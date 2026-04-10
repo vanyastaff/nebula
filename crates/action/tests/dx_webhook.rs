@@ -1,7 +1,7 @@
 //! Integration tests for WebhookAction DX trait + WebhookTriggerAdapter.
 
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
 use nebula_action::action::Action;
 use nebula_action::context::TriggerContext;
@@ -156,4 +156,124 @@ async fn webhook_adapter_handle_event_before_start_fails() {
     let result = adapter.handle_event(event, &ctx).await;
     assert!(result.is_err());
     nebula_action::assert_fatal!(result);
+}
+
+// ── Double-start rejection (A2) ───────────────────────────────────────────
+
+struct CountingWebhook {
+    meta: ActionMetadata,
+    activate_count: Arc<AtomicUsize>,
+    deactivate_count: Arc<AtomicUsize>,
+}
+
+impl ActionDependencies for CountingWebhook {}
+impl Action for CountingWebhook {
+    fn metadata(&self) -> &ActionMetadata {
+        &self.meta
+    }
+}
+
+impl WebhookAction for CountingWebhook {
+    type State = WebhookReg;
+
+    async fn on_activate(&self, _ctx: &TriggerContext) -> Result<WebhookReg, ActionError> {
+        self.activate_count.fetch_add(1, Ordering::Relaxed);
+        Ok(WebhookReg {
+            hook_id: "hook".into(),
+        })
+    }
+
+    async fn handle_request(
+        &self,
+        _event: &IncomingEvent,
+        _state: &WebhookReg,
+        _ctx: &TriggerContext,
+    ) -> Result<TriggerEventOutcome, ActionError> {
+        Ok(TriggerEventOutcome::skip())
+    }
+
+    async fn on_deactivate(
+        &self,
+        _state: WebhookReg,
+        _ctx: &TriggerContext,
+    ) -> Result<(), ActionError> {
+        self.deactivate_count.fetch_add(1, Ordering::Relaxed);
+        Ok(())
+    }
+}
+
+fn make_counting() -> (CountingWebhook, Arc<AtomicUsize>, Arc<AtomicUsize>) {
+    let activate = Arc::new(AtomicUsize::new(0));
+    let deactivate = Arc::new(AtomicUsize::new(0));
+    (
+        CountingWebhook {
+            meta: ActionMetadata::new(
+                nebula_core::action_key!("test.webhook.count"),
+                "Counting Webhook",
+                "Counts activate/deactivate",
+            ),
+            activate_count: activate.clone(),
+            deactivate_count: deactivate.clone(),
+        },
+        activate,
+        deactivate,
+    )
+}
+
+#[tokio::test]
+async fn webhook_adapter_rejects_double_start() {
+    // Sequential double-start MUST fail with Fatal. The first on_activate
+    // runs; the second start() is rejected by the read-lock pre-check
+    // BEFORE on_activate runs (fast path). The first state MUST NOT be
+    // deactivated — silently overwriting would leak the external
+    // registration at GitHub/Slack.
+    let (webhook, activate, deactivate) = make_counting();
+    let adapter = WebhookTriggerAdapter::new(webhook);
+    let (ctx, _, _) = TestContextBuilder::minimal().build_trigger();
+
+    adapter.start(&ctx).await.unwrap();
+    assert_eq!(activate.load(Ordering::Relaxed), 1);
+    assert_eq!(deactivate.load(Ordering::Relaxed), 0);
+
+    let err = adapter
+        .start(&ctx)
+        .await
+        .expect_err("second start must fail");
+    assert!(err.is_fatal(), "double-start must be Fatal");
+    assert_eq!(
+        activate.load(Ordering::Relaxed),
+        1,
+        "sequential double-start must be rejected by the read-lock \
+         pre-check BEFORE on_activate runs again. The re-check under \
+         the write lock only matters for a concurrent race where two \
+         tasks both passed the pre-check."
+    );
+    assert_eq!(
+        deactivate.load(Ordering::Relaxed),
+        0,
+        "first state MUST NOT have been deactivated by the double-start"
+    );
+
+    // stop() cleans up the (still-live) first state.
+    adapter.stop(&ctx).await.unwrap();
+    assert_eq!(deactivate.load(Ordering::Relaxed), 1);
+}
+
+#[tokio::test]
+async fn webhook_adapter_start_stop_start_succeeds() {
+    // After a clean stop, start() must be accepted again — the state
+    // slot is empty so double-start rejection does not trip.
+    let (webhook, activate, deactivate) = make_counting();
+    let adapter = WebhookTriggerAdapter::new(webhook);
+    let (ctx, _, _) = TestContextBuilder::minimal().build_trigger();
+
+    adapter.start(&ctx).await.unwrap();
+    adapter.stop(&ctx).await.unwrap();
+    adapter.start(&ctx).await.unwrap();
+
+    assert_eq!(activate.load(Ordering::Relaxed), 2);
+    assert_eq!(deactivate.load(Ordering::Relaxed), 1);
+
+    adapter.stop(&ctx).await.unwrap();
+    assert_eq!(deactivate.load(Ordering::Relaxed), 2);
 }

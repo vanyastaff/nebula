@@ -342,8 +342,43 @@ where
     }
 
     async fn start(&self, ctx: &TriggerContext) -> Result<(), ActionError> {
+        // Reject double-start: previous state must be stopped first.
+        // Silently overwriting would leak external webhook registrations
+        // (GitHub/Slack/Stripe) — the old hook stays live and stop() only
+        // deactivates the last one.
+        if self.state.read().is_some() {
+            return Err(ActionError::fatal(
+                "webhook trigger already started; call stop() before start() again",
+            ));
+        }
+
         let new_state = self.action.on_activate(ctx).await?;
-        *self.state.write() = Some(Arc::new(new_state));
+
+        // Re-check under the write lock to close the race between the
+        // read-guard drop above and the write below. The `rollback_state`
+        // dance keeps the parking_lot guard strictly inside the block so
+        // it cannot sit across the `.await` on `on_deactivate` — holding
+        // a non-Send, non-async guard across a suspension point would
+        // make the whole future `!Send`.
+        let rollback_state = {
+            let mut guard = self.state.write();
+            if guard.is_some() {
+                // Another task raced us and already stored state. We own
+                // `new_state` — nobody else has the Arc yet — so we must
+                // tear it down. Return it from the block for the await.
+                Some(new_state)
+            } else {
+                *guard = Some(Arc::new(new_state));
+                None
+            }
+        };
+
+        if let Some(orphan) = rollback_state {
+            let _ = self.action.on_deactivate(orphan, ctx).await;
+            return Err(ActionError::fatal(
+                "webhook trigger already started; call stop() before start() again",
+            ));
+        }
         Ok(())
     }
 
@@ -398,6 +433,14 @@ impl<A: WebhookAction> fmt::Debug for WebhookTriggerAdapter<A> {
 ///
 /// Created automatically by `nebula_runtime::ActionRegistry::register_poll`.
 ///
+/// # Double-start rejection
+///
+/// `start()` uses an `AtomicBool` sentinel to reject a concurrent or
+/// sequential second call with `ActionError::Fatal`. The sentinel is
+/// cleared via an RAII guard (defused pattern, NOT `mem::forget`) when
+/// `start()` exits — whether by cancellation, error, or normal return —
+/// so `stop() → start()` restart works.
+///
 /// # Error handling
 ///
 /// - `ActionError::Fatal` from `poll()` stops the loop immediately
@@ -405,13 +448,32 @@ impl<A: WebhookAction> fmt::Debug for WebhookTriggerAdapter<A> {
 /// - Emit failures are silently dropped (transient emitter issues don't kill the trigger)
 pub struct PollTriggerAdapter<A: PollAction> {
     action: A,
+    /// `true` while `start()` is running. Cleared by `StartedGuard` on exit.
+    started: std::sync::atomic::AtomicBool,
 }
 
 impl<A: PollAction> PollTriggerAdapter<A> {
     /// Wrap a typed poll action.
     #[must_use]
     pub fn new(action: A) -> Self {
-        Self { action }
+        Self {
+            action,
+            started: std::sync::atomic::AtomicBool::new(false),
+        }
+    }
+}
+
+/// RAII guard that clears the `started` flag when `start()` exits.
+///
+/// Uses the "defused" pattern — a plain `Drop` impl with no `mem::forget`
+/// call — so the flag is correctly cleared on panic, cancellation, or
+/// normal return. Keeping the flag set across a crashed `start()` would
+/// permanently poison the adapter.
+struct StartedGuard<'a>(&'a std::sync::atomic::AtomicBool);
+
+impl Drop for StartedGuard<'_> {
+    fn drop(&mut self) {
+        self.0.store(false, std::sync::atomic::Ordering::Release);
     }
 }
 
@@ -427,6 +489,25 @@ where
     }
 
     async fn start(&self, ctx: &TriggerContext) -> Result<(), ActionError> {
+        use std::sync::atomic::Ordering;
+
+        // Atomically claim the "started" slot. If another call already
+        // owns it, fail rather than spawning a second poll loop against
+        // a shared cursor — that would double-emit every event.
+        if self
+            .started
+            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+            .is_err()
+        {
+            return Err(ActionError::fatal(
+                "poll trigger already started; call stop() before start() again",
+            ));
+        }
+
+        // RAII: clear the flag on every exit path (cancellation, error,
+        // normal return) so restart works. Dropped at end of scope.
+        let _guard = StartedGuard(&self.started);
+
         let mut cursor = A::Cursor::default();
         let interval = self.action.poll_interval();
 
@@ -776,14 +857,44 @@ pub trait TriggerHandler: Send + Sync {
     /// Action metadata (key, version, capabilities).
     fn metadata(&self) -> &ActionMetadata;
 
-    /// Start the trigger (register listener, schedule poll, etc.).
+    /// Start the trigger.
+    ///
+    /// # Semantics — two valid shapes
+    ///
+    /// Implementations fall into one of two categories:
+    ///
+    /// 1. **Setup-and-return** — register an external listener (webhook,
+    ///    message queue consumer), then return immediately. The listener
+    ///    runs asynchronously outside this call. Example:
+    ///    [`WebhookTriggerAdapter`].
+    ///
+    /// 2. **Run-until-cancelled** — run the entire trigger loop inline,
+    ///    returning only when `ctx.cancellation` fires or a fatal error
+    ///    occurs. Example: [`PollTriggerAdapter`].
+    ///
+    /// **Callers MUST spawn `start()` in a dedicated task** and must not
+    /// assume it returns promptly. Calling sites that drive multiple
+    /// triggers sequentially will deadlock on shape (2).
+    ///
+    /// # Lifecycle
+    ///
+    /// `start` must be paired with [`stop`](Self::stop). Calling `start`
+    /// twice without an intervening `stop` returns [`ActionError::Fatal`] —
+    /// implementations MUST NOT silently re-register, as this would leak
+    /// external resources (webhook registrations, poll loops, schedules).
     ///
     /// # Errors
     ///
-    /// Returns [`ActionError`] if the trigger cannot be started.
+    /// Returns [`ActionError`] if the trigger cannot be started, if `start`
+    /// is called twice without an intervening `stop`, or (for shape 2) if
+    /// the trigger loop encounters a fatal error while running.
     async fn start(&self, ctx: &TriggerContext) -> Result<(), ActionError>;
 
     /// Stop the trigger (unregister, cancel schedule).
+    ///
+    /// Clears any state set by [`start`](Self::start) so a subsequent
+    /// `start` call is accepted. For shape-2 triggers (run-until-cancelled),
+    /// prefer cancelling `ctx.cancellation` to let `start()` exit cleanly.
     ///
     /// # Errors
     ///

@@ -123,3 +123,71 @@ async fn poll_action_cursor_advances() {
     assert_eq!(cursor, 2);
     assert_eq!(events.len(), 1);
 }
+
+// ── Double-start rejection (A2) ───────────────────────────────────────────
+
+#[tokio::test(start_paused = true)]
+async fn poll_adapter_rejects_concurrent_start() {
+    // Spawn one start() that owns the atomic "started" slot. While that
+    // loop is alive (suspended in tokio::time::sleep), a second start()
+    // from the test task must fail with Fatal — otherwise two loops
+    // would share the adapter's cursor and double-emit every event.
+    let (poller, _) = make_poller();
+    let adapter = Arc::new(PollTriggerAdapter::new(poller));
+    let (ctx, _, _) = TestContextBuilder::minimal().build_trigger();
+
+    let cancel = ctx.cancellation.clone();
+    let adapter1 = Arc::clone(&adapter);
+    let ctx1 = ctx.clone();
+    let handle = tokio::spawn(async move { adapter1.start(&ctx1).await });
+
+    // Let the spawned loop reach its first tokio::select! and register
+    // the sleep future. Now the atomic flag is set.
+    for _ in 0..5 {
+        tokio::task::yield_now().await;
+    }
+
+    let err = adapter
+        .start(&ctx)
+        .await
+        .expect_err("second start must fail while first is running");
+    assert!(err.is_fatal());
+    assert!(err.to_string().contains("already started"));
+
+    // Tear down the first loop cleanly.
+    cancel.cancel();
+    let result = handle.await.unwrap();
+    assert!(result.is_ok());
+}
+
+#[tokio::test(start_paused = true)]
+async fn poll_adapter_start_after_cancellation_succeeds() {
+    // Prove the RAII StartedGuard clears the flag on every exit path,
+    // including cancellation. After the first loop is cancelled and
+    // awaited, a second start() must succeed.
+    let (poller1, _) = make_poller();
+    let (poller2, _) = make_poller();
+    let adapter1 = PollTriggerAdapter::new(poller1);
+    let adapter2 = PollTriggerAdapter::new(poller2);
+    let (ctx, _, _) = TestContextBuilder::minimal().build_trigger();
+
+    let cancel = ctx.cancellation.clone();
+    let ctx_clone = ctx.clone();
+    let handle = tokio::spawn(async move { adapter1.start(&ctx_clone).await });
+    for _ in 0..5 {
+        tokio::task::yield_now().await;
+    }
+    cancel.cancel();
+    handle.await.unwrap().unwrap();
+
+    // Fresh cancellation token for the second start (the first was
+    // cancelled); otherwise start() returns immediately.
+    let (ctx2, _, _) = TestContextBuilder::minimal().build_trigger();
+    let cancel2 = ctx2.cancellation.clone();
+    let handle2 = tokio::spawn(async move { adapter2.start(&ctx2).await });
+    for _ in 0..5 {
+        tokio::task::yield_now().await;
+    }
+    cancel2.cancel();
+    handle2.await.unwrap().unwrap();
+}
