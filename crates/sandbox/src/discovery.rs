@@ -1,6 +1,6 @@
 //! Plugin discovery — scan directories for plugin binaries and get metadata.
 
-use nebula_action::handler::InternalHandler;
+use nebula_action::handler::ActionHandler;
 use nebula_action::metadata::ActionMetadata;
 use nebula_core::ActionKey;
 use nebula_plugin_protocol::{PROTOCOL_VERSION, PluginMetadata, PluginResponse};
@@ -56,7 +56,7 @@ pub async fn discover_plugin(binary: &Path) -> Result<PluginMetadata, String> {
 pub async fn discover_directory(
     dir: &Path,
     default_timeout: Duration,
-) -> Vec<(String, Vec<Arc<dyn InternalHandler>>)> {
+) -> Vec<(String, Vec<(ActionMetadata, ActionHandler)>)> {
     let mut results = Vec::new();
 
     let entries = match std::fs::read_dir(dir) {
@@ -108,11 +108,11 @@ pub async fn discover_directory(
     results
 }
 
-/// Create InternalHandler instances for each action in a discovered plugin.
+/// Create `ActionHandler` instances for each action in a discovered plugin.
 fn create_handlers(
     plugin: &PluginMetadata,
     sandbox: Arc<ProcessSandbox>,
-) -> Vec<Arc<dyn InternalHandler>> {
+) -> Vec<(ActionMetadata, ActionHandler)> {
     plugin
         .actions
         .iter()
@@ -133,10 +133,12 @@ fn create_handlers(
 
             let metadata = ActionMetadata::new(action_key, &action.name, &action.description);
 
-            let handler: Arc<dyn InternalHandler> =
-                Arc::new(ProcessSandboxHandler::new(Arc::clone(&sandbox), metadata));
+            let handler = ActionHandler::Stateless(Arc::new(ProcessSandboxHandler::new(
+                Arc::clone(&sandbox),
+                metadata.clone(),
+            )));
 
-            Some(handler)
+            Some((metadata, handler))
         })
         .collect()
 }

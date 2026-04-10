@@ -3,9 +3,9 @@
 //! Shared state for all handlers via Arc.
 //! Contains only ports (traits) — independent of concrete implementations.
 
-use nebula_action::registry::ActionRegistry;
 use nebula_config::Config;
 use nebula_plugin::PluginRegistry;
+use nebula_runtime::ActionRegistry;
 use nebula_storage::{ExecutionRepo, WorkflowRepo};
 use nebula_telemetry::metrics::MetricsRegistry;
 use std::sync::Arc;

@@ -19,4 +19,4 @@ Plugin isolation and sandboxing — SandboxRunner trait and implementations.
 ## Relations
 - Depends on nebula-action. Used by nebula-runtime (re-export), nebula-engine (via runtime).
 
-<!-- reviewed: 2026-04-09 — fixed Capability import behind cfg(linux) in os_sandbox.rs -->
+<!-- reviewed: 2026-04-09 — Phase 7.5: ProcessSandboxHandler migrated from InternalHandler to StatelessHandler, discovery returns ActionHandler tuples -->

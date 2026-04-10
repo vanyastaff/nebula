@@ -1,6 +1,5 @@
 #![forbid(unsafe_code)]
 #![warn(missing_docs)]
-#![allow(deprecated)] // Reason: InternalHandler migration to ActionHandler tracked for future phase
 
 //! # Nebula Runtime
 //!

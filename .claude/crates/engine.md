@@ -22,4 +22,4 @@ Workflow execution orchestrator — frontier-based DAG scheduler.
 - Credential refresh only fires when `credential_resolver` is also Some.
 - Resume budget/input not persisted — defaults on resume (TODO).
 
-<!-- reviewed: 2026-04-08 — added ExecutionEvent, with_event_sender, node_errors -->
+<!-- reviewed: 2026-04-09 — Phase 7.5: test handlers migrated from InternalHandler to StatelessAction, no architectural change -->

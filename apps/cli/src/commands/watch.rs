@@ -122,18 +122,15 @@ async fn run_workflow(path: &Path, args: &WatchArgs) {
     crate::actions::register_builtins(&registry);
 
     let metrics = MetricsRegistry::new();
-    let registry_for_sandbox = Arc::clone(&registry);
-    let executor: nebula_runtime::sandbox::ActionExecutor =
-        Arc::new(move |ctx, metadata, input| {
-            let registry = Arc::clone(&registry_for_sandbox);
-            let key = metadata.key.as_str().to_owned();
-            Box::pin(async move {
-                let handler = registry
-                    .get(&key)
-                    .map_err(|e| nebula_action::ActionError::fatal(e.to_string()))?;
-                handler.execute(input, ctx.inner()).await
-            })
-        });
+    // Sandbox executor is unreachable in Phase 7.5 — see run.rs for details.
+    let executor: nebula_runtime::sandbox::ActionExecutor = Arc::new(|_ctx, _metadata, _input| {
+        Box::pin(async move {
+            Err(nebula_action::ActionError::fatal(
+                "sandbox executor invoked unexpectedly — Phase 7.5 routes all execution \
+                 through ActionHandler enum dispatch, sandbox is Phase 7.6 work",
+            ))
+        })
+    });
 
     let sandbox = Arc::new(InProcessSandbox::new(executor));
     let runtime = Arc::new(ActionRuntime::new(

@@ -84,8 +84,6 @@ pub mod output;
 pub mod port;
 /// Convenience re-exports for action authors.
 pub mod prelude;
-/// Type-safe registry for action handlers, keyed by ActionKey.
-pub mod registry;
 /// Execution result types carrying data and flow-control intent.
 pub mod result;
 /// Scoped credential accessor — enforces type-based access control.
@@ -114,9 +112,6 @@ pub use dependency::ActionDependencies;
 pub use error::{ActionError, ErrorCode};
 pub use execution::{ResourceAction, StatelessAction, TriggerAction};
 pub use ext::ActionResultExt;
-#[allow(deprecated)]
-// Reason: InternalHandler re-exported for backward compat during migration
-pub use handler::InternalHandler;
 pub use handler::{
     ActionHandler, AgentHandler, IncomingEvent, PollTriggerAdapter, ResourceActionAdapter,
     ResourceHandler, StatefulActionAdapter, StatefulHandler, StatelessActionAdapter,
@@ -132,7 +127,6 @@ pub use output::{
     StreamOutput, StreamState, Timing, TokenUsage,
 };
 pub use port::{ConnectionFilter, DynamicPort, FlowKind, InputPort, OutputPort, SupportPort};
-pub use registry::ActionRegistry;
 pub use result::{ActionResult, BranchKey, BreakReason, PortKey, WaitCondition};
 pub use scoped::ScopedCredentialAccessor;
 pub use stateful::{

@@ -30,8 +30,7 @@ pub async fn list() {
 
         for (name, handlers) in &plugins {
             println!("  {name}");
-            for handler in handlers {
-                let meta = handler.metadata();
+            for (meta, _handler) in handlers {
                 println!("    action: {:<30} {}", meta.key.as_str(), meta.description);
             }
             total += handlers.len();

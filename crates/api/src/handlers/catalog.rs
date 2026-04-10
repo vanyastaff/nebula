@@ -16,7 +16,7 @@ use axum::{
 /// List all registered actions.
 ///
 /// Returns key, name, and version for every action in the action registry.
-/// Requires an [`ActionRegistry`](nebula_action::registry::ActionRegistry) to be
+/// Requires an [`ActionRegistry`](nebula_runtime::ActionRegistry) to be
 /// attached to [`AppState`] via [`AppState::with_action_registry`].
 ///
 /// # Errors
@@ -30,8 +30,9 @@ pub async fn list_actions(State(state): State<AppState>) -> ApiResult<Json<ListA
 
     let actions: Vec<ActionSummary> = registry
         .keys()
+        .into_iter()
         .map(|key| {
-            let entry = registry.get(key);
+            let entry = registry.get(&key);
             let name = entry
                 .as_ref()
                 .map(|(meta, _)| meta.name.clone())

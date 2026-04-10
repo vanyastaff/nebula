@@ -266,7 +266,7 @@ async fn migrate_state_succeeds_from_v1() {
     // migrate_state should kick in and supply default label.
     let mut state = serde_json::json!({ "count": 5 });
     let result = adapter
-        .execute(serde_json::json!({}), &mut state, &ctx)
+        .execute(&serde_json::json!({}), &mut state, &ctx)
         .await;
 
     nebula_action::assert_break!(result);
@@ -288,7 +288,7 @@ async fn migrate_state_propagates_error_when_none() {
     // Completely invalid state — CounterAction does not override migrate_state (returns None).
     let mut state = serde_json::json!("not_an_object");
     let result = adapter
-        .execute(serde_json::Value::Null, &mut state, &ctx)
+        .execute(&serde_json::Value::Null, &mut state, &ctx)
         .await;
 
     nebula_action::assert_validation_error!(result);

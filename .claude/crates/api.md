@@ -27,4 +27,4 @@ Thin axum REST + WebSocket server — entry point for external clients.
 ## Relations
 - Depends on nebula-storage, nebula-workflow, nebula-action, nebula-plugin. Highest layer.
 
-<!-- reviewed: 2026-04-07 -->
+<!-- reviewed: 2026-04-09 — Phase 7.5: migrated to nebula_runtime::ActionRegistry (was nebula_action), no architectural change -->
