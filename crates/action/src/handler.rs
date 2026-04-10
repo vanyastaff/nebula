@@ -234,30 +234,31 @@ where
             .execute(typed_input, &mut typed_state, ctx)
             .await;
 
-        match serde_json::to_value(&typed_state) {
-            Ok(new_state) => {
+        // Flatten the 2D decision (serialize-success × action-result) into
+        // a single tuple match — easier to audit than nested arms, which
+        // matters on a checkpoint-critical code path.
+        match (serde_json::to_value(&typed_state), &action_result) {
+            (Ok(new_state), _) => {
                 *state = new_state;
             }
-            Err(ser_err) => match &action_result {
-                Ok(_) => {
-                    // Success path: surface the serialization failure as fatal.
-                    return Err(ActionError::fatal(format!(
-                        "state serialization failed: {ser_err}"
-                    )));
-                }
-                Err(action_err) => {
-                    // Error path: the action error is the actionable signal.
-                    // Log the serde failure forensically and let the original
-                    // error propagate — masking it would break retry classification.
-                    tracing::error!(
-                        action = %self.action.metadata().key,
-                        serialization_error = %ser_err,
-                        action_error = %action_err,
-                        "stateful adapter: state serialization failed on error path; \
-                         checkpoint lost, propagating original action error"
-                    );
-                }
-            },
+            (Err(ser_err), Ok(_)) => {
+                // Success path: surface the serialization failure as fatal.
+                return Err(ActionError::fatal(format!(
+                    "state serialization failed: {ser_err}"
+                )));
+            }
+            (Err(ser_err), Err(action_err)) => {
+                // Error path: the action error is the actionable signal.
+                // Log the serde failure forensically and let the original
+                // error propagate — masking it would break retry classification.
+                tracing::error!(
+                    action = %self.action.metadata().key,
+                    serialization_error = %ser_err,
+                    action_error = %action_err,
+                    "stateful adapter: state serialization failed on error path; \
+                     checkpoint lost, propagating original action error"
+                );
+            }
         }
 
         let result = action_result?;
@@ -598,6 +599,48 @@ impl<A: PollAction> PollTriggerAdapter<A> {
             emit_warn: WarnThrottle::new(),
         }
     }
+
+    /// Serialize and emit a batch of events, dropping (with a throttled
+    /// warn) any event that fails to serialize or emit.
+    ///
+    /// Extracted from the poll loop so the `tokio::select!` arms stay
+    /// flat. A bad payload from a single event must not kill the
+    /// trigger — per-event failure is logged and skipped, the loop
+    /// continues with the next event.
+    async fn dispatch_events(&self, events: Vec<A::Event>, ctx: &TriggerContext)
+    where
+        A::Event: Send + Sync,
+    {
+        let action_key = &self.action.metadata().key;
+        for event in events {
+            let payload = match serde_json::to_value(&event) {
+                Ok(v) => v,
+                Err(e) => {
+                    if self.serialize_warn.should_log() {
+                        ctx.logger.log(
+                            ActionLogLevel::Warn,
+                            &format!(
+                                "poll trigger {action_key}: event serialization failed, \
+                                 dropping: {e}"
+                            ),
+                        );
+                    }
+                    continue;
+                }
+            };
+            if let Err(e) = ctx.emitter.emit(payload).await {
+                if self.emit_warn.should_log() {
+                    ctx.logger.log(
+                        ActionLogLevel::Warn,
+                        &format!(
+                            "poll trigger {action_key}: emitter.emit failed, \
+                             dropping event: {e}"
+                        ),
+                    );
+                }
+            }
+        }
+    }
 }
 
 /// RAII guard that clears the `started` flag when `start()` exits.
@@ -625,6 +668,26 @@ where
         self.action.metadata()
     }
 
+    /// Run the poll loop until cancellation.
+    ///
+    /// # Cancel safety
+    ///
+    /// The internal `tokio::select!` races two futures:
+    ///
+    /// 1. `ctx.cancellation.cancelled()` — a `CancellationToken`
+    ///    future that is cancel-safe: dropping it mid-poll simply
+    ///    unregisters the waker.
+    /// 2. `tokio::time::sleep(interval)` — the `Sleep` future from
+    ///    tokio is cancel-safe: dropping it mid-wait cancels the
+    ///    timer with no observable effect on adjacent state.
+    ///
+    /// Neither branch holds a lock, a guard, or state that would
+    /// leak on drop. The only state mutated inside the poll branch
+    /// is `cursor`, which `PollAction::poll` owns and the loop
+    /// re-reads on the next iteration — if cancellation fires
+    /// between `sleep` completing and `poll` being awaited, the
+    /// cursor simply stays at its previous position and the loop
+    /// exits cleanly.
     async fn start(&self, ctx: &TriggerContext) -> Result<(), ActionError> {
         use std::sync::atomic::Ordering;
 
@@ -661,8 +724,6 @@ where
             );
         }
 
-        let action_key = &self.action.metadata().key;
-
         loop {
             tokio::select! {
                 () = ctx.cancellation.cancelled() => {
@@ -670,40 +731,11 @@ where
                 }
                 () = tokio::time::sleep(interval) => {
                     match self.action.poll(&mut cursor, ctx).await {
-                        Ok(events) => {
-                            for event in events {
-                                // Bad payload from a single event must not kill the trigger.
-                                let payload = match serde_json::to_value(&event) {
-                                    Ok(v) => v,
-                                    Err(e) => {
-                                        if self.serialize_warn.should_log() {
-                                            ctx.logger.log(
-                                                ActionLogLevel::Warn,
-                                                &format!(
-                                                    "poll trigger {action_key}: event \
-                                                     serialization failed, dropping: {e}"
-                                                ),
-                                            );
-                                        }
-                                        continue;
-                                    }
-                                };
-                                if let Err(e) = ctx.emitter.emit(payload).await {
-                                    if self.emit_warn.should_log() {
-                                        ctx.logger.log(
-                                            ActionLogLevel::Warn,
-                                            &format!(
-                                                "poll trigger {action_key}: emitter.emit \
-                                                 failed, dropping event: {e}"
-                                            ),
-                                        );
-                                    }
-                                }
-                            }
-                        }
+                        Ok(events) => self.dispatch_events(events, ctx).await,
                         Err(e) if e.is_fatal() => return Err(e),
                         Err(e) => {
                             if self.poll_warn.should_log() {
+                                let action_key = &self.action.metadata().key;
                                 ctx.logger.log(
                                     ActionLogLevel::Warn,
                                     &format!(
@@ -1166,6 +1198,24 @@ pub trait TriggerHandler: Send + Sync {
     /// twice without an intervening `stop` returns [`ActionError::Fatal`] —
     /// implementations MUST NOT silently re-register, as this would leak
     /// external resources (webhook registrations, poll loops, schedules).
+    ///
+    /// # Cancel safety
+    ///
+    /// Implementations MUST be cancel-safe — dropping the returned
+    /// future at any `.await` point MUST NOT leak external resources,
+    /// corrupt internal state, or lose in-flight work beyond what the
+    /// trigger's contract already tolerates (e.g., a poll trigger may
+    /// lose one cycle of cursor progress, but must not leak its
+    /// listener registration).
+    ///
+    /// Shape-1 (setup-and-return) implementations register the
+    /// listener, then return. Cancel safety is trivially satisfied
+    /// because no `.await` sits on user state after registration.
+    /// Shape-2 (run-until-cancelled) implementations must structure
+    /// their `tokio::select!` so that each branch future is itself
+    /// cancel-safe — see [`PollTriggerAdapter::start`] for a worked
+    /// example using cancel-safe `CancellationToken::cancelled()` and
+    /// `tokio::time::sleep`.
     ///
     /// # Errors
     ///
