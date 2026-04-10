@@ -64,7 +64,6 @@ pub async fn execute(args: ReplayArgs, quiet: bool) -> anyhow::Result<ExitCode> 
 
     // 5. Build engine.
     let registry = Arc::new(ActionRegistry::new());
-    crate::actions::register_builtins(&registry);
 
     let community_count = crate::plugins::discover_and_register(&registry).await;
     if community_count > 0 {

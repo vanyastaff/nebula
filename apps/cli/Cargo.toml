@@ -50,9 +50,6 @@ dirs = "6"
 ratatui = { version = "0.29", optional = true }
 crossterm = { version = "0.28", optional = true }
 
-# HTTP client (for http.get/http.post built-in actions)
-reqwest = { workspace = true }
-
 # Nebula crates
 nebula-config = { path = "../../crates/config", features = ["toml", "env"] }
 nebula-core = { path = "../../crates/core" }

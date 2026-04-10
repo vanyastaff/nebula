@@ -1,0 +1,39 @@
+[package]
+name = "nebula-examples"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Runnable examples for Nebula DX traits (stateless, stateful, trigger actions)"
+publish = false
+autobins = false
+
+[dependencies]
+nebula-sdk = { path = "../crates/sdk" }
+
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "time"] }
+serde = { workspace = true }
+serde_json = { workspace = true }
+anyhow = { workspace = true }
+
+reqwest = { workspace = true, features = ["json", "rustls"] }
+rss = "2.0"
+chrono = { workspace = true }
+
+[[bin]]
+name = "paginated_users"
+path = "paginated_users.rs"
+
+[[bin]]
+name = "batch_products"
+path = "batch_products.rs"
+
+[[bin]]
+name = "transactional"
+path = "transactional.rs"
+
+[[bin]]
+name = "poll_habr"
+path = "poll_habr.rs"

@@ -54,7 +54,10 @@ pub use tokio;
 
 pub mod action;
 pub mod prelude;
+pub mod runtime;
 pub mod workflow;
+
+pub use runtime::{RunReport, TestRuntime};
 
 #[cfg(feature = "testing")]
 pub mod testing;

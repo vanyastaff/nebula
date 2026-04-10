@@ -20,6 +20,30 @@ pub use nebula_action::{
     port::OutputPort,
 };
 
+// DX trait families: stateful, trigger
+pub use nebula_action::result::BreakReason;
+pub use nebula_action::stateful::{
+    BatchAction, BatchItemResult, PageResult, PaginatedAction, StatefulAction, TransactionalAction,
+};
+pub use nebula_action::trigger::{PollAction, WebhookAction};
+pub use nebula_action::{
+    IncomingEvent, PollTriggerAdapter, StatefulActionAdapter, StatelessActionAdapter,
+    TriggerContext, TriggerEventOutcome, WebhookTriggerAdapter,
+};
+
+// DX codegen macros — re-exported so authors can write `impl_paginated_action!(...)`
+// without reaching into `nebula_action::`.
+pub use nebula_action::{impl_batch_action, impl_paginated_action, impl_transactional_action};
+
+// Testing harness — context builder, spy emitter/logger/scheduler.
+pub use nebula_action::testing::{
+    SpyEmitter, SpyLogger, SpyScheduler, StatefulTestHarness, TestContextBuilder,
+    TriggerTestHarness,
+};
+
+// In-process run harness for single-action examples and tests.
+pub use crate::runtime::{RunReport, TestRuntime};
+
 // Workflow traits and types
 pub use nebula_workflow::{
     ParamValue, WorkflowBuilder as CoreWorkflowBuilder, WorkflowDefinition, connection::Connection,

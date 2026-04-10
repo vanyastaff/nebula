@@ -23,7 +23,8 @@ nebula-resource = { path = "../resource" }
 nebula-validator = { path = "../validator" }
 
 # Async runtime
-tokio = { workspace = true }
+tokio = { workspace = true, features = ["rt", "macros", "time"] }
+tokio-util = { workspace = true }
 async-trait = { workspace = true }
 
 # Serialization

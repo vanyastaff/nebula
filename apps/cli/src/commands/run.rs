@@ -45,7 +45,6 @@ pub async fn execute(args: RunArgs, quiet: bool) -> anyhow::Result<ExitCode> {
 
     // 5. Build the execution stack.
     let registry = Arc::new(ActionRegistry::new());
-    crate::actions::register_builtins(&registry);
 
     // Discover and register community plugins from plugins/ directories.
     let community_count = crate::plugins::discover_and_register(&registry).await;

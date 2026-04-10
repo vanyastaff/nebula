@@ -119,7 +119,6 @@ async fn run_workflow(path: &Path, args: &WatchArgs) {
 
     // Build engine (fresh each run for simplicity).
     let registry = Arc::new(ActionRegistry::new());
-    crate::actions::register_builtins(&registry);
 
     let metrics = MetricsRegistry::new();
     // Sandbox executor is unreachable in Phase 7.5 — see run.rs for details.

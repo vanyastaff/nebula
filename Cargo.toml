@@ -36,6 +36,7 @@ members = [
     "crates/sandbox",
     "crates/plugin-protocol",
     "apps/cli",
+    "examples",
 ]
 exclude = [
     "crates/*/fuzz",
