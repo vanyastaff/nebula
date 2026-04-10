@@ -16,8 +16,8 @@ pub use crate::error::{ActionError, ErrorCode};
 pub use crate::execution::{ResourceAction, StatelessAction, TriggerAction};
 pub use crate::ext::ActionResultExt;
 pub use crate::handler::{
-    ActionHandler, ResourceActionAdapter, StatefulActionAdapter, StatelessActionAdapter,
-    TriggerActionAdapter,
+    ActionHandler, IncomingEvent, ResourceActionAdapter, StatefulActionAdapter,
+    StatelessActionAdapter, TriggerActionAdapter, TriggerEventOutcome,
 };
 pub use crate::metadata::{ActionMetadata, MetadataCompatibilityError};
 pub use crate::output::{
@@ -36,6 +36,7 @@ pub use crate::testing::{
     SpyEmitter, SpyLogger, SpyScheduler, StatefulTestHarness, TestContextBuilder,
     TriggerTestHarness,
 };
+pub use crate::trigger::{PollAction, WebhookAction};
 pub use crate::validation::{
     ActionPackageValidationError, ActionPackageValidationErrors, validate_action_package,
 };

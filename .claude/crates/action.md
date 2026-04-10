@@ -39,6 +39,12 @@ Action trait hierarchy and execution contract — Ports & Drivers architecture.
 - `migrate_state(old: Value) -> Option<Self::State>` — default method on `StatefulAction`. Adapter calls on state deser failure. Returns `None` by default (error propagated).
 - `ActionResult::continue_with()`, `break_completed()`, `break_with_reason()`, `continue_with_delay()` — convenience constructors for stateful iteration results.
 
+- `trigger.rs`: DX traits for TriggerAction — `WebhookAction` (register/handle/unregister lifecycle) + `PollAction` (blocking poll loop with in-memory cursor). Typed adapters (`WebhookTriggerAdapter`, `PollTriggerAdapter`) implement `TriggerHandler` directly. Registry convenience methods: `register_webhook()`, `register_poll()`.
+- `IncomingEvent` — transport-agnostic event struct (body bytes + headers map + source). Lives in `handler.rs` (not `trigger.rs`) to avoid circular imports — re-exported from `trigger.rs`.
+- `TriggerEventOutcome` enum (Skip/Emit/EmitMany) on `TriggerHandler` — universal event ingress. `accepts_events()` + `handle_event()` with default error. `handle_event` takes typed `IncomingEvent` directly (NOT `Value`) — no JSON round-trip, no body bloat.
+- `WebhookTriggerAdapter` stores state as `RwLock<Option<Arc<State>>>`. `handle_event` clones the `Arc` under read lock and releases BEFORE await (prevents deadlock with concurrent start/stop). `handle_event` before `start()` returns Fatal error.
+- `PollTriggerAdapter::start()` blocks in a `tokio::select!` loop until cancellation. Fatal errors stop the loop, Retryable errors skip the cycle, emit failures silently dropped.
+
 ## Traps
 - `ActionError::retryable(...)` vs `ActionError::fatal(...)` — engine uses this to decide retry. Use `ActionResultExt` for ergonomic `.retryable()?` / `.fatal()?`.
 - `FnStatelessAction` / `stateless_fn()` for closure-based actions (testing and one-off use). `FnStatelessCtxAction` / `stateless_ctx_fn()` for closures that need `ActionContext` (credentials, resources, logger). Use `.with_context(ctx)` to inject capabilities.
@@ -48,8 +54,13 @@ Action trait hierarchy and execution contract — Ports & Drivers architecture.
 - Must call `impl_paginated_action!(MyType)` after `impl PaginatedAction for MyType` — the macro generates the `StatefulAction` impl. Forgetting the macro = type won't work with `register_stateful()`.
 - A type cannot use two DX macros (e.g., both `impl_paginated_action!` and `impl_batch_action!`) — duplicate `StatefulAction` impl error. Choose one pattern per type.
 - `BatchAction::process_item` returning `ActionError::Fatal` aborts the entire batch. Use `ActionError::Retryable` for per-item errors that should be captured and continued.
+- `PollTriggerAdapter::start()` blocks until cancellation — engine MUST spawn it in a task. Tests use `#[tokio::test(start_paused = true)]` + `tokio::time::advance` + `yield_now` for determinism. Requires `tokio` `test-util` feature.
+- `WebhookTriggerAdapter::handle_event` before `start()` returns `ActionError::Fatal` — webhook layer must ensure trigger is started before routing events.
+- `IncomingEvent` is in `handler.rs` not `trigger.rs` — re-exported from both for public API. Both `nebula_action::handler::IncomingEvent` and `nebula_action::trigger::IncomingEvent` work.
+- `ctx.cancellation` and `ctx.emitter` accessed as pub fields in PollTriggerAdapter — known tech debt, should be methods. Tracked for TriggerContext refactor.
+- `PollAction::Cursor` is in-memory only — resets to `Default` on every `start()`. Cross-restart persistence requires runtime storage integration (post-v1).
 
 ## Relations
 - Depends on nebula-core, nebula-parameter, nebula-credential. Used by nebula-engine, nebula-runtime, nebula-sdk.
 
-<!-- reviewed: 2026-04-09 — Phase 6 DX stateful types, migrate_state, ActionResult constructors -->
+<!-- reviewed: 2026-04-09 — Phase 7 DX trigger types (WebhookAction, PollAction, IncomingEvent, TriggerEventOutcome) -->
