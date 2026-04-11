@@ -1,6 +1,9 @@
 #!/usr/bin/env bash
-# PostToolUse hook: if a .claude/ file was just edited, check its token budget.
+# PostToolUse hook: if a .project/context/ file was just edited, check its token budget.
 # Receives JSON on stdin with tool_input.file_path.
+#
+# Project context files live under .project/context/ (moved out of .claude/
+# on 2026-04-11 to avoid autopilot permission churn on every edit).
 
 set -euo pipefail
 
@@ -18,8 +21,8 @@ else
     FILE_PATH=$(printf '%s' "$INPUT" | grep -o '"file_path"[[:space:]]*:[[:space:]]*"[^"]*"' | head -1 | sed 's/.*"file_path"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/' || true)
 fi
 
-# Only care about .claude/ context files
-if [[ -z "$FILE_PATH" ]] || ! printf '%s' "$FILE_PATH" | grep -q '\.claude/'; then
+# Only care about .project/context/ files
+if [[ -z "$FILE_PATH" ]] || ! printf '%s' "$FILE_PATH" | grep -q '\.project/context/'; then
     exit 0
 fi
 

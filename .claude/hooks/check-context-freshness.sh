@@ -1,11 +1,14 @@
 #!/usr/bin/env bash
 # Stop hook: block completion if crate code changed but context wasn't updated.
 # Checks both uncommitted changes AND recent commits (since session start).
+#
+# Context files live under .project/context/crates/ (moved out of .claude/
+# on 2026-04-11 to avoid autopilot permission churn on every edit).
 
 set -euo pipefail
 
-CLAUDE_DIR="$(cd "$(dirname "$0")/.." && pwd)"
-WORKSPACE_ROOT="$(dirname "$CLAUDE_DIR")"
+HOOK_DIR="$(cd "$(dirname "$0")/.." && pwd)"
+WORKSPACE_ROOT="$(dirname "$HOOK_DIR")"
 cd "$WORKSPACE_ROOT"
 
 # Collect all changed files: uncommitted (staged + unstaged) + recent session commits.
@@ -34,15 +37,15 @@ for crate in $changed_crates; do
     if [[ ! -d "crates/${crate}" ]]; then
         continue
     fi
-    context_file=".claude/crates/${crate}.md"
+    context_file=".project/context/crates/${crate}.md"
     if [[ ! -f "$context_file" ]]; then
-        missing_updates="${missing_updates}\n- .claude/crates/${crate}.md is MISSING (new crate needs a context file)"
+        missing_updates="${missing_updates}\n- ${context_file} is MISSING (new crate needs a context file)"
     else
         # Check if context file appears anywhere in all_changed_files
         context_changed=$(printf '%s\n' "$all_changed_files" | \
-            grep -c "\.claude/crates/${crate}\.md" || true)
+            grep -c "\.project/context/crates/${crate}\.md" || true)
         if [[ "$context_changed" == "0" ]]; then
-            missing_updates="${missing_updates}\n- .claude/crates/${crate}.md NOT updated (but crates/${crate}/ was modified)"
+            missing_updates="${missing_updates}\n- ${context_file} NOT updated (but crates/${crate}/ was modified)"
         fi
     fi
 done
@@ -50,7 +53,7 @@ done
 if [[ -n "$missing_updates" ]]; then
     printf "Context files need updating before completing:%b\n" "$missing_updates" >&2
     echo "" >&2
-    echo "Update each listed .claude/crates/{name}.md if invariants, decisions, or traps changed." >&2
+    echo "Update each listed .project/context/crates/{name}.md if invariants, decisions, or traps changed." >&2
     echo "If only implementation details changed (no architectural impact), add '<!-- reviewed: $(date +%Y-%m-%d) -->' at the bottom of the file." >&2
     exit 2  # Block completion — stderr is fed back to Claude as feedback
 fi

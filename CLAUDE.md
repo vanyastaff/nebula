@@ -91,7 +91,7 @@ cargo +nightly fmt && cargo clippy --workspace -- -D warnings && cargo nextest r
 cargo bench --no-run -p nebula-resilience
 
 # Context file budgets
-bash .claude/validate.sh
+bash .project/validate.sh
 ```
 
 `cargo nextest run` replaces `cargo test` — parallel execution, better output. Doctests run separately (`cargo test --doc`) because nextest doesn't support them.
@@ -118,17 +118,21 @@ Database URL for local dev is in `deploy/.env` (copy from `deploy/.env.example`)
 
 ## Context System Protocol
 
-Workspace context lives in `.claude/` — do not re-derive what is already documented there.
+Workspace context lives in `.project/` — do not re-derive what is already documented there.
+(Moved out of `.claude/` on 2026-04-11. `.claude/` now holds only Claude Code harness —
+agents, hooks, settings. Coding rules and workspace context are tool-agnostic and live
+alongside the code, not inside the harness dir.)
 
 | File | Token budget | Contents |
 |------|-------------|----------|
-| `.claude/ROOT.md` | 300 | Workspace index, crate layers, conventions |
-| `.claude/decisions.md` | 500 | Cross-cutting architectural decisions (why, not what) |
-| `.claude/pitfalls.md` | 300 | Global traps and non-obvious constraints |
-| `.claude/active-work.md` | 200 | Current work, blocked areas, migration state |
-| `.claude/crates/{name}.md` | 500 each | Per-crate invariants, traps, non-obvious decisions |
+| `.project/context/ROOT.md` | 300 | Workspace index, crate layers, conventions |
+| `.project/context/decisions.md` | 500 | Cross-cutting architectural decisions (why, not what) |
+| `.project/context/pitfalls.md` | 300 | Global traps and non-obvious constraints |
+| `.project/context/active-work.md` | 200 | Current work, blocked areas, migration state |
+| `.project/context/crates/{name}.md` | 500 each | Per-crate invariants, traps, non-obvious decisions |
+| `.project/context/research/{slug}.md` | — | Background research, competitive analysis, findings |
+| `.project/rules/{topic}.md` | — | Coding rules, review checklists, audit protocols |
 | `docs/plans/{date}-{slug}.md` | — | Implementation plans for multi-step work (date-prefixed) |
-| `.claude/research/{slug}.md` | — | Background research, competitive analysis, findings |
 
 **Include:** invariants, non-obvious design decisions, active constraints, traps that burned someone.
 
@@ -136,9 +140,9 @@ Workspace context lives in `.claude/` — do not re-derive what is already docum
 
 ### Update Rules
 
-- **After modifying a crate**: update `.claude/crates/{name}.md` before the session ends.
+- **After modifying a crate**: update `.project/context/crates/{name}.md` before the session ends.
   - Changed invariants, decisions, or traps → update content.
   - Only implementation details changed → add `<!-- reviewed: YYYY-MM-DD -->` at bottom.
-- **After global decisions change**: update `decisions.md` or `pitfalls.md`.
-- **After work state changes**: update `active-work.md`.
+- **After global decisions change**: update `.project/context/decisions.md` or `.project/context/pitfalls.md`.
+- **After work state changes**: update `.project/context/active-work.md`.
 - A Stop hook enforces this: completion is blocked if a crate was modified but its context file was not touched.

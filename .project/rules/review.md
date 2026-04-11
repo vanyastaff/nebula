@@ -82,5 +82,5 @@ Use this for both PR reviews and periodic crate audits.
 - [ ] `cargo fmt && cargo clippy --workspace -- -D warnings && cargo nextest run --workspace` passes
 - [ ] `cargo bench --no-run -p <crate>` passes (bench contracts not broken)
 - [ ] Commit messages follow conventional commits
-- [ ] `.claude/crates/{name}.md` updated if invariants/decisions/traps changed
+- [ ] `.project/context/crates/{name}.md` updated if invariants/decisions/traps changed
 - [ ] Crate docs (`docs/`, `README.md`, `lib.rs`) reflect current API

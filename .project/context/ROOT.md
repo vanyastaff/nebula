@@ -1,7 +1,7 @@
 # Nebula
 DAG-based workflow automation engine in Rust (n8n/Zapier).
 
-## Crates (→ .claude/crates/{name}.md)
+## Crates (→ .project/context/crates/{name}.md)
 
 **Core layer**
 core · validator · parameter · expression · workflow · execution

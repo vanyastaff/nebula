@@ -19,7 +19,7 @@ For multi-file changes, batch I/O instead of serial read-edit cycles:
 
 After implementing, before saying "done":
 1. Re-read the changed files — does the diff match the intent?
-2. Check `.claude/crates/{name}.md` invariants — did I violate any?
+2. Check `.project/context/crates/{name}.md` invariants — did I violate any?
 3. Run `cargo fmt && cargo clippy --workspace -- -D warnings && cargo nextest run --workspace`
 4. If any step fails, fix it silently — don't report partial success
 
