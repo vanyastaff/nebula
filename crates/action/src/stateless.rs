@@ -19,14 +19,18 @@
 //! - [`FnStatelessCtxAction`] / [`stateless_ctx_fn`] — context-aware variant
 //!   for closures that need credentials, resources, or the logger.
 
+use std::fmt;
 use std::future::Future;
 use std::marker::PhantomData;
 use std::sync::Arc;
 
+use async_trait::async_trait;
+use serde_json::Value;
+
 use crate::action::Action;
 use crate::context::{ActionContext, Context};
 use crate::dependency::ActionDependencies;
-use crate::error::ActionError;
+use crate::error::{ActionError, ValidationReason};
 use crate::metadata::ActionMetadata;
 use crate::result::ActionResult;
 
@@ -293,8 +297,8 @@ pub fn stateless_ctx_fn<F, Input, Output>(
     FnStatelessCtxAction::new(metadata, func)
 }
 
-impl<F, Input, Output> std::fmt::Debug for FnStatelessCtxAction<F, Input, Output> {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl<F, Input, Output> fmt::Debug for FnStatelessCtxAction<F, Input, Output> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("FnStatelessCtxAction")
             .field("action", &self.metadata.key)
             .field(
@@ -309,11 +313,115 @@ impl<F, Input, Output> std::fmt::Debug for FnStatelessCtxAction<F, Input, Output
     }
 }
 
+// ── StatelessHandler trait ──────────────────────────────────────────────────
+
+/// Stateless action handler — JSON in, JSON out.
+///
+/// This is the JSON-level contract for one-shot actions. The engine sends
+/// a `serde_json::Value` input and receives a `serde_json::Value` output
+/// wrapped in [`ActionResult`].
+///
+/// # Errors
+///
+/// Returns [`ActionError`] on validation, retryable, or fatal failures.
+#[async_trait]
+pub trait StatelessHandler: Send + Sync {
+    /// Action metadata (key, version, capabilities).
+    fn metadata(&self) -> &ActionMetadata;
+
+    /// Execute with JSON input and context.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ActionError`] if execution fails (validation, retryable, or fatal).
+    async fn execute(
+        &self,
+        input: Value,
+        ctx: &ActionContext,
+    ) -> Result<ActionResult<Value>, ActionError>;
+}
+
+// ── StatelessActionAdapter ──────────────────────────────────────────────────
+
+/// Wraps a [`StatelessAction`] as a [`dyn StatelessHandler`].
+///
+/// Handles JSON deserialization of input and serialization of output so the
+/// runtime can work with untyped JSON throughout, while action authors write
+/// strongly-typed Rust.
+pub struct StatelessActionAdapter<A> {
+    action: A,
+}
+
+impl<A> StatelessActionAdapter<A> {
+    /// Wrap a typed stateless action.
+    #[must_use]
+    pub fn new(action: A) -> Self {
+        Self { action }
+    }
+
+    /// Consume the adapter, returning the inner action.
+    #[must_use]
+    pub fn into_inner(self) -> A {
+        self.action
+    }
+}
+
+#[async_trait]
+impl<A> StatelessHandler for StatelessActionAdapter<A>
+where
+    A: StatelessAction + Send + Sync + 'static,
+    A::Input: serde::de::DeserializeOwned + Send + Sync,
+    A::Output: serde::Serialize + Send + Sync,
+{
+    fn metadata(&self) -> &ActionMetadata {
+        self.action.metadata()
+    }
+
+    async fn execute(
+        &self,
+        input: Value,
+        ctx: &ActionContext,
+    ) -> Result<ActionResult<Value>, ActionError> {
+        let typed_input: A::Input = serde_json::from_value(input).map_err(|e| {
+            ActionError::validation(
+                "input",
+                ValidationReason::MalformedJson,
+                Some(e.to_string()),
+            )
+        })?;
+
+        let result = self.action.execute(typed_input, ctx).await?;
+
+        result.try_map_output(|output| {
+            serde_json::to_value(output)
+                .map_err(|e| ActionError::fatal(format!("output serialization failed: {e}")))
+        })
+    }
+}
+
+impl<A: Action> fmt::Debug for StatelessActionAdapter<A> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("StatelessActionAdapter")
+            .field("action", &self.action.metadata().key)
+            .finish_non_exhaustive()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use nebula_core::id::{ExecutionId, NodeId, WorkflowId};
+    use serde::{Deserialize, Serialize};
     use tokio_util::sync::CancellationToken;
+
+    fn make_ctx() -> ActionContext {
+        ActionContext::new(
+            ExecutionId::nil(),
+            NodeId::nil(),
+            WorkflowId::nil(),
+            CancellationToken::new(),
+        )
+    }
 
     #[tokio::test]
     async fn fn_stateless_action_executes_with_low_boilerplate() {
@@ -379,5 +487,130 @@ mod tests {
             }
             other => panic!("expected Success, got {other:?}"),
         }
+    }
+
+    // ── StatelessActionAdapter tests ──────────────────────────────────────
+
+    #[derive(Debug, Deserialize)]
+    struct AddInput {
+        a: i64,
+        b: i64,
+    }
+
+    #[derive(Debug, Serialize, Deserialize, PartialEq)]
+    struct AddOutput {
+        sum: i64,
+    }
+
+    struct AddAction {
+        meta: ActionMetadata,
+    }
+
+    impl AddAction {
+        fn new() -> Self {
+            Self {
+                meta: ActionMetadata::new(
+                    nebula_core::action_key!("math.add"),
+                    "Add",
+                    "Adds two numbers",
+                ),
+            }
+        }
+    }
+
+    impl ActionDependencies for AddAction {}
+
+    impl Action for AddAction {
+        fn metadata(&self) -> &ActionMetadata {
+            &self.meta
+        }
+    }
+
+    impl StatelessAction for AddAction {
+        type Input = AddInput;
+        type Output = AddOutput;
+
+        async fn execute(
+            &self,
+            input: Self::Input,
+            _ctx: &impl Context,
+        ) -> Result<ActionResult<Self::Output>, ActionError> {
+            Ok(ActionResult::success(AddOutput {
+                sum: input.a + input.b,
+            }))
+        }
+    }
+
+    #[tokio::test]
+    async fn adapter_executes_typed_action() {
+        let adapter = StatelessActionAdapter::new(AddAction::new());
+        let ctx = make_ctx();
+
+        let input = serde_json::json!({ "a": 3, "b": 7 });
+        let result = StatelessHandler::execute(&adapter, input, &ctx)
+            .await
+            .unwrap();
+
+        match result {
+            ActionResult::Success { output } => {
+                let v = output.into_value().unwrap();
+                let out: AddOutput = serde_json::from_value(v).unwrap();
+                assert_eq!(out.sum, 10);
+            }
+            _ => panic!("expected Success"),
+        }
+    }
+
+    #[tokio::test]
+    async fn adapter_returns_validation_error_on_bad_input() {
+        let adapter = StatelessActionAdapter::new(AddAction::new());
+        let ctx = make_ctx();
+
+        let bad_input = serde_json::json!({ "x": "not a number" });
+        let err = StatelessHandler::execute(&adapter, bad_input, &ctx)
+            .await
+            .unwrap_err();
+        assert!(matches!(err, ActionError::Validation { .. }));
+    }
+
+    #[tokio::test]
+    async fn adapter_exposes_metadata() {
+        let adapter = StatelessActionAdapter::new(AddAction::new());
+        assert_eq!(
+            StatelessHandler::metadata(&adapter).key,
+            nebula_core::action_key!("math.add")
+        );
+    }
+
+    #[test]
+    fn adapter_is_dyn_compatible() {
+        let adapter = StatelessActionAdapter::new(AddAction::new());
+        let _: Arc<dyn StatelessHandler> = Arc::new(adapter);
+    }
+
+    #[tokio::test]
+    async fn stateless_adapter_implements_stateless_handler() {
+        let adapter = StatelessActionAdapter::new(AddAction::new());
+        let handler: Arc<dyn StatelessHandler> = Arc::new(adapter);
+        let ctx = make_ctx();
+
+        let input = serde_json::json!({ "a": 5, "b": 3 });
+        let result = handler.execute(input, &ctx).await.unwrap();
+
+        match result {
+            ActionResult::Success { output } => {
+                let v = output.into_value().unwrap();
+                let out: AddOutput = serde_json::from_value(v).unwrap();
+                assert_eq!(out.sum, 8);
+            }
+            _ => panic!("expected Success"),
+        }
+    }
+
+    #[test]
+    fn stateless_adapter_into_inner_returns_action() {
+        let adapter = StatelessActionAdapter::new(AddAction::new());
+        let action = adapter.into_inner();
+        assert_eq!(action.metadata().key, nebula_core::action_key!("math.add"));
     }
 }

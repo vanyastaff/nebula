@@ -1,10 +1,21 @@
-//! Webhook signature verification helpers.
+//! Webhook trigger domain — DX trait, adapter, and HMAC signature primitives.
 //!
-//! Provides constant-time HMAC primitives for action authors implementing
-//! [`WebhookAction::handle_request`](crate::trigger::WebhookAction::handle_request).
-//! All comparisons delegate to `hmac::Mac::verify_slice`, which in turn
-//! uses `subtle::ConstantTimeEq` — the prefix-length timing side-channel
-//! that defeats naïve `==` comparison on HMAC digests is closed here.
+//! Groups everything an action author needs to implement a webhook
+//! trigger into one file:
+//!
+//! - [`WebhookAction`] — DX trait with the register / handle / unregister
+//!   lifecycle. Implement this and register via
+//!   `registry.register_webhook(action)`.
+//! - [`WebhookTriggerAdapter`] — bridges a typed `WebhookAction` to the
+//!   [`TriggerHandler`](crate::trigger::TriggerHandler) dyn contract.
+//!   Stores state from `on_activate` in a `RwLock<Option<Arc<State>>>`,
+//!   rejects double-start with `ActionError::Fatal`, and cleans up the
+//!   orphan registration on lost-race rollback.
+//! - [`verify_hmac_sha256`], [`hmac_sha256_compute`],
+//!   [`verify_tag_constant_time`], [`SignatureOutcome`] — constant-time
+//!   HMAC primitives. Use `verify_hmac_sha256` for GitHub-style
+//!   `sha256=…` bare-hex signatures; reach for the lower-level pair for
+//!   Stripe / Slack schemes that sign a derived payload.
 //!
 //! # Security
 //!
@@ -13,27 +24,279 @@
 //! time and is exploitable over the network. Always use the helpers in
 //! this module.
 //!
-//! ## Supported schemes
-//!
-//! - [`verify_hmac_sha256`] — bare hex digest OR `sha256=…` prefixed form
-//!   (GitHub webhook style). Single call, tri-state outcome.
-//! - [`hmac_sha256_compute`] + [`verify_tag_constant_time`] — escape hatch
-//!   for schemes that sign a derived payload rather than the raw body
-//!   (Stripe `t=…,v1=…`, Slack `v0:{timestamp}:{body}`, etc). You build
-//!   the signed payload and compare the tag yourself.
-//!
 //! Stripe/Slack helpers are intentionally NOT provided: their correct
 //! implementation requires a time source and a tolerance window to
 //! prevent replay, and wrapping that correctly would pull platform
 //! clocks into this module. Build them in your action on top of the
 //! primitives.
 
+use std::fmt;
+use std::future::Future;
+use std::sync::Arc;
+
+use async_trait::async_trait;
 use hmac::{Hmac, KeyInit, Mac};
+use parking_lot::RwLock;
+use serde::{Serialize, de::DeserializeOwned};
 use sha2::Sha256;
 use subtle::ConstantTimeEq;
 
+use crate::action::Action;
+use crate::context::TriggerContext;
 use crate::error::{ActionError, ValidationReason};
-use crate::handler::IncomingEvent;
+use crate::metadata::ActionMetadata;
+use crate::trigger::{IncomingEvent, TriggerEventOutcome, TriggerHandler};
+
+// ── DX trait ────────────────────────────────────────────────────────────────
+
+/// Webhook trigger — register/handle/unregister lifecycle.
+///
+/// Implement `handle_request` (required), and optionally `on_activate`/`on_deactivate`.
+/// Register via `registry.register_webhook(action)`.
+///
+/// State from `on_activate` is stored by the adapter and passed to `handle_request`
+/// (by reference) and `on_deactivate` (by value). For mutable per-event state, wrap
+/// fields in `Mutex` or atomic types inside `Self::State`.
+///
+/// # Example
+///
+/// Use [`verify_hmac_sha256`] for constant-time signature verification —
+/// naive `==` comparison on HMAC digests leaks the secret via a
+/// prefix-length timing side-channel.
+///
+/// ```rust,ignore
+/// use nebula_action::webhook::{WebhookAction, verify_hmac_sha256};
+/// use nebula_action::trigger::{IncomingEvent, TriggerEventOutcome};
+///
+/// struct GitHubWebhook { secret: Vec<u8> }
+///
+/// impl WebhookAction for GitHubWebhook {
+///     type State = WebhookReg;
+///
+///     async fn on_activate(&self, ctx: &TriggerContext) -> Result<WebhookReg, ActionError> {
+///         Ok(WebhookReg { hook_id: register(ctx).await? })
+///     }
+///
+///     async fn handle_request(&self, event: &IncomingEvent, _state: &Self::State, _ctx: &TriggerContext)
+///         -> Result<TriggerEventOutcome, ActionError> {
+///         let outcome = verify_hmac_sha256(event, &self.secret, "X-Hub-Signature-256")?;
+///         if !outcome.is_valid() {
+///             return Ok(TriggerEventOutcome::skip());
+///         }
+///         Ok(TriggerEventOutcome::emit(event.body_json()?))
+///     }
+///
+///     async fn on_deactivate(&self, state: WebhookReg, _ctx: &TriggerContext) -> Result<(), ActionError> {
+///         delete_hook(&state.hook_id).await
+///     }
+/// }
+/// ```
+pub trait WebhookAction: Action + Send + Sync + 'static {
+    /// Persisted state between activate/deactivate (e.g., webhook registration ID).
+    type State: Serialize + DeserializeOwned + Default + Clone + Send + Sync;
+
+    /// Register webhook with external service. Returns state to persist.
+    ///
+    /// Default: returns `State::default()` (no-op activation).
+    ///
+    /// # Errors
+    ///
+    /// Return [`ActionError`] if registration fails.
+    fn on_activate(
+        &self,
+        _ctx: &TriggerContext,
+    ) -> impl Future<Output = Result<Self::State, ActionError>> + Send {
+        async { Ok(Self::State::default()) }
+    }
+
+    /// Handle an incoming event. Return `Emit` to start a workflow, `Skip` to filter.
+    ///
+    /// State from `on_activate` is passed by reference. The adapter clones an
+    /// internal Arc cheaply before this call — no contention with start/stop.
+    ///
+    /// # Errors
+    ///
+    /// Return [`ActionError`] if event processing fails.
+    fn handle_request(
+        &self,
+        event: &IncomingEvent,
+        state: &Self::State,
+        ctx: &TriggerContext,
+    ) -> impl Future<Output = Result<TriggerEventOutcome, ActionError>> + Send;
+
+    /// Unregister webhook on deactivation.
+    ///
+    /// Receives the state stored from `on_activate`. Default: no-op.
+    /// Not called if `on_activate` was never called (stop without start).
+    ///
+    /// # Errors
+    ///
+    /// Return [`ActionError`] if unregistration fails.
+    fn on_deactivate(
+        &self,
+        _state: Self::State,
+        _ctx: &TriggerContext,
+    ) -> impl Future<Output = Result<(), ActionError>> + Send {
+        async { Ok(()) }
+    }
+}
+
+// ── WebhookTriggerAdapter ────────────────────────────────────────────────────
+
+/// Wraps a [`WebhookAction`] as a [`dyn TriggerHandler`] with state management.
+///
+/// Stores state from `on_activate` in a `RwLock<Option<Arc<State>>>`. `handle_event`
+/// clones the `Arc` under the read lock and releases the lock BEFORE awaiting
+/// `handle_request` — prevents deadlock with concurrent `start`/`stop` taking a
+/// write lock (parking_lot RwLock is not reentrant and not async-aware).
+///
+/// `handle_event` before `start()` returns `ActionError::Fatal` (no silent default state).
+///
+/// Created automatically by `nebula_runtime::ActionRegistry::register_webhook`.
+pub struct WebhookTriggerAdapter<A: WebhookAction> {
+    action: A,
+    state: RwLock<Option<Arc<A::State>>>,
+}
+
+impl<A: WebhookAction> WebhookTriggerAdapter<A> {
+    /// Wrap a typed webhook action.
+    #[must_use]
+    pub fn new(action: A) -> Self {
+        Self {
+            action,
+            state: RwLock::new(None),
+        }
+    }
+}
+
+#[async_trait]
+impl<A> TriggerHandler for WebhookTriggerAdapter<A>
+where
+    A: WebhookAction + Send + Sync + 'static,
+    A::State: Send + Sync,
+{
+    fn metadata(&self) -> &ActionMetadata {
+        self.action.metadata()
+    }
+
+    async fn start(&self, ctx: &TriggerContext) -> Result<(), ActionError> {
+        // Reject double-start: previous state must be stopped first.
+        // Silently overwriting would leak external webhook registrations
+        // (GitHub/Slack/Stripe) — the old hook stays live and stop() only
+        // deactivates the last one.
+        if self.state.read().is_some() {
+            return Err(ActionError::fatal(
+                "webhook trigger already started; call stop() before start() again",
+            ));
+        }
+
+        let new_state = self.action.on_activate(ctx).await?;
+
+        // Re-check under the write lock to close the race between the
+        // read-guard drop above and the write below. The `rollback_state`
+        // dance keeps the parking_lot guard strictly inside the block so
+        // it cannot sit across the `.await` on `on_deactivate` — holding
+        // a non-Send, non-async guard across a suspension point would
+        // make the whole future `!Send`.
+        let rollback_state = {
+            let mut guard = self.state.write();
+            if guard.is_some() {
+                // Another task raced us and already stored state. We own
+                // `new_state` — nobody else has the Arc yet — so we must
+                // tear it down. Return it from the block for the await.
+                Some(new_state)
+            } else {
+                *guard = Some(Arc::new(new_state));
+                None
+            }
+        };
+
+        if let Some(orphan) = rollback_state {
+            // Tear down the state we just created on the lost-race
+            // branch. We are already returning a Fatal to the caller,
+            // so we must not mask that by propagating the rollback's
+            // own error — but silently dropping it would hide a leaked
+            // external webhook registration. Log and continue to
+            // surface the original double-start error.
+            if let Err(e) = self.action.on_deactivate(orphan, ctx).await {
+                tracing::warn!(
+                    action = %self.action.metadata().key,
+                    error = %e,
+                    "webhook rollback on_deactivate failed after double-start race; \
+                     external hook may leak"
+                );
+            }
+            return Err(ActionError::fatal(
+                "webhook trigger already started; call stop() before start() again",
+            ));
+        }
+        Ok(())
+    }
+
+    async fn stop(&self, ctx: &TriggerContext) -> Result<(), ActionError> {
+        let stored = self.state.write().take();
+        match stored {
+            Some(arc_state) => {
+                // In normal flow no concurrent handle_event holds the Arc,
+                // so `unwrap_or_clone` takes the cheap path; on a lost
+                // race with an in-flight event it clones once.
+                let owned = Arc::unwrap_or_clone(arc_state);
+                self.action.on_deactivate(owned, ctx).await
+            }
+            // stop() without prior start() — no-op, nothing to deactivate.
+            None => Ok(()),
+        }
+    }
+
+    fn accepts_events(&self) -> bool {
+        true
+    }
+
+    /// Route an incoming event to the typed `handle_request`.
+    ///
+    /// # Stop vs in-flight event race
+    ///
+    /// `handle_event` clones the `Arc<State>` under a read lock and
+    /// releases the lock BEFORE awaiting `handle_request`. If `stop()`
+    /// wins the race, it takes the owned `Arc` and calls
+    /// `on_deactivate` on the result — meanwhile this in-flight
+    /// request still holds its independent `Arc` clone and runs
+    /// `handle_request` against it. Two observers of the same logical
+    /// state briefly exist side by side.
+    ///
+    /// This is benign for webhook authors whose `State` does not
+    /// invalidate shared substate on deactivation (the common case —
+    /// deactivation typically just unregisters an external hook).
+    /// Authors whose `on_deactivate` actively tears down shared
+    /// resources (closes a pooled connection held inside `State`,
+    /// etc.) must either wrap those resources in `Arc`-friendly
+    /// handles that tolerate being read from a stale clone, or
+    /// coordinate shutdown externally.
+    async fn handle_event(
+        &self,
+        event: IncomingEvent,
+        ctx: &TriggerContext,
+    ) -> Result<TriggerEventOutcome, ActionError> {
+        // Clone Arc under read lock; the guard drops at end of statement BEFORE
+        // the await on handle_request. Holding a parking_lot guard across .await
+        // would be unsound (non-Send) and risk re-entry panic with start/stop.
+        let state = self.state.read().as_ref().cloned().ok_or_else(|| {
+            ActionError::fatal("handle_event called before start — no state available")
+        })?;
+
+        self.action.handle_request(&event, &state, ctx).await
+    }
+}
+
+impl<A: WebhookAction> fmt::Debug for WebhookTriggerAdapter<A> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("WebhookTriggerAdapter")
+            .field("action", &self.action.metadata().key)
+            .finish_non_exhaustive()
+    }
+}
+
+// ── HMAC signature primitives ────────────────────────────────────────────────
 
 type HmacSha256 = Hmac<Sha256>;
 
@@ -98,25 +361,6 @@ impl SignatureOutcome {
 /// empty HMAC key silently produces a valid MAC for any input — almost
 /// always a misconfiguration, worth surfacing early as a fatal-for-this-
 /// event failure rather than a silent accept.
-///
-/// # Examples
-///
-/// ```rust,ignore
-/// use nebula_action::webhook::verify_hmac_sha256;
-///
-/// async fn handle_request(
-///     &self,
-///     event: &IncomingEvent,
-///     state: &Self::State,
-///     _ctx: &TriggerContext,
-/// ) -> Result<TriggerEventOutcome, ActionError> {
-///     let outcome = verify_hmac_sha256(event, state.secret.as_bytes(), "X-Hub-Signature-256")?;
-///     if !outcome.is_valid() {
-///         return Ok(TriggerEventOutcome::skip());
-///     }
-///     Ok(TriggerEventOutcome::emit(event.body_json()?))
-/// }
-/// ```
 pub fn verify_hmac_sha256(
     event: &IncomingEvent,
     secret: &[u8],

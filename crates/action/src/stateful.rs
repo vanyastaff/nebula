@@ -6,11 +6,16 @@
 //! [`ActionResult::Continue`] for another iteration or [`ActionResult::Break`]
 //! when done.
 
+use std::fmt;
+
+use async_trait::async_trait;
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
+use serde_json::Value;
 
 use crate::action::Action;
-use crate::context::Context;
-use crate::error::ActionError;
+use crate::context::{ActionContext, Context};
+use crate::error::{ActionError, ValidationReason};
+use crate::metadata::ActionMetadata;
 use crate::result::ActionResult;
 
 /// Stateful action: iterative execution with persistent state.
@@ -369,3 +374,485 @@ macro_rules! impl_batch_action {
 // When it does, it will ship its own trait shape that cooperates
 // with the orchestrator, not a re-imagined `TransactionalAction`.
 // See `.claude/decisions.md` for the rationale note.
+
+// ── StatefulHandler trait ───────────────────────────────────────────────────
+
+/// Stateful action handler — JSON in, mutable JSON state, JSON out.
+///
+/// The engine calls `execute` repeatedly. State is persisted as JSON between
+/// iterations for checkpointing. Return [`ActionResult::Continue`] for another
+/// iteration or [`ActionResult::Break`] when done.
+///
+/// # Errors
+///
+/// Returns [`ActionError`] on validation, retryable, or fatal failures.
+#[async_trait]
+pub trait StatefulHandler: Send + Sync {
+    /// Action metadata (key, version, capabilities).
+    fn metadata(&self) -> &ActionMetadata;
+
+    /// Create initial state as JSON for the first iteration.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ActionError::Fatal`] if the initial state cannot be produced
+    /// (e.g., serialization failure in an adapter).
+    fn init_state(&self) -> Result<Value, ActionError>;
+
+    /// Attempt to migrate state from a previous version.
+    ///
+    /// Called when state deserialization fails during `execute`. Returns
+    /// migrated state as JSON, or `None` to propagate the error.
+    fn migrate_state(&self, old: Value) -> Option<Value> {
+        let _ = old;
+        None
+    }
+
+    /// Execute one iteration with mutable JSON state.
+    ///
+    /// # State checkpointing
+    ///
+    /// Implementations MUST flush any state mutations back to `state` before
+    /// returning, regardless of whether the iteration succeeded. Returning
+    /// `Err(Retryable)` after mutating internal typed state without
+    /// checkpointing causes the engine to re-run the iteration against a
+    /// stale snapshot — partial work is replayed and external side effects
+    /// (API calls, DB writes, emits) are duplicated.
+    ///
+    /// The only exception is when state deserialization fails at the start
+    /// of the iteration — in that case no mutations could have occurred and
+    /// there is nothing to flush.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ActionError`] if execution fails (validation, retryable, or fatal).
+    async fn execute(
+        &self,
+        input: &Value,
+        state: &mut Value,
+        ctx: &ActionContext,
+    ) -> Result<ActionResult<Value>, ActionError>;
+}
+
+// ── StatefulActionAdapter ───────────────────────────────────────────────────
+
+/// Wraps a [`StatefulAction`] as a [`dyn StatefulHandler`].
+///
+/// Handles JSON (de)serialization of input, output, and state so the runtime
+/// works with untyped JSON while action authors write strongly-typed Rust.
+///
+/// State is serialized to/from `serde_json::Value` between iterations for
+/// engine checkpointing.
+pub struct StatefulActionAdapter<A> {
+    action: A,
+}
+
+impl<A> StatefulActionAdapter<A> {
+    /// Wrap a typed stateful action.
+    #[must_use]
+    pub fn new(action: A) -> Self {
+        Self { action }
+    }
+
+    /// Consume the adapter, returning the inner action.
+    #[must_use]
+    pub fn into_inner(self) -> A {
+        self.action
+    }
+}
+
+#[async_trait]
+impl<A> StatefulHandler for StatefulActionAdapter<A>
+where
+    A: StatefulAction + Send + Sync + 'static,
+    A::Input: serde::de::DeserializeOwned + Send + Sync,
+    A::Output: serde::Serialize + Send + Sync,
+    A::State: serde::Serialize + serde::de::DeserializeOwned + Clone + Send + Sync,
+{
+    fn metadata(&self) -> &ActionMetadata {
+        self.action.metadata()
+    }
+
+    fn init_state(&self) -> Result<Value, ActionError> {
+        serde_json::to_value(self.action.init_state())
+            .map_err(|e| ActionError::fatal(format!("init_state serialization failed: {e}")))
+    }
+
+    fn migrate_state(&self, old: Value) -> Option<Value> {
+        // If the migrated state can't be serialized back to JSON, treat as migration failure.
+        // This is acceptable because the alternative (a different error) would be more confusing.
+        self.action
+            .migrate_state(old)
+            .and_then(|state| serde_json::to_value(state).ok())
+    }
+
+    /// Execute one iteration, deserializing input and state from JSON.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ActionError::Validation`] if input or state deserialization fails,
+    /// or propagates errors from the underlying action.
+    ///
+    /// # State checkpointing invariant
+    ///
+    /// State mutations performed by the typed action are flushed back to
+    /// `state` **before** any error from `action.execute()` is propagated.
+    /// If the typed action increments a counter or advances a cursor and
+    /// then returns [`ActionError::Retryable`], the engine checkpoints the
+    /// new state — retries resume from the mutated position instead of
+    /// replaying completed work (which would duplicate API calls, double
+    /// charges, and double emits).
+    ///
+    /// The only path that does NOT checkpoint is `Validation` raised while
+    /// deserializing input or state — in that case `typed_state` was never
+    /// created and cannot have been mutated.
+    async fn execute(
+        &self,
+        input: &Value,
+        state: &mut Value,
+        ctx: &ActionContext,
+    ) -> Result<ActionResult<Value>, ActionError> {
+        // Adapter clones input ONCE per iteration to deserialize into typed A::Input.
+        let typed_input: A::Input = serde_json::from_value(input.clone()).map_err(|e| {
+            ActionError::validation(
+                "input",
+                ValidationReason::MalformedJson,
+                Some(e.to_string()),
+            )
+        })?;
+
+        let mut typed_state: A::State = serde_json::from_value(state.clone()).or_else(|e| {
+            self.action.migrate_state(state.clone()).ok_or_else(|| {
+                ActionError::validation(
+                    "state",
+                    ValidationReason::StateDeserialization,
+                    Some(e.to_string()),
+                )
+            })
+        })?;
+
+        // Run the typed action. typed_state may be mutated regardless of
+        // Ok/Err — flush it back to JSON before propagating so that a
+        // Retryable does not replay completed work on retry.
+        let action_result = self
+            .action
+            .execute(typed_input, &mut typed_state, ctx)
+            .await;
+
+        // Flatten the 2D decision (serialize-success × action-result) into
+        // a single tuple match — easier to audit than nested arms, which
+        // matters on a checkpoint-critical code path.
+        match (serde_json::to_value(&typed_state), &action_result) {
+            (Ok(new_state), _) => {
+                *state = new_state;
+            }
+            (Err(ser_err), Ok(_)) => {
+                // Success path: surface the serialization failure as fatal.
+                return Err(ActionError::fatal(format!(
+                    "state serialization failed: {ser_err}"
+                )));
+            }
+            (Err(ser_err), Err(action_err)) => {
+                // Error path: the action error is the actionable signal.
+                // Log the serde failure forensically and let the original
+                // error propagate — masking it would break retry classification.
+                tracing::error!(
+                    action = %self.action.metadata().key,
+                    serialization_error = %ser_err,
+                    action_error = %action_err,
+                    "stateful adapter: state serialization failed on error path; \
+                     checkpoint lost, propagating original action error"
+                );
+            }
+        }
+
+        let result = action_result?;
+
+        result.try_map_output(|output| {
+            serde_json::to_value(output)
+                .map_err(|e| ActionError::fatal(format!("output serialization failed: {e}")))
+        })
+    }
+}
+
+impl<A: Action> fmt::Debug for StatefulActionAdapter<A> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("StatefulActionAdapter")
+            .field("action", &self.action.metadata().key)
+            .finish_non_exhaustive()
+    }
+}
+
+// ── Tests ──────────────────────────────────────────────────────────────────
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+
+    use nebula_core::id::{ExecutionId, NodeId, WorkflowId};
+    use tokio_util::sync::CancellationToken;
+
+    use super::*;
+    use crate::dependency::ActionDependencies;
+    use crate::output::ActionOutput;
+    use crate::result::BreakReason;
+
+    fn make_ctx() -> ActionContext {
+        ActionContext::new(
+            ExecutionId::nil(),
+            NodeId::nil(),
+            WorkflowId::nil(),
+            CancellationToken::new(),
+        )
+    }
+
+    // ── StatefulActionAdapter tests ───────────────────────────────────────
+
+    #[derive(Debug, Clone, Serialize, Deserialize)]
+    struct CounterState {
+        count: u32,
+    }
+
+    struct CounterAction {
+        meta: ActionMetadata,
+    }
+
+    impl CounterAction {
+        fn new() -> Self {
+            Self {
+                meta: ActionMetadata::new(
+                    nebula_core::action_key!("test.counter"),
+                    "Counter",
+                    "Counts up to 3",
+                ),
+            }
+        }
+    }
+
+    impl ActionDependencies for CounterAction {}
+
+    impl Action for CounterAction {
+        fn metadata(&self) -> &ActionMetadata {
+            &self.meta
+        }
+    }
+
+    impl StatefulAction for CounterAction {
+        type Input = Value;
+        type Output = Value;
+        type State = CounterState;
+
+        fn init_state(&self) -> CounterState {
+            CounterState { count: 0 }
+        }
+
+        async fn execute(
+            &self,
+            _input: Self::Input,
+            state: &mut Self::State,
+            _ctx: &impl Context,
+        ) -> Result<ActionResult<Self::Output>, ActionError> {
+            state.count += 1;
+            if state.count >= 3 {
+                Ok(ActionResult::Break {
+                    output: ActionOutput::Value(serde_json::json!({"final": state.count})),
+                    reason: BreakReason::Completed,
+                })
+            } else {
+                Ok(ActionResult::Continue {
+                    output: ActionOutput::Value(serde_json::json!({"current": state.count})),
+                    progress: Some(state.count as f64 / 3.0),
+                    delay: None,
+                })
+            }
+        }
+    }
+
+    #[test]
+    fn stateful_adapter_is_dyn_compatible() {
+        let adapter = StatefulActionAdapter::new(CounterAction::new());
+        let _: Arc<dyn StatefulHandler> = Arc::new(adapter);
+    }
+
+    #[tokio::test]
+    async fn stateful_adapter_init_state_serializes() {
+        let adapter = StatefulActionAdapter::new(CounterAction::new());
+        let state = adapter.init_state().unwrap();
+        let cs: CounterState = serde_json::from_value(state).unwrap();
+        assert_eq!(cs.count, 0);
+    }
+
+    #[tokio::test]
+    async fn stateful_adapter_iterates_with_state() {
+        let adapter = StatefulActionAdapter::new(CounterAction::new());
+        let handler: Arc<dyn StatefulHandler> = Arc::new(adapter);
+        let ctx = make_ctx();
+        let mut state = handler.init_state().unwrap();
+
+        // Iteration 1: count goes 0 → 1, Continue
+        let result = handler
+            .execute(&serde_json::json!({}), &mut state, &ctx)
+            .await
+            .unwrap();
+        assert!(matches!(result, ActionResult::Continue { .. }));
+        let cs: CounterState = serde_json::from_value(state.clone()).unwrap();
+        assert_eq!(cs.count, 1);
+
+        // Iteration 2: count goes 1 → 2, Continue
+        let result = handler
+            .execute(&serde_json::json!({}), &mut state, &ctx)
+            .await
+            .unwrap();
+        assert!(matches!(result, ActionResult::Continue { .. }));
+        let cs: CounterState = serde_json::from_value(state.clone()).unwrap();
+        assert_eq!(cs.count, 2);
+
+        // Iteration 3: count goes 2 → 3, Break
+        let result = handler
+            .execute(&serde_json::json!({}), &mut state, &ctx)
+            .await
+            .unwrap();
+        assert!(matches!(result, ActionResult::Break { .. }));
+        let cs: CounterState = serde_json::from_value(state.clone()).unwrap();
+        assert_eq!(cs.count, 3);
+    }
+
+    #[tokio::test]
+    async fn stateful_adapter_returns_validation_error_on_bad_state() {
+        let adapter = StatefulActionAdapter::new(CounterAction::new());
+        let ctx = make_ctx();
+        let mut bad_state = serde_json::json!("not a counter state");
+
+        let err = adapter
+            .execute(&serde_json::json!({}), &mut bad_state, &ctx)
+            .await
+            .unwrap_err();
+        assert!(matches!(err, ActionError::Validation { .. }));
+    }
+
+    /// Action that mutates state to `mark` then fails with the configured error.
+    ///
+    /// Used to prove that `StatefulActionAdapter::execute` flushes state
+    /// back to JSON before propagating errors — critical for avoiding
+    /// duplicated side effects on retry.
+    struct MutateThenFailAction {
+        meta: ActionMetadata,
+        fail_with: ActionError,
+        mark: u32,
+    }
+
+    impl ActionDependencies for MutateThenFailAction {}
+
+    impl Action for MutateThenFailAction {
+        fn metadata(&self) -> &ActionMetadata {
+            &self.meta
+        }
+    }
+
+    impl StatefulAction for MutateThenFailAction {
+        type Input = Value;
+        type Output = Value;
+        type State = CounterState;
+
+        fn init_state(&self) -> CounterState {
+            CounterState { count: 0 }
+        }
+
+        async fn execute(
+            &self,
+            _input: Self::Input,
+            state: &mut Self::State,
+            _ctx: &impl Context,
+        ) -> Result<ActionResult<Self::Output>, ActionError> {
+            state.count = self.mark;
+            Err(self.fail_with.clone())
+        }
+    }
+
+    fn mutate_fail(fail_with: ActionError, mark: u32) -> MutateThenFailAction {
+        MutateThenFailAction {
+            meta: ActionMetadata::new(
+                nebula_core::action_key!("test.mutate_fail"),
+                "MutateFail",
+                "Mutates state then fails",
+            ),
+            fail_with,
+            mark,
+        }
+    }
+
+    #[tokio::test]
+    async fn stateful_adapter_checkpoints_state_on_retryable_error() {
+        // Prove: an action that advances cursor/counter state and then returns
+        // Retryable must have its mutations flushed to the JSON state so the
+        // engine checkpoints the new position. Otherwise retry replays
+        // completed work.
+        let adapter = StatefulActionAdapter::new(mutate_fail(
+            ActionError::retryable("transient upstream error"),
+            42,
+        ));
+        let ctx = make_ctx();
+        let mut state = serde_json::json!({ "count": 0 });
+
+        let err = adapter
+            .execute(&serde_json::json!({}), &mut state, &ctx)
+            .await
+            .unwrap_err();
+
+        assert!(err.is_retryable(), "error must still be retryable");
+        assert_eq!(
+            state,
+            serde_json::json!({ "count": 42 }),
+            "state mutations before Err must be checkpointed"
+        );
+    }
+
+    #[tokio::test]
+    async fn stateful_adapter_checkpoints_state_on_fatal_error() {
+        // Symmetric invariant: even fatal errors must checkpoint state, so
+        // an operator debugging the failure can see the position at which
+        // the action gave up.
+        let adapter =
+            StatefulActionAdapter::new(mutate_fail(ActionError::fatal("schema mismatch"), 7));
+        let ctx = make_ctx();
+        let mut state = serde_json::json!({ "count": 0 });
+
+        let err = adapter
+            .execute(&serde_json::json!({}), &mut state, &ctx)
+            .await
+            .unwrap_err();
+
+        assert!(err.is_fatal());
+        assert_eq!(state, serde_json::json!({ "count": 7 }));
+    }
+
+    #[tokio::test]
+    async fn stateful_adapter_preserves_state_on_validation_error() {
+        // Deserialization failure happens BEFORE the typed action runs, so
+        // typed_state never existed and nothing should be written back. The
+        // input JSON must remain verbatim so the engine can decide how to
+        // recover (e.g., schema migration path outside the adapter).
+        let adapter = StatefulActionAdapter::new(CounterAction::new());
+        let ctx = make_ctx();
+        let bad = serde_json::json!("not a counter state");
+        let mut state = bad.clone();
+
+        let err = adapter
+            .execute(&serde_json::json!({}), &mut state, &ctx)
+            .await
+            .unwrap_err();
+
+        assert!(matches!(err, ActionError::Validation { .. }));
+        assert_eq!(state, bad, "state must be untouched on deser failure");
+    }
+
+    #[test]
+    fn stateful_adapter_into_inner_returns_action() {
+        let adapter = StatefulActionAdapter::new(CounterAction::new());
+        let action = adapter.into_inner();
+        assert_eq!(
+            action.metadata().key,
+            nebula_core::action_key!("test.counter")
+        );
+    }
+}

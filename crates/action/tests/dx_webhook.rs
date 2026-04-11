@@ -12,7 +12,7 @@ use nebula_action::handler::{
 };
 use nebula_action::metadata::ActionMetadata;
 use nebula_action::testing::TestContextBuilder;
-use nebula_action::trigger::WebhookAction;
+use nebula_action::webhook::WebhookAction;
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]

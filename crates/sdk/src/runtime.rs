@@ -31,11 +31,12 @@ use std::time::{Duration, Instant};
 
 use nebula_action::error::ActionError;
 use nebula_action::handler::{StatefulHandler, StatelessHandler, TriggerHandler};
+use nebula_action::poll::PollAction;
 use nebula_action::result::{ActionResult, BreakReason};
 use nebula_action::stateful::StatefulAction;
 use nebula_action::stateless::StatelessAction;
 use nebula_action::testing::TestContextBuilder;
-use nebula_action::trigger::{PollAction, WebhookAction};
+use nebula_action::webhook::WebhookAction;
 use nebula_action::{
     IncomingEvent, PollTriggerAdapter, StatefulActionAdapter, StatelessActionAdapter,
     WebhookTriggerAdapter,

@@ -21,11 +21,12 @@ pub use nebula_action::{
 };
 
 // DX trait families: stateful, trigger
+pub use nebula_action::poll::PollAction;
 pub use nebula_action::result::BreakReason;
 pub use nebula_action::stateful::{
     BatchAction, BatchItemResult, PageResult, PaginatedAction, StatefulAction,
 };
-pub use nebula_action::trigger::{PollAction, WebhookAction};
+pub use nebula_action::webhook::WebhookAction;
 pub use nebula_action::{
     IncomingEvent, PollTriggerAdapter, StatefulActionAdapter, StatelessActionAdapter,
     TriggerContext, TriggerEventOutcome, WebhookTriggerAdapter,

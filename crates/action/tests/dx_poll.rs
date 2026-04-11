@@ -10,8 +10,8 @@ use nebula_action::dependency::ActionDependencies;
 use nebula_action::error::ActionError;
 use nebula_action::handler::{PollTriggerAdapter, TriggerHandler};
 use nebula_action::metadata::ActionMetadata;
+use nebula_action::poll::PollAction;
 use nebula_action::testing::TestContextBuilder;
-use nebula_action::trigger::PollAction;
 
 struct TickPoller {
     meta: ActionMetadata,

@@ -1,15 +1,23 @@
-//! [`ResourceAction`] — graph-level dependency injection for actions.
+//! [`ResourceAction`] trait, [`ResourceHandler`] dyn contract, and adapter.
 //!
 //! A resource action runs `configure` before the downstream subtree and
 //! `cleanup` when the scope ends. The produced resource is visible only
 //! to the downstream branch, unlike `ctx.resource()` from the global
 //! registry.
 
+use std::any::Any;
+use std::fmt;
 use std::future::Future;
 
+use async_trait::async_trait;
+use serde_json::Value;
+
 use crate::action::Action;
-use crate::context::Context;
+use crate::context::{ActionContext, Context};
 use crate::error::ActionError;
+use crate::metadata::ActionMetadata;
+
+// ── Core trait ──────────────────────────────────────────────────────────────
 
 /// Resource action: graph-level dependency injection.
 ///
@@ -42,4 +50,242 @@ pub trait ResourceAction: Action {
         resource: Self::Resource,
         ctx: &impl Context,
     ) -> impl Future<Output = Result<(), ActionError>> + Send;
+}
+
+// ── Handler trait ───────────────────────────────────────────────────────────
+
+/// Resource handler — configure/cleanup lifecycle for graph-scoped resources.
+///
+/// The engine runs `configure` before downstream nodes; the resulting instance
+/// is scoped to the branch. When the scope ends, `cleanup` is called.
+///
+/// # Errors
+///
+/// Returns [`ActionError`] on configuration or cleanup failure.
+#[async_trait]
+pub trait ResourceHandler: Send + Sync {
+    /// Action metadata (key, version, capabilities).
+    fn metadata(&self) -> &ActionMetadata;
+
+    /// Build the resource for this scope.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ActionError`] if the resource cannot be configured.
+    async fn configure(
+        &self,
+        config: Value,
+        ctx: &ActionContext,
+    ) -> Result<Box<dyn Any + Send + Sync>, ActionError>;
+
+    /// Clean up the resource instance when the scope ends.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ActionError`] if cleanup fails.
+    async fn cleanup(
+        &self,
+        instance: Box<dyn Any + Send + Sync>,
+        ctx: &ActionContext,
+    ) -> Result<(), ActionError>;
+}
+
+// ── Adapter ─────────────────────────────────────────────────────────────────
+
+/// Wraps a [`ResourceAction`] as a [`dyn ResourceHandler`].
+///
+/// Bridges the typed `configure`/`cleanup` lifecycle to the JSON-erased handler
+/// trait. The `configure` result is boxed as `Box<dyn Any + Send + Sync>`;
+/// `cleanup` downcasts it back to the typed `Resource`.
+///
+/// # Example
+///
+/// ```rust,ignore
+/// let handler: Arc<dyn ResourceHandler> = Arc::new(ResourceActionAdapter::new(my_resource));
+/// ```
+pub struct ResourceActionAdapter<A> {
+    action: A,
+}
+
+impl<A> ResourceActionAdapter<A> {
+    /// Wrap a typed resource action.
+    #[must_use]
+    pub fn new(action: A) -> Self {
+        Self { action }
+    }
+
+    /// Consume the adapter, returning the inner action.
+    #[must_use]
+    pub fn into_inner(self) -> A {
+        self.action
+    }
+}
+
+#[async_trait]
+impl<A> ResourceHandler for ResourceActionAdapter<A>
+where
+    A: ResourceAction + Send + Sync + 'static,
+{
+    fn metadata(&self) -> &ActionMetadata {
+        self.action.metadata()
+    }
+
+    /// Configure the resource by delegating to the typed action.
+    ///
+    /// The `_config` parameter is reserved for future use; the typed
+    /// [`ResourceAction::configure`] obtains its configuration from context.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ActionError`] if the resource cannot be configured.
+    async fn configure(
+        &self,
+        _config: Value,
+        ctx: &ActionContext,
+    ) -> Result<Box<dyn Any + Send + Sync>, ActionError> {
+        let resource = self.action.configure(ctx).await?;
+        Ok(Box::new(resource))
+    }
+
+    /// Clean up the resource by downcasting and delegating.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ActionError::Fatal`] if the downcast invariant is violated
+    /// (engine bug — the box we returned from `configure` was routed to a
+    /// different adapter), or propagates errors from the underlying action.
+    async fn cleanup(
+        &self,
+        resource: Box<dyn Any + Send + Sync>,
+        ctx: &ActionContext,
+    ) -> Result<(), ActionError> {
+        // The downcast is an engine-level invariant check: we box
+        // `A::Resource` in `configure` above and the engine routes the
+        // same box back here. A mismatch is an engine bug, not a user
+        // footgun — there is no `Config`/`Instance` split to bridge.
+        let typed = resource.downcast::<A::Resource>().map_err(|_| {
+            ActionError::fatal(format!(
+                "ResourceActionAdapter: downcast invariant violated for {}",
+                std::any::type_name::<A::Resource>()
+            ))
+        })?;
+        self.action.cleanup(*typed, ctx).await
+    }
+}
+
+impl<A: Action> fmt::Debug for ResourceActionAdapter<A> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("ResourceActionAdapter")
+            .field("action", &self.action.metadata().key)
+            .finish_non_exhaustive()
+    }
+}
+
+// ── Tests ──────────────────────────────────────────────────────────────────
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+
+    use nebula_core::id::{ExecutionId, NodeId, WorkflowId};
+    use tokio_util::sync::CancellationToken;
+
+    use super::*;
+    use crate::dependency::ActionDependencies;
+
+    struct MockResourceAction {
+        meta: ActionMetadata,
+    }
+
+    impl MockResourceAction {
+        fn new() -> Self {
+            Self {
+                meta: ActionMetadata::new(
+                    nebula_core::action_key!("test.resource_action"),
+                    "MockResource",
+                    "Creates a string pool",
+                ),
+            }
+        }
+    }
+
+    impl ActionDependencies for MockResourceAction {}
+
+    impl Action for MockResourceAction {
+        fn metadata(&self) -> &ActionMetadata {
+            &self.meta
+        }
+    }
+
+    impl ResourceAction for MockResourceAction {
+        type Resource = String;
+
+        async fn configure(&self, _ctx: &impl Context) -> Result<String, ActionError> {
+            Ok("pool-default".to_owned())
+        }
+
+        async fn cleanup(&self, _resource: String, _ctx: &impl Context) -> Result<(), ActionError> {
+            Ok(())
+        }
+    }
+
+    fn make_ctx() -> ActionContext {
+        ActionContext::new(
+            ExecutionId::nil(),
+            NodeId::nil(),
+            WorkflowId::nil(),
+            CancellationToken::new(),
+        )
+    }
+
+    #[test]
+    fn resource_adapter_is_dyn_compatible() {
+        let adapter = ResourceActionAdapter::new(MockResourceAction::new());
+        let _: Arc<dyn ResourceHandler> = Arc::new(adapter);
+    }
+
+    #[tokio::test]
+    async fn resource_adapter_configure_returns_boxed_instance() {
+        let adapter = ResourceActionAdapter::new(MockResourceAction::new());
+        let handler: Arc<dyn ResourceHandler> = Arc::new(adapter);
+        let ctx = make_ctx();
+
+        let instance = handler
+            .configure(serde_json::json!({}), &ctx)
+            .await
+            .unwrap();
+        let typed = instance.downcast::<String>().unwrap();
+        assert_eq!(*typed, "pool-default");
+    }
+
+    #[tokio::test]
+    async fn resource_adapter_cleanup_receives_typed_instance() {
+        let adapter = ResourceActionAdapter::new(MockResourceAction::new());
+        let handler: Arc<dyn ResourceHandler> = Arc::new(adapter);
+        let ctx = make_ctx();
+
+        let instance: Box<dyn Any + Send + Sync> = Box::new("pool-default".to_owned());
+        handler.cleanup(instance, &ctx).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn resource_adapter_cleanup_fails_on_wrong_type() {
+        let adapter = ResourceActionAdapter::new(MockResourceAction::new());
+        let handler: Arc<dyn ResourceHandler> = Arc::new(adapter);
+        let ctx = make_ctx();
+
+        let wrong_instance: Box<dyn Any + Send + Sync> = Box::new(42u32);
+        let err = handler.cleanup(wrong_instance, &ctx).await.unwrap_err();
+        assert!(matches!(err, ActionError::Fatal { .. }));
+    }
+
+    #[test]
+    fn resource_adapter_into_inner_returns_action() {
+        let adapter = ResourceActionAdapter::new(MockResourceAction::new());
+        let action = adapter.into_inner();
+        assert_eq!(
+            action.metadata().key,
+            nebula_core::action_key!("test.resource_action")
+        );
+    }
 }
