@@ -46,8 +46,9 @@ notify = "8"
 # Directories
 dirs = "6"
 
-# TUI (optional)
-ratatui = { version = "0.29", optional = true }
+# TUI (optional) — ratatui bumped to 0.30 to transitively pull lru >= 0.16.3,
+# closing Dependabot advisory GHSA-xxx (IterMut stacked-borrows unsoundness).
+ratatui = { version = "0.30", optional = true }
 crossterm = { version = "0.28", optional = true }
 
 # Nebula crates
