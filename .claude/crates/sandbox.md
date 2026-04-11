@@ -20,3 +20,4 @@ Plugin isolation and sandboxing — SandboxRunner trait and implementations.
 - Depends on nebula-action. Used by nebula-runtime (re-export), nebula-engine (via runtime).
 
 <!-- reviewed: 2026-04-09 — Phase 7.5: ProcessSandboxHandler migrated from InternalHandler to StatelessHandler, discovery returns ActionHandler tuples -->
+<!-- reviewed: 2026-04-11 — Import paths migrated off `nebula_action::handler::X` (aliases deleted upstream in action crate post-audit). `discovery.rs` and `handler.rs` now import `ActionHandler`, `ActionMetadata`, `StatelessHandler` from the `nebula_action` crate root. Zero behavior change. -->

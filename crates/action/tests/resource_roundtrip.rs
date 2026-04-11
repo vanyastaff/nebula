@@ -12,14 +12,10 @@
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
-use nebula_action::action::Action;
-use nebula_action::context::{ActionContext, Context};
-use nebula_action::dependency::ActionDependencies;
-use nebula_action::error::ActionError;
-use nebula_action::handler::{ResourceActionAdapter, ResourceHandler};
-use nebula_action::metadata::ActionMetadata;
-use nebula_action::resource::ResourceAction;
-use nebula_action::testing::TestContextBuilder;
+use nebula_action::{
+    Action, ActionContext, ActionDependencies, ActionError, ActionMetadata, Context,
+    ResourceAction, ResourceActionAdapter, ResourceHandler, TestContextBuilder,
+};
 
 /// Handle to a fictitious pool. Non-trivial enough to expose any
 /// downcast mismatch as a test failure rather than a spurious pass.

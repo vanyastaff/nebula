@@ -8,8 +8,7 @@
 //! - case-insensitive O(1) header lookup after lowercase normalization
 //! - duplicate key collapse (last write wins)
 
-use nebula_action::ActionError;
-use nebula_action::handler::{DEFAULT_MAX_BODY_BYTES, IncomingEvent, MAX_HEADER_COUNT};
+use nebula_action::{ActionError, DEFAULT_MAX_BODY_BYTES, IncomingEvent, MAX_HEADER_COUNT};
 
 #[test]
 fn try_new_accepts_empty_body() {

@@ -6,11 +6,7 @@
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use nebula_action::context::ActionContext;
-use nebula_action::error::ActionError;
-use nebula_action::handler::StatelessHandler;
-use nebula_action::metadata::ActionMetadata;
-use nebula_action::result::ActionResult;
+use nebula_action::{ActionContext, ActionError, ActionMetadata, ActionResult, StatelessHandler};
 
 use crate::SandboxRunner;
 use crate::process::ProcessSandbox;

@@ -3,16 +3,10 @@
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
-use nebula_action::action::Action;
-use nebula_action::context::TriggerContext;
-use nebula_action::dependency::ActionDependencies;
-use nebula_action::error::ActionError;
-use nebula_action::handler::{
-    IncomingEvent, TriggerEventOutcome, TriggerHandler, WebhookTriggerAdapter,
+use nebula_action::{
+    Action, ActionDependencies, ActionError, ActionMetadata, IncomingEvent, TestContextBuilder,
+    TriggerContext, TriggerEventOutcome, TriggerHandler, WebhookAction, WebhookTriggerAdapter,
 };
-use nebula_action::metadata::ActionMetadata;
-use nebula_action::testing::TestContextBuilder;
-use nebula_action::webhook::WebhookAction;
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]

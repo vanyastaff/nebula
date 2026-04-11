@@ -25,3 +25,4 @@ Also owns the in-process `TestRuntime` harness for running single actions end-to
 <!-- reviewed: 2026-04-08 — expanded prelude with StatelessAction, ActionDependencies, ActionContext, action_key!, descriptors -->
 <!-- reviewed: 2026-04-10 — added src/runtime.rs (TestRuntime + RunReport), expanded prelude with all DX traits + adapters + macros + Spy* + TestContextBuilder; examples/ now depends on nebula-sdk only -->
 <!-- reviewed: 2026-04-10 — M1: removed TransactionalAction + impl_transactional_action! re-exports from prelude (trait deleted in nebula-action). -->
+<!-- reviewed: 2026-04-11 — `src/runtime.rs` imports consolidated to a single `use nebula_action::{ ... }` block off the crate root — upstream deleted the `nebula_action::handler::X` alias surface after the post-audit re-export purge. No prelude changes, no API surface changes. -->

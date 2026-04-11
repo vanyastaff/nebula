@@ -12,10 +12,9 @@
 //! comes from delegating to `subtle::ConstantTimeEq` inside
 //! `hmac::Mac::verify_slice`. We assert correctness here.
 
-use nebula_action::ActionError;
-use nebula_action::handler::IncomingEvent;
-use nebula_action::webhook::{
-    SignatureOutcome, hmac_sha256_compute, verify_hmac_sha256, verify_tag_constant_time,
+use nebula_action::{
+    ActionError, IncomingEvent, SignatureOutcome, hmac_sha256_compute, verify_hmac_sha256,
+    verify_tag_constant_time,
 };
 
 fn sig_hex(secret: &[u8], body: &[u8]) -> String {

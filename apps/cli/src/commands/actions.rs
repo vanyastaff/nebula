@@ -188,7 +188,7 @@ struct TestReport {
 }
 
 async fn run_stateless(
-    handler: &dyn nebula_action::handler::StatelessHandler,
+    handler: &dyn nebula_action::StatelessHandler,
     input: serde_json::Value,
     ctx: &ActionContext,
 ) -> Result<TestReport, nebula_action::ActionError> {
@@ -203,7 +203,7 @@ async fn run_stateless(
 }
 
 async fn run_stateful(
-    handler: &dyn nebula_action::handler::StatefulHandler,
+    handler: &dyn nebula_action::StatefulHandler,
     input: serde_json::Value,
     ctx: &ActionContext,
 ) -> Result<TestReport, nebula_action::ActionError> {
@@ -268,7 +268,7 @@ async fn run_stateful(
 /// `--input.timeout_ms`, default 2s), cancels the token, awaits start to
 /// return, then reports everything the trigger pushed to the emitter.
 async fn run_trigger(
-    handler: Arc<dyn nebula_action::handler::TriggerHandler>,
+    handler: Arc<dyn nebula_action::TriggerHandler>,
     input: &serde_json::Value,
 ) -> Result<TestReport, nebula_action::ActionError> {
     let timeout_ms = input

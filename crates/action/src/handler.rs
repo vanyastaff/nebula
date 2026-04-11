@@ -1,4 +1,4 @@
-//! Top-level [`ActionHandler`] enum dispatcher and domain-neutral re-exports.
+//! Top-level [`ActionHandler`] enum dispatcher.
 //!
 //! The engine dispatches actions via [`ActionHandler`], a top-level enum whose
 //! variants wrap `Arc<dyn XxxHandler>` trait objects. Typed action authors write
@@ -9,22 +9,23 @@
 //! ## Handler traits
 //!
 //! Five handler traits model the JSON-level contract for each action kind.
-//! Each trait lives in its domain file; this module re-exports them so the
-//! documented `nebula_action::handler::*` path-space keeps working for
-//! downstream crates (runtime, sdk, engine, integration tests).
+//! Each trait lives in its domain file:
 //!
-//! - [`StatelessHandler`] — one-shot JSON in, JSON out (defined in
-//!   [`crate::stateless`])
-//! - [`StatefulHandler`] — iterative with mutable JSON state (defined in
-//!   [`crate::stateful`])
-//! - [`TriggerHandler`] — start/stop lifecycle, [`IncomingEvent`] +
-//!   [`TriggerEventOutcome`] (defined in [`crate::trigger`]; webhook and
-//!   poll specializations live in [`crate::webhook`] and [`crate::poll`])
-//! - [`ResourceHandler`] — configure/cleanup lifecycle (defined in
-//!   [`crate::resource`])
+//! - [`StatelessHandler`](crate::stateless::StatelessHandler) — one-shot
+//!   JSON in, JSON out
+//! - [`StatefulHandler`](crate::stateful::StatefulHandler) — iterative with
+//!   mutable JSON state
+//! - [`TriggerHandler`](crate::trigger::TriggerHandler) — start/stop
+//!   lifecycle with [`IncomingEvent`](crate::trigger::IncomingEvent) and
+//!   [`TriggerEventOutcome`](crate::trigger::TriggerEventOutcome); webhook
+//!   and poll specializations live in [`crate::webhook`] and [`crate::poll`]
+//! - [`ResourceHandler`](crate::resource::ResourceHandler) — configure/cleanup
+//!   lifecycle
 //! - [`AgentHandler`] — autonomous agent (stub for Phase 9, defined here)
 //!
-//! [`ActionHandler`] itself is the sum type the engine switches on.
+//! [`ActionHandler`] itself is the sum type the engine switches on. All handler
+//! types are also re-exported at the crate root, so the canonical import is
+//! `use nebula_action::{StatelessHandler, IncomingEvent, ...}`.
 
 use std::fmt;
 use std::sync::Arc;
@@ -35,21 +36,11 @@ use serde_json::Value;
 use crate::context::ActionContext;
 use crate::error::ActionError;
 use crate::metadata::ActionMetadata;
+use crate::resource::ResourceHandler;
 use crate::result::ActionResult;
-
-// Re-exports so `nebula_action::handler::X` paths keep resolving after the
-// 2026-04-11 domain-grouping refactor. Downstream crates and integration
-// tests reference these via the `handler::` namespace per
-// `.claude/crates/action.md`, so the alias surface is load-bearing.
-pub use crate::poll::{POLL_INTERVAL_FLOOR, PollTriggerAdapter};
-pub use crate::resource::{ResourceActionAdapter, ResourceHandler};
-pub use crate::stateful::{StatefulActionAdapter, StatefulHandler};
-pub use crate::stateless::{StatelessActionAdapter, StatelessHandler};
-pub use crate::trigger::{
-    DEFAULT_MAX_BODY_BYTES, IncomingEvent, MAX_HEADER_COUNT, TriggerActionAdapter,
-    TriggerEventOutcome, TriggerHandler,
-};
-pub use crate::webhook::WebhookTriggerAdapter;
+use crate::stateful::StatefulHandler;
+use crate::stateless::StatelessHandler;
+use crate::trigger::TriggerHandler;
 
 // ── AgentHandler (stub for Phase 9) ────────────────────────────────────────
 

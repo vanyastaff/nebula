@@ -1,7 +1,6 @@
 //! Plugin discovery — scan directories for plugin binaries and get metadata.
 
-use nebula_action::handler::ActionHandler;
-use nebula_action::metadata::ActionMetadata;
+use nebula_action::{ActionHandler, ActionMetadata};
 use nebula_core::ActionKey;
 use nebula_plugin_protocol::{PROTOCOL_VERSION, PluginMetadata, PluginResponse};
 use std::path::Path;
