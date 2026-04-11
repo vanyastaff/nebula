@@ -290,11 +290,21 @@ where
         // streaming trigger, not a poll trigger.
         let interval = raw_interval.max(POLL_INTERVAL_FLOOR);
         if interval != raw_interval {
-            tracing::warn!(
-                action = %self.action.metadata().key,
-                requested = ?raw_interval,
-                clamped = ?interval,
-                "poll_interval below floor; clamped to prevent busy loop"
+            // One-shot event per start() invocation — no throttle needed,
+            // `StartedGuard` ensures we only reach this branch once per
+            // start cycle. Routed through `ctx.logger` for the same reason
+            // as the three per-cycle error warnings below: tests assert
+            // over `SpyLogger`, production routes through the configured
+            // logger sink rather than the global tracing subscriber.
+            ctx.logger.log(
+                ActionLogLevel::Warn,
+                &format!(
+                    "poll trigger {}: poll_interval below floor; \
+                     requested {:?}, clamped to {:?} to prevent busy loop",
+                    self.action.metadata().key,
+                    raw_interval,
+                    interval,
+                ),
             );
         }
 

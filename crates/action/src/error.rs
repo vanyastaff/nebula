@@ -742,10 +742,7 @@ mod tests {
 
     #[test]
     fn ext_retryable_with_hint_sets_hint() {
-        let result: Result<i32, std::io::Error> = Err(std::io::Error::new(
-            std::io::ErrorKind::Other,
-            "rate limited",
-        ));
+        let result: Result<i32, std::io::Error> = Err(std::io::Error::other("rate limited"));
         let err = result
             .retryable_with_hint(RetryHintCode::RateLimited)
             .unwrap_err();
@@ -755,8 +752,7 @@ mod tests {
 
     #[test]
     fn ext_fatal_with_hint_sets_hint() {
-        let result: Result<i32, std::io::Error> =
-            Err(std::io::Error::new(std::io::ErrorKind::Other, "expired"));
+        let result: Result<i32, std::io::Error> = Err(std::io::Error::other("expired"));
         let err = result
             .fatal_with_hint(RetryHintCode::AuthExpired)
             .unwrap_err();

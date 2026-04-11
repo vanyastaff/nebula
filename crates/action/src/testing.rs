@@ -25,6 +25,14 @@ use crate::result::ActionResult;
 use crate::stateful::StatefulAction;
 use crate::trigger::TriggerAction;
 
+/// Factory that produces a fresh boxed resource on each call.
+///
+/// Stored instead of a raw `Box<dyn Any>` so `acquire()` can hand out
+/// independent instances on every call without consuming the slot —
+/// matches the semantics of production resource accessors where the
+/// same key can be acquired many times.
+type ResourceFactory = Arc<dyn Fn() -> Box<dyn Any + Send + Sync> + Send + Sync>;
+
 /// Builder for creating test [`ActionContext`] instances.
 ///
 /// Supports credential snapshots (string-keyed), type-based credentials,
@@ -43,14 +51,6 @@ use crate::trigger::TriggerAction;
 /// // Minimal context with no configuration:
 /// let ctx = TestContextBuilder::minimal().build();
 /// ```
-/// Factory that produces a fresh boxed resource on each call.
-///
-/// Stored instead of a raw `Box<dyn Any>` so `acquire()` can hand out
-/// independent instances on every call without consuming the slot —
-/// matches the semantics of production resource accessors where the
-/// same key can be acquired many times.
-type ResourceFactory = Arc<dyn Fn() -> Box<dyn Any + Send + Sync> + Send + Sync>;
-
 pub struct TestContextBuilder {
     credentials: HashMap<String, CredentialSnapshot>,
     typed_credentials: HashMap<TypeId, CredentialSnapshot>,
@@ -1095,11 +1095,8 @@ mod tests {
             }
         }
 
-        fn stop(
-            &self,
-            _ctx: &TriggerContext,
-        ) -> impl std::future::Future<Output = Result<(), ActionError>> + Send {
-            async { Ok(()) }
+        async fn stop(&self, _ctx: &TriggerContext) -> Result<(), ActionError> {
+            Ok(())
         }
     }
 

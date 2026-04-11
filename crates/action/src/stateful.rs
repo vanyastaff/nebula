@@ -521,15 +521,20 @@ where
             )
         })?;
 
-        let mut typed_state: A::State = serde_json::from_value(state.clone()).or_else(|e| {
-            self.action.migrate_state(state.clone()).ok_or_else(|| {
+        // Happy path: one clone for `from_value`. Migration path (rare,
+        // version skew between stored checkpoint and current State schema):
+        // a second clone only when the first deserialization fails and
+        // `migrate_state` is actually consulted.
+        let mut typed_state: A::State = match serde_json::from_value::<A::State>(state.clone()) {
+            Ok(s) => s,
+            Err(e) => self.action.migrate_state(state.clone()).ok_or_else(|| {
                 ActionError::validation(
                     "state",
                     ValidationReason::StateDeserialization,
                     Some(e.to_string()),
                 )
-            })
-        })?;
+            })?,
+        };
 
         // Run the typed action. typed_state may be mutated regardless of
         // Ok/Err — flush it back to JSON before propagating so that a

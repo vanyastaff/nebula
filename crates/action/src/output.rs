@@ -36,12 +36,16 @@ impl DeferredRetryConfig {
     ///
     /// Returns [`crate::ActionError::Validation`] if:
     /// - `max_attempts` is 0
+    /// - `initial_interval` is [`Duration::ZERO`]
     /// - `backoff_coefficient` is `NaN`, `±inf`, or ≤ 0
     ///
     /// The resolver uses `Duration::mul_f64(backoff_coefficient)` to
     /// scale retry intervals, and that function panics on NaN or
     /// overflow. Validation catches those cases at config-build time
-    /// instead of at retry time.
+    /// instead of at retry time. A zero `initial_interval` would fire
+    /// the first retry with no delay and — paired with any finite
+    /// `backoff_coefficient` — stays at zero forever, busy-looping the
+    /// resolver.
     pub fn validate(&self) -> Result<(), crate::ActionError> {
         use crate::error::ValidationReason;
 
@@ -50,6 +54,13 @@ impl DeferredRetryConfig {
                 "deferred_retry.max_attempts",
                 ValidationReason::OutOfRange,
                 Some("max_attempts must be >= 1"),
+            ));
+        }
+        if self.initial_interval.is_zero() {
+            return Err(crate::ActionError::validation(
+                "deferred_retry.initial_interval",
+                ValidationReason::OutOfRange,
+                Some("initial_interval must be > 0"),
             ));
         }
         if !self.backoff_coefficient.is_finite() || self.backoff_coefficient <= 0.0 {
@@ -322,6 +333,10 @@ pub enum ProducerKind {
 }
 
 /// Progress information, updated via heartbeats.
+///
+/// Intentionally does not derive `Eq`/`Hash`: [`Progress::fraction`] is
+/// `f64` and NaN breaks reflexivity. Use [`Progress::fraction`] directly
+/// for comparisons.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Progress {
     /// Completion fraction (0.0 to 1.0).
@@ -385,7 +400,7 @@ pub enum OutputOrigin {
 }
 
 /// Timing information for output production.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct Timing {
     /// When production started.
     pub started_at: chrono::DateTime<chrono::Utc>,
@@ -398,6 +413,10 @@ pub struct Timing {
 }
 
 /// Cost/resource usage for output production.
+///
+/// Intentionally does not derive `Eq`/`Hash`: [`Cost::usd_cents`] is `f64`
+/// and NaN breaks reflexivity. Compare token counts via [`Cost::tokens`]
+/// if deterministic equality is required.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Cost {
     /// Estimated monetary cost in USD cents.
@@ -407,7 +426,7 @@ pub struct Cost {
 }
 
 /// LLM token usage breakdown.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct TokenUsage {
     /// Input tokens consumed.
     pub input: u64,
@@ -1287,5 +1306,133 @@ mod tests {
         let json = serde_json::to_string(&out).unwrap();
         let back: ActionOutput<serde_json::Value> = serde_json::from_str(&json).unwrap();
         assert_eq!(out, back);
+    }
+
+    // ── DeferredRetryConfig::validate ──────────────────────────────────
+
+    fn sane_retry_config() -> DeferredRetryConfig {
+        DeferredRetryConfig {
+            max_attempts: 3,
+            initial_interval: Duration::from_secs(1),
+            backoff_coefficient: 2.0,
+            max_interval: Some(Duration::from_secs(30)),
+            non_retryable_errors: vec![],
+        }
+    }
+
+    fn assert_validation_field(result: Result<(), crate::ActionError>, expected_field: &str) {
+        match result {
+            Err(crate::ActionError::Validation { field, .. }) => assert_eq!(field, expected_field),
+            other => panic!("expected Validation({expected_field}), got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn retry_config_accepts_sane_defaults() {
+        assert!(sane_retry_config().validate().is_ok());
+    }
+
+    #[test]
+    fn retry_config_rejects_zero_max_attempts() {
+        let cfg = DeferredRetryConfig {
+            max_attempts: 0,
+            ..sane_retry_config()
+        };
+        assert_validation_field(cfg.validate(), "deferred_retry.max_attempts");
+    }
+
+    #[test]
+    fn retry_config_rejects_zero_initial_interval() {
+        let cfg = DeferredRetryConfig {
+            initial_interval: Duration::ZERO,
+            ..sane_retry_config()
+        };
+        assert_validation_field(cfg.validate(), "deferred_retry.initial_interval");
+    }
+
+    #[test]
+    fn retry_config_rejects_nan_backoff() {
+        let cfg = DeferredRetryConfig {
+            backoff_coefficient: f64::NAN,
+            ..sane_retry_config()
+        };
+        assert_validation_field(cfg.validate(), "deferred_retry.backoff_coefficient");
+    }
+
+    #[test]
+    fn retry_config_rejects_infinite_backoff() {
+        let cfg = DeferredRetryConfig {
+            backoff_coefficient: f64::INFINITY,
+            ..sane_retry_config()
+        };
+        assert_validation_field(cfg.validate(), "deferred_retry.backoff_coefficient");
+    }
+
+    #[test]
+    fn retry_config_rejects_non_positive_backoff() {
+        for bad in [0.0_f64, -1.0, -f64::MIN_POSITIVE] {
+            let cfg = DeferredRetryConfig {
+                backoff_coefficient: bad,
+                ..sane_retry_config()
+            };
+            assert_validation_field(cfg.validate(), "deferred_retry.backoff_coefficient");
+        }
+    }
+
+    // ── TokenUsage Eq/Hash ─────────────────────────────────────────────
+
+    #[test]
+    fn token_usage_eq_and_hash_agree() {
+        use std::collections::HashSet;
+
+        let a = TokenUsage {
+            input: 100,
+            output: 50,
+            cached: Some(10),
+        };
+        let b = a.clone();
+        let c = TokenUsage {
+            input: 100,
+            output: 50,
+            cached: None,
+        };
+
+        assert_eq!(a, b);
+        assert_ne!(a, c);
+
+        let mut set: HashSet<TokenUsage> = HashSet::new();
+        set.insert(a.clone());
+        assert!(set.contains(&b));
+        assert!(!set.contains(&c));
+    }
+
+    // ── Timing Eq/Hash ─────────────────────────────────────────────────
+
+    #[test]
+    fn timing_eq_and_hash_agree() {
+        use std::collections::HashSet;
+
+        let started = chrono::Utc::now();
+        let a = Timing {
+            started_at: started,
+            completed_at: None,
+            wall_time_ms: Some(42),
+            queue_time_ms: None,
+        };
+        let b = a.clone();
+        let c = Timing {
+            started_at: started,
+            completed_at: None,
+            wall_time_ms: Some(43),
+            queue_time_ms: None,
+        };
+
+        assert_eq!(a, b);
+        assert_ne!(a, c);
+
+        let mut set: HashSet<Timing> = HashSet::new();
+        set.insert(a.clone());
+        assert!(set.contains(&b));
+        assert!(!set.contains(&c));
     }
 }

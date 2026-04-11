@@ -43,6 +43,9 @@ fn metadata_key_matches_attribute() {
     name = "Fields Action",
     description = "action with fields"
 )]
+#[allow(dead_code)]
+// Fields exist only to exercise `#[derive(Action)]` expansion on a
+// non-unit struct — the test asserts on metadata, not on field values.
 struct ActionWithFields {
     url: String,
     timeout: u32,
@@ -69,6 +72,10 @@ fn derive_works_on_struct_with_fields() {
     name = "Combined",
     description = "combined derive test"
 )]
+#[allow(dead_code)]
+// Fields exist only to exercise `#[derive(Action)]` + `#[derive(Parameters)]`
+// expansion — the tests assert on metadata and generated parameter list,
+// not on field values.
 struct CombinedDeriveAction {
     #[param(label = "URL", hint = "url")]
     url: String,
