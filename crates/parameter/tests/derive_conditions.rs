@@ -1,6 +1,11 @@
-use nebula_parameter::{HasParameters, Parameters};
+use nebula_parameter::Parameters;
 
 #[derive(Parameters)]
+#[allow(dead_code)]
+// Fields exist only to exercise `#[derive(Parameters)]` expansion with
+// visible_when / required_when attributes. The test asserts on the
+// generated parameter metadata, not on field values, so the fields are
+// never read after struct construction.
 struct ConditionalInput {
     method: String,
 

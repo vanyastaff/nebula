@@ -172,23 +172,57 @@ impl PluginCapabilities {
     }
 }
 
-/// Match a host against a domain pattern.
-/// Supports wildcard prefix: "*.example.com" matches "api.example.com".
 /// Check if `path` is under `base` directory.
-/// "/tmp/foo" is under "/tmp", but "/tmp_evil" is NOT under "/tmp".
-/// Canonicalizes both paths to prevent traversal attacks (e.g., "/tmp/../etc").
+///
+/// "/tmp/foo" is under "/tmp", but "/tmp_evil" is NOT under "/tmp" —
+/// comparison is component-wise via [`Path::starts_with`], not substring.
+///
+/// # Security
+///
+/// Traversal attacks like `/tmp/../etc/passwd` are defused in two layers:
+///
+/// 1. **Preferred path** — if both `path` and `base` canonicalize
+///    successfully (both exist on disk), the canonical forms are used,
+///    so `..` is resolved by the OS before comparison.
+/// 2. **Fallback** — if either path does not exist, both are run through
+///    a lexical normalisation pass that drops `.` components and resolves
+///    `..` by popping the previous component. This keeps the function
+///    usable in tests and sandboxed environments where paths are
+///    abstract, without opening a traversal hole.
+///
+/// The fallback is component-wise: `"/tmp/file.txt".starts_with("/tmp")`
+/// returns `true`, `"/tmp_evil".starts_with("/tmp")` returns `false`.
+/// This is sep-agnostic — works the same on POSIX and Windows paths.
 fn path_under(path: &str, base: &str) -> bool {
-    // Try to canonicalize; fall back to string comparison if path doesn't exist.
-    let canon_path = std::fs::canonicalize(path)
-        .map(|p| p.to_string_lossy().to_string())
-        .unwrap_or_else(|_| path.to_owned());
-    let canon_base = std::fs::canonicalize(base)
-        .map(|p| p.to_string_lossy().to_string())
-        .unwrap_or_else(|_| base.to_owned());
+    use std::path::{Component, Path, PathBuf};
 
-    canon_path == canon_base || canon_path.starts_with(&format!("{canon_base}/"))
+    fn normalize_lex(p: &Path) -> PathBuf {
+        let mut out = PathBuf::new();
+        for c in p.components() {
+            match c {
+                Component::CurDir => {}
+                Component::ParentDir => {
+                    out.pop();
+                }
+                other => out.push(other.as_os_str()),
+            }
+        }
+        out
+    }
+
+    let path = Path::new(path);
+    let base = Path::new(base);
+
+    match (path.canonicalize(), base.canonicalize()) {
+        (Ok(p), Ok(b)) => p.starts_with(&b),
+        // Either or both don't exist — use lexical normalisation on
+        // both so the comparison stays symmetric.
+        _ => normalize_lex(path).starts_with(normalize_lex(base)),
+    }
 }
 
+/// Match a host against a domain pattern.
+/// Supports wildcard prefix: "*.example.com" matches "api.example.com".
 fn match_domain(host: &str, pattern: &str) -> bool {
     let host = host.to_lowercase();
     let pattern = pattern.to_lowercase();

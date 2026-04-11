@@ -4,6 +4,10 @@
 use nebula_parameter::{InputHint, ParameterType};
 
 #[derive(nebula_parameter::Parameters)]
+#[allow(dead_code)]
+// Fields exist only to exercise `#[param(hint = "...")]` attribute
+// expansion. The test asserts on generated parameter metadata, not on
+// field values, so the fields are never read after struct construction.
 struct HintTestInput {
     #[param(label = "Email", hint = "email")]
     email: String,

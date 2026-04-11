@@ -30,3 +30,4 @@ Universal credential management: 12 auth scheme types, open AuthScheme trait, co
 - RT-3: rkyv cache zeroization — not applicable yet (cache uses moka ciphertext).
 
 <!-- reviewed: 2026-04-09 — added CredentialGuard, CredentialAccessor, ScopedCredentialAccessor, CredentialAccessError -->
+<!-- reviewed: 2026-04-11 — `resolver.rs` CAS retry test lock migrated from `std::sync::Mutex<()>` to `LazyLock<tokio::sync::Mutex<()>>`. The lock serialises two `#[tokio::test]` bodies that share the `CAS_REFRESH_COUNT` static, and was being held across every `.await` — `std::sync::Mutex` trips `clippy::await_holding_lock` and would make the future `!Send`. No production-path change. -->

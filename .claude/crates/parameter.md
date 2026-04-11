@@ -26,3 +26,4 @@ Parameter schema system (RFC 0005) — defines what inputs a workflow node accep
 - Used by nebula-action, nebula-credential, nebula-sdk.
 
 <!-- reviewed: 2026-04-07 -->
+<!-- reviewed: 2026-04-11 — Test hygiene: `derive_conditions.rs` and `derive_hint.rs` gained `#[allow(dead_code)]` with a comment explaining the fields exist only to exercise `#[derive(Parameters)]` expansion. Removed the unused `HasParameters` import from `derive_conditions.rs`. No crate-source changes, no invariant changes. -->
