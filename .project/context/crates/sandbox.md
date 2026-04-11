@@ -18,9 +18,3 @@ Plugin isolation and sandboxing — SandboxRunner trait and implementations.
 
 ## Relations
 - Depends on nebula-action. Used by nebula-runtime (re-export), nebula-engine (via runtime).
-
-<!-- reviewed: 2026-04-09 — Phase 7.5: ProcessSandboxHandler migrated from InternalHandler to StatelessHandler, discovery returns ActionHandler tuples -->
-<!-- reviewed: 2026-04-11 — Import paths migrated off `nebula_action::handler::X` (aliases deleted upstream in action crate post-audit). `discovery.rs` and `handler.rs` now import `ActionHandler`, `ActionMetadata`, `StatelessHandler` from the `nebula_action` crate root. Zero behavior change. -->
-<!-- reviewed: 2026-04-11 — `capabilities::path_under` rewritten: was string-concat on `canonicalize().unwrap_or_else(|_| str::to_owned)`, which broke on Windows because `canonicalize` returned `\\?\C:\tmp` while the fallback kept POSIX `/tmp`, and component containment was faked with `format!("{base}/")`. New impl uses `std::path::Path` + component-wise `starts_with`. If both paths canonicalize, OS-resolved forms are compared (traversal-safe via `/tmp/../etc` → `/etc`). If either fails, both are run through a lexical `normalize_lex` that drops `CurDir` and pops on `ParentDir`, then component `starts_with` — symmetric, sep-agnostic, still traversal-safe, works on Windows where `/tmp` isn't a real path. Two previously-flaky tests (`filesystem_read_only`, `filesystem_write_implies_read`) now pass on both targets. -->
-
-<!-- reviewed: 2026-04-11 — Workspace-wide nightly rustfmt pass applied (group_imports = "StdExternalCrate", imports_granularity = "Crate", wrap_comments, format_code_in_doc_comments). Touches every Rust file in the crate; purely formatting, zero behavior change. -->

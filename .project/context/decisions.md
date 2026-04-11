@@ -48,6 +48,6 @@
 **Choice**: HTTP 10 s · Database 5 s · General 30 s
 **Why**: Explicit defaults prevent unbounded blocking; overridable via `ApiConfig`.
 
-## No TransactionalAction Trait (removed 2026-04-10)
-**Choice**: The fake three-phase `TransactionalAction` DX trait + `impl_transactional_action!` macro were deleted. Saga orchestration is a post-v1 engine feature and will ship with its own trait shape when real rollback trigger + saga state store + compensation DAG infrastructure lands.
-**Why**: The old trait generated a `Pending → Executed → Compensated` state machine inside `StatefulAction`, but `runtime::execute_stateful` only loops on `ActionResult::Continue`, and the `Pending` arm returned `break_completed`. The Executed / Compensated branches were unreachable in production engine dispatch — dead code that misled readers into thinking they had a working saga. The DX pattern did not actually add anything over `StatefulAction` with a tuple output, so even a renamed single-phase replacement (`CompensableAction`) would have been a distraction. Keep the surface honest: zero saga support until there's real saga support. Consumers who need compensation today can model it as two separate actions wired via failure events.
+## No saga / transactional trait today
+**Choice**: `nebula-action` has no saga or transactional-action DX trait. Consumers who need compensation model it as two separate actions wired via failure events.
+**Why**: A real saga needs a rollback trigger + saga state store + compensation DAG. Until the engine has all three, any DX trait claiming "transactional" would be either dead code or misleading. A previous `TransactionalAction` attempt was deleted for exactly this reason — its `Pending → Executed → Compensated` state machine was unreachable past `Pending` under actual engine dispatch. The public surface stays honest: zero saga support until there's real saga support.

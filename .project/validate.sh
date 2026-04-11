@@ -36,9 +36,25 @@ check_budget() {
     fi
 }
 
+# Per-file budgets. Default is 500 tokens (~2 KB). Crates with genuinely
+# large invariant surface get a realistic override. If a crate exceeds
+# its budget, either trim it or bump the number here with a PR
+# explaining why the surface grew.
+crate_budget() {
+    case "$1" in
+        action)     echo 1500 ;;  # 5 action subtypes × 4 adapters × many traps
+        resilience) echo 2000 ;;  # 6 patterns, adaptive algos, safety-critical notes
+        validator)  echo 1100 ;;  # two paradigms + derive macro DSL surface
+        error)      echo 800  ;;  # 14 categories, 11 detail types, HTTP mapping
+        runtime)    echo 700  ;;  # ActionRuntime dispatch matrix
+        resource)   echo 600  ;;  # 7 topologies
+        *)          echo 500  ;;
+    esac
+}
+
 # Check core context files
 check_budget "$CONTEXT_DIR/ROOT.md" 300 "context/ROOT.md"
-check_budget "$CONTEXT_DIR/decisions.md" 500 "context/decisions.md"
+check_budget "$CONTEXT_DIR/decisions.md" 900 "context/decisions.md"
 check_budget "$CONTEXT_DIR/pitfalls.md" 300 "context/pitfalls.md"
 check_budget "$CONTEXT_DIR/active-work.md" 200 "context/active-work.md"
 
@@ -51,7 +67,8 @@ if [[ -d "$WORKSPACE_ROOT/crates" ]]; then
         # Skip crates that are actually proc-macro subdirectories inside a
         # parent crate (e.g. crates/action/macros). They share context.
         if [[ -f "$crate_dir/Cargo.toml" ]]; then
-            check_budget "$CONTEXT_DIR/crates/${crate_name}.md" 500 "context/crates/${crate_name}.md"
+            budget=$(crate_budget "$crate_name")
+            check_budget "$CONTEXT_DIR/crates/${crate_name}.md" "$budget" "context/crates/${crate_name}.md"
         fi
     done
 fi

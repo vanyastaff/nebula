@@ -1,22 +1,13 @@
 # nebula-resilience
 Fault-tolerance patterns: circuit breaker, retry, bulkhead, rate limiter, timeout, load shedding.
 
-## Quick mental model
-- `ResiliencePipeline` composes layers in add-order (first added = outermost).
-- Recommended order: `load_shed -> rate_limiter -> timeout -> retry -> circuit_breaker -> bulkhead`.
-- `CallError<E>` is the single cross-pattern error contract; all adapters should preserve this shape.
-- `retry_with()` is Classify-aware; pipeline retry path uses `retry_with_inner()` and classifier plumbing.
-- Circuit breaker probe lifecycle is cancellation-sensitive and guarded by RAII (`ProbeGuard`).
-- Rate limiting has 4 built-in algorithms plus optional `governor` implementation.
-
-## Where to look first
-- Pipeline composition and layer semantics: `src/pipeline.rs`
-- Retry/backoff/jitter and budget handling: `src/retry.rs`
-- Circuit state machine and probe handling: `src/circuit_breaker.rs`
-- Concurrency gating/queueing: `src/bulkhead.rs`, `src/gate.rs`
-- Rate algorithms and adaptive tuning: `src/rate_limiter.rs`
-- Error contract and remapping helpers: `src/error.rs`
-- Metrics/events surface: `src/sink.rs`
+## Mental model
+- `ResiliencePipeline` composes layers in add-order (first added = outermost). Recommended: `load_shed -> rate_limiter -> timeout -> retry -> circuit_breaker -> bulkhead`.
+- `CallError<E>` is the single cross-pattern error contract; all adapters preserve this shape.
+- `retry_with()` is Classify-aware. Pipeline retry uses `retry_with_inner()` + classifier plumbing.
+- Circuit breaker probes are cancel-sensitive, guarded by RAII `ProbeGuard`.
+- Rate limiting has 4 built-in algorithms plus optional `governor`.
+- Where to look: `pipeline.rs`, `retry.rs`, `circuit_breaker.rs`, `bulkhead.rs`/`gate.rs`, `rate_limiter.rs`, `error.rs`, `sink.rs`.
 
 ## Invariants
 - `benches/compose.rs` is an API contract for `ResiliencePipeline`. Run `cargo bench --no-run -p nebula-resilience` after signature changes.
@@ -73,27 +64,8 @@ Fault-tolerance patterns: circuit breaker, retry, bulkhead, rate limiter, timeou
 - `humantime`: human-readable `Duration` serde support.
 - `full`: enables both optional features.
 
-## Fast validation commands
-- Single crate (default features): `cargo check -p nebula-resilience && cargo nextest run -p nebula-resilience`
-- Governor path: `cargo nextest run -p nebula-resilience --features governor`
-- Pre-PR workspace gate: `cargo fmt && cargo clippy --workspace -- -D warnings && cargo nextest run --workspace`
-- Targeted micro-benches: `cargo bench -p nebula-resilience --bench latency_tracker --features bench` and `--bench sliding_window_cb`
-- Loom (concurrency): `RUSTFLAGS="--cfg loom" cargo test -p nebula-resilience --features loom --lib -- loom`
-- Miri (UB detection): `cargo +nightly miri test -p nebula-resilience --lib` (139 tests, all pass)
-
-## Common change playbooks
-- Touching `retry`:
-	- Re-check `BackoffConfig` edge values and jitter finite handling.
-	- Validate `total_budget` semantics (elapsed op time + next delay).
-- Touching `circuit_breaker`:
-	- Verify half-open probe accounting on success/error/cancel paths.
-	- Confirm state-change callbacks still run outside locks.
-- Touching `pipeline`:
-	- Re-run `benches/compose.rs` contract compile.
-	- Verify retry + classifier + fallback error mapping still preserves `CallError<E>`.
-- Touching `rate_limiter`:
-	- Validate constructor bounds and conversion safety.
-	- Run tests with and without `governor` feature.
+## Feature flags
+`governor` — `GovernorRateLimiter` (GCRA). `humantime` — human-readable `Duration` serde. `full` — both. Loom: `RUSTFLAGS="--cfg loom" cargo test -p nebula-resilience --features loom --lib -- loom`. Miri: `cargo +nightly miri test -p nebula-resilience --lib`.
 
 ## Module structure
 ```
@@ -105,32 +77,8 @@ pipeline.rs     — ResiliencePipeline, PipelineBuilder
 + infra: cancellation, clock, gate
 ```
 
-## When to use this crate
-Any outgoing call (HTTP, DB, external service, plugin execution) should go through `ResiliencePipeline` or individual patterns. Specifically:
-- **Retry + timeout** — any call that can transiently fail (network, rate limits)
-- **CircuitBreaker** — protect against cascading failures from a degraded downstream
-- **Bulkhead** — limit concurrency to prevent resource exhaustion (e.g., connection pools)
-- **RateLimiter** — enforce throughput limits (API quotas, token budgets)
-- **Fallback** — graceful degradation (cached values, defaults, chain of alternatives)
-- **Gate** — cooperative shutdown barrier for request handlers
-
-Prefer `ResiliencePipeline` for composing multiple patterns — it handles layer ordering warnings, CB probe guards, and retry error classification automatically.
+## When to use
+Any outgoing call (HTTP, DB, external service, plugin execution) goes through `ResiliencePipeline` or individual patterns. Prefer the pipeline when composing multiple — it handles layer ordering warnings, CB probe guards, and retry error classification automatically.
 
 ## Relations
 - Depends on: nebula-error. Used by nebula-resource (pool resilience), nebula-credential (refresh CB).
-
-<!-- reviewed: 2026-04-02 — retry_with_inner promoted to #[doc(hidden)] pub (was pub(crate)) and re-exported from lib.rs so bench files can access it without the Classify bound; criterion dev-dep replaced by codspeed-criterion-compat workspace alias; new bench targets: retry (backoff strategies, loop, jitter), gate (enter contention, is_closed), load_shed (pass-through, reject, atomic predicate), hedge (no-hedge fast path, adaptive overhead cold/warmed, sample-scaling, write-lock contention) -->
-<!-- reviewed: 2026-04-02 — clippy cleanup in pipeline: Step::Retry now Box<RetryConfig<E>> to satisfy large_enum_variant without semantic changes -->
-
-<!-- reviewed: 2026-04-02 — removed stale design/ folder (PLAN.md, TASKS.md, MIGRATION.md); Phase 9 backlog was referencing non-existent Task.md, all active context lives in this file -->
-<!-- reviewed: 2026-04-02 — ASM-guided optimizations: OutcomeWindow power-of-two capacity + bitmask wrapping (eliminates div), byte_sum chunked helper (enables SIMD auto-vectorization), AtomicU32 lock-free circuit_state(), apply_jitter mul_add + simplified NaN guard -->
-<!-- reviewed: 2026-04-02 — ASM audit round 2: byte_sum outlined (#[inline(never)]) with 4-accumulator unroll (record_outcome 980→502 insns), unsafe get_unchecked in record/active_slice (eliminates all bounds-check panics), revert mul_add→explicit mul+add (eliminates call fma on generic target), #[cold] on reset() -->
-<!-- reviewed: 2026-04-02 — ASM audit round 3: apply_jitter split into leaf dispatcher (42 insns, no callee-saves on None path) + #[inline(never)] apply_jitter_full; NaN guard simplified from 35 insns to 3 (ucomisd+jbe); total check simplified; infinity factor now clamped to 1.0 instead of rejected -->
-<!-- reviewed: 2026-04-02 — ASM audit round 4: byte_sum rewritten with SSE2 _mm_sad_epu8 intrinsics (16 bytes/cycle vs 4 bytes/cycle scalar); rate_exceeds() integer fixed-point comparison replaces f64 cvtsi2sd (eliminates false-dependency stalls); ThinLTO already enabled -->
-
-<!-- reviewed: 2026-04-02 — memory audit: CallError Cancelled/FallbackFailed reason String→Cow<'static, str>, ConfigError message String→Cow<'static, str>, CancellationContext reason String→Cow<'static, str> — eliminates heap alloc for static error messages -->
-<!-- reviewed: 2026-04-02 — DX: added const constructors on CallError — cancelled(), cancelled_with(), fallback_failed(), fallback_failed_with(), rate_limited(), rate_limited_after() — all call sites migrated from struct syntax -->
-
-<!-- reviewed: 2026-04-07 -->
-
-<!-- reviewed: 2026-04-11 — Workspace-wide nightly rustfmt pass applied (group_imports = "StdExternalCrate", imports_granularity = "Crate", wrap_comments, format_code_in_doc_comments). Touches every Rust file in the crate; purely formatting, zero behavior change. -->

@@ -21,8 +21,3 @@ Workflow execution orchestrator — frontier-based DAG scheduler.
 - `transition_status(Running)` fails if already Running — guard before calling.
 - Credential refresh only fires when `credential_resolver` is also Some.
 - Resume budget/input not persisted — defaults on resume (TODO).
-
-<!-- reviewed: 2026-04-09 — Phase 7.5: test handlers migrated from InternalHandler to StatelessAction, no architectural change -->
-<!-- reviewed: 2026-04-10 — mechanical import path update: nebula_action::execution::StatelessAction → nebula_action::stateless::StatelessAction (action crate module layout cleanup) -->
-
-<!-- reviewed: 2026-04-11 — Workspace-wide nightly rustfmt pass applied (group_imports = "StdExternalCrate", imports_granularity = "Crate", wrap_comments, format_code_in_doc_comments). Touches every Rust file in the crate; purely formatting, zero behavior change. -->

@@ -23,7 +23,3 @@ In-memory metrics primitives for the Nebula workflow engine.
 
 ## Relations
 - Used by nebula-metrics (naming conventions + adapter). Used by nebula-runtime and nebula-engine for recording metrics.
-
-<!-- reviewed: 2026-04-04 — stripped to pure metrics primitives crate -->
-
-<!-- reviewed: 2026-04-11 — Workspace-wide nightly rustfmt pass applied (group_imports = "StdExternalCrate", imports_granularity = "Crate", wrap_comments, format_code_in_doc_comments). Touches every Rust file in the crate; purely formatting, zero behavior change. -->

@@ -23,9 +23,13 @@ all_changed_files=$(
     } | sort -u
 )
 
-# Get crates with changes
-changed_crates=$(printf '%s\n' "$all_changed_files" | \
-    grep '^crates/' | cut -d'/' -f2 | sort -u)
+# Get crates with changes.
+# `grep` returns exit 1 on no match; under `set -o pipefail` that blows
+# up the whole pipeline, so explicitly swallow empty-match as success.
+changed_crates=$(printf '%s\n' "$all_changed_files" \
+    | { grep '^crates/' || true; } \
+    | cut -d'/' -f2 \
+    | sort -u)
 
 if [[ -z "$changed_crates" ]]; then
     exit 0  # No crate changes — proceed normally

@@ -21,5 +21,3 @@ Proc-macro derives for the Nebula ecosystem — Action, Resource, Plugin, Creden
 
 ## Relations
 - proc-macro crate (no runtime nebula deps). Generates code that uses nebula-validator, nebula-action, nebula-resource, nebula-credential, nebula-parameter.
-
-<!-- reviewed: 2026-03-30 -->

@@ -19,13 +19,3 @@ Structured logging foundation for Nebula, built on `tracing` — single pipeline
 
 ## Relations
 - No nebula deps. Used by almost every crate. Wraps `tracing` macros — importing crates use `nebula_log::{info, debug, ...}` macros, not `tracing::` directly.
-
-<!-- reviewed: 2026-04-02 -->
-<!-- reviewed: 2026-04-02 — benchmark file has explicit clippy excessive_nesting expectation for nested Criterion + context-scope closures -->
-
-<!-- reviewed: 2026-04-02 — dep cleanup only: removed unused Cargo.toml deps via cargo shear --fix, no code changes -->
-<!-- reviewed: 2026-04-02 — ASM audit: FanoutWriter switched from Vec to SmallVec<[Box<dyn Write>; 4]> (eliminates heap alloc per log event for <=4 writers); OperationFailed.error changed from String to Cow<'static, str> (eliminates alloc on drop path) -->
-<!-- reviewed: 2026-04-02 — DX: added ::new() constructors for OperationStarted, OperationCompleted, OperationFailed; all internal call sites and examples migrated from struct syntax -->
-<!-- reviewed: 2026-04-04 — removed `metrics` crate dep and `observability` feature; MetricsHook, TimingGuard, timed_block removed; metrics module kept as empty placeholder; metrics now in nebula-telemetry/nebula-metrics -->
-
-<!-- reviewed: 2026-04-11 — Workspace-wide nightly rustfmt pass applied (group_imports = "StdExternalCrate", imports_granularity = "Crate", wrap_comments, format_code_in_doc_comments). Touches every Rust file in the crate; purely formatting, zero behavior change. -->

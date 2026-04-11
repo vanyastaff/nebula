@@ -21,5 +21,3 @@ Proc-macro crate providing `#[derive(ClassifyError)]` for nebula-resource error 
 
 - Depended on by: nebula-resource (re-exports `ClassifyError` derive)
 - No other dependencies beyond proc-macro2, quote, syn
-
-<!-- reviewed: 2026-03-26 -->

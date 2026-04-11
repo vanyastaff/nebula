@@ -28,13 +28,3 @@ Generic typed pub/sub event bus — transport infrastructure only, no domain eve
 
 ## Relations
 - No nebula deps. Used by nebula-telemetry, nebula-resource, nebula-credential.
-
-<!-- reviewed: 2026-03-19 -->
-
-<!-- reviewed: 2026-04-02 -->
-
-<!-- reviewed: 2026-04-02 -->
-
-<!-- reviewed: 2026-04-02 — dep cleanup only: removed unused Cargo.toml deps via cargo shear --fix, no code changes -->
-
-<!-- reviewed: 2026-04-11 — Workspace-wide nightly rustfmt pass applied (group_imports = "StdExternalCrate", imports_granularity = "Crate", wrap_comments, format_code_in_doc_comments). Touches every Rust file in the crate; purely formatting, zero behavior change. -->

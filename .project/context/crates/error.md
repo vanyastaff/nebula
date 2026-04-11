@@ -1,76 +1,43 @@
 # nebula-error
 
-Enterprise error infrastructure. Google error model (Status + typed details) adapted to Rust with AWS SDK wrapper pattern.
+Enterprise error infrastructure. Google error model (Status + typed details)
+adapted to Rust with AWS SDK wrapper pattern.
 
 ## Invariants
 
-- `#![forbid(unsafe_code)]`, `#![warn(missing_docs)]`
-- `Classify` trait: 2 required (`category`, `error_code`), 3 optional with defaults
-- `is_retryable()` default from `ErrorCategory`: Timeout, Exhausted, External, RateLimit, Unavailable = retryable
-- `ErrorDetails` keyed by TypeId — one value per type, insert overwrites
-- `ErrorCode` uses `Cow<'static, str>` — static for canonical, owned for plugin runtime codes
-- `ErrorSeverity` ordering: Info < Warning < Error (derives Ord), `#[non_exhaustive]`
-- `NebulaError<E>` requires `E: Classify` — classification delegated to domain error
-- `NebulaError<E>` implements `Classify` by delegating to inner — usable anywhere `impl Classify` expected
-- `NebulaError::map_inner()` preserves message, details, context_chain, source while transforming inner type
-- **`RetryHint` is both a Classify return type AND an ErrorDetail** — can be attached to `NebulaError` via `.with_detail()`
-- `RetryInfo` removed — use `RetryHint` instead
-- `ErrorCode` implements `PartialEq<&str>` — ergonomic comparisons in tests and application code
-- Serde behind feature flag — not forced on all consumers
-- Derive macro behind `derive` feature flag, re-exported as `nebula_error::Classify` (not `DeriveClassify`)
+- `Classify` trait: 2 required (`category`, `error_code`), 3 optional with defaults. `NebulaError<E>` requires `E: Classify` and delegates classification to the inner type.
+- `is_retryable()` default from `ErrorCategory`: Timeout, Exhausted, External, RateLimit, Unavailable = retryable. `DataTooLarge` is **not** default-retryable (client must reduce payload).
+- `ErrorDetails` is keyed by `TypeId` — one value per type, `insert` overwrites silently (no merge).
+- `ErrorCode` uses `Cow<'static, str>` — static for canonical codes, owned for plugin runtime codes. Implements `PartialEq<&str>` for ergonomic comparisons.
+- `ErrorSeverity` is `Info < Warning < Error` (derives `Ord`), `#[non_exhaustive]`. `ErrorCategory` is also `#[non_exhaustive]` — match arms need a wildcard.
+- `RetryHint` is both a `Classify` return type **and** an `ErrorDetail` — attachable via `.with_detail()`. Advisory for the resilience layer (backoff floor, not absolute).
+- `NebulaError::map_inner()` preserves message, details, context_chain, and source while transforming the inner type.
+- Serde and the `derive` macro are behind feature flags. Derive is re-exported as `nebula_error::Classify` (not `DeriveClassify`).
 
 ## Categories (14)
 
-NotFound, Validation, Authentication, Authorization, Conflict, RateLimit, Timeout, Exhausted, Cancelled, Internal, External, Unsupported, **Unavailable** (503, retryable), **DataTooLarge** (413, client error)
+NotFound, Validation, Authentication, Authorization, Conflict, RateLimit, Timeout, Exhausted, Cancelled, Internal, External, Unsupported, Unavailable (503, retryable), DataTooLarge (413, client error).
 
-## Detail Types (11)
+## Detail types (11)
 
-- `RetryHint` — retry delay + max attempts (also returned by `Classify::retry_hint()`)
-- `ResourceInfo` — resource type/name/owner
-- `BadRequest` / `FieldViolation` — field-level validation errors
-- `DebugInfo` — diagnostic detail + stack entries
-- `QuotaInfo` — metric/limit/used for quota failures
-- `PreconditionFailure` / `PreconditionViolation` — unmet preconditions
-- `ExecutionContext` — node_id, workflow_id, correlation_id, attempt (workflow tracing)
-- `ErrorRoute` — suggested_handler, dead_letter (error-edge routing)
-- `TypeMismatch` — expected, actual, location (DAG edge type validation)
-- `HelpLink` — url + description (documentation/troubleshooting links)
-- `RequestInfo` — request_id + serving_data (API-layer correlation)
-- `DependencyInfo` — service, endpoint, status_code (downstream failure info)
+`RetryHint` · `ResourceInfo` · `BadRequest` / `FieldViolation` · `DebugInfo` · `QuotaInfo` · `PreconditionFailure` / `PreconditionViolation` · `ExecutionContext` (node_id, workflow_id, correlation_id, attempt) · `ErrorRoute` (suggested_handler, dead_letter) · `TypeMismatch` (expected, actual, location) · `HelpLink` · `RequestInfo` · `DependencyInfo`.
 
-## HTTP Mapping
+## HTTP mapping
 
-- `ErrorCategory::http_status_code()` — maps category to HTTP status (const fn)
-- `ErrorCategory::from_http_status()` — reverse mapping (429 → RateLimit; lossy for Exhausted)
+- `ErrorCategory::http_status_code()` — category → HTTP status, `const fn`.
+- `ErrorCategory::from_http_status()` — reverse, **lossy**: 429 → RateLimit, not Exhausted.
 
-## ErrorClassifier
+## Classification helpers
 
-- Predicate-based category filtering: `ErrorClassifier::new(|cat| ...)`
-- Built-in: `retryable()`, `client_errors()`, `server_errors()`
-- Used by resilience layer for conditional retry routing
+`ErrorClassifier::new(|cat| ...)` — predicate-based category filtering. Built-ins: `retryable()`, `client_errors()`, `server_errors()`. Used by the resilience layer for conditional retry routing.
 
 ## Traps
 
-- `ErrorCategory` and `ErrorSeverity` are `#[non_exhaustive]` — match arms need wildcard
-- `RetryHint` is advisory — resilience layer uses it as backoff floor, not absolute
-- `ErrorDetails::insert` overwrites same-type entry silently (no merge)
-- Derive macro panics at compile time for unknown category/severity strings
-- `NebulaError<E>` requires `E: Classify + Debug + Display` for full Error trait impl
-- `from_http_status(429)` returns `RateLimit`, not `Exhausted` — lossy reverse mapping
-- `DataTooLarge` is NOT default-retryable (client must reduce payload size)
+- `#[derive(Classify)]` panics at compile time on unknown category / severity strings.
+- `NebulaError<E>` needs `E: Classify + Debug + Display` for the full `Error` trait.
+- `from_http_status(429)` returns `RateLimit`, not `Exhausted` — reverse mapping is lossy.
 
 ## Relations
 
-- Depends on: serde (optional), nebula-error-macros (optional); thiserror in dev-dependencies only
-- Depended on by: all 21 crates (Classify migration complete 2026-03-30)
-- 14 crates use `#[derive(Classify)]`. Remaining manual impls: core (cascade risk), credential (active dev), action/engine (dynamic delegation), resilience (generic `CallError<E>`)
-
-<!-- reviewed: 2026-03-30 (PartialEq<&str>, Classify re-export rename) -->
-<!-- reviewed: 2026-04-02 — pre-existing modifications, no architectural changes this session -->
-
-<!-- reviewed: 2026-04-02 — dep cleanup only: removed unused Cargo.toml deps via cargo shear --fix, no code changes -->
-<!-- reviewed: 2026-04-02 — ASM+cache audit: no changes needed. All const fn classification functions fully inlined by LLVM (bt bitmask trick for matches!). NebulaError<E> layout optimal for real domain errors (inner at offset 0 when align 8). No diagnostic code left in tree. -->
-
-<!-- reviewed: 2026-04-02 — fmt only -->
-
-<!-- reviewed: 2026-04-11 — Workspace-wide nightly rustfmt pass applied (group_imports = "StdExternalCrate", imports_granularity = "Crate", wrap_comments, format_code_in_doc_comments). Touches every Rust file in the crate; purely formatting, zero behavior change. -->
+Depends on: `serde` (optional), `nebula-error-macros` (optional); `thiserror` in dev-deps only.
+Depended on by: every other crate. 14 of them use `#[derive(Classify)]`; core/credential/action/engine/resilience keep hand-rolled `Classify` impls for cascade risk, active dev, or generic `CallError<E>` reasons.

@@ -23,7 +23,3 @@ Storage trait abstraction — MemoryStorage for tests, PostgresStorage for produ
 
 ## Relations
 - Depends on nebula-core (IDs). Used by nebula-engine, nebula-api.
-
-<!-- reviewed: 2026-04-06 — added PgExecutionRepo with full ExecutionRepo impl -->
-
-<!-- reviewed: 2026-04-11 — Workspace-wide nightly rustfmt pass applied (group_imports = "StdExternalCrate", imports_granularity = "Crate", wrap_comments, format_code_in_doc_comments). Touches every Rust file in the crate; purely formatting, zero behavior change. -->

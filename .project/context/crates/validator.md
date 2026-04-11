@@ -28,30 +28,11 @@ Composable, type-safe validation framework — two paradigms: programmatic combi
 - f64 convenience functions (`min_f64`, `max_f64`, `in_range_f64`) `debug_assert!` against NaN bounds.
 - Predicate comparisons (`Gt`/`Lt`/`Gte`/`Lte`) use precision-safe `json_number_cmp` (i64→u64→f64 fallback).
 
-## Derive Macro Architecture (nebula-validator-macros)
-- 3-phase pipeline: `parse.rs` (attrs → IR) → `emit.rs` (IR → TokenStream). `validator.rs` is a 28-line entry point.
-- IR types in `model.rs`: `ValidatorInput`, `FieldDef`, `Rule` enum (19 variants), `EachRules`, `StringFormat`, `StringFactoryKind`.
-- Option-wrapping centralized in `emit::wrap_option()` — binds `value` for both Option and non-Option fields.
-- Message override centralized in `emit::wrap_message()` — the before/after/last_mut pattern in one place.
-- `nested` and `custom` validators use inline message override (mut e pattern) — they need to modify the error before adding.
-- `each()` rules reuse the same `Rule` enum as field-level rules.
-- `#[validate(required)]` is strict: only valid on `Option<T>` fields. Using it on non-optional fields is a parse-time compile error, not a silent no-op.
-- Derive DSL now supports compositional sugar: `all(...)` and `any(...)` in addition to `using = ...`.
-- Inside `each(...)`, nested composition supports standard call form: `each(any(v1, v2))`, `each(all(v1, v2))`.
-- Derive DSL now also supports canonical call-style aliases inspired by validator/garde: `min(...)`, `max(...)`, `length(...)`, `range(...)`, and `inner(...)`.
-- `inner(...)` is the canonical public alias for per-element container validation; `each(...)` remains supported for compatibility.
-- Canonical call-style derive rules are parse-time type-checked too: e.g. `email()`/`prefix()` require string-like fields, `required()` requires `Option<T>`, and `inner(...)`/`each(...)` are constrained to vector-like containers.
-- `validation_codegen.rs` helpers in macro-support are still used by `config-macros`; validator-macros uses its own IR.
+## Derive Macro (nebula-validator-macros)
+- 3-phase pipeline: `parse.rs` (attrs → IR in `model.rs`) → `emit.rs` (IR → TokenStream). `validator.rs` is a 28-line entry.
+- `#[validate(required)]` is parse-time strict: only valid on `Option<T>` fields, otherwise compile error (not silent no-op).
+- Derive DSL supports both the `using = ...` form and compositional `all(...)`/`any(...)`, plus call-style aliases inspired by validator/garde: `min(...)`, `max(...)`, `length(...)`, `range(...)`, `inner(...)`. `inner(...)` is the canonical per-element container validator; `each(...)` kept for compatibility.
+- Call-style rules are parse-time type-checked: `email()`/`prefix()` require string-like fields, `required()` requires `Option<T>`, `inner(...)`/`each(...)` are constrained to vector-like containers.
 
 ## Relations
 - No nebula deps. Used by nebula-parameter, nebula-macros, nebula-action, nebula-parameter.
-
-<!-- reviewed: 2026-04-01 — Added strict canonical min/max/length/range/inner derive DSL, using/all/any composition paths, standard each(any/all(...)) syntax, try_size_range + strict required enforcement -->
-<!-- reviewed: 2026-04-02 — clippy cleanup in derive parser: removed unreachable match arm and collapsed length(...) single-arg parsing if-chain -->
-
-<!-- reviewed: 2026-04-02 -->
-
-<!-- reviewed: 2026-04-03 — deep invariant audit fixes: size_range assert→debug_assert, try_in_range/try_exclusive_range fallible constructors, NaN guards on f64 helpers, shared email/URL regex constants, Rule::try_pattern, Rule::Matches debug_assert, with_message doc -->
-<!-- reviewed: 2026-04-02 — dep cleanup only: removed unused Cargo.toml deps via cargo shear --fix, no code changes -->
-
-<!-- reviewed: 2026-04-11 — Workspace-wide nightly rustfmt pass applied (group_imports = "StdExternalCrate", imports_granularity = "Crate", wrap_comments, format_code_in_doc_comments). Touches every Rust file in the crate; purely formatting, zero behavior change. -->

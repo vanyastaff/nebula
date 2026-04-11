@@ -25,10 +25,3 @@ Inbound webhook server — UUID-isolated endpoints per trigger, single server pe
 - Depends on nebula-resource. Used by nebula-runtime for trigger management.
 
 <\!-- reviewed: 2026-03-25 -->
-
-<!-- reviewed: 2026-03-30 -->
-<!-- reviewed: 2026-04-02 -->
-
-<!-- reviewed: 2026-04-02 — dep cleanup only: removed unused Cargo.toml deps via cargo shear --fix, no code changes -->
-
-<!-- reviewed: 2026-04-11 — Workspace-wide nightly rustfmt pass applied (group_imports = "StdExternalCrate", imports_granularity = "Crate", wrap_comments, format_code_in_doc_comments). Touches every Rust file in the crate; purely formatting, zero behavior change. -->
