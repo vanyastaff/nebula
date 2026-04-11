@@ -3,8 +3,9 @@
 //! Provides [`SecretString`] with controlled access via closure API
 //! to prevent accidental secret copying and automatic memory zeroization.
 
-use serde::{Deserialize, Serialize};
 use std::fmt;
+
+use serde::{Deserialize, Serialize};
 use zeroize::{Zeroize, ZeroizeOnDrop};
 
 /// Secret string with automatic memory zeroization

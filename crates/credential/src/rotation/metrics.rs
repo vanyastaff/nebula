@@ -20,9 +20,10 @@ use nebula_telemetry::metrics::{Counter, Gauge, Histogram, MetricsRegistry};
 /// # Examples
 ///
 /// ```
-/// use nebula_telemetry::metrics::MetricsRegistry;
-/// use nebula_credential::rotation::RotationMetrics;
 /// use std::time::Duration;
+///
+/// use nebula_credential::rotation::RotationMetrics;
+/// use nebula_telemetry::metrics::MetricsRegistry;
 ///
 /// let registry = MetricsRegistry::new();
 /// let metrics = RotationMetrics::new(&registry);
@@ -107,8 +108,9 @@ impl RotationMetrics {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use std::time::Duration;
+
+    use super::*;
 
     fn registry() -> MetricsRegistry {
         MetricsRegistry::new()

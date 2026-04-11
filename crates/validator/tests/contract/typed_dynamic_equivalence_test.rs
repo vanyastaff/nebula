@@ -1,5 +1,4 @@
-use nebula_validator::foundation::Validate;
-use nebula_validator::validators::min_length;
+use nebula_validator::{foundation::Validate, validators::min_length};
 use serde_json::json;
 
 #[test]

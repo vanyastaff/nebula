@@ -7,7 +7,8 @@
 ///
 /// ```rust
 /// use std::time::Duration;
-/// use serde::{Serialize, Deserialize};
+///
+/// use serde::{Deserialize, Serialize};
 ///
 /// #[derive(Serialize, Deserialize)]
 /// struct Config {
@@ -15,7 +16,9 @@
 ///     timeout: Option<Duration>,
 /// }
 ///
-/// let c = Config { timeout: Some(Duration::from_millis(5000)) };
+/// let c = Config {
+///     timeout: Some(Duration::from_millis(5000)),
+/// };
 /// let json = serde_json::to_string(&c).unwrap();
 /// assert_eq!(json, r#"{"timeout":5000}"#);
 ///
@@ -23,8 +26,9 @@
 /// assert_eq!(c2.timeout, Some(Duration::from_millis(5000)));
 /// ```
 pub mod duration_opt_ms {
-    use serde::{Deserialize, Deserializer, Serialize, Serializer};
     use std::time::Duration;
+
+    use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
     /// Serialize `Option<Duration>` as an optional `u64` of milliseconds.
     pub fn serialize<S: Serializer>(duration: &Option<Duration>, s: S) -> Result<S::Ok, S::Error> {

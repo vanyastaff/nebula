@@ -6,20 +6,19 @@
 //!
 //! # Architecture
 //!
-//! - **[`Credential`] trait** — unified trait for the full credential lifecycle:
-//!   `resolve()`, `refresh()`, `test()`, `project()`.
+//! - **[`Credential`] trait** — unified trait for the full credential lifecycle: `resolve()`,
+//!   `refresh()`, `test()`, `project()`.
 //!
-//! - **[`AuthScheme`]** — open trait (in nebula-core) classifying auth material
-//!   via [`AuthPattern`]. 12 built-in scheme types + `Custom` for plugins.
+//! - **[`AuthScheme`]** — open trait (in nebula-core) classifying auth material via
+//!   [`AuthPattern`]. 12 built-in scheme types + `Custom` for plugins.
 //!
-//! - **[`CredentialStore`]** — composable storage with layered encryption,
-//!   caching, scoping, and audit via the [`layer`] module.
+//! - **[`CredentialStore`]** — composable storage with layered encryption, caching, scoping, and
+//!   audit via the [`layer`] module.
 //!
-//! - **[`CredentialRegistry`]** — type-erased runtime dispatch for credential
-//!   resolution.
+//! - **[`CredentialRegistry`]** — type-erased runtime dispatch for credential resolution.
 //!
-//! - **[`CredentialResolver`]** — runtime resolution engine: resolve, refresh,
-//!   test credentials via the registry.
+//! - **[`CredentialResolver`]** — runtime resolution engine: resolve, refresh, test credentials via
+//!   the registry.
 //!
 //! # Quick Start
 //!
@@ -107,98 +106,79 @@ pub mod resolver;
 // Commonly-used types available directly as `nebula_credential::TypeName`.
 
 // Derive macros
-pub use nebula_credential_macros::{AuthScheme, Credential};
-
-// Any-credential object-safe supertrait
-pub use crate::any::AnyCredential;
-
-// Core types & errors
-pub use crate::context::{CredentialContext, CredentialResolverRef};
-pub use crate::description::CredentialDescription;
-pub use crate::error::{
-    CredentialError, CryptoError, RefreshErrorKind, ResolutionStage, RetryAdvice, ValidationError,
-};
-pub use crate::metadata::CredentialMetadata;
-pub use crate::snapshot::{CredentialSnapshot, SnapshotError};
-pub use nebula_core::{AuthPattern, AuthScheme, CredentialEvent, CredentialId};
-
-// Crypto utilities
-pub use crate::crypto::{EncryptedData, EncryptionKey, decrypt, encrypt};
-pub use nebula_core::SecretString;
-
-// Rotation (feature-gated)
-#[cfg(feature = "rotation")]
-pub use crate::rotation::{
-    CredentialRotationEvent, GracePeriodConfig, RotationError, RotationResult,
-};
-
-// Credential key newtype
-pub use key::CredentialKey;
-
-// Unified Credential trait
-pub use credential::Credential;
-
-// Static protocol pattern
-pub use static_protocol::StaticProtocol;
-
-// Credential state
-pub use state::CredentialState;
-
-// Auth schemes (12 universal types)
-pub use scheme::{
-    Certificate, ChallengeSecret, ConnectionUri, FederatedAssertion, IdentityPassword,
-    InstanceBinding, KeyPair, OAuth2Token, OtpSeed, SecretToken, SharedKey, SigningKey,
-};
-
-// Pending state
-pub use pending::{NoPendingState, PendingState, PendingToken};
-
-// Pending state store
-pub use pending_store::{PendingStateStore, PendingStoreError};
-pub use pending_store_memory::InMemoryPendingStore;
-
-// Built-in credential implementations
-pub use credentials::{
-    ApiKeyCredential, BasicAuthCredential, OAuth2Credential, OAuth2Pending, OAuth2State,
-};
-
-// Typed handle
-pub use handle::CredentialHandle;
-
-// Storage layers
-pub use layer::{
-    AuditEvent, AuditLayer, AuditOperation, AuditResult, AuditSink, CacheConfig, CacheLayer,
-    CacheStats, EncryptionLayer, ScopeLayer, ScopeResolver,
-};
-pub use store::{CredentialStore, PutMode, StoreError, StoredCredential};
-pub use store_memory::InMemoryStore;
-
-// Registry
-pub use registry::{CredentialRegistry, RegistryError};
-
-// Resolver
-pub use resolver::{CredentialResolver, ResolveError};
-
-// Credential guard
-pub use guard::CredentialGuard;
-
 // Credential access error
 pub use access_error::CredentialAccessError;
-
 // Credential accessor trait + implementations
 pub use accessor::{
     CredentialAccessor, NoopCredentialAccessor, ScopedCredentialAccessor,
     default_credential_accessor,
 };
-
-// Refresh coordination
-pub use refresh::{RefreshAttempt, RefreshCoordinator};
-
+// Unified Credential trait
+pub use credential::Credential;
+// Built-in credential implementations
+pub use credentials::{
+    ApiKeyCredential, BasicAuthCredential, OAuth2Credential, OAuth2Pending, OAuth2State,
+};
 // Framework executor
 pub use executor::{ExecutorError, ResolveResponse, execute_continue, execute_resolve};
-
+// Credential guard
+pub use guard::CredentialGuard;
+// Typed handle
+pub use handle::CredentialHandle;
+// Credential key newtype
+pub use key::CredentialKey;
+// Storage layers
+pub use layer::{
+    AuditEvent, AuditLayer, AuditOperation, AuditResult, AuditSink, CacheConfig, CacheLayer,
+    CacheStats, EncryptionLayer, ScopeLayer, ScopeResolver,
+};
+pub use nebula_core::{AuthPattern, AuthScheme, CredentialEvent, CredentialId, SecretString};
+pub use nebula_credential_macros::{AuthScheme, Credential};
+// Pending state
+pub use pending::{NoPendingState, PendingState, PendingToken};
+// Pending state store
+pub use pending_store::{PendingStateStore, PendingStoreError};
+pub use pending_store_memory::InMemoryPendingStore;
+// Refresh coordination
+pub use refresh::{RefreshAttempt, RefreshCoordinator};
+// Registry
+pub use registry::{CredentialRegistry, RegistryError};
 // Resolve types
 pub use resolve::{
     DisplayData, InteractionRequest, RefreshOutcome, RefreshPolicy, ResolveResult,
     StaticResolveResult, TestResult, UserInput,
+};
+// Resolver
+pub use resolver::{CredentialResolver, ResolveError};
+// Auth schemes (12 universal types)
+pub use scheme::{
+    Certificate, ChallengeSecret, ConnectionUri, FederatedAssertion, IdentityPassword,
+    InstanceBinding, KeyPair, OAuth2Token, OtpSeed, SecretToken, SharedKey, SigningKey,
+};
+// Credential state
+pub use state::CredentialState;
+// Static protocol pattern
+pub use static_protocol::StaticProtocol;
+pub use store::{CredentialStore, PutMode, StoreError, StoredCredential};
+pub use store_memory::InMemoryStore;
+
+// Any-credential object-safe supertrait
+pub use crate::any::AnyCredential;
+// Core types & errors
+pub use crate::context::{CredentialContext, CredentialResolverRef};
+// Crypto utilities
+pub use crate::crypto::{EncryptedData, EncryptionKey, decrypt, encrypt};
+// Rotation (feature-gated)
+#[cfg(feature = "rotation")]
+pub use crate::rotation::{
+    CredentialRotationEvent, GracePeriodConfig, RotationError, RotationResult,
+};
+pub use crate::{
+    description::CredentialDescription,
+    error::{
+        CredentialError, CryptoError, RefreshErrorKind, ResolutionStage, RetryAdvice,
+        ValidationError,
+    },
+    metadata::CredentialMetadata,
+    snapshot::{CredentialSnapshot, SnapshotError},
 };

@@ -77,9 +77,9 @@ pub enum Capability {
 /// let caps = PluginCapabilities::none();
 /// assert!(!caps.has_network_access());
 ///
-/// let caps = PluginCapabilities::new(vec![
-///     Capability::Network { domains: vec!["api.telegram.org".into()] },
-/// ]);
+/// let caps = PluginCapabilities::new(vec![Capability::Network {
+///     domains: vec!["api.telegram.org".into()],
+/// }]);
 /// assert!(caps.has_network_access());
 /// assert!(caps.check_domain("api.telegram.org"));
 /// assert!(!caps.check_domain("evil.com"));
@@ -181,14 +181,12 @@ impl PluginCapabilities {
 ///
 /// Traversal attacks like `/tmp/../etc/passwd` are defused in two layers:
 ///
-/// 1. **Preferred path** — if both `path` and `base` canonicalize
-///    successfully (both exist on disk), the canonical forms are used,
-///    so `..` is resolved by the OS before comparison.
-/// 2. **Fallback** — if either path does not exist, both are run through
-///    a lexical normalisation pass that drops `.` components and resolves
-///    `..` by popping the previous component. This keeps the function
-///    usable in tests and sandboxed environments where paths are
-///    abstract, without opening a traversal hole.
+/// 1. **Preferred path** — if both `path` and `base` canonicalize successfully (both exist on
+///    disk), the canonical forms are used, so `..` is resolved by the OS before comparison.
+/// 2. **Fallback** — if either path does not exist, both are run through a lexical normalisation
+///    pass that drops `.` components and resolves `..` by popping the previous component. This
+///    keeps the function usable in tests and sandboxed environments where paths are abstract,
+///    without opening a traversal hole.
 ///
 /// The fallback is component-wise: `"/tmp/file.txt".starts_with("/tmp")`
 /// returns `true`, `"/tmp_evil".starts_with("/tmp")` returns `false`.

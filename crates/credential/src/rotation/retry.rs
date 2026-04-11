@@ -3,10 +3,10 @@
 //! [`RotationRetryPolicy`] is a config facade that builds
 //! [`nebula_resilience::RetryConfig`] internally.
 
-use serde::{Deserialize, Serialize};
 use std::time::Duration;
 
 use nebula_resilience::retry::{BackoffConfig, JitterConfig, RetryConfig};
+use serde::{Deserialize, Serialize};
 
 use super::error::RotationError;
 
@@ -126,8 +126,9 @@ where
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use std::sync::atomic::{AtomicU32, Ordering};
+
+    use super::*;
 
     /// Test error that implements Classify (retryable by default).
     #[derive(Debug)]

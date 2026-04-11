@@ -8,12 +8,10 @@ use std::collections::HashSet;
 
 use serde_json::Value;
 
-use crate::error::ParameterError;
-use crate::parameter::Parameter;
-use crate::parameter_type::ParameterType;
-use crate::profile::ValidationProfile;
-use crate::report::ValidationReport;
-use crate::values::ParameterValues;
+use crate::{
+    error::ParameterError, parameter::Parameter, parameter_type::ParameterType,
+    profile::ValidationProfile, report::ValidationReport, values::ParameterValues,
+};
 
 /// Maximum recursion depth for nested validation (Object → Object → ...).
 const MAX_VALIDATE_DEPTH: u8 = 16;

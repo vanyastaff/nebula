@@ -1,14 +1,12 @@
 //! Workflow-level definition types.
 
+use std::{collections::HashMap, time::Duration};
+
 use chrono::{DateTime, Utc};
-use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
-use std::time::Duration;
-
 use nebula_core::{NodeId, OwnerId, Version, WorkflowId};
+use serde::{Deserialize, Serialize};
 
-use crate::connection::Connection;
-use crate::node::NodeDefinition;
+use crate::{connection::Connection, node::NodeDefinition};
 
 /// Current schema version of the workflow definition format.
 pub const CURRENT_SCHEMA_VERSION: u32 = 1;

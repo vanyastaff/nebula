@@ -1,9 +1,9 @@
 //! Example demonstrating nebula-config integration with the Nebula ecosystem
 
 use std::time::Duration;
-use tokio::time::sleep;
 
 use nebula_config::prelude::*;
+use tokio::time::sleep;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {

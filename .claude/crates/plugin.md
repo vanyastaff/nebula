@@ -20,3 +20,5 @@ Plugin packaging unit — the user-visible integration bundle (e.g., Slack, HTTP
 - Depends on nebula-core (re-exports `PluginKey`). Used by nebula-engine, nebula-sdk.
 
 <!-- reviewed: 2026-04-08 — removed loader.rs, libloading, dynamic-loading feature. Loading moved to nebula-sandbox. -->
+
+<!-- reviewed: 2026-04-11 — Workspace-wide nightly rustfmt pass applied (group_imports = "StdExternalCrate", imports_granularity = "Crate", wrap_comments, format_code_in_doc_comments). Touches every Rust file in the crate; purely formatting, zero behavior change. -->

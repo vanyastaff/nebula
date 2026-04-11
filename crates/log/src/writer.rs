@@ -13,8 +13,10 @@ use tracing_subscriber::fmt::writer::{BoxMakeWriter, MakeWriter};
 
 #[cfg(feature = "file")]
 use crate::config::Rolling;
-use crate::config::{DestinationFailurePolicy, WriterConfig};
-use crate::core::{LogError, LogResult};
+use crate::{
+    config::{DestinationFailurePolicy, WriterConfig},
+    core::{LogError, LogResult},
+};
 
 #[cfg(feature = "file")]
 type WriterGuards = Vec<tracing_appender::non_blocking::WorkerGuard>;

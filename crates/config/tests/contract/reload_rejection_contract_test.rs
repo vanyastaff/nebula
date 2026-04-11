@@ -1,7 +1,8 @@
-use super::helpers::write_temp_file;
-use nebula_config::core::ConfigValidator;
-use nebula_config::{ConfigBuilder, ConfigError};
 use std::sync::Arc;
+
+use nebula_config::{ConfigBuilder, ConfigError, core::ConfigValidator};
+
+use super::helpers::write_temp_file;
 
 struct ClosureValidator<F>(F);
 #[async_trait::async_trait]

@@ -20,3 +20,5 @@ n8n-compatible expression language evaluating `serde_json::Value` — used in wo
 - `some`/`every`/`find`/`find_index`/`group_by`/`flat_map` are intercepted by the evaluator as lambda-based HOFs (eval.rs ~856-861) and never reach the builtin registry — do NOT add value-based implementations, they will be dead code.
 
 <!-- reviewed: 2026-04-07 — removed dead HOF builtins (some/every/find/find_index/group_by/flat_map); all are evaluator-only -->
+
+<!-- reviewed: 2026-04-11 — Workspace-wide nightly rustfmt pass applied (group_imports = "StdExternalCrate", imports_granularity = "Crate", wrap_comments, format_code_in_doc_comments). Touches every Rust file in the crate; purely formatting, zero behavior change. -->

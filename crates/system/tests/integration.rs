@@ -488,9 +488,11 @@ mod tests {
 
     #[cfg(feature = "sysinfo")]
     mod load_tests {
-        use nebula_system::cpu::CpuPressure;
-        use nebula_system::load::{self, SystemLoad};
-        use nebula_system::memory::MemoryPressure;
+        use nebula_system::{
+            cpu::CpuPressure,
+            load::{self, SystemLoad},
+            memory::MemoryPressure,
+        };
 
         #[test]
         fn system_load_values_in_range() {

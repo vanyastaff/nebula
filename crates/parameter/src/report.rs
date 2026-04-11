@@ -1,8 +1,6 @@
 //! Validation output report.
 
-use crate::error::ParameterError;
-use crate::runtime::ValidatedValues;
-use crate::values::ParameterValues;
+use crate::{error::ParameterError, runtime::ValidatedValues, values::ParameterValues};
 
 /// The result of running schema validation with a [`crate::profile::ValidationProfile`].
 ///

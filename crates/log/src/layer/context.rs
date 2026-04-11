@@ -8,10 +8,10 @@
 //! When the `async` feature is disabled, the context uses `thread_local!`
 //! (suitable for synchronous code or single-thread runtimes).
 
-use smallvec::SmallVec;
 use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
+use smallvec::SmallVec;
 
 // ---------------------------------------------------------------------------
 // Storage backend
@@ -19,8 +19,9 @@ use serde::{Deserialize, Serialize};
 
 #[cfg(feature = "async")]
 mod storage {
-    use super::*;
     use std::future::Future;
+
+    use super::*;
 
     tokio::task_local! {
         static CTX: Arc<Context>;
@@ -43,8 +44,9 @@ mod storage {
 
 #[cfg(not(feature = "async"))]
 mod storage {
-    use super::*;
     use std::cell::RefCell;
+
+    use super::*;
 
     thread_local! {
         static CTX: RefCell<Arc<Context>> = RefCell::new(Arc::new(Context::default()));

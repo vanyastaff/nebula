@@ -1,10 +1,12 @@
 //! CPU information and utilities
 
-use crate::core::{SystemError, SystemResult};
-use crate::info::SystemInfo;
-
 #[cfg(feature = "serde")]
 use serde::{Deserialize, Serialize};
+
+use crate::{
+    core::{SystemError, SystemResult},
+    info::SystemInfo,
+};
 
 /// CPU usage information
 #[derive(Debug, Clone)]
@@ -407,8 +409,9 @@ pub mod affinity {
     /// Set CPU affinity for current thread
     #[cfg(target_os = "linux")]
     pub fn set_current_thread(cpus: &[usize]) -> SystemResult<()> {
-        use libc::{CPU_SET, CPU_ZERO, cpu_set_t, sched_setaffinity};
         use std::mem;
+
+        use libc::{CPU_SET, CPU_ZERO, cpu_set_t, sched_setaffinity};
 
         // SAFETY: Using libc CPU affinity macros and syscalls:
         // - `cpu_set_t` is a C struct with no Drop or pointers, safe to zero-initialize

@@ -3,15 +3,15 @@
 //! Data is lost when the store is dropped. Use this in tests rather
 //! than mocking [`PendingStateStore`] directly.
 
-use std::collections::HashMap;
-use std::sync::Arc;
+use std::{collections::HashMap, sync::Arc};
 
 use chrono::Utc;
 use tokio::sync::RwLock;
 
-use crate::pending::PendingState;
-use crate::pending::PendingToken;
-use crate::pending_store::{PendingStateStore, PendingStoreError};
+use crate::{
+    pending::{PendingState, PendingToken},
+    pending_store::{PendingStateStore, PendingStoreError},
+};
 
 /// In-memory pending store backed by a `HashMap`.
 ///

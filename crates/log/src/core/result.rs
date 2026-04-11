@@ -142,8 +142,9 @@ impl LogIoResultExt for Result<(), std::io::Error> {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use std::io;
+
+    use super::*;
 
     #[test]
     fn test_log_io_result_ext() {

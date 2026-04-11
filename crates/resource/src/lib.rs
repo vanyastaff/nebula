@@ -46,62 +46,54 @@ pub mod topology;
 pub mod topology_tag;
 
 pub use cell::Cell;
+// Backward-compatibility re-exports (deprecated, will be removed).
+#[allow(deprecated)]
+pub use compat::{Context, Scope};
 pub use ctx::{BasicCtx, Ctx, Extensions, ScopeLevel, ctx_ext};
 pub use error::{Error, ErrorKind, ErrorScope};
 pub use events::ResourceEvent;
 pub use handle::ResourceHandle;
+pub use integration::{AcquireResilience, AcquireRetryConfig};
 pub use manager::{
     Manager, ManagerConfig, RegisterOptions, ResourceHealthSnapshot, ShutdownConfig,
 };
 pub use metrics::{ResourceOpsMetrics, ResourceOpsSnapshot};
-pub use options::{AcquireIntent, AcquireOptions};
-pub use registry::{AnyManagedResource, Registry};
-pub use release_queue::ReleaseQueue;
-pub use resource::{AnyResource, Resource, ResourceConfig, ResourceMetadata};
-pub use state::{ResourcePhase, ResourceStatus};
-pub use topology::daemon::{Daemon, RestartPolicy};
-pub use topology::event_source::EventSource;
-pub use topology::exclusive::Exclusive;
-pub use topology::pooled::{BrokenCheck, InstanceMetrics, Pooled, RecycleDecision};
-pub use topology::resident::Resident;
-pub use topology::service::{Service, TokenMode};
-pub use topology::transport::Transport;
-pub use topology_tag::TopologyTag;
-
-pub use integration::{AcquireResilience, AcquireRetryConfig};
-pub use recovery::{
-    GateState, RecoveryGate, RecoveryGateConfig, RecoveryGroupKey, RecoveryGroupRegistry,
-    RecoveryTicket, RecoveryWaiter, WatchdogConfig, WatchdogHandle,
-};
-
 pub use nebula_core::{ExecutionId, ResourceKey, WorkflowId, resource_key};
-
 /// Derive macro that generates `From<T> for nebula_resource::Error`.
 ///
 /// See [`nebula_resource_macros::ClassifyError`] for full documentation.
 pub use nebula_resource_macros::ClassifyError;
 pub use nebula_resource_macros::Resource;
-
+pub use options::{AcquireIntent, AcquireOptions};
+pub use recovery::{
+    GateState, RecoveryGate, RecoveryGateConfig, RecoveryGroupKey, RecoveryGroupRegistry,
+    RecoveryTicket, RecoveryWaiter, WatchdogConfig, WatchdogHandle,
+};
+pub use registry::{AnyManagedResource, Registry};
+pub use release_queue::ReleaseQueue;
+pub use resource::{AnyResource, Resource, ResourceConfig, ResourceMetadata};
 // Runtime types — needed for `Manager::register()`.
 pub use runtime::TopologyRuntime;
-pub use runtime::daemon::DaemonRuntime;
-pub use runtime::event_source::EventSourceRuntime;
-pub use runtime::exclusive::ExclusiveRuntime;
-pub use runtime::managed::ManagedResource;
-pub use runtime::pool::{PoolRuntime, PoolStats};
-pub use runtime::resident::ResidentRuntime;
-pub use runtime::service::ServiceRuntime;
-pub use runtime::transport::TransportRuntime;
-
+pub use runtime::{
+    daemon::DaemonRuntime,
+    event_source::EventSourceRuntime,
+    exclusive::ExclusiveRuntime,
+    managed::ManagedResource,
+    pool::{PoolRuntime, PoolStats},
+    resident::ResidentRuntime,
+    service::ServiceRuntime,
+    transport::TransportRuntime,
+};
+pub use state::{ResourcePhase, ResourceStatus};
 // Topology configurations — used at registration time.
 pub use topology::daemon::config::Config as DaemonConfig;
-pub use topology::event_source::config::Config as EventSourceConfig;
-pub use topology::exclusive::config::Config as ExclusiveConfig;
-pub use topology::pooled::config::Config as PoolConfig;
-pub use topology::resident::config::Config as ResidentConfig;
-pub use topology::service::config::Config as ServiceConfig;
-pub use topology::transport::config::Config as TransportConfig;
-
-// Backward-compatibility re-exports (deprecated, will be removed).
-#[allow(deprecated)]
-pub use compat::{Context, Scope};
+pub use topology::{
+    daemon::{Daemon, RestartPolicy},
+    event_source::{EventSource, config::Config as EventSourceConfig},
+    exclusive::{Exclusive, config::Config as ExclusiveConfig},
+    pooled::{BrokenCheck, InstanceMetrics, Pooled, RecycleDecision, config::Config as PoolConfig},
+    resident::{Resident, config::Config as ResidentConfig},
+    service::{Service, TokenMode, config::Config as ServiceConfig},
+    transport::{Transport, config::Config as TransportConfig},
+};
+pub use topology_tag::TopologyTag;

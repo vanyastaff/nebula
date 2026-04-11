@@ -1,13 +1,9 @@
-use std::io::Read;
-use std::process::ExitCode;
-use std::sync::Arc;
+use std::{io::Read, process::ExitCode, sync::Arc};
 
 use anyhow::Context;
 use nebula_core::id::ExecutionId;
 use nebula_engine::WorkflowEngine;
-use nebula_execution::ExecutionStatus;
-use nebula_execution::context::ExecutionBudget;
-use nebula_execution::plan::ExecutionPlan;
+use nebula_execution::{ExecutionStatus, context::ExecutionBudget, plan::ExecutionPlan};
 use nebula_runtime::{ActionRegistry, ActionRuntime, DataPassingPolicy, InProcessSandbox};
 use nebula_telemetry::metrics::MetricsRegistry;
 
@@ -419,8 +415,10 @@ async fn run_tui_live(
     budget: ExecutionBudget,
     mut engine_rx: tokio::sync::mpsc::UnboundedReceiver<nebula_engine::ExecutionEvent>,
 ) -> anyhow::Result<ExitCode> {
-    use crate::tui::app::App;
-    use crate::tui::event::{LogLevel, TuiEvent};
+    use crate::tui::{
+        app::App,
+        event::{LogLevel, TuiEvent},
+    };
 
     // Run engine — events are sent synchronously during execution.
     let result = engine.execute_workflow(workflow, input, budget).await?;

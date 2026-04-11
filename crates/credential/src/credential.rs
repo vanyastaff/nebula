@@ -16,15 +16,16 @@
 use std::future::Future;
 
 use nebula_core::AuthScheme;
-use nebula_parameter::ParameterCollection;
-use nebula_parameter::values::ParameterValues;
+use nebula_parameter::{ParameterCollection, values::ParameterValues};
 
-use crate::context::CredentialContext;
-use crate::description::CredentialDescription;
-use crate::error::CredentialError;
-use crate::pending::PendingState;
-use crate::resolve::{RefreshOutcome, RefreshPolicy, ResolveResult, TestResult, UserInput};
-use crate::state::CredentialState;
+use crate::{
+    context::CredentialContext,
+    description::CredentialDescription,
+    error::CredentialError,
+    pending::PendingState,
+    resolve::{RefreshOutcome, RefreshPolicy, ResolveResult, TestResult, UserInput},
+    state::CredentialState,
+};
 
 /// Unified trait for all credential types.
 ///
@@ -35,12 +36,10 @@ use crate::state::CredentialState;
 /// # Associated types
 ///
 /// - **`Scheme`** -- consumer-facing auth material ([`AuthScheme`]).
-/// - **`State`** -- what gets encrypted and stored
-///   ([`CredentialState`]). May include refresh internals not exposed
-///   to consumers.
-/// - **`Pending`** -- typed ephemeral state for interactive flows
-///   ([`PendingState`]). Non-interactive credentials use
-///   [`NoPendingState`](crate::pending::NoPendingState).
+/// - **`State`** -- what gets encrypted and stored ([`CredentialState`]). May include refresh
+///   internals not exposed to consumers.
+/// - **`Pending`** -- typed ephemeral state for interactive flows ([`PendingState`]).
+///   Non-interactive credentials use [`NoPendingState`](crate::pending::NoPendingState).
 ///
 /// # Capability consts
 ///

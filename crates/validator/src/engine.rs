@@ -18,20 +18,25 @@
 //! # Examples
 //!
 //! ```rust
-//! use nebula_validator::{Rule, ExecutionMode, validate_rules};
+//! use nebula_validator::{ExecutionMode, Rule, validate_rules};
 //! use serde_json::json;
 //!
 //! let rules = vec![
-//!     Rule::MinLength { min: 3, message: None },
-//!     Rule::MaxLength { max: 20, message: None },
+//!     Rule::MinLength {
+//!         min: 3,
+//!         message: None,
+//!     },
+//!     Rule::MaxLength {
+//!         max: 20,
+//!         message: None,
+//!     },
 //! ];
 //!
 //! assert!(validate_rules(&json!("alice"), &rules, ExecutionMode::StaticOnly).is_ok());
 //! assert!(validate_rules(&json!("ab"), &rules, ExecutionMode::StaticOnly).is_err());
 //! ```
 
-use crate::foundation::ValidationErrors;
-use crate::rule::Rule;
+use crate::{foundation::ValidationErrors, rule::Rule};
 
 /// Controls which rules are executed.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
@@ -104,8 +109,9 @@ pub fn validate_rules(
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use serde_json::json;
+
+    use super::*;
 
     #[test]
     fn static_only_skips_deferred() {

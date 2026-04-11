@@ -3,19 +3,16 @@
 //! Groups everything an action author needs to implement a webhook
 //! trigger into one file:
 //!
-//! - [`WebhookAction`] — DX trait with the register / handle / unregister
-//!   lifecycle. Implement this and register via
-//!   `registry.register_webhook(action)`.
+//! - [`WebhookAction`] — DX trait with the register / handle / unregister lifecycle. Implement this
+//!   and register via `registry.register_webhook(action)`.
 //! - [`WebhookTriggerAdapter`] — bridges a typed `WebhookAction` to the
-//!   [`TriggerHandler`](crate::trigger::TriggerHandler) dyn contract.
-//!   Stores state from `on_activate` in a `RwLock<Option<Arc<State>>>`,
-//!   rejects double-start with `ActionError::Fatal`, and cleans up the
-//!   orphan registration on lost-race rollback.
-//! - [`verify_hmac_sha256`], [`hmac_sha256_compute`],
-//!   [`verify_tag_constant_time`], [`SignatureOutcome`] — constant-time
-//!   HMAC primitives. Use `verify_hmac_sha256` for GitHub-style
-//!   `sha256=…` bare-hex signatures; reach for the lower-level pair for
-//!   Stripe / Slack schemes that sign a derived payload.
+//!   [`TriggerHandler`](crate::trigger::TriggerHandler) dyn contract. Stores state from
+//!   `on_activate` in a `RwLock<Option<Arc<State>>>`, rejects double-start with
+//!   `ActionError::Fatal`, and cleans up the orphan registration on lost-race rollback.
+//! - [`verify_hmac_sha256`], [`hmac_sha256_compute`], [`verify_tag_constant_time`],
+//!   [`SignatureOutcome`] — constant-time HMAC primitives. Use `verify_hmac_sha256` for
+//!   GitHub-style `sha256=…` bare-hex signatures; reach for the lower-level pair for Stripe / Slack
+//!   schemes that sign a derived payload.
 //!
 //! # Security
 //!
@@ -30,9 +27,7 @@
 //! clocks into this module. Build them in your action on top of the
 //! primitives.
 
-use std::fmt;
-use std::future::Future;
-use std::sync::Arc;
+use std::{fmt, future::Future, sync::Arc};
 
 use async_trait::async_trait;
 use hmac::{Hmac, KeyInit, Mac};
@@ -41,11 +36,13 @@ use serde::{Serialize, de::DeserializeOwned};
 use sha2::Sha256;
 use subtle::ConstantTimeEq;
 
-use crate::action::Action;
-use crate::context::TriggerContext;
-use crate::error::{ActionError, ValidationReason};
-use crate::metadata::ActionMetadata;
-use crate::trigger::{IncomingEvent, TriggerEventOutcome, TriggerHandler};
+use crate::{
+    action::Action,
+    context::TriggerContext,
+    error::{ActionError, ValidationReason},
+    metadata::ActionMetadata,
+    trigger::{IncomingEvent, TriggerEventOutcome, TriggerHandler},
+};
 
 // ── DX trait ────────────────────────────────────────────────────────────────
 

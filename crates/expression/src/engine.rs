@@ -3,20 +3,17 @@
 //! This module provides the main ExpressionEngine that parses and evaluates expressions,
 //! with optional caching of parsed ASTs for improved performance.
 
-use crate::ast::Expr;
-use crate::builtins::BuiltinRegistry;
-use crate::context::EvaluationContext;
-use crate::error::ExpressionResult;
-use crate::eval::Evaluator;
-use crate::lexer::Lexer;
-use crate::parser::Parser;
-use crate::policy::EvaluationPolicy;
-use nebula_log::{debug, trace};
-use serde_json::Value;
 use std::sync::Arc;
-
 #[cfg(feature = "cache")]
 use std::sync::atomic::{AtomicU64, Ordering};
+
+use nebula_log::{debug, trace};
+use serde_json::Value;
+
+use crate::{
+    ast::Expr, builtins::BuiltinRegistry, context::EvaluationContext, error::ExpressionResult,
+    eval::Evaluator, lexer::Lexer, parser::Parser, policy::EvaluationPolicy,
+};
 
 /// Cache hit/miss statistics snapshot.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

@@ -1,14 +1,22 @@
 //! File system watcher for configuration files
 
-use crate::core::{ConfigError, ConfigResult, ConfigSource};
-use crate::watchers::{ConfigWatchEvent, ConfigWatchEventType};
+use std::{
+    collections::HashMap,
+    path::PathBuf,
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    },
+};
+
 use async_trait::async_trait;
 use notify::{Event, EventKind, RecommendedWatcher, RecursiveMode, Watcher};
-use std::collections::HashMap;
-use std::path::PathBuf;
-use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
 use tokio::sync::{RwLock, mpsc};
+
+use crate::{
+    core::{ConfigError, ConfigResult, ConfigSource},
+    watchers::{ConfigWatchEvent, ConfigWatchEventType},
+};
 
 /// File system watcher for configuration files
 pub struct FileWatcher {

@@ -7,8 +7,9 @@
 //! 4. Environment variables (`NEBULA_*`)
 //! 5. CLI flags (highest priority)
 
-use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
+
+use serde::{Deserialize, Serialize};
 
 /// CLI configuration.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]

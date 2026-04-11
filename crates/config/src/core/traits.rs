@@ -1,9 +1,10 @@
 //! Core traits for configuration system
 
-use super::{ConfigError, ConfigResult, ConfigSource, SourceMetadata};
 use async_trait::async_trait;
 use nebula_validator::foundation::{Validate, ValidationError};
 use serde_json::Value;
+
+use super::{ConfigError, ConfigResult, ConfigSource, SourceMetadata};
 
 /// Configuration loader trait
 #[async_trait]

@@ -132,3 +132,5 @@ Prefer `ResiliencePipeline` for composing multiple patterns — it handles layer
 <!-- reviewed: 2026-04-02 — DX: added const constructors on CallError — cancelled(), cancelled_with(), fallback_failed(), fallback_failed_with(), rate_limited(), rate_limited_after() — all call sites migrated from struct syntax -->
 
 <!-- reviewed: 2026-04-07 -->
+
+<!-- reviewed: 2026-04-11 — Workspace-wide nightly rustfmt pass applied (group_imports = "StdExternalCrate", imports_granularity = "Crate", wrap_comments, format_code_in_doc_comments). Touches every Rust file in the crate; purely formatting, zero behavior change. -->

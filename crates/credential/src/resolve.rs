@@ -4,8 +4,7 @@
 //! immediate completion, interactive pending states, and polling retries.
 //! They also cover refresh, test, and interaction request/response types.
 
-use std::collections::HashMap;
-use std::time::Duration;
+use std::{collections::HashMap, time::Duration};
 
 use serde::{Deserialize, Serialize};
 
@@ -20,8 +19,8 @@ use crate::pending::{NoPendingState, PendingState};
 ///
 /// - **Complete** -- credential ready immediately (API key, basic auth).
 /// - **Pending** -- requires user interaction (OAuth2, SAML, device code).
-/// - **Retry** -- framework should poll `continue_resolve()` after a delay
-///   (device code flow, RFC 8628).
+/// - **Retry** -- framework should poll `continue_resolve()` after a delay (device code flow, RFC
+///   8628).
 #[derive(Debug)]
 pub enum ResolveResult<S, P: PendingState = NoPendingState> {
     /// Credential ready immediately (API key, basic auth, database).

@@ -3,8 +3,7 @@
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use nebula_action::result::ActionResult;
-use nebula_action::{ActionContext, ActionError, ActionMetadata};
+use nebula_action::{ActionContext, ActionError, ActionMetadata, result::ActionResult};
 
 /// Sandboxed execution context wrapping an [`ActionContext`].
 ///

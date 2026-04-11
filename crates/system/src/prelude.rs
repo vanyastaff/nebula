@@ -13,40 +13,34 @@
 //! ```
 
 // Core types
-pub use crate::core::{SystemError, SystemResult, SystemResultExt};
-pub use crate::info::{CpuInfo, HardwareInfo, OsInfo, SystemInfo};
-
-// Memory types
-#[cfg(feature = "sysinfo")]
-pub use crate::memory::{MemoryInfo, MemoryPressure};
-
 // CPU types
 #[cfg(feature = "sysinfo")]
 pub use crate::cpu::{CacheInfo, CpuFeatures, CpuPressure, CpuTopology, CpuUsage};
-
+// Disk types
+#[cfg(feature = "disk")]
+pub use crate::disk::{DiskInfo, DiskUsage};
 // Load types
 #[cfg(feature = "sysinfo")]
 pub use crate::load::SystemLoad;
-
+// Memory types
+#[cfg(feature = "sysinfo")]
+pub use crate::memory::{MemoryInfo, MemoryPressure};
+// Network types
+#[cfg(feature = "network")]
+pub use crate::network::{NetworkInterface, NetworkUsage};
 // Process types
 #[cfg(feature = "process")]
 pub use crate::process::{
     ProcessInfo, ProcessMonitor, ProcessSample, ProcessStats, ProcessStatus, ProcessTree,
 };
-
-// Network types
-#[cfg(feature = "network")]
-pub use crate::network::{NetworkInterface, NetworkUsage};
-
-// Disk types
-#[cfg(feature = "disk")]
-pub use crate::disk::{DiskInfo, DiskUsage};
-
-// Top-level functions
-pub use crate::{init, summary};
-
 // Utility functions
 pub use crate::utils::{
     PlatformInfo, cache_line_size, format_bytes, format_bytes_usize, format_duration,
     format_percentage, format_rate, is_power_of_two,
 };
+pub use crate::{
+    core::{SystemError, SystemResult, SystemResultExt},
+    info::{CpuInfo, HardwareInfo, OsInfo, SystemInfo},
+};
+// Top-level functions
+pub use crate::{init, summary};

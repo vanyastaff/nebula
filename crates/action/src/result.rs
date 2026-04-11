@@ -1,5 +1,4 @@
-use std::collections::HashMap;
-use std::time::Duration;
+use std::{collections::HashMap, time::Duration};
 
 use chrono::{DateTime, Utc};
 use nebula_core::id::ExecutionId;
@@ -175,8 +174,7 @@ pub enum WaitCondition {
 
 /// Normalize a progress fraction to the valid `0.0..=1.0` range.
 ///
-/// - `NaN` → `0.0` (downstream progress bars / ETAs divide by zero
-///   or render nonsense otherwise)
+/// - `NaN` → `0.0` (downstream progress bars / ETAs divide by zero or render nonsense otherwise)
 /// - negative → `0.0`
 /// - values above 1.0 → `1.0`
 ///
@@ -188,8 +186,9 @@ fn sanitize_fraction(x: f64) -> f64 {
 }
 
 mod duration_ms {
-    use serde::{Deserialize, Deserializer, Serialize, Serializer};
     use std::time::Duration;
+
+    use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
     /// Saturating cast from `u128` millis to `u64`. Durations longer
     /// than `u64::MAX` ms (~584 million years) saturate to `u64::MAX`
@@ -210,8 +209,9 @@ mod duration_ms {
 }
 
 mod duration_opt_ms {
-    use serde::{Deserialize, Deserializer, Serialize, Serializer};
     use std::time::Duration;
+
+    use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
     pub fn serialize<S: Serializer>(duration: &Option<Duration>, s: S) -> Result<S::Ok, S::Error> {
         match duration {

@@ -6,11 +6,10 @@
 //! - `call` happy path (acquire → execute → record)
 //! - Contention under concurrent callers
 
+use std::{hint::black_box, sync::Arc, time::Duration};
+
 use criterion::{BenchmarkId, Criterion, criterion_group, criterion_main};
 use nebula_resilience::circuit_breaker::{CircuitBreaker, CircuitBreakerConfig, Outcome};
-use std::hint::black_box;
-use std::sync::Arc;
-use std::time::Duration;
 
 fn closed_config() -> CircuitBreakerConfig {
     CircuitBreakerConfig {

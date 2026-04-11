@@ -3,8 +3,9 @@
 //! This module provides shared types, constants, and utility functions
 //! that are used across different parts of the system.
 
-use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+
+use serde::{Deserialize, Serialize};
 
 use super::id::{ExecutionId, NodeId, TenantId, UserId, WorkflowId};
 

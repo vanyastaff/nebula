@@ -9,19 +9,21 @@
 //! - Stdout size limit — prevents OOM from malicious plugins
 //! - Timeout + kill_on_drop — prevents infinite hangs
 
-use std::path::PathBuf;
-use std::time::Duration;
+use std::{path::PathBuf, time::Duration};
 
 use async_trait::async_trait;
-use nebula_action::result::ActionResult;
-use nebula_action::{ActionError, ActionMetadata};
+use nebula_action::{ActionError, ActionMetadata, result::ActionResult};
 use nebula_plugin_protocol::{PluginRequest, PluginResponse};
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
-use tokio::process::Command;
+use tokio::{
+    io::{AsyncReadExt, AsyncWriteExt},
+    process::Command,
+};
 
-use crate::SandboxRunner;
-use crate::capabilities::{Capability, PluginCapabilities};
-use crate::runner::SandboxedContext;
+use crate::{
+    SandboxRunner,
+    capabilities::{Capability, PluginCapabilities},
+    runner::SandboxedContext,
+};
 
 /// Maximum stdout size from a plugin (10 MB). Prevents DoS.
 const MAX_STDOUT_BYTES: u64 = 10 * 1024 * 1024;

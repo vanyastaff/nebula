@@ -8,14 +8,14 @@
 //! - GovernorRateLimiter throughput (GCRA, requires `governor` feature)
 //! - Comparison between different algorithms
 
+use std::{hint::black_box, sync::Arc};
+
 use criterion::{BenchmarkId, Criterion, criterion_group, criterion_main};
 #[cfg(feature = "governor")]
 use nebula_resilience::rate_limiter::GovernorRateLimiter;
 use nebula_resilience::{
     AdaptiveRateLimiter, CallError, LeakyBucket, RateLimiter, SlidingWindow, TokenBucket,
 };
-use std::hint::black_box;
-use std::sync::Arc;
 
 fn rate_limiter_acquire(c: &mut Criterion) {
     let mut group = c.benchmark_group("rate_limiter/acquire");

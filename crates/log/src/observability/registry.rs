@@ -3,14 +3,22 @@
 //! This module provides a thread-safe global registry for managing
 //! observability hooks and emitting events.
 
-use super::HookPolicy;
-use super::hooks::{ObservabilityEvent, ObservabilityHook};
+use std::{
+    panic::{self, AssertUnwindSafe},
+    sync::{
+        Arc, LazyLock,
+        atomic::{AtomicBool, Ordering},
+    },
+    time::Instant,
+};
+
 use arc_swap::ArcSwap;
 use parking_lot::{Mutex, MutexGuard, RwLock, RwLockReadGuard, RwLockWriteGuard};
-use std::panic::{self, AssertUnwindSafe};
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, LazyLock};
-use std::time::Instant;
+
+use super::{
+    HookPolicy,
+    hooks::{ObservabilityEvent, ObservabilityHook},
+};
 
 /// Hook list stored inside [`ArcSwap`] for lock-free reads.
 ///
@@ -205,8 +213,9 @@ fn policy_write_guard() -> RwLockWriteGuard<'static, HookPolicy> {
 /// # Example
 ///
 /// ```rust
-/// use nebula_log::observability::{LoggingHook, register_hook};
 /// use std::sync::Arc;
+///
+/// use nebula_log::observability::{LoggingHook, register_hook};
 ///
 /// let hook = LoggingHook::new(tracing::Level::INFO);
 /// register_hook(Arc::new(hook));
@@ -313,9 +322,12 @@ fn hook_count() -> usize {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::{
+        Arc,
+        atomic::{AtomicUsize, Ordering},
+    };
+
     use super::*;
-    use std::sync::Arc;
-    use std::sync::atomic::{AtomicUsize, Ordering};
 
     // Serialize all tests to prevent interference via global state
     static TEST_LOCK: LazyLock<Mutex<()>> = LazyLock::new(|| Mutex::new(()));

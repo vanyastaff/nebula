@@ -3,10 +3,14 @@
 use std::fmt;
 
 use tracing::{Event, Subscriber};
-use tracing_subscriber::fmt::format::Writer;
-use tracing_subscriber::fmt::time::{FormatTime, SystemTime};
-use tracing_subscriber::fmt::{FmtContext, FormatEvent, FormatFields};
-use tracing_subscriber::registry::LookupSpan;
+use tracing_subscriber::{
+    fmt::{
+        FmtContext, FormatEvent, FormatFields,
+        format::Writer,
+        time::{FormatTime, SystemTime},
+    },
+    registry::LookupSpan,
+};
 
 // ---------------------------------------------------------------------------
 // Timer

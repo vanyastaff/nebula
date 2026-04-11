@@ -1,7 +1,9 @@
 //! Integration tests for WebhookAction DX trait + WebhookTriggerAdapter.
 
-use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::{
+    Arc,
+    atomic::{AtomicBool, AtomicUsize, Ordering},
+};
 
 use nebula_action::{
     Action, ActionDependencies, ActionError, ActionMetadata, IncomingEvent, TestContextBuilder,

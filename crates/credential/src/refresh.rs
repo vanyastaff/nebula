@@ -33,10 +33,7 @@
 //! }
 //! ```
 
-use std::collections::HashMap;
-use std::fmt;
-use std::sync::Arc;
-use std::time::Duration;
+use std::{collections::HashMap, fmt, sync::Arc, time::Duration};
 
 use nebula_resilience::circuit_breaker::{CircuitBreaker, CircuitBreakerConfig, Outcome};
 use tokio::sync::Notify;

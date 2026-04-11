@@ -2,8 +2,10 @@ use std::process::ExitCode;
 
 use anyhow::Context;
 
-use crate::cli::{ValidateArgs, resolve_format};
-use crate::output;
+use crate::{
+    cli::{ValidateArgs, resolve_format},
+    output,
+};
 
 /// Execute the `validate` command.
 pub fn execute(args: ValidateArgs, quiet: bool) -> anyhow::Result<ExitCode> {

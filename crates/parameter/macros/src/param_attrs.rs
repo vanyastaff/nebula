@@ -1,10 +1,9 @@
 //! Parsed `#[param(...)]` and `#[validate(...)]` field attributes.
 
+use nebula_macro_support::attrs;
 use proc_macro2::TokenStream as TokenStream2;
 use quote::quote;
 use syn::{Ident, Result, Type};
-
-use nebula_macro_support::attrs;
 
 /// Parsed parameter field attributes.
 #[derive(Debug, Clone)]

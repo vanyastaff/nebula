@@ -2,13 +2,19 @@
 //!
 //! These tests verify that different components work together correctly.
 
-use nebula_log::observability::{
-    ObservabilityEvent, ObservabilityHook, OperationTracker, emit_event, register_hook,
-    shutdown_hooks,
+use std::sync::{
+    Arc, LazyLock, Mutex,
+    atomic::{AtomicUsize, Ordering},
 };
-use nebula_log::{info, warn};
-use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::{Arc, LazyLock, Mutex};
+
+use nebula_log::{
+    info,
+    observability::{
+        ObservabilityEvent, ObservabilityHook, OperationTracker, emit_event, register_hook,
+        shutdown_hooks,
+    },
+    warn,
+};
 
 // Serialization lock for tests using global state
 static TEST_LOCK: LazyLock<Mutex<()>> = LazyLock::new(|| Mutex::new(()));

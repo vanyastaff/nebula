@@ -1,5 +1,6 @@
-use super::helpers::assert_no_secrets;
 use nebula_validator::foundation::ValidationError;
+
+use super::helpers::assert_no_secrets;
 
 #[test]
 fn sensitive_param_values_are_redacted_in_errors() {

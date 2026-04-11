@@ -6,7 +6,12 @@
 //! use nebula_parameter::prelude::*;
 //!
 //! let params = ParameterCollection::new()
-//!     .add(Parameter::string("api_key").label("API Key").required().secret())
+//!     .add(
+//!         Parameter::string("api_key")
+//!             .label("API Key")
+//!             .required()
+//!             .secret(),
+//!     )
 //!     .add(Parameter::integer("timeout_ms").label("Timeout (ms)"));
 //!
 //! assert_eq!(params.len(), 2);
@@ -132,31 +137,31 @@ pub use values::{ModeValueRef, ParameterValue, ParameterValues};
 
 /// Common imports for working with parameters.
 pub mod prelude {
-    pub use crate::collection::ParameterCollection;
-    pub use crate::conditions::Condition;
-    pub use crate::display_mode::{ComputedReturn, DisplayMode};
-    pub use crate::error::ParameterError;
-    pub use crate::filter_field::{FilterField, FilterFieldType};
-    pub use crate::input_hint::InputHint;
-    pub use crate::lint::{LintDiagnostic, LintLevel, lint_collection};
-    pub use crate::loader::{
-        FilterFieldLoader, LoaderContext, LoaderError, OptionLoader, RecordLoader,
+    pub use crate::{
+        EnumSelect, HasParameters, HasSelectOptions, InferParameterType, Parameters,
+        collection::ParameterCollection,
+        conditions::Condition,
+        display_mode::{ComputedReturn, DisplayMode},
+        error::ParameterError,
+        filter_field::{FilterField, FilterFieldType},
+        input_hint::InputHint,
+        lint::{LintDiagnostic, LintLevel, lint_collection},
+        loader::{FilterFieldLoader, LoaderContext, LoaderError, OptionLoader, RecordLoader},
+        loader_result::LoaderResult,
+        notice::NoticeSeverity,
+        option::SelectOption,
+        parameter::Parameter,
+        parameter_type::ParameterType,
+        path::ParameterPath,
+        profile::ValidationProfile,
+        report::ValidationReport,
+        rules::Rule,
+        runtime::ValidatedValues,
+        spec::{
+            FieldSpec, FieldSpecConvertError, FilterCombinator, FilterExpr, FilterGroup, FilterOp,
+            FilterRule,
+        },
+        transformer::Transformer,
+        values::{ModeValueRef, ParameterValue, ParameterValues},
     };
-    pub use crate::loader_result::LoaderResult;
-    pub use crate::notice::NoticeSeverity;
-    pub use crate::option::SelectOption;
-    pub use crate::parameter::Parameter;
-    pub use crate::parameter_type::ParameterType;
-    pub use crate::path::ParameterPath;
-    pub use crate::profile::ValidationProfile;
-    pub use crate::report::ValidationReport;
-    pub use crate::rules::Rule;
-    pub use crate::runtime::ValidatedValues;
-    pub use crate::spec::{
-        FieldSpec, FieldSpecConvertError, FilterCombinator, FilterExpr, FilterGroup, FilterOp,
-        FilterRule,
-    };
-    pub use crate::transformer::Transformer;
-    pub use crate::values::{ModeValueRef, ParameterValue, ParameterValues};
-    pub use crate::{EnumSelect, HasParameters, HasSelectOptions, InferParameterType, Parameters};
 }

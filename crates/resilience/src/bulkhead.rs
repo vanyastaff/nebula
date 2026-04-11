@@ -1,8 +1,13 @@
 //! Bulkhead pattern — semaphore-based concurrency limit with injectable sink.
 
-use std::future::Future;
-use std::sync::Arc;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::{
+    future::Future,
+    sync::{
+        Arc,
+        atomic::{AtomicUsize, Ordering},
+    },
+};
+
 use tokio::sync::Semaphore;
 
 use crate::{
@@ -54,7 +59,8 @@ impl BulkheadConfig {
 
 /// Bulkhead — limits concurrent operations via a semaphore.
 ///
-/// Shared state via `Arc<Bulkhead>`. Add a [`RecordingSink`](crate::RecordingSink) for test observability.
+/// Shared state via `Arc<Bulkhead>`. Add a [`RecordingSink`](crate::RecordingSink) for test
+/// observability.
 #[derive(Clone)]
 pub struct Bulkhead {
     config: BulkheadConfig,
@@ -133,7 +139,8 @@ impl Bulkhead {
         f().await.map_err(CallError::Operation)
     }
 
-    /// Acquire a permit directly. Use [`call`](Bulkhead::call) for the typical execute-and-release pattern.
+    /// Acquire a permit directly. Use [`call`](Bulkhead::call) for the typical execute-and-release
+    /// pattern.
     ///
     /// # Errors
     ///
@@ -264,9 +271,10 @@ impl Bulkhead {
 
 #[cfg(test)]
 mod tests {
+    use std::time::Duration;
+
     use super::*;
     use crate::{CallError, RecordingSink, ResilienceEventKind};
-    use std::time::Duration;
 
     fn cfg(max: usize) -> BulkheadConfig {
         BulkheadConfig {

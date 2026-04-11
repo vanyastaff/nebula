@@ -1,10 +1,12 @@
 //! Environment variable configuration loader
 
+use std::collections::HashMap;
+
+use async_trait::async_trait;
+
 use crate::core::{
     ConfigError, ConfigFormat, ConfigLoader, ConfigResult, ConfigSource, SourceMetadata,
 };
-use async_trait::async_trait;
-use std::collections::HashMap;
 
 /// Environment value parsing mode.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]

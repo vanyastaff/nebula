@@ -3,9 +3,10 @@
 //! Provides non-sensitive metadata about credential instances
 //! for management and tracking (not security-critical).
 
+use std::collections::HashMap;
+
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
 
 #[cfg(feature = "rotation")]
 use crate::rotation::policy::RotationPolicy;
@@ -109,8 +110,9 @@ impl CredentialMetadata {
     /// # Example
     ///
     /// ```
-    /// use nebula_credential::CredentialMetadata;
     /// use std::time::Duration;
+    ///
+    /// use nebula_credential::CredentialMetadata;
     ///
     /// let mut metadata = CredentialMetadata::new();
     /// metadata.set_expiration(Duration::from_secs(3600)); // 1 hour TTL
@@ -133,8 +135,9 @@ impl CredentialMetadata {
     /// # Example
     ///
     /// ```
-    /// use nebula_credential::CredentialMetadata;
     /// use std::time::Duration;
+    ///
+    /// use nebula_credential::CredentialMetadata;
     ///
     /// let mut metadata = CredentialMetadata::new();
     ///
@@ -226,8 +229,9 @@ mod tests {
     #[test]
     #[cfg(feature = "rotation")]
     fn test_rotation_policy() {
-        use crate::rotation::policy::{PeriodicConfig, RotationPolicy};
         use std::time::Duration;
+
+        use crate::rotation::policy::{PeriodicConfig, RotationPolicy};
 
         let policy = RotationPolicy::Periodic(
             PeriodicConfig::new(

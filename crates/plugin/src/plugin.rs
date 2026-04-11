@@ -4,8 +4,10 @@ use std::fmt::Debug;
 
 use nebula_core::PluginKey;
 
-use crate::descriptor::{ActionDescriptor, CredentialDescriptor, ResourceDescriptor};
-use crate::{PluginError, PluginMetadata};
+use crate::{
+    PluginError, PluginMetadata,
+    descriptor::{ActionDescriptor, CredentialDescriptor, ResourceDescriptor},
+};
 
 /// Base trait for all plugin types in Nebula.
 ///
@@ -49,10 +51,14 @@ pub trait Plugin: Send + Sync + Debug + 'static {
     /// use nebula_plugin::{Plugin, PluginMetadata, descriptor::ActionDescriptor};
     ///
     /// #[derive(Debug)]
-    /// struct MyPlugin { meta: PluginMetadata }
+    /// struct MyPlugin {
+    ///     meta: PluginMetadata,
+    /// }
     ///
     /// impl Plugin for MyPlugin {
-    ///     fn metadata(&self) -> &PluginMetadata { &self.meta }
+    ///     fn metadata(&self) -> &PluginMetadata {
+    ///         &self.meta
+    ///     }
     ///
     ///     fn actions(&self) -> Vec<ActionDescriptor> {
     ///         vec![ActionDescriptor {
@@ -64,7 +70,9 @@ pub trait Plugin: Send + Sync + Debug + 'static {
     ///     }
     /// }
     ///
-    /// let plugin = MyPlugin { meta: PluginMetadata::builder("my", "My").build().unwrap() };
+    /// let plugin = MyPlugin {
+    ///     meta: PluginMetadata::builder("my", "My").build().unwrap(),
+    /// };
     /// assert_eq!(plugin.actions().len(), 1);
     /// ```
     fn actions(&self) -> Vec<ActionDescriptor> {
@@ -83,10 +91,14 @@ pub trait Plugin: Send + Sync + Debug + 'static {
     /// use nebula_plugin::{Plugin, PluginMetadata, descriptor::CredentialDescriptor};
     ///
     /// #[derive(Debug)]
-    /// struct MyPlugin { meta: PluginMetadata }
+    /// struct MyPlugin {
+    ///     meta: PluginMetadata,
+    /// }
     ///
     /// impl Plugin for MyPlugin {
-    ///     fn metadata(&self) -> &PluginMetadata { &self.meta }
+    ///     fn metadata(&self) -> &PluginMetadata {
+    ///         &self.meta
+    ///     }
     ///
     ///     fn credentials(&self) -> Vec<CredentialDescriptor> {
     ///         vec![CredentialDescriptor {
@@ -97,7 +109,9 @@ pub trait Plugin: Send + Sync + Debug + 'static {
     ///     }
     /// }
     ///
-    /// let plugin = MyPlugin { meta: PluginMetadata::builder("my", "My").build().unwrap() };
+    /// let plugin = MyPlugin {
+    ///     meta: PluginMetadata::builder("my", "My").build().unwrap(),
+    /// };
     /// assert_eq!(plugin.credentials().len(), 1);
     /// ```
     fn credentials(&self) -> Vec<CredentialDescriptor> {
@@ -116,10 +130,14 @@ pub trait Plugin: Send + Sync + Debug + 'static {
     /// use nebula_plugin::{Plugin, PluginMetadata, descriptor::ResourceDescriptor};
     ///
     /// #[derive(Debug)]
-    /// struct MyPlugin { meta: PluginMetadata }
+    /// struct MyPlugin {
+    ///     meta: PluginMetadata,
+    /// }
     ///
     /// impl Plugin for MyPlugin {
-    ///     fn metadata(&self) -> &PluginMetadata { &self.meta }
+    ///     fn metadata(&self) -> &PluginMetadata {
+    ///         &self.meta
+    ///     }
     ///
     ///     fn resources(&self) -> Vec<ResourceDescriptor> {
     ///         vec![ResourceDescriptor {
@@ -130,7 +148,9 @@ pub trait Plugin: Send + Sync + Debug + 'static {
     ///     }
     /// }
     ///
-    /// let plugin = MyPlugin { meta: PluginMetadata::builder("my", "My").build().unwrap() };
+    /// let plugin = MyPlugin {
+    ///     meta: PluginMetadata::builder("my", "My").build().unwrap(),
+    /// };
     /// assert_eq!(plugin.resources().len(), 1);
     /// ```
     fn resources(&self) -> Vec<ResourceDescriptor> {
@@ -154,10 +174,14 @@ pub trait Plugin: Send + Sync + Debug + 'static {
     /// use nebula_plugin::{Plugin, PluginError, PluginMetadata};
     ///
     /// #[derive(Debug)]
-    /// struct MyPlugin { meta: PluginMetadata }
+    /// struct MyPlugin {
+    ///     meta: PluginMetadata,
+    /// }
     ///
     /// impl Plugin for MyPlugin {
-    ///     fn metadata(&self) -> &PluginMetadata { &self.meta }
+    ///     fn metadata(&self) -> &PluginMetadata {
+    ///         &self.meta
+    ///     }
     ///
     ///     fn on_load(&self) -> Result<(), PluginError> {
     ///         // Perform initialization here.
@@ -165,7 +189,9 @@ pub trait Plugin: Send + Sync + Debug + 'static {
     ///     }
     /// }
     ///
-    /// let plugin = MyPlugin { meta: PluginMetadata::builder("my", "My").build().unwrap() };
+    /// let plugin = MyPlugin {
+    ///     meta: PluginMetadata::builder("my", "My").build().unwrap(),
+    /// };
     /// assert!(plugin.on_load().is_ok());
     /// ```
     fn on_load(&self) -> Result<(), PluginError> {
@@ -188,10 +214,14 @@ pub trait Plugin: Send + Sync + Debug + 'static {
     /// use nebula_plugin::{Plugin, PluginError, PluginMetadata};
     ///
     /// #[derive(Debug)]
-    /// struct MyPlugin { meta: PluginMetadata }
+    /// struct MyPlugin {
+    ///     meta: PluginMetadata,
+    /// }
     ///
     /// impl Plugin for MyPlugin {
-    ///     fn metadata(&self) -> &PluginMetadata { &self.meta }
+    ///     fn metadata(&self) -> &PluginMetadata {
+    ///         &self.meta
+    ///     }
     ///
     ///     fn on_unload(&self) -> Result<(), PluginError> {
     ///         // Flush buffers, close connections, etc.
@@ -199,7 +229,9 @@ pub trait Plugin: Send + Sync + Debug + 'static {
     ///     }
     /// }
     ///
-    /// let plugin = MyPlugin { meta: PluginMetadata::builder("my", "My").build().unwrap() };
+    /// let plugin = MyPlugin {
+    ///     meta: PluginMetadata::builder("my", "My").build().unwrap(),
+    /// };
     /// assert!(plugin.on_unload().is_ok());
     /// ```
     fn on_unload(&self) -> Result<(), PluginError> {

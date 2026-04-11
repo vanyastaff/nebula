@@ -63,11 +63,12 @@ impl std::error::Error for SandboxError {}
 
 #[cfg(target_os = "linux")]
 mod linux {
-    use super::*;
     use landlock::{
         ABI, Access, AccessFs, PathBeneath, PathFd, Ruleset, RulesetAttr, RulesetCreated,
         RulesetCreatedAttr, RulesetStatus,
     };
+
+    use super::*;
 
     /// Check if Landlock is supported by the running kernel.
     pub fn is_landlock_available() -> bool {

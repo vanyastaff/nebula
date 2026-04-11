@@ -12,13 +12,15 @@ use std::sync::Arc;
 use nebula_core::{CredentialEvent, CredentialId};
 use nebula_eventbus::EventBus;
 
-use crate::context::CredentialContext;
-use crate::credential::Credential;
-use crate::handle::CredentialHandle;
-use crate::refresh::{RefreshAttempt, RefreshCoordinator};
-use crate::resolve::RefreshOutcome;
-use crate::state::CredentialState;
-use crate::store::{CredentialStore, PutMode, StoreError, StoredCredential};
+use crate::{
+    context::CredentialContext,
+    credential::Credential,
+    handle::CredentialHandle,
+    refresh::{RefreshAttempt, RefreshCoordinator},
+    resolve::RefreshOutcome,
+    state::CredentialState,
+    store::{CredentialStore, PutMode, StoreError, StoredCredential},
+};
 
 /// Resolves credentials from storage into typed CredentialHandles.
 ///
@@ -117,8 +119,8 @@ impl<S: CredentialStore> CredentialResolver<S> {
     ///
     /// - [`ResolveError::Refresh`] if `Credential::refresh()` fails.
     /// - [`ResolveError::Store`] if the CAS write after refresh fails.
-    /// - [`ResolveError::ReauthRequired`] if the refresh indicates
-    ///   the credential needs full re-authentication.
+    /// - [`ResolveError::ReauthRequired`] if the refresh indicates the credential needs full
+    ///   re-authentication.
     pub async fn resolve_with_refresh<C>(
         &self,
         credential_id: &str,
@@ -411,23 +413,23 @@ pub enum ResolveError {
 
 #[cfg(test)]
 mod tests {
+    use nebula_parameter::{ParameterCollection, values::ParameterValues};
+
     use super::*;
-    use crate::credentials::ApiKeyCredential;
-    use crate::store::{PutMode, StoredCredential};
-    use crate::store_memory::InMemoryStore;
-
     // ── Test credential for early refresh ──────────────────────────────
-
     use crate::SecretString;
-    use crate::context::CredentialContext;
-    use crate::credential::Credential;
-    use crate::description::CredentialDescription;
-    use crate::error::CredentialError;
-    use crate::pending::NoPendingState;
-    use crate::resolve::{RefreshOutcome, RefreshPolicy, StaticResolveResult};
-    use crate::scheme::SecretToken;
-    use nebula_parameter::ParameterCollection;
-    use nebula_parameter::values::ParameterValues;
+    use crate::{
+        context::CredentialContext,
+        credential::Credential,
+        credentials::ApiKeyCredential,
+        description::CredentialDescription,
+        error::CredentialError,
+        pending::NoPendingState,
+        resolve::{RefreshOutcome, RefreshPolicy, StaticResolveResult},
+        scheme::SecretToken,
+        store::{PutMode, StoredCredential},
+        store_memory::InMemoryStore,
+    };
 
     /// State that reports an expiration time.
     #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]

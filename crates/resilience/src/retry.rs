@@ -4,13 +4,9 @@
 //! non-retryable errors (authentication, validation, etc.) and respects
 //! [`retry_hint()`](nebula_error::Classify::retry_hint) as a backoff delay floor.
 
-use std::fmt;
-use std::future::Future;
-use std::num::NonZeroU32;
+use std::{fmt, future::Future, num::NonZeroU32, sync::Arc, time::Duration};
 
 use smallvec::SmallVec;
-use std::sync::Arc;
-use std::time::Duration;
 
 use crate::{
     CallError,
@@ -292,8 +288,7 @@ impl<E: 'static> RetryConfig<E> {
 /// Error classification is automatic via [`Classify`](nebula_error::Classify):
 /// - Without a predicate, only errors where
 ///   [`is_retryable()`](nebula_error::Classify::is_retryable) returns `true` are retried
-/// - [`retry_hint().after`](nebula_error::RetryHint::after) is respected as a
-///   minimum backoff delay
+/// - [`retry_hint().after`](nebula_error::RetryHint::after) is respected as a minimum backoff delay
 /// - A [`retry_if`](RetryConfig::retry_if) predicate overrides classification
 ///
 /// # Errors
@@ -482,12 +477,18 @@ fn apply_jitter_full(delay: Duration, factor: f64, seed: Option<u64>, attempt: u
 
 #[cfg(test)]
 mod tests {
+    use std::{
+        sync::{
+            Arc,
+            atomic::{AtomicU32, Ordering},
+        },
+        time::Duration,
+    };
+
+    use nebula_error::{Classify, ErrorCategory, ErrorCode, RetryHint, codes};
+
     use super::*;
     use crate::{CallError, RecordingSink, ResilienceEventKind};
-    use nebula_error::{Classify, ErrorCategory, ErrorCode, RetryHint, codes};
-    use std::sync::Arc;
-    use std::sync::atomic::{AtomicU32, Ordering};
-    use std::time::Duration;
 
     /// Test error type implementing Classify. Always retryable.
     #[derive(Debug, Clone, PartialEq)]
@@ -973,8 +974,7 @@ mod tests {
 
     #[tokio::test]
     async fn pipeline_rate_limiter_from_works() {
-        use crate::pipeline::ResiliencePipeline;
-        use crate::rate_limiter::TokenBucket;
+        use crate::{pipeline::ResiliencePipeline, rate_limiter::TokenBucket};
 
         let rl = Arc::new(TokenBucket::new(1, 0.001).unwrap());
 

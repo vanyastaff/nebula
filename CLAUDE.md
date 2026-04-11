@@ -72,15 +72,20 @@ Search crates, check dependencies, audit vulnerabilities, compare alternatives â
 
 ## Key Commands
 
+> **`cargo fmt` requires nightly rustfmt.** `rustfmt.toml` uses unstable
+> options (`group_imports`, `imports_granularity`, `wrap_comments`,
+> `format_code_in_doc_comments`). Build / clippy / test stay on stable.
+> Install once: `rustup toolchain install nightly --component rustfmt`.
+
 ```bash
 # Fast local check (use this by default)
-cargo fmt && cargo clippy --workspace -- -D warnings && cargo nextest run --workspace
+cargo +nightly fmt && cargo clippy --workspace -- -D warnings && cargo nextest run --workspace
 
 # Single crate (fastest iteration)
 cargo check -p nebula-<crate> && cargo nextest run -p nebula-<crate>
 
 # Full validation (before PR)
-cargo fmt && cargo clippy --workspace -- -D warnings && cargo nextest run --workspace && cargo test --workspace --doc && cargo deny check
+cargo +nightly fmt && cargo clippy --workspace -- -D warnings && cargo nextest run --workspace && cargo test --workspace --doc && cargo deny check
 
 # Compose API contract
 cargo bench --no-run -p nebula-resilience

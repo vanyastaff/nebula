@@ -2,27 +2,31 @@
 //!
 //! Covers three layers of the hot path:
 //!
-//! - **`BackoffConfig::delay_for`** — pure delay calculation (no I/O, no allocation).
-//!   Fixed, Linear, Exponential, Fibonacci, and Custom strategies, all parametric
-//!   over attempt number (0–9) to capture variance across the range.
-//! - **Retry loop (immediate success)** — full async round-trip measuring scheduler
-//!   overhead with zero retries: acquire config → call → return.
-//! - **Retry loop (fail N times then succeed)** — measures classification, backoff
-//!   computation, and re-scheduling overhead across 1, 2, and 4 failures.
-//!   Uses `BackoffConfig::Fixed(Duration::ZERO)` to isolate logic cost from sleep time.
-//! - **Jitter overhead** — comparison of `JitterConfig::None` vs `JitterConfig::Full`
-//!   measured through the full retry loop at zero-delay backoff.
+//! - **`BackoffConfig::delay_for`** — pure delay calculation (no I/O, no allocation). Fixed,
+//!   Linear, Exponential, Fibonacci, and Custom strategies, all parametric over attempt number
+//!   (0–9) to capture variance across the range.
+//! - **Retry loop (immediate success)** — full async round-trip measuring scheduler overhead with
+//!   zero retries: acquire config → call → return.
+//! - **Retry loop (fail N times then succeed)** — measures classification, backoff computation, and
+//!   re-scheduling overhead across 1, 2, and 4 failures. Uses
+//!   `BackoffConfig::Fixed(Duration::ZERO)` to isolate logic cost from sleep time.
+//! - **Jitter overhead** — comparison of `JitterConfig::None` vs `JitterConfig::Full` measured
+//!   through the full retry loop at zero-delay backoff.
 //!
 //! Run with:
 //! ```text
 //! cargo bench -p nebula-resilience --bench retry
 //! ```
 
-use std::future::Future;
-use std::hint::black_box;
-use std::sync::Arc;
-use std::sync::atomic::{AtomicU32, Ordering};
-use std::time::Duration;
+use std::{
+    future::Future,
+    hint::black_box,
+    sync::{
+        Arc,
+        atomic::{AtomicU32, Ordering},
+    },
+    time::Duration,
+};
 
 use criterion::{BatchSize, BenchmarkId, Criterion, criterion_group, criterion_main};
 use nebula_resilience::retry::{BackoffConfig, JitterConfig, RetryConfig};

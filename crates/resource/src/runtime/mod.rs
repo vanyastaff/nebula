@@ -22,8 +22,7 @@ pub mod resident;
 pub mod service;
 pub mod transport;
 
-use crate::resource::Resource;
-use crate::topology_tag::TopologyTag;
+use crate::{resource::Resource, topology_tag::TopologyTag};
 
 /// Dispatch enum for all topology runtimes.
 ///

@@ -3,12 +3,13 @@
 //! Shared state for all handlers via Arc.
 //! Contains only ports (traits) — independent of concrete implementations.
 
+use std::sync::Arc;
+
 use nebula_config::Config;
 use nebula_plugin::PluginRegistry;
 use nebula_runtime::ActionRegistry;
 use nebula_storage::{ExecutionRepo, WorkflowRepo};
 use nebula_telemetry::metrics::MetricsRegistry;
-use std::sync::Arc;
 use tokio::sync::RwLock;
 
 /// Application state passed through `Router::with_state`.

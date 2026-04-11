@@ -1,7 +1,6 @@
 //! Idempotency key generation and deduplication.
 
-use std::collections::HashSet;
-use std::fmt;
+use std::{collections::HashSet, fmt};
 
 use nebula_core::{ExecutionId, NodeId};
 use serde::{Deserialize, Serialize};

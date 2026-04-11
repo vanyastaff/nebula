@@ -9,7 +9,8 @@
 //!
 //! Use `AnyValidator` when:
 //! - Storing validators in collections: `Vec<AnyValidator<str>>`
-//! - Function return types where the concrete type is complex: `fn get_validator() -> AnyValidator<str>`
+//! - Function return types where the concrete type is complex: `fn get_validator() ->
+//!   AnyValidator<str>`
 //! - Configuration-driven validation where types are dynamic
 //!
 //! # Performance

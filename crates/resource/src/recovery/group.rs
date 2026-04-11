@@ -41,9 +41,7 @@ impl std::fmt::Display for RecoveryGroupKey {
 /// # Examples
 ///
 /// ```
-/// use nebula_resource::recovery::{
-///     RecoveryGroupKey, RecoveryGroupRegistry, RecoveryGateConfig,
-/// };
+/// use nebula_resource::recovery::{RecoveryGateConfig, RecoveryGroupKey, RecoveryGroupRegistry};
 ///
 /// let registry = RecoveryGroupRegistry::new();
 /// let gate = registry.get_or_create(

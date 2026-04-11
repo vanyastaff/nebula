@@ -1,10 +1,8 @@
 //! Lazy-parsed node output with zero-copy sharing and cached Value.
 
-use std::sync::Arc;
-use std::sync::OnceLock;
+use std::sync::{Arc, OnceLock};
 
-use serde_json::Value;
-use serde_json::value::RawValue;
+use serde_json::{Value, value::RawValue};
 
 /// Lazy-parsed node output — raw JSON shared via Arc, parsed on demand.
 #[derive(Debug, Clone)]
@@ -46,8 +44,9 @@ impl NodeOutput {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use serde_json::json;
+
+    use super::*;
 
     #[test]
     fn roundtrip() {

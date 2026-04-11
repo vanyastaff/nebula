@@ -23,8 +23,9 @@
 //! assert!(scoped.is_in_scope(&ScopeLevel::Execution(exec_id)));
 //! ```
 
-use serde::{Deserialize, Serialize};
 use std::fmt;
+
+use serde::{Deserialize, Serialize};
 
 use super::id::{ExecutionId, NodeId, OrganizationId, ProjectId, WorkflowId};
 
@@ -185,9 +186,12 @@ impl ScopeLevel {
         match self {
             ScopeLevel::Global => None,
             ScopeLevel::Organization(_) => Some(ScopeLevel::Global),
-            ScopeLevel::Project(_) => None, // Project parent would be Organization, but we don't track it
-            ScopeLevel::Workflow(_) => None, // Workflow parent would be Project, but we don't track it
-            ScopeLevel::Execution(_) => None, // Execution doesn't have a direct parent
+            // Project parent would be Organization, but we don't track it.
+            ScopeLevel::Project(_) => None,
+            // Workflow parent would be Project, but we don't track it.
+            ScopeLevel::Workflow(_) => None,
+            // Execution doesn't have a direct parent.
+            ScopeLevel::Execution(_) => None,
             ScopeLevel::Action(exec_id, _) => Some(ScopeLevel::Execution(*exec_id)),
         }
     }
@@ -220,7 +224,8 @@ impl ScopeLevel {
     /// Strict containment check that verifies ID ownership via a resolver.
     ///
     /// Use this when security or lifecycle correctness requires that execution/workflow/project
-    /// relationships are verified, not just scope levels. The resolver is provided by engine/runtime.
+    /// relationships are verified, not just scope levels. The resolver is provided by
+    /// engine/runtime.
     ///
     /// # Examples
     ///

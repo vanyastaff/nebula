@@ -3,8 +3,7 @@
 //! Data is lost when the store is dropped. Use this in tests rather than
 //! mocking [`CredentialStore`] directly.
 
-use std::collections::HashMap;
-use std::sync::Arc;
+use std::{collections::HashMap, sync::Arc};
 
 use tokio::sync::RwLock;
 
@@ -123,7 +122,6 @@ impl CredentialStore for InMemoryStore {
 #[cfg(test)]
 mod tests {
     use super::*;
-
     use crate::store::test_helpers::make_credential;
 
     #[tokio::test]

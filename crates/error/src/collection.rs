@@ -4,9 +4,7 @@
 //! where a single operation can produce several independent failures — e.g.
 //! form validation, batch processing, or parallel execution.
 
-use crate::error::NebulaError;
-use crate::traits::Classify;
-use crate::{ErrorCategory, ErrorSeverity};
+use crate::{ErrorCategory, ErrorSeverity, error::NebulaError, traits::Classify};
 
 /// A collection of [`NebulaError`] values for batch/validation scenarios.
 ///
@@ -19,8 +17,7 @@ use crate::{ErrorCategory, ErrorSeverity};
 ///
 /// ```
 /// use nebula_error::{
-///     Classify, ErrorCategory, ErrorCode, ErrorSeverity,
-///     ErrorCollection, NebulaError, codes,
+///     Classify, ErrorCategory, ErrorCode, ErrorCollection, ErrorSeverity, NebulaError, codes,
 /// };
 ///
 /// #[derive(Debug)]
@@ -31,8 +28,12 @@ use crate::{ErrorCategory, ErrorSeverity};
 ///     }
 /// }
 /// impl Classify for ValErr {
-///     fn category(&self) -> ErrorCategory { ErrorCategory::Validation }
-///     fn code(&self) -> ErrorCode { codes::VALIDATION.clone() }
+///     fn category(&self) -> ErrorCategory {
+///         ErrorCategory::Validation
+///     }
+///     fn code(&self) -> ErrorCode {
+///         codes::VALIDATION.clone()
+///     }
 /// }
 ///
 /// let mut coll = ErrorCollection::new();
@@ -101,9 +102,7 @@ impl<E: Classify> ErrorCollection<E> {
     /// # Examples
     ///
     /// ```
-    /// use nebula_error::{
-    ///     Classify, ErrorCategory, ErrorCode, ErrorCollection, NebulaError, codes,
-    /// };
+    /// use nebula_error::{Classify, ErrorCategory, ErrorCode, ErrorCollection, NebulaError, codes};
     ///
     /// # #[derive(Debug)]
     /// # struct TimeoutErr;
@@ -166,9 +165,7 @@ impl<E: Classify> ErrorCollection<E> {
     /// # Examples
     ///
     /// ```
-    /// use nebula_error::{
-    ///     Classify, ErrorCategory, ErrorCode, ErrorCollection, NebulaError, codes,
-    /// };
+    /// use nebula_error::{Classify, ErrorCategory, ErrorCode, ErrorCollection, NebulaError, codes};
     ///
     /// # #[derive(Debug)]
     /// # struct ValErr;
@@ -273,9 +270,10 @@ pub type BatchResult<T, E> = std::result::Result<T, ErrorCollection<E>>;
 
 #[cfg(test)]
 mod tests {
+    use std::fmt;
+
     use super::*;
     use crate::codes;
-    use std::fmt;
 
     #[derive(Debug, Clone)]
     struct TestErr {

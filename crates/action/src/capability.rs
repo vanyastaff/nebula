@@ -11,9 +11,7 @@
 //! [`CredentialGuard`](nebula_credential::CredentialGuard) returned by
 //! [`ActionContext::credential`](crate::ActionContext::credential).
 
-use std::any::Any;
-use std::sync::Arc;
-use std::time::Duration;
+use std::{any::Any, sync::Arc, time::Duration};
 
 use async_trait::async_trait;
 use nebula_core::id::ExecutionId;

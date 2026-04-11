@@ -103,8 +103,9 @@ impl RuntimeError {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use nebula_action::ActionError;
+
+    use super::*;
 
     #[test]
     fn action_not_found_display() {

@@ -4,17 +4,17 @@
 //! [`Daemon::run`] method in a loop, respecting the configured restart
 //! policy, max restarts, and backoff duration.
 
-use std::marker::PhantomData;
-use std::sync::Arc;
+use std::{marker::PhantomData, sync::Arc};
 
 use tokio::sync::Mutex;
 use tokio_util::sync::CancellationToken;
 
-use crate::ctx::Ctx;
-use crate::error::Error;
-use crate::resource::Resource;
-use crate::topology::daemon::config::Config;
-use crate::topology::daemon::{Daemon, RestartPolicy};
+use crate::{
+    ctx::Ctx,
+    error::Error,
+    resource::Resource,
+    topology::daemon::{Daemon, RestartPolicy, config::Config},
+};
 
 /// Runtime state for a daemon topology.
 ///

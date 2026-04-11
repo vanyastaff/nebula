@@ -20,7 +20,12 @@ use serde::{Deserialize, Serialize};
 ///
 /// let properties = ParameterCollection::new()
 ///     .add(Parameter::string("client_id").label("Client ID").required())
-///     .add(Parameter::string("client_secret").label("Client Secret").required().secret());
+///     .add(
+///         Parameter::string("client_secret")
+///             .label("Client Secret")
+///             .required()
+///             .secret(),
+///     );
 ///
 /// let github_oauth2 = CredentialDescription {
 ///     key: "github_oauth2".to_string(),

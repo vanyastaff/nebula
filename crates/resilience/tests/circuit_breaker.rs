@@ -1,11 +1,12 @@
 //! Integration tests for CircuitBreaker — full lifecycle through call().
 
-use std::sync::Arc;
-use std::time::Duration;
+use std::{sync::Arc, time::Duration};
 
-use nebula_resilience::CallError;
-use nebula_resilience::circuit_breaker::{CircuitBreaker, CircuitBreakerConfig};
-use nebula_resilience::sink::CircuitState;
+use nebula_resilience::{
+    CallError,
+    circuit_breaker::{CircuitBreaker, CircuitBreakerConfig},
+    sink::CircuitState,
+};
 
 fn test_config() -> CircuitBreakerConfig {
     CircuitBreakerConfig {

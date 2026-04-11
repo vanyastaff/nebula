@@ -3,21 +3,23 @@
 //! Validates that spawning 10 concurrent `resolve_with_refresh` calls
 //! on an expiring credential results in exactly 1 actual refresh call.
 
-use std::sync::Arc;
-use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::{
+    Arc,
+    atomic::{AtomicU32, Ordering},
+};
 
-use nebula_credential::SecretString;
-use nebula_credential::context::CredentialContext;
-use nebula_credential::credential::Credential;
-use nebula_credential::description::CredentialDescription;
-use nebula_credential::error::CredentialError;
-use nebula_credential::pending::NoPendingState;
-use nebula_credential::resolve::{RefreshOutcome, RefreshPolicy, StaticResolveResult};
-use nebula_credential::scheme::SecretToken;
-use nebula_credential::store::{PutMode, StoredCredential};
-use nebula_credential::{CredentialResolver, CredentialStore, InMemoryStore};
-use nebula_parameter::ParameterCollection;
-use nebula_parameter::values::ParameterValues;
+use nebula_credential::{
+    CredentialResolver, CredentialStore, InMemoryStore, SecretString,
+    context::CredentialContext,
+    credential::Credential,
+    description::CredentialDescription,
+    error::CredentialError,
+    pending::NoPendingState,
+    resolve::{RefreshOutcome, RefreshPolicy, StaticResolveResult},
+    scheme::SecretToken,
+    store::{PutMode, StoredCredential},
+};
+use nebula_parameter::{ParameterCollection, values::ParameterValues};
 
 /// Global counter tracking how many times `refresh()` is actually called.
 static REFRESH_COUNT: AtomicU32 = AtomicU32::new(0);

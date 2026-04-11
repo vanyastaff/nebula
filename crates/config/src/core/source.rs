@@ -1,7 +1,8 @@
 //! Configuration source definitions
 
-use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
+
+use serde::{Deserialize, Serialize};
 
 /// Configuration source type
 #[non_exhaustive]
@@ -312,8 +313,9 @@ impl std::fmt::Display for ConfigFormat {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use std::path::Path;
+
+    use super::*;
 
     #[test]
     fn test_config_source_type_checks() {

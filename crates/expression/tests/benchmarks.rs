@@ -1,9 +1,10 @@
 // Simple baseline benchmarks without external dependencies
 // Run with: cargo test --release --test simple_baseline -- --nocapture --test-threads=1
 
+use std::time::{Duration, Instant};
+
 use nebula_expression::{EvaluationContext, ExpressionEngine, Template};
 use serde_json::Value;
-use std::time::{Duration, Instant};
 
 const ITERATIONS: usize = 1000;
 const WARMUP_ITERATIONS: usize = 100;
@@ -155,8 +156,7 @@ fn context_benchmarks() {
 fn concurrent_benchmarks() {
     println!("\n🔀 CONCURRENT BENCHMARKS");
 
-    use std::sync::Arc;
-    use std::thread;
+    use std::{sync::Arc, thread};
 
     let engine = Arc::new(ExpressionEngine::with_cache_size(1000));
     let expr = "2 + 2";
@@ -292,8 +292,7 @@ fn bench_engine_eval() {
 #[test]
 #[ignore]
 fn bench_concurrent() {
-    use std::sync::Arc;
-    use std::thread;
+    use std::{sync::Arc, thread};
 
     println!("\nConcurrent Benchmark:");
     let engine = Arc::new(ExpressionEngine::with_cache_size(1000));

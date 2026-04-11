@@ -6,10 +6,11 @@
 // Reason: webhook crate still uses v1 compat types (Context/Scope); migration tracked separately.
 #![allow(deprecated)]
 
+use std::sync::Arc;
+
 use async_trait::async_trait;
 use nebula_resource::{Context, ExecutionId, Scope, WorkflowId};
 use nebula_webhook::prelude::*;
-use std::sync::Arc;
 
 /// A simple trigger that accepts any POST request
 struct SimpleTrigger;

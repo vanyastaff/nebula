@@ -1,7 +1,6 @@
 //! Advisory retry metadata.
 
-use std::fmt;
-use std::time::Duration;
+use std::{fmt, time::Duration};
 
 /// Advisory metadata suggesting how a failed operation might be retried.
 ///
@@ -12,10 +11,10 @@ use std::time::Duration;
 ///
 /// ```
 /// use std::time::Duration;
+///
 /// use nebula_error::RetryHint;
 ///
-/// let hint = RetryHint::after(Duration::from_secs(5))
-///     .with_max_attempts(3);
+/// let hint = RetryHint::after(Duration::from_secs(5)).with_max_attempts(3);
 ///
 /// assert_eq!(hint.after, Some(Duration::from_secs(5)));
 /// assert_eq!(hint.max_attempts, Some(3));
@@ -35,6 +34,7 @@ impl RetryHint {
     ///
     /// ```
     /// use std::time::Duration;
+    ///
     /// use nebula_error::RetryHint;
     ///
     /// let hint = RetryHint::after(Duration::from_millis(500));
@@ -72,10 +72,10 @@ impl RetryHint {
     ///
     /// ```
     /// use std::time::Duration;
+    ///
     /// use nebula_error::RetryHint;
     ///
-    /// let hint = RetryHint::after(Duration::from_secs(1))
-    ///     .with_max_attempts(3);
+    /// let hint = RetryHint::after(Duration::from_secs(1)).with_max_attempts(3);
     /// assert_eq!(hint.max_attempts, Some(3));
     /// ```
     #[must_use]

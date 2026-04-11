@@ -1,12 +1,15 @@
 //! Date and time functions
 
-use super::{check_arg_count, check_min_arg_count};
-use crate::ExpressionError;
-use crate::context::EvaluationContext;
-use crate::error::{ExpressionErrorExt, ExpressionResult};
-use crate::eval::Evaluator;
 use chrono::{DateTime, Datelike, NaiveDateTime, TimeZone, Timelike, Utc};
 use serde_json::Value;
+
+use super::{check_arg_count, check_min_arg_count};
+use crate::{
+    ExpressionError,
+    context::EvaluationContext,
+    error::{ExpressionErrorExt, ExpressionResult},
+    eval::Evaluator,
+};
 
 /// Get current timestamp as Unix seconds
 pub fn now(
@@ -322,8 +325,7 @@ fn parse_datetime(value: &Value) -> ExpressionResult<DateTime<Utc>> {
 /// - ss: 2-digit second
 /// - s: second
 fn format_datetime(dt: &DateTime<Utc>, format: &str) -> ExpressionResult<String> {
-    use std::borrow::Cow;
-    use std::fmt::Write;
+    use std::{borrow::Cow, fmt::Write};
 
     // Pre-compute all formatted values once to avoid repeated formatting
     let year = dt.year();

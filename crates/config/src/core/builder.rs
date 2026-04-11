@@ -1,13 +1,16 @@
 //! Configuration builder
 
-use super::config::{ConfigRuntimeOptions, Sources, merge_json};
-use super::{Config, ConfigError, ConfigResult, ConfigSource};
-use crate::loaders::CompositeLoader;
+use std::sync::Arc;
+
+use smallvec::SmallVec;
+
+use super::{
+    Config, ConfigError, ConfigResult, ConfigSource,
+    config::{ConfigRuntimeOptions, Sources, merge_json},
+};
 #[cfg(feature = "env")]
 use crate::loaders::EnvParseMode;
-use crate::{ConfigLoader, ConfigValidator, ConfigWatcher};
-use smallvec::SmallVec;
-use std::sync::Arc;
+use crate::{ConfigLoader, ConfigValidator, ConfigWatcher, loaders::CompositeLoader};
 
 /// Configuration builder
 pub struct ConfigBuilder {
@@ -202,7 +205,8 @@ impl ConfigBuilder {
             sources.insert(0, ConfigSource::Default);
         }
 
-        // Sort sources by priority (higher number = lower priority, loaded first so higher overrides)
+        // Sort sources by priority (higher number = lower priority, loaded first so higher
+        // overrides)
         sources.sort_by_key(|s| std::cmp::Reverse(s.priority()));
 
         // Load initial configuration
@@ -338,10 +342,12 @@ impl std::fmt::Debug for ConfigBuilder {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
     use async_trait::async_trait;
     use serde_json::json;
-    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    use super::*;
 
     #[tokio::test]
     async fn test_builder_defaults_only() {

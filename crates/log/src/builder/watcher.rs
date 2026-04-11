@@ -3,8 +3,10 @@
 //! Polls a config file at a fixed interval and, when the content changes,
 //! reloads the log filter via [`ReloadHandle`].
 
-use std::path::{Path, PathBuf};
-use std::time::Duration;
+use std::{
+    path::{Path, PathBuf},
+    time::Duration,
+};
 
 use tokio::sync::watch;
 
@@ -129,9 +131,11 @@ async fn read_filter(path: &Path) -> Option<String> {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use std::io::Write;
+
     use tempfile::NamedTempFile;
+
+    use super::*;
 
     #[tokio::test]
     async fn watcher_detects_file_change() {

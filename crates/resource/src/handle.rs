@@ -6,16 +6,19 @@
 //! - **Guarded**: exclusive lease returned to pool on drop.
 //! - **Shared**: `Arc`-wrapped lease with shared access.
 
-use std::ops::Deref;
-use std::sync::Arc;
-use std::sync::atomic::{AtomicU64, Ordering as AtomicOrdering};
-use std::time::Instant;
+use std::{
+    ops::Deref,
+    sync::{
+        Arc,
+        atomic::{AtomicU64, Ordering as AtomicOrdering},
+    },
+    time::Instant,
+};
 
 use nebula_core::ResourceKey;
 use tokio::sync::{Notify, OwnedSemaphorePermit};
 
-use crate::resource::Resource;
-use crate::topology_tag::TopologyTag;
+use crate::{resource::Resource, topology_tag::TopologyTag};
 
 /// Callback invoked when a guarded lease is released.
 type GuardedRelease<R> = Box<dyn FnOnce(<R as Resource>::Lease, bool) + Send>;
@@ -329,8 +332,9 @@ impl<R: Resource> std::fmt::Debug for ResourceHandle<R> {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+
+    use super::*;
 
     // A trivial resource for testing.
     struct DummyResource;

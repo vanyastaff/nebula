@@ -1,6 +1,7 @@
-use super::helpers::{unique_env_prefix, write_temp_file};
 use nebula_config::{ConfigBuilder, ConfigSource};
 use serde_json::json;
+
+use super::helpers::{unique_env_prefix, write_temp_file};
 
 #[tokio::test]
 async fn env_overrides_file_and_defaults() {

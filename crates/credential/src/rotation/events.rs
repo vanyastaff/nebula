@@ -4,10 +4,10 @@
 
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
+use nebula_core::CredentialId;
 use serde::{Deserialize, Serialize};
 
 use super::error::RotationResult;
-use nebula_core::CredentialId;
 
 /// Rollback data (boxed to reduce enum size)
 #[derive(Debug, Clone, Serialize, Deserialize)]

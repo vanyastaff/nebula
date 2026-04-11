@@ -1,9 +1,7 @@
 //! Timeout pattern — wraps futures with a deadline, returning `CallError::Timeout`.
 
-use std::fmt;
-use std::future::Future;
-use std::sync::Arc;
-use std::time::Duration;
+use std::{fmt, future::Future, sync::Arc, time::Duration};
+
 use tokio::time::timeout as tokio_timeout;
 
 use crate::{
@@ -85,7 +83,8 @@ impl TimeoutExecutor {
     ///
     /// # Errors
     ///
-    /// Returns `Err(CallError::Timeout)` on timeout or `Err(CallError::Operation)` on operation error.
+    /// Returns `Err(CallError::Timeout)` on timeout or `Err(CallError::Operation)` on operation
+    /// error.
     pub async fn call<T, E, F>(&self, future: F) -> Result<T, CallError<E>>
     where
         F: Future<Output = Result<T, E>>,

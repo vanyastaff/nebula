@@ -9,8 +9,10 @@
 //! at runtime with `ActionError::Fatal("resource instance downcast
 //! failed")` on every `cleanup` call.
 
-use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{
+    Arc,
+    atomic::{AtomicBool, Ordering},
+};
 
 use nebula_action::{
     Action, ActionContext, ActionDependencies, ActionError, ActionMetadata, Context,

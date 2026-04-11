@@ -4,8 +4,9 @@
 //! Resources are scoped to individual nodes, not globally, ensuring security
 //! and multi-tenancy isolation.
 
-use serde::{Deserialize, Serialize};
 use std::fmt;
+
+use serde::{Deserialize, Serialize};
 use tracing::Level;
 
 /// Notification preferences for error reporting
@@ -80,7 +81,7 @@ pub enum NotificationSeverity {
 /// # Example
 ///
 /// ```rust
-/// use nebula_log::observability::{LoggerResource, NotificationPrefs, NodeContext};
+/// use nebula_log::observability::{LoggerResource, NodeContext, NotificationPrefs};
 /// use tracing::Level;
 ///
 /// let logger = LoggerResource::new()
@@ -89,8 +90,7 @@ pub enum NotificationSeverity {
 ///     .with_webhook("https://hooks.slack.com/services/...");
 ///
 /// // Attach to node context (isolated, secure) — typed by TypeId, no string key
-/// let ctx = NodeContext::new("my-node", "http.request")
-///     .with_resource(logger);
+/// let ctx = NodeContext::new("my-node", "http.request").with_resource(logger);
 /// ```
 #[derive(Clone, Serialize, Deserialize)]
 pub struct LoggerResource {

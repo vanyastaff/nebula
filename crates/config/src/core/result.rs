@@ -1,7 +1,8 @@
 //! Result type and utilities for configuration operations
 
-use super::error::ConfigError;
 use std::future::Future;
+
+use super::error::ConfigError;
 
 /// Standard result type for configuration operations
 pub type ConfigResult<T> = Result<T, ConfigError>;

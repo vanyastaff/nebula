@@ -3,8 +3,7 @@
 //! This is a runtime-level primitive for stream-oriented action outputs where
 //! producer and consumer rates may diverge.
 
-use std::collections::VecDeque;
-use std::sync::Arc;
+use std::{collections::VecDeque, sync::Arc};
 
 use nebula_action::Overflow;
 use tokio::sync::{Mutex, Notify};

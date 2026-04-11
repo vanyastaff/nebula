@@ -6,11 +6,12 @@
 
 use std::marker::PhantomData;
 
-use crate::ctx::Ctx;
-use crate::error::Error;
-use crate::resource::Resource;
-use crate::topology::event_source::EventSource;
-use crate::topology::event_source::config::Config;
+use crate::{
+    ctx::Ctx,
+    error::Error,
+    resource::Resource,
+    topology::event_source::{EventSource, config::Config},
+};
 
 /// Runtime state for an event source topology.
 ///

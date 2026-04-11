@@ -8,12 +8,16 @@
 //! # Examples
 //!
 //! ```
-//! use nebula_parameter::parameter::Parameter;
-//! use nebula_parameter::conditions::Condition;
+//! use nebula_parameter::{conditions::Condition, parameter::Parameter};
 //!
 //! let schema = vec![
-//!     Parameter::string("api_key").label("API Key").required().secret(),
-//!     Parameter::integer("timeout_ms").label("Timeout (ms)").default(serde_json::json!(30_000)),
+//!     Parameter::string("api_key")
+//!         .label("API Key")
+//!         .required()
+//!         .secret(),
+//!     Parameter::integer("timeout_ms")
+//!         .label("Timeout (ms)")
+//!         .default(serde_json::json!(30_000)),
 //!     Parameter::select("region")
 //!         .label("Region")
 //!         .option(serde_json::json!("us-east-1"), "US East")
@@ -28,19 +32,21 @@ use std::future::Future;
 
 use serde::{Deserialize, Serialize};
 
-use crate::conditions::Condition;
-use crate::display_mode::{ComputedReturn, DisplayMode};
-use crate::filter_field::FilterField;
-use crate::input_hint::InputHint;
-use crate::loader::{FilterFieldLoader, LoaderContext, LoaderError, OptionLoader, RecordLoader};
-use crate::loader_result::LoaderResult;
-use crate::notice::NoticeSeverity;
-use crate::option::SelectOption;
-use crate::parameter_type::ParameterType;
-use crate::path::ParameterPath;
-use crate::rules::Rule;
-use crate::spec::FilterOp;
-use crate::transformer::Transformer;
+use crate::{
+    conditions::Condition,
+    display_mode::{ComputedReturn, DisplayMode},
+    filter_field::FilterField,
+    input_hint::InputHint,
+    loader::{FilterFieldLoader, LoaderContext, LoaderError, OptionLoader, RecordLoader},
+    loader_result::LoaderResult,
+    notice::NoticeSeverity,
+    option::SelectOption,
+    parameter_type::ParameterType,
+    path::ParameterPath,
+    rules::Rule,
+    spec::FilterOp,
+    transformer::Transformer,
+};
 
 /// A single parameter in a workflow node's schema.
 ///

@@ -5,17 +5,17 @@
 //! to the downstream branch, unlike `ctx.resource()` from the global
 //! registry.
 
-use std::any::Any;
-use std::fmt;
-use std::future::Future;
+use std::{any::Any, fmt, future::Future};
 
 use async_trait::async_trait;
 use serde_json::Value;
 
-use crate::action::Action;
-use crate::context::{ActionContext, Context};
-use crate::error::ActionError;
-use crate::metadata::ActionMetadata;
+use crate::{
+    action::Action,
+    context::{ActionContext, Context},
+    error::ActionError,
+    metadata::ActionMetadata,
+};
 
 // ── Core trait ──────────────────────────────────────────────────────────────
 

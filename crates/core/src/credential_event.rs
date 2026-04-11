@@ -21,9 +21,7 @@ use crate::CredentialId;
 /// use nebula_core::{CredentialEvent, CredentialId};
 ///
 /// let id = CredentialId::new();
-/// let event = CredentialEvent::Refreshed {
-///     credential_id: id,
-/// };
+/// let event = CredentialEvent::Refreshed { credential_id: id };
 /// assert_eq!(event.credential_id(), id);
 /// ```
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]

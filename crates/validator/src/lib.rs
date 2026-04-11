@@ -4,10 +4,10 @@
 //!
 //! This crate provides two complementary validation approaches:
 //!
-//! - **Programmatic validators** — composable Rust types using the [`Validate`](foundation::Validate)
-//!   trait with `.and()`, `.or()`, `.not()` combinators.
-//! - **Declarative rules** — a unified [`Rule`] enum that can be serialized to/from JSON
-//!   and evaluated at runtime for value validation, context predicates, and logical combinators.
+//! - **Programmatic validators** — composable Rust types using the
+//!   [`Validate`](foundation::Validate) trait with `.and()`, `.or()`, `.not()` combinators.
+//! - **Declarative rules** — a unified [`Rule`] enum that can be serialized to/from JSON and
+//!   evaluated at runtime for value validation, context predicates, and logical combinators.
 //!
 //! ## Quick Start
 //!
@@ -133,9 +133,8 @@ pub mod validators;
 mod macros;
 
 // ── Re-exports ───────────────────────────────────────────────────────────────
-pub use nebula_validator_macros::Validator;
-
 pub use engine::{ExecutionMode, validate_rules};
 pub use error::ValidatorError;
+pub use nebula_validator_macros::Validator;
 pub use proof::Validated;
 pub use rule::Rule;

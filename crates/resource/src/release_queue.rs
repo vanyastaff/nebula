@@ -15,10 +15,12 @@
 //! is shared with workers, so `Manager::graceful_shutdown` automatically
 //! signals workers to drain without needing to drop the queue.
 
-use std::future::Future;
-use std::pin::Pin;
-use std::sync::atomic::{AtomicUsize, Ordering};
-use std::time::Duration;
+use std::{
+    future::Future,
+    pin::Pin,
+    sync::atomic::{AtomicUsize, Ordering},
+    time::Duration,
+};
 
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
@@ -59,10 +61,10 @@ pub struct ReleaseQueueHandle {
 ///
 /// There are two ways to shut down the queue:
 ///
-/// 1. **Via cancellation token** (preferred for [`Manager`](crate::Manager)):
-///    cancel the shared token → workers drain buffered tasks and exit.
-/// 2. **Via drop** (for standalone use): drop the `ReleaseQueue` → senders
-///    close → workers see `None` and exit.
+/// 1. **Via cancellation token** (preferred for [`Manager`](crate::Manager)): cancel the shared
+///    token → workers drain buffered tasks and exit.
+/// 2. **Via drop** (for standalone use): drop the `ReleaseQueue` → senders close → workers see
+///    `None` and exit.
 ///
 /// In both cases, call [`ReleaseQueue::shutdown`] afterward to await workers.
 ///
@@ -255,9 +257,12 @@ impl ReleaseQueue {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::{
+        Arc,
+        atomic::{AtomicU32, Ordering},
+    };
+
     use super::*;
-    use std::sync::Arc;
-    use std::sync::atomic::{AtomicU32, Ordering};
 
     async fn increment_counter(c: Arc<AtomicU32>) {
         c.fetch_add(1, Ordering::Relaxed);

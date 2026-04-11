@@ -12,8 +12,11 @@
 //! # Example
 //!
 //! ```rust
-//! use nebula_log::observability::{ObservabilityEvent, ObservabilityHook, register_hook, emit_event};
 //! use std::sync::Arc;
+//!
+//! use nebula_log::observability::{
+//!     ObservabilityEvent, ObservabilityHook, emit_event, register_hook,
+//! };
 //!
 //! // Define custom event
 //! struct MyEvent {
@@ -37,7 +40,9 @@
 //!
 //! // Register and emit
 //! register_hook(Arc::new(MyHook));
-//! emit_event(&MyEvent { name: "test".to_string() });
+//! emit_event(&MyEvent {
+//!     name: "test".to_string(),
+//! });
 //! ```
 
 pub mod context;

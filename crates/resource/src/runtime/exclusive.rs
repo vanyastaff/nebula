@@ -8,15 +8,16 @@ use std::sync::Arc;
 
 use tokio::sync::Semaphore;
 
-use crate::error::Error;
-use crate::handle::ResourceHandle;
-use crate::metrics::ResourceOpsMetrics;
-use crate::options::AcquireOptions;
-use crate::release_queue::ReleaseQueue;
-use crate::resource::Resource;
-use crate::topology::exclusive::Exclusive;
-use crate::topology::exclusive::config::Config;
-use crate::topology_tag::TopologyTag;
+use crate::{
+    error::Error,
+    handle::ResourceHandle,
+    metrics::ResourceOpsMetrics,
+    options::AcquireOptions,
+    release_queue::ReleaseQueue,
+    resource::Resource,
+    topology::exclusive::{Exclusive, config::Config},
+    topology_tag::TopologyTag,
+};
 
 /// Runtime state for an exclusive topology.
 ///

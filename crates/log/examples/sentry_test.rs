@@ -1,8 +1,9 @@
 //! Sentry integration test example
 
+use std::env;
+
 use anyhow::Result;
 use nebula_log::prelude::*;
-use std::env;
 use tokio::time::{Duration, sleep};
 
 #[tokio::main]

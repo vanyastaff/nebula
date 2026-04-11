@@ -1,5 +1,13 @@
 //! Workflow handlers
 
+use axum::{
+    Json,
+    extract::{Path, Query, State},
+    http::StatusCode,
+};
+use nebula_core::{ExecutionId, WorkflowId};
+use serde::Deserialize;
+
 use crate::{
     errors::{ApiError, ApiResult},
     models::{
@@ -8,13 +16,6 @@ use crate::{
     },
     state::AppState,
 };
-use axum::{
-    Json,
-    extract::{Path, Query, State},
-    http::StatusCode,
-};
-use nebula_core::{ExecutionId, WorkflowId};
-use serde::Deserialize;
 
 /// Pagination query parameters
 #[derive(Debug, Deserialize)]
@@ -516,7 +517,8 @@ pub async fn execute_workflow(
 ///
 /// # Errors
 ///
-/// - [`ApiError::Validation`] if `id` is not a valid workflow ID or the definition cannot be parsed.
+/// - [`ApiError::Validation`] if `id` is not a valid workflow ID or the definition cannot be
+///   parsed.
 /// - [`ApiError::NotFound`] if the workflow does not exist.
 /// - [`ApiError::Internal`] if the repository is unavailable.
 pub async fn validate_workflow_handler(

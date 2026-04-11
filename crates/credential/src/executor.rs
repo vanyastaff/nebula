@@ -8,12 +8,14 @@ use std::time::Duration;
 
 use nebula_parameter::values::ParameterValues;
 
-use crate::context::CredentialContext;
-use crate::credential::Credential;
-use crate::error::CredentialError;
-use crate::pending::PendingToken;
-use crate::pending_store::{PendingStateStore, PendingStoreError};
-use crate::resolve::{InteractionRequest, ResolveResult, UserInput};
+use crate::{
+    context::CredentialContext,
+    credential::Credential,
+    error::CredentialError,
+    pending::PendingToken,
+    pending_store::{PendingStateStore, PendingStoreError},
+    resolve::{InteractionRequest, ResolveResult, UserInput},
+};
 
 /// Default timeout for credential operations.
 const CREDENTIAL_TIMEOUT: Duration = Duration::from_secs(30);
@@ -69,10 +71,10 @@ pub enum ExecutorError {
 /// `PendingState` lifecycle:
 ///
 /// - **`Complete`** -- returns state for the caller to encrypt and store.
-/// - **`Pending`** -- stores `PendingState` via `pending_store`, returns
-///   a [`PendingToken`] and [`InteractionRequest`] for the UI.
-/// - **`Retry`** -- returns the retry delay for the framework to schedule
-///   a subsequent `continue_resolve()` poll.
+/// - **`Pending`** -- stores `PendingState` via `pending_store`, returns a [`PendingToken`] and
+///   [`InteractionRequest`] for the UI.
+/// - **`Retry`** -- returns the retry delay for the framework to schedule a subsequent
+///   `continue_resolve()` poll.
 ///
 /// # Errors
 ///
@@ -166,8 +168,7 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::credentials::ApiKeyCredential;
-    use crate::pending_store_memory::InMemoryPendingStore;
+    use crate::{credentials::ApiKeyCredential, pending_store_memory::InMemoryPendingStore};
 
     #[tokio::test]
     async fn execute_resolve_static_credential_returns_complete() {

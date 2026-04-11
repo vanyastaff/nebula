@@ -20,7 +20,6 @@
 use std::sync::Arc;
 
 use dashmap::DashMap;
-
 use nebula_action::{
     Action, ActionHandler, ActionMetadata, PollAction, PollTriggerAdapter, ResourceAction,
     ResourceActionAdapter, StatefulAction, StatefulActionAdapter, StatelessAction,
@@ -252,14 +251,12 @@ impl std::fmt::Debug for ActionRegistry {
 
 #[cfg(test)]
 mod tests {
+    use nebula_action::{
+        action::Action, context::Context, dependency::ActionDependencies, error::ActionError,
+        metadata::ActionMetadata, result::ActionResult, stateless::StatelessAction,
+    };
+
     use super::*;
-    use nebula_action::action::Action;
-    use nebula_action::context::Context;
-    use nebula_action::dependency::ActionDependencies;
-    use nebula_action::error::ActionError;
-    use nebula_action::metadata::ActionMetadata;
-    use nebula_action::result::ActionResult;
-    use nebula_action::stateless::StatelessAction;
 
     struct NoopAction {
         meta: ActionMetadata,

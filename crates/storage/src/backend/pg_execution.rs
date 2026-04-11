@@ -3,15 +3,13 @@
 //! Uses the `executions`, `node_outputs`, `execution_journal`, and
 //! `idempotency_keys` tables created by the SQL migrations in `./migrations`.
 
-use std::collections::HashMap;
-use std::time::Duration;
+use std::{collections::HashMap, time::Duration};
 
 use async_trait::async_trait;
-use sqlx::types::Json;
-use sqlx::{Pool, Postgres};
+use nebula_core::{ExecutionId, NodeId, WorkflowId};
+use sqlx::{Pool, Postgres, types::Json};
 
 use crate::execution_repo::{ExecutionRepo, ExecutionRepoError};
-use nebula_core::{ExecutionId, NodeId, WorkflowId};
 
 /// Postgres-backed execution repository.
 #[derive(Clone, Debug)]

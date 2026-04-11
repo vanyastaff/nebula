@@ -1,7 +1,6 @@
 //! Core error and result types for nebula-resilience.
 
-use std::borrow::Cow;
-use std::time::Duration;
+use std::{borrow::Cow, time::Duration};
 
 /// Returned by all resilience operations.
 ///
@@ -157,7 +156,8 @@ impl<E> CallError<E> {
         }
     }
 
-    /// Reference to the inner operation error, if this is an `Operation` or `RetriesExhausted` variant.
+    /// Reference to the inner operation error, if this is an `Operation` or `RetriesExhausted`
+    /// variant.
     #[must_use]
     pub const fn operation(&self) -> Option<&E> {
         match self {

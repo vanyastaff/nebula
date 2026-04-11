@@ -5,12 +5,12 @@
 
 use std::sync::Arc;
 
-use nebula_credential::credentials::ApiKeyCredential;
-use nebula_credential::scheme::{ConnectionUri, SecretToken};
-use nebula_credential::store::{PutMode, StoredCredential};
 use nebula_credential::{
     Credential, CredentialMetadata, CredentialResolver, CredentialSnapshot, CredentialStore,
     InMemoryStore, SnapshotError,
+    credentials::ApiKeyCredential,
+    scheme::{ConnectionUri, SecretToken},
+    store::{PutMode, StoredCredential},
 };
 
 #[tokio::test]

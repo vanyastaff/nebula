@@ -11,9 +11,9 @@
 //!
 //! This reduces stack size by ~47% compared to inlining all fields.
 
+use std::{borrow::Cow, fmt};
+
 use smallvec::SmallVec;
-use std::borrow::Cow;
-use std::fmt;
 
 /// Canonical error codes used by built-in validators and combinators.
 pub mod codes {
@@ -168,9 +168,10 @@ impl Default for ErrorExtras {
 ///
 /// let error = ValidationError::new("object_validation", "Object validation failed")
 ///     .with_field("user.email")
-///     .with_nested(vec![
-///         ValidationError::new("email_invalid", "Invalid email format"),
-///     ]);
+///     .with_nested(vec![ValidationError::new(
+///         "email_invalid",
+///         "Invalid email format",
+///     )]);
 /// ```
 #[derive(Debug, Clone, PartialEq)]
 pub struct ValidationError {

@@ -57,7 +57,10 @@ impl SelectOption {
     ///
     /// let opt = SelectOption::new(serde_json::json!("json"), "JSON")
     ///     .description("JavaScript Object Notation");
-    /// assert_eq!(opt.description.as_deref(), Some("JavaScript Object Notation"));
+    /// assert_eq!(
+    ///     opt.description.as_deref(),
+    ///     Some("JavaScript Object Notation")
+    /// );
     /// ```
     #[must_use]
     pub fn description(mut self, description: impl Into<String>) -> Self {
@@ -72,8 +75,7 @@ impl SelectOption {
     /// ```
     /// use nebula_parameter::option::SelectOption;
     ///
-    /// let opt = SelectOption::new(serde_json::json!("slack"), "Slack")
-    ///     .icon("slack-icon");
+    /// let opt = SelectOption::new(serde_json::json!("slack"), "Slack").icon("slack-icon");
     /// assert_eq!(opt.icon.as_deref(), Some("slack-icon"));
     /// ```
     #[must_use]
@@ -89,8 +91,7 @@ impl SelectOption {
     /// ```
     /// use nebula_parameter::option::SelectOption;
     ///
-    /// let opt = SelectOption::new(serde_json::json!("beta"), "Beta Feature")
-    ///     .disabled();
+    /// let opt = SelectOption::new(serde_json::json!("beta"), "Beta Feature").disabled();
     /// assert!(opt.disabled);
     /// ```
     #[must_use]

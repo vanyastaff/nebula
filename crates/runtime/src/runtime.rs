@@ -3,25 +3,26 @@
 //! Resolves actions from the registry, executes them through the sandbox,
 //! enforces data limits, and records metrics.
 
-use std::sync::Arc;
-use std::time::Instant;
+use std::{sync::Arc, time::Instant};
 
-use crate::blob::BlobStorage;
-use crate::sandbox::SandboxRunner;
-use nebula_action::output::{ActionOutput, DataReference};
-use nebula_action::result::ActionResult;
 use nebula_action::{
     ActionContext, ActionError, ActionHandler, ActionMetadata, IsolationLevel, StatefulHandler,
     StatelessHandler,
+    output::{ActionOutput, DataReference},
+    result::ActionResult,
 };
 use nebula_metrics::naming::{
     NEBULA_ACTION_DURATION_SECONDS, NEBULA_ACTION_EXECUTIONS_TOTAL, NEBULA_ACTION_FAILURES_TOTAL,
 };
 use nebula_telemetry::metrics::MetricsRegistry;
 
-use crate::data_policy::{DataPassingPolicy, LargeDataStrategy};
-use crate::error::RuntimeError;
-use crate::registry::ActionRegistry;
+use crate::{
+    blob::BlobStorage,
+    data_policy::{DataPassingPolicy, LargeDataStrategy},
+    error::RuntimeError,
+    registry::ActionRegistry,
+    sandbox::SandboxRunner,
+};
 
 /// The action runtime orchestrates execution of actions.
 ///
@@ -30,8 +31,7 @@ use crate::registry::ActionRegistry;
 ///
 /// 1. Looks up the action handler from the registry
 /// 2. Resolves the isolation level
-/// 3. Executes through the sandbox (if capability-gated/isolated)
-///    or directly (if trusted)
+/// 3. Executes through the sandbox (if capability-gated/isolated) or directly (if trusted)
 /// 4. Enforces data passing policies on the output
 /// 5. Emits telemetry events
 pub struct ActionRuntime {
@@ -430,17 +430,22 @@ fn primary_output_mut(
 
 #[cfg(test)]
 mod tests {
+    use nebula_action::{
+        ActionContext, TriggerContext,
+        action::Action,
+        context::{Context, CredentialContextExt},
+        dependency::ActionDependencies,
+        error::ActionError,
+        metadata::ActionMetadata,
+        stateless::StatelessAction,
+    };
+    use nebula_core::{
+        action_key,
+        id::{ExecutionId, NodeId, WorkflowId},
+    };
+
     use super::*;
     use crate::sandbox::{ActionExecutor, InProcessSandbox};
-    use nebula_action::action::Action;
-    use nebula_action::context::{Context, CredentialContextExt};
-    use nebula_action::dependency::ActionDependencies;
-    use nebula_action::error::ActionError;
-    use nebula_action::metadata::ActionMetadata;
-    use nebula_action::stateless::StatelessAction;
-    use nebula_action::{ActionContext, TriggerContext};
-    use nebula_core::action_key;
-    use nebula_core::id::{ExecutionId, NodeId, WorkflowId};
 
     struct EchoAction {
         meta: ActionMetadata,

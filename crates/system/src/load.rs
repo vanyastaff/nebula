@@ -18,12 +18,10 @@
 //! }
 //! ```
 
-use crate::cpu::CpuPressure;
-use crate::info::SYSINFO_SYSTEM;
-use crate::memory::MemoryPressure;
-
 #[cfg(feature = "serde")]
 use serde::{Deserialize, Serialize};
+
+use crate::{cpu::CpuPressure, info::SYSINFO_SYSTEM, memory::MemoryPressure};
 
 /// Aggregated system load snapshot.
 ///

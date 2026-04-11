@@ -66,7 +66,10 @@ impl ErrorCategory {
     /// ```
     /// use nebula_error::ErrorCategory;
     ///
-    /// assert_eq!(ErrorCategory::from_http_status(404), Some(ErrorCategory::NotFound));
+    /// assert_eq!(
+    ///     ErrorCategory::from_http_status(404),
+    ///     Some(ErrorCategory::NotFound)
+    /// );
     /// assert_eq!(ErrorCategory::from_http_status(418), None);
     /// ```
     #[must_use]

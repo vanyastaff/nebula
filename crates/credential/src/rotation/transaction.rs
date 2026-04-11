@@ -3,13 +3,11 @@
 //! Tracks the state and metadata of a credential rotation operation.
 
 use chrono::{DateTime, Utc};
+use nebula_core::CredentialId;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-use nebula_core::CredentialId;
-
-use super::error::RotationResult;
-use super::state::RotationState;
+use super::{error::RotationResult, state::RotationState};
 
 /// Unique identifier for a rotation transaction
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -790,7 +788,7 @@ impl RotationTransaction {
                     reason: "Cannot abort committed transaction".to_string(),
                 })
             }
-            Some(TransactionPhase::Aborting | TransactionPhase::Aborted) => Ok(()), // Already aborting
+            Some(TransactionPhase::Aborting | TransactionPhase::Aborted) => Ok(()), /* Already aborting */
             None => Err(super::error::RotationError::TransactionFailed {
                 reason: "No transaction in progress".to_string(),
             }),

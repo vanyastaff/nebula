@@ -1,8 +1,8 @@
 //! Integration tests for rate limiter patterns
 
+use std::{sync::Arc, time::Duration};
+
 use nebula_resilience::rate_limiter::*;
-use std::sync::Arc;
-use std::time::Duration;
 
 #[tokio::test]
 async fn test_token_bucket_rate_limiting() {

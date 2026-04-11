@@ -17,8 +17,9 @@
 //! assert!(validator.validate(&None::<String>).is_err());
 //! ```
 
-use crate::foundation::{Validate, ValidationError};
 use std::marker::PhantomData;
+
+use crate::foundation::{Validate, ValidationError};
 
 /// Validates that an `Option` is `Some`.
 ///

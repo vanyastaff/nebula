@@ -4,8 +4,7 @@
 //! engine/runtime/API. Changing the output format is a breaking change —
 //! update expected values intentionally and document in MIGRATION.md.
 
-use std::collections::HashMap;
-use std::time::Duration;
+use std::{collections::HashMap, time::Duration};
 
 use chrono::Utc;
 use nebula_action::{

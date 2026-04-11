@@ -8,28 +8,28 @@
 //! State/scheme separation: OAuth2State is stored (contains refresh
 //! internals), while OAuth2Token is the consumer-facing auth material produced by `project()`.
 
-use std::time::Duration;
-use std::{fmt, fmt::Formatter};
+use std::{fmt, fmt::Formatter, time::Duration};
 
 use chrono::{DateTime, Utc};
+use nebula_core::SecretString;
+use nebula_parameter::{Parameter, ParameterCollection, values::ParameterValues};
 use serde::{Deserialize, Serialize};
 use zeroize::Zeroize;
 
-use nebula_parameter::values::ParameterValues;
-use nebula_parameter::{Parameter, ParameterCollection};
-
-use super::oauth2_config::{AuthStyle, GrantType, OAuth2Config};
-use crate::context::CredentialContext;
-use crate::credential::Credential;
-use crate::description::CredentialDescription;
-use crate::error::CredentialError;
-use crate::pending::PendingState;
-use crate::resolve::{DisplayData, InteractionRequest, RefreshOutcome, ResolveResult, UserInput};
-use crate::scheme::OAuth2Token;
-use crate::state::CredentialState;
-use nebula_core::SecretString;
-
-use super::oauth2_flow;
+use super::{
+    oauth2_config::{AuthStyle, GrantType, OAuth2Config},
+    oauth2_flow,
+};
+use crate::{
+    context::CredentialContext,
+    credential::Credential,
+    description::CredentialDescription,
+    error::CredentialError,
+    pending::PendingState,
+    resolve::{DisplayData, InteractionRequest, RefreshOutcome, ResolveResult, UserInput},
+    scheme::OAuth2Token,
+    state::CredentialState,
+};
 
 // ── OAuth2State ────────────────────────────────────────────────────────
 
@@ -169,11 +169,11 @@ impl PendingState for OAuth2Pending {
 ///
 /// # Grant types
 ///
-/// - **Authorization Code** -- returns `Pending` with `Redirect`,
-///   completed via `continue_resolve` with callback `code`.
+/// - **Authorization Code** -- returns `Pending` with `Redirect`, completed via `continue_resolve`
+///   with callback `code`.
 /// - **Client Credentials** -- returns `Complete` immediately.
-/// - **Device Code** -- returns `Pending` with `DisplayInfo`,
-///   completed via polling `continue_resolve` with `UserInput::Poll`.
+/// - **Device Code** -- returns `Pending` with `DisplayInfo`, completed via polling
+///   `continue_resolve` with `UserInput::Poll`.
 ///
 /// # Examples
 ///
@@ -477,8 +477,9 @@ fn build_config(
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use std::collections::HashMap;
+
+    use super::*;
 
     fn make_state() -> OAuth2State {
         OAuth2State {

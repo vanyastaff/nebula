@@ -1,9 +1,9 @@
 //! Request signing credentials (HMAC, SigV4, webhook signatures).
 
 use nebula_core::SecretString;
+use serde::{Deserialize, Serialize};
 
 use crate::AuthScheme;
-use serde::{Deserialize, Serialize};
 
 /// A signing key used to authenticate requests via HMAC or similar algorithms.
 ///
@@ -14,8 +14,8 @@ use serde::{Deserialize, Serialize};
 /// # Examples
 ///
 /// ```
-/// use nebula_credential::scheme::SigningKey;
 /// use nebula_core::SecretString;
+/// use nebula_credential::scheme::SigningKey;
 ///
 /// let key = SigningKey::new(SecretString::new("whsec_abc123"), "hmac-sha256");
 /// ```

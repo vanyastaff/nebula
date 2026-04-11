@@ -283,8 +283,9 @@ impl ExpressionErrorExt for ExpressionError {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use nebula_error::Classify;
+
+    use super::*;
 
     #[test]
     fn test_error_creation() {

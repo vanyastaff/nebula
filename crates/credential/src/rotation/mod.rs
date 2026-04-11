@@ -67,24 +67,26 @@
 //! ## Periodic Rotation
 //!
 //! ```rust
-//! use nebula_credential::rotation::{RotationPolicy, PeriodicConfig};
 //! use std::time::Duration;
+//!
+//! use nebula_credential::rotation::{PeriodicConfig, RotationPolicy};
 //!
 //! // Configure 90-day rotation with 24-hour grace period
 //! let policy = RotationPolicy::Periodic(
 //!     PeriodicConfig::new(
 //!         Duration::from_secs(90 * 24 * 60 * 60), // interval
 //!         Duration::from_secs(24 * 60 * 60),      // grace_period
-//!         true,                                    // enable_jitter
-//!     ).expect("valid config")
+//!         true,                                   // enable_jitter
+//!     )
+//!     .expect("valid config"),
 //! );
 //! ```
 //!
 //! ## Scheduled Rotation
 //!
 //! ```rust
+//! use chrono::{Duration, Utc};
 //! use nebula_credential::rotation::{RotationPolicy, ScheduledConfig};
-//! use chrono::{Utc, Duration};
 //!
 //! // Rotate during next maintenance window
 //! let policy = RotationPolicy::Scheduled(
@@ -92,14 +94,15 @@
 //!         Utc::now() + Duration::days(7),
 //!         std::time::Duration::from_secs(3600), // grace_period (1 hour)
 //!         Some(std::time::Duration::from_secs(24 * 3600)), // notify_before
-//!     ).expect("valid config")
+//!     )
+//!     .expect("valid config"),
 //! );
 //! ```
 //!
 //! ## Manual Emergency Rotation
 //!
 //! ```rust
-//! use nebula_credential::rotation::{RotationPolicy, ManualConfig};
+//! use nebula_credential::rotation::{ManualConfig, RotationPolicy};
 //!
 //! // Emergency rotation with immediate revocation
 //! let policy = RotationPolicy::Manual(ManualConfig::emergency());
@@ -108,8 +111,7 @@
 //! ## Blue-Green Database Rotation
 //!
 //! ```rust,no_run
-//! use nebula_credential::rotation::BlueGreenRotation;
-//! use nebula_credential::CredentialId;
+//! use nebula_credential::{CredentialId, rotation::BlueGreenRotation};
 //!
 //! # async fn example() -> Result<(), Box<dyn std::error::Error>> {
 //! let blue = CredentialId::new();
@@ -118,16 +120,20 @@
 //! let mut rotation = BlueGreenRotation::new(blue, green);
 //!
 //! // Create and validate standby credential
-//! rotation.validate_standby_connectivity(|id| async {
-//!     // Test database connection with standby credential
-//!     Ok(())
-//! }).await?;
+//! rotation
+//!     .validate_standby_connectivity(|id| async {
+//!         // Test database connection with standby credential
+//!         Ok(())
+//!     })
+//!     .await?;
 //!
 //! // Atomic swap to standby
-//! rotation.swap_credentials(|active, standby| async {
-//!     // Update application config to use new credential
-//!     Ok(())
-//! }).await?;
+//! rotation
+//!     .swap_credentials(|active, standby| async {
+//!         // Update application config to use new credential
+//!         Ok(())
+//!     })
+//!     .await?;
 //! # Ok(())
 //! # }
 //! ```
@@ -241,8 +247,10 @@
 //! # See Also
 //!
 //! - [`RotationPolicy`](crate::rotation::policy::RotationPolicy) - Rotation strategies
-//! - [`RotationTransaction`](crate::rotation::transaction::RotationTransaction) - Transaction lifecycle
-//! - [`BlueGreenRotation`](crate::rotation::blue_green::BlueGreenRotation) - Zero-downtime database rotation
+//! - [`RotationTransaction`](crate::rotation::transaction::RotationTransaction) - Transaction
+//!   lifecycle
+//! - [`BlueGreenRotation`](crate::rotation::blue_green::BlueGreenRotation) - Zero-downtime database
+//!   rotation
 //! - [`FailureHandler`](crate::rotation::validation::FailureHandler) - Failure handling
 //! - [`RotatableCredential`](crate::traits::RotatableCredential) - Trait for rotatable credentials
 

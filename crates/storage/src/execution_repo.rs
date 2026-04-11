@@ -3,9 +3,11 @@
 //! State (versioned CAS), journal (append-only), leases. Used by API and engine;
 //! implementations in this crate or in adapters.
 
-use std::collections::{HashMap, HashSet};
-use std::sync::Arc;
-use std::time::Duration;
+use std::{
+    collections::{HashMap, HashSet},
+    sync::Arc,
+    time::Duration,
+};
 
 use async_trait::async_trait;
 use nebula_core::{ExecutionId, NodeId, WorkflowId};

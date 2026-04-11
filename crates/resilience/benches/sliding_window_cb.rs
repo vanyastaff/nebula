@@ -1,8 +1,8 @@
 //! Micro-benchmarks for the circuit breaker's internal `OutcomeWindow`.
 //!
 //! Measures the two core operations:
-//! - **`failure_count` / `slow_count`** — contiguous-byte sum over the active slice.
-//!   With `Box<[u8]>` LLVM auto-vectorizes at window sizes ≥ ~32 entries.
+//! - **`failure_count` / `slow_count`** — contiguous-byte sum over the active slice. With
+//!   `Box<[u8]>` LLVM auto-vectorizes at window sizes ≥ ~32 entries.
 //! - **`record`** — write to two byte arrays + ring-pointer advance.
 //!
 //! Also benchmarks `record_outcome` on a `CircuitBreaker` configured with a rate
@@ -14,11 +14,13 @@
 //! cargo bench -p nebula-resilience --bench sliding_window_cb
 //! ```
 
+use std::{hint::black_box, time::Duration};
+
 use criterion::{BenchmarkId, Criterion, criterion_group, criterion_main};
-use nebula_resilience::OutcomeWindow;
-use nebula_resilience::circuit_breaker::{CircuitBreaker, CircuitBreakerConfig, Outcome};
-use std::hint::black_box;
-use std::time::Duration;
+use nebula_resilience::{
+    OutcomeWindow,
+    circuit_breaker::{CircuitBreaker, CircuitBreakerConfig, Outcome},
+};
 
 // ── failure_count / slow_count ────────────────────────────────────────────────
 

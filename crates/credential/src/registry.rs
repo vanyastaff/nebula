@@ -4,14 +4,12 @@
 //! deserialize and project stored credentials without knowing the concrete
 //! [`Credential`](crate::credential::Credential) type at compile time.
 
-use std::collections::HashMap;
-use std::fmt;
-use std::sync::Arc;
+use std::{collections::HashMap, fmt, sync::Arc};
 
-use crate::credential::Credential;
-use crate::state::CredentialState;
+use crate::{credential::Credential, state::CredentialState};
 
-/// A function that projects stored bytes into a type-erased [`AuthScheme`](nebula_core::AuthScheme).
+/// A function that projects stored bytes into a type-erased
+/// [`AuthScheme`](nebula_core::AuthScheme).
 ///
 /// Registered per `state_kind`, called by the resolver during
 /// type-erased resolution.
@@ -150,8 +148,7 @@ pub enum RegistryError {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::credentials::ApiKeyCredential;
-    use crate::scheme::SecretToken;
+    use crate::{credentials::ApiKeyCredential, scheme::SecretToken};
 
     #[test]
     fn register_and_project_secret_token() {

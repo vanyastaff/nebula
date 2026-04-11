@@ -2,8 +2,9 @@
 //!
 //! This module defines the AST structure for parsed expressions.
 
-use serde_json::Value;
 use std::sync::Arc;
+
+use serde_json::Value;
 
 /// An expression node in the AST
 #[derive(Debug, Clone, PartialEq)]

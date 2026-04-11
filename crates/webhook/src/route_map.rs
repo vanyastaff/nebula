@@ -1,10 +1,12 @@
 //! Route mapping for webhook paths
 
-use crate::{Error, Result, WebhookPayload};
-use dashmap::DashMap;
 use std::sync::Arc;
+
+use dashmap::DashMap;
 use tokio::sync::broadcast;
 use tracing::{debug, warn};
+
+use crate::{Error, Result, WebhookPayload};
 
 /// Capacity for broadcast channels
 const DEFAULT_CHANNEL_CAPACITY: usize = 64;
@@ -137,8 +139,9 @@ pub(crate) type SharedRouteMap = Arc<RouteMap>;
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use bytes::Bytes;
+
+    use super::*;
 
     fn create_test_payload(path: &str) -> WebhookPayload {
         WebhookPayload::new(

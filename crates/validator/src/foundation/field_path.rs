@@ -4,8 +4,7 @@
 //! JSON Pointer string. It guarantees the path is well-formed at construction
 //! time and provides typed operations for composition and segment access.
 
-use std::borrow::Cow;
-use std::fmt;
+use std::{borrow::Cow, fmt};
 
 use super::error::to_json_pointer;
 
@@ -51,9 +50,15 @@ impl FieldPath {
     /// ```
     /// use nebula_validator::foundation::FieldPath;
     ///
-    /// assert_eq!(FieldPath::parse("user.name").unwrap().as_str(), "/user/name");
+    /// assert_eq!(
+    ///     FieldPath::parse("user.name").unwrap().as_str(),
+    ///     "/user/name"
+    /// );
     /// assert_eq!(FieldPath::parse("items[0]").unwrap().as_str(), "/items/0");
-    /// assert_eq!(FieldPath::parse("/already/pointer").unwrap().as_str(), "/already/pointer");
+    /// assert_eq!(
+    ///     FieldPath::parse("/already/pointer").unwrap().as_str(),
+    ///     "/already/pointer"
+    /// );
     /// assert!(FieldPath::parse("").is_none());
     /// ```
     #[must_use]

@@ -6,8 +6,7 @@
 
 use serde_json::Value;
 
-use crate::core::error::ConfigError;
-use crate::core::result::ConfigResult;
+use crate::core::{error::ConfigError, result::ConfigResult};
 
 /// Interpolate environment variable references in a JSON value tree.
 ///
@@ -167,8 +166,9 @@ fn resolve_reference(input: &str, start: usize) -> ConfigResult<(String, String,
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use serde_json::json;
+
+    use super::*;
 
     #[test]
     fn resolves_env_variable() {

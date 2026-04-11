@@ -4,21 +4,23 @@
 //! stable context for StatelessAction/StatefulAction/ResourceAction;
 //! [`TriggerContext`] is used by TriggerAction.
 
-use std::any::Any;
-use std::fmt;
-use std::sync::Arc;
+use std::{any::Any, fmt, sync::Arc};
 
-use nebula_core::AuthScheme;
-use nebula_core::id::{ExecutionId, NodeId, WorkflowId};
-use tokio_util::sync::CancellationToken;
-
-use crate::capability::{
-    ActionLogger, ExecutionEmitter, ResourceAccessor, TriggerScheduler, default_action_logger,
-    default_execution_emitter, default_resource_accessor, default_trigger_scheduler,
+use nebula_core::{
+    AuthScheme,
+    id::{ExecutionId, NodeId, WorkflowId},
 };
-use crate::error::ActionError;
 use nebula_credential::{
     CredentialAccessor, CredentialGuard, CredentialSnapshot, default_credential_accessor,
+};
+use tokio_util::sync::CancellationToken;
+
+use crate::{
+    capability::{
+        ActionLogger, ExecutionEmitter, ResourceAccessor, TriggerScheduler, default_action_logger,
+        default_execution_emitter, default_resource_accessor, default_trigger_scheduler,
+    },
+    error::ActionError,
 };
 
 /// Base trait for action execution contexts.
@@ -255,14 +257,13 @@ impl TriggerContext {
 /// implement it on their own context types; the crate's forward-
 /// compatibility contract is:
 ///
-/// - New credential helpers added to this trait will **always** ship
-///   with a default implementation built on top of
-///   [`Self::credentials`]. Downstream impls will not need to add
-///   new methods to stay compatible with new crate versions.
-/// - The required method [`Self::credentials`] will not change
-///   signature without a major version bump of `nebula-action`.
-/// - The trait itself may gain new default methods in minor versions;
-///   those default methods are non-breaking additions for implementors.
+/// - New credential helpers added to this trait will **always** ship with a default implementation
+///   built on top of [`Self::credentials`]. Downstream impls will not need to add new methods to
+///   stay compatible with new crate versions.
+/// - The required method [`Self::credentials`] will not change signature without a major version
+///   bump of `nebula-action`.
+/// - The trait itself may gain new default methods in minor versions; those default methods are
+///   non-breaking additions for implementors.
 pub trait CredentialContextExt {
     /// Access the underlying credential accessor.
     ///
@@ -288,10 +289,10 @@ pub trait CredentialContextExt {
     ///
     /// # Errors
     ///
-    /// - Returns [`ActionError::Fatal`] if the credential does not exist or the
-    ///   accessor is not configured.
-    /// - Returns [`ActionError::Fatal`] if the stored scheme type does not match
-    ///   `S` (scheme mismatch).
+    /// - Returns [`ActionError::Fatal`] if the credential does not exist or the accessor is not
+    ///   configured.
+    /// - Returns [`ActionError::Fatal`] if the stored scheme type does not match `S` (scheme
+    ///   mismatch).
     ///
     /// # Examples
     ///
@@ -386,7 +387,6 @@ impl fmt::Debug for TriggerContext {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use std::time::Duration;
 
     use async_trait::async_trait;
@@ -395,6 +395,7 @@ mod tests {
         scheme::ConnectionUri,
     };
 
+    use super::*;
     use crate::capability::{ActionLogLevel, ActionLogger, ExecutionEmitter, TriggerScheduler};
 
     struct MockContext {

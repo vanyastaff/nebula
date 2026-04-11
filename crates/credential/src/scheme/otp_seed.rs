@@ -1,9 +1,9 @@
 //! TOTP/HOTP seed for one-time passcode generation.
 
 use nebula_core::SecretString;
+use serde::{Deserialize, Serialize};
 
 use crate::AuthScheme;
-use serde::{Deserialize, Serialize};
 
 /// Seed material for generating TOTP or HOTP one-time passcodes.
 ///
@@ -14,11 +14,10 @@ use serde::{Deserialize, Serialize};
 /// # Examples
 ///
 /// ```
-/// use nebula_credential::scheme::OtpSeed;
 /// use nebula_core::SecretString;
+/// use nebula_credential::scheme::OtpSeed;
 ///
-/// let seed = OtpSeed::new(SecretString::new("JBSWY3DPEHPK3PXP"), "SHA1", 6)
-///     .with_period(30);
+/// let seed = OtpSeed::new(SecretString::new("JBSWY3DPEHPK3PXP"), "SHA1", 6).with_period(30);
 /// ```
 #[derive(Clone, Serialize, Deserialize, AuthScheme)]
 #[auth_scheme(pattern = OneTimePasscode)]

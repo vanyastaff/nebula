@@ -16,9 +16,13 @@
 // understand the import pattern.
 // ============================================================================
 
-use std::sync::Arc;
-use std::sync::atomic::{AtomicU64, Ordering};
-use std::time::Duration;
+use std::{
+    sync::{
+        Arc,
+        atomic::{AtomicU64, Ordering},
+    },
+    time::Duration,
+};
 
 use nebula_core::{ExecutionId, ResourceKey, resource_key};
 use nebula_resource::{
@@ -28,8 +32,10 @@ use nebula_resource::{
     error::{Error, ErrorKind},
     resource::{Resource, ResourceConfig, ResourceMetadata},
     runtime::{TopologyRuntime, pool::PoolRuntime, resident::ResidentRuntime},
-    topology::pooled::{BrokenCheck, InstanceMetrics, Pooled, RecycleDecision},
-    topology::resident::Resident,
+    topology::{
+        pooled::{BrokenCheck, InstanceMetrics, Pooled, RecycleDecision},
+        resident::Resident,
+    },
 };
 
 // ============================================================================

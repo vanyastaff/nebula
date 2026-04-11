@@ -6,10 +6,10 @@
 
 use serde_json::Value;
 
-use crate::display_mode::DisplayMode;
-use crate::parameter::Parameter;
-use crate::parameter_type::ParameterType;
-use crate::values::ParameterValues;
+use crate::{
+    display_mode::DisplayMode, parameter::Parameter, parameter_type::ParameterType,
+    values::ParameterValues,
+};
 
 /// Maximum recursion depth for nested normalization.
 const MAX_NORMALIZE_DEPTH: u8 = 16;
@@ -25,9 +25,9 @@ const MAX_NORMALIZE_DEPTH: u8 = 16;
 /// # Examples
 ///
 /// ```
-/// use nebula_parameter::parameter::Parameter;
-/// use nebula_parameter::values::ParameterValues;
-/// use nebula_parameter::normalize::normalize_parameters;
+/// use nebula_parameter::{
+///     normalize::normalize_parameters, parameter::Parameter, values::ParameterValues,
+/// };
 /// use serde_json::json;
 ///
 /// let params = vec![

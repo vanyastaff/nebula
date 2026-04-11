@@ -2,8 +2,10 @@
 
 use std::collections::HashSet;
 
-use crate::metadata::ActionMetadata;
-use crate::port::{InputPort, OutputPort};
+use crate::{
+    metadata::ActionMetadata,
+    port::{InputPort, OutputPort},
+};
 
 /// Validation error for action package integrity checks.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]

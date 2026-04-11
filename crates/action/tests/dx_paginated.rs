@@ -3,14 +3,16 @@
 //! Validates that the macro-generated `StatefulAction` impl correctly drives
 //! cursor-based pagination through the `StatefulTestHarness`.
 
-use nebula_action::action::Action;
-use nebula_action::context::Context;
-use nebula_action::dependency::ActionDependencies;
-use nebula_action::error::ActionError;
-use nebula_action::metadata::ActionMetadata;
-use nebula_action::result::ActionResult;
-use nebula_action::stateful::{PageResult, PaginatedAction};
-use nebula_action::testing::{StatefulTestHarness, TestContextBuilder};
+use nebula_action::{
+    action::Action,
+    context::Context,
+    dependency::ActionDependencies,
+    error::ActionError,
+    metadata::ActionMetadata,
+    result::ActionResult,
+    stateful::{PageResult, PaginatedAction},
+    testing::{StatefulTestHarness, TestContextBuilder},
+};
 use nebula_core::action_key;
 
 // ── NumberPaginator ────────────────────────────────────────────────────────

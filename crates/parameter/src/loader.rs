@@ -7,13 +7,9 @@
 //! Loaders are **not serialized** — they live only on the in-process
 //! [`Parameter`](crate::parameter::Parameter) value returned by `action.metadata()`.
 
-use std::future::Future;
-use std::pin::Pin;
-use std::sync::Arc;
+use std::{future::Future, pin::Pin, sync::Arc};
 
-use crate::filter_field::FilterField;
-use crate::loader_result::LoaderResult;
-use crate::option::SelectOption;
+use crate::{filter_field::FilterField, loader_result::LoaderResult, option::SelectOption};
 
 /// Boxed future returned by loader closures.
 pub type LoaderFuture<T> = Pin<Box<dyn Future<Output = Result<T, LoaderError>> + Send>>;
@@ -66,7 +62,6 @@ pub struct LoaderContext {
     /// The id of the field requesting a load.
     pub field_id: String,
     /// Current parameter values at the time of the request.
-    ///
     pub values: serde_json::Value,
     /// Optional text filter entered by the user (for searchable selects).
     pub filter: Option<String>,

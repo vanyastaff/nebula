@@ -3,17 +3,13 @@
 //! Resolves a username + password pair into [`IdentityPassword`]. State and
 //! Scheme are the same type via [`identity_state!`](crate::identity_state).
 
-use nebula_parameter::values::ParameterValues;
-use nebula_parameter::{Parameter, ParameterCollection};
+use nebula_parameter::{Parameter, ParameterCollection, values::ParameterValues};
 
-use crate::SecretString;
-use crate::context::CredentialContext;
-use crate::credential::Credential;
-use crate::description::CredentialDescription;
-use crate::error::CredentialError;
-use crate::pending::NoPendingState;
-use crate::resolve::StaticResolveResult;
-use crate::scheme::IdentityPassword;
+use crate::{
+    SecretString, context::CredentialContext, credential::Credential,
+    description::CredentialDescription, error::CredentialError, pending::NoPendingState,
+    resolve::StaticResolveResult, scheme::IdentityPassword,
+};
 
 /// HTTP Basic Auth credential -- resolves username + password into
 /// [`IdentityPassword`].

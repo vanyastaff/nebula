@@ -38,16 +38,13 @@ mod versions;
 
 // ── Public re-exports ─────────────────────────────────────────────────────────
 
-pub use nebula_plugin_macros::Plugin;
-
 pub use descriptor::{ActionDescriptor, CredentialDescriptor, ResourceDescriptor};
-
 pub use error::PluginError;
 pub use metadata::PluginMetadata;
+// Re-export PluginKey from core for convenience.
+pub use nebula_core::PluginKey;
+pub use nebula_plugin_macros::Plugin;
 pub use plugin::Plugin;
 pub use plugin_type::PluginType;
 pub use registry::PluginRegistry;
 pub use versions::PluginVersions;
-
-// Re-export PluginKey from core for convenience.
-pub use nebula_core::PluginKey;

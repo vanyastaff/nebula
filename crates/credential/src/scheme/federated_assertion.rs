@@ -14,8 +14,8 @@ use serde::{Deserialize, Serialize};
 /// # Examples
 ///
 /// ```
-/// use nebula_credential::scheme::FederatedAssertion;
 /// use nebula_core::SecretString;
+/// use nebula_credential::scheme::FederatedAssertion;
 ///
 /// let assertion = FederatedAssertion::new(
 ///     SecretString::new("eyJhbGciOiJSUzI1NiJ9..."),

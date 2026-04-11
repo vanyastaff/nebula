@@ -1,5 +1,4 @@
-use nebula_validator::combinators::error::CombinatorError;
-use nebula_validator::foundation::ValidationError;
+use nebula_validator::{combinators::error::CombinatorError, foundation::ValidationError};
 
 #[test]
 fn test_or_all_failed() {

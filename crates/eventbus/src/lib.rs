@@ -68,8 +68,8 @@
 //! ### Closure and Drop
 //!
 //! When a [`Subscriber`] is dropped, it automatically decrements the
-//! subscriber count. No explicit close call is required. Use [`is_closed()`](crate::Subscriber::is_closed)
-//! to check if the underlying bus has been dropped.
+//! subscriber count. No explicit close call is required. Use
+//! [`is_closed()`](crate::Subscriber::is_closed) to check if the underlying bus has been dropped.
 //!
 //! ## Architecture Note: Persistence
 //!
@@ -90,7 +90,8 @@
 //! - [`EventBusRegistry`] - multi-bus isolation by key (e.g. per-tenant buses).
 //! - [`SubscriptionScope`] and [`ScopedEvent`] - scope metadata for targeted subscriptions.
 //! - [`EventFilter`] and [`FilteredSubscriber`] - predicate-based event selection.
-//! - [`SubscriberStream`] and [`FilteredStream`] - `futures_core::Stream` adapters via `into_stream()`.
+//! - [`SubscriberStream`] and [`FilteredStream`] - `futures_core::Stream` adapters via
+//!   `into_stream()`.
 //! - [`prelude`] - convenience re-exports for common use.
 //!
 //! # Contract
@@ -121,11 +122,8 @@ pub use filter::EventFilter;
 pub use filtered_subscriber::FilteredSubscriber;
 pub use outcome::PublishOutcome;
 pub use policy::BackPressurePolicy;
-pub use registry::EventBusRegistry;
-pub use registry::EventBusRegistryStats;
-pub use scope::ScopedEvent;
-pub use scope::SubscriptionScope;
+pub use registry::{EventBusRegistry, EventBusRegistryStats};
+pub use scope::{ScopedEvent, SubscriptionScope};
 pub use stats::EventBusStats;
-pub use stream::FilteredStream;
-pub use stream::SubscriberStream;
+pub use stream::{FilteredStream, SubscriberStream};
 pub use subscriber::Subscriber;

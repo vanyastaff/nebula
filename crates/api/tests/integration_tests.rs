@@ -1,9 +1,10 @@
 //! Integration tests for Nebula API
 
+use std::sync::Arc;
+
 use nebula_api::{ApiConfig, AppState, app};
 use nebula_config::ConfigBuilder;
 use nebula_storage::{InMemoryExecutionRepo, InMemoryWorkflowRepo};
-use std::sync::Arc;
 
 const TEST_JWT_SECRET: &str = "test-secret-for-integration-tests";
 

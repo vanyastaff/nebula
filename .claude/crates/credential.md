@@ -31,3 +31,5 @@ Universal credential management: 12 auth scheme types, open AuthScheme trait, co
 
 <!-- reviewed: 2026-04-09 — added CredentialGuard, CredentialAccessor, ScopedCredentialAccessor, CredentialAccessError -->
 <!-- reviewed: 2026-04-11 — `resolver.rs` CAS retry test lock migrated from `std::sync::Mutex<()>` to `LazyLock<tokio::sync::Mutex<()>>`. The lock serialises two `#[tokio::test]` bodies that share the `CAS_REFRESH_COUNT` static, and was being held across every `.await` — `std::sync::Mutex` trips `clippy::await_holding_lock` and would make the future `!Send`. No production-path change. -->
+
+<!-- reviewed: 2026-04-11 — Workspace-wide nightly rustfmt pass applied (group_imports = "StdExternalCrate", imports_granularity = "Crate", wrap_comments, format_code_in_doc_comments). Touches every Rust file in the crate; purely formatting, zero behavior change. -->

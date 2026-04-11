@@ -2,9 +2,10 @@
 //!
 //! Defines when and how credentials should be rotated.
 
+use std::time::Duration;
+
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
-use std::time::Duration;
 
 use super::error::{RotationError, RotationResult};
 
@@ -21,14 +22,18 @@ use super::error::{RotationError, RotationResult};
 /// Rotate credentials every 90 days for PCI-DSS compliance:
 ///
 /// ```
-/// use nebula_credential::rotation::{RotationPolicy, PeriodicConfig};
 /// use std::time::Duration;
 ///
-/// let policy = RotationPolicy::Periodic(PeriodicConfig::new(
-///     Duration::from_secs(90 * 24 * 3600), // 90 days
-///     Duration::from_secs(24 * 3600),      // 24 hours grace
-///     true,                                // enable jitter
-/// ).unwrap());
+/// use nebula_credential::rotation::{PeriodicConfig, RotationPolicy};
+///
+/// let policy = RotationPolicy::Periodic(
+///     PeriodicConfig::new(
+///         Duration::from_secs(90 * 24 * 3600), // 90 days
+///         Duration::from_secs(24 * 3600),      // 24 hours grace
+///         true,                                // enable jitter
+///     )
+///     .unwrap(),
+/// );
 /// ```
 ///
 /// ## Before Expiry (OAuth Tokens)
@@ -36,14 +41,18 @@ use super::error::{RotationError, RotationResult};
 /// Rotate OAuth tokens at 80% of TTL to prevent expiration:
 ///
 /// ```
-/// use nebula_credential::rotation::{RotationPolicy, BeforeExpiryConfig};
 /// use std::time::Duration;
 ///
-/// let policy = RotationPolicy::BeforeExpiry(BeforeExpiryConfig::new(
-///     0.80,                              // Rotate at 80% TTL
-///     Duration::from_secs(3600),         // Don't rotate if TTL < 1 hour
-///     Duration::from_secs(600),          // 10 minutes grace period
-/// ).unwrap());
+/// use nebula_credential::rotation::{BeforeExpiryConfig, RotationPolicy};
+///
+/// let policy = RotationPolicy::BeforeExpiry(
+///     BeforeExpiryConfig::new(
+///         0.80,                      // Rotate at 80% TTL
+///         Duration::from_secs(3600), // Don't rotate if TTL < 1 hour
+///         Duration::from_secs(600),  // 10 minutes grace period
+///     )
+///     .unwrap(),
+/// );
 /// ```
 ///
 /// ## Scheduled (Maintenance Window)
@@ -51,15 +60,19 @@ use super::error::{RotationError, RotationResult};
 /// Rotate during planned maintenance with notifications:
 ///
 /// ```
-/// use nebula_credential::rotation::{RotationPolicy, ScheduledConfig};
-/// use chrono::{Utc, Duration};
 /// use std::time::Duration as StdDuration;
 ///
-/// let policy = RotationPolicy::Scheduled(ScheduledConfig::new(
-///     Utc::now() + Duration::days(7),
-///     StdDuration::from_secs(3600),                     // 1 hour grace period
-///     Some(StdDuration::from_secs(24 * 3600)),          // Notify 24h before
-/// ).unwrap());
+/// use chrono::{Duration, Utc};
+/// use nebula_credential::rotation::{RotationPolicy, ScheduledConfig};
+///
+/// let policy = RotationPolicy::Scheduled(
+///     ScheduledConfig::new(
+///         Utc::now() + Duration::days(7),
+///         StdDuration::from_secs(3600), // 1 hour grace period
+///         Some(StdDuration::from_secs(24 * 3600)), // Notify 24h before
+///     )
+///     .unwrap(),
+/// );
 /// ```
 ///
 /// ## Manual (Security Incident)
@@ -67,7 +80,7 @@ use super::error::{RotationError, RotationResult};
 /// Emergency rotation with immediate revocation:
 ///
 /// ```
-/// use nebula_credential::rotation::{RotationPolicy, ManualConfig};
+/// use nebula_credential::rotation::{ManualConfig, RotationPolicy};
 ///
 /// // Emergency: revoke immediately
 /// let emergency = RotationPolicy::Manual(ManualConfig::emergency());
@@ -75,7 +88,7 @@ use super::error::{RotationError, RotationResult};
 /// // Planned manual rotation with grace period
 /// use std::time::Duration;
 /// let planned = RotationPolicy::Manual(
-///     ManualConfig::planned(Duration::from_secs(3600)) // 1 hour grace
+///     ManualConfig::planned(Duration::from_secs(3600)), // 1 hour grace
 /// );
 /// ```
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -247,14 +260,16 @@ impl PeriodicConfig {
     /// # Example
     ///
     /// ```
-    /// use nebula_credential::rotation::PeriodicConfig;
     /// use std::time::Duration;
+    ///
+    /// use nebula_credential::rotation::PeriodicConfig;
     ///
     /// let config = PeriodicConfig::new(
     ///     Duration::from_secs(90 * 24 * 3600), // 90 days
     ///     Duration::from_secs(24 * 3600),      // 24 hours
     ///     true,
-    /// ).unwrap();
+    /// )
+    /// .unwrap();
     /// ```
     pub fn new(
         interval: Duration,
@@ -331,14 +346,16 @@ impl BeforeExpiryConfig {
     /// # Example
     ///
     /// ```
-    /// use nebula_credential::rotation::BeforeExpiryConfig;
     /// use std::time::Duration;
     ///
+    /// use nebula_credential::rotation::BeforeExpiryConfig;
+    ///
     /// let config = BeforeExpiryConfig::new(
-    ///     0.80, // Rotate at 80% TTL
-    ///     Duration::from_secs(3600),  // 1 hour minimum
-    ///     Duration::from_secs(600),   // 10 minutes grace
-    /// ).unwrap();
+    ///     0.80,                      // Rotate at 80% TTL
+    ///     Duration::from_secs(3600), // 1 hour minimum
+    ///     Duration::from_secs(600),  // 10 minutes grace
+    /// )
+    /// .unwrap();
     /// ```
     pub fn new(
         threshold_percentage: f32,
@@ -426,15 +443,17 @@ impl ScheduledConfig {
     /// # Example
     ///
     /// ```
-    /// use nebula_credential::rotation::ScheduledConfig;
-    /// use chrono::{Utc, Duration as ChronoDuration};
     /// use std::time::Duration;
+    ///
+    /// use chrono::{Duration as ChronoDuration, Utc};
+    /// use nebula_credential::rotation::ScheduledConfig;
     ///
     /// let config = ScheduledConfig::new(
     ///     Utc::now() + ChronoDuration::days(7),
     ///     Duration::from_secs(3600),
     ///     Some(Duration::from_secs(24 * 3600)), // Notify 24h before
-    /// ).unwrap();
+    /// )
+    /// .unwrap();
     /// ```
     pub fn new(
         scheduled_at: DateTime<Utc>,

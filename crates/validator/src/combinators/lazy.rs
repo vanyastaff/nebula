@@ -1,7 +1,8 @@
 //! LAZY combinator - deferred validator initialization
 
-use crate::foundation::{Validate, ValidationError};
 use std::sync::OnceLock;
+
+use crate::foundation::{Validate, ValidationError};
 
 // ============================================================================
 // LAZY COMBINATOR
@@ -109,9 +110,12 @@ where
 
 #[cfg(test)]
 mod tests {
+    use std::sync::{
+        Arc,
+        atomic::{AtomicUsize, Ordering},
+    };
+
     use super::*;
-    use std::sync::Arc;
-    use std::sync::atomic::{AtomicUsize, Ordering};
 
     struct MinLength {
         min: usize,

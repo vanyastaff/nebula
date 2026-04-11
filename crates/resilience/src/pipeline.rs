@@ -5,13 +5,9 @@
 //!
 //! Layers are applied in the order added: first added = outermost.
 
-use std::fmt;
-use std::future::Future;
-use std::pin::Pin;
-use std::sync::Arc;
+use std::{fmt, future::Future, pin::Pin, sync::Arc, time::Duration};
 
 use parking_lot::Mutex;
-use std::time::Duration;
 
 use crate::{
     CallError,
@@ -183,7 +179,8 @@ impl<E: Send + 'static> PipelineBuilder<E> {
 /// when `E` implements [`Classify`](nebula_error::Classify).
 impl<E: nebula_error::Classify + Send + Sync + 'static> PipelineBuilder<E> {
     /// Use [`NebulaClassifier`](crate::classifier::NebulaClassifier) to automatically
-    /// map [`ErrorCategory`](nebula_error::ErrorCategory) to [`ErrorClass`](crate::classifier::ErrorClass).
+    /// map [`ErrorCategory`](nebula_error::ErrorCategory) to
+    /// [`ErrorClass`](crate::classifier::ErrorClass).
     ///
     /// This is the recommended default for pipelines where `E: Classify`.
     #[must_use]
@@ -517,10 +514,13 @@ fn map_retry_result<T, E: Send>(
 
 #[cfg(test)]
 mod tests {
+    use std::{
+        sync::atomic::{AtomicU32, Ordering},
+        time::Duration,
+    };
+
     use super::*;
     use crate::{CallError, CircuitBreaker, retry::BackoffConfig};
-    use std::sync::atomic::{AtomicU32, Ordering};
-    use std::time::Duration;
 
     #[tokio::test]
     async fn pipeline_timeout_wraps_retry() {
@@ -624,8 +624,10 @@ mod tests {
 
     #[tokio::test]
     async fn pipeline_cb_half_open_allows_single_probe() {
-        use crate::circuit_breaker::{CircuitBreakerConfig, Outcome};
-        use crate::sink::CircuitState;
+        use crate::{
+            circuit_breaker::{CircuitBreakerConfig, Outcome},
+            sink::CircuitState,
+        };
 
         let cb = Arc::new(
             CircuitBreaker::new(CircuitBreakerConfig {

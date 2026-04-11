@@ -6,12 +6,13 @@
 // Reason: webhook crate still uses v1 compat types (Context/Scope); migration tracked separately.
 #![allow(deprecated)]
 
+use std::sync::Arc;
+
 use async_trait::async_trait;
 use nebula_core::{ExecutionId, WorkflowId};
 use nebula_resource::{Context, Scope};
 use nebula_webhook::prelude::*;
 use serde::{Deserialize, Serialize};
-use std::sync::Arc;
 
 const BOT_TOKEN: &str = "8582438389:AAGfJHsC6OdCl3o_LmkZ3uRDjMdzCDJEWtw";
 const TELEGRAM_API: &str = "https://api.telegram.org";

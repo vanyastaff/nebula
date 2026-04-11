@@ -7,26 +7,22 @@
 //!         -> gets ResourceHandle
 //!           -> downcasts to the concrete instance type
 
-use std::collections::HashMap;
-use std::sync::Arc;
+use std::{collections::HashMap, sync::Arc};
 
-use nebula_action::ActionError;
-use nebula_action::action::Action;
-use nebula_action::context::Context;
-use nebula_action::dependency::ActionDependencies;
-use nebula_action::metadata::ActionMetadata;
-use nebula_action::result::ActionResult;
-use nebula_action::stateless::StatelessAction;
-use nebula_core::ActionKey;
-use nebula_core::Version;
-use nebula_core::action_key;
-use nebula_core::id::{NodeId, WorkflowId};
+use nebula_action::{
+    ActionError, action::Action, context::Context, dependency::ActionDependencies,
+    metadata::ActionMetadata, result::ActionResult, stateless::StatelessAction,
+};
+use nebula_core::{
+    ActionKey, Version, action_key,
+    id::{NodeId, WorkflowId},
+};
 use nebula_engine::WorkflowEngine;
 use nebula_execution::context::ExecutionBudget;
 use nebula_resource::Manager;
-use nebula_runtime::registry::ActionRegistry;
-use nebula_runtime::{ActionExecutor, InProcessSandbox};
-use nebula_runtime::{ActionRuntime, DataPassingPolicy};
+use nebula_runtime::{
+    ActionExecutor, ActionRuntime, DataPassingPolicy, InProcessSandbox, registry::ActionRegistry,
+};
 use nebula_telemetry::metrics::MetricsRegistry;
 use nebula_workflow::{NodeDefinition, WorkflowConfig, WorkflowDefinition};
 
@@ -102,10 +98,9 @@ fn meta(key: ActionKey) -> ActionMetadata {
 /// via `ctx.resource("mock")` and returns the instance value as output.
 #[tokio::test]
 async fn action_acquires_resource_through_engine() {
-    // 1. Create an empty resource manager (no mock resource registered yet
-    //    because the v2 API requires topology + release queue setup; the
-    //    action handler returns a placeholder anyway until context wiring
-    //    is complete).
+    // 1. Create an empty resource manager (no mock resource registered yet because the v2 API
+    //    requires topology + release queue setup; the action handler returns a placeholder anyway
+    //    until context wiring is complete).
     let manager = Arc::new(Manager::new());
 
     // 2. Build the action registry

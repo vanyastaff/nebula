@@ -4,13 +4,13 @@
     reason = "Benchmark task fanout uses nested async closures and join loops by design"
 )]
 
+use std::{hint::black_box, sync::Arc};
+
 use criterion::{BenchmarkId, Criterion, criterion_group, criterion_main};
-use nebula_resilience::CallError;
-use nebula_resilience::fallback::{
-    ChainFallback, FallbackOperation, FallbackStrategy, ValueFallback,
+use nebula_resilience::{
+    CallError,
+    fallback::{ChainFallback, FallbackOperation, FallbackStrategy, ValueFallback},
 };
-use std::hint::black_box;
-use std::sync::Arc;
 
 fn fallback_call_overhead(c: &mut Criterion) {
     let mut group = c.benchmark_group("fallback/call");

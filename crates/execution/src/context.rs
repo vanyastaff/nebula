@@ -12,8 +12,9 @@ use nebula_core::ExecutionId;
 /// # Examples
 ///
 /// ```
-/// use nebula_execution::context::ExecutionBudget;
 /// use std::time::Duration;
+///
+/// use nebula_execution::context::ExecutionBudget;
 ///
 /// let budget = ExecutionBudget::default()
 ///     .with_max_duration(Duration::from_secs(300))

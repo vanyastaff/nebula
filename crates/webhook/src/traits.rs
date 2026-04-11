@@ -1,8 +1,10 @@
 //! Webhook action trait
 
-use crate::{Result, TriggerCtx, WebhookPayload};
-use async_trait::async_trait;
 use std::time::Duration;
+
+use async_trait::async_trait;
+
+use crate::{Result, TriggerCtx, WebhookPayload};
 
 /// Result of a test operation
 #[derive(Debug, Clone)]
@@ -65,8 +67,8 @@ impl TestResult {
 /// # Example
 ///
 /// ```no_run
-/// use nebula_webhook::prelude::*;
 /// use async_trait::async_trait;
+/// use nebula_webhook::prelude::*;
 ///
 /// struct TelegramTrigger;
 ///

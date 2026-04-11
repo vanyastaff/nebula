@@ -16,12 +16,16 @@
 //! let limiter = TokenBucket::new(100, 10.0).unwrap();
 //! ```
 
-use std::collections::VecDeque;
-use std::fmt;
-use std::future::Future;
-use std::sync::Arc;
-use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
-use std::time::{Duration, Instant};
+use std::{
+    collections::VecDeque,
+    fmt,
+    future::Future,
+    sync::{
+        Arc,
+        atomic::{AtomicU64, AtomicUsize, Ordering},
+    },
+    time::{Duration, Instant},
+};
 
 use parking_lot::{Mutex, RwLock};
 
@@ -303,7 +307,8 @@ impl RateLimiter for LeakyBucket {
         }
     }
 
-    // Reason: f64 leak amount cast to usize and usize capacity cast to f64 — acceptable for rate reporting.
+    // Reason: f64 leak amount cast to usize and usize capacity cast to f64 — acceptable for rate
+    // reporting.
     #[allow(
         clippy::cast_precision_loss,
         clippy::cast_possible_truncation,
@@ -669,10 +674,9 @@ impl RateLimiter for AdaptiveRateLimiter {
 
 #[cfg(feature = "governor")]
 mod governor_impl {
+    use std::{fmt, num::NonZeroU32, time::Duration};
+
     use governor::{DefaultDirectRateLimiter, Quota, RateLimiter as GovernorLimiter};
-    use std::fmt;
-    use std::num::NonZeroU32;
-    use std::time::Duration;
 
     use super::RateLimiter;
     use crate::CallError;

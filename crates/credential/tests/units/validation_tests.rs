@@ -1,6 +1,5 @@
 use nebula_core::CredentialKey;
-use nebula_credential::CredentialId;
-use nebula_credential::SecretString;
+use nebula_credential::{CredentialId, SecretString};
 
 #[test]
 fn test_credential_key_valid() {

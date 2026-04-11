@@ -11,36 +11,29 @@
 //! Five handler traits model the JSON-level contract for each action kind.
 //! Each trait lives in its domain file:
 //!
-//! - [`StatelessHandler`](crate::stateless::StatelessHandler) — one-shot
-//!   JSON in, JSON out
-//! - [`StatefulHandler`](crate::stateful::StatefulHandler) — iterative with
-//!   mutable JSON state
-//! - [`TriggerHandler`](crate::trigger::TriggerHandler) — start/stop
-//!   lifecycle with [`IncomingEvent`](crate::trigger::IncomingEvent) and
-//!   [`TriggerEventOutcome`](crate::trigger::TriggerEventOutcome); webhook
-//!   and poll specializations live in [`crate::webhook`] and [`crate::poll`]
-//! - [`ResourceHandler`](crate::resource::ResourceHandler) — configure/cleanup
-//!   lifecycle
+//! - [`StatelessHandler`](crate::stateless::StatelessHandler) — one-shot JSON in, JSON out
+//! - [`StatefulHandler`](crate::stateful::StatefulHandler) — iterative with mutable JSON state
+//! - [`TriggerHandler`](crate::trigger::TriggerHandler) — start/stop lifecycle with
+//!   [`IncomingEvent`](crate::trigger::IncomingEvent) and
+//!   [`TriggerEventOutcome`](crate::trigger::TriggerEventOutcome); webhook and poll specializations
+//!   live in [`crate::webhook`] and [`crate::poll`]
+//! - [`ResourceHandler`](crate::resource::ResourceHandler) — configure/cleanup lifecycle
 //! - [`AgentHandler`] — autonomous agent (stub for Phase 9, defined here)
 //!
 //! [`ActionHandler`] itself is the sum type the engine switches on. All handler
 //! types are also re-exported at the crate root, so the canonical import is
 //! `use nebula_action::{StatelessHandler, IncomingEvent, ...}`.
 
-use std::fmt;
-use std::sync::Arc;
+use std::{fmt, sync::Arc};
 
 use async_trait::async_trait;
 use serde_json::Value;
 
-use crate::context::ActionContext;
-use crate::error::ActionError;
-use crate::metadata::ActionMetadata;
-use crate::resource::ResourceHandler;
-use crate::result::ActionResult;
-use crate::stateful::StatefulHandler;
-use crate::stateless::StatelessHandler;
-use crate::trigger::TriggerHandler;
+use crate::{
+    context::ActionContext, error::ActionError, metadata::ActionMetadata,
+    resource::ResourceHandler, result::ActionResult, stateful::StatefulHandler,
+    stateless::StatelessHandler, trigger::TriggerHandler,
+};
 
 // ── AgentHandler (stub for Phase 9) ────────────────────────────────────────
 

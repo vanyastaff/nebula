@@ -1,22 +1,22 @@
 //! Benchmarks for the `Gate` graceful-shutdown primitive.
 //!
 //! Covers:
-//! - **`enter` uncontended** — single-thread acquire + drop of `GateGuard`.
-//!   The critical path is one `try_acquire()` on a semaphore plus a closing-flag check.
-//! - **`enter` contended** — N concurrent tasks all calling `enter()` while the gate
-//!   is open.  Measures semaphore permit contention overhead.
-//! - **`is_closed` hot check** — polling the closing flag (used by long-running tasks
-//!   to detect shutdown without holding the gate).
+//! - **`enter` uncontended** — single-thread acquire + drop of `GateGuard`. The critical path is
+//!   one `try_acquire()` on a semaphore plus a closing-flag check.
+//! - **`enter` contended** — N concurrent tasks all calling `enter()` while the gate is open.
+//!   Measures semaphore permit contention overhead.
+//! - **`is_closed` hot check** — polling the closing flag (used by long-running tasks to detect
+//!   shutdown without holding the gate).
 //!
 //! Run with:
 //! ```text
 //! cargo bench -p nebula-resilience --bench gate
 //! ```
 
+use std::{hint::black_box, sync::Arc};
+
 use criterion::{BenchmarkId, Criterion, criterion_group, criterion_main};
 use nebula_resilience::gate::Gate;
-use std::hint::black_box;
-use std::sync::Arc;
 
 // ── enter / drop (uncontended) ────────────────────────────────────────────────
 

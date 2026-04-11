@@ -7,9 +7,13 @@
 //! enforces a maximum number of tracked paths (`max_paths`). Requests for
 //! paths beyond this limit pass through without per-path rate limiting.
 
-use std::sync::Arc;
-use std::sync::atomic::{AtomicUsize, Ordering};
-use std::time::Duration;
+use std::{
+    sync::{
+        Arc,
+        atomic::{AtomicUsize, Ordering},
+    },
+    time::Duration,
+};
 
 use dashmap::DashMap;
 use nebula_resilience::SlidingWindow;

@@ -3,8 +3,10 @@
 //! Like `tracing` spans, observability contexts can be nested.
 //! This module provides utilities for merging resources from parent spans.
 
-use super::context::{ExecutionContext, NodeContext};
-use super::resources::LoggerResource;
+use super::{
+    context::{ExecutionContext, NodeContext},
+    resources::LoggerResource,
+};
 
 /// Get merged LoggerResource from all active contexts (span-like)
 ///

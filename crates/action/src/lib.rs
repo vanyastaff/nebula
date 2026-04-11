@@ -104,10 +104,6 @@ pub mod webhook;
 
 // ── Public re-exports ───────────────────────────────────────────────────────
 
-pub use nebula_action_macros::Action;
-pub use nebula_credential::CredentialGuard;
-pub use nebula_parameter::{Parameter, ParameterCollection};
-
 pub use action::Action;
 pub use capability::{
     ActionLogLevel, ActionLogger, ExecutionEmitter, ResourceAccessor, TriggerScheduler,
@@ -119,6 +115,9 @@ pub use error::{
 };
 pub use handler::{ActionHandler, AgentHandler};
 pub use metadata::{ActionMetadata, InterfaceVersion, IsolationLevel, MetadataCompatibilityError};
+pub use nebula_action_macros::Action;
+pub use nebula_credential::CredentialGuard;
+pub use nebula_parameter::{Parameter, ParameterCollection};
 pub use output::{
     ActionOutput, BinaryData, BinaryStorage, BufferConfig, CacheInfo, Cost, DataReference,
     DeferredOutput, DeferredRetryConfig, DeltaFormat, ExpectedOutput, OutputEnvelope, OutputMeta,

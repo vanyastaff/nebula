@@ -9,15 +9,15 @@ use nebula_core::{ActionKey, CredentialKey, InterfaceVersion, ResourceKey};
 
 /// Describes an action provided by a plugin without constructing the handler.
 ///
-/// A descriptor is returned by [`Plugin::actions()`](crate::plugin::Plugin::actions) and lets the engine
-/// enumerate available actions at startup or on-demand without calling into
+/// A descriptor is returned by [`Plugin::actions()`](crate::plugin::Plugin::actions) and lets the
+/// engine enumerate available actions at startup or on-demand without calling into
 /// external systems.
 ///
 /// # Examples
 ///
 /// ```
-/// use nebula_plugin::descriptor::ActionDescriptor;
 /// use nebula_core::{ActionKey, InterfaceVersion};
+/// use nebula_plugin::descriptor::ActionDescriptor;
 ///
 /// let descriptor = ActionDescriptor {
 ///     key: ActionKey::new("send_message").unwrap(),
@@ -42,14 +42,14 @@ pub struct ActionDescriptor {
 
 /// Describes a credential type provided by a plugin.
 ///
-/// Returned by [`Plugin::credentials()`](crate::plugin::Plugin::credentials). The engine uses these descriptors to
-/// know which credential schemas are available without loading actual credentials.
+/// Returned by [`Plugin::credentials()`](crate::plugin::Plugin::credentials). The engine uses these
+/// descriptors to know which credential schemas are available without loading actual credentials.
 ///
 /// # Examples
 ///
 /// ```
-/// use nebula_plugin::descriptor::CredentialDescriptor;
 /// use nebula_core::CredentialKey;
+/// use nebula_plugin::descriptor::CredentialDescriptor;
 ///
 /// let descriptor = CredentialDescriptor {
 ///     key: CredentialKey::new("slack_oauth2").unwrap(),
@@ -71,14 +71,14 @@ pub struct CredentialDescriptor {
 
 /// Describes a resource type provided by a plugin.
 ///
-/// Returned by [`Plugin::resources()`](crate::plugin::Plugin::resources). Resources are long-lived objects (connection
-/// pools, HTTP clients) that actions share within a workflow run.
+/// Returned by [`Plugin::resources()`](crate::plugin::Plugin::resources). Resources are long-lived
+/// objects (connection pools, HTTP clients) that actions share within a workflow run.
 ///
 /// # Examples
 ///
 /// ```
-/// use nebula_plugin::descriptor::ResourceDescriptor;
 /// use nebula_core::ResourceKey;
+/// use nebula_plugin::descriptor::ResourceDescriptor;
 ///
 /// let descriptor = ResourceDescriptor {
 ///     key: ResourceKey::new("slack_client").unwrap(),

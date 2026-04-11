@@ -2,9 +2,9 @@
 //!
 //! Централизованная конфигурация для Nebula API server.
 
+use std::{net::SocketAddr, time::Duration};
+
 use serde::{Deserialize, Serialize};
-use std::net::SocketAddr;
-use std::time::Duration;
 
 /// API Server Configuration
 #[derive(Clone, Serialize, Deserialize)]

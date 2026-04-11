@@ -1,6 +1,6 @@
+use std::{fs, path::PathBuf};
+
 use nebula_log::{Config, DestinationFailurePolicy, WriterConfig};
-use std::fs;
-use std::path::PathBuf;
 
 #[test]
 fn writer_policy_serialization_shape_is_stable() {

@@ -5,10 +5,13 @@
 //! - Advanced combinators (When)
 //! - Nested compositions
 
-use criterion::{Criterion, criterion_group, criterion_main};
-use nebula_validator::foundation::{Validate, ValidateExt};
-use nebula_validator::validators::*;
 use std::hint::black_box;
+
+use criterion::{Criterion, criterion_group, criterion_main};
+use nebula_validator::{
+    foundation::{Validate, ValidateExt},
+    validators::*,
+};
 
 // ============================================================================
 // BASIC COMBINATORS

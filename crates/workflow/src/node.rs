@@ -1,10 +1,8 @@
 //! Node (action step) definition within a workflow.
 
-use std::collections::HashMap;
-use std::time::Duration;
+use std::{collections::HashMap, time::Duration};
 
-use nebula_core::prelude::KeyParseError;
-use nebula_core::{ActionKey, InterfaceVersion, NodeId};
+use nebula_core::{ActionKey, InterfaceVersion, NodeId, prelude::KeyParseError};
 use serde::{Deserialize, Serialize};
 
 use crate::definition::RetryConfig;
@@ -72,8 +70,8 @@ impl NodeDefinition {
     ///
     /// # Errors
     ///
-    /// Returns [`InvalidActionKey`](crate::WorkflowError::InvalidActionKey) if `action_key` is not a valid
-    /// [`ActionKey`] (lowercase alphanumeric, underscores, dots, hyphens).
+    /// Returns [`InvalidActionKey`](crate::WorkflowError::InvalidActionKey) if `action_key` is not
+    /// a valid [`ActionKey`] (lowercase alphanumeric, underscores, dots, hyphens).
     pub fn new(
         id: NodeId,
         name: impl Into<String>,

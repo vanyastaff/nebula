@@ -6,9 +6,7 @@
 
 use std::borrow::Cow;
 
-use crate::code::ErrorCode;
-use crate::details::ErrorDetail;
-use crate::retry::RetryHint;
+use crate::{code::ErrorCode, details::ErrorDetail, retry::RetryHint};
 
 impl ErrorDetail for RetryHint {}
 
@@ -327,7 +325,7 @@ impl ErrorDetail for RequestInfo {}
 /// # Examples
 ///
 /// ```
-/// use nebula_error::{ErrorDetails, DependencyInfo};
+/// use nebula_error::{DependencyInfo, ErrorDetails};
 ///
 /// let mut details = ErrorDetails::new();
 /// details.insert(DependencyInfo {
@@ -350,10 +348,10 @@ impl ErrorDetail for DependencyInfo {}
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-    use crate::codes;
-    use crate::details::ErrorDetails;
     use std::time::Duration;
+
+    use super::*;
+    use crate::{codes, details::ErrorDetails};
 
     #[test]
     fn retry_hint_stored_and_retrieved() {

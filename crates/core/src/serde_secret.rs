@@ -6,8 +6,9 @@
 //!
 //! Use with `#[serde(with = "nebula_core::serde_secret")]` on `SecretString` fields.
 
-use crate::SecretString;
 use serde::{Deserialize, Deserializer, Serializer};
+
+use crate::SecretString;
 
 /// Serialize the actual secret value (for encrypted-at-rest storage only).
 pub fn serialize<S: Serializer>(secret: &SecretString, s: S) -> Result<S::Ok, S::Error> {

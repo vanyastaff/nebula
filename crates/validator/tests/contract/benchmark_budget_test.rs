@@ -9,8 +9,9 @@
 //! - Memory layout contracts (ValidationError size)
 //! - Budget values are sane (positive, within bounds)
 
-use serde_json::Value;
 use std::fs;
+
+use serde_json::Value;
 
 // ============================================================================
 // BUDGET FIXTURE INTEGRITY

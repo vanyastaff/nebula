@@ -4,18 +4,18 @@
 //! resource. It bundles the resource implementation, hot-swappable config,
 //! topology runtime, release queue, and lifecycle metadata.
 
-use std::sync::Arc;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{
+    Arc,
+    atomic::{AtomicU64, Ordering},
+};
 
 use arc_swap::ArcSwap;
 
-use crate::integration::AcquireResilience;
-use crate::recovery::RecoveryGate;
-use crate::release_queue::ReleaseQueue;
-use crate::resource::Resource;
-use crate::state::ResourceStatus;
-
 use super::TopologyRuntime;
+use crate::{
+    integration::AcquireResilience, recovery::RecoveryGate, release_queue::ReleaseQueue,
+    resource::Resource, state::ResourceStatus,
+};
 
 /// Per-registration runtime holding topology + metadata.
 ///

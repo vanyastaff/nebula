@@ -1,8 +1,8 @@
-use std::sync::Arc;
-use std::time::Duration;
+use std::{sync::Arc, time::Duration};
 
-use nebula_action::testing::SpyEmitter;
-use nebula_action::{ActionContext, ActionHandler, ActionResult, BreakReason, TriggerContext};
+use nebula_action::{
+    ActionContext, ActionHandler, ActionResult, BreakReason, TriggerContext, testing::SpyEmitter,
+};
 use nebula_core::id::{ExecutionId, NodeId, WorkflowId};
 use nebula_runtime::ActionRegistry;
 use tokio_util::sync::CancellationToken;

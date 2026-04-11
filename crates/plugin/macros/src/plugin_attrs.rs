@@ -1,10 +1,9 @@
 //! Parsed `#[plugin(...)]` attributes.
 
+use nebula_macro_support::attrs;
 use proc_macro2::TokenStream as TokenStream2;
 use quote::quote;
 use syn::{Ident, Result};
-
-use nebula_macro_support::attrs;
 
 /// Parsed plugin container attributes.
 #[derive(Debug, Clone)]

@@ -1,7 +1,6 @@
 //! Execution result types.
 
-use std::collections::HashMap;
-use std::time::Duration;
+use std::{collections::HashMap, time::Duration};
 
 use nebula_core::id::{ExecutionId, NodeId};
 use nebula_execution::ExecutionStatus;

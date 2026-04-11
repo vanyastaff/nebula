@@ -4,15 +4,14 @@
 //! hook fan-out during `emit_event()`, projection of event payloads, and lookup
 //! of merged logger resources from active execution/node contexts.
 
+use std::{hint::black_box, sync::Arc, time::Duration};
+
 use criterion::{BenchmarkId, Criterion, Throughput, criterion_group, criterion_main};
 use nebula_log::observability::{
     EventFields, ExecutionContext, HookPolicy, LoggerResource, NodeContext, ObservabilityEvent,
     ObservabilityFieldValue, ObservabilityFieldVisitor, ObservabilityHook, emit_event,
     event_data_json, get_current_logger_resource, register_hook, set_hook_policy, shutdown_hooks,
 };
-use std::hint::black_box;
-use std::sync::Arc;
-use std::time::Duration;
 
 // === CONSTANTS & FIXTURES ===
 // Hook counts reflect realistic deployment shapes:

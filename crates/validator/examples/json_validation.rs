@@ -2,11 +2,11 @@
 //!
 //! Run: `cargo run -p nebula-validator --features serde --example json_validation`
 
-use nebula_validator::combinators::{json_field, json_field_optional, not, when, with_message};
-use nebula_validator::foundation::{Validate, ValidateExt};
-use nebula_validator::validators::is_true;
-use nebula_validator::validators::{contains, email, max_length, min_length};
-use nebula_validator::validators::{greater_than, in_range};
+use nebula_validator::{
+    combinators::{json_field, json_field_optional, not, when, with_message},
+    foundation::{Validate, ValidateExt},
+    validators::{contains, email, greater_than, in_range, is_true, max_length, min_length},
+};
 use serde_json::{Value, json};
 
 fn main() {

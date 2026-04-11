@@ -1,10 +1,9 @@
 //! Identity + password authentication (username/email + password).
 
 use nebula_core::SecretString;
-
-use crate::AuthScheme;
-use crate::identity_state;
 use serde::{Deserialize, Serialize};
+
+use crate::{AuthScheme, identity_state};
 
 /// Identity (username, email, or account) paired with a password.
 ///
@@ -14,8 +13,8 @@ use serde::{Deserialize, Serialize};
 /// # Examples
 ///
 /// ```
-/// use nebula_credential::scheme::IdentityPassword;
 /// use nebula_core::SecretString;
+/// use nebula_credential::scheme::IdentityPassword;
 ///
 /// let cred = IdentityPassword::new("alice@example.com", SecretString::new("hunter2"));
 /// ```

@@ -20,8 +20,8 @@ use nebula_telemetry::metrics::{Counter, MetricsRegistry};
 /// # Examples
 ///
 /// ```
-/// use nebula_telemetry::metrics::MetricsRegistry;
 /// use nebula_resource::metrics::ResourceOpsMetrics;
+/// use nebula_telemetry::metrics::MetricsRegistry;
 ///
 /// let registry = MetricsRegistry::new();
 /// let metrics = ResourceOpsMetrics::new(&registry);

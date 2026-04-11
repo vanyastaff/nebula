@@ -2,21 +2,27 @@
 //!
 //! This module implements the evaluation of parsed expression ASTs.
 
-use crate::ExpressionError;
-use crate::ast::{BinaryOp, Expr};
-use crate::builtins::BuiltinRegistry;
-use crate::context::EvaluationContext;
-use crate::error::{ExpressionErrorExt, ExpressionResult};
-use crate::policy::EvaluationPolicy;
+#[cfg(feature = "regex")]
+use std::collections::HashMap;
+use std::sync::{
+    Arc,
+    atomic::{AtomicUsize, Ordering},
+};
+
 #[cfg(feature = "regex")]
 use parking_lot::Mutex;
 #[cfg(feature = "regex")]
 use regex::Regex;
 use serde_json::{Number, Value};
-#[cfg(feature = "regex")]
-use std::collections::HashMap;
-use std::sync::Arc;
-use std::sync::atomic::{AtomicUsize, Ordering};
+
+use crate::{
+    ExpressionError,
+    ast::{BinaryOp, Expr},
+    builtins::BuiltinRegistry,
+    context::EvaluationContext,
+    error::{ExpressionErrorExt, ExpressionResult},
+    policy::EvaluationPolicy,
+};
 
 /// Maximum recursion depth for expression evaluation
 const MAX_RECURSION_DEPTH: usize = 256;
@@ -1433,8 +1439,7 @@ impl Evaluator {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::builtins::BuiltinRegistry;
-    use crate::policy::EvaluationPolicy;
+    use crate::{builtins::BuiltinRegistry, policy::EvaluationPolicy};
 
     fn create_evaluator() -> Evaluator {
         let registry = Arc::new(BuiltinRegistry::new());

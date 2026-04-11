@@ -7,12 +7,12 @@
 //!
 //! This crate provides:
 //! - **[`naming`]** — standard `nebula_*` metric name constants
-//! - **[`TelemetryAdapter`]** — adapter over `nebula-telemetry::MetricsRegistry` that records
-//!   using those names
-//! - **[`snapshot`]** — Prometheus text-format export with `# HELP`, `# TYPE` metadata
-//!   and per-bucket histogram output
-//! - **[`filter::LabelAllowlist`]** — allowlist that strips high-cardinality label keys
-//!   before they reach the registry (prevents cardinality explosion)
+//! - **[`TelemetryAdapter`]** — adapter over `nebula-telemetry::MetricsRegistry` that records using
+//!   those names
+//! - **[`snapshot`]** — Prometheus text-format export with `# HELP`, `# TYPE` metadata and
+//!   per-bucket histogram output
+//! - **[`filter::LabelAllowlist`]** — allowlist that strips high-cardinality label keys before they
+//!   reach the registry (prevents cardinality explosion)
 //! - **[`prelude`]** — convenience re-exports for common types
 //!
 //! In-memory primitives (Counter, Gauge, Histogram) remain in `nebula-telemetry`; this crate
@@ -45,6 +45,5 @@ pub use naming::{
     NEBULA_WORKFLOW_EXECUTION_DURATION_SECONDS, NEBULA_WORKFLOW_EXECUTIONS_COMPLETED_TOTAL,
     NEBULA_WORKFLOW_EXECUTIONS_FAILED_TOTAL, NEBULA_WORKFLOW_EXECUTIONS_STARTED_TOTAL,
 };
-
 // Re-export for convenience so callers can use nebula_metrics::Counter etc.
 pub use nebula_telemetry::metrics::{Counter, Gauge, Histogram, MetricsRegistry};

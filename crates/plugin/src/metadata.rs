@@ -321,7 +321,10 @@ impl PluginMetadataBuilder {
     ///     .build()
     ///     .unwrap();
     ///
-    /// assert_eq!(meta.repository(), Some("https://github.com/example/slack-plugin"));
+    /// assert_eq!(
+    ///     meta.repository(),
+    ///     Some("https://github.com/example/slack-plugin")
+    /// );
     /// ```
     pub fn repository(mut self, url: impl Into<String>) -> Self {
         self.repository = Some(url.into());

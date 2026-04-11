@@ -11,15 +11,15 @@
 //! This allows each credential type (MySQL, PostgreSQL, OAuth2, etc.) to implement
 //! their own validation logic using their specific client libraries.
 
-use async_trait::async_trait;
-use serde::{Deserialize, Serialize};
 use std::time::Duration;
 
-use crate::metadata::CredentialMetadata;
+use async_trait::async_trait;
 use nebula_core::CredentialId;
+use serde::{Deserialize, Serialize};
+use tokio::time::timeout;
 
 use super::error::{RotationError, RotationResult};
-use tokio::time::timeout;
+use crate::metadata::CredentialMetadata;
 
 // ── Rotation-specific traits ──────────────────────────────────────────────
 

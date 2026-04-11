@@ -40,7 +40,10 @@
 //! use nebula_validator::Rule;
 //! use serde_json::json;
 //!
-//! let rule = Rule::MinLength { min: 3, message: None };
+//! let rule = Rule::MinLength {
+//!     min: 3,
+//!     message: None,
+//! };
 //! assert!(rule.validate_value(&json!("alice")).is_ok());
 //! assert!(rule.validate_value(&json!("ab")).is_err());
 //!
@@ -71,8 +74,14 @@
 //!
 //! let rule = Rule::All {
 //!     rules: vec![
-//!         Rule::MinLength { min: 3, message: None },
-//!         Rule::MaxLength { max: 20, message: None },
+//!         Rule::MinLength {
+//!             min: 3,
+//!             message: None,
+//!         },
+//!         Rule::MaxLength {
+//!             max: 20,
+//!             message: None,
+//!         },
 //!     ],
 //! };
 //! assert!(rule.validate_value(&json!("hello")).is_ok());
@@ -95,9 +104,13 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::foundation::{Validate, ValidationError};
-use crate::validators::content::{EMAIL_PATTERN, URL_PATTERN};
-use crate::validators::{max_length, max_size, min_length, min_size};
+use crate::{
+    foundation::{Validate, ValidationError},
+    validators::{
+        content::{EMAIL_PATTERN, URL_PATTERN},
+        max_length, max_size, min_length, min_size,
+    },
+};
 
 /// Compiles a regex pattern, returning a validation error if invalid.
 fn compile_regex(pattern: &str) -> Result<regex::Regex, ValidationError> {
@@ -1007,9 +1020,11 @@ fn cmp_number_predicate(
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-    use serde_json::json;
     use std::collections::HashMap;
+
+    use serde_json::json;
+
+    use super::*;
 
     // ── Value validation ────────────────────────────────────────────────
 

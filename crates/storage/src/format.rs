@@ -3,8 +3,7 @@
 //! Allows switching between JSON (human-readable) and MessagePack (compact)
 //! for persisted data without changing storage logic.
 
-use serde::Serialize;
-use serde::de::DeserializeOwned;
+use serde::{Serialize, de::DeserializeOwned};
 
 /// Storage serialization format.
 ///

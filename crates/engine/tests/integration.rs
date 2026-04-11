@@ -2,32 +2,32 @@
 //!
 //! These tests exercise the full stack: workflow → engine → runtime → sandbox → handler.
 
-use std::collections::HashMap;
-use std::sync::Arc;
-use std::sync::atomic::{AtomicUsize, Ordering};
-use std::time::Duration;
+use std::{
+    collections::HashMap,
+    sync::{
+        Arc,
+        atomic::{AtomicUsize, Ordering},
+    },
+    time::Duration,
+};
 
-use nebula_action::ActionError;
-use nebula_action::action::Action;
-use nebula_action::context::Context;
-use nebula_action::dependency::ActionDependencies;
-use nebula_action::metadata::ActionMetadata;
-use nebula_action::result::ActionResult;
-use nebula_action::stateless::StatelessAction;
-use nebula_core::ActionKey;
-use nebula_core::Version;
-use nebula_core::action_key;
-use nebula_core::id::{NodeId, WorkflowId};
+use nebula_action::{
+    ActionError, action::Action, context::Context, dependency::ActionDependencies,
+    metadata::ActionMetadata, result::ActionResult, stateless::StatelessAction,
+};
+use nebula_core::{
+    ActionKey, Version, action_key,
+    id::{NodeId, WorkflowId},
+};
 use nebula_engine::WorkflowEngine;
-use nebula_execution::ExecutionStatus;
-use nebula_execution::context::ExecutionBudget;
+use nebula_execution::{ExecutionStatus, context::ExecutionBudget};
 use nebula_metrics::naming::{
     NEBULA_ACTION_EXECUTIONS_TOTAL, NEBULA_WORKFLOW_EXECUTIONS_COMPLETED_TOTAL,
     NEBULA_WORKFLOW_EXECUTIONS_FAILED_TOTAL, NEBULA_WORKFLOW_EXECUTIONS_STARTED_TOTAL,
 };
-use nebula_runtime::registry::ActionRegistry;
-use nebula_runtime::{ActionExecutor, InProcessSandbox};
-use nebula_runtime::{ActionRuntime, DataPassingPolicy};
+use nebula_runtime::{
+    ActionExecutor, ActionRuntime, DataPassingPolicy, InProcessSandbox, registry::ActionRegistry,
+};
 use nebula_telemetry::metrics::MetricsRegistry;
 use nebula_workflow::{Connection, NodeDefinition, WorkflowConfig, WorkflowDefinition};
 

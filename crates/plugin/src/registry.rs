@@ -1,13 +1,10 @@
 //! In-memory plugin registry.
 
-use std::collections::HashMap;
-use std::sync::Arc;
+use std::{collections::HashMap, sync::Arc};
 
 use nebula_core::PluginKey;
 
-use crate::PluginError;
-use crate::metadata::normalize_key;
-use crate::plugin_type::PluginType;
+use crate::{PluginError, metadata::normalize_key, plugin_type::PluginType};
 
 /// In-memory registry mapping [`PluginKey`] to [`PluginType`].
 ///
@@ -15,12 +12,14 @@ use crate::plugin_type::PluginType;
 /// shared across threads.
 ///
 /// ```
-/// use nebula_plugin::{PluginRegistry, PluginType, PluginMetadata, Plugin};
+/// use nebula_plugin::{Plugin, PluginMetadata, PluginRegistry, PluginType};
 ///
 /// #[derive(Debug)]
 /// struct EchoPlugin(PluginMetadata);
 /// impl Plugin for EchoPlugin {
-///     fn metadata(&self) -> &PluginMetadata { &self.0 }
+///     fn metadata(&self) -> &PluginMetadata {
+///         &self.0
+///     }
 /// }
 ///
 /// let mut registry = PluginRegistry::new();
@@ -133,8 +132,7 @@ impl std::fmt::Debug for PluginRegistry {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::PluginMetadata;
-    use crate::plugin::Plugin;
+    use crate::{PluginMetadata, plugin::Plugin};
 
     #[derive(Debug)]
     struct StubPlugin(PluginMetadata);

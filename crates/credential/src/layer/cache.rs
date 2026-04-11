@@ -5,8 +5,10 @@
 //! sits below `EncryptionLayer` in the layer stack, so it never holds
 //! plaintext secrets.
 
-use std::sync::atomic::{AtomicU64, Ordering};
-use std::time::Duration;
+use std::{
+    sync::atomic::{AtomicU64, Ordering},
+    time::Duration,
+};
 
 use moka::future::Cache;
 
@@ -64,7 +66,10 @@ impl CacheStats {
     /// ```
     /// use nebula_credential::layer::cache::CacheStats;
     ///
-    /// let stats = CacheStats { hits: 80, misses: 20 };
+    /// let stats = CacheStats {
+    ///     hits: 80,
+    ///     misses: 20,
+    /// };
     /// assert!((stats.hit_rate() - 0.8).abs() < f64::EPSILON);
     /// ```
     #[must_use]
@@ -184,10 +189,10 @@ impl<S: CredentialStore> CredentialStore for CacheLayer<S> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::store::PutMode;
-    use crate::store_memory::InMemoryStore;
-
-    use crate::store::test_helpers::make_credential;
+    use crate::{
+        store::{PutMode, test_helpers::make_credential},
+        store_memory::InMemoryStore,
+    };
 
     #[tokio::test]
     async fn cache_hit_returns_cached() {

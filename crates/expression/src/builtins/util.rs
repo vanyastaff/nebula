@@ -1,11 +1,14 @@
 //! Utility functions
 
-use super::{check_arg_count, check_min_arg_count};
-use crate::ExpressionError;
-use crate::context::EvaluationContext;
-use crate::error::{ExpressionErrorExt, ExpressionResult};
-use crate::eval::Evaluator;
 use serde_json::Value;
+
+use super::{check_arg_count, check_min_arg_count};
+use crate::{
+    ExpressionError,
+    context::EvaluationContext,
+    error::{ExpressionErrorExt, ExpressionResult},
+    eval::Evaluator,
+};
 
 /// Get the length of a string or array
 pub fn length(

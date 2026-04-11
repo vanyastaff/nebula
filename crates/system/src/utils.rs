@@ -71,6 +71,7 @@ mod tests {
 /// # Examples
 /// ```
 /// use std::time::Duration;
+///
 /// use nebula_system::utils::format_duration;
 ///
 /// assert_eq!(format_duration(Duration::from_nanos(500)), "500ns");
@@ -173,8 +174,9 @@ impl PlatformInfo {
 
 #[cfg(test)]
 mod format_tests {
-    use super::*;
     use std::time::Duration;
+
+    use super::*;
 
     #[test]
     fn test_format_duration() {

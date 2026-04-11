@@ -15,14 +15,15 @@
 //! read the layer inspects `EncryptedData::key_id`:
 //!
 //! - If `key_id` matches `current_key_id`, decrypt normally.
-//! - If `key_id` differs from `current_key_id`, decrypt with the old key and
-//!   **re-encrypt with the current key** before returning — lazy rotation.
+//! - If `key_id` differs from `current_key_id`, decrypt with the old key and **re-encrypt with the
+//!   current key** before returning — lazy rotation.
 
-use std::collections::HashMap;
-use std::sync::Arc;
+use std::{collections::HashMap, sync::Arc};
 
-use crate::crypto::{self, EncryptionKey};
-use crate::store::{CredentialStore, PutMode, StoreError, StoredCredential};
+use crate::{
+    crypto::{self, EncryptionKey},
+    store::{CredentialStore, PutMode, StoreError, StoredCredential},
+};
 
 /// Wraps a store with AES-256-GCM encryption on the `data` field.
 ///
@@ -226,8 +227,7 @@ impl<S> EncryptionLayer<S> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::store::PutMode;
-    use crate::store_memory::InMemoryStore;
+    use crate::{store::PutMode, store_memory::InMemoryStore};
 
     fn test_key() -> Arc<EncryptionKey> {
         Arc::new(EncryptionKey::from_bytes([0x42; 32]))

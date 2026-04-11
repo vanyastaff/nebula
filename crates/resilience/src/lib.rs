@@ -9,9 +9,12 @@
 //! # Quick Start — Pipeline
 //!
 //! ```rust,no_run
-//! use nebula_resilience::{ResiliencePipeline, CallError};
-//! use nebula_resilience::retry::{RetryConfig, BackoffConfig};
 //! use std::time::Duration;
+//!
+//! use nebula_resilience::{
+//!     CallError, ResiliencePipeline,
+//!     retry::{BackoffConfig, RetryConfig},
+//! };
 //!
 //! # #[tokio::main]
 //! # async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -20,9 +23,9 @@
 //!     .retry(RetryConfig::new(3)?.backoff(BackoffConfig::exponential_default()))
 //!     .build();
 //!
-//! let _value: Result<String, _> = pipeline.call(|| Box::pin(async {
-//!     Ok::<_, String>("success".into())
-//! })).await;
+//! let _value: Result<String, _> = pipeline
+//!     .call(|| Box::pin(async { Ok::<_, String>("success".into()) }))
+//!     .await;
 //! # Ok(())
 //! # }
 //! ```
@@ -127,37 +130,32 @@ pub mod pipeline;
 // ── Re-exports ─────────────────────────────────────────────────────────────
 
 // Core types
+// Patterns
+pub use bulkhead::{Bulkhead, BulkheadConfig};
 pub use cancellation::{CancellableFuture, CancellationContext, CancellationExt};
+// ── Internals exposed for benchmarking ───────────────────────────────────────
+#[doc(hidden)]
+pub use circuit_breaker::OutcomeWindow;
+pub use circuit_breaker::{CircuitBreaker, CircuitBreakerConfig};
 pub use classifier::{
     AlwaysPermanent, AlwaysTransient, ErrorClass, ErrorClassifier, FnClassifier, NebulaClassifier,
 };
 pub use error::{CallError, CallErrorKind, CallResult, ConfigError};
-pub use policy::{ConstantLoad, LoadSignal, PolicySource};
-
-// Patterns
-pub use bulkhead::{Bulkhead, BulkheadConfig};
-pub use circuit_breaker::{CircuitBreaker, CircuitBreakerConfig};
 pub use fallback::{FallbackStrategy, ValueFallback};
+// Infrastructure
+pub use gate::{Gate, GateClosed, GateGuard};
+#[doc(hidden)]
+pub use hedge::LatencyTracker;
 pub use hedge::{HedgeConfig, HedgeExecutor};
 pub use load_shed::load_shed;
+pub use pipeline::{LoadShedPredicate, PipelineBuilder, RateLimitCheck, ResiliencePipeline};
+pub use policy::{ConstantLoad, LoadSignal, PolicySource};
 pub use rate_limiter::{AdaptiveRateLimiter, LeakyBucket, RateLimiter, SlidingWindow, TokenBucket};
 #[doc(hidden)]
 pub use retry::retry_with_inner;
 pub use retry::{BackoffConfig, JitterConfig, RetryConfig, retry, retry_with};
-pub use timeout::{TimeoutExecutor, timeout};
-
 // Observability
 pub use sink::{
     CircuitState, MetricsSink, NoopSink, RecordingSink, ResilienceEvent, ResilienceEventKind,
 };
-
-// Infrastructure
-pub use gate::{Gate, GateClosed, GateGuard};
-pub use pipeline::{LoadShedPredicate, PipelineBuilder, RateLimitCheck, ResiliencePipeline};
-
-// ── Internals exposed for benchmarking ───────────────────────────────────────
-
-#[doc(hidden)]
-pub use circuit_breaker::OutcomeWindow;
-#[doc(hidden)]
-pub use hedge::LatencyTracker;
+pub use timeout::{TimeoutExecutor, timeout};

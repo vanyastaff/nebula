@@ -6,13 +6,18 @@
 //! - Integration with external monitoring systems
 //! - Advanced observability patterns
 
-use nebula_log::info;
-use nebula_log::observability::{
-    ObservabilityEvent, ObservabilityFieldValue, ObservabilityFieldVisitor, ObservabilityHook,
-    emit_event, event_data_json, register_hook,
+use std::{
+    sync::Arc,
+    time::{SystemTime, UNIX_EPOCH},
 };
-use std::sync::Arc;
-use std::time::{SystemTime, UNIX_EPOCH};
+
+use nebula_log::{
+    info,
+    observability::{
+        ObservabilityEvent, ObservabilityFieldValue, ObservabilityFieldVisitor, ObservabilityHook,
+        emit_event, event_data_json, register_hook,
+    },
+};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Initialize logging

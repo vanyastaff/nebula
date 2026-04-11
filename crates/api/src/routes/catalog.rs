@@ -1,8 +1,8 @@
 //! Action and plugin catalog routes.
 
-use crate::handlers;
-use crate::state::AppState;
 use axum::{Router, routing::get};
+
+use crate::{handlers, state::AppState};
 
 /// Action and plugin catalog routes.
 pub fn router() -> Router<AppState> {

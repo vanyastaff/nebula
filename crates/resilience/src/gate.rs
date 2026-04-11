@@ -28,16 +28,13 @@
 //! ```
 
 // Under loom, swap std atomics for loom-instrumented equivalents.
-#[cfg(loom)]
-use loom::sync::atomic::{AtomicBool, Ordering};
 #[cfg(not(loom))]
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::{fmt, sync::Arc};
 
-use std::fmt;
-use std::sync::Arc;
-
-use tokio::sync::Semaphore;
-use tokio::time::Duration;
+#[cfg(loom)]
+use loom::sync::atomic::{AtomicBool, Ordering};
+use tokio::{sync::Semaphore, time::Duration};
 use tracing::warn; // used in Gate::close() loop
 
 // ---------------------------------------------------------------------------
@@ -105,8 +102,8 @@ impl Drop for GateGuard {
 ///
 /// - [`enter()`](Gate::enter) — acquire a guard (non-blocking). Returns
 ///   [`Err(GateClosed)`](GateClosed) if the gate is already closing.
-/// - [`close()`](Gate::close) — mark the gate as closing and asynchronously
-///   wait until all outstanding guards have been dropped.
+/// - [`close()`](Gate::close) — mark the gate as closing and asynchronously wait until all
+///   outstanding guards have been dropped.
 ///
 /// # Drop behaviour
 ///
@@ -166,11 +163,10 @@ impl Gate {
         // exists after close() has started — an invariant violation.
         //
         // With this ordering:
-        // - If closing was already true before we acquired, we drop the permit
-        //   (returns it to the semaphore so close() can drain correctly) and
-        //   return Err.
-        // - If close() runs after we read closing=false, the guard is valid and
-        //   was legitimately created before shutdown; close() will wait for it.
+        // - If closing was already true before we acquired, we drop the permit (returns it to the
+        //   semaphore so close() can drain correctly) and return Err.
+        // - If close() runs after we read closing=false, the guard is valid and was legitimately
+        //   created before shutdown; close() will wait for it.
         //
         // Happens-before note: `close()` stores `closing = true` with
         // `Ordering::Release`. The `Ordering::Acquire` load below synchronises
@@ -348,17 +344,17 @@ mod tests {
 // ---------------------------------------------------------------------------
 #[cfg(all(test, loom))]
 mod loom_tests {
+    use loom::{sync::Arc, thread};
+
     use super::*;
-    use loom::sync::Arc;
-    use loom::thread;
 
     /// Two threads race: one calls `enter()` and the other sets `closing=true`
     /// directly (simulating `close()`'s first action).  Loom exhaustively
     /// schedules all interleavings and checks that:
     ///
-    /// - After `closing` is set, a concurrent `enter()` either returns
-    ///   `Err(GateClosed)` OR the guard was already fully committed
-    ///   (acquired and flag not yet visible) — never a half-entered state.
+    /// - After `closing` is set, a concurrent `enter()` either returns `Err(GateClosed)` OR the
+    ///   guard was already fully committed (acquired and flag not yet visible) — never a
+    ///   half-entered state.
     #[test]
     fn enter_vs_close_flag_race() {
         loom::model(|| {

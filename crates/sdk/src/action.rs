@@ -5,8 +5,8 @@
 //! # Examples
 //!
 //! ```rust,no_run
-//! use nebula_sdk::action::ActionBuilder;
 //! use nebula_core::action_key;
+//! use nebula_sdk::action::ActionBuilder;
 //!
 //! let action = ActionBuilder::new(action_key!("my.action"), "My Action")
 //!     .with_description("Does something useful")
@@ -22,8 +22,8 @@ use nebula_core::ActionKey;
 /// # Examples
 ///
 /// ```
-/// use nebula_sdk::action::ActionBuilder;
 /// use nebula_core::action_key;
+/// use nebula_sdk::action::ActionBuilder;
 ///
 /// let metadata = ActionBuilder::new(action_key!("http.request"), "HTTP Request")
 ///     .with_description("Makes HTTP requests")

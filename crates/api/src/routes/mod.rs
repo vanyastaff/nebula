@@ -8,8 +8,9 @@ pub mod health;
 pub mod metrics;
 pub mod workflow;
 
-use crate::{config::ApiConfig, middleware::auth::auth_middleware, state::AppState};
 use axum::{Router, middleware};
+
+use crate::{config::ApiConfig, middleware::auth::auth_middleware, state::AppState};
 
 /// Create main router with all routes
 pub fn create_routes(state: AppState, _config: &ApiConfig) -> Router {

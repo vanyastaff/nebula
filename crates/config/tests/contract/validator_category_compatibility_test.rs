@@ -1,6 +1,7 @@
-use super::helpers::fixture_path;
 use nebula_config::core::error::ContractErrorCategory;
 use serde::Deserialize;
+
+use super::helpers::fixture_path;
 
 #[derive(Debug, Deserialize)]
 struct CategoryFixture {

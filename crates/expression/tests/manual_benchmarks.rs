@@ -1,9 +1,10 @@
 // Manual benchmarks (workaround for Rust 1.90 Windows bug)
 // Run with: cargo test --release manual_benchmarks -- --ignored --nocapture --test-threads=1
 
+use std::time::Instant;
+
 use nebula_expression::{EvaluationContext, ExpressionEngine, Template};
 use serde_json::Value;
-use std::time::Instant;
 
 const ITERATIONS: usize = 1000;
 
@@ -139,8 +140,7 @@ fn benchmark_baseline() {
     // ================================
     println!("\n{} Concurrent Benchmarks", "🔀");
 
-    use std::sync::Arc;
-    use std::thread;
+    use std::{sync::Arc, thread};
 
     let arc_engine = Arc::new(ExpressionEngine::with_cache_size(1000));
     let expr = "2 + 2";

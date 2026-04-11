@@ -3,8 +3,10 @@
 //! These traits provide common functionality that can be implemented
 //! by various types throughout the system.
 
-use super::id::{ExecutionId, NodeId, TenantId, UserId, WorkflowId};
-use super::scope::ScopeLevel;
+use super::{
+    id::{ExecutionId, NodeId, TenantId, UserId, WorkflowId},
+    scope::ScopeLevel,
+};
 
 /// Trait for entities that have a scope
 pub trait Scoped {
@@ -82,8 +84,10 @@ pub trait HasContext {
 
 #[cfg(test)]
 mod tests {
-    use super::super::id::{ExecutionId, NodeId, WorkflowId};
-    use super::*;
+    use super::{
+        super::id::{ExecutionId, NodeId, WorkflowId},
+        *,
+    };
 
     // Test implementation of Scoped
     #[derive(Debug)]

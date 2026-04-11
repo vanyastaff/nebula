@@ -8,8 +8,9 @@
 //! - Event filtering
 //! - Resource-aware hooks
 
-use nebula_log::observability::*;
 use std::sync::Arc;
+
+use nebula_log::observability::*;
 use tracing::Level;
 
 /// Custom event for workflow operations

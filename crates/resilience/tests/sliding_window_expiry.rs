@@ -4,8 +4,9 @@
 //! Before the fix, a window with 9/10 stale entries would only allow 1 new
 //! request until the deque filled up and triggered cleanup.
 
-use nebula_resilience::rate_limiter::{RateLimiter, SlidingWindow};
 use std::time::Duration;
+
+use nebula_resilience::rate_limiter::{RateLimiter, SlidingWindow};
 
 #[tokio::test]
 async fn expired_entries_do_not_block_new_requests() {

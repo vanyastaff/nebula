@@ -3,18 +3,17 @@
 //! Uses a simple key-value table (`storage_kv` by default) with
 //! `key TEXT PRIMARY KEY`, `value JSONB`, and `updated_at TIMESTAMPTZ`.
 
-use std::sync::Arc;
-use std::time::Duration;
+use std::{sync::Arc, time::Duration};
 
 use async_trait::async_trait;
-use sqlx::postgres::PgPoolOptions;
-use sqlx::types::Json;
-use sqlx::{Pool, Postgres};
-
-use crate::StorageError;
-use crate::storage::Storage;
-use crate::workflow_repo::{WorkflowRepo, WorkflowRepoError};
 use nebula_core::WorkflowId;
+use sqlx::{Pool, Postgres, postgres::PgPoolOptions, types::Json};
+
+use crate::{
+    StorageError,
+    storage::Storage,
+    workflow_repo::{WorkflowRepo, WorkflowRepoError},
+};
 
 /// Configuration for [`PostgresStorage`].
 #[derive(Clone, Debug)]

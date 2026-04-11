@@ -3,11 +3,10 @@
 //! [`RetryPolicy`](crate::retry::RetryPolicy) is a config facade that builds
 //! [`nebula_resilience::RetryConfig`] internally.
 
-use serde::{Deserialize, Serialize};
-use std::future::Future;
-use std::time::Duration;
+use std::{future::Future, time::Duration};
 
 use nebula_resilience::retry::{BackoffConfig, JitterConfig, RetryConfig};
+use serde::{Deserialize, Serialize};
 
 /// Retry policy configuration for exponential backoff
 ///
@@ -17,8 +16,9 @@ use nebula_resilience::retry::{BackoffConfig, JitterConfig, RetryConfig};
 /// # Example
 ///
 /// ```rust
-/// use nebula_credential::retry::RetryPolicy;
 /// use std::time::Duration;
+///
+/// use nebula_credential::retry::RetryPolicy;
 ///
 /// // Default policy: 5 retries, 100ms base delay, 2x multiplier
 /// let policy = RetryPolicy::default();

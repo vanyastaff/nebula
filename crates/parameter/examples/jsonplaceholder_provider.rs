@@ -9,11 +9,13 @@
 //! cargo run -p nebula-parameter --example jsonplaceholder_provider
 //! ```
 
-use nebula_parameter::loader::{LoaderContext, LoaderError};
-use nebula_parameter::loader_result::LoaderResult;
-use nebula_parameter::option::SelectOption;
-use nebula_parameter::parameter::Parameter;
-use nebula_parameter::parameter_type::ParameterType;
+use nebula_parameter::{
+    loader::{LoaderContext, LoaderError},
+    loader_result::LoaderResult,
+    option::SelectOption,
+    parameter::Parameter,
+    parameter_type::ParameterType,
+};
 
 // -- API shape ----------------------------------------------------------------
 

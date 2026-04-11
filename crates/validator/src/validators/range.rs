@@ -208,8 +208,7 @@ pub fn try_exclusive_range<T: PartialOrd + Display + Copy>(
 /// # Examples
 ///
 /// ```
-/// use nebula_validator::validators::min_i64;
-/// use nebula_validator::foundation::Validate;
+/// use nebula_validator::{foundation::Validate, validators::min_i64};
 ///
 /// assert!(min_i64(18).validate(&25_i64).is_ok());
 /// assert!(min_i64(18).validate(&10_i64).is_err());
@@ -224,8 +223,7 @@ pub fn min_i64(value: i64) -> Min<i64> {
 /// # Examples
 ///
 /// ```
-/// use nebula_validator::validators::max_i64;
-/// use nebula_validator::foundation::Validate;
+/// use nebula_validator::{foundation::Validate, validators::max_i64};
 ///
 /// assert!(max_i64(100).validate(&50_i64).is_ok());
 /// assert!(max_i64(100).validate(&200_i64).is_err());
@@ -240,8 +238,7 @@ pub fn max_i64(value: i64) -> Max<i64> {
 /// # Examples
 ///
 /// ```
-/// use nebula_validator::validators::in_range_i64;
-/// use nebula_validator::foundation::Validate;
+/// use nebula_validator::{foundation::Validate, validators::in_range_i64};
 ///
 /// assert!(in_range_i64(1, 100).validate(&50_i64).is_ok());
 /// assert!(in_range_i64(1, 100).validate(&0_i64).is_err());
@@ -260,8 +257,7 @@ pub fn in_range_i64(min_val: i64, max_val: i64) -> InRange<i64> {
 /// # Examples
 ///
 /// ```
-/// use nebula_validator::validators::min_f64;
-/// use nebula_validator::foundation::Validate;
+/// use nebula_validator::{foundation::Validate, validators::min_f64};
 ///
 /// assert!(min_f64(0.0).validate(&1.5_f64).is_ok());
 /// assert!(min_f64(0.0).validate(&-1.0_f64).is_err());
@@ -284,8 +280,7 @@ pub fn min_f64(value: f64) -> Min<f64> {
 /// # Examples
 ///
 /// ```
-/// use nebula_validator::validators::max_f64;
-/// use nebula_validator::foundation::Validate;
+/// use nebula_validator::{foundation::Validate, validators::max_f64};
 ///
 /// assert!(max_f64(100.0).validate(&50.5_f64).is_ok());
 /// assert!(max_f64(100.0).validate(&200.0_f64).is_err());
@@ -308,8 +303,7 @@ pub fn max_f64(value: f64) -> Max<f64> {
 /// # Examples
 ///
 /// ```
-/// use nebula_validator::validators::in_range_f64;
-/// use nebula_validator::foundation::Validate;
+/// use nebula_validator::{foundation::Validate, validators::in_range_f64};
 ///
 /// assert!(in_range_f64(0.0, 1.0).validate(&0.5_f64).is_ok());
 /// assert!(in_range_f64(0.0, 1.0).validate(&2.0_f64).is_err());

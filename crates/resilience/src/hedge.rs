@@ -9,17 +9,14 @@
 //! complete or are individually aborted. This is intentional: the hedge pattern assumes
 //! speculative work is cheap to abandon at the infrastructure level.
 
-use std::collections::VecDeque;
-use std::fmt;
-use std::future::Future;
-
-use smallvec::SmallVec;
+use std::{collections::VecDeque, fmt, future::Future, sync::Arc, time::Duration};
 
 use parking_lot::RwLock;
-use std::sync::Arc;
-use std::time::Duration;
-use tokio::task::JoinSet;
-use tokio::time::{Instant, sleep};
+use smallvec::SmallVec;
+use tokio::{
+    task::JoinSet,
+    time::{Instant, sleep},
+};
 
 use crate::{
     CallError,

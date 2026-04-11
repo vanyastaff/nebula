@@ -2,17 +2,20 @@
 /// lifecycle management, back-pressure policies, and graceful shutdown.
 mod helpers;
 
-use std::ptr;
-use std::sync::Arc;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::{
+    ptr,
+    sync::{
+        Arc,
+        atomic::{AtomicU64, Ordering},
+    },
+};
 
+use helpers::{TestEvent, init_log};
 use nebula_eventbus::{
     BackPressurePolicy, EventBus, EventBusRegistry, EventFilter, PublishOutcome,
 };
 use tokio::task;
 use tracing::debug;
-
-use helpers::{TestEvent, init_log};
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Phase 1: Multi-bus Registry Tests

@@ -1,7 +1,29 @@
-# Minimal, stable rustfmt configuration compatible with stable rustfmt
-# Remove unsupported/unstable options to avoid "Warning: can't set ..."
+# Nebula rustfmt configuration.
+#
+# Uses nightly rustfmt because several high-value options are still
+# unstable. To apply formatting locally run:
+#
+#     cargo +nightly fmt --all
+#
+# CI formatting check is pinned to nightly in `.github/workflows/ci.yml`.
+# `cargo build`/`clippy`/`test` stay on stable `rust-version` from the
+# workspace Cargo.toml — only `cargo fmt` is nightly-only.
+
 edition = "2024"
 max_width = 100
 hard_tabs = false
 newline_style = "Unix"
 reorder_imports = true
+
+# ── Unstable features (require nightly rustfmt) ─────────────────────────
+unstable_features = true
+
+# Group imports: std → external crates → crate::
+group_imports = "StdExternalCrate"
+# Collapse multiple `use` lines from the same crate into a single `use {..}`
+imports_granularity = "Crate"
+
+# Comments: wrap long lines and format code fences inside doc comments.
+wrap_comments = true
+comment_width = 100
+format_code_in_doc_comments = true

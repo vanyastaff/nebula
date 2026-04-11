@@ -3,12 +3,10 @@
 use std::collections::HashMap;
 
 use async_trait::async_trait;
-use serde::Serialize;
-use serde::de::DeserializeOwned;
+use serde::{Serialize, de::DeserializeOwned};
 use tokio::sync::RwLock;
 
-use crate::StorageError;
-use crate::storage::Storage;
+use crate::{StorageError, storage::Storage};
 
 /// In-memory key-value хранилище (для разработки и тестов).
 #[derive(Debug, Default)]

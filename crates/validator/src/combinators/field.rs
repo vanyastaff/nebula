@@ -3,10 +3,12 @@
 //! The FIELD combinator allows validating individual fields of a struct
 //! without requiring derive macros.
 
-use crate::combinators::error::CombinatorError;
-use crate::foundation::{Validate, ValidationError, ValidationMode};
-use std::borrow::Cow;
-use std::marker::PhantomData;
+use std::{borrow::Cow, marker::PhantomData};
+
+use crate::{
+    combinators::error::CombinatorError,
+    foundation::{Validate, ValidationError, ValidationMode},
+};
 
 // ============================================================================
 // FIELD COMBINATOR

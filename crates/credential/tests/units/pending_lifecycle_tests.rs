@@ -5,20 +5,19 @@
 
 use std::time::Duration;
 
-use nebula_credential::SecretString;
-use nebula_credential::context::CredentialContext;
-use nebula_credential::credential::Credential;
-use nebula_credential::description::CredentialDescription;
-use nebula_credential::error::CredentialError;
-use nebula_credential::executor::{ResolveResponse, execute_continue, execute_resolve};
-use nebula_credential::pending::PendingState;
-use nebula_credential::pending_store_memory::InMemoryPendingStore;
-use nebula_credential::resolve::{
-    DisplayData, InteractionRequest, RefreshOutcome, ResolveResult, UserInput,
+use nebula_credential::{
+    SecretString,
+    context::CredentialContext,
+    credential::Credential,
+    description::CredentialDescription,
+    error::CredentialError,
+    executor::{ResolveResponse, execute_continue, execute_resolve},
+    pending::PendingState,
+    pending_store_memory::InMemoryPendingStore,
+    resolve::{DisplayData, InteractionRequest, RefreshOutcome, ResolveResult, UserInput},
+    scheme::SecretToken,
 };
-use nebula_credential::scheme::SecretToken;
-use nebula_parameter::ParameterCollection;
-use nebula_parameter::values::ParameterValues;
+use nebula_parameter::{ParameterCollection, values::ParameterValues};
 
 // ── Test pending state ───────────────────────────────────────────────
 

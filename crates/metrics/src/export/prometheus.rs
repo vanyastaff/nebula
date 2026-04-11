@@ -8,12 +8,9 @@
 //! renders each family with a single `# HELP` / `# TYPE` header followed by
 //! sample lines. Labels are rendered as `{key1="value1",key2="value2"}`.
 
-use std::collections::BTreeMap;
-use std::fmt::Write as _;
-use std::sync::Arc;
+use std::{collections::BTreeMap, fmt::Write as _, sync::Arc};
 
-use nebula_telemetry::labels::LabelInterner;
-use nebula_telemetry::metrics::MetricsRegistry;
+use nebula_telemetry::{labels::LabelInterner, metrics::MetricsRegistry};
 
 use crate::naming::{
     NEBULA_ACTION_DURATION_SECONDS, NEBULA_ACTION_EXECUTIONS_TOTAL, NEBULA_ACTION_FAILURES_TOTAL,

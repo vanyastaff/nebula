@@ -7,8 +7,7 @@
 //!
 //! [`AuthScheme`]: nebula_core::AuthScheme
 
-use serde::Serialize;
-use serde::de::DeserializeOwned;
+use serde::{Serialize, de::DeserializeOwned};
 
 /// Trait for credential state types stored in encrypted storage (v2).
 ///

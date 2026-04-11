@@ -8,8 +8,7 @@
 //! nebula-resource depend on it — it is a contract type, not an
 //! implementation detail of either crate.
 
-use serde::Serialize;
-use serde::de::DeserializeOwned;
+use serde::{Serialize, de::DeserializeOwned};
 
 use crate::AuthPattern;
 
@@ -34,7 +33,7 @@ use crate::AuthPattern;
 /// # Examples
 ///
 /// ```
-/// use nebula_core::{AuthScheme, AuthPattern};
+/// use nebula_core::{AuthPattern, AuthScheme};
 /// use serde::{Deserialize, Serialize};
 ///
 /// #[derive(Clone, Serialize, Deserialize)]

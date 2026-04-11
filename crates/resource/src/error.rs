@@ -4,8 +4,7 @@
 //! [`ErrorScope`] (resource-wide vs. target-specific). The framework uses
 //! `ErrorKind` to decide whether to retry, back off, or propagate.
 
-use std::fmt;
-use std::time::Duration;
+use std::{fmt, time::Duration};
 
 use nebula_core::ResourceKey;
 

@@ -4,8 +4,7 @@
 //! - [`ObservabilityEvent`]: Events that can be emitted
 //! - [`ObservabilityHook`]: Hooks that receive events
 
-use std::fmt;
-use std::time::SystemTime;
+use std::{fmt, time::SystemTime};
 
 /// Borrowed field value for observability payload emission.
 #[derive(Debug, Clone, Copy)]
@@ -33,8 +32,9 @@ pub trait ObservabilityFieldVisitor {
 /// # Example
 ///
 /// ```rust
-/// use nebula_log::observability::ObservabilityEvent;
 /// use std::time::SystemTime;
+///
+/// use nebula_log::observability::ObservabilityEvent;
 ///
 /// struct ValidationEvent {
 ///     field: String,
@@ -46,9 +46,18 @@ pub trait ObservabilityFieldVisitor {
 ///         "validation"
 ///     }
 ///
-///     fn visit_fields(&self, visitor: &mut dyn nebula_log::observability::ObservabilityFieldVisitor) {
-///         visitor.record("field", nebula_log::observability::ObservabilityFieldValue::Str(&self.field));
-///         visitor.record("valid", nebula_log::observability::ObservabilityFieldValue::Bool(self.valid));
+///     fn visit_fields(
+///         &self,
+///         visitor: &mut dyn nebula_log::observability::ObservabilityFieldVisitor,
+///     ) {
+///         visitor.record(
+///             "field",
+///             nebula_log::observability::ObservabilityFieldValue::Str(&self.field),
+///         );
+///         visitor.record(
+///             "valid",
+///             nebula_log::observability::ObservabilityFieldValue::Bool(self.valid),
+///         );
 ///     }
 /// }
 /// ```
@@ -222,8 +231,9 @@ pub trait ObservabilityHook: Send + Sync {
 /// # Example
 ///
 /// ```rust
-/// use nebula_log::observability::{LoggingHook, register_hook};
 /// use std::sync::Arc;
+///
+/// use nebula_log::observability::{LoggingHook, register_hook};
 ///
 /// let hook = LoggingHook::new(tracing::Level::INFO);
 /// register_hook(Arc::new(hook));
@@ -276,15 +286,20 @@ impl ObservabilityHook for LoggingHook {
 /// # Example
 ///
 /// ```rust
-/// use nebula_log::observability::{
-///     ObservabilityEvent, ResourceAwareHook, NodeContext, LoggerResource
-/// };
 /// use std::sync::Arc;
+///
+/// use nebula_log::observability::{
+///     LoggerResource, NodeContext, ObservabilityEvent, ResourceAwareHook,
+/// };
 ///
 /// struct NotificationHook;
 ///
 /// impl ResourceAwareHook for NotificationHook {
-///     fn on_event_with_context(&self, event: &dyn ObservabilityEvent, ctx: Option<Arc<NodeContext>>) {
+///     fn on_event_with_context(
+///         &self,
+///         event: &dyn ObservabilityEvent,
+///         ctx: Option<Arc<NodeContext>>,
+///     ) {
 ///         if let Some(ctx) = ctx {
 ///             if let Some(logger) = ctx.get_resource::<LoggerResource>() {
 ///                 if logger.webhook_url().is_some() {

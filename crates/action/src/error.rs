@@ -1,5 +1,4 @@
-use std::sync::Arc;
-use std::time::Duration;
+use std::{sync::Arc, time::Duration};
 
 use serde::{Deserialize, Serialize};
 
@@ -161,9 +160,8 @@ pub enum ActionError {
     /// `serde_json::Error` message quoting the offending value). The
     /// framework sanitizes it at construction via
     /// [`ActionError::validation`]:
-    /// - control characters are escaped as `\uXXXX` (no newlines /
-    ///   carriage returns / tabs / nulls survive — this defeats log
-    ///   injection)
+    /// - control characters are escaped as `\uXXXX` (no newlines / carriage returns / tabs / nulls
+    ///   survive — this defeats log injection)
     /// - length is capped at [`MAX_VALIDATION_DETAIL`] bytes
     ///
     /// `field` is `&'static str` by design: it is the one piece of
@@ -398,17 +396,13 @@ impl ActionError {
     ///
     /// # Arguments
     ///
-    /// - `field` — a compile-time constant identifying the input area
-    ///   that failed. MUST NOT be user input — this is the one part of
-    ///   the error that will always appear in logs.
-    /// - `reason` — categorical classification for log aggregation and
-    ///   metrics.
-    /// - `detail` — optional free-form context. May contain fragments
-    ///   of untrusted input (e.g. a `serde_json::Error` message). The
-    ///   framework escapes control characters as `\uXXXX` and
-    ///   truncates to [`MAX_VALIDATION_DETAIL`] bytes before storing,
-    ///   so log injection via newlines/ANSI/null bytes is not possible
-    ///   through this path.
+    /// - `field` — a compile-time constant identifying the input area that failed. MUST NOT be user
+    ///   input — this is the one part of the error that will always appear in logs.
+    /// - `reason` — categorical classification for log aggregation and metrics.
+    /// - `detail` — optional free-form context. May contain fragments of untrusted input (e.g. a
+    ///   `serde_json::Error` message). The framework escapes control characters as `\uXXXX` and
+    ///   truncates to [`MAX_VALIDATION_DETAIL`] bytes before storing, so log injection via
+    ///   newlines/ANSI/null bytes is not possible through this path.
     ///
     /// # Examples
     ///

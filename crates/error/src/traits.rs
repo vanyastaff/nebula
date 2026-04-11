@@ -17,8 +17,7 @@ use crate::{ErrorCategory, ErrorCode, ErrorSeverity, RetryHint};
 /// are required. The remaining methods have sensible defaults:
 ///
 /// - [`severity`](Classify::severity) defaults to [`ErrorSeverity::Error`].
-/// - [`is_retryable`](Classify::is_retryable) delegates to
-///   [`ErrorCategory::is_default_retryable`].
+/// - [`is_retryable`](Classify::is_retryable) delegates to [`ErrorCategory::is_default_retryable`].
 /// - [`retry_hint`](Classify::retry_hint) returns `None`.
 ///
 /// # Examples
@@ -75,17 +74,23 @@ pub trait Classify {
 /// # Examples
 ///
 /// ```
-/// use nebula_error::{Classify, ErrorCategory, ErrorCode, ErrorClassifier, codes};
+/// use nebula_error::{Classify, ErrorCategory, ErrorClassifier, ErrorCode, codes};
 ///
-/// let transient_only = ErrorClassifier::new(|cat| matches!(
-///     cat,
-///     ErrorCategory::Timeout | ErrorCategory::RateLimit | ErrorCategory::External
-/// ));
+/// let transient_only = ErrorClassifier::new(|cat| {
+///     matches!(
+///         cat,
+///         ErrorCategory::Timeout | ErrorCategory::RateLimit | ErrorCategory::External
+///     )
+/// });
 ///
 /// struct TimeoutErr;
 /// impl Classify for TimeoutErr {
-///     fn category(&self) -> ErrorCategory { ErrorCategory::Timeout }
-///     fn code(&self) -> ErrorCode { codes::TIMEOUT.clone() }
+///     fn category(&self) -> ErrorCategory {
+///         ErrorCategory::Timeout
+///     }
+///     fn code(&self) -> ErrorCode {
+///         codes::TIMEOUT.clone()
+///     }
 /// }
 ///
 /// assert!(transient_only.matches(&TimeoutErr));
@@ -135,9 +140,9 @@ impl std::fmt::Debug for ErrorClassifier {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use std::time::Duration;
 
+    use super::*;
     use crate::codes;
 
     /// Minimal impl — only required methods.

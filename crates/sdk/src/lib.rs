@@ -5,8 +5,8 @@
 //! ## Quick Start
 //!
 //! ```rust,no_run
-//! use nebula_sdk::prelude::*;
 //! use nebula_core::action_key;
+//! use nebula_sdk::prelude::*;
 //!
 //! let metadata = ActionBuilder::new(action_key!("example.greet"), "Greet")
 //!     .with_description("A simple greeting action")
@@ -32,6 +32,9 @@
 #![cfg_attr(docsrs, feature(doc_auto_cfg))]
 
 // Re-export core crates
+// Re-export commonly used external crates
+pub use anyhow;
+pub use async_trait::async_trait;
 pub use nebula_action;
 pub use nebula_core;
 pub use nebula_credential;
@@ -40,14 +43,9 @@ pub use nebula_plugin;
 pub use nebula_resource;
 pub use nebula_validator;
 pub use nebula_workflow;
-
-// Re-export commonly used external crates
-pub use anyhow;
-pub use async_trait::async_trait;
 pub use serde;
 pub use serde_json;
 pub use thiserror;
-
 // Re-export tokio when needed for async
 #[cfg(feature = "testing")]
 pub use tokio;

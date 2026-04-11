@@ -6,10 +6,12 @@
 // Reason: webhook crate still uses v1 compat types; migration tracked separately.
 #![allow(deprecated)]
 
-use crate::{Environment, TriggerState};
-use nebula_resource::{Context, ExecutionId, WorkflowId};
 use std::sync::Arc;
+
+use nebula_resource::{Context, ExecutionId, WorkflowId};
 use tokio_util::sync::CancellationToken;
+
+use crate::{Environment, TriggerState};
 
 /// Context for webhook trigger operations
 ///
@@ -184,8 +186,9 @@ impl std::fmt::Debug for TriggerCtx {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use nebula_resource::Scope;
+
+    use super::*;
 
     fn create_test_ctx(env: Environment) -> TriggerCtx {
         let wf = WorkflowId::parse("550e8400-e29b-41d4-a716-446655440001").unwrap();

@@ -4,10 +4,12 @@
 
 use std::borrow::Cow;
 
-use crate::ExpressionError;
-use crate::error::{ExpressionErrorExt, ExpressionResult};
-use crate::span::Span;
-use crate::token::{Token, TokenKind};
+use crate::{
+    ExpressionError,
+    error::{ExpressionErrorExt, ExpressionResult},
+    span::Span,
+    token::{Token, TokenKind},
+};
 
 /// Lexer for tokenizing expression strings
 pub struct Lexer<'a> {

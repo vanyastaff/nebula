@@ -4,14 +4,11 @@
 //! to accept either a concrete value of type T or a string expression that will
 //! be evaluated at runtime.
 
-use crate::ExpressionError;
-use crate::ast::Expr;
-use crate::context::EvaluationContext;
-use crate::engine::ExpressionEngine;
 use once_cell::sync::OnceCell;
-use serde::de::DeserializeOwned;
-use serde::{Deserialize, Deserializer, Serialize, Serializer};
+use serde::{Deserialize, Deserializer, Serialize, Serializer, de::DeserializeOwned};
 use serde_json::Value;
+
+use crate::{ExpressionError, ast::Expr, context::EvaluationContext, engine::ExpressionEngine};
 
 /// Internal structure for cached expression parsing
 #[derive(Debug)]
@@ -152,7 +149,7 @@ where
     /// # Examples
     ///
     /// ```rust
-    /// use nebula_expression::{MaybeExpression, ExpressionEngine, EvaluationContext};
+    /// use nebula_expression::{EvaluationContext, ExpressionEngine, MaybeExpression};
     /// use serde_json::Value;
     ///
     /// let engine = ExpressionEngine::new();
@@ -350,8 +347,7 @@ fn is_expression(s: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::context::EvaluationContext;
-    use crate::engine::ExpressionEngine;
+    use crate::{context::EvaluationContext, engine::ExpressionEngine};
 
     #[test]
     fn test_maybe_expression_value() {

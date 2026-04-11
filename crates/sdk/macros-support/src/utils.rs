@@ -1,8 +1,6 @@
 //! General proc-macro utility functions.
 
-use syn::parse::Parse;
-use syn::spanned::Spanned;
-use syn::{Attribute, Data, DeriveInput, Fields};
+use syn::{Attribute, Data, DeriveInput, Fields, parse::Parse, spanned::Spanned};
 
 /// Collect doc comments (`/// ...`) into a single string.
 pub fn doc_string(attrs: &[Attribute]) -> String {

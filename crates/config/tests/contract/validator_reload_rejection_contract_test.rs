@@ -1,7 +1,9 @@
-use super::helpers::{assert_contract_category, assert_validation_failed, write_temp_file};
+use std::sync::Arc;
+
 use nebula_config::{ConfigBuilder, ConfigSource};
 use nebula_validator::foundation::{Validate, ValidationError};
-use std::sync::Arc;
+
+use super::helpers::{assert_contract_category, assert_validation_failed, write_temp_file};
 
 #[derive(Clone)]
 struct RequireFeatureEnabled;

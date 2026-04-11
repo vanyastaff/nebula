@@ -12,8 +12,10 @@ use crate::option::SelectOption;
 /// # Examples
 ///
 /// ```
-/// use nebula_parameter::filter_field::{FilterField, FilterFieldType};
-/// use nebula_parameter::option::SelectOption;
+/// use nebula_parameter::{
+///     filter_field::{FilterField, FilterFieldType},
+///     option::SelectOption,
+/// };
 ///
 /// let field = FilterField {
 ///     id: "priority".into(),

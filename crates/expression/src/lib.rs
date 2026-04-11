@@ -23,7 +23,7 @@
 //! ## Quick Start
 //!
 //! ```
-//! use nebula_expression::{ExpressionEngine, EvaluationContext};
+//! use nebula_expression::{EvaluationContext, ExpressionEngine};
 //! use serde_json::Value;
 //!
 //! // Create an engine
@@ -156,28 +156,25 @@ pub mod lexer;
 pub mod parser;
 
 // Re-exports
-pub use context::{EvaluationContext, EvaluationContextBuilder};
-pub use engine::{CacheOverview, ExpressionEngine};
-pub use maybe::{CachedExpression, MaybeExpression};
-pub use policy::EvaluationPolicy;
-pub use template::{MaybeTemplate, Template};
-
 // Internal types - only exported for advanced use cases
 // Most users should not need these types directly
 #[doc(hidden)]
 pub use ast::{BinaryOp, Expr};
+pub use context::{EvaluationContext, EvaluationContextBuilder};
+pub use engine::{CacheOverview, ExpressionEngine};
+// Re-export error types
+pub use error::{ExpressionError, ExpressionErrorExt, ExpressionResult};
+pub use maybe::{CachedExpression, MaybeExpression};
+pub use policy::EvaluationPolicy;
+// Re-export serde_json types for convenience
+pub use serde_json::Value;
 #[doc(hidden)]
 pub use span::Span;
+pub use template::{MaybeTemplate, Template};
 #[doc(hidden)]
 pub use template::{Position, TemplatePart};
 #[doc(hidden)]
 pub use token::{Token, TokenKind};
-
-// Re-export error types
-pub use error::{ExpressionError, ExpressionErrorExt, ExpressionResult};
-
-// Re-export serde_json types for convenience
-pub use serde_json::Value;
 
 /// Prelude module for convenient imports
 pub mod prelude {

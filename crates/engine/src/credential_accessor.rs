@@ -17,17 +17,13 @@
 //!
 //! # Allowlist semantics
 //!
-//! - An **empty** allowlist means **all credentials are permitted** (open/passthrough
-//!   mode). This is the current default until per-node credential declarations are
-//!   wired in from action dependency metadata.
-//! - A **non-empty** allowlist only permits the keys in the set. Requests for
-//!   undeclared keys are rejected with [`CredentialAccessError::AccessDenied`].
+//! - An **empty** allowlist means **all credentials are permitted** (open/passthrough mode). This
+//!   is the current default until per-node credential declarations are wired in from action
+//!   dependency metadata.
+//! - A **non-empty** allowlist only permits the keys in the set. Requests for undeclared keys are
+//!   rejected with [`CredentialAccessError::AccessDenied`].
 
-use std::collections::HashSet;
-use std::fmt;
-use std::future::Future;
-use std::pin::Pin;
-use std::sync::Arc;
+use std::{collections::HashSet, fmt, future::Future, pin::Pin, sync::Arc};
 
 use async_trait::async_trait;
 use nebula_credential::{CredentialAccessError, CredentialAccessor, CredentialSnapshot};
@@ -89,11 +85,11 @@ impl EngineCredentialAccessor {
     ///
     /// # Parameters
     ///
-    /// - `allowed_keys` — the set of credential IDs this accessor may resolve.
-    ///   Pass an empty set to allow all credential access (open/passthrough mode, used when
-    ///   per-node declarations are not yet populated).
-    /// - `resolve_fn` — async closure that resolves a credential ID to a
-    ///   [`CredentialSnapshot`] or a [`CredentialAccessError`].
+    /// - `allowed_keys` — the set of credential IDs this accessor may resolve. Pass an empty set to
+    ///   allow all credential access (open/passthrough mode, used when per-node declarations are
+    ///   not yet populated).
+    /// - `resolve_fn` — async closure that resolves a credential ID to a [`CredentialSnapshot`] or
+    ///   a [`CredentialAccessError`].
     /// - `action_id` — the action key or node identifier for security attribution in
     ///   [`CredentialAccessError::AccessDenied`] events.
     pub fn new<F, Fut>(allowed_keys: HashSet<String>, resolve_fn: F, action_id: String) -> Self
@@ -141,8 +137,8 @@ impl CredentialAccessor for EngineCredentialAccessor {
     ///
     /// # Errors
     ///
-    /// - [`CredentialAccessError::AccessDenied`] — if `id` is not in the allowlist
-    ///   (when the allowlist is non-empty and `id` is not listed).
+    /// - [`CredentialAccessError::AccessDenied`] — if `id` is not in the allowlist (when the
+    ///   allowlist is non-empty and `id` is not listed).
     /// - Any error returned by the underlying resolver function.
     ///
     /// # Cancel safety

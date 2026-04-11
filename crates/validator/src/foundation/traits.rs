@@ -39,16 +39,15 @@
 //! validator.validate("hello")?;
 //! ```
 
-use crate::foundation::ValidationError;
-use crate::foundation::validatable::AsValidatable;
 use std::borrow::Borrow;
 
 // Re-use canonical combinator types from the combinators module.
 // This avoids duplicate And/Or/Not/When definitions.
 use crate::combinators::and::And;
-use crate::combinators::not::Not;
-use crate::combinators::or::Or;
-use crate::combinators::when::When;
+use crate::{
+    combinators::{not::Not, or::Or, when::When},
+    foundation::{ValidationError, validatable::AsValidatable},
+};
 
 // ============================================================================
 // CORE VALIDATOR TRAIT
@@ -144,9 +143,7 @@ pub trait Validate<T: ?Sized> {
     /// # Examples
     ///
     /// ```rust
-    /// use nebula_validator::foundation::Validate;
-    /// use nebula_validator::proof::Validated;
-    /// use nebula_validator::validators::min_length;
+    /// use nebula_validator::{foundation::Validate, proof::Validated, validators::min_length};
     ///
     /// let v = min_length(3);
     /// let name: Validated<String> = v.validate_into("alice".to_string()).unwrap();

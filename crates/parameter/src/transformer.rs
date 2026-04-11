@@ -3,8 +3,10 @@
 //! Transformers operate on [`serde_json::Value`] and are composable via
 //! [`Transformer::Chain`] and [`Transformer::FirstMatch`].
 
-use std::collections::HashMap;
-use std::sync::{LazyLock, Mutex};
+use std::{
+    collections::HashMap,
+    sync::{LazyLock, Mutex},
+};
 
 use regex::Regex;
 use serde::{Deserialize, Serialize};
@@ -203,8 +205,9 @@ fn apply_to_string(value: &Value, f: impl FnOnce(&str) -> String) -> Value {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use serde_json::json;
+
+    use super::*;
 
     #[test]
     fn trim_strips_whitespace() {

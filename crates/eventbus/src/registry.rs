@@ -1,13 +1,10 @@
 //! Multi-bus registry for per-scope isolation (e.g. per-tenant).
 
-use std::collections::HashMap;
-use std::hash::Hash;
-use std::sync::Arc;
+use std::{collections::HashMap, hash::Hash, sync::Arc};
 
 use parking_lot::RwLock;
 
-use crate::BackPressurePolicy;
-use crate::EventBus;
+use crate::{BackPressurePolicy, EventBus};
 
 /// Aggregated snapshot across all buses in an [`EventBusRegistry`].
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -29,13 +26,12 @@ pub struct EventBusRegistryStats {
 ///
 /// # Concurrency
 ///
-/// - **Double-checked locking:** `get_or_create` uses a read lock first for performance,
-///   then upgrades to a write lock only if the bus does not exist. This minimizes contention.
+/// - **Double-checked locking:** `get_or_create` uses a read lock first for performance, then
+///   upgrades to a write lock only if the bus does not exist. This minimizes contention.
 ///
-/// - **Best-effort pruning:** `prune_without_subscribers` is a best-effort operation.
-///   A subscriber created between the check and the prune will survive, which is safe
-///   (the bus remains in the registry). The method is advisory and should not be relied
-///   upon for guaranteed cleanup.
+/// - **Best-effort pruning:** `prune_without_subscribers` is a best-effort operation. A subscriber
+///   created between the check and the prune will survive, which is safe (the bus remains in the
+///   registry). The method is advisory and should not be relied upon for guaranteed cleanup.
 #[derive(Debug)]
 pub struct EventBusRegistry<K, E> {
     buses: RwLock<HashMap<K, Arc<EventBus<E>>>>,

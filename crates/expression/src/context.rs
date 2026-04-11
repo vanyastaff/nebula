@@ -3,11 +3,12 @@
 //! This module provides the context in which expressions are evaluated,
 //! including access to $node, $execution, $workflow, and $input variables.
 
-use crate::policy::EvaluationPolicy;
+use std::{collections::HashMap, sync::Arc};
+
 use chrono::Utc;
 use serde_json::Value;
-use std::collections::HashMap;
-use std::sync::Arc;
+
+use crate::policy::EvaluationPolicy;
 
 /// Evaluation context containing variables and workflow data
 #[derive(Debug, Clone)]

@@ -1,5 +1,4 @@
-use nebula_log::observability::HookPolicy;
-use nebula_log::{DestinationFailurePolicy, Rolling, WriterConfig};
+use nebula_log::{DestinationFailurePolicy, Rolling, WriterConfig, observability::HookPolicy};
 
 #[test]
 fn api_contract_exposes_policy_types() {

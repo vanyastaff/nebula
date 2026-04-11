@@ -12,9 +12,7 @@
 //!
 //! Run with: `cargo nextest run -p nebula-action --test type_sizes`.
 
-use std::collections::HashMap;
-use std::mem::size_of;
-use std::time::Duration;
+use std::{collections::HashMap, mem::size_of, time::Duration};
 
 use nebula_action::{
     ActionContext, ActionError, ActionHandler, ActionMetadata, ActionOutput, ActionResult,

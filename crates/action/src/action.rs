@@ -1,5 +1,4 @@
-use crate::dependency::ActionDependencies;
-use crate::metadata::ActionMetadata;
+use crate::{dependency::ActionDependencies, metadata::ActionMetadata};
 
 /// Base trait for all action types.
 ///

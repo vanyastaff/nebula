@@ -36,8 +36,9 @@
 //! This design ensures nebula-validator has zero knowledge of third-party crates,
 //! avoiding version conflicts entirely.
 
-use crate::foundation::ValidationError;
 use std::borrow::Borrow;
+
+use crate::foundation::ValidationError;
 
 // ============================================================================
 // CORE TRAIT: AsValidatable with GAT
@@ -525,8 +526,10 @@ mod tests {
 
     #[test]
     fn validate_with_extension_method() {
-        use crate::foundation::{Validatable, Validate};
-        use crate::validators::{hostname, ipv4};
+        use crate::{
+            foundation::{Validatable, Validate},
+            validators::{hostname, ipv4},
+        };
 
         // Direct: validator.validate(input)
         assert!(ipv4().validate("192.168.0.1").is_ok());
@@ -602,9 +605,10 @@ mod tests {
 
 #[cfg(test)]
 mod serde_json_tests {
+    use serde_json::json;
+
     use super::*;
     use crate::foundation::Validate;
-    use serde_json::json;
 
     // -- str --
 
@@ -697,8 +701,7 @@ mod serde_json_tests {
 
     #[test]
     fn json_field_validator_with_json_value() {
-        use crate::combinators::json_field;
-        use crate::validators::min_length;
+        use crate::{combinators::json_field, validators::min_length};
 
         let validator = json_field("", min_length(3));
         assert!(validator.validate(&json!("hello")).is_ok());

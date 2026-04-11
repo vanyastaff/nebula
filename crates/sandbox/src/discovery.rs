@@ -1,15 +1,14 @@
 //! Plugin discovery — scan directories for plugin binaries and get metadata.
 
+use std::{path::Path, sync::Arc, time::Duration};
+
 use nebula_action::{ActionHandler, ActionMetadata};
 use nebula_core::ActionKey;
 use nebula_plugin_protocol::{PROTOCOL_VERSION, PluginMetadata, PluginResponse};
-use std::path::Path;
-use std::sync::Arc;
-use std::time::Duration;
 
-use crate::capabilities::PluginCapabilities;
-use crate::handler::ProcessSandboxHandler;
-use crate::process::ProcessSandbox;
+use crate::{
+    capabilities::PluginCapabilities, handler::ProcessSandboxHandler, process::ProcessSandbox,
+};
 
 /// Discover a plugin by running its binary and asking for metadata.
 pub async fn discover_plugin(binary: &Path) -> Result<PluginMetadata, String> {

@@ -5,6 +5,8 @@
 //! - pipeline execute overhead for the happy path
 //! - pipeline retry path overhead
 
+use std::{hint::black_box, sync::Arc, time::Duration};
+
 use criterion::{BenchmarkId, Criterion, criterion_group, criterion_main};
 use nebula_resilience::{
     ResiliencePipeline,
@@ -12,9 +14,6 @@ use nebula_resilience::{
     circuit_breaker::{CircuitBreaker, CircuitBreakerConfig},
     retry::{BackoffConfig, RetryConfig},
 };
-use std::hint::black_box;
-use std::sync::Arc;
-use std::time::Duration;
 
 fn build_pipeline_1step() -> ResiliencePipeline<&'static str> {
     ResiliencePipeline::builder()

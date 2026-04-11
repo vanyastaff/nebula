@@ -1,7 +1,6 @@
 //! Filtered subscriber wrapper.
 
-use crate::EventFilter;
-use crate::Subscriber;
+use crate::{EventFilter, Subscriber};
 
 /// Subscriber wrapper that yields only events matching a filter.
 ///
@@ -10,13 +9,14 @@ use crate::Subscriber;
 /// - **Events not matching the filter** are silently discarded and do not increment
 ///   [`lagged_count()`](Self::lagged_count) — only ring-buffer overflows are counted.
 ///
-/// - **Lag accumulation** happens at the underlying subscriber level. If the subscriber
-///   falls behind due to overflow, [`lagged_count()`](Self::lagged_count) reflects the
-///   total skipped events, whether or not they matched the filter.
+/// - **Lag accumulation** happens at the underlying subscriber level. If the subscriber falls
+///   behind due to overflow, [`lagged_count()`](Self::lagged_count) reflects the total skipped
+///   events, whether or not they matched the filter.
 ///
 /// - **Anti-pattern warning:** A filter matching 0 events will spin indefinitely in
-///   [`recv()`](Self::recv) or [`try_recv()`](Self::try_recv) (unless [`is_closed()`](Self::is_closed) becomes true).
-///   Ensure your filters can match at least some event types, or check [`is_closed()`](Self::is_closed) periodically.
+///   [`recv()`](Self::recv) or [`try_recv()`](Self::try_recv) (unless
+///   [`is_closed()`](Self::is_closed) becomes true). Ensure your filters can match at least some
+///   event types, or check [`is_closed()`](Self::is_closed) periodically.
 #[derive(Debug)]
 pub struct FilteredSubscriber<E> {
     inner: Subscriber<E>,

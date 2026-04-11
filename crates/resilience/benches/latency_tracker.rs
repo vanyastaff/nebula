@@ -11,10 +11,10 @@
 //! cargo bench -p nebula-resilience --bench latency_tracker
 //! ```
 
+use std::{hint::black_box, time::Duration};
+
 use criterion::{BenchmarkId, Criterion, criterion_group, criterion_main};
 use nebula_resilience::LatencyTracker;
-use std::hint::black_box;
-use std::time::Duration;
 
 // ── record ────────────────────────────────────────────────────────────────────
 

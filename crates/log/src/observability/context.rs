@@ -33,9 +33,11 @@
 //!     });
 //! ```
 
-use std::any::{Any, TypeId};
-use std::collections::HashMap;
-use std::sync::{Arc, LazyLock};
+use std::{
+    any::{Any, TypeId},
+    collections::HashMap,
+    sync::{Arc, LazyLock},
+};
 
 use arc_swap::ArcSwap;
 
@@ -155,8 +157,9 @@ impl ResourceMap {
 
 #[cfg(feature = "async")]
 mod storage {
-    use super::*;
     use std::future::Future;
+
+    use super::*;
 
     tokio::task_local! {
         static EXECUTION_CTX: Arc<ExecutionContext>;
@@ -192,8 +195,9 @@ mod storage {
 
 #[cfg(not(feature = "async"))]
 mod storage {
-    use super::*;
     use std::cell::RefCell;
+
+    use super::*;
 
     thread_local! {
         static EXECUTION_CTX: RefCell<Option<Arc<ExecutionContext>>> =
@@ -330,8 +334,8 @@ impl ExecutionContext {
 /// **SECURITY**: Resources are scoped per-node, not globally.
 /// This prevents credential leakage between nodes.
 ///
-/// **NOTE**: The hierarchical resource chain (Account -> User -> Workflow -> Execution -> Node -> Action)
-/// is managed by the workflow engine, not by nebula-log. nebula-log only receives the final
+/// **NOTE**: The hierarchical resource chain (Account -> User -> Workflow -> Execution -> Node ->
+/// Action) is managed by the workflow engine, not by nebula-log. nebula-log only receives the final
 /// merged LoggerResource via the ResourceMap.
 #[derive(Debug, Clone)]
 pub struct NodeContext {

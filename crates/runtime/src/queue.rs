@@ -2,15 +2,18 @@
 //!
 //! Used to distribute work to workers; at-least-once delivery with ack/nack.
 
-use std::sync::Arc;
-use std::sync::atomic::{AtomicUsize, Ordering};
-use std::time::Duration;
+use std::{
+    collections::HashMap,
+    sync::{
+        Arc,
+        atomic::{AtomicUsize, Ordering},
+    },
+    time::Duration,
+};
 
 use async_trait::async_trait;
 use thiserror::Error;
 use tokio::sync::{Mutex, mpsc};
-
-use std::collections::HashMap;
 
 /// Errors returned by queue operations.
 #[derive(Debug, Error)]

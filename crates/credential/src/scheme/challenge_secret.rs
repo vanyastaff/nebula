@@ -1,9 +1,9 @@
 //! Challenge-response protocol credentials (Digest, NTLM, SCRAM).
 
 use nebula_core::SecretString;
+use serde::{Deserialize, Serialize};
 
 use crate::AuthScheme;
-use serde::{Deserialize, Serialize};
 
 /// Credentials for challenge-response authentication protocols.
 ///
@@ -14,8 +14,8 @@ use serde::{Deserialize, Serialize};
 /// # Examples
 ///
 /// ```
-/// use nebula_credential::scheme::ChallengeSecret;
 /// use nebula_core::SecretString;
+/// use nebula_credential::scheme::ChallengeSecret;
 ///
 /// let cred = ChallengeSecret::new("alice", SecretString::new("password"), "SCRAM-SHA-256");
 /// ```

@@ -15,9 +15,9 @@
 //! ## Example
 //!
 //! ```no_run
-//! use nebula_webhook::prelude::*;
-//! use nebula_resource::Context;
 //! use async_trait::async_trait;
+//! use nebula_resource::Context;
+//! use nebula_webhook::prelude::*;
 //!
 //! struct MyTrigger;
 //!

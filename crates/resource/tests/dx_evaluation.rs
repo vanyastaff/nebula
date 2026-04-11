@@ -10,13 +10,16 @@
 use std::sync::Arc;
 
 use nebula_core::{ExecutionId, ResourceKey};
-use nebula_resource::ctx::ScopeLevel;
-use nebula_resource::error::{Error, ErrorKind};
-use nebula_resource::topology::pooled::{BrokenCheck, Pooled};
-use nebula_resource::topology::resident::Resident;
 use nebula_resource::{
     AcquireOptions, BasicCtx, Manager, PoolConfig, ResidentConfig, Resource, ResourceConfig,
-    ShutdownConfig, resource_key,
+    ShutdownConfig,
+    ctx::ScopeLevel,
+    error::{Error, ErrorKind},
+    resource_key,
+    topology::{
+        pooled::{BrokenCheck, Pooled},
+        resident::Resident,
+    },
 };
 
 // [FRICTION #1] ResourceConfig has no blanket impl for "accept everything".
@@ -371,9 +374,10 @@ async fn use_case_3_db_with_resilience_and_shutdown() {
     // doesn't show HOW — and "register" is the 7-arg low-level method.
     // That's a significant gap between the Feature Matrix and the Quick Start.
 
-    use nebula_resource::ResourceConfig as _;
-    use nebula_resource::runtime::TopologyRuntime;
-    use nebula_resource::runtime::pool::PoolRuntime;
+    use nebula_resource::{
+        ResourceConfig as _,
+        runtime::{TopologyRuntime, pool::PoolRuntime},
+    };
 
     let config = DbConfig {
         dsn: "postgres://localhost/test".into(),

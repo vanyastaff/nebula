@@ -1,9 +1,12 @@
 //! Health check handlers
 
-use crate::models::{DependenciesStatus, HealthResponse, ReadinessResponse};
-use crate::state::AppState;
 use axum::{Json, extract::State};
 use chrono::Utc;
+
+use crate::{
+    models::{DependenciesStatus, HealthResponse, ReadinessResponse},
+    state::AppState,
+};
 
 /// Health check endpoint
 /// GET /health

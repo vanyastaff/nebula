@@ -5,12 +5,16 @@
 //! rather than waiting for an entire topological level. This enables branching,
 //! skip propagation, error routing, and conditional edges.
 
-use std::collections::{HashMap, HashSet, VecDeque};
-use std::future::Future;
-use std::pin::Pin;
-use std::sync::Arc;
-use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
-use std::time::Instant;
+use std::{
+    collections::{HashMap, HashSet, VecDeque},
+    future::Future,
+    pin::Pin,
+    sync::{
+        Arc,
+        atomic::{AtomicU32, AtomicU64, Ordering},
+    },
+    time::Instant,
+};
 
 use dashmap::DashMap;
 // TODO: ExecutionBudget moved to nebula-execution
@@ -21,32 +25,29 @@ use nebula_credential::{CredentialAccessor, default_credential_accessor};
 // ScopeLevel removed from ActionContext
 // use nebula_core::scope::ScopeLevel;
 use nebula_execution::ExecutionStatus;
-use nebula_execution::context::ExecutionBudget;
-use nebula_execution::plan::ExecutionPlan;
-use nebula_execution::state::ExecutionState;
+use nebula_execution::{context::ExecutionBudget, plan::ExecutionPlan, state::ExecutionState};
+use nebula_expression::{EvaluationContext, ExpressionEngine};
 use nebula_metrics::naming::{
     NEBULA_WORKFLOW_EXECUTION_DURATION_SECONDS, NEBULA_WORKFLOW_EXECUTIONS_COMPLETED_TOTAL,
     NEBULA_WORKFLOW_EXECUTIONS_FAILED_TOTAL, NEBULA_WORKFLOW_EXECUTIONS_STARTED_TOTAL,
 };
+use nebula_plugin::PluginRegistry;
 use nebula_runtime::ActionRuntime;
 use nebula_telemetry::metrics::MetricsRegistry;
 use nebula_workflow::{
     Connection, DependencyGraph, EdgeCondition, ErrorMatcher, NodeState, ResultMatcher,
     WorkflowDefinition,
 };
-use tokio::sync::{Semaphore, mpsc};
-use tokio::task::JoinSet;
+use tokio::{
+    sync::{Semaphore, mpsc},
+    task::JoinSet,
+};
 use tokio_util::sync::CancellationToken;
 
-use nebula_expression::{EvaluationContext, ExpressionEngine};
-use nebula_plugin::PluginRegistry;
-
-use crate::credential_accessor::EngineCredentialAccessor;
-use crate::error::EngineError;
-use crate::event::ExecutionEvent;
-use crate::resolver::ParamResolver;
-use crate::resource_accessor::EngineResourceAccessor;
-use crate::result::ExecutionResult;
+use crate::{
+    credential_accessor::EngineCredentialAccessor, error::EngineError, event::ExecutionEvent,
+    resolver::ParamResolver, resource_accessor::EngineResourceAccessor, result::ExecutionResult,
+};
 
 /// Type alias for the optional event sender.
 type EventSender = mpsc::UnboundedSender<ExecutionEvent>;
@@ -362,7 +363,8 @@ impl WorkflowEngine {
 
         let error_strategy = workflow.config.error_strategy;
 
-        // Run the frontier loop — same as execute_workflow, just different seed + pre-populated outputs.
+        // Run the frontier loop — same as execute_workflow, just different seed + pre-populated
+        // outputs.
         let failed_node = self
             .run_frontier(
                 &graph,
@@ -637,8 +639,8 @@ impl WorkflowEngine {
         let graph = DependencyGraph::from_definition(&workflow)
             .map_err(|e| EngineError::PlanningFailed(e.to_string()))?;
 
-        // 7. Reconstruct the execution state, resetting non-terminal nodes.
-        //    Nodes that were Running at crash time need to be re-executed.
+        // 7. Reconstruct the execution state, resetting non-terminal nodes. Nodes that were Running
+        //    at crash time need to be re-executed.
         let mut exec_state = exec_state;
         for ns in exec_state.node_states.values_mut() {
             if !ns.state.is_terminal() {
@@ -994,7 +996,8 @@ impl WorkflowEngine {
                     // count it before any retry mechanism re-enqueues the node.
                     if matches!(action_result, ActionResult::Retry { .. }) {
                         total_retries.fetch_add(1, Ordering::Relaxed);
-                        // TODO: implement retry re-enqueue; currently treated as terminal (follow-up plan)
+                        // TODO: implement retry re-enqueue; currently treated as terminal
+                        // (follow-up plan)
                     }
 
                     mark_node_completed(exec_state, node_id);
@@ -1971,25 +1974,27 @@ fn extract_primary_output(result: &ActionResult<serde_json::Value>) -> Option<se
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-    use nebula_action::ActionError;
-    use nebula_action::TriggerContext;
-    use nebula_action::action::Action;
-    use nebula_action::context::{Context, CredentialContextExt};
-    use nebula_action::dependency::ActionDependencies;
-    use nebula_action::metadata::ActionMetadata;
-    use nebula_action::result::ActionResult;
-    use nebula_action::stateless::StatelessAction;
-    use nebula_core::Version;
-    use nebula_core::action_key;
-    use nebula_runtime::DataPassingPolicy;
-    use nebula_runtime::registry::ActionRegistry;
-    use nebula_runtime::{ActionExecutor, InProcessSandbox};
+    use std::time::Duration;
+
+    use nebula_action::{
+        ActionError, TriggerContext,
+        action::Action,
+        context::{Context, CredentialContextExt},
+        dependency::ActionDependencies,
+        metadata::ActionMetadata,
+        result::ActionResult,
+        stateless::StatelessAction,
+    };
+    use nebula_core::{Version, action_key};
+    use nebula_runtime::{
+        ActionExecutor, DataPassingPolicy, InProcessSandbox, registry::ActionRegistry,
+    };
     use nebula_storage::{ExecutionRepo, WorkflowRepo};
     use nebula_workflow::{
         Connection, ErrorStrategy, NodeDefinition, WorkflowConfig, WorkflowDefinition,
     };
-    use std::time::Duration;
+
+    use super::*;
 
     // -- Test handlers --
 

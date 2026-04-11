@@ -1,29 +1,34 @@
 //! Pool runtime — manages a pool of N interchangeable resource instances.
 //!
-//! The acquire path: try idle queue -> check broken -> test_on_checkout -> prepare -> return handle.
-//! If no idle instance: create new (respecting semaphore for max_size).
+//! The acquire path: try idle queue -> check broken -> test_on_checkout -> prepare -> return
+//! handle. If no idle instance: create new (respecting semaphore for max_size).
 //! If semaphore full: wait with timeout.
 //!
 //! The release path (via [`ReleaseQueue`]): tainted? -> stale fingerprint? -> max_lifetime? ->
 //! recycle() -> Keep/Drop.
 
-use std::collections::VecDeque;
-use std::sync::Arc;
-use std::sync::atomic::{AtomicU64, Ordering};
-use std::time::{Duration, Instant};
+use std::{
+    collections::VecDeque,
+    sync::{
+        Arc,
+        atomic::{AtomicU64, Ordering},
+    },
+    time::{Duration, Instant},
+};
 
 use tokio::sync::{Mutex, OwnedSemaphorePermit, Semaphore};
 
-use crate::ctx::Ctx;
-use crate::error::Error;
-use crate::handle::ResourceHandle;
-use crate::metrics::ResourceOpsMetrics;
-use crate::options::AcquireOptions;
-use crate::release_queue::ReleaseQueue;
-use crate::resource::Resource;
-use crate::topology::pooled::config::Config;
-use crate::topology::pooled::{InstanceMetrics, Pooled, RecycleDecision};
-use crate::topology_tag::TopologyTag;
+use crate::{
+    ctx::Ctx,
+    error::Error,
+    handle::ResourceHandle,
+    metrics::ResourceOpsMetrics,
+    options::AcquireOptions,
+    release_queue::ReleaseQueue,
+    resource::Resource,
+    topology::pooled::{InstanceMetrics, Pooled, RecycleDecision, config::Config},
+    topology_tag::TopologyTag,
+};
 
 /// A single pooled instance with its metrics and config fingerprint.
 ///
@@ -839,13 +844,17 @@ impl<R: Resource> Drop for CreateGuard<R> {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-    use crate::ctx::BasicCtx;
-    use crate::options::AcquireOptions;
-    use crate::resource::{ResourceConfig, ResourceMetadata};
-    use crate::topology::pooled::BrokenCheck;
-    use nebula_core::{ExecutionId, ResourceKey, resource_key};
     use std::sync::atomic::AtomicBool;
+
+    use nebula_core::{ExecutionId, ResourceKey, resource_key};
+
+    use super::*;
+    use crate::{
+        ctx::BasicCtx,
+        options::AcquireOptions,
+        resource::{ResourceConfig, ResourceMetadata},
+        topology::pooled::BrokenCheck,
+    };
 
     // -- Mock resource implementing Pooled --
 

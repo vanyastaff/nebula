@@ -1,8 +1,9 @@
 //! Crate-level operational error type.
 //!
 //! [`ValidatorError`] represents errors that occur during validator
-//! construction or configuration — as opposed to [`ValidationError`](crate::foundation::ValidationError),
-//! which represents validation *failures* on user input.
+//! construction or configuration — as opposed to
+//! [`ValidationError`](crate::foundation::ValidationError), which represents validation *failures*
+//! on user input.
 //!
 //! # When to Use
 //!

@@ -7,19 +7,19 @@
 
 use std::sync::Arc;
 
-use tokio::sync::Semaphore;
-use tokio::time;
+use tokio::{sync::Semaphore, time};
 
-use crate::ctx::Ctx;
-use crate::error::Error;
-use crate::handle::ResourceHandle;
-use crate::metrics::ResourceOpsMetrics;
-use crate::options::AcquireOptions;
-use crate::release_queue::ReleaseQueue;
-use crate::resource::Resource;
-use crate::topology::transport::Transport;
-use crate::topology::transport::config::Config;
-use crate::topology_tag::TopologyTag;
+use crate::{
+    ctx::Ctx,
+    error::Error,
+    handle::ResourceHandle,
+    metrics::ResourceOpsMetrics,
+    options::AcquireOptions,
+    release_queue::ReleaseQueue,
+    resource::Resource,
+    topology::transport::{Transport, config::Config},
+    topology_tag::TopologyTag,
+};
 
 /// Runtime state for a transport topology.
 ///
@@ -65,8 +65,8 @@ where
     ///
     /// 1. Acquires a semaphore permit (limiting concurrency to `max_sessions`).
     /// 2. Calls `resource.open_session(runtime, ctx)`.
-    /// 3. Returns a guarded handle whose drop submits `close_session()` +
-    ///    permit release to the ReleaseQueue.
+    /// 3. Returns a guarded handle whose drop submits `close_session()` + permit release to the
+    ///    ReleaseQueue.
     ///
     /// # Errors
     ///

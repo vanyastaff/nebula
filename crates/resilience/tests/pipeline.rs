@@ -1,16 +1,22 @@
 //! Integration tests for ResiliencePipeline — end-to-end multi-layer scenarios.
 
-use std::sync::Arc;
-use std::sync::atomic::{AtomicU32, Ordering};
-use std::time::Duration;
+use std::{
+    sync::{
+        Arc,
+        atomic::{AtomicU32, Ordering},
+    },
+    time::Duration,
+};
 
-use nebula_resilience::CallError;
-use nebula_resilience::bulkhead::{Bulkhead, BulkheadConfig};
-use nebula_resilience::circuit_breaker::{CircuitBreaker, CircuitBreakerConfig};
-use nebula_resilience::fallback::ValueFallback;
-use nebula_resilience::pipeline::{RateLimitCheck, ResiliencePipeline};
-use nebula_resilience::rate_limiter::TokenBucket;
-use nebula_resilience::retry::{BackoffConfig, RetryConfig};
+use nebula_resilience::{
+    CallError,
+    bulkhead::{Bulkhead, BulkheadConfig},
+    circuit_breaker::{CircuitBreaker, CircuitBreakerConfig},
+    fallback::ValueFallback,
+    pipeline::{RateLimitCheck, ResiliencePipeline},
+    rate_limiter::TokenBucket,
+    retry::{BackoffConfig, RetryConfig},
+};
 
 // ── Regression: Pipeline total_budget stops retries ─────────────────────────
 

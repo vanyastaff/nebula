@@ -4,9 +4,10 @@
 //! configurations: bare errors, errors with params, nested errors, and
 //! convenience constructors.
 
+use std::hint::black_box;
+
 use criterion::{Criterion, criterion_group, criterion_main};
 use nebula_validator::foundation::{ErrorSeverity, ValidationError};
-use std::hint::black_box;
 
 // ============================================================================
 // BARE ERROR CONSTRUCTION

@@ -37,9 +37,8 @@ use syn::{Data, DeriveInput, Fields, Ident, parse_macro_input};
 ///
 /// # Required attributes
 ///
-/// - `category` — one of: `not_found`, `validation`, `authentication`,
-///   `authorization`, `conflict`, `rate_limit`, `timeout`, `exhausted`,
-///   `cancelled`, `internal`, `external`, `unsupported`
+/// - `category` — one of: `not_found`, `validation`, `authentication`, `authorization`, `conflict`,
+///   `rate_limit`, `timeout`, `exhausted`, `cancelled`, `internal`, `external`, `unsupported`
 /// - `code` — a string literal for the machine-readable error code
 ///
 /// # Optional attributes

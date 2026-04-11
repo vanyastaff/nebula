@@ -3,11 +3,14 @@
 //! Provides structured cancellation handling that integrates
 //! with tokio's cancellation tokens for graceful shutdown and operation cancellation.
 
-use std::borrow::Cow;
-use std::fmt;
-use std::future::Future;
-use std::pin::Pin;
-use std::task::{Context, Poll};
+use std::{
+    borrow::Cow,
+    fmt,
+    future::Future,
+    pin::Pin,
+    task::{Context, Poll},
+};
+
 use tokio_util::sync::CancellationToken;
 
 use crate::CallError;
@@ -233,8 +236,9 @@ impl<F, T> CancellationExt<T> for F where F: Future<Output = T> {}
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use std::time::Duration;
+
+    use super::*;
 
     #[tokio::test]
     async fn test_cancellation_context() {

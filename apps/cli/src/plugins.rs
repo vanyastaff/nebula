@@ -11,8 +11,7 @@
 //!    - macOS:   `~/Library/Application Support/nebula/plugins/`
 //!    - Windows: `C:\Users\<user>\AppData\Roaming\nebula\plugins\`
 
-use std::path::PathBuf;
-use std::time::Duration;
+use std::{path::PathBuf, time::Duration};
 
 use nebula_runtime::ActionRegistry;
 use nebula_sandbox::discovery;

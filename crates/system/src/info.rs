@@ -1,13 +1,13 @@
 //! System information gathering
 
-use crate::core::SystemResult;
 use std::sync::Arc;
 
 #[cfg(feature = "sysinfo")]
 use parking_lot::RwLock;
-
 #[cfg(feature = "serde")]
 use serde::{Deserialize, Serialize};
+
+use crate::core::SystemResult;
 
 /// Complete system information
 #[derive(Debug, Clone)]

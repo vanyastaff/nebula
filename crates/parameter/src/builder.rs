@@ -10,11 +10,9 @@
 //!
 //! let params = ParameterCollection::builder()
 //!     .string("url", |s| s.label("URL").required())
-//!     .select("method", |s| s
-//!         .option("GET", "GET")
-//!         .option("POST", "POST")
-//!         .default("GET")
-//!     )
+//!     .select("method", |s| {
+//!         s.option("GET", "GET").option("POST", "POST").default("GET")
+//!     })
 //!     .number("timeout", |n| n.label("Timeout").integer().default(30))
 //!     .boolean("verbose", |b| b.label("Verbose").no_expression())
 //!     .build();
@@ -22,14 +20,10 @@
 //! assert_eq!(params.len(), 4);
 //! ```
 
-use crate::ParameterCollection;
-use crate::conditions::Condition;
-use crate::input_hint::InputHint;
-use crate::option::SelectOption;
-use crate::parameter::Parameter;
-use crate::parameter_type::ParameterType;
-use crate::rules::Rule;
-use crate::transformer::Transformer;
+use crate::{
+    ParameterCollection, conditions::Condition, input_hint::InputHint, option::SelectOption,
+    parameter::Parameter, parameter_type::ParameterType, rules::Rule, transformer::Transformer,
+};
 
 // ── Collection builder ─────────────────────────────────────────────────────
 

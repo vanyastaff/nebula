@@ -8,8 +8,8 @@
 //! This crate provides:
 //! - [`MetricsRegistry`] — concurrent registry for counters, gauges, and histograms
 //! - [`Counter`], [`Gauge`], [`Histogram`] — lock-free metric types backed by atomics
-//! - [`LabelInterner`] / [`LabelSet`] — `lasso`-backed string interning for
-//!   label keys and values, enabling zero-copy metric dimensions
+//! - [`LabelInterner`] / [`LabelSet`] — `lasso`-backed string interning for label keys and values,
+//!   enabling zero-copy metric dimensions
 //! - [`TelemetryError`] — unified error type for the telemetry subsystem
 //!
 //! ## Metric naming

@@ -1,5 +1,6 @@
-use nebula_log::{Config, LogError, LoggerBuilder};
 use std::sync::{LazyLock, Mutex};
+
+use nebula_log::{Config, LogError, LoggerBuilder};
 
 static ENV_LOCK: LazyLock<Mutex<()>> = LazyLock::new(|| Mutex::new(()));
 

@@ -3,13 +3,15 @@
 //! Covers all 23 diagnostic categories: structure, reference, rule consistency,
 //! object/mode, transformer, notice, and filter checks.
 
-use nebula_parameter::collection::ParameterCollection;
-use nebula_parameter::conditions::Condition;
-use nebula_parameter::filter_field::{FilterField, FilterFieldType};
-use nebula_parameter::lint::{LintDiagnostic, LintLevel, lint_collection};
-use nebula_parameter::parameter::Parameter;
-use nebula_parameter::path::ParameterPath;
-use nebula_parameter::transformer::Transformer;
+use nebula_parameter::{
+    collection::ParameterCollection,
+    conditions::Condition,
+    filter_field::{FilterField, FilterFieldType},
+    lint::{LintDiagnostic, LintLevel, lint_collection},
+    parameter::Parameter,
+    path::ParameterPath,
+    transformer::Transformer,
+};
 use nebula_validator::Rule;
 
 // ── Helpers ─────────────────────────────────────────────────────────────────

@@ -44,11 +44,11 @@ pub struct AuthenticatedUser {
 ///
 /// The middleware tries two paths in order:
 ///
-/// 1. **`X-API-Key` header** — if present, the value is compared in constant
-///    time against the configured `api_keys`. On match the request is allowed;
-///    on mismatch a 401 is returned immediately (no JWT fallback).
-/// 2. **`Authorization: Bearer <token>`** — validated against the server JWT
-///    secret with HS256. Expiry is enforced.
+/// 1. **`X-API-Key` header** — if present, the value is compared in constant time against the
+///    configured `api_keys`. On match the request is allowed; on mismatch a 401 is returned
+///    immediately (no JWT fallback).
+/// 2. **`Authorization: Bearer <token>`** — validated against the server JWT secret with HS256.
+///    Expiry is enforced.
 ///
 /// At least one must succeed, otherwise 401 is returned.
 ///

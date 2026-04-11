@@ -28,9 +28,8 @@ pub use credential_accessor::EngineCredentialAccessor;
 pub use engine::WorkflowEngine;
 pub use error::EngineError;
 pub use event::ExecutionEvent;
+// Re-export plugin types for convenience.
+pub use nebula_plugin::{Plugin, PluginKey, PluginMetadata, PluginRegistry, PluginType};
 pub use node_output::NodeOutput;
 pub use resource_accessor::EngineResourceAccessor;
 pub use result::ExecutionResult;
-
-// Re-export plugin types for convenience.
-pub use nebula_plugin::{Plugin, PluginKey, PluginMetadata, PluginRegistry, PluginType};

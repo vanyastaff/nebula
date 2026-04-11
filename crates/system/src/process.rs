@@ -8,11 +8,12 @@
 //! - **`thread_count`**: always `1` — sysinfo does not expose thread count portably.
 //! - **`uid` / `gid`**: always `None` — not populated even on Unix.
 
-use crate::core::{SystemError, SystemResult};
 use std::time::{Duration, Instant};
 
 #[cfg(feature = "serde")]
 use serde::{Deserialize, Serialize};
+
+use crate::core::{SystemError, SystemResult};
 
 /// Process information
 #[derive(Debug, Clone)]
@@ -139,8 +140,9 @@ pub fn current() -> SystemResult<ProcessInfo> {
 pub fn get_process(pid: u32) -> SystemResult<ProcessInfo> {
     #[cfg(feature = "process")]
     {
-        use crate::info::SYSINFO_SYSTEM;
         use sysinfo::{Pid, ProcessesToUpdate};
+
+        use crate::info::SYSINFO_SYSTEM;
 
         let mut sys = SYSINFO_SYSTEM.write();
         let _ = sys.refresh_processes(ProcessesToUpdate::Some(&[Pid::from_u32(pid)]), false);
@@ -316,7 +318,10 @@ pub struct ProcessSample {
 ///
 /// let mut monitor = ProcessMonitor::new(std::process::id()).unwrap();
 /// if let Some(sample) = monitor.sample() {
-///     println!("memory: {} bytes, cpu: {:.1}%", sample.memory, sample.cpu_usage);
+///     println!(
+///         "memory: {} bytes, cpu: {:.1}%",
+///         sample.memory, sample.cpu_usage
+///     );
 /// }
 /// println!("peak memory: {} bytes", monitor.peak_memory());
 /// println!("tracked for: {:?}", monitor.elapsed());

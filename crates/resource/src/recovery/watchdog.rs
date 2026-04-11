@@ -151,8 +151,10 @@ impl Drop for WatchdogHandle {
 
 #[cfg(test)]
 mod tests {
-    use std::sync::Arc;
-    use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+    use std::sync::{
+        Arc,
+        atomic::{AtomicBool, AtomicU32, Ordering},
+    };
 
     use super::*;
 

@@ -2,12 +2,13 @@
 //!
 //! Adds unique request ID to each request for tracing.
 
+use std::task::{Context, Poll};
+
 use axum::{
     extract::Request,
     response::{IntoResponse, Response},
 };
 use futures::future::BoxFuture;
-use std::task::{Context, Poll};
 use tower::{Layer, Service};
 use uuid::Uuid;
 

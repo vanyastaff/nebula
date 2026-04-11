@@ -1,7 +1,8 @@
 //! Cloud/infrastructure instance identity (IMDS, managed identity).
 
-use crate::AuthScheme;
 use serde::{Deserialize, Serialize};
+
+use crate::AuthScheme;
 
 /// Instance-level identity binding for cloud/infrastructure authentication.
 ///

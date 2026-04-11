@@ -1,7 +1,8 @@
 //! No-operation watcher that does nothing
 
-use crate::core::{ConfigResult, ConfigSource, ConfigWatcher};
 use async_trait::async_trait;
+
+use crate::core::{ConfigResult, ConfigSource, ConfigWatcher};
 
 /// No-op watcher that does nothing
 #[derive(Debug, Clone, Default)]

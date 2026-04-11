@@ -9,8 +9,8 @@
 //! When used with [`RetryConfig`](crate::retry::RetryConfig):
 //! 1. [`ErrorClassifier`] (set via [`with_classifier`](crate::retry::RetryConfig::with_classifier)
 //!    or [`retry_if`](crate::retry::RetryConfig::retry_if) shorthand)
-//! 2. [`Classify::is_retryable()`](nebula_error::Classify::is_retryable) — default fallback
-//!    when no classifier is set
+//! 2. [`Classify::is_retryable()`](nebula_error::Classify::is_retryable) — default fallback when no
+//!    classifier is set
 //!
 //! # Examples
 //!
@@ -18,7 +18,11 @@
 //! use nebula_resilience::classifier::{ErrorClass, ErrorClassifier, FnClassifier};
 //!
 //! #[derive(Debug)]
-//! enum ApiError { RateLimited, BadRequest, ServerDown }
+//! enum ApiError {
+//!     RateLimited,
+//!     BadRequest,
+//!     ServerDown,
+//! }
 //!
 //! let classifier = FnClassifier::new(|e: &ApiError| match e {
 //!     ApiError::RateLimited => ErrorClass::Overload,
@@ -28,12 +32,14 @@
 //!
 //! assert!(classifier.classify(&ApiError::RateLimited).is_retryable());
 //! assert!(!classifier.classify(&ApiError::BadRequest).is_retryable());
-//! assert!(classifier.classify(&ApiError::ServerDown).counts_as_failure());
+//! assert!(
+//!     classifier
+//!         .classify(&ApiError::ServerDown)
+//!         .counts_as_failure()
+//! );
 //! ```
 
-use std::fmt;
-use std::marker::PhantomData;
-use std::sync::Arc;
+use std::{fmt, marker::PhantomData, sync::Arc};
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // ERROR CLASS
@@ -178,8 +184,11 @@ impl<E> ErrorClassifier<E> for AlwaysPermanent {
 /// use nebula_resilience::classifier::{ErrorClass, FnClassifier};
 ///
 /// let classifier = FnClassifier::new(|e: &&str| {
-///     if e.contains("timeout") { ErrorClass::Timeout }
-///     else { ErrorClass::Transient }
+///     if e.contains("timeout") {
+///         ErrorClass::Timeout
+///     } else {
+///         ErrorClass::Transient
+///     }
 /// });
 /// ```
 pub struct FnClassifier<E, F> {

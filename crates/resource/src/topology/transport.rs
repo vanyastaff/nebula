@@ -2,8 +2,7 @@
 
 use std::future::Future;
 
-use crate::ctx::Ctx;
-use crate::resource::Resource;
+use crate::{ctx::Ctx, resource::Resource};
 
 /// Transport topology — shared connection, multiplexed sessions.
 ///

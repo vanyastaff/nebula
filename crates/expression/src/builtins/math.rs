@@ -1,13 +1,16 @@
 //! Math functions
 
+use serde_json::Value;
+
 use super::{
     check_arg_count, check_min_arg_count, get_int_arg_with_policy, get_number_arg_with_policy,
 };
-use crate::ExpressionError;
-use crate::context::EvaluationContext;
-use crate::error::{ExpressionErrorExt, ExpressionResult};
-use crate::eval::Evaluator;
-use serde_json::Value;
+use crate::{
+    ExpressionError,
+    context::EvaluationContext,
+    error::{ExpressionErrorExt, ExpressionResult},
+    eval::Evaluator,
+};
 
 /// Absolute value
 pub fn abs(args: &[Value], eval: &Evaluator, ctx: &EvaluationContext) -> ExpressionResult<Value> {

@@ -1,14 +1,17 @@
 //! Main configuration container
 
-use super::{ConfigError, ConfigResult, ConfigSource, SourceMetadata};
-use super::{ConfigLoader, ConfigValidator, ConfigWatcher};
+use std::{collections::HashMap, sync::Arc};
+
 use dashmap::DashMap;
 use serde::de::DeserializeOwned;
 use smallvec::SmallVec;
-use std::collections::HashMap;
-use std::sync::Arc;
 use tokio::sync::RwLock;
 use tokio_util::sync::CancellationToken;
+
+use super::{
+    ConfigError, ConfigLoader, ConfigResult, ConfigSource, ConfigValidator, ConfigWatcher,
+    SourceMetadata,
+};
 
 /// Inline storage for config sources — most configs have 1-3 sources.
 pub(crate) type Sources = SmallVec<[ConfigSource; 4]>;
@@ -635,8 +638,9 @@ impl Drop for Config {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use serde_json::json;
+
+    use super::*;
 
     fn test_config(data: serde_json::Value) -> Config {
         Config::new(

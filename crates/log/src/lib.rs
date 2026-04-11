@@ -130,9 +130,15 @@ mod telemetry;
 pub mod observability;
 
 // Public API
+// Re-export core types
+pub use core::{LogError, LogResult, LogResultExt};
+
 pub use builder::{LoggerBuilder, LoggerGuard, ReloadHandle};
 #[cfg(feature = "async")]
 pub use builder::{WatcherGuard, watch_config, watch_config_with_interval};
+// Re-export telemetry config when the feature is enabled
+#[cfg(feature = "telemetry")]
+pub use config::TelemetryConfig;
 pub use config::{
     Config, DestinationFailurePolicy, Format, Level, ResolvedConfig, ResolvedSource, Rolling,
     WriterConfig,
@@ -140,26 +146,18 @@ pub use config::{
 pub use layer::context::{Context, Fields};
 pub use timing::{Timed, Timer, TimerGuard};
 
-// Re-export core types
-pub use core::{LogError, LogResult, LogResultExt};
-
-// Re-export telemetry config when the feature is enabled
-#[cfg(feature = "telemetry")]
-pub use config::TelemetryConfig;
-
 /// Prelude for common imports
 pub mod prelude {
-    pub use crate::{
-        Level, LogError, LogResult, LogResultExt, Timed, Timer, auto_init, debug, error, info,
-        init, init_with, instrument, span, trace, warn,
-    };
-
     pub use tracing::{Span, field};
 
     // Observability hooks and events
     pub use crate::observability::{
         LoggingHook, ObservabilityEvent, ObservabilityHook, OperationCompleted, OperationFailed,
         OperationStarted, OperationTracker, emit_event, register_hook,
+    };
+    pub use crate::{
+        Level, LogError, LogResult, LogResultExt, Timed, Timer, auto_init, debug, error, info,
+        init, init_with, instrument, span, trace, warn,
     };
 }
 

@@ -13,8 +13,7 @@
 
 use std::time::Duration;
 
-use serde::de::DeserializeOwned;
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use zeroize::Zeroize;
 
 /// Typed pending state for interactive credential flows.
@@ -23,14 +22,12 @@ use zeroize::Zeroize;
 ///
 /// # Security properties
 ///
-/// - **TTL enforced:** [`expires_in`](PendingState::expires_in)
-///   determines max lifetime (typically 5-15 min).
-/// - **Single-use:** consumed (deleted) on first read by
-///   `continue_resolve()`.
+/// - **TTL enforced:** [`expires_in`](PendingState::expires_in) determines max lifetime (typically
+///   5-15 min).
+/// - **Single-use:** consumed (deleted) on first read by `continue_resolve()`.
 /// - **Encrypted at rest** by the `PendingStateStore` implementation.
 /// - **Zeroize on drop:** secrets zeroed when state is dropped.
-/// - Serialization buffers wrapped in `Zeroizing<Vec<u8>>` by store
-///   implementation.
+/// - Serialization buffers wrapped in `Zeroizing<Vec<u8>>` by store implementation.
 pub trait PendingState: Serialize + DeserializeOwned + Send + Sync + Zeroize + 'static {
     /// Stable identifier for this pending-state type
     /// (e.g. `"oauth2_pending"`).

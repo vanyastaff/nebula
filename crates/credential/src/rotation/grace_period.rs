@@ -2,12 +2,11 @@
 //!
 //! Provides grace period functionality for zero-downtime credential rotation.
 
-use chrono::{DateTime, Utc};
-use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
-use std::time::Duration;
+use std::{collections::HashMap, time::Duration};
 
+use chrono::{DateTime, Utc};
 use nebula_core::CredentialId;
+use serde::{Deserialize, Serialize};
 
 /// Grace period configuration
 ///

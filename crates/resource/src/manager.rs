@@ -14,29 +14,35 @@
 //!   └── shutdown()   — cancel all, drain
 //! ```
 
-use std::any::TypeId;
-use std::sync::Arc;
-use std::sync::atomic::{AtomicU64, Ordering as AtomicOrdering};
-use std::time::{Duration, Instant};
+use std::{
+    any::TypeId,
+    sync::{
+        Arc,
+        atomic::{AtomicU64, Ordering as AtomicOrdering},
+    },
+    time::{Duration, Instant},
+};
 
+use nebula_core::ResourceKey;
 use tokio::sync::{Notify, broadcast};
 use tokio_util::sync::CancellationToken;
 
-use nebula_core::ResourceKey;
-
-use crate::ctx::{Ctx, ScopeLevel};
-use crate::error::Error;
-use crate::events::ResourceEvent;
-use crate::integration::AcquireResilience;
-use crate::metrics::{ResourceOpsMetrics, ResourceOpsSnapshot};
-use crate::options::AcquireOptions;
-use crate::recovery::gate::{GateState, RecoveryGate};
-use crate::recovery::group::RecoveryGroupRegistry;
-use crate::registry::Registry;
-use crate::release_queue::{ReleaseQueue, ReleaseQueueHandle};
-use crate::resource::Resource;
-use crate::runtime::TopologyRuntime;
-use crate::runtime::managed::ManagedResource;
+use crate::{
+    ctx::{Ctx, ScopeLevel},
+    error::Error,
+    events::ResourceEvent,
+    integration::AcquireResilience,
+    metrics::{ResourceOpsMetrics, ResourceOpsSnapshot},
+    options::AcquireOptions,
+    recovery::{
+        gate::{GateState, RecoveryGate},
+        group::RecoveryGroupRegistry,
+    },
+    registry::Registry,
+    release_queue::{ReleaseQueue, ReleaseQueueHandle},
+    resource::Resource,
+    runtime::{TopologyRuntime, managed::ManagedResource},
+};
 
 /// Snapshot of a resource's health and operational state.
 #[derive(Debug, Clone)]
@@ -551,10 +557,10 @@ impl Manager {
     ///
     /// # Errors
     ///
-    /// - [`ErrorKind::NotFound`](crate::error::ErrorKind::NotFound) if no
-    ///   resource of type `R` is registered for the given scope.
-    /// - [`ErrorKind::Cancelled`](crate::error::ErrorKind::Cancelled) if the
-    ///   manager is shutting down.
+    /// - [`ErrorKind::NotFound`](crate::error::ErrorKind::NotFound) if no resource of type `R` is
+    ///   registered for the given scope.
+    /// - [`ErrorKind::Cancelled`](crate::error::ErrorKind::Cancelled) if the manager is shutting
+    ///   down.
     pub fn lookup<R: Resource>(
         &self,
         scope: &ScopeLevel,
@@ -574,12 +580,12 @@ impl Manager {
     ///
     /// # Errors
     ///
-    /// - [`ErrorKind::NotFound`](crate::error::ErrorKind::NotFound) if no
-    ///   resource of type `R` is registered.
-    /// - [`ErrorKind::Cancelled`](crate::error::ErrorKind::Cancelled) if the
-    ///   manager is shutting down.
-    /// - [`ErrorKind::Permanent`](crate::error::ErrorKind::Permanent) if the
-    ///   resource is not using pool topology.
+    /// - [`ErrorKind::NotFound`](crate::error::ErrorKind::NotFound) if no resource of type `R` is
+    ///   registered.
+    /// - [`ErrorKind::Cancelled`](crate::error::ErrorKind::Cancelled) if the manager is shutting
+    ///   down.
+    /// - [`ErrorKind::Permanent`](crate::error::ErrorKind::Permanent) if the resource is not using
+    ///   pool topology.
     /// - Propagates pool-specific acquire errors.
     pub async fn acquire_pooled<R>(
         &self,
@@ -654,10 +660,10 @@ impl Manager {
     ///
     /// # Errors
     ///
-    /// - [`ErrorKind::NotFound`](crate::error::ErrorKind::NotFound) if no
-    ///   resource of type `R` is registered.
-    /// - [`ErrorKind::Permanent`](crate::error::ErrorKind::Permanent) if the
-    ///   resource is not using resident topology.
+    /// - [`ErrorKind::NotFound`](crate::error::ErrorKind::NotFound) if no resource of type `R` is
+    ///   registered.
+    /// - [`ErrorKind::Permanent`](crate::error::ErrorKind::Permanent) if the resource is not using
+    ///   resident topology.
     /// - Propagates resident-specific acquire errors.
     pub async fn acquire_resident<R>(
         &self,
@@ -722,10 +728,10 @@ impl Manager {
     ///
     /// # Errors
     ///
-    /// - [`ErrorKind::NotFound`](crate::error::ErrorKind::NotFound) if no
-    ///   resource of type `R` is registered.
-    /// - [`ErrorKind::Permanent`](crate::error::ErrorKind::Permanent) if the
-    ///   resource is not using service topology.
+    /// - [`ErrorKind::NotFound`](crate::error::ErrorKind::NotFound) if no resource of type `R` is
+    ///   registered.
+    /// - [`ErrorKind::Permanent`](crate::error::ErrorKind::Permanent) if the resource is not using
+    ///   service topology.
     /// - Propagates service-specific acquire errors.
     pub async fn acquire_service<R>(
         &self,
@@ -795,10 +801,10 @@ impl Manager {
     ///
     /// # Errors
     ///
-    /// - [`ErrorKind::NotFound`](crate::error::ErrorKind::NotFound) if no
-    ///   resource of type `R` is registered.
-    /// - [`ErrorKind::Permanent`](crate::error::ErrorKind::Permanent) if the
-    ///   resource is not using transport topology.
+    /// - [`ErrorKind::NotFound`](crate::error::ErrorKind::NotFound) if no resource of type `R` is
+    ///   registered.
+    /// - [`ErrorKind::Permanent`](crate::error::ErrorKind::Permanent) if the resource is not using
+    ///   transport topology.
     /// - Propagates transport-specific acquire errors.
     pub async fn acquire_transport<R>(
         &self,
@@ -868,10 +874,10 @@ impl Manager {
     ///
     /// # Errors
     ///
-    /// - [`ErrorKind::NotFound`](crate::error::ErrorKind::NotFound) if no
-    ///   resource of type `R` is registered.
-    /// - [`ErrorKind::Permanent`](crate::error::ErrorKind::Permanent) if the
-    ///   resource is not using exclusive topology.
+    /// - [`ErrorKind::NotFound`](crate::error::ErrorKind::NotFound) if no resource of type `R` is
+    ///   registered.
+    /// - [`ErrorKind::Permanent`](crate::error::ErrorKind::Permanent) if the resource is not using
+    ///   exclusive topology.
     /// - Propagates exclusive-specific acquire errors.
     pub async fn acquire_exclusive<R>(
         &self,
@@ -946,9 +952,12 @@ impl Manager {
     /// # Errors
     ///
     /// - [`ErrorKind::Backpressure`](crate::error::ErrorKind::Backpressure) if the pool is full.
-    /// - [`ErrorKind::NotFound`](crate::error::ErrorKind::NotFound) if no resource of type `R` is registered.
-    /// - [`ErrorKind::Cancelled`](crate::error::ErrorKind::Cancelled) if the manager is shutting down.
-    /// - [`ErrorKind::Permanent`](crate::error::ErrorKind::Permanent) if the resource is not using pool topology.
+    /// - [`ErrorKind::NotFound`](crate::error::ErrorKind::NotFound) if no resource of type `R` is
+    ///   registered.
+    /// - [`ErrorKind::Cancelled`](crate::error::ErrorKind::Cancelled) if the manager is shutting
+    ///   down.
+    /// - [`ErrorKind::Permanent`](crate::error::ErrorKind::Permanent) if the resource is not using
+    ///   pool topology.
     pub async fn try_acquire_pooled<R>(
         &self,
         auth: &R::Auth,
@@ -1050,8 +1059,10 @@ impl Manager {
     ///
     /// # Errors
     ///
-    /// - [`ErrorKind::NotFound`](crate::error::ErrorKind::NotFound) if no resource of type `R` is registered.
-    /// - [`ErrorKind::Permanent`](crate::error::ErrorKind::Permanent) if the resource is not using pool topology.
+    /// - [`ErrorKind::NotFound`](crate::error::ErrorKind::NotFound) if no resource of type `R` is
+    ///   registered.
+    /// - [`ErrorKind::Permanent`](crate::error::ErrorKind::Permanent) if the resource is not using
+    ///   pool topology.
     ///
     /// # Examples
     ///
@@ -1094,12 +1105,10 @@ impl Manager {
     ///
     /// # Errors
     ///
-    /// - [`ErrorKind::NotFound`](crate::error::ErrorKind::NotFound) if no
-    ///   resource of type `R` is registered for the given scope.
-    /// - [`ErrorKind::Permanent`](crate::error::ErrorKind::Permanent) if config
-    ///   validation fails.
-    /// - [`ErrorKind::Cancelled`](crate::error::ErrorKind::Cancelled) if the
-    ///   manager is shut down.
+    /// - [`ErrorKind::NotFound`](crate::error::ErrorKind::NotFound) if no resource of type `R` is
+    ///   registered for the given scope.
+    /// - [`ErrorKind::Permanent`](crate::error::ErrorKind::Permanent) if config validation fails.
+    /// - [`ErrorKind::Cancelled`](crate::error::ErrorKind::Cancelled) if the manager is shut down.
     pub fn reload_config<R: Resource>(
         &self,
         new_config: R::Config,
@@ -1170,12 +1179,12 @@ impl Manager {
     /// Triggers graceful shutdown with drain and cleanup.
     ///
     /// 1. **Signal** — cancels the token so new acquires are rejected.
-    /// 2. **Drain** — waits up to [`ShutdownConfig::drain_timeout`] for
-    ///    in-flight handles to be released.
-    /// 3. **Clear** — drops all managed resources, releasing their
-    ///    `Arc<ReleaseQueue>` references so workers can drain and exit.
-    /// 4. **Await workers** — waits for the release queue workers to
-    ///    finish processing remaining tasks.
+    /// 2. **Drain** — waits up to [`ShutdownConfig::drain_timeout`] for in-flight handles to be
+    ///    released.
+    /// 3. **Clear** — drops all managed resources, releasing their `Arc<ReleaseQueue>` references
+    ///    so workers can drain and exit.
+    /// 4. **Await workers** — waits for the release queue workers to finish processing remaining
+    ///    tasks.
     ///
     /// # Examples
     ///
@@ -1184,9 +1193,11 @@ impl Manager {
     /// # use std::time::Duration;
     /// # async fn example() {
     /// let manager = Manager::new();
-    /// manager.graceful_shutdown(ShutdownConfig {
-    ///     drain_timeout: Duration::from_secs(5),
-    /// }).await;
+    /// manager
+    ///     .graceful_shutdown(ShutdownConfig {
+    ///         drain_timeout: Duration::from_secs(5),
+    ///     })
+    ///     .await;
     /// # }
     /// ```
     pub async fn graceful_shutdown(&self, config: ShutdownConfig) {

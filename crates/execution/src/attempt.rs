@@ -1,11 +1,11 @@
 //! Node execution attempt tracking.
 
-use crate::output::ExecutionOutput;
-use chrono::{DateTime, Utc};
-use serde::{Deserialize, Serialize};
 use std::time::Duration;
 
-use crate::idempotency::IdempotencyKey;
+use chrono::{DateTime, Utc};
+use serde::{Deserialize, Serialize};
+
+use crate::{idempotency::IdempotencyKey, output::ExecutionOutput};
 
 /// A single attempt to execute a node.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -86,8 +86,9 @@ impl NodeAttempt {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use nebula_core::{ExecutionId, NodeId};
+
+    use super::*;
 
     fn test_key() -> IdempotencyKey {
         IdempotencyKey::generate(ExecutionId::new(), NodeId::new(), 0)

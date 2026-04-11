@@ -3,21 +3,19 @@
 //! Demonstrates how to prevent registry bloat from high-cardinality labels
 //! using two complementary mechanisms learned from Vector.dev and Linkerd:
 //!
-//! 1. **`LabelAllowlist`** — strips unsafe label keys (e.g. `execution_id`,
-//!    `workflow_id`) before they reach the registry.
-//! 2. **`MetricsRegistry::retain_recent`** — TTL-based eviction of metric series
-//!    that have not been updated within a time window.
+//! 1. **`LabelAllowlist`** — strips unsafe label keys (e.g. `execution_id`, `workflow_id`) before
+//!    they reach the registry.
+//! 2. **`MetricsRegistry::retain_recent`** — TTL-based eviction of metric series that have not been
+//!    updated within a time window.
 //!
 //! Run with:
 //! ```bash
 //! cargo run -p nebula-metrics --example cardinality_guard
 //! ```
 
-use std::sync::Arc;
-use std::time::Duration;
+use std::{sync::Arc, time::Duration};
 
-use nebula_metrics::adapter::TelemetryAdapter;
-use nebula_metrics::filter::LabelAllowlist;
+use nebula_metrics::{adapter::TelemetryAdapter, filter::LabelAllowlist};
 use nebula_telemetry::metrics::MetricsRegistry;
 
 fn main() {

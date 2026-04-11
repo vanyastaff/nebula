@@ -2,8 +2,7 @@
 
 use std::sync::Arc;
 
-use crate::scope::ScopedEvent;
-use crate::scope::SubscriptionScope;
+use crate::scope::{ScopedEvent, SubscriptionScope};
 
 /// Predicate wrapper used by [`crate::FilteredSubscriber`].
 #[derive(Clone)]

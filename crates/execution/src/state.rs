@@ -7,11 +7,13 @@ use nebula_core::{ExecutionId, NodeId, WorkflowId};
 use nebula_workflow::NodeState;
 use serde::{Deserialize, Serialize};
 
-use crate::attempt::NodeAttempt;
-use crate::error::ExecutionError;
-use crate::output::NodeOutput;
-use crate::status::ExecutionStatus;
-use crate::transition::{validate_execution_transition, validate_node_transition};
+use crate::{
+    attempt::NodeAttempt,
+    error::ExecutionError,
+    output::NodeOutput,
+    status::ExecutionStatus,
+    transition::{validate_execution_transition, validate_node_transition},
+};
 
 /// The execution state of a single node within a running workflow.
 #[derive(Debug, Clone, Serialize, Deserialize)]

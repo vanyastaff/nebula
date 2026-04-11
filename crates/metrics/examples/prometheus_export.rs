@@ -10,8 +10,7 @@
 
 use std::sync::Arc;
 
-use nebula_metrics::adapter::TelemetryAdapter;
-use nebula_metrics::export::prometheus;
+use nebula_metrics::{adapter::TelemetryAdapter, export::prometheus};
 use nebula_telemetry::metrics::MetricsRegistry;
 
 fn main() {

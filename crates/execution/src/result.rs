@@ -1,7 +1,6 @@
 //! Execution result summary.
 
-use std::collections::HashMap;
-use std::time::Duration;
+use std::{collections::HashMap, time::Duration};
 
 use chrono::{DateTime, Utc};
 use nebula_core::{ExecutionId, NodeId};
@@ -17,9 +16,8 @@ use crate::status::ExecutionStatus;
 /// # Examples
 ///
 /// ```
-/// use nebula_execution::ExecutionResult;
-/// use nebula_execution::ExecutionStatus;
 /// use nebula_core::ExecutionId;
+/// use nebula_execution::{ExecutionResult, ExecutionStatus};
 ///
 /// let result = ExecutionResult::new(ExecutionId::new(), ExecutionStatus::Completed);
 /// assert!(result.status.is_terminal());

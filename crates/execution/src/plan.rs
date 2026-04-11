@@ -7,8 +7,7 @@ use nebula_core::{ExecutionId, NodeId, WorkflowId};
 use nebula_workflow::{DependencyGraph, WorkflowDefinition};
 use serde::{Deserialize, Serialize};
 
-use crate::context::ExecutionBudget;
-use crate::error::ExecutionError;
+use crate::{context::ExecutionBudget, error::ExecutionError};
 
 /// A pre-computed execution plan derived from a workflow definition.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -71,10 +70,12 @@ impl ExecutionPlan {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use std::collections::HashMap;
+
     use nebula_core::{Version, WorkflowId};
     use nebula_workflow::{Connection, NodeDefinition, WorkflowConfig, WorkflowDefinition};
-    use std::collections::HashMap;
+
+    use super::*;
 
     fn make_workflow(
         nodes: Vec<NodeDefinition>,

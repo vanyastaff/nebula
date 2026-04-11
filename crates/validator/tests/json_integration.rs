@@ -1,8 +1,10 @@
 //! Integration tests for serde_json::Value validation.
 
-use nebula_validator::combinators::{json_field, json_field_optional};
-use nebula_validator::foundation::{Validate, ValidateExt};
-use nebula_validator::validators::min_length;
+use nebula_validator::{
+    combinators::{json_field, json_field_optional},
+    foundation::{Validate, ValidateExt},
+    validators::min_length,
+};
 use serde_json::{Value, json};
 
 // ============================================================================
@@ -300,8 +302,7 @@ fn or_combinator_json() {
 
 #[test]
 fn not_combinator_json() {
-    use nebula_validator::combinators::not;
-    use nebula_validator::validators::contains;
+    use nebula_validator::{combinators::not, validators::contains};
 
     // Status must NOT contain "error"
     let v = not(json_field("/status", contains("error")));
@@ -311,8 +312,7 @@ fn not_combinator_json() {
 
 #[test]
 fn when_combinator_json() {
-    use nebula_validator::combinators::when;
-    use nebula_validator::validators::email;
+    use nebula_validator::{combinators::when, validators::email};
 
     // Validate email only when notify=true
     let v = when(json_field("/email", email()), |v: &Value| {
@@ -449,9 +449,7 @@ fn multiple_field_errors() {
 
 #[test]
 fn user_registration_payload() {
-    use nebula_validator::validators::in_range;
-    use nebula_validator::validators::is_true;
-    use nebula_validator::validators::{email, max_length};
+    use nebula_validator::validators::{email, in_range, is_true, max_length};
 
     let validator = json_field("/name", min_length(1))
         .and(json_field("/name", max_length(100)))
@@ -506,8 +504,7 @@ fn user_registration_payload() {
 
 #[test]
 fn server_config_payload() {
-    use nebula_validator::validators::contains;
-    use nebula_validator::validators::{greater_than, in_range};
+    use nebula_validator::validators::{contains, greater_than, in_range};
 
     let validator = json_field("/host", min_length(1))
         .and(json_field("/port", in_range::<i64>(1, 65535)))

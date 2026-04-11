@@ -2,9 +2,12 @@
 //!
 //! This module provides the fundamental building blocks for type-safe validation:
 //!
-//! - [`Validate`](crate::foundation::traits::Validate) - Core trait for validators, generic over input type
-//! - [`Validatable`](crate::foundation::traits::Validatable) - Extension trait enabling `value.validate(&validator)` syntax
-//! - [`ValidateExt`](crate::foundation::traits::ValidateExt) - Combinator methods (`.and()`, `.or()`, `.not()`)
+//! - [`Validate`](crate::foundation::traits::Validate) - Core trait for validators, generic over
+//!   input type
+//! - [`Validatable`](crate::foundation::traits::Validatable) - Extension trait enabling
+//!   `value.validate(&validator)` syntax
+//! - [`ValidateExt`](crate::foundation::traits::ValidateExt) - Combinator methods (`.and()`,
+//!   `.or()`, `.not()`)
 //! - [`ValidationError`](crate::foundation::error::ValidationError) - Structured validation errors
 //!
 //! # Two Ways to Validate
@@ -63,9 +66,7 @@ pub use validatable::AsValidatable;
 // Canonical definitions live in `crate::combinators`; these re-exports
 // keep the public surface stable.
 pub use crate::combinators::and::And;
-pub use crate::combinators::not::Not;
-pub use crate::combinators::or::Or;
-pub use crate::combinators::when::When;
+pub use crate::combinators::{not::Not, or::Or, when::When};
 
 // ============================================================================
 // PRELUDE

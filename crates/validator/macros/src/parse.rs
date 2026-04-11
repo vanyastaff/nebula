@@ -6,15 +6,13 @@
 
 #![forbid(unsafe_code)]
 
+use nebula_macro_support::{
+    attrs, diag,
+    validation_codegen::{is_option_type, parse_number_lit, parse_usize, value_token},
+};
 use proc_macro2::TokenStream as TokenStream2;
 use quote::quote;
-use syn::parse::Parser;
-use syn::{DeriveInput, Type};
-
-use nebula_macro_support::validation_codegen::{
-    is_option_type, parse_number_lit, parse_usize, value_token,
-};
-use nebula_macro_support::{attrs, diag};
+use syn::{DeriveInput, Type, parse::Parser};
 
 use crate::model::{
     ContainerAttrs, EachRules, FieldDef, Rule, StringFactoryKind, StringFormat, ValidatorInput,
@@ -1448,8 +1446,9 @@ fn expr_to_attr_value(expr: syn::Expr) -> attrs::AttrValue {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use syn::parse_quote;
+
+    use super::*;
 
     #[test]
     fn required_on_non_option_field_is_rejected() {

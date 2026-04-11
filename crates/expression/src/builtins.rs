@@ -10,13 +10,17 @@ pub mod object;
 pub mod string;
 pub mod util;
 
-use crate::ExpressionError;
-use crate::ast::Expr;
-use crate::context::EvaluationContext;
-use crate::error::{ExpressionErrorExt, ExpressionResult};
-use crate::eval::Evaluator;
-use serde_json::Value;
 use std::collections::HashMap;
+
+use serde_json::Value;
+
+use crate::{
+    ExpressionError,
+    ast::Expr,
+    context::EvaluationContext,
+    error::{ExpressionErrorExt, ExpressionResult},
+    eval::Evaluator,
+};
 
 /// Type alias for a builtin function
 pub type BuiltinFunction = fn(&[Value], &Evaluator, &EvaluationContext) -> ExpressionResult<Value>;

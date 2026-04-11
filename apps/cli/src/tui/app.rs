@@ -1,15 +1,19 @@
 //! TUI application state and main loop.
 
-use std::collections::HashMap;
-use std::io;
-use std::time::{Duration, Instant};
+use std::{
+    collections::HashMap,
+    io,
+    time::{Duration, Instant},
+};
 
 use crossterm::event::{self, Event, KeyCode, KeyEventKind};
 use nebula_core::id::NodeId;
 use tokio::sync::mpsc;
 
-use super::event::{LogLevel, TuiEvent};
-use super::render;
+use super::{
+    event::{LogLevel, TuiEvent},
+    render,
+};
 
 /// Status of a single node in the TUI.
 #[derive(Clone)]

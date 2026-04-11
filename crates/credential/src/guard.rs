@@ -5,8 +5,7 @@
 //! 2. **Zeroize on drop** — secret material wiped from memory
 //! 3. **Not Serialize** — prevents accidental inclusion in action output or state
 
-use std::fmt;
-use std::ops::Deref;
+use std::{fmt, ops::Deref};
 
 use zeroize::Zeroize;
 
@@ -119,8 +118,10 @@ mod tests {
 
     #[test]
     fn drop_zeroizes_inner() {
-        use std::sync::Arc;
-        use std::sync::atomic::{AtomicBool, Ordering};
+        use std::sync::{
+            Arc,
+            atomic::{AtomicBool, Ordering},
+        };
 
         /// A secret type whose `Zeroize` impl sets a shared flag.
         struct ObservableSecret {

@@ -21,8 +21,7 @@ use serde::{Deserialize, Serialize};
 /// assert!(!result.has_more());
 ///
 /// // Paginated response
-/// let result = LoaderResult::page(vec!["a", "b"], "cursor_abc")
-///     .with_total(100);
+/// let result = LoaderResult::page(vec!["a", "b"], "cursor_abc").with_total(100);
 /// assert!(result.has_more());
 /// assert_eq!(result.total, Some(100));
 /// ```

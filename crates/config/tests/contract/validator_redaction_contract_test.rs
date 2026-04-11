@@ -1,6 +1,7 @@
-use super::helpers::assert_validation_failed;
 use nebula_config::ConfigBuilder;
 use nebula_validator::foundation::{Validate, ValidationError};
+
+use super::helpers::assert_validation_failed;
 
 #[derive(Clone)]
 struct SecretRejectingValidator;

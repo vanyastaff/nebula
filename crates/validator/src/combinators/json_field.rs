@@ -3,11 +3,13 @@
 //! Uses RFC 6901 JSON Pointer syntax for path traversal via
 //! `serde_json::Value::pointer()`.
 
-use crate::foundation::validatable::AsValidatable;
-use crate::foundation::{Validate, ValidationError};
-use std::borrow::{Borrow, Cow};
-use std::fmt;
-use std::marker::PhantomData;
+use std::{
+    borrow::{Borrow, Cow},
+    fmt,
+    marker::PhantomData,
+};
+
+use crate::foundation::{Validate, ValidationError, validatable::AsValidatable};
 
 /// Validates a field within a JSON value by RFC 6901 JSON Pointer path.
 ///
@@ -228,10 +230,10 @@ where
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-    use crate::foundation::ValidateExt;
-    use crate::validators::min_length;
     use serde_json::json;
+
+    use super::*;
+    use crate::{foundation::ValidateExt, validators::min_length};
 
     #[test]
     fn required_field_valid() {

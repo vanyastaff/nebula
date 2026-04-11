@@ -49,3 +49,5 @@ v2 complete — topology-agnostic resource management. RPITIT, 7 topologies, Man
 <!-- reviewed: 2026-04-04 — replaced ResourceMetrics with registry-backed ResourceOpsMetrics, removed per-resource metrics -->
 
 <!-- reviewed: 2026-04-07 -->
+
+<!-- reviewed: 2026-04-11 — Workspace-wide nightly rustfmt pass applied (group_imports = "StdExternalCrate", imports_granularity = "Crate", wrap_comments, format_code_in_doc_comments). Touches every Rust file in the crate; purely formatting, zero behavior change. -->

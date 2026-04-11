@@ -1,6 +1,7 @@
+use std::hint::black_box;
+
 use criterion::{BenchmarkId, Criterion, criterion_group, criterion_main};
 use serde_json::json;
-use std::hint::black_box;
 
 fn bench_config_build(c: &mut Criterion) {
     let mut group = c.benchmark_group("config/build");

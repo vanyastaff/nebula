@@ -9,21 +9,27 @@
 //! # Examples
 //!
 //! ```
-//! use nebula_core::{AuthScheme, AuthPattern};
+//! use nebula_core::{AuthPattern, AuthScheme};
 //! use nebula_credential::{CredentialMetadata, CredentialSnapshot};
 //! use serde::{Deserialize, Serialize};
 //!
 //! #[derive(Clone, Serialize, Deserialize)]
-//! struct MyToken { value: String }
+//! struct MyToken {
+//!     value: String,
+//! }
 //!
 //! impl AuthScheme for MyToken {
-//!     fn pattern() -> AuthPattern { AuthPattern::SecretToken }
+//!     fn pattern() -> AuthPattern {
+//!         AuthPattern::SecretToken
+//!     }
 //! }
 //!
 //! let snapshot = CredentialSnapshot::new(
 //!     "api_key",
 //!     CredentialMetadata::new(),
-//!     MyToken { value: "secret".into() },
+//!     MyToken {
+//!         value: "secret".into(),
+//!     },
 //! );
 //!
 //! assert_eq!(snapshot.kind(), "api_key");
@@ -48,8 +54,7 @@
 //! );
 //! ```
 
-use std::any::Any;
-use std::fmt;
+use std::{any::Any, fmt};
 
 use nebula_core::AuthScheme;
 
@@ -59,8 +64,8 @@ use crate::metadata::CredentialMetadata;
 ///
 /// # Errors
 ///
-/// - [`SchemeMismatch`](SnapshotError::SchemeMismatch) when the requested
-///   `AuthScheme` type does not match the type stored in the snapshot.
+/// - [`SchemeMismatch`](SnapshotError::SchemeMismatch) when the requested `AuthScheme` type does
+///   not match the type stored in the snapshot.
 #[derive(Debug, Clone, thiserror::Error)]
 #[non_exhaustive]
 pub enum SnapshotError {
@@ -117,17 +122,25 @@ impl CredentialSnapshot {
     /// # Examples
     ///
     /// ```
-    /// use nebula_core::{AuthScheme, AuthPattern};
+    /// use nebula_core::{AuthPattern, AuthScheme};
     /// use nebula_credential::{CredentialMetadata, CredentialSnapshot};
     /// use serde::{Deserialize, Serialize};
     ///
     /// #[derive(Clone, Serialize, Deserialize)]
-    /// struct Bearer { token: String }
+    /// struct Bearer {
+    ///     token: String,
+    /// }
     /// impl AuthScheme for Bearer {
-    ///     fn pattern() -> AuthPattern { AuthPattern::SecretToken }
+    ///     fn pattern() -> AuthPattern {
+    ///         AuthPattern::SecretToken
+    ///     }
     /// }
     ///
-    /// let snap = CredentialSnapshot::new("api_key", CredentialMetadata::new(), Bearer { token: "t".into() });
+    /// let snap = CredentialSnapshot::new(
+    ///     "api_key",
+    ///     CredentialMetadata::new(),
+    ///     Bearer { token: "t".into() },
+    /// );
     /// assert_eq!(snap.scheme_pattern(), "SecretToken");
     /// ```
     #[must_use]
@@ -248,10 +261,13 @@ impl fmt::Debug for CredentialSnapshot {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-    use crate::metadata::CredentialMetadata;
-    use crate::scheme::{ConnectionUri, SecretToken};
     use nebula_core::SecretString;
+
+    use super::*;
+    use crate::{
+        metadata::CredentialMetadata,
+        scheme::{ConnectionUri, SecretToken},
+    };
 
     fn token_snapshot() -> CredentialSnapshot {
         CredentialSnapshot::new(

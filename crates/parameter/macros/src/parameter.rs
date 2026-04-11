@@ -1,10 +1,9 @@
 //! Parameters derive macro implementation.
 
+use nebula_macro_support::{attrs, diag, utils};
 use proc_macro::TokenStream;
 use quote::quote;
 use syn::parse_macro_input;
-
-use nebula_macro_support::{attrs, diag, utils};
 
 use crate::param_attrs::{ParameterAttrs, ValidateAttrs};
 

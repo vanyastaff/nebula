@@ -2,14 +2,16 @@
 //!
 //! Сборка Router с middleware (Production-Grade).
 
+use std::time::Duration;
+
+use axum::{Router, middleware, response::Response};
+use tower::ServiceBuilder;
+use tower_http::{compression::CompressionLayer, cors::CorsLayer, trace::TraceLayer};
+
 use crate::{
     config::ApiConfig, middleware::security_headers::security_headers_middleware, routes,
     state::AppState,
 };
-use axum::{Router, middleware, response::Response};
-use std::time::Duration;
-use tower::ServiceBuilder;
-use tower_http::{compression::CompressionLayer, cors::CorsLayer, trace::TraceLayer};
 
 /// Build the main application router with middleware
 pub fn build_app(state: AppState, config: &ApiConfig) -> Router {
@@ -40,8 +42,9 @@ async fn request_id_middleware(
     mut request: axum::extract::Request,
     next: axum::middleware::Next,
 ) -> Response {
-    use crate::middleware::request_id::{RequestId, X_REQUEST_ID};
     use uuid::Uuid;
+
+    use crate::middleware::request_id::{RequestId, X_REQUEST_ID};
 
     let request_id = request
         .headers()
@@ -65,8 +68,9 @@ async fn request_id_middleware(
 
 /// Build CORS layer from config
 fn build_cors_layer(config: &ApiConfig) -> CorsLayer {
-    use crate::middleware::request_id::X_REQUEST_ID;
     use axum::http::{HeaderValue, Method, header};
+
+    use crate::middleware::request_id::X_REQUEST_ID;
 
     let mut cors = CorsLayer::new();
 

@@ -220,8 +220,10 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::foundation::AnyValidator;
-    use crate::validators::{exact_length, max_length, min_length};
+    use crate::{
+        foundation::AnyValidator,
+        validators::{exact_length, max_length, min_length},
+    };
 
     #[test]
     fn test_all_of_all_pass() {

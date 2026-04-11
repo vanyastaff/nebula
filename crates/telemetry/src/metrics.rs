@@ -6,9 +6,13 @@
 //! [`dashmap`]-backed sharded maps for low-latency concurrent access on the
 //! hot recording path.
 
-use std::sync::Arc;
-use std::sync::atomic::{AtomicI64, AtomicU64, Ordering};
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::{
+    sync::{
+        Arc,
+        atomic::{AtomicI64, AtomicU64, Ordering},
+    },
+    time::{Duration, SystemTime, UNIX_EPOCH},
+};
 
 use dashmap::DashMap;
 
@@ -522,6 +526,7 @@ impl MetricsRegistry {
     ///
     /// ```
     /// use std::time::Duration;
+    ///
     /// use nebula_telemetry::metrics::MetricsRegistry;
     ///
     /// let reg = MetricsRegistry::new();

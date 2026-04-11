@@ -1,14 +1,13 @@
 //! Circuit breaker pattern — plain-struct config, injectable sink and clock.
 
-use parking_lot::Mutex;
-use std::sync::Arc;
-use std::time::Duration;
+#[cfg(not(loom))]
+use std::sync::atomic::{AtomicU32, Ordering};
+use std::{sync::Arc, time::Duration};
 
 // Under loom, swap std atomics for loom-instrumented equivalents.
 #[cfg(loom)]
 use loom::sync::atomic::{AtomicU32, Ordering};
-#[cfg(not(loom))]
-use std::sync::atomic::{AtomicU32, Ordering};
+use parking_lot::Mutex;
 
 use crate::{
     CallError, ConfigError,
@@ -44,7 +43,8 @@ pub struct CircuitBreakerConfig {
     pub slow_call_rate_threshold: f64,
     /// Size of the count-based sliding window. 0 = use simple counters (default).
     pub sliding_window_size: u32,
-    /// Failure rate threshold (0.0--1.0) used with sliding window. `None` = use `failure_threshold` count.
+    /// Failure rate threshold (0.0--1.0) used with sliding window. `None` = use
+    /// `failure_threshold` count.
     pub failure_rate_threshold: Option<f64>,
 }
 
@@ -179,7 +179,8 @@ type StateChangeCallback = Box<dyn Fn(CircuitState, CircuitState) + Send + Sync>
 
 /// Circuit breaker — protects downstream calls by rejecting requests when failure rate is high.
 ///
-/// Shared state via `Arc<CircuitBreaker>`. Inject [`MockClock`](crate::clock::MockClock) and [`RecordingSink`](crate::RecordingSink) for tests.
+/// Shared state via `Arc<CircuitBreaker>`. Inject [`MockClock`](crate::clock::MockClock) and
+/// [`RecordingSink`](crate::RecordingSink) for tests.
 ///
 /// # Cancel safety
 ///
@@ -464,7 +465,8 @@ impl CircuitBreaker {
         }
     }
 
-    /// Manually force the circuit open, rejecting all calls until reset timeout or [`force_close`](Self::force_close).
+    /// Manually force the circuit open, rejecting all calls until reset timeout or
+    /// [`force_close`](Self::force_close).
     pub fn force_open(&self) {
         let mut inner = self.state.lock();
         let prev = to_circuit_state(inner.state);
@@ -888,10 +890,10 @@ const fn to_circuit_state(s: State) -> CircuitState {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-    use crate::sink::CircuitState as CS;
-    use crate::{CallError, RecordingSink};
     use std::time::Duration;
+
+    use super::*;
+    use crate::{CallError, RecordingSink, sink::CircuitState as CS};
 
     fn default_config() -> CircuitBreakerConfig {
         CircuitBreakerConfig {
@@ -1338,9 +1340,13 @@ mod tests {
 // ---------------------------------------------------------------------------
 #[cfg(all(test, loom))]
 mod loom_tests {
-    use loom::sync::Arc;
-    use loom::sync::atomic::{AtomicU32, Ordering};
-    use loom::thread;
+    use loom::{
+        sync::{
+            Arc,
+            atomic::{AtomicU32, Ordering},
+        },
+        thread,
+    };
 
     use super::{STATE_CLOSED, STATE_HALF_OPEN, STATE_OPEN};
 

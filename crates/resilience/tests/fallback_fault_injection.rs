@@ -1,13 +1,13 @@
 //! Fault-injection integration tests for fallback strategies.
 
-use std::sync::Arc;
-use std::time::Duration;
+use std::{sync::Arc, time::Duration};
 
-use nebula_resilience::CallError;
-use nebula_resilience::CallErrorKind;
-use nebula_resilience::fallback::{
-    CacheFallback, ChainFallback, FallbackOperation, FallbackStrategy, FunctionFallback,
-    PriorityFallback, ValueFallback,
+use nebula_resilience::{
+    CallError, CallErrorKind,
+    fallback::{
+        CacheFallback, ChainFallback, FallbackOperation, FallbackStrategy, FunctionFallback,
+        PriorityFallback, ValueFallback,
+    },
 };
 
 #[tokio::test]

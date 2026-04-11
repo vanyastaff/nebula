@@ -1,9 +1,9 @@
 use std::sync::Arc;
 
-use nebula_metrics::naming::{
-    NEBULA_RESOURCE_ACQUIRE_WAIT_DURATION_SECONDS, NEBULA_RESOURCE_CREATE_TOTAL,
+use nebula_metrics::{
+    MetricsRegistry, TelemetryAdapter,
+    naming::{NEBULA_RESOURCE_ACQUIRE_WAIT_DURATION_SECONDS, NEBULA_RESOURCE_CREATE_TOTAL},
 };
-use nebula_metrics::{MetricsRegistry, TelemetryAdapter};
 
 #[test]
 fn telemetry_adapter_resource_metrics_round_trip_via_generic_accessors() {

@@ -5,8 +5,7 @@
 //! # Examples
 //!
 //! ```rust,no_run
-//! use nebula_sdk::workflow::WorkflowBuilder;
-//! use nebula_sdk::prelude::*;
+//! use nebula_sdk::{prelude::*, workflow::WorkflowBuilder};
 //!
 //! let workflow = WorkflowBuilder::new("my_workflow")
 //!     .with_description("Processes data")
@@ -16,13 +15,14 @@
 //!     .build();
 //! ```
 
+use std::collections::{HashMap, HashSet};
+
 use nebula_core::{ActionKey, NodeId, Version, WorkflowId};
 use nebula_workflow::{
     CURRENT_SCHEMA_VERSION, ParamValue, WorkflowConfig, WorkflowDefinition,
     connection::{Connection, EdgeCondition},
     node::NodeDefinition,
 };
-use std::collections::{HashMap, HashSet};
 
 /// Builder for constructing workflows.
 ///

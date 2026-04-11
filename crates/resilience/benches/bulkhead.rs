@@ -5,10 +5,10 @@
 //! - `call` happy path
 //! - Contention under concurrent callers
 
+use std::{hint::black_box, sync::Arc};
+
 use criterion::{BenchmarkId, Criterion, criterion_group, criterion_main};
 use nebula_resilience::bulkhead::{Bulkhead, BulkheadConfig};
-use std::hint::black_box;
-use std::sync::Arc;
 
 fn bulkhead_acquire(c: &mut Criterion) {
     let mut group = c.benchmark_group("bulkhead/acquire");

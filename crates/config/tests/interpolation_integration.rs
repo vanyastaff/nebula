@@ -1,7 +1,8 @@
 //! Integration tests for environment variable interpolation
 
-use nebula_config::{ConfigBuilder, ConfigSource};
 use std::io::Write;
+
+use nebula_config::{ConfigBuilder, ConfigSource};
 
 #[tokio::test]
 async fn toml_with_env_interpolation() {

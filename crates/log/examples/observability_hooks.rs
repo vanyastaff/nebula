@@ -6,14 +6,19 @@
 //! 3. Use built-in hooks (logging)
 //! 4. Track operation lifecycle
 
+use std::{
+    sync::{
+        Arc,
+        atomic::{AtomicUsize, Ordering},
+    },
+    time::Duration,
+};
+
 use nebula_log::observability::{
     LoggingHook, ObservabilityEvent, ObservabilityFieldValue, ObservabilityFieldVisitor,
     ObservabilityHook, OperationCompleted, OperationFailed, OperationStarted, OperationTracker,
     emit_event, event_data_json, register_hook,
 };
-use std::sync::Arc;
-use std::sync::atomic::{AtomicUsize, Ordering};
-use std::time::Duration;
 
 // =============================================================================
 // Custom Event Types

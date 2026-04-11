@@ -1,5 +1,10 @@
 //! Action and plugin catalog handlers
 
+use axum::{
+    Json,
+    extract::{Path, State},
+};
+
 use crate::{
     errors::{ApiError, ApiResult},
     models::{
@@ -7,10 +12,6 @@ use crate::{
         PluginDetailResponse, PluginSummary,
     },
     state::AppState,
-};
-use axum::{
-    Json,
-    extract::{Path, State},
 };
 
 /// List all registered actions.

@@ -6,14 +6,16 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::display_mode::{ComputedReturn, DisplayMode};
-use crate::filter_field::FilterField;
-use crate::input_hint::InputHint;
-use crate::loader::{FilterFieldLoader, OptionLoader, RecordLoader};
-use crate::notice::NoticeSeverity;
-use crate::option::SelectOption;
-use crate::path::ParameterPath;
-use crate::spec::FilterOp;
+use crate::{
+    display_mode::{ComputedReturn, DisplayMode},
+    filter_field::FilterField,
+    input_hint::InputHint,
+    loader::{FilterFieldLoader, OptionLoader, RecordLoader},
+    notice::NoticeSeverity,
+    option::SelectOption,
+    path::ParameterPath,
+    spec::FilterOp,
+};
 
 /// Returns `true` for serde defaults.
 fn default_true() -> bool {

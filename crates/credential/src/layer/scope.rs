@@ -6,11 +6,10 @@
 //!
 //! # Security model
 //!
-//! - Scope mismatches return [`StoreError::NotFound`], never a distinct
-//!   "permission denied" — callers cannot probe credential existence
-//!   across tenants.
-//! - A `None` return from [`ScopeResolver::current_owner`] represents
-//!   admin / global access and bypasses all scope checks.
+//! - Scope mismatches return [`StoreError::NotFound`], never a distinct "permission denied" —
+//!   callers cannot probe credential existence across tenants.
+//! - A `None` return from [`ScopeResolver::current_owner`] represents admin / global access and
+//!   bypasses all scope checks.
 //!
 //! # Scope enforcement
 //!
@@ -212,8 +211,8 @@ impl<S: CredentialStore> CredentialStore for ScopeLayer<S> {
 ///
 /// Returns `StoreError::NotFound` if:
 /// - The owner does not match, or
-/// - The credential has no `owner_id` in metadata (fail-closed: only admin
-///   can access unscoped/legacy credentials).
+/// - The credential has no `owner_id` in metadata (fail-closed: only admin can access
+///   unscoped/legacy credentials).
 ///
 /// Returns `StoreError::NotFound` on rejection to avoid leaking existence.
 fn verify_owner(
@@ -240,8 +239,7 @@ fn verify_owner(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::store::PutMode;
-    use crate::store_memory::InMemoryStore;
+    use crate::{store::PutMode, store_memory::InMemoryStore};
 
     struct FixedScope(Option<String>);
 

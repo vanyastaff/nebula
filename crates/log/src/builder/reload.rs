@@ -1,7 +1,8 @@
 //! Reload logic for runtime filter changes
 
-use arc_swap::ArcSwap;
 use std::sync::Arc;
+
+use arc_swap::ArcSwap;
 use tracing_subscriber::{EnvFilter, Registry, layer::Layer};
 
 use crate::core::LogResult;

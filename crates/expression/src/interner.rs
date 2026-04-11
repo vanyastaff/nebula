@@ -3,9 +3,9 @@
 //! This module provides string interning to reduce memory allocations and
 //! enable fast string comparisons via pointer equality.
 
+use std::{collections::HashSet, sync::Arc};
+
 use parking_lot::RwLock;
-use std::collections::HashSet;
-use std::sync::Arc;
 
 /// A thread-safe string interner
 ///

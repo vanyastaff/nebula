@@ -1,10 +1,15 @@
+use std::{
+    sync::{
+        Arc, LazyLock, Mutex,
+        atomic::{AtomicUsize, Ordering},
+    },
+    time::Duration,
+};
+
 use nebula_log::observability::{
     HookPolicy, ObservabilityEvent, ObservabilityHook, emit_event, register_hook, set_hook_policy,
     shutdown_hooks,
 };
-use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::{Arc, LazyLock, Mutex};
-use std::time::Duration;
 
 static TEST_LOCK: LazyLock<Mutex<()>> = LazyLock::new(|| Mutex::new(()));
 

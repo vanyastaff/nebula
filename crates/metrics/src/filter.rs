@@ -13,9 +13,9 @@
 //!
 //! ```rust
 //! use std::sync::Arc;
+//!
+//! use nebula_metrics::{adapter::TelemetryAdapter, filter::LabelAllowlist};
 //! use nebula_telemetry::metrics::MetricsRegistry;
-//! use nebula_metrics::filter::LabelAllowlist;
-//! use nebula_metrics::adapter::TelemetryAdapter;
 //!
 //! let reg = Arc::new(MetricsRegistry::new());
 //! let adapter = TelemetryAdapter::new(Arc::clone(&reg));

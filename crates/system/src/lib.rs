@@ -81,8 +81,8 @@ pub mod disk;
 
 // Re-exports
 pub use core::{SystemError, SystemResult, SystemResultExt};
-pub use info::SystemInfo;
 
+pub use info::SystemInfo;
 #[cfg(feature = "sysinfo")]
 pub use memory::{MemoryInfo, MemoryPressure};
 

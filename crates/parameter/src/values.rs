@@ -1,8 +1,6 @@
-use std::collections::HashMap;
-use std::fmt::Debug;
+use std::{collections::HashMap, fmt::Debug};
 
-use serde::de::DeserializeOwned;
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Serialize, de::DeserializeOwned};
 
 use crate::transformer::Transformer;
 
@@ -447,8 +445,9 @@ pub struct ParameterValuesDiff {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use serde_json::json;
+
+    use super::*;
 
     #[test]
     fn new_is_empty() {

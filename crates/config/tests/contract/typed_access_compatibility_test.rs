@@ -1,7 +1,8 @@
-use super::helpers::fixture_path;
 use nebula_config::ConfigBuilder;
 use serde::Deserialize;
 use serde_json::Value;
+
+use super::helpers::fixture_path;
 
 #[derive(Debug, Deserialize)]
 struct PathContractFixture {

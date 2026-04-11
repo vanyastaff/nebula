@@ -12,10 +12,8 @@
 //! let fallback = ValueFallback::new("default response".to_string());
 //! ```
 
-use std::fmt;
-use std::future::Future;
-use std::pin::Pin;
-use std::sync::Arc;
+use std::{fmt, future::Future, pin::Pin, sync::Arc};
+
 use tokio::sync::RwLock;
 
 use crate::error::{CallError, CallErrorKind};
@@ -433,8 +431,7 @@ impl<T, E> FallbackOperation<T, E> {
 
 #[cfg(test)]
 mod tests {
-    use std::sync::Arc;
-    use std::time::Duration;
+    use std::{sync::Arc, time::Duration};
 
     use super::*;
     use crate::CallError;

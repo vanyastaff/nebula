@@ -23,18 +23,18 @@
 //! construction — see [`DEFAULT_MAX_BODY_BYTES`] and
 //! [`MAX_HEADER_COUNT`] for the defaults.
 
-use std::collections::HashMap;
-use std::fmt;
-use std::future::Future;
+use std::{collections::HashMap, fmt, future::Future};
 
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use crate::action::Action;
-use crate::context::TriggerContext;
-use crate::error::{ActionError, ValidationReason};
-use crate::metadata::ActionMetadata;
+use crate::{
+    action::Action,
+    context::TriggerContext,
+    error::{ActionError, ValidationReason},
+    metadata::ActionMetadata,
+};
 
 // ── Core trait ──────────────────────────────────────────────────────────────
 
@@ -298,14 +298,13 @@ pub trait TriggerHandler: Send + Sync {
     ///
     /// Implementations fall into one of two categories:
     ///
-    /// 1. **Setup-and-return** — register an external listener (webhook,
-    ///    message queue consumer), then return immediately. The listener
-    ///    runs asynchronously outside this call. Example:
+    /// 1. **Setup-and-return** — register an external listener (webhook, message queue consumer),
+    ///    then return immediately. The listener runs asynchronously outside this call. Example:
     ///    [`crate::webhook::WebhookTriggerAdapter`].
     ///
-    /// 2. **Run-until-cancelled** — run the entire trigger loop inline,
-    ///    returning only when `ctx.cancellation` fires or a fatal error
-    ///    occurs. Example: [`crate::poll::PollTriggerAdapter`].
+    /// 2. **Run-until-cancelled** — run the entire trigger loop inline, returning only when
+    ///    `ctx.cancellation` fires or a fatal error occurs. Example:
+    ///    [`crate::poll::PollTriggerAdapter`].
     ///
     /// **Callers MUST spawn `start()` in a dedicated task** and must not
     /// assume it returns promptly. Calling sites that drive multiple
@@ -453,15 +452,16 @@ impl<A: Action> fmt::Debug for TriggerActionAdapter<A> {
 
 #[cfg(test)]
 mod tests {
-    use std::sync::Arc;
-    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    };
 
     use nebula_core::id::{NodeId, WorkflowId};
     use tokio_util::sync::CancellationToken;
 
     use super::*;
-    use crate::action::Action;
-    use crate::dependency::ActionDependencies;
+    use crate::{action::Action, dependency::ActionDependencies};
 
     // ── TriggerActionAdapter tests ────────────────────────────────────────────
 

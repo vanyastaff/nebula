@@ -1,7 +1,9 @@
 //! Stream adapters for event bus subscribers.
 
-use std::pin::Pin;
-use std::task::{Context, Poll};
+use std::{
+    pin::Pin,
+    task::{Context, Poll},
+};
 
 use futures_core::Stream;
 use tokio_stream::wrappers::BroadcastStream;
@@ -17,8 +19,8 @@ use crate::EventFilter;
 /// # Example
 ///
 /// ```no_run
-/// use nebula_eventbus::EventBus;
 /// use futures_core::Stream;
+/// use nebula_eventbus::EventBus;
 ///
 /// # #[derive(Clone)]
 /// # struct Event(u64);

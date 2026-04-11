@@ -181,8 +181,7 @@ mod tests {
     use std::sync::Mutex;
 
     use super::*;
-    use crate::store::PutMode;
-    use crate::store_memory::InMemoryStore;
+    use crate::{store::PutMode, store_memory::InMemoryStore};
 
     struct CollectingSink {
         events: Mutex<Vec<AuditEvent>>,

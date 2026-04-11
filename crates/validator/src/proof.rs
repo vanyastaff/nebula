@@ -7,20 +7,17 @@
 //! # Design
 //!
 //! - The inner value has **no public field** — it can only be constructed through
-//!   [`Validate::validate_into`](crate::foundation::Validate::validate_into) or
-//!   [`Validated::new`].
-//! - Read access via [`Deref`](std::ops::Deref), [`AsRef`], [`Borrow`](std::borrow::Borrow), and [`inner()`](Validated::inner).
+//!   [`Validate::validate_into`](crate::foundation::Validate::validate_into) or [`Validated::new`].
+//! - Read access via [`Deref`](std::ops::Deref), [`AsRef`], [`Borrow`](std::borrow::Borrow), and
+//!   [`inner()`](Validated::inner).
 //! - Ownership recovery via [`into_inner()`](Validated::into_inner).
-//! - `Serialize` is derived so validated values can be persisted.
-//!   `Deserialize` is intentionally **not** derived — deserialized data must
-//!   be re-validated before wrapping.
+//! - `Serialize` is derived so validated values can be persisted. `Deserialize` is intentionally
+//!   **not** derived — deserialized data must be re-validated before wrapping.
 //!
 //! # Examples
 //!
 //! ```rust
-//! use nebula_validator::foundation::Validate;
-//! use nebula_validator::proof::Validated;
-//! use nebula_validator::validators::min_length;
+//! use nebula_validator::{foundation::Validate, proof::Validated, validators::min_length};
 //!
 //! let v = min_length(3);
 //! let name: Validated<String> = v.validate_into("alice".to_string()).unwrap();
@@ -33,10 +30,9 @@
 //! assert_eq!(raw, "alice");
 //! ```
 
+use std::{borrow::Borrow, fmt, ops::Deref};
+
 use serde::Serialize;
-use std::borrow::Borrow;
-use std::fmt;
-use std::ops::Deref;
 
 /// A proof token certifying that the wrapped value has passed validation.
 ///
@@ -47,10 +43,8 @@ use std::ops::Deref;
 /// # Invariants
 ///
 /// - Can only be constructed through validated paths
-///   ([`Validate::validate_into`](crate::foundation::Validate::validate_into),
-///   [`Validated::new`]).
-/// - Immutable: no `&mut T` access is exposed, preserving the validation
-///   guarantee.
+///   ([`Validate::validate_into`](crate::foundation::Validate::validate_into), [`Validated::new`]).
+/// - Immutable: no `&mut T` access is exposed, preserving the validation guarantee.
 ///
 /// # Zero-cost
 ///
@@ -71,8 +65,7 @@ impl<T> Validated<T> {
     /// # Examples
     ///
     /// ```rust
-    /// use nebula_validator::proof::Validated;
-    /// use nebula_validator::validators::min_length;
+    /// use nebula_validator::{proof::Validated, validators::min_length};
     ///
     /// let name = Validated::new("alice".to_string(), &min_length(3)).unwrap();
     /// assert_eq!(name.as_ref(), "alice");
@@ -121,7 +114,8 @@ impl<T> Validated<T> {
     /// validation contract this proof is expected to represent.
     /// Misuse breaks the trust boundary that `Validated<T>` exists to enforce.
     ///
-    /// Prefer [`Validated::new`] or [`Validate::validate_into`](crate::foundation::Validate::validate_into).
+    /// Prefer [`Validated::new`] or
+    /// [`Validate::validate_into`](crate::foundation::Validate::validate_into).
     #[inline]
     pub(crate) fn new_unchecked(value: T) -> Self {
         Self { value }
@@ -172,8 +166,10 @@ impl<T: fmt::Display> fmt::Display for Validated<T> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::foundation::Validate;
-    use crate::validators::{max_length, min_length};
+    use crate::{
+        foundation::Validate,
+        validators::{max_length, min_length},
+    };
 
     #[test]
     fn validated_new_passes() {

@@ -7,12 +7,13 @@ use std::time::Duration;
 
 use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64};
 use chrono::Utc;
+use nebula_core::SecretString;
 use serde_json::Value;
 
-use nebula_core::SecretString;
-
-use super::oauth2::OAuth2State;
-use super::oauth2_config::{AuthStyle, OAuth2Config};
+use super::{
+    oauth2::OAuth2State,
+    oauth2_config::{AuthStyle, OAuth2Config},
+};
 use crate::error::CredentialError;
 
 /// HTTP request timeout for OAuth2 token exchanges.

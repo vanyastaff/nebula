@@ -3,15 +3,15 @@
 //! [`Registry`] stores managed resources indexed by [`ResourceKey`] and
 //! [`TypeId`], supporting scope-aware lookup and typed downcasting.
 
-use std::any::{Any, TypeId};
-use std::sync::Arc;
+use std::{
+    any::{Any, TypeId},
+    sync::Arc,
+};
 
 use dashmap::DashMap;
 use nebula_core::ResourceKey;
 
-use crate::ctx::ScopeLevel;
-use crate::resource::Resource;
-use crate::runtime::managed::ManagedResource;
+use crate::{ctx::ScopeLevel, resource::Resource, runtime::managed::ManagedResource};
 
 /// Type-erased trait for managed resources stored in the [`Registry`].
 ///
@@ -44,10 +44,10 @@ struct RegistryEntry {
 /// Type-erased storage for all registered resources.
 ///
 /// Provides two lookup paths:
-/// - **By key + scope**: `get()` finds the best-matching entry for a given
-///   [`ResourceKey`] and [`ScopeLevel`].
-/// - **By type**: `get_typed()` uses a secondary [`TypeId`] index for
-///   typed lookup with automatic downcasting.
+/// - **By key + scope**: `get()` finds the best-matching entry for a given [`ResourceKey`] and
+///   [`ScopeLevel`].
+/// - **By type**: `get_typed()` uses a secondary [`TypeId`] index for typed lookup with automatic
+///   downcasting.
 pub struct Registry {
     /// Primary index: ResourceKey -> list of entries (one per scope).
     entries: DashMap<ResourceKey, Vec<RegistryEntry>>,

@@ -1,9 +1,9 @@
 //! Pre-shared symmetric key authentication (TLS-PSK, WireGuard, IoT).
 
 use nebula_core::SecretString;
+use serde::{Deserialize, Serialize};
 
 use crate::AuthScheme;
-use serde::{Deserialize, Serialize};
 
 /// A pre-shared symmetric key, optionally paired with an identity hint.
 ///
@@ -13,11 +13,10 @@ use serde::{Deserialize, Serialize};
 /// # Examples
 ///
 /// ```
-/// use nebula_credential::scheme::SharedKey;
 /// use nebula_core::SecretString;
+/// use nebula_credential::scheme::SharedKey;
 ///
-/// let key = SharedKey::new(SecretString::new("base64-encoded-key=="))
-///     .with_identity("device-001");
+/// let key = SharedKey::new(SecretString::new("base64-encoded-key==")).with_identity("device-001");
 /// ```
 #[derive(Clone, Serialize, Deserialize, AuthScheme)]
 #[auth_scheme(pattern = SharedSecret)]

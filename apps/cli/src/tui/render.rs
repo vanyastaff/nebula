@@ -12,14 +12,18 @@
 //! │ keybindings footer                                                  │
 //! └─────────────────────────────────────────────────────────────────────┘
 
-use ratatui::Frame;
-use ratatui::layout::{Constraint, Layout, Rect};
-use ratatui::style::{Color, Modifier, Style};
-use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, Cell, Gauge, Paragraph, Row, Table, Wrap};
+use ratatui::{
+    Frame,
+    layout::{Constraint, Layout, Rect},
+    style::{Color, Modifier, Style},
+    text::{Line, Span},
+    widgets::{Block, Borders, Cell, Gauge, Paragraph, Row, Table, Wrap},
+};
 
-use super::app::{App, LogEntry, NodeStatus};
-use super::event::LogLevel;
+use super::{
+    app::{App, LogEntry, NodeStatus},
+    event::LogLevel,
+};
 
 pub fn draw(frame: &mut Frame, app: &App) {
     let outer = Layout::vertical([

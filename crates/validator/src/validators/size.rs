@@ -2,8 +2,9 @@
 //!
 //! This module provides validators for checking the size of collections.
 
-use crate::foundation::{Validate, ValidationError};
 use std::marker::PhantomData;
+
+use crate::foundation::{Validate, ValidationError};
 
 /// Validates that a collection has at least a minimum size.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -34,8 +35,7 @@ impl<T> Validate<[T]> for MinSize<T> {
 /// # Examples
 ///
 /// ```
-/// use nebula_validator::validators::min_size;
-/// use nebula_validator::foundation::Validate;
+/// use nebula_validator::{foundation::Validate, validators::min_size};
 ///
 /// let validator = min_size::<i32>(3);
 /// assert!(validator.validate(&vec![1, 2, 3]).is_ok());
@@ -78,8 +78,7 @@ impl<T> Validate<[T]> for MaxSize<T> {
 /// # Examples
 ///
 /// ```
-/// use nebula_validator::validators::max_size;
-/// use nebula_validator::foundation::Validate;
+/// use nebula_validator::{foundation::Validate, validators::max_size};
 ///
 /// let validator = max_size::<i32>(3);
 /// assert!(validator.validate(&vec![1, 2, 3]).is_ok());
@@ -122,8 +121,7 @@ impl<T> Validate<[T]> for ExactSize<T> {
 /// # Examples
 ///
 /// ```
-/// use nebula_validator::validators::exact_size;
-/// use nebula_validator::foundation::Validate;
+/// use nebula_validator::{foundation::Validate, validators::exact_size};
 ///
 /// let validator = exact_size::<i32>(3);
 /// assert!(validator.validate(&vec![1, 2, 3]).is_ok());
@@ -162,8 +160,7 @@ impl<T> Validate<[T]> for NotEmptyCollection<T> {
 /// # Examples
 ///
 /// ```
-/// use nebula_validator::validators::not_empty_collection;
-/// use nebula_validator::foundation::Validate;
+/// use nebula_validator::{foundation::Validate, validators::not_empty_collection};
 ///
 /// let validator = not_empty_collection::<i32>();
 /// assert!(validator.validate(&vec![1]).is_ok());
@@ -215,8 +212,7 @@ impl<T> Validate<[T]> for SizeRange<T> {
 /// # Examples
 ///
 /// ```
-/// use nebula_validator::validators::size_range;
-/// use nebula_validator::foundation::Validate;
+/// use nebula_validator::{foundation::Validate, validators::size_range};
 ///
 /// let validator = size_range::<i32>(2, 4);
 /// assert!(validator.validate(&vec![1, 2]).is_ok());

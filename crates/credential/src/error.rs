@@ -28,7 +28,9 @@
 //! ```
 //! use nebula_credential::StoreError;
 //!
-//! let err = StoreError::NotFound { id: "missing_cred".to_string() };
+//! let err = StoreError::NotFound {
+//!     id: "missing_cred".to_string(),
+//! };
 //! assert!(err.to_string().contains("missing_cred"));
 //! ```
 

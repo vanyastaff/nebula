@@ -2,8 +2,7 @@
 
 use nebula_workflow::NodeState;
 
-use crate::error::ExecutionError;
-use crate::status::ExecutionStatus;
+use crate::{error::ExecutionError, status::ExecutionStatus};
 
 /// Returns `true` if the execution-level transition from `from` to `to` is valid.
 #[must_use]

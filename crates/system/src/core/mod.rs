@@ -1,6 +1,7 @@
 //! Core components for the Nebula system information library.
 //!
-//! This module contains the fundamental types and utilities that power the system information gathering:
+//! This module contains the fundamental types and utilities that power the system information
+//! gathering:
 //!
 //! ## Core Components
 //!

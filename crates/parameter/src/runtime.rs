@@ -1,7 +1,9 @@
 //! Runtime-facing types for v2 parameter handling.
 
-pub use crate::error::ParameterError;
-pub use crate::values::{ModeValueRef, ParameterValue, ParameterValues};
+pub use crate::{
+    error::ParameterError,
+    values::{ModeValueRef, ParameterValue, ParameterValues},
+};
 
 /// Schema-bound validated values view.
 ///
@@ -16,7 +18,8 @@ pub struct ValidatedValues {
 impl ValidatedValues {
     /// Creates a validated wrapper from runtime values.
     ///
-    /// Not publicly constructible — use [`Schema::validate`](crate::collection::ParameterCollection::validate).
+    /// Not publicly constructible — use
+    /// [`Schema::validate`](crate::collection::ParameterCollection::validate).
     pub(crate) fn new(values: ParameterValues) -> Self {
         Self { values }
     }
@@ -102,8 +105,9 @@ impl ValidatedValues {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use serde_json::json;
+
+    use super::*;
 
     fn make_validated(pairs: &[(&str, serde_json::Value)]) -> ValidatedValues {
         let mut values = ParameterValues::new();

@@ -10,19 +10,19 @@
 //! `Default::default()`. Cross-restart persistence requires runtime
 //! storage integration (post-v1).
 
-use std::future::Future;
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::time::{Duration, Instant};
+use std::{
+    future::Future,
+    sync::atomic::{AtomicBool, Ordering},
+    time::{Duration, Instant},
+};
 
 use async_trait::async_trait;
 use serde::{Serialize, de::DeserializeOwned};
 
-use crate::action::Action;
-use crate::capability::ActionLogLevel;
-use crate::context::TriggerContext;
-use crate::error::ActionError;
-use crate::metadata::ActionMetadata;
-use crate::trigger::TriggerHandler;
+use crate::{
+    action::Action, capability::ActionLogLevel, context::TriggerContext, error::ActionError,
+    metadata::ActionMetadata, trigger::TriggerHandler,
+};
 
 /// Minimum poll interval enforced by [`PollTriggerAdapter`].
 ///
@@ -250,12 +250,10 @@ where
     ///
     /// The internal `tokio::select!` races two futures:
     ///
-    /// 1. `ctx.cancellation.cancelled()` — a `CancellationToken`
-    ///    future that is cancel-safe: dropping it mid-poll simply
-    ///    unregisters the waker.
-    /// 2. `tokio::time::sleep(interval)` — the `Sleep` future from
-    ///    tokio is cancel-safe: dropping it mid-wait cancels the
-    ///    timer with no observable effect on adjacent state.
+    /// 1. `ctx.cancellation.cancelled()` — a `CancellationToken` future that is cancel-safe:
+    ///    dropping it mid-poll simply unregisters the waker.
+    /// 2. `tokio::time::sleep(interval)` — the `Sleep` future from tokio is cancel-safe: dropping
+    ///    it mid-wait cancels the timer with no observable effect on adjacent state.
     ///
     /// Neither branch holds a lock, a guard, or state that would
     /// leak on drop. The only state mutated inside the poll branch

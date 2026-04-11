@@ -4,15 +4,18 @@
 //! cache the parsed structure for fast rendering, and provide detailed error information
 //! including line and column numbers.
 
-use crate::ExpressionError;
-use crate::context::EvaluationContext;
-use crate::engine::ExpressionEngine;
-use crate::error::{ExpressionErrorExt, ExpressionResult};
-use crate::error_formatter::format_template_error;
+use std::{fmt, sync::Arc};
+
 use nebula_log::trace;
 use serde::{Deserialize, Serialize};
-use std::fmt;
-use std::sync::Arc;
+
+use crate::{
+    ExpressionError,
+    context::EvaluationContext,
+    engine::ExpressionEngine,
+    error::{ExpressionErrorExt, ExpressionResult},
+    error_formatter::format_template_error,
+};
 
 /// Maximum number of expressions allowed in a single template (DoS protection)
 const MAX_TEMPLATE_EXPRESSIONS: usize = 1000;
@@ -415,9 +418,10 @@ impl From<&str> for MaybeTemplate {
 
 #[cfg(test)]
 mod tests {
+    use serde_json::Value;
+
     use super::*;
     use crate::ExpressionEngine;
-    use serde_json::Value;
 
     #[test]
     fn test_template_parse_static_only() {

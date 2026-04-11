@@ -1,10 +1,9 @@
 //! Parsed `#[action(...)]` attributes.
 
+use nebula_macro_support::attrs;
 use proc_macro2::TokenStream as TokenStream2;
 use quote::quote;
 use syn::{Ident, Result, Type};
-
-use nebula_macro_support::attrs;
 
 /// Parsed action container attributes.
 #[derive(Debug, Clone)]

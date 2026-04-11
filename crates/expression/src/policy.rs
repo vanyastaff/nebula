@@ -3,8 +3,7 @@
 //! Policies can constrain which builtin functions are callable and carry
 //! compatibility flags such as strict mode.
 
-use std::collections::HashSet;
-use std::sync::Arc;
+use std::{collections::HashSet, sync::Arc};
 
 /// Evaluation policy applied by the engine and optionally overridden by context.
 #[derive(Debug, Clone, Default)]

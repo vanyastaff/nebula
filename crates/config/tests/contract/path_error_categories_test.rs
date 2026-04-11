@@ -1,5 +1,4 @@
-use nebula_config::core::error::ContractErrorCategory;
-use nebula_config::{ConfigBuilder, ConfigError};
+use nebula_config::{ConfigBuilder, ConfigError, core::error::ContractErrorCategory};
 use serde_json::json;
 
 #[tokio::test]

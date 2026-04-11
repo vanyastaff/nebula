@@ -7,10 +7,11 @@
 //! [`NodeOutput`] wraps `ExecutionOutput` with execution metadata (status,
 //! timing, size).
 
+use std::time::Duration;
+
 use chrono::{DateTime, Utc};
 use nebula_workflow::NodeState;
 use serde::{Deserialize, Serialize};
-use std::time::Duration;
 
 /// Materialized output data for persistence and inter-node transport.
 ///

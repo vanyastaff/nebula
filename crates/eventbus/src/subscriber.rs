@@ -11,14 +11,14 @@ use tokio::sync::broadcast;
 ///
 /// ## Drop Behavior
 ///
-/// When a `Subscriber` is dropped, the underlying channel automatically decrements the subscriber count.
-/// No explicit unsubscribe is needed — the subscription ends when the subscriber is dropped.
+/// When a `Subscriber` is dropped, the underlying channel automatically decrements the subscriber
+/// count. No explicit unsubscribe is needed — the subscription ends when the subscriber is dropped.
 ///
 /// ## Lag Recovery
 ///
 /// When the ring buffer fills (more events emitted than buffer size), subscribers
-/// fall behind. Upon the next [`recv()`](Self::recv) or [`try_recv()`](Self::try_recv), the subscriber
-/// automatically skips to the latest event and recovers without blocking the producer.
+/// fall behind. Upon the next [`recv()`](Self::recv) or [`try_recv()`](Self::try_recv), the
+/// subscriber automatically skips to the latest event and recovers without blocking the producer.
 ///
 /// Use [`lagged_count()`](Self::lagged_count) to detect lag and monitor missed events:
 ///
@@ -44,7 +44,8 @@ use tokio::sync::broadcast;
 /// ## Closure Detection
 ///
 /// [`is_closed()`](Self::is_closed) returns `true` only after all [`EventBus`](crate::EventBus)
-/// senders are dropped. When the bus is closed, subsequent [`recv()`](Self::recv) calls return `None`.
+/// senders are dropped. When the bus is closed, subsequent [`recv()`](Self::recv) calls return
+/// `None`.
 #[derive(Debug)]
 pub struct Subscriber<E> {
     receiver: broadcast::Receiver<E>,

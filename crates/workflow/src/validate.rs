@@ -2,10 +2,12 @@
 
 use std::collections::HashSet;
 
-use crate::definition::{CURRENT_SCHEMA_VERSION, TriggerDefinition, WorkflowDefinition};
-use crate::error::WorkflowError;
-use crate::graph::DependencyGraph;
-use crate::node::ParamValue;
+use crate::{
+    definition::{CURRENT_SCHEMA_VERSION, TriggerDefinition, WorkflowDefinition},
+    error::WorkflowError,
+    graph::DependencyGraph,
+    node::ParamValue,
+};
 
 /// Validate a workflow definition comprehensively.
 ///
@@ -105,13 +107,17 @@ pub fn validate_workflow(definition: &WorkflowDefinition) -> Vec<WorkflowError> 
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-    use crate::connection::Connection;
-    use crate::definition::{WorkflowConfig, WorkflowDefinition};
-    use crate::node::{NodeDefinition, ParamValue};
+    use std::collections::HashMap;
+
     use chrono::Utc;
     use nebula_core::{NodeId, Version, WorkflowId};
-    use std::collections::HashMap;
+
+    use super::*;
+    use crate::{
+        connection::Connection,
+        definition::{WorkflowConfig, WorkflowDefinition},
+        node::{NodeDefinition, ParamValue},
+    };
 
     fn make_definition(
         name: &str,

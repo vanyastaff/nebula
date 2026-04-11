@@ -1,6 +1,8 @@
-use nebula_validator::combinators::each;
-use nebula_validator::foundation::Validate;
-use nebula_validator::validators::{matches_regex, min};
+use nebula_validator::{
+    combinators::each,
+    foundation::Validate,
+    validators::{matches_regex, min},
+};
 
 #[test]
 fn regex_heavy_payloads_remain_deterministic() {

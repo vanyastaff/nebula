@@ -1,10 +1,9 @@
 //! `#[derive(AuthScheme)]` macro implementation.
 
+use nebula_macro_support::{attrs, diag};
 use proc_macro::TokenStream;
 use quote::quote;
 use syn::{DeriveInput, parse_macro_input};
-
-use nebula_macro_support::{attrs, diag};
 
 /// Entry point for `#[derive(AuthScheme)]`.
 pub fn derive(input: TokenStream) -> TokenStream {

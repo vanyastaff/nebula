@@ -7,16 +7,17 @@
 
 use std::sync::Arc;
 
-use crate::ctx::Ctx;
-use crate::error::Error;
-use crate::handle::ResourceHandle;
-use crate::metrics::ResourceOpsMetrics;
-use crate::options::AcquireOptions;
-use crate::release_queue::ReleaseQueue;
-use crate::resource::Resource;
-use crate::topology::service::config::Config;
-use crate::topology::service::{Service, TokenMode};
-use crate::topology_tag::TopologyTag;
+use crate::{
+    ctx::Ctx,
+    error::Error,
+    handle::ResourceHandle,
+    metrics::ResourceOpsMetrics,
+    options::AcquireOptions,
+    release_queue::ReleaseQueue,
+    resource::Resource,
+    topology::service::{Service, TokenMode, config::Config},
+    topology_tag::TopologyTag,
+};
 
 /// Runtime state for a service topology.
 ///
@@ -56,8 +57,8 @@ where
     ///
     /// 1. Calls `resource.acquire_token(runtime, ctx)`.
     /// 2. If [`TokenMode::Cloned`] — returns an owned handle.
-    /// 3. If [`TokenMode::Tracked`] — returns a guarded handle whose
-    ///    drop submits `release_token()` to the [`ReleaseQueue`].
+    /// 3. If [`TokenMode::Tracked`] — returns a guarded handle whose drop submits `release_token()`
+    ///    to the [`ReleaseQueue`].
     ///
     /// # Errors
     ///
@@ -110,12 +111,16 @@ where
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-    use crate::ctx::BasicCtx;
-    use crate::options::AcquireOptions;
-    use crate::resource::{ResourceConfig, ResourceMetadata};
-    use nebula_core::{ExecutionId, ResourceKey, resource_key};
     use std::sync::atomic::{AtomicBool, Ordering};
+
+    use nebula_core::{ExecutionId, ResourceKey, resource_key};
+
+    use super::*;
+    use crate::{
+        ctx::BasicCtx,
+        options::AcquireOptions,
+        resource::{ResourceConfig, ResourceMetadata},
+    };
 
     // -- Cloned-mode service --
 

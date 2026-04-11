@@ -4,21 +4,21 @@
 //! runtime. On acquire, the runtime is cloned into an owned handle.
 //! If the runtime is missing or stale, it is (re)created.
 
-use std::sync::Arc;
-use std::time::Duration;
+use std::{sync::Arc, time::Duration};
 
 use tokio::sync::Mutex;
 use tracing::warn;
 
-use crate::cell::Cell;
-use crate::ctx::Ctx;
-use crate::error::Error;
-use crate::handle::ResourceHandle;
-use crate::options::AcquireOptions;
-use crate::resource::Resource;
-use crate::topology::resident::Resident;
-use crate::topology::resident::config::Config;
-use crate::topology_tag::TopologyTag;
+use crate::{
+    cell::Cell,
+    ctx::Ctx,
+    error::Error,
+    handle::ResourceHandle,
+    options::AcquireOptions,
+    resource::Resource,
+    topology::resident::{Resident, config::Config},
+    topology_tag::TopologyTag,
+};
 
 /// Runtime state for a resident topology.
 ///
@@ -160,12 +160,16 @@ where
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-    use crate::ctx::BasicCtx;
-    use crate::options::AcquireOptions;
-    use crate::resource::{ResourceConfig, ResourceMetadata};
-    use nebula_core::{ExecutionId, ResourceKey, resource_key};
     use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+
+    use nebula_core::{ExecutionId, ResourceKey, resource_key};
+
+    use super::*;
+    use crate::{
+        ctx::BasicCtx,
+        options::AcquireOptions,
+        resource::{ResourceConfig, ResourceMetadata},
+    };
 
     #[derive(Clone)]
     struct MockResident {

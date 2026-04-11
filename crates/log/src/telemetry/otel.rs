@@ -2,10 +2,7 @@
 //!
 //! Builds a tracing-compatible OpenTelemetry layer with OTLP gRPC export.
 
-use crate::config::{Fields, TelemetryConfig};
-use crate::core::{LogError, LogResult};
-use opentelemetry::trace::TracerProvider;
-use opentelemetry::{KeyValue, global};
+use opentelemetry::{KeyValue, global, trace::TracerProvider};
 use opentelemetry_otlp::WithExportConfig;
 use opentelemetry_sdk::{
     Resource,
@@ -14,6 +11,11 @@ use opentelemetry_sdk::{
 };
 use tracing_opentelemetry::OpenTelemetryLayer;
 use tracing_subscriber::Layer;
+
+use crate::{
+    config::{Fields, TelemetryConfig},
+    core::{LogError, LogResult},
+};
 
 /// Result of building an OpenTelemetry layer.
 ///

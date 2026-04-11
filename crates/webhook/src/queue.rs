@@ -106,8 +106,9 @@ impl InboundQueue for MemoryInboundQueue {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use serde_json::json;
+
+    use super::*;
 
     #[tokio::test]
     async fn memory_queue_enqueue_and_drain() {

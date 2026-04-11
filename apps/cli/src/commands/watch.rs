@@ -1,14 +1,15 @@
 //! Watch a workflow file and re-run on changes.
 
-use std::path::Path;
-use std::process::ExitCode;
-use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::{
+    path::Path,
+    process::ExitCode,
+    sync::Arc,
+    time::{Duration, Instant},
+};
 
 use anyhow::Context;
 use nebula_engine::WorkflowEngine;
-use nebula_execution::ExecutionStatus;
-use nebula_execution::context::ExecutionBudget;
+use nebula_execution::{ExecutionStatus, context::ExecutionBudget};
 use nebula_runtime::{ActionRegistry, ActionRuntime, DataPassingPolicy, InProcessSandbox};
 use nebula_telemetry::metrics::MetricsRegistry;
 use notify::{RecursiveMode, Watcher};

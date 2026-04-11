@@ -2,30 +2,28 @@
 //!
 //! Three cost layers:
 //!
-//! - **No-hedge path** (`hedge/call`) — operation succeeds before any hedge delay fires.
-//!   Measures `JoinSet::spawn` + one `select!` poll that yields the result immediately.
-//!   This is the dominant path in healthy systems where P50 latency < hedge_delay.
+//! - **No-hedge path** (`hedge/call`) — operation succeeds before any hedge delay fires. Measures
+//!   `JoinSet::spawn` + one `select!` poll that yields the result immediately. This is the dominant
+//!   path in healthy systems where P50 latency < hedge_delay.
 //!
-//! - **Adaptive overhead** (`hedge/adaptive`) — extra cost of `AdaptiveHedgeExecutor`
-//!   over `HedgeExecutor`: `RwLock::read` + `percentile()` walk + `RwLock::write` +
-//!   `record()` histogram insert.  Three variants: static baseline, cold tracker
-//!   (percentile returns None → fallback), and warmed tracker (full 1000-sample ring).
+//! - **Adaptive overhead** (`hedge/adaptive`) — extra cost of `AdaptiveHedgeExecutor` over
+//!   `HedgeExecutor`: `RwLock::read` + `percentile()` walk + `RwLock::write` + `record()` histogram
+//!   insert.  Three variants: static baseline, cold tracker (percentile returns None → fallback),
+//!   and warmed tracker (full 1000-sample ring).
 //!
-//! - **Write-lock contention** (`hedge/adaptive/contention`) — concurrent callers fighting
-//!   over `AdaptiveHedgeExecutor`'s `RwLock<LatencyTracker>`.  The write lock taken at
-//!   call-end for `record()` is the serialisation point; this bench quantifies that cost.
+//! - **Write-lock contention** (`hedge/adaptive/contention`) — concurrent callers fighting over
+//!   `AdaptiveHedgeExecutor`'s `RwLock<LatencyTracker>`.  The write lock taken at call-end for
+//!   `record()` is the serialisation point; this bench quantifies that cost.
 //!
 //! Run with:
 //! ```text
 //! cargo bench -p nebula-resilience --bench hedge
 //! ```
 
+use std::{hint::black_box, sync::Arc, time::Duration};
+
 use criterion::{BenchmarkId, Criterion, Throughput, criterion_group, criterion_main};
-use nebula_resilience::hedge::AdaptiveHedgeExecutor;
-use nebula_resilience::{HedgeConfig, HedgeExecutor};
-use std::hint::black_box;
-use std::sync::Arc;
-use std::time::Duration;
+use nebula_resilience::{HedgeConfig, HedgeExecutor, hedge::AdaptiveHedgeExecutor};
 
 // ── Fixtures ──────────────────────────────────────────────────────────────────
 

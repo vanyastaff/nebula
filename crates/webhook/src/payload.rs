@@ -1,8 +1,9 @@
 //! Webhook payload types
 
+use std::collections::HashMap;
+
 use bytes::Bytes;
 use chrono::{DateTime, Utc};
-use std::collections::HashMap;
 
 /// Raw HTTP request data from an incoming webhook
 ///

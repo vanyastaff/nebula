@@ -1,8 +1,10 @@
-use super::helpers::{StaticFixtureLoader, fixture_path};
+use std::sync::Arc;
+
 use nebula_config::{ConfigBuilder, ConfigSource};
 use serde::Deserialize;
 use serde_json::Value;
-use std::sync::Arc;
+
+use super::helpers::{StaticFixtureLoader, fixture_path};
 
 #[derive(Debug, Deserialize)]
 struct PrecedenceFixture {

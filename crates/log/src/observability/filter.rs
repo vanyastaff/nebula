@@ -2,8 +2,9 @@
 //!
 //! Allows hooks to filter events by category, pattern, or custom predicates.
 
-use super::hooks::ObservabilityEvent;
 use std::collections::HashSet;
+
+use super::hooks::ObservabilityEvent;
 
 /// Event filter for selective processing
 ///
@@ -14,7 +15,8 @@ use std::collections::HashSet;
 pub enum EventFilter {
     /// Allow all events
     All,
-    /// Filter by event name prefix (e.g., "workflow." matches "workflow.started", "workflow.completed")
+    /// Filter by event name prefix (e.g., "workflow." matches "workflow.started",
+    /// "workflow.completed")
     Prefix(String),
     /// Filter by exact event name
     Exact(String),

@@ -9,11 +9,10 @@
 //! variants: [`ParameterType::Notice`] for inline messages and
 //! [`DisplayMode::Sections`] for visual grouping.
 
-use crate::error::ParameterError;
-use crate::parameter::Parameter;
-use crate::profile::ValidationProfile;
-use crate::report::ValidationReport;
-use crate::values::ParameterValues;
+use crate::{
+    error::ParameterError, parameter::Parameter, profile::ValidationProfile,
+    report::ValidationReport, values::ParameterValues,
+};
 
 /// Complete parameter collection for v3 authoring.
 ///
@@ -24,8 +23,7 @@ use crate::values::ParameterValues;
 /// # Examples
 ///
 /// ```
-/// use nebula_parameter::collection::ParameterCollection;
-/// use nebula_parameter::parameter::Parameter;
+/// use nebula_parameter::{collection::ParameterCollection, parameter::Parameter};
 /// use serde_json::json;
 ///
 /// let params = ParameterCollection::new()
@@ -184,9 +182,10 @@ impl IntoIterator for ParameterCollection {
 
 #[cfg(test)]
 mod tests {
+    use serde_json::json;
+
     use super::*;
     use crate::parameter::Parameter;
-    use serde_json::json;
 
     #[test]
     fn new_creates_empty_collection() {

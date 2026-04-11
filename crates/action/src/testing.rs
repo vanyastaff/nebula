@@ -6,24 +6,28 @@
 //! Also provides [`StatefulTestHarness`] and [`TriggerTestHarness`] for
 //! stepping through stateful and trigger actions in isolation.
 
-use std::any::{Any, TypeId};
-use std::collections::HashMap;
-use std::sync::Arc;
-use std::time::Duration;
+use std::{
+    any::{Any, TypeId},
+    collections::HashMap,
+    sync::Arc,
+    time::Duration,
+};
 
 use async_trait::async_trait;
 use nebula_core::id::{ExecutionId, NodeId, WorkflowId};
 use nebula_credential::{CredentialAccessError, CredentialAccessor, CredentialSnapshot};
 use tokio_util::sync::CancellationToken;
 
-use crate::capability::{
-    ActionLogLevel, ActionLogger, ExecutionEmitter, ResourceAccessor, TriggerScheduler,
+use crate::{
+    capability::{
+        ActionLogLevel, ActionLogger, ExecutionEmitter, ResourceAccessor, TriggerScheduler,
+    },
+    context::{ActionContext, TriggerContext},
+    error::ActionError,
+    result::ActionResult,
+    stateful::StatefulAction,
+    trigger::TriggerAction,
 };
-use crate::context::{ActionContext, TriggerContext};
-use crate::error::ActionError;
-use crate::result::ActionResult;
-use crate::stateful::StatefulAction;
-use crate::trigger::TriggerAction;
 
 /// Factory that produces a fresh boxed resource on each call.
 ///
@@ -628,20 +632,18 @@ where
 mod tests {
     use std::collections::HashMap;
 
-    use nebula_core::SecretString;
+    use nebula_core::{SecretString, action_key};
     use nebula_credential::{CredentialMetadata, SecretToken};
 
-    use nebula_core::action_key;
-
     use super::*;
-    use crate::action::Action;
-    use crate::context::{Context, CredentialContextExt};
-    use crate::dependency::ActionDependencies;
-    use crate::metadata::ActionMetadata;
-    use crate::output::ActionOutput;
     use crate::{
+        action::Action,
         assert_branch, assert_break, assert_cancelled, assert_continue, assert_fatal, assert_retry,
         assert_retryable, assert_skip, assert_success, assert_validation_error, assert_wait,
+        context::{Context, CredentialContextExt},
+        dependency::ActionDependencies,
+        metadata::ActionMetadata,
+        output::ActionOutput,
     };
 
     #[test]

@@ -3,10 +3,9 @@
 //! Replaces the custom `ObservabilityHook` system. The default is [`NoopSink`].
 //! In nebula-engine, `EventBusSink` wraps nebula-eventbus — no direct dep here.
 
-use std::sync::Arc;
+use std::{sync::Arc, time::Duration};
 
 use parking_lot::Mutex;
-use std::time::Duration;
 
 /// A state in the circuit breaker state machine.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]

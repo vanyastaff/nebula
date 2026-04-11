@@ -6,10 +6,10 @@
 //! - Content validators (Email, URL)
 //! - Unicode handling
 
-use criterion::{BenchmarkId, Criterion, Throughput, criterion_group, criterion_main};
-use nebula_validator::foundation::Validate;
-use nebula_validator::validators::*;
 use std::hint::black_box;
+
+use criterion::{BenchmarkId, Criterion, Throughput, criterion_group, criterion_main};
+use nebula_validator::{foundation::Validate, validators::*};
 
 // ============================================================================
 // LENGTH VALIDATORS

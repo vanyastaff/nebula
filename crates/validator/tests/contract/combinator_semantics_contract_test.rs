@@ -1,8 +1,13 @@
-use nebula_validator::combinators::{unless, when};
-use nebula_validator::foundation::{Validate, ValidateExt, ValidationError};
-use nebula_validator::validators::{max_length, min_length};
-use std::sync::Arc;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{
+    Arc,
+    atomic::{AtomicUsize, Ordering},
+};
+
+use nebula_validator::{
+    combinators::{unless, when},
+    foundation::{Validate, ValidateExt, ValidationError},
+    validators::{max_length, min_length},
+};
 
 #[derive(Clone)]
 struct CountingValidator {

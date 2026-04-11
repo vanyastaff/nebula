@@ -2,11 +2,10 @@
 
 use std::fmt;
 
-use crate::input_hint::InputHint;
-use crate::loader::OptionLoader;
-use crate::option::SelectOption;
-use crate::parameter::Parameter;
-use crate::parameter_type::ParameterType;
+use crate::{
+    input_hint::InputHint, loader::OptionLoader, option::SelectOption, parameter::Parameter,
+    parameter_type::ParameterType,
+};
 
 /// Simplified parameter subset that dynamic record providers may return.
 ///

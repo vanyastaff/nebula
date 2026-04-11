@@ -1,13 +1,14 @@
 //! Cancel safety integration tests — verify RAII guards release resources
 //! when pipeline futures are dropped mid-flight (e.g., via tokio::select!).
 
-use std::sync::Arc;
-use std::time::Duration;
+use std::{sync::Arc, time::Duration};
 
-use nebula_resilience::bulkhead::{Bulkhead, BulkheadConfig};
-use nebula_resilience::circuit_breaker::{CircuitBreaker, CircuitBreakerConfig, Outcome};
-use nebula_resilience::pipeline::ResiliencePipeline;
-use nebula_resilience::sink::CircuitState;
+use nebula_resilience::{
+    bulkhead::{Bulkhead, BulkheadConfig},
+    circuit_breaker::{CircuitBreaker, CircuitBreakerConfig, Outcome},
+    pipeline::ResiliencePipeline,
+    sink::CircuitState,
+};
 
 // ── CB probe slot released on cancel ────────────────────────────────────────
 

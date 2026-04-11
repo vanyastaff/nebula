@@ -4,9 +4,11 @@
 //! value per concrete type implementing [`ErrorDetail`]. This mirrors the
 //! `google.rpc.Status.details` pattern where each detail type appears once.
 
-use std::any::{Any, TypeId};
-use std::collections::HashMap;
-use std::fmt;
+use std::{
+    any::{Any, TypeId},
+    collections::HashMap,
+    fmt,
+};
 
 /// Marker trait for types that can be stored in [`ErrorDetails`].
 ///
@@ -36,8 +38,9 @@ pub trait ErrorDetail: Any + Send + Sync + fmt::Debug {}
 /// # Examples
 ///
 /// ```
-/// use nebula_error::{ErrorDetails, RetryHint};
 /// use std::time::Duration;
+///
+/// use nebula_error::{ErrorDetails, RetryHint};
 ///
 /// let mut details = ErrorDetails::new();
 /// details.insert(RetryHint::after(Duration::from_secs(5)).with_max_attempts(3));

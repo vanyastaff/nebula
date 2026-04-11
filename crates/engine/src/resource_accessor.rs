@@ -20,13 +20,10 @@
 //! No allowlist is enforced — unlike credentials, resources are identified
 //! by their registered key and any registered key may be acquired.
 
-use std::any::Any;
-use std::fmt;
-use std::sync::Arc;
+use std::{any::Any, fmt, sync::Arc};
 
 use async_trait::async_trait;
-use nebula_action::capability::ResourceAccessor;
-use nebula_action::error::ActionError;
+use nebula_action::{capability::ResourceAccessor, error::ActionError};
 use nebula_core::ResourceKey;
 
 /// Engine-side implementation of [`ResourceAccessor`].
@@ -75,8 +72,8 @@ impl ResourceAccessor for EngineResourceAccessor {
     /// # Errors
     ///
     /// - [`ActionError::Fatal`] if `key` is not a valid [`ResourceKey`] format.
-    /// - [`ActionError::Fatal`] if no resource with the given key is registered
-    ///   in the global scope.
+    /// - [`ActionError::Fatal`] if no resource with the given key is registered in the global
+    ///   scope.
     ///
     /// # Cancel safety
     ///

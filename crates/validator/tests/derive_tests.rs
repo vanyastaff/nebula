@@ -3,9 +3,11 @@
 //! Exercises the 3-phase pipeline (parse → emit) by deriving `Validator`
 //! on real structs and verifying both happy-path and failure-path behavior.
 
-use nebula_validator::Validator;
-use nebula_validator::combinators::SelfValidating;
-use nebula_validator::foundation::{Validate, ValidationError, ValidationErrors};
+use nebula_validator::{
+    Validator,
+    combinators::SelfValidating,
+    foundation::{Validate, ValidationError, ValidationErrors},
+};
 
 // ============================================================================
 // Helper
@@ -373,8 +375,7 @@ fn canonical_range_rejects_out_of_bounds() {
 }
 
 // ============================================================================
-// 8. Collection validators — min_size, max_size, exact_size,
-//    not_empty_collection, size_range
+// 8. Collection validators — min_size, max_size, exact_size, not_empty_collection, size_range
 // ============================================================================
 
 #[derive(Validator)]

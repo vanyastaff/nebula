@@ -1,12 +1,15 @@
+use std::{
+    collections::HashMap,
+    path::PathBuf,
+    sync::atomic::{AtomicU64, Ordering},
+    time::{SystemTime, UNIX_EPOCH},
+};
+
 use async_trait::async_trait;
 use nebula_config::{
     ConfigError, ConfigFormat, ConfigLoader, ConfigResult, ConfigSource, SourceMetadata,
 };
 use serde_json::Value;
-use std::collections::HashMap;
-use std::path::PathBuf;
-use std::sync::atomic::{AtomicU64, Ordering};
-use std::time::{SystemTime, UNIX_EPOCH};
 
 #[derive(Clone, Default)]
 pub struct StaticFixtureLoader {

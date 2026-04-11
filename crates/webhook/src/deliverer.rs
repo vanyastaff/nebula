@@ -22,10 +22,11 @@
 //! # }
 //! ```
 
-use crate::Error;
 use hmac::{Hmac, Mac, digest::KeyInit};
 use sha2::Sha256;
 use tracing::{debug, error, warn};
+
+use crate::Error;
 
 /// Configuration for an outbound webhook endpoint.
 #[derive(Clone)]
@@ -72,8 +73,8 @@ impl WebhookDeliverer {
     ///
     /// # Arguments
     ///
-    /// * `max_retries` — total number of attempts.  Pass `1` to disable
-    ///   retries, `3` for two additional retry attempts, etc.
+    /// * `max_retries` — total number of attempts.  Pass `1` to disable retries, `3` for two
+    ///   additional retry attempts, etc.
     #[must_use]
     pub fn new(max_retries: u32) -> Self {
         Self {
@@ -93,12 +94,11 @@ impl WebhookDeliverer {
     ///
     /// # Errors
     ///
-    /// - [`Error::Other`] — all retry attempts are exhausted (5xx or connection
-    ///   errors on every attempt).
-    /// - [`Error::Config`] — the HMAC key is invalid (e.g. rejected by the
-    ///   underlying digest implementation).
-    /// - [`Error::Other`] — the remote returned a 4xx response (permanent
-    ///   failure; not retried).
+    /// - [`Error::Other`] — all retry attempts are exhausted (5xx or connection errors on every
+    ///   attempt).
+    /// - [`Error::Config`] — the HMAC key is invalid (e.g. rejected by the underlying digest
+    ///   implementation).
+    /// - [`Error::Other`] — the remote returned a 4xx response (permanent failure; not retried).
     ///
     /// Returns `Ok(())` immediately when `endpoint.enabled` is `false`.
     ///

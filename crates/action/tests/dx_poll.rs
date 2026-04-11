@@ -1,8 +1,12 @@
 //! Integration tests for PollAction DX trait + PollTriggerAdapter.
 
-use std::sync::Arc;
-use std::sync::atomic::{AtomicU32, Ordering};
-use std::time::Duration;
+use std::{
+    sync::{
+        Arc,
+        atomic::{AtomicU32, Ordering},
+    },
+    time::Duration,
+};
 
 use nebula_action::{
     Action, ActionDependencies, ActionError, ActionMetadata, PollAction, PollTriggerAdapter,

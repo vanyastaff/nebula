@@ -2,13 +2,17 @@
 //!
 //! This module implements a recursive descent parser with precedence climbing for operators.
 
-use crate::ExpressionError;
-use crate::ast::{BinaryOp, Expr};
-use crate::error::{ExpressionErrorExt, ExpressionResult};
-use crate::span::Span;
-use crate::token::{Token, TokenKind};
-use serde_json::Value;
 use std::sync::Arc;
+
+use serde_json::Value;
+
+use crate::{
+    ExpressionError,
+    ast::{BinaryOp, Expr},
+    error::{ExpressionErrorExt, ExpressionResult},
+    span::Span,
+    token::{Token, TokenKind},
+};
 
 /// Maximum recursion depth for parser
 const MAX_PARSER_DEPTH: usize = 256;

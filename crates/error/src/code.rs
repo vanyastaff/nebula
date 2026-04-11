@@ -1,7 +1,6 @@
 //! Machine-readable error codes.
 
-use std::borrow::Cow;
-use std::fmt;
+use std::{borrow::Cow, fmt};
 
 /// A machine-readable error code.
 ///

@@ -1,16 +1,17 @@
 //! Fluent builder for constructing and validating workflow definitions.
 
-use std::collections::HashMap;
-use std::time::Duration;
+use std::{collections::HashMap, time::Duration};
 
 use chrono::Utc;
 use nebula_core::{NodeId, OwnerId, Version, WorkflowId};
 
-use crate::connection::{Connection, EdgeCondition};
-use crate::definition::{CURRENT_SCHEMA_VERSION, UiMetadata, WorkflowConfig, WorkflowDefinition};
-use crate::error::WorkflowError;
-use crate::graph::DependencyGraph;
-use crate::node::NodeDefinition;
+use crate::{
+    connection::{Connection, EdgeCondition},
+    definition::{CURRENT_SCHEMA_VERSION, UiMetadata, WorkflowConfig, WorkflowDefinition},
+    error::WorkflowError,
+    graph::DependencyGraph,
+    node::NodeDefinition,
+};
 
 /// A builder that accumulates nodes, connections, and configuration, then validates
 /// and produces a [`WorkflowDefinition`].
@@ -214,8 +215,9 @@ impl WorkflowBuilder {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use nebula_core::NodeId;
+
+    use super::*;
 
     fn node(id: NodeId) -> NodeDefinition {
         NodeDefinition::new(id, "n", "n").unwrap()

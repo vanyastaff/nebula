@@ -2,16 +2,11 @@
 //!
 //! Provides request context for observability and audit logging.
 
-use std::any::Any;
-use std::fmt;
-use std::future::Future;
-use std::pin::Pin;
-use std::sync::Arc;
+use std::{any::Any, fmt, future::Future, pin::Pin, sync::Arc};
 
 use chrono::{DateTime, Utc};
-use uuid::Uuid;
-
 use nebula_core::{AuthScheme, ScopeLevel};
+use uuid::Uuid;
 
 use crate::error::CredentialError;
 
@@ -47,22 +42,20 @@ pub trait CredentialResolverRef: Send + Sync {
 /// # Examples
 ///
 /// ```
-/// use nebula_credential::CredentialContext;
 /// use nebula_core::{ProjectId, ScopeLevel};
+/// use nebula_credential::CredentialContext;
 ///
 /// // Basic context
 /// let ctx = CredentialContext::new("user_123");
 ///
 /// // With scope for multi-tenancy
 /// let project_id = ProjectId::new();
-/// let ctx = CredentialContext::new("user_123")
-///     .with_scope(ScopeLevel::Project(project_id));
+/// let ctx = CredentialContext::new("user_123").with_scope(ScopeLevel::Project(project_id));
 ///
 /// // With custom trace ID
 /// use uuid::Uuid;
 /// let trace_id = Uuid::new_v4();
-/// let ctx = CredentialContext::new("user_123")
-///     .with_trace_id(trace_id);
+/// let ctx = CredentialContext::new("user_123").with_trace_id(trace_id);
 /// ```
 #[derive(Clone)]
 pub struct CredentialContext {
@@ -220,10 +213,10 @@ impl CredentialContext {
 
 #[cfg(test)]
 mod tests {
+    use nebula_core::{ProjectId, ScopeLevel, SecretString};
+
     use super::*;
     use crate::scheme::SecretToken;
-    use nebula_core::SecretString;
-    use nebula_core::{ProjectId, ScopeLevel};
 
     struct MockResolverForComposition;
     impl CredentialResolverRef for MockResolverForComposition {

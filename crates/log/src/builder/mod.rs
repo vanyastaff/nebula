@@ -15,11 +15,10 @@ pub mod watcher;
 
 // Re-export public types
 pub use reload::ReloadHandle;
-#[cfg(feature = "async")]
-pub use watcher::{WatcherGuard, watch_config, watch_config_with_interval};
-
 // External dependencies
 use tracing_subscriber::{EnvFilter, Registry, layer::SubscriberExt, util::SubscriberInitExt};
+#[cfg(feature = "async")]
+pub use watcher::{WatcherGuard, watch_config, watch_config_with_interval};
 
 // Internal crates
 use crate::core::LogResult;

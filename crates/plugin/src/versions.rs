@@ -1,13 +1,10 @@
 //! Multi-version plugin container.
 
-use std::collections::HashMap;
-use std::fmt;
-use std::sync::Arc;
+use std::{collections::HashMap, fmt, sync::Arc};
 
 use nebula_core::PluginKey;
 
-use crate::PluginError;
-use crate::plugin::Plugin;
+use crate::{PluginError, plugin::Plugin};
 
 /// Container that stores multiple versions of the same plugin, keyed by `u32`.
 ///
@@ -15,17 +12,25 @@ use crate::plugin::Plugin;
 /// have a matching key.
 ///
 /// ```
-/// use nebula_plugin::{PluginVersions, PluginMetadata, Plugin};
+/// use nebula_plugin::{Plugin, PluginMetadata, PluginVersions};
 ///
 /// #[derive(Debug)]
 /// struct MyPlugin(PluginMetadata);
 /// impl Plugin for MyPlugin {
-///     fn metadata(&self) -> &PluginMetadata { &self.0 }
+///     fn metadata(&self) -> &PluginMetadata {
+///         &self.0
+///     }
 /// }
 ///
 /// let mut versions = PluginVersions::new();
-/// let m1 = PluginMetadata::builder("slack", "Slack").version(1).build().unwrap();
-/// let m2 = PluginMetadata::builder("slack", "Slack").version(2).build().unwrap();
+/// let m1 = PluginMetadata::builder("slack", "Slack")
+///     .version(1)
+///     .build()
+///     .unwrap();
+/// let m2 = PluginMetadata::builder("slack", "Slack")
+///     .version(2)
+///     .build()
+///     .unwrap();
 ///
 /// versions.add(MyPlugin(m1)).unwrap();
 /// versions.add(MyPlugin(m2)).unwrap();

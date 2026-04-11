@@ -3,13 +3,12 @@
 use std::collections::{HashMap, HashSet};
 
 use nebula_core::NodeId;
-use petgraph::Direction;
-use petgraph::algo;
-use petgraph::graph::{DiGraph, NodeIndex};
+use petgraph::{
+    Direction, algo,
+    graph::{DiGraph, NodeIndex},
+};
 
-use crate::connection::Connection;
-use crate::definition::WorkflowDefinition;
-use crate::error::WorkflowError;
+use crate::{connection::Connection, definition::WorkflowDefinition, error::WorkflowError};
 
 /// A directed acyclic graph representing the execution dependencies between workflow nodes.
 #[derive(Debug)]
@@ -216,13 +215,17 @@ impl DependencyGraph {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-    use crate::connection::Connection;
-    use crate::definition::{WorkflowConfig, WorkflowDefinition};
-    use crate::node::NodeDefinition;
+    use std::collections::HashMap;
+
     use chrono::Utc;
     use nebula_core::{NodeId, Version, WorkflowId};
-    use std::collections::HashMap;
+
+    use super::*;
+    use crate::{
+        connection::Connection,
+        definition::{WorkflowConfig, WorkflowDefinition},
+        node::NodeDefinition,
+    };
 
     /// Helper: build a minimal `WorkflowDefinition` from nodes and connections.
     fn make_definition(

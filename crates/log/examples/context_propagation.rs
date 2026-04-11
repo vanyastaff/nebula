@@ -4,8 +4,7 @@
 //! points in multi-thread Tokio runtimes via `tokio::task_local!`.
 
 use anyhow::Result;
-use nebula_log::Context;
-use nebula_log::prelude::*;
+use nebula_log::{Context, prelude::*};
 
 #[tokio::main]
 async fn main() -> Result<()> {

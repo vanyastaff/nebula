@@ -26,8 +26,10 @@
 //! # Ok(()) }
 //! ```
 
-use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::{
+    sync::Arc,
+    time::{Duration, Instant},
+};
 
 use nebula_action::{
     ActionError, ActionResult, BreakReason, IncomingEvent, PollAction, PollTriggerAdapter,
@@ -35,8 +37,7 @@ use nebula_action::{
     StatelessActionAdapter, StatelessHandler, TestContextBuilder, TriggerHandler, WebhookAction,
     WebhookTriggerAdapter,
 };
-use serde::Serialize;
-use serde::de::DeserializeOwned;
+use serde::{Serialize, de::DeserializeOwned};
 use serde_json::Value;
 
 /// Default safety cap on stateful iteration loops.

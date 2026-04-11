@@ -4,13 +4,15 @@
 //! on ActionResult/ActionError. They do not test cancellation (that is the runtime's
 //! responsibility via tokio::select!).
 
-use nebula_action::dependency::ActionDependencies;
 use nebula_action::{
     Action, ActionContext, ActionMetadata, ActionOutput, ActionResult, BreakReason, StatefulAction,
     StatefulActionAdapter, StatefulHandler, StatelessAction, TriggerAction, TriggerContext,
+    dependency::ActionDependencies,
 };
-use nebula_core::action_key;
-use nebula_core::id::{ExecutionId, NodeId, WorkflowId};
+use nebula_core::{
+    action_key,
+    id::{ExecutionId, NodeId, WorkflowId},
+};
 use tokio_util::sync::CancellationToken;
 
 // ── StatelessAction ─────────────────────────────────────────────────────────

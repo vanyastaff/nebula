@@ -20,8 +20,9 @@
 //! assert!(validator.validate(&my_struct_instance).is_ok());
 //! ```
 
-use crate::foundation::{Validate, ValidationError, ValidationMode};
 use std::marker::PhantomData;
+
+use crate::foundation::{Validate, ValidationError, ValidationMode};
 
 // ============================================================================
 // NESTED VALIDATOR

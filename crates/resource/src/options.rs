@@ -4,8 +4,10 @@
 //! resource subsystem, allowing topologies to make smarter scheduling and
 //! prioritization decisions.
 
-use std::borrow::Cow;
-use std::time::{Duration, Instant};
+use std::{
+    borrow::Cow,
+    time::{Duration, Instant},
+};
 
 use smallvec::SmallVec;
 
@@ -36,11 +38,11 @@ pub enum AcquireIntent {
 /// # Examples
 ///
 /// ```
-/// use nebula_resource::AcquireOptions;
 /// use std::time::{Duration, Instant};
 ///
-/// let opts = AcquireOptions::default()
-///     .with_deadline(Instant::now() + Duration::from_secs(5));
+/// use nebula_resource::AcquireOptions;
+///
+/// let opts = AcquireOptions::default().with_deadline(Instant::now() + Duration::from_secs(5));
 /// assert!(opts.deadline.is_some());
 /// ```
 #[derive(Debug, Clone)]

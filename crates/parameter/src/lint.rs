@@ -6,13 +6,10 @@
 
 use std::collections::HashSet;
 
-use crate::collection::ParameterCollection;
-use crate::conditions::Condition;
-use crate::display_mode::DisplayMode;
-use crate::parameter::Parameter;
-use crate::parameter_type::ParameterType;
-use crate::rules::Rule;
-use crate::transformer::Transformer;
+use crate::{
+    collection::ParameterCollection, conditions::Condition, display_mode::DisplayMode,
+    parameter::Parameter, parameter_type::ParameterType, rules::Rule, transformer::Transformer,
+};
 
 /// A single lint finding emitted by [`lint_collection`].
 #[derive(Debug, Clone, PartialEq)]
@@ -41,9 +38,9 @@ pub enum LintLevel {
 /// # Examples
 ///
 /// ```
-/// use nebula_parameter::collection::ParameterCollection;
-/// use nebula_parameter::parameter::Parameter;
-/// use nebula_parameter::lint::lint_collection;
+/// use nebula_parameter::{
+///     collection::ParameterCollection, lint::lint_collection, parameter::Parameter,
+/// };
 ///
 /// let coll = ParameterCollection::new()
 ///     .add(Parameter::string("name").label("Name"))

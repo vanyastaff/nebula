@@ -28,7 +28,8 @@ mod action_attrs;
 /// - `resources = [Type1, Type2]` - Multiple resource types (optional)
 /// - `parameters = Type` - Type with `parameters()` for `ActionMetadata` (optional)
 ///
-/// Note: `credential = "key"` (string) is ignored; use `credential = CredentialType` for type-based refs.
+/// Note: `credential = "key"` (string) is ignored; use `credential = CredentialType` for type-based
+/// refs.
 ///
 /// Action structs must be unit structs with no fields (e.g. `struct MyAction;`).
 ///

@@ -1,10 +1,7 @@
 //! Webhook HTTP server implementation
 
-use crate::{
-    Error, Result, TriggerCtx, TriggerHandle, WebhookPayload,
-    queue::InboundQueue,
-    route_map::{RouteMap, SharedRouteMap},
-};
+use std::{net::SocketAddr, sync::Arc};
+
 use axum::{
     Router,
     extract::{Path, State},
@@ -13,7 +10,6 @@ use axum::{
     routing::{any, get},
 };
 use bytes::Bytes;
-use std::{net::SocketAddr, sync::Arc};
 use tokio::{net::TcpListener, sync::Mutex, task::JoinHandle};
 use tokio_util::sync::CancellationToken;
 use tower_http::{
@@ -22,6 +18,12 @@ use tower_http::{
     trace::{DefaultMakeSpan, DefaultOnResponse, TraceLayer},
 };
 use tracing::{Level, debug, error, info, warn};
+
+use crate::{
+    Error, Result, TriggerCtx, TriggerHandle, WebhookPayload,
+    queue::InboundQueue,
+    route_map::{RouteMap, SharedRouteMap},
+};
 
 /// Configuration for the webhook server
 #[derive(Debug, Clone)]
@@ -76,7 +78,8 @@ pub struct WebhookServer {
     routes: SharedRouteMap,
     server_handle: Arc<Mutex<Option<JoinHandle<Result<()>>>>>,
     shutdown: CancellationToken,
-    /// Optional durable queue wired in via [`with_inbound_queue`](WebhookServer::with_inbound_queue).
+    /// Optional durable queue wired in via
+    /// [`with_inbound_queue`](WebhookServer::with_inbound_queue).
     inbound_queue: Option<Arc<dyn InboundQueue>>,
 }
 
@@ -152,6 +155,7 @@ impl WebhookServer {
     ///
     /// ```no_run
     /// use std::sync::Arc;
+    ///
     /// use nebula_webhook::{WebhookServer, WebhookServerConfig, queue::MemoryInboundQueue};
     ///
     /// # async fn run() -> nebula_webhook::Result<()> {
@@ -179,8 +183,9 @@ impl WebhookServer {
 
     /// Build the webhook HTTP router for embedding into another server.
     ///
-    /// Mount this router at the root (it already uses [`path_prefix`](WebhookServerConfig::path_prefix)
-    /// for webhook routes). Example: `api_app.merge(webhook_server.router())`.
+    /// Mount this router at the root (it already uses
+    /// [`path_prefix`](WebhookServerConfig::path_prefix) for webhook routes). Example:
+    /// `api_app.merge(webhook_server.router())`.
     pub fn router(&self) -> Router {
         let state = ServerState {
             routes: self.routes.clone(),
@@ -457,9 +462,11 @@ async fn webhook_handler(
 #[cfg(test)]
 #[allow(deprecated)]
 mod tests {
-    use super::*;
-    use nebula_resource::{Context, Scope};
     use std::sync::Arc as StdArc;
+
+    use nebula_resource::{Context, Scope};
+
+    use super::*;
 
     #[tokio::test]
     async fn test_server_creation() {
@@ -546,12 +553,13 @@ mod tests {
     /// handler processes an incoming webhook request.
     #[tokio::test]
     async fn enqueue_called_on_incoming_request() {
-        use crate::queue::MemoryInboundQueue;
         use axum::{
             body::Body,
             http::{self, Request},
         };
         use tower::util::ServiceExt as _;
+
+        use crate::queue::MemoryInboundQueue;
 
         let queue = StdArc::new(MemoryInboundQueue::new());
         assert!(queue.is_empty());

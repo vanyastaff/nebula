@@ -15,8 +15,10 @@
 //!  └──(retry_at expired)── Failed ──fail_permanent──▶ PermanentlyFailed
 //! ```
 
-use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::{
+    sync::Arc,
+    time::{Duration, Instant},
+};
 
 use arc_swap::ArcSwap;
 use tokio::sync::Notify;

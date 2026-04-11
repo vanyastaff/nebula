@@ -8,8 +8,7 @@
 //! # Examples
 //!
 //! ```
-//! use nebula_parameter::conditions::Condition;
-//! use nebula_parameter::path::ParameterPath;
+//! use nebula_parameter::{conditions::Condition, path::ParameterPath};
 //!
 //! let cond = Condition::all(vec![
 //!     Condition::eq("auth_mode", "oauth2"),

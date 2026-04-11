@@ -1,12 +1,10 @@
 //! Daemon topology (secondary) — background run loop.
 
-use std::future::Future;
-use std::time::Duration;
+use std::{future::Future, time::Duration};
 
 use tokio_util::sync::CancellationToken;
 
-use crate::ctx::Ctx;
-use crate::resource::Resource;
+use crate::{ctx::Ctx, resource::Resource};
 
 /// Policy for restarting a daemon after it exits.
 #[non_exhaustive]

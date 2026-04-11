@@ -8,8 +8,8 @@
 //!
 //! - **Flow** — main data pipe; every action has at least one input and output.
 //! - **Support** — sub-node / supply inputs (e.g. AI tool, memory, model slots).
-//! - **Dynamic** — config-driven outputs generated from an array in node config
-//!   (e.g. Switch node producing one output per rule).
+//! - **Dynamic** — config-driven outputs generated from an array in node config (e.g. Switch node
+//!   producing one output per rule).
 
 use serde::{Deserialize, Serialize};
 

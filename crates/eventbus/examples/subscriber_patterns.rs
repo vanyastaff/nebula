@@ -6,8 +6,9 @@
 //! 3. Lag monitoring with lagged_count()
 //! 4. Multi-bus registry pattern
 
-use nebula_eventbus::{BackPressurePolicy, EventBus, EventBusRegistry, EventFilter};
 use std::sync::Arc;
+
+use nebula_eventbus::{BackPressurePolicy, EventBus, EventBusRegistry, EventFilter};
 use tokio::task;
 
 #[derive(Clone, Debug, PartialEq, Eq)]

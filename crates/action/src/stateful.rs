@@ -12,11 +12,13 @@ use async_trait::async_trait;
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use serde_json::Value;
 
-use crate::action::Action;
-use crate::context::{ActionContext, Context};
-use crate::error::{ActionError, ValidationReason};
-use crate::metadata::ActionMetadata;
-use crate::result::ActionResult;
+use crate::{
+    action::Action,
+    context::{ActionContext, Context},
+    error::{ActionError, ValidationReason},
+    metadata::ActionMetadata,
+    result::ActionResult,
+};
 
 /// Stateful action: iterative execution with persistent state.
 ///
@@ -28,7 +30,8 @@ use crate::result::ActionResult;
 /// checkpoint it between iterations, and `Clone` so it can snapshot before
 /// executing (rollback on failure).
 ///
-/// Cancellation is enforced by the runtime (same as [`StatelessAction`](crate::stateless::StatelessAction)).
+/// Cancellation is enforced by the runtime (same as
+/// [`StatelessAction`](crate::stateless::StatelessAction)).
 pub trait StatefulAction: Action {
     /// Input type for each iteration.
     type Input: Send + Sync;
@@ -598,9 +601,7 @@ mod tests {
     use tokio_util::sync::CancellationToken;
 
     use super::*;
-    use crate::dependency::ActionDependencies;
-    use crate::output::ActionOutput;
-    use crate::result::BreakReason;
+    use crate::{dependency::ActionDependencies, output::ActionOutput, result::BreakReason};
 
     fn make_ctx() -> ActionContext {
         ActionContext::new(

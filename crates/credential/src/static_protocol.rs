@@ -31,8 +31,7 @@
 //! ```
 
 use nebula_core::AuthScheme;
-use nebula_parameter::ParameterCollection;
-use nebula_parameter::values::ParameterValues;
+use nebula_parameter::{ParameterCollection, values::ParameterValues};
 
 use crate::error::CredentialError;
 
@@ -100,8 +99,7 @@ pub trait StaticProtocol: Send + Sync + 'static {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::SecretString;
-    use crate::scheme::SecretToken;
+    use crate::{SecretString, scheme::SecretToken};
 
     struct TestProtocol;
 

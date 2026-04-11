@@ -1,10 +1,9 @@
 //! Resource derive macro implementation.
 
+use nebula_macro_support::{attrs, diag};
 use proc_macro::TokenStream;
 use quote::quote;
 use syn::{Data, DeriveInput, parse_macro_input};
-
-use nebula_macro_support::{attrs, diag};
 
 pub fn derive(input: TokenStream) -> TokenStream {
     let input = parse_macro_input!(input as DeriveInput);

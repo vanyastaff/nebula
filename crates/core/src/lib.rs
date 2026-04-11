@@ -7,8 +7,10 @@
 //!
 //! - **Identifiers**: UserId, TenantId, ExecutionId, WorkflowId, NodeId, ResourceId, CredentialId, ProjectId, RoleId, OrganizationId, OwnerId.  
 //!   (Node = workflow step / graph vertex; which action/plugin runs there is given by [`ActionKey`] = [`PluginKey`]; [`NodeDefinition`](https://docs.rs/nebula-workflow) has `action_key: ActionKey`.)
-//! - **Keys**: PluginKey (plugin type, e.g. `telegram_bot`), ActionKey (action within a plugin, e.g. `send_message`), ParameterKey, CredentialKey.
-//! - **Scope System**: Resource lifecycle management with different scope levels (Global, Organization, Project, Workflow, Execution, Action)
+//! - **Keys**: PluginKey (plugin type, e.g. `telegram_bot`), ActionKey (action within a plugin,
+//!   e.g. `send_message`), ParameterKey, CredentialKey.
+//! - **Scope System**: Resource lifecycle management with different scope levels (Global,
+//!   Organization, Project, Workflow, Execution, Action)
 //! - **Base Traits**: Scoped, HasContext, Identifiable for common functionality
 //! - **Common Types**: Utilities and constants used throughout the system
 //! - **Multi-tenancy Types**: ProjectType, RoleScope for identity and access management
@@ -16,10 +18,7 @@
 //! ## Usage
 //!
 //! ```rust
-//! use nebula_core::{
-//!     ExecutionId, WorkflowId, NodeId,
-//!     ScopeLevel, Scoped, HasContext
-//! };
+//! use nebula_core::{ExecutionId, HasContext, NodeId, ScopeLevel, Scoped, WorkflowId};
 //!
 //! let execution_id = ExecutionId::new();
 //! let workflow_id = WorkflowId::new();
@@ -73,27 +72,25 @@ pub type Result<T> = std::result::Result<T, error::CoreError>;
 /// Common prelude for Nebula crates
 pub mod prelude {
     // Identifiers (UUID-backed ids)
-    pub use crate::id::{
-        CredentialId, ExecutionId, NodeId, OrganizationId, OwnerId, ProjectId, ResourceId, RoleId,
-        TenantId, UserId, WorkflowId,
-    };
-
-    // Domain keys (normalized string keys)
-    pub use crate::keys::{ActionKey, CredentialKey, ParameterKey, PluginKey, ResourceKey};
-
-    // Core errors and parse errors
-    pub use crate::error::CoreError;
-    pub use crate::scope::{ScopeLevel, ScopeResolver};
-    pub use crate::traits::{HasContext, Scoped};
-    pub use crate::types::{InterfaceVersion, ProjectType, RoleScope};
     pub use domain_key::{KeyParseError, UuidParseError};
-
-    // Dependency error type
-    pub use crate::deps::DependencyError;
 
     // Core result alias
     pub use crate::Result;
-
+    // Dependency error type
+    pub use crate::deps::DependencyError;
+    // Core errors and parse errors
+    pub use crate::error::CoreError;
+    // Domain keys (normalized string keys)
+    pub use crate::keys::{ActionKey, CredentialKey, ParameterKey, PluginKey, ResourceKey};
     // Compile-time-validated key construction macros
     pub use crate::{action_key, credential_key, parameter_key, plugin_key, resource_key};
+    pub use crate::{
+        id::{
+            CredentialId, ExecutionId, NodeId, OrganizationId, OwnerId, ProjectId, ResourceId,
+            RoleId, TenantId, UserId, WorkflowId,
+        },
+        scope::{ScopeLevel, ScopeResolver},
+        traits::{HasContext, Scoped},
+        types::{InterfaceVersion, ProjectType, RoleScope},
+    };
 }

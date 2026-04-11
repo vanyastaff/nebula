@@ -9,13 +9,18 @@
 //! - Event correlation and tracing
 //! - Centralized observability configuration
 
-use nebula_log::info;
-use nebula_log::observability::{
-    ObservabilityEvent, ObservabilityFieldValue, ObservabilityFieldVisitor, ObservabilityHook,
-    emit_event, event_data_json, register_hook,
+use std::{
+    collections::HashMap,
+    sync::{Arc, Mutex},
 };
-use std::collections::HashMap;
-use std::sync::{Arc, Mutex};
+
+use nebula_log::{
+    info,
+    observability::{
+        ObservabilityEvent, ObservabilityFieldValue, ObservabilityFieldVisitor, ObservabilityHook,
+        emit_event, event_data_json, register_hook,
+    },
+};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Initialize unified logging

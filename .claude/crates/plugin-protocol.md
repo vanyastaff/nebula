@@ -25,3 +25,5 @@ Typed stdin/stdout JSON protocol for process-isolated community plugins.
 - Does NOT depend on nebula-action, nebula-core, or any other workspace crate.
 
 <!-- reviewed: 2026-04-09 -->
+
+<!-- reviewed: 2026-04-11 — Workspace-wide nightly rustfmt pass applied (group_imports = "StdExternalCrate", imports_granularity = "Crate", wrap_comments, format_code_in_doc_comments). Touches every Rust file in the crate; purely formatting, zero behavior change. -->

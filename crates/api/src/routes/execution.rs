@@ -1,11 +1,11 @@
 //! Execution routes
 
-use crate::handlers;
-use crate::state::AppState;
 use axum::{
     Router,
     routing::{get, post},
 };
+
+use crate::{handlers, state::AppState};
 
 /// Execution routes
 pub fn router() -> Router<AppState> {

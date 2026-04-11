@@ -1,6 +1,7 @@
+use std::collections::HashSet;
+
 use nebula_validator::foundation::error::codes;
 use serde::Deserialize;
-use std::collections::HashSet;
 
 #[derive(Debug, Deserialize)]
 struct ErrorRegistry {

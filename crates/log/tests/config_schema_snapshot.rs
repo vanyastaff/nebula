@@ -1,8 +1,7 @@
+use std::{collections::BTreeMap, fs, path::PathBuf};
+
 use nebula_log::{Config, DestinationFailurePolicy, Fields, Format, WriterConfig};
 use serde_json::Value;
-use std::collections::BTreeMap;
-use std::fs;
-use std::path::PathBuf;
 
 #[test]
 fn config_schema_snapshot_default_roundtrip() {

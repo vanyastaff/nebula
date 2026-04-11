@@ -1,10 +1,9 @@
 //! Credential derive macro implementation (v2).
 
+use nebula_macro_support::{attrs, diag};
 use proc_macro::TokenStream;
 use quote::quote;
 use syn::{Data, DeriveInput, Fields, parse_macro_input};
-
-use nebula_macro_support::{attrs, diag};
 
 /// Entry point for `#[derive(Credential)]`.
 pub fn derive(input: TokenStream) -> TokenStream {

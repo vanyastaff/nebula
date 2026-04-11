@@ -46,24 +46,21 @@ pub mod loaders;
 pub mod watchers;
 
 // Derive macros
-pub use nebula_config_macros::Config;
-
+// Re-export traits
+pub use core::{
+    AsyncConfigurable, ConfigLoader, ConfigValidator, ConfigWatcher, Configurable, Validatable,
+};
 // Re-export main types from core for explicit imports (e.g. `use nebula_config::Config`)
 pub use core::{
     Config, ConfigBuilder, ConfigError, ConfigFormat, ConfigResult, ConfigResultAggregator,
     ConfigResultExt, ConfigSource, SourceMetadata, try_sources,
 };
 
-// Re-export traits
-pub use core::{
-    AsyncConfigurable, ConfigLoader, ConfigValidator, ConfigWatcher, Configurable, Validatable,
-};
-
 // Re-export concrete implementations
 pub use loaders::{CompositeLoader, FileLoader};
 #[cfg(feature = "env")]
 pub use loaders::{EnvLoader, EnvParseMode};
-
+pub use nebula_config_macros::Config;
 pub use watchers::{
     ConfigWatchEvent, ConfigWatchEventType, FileWatcher, NoOpWatcher, PollingWatcher,
 };
@@ -75,11 +72,6 @@ pub use watchers::{
 pub mod prelude {
 
     // Core types
-    pub use crate::core::{
-        Config, ConfigBuilder, ConfigError, ConfigFormat, ConfigResult, ConfigResultExt,
-        ConfigSource, SourceMetadata,
-    };
-
     // Re-export nebula ecosystem types for convenience
     pub use nebula_log::{debug, error, info, warn};
 
@@ -87,12 +79,14 @@ pub mod prelude {
     pub use crate::core::{
         AsyncConfigurable, ConfigLoader, ConfigValidator, ConfigWatcher, Configurable, Validatable,
     };
-
+    pub use crate::core::{
+        Config, ConfigBuilder, ConfigError, ConfigFormat, ConfigResult, ConfigResultExt,
+        ConfigSource, SourceMetadata,
+    };
     // Common loaders
     pub use crate::loaders::{CompositeLoader, FileLoader};
     #[cfg(feature = "env")]
     pub use crate::loaders::{EnvLoader, EnvParseMode};
-
     // Common watchers
     pub use crate::watchers::{
         ConfigWatchEvent, ConfigWatchEventType, FileWatcher, PollingWatcher,
@@ -101,13 +95,15 @@ pub mod prelude {
 
 /// Builder pattern helpers for configuration
 pub mod builders {
-    use crate::core::{ConfigBuilder, ConfigSource};
+    use std::{path::PathBuf, sync::Arc};
+
     #[cfg(feature = "env")]
     use crate::loaders::EnvLoader;
-    use crate::loaders::FileLoader;
-    use crate::watchers::FileWatcher;
-    use std::path::PathBuf;
-    use std::sync::Arc;
+    use crate::{
+        core::{ConfigBuilder, ConfigSource},
+        loaders::FileLoader,
+        watchers::FileWatcher,
+    };
 
     /// Create a simple file-based configuration
     pub fn from_file(path: impl Into<PathBuf>) -> ConfigBuilder {
@@ -157,8 +153,9 @@ pub mod builders {
 
 /// Utilities for working with configuration
 pub mod utils {
-    use crate::core::{ConfigError, ConfigResult};
     use std::path::Path;
+
+    use crate::core::{ConfigError, ConfigResult};
 
     /// Check if a configuration file exists and is readable
     pub async fn check_config_file(path: &Path) -> ConfigResult<()> {
@@ -224,8 +221,7 @@ mod tests {
 
     #[test]
     fn test_parse_config_string_toml() {
-        use crate::core::source::ConfigFormat;
-        use crate::utils::parse_config_string;
+        use crate::{core::source::ConfigFormat, utils::parse_config_string};
 
         let toml = r#"
         [server]
@@ -243,8 +239,7 @@ mod tests {
 
     #[test]
     fn test_parse_config_string_unsupported_formats() {
-        use crate::core::source::ConfigFormat;
-        use crate::utils::parse_config_string;
+        use crate::{core::source::ConfigFormat, utils::parse_config_string};
 
         let sample = "a = 1";
         assert!(parse_config_string(sample, ConfigFormat::Json).is_err());
@@ -272,8 +267,9 @@ mod tests {
 
     #[tokio::test]
     async fn test_get_socket_addr() {
-        use serde_json::json;
         use std::net::SocketAddr;
+
+        use serde_json::json;
         let cfg = ConfigBuilder::new()
             .with_defaults(json!({ "bind": "0.0.0.0:8080" }))
             .build()
@@ -285,8 +281,9 @@ mod tests {
 
     #[tokio::test]
     async fn test_get_ip_addr() {
-        use serde_json::json;
         use std::net::IpAddr;
+
+        use serde_json::json;
         let cfg = ConfigBuilder::new()
             .with_defaults(json!({ "host": "192.168.0.1" }))
             .build()
@@ -298,8 +295,9 @@ mod tests {
 
     #[tokio::test]
     async fn test_get_path_buf() {
-        use serde_json::json;
         use std::path::PathBuf;
+
+        use serde_json::json;
         let cfg = ConfigBuilder::new()
             .with_defaults(json!({ "data_dir": "/var/app/data" }))
             .build()
@@ -311,8 +309,9 @@ mod tests {
 
     #[tokio::test]
     async fn test_get_with_arrays() {
-        use crate::prelude::*;
         use serde_json::json;
+
+        use crate::prelude::*;
 
         let defaults = json!({
             "arr": [

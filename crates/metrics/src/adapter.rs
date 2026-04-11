@@ -6,11 +6,12 @@
 use std::sync::Arc;
 
 use nebula_eventbus::EventBusStats;
-use nebula_telemetry::labels::LabelSet;
-use nebula_telemetry::metrics::{Counter, Gauge, Histogram, MetricsRegistry};
+use nebula_telemetry::{
+    labels::LabelSet,
+    metrics::{Counter, Gauge, Histogram, MetricsRegistry},
+};
 
-use crate::filter::LabelAllowlist;
-use crate::naming::*;
+use crate::{filter::LabelAllowlist, naming::*};
 
 /// Adapter that exposes telemetry metrics under standard `nebula_*` names.
 ///
@@ -47,12 +48,16 @@ impl TelemetryAdapter {
     ///
     /// ```rust
     /// use std::sync::Arc;
+    ///
+    /// use nebula_metrics::{LabelAllowlist, TelemetryAdapter};
     /// use nebula_telemetry::metrics::MetricsRegistry;
-    /// use nebula_metrics::{TelemetryAdapter, LabelAllowlist};
     ///
     /// let reg = Arc::new(MetricsRegistry::new());
-    /// let adapter = TelemetryAdapter::new(Arc::clone(&reg))
-    ///     .with_allowlist(LabelAllowlist::only(["action_type", "status", "trigger_type"]));
+    /// let adapter = TelemetryAdapter::new(Arc::clone(&reg)).with_allowlist(LabelAllowlist::only([
+    ///     "action_type",
+    ///     "status",
+    ///     "trigger_type",
+    /// ]));
     /// ```
     #[must_use]
     pub fn with_allowlist(mut self, allowlist: LabelAllowlist) -> Self {
@@ -153,8 +158,9 @@ impl TelemetryAdapter {
     ///
     /// ```
     /// use std::sync::Arc;
-    /// use nebula_telemetry::metrics::MetricsRegistry;
+    ///
     /// use nebula_metrics::adapter::TelemetryAdapter;
+    /// use nebula_telemetry::metrics::MetricsRegistry;
     ///
     /// let reg = Arc::new(MetricsRegistry::new());
     /// let adapter = TelemetryAdapter::new(Arc::clone(&reg));

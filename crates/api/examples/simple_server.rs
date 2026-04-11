@@ -1,7 +1,8 @@
+use std::sync::Arc;
+
 use nebula_api::{ApiConfig, AppState, app};
 use nebula_config::ConfigBuilder;
 use nebula_storage::{InMemoryExecutionRepo, InMemoryWorkflowRepo};
-use std::sync::Arc;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {

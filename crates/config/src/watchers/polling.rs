@@ -1,13 +1,21 @@
 //! Polling-based watcher for environments without native file watching
 
-use crate::core::{ConfigError, ConfigResult, ConfigSource, ConfigWatcher};
-use crate::watchers::{ConfigWatchEvent, ConfigWatchEventType};
+use std::{
+    collections::HashMap,
+    path::PathBuf,
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    },
+};
+
 use async_trait::async_trait;
-use std::collections::HashMap;
-use std::path::PathBuf;
-use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
 use tokio::sync::RwLock;
+
+use crate::{
+    core::{ConfigError, ConfigResult, ConfigSource, ConfigWatcher},
+    watchers::{ConfigWatchEvent, ConfigWatchEventType},
+};
 
 /// Polling watcher that checks for changes at regular intervals
 pub struct PollingWatcher {

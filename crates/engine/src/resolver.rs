@@ -6,8 +6,7 @@
 //! - `Template` — parsed and rendered via [`ExpressionEngine`]
 //! - `Reference` — looked up from a predecessor node's output
 
-use std::collections::HashMap;
-use std::sync::Arc;
+use std::{collections::HashMap, sync::Arc};
 
 use dashmap::DashMap;
 use nebula_core::id::NodeId;
@@ -160,8 +159,9 @@ fn navigate_path(value: &serde_json::Value, path: &str) -> serde_json::Value {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use serde_json::json;
+
+    use super::*;
 
     fn make_resolver() -> ParamResolver {
         let engine = Arc::new(ExpressionEngine::new());

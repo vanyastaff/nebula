@@ -7,8 +7,9 @@
 //! # Example
 //!
 //! ```rust
-//! use nebula_resilience::clock::{Clock, MockClock};
 //! use std::time::Duration;
+//!
+//! use nebula_resilience::clock::{Clock, MockClock};
 //!
 //! let clock = MockClock::new();
 //! let t0 = clock.now();
@@ -19,9 +20,12 @@
 //! assert!(t1.duration_since(t0) >= Duration::from_secs(5));
 //! ```
 
+use std::{
+    sync::Arc,
+    time::{Duration, Instant},
+};
+
 use parking_lot::Mutex;
-use std::sync::Arc;
-use std::time::{Duration, Instant};
 
 // =============================================================================
 // TRAIT

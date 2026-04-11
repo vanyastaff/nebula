@@ -1,11 +1,10 @@
+use nebula_core::ActionKey;
+// Re-export from core so downstream code can continue using `nebula_action::InterfaceVersion`.
+pub use nebula_core::InterfaceVersion;
+use nebula_parameter::collection::ParameterCollection;
 use serde::{Deserialize, Serialize};
 
 use crate::port::{self, InputPort, OutputPort};
-use nebula_core::ActionKey;
-use nebula_parameter::collection::ParameterCollection;
-
-// Re-export from core so downstream code can continue using `nebula_action::InterfaceVersion`.
-pub use nebula_core::InterfaceVersion;
 
 /// How isolated this action's execution should be.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, Default)]

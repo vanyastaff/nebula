@@ -1,7 +1,8 @@
 //! Persistent state storage trait
 
-use crate::{Result, TriggerState};
 use async_trait::async_trait;
+
+use crate::{Result, TriggerState};
 
 /// Trait for persisting trigger state across restarts
 #[async_trait]

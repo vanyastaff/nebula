@@ -185,7 +185,8 @@ impl<'a> TokenKind<'a> {
                 | TokenKind::GreaterEqual
                 | TokenKind::RegexMatch
                 | TokenKind::And
-                | TokenKind::Or // Pipe is not a binary operator, it's used for pipeline expressions
+                | TokenKind::Or /* Pipe is not a binary operator, it's used for pipeline
+                                 * expressions */
         )
     }
 

@@ -2,9 +2,8 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::core::{LogError, LogResult};
-
 use super::{DisplayConfig, Fields, WriterConfig};
+use crate::core::{LogError, LogResult};
 
 /// Logging configuration
 #[derive(Debug, Clone, Serialize, Deserialize)]

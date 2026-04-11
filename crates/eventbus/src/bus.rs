@@ -4,14 +4,13 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use tokio::sync::broadcast;
 
-use crate::EventFilter;
-use crate::FilteredSubscriber;
-use crate::PublishOutcome;
-use crate::policy::BackPressurePolicy;
-use crate::scope::ScopedEvent;
-use crate::scope::SubscriptionScope;
-use crate::stats::EventBusStats;
-use crate::subscriber::Subscriber;
+use crate::{
+    EventFilter, FilteredSubscriber, PublishOutcome,
+    policy::BackPressurePolicy,
+    scope::{ScopedEvent, SubscriptionScope},
+    stats::EventBusStats,
+    subscriber::Subscriber,
+};
 
 /// Generic broadcast event bus parameterized by event type `E`.
 ///

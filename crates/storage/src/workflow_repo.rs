@@ -2,8 +2,7 @@
 //!
 //! Used by API and app; implementations (in-memory, Postgres) live in this crate or in adapters.
 
-use std::collections::HashMap;
-use std::sync::Arc;
+use std::{collections::HashMap, sync::Arc};
 
 use async_trait::async_trait;
 use nebula_core::WorkflowId;

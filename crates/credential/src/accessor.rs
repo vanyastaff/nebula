@@ -5,15 +5,11 @@
 //! with type-based access control. [`NoopCredentialAccessor`] is a stub for
 //! contexts without credential support.
 
-use std::any::TypeId;
-use std::collections::HashSet;
-use std::fmt;
-use std::sync::Arc;
+use std::{any::TypeId, collections::HashSet, fmt, sync::Arc};
 
 use async_trait::async_trait;
 
-use crate::CredentialSnapshot;
-use crate::access_error::CredentialAccessError;
+use crate::{CredentialSnapshot, access_error::CredentialAccessError};
 
 /// Object-safe credential accessor injected into action/trigger contexts.
 ///
@@ -163,16 +159,13 @@ impl CredentialAccessor for ScopedCredentialAccessor {
 
 #[cfg(test)]
 mod tests {
-    use std::any::TypeId;
-    use std::collections::HashMap;
-    use std::sync::Arc;
+    use std::{any::TypeId, collections::HashMap, sync::Arc};
 
     use async_trait::async_trait;
     use nebula_core::SecretString;
 
-    use crate::{CredentialMetadata, CredentialSnapshot, SecretToken};
-
     use super::*;
+    use crate::{CredentialMetadata, CredentialSnapshot, SecretToken};
 
     /// Test accessor that supports both string-based and type-based access.
     struct MockAccessor {

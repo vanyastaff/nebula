@@ -1,12 +1,11 @@
 // Baseline benchmarks for nebula-expression
 // Run with: cargo bench --bench baseline
 
+use std::{hint::black_box, sync::Arc, thread};
+
 use criterion::{BenchmarkId, Criterion, Throughput, criterion_group, criterion_main};
 use nebula_expression::{EvaluationContext, ExpressionEngine, Template};
 use serde_json::Value;
-use std::hint::black_box;
-use std::sync::Arc;
-use std::thread;
 
 // ================================
 // Template Benchmarks

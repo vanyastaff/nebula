@@ -5,13 +5,19 @@
 //! # Examples
 //!
 //! ```rust,no_run
-//! use nebula_sdk::testing::{TestContext, ActionTester};
-//! use nebula_sdk::prelude::*;
+//! use nebula_sdk::{
+//!     prelude::*,
+//!     testing::{ActionTester, TestContext},
+//! };
 //!
 //! #[tokio::test]
 //! async fn test_my_action() {
 //!     let tester = ActionTester::new(MyAction::default());
-//!     let result = tester.execute(MyInput { name: "test".into() }).await;
+//!     let result = tester
+//!         .execute(MyInput {
+//!             name: "test".into(),
+//!         })
+//!         .await;
 //!     assert!(is_success(&result));
 //! }
 //! ```

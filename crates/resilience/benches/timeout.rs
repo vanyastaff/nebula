@@ -4,10 +4,13 @@
 //! - Success-path wrapper overhead for `timeout`
 //! - Cancellation-path latency when timeout expires
 
+use std::{
+    hint::black_box,
+    time::{Duration, Instant},
+};
+
 use criterion::{Criterion, criterion_group, criterion_main};
 use nebula_resilience::timeout;
-use std::hint::black_box;
-use std::time::{Duration, Instant};
 
 fn timeout_wrapper_overhead(c: &mut Criterion) {
     let mut group = c.benchmark_group("timeout/overhead");

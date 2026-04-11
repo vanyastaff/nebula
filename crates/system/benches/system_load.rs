@@ -49,9 +49,7 @@ fn bench_system_load(c: &mut Criterion) {
 }
 
 fn bench_headroom(c: &mut Criterion) {
-    use nebula_system::cpu::CpuPressure;
-    use nebula_system::load::SystemLoad;
-    use nebula_system::memory::MemoryPressure;
+    use nebula_system::{cpu::CpuPressure, load::SystemLoad, memory::MemoryPressure};
 
     let load = SystemLoad {
         cpu: CpuPressure::Medium,

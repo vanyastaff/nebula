@@ -14,25 +14,24 @@
 //!
 //! ## DX adapters
 //!
-//! - [`FnStatelessAction`] / [`stateless_fn`] — zero-boilerplate adapter for a
-//!   plain `async fn(Input) -> Result<Output, ActionError>`.
-//! - [`FnStatelessCtxAction`] / [`stateless_ctx_fn`] — context-aware variant
-//!   for closures that need credentials, resources, or the logger.
+//! - [`FnStatelessAction`] / [`stateless_fn`] — zero-boilerplate adapter for a plain `async
+//!   fn(Input) -> Result<Output, ActionError>`.
+//! - [`FnStatelessCtxAction`] / [`stateless_ctx_fn`] — context-aware variant for closures that need
+//!   credentials, resources, or the logger.
 
-use std::fmt;
-use std::future::Future;
-use std::marker::PhantomData;
-use std::sync::Arc;
+use std::{fmt, future::Future, marker::PhantomData, sync::Arc};
 
 use async_trait::async_trait;
 use serde_json::Value;
 
-use crate::action::Action;
-use crate::context::{ActionContext, Context};
-use crate::dependency::ActionDependencies;
-use crate::error::{ActionError, ValidationReason};
-use crate::metadata::ActionMetadata;
-use crate::result::ActionResult;
+use crate::{
+    action::Action,
+    context::{ActionContext, Context},
+    dependency::ActionDependencies,
+    error::{ActionError, ValidationReason},
+    metadata::ActionMetadata,
+    result::ActionResult,
+};
 
 /// Stateless action: pure function from input to result.
 ///
@@ -409,10 +408,11 @@ impl<A: Action> fmt::Debug for StatelessActionAdapter<A> {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use nebula_core::id::{ExecutionId, NodeId, WorkflowId};
     use serde::{Deserialize, Serialize};
     use tokio_util::sync::CancellationToken;
+
+    use super::*;
 
     fn make_ctx() -> ActionContext {
         ActionContext::new(

@@ -3,10 +3,12 @@
 //! This module provides pre-defined event types for common scenarios
 //! like operation lifecycle tracking.
 
-use super::hooks::{ObservabilityEvent, ObservabilityFieldValue, ObservabilityFieldVisitor};
-use super::semantic::{EventKind, field};
-use std::borrow::Cow;
-use std::time::Duration;
+use std::{borrow::Cow, time::Duration};
+
+use super::{
+    hooks::{ObservabilityEvent, ObservabilityFieldValue, ObservabilityFieldVisitor},
+    semantic::{EventKind, field},
+};
 
 /// Convert `Duration` milliseconds to `u64` with saturation instead of truncation.
 fn saturating_millis(d: Duration) -> u64 {
@@ -63,10 +65,14 @@ impl ObservabilityEvent for OperationStarted {
 /// # Example
 ///
 /// ```rust
-/// use nebula_log::observability::{OperationCompleted, emit_event};
 /// use std::time::Duration;
 ///
-/// emit_event(&OperationCompleted::new("database_query", Duration::from_millis(42)));
+/// use nebula_log::observability::{OperationCompleted, emit_event};
+///
+/// emit_event(&OperationCompleted::new(
+///     "database_query",
+///     Duration::from_millis(42),
+/// ));
 /// ```
 #[derive(Debug, Clone)]
 pub struct OperationCompleted {
@@ -116,8 +122,9 @@ impl ObservabilityEvent for OperationCompleted {
 /// # Example
 ///
 /// ```rust
-/// use nebula_log::observability::{OperationFailed, emit_event};
 /// use std::time::Duration;
+///
+/// use nebula_log::observability::{OperationFailed, emit_event};
 ///
 /// emit_event(&OperationFailed::new(
 ///     "database_query",

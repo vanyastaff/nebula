@@ -3,13 +3,13 @@
 //! [`NebulaError`] enriches any [`Classify`] error with optional message
 //! overrides, typed detail metadata, a context chain, and a source error.
 
-use std::borrow::Cow;
-use std::error::Error;
-use std::fmt;
+use std::{borrow::Cow, error::Error, fmt};
 
-use crate::details::{ErrorDetail, ErrorDetails};
-use crate::traits::Classify;
-use crate::{ErrorCategory, ErrorCode, ErrorSeverity, RetryHint};
+use crate::{
+    ErrorCategory, ErrorCode, ErrorSeverity, RetryHint,
+    details::{ErrorDetail, ErrorDetails},
+    traits::Classify,
+};
 
 /// The main error wrapper that enriches any [`Classify`] error with
 /// details, context chain, and metadata.
@@ -22,8 +22,7 @@ use crate::{ErrorCategory, ErrorCode, ErrorSeverity, RetryHint};
 ///
 /// ```
 /// use nebula_error::{
-///     Classify, ErrorCategory, ErrorCode, ErrorSeverity,
-///     NebulaError, ResourceInfo, codes,
+///     Classify, ErrorCategory, ErrorCode, ErrorSeverity, NebulaError, ResourceInfo, codes,
 /// };
 ///
 /// #[derive(Debug)]
@@ -36,8 +35,12 @@ use crate::{ErrorCategory, ErrorCode, ErrorSeverity, RetryHint};
 /// }
 ///
 /// impl Classify for NotFound {
-///     fn category(&self) -> ErrorCategory { ErrorCategory::NotFound }
-///     fn code(&self) -> ErrorCode { codes::NOT_FOUND.clone() }
+///     fn category(&self) -> ErrorCategory {
+///         ErrorCategory::NotFound
+///     }
+///     fn code(&self) -> ErrorCode {
+///         codes::NOT_FOUND.clone()
+///     }
 /// }
 ///
 /// let err = NebulaError::new(NotFound("workflow-42".into()))
@@ -76,8 +79,12 @@ impl<E: Classify> NebulaError<E> {
     ///     }
     /// }
     /// impl Classify for MyErr {
-    ///     fn category(&self) -> ErrorCategory { ErrorCategory::Internal }
-    ///     fn code(&self) -> ErrorCode { codes::INTERNAL.clone() }
+    ///     fn category(&self) -> ErrorCategory {
+    ///         ErrorCategory::Internal
+    ///     }
+    ///     fn code(&self) -> ErrorCode {
+    ///         codes::INTERNAL.clone()
+    ///     }
     /// }
     ///
     /// let err = NebulaError::new(MyErr);
@@ -115,10 +122,9 @@ impl<E: Classify> NebulaError<E> {
     /// # Examples
     ///
     /// ```
-    /// use nebula_error::{
-    ///     Classify, ErrorCategory, ErrorCode, NebulaError, RetryHint, codes,
-    /// };
     /// use std::time::Duration;
+    ///
+    /// use nebula_error::{Classify, ErrorCategory, ErrorCode, NebulaError, RetryHint, codes};
     ///
     /// # #[derive(Debug)]
     /// # struct E;
@@ -327,9 +333,10 @@ impl<E: Classify> From<E> for NebulaError<E> {
 
 #[cfg(test)]
 mod tests {
+    use std::time::Duration;
+
     use super::*;
     use crate::{ResourceInfo, RetryHint, codes};
-    use std::time::Duration;
 
     #[derive(Debug, Clone)]
     struct TestError {

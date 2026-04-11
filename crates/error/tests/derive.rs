@@ -1,5 +1,6 @@
-use nebula_error::{Classify, ErrorCategory, ErrorSeverity};
 use std::time::Duration;
+
+use nebula_error::{Classify, ErrorCategory, ErrorSeverity};
 
 #[derive(Debug, thiserror::Error, nebula_error_macros::Classify)]
 enum SimpleError {

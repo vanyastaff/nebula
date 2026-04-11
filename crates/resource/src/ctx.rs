@@ -4,8 +4,10 @@
 //! for threading arbitrary data through the resource subsystem. [`BasicCtx`] is
 //! the default concrete implementation.
 
-use std::any::{Any, TypeId};
-use std::collections::HashMap;
+use std::{
+    any::{Any, TypeId},
+    collections::HashMap,
+};
 
 use nebula_core::{ExecutionId, WorkflowId};
 use tokio_util::sync::CancellationToken;
@@ -98,8 +100,8 @@ impl Extensions {
 /// # Examples
 ///
 /// ```
-/// use nebula_resource::ctx::{BasicCtx, Ctx, ScopeLevel};
 /// use nebula_core::ExecutionId;
+/// use nebula_resource::ctx::{BasicCtx, Ctx, ScopeLevel};
 ///
 /// let ctx = BasicCtx::new(ExecutionId::new());
 /// assert_eq!(*ctx.scope(), ScopeLevel::Global);

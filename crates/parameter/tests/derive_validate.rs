@@ -1,5 +1,4 @@
-use nebula_parameter::Parameters;
-use nebula_parameter::rules::Rule;
+use nebula_parameter::{Parameters, rules::Rule};
 
 #[derive(Parameters)]
 #[allow(dead_code)]

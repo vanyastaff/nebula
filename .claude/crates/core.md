@@ -24,3 +24,5 @@ Foundation shared by every other crate — IDs, domain keys, scope system, and s
 - Imported by every other nebula crate. No nebula deps of its own — only external crates (`uuid`, `domain-key`, `zeroize`, `serde`, etc.).
 
 <!-- reviewed: 2026-04-07 — AuthPattern.NoAuth added, () maps to NoAuth -->
+
+<!-- reviewed: 2026-04-11 — Workspace-wide nightly rustfmt pass applied (group_imports = "StdExternalCrate", imports_granularity = "Crate", wrap_comments, format_code_in_doc_comments). Touches every Rust file in the crate; purely formatting, zero behavior change. -->

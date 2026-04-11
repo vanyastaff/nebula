@@ -17,8 +17,8 @@ use nebula_resource::AnyResource;
 ///
 /// The trait provides two complementary sets of methods:
 /// - `credential` / `resources` — return trait objects used for capability injection at runtime.
-/// - `credential_keys` / `resource_keys` — return typed [`CredentialKey`] / [`ResourceKey`]
-///   values used by the engine for dependency validation before execution begins.
+/// - `credential_keys` / `resource_keys` — return typed [`CredentialKey`] / [`ResourceKey`] values
+///   used by the engine for dependency validation before execution begins.
 pub trait ActionDependencies {
     /// The credential required by this action, if any.
     fn credential() -> Option<Box<dyn AnyCredential>>

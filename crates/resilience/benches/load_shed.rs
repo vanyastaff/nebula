@@ -3,23 +3,28 @@
 //! `load_shed` runs on every incoming request, so its predicate evaluation
 //! and control-flow overhead must be minimal.  Two scenarios:
 //!
-//! - **Pass-through** — predicate always returns `false`; measures the overhead
-//!   of the extra `async` wrapper + closure call when no shedding occurs.
-//! - **Reject** — predicate always returns `true`; measures the fast rejection
-//!   path where the operation is never started.
-//! - **Atomic predicate** — realistic production pattern: predicate reads an
-//!   `AtomicBool` set externally (e.g., by a health-check loop).
+//! - **Pass-through** — predicate always returns `false`; measures the overhead of the extra
+//!   `async` wrapper + closure call when no shedding occurs.
+//! - **Reject** — predicate always returns `true`; measures the fast rejection path where the
+//!   operation is never started.
+//! - **Atomic predicate** — realistic production pattern: predicate reads an `AtomicBool` set
+//!   externally (e.g., by a health-check loop).
 //!
 //! Run with:
 //! ```text
 //! cargo bench -p nebula-resilience --bench load_shed
 //! ```
 
+use std::{
+    hint::black_box,
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    },
+};
+
 use criterion::{Criterion, criterion_group, criterion_main};
 use nebula_resilience::load_shed;
-use std::hint::black_box;
-use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
 
 fn bench_pass_through(c: &mut Criterion) {
     let rt = tokio::runtime::Runtime::new().unwrap();

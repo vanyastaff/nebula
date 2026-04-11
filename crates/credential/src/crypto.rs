@@ -3,7 +3,11 @@
 //! Provides AES-256-GCM encryption with Argon2id key derivation,
 //! OAuth2/PKCE utilities, and secure random generation.
 
-use crate::error::CryptoError;
+use std::sync::{
+    OnceLock,
+    atomic::{AtomicU64, Ordering},
+};
+
 use aes_gcm::{
     Aes256Gcm,
     aead::{Aead, KeyInit, Payload},
@@ -11,9 +15,9 @@ use aes_gcm::{
 use argon2::{Argon2, ParamsBuilder};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-use std::sync::OnceLock;
-use std::sync::atomic::{AtomicU64, Ordering};
 use zeroize::{Zeroize, ZeroizeOnDrop, Zeroizing};
+
+use crate::error::CryptoError;
 
 // ============================================================================
 // Encryption & Key Derivation
@@ -442,8 +446,7 @@ fn base64_url_encode(input: &[u8]) -> String {
 /// to serialize as base64 strings in JSON, ensuring binary data survives
 /// round-trips.
 pub mod serde_base64 {
-    use base64::Engine;
-    use base64::engine::general_purpose::STANDARD;
+    use base64::{Engine, engine::general_purpose::STANDARD};
     use serde::{Deserialize, Deserializer, Serializer};
 
     /// Serialize bytes as a base64 string.

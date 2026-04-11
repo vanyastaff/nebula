@@ -14,6 +14,11 @@
 //! cargo run --example telemetry_integration -p nebula-log
 //! ```
 
+use std::{
+    sync::{Arc, Mutex},
+    time::Duration,
+};
+
 use nebula_log::{
     Config, Format, WriterConfig,
     observability::{
@@ -21,8 +26,6 @@ use nebula_log::{
         OperationStarted, OperationTracker, emit_event, register_hook,
     },
 };
-use std::sync::{Arc, Mutex};
-use std::time::Duration;
 
 // ── Step 1: Define a telemetry-forwarding hook ───────────────────────────────
 

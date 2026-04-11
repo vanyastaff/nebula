@@ -4,9 +4,11 @@
 
 mod contract;
 
-use nebula_validator::combinators::and::and;
-use nebula_validator::foundation::Validate;
-use nebula_validator::validators::{max_length, min_length};
+use nebula_validator::{
+    combinators::and::and,
+    foundation::Validate,
+    validators::{max_length, min_length},
+};
 
 #[test]
 fn test_min_length_validator() {

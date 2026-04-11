@@ -17,10 +17,9 @@ use crate::error::Error;
 /// # Examples
 ///
 /// ```
-/// use nebula_webhook::verifier::{WebhookVerifier, HmacSha256Verifier};
+/// use nebula_webhook::verifier::{HmacSha256Verifier, WebhookVerifier};
 ///
-/// let verifier = HmacSha256Verifier::new(b"secret", "X-Hub-Signature-256")
-///     .with_prefix("sha256=");
+/// let verifier = HmacSha256Verifier::new(b"secret", "X-Hub-Signature-256").with_prefix("sha256=");
 /// ```
 #[async_trait]
 pub trait WebhookVerifier: Send + Sync {
@@ -44,8 +43,8 @@ pub trait WebhookVerifier: Send + Sync {
 /// use nebula_webhook::HmacSha256Verifier;
 ///
 /// // GitHub-style: "sha256=<hex>"
-/// let verifier = HmacSha256Verifier::new(b"webhook-secret", "X-Hub-Signature-256")
-///     .with_prefix("sha256=");
+/// let verifier =
+///     HmacSha256Verifier::new(b"webhook-secret", "X-Hub-Signature-256").with_prefix("sha256=");
 ///
 /// // Stripe-style: bare hex in custom header
 /// let verifier = HmacSha256Verifier::new(b"whsec_xxx", "Stripe-Signature");

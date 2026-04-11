@@ -4,35 +4,36 @@
 //! involving real network resources. Mock resources use simple counters
 //! to verify lifecycle semantics.
 
-use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-
-use nebula_resource::AcquireOptions;
-use nebula_resource::Manager;
-use nebula_resource::ShutdownConfig;
-use nebula_resource::ctx::{BasicCtx, Ctx, ScopeLevel};
-use nebula_resource::error::{Error, ErrorKind};
-use nebula_resource::handle::ResourceHandle;
-use nebula_resource::recovery::{GateState, RecoveryGate, RecoveryGateConfig};
-use nebula_resource::release_queue::ReleaseQueue;
-use nebula_resource::resource::{Resource, ResourceConfig, ResourceMetadata};
-use nebula_resource::runtime::TopologyRuntime;
-use nebula_resource::runtime::exclusive::ExclusiveRuntime;
-use nebula_resource::runtime::pool::PoolRuntime;
-use nebula_resource::runtime::resident::ResidentRuntime;
-use nebula_resource::runtime::service::ServiceRuntime;
-use nebula_resource::runtime::transport::TransportRuntime;
-use nebula_resource::topology::exclusive;
-use nebula_resource::topology::exclusive::Exclusive;
-use nebula_resource::topology::pooled::{BrokenCheck, Pooled, RecycleDecision};
-use nebula_resource::topology::resident;
-use nebula_resource::topology::resident::Resident;
-use nebula_resource::topology::service;
-use nebula_resource::topology::service::{Service, TokenMode};
-use nebula_resource::topology::transport;
-use nebula_resource::topology::transport::Transport;
+use std::sync::{
+    Arc,
+    atomic::{AtomicBool, AtomicU64, Ordering},
+};
 
 use nebula_core::{ExecutionId, ResourceKey, resource_key};
+use nebula_resource::{
+    AcquireOptions, Manager, ShutdownConfig,
+    ctx::{BasicCtx, Ctx, ScopeLevel},
+    error::{Error, ErrorKind},
+    handle::ResourceHandle,
+    recovery::{GateState, RecoveryGate, RecoveryGateConfig},
+    release_queue::ReleaseQueue,
+    resource::{Resource, ResourceConfig, ResourceMetadata},
+    runtime::{
+        TopologyRuntime, exclusive::ExclusiveRuntime, pool::PoolRuntime, resident::ResidentRuntime,
+        service::ServiceRuntime, transport::TransportRuntime,
+    },
+    topology::{
+        exclusive,
+        exclusive::Exclusive,
+        pooled::{BrokenCheck, Pooled, RecycleDecision},
+        resident,
+        resident::Resident,
+        service,
+        service::{Service, TokenMode},
+        transport,
+        transport::Transport,
+    },
+};
 
 // ---------------------------------------------------------------------------
 // Mock resource error

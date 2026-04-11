@@ -4,11 +4,12 @@
 //! beyond capability checks on the [`SandboxedContext`].
 
 use async_trait::async_trait;
-use nebula_action::result::ActionResult;
-use nebula_action::{ActionError, ActionMetadata};
+use nebula_action::{ActionError, ActionMetadata, result::ActionResult};
 
-use crate::SandboxRunner;
-use crate::runner::{ActionExecutor, SandboxedContext};
+use crate::{
+    SandboxRunner,
+    runner::{ActionExecutor, SandboxedContext},
+};
 
 /// In-process sandbox: runs actions in the same process with capability checks.
 ///

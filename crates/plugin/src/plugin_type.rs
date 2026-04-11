@@ -4,9 +4,7 @@ use std::sync::Arc;
 
 use nebula_core::PluginKey;
 
-use crate::PluginError;
-use crate::plugin::Plugin;
-use crate::versions::PluginVersions;
+use crate::{PluginError, plugin::Plugin, versions::PluginVersions};
 
 /// Wraps either a single plugin instance or a multi-version container.
 pub enum PluginType {

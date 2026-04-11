@@ -1,9 +1,10 @@
 //! RAII handle for webhook trigger lifecycle
 
-use crate::WebhookPayload;
 use tokio::sync::broadcast;
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, info};
+
+use crate::WebhookPayload;
 
 /// RAII handle for a webhook trigger
 ///
@@ -181,10 +182,14 @@ impl std::fmt::Debug for TriggerHandle {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use std::sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    };
+
     use bytes::Bytes;
-    use std::sync::Arc;
-    use std::sync::atomic::{AtomicBool, Ordering};
+
+    use super::*;
 
     fn create_test_payload(path: &str) -> WebhookPayload {
         WebhookPayload::new(

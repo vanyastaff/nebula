@@ -1,8 +1,9 @@
 //! Integration tests for YAML configuration loading
 #![cfg(feature = "yaml")]
 
-use nebula_config::{ConfigBuilder, ConfigFormat, ConfigSource};
 use std::io::Write;
+
+use nebula_config::{ConfigBuilder, ConfigFormat, ConfigSource};
 use tempfile::NamedTempFile;
 
 fn write_yaml_tempfile(content: &str) -> NamedTempFile {

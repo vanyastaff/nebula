@@ -1,7 +1,9 @@
-use super::helpers::StaticFixtureLoader;
+use std::sync::Arc;
+
 use nebula_config::{ConfigBuilder, ConfigSource};
 use serde_json::json;
-use std::sync::Arc;
+
+use super::helpers::StaticFixtureLoader;
 
 async fn build_snapshot() -> serde_json::Value {
     let file_source = ConfigSource::File("contract-file.toml".into());
