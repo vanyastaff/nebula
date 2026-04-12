@@ -11,7 +11,14 @@
 //! [`CredentialGuard`](nebula_credential::CredentialGuard) returned by
 //! [`ActionContext::credential`](crate::ActionContext::credential).
 
-use std::{any::Any, sync::Arc, time::Duration};
+use std::{
+    any::Any,
+    sync::{
+        Arc,
+        atomic::{AtomicU32, AtomicU64, Ordering::Relaxed},
+    },
+    time::Duration,
+};
 
 use async_trait::async_trait;
 use nebula_core::id::ExecutionId;
@@ -63,6 +70,130 @@ pub trait TriggerScheduler: Send + Sync {
 pub trait ExecutionEmitter: Send + Sync {
     /// Start a new execution for this trigger's workflow with the given input.
     async fn emit(&self, input: serde_json::Value) -> Result<ExecutionId, ActionError>;
+}
+
+/// Shared health state for a running trigger. Adapter writes,
+/// runtime reads. Lock-free via atomics — no allocations per cycle.
+///
+/// Lives on `TriggerContext` as `Arc<TriggerHealth>`. Not behind a
+/// trait — health shape is universal, trait dispatch adds nothing.
+///
+/// All fields use `Relaxed` ordering (eventual consistency is
+/// sufficient for monitoring — exact cross-field consistency is
+/// not needed).
+pub struct TriggerHealth {
+    /// Epoch millis of last main operation. 0 = never.
+    last_active_at: AtomicU64,
+    /// Epoch millis of last successful event emission. 0 = never.
+    last_success_at: AtomicU64,
+    /// Consecutive cycles without progress.
+    idle_streak: AtomicU32,
+    /// Consecutive errors.
+    error_streak: AtomicU32,
+    /// Total events emitted since start.
+    total_emitted: AtomicU64,
+    /// Total cycles since start.
+    total_cycles: AtomicU64,
+}
+
+impl TriggerHealth {
+    /// Create a new health state with all counters at zero.
+    #[must_use]
+    pub fn new() -> Self {
+        Self {
+            last_active_at: AtomicU64::new(0),
+            last_success_at: AtomicU64::new(0),
+            idle_streak: AtomicU32::new(0),
+            error_streak: AtomicU32::new(0),
+            total_emitted: AtomicU64::new(0),
+            total_cycles: AtomicU64::new(0),
+        }
+    }
+
+    /// Record a completed cycle with successful event emission.
+    pub fn record_success(&self, emitted: u64) {
+        let now = now_millis();
+        self.last_active_at.store(now, Relaxed);
+        self.last_success_at.store(now, Relaxed);
+        self.total_emitted.fetch_add(emitted, Relaxed);
+        self.total_cycles.fetch_add(1, Relaxed);
+        self.idle_streak.store(0, Relaxed);
+        self.error_streak.store(0, Relaxed);
+    }
+
+    /// Record a completed cycle with no events (idle).
+    pub fn record_idle(&self) {
+        self.last_active_at.store(now_millis(), Relaxed);
+        self.total_cycles.fetch_add(1, Relaxed);
+        self.idle_streak.fetch_add(1, Relaxed);
+        self.error_streak.store(0, Relaxed);
+    }
+
+    /// Record a failed cycle (retryable error).
+    pub fn record_error(&self) {
+        self.last_active_at.store(now_millis(), Relaxed);
+        self.total_cycles.fetch_add(1, Relaxed);
+        self.error_streak.fetch_add(1, Relaxed);
+    }
+
+    /// Read a point-in-time snapshot for dashboards / API.
+    ///
+    /// Not atomic-consistent across fields (each field is read
+    /// independently), but sufficient for monitoring.
+    #[must_use]
+    pub fn snapshot(&self) -> TriggerHealthSnapshot {
+        TriggerHealthSnapshot {
+            last_active_at: self.last_active_at.load(Relaxed),
+            last_success_at: self.last_success_at.load(Relaxed),
+            idle_streak: self.idle_streak.load(Relaxed),
+            error_streak: self.error_streak.load(Relaxed),
+            total_emitted: self.total_emitted.load(Relaxed),
+            total_cycles: self.total_cycles.load(Relaxed),
+        }
+    }
+}
+
+impl Default for TriggerHealth {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl std::fmt::Debug for TriggerHealth {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("TriggerHealth")
+            .field("total_cycles", &self.total_cycles.load(Relaxed))
+            .field("total_emitted", &self.total_emitted.load(Relaxed))
+            .field("idle_streak", &self.idle_streak.load(Relaxed))
+            .field("error_streak", &self.error_streak.load(Relaxed))
+            .finish()
+    }
+}
+
+/// Point-in-time health snapshot — plain data, serializable.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct TriggerHealthSnapshot {
+    /// Epoch millis of last main operation. 0 = never.
+    pub last_active_at: u64,
+    /// Epoch millis of last successful event emission. 0 = never.
+    pub last_success_at: u64,
+    /// Consecutive cycles without progress.
+    pub idle_streak: u32,
+    /// Consecutive errors.
+    pub error_streak: u32,
+    /// Total events emitted since start.
+    pub total_emitted: u64,
+    /// Total cycles since start.
+    pub total_cycles: u64,
+}
+
+/// Current time as epoch milliseconds.
+#[must_use]
+pub fn now_millis() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis() as u64
 }
 
 /// No-op logger used when runtime does not inject a logger capability.

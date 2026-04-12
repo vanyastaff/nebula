@@ -189,6 +189,14 @@ async fn main() -> anyhow::Result<()> {
     if let Some(note) = &report.note {
         println!("note:       {note}");
     }
+    if let Some(health) = &report.health {
+        println!();
+        println!("── health snapshot ──");
+        println!("  total_cycles:  {}", health.total_cycles);
+        println!("  total_emitted: {}", health.total_emitted);
+        println!("  idle_streak:   {}", health.idle_streak);
+        println!("  error_streak:  {}", health.error_streak);
+    }
     println!();
     println!(
         "emitted {} execution(s) over the window",

@@ -17,8 +17,9 @@ use tokio_util::sync::CancellationToken;
 
 use crate::{
     capability::{
-        ActionLogger, ExecutionEmitter, ResourceAccessor, TriggerScheduler, default_action_logger,
-        default_execution_emitter, default_resource_accessor, default_trigger_scheduler,
+        ActionLogger, ExecutionEmitter, ResourceAccessor, TriggerHealth, TriggerScheduler,
+        default_action_logger, default_execution_emitter, default_resource_accessor,
+        default_trigger_scheduler,
     },
     error::ActionError,
 };
@@ -162,6 +163,8 @@ pub struct TriggerContext {
     pub credentials: Arc<dyn CredentialAccessor>,
     /// Trigger-scoped logger capability.
     pub logger: Arc<dyn ActionLogger>,
+    /// Shared health state — adapter writes, runtime reads.
+    pub health: Arc<TriggerHealth>,
 }
 
 impl TriggerContext {
@@ -180,6 +183,7 @@ impl TriggerContext {
             emitter: default_execution_emitter(),
             credentials: default_credential_accessor(),
             logger: default_action_logger(),
+            health: Arc::new(TriggerHealth::new()),
         }
     }
 
@@ -208,6 +212,13 @@ impl TriggerContext {
     #[must_use]
     pub fn with_logger(mut self, logger: Arc<dyn ActionLogger>) -> Self {
         self.logger = logger;
+        self
+    }
+
+    /// Inject a shared health state (runtime keeps its own Arc clone).
+    #[must_use]
+    pub fn with_health(mut self, health: Arc<TriggerHealth>) -> Self {
+        self.health = health;
         self
     }
 
@@ -381,6 +392,7 @@ impl fmt::Debug for TriggerContext {
             .field("emitter", &"<dyn ExecutionEmitter>")
             .field("credentials", &"<dyn CredentialAccessor>")
             .field("logger", &"<dyn ActionLogger>")
+            .field("health", &self.health)
             .finish()
     }
 }

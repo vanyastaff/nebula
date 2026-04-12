@@ -107,7 +107,8 @@ pub mod webhook;
 
 pub use action::Action;
 pub use capability::{
-    ActionLogLevel, ActionLogger, ExecutionEmitter, ResourceAccessor, TriggerScheduler,
+    ActionLogLevel, ActionLogger, ExecutionEmitter, ResourceAccessor, TriggerHealth,
+    TriggerHealthSnapshot, TriggerScheduler,
 };
 pub use context::{ActionContext, Context, CredentialContextExt, TriggerContext};
 pub use dependency::ActionDependencies;

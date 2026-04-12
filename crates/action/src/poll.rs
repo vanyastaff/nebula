@@ -280,6 +280,13 @@ impl<E> From<Vec<E>> for PollResult<E> {
     }
 }
 
+// ── PollHealth ────────────────────────────────────────────────────────────
+
+/// Poll-specific health details. Serialized into
+/// [`TriggerHealth::details`] by the adapter.
+#[derive(Debug, Clone, Serialize)]
+// Removed: PollHealth moved to atomic-based TriggerHealth in capability.rs.
+
 // ── PollCursor ────────────────────────────────────────────────────────────
 
 /// Cursor wrapper with checkpoint capability for incremental progress
@@ -796,6 +803,13 @@ impl DispatchResult {
             _ => false,
         }
     }
+
+    fn emitted(&self) -> usize {
+        match self {
+            Self::Ok { emitted, .. } => *emitted,
+            Self::Failed => 0,
+        }
+    }
 }
 
 /// Outcome of a resolved poll cycle — drives cursor and backoff in the
@@ -807,6 +821,8 @@ struct CycleOutcome<C> {
     backoff: bool,
     /// One-shot interval override for the next cycle (e.g., Retry-After).
     override_next: Option<Duration>,
+    /// Number of events successfully emitted this cycle.
+    emitted: usize,
 }
 
 // ── PollTriggerAdapter ────────────────────────────────────────────────────
@@ -884,20 +900,20 @@ impl<A: PollAction> PollTriggerAdapter<A> {
                 cursor: poll_cursor.into_current(),
                 backoff: true,
                 override_next,
+                emitted: 0,
             }),
 
             PollOutcome::Ready { events } => {
                 let dr = self
                     .dispatch_events(&events, config.emit_failure, ctx)
                     .await;
+                let emitted = dr.emitted();
                 if dr.is_ok() {
                     Ok(CycleOutcome {
                         cursor: poll_cursor.into_current(),
-                        // Back off if emitter is totally broken (all
-                        // events dropped) — don't poll aggressively
-                        // into a broken emitter.
                         backoff: dr.is_total_loss(),
                         override_next,
+                        emitted,
                     })
                 } else {
                     self.handle_dispatch_failure(poll_cursor, pre_poll, config, override_next)
@@ -905,8 +921,6 @@ impl<A: PollAction> PollTriggerAdapter<A> {
             }
 
             PollOutcome::Partial { events, error } => {
-                // Fix #1: degenerate Partial with empty events —
-                // treat as total failure, rollback to checkpoint.
                 if events.is_empty() {
                     poll_cursor.rollback();
                     if error.is_fatal() {
@@ -916,6 +930,7 @@ impl<A: PollAction> PollTriggerAdapter<A> {
                         cursor: poll_cursor.into_current(),
                         backoff: true,
                         override_next,
+                        emitted: 0,
                     });
                 }
 
@@ -923,22 +938,19 @@ impl<A: PollAction> PollTriggerAdapter<A> {
                 let dr = self
                     .dispatch_events(&events, config.emit_failure, ctx)
                     .await;
+                let emitted = dr.emitted();
 
-                // Always roll back to last checkpoint for Partial —
-                // the poll didn't finish, cursor should resume from
-                // the last safe position.
                 poll_cursor.rollback();
 
                 if !dr.is_ok() {
                     match config.emit_failure {
-                        EmitFailurePolicy::DropAndContinue => {
-                            // Lost events accepted, cursor at checkpoint.
-                        }
+                        EmitFailurePolicy::DropAndContinue => {}
                         EmitFailurePolicy::RetryBatch => {
                             return Ok(CycleOutcome {
                                 cursor: pre_poll,
                                 backoff: false,
                                 override_next,
+                                emitted,
                             });
                         }
                         EmitFailurePolicy::StopTrigger => {
@@ -951,9 +963,6 @@ impl<A: PollAction> PollTriggerAdapter<A> {
                     }
                 }
 
-                // Fatal partial error stops the trigger after
-                // dispatching accumulated events. Dispatched events
-                // are NOT rolled back.
                 if error.is_fatal() {
                     return Err(error);
                 }
@@ -973,6 +982,7 @@ impl<A: PollAction> PollTriggerAdapter<A> {
                     cursor: poll_cursor.into_current(),
                     backoff: true,
                     override_next,
+                    emitted,
                 })
             }
         }
@@ -996,12 +1006,14 @@ impl<A: PollAction> PollTriggerAdapter<A> {
                     cursor: poll_cursor.into_current(),
                     backoff: true,
                     override_next,
+                    emitted: 0,
                 })
             }
             EmitFailurePolicy::RetryBatch => Ok(CycleOutcome {
                 cursor: pre_poll,
                 backoff: false,
                 override_next,
+                emitted: 0,
             }),
             EmitFailurePolicy::StopTrigger => Err(ActionError::fatal(format!(
                 "poll trigger {}: dispatch failed, stopping (StopTrigger policy)",
@@ -1140,15 +1152,25 @@ where
                             if outcome.backoff {
                                 consecutive_empty =
                                     consecutive_empty.saturating_add(1);
+                                if outcome.emitted > 0 {
+                                    // Partial: had events but also error.
+                                    ctx.health.record_success(outcome.emitted as u64);
+                                } else {
+                                    ctx.health.record_idle();
+                                }
+                            } else if outcome.emitted > 0 {
+                                consecutive_empty = 0;
+                                ctx.health.record_success(outcome.emitted as u64);
                             } else {
                                 consecutive_empty = 0;
+                                ctx.health.record_idle();
                             }
                         }
                         Err(e) if e.is_fatal() => return Err(e),
                         Err(e) => {
-                            // Total failure — full rollback to pre-poll.
                             cursor = pre_poll;
                             consecutive_empty = consecutive_empty.saturating_add(1);
+                            ctx.health.record_error();
                             if self.poll_warn.should_log() {
                                 let action_key = &self.action.metadata().key;
                                 ctx.logger.log(

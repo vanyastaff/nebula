@@ -48,6 +48,7 @@ engine runs them from `nebula-runtime`. `ActionRegistry` lives there, not here.
 - **DX macro requirement.** `impl_paginated_action!`/`impl_batch_action!` generate the `StatefulAction` impl — forgetting the macro → `register_stateful()` fails. One macro per type.
 - **Resource downcast.** `ResourceActionAdapter::cleanup` downcasts `Box<dyn Any>` — mismatch is an engine bug, returns `Fatal`.
 - **In-memory poll cursor.** `PollAction::Cursor` resets on every `start()`. Cross-restart persistence is a runtime concern (post-v1).
+- **TriggerHealth.** Shared atomic state on `TriggerContext` as `Arc<TriggerHealth>` (not trait). Adapter writes via `record_success(n)` / `record_idle()` / `record_error()`. Runtime reads via `snapshot()` → `TriggerHealthSnapshot` (Serialize). All counters `Relaxed` ordering. No locks, no allocations per cycle.
 - **`ctx.cancellation` / `ctx.emitter`** are `pub` fields on `TriggerContext` — known tech debt, tracked for an accessor refactor.
 
 ## Module layout (one domain per file)

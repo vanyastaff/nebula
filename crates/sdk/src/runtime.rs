@@ -34,8 +34,8 @@ use std::{
 use nebula_action::{
     ActionError, ActionResult, BreakReason, PollAction, PollTriggerAdapter, StatefulAction,
     StatefulActionAdapter, StatefulHandler, StatelessAction, StatelessActionAdapter,
-    StatelessHandler, TestContextBuilder, TriggerEvent, TriggerHandler, WebhookAction,
-    WebhookRequest, WebhookTriggerAdapter,
+    StatelessHandler, TestContextBuilder, TriggerEvent, TriggerHandler, TriggerHealthSnapshot,
+    WebhookAction, WebhookRequest, WebhookTriggerAdapter,
 };
 use serde::{Serialize, de::DeserializeOwned};
 use serde_json::Value;
@@ -71,6 +71,8 @@ pub struct RunReport {
     pub emitted: Vec<Value>,
     /// Optional note (break reason, cap hit, trigger start error, etc.).
     pub note: Option<String>,
+    /// Trigger health snapshot at end of run (None for non-trigger runs).
+    pub health: Option<TriggerHealthSnapshot>,
 }
 
 /// In-process harness for running a single action through its full lifecycle.
@@ -135,6 +137,7 @@ impl TestRuntime {
             duration: start.elapsed(),
             emitted: Vec::new(),
             note: None,
+            health: None,
         })
     }
 
@@ -173,6 +176,7 @@ impl TestRuntime {
                             duration: start.elapsed(),
                             emitted: Vec::new(),
                             note: Some(format!("hit stateful cap {cap}")),
+                            health: None,
                         });
                     }
                 }
@@ -184,6 +188,7 @@ impl TestRuntime {
                         duration: start.elapsed(),
                         emitted: Vec::new(),
                         note: Some(format_break_reason(&reason)),
+                        health: None,
                     });
                 }
                 other => {
@@ -194,6 +199,7 @@ impl TestRuntime {
                         duration: start.elapsed(),
                         emitted: Vec::new(),
                         note: Some(format!("non-iterative result: {other:?}")),
+                        health: None,
                     });
                 }
             }
@@ -241,6 +247,8 @@ impl TestRuntime {
             Err(_) => Some("trigger did not exit within grace period".to_owned()),
         };
 
+        let health = ctx.health.snapshot();
+
         Ok(RunReport {
             kind: "trigger:poll",
             output: Value::Array(emitted.clone()),
@@ -248,6 +256,7 @@ impl TestRuntime {
             duration: start.elapsed(),
             emitted,
             note,
+            health: Some(health),
         })
     }
 
@@ -291,6 +300,7 @@ impl TestRuntime {
             duration: start.elapsed(),
             emitted,
             note: None,
+            health: None,
         })
     }
 }
