@@ -398,6 +398,20 @@ fn dedup_cursor_clear_seen_preserves_inner() {
 }
 
 #[test]
+fn dedup_cursor_serde_enforces_max_seen_on_deserialize() {
+    // Simulate a cursor serialized with a higher cap or corrupted data.
+    let json = r#"{"inner":0,"seen":["a","b","c","d","e"],"max_seen":3}"#;
+    let cursor: DeduplicatingCursor<String, u32> = serde_json::from_str(json).unwrap();
+    assert_eq!(cursor.seen_count(), 3);
+    // Oldest entries ("a", "b") evicted, newest kept.
+    assert!(cursor.is_new(&"a".to_string()));
+    assert!(cursor.is_new(&"b".to_string()));
+    assert!(!cursor.is_new(&"c".to_string()));
+    assert!(!cursor.is_new(&"d".to_string()));
+    assert!(!cursor.is_new(&"e".to_string()));
+}
+
+#[test]
 fn dedup_cursor_mark_seen_is_idempotent() {
     let mut cursor: DeduplicatingCursor<u32, ()> = DeduplicatingCursor::default();
     cursor.mark_seen(1);

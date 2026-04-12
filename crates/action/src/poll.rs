@@ -417,10 +417,20 @@ where
             max_seen: usize,
         }
         let wire = Wire::<K, C>::deserialize(de)?;
-        let lookup = wire.seen.iter().cloned().collect();
+        let mut order = wire.seen;
+        let mut lookup: HashSet<K> = order.iter().cloned().collect();
+
+        // Enforce max_seen invariant — serialized data may have been
+        // produced with a higher cap or be manually edited.
+        while lookup.len() > wire.max_seen {
+            if let Some(old) = order.pop_front() {
+                lookup.remove(&old);
+            }
+        }
+
         Ok(Self {
             inner: wire.inner,
-            order: wire.seen,
+            order,
             lookup,
             max_seen: wire.max_seen,
         })
