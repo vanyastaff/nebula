@@ -115,20 +115,23 @@ impl PollAction for HabrRssPollAction {
 
         let items = channel.items();
         let mut new_events: Vec<HabrArticle> = Vec::new();
+        let cutoff = **cursor;
+        let mut newest_seen = **cursor;
 
         for item in items {
             let Some(pub_date) = parse_rfc2822(item.pub_date().unwrap_or("")) else {
                 continue;
             };
-            if let Some(c) = **cursor
+            if let Some(c) = cutoff
                 && pub_date <= c
             {
                 break;
             }
             new_events.push(build_habr_article(item));
-            **cursor = Some((*cursor).map_or(pub_date, |n| n.max(pub_date)));
+            newest_seen = Some(newest_seen.map_or(pub_date, |n| n.max(pub_date)));
         }
 
+        **cursor = newest_seen;
         Ok(new_events.into())
     }
 }
