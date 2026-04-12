@@ -81,15 +81,15 @@ impl PollAction for HabrRssPollAction {
     type Cursor = Option<chrono::DateTime<chrono::Utc>>;
     type Event = HabrArticle;
 
-    fn poll_interval(&self) -> Duration {
-        HABR_POLL_INTERVAL
+    fn poll_config(&self) -> PollConfig {
+        PollConfig::fixed(HABR_POLL_INTERVAL).with_timeout(Duration::from_secs(10))
     }
 
     async fn poll(
         &self,
-        cursor: &Self::Cursor,
+        cursor: &mut Self::Cursor,
         _ctx: &TriggerContext,
-    ) -> Result<PollCycle<Self::Cursor, Self::Event>, ActionError> {
+    ) -> Result<PollResult<Self::Event>, ActionError> {
         let response = reqwest::get(HABR_RSS_URL).await.map_err(|e| {
             if e.is_timeout() || e.is_connect() {
                 ActionError::retryable(format!("habr RSS fetch failed: {e}"))
@@ -115,7 +115,6 @@ impl PollAction for HabrRssPollAction {
 
         let items = channel.items();
         let mut new_events: Vec<HabrArticle> = Vec::new();
-        let mut newest_seen: Option<chrono::DateTime<chrono::Utc>> = *cursor;
 
         for item in items {
             let Some(pub_date) = parse_rfc2822(item.pub_date().unwrap_or("")) else {
@@ -127,10 +126,10 @@ impl PollAction for HabrRssPollAction {
                 break;
             }
             new_events.push(build_habr_article(item));
-            newest_seen = Some(newest_seen.map_or(pub_date, |n| n.max(pub_date)));
+            *cursor = Some(cursor.map_or(pub_date, |n| n.max(pub_date)));
         }
 
-        Ok(PollCycle::new(newest_seen, new_events))
+        Ok(new_events.into())
     }
 }
 

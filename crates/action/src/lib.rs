@@ -125,7 +125,9 @@ pub use output::{
     OutputOrigin, Overflow, PollTarget, Producer, ProducerKind, Progress, Resolution, StreamMode,
     StreamOutput, StreamState, Timing, TokenUsage,
 };
-pub use poll::{EmitFailurePolicy, POLL_INTERVAL_FLOOR, PollAction, PollCycle, PollTriggerAdapter};
+pub use poll::{
+    EmitFailurePolicy, POLL_INTERVAL_FLOOR, PollAction, PollConfig, PollResult, PollTriggerAdapter,
+};
 pub use port::{ConnectionFilter, DynamicPort, FlowKind, InputPort, OutputPort, SupportPort};
 pub use resource::{ResourceAction, ResourceActionAdapter, ResourceHandler};
 pub use result::{ActionResult, BranchKey, BreakReason, PortKey, WaitCondition};

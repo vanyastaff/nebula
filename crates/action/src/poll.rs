@@ -1,10 +1,9 @@
 //! [`PollAction`] trait and [`PollTriggerAdapter`] — periodic pull-based triggers.
 //!
-//! A poll trigger runs a cancel-safe loop driven by
-//! [`PollAction::poll_interval`]: sleep → poll → emit events. The
-//! adapter enforces a 100 ms interval floor, rate-limits warn-level
-//! logs per failure kind, and uses an `AtomicBool` + RAII `StartedGuard`
-//! to reject double-start without poisoning the sentinel.
+//! A poll trigger runs a cancel-safe loop driven by [`PollConfig`]:
+//! sleep → poll → emit events. The adapter owns all timing logic —
+//! backoff, jitter, timeout, interval floor — so the action author
+//! never writes a sleep loop.
 //!
 //! The cursor is in-memory only — across process restarts it resets to
 //! `Default::default()`. Cross-restart persistence requires runtime
@@ -13,7 +12,7 @@
 use std::{
     future::Future,
     sync::atomic::{AtomicBool, Ordering},
-    time::{Duration, Instant},
+    time::{Duration, Instant, SystemTime},
 };
 
 use async_trait::async_trait;
@@ -26,97 +25,179 @@ use crate::{
 
 /// Minimum poll interval enforced by [`PollTriggerAdapter`].
 ///
-/// Anything shorter is clamped to this floor and a warning is logged.
-/// Rationale: 10 Hz is the upper bound of legitimate poll-based
-/// integration with upstream APIs. Higher frequencies are either a
-/// configuration bug (e.g., `Duration::ZERO` from a missing field) or
-/// an abusive integration. Use a streaming trigger (post-v1) for real
-/// high-frequency event sources.
+/// The computed sleep duration (after backoff + jitter) is clamped to
+/// this floor. Rationale: 10 Hz is the upper bound of legitimate
+/// poll-based integration. Higher frequencies are a configuration bug
+/// or an abusive integration.
 pub const POLL_INTERVAL_FLOOR: Duration = Duration::from_millis(100);
 
-// ── PollCycle + EmitFailurePolicy ─────────────────────────────────────────
+// ── PollConfig ────────────────────────────────────────────────────────────
 
-/// Policy for handling event dispatch failures within a poll cycle.
+/// Declarative polling configuration.
 ///
-/// Controls what happens when individual events from a [`PollCycle`]
-/// fail to serialize or emit. The policy is set per cycle by the action,
-/// allowing different strategies for different data sources.
-#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+/// Returned by [`PollAction::poll_config`] once at `start()`. The
+/// adapter owns all timing logic — backoff on idle, jitter to prevent
+/// thundering herd, timeout, and dispatch failure policy.
+///
+/// # Defaults
+///
+/// `PollConfig::default()` gives a fixed 60 s interval, no backoff, no
+/// jitter, 30 s poll timeout, and `DropAndContinue` on emit failure.
+/// Use [`PollConfig::fixed`] for a drop-in replacement of the old
+/// `poll_interval()` pattern.
+#[derive(Debug, Clone)]
 #[non_exhaustive]
-pub enum EmitFailurePolicy {
-    /// Stop the trigger on the first dispatch failure. The cursor is
-    /// NOT advanced — the next `start()` replays from the same position.
-    /// This is the safe default.
-    #[default]
-    StopOnFailure,
-    /// Drop failed events and continue. The cursor IS advanced to the
-    /// returned position. Use for best-effort integrations where data
-    /// loss is acceptable.
-    DropAndContinue,
-    /// Retry the entire cycle up to `max_retries` times, then stop.
-    /// Each retry re-dispatches ALL events from this cycle (not just
-    /// the failed ones).
-    RetryThenStop {
-        /// Maximum retry count before the trigger stops.
-        max_retries: u32,
-    },
+pub struct PollConfig {
+    /// Interval used immediately after a non-empty poll result (or on
+    /// the first cycle). Backoff multiplies this value on consecutive
+    /// empty polls.
+    pub base_interval: Duration,
+
+    /// Upper bound — backoff never exceeds this.
+    pub max_interval: Duration,
+
+    /// Multiplier applied per consecutive empty poll. `1.0` = fixed
+    /// interval (no backoff).
+    pub backoff_factor: f64,
+
+    /// Random ±fraction (0.0–0.5) applied to the computed interval to
+    /// prevent thundering herd when many triggers share a schedule.
+    pub jitter: f64,
+
+    /// Maximum duration for a single `poll()` call. If exceeded, the
+    /// adapter treats it as a retryable error and moves to the next
+    /// cycle.
+    pub poll_timeout: Duration,
+
+    /// What happens when `emitter.emit()` or serialization fails for
+    /// events within a batch.
+    pub emit_failure: EmitFailurePolicy,
 }
 
-/// Result of a single poll cycle, returned by [`PollAction::poll`].
-///
-/// Decouples the cursor update from event dispatch. The adapter
-/// advances the cursor to [`next_cursor`](Self::next_cursor) only
-/// after all events have been dispatched successfully (or per the
-/// [`emit_failure_policy`](Self::emit_failure_policy)).
-///
-/// # Cursor checkpoint semantics
-///
-/// The action receives `&Self::Cursor` (immutable) and returns a new
-/// cursor value inside `PollCycle`. The adapter stores this new cursor
-/// only if dispatch succeeds. On failure with
-/// [`EmitFailurePolicy::StopOnFailure`], the cursor stays at the
-/// previous position, enabling safe replay on restart.
-#[derive(Debug)]
-pub struct PollCycle<C, E> {
-    /// Updated cursor position. Applied by the adapter after dispatch.
-    pub next_cursor: C,
-    /// Events to emit as workflow executions.
-    pub events: Vec<E>,
-    /// How the adapter handles dispatch failures for this cycle.
-    pub emit_failure_policy: EmitFailurePolicy,
-}
-
-impl<C, E> PollCycle<C, E> {
-    /// Create a cycle with events and default policy (`StopOnFailure`).
-    pub fn new(next_cursor: C, events: Vec<E>) -> Self {
+impl Default for PollConfig {
+    fn default() -> Self {
         Self {
-            next_cursor,
-            events,
-            emit_failure_policy: EmitFailurePolicy::default(),
+            base_interval: Duration::from_secs(60),
+            max_interval: Duration::from_secs(3600),
+            backoff_factor: 1.0,
+            jitter: 0.0,
+            poll_timeout: Duration::from_secs(30),
+            emit_failure: EmitFailurePolicy::default(),
+        }
+    }
+}
+
+impl PollConfig {
+    /// Fixed interval, no backoff. Drop-in replacement for the old
+    /// `poll_interval()` pattern.
+    #[must_use]
+    pub fn fixed(interval: Duration) -> Self {
+        Self {
+            base_interval: interval,
+            max_interval: interval,
+            ..Default::default()
         }
     }
 
-    /// Override the emit failure policy.
+    /// Exponential backoff on idle, reset on activity. Includes 10%
+    /// jitter by default.
     #[must_use]
-    pub fn with_policy(mut self, policy: EmitFailurePolicy) -> Self {
-        self.emit_failure_policy = policy;
+    pub fn with_backoff(base: Duration, max: Duration, factor: f64) -> Self {
+        Self {
+            base_interval: base,
+            max_interval: max,
+            backoff_factor: factor.max(1.0),
+            jitter: 0.1,
+            ..Default::default()
+        }
+    }
+
+    /// Set jitter fraction (clamped to 0.0–0.5).
+    #[must_use]
+    pub fn with_jitter(mut self, jitter: f64) -> Self {
+        self.jitter = jitter.clamp(0.0, 0.5);
+        self
+    }
+
+    /// Set poll timeout.
+    #[must_use]
+    pub fn with_timeout(mut self, timeout: Duration) -> Self {
+        self.poll_timeout = timeout;
+        self
+    }
+
+    /// Set emit failure policy.
+    #[must_use]
+    pub fn with_emit_failure(mut self, policy: EmitFailurePolicy) -> Self {
+        self.emit_failure = policy;
         self
     }
 }
 
-/// Minimum interval between repeated warn-level log lines for the same
-/// failure kind inside a [`PollTriggerAdapter`].
+// ── EmitFailurePolicy ─────────────────────────────────────────────────────
+
+/// What the adapter does when event dispatch (serialization or emit)
+/// fails for some events in a batch.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum EmitFailurePolicy {
+    /// Drop failed events, advance cursor. Best-effort — suitable for
+    /// most integrations where occasional event loss is acceptable.
+    #[default]
+    DropAndContinue,
+    /// Restore cursor to pre-poll position so the next cycle re-fetches
+    /// the same data. Use for payment/audit integrations where data
+    /// loss is unacceptable.
+    RetryBatch,
+    /// Stop the trigger entirely on the first dispatch failure. Use
+    /// when partial processing is worse than no processing.
+    StopTrigger,
+}
+
+// ── PollResult ────────────────────────────────────────────────────────────
+
+/// What [`PollAction::poll`] returns.
 ///
-/// A stuck trigger that fails every cycle would otherwise flood logs
-/// with one line per poll — at `POLL_INTERVAL_FLOOR` = 100 ms that is
-/// 600 lines/minute per trigger. 30 s cooldown keeps the first hit
-/// visible, suppresses the following flood, and re-emits after the
-/// window so recurring failures are still observable.
-const POLL_WARN_COOLDOWN: Duration = Duration::from_secs(30);
+/// Contains the events to emit and an optional per-cycle interval
+/// override (e.g., for `Retry-After` headers from rate-limited APIs).
+#[derive(Debug)]
+pub struct PollResult<E> {
+    /// Events to emit as workflow executions.
+    pub events: Vec<E>,
+    /// One-shot override for the next sleep interval. Useful when the
+    /// upstream API provides a `Retry-After` or backoff hint. `None`
+    /// means use the normal computed interval.
+    pub override_next: Option<Duration>,
+}
+
+impl<E> PollResult<E> {
+    /// Create a result with events and no interval override.
+    pub fn new(events: Vec<E>) -> Self {
+        Self {
+            events,
+            override_next: None,
+        }
+    }
+
+    /// Set a one-shot interval override for the next cycle.
+    #[must_use]
+    pub fn with_override_next(mut self, interval: Duration) -> Self {
+        self.override_next = Some(interval);
+        self
+    }
+}
+
+impl<E> From<Vec<E>> for PollResult<E> {
+    fn from(events: Vec<E>) -> Self {
+        Self::new(events)
+    }
+}
+
+// ── PollAction trait ──────────────────────────────────────────────────────
 
 /// Periodic polling trigger with in-memory cursor.
 ///
-/// Implement `poll_interval` and `poll`, then register via
+/// Implement `poll_config` and `poll`, then register via
 /// `registry.register_poll(action)`.
 ///
 /// The [`PollTriggerAdapter`] runs a blocking loop in `start()`:
@@ -129,17 +210,25 @@ const POLL_WARN_COOLDOWN: Duration = Duration::from_secs(30);
 /// # Example
 ///
 /// ```rust,ignore
-/// use nebula_action::poll::{PollAction, PollCycle};
+/// use nebula_action::poll::{PollAction, PollConfig, PollResult};
 ///
 /// struct RssPoll { feed_url: String }
 /// impl PollAction for RssPoll {
 ///     type Cursor = String;
 ///     type Event = serde_json::Value;
-///     fn poll_interval(&self) -> std::time::Duration { std::time::Duration::from_secs(300) }
-///     async fn poll(&self, cursor: &String, ctx: &TriggerContext)
-///         -> Result<PollCycle<String, serde_json::Value>, ActionError> {
-///         let (items, new_cursor) = fetch_rss(&self.feed_url, cursor).await?;
-///         Ok(PollCycle::new(new_cursor, items))
+///
+///     fn poll_config(&self) -> PollConfig {
+///         PollConfig::with_backoff(
+///             Duration::from_secs(60),
+///             Duration::from_secs(3600),
+///             2.0,
+///         ).with_timeout(Duration::from_secs(10))
+///     }
+///
+///     async fn poll(&self, cursor: &mut String, ctx: &TriggerContext)
+///         -> Result<PollResult<serde_json::Value>, ActionError> {
+///         let items = fetch_rss(&self.feed_url, cursor).await?;
+///         Ok(items.into())
 ///     }
 /// }
 /// ```
@@ -149,23 +238,16 @@ pub trait PollAction: Action + Send + Sync + 'static {
     /// Event type emitted per poll cycle (each becomes a workflow execution).
     type Event: Serialize + Send + Sync;
 
-    /// Interval between poll cycles.
-    fn poll_interval(&self) -> Duration;
-
-    /// Maximum duration for a single `poll()` call before the adapter
-    /// treats it as timed out (retryable error). Default: 30 seconds.
+    /// Polling configuration — interval, backoff, timeout, failure policy.
     ///
-    /// Override for slow upstream APIs or when the action performs
-    /// expensive pagination within a single poll cycle.
-    fn poll_timeout(&self) -> Duration {
-        Duration::from_secs(30)
-    }
+    /// Called once at `start()`. The adapter caches the result and owns
+    /// all timing decisions.
+    fn poll_config(&self) -> PollConfig;
 
-    /// Execute one poll cycle.
+    /// Execute one poll cycle. Mutate cursor to track position.
     ///
-    /// Receives the current cursor by shared reference. Return a
-    /// [`PollCycle`] containing the updated cursor and events to emit.
-    /// The adapter advances the cursor only after successful dispatch.
+    /// Return events to emit. Empty vec = nothing new (triggers backoff
+    /// if configured).
     ///
     /// # Errors
     ///
@@ -173,18 +255,17 @@ pub trait PollAction: Action + Send + Sync + 'static {
     /// [`ActionError::Fatal`] to stop the trigger permanently.
     fn poll(
         &self,
-        cursor: &Self::Cursor,
+        cursor: &mut Self::Cursor,
         ctx: &TriggerContext,
-    ) -> impl Future<Output = Result<PollCycle<Self::Cursor, Self::Event>, ActionError>> + Send;
+    ) -> impl Future<Output = Result<PollResult<Self::Event>, ActionError>> + Send;
 }
 
-/// Rate-limits adapter warn lines to avoid log flooding.
-///
-/// Holds the timestamp of the last emitted warning. `should_log()`
-/// returns `true` the first time it is called, then `false` until
-/// `POLL_WARN_COOLDOWN` has elapsed, then `true` again. Each failure
-/// kind (poll error, serialize error, emit error) gets its own
-/// throttle so they cannot starve each other.
+// ── Internals ─────────────────────────────────────────────────────────────
+
+/// Minimum interval between repeated warn-level log lines for the same
+/// failure kind inside a [`PollTriggerAdapter`].
+const POLL_WARN_COOLDOWN: Duration = Duration::from_secs(30);
+
 struct WarnThrottle {
     last_logged: parking_lot::Mutex<Option<Instant>>,
 }
@@ -196,8 +277,6 @@ impl WarnThrottle {
         }
     }
 
-    /// Returns `true` if the caller should emit a log line; updates
-    /// the last-logged timestamp on a yes. Safe to call concurrently.
     fn should_log(&self) -> bool {
         let mut guard = self.last_logged.lock();
         let now = Instant::now();
@@ -211,12 +290,6 @@ impl WarnThrottle {
     }
 }
 
-/// RAII guard that clears the `started` flag when `start()` exits.
-///
-/// Uses the "defused" pattern — a plain `Drop` impl with no `mem::forget`
-/// call — so the flag is correctly cleared on panic, cancellation, or
-/// normal return. Keeping the flag set across a crashed `start()` would
-/// permanently poison the adapter.
 struct StartedGuard<'a>(&'a AtomicBool);
 
 impl Drop for StartedGuard<'_> {
@@ -224,6 +297,31 @@ impl Drop for StartedGuard<'_> {
         self.0.store(false, Ordering::Release);
     }
 }
+
+/// Compute the sleep duration for the next cycle.
+fn compute_interval(config: &PollConfig, consecutive_empty: u32) -> Duration {
+    let base = config.base_interval.as_secs_f64();
+    let multiplier = config.backoff_factor.powi(consecutive_empty as i32);
+    let raw = base * multiplier;
+    let capped = raw.min(config.max_interval.as_secs_f64());
+    let with_jitter = apply_jitter(capped, config.jitter);
+    Duration::from_secs_f64(with_jitter).max(POLL_INTERVAL_FLOOR)
+}
+
+fn apply_jitter(secs: f64, jitter_fraction: f64) -> f64 {
+    if jitter_fraction <= 0.0 {
+        return secs;
+    }
+    let seed = SystemTime::now()
+        .duration_since(SystemTime::UNIX_EPOCH)
+        .unwrap_or_default()
+        .subsec_nanos();
+    let normalized = f64::from(seed) / f64::from(u32::MAX);
+    let jitter = (normalized * 2.0 - 1.0) * jitter_fraction;
+    (secs * (1.0 + jitter)).max(0.001)
+}
+
+// ── PollTriggerAdapter ────────────────────────────────────────────────────
 
 /// Wraps a [`PollAction`] as a [`dyn TriggerHandler`].
 ///
@@ -241,20 +339,22 @@ impl Drop for StartedGuard<'_> {
 /// `start()` exits — whether by cancellation, error, or normal return —
 /// so `stop() → start()` restart works.
 ///
-/// # Error handling
+/// # Backoff
 ///
-/// - `ActionError::Fatal` from `poll()` stops the loop immediately
-/// - `ActionError::Retryable` skips the current cycle, continues at next interval
-/// - Emit failures are silently dropped (transient emitter issues don't kill the trigger)
+/// Consecutive empty poll results (no events) increase the sleep
+/// interval by `backoff_factor` up to `max_interval`. A non-empty
+/// result resets to `base_interval`.
+///
+/// # Cursor checkpoint
+///
+/// With [`EmitFailurePolicy::RetryBatch`], the adapter clones the
+/// cursor before calling `poll()` and restores it if dispatch fails.
+/// The action re-fetches the same data on the next cycle.
 pub struct PollTriggerAdapter<A: PollAction> {
     action: A,
-    /// `true` while `start()` is running. Cleared by `StartedGuard` on exit.
     started: AtomicBool,
-    /// Rate-limits retryable-poll-error warnings.
     poll_warn: WarnThrottle,
-    /// Rate-limits event-serialization-failure warnings.
     serialize_warn: WarnThrottle,
-    /// Rate-limits emitter.emit failure warnings.
     emit_warn: WarnThrottle,
 }
 
@@ -271,12 +371,7 @@ impl<A: PollAction> PollTriggerAdapter<A> {
         }
     }
 
-    /// Serialize and emit a batch of events. Returns `true` if all
-    /// events dispatched successfully, `false` if any failed.
-    ///
-    /// The `policy` parameter controls failure handling:
-    /// - `DropAndContinue` — log and skip failed events, return `true`
-    /// - `StopOnFailure` / `RetryThenStop` — return `false` on first failure
+    /// Returns `true` if all events dispatched, `false` if any failed.
     async fn dispatch_events(
         &self,
         events: &[A::Event],
@@ -297,10 +392,10 @@ impl<A: PollAction> PollTriggerAdapter<A> {
                             &format!("poll trigger {action_key}: event serialization failed: {e}"),
                         );
                     }
-                    match policy {
-                        EmitFailurePolicy::DropAndContinue => continue,
-                        _ => return false,
+                    if policy == EmitFailurePolicy::DropAndContinue {
+                        continue;
                     }
+                    return false;
                 }
             };
             if let Err(e) = ctx.emitter.emit(payload).await {
@@ -310,10 +405,10 @@ impl<A: PollAction> PollTriggerAdapter<A> {
                         &format!("poll trigger {action_key}: emitter.emit failed: {e}"),
                     );
                 }
-                match policy {
-                    EmitFailurePolicy::DropAndContinue => continue,
-                    _ => return false,
+                if policy == EmitFailurePolicy::DropAndContinue {
+                    continue;
                 }
+                return false;
             }
         }
         true
@@ -331,28 +426,7 @@ where
         self.action.metadata()
     }
 
-    /// Run the poll loop until cancellation.
-    ///
-    /// # Cancel safety
-    ///
-    /// The internal `tokio::select!` races two futures:
-    ///
-    /// 1. `ctx.cancellation.cancelled()` — a `CancellationToken` future that is cancel-safe:
-    ///    dropping it mid-poll simply unregisters the waker.
-    /// 2. `tokio::time::sleep(interval)` — the `Sleep` future from tokio is cancel-safe: dropping
-    ///    it mid-wait cancels the timer with no observable effect on adjacent state.
-    ///
-    /// Neither branch holds a lock, a guard, or state that would
-    /// leak on drop. The only state mutated inside the poll branch
-    /// is `cursor`, which `PollAction::poll` owns and the loop
-    /// re-reads on the next iteration — if cancellation fires
-    /// between `sleep` completing and `poll` being awaited, the
-    /// cursor simply stays at its previous position and the loop
-    /// exits cleanly.
     async fn start(&self, ctx: &TriggerContext) -> Result<(), ActionError> {
-        // Atomically claim the "started" slot. If another call already
-        // owns it, fail rather than spawning a second poll loop against
-        // a shared cursor — that would double-emit every event.
         if self
             .started
             .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
@@ -362,100 +436,86 @@ where
                 "poll trigger already started; call stop() before start() again",
             ));
         }
-
-        // RAII: clear the flag on every exit path (cancellation, error,
-        // normal return) so restart works. Dropped at end of scope.
         let _guard = StartedGuard(&self.started);
 
+        let config = self.action.poll_config();
         let mut cursor = A::Cursor::default();
-        let raw_interval = self.action.poll_interval();
-        // Floor the interval at 100 ms. Anything shorter is a busy-loop bug
-        // or an abusive integration — Nebula is a workflow engine, not an
-        // HFT platform. Legitimate high-frequency polling should use a
-        // streaming trigger, not a poll trigger.
-        let interval = raw_interval.max(POLL_INTERVAL_FLOOR);
-        if interval != raw_interval {
-            // One-shot event per start() invocation — no throttle needed,
-            // `StartedGuard` ensures we only reach this branch once per
-            // start cycle. Routed through `ctx.logger` for the same reason
-            // as the three per-cycle error warnings below: tests assert
-            // over `SpyLogger`, production routes through the configured
-            // logger sink rather than the global tracing subscriber.
+        let mut consecutive_empty: u32 = 0;
+        let mut override_next: Option<Duration> = None;
+
+        if config.base_interval < POLL_INTERVAL_FLOOR {
             ctx.logger.log(
                 ActionLogLevel::Warn,
                 &format!(
-                    "poll trigger {}: poll_interval below floor; \
-                     requested {:?}, clamped to {:?} to prevent busy loop",
+                    "poll trigger {}: base_interval below floor; \
+                     requested {:?}, will be clamped to {:?}",
                     self.action.metadata().key,
-                    raw_interval,
-                    interval,
+                    config.base_interval,
+                    POLL_INTERVAL_FLOOR,
                 ),
             );
         }
 
         loop {
+            let interval = override_next
+                .take()
+                .map(|d| d.max(POLL_INTERVAL_FLOOR))
+                .unwrap_or_else(|| compute_interval(&config, consecutive_empty));
+
             tokio::select! {
                 () = ctx.cancellation.cancelled() => {
                     return Ok(());
                 }
                 () = tokio::time::sleep(interval) => {
+                    // Clone cursor for RetryBatch rollback.
+                    let saved_cursor = if config.emit_failure == EmitFailurePolicy::RetryBatch {
+                        Some(cursor.clone())
+                    } else {
+                        None
+                    };
+
                     let poll_result = match tokio::time::timeout(
-                        self.action.poll_timeout(),
-                        self.action.poll(&cursor, ctx),
+                        config.poll_timeout,
+                        self.action.poll(&mut cursor, ctx),
                     ).await {
                         Ok(result) => result,
                         Err(_elapsed) => {
                             Err(ActionError::retryable(format!(
                                 "poll trigger {}: poll() timed out after {:?}",
                                 self.action.metadata().key,
-                                self.action.poll_timeout(),
+                                config.poll_timeout,
                             )))
                         }
                     };
+
                     match poll_result {
-                        Ok(cycle) => {
-                            let policy = cycle.emit_failure_policy;
-                            if cycle.events.is_empty() {
-                                cursor = cycle.next_cursor;
+                        Ok(result) => {
+                            override_next = result.override_next;
+
+                            if result.events.is_empty() {
+                                consecutive_empty = consecutive_empty.saturating_add(1);
                             } else {
-                                match policy {
-                                    EmitFailurePolicy::StopOnFailure => {
-                                        if self.dispatch_events(&cycle.events, policy, ctx).await {
-                                            cursor = cycle.next_cursor;
-                                        } else {
-                                            return Err(ActionError::fatal(format!(
-                                                "poll trigger {}: dispatch failed with StopOnFailure policy",
-                                                self.action.metadata().key,
-                                            )));
+                                consecutive_empty = 0;
+                                let ok = self.dispatch_events(
+                                    &result.events,
+                                    config.emit_failure,
+                                    ctx,
+                                ).await;
+
+                                if !ok {
+                                    match config.emit_failure {
+                                        EmitFailurePolicy::DropAndContinue => {
+                                            // unreachable: dispatch returns true
                                         }
-                                    }
-                                    EmitFailurePolicy::DropAndContinue => {
-                                        self.dispatch_events(&cycle.events, policy, ctx).await;
-                                        cursor = cycle.next_cursor;
-                                    }
-                                    EmitFailurePolicy::RetryThenStop { max_retries } => {
-                                        let mut success = false;
-                                        for attempt in 0..=max_retries {
-                                            if self.dispatch_events(&cycle.events, policy, ctx).await {
-                                                success = true;
-                                                break;
-                                            }
-                                            if attempt < max_retries && self.poll_warn.should_log() {
-                                                ctx.logger.log(
-                                                    ActionLogLevel::Warn,
-                                                    &format!(
-                                                        "poll trigger {}: dispatch retry {}/{max_retries}",
-                                                        self.action.metadata().key,
-                                                        attempt + 1,
-                                                    ),
-                                                );
+                                        EmitFailurePolicy::RetryBatch => {
+                                            if let Some(saved) = saved_cursor {
+                                                cursor = saved;
                                             }
                                         }
-                                        if success {
-                                            cursor = cycle.next_cursor;
-                                        } else {
+                                        EmitFailurePolicy::StopTrigger => {
                                             return Err(ActionError::fatal(format!(
-                                                "poll trigger {}: dispatch failed after {max_retries} retries",
+                                                "poll trigger {}: dispatch failed, \
+                                                 stopping (StopTrigger policy)",
                                                 self.action.metadata().key,
                                             )));
                                         }
@@ -465,6 +525,11 @@ where
                         }
                         Err(e) if e.is_fatal() => return Err(e),
                         Err(e) => {
+                            // Retryable: restore cursor if RetryBatch.
+                            if let Some(saved) = saved_cursor {
+                                cursor = saved;
+                            }
+                            consecutive_empty = consecutive_empty.saturating_add(1);
                             if self.poll_warn.should_log() {
                                 let action_key = &self.action.metadata().key;
                                 ctx.logger.log(

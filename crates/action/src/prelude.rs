@@ -21,7 +21,7 @@ pub use crate::{
         ActionOutput, DeferredOutput, ExpectedOutput, Producer, ProducerKind, Progress, Resolution,
         StreamMode, StreamOutput,
     },
-    poll::{EmitFailurePolicy, PollAction, PollCycle, PollTriggerAdapter},
+    poll::{EmitFailurePolicy, PollAction, PollConfig, PollResult, PollTriggerAdapter},
     port::{ConnectionFilter, DynamicPort, FlowKind, InputPort, OutputPort, SupportPort},
     resource::{ResourceAction, ResourceActionAdapter},
     result::ActionResult,
