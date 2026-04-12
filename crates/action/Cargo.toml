@@ -31,6 +31,12 @@ parking_lot = { workspace = true }
 tokio = { workspace = true, features = ["time"] }
 tracing = { workspace = true }
 
+# HTTP types — WebhookRequest uses http::Method / http::HeaderMap
+# so the webhook domain speaks the canonical HTTP vocabulary instead
+# of its own Method/HeaderMap newtypes.
+http = { workspace = true }
+bytes = { workspace = true }
+
 # Crypto — webhook signature verification primitives (crates::webhook)
 hmac = { workspace = true }
 sha2 = { workspace = true }

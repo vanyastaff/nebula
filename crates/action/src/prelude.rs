@@ -34,12 +34,12 @@ pub use crate::{
         SpyEmitter, SpyLogger, SpyScheduler, StatefulTestHarness, TestContextBuilder,
         TriggerTestHarness,
     },
-    trigger::{IncomingEvent, TriggerAction, TriggerActionAdapter, TriggerEventOutcome},
+    trigger::{TriggerAction, TriggerActionAdapter, TriggerEvent, TriggerEventOutcome},
     validation::{
         ActionPackageValidationError, ActionPackageValidationErrors, validate_action_package,
     },
     webhook::{
-        SignatureOutcome, WebhookAction, WebhookTriggerAdapter, hmac_sha256_compute,
-        verify_hmac_sha256, verify_tag_constant_time,
+        SignatureOutcome, WebhookAction, WebhookRequest, WebhookTriggerAdapter,
+        hmac_sha256_compute, verify_hmac_sha256, verify_tag_constant_time,
     },
 };

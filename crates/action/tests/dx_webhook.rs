@@ -6,8 +6,9 @@ use std::sync::{
 };
 
 use nebula_action::{
-    Action, ActionDependencies, ActionError, ActionMetadata, IncomingEvent, TestContextBuilder,
-    TriggerContext, TriggerEventOutcome, TriggerHandler, WebhookAction, WebhookTriggerAdapter,
+    Action, ActionDependencies, ActionError, ActionMetadata, TestContextBuilder, TriggerContext,
+    TriggerEvent, TriggerEventOutcome, TriggerHandler, WebhookAction, WebhookRequest,
+    WebhookTriggerAdapter, webhook::webhook_request_for_test,
 };
 use serde::{Deserialize, Serialize};
 
@@ -42,15 +43,15 @@ impl WebhookAction for TestWebhook {
 
     async fn handle_request(
         &self,
-        event: &IncomingEvent,
+        request: &WebhookRequest,
         _state: &WebhookReg,
         _ctx: &TriggerContext,
     ) -> Result<TriggerEventOutcome, ActionError> {
-        let sig = event.header("X-Secret").unwrap_or_default();
+        let sig = request.header_str("X-Secret").unwrap_or_default();
         if sig != self.secret {
             return Ok(TriggerEventOutcome::skip());
         }
-        let payload = event.body_json::<serde_json::Value>().map_err(|e| {
+        let payload = request.body_json::<serde_json::Value>().map_err(|e| {
             ActionError::validation(
                 "body",
                 nebula_action::ValidationReason::MalformedJson,
@@ -89,6 +90,10 @@ fn make_webhook() -> (TestWebhook, Arc<AtomicBool>, Arc<AtomicBool>) {
     )
 }
 
+fn wrap_event(req: WebhookRequest) -> TriggerEvent {
+    TriggerEvent::new(None, req)
+}
+
 #[tokio::test]
 async fn webhook_adapter_start_stores_state() {
     let (webhook, activated, _) = make_webhook();
@@ -118,10 +123,9 @@ async fn webhook_adapter_handle_event_emits_on_valid_secret() {
 
     adapter.start(&ctx).await.unwrap();
 
-    let event =
-        IncomingEvent::try_new(br#"{"action":"push"}"#, &[("X-Secret", "mysecret")]).unwrap();
-
-    let outcome = adapter.handle_event(event, &ctx).await.unwrap();
+    let req =
+        webhook_request_for_test(br#"{"action":"push"}"#, &[("X-Secret", "mysecret")]).unwrap();
+    let outcome = adapter.handle_event(wrap_event(req), &ctx).await.unwrap();
     assert!(outcome.will_emit());
 }
 
@@ -133,9 +137,8 @@ async fn webhook_adapter_handle_event_skips_on_bad_secret() {
 
     adapter.start(&ctx).await.unwrap();
 
-    let event = IncomingEvent::try_new(br#"{"action":"push"}"#, &[("X-Secret", "wrong")]).unwrap();
-
-    let outcome = adapter.handle_event(event, &ctx).await.unwrap();
+    let req = webhook_request_for_test(br#"{"action":"push"}"#, &[("X-Secret", "wrong")]).unwrap();
+    let outcome = adapter.handle_event(wrap_event(req), &ctx).await.unwrap();
     assert!(!outcome.will_emit());
 }
 
@@ -152,10 +155,9 @@ async fn webhook_adapter_handle_event_before_start_fails() {
     let adapter = WebhookTriggerAdapter::new(webhook);
     let (ctx, _, _) = TestContextBuilder::minimal().build_trigger();
 
-    let event =
-        IncomingEvent::try_new(br#"{"action":"push"}"#, &[("X-Secret", "mysecret")]).unwrap();
-
-    let result = adapter.handle_event(event, &ctx).await;
+    let req =
+        webhook_request_for_test(br#"{"action":"push"}"#, &[("X-Secret", "mysecret")]).unwrap();
+    let result = adapter.handle_event(wrap_event(req), &ctx).await;
     assert!(result.is_err());
     nebula_action::assert_fatal!(result);
 }
@@ -187,7 +189,7 @@ impl WebhookAction for CountingWebhook {
 
     async fn handle_request(
         &self,
-        _event: &IncomingEvent,
+        _request: &WebhookRequest,
         _state: &WebhookReg,
         _ctx: &TriggerContext,
     ) -> Result<TriggerEventOutcome, ActionError> {
@@ -224,11 +226,6 @@ fn make_counting() -> (CountingWebhook, Arc<AtomicUsize>, Arc<AtomicUsize>) {
 
 #[tokio::test]
 async fn webhook_adapter_rejects_double_start() {
-    // Sequential double-start MUST fail with Fatal. The first on_activate
-    // runs; the second start() is rejected by the read-lock pre-check
-    // BEFORE on_activate runs (fast path). The first state MUST NOT be
-    // deactivated — silently overwriting would leak the external
-    // registration at GitHub/Slack.
     let (webhook, activate, deactivate) = make_counting();
     let adapter = WebhookTriggerAdapter::new(webhook);
     let (ctx, _, _) = TestContextBuilder::minimal().build_trigger();
@@ -242,29 +239,15 @@ async fn webhook_adapter_rejects_double_start() {
         .await
         .expect_err("second start must fail");
     assert!(err.is_fatal(), "double-start must be Fatal");
-    assert_eq!(
-        activate.load(Ordering::Relaxed),
-        1,
-        "sequential double-start must be rejected by the read-lock \
-         pre-check BEFORE on_activate runs again. The re-check under \
-         the write lock only matters for a concurrent race where two \
-         tasks both passed the pre-check."
-    );
-    assert_eq!(
-        deactivate.load(Ordering::Relaxed),
-        0,
-        "first state MUST NOT have been deactivated by the double-start"
-    );
+    assert_eq!(activate.load(Ordering::Relaxed), 1);
+    assert_eq!(deactivate.load(Ordering::Relaxed), 0);
 
-    // stop() cleans up the (still-live) first state.
     adapter.stop(&ctx).await.unwrap();
     assert_eq!(deactivate.load(Ordering::Relaxed), 1);
 }
 
 #[tokio::test]
 async fn webhook_adapter_start_stop_start_succeeds() {
-    // After a clean stop, start() must be accepted again — the state
-    // slot is empty so double-start rejection does not trip.
     let (webhook, activate, deactivate) = make_counting();
     let adapter = WebhookTriggerAdapter::new(webhook);
     let (ctx, _, _) = TestContextBuilder::minimal().build_trigger();

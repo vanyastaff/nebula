@@ -32,10 +32,10 @@ use std::{
 };
 
 use nebula_action::{
-    ActionError, ActionResult, BreakReason, IncomingEvent, PollAction, PollTriggerAdapter,
-    StatefulAction, StatefulActionAdapter, StatefulHandler, StatelessAction,
-    StatelessActionAdapter, StatelessHandler, TestContextBuilder, TriggerHandler, WebhookAction,
-    WebhookTriggerAdapter,
+    ActionError, ActionResult, BreakReason, PollAction, PollTriggerAdapter, StatefulAction,
+    StatefulActionAdapter, StatefulHandler, StatelessAction, StatelessActionAdapter,
+    StatelessHandler, TestContextBuilder, TriggerEvent, TriggerHandler, WebhookAction,
+    WebhookRequest, WebhookTriggerAdapter,
 };
 use serde::{Serialize, de::DeserializeOwned};
 use serde_json::Value;
@@ -251,10 +251,12 @@ impl TestRuntime {
         })
     }
 
-    /// Run a webhook trigger with a single fake incoming event.
+    /// Run a webhook trigger with a single fake incoming request.
     ///
-    /// Sequence: `start()` → `handle_event(event)` → `stop()`. Returns whatever
-    /// the spy emitter captured during `handle_event`.
+    /// Sequence: `start()` → `handle_event(event)` → `stop()`. The caller
+    /// builds a [`WebhookRequest`]; this harness wraps it in a
+    /// [`TriggerEvent`] envelope (with `id = None`) before dispatching.
+    /// Returns whatever the spy emitter captured during `handle_event`.
     ///
     /// # Errors
     ///
@@ -262,7 +264,7 @@ impl TestRuntime {
     pub async fn run_webhook<A>(
         self,
         action: A,
-        event: IncomingEvent,
+        request: WebhookRequest,
     ) -> Result<RunReport, ActionError>
     where
         A: WebhookAction + Send + Sync + 'static,
@@ -273,6 +275,7 @@ impl TestRuntime {
         let start = Instant::now();
 
         handler.start(&ctx).await?;
+        let event = TriggerEvent::new(None, request);
         let outcome = handler.handle_event(event, &ctx).await?;
         handler.stop(&ctx).await?;
 

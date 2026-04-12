@@ -3689,9 +3689,11 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "async-trait",
+ "bytes",
  "chrono",
  "hex",
  "hmac 0.13.0",
+ "http 1.4.0",
  "nebula-action-macros",
  "nebula-core",
  "nebula-credential",

@@ -1,39 +1,48 @@
-//! Base trigger trait, handler contract, and transport-agnostic event type.
+//! Base trigger trait, handler contract, and transport-agnostic event envelope.
 //!
 //! A trigger action is a workflow starter — it lives outside the execution
 //! graph and emits new workflow executions in response to external events
-//! (webhooks, cron, polling, etc.). The runtime drives the `start`/`stop`
-//! lifecycle and receives workflow inputs through the trigger context.
+//! (webhooks, cron, polling, queue messages, etc.). The runtime drives the
+//! `start`/`stop` lifecycle and receives workflow inputs through the trigger
+//! context.
 //!
 //! ## Shape peers
 //!
-//! Specialized trigger families live in their own files:
+//! Specialized trigger families live in their own files and carry their
+//! own transport-specific event types:
 //!
-//! - [`crate::webhook`] — push-based webhooks with HMAC signature verification
-//! - [`crate::poll`] — pull-based periodic polling with cursor state
+//! - [`crate::webhook`] — HTTP webhooks, with `WebhookRequest` carrying method, path, query,
+//!   headers, and body.
+//! - [`crate::poll`] — pull-based periodic polling with cursor state.
 //!
-//! Both register their adapters against the dyn-trait contract defined
-//! here ([`TriggerHandler`]).
+//! Both register their adapters against the dyn contract defined here
+//! ([`TriggerHandler`]).
 //!
-//! ## Transport-agnostic event
+//! ## Transport-agnostic envelope
 //!
-//! [`IncomingEvent`] is the type boundary between a transport (HTTP
-//! webhook server, message-queue consumer, etc.) and an action. Its
-//! fallible constructor enforces size and header-count limits at
-//! construction — see [`DEFAULT_MAX_BODY_BYTES`] and
-//! [`MAX_HEADER_COUNT`] for the defaults.
+//! [`TriggerEvent`] is the type boundary between a transport and an
+//! action **at the dyn layer**. It carries only what the runtime
+//! needs — dedup id, arrival timestamp, and an opaque `Any`-erased
+//! payload. The receiving handler downcasts the payload to its
+//! transport-specific event type (for example,
+//! [`crate::webhook::WebhookRequest`]).
+//!
+//! Transport-specific invariants (body size caps, header count limits,
+//! HTTP methods, queue offsets, partition ids) stay inside the family
+//! that owns them — they do NOT leak into the base trigger contract.
 
-use std::{collections::HashMap, fmt, future::Future};
+use std::{
+    any::{Any, TypeId},
+    fmt,
+    future::Future,
+    time::SystemTime,
+};
 
 use async_trait::async_trait;
-use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::{
-    action::Action,
-    context::TriggerContext,
-    error::{ActionError, ValidationReason},
-    metadata::ActionMetadata,
+    action::Action, context::TriggerContext, error::ActionError, metadata::ActionMetadata,
 };
 
 // ── Core trait ──────────────────────────────────────────────────────────────
@@ -54,174 +63,143 @@ pub trait TriggerAction: Action {
     fn stop(&self, ctx: &TriggerContext) -> impl Future<Output = Result<(), ActionError>> + Send;
 }
 
-// ── Incoming event ──────────────────────────────────────────────────────────
+// ── Transport-agnostic event envelope ───────────────────────────────────────
 
-/// Default maximum webhook body size accepted by [`IncomingEvent::try_new`]: 1 MiB.
+/// Transport-agnostic event envelope at the [`TriggerHandler`] boundary.
 ///
-/// Rationale: covers 99% of real-world webhook payloads. Reference
-/// providers:
-/// - Stripe: 256 KB per event
-/// - Slack: ~3 MB
-/// - GitHub push events: typically < 100 KB (release artifacts can hit 25 MB)
-/// - Twilio: 64 KB
+/// Carries ONLY what the runtime needs: an optional dedup id, the arrival
+/// timestamp at the transport, and an opaque payload. The concrete
+/// transport-specific event (a [`crate::webhook::WebhookRequest`], a
+/// future `SqsMessage`, etc.) lives inside `payload` as a type-erased
+/// `Box<dyn Any + Send + Sync>` — the receiving handler downcasts it to
+/// its own type via [`downcast`](Self::downcast).
 ///
-/// For providers that need more, use
-/// [`IncomingEvent::try_new_with_limits`] and pass an explicit cap —
-/// we want oversize intake to be a deliberate decision visible in
-/// code review, not an accident.
-pub const DEFAULT_MAX_BODY_BYTES: usize = 1024 * 1024;
+/// # Why type erasure at the dyn boundary
+///
+/// Earlier versions of this type were an HTTP request in disguise
+/// (`body: Vec<u8>`, `headers: HashMap<String, String>`, size/header
+/// caps baked into the constructor). Every non-HTTP transport would
+/// either have to grow this struct with optional fields or fake headers
+/// it does not have. Erasing the payload keeps the base layer honest:
+/// the runtime and the `TriggerHandler` trait do not encode the
+/// semantics of any particular transport, while transport families
+/// are free to define their own typed event with their own
+/// invariants and constructors.
+pub struct TriggerEvent {
+    /// Stable dedup key assigned by the transport (webhook delivery id,
+    /// SQS message id, Kafka offset). `None` if the transport cannot
+    /// supply one — dedup then becomes the action's responsibility.
+    id: Option<String>,
 
-/// Maximum header count accepted by [`IncomingEvent::try_new`].
-///
-/// RFC 9110 does not mandate a limit; most HTTP servers cap at 100.
-/// We allow 128 to leave headroom for providers that include many
-/// tracing/forwarding headers, while preventing an O(n²) CPU DoS if
-/// an action called `header()` in a loop against a huge attacker-
-/// supplied header set.
-pub const MAX_HEADER_COUNT: usize = 128;
+    /// Arrival time at the transport (not the action). Used by runtime
+    /// metrics and by dedup / replay-window logic that needs to know
+    /// when the event was observed, independent of processing latency.
+    received_at: SystemTime,
 
-/// External event delivered to a trigger (HTTP request, message, etc.).
-///
-/// Transport-agnostic: webhook layer constructs this from HTTP requests,
-/// message queue layer constructs it from queue messages. The event is
-/// a **type boundary** between transport and action — size and header
-/// limits are enforced here at construction via
-/// [`try_new`](Self::try_new) and [`try_new_with_limits`](Self::try_new_with_limits).
-///
-/// Header keys are normalized to ASCII lowercase at construction, so
-/// [`header`](Self::header) is O(1). Duplicate keys collapse to the
-/// last value (acceptable for webhook signature verification — nobody
-/// signs `Set-Cookie`; if you need multi-valued headers, parse them
-/// from the underlying transport before constructing the event).
-///
-/// `body` holds canonical raw bytes — use directly for HMAC signature
-/// verification (do NOT round-trip through `body_json()` for signing).
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct IncomingEvent {
-    /// Raw payload body. Canonical bytes for signature verification.
-    pub body: Vec<u8>,
-    /// Headers / metadata (HTTP headers, message attributes, etc.).
-    /// Keys are stored lowercased for O(1) case-insensitive lookup.
-    pub headers: HashMap<String, String>,
-    /// Source identifier (URL path, topic name, queue name).
-    #[serde(default)]
-    pub source: String,
+    /// The transport-specific payload, erased at the dyn boundary.
+    ///
+    /// The trait object is `Any + Send + Sync + 'static`. Adapters
+    /// downcast to their expected type; a mismatch is an engine-level
+    /// routing bug and surfaces as [`ActionError::Fatal`] at the
+    /// adapter.
+    payload: Box<dyn Any + Send + Sync>,
+
+    /// `TypeId` of the concrete payload, captured at construction so
+    /// the adapter can report a meaningful error when it receives an
+    /// event routed to the wrong handler family.
+    payload_type: TypeId,
+    /// Static type name of the payload for diagnostic messages only.
+    payload_type_name: &'static str,
 }
 
-impl IncomingEvent {
-    /// Construct an event with the [`DEFAULT_MAX_BODY_BYTES`] body cap
-    /// and [`MAX_HEADER_COUNT`] header count cap.
+impl TriggerEvent {
+    /// Build an envelope wrapping a transport-specific payload.
     ///
-    /// Header keys are normalized to ASCII lowercase at construction.
-    ///
-    /// For providers whose payloads exceed the defaults (e.g., GitHub
-    /// release events up to 25 MB), use
-    /// [`try_new_with_limits`](Self::try_new_with_limits).
-    ///
-    /// # Errors
-    ///
-    /// - [`ActionError::DataLimitExceeded`] if `body.len() > DEFAULT_MAX_BODY_BYTES`
-    /// - [`ActionError::Validation`] if `headers.len() > MAX_HEADER_COUNT`
-    pub fn try_new(body: &[u8], headers: &[(&str, &str)]) -> Result<Self, ActionError> {
-        Self::try_new_with_limits(body, headers, DEFAULT_MAX_BODY_BYTES, MAX_HEADER_COUNT)
-    }
-
-    /// Construct with explicit limits. Prefer [`try_new`](Self::try_new)
-    /// unless you know your provider exceeds the defaults.
-    ///
-    /// Header keys are normalized to ASCII lowercase at construction.
-    ///
-    /// # Errors
-    ///
-    /// - [`ActionError::DataLimitExceeded`] if `body.len() > max_body`
-    /// - [`ActionError::Validation`] if `headers.len() > max_headers`
-    pub fn try_new_with_limits(
-        body: &[u8],
-        headers: &[(&str, &str)],
-        max_body: usize,
-        max_headers: usize,
-    ) -> Result<Self, ActionError> {
-        if body.len() > max_body {
-            return Err(ActionError::DataLimitExceeded {
-                limit_bytes: max_body as u64,
-                actual_bytes: body.len() as u64,
-            });
-        }
-        if headers.len() > max_headers {
-            return Err(ActionError::validation(
-                "headers",
-                ValidationReason::OutOfRange,
-                Some(format!(
-                    "too many headers on incoming event: {} > {max_headers}",
-                    headers.len()
-                )),
-            ));
-        }
-
-        // Normalize keys to lowercase once so `header()` is O(1) and
-        // case-insensitive lookup does not allocate per call.
-        let mut map = HashMap::with_capacity(headers.len());
-        for (k, v) in headers {
-            map.insert(k.to_ascii_lowercase(), (*v).to_string());
-        }
-
-        Ok(Self {
-            body: body.to_vec(),
-            headers: map,
-            source: String::new(),
-        })
-    }
-
-    /// Set the source identifier.
+    /// `id` is the transport-supplied dedup key (pass `None` if the
+    /// transport does not provide one). `received_at` is set to the
+    /// current clock; use [`with_received_at`](Self::with_received_at)
+    /// to override when replaying historical events.
     #[must_use]
-    pub fn with_source(mut self, source: impl Into<String>) -> Self {
-        self.source = source.into();
+    pub fn new<T>(id: Option<String>, payload: T) -> Self
+    where
+        T: Any + Send + Sync + 'static,
+    {
+        Self {
+            id,
+            received_at: SystemTime::now(),
+            payload_type: TypeId::of::<T>(),
+            payload_type_name: std::any::type_name::<T>(),
+            payload: Box::new(payload),
+        }
+    }
+
+    /// Override the arrival timestamp. Useful for replay from persisted
+    /// events where the original arrival time should be preserved.
+    #[must_use]
+    pub fn with_received_at(mut self, at: SystemTime) -> Self {
+        self.received_at = at;
         self
     }
 
-    /// Get a header value by key (ASCII case-insensitive, O(1)).
-    ///
-    /// Keys are normalized to lowercase at construction — HTTP headers
-    /// are ASCII per RFC 9110. Fast path: when the caller already
-    /// passes a lowercase key, lookup is allocation-free. Slow path:
-    /// a single fold to lowercase for mixed-case callers, still O(1)
-    /// vs the previous O(n) linear scan with per-entry
-    /// `eq_ignore_ascii_case`.
-    ///
-    /// Duplicate keys collapse to the last value stored during
-    /// construction — callers needing multi-valued header semantics
-    /// must parse them from the underlying transport.
+    /// Transport-supplied dedup key, if any.
     #[must_use]
-    pub fn header(&self, key: &str) -> Option<&str> {
-        // Fast path: key is already all-lowercase (or has no ASCII
-        // letters). Avoid the allocation from `to_ascii_lowercase`.
-        if !key.bytes().any(|b| b.is_ascii_uppercase()) {
-            self.headers.get(key).map(String::as_str)
-        } else {
-            self.headers
-                .get(&key.to_ascii_lowercase())
-                .map(String::as_str)
-        }
+    pub fn id(&self) -> Option<&str> {
+        self.id.as_deref()
     }
 
-    /// Get the body as a UTF-8 string slice.
+    /// Arrival timestamp at the transport.
     #[must_use]
-    pub fn body_str(&self) -> Option<&str> {
-        std::str::from_utf8(&self.body).ok()
+    pub fn received_at(&self) -> SystemTime {
+        self.received_at
     }
 
-    /// Parse the body as JSON.
+    /// Static type name of the erased payload — diagnostics only.
+    #[must_use]
+    pub fn payload_type_name(&self) -> &'static str {
+        self.payload_type_name
+    }
+
+    /// Attempt to downcast the payload to the expected transport type.
     ///
-    /// The body is already bounded by the construction-time limit (see
-    /// [`try_new`](Self::try_new) / [`try_new_with_limits`](Self::try_new_with_limits)),
-    /// so this call inherits that DoS protection without an additional
-    /// byte-size guard.
+    /// Returns the event itself on failure so the caller can surface a
+    /// diagnostic pointing at [`payload_type_name`](Self::payload_type_name).
+    /// Adapters that receive a mismatched event should raise
+    /// [`ActionError::fatal`] — a mismatch is always an engine-level
+    /// routing bug, not a user-recoverable condition.
     ///
     /// # Errors
     ///
-    /// Returns `Err` if the body is not valid JSON.
-    pub fn body_json<T: serde::de::DeserializeOwned>(&self) -> Result<T, serde_json::Error> {
-        serde_json::from_slice(&self.body)
+    /// Returns `Err(self)` if the stored payload is not of type `T`.
+    pub fn downcast<T>(self) -> Result<(Option<String>, SystemTime, T), Self>
+    where
+        T: Any + Send + Sync + 'static,
+    {
+        if self.payload_type != TypeId::of::<T>() {
+            return Err(self);
+        }
+        match self.payload.downcast::<T>() {
+            Ok(boxed) => Ok((self.id, self.received_at, *boxed)),
+            Err(payload) => {
+                // Should be unreachable because `payload_type` matched.
+                Err(Self {
+                    id: self.id,
+                    received_at: self.received_at,
+                    payload,
+                    payload_type: self.payload_type,
+                    payload_type_name: self.payload_type_name,
+                })
+            }
+        }
+    }
+}
+
+impl fmt::Debug for TriggerEvent {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("TriggerEvent")
+            .field("id", &self.id)
+            .field("received_at", &self.received_at)
+            .field("payload_type", &self.payload_type_name)
+            .finish_non_exhaustive()
     }
 }
 
@@ -364,7 +342,8 @@ pub trait TriggerHandler: Send + Sync {
     /// Handle an external event pushed to this trigger.
     ///
     /// Only called when [`accepts_events`](Self::accepts_events) returns `true`.
-    /// Takes typed [`IncomingEvent`] directly — no serialization round-trip.
+    /// Takes a transport-agnostic [`TriggerEvent`]; the adapter downcasts
+    /// the erased payload to its family-specific type.
     ///
     /// # Errors
     ///
@@ -372,7 +351,7 @@ pub trait TriggerHandler: Send + Sync {
     /// external events should never have this called.
     async fn handle_event(
         &self,
-        event: IncomingEvent,
+        event: TriggerEvent,
         ctx: &TriggerContext,
     ) -> Result<TriggerEventOutcome, ActionError> {
         let _ = (event, ctx);
@@ -533,6 +512,55 @@ mod tests {
         assert_eq!(
             action.metadata().key,
             nebula_core::action_key!("test.trigger_action")
+        );
+    }
+
+    // ── TriggerEvent tests ────────────────────────────────────────────────────
+
+    #[derive(Debug, PartialEq)]
+    struct DummyPayload(&'static str);
+
+    #[derive(Debug)]
+    struct OtherPayload;
+
+    #[test]
+    fn trigger_event_downcast_success_yields_payload_id_and_timestamp() {
+        let now = SystemTime::now();
+        let event = TriggerEvent::new(Some("msg-1".to_string()), DummyPayload("hello"))
+            .with_received_at(now);
+
+        let (id, received_at, payload) = event.downcast::<DummyPayload>().unwrap();
+        assert_eq!(id.as_deref(), Some("msg-1"));
+        assert_eq!(received_at, now);
+        assert_eq!(payload, DummyPayload("hello"));
+    }
+
+    #[test]
+    fn trigger_event_downcast_mismatch_returns_event() {
+        let event = TriggerEvent::new(None, OtherPayload);
+        let type_name_before = event.payload_type_name();
+        let back = event.downcast::<DummyPayload>().unwrap_err();
+        // Error path preserves the envelope so the adapter can surface a
+        // diagnostic pointing at the actual payload type.
+        assert_eq!(back.payload_type_name(), type_name_before);
+    }
+
+    #[test]
+    fn trigger_event_id_accessor_reflects_constructor_arg() {
+        assert_eq!(
+            TriggerEvent::new(Some("x".to_string()), DummyPayload("a")).id(),
+            Some("x")
+        );
+        assert_eq!(TriggerEvent::new(None, DummyPayload("a")).id(), None);
+    }
+
+    #[test]
+    fn trigger_event_debug_shows_payload_type_name() {
+        let event = TriggerEvent::new(None, DummyPayload("x"));
+        let debug = format!("{event:?}");
+        assert!(
+            debug.contains("DummyPayload"),
+            "Debug impl should surface payload type: {debug}"
         );
     }
 

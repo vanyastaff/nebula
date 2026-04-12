@@ -27,8 +27,8 @@ pub use nebula_action::{
     port::OutputPort,
 };
 pub use nebula_action::{
-    IncomingEvent, PollTriggerAdapter, StatefulActionAdapter, StatelessActionAdapter,
-    TriggerContext, TriggerEventOutcome, WebhookTriggerAdapter,
+    PollTriggerAdapter, StatefulActionAdapter, StatelessActionAdapter, TriggerContext,
+    TriggerEvent, TriggerEventOutcome, WebhookRequest, WebhookTriggerAdapter,
     result::BreakReason,
     stateful::{BatchAction, BatchItemResult, PageResult, PaginatedAction, StatefulAction},
     webhook::WebhookAction,

@@ -16,8 +16,8 @@ use std::{collections::HashMap, mem::size_of, time::Duration};
 
 use nebula_action::{
     ActionContext, ActionError, ActionHandler, ActionMetadata, ActionOutput, ActionResult,
-    BinaryData, Cost, DeferredOutput, IncomingEvent, OutputEnvelope, OutputMeta, Progress,
-    StreamOutput, Timing, TokenUsage, TriggerEventOutcome,
+    BinaryData, Cost, DeferredOutput, OutputEnvelope, OutputMeta, Progress, StreamOutput, Timing,
+    TokenUsage, TriggerEventOutcome, WebhookRequest,
 };
 
 #[test]
@@ -47,7 +47,7 @@ fn top_level_type_sizes_are_stable() {
     assert_eq!(size_of::<ActionMetadata>(), 168);
     assert_eq!(size_of::<ActionError>(), 64);
     assert_eq!(size_of::<ActionHandler>(), 24);
-    assert_eq!(size_of::<IncomingEvent>(), 96);
+    assert_eq!(size_of::<WebhookRequest>(), 208);
     assert_eq!(size_of::<TriggerEventOutcome>(), 32);
 }
 
@@ -105,7 +105,7 @@ fn print_type_size_baseline() {
         ("ActionMetadata", size_of::<ActionMetadata>()),
         ("ActionError", size_of::<ActionError>()),
         ("ActionHandler", size_of::<ActionHandler>()),
-        ("IncomingEvent", size_of::<IncomingEvent>()),
+        ("WebhookRequest", size_of::<WebhookRequest>()),
         ("TriggerEventOutcome", size_of::<TriggerEventOutcome>()),
         ("BinaryData", size_of::<BinaryData>()),
         ("StreamOutput", size_of::<StreamOutput>()),

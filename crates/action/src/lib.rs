@@ -91,9 +91,10 @@ pub mod stateful;
 pub mod stateless;
 /// Test utilities for action authors.
 pub mod testing;
-/// Base [`TriggerAction`] trait, [`TriggerHandler`] dyn contract,
-/// [`IncomingEvent`], [`TriggerEventOutcome`], and [`TriggerActionAdapter`].
-/// Webhook and poll specializations live in [`crate::webhook`] and
+/// Base [`TriggerAction`] trait, [`TriggerHandler`] dyn contract, the
+/// transport-agnostic [`TriggerEvent`] envelope, [`TriggerEventOutcome`],
+/// and [`TriggerActionAdapter`]. Webhook and poll specializations (each
+/// with their own typed request type) live in [`crate::webhook`] and
 /// [`crate::poll`].
 pub mod trigger;
 /// Action package validation utilities.
@@ -141,13 +142,12 @@ pub use testing::{
     TriggerTestHarness,
 };
 pub use trigger::{
-    DEFAULT_MAX_BODY_BYTES, IncomingEvent, MAX_HEADER_COUNT, TriggerAction, TriggerActionAdapter,
-    TriggerEventOutcome, TriggerHandler,
+    TriggerAction, TriggerActionAdapter, TriggerEvent, TriggerEventOutcome, TriggerHandler,
 };
 pub use validation::{
     ActionPackageValidationError, ActionPackageValidationErrors, validate_action_package,
 };
 pub use webhook::{
-    SignatureOutcome, WebhookAction, WebhookTriggerAdapter, hmac_sha256_compute,
-    verify_hmac_sha256, verify_tag_constant_time,
+    DEFAULT_MAX_BODY_BYTES, MAX_HEADER_COUNT, SignatureOutcome, WebhookAction, WebhookRequest,
+    WebhookTriggerAdapter, hmac_sha256_compute, verify_hmac_sha256, verify_tag_constant_time,
 };
