@@ -592,9 +592,11 @@ impl<K: Hash + Eq + Clone, C> DeduplicatingCursor<K, C> {
 ///    `Default::default()`. Override to start from "now" instead of "beginning of time" (e.g.,
 ///    latest Gmail history ID, current Stripe event cursor).
 /// 2. Each cycle: adapter wraps cursor in [`PollCursor`], calls `poll()`.
-/// 3. On success: cursor advances to `poll_cursor.current`.
-/// 4. On `partial_error`: cursor rolls back to last checkpoint.
-/// 5. On `Err`: cursor rolls back to pre-poll position.
+/// 3. [`PollOutcome::Ready`]: cursor advances to final position.
+/// 4. [`PollOutcome::Partial`]: events dispatched, cursor rolls back to last
+///    [`PollCursor::checkpoint`].
+/// 5. [`PollOutcome::Idle`]: cursor kept as-is (may have advanced past empty pages).
+/// 6. `Err` from `poll()`: cursor rolls back to pre-poll position.
 ///
 /// # Example
 ///
@@ -672,10 +674,13 @@ pub trait PollAction: Action + Send + Sync + 'static {
     /// paginated APIs, call [`PollCursor::checkpoint`] after each
     /// successful page to enable incremental progress.
     ///
-    /// Return [`PollResult::partial`] if pagination fails mid-way —
-    /// the adapter dispatches the successful events and rolls back
-    /// to the last checkpoint. Return `Err` for total failure — the
-    /// adapter rolls back to the pre-poll cursor.
+    /// Return one of three outcomes via [`PollResult`]:
+    ///
+    /// - `Ok(events.into())` — [`PollOutcome::Ready`] (non-empty) or [`PollOutcome::Idle`] (empty).
+    ///   Adapter advances cursor.
+    /// - `Ok(PollResult::partial(events, error))` — events from successful pages + the error.
+    ///   Adapter dispatches events, rolls back to last checkpoint.
+    /// - `Err(e)` — total failure. Adapter rolls back to pre-poll.
     ///
     /// # Errors
     ///
@@ -768,6 +773,31 @@ fn action_key_seed(key: &nebula_core::ActionKey) -> u64 {
     h
 }
 
+/// Result of dispatching a batch of events.
+enum DispatchResult {
+    /// All events dispatched (or dropped under `DropAndContinue`).
+    Ok { emitted: usize, dropped: usize },
+    /// Hard failure — stopped at the first non-droppable error.
+    Failed,
+}
+
+impl DispatchResult {
+    fn is_ok(&self) -> bool {
+        matches!(self, Self::Ok { .. })
+    }
+
+    /// True if events were produced by the action but none reached
+    /// the emitter — total silent loss under `DropAndContinue`.
+    fn is_total_loss(&self) -> bool {
+        match self {
+            Self::Ok {
+                emitted, dropped, ..
+            } => *emitted == 0 && *dropped > 0,
+            _ => false,
+        }
+    }
+}
+
 /// Outcome of a resolved poll cycle — drives cursor and backoff in the
 /// main loop.
 struct CycleOutcome<C> {
@@ -857,13 +887,16 @@ impl<A: PollAction> PollTriggerAdapter<A> {
             }),
 
             PollOutcome::Ready { events } => {
-                let ok = self
+                let dr = self
                     .dispatch_events(&events, config.emit_failure, ctx)
                     .await;
-                if ok {
+                if dr.is_ok() {
                     Ok(CycleOutcome {
                         cursor: poll_cursor.into_current(),
-                        backoff: false,
+                        // Back off if emitter is totally broken (all
+                        // events dropped) — don't poll aggressively
+                        // into a broken emitter.
+                        backoff: dr.is_total_loss(),
                         override_next,
                     })
                 } else {
@@ -872,8 +905,22 @@ impl<A: PollAction> PollTriggerAdapter<A> {
             }
 
             PollOutcome::Partial { events, error } => {
+                // Fix #1: degenerate Partial with empty events —
+                // treat as total failure, rollback to checkpoint.
+                if events.is_empty() {
+                    poll_cursor.rollback();
+                    if error.is_fatal() {
+                        return Err(error);
+                    }
+                    return Ok(CycleOutcome {
+                        cursor: poll_cursor.into_current(),
+                        backoff: true,
+                        override_next,
+                    });
+                }
+
                 let event_count = events.len();
-                let dispatch_ok = self
+                let dr = self
                     .dispatch_events(&events, config.emit_failure, ctx)
                     .await;
 
@@ -882,14 +929,12 @@ impl<A: PollAction> PollTriggerAdapter<A> {
                 // the last safe position.
                 poll_cursor.rollback();
 
-                if !dispatch_ok {
+                if !dr.is_ok() {
                     match config.emit_failure {
                         EmitFailurePolicy::DropAndContinue => {
                             // Lost events accepted, cursor at checkpoint.
                         }
                         EmitFailurePolicy::RetryBatch => {
-                            // Full rollback to pre-poll — re-fetch
-                            // everything including already-dispatched.
                             return Ok(CycleOutcome {
                                 cursor: pre_poll,
                                 backoff: false,
@@ -943,11 +988,16 @@ impl<A: PollAction> PollTriggerAdapter<A> {
         override_next: Option<Duration>,
     ) -> Result<CycleOutcome<A::Cursor>, ActionError> {
         match config.emit_failure {
-            EmitFailurePolicy::DropAndContinue => Ok(CycleOutcome {
-                cursor: poll_cursor.into_current(),
-                backoff: false,
-                override_next,
-            }),
+            EmitFailurePolicy::DropAndContinue => {
+                // Unreachable: DropAndContinue never triggers
+                // dispatch failure (dispatch_events returns Ok).
+                // Defensive: advance cursor, backoff.
+                Ok(CycleOutcome {
+                    cursor: poll_cursor.into_current(),
+                    backoff: true,
+                    override_next,
+                })
+            }
             EmitFailurePolicy::RetryBatch => Ok(CycleOutcome {
                 cursor: pre_poll,
                 backoff: false,
@@ -960,17 +1010,18 @@ impl<A: PollAction> PollTriggerAdapter<A> {
         }
     }
 
-    /// Returns `true` if all events dispatched, `false` if any failed.
     async fn dispatch_events(
         &self,
         events: &[A::Event],
         policy: EmitFailurePolicy,
         ctx: &TriggerContext,
-    ) -> bool
+    ) -> DispatchResult
     where
         A::Event: Send + Sync,
     {
         let action_key = &self.action.metadata().key;
+        let mut emitted: usize = 0;
+        let mut dropped: usize = 0;
         for event in events {
             let payload = match serde_json::to_value(event) {
                 Ok(v) => v,
@@ -982,9 +1033,10 @@ impl<A: PollAction> PollTriggerAdapter<A> {
                         );
                     }
                     if policy == EmitFailurePolicy::DropAndContinue {
+                        dropped += 1;
                         continue;
                     }
-                    return false;
+                    return DispatchResult::Failed;
                 }
             };
             if let Err(e) = ctx.emitter.emit(payload).await {
@@ -995,12 +1047,14 @@ impl<A: PollAction> PollTriggerAdapter<A> {
                     );
                 }
                 if policy == EmitFailurePolicy::DropAndContinue {
+                    dropped += 1;
                     continue;
                 }
-                return false;
+                return DispatchResult::Failed;
             }
+            emitted += 1;
         }
-        true
+        DispatchResult::Ok { emitted, dropped }
     }
 }
 
