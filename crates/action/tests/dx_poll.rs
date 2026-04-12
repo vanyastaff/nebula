@@ -307,3 +307,137 @@ fn poll_result_with_override() {
         PollResult::new(vec![1]).with_override_next(Duration::from_secs(60));
     assert_eq!(result.override_next, Some(Duration::from_secs(60)));
 }
+
+// ── DeduplicatingCursor ───────────────────────────────────────────────────
+
+use nebula_action::DeduplicatingCursor;
+
+#[test]
+fn dedup_cursor_filters_seen_keys() {
+    let mut cursor: DeduplicatingCursor<String, u64> = DeduplicatingCursor::default();
+
+    let items = vec![("a", 1), ("b", 2), ("c", 3)];
+    let new = cursor.filter_new(items, |item| item.0.to_string());
+    assert_eq!(new.len(), 3);
+
+    let items2 = vec![("b", 2), ("c", 3), ("d", 4)];
+    let new2 = cursor.filter_new(items2, |item| item.0.to_string());
+    assert_eq!(new2.len(), 1);
+    assert_eq!(new2[0].0, "d");
+}
+
+#[test]
+fn dedup_cursor_evicts_oldest_at_cap() {
+    let mut cursor: DeduplicatingCursor<u32, ()> = DeduplicatingCursor::new(()).with_max_seen(3);
+
+    cursor.mark_seen(1);
+    cursor.mark_seen(2);
+    cursor.mark_seen(3);
+    assert_eq!(cursor.seen_count(), 3);
+
+    cursor.mark_seen(4);
+    assert_eq!(cursor.seen_count(), 3);
+    // 1 was evicted (oldest)
+    assert!(cursor.is_new(&1));
+    assert!(!cursor.is_new(&4));
+}
+
+#[test]
+fn dedup_cursor_serde_roundtrip() {
+    let mut cursor: DeduplicatingCursor<String, u64> = DeduplicatingCursor::new(42);
+    cursor.mark_seen("msg-1".to_string());
+    cursor.mark_seen("msg-2".to_string());
+
+    let json = serde_json::to_string(&cursor).unwrap();
+    let restored: DeduplicatingCursor<String, u64> = serde_json::from_str(&json).unwrap();
+
+    assert_eq!(restored.inner, 42);
+    assert!(!restored.is_new(&"msg-1".to_string()));
+    assert!(!restored.is_new(&"msg-2".to_string()));
+    assert!(restored.is_new(&"msg-3".to_string()));
+}
+
+#[test]
+fn dedup_cursor_clear_seen_preserves_inner() {
+    let mut cursor: DeduplicatingCursor<u32, String> =
+        DeduplicatingCursor::new("offset-100".to_string());
+    cursor.mark_seen(1);
+    cursor.mark_seen(2);
+    assert_eq!(cursor.seen_count(), 2);
+
+    cursor.clear_seen();
+    assert_eq!(cursor.seen_count(), 0);
+    assert_eq!(cursor.inner, "offset-100");
+}
+
+#[test]
+fn dedup_cursor_mark_seen_is_idempotent() {
+    let mut cursor: DeduplicatingCursor<u32, ()> = DeduplicatingCursor::default();
+    cursor.mark_seen(1);
+    cursor.mark_seen(1);
+    cursor.mark_seen(1);
+    assert_eq!(cursor.seen_count(), 1);
+}
+
+// ── Validate ──────────────────────────────────────────────────────────────
+
+struct FailingValidator {
+    meta: ActionMetadata,
+}
+
+impl ActionDependencies for FailingValidator {}
+impl Action for FailingValidator {
+    fn metadata(&self) -> &ActionMetadata {
+        &self.meta
+    }
+}
+
+impl PollAction for FailingValidator {
+    type Cursor = u32;
+    type Event = serde_json::Value;
+
+    fn poll_config(&self) -> PollConfig {
+        PollConfig::fixed(Duration::from_secs(60))
+    }
+
+    async fn validate(&self, _ctx: &TriggerContext) -> Result<(), ActionError> {
+        Err(ActionError::fatal("bad credentials"))
+    }
+
+    async fn poll(
+        &self,
+        _cursor: &mut u32,
+        _ctx: &TriggerContext,
+    ) -> Result<PollResult<serde_json::Value>, ActionError> {
+        unreachable!("poll should never be called if validate fails")
+    }
+}
+
+#[tokio::test]
+async fn poll_adapter_validate_failure_prevents_start() {
+    let validator = FailingValidator {
+        meta: ActionMetadata::new(
+            nebula_core::action_key!("test.validate.fail"),
+            "Failing Validator",
+            "validate() returns Err",
+        ),
+    };
+    let adapter = PollTriggerAdapter::new(validator);
+    let (ctx, _, _) = TestContextBuilder::minimal().build_trigger();
+
+    let err = adapter.start(&ctx).await.expect_err("start must fail");
+    assert!(err.is_fatal());
+    assert!(err.to_string().contains("bad credentials"));
+
+    // StartedGuard cleared — can retry after fixing config.
+    let validator2 = FailingValidator {
+        meta: ActionMetadata::new(
+            nebula_core::action_key!("test.validate.fail2"),
+            "Failing Validator 2",
+            "validate() returns Err",
+        ),
+    };
+    let adapter2 = PollTriggerAdapter::new(validator2);
+    let err2 = adapter2.start(&ctx).await.expect_err("still fails");
+    assert!(err2.is_fatal());
+}

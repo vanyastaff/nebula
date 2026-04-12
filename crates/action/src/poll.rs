@@ -10,13 +10,15 @@
 //! storage integration (post-v1).
 
 use std::{
+    collections::{HashSet, VecDeque},
     future::Future,
+    hash::Hash,
     sync::atomic::{AtomicBool, Ordering},
     time::{Duration, Instant, SystemTime},
 };
 
 use async_trait::async_trait;
-use serde::{Serialize, de::DeserializeOwned};
+use serde::{Deserialize, Serialize, de::DeserializeOwned};
 
 use crate::{
     action::Action, capability::ActionLogLevel, context::TriggerContext, error::ActionError,
@@ -202,6 +204,189 @@ impl<E> From<Vec<E>> for PollResult<E> {
     }
 }
 
+// ── DeduplicatingCursor ───────────────────────────────────────────────────
+
+const DEFAULT_MAX_SEEN: usize = 1_000;
+
+/// Cursor wrapper that tracks seen event keys to prevent duplicates
+/// caused by timestamp granularity.
+///
+/// Many upstream APIs return timestamps rounded to the second or
+/// minute. Events at the boundary between two poll cycles can appear
+/// in both. `DeduplicatingCursor` maintains a bounded set of seen
+/// keys alongside the inner cursor so the action can filter them out.
+///
+/// Uses `HashSet` for O(1) membership checks and `VecDeque` for FIFO
+/// eviction order. The `key_fn` passed to [`filter_new`](Self::filter_new)
+/// is called once per item regardless of whether it's new or seen.
+///
+/// # Example
+///
+/// ```rust,ignore
+/// use nebula_action::poll::DeduplicatingCursor;
+///
+/// type Cursor = DeduplicatingCursor<String, chrono::DateTime<chrono::Utc>>;
+///
+/// async fn poll(&self, cursor: &mut Cursor, ctx: &TriggerContext)
+///     -> Result<PollResult<Event>, ActionError>
+/// {
+///     let raw_events = fetch_since(cursor.inner).await?;
+///     let new_events = cursor.filter_new(raw_events, |e| e.id.clone());
+///     if let Some(last) = new_events.last() {
+///         cursor.inner = last.timestamp;
+///     }
+///     Ok(new_events.into())
+/// }
+/// ```
+///
+/// # State growth
+///
+/// The seen set is capped at `max_seen` (default 1,000). When the
+/// cap is exceeded, the oldest entries are evicted (FIFO). Downstream
+/// consumers should be idempotent as a defense-in-depth measure.
+///
+/// The entire cursor (including the seen set) is cloned once per poll
+/// cycle for rollback safety. Keep `K` lightweight — prefer `String`
+/// or integer IDs over large composite keys. For integrations that
+/// need > 10k dedup keys, consider a custom cursor with
+/// application-specific eviction.
+#[derive(Debug, Clone)]
+pub struct DeduplicatingCursor<K, C> {
+    /// The inner cursor (e.g., timestamp, offset, revision ID).
+    pub inner: C,
+    /// Insertion-ordered keys for FIFO eviction. O(1) pop_front.
+    order: VecDeque<K>,
+    /// O(1) membership lookup. Rebuilt from `order` on deserialization.
+    lookup: HashSet<K>,
+    max_seen: usize,
+}
+
+fn default_max_seen() -> usize {
+    DEFAULT_MAX_SEEN
+}
+
+// Custom Serialize: write `order` as `seen` (skip the HashSet).
+impl<K: Serialize, C: Serialize> Serialize for DeduplicatingCursor<K, C> {
+    fn serialize<S: serde::Serializer>(&self, ser: S) -> Result<S::Ok, S::Error> {
+        use serde::ser::SerializeStruct;
+        let mut s = ser.serialize_struct("DeduplicatingCursor", 3)?;
+        s.serialize_field("inner", &self.inner)?;
+        s.serialize_field("seen", &self.order)?;
+        s.serialize_field("max_seen", &self.max_seen)?;
+        s.end()
+    }
+}
+
+// Custom Deserialize: read `seen` into VecDeque, rebuild HashSet.
+impl<'de, K, C> Deserialize<'de> for DeduplicatingCursor<K, C>
+where
+    K: Deserialize<'de> + Hash + Eq + Clone,
+    C: Deserialize<'de>,
+{
+    fn deserialize<D: serde::Deserializer<'de>>(de: D) -> Result<Self, D::Error> {
+        #[derive(Deserialize)]
+        struct Wire<K, C> {
+            inner: C,
+            seen: VecDeque<K>,
+            #[serde(default = "default_max_seen")]
+            max_seen: usize,
+        }
+        let wire = Wire::<K, C>::deserialize(de)?;
+        let lookup = wire.seen.iter().cloned().collect();
+        Ok(Self {
+            inner: wire.inner,
+            order: wire.seen,
+            lookup,
+            max_seen: wire.max_seen,
+        })
+    }
+}
+
+impl<K: Hash + Eq + Clone, C: Default> Default for DeduplicatingCursor<K, C> {
+    fn default() -> Self {
+        Self {
+            inner: C::default(),
+            order: VecDeque::new(),
+            lookup: HashSet::new(),
+            max_seen: DEFAULT_MAX_SEEN,
+        }
+    }
+}
+
+impl<K: Hash + Eq + Clone, C> DeduplicatingCursor<K, C> {
+    /// Create with a custom inner cursor and default cap (1,000).
+    pub fn new(inner: C) -> Self {
+        Self {
+            inner,
+            order: VecDeque::new(),
+            lookup: HashSet::new(),
+            max_seen: DEFAULT_MAX_SEEN,
+        }
+    }
+
+    /// Set the maximum number of seen keys to retain.
+    #[must_use]
+    pub fn with_max_seen(mut self, max: usize) -> Self {
+        self.max_seen = max.max(1);
+        self
+    }
+
+    /// Check whether a key has NOT been seen before.
+    pub fn is_new(&self, key: &K) -> bool {
+        !self.lookup.contains(key)
+    }
+
+    /// Mark a key as seen. No-op if already present.
+    pub fn mark_seen(&mut self, key: K) {
+        self.try_insert(key);
+    }
+
+    /// Filter a batch of items, keeping only those with unseen keys.
+    /// Seen keys are recorded automatically. This is the primary API
+    /// for poll actions — call it once per cycle on the raw fetch
+    /// results.
+    ///
+    /// `key_fn` is called once per item (including already-seen items).
+    pub fn filter_new<T>(&mut self, items: Vec<T>, key_fn: impl Fn(&T) -> K) -> Vec<T> {
+        let mut result = Vec::new();
+        for item in items {
+            let key = key_fn(&item);
+            if self.try_insert(key) {
+                result.push(item);
+            }
+        }
+        result
+    }
+
+    /// Number of currently tracked keys.
+    pub fn seen_count(&self) -> usize {
+        self.lookup.len()
+    }
+
+    /// Clear all tracked keys without resetting the inner cursor.
+    pub fn clear_seen(&mut self) {
+        self.order.clear();
+        self.lookup.clear();
+    }
+
+    /// Insert a key if not present. Returns `true` if the key was new.
+    /// Evicts the oldest entry if the cap is exceeded.
+    fn try_insert(&mut self, key: K) -> bool {
+        if self.lookup.contains(&key) {
+            return false;
+        }
+        self.order.push_back(key.clone());
+        self.lookup.insert(key);
+        // Evict oldest (FIFO) if over cap — O(1) per eviction.
+        while self.lookup.len() > self.max_seen {
+            if let Some(old) = self.order.pop_front() {
+                self.lookup.remove(&old);
+            }
+        }
+        true
+    }
+}
+
 // ── PollAction trait ──────────────────────────────────────────────────────
 
 /// Periodic polling trigger with in-memory cursor.
@@ -254,6 +439,21 @@ pub trait PollAction: Action + Send + Sync + 'static {
     /// Called once at `start()`. The adapter caches the result and owns
     /// all timing decisions.
     fn poll_config(&self) -> PollConfig;
+
+    /// Validate configuration and connectivity before the poll loop.
+    ///
+    /// Called once by the adapter at the beginning of `start()`, before
+    /// the first sleep/poll cycle. Return `Err` to abort activation
+    /// (e.g., bad credentials, unreachable endpoint). The error
+    /// propagates from `start()` as a fatal failure.
+    ///
+    /// Default: no-op (always succeeds).
+    fn validate(
+        &self,
+        _ctx: &TriggerContext,
+    ) -> impl Future<Output = Result<(), ActionError>> + Send {
+        async { Ok(()) }
+    }
 
     /// Execute one poll cycle. Mutate cursor to track position.
     ///
@@ -476,6 +676,8 @@ where
             ));
         }
         let _guard = StartedGuard(&self.started);
+
+        self.action.validate(ctx).await?;
 
         let config = self.action.poll_config();
         let identity_seed = action_key_seed(&self.action.metadata().key);

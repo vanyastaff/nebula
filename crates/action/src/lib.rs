@@ -126,7 +126,8 @@ pub use output::{
     StreamOutput, StreamState, Timing, TokenUsage,
 };
 pub use poll::{
-    EmitFailurePolicy, POLL_INTERVAL_FLOOR, PollAction, PollConfig, PollResult, PollTriggerAdapter,
+    DeduplicatingCursor, EmitFailurePolicy, POLL_INTERVAL_FLOOR, PollAction, PollConfig,
+    PollResult, PollTriggerAdapter,
 };
 pub use port::{ConnectionFilter, DynamicPort, FlowKind, InputPort, OutputPort, SupportPort};
 pub use resource::{ResourceAction, ResourceActionAdapter, ResourceHandler};
