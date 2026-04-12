@@ -6,14 +6,21 @@
 //! cargo run -p nebula-examples --bin poll_habr
 //! ```
 //!
-//! The action polls https://habr.com/ru/rss/articles/ every 500ms. Cursor is
-//! the newest `pub_date` seen in the previous cycle (parsed as RFC 2822 via
-//! chrono). First cycle emits every item in the feed; subsequent cycles only
-//! emit items with strictly newer `pub_date`.
+//! Demonstrates:
+//! - **`DeduplicatingCursor`** for timestamp-boundary dedup (RSS items with identical `pub_date`
+//!   won't duplicate across poll cycles)
+//! - **`PollConfig::with_backoff`** — exponential backoff on idle, reset on new articles
+//! - **`validate()`** — pre-flight connectivity check before the loop
 //!
-//! `main` drives the run through `TestRuntime::run_poll` with a 2.5-second
-//! window — the runtime spawns `start()`, sleeps, cancels, and returns
-//! everything the spy emitter captured.
+//! The action polls <https://habr.com/ru/rss/articles/> every 500 ms
+//! (demo-fast; production would use 5–60 min). Cursor is a
+//! `DeduplicatingCursor<String, Option<DateTime>>` — inner cursor
+//! tracks the newest `pub_date`, seen-set tracks article links for
+//! boundary dedup. First cycle emits every item in the feed;
+//! subsequent cycles only emit items with strictly newer `pub_date`.
+//!
+//! `main` drives the run through `TestRuntime::run_poll` with a
+//! 2.5-second window.
 
 use std::time::Duration;
 
@@ -22,7 +29,8 @@ use nebula_sdk::prelude::*;
 // ── Action definition ──────────────────────────────────────────────────────
 
 const HABR_RSS_URL: &str = "https://habr.com/ru/rss/articles/";
-const HABR_POLL_INTERVAL: Duration = Duration::from_millis(500);
+
+type HabrCursor = DeduplicatingCursor<String, Option<chrono::DateTime<chrono::Utc>>>;
 
 struct HabrRssPollAction {
     meta: ActionMetadata,
@@ -78,11 +86,29 @@ fn parse_rfc2822(raw: &str) -> Option<chrono::DateTime<chrono::Utc>> {
 }
 
 impl PollAction for HabrRssPollAction {
-    type Cursor = Option<chrono::DateTime<chrono::Utc>>;
+    type Cursor = HabrCursor;
     type Event = HabrArticle;
 
     fn poll_config(&self) -> PollConfig {
-        PollConfig::fixed(HABR_POLL_INTERVAL).with_timeout(Duration::from_secs(10))
+        PollConfig::with_backoff(
+            Duration::from_millis(500), // fast for demo; production: 5–60 min
+            Duration::from_secs(5),     // cap for demo
+            1.5,
+        )
+        .with_timeout(Duration::from_secs(10))
+    }
+
+    async fn validate(&self, _ctx: &TriggerContext) -> Result<(), ActionError> {
+        let resp = reqwest::get(HABR_RSS_URL)
+            .await
+            .map_err(|e| ActionError::fatal(format!("habr RSS unreachable: {e}")))?;
+        if !resp.status().is_success() {
+            return Err(ActionError::fatal(format!(
+                "habr RSS returned HTTP {}",
+                resp.status()
+            )));
+        }
+        Ok(())
     }
 
     async fn poll(
@@ -113,25 +139,29 @@ impl PollAction for HabrRssPollAction {
         let channel = rss::Channel::read_from(&body[..])
             .map_err(|e| ActionError::fatal(format!("habr RSS parse failed: {e}")))?;
 
-        let items = channel.items();
-        let mut new_events: Vec<HabrArticle> = Vec::new();
-        let cutoff = **cursor;
-        let mut newest_seen = **cursor;
+        // Filter by timestamp cutoff — only items newer than inner cursor.
+        let cutoff = cursor.inner;
+        let mut candidates: Vec<HabrArticle> = Vec::new();
+        let mut newest_seen = cursor.inner;
 
-        for item in items {
+        for item in channel.items() {
             let Some(pub_date) = parse_rfc2822(item.pub_date().unwrap_or("")) else {
                 continue;
             };
             if let Some(c) = cutoff
                 && pub_date <= c
             {
-                break;
+                break; // RSS is reverse-chronological
             }
-            new_events.push(build_habr_article(item));
+            candidates.push(build_habr_article(item));
             newest_seen = Some(newest_seen.map_or(pub_date, |n| n.max(pub_date)));
         }
 
-        **cursor = newest_seen;
+        // DeduplicatingCursor handles the timestamp-boundary overlap:
+        // items with identical pub_date won't re-emit on the next cycle.
+        let new_events = cursor.filter_new(candidates, |a| a.link.clone());
+
+        cursor.inner = newest_seen;
         Ok(new_events.into())
     }
 }
