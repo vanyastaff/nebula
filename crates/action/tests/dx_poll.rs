@@ -10,8 +10,8 @@ use std::{
 
 use nebula_action::{
     Action, ActionDependencies, ActionError, ActionMetadata, DeduplicatingCursor, PollAction,
-    PollConfig, PollCursor, PollResult, PollTriggerAdapter, TestContextBuilder, TriggerContext,
-    TriggerHandler,
+    PollConfig, PollCursor, PollOutcome, PollResult, PollTriggerAdapter, TestContextBuilder,
+    TriggerContext, TriggerHandler,
 };
 
 struct TickPoller {
@@ -115,11 +115,11 @@ async fn poll_action_cursor_advances_through_poll_cursor() {
 
     let result = poller.poll(&mut cursor, &ctx).await.unwrap();
     assert_eq!(*cursor, 1);
-    assert_eq!(result.events.len(), 1);
+    assert!(matches!(result.outcome, PollOutcome::Ready { ref events } if events.len() == 1));
 
     let result = poller.poll(&mut cursor, &ctx).await.unwrap();
     assert_eq!(*cursor, 2);
-    assert_eq!(result.events.len(), 1);
+    assert!(matches!(result.outcome, PollOutcome::Ready { ref events } if events.len() == 1));
 }
 
 // ── Double-start rejection (A2) ───────────────────────────────────────────
@@ -294,17 +294,23 @@ fn poll_config_backoff_factor_clamped_to_one() {
 // ── PollResult ergonomics ─────────────────────────────────────────────────
 
 #[test]
-fn poll_result_from_vec() {
-    let result: PollResult<i32> = vec![1, 2, 3].into();
-    assert_eq!(result.events.len(), 3);
+fn poll_result_from_empty_vec_is_idle() {
+    let result: PollResult<i32> = vec![].into();
+    assert!(matches!(result.outcome, PollOutcome::Idle));
     assert!(result.override_next.is_none());
-    assert!(result.partial_error.is_none());
+}
+
+#[test]
+fn poll_result_from_non_empty_vec_is_ready() {
+    let result: PollResult<i32> = vec![1, 2, 3].into();
+    assert!(matches!(result.outcome, PollOutcome::Ready { ref events } if events.len() == 3));
+    assert!(result.override_next.is_none());
 }
 
 #[test]
 fn poll_result_with_override() {
     let result: PollResult<i32> =
-        PollResult::new(vec![1]).with_override_next(Duration::from_secs(60));
+        PollResult::from(vec![1]).with_override_next(Duration::from_secs(60));
     assert_eq!(result.override_next, Some(Duration::from_secs(60)));
 }
 
@@ -312,8 +318,7 @@ fn poll_result_with_override() {
 fn poll_result_partial_carries_error_and_events() {
     let result: PollResult<i32> =
         PollResult::partial(vec![1, 2, 3], ActionError::retryable("page 4 failed"));
-    assert_eq!(result.events.len(), 3);
-    assert!(result.partial_error.is_some());
+    assert!(matches!(result.outcome, PollOutcome::Partial { ref events, .. } if events.len() == 3));
 }
 
 // ── PollCursor checkpoint ─────────────────────────────────────────────────
