@@ -33,16 +33,24 @@
 //! clocks into this module. Build them in your action on top of the
 //! primitives.
 
-use std::{fmt, future::Future, sync::Arc, time::SystemTime};
+use std::{
+    fmt,
+    future::Future,
+    sync::{
+        Arc,
+        atomic::{AtomicU32, Ordering},
+    },
+    time::SystemTime,
+};
 
 use async_trait::async_trait;
 use bytes::Bytes;
 use hmac::{Hmac, KeyInit, Mac};
-use http::{HeaderMap, HeaderName, HeaderValue, Method};
+use http::{HeaderMap, HeaderName, HeaderValue, Method, StatusCode};
 use parking_lot::RwLock;
-use serde::{Serialize, de::DeserializeOwned};
 use sha2::Sha256;
 use subtle::ConstantTimeEq;
+use tokio::sync::oneshot;
 
 use crate::{
     action::Action,
@@ -103,6 +111,7 @@ pub struct WebhookRequest {
     headers: HeaderMap,
     body: Bytes,
     received_at: SystemTime,
+    response_tx: parking_lot::Mutex<Option<oneshot::Sender<WebhookHttpResponse>>>,
 }
 
 impl WebhookRequest {
@@ -186,6 +195,7 @@ impl WebhookRequest {
             headers,
             body,
             received_at: SystemTime::now(),
+            response_tx: parking_lot::Mutex::new(None),
         })
     }
 
@@ -288,6 +298,26 @@ impl WebhookRequest {
     pub fn received_at(&self) -> SystemTime {
         self.received_at
     }
+
+    /// Attach a response channel for HTTP response plumbing.
+    ///
+    /// The HTTP transport layer calls this before wrapping the request
+    /// in a [`TriggerEvent`](crate::trigger::TriggerEvent). The adapter
+    /// sends a [`WebhookHttpResponse`] through the channel after calling
+    /// [`WebhookAction::handle_request`].
+    #[must_use]
+    pub fn with_response_channel(self, tx: oneshot::Sender<WebhookHttpResponse>) -> Self {
+        *self.response_tx.lock() = Some(tx);
+        self
+    }
+
+    /// Take the response channel sender, if present.
+    ///
+    /// Called by adapters after downcast. The sender is moved out so
+    /// that `handle_request` sees an immutable `&WebhookRequest`.
+    pub(crate) fn take_response_tx(&self) -> Option<oneshot::Sender<WebhookHttpResponse>> {
+        self.response_tx.lock().take()
+    }
 }
 
 impl fmt::Debug for WebhookRequest {
@@ -299,7 +329,148 @@ impl fmt::Debug for WebhookRequest {
             .field("headers_len", &self.headers.len())
             .field("body_len", &self.body.len())
             .field("received_at", &self.received_at)
+            .field("has_response_channel", &self.response_tx.lock().is_some())
             .finish()
+    }
+}
+
+// ── HTTP response types ────────────────────────────────────────────────────
+
+/// HTTP response data sent back to the webhook caller.
+///
+/// Produced by [`WebhookResponse::into_parts`] and plumbed through the
+/// response channel attached to [`WebhookRequest::with_response_channel`].
+/// The transport layer receives this and writes it to the HTTP connection.
+#[derive(Debug, Clone)]
+#[non_exhaustive]
+pub struct WebhookHttpResponse {
+    /// HTTP status code.
+    pub status: StatusCode,
+    /// Response headers.
+    pub headers: HeaderMap,
+    /// Response body.
+    pub body: Bytes,
+}
+
+impl WebhookHttpResponse {
+    /// 200 OK with empty body — the default for [`WebhookResponse::Accept`].
+    #[must_use]
+    pub fn ok() -> Self {
+        Self {
+            status: StatusCode::OK,
+            headers: HeaderMap::new(),
+            body: Bytes::new(),
+        }
+    }
+
+    /// Custom status with body and empty headers.
+    #[must_use]
+    pub fn new(status: StatusCode, body: impl Into<Bytes>) -> Self {
+        Self {
+            status,
+            headers: HeaderMap::new(),
+            body: body.into(),
+        }
+    }
+
+    /// Add response headers (builder pattern).
+    #[must_use]
+    pub fn with_headers(mut self, headers: HeaderMap) -> Self {
+        self.headers = headers;
+        self
+    }
+}
+
+impl Default for WebhookHttpResponse {
+    fn default() -> Self {
+        Self::ok()
+    }
+}
+
+/// Return type from [`WebhookAction::handle_request`].
+///
+/// Controls both the HTTP response sent to the webhook caller and the
+/// workflow emission triggered by the event. The two concerns are
+/// orthogonal: a Slack URL verification handshake returns a challenge
+/// body (`Respond`) but does not emit a workflow (`Skip`), while a
+/// normal push event returns 200 OK (`Accept`) and emits.
+///
+/// # Examples
+///
+/// ```rust,ignore
+/// // Normal event — accept with default 200 OK, emit workflow.
+/// Ok(WebhookResponse::accept(TriggerEventOutcome::emit(payload)))
+///
+/// // Slack URL verification — echo challenge, no workflow.
+/// Ok(WebhookResponse::respond(
+///     StatusCode::OK,
+///     challenge_value,
+///     TriggerEventOutcome::skip(),
+/// ))
+/// ```
+#[derive(Debug)]
+#[non_exhaustive]
+pub enum WebhookResponse {
+    /// Accept with 200 OK (default HTTP response).
+    Accept(TriggerEventOutcome),
+    /// Send a custom HTTP response.
+    Respond {
+        /// HTTP response to send back to the caller.
+        http: WebhookHttpResponse,
+        /// Workflow emission outcome.
+        outcome: TriggerEventOutcome,
+    },
+}
+
+impl WebhookResponse {
+    /// Accept with default 200 OK.
+    #[must_use]
+    pub fn accept(outcome: TriggerEventOutcome) -> Self {
+        Self::Accept(outcome)
+    }
+
+    /// Custom HTTP response with empty headers.
+    #[must_use]
+    pub fn respond(
+        status: StatusCode,
+        body: impl Into<Bytes>,
+        outcome: TriggerEventOutcome,
+    ) -> Self {
+        Self::Respond {
+            http: WebhookHttpResponse::new(status, body),
+            outcome,
+        }
+    }
+
+    /// Custom HTTP response with headers.
+    #[must_use]
+    pub fn respond_with_headers(
+        status: StatusCode,
+        headers: HeaderMap,
+        body: impl Into<Bytes>,
+        outcome: TriggerEventOutcome,
+    ) -> Self {
+        Self::Respond {
+            http: WebhookHttpResponse::new(status, body).with_headers(headers),
+            outcome,
+        }
+    }
+
+    /// Reference to the workflow emission outcome.
+    #[must_use]
+    pub fn outcome(&self) -> &TriggerEventOutcome {
+        match self {
+            Self::Accept(o) | Self::Respond { outcome: o, .. } => o,
+        }
+    }
+
+    /// Split into HTTP response data and workflow emission outcome.
+    #[must_use]
+    pub fn into_parts(self) -> (WebhookHttpResponse, TriggerEventOutcome) {
+        match self {
+            Self::Accept(outcome) => (WebhookHttpResponse::ok(), outcome),
+            Self::Respond { http, outcome } => (http, outcome),
+        }
     }
 }
 
@@ -322,7 +493,7 @@ impl fmt::Debug for WebhookRequest {
 /// prefix-length timing side-channel.
 ///
 /// ```rust,ignore
-/// use nebula_action::webhook::{WebhookAction, WebhookRequest, verify_hmac_sha256};
+/// use nebula_action::webhook::{WebhookAction, WebhookRequest, WebhookResponse, verify_hmac_sha256};
 /// use nebula_action::trigger::TriggerEventOutcome;
 ///
 /// struct GitHubWebhook { secret: Vec<u8> }
@@ -335,12 +506,12 @@ impl fmt::Debug for WebhookRequest {
 ///     }
 ///
 ///     async fn handle_request(&self, req: &WebhookRequest, _state: &Self::State, _ctx: &TriggerContext)
-///         -> Result<TriggerEventOutcome, ActionError> {
+///         -> Result<WebhookResponse, ActionError> {
 ///         let outcome = verify_hmac_sha256(req, &self.secret, "X-Hub-Signature-256")?;
 ///         if !outcome.is_valid() {
-///             return Ok(TriggerEventOutcome::skip());
+///             return Ok(WebhookResponse::accept(TriggerEventOutcome::skip()));
 ///         }
-///         Ok(TriggerEventOutcome::emit(req.body_json()?))
+///         Ok(WebhookResponse::accept(TriggerEventOutcome::emit(req.body_json()?)))
 ///     }
 ///
 ///     async fn on_deactivate(&self, state: WebhookReg, _ctx: &TriggerContext) -> Result<(), ActionError> {
@@ -349,25 +520,34 @@ impl fmt::Debug for WebhookRequest {
 /// }
 /// ```
 pub trait WebhookAction: Action + Send + Sync + 'static {
-    /// Persisted state between activate/deactivate (e.g., webhook registration ID).
-    type State: Serialize + DeserializeOwned + Default + Clone + Send + Sync;
+    /// State held between activate/deactivate (e.g., webhook registration ID).
+    ///
+    /// No serialization or `Default` bounds — the action creates state in
+    /// [`on_activate`](Self::on_activate) and receives it back in
+    /// [`on_deactivate`](Self::on_deactivate). If the runtime needs to
+    /// persist state across restarts, that is the runtime's
+    /// responsibility (post-v1).
+    type State: Clone + Send + Sync;
 
     /// Register webhook with external service. Returns state to persist.
     ///
-    /// Default: returns `State::default()` (no-op activation).
+    /// **Required** — no default implementation.
     ///
     /// # Errors
     ///
     /// Return [`ActionError`] if registration fails.
     fn on_activate(
         &self,
-        _ctx: &TriggerContext,
-    ) -> impl Future<Output = Result<Self::State, ActionError>> + Send {
-        async { Ok(Self::State::default()) }
-    }
+        ctx: &TriggerContext,
+    ) -> impl Future<Output = Result<Self::State, ActionError>> + Send;
 
-    /// Handle an incoming webhook request. Return `Emit` to start a
-    /// workflow, `Skip` to filter.
+    /// Handle an incoming webhook request.
+    ///
+    /// Return [`WebhookResponse::accept`] to send 200 OK, or
+    /// [`WebhookResponse::respond`] for a custom HTTP response (e.g.,
+    /// Slack URL verification challenge echo). The
+    /// [`TriggerEventOutcome`] inside the response controls workflow
+    /// emission independently of the HTTP response.
     ///
     /// State from `on_activate` is passed by reference. The adapter
     /// clones an internal `Arc` cheaply before this call — no
@@ -381,7 +561,7 @@ pub trait WebhookAction: Action + Send + Sync + 'static {
         request: &WebhookRequest,
         state: &Self::State,
         ctx: &TriggerContext,
-    ) -> impl Future<Output = Result<TriggerEventOutcome, ActionError>> + Send;
+    ) -> impl Future<Output = Result<WebhookResponse, ActionError>> + Send;
 
     /// Unregister webhook on deactivation.
     ///
@@ -413,10 +593,19 @@ pub trait WebhookAction: Action + Send + Sync + 'static {
 /// `handle_event` before `start()` returns `ActionError::Fatal` (no
 /// silent default state).
 ///
+/// # In-flight request tracking (M1 fix)
+///
+/// An atomic in-flight counter prevents `stop()` from calling
+/// `on_deactivate` while `handle_request` is still running against the
+/// state. `handle_event` increments before processing and decrements
+/// (via RAII guard) on completion. `stop()` spins briefly if the
+/// counter is non-zero.
+///
 /// Created automatically by `nebula_runtime::ActionRegistry::register_webhook`.
 pub struct WebhookTriggerAdapter<A: WebhookAction> {
     action: A,
     state: RwLock<Option<Arc<A::State>>>,
+    in_flight: AtomicU32,
 }
 
 impl<A: WebhookAction> WebhookTriggerAdapter<A> {
@@ -426,7 +615,17 @@ impl<A: WebhookAction> WebhookTriggerAdapter<A> {
         Self {
             action,
             state: RwLock::new(None),
+            in_flight: AtomicU32::new(0),
         }
+    }
+}
+
+/// RAII guard that decrements the in-flight counter on drop.
+struct InFlightGuard<'a>(&'a AtomicU32);
+
+impl Drop for InFlightGuard<'_> {
+    fn drop(&mut self) {
+        self.0.fetch_sub(1, Ordering::Release);
     }
 }
 
@@ -489,6 +688,13 @@ where
         let stored = self.state.write().take();
         match stored {
             Some(arc_state) => {
+                // Wait for in-flight handle_event calls to complete before
+                // calling on_deactivate. Each in-flight request holds its
+                // own Arc clone, so on_deactivate sees the state after all
+                // requests finish (not while they're mid-flight).
+                while self.in_flight.load(Ordering::Acquire) > 0 {
+                    tokio::task::yield_now().await;
+                }
                 let owned = Arc::unwrap_or_clone(arc_state);
                 self.action.on_deactivate(owned, ctx).await
             }
@@ -507,16 +713,20 @@ where
     /// [`ActionError::Fatal`] — a different trigger family should
     /// never have its events delivered here.
     ///
-    /// # Stop vs in-flight event race
+    /// If the request carries a response channel (via
+    /// [`WebhookRequest::with_response_channel`]), the adapter sends
+    /// the [`WebhookHttpResponse`] through it after `handle_request`
+    /// returns. If `handle_request` errors, the channel is dropped
+    /// without sending — the transport receives `RecvError` and should
+    /// return 500.
     ///
-    /// `handle_event` clones the `Arc<State>` under a read lock and
-    /// releases the lock BEFORE awaiting `handle_request`. If `stop()`
-    /// wins the race, it takes the owned `Arc` and calls
-    /// `on_deactivate` on the result — meanwhile this in-flight
-    /// request still holds its independent `Arc` clone and runs
-    /// `handle_request` against it. Two observers of the same logical
-    /// state briefly exist side by side. Documented trap; tightened
-    /// in a later commit.
+    /// # In-flight tracking
+    ///
+    /// The adapter increments an atomic counter before processing and
+    /// decrements it (via RAII guard) on completion. `stop()` waits
+    /// for the counter to reach zero before calling `on_deactivate`,
+    /// preventing the state from being destroyed while a request is
+    /// still being handled.
     async fn handle_event(
         &self,
         event: TriggerEvent,
@@ -533,6 +743,11 @@ where
             }
         };
 
+        let response_tx = request.take_response_tx();
+
+        self.in_flight.fetch_add(1, Ordering::AcqRel);
+        let _guard = InFlightGuard(&self.in_flight);
+
         // Clone Arc under read lock; the guard drops at end of statement BEFORE
         // the await on handle_request. Holding a parking_lot guard across .await
         // would be unsound (non-Send) and risk re-entry panic with start/stop.
@@ -540,7 +755,14 @@ where
             ActionError::fatal("handle_event called before start — no state available")
         })?;
 
-        self.action.handle_request(&request, &state, ctx).await
+        let response = self.action.handle_request(&request, &state, ctx).await?;
+        let (http_response, outcome) = response.into_parts();
+
+        if let Some(tx) = response_tx {
+            let _ = tx.send(http_response);
+        }
+
+        Ok(outcome)
     }
 }
 

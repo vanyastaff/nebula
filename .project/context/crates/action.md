@@ -5,7 +5,7 @@ engine runs them from `nebula-runtime`. `ActionRegistry` lives there, not here.
 ## Subtypes
 - `StatelessAction` — one-shot.
 - `StatefulAction` — `Continue`/`Break` loop. `State: Serialize + DeserializeOwned + Clone`.
-- `TriggerAction` — starts workflows from outside the graph. DX specializations: `WebhookAction` (push) + `PollAction` (pull).
+- `TriggerAction` — starts workflows from outside the graph. DX specializations: `WebhookAction` (push, returns `WebhookResponse`) + `PollAction` (pull, returns `PollCycle`).
 - `ResourceAction` — branch-scoped DI, single `type Resource`.
 
 ## Dispatch
@@ -28,10 +28,15 @@ engine runs them from `nebula-runtime`. `ActionRegistry` lives there, not here.
 ## Traps
 - **State checkpointing.** `StatefulActionAdapter::execute` MUST flush `typed_state` back to JSON on both Ok and Err paths before propagating. A `Retryable` with mutated cursor that isn't flushed makes the engine replay — duplicated API calls, double charges, double emits. Only exception: `Validation` from input/state deserialization (typed state never existed). If state serialization itself fails on the error path, log and propagate the original error — masking breaks retry classification.
 - **Webhook double-start.** `WebhookTriggerAdapter::start` rejects double-start with `Fatal` (read-lock pre-check + write-lock re-check with orphan `on_deactivate`). Silent re-registration leaks external webhook registrations. Guards scoped so they never cross `.await` (parking_lot is `!Send`).
+- **Webhook in-flight tracking (M1).** `handle_event` increments an `AtomicU32` in-flight counter (RAII guard). `stop()` yields until the counter reaches zero before calling `on_deactivate`. Prevents state destruction while requests are mid-flight.
 - **Poll double-start.** `PollTriggerAdapter::start` rejects via `AtomicBool` + `compare_exchange(AcqRel, Acquire)`, cleared by `StartedGuard` RAII (defused, never `mem::forget`). Shared cursor would double-emit. `start()` blocks until cancellation — MUST be spawned.
 - **Two trigger shapes.** `TriggerHandler::start` is either **setup-and-return** (webhook) or **run-until-cancelled** (poll). Sequentially awaiting multiple shape-2 triggers deadlocks. Always spawn.
 - **Poll interval floor.** Clamped to `POLL_INTERVAL_FLOOR = 100 ms`. Tests must use ≥100 ms. Clamp logs one-shot warn via `ctx.logger` at `start()`. Per-cycle retryable/serialize/emit failures log via `ctx.logger` with per-kind `WarnThrottle` (30 s cooldown).
-- **Event limits.** `IncomingEvent::try_new` enforces `DEFAULT_MAX_BODY_BYTES` (1 MiB) + `MAX_HEADER_COUNT` (128). Returns `DataLimitExceeded` / `Validation`. Use `try_new_with_limits` for providers needing larger caps. Header keys lowercased at construction — `header()` is O(1). Duplicate keys collapse to last value.
+- **WebhookAction::State bounds.** `State: Clone + Send + Sync` only — no `Default`, no `Serialize`/`DeserializeOwned`. `on_activate` is the factory (required, no default). State persistence across restarts is a runtime concern (post-v1).
+- **WebhookResponse.** `handle_request` returns `WebhookResponse` (not `TriggerEventOutcome`). `Accept(outcome)` = 200 OK. `Respond { http, outcome }` = custom HTTP response (Slack challenge, Stripe 200-within-5s). Response plumbed via `oneshot::Sender<WebhookHttpResponse>` attached to `WebhookRequest::with_response_channel`.
+- **PollCycle + EmitFailurePolicy.** `poll(&cursor) -> PollCycle { next_cursor, events, emit_failure_policy }`. Cursor is immutable input; adapter advances only after successful dispatch. `StopOnFailure` (default), `DropAndContinue`, `RetryThenStop { max_retries }`.
+- **Poll timeout.** `poll_timeout() -> Duration` (default 30s). Adapter wraps `poll()` in `tokio::time::timeout`; timeout surfaces as retryable error.
+- **Event limits.** `WebhookRequest::try_new` enforces `DEFAULT_MAX_BODY_BYTES` (1 MiB) + `MAX_HEADER_COUNT` (128). Returns `DataLimitExceeded` / `Validation`. Use `try_new_with_limits` for providers needing larger caps. Header keys lowercased at construction — `header()` is O(1). Duplicate keys collapse to last value.
 - **Batch error semantics.** `BatchAction::process_item` → `Fatal` aborts the batch. Use `Retryable` for per-item failures the batch should capture and skip past.
 - **DX macro requirement.** `impl_paginated_action!`/`impl_batch_action!` generate the `StatefulAction` impl — forgetting the macro → `register_stateful()` fails. One macro per type.
 - **Resource downcast.** `ResourceActionAdapter::cleanup` downcasts `Box<dyn Any>` — mismatch is an engine bug, returns `Fatal`.
@@ -39,7 +44,7 @@ engine runs them from `nebula-runtime`. `ActionRegistry` lives there, not here.
 - **`ctx.cancellation` / `ctx.emitter`** are `pub` fields on `TriggerContext` — known tech debt, tracked for an accessor refactor.
 
 ## Module layout (one domain per file)
-`action.rs` (base) · `stateless.rs` · `stateful.rs` (+ `PaginatedAction`/`BatchAction` DX + `impl_*_action!` macros) · `trigger.rs` (base + `IncomingEvent` + `TriggerEventOutcome`) · `webhook.rs` (+ HMAC primitives via `subtle::ConstantTimeEq`) · `poll.rs` · `resource.rs` · `handler.rs` (`ActionHandler` enum + `AgentHandler` stub + cross-variant tests) · `error.rs` · `result.rs` · `context.rs` · `metadata.rs` · `output.rs` · `port.rs` · `dependency.rs` · `capability.rs` · `validation.rs` · `testing.rs`.
+`action.rs` (base) · `stateless.rs` · `stateful.rs` (+ `PaginatedAction`/`BatchAction` DX + `impl_*_action!` macros) · `trigger.rs` (base + `TriggerEvent` + `TriggerEventOutcome`) · `webhook.rs` (`WebhookAction` + `WebhookResponse` + `WebhookHttpResponse` + HMAC primitives via `subtle::ConstantTimeEq`) · `poll.rs` (`PollAction` + `PollCycle` + `EmitFailurePolicy`) · `resource.rs` · `handler.rs` (`ActionHandler` enum + `AgentHandler` stub + cross-variant tests) · `error.rs` · `result.rs` · `context.rs` · `metadata.rs` · `output.rs` · `port.rs` · `dependency.rs` · `capability.rs` · `validation.rs` · `testing.rs`.
 
 ## Testing
 - `TestContextBuilder` — `minimal()`, `with_credential_snapshot()`, `with_credential::<S>()`, `with_resource()`, `with_input()`, `build_trigger()`.

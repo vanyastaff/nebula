@@ -1,18 +1,20 @@
 # Active Work
-Updated: 2026-04-07
+Updated: 2026-04-12
 
 ## In Progress
 - **Desktop app** (Tauri): `apps/desktop/`
 
 ## Recently Completed
-- **credential v3 + cleanup** (04-07): Universal schemes, key rotation, AAD, derive macros, design/ removed, identity_state relocated.
-- **Telemetry/metrics unification** (04-04)
-- **nebula-system overhaul** (04-03)
-- **error v1 + Classify migration** (03-27–30)
+- **Trigger subsystem refactor** (commits 1-5 of 5, 04-09–12):
+  - Commit 1 ✅ `TriggerEvent` envelope + `WebhookRequest`. `IncomingEvent` deleted.
+  - Commit 2 ✅ `WebhookResponse` enum (Accept/Respond) + `WebhookHttpResponse` + oneshot response channel.
+  - Commit 3 ✅ `PollCycle` + `EmitFailurePolicy`. `poll(&cursor) -> PollCycle`, cursor checkpoint on success.
+  - Commit 4 ✅ `poll_timeout()` + `tokio::time::timeout` wrapper.
+  - Commit 5 ✅ Dropped `Default+Serialize+DeserializeOwned` from `WebhookAction::State`. M1 fix (in-flight counter). `PollTriggerAdapter::stop` documented.
+- **nebula-action audit + refactor** (04-11–12): handler re-export purge, derives, DeferredRetryConfig validation, POLL_INTERVAL_FLOOR on ctx.logger, workspace clippy cleanup, nightly rustfmt pass, .claude→.project split, context file trimming.
 
 ## Blocked
 - **engine**: needs credential DI + Postgres storage
-- **webhook**: deprecated v1 types
 - **auth**: RFC phase
 
 ## Next Up

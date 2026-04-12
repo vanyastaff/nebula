@@ -125,7 +125,7 @@ pub use output::{
     OutputOrigin, Overflow, PollTarget, Producer, ProducerKind, Progress, Resolution, StreamMode,
     StreamOutput, StreamState, Timing, TokenUsage,
 };
-pub use poll::{POLL_INTERVAL_FLOOR, PollAction, PollTriggerAdapter};
+pub use poll::{EmitFailurePolicy, POLL_INTERVAL_FLOOR, PollAction, PollCycle, PollTriggerAdapter};
 pub use port::{ConnectionFilter, DynamicPort, FlowKind, InputPort, OutputPort, SupportPort};
 pub use resource::{ResourceAction, ResourceActionAdapter, ResourceHandler};
 pub use result::{ActionResult, BranchKey, BreakReason, PortKey, WaitCondition};
@@ -148,6 +148,7 @@ pub use validation::{
     ActionPackageValidationError, ActionPackageValidationErrors, validate_action_package,
 };
 pub use webhook::{
-    DEFAULT_MAX_BODY_BYTES, MAX_HEADER_COUNT, SignatureOutcome, WebhookAction, WebhookRequest,
-    WebhookTriggerAdapter, hmac_sha256_compute, verify_hmac_sha256, verify_tag_constant_time,
+    DEFAULT_MAX_BODY_BYTES, MAX_HEADER_COUNT, SignatureOutcome, WebhookAction, WebhookHttpResponse,
+    WebhookRequest, WebhookResponse, WebhookTriggerAdapter, hmac_sha256_compute,
+    verify_hmac_sha256, verify_tag_constant_time,
 };

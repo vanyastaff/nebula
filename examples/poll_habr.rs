@@ -87,9 +87,9 @@ impl PollAction for HabrRssPollAction {
 
     async fn poll(
         &self,
-        cursor: &mut Self::Cursor,
+        cursor: &Self::Cursor,
         _ctx: &TriggerContext,
-    ) -> Result<Vec<Self::Event>, ActionError> {
+    ) -> Result<PollCycle<Self::Cursor, Self::Event>, ActionError> {
         let response = reqwest::get(HABR_RSS_URL).await.map_err(|e| {
             if e.is_timeout() || e.is_connect() {
                 ActionError::retryable(format!("habr RSS fetch failed: {e}"))
@@ -130,8 +130,7 @@ impl PollAction for HabrRssPollAction {
             newest_seen = Some(newest_seen.map_or(pub_date, |n| n.max(pub_date)));
         }
 
-        *cursor = newest_seen;
-        Ok(new_events)
+        Ok(PollCycle::new(newest_seen, new_events))
     }
 }
 

@@ -21,7 +21,7 @@ pub use crate::{
         ActionOutput, DeferredOutput, ExpectedOutput, Producer, ProducerKind, Progress, Resolution,
         StreamMode, StreamOutput,
     },
-    poll::{PollAction, PollTriggerAdapter},
+    poll::{EmitFailurePolicy, PollAction, PollCycle, PollTriggerAdapter},
     port::{ConnectionFilter, DynamicPort, FlowKind, InputPort, OutputPort, SupportPort},
     resource::{ResourceAction, ResourceActionAdapter},
     result::ActionResult,
@@ -39,7 +39,7 @@ pub use crate::{
         ActionPackageValidationError, ActionPackageValidationErrors, validate_action_package,
     },
     webhook::{
-        SignatureOutcome, WebhookAction, WebhookRequest, WebhookTriggerAdapter,
-        hmac_sha256_compute, verify_hmac_sha256, verify_tag_constant_time,
+        SignatureOutcome, WebhookAction, WebhookHttpResponse, WebhookRequest, WebhookResponse,
+        WebhookTriggerAdapter, hmac_sha256_compute, verify_hmac_sha256, verify_tag_constant_time,
     },
 };

@@ -34,6 +34,76 @@ use crate::{
 /// high-frequency event sources.
 pub const POLL_INTERVAL_FLOOR: Duration = Duration::from_millis(100);
 
+// ── PollCycle + EmitFailurePolicy ─────────────────────────────────────────
+
+/// Policy for handling event dispatch failures within a poll cycle.
+///
+/// Controls what happens when individual events from a [`PollCycle`]
+/// fail to serialize or emit. The policy is set per cycle by the action,
+/// allowing different strategies for different data sources.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum EmitFailurePolicy {
+    /// Stop the trigger on the first dispatch failure. The cursor is
+    /// NOT advanced — the next `start()` replays from the same position.
+    /// This is the safe default.
+    #[default]
+    StopOnFailure,
+    /// Drop failed events and continue. The cursor IS advanced to the
+    /// returned position. Use for best-effort integrations where data
+    /// loss is acceptable.
+    DropAndContinue,
+    /// Retry the entire cycle up to `max_retries` times, then stop.
+    /// Each retry re-dispatches ALL events from this cycle (not just
+    /// the failed ones).
+    RetryThenStop {
+        /// Maximum retry count before the trigger stops.
+        max_retries: u32,
+    },
+}
+
+/// Result of a single poll cycle, returned by [`PollAction::poll`].
+///
+/// Decouples the cursor update from event dispatch. The adapter
+/// advances the cursor to [`next_cursor`](Self::next_cursor) only
+/// after all events have been dispatched successfully (or per the
+/// [`emit_failure_policy`](Self::emit_failure_policy)).
+///
+/// # Cursor checkpoint semantics
+///
+/// The action receives `&Self::Cursor` (immutable) and returns a new
+/// cursor value inside `PollCycle`. The adapter stores this new cursor
+/// only if dispatch succeeds. On failure with
+/// [`EmitFailurePolicy::StopOnFailure`], the cursor stays at the
+/// previous position, enabling safe replay on restart.
+#[derive(Debug)]
+pub struct PollCycle<C, E> {
+    /// Updated cursor position. Applied by the adapter after dispatch.
+    pub next_cursor: C,
+    /// Events to emit as workflow executions.
+    pub events: Vec<E>,
+    /// How the adapter handles dispatch failures for this cycle.
+    pub emit_failure_policy: EmitFailurePolicy,
+}
+
+impl<C, E> PollCycle<C, E> {
+    /// Create a cycle with events and default policy (`StopOnFailure`).
+    pub fn new(next_cursor: C, events: Vec<E>) -> Self {
+        Self {
+            next_cursor,
+            events,
+            emit_failure_policy: EmitFailurePolicy::default(),
+        }
+    }
+
+    /// Override the emit failure policy.
+    #[must_use]
+    pub fn with_policy(mut self, policy: EmitFailurePolicy) -> Self {
+        self.emit_failure_policy = policy;
+        self
+    }
+}
+
 /// Minimum interval between repeated warn-level log lines for the same
 /// failure kind inside a [`PollTriggerAdapter`].
 ///
@@ -59,17 +129,17 @@ const POLL_WARN_COOLDOWN: Duration = Duration::from_secs(30);
 /// # Example
 ///
 /// ```rust,ignore
-/// use nebula_action::poll::PollAction;
+/// use nebula_action::poll::{PollAction, PollCycle};
 ///
 /// struct RssPoll { feed_url: String }
 /// impl PollAction for RssPoll {
 ///     type Cursor = String;
 ///     type Event = serde_json::Value;
 ///     fn poll_interval(&self) -> std::time::Duration { std::time::Duration::from_secs(300) }
-///     async fn poll(&self, cursor: &mut String, ctx: &TriggerContext)
-///         -> Result<Vec<serde_json::Value>, ActionError> {
-///         let items = fetch_rss(&self.feed_url, cursor).await?;
-///         Ok(items)
+///     async fn poll(&self, cursor: &String, ctx: &TriggerContext)
+///         -> Result<PollCycle<String, serde_json::Value>, ActionError> {
+///         let (items, new_cursor) = fetch_rss(&self.feed_url, cursor).await?;
+///         Ok(PollCycle::new(new_cursor, items))
 ///     }
 /// }
 /// ```
@@ -82,9 +152,20 @@ pub trait PollAction: Action + Send + Sync + 'static {
     /// Interval between poll cycles.
     fn poll_interval(&self) -> Duration;
 
-    /// Execute one poll cycle. Mutate cursor to track position.
+    /// Maximum duration for a single `poll()` call before the adapter
+    /// treats it as timed out (retryable error). Default: 30 seconds.
     ///
-    /// Return events to emit. Empty vec = nothing new.
+    /// Override for slow upstream APIs or when the action performs
+    /// expensive pagination within a single poll cycle.
+    fn poll_timeout(&self) -> Duration {
+        Duration::from_secs(30)
+    }
+
+    /// Execute one poll cycle.
+    ///
+    /// Receives the current cursor by shared reference. Return a
+    /// [`PollCycle`] containing the updated cursor and events to emit.
+    /// The adapter advances the cursor only after successful dispatch.
     ///
     /// # Errors
     ///
@@ -92,9 +173,9 @@ pub trait PollAction: Action + Send + Sync + 'static {
     /// [`ActionError::Fatal`] to stop the trigger permanently.
     fn poll(
         &self,
-        cursor: &mut Self::Cursor,
+        cursor: &Self::Cursor,
         ctx: &TriggerContext,
-    ) -> impl Future<Output = Result<Vec<Self::Event>, ActionError>> + Send;
+    ) -> impl Future<Output = Result<PollCycle<Self::Cursor, Self::Event>, ActionError>> + Send;
 }
 
 /// Rate-limits adapter warn lines to avoid log flooding.
@@ -190,46 +271,52 @@ impl<A: PollAction> PollTriggerAdapter<A> {
         }
     }
 
-    /// Serialize and emit a batch of events, dropping (with a throttled
-    /// warn) any event that fails to serialize or emit.
+    /// Serialize and emit a batch of events. Returns `true` if all
+    /// events dispatched successfully, `false` if any failed.
     ///
-    /// Extracted from the poll loop so the `tokio::select!` arms stay
-    /// flat. A bad payload from a single event must not kill the
-    /// trigger — per-event failure is logged and skipped, the loop
-    /// continues with the next event.
-    async fn dispatch_events(&self, events: Vec<A::Event>, ctx: &TriggerContext)
+    /// The `policy` parameter controls failure handling:
+    /// - `DropAndContinue` — log and skip failed events, return `true`
+    /// - `StopOnFailure` / `RetryThenStop` — return `false` on first failure
+    async fn dispatch_events(
+        &self,
+        events: &[A::Event],
+        policy: EmitFailurePolicy,
+        ctx: &TriggerContext,
+    ) -> bool
     where
         A::Event: Send + Sync,
     {
         let action_key = &self.action.metadata().key;
         for event in events {
-            let payload = match serde_json::to_value(&event) {
+            let payload = match serde_json::to_value(event) {
                 Ok(v) => v,
                 Err(e) => {
                     if self.serialize_warn.should_log() {
                         ctx.logger.log(
                             ActionLogLevel::Warn,
-                            &format!(
-                                "poll trigger {action_key}: event serialization failed, \
-                                 dropping: {e}"
-                            ),
+                            &format!("poll trigger {action_key}: event serialization failed: {e}"),
                         );
                     }
-                    continue;
+                    match policy {
+                        EmitFailurePolicy::DropAndContinue => continue,
+                        _ => return false,
+                    }
                 }
             };
-            if let Err(e) = ctx.emitter.emit(payload).await
-                && self.emit_warn.should_log()
-            {
-                ctx.logger.log(
-                    ActionLogLevel::Warn,
-                    &format!(
-                        "poll trigger {action_key}: emitter.emit failed, \
-                         dropping event: {e}"
-                    ),
-                );
+            if let Err(e) = ctx.emitter.emit(payload).await {
+                if self.emit_warn.should_log() {
+                    ctx.logger.log(
+                        ActionLogLevel::Warn,
+                        &format!("poll trigger {action_key}: emitter.emit failed: {e}"),
+                    );
+                }
+                match policy {
+                    EmitFailurePolicy::DropAndContinue => continue,
+                    _ => return false,
+                }
             }
         }
+        true
     }
 }
 
@@ -312,8 +399,70 @@ where
                     return Ok(());
                 }
                 () = tokio::time::sleep(interval) => {
-                    match self.action.poll(&mut cursor, ctx).await {
-                        Ok(events) => self.dispatch_events(events, ctx).await,
+                    let poll_result = match tokio::time::timeout(
+                        self.action.poll_timeout(),
+                        self.action.poll(&cursor, ctx),
+                    ).await {
+                        Ok(result) => result,
+                        Err(_elapsed) => {
+                            Err(ActionError::retryable(format!(
+                                "poll trigger {}: poll() timed out after {:?}",
+                                self.action.metadata().key,
+                                self.action.poll_timeout(),
+                            )))
+                        }
+                    };
+                    match poll_result {
+                        Ok(cycle) => {
+                            let policy = cycle.emit_failure_policy;
+                            if cycle.events.is_empty() {
+                                cursor = cycle.next_cursor;
+                            } else {
+                                match policy {
+                                    EmitFailurePolicy::StopOnFailure => {
+                                        if self.dispatch_events(&cycle.events, policy, ctx).await {
+                                            cursor = cycle.next_cursor;
+                                        } else {
+                                            return Err(ActionError::fatal(format!(
+                                                "poll trigger {}: dispatch failed with StopOnFailure policy",
+                                                self.action.metadata().key,
+                                            )));
+                                        }
+                                    }
+                                    EmitFailurePolicy::DropAndContinue => {
+                                        self.dispatch_events(&cycle.events, policy, ctx).await;
+                                        cursor = cycle.next_cursor;
+                                    }
+                                    EmitFailurePolicy::RetryThenStop { max_retries } => {
+                                        let mut success = false;
+                                        for attempt in 0..=max_retries {
+                                            if self.dispatch_events(&cycle.events, policy, ctx).await {
+                                                success = true;
+                                                break;
+                                            }
+                                            if attempt < max_retries && self.poll_warn.should_log() {
+                                                ctx.logger.log(
+                                                    ActionLogLevel::Warn,
+                                                    &format!(
+                                                        "poll trigger {}: dispatch retry {}/{max_retries}",
+                                                        self.action.metadata().key,
+                                                        attempt + 1,
+                                                    ),
+                                                );
+                                            }
+                                        }
+                                        if success {
+                                            cursor = cycle.next_cursor;
+                                        } else {
+                                            return Err(ActionError::fatal(format!(
+                                                "poll trigger {}: dispatch failed after {max_retries} retries",
+                                                self.action.metadata().key,
+                                            )));
+                                        }
+                                    }
+                                }
+                            }
+                        }
                         Err(e) if e.is_fatal() => return Err(e),
                         Err(e) => {
                             if self.poll_warn.should_log() {
@@ -333,8 +482,16 @@ where
         }
     }
 
+    /// No-op — poll shutdown is driven by `ctx.cancellation`.
+    ///
+    /// [`PollTriggerAdapter::start`] runs an internal loop that exits
+    /// when the cancellation token fires. Calling `stop()` explicitly
+    /// is not required; the [`StartedGuard`] RAII pattern clears the
+    /// `started` flag on every exit path (including cancellation).
+    ///
+    /// Callers that need to ensure the poll loop has fully exited
+    /// should cancel the token and then `.await` the `start()` task.
     async fn stop(&self, _ctx: &TriggerContext) -> Result<(), ActionError> {
-        // Cancellation token handles shutdown — no-op.
         Ok(())
     }
 }

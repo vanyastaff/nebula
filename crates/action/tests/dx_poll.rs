@@ -9,8 +9,8 @@ use std::{
 };
 
 use nebula_action::{
-    Action, ActionDependencies, ActionError, ActionMetadata, PollAction, PollTriggerAdapter,
-    TestContextBuilder, TriggerContext, TriggerHandler,
+    Action, ActionDependencies, ActionError, ActionMetadata, PollAction, PollCycle,
+    PollTriggerAdapter, TestContextBuilder, TriggerContext, TriggerHandler,
 };
 
 struct TickPoller {
@@ -38,12 +38,15 @@ impl PollAction for TickPoller {
 
     async fn poll(
         &self,
-        cursor: &mut u32,
+        cursor: &u32,
         _ctx: &TriggerContext,
-    ) -> Result<Vec<serde_json::Value>, ActionError> {
-        *cursor += 1;
+    ) -> Result<PollCycle<u32, serde_json::Value>, ActionError> {
+        let next = cursor + 1;
         self.poll_count.fetch_add(1, Ordering::Relaxed);
-        Ok(vec![serde_json::json!({"tick": *cursor})])
+        Ok(PollCycle::new(
+            next,
+            vec![serde_json::json!({"tick": next})],
+        ))
     }
 }
 
@@ -119,13 +122,14 @@ async fn poll_action_cursor_advances() {
     let (ctx, _, _) = TestContextBuilder::minimal().build_trigger();
     let mut cursor = 0u32;
 
-    let events = poller.poll(&mut cursor, &ctx).await.unwrap();
-    assert_eq!(cursor, 1);
-    assert_eq!(events.len(), 1);
+    let cycle = poller.poll(&cursor, &ctx).await.unwrap();
+    assert_eq!(cycle.next_cursor, 1);
+    assert_eq!(cycle.events.len(), 1);
+    cursor = cycle.next_cursor;
 
-    let events = poller.poll(&mut cursor, &ctx).await.unwrap();
-    assert_eq!(cursor, 2);
-    assert_eq!(events.len(), 1);
+    let cycle = poller.poll(&cursor, &ctx).await.unwrap();
+    assert_eq!(cycle.next_cursor, 2);
+    assert_eq!(cycle.events.len(), 1);
 }
 
 // ── Double-start rejection (A2) ───────────────────────────────────────────
@@ -188,11 +192,11 @@ impl PollAction for ZeroIntervalPoller {
 
     async fn poll(
         &self,
-        _cursor: &mut u32,
+        cursor: &u32,
         _ctx: &TriggerContext,
-    ) -> Result<Vec<serde_json::Value>, ActionError> {
+    ) -> Result<PollCycle<u32, serde_json::Value>, ActionError> {
         self.poll_count.fetch_add(1, Ordering::Relaxed);
-        Ok(vec![])
+        Ok(PollCycle::new(*cursor, vec![]))
     }
 }
 

@@ -21,3 +21,4 @@ public surface of `nebula-action`, `-core`, `-credential`, `-parameter`,
 ## Relations
 
 Re-exports: `nebula-action`, `nebula-core`, `nebula-credential`, `nebula-parameter`, `nebula-plugin`, `nebula-validator`, `nebula-workflow`, `anyhow`, `async-trait`, `serde`, `serde_json`, `thiserror`.
+<!-- reviewed: 2026-04-12 -->

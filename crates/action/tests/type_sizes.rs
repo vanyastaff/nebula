@@ -47,7 +47,7 @@ fn top_level_type_sizes_are_stable() {
     assert_eq!(size_of::<ActionMetadata>(), 168);
     assert_eq!(size_of::<ActionError>(), 64);
     assert_eq!(size_of::<ActionHandler>(), 24);
-    assert_eq!(size_of::<WebhookRequest>(), 208);
+    assert_eq!(size_of::<WebhookRequest>(), 232);
     assert_eq!(size_of::<TriggerEventOutcome>(), 32);
 }
 

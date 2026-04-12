@@ -8,7 +8,7 @@ use std::sync::{
 use nebula_action::{
     Action, ActionDependencies, ActionError, ActionMetadata, TestContextBuilder, TriggerContext,
     TriggerEvent, TriggerEventOutcome, TriggerHandler, WebhookAction, WebhookRequest,
-    WebhookTriggerAdapter, webhook::webhook_request_for_test,
+    WebhookResponse, WebhookTriggerAdapter, webhook::webhook_request_for_test,
 };
 use serde::{Deserialize, Serialize};
 
@@ -46,10 +46,10 @@ impl WebhookAction for TestWebhook {
         request: &WebhookRequest,
         _state: &WebhookReg,
         _ctx: &TriggerContext,
-    ) -> Result<TriggerEventOutcome, ActionError> {
+    ) -> Result<WebhookResponse, ActionError> {
         let sig = request.header_str("X-Secret").unwrap_or_default();
         if sig != self.secret {
-            return Ok(TriggerEventOutcome::skip());
+            return Ok(WebhookResponse::accept(TriggerEventOutcome::skip()));
         }
         let payload = request.body_json::<serde_json::Value>().map_err(|e| {
             ActionError::validation(
@@ -58,7 +58,7 @@ impl WebhookAction for TestWebhook {
                 Some(e.to_string()),
             )
         })?;
-        Ok(TriggerEventOutcome::emit(payload))
+        Ok(WebhookResponse::accept(TriggerEventOutcome::emit(payload)))
     }
 
     async fn on_deactivate(
@@ -192,8 +192,8 @@ impl WebhookAction for CountingWebhook {
         _request: &WebhookRequest,
         _state: &WebhookReg,
         _ctx: &TriggerContext,
-    ) -> Result<TriggerEventOutcome, ActionError> {
-        Ok(TriggerEventOutcome::skip())
+    ) -> Result<WebhookResponse, ActionError> {
+        Ok(WebhookResponse::accept(TriggerEventOutcome::skip()))
     }
 
     async fn on_deactivate(

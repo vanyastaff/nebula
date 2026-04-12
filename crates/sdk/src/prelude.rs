@@ -14,7 +14,7 @@ pub use anyhow::{Context, Result as AnyhowResult, anyhow, bail};
 // Async traits
 pub use async_trait::async_trait;
 // DX trait families: stateful, trigger
-pub use nebula_action::poll::PollAction;
+pub use nebula_action::poll::{PollAction, PollCycle};
 // Testing harness — context builder, spy emitter/logger/scheduler.
 pub use nebula_action::testing::{
     SpyEmitter, SpyLogger, SpyScheduler, StatefulTestHarness, TestContextBuilder,
@@ -31,7 +31,7 @@ pub use nebula_action::{
     TriggerEvent, TriggerEventOutcome, WebhookRequest, WebhookTriggerAdapter,
     result::BreakReason,
     stateful::{BatchAction, BatchItemResult, PageResult, PaginatedAction, StatefulAction},
-    webhook::WebhookAction,
+    webhook::{WebhookAction, WebhookHttpResponse, WebhookResponse},
 };
 // DX codegen macros — re-exported so authors can write `impl_paginated_action!(...)`
 // without reaching into `nebula_action::`.
