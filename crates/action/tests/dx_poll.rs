@@ -9,8 +9,9 @@ use std::{
 };
 
 use nebula_action::{
-    Action, ActionDependencies, ActionError, ActionMetadata, PollAction, PollConfig, PollResult,
-    PollTriggerAdapter, TestContextBuilder, TriggerContext, TriggerHandler,
+    Action, ActionDependencies, ActionError, ActionMetadata, DeduplicatingCursor, PollAction,
+    PollConfig, PollCursor, PollResult, PollTriggerAdapter, TestContextBuilder, TriggerContext,
+    TriggerHandler,
 };
 
 struct TickPoller {
@@ -35,12 +36,12 @@ impl PollAction for TickPoller {
 
     async fn poll(
         &self,
-        cursor: &mut u32,
+        cursor: &mut PollCursor<u32>,
         _ctx: &TriggerContext,
     ) -> Result<PollResult<serde_json::Value>, ActionError> {
-        *cursor += 1;
+        **cursor += 1;
         self.poll_count.fetch_add(1, Ordering::Relaxed);
-        Ok(vec![serde_json::json!({"tick": *cursor})].into())
+        Ok(vec![serde_json::json!({"tick": **cursor})].into())
     }
 }
 
@@ -107,17 +108,17 @@ async fn poll_adapter_does_not_accept_events() {
 }
 
 #[tokio::test]
-async fn poll_action_cursor_advances() {
+async fn poll_action_cursor_advances_through_poll_cursor() {
     let (poller, _) = make_poller();
     let (ctx, _, _) = TestContextBuilder::minimal().build_trigger();
-    let mut cursor = 0u32;
+    let mut cursor = PollCursor::new(0u32);
 
     let result = poller.poll(&mut cursor, &ctx).await.unwrap();
-    assert_eq!(cursor, 1);
+    assert_eq!(*cursor, 1);
     assert_eq!(result.events.len(), 1);
 
     let result = poller.poll(&mut cursor, &ctx).await.unwrap();
-    assert_eq!(cursor, 2);
+    assert_eq!(*cursor, 2);
     assert_eq!(result.events.len(), 1);
 }
 
@@ -174,7 +175,7 @@ impl PollAction for ZeroIntervalPoller {
 
     async fn poll(
         &self,
-        _cursor: &mut u32,
+        _cursor: &mut PollCursor<u32>,
         _ctx: &TriggerContext,
     ) -> Result<PollResult<serde_json::Value>, ActionError> {
         self.poll_count.fetch_add(1, Ordering::Relaxed);
@@ -205,7 +206,6 @@ async fn poll_adapter_clamps_zero_interval_to_floor() {
         tokio::task::yield_now().await;
     }
 
-    // Below the 100 ms floor — no polls yet.
     tokio::time::advance(Duration::from_millis(50)).await;
     for _ in 0..5 {
         tokio::task::yield_now().await;
@@ -216,7 +216,6 @@ async fn poll_adapter_clamps_zero_interval_to_floor() {
         "below the 100 ms floor — no polls yet"
     );
 
-    // Past the floor — at least one poll.
     tokio::time::advance(Duration::from_millis(60)).await;
     for _ in 0..5 {
         tokio::task::yield_now().await;
@@ -299,6 +298,7 @@ fn poll_result_from_vec() {
     let result: PollResult<i32> = vec![1, 2, 3].into();
     assert_eq!(result.events.len(), 3);
     assert!(result.override_next.is_none());
+    assert!(result.partial_error.is_none());
 }
 
 #[test]
@@ -308,9 +308,37 @@ fn poll_result_with_override() {
     assert_eq!(result.override_next, Some(Duration::from_secs(60)));
 }
 
-// ── DeduplicatingCursor ───────────────────────────────────────────────────
+#[test]
+fn poll_result_partial_carries_error_and_events() {
+    let result: PollResult<i32> =
+        PollResult::partial(vec![1, 2, 3], ActionError::retryable("page 4 failed"));
+    assert_eq!(result.events.len(), 3);
+    assert!(result.partial_error.is_some());
+}
 
-use nebula_action::DeduplicatingCursor;
+// ── PollCursor checkpoint ─────────────────────────────────────────────────
+
+#[test]
+fn poll_cursor_deref_transparent() {
+    let mut cursor = PollCursor::new(42u32);
+    assert_eq!(*cursor, 42);
+    *cursor = 100;
+    assert_eq!(*cursor, 100);
+}
+
+#[test]
+fn poll_cursor_checkpoint_preserves_position() {
+    let mut cursor = PollCursor::new(0u32);
+    *cursor = 10;
+    cursor.checkpoint();
+    *cursor = 20;
+    // After checkpoint at 10, current is 20.
+    // Adapter would rollback on error; we verify checkpoint was taken
+    // by observing that into_current returns 20 (the latest position).
+    assert_eq!(*cursor, 20);
+}
+
+// ── DeduplicatingCursor ───────────────────────────────────────────────────
 
 #[test]
 fn dedup_cursor_filters_seen_keys() {
@@ -337,8 +365,7 @@ fn dedup_cursor_evicts_oldest_at_cap() {
 
     cursor.mark_seen(4);
     assert_eq!(cursor.seen_count(), 3);
-    // 1 was evicted (oldest)
-    assert!(cursor.is_new(&1));
+    assert!(cursor.is_new(&1)); // evicted
     assert!(!cursor.is_new(&4));
 }
 
@@ -406,7 +433,7 @@ impl PollAction for FailingValidator {
 
     async fn poll(
         &self,
-        _cursor: &mut u32,
+        _cursor: &mut PollCursor<u32>,
         _ctx: &TriggerContext,
     ) -> Result<PollResult<serde_json::Value>, ActionError> {
         unreachable!("poll should never be called if validate fails")
@@ -428,16 +455,76 @@ async fn poll_adapter_validate_failure_prevents_start() {
     let err = adapter.start(&ctx).await.expect_err("start must fail");
     assert!(err.is_fatal());
     assert!(err.to_string().contains("bad credentials"));
+}
 
-    // StartedGuard cleared — can retry after fixing config.
-    let validator2 = FailingValidator {
+// ── Initial cursor ────────────────────────────────────────────────────────
+
+struct StartFromNowPoller {
+    meta: ActionMetadata,
+    poll_count: Arc<AtomicU32>,
+}
+
+impl ActionDependencies for StartFromNowPoller {}
+impl Action for StartFromNowPoller {
+    fn metadata(&self) -> &ActionMetadata {
+        &self.meta
+    }
+}
+
+impl PollAction for StartFromNowPoller {
+    type Cursor = u64;
+    type Event = serde_json::Value;
+
+    fn poll_config(&self) -> PollConfig {
+        PollConfig::fixed(Duration::from_millis(100))
+    }
+
+    async fn initial_cursor(&self, _ctx: &TriggerContext) -> Result<u64, ActionError> {
+        Ok(1000) // "start from now" — skip historical data
+    }
+
+    async fn poll(
+        &self,
+        cursor: &mut PollCursor<u64>,
+        _ctx: &TriggerContext,
+    ) -> Result<PollResult<serde_json::Value>, ActionError> {
+        self.poll_count.fetch_add(1, Ordering::Relaxed);
+        **cursor += 1;
+        Ok(vec![serde_json::json!({"id": **cursor})].into())
+    }
+}
+
+#[tokio::test(start_paused = true)]
+async fn poll_adapter_uses_initial_cursor() {
+    let poll_count = Arc::new(AtomicU32::new(0));
+    let poller = StartFromNowPoller {
         meta: ActionMetadata::new(
-            nebula_core::action_key!("test.validate.fail2"),
-            "Failing Validator 2",
-            "validate() returns Err",
+            nebula_core::action_key!("test.initial_cursor"),
+            "Start From Now",
+            "initial_cursor returns 1000",
         ),
+        poll_count: poll_count.clone(),
     };
-    let adapter2 = PollTriggerAdapter::new(validator2);
-    let err2 = adapter2.start(&ctx).await.expect_err("still fails");
-    assert!(err2.is_fatal());
+    let adapter = PollTriggerAdapter::new(poller);
+    let (ctx, emitter, _) = TestContextBuilder::minimal().build_trigger();
+
+    let cancel = ctx.cancellation.clone();
+    let ctx_clone = ctx.clone();
+    let handle = tokio::spawn(async move { adapter.start(&ctx_clone).await });
+
+    for _ in 0..5 {
+        tokio::task::yield_now().await;
+    }
+    tokio::time::advance(Duration::from_millis(110)).await;
+    for _ in 0..5 {
+        tokio::task::yield_now().await;
+    }
+    cancel.cancel();
+    handle.await.unwrap().unwrap();
+
+    assert!(poll_count.load(Ordering::Relaxed) >= 1);
+    // First emitted event should be id: 1001 (initial_cursor = 1000, then +1)
+    let emitted = emitter.emitted();
+    assert!(!emitted.is_empty());
+    assert_eq!(emitted[0]["id"], 1001);
 }

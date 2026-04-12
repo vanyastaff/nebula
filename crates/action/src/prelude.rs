@@ -22,7 +22,7 @@ pub use crate::{
         StreamMode, StreamOutput,
     },
     poll::{
-        DeduplicatingCursor, EmitFailurePolicy, PollAction, PollConfig, PollResult,
+        DeduplicatingCursor, EmitFailurePolicy, PollAction, PollConfig, PollCursor, PollResult,
         PollTriggerAdapter,
     },
     port::{ConnectionFilter, DynamicPort, FlowKind, InputPort, OutputPort, SupportPort},

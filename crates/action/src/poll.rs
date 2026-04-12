@@ -6,13 +6,14 @@
 //! never writes a sleep loop.
 //!
 //! The cursor is in-memory only — across process restarts it resets to
-//! `Default::default()`. Cross-restart persistence requires runtime
-//! storage integration (post-v1).
+//! the value returned by [`PollAction::initial_cursor`]. Cross-restart
+//! persistence requires runtime storage integration (post-v1).
 
 use std::{
     collections::{HashSet, VecDeque},
     future::Future,
     hash::Hash,
+    ops::{Deref, DerefMut},
     sync::atomic::{AtomicBool, Ordering},
     time::{Duration, Instant, SystemTime},
 };
@@ -44,7 +45,8 @@ pub const POLL_INTERVAL_FLOOR: Duration = Duration::from_millis(100);
 /// # Defaults
 ///
 /// `PollConfig::default()` gives a fixed 60 s interval, no backoff, no
-/// jitter, 30 s poll timeout, and `DropAndContinue` on emit failure.
+/// jitter, 30 s poll timeout, `DropAndContinue` on emit failure, and
+/// no event cap.
 /// Use [`PollConfig::fixed`] for a drop-in replacement of the old
 /// `poll_interval()` pattern.
 #[derive(Debug, Clone)]
@@ -74,6 +76,15 @@ pub struct PollConfig {
     /// What happens when `emitter.emit()` or serialization fails for
     /// events within a batch.
     pub emit_failure: EmitFailurePolicy,
+
+    /// Warn threshold for events per cycle. If a single `poll()`
+    /// returns more events than this, the adapter logs a warning.
+    /// `None` = no warning.
+    ///
+    /// Does NOT truncate events — the action is responsible for
+    /// limiting batch size. Use [`PollCursor::checkpoint`] to enable
+    /// incremental progress within paginated polls.
+    pub max_events_per_cycle: Option<usize>,
 }
 
 impl Default for PollConfig {
@@ -85,6 +96,7 @@ impl Default for PollConfig {
             jitter: 0.0,
             poll_timeout: Duration::from_secs(30),
             emit_failure: EmitFailurePolicy::default(),
+            max_events_per_cycle: None,
         }
     }
 }
@@ -134,6 +146,13 @@ impl PollConfig {
         self.emit_failure = policy;
         self
     }
+
+    /// Set event count warning threshold.
+    #[must_use]
+    pub fn with_max_events_per_cycle(mut self, max: usize) -> Self {
+        self.max_events_per_cycle = Some(max);
+        self
+    }
 }
 
 // ── EmitFailurePolicy ─────────────────────────────────────────────────────
@@ -169,8 +188,8 @@ pub enum EmitFailurePolicy {
 
 /// What [`PollAction::poll`] returns.
 ///
-/// Contains the events to emit and an optional per-cycle interval
-/// override (e.g., for `Retry-After` headers from rate-limited APIs).
+/// Contains the events to emit, an optional per-cycle interval
+/// override, and an optional partial error for paginated polls.
 #[derive(Debug)]
 pub struct PollResult<E> {
     /// Events to emit as workflow executions.
@@ -179,14 +198,23 @@ pub struct PollResult<E> {
     /// upstream API provides a `Retry-After` or backoff hint. `None`
     /// means use the normal computed interval.
     pub override_next: Option<Duration>,
+    /// If set, this cycle had an error after producing some events
+    /// (e.g., pagination failed mid-way). The adapter dispatches the
+    /// events, then rolls back the cursor to the last
+    /// [`PollCursor::checkpoint`] and applies error handling (backoff).
+    ///
+    /// For non-paginated polls that fail, return `Err` from `poll()`
+    /// instead — it triggers a full rollback.
+    pub partial_error: Option<ActionError>,
 }
 
 impl<E> PollResult<E> {
-    /// Create a result with events and no interval override.
+    /// Create a result with events, no override, no error.
     pub fn new(events: Vec<E>) -> Self {
         Self {
             events,
             override_next: None,
+            partial_error: None,
         }
     }
 
@@ -196,11 +224,120 @@ impl<E> PollResult<E> {
         self.override_next = Some(interval);
         self
     }
+
+    /// Create a partial result: events from successful pages +
+    /// the error from the failed page. Adapter dispatches the events
+    /// and rolls cursor back to the last checkpoint.
+    pub fn partial(events: Vec<E>, error: ActionError) -> Self {
+        Self {
+            events,
+            override_next: None,
+            partial_error: Some(error),
+        }
+    }
 }
 
 impl<E> From<Vec<E>> for PollResult<E> {
     fn from(events: Vec<E>) -> Self {
         Self::new(events)
+    }
+}
+
+// ── PollCursor ────────────────────────────────────────────────────────────
+
+/// Cursor wrapper with checkpoint capability for incremental progress
+/// inside a single `poll()` call.
+///
+/// The adapter creates a `PollCursor` before each poll cycle. Actions
+/// that fetch paginated data call [`checkpoint`](Self::checkpoint)
+/// after each successfully processed page. On error, the adapter
+/// rolls back to the last checkpoint — not to the pre-poll position
+/// — so completed pages are not re-fetched.
+///
+/// For non-paginated actions, `PollCursor` is transparent: `Deref`
+/// and `DerefMut` delegate to the inner cursor, and no checkpoint
+/// calls are needed. On error, the adapter does a full rollback to
+/// the pre-poll position (since no checkpoints were made, checkpoint
+/// equals the initial position).
+///
+/// # Example — paginated Gmail poll
+///
+/// ```rust,ignore
+/// async fn poll(&self, cursor: &mut PollCursor<GmailCursor>, ctx: &TriggerContext)
+///     -> Result<PollResult<GmailEvent>, ActionError>
+/// {
+///     let mut all_events = Vec::new();
+///     let mut page_token = None;
+///
+///     loop {
+///         let page = match self.client.history_list(cursor.history_id, page_token).await {
+///             Ok(p) => p,
+///             Err(e) => return Ok(PollResult::partial(all_events, e.into())),
+///         };
+///
+///         all_events.extend(page.events);
+///         cursor.history_id = page.last_history_id;
+///         cursor.checkpoint(); // safe to resume from here
+///
+///         match page.next_page_token {
+///             Some(token) => page_token = Some(token),
+///             None => break,
+///         }
+///     }
+///
+///     Ok(all_events.into())
+/// }
+/// ```
+pub struct PollCursor<C> {
+    current: C,
+    checkpoint: C,
+}
+
+impl<C: Clone> PollCursor<C> {
+    /// Create a new poll cursor. The checkpoint is initialized to a
+    /// clone of the current position.
+    ///
+    /// The adapter creates this automatically; action authors use it
+    /// in unit tests to construct a cursor for direct `poll()` calls.
+    pub fn new(cursor: C) -> Self {
+        let checkpoint = cursor.clone();
+        Self {
+            current: cursor,
+            checkpoint,
+        }
+    }
+
+    /// Save the current position as safe-to-resume-from.
+    ///
+    /// Call after each successfully processed page. If `poll()`
+    /// returns [`PollResult::partial`] after this, the adapter
+    /// resumes from this checkpoint instead of re-fetching all pages.
+    pub fn checkpoint(&mut self) {
+        self.checkpoint = self.current.clone();
+    }
+
+    /// Roll back to the last checkpoint (or initial position if
+    /// no checkpoints were made).
+    pub(crate) fn rollback(&mut self) {
+        self.current = self.checkpoint.clone();
+    }
+
+    /// Consume and return the current cursor position.
+    pub(crate) fn into_current(self) -> C {
+        self.current
+    }
+}
+
+impl<C> Deref for PollCursor<C> {
+    type Target = C;
+    fn deref(&self) -> &C {
+        &self.current
+    }
+}
+
+impl<C> DerefMut for PollCursor<C> {
+    fn deref_mut(&mut self) -> &mut C {
+        &mut self.current
     }
 }
 
@@ -227,7 +364,7 @@ const DEFAULT_MAX_SEEN: usize = 1_000;
 ///
 /// type Cursor = DeduplicatingCursor<String, chrono::DateTime<chrono::Utc>>;
 ///
-/// async fn poll(&self, cursor: &mut Cursor, ctx: &TriggerContext)
+/// async fn poll(&self, cursor: &mut PollCursor<Cursor>, ctx: &TriggerContext)
 ///     -> Result<PollResult<Event>, ActionError>
 /// {
 ///     let raw_events = fetch_since(cursor.inner).await?;
@@ -397,14 +534,20 @@ impl<K: Hash + Eq + Clone, C> DeduplicatingCursor<K, C> {
 /// The [`PollTriggerAdapter`] runs a blocking loop in `start()`:
 /// sleep → poll → emit events. Cancellation via `TriggerContext::cancellation`.
 ///
-/// **Note:** The cursor is in-memory only. Across process restarts the cursor
-/// resets to `Default::default()` — full persistence requires runtime storage
-/// integration (post-v1).
+/// # Cursor lifecycle
+///
+/// 1. [`initial_cursor`](Self::initial_cursor) — called once at start; default returns
+///    `Default::default()`. Override to start from "now" instead of "beginning of time" (e.g.,
+///    latest Gmail history ID, current Stripe event cursor).
+/// 2. Each cycle: adapter wraps cursor in [`PollCursor`], calls `poll()`.
+/// 3. On success: cursor advances to `poll_cursor.current`.
+/// 4. On `partial_error`: cursor rolls back to last checkpoint.
+/// 5. On `Err`: cursor rolls back to pre-poll position.
 ///
 /// # Example
 ///
 /// ```rust,ignore
-/// use nebula_action::poll::{PollAction, PollConfig, PollResult};
+/// use nebula_action::poll::{PollAction, PollConfig, PollCursor, PollResult};
 ///
 /// struct RssPoll { feed_url: String }
 /// impl PollAction for RssPoll {
@@ -419,9 +562,9 @@ impl<K: Hash + Eq + Clone, C> DeduplicatingCursor<K, C> {
 ///         ).with_timeout(Duration::from_secs(10))
 ///     }
 ///
-///     async fn poll(&self, cursor: &mut String, ctx: &TriggerContext)
+///     async fn poll(&self, cursor: &mut PollCursor<String>, ctx: &TriggerContext)
 ///         -> Result<PollResult<serde_json::Value>, ActionError> {
-///         let items = fetch_rss(&self.feed_url, cursor).await?;
+///         let items = fetch_rss(&self.feed_url, &*cursor).await?;
 ///         Ok(items.into())
 ///     }
 /// }
@@ -455,17 +598,32 @@ pub trait PollAction: Action + Send + Sync + 'static {
         async { Ok(()) }
     }
 
-    /// Execute one poll cycle. Mutate cursor to track position.
+    /// Initial cursor position on first start.
     ///
-    /// Return events to emit. Empty vec = nothing new (triggers backoff
-    /// if configured).
+    /// Called once before the first poll cycle. Override to start from
+    /// "now" (e.g., latest upstream ID) instead of `Default::default()`
+    /// (beginning of time). This prevents the first-run flood that
+    /// occurs when `Default::default()` means "fetch everything."
     ///
-    /// # Cursor safety
+    /// Default: returns `Self::Cursor::default()`.
+    fn initial_cursor(
+        &self,
+        _ctx: &TriggerContext,
+    ) -> impl Future<Output = Result<Self::Cursor, ActionError>> + Send {
+        async { Ok(Self::Cursor::default()) }
+    }
+
+    /// Execute one poll cycle.
     ///
-    /// The adapter clones the cursor before calling `poll()` and
-    /// restores the snapshot on any error. This means partial cursor
-    /// mutations inside a failed `poll()` are rolled back automatically.
-    /// Actions do not need to manually undo cursor changes on error.
+    /// Receives a [`PollCursor`] wrapping the inner cursor. Use
+    /// `Deref`/`DerefMut` to access the cursor transparently. For
+    /// paginated APIs, call [`PollCursor::checkpoint`] after each
+    /// successful page to enable incremental progress.
+    ///
+    /// Return [`PollResult::partial`] if pagination fails mid-way —
+    /// the adapter dispatches the successful events and rolls back
+    /// to the last checkpoint. Return `Err` for total failure — the
+    /// adapter rolls back to the pre-poll cursor.
     ///
     /// # Errors
     ///
@@ -473,7 +631,7 @@ pub trait PollAction: Action + Send + Sync + 'static {
     /// [`ActionError::Fatal`] to stop the trigger permanently.
     fn poll(
         &self,
-        cursor: &mut Self::Cursor,
+        cursor: &mut PollCursor<Self::Cursor>,
         ctx: &TriggerContext,
     ) -> impl Future<Output = Result<PollResult<Self::Event>, ActionError>> + Send;
 }
@@ -582,13 +740,15 @@ fn action_key_seed(key: &nebula_core::ActionKey) -> u64 {
 /// increase the sleep interval by `backoff_factor` up to
 /// `max_interval`. A non-empty result resets to `base_interval`.
 ///
-/// # Cursor checkpoint
+/// # Cursor rollback strategy
 ///
-/// The adapter unconditionally clones the cursor before calling
-/// `poll()`. On any retryable error or dispatch failure (except
-/// `DropAndContinue`), the cursor is restored from the snapshot.
-/// This prevents cursor corruption from partial mutations inside
-/// a failed `poll()` call.
+/// Three rollback targets depending on outcome:
+///
+/// - **Full success** (`Ok`, no `partial_error`): cursor = final position.
+/// - **Partial success** (`Ok` with `partial_error`): cursor = last [`PollCursor::checkpoint`] (or
+///   initial position if no checkpoints). Events are dispatched before rollback.
+/// - **Total failure** (`Err`): cursor = pre-poll position. No events dispatched.
+/// - **Dispatch failure + `RetryBatch`**: cursor = pre-poll position.
 pub struct PollTriggerAdapter<A: PollAction> {
     action: A,
     started: AtomicBool,
@@ -681,7 +841,7 @@ where
 
         let config = self.action.poll_config();
         let identity_seed = action_key_seed(&self.action.metadata().key);
-        let mut cursor = A::Cursor::default();
+        let mut cursor = self.action.initial_cursor(ctx).await?;
         let mut consecutive_empty: u32 = 0;
         let mut override_next: Option<Duration> = None;
 
@@ -709,16 +869,12 @@ where
                     return Ok(());
                 }
                 () = tokio::time::sleep(interval) => {
-                    // Always clone cursor before poll(). If poll() mutates
-                    // cursor and then returns Err, or dispatch fails, we
-                    // restore from this snapshot. The "don't mutate cursor
-                    // on error" contract is unenforceable by the compiler,
-                    // so the adapter defends against it unconditionally.
-                    let saved_cursor = cursor.clone();
+                    let pre_poll = cursor.clone();
+                    let mut poll_cursor = PollCursor::new(cursor);
 
                     let poll_result = match tokio::time::timeout(
                         config.poll_timeout,
-                        self.action.poll(&mut cursor, ctx),
+                        self.action.poll(&mut poll_cursor, ctx),
                     ).await {
                         Ok(result) => result,
                         Err(_elapsed) => {
@@ -733,31 +889,98 @@ where
                     match poll_result {
                         Ok(result) => {
                             override_next = result.override_next;
+                            let has_partial_error = result.partial_error.is_some();
 
-                            if result.events.is_empty() {
+                            // Warn on event flood.
+                            if let Some(cap) = config.max_events_per_cycle
+                                && result.events.len() > cap
+                            {
+                                ctx.logger.log(
+                                    ActionLogLevel::Warn,
+                                    &format!(
+                                        "poll trigger {}: {} events exceeds \
+                                         max_events_per_cycle ({})",
+                                        self.action.metadata().key,
+                                        result.events.len(),
+                                        cap,
+                                    ),
+                                );
+                            }
+
+                            if result.events.is_empty() && !has_partial_error {
+                                cursor = poll_cursor.into_current();
                                 consecutive_empty = consecutive_empty.saturating_add(1);
+                            } else if result.events.is_empty() && has_partial_error {
+                                // No events, just an error — full rollback.
+                                cursor = pre_poll;
+                                consecutive_empty = consecutive_empty.saturating_add(1);
+                                let err = result.partial_error.unwrap();
+                                if err.is_fatal() {
+                                    return Err(err);
+                                }
+                                if self.poll_warn.should_log() {
+                                    ctx.logger.log(
+                                        ActionLogLevel::Warn,
+                                        &format!(
+                                            "poll trigger {}: partial error (no events): {err}",
+                                            self.action.metadata().key,
+                                        ),
+                                    );
+                                }
                             } else {
+                                // Has events — dispatch them.
                                 // Reset backoff when upstream produced data,
                                 // regardless of dispatch outcome. Backoff
                                 // protects against hammering an idle upstream,
-                                // not against emitter failures. If the emitter
-                                // is broken, polling less won't help — the
-                                // upstream accumulates more events.
+                                // not against emitter failures.
                                 consecutive_empty = 0;
-                                let ok = self.dispatch_events(
-                                    &result.events,
-                                    config.emit_failure,
-                                    ctx,
-                                ).await;
+                                let ok = self
+                                    .dispatch_events(&result.events, config.emit_failure, ctx)
+                                    .await;
 
-                                if !ok {
+                                if ok {
+                                    if has_partial_error {
+                                        // Events dispatched, but poll had a
+                                        // partial error. Roll back to last
+                                        // checkpoint so next cycle resumes
+                                        // from the safe position.
+                                        poll_cursor.rollback();
+                                        cursor = poll_cursor.into_current();
+                                        let err = result.partial_error.unwrap();
+                                        if err.is_fatal() {
+                                            return Err(err);
+                                        }
+                                        consecutive_empty =
+                                            consecutive_empty.saturating_add(1);
+                                        if self.poll_warn.should_log() {
+                                            ctx.logger.log(
+                                                ActionLogLevel::Warn,
+                                                &format!(
+                                                    "poll trigger {}: partial error \
+                                                     after dispatching {} events: {err}",
+                                                    self.action.metadata().key,
+                                                    result.events.len(),
+                                                ),
+                                            );
+                                        }
+                                    } else {
+                                        // Full success.
+                                        cursor = poll_cursor.into_current();
+                                    }
+                                } else {
+                                    // Dispatch failed.
                                     match config.emit_failure {
                                         EmitFailurePolicy::DropAndContinue => {
-                                            // All failures already skipped inside dispatch_events.
-                                            // Cursor stays advanced — intentional for best-effort.
+                                            // Cursor stays advanced — intentional
+                                            // for best-effort.
+                                            if has_partial_error {
+                                                poll_cursor.rollback();
+                                            }
+                                            cursor = poll_cursor.into_current();
                                         }
                                         EmitFailurePolicy::RetryBatch => {
-                                            cursor = saved_cursor;
+                                            // Full rollback to pre-poll.
+                                            cursor = pre_poll;
                                         }
                                         EmitFailurePolicy::StopTrigger => {
                                             return Err(ActionError::fatal(format!(
@@ -772,7 +995,8 @@ where
                         }
                         Err(e) if e.is_fatal() => return Err(e),
                         Err(e) => {
-                            cursor = saved_cursor;
+                            // Total failure — full rollback to pre-poll.
+                            cursor = pre_poll;
                             consecutive_empty = consecutive_empty.saturating_add(1);
                             if self.poll_warn.should_log() {
                                 let action_key = &self.action.metadata().key;

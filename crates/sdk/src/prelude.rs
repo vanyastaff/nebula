@@ -14,7 +14,9 @@ pub use anyhow::{Context, Result as AnyhowResult, anyhow, bail};
 // Async traits
 pub use async_trait::async_trait;
 // DX trait families: stateful, trigger
-pub use nebula_action::poll::{DeduplicatingCursor, PollAction, PollConfig, PollResult};
+pub use nebula_action::poll::{
+    DeduplicatingCursor, PollAction, PollConfig, PollCursor, PollResult,
+};
 // Testing harness — context builder, spy emitter/logger/scheduler.
 pub use nebula_action::testing::{
     SpyEmitter, SpyLogger, SpyScheduler, StatefulTestHarness, TestContextBuilder,

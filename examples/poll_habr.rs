@@ -87,7 +87,7 @@ impl PollAction for HabrRssPollAction {
 
     async fn poll(
         &self,
-        cursor: &mut Self::Cursor,
+        cursor: &mut PollCursor<Self::Cursor>,
         _ctx: &TriggerContext,
     ) -> Result<PollResult<Self::Event>, ActionError> {
         let response = reqwest::get(HABR_RSS_URL).await.map_err(|e| {
@@ -120,13 +120,13 @@ impl PollAction for HabrRssPollAction {
             let Some(pub_date) = parse_rfc2822(item.pub_date().unwrap_or("")) else {
                 continue;
             };
-            if let Some(c) = *cursor
+            if let Some(c) = **cursor
                 && pub_date <= c
             {
                 break;
             }
             new_events.push(build_habr_article(item));
-            *cursor = Some(cursor.map_or(pub_date, |n| n.max(pub_date)));
+            **cursor = Some((*cursor).map_or(pub_date, |n| n.max(pub_date)));
         }
 
         Ok(new_events.into())
