@@ -148,9 +148,18 @@ pub enum EmitFailurePolicy {
     /// Restore cursor to pre-poll position so the next cycle re-fetches
     /// the same data. Use for payment/audit integrations where data
     /// loss is unacceptable.
+    ///
+    /// **At-least-once semantics:** if dispatch partially succeeds
+    /// (some events emitted before the failure), those events are NOT
+    /// rolled back. The cursor rollback causes the next poll to
+    /// re-fetch the same batch, producing duplicates for the events
+    /// that were already emitted. Downstream consumers must be
+    /// idempotent.
     RetryBatch,
     /// Stop the trigger entirely on the first dispatch failure. Use
-    /// when partial processing is worse than no processing.
+    /// when partial processing is worse than no processing. Note:
+    /// events dispatched before the failure are NOT rolled back —
+    /// partial batch delivery is possible.
     StopTrigger,
 }
 
@@ -234,6 +243,8 @@ impl<E> From<Vec<E>> for PollResult<E> {
 /// ```
 pub trait PollAction: Action + Send + Sync + 'static {
     /// Cursor type for tracking poll position.
+    ///
+    /// Cloned once per poll cycle for rollback safety — keep lightweight.
     type Cursor: Serialize + DeserializeOwned + Clone + Default + Send + Sync;
     /// Event type emitted per poll cycle (each becomes a workflow execution).
     type Event: Serialize + Send + Sync;
@@ -248,6 +259,13 @@ pub trait PollAction: Action + Send + Sync + 'static {
     ///
     /// Return events to emit. Empty vec = nothing new (triggers backoff
     /// if configured).
+    ///
+    /// # Cursor safety
+    ///
+    /// The adapter clones the cursor before calling `poll()` and
+    /// restores the snapshot on any error. This means partial cursor
+    /// mutations inside a failed `poll()` are rolled back automatically.
+    /// Actions do not need to manually undo cursor changes on error.
     ///
     /// # Errors
     ///
@@ -299,26 +317,45 @@ impl Drop for StartedGuard<'_> {
 }
 
 /// Compute the sleep duration for the next cycle.
-fn compute_interval(config: &PollConfig, consecutive_empty: u32) -> Duration {
+///
+/// Backoff covers both "no data" and "transient error" cases:
+/// `consecutive_empty` increments on empty results AND retryable
+/// errors, so the adapter backs off when the upstream is down too.
+fn compute_interval(config: &PollConfig, consecutive_empty: u32, identity_seed: u64) -> Duration {
     let base = config.base_interval.as_secs_f64();
     let multiplier = config.backoff_factor.powi(consecutive_empty as i32);
     let raw = base * multiplier;
     let capped = raw.min(config.max_interval.as_secs_f64());
-    let with_jitter = apply_jitter(capped, config.jitter);
+    let with_jitter = apply_jitter(capped, config.jitter, identity_seed);
     Duration::from_secs_f64(with_jitter).max(POLL_INTERVAL_FLOOR)
 }
 
-fn apply_jitter(secs: f64, jitter_fraction: f64) -> f64 {
+/// Apply ±jitter to an interval. `identity_seed` is XOR'd with the
+/// time-based seed so that two triggers starting at the same instant
+/// get different jitter values (thundering herd prevention).
+fn apply_jitter(secs: f64, jitter_fraction: f64, identity_seed: u64) -> f64 {
     if jitter_fraction <= 0.0 {
         return secs;
     }
-    let seed = SystemTime::now()
+    let time_seed = SystemTime::now()
         .duration_since(SystemTime::UNIX_EPOCH)
         .unwrap_or_default()
-        .subsec_nanos();
-    let normalized = f64::from(seed) / f64::from(u32::MAX);
+        .subsec_nanos() as u64;
+    let seed = time_seed ^ identity_seed;
+    let normalized = (seed % 1_000_000) as f64 / 1_000_000.0;
     let jitter = (normalized * 2.0 - 1.0) * jitter_fraction;
     (secs * (1.0 + jitter)).max(0.001)
+}
+
+/// Cheap hash of an action key for jitter identity seed.
+fn action_key_seed(key: &nebula_core::ActionKey) -> u64 {
+    let bytes = key.as_str().as_bytes();
+    let mut h: u64 = 0xcbf2_9ce4_8422_2325; // FNV-1a offset basis
+    for &b in bytes {
+        h ^= u64::from(b);
+        h = h.wrapping_mul(0x0100_0000_01b3); // FNV-1a prime
+    }
+    h
 }
 
 // ── PollTriggerAdapter ────────────────────────────────────────────────────
@@ -341,15 +378,17 @@ fn apply_jitter(secs: f64, jitter_fraction: f64) -> f64 {
 ///
 /// # Backoff
 ///
-/// Consecutive empty poll results (no events) increase the sleep
-/// interval by `backoff_factor` up to `max_interval`. A non-empty
-/// result resets to `base_interval`.
+/// Consecutive empty poll results (no events) AND retryable errors
+/// increase the sleep interval by `backoff_factor` up to
+/// `max_interval`. A non-empty result resets to `base_interval`.
 ///
 /// # Cursor checkpoint
 ///
-/// With [`EmitFailurePolicy::RetryBatch`], the adapter clones the
-/// cursor before calling `poll()` and restores it if dispatch fails.
-/// The action re-fetches the same data on the next cycle.
+/// The adapter unconditionally clones the cursor before calling
+/// `poll()`. On any retryable error or dispatch failure (except
+/// `DropAndContinue`), the cursor is restored from the snapshot.
+/// This prevents cursor corruption from partial mutations inside
+/// a failed `poll()` call.
 pub struct PollTriggerAdapter<A: PollAction> {
     action: A,
     started: AtomicBool,
@@ -439,6 +478,7 @@ where
         let _guard = StartedGuard(&self.started);
 
         let config = self.action.poll_config();
+        let identity_seed = action_key_seed(&self.action.metadata().key);
         let mut cursor = A::Cursor::default();
         let mut consecutive_empty: u32 = 0;
         let mut override_next: Option<Duration> = None;
@@ -460,19 +500,19 @@ where
             let interval = override_next
                 .take()
                 .map(|d| d.max(POLL_INTERVAL_FLOOR))
-                .unwrap_or_else(|| compute_interval(&config, consecutive_empty));
+                .unwrap_or_else(|| compute_interval(&config, consecutive_empty, identity_seed));
 
             tokio::select! {
                 () = ctx.cancellation.cancelled() => {
                     return Ok(());
                 }
                 () = tokio::time::sleep(interval) => {
-                    // Clone cursor for RetryBatch rollback.
-                    let saved_cursor = if config.emit_failure == EmitFailurePolicy::RetryBatch {
-                        Some(cursor.clone())
-                    } else {
-                        None
-                    };
+                    // Always clone cursor before poll(). If poll() mutates
+                    // cursor and then returns Err, or dispatch fails, we
+                    // restore from this snapshot. The "don't mutate cursor
+                    // on error" contract is unenforceable by the compiler,
+                    // so the adapter defends against it unconditionally.
+                    let saved_cursor = cursor.clone();
 
                     let poll_result = match tokio::time::timeout(
                         config.poll_timeout,
@@ -495,6 +535,12 @@ where
                             if result.events.is_empty() {
                                 consecutive_empty = consecutive_empty.saturating_add(1);
                             } else {
+                                // Reset backoff when upstream produced data,
+                                // regardless of dispatch outcome. Backoff
+                                // protects against hammering an idle upstream,
+                                // not against emitter failures. If the emitter
+                                // is broken, polling less won't help — the
+                                // upstream accumulates more events.
                                 consecutive_empty = 0;
                                 let ok = self.dispatch_events(
                                     &result.events,
@@ -505,12 +551,11 @@ where
                                 if !ok {
                                     match config.emit_failure {
                                         EmitFailurePolicy::DropAndContinue => {
-                                            // unreachable: dispatch returns true
+                                            // All failures already skipped inside dispatch_events.
+                                            // Cursor stays advanced — intentional for best-effort.
                                         }
                                         EmitFailurePolicy::RetryBatch => {
-                                            if let Some(saved) = saved_cursor {
-                                                cursor = saved;
-                                            }
+                                            cursor = saved_cursor;
                                         }
                                         EmitFailurePolicy::StopTrigger => {
                                             return Err(ActionError::fatal(format!(
@@ -525,10 +570,7 @@ where
                         }
                         Err(e) if e.is_fatal() => return Err(e),
                         Err(e) => {
-                            // Retryable: restore cursor if RetryBatch.
-                            if let Some(saved) = saved_cursor {
-                                cursor = saved;
-                            }
+                            cursor = saved_cursor;
                             consecutive_empty = consecutive_empty.saturating_add(1);
                             if self.poll_warn.should_log() {
                                 let action_key = &self.action.metadata().key;
