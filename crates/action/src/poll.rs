@@ -76,15 +76,6 @@ pub struct PollConfig {
     /// What happens when `emitter.emit()` or serialization fails for
     /// events within a batch.
     pub emit_failure: EmitFailurePolicy,
-
-    /// Warn threshold for events per cycle. If a single `poll()`
-    /// returns more events than this, the adapter logs a warning.
-    /// `None` = no warning.
-    ///
-    /// Does NOT truncate events — the action is responsible for
-    /// limiting batch size. Use [`PollCursor::checkpoint`] to enable
-    /// incremental progress within paginated polls.
-    pub max_events_per_cycle: Option<usize>,
 }
 
 impl Default for PollConfig {
@@ -96,7 +87,6 @@ impl Default for PollConfig {
             jitter: 0.0,
             poll_timeout: Duration::from_secs(30),
             emit_failure: EmitFailurePolicy::default(),
-            max_events_per_cycle: None,
         }
     }
 }
@@ -146,13 +136,6 @@ impl PollConfig {
         self.emit_failure = policy;
         self
     }
-
-    /// Set event count warning threshold.
-    #[must_use]
-    pub fn with_max_events_per_cycle(mut self, max: usize) -> Self {
-        self.max_events_per_cycle = Some(max);
-        self
-    }
 }
 
 // ── EmitFailurePolicy ─────────────────────────────────────────────────────
@@ -169,6 +152,11 @@ pub enum EmitFailurePolicy {
     /// Restore cursor to pre-poll position so the next cycle re-fetches
     /// the same data. Use for payment/audit integrations where data
     /// loss is unacceptable.
+    ///
+    /// **Always rolls back to pre-poll position**, even if
+    /// [`PollCursor::checkpoint`] was called during the cycle. This
+    /// means paginated polls re-fetch ALL pages (including
+    /// successfully dispatched ones), not just the failed tail.
     ///
     /// **At-least-once semantics:** if dispatch partially succeeds
     /// (some events emitted before the failure), those events are NOT
@@ -716,6 +704,17 @@ fn action_key_seed(key: &nebula_core::ActionKey) -> u64 {
     h
 }
 
+/// Outcome of a resolved poll cycle — drives cursor and backoff in the
+/// main loop.
+struct CycleOutcome<C> {
+    /// New cursor position to store.
+    cursor: C,
+    /// Whether to increment `consecutive_empty` (triggers backoff).
+    backoff: bool,
+    /// One-shot interval override for the next cycle (e.g., Retry-After).
+    override_next: Option<Duration>,
+}
+
 // ── PollTriggerAdapter ────────────────────────────────────────────────────
 
 /// Wraps a [`PollAction`] as a [`dyn TriggerHandler`].
@@ -767,6 +766,130 @@ impl<A: PollAction> PollTriggerAdapter<A> {
             poll_warn: WarnThrottle::new(),
             serialize_warn: WarnThrottle::new(),
             emit_warn: WarnThrottle::new(),
+        }
+    }
+
+    /// Resolve a successful poll cycle: dispatch events, determine cursor
+    /// fate and backoff. Extracted from the `start()` loop to flatten the
+    /// 2×2×3 (events × partial_error × dispatch_policy) matrix.
+    async fn resolve_cycle(
+        &self,
+        result: PollResult<A::Event>,
+        mut poll_cursor: PollCursor<A::Cursor>,
+        pre_poll: A::Cursor,
+        config: &PollConfig,
+        ctx: &TriggerContext,
+    ) -> Result<CycleOutcome<A::Cursor>, ActionError>
+    where
+        A::Event: Send + Sync,
+    {
+        let override_next = result.override_next;
+        let has_partial_error = result.partial_error.is_some();
+
+        // No events.
+        if result.events.is_empty() {
+            return if has_partial_error {
+                let err = result.partial_error.unwrap();
+                if err.is_fatal() {
+                    return Err(err);
+                }
+                if self.poll_warn.should_log() {
+                    ctx.logger.log(
+                        ActionLogLevel::Warn,
+                        &format!(
+                            "poll trigger {}: partial error (no events): {err}",
+                            self.action.metadata().key,
+                        ),
+                    );
+                }
+                Ok(CycleOutcome {
+                    cursor: pre_poll,
+                    backoff: true,
+                    override_next,
+                })
+            } else {
+                Ok(CycleOutcome {
+                    cursor: poll_cursor.into_current(),
+                    backoff: true,
+                    override_next,
+                })
+            };
+        }
+
+        // Has events — dispatch them.
+        let event_count = result.events.len();
+        let dispatch_ok = self
+            .dispatch_events(&result.events, config.emit_failure, ctx)
+            .await;
+
+        if dispatch_ok {
+            if has_partial_error {
+                // Events dispatched, but poll errored mid-pagination.
+                // Roll back to last checkpoint so next cycle resumes
+                // from the safe position.
+                //
+                // Fatal partial_error stops the trigger after
+                // dispatching accumulated events. Dispatched events
+                // are NOT rolled back.
+                poll_cursor.rollback();
+                let err = result.partial_error.unwrap();
+                if err.is_fatal() {
+                    return Err(err);
+                }
+                if self.poll_warn.should_log() {
+                    ctx.logger.log(
+                        ActionLogLevel::Warn,
+                        &format!(
+                            "poll trigger {}: partial error \
+                             after dispatching {event_count} events: {err}",
+                            self.action.metadata().key,
+                        ),
+                    );
+                }
+                // One backoff level: upstream has data but isn't fully
+                // drained — not aggressive, not idle.
+                Ok(CycleOutcome {
+                    cursor: poll_cursor.into_current(),
+                    backoff: true,
+                    override_next,
+                })
+            } else {
+                // Full success.
+                Ok(CycleOutcome {
+                    cursor: poll_cursor.into_current(),
+                    backoff: false,
+                    override_next,
+                })
+            }
+        } else {
+            // Dispatch failed.
+            match config.emit_failure {
+                EmitFailurePolicy::DropAndContinue => {
+                    if has_partial_error {
+                        poll_cursor.rollback();
+                    }
+                    Ok(CycleOutcome {
+                        cursor: poll_cursor.into_current(),
+                        backoff: false,
+                        override_next,
+                    })
+                }
+                EmitFailurePolicy::RetryBatch => {
+                    // Full rollback to pre-poll, NOT to checkpoint.
+                    // Re-fetches all pages including already-dispatched
+                    // ones — at-least-once with maximum overlap.
+                    Ok(CycleOutcome {
+                        cursor: pre_poll,
+                        backoff: false,
+                        override_next,
+                    })
+                }
+                EmitFailurePolicy::StopTrigger => Err(ActionError::fatal(format!(
+                    "poll trigger {}: dispatch failed, \
+                     stopping (StopTrigger policy)",
+                    self.action.metadata().key,
+                ))),
+            }
         }
     }
 
@@ -888,109 +1011,17 @@ where
 
                     match poll_result {
                         Ok(result) => {
-                            override_next = result.override_next;
-                            let has_partial_error = result.partial_error.is_some();
-
-                            // Warn on event flood.
-                            if let Some(cap) = config.max_events_per_cycle
-                                && result.events.len() > cap
-                            {
-                                ctx.logger.log(
-                                    ActionLogLevel::Warn,
-                                    &format!(
-                                        "poll trigger {}: {} events exceeds \
-                                         max_events_per_cycle ({})",
-                                        self.action.metadata().key,
-                                        result.events.len(),
-                                        cap,
-                                    ),
-                                );
-                            }
-
-                            if result.events.is_empty() && !has_partial_error {
-                                cursor = poll_cursor.into_current();
-                                consecutive_empty = consecutive_empty.saturating_add(1);
-                            } else if result.events.is_empty() && has_partial_error {
-                                // No events, just an error — full rollback.
-                                cursor = pre_poll;
-                                consecutive_empty = consecutive_empty.saturating_add(1);
-                                let err = result.partial_error.unwrap();
-                                if err.is_fatal() {
-                                    return Err(err);
-                                }
-                                if self.poll_warn.should_log() {
-                                    ctx.logger.log(
-                                        ActionLogLevel::Warn,
-                                        &format!(
-                                            "poll trigger {}: partial error (no events): {err}",
-                                            self.action.metadata().key,
-                                        ),
-                                    );
-                                }
-                            } else {
-                                // Has events — dispatch them.
-                                // Reset backoff when upstream produced data,
-                                // regardless of dispatch outcome. Backoff
-                                // protects against hammering an idle upstream,
-                                // not against emitter failures.
+                            let had_events = !result.events.is_empty();
+                            let outcome = self.resolve_cycle(
+                                result, poll_cursor, pre_poll, &config, ctx,
+                            ).await?;
+                            cursor = outcome.cursor;
+                            override_next = outcome.override_next;
+                            if had_events && !outcome.backoff {
                                 consecutive_empty = 0;
-                                let ok = self
-                                    .dispatch_events(&result.events, config.emit_failure, ctx)
-                                    .await;
-
-                                if ok {
-                                    if has_partial_error {
-                                        // Events dispatched, but poll had a
-                                        // partial error. Roll back to last
-                                        // checkpoint so next cycle resumes
-                                        // from the safe position.
-                                        poll_cursor.rollback();
-                                        cursor = poll_cursor.into_current();
-                                        let err = result.partial_error.unwrap();
-                                        if err.is_fatal() {
-                                            return Err(err);
-                                        }
-                                        consecutive_empty =
-                                            consecutive_empty.saturating_add(1);
-                                        if self.poll_warn.should_log() {
-                                            ctx.logger.log(
-                                                ActionLogLevel::Warn,
-                                                &format!(
-                                                    "poll trigger {}: partial error \
-                                                     after dispatching {} events: {err}",
-                                                    self.action.metadata().key,
-                                                    result.events.len(),
-                                                ),
-                                            );
-                                        }
-                                    } else {
-                                        // Full success.
-                                        cursor = poll_cursor.into_current();
-                                    }
-                                } else {
-                                    // Dispatch failed.
-                                    match config.emit_failure {
-                                        EmitFailurePolicy::DropAndContinue => {
-                                            // Cursor stays advanced — intentional
-                                            // for best-effort.
-                                            if has_partial_error {
-                                                poll_cursor.rollback();
-                                            }
-                                            cursor = poll_cursor.into_current();
-                                        }
-                                        EmitFailurePolicy::RetryBatch => {
-                                            // Full rollback to pre-poll.
-                                            cursor = pre_poll;
-                                        }
-                                        EmitFailurePolicy::StopTrigger => {
-                                            return Err(ActionError::fatal(format!(
-                                                "poll trigger {}: dispatch failed, \
-                                                 stopping (StopTrigger policy)",
-                                                self.action.metadata().key,
-                                            )));
-                                        }
-                                    }
-                                }
+                            } else {
+                                consecutive_empty =
+                                    consecutive_empty.saturating_add(1);
                             }
                         }
                         Err(e) if e.is_fatal() => return Err(e),

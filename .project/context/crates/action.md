@@ -40,7 +40,7 @@ engine runs them from `nebula-runtime`. `ActionRegistry` lives there, not here.
 - **DeduplicatingCursor<K, C>.** Wrapper cursor with bounded seen-key tracking (HashSet + VecDeque). Solves timestamp-granularity duplication (Gmail/Salesforce/Notion pattern). `filter_new(items, key_fn)` is the primary API. Cap default 1k, FIFO eviction.
 - **PollAction::validate(ctx).** Called once before the poll loop. Default no-op. Return Err to abort activation.
 - **PollAction::initial_cursor(ctx).** Called once before the first cycle. Default returns `Cursor::default()`. Override to start from "now" (prevent first-run flood).
-- **max_events_per_cycle.** Warn-only threshold in PollConfig. No truncation — action responsible for batch size.
+- **RetryBatch + checkpoints.** RetryBatch ALWAYS rolls back to pre-poll, never to checkpoint. Paginated polls with RetryBatch re-fetch all pages on dispatch failure, including already-dispatched ones. At-least-once with maximum overlap. Use DeduplicatingCursor or downstream idempotency.
 - **EmitFailurePolicy.** `DropAndContinue` (default), `RetryBatch` (restore cursor, re-fetch next cycle), `StopTrigger` (halt on first failure).
 - **Event limits.** `WebhookRequest::try_new` enforces `DEFAULT_MAX_BODY_BYTES` (1 MiB) + `MAX_HEADER_COUNT` (128). Returns `DataLimitExceeded` / `Validation`. Use `try_new_with_limits` for providers needing larger caps. Header keys lowercased at construction — `header()` is O(1). Duplicate keys collapse to last value.
 - **Batch error semantics.** `BatchAction::process_item` → `Fatal` aborts the batch. Use `Retryable` for per-item failures the batch should capture and skip past.
