@@ -1,5 +1,10 @@
 # nebula-api Architecture Vision
 
+> ⚠️ **STALE 2026-04-13.** References to `nebula-webhook` (as an
+> optional sibling crate) are obsolete — orphan crate deleted,
+> webhook HTTP ingress now lives in `nebula-api::webhook`. See
+> `docs/plans/2026-04-13-webhook-subsystem-spec.md`.
+
 > **Purpose**: Target architecture and structural principles for a production-grade, scalable API layer. Complements [ARCHITECTURE.md](./ARCHITECTURE.md) with concrete layout and evolution path.  
 > **Aligned with**: [ARCHITECTURE.md](./ARCHITECTURE.md), [API.md](./API.md), [ROADMAP.md](./ROADMAP.md).
 

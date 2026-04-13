@@ -1,5 +1,11 @@
 # Tasks: nebula-api
 
+> ⚠️ **STALE 2026-04-13.** References to `nebula-webhook` are
+> obsolete — orphan crate deleted, webhook HTTP ingress now lives
+> in `nebula-api::webhook`. Task API-T003 (embed nebula-webhook
+> router) is superseded by the new `api::webhook::WebhookTransport`.
+> See `docs/plans/2026-04-13-webhook-subsystem-spec.md`.
+
 **ROADMAP**: [ROADMAP.md](ROADMAP.md) | **PLAN**: [PLAN.md](PLAN.md)
 
 ## Format: `[ID] [P?] Description`

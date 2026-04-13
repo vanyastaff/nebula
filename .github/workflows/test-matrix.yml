@@ -53,7 +53,7 @@ jobs:
         run: |
           set -euo pipefail
 
-          FULL='["nebula-action","nebula-api","nebula-config","nebula-core","nebula-credential","nebula-engine","nebula-error","nebula-eventbus","nebula-execution","nebula-expression","nebula-log","nebula-metrics","nebula-parameter","nebula-plugin","nebula-resilience","nebula-resource","nebula-runtime","nebula-sdk","nebula-storage","nebula-system","nebula-telemetry","nebula-validator","nebula-webhook","nebula-workflow"]'
+          FULL='["nebula-action","nebula-api","nebula-config","nebula-core","nebula-credential","nebula-engine","nebula-error","nebula-eventbus","nebula-execution","nebula-expression","nebula-log","nebula-metrics","nebula-parameter","nebula-plugin","nebula-resilience","nebula-resource","nebula-runtime","nebula-sdk","nebula-storage","nebula-system","nebula-telemetry","nebula-validator","nebula-workflow"]'
           SMOKE='["nebula-core","nebula-engine","nebula-runtime"]'
 
           if [[ "${{ github.event_name }}" == "push" ]]; then

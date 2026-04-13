@@ -1,5 +1,10 @@
 # API
 
+> ⚠️ **STALE 2026-04-13.** References to `nebula-webhook` are
+> obsolete — orphan crate deleted, webhook HTTP ingress now lives
+> in `nebula-api::webhook`. See
+> `docs/plans/2026-04-13-webhook-subsystem-spec.md`.
+
 ## Public Surface
 
 ### Stable APIs

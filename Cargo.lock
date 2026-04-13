@@ -4291,35 +4291,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "nebula-webhook"
-version = "0.1.0"
-dependencies = [
- "async-trait",
- "axum",
- "bytes",
- "chrono",
- "dashmap",
- "hex",
- "hmac 0.13.0",
- "nebula-core",
- "nebula-error",
- "nebula-resilience",
- "nebula-resource",
- "reqwest 0.13.2",
- "serde",
- "serde_json",
- "sha2 0.11.0",
- "thiserror 2.0.18",
- "tokio",
- "tokio-util",
- "tower",
- "tower-http",
- "tracing",
- "tracing-subscriber",
- "uuid",
-]
-
-[[package]]
 name = "nebula-workflow"
 version = "0.1.0"
 dependencies = [

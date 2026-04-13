@@ -1,5 +1,14 @@
 # nebula-api
 
+> ⚠️ **STALE 2026-04-13.** This document predates the webhook
+> subsystem consolidation. References to `nebula-webhook` are
+> obsolete — the orphan crate was deleted and HTTP ingress for
+> webhook triggers now lives inside `nebula-api` itself as
+> `api::webhook::WebhookTransport`. See
+> `docs/plans/2026-04-13-webhook-subsystem-spec.md` and
+> `crates/api/src/webhook/` for the current design. The rest of
+> this file is kept for historical context only.
+
 Unified HTTP server for Nebula: API + webhook on one port.
 
 ## Scope

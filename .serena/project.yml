@@ -162,8 +162,8 @@ initial_prompt: |
 
   Infrastructure + API layer:
     nebula-storage      — storage abstraction; MemoryStorage + PostgresStorage
-    nebula-api          — REST + WebSocket server (axum)
-    nebula-webhook      — inbound webhook ingestion
+    nebula-api          — REST + WebSocket server (axum); hosts webhook HTTP
+                          transport under api::webhook for WebhookAction triggers
     nebula-sdk          — action/plugin author SDK (re-exports core crates)
     nebula-macros       — proc-macros: #[node], #[action], validation derive
 

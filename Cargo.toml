@@ -20,7 +20,6 @@ members = [
     "crates/telemetry",
     "crates/validator",
     "crates/api",
-    "crates/webhook",
     "crates/workflow",
     "crates/sdk/macros-support",
     "crates/resource/macros",
