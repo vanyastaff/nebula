@@ -27,6 +27,7 @@ pub mod models;
 pub mod routes;
 pub mod services;
 pub mod state;
+pub mod webhook;
 
 pub use app::build_app;
 pub use config::ApiConfig;

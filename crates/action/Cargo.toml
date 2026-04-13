@@ -36,6 +36,7 @@ tracing = { workspace = true }
 # of its own Method/HeaderMap newtypes.
 http = { workspace = true }
 bytes = { workspace = true }
+url = { workspace = true }
 
 # Crypto — webhook signature verification primitives (crates::webhook)
 hmac = { workspace = true }

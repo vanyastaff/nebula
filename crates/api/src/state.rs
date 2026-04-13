@@ -12,6 +12,8 @@ use nebula_storage::{ExecutionRepo, WorkflowRepo};
 use nebula_telemetry::metrics::MetricsRegistry;
 use tokio::sync::RwLock;
 
+use crate::webhook::WebhookTransport;
+
 /// Application state passed through `Router::with_state`.
 #[derive(Clone)]
 pub struct AppState {
@@ -45,6 +47,12 @@ pub struct AppState {
     /// Optional plugin registry for the plugin catalog endpoints.
     /// When `None`, the `GET /plugins` endpoints return 503.
     pub plugin_registry: Option<Arc<RwLock<PluginRegistry>>>,
+
+    /// Optional webhook HTTP transport. When `None`, no `/webhooks/*`
+    /// routes are mounted on the app; webhook-style `WebhookAction`
+    /// triggers registered via `ActionRegistry::register_webhook`
+    /// will never fire until the transport is attached.
+    pub webhook_transport: Option<WebhookTransport>,
 }
 
 impl AppState {
@@ -66,6 +74,7 @@ impl AppState {
             metrics_registry: None,
             action_registry: None,
             plugin_registry: None,
+            webhook_transport: None,
         }
     }
 
@@ -97,6 +106,14 @@ impl AppState {
     #[must_use = "builder methods must be chained or built"]
     pub fn with_plugin_registry(mut self, registry: Arc<RwLock<PluginRegistry>>) -> Self {
         self.plugin_registry = Some(registry);
+        self
+    }
+
+    /// Attach a webhook HTTP transport. The router the transport
+    /// exposes gets merged into the main app router in `build_app`.
+    #[must_use = "builder methods must be chained or built"]
+    pub fn with_webhook_transport(mut self, transport: WebhookTransport) -> Self {
+        self.webhook_transport = Some(transport);
         self
     }
 }

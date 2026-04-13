@@ -165,6 +165,14 @@ pub struct TriggerContext {
     pub logger: Arc<dyn ActionLogger>,
     /// Shared health state — adapter writes, runtime reads.
     pub health: Arc<TriggerHealth>,
+    /// Webhook endpoint capability — `Some` only for webhook
+    /// triggers, populated by the HTTP transport at activation time
+    /// so `WebhookAction::on_activate` can read the public URL and
+    /// register it with the external provider.
+    ///
+    /// `None` for poll triggers and any shape that does not own an
+    /// HTTP endpoint.
+    pub webhook: Option<Arc<dyn crate::webhook::WebhookEndpointProvider>>,
 }
 
 impl TriggerContext {
@@ -184,6 +192,7 @@ impl TriggerContext {
             credentials: default_credential_accessor(),
             logger: default_action_logger(),
             health: Arc::new(TriggerHealth::new()),
+            webhook: None,
         }
     }
 
@@ -219,6 +228,22 @@ impl TriggerContext {
     #[must_use]
     pub fn with_health(mut self, health: Arc<TriggerHealth>) -> Self {
         self.health = health;
+        self
+    }
+
+    /// Inject a webhook endpoint provider.
+    ///
+    /// The HTTP transport layer calls this at trigger activation
+    /// time, after it has generated the `(trigger_uuid, nonce)` path
+    /// and built the full public URL. Called on a per-activation
+    /// clone of the context template — do NOT call on a shared
+    /// context.
+    #[must_use]
+    pub fn with_webhook_endpoint(
+        mut self,
+        provider: Arc<dyn crate::webhook::WebhookEndpointProvider>,
+    ) -> Self {
+        self.webhook = Some(provider);
         self
     }
 

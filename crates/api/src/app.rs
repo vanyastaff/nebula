@@ -17,6 +17,16 @@ use crate::{
 pub fn build_app(state: AppState, config: &ApiConfig) -> Router {
     let routes = routes::create_routes(state.clone(), config);
 
+    // Merge the webhook transport router (if attached). Webhook
+    // routes live alongside REST API routes on the same axum app,
+    // so external providers only hit one port. `Router::merge`
+    // works because the webhook router carries its own state type
+    // (`WebhookTransport`) that does not collide with `AppState`.
+    let routes = match state.webhook_transport.clone() {
+        Some(transport) => routes.merge(transport.router()),
+        None => routes,
+    };
+
     // Build middleware stack (ServiceBuilder — сверху вниз)
     let middleware_stack = ServiceBuilder::new()
         // 1. Request tracing

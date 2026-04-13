@@ -623,6 +623,60 @@ pub trait WebhookAction: Action + Send + Sync + 'static {
     }
 }
 
+// ── WebhookEndpointProvider ──────────────────────────────────────────────
+
+/// Capability injected into [`TriggerContext`](crate::context::TriggerContext)
+/// by the HTTP transport layer so webhook actions can discover the
+/// public URL at which external providers should POST.
+///
+/// Implemented by `nebula-api::webhook::EndpointProviderImpl`.
+/// `nebula-action` declares the trait; it does NOT implement it —
+/// the layer system forbids Business → API dependencies.
+///
+/// # Why a capability and not a field on `TriggerContext`
+///
+/// The URL shape is owned by the HTTP transport: it decides the path
+/// prefix, the UUID / nonce format, whether the scheme is https, and
+/// whether the host is a fixed string or a per-tenant subdomain. The
+/// action has no input on any of that — it only needs to read the
+/// final URL and hand it to the provider API at registration time.
+/// Capability injection keeps those decisions out of the action
+/// trait's signature.
+///
+/// # Example
+///
+/// ```rust,ignore
+/// async fn on_activate(&self, ctx: &TriggerContext)
+///     -> Result<Self::State, ActionError>
+/// {
+///     let endpoint = ctx.webhook.as_ref().ok_or_else(|| {
+///         ActionError::fatal("webhook trigger activated without endpoint provider")
+///     })?;
+///     let hook_id = github_api::create_hook(
+///         &self.repo,
+///         endpoint.endpoint_url().as_str(),
+///         &self.secret,
+///     ).await?;
+///     Ok(GitHubState { hook_id })
+/// }
+/// ```
+pub trait WebhookEndpointProvider: Send + Sync + fmt::Debug {
+    /// Full public URL at which the webhook endpoint is reachable.
+    ///
+    /// Transport-dependent format, typically
+    /// `https://<host>/<path_prefix>/<trigger_uuid>/<nonce>`. The
+    /// action hands this URL to the external provider API when
+    /// registering the webhook in `on_activate`.
+    fn endpoint_url(&self) -> &url::Url;
+
+    /// Path component only (no scheme / host).
+    ///
+    /// Useful for embedding in signed payloads where the host is
+    /// not relevant, for multi-tenant routing in downstream
+    /// handlers, or for structured log fields.
+    fn endpoint_path(&self) -> &str;
+}
+
 // ── WebhookTriggerAdapter ────────────────────────────────────────────────────
 
 /// Wraps a [`WebhookAction`] as a [`dyn TriggerHandler`] with state management.

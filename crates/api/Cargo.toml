@@ -23,8 +23,9 @@ nebula-workflow = { path = "../workflow" }
 nebula-action = { path = "../action" }
 nebula-runtime = { path = "../runtime" }
 nebula-plugin = { path = "../plugin" }
+nebula-resilience = { path = "../resilience" }
 
-tokio = { workspace = true, features = ["rt", "rt-multi-thread", "macros", "sync", "net", "signal"] }
+tokio = { workspace = true, features = ["rt", "rt-multi-thread", "macros", "sync", "net", "signal", "time"] }
 axum = { workspace = true }
 tower = { version = "0.5", features = ["timeout", "util", "limit", "load-shed"] }
 tower-http = { workspace = true, features = ["trace", "cors", "compression-full", "limit", "timeout", "catch-panic", "set-header"] }
@@ -37,8 +38,20 @@ uuid = { version = "1.11", features = ["v4", "serde"] }
 jsonwebtoken = { workspace = true }
 futures = "0.3"
 
+# Webhook transport
+dashmap = { workspace = true }
+url = { workspace = true }
+bytes = { workspace = true }
+http = { workspace = true }
+
 [dev-dependencies]
 tracing-subscriber = { workspace = true, features = ["env-filter", "fmt"] }
+hex = { workspace = true }
+hmac = { workspace = true }
+sha2 = { workspace = true }
+tokio = { workspace = true, features = ["test-util"] }
+tokio-util = { workspace = true }
+async-trait = { workspace = true }
 
 [lib]
 doctest = false
