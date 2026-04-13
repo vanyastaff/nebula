@@ -27,7 +27,7 @@ use nebula_plugin_sdk::{
     transport::{self, PluginStream},
 };
 use tokio::{
-    io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader},
+    io::{AsyncBufReadExt, AsyncWriteExt, BufReader},
     process::{Child, Command},
     sync::Mutex,
 };
@@ -69,7 +69,8 @@ pub struct ProcessSandbox {
 
 /// Live connection to a running plugin process.
 ///
-/// Owns the spawned [`Child`] and the two halves of the accepted stream.
+/// Owns the spawned [`Child`] and the two halves of the accepted stream
+/// (reader is wrapped in `BufReader` for efficient line-delimited reads).
 /// When dropped, `kill_on_drop(true)` on the child ensures the OS process
 /// is terminated; the socket/pipe is released by `PluginStream`'s cleanup
 /// guard on the plugin side.
@@ -78,23 +79,40 @@ struct PluginHandle {
     /// child. Read nowhere; the underscore prefix silences dead-code
     /// warnings.
     _child: Child,
-    stream: PluginStream,
+    /// Buffered reader over the stream's read half. Crucial for
+    /// throughput — byte-at-a-time reads hit ~4 MB/s, BufReader reaches
+    /// hundreds of MB/s on local sockets/pipes.
+    reader: BufReader<tokio::io::ReadHalf<PluginStream>>,
+    /// Owning write half for envelope dispatch.
+    writer: tokio::io::WriteHalf<PluginStream>,
+    /// Scratch string reused across `recv_envelope` calls to avoid
+    /// per-call allocation.
     line_buf: String,
 }
 
 impl PluginHandle {
+    fn new(child: Child, stream: PluginStream) -> Self {
+        let (read_half, write_half) = tokio::io::split(stream);
+        Self {
+            _child: child,
+            reader: BufReader::new(read_half),
+            writer: write_half,
+            line_buf: String::with_capacity(512),
+        }
+    }
+
     async fn send_envelope(&mut self, envelope: &HostToPlugin) -> Result<(), ActionError> {
         let encoded = serde_json::to_string(envelope)
             .map_err(|e| ActionError::fatal(format!("envelope serialization: {e}")))?;
-        self.stream
+        self.writer
             .write_all(encoded.as_bytes())
             .await
             .map_err(|e| ActionError::fatal(format!("plugin write error: {e}")))?;
-        self.stream
+        self.writer
             .write_all(b"\n")
             .await
             .map_err(|e| ActionError::fatal(format!("plugin write newline: {e}")))?;
-        self.stream
+        self.writer
             .flush()
             .await
             .map_err(|e| ActionError::fatal(format!("plugin flush: {e}")))?;
@@ -102,25 +120,16 @@ impl PluginHandle {
     }
 
     async fn recv_envelope(&mut self) -> Result<PluginToHost, ActionError> {
-        // Byte-at-a-time to avoid maintaining a separate BufReader that
-        // would own the stream. Line volume per invocation is low.
         self.line_buf.clear();
-        let mut byte = [0u8; 1];
-        loop {
-            let n = self
-                .stream
-                .read(&mut byte)
-                .await
-                .map_err(|e| ActionError::fatal(format!("plugin read error: {e}")))?;
-            if n == 0 {
-                return Err(ActionError::fatal(
-                    "plugin closed transport without sending a response envelope",
-                ));
-            }
-            if byte[0] == b'\n' {
-                break;
-            }
-            self.line_buf.push(byte[0] as char);
+        let n = self
+            .reader
+            .read_line(&mut self.line_buf)
+            .await
+            .map_err(|e| ActionError::fatal(format!("plugin read error: {e}")))?;
+        if n == 0 {
+            return Err(ActionError::fatal(
+                "plugin closed transport without sending a response envelope",
+            ));
         }
         let trimmed = self.line_buf.trim();
         serde_json::from_str::<PluginToHost>(trimmed)
@@ -356,11 +365,7 @@ impl ProcessSandbox {
             .await
             .map_err(|e| ActionError::fatal(format!("plugin transport dial failed: {e}")))?;
 
-        Ok(PluginHandle {
-            _child: child,
-            stream,
-            line_buf: String::with_capacity(512),
-        })
+        Ok(PluginHandle::new(child, stream))
     }
 }
 

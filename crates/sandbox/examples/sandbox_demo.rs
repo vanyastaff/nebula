@@ -13,7 +13,10 @@
 //! without ever going back to zero. If you see the counter reset between
 //! calls, the long-lived `PluginHandle` is broken.
 
-use std::{path::PathBuf, time::Duration};
+use std::{
+    path::PathBuf,
+    time::{Duration, Instant},
+};
 
 use nebula_sandbox::{ProcessSandbox, capabilities::PluginCapabilities};
 use serde_json::json;
@@ -118,6 +121,85 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         Ok(v) => println!("unexpected ok: {v}"),
         Err(e) => println!("error (expected): {e}"),
     }
+    println!();
+
+    // 6. Panic probe. Plugin panics inside `execute`; its process dies; host detects the broken
+    //    connection on the retry path. Subsequent calls should succeed against a fresh plugin
+    //    process — counter will reset because we lost state.
+    println!("--- step 6: plugin panic + auto-respawn ---");
+    let before = sandbox.invoke("current", json!({})).await?;
+    println!("before panic: current = {before}");
+    let t0 = Instant::now();
+    match sandbox.invoke("panic", json!({})).await {
+        Ok(v) => println!("unexpected ok: {v}"),
+        Err(e) => println!("panic call returned: {e} (took {:?})", t0.elapsed()),
+    }
+    // Next call should spawn a fresh plugin and start from zero.
+    let after_panic = sandbox.invoke("increment", json!({ "amount": 7 })).await?;
+    println!("after panic (fresh plugin): increment(7) → {after_panic}");
+    println!();
+
+    // 7. Timeout probe. Use a separate short-timeout sandbox so we don't affect the main one.
+    //    Plugin sleeps longer than the timeout.
+    println!("--- step 7: slow action hits per-call timeout ---");
+    let fast_binary = locate_counter_binary().unwrap();
+    let fast_sandbox = ProcessSandbox::new(
+        fast_binary,
+        Duration::from_millis(300),
+        PluginCapabilities::trusted(),
+    );
+    let t0 = Instant::now();
+    match fast_sandbox.invoke("slow", json!({ "millis": 2000 })).await {
+        Ok(v) => println!("unexpected ok: {v}"),
+        Err(e) => println!("slow call returned: {e} (took {:?})", t0.elapsed()),
+    }
+    drop(fast_sandbox);
+    println!();
+
+    // 8. Big payload probe. Host `recv_envelope` currently reads byte-at-a-time, so this is where
+    //    we'll see if that matters for KB-range responses.
+    println!("--- step 8: large payload round-trip ---");
+    for kb in [10_u64, 100, 500, 1000] {
+        let t0 = Instant::now();
+        match sandbox.invoke("big", json!({ "kb": kb })).await {
+            Ok(v) => {
+                let size = v.get("size_bytes").and_then(|x| x.as_u64()).unwrap_or(0);
+                let elapsed = t0.elapsed();
+                let throughput_kbps = (size as f64) / 1024.0 / elapsed.as_secs_f64();
+                println!(
+                    "big(kb={kb:>4}) → {size:>7} bytes in {elapsed:>10.3?} ({throughput_kbps:>8.1} KB/s)"
+                );
+            }
+            Err(e) => println!("big(kb={kb}) error: {e}"),
+        }
+    }
+    println!();
+
+    // 9. Latency probe. 100 rapid increments on the cached handle. Measures per-call wall time for
+    //    small envelopes round-tripping over the long-lived socket. No respawn should occur during
+    //    the loop.
+    println!("--- step 9: 100 rapid increments (hot-path latency) ---");
+    sandbox.invoke("reset", json!({})).await?;
+    let mut latencies: Vec<Duration> = Vec::with_capacity(100);
+    let loop_start = Instant::now();
+    for _ in 0..100 {
+        let t0 = Instant::now();
+        sandbox.invoke("increment", json!({ "amount": 1 })).await?;
+        latencies.push(t0.elapsed());
+    }
+    let total = loop_start.elapsed();
+    let final_total = sandbox.invoke("current", json!({})).await?;
+    latencies.sort();
+    let min = latencies.first().copied().unwrap_or_default();
+    let max = latencies.last().copied().unwrap_or_default();
+    let p50 = latencies[50];
+    let p95 = latencies[95];
+    let p99 = latencies[99];
+    let mean = total / 100;
+    println!(
+        "100 increments in {total:?} — min={min:?} p50={p50:?} p95={p95:?} p99={p99:?} max={max:?} mean={mean:?}"
+    );
+    println!("final total: {final_total}");
     println!();
 
     println!("--- done: plugin process will be killed via kill_on_drop when sandbox drops ---");

@@ -11,7 +11,10 @@
 //! counter would reset every time; seeing it accumulate proves slice 1c's
 //! long-lived `PluginHandle` is live.
 
-use std::sync::atomic::{AtomicI64, Ordering};
+use std::{
+    sync::atomic::{AtomicI64, Ordering},
+    time::Duration,
+};
 
 use nebula_plugin_sdk::{PluginCtx, PluginError, PluginHandler, PluginMeta, run_duplex};
 use serde_json::{Value, json};
@@ -31,6 +34,17 @@ impl PluginHandler for CounterPlugin {
             )
             .with_action("current", "Current", "Return the current running total")
             .with_action("reset", "Reset", "Reset the running total to zero")
+            .with_action("panic", "Panic", "Deliberately panic (probe)")
+            .with_action(
+                "slow",
+                "Slow",
+                "Sleep for `millis` then return (probe timeout handling)",
+            )
+            .with_action(
+                "big",
+                "Big",
+                "Return a payload of roughly `kb` kilobytes (probe large IO)",
+            )
     }
 
     async fn execute(
@@ -58,6 +72,25 @@ impl PluginHandler for CounterPlugin {
                 Ok(json!({
                     "total": 0,
                     "reset": true,
+                }))
+            }
+            // Probe actions for slice 1c validation — exercise edge cases
+            // in the long-lived plugin lifecycle.
+            "panic" => {
+                panic!("boom from counter plugin (probe)");
+            }
+            "slow" => {
+                let millis = input.get("millis").and_then(|v| v.as_u64()).unwrap_or(2000);
+                tokio::time::sleep(Duration::from_millis(millis)).await;
+                Ok(json!({ "slept_ms": millis }))
+            }
+            "big" => {
+                let kb = input.get("kb").and_then(|v| v.as_u64()).unwrap_or(100);
+                let len = (kb as usize) * 1024;
+                let data: String = "x".repeat(len);
+                Ok(json!({
+                    "size_bytes": len,
+                    "data": data,
                 }))
             }
             other => Err(PluginError::fatal(
