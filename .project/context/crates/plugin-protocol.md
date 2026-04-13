@@ -1,25 +1,26 @@
 # nebula-plugin-protocol
-Typed stdin/stdout JSON protocol for process-isolated community plugins.
+Wire protocol for process-isolated plugins. Two versions coexist during Phase 1 migration.
 
 ## Invariants
-- Plugin authors depend ONLY on this crate — not on nebula-action or nebula-core.
-- Protocol is request/response over stdin/stdout: one `PluginRequest` in, one `PluginResponse` out.
-- `__metadata__` is a reserved action key — returns `PluginMetadata` with plugin info and action list.
-- Tagged enum serialization (`#[serde(tag = "status")]`) — no ambiguity between Ok and Error.
+- Plugin authors depend only on this crate. No `nebula-action` / `nebula-core` leakage.
+- **v1 (one-shot, legacy)**: `PluginRequest` in, `PluginResponse` out, exit. Used by current `ProcessSandbox`. Deleted in slice 1b.
+- **v2 (duplex, `duplex` module)**: bidirectional line-delimited JSON, one envelope per `\n`. `DUPLEX_PROTOCOL_VERSION = 2`. Tagged by `kind`. Flat variants (`ActionResultOk` / `ActionResultError`), no nested flattening.
 
 ## Key Decisions
-- Separate from nebula-action: plugins don't need the full action trait system. They implement `PluginHandler` (metadata + execute) instead.
-- `PluginResponse::Error` carries `retryable: bool` — maps to `ActionError::Retryable` / `Fatal` on host side.
-- `run()` entry point handles the protocol loop — plugin author just implements the trait.
-- String-based error codes (e.g., "TIMEOUT", "RATE_LIMIT") — no dependency on `ErrorCode` enum.
-- Minimal dependencies: only `serde` + `serde_json`.
+- Slice 1a shipped duplex JSON with **zero new deps** — only pre-existing `serde` + `serde_json`. Slice 1b adds `prost` for protobuf, 1c adds `tonic` + `rustls` + `rcgen` for gRPC over UDS/TCP.
+- Flat enum variants — serde untagged flattening is fragile, flat variants round-trip cleanly.
+- String error codes; no `ErrorCode` enum dep.
 
 ## Traps
-- `run()` panics on broken stdin/stdout — intentional, a plugin with broken I/O cannot function.
-- Protocol version must match between host and plugin — no version negotiation yet.
-- Action keys in plugin-protocol use full `plugin.action` format (e.g., "telegram.send_message"), unlike nebula-action where ActionKey is just the action name.
+- v1 and v2 are **incompatible on the wire**. Only `ProcessSandbox` (v1) is currently wired.
+- v1 `run()` panics on broken stdio — intentional.
+- v2 parser is permissive: malformed lines logged via `tracing::warn!` and skipped.
+- v2 ignores `Cancel` / `RpcResponseOk` / `RpcResponseError` in slice 1a. Slice 1b must route them to pending-call tables or they leak.
+- Protocol version matching happens at spawn handshake (slice 1d), not runtime.
 
 ## Relations
-- Used by community plugin binaries (external crate consumers).
-- Host side (nebula-sandbox) deserializes the same types.
-- Does NOT depend on nebula-action, nebula-core, or any other workspace crate.
+- Used by community plugin binaries via `nebula-plugin-sdk`.
+- `nebula-sandbox::ProcessSandbox` consumes v1 today. v2 host consumer lands slice 1b.
+- No internal deps.
+
+<!-- reviewed: 2026-04-13 — Phase 1 slice 1a -->
