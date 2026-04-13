@@ -40,17 +40,18 @@ use std::{
         Arc,
         atomic::{AtomicU32, Ordering},
     },
-    time::SystemTime,
+    time::{Duration, SystemTime},
 };
 
 use async_trait::async_trait;
+use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64_STANDARD};
 use bytes::Bytes;
 use hmac::{Hmac, KeyInit, Mac};
 use http::{HeaderMap, HeaderName, HeaderValue, Method, StatusCode};
 use parking_lot::RwLock;
 use sha2::Sha256;
 use subtle::ConstantTimeEq;
-use tokio::sync::oneshot;
+use tokio::sync::{Notify, oneshot};
 
 use crate::{
     action::Action,
@@ -78,11 +79,14 @@ pub const DEFAULT_MAX_BODY_BYTES: usize = 1024 * 1024;
 /// Maximum header count accepted by [`WebhookRequest::try_new`].
 ///
 /// RFC 9110 does not mandate a limit; most HTTP servers cap at 100.
-/// We allow 128 to leave headroom for providers that include many
-/// tracing/forwarding headers, while preventing an O(n²) CPU DoS if an
-/// action called `header()` in a loop against a huge attacker-supplied
-/// header set.
-pub const MAX_HEADER_COUNT: usize = 128;
+/// We allow 256 to accommodate modern deployments that stack
+/// Cloudflare + NGINX + a service-mesh sidecar in front of the
+/// webhook endpoint — each layer typically adds 10–30 tracing,
+/// forwarding, and auth headers, so 60–80 is a legitimate baseline
+/// and 128 (our previous cap) was tight. 256 still prevents an
+/// O(n²) CPU DoS if an action calls `header()` in a loop against a
+/// huge attacker-supplied header set.
+pub const MAX_HEADER_COUNT: usize = 256;
 
 // ── WebhookRequest ──────────────────────────────────────────────────────────
 
@@ -281,13 +285,52 @@ impl WebhookRequest {
     /// Parse the body as JSON.
     ///
     /// The body is already bounded by the construction-time limit, so
-    /// this call inherits that DoS protection without an additional
-    /// byte-size guard.
+    /// this call inherits that byte-size DoS protection.
+    ///
+    /// # Security — depth not checked
+    ///
+    /// `serde_json` does **not** cap recursion depth by default. A
+    /// hostile 1 MiB body containing 100 000 levels of `{"a":`
+    /// followed by matching `}` will happily parse and may overflow
+    /// the tokio worker thread stack (2 MiB on Linux release
+    /// builds). For webhook endpoints that parse untrusted JSON,
+    /// prefer [`body_json_bounded`](Self::body_json_bounded) which
+    /// pre-scans the byte stream for nesting depth before invoking
+    /// `serde_json`.
+    ///
+    /// Use `body_json` only when you trust the payload source (e.g.,
+    /// a provider that has its own schema enforcement) or when your
+    /// target type deserialises into a small fixed-depth structure.
     ///
     /// # Errors
     ///
     /// Returns `Err` if the body is not valid JSON.
     pub fn body_json<T: serde::de::DeserializeOwned>(&self) -> Result<T, serde_json::Error> {
+        serde_json::from_slice(&self.body)
+    }
+
+    /// Parse the body as JSON with a hard cap on nesting depth.
+    ///
+    /// Scans the body bytes once, tracking `{`/`[` vs `}`/`]` depth
+    /// and skipping the contents of JSON strings (with `\\`/`\"`
+    /// escape handling). If the depth at any point exceeds
+    /// `max_depth`, returns a custom serde error WITHOUT invoking
+    /// `serde_json`.
+    ///
+    /// Recommended `max_depth`: **64**. Real webhook payloads rarely
+    /// exceed 10 levels; 64 leaves headroom for deeply nested
+    /// metadata (Slack blocks, GitHub check runs) while staying well
+    /// below stack-overflow territory.
+    ///
+    /// # Errors
+    ///
+    /// Returns `Err` if the body is not valid JSON, or if the
+    /// pre-scan reports nesting depth above `max_depth`.
+    pub fn body_json_bounded<T: serde::de::DeserializeOwned>(
+        &self,
+        max_depth: usize,
+    ) -> Result<T, serde_json::Error> {
+        check_json_depth(&self.body, max_depth)?;
         serde_json::from_slice(&self.body)
     }
 
@@ -605,7 +648,12 @@ pub trait WebhookAction: Action + Send + Sync + 'static {
 pub struct WebhookTriggerAdapter<A: WebhookAction> {
     action: A,
     state: RwLock<Option<Arc<A::State>>>,
-    in_flight: AtomicU32,
+    /// Shared with every [`InFlightGuard`] so the guard can decrement
+    /// and notify on drop without needing a lifetime back to `self`.
+    in_flight: Arc<AtomicU32>,
+    /// Notifies `stop()` when the in-flight counter hits zero.
+    /// Replaces the old `yield_now` spin loop.
+    idle_notify: Arc<Notify>,
 }
 
 impl<A: WebhookAction> WebhookTriggerAdapter<A> {
@@ -615,17 +663,26 @@ impl<A: WebhookAction> WebhookTriggerAdapter<A> {
         Self {
             action,
             state: RwLock::new(None),
-            in_flight: AtomicU32::new(0),
+            in_flight: Arc::new(AtomicU32::new(0)),
+            idle_notify: Arc::new(Notify::new()),
         }
     }
 }
 
-/// RAII guard that decrements the in-flight counter on drop.
-struct InFlightGuard<'a>(&'a AtomicU32);
+/// RAII guard that decrements the in-flight counter on drop and
+/// wakes any `stop()` waiter when the counter transitions to zero.
+struct InFlightGuard {
+    counter: Arc<AtomicU32>,
+    notify: Arc<Notify>,
+}
 
-impl Drop for InFlightGuard<'_> {
+impl Drop for InFlightGuard {
     fn drop(&mut self) {
-        self.0.fetch_sub(1, Ordering::Release);
+        // fetch_sub returns the PREVIOUS value. If it was 1, the new
+        // value is 0 — that's when a stop() waiter can proceed.
+        if self.counter.fetch_sub(1, Ordering::AcqRel) == 1 {
+            self.notify.notify_waiters();
+        }
     }
 }
 
@@ -688,12 +745,29 @@ where
         let stored = self.state.write().take();
         match stored {
             Some(arc_state) => {
-                // Wait for in-flight handle_event calls to complete before
-                // calling on_deactivate. Each in-flight request holds its
-                // own Arc clone, so on_deactivate sees the state after all
-                // requests finish (not while they're mid-flight).
-                while self.in_flight.load(Ordering::Acquire) > 0 {
-                    tokio::task::yield_now().await;
+                // Wait for in-flight handle_event calls to complete
+                // before calling on_deactivate. Replaces the old
+                // `yield_now` busy-wait with a tokio::sync::Notify
+                // waiter — the last `InFlightGuard::drop` calls
+                // `notify_waiters` when the counter transitions to 0.
+                //
+                // The check + await pattern protects against the race
+                // where all in-flight requests finish BEFORE stop()
+                // reaches the notified() call: we check first, and
+                // only await if there's still work in flight.
+                loop {
+                    if self.in_flight.load(Ordering::Acquire) == 0 {
+                        break;
+                    }
+                    // Register interest before re-checking the counter
+                    // so we don't miss the notification.
+                    let notified = self.idle_notify.notified();
+                    tokio::pin!(notified);
+                    notified.as_mut().enable();
+                    if self.in_flight.load(Ordering::Acquire) == 0 {
+                        break;
+                    }
+                    notified.await;
                 }
                 let owned = Arc::unwrap_or_clone(arc_state);
                 self.action.on_deactivate(owned, ctx).await
@@ -746,20 +820,88 @@ where
         let response_tx = request.take_response_tx();
 
         self.in_flight.fetch_add(1, Ordering::AcqRel);
-        let _guard = InFlightGuard(&self.in_flight);
+        let _guard = InFlightGuard {
+            counter: Arc::clone(&self.in_flight),
+            notify: Arc::clone(&self.idle_notify),
+        };
 
         // Clone Arc under read lock; the guard drops at end of statement BEFORE
         // the await on handle_request. Holding a parking_lot guard across .await
         // would be unsound (non-Send) and risk re-entry panic with start/stop.
-        let state = self.state.read().as_ref().cloned().ok_or_else(|| {
-            ActionError::fatal("handle_event called before start — no state available")
-        })?;
+        let state = match self.state.read().as_ref().cloned() {
+            Some(s) => s,
+            None => {
+                // State could be None in two situations: (1) genuine
+                // "before start" programmer error, or (2) a race with
+                // stop() that already took the state. Both should not
+                // hang the transport — send a 500 so the caller gets
+                // a real HTTP response instead of `RecvError`.
+                if let Some(tx) = response_tx {
+                    let _ = tx.send(WebhookHttpResponse::new(
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        Bytes::new(),
+                    ));
+                }
+                ctx.health.record_error();
+                return Err(ActionError::fatal(
+                    "handle_event called before start or after stop — no state available",
+                ));
+            }
+        };
 
-        let response = self.action.handle_request(&request, &state, ctx).await?;
+        // H6 — cancellation-safe dispatch. If the trigger is being
+        // shut down mid-request, send `503 Service Unavailable` to
+        // the external caller and return a retryable error so the
+        // runtime records it and the task exits cleanly. Otherwise
+        // race the handler normally.
+        let response = tokio::select! {
+            biased;
+            () = ctx.cancellation.cancelled() => {
+                if let Some(tx) = response_tx {
+                    let _ = tx.send(WebhookHttpResponse::new(
+                        StatusCode::SERVICE_UNAVAILABLE,
+                        Bytes::from_static(b"shutting down"),
+                    ));
+                }
+                ctx.health.record_error();
+                return Err(ActionError::retryable(
+                    "webhook trigger cancelled mid-request",
+                ));
+            }
+            result = self.action.handle_request(&request, &state, ctx) => {
+                // H1 — on handler error, send a 500 via oneshot BEFORE
+                // propagating Err. Without this, the transport receives
+                // RecvError and has to guess the HTTP status.
+                match result {
+                    Ok(r) => r,
+                    Err(e) => {
+                        if let Some(tx) = response_tx {
+                            let _ = tx.send(WebhookHttpResponse::new(
+                                StatusCode::INTERNAL_SERVER_ERROR,
+                                Bytes::new(),
+                            ));
+                        }
+                        ctx.health.record_error();
+                        return Err(e);
+                    }
+                }
+            }
+        };
+
         let (http_response, outcome) = response.into_parts();
 
         if let Some(tx) = response_tx {
             let _ = tx.send(http_response);
+        }
+
+        // H7 — health: emit = success, skip = idle-equivalent.
+        // Matches poll's record_success/record_idle split.
+        match &outcome {
+            TriggerEventOutcome::Emit(_) => ctx.health.record_success(1),
+            TriggerEventOutcome::EmitMany(batch) => {
+                ctx.health.record_success(batch.len() as u64);
+            }
+            TriggerEventOutcome::Skip => ctx.health.record_idle(),
         }
 
         Ok(outcome)
@@ -812,6 +954,153 @@ impl SignatureOutcome {
     }
 }
 
+/// Pre-scan JSON bytes for maximum nesting depth.
+///
+/// Single-pass byte scan that tracks `{`/`[` vs `}`/`]` depth,
+/// skipping the contents of JSON strings (with `\\` escape
+/// handling). Returns an error synthesised via [`serde::de::Error`]
+/// so `body_json_bounded` can report a uniform error type.
+///
+/// This is NOT a full JSON validator — malformed input will fall
+/// through to `serde_json` for a real error report. The only thing
+/// this guards is stack-overflow from pathologically nested input
+/// that would otherwise blow the tokio worker stack.
+fn check_json_depth(bytes: &[u8], max_depth: usize) -> Result<(), serde_json::Error> {
+    let mut depth: usize = 0;
+    let mut in_string = false;
+    let mut escape = false;
+
+    for &b in bytes {
+        if escape {
+            escape = false;
+            continue;
+        }
+        if in_string {
+            match b {
+                b'\\' => escape = true,
+                b'"' => in_string = false,
+                _ => {}
+            }
+            continue;
+        }
+        match b {
+            b'"' => in_string = true,
+            b'{' | b'[' => {
+                depth = depth.saturating_add(1);
+                if depth > max_depth {
+                    return Err(<serde_json::Error as serde::de::Error>::custom(format!(
+                        "webhook body JSON exceeds max depth {max_depth}"
+                    )));
+                }
+            }
+            b'}' | b']' => {
+                depth = depth.saturating_sub(1);
+            }
+            _ => {}
+        }
+    }
+    Ok(())
+}
+
+/// Result of a strict single-value header lookup.
+///
+/// Used by signature verification to reject proxy-chain header
+/// duplication attacks (H3 in the webhook hardening audit).
+enum HeaderLookup<'a> {
+    Missing,
+    One(&'a str),
+    Multiple,
+}
+
+/// Look up a header and require exactly one value.
+///
+/// Returns `Multiple` if two or more header values are present with
+/// the same name, or if the single value is not valid ASCII.
+fn single_header_value<'a>(headers: &'a HeaderMap, name: &HeaderName) -> HeaderLookup<'a> {
+    let mut iter = headers.get_all(name).iter();
+    let Some(first) = iter.next() else {
+        return HeaderLookup::Missing;
+    };
+    if iter.next().is_some() {
+        return HeaderLookup::Multiple;
+    }
+    match first.to_str() {
+        Ok(s) => HeaderLookup::One(s),
+        Err(_) => HeaderLookup::Multiple,
+    }
+}
+
+/// Build an `HmacSha256` over `body`. Panic-free by construction:
+/// HMAC (RFC 2104) accepts any key length, so `new_from_slice` only
+/// fails for block-cipher MACs that don't apply here.
+fn hmac_sha256_over(secret: &[u8], body: &[u8]) -> HmacSha256 {
+    #[allow(clippy::expect_used)]
+    let mut mac =
+        HmacSha256::new_from_slice(secret).expect("HMAC accepts any key length (RFC 2104)");
+    mac.update(body);
+    mac
+}
+
+/// Timing-invariant hex-HMAC verification (H9).
+///
+/// Always runs the full MAC computation, regardless of whether the
+/// incoming hex decodes successfully. This avoids a data-dependent
+/// early return that could leak header well-formedness via timing.
+/// A decode failure substitutes a zero-filled 32-byte expected tag;
+/// the constant-time compare then fails, and the final result is
+/// `Invalid` — identical in duration to a valid-hex mismatch.
+fn verify_hex_hmac_timing_invariant(
+    secret: &[u8],
+    body: &[u8],
+    sig_header: &str,
+) -> SignatureOutcome {
+    // Strip the GitHub-style prefix if present.
+    let sig_hex = sig_header
+        .strip_prefix("sha256=")
+        .unwrap_or(sig_header)
+        .trim();
+
+    let (expected, decode_ok) = match hex::decode(sig_hex) {
+        Ok(v) => (v, true),
+        Err(_) => (vec![0u8; 32], false),
+    };
+
+    let mac = hmac_sha256_over(secret, body);
+    let compare_ok = mac.verify_slice(&expected).is_ok();
+
+    if decode_ok && compare_ok {
+        SignatureOutcome::Valid
+    } else {
+        SignatureOutcome::Invalid
+    }
+}
+
+/// Timing-invariant base64-HMAC verification — H4 sibling helper.
+///
+/// Same discipline as the hex variant: always runs the MAC even
+/// when base64 decode fails. Shopify and Square use this scheme
+/// (raw 32-byte HMAC, standard base64 alphabet, no prefix).
+fn verify_base64_hmac_timing_invariant(
+    secret: &[u8],
+    body: &[u8],
+    sig_header: &str,
+) -> SignatureOutcome {
+    let trimmed = sig_header.trim();
+    let (expected, decode_ok) = match BASE64_STANDARD.decode(trimmed) {
+        Ok(v) => (v, true),
+        Err(_) => (vec![0u8; 32], false),
+    };
+
+    let mac = hmac_sha256_over(secret, body);
+    let compare_ok = mac.verify_slice(&expected).is_ok();
+
+    if decode_ok && compare_ok {
+        SignatureOutcome::Valid
+    } else {
+        SignatureOutcome::Invalid
+    }
+}
+
 /// Verify an HMAC-SHA256 signature from a named header against the
 /// webhook request body.
 ///
@@ -861,38 +1150,177 @@ pub fn verify_hmac_sha256(
         )
     })?;
 
-    let Some(sig_header) = request.header(&name) else {
-        return Ok(SignatureOutcome::Missing);
+    // H3 — strict single-valued signature header. A proxy chain that
+    // appends rather than replaces can produce duplicate headers;
+    // picking "the first" gives an attacker-controlled slot. Reject
+    // anything other than exactly one value.
+    let sig_header = match single_header_value(request.headers(), &name) {
+        HeaderLookup::One(v) => v,
+        HeaderLookup::Missing => return Ok(SignatureOutcome::Missing),
+        HeaderLookup::Multiple => return Ok(SignatureOutcome::Invalid),
     };
 
-    // Strip the common GitHub-style prefix. Other schemes that embed
-    // metadata in the header (Stripe `t=…,v1=…`) are not handled here —
-    // use `hmac_sha256_compute` + `verify_tag_constant_time` directly.
-    let sig_hex = sig_header
-        .strip_prefix("sha256=")
-        .unwrap_or(sig_header)
-        .trim();
+    Ok(verify_hex_hmac_timing_invariant(
+        secret,
+        request.body(),
+        sig_header,
+    ))
+}
 
-    let Ok(expected) = hex::decode(sig_hex) else {
+/// Verify an HMAC-SHA256 signature where the header value is
+/// base64-encoded instead of hex-encoded. Covers Shopify and Square.
+///
+/// Identical discipline to [`verify_hmac_sha256`]:
+/// - Strict single-valued signature header
+/// - Constant-time compare via [`hmac::Mac::verify_slice`]
+/// - Timing-invariant decode + MAC sequence
+/// - Empty secret → `Err(Validation)` (fail-closed)
+///
+/// # Errors
+///
+/// Same as [`verify_hmac_sha256`] — empty secret or invalid HTTP
+/// header name produce `ActionError::Validation`. Missing header is
+/// `Ok(Missing)`, not `Err`.
+pub fn verify_hmac_sha256_base64(
+    request: &WebhookRequest,
+    secret: &[u8],
+    header: &str,
+) -> Result<SignatureOutcome, ActionError> {
+    if secret.is_empty() {
+        return Err(ActionError::validation(
+            "webhook.secret",
+            ValidationReason::MissingField,
+            Some("webhook signature verification requires a non-empty HMAC secret".to_string()),
+        ));
+    }
+
+    let name = HeaderName::from_bytes(header.as_bytes()).map_err(|_| {
+        ActionError::validation(
+            "webhook.signature_header",
+            ValidationReason::WrongType,
+            Some(format!("invalid HTTP header name: {header:?}")),
+        )
+    })?;
+
+    let sig_header = match single_header_value(request.headers(), &name) {
+        HeaderLookup::One(v) => v,
+        HeaderLookup::Missing => return Ok(SignatureOutcome::Missing),
+        HeaderLookup::Multiple => return Ok(SignatureOutcome::Invalid),
+    };
+
+    Ok(verify_base64_hmac_timing_invariant(
+        secret,
+        request.body(),
+        sig_header,
+    ))
+}
+
+/// Verify an HMAC-SHA256 signature over a canonical payload derived
+/// from a timestamp header and the request body — covers Stripe and
+/// Slack replay-protection schemes.
+///
+/// Unlike [`verify_hmac_sha256`], this helper enforces a replay
+/// window: the timestamp carried in `ts_header` must be within
+/// `tolerance` of the request's arrival time (measured from
+/// [`WebhookRequest::received_at`], never the wall clock). This
+/// prevents an attacker from replaying a captured signed request
+/// hours later and having it accepted.
+///
+/// The caller supplies a `canonicalize` closure that builds the
+/// byte slice that was HMAC'd. This lets one helper serve multiple
+/// provider schemes:
+///
+/// - **Stripe** signs `{ts}.{body_utf8}`: `|ts, body| format!("{ts}.{}",
+///   std::str::from_utf8(body).unwrap_or_default()).into_bytes()`. The outer header is
+///   `Stripe-Signature: t=<ts>,v1=<hex>`; extract `t` and `v1` in user code, then call this helper
+///   with `sig_header` set to a header you stored the parsed `v1` into, or use
+///   [`hmac_sha256_compute`] + [`verify_tag_constant_time`] directly.
+/// - **Slack** signs `v0:{ts}:{body_utf8}`: `|ts, body| format!("v0:{ts}:{}",
+///   std::str::from_utf8(body).unwrap_or_default()).into_bytes()`.
+///
+/// # Clock source
+///
+/// This helper reads [`WebhookRequest::received_at`], set by the
+/// transport when the HTTP request was received. It **never** reads
+/// the wall clock — replay verification is deterministic for any
+/// given `WebhookRequest`, which is important for replay from
+/// persisted events.
+///
+/// Future timestamps (outside `tolerance`, or more than 60 s ahead
+/// of `received_at`) are rejected as `Invalid`.
+///
+/// # Errors
+///
+/// - `ActionError::Validation` if `secret` is empty, or if either `sig_header` or `ts_header` is
+///   not a valid HTTP header name.
+pub fn verify_hmac_sha256_with_timestamp(
+    request: &WebhookRequest,
+    secret: &[u8],
+    sig_header: &str,
+    ts_header: &str,
+    tolerance: Duration,
+    canonicalize: impl Fn(&str, &[u8]) -> Vec<u8>,
+) -> Result<SignatureOutcome, ActionError> {
+    if secret.is_empty() {
+        return Err(ActionError::validation(
+            "webhook.secret",
+            ValidationReason::MissingField,
+            Some("webhook signature verification requires a non-empty HMAC secret".to_string()),
+        ));
+    }
+
+    let sig_name = HeaderName::from_bytes(sig_header.as_bytes()).map_err(|_| {
+        ActionError::validation(
+            "webhook.signature_header",
+            ValidationReason::WrongType,
+            Some(format!("invalid HTTP header name: {sig_header:?}")),
+        )
+    })?;
+    let ts_name = HeaderName::from_bytes(ts_header.as_bytes()).map_err(|_| {
+        ActionError::validation(
+            "webhook.timestamp_header",
+            ValidationReason::WrongType,
+            Some(format!("invalid HTTP header name: {ts_header:?}")),
+        )
+    })?;
+
+    let ts_str = match single_header_value(request.headers(), &ts_name) {
+        HeaderLookup::One(v) => v,
+        HeaderLookup::Missing => return Ok(SignatureOutcome::Missing),
+        HeaderLookup::Multiple => return Ok(SignatureOutcome::Invalid),
+    };
+    let sig_str = match single_header_value(request.headers(), &sig_name) {
+        HeaderLookup::One(v) => v,
+        HeaderLookup::Missing => return Ok(SignatureOutcome::Missing),
+        HeaderLookup::Multiple => return Ok(SignatureOutcome::Invalid),
+    };
+
+    // Replay window: timestamp must be within tolerance of received_at.
+    let ts_secs: i64 = match ts_str.trim().parse() {
+        Ok(n) => n,
+        Err(_) => return Ok(SignatureOutcome::Invalid),
+    };
+    let received_secs: i64 = match request.received_at().duration_since(SystemTime::UNIX_EPOCH) {
+        Ok(d) => d.as_secs() as i64,
+        Err(_) => return Ok(SignatureOutcome::Invalid),
+    };
+    let skew = received_secs.saturating_sub(ts_secs);
+    let tol_secs = tolerance.as_secs() as i64;
+    // Accept [received - tol, received + 60]. Allow a small positive
+    // forward skew for clock drift, but reject signatures dated far
+    // in the future — a replay window that accepts far-future
+    // timestamps is no replay window at all.
+    const FUTURE_SKEW_SECS: i64 = 60;
+    if skew > tol_secs || skew < -FUTURE_SKEW_SECS {
         return Ok(SignatureOutcome::Invalid);
-    };
+    }
 
-    // Reason: `Hmac::new_from_slice` returns `InvalidLength` only for
-    // block-cipher MACs (CMAC etc.). For HMAC (RFC 2104) any key
-    // length is accepted — oversize keys are hashed to block size,
-    // undersize keys are zero-padded. Surfacing this as
-    // `ActionError::Fatal` would poison callers with an impossible
-    // error variant. The empty-secret guard above is the only length
-    // check HMAC actually needs.
-    #[allow(clippy::expect_used)]
-    let mut mac =
-        HmacSha256::new_from_slice(secret).expect("HMAC accepts any key length (RFC 2104)");
-    mac.update(request.body());
+    // Build canonical signed payload via user-supplied closure.
+    let canonical = canonicalize(ts_str, request.body());
 
-    Ok(match mac.verify_slice(&expected) {
-        Ok(()) => SignatureOutcome::Valid,
-        Err(_) => SignatureOutcome::Invalid,
-    })
+    Ok(verify_hex_hmac_timing_invariant(
+        secret, &canonical, sig_str,
+    ))
 }
 
 /// Compute a raw HMAC-SHA256 tag over arbitrary bytes.

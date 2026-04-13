@@ -154,5 +154,6 @@ pub use validation::{
 pub use webhook::{
     DEFAULT_MAX_BODY_BYTES, MAX_HEADER_COUNT, SignatureOutcome, WebhookAction, WebhookHttpResponse,
     WebhookRequest, WebhookResponse, WebhookTriggerAdapter, hmac_sha256_compute,
-    verify_hmac_sha256, verify_tag_constant_time,
+    verify_hmac_sha256, verify_hmac_sha256_base64, verify_hmac_sha256_with_timestamp,
+    verify_tag_constant_time,
 };

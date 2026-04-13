@@ -262,3 +262,289 @@ async fn webhook_adapter_start_stop_start_succeeds() {
     adapter.stop(&ctx).await.unwrap();
     assert_eq!(deactivate.load(Ordering::Relaxed), 2);
 }
+
+// ── H1: handle_request error → 500 via oneshot ───────────────────────────
+
+struct ErroringWebhook {
+    meta: ActionMetadata,
+}
+
+impl ActionDependencies for ErroringWebhook {}
+impl Action for ErroringWebhook {
+    fn metadata(&self) -> &ActionMetadata {
+        &self.meta
+    }
+}
+
+impl WebhookAction for ErroringWebhook {
+    type State = ();
+
+    async fn on_activate(&self, _ctx: &TriggerContext) -> Result<(), ActionError> {
+        Ok(())
+    }
+
+    async fn handle_request(
+        &self,
+        _request: &WebhookRequest,
+        _state: &(),
+        _ctx: &TriggerContext,
+    ) -> Result<WebhookResponse, ActionError> {
+        Err(ActionError::retryable("handler blew up"))
+    }
+}
+
+#[tokio::test]
+async fn handle_request_error_sends_500_via_oneshot() {
+    use http::StatusCode;
+    let adapter = WebhookTriggerAdapter::new(ErroringWebhook {
+        meta: ActionMetadata::new(
+            nebula_core::action_key!("test.webhook.error"),
+            "Erroring Webhook",
+            "handle_request always returns Err",
+        ),
+    });
+    let (ctx, _, _) = TestContextBuilder::minimal().build_trigger();
+    adapter.start(&ctx).await.unwrap();
+
+    let req = webhook_request_for_test(b"{}", &[]).unwrap();
+    let (tx, rx) = tokio::sync::oneshot::channel();
+    let req = req.with_response_channel(tx);
+    let event = wrap_event(req);
+
+    let result = adapter.handle_event(event, &ctx).await;
+    assert!(
+        result.is_err(),
+        "handle_event must propagate the handler's Err"
+    );
+
+    // The oneshot MUST have received a 500 before the Err was
+    // propagated. Without H1, this would be Err(RecvError) and the
+    // transport would hang or return a wrong status.
+    let response = rx
+        .await
+        .expect("oneshot sender must have sent 500 before returning Err");
+    assert_eq!(response.status, StatusCode::INTERNAL_SERVER_ERROR);
+}
+
+// ── H6: cancellation mid-request ─────────────────────────────────────────
+
+struct HangingWebhook {
+    meta: ActionMetadata,
+    entered: Arc<AtomicBool>,
+}
+
+impl ActionDependencies for HangingWebhook {}
+impl Action for HangingWebhook {
+    fn metadata(&self) -> &ActionMetadata {
+        &self.meta
+    }
+}
+
+impl WebhookAction for HangingWebhook {
+    type State = ();
+
+    async fn on_activate(&self, _ctx: &TriggerContext) -> Result<(), ActionError> {
+        Ok(())
+    }
+
+    async fn handle_request(
+        &self,
+        _request: &WebhookRequest,
+        _state: &(),
+        _ctx: &TriggerContext,
+    ) -> Result<WebhookResponse, ActionError> {
+        self.entered.store(true, Ordering::Relaxed);
+        // Hang forever — only cancellation can save us.
+        std::future::pending::<()>().await;
+        unreachable!()
+    }
+}
+
+#[tokio::test]
+async fn handle_request_cancelled_mid_flight_returns_cleanly() {
+    use http::StatusCode;
+    let entered = Arc::new(AtomicBool::new(false));
+    let adapter = Arc::new(WebhookTriggerAdapter::new(HangingWebhook {
+        meta: ActionMetadata::new(
+            nebula_core::action_key!("test.webhook.hang"),
+            "Hanging Webhook",
+            "handle_request hangs forever",
+        ),
+        entered: entered.clone(),
+    }));
+    let (ctx, _, _) = TestContextBuilder::minimal().build_trigger();
+    adapter.start(&ctx).await.unwrap();
+
+    let req = webhook_request_for_test(b"{}", &[]).unwrap();
+    let (tx, rx) = tokio::sync::oneshot::channel();
+    let req = req.with_response_channel(tx);
+    let event = wrap_event(req);
+
+    let cancel = ctx.cancellation.clone();
+    let adapter1 = Arc::clone(&adapter);
+    let ctx1 = ctx.clone();
+    let handle = tokio::spawn(async move { adapter1.handle_event(event, &ctx1).await });
+
+    // Let handle_request enter pending state.
+    for _ in 0..10 {
+        tokio::task::yield_now().await;
+    }
+    assert!(
+        entered.load(Ordering::Relaxed),
+        "handler should have started before cancel"
+    );
+
+    cancel.cancel();
+
+    let result = tokio::time::timeout(std::time::Duration::from_secs(1), handle)
+        .await
+        .expect("handle_event must exit within 1s of cancellation")
+        .unwrap();
+    assert!(
+        result.is_err(),
+        "cancelled handle_event must return retryable Err"
+    );
+
+    // Oneshot must have received 503.
+    let response = rx.await.expect("503 must be sent via oneshot on cancel");
+    assert_eq!(response.status, StatusCode::SERVICE_UNAVAILABLE);
+}
+
+// ── H7: TriggerHealth wired ──────────────────────────────────────────────
+
+#[tokio::test]
+async fn webhook_adapter_records_health_success_on_emit() {
+    let (webhook, _, _) = make_webhook();
+    let adapter = WebhookTriggerAdapter::new(webhook);
+    let (ctx, _, _) = TestContextBuilder::minimal().build_trigger();
+    adapter.start(&ctx).await.unwrap();
+
+    let req = webhook_request_for_test(br#"{"ok":true}"#, &[("X-Secret", "mysecret")]).unwrap();
+    let event = wrap_event(req);
+    let outcome = adapter.handle_event(event, &ctx).await.unwrap();
+    assert!(matches!(outcome, TriggerEventOutcome::Emit(_)));
+
+    let snap = ctx.health.snapshot();
+    assert_eq!(
+        snap.total_emitted, 1,
+        "health must record 1 emission from handle_event"
+    );
+    assert_eq!(snap.error_streak, 0);
+}
+
+#[tokio::test]
+async fn webhook_adapter_records_health_error_on_handler_failure() {
+    let adapter = WebhookTriggerAdapter::new(ErroringWebhook {
+        meta: ActionMetadata::new(
+            nebula_core::action_key!("test.webhook.error_health"),
+            "Erroring",
+            "error path health check",
+        ),
+    });
+    let (ctx, _, _) = TestContextBuilder::minimal().build_trigger();
+    adapter.start(&ctx).await.unwrap();
+
+    let req = webhook_request_for_test(b"{}", &[]).unwrap();
+    let event = wrap_event(req);
+    let _ = adapter.handle_event(event, &ctx).await;
+
+    let snap = ctx.health.snapshot();
+    assert!(
+        snap.error_streak >= 1,
+        "health error_streak must grow on handler Err, got {}",
+        snap.error_streak
+    );
+}
+
+// ── H10: Notify wakes stop() instead of yield_now spin ───────────────────
+
+struct SlowWebhook {
+    meta: ActionMetadata,
+    finish: Arc<AtomicBool>,
+}
+
+impl ActionDependencies for SlowWebhook {}
+impl Action for SlowWebhook {
+    fn metadata(&self) -> &ActionMetadata {
+        &self.meta
+    }
+}
+
+impl WebhookAction for SlowWebhook {
+    type State = ();
+
+    async fn on_activate(&self, _ctx: &TriggerContext) -> Result<(), ActionError> {
+        Ok(())
+    }
+
+    async fn handle_request(
+        &self,
+        _request: &WebhookRequest,
+        _state: &(),
+        _ctx: &TriggerContext,
+    ) -> Result<WebhookResponse, ActionError> {
+        // Await until a signal flag flips — simulates a slow handler.
+        while !self.finish.load(Ordering::Acquire) {
+            tokio::task::yield_now().await;
+        }
+        Ok(WebhookResponse::accept(TriggerEventOutcome::skip()))
+    }
+}
+
+#[tokio::test]
+async fn in_flight_notify_wakes_stop() {
+    let finish = Arc::new(AtomicBool::new(false));
+    let adapter = Arc::new(WebhookTriggerAdapter::new(SlowWebhook {
+        meta: ActionMetadata::new(
+            nebula_core::action_key!("test.webhook.slow"),
+            "Slow Webhook",
+            "handle_request awaits a flag",
+        ),
+        finish: finish.clone(),
+    }));
+    let (ctx, _, _) = TestContextBuilder::minimal().build_trigger();
+    adapter.start(&ctx).await.unwrap();
+
+    let req = webhook_request_for_test(b"{}", &[]).unwrap();
+    let event = wrap_event(req);
+
+    // Spawn the in-flight request.
+    let adapter1 = Arc::clone(&adapter);
+    let ctx1 = ctx.clone();
+    let in_flight_task = tokio::spawn(async move { adapter1.handle_event(event, &ctx1).await });
+
+    // Let the handler enter the slow loop.
+    for _ in 0..10 {
+        tokio::task::yield_now().await;
+    }
+
+    // Start stop() — it should block on in_flight > 0.
+    let adapter2 = Arc::clone(&adapter);
+    let ctx2 = ctx.clone();
+    let stop_task = tokio::spawn(async move { adapter2.stop(&ctx2).await });
+
+    // Give stop() a chance to park on the notify.
+    for _ in 0..10 {
+        tokio::task::yield_now().await;
+    }
+    assert!(
+        !stop_task.is_finished(),
+        "stop() should be waiting for in-flight"
+    );
+
+    // Release the handler. Notify wakes stop() promptly.
+    finish.store(true, Ordering::Release);
+
+    let stop_result = tokio::time::timeout(std::time::Duration::from_secs(2), stop_task)
+        .await
+        .expect("stop() must return within 2s once in_flight drops to 0")
+        .unwrap();
+    assert!(stop_result.is_ok());
+
+    // And the in-flight request also completes.
+    let in_flight_result = tokio::time::timeout(std::time::Duration::from_secs(2), in_flight_task)
+        .await
+        .expect("in-flight handle_event must complete after finish flag")
+        .unwrap();
+    assert!(in_flight_result.is_ok());
+}
