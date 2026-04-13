@@ -1,26 +1,35 @@
 //! Process-based sandbox for community plugins using the duplex v2 protocol.
 //!
-//! Each action execution spawns the plugin binary, sends one envelope over
-//! stdin (either `ActionInvoke` for action execution or `MetadataRequest` for
-//! discovery), reads the first valid response envelope from stdout, and waits
-//! for the plugin to exit. Slice 1b still spawns per-call; slice 1d replaces
-//! this with a long-lived `PluginSupervisor` that keeps plugin processes
-//! alive across invocations with Reattach.
+//! Slice 1c (2026-04-13): plugin processes are **long-lived**. On the first
+//! call, `ProcessSandbox` spawns the plugin binary, reads the handshake line
+//! from its stdout, dials the announced UDS or Named Pipe, and stores the
+//! resulting [`PluginHandle`] on the sandbox. Subsequent calls reuse that
+//! handle, sending envelopes over the socket without respawning. A broken
+//! connection (plugin crashed or exited) clears the handle and the next
+//! request triggers a fresh spawn.
 //!
-//! Security enforcement:
-//! - `env_clear()` — plugin only sees explicitly allowed env vars
-//! - `pre_exec` — applies landlock (filesystem) + rlimits before plugin starts (Linux only)
-//! - Stdout size limit — prevents OOM from malicious plugins
-//! - Timeout + `kill_on_drop` — prevents infinite hangs
+//! The plugin-side event loop in `nebula-plugin-sdk::run_duplex` is still
+//! sequential — one action at a time per plugin process. Slice 1d adds
+//! concurrent multiplexed dispatch.
+//!
+//! Security enforcement (unchanged since slice 1b):
+//! - `env_clear()` + explicit env allowlist
+//! - `pre_exec` landlock + rlimits (Linux)
+//! - stderr size limit for log capture
+//! - `kill_on_drop` on the spawned child → plugin process dies with the sandbox
 
 use std::{path::PathBuf, time::Duration};
 
 use async_trait::async_trait;
 use nebula_action::{ActionError, ActionMetadata, result::ActionResult};
-use nebula_plugin_sdk::protocol::{HostToPlugin, PluginToHost};
+use nebula_plugin_sdk::{
+    protocol::{HostToPlugin, PluginToHost},
+    transport::{self, PluginStream},
+};
 use tokio::{
     io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader},
-    process::Command,
+    process::{Child, Command},
+    sync::Mutex,
 };
 
 use crate::{
@@ -29,31 +38,98 @@ use crate::{
     runner::SandboxedContext,
 };
 
-/// Maximum stdout size from a plugin (10 MB). Prevents DoS.
-const MAX_STDOUT_BYTES: u64 = 10 * 1024 * 1024;
-
-/// Maximum stderr size to capture for logging (64 KB).
+/// Maximum stderr bytes captured for logging (64 KB). stdout is parsed
+/// line-by-line for the handshake so has no fixed cap.
 const MAX_STDERR_BYTES: usize = 64 * 1024;
+
+/// Timeout for reading the plugin's handshake line from stdout.
+const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(3);
 
 /// Correlation id used for the single envelope sent per invocation.
 ///
-/// Slice 1b keeps the one-shot spawn-per-call shape from slice 1a; we only
-/// ever issue one envelope per plugin process lifetime, so the id is fixed.
-/// Slice 1d's `PluginSupervisor` assigns unique ids across concurrent calls
-/// to a long-lived plugin process.
+/// Slice 1c still does one envelope exchange at a time per call. Slice 1d's
+/// concurrent dispatch assigns unique ids across multiple in-flight calls.
 const ONE_SHOT_ID: u64 = 1;
 
-/// Process sandbox: runs plugin actions as isolated child processes.
+/// Process sandbox: spawns the plugin binary once and keeps the connection
+/// alive for the lifetime of this sandbox instance.
 ///
-/// Spawns the plugin binary per call, sends one [`HostToPlugin`] envelope,
-/// reads the first [`PluginToHost`] envelope from stdout, waits for exit.
+/// Each `ProcessSandbox` owns a long-lived [`PluginHandle`] behind a
+/// `Mutex`. The first invocation spawns the child and dials the socket;
+/// subsequent invocations reuse the same handle. A connection error on
+/// write or read invalidates the handle and the next call respawns.
 pub struct ProcessSandbox {
     /// Path to the plugin binary.
     binary: PathBuf,
-    /// Timeout for each action execution.
+    /// Per-call timeout (envelope round-trip wall clock).
     timeout: Duration,
     /// Capabilities granted to this plugin.
     capabilities: PluginCapabilities,
+    /// Long-lived handle to the spawned plugin process. Serialized via the
+    /// mutex — slice 1c is sequential per sandbox instance. Slice 1d can
+    /// replace this with a lock-free handle once concurrent dispatch lands.
+    handle: Mutex<Option<PluginHandle>>,
+}
+
+/// Live connection to a running plugin process.
+///
+/// Owns the spawned [`Child`] and the two halves of the accepted stream.
+/// When dropped, `kill_on_drop(true)` on the child ensures the OS process
+/// is terminated; the socket/pipe is released by `PluginStream`'s cleanup
+/// guard on the plugin side.
+struct PluginHandle {
+    /// Kept alive for `kill_on_drop` — dropping this struct SIGKILLs the
+    /// child. Read nowhere; the underscore prefix silences dead-code
+    /// warnings.
+    _child: Child,
+    stream: PluginStream,
+    line_buf: String,
+}
+
+impl PluginHandle {
+    async fn send_envelope(&mut self, envelope: &HostToPlugin) -> Result<(), ActionError> {
+        let encoded = serde_json::to_string(envelope)
+            .map_err(|e| ActionError::fatal(format!("envelope serialization: {e}")))?;
+        self.stream
+            .write_all(encoded.as_bytes())
+            .await
+            .map_err(|e| ActionError::fatal(format!("plugin write error: {e}")))?;
+        self.stream
+            .write_all(b"\n")
+            .await
+            .map_err(|e| ActionError::fatal(format!("plugin write newline: {e}")))?;
+        self.stream
+            .flush()
+            .await
+            .map_err(|e| ActionError::fatal(format!("plugin flush: {e}")))?;
+        Ok(())
+    }
+
+    async fn recv_envelope(&mut self) -> Result<PluginToHost, ActionError> {
+        // Byte-at-a-time to avoid maintaining a separate BufReader that
+        // would own the stream. Line volume per invocation is low.
+        self.line_buf.clear();
+        let mut byte = [0u8; 1];
+        loop {
+            let n = self
+                .stream
+                .read(&mut byte)
+                .await
+                .map_err(|e| ActionError::fatal(format!("plugin read error: {e}")))?;
+            if n == 0 {
+                return Err(ActionError::fatal(
+                    "plugin closed transport without sending a response envelope",
+                ));
+            }
+            if byte[0] == b'\n' {
+                break;
+            }
+            self.line_buf.push(byte[0] as char);
+        }
+        let trimmed = self.line_buf.trim();
+        serde_json::from_str::<PluginToHost>(trimmed)
+            .map_err(|e| ActionError::fatal(format!("plugin sent malformed envelope: {e}")))
+    }
 }
 
 impl ProcessSandbox {
@@ -64,14 +140,11 @@ impl ProcessSandbox {
             binary,
             timeout,
             capabilities,
+            handle: Mutex::new(None),
         }
     }
 
     /// Invoke an action and return the plugin's response envelope.
-    ///
-    /// Callers are expected to match on [`PluginToHost::ActionResultOk`] /
-    /// [`PluginToHost::ActionResultError`]; any other variant signals a
-    /// protocol violation.
     pub(crate) async fn call_action(
         &self,
         action_key: &str,
@@ -85,15 +158,69 @@ impl ProcessSandbox {
         self.dispatch_envelope(request).await
     }
 
-    /// Query plugin metadata via the duplex [`HostToPlugin::MetadataRequest`]
-    /// envelope. Used by plugin discovery.
+    /// Query plugin metadata via a `MetadataRequest` envelope.
     pub async fn get_metadata(&self) -> Result<PluginToHost, ActionError> {
         let request = HostToPlugin::MetadataRequest { id: ONE_SHOT_ID };
         self.dispatch_envelope(request).await
     }
 
-    /// Core one-shot dispatch: spawn child, send envelope, read envelope, wait.
+    /// Core long-lived dispatch. Reuses the cached [`PluginHandle`] if any,
+    /// spawns fresh otherwise. On transport error, clears the handle and
+    /// retries once.
     async fn dispatch_envelope(&self, envelope: HostToPlugin) -> Result<PluginToHost, ActionError> {
+        let first_attempt = self.try_dispatch(envelope.clone()).await;
+        if first_attempt.is_ok() {
+            return first_attempt;
+        }
+        // Clear the stale handle and retry once with a fresh spawn.
+        *self.handle.lock().await = None;
+        self.try_dispatch(envelope).await
+    }
+
+    async fn try_dispatch(&self, envelope: HostToPlugin) -> Result<PluginToHost, ActionError> {
+        let mut guard = self.handle.lock().await;
+        if guard.is_none() {
+            *guard = Some(self.spawn_and_dial().await?);
+        }
+        let handle = guard.as_mut().expect("handle set above");
+
+        // Round-trip the envelope with a per-call timeout.
+        let envelope_tag = match &envelope {
+            HostToPlugin::ActionInvoke { .. } => "action_invoke",
+            HostToPlugin::MetadataRequest { .. } => "metadata_request",
+            _ => "other",
+        };
+
+        let result = tokio::time::timeout(self.timeout, async {
+            handle.send_envelope(&envelope).await?;
+            handle.recv_envelope().await
+        })
+        .await;
+
+        match result {
+            Ok(Ok(response)) => Ok(response),
+            Ok(Err(e)) => {
+                // Transport/protocol error — invalidate the handle so the
+                // next call respawns.
+                *guard = None;
+                Err(e)
+            }
+            Err(_) => {
+                // Timeout — also invalidate; we don't know if the plugin is
+                // still processing and we can't safely reuse the connection.
+                *guard = None;
+                Err(ActionError::retryable(format!(
+                    "plugin {} timed out on {envelope_tag} after {:?}",
+                    self.binary.display(),
+                    self.timeout
+                )))
+            }
+        }
+    }
+
+    /// Spawn the plugin binary, read and parse its handshake line, dial the
+    /// announced transport, and return a fresh [`PluginHandle`].
+    async fn spawn_and_dial(&self) -> Result<PluginHandle, ActionError> {
         // Build allowed env vars from capabilities.
         let allowed_env: Vec<(String, String)> = self
             .capabilities
@@ -108,12 +235,12 @@ impl ProcessSandbox {
             .collect();
 
         let mut cmd = Command::new(&self.binary);
-        cmd.stdin(std::process::Stdio::piped())
+        cmd.stdin(std::process::Stdio::null())
             .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::piped())
             .kill_on_drop(true)
-            .env_clear() // SECURITY: start with empty environment
-            .envs(allowed_env); // only pass granted env vars
+            .env_clear()
+            .envs(allowed_env);
 
         // Apply OS-level sandbox in child process before exec (Linux only).
         #[cfg(target_os = "linux")]
@@ -123,7 +250,6 @@ impl ProcessSandbox {
 
             // SAFETY: pre_exec runs between fork() and exec() in the child.
             // We only call async-signal-safe operations (landlock, setrlimit).
-            // caps_json is a moved String — safe in single-threaded child context.
             #[allow(unsafe_code)]
             unsafe {
                 cmd.pre_exec(move || {
@@ -142,41 +268,20 @@ impl ProcessSandbox {
             ))
         })?;
 
-        // Write the envelope to stdin as one line.
-        let stdin = child
-            .stdin
-            .as_mut()
-            .ok_or_else(|| ActionError::fatal("failed to open plugin stdin"))?;
-        let encoded = serde_json::to_string(&envelope)
-            .map_err(|e| ActionError::fatal(format!("envelope serialization: {e}")))?;
-        stdin
-            .write_all(encoded.as_bytes())
-            .await
-            .map_err(|e| ActionError::fatal(format!("failed to write plugin stdin: {e}")))?;
-        stdin
-            .write_all(b"\n")
-            .await
-            .map_err(|e| ActionError::fatal(format!("failed to write newline: {e}")))?;
-        // Closing stdin signals end-of-input → plugin's `run_duplex` loop sees
-        // EOF and exits after responding. Slice 1d keeps stdin open.
-        stdin
-            .shutdown()
-            .await
-            .map_err(|e| ActionError::fatal(format!("failed to close plugin stdin: {e}")))?;
-
-        // Read stdout with size limit (prevents OOM from malicious plugins).
-        let stdout_handle = child
+        // Read handshake line from child stdout with timeout.
+        let stdout = child
             .stdout
             .take()
             .ok_or_else(|| ActionError::fatal("failed to open plugin stdout"))?;
-        let limited = stdout_handle.take(MAX_STDOUT_BYTES);
-        let mut reader = BufReader::new(limited);
+        let mut stdout_reader = BufReader::new(stdout);
+        let mut handshake_line = String::new();
 
-        let binary_name = self.binary.display().to_string();
-        let read_result =
-            tokio::time::timeout(self.timeout, read_envelope(&mut reader, &binary_name)).await;
+        let read_result = tokio::time::timeout(HANDSHAKE_TIMEOUT, async {
+            stdout_reader.read_line(&mut handshake_line).await
+        })
+        .await;
 
-        // Capture stderr (limited) for logging, regardless of outcome.
+        // Drain stderr into a log line (best effort).
         let stderr_buf = if let Some(mut stderr) = child.stderr.take() {
             let mut buf = vec![0u8; MAX_STDERR_BYTES];
             let n = stderr.read(&mut buf).await.unwrap_or(0);
@@ -190,64 +295,46 @@ impl ProcessSandbox {
             tracing::debug!(
                 plugin = %self.binary.display(),
                 stderr = %stderr,
-                "plugin stderr"
+                "plugin stderr captured during spawn"
             );
         }
 
-        let envelope = match read_result {
-            Ok(Ok(env)) => env,
-            Ok(Err(e)) => return Err(e),
-            Err(_) => {
-                return Err(ActionError::retryable(format!(
-                    "plugin timed out after {:?}",
-                    self.timeout
-                )));
-            }
-        };
-
-        // Wait for child to exit cleanly within a short grace window.
-        // If the plugin is misbehaving and hasn't exited, `kill_on_drop` will
-        // SIGKILL it when `child` drops.
-        let _ = tokio::time::timeout(Duration::from_secs(5), child.wait()).await;
-
-        Ok(envelope)
-    }
-}
-
-/// Read lines from the plugin's stdout until a parseable [`PluginToHost`]
-/// envelope is found. Empty and malformed lines are skipped with a
-/// `tracing::warn!`. Returns an error on EOF without a valid envelope.
-async fn read_envelope<R: AsyncBufReadExt + Unpin>(
-    reader: &mut R,
-    binary_name: &str,
-) -> Result<PluginToHost, ActionError> {
-    let mut line = String::new();
-    loop {
-        line.clear();
-        let n = reader
-            .read_line(&mut line)
-            .await
-            .map_err(|e| ActionError::fatal(format!("plugin stdout read error: {e}")))?;
+        let n = read_result
+            .map_err(|_| {
+                ActionError::fatal(format!(
+                    "plugin {} handshake timeout after {HANDSHAKE_TIMEOUT:?}",
+                    self.binary.display()
+                ))
+            })?
+            .map_err(|e| {
+                ActionError::fatal(format!(
+                    "plugin {} handshake read error: {e}",
+                    self.binary.display()
+                ))
+            })?;
         if n == 0 {
             return Err(ActionError::fatal(format!(
-                "plugin {binary_name} closed stdout without sending a response envelope"
+                "plugin {} exited before printing handshake line",
+                self.binary.display()
             )));
         }
-        let trimmed = line.trim();
-        if trimmed.is_empty() {
-            continue;
-        }
-        match serde_json::from_str::<PluginToHost>(trimmed) {
-            Ok(env) => return Ok(env),
-            Err(e) => {
-                tracing::warn!(
-                    plugin = %binary_name,
-                    error = %e,
-                    "malformed envelope from plugin, skipping line"
-                );
-                continue;
-            }
-        }
+
+        tracing::debug!(
+            plugin = %self.binary.display(),
+            handshake = %handshake_line.trim(),
+            "plugin handshake received"
+        );
+
+        // Dial the announced transport.
+        let stream = transport::dial(handshake_line.trim())
+            .await
+            .map_err(|e| ActionError::fatal(format!("plugin transport dial failed: {e}")))?;
+
+        Ok(PluginHandle {
+            _child: child,
+            stream,
+            line_buf: String::with_capacity(512),
+        })
     }
 }
 
@@ -293,8 +380,21 @@ impl SandboxRunner for ProcessSandbox {
     }
 }
 
-/// Returns the discriminant name of a `PluginToHost` envelope for error
-/// messages. Kept in sync with the enum variants.
+/// Drop the cached handle on sandbox drop so the child is killed promptly.
+///
+/// `kill_on_drop(true)` on the spawned `Command` handles this at the OS
+/// level — the destructor of `PluginHandle.child` sends SIGKILL. We add no
+/// extra cleanup here; the `Arc<ProcessSandbox>` in the engine's handler
+/// table owns the lifetime.
+impl Drop for ProcessSandbox {
+    fn drop(&mut self) {
+        tracing::debug!(
+            plugin = %self.binary.display(),
+            "ProcessSandbox dropped; plugin child will be killed by kill_on_drop"
+        );
+    }
+}
+
 fn envelope_kind(env: &PluginToHost) -> &'static str {
     match env {
         PluginToHost::ActionResultOk { .. } => "action_result_ok",
@@ -305,8 +405,6 @@ fn envelope_kind(env: &PluginToHost) -> &'static str {
     }
 }
 
-/// Sanitize a plugin-sourced string for safe logging/display.
-/// Removes control characters (except newline) and truncates.
 fn sanitize_plugin_string(s: &str) -> String {
     s.chars()
         .take(1024)

@@ -1,76 +1,110 @@
-//! End-to-end smoke test for the Phase 1 slice-1a duplex protocol.
+//! End-to-end smoke test for the Phase 1 slice-1c socket transport.
 //!
-//! Spawns the `nebula-echo-fixture` binary (a sibling bin target of this
-//! crate), sends it `HostToPlugin::ActionInvoke` envelopes over its stdin,
-//! reads `PluginToHost::ActionResultOk` envelopes from its stdout, and
-//! asserts round-trip correctness.
+//! Spawns the `nebula-echo-fixture` binary, reads its handshake line from
+//! stdout, dials the announced UDS (Linux/macOS) or Named Pipe (Windows),
+//! then exchanges envelopes over the resulting stream. Validates the full
+//! handshake → dial → run loop path end-to-end without going through
+//! `ProcessSandbox`.
 //!
-//! This test does **not** go through `ProcessSandbox` — it validates the
-//! wire protocol and the plugin-sdk's `run_duplex` event loop in isolation.
-//! Slice 1b will wire the same protocol into `ProcessSandbox`.
+//! Slice 1b shipped the same test over raw stdio; slice 1c replaces the
+//! transport layer with sockets. The envelope shape is unchanged.
 
 use std::time::Duration;
 
-use nebula_plugin_sdk::protocol::{DUPLEX_PROTOCOL_VERSION, HostToPlugin, LogLevel, PluginToHost};
+use nebula_plugin_sdk::{
+    protocol::{DUPLEX_PROTOCOL_VERSION, HostToPlugin, LogLevel, PluginToHost},
+    transport::{self, PluginStream},
+};
 use serde_json::json;
 use tokio::{
-    io::{AsyncBufReadExt, AsyncWriteExt, BufReader},
-    process::{ChildStdin, ChildStdout, Command},
+    io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader},
+    process::{Child, ChildStderr, ChildStdout, Command},
 };
 
 const ECHO_BIN: &str = env!("CARGO_BIN_EXE_nebula-echo-fixture");
 const OP_TIMEOUT: Duration = Duration::from_secs(5);
+const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(5);
 
 struct PluginProcess {
-    child: tokio::process::Child,
-    stdin: ChildStdin,
-    stdout: BufReader<ChildStdout>,
+    child: Child,
+    stream: PluginStream,
     line_buf: String,
+    #[allow(dead_code)]
+    stderr: Option<ChildStderr>,
 }
 
 impl PluginProcess {
     async fn spawn() -> Self {
         let mut cmd = Command::new(ECHO_BIN);
-        cmd.stdin(std::process::Stdio::piped())
+        cmd.stdin(std::process::Stdio::null())
             .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::piped())
             .kill_on_drop(true);
 
         let mut child = cmd.spawn().expect("failed to spawn echo fixture");
-        let stdin = child.stdin.take().expect("stdin piped");
-        let stdout = BufReader::new(child.stdout.take().expect("stdout piped"));
+
+        // Read the handshake line from the fixture's stdout.
+        let stdout: ChildStdout = child.stdout.take().expect("stdout piped");
+        let mut stdout_reader = BufReader::new(stdout);
+        let mut handshake = String::new();
+        tokio::time::timeout(HANDSHAKE_TIMEOUT, stdout_reader.read_line(&mut handshake))
+            .await
+            .expect("handshake read timed out")
+            .expect("handshake read failed");
+        assert!(
+            !handshake.is_empty(),
+            "plugin exited before printing handshake line"
+        );
+
+        // Dial the announced transport.
+        let stream = transport::dial(handshake.trim())
+            .await
+            .expect("failed to dial plugin transport");
+
+        // Keep stderr piped but don't actively drain it in slice 1c tests.
+        let stderr = child.stderr.take();
+
         Self {
             child,
-            stdin,
-            stdout,
+            stream,
             line_buf: String::with_capacity(512),
+            stderr,
         }
     }
 
     async fn send(&mut self, msg: &HostToPlugin) {
         let encoded = serde_json::to_string(msg).expect("serialize HostToPlugin");
-        self.stdin
+        self.stream
             .write_all(encoded.as_bytes())
             .await
             .expect("write envelope");
-        self.stdin.write_all(b"\n").await.expect("write newline");
-        self.stdin.flush().await.expect("flush stdin");
+        self.stream.write_all(b"\n").await.expect("write newline");
+        self.stream.flush().await.expect("flush stream");
     }
 
     async fn recv(&mut self) -> PluginToHost {
         self.line_buf.clear();
-        let n = tokio::time::timeout(OP_TIMEOUT, self.stdout.read_line(&mut self.line_buf))
-            .await
-            .expect("recv timeout")
-            .expect("read_line io");
-        assert!(n > 0, "plugin closed stdout unexpectedly");
+        let mut byte = [0u8; 1];
+        loop {
+            let n = tokio::time::timeout(OP_TIMEOUT, self.stream.read(&mut byte))
+                .await
+                .expect("recv timed out")
+                .expect("read failed");
+            assert!(n > 0, "plugin closed stream unexpectedly");
+            if byte[0] == b'\n' {
+                break;
+            }
+            self.line_buf.push(byte[0] as char);
+        }
         serde_json::from_str(self.line_buf.trim())
             .unwrap_or_else(|e| panic!("parse PluginToHost failed: {e} :: {:?}", self.line_buf))
     }
 
     async fn shutdown(mut self) {
+        // Send Shutdown envelope; the plugin will return Ok(()) from its
+        // event loop, the stream will close, and the process exits.
         self.send(&HostToPlugin::Shutdown).await;
-        drop(self.stdin);
+        drop(self.stream);
         let status = tokio::time::timeout(OP_TIMEOUT, self.child.wait())
             .await
             .expect("child did not exit in time")
@@ -202,13 +236,14 @@ async fn metadata_request_returns_plugin_info() {
 }
 
 #[tokio::test]
-async fn plugin_exits_on_stdin_eof() {
-    // Spawn, drop stdin, verify the plugin exits cleanly.
+async fn plugin_exits_on_host_disconnect() {
+    // Spawn, drop the stream (simulating host disconnect), verify the
+    // plugin exits cleanly within a grace window.
     let mut p = PluginProcess::spawn().await;
-    drop(p.stdin);
+    drop(p.stream);
     let status = tokio::time::timeout(OP_TIMEOUT, p.child.wait())
         .await
-        .expect("child did not exit after stdin drop")
+        .expect("child did not exit after host disconnect")
         .expect("child wait");
     assert!(status.success(), "plugin exited with {status}");
 }
@@ -217,11 +252,11 @@ async fn plugin_exits_on_stdin_eof() {
 async fn malformed_json_line_is_skipped_not_fatal() {
     let mut p = PluginProcess::spawn().await;
     // Send a garbage line first.
-    p.stdin
+    p.stream
         .write_all(b"this is not valid json\n")
         .await
         .expect("write garbage");
-    p.stdin.flush().await.expect("flush");
+    p.stream.flush().await.expect("flush");
 
     // Then send a valid invocation — it should still work.
     p.send(&HostToPlugin::ActionInvoke {
@@ -243,8 +278,8 @@ async fn malformed_json_line_is_skipped_not_fatal() {
 
 #[tokio::test]
 async fn cancel_and_rpc_response_messages_are_ignored_cleanly() {
-    // Slice 1a ignores Cancel / RpcResponseOk / RpcResponseError — they should
-    // neither crash the plugin nor produce a response.
+    // Slice 1c ignores Cancel / RpcResponseOk / RpcResponseError — they
+    // should neither crash the plugin nor produce a response.
     let mut p = PluginProcess::spawn().await;
     p.send(&HostToPlugin::Cancel { id: 1 }).await;
     p.send(&HostToPlugin::RpcResponseOk {
@@ -278,9 +313,8 @@ async fn cancel_and_rpc_response_messages_are_ignored_cleanly() {
     p.shutdown().await;
 }
 
-// Suppress warning about the unused LogLevel import — the `use` is there so
-// that future slice-1a tests (when we add Log-stream assertions) can use it
-// without another import line. Delete when Log tests land.
+// Suppress unused-import warning: LogLevel is kept for the future slice 1d
+// test for `Log` envelope round-trips.
 #[allow(dead_code)]
 fn _referenced_levels() {
     let _ = LogLevel::Info;

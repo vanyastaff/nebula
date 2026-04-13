@@ -15,7 +15,7 @@ documentation.workspace = true
 async-trait = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
-tokio = { workspace = true, features = ["io-std", "io-util", "sync"] }
+tokio = { workspace = true, features = ["io-std", "io-util", "sync", "net"] }
 thiserror = { workspace = true }
 tracing = { workspace = true }
 

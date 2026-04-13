@@ -67,6 +67,7 @@ use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use crate::protocol::{ActionDescriptor, DUPLEX_PROTOCOL_VERSION, HostToPlugin, PluginToHost};
 
 pub mod protocol;
+pub mod transport;
 
 /// Error returned from a [`PluginHandler::execute`] call.
 #[derive(Debug, Clone, Error)]
@@ -179,32 +180,67 @@ pub trait PluginHandler: Send + Sync + 'static {
     ) -> Result<Value, PluginError>;
 }
 
-/// Run the plugin's duplex event loop until stdin EOF or [`HostToPlugin::Shutdown`].
+/// Run the plugin's duplex event loop.
 ///
-/// # Behaviour
+/// # Lifecycle
 ///
-/// - Reads line-delimited JSON from stdin, each line one [`HostToPlugin`] envelope.
+/// 1. Binds a transport listener (Unix domain socket on Linux/macOS, named pipe on Windows) via
+///    [`transport::bind_listener`].
+/// 2. Prints the handshake line to **stdout** and flushes.
+/// 3. Waits for exactly one incoming connection from the host.
+/// 4. Runs the event loop over the accepted stream until the host closes the connection or sends
+///    [`HostToPlugin::Shutdown`].
+///
+/// stdout is used only for the handshake line. After the connection is
+/// accepted, all protocol traffic flows over the socket/pipe; the plugin
+/// may still write diagnostic lines to stderr, which the host scrapes
+/// into its logger.
+///
+/// # Behaviour inside the event loop
+///
+/// - Line-delimited JSON envelopes, one [`HostToPlugin`] per `\n`.
 /// - Dispatches [`HostToPlugin::ActionInvoke`] to [`PluginHandler::execute`].
 /// - Dispatches [`HostToPlugin::MetadataRequest`] to [`PluginHandler::metadata`].
 /// - Ignores [`HostToPlugin::Cancel`] / [`HostToPlugin::RpcResponseOk`] /
-///   [`HostToPlugin::RpcResponseError`] in slice 1a (no in-flight tracking yet — slice 1b adds
-///   concurrent dispatch with multiplexing).
-/// - Exits cleanly on stdin EOF or [`HostToPlugin::Shutdown`].
+///   [`HostToPlugin::RpcResponseError`] in slice 1c (concurrent dispatch and broker RPC flow land
+///   in slice 1d).
+/// - Exits cleanly on stream EOF or [`HostToPlugin::Shutdown`].
+/// - Malformed JSON lines are logged via `tracing::warn!` and skipped; the loop continues. The host
+///   and plugin stay in sync because every legit envelope is self-contained.
 ///
-/// Malformed JSON lines are logged to stderr via `tracing::warn!` and skipped;
-/// the loop continues. A parse failure is **not** fatal — the host and plugin
-/// stay in sync because every legit message is self-contained.
+/// Slice 1c keeps plugin-side dispatch **sequential** — one action at a
+/// time, head-of-line blocking. Slice 1d adds `tokio::spawn` per invocation
+/// with a writer channel, so RPC calls can interleave with action execution.
 ///
 /// # Errors
 ///
-/// Returns [`std::io::Error`] on stdout write failures only. stdin read
-/// failures cause a clean exit (treated as "parent dropped the pipe").
+/// Returns [`std::io::Error`] on transport bind / accept failures or on
+/// stdout handshake write failures. Read/write errors on the accepted
+/// stream cause a clean exit (treated as "host dropped the connection").
 pub async fn run_duplex<H: PluginHandler>(handler: H) -> std::io::Result<()> {
     let handler = Arc::new(handler);
-    let stdin = tokio::io::stdin();
-    let stdout = tokio::io::stdout();
-    let mut reader = BufReader::new(stdin);
-    let mut writer = stdout;
+
+    // Bind listener and emit handshake line on stdout.
+    let (listener, handshake) = transport::bind_listener()?;
+    {
+        let mut stdout = tokio::io::stdout();
+        stdout.write_all(handshake.as_bytes()).await?;
+        stdout.write_all(b"\n").await?;
+        stdout.flush().await?;
+    }
+
+    // Wait for the host to dial.
+    let stream = listener.accept().await?;
+    run_event_loop(stream, handler).await
+}
+
+async fn run_event_loop<H: PluginHandler>(
+    stream: transport::PluginStream,
+    handler: Arc<H>,
+) -> std::io::Result<()> {
+    let (read_half, write_half) = tokio::io::split(stream);
+    let mut reader = BufReader::new(read_half);
+    let mut writer = write_half;
     let ctx = PluginCtx::new();
     let mut line = String::new();
 
@@ -212,12 +248,12 @@ pub async fn run_duplex<H: PluginHandler>(handler: H) -> std::io::Result<()> {
         line.clear();
         let bytes = match reader.read_line(&mut line).await {
             Ok(0) => {
-                tracing::debug!("plugin: stdin EOF, exiting");
+                tracing::debug!("plugin: transport EOF, exiting");
                 return Ok(());
             }
             Ok(n) => n,
             Err(e) => {
-                tracing::warn!(error = %e, "plugin: stdin read error, exiting");
+                tracing::warn!(error = %e, "plugin: transport read error, exiting");
                 return Ok(());
             }
         };
@@ -273,8 +309,10 @@ pub async fn run_duplex<H: PluginHandler>(handler: H) -> std::io::Result<()> {
             HostToPlugin::Cancel { .. }
             | HostToPlugin::RpcResponseOk { .. }
             | HostToPlugin::RpcResponseError { .. } => {
-                // Slice 1a ignores these — no concurrent dispatch or broker
-                // RPC flow yet. Slice 1b adds multiplexing and handles them.
+                // Slice 1c: sequential dispatch means Cancel is a no-op
+                // (the in-flight invocation blocks the loop anyway). Slice
+                // 1d adds concurrent dispatch and pending-call tables and
+                // routes these correctly.
             }
         }
     }

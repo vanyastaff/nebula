@@ -4,7 +4,7 @@ Plugin isolation — `SandboxRunner` trait + implementations.
 ## Invariants
 - `SandboxRunner` is the common interface.
 - `InProcessSandbox` — trusted in-process. Built-in actions.
-- `ProcessSandbox` — child process speaking duplex v2 (slice 1b, 2026-04-13). Still one-shot per call: spawn → send envelope → read envelope → wait → exit. Long-lived + Reattach lands in slice 1d's `PluginSupervisor`.
+- `ProcessSandbox` — long-lived plugin over UDS/Named-Pipe (slice 1c). First call spawns + dials socket the plugin announces via stdout handshake; subsequent calls reuse `PluginHandle` via `Mutex<Option<_>>`. Connection error → clear + retry once. Supervisor + concurrent dispatch + reattach slice 1d.
 - Phase 0: `execute_stateless` routes `CapabilityGated`/`Isolated` through `self.sandbox`. Stateful still fail-closes.
 - **Permission manifest deferred** (roadmap §D4). `plugin.toml` = 9 lines. Defense = process isolation + broker + anti-SSRF + audit + OS jail + signed manifest.
 
