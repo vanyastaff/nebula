@@ -25,3 +25,7 @@ tokio = { workspace = true, features = ["rt", "rt-multi-thread", "macros", "proc
 [[bin]]
 name = "nebula-echo-fixture"
 path = "src/bin/echo_fixture.rs"
+
+[[bin]]
+name = "nebula-counter-fixture"
+path = "src/bin/counter_fixture.rs"

@@ -38,10 +38,6 @@ use crate::{
     runner::SandboxedContext,
 };
 
-/// Maximum stderr bytes captured for logging (64 KB). stdout is parsed
-/// line-by-line for the handshake so has no fixed cap.
-const MAX_STDERR_BYTES: usize = 64 * 1024;
-
 /// Timeout for reading the plugin's handshake line from stdout.
 const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(3);
 
@@ -164,6 +160,44 @@ impl ProcessSandbox {
         self.dispatch_envelope(request).await
     }
 
+    /// High-level action invocation for host code outside the engine flow
+    /// (diagnostics, examples, integration tests, ad-hoc CLI invocations).
+    ///
+    /// Sends an `ActionInvoke` envelope to the (possibly already-spawned)
+    /// plugin process, awaits the matching `ActionResult*` envelope, and
+    /// returns the unwrapped output value.
+    ///
+    /// Production action execution in the engine still goes through the
+    /// `SandboxRunner::execute` trait method, which wraps cancellation,
+    /// metadata plumbing, and integration with `ActionRuntime`.
+    pub async fn invoke(
+        &self,
+        action_key: &str,
+        input: serde_json::Value,
+    ) -> Result<serde_json::Value, ActionError> {
+        let envelope = self.call_action(action_key, input).await?;
+        match envelope {
+            PluginToHost::ActionResultOk { output, .. } => Ok(output),
+            PluginToHost::ActionResultError {
+                code,
+                message,
+                retryable,
+                ..
+            } => {
+                let msg = sanitize_plugin_string(&format!("{code}: {message}"));
+                if retryable {
+                    Err(ActionError::retryable(msg))
+                } else {
+                    Err(ActionError::fatal(msg))
+                }
+            }
+            other => Err(ActionError::fatal(format!(
+                "plugin returned unexpected envelope (expected ActionResult*, got {})",
+                envelope_kind(&other)
+            ))),
+        }
+    }
+
     /// Core long-lived dispatch. Reuses the cached [`PluginHandle`] if any,
     /// spawns fresh otherwise. On transport error, clears the handle and
     /// retries once.
@@ -268,7 +302,17 @@ impl ProcessSandbox {
             ))
         })?;
 
-        // Read handshake line from child stdout with timeout.
+        // Spawn a background task that drains the plugin's stderr and logs
+        // each line via `tracing`. We do this BEFORE reading the handshake
+        // so that any crash diagnostics the plugin writes during startup
+        // are captured. The task ends when the child's stderr closes —
+        // usually on plugin exit.
+        if let Some(stderr) = child.stderr.take() {
+            let plugin_name = self.binary.display().to_string();
+            tokio::spawn(drain_plugin_stderr(stderr, plugin_name));
+        }
+
+        // Read the handshake line from child stdout with a hard timeout.
         let stdout = child
             .stdout
             .take()
@@ -280,24 +324,6 @@ impl ProcessSandbox {
             stdout_reader.read_line(&mut handshake_line).await
         })
         .await;
-
-        // Drain stderr into a log line (best effort).
-        let stderr_buf = if let Some(mut stderr) = child.stderr.take() {
-            let mut buf = vec![0u8; MAX_STDERR_BYTES];
-            let n = stderr.read(&mut buf).await.unwrap_or(0);
-            buf.truncate(n);
-            buf
-        } else {
-            Vec::new()
-        };
-        if !stderr_buf.is_empty() {
-            let stderr = sanitize_plugin_string(&String::from_utf8_lossy(&stderr_buf));
-            tracing::debug!(
-                plugin = %self.binary.display(),
-                stderr = %stderr,
-                "plugin stderr captured during spawn"
-            );
-        }
 
         let n = read_result
             .map_err(|_| {
@@ -391,6 +417,26 @@ impl Drop for ProcessSandbox {
         tracing::debug!(
             plugin = %self.binary.display(),
             "ProcessSandbox dropped; plugin child will be killed by kill_on_drop"
+        );
+    }
+}
+
+/// Drain a plugin child's stderr, emitting one `tracing::debug!` event per
+/// line. Returns when the stderr pipe closes (plugin exited) or read errors.
+async fn drain_plugin_stderr(stderr: tokio::process::ChildStderr, plugin_name: String) {
+    let mut reader = BufReader::new(stderr);
+    let mut line = String::new();
+    loop {
+        line.clear();
+        match reader.read_line(&mut line).await {
+            Ok(0) | Err(_) => return,
+            Ok(_) => {}
+        }
+        let sanitized = sanitize_plugin_string(line.trim());
+        tracing::debug!(
+            plugin = %plugin_name,
+            stderr = %sanitized,
+            "plugin stderr"
         );
     }
 }
