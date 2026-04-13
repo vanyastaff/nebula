@@ -47,7 +47,23 @@ fn top_level_type_sizes_are_stable() {
     assert_eq!(size_of::<ActionMetadata>(), 168);
     assert_eq!(size_of::<ActionError>(), 64);
     assert_eq!(size_of::<ActionHandler>(), 24);
-    assert_eq!(size_of::<WebhookRequest>(), 232);
+
+    // `WebhookRequest` contains a `SystemTime`, which is 8 bytes on
+    // Windows (FILETIME) and 16 bytes on Linux (timespec). Assert the
+    // platform-specific baseline so the test is meaningful on both.
+    #[cfg(target_os = "windows")]
+    assert_eq!(
+        size_of::<WebhookRequest>(),
+        232,
+        "WebhookRequest grew on Windows — check recent webhook.rs additions."
+    );
+    #[cfg(not(target_os = "windows"))]
+    assert_eq!(
+        size_of::<WebhookRequest>(),
+        240,
+        "WebhookRequest grew on Unix — check recent webhook.rs additions."
+    );
+
     assert_eq!(size_of::<TriggerEventOutcome>(), 32);
 }
 

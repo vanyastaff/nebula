@@ -1,5 +1,4 @@
-//! `EndpointProviderImpl` — implements the
-//! [`WebhookEndpointProvider`](nebula_action::WebhookEndpointProvider)
+//! `EndpointProviderImpl` — implements the [`WebhookEndpointProvider`]
 //! trait so webhook actions can read the public URL they should
 //! register with the external provider in `on_activate`.
 
