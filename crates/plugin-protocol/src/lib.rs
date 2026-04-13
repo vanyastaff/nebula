@@ -8,7 +8,17 @@
 //! Plugin authors depend on this crate to implement the stdin/stdout JSON protocol.
 //! The host (nebula-sandbox) uses the same types for (de)serialization.
 //!
-//! ## Quick Start
+//! Two protocols coexist during the Phase 1 migration:
+//!
+//! - **v1 (one-shot)** — [`PluginRequest`] / [`PluginResponse`] / [`run`]. Host writes one request
+//!   to stdin, plugin writes one response to stdout, plugin exits. Used by the current
+//!   `ProcessSandbox`. Will be removed once `ProcessSandbox` migrates to v2 (slice 1b of Phase 1).
+//! - **v2 (duplex)** — [`duplex::HostToPlugin`] / [`duplex::PluginToHost`]. Bidirectional
+//!   line-delimited JSON envelope stream. Supports action invocation, plugin-initiated RPCs into
+//!   the host broker, metadata requests, and cooperative cancellation. See
+//!   `docs/plans/2026-04-13-sandbox-phase1-broker.md` for the full spec.
+//!
+//! ## Quick Start (v1 — legacy)
 //!
 //! ```rust,ignore
 //! use nebula_plugin_protocol::*;
@@ -33,6 +43,8 @@
 //!     nebula_plugin_protocol::run(MyPlugin);
 //! }
 //! ```
+
+pub mod duplex;
 
 use serde::{Deserialize, Serialize};
 
