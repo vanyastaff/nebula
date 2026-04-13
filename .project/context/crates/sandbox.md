@@ -10,8 +10,8 @@ Plugin isolation — `SandboxRunner` trait + implementations.
 
 ## Key Decisions
 - Process isolation over WASM — tokio/reqwest don't compile to WASM.
-- Phase 1 target: gRPC over UDS/TCP-loopback + AutoMTLS + Reattach (go-plugin). Slice 1a/1b ship duplex JSON as stepping stone, zero new deps.
-- `ProcessSandbox::call_action` for action execution, `get_metadata` for discovery (`MetadataRequest` envelope).
+- Phase 1 transport: **UDS (Unix) / Named Pipe (Windows) + line-delimited JSON**. No gRPC, no TLS. Rust-only plugin constraint means no cross-language interop; tonic+prost+rustls+rcgen rejected (~65 transitive crates). Prior art: LSP/DAP.
+- `call_action` for execution, `get_metadata` for discovery.
 - OS enforcement — Phase 2/3.
 
 ## Traps

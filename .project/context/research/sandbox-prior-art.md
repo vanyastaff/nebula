@@ -26,7 +26,7 @@ Research done 2026-04-13 for nebula-sandbox design. Three parallel research pass
 | `postcard` | 1.1.3 | Binary wire format | MIT/Apache | 27.8M dl, COBS-framed, no_std clean, stable 1.x |
 | `rkyv` | 0.8.15 | Zero-copy archive | MIT | 97M dl, for device-ring hot path only |
 | `cap-std` | 4.0.2 | Capability-based std | Apache-2.0 | 9.6M dl, BCA owns. **Host-side only** — makes path-traversal bugs in our broker code structurally impossible. Not an enforcement layer. |
-| `tonic` + `prost` + `rustls` | latest | gRPC transport | MIT/Apache | For Phase 1 go-plugin-style transport |
+| ~~`tonic` + `prost` + `rustls` + `rcgen`~~ | ~~latest~~ | ~~gRPC transport~~ | ~~MIT/Apache~~ | **Rejected 2026-04-13** — Rust-only plugin constraint means no cross-language interop need; ~65 transitive crates not justified. Slice 1c ships UDS / Named Pipe via tokio `net` feature alone. See D1 above. |
 | `libloading` | 0.9.0 | dlopen/LoadLibrary | ISC | 341M dl — **only if** we ever ship in-process plugins (currently rejected) |
 
 ### Crates we study but don't depend on
@@ -299,8 +299,18 @@ This is strictly better than n8n's in-process model (no isolation at all) withou
 
 ## Confirmed architectural decisions
 
-### D1 — Transport: gRPC over UDS/TCP with go-plugin-style handshake
-Stdio is for handshake line only. Plugin writes one line to stdout: `NEBULA-PROTO-1 | PLUGIN-VER-N | unix|tcp | addr | grpc`. Host parses, dials. gRPC with AutoMTLS on both sides. UDS on Linux/macOS, TCP loopback on Windows (Windows UDS is supported since 1803 but tooling is uneven). Plugin-SDK hides the handshake behind `run_duplex(handler)`; plugin authors see a simple async API.
+### D1 — Transport: plain UDS / Windows Named Pipe + line-delimited JSON
+**No gRPC, no protobuf, no TLS.** Initially we considered the go-plugin stack (tonic + prost + rustls + rcgen, ~65 transitive crates) but that pattern is designed for cross-language plugin ecosystems — Terraform plugins can be written in any language that speaks gRPC. nebula is deliberately **Rust-only** (the user rejected JS/Python plugins on security grounds; see roadmap §D5), so we don't pay for cross-language interop we don't need.
+
+**Handshake line** printed by plugin to stdout: `NEBULA-PROTO-2|unix|/tmp/nebula-plugin-<uuid>.sock` or `NEBULA-PROTO-2|pipe|\\.\pipe\LOCAL\nebula-plugin-<uuid>`. Host dials the socket/pipe directly.
+
+**Auth** is filesystem / pipe object namespace ACLs — UDS mode `0600` inside a parent dir with mode `0700` (Linux/macOS); session-scoped named pipe with user-SID DACL (Windows). Same security primitive as SSH agent, systemd, dbus, Docker socket, LSP servers.
+
+**Prior art**: LSP (Language Server Protocol — rust-analyzer, clangd, gopls) and DAP (Debug Adapter Protocol — every serious debugger UI). Plain bidirectional JSON-RPC over stdio or sockets. 10+ years in production across millions of users and every platform. Zero gRPC. Proves the light path is production-grade.
+
+**What we keep from go-plugin**: the *lifecycle pattern* (long-lived subprocess, Reattach, supervisor model) — just without the transport baggage. Slice 1c ships this.
+
+Plugin-SDK hides all transport details behind `run_duplex(handler)`; plugin authors see a simple async trait.
 
 ### D2 — Lifecycle: long-lived per `(plugin_key, credential_scope)` with Reattach
 Not per-invocation. Not per-engine-instance. Per credential-scope — same plugin with different credentials = different process (prevents credential leak). Reattach means engine can restart without killing in-flight workflows.
