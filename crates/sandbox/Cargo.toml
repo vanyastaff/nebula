@@ -15,7 +15,7 @@ publish = false
 [dependencies]
 nebula-action = { path = "../action" }
 nebula-core = { path = "../core" }
-nebula-plugin-protocol = { path = "../plugin-protocol" }
+nebula-plugin-sdk = { path = "../plugin-sdk" }
 
 async-trait = { workspace = true }
 serde = { workspace = true }

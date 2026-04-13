@@ -8,8 +8,9 @@
 //! [`run_duplex`] from `main` — the SDK handles the wire protocol, line
 //! framing, and dispatch.
 //!
-//! This is the high-level wrapper around [`nebula_plugin_protocol::duplex`];
-//! plugin authors never touch raw envelopes.
+//! The wire envelope types live in the [`protocol`] submodule. Plugin authors
+//! never touch them directly; the host (`nebula-sandbox`) imports them to
+//! (de)serialize messages over the transport.
 //!
 //! ## Quick start
 //!
@@ -59,12 +60,13 @@
 
 use std::sync::Arc;
 
-use nebula_plugin_protocol::duplex::{
-    ActionDescriptor, DUPLEX_PROTOCOL_VERSION, HostToPlugin, PluginToHost,
-};
 use serde_json::Value;
 use thiserror::Error;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+
+use crate::protocol::{ActionDescriptor, DUPLEX_PROTOCOL_VERSION, HostToPlugin, PluginToHost};
+
+pub mod protocol;
 
 /// Error returned from a [`PluginHandler::execute`] call.
 #[derive(Debug, Clone, Error)]

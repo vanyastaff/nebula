@@ -5,7 +5,7 @@ use std::{path::Path, sync::Arc, time::Duration};
 
 use nebula_action::{ActionHandler, ActionMetadata};
 use nebula_core::ActionKey;
-use nebula_plugin_protocol::duplex::{ActionDescriptor, DUPLEX_PROTOCOL_VERSION, PluginToHost};
+use nebula_plugin_sdk::protocol::{ActionDescriptor, DUPLEX_PROTOCOL_VERSION, PluginToHost};
 
 use crate::{
     capabilities::PluginCapabilities, handler::ProcessSandboxHandler, process::ProcessSandbox,

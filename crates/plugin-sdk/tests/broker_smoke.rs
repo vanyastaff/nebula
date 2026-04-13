@@ -11,9 +11,7 @@
 
 use std::time::Duration;
 
-use nebula_plugin_protocol::duplex::{
-    DUPLEX_PROTOCOL_VERSION, HostToPlugin, LogLevel, PluginToHost,
-};
+use nebula_plugin_sdk::protocol::{DUPLEX_PROTOCOL_VERSION, HostToPlugin, LogLevel, PluginToHost};
 use serde_json::json;
 use tokio::{
     io::{AsyncBufReadExt, AsyncWriteExt, BufReader},

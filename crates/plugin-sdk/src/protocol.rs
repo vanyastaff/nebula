@@ -1,23 +1,29 @@
-//! Duplex protocol (v2): bidirectional envelope-based message stream between
-//! host and plugin over stdio.
+//! Wire protocol: tagged envelope types for the duplex broker stream.
 //!
-//! This module defines the line-delimited JSON envelope format used by the
-//! Phase 1 plugin broker. Each line of stdin (host→plugin) and stdout
-//! (plugin→host) is one JSON object tagged by `kind`. See
-//! `docs/plans/2026-04-13-sandbox-phase1-broker.md` for the full architecture.
-//!
-//! The one-shot v1 protocol ([`crate::PluginRequest`] / [`crate::PluginResponse`])
-//! is kept for backward compatibility with the current `ProcessSandbox` and
-//! will be removed once `ProcessSandbox` is rewritten to use this duplex
-//! protocol (slice 1b of Phase 1).
+//! This module defines the on-the-wire shapes used by both the plugin and
+//! the host. Plugin authors never touch these types directly — they work
+//! with [`PluginHandler`](crate::PluginHandler) / [`PluginCtx`](crate::PluginCtx)
+//! in the parent module. The host (`nebula-sandbox`) imports these types to
+//! (de)serialize envelopes over the transport.
 //!
 //! ## Framing
 //!
-//! - One message per line. Newlines inside strings must be escaped (standard JSON serialization
-//!   with `serde_json::to_string` never produces a raw newline inside a string literal, so this is
-//!   automatic).
-//! - Reader must check `\n` terminators and parse the line as JSON.
-//! - Writer must append `\n` after the JSON and flush.
+//! - Line-delimited JSON. One message per `\n`.
+//! - Serialized envelopes must never contain raw newlines — `serde_json::to_string` escapes them
+//!   inside string values, so this is automatic. The [`single_line_serialization`](#testing) test
+//!   locks the invariant.
+//! - Readers split on `\n`, trim whitespace, parse each non-empty line.
+//! - Writers `write_all(encoded)` then `write_all(b"\n")` then `flush`.
+//!
+//! ## Transport
+//!
+//! - Slices 1a / 1b: stdio (parent pipes to child's stdin/stdout).
+//! - Slice 1c: Unix domain socket (Linux/macOS) or Named Pipe (Windows), with the parent dialing an
+//!   address the plugin announces via a one-line handshake printed to stdout before the listener
+//!   accepts.
+//!
+//! The envelope shape is transport-agnostic — the same types flow over any
+//! byte stream that implements `AsyncRead + AsyncWrite`.
 
 use serde::{Deserialize, Serialize};
 

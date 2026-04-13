@@ -17,7 +17,7 @@ use std::{path::PathBuf, time::Duration};
 
 use async_trait::async_trait;
 use nebula_action::{ActionError, ActionMetadata, result::ActionResult};
-use nebula_plugin_protocol::duplex::{HostToPlugin, PluginToHost};
+use nebula_plugin_sdk::protocol::{HostToPlugin, PluginToHost};
 use tokio::{
     io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader},
     process::Command,

@@ -4103,19 +4103,10 @@ dependencies = [
 ]
 
 [[package]]
-name = "nebula-plugin-protocol"
-version = "0.1.0"
-dependencies = [
- "serde",
- "serde_json",
-]
-
-[[package]]
 name = "nebula-plugin-sdk"
 version = "0.1.0"
 dependencies = [
  "async-trait",
- "nebula-plugin-protocol",
  "serde",
  "serde_json",
  "thiserror 2.0.18",
@@ -4202,7 +4193,7 @@ dependencies = [
  "landlock",
  "nebula-action",
  "nebula-core",
- "nebula-plugin-protocol",
+ "nebula-plugin-sdk",
  "nix 0.31.2",
  "serde",
  "serde_json",
