@@ -116,8 +116,9 @@ name = "{crate_name}"
 path = "src/main.rs"
 
 [dependencies]
-nebula-plugin-protocol = "0.1"
-serde = {{ version = "1", features = ["derive"] }}
+nebula-plugin-sdk = "0.1"
+async-trait = "0.1"
+tokio = {{ version = "1", features = ["rt", "macros", "io-std", "io-util", "sync"] }}
 serde_json = "1"
 "#
     )
@@ -129,7 +130,7 @@ fn main_rs(plugin_key: &str, struct_name: &str, name: &str, action_names: &[Stri
         .map(|a| {
             let display_name = to_pascal_case(a);
             format!(
-                r#"            .action("{plugin_key}.{a}", "{display_name}", "TODO: describe {a}")"#,
+                r#"            .with_action("{plugin_key}.{a}", "{display_name}", "TODO: describe {a}")"#,
             )
         })
         .collect::<Vec<_>>()
@@ -141,7 +142,7 @@ fn main_rs(plugin_key: &str, struct_name: &str, name: &str, action_names: &[Stri
             format!(
                 r#"            "{plugin_key}.{a}" | "{a}" => {{
                 // TODO: implement {a}
-                PluginResult::success(serde_json::json!({{"ok": true, "action": "{a}"}}))
+                Ok(serde_json::json!({{"ok": true, "action": "{a}"}}))
             }}"#,
             )
         })
@@ -151,28 +152,38 @@ fn main_rs(plugin_key: &str, struct_name: &str, name: &str, action_names: &[Stri
     format!(
         r#"//! Nebula plugin: {name}
 
-use nebula_plugin_protocol::{{PluginHandler, PluginMetadata, PluginResult}};
+use nebula_plugin_sdk::{{PluginCtx, PluginError, PluginHandler, PluginMeta, run_duplex}};
 use serde_json::Value;
 
 struct {struct_name};
 
+#[async_trait::async_trait]
 impl PluginHandler for {struct_name} {{
-    fn metadata(&self) -> PluginMetadata {{
-        PluginMetadata::new("{plugin_key}", "{struct_name}")
-            .description("TODO: describe {name} plugin")
+    fn metadata(&self) -> PluginMeta {{
+        PluginMeta::new("{plugin_key}", "0.1.0")
 {action_builders}
     }}
 
-    fn execute(&self, action_key: &str, input: Value) -> PluginResult {{
+    async fn execute(
+        &self,
+        _ctx: &PluginCtx,
+        action_key: &str,
+        input: Value,
+    ) -> Result<Value, PluginError> {{
+        let _ = input;
         match action_key {{
 {action_match_arms}
-            other => PluginResult::unknown_action(other),
+            other => Err(PluginError::fatal(
+                "UNKNOWN_ACTION",
+                format!("unknown action: {{other}}"),
+            )),
         }}
     }}
 }}
 
-fn main() {{
-    nebula_plugin_protocol::run({struct_name});
+#[tokio::main(flavor = "current_thread")]
+async fn main() -> std::io::Result<()> {{
+    run_duplex({struct_name}).await
 }}
 "#
     )

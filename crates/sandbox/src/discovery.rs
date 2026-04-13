@@ -1,53 +1,82 @@
-//! Plugin discovery — scan directories for plugin binaries and get metadata.
+//! Plugin discovery — scan directories for plugin binaries and query metadata
+//! using the duplex v2 protocol.
 
 use std::{path::Path, sync::Arc, time::Duration};
 
 use nebula_action::{ActionHandler, ActionMetadata};
 use nebula_core::ActionKey;
-use nebula_plugin_protocol::{PROTOCOL_VERSION, PluginMetadata, PluginResponse};
+use nebula_plugin_protocol::duplex::{ActionDescriptor, DUPLEX_PROTOCOL_VERSION, PluginToHost};
 
 use crate::{
     capabilities::PluginCapabilities, handler::ProcessSandboxHandler, process::ProcessSandbox,
 };
 
-/// Discover a plugin by running its binary and asking for metadata.
-pub async fn discover_plugin(binary: &Path) -> Result<PluginMetadata, String> {
+/// Plugin metadata returned by [`discover_plugin`].
+///
+/// Host-side projection of [`PluginToHost::MetadataResponse`] — drops the
+/// correlation `id` field and keeps the rest.
+#[derive(Debug, Clone)]
+pub struct DiscoveredPlugin {
+    /// Unique plugin key (e.g., `"com.author.telegram"`).
+    pub key: String,
+    /// Plugin version string (semver).
+    pub version: String,
+    /// Actions this plugin provides.
+    pub actions: Vec<ActionDescriptor>,
+}
+
+/// Discover a plugin by spawning its binary and sending a `MetadataRequest`
+/// envelope.
+pub async fn discover_plugin(binary: &Path) -> Result<DiscoveredPlugin, String> {
     let sandbox = ProcessSandbox::new(
         binary.to_path_buf(),
         Duration::from_secs(5),
         PluginCapabilities::none(),
     );
 
-    let output = sandbox
-        .call("__metadata__", serde_json::Value::Null)
+    let envelope = sandbox
+        .get_metadata()
         .await
         .map_err(|e| format!("discovery failed for {}: {e}", binary.display()))?;
 
-    // Parse the tagged response.
-    let response: PluginResponse = serde_json::from_str(&output)
-        .map_err(|e| format!("invalid response from {}: {e}", binary.display()))?;
-
-    let metadata_value = match response {
-        PluginResponse::Ok { output } => output,
-        PluginResponse::Error { code, message, .. } => {
-            return Err(format!("{}: {code}: {message}", binary.display()));
+    match envelope {
+        PluginToHost::MetadataResponse {
+            protocol_version,
+            plugin_key,
+            plugin_version,
+            actions,
+            ..
+        } => {
+            if protocol_version != DUPLEX_PROTOCOL_VERSION {
+                return Err(format!(
+                    "{}: protocol version mismatch (plugin={}, host={})",
+                    binary.display(),
+                    protocol_version,
+                    DUPLEX_PROTOCOL_VERSION,
+                ));
+            }
+            Ok(DiscoveredPlugin {
+                key: plugin_key,
+                version: plugin_version,
+                actions,
+            })
         }
-    };
-
-    let metadata: LeftPluginMetadata = serde_json::from_value(metadata_value)
-        .map_err(|e| format!("invalid metadata from {}: {e}", binary.display()))?;
-
-    // Validate protocol version.
-    if metadata.protocol_version != PROTOCOL_VERSION {
-        return Err(format!(
-            "{}: protocol version mismatch (plugin={}, host={})",
+        other => Err(format!(
+            "{}: unexpected envelope from plugin: {}",
             binary.display(),
-            metadata.protocol_version,
-            PROTOCOL_VERSION,
-        ));
+            response_kind(&other),
+        )),
     }
+}
 
-    Ok(metadata.into_protocol())
+fn response_kind(env: &PluginToHost) -> &'static str {
+    match env {
+        PluginToHost::ActionResultOk { .. } => "action_result_ok",
+        PluginToHost::ActionResultError { .. } => "action_result_error",
+        PluginToHost::RpcCall { .. } => "rpc_call",
+        PluginToHost::Log { .. } => "log",
+        PluginToHost::MetadataResponse { .. } => "metadata_response",
+    }
 }
 
 /// Discover all plugins in a directory and create handlers.
@@ -80,22 +109,23 @@ pub async fn discover_directory(
         }
 
         match discover_plugin(&path).await {
-            Ok(meta) => {
+            Ok(plugin) => {
                 let sandbox = Arc::new(ProcessSandbox::new(
                     path.clone(),
                     default_timeout,
                     PluginCapabilities::none(), // TODO: load from config
                 ));
-                let handlers = create_handlers(&meta, sandbox);
+                let handlers = create_handlers(&plugin, sandbox);
 
                 tracing::info!(
-                    plugin = %meta.key,
+                    plugin = %plugin.key,
+                    version = %plugin.version,
                     actions = handlers.len(),
                     binary = %path.display(),
                     "discovered community plugin"
                 );
 
-                results.push((meta.key.clone(), handlers));
+                results.push((plugin.key.clone(), handlers));
             }
             Err(e) => {
                 tracing::warn!(binary = %path.display(), error = %e, "skipping plugin");
@@ -108,7 +138,7 @@ pub async fn discover_directory(
 
 /// Create `ActionHandler` instances for each action in a discovered plugin.
 fn create_handlers(
-    plugin: &PluginMetadata,
+    plugin: &DiscoveredPlugin,
     sandbox: Arc<ProcessSandbox>,
 ) -> Vec<(ActionMetadata, ActionHandler)> {
     plugin
@@ -173,36 +203,5 @@ fn is_executable(path: &Path) -> bool {
     #[cfg(not(unix))]
     {
         ext == "exe" || ext.is_empty()
-    }
-}
-
-/// Internal type for parsing metadata with protocol_version field.
-#[derive(serde::Deserialize)]
-struct LeftPluginMetadata {
-    #[serde(default)]
-    protocol_version: u32,
-    key: String,
-    name: String,
-    #[serde(default = "default_version")]
-    version: u32,
-    #[serde(default)]
-    description: String,
-    #[serde(default)]
-    actions: Vec<nebula_plugin_protocol::ActionMeta>,
-}
-
-fn default_version() -> u32 {
-    1
-}
-
-impl LeftPluginMetadata {
-    fn into_protocol(self) -> PluginMetadata {
-        let mut meta = PluginMetadata::new(self.key, self.name)
-            .version(self.version)
-            .description(self.description);
-        for action in self.actions {
-            meta = meta.action(action.key, action.name, action.description);
-        }
-        meta
     }
 }
