@@ -4,12 +4,12 @@
 //! engine/runtime/API. Changing the output format is a breaking change —
 //! update expected values intentionally and document in MIGRATION.md.
 
-use std::{collections::HashMap, time::Duration};
+use std::{collections::HashMap, sync::Arc, time::Duration};
 
 use chrono::Utc;
 use nebula_action::{
-    ActionOutput, ActionResult, BreakReason, DynamicPort, FlowKind, InputPort, OutputPort,
-    SupportPort, WaitCondition,
+    ActionCategory, ActionOutput, ActionResult, BreakReason, DynamicPort, FlowKind, InputPort,
+    OutputPort, SupportPort, TerminationReason, WaitCondition,
 };
 use nebula_core::id::ExecutionId;
 
@@ -225,5 +225,117 @@ fn break_reason_serialization_contract() {
         let back: BreakReason = serde_json::from_str(&json).unwrap();
         let json_back = serde_json::to_string(&back).unwrap();
         assert_eq!(json_back, json, "BreakReason serialization changed");
+    }
+}
+
+// ── Drop / Terminate / TerminationReason contracts ──────────────────────────
+//
+// These freeze the JSON shape for the new control-flow variants added in
+// Phase 0 of the ControlAction work. Changing any of these values without
+// a documented migration is a breaking change — the engine, audit log, and
+// downstream persistence layers rely on the shape staying stable.
+
+#[test]
+fn action_result_drop_serialization_contract() {
+    let drop_with_reason: ActionResult<i32> = ActionResult::drop_with_reason("filtered");
+    let json = serde_json::to_string(&drop_with_reason).unwrap();
+    assert_eq!(json, r#"{"type":"Drop","reason":"filtered"}"#);
+    let back: ActionResult<i32> = serde_json::from_str(&json).unwrap();
+    assert!(back.is_drop());
+
+    let drop_no_reason: ActionResult<i32> = ActionResult::drop_item();
+    let json = serde_json::to_string(&drop_no_reason).unwrap();
+    assert_eq!(json, r#"{"type":"Drop","reason":null}"#);
+}
+
+#[test]
+fn action_result_terminate_success_serialization_contract() {
+    let terminate: ActionResult<i32> =
+        ActionResult::terminate_success(Some("done early".to_string()));
+    let json = serde_json::to_string(&terminate).unwrap();
+    assert_eq!(
+        json,
+        r#"{"type":"Terminate","reason":{"type":"Success","note":"done early"}}"#
+    );
+    let back: ActionResult<i32> = serde_json::from_str(&json).unwrap();
+    assert!(back.is_terminate());
+}
+
+#[test]
+fn action_result_terminate_success_no_note_serialization_contract() {
+    let terminate: ActionResult<i32> = ActionResult::terminate_success(None);
+    let json = serde_json::to_string(&terminate).unwrap();
+    assert_eq!(
+        json,
+        r#"{"type":"Terminate","reason":{"type":"Success","note":null}}"#
+    );
+}
+
+#[test]
+fn action_result_terminate_failure_serialization_contract() {
+    let terminate: ActionResult<i32> =
+        ActionResult::terminate_failure("E_VALIDATION", "field missing");
+    let json = serde_json::to_string(&terminate).unwrap();
+    assert_eq!(
+        json,
+        r#"{"type":"Terminate","reason":{"type":"Failure","code":"E_VALIDATION","message":"field missing"}}"#
+    );
+    let back: ActionResult<i32> = serde_json::from_str(&json).unwrap();
+    match back {
+        ActionResult::Terminate { reason } => match reason {
+            TerminationReason::Failure { code, message } => {
+                assert_eq!(&*code, "E_VALIDATION");
+                assert_eq!(message, "field missing");
+            }
+            TerminationReason::Success { .. } => panic!("expected Failure"),
+            _ => panic!("unexpected TerminationReason variant"),
+        },
+        _ => panic!("expected Terminate"),
+    }
+}
+
+#[test]
+fn termination_reason_round_trip_contract() {
+    let cases: Vec<TerminationReason> = vec![
+        TerminationReason::Success { note: None },
+        TerminationReason::Success {
+            note: Some("early stop".to_string()),
+        },
+        TerminationReason::Failure {
+            code: Arc::from("E_FAIL"),
+            message: "boom".to_string(),
+        },
+    ];
+    for original in cases {
+        let json = serde_json::to_string(&original).unwrap();
+        let back: TerminationReason = serde_json::from_str(&json).unwrap();
+        let json_back = serde_json::to_string(&back).unwrap();
+        assert_eq!(json_back, json, "TerminationReason serialization changed");
+    }
+}
+
+// ── ActionCategory contract ────────────────────────────────────────────────
+//
+// Metadata discriminator added in Phase 0. Serialized as snake_case tag;
+// changing any variant name is a breaking change for UI editor / audit log.
+
+#[test]
+fn action_category_serialization_contract() {
+    let cases = [
+        (ActionCategory::Data, r#""data""#),
+        (ActionCategory::Control, r#""control""#),
+        (ActionCategory::Trigger, r#""trigger""#),
+        (ActionCategory::Resource, r#""resource""#),
+        (ActionCategory::Agent, r#""agent""#),
+        (ActionCategory::Terminal, r#""terminal""#),
+    ];
+    for (value, expected) in cases {
+        let json = serde_json::to_string(&value).unwrap();
+        assert_eq!(
+            json, expected,
+            "ActionCategory serialization changed for {value:?}"
+        );
+        let back: ActionCategory = serde_json::from_str(&json).unwrap();
+        assert_eq!(back, value);
     }
 }

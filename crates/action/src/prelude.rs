@@ -13,6 +13,7 @@ pub use crate::{
         ActionLogLevel, ActionLogger, ExecutionEmitter, ResourceAccessor, TriggerScheduler,
     },
     context::{ActionContext, Context, CredentialContextExt, TriggerContext},
+    control::{ControlAction, ControlActionAdapter, ControlInput, ControlOutcome},
     dependency::ActionDependencies,
     error::{ActionError, ActionErrorExt, RetryHintCode, ValidationReason},
     handler::ActionHandler,
@@ -27,7 +28,7 @@ pub use crate::{
     },
     port::{ConnectionFilter, DynamicPort, FlowKind, InputPort, OutputPort, SupportPort},
     resource::{ResourceAction, ResourceActionAdapter},
-    result::ActionResult,
+    result::{ActionResult, TerminationReason},
     stateful::{
         BatchAction, BatchItemResult, PageResult, PaginatedAction, StatefulAction,
         StatefulActionAdapter,

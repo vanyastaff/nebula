@@ -6,7 +6,7 @@ use chrono::{DateTime, Utc};
 use nebula_core::{ExecutionId, NodeId};
 use serde::{Deserialize, Serialize};
 
-use crate::status::ExecutionStatus;
+use crate::status::{ExecutionStatus, ExecutionTerminationReason};
 
 /// Summary of a completed workflow execution.
 ///
@@ -49,6 +49,14 @@ pub struct ExecutionResult {
     /// Collected outputs from terminal nodes (nodes with no outgoing edges).
     #[serde(default)]
     pub outputs: HashMap<NodeId, serde_json::Value>,
+    /// Why this execution reached its terminal state.
+    ///
+    /// `None` for in-flight or legacy results that predate this field;
+    /// callers treat `None` as equivalent to
+    /// [`ExecutionTerminationReason::NaturalCompletion`] when status is
+    /// `Completed`, and as `SystemError` for other terminal statuses.
+    #[serde(default)]
+    pub termination_reason: Option<ExecutionTerminationReason>,
 }
 
 impl ExecutionResult {
@@ -67,7 +75,15 @@ impl ExecutionResult {
             nodes_failed: 0,
             nodes_skipped: 0,
             outputs: HashMap::new(),
+            termination_reason: None,
         }
+    }
+
+    /// Set the termination reason for this execution.
+    #[must_use = "builder methods must be chained or built"]
+    pub fn with_termination_reason(mut self, reason: ExecutionTerminationReason) -> Self {
+        self.termination_reason = Some(reason);
+        self
     }
 
     /// Set timing information.
@@ -179,6 +195,58 @@ mod tests {
         assert_eq!(restored.nodes_skipped, 2);
         assert_eq!(restored.duration, Some(Duration::from_secs(42)));
         assert_eq!(restored.outputs.len(), 1);
+    }
+
+    #[test]
+    fn termination_reason_defaults_to_none() {
+        let result = ExecutionResult::new(ExecutionId::new(), ExecutionStatus::Completed);
+        assert!(result.termination_reason.is_none());
+    }
+
+    #[test]
+    fn with_termination_reason_builder() {
+        let node_id = NodeId::new();
+        let result = ExecutionResult::new(ExecutionId::new(), ExecutionStatus::Completed)
+            .with_termination_reason(ExecutionTerminationReason::ExplicitStop {
+                by_node: node_id,
+                note: Some("done early".into()),
+            });
+        match result.termination_reason {
+            Some(ExecutionTerminationReason::ExplicitStop { by_node, note }) => {
+                assert_eq!(by_node, node_id);
+                assert_eq!(note.as_deref(), Some("done early"));
+            }
+            _ => panic!("expected ExplicitStop"),
+        }
+    }
+
+    #[test]
+    fn termination_reason_serde_roundtrip() {
+        let original = ExecutionResult::new(ExecutionId::new(), ExecutionStatus::Failed)
+            .with_termination_reason(ExecutionTerminationReason::ExplicitFail {
+                by_node: NodeId::new(),
+                code: std::sync::Arc::from("E_BAD"),
+                message: "broken".into(),
+            });
+        let json = serde_json::to_string(&original).unwrap();
+        let back: ExecutionResult = serde_json::from_str(&json).unwrap();
+        match back.termination_reason {
+            Some(ExecutionTerminationReason::ExplicitFail { code, message, .. }) => {
+                assert_eq!(&*code, "E_BAD");
+                assert_eq!(message, "broken");
+            }
+            _ => panic!("expected ExplicitFail"),
+        }
+    }
+
+    #[test]
+    fn termination_reason_backward_compat_deserialize_without_field() {
+        // Legacy payloads serialized before termination_reason existed
+        // must deserialize with termination_reason == None.
+        let id = ExecutionId::new();
+        let json = format!(r#"{{"execution_id":"{}","status":"completed"}}"#, id);
+        let result: ExecutionResult = serde_json::from_str(&json).unwrap();
+        assert!(result.termination_reason.is_none());
     }
 
     #[test]

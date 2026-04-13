@@ -1,5 +1,8 @@
 //! Execution-level status tracking.
 
+use std::sync::Arc;
+
+use nebula_core::NodeId;
 use serde::{Deserialize, Serialize};
 
 /// The overall status of a workflow execution.
@@ -66,6 +69,60 @@ impl std::fmt::Display for ExecutionStatus {
             Self::TimedOut => write!(f, "timed_out"),
         }
     }
+}
+
+/// Why a workflow execution reached its terminal state.
+///
+/// Attached to [`crate::ExecutionResult`] so that audit logs and UI can
+/// distinguish intentional terminations (a `StopAction` or `FailAction`
+/// node requested the end) from system-level terminations (crashes,
+/// timeouts, cancellations) and from natural completion (all nodes
+/// finished normally).
+///
+/// This does **not** replace [`ExecutionStatus`]. Status describes *what*
+/// terminal state was reached; this enum describes *why*.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "type")]
+#[non_exhaustive]
+pub enum ExecutionTerminationReason {
+    /// Execution completed naturally — all reachable nodes ran and the
+    /// frontier drained without an explicit terminate signal.
+    NaturalCompletion,
+
+    /// A node explicitly requested successful termination via
+    /// `ActionResult::Terminate { TerminationReason::Success }` (typically
+    /// a `StopAction`).
+    ///
+    /// Parallel branches still running at the time are cancelled cleanly.
+    ExplicitStop {
+        /// The node that requested termination.
+        by_node: NodeId,
+        /// Optional note describing why the node chose to stop early.
+        note: Option<String>,
+    },
+
+    /// A node explicitly requested failed termination via
+    /// `ActionResult::Terminate { TerminationReason::Failure }` (typically
+    /// a `FailAction`).
+    ///
+    /// Parallel branches still running at the time are cancelled cleanly.
+    ExplicitFail {
+        /// The node that requested termination.
+        by_node: NodeId,
+        /// Opaque error code identifier (placeholder for `ErrorCode`).
+        code: Arc<str>,
+        /// Human-readable error message.
+        message: String,
+    },
+
+    /// Execution was cancelled by the user, the API, or the engine shutting
+    /// down — not by a node inside the workflow.
+    Cancelled,
+
+    /// Execution ended due to a system-level error: crash, panic, storage
+    /// failure, engine timeout. Distinct from `ExplicitFail`, which is a
+    /// deliberate in-workflow decision.
+    SystemError,
 }
 
 #[cfg(test)]
@@ -156,5 +213,68 @@ mod tests {
         let a = ExecutionStatus::Running;
         let b = a;
         assert_eq!(a, b);
+    }
+
+    // ── ExecutionTerminationReason ──────────────────────────────────
+
+    #[test]
+    fn termination_reason_natural_completion_roundtrip() {
+        let reason = ExecutionTerminationReason::NaturalCompletion;
+        let json = serde_json::to_string(&reason).unwrap();
+        let back: ExecutionTerminationReason = serde_json::from_str(&json).unwrap();
+        assert!(matches!(
+            back,
+            ExecutionTerminationReason::NaturalCompletion
+        ));
+    }
+
+    #[test]
+    fn termination_reason_explicit_stop_roundtrip() {
+        let reason = ExecutionTerminationReason::ExplicitStop {
+            by_node: NodeId::new(),
+            note: Some("duplicate detected".into()),
+        };
+        let json = serde_json::to_string(&reason).unwrap();
+        let back: ExecutionTerminationReason = serde_json::from_str(&json).unwrap();
+        match back {
+            ExecutionTerminationReason::ExplicitStop { note, .. } => {
+                assert_eq!(note.as_deref(), Some("duplicate detected"));
+            }
+            _ => panic!("expected ExplicitStop"),
+        }
+    }
+
+    #[test]
+    fn termination_reason_explicit_fail_roundtrip() {
+        let reason = ExecutionTerminationReason::ExplicitFail {
+            by_node: NodeId::new(),
+            code: Arc::from("E_VALIDATION"),
+            message: "field `name` is required".into(),
+        };
+        let json = serde_json::to_string(&reason).unwrap();
+        let back: ExecutionTerminationReason = serde_json::from_str(&json).unwrap();
+        match back {
+            ExecutionTerminationReason::ExplicitFail { code, message, .. } => {
+                assert_eq!(&*code, "E_VALIDATION");
+                assert_eq!(message, "field `name` is required");
+            }
+            _ => panic!("expected ExplicitFail"),
+        }
+    }
+
+    #[test]
+    fn termination_reason_cancelled_roundtrip() {
+        let reason = ExecutionTerminationReason::Cancelled;
+        let json = serde_json::to_string(&reason).unwrap();
+        let back: ExecutionTerminationReason = serde_json::from_str(&json).unwrap();
+        assert!(matches!(back, ExecutionTerminationReason::Cancelled));
+    }
+
+    #[test]
+    fn termination_reason_system_error_roundtrip() {
+        let reason = ExecutionTerminationReason::SystemError;
+        let json = serde_json::to_string(&reason).unwrap();
+        let back: ExecutionTerminationReason = serde_json::from_str(&json).unwrap();
+        assert!(matches!(back, ExecutionTerminationReason::SystemError));
     }
 }

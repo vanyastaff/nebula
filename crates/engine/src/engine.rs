@@ -1579,7 +1579,9 @@ fn process_outgoing_edges(
 /// Evaluate whether an edge should activate given the source node's outcome.
 ///
 /// Rules:
-/// - `Skip` results don't activate any edges
+/// - `Skip` results don't activate any edges (whole downstream subgraph)
+/// - `Drop` results don't activate any edges (item dropped, no output on main port)
+/// - `Terminate` results don't activate any edges (execution is ending)
 /// - Failed nodes only activate `OnError` edges
 /// - `Branch` results only activate edges whose `branch_key` matches `selected`
 /// - `Route` results only activate edges whose `from_port` matches `port`
@@ -1593,8 +1595,24 @@ fn evaluate_edge(
     result: Option<&ActionResult<serde_json::Value>>,
     node_failed: bool,
 ) -> bool {
-    // Skip results don't activate any edges
+    // Skip results don't activate any edges — skips the whole downstream subgraph.
     if let Some(ActionResult::Skip { .. }) = result {
+        return false;
+    }
+
+    // Drop results don't activate any edges — this item produced no output
+    // on the main port, but downstream parallel branches processing other
+    // items are unaffected (they have their own per-item evaluate_edge call).
+    if let Some(ActionResult::Drop { .. }) = result {
+        return false;
+    }
+
+    // Terminate results don't activate any edges — the execution is ending.
+    // Full engine-level termination (cancelling parallel branches, recording
+    // ExecutionTerminationReason in the audit log) is handled elsewhere in
+    // the scheduler; this gate just prevents downstream edges from firing
+    // between the terminate signal and the execution-level teardown.
+    if let Some(ActionResult::Terminate { .. }) = result {
         return false;
     }
 
