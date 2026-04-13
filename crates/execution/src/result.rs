@@ -51,10 +51,17 @@ pub struct ExecutionResult {
     pub outputs: HashMap<NodeId, serde_json::Value>,
     /// Why this execution reached its terminal state.
     ///
-    /// `None` for in-flight or legacy results that predate this field;
-    /// callers treat `None` as equivalent to
-    /// [`ExecutionTerminationReason::NaturalCompletion`] when status is
-    /// `Completed`, and as `SystemError` for other terminal statuses.
+    /// `None` for in-flight executions and for results serialised before
+    /// this field existed. When `None` on a *terminal* status, callers
+    /// should interpret it as:
+    ///
+    /// - [`ExecutionStatus::Completed`] → [`ExecutionTerminationReason::NaturalCompletion`]
+    /// - [`ExecutionStatus::Cancelled`] → [`ExecutionTerminationReason::Cancelled`] (legacy
+    ///   executions cancelled before this field existed landed here legitimately)
+    /// - [`ExecutionStatus::Failed`] or [`ExecutionStatus::TimedOut`] → unknown cause; prefer
+    ///   [`ExecutionTerminationReason::SystemError`] rather than collapsing to another category
+    /// - any other status → should not occur for a terminal result; treat as
+    ///   [`ExecutionTerminationReason::SystemError`]
     #[serde(default)]
     pub termination_reason: Option<ExecutionTerminationReason>,
 }
@@ -225,14 +232,14 @@ mod tests {
         let original = ExecutionResult::new(ExecutionId::new(), ExecutionStatus::Failed)
             .with_termination_reason(ExecutionTerminationReason::ExplicitFail {
                 by_node: NodeId::new(),
-                code: std::sync::Arc::from("E_BAD"),
+                code: "E_BAD".into(),
                 message: "broken".into(),
             });
         let json = serde_json::to_string(&original).unwrap();
         let back: ExecutionResult = serde_json::from_str(&json).unwrap();
         match back.termination_reason {
             Some(ExecutionTerminationReason::ExplicitFail { code, message, .. }) => {
-                assert_eq!(&*code, "E_BAD");
+                assert_eq!(code.as_str(), "E_BAD");
                 assert_eq!(message, "broken");
             }
             _ => panic!("expected ExplicitFail"),

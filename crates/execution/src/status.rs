@@ -81,6 +81,17 @@ impl std::fmt::Display for ExecutionStatus {
 ///
 /// This does **not** replace [`ExecutionStatus`]. Status describes *what*
 /// terminal state was reached; this enum describes *why*.
+///
+/// # v1 wiring status
+///
+/// The `ExplicitStop` / `ExplicitFail` variants are defined and serde-
+/// round-trippable, but the engine is **not yet** populating them off
+/// `ActionResult::Terminate`. Today a node returning `Terminate` only
+/// causes its own downstream edges to be gated off in `evaluate_edge`;
+/// the scheduler still drives `determine_final_status` from aggregate
+/// node state, so executions that reach a `Terminate` end up with
+/// `termination_reason == None` on the result. Full propagation is
+/// tracked as Phase 3 of the ControlAction plan.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type")]
 #[non_exhaustive]
@@ -109,8 +120,13 @@ pub enum ExecutionTerminationReason {
     ExplicitFail {
         /// The node that requested termination.
         by_node: NodeId,
-        /// Opaque error code identifier (placeholder for `ErrorCode`).
-        code: Arc<str>,
+        /// Opaque error code identifier.
+        ///
+        /// See [`ExecutionTerminationCode`] — a thin newtype over
+        /// `Arc<str>` that will be swapped to the structured `ErrorCode`
+        /// in Phase 10 of the action-v2 roadmap without changing this
+        /// public shape or wire format.
+        code: ExecutionTerminationCode,
         /// Human-readable error message.
         message: String,
     },
@@ -123,6 +139,57 @@ pub enum ExecutionTerminationReason {
     /// failure, engine timeout. Distinct from `ExplicitFail`, which is a
     /// deliberate in-workflow decision.
     SystemError,
+}
+
+/// Opaque identifier for an execution-level termination error.
+///
+/// Parallel to `nebula_action::TerminationCode` — but defined locally
+/// here so that `nebula-execution` does not pick up a dependency on
+/// `nebula-action` (wrong-direction layer edge). Currently backed by
+/// `Arc<str>` and serialised as a bare JSON string via
+/// `#[serde(transparent)]`; Phase 10 of the action-v2 roadmap will swap
+/// the inner representation to a structured `ErrorCode` without changing
+/// this public API or the wire format.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct ExecutionTerminationCode(Arc<str>);
+
+impl ExecutionTerminationCode {
+    /// Construct from anything convertible to `Arc<str>`.
+    #[must_use]
+    pub fn new(code: impl Into<Arc<str>>) -> Self {
+        Self(code.into())
+    }
+
+    /// Borrow the underlying string.
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl From<&str> for ExecutionTerminationCode {
+    fn from(s: &str) -> Self {
+        Self(Arc::from(s))
+    }
+}
+
+impl From<String> for ExecutionTerminationCode {
+    fn from(s: String) -> Self {
+        Self(Arc::from(s))
+    }
+}
+
+impl From<Arc<str>> for ExecutionTerminationCode {
+    fn from(a: Arc<str>) -> Self {
+        Self(a)
+    }
+}
+
+impl std::fmt::Display for ExecutionTerminationCode {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        self.0.fmt(f)
+    }
 }
 
 #[cfg(test)]
@@ -248,14 +315,14 @@ mod tests {
     fn termination_reason_explicit_fail_roundtrip() {
         let reason = ExecutionTerminationReason::ExplicitFail {
             by_node: NodeId::new(),
-            code: Arc::from("E_VALIDATION"),
+            code: "E_VALIDATION".into(),
             message: "field `name` is required".into(),
         };
         let json = serde_json::to_string(&reason).unwrap();
         let back: ExecutionTerminationReason = serde_json::from_str(&json).unwrap();
         match back {
             ExecutionTerminationReason::ExplicitFail { code, message, .. } => {
-                assert_eq!(&*code, "E_VALIDATION");
+                assert_eq!(code.as_str(), "E_VALIDATION");
                 assert_eq!(message, "field `name` is required");
             }
             _ => panic!("expected ExplicitFail"),

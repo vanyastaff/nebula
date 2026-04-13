@@ -4,7 +4,7 @@
 //! engine/runtime/API. Changing the output format is a breaking change —
 //! update expected values intentionally and document in MIGRATION.md.
 
-use std::{collections::HashMap, sync::Arc, time::Duration};
+use std::{collections::HashMap, time::Duration};
 
 use chrono::Utc;
 use nebula_action::{
@@ -284,7 +284,7 @@ fn action_result_terminate_failure_serialization_contract() {
     match back {
         ActionResult::Terminate { reason } => match reason {
             TerminationReason::Failure { code, message } => {
-                assert_eq!(&*code, "E_VALIDATION");
+                assert_eq!(code.as_str(), "E_VALIDATION");
                 assert_eq!(message, "field missing");
             }
             TerminationReason::Success { .. } => panic!("expected Failure"),
@@ -302,7 +302,7 @@ fn termination_reason_round_trip_contract() {
             note: Some("early stop".to_string()),
         },
         TerminationReason::Failure {
-            code: Arc::from("E_FAIL"),
+            code: "E_FAIL".into(),
             message: "boom".to_string(),
         },
     ];

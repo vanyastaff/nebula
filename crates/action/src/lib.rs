@@ -140,7 +140,10 @@ pub use poll::{
 };
 pub use port::{ConnectionFilter, DynamicPort, FlowKind, InputPort, OutputPort, SupportPort};
 pub use resource::{ResourceAction, ResourceActionAdapter, ResourceHandler};
-pub use result::{ActionResult, BranchKey, BreakReason, PortKey, TerminationReason, WaitCondition};
+pub use result::{
+    ActionResult, BranchKey, BreakReason, PortKey, TerminationCode, TerminationReason,
+    WaitCondition,
+};
 pub use stateful::{
     BatchAction, BatchItemResult, BatchState, PageResult, PaginatedAction, PaginationState,
     StatefulAction, StatefulActionAdapter, StatefulHandler,

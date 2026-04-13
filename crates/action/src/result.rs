@@ -157,19 +157,28 @@ pub enum ActionResult<T> {
         reason: String,
     },
 
-    /// Terminate the entire workflow execution explicitly.
-    ///
-    /// Unlike [`Skip`](Self::Skip), which affects only the downstream
-    /// dependents of this node, `Terminate` ends the whole execution
-    /// regardless of other parallel branches. The engine transitions the
-    /// execution state to a terminal state (`Succeeded` or `Failed`)
-    /// matching the [`TerminationReason`] and records the cause in the
-    /// audit log via `ExecutionTerminationReason::ExplicitStop` /
-    /// `::ExplicitFail`.
+    /// Terminate this node and signal that the execution should stop.
     ///
     /// Used by explicit termination nodes (n8n "Stop And Error",
     /// Kestra `Fail`, AWS Step Functions `Succeed`/`Fail` states,
-    /// Pipedream "Exit Workflow", Make `Rollback`).
+    /// Pipedream "Exit Workflow", Make `Rollback`). Plugin authors should
+    /// return `Terminate` today when they want "no more work from this
+    /// branch" semantics.
+    ///
+    /// # v1 behaviour
+    ///
+    /// The engine's `evaluate_edge` treats `Terminate` the same as
+    /// [`Skip`](Self::Skip): downstream edges from this node do **not**
+    /// fire. That is the entirety of the current engine-side wiring.
+    ///
+    /// Full scheduler integration — cancelling sibling branches still in
+    /// flight, propagating the [`TerminationReason`] into the audit log
+    /// as `ExecutionTerminationReason::ExplicitStop` /
+    /// `ExecutionTerminationReason::ExplicitFail`, and driving
+    /// `determine_final_status` off the terminate signal — is tracked as
+    /// Phase 3 of the ControlAction plan and is **not yet wired**. Do not
+    /// rely on `Terminate` in v1 to cancel sibling branches; it only
+    /// gates the local subgraph downstream of the terminating node.
     Terminate {
         /// Why the execution is ending.
         reason: TerminationReason,
@@ -196,14 +205,76 @@ pub enum TerminationReason {
     Failure {
         /// Opaque error code identifier.
         ///
-        /// Placeholder shape until `ErrorCode` lands in Phase 10 of the
-        /// action-v2 roadmap. Callers should treat this as an opaque
-        /// string for equality matching; the exact type may be upgraded
-        /// to a structured `ErrorCode` without changing the variant shape.
-        code: Arc<str>,
+        /// See [`TerminationCode`] — currently a thin wrapper over
+        /// `Arc<str>`, will be swapped to the structured `ErrorCode`
+        /// in Phase 10 of the action-v2 roadmap without changing this
+        /// public shape or the wire format (the newtype is
+        /// `#[serde(transparent)]`).
+        code: TerminationCode,
         /// Human-readable error message.
         message: String,
     },
+}
+
+/// Opaque identifier for a termination error.
+///
+/// Currently backed by `Arc<str>` and serialised as a bare JSON string
+/// via `#[serde(transparent)]`. Phase 10 of the action-v2 roadmap will
+/// swap the inner representation to a structured `ErrorCode` type
+/// (namespace, code, metadata) without changing this public API or the
+/// wire format, so existing persisted `TerminationCode` values will
+/// continue to deserialise.
+///
+/// Construct from any string-ish source via `From`:
+///
+/// ```
+/// use nebula_action::TerminationCode;
+///
+/// let from_str: TerminationCode = "E_BAD".into();
+/// let from_owned: TerminationCode = String::from("E_BAD").into();
+/// assert_eq!(from_str.as_str(), "E_BAD");
+/// ```
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct TerminationCode(Arc<str>);
+
+impl TerminationCode {
+    /// Construct a new `TerminationCode` from anything convertible to
+    /// `Arc<str>`.
+    #[must_use]
+    pub fn new(code: impl Into<Arc<str>>) -> Self {
+        Self(code.into())
+    }
+
+    /// Borrow the underlying string.
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl From<&str> for TerminationCode {
+    fn from(s: &str) -> Self {
+        Self(Arc::from(s))
+    }
+}
+
+impl From<String> for TerminationCode {
+    fn from(s: String) -> Self {
+        Self(Arc::from(s))
+    }
+}
+
+impl From<Arc<str>> for TerminationCode {
+    fn from(a: Arc<str>) -> Self {
+        Self(a)
+    }
+}
+
+impl std::fmt::Display for TerminationCode {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        self.0.fmt(f)
+    }
 }
 
 /// Reason a stateful iteration ended.
@@ -405,7 +476,7 @@ impl<T> ActionResult<T> {
 
     /// Create a `Terminate` result that ends the execution with a failure.
     #[must_use]
-    pub fn terminate_failure(code: impl Into<Arc<str>>, message: impl Into<String>) -> Self {
+    pub fn terminate_failure(code: impl Into<TerminationCode>, message: impl Into<String>) -> Self {
         Self::Terminate {
             reason: TerminationReason::Failure {
                 code: code.into(),
@@ -1473,7 +1544,7 @@ mod tests {
         match r {
             ActionResult::Terminate { reason } => match reason {
                 TerminationReason::Failure { code, message } => {
-                    assert_eq!(&*code, "INVALID_STATE");
+                    assert_eq!(code.as_str(), "INVALID_STATE");
                     assert_eq!(message, "cannot proceed from current state");
                 }
                 TerminationReason::Success { .. } => panic!("expected Failure"),
@@ -1495,7 +1566,7 @@ mod tests {
         match mapped {
             ActionResult::Terminate { reason } => match reason {
                 TerminationReason::Failure { code, message } => {
-                    assert_eq!(&*code, "CODE");
+                    assert_eq!(code.as_str(), "CODE");
                     assert_eq!(message, "msg");
                 }
                 TerminationReason::Success { .. } => panic!("expected Failure"),
@@ -1527,7 +1598,7 @@ mod tests {
         match decoded {
             ActionResult::Terminate { reason } => match reason {
                 TerminationReason::Failure { code, message } => {
-                    assert_eq!(&*code, "E_BAD");
+                    assert_eq!(code.as_str(), "E_BAD");
                     assert_eq!(message, "something broke");
                 }
                 TerminationReason::Success { .. } => panic!("expected Failure"),

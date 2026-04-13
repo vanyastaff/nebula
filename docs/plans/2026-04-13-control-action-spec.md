@@ -115,6 +115,8 @@ pub enum ExecutionTerminationReason {
 
 Audit log and UI can then correctly attribute "this workflow ended because node `stop_on_duplicate` decided to" vs. "a crash terminated the run."
 
+**v1 limitation (shipped in Phase 0):** only the `ActionResult::Terminate` and `ExecutionTerminationReason` *types* have landed; the engine-side wiring is partial. `evaluate_edge` gates the local subgraph of a terminating node (same as `Skip`), but the scheduler does **not** yet cancel sibling branches in flight, and `determine_final_status` does not consume the `Terminate` signal. `ExecutionResult::termination_reason` therefore stays `None` today. Full scheduler integration is tracked as Phase 3 of this plan; until then, `Terminate` behaves as "stop my own subgraph," not "stop the whole execution."
+
 ### 4.3 `ActionCategory` in `ActionMetadata`
 
 **Problem:** runtime doesn't need to distinguish control nodes from data nodes (the whole point of the adapter pattern). But the **UI editor, workflow validator, and audit log** do — palette grouping, icon shape, reachability validation, and log filtering all need to know whether a node is control-flow or data-flow. Without a discriminator in metadata, the editor has to hardcode type names, which breaks for community-contributed control nodes.
@@ -147,7 +149,7 @@ pub enum ActionCategory {
 
 ### 5.1 The adapter pattern, recap
 
-```
+```text
 ┌──────────────────────────────────────┐
 │  nebula-action (public traits)       │
 │                                      │
@@ -211,9 +213,16 @@ use crate::{ActionContext, ActionError, ActionMetadata};
 ///
 /// Implement `ControlAction` for nodes that:
 ///
-/// - Make a synchronous decision based on a single input value (no state, no await on external)
+/// - Make a synchronous decision based on a single input value
 /// - Route, filter, or terminate execution based on that decision
 /// - Do not need iteration, delay, or external signals (those go to `StatefulAction`)
+///
+/// "Stateless" here means **no engine-persisted state between dispatches**:
+/// no `State` associated type, no checkpointing, no serialization. In-memory
+/// `&self` state for local concerns (rate-limit counters, simple caches,
+/// metrics) is fine — it just does not survive process restarts. If you
+/// need state that *does* survive restarts, you want `StatefulAction`,
+/// not `ControlAction`.
 ///
 /// # When NOT to implement this
 ///
@@ -531,6 +540,12 @@ use std::sync::Arc;
 pub struct ThrottleAction {
     metadata: ActionMetadata,
     rate_limit_per_sec: u32,
+    // In-memory rate-limit counter. Does not survive process restarts —
+    // that is fine for best-effort local throttling, which is the whole
+    // point of this example. "Stateless between invocations" in the
+    // ControlAction contract means no engine-persisted state (no `State`
+    // associated type, no checkpointing, no serialization), not "no
+    // `&self` fields."
     state: parking_lot::Mutex<ThrottleState>,
 }
 

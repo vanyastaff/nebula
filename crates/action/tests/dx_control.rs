@@ -297,7 +297,7 @@ impl ControlAction for DemoRouter {
             }
             (RouterMode::AllMatch, _) => {
                 let value = input.into_value();
-                let ports = matches
+                let ports: std::collections::HashMap<_, _> = matches
                     .iter()
                     .map(|port| ((*port).to_string(), value.clone()))
                     .collect();
@@ -625,7 +625,7 @@ impl ControlAction for DemoFail {
     ) -> Result<ControlOutcome, ActionError> {
         Ok(ControlOutcome::Terminate {
             reason: TerminationReason::Failure {
-                code: Arc::from(self.code.as_str()),
+                code: self.code.as_str().into(),
                 message: self.message.clone(),
             },
         })
@@ -640,7 +640,7 @@ async fn demo_fail_terminates_with_failure() {
     match result {
         ActionResult::Terminate { reason } => match reason {
             TerminationReason::Failure { code, message } => {
-                assert_eq!(&*code, "E_VALIDATION");
+                assert_eq!(code.as_str(), "E_VALIDATION");
                 assert_eq!(message, "input failed business rules");
             }
             TerminationReason::Success { .. } => panic!("expected Failure"),

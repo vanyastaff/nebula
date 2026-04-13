@@ -93,9 +93,9 @@ Schedule relative to other in-progress work (per `.project/context/active-work.m
    - No code change — only docstring update on `ActionResult::MultiOutput`
    - Documented rule: downstream with multiple upstream edges fires when all emitted ports carry data; absent output ports imply "not emitted" and do not block downstream (same as `all_success` trigger rule)
 
-6. **Engine handling for new `ActionResult` variants**
-   - `Drop`: engine frontier logic treats it as "no main output produced for this item." Downstream branch continues with next item in the iteration (if any). Audit log records the drop with reason.
-   - `Terminate`: engine transitions `ExecutionState` to the terminal state corresponding to `TerminationReason` (Success → `Succeeded` with note, Failure → `Failed` with code/message). Other running nodes in parallel branches receive cancellation. Audit log records `ExecutionTerminationReason::ExplicitStop`/`::ExplicitFail`.
+6. **Engine handling for new `ActionResult` variants** (partial in Phase 0, completed in Phase 3)
+   - `Drop`: `evaluate_edge` returns `false` for `Drop` results. Downstream edges from this node do not activate. Full frontier handling (per-item drop accounting across a stateful iteration) is still scheduler work.
+   - `Terminate`: `evaluate_edge` gates local downstream edges the same way it gates `Skip`. **Not yet wired** in Phase 0: parallel-branch cancellation, `ExecutionTerminationReason` propagation into `ExecutionResult.termination_reason`, and `determine_final_status` consuming the terminate signal. Those are tracked as Phase 3 (scheduler integration). Until Phase 3 lands, a `Terminate` return behaves as "stop my own subgraph," not "cancel the whole execution."
 
 ### Files touched
 

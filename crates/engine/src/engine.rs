@@ -1608,10 +1608,13 @@ fn evaluate_edge(
     }
 
     // Terminate results don't activate any edges — the execution is ending.
-    // Full engine-level termination (cancelling parallel branches, recording
-    // ExecutionTerminationReason in the audit log) is handled elsewhere in
-    // the scheduler; this gate just prevents downstream edges from firing
-    // between the terminate signal and the execution-level teardown.
+    // TODO(engine): this gate only blocks local downstream edges. Full
+    // parallel-branch cancellation, ExecutionTerminationReason propagation,
+    // and determine_final_status handling for Terminate is scheduler work
+    // tracked in the ControlAction plan as Phase 3. Until then, a Terminate
+    // return from a node in one branch does NOT cancel sibling branches
+    // and does NOT populate ExecutionResult::termination_reason — it only
+    // prevents this node's own subgraph from firing.
     if let Some(ActionResult::Terminate { .. }) = result {
         return false;
     }

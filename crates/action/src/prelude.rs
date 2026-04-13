@@ -28,7 +28,7 @@ pub use crate::{
     },
     port::{ConnectionFilter, DynamicPort, FlowKind, InputPort, OutputPort, SupportPort},
     resource::{ResourceAction, ResourceActionAdapter},
-    result::{ActionResult, TerminationReason},
+    result::{ActionResult, TerminationCode, TerminationReason},
     stateful::{
         BatchAction, BatchItemResult, PageResult, PaginatedAction, StatefulAction,
         StatefulActionAdapter,

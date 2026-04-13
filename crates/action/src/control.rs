@@ -154,7 +154,10 @@ impl ControlInput {
             ActionError::validation(
                 "control_input",
                 ValidationReason::WrongType,
-                Some(format!("expected boolean at `{pointer}`, got {v}")),
+                Some(format!(
+                    "expected boolean at `{pointer}`, got {}",
+                    value_kind(v)
+                )),
             )
         })
     }
@@ -169,7 +172,10 @@ impl ControlInput {
             ActionError::validation(
                 "control_input",
                 ValidationReason::WrongType,
-                Some(format!("expected string at `{pointer}`, got {v}")),
+                Some(format!(
+                    "expected string at `{pointer}`, got {}",
+                    value_kind(v)
+                )),
             )
         })
     }
@@ -185,7 +191,10 @@ impl ControlInput {
             ActionError::validation(
                 "control_input",
                 ValidationReason::WrongType,
-                Some(format!("expected i64 at `{pointer}`, got {v}")),
+                Some(format!(
+                    "expected i64 at `{pointer}`, got {}",
+                    value_kind(v)
+                )),
             )
         })
     }
@@ -200,7 +209,10 @@ impl ControlInput {
             ActionError::validation(
                 "control_input",
                 ValidationReason::WrongType,
-                Some(format!("expected f64 at `{pointer}`, got {v}")),
+                Some(format!(
+                    "expected f64 at `{pointer}`, got {}",
+                    value_kind(v)
+                )),
             )
         })
     }
@@ -213,6 +225,24 @@ impl ControlInput {
                 Some(format!("field `{pointer}` is required")),
             )
         })
+    }
+}
+
+/// Classify a JSON value by its type for use in validation error messages.
+///
+/// Returns a static string describing the JSON shape (`"null"`, `"bool"`,
+/// `"number"`, `"string"`, `"array"`, `"object"`). Deliberately does NOT
+/// include the actual value — a control node's input may carry secrets
+/// (API keys, passwords, PII) and the `ActionError::Validation.detail`
+/// field flows into logs.
+fn value_kind(value: &Value) -> &'static str {
+    match value {
+        Value::Null => "null",
+        Value::Bool(_) => "bool",
+        Value::Number(_) => "number",
+        Value::String(_) => "string",
+        Value::Array(_) => "array",
+        Value::Object(_) => "object",
     }
 }
 
@@ -255,10 +285,15 @@ pub enum ControlOutcome {
     /// Used by `Router` in all-match mode. Desugars to
     /// [`ActionResult::MultiOutput`]. Downstream join semantics follow
     /// the `all_success` rule documented on that variant.
+    ///
+    /// Carries a `HashMap` rather than a `Vec<(PortKey, Value)>` so that
+    /// duplicate port keys are unrepresentable — an earlier `Vec` shape
+    /// would silently overwrite on collision, which is a quiet footgun
+    /// in routers that build up port lists dynamically.
     Route {
-        /// Per-port outputs. Ports not present in this list are not
+        /// Per-port outputs. Ports not present in this map are not
         /// emitted this cycle.
-        ports: Vec<(PortKey, Value)>,
+        ports: std::collections::HashMap<PortKey, Value>,
     },
 
     /// Pass the input through unchanged to the single main output.
@@ -333,7 +368,11 @@ impl From<ControlOutcome> for ActionResult<Value> {
 /// # When to implement this
 ///
 /// - Node routes, filters, or terminates based on a synchronous decision over a single input.
-/// - No state between calls, no waiting on external signals, no iteration.
+/// - No **engine-persisted** state between calls (no `State` associated type, no checkpointing, no
+///   serialization). In-memory `&self` state for local concerns like rate-limit counters, caches,
+///   or metrics is fine — it just does not survive process restarts. If you need state that *does*
+///   survive restarts, reach for [`StatefulAction`](crate::StatefulAction) instead.
+/// - No waiting on external signals, no iteration.
 ///
 /// # When NOT to implement this
 ///
@@ -358,11 +397,33 @@ pub trait ControlAction: Action {
     /// Returns a [`ControlOutcome`] on success, or [`ActionError`] if
     /// the input fails validation or an unrecoverable error occurs.
     ///
-    /// The returned future must be `Send` so the runtime can run it in
-    /// `tokio::select!` with cancellation. Do not use `async fn` sugar
-    /// directly — write the return type as `impl Future<Output = ...> + Send`
-    /// to match the existing [`StatelessAction::execute`](crate::StatelessAction::execute)
-    /// convention.
+    /// The returned future must be `Send` because the runtime drives
+    /// evaluation in `tokio::select!` against cancellation. Either of
+    /// these forms is fine:
+    ///
+    /// ```ignore
+    /// // Sugar form — `async fn` in trait impls is stable and
+    /// // desugars via RPITIT to the explicit return-type form below.
+    /// async fn evaluate(
+    ///     &self,
+    ///     input: ControlInput,
+    ///     ctx: &ActionContext,
+    /// ) -> Result<ControlOutcome, ActionError> { /* ... */ }
+    /// ```
+    ///
+    /// ```ignore
+    /// // Explicit form — use this if you want to spell out bounds
+    /// // or match the existing StatelessAction::execute convention.
+    /// fn evaluate(
+    ///     &self,
+    ///     input: ControlInput,
+    ///     ctx: &ActionContext,
+    /// ) -> impl Future<Output = Result<ControlOutcome, ActionError>> + Send { /* ... */ }
+    /// ```
+    ///
+    /// Both compile to equivalent code. If your impl accidentally
+    /// captures a non-`Send` value the compiler will flag it at the
+    /// adapter instantiation site, which is the right place to notice.
     fn evaluate(
         &self,
         input: ControlInput,
@@ -583,10 +644,10 @@ mod tests {
     #[test]
     fn outcome_route_desugars_to_multi_output() {
         let outcome = ControlOutcome::Route {
-            ports: vec![
+            ports: std::collections::HashMap::from([
                 ("high".into(), serde_json::json!(1)),
                 ("low".into(), serde_json::json!(2)),
-            ],
+            ]),
         };
         let result: ActionResult<Value> = outcome.into();
         match result {
@@ -652,7 +713,7 @@ mod tests {
     fn outcome_terminate_failure_desugars_to_terminate() {
         let outcome = ControlOutcome::Terminate {
             reason: TerminationReason::Failure {
-                code: Arc::from("E_BAD"),
+                code: "E_BAD".into(),
                 message: "nope".into(),
             },
         };
@@ -660,7 +721,7 @@ mod tests {
         match result {
             ActionResult::Terminate { reason } => match reason {
                 TerminationReason::Failure { code, message } => {
-                    assert_eq!(&*code, "E_BAD");
+                    assert_eq!(code.as_str(), "E_BAD");
                     assert_eq!(message, "nope");
                 }
                 TerminationReason::Success { .. } => panic!("expected Failure"),
