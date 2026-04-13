@@ -6,8 +6,8 @@ Action execution layer — `ActionRegistry`, `ActionRuntime`, data policies, `Me
 
 - `ActionRegistry` is the single source of truth for registered actions. DashMap-backed, `&self` API. Has six `register_*` convenience methods (`stateless`, `stateful`, `trigger`, `webhook`, `poll`, `resource`). Lookup returns owned `(ActionMetadata, ActionHandler)`; `ActionHandler` wraps `Arc` internally so cloning is cheap.
 - `ActionRuntime::run_handler` dispatches on the `ActionHandler` enum:
-  - `Stateless` → direct execution for `IsolationLevel::None`; non-`None` returns `Fatal` (fail-closed until real sandbox dispatch lands).
-  - `Stateful` → iteration loop with in-memory state checkpoint, hard cap `MAX_ITERATIONS = 10_000`, cooperative cancellation **between** iterations.
+  - `Stateless` → `IsolationLevel::None` runs direct; `CapabilityGated` / `Isolated` dispatch through `self.sandbox: Arc<dyn SandboxRunner>` (Phase 0, 2026-04-13). Unknown variants fail-closed via `_ =>` arm because `IsolationLevel` is `#[non_exhaustive]`.
+  - `Stateful` → iteration loop with in-memory state checkpoint, hard cap `MAX_ITERATIONS = 10_000`, cooperative cancellation **between** iterations. Non-`None` isolation still **fail-closed** — sandbox dispatch for stateful actions needs the broker's long-lived bidirectional loop (Phase 1).
   - `Trigger` → `RuntimeError::TriggerNotExecutable` (triggers have their own runtime, post-v1).
   - `Resource` → `RuntimeError::ResourceNotExecutable` (resources scoped via the resource graph, post-v1).
   - `Agent` → `RuntimeError::AgentNotSupportedYet`.
@@ -20,7 +20,8 @@ Action execution layer — `ActionRegistry`, `ActionRuntime`, data policies, `Me
 
 - `ActionRuntime::execute_action` runs **only** Stateless and Stateful actions. Trigger/Resource/Agent return typed errors — they have separate lifecycles that don't fit the one-shot execute model.
 - Stateful state is in-memory only — does not survive process restart. Persistence needs `nebula-storage` integration.
-- Sandboxed Stateless/Stateful execution returns `Fatal` for any `IsolationLevel != None` — fail-closed to prevent silent capability bypass. Unblocks when real sandbox dispatch lands.
+- **Stateless sandbox dispatch is live** (Phase 0, 2026-04-13): `CapabilityGated` / `Isolated` go through `self.sandbox`. The engine's InProcessSandbox executor closure must actually invoke the correct handler when called for non-None isolation — in Phase 0 the engine passes an echo-style closure, so non-None actions silently echo input. This is acceptable because **no production actions declare non-None isolation yet**. Phase 1 replaces this with `PluginSupervisor` + gRPC dispatch to real plugin subprocesses.
+- **Stateful sandbox dispatch still fail-closes** for `IsolationLevel != None`. Unblocks when Phase 1 broker lands (needs iteration loop in the broker protocol, not just the current single-shot `SandboxRunner::execute`).
 - `RuntimeError::InvalidActionKey { key, reason }` distinguishes parse failures from `ActionNotFound` — use it when reporting CLI/API errors to users.
 - Cooperative cancellation in the stateful loop checks **between** iterations only. A hanging `execute()` body cannot be cancelled.
 

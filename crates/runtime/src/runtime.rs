@@ -21,7 +21,7 @@ use crate::{
     data_policy::{DataPassingPolicy, LargeDataStrategy},
     error::RuntimeError,
     registry::ActionRegistry,
-    sandbox::SandboxRunner,
+    sandbox::{SandboxRunner, SandboxedContext},
 };
 
 /// The action runtime orchestrates execution of actions.
@@ -36,10 +36,9 @@ use crate::{
 /// 5. Emits telemetry events
 pub struct ActionRuntime {
     registry: Arc<ActionRegistry>,
-    // Sandbox dispatch for isolated execution is deferred to Phase 7.6.
-    // Currently stateless actions run directly through StatelessHandler::execute
-    // regardless of isolation level.
-    #[allow(dead_code)]
+    // Used for non-None isolation in execute_stateless (Phase 0).
+    // Stateful isolation dispatch remains fail-closed until the broker
+    // protocol lands in Phase 1 — see execute_stateful.
     sandbox: Arc<dyn SandboxRunner>,
     data_policy: DataPassingPolicy,
     metrics: MetricsRegistry,
@@ -229,12 +228,16 @@ impl ActionRuntime {
 
     /// Execute a stateless handler.
     ///
-    /// Execute a stateless handler.
+    /// Dispatch depends on the action's [`IsolationLevel`]:
     ///
-    /// Only `IsolationLevel::None` is supported in Phase 7.5. Non-`None`
-    /// isolation levels return `ActionError::Fatal` to prevent silent
-    /// bypassing of capability checks. Sandbox dispatch through
-    /// [`SandboxRunner`] is Phase 7.6 work.
+    /// - `None` — trusted in-process execution, handler invoked directly.
+    /// - `CapabilityGated` / `Isolated` — routed through [`SandboxRunner`]. In Phase 0 the sandbox
+    ///   is typically an `InProcessSandbox` whose `ActionExecutor` was wired at engine construction
+    ///   time; the engine is responsible for passing a closure that can actually invoke the
+    ///   registered handler for the given action key. Phase 1 replaces this with `PluginSupervisor`
+    ///   dispatching to real plugin subprocesses via gRPC. See
+    ///   `docs/plans/2026-04-13-sandbox-phase0-wire-existing.md` and
+    ///   `2026-04-13-sandbox-phase1-broker.md`.
     async fn execute_stateless(
         &self,
         metadata: &ActionMetadata,
@@ -242,13 +245,19 @@ impl ActionRuntime {
         input: serde_json::Value,
         context: ActionContext,
     ) -> Result<ActionResult<serde_json::Value>, ActionError> {
-        if !matches!(metadata.isolation_level, IsolationLevel::None) {
-            return Err(ActionError::fatal(
-                "sandboxed stateless execution is not yet supported (Phase 7.6) — \
-                 refusing to silently bypass isolation/capability checks",
-            ));
+        match metadata.isolation_level {
+            IsolationLevel::None => handler.execute(input, &context).await,
+            IsolationLevel::CapabilityGated | IsolationLevel::Isolated => {
+                let sandboxed = SandboxedContext::new(context);
+                self.sandbox.execute(sandboxed, metadata, input).await
+            }
+            // IsolationLevel is `#[non_exhaustive]`. Any future variant must
+            // fail-closed until we explicitly wire dispatch for it.
+            _ => Err(ActionError::fatal(format!(
+                "unknown isolation level for action '{}' — refusing to dispatch",
+                metadata.key.as_str()
+            ))),
         }
-        handler.execute(input, &context).await
     }
 
     /// Execute a stateful handler — loops through [`StatefulHandler::execute`]
@@ -264,8 +273,15 @@ impl ActionRuntime {
         context: ActionContext,
     ) -> Result<ActionResult<serde_json::Value>, ActionError> {
         if !matches!(metadata.isolation_level, IsolationLevel::None) {
+            // Stateful sandbox dispatch requires the broker's long-lived
+            // bidirectional loop to persist state across iterations. The
+            // current `SandboxRunner` trait is a single-shot execute call
+            // with no iteration semantics. Unblocks when Phase 1 ships the
+            // broker protocol — see
+            // docs/plans/2026-04-13-sandbox-phase1-broker.md.
             return Err(ActionError::fatal(
-                "sandboxed stateful execution is not yet supported (Phase 7.6)",
+                "sandboxed stateful execution is not yet supported — \
+                 broker iteration protocol lands in Phase 1",
             ));
         }
 
@@ -645,7 +661,6 @@ mod tests {
     }
 
     #[tokio::test]
-    #[ignore = "Sandboxed dispatch is Phase 7.6 — currently bypassed"]
     async fn execute_uses_sandbox_for_capability_gated() {
         use std::sync::atomic::{AtomicBool, Ordering};
 
