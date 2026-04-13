@@ -42,6 +42,21 @@ pub const POLL_INTERVAL_FLOOR: Duration = Duration::from_millis(100);
 /// adapter owns all timing logic — backoff on idle, jitter to prevent
 /// thundering herd, timeout, and dispatch failure policy.
 ///
+/// # Responsibility — read before adding new fields
+///
+/// `PollConfig` declares the *integration-intrinsic timing
+/// constraints* of a poll action: upper/lower interval bounds,
+/// per-cycle timeout, failure policy. It does **not** decide *when*
+/// polls are scheduled, staggered, or activated — those are runtime
+/// concerns.
+///
+/// In particular, there is no "first poll delay" knob. The adapter
+/// always runs the first `poll()` immediately after `start()`, and
+/// the runtime is expected to delay its call to `start()` if it
+/// needs per-integration warmup or fleet-wide stagger. If you find
+/// yourself reaching for a `first_poll: FirstPoll` field, stop —
+/// that responsibility belongs above this struct.
+///
 /// # Defaults
 ///
 /// `PollConfig::default()` gives a fixed 60 s interval, no backoff, no
@@ -151,6 +166,82 @@ impl PollConfig {
         self.max_pages_hint = Some(max);
         self
     }
+
+    /// Clamp configuration to safe invariants and log a warn for
+    /// every clamp that actually triggered.
+    ///
+    /// Called by [`PollTriggerAdapter`] once at `start()` before the
+    /// loop. Rationale: configuration mistakes should degrade to
+    /// sane defaults, not fail startup — credentials fail startup,
+    /// wrong numbers do not.
+    ///
+    /// Clamps applied:
+    /// - `max_interval >= base_interval` (otherwise `.min(max)` in `compute_interval` silently caps
+    ///   below the requested base)
+    /// - `backoff_factor ∈ [1.0, 60.0]` (guards `powi` against NaN / infinity / ridiculous values)
+    /// - `poll_timeout > 0` (zero timeout makes every poll a retryable error)
+    /// - `base_interval >= POLL_INTERVAL_FLOOR` (already clamped in `compute_interval`, warned here
+    ///   for visibility)
+    pub(crate) fn validate_and_clamp(
+        &mut self,
+        logger: &dyn crate::capability::ActionLogger,
+        action_key: &nebula_core::ActionKey,
+    ) {
+        use crate::capability::ActionLogLevel;
+
+        if self.base_interval < POLL_INTERVAL_FLOOR {
+            logger.log(
+                ActionLogLevel::Warn,
+                &format!(
+                    "poll trigger {action_key}: base_interval {:?} below floor {:?}; \
+                     will be clamped to floor in compute_interval",
+                    self.base_interval, POLL_INTERVAL_FLOOR,
+                ),
+            );
+        }
+        if self.max_interval < self.base_interval {
+            logger.log(
+                ActionLogLevel::Warn,
+                &format!(
+                    "poll trigger {action_key}: max_interval {:?} < base_interval {:?}; \
+                     raising max_interval to base_interval",
+                    self.max_interval, self.base_interval,
+                ),
+            );
+            self.max_interval = self.base_interval;
+        }
+        if !self.backoff_factor.is_finite() || self.backoff_factor < 1.0 {
+            logger.log(
+                ActionLogLevel::Warn,
+                &format!(
+                    "poll trigger {action_key}: backoff_factor {} not in [1.0, 60.0]; \
+                     clamping to 1.0 (no backoff)",
+                    self.backoff_factor,
+                ),
+            );
+            self.backoff_factor = 1.0;
+        } else if self.backoff_factor > 60.0 {
+            logger.log(
+                ActionLogLevel::Warn,
+                &format!(
+                    "poll trigger {action_key}: backoff_factor {} exceeds 60.0; \
+                     clamping to 60.0",
+                    self.backoff_factor,
+                ),
+            );
+            self.backoff_factor = 60.0;
+        }
+        if self.poll_timeout.is_zero() {
+            logger.log(
+                ActionLogLevel::Warn,
+                &format!(
+                    "poll trigger {action_key}: poll_timeout is zero; \
+                     resetting to 30s default",
+                ),
+            );
+            self.poll_timeout = Duration::from_secs(30);
+        }
+    }
 }
 
 // ── EmitFailurePolicy ─────────────────────────────────────────────────────
@@ -230,6 +321,7 @@ pub enum PollOutcome<E> {
 /// `override_next` is orthogonal to outcome: a Stripe `Retry-After`
 /// header applies whether the cycle was `Ready`, `Partial`, or `Idle`.
 #[derive(Debug)]
+#[non_exhaustive]
 pub struct PollResult<E> {
     /// What happened during this poll cycle.
     pub outcome: PollOutcome<E>,
@@ -240,6 +332,19 @@ pub struct PollResult<E> {
 }
 
 impl<E> PollResult<E> {
+    /// Build a [`PollResult`] from an outcome with no override.
+    ///
+    /// The raw struct is `#[non_exhaustive]`; use this constructor
+    /// (plus chained setters like [`with_override_next`](Self::with_override_next))
+    /// instead of field literals outside the crate.
+    #[must_use]
+    pub fn from_outcome(outcome: PollOutcome<E>) -> Self {
+        Self {
+            outcome,
+            override_next: None,
+        }
+    }
+
     /// Set a one-shot interval override for the next cycle.
     #[must_use]
     pub fn with_override_next(mut self, interval: Duration) -> Self {
@@ -420,16 +525,31 @@ const DEFAULT_MAX_SEEN: usize = 1_000;
 /// }
 /// ```
 ///
+/// # Sizing `max_seen`
+///
+/// **Size it for at least twice the maximum batch you expect per
+/// poll cycle.** FIFO eviction happens inside `filter_new` as items
+/// are inserted — if a single batch exceeds `max_seen`, entries from
+/// the *start* of the same batch are evicted before the batch
+/// finishes. On the next poll those boundary events re-enter as
+/// "new" and slip through dedup. Example: Stripe polled every 60 s
+/// with 6 000 events per cycle needs `max_seen ≥ 12 000`, not the
+/// default 1 000.
+///
+/// `filter_new` `debug_assert!`s when a single call exceeds the cap,
+/// so tests catch this in development.
+///
 /// # State growth
 ///
 /// The seen set is capped at `max_seen` (default 1,000). When the
 /// cap is exceeded, the oldest entries are evicted (FIFO). Downstream
 /// consumers should be idempotent as a defense-in-depth measure.
 ///
-/// The entire cursor (including the seen set) is cloned once per poll
-/// cycle for rollback safety. Keep `K` lightweight — prefer `String`
-/// or integer IDs over large composite keys. For integrations that
-/// need > 10k dedup keys, consider a custom cursor with
+/// The entire cursor (including the seen set) is cloned by the
+/// adapter on each cycle for rollback safety (pre-poll snapshot +
+/// internal checkpoint). Keep `K` lightweight — prefer `String` or
+/// integer IDs over large composite keys. For integrations that need
+/// more than 10k dedup keys, consider a custom cursor with
 /// application-specific eviction.
 #[derive(Debug, Clone)]
 pub struct DeduplicatingCursor<K, C> {
@@ -474,8 +594,10 @@ where
         }
         let wire = Wire::<K, C>::deserialize(de)?;
         // Normalize: rebuild both structures from order,
-        // deduplicating and enforcing max_seen cap.
-        let cap = wire.max_seen;
+        // deduplicating and enforcing max_seen cap. Cap is clamped to
+        // >= 1 — `max_seen = 0` would leave try_insert in an add-then-
+        // immediately-evict loop and silently disable dedup.
+        let cap = wire.max_seen.max(1);
         let mut lookup = HashSet::with_capacity(wire.seen.len().min(cap));
         let mut order = VecDeque::with_capacity(wire.seen.len().min(cap));
         for key in wire.seen {
@@ -543,7 +665,21 @@ impl<K: Hash + Eq + Clone, C> DeduplicatingCursor<K, C> {
     /// results.
     ///
     /// `key_fn` is called once per item (including already-seen items).
+    ///
+    /// # Panics (debug only)
+    ///
+    /// Debug-asserts that `items.len() <= max_seen`. A batch larger
+    /// than the cap means FIFO eviction will drop items from the
+    /// start of the same batch — duplicates will leak across cycles.
+    /// See the `DeduplicatingCursor` type docs for sizing guidance.
     pub fn filter_new<T>(&mut self, items: Vec<T>, key_fn: impl Fn(&T) -> K) -> Vec<T> {
+        debug_assert!(
+            items.len() <= self.max_seen,
+            "DeduplicatingCursor::filter_new: batch of {} exceeds max_seen {} — \
+             dedup will leak at the boundary. Size max_seen for ≥ 2 × max batch.",
+            items.len(),
+            self.max_seen,
+        );
         let mut result = Vec::new();
         for item in items {
             let key = key_fn(&item);
@@ -591,7 +727,39 @@ impl<K: Hash + Eq + Clone, C> DeduplicatingCursor<K, C> {
 /// `registry.register_poll(action)`.
 ///
 /// The [`PollTriggerAdapter`] runs a blocking loop in `start()`:
-/// sleep → poll → emit events. Cancellation via `TriggerContext::cancellation`.
+/// poll → dispatch → sleep. The first cycle runs immediately on
+/// start. Cancellation via `TriggerContext::cancellation`.
+///
+/// # Persistence — READ BEFORE SHIPPING
+///
+/// **Cursor state is in-memory only.** On process restart,
+/// [`initial_cursor`](Self::initial_cursor) is called again and all
+/// progress accumulated between the last successful poll and the
+/// restart is discarded.
+///
+/// This is acceptable for **best-effort** integrations:
+/// - RSS / Atom / news feeds
+/// - Dashboards, metrics, health checks
+/// - Any integration where occasional loss or replay is cheap
+///
+/// This is **NOT acceptable** for:
+/// - Payments (Stripe events, invoice sync, ledger updates)
+/// - Audit / compliance feeds
+/// - CRM sync where "missed lead = lost revenue"
+/// - Any integration with strong delivery expectations
+///
+/// For the NOT-acceptable class, a process restart will either:
+/// 1. Re-flood upstream and re-emit every historical event (if `initial_cursor` returns
+///    `Default::default()`), or
+/// 2. Silently skip every event that arrived between the last successful poll and the restart (if
+///    `initial_cursor` returns "now"). **No error. No warning. No health degradation.**
+///
+/// Durable cursor storage across restarts is tracked as future
+/// work — the runtime will grow a `TriggerStateStore` capability
+/// that persists cursor snapshots. Until that lands, do **not**
+/// ship a high-value integration against this trait unless your
+/// downstream workflow is fully idempotent (every event carries an
+/// external dedup id and the downstream rejects duplicates).
 ///
 /// # Cursor lifecycle
 ///
@@ -769,14 +937,27 @@ fn apply_jitter(secs: f64, jitter_fraction: f64, identity_seed: u64) -> f64 {
     (secs * (1.0 + jitter)).max(0.001)
 }
 
-/// Cheap hash of an action key for jitter identity seed.
-fn action_key_seed(key: &nebula_core::ActionKey) -> u64 {
-    let bytes = key.as_str().as_bytes();
+/// Cheap FNV-1a hash over action key + workflow id + trigger id.
+///
+/// Each running trigger instance gets a unique seed, so fleet
+/// deployments of the same action type no longer produce correlated
+/// jitter (thundering herd). Action type alone is insufficient —
+/// see commit "poll: jitter seed uses trigger identity".
+fn trigger_seed(
+    action_key: &nebula_core::ActionKey,
+    workflow_id: &nebula_core::WorkflowId,
+    trigger_id: &nebula_core::NodeId,
+) -> u64 {
     let mut h: u64 = 0xcbf2_9ce4_8422_2325; // FNV-1a offset basis
-    for &b in bytes {
-        h ^= u64::from(b);
-        h = h.wrapping_mul(0x0100_0000_01b3); // FNV-1a prime
-    }
+    let mix = |h: &mut u64, bytes: &[u8]| {
+        for &b in bytes {
+            *h ^= u64::from(b);
+            *h = h.wrapping_mul(0x0100_0000_01b3); // FNV-1a prime
+        }
+    };
+    mix(&mut h, action_key.as_str().as_bytes());
+    mix(&mut h, workflow_id.as_bytes());
+    mix(&mut h, trigger_id.as_bytes());
     h
 }
 
@@ -819,6 +1000,10 @@ struct CycleOutcome<C> {
     cursor: C,
     /// Whether to increment `consecutive_empty` (triggers backoff).
     backoff: bool,
+    /// Whether this cycle counts as a health error (dispatch failure,
+    /// total drop, or retryable poll error surfaced through Partial).
+    /// Independent of `backoff`: a cycle can both back off and error.
+    errored: bool,
     /// One-shot interval override for the next cycle (e.g., Retry-After).
     override_next: Option<Duration>,
     /// Number of events successfully emitted this cycle.
@@ -899,6 +1084,7 @@ impl<A: PollAction> PollTriggerAdapter<A> {
             PollOutcome::Idle => Ok(CycleOutcome {
                 cursor: poll_cursor.into_current(),
                 backoff: true,
+                errored: false,
                 override_next,
                 emitted: 0,
             }),
@@ -909,9 +1095,16 @@ impl<A: PollAction> PollTriggerAdapter<A> {
                     .await;
                 let emitted = dr.emitted();
                 if dr.is_ok() {
+                    // Total loss under DropAndContinue: all events
+                    // dropped (serialize/emit failed for every one).
+                    // Cursor advances, but health must record an error
+                    // — the dashboard must not see "idle" while 100 %
+                    // of events are being silently lost.
+                    let total_loss = dr.is_total_loss();
                     Ok(CycleOutcome {
                         cursor: poll_cursor.into_current(),
-                        backoff: dr.is_total_loss(),
+                        backoff: total_loss,
+                        errored: total_loss,
                         override_next,
                         emitted,
                     })
@@ -922,13 +1115,28 @@ impl<A: PollAction> PollTriggerAdapter<A> {
 
             PollOutcome::Partial { events, error } => {
                 if events.is_empty() {
+                    // Empty-events Partial is the same shape as a
+                    // top-level Err from poll(): roll back, log, back
+                    // off, report health error for retryable; bubble
+                    // fatal.
                     poll_cursor.rollback();
                     if error.is_fatal() {
                         return Err(error);
                     }
+                    if self.poll_warn.should_log() {
+                        ctx.logger.log(
+                            ActionLogLevel::Warn,
+                            &format!(
+                                "poll trigger {}: partial with no events, \
+                                 retryable error: {error}",
+                                self.action.metadata().key,
+                            ),
+                        );
+                    }
                     return Ok(CycleOutcome {
                         cursor: poll_cursor.into_current(),
                         backoff: true,
+                        errored: true,
                         override_next,
                         emitted: 0,
                     });
@@ -948,7 +1156,8 @@ impl<A: PollAction> PollTriggerAdapter<A> {
                         EmitFailurePolicy::RetryBatch => {
                             return Ok(CycleOutcome {
                                 cursor: pre_poll,
-                                backoff: false,
+                                backoff: true,
+                                errored: true,
                                 override_next,
                                 emitted,
                             });
@@ -981,6 +1190,7 @@ impl<A: PollAction> PollTriggerAdapter<A> {
                 Ok(CycleOutcome {
                     cursor: poll_cursor.into_current(),
                     backoff: true,
+                    errored: true,
                     override_next,
                     emitted,
                 })
@@ -1001,17 +1211,19 @@ impl<A: PollAction> PollTriggerAdapter<A> {
             EmitFailurePolicy::DropAndContinue => {
                 // Unreachable: DropAndContinue never triggers
                 // dispatch failure (dispatch_events returns Ok).
-                // Defensive: advance cursor, backoff.
+                // Defensive: advance cursor, record error.
                 Ok(CycleOutcome {
                     cursor: poll_cursor.into_current(),
                     backoff: true,
+                    errored: true,
                     override_next,
                     emitted: 0,
                 })
             }
             EmitFailurePolicy::RetryBatch => Ok(CycleOutcome {
                 cursor: pre_poll,
-                backoff: false,
+                backoff: true,
+                errored: true,
                 override_next,
                 emitted: 0,
             }),
@@ -1088,116 +1300,137 @@ where
             .is_err()
         {
             return Err(ActionError::fatal(
-                "poll trigger already started; call stop() before start() again",
+                "poll trigger already started; call stop() and await the task before start() again",
             ));
         }
         let _guard = StartedGuard(&self.started);
 
         self.action.validate(ctx).await?;
 
-        let config = self.action.poll_config();
-        let identity_seed = action_key_seed(&self.action.metadata().key);
+        let action_key = self.action.metadata().key.clone();
+        let mut config = self.action.poll_config();
+        config.validate_and_clamp(&*ctx.logger, &action_key);
+
+        let identity_seed = trigger_seed(&action_key, &ctx.workflow_id, &ctx.trigger_id);
         let mut cursor = self.action.initial_cursor(ctx).await?;
         let mut consecutive_empty: u32 = 0;
         let mut override_next: Option<Duration> = None;
 
-        if config.base_interval < POLL_INTERVAL_FLOOR {
-            ctx.logger.log(
-                ActionLogLevel::Warn,
-                &format!(
-                    "poll trigger {}: base_interval below floor; \
-                     requested {:?}, will be clamped to {:?}",
-                    self.action.metadata().key,
-                    config.base_interval,
-                    POLL_INTERVAL_FLOOR,
-                ),
-            );
-        }
+        // Effective max_interval for override clamping: never below
+        // the global floor, regardless of a sloppy PollConfig.
+        let effective_max_interval = config.max_interval.max(POLL_INTERVAL_FLOOR);
 
         loop {
+            // H1: pre-poll cancellation check. This is the only
+            // place a newly-activated-then-immediately-cancelled
+            // trigger can exit before running any poll. Cheap
+            // atomic read, no futures, no await.
+            if ctx.cancellation.is_cancelled() {
+                return Ok(());
+            }
+
+            // Poll + dispatch first, sleep after. Matches
+            // scheduler-style expectations: PollConfig::fixed(60s)
+            // means "every 60s starting now", not "wait 60s and
+            // then every 60s". Pre-activation delay is a runtime
+            // concern: runtime delays its call to start() if it
+            // wants fleet stagger or warmup.
+            let pre_poll = cursor.clone();
+            let mut poll_cursor = PollCursor::new(cursor);
+
+            let poll_result = match tokio::time::timeout(
+                config.poll_timeout,
+                self.action.poll(&mut poll_cursor, ctx),
+            )
+            .await
+            {
+                Ok(result) => result,
+                Err(_elapsed) => Err(ActionError::retryable(format!(
+                    "poll trigger {action_key}: poll() timed out after {:?}",
+                    config.poll_timeout,
+                ))),
+            };
+
+            match poll_result {
+                Ok(result) => {
+                    let outcome = self
+                        .resolve_cycle(result, poll_cursor, pre_poll, &config, ctx)
+                        .await?;
+                    cursor = outcome.cursor;
+                    override_next = outcome.override_next;
+                    if outcome.backoff {
+                        consecutive_empty = consecutive_empty.saturating_add(1);
+                    } else {
+                        consecutive_empty = 0;
+                    }
+                    // Health reporting is orthogonal to backoff
+                    // and cursor fate: errored > success > idle.
+                    if outcome.errored {
+                        ctx.health.record_error();
+                    } else if outcome.emitted > 0 {
+                        ctx.health.record_success(outcome.emitted as u64);
+                    } else {
+                        ctx.health.record_idle();
+                    }
+                }
+                Err(e) if e.is_fatal() => return Err(e),
+                Err(e) => {
+                    cursor = pre_poll;
+                    consecutive_empty = consecutive_empty.saturating_add(1);
+                    ctx.health.record_error();
+                    if self.poll_warn.should_log() {
+                        ctx.logger.log(
+                            ActionLogLevel::Warn,
+                            &format!(
+                                "poll trigger {action_key}: retryable poll error, \
+                                 will retry next cycle: {e}"
+                            ),
+                        );
+                    }
+                }
+            }
+
+            // Sleep with cancellation. The sleep interval is
+            // computed AFTER the poll so override_next (e.g.
+            // Retry-After from upstream) from the cycle we just
+            // ran takes effect.
             let interval = override_next
                 .take()
-                .map(|d| d.max(POLL_INTERVAL_FLOOR))
+                .map(|d| d.clamp(POLL_INTERVAL_FLOOR, effective_max_interval))
                 .unwrap_or_else(|| compute_interval(&config, consecutive_empty, identity_seed));
 
             tokio::select! {
-                () = ctx.cancellation.cancelled() => {
-                    return Ok(());
-                }
-                () = tokio::time::sleep(interval) => {
-                    let pre_poll = cursor.clone();
-                    let mut poll_cursor = PollCursor::new(cursor);
-
-                    let poll_result = match tokio::time::timeout(
-                        config.poll_timeout,
-                        self.action.poll(&mut poll_cursor, ctx),
-                    ).await {
-                        Ok(result) => result,
-                        Err(_elapsed) => {
-                            Err(ActionError::retryable(format!(
-                                "poll trigger {}: poll() timed out after {:?}",
-                                self.action.metadata().key,
-                                config.poll_timeout,
-                            )))
-                        }
-                    };
-
-                    match poll_result {
-                        Ok(result) => {
-                            let outcome = self.resolve_cycle(
-                                result, poll_cursor, pre_poll, &config, ctx,
-                            ).await?;
-                            cursor = outcome.cursor;
-                            override_next = outcome.override_next;
-                            if outcome.backoff {
-                                consecutive_empty =
-                                    consecutive_empty.saturating_add(1);
-                                if outcome.emitted > 0 {
-                                    // Partial: had events but also error.
-                                    ctx.health.record_success(outcome.emitted as u64);
-                                } else {
-                                    ctx.health.record_idle();
-                                }
-                            } else if outcome.emitted > 0 {
-                                consecutive_empty = 0;
-                                ctx.health.record_success(outcome.emitted as u64);
-                            } else {
-                                consecutive_empty = 0;
-                                ctx.health.record_idle();
-                            }
-                        }
-                        Err(e) if e.is_fatal() => return Err(e),
-                        Err(e) => {
-                            cursor = pre_poll;
-                            consecutive_empty = consecutive_empty.saturating_add(1);
-                            ctx.health.record_error();
-                            if self.poll_warn.should_log() {
-                                let action_key = &self.action.metadata().key;
-                                ctx.logger.log(
-                                    ActionLogLevel::Warn,
-                                    &format!(
-                                        "poll trigger {action_key}: retryable poll error, \
-                                         will retry next cycle: {e}"
-                                    ),
-                                );
-                            }
-                        }
-                    }
-                }
+                () = ctx.cancellation.cancelled() => return Ok(()),
+                () = tokio::time::sleep(interval) => {}
             }
         }
     }
 
-    /// No-op — poll shutdown is driven by `ctx.cancellation`.
+    /// Initiate shutdown by cancelling `ctx.cancellation`.
     ///
     /// [`PollTriggerAdapter::start`] runs an internal loop that exits
-    /// when the cancellation token fires. Calling `stop()` explicitly
-    /// is not required; the [`StartedGuard`] RAII pattern clears the
-    /// `started` flag on every exit path (including cancellation).
+    /// when the cancellation token fires. This method fires the
+    /// token itself — previously it was a no-op and relied on the
+    /// caller to cancel the token, which silently broke the
+    /// `stop() -> start()` restart pattern when callers forgot.
     ///
-    /// Callers that need to ensure the poll loop has fully exited
-    /// should cancel the token and then `.await` the `start()` task.
-    async fn stop(&self, _ctx: &TriggerContext) -> Result<(), ActionError> {
+    /// **This does not wait for the loop to finish.** The
+    /// [`StartedGuard`] RAII pattern clears the `started` flag only
+    /// after the background task returns from `start()`. Callers
+    /// needing synchronous restart semantics must:
+    ///
+    /// ```text
+    /// adapter.stop(&ctx).await?;
+    /// handle.await??;           // wait for the spawned start() task
+    /// adapter.start(&ctx).await?;
+    /// ```
+    ///
+    /// Without the `handle.await`, the second `start()` races the
+    /// first task's exit and may return `Fatal("already started")`.
+    /// A future runtime-owned task handle (tracked as F-level work)
+    /// will hide this footgun.
+    async fn stop(&self, ctx: &TriggerContext) -> Result<(), ActionError> {
+        ctx.cancellation.cancel();
         Ok(())
     }
 }
