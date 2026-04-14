@@ -257,3 +257,216 @@ async fn daemon_loop<R>(
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use std::{
+        sync::atomic::{AtomicU32, Ordering},
+        time::Duration,
+    };
+
+    use nebula_core::{ExecutionId, ResourceKey};
+
+    use super::*;
+    use crate::{
+        ctx::BasicCtx,
+        error::Error as ResourceError,
+        resource::{Resource, ResourceConfig, ResourceMetadata},
+        topology::daemon::{Daemon, RestartPolicy, config::Config as DaemonCfg},
+    };
+
+    #[derive(Clone, Debug, Default)]
+    struct EmptyCfg;
+
+    impl ResourceConfig for EmptyCfg {
+        fn fingerprint(&self) -> u64 {
+            0
+        }
+    }
+
+    #[derive(Debug, thiserror::Error)]
+    #[error("daemon-test: {0}")]
+    struct TestError(&'static str);
+
+    impl From<TestError> for ResourceError {
+        fn from(e: TestError) -> Self {
+            ResourceError::transient(e.to_string())
+        }
+    }
+
+    #[derive(Clone)]
+    struct FlakyDaemon {
+        attempts: Arc<AtomicU32>,
+    }
+
+    impl Resource for FlakyDaemon {
+        type Config = EmptyCfg;
+        type Runtime = ();
+        type Lease = ();
+        type Error = TestError;
+        type Auth = ();
+
+        fn key() -> ResourceKey {
+            ResourceKey::new("daemon-flaky").unwrap()
+        }
+
+        async fn create(
+            &self,
+            _config: &Self::Config,
+            _auth: &(),
+            _ctx: &dyn Ctx,
+        ) -> Result<(), TestError> {
+            Ok(())
+        }
+
+        fn metadata() -> ResourceMetadata {
+            ResourceMetadata::from_key(&Self::key())
+        }
+    }
+
+    impl Daemon for FlakyDaemon {
+        async fn run(
+            &self,
+            _runtime: &Self::Runtime,
+            _ctx: &dyn Ctx,
+            _cancel: CancellationToken,
+        ) -> Result<(), TestError> {
+            self.attempts.fetch_add(1, Ordering::SeqCst);
+            Err(TestError("intentional"))
+        }
+    }
+
+    #[derive(Clone)]
+    struct OneShotDaemon;
+
+    impl Resource for OneShotDaemon {
+        type Config = EmptyCfg;
+        type Runtime = ();
+        type Lease = ();
+        type Error = TestError;
+        type Auth = ();
+
+        fn key() -> ResourceKey {
+            ResourceKey::new("daemon-oneshot").unwrap()
+        }
+
+        async fn create(
+            &self,
+            _config: &Self::Config,
+            _auth: &(),
+            _ctx: &dyn Ctx,
+        ) -> Result<(), TestError> {
+            Ok(())
+        }
+
+        fn metadata() -> ResourceMetadata {
+            ResourceMetadata::from_key(&Self::key())
+        }
+    }
+
+    impl Daemon for OneShotDaemon {
+        async fn run(
+            &self,
+            _runtime: &Self::Runtime,
+            _ctx: &dyn Ctx,
+            _cancel: CancellationToken,
+        ) -> Result<(), TestError> {
+            Ok(())
+        }
+    }
+
+    /// #323: `stop()` called while the daemon is sleeping in `restart_backoff`
+    /// must return promptly. Without the `biased select` at the bottom of
+    /// `daemon_loop`, stop would be blocked for the full backoff.
+    #[tokio::test]
+    async fn stop_during_restart_backoff_returns_promptly() {
+        let parent = CancellationToken::new();
+        let cfg = DaemonCfg {
+            restart_policy: RestartPolicy::Always,
+            restart_backoff: Duration::from_secs(10),
+            max_restarts: 100,
+        };
+        let rt = DaemonRuntime::<FlakyDaemon>::new(cfg, parent);
+        let resource = FlakyDaemon {
+            attempts: Arc::new(AtomicU32::new(0)),
+        };
+        let ctx = BasicCtx::new(ExecutionId::new());
+
+        rt.start(resource, Arc::new(()), &ctx).await.unwrap();
+
+        // Give the daemon time for the first run() to fail and enter the
+        // 10s backoff sleep.
+        tokio::time::sleep(Duration::from_millis(50)).await;
+
+        let started = std::time::Instant::now();
+        rt.stop().await;
+        let elapsed = started.elapsed();
+
+        assert!(
+            elapsed < Duration::from_secs(1),
+            "stop() during restart_backoff must return promptly, took {elapsed:?}",
+        );
+        assert!(!rt.is_running().await);
+    }
+
+    /// #318: `start → stop → start` must succeed. The per-run child token
+    /// + inner handle cleanup in `start()` are what makes this work.
+    #[tokio::test]
+    async fn start_stop_start_lifecycle() {
+        let parent = CancellationToken::new();
+        let cfg = DaemonCfg {
+            restart_policy: RestartPolicy::Always,
+            restart_backoff: Duration::from_millis(20),
+            max_restarts: 100,
+        };
+        let rt = DaemonRuntime::<FlakyDaemon>::new(cfg, parent);
+        let resource = FlakyDaemon {
+            attempts: Arc::new(AtomicU32::new(0)),
+        };
+        let ctx = BasicCtx::new(ExecutionId::new());
+
+        rt.start(resource.clone(), Arc::new(()), &ctx)
+            .await
+            .unwrap();
+        tokio::time::sleep(Duration::from_millis(30)).await;
+        rt.stop().await;
+        assert!(!rt.is_running().await);
+
+        rt.start(resource, Arc::new(()), &ctx)
+            .await
+            .expect("start after stop must succeed");
+        assert!(rt.is_running().await);
+        rt.stop().await;
+    }
+
+    /// #318: `start → natural-exit → start` must succeed too. Under
+    /// `RestartPolicy::Never` the task exits after one run; the stale
+    /// finished handle in `inner` must not block the next `start()`.
+    #[tokio::test]
+    async fn start_natural_exit_start_lifecycle() {
+        let parent = CancellationToken::new();
+        let cfg = DaemonCfg {
+            restart_policy: RestartPolicy::Never,
+            restart_backoff: Duration::from_millis(10),
+            max_restarts: 0,
+        };
+        let rt = DaemonRuntime::<OneShotDaemon>::new(cfg, parent);
+        let ctx = BasicCtx::new(ExecutionId::new());
+
+        rt.start(OneShotDaemon, Arc::new(()), &ctx).await.unwrap();
+
+        // Wait until the run future has resolved and the join handle is
+        // finished. 250 ms with 5 ms polls is generous.
+        for _ in 0..50 {
+            if !rt.is_running().await {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+        assert!(!rt.is_running().await);
+
+        rt.start(OneShotDaemon, Arc::new(()), &ctx)
+            .await
+            .expect("start after natural exit must succeed");
+    }
+}
