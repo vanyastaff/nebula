@@ -102,7 +102,6 @@ pub mod builders {
     use crate::{
         core::{ConfigBuilder, ConfigSource},
         loaders::FileLoader,
-        watchers::FileWatcher,
     };
 
     /// Create a simple file-based configuration
@@ -139,16 +138,13 @@ pub mod builders {
             .with_loader(Arc::new(crate::loaders::CompositeLoader::default_loaders()))
     }
 
-    /// Create a configuration with file watching
-    pub fn with_hot_reload(config_file: impl Into<PathBuf>) -> ConfigBuilder {
-        ConfigBuilder::new()
-            .with_source(ConfigSource::File(config_file.into()))
-            .with_loader(Arc::new(FileLoader::new()))
-            .with_watcher(Arc::new(FileWatcher::new(|event| {
-                nebula_log::info!("Configuration changed: {:?}", event);
-            })))
-            .with_hot_reload(true)
-    }
+    // The previous `with_hot_reload(path) -> ConfigBuilder` helper was
+    // **deleted** in PR #294 #310 #313 batch. Its callback only logged the
+    // event and never forwarded it to `Config::reload`, which made
+    // `with_hot_reload(true)` silently a no-op (issue #313). Use
+    // `ConfigBuilder::new().with_source(...).with_hot_reload(true)` instead;
+    // the builder now wires the reload pipeline through `FileWatcher` →
+    // debounced reloader → `Config::reload` automatically.
 }
 
 /// Utilities for working with configuration

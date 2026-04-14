@@ -1,17 +1,38 @@
 //! Main configuration container
 
-use std::{collections::HashMap, sync::Arc};
+use std::{collections::HashMap, path::PathBuf, sync::Arc, time::Duration};
 
 use dashmap::DashMap;
 use serde::de::DeserializeOwned;
 use smallvec::SmallVec;
-use tokio::sync::RwLock;
+use tokio::sync::{Mutex, RwLock, mpsc};
 use tokio_util::sync::CancellationToken;
 
 use super::{
     ConfigError, ConfigLoader, ConfigResult, ConfigSource, ConfigValidator, ConfigWatcher,
     SourceMetadata,
 };
+
+/// Internal signal passed from a watcher callback into the hot-reload task.
+///
+/// Carries only enough context for diagnostics — the reload task always calls
+/// [`Config::reload`], which re-loads ALL sources rather than relying on the
+/// trigger payload. This keeps the reload semantics identical to a manual
+/// `reload()` invocation regardless of which source fired the event.
+#[non_exhaustive]
+#[derive(Debug, Clone)]
+pub(crate) struct ReloadTrigger {
+    /// Source whose backing storage changed (file, directory, …).
+    pub source: ConfigSource,
+    /// Concrete path that triggered the event, when available.
+    pub path: Option<PathBuf>,
+}
+
+/// Coalescing window for the hot-reload pipeline. After the first trigger
+/// arrives, the reloader waits up to this duration for additional triggers
+/// before issuing a single `reload()` call. This collapses bursts (rapid
+/// editor saves, deploy storms) into one reload.
+const RELOAD_COALESCE: Duration = Duration::from_millis(250);
 
 /// Inline storage for config sources — most configs have 1-3 sources.
 pub(crate) type Sources = SmallVec<[ConfigSource; 4]>;
@@ -55,6 +76,26 @@ pub struct Config {
 
     /// Cancellation token for background tasks (auto-reload, etc.)
     cancel_token: CancellationToken,
+
+    /// Receiver end of the hot-reload trigger channel.
+    ///
+    /// The builder installs a `FileWatcher` whose callback writes to the
+    /// matching `Sender`. [`Config::start_hot_reload_pipeline`] drains the
+    /// receiver inside a debouncing reloader task and calls [`Config::reload`]
+    /// on each coalesced batch. Stored in an `Arc<Mutex<Option<…>>>` so
+    /// `Config: Clone` semantics are preserved (cheap clones share the same
+    /// slot, and the receiver — a non-`Clone` resource — is `take()`n exactly
+    /// once when the pipeline starts). `None` means hot reload is either
+    /// disabled or already started.
+    reload_rx: Arc<Mutex<Option<mpsc::Receiver<ReloadTrigger>>>>,
+
+    /// Count of completed hot-reload cycles since this `Config` was built.
+    ///
+    /// Exposed via [`Config::hot_reload_count`] for tests and dashboards. A
+    /// "cycle" is one debounced batch ending in a `reload()` call (regardless
+    /// of whether the reload succeeded — failures still increment, with the
+    /// error logged).
+    reload_count: Arc<std::sync::atomic::AtomicU64>,
 }
 
 impl Config {
@@ -79,12 +120,34 @@ impl Config {
             hot_reload: options.hot_reload,
             fail_on_missing: options.fail_on_missing,
             cancel_token: CancellationToken::new(),
+            reload_rx: Arc::new(Mutex::new(None)),
+            reload_count: Arc::new(std::sync::atomic::AtomicU64::new(0)),
         }
     }
 
     /// Get the cancellation token for background tasks
     pub(crate) fn cancel_token(&self) -> &CancellationToken {
         &self.cancel_token
+    }
+
+    /// Stash the hot-reload receiver supplied by the builder.
+    ///
+    /// Called from [`ConfigBuilder::build`] when hot reload is enabled, after
+    /// the builder has constructed the trigger channel and installed a
+    /// `FileWatcher` whose callback writes to the matching sender. The
+    /// receiver is consumed by [`Config::start_hot_reload_pipeline`].
+    pub(crate) async fn install_reload_rx(&self, rx: mpsc::Receiver<ReloadTrigger>) {
+        let mut slot = self.reload_rx.lock().await;
+        *slot = Some(rx);
+    }
+
+    /// Number of completed hot-reload cycles since this `Config` was built.
+    ///
+    /// Each cycle is one debounced batch ending in a `reload()` call. Useful
+    /// for asserting in tests that a coalesced burst produced fewer reloads
+    /// than triggers, and for dashboard alerting on reload churn.
+    pub fn hot_reload_count(&self) -> u64 {
+        self.reload_count.load(std::sync::atomic::Ordering::Relaxed)
     }
 
     /// Get entire configuration as typed value
@@ -268,7 +331,20 @@ impl Config {
         &self.sources
     }
 
-    /// Start watching for configuration changes (if hot reload is enabled)
+    /// Start watching for configuration changes (if hot reload is enabled).
+    ///
+    /// **This method only starts the underlying watcher; it does NOT wire
+    /// watcher events to [`Config::reload`].** Use
+    /// [`ConfigBuilder::with_hot_reload`] to opt into the full hot-reload
+    /// pipeline, which the builder sets up by calling
+    /// [`Config::start_hot_reload_pipeline`] (#313).
+    ///
+    /// Kept for backwards-compatibility with callers that wire their own
+    /// reload logic on top of a raw `ConfigWatcher`.
+    #[deprecated(
+        since = "0.2.1",
+        note = "use ConfigBuilder::with_hot_reload — start_watching alone does not apply file changes to Config data; see #313"
+    )]
     pub async fn start_watching(&self) -> ConfigResult<()> {
         if !self.hot_reload {
             nebula_log::debug!("Hot reload is disabled, skipping watch setup");
@@ -287,6 +363,72 @@ impl Config {
         } else {
             nebula_log::debug!("No watcher configured");
         }
+
+        Ok(())
+    }
+
+    /// Wire watcher events through to [`Config::reload`] via a debounced
+    /// internal channel (#313).
+    ///
+    /// Called from [`ConfigBuilder::build`] when `hot_reload(true)` is set.
+    /// The builder is responsible for installing a `FileWatcher` whose
+    /// callback forwards [`ReloadTrigger`] values into the channel previously
+    /// stashed via [`Config::install_reload_rx`].
+    ///
+    /// # Pipeline shape
+    ///
+    /// 1. The watcher callback writes to `reload_tx` via non-blocking `try_send` — see #310. Drops
+    ///    on saturation are acceptable: the next file change retriggers, and the reloader always
+    ///    reloads from scratch.
+    /// 2. This method consumes the matching `reload_rx`, starts the watcher, then spawns a
+    ///    debouncing reload task.
+    /// 3. The reload task waits for the first trigger, then collects any additional triggers that
+    ///    arrive within `RELOAD_COALESCE` (250 ms) before issuing one [`Config::reload`] call. This
+    ///    collapses bursts of editor-saves into a single reload.
+    /// 4. The reload task exits when `cancel_token` fires — which happens automatically on
+    ///    `Config::drop`, so the task is reclaimed without requiring an async destructor.
+    ///
+    /// # Ownership
+    ///
+    /// The reload task holds a `Config` clone — `Config: Clone` is cheap
+    /// (`Arc`-shared inner state) and lets the task call `reload()` directly
+    /// without `Arc<Config>` gymnastics.
+    pub(crate) async fn start_hot_reload_pipeline(&self) -> ConfigResult<()> {
+        // Take the receiver installed by the builder. Doing this BEFORE we
+        // call into the watcher means a misconfigured pipeline (no
+        // `install_reload_rx`) fails fast before any background tasks spawn.
+        let reload_rx = {
+            let mut slot = self.reload_rx.lock().await;
+            slot.take().ok_or_else(|| {
+                ConfigError::internal(
+                    "hot reload pipeline started without a reload channel; \
+                     the builder must call `install_reload_rx` first",
+                )
+            })?
+        };
+
+        // Now bring the watcher up. If this fails, the receiver has already
+        // been moved out of the slot — another `start_hot_reload_pipeline`
+        // call cannot accidentally re-use it.
+        if let Some(watcher) = &self.watcher {
+            nebula_log::info!("Starting configuration watcher (hot reload)");
+            watcher
+                .start_watching(&self.sources, self.cancel_token.child_token())
+                .await?;
+        } else {
+            // Without a watcher there is nothing to drain; this is a misuse
+            // of the API and we surface it loudly.
+            return Err(ConfigError::internal(
+                "hot reload pipeline started without a watcher",
+            ));
+        }
+
+        // Spawn the debouncing reloader. Holds a Config clone (cheap).
+        let cfg = self.clone();
+        let cancel = self.cancel_token.clone();
+        tokio::spawn(async move {
+            run_hot_reload_loop(cfg, reload_rx, cancel).await;
+        });
 
         Ok(())
     }
@@ -525,6 +667,91 @@ impl Config {
         let mut data = self.data.write().await;
         merge_json(&mut data, value)
     }
+}
+
+/// Debouncing reload loop spawned by [`Config::start_hot_reload_pipeline`].
+///
+/// The loop has three exit paths:
+///
+/// - `cancel.cancelled()` — fired by `Config::drop` or an explicit `stop_watching()`. This is the
+///   primary shutdown signal; `biased` ensures it always wins over a pending `recv()` when both are
+///   ready.
+/// - `reload_rx.recv()` returns `None` — the watcher tore down its sender, typically because the
+///   `FileWatcher`'s notify thread exited.
+/// - A panic inside `cfg.reload()` — caught nowhere; the spawned task exits and the `JoinError` is
+///   observable via the runtime, matching the existing auto-reload task's contract.
+///
+/// Inside the loop, the first trigger opens a coalescing window of length
+/// [`RELOAD_COALESCE`]. Any additional triggers that arrive in the window are
+/// drained without issuing reloads; once the window closes (or the channel
+/// closes, or cancel fires) a single `cfg.reload()` is performed and
+/// `reload_count` is incremented.
+async fn run_hot_reload_loop(
+    cfg: Config,
+    mut reload_rx: mpsc::Receiver<ReloadTrigger>,
+    cancel: CancellationToken,
+) {
+    nebula_log::debug!("hot reload pipeline task started");
+
+    loop {
+        // Wait for the first trigger or shutdown.
+        let first = tokio::select! {
+            biased;
+            () = cancel.cancelled() => break,
+            maybe = reload_rx.recv() => match maybe {
+                Some(trigger) => trigger,
+                None => break,
+            },
+        };
+
+        nebula_log::debug!(
+            source = %first.source,
+            path = ?first.path,
+            "hot reload trigger received; starting coalesce window"
+        );
+
+        // Coalesce: drain any additional triggers that arrive within the
+        // window. Cancel still wins. A `recv() == None` aborts the loop.
+        let deadline = tokio::time::sleep(RELOAD_COALESCE);
+        tokio::pin!(deadline);
+        let mut closed = false;
+        loop {
+            tokio::select! {
+                biased;
+                () = cancel.cancelled() => return,
+                () = &mut deadline => break,
+                maybe = reload_rx.recv() => {
+                    if maybe.is_none() {
+                        closed = true;
+                        break;
+                    }
+                    // Additional trigger collapsed into the same reload cycle.
+                }
+            }
+        }
+
+        // Perform the reload. We always call `cfg.reload()` regardless of
+        // which source fired — the trigger payload is diagnostic only, and
+        // re-reading every source preserves cross-source merge semantics.
+        match cfg.reload().await {
+            Ok(()) => {
+                nebula_log::info!("hot reload applied");
+            }
+            Err(e) => {
+                // Do not exit the loop on a transient reload failure: the
+                // next file change will retrigger. Surface the error loudly.
+                nebula_log::warn!(error = %e, "hot reload failed");
+            }
+        }
+        cfg.reload_count
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+
+        if closed {
+            break;
+        }
+    }
+
+    nebula_log::debug!("hot reload pipeline task exiting");
 }
 
 /// Get human-readable type name for a JSON value (zero-alloc)
