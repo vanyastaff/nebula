@@ -55,7 +55,8 @@ pub use events::ResourceEvent;
 pub use handle::ResourceHandle;
 pub use integration::{AcquireResilience, AcquireRetryConfig};
 pub use manager::{
-    Manager, ManagerConfig, RegisterOptions, ResourceHealthSnapshot, ShutdownConfig,
+    DrainTimeoutPolicy, Manager, ManagerConfig, RegisterOptions, ResourceHealthSnapshot,
+    ShutdownConfig, ShutdownError, ShutdownReport,
 };
 pub use metrics::{ResourceOpsMetrics, ResourceOpsSnapshot};
 pub use nebula_core::{ExecutionId, ResourceKey, WorkflowId, resource_key};
