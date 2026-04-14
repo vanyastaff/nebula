@@ -154,7 +154,11 @@ impl FileWatcher {
 
 #[async_trait]
 impl crate::core::ConfigWatcher for FileWatcher {
-    async fn start_watching(&self, sources: &[ConfigSource]) -> ConfigResult<()> {
+    async fn start_watching(
+        &self,
+        sources: &[ConfigSource],
+        cancel: CancellationToken,
+    ) -> ConfigResult<()> {
         // Atomically claim the watching slot before any async work starts.
         // This prevents concurrent starts from racing through a load/store pair.
         if self
@@ -285,8 +289,8 @@ impl crate::core::ConfigWatcher for FileWatcher {
             *watcher = Some(fs_watcher);
         }
 
-        // Start event processor
-        self.start_event_processor(rx).await;
+        // Start event processor bound to the owner's cancel token.
+        self.start_event_processor(rx, cancel).await;
         claim_guard.disarm();
 
         nebula_log::info!("Started watching {} sources", sources.len());
