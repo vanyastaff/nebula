@@ -52,15 +52,18 @@ pub fn validate_workflow(definition: &WorkflowDefinition) -> Vec<WorkflowError> 
 
     // 4b. Detect duplicate connections (identical source, target, ports, and condition).
     // Duplicate connections are always redundant and confuse edge-resolution bookkeeping.
-    let mut seen_connections: Vec<&crate::connection::Connection> = Vec::new();
+    //
+    // `Connection` cannot derive `Hash` (because `serde_json::Value` doesn't implement it),
+    // so we serialize each connection to a canonical JSON string and use a HashSet<String>
+    // for O(n) average-case detection.
+    let mut seen_connections: std::collections::HashSet<String> = std::collections::HashSet::new();
     for conn in &definition.connections {
-        if seen_connections.contains(&conn) {
+        let key = serde_json::to_string(conn).unwrap_or_default();
+        if !seen_connections.insert(key) {
             errors.push(WorkflowError::DuplicateConnection {
                 from: conn.from_node,
                 to: conn.to_node,
             });
-        } else {
-            seen_connections.push(conn);
         }
     }
 

@@ -1991,8 +1991,16 @@ fn determine_final_status(
         // this indicates a bookkeeping inconsistency (e.g., a node that was
         // never enqueued because its incoming-edge count was never satisfied).
         // Returning Failed prevents a false Completed status.
+        let non_terminal: Vec<_> = exec_state
+            .node_states
+            .iter()
+            .filter(|(_, ns)| !ns.state.is_terminal())
+            .map(|(&id, ns)| (id, ns.state))
+            .collect();
         tracing::warn!(
             execution_id = %exec_state.execution_id,
+            non_terminal_count = non_terminal.len(),
+            ?non_terminal,
             "execution loop finished but not all nodes are terminal; \
              marking execution as failed to prevent false Completed status"
         );
