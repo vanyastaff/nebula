@@ -341,6 +341,12 @@ impl Manager {
         self.registry
             .register(key.clone(), type_id, scope, managed.clone());
 
+        // #387: everything below `register()` is a single funnel — the
+        // resource is installed, so advance its phase from `Initializing`
+        // to `Ready`. Failures are surfaced by `config.validate()` above,
+        // which aborts before we reach this line.
+        managed.set_phase(crate::state::ResourcePhase::Ready);
+
         if let Some(m) = &self.metrics {
             m.record_create();
         }
@@ -1256,6 +1262,10 @@ impl Manager {
 
         let managed = self.lookup::<R>(scope)?;
 
+        // #387: visible `Reloading` phase for operators polling health
+        // mid-swap.
+        managed.set_phase(crate::state::ResourcePhase::Reloading);
+
         // Compute fingerprint before swap so we don't clone config.
         let new_fp = new_config.fingerprint();
 
@@ -1271,6 +1281,11 @@ impl Manager {
         managed
             .generation
             .fetch_add(1, std::sync::atomic::Ordering::Release);
+
+        // #387: return to `Ready` with the new generation baked into
+        // `ResourceStatus.generation` (this is what `health_check`
+        // surfaces to operators).
+        managed.set_phase(crate::state::ResourcePhase::Ready);
 
         let _ = self
             .event_tx
@@ -1358,6 +1373,11 @@ impl Manager {
         //      (they share this token via `ReleaseQueue::with_cancel`).
         self.cancel.cancel();
 
+        // #387: mark every registered resource as `Draining` so operators
+        // polling `health_check` during the drain window see the correct
+        // lifecycle phase instead of a stale `Ready`.
+        self.set_phase_all(crate::state::ResourcePhase::Draining);
+
         // Phase 2: DRAIN — wait for in-flight handles to be released.
         // On timeout, respect the policy: Abort preserves "graceful"
         // (returns Err *without* clearing the registry), Force proceeds
@@ -1385,6 +1405,12 @@ impl Manager {
                 },
             },
         }
+
+        // #387: drain has completed (or been force-released). Mark every
+        // resource as `ShuttingDown` so a health snapshot captured in the
+        // narrow window between here and `registry.clear()` reflects the
+        // real lifecycle state.
+        self.set_phase_all(crate::state::ResourcePhase::ShuttingDown);
 
         // Phase 3: CLEAR — drop all ManagedResources so their
         // Arc<ReleaseQueue> refs are released.
@@ -1418,6 +1444,17 @@ impl Manager {
             // work to drain — either way the contract is "drained".
             release_queue_drained: true,
         })
+    }
+
+    /// Drives every registered resource to the given lifecycle phase.
+    ///
+    /// Type-erased bulk update used during graceful shutdown so that
+    /// `health_check` returns the correct phase while the drain/cleanup
+    /// is in flight (#387).
+    fn set_phase_all(&self, phase: crate::state::ResourcePhase) {
+        for managed in self.registry.all_managed() {
+            managed.set_phase_erased(phase);
+        }
     }
 
     /// Waits until all active `ResourceHandle`s are dropped or timeout expires.

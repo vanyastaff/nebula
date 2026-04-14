@@ -551,6 +551,94 @@ async fn manager_shutdown_rejects_acquire() {
     assert_eq!(*err.kind(), ErrorKind::Cancelled);
 }
 
+// ---------------------------------------------------------------------------
+// #387 — ResourceStatus.phase lifecycle
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn register_transitions_phase_to_ready() {
+    let manager = Manager::new();
+    let resource = ResidentTestResource::new();
+    let resident_rt =
+        ResidentRuntime::<ResidentTestResource>::new(resident::config::Config::default());
+
+    manager
+        .register(
+            resource,
+            test_config(),
+            ScopeLevel::Global,
+            TopologyRuntime::Resident(resident_rt),
+            None,
+            None,
+        )
+        .expect("register");
+
+    let snap = manager
+        .health_check::<ResidentTestResource>(&ScopeLevel::Global)
+        .expect("health");
+    assert_eq!(snap.phase, nebula_resource::state::ResourcePhase::Ready);
+    assert_eq!(snap.generation, 0);
+}
+
+#[tokio::test]
+async fn reload_config_bumps_status_generation() {
+    let manager = Manager::new();
+    let resource = ResidentTestResource::new();
+    let resident_rt =
+        ResidentRuntime::<ResidentTestResource>::new(resident::config::Config::default());
+
+    manager
+        .register(
+            resource,
+            test_config(),
+            ScopeLevel::Global,
+            TopologyRuntime::Resident(resident_rt),
+            None,
+            None,
+        )
+        .expect("register");
+
+    manager
+        .reload_config::<ResidentTestResource>(test_config(), &ScopeLevel::Global)
+        .expect("reload");
+
+    let snap = manager
+        .health_check::<ResidentTestResource>(&ScopeLevel::Global)
+        .expect("health");
+    assert_eq!(snap.phase, nebula_resource::state::ResourcePhase::Ready);
+    assert_eq!(
+        snap.generation, 1,
+        "reload_config must bake the new generation into ResourceStatus (#387)",
+    );
+}
+
+#[tokio::test]
+async fn graceful_shutdown_report_marks_registry_cleared() {
+    use nebula_resource::manager::ShutdownConfig;
+
+    let manager = Manager::new();
+    let resource = ResidentTestResource::new();
+    let resident_rt =
+        ResidentRuntime::<ResidentTestResource>::new(resident::config::Config::default());
+
+    manager
+        .register(
+            resource,
+            test_config(),
+            ScopeLevel::Global,
+            TopologyRuntime::Resident(resident_rt),
+            None,
+            None,
+        )
+        .expect("register");
+
+    let report = manager
+        .graceful_shutdown(ShutdownConfig::default())
+        .await
+        .expect("graceful");
+    assert!(report.registry_cleared);
+}
+
 #[tokio::test]
 async fn remove_nonexistent_returns_not_found() {
     let manager = Manager::new();

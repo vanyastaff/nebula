@@ -30,6 +30,14 @@ pub trait AnyManagedResource: Send + Sync + 'static {
     /// Used by [`Registry::register`] to scrub stale rows from `type_index`
     /// when an entry is replaced in place (#382).
     fn managed_type_id(&self) -> TypeId;
+
+    /// Type-erased lifecycle phase mutation (#387).
+    ///
+    /// Lets the manager drive phase transitions on all registered
+    /// resources without needing a typed handle, which matters during
+    /// graceful shutdown where only the type-erased registry iteration
+    /// is available.
+    fn set_phase_erased(&self, phase: crate::state::ResourcePhase);
 }
 
 impl<R: Resource> AnyManagedResource for ManagedResource<R> {
@@ -43,6 +51,10 @@ impl<R: Resource> AnyManagedResource for ManagedResource<R> {
 
     fn managed_type_id(&self) -> TypeId {
         TypeId::of::<ManagedResource<R>>()
+    }
+
+    fn set_phase_erased(&self, phase: crate::state::ResourcePhase) {
+        self.set_phase(phase);
     }
 }
 
@@ -149,6 +161,21 @@ impl Registry {
         self.entries.iter().map(|r| r.key().clone()).collect()
     }
 
+    /// Returns every registered managed resource across all scopes.
+    ///
+    /// Used by the manager to drive lifecycle transitions (e.g. shifting
+    /// every resource to `Draining` / `ShuttingDown` during graceful
+    /// shutdown, #387) without needing typed access to each entry.
+    pub(crate) fn all_managed(&self) -> Vec<Arc<dyn AnyManagedResource>> {
+        let mut out = Vec::new();
+        for row in self.entries.iter() {
+            for entry in row.value().iter() {
+                out.push(Arc::clone(&entry.managed));
+            }
+        }
+        out
+    }
+
     /// Returns `true` if a resource with the given key is registered.
     pub fn contains(&self, key: &ResourceKey) -> bool {
         self.entries.contains_key(key)
@@ -209,6 +236,7 @@ mod tests {
         fn managed_type_id(&self) -> TypeId {
             TypeId::of::<FakeA>()
         }
+        fn set_phase_erased(&self, _phase: crate::state::ResourcePhase) {}
     }
 
     impl AnyManagedResource for FakeB {
@@ -221,6 +249,7 @@ mod tests {
         fn managed_type_id(&self) -> TypeId {
             TypeId::of::<FakeB>()
         }
+        fn set_phase_erased(&self, _phase: crate::state::ResourcePhase) {}
     }
 
     #[test]
