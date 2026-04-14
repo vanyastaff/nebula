@@ -76,4 +76,9 @@ pub enum SandboxError {
     /// Plugin sent bytes that did not decode as a valid envelope.
     #[error("plugin sent malformed envelope")]
     MalformedEnvelope(#[source] serde_json::Error),
+
+    /// Host failed to serialize an outbound envelope before writing it
+    /// to the plugin transport.
+    #[error("host failed to serialize outbound envelope")]
+    HostMalformedEnvelope(#[source] serde_json::Error),
 }

@@ -153,7 +153,7 @@ impl PluginHandle {
         if self.poisoned {
             return Err(SandboxError::TransportPoisoned);
         }
-        let encoded = serde_json::to_vec(envelope).map_err(SandboxError::MalformedEnvelope)?;
+        let encoded = serde_json::to_vec(envelope).map_err(SandboxError::HostMalformedEnvelope)?;
         if let Err(e) = self.writer.write_all(&encoded).await {
             self.poisoned = true;
             return Err(SandboxError::Transport(e));
@@ -551,9 +551,10 @@ impl ProcessSandbox {
             ))
         })?;
 
+        let sanitized_handshake = sanitize_plugin_string(handshake_line.trim());
         tracing::debug!(
             plugin = %self.binary.display(),
-            handshake = %handshake_line,
+            handshake = %sanitized_handshake,
             "plugin handshake received"
         );
 
@@ -580,7 +581,8 @@ fn sandbox_error_to_action_error(err: SandboxError) -> ActionError {
         | SandboxError::HandshakeLineTooLarge { .. }
         | SandboxError::TransportPoisoned
         | SandboxError::Transport(_)
-        | SandboxError::MalformedEnvelope(_) => ActionError::fatal_from(err),
+        | SandboxError::MalformedEnvelope(_)
+        | SandboxError::HostMalformedEnvelope(_) => ActionError::fatal_from(err),
     }
 }
 
@@ -700,18 +702,22 @@ async fn drain_plugin_stderr(stderr: tokio::process::ChildStderr, plugin_name: S
 /// `STDERR_LINE_CAP`.
 async fn drop_until_newline<R>(reader: &mut R) -> bool
 where
-    R: tokio::io::AsyncRead + Unpin,
+    R: tokio::io::AsyncBufRead + Unpin,
 {
-    let mut scratch = [0u8; 1024];
     loop {
-        let n = match reader.read(&mut scratch).await {
-            Ok(0) => return false,
-            Ok(n) => n,
+        let chunk = match reader.fill_buf().await {
+            Ok(chunk) => chunk,
             Err(_) => return false,
         };
-        if scratch[..n].contains(&b'\n') {
+        if chunk.is_empty() {
+            return false;
+        }
+        if let Some(idx) = chunk.iter().position(|&b| b == b'\n') {
+            reader.consume(idx + 1);
             return true;
         }
+        let len = chunk.len();
+        reader.consume(len);
     }
 }
 
@@ -1055,6 +1061,26 @@ mod tests {
         assert!(matches!(err2, SandboxError::TransportPoisoned));
     }
 
+    #[tokio::test]
+    async fn drop_until_newline_keeps_bytes_after_newline() {
+        let data: &[u8] = b"oversized-line\nnext-line\n";
+        let mut reader = TokioBufReader::new(data);
+
+        assert!(drop_until_newline(&mut reader).await);
+
+        let mut buf = Vec::new();
+        let outcome = read_bounded_line(&mut reader, 1024, &mut buf)
+            .await
+            .expect("next line must still be readable");
+        assert_eq!(
+            outcome,
+            BoundedReadOutcome::Line {
+                bytes_including_newline: 10,
+            }
+        );
+        assert_eq!(buf, b"next-line\n");
+    }
+
     // ---- SandboxError → ActionError conversion -----------------------
 
     #[test]
@@ -1091,5 +1117,13 @@ mod tests {
             matches!(ae, ActionError::Retryable { .. }),
             "PluginClosed should classify as Retryable, got {ae:?}",
         );
+    }
+
+    #[test]
+    fn host_malformed_envelope_converts_to_fatal_action_error() {
+        let parse_err = serde_json::from_str::<serde_json::Value>("{")
+            .expect_err("fixture must produce serde_json::Error");
+        let ae = sandbox_error_to_action_error(SandboxError::HostMalformedEnvelope(parse_err));
+        assert!(matches!(ae, ActionError::Fatal { .. }));
     }
 }
