@@ -6,7 +6,7 @@ use nebula_api::{ApiConfig, AppState, app};
 use nebula_config::ConfigBuilder;
 use nebula_storage::{InMemoryExecutionRepo, InMemoryWorkflowRepo};
 
-const TEST_JWT_SECRET: &str = "test-secret-for-integration-tests";
+const TEST_JWT_SECRET: &str = "test-secret-for-integration-tests-0123456789";
 
 /// Helper to create test app state
 async fn create_test_state() -> AppState {
@@ -22,7 +22,13 @@ async fn create_test_state() -> AppState {
         .unwrap();
     let workflow_repo = Arc::new(InMemoryWorkflowRepo::new());
     let execution_repo = Arc::new(InMemoryExecutionRepo::new());
-    AppState::new(config, workflow_repo, execution_repo, TEST_JWT_SECRET)
+    let api_config = ApiConfig::for_test();
+    AppState::new(
+        config,
+        workflow_repo,
+        execution_repo,
+        api_config.jwt_secret.clone(),
+    )
 }
 
 /// Helper to create a valid JWT token for testing
@@ -59,7 +65,7 @@ fn create_test_jwt() -> String {
 #[tokio::test]
 async fn test_health_endpoint() {
     let state = create_test_state().await;
-    let api_config = ApiConfig::default();
+    let api_config = ApiConfig::for_test();
     let _app = app::build_app(state, &api_config);
 
     // TODO: Use axum test helpers to test endpoints
@@ -82,7 +88,7 @@ async fn test_workflow_list_empty() {
     use tower::ServiceExt;
 
     let state = create_test_state().await;
-    let api_config = ApiConfig::default();
+    let api_config = ApiConfig::for_test();
     let app = app::build_app(state, &api_config);
     let token = create_test_jwt();
 
@@ -118,7 +124,7 @@ async fn test_error_format_rfc9457() {
     use tower::ServiceExt;
 
     let state = create_test_state().await;
-    let api_config = ApiConfig::default();
+    let api_config = ApiConfig::for_test();
     let token = create_test_jwt();
 
     // Test 1: Not Found (404) - workflow not found
@@ -277,7 +283,7 @@ async fn create_workflow() {
     use tower::ServiceExt;
 
     let state = create_test_state().await;
-    let api_config = ApiConfig::default();
+    let api_config = ApiConfig::for_test();
     let app = app::build_app(state, &api_config);
     let token = create_test_jwt();
 
@@ -328,7 +334,7 @@ async fn test_workflow_list_with_data() {
     use tower::ServiceExt;
 
     let state = create_test_state().await;
-    let api_config = ApiConfig::default();
+    let api_config = ApiConfig::for_test();
     let token = create_test_jwt();
 
     // Create a workflow first
@@ -392,7 +398,7 @@ async fn test_get_workflow_by_id() {
     use tower::ServiceExt;
 
     let state = create_test_state().await;
-    let api_config = ApiConfig::default();
+    let api_config = ApiConfig::for_test();
     let token = create_test_jwt();
 
     // Create a workflow first
@@ -462,7 +468,7 @@ async fn test_get_workflow_not_found() {
     use tower::ServiceExt;
 
     let state = create_test_state().await;
-    let api_config = ApiConfig::default();
+    let api_config = ApiConfig::for_test();
     let app = app::build_app(state, &api_config);
     let token = create_test_jwt();
 
@@ -493,7 +499,7 @@ async fn test_update_workflow() {
     use tower::ServiceExt;
 
     let state = create_test_state().await;
-    let api_config = ApiConfig::default();
+    let api_config = ApiConfig::for_test();
     let token = create_test_jwt();
 
     // Create a workflow first
@@ -577,7 +583,7 @@ async fn test_delete_workflow() {
     use tower::ServiceExt;
 
     let state = create_test_state().await;
-    let api_config = ApiConfig::default();
+    let api_config = ApiConfig::for_test();
     let token = create_test_jwt();
 
     // Create a workflow first
@@ -654,7 +660,7 @@ async fn test_activate_workflow() {
     use tower::ServiceExt;
 
     let state = create_test_state().await;
-    let api_config = ApiConfig::default();
+    let api_config = ApiConfig::for_test();
     let token = create_test_jwt();
 
     // Create a workflow first
@@ -725,7 +731,7 @@ async fn test_activate_workflow_not_found() {
     use tower::ServiceExt;
 
     let state = create_test_state().await;
-    let api_config = ApiConfig::default();
+    let api_config = ApiConfig::for_test();
     let app = app::build_app(state, &api_config);
     let token = create_test_jwt();
 
@@ -756,7 +762,7 @@ async fn test_execute_workflow() {
     use tower::ServiceExt;
 
     let state = create_test_state().await;
-    let api_config = ApiConfig::default();
+    let api_config = ApiConfig::for_test();
     let token = create_test_jwt();
 
     // Create a workflow first
@@ -837,7 +843,7 @@ async fn test_execute_workflow_not_found() {
     use tower::ServiceExt;
 
     let state = create_test_state().await;
-    let api_config = ApiConfig::default();
+    let api_config = ApiConfig::for_test();
     let app = app::build_app(state, &api_config);
     let token = create_test_jwt();
 
@@ -876,7 +882,7 @@ async fn test_execution_list_all_empty() {
     use tower::ServiceExt;
 
     let state = create_test_state().await;
-    let api_config = ApiConfig::default();
+    let api_config = ApiConfig::for_test();
     let app = app::build_app(state, &api_config);
     let token = create_test_jwt();
 
@@ -914,7 +920,7 @@ async fn test_execution_list_for_workflow_empty() {
     use tower::ServiceExt;
 
     let state = create_test_state().await;
-    let api_config = ApiConfig::default();
+    let api_config = ApiConfig::for_test();
     let token = create_test_jwt();
 
     // Create a workflow first
@@ -984,7 +990,7 @@ async fn test_execution_get_by_id() {
     use tower::ServiceExt;
 
     let state = create_test_state().await;
-    let api_config = ApiConfig::default();
+    let api_config = ApiConfig::for_test();
     let token = create_test_jwt();
 
     // Create an execution directly in the repo
@@ -1045,7 +1051,7 @@ async fn test_execution_get_not_found() {
     use tower::ServiceExt;
 
     let state = create_test_state().await;
-    let api_config = ApiConfig::default();
+    let api_config = ApiConfig::for_test();
     let app = app::build_app(state, &api_config);
     let token = create_test_jwt();
 
@@ -1076,7 +1082,7 @@ async fn test_execution_start() {
     use tower::ServiceExt;
 
     let state = create_test_state().await;
-    let api_config = ApiConfig::default();
+    let api_config = ApiConfig::for_test();
     let token = create_test_jwt();
 
     // Create a workflow first
@@ -1154,7 +1160,7 @@ async fn test_execution_cancel() {
     use tower::ServiceExt;
 
     let state = create_test_state().await;
-    let api_config = ApiConfig::default();
+    let api_config = ApiConfig::for_test();
     let token = create_test_jwt();
 
     // Create an execution directly in the repo
@@ -1236,7 +1242,7 @@ async fn test_execution_cancel_not_found() {
     use tower::ServiceExt;
 
     let state = create_test_state().await;
-    let api_config = ApiConfig::default();
+    let api_config = ApiConfig::for_test();
     let app = app::build_app(state, &api_config);
     let token = create_test_jwt();
 
@@ -1268,7 +1274,7 @@ async fn test_execution_cancel_already_completed() {
     use tower::ServiceExt;
 
     let state = create_test_state().await;
-    let api_config = ApiConfig::default();
+    let api_config = ApiConfig::for_test();
     let token = create_test_jwt();
 
     // Create a completed execution directly in the repo
@@ -1334,7 +1340,7 @@ async fn test_execution_get_invalid_id() {
     use tower::ServiceExt;
 
     let state = create_test_state().await;
-    let api_config = ApiConfig::default();
+    let api_config = ApiConfig::for_test();
     let app = app::build_app(state, &api_config);
     let token = create_test_jwt();
 
@@ -1371,7 +1377,7 @@ async fn rate_limit_allows_requests_within_quota() {
     // Set a generous limit so a single test request is never throttled.
     let api_config = ApiConfig {
         rate_limit_per_second: 100,
-        ..ApiConfig::default()
+        ..ApiConfig::for_test()
     };
     let app = app::build_app(state, &api_config);
 
@@ -1402,7 +1408,7 @@ async fn rate_limit_excludes_health_path() {
     // Minimal quota — would throttle any non-excluded path immediately.
     let api_config = ApiConfig {
         rate_limit_per_second: 1,
-        ..ApiConfig::default()
+        ..ApiConfig::for_test()
     };
 
     // Send more requests than the quota allows; all must succeed because /health
@@ -1438,7 +1444,7 @@ async fn rate_limit_excludes_ready_path() {
     let state = create_test_state().await;
     let api_config = ApiConfig {
         rate_limit_per_second: 1,
-        ..ApiConfig::default()
+        ..ApiConfig::for_test()
     };
 
     for _ in 0..5 {
@@ -1472,7 +1478,7 @@ async fn rate_limit_returns_429_when_quota_exceeded() {
     // 1 req/s burst — the second request from the same IP must be throttled.
     let api_config = ApiConfig {
         rate_limit_per_second: 1,
-        ..ApiConfig::default()
+        ..ApiConfig::for_test()
     };
 
     let app = app::build_app(state, &api_config);
@@ -1527,7 +1533,7 @@ async fn rate_limit_is_per_ip() {
     let state = create_test_state().await;
     let api_config = ApiConfig {
         rate_limit_per_second: 1,
-        ..ApiConfig::default()
+        ..ApiConfig::for_test()
     };
 
     let app = app::build_app(state, &api_config);
@@ -1563,4 +1569,90 @@ async fn rate_limit_is_per_ip() {
 
     assert_eq!(r1.status(), StatusCode::OK, "first IP first request");
     assert_eq!(r2.status(), StatusCode::OK, "second IP first request");
+}
+// ── #320: CORS preflight regression tests ──────────────────────────────
+
+/// Preflight for `X-API-Key` must succeed so browser clients using
+/// API key auth can reach protected routes. Regression for #320.
+#[tokio::test]
+async fn cors_preflight_allows_x_api_key() {
+    use axum::{
+        body::Body,
+        http::{Request, StatusCode},
+    };
+    use tower::ServiceExt;
+
+    let state = create_test_state().await;
+    let api_config = ApiConfig::for_test();
+    let app = app::build_app(state, &api_config);
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("OPTIONS")
+                .uri("/api/v1/workflows")
+                .header("origin", "https://app.example")
+                .header("access-control-request-method", "GET")
+                .header("access-control-request-headers", "x-api-key")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let allow_headers = response
+        .headers()
+        .get("access-control-allow-headers")
+        .expect("preflight response must include Access-Control-Allow-Headers")
+        .to_str()
+        .unwrap()
+        .to_ascii_lowercase();
+    assert!(
+        allow_headers.contains("x-api-key"),
+        "x-api-key must appear in allow-headers, got: {allow_headers}"
+    );
+}
+
+/// Regression lock for the pre-existing `Authorization` header
+/// allowance. Kept alongside #320's addition so future CORS edits
+/// cannot silently drop the Bearer-token path either.
+#[tokio::test]
+async fn cors_preflight_allows_authorization() {
+    use axum::{
+        body::Body,
+        http::{Request, StatusCode},
+    };
+    use tower::ServiceExt;
+
+    let state = create_test_state().await;
+    let api_config = ApiConfig::for_test();
+    let app = app::build_app(state, &api_config);
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("OPTIONS")
+                .uri("/api/v1/workflows")
+                .header("origin", "https://app.example")
+                .header("access-control-request-method", "GET")
+                .header("access-control-request-headers", "authorization")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let allow_headers = response
+        .headers()
+        .get("access-control-allow-headers")
+        .expect("preflight response must include Access-Control-Allow-Headers")
+        .to_str()
+        .unwrap()
+        .to_ascii_lowercase();
+    assert!(
+        allow_headers.contains("authorization"),
+        "authorization must appear in allow-headers, got: {allow_headers}"
+    );
 }
