@@ -25,3 +25,5 @@ Execution state machine types — persistent state, journals, idempotency, plans
 <!-- reviewed: 2026-04-14 — #247 added ExecutionTerminationReason + ExecutionTerminationCode newtype and ExecutionResult::termination_reason field; Phase 0 wiring is partial (local edge gate only, full scheduler propagation deferred) -->
 
 <!-- reviewed: 2026-04-14 -->
+
+<!-- reviewed: 2026-04-14 — PR #388 review-fixup: doc-comment on ExecutionBudget.max_concurrent_nodes (intra-doc link → backticks). No invariants changed. -->

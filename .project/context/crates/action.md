@@ -89,3 +89,5 @@ engine runs them from `nebula-runtime`. `ActionRegistry` lives there, not here.
 ## Relations
 Depends on `nebula-core`, `nebula-parameter`, `nebula-credential`.
 Used by `nebula-engine`, `nebula-runtime`, `nebula-sdk`.
+
+<!-- reviewed: 2026-04-14 — PR #388 review-fixup: CredentialRefreshFailed docstring wording. No invariants changed. -->
