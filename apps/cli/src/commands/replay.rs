@@ -124,7 +124,7 @@ pub async fn execute(args: ReplayArgs, quiet: bool) -> anyhow::Result<ExitCode> 
                     "{}",
                     serde_json::to_string_pretty(&json).unwrap_or_else(|_| "{}".to_owned())
                 );
-            }
+            },
             OutputFormat::Text => {
                 println!("Replay:    {}", result.execution_id);
                 println!("Status:    {:?}", result.status);
@@ -136,7 +136,7 @@ pub async fn execute(args: ReplayArgs, quiet: bool) -> anyhow::Result<ExitCode> 
                         println!("  {nid}: {err}");
                     }
                 }
-            }
+            },
         }
     }
 

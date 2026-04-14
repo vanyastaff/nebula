@@ -79,21 +79,21 @@ impl<T> BoundedStreamBuffer<T> {
                     notified.as_mut().enable();
                     drop(queue);
                     notified.await;
-                }
+                },
                 Overflow::DropOldest => {
                     let _ = queue.pop_front();
                     queue.push_back(item.take().expect("item available"));
                     self.inner.not_empty.notify_one();
                     return Ok(PushOutcome::AcceptedAfterDropOldest);
-                }
+                },
                 Overflow::DropNewest => {
                     return Ok(PushOutcome::DroppedNewest);
-                }
+                },
                 Overflow::Error => {
                     return Err(RuntimeError::Internal(
                         "stream buffer overflow (policy=error)".to_string(),
                     ));
-                }
+                },
             }
         }
     }

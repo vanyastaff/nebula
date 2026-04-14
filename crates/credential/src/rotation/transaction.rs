@@ -711,7 +711,7 @@ impl RotationTransaction {
             Some(TransactionPhase::Preparing) => {
                 self.transaction_phase = Some(TransactionPhase::Prepared);
                 Ok(())
-            }
+            },
             Some(phase) => Err(super::error::RotationError::InvalidStateTransition {
                 from: format!("{:?}", phase),
                 to: "Prepared".to_string(),
@@ -732,7 +732,7 @@ impl RotationTransaction {
             Some(TransactionPhase::Prepared) => {
                 self.transaction_phase = Some(TransactionPhase::Committing);
                 Ok(())
-            }
+            },
             Some(phase) => Err(super::error::RotationError::InvalidStateTransition {
                 from: format!("{:?}", phase),
                 to: "Committing".to_string(),
@@ -750,7 +750,7 @@ impl RotationTransaction {
                 self.transaction_phase = Some(TransactionPhase::Committed);
                 self.completed_at = Some(chrono::Utc::now());
                 Ok(())
-            }
+            },
             Some(phase) => Err(super::error::RotationError::InvalidStateTransition {
                 from: format!("{:?}", phase),
                 to: "Committed".to_string(),
@@ -782,12 +782,12 @@ impl RotationTransaction {
                 self.transaction_phase = Some(TransactionPhase::Aborting);
                 self.set_error(reason_str);
                 Ok(())
-            }
+            },
             Some(TransactionPhase::Committed) => {
                 Err(super::error::RotationError::TransactionFailed {
                     reason: "Cannot abort committed transaction".to_string(),
                 })
-            }
+            },
             Some(TransactionPhase::Aborting | TransactionPhase::Aborted) => Ok(()), /* Already aborting */
             None => Err(super::error::RotationError::TransactionFailed {
                 reason: "No transaction in progress".to_string(),
@@ -802,7 +802,7 @@ impl RotationTransaction {
                 self.transaction_phase = Some(TransactionPhase::Aborted);
                 self.completed_at = Some(chrono::Utc::now());
                 Ok(())
-            }
+            },
             Some(phase) => Err(super::error::RotationError::InvalidStateTransition {
                 from: format!("{:?}", phase),
                 to: "Aborted".to_string(),

@@ -160,7 +160,7 @@ where
                 .await
                 .map_err(ExecutorError::PendingStore)?;
             Ok(ResolveResponse::Pending { token, interaction })
-        }
+        },
         ResolveResult::Retry { after } => Ok(ResolveResponse::Retry { after }),
     }
 }

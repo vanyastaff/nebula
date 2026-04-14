@@ -234,7 +234,7 @@ fn validate_timezone_suffix(s: &str) -> Result<(), ()> {
                 }
             }
             Err(())
-        }
+        },
         _ => Err(()),
     }
 }

@@ -29,7 +29,7 @@ fn main() -> ExitCode {
         Err(err) => {
             eprintln!("error: {err:#}");
             ExitCode::FAILURE
-        }
+        },
     }
 }
 
@@ -73,14 +73,14 @@ async fn dispatch(cli: Cli) -> anyhow::Result<ExitCode> {
                 ActionsCommand::Test(args) => commands::actions::test(args).await,
             }
             Ok(ExitCode::SUCCESS)
-        }
+        },
         Command::Plugin { command } => {
             match command {
                 PluginCommand::List => commands::plugin::list().await,
                 PluginCommand::New(args) => commands::plugin_new::execute(args)?,
             }
             Ok(ExitCode::SUCCESS)
-        }
+        },
         Command::Dev { command } => {
             match command {
                 DevCommand::Init(args) => commands::dev::init::execute(args)?,
@@ -89,17 +89,17 @@ async fn dispatch(cli: Cli) -> anyhow::Result<ExitCode> {
                 },
             }
             Ok(ExitCode::SUCCESS)
-        }
+        },
         Command::Config { command } => {
             match command {
                 ConfigCommand::Show => commands::config::show().await,
                 ConfigCommand::Init(args) => commands::config::init(args.global)?,
             }
             Ok(ExitCode::SUCCESS)
-        }
+        },
         Command::Completion(args) => {
             commands::completion::execute(args);
             Ok(ExitCode::SUCCESS)
-        }
+        },
     }
 }

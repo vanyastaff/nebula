@@ -241,7 +241,7 @@ impl ConfigBuilder {
                     );
 
                     merge_json(&mut merged_data, data)?;
-                }
+                },
                 Err(e) => {
                     if self.fail_on_missing || !source.is_optional() {
                         return Err(e);
@@ -253,7 +253,7 @@ impl ConfigBuilder {
                         optional = source.is_optional(),
                         "Failed to load optional configuration source"
                     );
-                }
+                },
             }
         }
 
@@ -463,7 +463,7 @@ mod tests {
                             source.name(),
                         ))
                     }
-                }
+                },
                 _ => Err(ConfigError::source_error("unsupported", source.name())),
             }
         }

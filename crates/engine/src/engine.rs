@@ -307,10 +307,10 @@ impl WorkflowEngine {
             match e {
                 mpsc::error::TrySendError::Full(_) => {
                     tracing::warn!("engine event channel full; dropping event (slow consumer)");
-                }
+                },
                 mpsc::error::TrySendError::Closed(_) => {
                     // Consumer disconnected — silent, expected on shutdown.
-                }
+                },
             }
         }
     }
@@ -574,20 +574,20 @@ impl WorkflowEngine {
                 .transition(execution_id, repo_version, state_json)
                 .await
             {
-                Ok(true) => { /* success */ }
+                Ok(true) => { /* success */ },
                 Ok(false) => {
                     tracing::warn!(
                         %execution_id,
                         "final state checkpoint CAS mismatch"
                     );
-                }
+                },
                 Err(e) => {
                     tracing::warn!(
                         %execution_id,
                         error = %e,
                         "final state checkpoint failed"
                     );
-                }
+                },
             }
         }
 
@@ -842,13 +842,13 @@ impl WorkflowEngine {
                 .transition(execution_id, repo_version, state_json)
                 .await
             {
-                Ok(true) => {}
+                Ok(true) => {},
                 Ok(false) => {
                     tracing::warn!(%execution_id, "resume: final state checkpoint CAS mismatch");
-                }
+                },
                 Err(e) => {
                     tracing::warn!(%execution_id, error = %e, "resume: final state checkpoint failed");
-                }
+                },
             }
         }
 
@@ -1134,7 +1134,7 @@ impl WorkflowEngine {
                             error: err.to_string(),
                         });
                     }
-                }
+                },
                 Ok((node_id, Ok(action_result))) => {
                     mark_node_completed(exec_state, node_id);
 
@@ -1172,7 +1172,7 @@ impl WorkflowEngine {
                         &mut ready_queue,
                         exec_state,
                     );
-                }
+                },
                 Ok((node_id, Err(ref err))) => {
                     // Node failed at runtime — persist before any observer
                     // learns the node is done and before successors advance
@@ -1214,12 +1214,12 @@ impl WorkflowEngine {
                             error: err.to_string(),
                         });
                     }
-                }
+                },
                 Err(join_err) => {
                     tracing::error!(?join_err, "node task panicked");
                     cancel_token.cancel();
                     return Some((NodeId::new(), join_err.to_string()));
-                }
+                },
             }
         }
 
@@ -1279,7 +1279,7 @@ impl WorkflowEngine {
                         ns.error_message = Some(e.to_string());
                     }
                     return false;
-                }
+                },
             };
 
         // Mark node as running in execution state (versioned).
@@ -1403,7 +1403,7 @@ impl WorkflowEngine {
                     "idempotency check failed; proceeding with execution"
                 );
                 return false;
-            }
+            },
         };
 
         if !already_done {
@@ -1423,7 +1423,7 @@ impl WorkflowEngine {
                     "idempotency key present but output missing; re-executing node"
                 );
                 return false;
-            }
+            },
             Err(e) => {
                 tracing::warn!(
                     %execution_id,
@@ -1432,7 +1432,7 @@ impl WorkflowEngine {
                     "failed to load idempotent node output; re-executing"
                 );
                 return false;
-            }
+            },
         };
 
         outputs.insert(node_id, output_value.clone());
@@ -1520,14 +1520,14 @@ impl WorkflowEngine {
                     if let Ok(Some((current_version, _))) = repo.get_state(execution_id).await {
                         *repo_version = current_version;
                     }
-                }
+                },
                 Err(e) => {
                     tracing::warn!(
                         %execution_id,
                         error = %e,
                         "checkpoint persist failed"
                     );
-                }
+                },
             }
         }
     }
@@ -1545,13 +1545,13 @@ impl WorkflowEngine {
                 self.metrics
                     .counter(NEBULA_WORKFLOW_EXECUTIONS_COMPLETED_TOTAL)
                     .inc();
-            }
+            },
             ExecutionStatus::Failed => {
                 self.metrics
                     .counter(NEBULA_WORKFLOW_EXECUTIONS_FAILED_TOTAL)
                     .inc();
-            }
-            _ => {}
+            },
+            _ => {},
         }
 
         self.metrics
@@ -1634,12 +1634,12 @@ impl NodeTask {
             };
 
             match refresh_result {
-                Ok(()) => {}
+                Ok(()) => {},
                 Err(source) => {
                     let action_err =
                         ActionError::credential_refresh_failed(self.action_key.to_string(), source);
                     return (self.node_id, Err(EngineError::Action(action_err)));
-                }
+                },
             }
         }
 
@@ -1695,7 +1695,7 @@ impl NodeTask {
                     self.outputs.insert(self.node_id, output);
                 }
                 (self.node_id, Ok(action_result))
-            }
+            },
             Err(e) => (self.node_id, Err(EngineError::Runtime(e))),
         }
     }
@@ -1875,7 +1875,7 @@ fn match_result_condition(
                 .as_ref()
                 .and_then(|v| v.get(field))
                 .is_some_and(|v| v == value)
-        }
+        },
         // Expression-based result matching; default to true for now.
         ResultMatcher::Expression { .. } => true,
         _ => false,
@@ -2051,7 +2051,7 @@ fn handle_node_failure(
             // Edges already resolved (not activated) above — dependents
             // will be skipped; unaffected branches continue.
             None
-        }
+        },
         // FailFast and future variants
         _ => Some(error_msg.to_owned()),
     }
@@ -2123,7 +2123,7 @@ fn resolve_node_input_with_support(
                 if !flow_predecessors.contains(&source) {
                     flow_predecessors.push(source);
                 }
-            }
+            },
             Some(port_name) => {
                 if let Some(output) = outputs.get(&source) {
                     support_inputs
@@ -2131,7 +2131,7 @@ fn resolve_node_input_with_support(
                         .or_default()
                         .push(output.value().clone());
                 }
-            }
+            },
         }
     }
 
@@ -2172,10 +2172,10 @@ fn extract_primary_output(result: &ActionResult<serde_json::Value>) -> Option<se
         ActionResult::Route { data, .. } => data.as_value().cloned(),
         ActionResult::MultiOutput { main_output, .. } => {
             main_output.as_ref().and_then(|o| o.as_value().cloned())
-        }
+        },
         ActionResult::Wait { partial_output, .. } => {
             partial_output.as_ref().and_then(|o| o.as_value().cloned())
-        }
+        },
         ActionResult::Retry { .. } => None,
         _ => None,
     }

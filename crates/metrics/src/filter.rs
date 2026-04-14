@@ -98,7 +98,7 @@ impl LabelAllowlist {
             AllowlistInner::Keys(keys) => {
                 let allowed: Vec<&str> = keys.iter().map(String::as_str).collect();
                 interner.filter_label_set(labels, &allowed)
-            }
+            },
         }
     }
 

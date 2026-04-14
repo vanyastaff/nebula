@@ -248,7 +248,7 @@ mod tests {
         match metadata.rotation_policy.unwrap() {
             RotationPolicy::Periodic(config) => {
                 assert_eq!(config.interval(), Duration::from_secs(90 * 24 * 3600));
-            }
+            },
             _ => panic!("Expected Periodic policy"),
         }
     }

@@ -98,7 +98,7 @@ impl nebula_error::Classify for EngineError {
             | Self::EdgeEvaluationFailed { .. } => nebula_error::ErrorCategory::Validation,
             Self::NodeFailed { .. } | Self::TaskPanicked(_) => {
                 nebula_error::ErrorCategory::Internal
-            }
+            },
             Self::Cancelled => nebula_error::ErrorCategory::Cancelled,
             Self::BudgetExceeded(_) => nebula_error::ErrorCategory::Exhausted,
             Self::Runtime(e) => nebula_error::Classify::category(e),

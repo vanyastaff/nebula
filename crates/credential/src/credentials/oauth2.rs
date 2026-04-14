@@ -97,7 +97,7 @@ impl OAuth2State {
             Some(exp) => {
                 let margin = chrono::Duration::from_std(margin).unwrap_or_default();
                 Utc::now() + margin >= exp
-            }
+            },
         }
     }
 
@@ -408,13 +408,13 @@ impl Credential for OAuth2Credential {
                     state: pending,
                     interaction: InteractionRequest::Redirect { url },
                 })
-            }
+            },
             GrantType::ClientCredentials => {
                 let state =
                     oauth2_flow::exchange_client_credentials(&config, client_id, client_secret)
                         .await?;
                 Ok(ResolveResult::Complete(state))
-            }
+            },
             GrantType::DeviceCode => {
                 let device_resp = oauth2_flow::request_device_code(&config, client_id).await?;
                 let pending = OAuth2Pending {
@@ -445,7 +445,7 @@ impl Credential for OAuth2Credential {
                         expires_in: device_resp.expires_in,
                     },
                 })
-            }
+            },
         }
     }
 
@@ -468,7 +468,7 @@ impl Credential for OAuth2Credential {
                         return Err(CredentialError::InvalidInput(
                             "authorization_code flow expects UserInput::Callback".into(),
                         ));
-                    }
+                    },
                 };
 
                 let code = params
@@ -525,7 +525,7 @@ impl Credential for OAuth2Credential {
                 )
                 .await?;
                 Ok(ResolveResult::Complete(state))
-            }
+            },
             GrantType::DeviceCode => {
                 if !matches!(input, UserInput::Poll) {
                     return Err(CredentialError::InvalidInput(
@@ -549,16 +549,16 @@ impl Credential for OAuth2Credential {
                 {
                     oauth2_flow::DevicePollStatus::Ready(state) => {
                         Ok(ResolveResult::Complete(state))
-                    }
+                    },
                     oauth2_flow::DevicePollStatus::Pending
                     | oauth2_flow::DevicePollStatus::SlowDown => Ok(ResolveResult::Retry {
                         after: Duration::from_secs(interval),
                     }),
                     oauth2_flow::DevicePollStatus::Expired => {
                         Err(CredentialError::Provider("device code expired".into()))
-                    }
+                    },
                 }
-            }
+            },
             GrantType::ClientCredentials => Err(CredentialError::InvalidInput(
                 "client_credentials flow does not use continue_resolve".into(),
             )),
@@ -644,7 +644,7 @@ fn build_config(
                 .token_url(token_url)
                 .scopes(scopes.iter().cloned())
                 .build()
-        }
+        },
         GrantType::ClientCredentials => OAuth2Config::client_credentials()
             .auth_url(auth_url)
             .token_url(token_url)
@@ -831,7 +831,7 @@ mod tests {
                     msg.contains("redirect_uri"),
                     "error message must name the missing field: {msg}"
                 );
-            }
+            },
             other => panic!("expected InvalidInput, got {other:?}"),
         }
     }

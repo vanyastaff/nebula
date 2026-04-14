@@ -34,7 +34,7 @@ fn try_new_rejects_oversized_body() {
         } => {
             assert_eq!(limit_bytes, DEFAULT_MAX_BODY_BYTES as u64);
             assert_eq!(actual_bytes, (DEFAULT_MAX_BODY_BYTES + 1) as u64);
-        }
+        },
         other => panic!("expected DataLimitExceeded, got {other:?}"),
     }
 }
@@ -84,7 +84,7 @@ fn try_new_rejects_too_many_headers() {
             assert_eq!(reason, nebula_action::ValidationReason::OutOfRange);
             let detail = detail.expect("header count error carries detail");
             assert!(detail.contains("too many headers"), "detail was: {detail}");
-        }
+        },
         other => panic!("expected Validation, got {other:?}"),
     }
 }

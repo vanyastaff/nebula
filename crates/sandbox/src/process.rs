@@ -199,7 +199,7 @@ impl ProcessSandbox {
                 } else {
                     Err(ActionError::fatal(msg))
                 }
-            }
+            },
             other => Err(ActionError::fatal(format!(
                 "plugin returned unexpected envelope (expected ActionResult*, got {})",
                 envelope_kind(&other)
@@ -247,7 +247,7 @@ impl ProcessSandbox {
                 // next call respawns.
                 *guard = None;
                 Err(e)
-            }
+            },
             Err(_) => {
                 // Timeout — also invalidate; we don't know if the plugin is
                 // still processing and we can't safely reuse the connection.
@@ -257,7 +257,7 @@ impl ProcessSandbox {
                     self.binary.display(),
                     self.timeout
                 )))
-            }
+            },
         }
     }
 
@@ -402,7 +402,7 @@ impl SandboxRunner for ProcessSandbox {
                 } else {
                     Err(ActionError::fatal(msg))
                 }
-            }
+            },
             other => Err(ActionError::fatal(format!(
                 "plugin returned unexpected envelope (expected ActionResult*, got {})",
                 envelope_kind(&other)
@@ -435,7 +435,7 @@ async fn drain_plugin_stderr(stderr: tokio::process::ChildStderr, plugin_name: S
         line.clear();
         match reader.read_line(&mut line).await {
             Ok(0) | Err(_) => return,
-            Ok(_) => {}
+            Ok(_) => {},
         }
         let sanitized = sanitize_plugin_string(line.trim());
         tracing::debug!(

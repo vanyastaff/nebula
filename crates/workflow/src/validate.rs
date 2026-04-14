@@ -79,13 +79,13 @@ pub fn validate_workflow(definition: &WorkflowDefinition) -> Vec<WorkflowError> 
                 errors.push(WorkflowError::InvalidTrigger {
                     reason: "cron expression must not be empty".into(),
                 });
-            }
+            },
             TriggerDefinition::Webhook { path, .. } if !path.starts_with('/') => {
                 errors.push(WorkflowError::InvalidTrigger {
                     reason: format!("webhook path must start with '/', got: {path:?}"),
                 });
-            }
-            _ => {}
+            },
+            _ => {},
         }
     }
 
@@ -98,7 +98,7 @@ pub fn validate_workflow(definition: &WorkflowDefinition) -> Vec<WorkflowError> 
             if graph.entry_nodes().is_empty() {
                 errors.push(WorkflowError::NoEntryNodes);
             }
-        }
+        },
         Err(e) => errors.push(e),
     }
 

@@ -42,7 +42,7 @@ pub fn list(args: ActionsListArgs) {
                 })
                 .collect();
             println!("{}", serde_json::to_string_pretty(&entries).expect("json"));
-        }
+        },
         OutputFormat::Text => {
             let header = format!("{:<12} {:<10} {:<8} DESCRIPTION", "KEY", "NAME", "VER");
             println!("{header}");
@@ -58,7 +58,7 @@ pub fn list(args: ActionsListArgs) {
                     );
                 }
             }
-        }
+        },
     }
 }
 
@@ -78,7 +78,7 @@ pub fn info(args: ActionsInfoArgs) {
                     "isolation": format!("{:?}", meta.isolation_level),
                 });
                 println!("{}", serde_json::to_string_pretty(&json).expect("json"));
-            }
+            },
             OutputFormat::Text => {
                 println!("Key:         {}", meta.key.as_str());
                 println!("Name:        {}", meta.name);
@@ -93,7 +93,7 @@ pub fn info(args: ActionsInfoArgs) {
                         "(defined)"
                     }
                 );
-            }
+            },
         },
         None => {
             eprintln!("error: action '{}' not found", args.key);
@@ -105,7 +105,7 @@ pub fn info(args: ActionsInfoArgs) {
                 eprintln!("  {key}");
             }
             std::process::exit(1);
-        }
+        },
     }
 }
 
@@ -129,7 +129,7 @@ pub async fn test(args: ActionsTestArgs) {
             let names: Vec<String> = keys.iter().map(|k| k.as_str().to_owned()).collect();
             eprintln!("Available: {}", names.join(", "));
             std::process::exit(1);
-        }
+        },
     };
 
     let input: serde_json::Value = match serde_json::from_str(&args.input) {
@@ -137,7 +137,7 @@ pub async fn test(args: ActionsTestArgs) {
         Err(e) => {
             eprintln!("error: invalid --input JSON: {e}");
             std::process::exit(1);
-        }
+        },
     };
 
     // Build a minimal ActionContext.
@@ -163,7 +163,7 @@ pub async fn test(args: ActionsTestArgs) {
         other => {
             eprintln!("error: `actions test` does not yet support this action kind: {other:?}");
             std::process::exit(2);
-        }
+        },
     };
     let elapsed = start.elapsed();
 
@@ -174,7 +174,7 @@ pub async fn test(args: ActionsTestArgs) {
             eprintln!("Duration: {elapsed:?}");
             eprintln!("Error:    {e}");
             std::process::exit(2);
-        }
+        },
     }
 }
 
@@ -234,7 +234,7 @@ async fn run_stateful(
                         )),
                     });
                 }
-            }
+            },
             ActionResult::Break { reason, .. } => {
                 eprintln!(
                     "  iter {iterations:>3}: Break ({}) final={}",
@@ -247,7 +247,7 @@ async fn run_stateful(
                     kind: "stateful",
                     note: Some(format!("break: {}", format_break_reason(reason))),
                 });
-            }
+            },
             // Any other variant is a non-iterative outcome — surface and stop.
             other => {
                 return Ok(TestReport {
@@ -256,7 +256,7 @@ async fn run_stateful(
                     kind: "stateful",
                     note: Some(format!("non-iterative result: {other:?}")),
                 });
-            }
+            },
         }
     }
 }
@@ -305,7 +305,7 @@ async fn run_trigger(
         Err(_) => {
             eprintln!("  warning: trigger did not exit within grace period");
             Ok(())
-        }
+        },
     };
 
     // Best-effort stop — most adapters are no-ops here (cancellation already
@@ -383,7 +383,7 @@ fn print_report(report: &TestReport, elapsed: std::time::Duration, format: Outpu
                 "{}",
                 serde_json::to_string_pretty(&json).unwrap_or_else(|_| "{}".to_owned())
             );
-        }
+        },
         OutputFormat::Text => {
             println!("Status:     ok");
             println!("Kind:       {}", report.kind);
@@ -396,6 +396,6 @@ fn print_report(report: &TestReport, elapsed: std::time::Duration, format: Outpu
                 "Output:     {}",
                 serde_json::to_string_pretty(&report.output).unwrap_or_else(|_| "null".to_owned())
             );
-        }
+        },
     }
 }

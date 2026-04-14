@@ -172,7 +172,7 @@ fn lint_parameters(
                     level: LintLevel::Warning,
                     message: "sub-parameter inside Sections Object is missing `group`".to_owned(),
                 });
-            }
+            },
             // 12. group on parameter inside non-Sections Object
             ObjectContext::ObjectInline | ObjectContext::ObjectCollapsed
                 if param.group.is_some() =>
@@ -182,8 +182,8 @@ fn lint_parameters(
                     level: LintLevel::Warning,
                     message: "`group` is set but parent Object is not Sections mode".to_owned(),
                 });
-            }
-            _ => {}
+            },
+            _ => {},
         }
 
         // 13. required on sub-parameter of PickFields Object
@@ -231,7 +231,7 @@ fn lint_parameter_type(
             }
 
             lint_parameters(parameters, path, root_ids, diags, ctx);
-        }
+        },
 
         ParameterType::List { item, .. } => {
             let item_path = format!("{path}[]");
@@ -242,7 +242,7 @@ fn lint_parameter_type(
                 diags,
                 ObjectContext::Root,
             );
-        }
+        },
 
         ParameterType::Mode {
             variants,
@@ -317,11 +317,11 @@ fn lint_parameter_type(
                     diags,
                 );
             }
-        }
+        },
 
         ParameterType::Select { depends_on, .. } => {
             check_depends_on(depends_on, param_id, path, root_ids, diags);
-        }
+        },
 
         ParameterType::Filter {
             depends_on,
@@ -351,13 +351,13 @@ fn lint_parameter_type(
                     });
                 }
             }
-        }
+        },
 
         ParameterType::Dynamic { depends_on, .. } => {
             check_depends_on(depends_on, param_id, path, root_ids, diags);
-        }
+        },
 
-        _ => {}
+        _ => {},
     }
 }
 
@@ -517,19 +517,19 @@ fn collect_min_max(
         match rule {
             Rule::MinLength { min, .. } => {
                 *min_length = Some(min_length.map_or(*min, |prev| prev.max(*min)));
-            }
+            },
             Rule::MaxLength { max, .. } => {
                 *max_length = Some(max_length.map_or(*max, |prev| prev.min(*max)));
-            }
+            },
             Rule::MinItems { min, .. } => {
                 *min_items = Some(min_items.map_or(*min, |prev| prev.max(*min)));
-            }
+            },
             Rule::MaxItems { max, .. } => {
                 *max_items = Some(max_items.map_or(*max, |prev| prev.min(*max)));
-            }
+            },
             Rule::All { rules: sub } | Rule::Any { rules: sub } => {
                 collect_min_max(sub, min_length, max_length, min_items, max_items);
-            }
+            },
             Rule::Not { inner: sub } => {
                 collect_min_max(
                     std::slice::from_ref(sub.as_ref()),
@@ -538,8 +538,8 @@ fn collect_min_max(
                     min_items,
                     max_items,
                 );
-            }
-            _ => {}
+            },
+            _ => {},
         }
     }
 }
@@ -628,7 +628,7 @@ fn check_single_transformer(
                     transformer_name(transformer),
                 ),
             });
-        }
+        },
 
         // 17, 18. Regex checks
         Transformer::Regex { pattern, group } => {
@@ -646,7 +646,7 @@ fn check_single_transformer(
                     message: "regex capture group 0 is the whole match (likely unintended; use group >= 1)".to_owned(),
                 });
             }
-        }
+        },
 
         // 19. Chain/FirstMatch with single transformer
         Transformer::Chain { transformers } => {
@@ -667,7 +667,7 @@ fn check_single_transformer(
                     diags,
                 );
             }
-        }
+        },
 
         Transformer::FirstMatch { transformers } => {
             if transformers.len() == 1 {
@@ -687,9 +687,9 @@ fn check_single_transformer(
                     diags,
                 );
             }
-        }
+        },
 
-        _ => {}
+        _ => {},
     }
 }
 

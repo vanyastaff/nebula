@@ -61,10 +61,10 @@ impl fmt::Display for CredentialEvent {
         match self {
             Self::Refreshed { credential_id } => {
                 write!(f, "credential refreshed: {credential_id}")
-            }
+            },
             Self::Revoked { credential_id } => {
                 write!(f, "credential revoked: {credential_id}")
-            }
+            },
         }
     }
 }

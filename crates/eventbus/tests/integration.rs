@@ -527,17 +527,17 @@ async fn test_registry_clear_existing_subscribers_continue_draining() {
             match tokio::time::timeout(tokio::time::Duration::from_millis(500), sub.recv()).await {
                 Ok(Some(_event)) => {
                     received_clone.fetch_add(1, Ordering::SeqCst);
-                }
+                },
                 Ok(None) => {
                     debug!("subscriber: bus closed, exiting");
                     break;
-                }
+                },
                 Err(_) => {
                     debug!("subscriber: timeout waiting for events");
                     if sub.is_closed() {
                         break;
                     }
-                }
+                },
             }
         }
     });

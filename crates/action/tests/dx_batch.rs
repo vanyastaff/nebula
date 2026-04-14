@@ -143,7 +143,7 @@ async fn batch_handles_per_item_errors() {
             let result: BatchOutput = output.into_value().unwrap();
             assert_eq!(result.processed, vec![2, 4]);
             assert_eq!(result.errors, 1);
-        }
+        },
         other => panic!("expected Break, got {other:?}"),
     }
 }

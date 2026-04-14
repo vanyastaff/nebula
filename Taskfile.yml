@@ -64,12 +64,12 @@ tasks:
   fmt:
     desc: Format all code in place
     cmds:
-      - cargo fmt
+      - cargo +nightly fmt --all
 
   fmt:check:
     desc: Check formatting without modifying files (CI)
     cmds:
-      - cargo fmt --all -- --check
+      - cargo +nightly fmt --all -- --check
 
   clippy:
     desc: Run Clippy linter (warnings treated as errors)
@@ -291,6 +291,15 @@ tasks:
       - task: fmt:check
       - task: clippy
       - task: check
+
+  dev:check:
+    desc: Recommended local pre-PR gate (fmt, clippy, nextest, doc, deny)
+    cmds:
+      - task: fmt:check
+      - task: clippy
+      - cargo nextest run --workspace
+      - cargo test --workspace --doc
+      - task: deny
 
   # ── Clean ─────────────────────────────────────────────────────────────────
 

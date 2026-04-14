@@ -306,7 +306,7 @@ mod tests {
         match back {
             ExecutionTerminationReason::ExplicitStop { note, .. } => {
                 assert_eq!(note.as_deref(), Some("duplicate detected"));
-            }
+            },
             _ => panic!("expected ExplicitStop"),
         }
     }
@@ -324,7 +324,7 @@ mod tests {
             ExecutionTerminationReason::ExplicitFail { code, message, .. } => {
                 assert_eq!(code.as_str(), "E_VALIDATION");
                 assert_eq!(message, "field `name` is required");
-            }
+            },
             _ => panic!("expected ExplicitFail"),
         }
     }

@@ -465,7 +465,7 @@ mod tests {
                 "windows" => assert_eq!(info.os.family, OsFamily::Windows),
                 "linux" => assert_eq!(info.os.family, OsFamily::Linux),
                 "macos" => assert_eq!(info.os.family, OsFamily::MacOS),
-                _ => {} // Other platforms — just don't panic
+                _ => {}, // Other platforms — just don't panic
             }
         }
 

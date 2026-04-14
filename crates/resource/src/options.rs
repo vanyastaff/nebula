@@ -153,7 +153,7 @@ mod tests {
         match intent {
             AcquireIntent::Streaming { expected } => {
                 assert_eq!(expected, Duration::from_secs(300));
-            }
+            },
             _ => panic!("wrong variant"),
         }
     }

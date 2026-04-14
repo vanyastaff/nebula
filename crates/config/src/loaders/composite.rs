@@ -109,7 +109,7 @@ impl CompositeLoader {
                     }
 
                     last_error = Some(e);
-                }
+                },
             }
         }
 

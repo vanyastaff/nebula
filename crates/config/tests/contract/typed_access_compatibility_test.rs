@@ -38,21 +38,21 @@ async fn typed_access_contract_fixture_is_compatible() {
                     .await
                     .expect("u16 access should succeed");
                 assert_eq!(serde_json::json!(actual), case.expected);
-            }
+            },
             "string" => {
                 let actual: String = config
                     .get(&case.path)
                     .await
                     .expect("string access should succeed");
                 assert_eq!(serde_json::json!(actual), case.expected);
-            }
+            },
             "bool" => {
                 let actual: bool = config
                     .get(&case.path)
                     .await
                     .expect("bool access should succeed");
                 assert_eq!(serde_json::json!(actual), case.expected);
-            }
+            },
             other => panic!("unsupported fixture kind: {other}"),
         }
     }

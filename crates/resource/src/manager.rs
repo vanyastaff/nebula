@@ -739,7 +739,7 @@ impl Manager {
                             self.metrics.clone(),
                         )
                         .await
-                    }
+                    },
                     _ => Err(Error::permanent(format!(
                         "{}: expected Pool topology, registered as {}",
                         R::key(),
@@ -810,7 +810,7 @@ impl Manager {
                     TopologyRuntime::Resident(rt) => {
                         rt.acquire(&managed.resource, &config, auth, ctx, options)
                             .await
-                    }
+                    },
                     _ => Err(Error::permanent(format!(
                         "{}: expected Resident topology, registered as {}",
                         R::key(),
@@ -887,7 +887,7 @@ impl Manager {
                             self.metrics.clone(),
                         )
                         .await
-                    }
+                    },
                     _ => Err(Error::permanent(format!(
                         "{}: expected Service topology, registered as {}",
                         R::key(),
@@ -963,7 +963,7 @@ impl Manager {
                             self.metrics.clone(),
                         )
                         .await
-                    }
+                    },
                     _ => Err(Error::permanent(format!(
                         "{}: expected Transport topology, registered as {}",
                         R::key(),
@@ -1038,7 +1038,7 @@ impl Manager {
                             self.metrics.clone(),
                         )
                         .await
-                    }
+                    },
                     _ => Err(Error::permanent(format!(
                         "{}: expected Exclusive topology, registered as {}",
                         R::key(),
@@ -1121,7 +1121,7 @@ impl Manager {
                     self.metrics.clone(),
                 )
                 .await
-            }
+            },
             _ => Err(Error::permanent(format!(
                 "{}: expected Pool topology for try_acquire, registered as {}",
                 R::key(),
@@ -1223,7 +1223,7 @@ impl Manager {
             TopologyRuntime::Pool(rt) => {
                 let count = rt.warmup(&managed.resource, &config, &auth, ctx).await;
                 Ok(count)
-            }
+            },
             _ => Err(Error::permanent(format!(
                 "{}: warmup_pool requires Pool topology, registered as {}",
                 R::key(),
@@ -1364,7 +1364,7 @@ impl Manager {
         // but records the outstanding count in the report.
         let mut outstanding_after_drain: u64 = 0;
         match self.wait_for_drain(config.drain_timeout).await {
-            Ok(()) => {}
+            Ok(()) => {},
             Err(DrainTimeoutError { outstanding }) => match config.on_drain_timeout {
                 DrainTimeoutPolicy::Abort => {
                     tracing::warn!(
@@ -1374,7 +1374,7 @@ impl Manager {
                     );
                     self.shutting_down.store(false, AtomicOrdering::Release);
                     return Err(ShutdownError::DrainTimeout { outstanding });
-                }
+                },
                 DrainTimeoutPolicy::Force => {
                     tracing::warn!(
                         outstanding,
@@ -1382,7 +1382,7 @@ impl Manager {
                          clearing registry anyway"
                     );
                     outstanding_after_drain = outstanding;
-                }
+                },
             },
         }
 
@@ -1563,7 +1563,7 @@ impl Manager {
                     key: R::key(),
                     duration: started.elapsed(),
                 });
-            }
+            },
             Err(e) => {
                 if let Some(m) = &self.metrics {
                     m.record_acquire_error();
@@ -1572,7 +1572,7 @@ impl Manager {
                     key: R::key(),
                     error: e.to_string(),
                 });
-            }
+            },
         }
     }
 }
@@ -1632,10 +1632,10 @@ fn admit_through_gate(gate: &Option<Arc<RecoveryGate>>) -> Result<GateAdmission,
                 Err(TryBeginError::RetryLater { retry_at }) => {
                     let wait = retry_at.saturating_duration_since(Instant::now());
                     Err(Error::exhausted("backend recovering", Some(wait)))
-                }
+                },
                 Err(TryBeginError::PermanentlyFailed { message }) => Err(Error::permanent(message)),
             }
-        }
+        },
         GateState::PermanentlyFailed { message } => Err(Error::permanent(message)),
     }
 }
@@ -1648,19 +1648,19 @@ fn settle_gate_admission<T>(admission: GateAdmission, result: &Result<T, Error>)
         (GateAdmission::Probe(ticket), Ok(_)) => ticket.resolve(),
         (GateAdmission::Probe(ticket), Err(e)) if e.is_retryable() => {
             ticket.fail_transient(e.to_string());
-        }
+        },
         (GateAdmission::Probe(ticket), Err(_e)) => {
             // Non-retryable errors are not backend-health signals; keep the
             // gate open to avoid permanently bricking acquires.
             ticket.resolve();
-        }
+        },
         (GateAdmission::OpenGated(gate), Err(e)) if e.is_retryable() => {
             // First retryable failure on healthy path opens the backoff gate.
             if let Ok(ticket) = gate.try_begin() {
                 ticket.fail_transient(e.to_string());
             }
-        }
-        (GateAdmission::OpenGated(_), _) | (GateAdmission::Open, _) => {}
+        },
+        (GateAdmission::OpenGated(_), _) | (GateAdmission::Open, _) => {},
     }
 }
 
@@ -1690,7 +1690,7 @@ where
             | nebula_resilience::CallError::RetriesExhausted { last: e, .. } => e,
             nebula_resilience::CallError::Timeout(d) => {
                 Error::transient(format!("acquire timed out after {d:?}"))
-            }
+            },
             other => Error::transient(other.to_string()),
         })
 }

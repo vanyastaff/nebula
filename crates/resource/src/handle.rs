@@ -149,10 +149,10 @@ impl<R: Resource> ResourceHandle<R> {
     /// Marks the lease as tainted — it will be destroyed instead of recycled.
     pub fn taint(&mut self) {
         match &mut self.inner {
-            HandleInner::Owned(_) => {} // no-op for owned
+            HandleInner::Owned(_) => {}, // no-op for owned
             HandleInner::Guarded { tainted, .. } | HandleInner::Shared { tainted, .. } => {
                 *tainted = true;
-            }
+            },
         }
     }
 
@@ -180,7 +180,7 @@ impl<R: Resource> ResourceHandle<R> {
                     HandleInner::Owned(lease) => Some(lease),
                     _ => unreachable!(),
                 }
-            }
+            },
             HandleInner::Guarded { .. } => {
                 let inner = std::mem::replace(
                     &mut self.inner,
@@ -199,7 +199,7 @@ impl<R: Resource> ResourceHandle<R> {
                     } => Some(lease),
                     _ => None,
                 }
-            }
+            },
             HandleInner::Shared { .. } => None,
         }
     }
@@ -210,7 +210,7 @@ impl<R: Resource> ResourceHandle<R> {
             HandleInner::Owned(_) => std::time::Duration::ZERO,
             HandleInner::Guarded { acquired_at, .. } | HandleInner::Shared { acquired_at, .. } => {
                 acquired_at.elapsed()
-            }
+            },
         }
     }
 
@@ -230,7 +230,7 @@ impl<R: Resource> ResourceHandle<R> {
             HandleInner::Owned(_) => None,
             HandleInner::Guarded { generation, .. } | HandleInner::Shared { generation, .. } => {
                 Some(*generation)
-            }
+            },
         }
     }
 }
@@ -246,7 +246,7 @@ impl<R: Resource> Deref for ResourceHandle<R> {
             } => lease,
             HandleInner::Guarded { value: None, .. } => {
                 panic!("ResourceHandle accessed after detach")
-            }
+            },
             HandleInner::Shared { value, .. } => value,
         }
     }
@@ -255,7 +255,7 @@ impl<R: Resource> Deref for ResourceHandle<R> {
 impl<R: Resource> Drop for ResourceHandle<R> {
     fn drop(&mut self) {
         match &mut self.inner {
-            HandleInner::Owned(_) => {} // nothing to do
+            HandleInner::Owned(_) => {}, // nothing to do
             HandleInner::Guarded {
                 value,
                 on_release,
@@ -284,7 +284,7 @@ impl<R: Resource> Drop for ResourceHandle<R> {
                     }
                 }
                 // _permit_guard drops here, returning the slot to the semaphore.
-            }
+            },
             HandleInner::Shared {
                 on_release,
                 tainted,
@@ -303,7 +303,7 @@ impl<R: Resource> Drop for ResourceHandle<R> {
                         );
                     }
                 }
-            }
+            },
         }
 
         // Drain tracking: decrement active count and notify shutdown waiters.

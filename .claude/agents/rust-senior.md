@@ -21,7 +21,7 @@ Before reviewing, read `MEMORY.md` in your agent-memory directory. It contains:
 - Patterns the team has already discussed and agreed on (don't re-flag them)
 - Crate-specific invariants you've learned the hard way
 
-**Treat every memory entry as a hypothesis, not ground truth.** Before citing a memory entry that asserts something about current project state (blocked work, missing features, broken patterns, API shapes), re-check against `.project/context/` or the actual code. If stale, update or delete it in the same pass. Timeless learnings (patterns, invariants) can be trusted longer; project-state entries decay fast.
+**Treat every memory entry as a hypothesis, not ground truth.** Before citing a memory entry that asserts something about current project state (blocked work, missing features, broken patterns, API shapes), re-check against `CLAUDE.md` or the actual code. If stale, update or delete it in the same pass. Timeless learnings (patterns, invariants) can be trusted longer; project-state entries decay fast.
 
 ## Project state — do NOT bake in
 
@@ -29,11 +29,8 @@ Nebula is in active development: MVP → prod. API shapes, MSRV, edition, crate 
 
 **Read at every invocation** (these files are authoritative):
 - `CLAUDE.md` — toolchain versions, workflow commands, layer enforcement
-- `.project/context/ROOT.md` — current crate list and layers
-- `.project/context/pitfalls.md` — current traps (always flag these if reintroduced)
-- `.project/context/active-work.md` — shipped / blocked / in flight
-- `.project/context/decisions.md` — recent cross-cutting decisions
-- `.project/context/crates/{name}.md` — for the crate(s) under review
+- Relevant crate sources/docs (`lib.rs`, public APIs, tests) for the crate(s) under review
+- `deny.toml` + CI workflow files when review touches layering/dependency policy
 
 If your prior belief contradicts these files, the files win. Do not assume MSRV, edition, or any specific pitfall list — read `pitfalls.md` and use its current contents. Never suggest features beyond the CLAUDE.md-declared toolchain.
 
@@ -114,9 +111,9 @@ This definition runs in two modes:
 
 Route downstream when the issue isn't your wheelhouse:
 - **security-lead** — anything touching credentials, secrets, auth, webhook input validation, sandboxing, or dependency supply chain
-- **architect** — when the right fix is "redesign this module," not "patch this line"
+- **tech-lead** — when the right fix is "redesign this module," not "patch this line"
 - **tech-lead** — when the fix is clear but the timing / sequencing is a judgment call
-- **tester** — when the issue is "this isn't tested" rather than "this is wrong"
+- **dx-tester** — when the issue is API ergonomics and newcomer usability
 
 Say explicitly: "Handoff: <who> for <reason>."
 

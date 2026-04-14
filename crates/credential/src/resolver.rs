@@ -223,7 +223,7 @@ impl<S: CredentialStore> CredentialResolver<S> {
                 }
                 // complete() and notify_waiters() called by guard on drop
                 result
-            }
+            },
             RefreshAttempt::Waiter(notify) => {
                 // Race note: `Notify::notify_waiters()` only wakes waiters that
                 // are *already registered* at the moment it fires. If the
@@ -260,7 +260,7 @@ impl<S: CredentialStore> CredentialResolver<S> {
                 // normal success path (winner wrote a fresh value) and
                 // the race-recovery path (wakeup was lost).
                 self.resolve::<C>(credential_id).await
-            }
+            },
         }
     }
 
@@ -384,7 +384,7 @@ impl<S: CredentialStore> CredentialResolver<S> {
                             }
                             let scheme = C::project(&state);
                             return Ok(CredentialHandle::new(scheme, credential_id));
-                        }
+                        },
                         Err(StoreError::VersionConflict { actual, .. }) => {
                             tracing::warn!(
                                 credential_id,
@@ -394,7 +394,7 @@ impl<S: CredentialStore> CredentialResolver<S> {
                             );
                             current_version = actual;
                             continue;
-                        }
+                        },
                         Err(e) => return Err(ResolveError::Store(e)),
                     }
                 }
@@ -404,12 +404,12 @@ impl<S: CredentialStore> CredentialResolver<S> {
                     expected: current_version,
                     actual: current_version,
                 }))
-            }
+            },
             RefreshOutcome::NotSupported => {
                 // Not refreshable -- return current state anyway
                 let scheme = C::project(&state);
                 Ok(CredentialHandle::new(scheme, credential_id))
-            }
+            },
             RefreshOutcome::ReauthRequired => Err(ResolveError::ReauthRequired {
                 credential_id: credential_id.to_string(),
             }),
@@ -758,7 +758,7 @@ mod tests {
                     reason.contains("circuit") || reason.contains("expired"),
                     "error should explain the circuit-breaker-and-expired cause: {reason}"
                 );
-            }
+            },
             other => panic!(
                 "expected ResolveError::Refresh for an expired token under an open circuit, got: {other:?}"
             ),

@@ -188,7 +188,7 @@ impl TriggerEvent {
                     payload_type: self.payload_type,
                     payload_type_name: self.payload_type_name,
                 })
-            }
+            },
         }
     }
 }

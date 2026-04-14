@@ -225,18 +225,18 @@ impl Gate {
                     permit.forget();
                     self.inner.sem.close();
                     return;
-                }
+                },
                 Ok(Err(_)) => {
                     // Semaphore was closed externally — already drained.
                     return;
-                }
+                },
                 Err(_elapsed) => {
                     // Still waiting after 1 s — log a warning and retry.
                     warn!(
                         "Gate::close() is still waiting for active guards to exit \
                          (outstanding work may be stalling shutdown)"
                     );
-                }
+                },
             }
         }
     }

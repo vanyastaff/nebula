@@ -8,7 +8,7 @@ Expression and template engine for dynamic workflow data transformation.
   - expression parsing, AST evaluation, and built-in function registry
   - template rendering with `{{ }}` expressions and whitespace control
   - evaluation context for node/execution/workflow/input variables
-  - optional parsing/evaluation caches via `nebula-memory`
+  - optional parsing/evaluation caches via built-in `nebula-expression` caches
 - Out of scope:
   - workflow orchestration and scheduling
   - storage of execution results

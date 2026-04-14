@@ -61,7 +61,7 @@ impl CredentialStore for InMemoryStore {
                 credential.updated_at = credential.created_at;
                 data.insert(credential.id.clone(), credential.clone());
                 Ok(credential)
-            }
+            },
             PutMode::Overwrite => {
                 let version = data
                     .get(&credential.id)
@@ -73,7 +73,7 @@ impl CredentialStore for InMemoryStore {
                 }
                 data.insert(credential.id.clone(), credential.clone());
                 Ok(credential)
-            }
+            },
             PutMode::CompareAndSwap { expected_version } => {
                 let Some(existing) = data.get(&credential.id) else {
                     return Err(StoreError::NotFound {
@@ -91,7 +91,7 @@ impl CredentialStore for InMemoryStore {
                 credential.updated_at = chrono::Utc::now();
                 data.insert(credential.id.clone(), credential.clone());
                 Ok(credential)
-            }
+            },
         }
     }
 

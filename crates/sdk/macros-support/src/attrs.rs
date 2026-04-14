@@ -93,7 +93,7 @@ impl AttrArgs {
                     other,
                     format!("expected a type for `{key}`"),
                 ));
-            }
+            },
         };
 
         Ok(Some(ty))
@@ -148,7 +148,7 @@ impl AttrArgs {
                     })
                     .collect();
                 Some(strings)
-            }
+            },
             _ => None,
         })
     }
@@ -199,7 +199,7 @@ impl AttrArgs {
                         other,
                         format!("expected a type in `{key}` list"),
                     ));
-                }
+                },
             };
             types.push(ty);
         }
@@ -228,7 +228,7 @@ pub fn parse_attr(attr: &Attribute, expected: &str) -> Result<Option<AttrArgs>> 
         Meta::List(list) => {
             let args = syn::parse2::<AttrArgsParser>(list.tokens.clone())?;
             Ok(Some(args.0))
-        }
+        },
         Meta::NameValue(nv) => Err(diag::error_spanned(
             nv,
             format!("#[{expected}] must be #[{expected}(...)] or #[{expected}] (not name-value)"),

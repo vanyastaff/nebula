@@ -1,9 +1,9 @@
 # Nebula
 
-[![CI](https://github.com/vanyastaff/nebula/actions/workflows/ci.yml/badge.svg)](https://github.com/vanyastaff/nebula/actions/workflows/ci.yml)
-[![Rust](https://img.shields.io/badge/rust-1.94%2B-orange.svg)](https://www.rust-lang.org/)
-[![License](https://img.shields.io/badge/license-MIT%2FApache--2.0-blue.svg)](LICENSE)
-[![CodSpeed](https://img.shields.io/endpoint?url=https://codspeed.io/badge.json)](https://codspeed.io/vanyastaff/nebula)
+[CI](https://github.com/vanyastaff/nebula/actions/workflows/ci.yml)
+[Rust](https://www.rust-lang.org/)
+[License](LICENSE)
+[CodSpeed](https://codspeed.io/vanyastaff/nebula)
 
 **Modular, type-safe workflow automation engine in Rust.**
 
@@ -23,7 +23,7 @@ Most automation platforms are runtime-interpreted, dynamically typed, and treat 
 
 **Resilience is not optional.** Retry with backoff, circuit breakers, rate limiting, hedged requests, and bulkhead isolation are composable building blocks in `nebula-resilience`. Every pattern returns `CallError<E>` with enough context to decide what to do next. These aren't wrappers around another library &mdash; they're purpose-built, audited (153 tests, 14 integration tests, 7 benchmark suites), and designed for the engine's concurrency model.
 
-**Modularity is enforced, not aspirational.** The 24-crate workspace has strict one-way layer dependencies checked by `cargo deny` on every CI run. Cross-crate communication goes through `EventBus`, not direct imports. You can use `nebula-credential` without touching `nebula-engine`. You can embed `nebula-resilience` in a project that has nothing to do with workflows.
+**Modularity is a hard requirement.** The workspace follows one-way layer dependencies with selected checks enforced by `cargo deny` in CI and the rest enforced in review. Cross-crate communication goes through `EventBus`, not direct imports. You can use `nebula-credential` without touching `nebula-engine`. You can embed `nebula-resilience` in a project that has nothing to do with workflows.
 
 ## Design Principles
 
@@ -36,7 +36,7 @@ Most automation platforms are runtime-interpreted, dynamically typed, and treat 
 ## Architecture
 
 ```
-API              api, webhook
+API              api (webhook is a module in `nebula-api`)
 Exec             engine, runtime, storage, sdk
 Business         credential, resource, action, plugin
 Core             core, validator, parameter, expression, workflow, execution
@@ -60,32 +60,33 @@ Trigger (webhook / cron / event)
 
 ## Crate Map
 
-| Layer | Crate | Purpose |
-|-------|-------|---------|
-| **Core** | `core` | IDs, domain keys, `AuthScheme` trait, `AuthPattern`, `SecretString` |
-| | `validator` | Schema validation |
-| | `parameter` | Typed parameter definitions, `#[derive(Parameters)]` |
-| | `expression` | Template expression engine |
-| | `workflow` | Workflow definition, DAG structure |
-| | `execution` | Execution state machine |
-| **Business** | `credential` | Encrypted storage, key rotation, 12 universal auth schemes, `#[derive(AuthScheme)]` |
-| | `resource` | External service connections, typed credential refs |
-| | `action` | Action trait, context-based DI |
-| | `plugin` | Plugin loading and registry |
-| **Exec** | `engine` | DAG resolution, orchestration |
-| | `runtime` | Node scheduling, isolation routing, blob spill |
-| | `storage` | Persistence abstraction (in-memory, Postgres) |
-| | `sdk` | Plugin author SDK and prelude |
-| **API** | `api` | REST + WebSocket server |
-| | `webhook` | Inbound webhook handling, HMAC verification |
-| **Cross-cutting** | `error` | `NebulaError<E>`, `Classify` trait, derive macro |
-| | `resilience` | Retry, circuit breaker, rate limiter, hedge, bulkhead |
-| | `log` | Structured logging infrastructure |
-| | `config` | Configuration loading |
-| | `eventbus` | In-memory typed pub/sub for cross-crate signals |
-| | `telemetry` | Metrics registry |
-| | `metrics` | Prometheus export |
-| | `system` | Process monitoring, system load tracking |
+
+| Layer             | Crate        | Purpose                                                                             |
+| ----------------- | ------------ | ----------------------------------------------------------------------------------- |
+| **Core**          | `core`       | IDs, domain keys, `AuthScheme` trait, `AuthPattern`, `SecretString`                 |
+|                   | `validator`  | Schema validation                                                                   |
+|                   | `parameter`  | Typed parameter definitions, `#[derive(Parameters)]`                                |
+|                   | `expression` | Template expression engine                                                          |
+|                   | `workflow`   | Workflow definition, DAG structure                                                  |
+|                   | `execution`  | Execution state machine                                                             |
+| **Business**      | `credential` | Encrypted storage, key rotation, 12 universal auth schemes, `#[derive(AuthScheme)]` |
+|                   | `resource`   | External service connections, typed credential refs                                 |
+|                   | `action`     | Action trait, context-based DI                                                      |
+|                   | `plugin`     | Plugin loading and registry                                                         |
+| **Exec**          | `engine`     | DAG resolution, orchestration                                                       |
+|                   | `runtime`    | Node scheduling, isolation routing, blob spill                                      |
+|                   | `storage`    | Persistence abstraction (in-memory, Postgres)                                       |
+|                   | `sdk`        | Plugin author SDK and prelude                                                       |
+| **API**           | `api`        | REST server, webhook endpoints, middleware                                          |
+| **Cross-cutting** | `error`      | `NebulaError<E>`, `Classify` trait, derive macro                                    |
+|                   | `resilience` | Retry, circuit breaker, rate limiter, hedge, bulkhead                               |
+|                   | `log`        | Structured logging infrastructure                                                   |
+|                   | `config`     | Configuration loading                                                               |
+|                   | `eventbus`   | In-memory typed pub/sub for cross-crate signals                                     |
+|                   | `telemetry`  | Metrics registry                                                                    |
+|                   | `metrics`    | Prometheus export                                                                   |
+|                   | `system`     | Process monitoring, system load tracking                                            |
+
 
 **Desktop app**: `apps/desktop/` &mdash; Tauri shell with React + TypeScript frontend.
 
@@ -95,7 +96,7 @@ The credential subsystem is one of Nebula's most developed areas. Highlights:
 
 - **12 universal auth patterns** covering real-world auth: `SecretToken`, `IdentityPassword`, `OAuth2Token`, `KeyPair`, `Certificate`, `SigningKey`, `FederatedAssertion`, `ChallengeSecret`, `OtpSeed`, `ConnectionUri`, `InstanceBinding`, `SharedKey`
 - **Open `AuthScheme` trait** &mdash; plugins add custom schemes without modifying core
-- **`#[derive(AuthScheme)]`** generates trait impls from a single attribute
+- `#[derive(AuthScheme)]` generates trait impls from a single attribute
 - **Layered storage**: encryption (AES-256-GCM with key rotation) -> cache (moka) -> audit trail -> scope isolation
 - **Interactive flows**: OAuth2 with PKCE, multi-step auth, challenge-response &mdash; all via a state machine (`resolve` / `continue_resolve` / `refresh`)
 - **Rotation subsystem** (feature-gated): periodic, before-expiry, scheduled, manual &mdash; with blue-green and grace period support
@@ -106,10 +107,10 @@ The credential subsystem is one of Nebula's most developed areas. Highlights:
 git clone https://github.com/vanyastaff/nebula.git
 cd nebula
 cargo build
-cargo test --workspace
+cargo nextest run --workspace
 ```
 
-Requires **Rust 1.94+** (edition 2024). Uses [cargo-nextest](https://nexte.st/) for faster test runs if installed.
+Requires **Rust 1.94+** (edition 2024). Uses [cargo-nextest](https://nexte.st/) for test runs.
 
 ### Local Infrastructure
 
@@ -123,17 +124,27 @@ task desktop:dev    # Launch Tauri desktop app in dev mode
 ### CI Locally
 
 ```bash
-cargo fmt && cargo clippy --workspace -- -D warnings && cargo test --workspace
+task dev:check
 ```
+
+### Optional Local Hooks
+
+```bash
+cargo install --locked lefthook
+lefthook install
+```
+
+This enables local hooks from `lefthook.yml`: fast checks on `pre-commit` and full `nextest` on `pre-push`.
 
 ## Documentation
 
-| Doc | Description |
-|-----|-------------|
-| [Architecture](docs/ARCHITECTURE.md) | Layer system, crate map, data flow |
-| [Project Status](docs/PROJECT_STATUS.md) | What's stable, what's in progress |
-| [Roadmap](docs/ROADMAP.md) | Phases, priorities, dependencies |
-| [Contributing](docs/contributing.md) | Setup, standards, PR process |
+
+| Doc                                | Description                                                 |
+| ---------------------------------- | ----------------------------------------------------------- |
+| [CLAUDE.md](CLAUDE.md)             | Canonical project conventions, commands, architecture notes |
+| [CONTRIBUTING.md](CONTRIBUTING.md) | Setup and contribution flow                                 |
+| [docs/plans/](docs/plans/)         | Active implementation plans and archived plans              |
+
 
 ## Status
 

@@ -130,7 +130,7 @@ impl Template {
                     } else {
                         result.push_str(content);
                     }
-                }
+                },
                 TemplatePart::Expression {
                     content,
                     position,
@@ -164,7 +164,7 @@ impl Template {
                             if *strip_right {
                                 strip_next_leading = true;
                             }
-                        }
+                        },
                         Err(e) => {
                             // Create beautiful error message with source context
                             let formatted_error = format_template_error(
@@ -174,9 +174,9 @@ impl Template {
                                 Some(content.trim()),
                             );
                             return Err(ExpressionError::expression_eval_error(formatted_error));
-                        }
+                        },
                     }
-                }
+                },
             }
         }
 
@@ -391,7 +391,7 @@ impl MaybeTemplate {
             Self::Template(template_str) => {
                 let template = Template::new(template_str)?;
                 template.render(engine, context)
-            }
+            },
             Self::Resolved(value) => Ok(value.clone()),
         }
     }

@@ -39,7 +39,7 @@ pub fn parse_workflow(
     match ext {
         "yaml" | "yml" => {
             serde_yaml::from_str(content).with_context(|| "failed to parse YAML workflow")
-        }
+        },
         "json" => serde_json::from_str(content).with_context(|| "failed to parse JSON workflow"),
         _ => serde_yaml::from_str::<nebula_workflow::WorkflowDefinition>(content)
             .or_else(|_| serde_json::from_str(content))
@@ -60,7 +60,7 @@ pub fn parse_workflow_lenient(
     let mut value: serde_json::Value = match ext {
         "yaml" | "yml" => {
             serde_yaml::from_str(content).with_context(|| "failed to parse YAML workflow")?
-        }
+        },
         "json" => serde_json::from_str(content).with_context(|| "failed to parse JSON workflow")?,
         _ => serde_yaml::from_str::<serde_json::Value>(content)
             .or_else(|_| serde_json::from_str(content))

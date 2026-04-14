@@ -205,31 +205,31 @@ impl CoreError {
                 ..
             } => {
                 format!("{} '{}' not found", resource_type, resource_id)
-            }
+            },
             CoreError::AlreadyExists {
                 resource_type,
                 resource_id,
                 ..
             } => {
                 format!("{} '{}' already exists", resource_type, resource_id)
-            }
+            },
             CoreError::PermissionDenied {
                 operation,
                 resource,
                 ..
             } => {
                 format!("You don't have permission to {} {}", operation, resource)
-            }
+            },
             CoreError::Authentication { reason, .. } => {
                 format!("Authentication failed: {}", reason)
-            }
+            },
             CoreError::Authorization {
                 operation,
                 resource,
                 ..
             } => {
                 format!("You don't have permission to {} {}", operation, resource)
-            }
+            },
             CoreError::InvalidInput { message, .. } => format!("Invalid input: {}", message),
             CoreError::Serialization { .. } => "Failed to process data".to_string(),
             CoreError::Deserialization { .. } => "Failed to process data".to_string(),
@@ -237,7 +237,7 @@ impl CoreError {
             CoreError::ResourceExhausted { resource, .. } => format!("{} limit reached", resource),
             CoreError::Internal { .. } => {
                 "An internal error occurred. Please try again later.".to_string()
-            }
+            },
             CoreError::Configuration { message, .. } => format!("Configuration error: {}", message),
             CoreError::InvalidState {
                 current_state,
@@ -245,7 +245,7 @@ impl CoreError {
                 ..
             } => {
                 format!("Cannot {} in current state: {}", operation, current_state)
-            }
+            },
             CoreError::Dependency { dependency, .. } => format!("{} is not available", dependency),
         }
     }
@@ -399,20 +399,20 @@ impl nebula_error::Classify for CoreError {
         match self {
             Self::Validation { .. } | Self::InvalidInput { .. } | Self::Configuration { .. } => {
                 nebula_error::ErrorCategory::Validation
-            }
+            },
             Self::NotFound { .. } => nebula_error::ErrorCategory::NotFound,
             Self::AlreadyExists { .. } | Self::InvalidState { .. } => {
                 nebula_error::ErrorCategory::Conflict
-            }
+            },
             Self::PermissionDenied { .. } | Self::Authorization { .. } => {
                 nebula_error::ErrorCategory::Authorization
-            }
+            },
             Self::Authentication { .. } => nebula_error::ErrorCategory::Authentication,
             Self::Timeout { .. } => nebula_error::ErrorCategory::Timeout,
             Self::ResourceExhausted { .. } => nebula_error::ErrorCategory::Exhausted,
             Self::Internal { .. } | Self::Serialization { .. } | Self::Deserialization { .. } => {
                 nebula_error::ErrorCategory::Internal
-            }
+            },
             Self::Dependency { .. } => nebula_error::ErrorCategory::External,
         }
     }

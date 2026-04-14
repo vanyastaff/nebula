@@ -157,7 +157,7 @@ impl ReleaseQueue {
         let factory: TaskFactory = Box::new(factory);
 
         match self.senders[idx].try_send(factory) {
-            Ok(()) => {}
+            Ok(()) => {},
             Err(mpsc::error::TrySendError::Full(factory)) => {
                 // Primary is full — try bounded fallback.
                 let count = self.fallback_count.fetch_add(1, Ordering::Relaxed) + 1;
@@ -168,7 +168,7 @@ impl ReleaseQueue {
                     );
                 }
                 match self.fallback_tx.try_send(factory) {
-                    Ok(()) => {}
+                    Ok(()) => {},
                     Err(mpsc::error::TrySendError::Full(_)) => {
                         let dropped = self.dropped_count.fetch_add(1, Ordering::Relaxed) + 1;
                         if dropped.is_power_of_two() {
@@ -178,18 +178,18 @@ impl ReleaseQueue {
                                  task (resource may leak)"
                             );
                         }
-                    }
+                    },
                     Err(mpsc::error::TrySendError::Closed(_)) => {
                         tracing::warn!(
                             "release queue fallback channel closed, \
                              dropping release task"
                         );
-                    }
+                    },
                 }
-            }
+            },
             Err(mpsc::error::TrySendError::Closed(_)) => {
                 tracing::warn!("release queue primary worker channel closed");
-            }
+            },
         }
     }
 

@@ -129,7 +129,7 @@ impl TaskQueue for MemoryQueue {
                 let payload = item.payload.clone();
                 self.in_flight.lock().await.insert(id.clone(), item);
                 Ok(Some((id, payload)))
-            }
+            },
             Ok(None) => Ok(None),
             Err(_) => Ok(None),
         }

@@ -3541,7 +3541,7 @@ async fn graceful_shutdown_abort_on_drain_timeout_preserves_registry() {
                 outstanding >= 1,
                 "expected at least one outstanding handle, got {outstanding}"
             );
-        }
+        },
         other => panic!("expected DrainTimeout, got {other:?}"),
     }
 

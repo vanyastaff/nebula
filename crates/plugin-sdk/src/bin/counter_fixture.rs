@@ -63,7 +63,7 @@ impl PluginHandler for CounterPlugin {
                     "added": amount,
                     "previous": previous,
                 }))
-            }
+            },
             "current" => Ok(json!({
                 "total": self.total.load(Ordering::Relaxed),
             })),
@@ -73,17 +73,17 @@ impl PluginHandler for CounterPlugin {
                     "total": 0,
                     "reset": true,
                 }))
-            }
+            },
             // Probe actions for slice 1c validation — exercise edge cases
             // in the long-lived plugin lifecycle.
             "panic" => {
                 panic!("boom from counter plugin (probe)");
-            }
+            },
             "slow" => {
                 let millis = input.get("millis").and_then(|v| v.as_u64()).unwrap_or(2000);
                 tokio::time::sleep(Duration::from_millis(millis)).await;
                 Ok(json!({ "slept_ms": millis }))
-            }
+            },
             "big" => {
                 let kb = input.get("kb").and_then(|v| v.as_u64()).unwrap_or(100);
                 let len = (kb as usize) * 1024;
@@ -92,7 +92,7 @@ impl PluginHandler for CounterPlugin {
                     "size_bytes": len,
                     "data": data,
                 }))
-            }
+            },
             other => Err(PluginError::fatal(
                 "UNKNOWN_ACTION",
                 format!("counter plugin does not implement action '{other}'"),

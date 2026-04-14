@@ -30,13 +30,13 @@ fn expand(input: DeriveInput) -> syn::Result<proc_macro2::TokenStream> {
         .unwrap_or_else(|| syn::parse_str("Self").expect("valid Self type"));
 
     match &input.data {
-        Data::Struct(_) => {}
+        Data::Struct(_) => {},
         _ => {
             return Err(syn::Error::new(
                 input.ident.span(),
                 "Resource derive can only be used on structs",
             ));
-        }
+        },
     };
 
     let expanded = quote! {

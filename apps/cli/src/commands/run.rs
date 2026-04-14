@@ -159,7 +159,7 @@ fn load_input(args: &RunArgs) -> anyhow::Result<serde_json::Value> {
                     .with_context(|| format!("failed to read {}", path.display()))?
             };
             serde_json::from_str(&content).context("failed to parse input file as JSON")
-        }
+        },
         None => serde_json::from_str(&args.input).context("failed to parse --input as JSON"),
     }
 }
@@ -259,7 +259,7 @@ pub fn apply_overrides(
                     "unknown node \"{node_name}\" in --set.{hint}\nAvailable: {}",
                     node_names.join(", ")
                 );
-            }
+            },
         };
 
         // Parse value as JSON, fall back to string.
@@ -339,7 +339,7 @@ fn dry_run(
                 "{}",
                 serde_json::to_string_pretty(&json).unwrap_or_else(|_| "{}".to_owned())
             );
-        }
+        },
         OutputFormat::Text => {
             println!("Execution Plan (dry-run)");
             println!("  Nodes:        {}", plan.total_nodes);
@@ -361,7 +361,7 @@ fn dry_run(
                     println!("    {node_id}  {name}");
                 }
             }
-        }
+        },
     }
 
     Ok(ExitCode::SUCCESS)
@@ -381,17 +381,17 @@ fn print_stream_event(event: &nebula_engine::ExecutionEvent) {
         } => eprintln!("  ✓ {node_id} completed ({elapsed:?})"),
         ExecutionEvent::NodeFailed { node_id, error, .. } => {
             eprintln!("  ✗ {node_id} failed: {error}")
-        }
+        },
         ExecutionEvent::NodeSkipped { node_id, .. } => {
             eprintln!("  ⊘ {node_id} skipped");
-        }
+        },
         ExecutionEvent::ExecutionFinished {
             success, elapsed, ..
         } => {
             let status = if *success { "completed" } else { "failed" };
             eprintln!("  ═ Execution {status} ({elapsed:?})");
-        }
-        _ => {}
+        },
+        _ => {},
     }
 }
 
@@ -462,7 +462,7 @@ async fn run_tui_live(
                     elapsed: std::time::Duration::ZERO,
                     error,
                 }
-            }
+            },
             nebula_engine::ExecutionEvent::NodeSkipped { node_id, .. } => TuiEvent::Log {
                 level: LogLevel::Info,
                 message: format!("node {node_id} skipped"),

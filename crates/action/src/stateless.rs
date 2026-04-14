@@ -451,7 +451,7 @@ mod tests {
                     output.as_value(),
                     Some(&serde_json::json!({"hello":"world"}))
                 );
-            }
+            },
             other => panic!("expected Success, got {other:?}"),
         }
     }
@@ -484,7 +484,7 @@ mod tests {
         match result {
             ActionResult::Success { output } => {
                 assert_eq!(output.as_value(), Some(&serde_json::json!({"ctx":"aware"})));
-            }
+            },
             other => panic!("expected Success, got {other:?}"),
         }
     }
@@ -556,7 +556,7 @@ mod tests {
                 let v = output.into_value().unwrap();
                 let out: AddOutput = serde_json::from_value(v).unwrap();
                 assert_eq!(out.sum, 10);
-            }
+            },
             _ => panic!("expected Success"),
         }
     }
@@ -602,7 +602,7 @@ mod tests {
                 let v = output.into_value().unwrap();
                 let out: AddOutput = serde_json::from_value(v).unwrap();
                 assert_eq!(out.sum, 8);
-            }
+            },
             _ => panic!("expected Success"),
         }
     }

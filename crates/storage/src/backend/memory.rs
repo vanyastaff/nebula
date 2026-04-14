@@ -96,7 +96,7 @@ where
             Some(bytes) => {
                 let value = serde_json::from_slice(&bytes)?;
                 Ok(Some(value))
-            }
+            },
         }
     }
 

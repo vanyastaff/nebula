@@ -1,148 +1,107 @@
-# CLAUDE.md
+# [CLAUDE.md](http://CLAUDE.md)
 
-This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+Operational guidance for coding agents in this repository.
 
----
+## Project Snapshot
 
-## Project Overview
+Nebula is a modular, type-safe workflow automation engine in Rust (alpha stage).
+The workspace contains core libraries, execution/runtime layers, API, CLI, and examples.
 
-**Nebula** is a modular, type-safe workflow automation engine (like n8n/Zapier) built in Rust 1.94+. Workflows are DAGs of composable actions with built-in retries/error handling, extensible via plugins. Alpha: core crates stable, execution engine + credential system in active development. 25 main crates plus per-crate macro sub-crates, `apps/cli`, `examples/` — all under one workspace with one-way layer dependencies.
+- Rust edition: `2024`
+- Rust version: `1.94`
+- Primary test runner: `cargo nextest`
+- Formatting: nightly `rustfmt` (required by `rustfmt.toml`)
 
----
+## Development Mode
 
-## Architecture
+This repository is in active development. Prefer the **best long-term design**, not the smallest diff.
 
-### Layer system (convention only — not enforced by tooling)
+- Bold refactors are allowed when they improve clarity, correctness, or architecture.
+- Breaking changes are acceptable when they remove bad APIs or reduce complexity.
+- Do not preserve flawed code for compatibility unless explicitly requested.
+- When touching bad code, fix root causes instead of patching symptoms.
 
-```
-API layer          api (+ webhook module) · (auth — RFC, not yet in workspace)
-  ↑
-Exec layer         engine · runtime · storage · sandbox · sdk · plugin-sdk
-  ↑
-Business layer     credential · resource · action · plugin
-  ↑
-Core layer         core · validator · parameter · expression · workflow · execution
-
-Cross-cutting      log · system · eventbus · telemetry · metrics · config · resilience · error
-(importable at any layer)
-```
-
-Arrows mean "depends on". No upward dependencies — enforced by **convention and review only**. `cargo deny` runs but its `[bans.deny]` list is empty (see `.project/context/pitfalls.md`); cross-layer edges will NOT fail CI. Webhook is a module inside `nebula-api` (`crates/api/src/webhook/`), not a standalone crate.
-
-Each business/exec crate may have a companion proc-macro sub-crate (e.g., `crates/action/macros`, `crates/error/macros`, `crates/credential/macros`). These are part of their parent crate's public API surface.
-
-### Data flow
-
-```
-Trigger (webhook/cron/event)
-  → Engine resolves workflow DAG
-    → Runtime schedules nodes (topological order)
-      → Each node: Action::execute(Context) → serde_json::Value
-        → Context provides: credentials (encrypted), resources, parameters, logger
-          → Cross-crate signals via EventBus (e.g., CredentialRotatedEvent)
-```
-
-### Key patterns
-- **`serde_json::Value`** is the universal data type — workflow data, action I/O, config, expressions
-- **`Context` trait** for DI into actions — credentials, resources, logger injected, never constructed
-- **`EventBus<E>`** for cross-crate signals — prevents circular deps (especially credential↔resource)
-- **`NebulaError<E>`** with `Classify` trait — typed errors in libs (`thiserror`), `anyhow` in binaries
-- **`NodeId`** = graph position; **`ActionKey`** = action type identity — multiple nodes can share an action
-
-### Desktop app
-Tauri-based desktop surface in `apps/desktop/` — currently in development.
-
----
-
-## MCP Servers
-
-### Serena (LSP-backed code intelligence)
-
-Project config: `.serena/project.yml`. **Must activate at session start:**
-```
-activate_project("nebula")
-```
-Provides: `find_symbol`, `find_referencing_symbols`, `get_symbols_overview`, `rename_symbol`, `replace_symbol_body`, `insert_before/after_symbol`. Macro-generated symbols (e.g. `NodeId` from `define_id!`) may not be indexed.
-
-### crates.io MCP
-
-Search crates, check dependencies, audit vulnerabilities, compare alternatives — no setup needed.
-
----
-
-## Key Commands
-
-> **`cargo fmt` requires nightly rustfmt.** `rustfmt.toml` uses unstable
-> options (`group_imports`, `imports_granularity`, `wrap_comments`,
-> `format_code_in_doc_comments`). Build / clippy / test stay on stable.
-> Install once: `rustup toolchain install nightly --component rustfmt`.
+## Canonical Commands
 
 ```bash
-# Fast local check (use this by default)
-cargo +nightly fmt && cargo clippy --workspace -- -D warnings && cargo nextest run --workspace
+# Fast local gate (default)
+cargo +nightly fmt --all && cargo clippy --workspace -- -D warnings && cargo nextest run --workspace
 
-# Single crate (fastest iteration)
+# Single crate iteration
 cargo check -p nebula-<crate> && cargo nextest run -p nebula-<crate>
 
 # Full validation (before PR)
-cargo +nightly fmt && cargo clippy --workspace -- -D warnings && cargo nextest run --workspace && cargo test --workspace --doc && cargo deny check
-
-# Compose API contract
-cargo bench --no-run -p nebula-resilience
-
-# Context file budgets
-bash .project/validate.sh
+cargo +nightly fmt --all && cargo clippy --workspace -- -D warnings && cargo nextest run --workspace && cargo test --workspace --doc && cargo deny check
 ```
 
-`cargo nextest run` replaces `cargo test` — parallel execution, better output. Doctests run separately (`cargo test --doc`) because nextest doesn't support them.
+Notes:
 
-### Taskfile (task runner)
+- `cargo +nightly fmt` is required (unstable rustfmt options are enabled).
+- Doctests are run separately with `cargo test --doc`.
 
-`Taskfile.yml` wraps common workflows — run `task --list` to see all tasks. Key groups:
+## Architecture Boundaries
+
+Layer direction is one-way:
+
+```
+API            api (+ webhook module)
+  ↑
+Exec           engine · runtime · storage · sandbox · sdk · plugin-sdk
+  ↑
+Business       credential · resource · action · plugin
+  ↑
+Core           core · validator · parameter · expression · workflow · execution
+
+Cross-cutting  log · system · eventbus · telemetry · metrics · config · resilience · error
+```
+
+- No upward dependencies.
+- Enforced partly by `deny.toml` (`cargo deny`) and partly by code review.
+- Webhook is a module under `crates/api/src/webhook/`, not a separate crate.
+
+## Engineering Defaults
+
+- Prefer explicit, type-safe APIs over stringly-typed contracts.
+- Use `serde_json::Value` as the workflow data interchange type.
+- In library crates, use typed errors (`thiserror`); reserve `anyhow` for binaries.
+- Keep secrets encrypted/redacted/zeroized when touching credential flows.
+- Prefer deletion/simplification over compatibility shims when APIs are wrong.
+
+## Agent Strategy
+
+Do:
+
+- Read current source and config files before making assumptions.
+- Use `Cargo.toml`, `deny.toml`, and `.github/workflows/*` as policy sources of truth.
+- Choose the best solution even if it requires broad edits.
+- Refactor aggressively when it reduces technical debt.
+- Run relevant verification commands for touched areas.
+- Leave code simpler than you found it.
+
+Don't:
+
+- Reintroduce removed internal context systems or `.project/*` conventions.
+- Assume historical crate layout/state from memory.
+- Keep dead abstractions "just in case."
+- Split obvious fixes into artificial micro-changes if it hurts solution quality.
+
+## Safety Rails
+
+Be bold on design, strict on safety:
+
+- Keep security guarantees intact (credentials, secrets, auth boundaries).
+- Preserve or improve test coverage around changed behavior.
+- For high-risk changes, validate with targeted checks before finishing.
+- If a refactor changes behavior intentionally, state that explicitly in the summary.
+
+## Useful Local Workflows
 
 ```bash
-task db:up          # Start local Postgres via Docker Compose
-task db:migrate     # Run pending sqlx migrations (requires DATABASE_URL)
-task db:prepare     # Regenerate sqlx offline query data after schema changes
-task db:reset       # Drop + recreate + re-migrate (destructive)
-
-task desktop:dev    # Start Tauri dev mode (from apps/desktop/)
-task desktop:build  # Build Tauri app for distribution
-
-task obs:up         # Start Jaeger + OTEL collector for local tracing
+task db:up
+task db:migrate
+task db:prepare
+task desktop:dev
+task obs:up
 ```
 
-Database URL for local dev is in `deploy/.env` (copy from `deploy/.env.example`). sqlx runs in offline mode in CI — run `task db:prepare` after any query changes.
-
----
-
-## Context System Protocol
-
-Workspace context lives in `.project/` — do not re-derive what is already documented there.
-(Moved out of `.claude/` on 2026-04-11. `.claude/` now holds only Claude Code harness —
-agents, hooks, settings. Coding rules and workspace context are tool-agnostic and live
-alongside the code, not inside the harness dir.)
-
-| File | Token budget | Contents |
-|------|-------------|----------|
-| `.project/context/ROOT.md` | 300 | Workspace index, crate layers, conventions |
-| `.project/context/decisions.md` | 500 | Cross-cutting architectural decisions (why, not what) |
-| `.project/context/pitfalls.md` | 300 | Global traps and non-obvious constraints |
-| `.project/context/active-work.md` | 200 | Current work, blocked areas, migration state |
-| `.project/context/crates/{name}.md` | 500 each | Per-crate invariants, traps, non-obvious decisions |
-| `.project/context/research/{slug}.md` | — | Background research, competitive analysis, findings |
-| `.project/rules/{topic}.md` | — | Coding rules, review checklists, audit protocols |
-| `docs/plans/{date}-{slug}.md` | — | Implementation plans for multi-step work (date-prefixed) |
-
-**Include:** invariants, non-obvious design decisions, active constraints, traps that burned someone.
-
-**Exclude:** pub types, function signatures, Cargo.toml deps (read the code), git history.
-
-### Update Rules
-
-- **After modifying a crate**: update `.project/context/crates/{name}.md` before the session ends.
-  - Changed invariants, decisions, or traps → update content.
-  - Only implementation details changed → add `<!-- reviewed: YYYY-MM-DD -->` at bottom.
-- **After global decisions change**: update `.project/context/decisions.md` or `.project/context/pitfalls.md`.
-- **After work state changes**: update `.project/context/active-work.md`.
-- A Stop hook enforces this: completion is blocked if a crate was modified but its context file was not touched.
+Use `task --list` for the full task catalog.

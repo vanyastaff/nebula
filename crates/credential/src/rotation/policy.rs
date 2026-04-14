@@ -220,7 +220,7 @@ impl RotationPolicy {
                 } else {
                     config.grace_period
                 }
-            }
+            },
         }
     }
 }

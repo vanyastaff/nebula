@@ -893,7 +893,7 @@ impl WarnThrottle {
             _ => {
                 *guard = Some(now);
                 true
-            }
+            },
         }
     }
 }
@@ -1111,7 +1111,7 @@ impl<A: PollAction> PollTriggerAdapter<A> {
                 } else {
                     self.handle_dispatch_failure(poll_cursor, pre_poll, config, override_next)
                 }
-            }
+            },
 
             PollOutcome::Partial { events, error } => {
                 if events.is_empty() {
@@ -1152,7 +1152,7 @@ impl<A: PollAction> PollTriggerAdapter<A> {
 
                 if !dr.is_ok() {
                     match config.emit_failure {
-                        EmitFailurePolicy::DropAndContinue => {}
+                        EmitFailurePolicy::DropAndContinue => {},
                         EmitFailurePolicy::RetryBatch => {
                             return Ok(CycleOutcome {
                                 cursor: pre_poll,
@@ -1161,14 +1161,14 @@ impl<A: PollAction> PollTriggerAdapter<A> {
                                 override_next,
                                 emitted,
                             });
-                        }
+                        },
                         EmitFailurePolicy::StopTrigger => {
                             return Err(ActionError::fatal(format!(
                                 "poll trigger {}: dispatch failed, \
                                  stopping (StopTrigger policy)",
                                 self.action.metadata().key,
                             )));
-                        }
+                        },
                     }
                 }
 
@@ -1194,7 +1194,7 @@ impl<A: PollAction> PollTriggerAdapter<A> {
                     override_next,
                     emitted,
                 })
-            }
+            },
         }
     }
 
@@ -1219,7 +1219,7 @@ impl<A: PollAction> PollTriggerAdapter<A> {
                     override_next,
                     emitted: 0,
                 })
-            }
+            },
             EmitFailurePolicy::RetryBatch => Ok(CycleOutcome {
                 cursor: pre_poll,
                 backoff: true,
@@ -1261,7 +1261,7 @@ impl<A: PollAction> PollTriggerAdapter<A> {
                         continue;
                     }
                     return DispatchResult::Failed;
-                }
+                },
             };
             if let Err(e) = ctx.emitter.emit(payload).await {
                 if self.emit_warn.should_log() {
@@ -1372,7 +1372,7 @@ where
                     } else {
                         ctx.health.record_idle();
                     }
-                }
+                },
                 Err(e) if e.is_fatal() => return Err(e),
                 Err(e) => {
                     cursor = pre_poll;
@@ -1387,7 +1387,7 @@ where
                             ),
                         );
                     }
-                }
+                },
             }
 
             // Sleep with cancellation. The sleep interval is

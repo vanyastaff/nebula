@@ -250,12 +250,12 @@ async fn run_event_loop<H: PluginHandler>(
             Ok(0) => {
                 tracing::debug!("plugin: transport EOF, exiting");
                 return Ok(());
-            }
+            },
             Ok(n) => n,
             Err(e) => {
                 tracing::warn!(error = %e, "plugin: transport read error, exiting");
                 return Ok(());
-            }
+            },
         };
         let trimmed = line.trim();
         if trimmed.is_empty() {
@@ -271,7 +271,7 @@ async fn run_event_loop<H: PluginHandler>(
                     "plugin: failed to parse HostToPlugin envelope, skipping line",
                 );
                 continue;
-            }
+            },
         };
 
         match msg {
@@ -290,7 +290,7 @@ async fn run_event_loop<H: PluginHandler>(
                     },
                 };
                 write_line(&mut writer, &response).await?;
-            }
+            },
             HostToPlugin::MetadataRequest { id } => {
                 let meta = handler.metadata();
                 let response = PluginToHost::MetadataResponse {
@@ -301,11 +301,11 @@ async fn run_event_loop<H: PluginHandler>(
                     actions: meta.actions,
                 };
                 write_line(&mut writer, &response).await?;
-            }
+            },
             HostToPlugin::Shutdown => {
                 tracing::debug!("plugin: received Shutdown, exiting");
                 return Ok(());
-            }
+            },
             HostToPlugin::Cancel { .. }
             | HostToPlugin::RpcResponseOk { .. }
             | HostToPlugin::RpcResponseError { .. } => {
@@ -313,7 +313,7 @@ async fn run_event_loop<H: PluginHandler>(
                 // (the in-flight invocation blocks the loop anyway). Slice
                 // 1d adds concurrent dispatch and pending-call tables and
                 // routes these correctly.
-            }
+            },
         }
     }
 }

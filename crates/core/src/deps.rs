@@ -31,13 +31,13 @@ impl fmt::Display for DependencyError {
                     f,
                     "missing dependency: `{required_by}` requires `{name}`, but it is not registered"
                 )
-            }
+            },
             DependencyError::Cycle { path } => {
                 write!(f, "dependency cycle detected: {}", path.join(" -> "))
-            }
+            },
             DependencyError::RegistryInvariant(msg) => {
                 write!(f, "registry invariant violated: {msg}")
-            }
+            },
         }
     }
 }

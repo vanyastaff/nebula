@@ -57,7 +57,7 @@ pub fn is_truthy(value: &Value) -> bool {
             } else {
                 true // u64 values
             }
-        }
+        },
         Value::String(s) => !s.is_empty(),
         Value::Array(arr) => !arr.is_empty(),
         Value::Object(obj) => !obj.is_empty(),

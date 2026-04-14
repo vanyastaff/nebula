@@ -271,7 +271,7 @@ impl ConfigLoader for EnvLoader {
                 }
 
                 Ok(self.env_to_json(vars))
-            }
+            },
             ConfigSource::EnvWithPrefix(prefix) => {
                 let vars = self.filter_vars(prefix);
 
@@ -286,7 +286,7 @@ impl ConfigLoader for EnvLoader {
                 }
 
                 Ok(self.env_to_json(vars))
-            }
+            },
             _ => Err(ConfigError::source_error(
                 "EnvLoader does not support this source type",
                 source.name(),
@@ -304,7 +304,7 @@ impl ConfigLoader for EnvLoader {
                 Ok(SourceMetadata::new(source.clone())
                     .with_format(ConfigFormat::Env)
                     .with_last_modified(chrono::Utc::now()))
-            }
+            },
             _ => Err(ConfigError::source_error(
                 "EnvLoader does not support this source type",
                 source.name(),

@@ -1,0 +1,10 @@
+[files]
+extend-exclude = [
+  "target",
+  ".worktrees",
+  ".claude/worktrees",
+  "docs/plans/archive",
+]
+
+[default]
+check-filename = true

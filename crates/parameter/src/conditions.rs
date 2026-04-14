@@ -233,7 +233,7 @@ impl Condition {
 
             Self::OneOf { field, values: vs } => {
                 values.get(field.as_str()).is_some_and(|v| vs.contains(v))
-            }
+            },
 
             Self::Set { field } => values.get(field.as_str()).is_some_and(|v| !v.is_null()),
 
@@ -241,7 +241,7 @@ impl Condition {
 
             Self::IsTrue { field } => {
                 values.get(field.as_str()).and_then(Value::as_bool) == Some(true)
-            }
+            },
 
             Self::Gt { field, value } => match (
                 values.get(field.as_str()).and_then(Value::as_f64),
@@ -290,18 +290,18 @@ impl Condition {
             | Self::Gt { field, .. }
             | Self::Lt { field, .. } => {
                 refs.push(field.as_str());
-            }
+            },
             Self::All { conditions } | Self::Any { conditions } => {
                 for c in conditions {
                     c.field_references(refs);
                 }
-            }
+            },
             Self::Not { condition } => {
                 condition.field_references(refs);
-            }
+            },
 
             // Future variants: no field references by default
-            _ => {}
+            _ => {},
         }
     }
 }

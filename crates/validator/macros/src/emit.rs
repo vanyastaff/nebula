@@ -141,13 +141,13 @@ fn emit_field_rule(field: &FieldDef, rule: &Rule) -> TokenStream2 {
         Rule::StringFormat(fmt) => emit_str_validator(field, string_format_to_tokens(*fmt)),
         Rule::StringFactory { kind, arg } => {
             emit_str_validator(field, string_factory_to_tokens(*kind, arg))
-        }
+        },
         Rule::IsTrue => {
             emit_bool_validator(field, quote!(::nebula_validator::validators::is_true()))
-        }
+        },
         Rule::IsFalse => {
             emit_bool_validator(field, quote!(::nebula_validator::validators::is_false()))
-        }
+        },
         Rule::Regex(pattern) => emit_regex_validator(field, pattern),
         Rule::Nested => emit_nested_validator(field),
         Rule::Custom(expr) => emit_custom_validator(field, expr),
@@ -619,7 +619,7 @@ fn emit_each_rule(rule: &Rule, field: &FieldDef, each: &EachRules) -> TokenStrea
         Rule::Max(bound) => emit_each_cmp_check(bound, false, message, element_is_option),
         Rule::StringFormat(fmt) => {
             emit_each_str_validator(string_format_to_tokens(*fmt), message, element_is_option)
-        }
+        },
         Rule::StringFactory { kind, arg } => emit_each_str_validator(
             string_factory_to_tokens(*kind, arg),
             message,
@@ -1102,7 +1102,7 @@ fn string_factory_to_tokens(kind: StringFactoryKind, arg: &str) -> TokenStream2 
         StringFactoryKind::Contains => quote!(::nebula_validator::validators::contains(#arg)),
         StringFactoryKind::StartsWith => {
             quote!(::nebula_validator::validators::starts_with(#arg))
-        }
+        },
         StringFactoryKind::EndsWith => quote!(::nebula_validator::validators::ends_with(#arg)),
     }
 }

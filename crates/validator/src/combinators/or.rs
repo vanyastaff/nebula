@@ -66,7 +66,7 @@ where
                     Err(ValidationError::new("or_failed", "All alternatives failed")
                         .with_nested_error(left_error)
                         .with_nested_error(right_error))
-                }
+                },
             },
         }
     }

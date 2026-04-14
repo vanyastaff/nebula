@@ -150,7 +150,7 @@ impl TestContext {
                     operation: "credential_validation".to_string(),
                     timeout_secs: timeout_duration.as_secs(),
                 })
-            }
+            },
         }
     }
 }

@@ -122,7 +122,7 @@ impl PollingWatcher {
                     if let Some(metadata) = Self::get_file_metadata(path).await {
                         initial_entries.push((path.clone(), metadata));
                     }
-                }
+                },
                 ConfigSource::Directory(dir) => {
                     if let Ok(mut entries) = tokio::fs::read_dir(dir).await {
                         while let Ok(Some(entry)) = entries.next_entry().await {
@@ -132,8 +132,8 @@ impl PollingWatcher {
                             }
                         }
                     }
-                }
-                _ => {}
+                },
+                _ => {},
             }
         }
         if !initial_entries.is_empty() {
@@ -182,7 +182,7 @@ impl PollingWatcher {
             match (cache_read.get(path), &current_metadata) {
                 (Some(old), Some(new)) if Self::has_changed(old, new) => {
                     Some(ConfigWatchEventType::Modified)
-                }
+                },
                 (Some(_), None) => Some(ConfigWatchEventType::Deleted),
                 (None, Some(_)) => Some(ConfigWatchEventType::Created),
                 _ => None,
@@ -199,12 +199,12 @@ impl PollingWatcher {
             match event_type {
                 ConfigWatchEventType::Deleted => {
                     cache_write.remove(path);
-                }
+                },
                 _ => {
                     if let Some(metadata) = current_metadata {
                         cache_write.insert(path.clone(), metadata);
                     }
-                }
+                },
             }
         }
     }
@@ -247,11 +247,11 @@ impl PollingWatcher {
                 match cache_read.get(path) {
                     Some(old) if Self::has_changed(old, new_metadata) => {
                         events.push((path.clone(), ConfigWatchEventType::Modified));
-                    }
+                    },
                     None => {
                         events.push((path.clone(), ConfigWatchEventType::Created));
-                    }
-                    _ => {}
+                    },
+                    _ => {},
                 }
             }
 
@@ -279,12 +279,12 @@ impl PollingWatcher {
                 match event_type {
                     ConfigWatchEventType::Deleted => {
                         cache_write.remove(&path);
-                    }
+                    },
                     _ => {
                         if let Some(metadata) = current_files.remove(&path) {
                             cache_write.insert(path, metadata);
                         }
-                    }
+                    },
                 }
             }
         }

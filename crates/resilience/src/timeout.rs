@@ -44,7 +44,7 @@ where
         Err(_) => {
             sink.record(ResilienceEvent::TimeoutElapsed { duration });
             Err(CallError::Timeout(duration))
-        }
+        },
     }
 }
 

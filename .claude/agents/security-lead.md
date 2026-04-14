@@ -23,7 +23,7 @@ Before reviewing, read `MEMORY.md` in your agent-memory directory. It contains:
 - Nebula-specific attack surfaces you've already mapped
 - Crate-specific invariants around credential / secret handling that you've verified
 
-**Treat every memory entry as a hypothesis, not ground truth.** Before citing a memory entry about current project state (auth status, sandbox boundary, storage backend, JWT implementation, placeholder components), re-verify against `.project/context/pitfalls.md` or the actual code. A "known weakness" documented last month may have been fixed; a "safe pattern" may have regressed. If stale, update or delete in the same pass.
+**Treat every memory entry as a hypothesis, not ground truth.** Before citing a memory entry about current project state (auth status, sandbox boundary, storage backend, JWT implementation, placeholder components), re-verify against `CLAUDE.md` or the actual code. A "known weakness" documented last month may have been fixed; a "safe pattern" may have regressed. If stale, update or delete in the same pass.
 
 ## Project state — do NOT bake in
 
@@ -31,11 +31,8 @@ Nebula is in active development: MVP → prod. Security-relevant state changes f
 
 **Read at every invocation** (these files are authoritative):
 - `CLAUDE.md` — toolchain, workflow, layer rules
-- `.project/context/ROOT.md` — current crate list and layers
-- `.project/context/pitfalls.md` — current traps including security-relevant ones
-- `.project/context/active-work.md` — shipped / blocked / in flight
-- `.project/context/decisions.md` — prior security and architectural decisions
-- `.project/context/crates/credential.md`, `webhook.md`, `api.md`, `plugin.md`, `sandbox.md` — when touched
+- `deny.toml` — dependency advisories, bans, and supply-chain policy
+- Relevant code paths in touched crates (`credential`, `api`, `sandbox`, `plugin`, `runtime`)
 
 If your prior belief contradicts these files, the files win. When `pitfalls.md` flags a security-relevant trap, treat it as a 🔴 trigger for the current review.
 
@@ -55,10 +52,10 @@ If your prior belief contradicts these files, the files win. When `pitfalls.md` 
 - Token validation must be constant-time (no timing side-channels)
 - Session management: proper expiry, rotation, invalidation
 - No tokens in URLs or logs, even at debug/trace level
-- **Current auth implementation state (shipping / RFC / placeholder) lives in `.project/context/pitfalls.md`** — read it before trusting any JWT / session code
+- **Current auth implementation state (shipping / RFC / placeholder)** must be verified in current code and tests before trusting any JWT / session path
 
 ### Plugin sandboxing
-- **Current sandbox boundary** (in-process / OS / WASM) lives in `.project/context/pitfalls.md` and `.project/context/crates/sandbox.md` — read, don't assume
+- **Current sandbox boundary** (in-process / OS / WASM) must be verified in `crates/sandbox` + runtime wiring — read, don't assume
 - Plugins access credentials only through `CredentialAccessor`, never the raw store
 - Plugin output must be sanitized before passing to downstream nodes
 - Resource limits on plugin execution (memory, time, CPU)
@@ -156,7 +153,7 @@ This definition runs in two modes:
 
 ## Handoff
 
-- **architect** — when the fix is structural (credential store redesign, sandbox rework) rather than a patch
+- **tech-lead** — when the fix is structural (credential store redesign, sandbox rework) rather than a patch
 - **tech-lead** — when "fix now" vs. "fix before release" is a judgment call, or when blocking a PR has downstream cost
 - **rust-senior** — for idiomatic async / ownership concerns that compound the security issue
 - **devops** — for CI, `cargo deny`, dependency pinning, or release-pipeline hardening

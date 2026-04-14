@@ -7,6 +7,6 @@ contact_links:
     url: https://github.com/vanyastaff/nebula/blob/main/README.md
     about: Read the project documentation and guides
   - name: 🏗️ Architecture
-    url: https://github.com/vanyastaff/nebula/blob/main/vision/ARCHITECTURE.md
+    url: https://github.com/vanyastaff/nebula/tree/main/docs
     about: Learn about the system architecture and design
 

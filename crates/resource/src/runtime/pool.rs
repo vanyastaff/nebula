@@ -417,7 +417,7 @@ where
             Ok(Err(e)) => return Err(e.into()),
             Err(_timeout) => {
                 return Err(Error::transient("pool: create timed out"));
-            }
+            },
         };
 
         Ok(PoolEntry {
@@ -532,7 +532,7 @@ where
                     R::key(),
                     self.config.max_size,
                 )));
-            }
+            },
         };
 
         // Try the idle queue first.
@@ -625,11 +625,11 @@ where
             WarmupStrategy::Sequential | WarmupStrategy::Parallel => {
                 self.warmup_sequential(resource, resource_config, auth, ctx, target)
                     .await
-            }
+            },
             WarmupStrategy::Staggered { interval } => {
                 self.warmup_staggered(resource, resource_config, auth, ctx, target, interval)
                     .await
-            }
+            },
         }
     }
 
@@ -658,7 +658,7 @@ where
                         target,
                         "pool warmup: instance created"
                     );
-                }
+                },
                 Err(e) => {
                     tracing::warn!(
                         key = %R::key(),
@@ -668,7 +668,7 @@ where
                         "pool warmup: create failed, stopping early"
                     );
                     break;
-                }
+                },
             }
         }
         if created > 0 {
@@ -706,7 +706,7 @@ where
                         target,
                         "pool warmup (staggered): instance created"
                     );
-                }
+                },
                 Err(e) => {
                     tracing::warn!(
                         key = %R::key(),
@@ -716,7 +716,7 @@ where
                         "pool warmup (staggered): create failed, stopping early"
                     );
                     break;
-                }
+                },
             }
         }
         if created > 0 {
@@ -776,10 +776,10 @@ async fn release_entry<R>(
             let mut entry = entry;
             entry.returned_at = Some(Instant::now());
             idle.lock().await.push_back(entry);
-        }
+        },
         Ok(RecycleDecision::Drop) | Err(_) => {
             let _ = resource.destroy(entry.runtime).await;
-        }
+        },
     }
 }
 

@@ -94,11 +94,6 @@ datasets/
 
 # Git files (already tracked by git)
 .git/
-.gitignore
-.gitattributes
-
-# GitHub specific
-.github/
 
 # Rust-specific large artifacts
 target/release/
@@ -141,23 +136,6 @@ nul
 .auto-claude-security.json
 .claude_settings.json
 
-# Deploy configs (Kubernetes/Docker — noise for Rust coding)
-deploy/
-
-# Database migrations (rarely needed during feature work)
-migrations/
-
-# Frontend apps (separate from Rust crates work)
-apps/
-
-# Vision/architecture docs (large, rarely needed mid-task)
-vision/
-
-# Changelog (auto-generated, large)
-CHANGELOG.md
-
-# Scripts (shell/PowerShell — not Rust source)
-scripts/
-
 # Worktrees
 .worktrees/
+.claude/worktrees/

@@ -1,16 +1,31 @@
+# Keep lint interpretation aligned with workspace toolchain.
 msrv = "1.94"
+
+# Complexity limits (balanced for a heavily generic Rust workspace).
 cognitive-complexity-threshold = 25
 excessive-nesting-threshold = 5
+type-complexity-threshold = 250
+too-many-arguments-threshold = 7
+too-many-lines-threshold = 100
 
+# Hygiene and test ergonomics.
 warn-on-all-wildcard-imports = true
 allow-expect-in-tests = true
 allow-unwrap-in-tests = true
 allow-dbg-in-tests = true
 allow-print-in-tests = true
+
+# Domain docs use these identifiers frequently; avoid false positives.
+doc-valid-idents = [
+    "GitHub",
+    "OpenTelemetry",
+    "OAuth2",
+    "PostgreSQL",
+    "WebSocket",
+]
+
+# Data-shape / memory-footprint heuristics.
 enum-variant-size-threshold = 200
-type-complexity-threshold = 250
-too-many-arguments-threshold = 7
-too-many-lines-threshold = 100
 array-size-threshold = 512000
 vec-box-size-threshold = 4096
 max-trait-bounds = 3
@@ -21,5 +36,6 @@ pass-by-value-size-limit = 256
 too-large-for-stack = 200
 future-size-threshold = 16384
 
+# Docs policy in library crates.
 missing-docs-in-crate-items = true
 check-private-items = false

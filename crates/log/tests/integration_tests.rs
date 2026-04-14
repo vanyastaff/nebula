@@ -297,11 +297,11 @@ impl ObservabilityHook for TrackingHook {
         match event.name() {
             name if name.contains("completed") => {
                 self.completed.fetch_add(1, Ordering::SeqCst);
-            }
+            },
             name if name.contains("failed") => {
                 self.failed.fetch_add(1, Ordering::SeqCst);
-            }
-            _ => {}
+            },
+            _ => {},
         }
     }
 }

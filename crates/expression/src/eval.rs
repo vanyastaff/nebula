@@ -228,7 +228,7 @@ impl Evaluator {
                 }
                 // Otherwise treat as a string constant
                 Ok(Value::String(name.as_ref().to_string()))
-            }
+            },
 
             Expr::Negate(expr) => {
                 let val = self.eval_with_frame(expr, context, frame)?;
@@ -243,33 +243,33 @@ impl Evaluator {
                                 "Cannot negate number",
                             ))
                         }
-                    }
+                    },
                     _ => Err(ExpressionError::expression_type_error(
                         "number",
                         crate::value_utils::value_type_name(&val),
                     )),
                 }
-            }
+            },
 
             Expr::Not(expr) => {
                 let val = self.eval_with_frame(expr, context, frame)?;
                 Ok(Value::Bool(!self.coerce_boolean(&val, context)?))
-            }
+            },
 
             Expr::Binary { left, op, right } => {
                 self.eval_binary_op(*op, left, right, context, frame)
-            }
+            },
 
             Expr::PropertyAccess { object, property } => {
                 let obj_val = self.eval_with_frame(object, context, frame)?;
                 self.access_property(&obj_val, property)
-            }
+            },
 
             Expr::IndexAccess { object, index } => {
                 let obj_val = self.eval_with_frame(object, context, frame)?;
                 let index_val = self.eval_with_frame(index, context, frame)?;
                 self.access_index(&obj_val, &index_val)
-            }
+            },
 
             Expr::FunctionCall { name, args } => {
                 // Try higher-order functions first (they need raw AST args for lambdas)
@@ -283,7 +283,7 @@ impl Evaluator {
                     arg_values.push(self.eval_with_frame(arg, context, frame)?);
                 }
                 self.call_function(name, &arg_values, context, frame)
-            }
+            },
 
             Expr::Pipeline {
                 value,
@@ -310,7 +310,7 @@ impl Evaluator {
                     arg_values.push(self.eval_with_frame(arg, context, frame)?);
                 }
                 self.call_function(function, &arg_values, context, frame)
-            }
+            },
 
             Expr::Conditional {
                 condition,
@@ -323,14 +323,14 @@ impl Evaluator {
                 } else {
                     self.eval_with_frame(else_expr, context, frame)
                 }
-            }
+            },
 
             Expr::Lambda { .. } => {
                 // Lambdas are handled specially in higher-order functions
                 Err(ExpressionError::expression_eval_error(
                     "Lambda expressions can only be used as function arguments",
                 ))
-            }
+            },
 
             Expr::Array(elements) => {
                 let values: Result<Vec<_>, _> = elements
@@ -339,7 +339,7 @@ impl Evaluator {
                     .collect();
                 let values = values?;
                 Ok(Value::Array(values))
-            }
+            },
 
             Expr::Object(pairs) => {
                 let mut obj = serde_json::Map::new();
@@ -348,7 +348,7 @@ impl Evaluator {
                     obj.insert(key.to_string(), value);
                 }
                 Ok(Value::Object(obj))
-            }
+            },
         }
     }
 
@@ -372,7 +372,7 @@ impl Evaluator {
                 }
                 let right_val = self.eval_with_frame(right, context, frame)?;
                 Ok(Value::Bool(self.coerce_boolean(&right_val, context)?))
-            }
+            },
             BinaryOp::Or => {
                 let left_val = self.eval_with_frame(left, context, frame)?;
                 if self.coerce_boolean(&left_val, context)? {
@@ -381,7 +381,7 @@ impl Evaluator {
                 }
                 let right_val = self.eval_with_frame(right, context, frame)?;
                 Ok(Value::Bool(self.coerce_boolean(&right_val, context)?))
-            }
+            },
             // For all other operators, evaluate both operands
             _ => {
                 let left_val = self.eval_with_frame(left, context, frame)?;
@@ -403,7 +403,7 @@ impl Evaluator {
                     BinaryOp::RegexMatch => self.regex_match(&left_val, &right_val),
                     BinaryOp::And | BinaryOp::Or => unreachable!(), // Handled above
                 }
-            }
+            },
         }
     }
 
@@ -426,14 +426,14 @@ impl Evaluator {
                     let rf = self.number_to_f64(r)?;
                     Ok(serde_json::json!(lf + rf))
                 }
-            }
+            },
             (Value::String(l), Value::String(r)) => {
                 // Pre-allocate exact capacity to avoid reallocations
                 let mut result = String::with_capacity(l.len() + r.len());
                 result.push_str(l);
                 result.push_str(r);
                 Ok(Value::String(result))
-            }
+            },
             _ => Err(ExpressionError::expression_type_error(
                 "number or string",
                 format!(
@@ -463,7 +463,7 @@ impl Evaluator {
                     let rf = self.number_to_f64(r)?;
                     Ok(serde_json::json!(lf - rf))
                 }
-            }
+            },
             _ => Err(ExpressionError::expression_type_error(
                 "number",
                 format!(
@@ -493,7 +493,7 @@ impl Evaluator {
                     let rf = self.number_to_f64(r)?;
                     Ok(serde_json::json!(lf * rf))
                 }
-            }
+            },
             _ => Err(ExpressionError::expression_type_error(
                 "number",
                 format!(
@@ -533,7 +533,7 @@ impl Evaluator {
                     ));
                 }
                 Ok(serde_json::json!(result))
-            }
+            },
             _ => Err(ExpressionError::expression_type_error(
                 "number",
                 format!(
@@ -565,7 +565,7 @@ impl Evaluator {
                     }
                     Ok(serde_json::json!(lf % rf))
                 }
-            }
+            },
             _ => Err(ExpressionError::expression_type_error(
                 "number",
                 format!(
@@ -586,7 +586,7 @@ impl Evaluator {
                 let lf = self.number_to_f64(l)?;
                 let rf = self.number_to_f64(r)?;
                 Ok(serde_json::json!(lf.powf(rf)))
-            }
+            },
             _ => Err(ExpressionError::expression_type_error(
                 "number",
                 format!(
@@ -623,7 +623,7 @@ impl Evaluator {
                 let lf = self.number_to_f64(l)?;
                 let rf = self.number_to_f64(r)?;
                 Ok(Value::Bool(lf < rf))
-            }
+            },
             (Value::String(l), Value::String(r)) => Ok(Value::Bool(l < r)),
             _ => Err(ExpressionError::expression_type_error(
                 "comparable values",
@@ -661,7 +661,7 @@ impl Evaluator {
                 let lf = self.number_to_f64(l)?;
                 let rf = self.number_to_f64(r)?;
                 Ok(Value::Bool(lf > rf))
-            }
+            },
             (Value::String(l), Value::String(r)) => Ok(Value::Bool(l > r)),
             _ => Err(ExpressionError::expression_type_error(
                 "comparable values",
@@ -698,7 +698,7 @@ impl Evaluator {
                 let lf = self.number_to_f64(l)?;
                 let rf = self.number_to_f64(r)?;
                 Ok(Value::Bool(lf <= rf))
-            }
+            },
             (Value::String(l), Value::String(r)) => Ok(Value::Bool(l <= r)),
             _ => Err(ExpressionError::expression_type_error(
                 "comparable values",
@@ -735,7 +735,7 @@ impl Evaluator {
                 let lf = self.number_to_f64(l)?;
                 let rf = self.number_to_f64(r)?;
                 Ok(Value::Bool(lf >= rf))
-            }
+            },
             (Value::String(l), Value::String(r)) => Ok(Value::Bool(l >= r)),
             _ => Err(ExpressionError::expression_type_error(
                 "comparable values",
@@ -836,7 +836,7 @@ impl Evaluator {
                         '(' => depth += 1,
                         ')' => depth -= 1,
                         '\\' => i += 1, // Skip escaped character
-                        _ => {}
+                        _ => {},
                     }
                     i += 1;
                 }
@@ -882,7 +882,7 @@ impl Evaluator {
                     ))
                 })?;
                 Ok(json_val.clone())
-            }
+            },
             _ => Err(ExpressionError::expression_type_error(
                 "object",
                 crate::value_utils::value_type_name(obj),
@@ -917,7 +917,7 @@ impl Evaluator {
                     )
                 })?;
                 Ok(json_val.clone())
-            }
+            },
             Value::Object(o) => {
                 let key = index.as_str().ok_or_else(|| {
                     ExpressionError::expression_type_error(
@@ -929,7 +929,7 @@ impl Evaluator {
                     ExpressionError::expression_eval_error(format!("Key '{}' not found", key))
                 })?;
                 Ok(json_val.clone())
-            }
+            },
             _ => Err(ExpressionError::expression_type_error(
                 "array or object",
                 crate::value_utils::value_type_name(obj),
@@ -1153,7 +1153,7 @@ impl Evaluator {
                     "lambda expression",
                     "non-lambda",
                 ));
-            }
+            },
         };
 
         // Filter the array
@@ -1202,7 +1202,7 @@ impl Evaluator {
                     "lambda expression",
                     "non-lambda",
                 ));
-            }
+            },
         };
 
         // Map the array
@@ -1255,7 +1255,7 @@ impl Evaluator {
                     "lambda expression",
                     "non-lambda",
                 ));
-            }
+            },
         };
 
         // Reduce the array. Each iteration reuses the caller's frame
@@ -1306,7 +1306,7 @@ impl Evaluator {
                     "lambda expression",
                     "non-lambda",
                 ));
-            }
+            },
         };
 
         for item in array.iter() {
@@ -1351,7 +1351,7 @@ impl Evaluator {
                     "lambda expression",
                     "non-lambda",
                 ));
-            }
+            },
         };
 
         for item in array.iter() {
@@ -1396,7 +1396,7 @@ impl Evaluator {
                     "lambda expression",
                     "non-lambda",
                 ));
-            }
+            },
         };
 
         for item in array.iter() {
@@ -1441,7 +1441,7 @@ impl Evaluator {
                     "lambda expression",
                     "non-lambda",
                 ));
-            }
+            },
         };
 
         for (i, item) in array.iter().enumerate() {
@@ -1487,7 +1487,7 @@ impl Evaluator {
                     "lambda expression",
                     "non-lambda",
                 ));
-            }
+            },
         };
 
         let mut groups = serde_json::Map::new();
@@ -1502,7 +1502,7 @@ impl Evaluator {
                     return Err(ExpressionError::expression_eval_error(
                         "group_by key must be a string, number, boolean, or null",
                     ));
-                }
+                },
             };
             let group_entry = groups
                 .entry(key)
@@ -1515,7 +1515,7 @@ impl Evaluator {
                         "array",
                         crate::value_utils::value_type_name(other),
                     ));
-                }
+                },
             }
         }
 
@@ -1554,7 +1554,7 @@ impl Evaluator {
                     "lambda expression",
                     "non-lambda",
                 ));
-            }
+            },
         };
 
         let mut result = Vec::new();

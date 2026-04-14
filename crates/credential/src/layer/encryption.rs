@@ -145,7 +145,7 @@ impl<S: CredentialStore> CredentialStore for EncryptionLayer<S> {
                 )
                 .await
             {
-                Ok(_) | Err(StoreError::VersionConflict { .. }) => {}
+                Ok(_) | Err(StoreError::VersionConflict { .. }) => {},
                 Err(other) => return Err(other),
             }
         }

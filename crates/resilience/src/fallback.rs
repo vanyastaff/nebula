@@ -420,7 +420,7 @@ impl<T, E> FallbackOperation<T, E> {
                 } else {
                     Err(error)
                 }
-            }
+            },
         }
     }
 }

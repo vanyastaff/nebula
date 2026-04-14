@@ -271,13 +271,13 @@ impl nebula_error::Classify for CredentialError {
             Self::RevokeFailed { .. } => nebula_error::ErrorCode::new("CREDENTIAL:REVOKE_FAILED"),
             Self::CompositionNotAvailable => {
                 nebula_error::ErrorCode::new("CREDENTIAL:COMPOSITION_UNAVAILABLE")
-            }
+            },
             Self::CompositionFailed { .. } => {
                 nebula_error::ErrorCode::new("CREDENTIAL:COMPOSITION_FAILED")
-            }
+            },
             Self::SchemeMismatch { .. } => {
                 nebula_error::ErrorCode::new("CREDENTIAL:SCHEME_MISMATCH")
-            }
+            },
         }
     }
 

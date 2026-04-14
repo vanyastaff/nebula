@@ -98,7 +98,7 @@ impl Write for FanoutWriter<'_> {
             DestinationFailurePolicy::BestEffort => write_best_effort(&mut self.writers, buf),
             DestinationFailurePolicy::PrimaryWithFallback => {
                 write_primary_with_fallback(&mut self.writers, buf)
-            }
+            },
         }
     }
 
@@ -108,7 +108,7 @@ impl Write for FanoutWriter<'_> {
             DestinationFailurePolicy::BestEffort => flush_best_effort(&mut self.writers),
             DestinationFailurePolicy::PrimaryWithFallback => {
                 flush_primary_with_fallback(&mut self.writers)
-            }
+            },
         }
     }
 }
@@ -133,7 +133,7 @@ fn write_best_effort(writers: &mut FanoutVec<'_>, buf: &[u8]) -> io::Result<usiz
         match writer.write_all(buf) {
             Ok(()) => success = true,
             Err(err) if first_err.is_none() => first_err = Some(err),
-            Err(_) => {}
+            Err(_) => {},
         }
     }
 
@@ -192,7 +192,7 @@ fn flush_best_effort(writers: &mut FanoutVec<'_>) -> io::Result<()> {
         match writer.flush() {
             Ok(()) => success = true,
             Err(err) if first_err.is_none() => first_err = Some(err),
-            Err(_) => {}
+            Err(_) => {},
         }
     }
     if success {
@@ -356,11 +356,11 @@ pub fn make_writer(config: &WriterConfig) -> LogResult<(BoxMakeWriter, WriterGua
                 Some(Rolling::Hourly) => {
                     let dir = path.parent().unwrap_or_else(|| std::path::Path::new("."));
                     Box::new(tracing_appender::rolling::hourly(dir, file_prefix(path)?))
-                }
+                },
                 Some(Rolling::Daily) => {
                     let dir = path.parent().unwrap_or_else(|| std::path::Path::new("."));
                     Box::new(tracing_appender::rolling::daily(dir, file_prefix(path)?))
-                }
+                },
                 Some(Rolling::Size(megabytes)) => Box::new(
                     SizeRollingAppender::new(path.clone(), *megabytes, 1).map_err(|e| {
                         LogError::Io(format!("failed to create size rolling writer: {e}"))
@@ -384,7 +384,7 @@ pub fn make_writer(config: &WriterConfig) -> LogResult<(BoxMakeWriter, WriterGua
             } else {
                 BoxMakeWriter::new(SharedWriterMakeWriter::new(appender))
             }
-        }
+        },
 
         WriterConfig::Multi { policy, writers } => {
             if writers.is_empty() {
@@ -407,7 +407,7 @@ pub fn make_writer(config: &WriterConfig) -> LogResult<(BoxMakeWriter, WriterGua
                 policy: *policy,
                 writers: make_writers,
             })
-        }
+        },
     };
 
     Ok((writer, guards))
@@ -490,7 +490,7 @@ mod tests {
         match result {
             Err(e) if e.kind() == io::ErrorKind::InvalidInput => {
                 assert!(e.to_string().contains("17592186044415"));
-            }
+            },
             Err(e) => panic!("wrong error kind: {e}"),
             Ok(_) => panic!("should reject overflow"),
         }

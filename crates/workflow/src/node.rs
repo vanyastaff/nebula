@@ -272,7 +272,7 @@ mod tests {
         match pv {
             ParamValue::Expression { expr } => {
                 assert_eq!(expr, "{{ nodes.a.output.count + 1 }}")
-            }
+            },
             _ => panic!("expected Expression"),
         }
     }
@@ -297,7 +297,7 @@ mod tests {
             } => {
                 assert_eq!(node_id, source);
                 assert_eq!(output_path, "$.data.items");
-            }
+            },
             _ => panic!("expected Reference"),
         }
     }

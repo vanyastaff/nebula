@@ -32,11 +32,10 @@ Nebula is in active development: MVP → prod. MSRV, Rust edition, formatter req
 
 **Read at every invocation** (authoritative):
 - `CLAUDE.md` — current toolchain, workflow commands, formatter requirements
-- `.project/context/ROOT.md` — current crate list and layers
-- `.project/context/active-work.md` — what's in flight (so you don't chase stale failures)
-- `.project/context/decisions.md` — dependency / tooling decisions on record
-- `.project/context/pitfalls.md` — current traps, including build-system and dependency ones
-- Config files: `Cargo.toml`, `deny.toml`, `rustfmt.toml`, `clippy.toml`, `.github/workflows/*`
+- `Cargo.toml` + crate `Cargo.toml` files — crate list, workspace shape, dependency graph
+- `deny.toml` — current supply-chain/layer enforcement policy
+- `rustfmt.toml`, `clippy.toml` — linting/formatting rules
+- `.github/workflows/*` — CI behavior and gates
 
 If CLAUDE.md says "MSRV is X, edition Y, formatter Z," that's the current truth — never contradict it from memory.
 
@@ -51,7 +50,7 @@ If CLAUDE.md says "MSRV is X, edition Y, formatter Z," that's the current truth 
 
 ### Dependency management
 - `cargo deny` configuration: licenses, advisories, bans, sources
-- Allowed licenses: MIT, Apache-2.0, BSD-2/3, ISC, Zlib, MPL-2.0, Unlicense, CC0
+- Allowed licenses: see `deny.toml` (do not hardcode from memory)
 - No `*` version requirements — pin to `"major.minor"` minimum
 - Audit new deps: download count, maintenance status, transitive tree size
 - When a dep has a CVE, assess impact and propose update or replacement
@@ -127,8 +126,6 @@ cargo tree -i {crate}            # who depends on this?
 cargo check -p nebula-{crate}    # single-crate check
 cargo bench --no-run -p nebula-resilience  # compose API contract
 
-# Context file budgets
-bash .project/validate.sh
 ```
 
 ## Execution mode: sub-agent vs teammate
@@ -148,7 +145,7 @@ This definition runs in two modes:
 - **security-lead** — any dep with a CVE, supply-chain question, or crate that introduces `unsafe`
 - **tech-lead** — when a fix has a team-wide cost (deadline vs. correctness)
 - **rust-senior** — when a clippy lint reveals a real code issue, not just a style nit
-- **architect** — when a layer violation reflects a structural problem, not just a typo
+- **tech-lead** — when a layer violation reflects a structural problem, not just a typo
 
 Say explicitly: "Handoff: <who> for <reason>."
 

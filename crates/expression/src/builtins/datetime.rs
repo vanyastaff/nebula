@@ -99,7 +99,7 @@ pub fn date_add(
                 "date_add",
                 format!("Invalid unit: {}", unit),
             ));
-        }
+        },
     };
 
     Ok(Value::Number(new_dt.timestamp().into()))
@@ -135,7 +135,7 @@ pub fn date_subtract(
                 "date_subtract",
                 format!("Invalid unit: {}", unit),
             ));
-        }
+        },
     };
 
     Ok(Value::Number(new_dt.timestamp().into()))
@@ -171,7 +171,7 @@ pub fn date_diff(
                 "date_diff",
                 format!("Invalid unit: {}", unit),
             ));
-        }
+        },
     };
 
     Ok(Value::Number(result.into()))
@@ -269,7 +269,7 @@ fn parse_datetime(value: &Value) -> ExpressionResult<DateTime<Utc>> {
                 .single()
                 .ok_or_else(|| ExpressionError::expression_eval_error("Invalid timestamp"))?;
             Ok(dt)
-        }
+        },
         Value::String(s) => {
             let s = s.as_str();
 
@@ -302,7 +302,7 @@ fn parse_datetime(value: &Value) -> ExpressionResult<DateTime<Utc>> {
                 "Cannot parse date: {}",
                 s
             )))
-        }
+        },
         _ => Err(ExpressionError::expression_type_error(
             "integer or string",
             crate::value_utils::value_type_name(value),

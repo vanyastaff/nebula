@@ -223,14 +223,14 @@ impl Config {
                     }
 
                     merge_json(&mut merged_data, data)?;
-                }
+                },
                 Err(e) => {
                     nebula_log::warn!("Failed to load from source {}: {}", source, e);
 
                     if self.fail_on_missing || !source.is_optional() {
                         return Err(e);
                     }
-                }
+                },
             }
         }
 
@@ -337,7 +337,7 @@ impl Config {
                     current = obj.get(part).ok_or_else(|| {
                         ConfigError::path_error(format!("Key '{part}' not found"), path.to_string())
                     })?;
-                }
+                },
                 serde_json::Value::Array(arr) => {
                     let index: usize = part.parse().map_err(|_| {
                         ConfigError::path_error(
@@ -351,7 +351,7 @@ impl Config {
                             path.to_string(),
                         )
                     })?;
-                }
+                },
                 _ => {
                     return Err(ConfigError::path_error(
                         format!(
@@ -360,7 +360,7 @@ impl Config {
                         ),
                         path.to_string(),
                     ));
-                }
+                },
             }
 
             if rest.is_empty() {
@@ -407,7 +407,7 @@ impl Config {
                         current = obj
                             .entry(part.to_string())
                             .or_insert_with(|| serde_json::Value::Object(serde_json::Map::new()));
-                    }
+                    },
                     serde_json::Value::Array(arr) => {
                         let index: usize = part.parse().map_err(|_| {
                             ConfigError::path_error(
@@ -419,13 +419,13 @@ impl Config {
                             arr.push(serde_json::Value::Null);
                         }
                         current = &mut arr[index];
-                    }
+                    },
                     _ => {
                         return Err(ConfigError::path_error(
                             format!("Cannot navigate into {} type", json_type_name(current)),
                             path.to_string(),
                         ));
-                    }
+                    },
                 }
             }
             current
@@ -437,7 +437,7 @@ impl Config {
         match current {
             serde_json::Value::Object(obj) => {
                 obj.insert(final_key.to_string(), new_value);
-            }
+            },
             serde_json::Value::Array(arr) => {
                 let index: usize = final_key.parse().map_err(|_| {
                     ConfigError::path_error(
@@ -449,13 +449,13 @@ impl Config {
                     arr.push(serde_json::Value::Null);
                 }
                 arr[index] = new_value;
-            }
+            },
             _ => {
                 return Err(ConfigError::path_error(
                     format!("Cannot set value in {} type", json_type_name(current)),
                     path.to_string(),
                 ));
-            }
+            },
         }
 
         Ok(())
@@ -544,16 +544,16 @@ pub(crate) fn merge_json(
                 match target_obj.entry(key) {
                     serde_json::map::Entry::Occupied(mut entry) => {
                         merge_json(entry.get_mut(), value)?;
-                    }
+                    },
                     serde_json::map::Entry::Vacant(entry) => {
                         entry.insert(value);
-                    }
+                    },
                 }
             }
-        }
+        },
         (target, source) => {
             *target = source;
-        }
+        },
     }
     Ok(())
 }
@@ -590,7 +590,7 @@ fn flatten_into(
                 flatten_into(buf, val, out);
                 buf.truncate(prev_len);
             }
-        }
+        },
         serde_json::Value::Array(arr) => {
             let mut itoa_buf = itoa::Buffer::new();
             for (index, val) in arr.iter().enumerate() {
@@ -602,10 +602,10 @@ fn flatten_into(
                 flatten_into(buf, val, out);
                 buf.truncate(prev_len);
             }
-        }
+        },
         _ => {
             out.push((buf.clone(), value.clone()));
-        }
+        },
     }
 }
 

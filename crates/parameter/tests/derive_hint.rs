@@ -27,7 +27,7 @@ fn derive_hint_uses_input_hint_enum() {
     match &email_param.param_type {
         ParameterType::String { input_hint, .. } => {
             assert_eq!(*input_hint, InputHint::Email);
-        }
+        },
         other => panic!("expected String, got {:?}", other),
     }
 
@@ -35,7 +35,7 @@ fn derive_hint_uses_input_hint_enum() {
     match &date_param.param_type {
         ParameterType::String { input_hint, .. } => {
             assert_eq!(*input_hint, InputHint::Date);
-        }
+        },
         other => panic!("expected String, got {:?}", other),
     }
 
@@ -43,7 +43,7 @@ fn derive_hint_uses_input_hint_enum() {
     match &url_param.param_type {
         ParameterType::String { input_hint, .. } => {
             assert_eq!(*input_hint, InputHint::Url);
-        }
+        },
         other => panic!("expected String, got {:?}", other),
     }
 }

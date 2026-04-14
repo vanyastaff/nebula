@@ -40,7 +40,7 @@
 | Standard | Status | Path |
 |----------|--------|------|
 | SOC2 CC6.1 (encryption) | Partial — credentials encrypted | Complete: encrypt execution state too |
-| SOC2 CC6.3 (access control) | Partial — OwnerId + RLS | Complete: RBAC in nebula-auth |
+| SOC2 CC6.3 (access control) | Partial — OwnerId + RLS | Complete: RBAC in auth subsystem |
 | PCI-DSS (card data) | GAP — node outputs unencrypted | Fix: EncryptionLayer on execution state |
 | ISO 27001 | Not started | Requires organizational controls, not just code |
 | HIPAA | Not started | Requires BAA + encryption + audit |

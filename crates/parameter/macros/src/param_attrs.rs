@@ -196,7 +196,7 @@ impl ParameterAttrs {
                         "date" => quote! { ::nebula_parameter::parameter::Parameter::date(#key) },
                         "datetime" => {
                             quote! { ::nebula_parameter::parameter::Parameter::datetime(#key) }
-                        }
+                        },
                         "time" => quote! { ::nebula_parameter::parameter::Parameter::time(#key) },
                         "color" => quote! { ::nebula_parameter::parameter::Parameter::color(#key) },
                         "password" => quote! {
@@ -219,16 +219,16 @@ impl ParameterAttrs {
                 } else {
                     quote! { ::nebula_parameter::parameter::Parameter::string(#key) }
                 }
-            }
+            },
             "bool" => {
                 quote! { ::nebula_parameter::parameter::Parameter::boolean(#key) }
-            }
+            },
             "u8" | "u16" | "u32" | "u64" | "usize" | "i8" | "i16" | "i32" | "i64" | "isize" => {
                 quote! { ::nebula_parameter::parameter::Parameter::integer(#key) }
-            }
+            },
             "f32" | "f64" => {
                 quote! { ::nebula_parameter::parameter::Parameter::number(#key) }
-            }
+            },
             // For any other type: assume it implements HasParameters (nested object)
             // or HasSelectOptions (enum select). We try HasSelectOptions first
             // via trait resolution — if it fails, fall back to HasParameters.
@@ -239,7 +239,7 @@ impl ParameterAttrs {
                     // This uses a trait-based approach — the compiler resolves which.
                     <#ty_ident as ::nebula_parameter::InferParameterType>::into_parameter(#key)
                 }}
-            }
+            },
         }
     }
 
@@ -251,14 +251,14 @@ impl ParameterAttrs {
             "bool" => quote! { ::nebula_parameter::parameter::Parameter::boolean(#id) },
             "u8" | "u16" | "u32" | "u64" | "usize" | "i8" | "i16" | "i32" | "i64" | "isize" => {
                 quote! { ::nebula_parameter::parameter::Parameter::integer(#id) }
-            }
+            },
             "f32" | "f64" => quote! { ::nebula_parameter::parameter::Parameter::number(#id) },
             _ => {
                 let ty_ident = ty;
                 quote! {{
                     <#ty_ident as ::nebula_parameter::InferParameterType>::into_parameter(#id)
                 }}
-            }
+            },
         }
     }
 }
@@ -401,27 +401,27 @@ fn attr_value_to_json(val: &attrs::AttrValue) -> TokenStream2 {
             syn::Lit::Str(s) => {
                 let v = s.value();
                 quote! { ::serde_json::json!(#v) }
-            }
+            },
             syn::Lit::Int(i) => {
                 let v: i64 = i.base10_parse().unwrap_or(0);
                 quote! { ::serde_json::json!(#v) }
-            }
+            },
             syn::Lit::Float(f) => {
                 let v: f64 = f.base10_parse().unwrap_or(0.0);
                 quote! { ::serde_json::json!(#v) }
-            }
+            },
             syn::Lit::Bool(b) => {
                 let v = b.value;
                 quote! { ::serde_json::json!(#v) }
-            }
+            },
             _ => quote! { ::serde_json::Value::Null },
         },
         attrs::AttrValue::Ident(i) => {
             let s = i.to_string();
             quote! { ::serde_json::json!(#s) }
-        }
+        },
         attrs::AttrValue::Tokens(ts) => {
             quote! { ::serde_json::json!(#ts) }
-        }
+        },
     }
 }

@@ -172,7 +172,7 @@ mod linux {
                             .map_err(|e| SandboxError::Landlock(e.to_string()))?;
                     }
                 }
-            }
+            },
             Capability::FilesystemWrite { paths } => {
                 for path in paths {
                     if let Ok(fd) = PathFd::new(path) {
@@ -181,8 +181,8 @@ mod linux {
                             .map_err(|e| SandboxError::Landlock(e.to_string()))?;
                     }
                 }
-            }
-            _ => {}
+            },
+            _ => {},
         }
         Ok(ruleset)
     }

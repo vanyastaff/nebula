@@ -71,13 +71,13 @@ fn expand(input: DeriveInput) -> syn::Result<proc_macro2::TokenStream> {
                     "#[derive(Credential)] requires a unit struct (e.g. `struct MyCredential;`)",
                 ));
             }
-        }
+        },
         _ => {
             return Err(syn::Error::new(
                 input.ident.span(),
                 "#[derive(Credential)] can only be used on structs",
             ));
-        }
+        },
     }
 
     let attr_args = attrs::parse_attrs(&input.attrs, "credential")?;

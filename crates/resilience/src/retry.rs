@@ -98,11 +98,11 @@ impl BackoffConfig {
             } => {
                 let ms = base.as_millis() as f64 * multiplier.powi(attempt as i32);
                 Duration::from_millis(ms as u64).min(*max)
-            }
+            },
             Self::Fibonacci { base, max } => {
                 let fib_n = Self::fibonacci(attempt);
                 base.saturating_mul(fib_n).min(*max)
-            }
+            },
             Self::Custom(delays) => delays
                 .get(attempt as usize)
                 .or_else(|| delays.last())
@@ -402,7 +402,7 @@ where
                 if !delay.is_zero() {
                     tokio::time::sleep(delay).await;
                 }
-            }
+            },
         }
     }
 
@@ -967,7 +967,7 @@ mod tests {
                     Some(hint),
                     "retry_after hint should be forwarded"
                 );
-            }
+            },
             other => panic!("expected RateLimited, got {other:?}"),
         }
     }

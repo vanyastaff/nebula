@@ -43,6 +43,6 @@ body:
       label: Checklist
       options:
         - label: I've searched documentation and existing issues
-        - label: I've checked the vision/ folder for architecture docs
+        - label: I've checked the docs/ folder for architecture docs
         - label: This is a question/discussion, not a bug or feature request
 

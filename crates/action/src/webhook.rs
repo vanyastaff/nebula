@@ -824,7 +824,7 @@ where
                 }
                 let owned = Arc::unwrap_or_clone(arc_state);
                 self.action.on_deactivate(owned, ctx).await
-            }
+            },
             None => Ok(()),
         }
     }
@@ -867,7 +867,7 @@ where
                      (got {}); engine routing bug",
                     mismatched.payload_type_name()
                 )));
-            }
+            },
         };
 
         let response_tx = request.take_response_tx();
@@ -899,7 +899,7 @@ where
                 return Err(ActionError::fatal(
                     "handle_event called before start or after stop — no state available",
                 ));
-            }
+            },
         };
 
         // H6 — cancellation-safe dispatch. If the trigger is being
@@ -953,7 +953,7 @@ where
             TriggerEventOutcome::Emit(_) => ctx.health.record_success(1),
             TriggerEventOutcome::EmitMany(batch) => {
                 ctx.health.record_success(batch.len() as u64);
-            }
+            },
             TriggerEventOutcome::Skip => ctx.health.record_idle(),
         }
 
@@ -1032,7 +1032,7 @@ fn check_json_depth(bytes: &[u8], max_depth: usize) -> Result<(), serde_json::Er
             match b {
                 b'\\' => escape = true,
                 b'"' => in_string = false,
-                _ => {}
+                _ => {},
             }
             continue;
         }
@@ -1045,11 +1045,11 @@ fn check_json_depth(bytes: &[u8], max_depth: usize) -> Result<(), serde_json::Er
                         "webhook body JSON exceeds max depth {max_depth}"
                     )));
                 }
-            }
+            },
             b'}' | b']' => {
                 depth = depth.saturating_sub(1);
-            }
-            _ => {}
+            },
+            _ => {},
         }
     }
     Ok(())

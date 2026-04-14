@@ -161,17 +161,17 @@ impl ScopeLevel {
                 // Note: This is a simplified check. In practice, we'd need to
                 // verify that the execution belongs to the workflow
                 true
-            }
+            },
             (ScopeLevel::Action(_exec_id, _), ScopeLevel::Workflow(_)) => {
                 // Note: This is a simplified check. In practice, we'd need to
                 // verify that the execution belongs to the workflow
                 true
-            }
+            },
 
             // Execution scope contains action scopes for that execution
             (ScopeLevel::Action(exec_id, _), ScopeLevel::Execution(other_exec_id)) => {
                 exec_id == other_exec_id
-            }
+            },
 
             // Otherwise, no containment
             _ => false,
@@ -201,22 +201,22 @@ impl ScopeLevel {
         match (self, child_type) {
             (ScopeLevel::Global, ChildScopeType::Organization(org_id)) => {
                 Some(ScopeLevel::Organization(org_id))
-            }
+            },
             (ScopeLevel::Organization(_), ChildScopeType::Project(project_id)) => {
                 Some(ScopeLevel::Project(project_id))
-            }
+            },
             (ScopeLevel::Project(_), ChildScopeType::Workflow(workflow_id)) => {
                 Some(ScopeLevel::Workflow(workflow_id))
-            }
+            },
             (ScopeLevel::Global, ChildScopeType::Workflow(workflow_id)) => {
                 Some(ScopeLevel::Workflow(workflow_id))
-            }
+            },
             (ScopeLevel::Workflow(_), ChildScopeType::Execution(exec_id)) => {
                 Some(ScopeLevel::Execution(exec_id))
-            }
+            },
             (ScopeLevel::Execution(exec_id), ChildScopeType::Action(node_id)) => {
                 Some(ScopeLevel::Action(*exec_id, node_id))
-            }
+            },
             _ => None,
         }
     }
@@ -251,14 +251,14 @@ impl ScopeLevel {
 
             (ScopeLevel::Project(this), ScopeLevel::Organization(other_org)) => {
                 resolver.organization_for_project(this).as_ref() == Some(other_org)
-            }
+            },
             (ScopeLevel::Workflow(this), ScopeLevel::Organization(other_org)) => {
                 resolver
                     .project_for_workflow(this)
                     .and_then(|p| resolver.organization_for_project(&p))
                     .as_ref()
                     == Some(other_org)
-            }
+            },
             (ScopeLevel::Execution(this), ScopeLevel::Organization(other_org)) => {
                 resolver
                     .workflow_for_execution(this)
@@ -266,7 +266,7 @@ impl ScopeLevel {
                     .and_then(|p| resolver.organization_for_project(&p))
                     .as_ref()
                     == Some(other_org)
-            }
+            },
             (ScopeLevel::Action(this_exec, _), ScopeLevel::Organization(other_org)) => {
                 resolver
                     .workflow_for_execution(this_exec)
@@ -274,36 +274,36 @@ impl ScopeLevel {
                     .and_then(|p| resolver.organization_for_project(&p))
                     .as_ref()
                     == Some(other_org)
-            }
+            },
 
             (ScopeLevel::Workflow(this), ScopeLevel::Project(other_proj)) => {
                 resolver.project_for_workflow(this).as_ref() == Some(other_proj)
-            }
+            },
             (ScopeLevel::Execution(this), ScopeLevel::Project(other_proj)) => {
                 resolver
                     .workflow_for_execution(this)
                     .and_then(|w| resolver.project_for_workflow(&w))
                     .as_ref()
                     == Some(other_proj)
-            }
+            },
             (ScopeLevel::Action(this_exec, _), ScopeLevel::Project(other_proj)) => {
                 resolver
                     .workflow_for_execution(this_exec)
                     .and_then(|w| resolver.project_for_workflow(&w))
                     .as_ref()
                     == Some(other_proj)
-            }
+            },
 
             (ScopeLevel::Execution(this), ScopeLevel::Workflow(other_wf)) => {
                 resolver.workflow_for_execution(this).as_ref() == Some(other_wf)
-            }
+            },
             (ScopeLevel::Action(this_exec, _), ScopeLevel::Workflow(other_wf)) => {
                 resolver.workflow_for_execution(this_exec).as_ref() == Some(other_wf)
-            }
+            },
 
             (ScopeLevel::Action(exec_id, _), ScopeLevel::Execution(other_exec_id)) => {
                 exec_id == other_exec_id
-            }
+            },
 
             _ => false,
         }
@@ -335,7 +335,7 @@ impl fmt::Display for ScopeLevel {
             ScopeLevel::Execution(id) => write!(f, "execution:{}", id),
             ScopeLevel::Action(exec_id, node_id) => {
                 write!(f, "action:{}:{}", exec_id, node_id)
-            }
+            },
         }
     }
 }

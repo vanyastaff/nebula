@@ -1,4 +1,3 @@
-//!
 //! Built-in functions for the expression language
 //! This module provides all built-in functions organized by category.
 pub mod array;

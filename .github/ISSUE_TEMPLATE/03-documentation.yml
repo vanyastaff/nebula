@@ -24,7 +24,7 @@ body:
     attributes:
       label: Location
       description: File/section that needs updating (or "docs don't exist for X")
-      placeholder: "vision/ARCHITECTURE.md#async-patterns"
+      placeholder: "docs/architecture.md#async-patterns"
     validations:
       required: true
 

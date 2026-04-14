@@ -58,7 +58,7 @@ pub fn validate_with_profile(
             match profile {
                 ValidationProfile::Strict => report.push_error(error),
                 ValidationProfile::Warn => report.push_warning(error),
-                ValidationProfile::Permissive => {}
+                ValidationProfile::Permissive => {},
             }
         }
     }
@@ -197,7 +197,7 @@ fn validate_type(
         ParameterType::Dynamic { .. } | ParameterType::Filter { .. } => {
             // Dynamic: resolved at runtime, skip.
             // Filter: skip deep validation for now.
-        }
+        },
 
         // All others: no type-specific validation beyond rules.
         #[allow(deprecated)]
@@ -211,10 +211,10 @@ fn validate_type(
         | ParameterType::File { .. }
         | ParameterType::Hidden
         | ParameterType::Computed { .. }
-        | ParameterType::Notice { .. } => {}
+        | ParameterType::Notice { .. } => {},
 
         // Future variants: skip type-specific validation
-        _ => {}
+        _ => {},
     }
 }
 
@@ -498,7 +498,7 @@ fn value_type_name(value: &Value) -> String {
             } else {
                 format!("string \"{s}\"")
             }
-        }
+        },
         Value::Array(arr) => format!("array (length {})", arr.len()),
         Value::Object(_) => "object".to_owned(),
     }

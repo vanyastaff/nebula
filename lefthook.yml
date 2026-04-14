@@ -1,0 +1,15 @@
+pre-commit:
+  parallel: true
+  commands:
+    fmt-check:
+      run: cargo +nightly fmt --all -- --check
+    clippy:
+      run: cargo clippy --workspace --all-targets -- -D warnings
+    cargo-check:
+      run: cargo check --workspace --all-targets -q
+
+pre-push:
+  parallel: false
+  commands:
+    nextest:
+      run: cargo nextest run --workspace

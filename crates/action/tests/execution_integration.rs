@@ -59,7 +59,7 @@ async fn stateless_action_execute_returns_success() {
         ActionResult::Success { output } => {
             let v = output.as_value().expect("value");
             assert_eq!(v, &input);
-        }
+        },
         _ => panic!("expected Success, got {:?}", result),
     }
 }
@@ -127,7 +127,7 @@ async fn stateful_action_continue_then_break() {
     match &r0 {
         ActionResult::Continue { output, .. } => {
             assert_eq!(output.as_value(), Some(&0));
-        }
+        },
         _ => panic!("expected Continue, got {:?}", r0),
     }
     assert_eq!(state, 1);
@@ -136,7 +136,7 @@ async fn stateful_action_continue_then_break() {
     match &r1 {
         ActionResult::Continue { output, .. } => {
             assert_eq!(output.as_value(), Some(&1));
-        }
+        },
         _ => panic!("expected Continue, got {:?}", r1),
     }
     assert_eq!(state, 2);
@@ -146,7 +146,7 @@ async fn stateful_action_continue_then_break() {
         ActionResult::Break { output, reason } => {
             assert_eq!(output.as_value(), Some(&2));
             assert_eq!(*reason, BreakReason::Completed);
-        }
+        },
         _ => panic!("expected Break, got {:?}", r2),
     }
     assert_eq!(state, 3);

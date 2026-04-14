@@ -85,7 +85,7 @@ impl<E: Clone + Send> EventBus<E> {
         let outcome = match &self.policy {
             BackPressurePolicy::DropOldest | BackPressurePolicy::Block { .. } => {
                 self.publish_drop_oldest(event)
-            }
+            },
             BackPressurePolicy::DropNewest => self.publish_drop_newest(event),
         };
         self.record_outcome(outcome);
@@ -121,12 +121,12 @@ impl<E: Clone + Send> EventBus<E> {
         match outcome {
             PublishOutcome::Sent => {
                 self.sent_count.fetch_add(1, Ordering::Relaxed);
-            }
+            },
             PublishOutcome::DroppedNoSubscribers
             | PublishOutcome::DroppedByPolicy
             | PublishOutcome::DroppedTimeout => {
                 self.dropped_count.fetch_add(1, Ordering::Relaxed);
-            }
+            },
         }
     }
 
@@ -143,7 +143,7 @@ impl<E: Clone + Send> EventBus<E> {
                 let outcome = self.emit_blocking(event, *timeout).await;
                 self.record_outcome(outcome);
                 outcome
-            }
+            },
             _ => self.emit(event),
         }
     }

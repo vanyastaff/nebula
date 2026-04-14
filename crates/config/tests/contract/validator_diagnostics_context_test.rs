@@ -42,7 +42,7 @@ async fn diagnostics_include_source_and_path_context() {
         ConfigError::ValidationError { message, field } => {
             assert!(message.contains("service.port is invalid"));
             assert_eq!(field.as_deref(), Some("/service/port"));
-        }
+        },
         other => panic!("expected validation error, got {other:?}"),
     }
 }
@@ -62,7 +62,7 @@ async fn diagnostics_promote_nested_field_context_from_validator() {
             assert!(message.contains("help: set service.port >= 1"));
             assert!(message.contains("nested_errors=1"));
             assert_eq!(field.as_deref(), Some("/service/port"));
-        }
+        },
         other => panic!("expected validation error, got {other:?}"),
     }
 }

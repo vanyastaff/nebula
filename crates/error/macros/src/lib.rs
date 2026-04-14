@@ -83,7 +83,7 @@ fn classify_impl(input: &DeriveInput) -> syn::Result<TokenStream2> {
                 enum_name,
                 "Classify can only be derived for enums",
             ));
-        }
+        },
     };
 
     let mut category_arms = Vec::new();
@@ -267,7 +267,7 @@ fn category_from_str(s: &str, span: &dyn quote::ToTokens) -> syn::Result<TokenSt
                      unavailable, data_too_large"
                 ),
             ));
-        }
+        },
     };
     Ok(quote! { ::nebula_error::ErrorCategory::#variant })
 }
@@ -283,7 +283,7 @@ fn severity_from_str(s: &str, span: &dyn quote::ToTokens) -> syn::Result<TokenSt
                 span,
                 format!("unknown severity `{s}` — expected one of: error, warning, info"),
             ));
-        }
+        },
     };
     Ok(quote! { ::nebula_error::ErrorSeverity::#variant })
 }
@@ -309,31 +309,31 @@ fn parse_classify_meta(attr: &syn::Attribute) -> syn::Result<VariantClassificati
                 let lit: syn::LitStr = value.parse()?;
                 category = Some(category_from_str(&lit.value(), &lit)?);
                 Ok(())
-            }
+            },
             "code" => {
                 let value = meta.value()?;
                 let lit: syn::LitStr = value.parse()?;
                 code = Some(lit.value());
                 Ok(())
-            }
+            },
             "severity" => {
                 let value = meta.value()?;
                 let lit: syn::LitStr = value.parse()?;
                 severity = Some(severity_from_str(&lit.value(), &lit)?);
                 Ok(())
-            }
+            },
             "retryable" => {
                 let value = meta.value()?;
                 let lit: syn::LitBool = value.parse()?;
                 retryable = Some(lit.value());
                 Ok(())
-            }
+            },
             "retry_after_secs" => {
                 let value = meta.value()?;
                 let lit: syn::LitInt = value.parse()?;
                 retry_after_secs = Some(lit.base10_parse()?);
                 Ok(())
-            }
+            },
             _ => Err(syn::Error::new_spanned(
                 ident,
                 format!(

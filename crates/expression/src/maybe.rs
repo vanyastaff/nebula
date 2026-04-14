@@ -177,7 +177,7 @@ where
             Self::Expression(cached) => {
                 let value = engine.evaluate(&cached.source, context)?;
                 T::try_from(value).map_err(Into::into)
-            }
+            },
         }
     }
 }
@@ -217,7 +217,7 @@ impl MaybeExpression<String> {
                     Some(s) => Ok(s.to_owned()),
                     None => Ok(value.to_string()),
                 }
-            }
+            },
         }
     }
 }
@@ -239,7 +239,7 @@ impl MaybeExpression<i64> {
                         crate::value_utils::value_type_name(&value),
                     )
                 })
-            }
+            },
         }
     }
 }
@@ -257,7 +257,7 @@ impl MaybeExpression<f64> {
                 let value = engine.evaluate(&cached.source, context)?;
                 crate::value_utils::to_float(&value)
                     .map_err(|e| ExpressionError::type_error("float", e))
-            }
+            },
         }
     }
 }
@@ -274,7 +274,7 @@ impl MaybeExpression<bool> {
             Self::Expression(cached) => {
                 let value = engine.evaluate(&cached.source, context)?;
                 Ok(crate::value_utils::to_boolean(&value))
-            }
+            },
         }
     }
 }

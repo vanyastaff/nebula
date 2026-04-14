@@ -273,7 +273,7 @@ impl ExecutionRepo for PgExecutionRepo {
                     expected_version: 0,
                     actual_version,
                 })
-            }
+            },
             Err(err) => Err(map_err(err)),
         }
     }
@@ -375,7 +375,7 @@ impl ExecutionRepo for PgExecutionRepo {
                     .fetch_one(&self.pool)
                     .await
                     .map_err(map_err)?
-            }
+            },
             None => sqlx::query_scalar("SELECT COUNT(*) FROM executions")
                 .fetch_one(&self.pool)
                 .await
@@ -472,7 +472,7 @@ mod tests {
             } => {
                 assert_eq!(expected_version, 0);
                 assert_eq!(actual_version, 1);
-            }
+            },
             other => panic!("unexpected error: {other}"),
         }
     }

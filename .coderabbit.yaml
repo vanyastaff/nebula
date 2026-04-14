@@ -1,0 +1,45 @@
+language: "en-US"
+tone_instructions: >
+  Perform deep, high-signal reviews. Prioritize correctness, security, data-loss risk,
+  race conditions, API contract breakage, and missing/weak tests.
+  Be explicit about severity and concrete fix direction. Flag risky assumptions.
+  Keep recommendations actionable and code-aware; avoid generic advice.
+
+reviews:
+  profile: "assertive"
+  request_changes_workflow: true
+  high_level_summary: true
+  review_status: true
+  collapse_walkthrough: false
+  changed_files_summary: true
+  sequence_diagrams: true
+
+  auto_review:
+    enabled: true
+    drafts: true
+    incremental_reviews: true
+    base_branches:
+      - "main"
+      - "release/.*"
+    labels:
+      - "!skip-coderabbit"
+    description_keyword: "@coderabbit review"
+
+  path_filters:
+    - "!**/.claude/worktrees/**"
+    - "!docs/plans/archive/**"
+    - "!target/**"
+
+chat:
+  auto_reply: true
+
+knowledge_base:
+  opt_out: false
+  learnings:
+    scope: "auto"
+  issues:
+    enabled: true
+  pull_requests:
+    enabled: true
+  linear:
+    enabled: true

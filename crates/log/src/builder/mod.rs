@@ -173,10 +173,10 @@ impl LoggerBuilder {
                         Some(otel) => {
                             inner.otel_provider = Some(otel.provider);
                             Some(otel.layer)
-                        }
+                        },
                         None => None,
                     }
-                }
+                },
                 None => None,
             }
         };
@@ -188,19 +188,19 @@ impl LoggerBuilder {
             Format::Pretty => {
                 let fmt_layer = create_fmt_layer!(pretty, &self.config.display, writer);
                 init_subscriber!(filter_layer, fmt_layer, otel_layer);
-            }
+            },
             Format::Compact => {
                 let fmt_layer = create_fmt_layer!(compact, &self.config.display, writer);
                 init_subscriber!(filter_layer, fmt_layer, otel_layer);
-            }
+            },
             Format::Logfmt => {
                 let fmt_layer = create_logfmt_layer!(&self.config.display, writer);
                 init_subscriber!(filter_layer, fmt_layer, otel_layer);
-            }
+            },
             Format::Json => {
                 let fmt_layer = create_json_layer!(&self.config.display, writer);
                 init_subscriber!(filter_layer, fmt_layer, otel_layer);
-            }
+            },
         }
 
         // Create root span with global fields

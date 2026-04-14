@@ -167,14 +167,14 @@ impl crate::core::ConfigWatcher for FileWatcher {
                 ConfigSource::File(path) | ConfigSource::FileAuto(path) => {
                     path_to_source.insert(path.clone(), source.clone());
                     paths_to_watch.push(path.clone());
-                }
+                },
                 ConfigSource::Directory(dir) => {
                     path_to_source.insert(dir.clone(), source.clone());
                     paths_to_watch.push(dir.clone());
-                }
+                },
                 _ => {
                     // Skip non-file sources
-                }
+                },
             }
         }
 
@@ -225,7 +225,7 @@ impl crate::core::ConfigWatcher for FileWatcher {
                                 }
                             }
                         }
-                    }
+                    },
                     Err(e) => {
                         nebula_log::error!("Watch error: {}", e);
 
@@ -235,7 +235,7 @@ impl crate::core::ConfigWatcher for FileWatcher {
                         );
 
                         let _ = tx_clone.blocking_send(error_event);
-                    }
+                    },
                 }
             })
             .map_err(|e| ConfigError::watch_error(e.to_string()))?;
