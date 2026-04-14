@@ -1,9 +1,9 @@
+# yaml-language-server: $schema=https://coderabbit.ai/integrations/schema.v2.json
 language: "en-US"
-tone_instructions: >
-  Perform deep, high-signal reviews. Prioritize correctness, security, data-loss risk,
-  race conditions, API contract breakage, and missing/weak tests.
-  Be explicit about severity and concrete fix direction. Flag risky assumptions.
-  Keep recommendations actionable and code-aware; avoid generic advice.
+tone_instructions: >-
+  Deep, high-signal reviews for a Rust workflow engine. Prioritize correctness,
+  safety (data loss, concurrency races, lock ordering), API contract breakage,
+  silent fallbacks, and missing regression tests. Be terse. Skip style nits.
 
 reviews:
   profile: "assertive"
@@ -43,3 +43,4 @@ knowledge_base:
     enabled: true
   linear:
     enabled: true
+

@@ -53,8 +53,13 @@ jobs:
           tool: cargo-codspeed
 
       - name: Build the benchmark targets
+        # `-m walltime` is required so cargo-codspeed compiles the bench
+        # targets for the walltime runner. Without this flag the default
+        # `instrumentation` build is produced and `CodSpeedHQ/action` fails
+        # at the run step with "No benchmarks found for the walltime mode".
+        # See https://github.com/CodSpeedHQ/codspeed-rust
         run: |
-          cargo codspeed build \
+          cargo codspeed build -m walltime \
             -p nebula-config \
             -p nebula-core \
             -p nebula-eventbus \
@@ -68,4 +73,4 @@ jobs:
         uses: CodSpeedHQ/action@v4
         with:
           mode: walltime
-          run: cargo codspeed run
+          run: cargo codspeed run -m walltime
