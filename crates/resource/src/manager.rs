@@ -1287,9 +1287,11 @@ impl Manager {
             .generation
             .fetch_add(1, std::sync::atomic::Ordering::Release);
 
-        // #387: return to `Ready` with the new generation baked into
-        // `ResourceStatus.generation` (this is what `health_check`
-        // surfaces to operators).
+        // #387: return to `Ready` after publishing the new atomic
+        // generation so pollers see the phase transition alongside the
+        // config change. `health_check` reads the atomic directly, but
+        // `ResourceStatus.generation` is also refreshed by `set_phase`
+        // so `status()` snapshots stay self-consistent.
         managed.set_phase(crate::state::ResourcePhase::Ready);
 
         let _ = self
@@ -1724,7 +1726,13 @@ where
         return operation().await;
     };
 
-    let retry_cfg = config.to_retry_config();
+    // #383: `to_retry_config` returns `None` only if the underlying
+    // `RetryConfig::new` rejects the clamped attempt count. That path is
+    // unreachable today; if it ever fires we prefer to fall through to a
+    // single un-retried attempt rather than panic the manager.
+    let Some(retry_cfg) = config.to_retry_config() else {
+        return operation().await;
+    };
     nebula_resilience::retry_with(retry_cfg, operation)
         .await
         .map_err(|call_err| match call_err {
@@ -1777,8 +1785,10 @@ mod gate_admission_tests {
 
     /// #322: after `Failed { retry_at = past }`, concurrent callers must
     /// see **exactly one** `Probe` ticket, not a stampede. The CAS-based
-    /// single-probe claim lives in `admit_through_gate`.
-    #[tokio::test]
+    /// single-probe claim lives in `admit_through_gate`. Each spawned
+    /// task parks on a `Barrier` before calling so the 32 attempts
+    /// really contend, instead of being serviced one at a time.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
     async fn expired_failed_state_admits_only_one_probe() {
         let gate = Arc::new(RecoveryGate::new(RecoveryGateConfig {
             max_attempts: 16,
@@ -1790,16 +1800,43 @@ mod gate_admission_tests {
         ticket.fail_transient("seed");
         tokio::time::sleep(Duration::from_millis(20)).await;
 
-        // Concurrently fire 32 admit_through_gate calls.
-        let some_gate: Option<Arc<RecoveryGate>> = Some(Arc::clone(&gate));
-        let mut probes = 0;
-        let mut blocked = 0;
-        for _ in 0..32 {
+        async fn contend(
+            gate: Arc<RecoveryGate>,
+            barrier: Arc<tokio::sync::Barrier>,
+        ) -> (u32, u32) {
+            // Park here until every task is ready so we really stress
+            // the CAS claim.
+            barrier.wait().await;
+            let some_gate: Option<Arc<RecoveryGate>> = Some(gate);
             match admit_through_gate(&some_gate) {
-                Ok(GateAdmission::Probe(_t)) => probes += 1,
-                Ok(GateAdmission::Open) | Ok(GateAdmission::OpenGated(_)) => blocked += 1,
-                Err(_) => blocked += 1,
+                Ok(GateAdmission::Probe(ticket)) => {
+                    // Hold the probe until the test is done counting so
+                    // a second caller can't race in after a fast
+                    // resolve/fail cycle.
+                    tokio::time::sleep(Duration::from_millis(10)).await;
+                    drop(ticket);
+                    (1, 0)
+                },
+                Ok(GateAdmission::Open) | Ok(GateAdmission::OpenGated(_)) => (0, 1),
+                Err(_) => (0, 1),
             }
+        }
+
+        let barrier = Arc::new(tokio::sync::Barrier::new(32));
+        let mut handles = Vec::with_capacity(32);
+        for _ in 0..32 {
+            handles.push(tokio::spawn(contend(
+                Arc::clone(&gate),
+                Arc::clone(&barrier),
+            )));
+        }
+
+        let mut probes = 0u32;
+        let mut blocked = 0u32;
+        for h in handles {
+            let (p, b) = h.await.expect("admission task");
+            probes += p;
+            blocked += b;
         }
 
         assert_eq!(probes, 1, "exactly one Probe ticket must be granted (#322)");

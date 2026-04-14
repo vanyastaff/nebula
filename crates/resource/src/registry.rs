@@ -97,22 +97,34 @@ impl Registry {
         scope: ScopeLevel,
         managed: Arc<dyn AnyManagedResource>,
     ) {
-        let mut entries = self.entries.entry(key.clone()).or_default();
+        // Lock order is **strictly one-way**: `entries → (release) → type_index`.
+        // `get_typed` takes `type_index` first and then `entries`; if this
+        // function also held both simultaneously in either order we would
+        // race into an AB-BA deadlock on the dashmap shards. So we do all
+        // `entries` work in a scoped block, drop the guard, and only then
+        // touch `type_index`.
+        let stale_type_id = {
+            let mut entries = self.entries.entry(key.clone()).or_default();
 
-        // #382: if we're replacing an entry at the same scope whose concrete
-        // TypeId differs from the new one, scrub the prior TypeId row from
-        // type_index before installing the new mapping. Otherwise the stale
-        // row leaks and `get_typed::<OldR>` finds a key it can't downcast.
-        if let Some(pos) = entries.iter().position(|e| e.scope == scope) {
-            let prev_type_id = entries[pos].managed.managed_type_id();
-            if prev_type_id != type_id {
-                self.type_index.remove_if(&prev_type_id, |_, k| k == &key);
+            // #382: if we're replacing an entry at the same scope whose
+            // concrete `TypeId` differs from the new one, remember the
+            // prior id so we can scrub its `type_index` row below.
+            // Otherwise the stale row leaks and `get_typed::<OldR>` finds
+            // a key it can't downcast.
+            if let Some(pos) = entries.iter().position(|e| e.scope == scope) {
+                let prev_type_id = entries[pos].managed.managed_type_id();
+                entries[pos] = RegistryEntry { scope, managed };
+                (prev_type_id != type_id).then_some(prev_type_id)
+            } else {
+                entries.push(RegistryEntry { scope, managed });
+                None
             }
-            entries[pos] = RegistryEntry { scope, managed };
-        } else {
-            entries.push(RegistryEntry { scope, managed });
-        }
+            // entries guard drops here.
+        };
 
+        if let Some(stale) = stale_type_id {
+            self.type_index.remove_if(&stale, |_, k| k == &key);
+        }
         self.type_index.insert(type_id, key);
     }
 

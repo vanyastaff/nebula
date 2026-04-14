@@ -92,27 +92,32 @@ impl AcquireResilience {
     /// Convert to a [`RetryConfig`] for use with [`nebula_resilience::retry_with`].
     ///
     /// Maps exponential backoff (2× multiplier) and optional wall-clock
-    /// timeout budget. When no retry config is set, returns a single-attempt
-    /// config with optional timeout budget.
-    pub(crate) fn to_retry_config<E: 'static>(&self) -> RetryConfig<E> {
+    /// timeout budget. Returns `None` if [`RetryConfig::new`] rejects the
+    /// (clamped, `>= 1`) attempt count — today that path is unreachable,
+    /// but a future version of `nebula-resilience` might add new
+    /// validation and we prefer "skip retry" over "panic the manager".
+    /// Callers that receive `None` should run the operation without
+    /// retry (the existing `None` branch in [`execute_with_resilience`]).
+    pub(crate) fn to_retry_config<E: 'static>(&self) -> Option<RetryConfig<E>> {
+        // #383: clamp a user-supplied `max_attempts: 0` to 1 so we
+        // degrade to a single attempt instead of panicking. Clamping is
+        // documented on `AcquireRetryConfig::max_attempts`.
         let max_attempts = self.retry.as_ref().map_or(1, |r| r.max_attempts.max(1));
-        let cfg = RetryConfig::new(max_attempts).expect("max_attempts clamped to >=1 above");
+        let mut cfg = RetryConfig::new(max_attempts).ok()?;
 
-        let cfg = if let Some(ref retry) = self.retry {
-            cfg.backoff(BackoffConfig::Exponential {
+        if let Some(ref retry) = self.retry {
+            cfg = cfg.backoff(BackoffConfig::Exponential {
                 base: retry.initial_backoff,
                 multiplier: 2.0,
                 max: retry.max_backoff,
-            })
-        } else {
-            cfg
-        };
+            });
+        }
 
         if let Some(timeout) = self.timeout {
-            cfg.total_budget(timeout)
-        } else {
-            cfg
+            cfg = cfg.total_budget(timeout);
         }
+
+        Some(cfg)
     }
 }
 

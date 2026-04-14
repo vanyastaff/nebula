@@ -105,6 +105,24 @@ impl<R: Resource> PoolRuntime<R> {
     /// [`ResourceConfig::fingerprint()`](crate::ResourceConfig::fingerprint)
     /// on your config type to enable change detection.
     pub fn new(config: Config, fingerprint: u64) -> Self {
+        // #390: fail loudly at construction rather than deadlock on first
+        // acquire. `Manager::register_pooled*` surfaces the same check as
+        // a typed `Error::permanent`, but this guard also protects direct
+        // callers of the public `PoolRuntime::new` (e.g. the README and
+        // doctests). Invariants that must hold for the pool to function
+        // at all are asserted here rather than silently clamped.
+        assert!(
+            config.max_size > 0,
+            "PoolRuntime: config.max_size must be > 0 (got 0 — would deadlock \
+             the checkout semaphore on first acquire)",
+        );
+        assert!(
+            config.min_size <= config.max_size,
+            "PoolRuntime: config.min_size ({}) must be <= max_size ({})",
+            config.min_size,
+            config.max_size,
+        );
+
         let semaphore = Arc::new(Semaphore::new(config.max_size as usize));
         // #390: cap concurrent instance creation. `max(1)` protects us
         // from a pathological `max_concurrent_creates = 0` config that
