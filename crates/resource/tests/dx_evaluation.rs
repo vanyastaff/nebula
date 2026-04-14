@@ -426,10 +426,11 @@ async fn use_case_3_db_with_resilience_and_shutdown() {
 
     // Graceful shutdown
     manager
-        .graceful_shutdown(ShutdownConfig {
-            drain_timeout: std::time::Duration::from_secs(5),
-        })
-        .await;
+        .graceful_shutdown(
+            ShutdownConfig::default().with_drain_timeout(std::time::Duration::from_secs(5)),
+        )
+        .await
+        .expect("graceful_shutdown must succeed with no outstanding handles");
 
     assert!(manager.is_shutdown());
 }
