@@ -9,6 +9,7 @@ Storage trait abstraction — MemoryStorage for tests, PostgresStorage for produ
 - Node outputs keyed by `(execution_id, node_id, attempt)` — loads return highest attempt per node.
 - `list_running` non-terminal statuses: `"created"`, `"running"`, `"paused"`, `"cancelling"`.
 - Idempotency: string key dedup, `mark_idempotent` is no-op if key exists.
+- Stateful checkpoints keyed by `(execution_id, node_id, attempt)` — see `save/load/delete_stateful_checkpoint`. Default impls on the trait return `ExecutionRepoError::Internal("not implemented")` so backends (Postgres) that don't yet implement them compile; runtime logs WARN and falls back to `init_state` on load failure, never silently swallows (#308).
 
 ## Key Decisions
 - `PgWorkflowRepo` and `PgExecutionRepo` accept `Pool<Postgres>`, not a connection string — get pool from `PostgresStorage::pool()`.

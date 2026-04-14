@@ -23,6 +23,7 @@ Thin axum REST + WebSocket server — entry point for external clients.
 - `get_execution_outputs` and `get_execution_logs` call `get_state` first — return 404 for unknown IDs.
 - Execution list uses `list_running()` only; workflow-scoped filter is in-memory (TODO).
 - `ApiConfig` has manual `Debug` redacting secrets — never add `#[derive(Debug)]`.
+- **Global per-IP rate limiting.** `RateLimitState::new(rps)` wraps `governor::DefaultKeyedRateLimiter<IpAddr>` (GCRA, lock-free). Applied outermost in `build_app` via `middleware::from_fn` closure capture. IP resolved: `ConnectInfo<SocketAddr>` (requires `serve()` to use `into_make_service_with_connect_info`) → `X-Forwarded-For` → `X-Real-IP` → loopback fallback. `/health` and `/ready` are always excluded. Returns 429 with `Retry-After: 1`. Configured by `ApiConfig.rate_limit_per_second` (default 100). `serve()` now uses `into_make_service_with_connect_info::<SocketAddr>()` — do not revert to plain `into_make_service()`.
 - `ApiConfig::from_env` fails closed when `NEBULA_ENV` is unset (defaults to `production`); dev-only ephemeral JWT secret path activates only for `development`/`dev`/`local`.
 - **Webhook transport in `api::webhook`.** HTTP ingress for `nebula-action` `WebhookAction` triggers. `WebhookTransport::activate(handler, ctx_template)` generates `(trigger_uuid, nonce)`, builds `EndpointProviderImpl`, injects it into the `TriggerContext` template via `with_webhook_endpoint`, stores `(handler, ctx)` in a `DashMap`-backed `RoutingMap`, returns `ActivationHandle`. Runtime calls `adapter.start(&handle.ctx)`. Router is `POST /{path_prefix}/{trigger_uuid}/{nonce}` merged into `build_app` when `AppState.webhook_transport` is `Some`. Dispatch: body-size check → rate limit → route lookup → `WebhookRequest::try_new` → oneshot → `handler.handle_event` → await oneshot with timeout → write HTTP response. Error mapping: 404/404/413/400/429/500/504 per spec. `WebhookRateLimiter` salvaged verbatim from deleted `crates/webhook/` orphan, wraps `nebula_resilience::SlidingWindow` per-path with a `max_paths` soft cap. Nonce is 128-bit random per activation — stale external hooks pointing at the same UUID can't route to fresh registrations.
 - Webhook router must apply `DefaultBodyLimit::max(body_limit_bytes)` in addition to in-handler length checks. `Bytes` extraction without router-level limit can allocate attacker-sized bodies before application checks run.
@@ -30,6 +31,4 @@ Thin axum REST + WebSocket server — entry point for external clients.
 ## Relations
 - Depends on nebula-storage, nebula-workflow, nebula-action, nebula-plugin, nebula-runtime, nebula-resilience. Highest layer.
 
-<!-- reviewed: 2026-04-14 — webhook/mod.rs + webhook/provider.rs docstring cleanup for rustdoc (private `routing` module link, redundant explicit link target on `WebhookEndpointProvider`); no structural changes -->
-
-<!-- reviewed: 2026-04-14 -->
+<!-- reviewed: 2026-04-14 — added global per-IP rate limiting middleware (governor GCRA, RateLimitState, EXCLUDED_PATHS, serve ConnectInfo) -->

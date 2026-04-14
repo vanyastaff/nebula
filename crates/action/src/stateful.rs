@@ -426,6 +426,24 @@ pub trait StatefulHandler: Send + Sync {
     /// of the iteration — in that case no mutations could have occurred and
     /// there is nothing to flush.
     ///
+    /// # Cancellation (cancel-on-drop contract)
+    ///
+    /// The runtime races this future against `ctx.cancellation().cancelled()`
+    /// via `tokio::select!`. When the cancellation token fires mid-`await`,
+    /// the runtime **drops the execute future**, which cancels all nested
+    /// futures at their next `.await` point. Implementations whose
+    /// mid-`await` state cannot safely be dropped (in-flight DB transactions,
+    /// outgoing HTTP requests that must be completed, …) must either:
+    ///
+    /// 1. Guard the critical section behind a `tokio::select!` with a longer grace period and a
+    ///    compensating rollback, or
+    /// 2. Use `tokio::task::spawn` for the critical section and await the join handle — dropping
+    ///    the spawned task still leaks it, but the caller can wait for it to settle.
+    ///
+    /// The runtime will NOT poll the future to completion after
+    /// cancellation fires — a stuck handler cannot stall cancellation
+    /// (#304).
+    ///
     /// # Errors
     ///
     /// Returns [`ActionError`] if execution fails (validation, retryable, or fatal).

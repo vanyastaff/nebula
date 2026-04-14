@@ -35,6 +35,31 @@ pub const NEBULA_ACTION_FAILURES_TOTAL: &str = "nebula_action_failures_total";
 /// Histogram: action execution duration in seconds.
 pub const NEBULA_ACTION_DURATION_SECONDS: &str = "nebula_action_duration_seconds";
 
+/// Counter: action dispatches rejected before reaching a handler.
+///
+/// Labeled by `reason`. Separate from [`NEBULA_ACTION_EXECUTIONS_TOTAL`] so
+/// that the duration histogram and execution counter are not skewed by
+/// early-rejection paths (trigger / resource / agent / unknown variants).
+/// See `runtime::ActionRuntime::run_handler` and
+/// [`dispatch_reject_reason`] for the label values.
+pub const NEBULA_ACTION_DISPATCH_REJECTED_TOTAL: &str = "nebula_action_dispatch_rejected_total";
+
+/// Reason labels for [`NEBULA_ACTION_DISPATCH_REJECTED_TOTAL`].
+///
+/// These are the exact static strings emitted as the `reason` label on
+/// the dispatch-rejected counter. They are `pub const` so call sites and
+/// tests can compare without stringifying a value twice.
+pub mod dispatch_reject_reason {
+    /// `ActionHandler::Trigger` cannot be executed through `ActionRuntime`.
+    pub const TRIGGER_NOT_EXECUTABLE: &str = "trigger_not_executable";
+    /// `ActionHandler::Resource` cannot be executed through `ActionRuntime`.
+    pub const RESOURCE_NOT_EXECUTABLE: &str = "resource_not_executable";
+    /// `ActionHandler::Agent` is not yet supported (Phase 9 work).
+    pub const AGENT_NOT_SUPPORTED: &str = "agent_not_supported";
+    /// Unknown `ActionHandler` variant (`#[non_exhaustive]` guard).
+    pub const UNKNOWN_VARIANT: &str = "unknown_variant";
+}
+
 // ---------------------------------------------------------------------------
 // Resource (resource crate)
 // ---------------------------------------------------------------------------

@@ -25,7 +25,9 @@ pub use backend::{MemoryStorage, MemoryStorageTyped};
 #[cfg(feature = "postgres")]
 pub use backend::{PgExecutionRepo, PgWorkflowRepo, PostgresStorage, PostgresStorageConfig};
 pub use error::StorageError;
-pub use execution_repo::{ExecutionRepo, ExecutionRepoError, InMemoryExecutionRepo};
+pub use execution_repo::{
+    ExecutionRepo, ExecutionRepoError, InMemoryExecutionRepo, StatefulCheckpointRecord,
+};
 pub use format::StorageFormat;
 pub use storage::Storage;
 pub use workflow_repo::{InMemoryWorkflowRepo, WorkflowRepo, WorkflowRepoError};

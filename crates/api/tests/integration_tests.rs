@@ -6,9 +6,6 @@ use nebula_api::{ApiConfig, AppState, app};
 use nebula_config::ConfigBuilder;
 use nebula_storage::{InMemoryExecutionRepo, InMemoryWorkflowRepo};
 
-/// Must match the literal passed to `JwtSecret::for_test_unchecked` inside
-/// `ApiConfig::for_test` in `crates/api/src/config.rs`. Tests use this to
-/// mint JWTs against the same key the `test-util` config is built with.
 const TEST_JWT_SECRET: &str = "test-secret-for-integration-tests-0123456789";
 
 /// Helper to create test app state
@@ -1365,6 +1362,214 @@ async fn test_execution_get_invalid_id() {
     assert_eq!(response.status(), StatusCode::BAD_REQUEST);
 }
 
+// ── Rate limiting tests ──────────────────────────────────────────────────────
+
+/// Verify that requests within the per-IP limit are allowed through.
+#[tokio::test]
+async fn rate_limit_allows_requests_within_quota() {
+    use axum::{
+        body::Body,
+        http::{Request, StatusCode},
+    };
+    use tower::ServiceExt;
+
+    let state = create_test_state().await;
+    // Set a generous limit so a single test request is never throttled.
+    let api_config = ApiConfig {
+        rate_limit_per_second: 100,
+        ..ApiConfig::for_test()
+    };
+    let app = app::build_app(state, &api_config);
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .uri("/health")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::OK);
+}
+
+/// Verify that `/health` is never rate-limited, even with a 1 req/s quota and
+/// many rapid requests.
+#[tokio::test]
+async fn rate_limit_excludes_health_path() {
+    use axum::{
+        body::Body,
+        http::{Request, StatusCode},
+    };
+    use tower::ServiceExt;
+
+    let state = create_test_state().await;
+    // Minimal quota — would throttle any non-excluded path immediately.
+    let api_config = ApiConfig {
+        rate_limit_per_second: 1,
+        ..ApiConfig::for_test()
+    };
+
+    // Send more requests than the quota allows; all must succeed because /health
+    // is on the exclusion list.
+    for _ in 0..5 {
+        let app = app::build_app(state.clone(), &api_config);
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/health")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            response.status(),
+            StatusCode::OK,
+            "/health must never be rate-limited"
+        );
+    }
+}
+
+/// Verify that `/ready` is never rate-limited.
+#[tokio::test]
+async fn rate_limit_excludes_ready_path() {
+    use axum::{
+        body::Body,
+        http::{Request, StatusCode},
+    };
+    use tower::ServiceExt;
+
+    let state = create_test_state().await;
+    let api_config = ApiConfig {
+        rate_limit_per_second: 1,
+        ..ApiConfig::for_test()
+    };
+
+    for _ in 0..5 {
+        let app = app::build_app(state.clone(), &api_config);
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/ready")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            response.status(),
+            StatusCode::OK,
+            "/ready must never be rate-limited"
+        );
+    }
+}
+
+/// Verify that exceeding the per-IP quota returns 429 with a `Retry-After` header.
+#[tokio::test]
+async fn rate_limit_returns_429_when_quota_exceeded() {
+    use axum::{
+        body::Body,
+        http::{Request, StatusCode},
+    };
+
+    let state = create_test_state().await;
+    // 1 req/s burst — the second request from the same IP must be throttled.
+    let api_config = ApiConfig {
+        rate_limit_per_second: 1,
+        ..ApiConfig::for_test()
+    };
+
+    let app = app::build_app(state, &api_config);
+    let token = create_test_jwt();
+
+    // `into_service::<Body>()` produces a cloneable service; clones share the same Arc-backed
+    // rate-limiter map, so both requests hit the same per-IP counter.
+    let svc = app.into_service::<Body>();
+
+    // First request — should be allowed (burst of 1 at 1 req/s).
+    let first_response = tower::ServiceExt::oneshot(
+        svc.clone(),
+        Request::builder()
+            .uri("/api/v1/workflows")
+            .header("x-real-ip", "10.0.0.99")
+            .header("authorization", format!("Bearer {token}"))
+            .body(Body::empty())
+            .unwrap(),
+    )
+    .await
+    .unwrap();
+
+    // Second immediate request from the same IP must be throttled.
+    let second_response = tower::ServiceExt::oneshot(
+        svc,
+        Request::builder()
+            .uri("/api/v1/workflows")
+            .header("x-real-ip", "10.0.0.99")
+            .header("authorization", format!("Bearer {token}"))
+            .body(Body::empty())
+            .unwrap(),
+    )
+    .await
+    .unwrap();
+
+    assert_eq!(first_response.status(), StatusCode::OK);
+    assert_eq!(second_response.status(), StatusCode::TOO_MANY_REQUESTS);
+    assert!(
+        second_response.headers().contains_key("retry-after"),
+        "429 response must include Retry-After header"
+    );
+}
+
+/// Verify that two different IPs do not share quota.
+#[tokio::test]
+async fn rate_limit_is_per_ip() {
+    use axum::{
+        body::Body,
+        http::{Request, StatusCode},
+    };
+
+    let state = create_test_state().await;
+    let api_config = ApiConfig {
+        rate_limit_per_second: 1,
+        ..ApiConfig::for_test()
+    };
+
+    let app = app::build_app(state, &api_config);
+    let token = create_test_jwt();
+
+    let svc = app.into_service::<Body>();
+
+    // First IP — first request (within quota)
+    let r1 = tower::ServiceExt::oneshot(
+        svc.clone(),
+        Request::builder()
+            .uri("/api/v1/workflows")
+            .header("x-real-ip", "10.0.0.1")
+            .header("authorization", format!("Bearer {token}"))
+            .body(Body::empty())
+            .unwrap(),
+    )
+    .await
+    .unwrap();
+
+    // Second IP — first request (within its own separate quota)
+    let r2 = tower::ServiceExt::oneshot(
+        svc,
+        Request::builder()
+            .uri("/api/v1/workflows")
+            .header("x-real-ip", "10.0.0.2")
+            .header("authorization", format!("Bearer {token}"))
+            .body(Body::empty())
+            .unwrap(),
+    )
+    .await
+    .unwrap();
+
+    assert_eq!(r1.status(), StatusCode::OK, "first IP first request");
+    assert_eq!(r2.status(), StatusCode::OK, "second IP first request");
+}
 // ── #320: CORS preflight regression tests ──────────────────────────────
 
 /// Preflight for `X-API-Key` must succeed so browser clients using
