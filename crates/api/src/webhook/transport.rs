@@ -25,10 +25,10 @@ use std::{sync::Arc, time::Duration};
 use axum::{
     Router,
     body::Bytes,
-    extract::{Path, State},
+    extract::{DefaultBodyLimit, Path, State},
     http::{HeaderMap, Method, StatusCode, Uri},
     response::{IntoResponse, Response},
-    routing::any,
+    routing::post,
 };
 use nebula_action::{
     TriggerContext, TriggerEvent, TriggerHandler, WebhookEndpointProvider, WebhookHttpResponse,
@@ -188,13 +188,22 @@ impl WebhookTransport {
 
     /// Build the axum router that dispatches incoming webhook
     /// requests to registered triggers.
+    ///
+    /// The route is gated to `POST` only: the webhook contract at
+    /// the top of this file specifies `POST /{prefix}/{trigger_uuid}/{nonce}`,
+    /// and axum returns `405 Method Not Allowed` with `Allow: POST`
+    /// automatically for non-POST requests. Gating at the routing
+    /// boundary (rather than inside the handler) means middlewares,
+    /// rate limiters, and the routing-map lookup never count the
+    /// offending request — cheaper *and* more correct.
     pub fn router(&self) -> Router {
         let route = format!(
             "{prefix}/{{trigger_uuid}}/{{nonce}}",
             prefix = self.inner.config.path_prefix,
         );
         Router::new()
-            .route(&route, any(webhook_handler))
+            .route(&route, post(webhook_handler))
+            .layer(DefaultBodyLimit::max(self.inner.config.body_limit_bytes))
             .with_state(self.clone())
     }
 }
@@ -231,7 +240,7 @@ fn generate_nonce() -> String {
 
 // ── HTTP handler ────────────────────────────────────────────────────────
 
-/// Axum handler for `ANY /{prefix}/{trigger_uuid}/{nonce}`.
+/// Axum handler for `POST /{prefix}/{trigger_uuid}/{nonce}`.
 ///
 /// Error-to-status mapping follows the spec:
 ///

@@ -111,34 +111,43 @@ impl PendingStateStore for InMemoryPendingStore {
         owner_id: &str,
         session_id: &str,
     ) -> Result<P, PendingStoreError> {
-        let entry = self
-            .entries
-            .write()
-            .await
-            .remove(token.as_str())
+        // Validate *before* removing. A wrong-owner (or otherwise malformed)
+        // `consume` request must not be able to destroy the legitimate
+        // user's pending state — that would turn any token leak into a
+        // single-shot DoS against the in-flight flow. Hold the write lock
+        // across the whole check so no concurrent consume can race between
+        // validation and removal.
+        let mut entries = self.entries.write().await;
+
+        let entry = entries
+            .get(token.as_str())
             .ok_or(PendingStoreError::NotFound)?;
 
         if Utc::now() > entry.expires_at {
+            // Expiry is deterministic; it's safe to evict the stale row now.
+            entries.remove(token.as_str());
             return Err(PendingStoreError::Expired);
         }
 
-        if entry.credential_kind != credential_kind {
+        // All three binding checks are folded into one OR so the failure
+        // path is indistinguishable and does not hint at which dimension
+        // mismatched (cheap mitigation for a timing/oracle probe).
+        let mismatch = entry.credential_kind != credential_kind
+            || entry.owner_id != owner_id
+            || entry.session_id != session_id;
+        if mismatch {
+            // Intentionally leave the entry in place so the legitimate
+            // caller can still consume it.
             return Err(PendingStoreError::ValidationFailed {
-                reason: "credential kind mismatch".to_owned(),
+                reason: "token bindings do not match".to_owned(),
             });
         }
 
-        if entry.owner_id != owner_id {
-            return Err(PendingStoreError::ValidationFailed {
-                reason: "owner mismatch".to_owned(),
-            });
-        }
-
-        if entry.session_id != session_id {
-            return Err(PendingStoreError::ValidationFailed {
-                reason: "session mismatch".to_owned(),
-            });
-        }
+        // Only now remove the entry and deserialize from the owned bytes.
+        let entry = entries
+            .remove(token.as_str())
+            .expect("entry was just validated via get() under the same lock");
+        drop(entries);
 
         serde_json::from_slice(&entry.data).map_err(|e| PendingStoreError::Backend(Box::new(e)))
     }
@@ -221,7 +230,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn consume_validates_credential_kind() {
+    async fn consume_rejects_wrong_credential_kind_and_preserves_entry() {
         let store = InMemoryPendingStore::new();
         let token = store
             .put("oauth2", "user_1", "sess_1", test_pending("x"))
@@ -232,15 +241,19 @@ mod tests {
             .consume::<TestPending>("api_key", &token, "user_1", "sess_1")
             .await
             .unwrap_err();
+        assert!(matches!(err, PendingStoreError::ValidationFailed { .. }));
 
-        assert!(
-            matches!(err, PendingStoreError::ValidationFailed { ref reason } if reason == "credential kind mismatch"),
-            "expected credential kind mismatch, got: {err}"
-        );
+        // Entry must still be consumable by the legitimate caller — a
+        // wrong-kind probe must not destroy pending state.
+        let ok: TestPending = store
+            .consume("oauth2", &token, "user_1", "sess_1")
+            .await
+            .expect("legitimate consume should still succeed after bad probe");
+        assert_eq!(ok.data, "x");
     }
 
     #[tokio::test]
-    async fn consume_validates_owner_id() {
+    async fn consume_rejects_wrong_owner_and_preserves_entry() {
         let store = InMemoryPendingStore::new();
         let token = store
             .put("oauth2", "user_1", "sess_1", test_pending("x"))
@@ -251,15 +264,17 @@ mod tests {
             .consume::<TestPending>("oauth2", &token, "user_2", "sess_1")
             .await
             .unwrap_err();
+        assert!(matches!(err, PendingStoreError::ValidationFailed { .. }));
 
-        assert!(
-            matches!(err, PendingStoreError::ValidationFailed { ref reason } if reason == "owner mismatch"),
-            "expected owner mismatch, got: {err}"
-        );
+        let ok: TestPending = store
+            .consume("oauth2", &token, "user_1", "sess_1")
+            .await
+            .expect("legitimate consume should still succeed after bad probe");
+        assert_eq!(ok.data, "x");
     }
 
     #[tokio::test]
-    async fn consume_validates_session_id() {
+    async fn consume_rejects_wrong_session_and_preserves_entry() {
         let store = InMemoryPendingStore::new();
         let token = store
             .put("oauth2", "user_1", "sess_1", test_pending("x"))
@@ -270,11 +285,13 @@ mod tests {
             .consume::<TestPending>("oauth2", &token, "user_1", "sess_2")
             .await
             .unwrap_err();
+        assert!(matches!(err, PendingStoreError::ValidationFailed { .. }));
 
-        assert!(
-            matches!(err, PendingStoreError::ValidationFailed { ref reason } if reason == "session mismatch"),
-            "expected session mismatch, got: {err}"
-        );
+        let ok: TestPending = store
+            .consume("oauth2", &token, "user_1", "sess_1")
+            .await
+            .expect("legitimate consume should still succeed after bad probe");
+        assert_eq!(ok.data, "x");
     }
 
     #[tokio::test]

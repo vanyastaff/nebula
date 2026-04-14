@@ -13,3 +13,5 @@
 - **nebula-auth**: RFC phase — do not depend on it.
 - **API JWT**: Placeholder — header presence-check only.
 - **Gone crates**: nebula-app, nebula-value, nebula-memory — all removed, references stale.
+- **`cargo deny` layers are convention-only**: `[bans.deny]=[]`. CI runs deny but only for advisories/licenses. Cross-layer deps won't fail CI — review must catch.
+- **Intra-doc links in `//!` / attribute docs**: rustdoc under `-D warnings` cannot resolve `[`external::Path`]` (e.g. `tokio::sync::Semaphore`) unless the path is `use`d in scope, and sometimes fails on same-module types from inside `//!` blocks too. Use plain code spans (`` `Foo` ``) instead of bracketed links in module-level/attribute docs unless you have verified resolution. Doc CI is gated by Formatting — when fmt fails, doc job is skipped, so broken links can sit on main unnoticed.

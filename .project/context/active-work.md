@@ -1,26 +1,27 @@
 # Active Work
-Updated: 2026-04-13
+Updated: 2026-04-14
 
 ## In Progress
-- **Desktop app** (Tauri): `apps/desktop/`
-
-## Recently Completed
-- **Webhook subsystem Sessions 1+2** (2026-04-13, two commits): (S1) nebula-action::webhook hardening bundle H1-H10 — oneshot-500 on handle_request Err, cancel-safe handle_request (503 on cancel), `verify_hmac_sha256_with_timestamp` helper for Stripe/Slack replay windows with injectable canonicalizer and `received_at()` clock source, `verify_hmac_sha256_base64` for Shopify/Square, `body_json_bounded(max_depth)` pre-scanner for JSON bomb defence, multi-valued header rejection, timing-invariant hex decode, TriggerHealth wiring, MAX_HEADER_COUNT 128→256, `Notify` replacing `yield_now` spin in stop(). 22 new tests (370 green). (S2) nebula-api::webhook HTTP transport — `WebhookTransport` with axum Router mounted at `POST /webhooks/{trigger_uuid}/{nonce}`, `WebhookEndpointProvider` capability on `TriggerContext` (declared in nebula-action, implemented in nebula-api), `RoutingMap` DashMap, salvaged `WebhookRateLimiter` wrapping `nebula_resilience::SlidingWindow`, `EndpointProviderImpl` building per-activation URLs with 128-bit nonce (defence against stale external hook routing). 20 new tests (9 integration round-trip + 11 unit). 3246 workspace tests green. Session 3 pending: delete orphan `crates/webhook/` (4532 LOC). See `docs/plans/2026-04-13-webhook-subsystem-spec.md`, `webhook-implementation-plan.md`.
-- **Poll trigger hardening** (2026-04-13, two plans): critical correctness fixes (B1-B6: RetryBatch backoff + errored flag, DedupCursor deserialize clamp, override_next clamping, total-loss observability, Partial empty-events handling, batch-size debug_assert) AND quick-hardening bundle (H1-H7: loop flip poll→sleep, stop() cancels token, jitter seed per-trigger-identity, #[non_exhaustive] on PollResult, PollConfig validate_and_clamp, persistence warning in trait doc, PollConfig=constraint-not-policy principle). 348 tests green. See `docs/plans/2026-04-13-poll-critical-fixes.md` and `2026-04-13-poll-quick-hardening.md`. Deferred breaking changes tracked in `2026-04-13-poll-api-v2.md`.
-- **Trigger subsystem refactor** (commits 1-5 of 5, 04-09–12):
-  - Commit 1 ✅ `TriggerEvent` envelope + `WebhookRequest`. `IncomingEvent` deleted.
-  - Commit 2 ✅ `WebhookResponse` enum (Accept/Respond) + `WebhookHttpResponse` + oneshot response channel.
-  - Commit 3 ✅ `PollCycle` + `EmitFailurePolicy`. `poll(&cursor) -> PollCycle`, cursor checkpoint on success.
-  - Commit 4 ✅ `poll_timeout()` + `tokio::time::timeout` wrapper.
-  - Commit 5 ✅ Dropped `Default+Serialize+DeserializeOwned` from `WebhookAction::State`. M1 fix (in-flight counter). `PollTriggerAdapter::stop` documented.
-- **nebula-action audit + refactor** (04-11–12): handler re-export purge, derives, DeferredRetryConfig validation, POLL_INTERVAL_FLOOR on ctx.logger, workspace clippy cleanup, nightly rustfmt pass, .claude→.project split, context file trimming.
+- **Desktop app** (Tauri): `apps/desktop/`.
+- **Sandbox Phase 1** slices 1a + 1b + 1c all landed. Duplex v2 is the only protocol. `ProcessSandbox` speaks v2 long-lived handle over UDS (Unix) / Named Pipes (Windows) with JSON framing — gRPC/tonic/protobuf stack was dropped in favour of UDS+JSON (`b607ac39`). Roadmap: `docs/plans/2026-04-13-sandbox-roadmap.md`. Next: Phase 1 slice 1d (supervisor + broker) per `docs/plans/2026-04-13-sandbox-phase1-broker.md`.
 
 ## Blocked
-- **engine**: needs credential DI + Postgres storage
-- **auth**: RFC phase
-- **poll cursor persistence (F8 / V5)**: blocked on runtime storage — only `MemoryStorage` exists today. Tracked in `docs/plans/2026-04-13-poll-api-v2.md`. High-value (payment/audit) integrations must not ship against current `PollAction` without downstream idempotency.
+- **engine**: credential DI + Postgres storage.
+- **auth**: RFC phase.
+- **poll cursor persistence**: runtime storage only `MemoryStorage`. See `docs/plans/2026-04-13-poll-api-v2.md`.
 
 ## Next Up
-- Credential bugs B1-B9 (B6 CRITICAL)
-- CredentialPhase + OwnerId
-- Wire CredentialResolver into ActionContext
+- Sandbox slice 1d (supervisor + broker).
+- Credential bugs **B3, B4, B5, B13** remaining. Shipped: B1, B2, B6 (was CRITICAL), B7, B8, B9, B10, B11, B12, B14 — visible in `git log --grep '\[B[0-9]'`.
+- CredentialPhase + OwnerId.
+- Wire CredentialResolver into ActionContext.
+- **ControlAction Phase 2**: 7 concrete control nodes (If/Switch/Router/Filter/NoOp/Stop/Fail) in a downstream crate — blocked on crate-placement decision. Trait + adapter + Drop/Terminate prerequisites landed on `main` as `d77a3a1f` (#247). Plan: `docs/plans/2026-04-13-control-action-plan.md`.
+- **ControlAction Phase 3**: full engine wiring for `Terminate` (parallel-branch cancellation, `ExecutionResult::termination_reason` propagation, `determine_final_status` handling). v1 gates downstream edges locally only.
+
+## Recently shipped (this session, 2026-04-13)
+- **#247 ControlAction DX trait** — public trait + adapter pattern over `StatelessHandler`, plus correctness fixes `ActionResult::Drop`/`Terminate`, `TerminationCode` newtype, `ActionCategory` metadata, `ExecutionTerminationReason`. 56 new tests, 7 demo fixtures, 5 commits squashed.
+
+## Archived branches
+- `archive/refactor-credential-beta` (tag at `c93b51d5`) — parallel attempt at credential v2 rewrite; v2 won, beta preserved as tag. Three salvageable ideas documented (CredentialContext encapsulation, CredentialDescription::builder required key, CacheLayer::exists hit counter) — revive as separate small PRs if wanted.
+
+Recent work in `git log`.

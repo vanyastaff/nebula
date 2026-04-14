@@ -14,7 +14,7 @@
 //! - [`StatelessHandler`](crate::stateless::StatelessHandler) — one-shot JSON in, JSON out
 //! - [`StatefulHandler`](crate::stateful::StatefulHandler) — iterative with mutable JSON state
 //! - [`TriggerHandler`](crate::trigger::TriggerHandler) — start/stop lifecycle with
-//!   [`IncomingEvent`](crate::trigger::IncomingEvent) and
+//!   [`TriggerEvent`](crate::trigger::TriggerEvent) and
 //!   [`TriggerEventOutcome`](crate::trigger::TriggerEventOutcome); webhook and poll specializations
 //!   live in [`crate::webhook`] and [`crate::poll`]
 //! - [`ResourceHandler`](crate::resource::ResourceHandler) — configure/cleanup lifecycle
@@ -22,7 +22,7 @@
 //!
 //! [`ActionHandler`] itself is the sum type the engine switches on. All handler
 //! types are also re-exported at the crate root, so the canonical import is
-//! `use nebula_action::{StatelessHandler, IncomingEvent, ...}`.
+//! `use nebula_action::{StatelessHandler, TriggerEvent, ...}`.
 
 use std::{fmt, sync::Arc};
 

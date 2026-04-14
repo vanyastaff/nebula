@@ -391,3 +391,91 @@ async fn deactivate_removes_route() {
     let r2 = router.clone().oneshot(req2).await.unwrap();
     assert_eq!(r2.status(), StatusCode::NOT_FOUND);
 }
+
+// ── #312: webhook router must only accept POST ──────────────────────────
+//
+// Regression tests for issue #312: the previous routing used
+// `.route(&route, any(...))` which dispatched GET/PUT/DELETE/PATCH
+// through the handler. The fix changes that to `.route(..., post(...))`
+// so axum auto-returns 405 with `Allow: POST` for non-POST methods.
+
+/// Helper: build an activated transport + the path under which its
+/// webhook is registered.
+async fn make_activated_transport() -> (WebhookTransport, String) {
+    let transport = make_transport(None, 1024 * 1024);
+    let (handle, _) = register_webhook(&transport, b"secret".to_vec()).await;
+    let path = handle.endpoint_url.path().to_string();
+    (transport, path)
+}
+
+async fn assert_method_rejected(method: &'static str) {
+    let (transport, path) = make_activated_transport().await;
+    let router = transport.router();
+
+    let request = Request::builder()
+        .method(method)
+        .uri(&path)
+        .body(Body::from("{}"))
+        .unwrap();
+
+    let response = router.oneshot(request).await.unwrap();
+    assert_eq!(
+        response.status(),
+        StatusCode::METHOD_NOT_ALLOWED,
+        "{method} must be rejected with 405"
+    );
+    let allow = response
+        .headers()
+        .get("allow")
+        .expect("405 must include Allow header")
+        .to_str()
+        .unwrap()
+        .to_ascii_uppercase();
+    assert!(
+        allow.contains("POST"),
+        "Allow header must advertise POST, got: {allow}"
+    );
+}
+
+#[tokio::test]
+async fn rejects_get_with_405() {
+    assert_method_rejected("GET").await;
+}
+
+#[tokio::test]
+async fn rejects_put_with_405() {
+    assert_method_rejected("PUT").await;
+}
+
+#[tokio::test]
+async fn rejects_delete_with_405() {
+    assert_method_rejected("DELETE").await;
+}
+
+#[tokio::test]
+async fn rejects_patch_with_405() {
+    assert_method_rejected("PATCH").await;
+}
+
+/// Regression lock: POST must still dispatch through the handler
+/// after the method-gate change.
+#[tokio::test]
+async fn post_still_dispatches() {
+    let transport = make_transport(None, 1024 * 1024);
+    let (handle, _) = register_webhook(&transport, b"secret".to_vec()).await;
+
+    let router = transport.router();
+    let body_bytes = br#"{"ping":true}"#.to_vec();
+    let sig = sign(b"secret", &body_bytes);
+
+    let request = Request::builder()
+        .method("POST")
+        .uri(handle.endpoint_url.path())
+        .header("content-type", "application/json")
+        .header("x-hub-signature-256", sig)
+        .body(Body::from(body_bytes))
+        .unwrap();
+
+    let response = router.oneshot(request).await.unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+}

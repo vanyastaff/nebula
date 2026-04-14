@@ -349,9 +349,11 @@ where
     );
 
     let mut last_err: Option<E> = None;
+    let mut attempts_executed: u32 = 0;
     let start = std::time::Instant::now();
 
     for attempt in 0..config.max_attempts {
+        attempts_executed = attempt + 1;
         match f().await {
             Ok(value) => return Ok(value),
             Err(e) => {
@@ -409,7 +411,7 @@ where
     Err(last_err.map_or_else(
         || CallError::cancelled(),
         |e| CallError::RetriesExhausted {
-            attempts: config.max_attempts,
+            attempts: attempts_executed.max(1),
             last: e,
         },
     ))

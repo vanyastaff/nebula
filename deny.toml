@@ -76,6 +76,13 @@ ignore = [
     # Risk is acceptable: nebula-api uses HS256 only — RSA JWT algorithms (RS256/PS256/etc.)
     # are never configured or called. Revisit when jsonwebtoken ships a patched rsa dep.
     { id = "RUSTSEC-2023-0071", reason = "rsa pulled by jsonwebtoken rust_crypto feature; project uses HS256 only, RSA code path never reached" },
+    # rand 0.10.0 is flagged unsound under a specific narrow pattern: calling
+    # `rand::rng()` (thread-local RNG) while a *custom panic logger* is active
+    # that itself touches thread-local state — safe code can then trigger UB.
+    # Nebula does not install a custom panic logger that touches thread-locals,
+    # and all use of `rand::rng()` is in benches / tests / trigger jitter on
+    # non-security-critical paths. Revisit when rand ships a patched release.
+    { id = "RUSTSEC-2026-0097", reason = "rand 0.10.0 unsound only under custom panic-logger + thread-local interaction, not our usage pattern; patched release pending upstream" },
 ]
 # If this is true, then cargo deny will use the git executable to fetch advisory database.
 # If this is false, then it uses a built-in git library.

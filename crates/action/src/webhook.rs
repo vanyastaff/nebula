@@ -91,7 +91,7 @@ pub const MAX_HEADER_COUNT: usize = 256;
 // ── WebhookRequest ──────────────────────────────────────────────────────────
 
 /// Incoming HTTP webhook request — the typed event carried inside a
-/// [`TriggerEvent`](crate::trigger::TriggerEvent) for webhook triggers.
+/// [`TriggerEvent`] for webhook triggers.
 ///
 /// The HTTP transport layer constructs one of these from an incoming
 /// request and wraps it in a `TriggerEvent` before routing to the
@@ -345,9 +345,8 @@ impl WebhookRequest {
     /// Attach a response channel for HTTP response plumbing.
     ///
     /// The HTTP transport layer calls this before wrapping the request
-    /// in a [`TriggerEvent`](crate::trigger::TriggerEvent). The adapter
-    /// sends a [`WebhookHttpResponse`] through the channel after calling
-    /// [`WebhookAction::handle_request`].
+    /// in a [`TriggerEvent`]. The adapter sends a [`WebhookHttpResponse`]
+    /// through the channel after calling [`WebhookAction::handle_request`].
     #[must_use]
     pub fn with_response_channel(self, tx: oneshot::Sender<WebhookHttpResponse>) -> Self {
         *self.response_tx.lock() = Some(tx);
@@ -625,9 +624,9 @@ pub trait WebhookAction: Action + Send + Sync + 'static {
 
 // ── WebhookEndpointProvider ──────────────────────────────────────────────
 
-/// Capability injected into [`TriggerContext`](crate::context::TriggerContext)
-/// by the HTTP transport layer so webhook actions can discover the
-/// public URL at which external providers should POST.
+/// Capability injected into [`TriggerContext`] by the HTTP transport
+/// layer so webhook actions can discover the public URL at which
+/// external providers should POST.
 ///
 /// Implemented by `nebula-api::webhook::EndpointProviderImpl`.
 /// `nebula-action` declares the trait; it does NOT implement it —

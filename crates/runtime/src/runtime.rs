@@ -21,7 +21,7 @@ use crate::{
     data_policy::{DataPassingPolicy, LargeDataStrategy},
     error::RuntimeError,
     registry::ActionRegistry,
-    sandbox::SandboxRunner,
+    sandbox::{SandboxRunner, SandboxedContext},
 };
 
 /// The action runtime orchestrates execution of actions.
@@ -36,10 +36,9 @@ use crate::{
 /// 5. Emits telemetry events
 pub struct ActionRuntime {
     registry: Arc<ActionRegistry>,
-    // Sandbox dispatch for isolated execution is deferred to Phase 7.6.
-    // Currently stateless actions run directly through StatelessHandler::execute
-    // regardless of isolation level.
-    #[allow(dead_code)]
+    // Used for non-None isolation in execute_stateless (Phase 0).
+    // Stateful isolation dispatch remains fail-closed until the broker
+    // protocol lands in Phase 1 — see execute_stateful.
     sandbox: Arc<dyn SandboxRunner>,
     data_policy: DataPassingPolicy,
     metrics: MetricsRegistry,
@@ -229,12 +228,17 @@ impl ActionRuntime {
 
     /// Execute a stateless handler.
     ///
-    /// Execute a stateless handler.
+    /// Dispatch depends on the action's [`IsolationLevel`]:
     ///
-    /// Only `IsolationLevel::None` is supported in Phase 7.5. Non-`None`
-    /// isolation levels return `ActionError::Fatal` to prevent silent
-    /// bypassing of capability checks. Sandbox dispatch through
-    /// [`SandboxRunner`] is Phase 7.6 work.
+    /// - `None` — trusted in-process execution, handler invoked directly.
+    /// - `CapabilityGated` / `Isolated` — routed through [`SandboxRunner`]. In Phase 0 the sandbox
+    ///   is typically an `InProcessSandbox` whose `ActionExecutor` was wired at engine construction
+    ///   time; the engine is responsible for passing a closure that can actually invoke the
+    ///   registered handler for the given action key. Phase 1 replaces this with `ProcessSandbox`
+    ///   dispatching to real plugin subprocesses over the UDS + JSON duplex v2 protocol (slices
+    ///   1a–1c shipped; slice 1d supervisor + broker pending). See
+    ///   `docs/plans/2026-04-13-sandbox-roadmap.md` and
+    ///   `docs/plans/2026-04-13-sandbox-phase1-broker.md`.
     async fn execute_stateless(
         &self,
         metadata: &ActionMetadata,
@@ -242,13 +246,19 @@ impl ActionRuntime {
         input: serde_json::Value,
         context: ActionContext,
     ) -> Result<ActionResult<serde_json::Value>, ActionError> {
-        if !matches!(metadata.isolation_level, IsolationLevel::None) {
-            return Err(ActionError::fatal(
-                "sandboxed stateless execution is not yet supported (Phase 7.6) — \
-                 refusing to silently bypass isolation/capability checks",
-            ));
+        match metadata.isolation_level {
+            IsolationLevel::None => handler.execute(input, &context).await,
+            IsolationLevel::CapabilityGated | IsolationLevel::Isolated => {
+                let sandboxed = SandboxedContext::new(context);
+                self.sandbox.execute(sandboxed, metadata, input).await
+            }
+            // IsolationLevel is `#[non_exhaustive]`. Any future variant must
+            // fail-closed until we explicitly wire dispatch for it.
+            _ => Err(ActionError::fatal(format!(
+                "unknown isolation level for action '{}' — refusing to dispatch",
+                metadata.key.as_str()
+            ))),
         }
-        handler.execute(input, &context).await
     }
 
     /// Execute a stateful handler — loops through [`StatefulHandler::execute`]
@@ -264,8 +274,14 @@ impl ActionRuntime {
         context: ActionContext,
     ) -> Result<ActionResult<serde_json::Value>, ActionError> {
         if !matches!(metadata.isolation_level, IsolationLevel::None) {
+            // Stateful sandbox dispatch requires a long-lived broker loop to
+            // persist state across iterations. The current `SandboxRunner`
+            // trait is a single-shot execute call with no iteration semantics.
+            // Unblocks when sandbox slice 1d ships the supervisor + broker —
+            // see docs/plans/2026-04-13-sandbox-phase1-broker.md.
             return Err(ActionError::fatal(
-                "sandboxed stateful execution is not yet supported (Phase 7.6)",
+                "sandboxed stateful execution is not yet supported — \
+                 broker iteration protocol lands in sandbox slice 1d",
             ));
         }
 
@@ -311,120 +327,167 @@ impl ActionRuntime {
         )))
     }
 
-    /// Check the primary output of an `ActionResult` against the data passing policy.
+    /// Check every downstream-visible output slot against the data-passing
+    /// policy.
     ///
-    /// Returns `Ok(())` if within limits.
-    /// For `SpillToBlob`, writes the output to blob storage if configured and
-    /// **rewrites** the primary output field to an [`ActionOutput::Reference`] so the
-    /// large inline payload is no longer carried downstream.
-    /// Returns `Err(DataLimitExceeded)` if the output is too large and cannot
-    /// be spilled.
+    /// This walks *all* output fields an action can emit, not just the
+    /// "primary" one:
+    ///
+    /// - `Success` / `Continue` / `Break` / `Route` — their single output
+    /// - `Skip` / `Wait` — the optional partial output
+    /// - `Branch` — the selected output **and** every alternative (previews are still shipped
+    ///   downstream; a misbehaving node must not smuggle a GB-sized alternative past the limit)
+    /// - `MultiOutput` — the optional main output **and** every fan-out port
+    ///
+    /// For each inline `Value` slot that exceeds the limit, applies the
+    /// configured strategy:
+    /// - `Reject` → returns `DataLimitExceeded` on the first offender
+    /// - `SpillToBlob` → writes the payload to blob storage and rewrites the slot to an
+    ///   `ActionOutput::Reference` so the large inline value is no longer carried downstream
+    ///
+    /// Non-`Value` variants (`Binary` / `Reference` / `Deferred`) are
+    /// skipped — their size is managed by the owning storage backend.
     async fn enforce_data_limit(
         &self,
         action_key: &str,
         action_result: &mut ActionResult<serde_json::Value>,
         error_counter: &nebula_telemetry::metrics::Counter,
     ) -> Result<(), RuntimeError> {
-        let output = match primary_output_mut(action_result) {
-            Some(o) => o,
-            None => return Ok(()),
-        };
-
-        // Only inline values can exceed the size limit; binary/reference outputs
-        // are already managed by their respective storage backends.
-        let serialized = match &*output {
-            ActionOutput::Value(v) => serde_json::to_vec(v).map_err(|e| {
-                RuntimeError::Internal(format!(
-                    "failed to serialize output for size limit enforcement: {e}"
-                ))
-            })?,
-            _ => return Ok(()),
-        };
-
-        let actual = serialized.len() as u64;
         let limit = self.data_policy.max_node_output_bytes;
 
-        if actual <= limit {
-            return Ok(());
-        }
+        // Collect disjoint mut references to every output slot in the result.
+        // The Vec itself holds unique borrows of distinct struct fields, so
+        // iterating and mutating each in turn is sound.
+        let mut slots: Vec<&mut ActionOutput<serde_json::Value>> = Vec::new();
+        collect_output_slots_mut(action_result, &mut slots);
 
-        // Output is oversized — apply the configured strategy.
-        match self.data_policy.large_data_strategy {
-            LargeDataStrategy::Reject => {
-                error_counter.inc();
-                Err(RuntimeError::DataLimitExceeded {
-                    limit_bytes: limit,
-                    actual_bytes: actual,
-                })
+        for slot in slots {
+            // Only inline Value outputs participate in the size check;
+            // Binary / Reference / Deferred are already bounded by their
+            // respective backends.
+            let serialized = match &*slot {
+                ActionOutput::Value(v) => serde_json::to_vec(v).map_err(|e| {
+                    RuntimeError::Internal(format!(
+                        "failed to serialize output for size limit enforcement: {e}"
+                    ))
+                })?,
+                _ => continue,
+            };
+            let actual = serialized.len() as u64;
+            if actual <= limit {
+                continue;
             }
-            LargeDataStrategy::SpillToBlob => match &self.blob_storage {
-                Some(storage) => {
-                    let blob_ref = storage
-                        .write(&serialized, "application/json")
-                        .await
-                        .map_err(|e| {
+
+            match self.data_policy.large_data_strategy {
+                LargeDataStrategy::Reject => {
+                    error_counter.inc();
+                    return Err(RuntimeError::DataLimitExceeded {
+                        limit_bytes: limit,
+                        actual_bytes: actual,
+                    });
+                }
+                LargeDataStrategy::SpillToBlob => {
+                    let Some(storage) = self.blob_storage.as_ref() else {
+                        tracing::warn!(
+                            action_key,
+                            actual,
+                            limit,
+                            "output exceeds limit and no blob storage configured"
+                        );
+                        error_counter.inc();
+                        return Err(RuntimeError::DataLimitExceeded {
+                            limit_bytes: limit,
+                            actual_bytes: actual,
+                        });
+                    };
+                    let blob_ref = match storage.write(&serialized, "application/json").await {
+                        Ok(r) => r,
+                        Err(e) => {
                             tracing::warn!(
                                 action_key,
                                 error = %e,
                                 "blob spill failed, rejecting output"
                             );
                             error_counter.inc();
-                            RuntimeError::DataLimitExceeded {
+                            return Err(RuntimeError::DataLimitExceeded {
                                 limit_bytes: limit,
                                 actual_bytes: actual,
-                            }
-                        })?;
+                            });
+                        }
+                    };
                     tracing::info!(
                         action_key,
                         uri = %blob_ref.uri,
                         size = blob_ref.size_bytes,
-                        "output spilled to blob storage"
+                        "output slot spilled to blob storage"
                     );
-                    // Replace the large inline value with a reference so downstream
-                    // nodes receive a small handle instead of the full payload.
-                    *output = ActionOutput::Reference(DataReference {
+                    *slot = ActionOutput::Reference(DataReference {
                         storage_type: "blob".into(),
                         path: blob_ref.uri,
                         size: Some(blob_ref.size_bytes),
                         content_type: Some(blob_ref.content_type),
                     });
-                    Ok(())
                 }
-                None => {
-                    tracing::warn!(
-                        action_key,
-                        actual,
-                        limit,
-                        "output exceeds limit and no blob storage configured"
-                    );
-                    error_counter.inc();
-                    Err(RuntimeError::DataLimitExceeded {
-                        limit_bytes: limit,
-                        actual_bytes: actual,
-                    })
-                }
-            },
+            }
         }
+
+        Ok(())
     }
 }
 
-/// Extract a mutable reference to the primary output field of an `ActionResult`.
+/// Push a mut reference to every downstream-visible output slot in `result`
+/// into `out`.
 ///
-/// Returns `None` for variants that carry no primary output (e.g. `Retry`).
-fn primary_output_mut(
-    result: &mut ActionResult<serde_json::Value>,
-) -> Option<&mut ActionOutput<serde_json::Value>> {
+/// Each pushed reference borrows a distinct field of `result`, so the set
+/// of references is disjoint and safe to iterate and mutate sequentially.
+///
+/// Variants without any output slot (`Retry`, `Drop`, `Terminate`, future
+/// `#[non_exhaustive]` variants) push nothing.
+fn collect_output_slots_mut<'a>(
+    result: &'a mut ActionResult<serde_json::Value>,
+    out: &mut Vec<&'a mut ActionOutput<serde_json::Value>>,
+) {
     match result {
-        ActionResult::Success { output } => Some(output),
-        ActionResult::Skip { output, .. } => output.as_mut(),
-        ActionResult::Continue { output, .. } => Some(output),
-        ActionResult::Break { output, .. } => Some(output),
-        ActionResult::Branch { output, .. } => Some(output),
-        ActionResult::Route { data, .. } => Some(data),
-        ActionResult::MultiOutput { main_output, .. } => main_output.as_mut(),
-        ActionResult::Wait { partial_output, .. } => partial_output.as_mut(),
-        ActionResult::Retry { .. } => None,
-        _ => None,
+        ActionResult::Success { output } => out.push(output),
+        ActionResult::Skip { output, .. } => {
+            if let Some(o) = output.as_mut() {
+                out.push(o);
+            }
+        }
+        ActionResult::Continue { output, .. } => out.push(output),
+        ActionResult::Break { output, .. } => out.push(output),
+        ActionResult::Branch {
+            output,
+            alternatives,
+            ..
+        } => {
+            out.push(output);
+            for alt in alternatives.values_mut() {
+                out.push(alt);
+            }
+        }
+        ActionResult::Route { data, .. } => out.push(data),
+        ActionResult::MultiOutput {
+            outputs,
+            main_output,
+        } => {
+            if let Some(m) = main_output.as_mut() {
+                out.push(m);
+            }
+            for o in outputs.values_mut() {
+                out.push(o);
+            }
+        }
+        ActionResult::Wait { partial_output, .. } => {
+            if let Some(o) = partial_output.as_mut() {
+                out.push(o);
+            }
+        }
+        // `ActionResult` is `#[non_exhaustive]`. Variants without a
+        // downstream-visible payload (Retry, Drop, Terminate, and any
+        // future additions) contribute nothing here — a slot they own
+        // cannot bypass the limit because there is no slot.
+        _ => {}
     }
 }
 
@@ -645,7 +708,6 @@ mod tests {
     }
 
     #[tokio::test]
-    #[ignore = "Sandboxed dispatch is Phase 7.6 — currently bypassed"]
     async fn execute_uses_sandbox_for_capability_gated() {
         use std::sync::atomic::{AtomicBool, Ordering};
 
@@ -780,5 +842,157 @@ mod tests {
             }
             other => panic!("expected Success with Reference output after spill, got {other:?}"),
         }
+    }
+
+    /// Regression: previously, `enforce_data_limit` only inspected a single
+    /// "primary" output slot. A `MultiOutput` with oversized fan-out ports
+    /// sailed through the limit silently — any port could carry an
+    /// arbitrarily large payload downstream as long as `main_output` was
+    /// small (or absent). This test pins the fix: every port slot is
+    /// checked.
+    #[tokio::test]
+    async fn multi_output_fanout_port_respects_reject_limit() {
+        use std::collections::HashMap;
+
+        use nebula_action::{PortKey, result::ActionResult as AR};
+
+        struct MultiOutAction {
+            meta: ActionMetadata,
+        }
+        impl ActionDependencies for MultiOutAction {}
+        impl Action for MultiOutAction {
+            fn metadata(&self) -> &ActionMetadata {
+                &self.meta
+            }
+        }
+        impl StatelessAction for MultiOutAction {
+            type Input = serde_json::Value;
+            type Output = serde_json::Value;
+            async fn execute(
+                &self,
+                _input: Self::Input,
+                _ctx: &impl Context,
+            ) -> Result<AR<Self::Output>, ActionError> {
+                // `main_output` is tiny; a fan-out port is huge. Before the
+                // fix, only `main_output` was checked and this result passed
+                // a byte limit of 16.
+                let mut outputs: HashMap<PortKey, ActionOutput<serde_json::Value>> = HashMap::new();
+                outputs.insert(
+                    PortKey::from("big_port"),
+                    ActionOutput::Value(serde_json::json!(
+                        "this payload is definitely larger than the 16 byte limit"
+                    )),
+                );
+                Ok(AR::MultiOutput {
+                    outputs,
+                    main_output: Some(ActionOutput::Value(serde_json::json!("ok"))),
+                })
+            }
+        }
+
+        let registry = Arc::new(ActionRegistry::new());
+        registry.register_stateless(MultiOutAction {
+            meta: ActionMetadata::new(
+                action_key!("test.multi_out"),
+                "MultiOut",
+                "multi-port fan-out",
+            ),
+        });
+
+        let executor: ActionExecutor = Arc::new(|_ctx, _meta, input| {
+            Box::pin(async move { Ok(ActionResult::success(input)) })
+        });
+        let sandbox = Arc::new(InProcessSandbox::new(executor));
+        let metrics = MetricsRegistry::new();
+        let rt = ActionRuntime::new(
+            registry,
+            sandbox,
+            DataPassingPolicy {
+                max_node_output_bytes: 16,
+                large_data_strategy: LargeDataStrategy::Reject,
+                ..Default::default()
+            },
+            metrics,
+        );
+
+        let result = rt
+            .execute_action("test.multi_out", serde_json::json!(null), test_context())
+            .await;
+        assert!(
+            matches!(result, Err(RuntimeError::DataLimitExceeded { .. })),
+            "MultiOutput fan-out port must not bypass the data-passing limit \
+             — got {result:?}"
+        );
+    }
+
+    /// Regression: `Branch.alternatives` previously bypassed the size limit
+    /// too. A branch node could ship a GB-sized preview alongside the
+    /// selected output and it would pass through silently.
+    #[tokio::test]
+    async fn branch_alternatives_respect_reject_limit() {
+        use std::collections::HashMap;
+
+        use nebula_action::result::ActionResult as AR;
+
+        struct BranchAction {
+            meta: ActionMetadata,
+        }
+        impl ActionDependencies for BranchAction {}
+        impl Action for BranchAction {
+            fn metadata(&self) -> &ActionMetadata {
+                &self.meta
+            }
+        }
+        impl StatelessAction for BranchAction {
+            type Input = serde_json::Value;
+            type Output = serde_json::Value;
+            async fn execute(
+                &self,
+                _input: Self::Input,
+                _ctx: &impl Context,
+            ) -> Result<AR<Self::Output>, ActionError> {
+                let mut alternatives = HashMap::new();
+                alternatives.insert(
+                    "else".to_string(),
+                    ActionOutput::Value(serde_json::json!(
+                        "alternative branch holds way more than 16 bytes of data"
+                    )),
+                );
+                Ok(AR::Branch {
+                    selected: "then".to_string(),
+                    output: ActionOutput::Value(serde_json::json!("ok")),
+                    alternatives,
+                })
+            }
+        }
+
+        let registry = Arc::new(ActionRegistry::new());
+        registry.register_stateless(BranchAction {
+            meta: ActionMetadata::new(action_key!("test.branch"), "Branch", "branch with alts"),
+        });
+
+        let executor: ActionExecutor = Arc::new(|_ctx, _meta, input| {
+            Box::pin(async move { Ok(ActionResult::success(input)) })
+        });
+        let sandbox = Arc::new(InProcessSandbox::new(executor));
+        let metrics = MetricsRegistry::new();
+        let rt = ActionRuntime::new(
+            registry,
+            sandbox,
+            DataPassingPolicy {
+                max_node_output_bytes: 16,
+                large_data_strategy: LargeDataStrategy::Reject,
+                ..Default::default()
+            },
+            metrics,
+        );
+
+        let result = rt
+            .execute_action("test.branch", serde_json::json!(null), test_context())
+            .await;
+        assert!(
+            matches!(result, Err(RuntimeError::DataLimitExceeded { .. })),
+            "Branch.alternatives must not bypass the data-passing limit — got {result:?}"
+        );
     }
 }

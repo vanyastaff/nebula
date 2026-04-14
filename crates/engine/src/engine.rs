@@ -13,13 +13,13 @@ use std::{
         Arc,
         atomic::{AtomicU32, AtomicU64, Ordering},
     },
-    time::Instant,
+    time::{Duration, Instant},
 };
 
 use dashmap::DashMap;
 // TODO: ExecutionBudget moved to nebula-execution
 use nebula_action::capability::{ResourceAccessor, default_resource_accessor};
-use nebula_action::{ActionContext, ActionResult};
+use nebula_action::{ActionContext, ActionError, ActionResult};
 use nebula_core::id::{ExecutionId, NodeId, WorkflowId};
 use nebula_credential::{CredentialAccessor, default_credential_accessor};
 // ScopeLevel removed from ActionContext
@@ -50,7 +50,17 @@ use crate::{
 };
 
 /// Type alias for the optional event sender.
-type EventSender = mpsc::UnboundedSender<ExecutionEvent>;
+///
+/// Bounded (rather than unbounded) so a slow consumer cannot drive engine
+/// memory to unbounded growth. A workflow with ~10k nodes emits ~50k events;
+/// the capacity below keeps roughly one in-flight workflow's worth of events
+/// buffered before the engine starts dropping.
+type EventSender = mpsc::Sender<ExecutionEvent>;
+
+/// Default capacity for the engine's event channel. Tuned so a typical
+/// interactive workflow (hundreds of nodes) never blocks, while a runaway
+/// producer with a dead consumer cannot inflate memory without bound.
+pub const DEFAULT_EVENT_CHANNEL_CAPACITY: usize = 1024;
 
 /// Type alias for the boxed async credential-refresh function stored on the engine.
 ///
@@ -271,18 +281,37 @@ impl WorkflowEngine {
     /// Attach an event sender for real-time execution monitoring.
     ///
     /// When set, the engine emits [`ExecutionEvent`]s for node lifecycle
-    /// transitions (started, completed, failed, skipped) and execution completion.
-    /// Used by the CLI TUI for live monitoring.
+    /// transitions (started, completed, failed, skipped) and execution
+    /// completion. Used by the CLI TUI for live monitoring.
+    ///
+    /// Pair with a receiver from [`mpsc::channel`] sized at
+    /// [`DEFAULT_EVENT_CHANNEL_CAPACITY`] or larger — events are *dropped*
+    /// (not blocked) when the buffer is full, so a stuck consumer cannot
+    /// stall the engine or grow memory without bound.
     #[must_use = "builder methods must be chained or built"]
-    pub fn with_event_sender(mut self, sender: mpsc::UnboundedSender<ExecutionEvent>) -> Self {
+    pub fn with_event_sender(mut self, sender: mpsc::Sender<ExecutionEvent>) -> Self {
         self.event_sender = Some(sender);
         self
     }
 
     /// Emit an execution event if a sender is configured.
+    ///
+    /// Uses `try_send` so a backed-up consumer cannot block the engine.
+    /// The channel is deliberately bounded; drops are observability-only.
     fn emit_event(&self, event: ExecutionEvent) {
-        if let Some(sender) = &self.event_sender {
-            let _ = sender.send(event);
+        if let Some(sender) = &self.event_sender
+            && let Err(e) = sender.try_send(event)
+        {
+            // Full or closed — drop. The alternative (block the engine on
+            // a slow TUI) would be far worse. Log once at the boundary.
+            match e {
+                mpsc::error::TrySendError::Full(_) => {
+                    tracing::warn!("engine event channel full; dropping event (slow consumer)");
+                }
+                mpsc::error::TrySendError::Closed(_) => {
+                    // Consumer disconnected — silent, expected on shutdown.
+                }
+            }
         }
     }
 
@@ -296,6 +325,10 @@ impl WorkflowEngine {
         plan: nebula_execution::ReplayPlan,
         budget: ExecutionBudget,
     ) -> Result<ExecutionResult, EngineError> {
+        budget
+            .validate_for_execution()
+            .map_err(|msg| EngineError::PlanningFailed(msg.to_string()))?;
+
         let execution_id = ExecutionId::new();
         let started = Instant::now();
 
@@ -306,35 +339,59 @@ impl WorkflowEngine {
         let node_map: HashMap<NodeId, &nebula_workflow::NodeDefinition> =
             workflow.nodes.iter().map(|n| (n.id, n)).collect();
 
-        // Build predecessor map for partitioning.
+        // Build both predecessor AND successor maps.
+        //
+        // - Predecessors are needed to compute seeds: a node whose entire incoming edge set is
+        //   pinned is ready to start.
+        // - Successors are needed by `ReplayPlan::partition_nodes` to forward-traverse from
+        //   `replay_from` and identify the re-run set. Issue #254 — the old predecessor-only
+        //   partition classified unrelated sibling branches as rerun, duplicating their side
+        //   effects on every replay.
         let mut predecessors: HashMap<NodeId, Vec<NodeId>> = HashMap::new();
+        let mut successors: HashMap<NodeId, Vec<NodeId>> = HashMap::new();
         for conn in &workflow.connections {
             predecessors
                 .entry(conn.to_node)
                 .or_default()
                 .push(conn.from_node);
+            successors
+                .entry(conn.from_node)
+                .or_default()
+                .push(conn.to_node);
         }
 
         // Partition nodes into pinned (use stored outputs) and rerun.
-        let (pinned, _rerun) = plan.partition_nodes(&node_ids, &predecessors);
+        let (pinned, _rerun) = plan.partition_nodes(&node_ids, &successors);
 
         // Pre-populate outputs with pinned values.
+        //
+        // The `ReplayPlan` contract requires `pinned_outputs` to be
+        // complete for every pinned node. Iterate the set and fail
+        // loudly on a missing entry — this surfaces stale or
+        // incomplete plans at replay start instead of letting the
+        // frontier loop silently feed `Null` to a downstream node. The
+        // previous filter-in-map-keys approach hid missing pins the
+        // same way `#[serde(skip)]` on `pinned_outputs` did (#253).
         let outputs: Arc<DashMap<NodeId, serde_json::Value>> = Arc::new(DashMap::new());
-        for (node_id, output) in &plan.pinned_outputs {
-            if pinned.contains(node_id) {
-                outputs.insert(*node_id, output.clone());
-            }
+        for node_id in &pinned {
+            let Some(output) = plan.pinned_outputs.get(node_id) else {
+                return Err(EngineError::PlanningFailed(format!(
+                    "replay plan is missing pinned output for node {node_id}; \
+                     every node in the partition's pinned set must have a stored output"
+                )));
+            };
+            outputs.insert(*node_id, output.clone());
         }
 
-        // Build execution state — mark pinned nodes as Completed.
+        // Build execution state — mark pinned nodes as Completed via
+        // the versioned transition API so downstream CAS readers see
+        // the version move (issue #255).
         let mut exec_state = ExecutionState::new(execution_id, workflow.id, &node_ids);
         exec_state.transition_status(ExecutionStatus::Running)?;
         for &node_id in &pinned {
-            if let Some(ns) = exec_state.node_states.get_mut(&node_id) {
-                let _ = ns.transition_to(NodeState::Ready);
-                let _ = ns.transition_to(NodeState::Running);
-                let _ = ns.transition_to(NodeState::Completed);
-            }
+            let _ = exec_state.transition_node(node_id, NodeState::Ready);
+            let _ = exec_state.transition_node(node_id, NodeState::Running);
+            let _ = exec_state.transition_node(node_id, NodeState::Completed);
         }
 
         let semaphore = Arc::new(Semaphore::new(budget.max_concurrent_nodes));
@@ -431,6 +488,10 @@ impl WorkflowEngine {
         input: serde_json::Value,
         budget: ExecutionBudget,
     ) -> Result<ExecutionResult, EngineError> {
+        budget
+            .validate_for_execution()
+            .map_err(|msg| EngineError::PlanningFailed(msg.to_string()))?;
+
         let execution_id = ExecutionId::new();
         let started = Instant::now();
 
@@ -640,12 +701,18 @@ impl WorkflowEngine {
             .map_err(|e| EngineError::PlanningFailed(e.to_string()))?;
 
         // 7. Reconstruct the execution state, resetting non-terminal nodes. Nodes that were Running
-        //    at crash time need to be re-executed.
+        //    at crash time need to be re-executed. This is a recovery path, so the reset bypasses
+        //    the forward state machine via `override_node_state` but still bumps the version per
+        //    transition so CAS readers see the change (issue #255).
         let mut exec_state = exec_state;
-        for ns in exec_state.node_states.values_mut() {
-            if !ns.state.is_terminal() {
-                ns.state = NodeState::Pending;
-            }
+        let non_terminal: Vec<NodeId> = exec_state
+            .node_states
+            .iter()
+            .filter(|(_, ns)| !ns.state.is_terminal())
+            .map(|(id, _)| *id)
+            .collect();
+        for id in non_terminal {
+            let _ = exec_state.override_node_state(id, NodeState::Pending);
         }
         // Transition back to Running so the frontier loop can proceed.
         // The persisted state may be Created, Paused, or already Running after a crash.
@@ -978,34 +1045,98 @@ impl WorkflowEngine {
             }
 
             if cancel_token.is_cancelled() {
+                join_set.abort_all();
                 while join_set.join_next().await.is_some() {}
                 break;
             }
 
-            let Some(join_result) = join_set.join_next().await else {
-                break;
+            // Race join_set against the wall-clock deadline so a hung node
+            // cannot starve budget enforcement. The Phase 1 check_budget call
+            // only fires while ready_queue has work; once everything is in
+            // flight, this select is the sole budget guard.
+            let wall_clock_remaining: Option<Duration> = budget
+                .max_duration
+                .map(|max_dur| max_dur.saturating_sub(started.elapsed()));
+            let sleep_fut = async {
+                if let Some(d) = wall_clock_remaining {
+                    tokio::time::sleep(d).await
+                } else {
+                    std::future::pending::<()>().await
+                }
+            };
+            tokio::pin!(sleep_fut);
+
+            let join_result = tokio::select! {
+                result = join_set.join_next() => match result {
+                    Some(r) => r,
+                    None => break,
+                },
+                () = &mut sleep_fut => {
+                    cancel_token.cancel();
+                    join_set.abort_all();
+                    while join_set.join_next().await.is_some() {}
+                    return Some((
+                        NodeId::nil(),
+                        "execution budget exceeded: max_duration".to_string(),
+                    ));
+                }
+                () = cancel_token.cancelled() => {
+                    join_set.abort_all();
+                    while join_set.join_next().await.is_some() {}
+                    break;
+                }
             };
 
             // Phase 3: Process the completed task
             match join_result {
-                Ok((node_id, Ok(action_result))) => {
-                    // Node ran and produced a result
-
-                    // Track retry attempts for budget enforcement.
-                    // ActionResult::Retry signals the action requested a retry;
-                    // count it before any retry mechanism re-enqueues the node.
-                    if matches!(action_result, ActionResult::Retry { .. }) {
-                        total_retries.fetch_add(1, Ordering::Relaxed);
-                        // TODO: implement retry re-enqueue; currently treated as terminal
-                        // (follow-up plan)
+                Ok((node_id, Ok(ActionResult::Retry { .. }))) => {
+                    // ActionResult::Retry has no scheduler yet; treat it as a node
+                    // failure for at-least-once semantics (#290/#296 short-term).
+                    total_retries.fetch_add(1, Ordering::Relaxed);
+                    let err = EngineError::Runtime(nebula_runtime::RuntimeError::ActionError(
+                        nebula_action::error::ActionError::retryable(
+                            "Action retry is not supported by the engine",
+                        ),
+                    ));
+                    mark_node_failed(exec_state, node_id, &err);
+                    let abort = handle_node_failure(
+                        node_id,
+                        &err.to_string(),
+                        error_strategy,
+                        graph,
+                        outputs,
+                        &mut activated_edges,
+                        &mut resolved_edges,
+                        &required_count,
+                        &mut ready_queue,
+                        exec_state,
+                    );
+                    if let Some(err_msg) = abort {
+                        cancel_token.cancel();
+                        return Some((node_id, err_msg));
                     }
 
+                    if exec_state
+                        .node_state(node_id)
+                        .is_some_and(|ns| ns.state == NodeState::Failed)
+                    {
+                        self.checkpoint_node(
+                            execution_id,
+                            node_id,
+                            outputs,
+                            exec_state,
+                            repo_version,
+                        )
+                        .await;
+                        self.emit_event(ExecutionEvent::NodeFailed {
+                            execution_id,
+                            node_id,
+                            error: err.to_string(),
+                        });
+                    }
+                }
+                Ok((node_id, Ok(action_result))) => {
                     mark_node_completed(exec_state, node_id);
-                    self.emit_event(ExecutionEvent::NodeCompleted {
-                        execution_id,
-                        node_id,
-                        elapsed: started.elapsed(),
-                    });
 
                     // Track output size for budget enforcement
                     if let Some(output) = outputs.get(&node_id) {
@@ -1015,13 +1146,19 @@ impl WorkflowEngine {
                         total_output_bytes.fetch_add(bytes, Ordering::Relaxed);
                     }
 
-                    // Checkpoint: persist node output + execution state
+                    // Persist node output + execution state, then record the
+                    // idempotency key, before any external observer learns the
+                    // node is done. This guarantees durability precedes
+                    // visibility (#297).
                     self.checkpoint_node(execution_id, node_id, outputs, exec_state, repo_version)
                         .await;
-
-                    // Record idempotency key after successful execution so that
-                    // any subsequent attempt for this node is skipped.
                     self.record_idempotency(execution_id, node_id).await;
+
+                    self.emit_event(ExecutionEvent::NodeCompleted {
+                        execution_id,
+                        node_id,
+                        elapsed: started.elapsed(),
+                    });
 
                     // Evaluate outgoing edges and update frontier
                     process_outgoing_edges(
@@ -1037,15 +1174,10 @@ impl WorkflowEngine {
                     );
                 }
                 Ok((node_id, Err(ref err))) => {
-                    // Node failed at runtime — delegate to
-                    // strategy-aware handler.
+                    // Node failed at runtime — persist before any observer
+                    // learns the node is done and before successors advance
+                    // (#297).
                     mark_node_failed(exec_state, node_id, err);
-                    self.emit_event(ExecutionEvent::NodeFailed {
-                        execution_id,
-                        node_id,
-                        error: err.to_string(),
-                    });
-
                     let abort = handle_node_failure(
                         node_id,
                         &err.to_string(),
@@ -1059,15 +1191,28 @@ impl WorkflowEngine {
                         exec_state,
                     );
 
-                    // Checkpoint *after* handle_node_failure so the persisted
-                    // node state reflects the final resolved state (e.g.
-                    // Completed for IgnoreErrors, Failed for FailFast/Continue).
-                    self.checkpoint_node(execution_id, node_id, outputs, exec_state, repo_version)
-                        .await;
-
                     if let Some(err_msg) = abort {
                         cancel_token.cancel();
                         return Some((node_id, err_msg));
+                    }
+
+                    if exec_state
+                        .node_state(node_id)
+                        .is_some_and(|ns| ns.state == NodeState::Failed)
+                    {
+                        self.checkpoint_node(
+                            execution_id,
+                            node_id,
+                            outputs,
+                            exec_state,
+                            repo_version,
+                        )
+                        .await;
+                        self.emit_event(ExecutionEvent::NodeFailed {
+                            execution_id,
+                            node_id,
+                            error: err.to_string(),
+                        });
                     }
                 }
                 Err(join_err) => {
@@ -1120,21 +1265,32 @@ impl WorkflowEngine {
                 Ok(Some(resolved_params)) => resolved_params,
                 Ok(None) => node_input, // No parameters → use predecessor output
                 Err(e) => {
-                    // Mark node as failed and signal failure
+                    // Mark node as failed. Using `override_node_state`
+                    // rather than a Ready→Running→Failed sequence
+                    // because (a) parameter resolution failed BEFORE
+                    // the node was scheduled so it is still Pending
+                    // here, and Pending→Failed is not a valid forward
+                    // transition; (b) we know for a fact the node
+                    // failed and want it in the Failed state
+                    // regardless of its current position. Version is
+                    // still bumped per issue #255.
+                    let _ = exec_state.override_node_state(node_id, NodeState::Failed);
                     if let Some(ns) = exec_state.node_states.get_mut(&node_id) {
-                        let _ = ns.transition_to(NodeState::Ready);
-                        let _ = ns.transition_to(NodeState::Running);
-                        let _ = ns.transition_to(NodeState::Failed);
                         ns.error_message = Some(e.to_string());
                     }
                     return false;
                 }
             };
 
-        // Mark node as running in execution state
-        if let Some(ns) = exec_state.node_states.get_mut(&node_id) {
-            let _ = ns.transition_to(NodeState::Ready);
-            let _ = ns.transition_to(NodeState::Running);
+        // Mark node as running in execution state (versioned).
+        // Log on failure so a rejected transition is not silently
+        // swallowed — callers of the frontier loop need to know if
+        // the execution state got out of sync with the scheduler.
+        if let Err(err) = exec_state.transition_node(node_id, NodeState::Ready) {
+            tracing::warn!(%node_id, %err, "failed to transition node to Ready");
+        }
+        if let Err(err) = exec_state.transition_node(node_id, NodeState::Running) {
+            tracing::warn!(%node_id, %err, "failed to transition node to Running");
         }
 
         let runtime = self.runtime.clone();
@@ -1455,17 +1611,36 @@ impl NodeTask {
 
         // Proactive credential refresh: call the hook before the action runs
         // so that any short-lived credential is rotated while still valid.
-        // Errors are logged but do not abort execution — the action will fail
-        // on its own if the credential is truly unusable.
-        if let Some(ref refresh_fn) = self.credential_refresh
-            && let Err(e) = (refresh_fn)(&self.action_key).await
-        {
-            tracing::warn!(
-                node_id = %self.node_id,
-                action_key = %self.action_key,
-                error = %e,
-                "proactive credential refresh failed; proceeding with potentially stale credential"
-            );
+        //
+        // Failure modes (Batch 5D / #306):
+        //   - cancel fires first → return EngineError::Cancelled. We must NOT block shutdown on a
+        //     dying credential store.
+        //   - refresh returns Err → surface a typed ActionError::CredentialRefreshFailed through
+        //     EngineError::Action. The frontier loop routes this through `handle_node_failure`,
+        //     where the workflow-level ErrorStrategy decides whether execution fails fast or
+        //     continues/ignores the failure, and whether any `OnError` edge is activated. This
+        //     replaces the old "log a WARN and proceed with a potentially stale credential" path,
+        //     which leaked into N opaque downstream auth errors per failure.
+        //   - refresh returns Ok → fall through to the action dispatch.
+        if let Some(ref refresh_fn) = self.credential_refresh {
+            let refresh_fut = (refresh_fn)(&self.action_key);
+            tokio::pin!(refresh_fut);
+            let refresh_result = tokio::select! {
+                biased;
+                () = self.cancel.cancelled() => {
+                    return (self.node_id, Err(EngineError::Cancelled));
+                }
+                res = &mut refresh_fut => res,
+            };
+
+            match refresh_result {
+                Ok(()) => {}
+                Err(source) => {
+                    let action_err =
+                        ActionError::credential_refresh_failed(self.action_key.to_string(), source);
+                    return (self.node_id, Err(EngineError::Action(action_err)));
+                }
+            }
         }
 
         let action_ctx = ActionContext::new(
@@ -1477,14 +1652,26 @@ impl NodeTask {
         .with_credentials(self.credentials.clone())
         .with_resources(self.resources.clone());
 
-        // Acquire rate limit permit if configured.
+        // Acquire rate limit permit if configured. If the limiter rejects the
+        // request, fail the node so ErrorStrategy decides abort/continue.
         if let Some(ref limiter) = self.rate_limiter {
             use nebula_resilience::rate_limiter::RateLimiter;
-            if limiter.acquire().await.is_err() {
+            if let Err(e) = limiter.acquire().await {
                 tracing::warn!(
                     node_id = %self.node_id,
                     action_key = %self.action_key,
-                    "rate limit exceeded, request queued"
+                    error = ?e,
+                    "rate limit exceeded; failing node"
+                );
+                let action_err = nebula_action::error::ActionError::retryable_with_hint(
+                    format!("rate limit exceeded: {e:?}"),
+                    nebula_action::error::RetryHintCode::RateLimited,
+                );
+                return (
+                    self.node_id,
+                    Err(EngineError::Runtime(
+                        nebula_runtime::RuntimeError::ActionError(action_err),
+                    )),
                 );
             }
         }
@@ -1579,7 +1766,9 @@ fn process_outgoing_edges(
 /// Evaluate whether an edge should activate given the source node's outcome.
 ///
 /// Rules:
-/// - `Skip` results don't activate any edges
+/// - `Skip` results don't activate any edges (whole downstream subgraph)
+/// - `Drop` results don't activate any edges (item dropped, no output on main port)
+/// - `Terminate` results don't activate any edges (execution is ending)
 /// - Failed nodes only activate `OnError` edges
 /// - `Branch` results only activate edges whose `branch_key` matches `selected`
 /// - `Route` results only activate edges whose `from_port` matches `port`
@@ -1593,8 +1782,27 @@ fn evaluate_edge(
     result: Option<&ActionResult<serde_json::Value>>,
     node_failed: bool,
 ) -> bool {
-    // Skip results don't activate any edges
+    // Skip results don't activate any edges — skips the whole downstream subgraph.
     if let Some(ActionResult::Skip { .. }) = result {
+        return false;
+    }
+
+    // Drop results don't activate any edges — this item produced no output
+    // on the main port, but downstream parallel branches processing other
+    // items are unaffected (they have their own per-item evaluate_edge call).
+    if let Some(ActionResult::Drop { .. }) = result {
+        return false;
+    }
+
+    // Terminate results don't activate any edges — the execution is ending.
+    // TODO(engine): this gate only blocks local downstream edges. Full
+    // parallel-branch cancellation, ExecutionTerminationReason propagation,
+    // and determine_final_status handling for Terminate is scheduler work
+    // tracked in the ControlAction plan as Phase 3. Until then, a Terminate
+    // return from a node in one branch does NOT cancel sibling branches
+    // and does NOT populate ExecutionResult::termination_reason — it only
+    // prevents this node's own subgraph from firing.
+    if let Some(ActionResult::Terminate { .. }) = result {
         return false;
     }
 
@@ -1709,9 +1917,8 @@ fn propagate_skip(
         return;
     }
 
-    if let Some(ns) = exec_state.node_states.get_mut(&node_id) {
-        let _ = ns.transition_to(NodeState::Skipped);
-    }
+    // Versioned transition (issue #255).
+    let _ = exec_state.transition_node(node_id, NodeState::Skipped);
 
     // Mark all outgoing edges as resolved (dead) for their targets
     for conn in graph.outgoing_connections(node_id) {
@@ -1791,8 +1998,11 @@ fn handle_node_failure(
     if error_strategy == nebula_workflow::ErrorStrategy::IgnoreErrors {
         // The node was already marked Failed by the caller; recover it to
         // Completed since we are ignoring the error, keeping state consistent.
+        // `Failed → Completed` is not a valid forward transition, so this
+        // uses `override_node_state` to reset the state; the version is
+        // still bumped so CAS readers observe the recovery (issue #255).
+        let _ = exec_state.override_node_state(node_id, NodeState::Completed);
         if let Some(ns) = exec_state.node_states.get_mut(&node_id) {
-            ns.state = NodeState::Completed;
             ns.error_message = None;
         }
         outputs.insert(node_id, serde_json::json!(null));
@@ -1848,23 +2058,22 @@ fn handle_node_failure(
 }
 
 /// Mark a node as skipped in the execution state.
+///
+/// Uses the versioned transition API (issue #255) so CAS readers see
+/// the parent version move.
 fn mark_node_skipped(exec_state: &mut ExecutionState, node_id: NodeId) {
-    if let Some(ns) = exec_state.node_states.get_mut(&node_id) {
-        let _ = ns.transition_to(NodeState::Skipped);
-    }
+    let _ = exec_state.transition_node(node_id, NodeState::Skipped);
 }
 
 /// Mark a node as completed in the execution state.
 fn mark_node_completed(exec_state: &mut ExecutionState, node_id: NodeId) {
-    if let Some(ns) = exec_state.node_states.get_mut(&node_id) {
-        let _ = ns.transition_to(NodeState::Completed);
-    }
+    let _ = exec_state.transition_node(node_id, NodeState::Completed);
 }
 
 /// Mark a node as failed in the execution state.
 fn mark_node_failed(exec_state: &mut ExecutionState, node_id: NodeId, err: &EngineError) {
+    let _ = exec_state.transition_node(node_id, NodeState::Failed);
     if let Some(ns) = exec_state.node_states.get_mut(&node_id) {
-        let _ = ns.transition_to(NodeState::Failed);
         ns.error_message = Some(err.to_string());
     }
 }
@@ -3473,5 +3682,122 @@ mod tests {
             2,
             "refresh hook should be called once per dispatched node"
         );
+    }
+
+    /// Regression for #306: when the proactive credential-refresh hook
+    /// returns an error, the node MUST end up Failed (not Completed) and
+    /// the failure MUST surface as a typed
+    /// `ActionError::CredentialRefreshFailed`, not a log-and-continue WARN.
+    ///
+    /// Verifies:
+    ///   1. The action handler is **never** invoked (refresh fails before dispatch).
+    ///   2. The execution result is not a success.
+    ///   3. The emitted `NodeFailed` event carries the typed error code
+    ///      `ACTION:CREDENTIAL_REFRESH_FAILED` (visible to downstream consumers via the error
+    ///      string).
+    ///   4. The new `EngineError::Action` carries an `ActionError` that pattern-matches as
+    ///      `CredentialRefreshFailed`.
+    #[tokio::test]
+    async fn credential_refresh_failure_surfaces_as_typed_error() {
+        use std::sync::atomic::{AtomicU32, Ordering as AOrdering};
+
+        // Action that asserts it never runs — if the engine reaches
+        // dispatch despite a failed refresh, this will fire and surface
+        // a different error than the one we expect.
+        struct NeverRunHandler {
+            meta: ActionMetadata,
+            invoked: Arc<AtomicU32>,
+        }
+        impl ActionDependencies for NeverRunHandler {}
+        impl Action for NeverRunHandler {
+            fn metadata(&self) -> &ActionMetadata {
+                &self.meta
+            }
+        }
+        impl StatelessAction for NeverRunHandler {
+            type Input = serde_json::Value;
+            type Output = serde_json::Value;
+
+            async fn execute(
+                &self,
+                input: Self::Input,
+                _ctx: &impl Context,
+            ) -> Result<ActionResult<Self::Output>, ActionError> {
+                self.invoked.fetch_add(1, AOrdering::Relaxed);
+                Ok(ActionResult::success(input))
+            }
+        }
+
+        let invoked = Arc::new(AtomicU32::new(0));
+        let registry = Arc::new(ActionRegistry::new());
+        registry.register_stateless(NeverRunHandler {
+            meta: ActionMetadata::new(action_key!("never"), "Never", "must not run"),
+            invoked: invoked.clone(),
+        });
+
+        // Refresh hook always fails. Use `ActionError::retryable` for
+        // the inner source so the `Arc<dyn Error>` wrapping in
+        // `CredentialRefreshFailed` round-trips through Display.
+        let (engine, _) = make_engine(registry);
+        let engine = engine
+            .with_credential_resolver(|_id: &str| async move {
+                Err(nebula_credential::CredentialAccessError::NotFound(
+                    "no credentials".to_owned(),
+                ))
+            })
+            .with_credential_refresh(|_id: &str| async move {
+                Err(ActionError::retryable("credential store down"))
+            });
+
+        let n1 = NodeId::new();
+        let wf = make_workflow(vec![NodeDefinition::new(n1, "A", "never").unwrap()], vec![]);
+
+        let result = engine
+            .execute_workflow(&wf, serde_json::json!("x"), ExecutionBudget::default())
+            .await
+            .expect("engine returns Ok(ExecutionResult) even on node failure");
+
+        // (1) The action body must NEVER have been called.
+        assert_eq!(
+            invoked.load(AOrdering::Relaxed),
+            0,
+            "action body must not run when proactive refresh fails"
+        );
+
+        // (2) Execution must NOT be a success.
+        assert!(
+            !result.is_success(),
+            "workflow must not succeed when refresh fails"
+        );
+
+        // (3) The node-level error message must mention the typed cause.
+        // The default ErrorStrategy is FailFast, so the engine populates
+        // `node_errors` with the failed node's error message. The string
+        // representation of the new variant is stable and downstream
+        // consumers (TUI, log scrape, dashboards) can match on it.
+        let node_err = result
+            .node_errors
+            .get(&n1)
+            .expect("node_errors must contain the failed node");
+        assert!(
+            node_err.contains("credential refresh failed"),
+            "expected typed CredentialRefreshFailed in error, got: {node_err}"
+        );
+        assert!(
+            node_err.contains("credential store down"),
+            "expected source string preserved in error, got: {node_err}"
+        );
+
+        // (4) Construct the variant directly and confirm classifier
+        // routing — this is the contract downstream consumers match on.
+        let typed =
+            ActionError::credential_refresh_failed("never", ActionError::retryable("store down"));
+        assert!(matches!(typed, ActionError::CredentialRefreshFailed { .. }));
+        assert!(typed.is_retryable(), "default classification is retryable");
+        let engine_err = EngineError::Action(typed);
+        assert!(matches!(
+            engine_err,
+            EngineError::Action(ActionError::CredentialRefreshFailed { .. })
+        ));
     }
 }

@@ -138,8 +138,15 @@ impl<S: CredentialStore> CredentialResolver<S> {
         let needs_refresh = state.expires_at().is_some_and(|exp| {
             let now = chrono::Utc::now();
             let jitter = if C::REFRESH_POLICY.jitter > std::time::Duration::ZERO {
-                let bound = C::REFRESH_POLICY.jitter.as_millis() as u64;
-                std::time::Duration::from_millis(rand::random_range(0..bound))
+                let bound_ms = C::REFRESH_POLICY.jitter.as_millis();
+                if bound_ms == 0 {
+                    // Sub-millisecond jitter is valid config; treat as no jitter
+                    // instead of panicking on an empty random range.
+                    std::time::Duration::ZERO
+                } else {
+                    let upper = u64::try_from(bound_ms).unwrap_or(u64::MAX);
+                    std::time::Duration::from_millis(rand::random_range(0..upper))
+                }
             } else {
                 std::time::Duration::ZERO
             };
@@ -154,11 +161,34 @@ impl<S: CredentialStore> CredentialResolver<S> {
             return Ok(CredentialHandle::new(scheme, credential_id));
         }
 
-        // Circuit breaker: skip refresh if too many recent failures
+        // Circuit breaker: skip refresh if too many recent failures.
+        //
+        // Fail-fast fix (issue #258): distinguish "refresh is proactive"
+        // from "token is genuinely expired". Serving a stale-but-valid
+        // token while the circuit is open is the documented graceful-
+        // degradation path. Serving a token that has already passed
+        // its real `expires_at` is NOT — it is guaranteed to fail at
+        // the remote API and the failure will be misattributed
+        // ("the provider rejected our credential") instead of
+        // surfacing the real cause ("the refresh circuit is open").
+        // Return `ResolveError::Refresh` when the token is past its
+        // true expiry so callers can react immediately.
         if self.refresh_coordinator.is_circuit_open(credential_id) {
+            let now = chrono::Utc::now();
+            let truly_expired = state.expires_at().is_some_and(|exp| exp <= now);
+            if truly_expired {
+                tracing::warn!(
+                    credential_id,
+                    "circuit breaker open and token has passed its expiry; failing fast"
+                );
+                return Err(ResolveError::Refresh {
+                    credential_id: credential_id.to_string(),
+                    reason: "refresh circuit breaker open and token is expired".to_string(),
+                });
+            }
             tracing::warn!(
                 credential_id,
-                "circuit breaker open: too many refresh failures, serving potentially stale credential"
+                "circuit breaker open: too many refresh failures, serving stale-but-valid credential within early-refresh window"
             );
             let scheme = C::project(&state);
             return Ok(CredentialHandle::new(scheme, credential_id));
@@ -195,19 +225,40 @@ impl<S: CredentialStore> CredentialResolver<S> {
                 result
             }
             RefreshAttempt::Waiter(notify) => {
-                // 60s max wait -- don't hang forever if winner is slow
-                match tokio::time::timeout(std::time::Duration::from_secs(60), notify.notified())
+                // Race note: `Notify::notify_waiters()` only wakes waiters that
+                // are *already registered* at the moment it fires. If the
+                // winner completes its refresh faster than this waiter can
+                // poll `notify.notified()` for the first time, the wakeup is
+                // lost and we would stall until timeout.
+                //
+                // Mitigations:
+                // 1. Eagerly construct and `enable()` the `Notified` future — this registers the
+                //    waiter immediately, narrowing the race window from "await-first-poll" down to
+                //    "the handful of instructions between returning from try_refresh and enable()".
+                // 2. Short (5 s) timeout — the post-wait `resolve` re-read always fetches the fresh
+                //    value from the store, so the timeout is not fatal. Staying on 60 s meant a
+                //    lost wakeup produced a 60-second latency spike. 5 s bounds worst-case waiter
+                //    latency to a value humans still tolerate while leaving room for a slow
+                //    legitimate refresh (which itself holds a `refresh_semaphore` permit and is
+                //    normally sub-second).
+                let notified = notify.notified();
+                tokio::pin!(notified);
+                // Pre-register before any await so a concurrent
+                // `notify_waiters()` will see us.
+                notified.as_mut().enable();
+
+                if tokio::time::timeout(std::time::Duration::from_secs(5), notified)
                     .await
+                    .is_err()
                 {
-                    Ok(()) => {}
-                    Err(_) => {
-                        tracing::warn!(
-                            credential_id,
-                            "refresh waiter timed out after 60s, re-reading from store"
-                        );
-                    }
+                    tracing::debug!(
+                        credential_id,
+                        "refresh waiter did not observe notify within 5s, re-reading from store"
+                    );
                 }
-                // Re-read from store regardless (winner may have updated)
+                // Re-read from store regardless — this is both the
+                // normal success path (winner wrote a fresh value) and
+                // the race-recovery path (wakeup was lost).
                 self.resolve::<C>(credential_id).await
             }
         }
@@ -501,6 +552,61 @@ mod tests {
         }
     }
 
+    /// Same as `RefreshableTestCredential` but with sub-millisecond jitter
+    /// to exercise the empty-range panic regression.
+    struct TinyJitterRefreshableTestCredential;
+
+    impl Credential for TinyJitterRefreshableTestCredential {
+        type Scheme = SecretToken;
+        type State = ExpiringState;
+        type Pending = NoPendingState;
+
+        const KEY: &'static str = "tiny_jitter_refreshable_test";
+        const REFRESHABLE: bool = true;
+        const REFRESH_POLICY: RefreshPolicy = RefreshPolicy {
+            early_refresh: std::time::Duration::from_secs(300),
+            jitter: std::time::Duration::from_micros(500),
+            ..RefreshPolicy::DEFAULT
+        };
+
+        fn description() -> CredentialDescription {
+            CredentialDescription {
+                key: Self::KEY.to_owned(),
+                name: "Tiny Jitter Refreshable Test".to_owned(),
+                description: "Test credential with sub-ms jitter".to_owned(),
+                icon: None,
+                icon_url: None,
+                documentation_url: None,
+                properties: Self::parameters(),
+                pattern: nebula_core::AuthPattern::SecretToken,
+            }
+        }
+
+        fn parameters() -> ParameterCollection {
+            ParameterCollection::new()
+        }
+
+        fn project(state: &ExpiringState) -> SecretToken {
+            SecretToken::new(SecretString::new(state.token.clone()))
+        }
+
+        async fn resolve(
+            _values: &ParameterValues,
+            _ctx: &CredentialContext,
+        ) -> Result<StaticResolveResult<ExpiringState>, CredentialError> {
+            unreachable!("not used in refresh tests")
+        }
+
+        async fn refresh(
+            state: &mut ExpiringState,
+            _ctx: &CredentialContext,
+        ) -> Result<RefreshOutcome, CredentialError> {
+            state.token = "tiny-jitter-refreshed-token".to_owned();
+            state.expires_at = chrono::Utc::now() + chrono::Duration::hours(1);
+            Ok(RefreshOutcome::Refreshed)
+        }
+    }
+
     #[tokio::test]
     async fn resolve_api_key_credential() {
         let store = Arc::new(InMemoryStore::new());
@@ -593,6 +699,216 @@ mod tests {
         assert!(matches!(result, Err(ResolveError::Deserialize { .. })));
     }
 
+    /// Regression for issue #258: when the refresh circuit breaker is
+    /// open AND the token is past its real `expires_at`, the resolver
+    /// must fail fast with `ResolveError::Refresh` instead of serving
+    /// the dead token silently. Otherwise the downstream auth error
+    /// looks like "the provider rejected our credential" and the
+    /// real cause (refresh circuit open) is invisible to callers.
+    #[tokio::test]
+    async fn open_circuit_fails_fast_when_token_is_expired() {
+        let store = Arc::new(InMemoryStore::new());
+
+        // Token expired 30 seconds ago — well past expiry, not just in
+        // the early-refresh window.
+        let expires_at = chrono::Utc::now() - chrono::Duration::seconds(30);
+        let state = ExpiringState {
+            token: "dead-token".to_owned(),
+            expires_at,
+        };
+        let data = serde_json::to_vec(&state).unwrap();
+
+        let cred = StoredCredential {
+            id: "expired-cred".into(),
+            credential_key: "refreshable_test".into(),
+            data,
+            state_kind: "expiring_test".into(),
+            state_version: 1,
+            version: 0,
+            created_at: chrono::Utc::now(),
+            updated_at: chrono::Utc::now(),
+            expires_at: Some(expires_at),
+            metadata: Default::default(),
+        };
+        store.put(cred, PutMode::CreateOnly).await.unwrap();
+
+        let resolver = CredentialResolver::new(store);
+        let ctx = CredentialContext::new("test-user");
+
+        // Trip the circuit breaker by recording 5 failures (the
+        // default `CircuitBreakerConfig::failure_threshold`).
+        for _ in 0..5 {
+            resolver.refresh_coordinator.record_failure("expired-cred");
+        }
+        assert!(
+            resolver.refresh_coordinator.is_circuit_open("expired-cred"),
+            "circuit breaker must be open before exercising the fail-fast path"
+        );
+
+        let result = resolver
+            .resolve_with_refresh::<RefreshableTestCredential>("expired-cred", &ctx)
+            .await;
+        match result {
+            Err(ResolveError::Refresh {
+                credential_id,
+                reason,
+            }) => {
+                assert_eq!(credential_id, "expired-cred");
+                assert!(
+                    reason.contains("circuit") || reason.contains("expired"),
+                    "error should explain the circuit-breaker-and-expired cause: {reason}"
+                );
+            }
+            other => panic!(
+                "expected ResolveError::Refresh for an expired token under an open circuit, got: {other:?}"
+            ),
+        }
+    }
+
+    /// Regression for issue #258: a non-expiring credential
+    /// (`expires_at() == None`) must not be classified as "truly
+    /// expired" just because the circuit is open. `is_some_and`
+    /// returns false for `None`, and the fail-fast branch is skipped.
+    #[tokio::test]
+    async fn open_circuit_serves_non_expiring_credential() {
+        // ApiKeyCredential returns `expires_at() == None`, so the
+        // circuit-breaker-open path must fall through to the graceful
+        // serve instead of the fail-fast error.
+        let store = Arc::new(InMemoryStore::new());
+        let data = br#"{"token":"forever"}"#.to_vec();
+        let cred = StoredCredential {
+            id: "non-expiring".into(),
+            credential_key: "api_key".into(),
+            data,
+            state_kind: "secret_token".into(),
+            state_version: 1,
+            version: 0,
+            created_at: chrono::Utc::now(),
+            updated_at: chrono::Utc::now(),
+            expires_at: None,
+            metadata: Default::default(),
+        };
+        store.put(cred, PutMode::CreateOnly).await.unwrap();
+
+        let resolver = CredentialResolver::new(store);
+        // Trip the circuit breaker.
+        for _ in 0..5 {
+            resolver.refresh_coordinator.record_failure("non-expiring");
+        }
+
+        // Non-expiring credentials do not take the refresh path at
+        // all (they return `needs_refresh = false` before the circuit
+        // check), so this just asserts a plain `resolve` on a
+        // non-refreshable credential still works under a tripped
+        // circuit. Serves as a regression guard that the future
+        // behavior of the circuit branch does not start rejecting
+        // non-expiring credentials.
+        let handle = resolver
+            .resolve::<ApiKeyCredential>("non-expiring")
+            .await
+            .expect("non-expiring credential should resolve under any circuit state");
+        let value = handle.snapshot().token().expose_secret(|s| s.to_owned());
+        assert_eq!(value, "forever");
+    }
+
+    /// Regression for issue #258: with a closed circuit, an expired
+    /// token should take the normal refresh path — not the fail-fast
+    /// error. Guards against a future refactor that would flip the
+    /// conditional and start erroring on every expired token.
+    #[tokio::test]
+    async fn closed_circuit_expired_token_refreshes_normally() {
+        let store = Arc::new(InMemoryStore::new());
+        let expires_at = chrono::Utc::now() - chrono::Duration::seconds(30);
+        let state = ExpiringState {
+            token: "old".to_owned(),
+            expires_at,
+        };
+        let data = serde_json::to_vec(&state).unwrap();
+
+        let cred = StoredCredential {
+            id: "closed-circuit-expired".into(),
+            credential_key: "refreshable_test".into(),
+            data,
+            state_kind: "expiring_test".into(),
+            state_version: 1,
+            version: 0,
+            created_at: chrono::Utc::now(),
+            updated_at: chrono::Utc::now(),
+            expires_at: Some(expires_at),
+            metadata: Default::default(),
+        };
+        store.put(cred, PutMode::CreateOnly).await.unwrap();
+
+        let resolver = CredentialResolver::new(store);
+        let ctx = CredentialContext::new("test-user");
+        // Circuit is fresh — no failures recorded.
+        assert!(
+            !resolver
+                .refresh_coordinator
+                .is_circuit_open("closed-circuit-expired")
+        );
+
+        let handle = resolver
+            .resolve_with_refresh::<RefreshableTestCredential>("closed-circuit-expired", &ctx)
+            .await
+            .expect("closed-circuit + expired = normal refresh path");
+        let value = handle.snapshot().token().expose_secret(|s| s.to_owned());
+        assert_eq!(value, "refreshed-token");
+    }
+
+    /// Complement to `open_circuit_fails_fast_when_token_is_expired`:
+    /// a token that is still valid but within the early-refresh window
+    /// should still be served gracefully while the circuit is open —
+    /// that is the documented graceful-degradation path and must NOT
+    /// regress to a hard error.
+    #[tokio::test]
+    async fn open_circuit_serves_stale_but_valid_token() {
+        let store = Arc::new(InMemoryStore::new());
+
+        // Token expires in 2 minutes — inside the 5-minute early
+        // refresh window but not yet expired.
+        let expires_at = chrono::Utc::now() + chrono::Duration::minutes(2);
+        let state = ExpiringState {
+            token: "still-valid".to_owned(),
+            expires_at,
+        };
+        let data = serde_json::to_vec(&state).unwrap();
+
+        let cred = StoredCredential {
+            id: "soon-expiring".into(),
+            credential_key: "refreshable_test".into(),
+            data,
+            state_kind: "expiring_test".into(),
+            state_version: 1,
+            version: 0,
+            created_at: chrono::Utc::now(),
+            updated_at: chrono::Utc::now(),
+            expires_at: Some(expires_at),
+            metadata: Default::default(),
+        };
+        store.put(cred, PutMode::CreateOnly).await.unwrap();
+
+        let resolver = CredentialResolver::new(store);
+        let ctx = CredentialContext::new("test-user");
+
+        // Open the circuit.
+        for _ in 0..5 {
+            resolver.refresh_coordinator.record_failure("soon-expiring");
+        }
+        assert!(
+            resolver
+                .refresh_coordinator
+                .is_circuit_open("soon-expiring")
+        );
+
+        let handle = resolver
+            .resolve_with_refresh::<RefreshableTestCredential>("soon-expiring", &ctx)
+            .await
+            .expect("stale-but-valid token must still resolve while circuit is open");
+        let value = handle.snapshot().token().expose_secret(|s| s.to_owned());
+        assert_eq!(value, "still-valid");
+    }
+
     #[tokio::test]
     async fn early_refresh_triggers_before_expiry() {
         let store = Arc::new(InMemoryStore::new());
@@ -630,6 +946,44 @@ mod tests {
         // The refresh should have fired because 4 min < 5 min early_refresh
         let value = handle.snapshot().token().expose_secret(|s| s.to_owned());
         assert_eq!(value, "refreshed-token");
+    }
+
+    #[tokio::test]
+    async fn sub_millisecond_jitter_does_not_panic() {
+        let store = Arc::new(InMemoryStore::new());
+
+        // Inside early-refresh window so refresh path runs and computes jitter.
+        let expires_at = chrono::Utc::now() + chrono::Duration::minutes(4);
+        let state = ExpiringState {
+            token: "old-token".to_owned(),
+            expires_at,
+        };
+        let data = serde_json::to_vec(&state).unwrap();
+
+        let cred = StoredCredential {
+            id: "tiny-jitter-cred".into(),
+            credential_key: "tiny_jitter_refreshable_test".into(),
+            data,
+            state_kind: "expiring_test".into(),
+            state_version: 1,
+            version: 0,
+            created_at: chrono::Utc::now(),
+            updated_at: chrono::Utc::now(),
+            expires_at: Some(expires_at),
+            metadata: Default::default(),
+        };
+        store.put(cred, PutMode::CreateOnly).await.unwrap();
+
+        let resolver = CredentialResolver::new(store);
+        let ctx = CredentialContext::new("test-user");
+
+        let handle = resolver
+            .resolve_with_refresh::<TinyJitterRefreshableTestCredential>("tiny-jitter-cred", &ctx)
+            .await
+            .unwrap();
+
+        let value = handle.snapshot().token().expose_secret(|s| s.to_owned());
+        assert_eq!(value, "tiny-jitter-refreshed-token");
     }
 
     // ── CAS retry test infrastructure ───────────────────────────────

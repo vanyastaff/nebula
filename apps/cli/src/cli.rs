@@ -2,6 +2,19 @@ use std::{io::IsTerminal, path::PathBuf, time::Duration};
 
 use clap::{Parser, Subcommand};
 
+/// Reject `--concurrency 0`: the engine uses a `Semaphore` with this many permits; zero deadlocks
+/// scheduling.
+fn parse_concurrency_at_least_one(s: &str) -> Result<usize, String> {
+    let n: usize = s
+        .parse()
+        .map_err(|e: std::num::ParseIntError| e.to_string())?;
+    if n < 1 {
+        Err("concurrency must be at least 1 (0 would deadlock the workflow scheduler)".to_string())
+    } else {
+        Ok(n)
+    }
+}
+
 /// Nebula workflow engine CLI.
 ///
 /// Run, validate, and manage workflows from the terminal.
@@ -223,7 +236,7 @@ pub struct RunArgs {
     pub timeout: Option<Duration>,
 
     /// Maximum concurrent nodes.
-    #[arg(long, default_value = "10")]
+    #[arg(long, default_value = "10", value_parser = parse_concurrency_at_least_one)]
     pub concurrency: usize,
 
     /// Show execution plan without running (validate + resolve DAG).
@@ -259,7 +272,7 @@ pub struct WatchArgs {
     pub overrides: Vec<String>,
 
     /// Maximum concurrent nodes.
-    #[arg(long, default_value = "10")]
+    #[arg(long, default_value = "10", value_parser = parse_concurrency_at_least_one)]
     pub concurrency: usize,
 }
 

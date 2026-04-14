@@ -28,7 +28,6 @@
 //!     ApiKeyCredential, SecretToken,
 //! };
 //! ```
-#![deny(unsafe_code)]
 #![forbid(unsafe_code)]
 
 /// Error type for credential access operations.

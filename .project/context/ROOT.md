@@ -13,10 +13,9 @@ log · system · eventbus · telemetry · metrics · config · resilience · err
 credential · resource · action · plugin · auth (RFC — not yet in workspace)
 
 **Exec / API / Infra**
-engine · runtime · storage · api · webhook · sdk
+engine · runtime · storage · api · sdk · sandbox · plugin-sdk
 
-**Desktop app**
-apps/desktop (Tauri — React + TypeScript; replaces former nebula-app/egui)
+**Apps** — apps/cli, apps/desktop (Tauri, standalone)
 
 ## Cross-cutting Docs
 → decisions.md — architecture decisions
@@ -27,6 +26,6 @@ apps/desktop (Tauri — React + TypeScript; replaces former nebula-app/egui)
 - Edition 2024, rust-version 1.94
 - `serde_json::Value` as universal data type (no nebula-value crate — was removed)
 - Errors: `thiserror` in libs, `anyhow` in binaries
-- Layers enforced by `cargo deny`: Infra → Core → Business → Exec → API
-- Cross-cutting crates are exempt from layer restrictions
+- Layer order: Infra → Core → Business → Exec → API (convention-only, see pitfalls.md)
+- Cross-cutting crates exempt from layer restrictions
 - `auth` crate is in RFC phase — API not stable, do not depend on it

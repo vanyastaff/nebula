@@ -341,3 +341,6 @@ init.sh
 .claude_settings.json
 .security-key
 logs/security/
+
+# Claude Code local agent memory (per-developer, not shared)
+.claude/agent-memory-local/

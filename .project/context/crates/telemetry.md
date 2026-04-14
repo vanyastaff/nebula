@@ -23,3 +23,5 @@ In-memory metrics primitives for the Nebula workflow engine.
 
 ## Relations
 - Used by nebula-metrics (naming conventions + adapter). Used by nebula-runtime and nebula-engine for recording metrics.
+
+<!-- reviewed: 2026-04-14 -->

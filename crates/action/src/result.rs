@@ -1,4 +1,4 @@
-use std::{collections::HashMap, time::Duration};
+use std::{collections::HashMap, sync::Arc, time::Duration};
 
 use chrono::{DateTime, Utc};
 use nebula_core::id::ExecutionId;
@@ -18,12 +18,15 @@ pub use crate::port::PortKey;
 ///
 /// The engine matches on this enum to decide what happens next in the workflow:
 /// - `Success` → pass output to dependent nodes
-/// - `Skip` → skip downstream processing
+/// - `Skip` → skip downstream processing (whole subgraph)
+/// - `Drop` → drop this item without stopping the branch
 /// - `Continue` → re-enqueue for next iteration (stateful actions)
 /// - `Break` → finalize iteration (stateful actions)
 /// - `Branch` → activate a specific branch path
 /// - `Route` / `MultiOutput` → fan-out to output ports
 /// - `Wait` → pause until external event, timer, or approval
+/// - `Retry` → request re-execution after a delay
+/// - `Terminate` → end the whole execution explicitly (Stop / Fail nodes)
 ///
 /// All output fields are wrapped in [`ActionOutput<T>`] to support binary,
 /// reference, and stream data alongside structured values.
@@ -38,11 +41,31 @@ pub enum ActionResult<T> {
     },
 
     /// Skip this node -- engine skips downstream dependents.
+    ///
+    /// The *entire downstream subgraph* reachable from this node is marked
+    /// skipped. Use [`Drop`](Self::Drop) if you want to discard a single item
+    /// while leaving downstream processing alive for other items.
     Skip {
         /// Human-readable reason for skipping.
         reason: String,
         /// Optional output produced before the skip decision.
         output: Option<ActionOutput<T>>,
+    },
+
+    /// Drop this item from the flow without stopping downstream processing.
+    ///
+    /// Unlike [`Skip`](Self::Skip), which marks the entire downstream subgraph
+    /// as skipped, `Drop` means "this particular item did not produce output
+    /// on the main port." Downstream execution continues normally for any
+    /// parallel branches, and subsequent items in a stateful iteration are
+    /// processed as usual.
+    ///
+    /// Used by filter-style nodes that remove items without terminating
+    /// the branch (n8n Filter, Node-RED `rbe`, Airflow `ShortCircuit`,
+    /// Pipedream "continue workflow on condition").
+    Drop {
+        /// Optional human-readable reason for dropping this item.
+        reason: Option<String>,
     },
 
     /// Stateful iteration: not yet done, need another call.
@@ -89,6 +112,18 @@ pub enum ActionResult<T> {
     },
 
     /// Fan-out to multiple output ports simultaneously.
+    ///
+    /// # Downstream join semantics
+    ///
+    /// Downstream nodes with multiple upstream edges fire when **all** emitted
+    /// output ports carry data. A port absent from the `outputs` map means
+    /// "not emitted" and does not block downstream nodes connected to other
+    /// emitted ports (same rule as `trigger_rule: all_success`).
+    ///
+    /// Authors wanting first-match-only routing should return
+    /// [`Branch`](Self::Branch) or [`Route`](Self::Route) instead;
+    /// `MultiOutput` expresses "multiple ports fired with data in the same
+    /// dispatch."
     MultiOutput {
         /// Per-port output data.
         outputs: HashMap<PortKey, ActionOutput<T>>,
@@ -121,6 +156,125 @@ pub enum ActionResult<T> {
         /// Human-readable reason for requesting the retry.
         reason: String,
     },
+
+    /// Terminate this node and signal that the execution should stop.
+    ///
+    /// Used by explicit termination nodes (n8n "Stop And Error",
+    /// Kestra `Fail`, AWS Step Functions `Succeed`/`Fail` states,
+    /// Pipedream "Exit Workflow", Make `Rollback`). Plugin authors should
+    /// return `Terminate` today when they want "no more work from this
+    /// branch" semantics.
+    ///
+    /// # v1 behaviour
+    ///
+    /// The engine's `evaluate_edge` treats `Terminate` the same as
+    /// [`Skip`](Self::Skip): downstream edges from this node do **not**
+    /// fire. That is the entirety of the current engine-side wiring.
+    ///
+    /// Full scheduler integration — cancelling sibling branches still in
+    /// flight, propagating the [`TerminationReason`] into the audit log
+    /// as `ExecutionTerminationReason::ExplicitStop` /
+    /// `ExecutionTerminationReason::ExplicitFail`, and driving
+    /// `determine_final_status` off the terminate signal — is tracked as
+    /// Phase 3 of the ControlAction plan and is **not yet wired**. Do not
+    /// rely on `Terminate` in v1 to cancel sibling branches; it only
+    /// gates the local subgraph downstream of the terminating node.
+    Terminate {
+        /// Why the execution is ending.
+        reason: TerminationReason,
+    },
+}
+
+/// Why a workflow execution was explicitly terminated by a node.
+///
+/// Delivered via [`ActionResult::Terminate`] and recorded in the execution
+/// audit log so that explicit termination is distinguishable from crashes
+/// or natural completion.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "type")]
+#[non_exhaustive]
+pub enum TerminationReason {
+    /// Successful early termination — the node intentionally ended the
+    /// workflow with a success outcome.
+    Success {
+        /// Optional note explaining why the node chose to terminate early.
+        note: Option<String>,
+    },
+    /// Error termination — the node intentionally ended the workflow
+    /// with a failure outcome.
+    Failure {
+        /// Opaque error code identifier.
+        ///
+        /// See [`TerminationCode`] — currently a thin wrapper over
+        /// `Arc<str>`, will be swapped to the structured `ErrorCode`
+        /// in Phase 10 of the action-v2 roadmap without changing this
+        /// public shape or the wire format (the newtype is
+        /// `#[serde(transparent)]`).
+        code: TerminationCode,
+        /// Human-readable error message.
+        message: String,
+    },
+}
+
+/// Opaque identifier for a termination error.
+///
+/// Currently backed by `Arc<str>` and serialised as a bare JSON string
+/// via `#[serde(transparent)]`. Phase 10 of the action-v2 roadmap will
+/// swap the inner representation to a structured `ErrorCode` type
+/// (namespace, code, metadata) without changing this public API or the
+/// wire format, so existing persisted `TerminationCode` values will
+/// continue to deserialise.
+///
+/// Construct from any string-ish source via `From`:
+///
+/// ```
+/// use nebula_action::TerminationCode;
+///
+/// let from_str: TerminationCode = "E_BAD".into();
+/// let from_owned: TerminationCode = String::from("E_BAD").into();
+/// assert_eq!(from_str.as_str(), "E_BAD");
+/// ```
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct TerminationCode(Arc<str>);
+
+impl TerminationCode {
+    /// Construct a new `TerminationCode` from anything convertible to
+    /// `Arc<str>`.
+    #[must_use]
+    pub fn new(code: impl Into<Arc<str>>) -> Self {
+        Self(code.into())
+    }
+
+    /// Borrow the underlying string.
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl From<&str> for TerminationCode {
+    fn from(s: &str) -> Self {
+        Self(Arc::from(s))
+    }
+}
+
+impl From<String> for TerminationCode {
+    fn from(s: String) -> Self {
+        Self(Arc::from(s))
+    }
+}
+
+impl From<Arc<str>> for TerminationCode {
+    fn from(a: Arc<str>) -> Self {
+        Self(a)
+    }
+}
+
+impl std::fmt::Display for TerminationCode {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        self.0.fmt(f)
+    }
 }
 
 /// Reason a stateful iteration ended.
@@ -295,6 +449,42 @@ impl<T> ActionResult<T> {
         }
     }
 
+    /// Create a `Drop` result without a reason.
+    ///
+    /// Drops the current item from the main output; downstream branches
+    /// continue processing subsequent items normally.
+    #[must_use]
+    pub fn drop_item() -> Self {
+        Self::Drop { reason: None }
+    }
+
+    /// Create a `Drop` result with a human-readable reason.
+    #[must_use]
+    pub fn drop_with_reason(reason: impl Into<String>) -> Self {
+        Self::Drop {
+            reason: Some(reason.into()),
+        }
+    }
+
+    /// Create a `Terminate` result that ends the execution successfully.
+    #[must_use]
+    pub fn terminate_success(note: Option<String>) -> Self {
+        Self::Terminate {
+            reason: TerminationReason::Success { note },
+        }
+    }
+
+    /// Create a `Terminate` result that ends the execution with a failure.
+    #[must_use]
+    pub fn terminate_failure(code: impl Into<TerminationCode>, message: impl Into<String>) -> Self {
+        Self::Terminate {
+            reason: TerminationReason::Failure {
+                code: code.into(),
+                message: message.into(),
+            },
+        }
+    }
+
     /// Create a `Continue` result for stateful action iteration.
     ///
     /// Wraps `output` in [`ActionOutput::Value`] with optional progress.
@@ -384,6 +574,18 @@ impl<T> ActionResult<T> {
         matches!(self, Self::Retry { .. })
     }
 
+    /// Returns `true` if the action dropped its item without stopping the branch.
+    #[must_use]
+    pub fn is_drop(&self) -> bool {
+        matches!(self, Self::Drop { .. })
+    }
+
+    /// Returns `true` if the action is requesting explicit execution termination.
+    #[must_use]
+    pub fn is_terminate(&self) -> bool {
+        matches!(self, Self::Terminate { .. })
+    }
+
     /// Transform the output value in every variant, preserving flow-control semantics.
     ///
     /// Delegates to [`ActionOutput::map`] for each output field.
@@ -445,6 +647,8 @@ impl<T> ActionResult<T> {
                 partial_output: partial_output.map(|o| o.map(&mut f)),
             },
             Self::Retry { after, reason } => ActionResult::Retry { after, reason },
+            Self::Drop { reason } => ActionResult::Drop { reason },
+            Self::Terminate { reason } => ActionResult::Terminate { reason },
         }
     }
 
@@ -519,6 +723,8 @@ impl<T> ActionResult<T> {
                 partial_output: partial_output.map(|o| o.try_map(&mut f)).transpose()?,
             }),
             Self::Retry { after, reason } => Ok(ActionResult::Retry { after, reason }),
+            Self::Drop { reason } => Ok(ActionResult::Drop { reason }),
+            Self::Terminate { reason } => Ok(ActionResult::Terminate { reason }),
         }
     }
 
@@ -545,6 +751,8 @@ impl<T> ActionResult<T> {
             Self::MultiOutput { main_output, .. } => main_output,
             Self::Wait { partial_output, .. } => partial_output,
             Self::Retry { .. } => None,
+            Self::Drop { .. } => None,
+            Self::Terminate { .. } => None,
         }
     }
 }
@@ -1253,6 +1461,149 @@ mod tests {
                 assert_eq!(reason, BreakReason::MaxIterations);
             }
             _ => panic!("expected Break"),
+        }
+    }
+
+    // ── Drop variant ────────────────────────────────────────────────
+
+    #[test]
+    fn drop_item_constructor() {
+        let r: ActionResult<()> = ActionResult::drop_item();
+        assert!(r.is_drop());
+        match r {
+            ActionResult::Drop { reason } => assert!(reason.is_none()),
+            _ => panic!("expected Drop"),
+        }
+    }
+
+    #[test]
+    fn drop_with_reason_constructor() {
+        let r: ActionResult<()> = ActionResult::drop_with_reason("rate limit exceeded");
+        assert!(r.is_drop());
+        match r {
+            ActionResult::Drop { reason } => {
+                assert_eq!(reason.as_deref(), Some("rate limit exceeded"));
+            }
+            _ => panic!("expected Drop"),
+        }
+    }
+
+    #[test]
+    fn drop_into_primary_output_is_none() {
+        let r: ActionResult<i32> = ActionResult::drop_item();
+        assert!(r.into_primary_output().is_none());
+    }
+
+    #[test]
+    fn drop_map_output_preserves_reason() {
+        let r: ActionResult<i32> = ActionResult::drop_with_reason("bad item");
+        let mapped = r.map_output(|n| n * 10);
+        match mapped {
+            ActionResult::Drop { reason } => {
+                assert_eq!(reason.as_deref(), Some("bad item"));
+            }
+            _ => panic!("expected Drop"),
+        }
+    }
+
+    #[test]
+    fn drop_serde_round_trip() {
+        let original: ActionResult<i32> = ActionResult::drop_with_reason("filtered");
+        let json = serde_json::to_string(&original).unwrap();
+        let decoded: ActionResult<i32> = serde_json::from_str(&json).unwrap();
+        match decoded {
+            ActionResult::Drop { reason } => {
+                assert_eq!(reason.as_deref(), Some("filtered"));
+            }
+            _ => panic!("expected Drop"),
+        }
+    }
+
+    // ── Terminate variant ──────────────────────────────────────────
+
+    #[test]
+    fn terminate_success_constructor() {
+        let r: ActionResult<()> = ActionResult::terminate_success(Some("done early".into()));
+        assert!(r.is_terminate());
+        match r {
+            ActionResult::Terminate { reason } => match reason {
+                TerminationReason::Success { note } => {
+                    assert_eq!(note.as_deref(), Some("done early"));
+                }
+                TerminationReason::Failure { .. } => panic!("expected Success"),
+            },
+            _ => panic!("expected Terminate"),
+        }
+    }
+
+    #[test]
+    fn terminate_failure_constructor() {
+        let r: ActionResult<()> =
+            ActionResult::terminate_failure("INVALID_STATE", "cannot proceed from current state");
+        assert!(r.is_terminate());
+        match r {
+            ActionResult::Terminate { reason } => match reason {
+                TerminationReason::Failure { code, message } => {
+                    assert_eq!(code.as_str(), "INVALID_STATE");
+                    assert_eq!(message, "cannot proceed from current state");
+                }
+                TerminationReason::Success { .. } => panic!("expected Failure"),
+            },
+            _ => panic!("expected Terminate"),
+        }
+    }
+
+    #[test]
+    fn terminate_into_primary_output_is_none() {
+        let r: ActionResult<i32> = ActionResult::terminate_success(None);
+        assert!(r.into_primary_output().is_none());
+    }
+
+    #[test]
+    fn terminate_map_output_preserves_reason() {
+        let r: ActionResult<i32> = ActionResult::terminate_failure("CODE", "msg");
+        let mapped = r.map_output(|n| n * 10);
+        match mapped {
+            ActionResult::Terminate { reason } => match reason {
+                TerminationReason::Failure { code, message } => {
+                    assert_eq!(code.as_str(), "CODE");
+                    assert_eq!(message, "msg");
+                }
+                TerminationReason::Success { .. } => panic!("expected Failure"),
+            },
+            _ => panic!("expected Terminate"),
+        }
+    }
+
+    #[test]
+    fn terminate_success_serde_round_trip() {
+        let original: ActionResult<i32> = ActionResult::terminate_success(Some("ok".into()));
+        let json = serde_json::to_string(&original).unwrap();
+        let decoded: ActionResult<i32> = serde_json::from_str(&json).unwrap();
+        match decoded {
+            ActionResult::Terminate { reason } => match reason {
+                TerminationReason::Success { note } => assert_eq!(note.as_deref(), Some("ok")),
+                TerminationReason::Failure { .. } => panic!("expected Success"),
+            },
+            _ => panic!("expected Terminate"),
+        }
+    }
+
+    #[test]
+    fn terminate_failure_serde_round_trip() {
+        let original: ActionResult<i32> =
+            ActionResult::terminate_failure("E_BAD", "something broke");
+        let json = serde_json::to_string(&original).unwrap();
+        let decoded: ActionResult<i32> = serde_json::from_str(&json).unwrap();
+        match decoded {
+            ActionResult::Terminate { reason } => match reason {
+                TerminationReason::Failure { code, message } => {
+                    assert_eq!(code.as_str(), "E_BAD");
+                    assert_eq!(message, "something broke");
+                }
+                TerminationReason::Success { .. } => panic!("expected Failure"),
+            },
+            _ => panic!("expected Terminate"),
         }
     }
 }

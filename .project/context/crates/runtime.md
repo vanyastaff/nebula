@@ -4,26 +4,27 @@ Action execution layer — `ActionRegistry`, `ActionRuntime`, data policies, `Me
 
 ## Invariants
 
-- `ActionRegistry` is the single source of truth for registered actions. DashMap-backed, `&self` API. Has six `register_*` convenience methods (`stateless`, `stateful`, `trigger`, `webhook`, `poll`, `resource`). Lookup returns owned `(ActionMetadata, ActionHandler)`; `ActionHandler` wraps `Arc` internally so cloning is cheap.
+- `ActionRegistry` is the single source of truth. DashMap-backed, `&self` API. Six `register_*` methods (`stateless`, `stateful`, `trigger`, `webhook`, `poll`, `resource`). Lookup returns owned `(ActionMetadata, ActionHandler)`; `ActionHandler` wraps `Arc` internally.
 - `ActionRuntime::run_handler` dispatches on the `ActionHandler` enum:
-  - `Stateless` → direct execution for `IsolationLevel::None`; non-`None` returns `Fatal` (fail-closed until real sandbox dispatch lands).
-  - `Stateful` → iteration loop with in-memory state checkpoint, hard cap `MAX_ITERATIONS = 10_000`, cooperative cancellation **between** iterations.
-  - `Trigger` → `RuntimeError::TriggerNotExecutable` (triggers have their own runtime, post-v1).
-  - `Resource` → `RuntimeError::ResourceNotExecutable` (resources scoped via the resource graph, post-v1).
-  - `Agent` → `RuntimeError::AgentNotSupportedYet`.
-- Non-executable variants (Trigger/Resource/Agent) are still counted as failed executions in metrics — they were valid registry lookups invoked via the wrong path.
-- `DataPassingPolicy` / `LargeDataStrategy` enforce output size limits — oversized outputs can be redirected to blob storage.
-- `SandboxRunner` trait, `InProcessSandbox`, `SandboxedContext`, `ActionExecutor` — implemented in `nebula-sandbox`, re-exported from `runtime::sandbox` for backward compatibility. New code should import from `nebula-sandbox` directly.
+  - `Stateless` → `IsolationLevel::None` direct; `CapabilityGated`/`Isolated` through `self.sandbox: Arc<dyn SandboxRunner>`. Unknown variants fail-closed.
+  - `Stateful` → iteration loop with in-memory state checkpoint, hard cap `MAX_ITERATIONS = 10_000`, cooperative cancellation **between** iterations. Non-`None` isolation still fail-closed — needs Phase 1 broker's long-lived bidirectional loop.
+  - `Trigger` / `Resource` / `Agent` → typed `RuntimeError::*NotExecutable` / `AgentNotSupportedYet` — still counted as failed executions in metrics (valid lookup, wrong path).
+- `DataPassingPolicy` / `LargeDataStrategy` enforce output size limits. `enforce_data_limit` walks **every** downstream-visible slot (`MultiOutput.outputs`, `Branch.alternatives`, `Wait.partial_output`, …) — a fan-out port cannot hide a large payload behind a small main.
+- `SandboxRunner` + `InProcessSandbox` + `SandboxedContext` + `ActionExecutor` live in `nebula-sandbox`, re-exported from `runtime::sandbox`. New code should import `nebula-sandbox` directly.
 - `ActionRuntime::new(registry, sandbox, data_policy, metrics)` — no `EventBus`. Runtime only records metrics.
 
 ## Traps
 
-- `ActionRuntime::execute_action` runs **only** Stateless and Stateful actions. Trigger/Resource/Agent return typed errors — they have separate lifecycles that don't fit the one-shot execute model.
-- Stateful state is in-memory only — does not survive process restart. Persistence needs `nebula-storage` integration.
-- Sandboxed Stateless/Stateful execution returns `Fatal` for any `IsolationLevel != None` — fail-closed to prevent silent capability bypass. Unblocks when real sandbox dispatch lands.
-- `RuntimeError::InvalidActionKey { key, reason }` distinguishes parse failures from `ActionNotFound` — use it when reporting CLI/API errors to users.
-- Cooperative cancellation in the stateful loop checks **between** iterations only. A hanging `execute()` body cannot be cancelled.
+- `execute_action` runs only Stateless and Stateful. Trigger/Resource/Agent return typed errors — separate lifecycles.
+- Stateful state is in-memory only — no persistence across restart.
+- **Stateless sandbox dispatch is live** (Phase 0): `CapabilityGated` / `Isolated` go through `self.sandbox`. In Phase 0 the engine passes an echo-style `ActionExecutor`, so non-None actions silently echo input rather than invoking the registered handler. Acceptable because **no production actions declare non-None isolation yet**. Phase 1 replaces this with `PluginSupervisor` + gRPC.
+- **Stateful sandbox dispatch still fail-closes** for non-None. Unblocks when Phase 1 broker iteration loop lands.
+- `RuntimeError::InvalidActionKey { key, reason }` distinguishes parse failures from `ActionNotFound` — use for user-facing CLI/API errors.
+- Stateful cancellation checks **between** iterations only — a hanging `execute()` body cannot be cancelled.
+- `MemoryQueue::nack` is part of the at-least-once contract: never remove from `in_flight` until requeue succeeds. Using `try_send` after removal can silently lose tasks when the queue is full.
 
 ## Relations
 
 Depends on `nebula-action`, `nebula-core`, `nebula-sandbox`. Used by `nebula-engine`.
+
+<!-- reviewed: 2026-04-14 -->

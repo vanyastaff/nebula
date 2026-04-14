@@ -10,7 +10,7 @@
 //!   [`router`](WebhookTransport::router) and the axum handler function.
 //! - [`provider`] — [`EndpointProviderImpl`] implementing `nebula_action::WebhookEndpointProvider`
 //!   so action code can read `ctx.webhook.endpoint_url()`.
-//! - [`routing`] — private `RoutingMap` (DashMap under the hood) keyed by `(trigger_uuid, nonce)`.
+//! - `routing` — private `RoutingMap` (DashMap under the hood) keyed by `(trigger_uuid, nonce)`.
 //! - [`ratelimit`] — salvaged `WebhookRateLimiter` from the deleted `crates/webhook/` orphan,
 //!   adapted to return a local error.
 

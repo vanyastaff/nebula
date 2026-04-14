@@ -33,7 +33,7 @@ members = [
     "crates/validator/macros",
     "crates/config/macros",
     "crates/sandbox",
-    "crates/plugin-protocol",
+    "crates/plugin-sdk",
     "apps/cli",
     "examples",
 ]

@@ -14,6 +14,7 @@ use chrono::{DateTime, Utc};
 use nebula_core::SecretString;
 use nebula_parameter::{Parameter, ParameterCollection, values::ParameterValues};
 use serde::{Deserialize, Serialize};
+use subtle::ConstantTimeEq;
 use zeroize::Zeroize;
 
 use super::{
@@ -122,7 +123,17 @@ impl CredentialState for OAuth2State {
 ///
 /// Held in encrypted storage between `resolve()` and `continue_resolve()`.
 /// Contains the config + credentials needed to complete the token exchange.
-#[derive(Clone, Debug, Serialize, Deserialize)]
+///
+/// For [`GrantType::AuthorizationCode`] the last three fields
+/// (`pkce_verifier`, `state`, `redirect_uri`) are all `Some(_)` — they
+/// carry the per-flow PKCE verifier, the anti-CSRF state token, and the
+/// exact redirect URI that must be echoed on the token exchange. For
+/// other grant types all three are `None`. The `Option` wrapping also
+/// lets records serialized before the PKCE fix deserialize successfully;
+/// `continue_resolve` rejects such records loudly as "callback
+/// validation failed" rather than silently completing without a PKCE
+/// check.
+#[derive(Clone, Serialize, Deserialize)]
 pub struct OAuth2Pending {
     /// OAuth2 provider configuration.
     pub config: OAuth2Config,
@@ -140,14 +151,85 @@ pub struct OAuth2Pending {
     pub device_code: Option<String>,
     /// Polling interval in seconds for device code flow.
     pub interval: Option<u64>,
+    /// PKCE code verifier for AuthorizationCode flows.
+    ///
+    /// Generated fresh on every `resolve()`. Sent as `code_verifier` on
+    /// the token exchange so the provider can recompute and match the
+    /// `code_challenge` carried on the auth URL.
+    #[serde(default, with = "nebula_core::option_serde_secret")]
+    pub pkce_verifier: Option<SecretString>,
+    /// Anti-CSRF `state` parameter for AuthorizationCode flows.
+    ///
+    /// Generated fresh on every `resolve()`. Validated in
+    /// `continue_resolve` against the callback-provided value via a
+    /// constant-time comparison.
+    #[serde(default)]
+    pub state: Option<String>,
+    /// Exact `redirect_uri` echoed on the token exchange for
+    /// AuthorizationCode flows.
+    #[serde(default)]
+    pub redirect_uri: Option<String>,
+}
+
+// Manual `Debug` so that `tracing::debug!(?pending)` cannot leak the
+// `client_secret` (already redacted by `SecretString`'s own `Debug`),
+// the `device_code` (device-flow bearer), the `pkce_verifier` (one-shot
+// auth-code verifier), or the `state` (callback CSRF token). The
+// `redirect_uri` is not secret and is shown verbatim.
+impl std::fmt::Debug for OAuth2Pending {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("OAuth2Pending")
+            .field("config", &self.config)
+            .field("client_id", &"[REDACTED]")
+            .field("client_secret", &"[REDACTED]")
+            .field("grant_type", &self.grant_type)
+            .field("auth_style", &self.auth_style)
+            .field(
+                "device_code",
+                &self.device_code.as_ref().map(|_| "[REDACTED]"),
+            )
+            .field("interval", &self.interval)
+            .field(
+                "pkce_verifier",
+                &self.pkce_verifier.as_ref().map(|_| "[REDACTED]"),
+            )
+            .field("state", &self.state.as_ref().map(|_| "[REDACTED]"))
+            .field("redirect_uri", &self.redirect_uri)
+            .finish()
+    }
 }
 
 impl Zeroize for OAuth2Pending {
     fn zeroize(&mut self) {
+        // Zeroize the existing SecretString in place before replacing it, so
+        // the underlying heap buffer is scrubbed rather than relying solely
+        // on Drop of the replacement.
+        self.client_secret.zeroize();
         self.client_secret = SecretString::new("");
+        // client_id is not strictly a secret, but it correlates to an
+        // account and we are told to wipe this struct — scrub it too.
+        self.client_id.zeroize();
         if let Some(ref mut dc) = self.device_code {
             dc.zeroize();
         }
+        // Drop the Option entirely so downstream callers cannot tell a
+        // wiped device-code apart from a fresh Some("").
+        self.device_code = None;
+        self.interval = None;
+        // PKCE verifier: scrub in place, then drop the Option.
+        if let Some(ref mut v) = self.pkce_verifier {
+            v.zeroize();
+        }
+        self.pkce_verifier = None;
+        // Anti-CSRF state and redirect URI: scrub + drop.
+        if let Some(ref mut s) = self.state {
+            s.zeroize();
+        }
+        self.state = None;
+        if let Some(ref mut r) = self.redirect_uri {
+            r.zeroize();
+        }
+        self.redirect_uri = None;
     }
 }
 
@@ -250,6 +332,14 @@ impl Credential for OAuth2Credential {
                     .label("Scopes")
                     .description("Space-separated list of OAuth2 scopes"),
             )
+            .add(
+                Parameter::string("redirect_uri")
+                    .label("Redirect URI")
+                    .description(
+                        "OAuth2 redirect URI (required for authorization_code grant; must match the URI registered with the provider)",
+                    )
+                    .placeholder("https://app.example.com/oauth2/callback"),
+            )
     }
 
     fn project(state: &OAuth2State) -> OAuth2Token {
@@ -279,11 +369,29 @@ impl Credential for OAuth2Credential {
         let auth_url = values.get_string("auth_url").unwrap_or_default();
         let scopes = parse_scopes(values);
 
-        let config = build_config(grant_type, auth_url, token_url, &scopes);
+        // `redirect_uri` is required for AuthorizationCode (RFC 6749
+        // §4.1.3), ignored for the other grants.
+        let redirect_uri_opt = values.get_string("redirect_uri").map(str::to_owned);
+        let config = build_config(grant_type, auth_url, token_url, &scopes, redirect_uri_opt)?;
 
         match grant_type {
             GrantType::AuthorizationCode => {
-                let url = oauth2_flow::build_auth_url(&config, client_id)?;
+                // Generate per-flow PKCE verifier + anti-CSRF state.
+                let verifier = crate::crypto::generate_pkce_verifier();
+                let challenge = crate::crypto::generate_code_challenge(&verifier);
+                let state_token = crate::crypto::generate_random_state();
+
+                let url =
+                    oauth2_flow::build_auth_url(&config, client_id, &challenge, &state_token)?;
+
+                // `build_config` rejects missing `redirect_uri` for this
+                // grant type, so this `clone()` unwraps a value that was
+                // validated moments ago.
+                let redirect_uri = config
+                    .redirect_uri
+                    .clone()
+                    .expect("build_config guarantees redirect_uri for AuthorizationCode");
+
                 let pending = OAuth2Pending {
                     client_id: client_id.to_owned(),
                     client_secret: SecretString::new(client_secret),
@@ -291,6 +399,9 @@ impl Credential for OAuth2Credential {
                     auth_style: config.auth_style,
                     device_code: None,
                     interval: None,
+                    pkce_verifier: Some(SecretString::new(verifier)),
+                    state: Some(state_token),
+                    redirect_uri: Some(redirect_uri),
                     config,
                 };
                 Ok(ResolveResult::Pending {
@@ -313,6 +424,9 @@ impl Credential for OAuth2Credential {
                     auth_style: config.auth_style,
                     device_code: Some(device_resp.device_code),
                     interval: Some(device_resp.interval),
+                    pkce_verifier: None,
+                    state: None,
+                    redirect_uri: None,
                     config,
                 };
                 Ok(ResolveResult::Pending {
@@ -342,25 +456,72 @@ impl Credential for OAuth2Credential {
     ) -> Result<ResolveResult<OAuth2State, OAuth2Pending>, CredentialError> {
         match pending.grant_type {
             GrantType::AuthorizationCode => {
-                let code = match input {
-                    UserInput::Callback { params } => {
-                        params.get("code").cloned().ok_or_else(|| {
-                            CredentialError::InvalidInput("callback missing 'code' param".into())
-                        })?
-                    }
+                // Uniform failure message so a callback probe cannot use
+                // response-error text as an oracle for which dimension
+                // (missing code / missing state / wrong state / missing
+                // verifier) tripped the check.
+                const FAILED: &str = "OAuth2 callback validation failed";
+
+                let params = match input {
+                    UserInput::Callback { params } => params,
                     _ => {
                         return Err(CredentialError::InvalidInput(
-                            "authorization_code flow expects UserInput::Callback with 'code'"
-                                .into(),
+                            "authorization_code flow expects UserInput::Callback".into(),
                         ));
                     }
                 };
+
+                let code = params
+                    .get("code")
+                    .ok_or_else(|| CredentialError::InvalidInput(FAILED.into()))?;
+                let callback_state = params
+                    .get("state")
+                    .ok_or_else(|| CredentialError::InvalidInput(FAILED.into()))?;
+                let expected_state = pending
+                    .state
+                    .as_deref()
+                    .ok_or_else(|| CredentialError::InvalidInput(FAILED.into()))?;
+
+                // Constant-time compare on the (callback, expected) state
+                // so a timing probe cannot recover the expected value by
+                // guessing one prefix byte at a time. `ct_eq` returns
+                // `Choice`; `bool::from` turns it into an observable bool.
+                let state_matches: bool = callback_state
+                    .as_bytes()
+                    .ct_eq(expected_state.as_bytes())
+                    .into();
+                if !state_matches {
+                    return Err(CredentialError::InvalidInput(
+                        "OAuth2 state mismatch".into(),
+                    ));
+                }
+
+                let verifier_secret = pending
+                    .pkce_verifier
+                    .as_ref()
+                    .ok_or_else(|| CredentialError::InvalidInput(FAILED.into()))?;
+                let redirect_uri = pending
+                    .redirect_uri
+                    .as_deref()
+                    .ok_or_else(|| CredentialError::InvalidInput(FAILED.into()))?;
+
+                // TODO(BL-C7-13, issue #265): these materialise plaintext
+                // `String`s that live until the HTTP round-trip drops them
+                // without zeroization. Wrap in `Zeroizing<String>` when
+                // that issue lands so the heap is scrubbed on drop. The
+                // window is narrow — `PendingStoreMemory::consume` wipes
+                // the pending row in the same call — but narrow is not
+                // zero.
                 let client_secret = pending.client_secret.expose_secret(|s| s.to_owned());
+                let code_verifier = verifier_secret.expose_secret(|s| s.to_owned());
+
                 let state = oauth2_flow::exchange_authorization_code(
                     &pending.config,
                     &pending.client_id,
                     &client_secret,
-                    &code,
+                    code,
+                    &code_verifier,
+                    redirect_uri,
                 )
                 .await?;
                 Ok(ResolveResult::Complete(state))
@@ -457,22 +618,45 @@ fn parse_scopes(values: &ParameterValues) -> Vec<String> {
 }
 
 /// Build an [`OAuth2Config`] from extracted parameter values.
+///
+/// For [`GrantType::AuthorizationCode`], `redirect_uri` is required —
+/// the builder will reject a missing value with
+/// `CredentialError::InvalidInput`. For other grants, `redirect_uri` is
+/// silently ignored (passing `None` or `Some(_)` both yield a config
+/// with `redirect_uri = None`).
 fn build_config(
     grant_type: GrantType,
     auth_url: &str,
     token_url: &str,
     scopes: &[String],
-) -> OAuth2Config {
-    let builder = match grant_type {
-        GrantType::AuthorizationCode => OAuth2Config::authorization_code(),
-        GrantType::ClientCredentials => OAuth2Config::client_credentials(),
-        GrantType::DeviceCode => OAuth2Config::device_code(),
+    redirect_uri: Option<String>,
+) -> Result<OAuth2Config, CredentialError> {
+    let config = match grant_type {
+        GrantType::AuthorizationCode => {
+            let redirect = redirect_uri.ok_or_else(|| {
+                CredentialError::InvalidInput(
+                    "missing required field: redirect_uri (required for authorization_code grant)"
+                        .into(),
+                )
+            })?;
+            OAuth2Config::authorization_code(redirect)
+                .auth_url(auth_url)
+                .token_url(token_url)
+                .scopes(scopes.iter().cloned())
+                .build()
+        }
+        GrantType::ClientCredentials => OAuth2Config::client_credentials()
+            .auth_url(auth_url)
+            .token_url(token_url)
+            .scopes(scopes.iter().cloned())
+            .build(),
+        GrantType::DeviceCode => OAuth2Config::device_code()
+            .auth_url(auth_url)
+            .token_url(token_url)
+            .scopes(scopes.iter().cloned())
+            .build(),
     };
-    builder
-        .auth_url(auth_url)
-        .token_url(token_url)
-        .scopes(scopes.iter().cloned())
-        .build()
+    Ok(config)
 }
 
 #[cfg(test)]
@@ -548,7 +732,8 @@ mod tests {
         assert!(params.contains("token_url"));
         assert!(params.contains("grant_type"));
         assert!(params.contains("scopes"));
-        assert_eq!(params.len(), 6);
+        assert!(params.contains("redirect_uri"));
+        assert_eq!(params.len(), 7);
     }
 
     #[test]
@@ -604,10 +789,11 @@ mod tests {
         assert!(result.is_err());
     }
 
-    #[tokio::test]
-    async fn continue_resolve_rejects_wrong_input_for_auth_code() {
-        let pending = OAuth2Pending {
-            config: OAuth2Config::authorization_code()
+    const TEST_CALLBACK: &str = "https://app.example.com/oauth2/callback";
+
+    fn auth_code_pending() -> OAuth2Pending {
+        OAuth2Pending {
+            config: OAuth2Config::authorization_code(TEST_CALLBACK)
                 .auth_url("https://a.com/auth")
                 .token_url("https://a.com/token")
                 .build(),
@@ -617,8 +803,42 @@ mod tests {
             auth_style: AuthStyle::default(),
             device_code: None,
             interval: None,
-        };
+            pkce_verifier: Some(SecretString::new("verifier_value")),
+            state: Some("expected_state".into()),
+            redirect_uri: Some(TEST_CALLBACK.into()),
+        }
+    }
 
+    #[tokio::test]
+    async fn resolve_rejects_missing_redirect_uri_for_auth_code() {
+        // The parameter-level contract at `resolve` is the one an
+        // attacker can actually reach — a deployment that forgets to
+        // supply `redirect_uri` must fail loudly rather than build a
+        // PKCE flow with an empty callback URL.
+        let mut values = ParameterValues::new();
+        values.set("client_id", serde_json::json!("cid"));
+        values.set("client_secret", serde_json::json!("cs"));
+        values.set("auth_url", serde_json::json!("https://a.com/auth"));
+        values.set("token_url", serde_json::json!("https://a.com/token"));
+        values.set("grant_type", serde_json::json!("authorization_code"));
+        // deliberately no `redirect_uri`
+
+        let ctx = CredentialContext::new("test-user");
+        let result = OAuth2Credential::resolve(&values, &ctx).await;
+        match result {
+            Err(CredentialError::InvalidInput(msg)) => {
+                assert!(
+                    msg.contains("redirect_uri"),
+                    "error message must name the missing field: {msg}"
+                );
+            }
+            other => panic!("expected InvalidInput, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn continue_resolve_rejects_wrong_input_for_auth_code() {
+        let pending = auth_code_pending();
         let ctx = CredentialContext::new("test-user");
         let result = OAuth2Credential::continue_resolve(&pending, &UserInput::Poll, &ctx).await;
         assert!(result.is_err());
@@ -626,25 +846,71 @@ mod tests {
 
     #[tokio::test]
     async fn continue_resolve_rejects_callback_without_code() {
-        let pending = OAuth2Pending {
-            config: OAuth2Config::authorization_code()
-                .auth_url("https://a.com/auth")
-                .token_url("https://a.com/token")
-                .build(),
-            client_id: "cid".into(),
-            client_secret: SecretString::new("cs"),
-            grant_type: GrantType::AuthorizationCode,
-            auth_style: AuthStyle::default(),
-            device_code: None,
-            interval: None,
-        };
-
+        let pending = auth_code_pending();
         let ctx = CredentialContext::new("test-user");
         let input = UserInput::Callback {
             params: HashMap::new(),
         };
         let result = OAuth2Credential::continue_resolve(&pending, &input, &ctx).await;
         assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn continue_resolve_rejects_callback_missing_state_param() {
+        let pending = auth_code_pending();
+        let ctx = CredentialContext::new("test-user");
+        // Callback carries `code` but no `state` — the CSRF check must fail.
+        let mut params = HashMap::new();
+        params.insert("code".to_owned(), "the_code".to_owned());
+        let input = UserInput::Callback { params };
+        let result = OAuth2Credential::continue_resolve(&pending, &input, &ctx).await;
+        assert!(matches!(result, Err(CredentialError::InvalidInput(_))));
+    }
+
+    #[tokio::test]
+    async fn continue_resolve_rejects_wrong_state() {
+        let pending = auth_code_pending();
+        let ctx = CredentialContext::new("test-user");
+        let mut params = HashMap::new();
+        params.insert("code".to_owned(), "the_code".to_owned());
+        params.insert("state".to_owned(), "attacker_state".to_owned());
+        let input = UserInput::Callback { params };
+        let result = OAuth2Credential::continue_resolve(&pending, &input, &ctx).await;
+        assert!(matches!(result, Err(CredentialError::InvalidInput(_))));
+    }
+
+    #[tokio::test]
+    async fn continue_resolve_rejects_length_mismatched_state() {
+        // `subtle::ConstantTimeEq` on differing-length byte slices must
+        // still return false rather than panic. Guard against a future
+        // switch to a plain `==` comparison that would short-circuit.
+        let mut pending = auth_code_pending();
+        pending.state = Some("aaa".into());
+        let ctx = CredentialContext::new("test-user");
+        let mut params = HashMap::new();
+        params.insert("code".to_owned(), "c".to_owned());
+        params.insert("state".to_owned(), "aaaa".to_owned()); // longer
+        let input = UserInput::Callback { params };
+        let result = OAuth2Credential::continue_resolve(&pending, &input, &ctx).await;
+        assert!(matches!(result, Err(CredentialError::InvalidInput(_))));
+    }
+
+    #[tokio::test]
+    async fn continue_resolve_rejects_pre_fix_pending_without_state() {
+        // A record persisted before the PKCE/state fix has `state: None`,
+        // `pkce_verifier: None`, `redirect_uri: None`. It must fail the
+        // callback validation loudly.
+        let mut pending = auth_code_pending();
+        pending.state = None;
+        pending.pkce_verifier = None;
+        pending.redirect_uri = None;
+        let ctx = CredentialContext::new("test-user");
+        let mut params = HashMap::new();
+        params.insert("code".to_owned(), "c".to_owned());
+        params.insert("state".to_owned(), "s".to_owned());
+        let input = UserInput::Callback { params };
+        let result = OAuth2Credential::continue_resolve(&pending, &input, &ctx).await;
+        assert!(matches!(result, Err(CredentialError::InvalidInput(_))));
     }
 
     #[tokio::test]
@@ -660,6 +926,9 @@ mod tests {
             auth_style: AuthStyle::default(),
             device_code: Some("dcode".into()),
             interval: Some(5),
+            pkce_verifier: None,
+            state: None,
+            redirect_uri: None,
         };
 
         let ctx = CredentialContext::new("test-user");
@@ -725,9 +994,9 @@ mod tests {
     }
 
     #[test]
-    fn pending_state_zeroizes_secret() {
+    fn pending_state_zeroizes_all_fields_including_pkce_verifier_state_redirect() {
         let mut pending = OAuth2Pending {
-            config: OAuth2Config::authorization_code()
+            config: OAuth2Config::authorization_code(TEST_CALLBACK)
                 .auth_url("https://a.com/auth")
                 .token_url("https://a.com/token")
                 .build(),
@@ -737,19 +1006,30 @@ mod tests {
             auth_style: AuthStyle::default(),
             device_code: Some("dcode_secret".into()),
             interval: None,
+            pkce_verifier: Some(SecretString::new("verifier_contents")),
+            state: Some("state_contents".into()),
+            redirect_uri: Some(TEST_CALLBACK.into()),
         };
 
         pending.zeroize();
         pending
             .client_secret
             .expose_secret(|s| assert!(s.is_empty()));
-        assert_eq!(pending.device_code.as_deref(), Some(""));
+        // Zeroize drops Option fields entirely so a wiped value is
+        // indistinguishable from a fresh absent one.
+        assert!(pending.device_code.is_none());
+        assert!(pending.client_id.is_empty());
+        assert!(pending.interval.is_none());
+        // New fields: verifier, state, redirect_uri are all None after wipe.
+        assert!(pending.pkce_verifier.is_none());
+        assert!(pending.state.is_none());
+        assert!(pending.redirect_uri.is_none());
     }
 
     #[test]
-    fn pending_state_expires_in_10_minutes() {
+    fn pending_state_debug_redacts_pkce_verifier_and_state_but_shows_redirect_uri() {
         let pending = OAuth2Pending {
-            config: OAuth2Config::authorization_code()
+            config: OAuth2Config::authorization_code(TEST_CALLBACK)
                 .auth_url("https://a.com/auth")
                 .token_url("https://a.com/token")
                 .build(),
@@ -759,6 +1039,34 @@ mod tests {
             auth_style: AuthStyle::default(),
             device_code: None,
             interval: None,
+            pkce_verifier: Some(SecretString::new("my_pkce_verifier_value")),
+            state: Some("my_csrf_state_value".into()),
+            redirect_uri: Some(TEST_CALLBACK.into()),
+        };
+        let debug = format!("{pending:?}");
+        assert!(!debug.contains("my_pkce_verifier_value"));
+        assert!(!debug.contains("my_csrf_state_value"));
+        // Redirect URI is not secret — it's a registered callback URL.
+        assert!(debug.contains(TEST_CALLBACK));
+        assert!(debug.contains("[REDACTED]"));
+    }
+
+    #[test]
+    fn pending_state_expires_in_10_minutes() {
+        let pending = OAuth2Pending {
+            config: OAuth2Config::authorization_code(TEST_CALLBACK)
+                .auth_url("https://a.com/auth")
+                .token_url("https://a.com/token")
+                .build(),
+            client_id: "cid".into(),
+            client_secret: SecretString::new("cs"),
+            grant_type: GrantType::AuthorizationCode,
+            auth_style: AuthStyle::default(),
+            device_code: None,
+            interval: None,
+            pkce_verifier: None,
+            state: None,
+            redirect_uri: None,
         };
 
         assert_eq!(pending.expires_in(), Duration::from_secs(600));

@@ -13,12 +13,14 @@
 
 pub mod capabilities;
 pub mod discovery;
+pub mod error;
 mod handler;
 mod in_process;
 pub mod os_sandbox;
 mod process;
 mod runner;
 
+pub use error::SandboxError;
 pub use handler::ProcessSandboxHandler;
 pub use in_process::InProcessSandbox;
 pub use process::ProcessSandbox;

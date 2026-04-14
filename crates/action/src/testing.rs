@@ -101,7 +101,7 @@ impl TestContextBuilder {
     /// Add a type-based credential for testing.
     ///
     /// The scheme is stored by [`TypeId`] and returned when
-    /// [`ActionContext::credential`] is called with the same type.
+    /// `ActionContext::credential_typed` is called with the same type.
     #[must_use]
     pub fn with_credential<S>(mut self, scheme: S) -> Self
     where
