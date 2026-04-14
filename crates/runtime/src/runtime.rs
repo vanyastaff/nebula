@@ -335,17 +335,15 @@ impl ActionRuntime {
     ///
     /// - `Success` / `Continue` / `Break` / `Route` — their single output
     /// - `Skip` / `Wait` — the optional partial output
-    /// - `Branch` — the selected output **and** every alternative (previews
-    ///   are still shipped downstream; a misbehaving node must not smuggle
-    ///   a GB-sized alternative past the limit)
+    /// - `Branch` — the selected output **and** every alternative (previews are still shipped
+    ///   downstream; a misbehaving node must not smuggle a GB-sized alternative past the limit)
     /// - `MultiOutput` — the optional main output **and** every fan-out port
     ///
     /// For each inline `Value` slot that exceeds the limit, applies the
     /// configured strategy:
     /// - `Reject` → returns `DataLimitExceeded` on the first offender
-    /// - `SpillToBlob` → writes the payload to blob storage and rewrites
-    ///   the slot to an `ActionOutput::Reference` so the large inline
-    ///   value is no longer carried downstream
+    /// - `SpillToBlob` → writes the payload to blob storage and rewrites the slot to an
+    ///   `ActionOutput::Reference` so the large inline value is no longer carried downstream
     ///
     /// Non-`Value` variants (`Binary` / `Reference` / `Deferred`) are
     /// skipped — their size is managed by the owning storage backend.
