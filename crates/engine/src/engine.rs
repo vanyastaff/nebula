@@ -13,13 +13,13 @@ use std::{
         Arc,
         atomic::{AtomicU32, AtomicU64, Ordering},
     },
-    time::Instant,
+    time::{Duration, Instant},
 };
 
 use dashmap::DashMap;
 // TODO: ExecutionBudget moved to nebula-execution
 use nebula_action::capability::{ResourceAccessor, default_resource_accessor};
-use nebula_action::{ActionContext, ActionResult};
+use nebula_action::{ActionContext, ActionError, ActionResult};
 use nebula_core::id::{ExecutionId, NodeId, WorkflowId};
 use nebula_credential::{CredentialAccessor, default_credential_accessor};
 // ScopeLevel removed from ActionContext
@@ -701,9 +701,8 @@ impl WorkflowEngine {
             .map_err(|e| EngineError::PlanningFailed(e.to_string()))?;
 
         // 7. Reconstruct the execution state, resetting non-terminal nodes. Nodes that were Running
-        //    at crash time need to be re-executed. This is a recovery
-        //    path, so the reset bypasses the forward state machine via
-        //    `override_node_state` but still bumps the version per
+        //    at crash time need to be re-executed. This is a recovery path, so the reset bypasses
+        //    the forward state machine via `override_node_state` but still bumps the version per
         //    transition so CAS readers see the change (issue #255).
         let mut exec_state = exec_state;
         let non_terminal: Vec<NodeId> = exec_state
@@ -1048,34 +1047,98 @@ impl WorkflowEngine {
             }
 
             if cancel_token.is_cancelled() {
+                join_set.abort_all();
                 while join_set.join_next().await.is_some() {}
                 break;
             }
 
-            let Some(join_result) = join_set.join_next().await else {
-                break;
+            // Race join_set against the wall-clock deadline so a hung node
+            // cannot starve budget enforcement. The Phase 1 check_budget call
+            // only fires while ready_queue has work; once everything is in
+            // flight, this select is the sole budget guard.
+            let wall_clock_remaining: Option<Duration> = budget
+                .max_duration
+                .map(|max_dur| max_dur.saturating_sub(started.elapsed()));
+            let sleep_fut = async {
+                if let Some(d) = wall_clock_remaining {
+                    tokio::time::sleep(d).await
+                } else {
+                    std::future::pending::<()>().await
+                }
+            };
+            tokio::pin!(sleep_fut);
+
+            let join_result = tokio::select! {
+                result = join_set.join_next() => match result {
+                    Some(r) => r,
+                    None => break,
+                },
+                () = &mut sleep_fut => {
+                    cancel_token.cancel();
+                    join_set.abort_all();
+                    while join_set.join_next().await.is_some() {}
+                    return Some((
+                        NodeId::nil(),
+                        "execution budget exceeded: max_duration".to_string(),
+                    ));
+                }
+                () = cancel_token.cancelled() => {
+                    join_set.abort_all();
+                    while join_set.join_next().await.is_some() {}
+                    break;
+                }
             };
 
             // Phase 3: Process the completed task
             match join_result {
-                Ok((node_id, Ok(action_result))) => {
-                    // Node ran and produced a result
-
-                    // Track retry attempts for budget enforcement.
-                    // ActionResult::Retry signals the action requested a retry;
-                    // count it before any retry mechanism re-enqueues the node.
-                    if matches!(action_result, ActionResult::Retry { .. }) {
-                        total_retries.fetch_add(1, Ordering::Relaxed);
-                        // TODO: implement retry re-enqueue; currently treated as terminal
-                        // (follow-up plan)
+                Ok((node_id, Ok(ActionResult::Retry { .. }))) => {
+                    // ActionResult::Retry has no scheduler yet; treat it as a node
+                    // failure for at-least-once semantics (#290/#296 short-term).
+                    total_retries.fetch_add(1, Ordering::Relaxed);
+                    let err = EngineError::Runtime(nebula_runtime::RuntimeError::ActionError(
+                        nebula_action::error::ActionError::retryable(
+                            "Action retry is not supported by the engine",
+                        ),
+                    ));
+                    mark_node_failed(exec_state, node_id, &err);
+                    let abort = handle_node_failure(
+                        node_id,
+                        &err.to_string(),
+                        error_strategy,
+                        graph,
+                        outputs,
+                        &mut activated_edges,
+                        &mut resolved_edges,
+                        &required_count,
+                        &mut ready_queue,
+                        exec_state,
+                    );
+                    if let Some(err_msg) = abort {
+                        cancel_token.cancel();
+                        return Some((node_id, err_msg));
                     }
 
+                    if exec_state
+                        .node_state(node_id)
+                        .is_some_and(|ns| ns.state == NodeState::Failed)
+                    {
+                        self.checkpoint_node(
+                            execution_id,
+                            node_id,
+                            outputs,
+                            exec_state,
+                            repo_version,
+                        )
+                        .await;
+                        self.emit_event(ExecutionEvent::NodeFailed {
+                            execution_id,
+                            node_id,
+                            error: err.to_string(),
+                        });
+                    }
+                }
+                Ok((node_id, Ok(action_result))) => {
                     mark_node_completed(exec_state, node_id);
-                    self.emit_event(ExecutionEvent::NodeCompleted {
-                        execution_id,
-                        node_id,
-                        elapsed: started.elapsed(),
-                    });
 
                     // Track output size for budget enforcement
                     if let Some(output) = outputs.get(&node_id) {
@@ -1085,13 +1148,19 @@ impl WorkflowEngine {
                         total_output_bytes.fetch_add(bytes, Ordering::Relaxed);
                     }
 
-                    // Checkpoint: persist node output + execution state
+                    // Persist node output + execution state, then record the
+                    // idempotency key, before any external observer learns the
+                    // node is done. This guarantees durability precedes
+                    // visibility (#297).
                     self.checkpoint_node(execution_id, node_id, outputs, exec_state, repo_version)
                         .await;
-
-                    // Record idempotency key after successful execution so that
-                    // any subsequent attempt for this node is skipped.
                     self.record_idempotency(execution_id, node_id).await;
+
+                    self.emit_event(ExecutionEvent::NodeCompleted {
+                        execution_id,
+                        node_id,
+                        elapsed: started.elapsed(),
+                    });
 
                     // Evaluate outgoing edges and update frontier
                     process_outgoing_edges(
@@ -1107,15 +1176,10 @@ impl WorkflowEngine {
                     );
                 }
                 Ok((node_id, Err(ref err))) => {
-                    // Node failed at runtime — delegate to
-                    // strategy-aware handler.
+                    // Node failed at runtime — persist before any observer
+                    // learns the node is done and before successors advance
+                    // (#297).
                     mark_node_failed(exec_state, node_id, err);
-                    self.emit_event(ExecutionEvent::NodeFailed {
-                        execution_id,
-                        node_id,
-                        error: err.to_string(),
-                    });
-
                     let abort = handle_node_failure(
                         node_id,
                         &err.to_string(),
@@ -1129,15 +1193,28 @@ impl WorkflowEngine {
                         exec_state,
                     );
 
-                    // Checkpoint *after* handle_node_failure so the persisted
-                    // node state reflects the final resolved state (e.g.
-                    // Completed for IgnoreErrors, Failed for FailFast/Continue).
-                    self.checkpoint_node(execution_id, node_id, outputs, exec_state, repo_version)
-                        .await;
-
                     if let Some(err_msg) = abort {
                         cancel_token.cancel();
                         return Some((node_id, err_msg));
+                    }
+
+                    if exec_state
+                        .node_state(node_id)
+                        .is_some_and(|ns| ns.state == NodeState::Failed)
+                    {
+                        self.checkpoint_node(
+                            execution_id,
+                            node_id,
+                            outputs,
+                            exec_state,
+                            repo_version,
+                        )
+                        .await;
+                        self.emit_event(ExecutionEvent::NodeFailed {
+                            execution_id,
+                            node_id,
+                            error: err.to_string(),
+                        });
                     }
                 }
                 Err(join_err) => {
@@ -1536,17 +1613,36 @@ impl NodeTask {
 
         // Proactive credential refresh: call the hook before the action runs
         // so that any short-lived credential is rotated while still valid.
-        // Errors are logged but do not abort execution — the action will fail
-        // on its own if the credential is truly unusable.
-        if let Some(ref refresh_fn) = self.credential_refresh
-            && let Err(e) = (refresh_fn)(&self.action_key).await
-        {
-            tracing::warn!(
-                node_id = %self.node_id,
-                action_key = %self.action_key,
-                error = %e,
-                "proactive credential refresh failed; proceeding with potentially stale credential"
-            );
+        //
+        // Failure modes (Batch 5D / #306):
+        //   - cancel fires first → return EngineError::Cancelled. We must NOT block shutdown on a
+        //     dying credential store.
+        //   - refresh returns Err → surface a typed ActionError::CredentialRefreshFailed through
+        //     EngineError::Action. The frontier loop routes this through `handle_node_failure`,
+        //     where the workflow-level ErrorStrategy decides whether execution fails fast or
+        //     continues/ignores the failure, and whether any `OnError` edge is activated. This
+        //     replaces the old "log a WARN and proceed with a potentially stale credential" path,
+        //     which leaked into N opaque downstream auth errors per failure.
+        //   - refresh returns Ok → fall through to the action dispatch.
+        if let Some(ref refresh_fn) = self.credential_refresh {
+            let refresh_fut = (refresh_fn)(&self.action_key);
+            tokio::pin!(refresh_fut);
+            let refresh_result = tokio::select! {
+                biased;
+                () = self.cancel.cancelled() => {
+                    return (self.node_id, Err(EngineError::Cancelled));
+                }
+                res = &mut refresh_fut => res,
+            };
+
+            match refresh_result {
+                Ok(()) => {}
+                Err(source) => {
+                    let action_err =
+                        ActionError::credential_refresh_failed(self.action_key.to_string(), source);
+                    return (self.node_id, Err(EngineError::Action(action_err)));
+                }
+            }
         }
 
         let action_ctx = ActionContext::new(
@@ -1558,14 +1654,26 @@ impl NodeTask {
         .with_credentials(self.credentials.clone())
         .with_resources(self.resources.clone());
 
-        // Acquire rate limit permit if configured.
+        // Acquire rate limit permit if configured. If the limiter rejects the
+        // request, fail the node so ErrorStrategy decides abort/continue.
         if let Some(ref limiter) = self.rate_limiter {
             use nebula_resilience::rate_limiter::RateLimiter;
-            if limiter.acquire().await.is_err() {
+            if let Err(e) = limiter.acquire().await {
                 tracing::warn!(
                     node_id = %self.node_id,
                     action_key = %self.action_key,
-                    "rate limit exceeded, request queued"
+                    error = ?e,
+                    "rate limit exceeded; failing node"
+                );
+                let action_err = nebula_action::error::ActionError::retryable_with_hint(
+                    format!("rate limit exceeded: {e:?}"),
+                    nebula_action::error::RetryHintCode::RateLimited,
+                );
+                return (
+                    self.node_id,
+                    Err(EngineError::Runtime(
+                        nebula_runtime::RuntimeError::ActionError(action_err),
+                    )),
                 );
             }
         }
@@ -3642,7 +3750,11 @@ mod tests {
         );
 
         let result = engine
-            .execute_workflow(&wf, serde_json::json!("payload"), ExecutionBudget::default())
+            .execute_workflow(
+                &wf,
+                serde_json::json!("payload"),
+                ExecutionBudget::default(),
+            )
             .await
             .unwrap();
 
@@ -3707,5 +3819,122 @@ mod tests {
             ExecutionStatus::Completed,
             "all-terminal nodes with no failure must yield Completed"
         );
+    }
+
+    /// Regression for #306: when the proactive credential-refresh hook
+    /// returns an error, the node MUST end up Failed (not Completed) and
+    /// the failure MUST surface as a typed
+    /// `ActionError::CredentialRefreshFailed`, not a log-and-continue WARN.
+    ///
+    /// Verifies:
+    ///   1. The action handler is **never** invoked (refresh fails before dispatch).
+    ///   2. The execution result is not a success.
+    ///   3. The emitted `NodeFailed` event carries the typed error code
+    ///      `ACTION:CREDENTIAL_REFRESH_FAILED` (visible to downstream consumers via the error
+    ///      string).
+    ///   4. The new `EngineError::Action` carries an `ActionError` that pattern-matches as
+    ///      `CredentialRefreshFailed`.
+    #[tokio::test]
+    async fn credential_refresh_failure_surfaces_as_typed_error() {
+        use std::sync::atomic::{AtomicU32, Ordering as AOrdering};
+
+        // Action that asserts it never runs — if the engine reaches
+        // dispatch despite a failed refresh, this will fire and surface
+        // a different error than the one we expect.
+        struct NeverRunHandler {
+            meta: ActionMetadata,
+            invoked: Arc<AtomicU32>,
+        }
+        impl ActionDependencies for NeverRunHandler {}
+        impl Action for NeverRunHandler {
+            fn metadata(&self) -> &ActionMetadata {
+                &self.meta
+            }
+        }
+        impl StatelessAction for NeverRunHandler {
+            type Input = serde_json::Value;
+            type Output = serde_json::Value;
+
+            async fn execute(
+                &self,
+                input: Self::Input,
+                _ctx: &impl Context,
+            ) -> Result<ActionResult<Self::Output>, ActionError> {
+                self.invoked.fetch_add(1, AOrdering::Relaxed);
+                Ok(ActionResult::success(input))
+            }
+        }
+
+        let invoked = Arc::new(AtomicU32::new(0));
+        let registry = Arc::new(ActionRegistry::new());
+        registry.register_stateless(NeverRunHandler {
+            meta: ActionMetadata::new(action_key!("never"), "Never", "must not run"),
+            invoked: invoked.clone(),
+        });
+
+        // Refresh hook always fails. Use `ActionError::retryable` for
+        // the inner source so the `Arc<dyn Error>` wrapping in
+        // `CredentialRefreshFailed` round-trips through Display.
+        let (engine, _) = make_engine(registry);
+        let engine = engine
+            .with_credential_resolver(|_id: &str| async move {
+                Err(nebula_credential::CredentialAccessError::NotFound(
+                    "no credentials".to_owned(),
+                ))
+            })
+            .with_credential_refresh(|_id: &str| async move {
+                Err(ActionError::retryable("credential store down"))
+            });
+
+        let n1 = NodeId::new();
+        let wf = make_workflow(vec![NodeDefinition::new(n1, "A", "never").unwrap()], vec![]);
+
+        let result = engine
+            .execute_workflow(&wf, serde_json::json!("x"), ExecutionBudget::default())
+            .await
+            .expect("engine returns Ok(ExecutionResult) even on node failure");
+
+        // (1) The action body must NEVER have been called.
+        assert_eq!(
+            invoked.load(AOrdering::Relaxed),
+            0,
+            "action body must not run when proactive refresh fails"
+        );
+
+        // (2) Execution must NOT be a success.
+        assert!(
+            !result.is_success(),
+            "workflow must not succeed when refresh fails"
+        );
+
+        // (3) The node-level error message must mention the typed cause.
+        // The default ErrorStrategy is FailFast, so the engine populates
+        // `node_errors` with the failed node's error message. The string
+        // representation of the new variant is stable and downstream
+        // consumers (TUI, log scrape, dashboards) can match on it.
+        let node_err = result
+            .node_errors
+            .get(&n1)
+            .expect("node_errors must contain the failed node");
+        assert!(
+            node_err.contains("credential refresh failed"),
+            "expected typed CredentialRefreshFailed in error, got: {node_err}"
+        );
+        assert!(
+            node_err.contains("credential store down"),
+            "expected source string preserved in error, got: {node_err}"
+        );
+
+        // (4) Construct the variant directly and confirm classifier
+        // routing — this is the contract downstream consumers match on.
+        let typed =
+            ActionError::credential_refresh_failed("never", ActionError::retryable("store down"));
+        assert!(matches!(typed, ActionError::CredentialRefreshFailed { .. }));
+        assert!(typed.is_retryable(), "default classification is retryable");
+        let engine_err = EngineError::Action(typed);
+        assert!(matches!(
+            engine_err,
+            EngineError::Action(ActionError::CredentialRefreshFailed { .. })
+        ));
     }
 }

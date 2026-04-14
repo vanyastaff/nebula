@@ -1,3 +1,10 @@
+//! Minimal Nebula API server.
+//!
+//! Set `API_JWT_SECRET` (32+ bytes) before running, or set
+//! `NEBULA_ENV=development` to let the loader generate an ephemeral
+//! per-process secret. Tokens signed with an ephemeral secret are
+//! invalidated on restart.
+
 use std::sync::Arc;
 
 use nebula_api::{ApiConfig, AppState, app};
@@ -19,7 +26,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .await?;
     let workflow_repo = Arc::new(InMemoryWorkflowRepo::new());
     let execution_repo = Arc::new(InMemoryExecutionRepo::new());
-    let api_config = ApiConfig::default();
+    let api_config = ApiConfig::from_env()?;
 
     // Wire api_keys from ApiConfig so X-API-Key auth is honoured.
     let state = AppState::new(
