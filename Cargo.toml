@@ -56,7 +56,7 @@ documentation = "https://docs.rs/nebula"
 
 [workspace.dependencies]
 # Async runtime
-tokio = { version = "1.51.0", features = ["rt", "rt-multi-thread", "macros", "sync", "time", "fs"] }
+tokio = { version = "1.51.1", features = ["rt", "rt-multi-thread", "macros", "sync", "time", "fs"] }
 tokio-util = "0.7.18"
 async-trait = "0.1.89"
 futures = "0.3"
