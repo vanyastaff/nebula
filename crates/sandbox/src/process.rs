@@ -50,7 +50,7 @@ const ONE_SHOT_ID: u64 = 1;
 /// Process sandbox: spawns the plugin binary once and keeps the connection
 /// alive for the lifetime of this sandbox instance.
 ///
-/// Each `ProcessSandbox` owns a long-lived [`PluginHandle`] behind a
+/// Each `ProcessSandbox` owns a long-lived `PluginHandle` behind a
 /// `Mutex`. The first invocation spawns the child and dials the socket;
 /// subsequent invocations reuse the same handle. A connection error on
 /// write or read invalidates the handle and the next call respawns.

@@ -388,7 +388,7 @@ impl<E> From<Vec<E>> for PollResult<E> {
 // ── PollHealth ────────────────────────────────────────────────────────────
 
 /// Poll-specific health details. Serialized into
-/// [`TriggerHealth::details`] by the adapter.
+/// [`TriggerHealth`](crate::capability::TriggerHealth) by the adapter.
 #[derive(Debug, Clone, Serialize)]
 // Removed: PollHealth moved to atomic-based TriggerHealth in capability.rs.
 
@@ -1415,7 +1415,7 @@ where
     /// `stop() -> start()` restart pattern when callers forgot.
     ///
     /// **This does not wait for the loop to finish.** The
-    /// [`StartedGuard`] RAII pattern clears the `started` flag only
+    /// `StartedGuard` RAII pattern clears the `started` flag only
     /// after the background task returns from `start()`. Callers
     /// needing synchronous restart semantics must:
     ///

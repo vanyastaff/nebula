@@ -12,7 +12,7 @@
 //! comes from delegating to `subtle::ConstantTimeEq` inside
 //! `hmac::Mac::verify_slice`. We assert correctness here.
 
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, UNIX_EPOCH};
 
 use nebula_action::{
     ActionError, SignatureOutcome, hmac_sha256_compute, verify_hmac_sha256,

@@ -6,7 +6,7 @@
 //! cargo run -p nebula-examples --bin paginated_users
 //! ```
 //!
-//! The action walks https://dummyjson.com/users with cursor-based pagination
+//! The action walks <https://dummyjson.com/users> with cursor-based pagination
 //! (`?limit=N&skip=S`) until the server signals no more pages. `main` drives
 //! it through [`TestRuntime::run_stateful`] — one line for context, one for
 //! the run, no adapter wiring.

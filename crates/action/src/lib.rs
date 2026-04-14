@@ -58,6 +58,11 @@ pub mod action;
 pub mod capability;
 /// Runtime context provided to actions during execution.
 pub mod context;
+/// [`ControlAction`] DX trait, [`ControlOutcome`] / [`ControlInput`] types,
+/// and [`ControlActionAdapter`] bridging to [`StatelessHandler`]. The
+/// public contract for flow-control nodes (If, Switch, Router, Filter,
+/// NoOp, Stop, Fail).
+pub mod control;
 /// Declarative dependency declaration for actions.
 pub mod dependency;
 /// Error types distinguishing retryable from fatal failures.
@@ -111,12 +116,15 @@ pub use capability::{
     TriggerHealthSnapshot, TriggerScheduler,
 };
 pub use context::{ActionContext, Context, CredentialContextExt, TriggerContext};
+pub use control::{ControlAction, ControlActionAdapter, ControlInput, ControlOutcome};
 pub use dependency::ActionDependencies;
 pub use error::{
     ActionError, ActionErrorExt, MAX_VALIDATION_DETAIL, RetryHintCode, ValidationReason,
 };
 pub use handler::{ActionHandler, AgentHandler};
-pub use metadata::{ActionMetadata, InterfaceVersion, IsolationLevel, MetadataCompatibilityError};
+pub use metadata::{
+    ActionCategory, ActionMetadata, InterfaceVersion, IsolationLevel, MetadataCompatibilityError,
+};
 pub use nebula_action_macros::Action;
 pub use nebula_credential::CredentialGuard;
 pub use nebula_parameter::{Parameter, ParameterCollection};
@@ -132,7 +140,10 @@ pub use poll::{
 };
 pub use port::{ConnectionFilter, DynamicPort, FlowKind, InputPort, OutputPort, SupportPort};
 pub use resource::{ResourceAction, ResourceActionAdapter, ResourceHandler};
-pub use result::{ActionResult, BranchKey, BreakReason, PortKey, WaitCondition};
+pub use result::{
+    ActionResult, BranchKey, BreakReason, PortKey, TerminationCode, TerminationReason,
+    WaitCondition,
+};
 pub use stateful::{
     BatchAction, BatchItemResult, BatchState, PageResult, PaginatedAction, PaginationState,
     StatefulAction, StatefulActionAdapter, StatefulHandler,
