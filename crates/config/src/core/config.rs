@@ -335,9 +335,9 @@ impl Config {
     ///
     /// **This method only starts the underlying watcher; it does NOT wire
     /// watcher events to [`Config::reload`].** Use
-    /// [`ConfigBuilder::with_hot_reload`] to opt into the full hot-reload
+    /// `ConfigBuilder::with_hot_reload` to opt into the full hot-reload
     /// pipeline, which the builder sets up by calling
-    /// [`Config::start_hot_reload_pipeline`] (#313).
+    /// `Config::start_hot_reload_pipeline` (#313).
     ///
     /// Kept for backwards-compatibility with callers that wire their own
     /// reload logic on top of a raw `ConfigWatcher`.
