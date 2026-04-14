@@ -27,3 +27,5 @@ Workflow execution orchestrator — frontier-based DAG scheduler.
 <!-- reviewed: 2026-04-14 — #247 added Drop/Terminate gate to evaluate_edge with TODO(engine) for Phase 3 scheduler wiring -->
 
 <!-- reviewed: 2026-04-14 -->
+
+<!-- reviewed: 2026-04-13 — batch 2 (#299 #300 #301 #311 #321): spawn_node now uses typed start_node_attempt helper and routes invalid transitions through mark_setup_failed + setup-failure checkpoint path; panicked JoinSet tasks recover the real NodeId via a task-id side map (join_next_with_id); resume restores workflow_input from persisted ExecutionState (fallback Null+warn on legacy states); idempotency replay loads the full ActionResult via save_node_result/load_node_result so Branch/Route/MultiOutput routing survives replay. -->

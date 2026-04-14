@@ -83,6 +83,30 @@ impl NodeExecutionState {
 
         Ok(())
     }
+
+    /// Drive a node to `Running` for a fresh attempt, covering both the
+    /// first dispatch (`Pending → Ready → Running`) and retry paths
+    /// (`Failed → Retrying → Running`, `Retrying → Running`). Any other
+    /// source state is an invalid transition and returned as such — the
+    /// engine must route the node through the setup-failure path
+    /// instead of silently spawning a task on stale state (issue #300).
+    pub fn start_attempt(&mut self) -> Result<(), ExecutionError> {
+        match self.state {
+            NodeState::Pending => {
+                self.transition_to(NodeState::Ready)?;
+                self.transition_to(NodeState::Running)
+            }
+            NodeState::Failed => {
+                self.transition_to(NodeState::Retrying)?;
+                self.transition_to(NodeState::Running)
+            }
+            NodeState::Retrying => self.transition_to(NodeState::Running),
+            from => Err(ExecutionError::InvalidTransition {
+                from: from.to_string(),
+                to: NodeState::Running.to_string(),
+            }),
+        }
+    }
 }
 
 impl Default for NodeExecutionState {
@@ -121,6 +145,15 @@ pub struct ExecutionState {
     /// Execution-level variables.
     #[serde(default)]
     pub variables: serde_json::Map<String, serde_json::Value>,
+    /// The original workflow-level input (trigger payload) for this
+    /// execution. Persisted so that `resume_execution` can feed entry
+    /// nodes the same payload the original run saw, rather than
+    /// silently substituting `Null` (issue #311).
+    ///
+    /// Legacy persisted states that predate this field deserialize as
+    /// `None` and the engine falls back to `Null` with a warning log.
+    #[serde(default)]
+    pub workflow_input: Option<serde_json::Value>,
 }
 
 impl ExecutionState {
@@ -146,7 +179,17 @@ impl ExecutionState {
             total_retries: 0,
             total_output_bytes: 0,
             variables: serde_json::Map::new(),
+            workflow_input: None,
         }
+    }
+
+    /// Attach the original workflow-level input to this execution.
+    ///
+    /// Called by the engine at execution start so that
+    /// `resume_execution` can feed entry nodes the same payload the
+    /// original run saw (issue #311).
+    pub fn set_workflow_input(&mut self, input: serde_json::Value) {
+        self.workflow_input = Some(input);
     }
 
     /// Get a node's execution state.
@@ -215,11 +258,9 @@ impl ExecutionState {
     ///
     /// # Errors
     ///
-    /// - [`ExecutionError::NodeNotFound`] if `node_id` is not in this
-    ///   execution's node map.
-    /// - Any error returned by [`NodeExecutionState::transition_to`]
-    ///   for invalid transitions — in which case the version is NOT
-    ///   bumped (the state did not actually change).
+    /// - [`ExecutionError::NodeNotFound`] if `node_id` is not in this execution's node map.
+    /// - Any error returned by [`NodeExecutionState::transition_to`] for invalid transitions — in
+    ///   which case the version is NOT bumped (the state did not actually change).
     pub fn transition_node(
         &mut self,
         node_id: NodeId,
@@ -232,6 +273,57 @@ impl ExecutionState {
         ns.transition_to(new_state)?;
         self.version += 1;
         self.updated_at = Utc::now();
+        Ok(())
+    }
+
+    /// Drive a node to `Running` for a fresh attempt (first dispatch
+    /// or retry). Delegates to
+    /// [`NodeExecutionState::start_attempt`] and bumps the parent
+    /// version on success so CAS readers observe the transition.
+    ///
+    /// # Errors
+    ///
+    /// - [`ExecutionError::NodeNotFound`] if `node_id` is unknown.
+    /// - [`ExecutionError::InvalidTransition`] if the node is not in a state from which a fresh
+    ///   attempt is legal. Callers must route the node through the setup-failure path on `Err` —
+    ///   they must NOT silently spawn a task on stale state (issue #300).
+    pub fn start_node_attempt(&mut self, node_id: NodeId) -> Result<(), ExecutionError> {
+        let ns = self
+            .node_states
+            .get_mut(&node_id)
+            .ok_or(ExecutionError::NodeNotFound(node_id))?;
+        let before_version = self.version;
+        // `start_attempt` may bump through two per-node transitions;
+        // count the parent version by one logical "attempt start".
+        ns.start_attempt()?;
+        self.version = before_version + 1;
+        self.updated_at = Utc::now();
+        Ok(())
+    }
+
+    /// Move a node to `Failed` for a setup-time failure (parameter
+    /// resolution, missing node definition, etc.) and record the error
+    /// message. Handles both first-dispatch Pending-state failures and
+    /// retry-path failures where the node is already Failed or
+    /// Retrying.
+    ///
+    /// Uses `override_node_state` because Pending → Failed is not a
+    /// valid forward transition — setup fails before the node has
+    /// reached Running — but the version is still bumped so CAS
+    /// readers observe the change (issue #255, #300).
+    ///
+    /// # Errors
+    ///
+    /// - [`ExecutionError::NodeNotFound`] if `node_id` is unknown.
+    pub fn mark_setup_failed(
+        &mut self,
+        node_id: NodeId,
+        error_message: impl Into<String>,
+    ) -> Result<(), ExecutionError> {
+        self.override_node_state(node_id, NodeState::Failed)?;
+        if let Some(ns) = self.node_states.get_mut(&node_id) {
+            ns.error_message = Some(error_message.into());
+        }
         Ok(())
     }
 
@@ -457,6 +549,102 @@ mod tests {
         assert!(matches!(err, ExecutionError::NodeNotFound(_)));
         // Version unchanged.
         assert_eq!(state.version, 0);
+    }
+
+    #[test]
+    fn start_attempt_pending_path() {
+        let mut ns = NodeExecutionState::new();
+        ns.start_attempt()
+            .expect("pending -> running should be legal");
+        assert_eq!(ns.state, NodeState::Running);
+        assert!(ns.scheduled_at.is_some());
+        assert!(ns.started_at.is_some());
+    }
+
+    #[test]
+    fn start_attempt_retry_path() {
+        let mut ns = NodeExecutionState::new();
+        // Drive to Failed via the legal transition chain.
+        ns.transition_to(NodeState::Ready).unwrap();
+        ns.transition_to(NodeState::Running).unwrap();
+        ns.transition_to(NodeState::Failed).unwrap();
+        ns.start_attempt()
+            .expect("failed -> running via retrying should be legal");
+        assert_eq!(ns.state, NodeState::Running);
+    }
+
+    #[test]
+    fn start_attempt_rejects_completed() {
+        let mut ns = NodeExecutionState::new();
+        ns.transition_to(NodeState::Ready).unwrap();
+        ns.transition_to(NodeState::Running).unwrap();
+        ns.transition_to(NodeState::Completed).unwrap();
+        let err = ns
+            .start_attempt()
+            .expect_err("completed nodes cannot start a fresh attempt");
+        assert!(matches!(err, ExecutionError::InvalidTransition { .. }));
+        assert_eq!(
+            ns.state,
+            NodeState::Completed,
+            "state must not move on error"
+        );
+    }
+
+    #[test]
+    fn execution_state_start_node_attempt_bumps_version() {
+        let (mut state, n1, _n2) = make_state();
+        let v0 = state.version;
+        state.start_node_attempt(n1).unwrap();
+        assert_eq!(state.node_state(n1).unwrap().state, NodeState::Running);
+        assert_eq!(state.version, v0 + 1);
+    }
+
+    #[test]
+    fn mark_setup_failed_records_error_and_bumps_version() {
+        let (mut state, n1, _n2) = make_state();
+        let v0 = state.version;
+        state
+            .mark_setup_failed(n1, "param resolution: missing credential")
+            .unwrap();
+        let ns = state.node_state(n1).unwrap();
+        assert_eq!(ns.state, NodeState::Failed);
+        assert_eq!(
+            ns.error_message.as_deref(),
+            Some("param resolution: missing credential")
+        );
+        assert_eq!(state.version, v0 + 1);
+    }
+
+    #[test]
+    fn workflow_input_roundtrip_via_serde() {
+        let (mut state, _n1, _n2) = make_state();
+        assert!(state.workflow_input.is_none());
+        state.set_workflow_input(serde_json::json!({"trigger": "webhook"}));
+        let json = serde_json::to_string(&state).unwrap();
+        let back: ExecutionState = serde_json::from_str(&json).unwrap();
+        assert_eq!(
+            back.workflow_input,
+            Some(serde_json::json!({"trigger": "webhook"}))
+        );
+    }
+
+    #[test]
+    fn workflow_input_missing_field_deserializes_as_none() {
+        // Legacy stored states that predate `workflow_input` must
+        // still deserialize — we rely on `#[serde(default)]`.
+        let legacy = serde_json::json!({
+            "execution_id": ExecutionId::new(),
+            "workflow_id": WorkflowId::new(),
+            "status": "created",
+            "node_states": {},
+            "version": 0,
+            "created_at": chrono::Utc::now(),
+            "updated_at": chrono::Utc::now(),
+            "total_retries": 0,
+            "total_output_bytes": 0,
+        });
+        let state: ExecutionState = serde_json::from_value(legacy).unwrap();
+        assert!(state.workflow_input.is_none());
     }
 
     #[test]

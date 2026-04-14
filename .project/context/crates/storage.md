@@ -23,3 +23,5 @@ Storage trait abstraction — MemoryStorage for tests, PostgresStorage for produ
 
 ## Relations
 - Depends on nebula-core (IDs). Used by nebula-engine, nebula-api.
+
+<!-- reviewed: 2026-04-13 — batch 2 (#299): ExecutionRepo::save_node_result / load_node_result persist the full ActionResult<Value> next to the primary node output so idempotency replay can reconstruct Branch/Route/MultiOutput routing. Default trait impl is no-op (Ok(None)/Ok(())) so backends opt in; InMemoryExecutionRepo overrides both. Postgres backend keeps the default (no migration) — idempotency replay on Postgres falls back to synthesized Success with a warn log until the column is added. -->

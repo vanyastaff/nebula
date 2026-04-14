@@ -25,3 +25,5 @@ Execution state machine types — persistent state, journals, idempotency, plans
 <!-- reviewed: 2026-04-14 — #247 added ExecutionTerminationReason + ExecutionTerminationCode newtype and ExecutionResult::termination_reason field; Phase 0 wiring is partial (local edge gate only, full scheduler propagation deferred) -->
 
 <!-- reviewed: 2026-04-14 -->
+
+<!-- reviewed: 2026-04-13 — batch 2 (#300 #311): NodeExecutionState::start_attempt models Pending->Ready->Running / Failed->Retrying->Running / Retrying->Running as typed transitions; ExecutionState::start_node_attempt wraps it with parent-version bump. ExecutionState::mark_setup_failed handles param-resolution-time failures (Pending->Failed via override_node_state + error_message). ExecutionState::workflow_input is Option<Value> with #[serde(default)] so legacy stored states round-trip; set by engine at execution start, read by resume_execution. -->
