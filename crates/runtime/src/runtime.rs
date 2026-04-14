@@ -62,8 +62,12 @@ impl StatefulCheckpoint {
 /// implements this trait backed by `ExecutionRepo::{save,load,delete}_stateful_checkpoint`
 /// and injects it into `execute_action_with_checkpoint`.
 ///
-/// Methods return [`ActionError`] so any failure flows into the same retry
-/// classification path as a handler-side failure.
+/// Methods return [`ActionError`] for sink-transport/serialization failures.
+///
+/// Runtime behavior differs by method:
+/// - `load` errors are logged at WARN and execution falls back to `handler.init_state()`.
+/// - `save` errors are propagated as action errors (retry-classified by the caller).
+/// - `clear` errors are logged at WARN on terminal iterations and ignored.
 #[async_trait]
 pub trait StatefulCheckpointSink: Send + Sync {
     /// Return the last persisted checkpoint for the (execution, node,
@@ -173,8 +177,10 @@ impl ActionRuntime {
     ///
     /// # Errors
     ///
-    /// Same as [`Self::execute_action_versioned`], plus any errors
-    /// surfaced by the sink (wrapped into [`RuntimeError::ActionError`]).
+    /// Same as [`Self::execute_action_versioned`], plus `save()` sink errors
+    /// surfaced as [`RuntimeError::ActionError`]. `load()` / `clear()` sink
+    /// errors are logged and handled in-band (fallback/ignore) by
+    /// `execute_stateful`.
     pub async fn execute_action_with_checkpoint(
         &self,
         action_key: &str,
@@ -315,10 +321,7 @@ impl ActionRuntime {
                     .await?;
                 Ok(action_result)
             }
-            Err(action_err) => {
-                error_counter.inc();
-                Err(RuntimeError::ActionError(action_err))
-            }
+            Err(action_err) => Err(RuntimeError::ActionError(action_err)),
         }
     }
 
@@ -1649,12 +1652,9 @@ mod tests {
         assert_eq!(sink.clears.load(AtomicOrdering::Relaxed), 1);
     }
 
-    /// #308 gotcha regression: a checkpoint sink that fails `load()` MUST
-    /// NOT silently start from `init_state` — the runtime logs WARN and
-    /// *then* falls back. The test asserts fallback (running to
-    /// completion from `count=0`) and that save/clear still happen.
-    /// The WARN log itself is side-effect tested via a tracing subscriber
-    /// in a separate helper — here we pin the functional fallback.
+    /// #308 gotcha regression: a checkpoint sink that fails `load()` must
+    /// still complete via fallback to `init_state`. This test pins the
+    /// functional fallback path and checkpoint side effects.
     #[tokio::test]
     async fn execute_stateful_load_failure_falls_back_to_init_state() {
         let registry = Arc::new(ActionRegistry::new());

@@ -16,7 +16,7 @@ Action execution layer — `ActionRegistry`, `ActionRuntime`, data policies, `Me
 ## Traps
 
 - `execute_action` runs only Stateless and Stateful. Trigger/Resource/Agent return typed errors — separate lifecycles.
-- Stateful state persists across dispatches ONLY when the caller wires a `StatefulCheckpointSink` (engine does this via `ExecutionRepo::{save,load,delete}_stateful_checkpoint`). Without a sink the loop is still stack-local. Checkpoint load failures MUST log WARN with `(action_key, execution_id, node_id)` and fall through to `init_state` — never silently swallow.
+- Stateful state persists across dispatches ONLY when the caller wires a `StatefulCheckpointSink` (engine does this via `ExecutionRepo::{save,load,delete}_stateful_checkpoint`). Without a sink the loop is still stack-local. Sink semantics are asymmetric by design: `load` failures WARN+fallback to `init_state`, `save` failures propagate as `ActionError`, and terminal `clear` failures WARN+ignore.
 - **Stateless sandbox dispatch is live** (Phase 0): `CapabilityGated` / `Isolated` go through `self.sandbox`. In Phase 0 the engine passes an echo-style `ActionExecutor`, so non-None actions silently echo input rather than invoking the registered handler. Acceptable because **no production actions declare non-None isolation yet**. Phase 1 replaces this with `PluginSupervisor` + gRPC.
 - **Stateful sandbox dispatch still fail-closes** for non-None. Unblocks when Phase 1 broker iteration loop lands.
 - `RuntimeError::InvalidActionKey { key, reason }` distinguishes parse failures from `ActionNotFound` — use for user-facing CLI/API errors.
@@ -27,4 +27,4 @@ Action execution layer — `ActionRegistry`, `ActionRuntime`, data policies, `Me
 
 Depends on `nebula-action`, `nebula-core`, `nebula-sandbox`. Used by `nebula-engine`.
 
-<!-- reviewed: 2026-04-14 (batch5B: #304 #305 #308) -->
+<!-- reviewed: 2026-04-14 (batch5B: #304 #305 #308 + PR389 review fixes) -->
