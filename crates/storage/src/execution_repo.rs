@@ -202,6 +202,39 @@ pub trait ExecutionRepo: Send + Sync {
     /// Counts executions, optionally filtered by workflow_id.
     async fn count(&self, workflow_id: Option<WorkflowId>) -> Result<u64, ExecutionRepoError>;
 
+    /// Persists the full [`ActionResult`](serde_json::Value)-encoded
+    /// variant for an idempotent node, keyed by attempt. Enables the
+    /// engine to replay the exact routing semantics (Branch, Route,
+    /// MultiOutput, Skip, etc.) on resume instead of synthesising a
+    /// flat `Success` that leaks every branch edge (issue #299).
+    ///
+    /// Stored value is the JSON-serialized `ActionResult<Value>`. The
+    /// default implementation is a no-op so backends can opt into this
+    /// feature at their own pace; the engine falls back to output-only
+    /// behaviour when [`load_node_result`](Self::load_node_result)
+    /// returns `Ok(None)`.
+    async fn save_node_result(
+        &self,
+        _execution_id: ExecutionId,
+        _node_key: NodeKey,
+        _attempt: u32,
+        _result: serde_json::Value,
+    ) -> Result<(), ExecutionRepoError> {
+        Ok(())
+    }
+
+    /// Loads the full serialized `ActionResult<Value>` for a node
+    /// (latest attempt), if any. Returns `Ok(None)` when the backend
+    /// has no stored result — the engine falls back to the
+    /// output-only path with a warning log.
+    async fn load_node_result(
+        &self,
+        _execution_id: ExecutionId,
+        _node_key: NodeKey,
+    ) -> Result<Option<serde_json::Value>, ExecutionRepoError> {
+        Ok(None)
+    }
+
     /// Returns true if this idempotency key has been recorded.
     async fn check_idempotency(&self, key: &str) -> Result<bool, ExecutionRepoError>;
 
@@ -330,6 +363,7 @@ pub struct InMemoryExecutionRepo {
     leases: Arc<RwLock<HashMap<ExecutionId, LeaseEntry>>>,
     workflows: Arc<RwLock<HashMap<ExecutionId, WorkflowId>>>,
     node_outputs: Arc<RwLock<HashMap<NodeOutputKey, serde_json::Value>>>,
+    node_results: Arc<RwLock<HashMap<NodeOutputKey, serde_json::Value>>>,
     idempotency: Arc<RwLock<HashSet<String>>>,
     stateful_checkpoints: Arc<RwLock<HashMap<StatefulCheckpointKey, StatefulCheckpointRecord>>>,
 }
@@ -535,6 +569,34 @@ impl ExecutionRepo for InMemoryExecutionRepo {
         let workflows = self.workflows.read().await;
         let n = workflows.values().filter(|v| **v == wid).count() as u64;
         Ok(n)
+    }
+
+    async fn save_node_result(
+        &self,
+        execution_id: ExecutionId,
+        node_key: NodeKey,
+        attempt: u32,
+        result: serde_json::Value,
+    ) -> Result<(), ExecutionRepoError> {
+        self.node_results
+            .write()
+            .await
+            .insert((execution_id, node_key, attempt), result);
+        Ok(())
+    }
+
+    async fn load_node_result(
+        &self,
+        execution_id: ExecutionId,
+        node_key: NodeKey,
+    ) -> Result<Option<serde_json::Value>, ExecutionRepoError> {
+        let results = self.node_results.read().await;
+        let best = results
+            .iter()
+            .filter(|((eid, nid, _), _)| *eid == execution_id && *nid == node_key)
+            .max_by_key(|((_, _, attempt), _)| *attempt)
+            .map(|(_, v)| v.clone());
+        Ok(best)
     }
 
     async fn check_idempotency(&self, key: &str) -> Result<bool, ExecutionRepoError> {
