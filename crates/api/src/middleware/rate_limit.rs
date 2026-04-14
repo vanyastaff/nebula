@@ -3,7 +3,7 @@
 //! Global per-IP rate limiting for the Axum HTTP stack using the GCRA algorithm
 //! (via the [`governor`] crate).
 //!
-//! [`/health`] and [`/ready`] paths are always excluded so that Kubernetes liveness
+//! `/health` and `/ready` paths are always excluded so that Kubernetes liveness
 //! and readiness probes are never throttled even under load.
 //!
 //! # Examples
