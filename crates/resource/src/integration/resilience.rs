@@ -36,6 +36,7 @@ pub struct AcquireRetryConfig {
     /// Maximum total number of attempts (including the initial try).
     ///
     /// For example, `max_attempts: 3` means 1 initial try + 2 retries.
+    /// Values below 1 are clamped to 1 by the manager.
     pub max_attempts: u32,
     /// Initial backoff duration before the first retry.
     pub initial_backoff: Duration,
@@ -94,8 +95,11 @@ impl AcquireResilience {
     /// timeout budget. When no retry config is set, returns a single-attempt
     /// config with optional timeout budget.
     pub(crate) fn to_retry_config<E: 'static>(&self) -> RetryConfig<E> {
-        let max_attempts = self.retry.as_ref().map_or(1, |r| r.max_attempts);
-        let cfg = RetryConfig::new(max_attempts).expect("max_attempts validated at construction");
+        // #383: a misconfigured `max_attempts: 0` from a config file used to
+        // panic here via `expect`. Clamp to `1` so we degrade to a single
+        // attempt rather than killing the process during acquire.
+        let max_attempts = self.retry.as_ref().map_or(1, |r| r.max_attempts.max(1));
+        let cfg = RetryConfig::new(max_attempts).expect("max_attempts clamped to >=1 above");
 
         let cfg = if let Some(ref retry) = self.retry {
             cfg.backoff(BackoffConfig::Exponential {
@@ -145,5 +149,20 @@ mod tests {
         let c = AcquireResilience::none();
         assert!(c.timeout.is_none());
         assert!(c.retry.is_none());
+    }
+
+    #[test]
+    fn to_retry_config_handles_zero_max_attempts_without_panic() {
+        let cfg = AcquireResilience {
+            timeout: None,
+            retry: Some(AcquireRetryConfig {
+                max_attempts: 0,
+                initial_backoff: Duration::from_millis(10),
+                max_backoff: Duration::from_millis(50),
+            }),
+        };
+
+        // Must not panic. Behaviour: degrade to a single attempt.
+        let _ = cfg.to_retry_config::<crate::error::Error>();
     }
 }
