@@ -104,11 +104,18 @@ fn build_cors_layer(config: &ApiConfig) -> CorsLayer {
         Method::PATCH,
         Method::OPTIONS,
     ])
+    // Allowed headers must match the auth middleware's accepted
+    // headers — if the middleware accepts `X-API-Key` but CORS
+    // rejects the preflight, browser clients never get past the
+    // OPTIONS probe. The policy must match the *protocol surface*,
+    // not the *current tenant config*: enabling API keys later
+    // should not need a restart for preflight to work.
     .allow_headers([
         header::CONTENT_TYPE,
         header::AUTHORIZATION,
         header::ACCEPT,
         header::HeaderName::from_static(X_REQUEST_ID),
+        crate::middleware::auth::X_API_KEY.clone(),
     ])
     .expose_headers([header::HeaderName::from_static(X_REQUEST_ID)])
     .max_age(Duration::from_secs(3600))
