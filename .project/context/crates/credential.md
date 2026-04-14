@@ -33,4 +33,5 @@ Universal credential management: 12 auth scheme types, open AuthScheme trait, co
 - RT-4: ScopeLayer TOCTOU on delete/put — requires trait-level conditional ops.
 - RT-3: rkyv cache zeroization — not applicable yet (cache uses moka ciphertext).
 
-<!-- reviewed: 2026-04-14 -->
+<!-- reviewed: 2026-04-14 — fixed rustdoc intra-doc links for OAuth2 builder names in module-level docs -->
+<!-- reviewed: 2026-04-14 — PR #388 merge fixup pulled in oauth2_config doc-link tidy from main. No invariants changed. -->

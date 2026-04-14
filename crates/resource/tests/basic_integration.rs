@@ -482,10 +482,11 @@ async fn manager_register_and_acquire_pooled() {
     drop(handle);
 
     manager
-        .graceful_shutdown(ShutdownConfig {
-            drain_timeout: std::time::Duration::from_millis(50),
-        })
-        .await;
+        .graceful_shutdown(
+            ShutdownConfig::default().with_drain_timeout(std::time::Duration::from_millis(50)),
+        )
+        .await
+        .expect("graceful_shutdown must succeed");
 }
 
 #[tokio::test]
@@ -1102,10 +1103,11 @@ async fn manager_multiple_resources_coexist() {
     drop(resident_handle);
 
     manager
-        .graceful_shutdown(ShutdownConfig {
-            drain_timeout: std::time::Duration::from_millis(50),
-        })
-        .await;
+        .graceful_shutdown(
+            ShutdownConfig::default().with_drain_timeout(std::time::Duration::from_millis(50)),
+        )
+        .await
+        .expect("graceful_shutdown must succeed");
 }
 
 // ---------------------------------------------------------------------------
@@ -1978,10 +1980,11 @@ async fn registry_backed_metrics_record_operations() {
     assert_eq!(create_counter.get(), 2);
 
     manager
-        .graceful_shutdown(ShutdownConfig {
-            drain_timeout: std::time::Duration::from_millis(50),
-        })
-        .await;
+        .graceful_shutdown(
+            ShutdownConfig::default().with_drain_timeout(std::time::Duration::from_millis(50)),
+        )
+        .await
+        .expect("graceful_shutdown must succeed");
 }
 
 #[tokio::test]
@@ -2016,10 +2019,11 @@ async fn graceful_shutdown_stops_new_acquires() {
         .unwrap();
 
     manager
-        .graceful_shutdown(ShutdownConfig {
-            drain_timeout: std::time::Duration::from_millis(10),
-        })
-        .await;
+        .graceful_shutdown(
+            ShutdownConfig::default().with_drain_timeout(std::time::Duration::from_millis(10)),
+        )
+        .await
+        .expect("graceful_shutdown must succeed");
 
     assert!(manager.is_shutdown());
 
@@ -2057,11 +2061,16 @@ async fn graceful_shutdown_clears_registry() {
 
     // Graceful shutdown now clears the registry to allow release queue
     // workers to drain.
-    manager
-        .graceful_shutdown(ShutdownConfig {
-            drain_timeout: std::time::Duration::from_millis(10),
-        })
-        .await;
+    let report = manager
+        .graceful_shutdown(
+            ShutdownConfig::default().with_drain_timeout(std::time::Duration::from_millis(10)),
+        )
+        .await
+        .expect("graceful_shutdown must succeed");
+    assert!(
+        report.registry_cleared,
+        "ShutdownReport should confirm registry was cleared"
+    );
 
     assert!(manager.is_shutdown());
     assert!(
@@ -2368,7 +2377,9 @@ async fn acquire_timeout_fires() {
 // ---------------------------------------------------------------------------
 
 #[tokio::test]
-async fn graceful_shutdown_is_idempotent() {
+async fn graceful_shutdown_second_call_errors_already_shutting_down() {
+    use nebula_resource::manager::ShutdownError;
+
     let manager = Manager::new();
     let resource = ResidentTestResource::new();
     let resident_rt =
@@ -2385,16 +2396,27 @@ async fn graceful_shutdown_is_idempotent() {
         )
         .unwrap();
 
-    let short_drain = ShutdownConfig {
-        drain_timeout: std::time::Duration::from_millis(10),
-    };
+    let short_drain =
+        ShutdownConfig::default().with_drain_timeout(std::time::Duration::from_millis(10));
 
-    // First shutdown.
-    manager.graceful_shutdown(short_drain.clone()).await;
+    // First shutdown wins the CAS and proceeds.
+    manager
+        .graceful_shutdown(short_drain.clone())
+        .await
+        .expect("first graceful_shutdown must succeed");
     assert!(manager.is_shutdown());
 
-    // Second shutdown must not panic or hang.
-    manager.graceful_shutdown(short_drain).await;
+    // Second shutdown must fail-fast with AlreadyShuttingDown (#302).
+    // Before the CAS guard, a second call would re-enter the phases and
+    // race against a half-torn manager.
+    let err = manager
+        .graceful_shutdown(short_drain)
+        .await
+        .expect_err("second graceful_shutdown must error");
+    assert!(
+        matches!(err, ShutdownError::AlreadyShuttingDown),
+        "expected AlreadyShuttingDown, got {err:?}"
+    );
     assert!(manager.is_shutdown());
 }
 
@@ -3429,10 +3451,11 @@ async fn reload_config_evicts_stale_pool_instances() {
     drop(handle2);
 
     manager
-        .graceful_shutdown(ShutdownConfig {
-            drain_timeout: std::time::Duration::from_millis(50),
-        })
-        .await;
+        .graceful_shutdown(
+            ShutdownConfig::default().with_drain_timeout(std::time::Duration::from_millis(50)),
+        )
+        .await
+        .expect("graceful_shutdown must succeed");
 }
 
 #[tokio::test]
@@ -3469,4 +3492,228 @@ async fn reload_config_rejected_when_shutdown() {
         manager.reload_config::<ReloadPoolResource>(ReloadConfig::new(2), &ScopeLevel::Global);
     assert!(result.is_err());
     assert_eq!(*result.unwrap_err().kind(), ErrorKind::Cancelled);
+}
+
+// ---------------------------------------------------------------------------
+// #302 regression — DrainTimeoutPolicy / ShutdownReport / ShutdownError
+// ---------------------------------------------------------------------------
+
+/// #302: with the default `DrainTimeoutPolicy::Abort`, a drain timeout must
+/// return `Err(ShutdownError::DrainTimeout { outstanding })` and **must not**
+/// clear the registry. Any outstanding handle remains valid.
+#[tokio::test]
+async fn graceful_shutdown_abort_on_drain_timeout_preserves_registry() {
+    use nebula_resource::manager::ShutdownError;
+
+    let manager = Manager::new();
+    let resource = ResidentTestResource::new();
+    let resident_rt =
+        ResidentRuntime::<ResidentTestResource>::new(resident::config::Config::default());
+
+    manager
+        .register(
+            resource,
+            test_config(),
+            ScopeLevel::Global,
+            TopologyRuntime::Resident(resident_rt),
+            None,
+            None,
+        )
+        .unwrap();
+
+    // Hold a handle across the shutdown so drain cannot complete.
+    let ctx = test_ctx();
+    let _handle = manager
+        .acquire_resident::<ResidentTestResource>(&(), &ctx, &AcquireOptions::default())
+        .await
+        .expect("acquire must succeed");
+
+    let err = manager
+        .graceful_shutdown(
+            ShutdownConfig::default().with_drain_timeout(std::time::Duration::from_millis(20)),
+        )
+        .await
+        .expect_err("Abort policy must surface drain timeout as Err");
+
+    match err {
+        ShutdownError::DrainTimeout { outstanding } => {
+            assert!(
+                outstanding >= 1,
+                "expected at least one outstanding handle, got {outstanding}"
+            );
+        }
+        other => panic!("expected DrainTimeout, got {other:?}"),
+    }
+
+    // Registry must still contain the resource — the whole point of #302.
+    assert!(
+        manager.contains(&resource_key!("test-resident")),
+        "Abort policy must preserve the registry on drain timeout"
+    );
+}
+
+/// #302: `DrainTimeoutPolicy::Force` is the opt-in escape hatch. It clears
+/// the registry anyway and reports the outstanding-handle count so a
+/// supervisor with a hard deadline can still exit.
+#[tokio::test]
+async fn graceful_shutdown_force_clears_registry_on_timeout() {
+    use nebula_resource::manager::DrainTimeoutPolicy;
+
+    let manager = Manager::new();
+    let resource = ResidentTestResource::new();
+    let resident_rt =
+        ResidentRuntime::<ResidentTestResource>::new(resident::config::Config::default());
+
+    manager
+        .register(
+            resource,
+            test_config(),
+            ScopeLevel::Global,
+            TopologyRuntime::Resident(resident_rt),
+            None,
+            None,
+        )
+        .unwrap();
+
+    let ctx = test_ctx();
+    let _handle = manager
+        .acquire_resident::<ResidentTestResource>(&(), &ctx, &AcquireOptions::default())
+        .await
+        .expect("acquire must succeed");
+
+    let report = manager
+        .graceful_shutdown(
+            ShutdownConfig::default()
+                .with_drain_timeout(std::time::Duration::from_millis(20))
+                .with_drain_timeout_policy(DrainTimeoutPolicy::Force),
+        )
+        .await
+        .expect("Force policy must yield Ok(ShutdownReport)");
+
+    assert!(report.registry_cleared);
+    assert!(
+        report.outstanding_handles_after_drain >= 1,
+        "report must surface the outstanding count"
+    );
+    assert!(
+        !manager.contains(&resource_key!("test-resident")),
+        "Force policy must clear the registry"
+    );
+}
+
+/// Happy path: no outstanding handles, shutdown returns `Ok` with zero
+/// outstanding and `registry_cleared: true`.
+#[tokio::test]
+async fn graceful_shutdown_happy_path_returns_zero_outstanding() {
+    let manager = Manager::new();
+    let resource = ResidentTestResource::new();
+    let resident_rt =
+        ResidentRuntime::<ResidentTestResource>::new(resident::config::Config::default());
+
+    manager
+        .register(
+            resource,
+            test_config(),
+            ScopeLevel::Global,
+            TopologyRuntime::Resident(resident_rt),
+            None,
+            None,
+        )
+        .unwrap();
+
+    let report = manager
+        .graceful_shutdown(
+            ShutdownConfig::default().with_drain_timeout(std::time::Duration::from_millis(50)),
+        )
+        .await
+        .expect("happy path must succeed");
+
+    assert_eq!(report.outstanding_handles_after_drain, 0);
+    assert!(report.registry_cleared);
+    assert!(report.release_queue_drained);
+}
+
+// ---------------------------------------------------------------------------
+// #322 regression — probe-boundary serialization under concurrent acquires
+// ---------------------------------------------------------------------------
+
+/// #322: before the fix, `check_recovery_gate` inspected `gate.state()`
+/// read-only and, on expired `Failed`, returned `Ok(())` so every caller
+/// proceeded. A herd of N concurrent acquires after backoff expiry would
+/// all hit the backend. The new `admit_through_gate` CAS-claims the probe
+/// slot up front, so exactly one caller becomes the probe and the others
+/// receive an admission error.
+#[tokio::test]
+async fn probe_boundary_serializes_callers_under_herd() {
+    let manager = Arc::new(Manager::new());
+
+    // Resource always fails transiently — this lets us count how many
+    // acquires actually reached `create`.
+    let resource = FailingResidentResource::new(u64::MAX);
+    let create_counter = resource.create_count.clone();
+
+    let gate = Arc::new(RecoveryGate::new(RecoveryGateConfig {
+        max_attempts: 100,
+        // Very short backoff so we can unblock quickly, but long enough
+        // that the second herd all arrives before any retry.
+        base_backoff: std::time::Duration::from_millis(15),
+    }));
+
+    let resident_rt =
+        ResidentRuntime::<FailingResidentResource>::new(resident::config::Config::default());
+
+    manager
+        .register(
+            resource,
+            test_config(),
+            ScopeLevel::Global,
+            TopologyRuntime::Resident(resident_rt),
+            None,
+            Some(gate.clone()),
+        )
+        .unwrap();
+
+    // First acquire becomes the probe and fails — gate transitions to Failed.
+    let ctx = test_ctx();
+    let first = manager
+        .acquire_resident::<FailingResidentResource>(&(), &ctx, &AcquireOptions::default())
+        .await;
+    assert!(first.is_err(), "first acquire must fail");
+    assert_eq!(
+        create_counter.load(Ordering::Relaxed),
+        1,
+        "first acquire should have called create exactly once"
+    );
+
+    // Wait until the gate's backoff expires so the next try_begin from
+    // Failed transitions to InProgress.
+    tokio::time::sleep(std::time::Duration::from_millis(40)).await;
+
+    // Fire a herd of 64 concurrent acquires. Exactly one must be admitted
+    // as the probe (calling `create`); the rest must receive an admission
+    // error from the gate without touching the backend. Pre-fix, every
+    // caller in the herd saw the same `Failed` snapshot with an expired
+    // `retry_at` and proceeded to `create`.
+    let before = create_counter.load(Ordering::Relaxed);
+
+    let mut handles = Vec::new();
+    for _ in 0..64 {
+        let mgr = Arc::clone(&manager);
+        handles.push(tokio::spawn(async move {
+            let ctx = test_ctx();
+            mgr.acquire_resident::<FailingResidentResource>(&(), &ctx, &AcquireOptions::default())
+                .await
+        }));
+    }
+
+    for h in handles {
+        let _ = h.await.expect("task must not panic");
+    }
+
+    let after = create_counter.load(Ordering::Relaxed);
+    let probes = after - before;
+    assert_eq!(
+        probes, 1,
+        "#322: exactly one caller should have been admitted as the probe, got {probes}"
+    );
 }
