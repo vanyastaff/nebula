@@ -3739,6 +3739,7 @@ dependencies = [
  "http 1.4.0",
  "jsonwebtoken",
  "nebula-action",
+ "nebula-api",
  "nebula-config",
  "nebula-core",
  "nebula-error",
@@ -3750,6 +3751,7 @@ dependencies = [
  "nebula-telemetry",
  "nebula-validator",
  "nebula-workflow",
+ "rand 0.10.0",
  "serde",
  "serde_json",
  "sha2 0.11.0",
@@ -4198,6 +4200,7 @@ dependencies = [
  "nix 0.31.2",
  "serde",
  "serde_json",
+ "thiserror 2.0.18",
  "tokio",
  "tracing",
 ]
