@@ -277,7 +277,13 @@ impl Config {
 
         if let Some(watcher) = &self.watcher {
             nebula_log::info!("Starting configuration watcher");
-            watcher.start_watching(&self.sources).await?;
+            // Hand the watcher a child of our cancel token. Cancelling the
+            // child via `stop_watching` still works, and parent cancellation
+            // (fired by `Config::drop`) cascades to this child, tearing down
+            // any spawned watcher tasks without requiring an async drop.
+            watcher
+                .start_watching(&self.sources, self.cancel_token.child_token())
+                .await?;
         } else {
             nebula_log::debug!("No watcher configured");
         }
@@ -873,5 +879,38 @@ mod tests {
         let config = test_config(json!({"a": {"b": "val"}}));
         let err = config.get::<String>("a..b").await;
         assert!(err.is_err());
+    }
+
+    /// #315: dropping a `Config` must cancel its `cancel_token`, which in
+    /// turn reaches any `ConfigWatcher` spawned task via the child token
+    /// passed in `start_watching`. Observed via an external clone of the
+    /// same token — a child observes its parent's cancellation.
+    #[tokio::test]
+    async fn dropping_config_cancels_child_watcher_token() {
+        let data = json!({"k": "v"});
+        let config = Config::new(
+            data,
+            smallvec::smallvec![ConfigSource::Default],
+            None,
+            Arc::new(crate::loaders::CompositeLoader::default()),
+            None,
+            None,
+            ConfigRuntimeOptions {
+                hot_reload: true,
+                fail_on_missing: false,
+            },
+        );
+
+        // Grab a child from the same parent token the watcher would get.
+        let child = config.cancel_token().child_token();
+        assert!(!child.is_cancelled());
+
+        drop(config);
+
+        // Cancellation cascades from parent to child synchronously.
+        assert!(
+            child.is_cancelled(),
+            "Config::drop must cancel its cancel_token so watcher child tokens fire"
+        );
     }
 }
