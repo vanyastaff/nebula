@@ -328,40 +328,61 @@ pub enum ControlOutcome {
         reason: Option<String>,
     },
 
-    /// Terminate the entire workflow execution.
+    /// Terminate this branch and signal that execution should stop.
     ///
-    /// Used by `StopAction` (success) and `FailAction` (error). Desugars to
-    /// `ActionResult::Terminate`, which the engine recognises as a
-    /// whole-execution terminal state, not a per-node skip.
+    /// Used by `StopAction` (success) and `FailAction` (error). Desugars
+    /// to `ActionResult::Terminate`. **v1 scope**: the engine's
+    /// `evaluate_edge` treats `Terminate` like `Skip` — downstream edges
+    /// from this node do not fire. Full parallel-branch cancellation
+    /// (reaching sibling branches in flight) and `ExecutionResult::
+    /// termination_reason` population via `ExecutionTerminationReason::
+    /// ExplicitStop` / `ExplicitFail` are deferred scheduler work (see
+    /// §4.2 and the plan Phase 3). Until that ships, `Terminate` is
+    /// best-effort local signalling, not execution-wide enforcement.
     Terminate {
         reason: TerminationReason,
     },
 }
 ```
 
-### 5.4 `TerminationReason`
+### 5.4 `TerminationReason` and `TerminationCode`
 
 ```rust
-/// Why a `ControlAction` ended the execution.
+/// Why a `ControlAction` requested termination.
 #[non_exhaustive]
 pub enum TerminationReason {
     /// Successful early termination — `StopAction`.
     ///
-    /// Execution state becomes `Succeeded` with an explicit note that
-    /// node `by_node` requested termination. Downstream nodes (in any
-    /// parallel branch) do not run.
+    /// Maps (once scheduler wiring is complete) to
+    /// `ExecutionStatus::Completed` with an audit-log note that the
+    /// node `by_node` requested termination. In Phase 0 only the
+    /// local downstream edges are gated; the execution status is
+    /// whatever `determine_final_status` computes from the drained
+    /// frontier.
     Success { note: Option<String> },
 
     /// Error termination — `FailAction`.
     ///
-    /// Execution state becomes `Failed` with a typed error code and
-    /// message. Companion `ExecutionTerminationReason::ExplicitFail` is
-    /// recorded in audit log for distinguishing from crashes.
+    /// Maps (once wired) to `ExecutionStatus::Failed` with a typed
+    /// termination code and message. Companion
+    /// `ExecutionTerminationReason::ExplicitFail` will be recorded in
+    /// the audit log for distinguishing from crashes when the Phase 3
+    /// scheduler wiring lands.
     Failure {
-        code: crate::ErrorCode,
+        code: TerminationCode,
         message: String,
     },
 }
+
+/// Opaque identifier for a termination error.
+///
+/// Public newtype (`#[serde(transparent)]`) over `Arc<str>`. Pinning
+/// the wire format today lets the internal representation swap to a
+/// structured `ErrorCode` in Phase 10 of the action-v2 roadmap without
+/// breaking serialized shapes or the public API.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct TerminationCode(Arc<str>);
 ```
 
 ### 5.5 `ControlInput`
@@ -492,27 +513,37 @@ fn derive_category<A: ControlAction>(meta: &ActionMetadata, _action: &A) -> Acti
 impl From<ControlOutcome> for ActionResult<Value> {
     fn from(outcome: ControlOutcome) -> Self {
         match outcome {
-            ControlOutcome::Branch { selected, output } => {
-                ActionResult::Branch { selected, output, alternatives: Vec::new() }
-            }
+            ControlOutcome::Branch { selected, output } => ActionResult::Branch {
+                selected,
+                output: ActionOutput::Value(output),
+                alternatives: HashMap::new(),
+            },
             ControlOutcome::Route { ports } => {
-                ActionResult::MultiOutput { outputs: ports.into_iter().collect() }
+                // `ports` is already a HashMap<PortKey, Value>; wrap values
+                // into ActionOutput and hand off to MultiOutput. Duplicates
+                // are unrepresentable because the caller built a HashMap.
+                let outputs = ports
+                    .into_iter()
+                    .map(|(k, v)| (k, ActionOutput::Value(v)))
+                    .collect();
+                ActionResult::MultiOutput {
+                    outputs,
+                    main_output: None,
+                }
             }
-            ControlOutcome::Pass { output } => {
-                ActionResult::Success(output)
-            }
-            ControlOutcome::Drop { reason } => {
-                ActionResult::Drop { reason }
-            }
+            ControlOutcome::Pass { output } => ActionResult::Success {
+                output: ActionOutput::Value(output),
+            },
+            ControlOutcome::Drop { reason } => ActionResult::Drop { reason },
             ControlOutcome::Terminate { reason } => {
-                ActionResult::Terminate { reason: reason.into() }
+                ActionResult::Terminate { reason }
             }
         }
     }
 }
 ```
 
-`ActionResult::Drop` and `ActionResult::Terminate` are added in Prerequisites (§4.1, §4.2); this `From` impl is what validates their shape is right.
+`ActionResult::Drop` and `ActionResult::Terminate` are added in Prerequisites (§4.1, §4.2); this `From` impl is what validates their shape is right. Note: all payload-carrying variants of `ActionResult` take `output: ActionOutput<T>` (not bare `T`) because `ActionOutput` is the common envelope that supports inline values, binary blobs, references, and streaming — the control adapter always wraps its `serde_json::Value` payload via `ActionOutput::Value(_)`.
 
 ---
 
