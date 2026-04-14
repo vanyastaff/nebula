@@ -1538,10 +1538,11 @@ impl NodeTask {
         //   - cancel fires first → return EngineError::Cancelled. We must NOT block shutdown on a
         //     dying credential store.
         //   - refresh returns Err → surface a typed ActionError::CredentialRefreshFailed through
-        //     EngineError::Action. The frontier loop routes this through `handle_node_failure` so
-        //     ErrorStrategy decides retry / dead-letter / fail. This replaces the old "log a WARN
-        //     and proceed with a potentially stale credential" path, which leaked into N opaque
-        //     downstream auth errors per failure.
+        //     EngineError::Action. The frontier loop routes this through `handle_node_failure`,
+        //     where the workflow-level ErrorStrategy decides whether execution fails fast or
+        //     continues/ignores the failure, and whether any `OnError` edge is activated. This
+        //     replaces the old "log a WARN and proceed with a potentially stale credential" path,
+        //     which leaked into N opaque downstream auth errors per failure.
         //   - refresh returns Ok → fall through to the action dispatch.
         if let Some(ref refresh_fn) = self.credential_refresh {
             let refresh_fut = (refresh_fn)(&self.action_key);

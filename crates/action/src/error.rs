@@ -215,8 +215,11 @@ pub enum ActionError {
     /// Classified as **retryable by default** — the credential store may
     /// be transiently unavailable (rate-limited refresh endpoint, network
     /// blip, leader election) and a retry in 100ms–1s is often enough.
-    /// Operators who want fail-fast semantics can intercept this variant
-    /// via `ErrorStrategy` per action.
+    /// Operators who want different handling can configure the workflow's
+    /// `ErrorStrategy` (`FailFast` / `ContinueOnError` / `IgnoreErrors`)
+    /// or route this failure through `OnError` edges with matchers, rather
+    /// than relying on a per-action `ErrorStrategy` override (which does
+    /// not exist).
     ///
     /// [`execute_action_versioned`]: https://docs.rs/nebula-runtime
     #[error("credential refresh failed for action '{action_key}': {source}")]
