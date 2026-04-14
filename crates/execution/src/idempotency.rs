@@ -1,11 +1,11 @@
 //! Idempotency key generation.
 //!
-//! Deduplication itself is owned by [`nebula_storage::ExecutionRepo`] via
+//! Deduplication itself is owned by `nebula_storage::ExecutionRepo` via
 //! `check_idempotency` / `mark_idempotent`. The engine constructs a key with
 //! [`IdempotencyKey::generate`] and routes the dedup decision through the
 //! repository so that durability and the key namespace stay in lock-step.
 
-use std::fmt;
+use std::{collections::HashSet, fmt};
 
 use nebula_core::{ExecutionId, NodeId};
 use serde::{Deserialize, Serialize};
@@ -31,6 +31,58 @@ impl IdempotencyKey {
 impl fmt::Display for IdempotencyKey {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "{}", self.0)
+    }
+}
+
+/// Tracks idempotency keys in-memory.
+///
+/// This manager is retained as a compatibility shim while deduplication lives
+/// in `ExecutionRepo` implementations.
+#[derive(Debug, Default)]
+#[deprecated(
+    since = "0.1.0",
+    note = "Use `nebula_storage::ExecutionRepo::{check_idempotency, mark_idempotent}` for durable deduplication."
+)]
+pub struct IdempotencyManager {
+    seen: HashSet<String>,
+}
+
+#[allow(deprecated)]
+impl IdempotencyManager {
+    /// Create a new empty manager.
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Check if the key has been seen before, and mark it as seen.
+    ///
+    /// Returns `true` when key is new; `false` for duplicates.
+    pub fn check_and_mark(&mut self, key: &IdempotencyKey) -> bool {
+        self.seen.insert(key.0.clone())
+    }
+
+    /// Check if a key has been seen without marking it.
+    #[must_use]
+    pub fn is_seen(&self, key: &IdempotencyKey) -> bool {
+        self.seen.contains(&key.0)
+    }
+
+    /// Clear all tracked keys.
+    pub fn clear(&mut self) {
+        self.seen.clear();
+    }
+
+    /// Number of tracked keys.
+    #[must_use]
+    pub fn len(&self) -> usize {
+        self.seen.len()
+    }
+
+    /// Returns `true` when no keys are tracked.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.seen.is_empty()
     }
 }
 
@@ -73,5 +125,26 @@ mod tests {
         let json = serde_json::to_string(&key).expect("serialize");
         let back: IdempotencyKey = serde_json::from_str(&json).expect("deserialize");
         assert_eq!(key, back);
+    }
+
+    #[allow(deprecated)]
+    #[test]
+    fn manager_check_and_mark_new_key() {
+        let mut mgr = IdempotencyManager::new();
+        let key = IdempotencyKey::generate(ExecutionId::new(), NodeId::new(), 0);
+        assert!(mgr.check_and_mark(&key));
+        assert!(!mgr.check_and_mark(&key));
+    }
+
+    #[allow(deprecated)]
+    #[test]
+    fn manager_clear_resets() {
+        let mut mgr = IdempotencyManager::new();
+        let key = IdempotencyKey::generate(ExecutionId::new(), NodeId::new(), 0);
+        mgr.check_and_mark(&key);
+        assert_eq!(mgr.len(), 1);
+        mgr.clear();
+        assert!(mgr.is_empty());
+        assert!(!mgr.is_seen(&key));
     }
 }

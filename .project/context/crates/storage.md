@@ -24,6 +24,8 @@ Storage trait abstraction — MemoryStorage for tests, PostgresStorage for produ
 - `InMemoryExecutionRepo` lease entries are `(holder, tokio::time::Instant)`; expiration uses
   monotonic tokio time so `start_paused` tests can advance virtual time to assert TTL semantics.
   Postgres backend stays correct via `make_interval` in SQL.
+- In-memory and Postgres lease semantics must stay aligned: acquire treats a lease expiring *at*
+  current time as still held (`>= now`), and renew only requires holder match (even after expiry).
 
 ## Relations
 - Depends on nebula-core (IDs). Used by nebula-engine, nebula-api.

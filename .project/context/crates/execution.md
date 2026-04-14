@@ -7,7 +7,7 @@ Execution state machine types — persistent state, journals, idempotency, plans
 
 ## Key Decisions
 - `ExecutionPlan` is a pre-computed parallel schedule (levels) built from the workflow graph — computed by nebula-engine, consumed here as a data type.
-- `IdempotencyKey` is a deterministic `{execution}:{node}:{attempt}` token. Deduplication is owned by `nebula_storage::ExecutionRepo::{check_idempotency, mark_idempotent}` — there is no in-memory `IdempotencyManager` (deleted in batch 5C, issue #303) because a process-local `HashSet` cache duplicated repo state and disappeared on restart.
+- `IdempotencyKey` is a deterministic `{execution}:{node}:{attempt}` token. Deduplication is owned by `nebula_storage::ExecutionRepo::{check_idempotency, mark_idempotent}`. `IdempotencyManager` remains only as a deprecated compatibility shim for downstream code; engine/runtime must not rely on it for durability.
 - `JournalEntry` provides an immutable audit log of execution events — append-only.
 - **`ReplayPlan` partition contract (issues #253, #254):** `partition_nodes(all_nodes, successors)` returns `(pinned, rerun)` where `rerun = {replay_from} ∪ forward-reachable(replay_from)` and `pinned = all_nodes \ rerun`. Pinned nodes include ancestors, unrelated siblings, and disconnected branches — every non-rerun node MUST have a stored output in `pinned_outputs`. The engine's `replay_execution` iterates the pinned set and errors with `PlanningFailed` on any missing entry; this is deliberate, the previous filter-on-key approach hid silent data corruption. `pinned_outputs` serializes normally (no `#[serde(skip)]`) so plans round-trip through storage without losing stored outputs.
 

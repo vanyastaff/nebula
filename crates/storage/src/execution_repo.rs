@@ -221,6 +221,16 @@ type NodeOutputKey = (ExecutionId, NodeId, u32);
 /// [`tokio::time::Instant`] so paused-time tests behave deterministically.
 type LeaseEntry = (String, Instant);
 
+/// Normalize lease TTL to the same safe range as Postgres backend.
+fn normalized_lease_ttl(ttl: Duration) -> Duration {
+    Duration::from_secs_f64(ttl.as_secs_f64().clamp(1.0, 86_400.0))
+}
+
+/// Compute lease expiration instant without panicking on overflow.
+fn lease_expires_at(now: Instant, ttl: Duration) -> Instant {
+    now.checked_add(normalized_lease_ttl(ttl)).unwrap_or(now)
+}
+
 /// In-memory execution repository for tests and single-process/health-only mode.
 #[derive(Default)]
 pub struct InMemoryExecutionRepo {
@@ -298,11 +308,11 @@ impl ExecutionRepo for InMemoryExecutionRepo {
         let mut leases = self.leases.write().await;
         let now = Instant::now();
         if let Some((_, expires_at)) = leases.get(&id)
-            && *expires_at > now
+            && *expires_at >= now
         {
             return Ok(false);
         }
-        leases.insert(id, (holder, now + ttl));
+        leases.insert(id, (holder, lease_expires_at(now, ttl)));
         Ok(true)
     }
 
@@ -315,8 +325,8 @@ impl ExecutionRepo for InMemoryExecutionRepo {
         let mut leases = self.leases.write().await;
         let now = Instant::now();
         match leases.get_mut(&id) {
-            Some((current, expires_at)) if current == holder && *expires_at > now => {
-                *expires_at = now + ttl;
+            Some((current, expires_at)) if current == holder => {
+                *expires_at = lease_expires_at(now, ttl);
                 Ok(true)
             }
             _ => Ok(false),
@@ -599,6 +609,30 @@ mod tests {
     }
 
     #[tokio::test(start_paused = true)]
+    async fn lease_expiring_now_is_still_live_until_time_advances() {
+        let repo = InMemoryExecutionRepo::default();
+        let id = ExecutionId::new();
+        assert!(
+            repo.acquire_lease(id, "A".into(), Duration::from_secs(5))
+                .await
+                .expect("acquire A")
+        );
+        tokio::time::advance(Duration::from_secs(5)).await;
+        assert!(
+            !repo
+                .acquire_lease(id, "B".into(), Duration::from_secs(5))
+                .await
+                .expect("B at exact expiry boundary")
+        );
+        tokio::time::advance(Duration::from_secs(1)).await;
+        assert!(
+            repo.acquire_lease(id, "B".into(), Duration::from_secs(5))
+                .await
+                .expect("B after boundary")
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
     async fn lease_renew_extends_expiry() {
         let repo = InMemoryExecutionRepo::default();
         let id = ExecutionId::new();
@@ -645,6 +679,59 @@ mod tests {
                 .acquire_lease(id, "C".into(), Duration::from_secs(5))
                 .await
                 .expect("acquire by C")
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn lease_renew_allows_expired_lease_for_same_holder() {
+        let repo = InMemoryExecutionRepo::default();
+        let id = ExecutionId::new();
+        assert!(
+            repo.acquire_lease(id, "A".into(), Duration::from_secs(5))
+                .await
+                .expect("acquire A")
+        );
+        tokio::time::advance(Duration::from_secs(6)).await;
+        assert!(
+            repo.renew_lease(id, "A", Duration::from_secs(5))
+                .await
+                .expect("renew after expiry by same holder")
+        );
+        assert!(
+            !repo
+                .acquire_lease(id, "B".into(), Duration::from_secs(5))
+                .await
+                .expect("B after A renew")
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn lease_ttl_is_clamped_to_at_least_one_second() {
+        let repo = InMemoryExecutionRepo::default();
+        let id = ExecutionId::new();
+        assert!(
+            repo.acquire_lease(id, "A".into(), Duration::ZERO)
+                .await
+                .expect("acquire A")
+        );
+        assert!(
+            !repo
+                .acquire_lease(id, "B".into(), Duration::from_secs(5))
+                .await
+                .expect("B immediately")
+        );
+        tokio::time::advance(Duration::from_secs(1)).await;
+        assert!(
+            !repo
+                .acquire_lease(id, "B".into(), Duration::from_secs(5))
+                .await
+                .expect("B at one-second boundary")
+        );
+        tokio::time::advance(Duration::from_secs(1)).await;
+        assert!(
+            repo.acquire_lease(id, "B".into(), Duration::from_secs(5))
+                .await
+                .expect("B after one-second minimum ttl")
         );
     }
 
