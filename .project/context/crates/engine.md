@@ -33,4 +33,3 @@ Workflow execution orchestrator — frontier-based DAG scheduler.
 <!-- reviewed: 2026-04-14 — #247 added Drop/Terminate gate; PR #394 added failure-ordering + JoinSet abort_all traps -->
 <!-- reviewed: 2026-04-14 — multi-edge fix: resolved_edges changed to usize count; determine_final_status guards Completed on all_nodes_terminal() -->
 <!-- reviewed: 2026-04-14 -->
-
