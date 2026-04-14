@@ -42,7 +42,7 @@ where
 pub struct ExecutionBudget {
     /// Maximum nodes executing in parallel.
     ///
-    /// Must be at least **1**. The workflow engine uses a [`tokio::sync::Semaphore`]
+    /// Must be at least **1**. The workflow engine uses a `tokio::sync::Semaphore`
     /// with this many permits; `0` leaves no permits and deadlocks scheduling.
     #[serde(
         default = "default_max_concurrent_nodes",
