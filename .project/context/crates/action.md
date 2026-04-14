@@ -24,6 +24,7 @@ engine runs them from `nebula-runtime`. `ActionRegistry` lives there, not here.
 - `retryable(..)` vs `fatal(..)` decides retry. `ActionErrorExt` gives `.retryable()?`/`.fatal()?` on any `Result`.
 - `RetryHintCode` (`#[non_exhaustive]`) — action-supplied retry hint. Attached via `retryable_with_hint`/`fatal_with_hint`. Distinct from `nebula_error::Classify::code()`.
 - Payload is `Arc<anyhow::Error>` — full chain, cheap clone.
+- `ActionError::CredentialRefreshFailed { action_key, source: Arc<dyn Error + Send + Sync> }` (#306, Batch 5D) — surfaced by the engine when the proactive `credential_refresh` hook fails before action dispatch. Default classification is **retryable** (transient credential-store outages); appears in `Classify::code()` as `ACTION:CREDENTIAL_REFRESH_FAILED` / `ErrorCategory::External`. `source` is `Arc<dyn Error>` (not `Box`) so the variant stays `Clone` — matching the pattern of the other `Arc<anyhow::Error>` payloads. Construct via `ActionError::credential_refresh_failed(action_key, source)`. The enum stays `#[non_exhaustive]`, so this is a purely additive change for downstream consumers.
 
 ## Traps
 - **State checkpointing.** `StatefulActionAdapter::execute` MUST flush `typed_state` back to JSON on both Ok and Err paths before propagating. A `Retryable` with mutated cursor that isn't flushed makes the engine replay — duplicated API calls, double charges, double emits. Only exception: `Validation` from input/state deserialization (typed state never existed). If state serialization itself fails on the error path, log and propagate the original error — masking breaks retry classification.
@@ -88,3 +89,5 @@ engine runs them from `nebula-runtime`. `ActionRegistry` lives there, not here.
 ## Relations
 Depends on `nebula-core`, `nebula-parameter`, `nebula-credential`.
 Used by `nebula-engine`, `nebula-runtime`, `nebula-sdk`.
+
+<!-- reviewed: 2026-04-14 — PR #388 review-fixup: CredentialRefreshFailed docstring wording. No invariants changed. -->

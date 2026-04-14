@@ -4,10 +4,10 @@
 //! compile time:
 //!
 //! - [`AuthCodeBuilder`](crate::credentials::oauth2_config::AuthCodeBuilder) requires
-//!   `redirect_uri` as a constructor argument (RFC 6749 §4.1.3), and
-//!   unconditionally enables PKCE S256 (RFC 7636 + RFC 8252 §6).
-//! - [`ClientCredentialsBuilder`](crate::credentials::oauth2_config::ClientCredentialsBuilder)
-//!   has no `redirect_uri` method and no `pkce` method — neither concept applies.
+//!   `redirect_uri` as a constructor argument (RFC 6749 §4.1.3), and unconditionally enables PKCE
+//!   S256 (RFC 7636 + RFC 8252 §6).
+//! - [`ClientCredentialsBuilder`](crate::credentials::oauth2_config::ClientCredentialsBuilder) has
+//!   no `redirect_uri` method and no `pkce` method — neither concept applies.
 //! - [`DeviceCodeBuilder`](crate::credentials::oauth2_config::DeviceCodeBuilder) likewise has no
 //!   `redirect_uri`/`pkce` methods.
 //!
