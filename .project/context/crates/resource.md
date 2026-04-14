@@ -35,4 +35,4 @@ topology-specific acquire dispatch.
 ## Relations
 
 Depends on: `nebula-core`, `nebula-metrics`, `nebula-telemetry`, `nebula-resource-macros`.
-Depended on by: `nebula-action`, `nebula-plugin`, `nebula-engine`, `nebula-webhook`.
+Depended on by: `nebula-action`, `nebula-plugin`, `nebula-engine`, `nebula-api` (webhook module lives there — there is no `nebula-webhook` crate).

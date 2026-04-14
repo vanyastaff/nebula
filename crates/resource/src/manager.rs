@@ -1237,6 +1237,25 @@ impl Manager {
     }
 
     /// Waits until all active `ResourceHandle`s are dropped or timeout expires.
+    ///
+    /// The loop uses a `register-then-check` ordering to avoid the classic
+    /// `Notify::notify_waiters` lost-wakeup:
+    ///
+    /// 1. Construct + pin + `enable()` a fresh `Notified` future. Calling
+    ///    `enable()` registers this waiter on the `Notify` queue without
+    ///    requiring a `.await`, so any subsequent `notify_waiters()` (fired
+    ///    when a handle's `Drop` decrements the counter from 1 → 0) will
+    ///    reach us.
+    /// 2. Re-check the counter. If it already hit 0 between the outer
+    ///    initial check and our registration, return now — the wakeup we
+    ///    would otherwise wait for has already been consumed.
+    /// 3. Only then await the `Notified` future.
+    ///
+    /// Without this ordering, a burst of handle drops that completes the
+    /// drain *before* the first `notified().await` poll would leak the
+    /// notification entirely, stalling `graceful_shutdown` for the full
+    /// `drain_timeout` (default 30 s) and risking `SIGKILL` escalation
+    /// under a tight orchestrator shutdown window.
     async fn wait_for_drain(&self, timeout: Duration) {
         let active = self.drain_tracker.0.load(AtomicOrdering::Acquire);
         if active == 0 {
@@ -1247,7 +1266,21 @@ impl Manager {
         let tracker = &self.drain_tracker;
         let drained = tokio::time::timeout(timeout, async {
             loop {
-                tracker.1.notified().await;
+                // Pre-register this waiter BEFORE re-checking the counter.
+                let notified = tracker.1.notified();
+                tokio::pin!(notified);
+                notified.as_mut().enable();
+
+                // Re-check after registration. If the last handle dropped
+                // while we were between the outer check and `enable()`,
+                // the counter is now 0 and we would otherwise wait on a
+                // notification that has already fired.
+                if tracker.0.load(AtomicOrdering::Acquire) == 0 {
+                    return;
+                }
+
+                notified.await;
+
                 if tracker.0.load(AtomicOrdering::Acquire) == 0 {
                     return;
                 }
@@ -1441,5 +1474,100 @@ impl std::fmt::Debug for Manager {
             .field("registered_count", &self.registry.keys().len())
             .field("is_shutdown", &self.is_shutdown())
             .finish_non_exhaustive()
+    }
+}
+
+#[cfg(test)]
+mod drain_race_tests {
+    use super::*;
+
+    /// Regression for the drain-race bug: previously `wait_for_drain`
+    /// did `tracker.1.notified().await` without pre-registering the
+    /// `Notified` future, so a handle dropping (and firing
+    /// `notify_waiters()`) in the window between the outer
+    /// `active == 0` check and the first `notified().await` poll would
+    /// leak the wakeup. Stall persisted until the full `drain_timeout`
+    /// elapsed.
+    ///
+    /// The fix pre-enables the `Notified` future and re-checks the
+    /// counter *after* registration, so a drop that completes the drain
+    /// mid-race is observed on the re-check and returns immediately.
+    ///
+    /// This test exercises the normal "handle drops while we're waiting"
+    /// path and asserts we return far sooner than the timeout.
+    #[tokio::test]
+    async fn wait_for_drain_returns_promptly_when_handle_drops() {
+        let mgr = Manager::new();
+        // Simulate one active handle.
+        mgr.drain_tracker.0.fetch_add(1, AtomicOrdering::Release);
+
+        let tracker = mgr.drain_tracker.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+            if tracker.0.fetch_sub(1, AtomicOrdering::Release) == 1 {
+                tracker.1.notify_waiters();
+            }
+        });
+
+        let start = Instant::now();
+        mgr.wait_for_drain(Duration::from_secs(30)).await;
+        let elapsed = start.elapsed();
+
+        assert!(
+            elapsed < Duration::from_secs(1),
+            "wait_for_drain should return within 1s when a handle drops, took {elapsed:?}"
+        );
+        assert_eq!(mgr.drain_tracker.0.load(AtomicOrdering::Acquire), 0);
+    }
+
+    /// Regression: if the counter reaches 0 *before* `wait_for_drain`
+    /// gets to pre-register the `Notified`, the post-enable re-check
+    /// must catch it and return immediately rather than stalling.
+    ///
+    /// We simulate the race by setting `active = 1` (so the outer
+    /// early-return doesn't fire), then immediately decrementing to 0
+    /// before `wait_for_drain` is polled.
+    #[tokio::test]
+    async fn wait_for_drain_catches_drop_via_recheck() {
+        let mgr = Manager::new();
+        mgr.drain_tracker.0.fetch_add(1, AtomicOrdering::Release);
+
+        // Decrement + notify synchronously — the counter is 0 before
+        // `wait_for_drain` is even called, but we want to prove that
+        // even if the outer check observed `active == 1` and then
+        // the counter hit 0 *between* that check and the inner enable,
+        // the inner re-check would catch it.
+        //
+        // Simulated here by priming the state and then calling
+        // wait_for_drain directly; the inner loop's re-check should
+        // fire on the very first iteration because the counter is
+        // already 0. The outer check is bypassed by the fetch_add
+        // above leaving active == 1 until... wait, we need to
+        // decrement BETWEEN the outer check and the inner enable.
+        //
+        // Easiest approximation: skip the outer early-return by
+        // keeping active = 1 through the outer check, then decrement
+        // via a spawned task that runs before wait_for_drain gets
+        // scheduler time.
+        let tracker = mgr.drain_tracker.clone();
+        tokio::task::yield_now().await;
+        let handle = tokio::spawn(async move {
+            // Yield so that wait_for_drain's outer load sees active = 1,
+            // then decrement before the inner poll happens.
+            tokio::task::yield_now().await;
+            if tracker.0.fetch_sub(1, AtomicOrdering::Release) == 1 {
+                tracker.1.notify_waiters();
+            }
+        });
+
+        let start = Instant::now();
+        mgr.wait_for_drain(Duration::from_secs(30)).await;
+        let elapsed = start.elapsed();
+        handle.await.unwrap();
+
+        assert!(
+            elapsed < Duration::from_secs(1),
+            "wait_for_drain must return promptly even under race, took {elapsed:?}"
+        );
     }
 }

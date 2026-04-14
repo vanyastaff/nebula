@@ -69,8 +69,18 @@ impl PendingState for NoPendingState {
 /// Contains a 32-byte CSPRNG value encoded as URL-safe base64 (no padding).
 /// The token is bound to (credential_kind, owner_id, session_id) at storage
 /// time — all four dimensions are validated on consume.
-#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct PendingToken(String);
+
+// Manual `Debug` so that `tracing::debug!(?token)` — which is exactly the
+// path a bearer-token value would most plausibly leak through — prints the
+// same redacted placeholder as `Display`. A derived `Debug` would print the
+// base64 CSPRNG contents verbatim.
+impl std::fmt::Debug for PendingToken {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("PendingToken([REDACTED])")
+    }
+}
 
 impl PendingToken {
     /// Generates a new cryptographically random token.

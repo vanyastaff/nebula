@@ -28,4 +28,4 @@ Infrastructure crate for sandbox monitoring, health, and adaptive load shedding.
 
 ## Relations
 
-No nebula deps. Used by `nebula-memory` (pressure detection, format utils, `SystemInfo`). Not used by `nebula-log`.
+No nebula deps. `nebula-memory` (former consumer) has been removed from the workspace — no current consumers are wired through. Available for use by sandbox monitoring, engine health, and adaptive load shedding.

@@ -144,20 +144,75 @@ impl TaskQueue for MemoryQueue {
     }
 
     async fn nack(&self, task_id: &str) -> Result<(), QueueError> {
-        let item = self.in_flight.lock().await.remove(task_id);
-        match item {
-            Some(item) => {
-                self.sender
-                    .try_send(item)
-                    .map_err(|e| QueueError::Internal(format!("requeue failed: {e}")))?;
-                self.queued_count.fetch_add(1, Ordering::Relaxed);
-                Ok(())
-            }
-            None => Err(QueueError::not_found("Task", task_id)),
-        }
+        // Keep the item in-flight until requeue succeeds to preserve
+        // at-least-once guarantees when the queue is saturated.
+        let item = {
+            let in_flight = self.in_flight.lock().await;
+            in_flight.get(task_id).cloned()
+        };
+        let Some(item) = item else {
+            return Err(QueueError::not_found("Task", task_id));
+        };
+
+        self.sender
+            .send(item)
+            .await
+            .map_err(|e| QueueError::Internal(format!("requeue failed: {e}")))?;
+        self.queued_count.fetch_add(1, Ordering::Relaxed);
+        let _ = self.in_flight.lock().await.remove(task_id);
+        Ok(())
     }
 
     async fn len(&self) -> Result<usize, QueueError> {
         Ok(self.queued_count.load(Ordering::Relaxed))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn nack_waits_for_capacity_and_preserves_task() {
+        let queue = Arc::new(MemoryQueue::new(1));
+
+        let first_id = queue.enqueue(serde_json::json!({"task":"first"})).await.unwrap();
+        let (dequeued_id, _) = queue
+            .dequeue(Duration::from_millis(50))
+            .await
+            .unwrap()
+            .expect("expected dequeued task");
+        assert_eq!(dequeued_id, first_id);
+
+        // Fill the queue so nack must wait for capacity.
+        queue
+            .enqueue(serde_json::json!({"task":"filler"}))
+            .await
+            .unwrap();
+
+        let queue_for_nack = Arc::clone(&queue);
+        let id_for_nack = dequeued_id.clone();
+        let nack_task = tokio::spawn(async move { queue_for_nack.nack(&id_for_nack).await });
+
+        tokio::time::sleep(Duration::from_millis(20)).await;
+        assert!(
+            !nack_task.is_finished(),
+            "nack should block while queue is full"
+        );
+
+        // Free one slot, then nack should complete and requeue original task.
+        let (_filler_id, _filler_payload) = queue
+            .dequeue(Duration::from_millis(50))
+            .await
+            .unwrap()
+            .expect("expected filler dequeue");
+        nack_task.await.unwrap().unwrap();
+
+        let (requeued_id, _) = queue
+            .dequeue(Duration::from_millis(50))
+            .await
+            .unwrap()
+            .expect("expected requeued task");
+        assert_eq!(requeued_id, dequeued_id);
     }
 }

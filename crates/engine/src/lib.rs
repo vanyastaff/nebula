@@ -25,7 +25,7 @@ pub mod resource_accessor;
 pub mod result;
 
 pub use credential_accessor::EngineCredentialAccessor;
-pub use engine::WorkflowEngine;
+pub use engine::{DEFAULT_EVENT_CHANNEL_CAPACITY, WorkflowEngine};
 pub use error::EngineError;
 pub use event::ExecutionEvent;
 // Re-export plugin types for convenience.

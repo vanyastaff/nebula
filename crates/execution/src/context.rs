@@ -3,6 +3,24 @@
 use std::time::Duration;
 
 use nebula_core::ExecutionId;
+use serde::{Deserialize, Deserializer};
+
+fn default_max_concurrent_nodes() -> usize {
+    10
+}
+
+fn deserialize_min_concurrency<'de, D>(deserializer: D) -> Result<usize, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let n = usize::deserialize(deserializer)?;
+    if n == 0 {
+        return Err(serde::de::Error::custom(
+            "max_concurrent_nodes must be >= 1 (0 deadlocks the workflow scheduler — zero permits on the node semaphore)",
+        ));
+    }
+    Ok(n)
+}
 
 /// Resource budget for a single workflow execution.
 ///
@@ -23,6 +41,13 @@ use nebula_core::ExecutionId;
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct ExecutionBudget {
     /// Maximum nodes executing in parallel.
+    ///
+    /// Must be at least **1**. The workflow engine uses a [`tokio::sync::Semaphore`]
+    /// with this many permits; `0` leaves no permits and deadlocks scheduling.
+    #[serde(
+        default = "default_max_concurrent_nodes",
+        deserialize_with = "deserialize_min_concurrency"
+    )]
     pub max_concurrent_nodes: usize,
 
     /// Wall-clock timeout for the entire execution. `None` = unlimited.
@@ -50,9 +75,31 @@ impl Default for ExecutionBudget {
 }
 
 impl ExecutionBudget {
+    /// Validates fields that affect the workflow scheduler.
+    ///
+    /// Returns an error if [`Self::max_concurrent_nodes`] is zero — the engine
+    /// would otherwise construct a `Semaphore::new(0)` with no permits and
+    /// hang forever waiting for concurrency slots.
+    pub fn validate_for_execution(&self) -> Result<(), &'static str> {
+        if self.max_concurrent_nodes == 0 {
+            return Err("max_concurrent_nodes must be >= 1 (0 deadlocks the workflow scheduler)");
+        }
+        Ok(())
+    }
+
     /// Set the maximum number of concurrent nodes.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `n == 0`. A zero semaphore deadlocks the scheduler
+    /// silently, so the builder rejects the value loudly.
     #[must_use = "builder methods must be chained or built"]
     pub fn with_max_concurrent_nodes(mut self, n: usize) -> Self {
+        assert!(
+            n > 0,
+            "with_max_concurrent_nodes(0) would deadlock the scheduler; \
+             use a positive limit"
+        );
         self.max_concurrent_nodes = n;
         self
     }
@@ -155,5 +202,24 @@ mod tests {
         assert_eq!(budget.max_duration, None);
         assert_eq!(budget.max_output_bytes, None);
         assert_eq!(budget.max_total_retries, None);
+    }
+
+    #[test]
+    fn deserialize_rejects_zero_max_concurrent_nodes() {
+        let json = r#"{"max_concurrent_nodes":0}"#;
+        let err = serde_json::from_str::<ExecutionBudget>(json).unwrap_err();
+        assert!(
+            err.to_string().contains("max_concurrent_nodes"),
+            "unexpected serde error: {err}"
+        );
+    }
+
+    #[test]
+    fn validate_for_execution_rejects_zero() {
+        let budget = ExecutionBudget {
+            max_concurrent_nodes: 0,
+            ..ExecutionBudget::default()
+        };
+        assert!(budget.validate_for_execution().is_err());
     }
 }

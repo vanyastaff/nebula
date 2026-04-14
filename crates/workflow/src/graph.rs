@@ -27,7 +27,14 @@ impl DependencyGraph {
 
         for node in &definition.nodes {
             let idx = graph.add_node(node.id);
-            index_map.insert(node.id, idx);
+            // `validate_workflow` also checks duplicates, but plan builders
+            // call this constructor directly without that pass, so an
+            // unchecked `insert` would orphan the first of two duplicate
+            // nodes inside `petgraph` while silently losing it from the
+            // index map. Fail loudly here.
+            if index_map.insert(node.id, idx).is_some() {
+                return Err(WorkflowError::DuplicateNodeId(node.id));
+            }
         }
 
         for conn in &definition.connections {

@@ -25,7 +25,7 @@ use std::{sync::Arc, time::Duration};
 use axum::{
     Router,
     body::Bytes,
-    extract::{Path, State},
+    extract::{DefaultBodyLimit, Path, State},
     http::{HeaderMap, Method, StatusCode, Uri},
     response::{IntoResponse, Response},
     routing::any,
@@ -195,6 +195,7 @@ impl WebhookTransport {
         );
         Router::new()
             .route(&route, any(webhook_handler))
+            .layer(DefaultBodyLimit::max(self.inner.config.body_limit_bytes))
             .with_state(self.clone())
     }
 }

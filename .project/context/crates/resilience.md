@@ -82,3 +82,5 @@ Any outgoing call (HTTP, DB, external service, plugin execution) goes through `R
 
 ## Relations
 - Depends on: nebula-error. Used by nebula-resource (pool resilience), nebula-credential (refresh CB).
+
+<!-- reviewed: 2026-04-14 -->

@@ -27,6 +27,7 @@ Universal credential management: 12 auth scheme types, open AuthScheme trait, co
 - `CredentialHandle::Clone` creates independent `ArcSwap` — share via `Arc`.
 - CAS retry tests race in parallel. Use `--test-threads=1`.
 - `RefreshCoordinator`: Waiter path **must** pre-enable `Notified` (`pin!` + `.as_mut().enable()`) before await — else `notify_waiters()` can fire before registration. 5 s waiter timeout is intentional; store re-read is the race-recovery.
+- `resolve_with_refresh` jitter math must tolerate sub-millisecond `RefreshPolicy::jitter` values. `Duration::as_millis()` can be `0` for non-zero jitter; do not pass `0..0` to RNG ranges (panic). Treat sub-ms jitter as zero jitter.
 
 ## Known Issues (deferred)
 - RT-4: ScopeLayer TOCTOU on delete/put — requires trait-level conditional ops.

@@ -39,7 +39,6 @@ pub struct PollingWatcher {
 struct FileMetadata {
     modified: std::time::SystemTime,
     size: u64,
-    hash: Option<String>,
 }
 
 impl std::fmt::Debug for PollingWatcher {
@@ -89,13 +88,10 @@ impl PollingWatcher {
     /// Get file metadata
     async fn get_file_metadata(path: &PathBuf) -> Option<FileMetadata> {
         match tokio::fs::metadata(path).await {
-            Ok(metadata) => {
-                Some(FileMetadata {
-                    modified: metadata.modified().unwrap_or(std::time::UNIX_EPOCH),
-                    size: metadata.len(),
-                    hash: None, // Could add content hashing for better change detection
-                })
-            }
+            Ok(metadata) => Some(FileMetadata {
+                modified: metadata.modified().unwrap_or(std::time::UNIX_EPOCH),
+                size: metadata.len(),
+            }),
             Err(_) => None,
         }
     }
@@ -298,8 +294,14 @@ impl PollingWatcher {
 #[async_trait]
 impl ConfigWatcher for PollingWatcher {
     async fn start_watching(&self, sources: &[ConfigSource]) -> ConfigResult<()> {
-        // Check if already watching
-        if self.watching.load(Ordering::Relaxed) {
+        // Atomically claim the watching slot. Using compare_exchange closes
+        // the race window where two concurrent `start_watching` calls could
+        // both pass a load/store pair and leak one of the spawned tasks.
+        if self
+            .watching
+            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+            .is_err()
+        {
             return Err(ConfigError::watch_error("Already watching"));
         }
 
@@ -314,9 +316,6 @@ impl ConfigWatcher for PollingWatcher {
             let mut cache = metadata_cache.write().await;
             cache.clear();
         }
-
-        // Mark as watching
-        watching.store(true, Ordering::Relaxed);
 
         // Start polling task
         let watcher = self.clone();
@@ -353,12 +352,13 @@ impl ConfigWatcher for PollingWatcher {
         };
         if let Some(handle) = handle {
             // The task will exit on next interval tick when it sees watching == false.
-            // Use a timeout to avoid waiting indefinitely if the task is stuck.
-            match tokio::time::timeout(self.interval * 2, handle).await {
-                Ok(_) => {}
-                Err(_) => {
-                    nebula_log::warn!("Polling task did not exit within timeout");
-                }
+            // Use a timeout to avoid waiting indefinitely if the task is stuck;
+            // on timeout, abort explicitly so the runtime reclaims the task
+            // rather than leaving a zombie behind.
+            let abort_handle = handle.abort_handle();
+            if tokio::time::timeout(self.interval * 2, handle).await.is_err() {
+                nebula_log::warn!("Polling task did not exit within timeout; aborting");
+                abort_handle.abort();
             }
         }
 
