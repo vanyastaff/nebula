@@ -32,3 +32,5 @@ Thin axum REST + WebSocket server — entry point for external clients.
 <!-- reviewed: 2026-04-14 — webhook/mod.rs + webhook/provider.rs docstring cleanup for rustdoc (private `routing` module link, redundant explicit link target on `WebhookEndpointProvider`); no structural changes -->
 
 <!-- reviewed: 2026-04-14 -->
+
+<!-- reviewed: 2026-04-14 -->
