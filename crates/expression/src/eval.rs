@@ -39,13 +39,12 @@ const MAX_REGEX_CACHE_SIZE: usize = 100;
 /// [`EvaluationContext`]). Every recursive path inside the evaluator
 /// threads `&mut EvalFrame` instead of a bare `depth: usize`, so:
 ///
-/// - Concurrent `Arc<Evaluator>` users each get their own frame with
-///   zero synchronization — no shared atomics, no thread-local state.
-/// - Nested lambda evaluation cannot accidentally reset the counter
-///   (the old `self.eval(...)` re-entry pattern that did
-///   `self.steps.store(0)` at the top of every call is gone).
-/// - One top-level `eval` call = one step budget, regardless of how
-///   many lambdas / reduces / pipelines it recurses through.
+/// - Concurrent `Arc<Evaluator>` users each get their own frame with zero synchronization — no
+///   shared atomics, no thread-local state.
+/// - Nested lambda evaluation cannot accidentally reset the counter (the old `self.eval(...)`
+///   re-entry pattern that did `self.steps.store(0)` at the top of every call is gone).
+/// - One top-level `eval` call = one step budget, regardless of how many lambdas / reduces /
+///   pipelines it recurses through.
 ///
 /// Closes CO-C1-01 (issue #252): `max_eval_steps` bypass via lambdas.
 pub(crate) struct EvalFrame {
@@ -2335,9 +2334,9 @@ mod tests {
             name: Arc::from("map"),
             args: vec![literal_array(100), increment_lambda()],
         };
-        let err = evaluator.eval(&expr, &context).expect_err(
-            "context-level budget of 5 must also bound a map over 100 elements",
-        );
+        let err = evaluator
+            .eval(&expr, &context)
+            .expect_err("context-level budget of 5 must also bound a map over 100 elements");
         assert!(err.to_string().contains("Maximum evaluation steps"));
     }
 

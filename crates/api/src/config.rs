@@ -44,10 +44,10 @@ impl JwtSecret {
     ///
     /// # Errors
     ///
-    /// - [`ApiConfigError::JwtSecretTooShort`] if the input is
-    ///   shorter than [`Self::MIN_BYTES`] bytes.
-    /// - [`ApiConfigError::JwtSecretIsDevPlaceholder`] if the input
-    ///   matches the well-known development placeholder.
+    /// - [`ApiConfigError::JwtSecretTooShort`] if the input is shorter than [`Self::MIN_BYTES`]
+    ///   bytes.
+    /// - [`ApiConfigError::JwtSecretIsDevPlaceholder`] if the input matches the well-known
+    ///   development placeholder.
     pub fn new(raw: impl Into<Arc<str>>) -> Result<Self, ApiConfigError> {
         let raw = raw.into();
         if raw.as_ref() == Self::DEV_PLACEHOLDER {
@@ -138,9 +138,7 @@ pub enum ApiConfigError {
     },
 
     /// `API_JWT_SECRET` is literally the well-known dev placeholder.
-    #[error(
-        "API_JWT_SECRET matches the well-known development placeholder — refusing to start"
-    )]
+    #[error("API_JWT_SECRET matches the well-known development placeholder — refusing to start")]
     JwtSecretIsDevPlaceholder,
 
     /// `API_BIND_ADDRESS` failed to parse.
@@ -240,12 +238,10 @@ impl ApiConfig {
     /// - missing `API_JWT_SECRET` outside dev mode
     /// - `API_JWT_SECRET` shorter than [`JwtSecret::MIN_BYTES`]
     /// - `API_JWT_SECRET` matching the well-known dev placeholder
-    /// - malformed `API_BIND_ADDRESS`, `API_REQUEST_TIMEOUT`,
-    ///   `API_MAX_BODY_SIZE`, `API_ENABLE_COMPRESSION`,
-    ///   `API_ENABLE_TRACING`, or `API_RATE_LIMIT`
+    /// - malformed `API_BIND_ADDRESS`, `API_REQUEST_TIMEOUT`, `API_MAX_BODY_SIZE`,
+    ///   `API_ENABLE_COMPRESSION`, `API_ENABLE_TRACING`, or `API_RATE_LIMIT`
     pub fn from_env() -> Result<Self, ApiConfigError> {
-        let env_mode =
-            std::env::var("NEBULA_ENV").unwrap_or_else(|_| "development".to_string());
+        let env_mode = std::env::var("NEBULA_ENV").unwrap_or_else(|_| "development".to_string());
         let is_dev = matches!(env_mode.as_str(), "development" | "dev" | "local");
 
         let jwt_secret = match std::env::var("API_JWT_SECRET") {
@@ -488,8 +484,7 @@ mod tests {
 
     #[test]
     fn jwt_secret_debug_is_redacted() {
-        let secret =
-            JwtSecret::new("this-is-a-32-byte-minimum-secret!!".to_string()).unwrap();
+        let secret = JwtSecret::new("this-is-a-32-byte-minimum-secret!!".to_string()).unwrap();
         let formatted = format!("{secret:?}");
         assert!(formatted.contains("REDACTED"));
         assert!(!formatted.contains("this-is-a-32-byte"));

@@ -176,7 +176,10 @@ mod tests {
     async fn nack_waits_for_capacity_and_preserves_task() {
         let queue = Arc::new(MemoryQueue::new(1));
 
-        let first_id = queue.enqueue(serde_json::json!({"task":"first"})).await.unwrap();
+        let first_id = queue
+            .enqueue(serde_json::json!({"task":"first"}))
+            .await
+            .unwrap();
         let (dequeued_id, _) = queue
             .dequeue(Duration::from_millis(50))
             .await
