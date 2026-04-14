@@ -19,6 +19,7 @@ Plugin isolation — `SandboxRunner` trait + implementations.
 - Only `ActionResultOk`/`ActionResultError` valid as response to `ActionInvoke`; other envelope kinds → fatal. `Log`/`RpcCall` from plugin discarded in one-shot read.
 - `DUPLEX_PROTOCOL_VERSION` match is compile-time only; runtime handshake lands slice 1d.
 - Permissions advisory only until Phase 2.
+- **Plugin transport is length-capped (#316, 2026-04-14)**: 4 KiB handshake, 1 MiB envelope, 8 KiB stderr log lines. Enforced by `read_bounded_line` via `take(cap + 1).read_until(b'\n', buf)`. Over-cap reads on handshake / envelope return typed `SandboxError::{PluginLineTooLarge,HandshakeLineTooLarge}` — reject-loud, no truncation. `PluginHandle` carries a `poisoned: bool` flag that trips on overflow / mid-frame I/O / EOF; subsequent `send_envelope` / `recv_envelope` short-circuit with `TransportPoisoned`. Outer `try_dispatch` also clears `*handle.lock().await = None` on error (defense in depth). Stderr path truncates silently since it is log output, not protocol. To raise the envelope cap, add a `ProcessSandbox::new` override rather than bumping `ENVELOPE_LINE_CAP`.
 
 ## Relations
 - Depends on `nebula-action`, `nebula-plugin-protocol::duplex`. Used by `nebula-runtime` (re-export), `nebula-engine`.
@@ -28,3 +29,5 @@ Roadmap: `docs/plans/2026-04-13-sandbox-roadmap.md`. Research: `.project/context
 <!-- reviewed: 2026-04-14 — slice 1c landed: UDS/Named-Pipe long-lived handle + JSON framing; process.rs docstring cleanup for rustdoc -->
 
 <!-- reviewed: 2026-04-14 -->
+
+<!-- reviewed: 2026-04-14 — #316: bounded plugin transport reads (4 KiB handshake / 1 MiB envelope / 8 KiB stderr), typed SandboxError, PluginHandle poison flag -->
