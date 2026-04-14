@@ -83,6 +83,8 @@ engine runs them from `nebula-runtime`. `ActionRegistry` lives there, not here.
 - Assertion macros (`assert_success!`, `assert_branch!`, …) match on real variants.
 - Poll tests: `#[tokio::test(start_paused = true)]` + `tokio::time::advance` + `yield_now` (requires tokio `test-util`).
 
+<!-- reviewed: 2026-04-14 — #247 ControlAction DX family landed: trait + adapter + Drop/Terminate/TerminationCode/ActionCategory + 56 new tests; see traps section for the new invariants and the follow-up roadmap references -->
+
 ## Relations
 Depends on `nebula-core`, `nebula-parameter`, `nebula-credential`.
 Used by `nebula-engine`, `nebula-runtime`, `nebula-sdk`.

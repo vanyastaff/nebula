@@ -19,3 +19,5 @@ Execution state machine types — persistent state, journals, idempotency, plans
 
 ## Relations
 - Depends on nebula-core (IDs). Used by nebula-engine, nebula-storage, nebula-api.
+
+<!-- reviewed: 2026-04-14 — #247 added ExecutionTerminationReason + ExecutionTerminationCode newtype and ExecutionResult::termination_reason field; Phase 0 wiring is partial (local edge gate only, full scheduler propagation deferred) -->

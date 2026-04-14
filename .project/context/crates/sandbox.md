@@ -25,4 +25,4 @@ Plugin isolation — `SandboxRunner` trait + implementations.
 
 Roadmap: `docs/plans/2026-04-13-sandbox-roadmap.md`. Research: `.project/context/research/sandbox-prior-art.md`.
 
-<!-- reviewed: 2026-04-13 — slice 1b: ProcessSandbox migrated to duplex v2 -->
+<!-- reviewed: 2026-04-14 — slice 1c landed: UDS/Named-Pipe long-lived handle + JSON framing; process.rs docstring cleanup for rustdoc -->

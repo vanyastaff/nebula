@@ -13,3 +13,4 @@
 - **nebula-auth**: RFC phase — do not depend on it.
 - **API JWT**: Placeholder — header presence-check only.
 - **Gone crates**: nebula-app, nebula-value, nebula-memory — all removed, references stale.
+- **`cargo deny` layers are convention-only**: `[bans.deny]=[]`. CI runs deny but only for advisories/licenses. Cross-layer deps won't fail CI — review must catch.
