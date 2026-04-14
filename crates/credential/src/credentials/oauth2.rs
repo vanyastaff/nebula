@@ -381,12 +381,8 @@ impl Credential for OAuth2Credential {
                 let challenge = crate::crypto::generate_code_challenge(&verifier);
                 let state_token = crate::crypto::generate_random_state();
 
-                let url = oauth2_flow::build_auth_url(
-                    &config,
-                    client_id,
-                    &challenge,
-                    &state_token,
-                )?;
+                let url =
+                    oauth2_flow::build_auth_url(&config, client_id, &challenge, &state_token)?;
 
                 // `build_config` rejects missing `redirect_uri` for this
                 // grant type, so this `clone()` unwraps a value that was

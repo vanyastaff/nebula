@@ -106,8 +106,8 @@ impl PollingWatcher {
     ///
     /// The loop exits on either:
     /// - `cancel.cancelled()` — fired by `Config::drop` or `stop_watching`,
-    /// - `watching` flipped to `false` — legacy shutdown path for callers
-    ///   that still call `stop_watching` explicitly.
+    /// - `watching` flipped to `false` — legacy shutdown path for callers that still call
+    ///   `stop_watching` explicitly.
     ///
     /// The `watching` flag is cleared on exit regardless of which path
     /// triggered shutdown, so `is_watching()` always reflects the real state
@@ -402,7 +402,10 @@ impl ConfigWatcher for PollingWatcher {
             // on timeout, abort explicitly so the runtime reclaims the task
             // rather than leaving a zombie behind.
             let abort_handle = handle.abort_handle();
-            if tokio::time::timeout(self.interval * 2, handle).await.is_err() {
+            if tokio::time::timeout(self.interval * 2, handle)
+                .await
+                .is_err()
+            {
                 nebula_log::warn!("Polling task did not exit within timeout; aborting");
                 abort_handle.abort();
             }

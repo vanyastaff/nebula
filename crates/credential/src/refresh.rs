@@ -513,8 +513,8 @@ mod tests {
 
     #[tokio::test]
     async fn semaphore_limits_concurrent_refreshes() {
-        let coord = RefreshCoordinator::with_max_concurrent(2)
-            .expect("max=2 is a valid concurrency limit");
+        let coord =
+            RefreshCoordinator::with_max_concurrent(2).expect("max=2 is a valid concurrency limit");
         assert_eq!(coord.available_permits(), 2);
 
         let _p1 = coord.acquire_permit().await;
@@ -552,8 +552,7 @@ mod tests {
 
     #[tokio::test]
     async fn one_max_concurrent_is_valid() {
-        let coord = RefreshCoordinator::with_max_concurrent(1)
-            .expect("max=1 is valid");
+        let coord = RefreshCoordinator::with_max_concurrent(1).expect("max=1 is valid");
         assert_eq!(coord.available_permits(), 1);
         let _p = coord.acquire_permit().await;
         assert_eq!(coord.available_permits(), 0);

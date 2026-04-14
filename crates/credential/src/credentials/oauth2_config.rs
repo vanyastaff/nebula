@@ -3,12 +3,11 @@
 //! The builder surface enforces grant-type-specific requirements at
 //! compile time:
 //!
-//! - `AuthCodeBuilder` requires `redirect_uri` as a constructor
-//!   argument (RFC 6749 §4.1.3), and unconditionally enables PKCE S256
-//!   (RFC 7636 + RFC 8252 §6).
-//! - `ClientCredentialsBuilder` has no `redirect_uri` method and no
-//!   `pkce` method — neither concept applies.
-//! - `DeviceCodeBuilder` likewise has no `redirect_uri`/`pkce` methods.
+//! - [`AuthCodeBuilder`] requires `redirect_uri` as a constructor argument (RFC 6749 §4.1.3), and
+//!   unconditionally enables PKCE S256 (RFC 7636 + RFC 8252 §6).
+//! - [`ClientCredentialsBuilder`] has no `redirect_uri` method and no `pkce` method — neither
+//!   concept applies.
+//! - [`DeviceCodeBuilder`] likewise has no `redirect_uri`/`pkce` methods.
 //!
 //! Closes the missing-`redirect_uri` / missing-`state` / missing-PKCE
 //! holes from GitHub issues #250 and #251.
@@ -70,8 +69,8 @@ impl PkceMethod {
 ///
 /// # AuthorizationCode invariants
 ///
-/// - `redirect_uri == Some(_)` — the exact URI registered with the
-///   provider; echoed on the token-exchange request per RFC 6749 §4.1.3.
+/// - `redirect_uri == Some(_)` — the exact URI registered with the provider; echoed on the
+///   token-exchange request per RFC 6749 §4.1.3.
 /// - `pkce == Some(PkceMethod::S256)` — PKCE protection is mandatory.
 ///
 /// For other grant types both fields are `None`.
