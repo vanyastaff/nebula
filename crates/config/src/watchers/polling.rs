@@ -11,6 +11,7 @@ use std::{
 
 use async_trait::async_trait;
 use tokio::sync::RwLock;
+use tokio_util::sync::CancellationToken;
 
 use crate::{
     core::{ConfigError, ConfigResult, ConfigSource, ConfigWatcher},
@@ -101,7 +102,16 @@ impl PollingWatcher {
         old.modified != new.modified || old.size != new.size
     }
 
-    /// Start the polling loop
+    /// Start the polling loop.
+    ///
+    /// The loop exits on either:
+    /// - `cancel.cancelled()` — fired by `Config::drop` or `stop_watching`,
+    /// - `watching` flipped to `false` — legacy shutdown path for callers that still call
+    ///   `stop_watching` explicitly.
+    ///
+    /// The `watching` flag is cleared on exit regardless of which path
+    /// triggered shutdown, so `is_watching()` always reflects the real state
+    /// after the spawned task has observed cancellation.
     #[allow(clippy::excessive_nesting)] // Reason: polling loop with per-source type dispatch
     async fn start_polling_loop(
         &self,
@@ -110,13 +120,20 @@ impl PollingWatcher {
         watching: Arc<AtomicBool>,
         metadata_cache: Arc<RwLock<HashMap<PathBuf, FileMetadata>>>,
         interval: std::time::Duration,
+        cancel: CancellationToken,
     ) {
         let mut interval_timer = tokio::time::interval(interval);
         interval_timer.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
 
-        // Initial scan to populate cache (collect all metadata first, then lock once)
+        // Initial scan to populate cache (collect all metadata first, then lock once).
+        // Racing against cancel during the initial scan lets `Config::drop` during
+        // a slow startup scan still tear the task down promptly.
         let mut initial_entries = Vec::new();
         for source in &sources {
+            if cancel.is_cancelled() {
+                watching.store(false, Ordering::Release);
+                return;
+            }
             match source {
                 ConfigSource::File(path) | ConfigSource::FileAuto(path) => {
                     if let Some(metadata) = Self::get_file_metadata(path).await {
@@ -143,8 +160,19 @@ impl PollingWatcher {
             }
         }
 
-        while watching.load(Ordering::Relaxed) {
-            interval_timer.tick().await;
+        loop {
+            tokio::select! {
+                biased;
+                () = cancel.cancelled() => break,
+                _ = interval_timer.tick() => {}
+            }
+
+            // The legacy `stop_watching` path flips this flag and then waits
+            // for the task to exit at its next iteration. Honor it here too
+            // so both shutdown paths behave identically.
+            if !watching.load(Ordering::Acquire) {
+                break;
+            }
 
             // Check all sources concurrently per tick
             type BoxFut<'a> = std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send + 'a>>;
@@ -164,6 +192,10 @@ impl PollingWatcher {
                 .collect();
             futures::future::join_all(check_futures).await;
         }
+
+        // Clear the status mirror so `is_watching()` becomes correct even
+        // when cancellation (not `stop_watching`) was the trigger.
+        watching.store(false, Ordering::Release);
     }
 
     /// Check for file changes (read lock first, write lock only on change)
@@ -293,7 +325,11 @@ impl PollingWatcher {
 
 #[async_trait]
 impl ConfigWatcher for PollingWatcher {
-    async fn start_watching(&self, sources: &[ConfigSource]) -> ConfigResult<()> {
+    async fn start_watching(
+        &self,
+        sources: &[ConfigSource],
+        cancel: CancellationToken,
+    ) -> ConfigResult<()> {
         // Atomically claim the watching slot. Using compare_exchange closes
         // the race window where two concurrent `start_watching` calls could
         // both pass a load/store pair and leak one of the spawned tasks.
@@ -317,11 +353,21 @@ impl ConfigWatcher for PollingWatcher {
             cache.clear();
         }
 
-        // Start polling task
+        // Start polling task. The cancel token is owned by the spawned loop;
+        // `Config::drop` (sync) cancels the parent and this task exits on its
+        // next select! tick. This is the #315 fix: without the token the task
+        // leaked when the owning `Config` was dropped.
         let watcher = self.clone();
         let handle = tokio::spawn(async move {
             watcher
-                .start_polling_loop(sources, callback, watching, metadata_cache, interval)
+                .start_polling_loop(
+                    sources,
+                    callback,
+                    watching,
+                    metadata_cache,
+                    interval,
+                    cancel,
+                )
                 .await;
         });
 
@@ -391,5 +437,95 @@ impl Clone for PollingWatcher {
             task_handle: Arc::clone(&self.task_handle),
             metadata_cache: Arc::clone(&self.metadata_cache),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// #315: Before the fix, `PollingWatcher`'s loop only exited on
+    /// `stop_watching().await`, which `Config::drop` (sync) cannot call.
+    /// Cancelling the token must now terminate the spawned task.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn polling_task_exits_on_token_cancel() {
+        let watcher = PollingWatcher::new_noop(std::time::Duration::from_millis(20));
+        let cancel = CancellationToken::new();
+
+        watcher
+            .start_watching(&[ConfigSource::Env], cancel.clone())
+            .await
+            .expect("start_watching must succeed");
+        assert!(watcher.is_watching());
+
+        // Fire the parent signal `Config::drop` would fire, and let the
+        // task observe it on its next select! tick.
+        cancel.cancel();
+
+        // The loop rechecks on each tick; give it up to ~10 ticks to exit.
+        let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(2);
+        while watcher.is_watching() && tokio::time::Instant::now() < deadline {
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+        assert!(
+            !watcher.is_watching(),
+            "watcher did not clear is_watching() after cancel"
+        );
+
+        // Task handle must be joinable and finished.
+        let handle = watcher
+            .task_handle
+            .write()
+            .await
+            .take()
+            .expect("task handle must exist");
+        assert!(
+            handle.is_finished(),
+            "spawned polling task must have exited after cancel"
+        );
+        if let Err(e) = handle.await {
+            assert!(!e.is_panic(), "polling task panicked: {e}");
+        }
+    }
+
+    /// Regression for the pre-fix behavior: an explicit `stop_watching()`
+    /// still tears the task down cleanly without relying on the cancel path.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn polling_task_exits_on_explicit_stop() {
+        let watcher = PollingWatcher::new_noop(std::time::Duration::from_millis(20));
+        let cancel = CancellationToken::new();
+        watcher
+            .start_watching(&[ConfigSource::Env], cancel)
+            .await
+            .expect("start_watching must succeed");
+        assert!(watcher.is_watching());
+
+        watcher
+            .stop_watching()
+            .await
+            .expect("stop_watching must succeed");
+        assert!(!watcher.is_watching());
+    }
+
+    /// Double-start must return `Err(Already watching)` via the `compare_exchange`
+    /// guard, not leak a second spawned task.
+    #[tokio::test]
+    async fn double_start_watching_is_rejected() {
+        let watcher = PollingWatcher::new_noop(std::time::Duration::from_millis(50));
+        let cancel = CancellationToken::new();
+
+        watcher
+            .start_watching(&[ConfigSource::Env], cancel.clone())
+            .await
+            .expect("first start must succeed");
+
+        let err = watcher
+            .start_watching(&[ConfigSource::Env], cancel.clone())
+            .await
+            .expect_err("second start must fail");
+        assert!(err.to_string().contains("Already watching"));
+
+        // Clean up so the test doesn't leave a background task around.
+        cancel.cancel();
     }
 }

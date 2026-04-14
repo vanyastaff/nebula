@@ -12,7 +12,7 @@ use std::{
 use async_trait::async_trait;
 use nebula_core::{ExecutionId, NodeId, WorkflowId};
 use thiserror::Error;
-use tokio::sync::RwLock;
+use tokio::{sync::RwLock, time::Instant};
 
 /// Errors returned by execution repository operations.
 #[derive(Debug, Error)]
@@ -212,20 +212,126 @@ pub trait ExecutionRepo: Send + Sync {
         execution_id: ExecutionId,
         node_id: NodeId,
     ) -> Result<(), ExecutionRepoError>;
+
+    // ── Stateful action checkpoints (#308) ──────────────────────────────────
+    //
+    // The runtime persists `(iteration, state)` at every iteration boundary
+    // of a stateful action so that a process restart can resume from the
+    // last completed iteration instead of re-running from `init_state`.
+    //
+    // Defaults return `ExecutionRepoError::Internal("not implemented")` so
+    // backends that do not yet support stateful resumption (the stubbed
+    // Postgres backend today) still compile. The runtime surfaces load
+    // errors as WARN and falls back to `init_state` — no silent swallowing.
+
+    /// Persist a stateful iteration checkpoint.
+    ///
+    /// The key is `(execution_id, node_id, attempt)`. Calling twice with
+    /// the same key overwrites the prior checkpoint — only the latest
+    /// iteration boundary is persisted.
+    async fn save_stateful_checkpoint(
+        &self,
+        execution_id: ExecutionId,
+        node_id: NodeId,
+        attempt: u32,
+        iteration: u32,
+        state: serde_json::Value,
+    ) -> Result<(), ExecutionRepoError> {
+        let _ = (execution_id, node_id, attempt, iteration, state);
+        Err(ExecutionRepoError::Internal(
+            "save_stateful_checkpoint not implemented for this backend".to_owned(),
+        ))
+    }
+
+    /// Load the latest stateful checkpoint for a `(execution, node, attempt)`.
+    ///
+    /// Returns `Ok(None)` when no checkpoint exists yet (fresh dispatch).
+    /// Returns `Err` when the backend cannot be queried (connection,
+    /// serialization, etc.) — the runtime logs WARN with full
+    /// `(action_key, execution_id, node_id)` context and falls through to
+    /// `init_state` so iteration progress loss is visible, never swallowed.
+    async fn load_stateful_checkpoint(
+        &self,
+        execution_id: ExecutionId,
+        node_id: NodeId,
+        attempt: u32,
+    ) -> Result<Option<StatefulCheckpointRecord>, ExecutionRepoError> {
+        let _ = (execution_id, node_id, attempt);
+        Err(ExecutionRepoError::Internal(
+            "load_stateful_checkpoint not implemented for this backend".to_owned(),
+        ))
+    }
+
+    /// Delete the stateful checkpoint for `(execution, node, attempt)`.
+    ///
+    /// Called when the stateful action reaches a terminal iteration
+    /// (`Break`, `Success`, `Skip`, etc.). Implementations should treat a
+    /// missing row as success — the caller only needs "the row is gone".
+    async fn delete_stateful_checkpoint(
+        &self,
+        execution_id: ExecutionId,
+        node_id: NodeId,
+        attempt: u32,
+    ) -> Result<(), ExecutionRepoError> {
+        let _ = (execution_id, node_id, attempt);
+        Err(ExecutionRepoError::Internal(
+            "delete_stateful_checkpoint not implemented for this backend".to_owned(),
+        ))
+    }
+}
+
+/// A persisted stateful iteration checkpoint.
+///
+/// Storage-side mirror of the runtime's `StatefulCheckpoint` — separate
+/// types so that the runtime crate does not depend on `nebula-storage`.
+/// The engine glue converts between the two shapes.
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct StatefulCheckpointRecord {
+    /// Number of completed iterations when the checkpoint was written.
+    pub iteration: u32,
+    /// Serialized handler state (opaque JSON from the handler's point of view).
+    pub state: serde_json::Value,
+}
+
+impl StatefulCheckpointRecord {
+    /// Build a new record.
+    #[must_use]
+    pub fn new(iteration: u32, state: serde_json::Value) -> Self {
+        Self { iteration, state }
+    }
 }
 
 /// Key for node output storage: `(execution_id, node_id, attempt)`.
 type NodeOutputKey = (ExecutionId, NodeId, u32);
+
+/// Key for stateful checkpoint storage: `(execution_id, node_id, attempt)`.
+type StatefulCheckpointKey = (ExecutionId, NodeId, u32);
+
+/// Lease entry: `(holder, expires_at)`. Expiration is monotonic via
+/// [`tokio::time::Instant`] so paused-time tests behave deterministically.
+type LeaseEntry = (String, Instant);
+
+/// Normalize lease TTL to the same safe range as Postgres backend.
+fn normalized_lease_ttl(ttl: Duration) -> Duration {
+    Duration::from_secs_f64(ttl.as_secs_f64().clamp(1.0, 86_400.0))
+}
+
+/// Compute lease expiration instant without panicking on overflow.
+fn lease_expires_at(now: Instant, ttl: Duration) -> Instant {
+    now.checked_add(normalized_lease_ttl(ttl)).unwrap_or(now)
+}
 
 /// In-memory execution repository for tests and single-process/health-only mode.
 #[derive(Default)]
 pub struct InMemoryExecutionRepo {
     state: Arc<RwLock<HashMap<ExecutionId, (u64, serde_json::Value)>>>,
     journal: Arc<RwLock<HashMap<ExecutionId, Vec<serde_json::Value>>>>,
-    leases: Arc<RwLock<HashMap<ExecutionId, String>>>,
+    leases: Arc<RwLock<HashMap<ExecutionId, LeaseEntry>>>,
     workflows: Arc<RwLock<HashMap<ExecutionId, WorkflowId>>>,
     node_outputs: Arc<RwLock<HashMap<NodeOutputKey, serde_json::Value>>>,
     idempotency: Arc<RwLock<HashSet<String>>>,
+    stateful_checkpoints: Arc<RwLock<HashMap<StatefulCheckpointKey, StatefulCheckpointRecord>>>,
 }
 
 impl InMemoryExecutionRepo {
@@ -289,13 +395,16 @@ impl ExecutionRepo for InMemoryExecutionRepo {
         &self,
         id: ExecutionId,
         holder: String,
-        _ttl: Duration,
+        ttl: Duration,
     ) -> Result<bool, ExecutionRepoError> {
         let mut leases = self.leases.write().await;
-        if leases.contains_key(&id) {
+        let now = Instant::now();
+        if let Some((_, expires_at)) = leases.get(&id)
+            && *expires_at >= now
+        {
             return Ok(false);
         }
-        leases.insert(id, holder);
+        leases.insert(id, (holder, lease_expires_at(now, ttl)));
         Ok(true)
     }
 
@@ -303,10 +412,17 @@ impl ExecutionRepo for InMemoryExecutionRepo {
         &self,
         id: ExecutionId,
         holder: &str,
-        _ttl: Duration,
+        ttl: Duration,
     ) -> Result<bool, ExecutionRepoError> {
-        let leases = self.leases.read().await;
-        Ok(leases.get(&id).map(|h| h.as_str()) == Some(holder))
+        let mut leases = self.leases.write().await;
+        let now = Instant::now();
+        match leases.get_mut(&id) {
+            Some((current, expires_at)) if current == holder => {
+                *expires_at = lease_expires_at(now, ttl);
+                Ok(true)
+            },
+            _ => Ok(false),
+        }
     }
 
     async fn release_lease(
@@ -315,11 +431,13 @@ impl ExecutionRepo for InMemoryExecutionRepo {
         holder: &str,
     ) -> Result<bool, ExecutionRepoError> {
         let mut leases = self.leases.write().await;
-        let ok = leases.get(&id).map(|h| h.as_str()) == Some(holder);
-        if ok {
+        if let Some((current, _)) = leases.get(&id)
+            && current == holder
+        {
             leases.remove(&id);
+            return Ok(true);
         }
-        Ok(ok)
+        Ok(false)
     }
 
     async fn create(
@@ -426,6 +544,43 @@ impl ExecutionRepo for InMemoryExecutionRepo {
         _node_id: NodeId,
     ) -> Result<(), ExecutionRepoError> {
         self.idempotency.write().await.insert(key.to_owned());
+        Ok(())
+    }
+
+    async fn save_stateful_checkpoint(
+        &self,
+        execution_id: ExecutionId,
+        node_id: NodeId,
+        attempt: u32,
+        iteration: u32,
+        state: serde_json::Value,
+    ) -> Result<(), ExecutionRepoError> {
+        let mut cps = self.stateful_checkpoints.write().await;
+        cps.insert(
+            (execution_id, node_id, attempt),
+            StatefulCheckpointRecord::new(iteration, state),
+        );
+        Ok(())
+    }
+
+    async fn load_stateful_checkpoint(
+        &self,
+        execution_id: ExecutionId,
+        node_id: NodeId,
+        attempt: u32,
+    ) -> Result<Option<StatefulCheckpointRecord>, ExecutionRepoError> {
+        let cps = self.stateful_checkpoints.read().await;
+        Ok(cps.get(&(execution_id, node_id, attempt)).cloned())
+    }
+
+    async fn delete_stateful_checkpoint(
+        &self,
+        execution_id: ExecutionId,
+        node_id: NodeId,
+        attempt: u32,
+    ) -> Result<(), ExecutionRepoError> {
+        let mut cps = self.stateful_checkpoints.write().await;
+        cps.remove(&(execution_id, node_id, attempt));
         Ok(())
     }
 }
@@ -544,6 +699,283 @@ mod tests {
             .await
             .unwrap();
         assert!(repo.check_idempotency(key).await.unwrap());
+    }
+
+    // ── #308 regression: stateful checkpoint round-trips ───────────────────
+
+    #[tokio::test]
+    async fn stateful_checkpoint_save_load_round_trip() {
+        let repo = InMemoryExecutionRepo::default();
+        let eid = ExecutionId::new();
+        let nid = NodeId::new();
+        let state = serde_json::json!({"cursor": "page-2", "count": 42u32});
+
+        // Empty before first save.
+        assert_eq!(
+            repo.load_stateful_checkpoint(eid, nid, 0).await.unwrap(),
+            None
+        );
+
+        repo.save_stateful_checkpoint(eid, nid, 0, 5, state.clone())
+            .await
+            .unwrap();
+        let loaded = repo
+            .load_stateful_checkpoint(eid, nid, 0)
+            .await
+            .unwrap()
+            .expect("checkpoint must exist after save");
+        assert_eq!(loaded.iteration, 5);
+        assert_eq!(loaded.state, state);
+    }
+
+    #[tokio::test]
+    async fn stateful_checkpoint_delete_removes_row() {
+        let repo = InMemoryExecutionRepo::default();
+        let eid = ExecutionId::new();
+        let nid = NodeId::new();
+
+        repo.save_stateful_checkpoint(eid, nid, 2, 1, serde_json::json!({"k": 1}))
+            .await
+            .unwrap();
+        assert!(
+            repo.load_stateful_checkpoint(eid, nid, 2)
+                .await
+                .unwrap()
+                .is_some()
+        );
+        repo.delete_stateful_checkpoint(eid, nid, 2).await.unwrap();
+        assert_eq!(
+            repo.load_stateful_checkpoint(eid, nid, 2).await.unwrap(),
+            None
+        );
+        // Double-delete is idempotent.
+        repo.delete_stateful_checkpoint(eid, nid, 2).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn stateful_checkpoint_is_scoped_by_attempt() {
+        let repo = InMemoryExecutionRepo::default();
+        let eid = ExecutionId::new();
+        let nid = NodeId::new();
+
+        repo.save_stateful_checkpoint(eid, nid, 0, 1, serde_json::json!("attempt-0"))
+            .await
+            .unwrap();
+        repo.save_stateful_checkpoint(eid, nid, 1, 1, serde_json::json!("attempt-1"))
+            .await
+            .unwrap();
+
+        let a0 = repo
+            .load_stateful_checkpoint(eid, nid, 0)
+            .await
+            .unwrap()
+            .unwrap();
+        let a1 = repo
+            .load_stateful_checkpoint(eid, nid, 1)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(a0.state, serde_json::json!("attempt-0"));
+        assert_eq!(a1.state, serde_json::json!("attempt-1"));
+
+        // Deleting one attempt does not touch the other.
+        repo.delete_stateful_checkpoint(eid, nid, 0).await.unwrap();
+        assert_eq!(
+            repo.load_stateful_checkpoint(eid, nid, 0).await.unwrap(),
+            None
+        );
+        assert!(
+            repo.load_stateful_checkpoint(eid, nid, 1)
+                .await
+                .unwrap()
+                .is_some()
+        );
+    }
+
+    // ── #303 lease TTL semantics (batch 5C) ───────────────────────────────
+
+    #[tokio::test(start_paused = true)]
+    async fn lease_acquire_blocks_other_holder_until_expiry() {
+        let repo = InMemoryExecutionRepo::default();
+        let id = ExecutionId::new();
+        assert!(
+            repo.acquire_lease(id, "A".into(), Duration::from_secs(5))
+                .await
+                .expect("acquire A")
+        );
+        // While A is still valid, B cannot steal.
+        assert!(
+            !repo
+                .acquire_lease(id, "B".into(), Duration::from_secs(5))
+                .await
+                .expect("acquire B during A")
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn lease_expires_after_ttl_allowing_reacquire() {
+        let repo = InMemoryExecutionRepo::default();
+        let id = ExecutionId::new();
+        assert!(
+            repo.acquire_lease(id, "A".into(), Duration::from_secs(5))
+                .await
+                .expect("acquire A")
+        );
+        tokio::time::advance(Duration::from_secs(6)).await;
+        // A's stale lease must not block B.
+        assert!(
+            repo.acquire_lease(id, "B".into(), Duration::from_secs(5))
+                .await
+                .expect("reacquire by B")
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn lease_expiring_now_is_still_live_until_time_advances() {
+        let repo = InMemoryExecutionRepo::default();
+        let id = ExecutionId::new();
+        assert!(
+            repo.acquire_lease(id, "A".into(), Duration::from_secs(5))
+                .await
+                .expect("acquire A")
+        );
+        tokio::time::advance(Duration::from_secs(5)).await;
+        assert!(
+            !repo
+                .acquire_lease(id, "B".into(), Duration::from_secs(5))
+                .await
+                .expect("B at exact expiry boundary")
+        );
+        tokio::time::advance(Duration::from_secs(1)).await;
+        assert!(
+            repo.acquire_lease(id, "B".into(), Duration::from_secs(5))
+                .await
+                .expect("B after boundary")
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn lease_renew_extends_expiry() {
+        let repo = InMemoryExecutionRepo::default();
+        let id = ExecutionId::new();
+        assert!(
+            repo.acquire_lease(id, "A".into(), Duration::from_secs(5))
+                .await
+                .expect("acquire")
+        );
+        tokio::time::advance(Duration::from_secs(3)).await;
+        assert!(
+            repo.renew_lease(id, "A", Duration::from_secs(5))
+                .await
+                .expect("renew")
+        );
+        tokio::time::advance(Duration::from_secs(3)).await;
+        // 6s elapsed since acquire, but renew at 3s pushed expiry to 8s.
+        // B must still see A's lease as live.
+        assert!(
+            !repo
+                .acquire_lease(id, "B".into(), Duration::from_secs(5))
+                .await
+                .expect("steal attempt")
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn lease_renew_rejects_wrong_holder() {
+        let repo = InMemoryExecutionRepo::default();
+        let id = ExecutionId::new();
+        assert!(
+            repo.acquire_lease(id, "A".into(), Duration::from_secs(5))
+                .await
+                .expect("acquire")
+        );
+        assert!(
+            !repo
+                .renew_lease(id, "B", Duration::from_secs(5))
+                .await
+                .expect("renew by B")
+        );
+        // A's lease must remain effective.
+        assert!(
+            !repo
+                .acquire_lease(id, "C".into(), Duration::from_secs(5))
+                .await
+                .expect("acquire by C")
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn lease_renew_allows_expired_lease_for_same_holder() {
+        let repo = InMemoryExecutionRepo::default();
+        let id = ExecutionId::new();
+        assert!(
+            repo.acquire_lease(id, "A".into(), Duration::from_secs(5))
+                .await
+                .expect("acquire A")
+        );
+        tokio::time::advance(Duration::from_secs(6)).await;
+        assert!(
+            repo.renew_lease(id, "A", Duration::from_secs(5))
+                .await
+                .expect("renew after expiry by same holder")
+        );
+        assert!(
+            !repo
+                .acquire_lease(id, "B".into(), Duration::from_secs(5))
+                .await
+                .expect("B after A renew")
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn lease_ttl_is_clamped_to_at_least_one_second() {
+        let repo = InMemoryExecutionRepo::default();
+        let id = ExecutionId::new();
+        assert!(
+            repo.acquire_lease(id, "A".into(), Duration::ZERO)
+                .await
+                .expect("acquire A")
+        );
+        assert!(
+            !repo
+                .acquire_lease(id, "B".into(), Duration::from_secs(5))
+                .await
+                .expect("B immediately")
+        );
+        tokio::time::advance(Duration::from_secs(1)).await;
+        assert!(
+            !repo
+                .acquire_lease(id, "B".into(), Duration::from_secs(5))
+                .await
+                .expect("B at one-second boundary")
+        );
+        tokio::time::advance(Duration::from_secs(1)).await;
+        assert!(
+            repo.acquire_lease(id, "B".into(), Duration::from_secs(5))
+                .await
+                .expect("B after one-second minimum ttl")
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn lease_release_validates_holder() {
+        let repo = InMemoryExecutionRepo::default();
+        let id = ExecutionId::new();
+        assert!(
+            repo.acquire_lease(id, "A".into(), Duration::from_secs(5))
+                .await
+                .expect("acquire")
+        );
+        // Wrong holder cannot release.
+        assert!(!repo.release_lease(id, "B").await.expect("release by B"));
+        // Correct holder can release.
+        assert!(repo.release_lease(id, "A").await.expect("release by A"));
+        // After release, anyone may acquire.
+        assert!(
+            repo.acquire_lease(id, "C".into(), Duration::from_secs(5))
+                .await
+                .expect("reacquire by C")
+        );
     }
 
     #[tokio::test]

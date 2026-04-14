@@ -3,14 +3,22 @@
 use std::sync::Arc;
 
 use smallvec::SmallVec;
+use tokio::sync::mpsc;
 
 use super::{
     Config, ConfigError, ConfigResult, ConfigSource,
-    config::{ConfigRuntimeOptions, Sources, merge_json},
+    config::{ConfigRuntimeOptions, ReloadTrigger, Sources, merge_json},
 };
 #[cfg(feature = "env")]
 use crate::loaders::EnvParseMode;
-use crate::{ConfigLoader, ConfigValidator, ConfigWatcher, loaders::CompositeLoader};
+use crate::{
+    ConfigLoader, ConfigValidator, ConfigWatcher, loaders::CompositeLoader, watchers::FileWatcher,
+};
+
+/// Capacity of the hot-reload trigger channel installed by the builder.
+/// Bounded so a runaway watcher cannot grow memory; small because the
+/// debouncing reloader collapses bursts into a single reload cycle.
+const RELOAD_TRIGGER_CHANNEL_CAPACITY: usize = 64;
 
 /// Configuration builder
 pub struct ConfigBuilder {
@@ -177,6 +185,7 @@ impl ConfigBuilder {
     }
 
     /// Build the configuration
+    #[allow(clippy::too_many_lines)] // Reason: linear build pipeline; splitting fragments the flow
     pub async fn build(self) -> ConfigResult<Config> {
         // Validate builder
         self.validate()?;
@@ -269,6 +278,67 @@ impl ConfigBuilder {
             nebula_log::debug!("interpolation pass complete for merged config");
         }
 
+        // Hot-reload wiring (#313).
+        //
+        // When hot reload is enabled, the builder owns the responsibility of
+        // installing a watcher whose callback reaches all the way through to
+        // `Config::reload`. The current flow:
+        //
+        //   1. Create a bounded `mpsc<ReloadTrigger>` channel.
+        //   2. If the user provided a watcher, use it as-is and trust its callback was wired
+        //      correctly. Otherwise install the default `FileWatcher` whose callback forwards into
+        //      the trigger channel via non-blocking `try_send` (#310).
+        //   3. After constructing the `Config`, stash the receiver on it and call
+        //      `start_hot_reload_pipeline` — that method spawns the debouncing reloader task that
+        //      actually invokes `Config::reload` on each coalesced batch.
+        //
+        // Without this wiring, `with_hot_reload(true)` would only install a
+        // watcher whose events never reached the `Config` data — the bug
+        // tracked by #313.
+        let (watcher, hot_reload_rx): (
+            Option<Arc<dyn ConfigWatcher>>,
+            Option<mpsc::Receiver<ReloadTrigger>>,
+        ) = if self.hot_reload {
+            let (reload_tx, reload_rx) =
+                mpsc::channel::<ReloadTrigger>(RELOAD_TRIGGER_CHANNEL_CAPACITY);
+
+            let watcher: Arc<dyn ConfigWatcher> = match self.watcher {
+                Some(custom) => {
+                    // The user supplied their own watcher. We honour it, but
+                    // note the integration point: their watcher's events do
+                    // NOT flow through `reload_tx` automatically. They are
+                    // expected to wire the bridge themselves (or accept that
+                    // hot reload is a no-op for that watcher). Documented on
+                    // `ConfigBuilder::with_watcher`.
+                    custom
+                },
+                None => Arc::new(FileWatcher::new(move |event| {
+                    let trigger = ReloadTrigger {
+                        source: event.source.clone(),
+                        path: event.path.clone(),
+                    };
+                    // Non-blocking: dropping a redundant trigger is fine —
+                    // the debounced reloader catches up on the next event
+                    // and `Config::reload` re-reads everything.
+                    match reload_tx.try_send(trigger) {
+                        Ok(()) => {},
+                        Err(mpsc::error::TrySendError::Full(_)) => {
+                            nebula_log::debug!(
+                                "hot reload trigger channel full; dropping redundant event"
+                            );
+                        },
+                        Err(mpsc::error::TrySendError::Closed(_)) => {
+                            // Reload task is gone — Config has been dropped.
+                        },
+                    }
+                })),
+            };
+
+            (Some(watcher), Some(reload_rx))
+        } else {
+            (self.watcher, None)
+        };
+
         // Create configuration
         let config = Config::new(
             merged_data,
@@ -276,16 +346,27 @@ impl ConfigBuilder {
             defaults,
             loader,
             self.validator,
-            self.watcher,
+            watcher,
             ConfigRuntimeOptions {
                 hot_reload: self.hot_reload,
                 fail_on_missing: self.fail_on_missing,
             },
         );
 
-        // Start watching if hot reload is enabled
+        // Start hot reload pipeline if enabled.
         if self.hot_reload {
-            config.start_watching().await?;
+            if let Some(rx) = hot_reload_rx {
+                config.install_reload_rx(rx).await;
+                config.start_hot_reload_pipeline().await?;
+            } else {
+                // Should not be reachable: hot_reload implies the channel
+                // was created above. Guard with a structured error rather
+                // than `unreachable!()` so a future refactor that breaks
+                // the invariant fails loudly instead of panicking.
+                return Err(ConfigError::internal(
+                    "hot_reload enabled but reload channel was not created",
+                ));
+            }
         }
 
         // Start auto-reload if interval is set

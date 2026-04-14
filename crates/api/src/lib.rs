@@ -30,5 +30,5 @@ pub mod state;
 pub mod webhook;
 
 pub use app::build_app;
-pub use config::ApiConfig;
+pub use config::{ApiConfig, ApiConfigError, JwtSecret};
 pub use state::AppState;

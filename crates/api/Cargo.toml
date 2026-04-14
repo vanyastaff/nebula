@@ -29,6 +29,7 @@ tokio = { workspace = true, features = ["rt", "rt-multi-thread", "macros", "sync
 axum = { workspace = true }
 tower = { version = "0.5", features = ["timeout", "util", "limit", "load-shed"] }
 tower-http = { workspace = true, features = ["trace", "cors", "compression-full", "limit", "timeout", "catch-panic", "set-header"] }
+governor = { version = "0.10", default-features = false, features = ["std", "dashmap"] }
 serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }
 tracing = { workspace = true }
@@ -37,6 +38,7 @@ chrono = { workspace = true, features = ["serde"] }
 uuid = { version = "1.11", features = ["v4", "serde"] }
 jsonwebtoken = { workspace = true }
 futures = "0.3"
+rand = { workspace = true }
 
 # Webhook transport
 dashmap = { workspace = true }
@@ -45,6 +47,7 @@ bytes = { workspace = true }
 http = { workspace = true }
 
 [dev-dependencies]
+nebula-api = { path = ".", features = ["test-util"] }
 tracing-subscriber = { workspace = true, features = ["env-filter", "fmt"] }
 hex = { workspace = true }
 hmac = { workspace = true }
@@ -52,6 +55,13 @@ sha2 = { workspace = true }
 tokio = { workspace = true, features = ["test-util"] }
 tokio-util = { workspace = true }
 async-trait = { workspace = true }
+
+[features]
+default = []
+# Enables `ApiConfig::for_test()` and other test helpers. NEVER
+# enable this in production builds — it exposes a constructor that
+# bypasses the JwtSecret validation gate.
+test-util = []
 
 [lib]
 doctest = false

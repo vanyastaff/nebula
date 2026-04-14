@@ -30,7 +30,7 @@ bytes = { workspace = true }
 
 [dev-dependencies]
 nebula-core = { path = "../core" }
-tokio = { workspace = true, features = ["rt-multi-thread", "macros", "time"] }
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "time", "test-util"] }
 tokio-util = { workspace = true }
 
 [lib]
