@@ -20,6 +20,7 @@ Updated: 2026-04-14
 
 ## Recently shipped (this session, 2026-04-13)
 - **#247 ControlAction DX trait** — public trait + adapter pattern over `StatelessHandler`, plus correctness fixes `ActionResult::Drop`/`Terminate`, `TerminationCode` newtype, `ActionCategory` metadata, `ExecutionTerminationReason`. 56 new tests, 7 demo fixtures, 5 commits squashed.
+- **Batch 5B (#304 #305 #308)** — runtime stateful loop now races `handler.execute` against cancellation inside every iteration; new `StatefulCheckpointSink` trait + 3 `ExecutionRepo` methods (`save/load/delete_stateful_checkpoint`) persist `(iteration, state)` per iteration; duration histogram + executions/failures counters only observe dispatched paths, with a new `NEBULA_ACTION_DISPATCH_REJECTED_TOTAL{reason=...}` counter for trigger/resource/agent/unknown rejection paths. Checkpoint-load failure logs WARN with full `(action_key, execution_id, node_id)` context and falls through to `init_state` — never silent. Postgres impl stubbed via trait defaults.
 
 ## Archived branches
 - `archive/refactor-credential-beta` (tag at `c93b51d5`) — parallel attempt at credential v2 rewrite; v2 won, beta preserved as tag. Three salvageable ideas documented (CredentialContext encapsulation, CredentialDescription::builder required key, CacheLayer::exists hit counter) — revive as separate small PRs if wanted.
