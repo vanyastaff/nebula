@@ -175,9 +175,7 @@ impl<S: CredentialStore> CredentialResolver<S> {
         // true expiry so callers can react immediately.
         if self.refresh_coordinator.is_circuit_open(credential_id) {
             let now = chrono::Utc::now();
-            let truly_expired = state
-                .expires_at()
-                .is_some_and(|exp| exp <= now);
+            let truly_expired = state.expires_at().is_some_and(|exp| exp <= now);
             if truly_expired {
                 tracing::warn!(
                     credential_id,
@@ -234,19 +232,15 @@ impl<S: CredentialStore> CredentialResolver<S> {
                 // lost and we would stall until timeout.
                 //
                 // Mitigations:
-                // 1. Eagerly construct and `enable()` the `Notified` future —
-                //    this registers the waiter immediately, narrowing the
-                //    race window from "await-first-poll" down to "the handful
-                //    of instructions between returning from try_refresh and
-                //    enable()".
-                // 2. Short (5 s) timeout — the post-wait `resolve` re-read
-                //    always fetches the fresh value from the store, so the
-                //    timeout is not fatal. Staying on 60 s meant a lost
-                //    wakeup produced a 60-second latency spike. 5 s bounds
-                //    worst-case waiter latency to a value humans still
-                //    tolerate while leaving room for a slow legitimate
-                //    refresh (which itself holds a `refresh_semaphore`
-                //    permit and is normally sub-second).
+                // 1. Eagerly construct and `enable()` the `Notified` future — this registers the
+                //    waiter immediately, narrowing the race window from "await-first-poll" down to
+                //    "the handful of instructions between returning from try_refresh and enable()".
+                // 2. Short (5 s) timeout — the post-wait `resolve` re-read always fetches the fresh
+                //    value from the store, so the timeout is not fatal. Staying on 60 s meant a
+                //    lost wakeup produced a 60-second latency spike. 5 s bounds worst-case waiter
+                //    latency to a value humans still tolerate while leaving room for a slow
+                //    legitimate refresh (which itself holds a `refresh_semaphore` permit and is
+                //    normally sub-second).
                 let notified = notify.notified();
                 tokio::pin!(notified);
                 // Pre-register before any await so a concurrent
@@ -813,10 +807,7 @@ mod tests {
             .resolve::<ApiKeyCredential>("non-expiring")
             .await
             .expect("non-expiring credential should resolve under any circuit state");
-        let value = handle
-            .snapshot()
-            .token()
-            .expose_secret(|s| s.to_owned());
+        let value = handle.snapshot().token().expose_secret(|s| s.to_owned());
         assert_eq!(value, "forever");
     }
 
@@ -902,9 +893,7 @@ mod tests {
 
         // Open the circuit.
         for _ in 0..5 {
-            resolver
-                .refresh_coordinator
-                .record_failure("soon-expiring");
+            resolver.refresh_coordinator.record_failure("soon-expiring");
         }
         assert!(
             resolver
