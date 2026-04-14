@@ -23,6 +23,9 @@ Workflow execution orchestrator — frontier-based DAG scheduler.
 - Credential refresh only fires when `credential_resolver` is also Some.
 - **Cred refresh failure is typed, not WARN-and-continue** (#306, B5D). Hook `Err` → `EngineError::Action(CredentialRefreshFailed)` → `handle_node_failure` → workflow `ErrorStrategy`. Action body never invoked. Awaited under `tokio::select!` vs cancel. Default: retryable. No per-action overrides; no retry/dead-letter here.
 - Resume budget/input not persisted — defaults on resume (TODO).
+- **Failure finalization ordering is strategy-sensitive.** `handle_node_failure()` can rewrite a node from `Failed` to `Completed` (`IgnoreErrors`) and/or inject synthetic outputs for `OnError` routing. Do not checkpoint or emit `NodeFailed` before this call; persist/emit only after confirming the node still ends in `Failed`.
+- **Budget timeout/cancel teardown must abort JoinSet tasks before drain.** A cancelled token alone does not guarantee in-flight action tasks will cooperatively exit; call `join_set.abort_all()` before draining so max-duration/cancel paths cannot hang indefinitely.
 - **`evaluate_edge` gates `Skip`/`Drop`/`Terminate` unconditionally** (return `false`); only `Branch`/`Route`/`MultiOutput` do selector filtering. `Drop`/`Terminate` added 2026-04-13 (ControlAction Phase 0). New `ActionResult` variants: decide gate-vs-fall-through and update `evaluate_edge` in the same PR. Full `Terminate` sibling-branch cancellation tracked separately.
 
+<!-- reviewed: 2026-04-14 — #247 added Drop/Terminate gate; PR #394 added failure-ordering + JoinSet abort_all traps -->
 <!-- reviewed: 2026-04-14 -->
