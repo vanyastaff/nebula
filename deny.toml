@@ -46,7 +46,7 @@ external-default-features = "allow"
 allow = []
 deny = [
     { crate = "openssl", reason = "Prefer rustls-based TLS stack across the workspace" },
-    { crate = "nebula-api", wrappers = ["nebula-cli"], reason = "API is top layer; lower-level crates must not depend on it directly" },
+    { crate = "nebula-api", wrappers = ["nebula-cli", "nebula-api"], reason = "API is top layer; lower-level crates must not depend on it directly" },
     { crate = "nebula-engine", wrappers = ["nebula-cli"], reason = "Engine is exec-layer orchestration; business/core crates must not depend on it" },
     { crate = "nebula-runtime", wrappers = ["nebula-engine", "nebula-api", "nebula-cli"], reason = "Runtime is exec-layer; only designated upper-layer crates may depend on it" },
     { crate = "nebula-sandbox", wrappers = ["nebula-runtime", "nebula-cli"], reason = "Sandbox is infra/exec boundary and should only be used through runtime-facing crates" },
