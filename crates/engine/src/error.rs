@@ -1,9 +1,11 @@
 //! Engine error types.
 
+use nebula_action::ActionError;
 use nebula_core::id::NodeId;
 
 /// Errors from the engine layer.
 #[derive(Debug, thiserror::Error)]
+#[non_exhaustive]
 pub enum EngineError {
     /// A referenced node was not found in the workflow.
     #[error("node not found: {node_id}")]
@@ -75,6 +77,16 @@ pub enum EngineError {
     /// A task panicked during execution.
     #[error("task panicked: {0}")]
     TaskPanicked(String),
+
+    /// A typed [`ActionError`] bubbled up from the action/dispatch layer.
+    ///
+    /// Used by the engine's pre-dispatch pipeline (e.g. proactive
+    /// credential refresh) to surface typed errors through the normal
+    /// `ErrorStrategy` decision path instead of logging-and-continuing.
+    /// Downstream consumers can match on the inner variant to distinguish
+    /// `CredentialRefreshFailed` from other failure modes.
+    #[error("action failed: {0}")]
+    Action(#[from] ActionError),
 }
 
 impl nebula_error::Classify for EngineError {
@@ -92,6 +104,7 @@ impl nebula_error::Classify for EngineError {
             Self::BudgetExceeded(_) => nebula_error::ErrorCategory::Exhausted,
             Self::Runtime(e) => nebula_error::Classify::category(e),
             Self::Execution(e) => nebula_error::Classify::category(e),
+            Self::Action(e) => nebula_error::Classify::category(e),
         }
     }
 
@@ -107,6 +120,7 @@ impl nebula_error::Classify for EngineError {
             Self::BudgetExceeded(_) => "ENGINE:BUDGET_EXCEEDED",
             Self::Runtime(e) => return nebula_error::Classify::code(e),
             Self::Execution(e) => return nebula_error::Classify::code(e),
+            Self::Action(e) => return nebula_error::Classify::code(e),
             Self::TaskPanicked(_) => "ENGINE:TASK_PANICKED",
         })
     }
@@ -115,6 +129,7 @@ impl nebula_error::Classify for EngineError {
         match self {
             Self::Runtime(e) => nebula_error::Classify::is_retryable(e),
             Self::Execution(e) => nebula_error::Classify::is_retryable(e),
+            Self::Action(e) => nebula_error::Classify::is_retryable(e),
             _ => self.category().is_default_retryable(),
         }
     }

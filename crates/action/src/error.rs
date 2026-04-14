@@ -204,6 +204,33 @@ pub enum ActionError {
         /// Actual output size in bytes.
         actual_bytes: u64,
     },
+
+    /// Proactive credential refresh failed before the action was dispatched.
+    ///
+    /// Raised by the engine when a configured credential-refresh hook
+    /// returns an error prior to [`execute_action_versioned`]. The action
+    /// body never runs — the node transitions directly to Failed with this
+    /// typed cause.
+    ///
+    /// Classified as **retryable by default** — the credential store may
+    /// be transiently unavailable (rate-limited refresh endpoint, network
+    /// blip, leader election) and a retry in 100ms–1s is often enough.
+    /// Operators who want fail-fast semantics can intercept this variant
+    /// via `ErrorStrategy` per action.
+    ///
+    /// [`execute_action_versioned`]: https://docs.rs/nebula-runtime
+    #[error("credential refresh failed for action '{action_key}': {source}")]
+    CredentialRefreshFailed {
+        /// Action key identifying the dispatch target that was waiting on
+        /// the refresh. Free-form string (not typed) to avoid a back-edge
+        /// from `nebula-action` to `nebula-core`.
+        action_key: String,
+        /// Underlying error from the refresh hook. Wrapped in `Arc` so
+        /// `ActionError` stays `Clone` (consistent with the other variants
+        /// that wrap `anyhow::Error` in `Arc`).
+        #[source]
+        source: Arc<dyn std::error::Error + Send + Sync>,
+    },
 }
 
 impl nebula_error::Classify for ActionError {
@@ -215,6 +242,10 @@ impl nebula_error::Classify for ActionError {
             Self::SandboxViolation { .. } => nebula_error::ErrorCategory::Authorization,
             Self::Cancelled => nebula_error::ErrorCategory::Cancelled,
             Self::DataLimitExceeded { .. } => nebula_error::ErrorCategory::Exhausted,
+            // Credential store trouble is an external dependency issue,
+            // not an internal bug — route it through the External bucket
+            // so it lands next to other transient infra failures.
+            Self::CredentialRefreshFailed { .. } => nebula_error::ErrorCategory::External,
         }
     }
 
@@ -226,6 +257,7 @@ impl nebula_error::Classify for ActionError {
             Self::SandboxViolation { .. } => "ACTION:SANDBOX_VIOLATION",
             Self::Cancelled => "ACTION:CANCELLED",
             Self::DataLimitExceeded { .. } => "ACTION:DATA_LIMIT",
+            Self::CredentialRefreshFailed { .. } => "ACTION:CREDENTIAL_REFRESH_FAILED",
         })
     }
 
@@ -426,9 +458,17 @@ impl ActionError {
     }
 
     /// Returns `true` if the engine should consider retrying this error.
+    ///
+    /// Includes both the explicit [`Self::Retryable`] variant and
+    /// [`Self::CredentialRefreshFailed`] — credential-store outages are
+    /// expected to be transient and the engine's retry loop is the right
+    /// place to smooth over them.
     #[must_use]
     pub fn is_retryable(&self) -> bool {
-        matches!(self, Self::Retryable { .. })
+        matches!(
+            self,
+            Self::Retryable { .. } | Self::CredentialRefreshFailed { .. }
+        )
     }
 
     /// Returns `true` if this error is permanent and should never be retried.
@@ -458,6 +498,24 @@ impl ActionError {
         match self {
             Self::Retryable { partial_output, .. } => partial_output.as_ref(),
             _ => None,
+        }
+    }
+
+    /// Construct a [`Self::CredentialRefreshFailed`] from a refresh-hook
+    /// error.
+    ///
+    /// The engine calls this when a proactive `credential_refresh` hook
+    /// returns an error before the action is dispatched. Wrapping the
+    /// source in `Arc` keeps `ActionError` `Clone` without forcing the
+    /// caller to construct an `Arc` themselves.
+    #[must_use]
+    pub fn credential_refresh_failed(
+        action_key: impl Into<String>,
+        source: impl std::error::Error + Send + Sync + 'static,
+    ) -> Self {
+        Self::CredentialRefreshFailed {
+            action_key: action_key.into(),
+            source: Arc::new(source),
         }
     }
 }
@@ -857,6 +915,52 @@ mod tests {
         assert_eq!(*field, "email");
         assert_eq!(*reason, ValidationReason::WrongType);
         assert_eq!(detail.as_deref(), Some("got number"));
+    }
+
+    // ── CredentialRefreshFailed ─────────────────────────────────────────────
+
+    #[test]
+    fn credential_refresh_failed_is_retryable() {
+        let err = ActionError::credential_refresh_failed(
+            "http.fetch",
+            std::io::Error::new(std::io::ErrorKind::ConnectionReset, "store down"),
+        );
+        assert!(err.is_retryable());
+        assert!(!err.is_fatal());
+    }
+
+    #[test]
+    fn credential_refresh_failed_display_includes_source_and_key() {
+        let err = ActionError::credential_refresh_failed(
+            "http.fetch",
+            std::io::Error::other("store down"),
+        );
+        let msg = err.to_string();
+        assert!(msg.contains("http.fetch"), "{msg}");
+        assert!(msg.contains("store down"), "{msg}");
+    }
+
+    #[test]
+    fn credential_refresh_failed_classify_code_is_stable() {
+        use nebula_error::Classify;
+        let err = ActionError::credential_refresh_failed(
+            "http.fetch",
+            std::io::Error::other("boom"),
+        );
+        assert_eq!(err.code().as_str(), "ACTION:CREDENTIAL_REFRESH_FAILED");
+    }
+
+    #[test]
+    fn credential_refresh_failed_is_clone() {
+        let err = ActionError::credential_refresh_failed(
+            "http.fetch",
+            std::io::Error::other("boom"),
+        );
+        // The whole point of wrapping `source` in `Arc` is that the
+        // variant remains `Clone`-compatible with the rest of
+        // `ActionError`.
+        let cloned = err.clone();
+        assert_eq!(err.to_string(), cloned.to_string());
     }
 
     #[test]
