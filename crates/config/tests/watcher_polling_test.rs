@@ -11,6 +11,7 @@ use std::{
 };
 
 use nebula_config::{ConfigSource, ConfigWatchEventType, ConfigWatcher, PollingWatcher};
+use tokio_util::sync::CancellationToken;
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -36,12 +37,13 @@ async fn already_watching_returns_err() {
     let source = ConfigSource::File(path.clone());
 
     let watcher = make_watcher(Arc::new(Mutex::new(Vec::new())));
+    let cancel = CancellationToken::new();
     watcher
-        .start_watching(std::slice::from_ref(&source))
+        .start_watching(std::slice::from_ref(&source), cancel.clone())
         .await
         .expect("first start_watching should succeed");
 
-    let second = watcher.start_watching(&[source]).await;
+    let second = watcher.start_watching(&[source], cancel).await;
     assert!(second.is_err(), "second start_watching must return Err");
 
     watcher
@@ -83,7 +85,7 @@ async fn is_watching_lifecycle() {
     );
 
     watcher
-        .start_watching(&[source])
+        .start_watching(&[source], CancellationToken::new())
         .await
         .expect("start_watching should succeed");
     assert!(watcher.is_watching(), "should be watching after start");
@@ -112,7 +114,7 @@ async fn detects_file_modification() {
 
     let watcher = make_watcher(Arc::clone(&events));
     watcher
-        .start_watching(&[source])
+        .start_watching(&[source], CancellationToken::new())
         .await
         .expect("start_watching should succeed");
 
@@ -158,7 +160,7 @@ async fn detects_file_creation() {
     let events: Arc<Mutex<Vec<ConfigWatchEventType>>> = Arc::new(Mutex::new(Vec::new()));
     let watcher = make_watcher(Arc::clone(&events));
     watcher
-        .start_watching(&[source])
+        .start_watching(&[source], CancellationToken::new())
         .await
         .expect("start_watching should succeed for non-existent path");
 

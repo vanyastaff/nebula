@@ -12,6 +12,7 @@ use std::{
 use async_trait::async_trait;
 use notify::{Event, EventKind, RecommendedWatcher, RecursiveMode, Watcher};
 use tokio::sync::{RwLock, mpsc};
+use tokio_util::sync::CancellationToken;
 
 use crate::{
     core::{ConfigError, ConfigResult, ConfigSource},
@@ -76,39 +77,64 @@ impl FileWatcher {
         self
     }
 
-    /// Start the event processing task
+    /// Start the event processing task.
+    ///
+    /// The task exits when either the event channel is closed *or* `cancel`
+    /// fires. The cancel path is essential for #315: `Config::drop` is sync
+    /// and cannot `stop_watching().await`, so cancellation is the only way
+    /// to guarantee the spawned task is reclaimed when the owner drops.
     #[allow(clippy::excessive_nesting)] // Reason: async event loop with debounce logic
-    async fn start_event_processor(&self, mut rx: mpsc::Receiver<ConfigWatchEvent>) {
+    async fn start_event_processor(
+        &self,
+        mut rx: mpsc::Receiver<ConfigWatchEvent>,
+        cancel: CancellationToken,
+    ) {
         let callback = Arc::clone(&self.callback);
         let debounce_duration = self.debounce_duration;
+        let watching = Arc::clone(&self.watching);
 
         tokio::spawn(async move {
             let mut last_events: HashMap<PathBuf, std::time::Instant> = HashMap::new();
 
-            while let Some(event) = rx.recv().await {
-                // Debounce events for the same path
-                if let Some(path) = &event.path {
-                    let now = std::time::Instant::now();
+            loop {
+                tokio::select! {
+                    biased;
+                    () = cancel.cancelled() => break,
+                    maybe_event = rx.recv() => {
+                        let Some(event) = maybe_event else { break; };
+                        // Debounce events for the same path
+                        if let Some(path) = &event.path {
+                            let now = std::time::Instant::now();
 
-                    if let Some(last_time) = last_events.get(path)
-                        && now.duration_since(*last_time) < debounce_duration
-                    {
-                        continue; // Skip this event
+                            if let Some(last_time) = last_events.get(path)
+                                && now.duration_since(*last_time) < debounce_duration
+                            {
+                                continue; // Skip this event
+                            }
+
+                            last_events.insert(path.clone(), now);
+                        }
+
+                        // Call the callback
+                        (callback)(event);
                     }
-
-                    last_events.insert(path.clone(), now);
                 }
-
-                // Call the callback
-                (callback)(event);
             }
+
+            // Mirror the status flag to the real exit state so external
+            // `is_watching()` observers see the task is gone.
+            watching.store(false, Ordering::Release);
         });
     }
 }
 
 #[async_trait]
 impl crate::core::ConfigWatcher for FileWatcher {
-    async fn start_watching(&self, sources: &[ConfigSource]) -> ConfigResult<()> {
+    async fn start_watching(
+        &self,
+        sources: &[ConfigSource],
+        cancel: CancellationToken,
+    ) -> ConfigResult<()> {
         // Check if already watching
         if self.watching.load(Ordering::Relaxed) {
             return Err(ConfigError::watch_error("Already watching"));
@@ -233,8 +259,9 @@ impl crate::core::ConfigWatcher for FileWatcher {
             *watcher = Some(fs_watcher);
         }
 
-        // Start event processor
-        self.start_event_processor(rx).await;
+        // Start event processor bound to the owner's cancel token so
+        // dropping the parent `Config` tears this task down.
+        self.start_event_processor(rx, cancel).await;
 
         // Mark as watching
         self.watching.store(true, Ordering::Relaxed);

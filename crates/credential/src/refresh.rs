@@ -118,11 +118,31 @@ pub enum RefreshAttempt {
 /// Default maximum number of concurrent refresh operations.
 const DEFAULT_MAX_CONCURRENT_REFRESHES: usize = 32;
 
+/// Configuration errors returned by [`RefreshCoordinator`] constructors.
+///
+/// `RefreshCoordinator::with_max_concurrent(0)` would back the coordinator
+/// with a `tokio::sync::Semaphore::new(0)`, deadlocking every caller that
+/// awaits a permit. Rather than silently clamp to `1` (which would hide the
+/// misconfiguration), construction fails with a typed error so the caller is
+/// forced to handle the bad input at startup.
+#[derive(Debug, thiserror::Error)]
+#[non_exhaustive]
+pub enum RefreshConfigError {
+    /// `max_concurrent` must be at least `1`; `0` would deadlock any caller
+    /// awaiting an `OwnedSemaphorePermit`.
+    #[error("RefreshCoordinator::max_concurrent must be >= 1, got 0")]
+    ZeroConcurrency,
+}
+
 impl RefreshCoordinator {
     /// Creates a new coordinator with no in-flight refreshes and a default
     /// concurrency limit of 32.
     pub fn new() -> Self {
-        Self::with_max_concurrent(DEFAULT_MAX_CONCURRENT_REFRESHES)
+        // DEFAULT_MAX_CONCURRENT_REFRESHES is a compile-time const > 0, so
+        // this construction is statically valid and we use the infallible
+        // private constructor. Do NOT `.unwrap()` the public fallible one —
+        // that would propagate a needless panic path into `Default`.
+        Self::with_max_concurrent_unchecked(DEFAULT_MAX_CONCURRENT_REFRESHES)
     }
 
     /// Creates a new coordinator with a custom concurrency limit.
@@ -131,17 +151,34 @@ impl RefreshCoordinator {
     /// in parallel across all credentials. Set this based on the provider's
     /// rate limit tolerance.
     ///
+    /// # Errors
+    ///
+    /// Returns [`RefreshConfigError::ZeroConcurrency`] if `max == 0`. A
+    /// zero-permit semaphore would deadlock every caller that awaits
+    /// [`acquire_permit`](Self::acquire_permit), so construction is rejected
+    /// rather than silently clamped.
+    ///
     /// # Examples
     ///
     /// ```ignore
     /// use nebula_credential::refresh::RefreshCoordinator;
     ///
     /// // Allow at most 10 concurrent refreshes
-    /// let coord = RefreshCoordinator::with_max_concurrent(10);
+    /// let coord = RefreshCoordinator::with_max_concurrent(10)?;
     /// assert_eq!(coord.available_permits(), 10);
+    /// # Ok::<_, nebula_credential::refresh::RefreshConfigError>(())
     /// ```
-    #[must_use]
-    pub fn with_max_concurrent(max: usize) -> Self {
+    pub fn with_max_concurrent(max: usize) -> Result<Self, RefreshConfigError> {
+        if max == 0 {
+            return Err(RefreshConfigError::ZeroConcurrency);
+        }
+        Ok(Self::with_max_concurrent_unchecked(max))
+    }
+
+    /// Infallible constructor used by `new()` and by the validated fallible
+    /// path. Private so external callers cannot skip the `max >= 1` check.
+    fn with_max_concurrent_unchecked(max: usize) -> Self {
+        debug_assert!(max > 0, "with_max_concurrent_unchecked requires max >= 1");
         Self {
             in_flight: parking_lot::Mutex::new(HashMap::new()),
             circuit_breakers: parking_lot::Mutex::new(HashMap::new()),
@@ -476,7 +513,8 @@ mod tests {
 
     #[tokio::test]
     async fn semaphore_limits_concurrent_refreshes() {
-        let coord = RefreshCoordinator::with_max_concurrent(2);
+        let coord = RefreshCoordinator::with_max_concurrent(2)
+            .expect("max=2 is a valid concurrency limit");
         assert_eq!(coord.available_permits(), 2);
 
         let _p1 = coord.acquire_permit().await;
@@ -500,6 +538,25 @@ mod tests {
             coord.available_permits(),
             super::DEFAULT_MAX_CONCURRENT_REFRESHES
         );
+    }
+
+    /// #314: `with_max_concurrent(0)` must not construct a deadlocking
+    /// coordinator. Before the fix this returned `Self` backed by
+    /// `Semaphore::new(0)`, so any `acquire_permit().await` hung forever.
+    #[tokio::test]
+    async fn zero_max_concurrent_returns_config_error() {
+        let err = RefreshCoordinator::with_max_concurrent(0)
+            .expect_err("zero concurrency must be rejected");
+        assert!(matches!(err, RefreshConfigError::ZeroConcurrency));
+    }
+
+    #[tokio::test]
+    async fn one_max_concurrent_is_valid() {
+        let coord = RefreshCoordinator::with_max_concurrent(1)
+            .expect("max=1 is valid");
+        assert_eq!(coord.available_permits(), 1);
+        let _p = coord.acquire_permit().await;
+        assert_eq!(coord.available_permits(), 0);
     }
 
     /// Pins the invariant the resolver's Waiter path relies on:

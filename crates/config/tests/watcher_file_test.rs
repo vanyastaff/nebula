@@ -8,6 +8,7 @@ mod common;
 use std::time::Duration;
 
 use nebula_config::{ConfigSource, ConfigWatcher, FileWatcher};
+use tokio_util::sync::CancellationToken;
 
 // ── Lifecycle ────────────────────────────────────────────────────────────────
 
@@ -22,7 +23,7 @@ async fn stop_watching_returns_ok() {
 
     let watcher = FileWatcher::new(|_| {});
     watcher
-        .start_watching(&[source])
+        .start_watching(&[source], CancellationToken::new())
         .await
         .expect("start_watching should succeed");
 
@@ -46,7 +47,7 @@ async fn is_watching_false_after_stop() {
 
     let watcher = FileWatcher::new(|_| {});
     watcher
-        .start_watching(&[source])
+        .start_watching(&[source], CancellationToken::new())
         .await
         .expect("start_watching should succeed");
     assert!(watcher.is_watching(), "should be watching after start");
@@ -71,12 +72,13 @@ async fn already_watching_returns_err() {
     let source = ConfigSource::File(path.clone());
 
     let watcher = FileWatcher::new(|_| {});
+    let cancel = CancellationToken::new();
     watcher
-        .start_watching(std::slice::from_ref(&source))
+        .start_watching(std::slice::from_ref(&source), cancel.clone())
         .await
         .expect("first start_watching should succeed");
 
-    let second = watcher.start_watching(&[source]).await;
+    let second = watcher.start_watching(&[source], cancel).await;
     assert!(second.is_err(), "second start_watching must return Err");
 
     watcher
@@ -99,7 +101,7 @@ async fn no_panic_on_write_after_stop() {
 
     let watcher = FileWatcher::new(|_| {});
     watcher
-        .start_watching(&[source])
+        .start_watching(&[source], CancellationToken::new())
         .await
         .expect("start_watching should succeed");
     watcher.stop_watching().await.expect("stop should succeed");
