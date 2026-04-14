@@ -12,7 +12,7 @@ use nebula_storage::{ExecutionRepo, WorkflowRepo};
 use nebula_telemetry::metrics::MetricsRegistry;
 use tokio::sync::RwLock;
 
-use crate::webhook::WebhookTransport;
+use crate::{config::JwtSecret, webhook::WebhookTransport};
 
 /// Application state passed through `Router::with_state`.
 #[derive(Clone)]
@@ -21,8 +21,12 @@ pub struct AppState {
     pub config: Arc<Config>,
 
     /// JWT secret used to validate Bearer tokens.
-    /// Must be at least 32 bytes of random entropy in production.
-    pub jwt_secret: Arc<str>,
+    ///
+    /// Wrapped in [`JwtSecret`] so construction enforces a
+    /// 32-byte minimum length and rejects the well-known development
+    /// placeholder. The middleware calls `as_bytes()` — same call
+    /// shape as the previous `Arc<str>`.
+    pub jwt_secret: JwtSecret,
 
     /// Static API keys accepted via `X-API-Key` header.
     ///
@@ -58,16 +62,18 @@ pub struct AppState {
 impl AppState {
     /// Create new AppState with provided dependencies.
     ///
-    /// `jwt_secret` must be at least 32 bytes long in production.
+    /// `jwt_secret` is a validated [`JwtSecret`]. Obtain one from
+    /// [`crate::config::ApiConfig::from_env`] (production) or
+    /// `ApiConfig::for_test` (tests with the `test-util` feature).
     pub fn new(
         config: Config,
         workflow_repo: Arc<dyn WorkflowRepo>,
         execution_repo: Arc<dyn ExecutionRepo>,
-        jwt_secret: impl Into<Arc<str>>,
+        jwt_secret: JwtSecret,
     ) -> Self {
         Self {
             config: Arc::new(config),
-            jwt_secret: jwt_secret.into(),
+            jwt_secret,
             api_keys: Arc::new(Vec::new()),
             workflow_repo,
             execution_repo,
