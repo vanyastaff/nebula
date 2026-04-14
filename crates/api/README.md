@@ -96,10 +96,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let workflow_repo = Arc::new(InMemoryWorkflowRepo::new());
     let execution_repo = Arc::new(InMemoryExecutionRepo::new());
     
-    let state = AppState::new(config, workflow_repo, execution_repo);
-
-    // Build app with config
-    let api_config = ApiConfig::default();
+    // Build app with config. `from_env` reads `API_JWT_SECRET`,
+    // which must be 32+ bytes unless `NEBULA_ENV=development`
+    // (dev mode generates an ephemeral per-process secret).
+    let api_config = ApiConfig::from_env()?;
+    let state = AppState::new(
+        config,
+        workflow_repo,
+        execution_repo,
+        api_config.jwt_secret.clone(),
+    );
     let app = build_app(state, &api_config);
 
     // Serve
