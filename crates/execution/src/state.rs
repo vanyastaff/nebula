@@ -215,11 +215,9 @@ impl ExecutionState {
     ///
     /// # Errors
     ///
-    /// - [`ExecutionError::NodeNotFound`] if `node_id` is not in this
-    ///   execution's node map.
-    /// - Any error returned by [`NodeExecutionState::transition_to`]
-    ///   for invalid transitions — in which case the version is NOT
-    ///   bumped (the state did not actually change).
+    /// - [`ExecutionError::NodeNotFound`] if `node_id` is not in this execution's node map.
+    /// - Any error returned by [`NodeExecutionState::transition_to`] for invalid transitions — in
+    ///   which case the version is NOT bumped (the state did not actually change).
     pub fn transition_node(
         &mut self,
         node_id: NodeId,
