@@ -1045,6 +1045,7 @@ impl WorkflowEngine {
             }
 
             if cancel_token.is_cancelled() {
+                join_set.abort_all();
                 while join_set.join_next().await.is_some() {}
                 break;
             }
@@ -1072,13 +1073,15 @@ impl WorkflowEngine {
                 },
                 () = &mut sleep_fut => {
                     cancel_token.cancel();
+                    join_set.abort_all();
                     while join_set.join_next().await.is_some() {}
                     return Some((
-                        NodeId::new(),
+                        NodeId::nil(),
                         "execution budget exceeded: max_duration".to_string(),
                     ));
                 }
                 () = cancel_token.cancelled() => {
+                    join_set.abort_all();
                     while join_set.join_next().await.is_some() {}
                     break;
                 }
@@ -1092,18 +1095,10 @@ impl WorkflowEngine {
                     total_retries.fetch_add(1, Ordering::Relaxed);
                     let err = EngineError::Runtime(nebula_runtime::RuntimeError::ActionError(
                         nebula_action::error::ActionError::retryable(
-                            "ActionResult::Retry is not yet implemented by the engine; \
-                             treating as node failure (short-term — see issues #290/#296)",
+                            "Action retry is not supported by the engine",
                         ),
                     ));
                     mark_node_failed(exec_state, node_id, &err);
-                    self.checkpoint_node(execution_id, node_id, outputs, exec_state, repo_version)
-                        .await;
-                    self.emit_event(ExecutionEvent::NodeFailed {
-                        execution_id,
-                        node_id,
-                        error: err.to_string(),
-                    });
                     let abort = handle_node_failure(
                         node_id,
                         &err.to_string(),
@@ -1119,6 +1114,25 @@ impl WorkflowEngine {
                     if let Some(err_msg) = abort {
                         cancel_token.cancel();
                         return Some((node_id, err_msg));
+                    }
+
+                    if exec_state
+                        .node_state(node_id)
+                        .is_some_and(|ns| ns.state == NodeState::Failed)
+                    {
+                        self.checkpoint_node(
+                            execution_id,
+                            node_id,
+                            outputs,
+                            exec_state,
+                            repo_version,
+                        )
+                        .await;
+                        self.emit_event(ExecutionEvent::NodeFailed {
+                            execution_id,
+                            node_id,
+                            error: err.to_string(),
+                        });
                     }
                 }
                 Ok((node_id, Ok(action_result))) => {
@@ -1164,14 +1178,6 @@ impl WorkflowEngine {
                     // learns the node is done and before successors advance
                     // (#297).
                     mark_node_failed(exec_state, node_id, err);
-                    self.checkpoint_node(execution_id, node_id, outputs, exec_state, repo_version)
-                        .await;
-                    self.emit_event(ExecutionEvent::NodeFailed {
-                        execution_id,
-                        node_id,
-                        error: err.to_string(),
-                    });
-
                     let abort = handle_node_failure(
                         node_id,
                         &err.to_string(),
@@ -1188,6 +1194,25 @@ impl WorkflowEngine {
                     if let Some(err_msg) = abort {
                         cancel_token.cancel();
                         return Some((node_id, err_msg));
+                    }
+
+                    if exec_state
+                        .node_state(node_id)
+                        .is_some_and(|ns| ns.state == NodeState::Failed)
+                    {
+                        self.checkpoint_node(
+                            execution_id,
+                            node_id,
+                            outputs,
+                            exec_state,
+                            repo_version,
+                        )
+                        .await;
+                        self.emit_event(ExecutionEvent::NodeFailed {
+                            execution_id,
+                            node_id,
+                            error: err.to_string(),
+                        });
                     }
                 }
                 Err(join_err) => {
