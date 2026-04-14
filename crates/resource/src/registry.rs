@@ -98,11 +98,15 @@ impl Registry {
         managed: Arc<dyn AnyManagedResource>,
     ) {
         // Lock order is **strictly one-way**: `entries → (release) → type_index`.
-        // `get_typed` takes `type_index` first and then `entries`; if this
-        // function also held both simultaneously in either order we would
-        // race into an AB-BA deadlock on the dashmap shards. So we do all
-        // `entries` work in a scoped block, drop the guard, and only then
-        // touch `type_index`.
+        //
+        // `get_typed` takes the `type_index` shard read lock first and only
+        // then touches `entries`. If `register` ever held both dashmap
+        // shards simultaneously in the opposite order, two concurrent
+        // callers (one here, one in `get_typed`) could each be waiting on
+        // the shard the other already holds — a classic lock-ordering
+        // reversal. We prevent that by doing all `entries` work in a
+        // scoped block, dropping the guard, and only *then* touching
+        // `type_index`.
         let stale_type_id = {
             let mut entries = self.entries.entry(key.clone()).or_default();
 

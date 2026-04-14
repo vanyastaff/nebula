@@ -437,6 +437,13 @@ where
     /// `create_semaphore` (#390) so a burst of acquires cannot stampede
     /// a fragile backend with `max_size` parallel connects. The permit
     /// is released as soon as `Resource::create` returns.
+    ///
+    /// The whole path — permit wait + `resource.create` — shares a
+    /// single `create_timeout` budget. Both the create semaphore wait
+    /// and the actual create are bounded by the remaining budget so a
+    /// slow-creating backend cannot stall callers forever (also raised
+    /// in PR #399 review: the create-semaphore acquire used to be
+    /// unbounded).
     async fn create_entry(
         &self,
         resource: &R,
@@ -444,15 +451,30 @@ where
         auth: &R::Auth,
         ctx: &dyn Ctx,
     ) -> Result<PoolEntry<R>, Error> {
-        let _create_permit = self
-            .create_semaphore
-            .clone()
-            .acquire_owned()
-            .await
-            .map_err(|_| Error::permanent("pool: create semaphore closed"))?;
+        let deadline = Instant::now() + self.config.create_timeout;
 
-        let runtime = match tokio::time::timeout(
-            self.config.create_timeout,
+        let _create_permit = match tokio::time::timeout_at(
+            deadline.into(),
+            self.create_semaphore.clone().acquire_owned(),
+        )
+        .await
+        {
+            Ok(Ok(permit)) => permit,
+            Ok(Err(_)) => {
+                return Err(Error::permanent("pool: create semaphore closed"));
+            },
+            Err(_) => {
+                return Err(Error::backpressure(
+                    "pool: create timed out waiting for create-semaphore permit",
+                ));
+            },
+        };
+
+        // Use `timeout_at` with the same absolute deadline so the budget
+        // is shared: a long permit wait shortens the time available to
+        // `resource.create`.
+        let runtime = match tokio::time::timeout_at(
+            deadline.into(),
             resource.create(config, auth, ctx),
         )
         .await
