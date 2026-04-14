@@ -34,12 +34,31 @@ fn http_client() -> &'static reqwest::Client {
 
 /// Build the authorization URL for the Authorization Code grant.
 ///
-/// Uses [`url::Url`] query encoding so special characters in `client_id`
-/// or scope values are always properly percent-encoded.
+/// Appends every query parameter required by RFC 6749 §4.1.1 plus the
+/// RFC 7636 PKCE extension and the anti-CSRF `state` parameter. The
+/// config MUST come from the `AuthCodeBuilder` in `oauth2_config`, which
+/// guarantees that `config.pkce` and `config.redirect_uri` are both
+/// `Some(_)` — callers cannot hand us a misconfigured [`OAuth2Config`]
+/// without a compile error. The runtime `ok_or_else` branches are there
+/// only to defend against struct-literal construction and malformed
+/// deserialized records.
+///
+/// Uses [`url::Url`] query encoding so special characters in
+/// `client_id`, `redirect_uri`, and scope values are properly
+/// percent-encoded.
 pub(crate) fn build_auth_url(
     config: &OAuth2Config,
     client_id: &str,
+    code_challenge: &str,
+    state: &str,
 ) -> Result<String, CredentialError> {
+    let redirect_uri = config.redirect_uri.as_deref().ok_or_else(|| {
+        provider_error("authorization_code config missing redirect_uri".into())
+    })?;
+    let pkce_method = config
+        .pkce
+        .ok_or_else(|| provider_error("authorization_code config missing pkce method".into()))?;
+
     let mut url = url::Url::parse(&config.auth_url)
         .map_err(|e| provider_error(format!("invalid auth_url: {e}")))?;
 
@@ -47,14 +66,15 @@ pub(crate) fn build_auth_url(
         let mut q = url.query_pairs_mut();
         q.append_pair("response_type", "code");
         q.append_pair("client_id", client_id);
+        q.append_pair("redirect_uri", redirect_uri);
 
         if !config.scopes.is_empty() {
             q.append_pair("scope", &config.scopes.join(" "));
         }
 
-        if config.pkce {
-            q.append_pair("code_challenge_method", "S256");
-        }
+        q.append_pair("state", state);
+        q.append_pair("code_challenge", code_challenge);
+        q.append_pair("code_challenge_method", pkce_method.as_str());
     }
 
     Ok(url.to_string())
@@ -107,18 +127,28 @@ pub(crate) async fn exchange_client_credentials(
 }
 
 /// Exchange authorization code for access token (Authorization Code grant).
+///
+/// `code_verifier` must be the same value whose SHA256 was sent as
+/// `code_challenge` in [`build_auth_url`]. `redirect_uri` must byte-match
+/// the one on the original auth request (RFC 6749 §4.1.3).
 pub(crate) async fn exchange_authorization_code(
     config: &OAuth2Config,
     client_id: &str,
     client_secret: &str,
     code: &str,
+    code_verifier: &str,
+    redirect_uri: &str,
 ) -> Result<OAuth2State, CredentialError> {
     let client = http_client();
 
-    let mut form: Vec<(&str, String)> = vec![
-        ("grant_type", "authorization_code".into()),
-        ("code", code.to_owned()),
-    ];
+    let form = compose_auth_code_form(
+        code,
+        code_verifier,
+        redirect_uri,
+        client_id,
+        client_secret,
+        config.auth_style,
+    );
 
     let mut req = client.post(&config.token_url);
 
@@ -130,8 +160,6 @@ pub(crate) async fn exchange_authorization_code(
                 .form(&form);
         }
         AuthStyle::PostBody => {
-            form.push(("client_id", client_id.to_owned()));
-            form.push(("client_secret", client_secret.to_owned()));
             req = req.form(&form);
         }
     }
@@ -150,6 +178,38 @@ pub(crate) async fn exchange_authorization_code(
         &config.token_url,
         config.auth_style,
     )
+}
+
+/// Build the form body for the authorization-code token exchange.
+///
+/// Extracted as a pure function so tests can assert the exact shape of
+/// the request body without standing up a mock HTTP server. The caller
+/// is expected to send this via `reqwest::RequestBuilder::form`.
+///
+/// Per RFC 6749 §4.1.3 + RFC 7636 §4.5 the form always contains
+/// `grant_type=authorization_code`, `code`, `code_verifier`, and
+/// `redirect_uri`. When [`AuthStyle::PostBody`] is used, `client_id` and
+/// `client_secret` are appended; otherwise they are carried in the
+/// `Authorization: Basic` header by the caller.
+pub(crate) fn compose_auth_code_form(
+    code: &str,
+    code_verifier: &str,
+    redirect_uri: &str,
+    client_id: &str,
+    client_secret: &str,
+    auth_style: AuthStyle,
+) -> Vec<(&'static str, String)> {
+    let mut form: Vec<(&'static str, String)> = vec![
+        ("grant_type", "authorization_code".into()),
+        ("code", code.to_owned()),
+        ("code_verifier", code_verifier.to_owned()),
+        ("redirect_uri", redirect_uri.to_owned()),
+    ];
+    if matches!(auth_style, AuthStyle::PostBody) {
+        form.push(("client_id", client_id.to_owned()));
+        form.push(("client_secret", client_secret.to_owned()));
+    }
+    form
 }
 
 /// Device code response from authorization server (RFC 8628).
@@ -467,26 +527,55 @@ fn provider_error(message: String) -> CredentialError {
 mod tests {
     use super::*;
 
+    const CALLBACK: &str = "https://app.example.com/cb";
+
+    /// RFC 7636 appendix B vector (section 4.2).
+    const RFC7636_VERIFIER: &str = "dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk";
+    const RFC7636_CHALLENGE: &str = "E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM";
+
     #[test]
-    fn build_auth_url_includes_pkce() {
-        let config = OAuth2Config::authorization_code()
+    fn build_auth_url_includes_code_challenge_s256() {
+        let config = OAuth2Config::authorization_code(CALLBACK)
             .auth_url("https://example.com/auth")
             .token_url("https://example.com/token")
-            .pkce(true)
             .build();
 
-        let url = build_auth_url(&config, "cid").unwrap();
+        let url = build_auth_url(&config, "cid", RFC7636_CHALLENGE, "state_abc").unwrap();
         assert!(url.contains("code_challenge_method=S256"));
+        assert!(url.contains(&format!("code_challenge={RFC7636_CHALLENGE}")));
+    }
+
+    #[test]
+    fn build_auth_url_includes_state_and_redirect_uri() {
+        let config = OAuth2Config::authorization_code(CALLBACK)
+            .auth_url("https://example.com/auth")
+            .token_url("https://example.com/token")
+            .build();
+
+        let url = build_auth_url(&config, "cid", "chal", "state_abc").unwrap();
+        assert!(url.contains("state=state_abc"));
+        // `CALLBACK` contains `://` which percent-encodes as `%3A%2F%2F`.
+        assert!(
+            url.contains("redirect_uri=https%3A%2F%2Fapp.example.com%2Fcb"),
+            "redirect_uri not percent-encoded in URL: {url}"
+        );
+    }
+
+    #[test]
+    fn build_auth_url_verifier_hashes_to_challenge() {
+        // Guard against a future refactor breaking the PKCE helper chain.
+        let challenge = crate::crypto::generate_code_challenge(RFC7636_VERIFIER);
+        assert_eq!(challenge, RFC7636_CHALLENGE);
     }
 
     #[test]
     fn build_auth_url_without_scopes() {
-        let config = OAuth2Config::authorization_code()
+        let config = OAuth2Config::authorization_code(CALLBACK)
             .auth_url("https://example.com/auth")
             .token_url("https://example.com/token")
             .build();
 
-        let url = build_auth_url(&config, "cid").unwrap();
+        let url = build_auth_url(&config, "cid", "chal", "st").unwrap();
         assert!(!url.contains("scope="));
         assert!(url.contains("response_type=code"));
         assert!(url.contains("client_id=cid"));
@@ -494,14 +583,58 @@ mod tests {
 
     #[test]
     fn build_auth_url_with_scopes() {
-        let config = OAuth2Config::authorization_code()
+        let config = OAuth2Config::authorization_code(CALLBACK)
             .auth_url("https://example.com/auth")
             .token_url("https://example.com/token")
             .scopes(["read", "write"])
             .build();
 
-        let url = build_auth_url(&config, "cid").unwrap();
+        let url = build_auth_url(&config, "cid", "chal", "st").unwrap();
         assert!(url.contains("scope=read+write"));
+    }
+
+    #[test]
+    fn compose_auth_code_form_header_style_has_exact_shape() {
+        let form = compose_auth_code_form(
+            "the_code",
+            "the_verifier",
+            "https://cb.example/path",
+            "cid",
+            "csecret",
+            AuthStyle::Header,
+        );
+        assert_eq!(
+            form,
+            vec![
+                ("grant_type", "authorization_code".into()),
+                ("code", "the_code".into()),
+                ("code_verifier", "the_verifier".into()),
+                ("redirect_uri", "https://cb.example/path".into()),
+            ]
+        );
+    }
+
+    #[test]
+    fn compose_auth_code_form_post_body_style_appends_client_credentials() {
+        let form = compose_auth_code_form(
+            "c",
+            "v",
+            "r",
+            "cid",
+            "csecret",
+            AuthStyle::PostBody,
+        );
+        assert_eq!(
+            form,
+            vec![
+                ("grant_type", "authorization_code".into()),
+                ("code", "c".into()),
+                ("code_verifier", "v".into()),
+                ("redirect_uri", "r".into()),
+                ("client_id", "cid".into()),
+                ("client_secret", "csecret".into()),
+            ]
+        );
     }
 
     #[test]
@@ -629,12 +762,12 @@ mod tests {
 
     #[test]
     fn invalid_auth_url_returns_error() {
-        let config = OAuth2Config::authorization_code()
+        let config = OAuth2Config::authorization_code(CALLBACK)
             .auth_url("not a url")
             .token_url("https://t.com/token")
             .build();
 
-        let result = build_auth_url(&config, "cid");
+        let result = build_auth_url(&config, "cid", "chal", "st");
         assert!(result.is_err());
     }
 }
