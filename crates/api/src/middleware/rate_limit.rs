@@ -110,8 +110,8 @@ impl RateLimitState {
 ///
 /// Resolution order:
 ///
-/// 1. [`ConnectInfo<SocketAddr>`] extension — direct TCP peer address (most reliable,
-///    requires `axum::serve` with `into_make_service_with_connect_info`).
+/// 1. [`ConnectInfo<SocketAddr>`] extension — direct TCP peer address (most reliable, requires
+///    `axum::serve` with `into_make_service_with_connect_info`).
 /// 2. `X-Forwarded-For` header — first address in the comma-separated list.
 /// 3. `X-Real-IP` header — single forwarded address.
 /// 4. Loopback (`127.0.0.1`) as a last resort (e.g. in unit tests).
