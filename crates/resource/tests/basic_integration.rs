@@ -1854,6 +1854,117 @@ async fn exclusive_acquire_timeout_when_locked() {
 }
 
 // ---------------------------------------------------------------------------
+// #384 — exclusive permit held until reset() completes
+// ---------------------------------------------------------------------------
+
+#[derive(Clone)]
+struct SlowResetExclusive {
+    in_progress: Arc<std::sync::atomic::AtomicBool>,
+    overlap_observed: Arc<std::sync::atomic::AtomicBool>,
+}
+
+impl Resource for SlowResetExclusive {
+    type Config = TestConfig;
+    type Runtime = Arc<AtomicU64>;
+    type Lease = Arc<AtomicU64>;
+    type Error = TestError;
+    type Auth = ();
+
+    fn key() -> ResourceKey {
+        resource_key!("slow-reset-exclusive")
+    }
+
+    async fn create(
+        &self,
+        _config: &TestConfig,
+        _auth: &(),
+        _ctx: &dyn Ctx,
+    ) -> Result<Arc<AtomicU64>, TestError> {
+        Ok(Arc::new(AtomicU64::new(0)))
+    }
+
+    async fn destroy(&self, _runtime: Arc<AtomicU64>) -> Result<(), TestError> {
+        Ok(())
+    }
+
+    fn metadata() -> ResourceMetadata {
+        ResourceMetadata::from_key(&Self::key())
+    }
+}
+
+impl Exclusive for SlowResetExclusive {
+    fn reset(
+        &self,
+        _runtime: &Arc<AtomicU64>,
+    ) -> impl std::future::Future<Output = Result<(), TestError>> + Send {
+        let in_progress = self.in_progress.clone();
+        async move {
+            in_progress.store(true, Ordering::SeqCst);
+            tokio::time::sleep(std::time::Duration::from_millis(150)).await;
+            in_progress.store(false, Ordering::SeqCst);
+            Ok(())
+        }
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn exclusive_next_acquire_waits_until_reset_completes() {
+    // #384: verify a second acquire cannot enter the critical section
+    // while a previous reset() is still running asynchronously. The
+    // resource's reset() holds `in_progress = true` for ~150ms, so under
+    // the fix the next acquire must block for at least that long.
+    let resource = SlowResetExclusive {
+        in_progress: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+        overlap_observed: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+    };
+    let runtime = Arc::new(AtomicU64::new(0));
+    let rt =
+        ExclusiveRuntime::<SlowResetExclusive>::new(runtime, exclusive::config::Config::default());
+    let (rq, rq_handle) = ReleaseQueue::new(1);
+    let rq = Arc::new(rq);
+
+    let h1 = rt
+        .acquire(&resource, &rq, 0, &AcquireOptions::default(), None)
+        .await
+        .expect("first acquire");
+    drop(h1);
+
+    // Give the release queue worker time to pick up the reset task and
+    // start its sleep. Without the fix the permit was already dropped by
+    // HandleInner::Guarded's Drop; with the fix the permit moved into the
+    // reset future and is still held.
+    tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+
+    let start = std::time::Instant::now();
+    let h2 = rt
+        .acquire(&resource, &rq, 0, &AcquireOptions::default(), None)
+        .await
+        .expect("second acquire");
+    let elapsed = start.elapsed();
+
+    // Any overlap with the in-flight reset is a bug.
+    if resource.in_progress.load(Ordering::SeqCst) {
+        resource.overlap_observed.store(true, Ordering::SeqCst);
+    }
+    assert!(
+        !resource.overlap_observed.load(Ordering::SeqCst),
+        "second acquire raced against an in-flight reset() — permit was \
+         returned before reset completed (#384)",
+    );
+    assert!(
+        elapsed >= std::time::Duration::from_millis(80),
+        "second acquire must block until reset() finishes (~150ms), \
+         actually blocked {elapsed:?} — the fix is missing (#384)",
+    );
+
+    drop(h2);
+    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+
+    drop(rq);
+    ReleaseQueue::shutdown(rq_handle).await;
+}
+
+// ---------------------------------------------------------------------------
 // Pool permit leak regression test
 // ---------------------------------------------------------------------------
 
