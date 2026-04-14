@@ -153,8 +153,7 @@ This definition runs in two modes:
 
 ## Handoff
 
-- **tech-lead** — when the fix is structural (credential store redesign, sandbox rework) rather than a patch
-- **tech-lead** — when "fix now" vs. "fix before release" is a judgment call, or when blocking a PR has downstream cost
+- **tech-lead** — when the fix is structural or timing-sensitive (fix now vs before release)
 - **rust-senior** — for idiomatic async / ownership concerns that compound the security issue
 - **devops** — for CI, `cargo deny`, dependency pinning, or release-pipeline hardening
 

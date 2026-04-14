@@ -111,8 +111,7 @@ This definition runs in two modes:
 
 Route downstream when the issue isn't your wheelhouse:
 - **security-lead** — anything touching credentials, secrets, auth, webhook input validation, sandboxing, or dependency supply chain
-- **tech-lead** — when the right fix is "redesign this module," not "patch this line"
-- **tech-lead** — when the fix is clear but the timing / sequencing is a judgment call
+- **tech-lead** — when the right fix is redesign/timing tradeoff rather than a local patch
 - **dx-tester** — when the issue is API ergonomics and newcomer usability
 
 Say explicitly: "Handoff: <who> for <reason>."

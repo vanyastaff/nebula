@@ -7,7 +7,12 @@ set -euo pipefail
 INPUT=$(cat)
 
 CMD=""
-if command -v python3 >/dev/null 2>&1; then
+# Prefer jq when available, then python3, then a basic sed fallback.
+if command -v jq >/dev/null 2>&1; then
+  CMD=$(printf '%s' "$INPUT" | jq -r '.tool_input.command // ""' 2>/dev/null || true)
+fi
+
+if [[ -z "$CMD" ]] && command -v python3 >/dev/null 2>&1; then
   CMD=$(printf '%s' "$INPUT" | python3 -c '
 import json, sys
 try:
@@ -17,6 +22,10 @@ except Exception:
     raise SystemExit(0)
 print(payload.get("tool_input", {}).get("command", "") or "")
 ' 2>/dev/null || true)
+fi
+
+if [[ -z "$CMD" ]]; then
+  CMD=$(printf '%s' "$INPUT" | sed -n 's/.*"command"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' | head -n 1)
 fi
 
 if [[ -z "$CMD" ]]; then

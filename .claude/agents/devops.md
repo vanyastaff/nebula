@@ -143,9 +143,8 @@ This definition runs in two modes:
 ## Handoff
 
 - **security-lead** — any dep with a CVE, supply-chain question, or crate that introduces `unsafe`
-- **tech-lead** — when a fix has a team-wide cost (deadline vs. correctness)
 - **rust-senior** — when a clippy lint reveals a real code issue, not just a style nit
-- **tech-lead** — when a layer violation reflects a structural problem, not just a typo
+- **tech-lead** — when a fix has team-wide architectural/timing cost, not just a local typo
 
 Say explicitly: "Handoff: <who> for <reason>."
 
