@@ -4,10 +4,7 @@
 
 #[cfg(feature = "regex")]
 use std::collections::HashMap;
-use std::sync::{
-    Arc,
-    atomic::{AtomicUsize, Ordering},
-};
+use std::sync::Arc;
 
 #[cfg(feature = "regex")]
 use parking_lot::Mutex;
@@ -35,12 +32,90 @@ const MAX_REGEX_PATTERN_LEN: usize = 1000;
 #[cfg(feature = "regex")]
 const MAX_REGEX_CACHE_SIZE: usize = 100;
 
+/// Per-call evaluation frame that tracks recursion depth and the DoS
+/// step budget for a single top-level [`Evaluator::eval`] invocation.
+///
+/// Lives on the caller's stack (never on `Evaluator`, never on
+/// [`EvaluationContext`]). Every recursive path inside the evaluator
+/// threads `&mut EvalFrame` instead of a bare `depth: usize`, so:
+///
+/// - Concurrent `Arc<Evaluator>` users each get their own frame with
+///   zero synchronization — no shared atomics, no thread-local state.
+/// - Nested lambda evaluation cannot accidentally reset the counter
+///   (the old `self.eval(...)` re-entry pattern that did
+///   `self.steps.store(0)` at the top of every call is gone).
+/// - One top-level `eval` call = one step budget, regardless of how
+///   many lambdas / reduces / pipelines it recurses through.
+///
+/// Closes CO-C1-01 (issue #252): `max_eval_steps` bypass via lambdas.
+pub(crate) struct EvalFrame {
+    depth: usize,
+    steps: usize,
+    max_steps: Option<usize>,
+}
+
+impl EvalFrame {
+    /// Create a fresh frame with the given step cap (snapshotted once
+    /// from the effective policy at the top-level `eval` entry).
+    #[inline]
+    fn new(max_steps: Option<usize>) -> Self {
+        Self {
+            depth: 0,
+            steps: 0,
+            max_steps,
+        }
+    }
+
+    /// Count one AST-node evaluation against the step budget.
+    ///
+    /// Called from the top of [`Evaluator::eval_with_frame`] exactly
+    /// once per AST node. Returns an error the moment the cap is
+    /// exceeded, so a hostile `map(range, x => expensive)` traversal
+    /// aborts deterministically instead of running to completion.
+    #[inline]
+    fn tick(&mut self) -> ExpressionResult<()> {
+        self.steps += 1;
+        if let Some(max) = self.max_steps
+            && self.steps > max
+        {
+            return Err(ExpressionError::expression_eval_error(format!(
+                "Maximum evaluation steps ({max}) exceeded",
+            )));
+        }
+        Ok(())
+    }
+
+    /// Enter a deeper recursion level.
+    ///
+    /// Each recursive `eval_with_frame` call increments `depth`; the
+    /// matching decrement happens after the dispatch returns via the
+    /// symmetric `leave` call, wired unconditionally (both success and
+    /// error paths) from `eval_with_frame`. Frames are per-call and
+    /// stack-local, so depth cannot leak across top-level `eval` calls
+    /// even if a recursive path bails mid-traversal.
+    #[inline]
+    fn enter(&mut self) -> ExpressionResult<()> {
+        if self.depth >= MAX_RECURSION_DEPTH {
+            return Err(ExpressionError::expression_eval_error(format!(
+                "Maximum recursion depth ({MAX_RECURSION_DEPTH}) exceeded",
+            )));
+        }
+        self.depth += 1;
+        Ok(())
+    }
+
+    /// Leave a recursion level previously entered via [`enter`].
+    #[inline]
+    fn leave(&mut self) {
+        debug_assert!(self.depth > 0, "leave called without matching enter");
+        self.depth -= 1;
+    }
+}
+
 /// Evaluator for expression ASTs
 pub struct Evaluator {
     builtins: Arc<BuiltinRegistry>,
     policy: Option<Arc<EvaluationPolicy>>,
-    /// Step counter for DoS prevention (reset per top-level eval call).
-    steps: AtomicUsize,
     /// Regex cache (pattern -> compiled Regex)
     /// Using Mutex for thread-safe interior mutability
     #[cfg(feature = "regex")]
@@ -61,48 +136,85 @@ impl Evaluator {
         Self {
             builtins,
             policy,
-            steps: AtomicUsize::new(0),
             #[cfg(feature = "regex")]
             regex_cache: Mutex::new(HashMap::new()),
         }
     }
 
-    /// Evaluate an expression in the given context
+    /// Resolve the effective `max_eval_steps` for this `eval` call.
+    ///
+    /// Policy can be attached either on the evaluator itself or on the
+    /// `EvaluationContext`; the context wins when both are set (matches
+    /// the precedence already used by `ensure_function_allowed`).
     #[inline]
-    pub fn eval(&self, expr: &Expr, context: &EvaluationContext) -> ExpressionResult<Value> {
-        self.steps.store(0, Ordering::Relaxed);
-        self.eval_with_depth(expr, context, 0)
+    fn resolve_max_steps(&self, context: &EvaluationContext) -> Option<usize> {
+        context
+            .policy()
+            .and_then(EvaluationPolicy::max_eval_steps)
+            .or_else(|| {
+                self.policy
+                    .as_deref()
+                    .and_then(EvaluationPolicy::max_eval_steps)
+            })
     }
 
-    /// Evaluate an expression with recursion depth tracking
+    /// Evaluate an expression in the given context.
+    ///
+    /// This is the sole place where a fresh [`EvalFrame`] is constructed.
+    /// All recursive paths inside the evaluator reuse the caller's frame
+    /// via [`eval_with_frame`], so the step budget defined by
+    /// [`EvaluationPolicy::max_eval_steps`] is enforced across ALL
+    /// nested work — lambdas, reduces, pipelines, higher-order combinators.
+    ///
+    /// # CO-C1-01 footgun (builtins)
+    ///
+    /// `BuiltinRegistry::call` currently hands builtins `&Evaluator`
+    /// without the caller's [`EvalFrame`]. A builtin that recurses by
+    /// invoking `evaluator.eval(...)` will build a fresh frame and
+    /// reset the step budget mid-traversal — which is exactly the DoS
+    /// bypass this refactor closes for the intrinsic higher-order
+    /// combinators (`map`, `filter`, `reduce`, ...).
+    ///
+    /// Today no shipping builtin does this, but before stabilising the
+    /// public builtin API plumb `&mut EvalFrame` through
+    /// `BuiltinRegistry::call` and add a pitfalls note under
+    /// `.project/context/pitfalls.md`. See issue #252 / audit memory
+    /// `pitfall_expression_builtin_frame`.
     #[inline]
-    fn eval_with_depth(
+    pub fn eval(&self, expr: &Expr, context: &EvaluationContext) -> ExpressionResult<Value> {
+        let mut frame = EvalFrame::new(self.resolve_max_steps(context));
+        self.eval_with_frame(expr, context, &mut frame)
+    }
+
+    /// Evaluate an expression using the caller's step/depth frame.
+    ///
+    /// Internal recursive paths MUST use this method — calling
+    /// `self.eval(...)` from within the evaluator would construct a
+    /// fresh frame mid-traversal and reset the step budget, reopening
+    /// the CO-C1-01 lambda DoS bypass.
+    #[inline]
+    fn eval_with_frame(
         &self,
         expr: &Expr,
         context: &EvaluationContext,
-        depth: usize,
+        frame: &mut EvalFrame,
     ) -> ExpressionResult<Value> {
-        // Check recursion depth limit
-        if depth > MAX_RECURSION_DEPTH {
-            return Err(ExpressionError::expression_eval_error(format!(
-                "Maximum recursion depth ({MAX_RECURSION_DEPTH}) exceeded",
-            )));
-        }
+        frame.tick()?;
+        frame.enter()?;
+        let result = self.eval_node(expr, context, frame);
+        frame.leave();
+        result
+    }
 
-        // Check step limit
-        let step = self.steps.fetch_add(1, Ordering::Relaxed) + 1;
-        if self
-            .policy
-            .as_ref()
-            .and_then(|p| p.max_eval_steps())
-            .is_some_and(|max| step > max)
-        {
-            let max = self.policy.as_ref().unwrap().max_eval_steps().unwrap();
-            return Err(ExpressionError::expression_eval_error(format!(
-                "Maximum evaluation steps ({max}) exceeded",
-            )));
-        }
-
+    /// Dispatch on the AST node kind. Split from `eval_with_frame` so
+    /// `frame.leave()` still runs on the success path without having to
+    /// sprinkle early returns through every match arm.
+    fn eval_node(
+        &self,
+        expr: &Expr,
+        context: &EvaluationContext,
+        frame: &mut EvalFrame,
+    ) -> ExpressionResult<Value> {
         match expr {
             Expr::Literal(val) => Ok(val.clone()),
 
@@ -120,7 +232,7 @@ impl Evaluator {
             }
 
             Expr::Negate(expr) => {
-                let val = self.eval_with_depth(expr, context, depth + 1)?;
+                let val = self.eval_with_frame(expr, context, frame)?;
                 match val {
                     Value::Number(ref n) => {
                         if let Some(i) = crate::value_utils::number_as_i64(n) {
@@ -141,37 +253,37 @@ impl Evaluator {
             }
 
             Expr::Not(expr) => {
-                let val = self.eval_with_depth(expr, context, depth + 1)?;
+                let val = self.eval_with_frame(expr, context, frame)?;
                 Ok(Value::Bool(!self.coerce_boolean(&val, context)?))
             }
 
             Expr::Binary { left, op, right } => {
-                self.eval_binary_op(*op, left, right, context, depth)
+                self.eval_binary_op(*op, left, right, context, frame)
             }
 
             Expr::PropertyAccess { object, property } => {
-                let obj_val = self.eval_with_depth(object, context, depth + 1)?;
+                let obj_val = self.eval_with_frame(object, context, frame)?;
                 self.access_property(&obj_val, property)
             }
 
             Expr::IndexAccess { object, index } => {
-                let obj_val = self.eval_with_depth(object, context, depth + 1)?;
-                let index_val = self.eval_with_depth(index, context, depth + 1)?;
+                let obj_val = self.eval_with_frame(object, context, frame)?;
+                let index_val = self.eval_with_frame(index, context, frame)?;
                 self.access_index(&obj_val, &index_val)
             }
 
             Expr::FunctionCall { name, args } => {
                 // Try higher-order functions first (they need raw AST args for lambdas)
-                if let Some(result) = self.try_higher_order_function(name, args, context, depth) {
+                if let Some(result) = self.try_higher_order_function(name, args, context, frame) {
                     return result;
                 }
 
                 // Regular function: evaluate all args to values
                 let mut arg_values = Vec::with_capacity(args.len());
                 for arg in args {
-                    arg_values.push(self.eval_with_depth(arg, context, depth + 1)?);
+                    arg_values.push(self.eval_with_frame(arg, context, frame)?);
                 }
-                self.call_function(name, &arg_values, context, depth)
+                self.call_function(name, &arg_values, context, frame)
             }
 
             Expr::Pipeline {
@@ -186,19 +298,19 @@ impl Evaluator {
 
                 // Try higher-order functions first
                 if let Some(result) =
-                    self.try_higher_order_function(function, &full_args, context, depth)
+                    self.try_higher_order_function(function, &full_args, context, frame)
                 {
                     return result;
                 }
 
                 // Regular function: evaluate all args to values
-                let val = self.eval_with_depth(value, context, depth + 1)?;
+                let val = self.eval_with_frame(value, context, frame)?;
                 let mut arg_values: Vec<Value> = Vec::with_capacity(1 + args.len());
                 arg_values.push(val);
                 for arg in args {
-                    arg_values.push(self.eval_with_depth(arg, context, depth + 1)?);
+                    arg_values.push(self.eval_with_frame(arg, context, frame)?);
                 }
-                self.call_function(function, &arg_values, context, depth)
+                self.call_function(function, &arg_values, context, frame)
             }
 
             Expr::Conditional {
@@ -206,11 +318,11 @@ impl Evaluator {
                 then_expr,
                 else_expr,
             } => {
-                let cond_val = self.eval_with_depth(condition, context, depth + 1)?;
+                let cond_val = self.eval_with_frame(condition, context, frame)?;
                 if self.coerce_boolean(&cond_val, context)? {
-                    self.eval_with_depth(then_expr, context, depth + 1)
+                    self.eval_with_frame(then_expr, context, frame)
                 } else {
-                    self.eval_with_depth(else_expr, context, depth + 1)
+                    self.eval_with_frame(else_expr, context, frame)
                 }
             }
 
@@ -224,7 +336,7 @@ impl Evaluator {
             Expr::Array(elements) => {
                 let values: Result<Vec<_>, _> = elements
                     .iter()
-                    .map(|e| self.eval_with_depth(e, context, depth + 1))
+                    .map(|e| self.eval_with_frame(e, context, frame))
                     .collect();
                 let values = values?;
                 Ok(Value::Array(values))
@@ -233,7 +345,7 @@ impl Evaluator {
             Expr::Object(pairs) => {
                 let mut obj = serde_json::Map::new();
                 for (key, expr) in pairs {
-                    let value = self.eval_with_depth(expr, context, depth + 1)?;
+                    let value = self.eval_with_frame(expr, context, frame)?;
                     obj.insert(key.to_string(), value);
                 }
                 Ok(Value::Object(obj))
@@ -249,32 +361,32 @@ impl Evaluator {
         left: &Expr,
         right: &Expr,
         context: &EvaluationContext,
-        depth: usize,
+        frame: &mut EvalFrame,
     ) -> ExpressionResult<Value> {
         // Short-circuit evaluation for logical operators
         match op {
             BinaryOp::And => {
-                let left_val = self.eval_with_depth(left, context, depth + 1)?;
+                let left_val = self.eval_with_frame(left, context, frame)?;
                 if !self.coerce_boolean(&left_val, context)? {
                     // Short-circuit: if left is false, don't evaluate right
                     return Ok(Value::Bool(false));
                 }
-                let right_val = self.eval_with_depth(right, context, depth + 1)?;
+                let right_val = self.eval_with_frame(right, context, frame)?;
                 Ok(Value::Bool(self.coerce_boolean(&right_val, context)?))
             }
             BinaryOp::Or => {
-                let left_val = self.eval_with_depth(left, context, depth + 1)?;
+                let left_val = self.eval_with_frame(left, context, frame)?;
                 if self.coerce_boolean(&left_val, context)? {
                     // Short-circuit: if left is true, don't evaluate right
                     return Ok(Value::Bool(true));
                 }
-                let right_val = self.eval_with_depth(right, context, depth + 1)?;
+                let right_val = self.eval_with_frame(right, context, frame)?;
                 Ok(Value::Bool(self.coerce_boolean(&right_val, context)?))
             }
             // For all other operators, evaluate both operands
             _ => {
-                let left_val = self.eval_with_depth(left, context, depth + 1)?;
-                let right_val = self.eval_with_depth(right, context, depth + 1)?;
+                let left_val = self.eval_with_frame(left, context, frame)?;
+                let right_val = self.eval_with_frame(right, context, frame)?;
 
                 match op {
                     BinaryOp::Add => self.add(&left_val, &right_val),
@@ -301,17 +413,14 @@ impl Evaluator {
     fn add(&self, left: &Value, right: &Value) -> ExpressionResult<Value> {
         match (left, right) {
             (Value::Number(l), Value::Number(r)) => {
-                // Try integer addition with overflow checking
+                // Try integer addition with overflow checking; on overflow,
+                // fall back to f64 arithmetic (lossy for values above 2^53).
                 if let (Some(li), Some(ri)) = (l.as_i64(), r.as_i64()) {
-                    li.checked_add(ri)
-                        .map(|result| Value::Number(result.into()))
-                        .or_else(|| {
-                            // Overflow - fall back to float
-                            Some(serde_json::json!(li as f64 + ri as f64))
-                        })
-                        .ok_or_else(|| {
-                            ExpressionError::expression_eval_error("Arithmetic overflow")
-                        })
+                    let result = li.checked_add(ri).map_or_else(
+                        || serde_json::json!(li as f64 + ri as f64),
+                        |v| Value::Number(v.into()),
+                    );
+                    Ok(result)
                 } else {
                     // At least one is float
                     let lf = self.number_to_f64(l)?;
@@ -342,14 +451,14 @@ impl Evaluator {
     fn subtract(&self, left: &Value, right: &Value) -> ExpressionResult<Value> {
         match (left, right) {
             (Value::Number(l), Value::Number(r)) => {
-                // Try integer subtraction with overflow checking
+                // Try integer subtraction with overflow checking; on overflow
+                // fall back to f64 (lossy above 2^53).
                 if let (Some(li), Some(ri)) = (l.as_i64(), r.as_i64()) {
-                    li.checked_sub(ri)
-                        .map(|result| Value::Number(result.into()))
-                        .or_else(|| Some(serde_json::json!(li as f64 - ri as f64)))
-                        .ok_or_else(|| {
-                            ExpressionError::expression_eval_error("Arithmetic overflow")
-                        })
+                    let result = li.checked_sub(ri).map_or_else(
+                        || serde_json::json!(li as f64 - ri as f64),
+                        |v| Value::Number(v.into()),
+                    );
+                    Ok(result)
                 } else {
                     let lf = self.number_to_f64(l)?;
                     let rf = self.number_to_f64(r)?;
@@ -372,14 +481,14 @@ impl Evaluator {
     fn multiply(&self, left: &Value, right: &Value) -> ExpressionResult<Value> {
         match (left, right) {
             (Value::Number(l), Value::Number(r)) => {
-                // Try integer multiplication with overflow checking
+                // Try integer multiplication with overflow checking; on
+                // overflow fall back to f64 (lossy above 2^53).
                 if let (Some(li), Some(ri)) = (l.as_i64(), r.as_i64()) {
-                    li.checked_mul(ri)
-                        .map(|result| Value::Number(result.into()))
-                        .or_else(|| Some(serde_json::json!(li as f64 * ri as f64)))
-                        .ok_or_else(|| {
-                            ExpressionError::expression_eval_error("Arithmetic overflow")
-                        })
+                    let result = li.checked_mul(ri).map_or_else(
+                        || serde_json::json!(li as f64 * ri as f64),
+                        |v| Value::Number(v.into()),
+                    );
+                    Ok(result)
                 } else {
                     let lf = self.number_to_f64(l)?;
                     let rf = self.number_to_f64(r)?;
@@ -409,8 +518,22 @@ impl Evaluator {
                 if rf == 0.0 {
                     return Err(ExpressionError::expression_division_by_zero());
                 }
+                // Reject non-finite divisor (NaN, ±∞). `serde_json::json!(NaN)`
+                // silently converts to `Value::Null`, which would surface as
+                // `1 / NaN = null` instead of an error.
+                if !rf.is_finite() {
+                    return Err(ExpressionError::expression_eval_error(
+                        "division by non-finite number",
+                    ));
+                }
 
-                Ok(serde_json::json!(lf / rf))
+                let result = lf / rf;
+                if !result.is_finite() {
+                    return Err(ExpressionError::expression_eval_error(
+                        "division produced a non-finite result",
+                    ));
+                }
+                Ok(serde_json::json!(result))
             }
             _ => Err(ExpressionError::expression_type_error(
                 "number",
@@ -821,24 +944,33 @@ impl Evaluator {
         name: &str,
         args: &[Value],
         context: &EvaluationContext,
-        _depth: usize,
+        _frame: &mut EvalFrame,
     ) -> ExpressionResult<Value> {
         self.ensure_function_allowed(name, context)?;
         self.builtins.call(name, args, self, context)
     }
 
-    /// Evaluate a lambda expression with a parameter value
-    pub fn eval_lambda(
+    /// Evaluate a lambda expression with a parameter value.
+    ///
+    /// Visibility is `pub(crate)` — external callers cannot construct
+    /// an [`EvalFrame`], and exposing a wrapper that would create a
+    /// fresh frame would reopen the CO-C1-01 lambda DoS bypass.
+    pub(crate) fn eval_lambda(
         &self,
         param: &str,
         body: &Expr,
         value: &Value,
         context: &EvaluationContext,
+        frame: &mut EvalFrame,
     ) -> ExpressionResult<Value> {
-        // Create a new context with the lambda parameter
+        // Create a new context with the lambda parameter. Note: we
+        // reuse the caller's `frame` so the step budget accumulates
+        // across every lambda application. Do NOT switch this to
+        // `self.eval(...)` — doing so would construct a fresh frame
+        // and defeat the whole budget.
         let mut lambda_context = context.clone();
         lambda_context.set_lambda_var(param, value.clone());
-        self.eval(body, &lambda_context)
+        self.eval_with_frame(body, &lambda_context, frame)
     }
 
     /// Handle higher-order functions that require lambda expressions.
@@ -849,22 +981,22 @@ impl Evaluator {
         name: &str,
         args: &[Expr],
         context: &EvaluationContext,
-        depth: usize,
+        frame: &mut EvalFrame,
     ) -> Option<ExpressionResult<Value>> {
         if let Err(err) = self.ensure_function_allowed(name, context) {
             return Some(Err(err));
         }
 
         match name {
-            "filter" => Some(self.eval_filter(args, context, depth)),
-            "map" => Some(self.eval_map(args, context, depth)),
-            "reduce" => Some(self.eval_reduce(args, context, depth)),
-            "find" => Some(self.eval_find(args, context, depth)),
-            "find_index" => Some(self.eval_find_index(args, context, depth)),
-            "every" | "all" => Some(self.eval_every(args, context, depth)),
-            "some" | "any" => Some(self.eval_some(args, context, depth)),
-            "group_by" => Some(self.eval_group_by(args, context, depth)),
-            "flat_map" => Some(self.eval_flat_map(args, context, depth)),
+            "filter" => Some(self.eval_filter(args, context, frame)),
+            "map" => Some(self.eval_map(args, context, frame)),
+            "reduce" => Some(self.eval_reduce(args, context, frame)),
+            "find" => Some(self.eval_find(args, context, frame)),
+            "find_index" => Some(self.eval_find_index(args, context, frame)),
+            "every" | "all" => Some(self.eval_every(args, context, frame)),
+            "some" | "any" => Some(self.eval_some(args, context, frame)),
+            "group_by" => Some(self.eval_group_by(args, context, frame)),
+            "flat_map" => Some(self.eval_flat_map(args, context, frame)),
             _ => None,
         }
     }
@@ -996,7 +1128,7 @@ impl Evaluator {
         &self,
         args: &[Expr],
         context: &EvaluationContext,
-        depth: usize,
+        frame: &mut EvalFrame,
     ) -> ExpressionResult<Value> {
         if args.len() != 2 {
             return Err(ExpressionError::expression_invalid_argument(
@@ -1006,7 +1138,7 @@ impl Evaluator {
         }
 
         // Evaluate the array argument
-        let array_val = self.eval_with_depth(&args[0], context, depth + 1)?;
+        let array_val = self.eval_with_frame(&args[0], context, frame)?;
         let array = array_val.as_array().ok_or_else(|| {
             ExpressionError::expression_type_error(
                 "array",
@@ -1028,7 +1160,7 @@ impl Evaluator {
         // Filter the array
         let mut result = Vec::with_capacity(array.len());
         for item in array.iter() {
-            let predicate_result = self.eval_lambda(param, body, item, context)?;
+            let predicate_result = self.eval_lambda(param, body, item, context, frame)?;
             if self.coerce_boolean(&predicate_result, context)? {
                 result.push(item.clone());
             }
@@ -1045,7 +1177,7 @@ impl Evaluator {
         &self,
         args: &[Expr],
         context: &EvaluationContext,
-        depth: usize,
+        frame: &mut EvalFrame,
     ) -> ExpressionResult<Value> {
         if args.len() != 2 {
             return Err(ExpressionError::expression_invalid_argument(
@@ -1055,7 +1187,7 @@ impl Evaluator {
         }
 
         // Evaluate the array argument
-        let array_val = self.eval_with_depth(&args[0], context, depth + 1)?;
+        let array_val = self.eval_with_frame(&args[0], context, frame)?;
         let array = array_val.as_array().ok_or_else(|| {
             ExpressionError::expression_type_error(
                 "array",
@@ -1077,7 +1209,7 @@ impl Evaluator {
         // Map the array
         let mut result = Vec::with_capacity(array.len());
         for item in array.iter() {
-            let transformed = self.eval_lambda(param, body, item, context)?;
+            let transformed = self.eval_lambda(param, body, item, context, frame)?;
             result.push(transformed);
         }
 
@@ -1095,7 +1227,7 @@ impl Evaluator {
         &self,
         args: &[Expr],
         context: &EvaluationContext,
-        depth: usize,
+        frame: &mut EvalFrame,
     ) -> ExpressionResult<Value> {
         if args.len() != 3 {
             return Err(ExpressionError::expression_invalid_argument(
@@ -1105,7 +1237,7 @@ impl Evaluator {
         }
 
         // Evaluate the array argument
-        let array_val = self.eval_with_depth(&args[0], context, depth + 1)?;
+        let array_val = self.eval_with_frame(&args[0], context, frame)?;
         let array = array_val.as_array().ok_or_else(|| {
             ExpressionError::expression_type_error(
                 "array",
@@ -1114,7 +1246,7 @@ impl Evaluator {
         })?;
 
         // Evaluate the initial value
-        let initial = self.eval_with_depth(&args[1], context, depth + 1)?;
+        let initial = self.eval_with_frame(&args[1], context, frame)?;
 
         // Extract the lambda
         let (param, body) = match &args[2] {
@@ -1127,14 +1259,17 @@ impl Evaluator {
             }
         };
 
-        // Reduce the array
+        // Reduce the array. Each iteration reuses the caller's frame
+        // so the step budget is enforced across every element — the
+        // previous `self.eval(body, ...)` pattern reset the counter on
+        // every element and was the CO-C1-01 DoS bypass.
         let mut accumulator = initial;
         for item in array.iter() {
             // Create context with both accumulator and current item
             let mut reduce_context = context.clone();
             reduce_context.set_lambda_var("$acc", accumulator.clone());
             reduce_context.set_lambda_var(param, item.clone());
-            accumulator = self.eval(body, &reduce_context)?;
+            accumulator = self.eval_with_frame(body, &reduce_context, frame)?;
         }
 
         Ok(accumulator)
@@ -1148,7 +1283,7 @@ impl Evaluator {
         &self,
         args: &[Expr],
         context: &EvaluationContext,
-        depth: usize,
+        frame: &mut EvalFrame,
     ) -> ExpressionResult<Value> {
         if args.len() != 2 {
             return Err(ExpressionError::expression_invalid_argument(
@@ -1157,7 +1292,7 @@ impl Evaluator {
             ));
         }
 
-        let array_val = self.eval_with_depth(&args[0], context, depth + 1)?;
+        let array_val = self.eval_with_frame(&args[0], context, frame)?;
         let array = array_val.as_array().ok_or_else(|| {
             ExpressionError::expression_type_error(
                 "array",
@@ -1176,7 +1311,7 @@ impl Evaluator {
         };
 
         for item in array.iter() {
-            let predicate_result = self.eval_lambda(param, body, item, context)?;
+            let predicate_result = self.eval_lambda(param, body, item, context, frame)?;
             if self.coerce_boolean(&predicate_result, context)? {
                 return Ok(item.clone());
             }
@@ -1193,7 +1328,7 @@ impl Evaluator {
         &self,
         args: &[Expr],
         context: &EvaluationContext,
-        depth: usize,
+        frame: &mut EvalFrame,
     ) -> ExpressionResult<Value> {
         if args.len() != 2 {
             return Err(ExpressionError::expression_invalid_argument(
@@ -1202,7 +1337,7 @@ impl Evaluator {
             ));
         }
 
-        let array_val = self.eval_with_depth(&args[0], context, depth + 1)?;
+        let array_val = self.eval_with_frame(&args[0], context, frame)?;
         let array = array_val.as_array().ok_or_else(|| {
             ExpressionError::expression_type_error(
                 "array",
@@ -1221,7 +1356,7 @@ impl Evaluator {
         };
 
         for item in array.iter() {
-            let predicate_result = self.eval_lambda(param, body, item, context)?;
+            let predicate_result = self.eval_lambda(param, body, item, context, frame)?;
             if !self.coerce_boolean(&predicate_result, context)? {
                 return Ok(Value::Bool(false));
             }
@@ -1238,7 +1373,7 @@ impl Evaluator {
         &self,
         args: &[Expr],
         context: &EvaluationContext,
-        depth: usize,
+        frame: &mut EvalFrame,
     ) -> ExpressionResult<Value> {
         if args.len() != 2 {
             return Err(ExpressionError::expression_invalid_argument(
@@ -1247,7 +1382,7 @@ impl Evaluator {
             ));
         }
 
-        let array_val = self.eval_with_depth(&args[0], context, depth + 1)?;
+        let array_val = self.eval_with_frame(&args[0], context, frame)?;
         let array = array_val.as_array().ok_or_else(|| {
             ExpressionError::expression_type_error(
                 "array",
@@ -1266,7 +1401,7 @@ impl Evaluator {
         };
 
         for item in array.iter() {
-            let predicate_result = self.eval_lambda(param, body, item, context)?;
+            let predicate_result = self.eval_lambda(param, body, item, context, frame)?;
             if self.coerce_boolean(&predicate_result, context)? {
                 return Ok(Value::Bool(true));
             }
@@ -1283,7 +1418,7 @@ impl Evaluator {
         &self,
         args: &[Expr],
         context: &EvaluationContext,
-        depth: usize,
+        frame: &mut EvalFrame,
     ) -> ExpressionResult<Value> {
         if args.len() != 2 {
             return Err(ExpressionError::expression_invalid_argument(
@@ -1292,7 +1427,7 @@ impl Evaluator {
             ));
         }
 
-        let array_val = self.eval_with_depth(&args[0], context, depth + 1)?;
+        let array_val = self.eval_with_frame(&args[0], context, frame)?;
         let array = array_val.as_array().ok_or_else(|| {
             ExpressionError::expression_type_error(
                 "array",
@@ -1311,7 +1446,7 @@ impl Evaluator {
         };
 
         for (i, item) in array.iter().enumerate() {
-            let predicate_result = self.eval_lambda(param, body, item, context)?;
+            let predicate_result = self.eval_lambda(param, body, item, context, frame)?;
             if self.coerce_boolean(&predicate_result, context)? {
                 return Ok(Value::Number((i as i64).into()));
             }
@@ -1329,7 +1464,7 @@ impl Evaluator {
         &self,
         args: &[Expr],
         context: &EvaluationContext,
-        depth: usize,
+        frame: &mut EvalFrame,
     ) -> ExpressionResult<Value> {
         if args.len() != 2 {
             return Err(ExpressionError::expression_invalid_argument(
@@ -1338,7 +1473,7 @@ impl Evaluator {
             ));
         }
 
-        let array_val = self.eval_with_depth(&args[0], context, depth + 1)?;
+        let array_val = self.eval_with_frame(&args[0], context, frame)?;
         let array = array_val.as_array().ok_or_else(|| {
             ExpressionError::expression_type_error(
                 "array",
@@ -1358,7 +1493,7 @@ impl Evaluator {
 
         let mut groups = serde_json::Map::new();
         for item in array.iter() {
-            let key_val = self.eval_lambda(param, body, item, context)?;
+            let key_val = self.eval_lambda(param, body, item, context, frame)?;
             let key = match &key_val {
                 Value::String(s) => s.clone(),
                 Value::Number(n) => n.to_string(),
@@ -1396,7 +1531,7 @@ impl Evaluator {
         &self,
         args: &[Expr],
         context: &EvaluationContext,
-        depth: usize,
+        frame: &mut EvalFrame,
     ) -> ExpressionResult<Value> {
         if args.len() != 2 {
             return Err(ExpressionError::expression_invalid_argument(
@@ -1405,7 +1540,7 @@ impl Evaluator {
             ));
         }
 
-        let array_val = self.eval_with_depth(&args[0], context, depth + 1)?;
+        let array_val = self.eval_with_frame(&args[0], context, frame)?;
         let array = array_val.as_array().ok_or_else(|| {
             ExpressionError::expression_type_error(
                 "array",
@@ -1425,7 +1560,7 @@ impl Evaluator {
 
         let mut result = Vec::new();
         for item in array.iter() {
-            let transformed = self.eval_lambda(param, body, item, context)?;
+            let transformed = self.eval_lambda(param, body, item, context, frame)?;
             match transformed {
                 Value::Array(inner) => result.extend(inner),
                 other => result.push(other),
@@ -1993,5 +2128,334 @@ mod tests {
 
         let result = evaluator.eval(&expr, &context).unwrap();
         assert_eq!(result.as_bool(), Some(true));
+    }
+
+    // ────────────────────────────────────────────────────────────────
+    // CO-C1-01 / issue #252 regression guards — step-budget enforcement
+    // across higher-order combinators, with thread-safety under a
+    // shared Arc<Evaluator>.
+    // ────────────────────────────────────────────────────────────────
+
+    /// Build an `Evaluator` with a hard step budget.
+    fn create_evaluator_with_step_budget(max_steps: usize) -> Evaluator {
+        let registry = Arc::new(BuiltinRegistry::new());
+        let policy = EvaluationPolicy::new().with_max_eval_steps(max_steps);
+        Evaluator::with_policy(registry, Some(Arc::new(policy)))
+    }
+
+    /// Build a literal array `[0, 1, ..., n-1]`.
+    fn literal_array(n: usize) -> Expr {
+        Expr::Array(
+            (0..n)
+                .map(|i| Expr::Literal(Value::Number((i as i64).into())))
+                .collect(),
+        )
+    }
+
+    /// `x => x + 1` — one lambda body evaluation = ~3 steps (binary op +
+    /// two operands). Used as a cheap predicate that nonetheless multiplies
+    /// out under higher-order traversal.
+    fn increment_lambda() -> Expr {
+        Expr::Lambda {
+            param: Arc::from("x"),
+            body: Box::new(Expr::Binary {
+                left: Box::new(Expr::Variable(Arc::from("x"))),
+                op: BinaryOp::Add,
+                right: Box::new(Expr::Literal(Value::Number(1.into()))),
+            }),
+        }
+    }
+
+    #[test]
+    fn step_budget_bounds_linear_expression() {
+        // Sanity check: a trivial top-level expression still fires the
+        // step-limit error when the cap is tight.
+        let evaluator = create_evaluator_with_step_budget(2);
+        let context = EvaluationContext::new();
+        let expr = Expr::Binary {
+            left: Box::new(Expr::Binary {
+                left: Box::new(Expr::Literal(Value::Number(1.into()))),
+                op: BinaryOp::Add,
+                right: Box::new(Expr::Literal(Value::Number(2.into()))),
+            }),
+            op: BinaryOp::Add,
+            right: Box::new(Expr::Literal(Value::Number(3.into()))),
+        };
+        let err = evaluator.eval(&expr, &context).unwrap_err();
+        assert!(
+            err.to_string().contains("Maximum evaluation steps"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn step_budget_bounds_map_over_large_array() {
+        // Pre-fix: `eval_lambda` called `self.eval(...)` which reset the
+        // step counter per element, so this test passed. After the fix
+        // the lambda reuses the caller's frame and the cap stops the
+        // traversal after a handful of elements.
+        let evaluator = create_evaluator_with_step_budget(50);
+        let context = EvaluationContext::new();
+        let expr = Expr::FunctionCall {
+            name: Arc::from("map"),
+            args: vec![literal_array(1000), increment_lambda()],
+        };
+        let err = evaluator
+            .eval(&expr, &context)
+            .expect_err("map over 1000 elements must exceed a 50-step budget");
+        assert!(
+            err.to_string().contains("Maximum evaluation steps"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn step_budget_bounds_nested_higher_order() {
+        // `map(arr, x => filter(arr2, y => y > x))` — nested lambdas
+        // used to double-reset the counter. Now the budget is honoured
+        // across the whole traversal.
+        let evaluator = create_evaluator_with_step_budget(80);
+        let context = EvaluationContext::new();
+        let inner_filter = Expr::FunctionCall {
+            name: Arc::from("filter"),
+            args: vec![
+                literal_array(20),
+                Expr::Lambda {
+                    param: Arc::from("y"),
+                    body: Box::new(Expr::Binary {
+                        left: Box::new(Expr::Variable(Arc::from("y"))),
+                        op: BinaryOp::GreaterThan,
+                        right: Box::new(Expr::Variable(Arc::from("x"))),
+                    }),
+                },
+            ],
+        };
+        let expr = Expr::FunctionCall {
+            name: Arc::from("map"),
+            args: vec![
+                literal_array(20),
+                Expr::Lambda {
+                    param: Arc::from("x"),
+                    body: Box::new(inner_filter),
+                },
+            ],
+        };
+        let err = evaluator
+            .eval(&expr, &context)
+            .expect_err("nested map/filter must exceed an 80-step budget");
+        assert!(err.to_string().contains("Maximum evaluation steps"));
+    }
+
+    #[test]
+    fn step_budget_bounds_reduce_across_iterations() {
+        // `reduce` clones the context per iteration — before the fix
+        // the clone carried a reset step counter. Afterwards, each
+        // iteration reuses the caller's frame.
+        let evaluator = create_evaluator_with_step_budget(30);
+        let context = EvaluationContext::new();
+        let expr = Expr::FunctionCall {
+            name: Arc::from("reduce"),
+            args: vec![
+                literal_array(100),
+                Expr::Literal(Value::Number(0.into())),
+                Expr::Lambda {
+                    param: Arc::from("x"),
+                    body: Box::new(Expr::Binary {
+                        left: Box::new(Expr::Variable(Arc::from("$acc"))),
+                        op: BinaryOp::Add,
+                        right: Box::new(Expr::Variable(Arc::from("x"))),
+                    }),
+                },
+            ],
+        };
+        let err = evaluator
+            .eval(&expr, &context)
+            .expect_err("reduce over 100 elements must exceed a 30-step budget");
+        assert!(err.to_string().contains("Maximum evaluation steps"));
+    }
+
+    #[test]
+    fn step_budget_bounds_flat_map() {
+        let evaluator = create_evaluator_with_step_budget(40);
+        let context = EvaluationContext::new();
+        let expr = Expr::FunctionCall {
+            name: Arc::from("flat_map"),
+            args: vec![literal_array(200), increment_lambda()],
+        };
+        let err = evaluator
+            .eval(&expr, &context)
+            .expect_err("flat_map over 200 elements must exceed a 40-step budget");
+        assert!(err.to_string().contains("Maximum evaluation steps"));
+    }
+
+    #[test]
+    fn step_budget_bounds_group_by() {
+        let evaluator = create_evaluator_with_step_budget(40);
+        let context = EvaluationContext::new();
+        let expr = Expr::FunctionCall {
+            name: Arc::from("group_by"),
+            args: vec![literal_array(200), increment_lambda()],
+        };
+        let err = evaluator
+            .eval(&expr, &context)
+            .expect_err("group_by over 200 elements must exceed a 40-step budget");
+        assert!(err.to_string().contains("Maximum evaluation steps"));
+    }
+
+    #[test]
+    fn step_budget_resets_between_successive_eval_calls() {
+        // Guard against a future mistake that would move the step
+        // counter onto `EvaluationContext` (or `Evaluator`) and have
+        // it leak across top-level calls. Two back-to-back `eval`
+        // calls on the same evaluator and context must each start
+        // from a fresh budget.
+        let evaluator = create_evaluator_with_step_budget(10);
+        let context = EvaluationContext::new();
+        let expr = Expr::Binary {
+            left: Box::new(Expr::Literal(Value::Number(1.into()))),
+            op: BinaryOp::Add,
+            right: Box::new(Expr::Literal(Value::Number(2.into()))),
+        };
+        // First call: 3 steps, well under the cap.
+        let r1 = evaluator.eval(&expr, &context).unwrap();
+        assert_eq!(r1.as_i64(), Some(3));
+        // Second call: also starts at 0 steps, must also succeed.
+        let r2 = evaluator.eval(&expr, &context).unwrap();
+        assert_eq!(r2.as_i64(), Some(3));
+    }
+
+    #[test]
+    fn step_budget_respects_context_policy_when_evaluator_has_none() {
+        // An evaluator with no policy can still be bounded via the
+        // `EvaluationContext` builder's policy override.
+        let evaluator = create_evaluator();
+        let policy = EvaluationPolicy::new().with_max_eval_steps(5);
+        let context = EvaluationContext::builder().policy(policy).build();
+        let expr = Expr::FunctionCall {
+            name: Arc::from("map"),
+            args: vec![literal_array(100), increment_lambda()],
+        };
+        let err = evaluator.eval(&expr, &context).expect_err(
+            "context-level budget of 5 must also bound a map over 100 elements",
+        );
+        assert!(err.to_string().contains("Maximum evaluation steps"));
+    }
+
+    #[test]
+    fn step_budget_error_path_does_not_leak_depth_into_next_call() {
+        // A recursion-depth error on one `eval` call must not
+        // contaminate the next call's depth tracking — each top-level
+        // call builds a fresh `EvalFrame` on the caller's stack.
+        let evaluator = create_evaluator();
+        let context = EvaluationContext::new();
+
+        // Build a deeply nested unary-not chain that exceeds MAX_RECURSION_DEPTH.
+        let mut deep_expr = Expr::Literal(Value::Bool(true));
+        for _ in 0..(MAX_RECURSION_DEPTH + 10) {
+            deep_expr = Expr::Not(Box::new(deep_expr));
+        }
+        let err = evaluator.eval(&deep_expr, &context).unwrap_err();
+        assert!(err.to_string().contains("Maximum recursion depth"));
+
+        // Next call on the same evaluator must start fresh.
+        let ok = evaluator
+            .eval(&Expr::Literal(Value::Bool(true)), &context)
+            .expect("fresh call after a depth error must succeed");
+        assert_eq!(ok.as_bool(), Some(true));
+    }
+
+    #[test]
+    fn step_budget_concurrent_arc_evaluator_is_independent_per_task() {
+        // Thread-safety regression: N threads sharing a single
+        // `Arc<Evaluator>` must each get their own stack-local
+        // `EvalFrame`. Before the fix, all threads shared a single
+        // `AtomicUsize` counter on the evaluator and could see
+        // spurious "step limit exceeded" errors caused by another
+        // thread's work.
+        use std::thread;
+
+        let evaluator = Arc::new(create_evaluator_with_step_budget(500));
+        let expr = Arc::new(Expr::FunctionCall {
+            name: Arc::from("map"),
+            args: vec![literal_array(50), increment_lambda()],
+        });
+
+        let mut handles = Vec::new();
+        for _ in 0..8 {
+            let evaluator = Arc::clone(&evaluator);
+            let expr = Arc::clone(&expr);
+            handles.push(thread::spawn(move || {
+                let context = EvaluationContext::new();
+                // 50 elements × ~3-step body + overhead is well under
+                // 500. Every thread should succeed. If the counters
+                // were shared, some threads would see 500 exceeded.
+                for _ in 0..10 {
+                    evaluator
+                        .eval(&expr, &context)
+                        .expect("per-thread budget must be independent");
+                }
+            }));
+        }
+        for h in handles {
+            h.join().expect("worker thread panicked");
+        }
+    }
+
+    #[test]
+    fn step_budget_bounds_reduce_nested_in_map() {
+        // Reduce has its own per-iteration context clone path (the
+        // `$acc` lambda var lives on a fresh clone per element). The
+        // other nested test exercises map + filter; this one exercises
+        // map-of-reduce so the reduce-specific clone cannot become a
+        // hidden counter reset in future refactors.
+        let evaluator = create_evaluator_with_step_budget(80);
+        let context = EvaluationContext::new();
+        let inner_reduce = Expr::FunctionCall {
+            name: Arc::from("reduce"),
+            args: vec![
+                literal_array(10),
+                Expr::Literal(Value::Number(0.into())),
+                Expr::Lambda {
+                    param: Arc::from("y"),
+                    body: Box::new(Expr::Binary {
+                        left: Box::new(Expr::Variable(Arc::from("$acc"))),
+                        op: BinaryOp::Add,
+                        right: Box::new(Expr::Variable(Arc::from("y"))),
+                    }),
+                },
+            ],
+        };
+        let expr = Expr::FunctionCall {
+            name: Arc::from("map"),
+            args: vec![
+                literal_array(10),
+                Expr::Lambda {
+                    param: Arc::from("x"),
+                    body: Box::new(inner_reduce),
+                },
+            ],
+        };
+        let err = evaluator
+            .eval(&expr, &context)
+            .expect_err("map-of-reduce over 10x10 must exceed an 80-step budget");
+        assert!(err.to_string().contains("Maximum evaluation steps"));
+    }
+
+    #[test]
+    fn step_budget_permissive_budget_still_completes_large_map() {
+        // Smoke test that a reasonable budget does NOT spuriously
+        // reject a realistic higher-order expression — guards against
+        // off-by-one or arithmetic regressions in `tick`.
+        let evaluator = create_evaluator_with_step_budget(10_000);
+        let context = EvaluationContext::new();
+        let expr = Expr::FunctionCall {
+            name: Arc::from("map"),
+            args: vec![literal_array(100), increment_lambda()],
+        };
+        let result = evaluator.eval(&expr, &context).unwrap();
+        let arr = result.as_array().expect("map returns an array");
+        assert_eq!(arr.len(), 100);
+        assert_eq!(arr.first().and_then(|v| v.as_i64()), Some(1));
+        assert_eq!(arr.last().and_then(|v| v.as_i64()), Some(100));
     }
 }
