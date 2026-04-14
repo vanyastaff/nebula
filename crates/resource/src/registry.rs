@@ -23,6 +23,13 @@ pub trait AnyManagedResource: Send + Sync + 'static {
 
     /// Returns a reference to `self` as `&dyn Any` for downcasting.
     fn as_any_arc(self: Arc<Self>) -> Arc<dyn Any + Send + Sync>;
+
+    /// Returns the concrete `TypeId` used as the secondary index key.
+    ///
+    /// For real `ManagedResource<R>` this is `TypeId::of::<ManagedResource<R>>()`.
+    /// Used by [`Registry::register`] to scrub stale rows from `type_index`
+    /// when an entry is replaced in place (#382).
+    fn managed_type_id(&self) -> TypeId;
 }
 
 impl<R: Resource> AnyManagedResource for ManagedResource<R> {
@@ -32,6 +39,10 @@ impl<R: Resource> AnyManagedResource for ManagedResource<R> {
 
     fn as_any_arc(self: Arc<Self>) -> Arc<dyn Any + Send + Sync> {
         self
+    }
+
+    fn managed_type_id(&self) -> TypeId {
+        TypeId::of::<ManagedResource<R>>()
     }
 }
 
@@ -74,15 +85,23 @@ impl Registry {
         scope: ScopeLevel,
         managed: Arc<dyn AnyManagedResource>,
     ) {
-        self.type_index.insert(type_id, key.clone());
+        let mut entries = self.entries.entry(key.clone()).or_default();
 
-        let mut entries = self.entries.entry(key).or_default();
-        // Replace existing entry with same scope, if any.
+        // #382: if we're replacing an entry at the same scope whose concrete
+        // TypeId differs from the new one, scrub the prior TypeId row from
+        // type_index before installing the new mapping. Otherwise the stale
+        // row leaks and `get_typed::<OldR>` finds a key it can't downcast.
         if let Some(pos) = entries.iter().position(|e| e.scope == scope) {
+            let prev_type_id = entries[pos].managed.managed_type_id();
+            if prev_type_id != type_id {
+                self.type_index.remove_if(&prev_type_id, |_, k| k == &key);
+            }
             entries[pos] = RegistryEntry { scope, managed };
         } else {
             entries.push(RegistryEntry { scope, managed });
         }
+
+        self.type_index.insert(type_id, key);
     }
 
     /// Looks up a managed resource by key and scope.
@@ -170,5 +189,67 @@ impl Registry {
 impl Default for Registry {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    struct FakeA;
+    struct FakeB;
+
+    impl AnyManagedResource for FakeA {
+        fn resource_key(&self) -> ResourceKey {
+            ResourceKey::new("fake").unwrap()
+        }
+        fn as_any_arc(self: Arc<Self>) -> Arc<dyn Any + Send + Sync> {
+            self
+        }
+        fn managed_type_id(&self) -> TypeId {
+            TypeId::of::<FakeA>()
+        }
+    }
+
+    impl AnyManagedResource for FakeB {
+        fn resource_key(&self) -> ResourceKey {
+            ResourceKey::new("fake").unwrap()
+        }
+        fn as_any_arc(self: Arc<Self>) -> Arc<dyn Any + Send + Sync> {
+            self
+        }
+        fn managed_type_id(&self) -> TypeId {
+            TypeId::of::<FakeB>()
+        }
+    }
+
+    #[test]
+    fn register_replace_drops_stale_type_id_row() {
+        let reg = Registry::new();
+        let key = ResourceKey::new("fake").unwrap();
+        let scope = ScopeLevel::Global;
+
+        reg.register(
+            key.clone(),
+            TypeId::of::<FakeA>(),
+            scope.clone(),
+            Arc::new(FakeA),
+        );
+        assert!(reg.type_index.contains_key(&TypeId::of::<FakeA>()));
+
+        // Replace at the same key+scope with a different concrete type.
+        reg.register(
+            key.clone(),
+            TypeId::of::<FakeB>(),
+            scope.clone(),
+            Arc::new(FakeB),
+        );
+
+        // The stale TypeId row for FakeA must be gone (#382).
+        assert!(
+            !reg.type_index.contains_key(&TypeId::of::<FakeA>()),
+            "stale TypeId for FakeA still in type_index after replace"
+        );
+        assert!(reg.type_index.contains_key(&TypeId::of::<FakeB>()));
     }
 }
