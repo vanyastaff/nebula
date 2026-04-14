@@ -105,7 +105,9 @@ async fn concurrent_start_watching_allows_only_single_winner() {
     for _ in 0..attempts {
         let watcher = Arc::clone(&watcher);
         let source = source.clone();
-        tasks.push(tokio::spawn(async move { watcher.start_watching(&[source]).await }));
+        tasks.push(tokio::spawn(async move {
+            watcher.start_watching(&[source]).await
+        }));
     }
 
     let results = futures::future::join_all(tasks).await;
