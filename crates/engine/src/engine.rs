@@ -13,7 +13,7 @@ use std::{
         Arc,
         atomic::{AtomicU32, AtomicU64, Ordering},
     },
-    time::Instant,
+    time::{Duration, Instant},
 };
 
 use dashmap::DashMap;
@@ -1050,30 +1050,80 @@ impl WorkflowEngine {
                 break;
             }
 
-            let Some(join_result) = join_set.join_next().await else {
-                break;
+            // Race join_set against the wall-clock deadline so a hung node
+            // cannot starve budget enforcement. The Phase 1 check_budget call
+            // only fires while ready_queue has work; once everything is in
+            // flight, this select is the sole budget guard.
+            let wall_clock_remaining: Option<Duration> = budget
+                .max_duration
+                .map(|max_dur| max_dur.saturating_sub(started.elapsed()));
+            let sleep_fut = async {
+                if let Some(d) = wall_clock_remaining {
+                    tokio::time::sleep(d).await
+                } else {
+                    std::future::pending::<()>().await
+                }
+            };
+            tokio::pin!(sleep_fut);
+
+            let join_result = tokio::select! {
+                result = join_set.join_next() => match result {
+                    Some(r) => r,
+                    None => break,
+                },
+                () = &mut sleep_fut => {
+                    cancel_token.cancel();
+                    while join_set.join_next().await.is_some() {}
+                    return Some((
+                        NodeId::new(),
+                        "execution budget exceeded: max_duration".to_string(),
+                    ));
+                }
+                () = cancel_token.cancelled() => {
+                    while join_set.join_next().await.is_some() {}
+                    break;
+                }
             };
 
             // Phase 3: Process the completed task
             match join_result {
-                Ok((node_id, Ok(action_result))) => {
-                    // Node ran and produced a result
-
-                    // Track retry attempts for budget enforcement.
-                    // ActionResult::Retry signals the action requested a retry;
-                    // count it before any retry mechanism re-enqueues the node.
-                    if matches!(action_result, ActionResult::Retry { .. }) {
-                        total_retries.fetch_add(1, Ordering::Relaxed);
-                        // TODO: implement retry re-enqueue; currently treated as terminal
-                        // (follow-up plan)
-                    }
-
-                    mark_node_completed(exec_state, node_id);
-                    self.emit_event(ExecutionEvent::NodeCompleted {
+                Ok((node_id, Ok(ActionResult::Retry { .. }))) => {
+                    // ActionResult::Retry has no scheduler yet; treat it as a node
+                    // failure for at-least-once semantics (#290/#296 short-term).
+                    total_retries.fetch_add(1, Ordering::Relaxed);
+                    let err = EngineError::Runtime(nebula_runtime::RuntimeError::ActionError(
+                        nebula_action::error::ActionError::retryable(
+                            "ActionResult::Retry is not yet implemented by the engine; \
+                             treating as node failure (short-term — see issues #290/#296)",
+                        ),
+                    ));
+                    mark_node_failed(exec_state, node_id, &err);
+                    self.checkpoint_node(execution_id, node_id, outputs, exec_state, repo_version)
+                        .await;
+                    self.emit_event(ExecutionEvent::NodeFailed {
                         execution_id,
                         node_id,
-                        elapsed: started.elapsed(),
+                        error: err.to_string(),
                     });
+                    let abort = handle_node_failure(
+                        node_id,
+                        &err.to_string(),
+                        error_strategy,
+                        graph,
+                        outputs,
+                        &mut activated_edges,
+                        &mut resolved_edges,
+                        &required_count,
+                        &mut ready_queue,
+                        exec_state,
+                    );
+                    if let Some(err_msg) = abort {
+                        cancel_token.cancel();
+                        return Some((node_id, err_msg));
+                    }
+                }
+                Ok((node_id, Ok(action_result))) => {
+                    mark_node_completed(exec_state, node_id);
 
                     // Track output size for budget enforcement
                     if let Some(output) = outputs.get(&node_id) {
@@ -1083,13 +1133,19 @@ impl WorkflowEngine {
                         total_output_bytes.fetch_add(bytes, Ordering::Relaxed);
                     }
 
-                    // Checkpoint: persist node output + execution state
+                    // Persist node output + execution state, then record the
+                    // idempotency key, before any external observer learns the
+                    // node is done. This guarantees durability precedes
+                    // visibility (#297).
                     self.checkpoint_node(execution_id, node_id, outputs, exec_state, repo_version)
                         .await;
-
-                    // Record idempotency key after successful execution so that
-                    // any subsequent attempt for this node is skipped.
                     self.record_idempotency(execution_id, node_id).await;
+
+                    self.emit_event(ExecutionEvent::NodeCompleted {
+                        execution_id,
+                        node_id,
+                        elapsed: started.elapsed(),
+                    });
 
                     // Evaluate outgoing edges and update frontier
                     process_outgoing_edges(
@@ -1105,9 +1161,12 @@ impl WorkflowEngine {
                     );
                 }
                 Ok((node_id, Err(ref err))) => {
-                    // Node failed at runtime — delegate to
-                    // strategy-aware handler.
+                    // Node failed at runtime — persist before any observer
+                    // learns the node is done and before successors advance
+                    // (#297).
                     mark_node_failed(exec_state, node_id, err);
+                    self.checkpoint_node(execution_id, node_id, outputs, exec_state, repo_version)
+                        .await;
                     self.emit_event(ExecutionEvent::NodeFailed {
                         execution_id,
                         node_id,
@@ -1126,12 +1185,6 @@ impl WorkflowEngine {
                         &mut ready_queue,
                         exec_state,
                     );
-
-                    // Checkpoint *after* handle_node_failure so the persisted
-                    // node state reflects the final resolved state (e.g.
-                    // Completed for IgnoreErrors, Failed for FailFast/Continue).
-                    self.checkpoint_node(execution_id, node_id, outputs, exec_state, repo_version)
-                        .await;
 
                     if let Some(err_msg) = abort {
                         cancel_token.cancel();
@@ -1556,14 +1609,26 @@ impl NodeTask {
         .with_credentials(self.credentials.clone())
         .with_resources(self.resources.clone());
 
-        // Acquire rate limit permit if configured.
+        // Acquire rate limit permit if configured. If the limiter rejects the
+        // request, fail the node so ErrorStrategy decides abort/continue.
         if let Some(ref limiter) = self.rate_limiter {
             use nebula_resilience::rate_limiter::RateLimiter;
-            if limiter.acquire().await.is_err() {
+            if let Err(e) = limiter.acquire().await {
                 tracing::warn!(
                     node_id = %self.node_id,
                     action_key = %self.action_key,
-                    "rate limit exceeded, request queued"
+                    error = ?e,
+                    "rate limit exceeded; failing node"
+                );
+                let action_err = nebula_action::error::ActionError::retryable_with_hint(
+                    format!("rate limit exceeded: {e:?}"),
+                    nebula_action::error::RetryHintCode::RateLimited,
+                );
+                return (
+                    self.node_id,
+                    Err(EngineError::Runtime(
+                        nebula_runtime::RuntimeError::ActionError(action_err),
+                    )),
                 );
             }
         }
