@@ -105,8 +105,9 @@ async fn concurrent_start_watching_allows_only_single_winner() {
     for _ in 0..attempts {
         let watcher = Arc::clone(&watcher);
         let source = source.clone();
+        let cancel = tokio_util::sync::CancellationToken::new();
         tasks.push(tokio::spawn(async move {
-            watcher.start_watching(&[source]).await
+            watcher.start_watching(&[source], cancel).await
         }));
     }
 
