@@ -3,6 +3,7 @@
 use async_trait::async_trait;
 use nebula_validator::foundation::{Validate, ValidationError};
 use serde_json::Value;
+use tokio_util::sync::CancellationToken;
 
 use super::{ConfigError, ConfigResult, ConfigSource, SourceMetadata};
 
@@ -77,16 +78,36 @@ where
     }
 }
 
-/// Configuration watcher trait
+/// Configuration watcher trait.
+///
+/// # Cancellation contract
+///
+/// `start_watching` receives a [`CancellationToken`] owned by the [`Config`]
+/// container. Implementations **must** spawn their background tasks in a way
+/// that observes this token and exits promptly when it is cancelled. This is
+/// the only cancellation mechanism `Config::drop` (which is sync and cannot
+/// `block_on` a `stop_watching` future) has to tear watcher tasks down —
+/// anything that only polls a local `AtomicBool` written by `stop_watching`
+/// will leak the spawned task when the owning `Config` is dropped.
+///
+/// [`Config`]: super::Config
 #[async_trait]
 pub trait ConfigWatcher: Send + Sync {
-    /// Start watching configuration sources
-    async fn start_watching(&self, sources: &[ConfigSource]) -> ConfigResult<()>;
+    /// Start watching configuration sources.
+    ///
+    /// `cancel` is the per-`Config` cancel token. Background tasks must
+    /// `select!` against `cancel.cancelled()` (biased towards cancel so
+    /// shutdown wins deterministically) and exit when it fires.
+    async fn start_watching(
+        &self,
+        sources: &[ConfigSource],
+        cancel: CancellationToken,
+    ) -> ConfigResult<()>;
 
-    /// Stop watching
+    /// Stop watching.
     async fn stop_watching(&self) -> ConfigResult<()>;
 
-    /// Check if currently watching
+    /// Check if currently watching.
     fn is_watching(&self) -> bool;
 }
 

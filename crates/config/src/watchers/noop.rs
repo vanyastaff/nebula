@@ -1,6 +1,7 @@
 //! No-operation watcher that does nothing
 
 use async_trait::async_trait;
+use tokio_util::sync::CancellationToken;
 
 use crate::core::{ConfigResult, ConfigSource, ConfigWatcher};
 
@@ -17,7 +18,11 @@ impl NoOpWatcher {
 
 #[async_trait]
 impl ConfigWatcher for NoOpWatcher {
-    async fn start_watching(&self, _sources: &[ConfigSource]) -> ConfigResult<()> {
+    async fn start_watching(
+        &self,
+        _sources: &[ConfigSource],
+        _cancel: CancellationToken,
+    ) -> ConfigResult<()> {
         nebula_log::debug!("NoOpWatcher: start_watching called (no-op)");
         Ok(())
     }
@@ -41,10 +46,12 @@ mod tests {
         let w = NoOpWatcher::new();
         assert!(!w.is_watching());
 
-        w.start_watching(&[ConfigSource::Env]).await.unwrap();
+        w.start_watching(&[ConfigSource::Env], CancellationToken::new())
+            .await
+            .expect("noop watcher never fails");
         assert!(!w.is_watching()); // still false — it's a no-op
 
-        w.stop_watching().await.unwrap();
+        w.stop_watching().await.expect("noop watcher never fails");
         assert!(!w.is_watching());
     }
 }
