@@ -29,6 +29,12 @@ use nebula_resilience::SlidingWindow;
 /// to prevent unbounded `DashMap` growth.
 const DEFAULT_MAX_PATHS: usize = 10_000;
 
+/// Result of a `path_count` slot reservation attempt.
+enum SlotReservation {
+    Reserved,
+    Saturated,
+}
+
 /// Error returned when a request exceeds the per-path quota.
 #[derive(Debug, Clone, thiserror::Error)]
 #[error("webhook rate limit exceeded for path {path:?} (retry after {retry_after_secs}s)")]
@@ -106,13 +112,40 @@ impl WebhookRateLimiter {
             return Self::acquire(window.clone(), path, self.window.as_secs()).await;
         }
 
-        // New path: check the soft cap before inserting. CAS avoids
-        // unbounded DashMap growth from attacker-controlled paths.
+        // Slow path: get or insert the window atomically via DashMap's
+        // `entry` API. `path_count` is bumped only inside the `Vacant`
+        // arm (via `try_reserve_slot`) so two concurrent first-time
+        // requests for the same path insert exactly one entry and
+        // increment exactly once — the previous pre-CAS-then-entry
+        // ordering could overcount `path_count` and eventually cross
+        // `max_paths` silently, disabling per-path limiting wholesale.
+        use dashmap::mapref::entry::Entry;
+        let window = match self.windows.entry(path.to_string()) {
+            Entry::Occupied(e) => e.get().clone(),
+            Entry::Vacant(v) => match self.try_reserve_slot() {
+                SlotReservation::Reserved => v
+                    .insert(Arc::new(
+                        SlidingWindow::new(self.window, self.max_requests)
+                            .expect("valid config: max_requests >= 1, window > 0"),
+                    ))
+                    .clone(),
+                SlotReservation::Saturated => return Ok(()),
+            },
+        };
+
+        Self::acquire(window, path, self.window.as_secs()).await
+    }
+
+    /// Attempts to reserve a slot in the `path_count` soft cap.
+    ///
+    /// Returns `Reserved` if `path_count` was bumped under the cap;
+    /// `Saturated` if the map has already reached `max_paths` and the
+    /// caller must pass the request through without tracking.
+    fn try_reserve_slot(&self) -> SlotReservation {
         let mut current = self.path_count.load(Ordering::Relaxed);
         loop {
             if current >= self.max_paths {
-                // Soft cap reached — pass through.
-                return Ok(());
+                return SlotReservation::Saturated;
             }
             match self.path_count.compare_exchange_weak(
                 current,
@@ -120,25 +153,10 @@ impl WebhookRateLimiter {
                 Ordering::AcqRel,
                 Ordering::Relaxed,
             ) {
-                Ok(_) => break,
+                Ok(_) => return SlotReservation::Reserved,
                 Err(actual) => current = actual,
             }
         }
-
-        // Slot reserved. Insert the window (or reuse one if a concurrent
-        // thread already inserted for the same path).
-        let window = self
-            .windows
-            .entry(path.to_string())
-            .or_insert_with(|| {
-                Arc::new(
-                    SlidingWindow::new(self.window, self.max_requests)
-                        .expect("valid config: max_requests >= 1, window > 0"),
-                )
-            })
-            .clone();
-
-        Self::acquire(window, path, self.window.as_secs()).await
     }
 
     async fn acquire(

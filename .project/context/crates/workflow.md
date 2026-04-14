@@ -16,3 +16,5 @@ Workflow definition types and DAG model — pure data, no execution.
 - `ParamValue` (definition-time) vs `FieldValues` (runtime, nebula-parameter) — different types.
 - `NodeState` vs `NodeExecutionState` (nebula-execution) — different types.
 - Adding fields to `WorkflowDefinition` requires updating ALL construction sites. Search `WorkflowDefinition {`.
+
+<!-- reviewed: 2026-04-14 -->

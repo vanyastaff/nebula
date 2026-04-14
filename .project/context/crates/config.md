@@ -17,8 +17,13 @@ Multi-source configuration with env interpolation, hot-reload, and typed access.
 - `ConfigResultAggregator` collects multiple errors before returning — use for batch validation.
 - `EnvLoader` requires the `env` feature flag. Not default.
 - `PollingWatcher` is the fallback when native file watching isn't available — it polls on an interval.
+- `FileWatcher::start_watching` now atomically claims `watching` with CAS before setup/spawn; duplicate concurrent starts must fail with `Already watching`.
+- `FileWatcher` uses a setup claim guard: any early `start_watching` failure must unwind `watching` back to `false` so retries are possible.
+- `FileWatcher`'s event processor is the lifecycle owner for clearing `watching` on loop exit.
 - **`interpolate` takes `Value` by value** (not `&Value`) — callers must pass ownership. In `builder.rs` this means `merged_data` is moved into `interpolate(merged_data)`.
 - **`reload()` does NOT re-interpolate** — env var references (`${VAR}`) in config sources are NOT re-resolved on hot-reload. Interpolation runs once at initial build time only. Pre-existing bug, tracked separately.
 
 ## Relations
 - Depends on nebula-log (re-exports `info!`, `debug!` etc. in prelude). Used by nebula-api, nebula-runtime, and any crate needing runtime configuration.
+
+<!-- reviewed: 2026-04-14 -->

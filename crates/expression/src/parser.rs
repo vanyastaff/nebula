@@ -114,6 +114,16 @@ impl<'a> Parser<'a> {
         min_precedence: u8,
         depth: usize,
     ) -> ExpressionResult<Expr> {
+        // Right-associative operators (`**`, long comparison chains) recurse
+        // directly into `parse_binary_op_with_depth` without re-entering
+        // `parse_expression_with_depth`, so the global entry-point depth
+        // guard is not enough. Enforce the cap here too.
+        if depth > MAX_PARSER_DEPTH {
+            return Err(ExpressionError::expression_parse_error(format!(
+                "Maximum parser recursion depth ({}) exceeded",
+                MAX_PARSER_DEPTH
+            )));
+        }
         let mut left = self.parse_unary_with_depth(depth + 1)?;
 
         while self.current_token().kind.is_binary_operator() {
@@ -171,6 +181,15 @@ impl<'a> Parser<'a> {
 
     /// Parse unary expression with depth tracking
     fn parse_unary_with_depth(&mut self, depth: usize) -> ExpressionResult<Expr> {
+        // Long chains like `-----…-x` or `!!!…!x` recurse here directly.
+        // The `parse_expression_with_depth` guard is too far upstream to
+        // stop a stack overflow on hostile input, so enforce the cap here.
+        if depth > MAX_PARSER_DEPTH {
+            return Err(ExpressionError::expression_parse_error(format!(
+                "Maximum parser recursion depth ({}) exceeded",
+                MAX_PARSER_DEPTH
+            )));
+        }
         match &self.current_token().kind {
             TokenKind::Minus => {
                 self.advance();

@@ -86,7 +86,7 @@ pub async fn discover_directory(
 ) -> Vec<(String, Vec<(ActionMetadata, ActionHandler)>)> {
     let mut results = Vec::new();
 
-    let entries = match std::fs::read_dir(dir) {
+    let mut entries = match tokio::fs::read_dir(dir).await {
         Ok(entries) => entries,
         Err(e) => {
             tracing::warn!(dir = %dir.display(), error = %e, "failed to read plugin directory");
@@ -94,9 +94,10 @@ pub async fn discover_directory(
         }
     };
 
-    for entry in entries {
-        let entry = match entry {
-            Ok(e) => e,
+    loop {
+        let entry = match entries.next_entry().await {
+            Ok(Some(e)) => e,
+            Ok(None) => break,
             Err(e) => {
                 tracing::warn!(error = %e, "failed to read directory entry");
                 continue;

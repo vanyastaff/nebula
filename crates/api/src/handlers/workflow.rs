@@ -5,6 +5,7 @@ use axum::{
     extract::{Path, Query, State},
     http::StatusCode,
 };
+use chrono::Utc;
 use nebula_core::{ExecutionId, WorkflowId};
 use serde::Deserialize;
 
@@ -180,11 +181,10 @@ pub async fn create_workflow(
     // Generate new workflow ID
     let workflow_id = WorkflowId::new();
 
-    // Get current timestamp
-    let now = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap()
-        .as_secs() as i64;
+    // Current timestamp — `chrono::Utc::now()` is monotonic through time
+    // shifts and does not panic on clocks set before 1970, unlike
+    // `SystemTime::duration_since(UNIX_EPOCH).unwrap()`.
+    let now = Utc::now().timestamp();
 
     // Build workflow definition by merging request definition with metadata
     let mut definition = payload.definition.clone();
@@ -244,11 +244,10 @@ pub async fn update_workflow(
         .map_err(|e| ApiError::Internal(format!("Failed to get workflow: {}", e)))?
         .ok_or_else(|| ApiError::NotFound(format!("Workflow {} not found", id)))?;
 
-    // Get current timestamp
-    let now = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap()
-        .as_secs() as i64;
+    // Current timestamp — `chrono::Utc::now()` is monotonic through time
+    // shifts and does not panic on clocks set before 1970, unlike
+    // `SystemTime::duration_since(UNIX_EPOCH).unwrap()`.
+    let now = Utc::now().timestamp();
 
     // Update definition with new values
     if let Some(obj) = definition.as_object_mut() {
@@ -376,11 +375,10 @@ pub async fn activate_workflow(
         .map_err(|e| ApiError::Internal(format!("Failed to get workflow: {}", e)))?
         .ok_or_else(|| ApiError::NotFound(format!("Workflow {} not found", id)))?;
 
-    // Get current timestamp
-    let now = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap()
-        .as_secs() as i64;
+    // Current timestamp — `chrono::Utc::now()` is monotonic through time
+    // shifts and does not panic on clocks set before 1970, unlike
+    // `SystemTime::duration_since(UNIX_EPOCH).unwrap()`.
+    let now = Utc::now().timestamp();
 
     // Update definition to set active flag
     if let Some(obj) = definition.as_object_mut() {
@@ -460,11 +458,10 @@ pub async fn execute_workflow(
     // Generate new execution ID
     let execution_id = ExecutionId::new();
 
-    // Get current timestamp
-    let now = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap()
-        .as_secs() as i64;
+    // Current timestamp — `chrono::Utc::now()` is monotonic through time
+    // shifts and does not panic on clocks set before 1970, unlike
+    // `SystemTime::duration_since(UNIX_EPOCH).unwrap()`.
+    let now = Utc::now().timestamp();
 
     // Create initial execution state
     let execution_state = serde_json::json!({
@@ -474,18 +471,14 @@ pub async fn execute_workflow(
         "input": payload.input,
     });
 
-    // Create execution record (version 0 for new execution)
-    let success = state
+    // Create execution record via `create` — `transition` is a CAS UPDATE
+    // and was hitting zero rows for every brand-new ID, so every call to
+    // this handler previously returned a 500.
+    state
         .execution_repo
-        .transition(execution_id, 0, execution_state.clone())
+        .create(execution_id, workflow_id, execution_state.clone())
         .await
         .map_err(|e| ApiError::Internal(format!("Failed to create execution: {}", e)))?;
-
-    if !success {
-        return Err(ApiError::Internal(
-            "Failed to create execution record".to_string(),
-        ));
-    }
 
     // Build response
     let response = ExecutionResponse {

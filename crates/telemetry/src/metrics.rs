@@ -213,7 +213,15 @@ impl Histogram {
     }
 
     /// Record an observation.
+    ///
+    /// Non-finite values (`NaN`, `±∞`) are silently dropped. NaN would
+    /// otherwise permanently poison `sum_bits` via the CAS loop
+    /// (`x + NaN = NaN`), breaking every subsequent `sum()` / percentile.
     pub fn observe(&self, value: f64) {
+        if !value.is_finite() {
+            return;
+        }
+
         // Find the first bucket whose upper bound is >= value.
         let idx = self
             .boundaries

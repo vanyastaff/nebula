@@ -67,8 +67,18 @@ impl<T> BoundedStreamBuffer<T> {
 
             match self.inner.overflow {
                 Overflow::Block => {
+                    // Register the `Notified` future BEFORE releasing the
+                    // queue lock so we cannot race past a `notify_one` that
+                    // fires between `drop(queue)` and `.notified().await`.
+                    // `Notify::notify_one` only stores a permit when a
+                    // waiter is already registered; enabling the future via
+                    // `as_mut().enable()` performs that registration
+                    // without yielding. See tokio::sync::Notify docs.
+                    let notified = self.inner.not_full.notified();
+                    tokio::pin!(notified);
+                    notified.as_mut().enable();
                     drop(queue);
-                    self.inner.not_full.notified().await;
+                    notified.await;
                 }
                 Overflow::DropOldest => {
                     let _ = queue.pop_front();
@@ -96,8 +106,14 @@ impl<T> BoundedStreamBuffer<T> {
                 self.inner.not_full.notify_one();
                 return item;
             }
+            // Same enable-before-drop pattern as `push`: register the
+            // waiter while still holding the queue lock so a concurrent
+            // `notify_one` cannot slip past us.
+            let notified = self.inner.not_empty.notified();
+            tokio::pin!(notified);
+            notified.as_mut().enable();
             drop(queue);
-            self.inner.not_empty.notified().await;
+            notified.await;
         }
     }
 

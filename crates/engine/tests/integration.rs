@@ -590,6 +590,35 @@ async fn bounded_concurrency_with_multiple_parallel_nodes() {
     assert_eq!(counter.load(Ordering::SeqCst), 8, "all 8 nodes should run");
 }
 
+#[tokio::test]
+async fn zero_concurrency_budget_returns_planning_error() {
+    let registry = Arc::new(ActionRegistry::new());
+    registry.register_stateless(EchoHandler {
+        meta: meta(action_key!("echo")),
+    });
+
+    let (engine, _) = make_engine(registry);
+
+    let a = NodeId::new();
+    let wf = make_workflow(vec![NodeDefinition::new(a, "A", "echo").unwrap()], vec![]);
+
+    let budget = ExecutionBudget {
+        max_concurrent_nodes: 0,
+        ..ExecutionBudget::default()
+    };
+
+    let err = engine
+        .execute_workflow(&wf, serde_json::json!({}), budget)
+        .await
+        .expect_err("zero permits must not deadlock behind Semaphore::new(0)");
+
+    let msg = err.to_string();
+    assert!(
+        msg.contains("max_concurrent_nodes") || msg.contains("deadlock"),
+        "unexpected error message: {msg}"
+    );
+}
+
 /// Three-level chain: A → B → C → D. Verify output propagation at each stage.
 #[tokio::test]
 async fn deep_chain_propagates_outputs() {

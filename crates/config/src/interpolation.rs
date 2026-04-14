@@ -152,7 +152,11 @@ fn resolve_reference(input: &str, start: usize) -> ConfigResult<(String, String,
         Ok(val) => Ok((val, var_name.to_string(), new_pos)),
         Err(_) => {
             if let Some(default) = default_value {
-                nebula_log::warn!("unresolved variable ${{{var_name}}}, using default: {default}");
+                // Deliberately do NOT include the default value in the log:
+                // defaults are the very place operators put fallback secrets
+                // (e.g. `${DB_PASSWORD:-dev-password}`), and this warning goes
+                // to tracing.
+                nebula_log::warn!("unresolved variable ${{{var_name}}}, using configured default");
                 Ok((default.to_owned(), var_name.to_string(), new_pos))
             } else {
                 Err(ConfigError::interpolation_error(

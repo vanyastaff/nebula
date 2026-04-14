@@ -122,24 +122,40 @@ impl fmt::Display for SecretString {
     }
 }
 
-// Serialize as redacted for safety
-// Note: This prevents accidental secret leakage in logs
+/// Sentinel written by the default `Serialize` impl so that accidentally
+/// serialising a `SecretString` never leaks the underlying value.
+pub(crate) const REDACTED_SENTINEL: &str = "[REDACTED]";
+
+// Serialize as redacted for safety. Callers that need to persist the real
+// value must use an explicit opt-in wrapper (`serde_secret` helper module).
+// The default Deserialize impl below refuses to accept the redacted
+// sentinel, so a default round-trip always fails loudly instead of
+// silently rewriting the secret to the literal string `[REDACTED]`.
 impl Serialize for SecretString {
     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
     where
         S: serde::Serializer,
     {
-        serializer.serialize_str("[REDACTED]")
+        serializer.serialize_str(REDACTED_SENTINEL)
     }
 }
 
-// Deserialize from string
+// Deserialize from string, refusing the redacted sentinel.
 impl<'de> Deserialize<'de> for SecretString {
     fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
     where
         D: serde::Deserializer<'de>,
     {
-        String::deserialize(deserializer).map(SecretString::new)
+        let s = String::deserialize(deserializer)?;
+        if s == REDACTED_SENTINEL {
+            return Err(serde::de::Error::custom(
+                "refusing to deserialize SecretString from the `[REDACTED]` sentinel: \
+                 a persisted value round-tripped through the default Serialize impl \
+                 has lost its real contents. Use an explicit secret-serde helper \
+                 (`serde_secret`) for fields that must round-trip.",
+            ));
+        }
+        Ok(SecretString::new(s))
     }
 }
 

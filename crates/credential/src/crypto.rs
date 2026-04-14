@@ -3,11 +3,6 @@
 //! Provides AES-256-GCM encryption with Argon2id key derivation,
 //! OAuth2/PKCE utilities, and secure random generation.
 
-use std::sync::{
-    OnceLock,
-    atomic::{AtomicU64, Ordering},
-};
-
 use aes_gcm::{
     Aes256Gcm,
     aead::{Aead, KeyInit, Payload},
@@ -122,56 +117,28 @@ impl EncryptedData {
     }
 }
 
-impl Drop for EncryptedData {
-    fn drop(&mut self) {
-        // Zero out sensitive data on drop to prevent memory scraping attacks
-        self.ciphertext.zeroize();
-        self.nonce.zeroize();
-        self.tag.zeroize();
-    }
-}
+// Previous versions of this module wiped `ciphertext`/`nonce`/`tag` on
+// Drop, but these are public ciphertext bytes by design — they live on
+// disk and in envelopes. Only plaintext (already wrapped in `Zeroizing`)
+// needs scrubbing. No `Drop` impl here; the default auto-derived drop
+// releases the Vec without burning cycles on a false sense of security.
 
-/// Nonce generator with atomic counter and random component
+/// Generate a fresh 96-bit random AES-GCM nonce.
 ///
-/// Uses 8 bytes for counter (prevents reuse within session) and 4 bytes
-/// for random data (prevents reuse across process restarts).
-///
-/// # Security Note
-///
-/// The random component protects against nonce reuse if the same encryption
-/// key is used after a process restart. Without this, the counter would reset
-/// to 0, potentially reusing (key, nonce) pairs - a catastrophic failure for AES-GCM.
-struct NonceGenerator {
-    counter: AtomicU64,
-}
+/// Per NIST SP 800-38D §8.2.2 a fully-random 96-bit nonce is safe up to
+/// roughly 2^32 encryptions per key under the birthday bound. The previous
+/// implementation combined a 64-bit in-process counter with only 32 bits of
+/// randomness, which left exactly 32 bits of collision protection across
+/// restarts — after ~65 k restart-encryptions per key the collision
+/// probability crossed 50%. AES-GCM nonce reuse is catastrophic (full
+/// plaintext recovery + authentication forgery), so we take the NIST random
+/// path and read the full 12 bytes from the OS CSPRNG on every call.
+fn fresh_nonce() -> aes_gcm::Nonce<aes_gcm::aes::cipher::typenum::U12> {
+    use rand::RngExt;
 
-impl NonceGenerator {
-    fn new() -> Self {
-        Self {
-            counter: AtomicU64::new(0),
-        }
-    }
-
-    fn next(&self) -> aes_gcm::Nonce<aes_gcm::aes::cipher::typenum::U12> {
-        use rand::RngExt;
-
-        let counter = self.counter.fetch_add(1, Ordering::SeqCst);
-        let random: u32 = rand::rng().random();
-
-        // 12-byte nonce: 8 bytes counter + 4 bytes random
-        let mut nonce_bytes = [0u8; 12];
-        nonce_bytes[0..8].copy_from_slice(&counter.to_le_bytes());
-        nonce_bytes[8..12].copy_from_slice(&random.to_le_bytes());
-
-        *aes_gcm::Nonce::from_slice(&nonce_bytes)
-    }
-}
-
-// Global nonce generator (thread-safe)
-static NONCE_GEN: OnceLock<NonceGenerator> = OnceLock::new();
-
-fn nonce_generator() -> &'static NonceGenerator {
-    NONCE_GEN.get_or_init(NonceGenerator::new)
+    let mut rng = rand::rng();
+    let nonce_bytes: [u8; 12] = rng.random();
+    *aes_gcm::Nonce::from_slice(&nonce_bytes)
 }
 
 /// Encrypt plaintext using AES-256-GCM
@@ -192,7 +159,7 @@ pub fn encrypt(key: &EncryptionKey, plaintext: &[u8]) -> Result<EncryptedData, C
     let cipher = Aes256Gcm::new_from_slice(key.as_bytes())
         .map_err(|e| CryptoError::EncryptionFailed(e.to_string()))?;
 
-    let nonce = nonce_generator().next();
+    let nonce = fresh_nonce();
 
     let ciphertext = cipher
         .encrypt(&nonce, plaintext)
@@ -276,7 +243,7 @@ pub fn encrypt_with_aad(
     let cipher = Aes256Gcm::new_from_slice(key.as_bytes())
         .map_err(|e| CryptoError::EncryptionFailed(e.to_string()))?;
 
-    let nonce = nonce_generator().next();
+    let nonce = fresh_nonce();
 
     let payload = Payload {
         msg: plaintext,
@@ -382,7 +349,7 @@ pub fn encrypt_with_key_id(
     let cipher = Aes256Gcm::new_from_slice(key.as_bytes())
         .map_err(|e| CryptoError::EncryptionFailed(e.to_string()))?;
 
-    let nonce = nonce_generator().next();
+    let nonce = fresh_nonce();
 
     let payload = Payload {
         msg: plaintext,
@@ -510,35 +477,26 @@ mod tests {
     }
 
     #[test]
-    fn test_nonce_generator_uniqueness() {
-        let generator = NonceGenerator::new();
-        let nonce1 = generator.next();
-        let nonce2 = generator.next();
-        let nonce3 = generator.next();
+    fn fresh_nonce_uniqueness() {
+        // A fully-random 96-bit nonce has a 2^48 birthday bound; three
+        // samples should never collide in practice.
+        let nonce1 = fresh_nonce();
+        let nonce2 = fresh_nonce();
+        let nonce3 = fresh_nonce();
 
-        // All nonces must be different
         assert_ne!(nonce1.as_slice(), nonce2.as_slice());
         assert_ne!(nonce2.as_slice(), nonce3.as_slice());
         assert_ne!(nonce1.as_slice(), nonce3.as_slice());
     }
 
     #[test]
-    fn test_nonce_generator_has_random_component() {
-        // Generate nonces from two different generators (simulating restart)
-        let gen1 = NonceGenerator::new();
-        let gen2 = NonceGenerator::new();
-
-        let nonce1 = gen1.next();
-        let nonce2 = gen2.next();
-
-        // Even though both start with counter=0, random component makes them different
-        // Extract random part (last 4 bytes)
-        let random1 = &nonce1.as_slice()[8..12];
-        let random2 = &nonce2.as_slice()[8..12];
-
-        // With extremely high probability, random components should differ
-        // (collision probability is 1 in 2^32 = 1 in 4.3 billion)
-        assert_ne!(random1, random2);
+    fn fresh_nonce_has_nonzero_entropy() {
+        // Smoke test that the OS CSPRNG path is wired up — an all-zero
+        // nonce across multiple calls would indicate it is not.
+        let n1 = fresh_nonce();
+        let n2 = fresh_nonce();
+        let zero = [0u8; 12];
+        assert!(n1.as_slice() != zero || n2.as_slice() != zero);
     }
 
     // ========================================================================

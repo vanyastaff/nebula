@@ -6,28 +6,28 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-**Nebula** is a modular, type-safe workflow automation engine (like n8n/Zapier) built in Rust 1.94+. Workflows are DAGs of composable actions with built-in retries/error handling, extensible via plugins. Alpha: core crates stable, execution engine + credential system in active development. 25-crate workspace with strict one-way layer dependencies.
+**Nebula** is a modular, type-safe workflow automation engine (like n8n/Zapier) built in Rust 1.94+. Workflows are DAGs of composable actions with built-in retries/error handling, extensible via plugins. Alpha: core crates stable, execution engine + credential system in active development. 25 main crates plus per-crate macro sub-crates, `apps/cli`, `examples/` — all under one workspace with one-way layer dependencies.
 
 ---
 
 ## Architecture
 
-### Layer system (enforced by `cargo deny`)
+### Layer system (convention only — not enforced by tooling)
 
 ```
-API layer          api · webhook · (auth — RFC, not yet in workspace)
+API layer          api (+ webhook module) · (auth — RFC, not yet in workspace)
   ↑
-Exec layer         engine · runtime · storage · sdk
+Exec layer         engine · runtime · storage · sandbox · sdk · plugin-sdk
   ↑
 Business layer     credential · resource · action · plugin
   ↑
-Core layer         core · validator · parameter · expression · memory · workflow · execution
+Core layer         core · validator · parameter · expression · workflow · execution
 
 Cross-cutting      log · system · eventbus · telemetry · metrics · config · resilience · error
 (importable at any layer)
 ```
 
-Arrows mean "depends on". No upward dependencies — enforce via `deny.toml`.
+Arrows mean "depends on". No upward dependencies — enforced by **convention and review only**. `cargo deny` runs but its `[bans.deny]` list is empty (see `.project/context/pitfalls.md`); cross-layer edges will NOT fail CI. Webhook is a module inside `nebula-api` (`crates/api/src/webhook/`), not a standalone crate.
 
 Each business/exec crate may have a companion proc-macro sub-crate (e.g., `crates/action/macros`, `crates/error/macros`, `crates/credential/macros`). These are part of their parent crate's public API surface.
 

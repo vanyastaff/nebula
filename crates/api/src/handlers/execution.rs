@@ -220,11 +220,8 @@ pub async fn start_execution(
     // Generate new execution ID
     let execution_id = ExecutionId::new();
 
-    // Get current timestamp
-    let now = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap()
-        .as_secs() as i64;
+    // Current timestamp via chrono — does not panic on misconfigured clocks.
+    let now = chrono::Utc::now().timestamp();
 
     // Create initial execution state
     let execution_state = serde_json::json!({
@@ -234,18 +231,16 @@ pub async fn start_execution(
         "input": payload.input,
     });
 
-    // Create execution record (version 0 for new execution)
-    let success = state
+    // Create execution record. We must call `create` here — the previous
+    // implementation called `transition(id, expected_version = 0, ...)`,
+    // which is a CAS UPDATE that can never match a brand-new ID (no row
+    // exists yet), so every call returned `Ok(false)` and the handler
+    // surfaced an Internal error unconditionally.
+    state
         .execution_repo
-        .transition(execution_id, 0, execution_state.clone())
+        .create(execution_id, workflow_id_parsed, execution_state.clone())
         .await
         .map_err(|e| ApiError::Internal(format!("Failed to create execution: {}", e)))?;
-
-    if !success {
-        return Err(ApiError::Internal(
-            "Failed to create execution record".to_string(),
-        ));
-    }
 
     // Build response
     let response = ExecutionResponse {
@@ -304,10 +299,7 @@ pub async fn cancel_execution(
 
         // Set finished_at timestamp if not already set
         if !state_obj.contains_key("finished_at") {
-            let now = std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_secs() as i64;
+            let now = chrono::Utc::now().timestamp();
             state_obj.insert("finished_at".to_string(), serde_json::json!(now));
         }
     }

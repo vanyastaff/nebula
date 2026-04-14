@@ -98,7 +98,7 @@ pub async fn execute(args: RunArgs, quiet: bool) -> anyhow::Result<ExitCode> {
         };
 
     let (event_tx, mut event_rx) = if want_events {
-        let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+        let (tx, rx) = tokio::sync::mpsc::channel(nebula_engine::DEFAULT_EVENT_CHANNEL_CAPACITY);
         (Some(tx), Some(rx))
     } else {
         (None, None)
@@ -413,7 +413,7 @@ async fn run_tui_live(
     engine: WorkflowEngine,
     input: serde_json::Value,
     budget: ExecutionBudget,
-    mut engine_rx: tokio::sync::mpsc::UnboundedReceiver<nebula_engine::ExecutionEvent>,
+    mut engine_rx: tokio::sync::mpsc::Receiver<nebula_engine::ExecutionEvent>,
 ) -> anyhow::Result<ExitCode> {
     use crate::tui::{
         app::App,

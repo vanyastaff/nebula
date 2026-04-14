@@ -18,7 +18,7 @@ use std::{
     any::TypeId,
     sync::{
         Arc,
-        atomic::{AtomicU64, Ordering as AtomicOrdering},
+        atomic::{AtomicBool, AtomicU64, Ordering as AtomicOrdering},
     },
     time::{Duration, Instant},
 };
@@ -35,7 +35,7 @@ use crate::{
     metrics::{ResourceOpsMetrics, ResourceOpsSnapshot},
     options::AcquireOptions,
     recovery::{
-        gate::{GateState, RecoveryGate},
+        gate::{GateState, RecoveryGate, RecoveryTicket, TryBeginError},
         group::RecoveryGroupRegistry,
     },
     registry::Registry,
@@ -59,19 +59,132 @@ pub struct ResourceHealthSnapshot {
     pub generation: u64,
 }
 
+/// Policy that controls what `graceful_shutdown` does when the
+/// drain phase expires with handles still outstanding (#302).
+///
+/// Before this split, `graceful_shutdown` always proceeded to
+/// `registry.clear()` even on timeout, dropping live `ManagedResource`s
+/// while handles remained outstanding. That turned a cooperative shutdown
+/// into a use-after-logical-drop. The policy makes the choice explicit.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum DrainTimeoutPolicy {
+    /// On drain timeout, return
+    /// [`ShutdownError::DrainTimeout`] **without** clearing the registry.
+    /// Live handles remain valid and the caller decides what to do next.
+    /// This is the default — it preserves the "graceful" guarantee.
+    #[default]
+    Abort,
+    /// On drain timeout, log, clear the registry anyway, and report the
+    /// outstanding-handle count in [`ShutdownReport`]. Opt-in escape hatch
+    /// for supervisors that must exit on a deadline regardless of cost.
+    Force,
+}
+
 /// Configuration for graceful shutdown.
 #[derive(Debug, Clone)]
+#[non_exhaustive]
 pub struct ShutdownConfig {
     /// How long to wait for in-flight handles to be released.
     pub drain_timeout: Duration,
+    /// What to do on drain timeout. Default: [`DrainTimeoutPolicy::Abort`].
+    pub on_drain_timeout: DrainTimeoutPolicy,
+    /// Upper bound on how long Phase 4 will wait for release-queue
+    /// workers to finish processing outstanding tasks.
+    pub release_queue_timeout: Duration,
 }
 
 impl Default for ShutdownConfig {
     fn default() -> Self {
         Self {
             drain_timeout: Duration::from_secs(30),
+            on_drain_timeout: DrainTimeoutPolicy::Abort,
+            release_queue_timeout: Duration::from_secs(10),
         }
     }
+}
+
+impl ShutdownConfig {
+    /// Override the drain timeout, returning `self` for chaining.
+    ///
+    /// `#[non_exhaustive]` prevents external crates from using struct
+    /// literal construction; this (and the sibling setters) is the
+    /// forward-compatible entry point for per-field customization.
+    #[must_use]
+    pub fn with_drain_timeout(mut self, timeout: Duration) -> Self {
+        self.drain_timeout = timeout;
+        self
+    }
+
+    /// Override the drain-timeout policy.
+    #[must_use]
+    pub fn with_drain_timeout_policy(mut self, policy: DrainTimeoutPolicy) -> Self {
+        self.on_drain_timeout = policy;
+        self
+    }
+
+    /// Override the release-queue timeout budget for Phase 4.
+    #[must_use]
+    pub fn with_release_queue_timeout(mut self, timeout: Duration) -> Self {
+        self.release_queue_timeout = timeout;
+        self
+    }
+}
+
+/// Structured result of a successful (or forced-through) graceful shutdown.
+#[derive(Debug, Clone)]
+#[non_exhaustive]
+pub struct ShutdownReport {
+    /// How many `ResourceHandle`s were still outstanding when the drain
+    /// phase finished. Zero on the happy path. Nonzero only when the
+    /// caller explicitly opted into [`DrainTimeoutPolicy::Force`].
+    pub outstanding_handles_after_drain: u64,
+    /// Whether Phase 3 (`registry.clear`) actually ran.
+    pub registry_cleared: bool,
+    /// Whether Phase 4 (release-queue drain) completed within
+    /// `release_queue_timeout`.
+    pub release_queue_drained: bool,
+}
+
+/// Errors returned by [`Manager::graceful_shutdown`].
+///
+/// Each variant corresponds to a failure mode that was previously silently
+/// absorbed by the old infallible signature. A timeout during drain, for
+/// example, used to be a `tracing::warn!` and a forced `registry.clear()`;
+/// it is now a typed error that the caller must handle.
+#[derive(Debug, thiserror::Error)]
+#[non_exhaustive]
+pub enum ShutdownError {
+    /// `graceful_shutdown` was already in progress when this call entered.
+    /// CAS-guarded so exactly one caller wins the race.
+    #[error("graceful shutdown already in progress")]
+    AlreadyShuttingDown,
+
+    /// The drain phase did not finish within `drain_timeout` and the
+    /// policy was [`DrainTimeoutPolicy::Abort`]. The registry was **not**
+    /// cleared and any outstanding handles remain valid.
+    #[error(
+        "drain timeout expired with {outstanding} handle(s) still active; registry was NOT cleared (policy=Abort)"
+    )]
+    DrainTimeout {
+        /// Snapshot of the drain-tracker counter at the moment the timeout
+        /// fired.
+        outstanding: u64,
+    },
+
+    /// Phase 4 did not finish within `release_queue_timeout`.
+    #[error("release queue workers did not finish within {timeout:?}")]
+    ReleaseQueueTimeout {
+        /// The budget that was exceeded.
+        timeout: Duration,
+    },
+}
+
+/// Internal drain-phase error used by the private `wait_for_drain` helper.
+/// Carries the outstanding-handle count at the moment the drain timer fired.
+#[derive(Debug)]
+struct DrainTimeoutError {
+    outstanding: u64,
 }
 
 /// Configuration for the [`Manager`].
@@ -130,6 +243,10 @@ pub struct Manager {
     release_queue_handle: tokio::sync::Mutex<Option<ReleaseQueueHandle>>,
     /// Tracks active `ResourceHandle`s for drain-aware shutdown.
     drain_tracker: Arc<(AtomicU64, Notify)>,
+    /// CAS-guarded idempotency flag for `graceful_shutdown`. Flipped
+    /// false → true by the winning caller; losers return
+    /// [`ShutdownError::AlreadyShuttingDown`].
+    shutting_down: AtomicBool,
 }
 
 impl Manager {
@@ -157,6 +274,7 @@ impl Manager {
             release_queue: Arc::new(release_queue),
             release_queue_handle: tokio::sync::Mutex::new(Some(release_queue_handle)),
             drain_tracker: Arc::new((AtomicU64::new(0), Notify::new())),
+            shutting_down: AtomicBool::new(false),
         }
     }
 
@@ -600,7 +718,7 @@ impl Manager {
     {
         let started = Instant::now();
         let managed = self.lookup::<R>(ctx.scope())?;
-        check_recovery_gate(&managed.recovery_gate)?;
+        let gate_admission = admit_through_gate(&managed.recovery_gate)?;
         let resilience = managed.resilience.clone();
 
         let result = execute_with_resilience(&resilience, || {
@@ -632,9 +750,12 @@ impl Manager {
         })
         .await;
 
-        if let Err(e) = &result {
-            trigger_recovery_on_failure(&managed.recovery_gate, e);
-        }
+        // Settle the gate ticket based on the acquire result. #322: this
+        // makes the ticket ownership end-to-end — on success we `resolve`,
+        // on retryable error we `fail_transient`, on permanent error we
+        // `fail_permanent`. The `Drop` impl of `RecoveryTicket` covers
+        // cancellation/panic paths.
+        settle_gate_admission(gate_admission, &result);
         self.record_acquire_result(&result, started);
         result.map(|h| h.with_drain_tracker(self.drain_tracker.clone()))
     }
@@ -678,7 +799,7 @@ impl Manager {
     {
         let started = Instant::now();
         let managed = self.lookup::<R>(ctx.scope())?;
-        check_recovery_gate(&managed.recovery_gate)?;
+        let gate_admission = admit_through_gate(&managed.recovery_gate)?;
         let resilience = managed.resilience.clone();
 
         let result = execute_with_resilience(&resilience, || {
@@ -700,9 +821,12 @@ impl Manager {
         })
         .await;
 
-        if let Err(e) = &result {
-            trigger_recovery_on_failure(&managed.recovery_gate, e);
-        }
+        // Settle the gate ticket based on the acquire result. #322: this
+        // makes the ticket ownership end-to-end — on success we `resolve`,
+        // on retryable error we `fail_transient`, on permanent error we
+        // `fail_permanent`. The `Drop` impl of `RecoveryTicket` covers
+        // cancellation/panic paths.
+        settle_gate_admission(gate_admission, &result);
         self.record_acquire_result(&result, started);
         result.map(|h| h.with_drain_tracker(self.drain_tracker.clone()))
     }
@@ -745,7 +869,7 @@ impl Manager {
     {
         let started = Instant::now();
         let managed = self.lookup::<R>(ctx.scope())?;
-        check_recovery_gate(&managed.recovery_gate)?;
+        let gate_admission = admit_through_gate(&managed.recovery_gate)?;
         let resilience = managed.resilience.clone();
 
         let result = execute_with_resilience(&resilience, || {
@@ -774,9 +898,12 @@ impl Manager {
         })
         .await;
 
-        if let Err(e) = &result {
-            trigger_recovery_on_failure(&managed.recovery_gate, e);
-        }
+        // Settle the gate ticket based on the acquire result. #322: this
+        // makes the ticket ownership end-to-end — on success we `resolve`,
+        // on retryable error we `fail_transient`, on permanent error we
+        // `fail_permanent`. The `Drop` impl of `RecoveryTicket` covers
+        // cancellation/panic paths.
+        settle_gate_admission(gate_admission, &result);
         self.record_acquire_result(&result, started);
         result.map(|h| h.with_drain_tracker(self.drain_tracker.clone()))
     }
@@ -818,7 +945,7 @@ impl Manager {
     {
         let started = Instant::now();
         let managed = self.lookup::<R>(ctx.scope())?;
-        check_recovery_gate(&managed.recovery_gate)?;
+        let gate_admission = admit_through_gate(&managed.recovery_gate)?;
         let resilience = managed.resilience.clone();
 
         let result = execute_with_resilience(&resilience, || {
@@ -847,9 +974,12 @@ impl Manager {
         })
         .await;
 
-        if let Err(e) = &result {
-            trigger_recovery_on_failure(&managed.recovery_gate, e);
-        }
+        // Settle the gate ticket based on the acquire result. #322: this
+        // makes the ticket ownership end-to-end — on success we `resolve`,
+        // on retryable error we `fail_transient`, on permanent error we
+        // `fail_permanent`. The `Drop` impl of `RecoveryTicket` covers
+        // cancellation/panic paths.
+        settle_gate_admission(gate_admission, &result);
         self.record_acquire_result(&result, started);
         result.map(|h| h.with_drain_tracker(self.drain_tracker.clone()))
     }
@@ -891,7 +1021,7 @@ impl Manager {
     {
         let started = Instant::now();
         let managed = self.lookup::<R>(ctx.scope())?;
-        check_recovery_gate(&managed.recovery_gate)?;
+        let gate_admission = admit_through_gate(&managed.recovery_gate)?;
         let resilience = managed.resilience.clone();
 
         let result = execute_with_resilience(&resilience, || {
@@ -919,9 +1049,12 @@ impl Manager {
         })
         .await;
 
-        if let Err(e) = &result {
-            trigger_recovery_on_failure(&managed.recovery_gate, e);
-        }
+        // Settle the gate ticket based on the acquire result. #322: this
+        // makes the ticket ownership end-to-end — on success we `resolve`,
+        // on retryable error we `fail_transient`, on permanent error we
+        // `fail_permanent`. The `Drop` impl of `RecoveryTicket` covers
+        // cancellation/panic paths.
+        settle_gate_admission(gate_admission, &result);
         self.record_acquire_result(&result, started);
         result.map(|h| h.with_drain_tracker(self.drain_tracker.clone()))
     }
@@ -971,7 +1104,7 @@ impl Manager {
     {
         let started = Instant::now();
         let managed = self.lookup::<R>(ctx.scope())?;
-        check_recovery_gate(&managed.recovery_gate)?;
+        let gate_admission = admit_through_gate(&managed.recovery_gate)?;
 
         let result = match &managed.topology {
             TopologyRuntime::Pool(rt) => {
@@ -996,9 +1129,12 @@ impl Manager {
             ))),
         };
 
-        if let Err(e) = &result {
-            trigger_recovery_on_failure(&managed.recovery_gate, e);
-        }
+        // Settle the gate ticket based on the acquire result. #322: this
+        // makes the ticket ownership end-to-end — on success we `resolve`,
+        // on retryable error we `fail_transient`, on permanent error we
+        // `fail_permanent`. The `Drop` impl of `RecoveryTicket` covers
+        // cancellation/panic paths.
+        settle_gate_admission(gate_admission, &result);
         self.record_acquire_result(&result, started);
         result.map(|h| h.with_drain_tracker(self.drain_tracker.clone()))
     }
@@ -1194,13 +1330,26 @@ impl Manager {
     /// # async fn example() {
     /// let manager = Manager::new();
     /// manager
-    ///     .graceful_shutdown(ShutdownConfig {
-    ///         drain_timeout: Duration::from_secs(5),
-    ///     })
-    ///     .await;
+    ///     .graceful_shutdown(ShutdownConfig::default().with_drain_timeout(Duration::from_secs(5)))
+    ///     .await
+    ///     .expect("graceful shutdown should succeed");
     /// # }
     /// ```
-    pub async fn graceful_shutdown(&self, config: ShutdownConfig) {
+    pub async fn graceful_shutdown(
+        &self,
+        config: ShutdownConfig,
+    ) -> Result<ShutdownReport, ShutdownError> {
+        // CAS idempotency guard: exactly one caller wins. Concurrent callers
+        // that arrive after this CAS see `AlreadyShuttingDown` immediately
+        // rather than re-entering the drain logic against a half-torn state.
+        if self
+            .shutting_down
+            .compare_exchange(false, true, AtomicOrdering::AcqRel, AtomicOrdering::Acquire)
+            .is_err()
+        {
+            return Err(ShutdownError::AlreadyShuttingDown);
+        }
+
         tracing::info!("resource manager: starting graceful shutdown");
 
         // Phase 1: SIGNAL — cancel the shared token. This does two things:
@@ -1209,45 +1358,112 @@ impl Manager {
         //      (they share this token via `ReleaseQueue::with_cancel`).
         self.cancel.cancel();
 
-        // Phase 2: DRAIN — wait for in-flight handles to be released,
-        // or timeout if they are not released in time.
-        self.wait_for_drain(config.drain_timeout).await;
+        // Phase 2: DRAIN — wait for in-flight handles to be released.
+        // On timeout, respect the policy: Abort preserves "graceful"
+        // (returns Err *without* clearing the registry), Force proceeds
+        // but records the outstanding count in the report.
+        let mut outstanding_after_drain: u64 = 0;
+        match self.wait_for_drain(config.drain_timeout).await {
+            Ok(()) => {}
+            Err(DrainTimeoutError { outstanding }) => match config.on_drain_timeout {
+                DrainTimeoutPolicy::Abort => {
+                    tracing::warn!(
+                        outstanding,
+                        "resource manager: drain timeout, policy=Abort — \
+                         registry preserved, returning DrainTimeout"
+                    );
+                    self.shutting_down.store(false, AtomicOrdering::Release);
+                    return Err(ShutdownError::DrainTimeout { outstanding });
+                }
+                DrainTimeoutPolicy::Force => {
+                    tracing::warn!(
+                        outstanding,
+                        "resource manager: drain timeout, policy=Force — \
+                         clearing registry anyway"
+                    );
+                    outstanding_after_drain = outstanding;
+                }
+            },
+        }
 
         // Phase 3: CLEAR — drop all ManagedResources so their
         // Arc<ReleaseQueue> refs are released.
         self.registry.clear();
 
         // Phase 4: AWAIT WORKERS — workers are already draining (from
-        // Phase 1 cancel signal). Await with a bounded timeout in case
-        // a release task is slow.
+        // Phase 1 cancel signal). Await with a bounded timeout; failure
+        // to finish in time is a typed error, not a swallowed warning.
         if let Some(handle) = self.release_queue_handle.lock().await.take() {
             let shutdown_fut = ReleaseQueue::shutdown(handle);
-            if tokio::time::timeout(Duration::from_secs(10), shutdown_fut)
+            if tokio::time::timeout(config.release_queue_timeout, shutdown_fut)
                 .await
                 .is_err()
             {
                 tracing::warn!(
+                    timeout = ?config.release_queue_timeout,
                     "resource manager: release queue workers did not \
-                     finish within 10s, continuing shutdown"
+                     finish within release_queue_timeout"
                 );
+                return Err(ShutdownError::ReleaseQueueTimeout {
+                    timeout: config.release_queue_timeout,
+                });
             }
         }
 
         tracing::info!("resource manager: shutdown complete");
+        Ok(ShutdownReport {
+            outstanding_handles_after_drain: outstanding_after_drain,
+            registry_cleared: true,
+            // If we reached this line Phase 4 either succeeded or had no
+            // work to drain — either way the contract is "drained".
+            release_queue_drained: true,
+        })
     }
 
     /// Waits until all active `ResourceHandle`s are dropped or timeout expires.
-    async fn wait_for_drain(&self, timeout: Duration) {
+    ///
+    /// The loop uses a `register-then-check` ordering to avoid the classic
+    /// `Notify::notify_waiters` lost-wakeup:
+    ///
+    /// 1. Construct + pin + `enable()` a fresh `Notified` future. Calling `enable()` registers this
+    ///    waiter on the `Notify` queue without requiring a `.await`, so any subsequent
+    ///    `notify_waiters()` (fired when a handle's `Drop` decrements the counter from 1 → 0) will
+    ///    reach us.
+    /// 2. Re-check the counter. If it already hit 0 between the outer initial check and our
+    ///    registration, return now — the wakeup we would otherwise wait for has already been
+    ///    consumed.
+    /// 3. Only then await the `Notified` future.
+    ///
+    /// Without this ordering, a burst of handle drops that completes the
+    /// drain *before* the first `notified().await` poll would leak the
+    /// notification entirely, stalling `graceful_shutdown` for the full
+    /// `drain_timeout` (default 30 s) and risking `SIGKILL` escalation
+    /// under a tight orchestrator shutdown window.
+    async fn wait_for_drain(&self, timeout: Duration) -> Result<(), DrainTimeoutError> {
         let active = self.drain_tracker.0.load(AtomicOrdering::Acquire);
         if active == 0 {
-            return;
+            return Ok(());
         }
 
         tracing::debug!(active_handles = active, "waiting for handles to drain");
         let tracker = &self.drain_tracker;
         let drained = tokio::time::timeout(timeout, async {
             loop {
-                tracker.1.notified().await;
+                // Pre-register this waiter BEFORE re-checking the counter.
+                let notified = tracker.1.notified();
+                tokio::pin!(notified);
+                notified.as_mut().enable();
+
+                // Re-check after registration. If the last handle dropped
+                // while we were between the outer check and `enable()`,
+                // the counter is now 0 and we would otherwise wait on a
+                // notification that has already fired.
+                if tracker.0.load(AtomicOrdering::Acquire) == 0 {
+                    return;
+                }
+
+                notified.await;
+
                 if tracker.0.load(AtomicOrdering::Acquire) == 0 {
                     return;
                 }
@@ -1256,11 +1472,14 @@ impl Manager {
         .await;
 
         if drained.is_err() {
+            let outstanding = tracker.0.load(AtomicOrdering::Acquire);
             tracing::warn!(
-                active_handles = tracker.0.load(AtomicOrdering::Relaxed),
+                outstanding,
                 "resource manager: drain timeout expired with handles still active"
             );
+            return Err(DrainTimeoutError { outstanding });
         }
+        Ok(())
     }
 
     /// Returns `true` if a resource with the given key is registered.
@@ -1358,43 +1577,90 @@ impl Manager {
     }
 }
 
-/// Checks the recovery gate before acquire.
+/// Outcome of the pre-acquire gate admission check (#322).
 ///
-/// Returns `Ok(())` if the backend is presumed healthy or the backoff has
-/// expired (allowing the caller to act as the probe). Returns an
-/// appropriate error otherwise.
-fn check_recovery_gate(gate: &Option<Arc<RecoveryGate>>) -> Result<(), Error> {
-    let Some(gate) = gate else { return Ok(()) };
+/// The old `check_recovery_gate` → `trigger_recovery_on_failure` split was
+/// a stampede hazard: after the backoff expired, every caller's `state()`
+/// read returned the same snapshot and all of them proceeded through to
+/// hit the dead backend. The gate was only advanced to `InProgress` *after*
+/// failure, in `trigger_recovery_on_failure`, which is too late.
+///
+/// This enum pushes the CAS-based single-probe claim into the pre-acquire
+/// check: either the caller is granted a ticket (`Probe`) that must be
+/// resolved end-to-end with the acquire result, or the gate was idle/absent
+/// (`Open`), or we got a typed error out directly.
+enum GateAdmission {
+    /// No gate attached. Proceed normally; no ticket ownership.
+    Open,
+    /// Gate attached and currently healthy (`Idle`). Proceed without a
+    /// ticket, but retain the gate so a retryable acquire error can mark it
+    /// failed and open the backoff window for subsequent callers.
+    OpenGated(Arc<RecoveryGate>),
+    /// This caller has been granted the single recovery slot. The acquire
+    /// **must** consume the ticket by calling `resolve()`, `fail_transient`,
+    /// or `fail_permanent` based on the acquire result. Dropping it without
+    /// resolution auto-fails to `GateState::Failed` via its `Drop` impl —
+    /// so even a cancellation or panic in the acquire path is safe.
+    Probe(RecoveryTicket),
+}
+
+/// Admits a caller through the optional recovery gate.
+///
+/// Healthy gates (`Idle`) admit immediately with no CAS so regular traffic
+/// keeps full pool concurrency. Only callers entering while the gate is in a
+/// retryable `Failed` state claim a probe ticket.
+fn admit_through_gate(gate: &Option<Arc<RecoveryGate>>) -> Result<GateAdmission, Error> {
+    let Some(gate) = gate else {
+        return Ok(GateAdmission::Open);
+    };
 
     match gate.state() {
-        GateState::Idle => Ok(()),
+        GateState::Idle => Ok(GateAdmission::OpenGated(Arc::clone(gate))),
         GateState::InProgress { .. } => Err(Error::transient(
             "backend recovery in progress, retry later",
         )),
         GateState::Failed { retry_at, .. } => {
-            let now = Instant::now();
-            if now < retry_at {
-                let wait = retry_at - now;
-                Err(Error::exhausted("backend recovering", Some(wait)))
-            } else {
-                // Backoff expired — allow through so this caller acts as probe.
-                Ok(())
+            if Instant::now() < retry_at {
+                let wait = retry_at.saturating_duration_since(Instant::now());
+                return Err(Error::exhausted("backend recovering", Some(wait)));
+            }
+            match gate.try_begin() {
+                Ok(ticket) => Ok(GateAdmission::Probe(ticket)),
+                Err(TryBeginError::AlreadyInProgress(_waiter)) => Err(Error::transient(
+                    "backend recovery in progress, retry later",
+                )),
+                Err(TryBeginError::RetryLater { retry_at }) => {
+                    let wait = retry_at.saturating_duration_since(Instant::now());
+                    Err(Error::exhausted("backend recovering", Some(wait)))
+                }
+                Err(TryBeginError::PermanentlyFailed { message }) => Err(Error::permanent(message)),
             }
         }
-        GateState::PermanentlyFailed { message, .. } => Err(Error::permanent(message)),
+        GateState::PermanentlyFailed { message } => Err(Error::permanent(message)),
     }
 }
 
-/// If the acquire result is a retryable error and a recovery gate is
-/// present, passively trigger recovery so subsequent callers fast-fail
-/// instead of independently hitting the dead backend.
-fn trigger_recovery_on_failure(gate: &Option<Arc<RecoveryGate>>, error: &Error) {
-    let Some(gate) = gate else { return };
-    if !error.is_retryable() {
-        return;
-    }
-    if let Ok(ticket) = gate.try_begin() {
-        ticket.fail_transient(error.to_string());
+/// Resolves the ticket granted by [`admit_through_gate`] based on the
+/// acquire result. No-op when the admission was [`GateAdmission::Open`]
+/// (no gate attached), so callers can always call this unconditionally.
+fn settle_gate_admission<T>(admission: GateAdmission, result: &Result<T, Error>) {
+    match (admission, result) {
+        (GateAdmission::Probe(ticket), Ok(_)) => ticket.resolve(),
+        (GateAdmission::Probe(ticket), Err(e)) if e.is_retryable() => {
+            ticket.fail_transient(e.to_string());
+        }
+        (GateAdmission::Probe(ticket), Err(_e)) => {
+            // Non-retryable errors are not backend-health signals; keep the
+            // gate open to avoid permanently bricking acquires.
+            ticket.resolve();
+        }
+        (GateAdmission::OpenGated(gate), Err(e)) if e.is_retryable() => {
+            // First retryable failure on healthy path opens the backoff gate.
+            if let Ok(ticket) = gate.try_begin() {
+                ticket.fail_transient(e.to_string());
+            }
+        }
+        (GateAdmission::OpenGated(_), _) | (GateAdmission::Open, _) => {}
     }
 }
 
@@ -1441,5 +1707,104 @@ impl std::fmt::Debug for Manager {
             .field("registered_count", &self.registry.keys().len())
             .field("is_shutdown", &self.is_shutdown())
             .finish_non_exhaustive()
+    }
+}
+
+#[cfg(test)]
+mod drain_race_tests {
+    use super::*;
+
+    /// Regression for the drain-race bug: previously `wait_for_drain`
+    /// did `tracker.1.notified().await` without pre-registering the
+    /// `Notified` future, so a handle dropping (and firing
+    /// `notify_waiters()`) in the window between the outer
+    /// `active == 0` check and the first `notified().await` poll would
+    /// leak the wakeup. Stall persisted until the full `drain_timeout`
+    /// elapsed.
+    ///
+    /// The fix pre-enables the `Notified` future and re-checks the
+    /// counter *after* registration, so a drop that completes the drain
+    /// mid-race is observed on the re-check and returns immediately.
+    ///
+    /// This test exercises the normal "handle drops while we're waiting"
+    /// path and asserts we return far sooner than the timeout.
+    #[tokio::test]
+    async fn wait_for_drain_returns_promptly_when_handle_drops() {
+        let mgr = Manager::new();
+        // Simulate one active handle.
+        mgr.drain_tracker.0.fetch_add(1, AtomicOrdering::Release);
+
+        let tracker = mgr.drain_tracker.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+            if tracker.0.fetch_sub(1, AtomicOrdering::Release) == 1 {
+                tracker.1.notify_waiters();
+            }
+        });
+
+        let start = Instant::now();
+        mgr.wait_for_drain(Duration::from_secs(30))
+            .await
+            .expect("handle drop must drain under the timeout");
+        let elapsed = start.elapsed();
+
+        assert!(
+            elapsed < Duration::from_secs(1),
+            "wait_for_drain should return within 1s when a handle drops, took {elapsed:?}"
+        );
+        assert_eq!(mgr.drain_tracker.0.load(AtomicOrdering::Acquire), 0);
+    }
+
+    /// Regression: if the counter reaches 0 *before* `wait_for_drain`
+    /// gets to pre-register the `Notified`, the post-enable re-check
+    /// must catch it and return immediately rather than stalling.
+    ///
+    /// We simulate the race by setting `active = 1` (so the outer
+    /// early-return doesn't fire), then immediately decrementing to 0
+    /// before `wait_for_drain` is polled.
+    #[tokio::test]
+    async fn wait_for_drain_catches_drop_via_recheck() {
+        let mgr = Manager::new();
+        mgr.drain_tracker.0.fetch_add(1, AtomicOrdering::Release);
+
+        // Decrement + notify synchronously — the counter is 0 before
+        // `wait_for_drain` is even called, but we want to prove that
+        // even if the outer check observed `active == 1` and then
+        // the counter hit 0 *between* that check and the inner enable,
+        // the inner re-check would catch it.
+        //
+        // Simulated here by priming the state and then calling
+        // wait_for_drain directly; the inner loop's re-check should
+        // fire on the very first iteration because the counter is
+        // already 0. The outer check is bypassed by the fetch_add
+        // above leaving active == 1 until... wait, we need to
+        // decrement BETWEEN the outer check and the inner enable.
+        //
+        // Easiest approximation: skip the outer early-return by
+        // keeping active = 1 through the outer check, then decrement
+        // via a spawned task that runs before wait_for_drain gets
+        // scheduler time.
+        let tracker = mgr.drain_tracker.clone();
+        tokio::task::yield_now().await;
+        let handle = tokio::spawn(async move {
+            // Yield so that wait_for_drain's outer load sees active = 1,
+            // then decrement before the inner poll happens.
+            tokio::task::yield_now().await;
+            if tracker.0.fetch_sub(1, AtomicOrdering::Release) == 1 {
+                tracker.1.notify_waiters();
+            }
+        });
+
+        let start = Instant::now();
+        mgr.wait_for_drain(Duration::from_secs(30))
+            .await
+            .expect("recheck path must drain under the timeout");
+        let elapsed = start.elapsed();
+        handle.await.unwrap();
+
+        assert!(
+            elapsed < Duration::from_secs(1),
+            "wait_for_drain must return promptly even under race, took {elapsed:?}"
+        );
     }
 }

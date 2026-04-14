@@ -22,3 +22,5 @@ Foundation shared by every other crate — IDs, domain keys, scope system, and s
 
 ## Relations
 - Imported by every other nebula crate. No nebula deps of its own — only external crates (`uuid`, `domain-key`, `zeroize`, `serde`, etc.).
+
+<!-- reviewed: 2026-04-14 -->

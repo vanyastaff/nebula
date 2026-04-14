@@ -501,4 +501,35 @@ mod tests {
             super::DEFAULT_MAX_CONCURRENT_REFRESHES
         );
     }
+
+    /// Pins the invariant the resolver's Waiter path relies on:
+    /// `Notified::enable()` registers the waiter *before* the first poll,
+    /// so a subsequent `notify_waiters()` will wake it.
+    ///
+    /// Without `enable()`, this is a classic lost-wakeup race: a winner
+    /// that calls `notify_waiters()` between `notify.notified()` returning
+    /// and the waiter polling it will find an empty waiter queue and leave
+    /// the waiter stalled. In the resolver that used to mean a 60-second
+    /// stall per lost wakeup before the post-wait store re-read could
+    /// rescue latency.
+    #[tokio::test]
+    async fn pre_enabled_notified_receives_notify_waiters() {
+        let notify = Arc::new(Notify::new());
+
+        // Create + pre-enable BEFORE the notify_waiters() call. This is
+        // the exact pattern in `resolver.rs::resolve_and_refresh`.
+        let notified = notify.notified();
+        tokio::pin!(notified);
+        notified.as_mut().enable();
+
+        // Now fire notify_waiters *before* we poll the future for the
+        // first time. With enable() this is fine; without it this test
+        // would hang until timeout.
+        notify.notify_waiters();
+
+        // Pre-enabled future must complete effectively immediately.
+        tokio::time::timeout(Duration::from_millis(50), notified)
+            .await
+            .expect("pre-enabled Notified must wake after notify_waiters");
+    }
 }
