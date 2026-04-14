@@ -83,4 +83,19 @@ pub enum WorkflowError {
     #[classify(category = "validation", code = "WORKFLOW:GRAPH_ERROR")]
     #[error("graph error: {0}")]
     GraphError(String),
+
+    /// Two or more connections in the workflow are identical.
+    ///
+    /// Duplicate connections (same source node, target node, source port, target
+    /// port, and edge condition) are always redundant and usually indicate a
+    /// modelling error. They also confuse the engine's edge-resolution bookkeeping
+    /// which counts incoming edges and compares to a required total.
+    #[classify(category = "validation", code = "WORKFLOW:DUPLICATE_CONNECTION")]
+    #[error("duplicate connection from {from} to {to}")]
+    DuplicateConnection {
+        /// Source node of the duplicated connection.
+        from: NodeId,
+        /// Target node of the duplicated connection.
+        to: NodeId,
+    },
 }

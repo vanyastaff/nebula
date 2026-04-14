@@ -6,6 +6,7 @@ Workflow definition types and DAG model — pure data, no execution.
 - Workflows must be DAGs. Cyclic connections fail `validate_workflow`.
 - `owner_id` is `Option<OwnerId>` for backward compat with existing serialized workflows.
 - `UiMetadata` is opaque to the engine — only desktop/web editor reads it.
+- **`validate_workflow` rejects identical (duplicate) connections** — same from_node, to_node, from_port, to_port, and condition (full `PartialEq`). Returns `WorkflowError::DuplicateConnection`. Distinct multi-edges (different ports or conditions) are allowed.
 
 ## Key Decisions
 - `validate_workflow` collects all errors (not fail-fast).
@@ -17,4 +18,4 @@ Workflow definition types and DAG model — pure data, no execution.
 - `NodeState` vs `NodeExecutionState` (nebula-execution) — different types.
 - Adding fields to `WorkflowDefinition` requires updating ALL construction sites. Search `WorkflowDefinition {`.
 
-<!-- reviewed: 2026-04-14 -->
+<!-- reviewed: 2026-04-14 — DuplicateConnection validation added to prevent identical edges -->
