@@ -701,9 +701,8 @@ impl WorkflowEngine {
             .map_err(|e| EngineError::PlanningFailed(e.to_string()))?;
 
         // 7. Reconstruct the execution state, resetting non-terminal nodes. Nodes that were Running
-        //    at crash time need to be re-executed. This is a recovery
-        //    path, so the reset bypasses the forward state machine via
-        //    `override_node_state` but still bumps the version per
+        //    at crash time need to be re-executed. This is a recovery path, so the reset bypasses
+        //    the forward state machine via `override_node_state` but still bumps the version per
         //    transition so CAS readers see the change (issue #255).
         let mut exec_state = exec_state;
         let non_terminal: Vec<NodeId> = exec_state

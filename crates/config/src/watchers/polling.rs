@@ -356,7 +356,10 @@ impl ConfigWatcher for PollingWatcher {
             // on timeout, abort explicitly so the runtime reclaims the task
             // rather than leaving a zombie behind.
             let abort_handle = handle.abort_handle();
-            if tokio::time::timeout(self.interval * 2, handle).await.is_err() {
+            if tokio::time::timeout(self.interval * 2, handle)
+                .await
+                .is_err()
+            {
                 nebula_log::warn!("Polling task did not exit within timeout; aborting");
                 abort_handle.abort();
             }
