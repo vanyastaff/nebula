@@ -444,7 +444,7 @@ impl WorkflowEngine {
             .await;
 
         let elapsed = started.elapsed();
-        let final_status = determine_final_status(&failed_node, &cancel_token);
+        let final_status = determine_final_status(&failed_node, &cancel_token, &exec_state);
         let _ = exec_state.transition_status(final_status);
 
         self.emit_event(ExecutionEvent::ExecutionFinished {
@@ -563,7 +563,7 @@ impl WorkflowEngine {
         let elapsed = started.elapsed();
 
         // 10. Determine final status and emit events
-        let final_status = determine_final_status(&failed_node, &cancel_token);
+        let final_status = determine_final_status(&failed_node, &cancel_token, &exec_state);
         let _ = exec_state.transition_status(final_status);
 
         // Persist final execution state (best-effort)
@@ -743,7 +743,7 @@ impl WorkflowEngine {
             workflow.nodes.iter().map(|n| (n.id, n)).collect();
 
         let mut activated_edges: HashMap<NodeId, HashSet<NodeId>> = HashMap::new();
-        let mut resolved_edges: HashMap<NodeId, HashSet<NodeId>> = HashMap::new();
+        let mut resolved_edges: HashMap<NodeId, usize> = HashMap::new();
         let mut seed_nodes: Vec<NodeId> = Vec::new();
 
         // Mark edges from terminal nodes as resolved (and activated, since they
@@ -754,7 +754,9 @@ impl WorkflowEngine {
             }
             for conn in graph.outgoing_connections(node_id) {
                 let target = conn.to_node;
-                resolved_edges.entry(target).or_default().insert(node_id);
+                // Increment per-edge count so multiple edges from the same terminal
+                // source to the same target are each counted during resume.
+                *resolved_edges.entry(target).or_insert(0) += 1;
                 // Completed and Skipped nodes activate their outgoing edges so
                 // that downstream nodes see a resolved predecessor.
                 if matches!(ns.state, NodeState::Completed | NodeState::Skipped) {
@@ -780,7 +782,7 @@ impl WorkflowEngine {
             }
             let incoming = graph.incoming_connections(node_id);
             let required = incoming.len();
-            let resolved = resolved_edges.get(&node_id).map_or(0, |s| s.len());
+            let resolved = resolved_edges.get(&node_id).copied().unwrap_or(0);
 
             if required == 0 || resolved == required {
                 seed_nodes.push(node_id);
@@ -831,7 +833,7 @@ impl WorkflowEngine {
 
         let elapsed = started.elapsed();
 
-        let final_status = determine_final_status(&failed_node, &cancel_token);
+        let final_status = determine_final_status(&failed_node, &cancel_token, &exec_state);
         // Use the validated transition path. Ignoring the result is intentional:
         // if the current status is already terminal (e.g. the execution was
         // cancelled during the frontier loop), we do not overwrite it.
@@ -914,7 +916,7 @@ impl WorkflowEngine {
         error_strategy: nebula_workflow::ErrorStrategy,
         seed_nodes: Vec<NodeId>,
         initial_activated: HashMap<NodeId, HashSet<NodeId>>,
-        initial_resolved: HashMap<NodeId, HashSet<NodeId>>,
+        initial_resolved: HashMap<NodeId, usize>,
     ) -> Option<(NodeId, String)> {
         let total_output_bytes = Arc::new(AtomicU64::new(0));
         let total_retries = Arc::new(AtomicU32::new(0));
@@ -1306,7 +1308,7 @@ impl WorkflowEngine {
         exec_state: &mut ExecutionState,
         graph: &DependencyGraph,
         activated_edges: &mut HashMap<NodeId, HashSet<NodeId>>,
-        resolved_edges: &mut HashMap<NodeId, HashSet<NodeId>>,
+        resolved_edges: &mut HashMap<NodeId, usize>,
         required_count: &HashMap<NodeId, usize>,
         ready_queue: &mut VecDeque<NodeId>,
     ) -> bool {
@@ -1609,7 +1611,7 @@ fn process_outgoing_edges(
     error_msg: Option<&str>,
     graph: &DependencyGraph,
     activated_edges: &mut HashMap<NodeId, HashSet<NodeId>>,
-    resolved_edges: &mut HashMap<NodeId, HashSet<NodeId>>,
+    resolved_edges: &mut HashMap<NodeId, usize>,
     required_count: &HashMap<NodeId, usize>,
     ready_queue: &mut VecDeque<NodeId>,
     exec_state: &mut ExecutionState,
@@ -1622,7 +1624,9 @@ fn process_outgoing_edges(
         let target = conn.to_node;
         let activate = evaluate_edge(conn, result, node_failed);
 
-        resolved_edges.entry(target).or_default().insert(source_id);
+        // Increment the per-edge resolved count (not per-source, so that multiple
+        // edges from the same source node to the same target are each counted).
+        *resolved_edges.entry(target).or_insert(0) += 1;
         if activate {
             activated_edges.entry(target).or_default().insert(source_id);
             if node_failed {
@@ -1631,7 +1635,7 @@ fn process_outgoing_edges(
         }
 
         // Check if target is now fully resolved
-        let resolved = resolved_edges.get(&target).map_or(0, |s| s.len());
+        let resolved = resolved_edges.get(&target).copied().unwrap_or(0);
         let required = required_count.get(&target).copied().unwrap_or(0);
         let activated = activated_edges.get(&target).map_or(0, |s| s.len());
 
@@ -1797,7 +1801,7 @@ fn propagate_skip(
     node_id: NodeId,
     graph: &DependencyGraph,
     exec_state: &mut ExecutionState,
-    resolved_edges: &mut HashMap<NodeId, HashSet<NodeId>>,
+    resolved_edges: &mut HashMap<NodeId, usize>,
     activated_edges: &HashMap<NodeId, HashSet<NodeId>>,
     required_count: &HashMap<NodeId, usize>,
     ready_queue: &mut VecDeque<NodeId>,
@@ -1815,9 +1819,11 @@ fn propagate_skip(
     // Mark all outgoing edges as resolved (dead) for their targets
     for conn in graph.outgoing_connections(node_id) {
         let target = conn.to_node;
-        resolved_edges.entry(target).or_default().insert(node_id);
+        // Increment per-edge count (not per-source) so that multiple edges from
+        // the same skipped source to the same target are each counted.
+        *resolved_edges.entry(target).or_insert(0) += 1;
 
-        let resolved = resolved_edges.get(&target).map_or(0, |s| s.len());
+        let resolved = resolved_edges.get(&target).copied().unwrap_or(0);
         let required = required_count.get(&target).copied().unwrap_or(0);
         let activated = activated_edges.get(&target).map_or(0, |s| s.len());
 
@@ -1880,7 +1886,7 @@ fn handle_node_failure(
     graph: &DependencyGraph,
     outputs: &Arc<DashMap<NodeId, serde_json::Value>>,
     activated_edges: &mut HashMap<NodeId, HashSet<NodeId>>,
-    resolved_edges: &mut HashMap<NodeId, HashSet<NodeId>>,
+    resolved_edges: &mut HashMap<NodeId, usize>,
     required_count: &HashMap<NodeId, usize>,
     ready_queue: &mut VecDeque<NodeId>,
     exec_state: &mut ExecutionState,
@@ -1974,11 +1980,23 @@ fn mark_node_failed(exec_state: &mut ExecutionState, node_id: NodeId, err: &Engi
 fn determine_final_status(
     failed_node: &Option<(NodeId, String)>,
     cancel_token: &CancellationToken,
+    exec_state: &ExecutionState,
 ) -> ExecutionStatus {
     if failed_node.is_some() {
         ExecutionStatus::Failed
     } else if cancel_token.is_cancelled() {
         ExecutionStatus::Cancelled
+    } else if !exec_state.all_nodes_terminal() {
+        // All reachable paths finished but some nodes are still non-terminal —
+        // this indicates a bookkeeping inconsistency (e.g., a node that was
+        // never enqueued because its incoming-edge count was never satisfied).
+        // Returning Failed prevents a false Completed status.
+        tracing::warn!(
+            execution_id = %exec_state.execution_id,
+            "execution loop finished but not all nodes are terminal; \
+             marking execution as failed to prevent false Completed status"
+        );
+        ExecutionStatus::Failed
     } else {
         ExecutionStatus::Completed
     }
@@ -3573,6 +3591,113 @@ mod tests {
             refresh_count.load(AOrdering::Relaxed),
             2,
             "refresh hook should be called once per dispatched node"
+        );
+    }
+
+    // -- Multi-edge regression tests --
+
+    /// Regression: two distinct edges from the same source to the same target
+    /// must not stall the target node.
+    ///
+    /// Previously, `resolved_edges` used `HashSet<NodeId>` (source-node cardinality)
+    /// while `required_count` counted edges. With two edges A → B, the set deduped
+    /// them to one entry, so `resolved(1) != required(2)` forever and B never ran.
+    /// The fix changes `resolved_edges` to `HashMap<NodeId, usize>` (edge-count
+    /// cardinality), so both increments are counted and B correctly becomes ready.
+    #[tokio::test]
+    async fn multi_edge_from_same_source_executes_target() {
+        use nebula_workflow::EdgeCondition;
+
+        let registry = Arc::new(ActionRegistry::new());
+        registry.register_stateless(EchoHandler {
+            meta: ActionMetadata::new(action_key!("echo"), "Echo", "echoes input"),
+        });
+
+        let (engine, _) = make_engine(registry);
+
+        let a = NodeId::new();
+        let b = NodeId::new();
+
+        // Two distinct (non-identical) edges from A to B: one unconditional,
+        // one via a named source port. Both activate on success.
+        let wf = make_workflow(
+            vec![
+                NodeDefinition::new(a, "A", "echo").unwrap(),
+                NodeDefinition::new(b, "B", "echo").unwrap(),
+            ],
+            vec![
+                Connection::new(a, b).with_condition(EdgeCondition::Always),
+                Connection::new(a, b)
+                    .with_condition(EdgeCondition::Always)
+                    .with_from_port("alt"),
+            ],
+        );
+
+        let result = engine
+            .execute_workflow(&wf, serde_json::json!("payload"), ExecutionBudget::default())
+            .await
+            .unwrap();
+
+        assert!(
+            result.is_success(),
+            "multi-edge workflow must complete successfully; got: {:?}",
+            result.status
+        );
+        assert!(
+            result.node_output(b).is_some(),
+            "target node B must execute and produce output"
+        );
+    }
+
+    /// Regression: `determine_final_status` must return `Failed` (not `Completed`)
+    /// when at least one node has not reached a terminal state, even when no node
+    /// explicitly failed and the cancellation token is not set.
+    ///
+    /// This guards against the false-Completed scenario described in the issue:
+    /// the frontier can drain and the execution incorrectly returns Completed while
+    /// some nodes are still Pending due to edge-resolution bookkeeping bugs.
+    #[test]
+    fn final_status_guard_returns_failed_for_non_terminal_nodes() {
+        let exec_id = ExecutionId::new();
+        let wf_id = WorkflowId::new();
+        let n1 = NodeId::new();
+        let n2 = NodeId::new();
+
+        // n1 completed, n2 still Pending (simulates a stalled node).
+        let mut exec_state = ExecutionState::new(exec_id, wf_id, &[n1, n2]);
+        exec_state.node_states.get_mut(&n1).unwrap().state = NodeState::Completed;
+        // n2 stays NodeState::Pending
+
+        let cancel_token = CancellationToken::new();
+        let status = determine_final_status(&None, &cancel_token, &exec_state);
+
+        assert_eq!(
+            status,
+            ExecutionStatus::Failed,
+            "non-terminal nodes must prevent a false Completed status"
+        );
+    }
+
+    /// Smoke-test: `determine_final_status` returns `Completed` when all nodes are
+    /// terminal and there is no failure or cancellation.
+    #[test]
+    fn final_status_completed_when_all_terminal() {
+        let exec_id = ExecutionId::new();
+        let wf_id = WorkflowId::new();
+        let n1 = NodeId::new();
+        let n2 = NodeId::new();
+
+        let mut exec_state = ExecutionState::new(exec_id, wf_id, &[n1, n2]);
+        exec_state.node_states.get_mut(&n1).unwrap().state = NodeState::Completed;
+        exec_state.node_states.get_mut(&n2).unwrap().state = NodeState::Skipped;
+
+        let cancel_token = CancellationToken::new();
+        let status = determine_final_status(&None, &cancel_token, &exec_state);
+
+        assert_eq!(
+            status,
+            ExecutionStatus::Completed,
+            "all-terminal nodes with no failure must yield Completed"
         );
     }
 }

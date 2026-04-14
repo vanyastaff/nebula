@@ -11,6 +11,9 @@ Workflow execution orchestrator — frontier-based DAG scheduler.
 - Frontier-based: nodes spawn when all incoming edges resolve.
 - Error strategy: FailFast cancels, ContinueOnError skips dependents, IgnoreErrors = null success.
 - Disabled nodes: `mark_node_skipped()` + `process_outgoing_edges(None, None)`.
+- **`resolved_edges` is `HashMap<NodeId, usize>` (edge-count, not source-node set).** Using `HashSet<NodeId>` caused multi-edge stalls: two edges from A→B would dedup to one entry, so resolved never reached required=2. The count-based type correctly increments once per edge processed.
+- `activated_edges` remains `HashMap<NodeId, HashSet<NodeId>>` (source-node set) — used by `resolve_node_input_with_support` to filter which predecessor outputs to include; dedup-by-source is correct there.
+- `determine_final_status` guards `Completed` behind `exec_state.all_nodes_terminal()`. If frontier drains but non-terminal nodes remain (engine bug), returns `Failed` with a warning rather than a false `Completed`.
 
 ## resume_execution()
 - Needs `execution_repo` + `workflow_repo` or returns `PlanningFailed`.
@@ -26,4 +29,4 @@ Workflow execution orchestrator — frontier-based DAG scheduler.
 
 <!-- reviewed: 2026-04-14 — #247 added Drop/Terminate gate to evaluate_edge with TODO(engine) for Phase 3 scheduler wiring -->
 
-<!-- reviewed: 2026-04-14 -->
+<!-- reviewed: 2026-04-14 — multi-edge fix: resolved_edges changed to usize count; determine_final_status guards Completed on all_nodes_terminal() -->
