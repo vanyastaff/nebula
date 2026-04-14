@@ -7,7 +7,7 @@ topology-specific acquire dispatch.
 
 - `ErrorKind` determines retry: Transient / Exhausted / Backpressure = retryable.
 - `execute_with_resilience` respects `retry_after()` as backoff floor.
-- Release queue fallback is bounded (4096) — drops tasks with `tracing::error!` when full.
+- Release queue fallback is bounded (4096). On double-`Full` saturation `submit` spawns a bounded-lifetime rescue task (30s timeout via `tokio::time::timeout`) that awaits fallback capacity instead of silently dropping. `rescued_count()` exposes the saturation counter; `dropped_count()` only increments on rescue timeout / shutdown / closed-channel — never on the fast `try_send` path.
 - `register()` takes 6 params — convenience methods require `Auth = ()` bound.
 - `ResourceHandle` RAII — guarded returns lease on drop, tainted destroys.
 - Guarded permit drops **after** `catch_unwind` in `Drop` — prevents semaphore leak on panic.

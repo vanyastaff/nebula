@@ -18,7 +18,10 @@
 use std::{
     future::Future,
     pin::Pin,
-    sync::atomic::{AtomicUsize, Ordering},
+    sync::{
+        Arc,
+        atomic::{AtomicUsize, Ordering},
+    },
     time::Duration,
 };
 
@@ -45,6 +48,16 @@ const CHANNEL_BUFFER: usize = 256;
 /// Previously unbounded — now bounded to prevent OOM under sustained overload.
 /// Tasks exceeding this capacity are dropped with a warning.
 const FALLBACK_BUFFER: usize = 4096;
+
+/// Maximum lifetime of a rescue task spawned on double-`Full` saturation.
+///
+/// When both primary and fallback channels are full, [`ReleaseQueue::submit`]
+/// spawns a short-lived task that awaits capacity on the fallback channel
+/// (blocking send) for up to this window. If no worker drains within
+/// `RESCUE_TIMEOUT`, the task is recorded as truly dropped — an explicit,
+/// metric-observable loss rather than a silent one. This bound also caps
+/// the total lifetime of any rescue task so they cannot leak indefinitely.
+const RESCUE_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// Handle to the running release queue workers.
 ///
@@ -87,8 +100,17 @@ pub struct ReleaseQueue {
     cancel: CancellationToken,
     /// Tracks how many tasks have gone to the fallback channel.
     fallback_count: AtomicUsize,
-    /// Tracks how many tasks were dropped due to full queues.
-    dropped_count: AtomicUsize,
+    /// Tracks how many tasks were dropped due to full queues
+    /// (rescue timeout or shutdown).
+    ///
+    /// Shared with rescue tasks via `Arc` so they can record terminal
+    /// drops from outside the queue.
+    dropped_count: Arc<AtomicUsize>,
+    /// Tracks how many tasks were sent down the rescue path
+    /// (double-`Full` saturation). A non-zero value means the queue is
+    /// saturated badly enough that `try_send` to both primary and fallback
+    /// failed — operators should investigate worker capacity.
+    rescued_count: Arc<AtomicUsize>,
 }
 
 impl ReleaseQueue {
@@ -137,7 +159,8 @@ impl ReleaseQueue {
             next: AtomicUsize::new(0),
             cancel,
             fallback_count: AtomicUsize::new(0),
-            dropped_count: AtomicUsize::new(0),
+            dropped_count: Arc::new(AtomicUsize::new(0)),
+            rescued_count: Arc::new(AtomicUsize::new(0)),
         };
         let handle = ReleaseQueueHandle {
             workers,
@@ -169,28 +192,109 @@ impl ReleaseQueue {
                 }
                 match self.fallback_tx.try_send(factory) {
                     Ok(()) => {}
-                    Err(mpsc::error::TrySendError::Full(_)) => {
-                        let dropped = self.dropped_count.fetch_add(1, Ordering::Relaxed) + 1;
-                        if dropped.is_power_of_two() {
-                            tracing::error!(
-                                dropped_tasks = dropped,
-                                "release queue fallback full — dropping release \
-                                 task (resource may leak)"
-                            );
-                        }
+                    Err(mpsc::error::TrySendError::Full(factory)) => {
+                        // Both primary and fallback are full. Previously this
+                        // path silently dropped the task. Now we hand it to a
+                        // bounded-lifetime rescue task that awaits capacity on
+                        // the fallback channel for up to `RESCUE_TIMEOUT`.
+                        self.spawn_rescue(factory);
                     }
-                    Err(mpsc::error::TrySendError::Closed(_)) => {
-                        tracing::warn!(
-                            "release queue fallback channel closed, \
-                             dropping release task"
-                        );
+                    Err(mpsc::error::TrySendError::Closed(factory)) => {
+                        // Fallback channel is closed — workers have exited.
+                        // Record as a drop (with reason) instead of silently
+                        // discarding. The factory is dropped here on purpose:
+                        // there is nowhere to send it.
+                        drop(factory);
+                        record_drop(&self.dropped_count, "fallback_channel_closed");
                     }
                 }
             }
-            Err(mpsc::error::TrySendError::Closed(_)) => {
-                tracing::warn!("release queue primary worker channel closed");
+            Err(mpsc::error::TrySendError::Closed(factory)) => {
+                // Primary worker exited (e.g., panic). Try the fallback
+                // before recording a drop — fallback may still be alive.
+                match self.fallback_tx.try_send(factory) {
+                    Ok(()) => {}
+                    Err(mpsc::error::TrySendError::Full(factory)) => {
+                        self.spawn_rescue(factory);
+                    }
+                    Err(mpsc::error::TrySendError::Closed(factory)) => {
+                        drop(factory);
+                        record_drop(&self.dropped_count, "primary_and_fallback_closed");
+                    }
+                }
             }
         }
+    }
+
+    /// Spawns a bounded-lifetime rescue task for a release that lost the
+    /// `try_send` race on both primary and fallback channels.
+    ///
+    /// The rescue task awaits capacity on the fallback channel via blocking
+    /// `send` for up to [`RESCUE_TIMEOUT`]. If the queue is cancelled or the
+    /// timeout expires, the task is recorded via `dropped_count` — the only
+    /// path that counts toward dropped tasks, and one that is bounded and
+    /// observable. The task is fire-and-forget by design: its purpose is to
+    /// survive without a caller handle, and the timeout caps its total
+    /// lifetime so it cannot leak indefinitely.
+    fn spawn_rescue(&self, factory: TaskFactory) {
+        let rescued = self.rescued_count.fetch_add(1, Ordering::Relaxed) + 1;
+        if rescued.is_power_of_two() {
+            tracing::warn!(
+                rescued_tasks = rescued,
+                "release queue saturated (primary + fallback full); \
+                 spawning bounded-lifetime rescue task"
+            );
+        }
+
+        let fallback_tx = self.fallback_tx.clone();
+        let cancel = self.cancel.clone();
+        let dropped = Arc::clone(&self.dropped_count);
+
+        tokio::spawn(async move {
+            tokio::select! {
+                biased;
+                _ = cancel.cancelled() => {
+                    // Shutdown signalled while we were waiting for capacity.
+                    // The drain loop in worker_loop will not see us — record
+                    // the drop and exit.
+                    record_drop(&dropped, "shutdown");
+                }
+                res = tokio::time::timeout(RESCUE_TIMEOUT, fallback_tx.send(factory)) => {
+                    match res {
+                        Ok(Ok(())) => {
+                            // Rescued: a worker drained the fallback in time.
+                        }
+                        Ok(Err(_closed)) => {
+                            record_drop(&dropped, "channel_closed");
+                        }
+                        Err(_elapsed) => {
+                            record_drop(&dropped, "timeout");
+                        }
+                    }
+                }
+            }
+        });
+    }
+
+    /// Returns the total number of tasks routed via the fallback channel.
+    pub fn fallback_count(&self) -> usize {
+        self.fallback_count.load(Ordering::Relaxed)
+    }
+
+    /// Returns the number of tasks that were truly dropped (after rescue
+    /// failure or shutdown). A non-zero value means resources may have
+    /// leaked and warrants operator attention.
+    pub fn dropped_count(&self) -> usize {
+        self.dropped_count.load(Ordering::Relaxed)
+    }
+
+    /// Returns the number of tasks that entered the rescue path due to
+    /// double-`Full` saturation. A non-zero value means the queue was
+    /// saturated badly enough that both primary and fallback `try_send`
+    /// failed — operators should investigate worker capacity even if
+    /// `dropped_count()` is still zero.
+    pub fn rescued_count(&self) -> usize {
+        self.rescued_count.load(Ordering::Relaxed)
     }
 
     /// Signals workers to drain remaining tasks and exit.
@@ -252,6 +356,20 @@ impl ReleaseQueue {
                 TASK_EXECUTION_TIMEOUT.as_secs()
             );
         }
+    }
+}
+
+/// Records a terminal task drop on the shared counter, with a structured
+/// reason. Logs at ERROR level when the drop count crosses a power-of-two
+/// boundary so log volume stays bounded under sustained loss.
+fn record_drop(counter: &Arc<AtomicUsize>, reason: &'static str) {
+    let n = counter.fetch_add(1, Ordering::Relaxed) + 1;
+    if n.is_power_of_two() {
+        tracing::error!(
+            dropped_tasks = n,
+            reason = reason,
+            "release queue rescue failed — resource may leak"
+        );
     }
 }
 
@@ -358,6 +476,111 @@ mod tests {
             counter.load(Ordering::Relaxed),
             5,
             "close() must drain all buffered tasks before workers exit"
+        );
+    }
+
+    fn submit_gated(
+        queue: &ReleaseQueue,
+        gate: &Arc<tokio::sync::Notify>,
+        counter: &Arc<AtomicU32>,
+    ) {
+        let g = gate.clone();
+        let c = counter.clone();
+        queue.submit(move || Box::pin(gated_increment(g, c)));
+    }
+
+    async fn gated_increment(gate: Arc<tokio::sync::Notify>, counter: Arc<AtomicU32>) {
+        gate.notified().await;
+        counter.fetch_add(1, Ordering::Relaxed);
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn double_full_saturation_rescues_instead_of_dropping() {
+        // Saturate both primary (256) and fallback (4096) by parking BOTH
+        // the primary worker and the fallback worker on a gate. Once both
+        // channels are full, any further submit must spawn a rescue task —
+        // NOT silently drop.
+        let (queue, handle) = ReleaseQueue::new(1);
+        let counter = Arc::new(AtomicU32::new(0));
+        let gate = Arc::new(tokio::sync::Notify::new());
+
+        // Step 1: park the primary worker on the gate. The first submit
+        // routes to senders[0] (round-robin with 1 worker). The primary
+        // worker pulls it via `recv()` and blocks on `notified()`.
+        submit_gated(&queue, &gate, &counter);
+        // Yield long enough for the primary worker to actually receive
+        // and start the gated task.
+        tokio::time::sleep(Duration::from_millis(50)).await;
+
+        // Step 2: park the fallback worker too. Fill primary first with
+        // near-instant tasks so the next submit overflows into the
+        // fallback channel — and the gated task we send next is what
+        // the fallback worker picks up and blocks on.
+        for _ in 0..CHANNEL_BUFFER {
+            submit_increment(&queue, &counter);
+        }
+        // Primary is now full (256 buffered, 1 in-flight on the worker).
+        // Next submit overflows to the fallback channel.
+        submit_gated(&queue, &gate, &counter);
+        // Let the fallback worker pick up the gated task and block.
+        tokio::time::sleep(Duration::from_millis(50)).await;
+
+        // Step 3: now both workers are blocked. Flood until both channels
+        // are completely full and rescue must kick in. Capacity:
+        //   primary buffer  = 256 (full from step 2)
+        //   fallback buffer = 4096 (1 already used by the gated task that
+        //                          the fallback worker is now holding;
+        //                          the gated task is no longer in the
+        //                          buffer, so 4096 free slots remain)
+        // Submitting (256 already filled - we re-fill primary as workers
+        // are gated) plus 4096 to fallback = 4352 buffered before rescue.
+        // After step 2, primary buffer is still ~256 but the 257th went
+        // to fallback. So available room: primary 0, fallback 4096.
+        // Add a margin: 4096 + 300 forces 300 rescues.
+        let extras: u32 = FALLBACK_BUFFER as u32 + 300;
+        for _ in 0..extras {
+            submit_increment(&queue, &counter);
+        }
+
+        // Rescue path must have been exercised at least once.
+        assert!(
+            queue.rescued_count() > 0,
+            "rescue path must be exercised under double-full saturation \
+             (fallback={}, rescued={}, dropped={})",
+            queue.fallback_count(),
+            queue.rescued_count(),
+            queue.dropped_count(),
+        );
+        assert_eq!(
+            queue.dropped_count(),
+            0,
+            "no task should be dropped — they must all be rescued and run"
+        );
+
+        // Release both gated tasks so workers can drain.
+        gate.notify_waiters();
+
+        // Wait for the counter to settle. Total expected:
+        //   2 gated tasks
+        //   + CHANNEL_BUFFER near-instant tasks (step 2)
+        //   + extras near-instant tasks (step 3)
+        let expected: u32 = 2 + CHANNEL_BUFFER as u32 + extras;
+        let deadline = std::time::Instant::now() + Duration::from_secs(15);
+        while counter.load(Ordering::Relaxed) < expected {
+            if std::time::Instant::now() > deadline {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+
+        drop(queue);
+        ReleaseQueue::shutdown(handle).await;
+
+        assert_eq!(
+            counter.load(Ordering::Relaxed),
+            expected,
+            "every submitted task (including gated and rescued) must \
+             complete — none should be silently dropped"
         );
     }
 
