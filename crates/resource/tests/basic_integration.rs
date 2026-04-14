@@ -552,6 +552,159 @@ async fn manager_shutdown_rejects_acquire() {
 }
 
 // ---------------------------------------------------------------------------
+// #390 — pool config validation + max_concurrent_creates enforcement
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn register_pooled_rejects_min_greater_than_max() {
+    let manager = Manager::new();
+    let resource = PoolTestResource::new();
+    let pool_config = nebula_resource::topology::pooled::config::Config {
+        min_size: 5,
+        max_size: 2,
+        ..Default::default()
+    };
+
+    let err = manager
+        .register_pooled::<PoolTestResource>(resource, test_config(), pool_config)
+        .expect_err("min > max must be rejected");
+    let msg = err.to_string();
+    assert!(
+        msg.contains("min_size") && msg.contains("max_size"),
+        "error message must mention min_size and max_size, got: {msg}",
+    );
+}
+
+#[tokio::test]
+async fn register_pooled_rejects_max_size_zero() {
+    let manager = Manager::new();
+    let resource = PoolTestResource::new();
+    let pool_config = nebula_resource::topology::pooled::config::Config {
+        min_size: 0,
+        max_size: 0,
+        ..Default::default()
+    };
+
+    let err = manager
+        .register_pooled::<PoolTestResource>(resource, test_config(), pool_config)
+        .expect_err("max_size == 0 must be rejected");
+    assert!(err.to_string().contains("max_size"));
+}
+
+#[derive(Clone)]
+struct SlowCreatePoolResource {
+    in_flight: Arc<AtomicU64>,
+    peak: Arc<AtomicU64>,
+}
+
+impl Resource for SlowCreatePoolResource {
+    type Config = TestConfig;
+    type Runtime = Arc<AtomicU64>;
+    type Lease = Arc<AtomicU64>;
+    type Error = TestError;
+    type Auth = ();
+
+    fn key() -> ResourceKey {
+        resource_key!("slow-create-pool")
+    }
+
+    async fn create(
+        &self,
+        _config: &TestConfig,
+        _auth: &(),
+        _ctx: &dyn Ctx,
+    ) -> Result<Arc<AtomicU64>, TestError> {
+        let now = self.in_flight.fetch_add(1, Ordering::SeqCst) + 1;
+        // Update peak with a compare-exchange loop.
+        let mut observed = self.peak.load(Ordering::SeqCst);
+        while now > observed {
+            match self
+                .peak
+                .compare_exchange(observed, now, Ordering::SeqCst, Ordering::SeqCst)
+            {
+                Ok(_) => break,
+                Err(cur) => observed = cur,
+            }
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(80)).await;
+        self.in_flight.fetch_sub(1, Ordering::SeqCst);
+        Ok(Arc::new(AtomicU64::new(0)))
+    }
+
+    async fn destroy(&self, _runtime: Arc<AtomicU64>) -> Result<(), TestError> {
+        Ok(())
+    }
+
+    fn metadata() -> ResourceMetadata {
+        ResourceMetadata::from_key(&Self::key())
+    }
+}
+
+impl Pooled for SlowCreatePoolResource {
+    fn is_broken(&self, _runtime: &Arc<AtomicU64>) -> BrokenCheck {
+        BrokenCheck::Healthy
+    }
+
+    async fn recycle(
+        &self,
+        _runtime: &Arc<AtomicU64>,
+        _metrics: &nebula_resource::topology::pooled::InstanceMetrics,
+    ) -> Result<RecycleDecision, TestError> {
+        Ok(RecycleDecision::Keep)
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn pool_create_path_respects_max_concurrent_creates() {
+    use nebula_resource::topology::pooled::config::{Config as PoolCfg, WarmupStrategy};
+
+    let resource = SlowCreatePoolResource {
+        in_flight: Arc::new(AtomicU64::new(0)),
+        peak: Arc::new(AtomicU64::new(0)),
+    };
+    let peak = resource.peak.clone();
+
+    let manager = Arc::new(Manager::new());
+    let pool_config = PoolCfg {
+        min_size: 0,
+        max_size: 10,
+        max_concurrent_creates: 2,
+        warmup: WarmupStrategy::None,
+        ..Default::default()
+    };
+    manager
+        .register_pooled::<SlowCreatePoolResource>(resource, test_config(), pool_config)
+        .expect("register");
+
+    // Fire 10 concurrent acquires so they all hit the create path.
+    let mut handles = Vec::new();
+    for _ in 0..10 {
+        let mgr = Arc::clone(&manager);
+        handles.push(tokio::spawn(async move {
+            let ctx = test_ctx();
+            mgr.acquire_pooled::<SlowCreatePoolResource>(&(), &ctx, &AcquireOptions::default())
+                .await
+                .expect("acquire")
+        }));
+    }
+    let mut leases = Vec::with_capacity(10);
+    for h in handles {
+        leases.push(h.await.expect("spawn"));
+    }
+    drop(leases);
+
+    let observed = peak.load(Ordering::SeqCst);
+    assert!(
+        observed <= 2,
+        "max_concurrent_creates=2 violated — observed peak={observed} (#390)",
+    );
+    assert!(
+        observed > 0,
+        "create path never ran — test fixture is broken",
+    );
+}
+
+// ---------------------------------------------------------------------------
 // #387 — ResourceStatus.phase lifecycle
 // ---------------------------------------------------------------------------
 

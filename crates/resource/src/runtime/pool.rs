@@ -82,6 +82,13 @@ pub struct PoolStats {
 pub struct PoolRuntime<R: Resource> {
     idle: Arc<Mutex<VecDeque<PoolEntry<R>>>>,
     semaphore: Arc<Semaphore>,
+    /// Bounds concurrent invocations of `create_entry` (#390).
+    ///
+    /// The checkout semaphore gates active leases; this one gates
+    /// *creation* so a burst of concurrent acquires cannot fan out into
+    /// `max_size` parallel `Resource::create` calls against a fragile
+    /// backend.
+    create_semaphore: Arc<Semaphore>,
     config: Config,
     current_fingerprint: Arc<AtomicU64>,
 }
@@ -99,9 +106,16 @@ impl<R: Resource> PoolRuntime<R> {
     /// on your config type to enable change detection.
     pub fn new(config: Config, fingerprint: u64) -> Self {
         let semaphore = Arc::new(Semaphore::new(config.max_size as usize));
+        // #390: cap concurrent instance creation. `max(1)` protects us
+        // from a pathological `max_concurrent_creates = 0` config that
+        // would otherwise deadlock the pool on first acquire.
+        let create_semaphore = Arc::new(Semaphore::new(
+            (config.max_concurrent_creates as usize).max(1),
+        ));
         Self {
             idle: Arc::new(Mutex::new(VecDeque::new())),
             semaphore,
+            create_semaphore,
             config,
             current_fingerprint: Arc::new(AtomicU64::new(fingerprint)),
         }
@@ -400,6 +414,11 @@ where
     }
 
     /// Creates a new pool entry via `resource.create()`.
+    ///
+    /// All creation goes through this funnel and is gated on
+    /// `create_semaphore` (#390) so a burst of acquires cannot stampede
+    /// a fragile backend with `max_size` parallel connects. The permit
+    /// is released as soon as `Resource::create` returns.
     async fn create_entry(
         &self,
         resource: &R,
@@ -407,6 +426,13 @@ where
         auth: &R::Auth,
         ctx: &dyn Ctx,
     ) -> Result<PoolEntry<R>, Error> {
+        let _create_permit = self
+            .create_semaphore
+            .clone()
+            .acquire_owned()
+            .await
+            .map_err(|_| Error::permanent("pool: create semaphore closed"))?;
+
         let runtime = match tokio::time::timeout(
             self.config.create_timeout,
             resource.create(config, auth, ctx),

@@ -379,6 +379,8 @@ impl Manager {
     {
         use crate::resource::ResourceConfig as _;
 
+        validate_pool_config(&pool_config)?;
+
         let fingerprint = config.fingerprint();
         self.register(
             resource,
@@ -534,6 +536,9 @@ impl Manager {
         R: Resource<Auth = ()>,
     {
         use crate::resource::ResourceConfig as _;
+
+        validate_pool_config(&pool_config)?;
+
         let fingerprint = config.fingerprint();
         self.register(
             resource,
@@ -1730,6 +1735,24 @@ where
             },
             other => Error::transient(other.to_string()),
         })
+}
+
+/// Validates pool config invariants at registration time.
+///
+/// Catches obviously broken configs (`max_size == 0`, `min_size > max_size`)
+/// before they reach [`PoolRuntime`], so warmup never inflates beyond
+/// `max_size` and callers cannot deadlock on an empty semaphore (#390).
+fn validate_pool_config(cfg: &crate::topology::pooled::config::Config) -> Result<(), Error> {
+    if cfg.max_size == 0 {
+        return Err(Error::permanent("pool max_size must be > 0"));
+    }
+    if cfg.min_size > cfg.max_size {
+        return Err(Error::permanent(format!(
+            "pool min_size ({}) must be <= max_size ({})",
+            cfg.min_size, cfg.max_size,
+        )));
+    }
+    Ok(())
 }
 
 impl Default for Manager {
