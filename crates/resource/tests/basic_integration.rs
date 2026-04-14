@@ -551,6 +551,247 @@ async fn manager_shutdown_rejects_acquire() {
     assert_eq!(*err.kind(), ErrorKind::Cancelled);
 }
 
+// ---------------------------------------------------------------------------
+// #390 — pool config validation + max_concurrent_creates enforcement
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn register_pooled_rejects_min_greater_than_max() {
+    let manager = Manager::new();
+    let resource = PoolTestResource::new();
+    let pool_config = nebula_resource::topology::pooled::config::Config {
+        min_size: 5,
+        max_size: 2,
+        ..Default::default()
+    };
+
+    let err = manager
+        .register_pooled::<PoolTestResource>(resource, test_config(), pool_config)
+        .expect_err("min > max must be rejected");
+    let msg = err.to_string();
+    assert!(
+        msg.contains("min_size") && msg.contains("max_size"),
+        "error message must mention min_size and max_size, got: {msg}",
+    );
+}
+
+#[tokio::test]
+async fn register_pooled_rejects_max_size_zero() {
+    let manager = Manager::new();
+    let resource = PoolTestResource::new();
+    let pool_config = nebula_resource::topology::pooled::config::Config {
+        min_size: 0,
+        max_size: 0,
+        ..Default::default()
+    };
+
+    let err = manager
+        .register_pooled::<PoolTestResource>(resource, test_config(), pool_config)
+        .expect_err("max_size == 0 must be rejected");
+    assert!(err.to_string().contains("max_size"));
+}
+
+#[derive(Clone)]
+struct SlowCreatePoolResource {
+    in_flight: Arc<AtomicU64>,
+    peak: Arc<AtomicU64>,
+}
+
+impl Resource for SlowCreatePoolResource {
+    type Config = TestConfig;
+    type Runtime = Arc<AtomicU64>;
+    type Lease = Arc<AtomicU64>;
+    type Error = TestError;
+    type Auth = ();
+
+    fn key() -> ResourceKey {
+        resource_key!("slow-create-pool")
+    }
+
+    async fn create(
+        &self,
+        _config: &TestConfig,
+        _auth: &(),
+        _ctx: &dyn Ctx,
+    ) -> Result<Arc<AtomicU64>, TestError> {
+        let now = self.in_flight.fetch_add(1, Ordering::SeqCst) + 1;
+        // Update peak with a compare-exchange loop.
+        let mut observed = self.peak.load(Ordering::SeqCst);
+        while now > observed {
+            match self
+                .peak
+                .compare_exchange(observed, now, Ordering::SeqCst, Ordering::SeqCst)
+            {
+                Ok(_) => break,
+                Err(cur) => observed = cur,
+            }
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(80)).await;
+        self.in_flight.fetch_sub(1, Ordering::SeqCst);
+        Ok(Arc::new(AtomicU64::new(0)))
+    }
+
+    async fn destroy(&self, _runtime: Arc<AtomicU64>) -> Result<(), TestError> {
+        Ok(())
+    }
+
+    fn metadata() -> ResourceMetadata {
+        ResourceMetadata::from_key(&Self::key())
+    }
+}
+
+impl Pooled for SlowCreatePoolResource {
+    fn is_broken(&self, _runtime: &Arc<AtomicU64>) -> BrokenCheck {
+        BrokenCheck::Healthy
+    }
+
+    async fn recycle(
+        &self,
+        _runtime: &Arc<AtomicU64>,
+        _metrics: &nebula_resource::topology::pooled::InstanceMetrics,
+    ) -> Result<RecycleDecision, TestError> {
+        Ok(RecycleDecision::Keep)
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn pool_create_path_respects_max_concurrent_creates() {
+    use nebula_resource::topology::pooled::config::{Config as PoolCfg, WarmupStrategy};
+
+    let resource = SlowCreatePoolResource {
+        in_flight: Arc::new(AtomicU64::new(0)),
+        peak: Arc::new(AtomicU64::new(0)),
+    };
+    let peak = resource.peak.clone();
+
+    let manager = Arc::new(Manager::new());
+    let pool_config = PoolCfg {
+        min_size: 0,
+        max_size: 10,
+        max_concurrent_creates: 2,
+        warmup: WarmupStrategy::None,
+        ..Default::default()
+    };
+    manager
+        .register_pooled::<SlowCreatePoolResource>(resource, test_config(), pool_config)
+        .expect("register");
+
+    // Fire 10 concurrent acquires so they all hit the create path.
+    let mut handles = Vec::new();
+    for _ in 0..10 {
+        let mgr = Arc::clone(&manager);
+        handles.push(tokio::spawn(async move {
+            let ctx = test_ctx();
+            mgr.acquire_pooled::<SlowCreatePoolResource>(&(), &ctx, &AcquireOptions::default())
+                .await
+                .expect("acquire")
+        }));
+    }
+    let mut leases = Vec::with_capacity(10);
+    for h in handles {
+        leases.push(h.await.expect("spawn"));
+    }
+    drop(leases);
+
+    let observed = peak.load(Ordering::SeqCst);
+    assert!(
+        observed <= 2,
+        "max_concurrent_creates=2 violated — observed peak={observed} (#390)",
+    );
+    assert!(
+        observed > 0,
+        "create path never ran — test fixture is broken",
+    );
+}
+
+// ---------------------------------------------------------------------------
+// #387 — ResourceStatus.phase lifecycle
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn register_transitions_phase_to_ready() {
+    let manager = Manager::new();
+    let resource = ResidentTestResource::new();
+    let resident_rt =
+        ResidentRuntime::<ResidentTestResource>::new(resident::config::Config::default());
+
+    manager
+        .register(
+            resource,
+            test_config(),
+            ScopeLevel::Global,
+            TopologyRuntime::Resident(resident_rt),
+            None,
+            None,
+        )
+        .expect("register");
+
+    let snap = manager
+        .health_check::<ResidentTestResource>(&ScopeLevel::Global)
+        .expect("health");
+    assert_eq!(snap.phase, nebula_resource::state::ResourcePhase::Ready);
+    assert_eq!(snap.generation, 0);
+}
+
+#[tokio::test]
+async fn reload_config_bumps_status_generation() {
+    let manager = Manager::new();
+    let resource = ResidentTestResource::new();
+    let resident_rt =
+        ResidentRuntime::<ResidentTestResource>::new(resident::config::Config::default());
+
+    manager
+        .register(
+            resource,
+            test_config(),
+            ScopeLevel::Global,
+            TopologyRuntime::Resident(resident_rt),
+            None,
+            None,
+        )
+        .expect("register");
+
+    manager
+        .reload_config::<ResidentTestResource>(test_config(), &ScopeLevel::Global)
+        .expect("reload");
+
+    let snap = manager
+        .health_check::<ResidentTestResource>(&ScopeLevel::Global)
+        .expect("health");
+    assert_eq!(snap.phase, nebula_resource::state::ResourcePhase::Ready);
+    assert_eq!(
+        snap.generation, 1,
+        "reload_config must bake the new generation into ResourceStatus (#387)",
+    );
+}
+
+#[tokio::test]
+async fn graceful_shutdown_report_marks_registry_cleared() {
+    use nebula_resource::manager::ShutdownConfig;
+
+    let manager = Manager::new();
+    let resource = ResidentTestResource::new();
+    let resident_rt =
+        ResidentRuntime::<ResidentTestResource>::new(resident::config::Config::default());
+
+    manager
+        .register(
+            resource,
+            test_config(),
+            ScopeLevel::Global,
+            TopologyRuntime::Resident(resident_rt),
+            None,
+            None,
+        )
+        .expect("register");
+
+    let report = manager
+        .graceful_shutdown(ShutdownConfig::default())
+        .await
+        .expect("graceful");
+    assert!(report.registry_cleared);
+}
+
 #[tokio::test]
 async fn remove_nonexistent_returns_not_found() {
     let manager = Manager::new();
@@ -1848,6 +2089,117 @@ async fn exclusive_acquire_timeout_when_locked() {
 
     drop(_h1);
     tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+    drop(rq);
+    ReleaseQueue::shutdown(rq_handle).await;
+}
+
+// ---------------------------------------------------------------------------
+// #384 — exclusive permit held until reset() completes
+// ---------------------------------------------------------------------------
+
+#[derive(Clone)]
+struct SlowResetExclusive {
+    in_progress: Arc<std::sync::atomic::AtomicBool>,
+    overlap_observed: Arc<std::sync::atomic::AtomicBool>,
+}
+
+impl Resource for SlowResetExclusive {
+    type Config = TestConfig;
+    type Runtime = Arc<AtomicU64>;
+    type Lease = Arc<AtomicU64>;
+    type Error = TestError;
+    type Auth = ();
+
+    fn key() -> ResourceKey {
+        resource_key!("slow-reset-exclusive")
+    }
+
+    async fn create(
+        &self,
+        _config: &TestConfig,
+        _auth: &(),
+        _ctx: &dyn Ctx,
+    ) -> Result<Arc<AtomicU64>, TestError> {
+        Ok(Arc::new(AtomicU64::new(0)))
+    }
+
+    async fn destroy(&self, _runtime: Arc<AtomicU64>) -> Result<(), TestError> {
+        Ok(())
+    }
+
+    fn metadata() -> ResourceMetadata {
+        ResourceMetadata::from_key(&Self::key())
+    }
+}
+
+impl Exclusive for SlowResetExclusive {
+    fn reset(
+        &self,
+        _runtime: &Arc<AtomicU64>,
+    ) -> impl std::future::Future<Output = Result<(), TestError>> + Send {
+        let in_progress = self.in_progress.clone();
+        async move {
+            in_progress.store(true, Ordering::SeqCst);
+            tokio::time::sleep(std::time::Duration::from_millis(150)).await;
+            in_progress.store(false, Ordering::SeqCst);
+            Ok(())
+        }
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn exclusive_next_acquire_waits_until_reset_completes() {
+    // #384: verify a second acquire cannot enter the critical section
+    // while a previous reset() is still running asynchronously. The
+    // resource's reset() holds `in_progress = true` for ~150ms, so under
+    // the fix the next acquire must block for at least that long.
+    let resource = SlowResetExclusive {
+        in_progress: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+        overlap_observed: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+    };
+    let runtime = Arc::new(AtomicU64::new(0));
+    let rt =
+        ExclusiveRuntime::<SlowResetExclusive>::new(runtime, exclusive::config::Config::default());
+    let (rq, rq_handle) = ReleaseQueue::new(1);
+    let rq = Arc::new(rq);
+
+    let h1 = rt
+        .acquire(&resource, &rq, 0, &AcquireOptions::default(), None)
+        .await
+        .expect("first acquire");
+    drop(h1);
+
+    // Give the release queue worker time to pick up the reset task and
+    // start its sleep. Without the fix the permit was already dropped by
+    // HandleInner::Guarded's Drop; with the fix the permit moved into the
+    // reset future and is still held.
+    tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+
+    let start = std::time::Instant::now();
+    let h2 = rt
+        .acquire(&resource, &rq, 0, &AcquireOptions::default(), None)
+        .await
+        .expect("second acquire");
+    let elapsed = start.elapsed();
+
+    // Any overlap with the in-flight reset is a bug.
+    if resource.in_progress.load(Ordering::SeqCst) {
+        resource.overlap_observed.store(true, Ordering::SeqCst);
+    }
+    assert!(
+        !resource.overlap_observed.load(Ordering::SeqCst),
+        "second acquire raced against an in-flight reset() — permit was \
+         returned before reset completed (#384)",
+    );
+    assert!(
+        elapsed >= std::time::Duration::from_millis(80),
+        "second acquire must block until reset() finishes (~150ms), \
+         actually blocked {elapsed:?} — the fix is missing (#384)",
+    );
+
+    drop(h2);
+    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
 
     drop(rq);
     ReleaseQueue::shutdown(rq_handle).await;

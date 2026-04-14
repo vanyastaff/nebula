@@ -19,7 +19,10 @@ use crate::resource::Resource;
 pub trait Exclusive: Resource {
     /// Resets the resource state after each exclusive use.
     ///
-    /// Called when the lease is released, before the next caller can acquire.
+    /// Called after the lease is released, before the **next** caller can
+    /// acquire the exclusive permit. The runtime guarantees this ordering
+    /// by holding the semaphore permit until `reset` resolves (#384).
+    ///
     /// The default implementation is a no-op.
     fn reset(
         &self,

@@ -13,8 +13,12 @@ use smallvec::SmallVec;
 
 /// The caller's intent when acquiring a resource lease.
 ///
-/// Topologies may use this to select different pools, apply different
-/// timeouts, or skip health checks for critical requests.
+/// **Status:** reserved for future engine integration. The field is
+/// preserved on [`AcquireOptions`] for forward compatibility, but no
+/// topology in `nebula-resource` currently reads it (#391). Setting
+/// [`AcquireIntent::Critical`] does not bypass queues or change
+/// throttling today — only [`AcquireOptions::deadline`] affects acquire
+/// behaviour.
 #[non_exhaustive]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AcquireIntent {
@@ -29,7 +33,10 @@ pub enum AcquireIntent {
     },
     /// Prefetch — low priority, may be deferred.
     Prefetch,
-    /// Critical — bypass queues if possible, never throttle.
+    /// Critical — reserved for future use. Will allow callers to
+    /// bypass queues or skip throttling once engine integration lands;
+    /// today it is informational only (see the enum-level `Status`
+    /// note, #391).
     Critical,
 }
 
@@ -47,11 +54,13 @@ pub enum AcquireIntent {
 /// ```
 #[derive(Debug, Clone)]
 pub struct AcquireOptions {
-    /// The caller's intent.
+    /// The caller's intent. Currently informational only — see
+    /// [`AcquireIntent`] (#391).
     pub intent: AcquireIntent,
     /// Absolute deadline for the acquire operation.
     pub deadline: Option<Instant>,
-    /// Freeform key-value tags for routing and diagnostics.
+    /// Freeform key-value tags. Reserved for future routing/diagnostics;
+    /// not read by any topology in `nebula-resource` today (#391).
     pub tags: SmallVec<[(Cow<'static, str>, Cow<'static, str>); 2]>,
 }
 

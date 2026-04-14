@@ -91,7 +91,12 @@ where
         let resource_clone = resource.clone();
         let rq = release_queue.clone();
 
-        Ok(ResourceHandle::guarded_with_permit(
+        // #384: the permit must stay alive for the entire `reset()` window,
+        // otherwise the next acquirer can enter while the previous reset is
+        // still running. We move the permit into the release closure and
+        // then into the submitted future, so it is dropped AFTER reset
+        // resolves (see `release_exclusive`).
+        Ok(ResourceHandle::guarded(
             lease,
             R::key(),
             TopologyTag::Exclusive,
@@ -100,22 +105,26 @@ where
                 if let Some(m) = &metrics {
                     m.record_release();
                 }
-                rq.submit(move || Box::pin(release_exclusive(resource_clone, runtime)));
+                rq.submit(move || Box::pin(release_exclusive(resource_clone, runtime, permit)));
             },
-            Some(permit),
         ))
     }
 }
 
 /// Async helper for releasing an exclusive lease.
 ///
-/// Calls `reset()` on the resource. The semaphore permit is **not** held
-/// here — it was already returned when the handle dropped (it lives in
-/// `HandleInner::Guarded`, not in the callback closure).
-async fn release_exclusive<R>(resource: R, runtime: Arc<R::Runtime>)
-where
+/// Calls `reset()` on the resource and then drops the semaphore permit.
+/// Holding the permit until after `reset()` resolves is the contract
+/// documented on `Exclusive::reset`: the next caller cannot acquire the
+/// exclusive lock until the previous reset has finished (#384).
+async fn release_exclusive<R>(
+    resource: R,
+    runtime: Arc<R::Runtime>,
+    permit: tokio::sync::OwnedSemaphorePermit,
+) where
     R: Exclusive + Send + Sync + 'static,
     R::Runtime: Send + Sync + 'static,
 {
     let _ = resource.reset(&runtime).await;
+    drop(permit);
 }

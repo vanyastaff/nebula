@@ -341,6 +341,12 @@ impl Manager {
         self.registry
             .register(key.clone(), type_id, scope, managed.clone());
 
+        // #387: everything below `register()` is a single funnel — the
+        // resource is installed, so advance its phase from `Initializing`
+        // to `Ready`. Failures are surfaced by `config.validate()` above,
+        // which aborts before we reach this line.
+        managed.set_phase(crate::state::ResourcePhase::Ready);
+
         if let Some(m) = &self.metrics {
             m.record_create();
         }
@@ -372,6 +378,8 @@ impl Manager {
         R: Resource<Auth = ()>,
     {
         use crate::resource::ResourceConfig as _;
+
+        validate_pool_config(&pool_config)?;
 
         let fingerprint = config.fingerprint();
         self.register(
@@ -528,6 +536,9 @@ impl Manager {
         R: Resource<Auth = ()>,
     {
         use crate::resource::ResourceConfig as _;
+
+        validate_pool_config(&pool_config)?;
+
         let fingerprint = config.fingerprint();
         self.register(
             resource,
@@ -1256,6 +1267,10 @@ impl Manager {
 
         let managed = self.lookup::<R>(scope)?;
 
+        // #387: visible `Reloading` phase for operators polling health
+        // mid-swap.
+        managed.set_phase(crate::state::ResourcePhase::Reloading);
+
         // Compute fingerprint before swap so we don't clone config.
         let new_fp = new_config.fingerprint();
 
@@ -1271,6 +1286,13 @@ impl Manager {
         managed
             .generation
             .fetch_add(1, std::sync::atomic::Ordering::Release);
+
+        // #387: return to `Ready` after publishing the new atomic
+        // generation so pollers see the phase transition alongside the
+        // config change. `health_check` reads the atomic directly, but
+        // `ResourceStatus.generation` is also refreshed by `set_phase`
+        // so `status()` snapshots stay self-consistent.
+        managed.set_phase(crate::state::ResourcePhase::Ready);
 
         let _ = self
             .event_tx
@@ -1358,6 +1380,11 @@ impl Manager {
         //      (they share this token via `ReleaseQueue::with_cancel`).
         self.cancel.cancel();
 
+        // #387: mark every registered resource as `Draining` so operators
+        // polling `health_check` during the drain window see the correct
+        // lifecycle phase instead of a stale `Ready`.
+        self.set_phase_all(crate::state::ResourcePhase::Draining);
+
         // Phase 2: DRAIN — wait for in-flight handles to be released.
         // On timeout, respect the policy: Abort preserves "graceful"
         // (returns Err *without* clearing the registry), Force proceeds
@@ -1372,6 +1399,14 @@ impl Manager {
                         "resource manager: drain timeout, policy=Abort — \
                          registry preserved, returning DrainTimeout"
                     );
+                    // #387 / PR #399 review: we already flipped every
+                    // resource to `Draining` above. The Abort policy
+                    // preserves the "graceful" guarantee and keeps live
+                    // handles valid, so we must also restore the phase
+                    // back to `Ready` — otherwise `is_accepting()` would
+                    // falsely keep returning `false` and the manager
+                    // would reject new acquires forever.
+                    self.set_phase_all(crate::state::ResourcePhase::Ready);
                     self.shutting_down.store(false, AtomicOrdering::Release);
                     return Err(ShutdownError::DrainTimeout { outstanding });
                 },
@@ -1385,6 +1420,12 @@ impl Manager {
                 },
             },
         }
+
+        // #387: drain has completed (or been force-released). Mark every
+        // resource as `ShuttingDown` so a health snapshot captured in the
+        // narrow window between here and `registry.clear()` reflects the
+        // real lifecycle state.
+        self.set_phase_all(crate::state::ResourcePhase::ShuttingDown);
 
         // Phase 3: CLEAR — drop all ManagedResources so their
         // Arc<ReleaseQueue> refs are released.
@@ -1418,6 +1459,17 @@ impl Manager {
             // work to drain — either way the contract is "drained".
             release_queue_drained: true,
         })
+    }
+
+    /// Drives every registered resource to the given lifecycle phase.
+    ///
+    /// Type-erased bulk update used during graceful shutdown so that
+    /// `health_check` returns the correct phase while the drain/cleanup
+    /// is in flight (#387).
+    fn set_phase_all(&self, phase: crate::state::ResourcePhase) {
+        for managed in self.registry.all_managed() {
+            managed.set_phase_erased(phase);
+        }
     }
 
     /// Waits until all active `ResourceHandle`s are dropped or timeout expires.
@@ -1682,7 +1734,13 @@ where
         return operation().await;
     };
 
-    let retry_cfg = config.to_retry_config();
+    // #383: `to_retry_config` returns `None` only if the underlying
+    // `RetryConfig::new` rejects the clamped attempt count. That path is
+    // unreachable today; if it ever fires we prefer to fall through to a
+    // single un-retried attempt rather than panic the manager.
+    let Some(retry_cfg) = config.to_retry_config() else {
+        return operation().await;
+    };
     nebula_resilience::retry_with(retry_cfg, operation)
         .await
         .map_err(|call_err| match call_err {
@@ -1693,6 +1751,24 @@ where
             },
             other => Error::transient(other.to_string()),
         })
+}
+
+/// Validates pool config invariants at registration time.
+///
+/// Catches obviously broken configs (`max_size == 0`, `min_size > max_size`)
+/// before they reach [`PoolRuntime`], so warmup never inflates beyond
+/// `max_size` and callers cannot deadlock on an empty semaphore (#390).
+fn validate_pool_config(cfg: &crate::topology::pooled::config::Config) -> Result<(), Error> {
+    if cfg.max_size == 0 {
+        return Err(Error::permanent("pool max_size must be > 0"));
+    }
+    if cfg.min_size > cfg.max_size {
+        return Err(Error::permanent(format!(
+            "pool min_size ({}) must be <= max_size ({})",
+            cfg.min_size, cfg.max_size,
+        )));
+    }
+    Ok(())
 }
 
 impl Default for Manager {
@@ -1707,6 +1783,76 @@ impl std::fmt::Debug for Manager {
             .field("registered_count", &self.registry.keys().len())
             .field("is_shutdown", &self.is_shutdown())
             .finish_non_exhaustive()
+    }
+}
+
+#[cfg(test)]
+mod gate_admission_tests {
+    use super::*;
+    use crate::recovery::gate::RecoveryGateConfig;
+
+    /// #322: after `Failed { retry_at = past }`, concurrent callers must
+    /// see **exactly one** `Probe` ticket, not a stampede. The CAS-based
+    /// single-probe claim lives in `admit_through_gate`. Each spawned
+    /// task parks on a `Barrier` before calling so the 32 attempts
+    /// really contend, instead of being serviced one at a time.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn expired_failed_state_admits_only_one_probe() {
+        let gate = Arc::new(RecoveryGate::new(RecoveryGateConfig {
+            max_attempts: 16,
+            base_backoff: Duration::from_millis(5),
+        }));
+
+        // Drive the gate into Failed { retry_at ≈ past }.
+        let ticket = gate.try_begin().expect("first ticket");
+        ticket.fail_transient("seed");
+        tokio::time::sleep(Duration::from_millis(20)).await;
+
+        async fn contend(
+            gate: Arc<RecoveryGate>,
+            barrier: Arc<tokio::sync::Barrier>,
+        ) -> (u32, u32) {
+            // Park here until every task is ready so we really stress
+            // the CAS claim.
+            barrier.wait().await;
+            let some_gate: Option<Arc<RecoveryGate>> = Some(gate);
+            match admit_through_gate(&some_gate) {
+                Ok(GateAdmission::Probe(ticket)) => {
+                    // Hold the probe until the test is done counting so
+                    // a second caller can't race in after a fast
+                    // resolve/fail cycle.
+                    tokio::time::sleep(Duration::from_millis(10)).await;
+                    drop(ticket);
+                    (1, 0)
+                },
+                Ok(GateAdmission::Open) | Ok(GateAdmission::OpenGated(_)) => (0, 1),
+                Err(_) => (0, 1),
+            }
+        }
+
+        let barrier = Arc::new(tokio::sync::Barrier::new(32));
+        let mut handles = Vec::with_capacity(32);
+        for _ in 0..32 {
+            handles.push(tokio::spawn(contend(
+                Arc::clone(&gate),
+                Arc::clone(&barrier),
+            )));
+        }
+
+        let mut probes = 0u32;
+        let mut blocked = 0u32;
+        for h in handles {
+            let (p, b) = h.await.expect("admission task");
+            probes += p;
+            blocked += b;
+        }
+
+        assert_eq!(probes, 1, "exactly one Probe ticket must be granted (#322)");
+        assert_eq!(
+            probes + blocked,
+            32,
+            "every call must be accounted for: probes={probes}, blocked={blocked}",
+        );
     }
 }
 
@@ -1806,5 +1952,52 @@ mod drain_race_tests {
             elapsed < Duration::from_secs(1),
             "wait_for_drain must return promptly even under race, took {elapsed:?}"
         );
+    }
+
+    /// #302: Abort policy must return a typed `DrainTimeout` error and
+    /// leave the registry untouched. Before the policy split
+    /// `graceful_shutdown` would log a warning and proceed to
+    /// `registry.clear()` anyway, turning a cooperative shutdown into a
+    /// logical use-after-free.
+    #[tokio::test]
+    async fn graceful_shutdown_abort_policy_returns_drain_timeout_error() {
+        let mgr = Manager::new();
+        // Simulate an outstanding handle.
+        mgr.drain_tracker.0.fetch_add(1, AtomicOrdering::Release);
+
+        let cfg = ShutdownConfig::default()
+            .with_drain_timeout(Duration::from_millis(50))
+            .with_drain_timeout_policy(DrainTimeoutPolicy::Abort);
+
+        let err = mgr
+            .graceful_shutdown(cfg)
+            .await
+            .expect_err("Abort policy must surface drain timeout");
+        match err {
+            ShutdownError::DrainTimeout { outstanding } => {
+                assert_eq!(outstanding, 1, "outstanding count mismatch");
+            },
+            other => panic!("wrong error variant: {other:?}"),
+        }
+    }
+
+    /// #302: Force policy must clear the registry and report the
+    /// outstanding-handle count in `ShutdownReport` so operators can see
+    /// exactly how much in-flight work was abandoned.
+    #[tokio::test]
+    async fn graceful_shutdown_force_policy_clears_registry_with_outstanding_count() {
+        let mgr = Manager::new();
+        mgr.drain_tracker.0.fetch_add(2, AtomicOrdering::Release);
+
+        let cfg = ShutdownConfig::default()
+            .with_drain_timeout(Duration::from_millis(50))
+            .with_drain_timeout_policy(DrainTimeoutPolicy::Force);
+
+        let report = mgr
+            .graceful_shutdown(cfg)
+            .await
+            .expect("Force policy must succeed");
+        assert!(report.registry_cleared);
+        assert_eq!(report.outstanding_handles_after_drain, 2);
     }
 }

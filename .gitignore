@@ -346,3 +346,6 @@ logs/security/
 
 # Claude Code local agent memory (per-developer, not shared)
 .claude/agent-memory-local/
+
+# Git worktrees created by superpowers workflow
+.worktrees/
