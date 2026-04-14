@@ -9,7 +9,9 @@ use tower::ServiceBuilder;
 use tower_http::{compression::CompressionLayer, cors::CorsLayer, trace::TraceLayer};
 
 use crate::{
-    config::ApiConfig, middleware::security_headers::security_headers_middleware, routes,
+    config::ApiConfig,
+    middleware::{rate_limit::RateLimitState, security_headers::security_headers_middleware},
+    routes,
     state::AppState,
 };
 
@@ -27,6 +29,9 @@ pub fn build_app(state: AppState, config: &ApiConfig) -> Router {
         None => routes,
     };
 
+    // Build per-IP rate limiter from config.
+    let rate_limit = RateLimitState::new(config.rate_limit_per_second);
+
     // Build middleware stack (ServiceBuilder — сверху вниз)
     let middleware_stack = ServiceBuilder::new()
         // 1. Request tracing
@@ -40,11 +45,19 @@ pub fn build_app(state: AppState, config: &ApiConfig) -> Router {
         // 3. CORS
         .layer(build_cors_layer(config));
 
-    // Apply middleware to routes
+    // Apply middleware to routes.
+    // Layers are applied bottom-up: rate_limit runs first (outermost),
+    // then request_id, then security_headers, then the inner stack.
     routes
         .layer(middleware_stack)
         .layer(middleware::from_fn(security_headers_middleware))
         .layer(middleware::from_fn(request_id_middleware))
+        // Global per-IP rate limiting — placed outermost so it runs first
+        // and rejects excess traffic before any heavier processing begins.
+        .layer(middleware::from_fn(move |req, next| {
+            let rl = rate_limit.clone();
+            async move { rl.handle(req, next).await }
+        }))
 }
 
 /// Request ID middleware
@@ -122,9 +135,14 @@ pub async fn serve(
     let listener = tokio::net::TcpListener::bind(addr).await?;
     tracing::info!("Server listening on {}", addr);
 
-    axum::serve(listener, app)
-        .with_graceful_shutdown(shutdown_signal())
-        .await?;
+    axum::serve(
+        listener,
+        // `into_make_service_with_connect_info` populates `ConnectInfo<SocketAddr>`
+        // in request extensions so the rate-limit middleware can read the real peer IP.
+        app.into_make_service_with_connect_info::<std::net::SocketAddr>(),
+    )
+    .with_graceful_shutdown(shutdown_signal())
+    .await?;
 
     Ok(())
 }
