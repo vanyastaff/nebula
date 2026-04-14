@@ -6,9 +6,9 @@ use nebula_api::{ApiConfig, AppState, app};
 use nebula_config::ConfigBuilder;
 use nebula_storage::{InMemoryExecutionRepo, InMemoryWorkflowRepo};
 
-/// Must match the literal inside `ApiConfig::for_test_unchecked` in
-/// `crates/api/src/config.rs`. Tests use this to mint JWTs against
-/// the same key the `test-util` config is built with.
+/// Must match the literal passed to `JwtSecret::for_test_unchecked` inside
+/// `ApiConfig::for_test` in `crates/api/src/config.rs`. Tests use this to
+/// mint JWTs against the same key the `test-util` config is built with.
 const TEST_JWT_SECRET: &str = "test-secret-for-integration-tests-0123456789";
 
 /// Helper to create test app state

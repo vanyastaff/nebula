@@ -14,10 +14,14 @@
 //!
 //! There is **no** `impl Default for ApiConfig` — a missing
 //! `API_JWT_SECRET` in production mode is a hard startup error, not a
-//! soft fallback. Tests must use [`ApiConfig::for_test`], gated
+//! soft fallback. Tests must use `ApiConfig::for_test` (gated
 //! behind the `test-util` feature.
 
-use std::{net::SocketAddr, sync::Arc, time::Duration};
+use std::{
+    net::SocketAddr,
+    sync::{Arc, OnceLock},
+    time::Duration,
+};
 
 use serde::{Deserialize, Serialize};
 
@@ -125,7 +129,7 @@ impl<'de> Deserialize<'de> for JwtSecret {
 #[non_exhaustive]
 pub enum ApiConfigError {
     /// `API_JWT_SECRET` unset in a non-dev `NEBULA_ENV`.
-    #[error("API_JWT_SECRET is required in production mode (NEBULA_ENV={0})")]
+    #[error("API_JWT_SECRET is required in non-dev mode (NEBULA_ENV={0})")]
     MissingJwtSecret(String),
 
     /// `API_JWT_SECRET` is shorter than [`JwtSecret::MIN_BYTES`].
@@ -221,6 +225,20 @@ impl std::fmt::Debug for ApiConfig {
 }
 
 impl ApiConfig {
+    fn dev_ephemeral_secret(env_mode: &str) -> JwtSecret {
+        static DEV_SECRET: OnceLock<JwtSecret> = OnceLock::new();
+        DEV_SECRET
+            .get_or_init(|| {
+                tracing::warn!(
+                    nebula_env = %env_mode,
+                    "API_JWT_SECRET unset; generated process-scoped ephemeral secret for dev mode. \
+                     Tokens will be invalidated on restart."
+                );
+                JwtSecret::generate_ephemeral()
+            })
+            .clone()
+    }
+
     /// Load configuration from environment variables.
     ///
     /// Honours `NEBULA_ENV` to decide whether a missing
@@ -241,20 +259,12 @@ impl ApiConfig {
     /// - malformed `API_BIND_ADDRESS`, `API_REQUEST_TIMEOUT`, `API_MAX_BODY_SIZE`,
     ///   `API_ENABLE_COMPRESSION`, `API_ENABLE_TRACING`, or `API_RATE_LIMIT`
     pub fn from_env() -> Result<Self, ApiConfigError> {
-        let env_mode = std::env::var("NEBULA_ENV").unwrap_or_else(|_| "development".to_string());
+        let env_mode = std::env::var("NEBULA_ENV").unwrap_or_else(|_| "production".to_string());
         let is_dev = matches!(env_mode.as_str(), "development" | "dev" | "local");
 
         let jwt_secret = match std::env::var("API_JWT_SECRET") {
             Ok(raw) => JwtSecret::new(raw)?,
-            Err(_) if is_dev => {
-                let secret = JwtSecret::generate_ephemeral();
-                tracing::warn!(
-                    nebula_env = %env_mode,
-                    "API_JWT_SECRET unset; generated ephemeral secret for dev mode. \
-                     Tokens will be invalidated on restart."
-                );
-                secret
-            }
+            Err(_) if is_dev => Self::dev_ephemeral_secret(&env_mode),
             Err(_) => return Err(ApiConfigError::MissingJwtSecret(env_mode)),
         };
 
@@ -342,7 +352,7 @@ impl ApiConfig {
     #[must_use]
     pub fn for_test() -> Self {
         Self {
-            bind_address: "127.0.0.1:0".parse().expect("static addr"),
+            bind_address: SocketAddr::from(([127, 0, 0, 1], 0)),
             request_timeout: Duration::from_secs(30),
             max_body_size: 2 * 1024 * 1024,
             cors_allowed_origins: vec!["*".to_string()],
@@ -458,11 +468,24 @@ mod tests {
         let cfg1 = ApiConfig::from_env().expect("dev mode must succeed");
         let cfg2 = ApiConfig::from_env().expect("dev mode must succeed");
 
-        // Two successive loads must produce different ephemeral
-        // secrets — this is the guarantee that ephemeral is random
-        // per process rather than a derived constant.
-        assert_ne!(cfg1.jwt_secret.as_bytes(), cfg2.jwt_secret.as_bytes());
+        // Successive loads in one process must reuse the same ephemeral
+        // secret so auth state remains stable until restart.
+        assert_eq!(cfg1.jwt_secret.as_bytes(), cfg2.jwt_secret.as_bytes());
         assert!(cfg1.jwt_secret.as_bytes().len() >= JwtSecret::MIN_BYTES);
+
+        clear_env();
+    }
+
+    #[test]
+    fn from_env_missing_secret_without_env_fails_closed() {
+        let _g = env_lock();
+        clear_env();
+
+        let err = ApiConfig::from_env().expect_err("unset NEBULA_ENV must fail closed");
+        match err {
+            ApiConfigError::MissingJwtSecret(mode) => assert_eq!(mode, "production"),
+            other => panic!("wrong variant: {other:?}"),
+        }
 
         clear_env();
     }

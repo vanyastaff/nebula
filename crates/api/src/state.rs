@@ -64,8 +64,7 @@ impl AppState {
     ///
     /// `jwt_secret` is a validated [`JwtSecret`]. Obtain one from
     /// [`crate::config::ApiConfig::from_env`] (production) or
-    /// [`crate::config::ApiConfig::for_test`] (tests with the
-    /// `test-util` feature).
+    /// `ApiConfig::for_test` (tests with the `test-util` feature).
     pub fn new(
         config: Config,
         workflow_repo: Arc<dyn WorkflowRepo>,

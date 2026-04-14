@@ -23,7 +23,7 @@ pub const API_KEY_PREFIX: &str = "nbl_sk_";
 /// Exposed so the CORS layer in `app::build_cors_layer` references
 /// the same header constant as the auth middleware — there is
 /// exactly one place the `x-api-key` string lives.
-pub static X_API_KEY: HeaderName = HeaderName::from_static("x-api-key");
+pub(crate) static X_API_KEY: HeaderName = HeaderName::from_static("x-api-key");
 
 /// Standard JWT claims validated on every request.
 #[derive(Debug, Clone, Serialize, Deserialize)]
