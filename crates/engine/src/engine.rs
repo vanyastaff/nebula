@@ -383,15 +383,15 @@ impl WorkflowEngine {
             outputs.insert(*node_id, output.clone());
         }
 
-        // Build execution state — mark pinned nodes as Completed.
+        // Build execution state — mark pinned nodes as Completed via
+        // the versioned transition API so downstream CAS readers see
+        // the version move (issue #255).
         let mut exec_state = ExecutionState::new(execution_id, workflow.id, &node_ids);
         exec_state.transition_status(ExecutionStatus::Running)?;
         for &node_id in &pinned {
-            if let Some(ns) = exec_state.node_states.get_mut(&node_id) {
-                let _ = ns.transition_to(NodeState::Ready);
-                let _ = ns.transition_to(NodeState::Running);
-                let _ = ns.transition_to(NodeState::Completed);
-            }
+            let _ = exec_state.transition_node(node_id, NodeState::Ready);
+            let _ = exec_state.transition_node(node_id, NodeState::Running);
+            let _ = exec_state.transition_node(node_id, NodeState::Completed);
         }
 
         let semaphore = Arc::new(Semaphore::new(budget.max_concurrent_nodes));
@@ -701,12 +701,19 @@ impl WorkflowEngine {
             .map_err(|e| EngineError::PlanningFailed(e.to_string()))?;
 
         // 7. Reconstruct the execution state, resetting non-terminal nodes. Nodes that were Running
-        //    at crash time need to be re-executed.
+        //    at crash time need to be re-executed. This is a recovery
+        //    path, so the reset bypasses the forward state machine via
+        //    `override_node_state` but still bumps the version per
+        //    transition so CAS readers see the change (issue #255).
         let mut exec_state = exec_state;
-        for ns in exec_state.node_states.values_mut() {
-            if !ns.state.is_terminal() {
-                ns.state = NodeState::Pending;
-            }
+        let non_terminal: Vec<NodeId> = exec_state
+            .node_states
+            .iter()
+            .filter(|(_, ns)| !ns.state.is_terminal())
+            .map(|(id, _)| *id)
+            .collect();
+        for id in non_terminal {
+            let _ = exec_state.override_node_state(id, NodeState::Pending);
         }
         // Transition back to Running so the frontier loop can proceed.
         // The persisted state may be Created, Paused, or already Running after a crash.
@@ -1181,21 +1188,32 @@ impl WorkflowEngine {
                 Ok(Some(resolved_params)) => resolved_params,
                 Ok(None) => node_input, // No parameters → use predecessor output
                 Err(e) => {
-                    // Mark node as failed and signal failure
+                    // Mark node as failed. Using `override_node_state`
+                    // rather than a Ready→Running→Failed sequence
+                    // because (a) parameter resolution failed BEFORE
+                    // the node was scheduled so it is still Pending
+                    // here, and Pending→Failed is not a valid forward
+                    // transition; (b) we know for a fact the node
+                    // failed and want it in the Failed state
+                    // regardless of its current position. Version is
+                    // still bumped per issue #255.
+                    let _ = exec_state.override_node_state(node_id, NodeState::Failed);
                     if let Some(ns) = exec_state.node_states.get_mut(&node_id) {
-                        let _ = ns.transition_to(NodeState::Ready);
-                        let _ = ns.transition_to(NodeState::Running);
-                        let _ = ns.transition_to(NodeState::Failed);
                         ns.error_message = Some(e.to_string());
                     }
                     return false;
                 }
             };
 
-        // Mark node as running in execution state
-        if let Some(ns) = exec_state.node_states.get_mut(&node_id) {
-            let _ = ns.transition_to(NodeState::Ready);
-            let _ = ns.transition_to(NodeState::Running);
+        // Mark node as running in execution state (versioned).
+        // Log on failure so a rejected transition is not silently
+        // swallowed — callers of the frontier loop need to know if
+        // the execution state got out of sync with the scheduler.
+        if let Err(err) = exec_state.transition_node(node_id, NodeState::Ready) {
+            tracing::warn!(%node_id, %err, "failed to transition node to Ready");
+        }
+        if let Err(err) = exec_state.transition_node(node_id, NodeState::Running) {
+            tracing::warn!(%node_id, %err, "failed to transition node to Running");
         }
 
         let runtime = self.runtime.clone();
@@ -1791,9 +1809,8 @@ fn propagate_skip(
         return;
     }
 
-    if let Some(ns) = exec_state.node_states.get_mut(&node_id) {
-        let _ = ns.transition_to(NodeState::Skipped);
-    }
+    // Versioned transition (issue #255).
+    let _ = exec_state.transition_node(node_id, NodeState::Skipped);
 
     // Mark all outgoing edges as resolved (dead) for their targets
     for conn in graph.outgoing_connections(node_id) {
@@ -1873,8 +1890,11 @@ fn handle_node_failure(
     if error_strategy == nebula_workflow::ErrorStrategy::IgnoreErrors {
         // The node was already marked Failed by the caller; recover it to
         // Completed since we are ignoring the error, keeping state consistent.
+        // `Failed → Completed` is not a valid forward transition, so this
+        // uses `override_node_state` to reset the state; the version is
+        // still bumped so CAS readers observe the recovery (issue #255).
+        let _ = exec_state.override_node_state(node_id, NodeState::Completed);
         if let Some(ns) = exec_state.node_states.get_mut(&node_id) {
-            ns.state = NodeState::Completed;
             ns.error_message = None;
         }
         outputs.insert(node_id, serde_json::json!(null));
@@ -1930,23 +1950,22 @@ fn handle_node_failure(
 }
 
 /// Mark a node as skipped in the execution state.
+///
+/// Uses the versioned transition API (issue #255) so CAS readers see
+/// the parent version move.
 fn mark_node_skipped(exec_state: &mut ExecutionState, node_id: NodeId) {
-    if let Some(ns) = exec_state.node_states.get_mut(&node_id) {
-        let _ = ns.transition_to(NodeState::Skipped);
-    }
+    let _ = exec_state.transition_node(node_id, NodeState::Skipped);
 }
 
 /// Mark a node as completed in the execution state.
 fn mark_node_completed(exec_state: &mut ExecutionState, node_id: NodeId) {
-    if let Some(ns) = exec_state.node_states.get_mut(&node_id) {
-        let _ = ns.transition_to(NodeState::Completed);
-    }
+    let _ = exec_state.transition_node(node_id, NodeState::Completed);
 }
 
 /// Mark a node as failed in the execution state.
 fn mark_node_failed(exec_state: &mut ExecutionState, node_id: NodeId, err: &EngineError) {
+    let _ = exec_state.transition_node(node_id, NodeState::Failed);
     if let Some(ns) = exec_state.node_states.get_mut(&node_id) {
-        let _ = ns.transition_to(NodeState::Failed);
         ns.error_message = Some(err.to_string());
     }
 }

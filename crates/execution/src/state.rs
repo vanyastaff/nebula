@@ -155,9 +155,84 @@ impl ExecutionState {
         self.node_states.get(&node_id)
     }
 
-    /// Set a node's execution state.
+    /// Set a node's execution state directly.
+    ///
+    /// **This bypasses transition validation and the parent version
+    /// bump.** It exists for building initial state from storage and
+    /// for tests. Engine code MUST use [`transition_node`] — a direct
+    /// `set_node_state` (or `get_mut(...).transition_to(...)`) does
+    /// not invalidate any optimistic-concurrency reader that was
+    /// tracking the parent [`ExecutionState::version`].
+    ///
+    /// [`transition_node`]: Self::transition_node
     pub fn set_node_state(&mut self, node_id: NodeId, state: NodeExecutionState) {
         self.node_states.insert(node_id, state);
+    }
+
+    /// Override a node's raw state without running transition
+    /// validation, but still bump the parent execution version.
+    ///
+    /// This is the escape hatch for the engine's recovery paths — the
+    /// `resume_execution` reset (Running → Pending after a crash) and
+    /// the `IgnoreErrors` strategy (Failed → Completed) both need to
+    /// move a node into a state that is not reachable from the
+    /// current one via the forward state machine. They still MUST
+    /// bump the parent version so CAS readers observe the change
+    /// (issue #255); use this method instead of a direct
+    /// `node_states.get_mut(...).state = ...` assignment.
+    ///
+    /// Application code that is NOT in a recovery path should use
+    /// [`transition_node`](Self::transition_node) instead — it
+    /// enforces the transition rules.
+    ///
+    /// Returns an error only if `node_id` is unknown.
+    pub fn override_node_state(
+        &mut self,
+        node_id: NodeId,
+        new_state: NodeState,
+    ) -> Result<(), ExecutionError> {
+        let ns = self
+            .node_states
+            .get_mut(&node_id)
+            .ok_or(ExecutionError::NodeNotFound(node_id))?;
+        ns.state = new_state;
+        self.version += 1;
+        self.updated_at = Utc::now();
+        Ok(())
+    }
+
+    /// Transition a node through the validated state machine and bump
+    /// the parent execution version.
+    ///
+    /// This is the ONLY correct way to mutate a node's state from
+    /// engine code. Direct mutation via
+    /// `node_states.get_mut(&id).unwrap().transition_to(...)`
+    /// validates the per-node transition but silently leaves
+    /// `ExecutionState::version` and `ExecutionState::updated_at`
+    /// behind, which breaks any optimistic-concurrency reader that
+    /// keyed its CAS on the parent version — it will happily accept a
+    /// stale snapshot because the version never moved.
+    ///
+    /// # Errors
+    ///
+    /// - [`ExecutionError::NodeNotFound`] if `node_id` is not in this
+    ///   execution's node map.
+    /// - Any error returned by [`NodeExecutionState::transition_to`]
+    ///   for invalid transitions — in which case the version is NOT
+    ///   bumped (the state did not actually change).
+    pub fn transition_node(
+        &mut self,
+        node_id: NodeId,
+        new_state: NodeState,
+    ) -> Result<(), ExecutionError> {
+        let ns = self
+            .node_states
+            .get_mut(&node_id)
+            .ok_or(ExecutionError::NodeNotFound(node_id))?;
+        ns.transition_to(new_state)?;
+        self.version += 1;
+        self.updated_at = Utc::now();
+        Ok(())
     }
 
     /// Returns `true` if all nodes are in terminal states.
@@ -327,6 +402,61 @@ mod tests {
         let new_node = NodeId::new();
         state.set_node_state(new_node, NodeExecutionState::new());
         assert!(state.node_state(new_node).is_some());
+    }
+
+    /// Regression for issue #255: every node-state transition must
+    /// bump the parent `ExecutionState::version` so optimistic
+    /// concurrency readers can detect the change. The old engine
+    /// pattern `state.node_states.get_mut(&id).unwrap().transition_to(...)`
+    /// silently skipped the bump — the `transition_node` method closes
+    /// that hole.
+    #[test]
+    fn transition_node_bumps_parent_version_and_touches_updated_at() {
+        let (mut state, n1, _n2) = make_state();
+        let v0 = state.version;
+        let t0 = state.updated_at;
+
+        state
+            .transition_node(n1, NodeState::Ready)
+            .expect("valid transition");
+        assert_eq!(state.node_state(n1).unwrap().state, NodeState::Ready);
+        assert_eq!(state.version, v0 + 1, "version must be bumped");
+        assert!(state.updated_at >= t0, "updated_at must move forward");
+
+        // Chained transitions each bump the version once.
+        state.transition_node(n1, NodeState::Running).unwrap();
+        assert_eq!(state.version, v0 + 2);
+        state.transition_node(n1, NodeState::Completed).unwrap();
+        assert_eq!(state.version, v0 + 3);
+        assert!(state.node_state(n1).unwrap().state.is_terminal());
+    }
+
+    #[test]
+    fn transition_node_invalid_transition_does_not_bump_version() {
+        let (mut state, n1, _n2) = make_state();
+        let v0 = state.version;
+        // Pending -> Completed is invalid (must pass through Ready/Running).
+        let err = state
+            .transition_node(n1, NodeState::Completed)
+            .expect_err("invalid transition must error");
+        assert!(err.to_string().contains("invalid transition"));
+        // Version must NOT move on a rejected transition — if it did,
+        // optimistic-concurrency readers would see a phantom change.
+        assert_eq!(state.version, v0);
+        // And the node stayed Pending.
+        assert_eq!(state.node_state(n1).unwrap().state, NodeState::Pending);
+    }
+
+    #[test]
+    fn transition_node_unknown_node_is_error() {
+        let (mut state, _n1, _n2) = make_state();
+        let ghost = NodeId::new();
+        let err = state
+            .transition_node(ghost, NodeState::Ready)
+            .expect_err("unknown node id");
+        assert!(matches!(err, ExecutionError::NodeNotFound(_)));
+        // Version unchanged.
+        assert_eq!(state.version, 0);
     }
 
     #[test]
