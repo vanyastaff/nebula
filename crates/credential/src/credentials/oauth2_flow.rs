@@ -52,9 +52,10 @@ pub(crate) fn build_auth_url(
     code_challenge: &str,
     state: &str,
 ) -> Result<String, CredentialError> {
-    let redirect_uri = config.redirect_uri.as_deref().ok_or_else(|| {
-        provider_error("authorization_code config missing redirect_uri".into())
-    })?;
+    let redirect_uri = config
+        .redirect_uri
+        .as_deref()
+        .ok_or_else(|| provider_error("authorization_code config missing redirect_uri".into()))?;
     let pkce_method = config
         .pkce
         .ok_or_else(|| provider_error("authorization_code config missing pkce method".into()))?;
@@ -616,14 +617,7 @@ mod tests {
 
     #[test]
     fn compose_auth_code_form_post_body_style_appends_client_credentials() {
-        let form = compose_auth_code_form(
-            "c",
-            "v",
-            "r",
-            "cid",
-            "csecret",
-            AuthStyle::PostBody,
-        );
+        let form = compose_auth_code_form("c", "v", "r", "cid", "csecret", AuthStyle::PostBody);
         assert_eq!(
             form,
             vec![
