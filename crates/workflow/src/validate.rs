@@ -50,6 +50,23 @@ pub fn validate_workflow(definition: &WorkflowDefinition) -> Vec<WorkflowError> 
         }
     }
 
+    // 4b. Detect duplicate connections (identical source, target, ports, and condition).
+    // Duplicate connections are always redundant and confuse edge-resolution bookkeeping.
+    //
+    // `Connection` cannot derive `Hash` (because `serde_json::Value` doesn't implement it),
+    // so we serialize each connection to a canonical JSON string and use a HashSet<String>
+    // for O(n) average-case detection.
+    let mut seen_connections: std::collections::HashSet<String> = std::collections::HashSet::new();
+    for conn in &definition.connections {
+        let key = serde_json::to_string(conn).unwrap_or_default();
+        if !seen_connections.insert(key) {
+            errors.push(WorkflowError::DuplicateConnection {
+                from: conn.from_node,
+                to: conn.to_node,
+            });
+        }
+    }
+
     // 5. Check parameter references
     for node in &definition.nodes {
         for param in node.parameters.values() {
@@ -322,6 +339,46 @@ mod tests {
                 .iter()
                 .any(|e| matches!(e, WorkflowError::UnsupportedSchema { .. })),
             "expected UnsupportedSchema, got: {errors:?}"
+        );
+    }
+
+    #[test]
+    fn detects_duplicate_connection() {
+        let a = NodeId::new();
+        let b = NodeId::new();
+        // Two identical connections: same from/to, same condition, same ports.
+        let conn = Connection::new(a, b);
+        let def = make_definition("dup-conn", vec![node(a), node(b)], vec![conn.clone(), conn]);
+        let errors = validate_workflow(&def);
+        assert!(
+            errors
+                .iter()
+                .any(|e| matches!(e, WorkflowError::DuplicateConnection { .. })),
+            "expected DuplicateConnection error, got: {errors:?}"
+        );
+    }
+
+    #[test]
+    fn distinct_multi_edges_are_not_duplicate() {
+        use crate::connection::EdgeCondition;
+        let a = NodeId::new();
+        let b = NodeId::new();
+        // Two edges from A to B but with different conditions — these are
+        // distinct (not duplicates) and must not trigger a validation error.
+        let def = make_definition(
+            "multi-edge",
+            vec![node(a), node(b)],
+            vec![
+                Connection::new(a, b).with_condition(EdgeCondition::Always),
+                Connection::new(a, b).with_from_port("alt"),
+            ],
+        );
+        let errors = validate_workflow(&def);
+        assert!(
+            !errors
+                .iter()
+                .any(|e| matches!(e, WorkflowError::DuplicateConnection { .. })),
+            "distinct multi-edges must not be flagged as duplicates; got: {errors:?}"
         );
     }
 }

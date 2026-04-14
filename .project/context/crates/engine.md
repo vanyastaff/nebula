@@ -11,6 +11,9 @@ Workflow execution orchestrator — frontier-based DAG scheduler.
 - Frontier-based: nodes spawn when all incoming edges resolve.
 - ErrorStrategy: FailFast cancels, ContinueOnError skips dependents, IgnoreErrors = null success.
 - Disabled nodes: `mark_node_skipped()` + `process_outgoing_edges(None, None)`.
+- **`resolved_edges` is `HashMap<NodeId, usize>` (edge-count, not source-node set).** Using `HashSet<NodeId>` caused multi-edge stalls: two edges from A→B would dedup to one entry, so resolved never reached required=2. The count-based type correctly increments once per edge processed.
+- `activated_edges` remains `HashMap<NodeId, HashSet<NodeId>>` (source-node set) — used by `resolve_node_input_with_support` to filter which predecessor outputs to include; dedup-by-source is correct there.
+- `determine_final_status` guards `Completed` behind `exec_state.all_nodes_terminal()`. If frontier drains but non-terminal nodes remain (engine bug), returns `Failed` with a warning rather than a false `Completed`.
 
 ## resume_execution()
 - Needs `execution_repo` + `workflow_repo` or returns `PlanningFailed`.
@@ -28,4 +31,6 @@ Workflow execution orchestrator — frontier-based DAG scheduler.
 - **`evaluate_edge` gates `Skip`/`Drop`/`Terminate` unconditionally** (return `false`); only `Branch`/`Route`/`MultiOutput` do selector filtering. `Drop`/`Terminate` added 2026-04-13 (ControlAction Phase 0). New `ActionResult` variants: decide gate-vs-fall-through and update `evaluate_edge` in the same PR. Full `Terminate` sibling-branch cancellation tracked separately.
 
 <!-- reviewed: 2026-04-14 — #247 added Drop/Terminate gate; PR #394 added failure-ordering + JoinSet abort_all traps -->
+<!-- reviewed: 2026-04-14 — multi-edge fix: resolved_edges changed to usize count; determine_final_status guards Completed on all_nodes_terminal() -->
 <!-- reviewed: 2026-04-14 -->
+
