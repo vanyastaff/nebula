@@ -17,7 +17,8 @@
 //! - [`JournalEntry`] — audit log of execution events
 //! - [`NodeOutput`] — node output data with metadata
 //! - [`NodeAttempt`] — individual execution attempt tracking
-//! - [`IdempotencyKey`] and [`IdempotencyManager`] — exactly-once guarantees
+//! - [`IdempotencyKey`] — deterministic key for exactly-once dedup (deduplication is owned by
+//!   `nebula_storage::ExecutionRepo`)
 //! - State machine transitions validated by the [`transition`] module
 
 pub mod attempt;
@@ -36,7 +37,7 @@ pub mod transition;
 pub use attempt::NodeAttempt;
 pub use context::{ExecutionBudget, ExecutionContext};
 pub use error::ExecutionError;
-pub use idempotency::{IdempotencyKey, IdempotencyManager};
+pub use idempotency::IdempotencyKey;
 pub use journal::JournalEntry;
 /// Re-export the shared serde helper so internal `crate::serde_duration_opt` still resolves.
 pub(crate) use nebula_core::serde_helpers::duration_opt_ms as serde_duration_opt;

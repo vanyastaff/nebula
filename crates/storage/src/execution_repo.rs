@@ -12,7 +12,7 @@ use std::{
 use async_trait::async_trait;
 use nebula_core::{ExecutionId, NodeId, WorkflowId};
 use thiserror::Error;
-use tokio::sync::RwLock;
+use tokio::{sync::RwLock, time::Instant};
 
 /// Errors returned by execution repository operations.
 #[derive(Debug, Error)]
@@ -214,12 +214,16 @@ pub trait ExecutionRepo: Send + Sync {
 /// Key for node output storage: `(execution_id, node_id, attempt)`.
 type NodeOutputKey = (ExecutionId, NodeId, u32);
 
+/// Lease entry: `(holder, expires_at)`. Expiration is monotonic via
+/// [`tokio::time::Instant`] so paused-time tests behave deterministically.
+type LeaseEntry = (String, Instant);
+
 /// In-memory execution repository for tests and single-process/health-only mode.
 #[derive(Default)]
 pub struct InMemoryExecutionRepo {
     state: Arc<RwLock<HashMap<ExecutionId, (u64, serde_json::Value)>>>,
     journal: Arc<RwLock<HashMap<ExecutionId, Vec<serde_json::Value>>>>,
-    leases: Arc<RwLock<HashMap<ExecutionId, String>>>,
+    leases: Arc<RwLock<HashMap<ExecutionId, LeaseEntry>>>,
     workflows: Arc<RwLock<HashMap<ExecutionId, WorkflowId>>>,
     node_outputs: Arc<RwLock<HashMap<NodeOutputKey, serde_json::Value>>>,
     idempotency: Arc<RwLock<HashSet<String>>>,
@@ -280,13 +284,16 @@ impl ExecutionRepo for InMemoryExecutionRepo {
         &self,
         id: ExecutionId,
         holder: String,
-        _ttl: Duration,
+        ttl: Duration,
     ) -> Result<bool, ExecutionRepoError> {
         let mut leases = self.leases.write().await;
-        if leases.contains_key(&id) {
+        let now = Instant::now();
+        if let Some((_, expires_at)) = leases.get(&id)
+            && *expires_at > now
+        {
             return Ok(false);
         }
-        leases.insert(id, holder);
+        leases.insert(id, (holder, now + ttl));
         Ok(true)
     }
 
@@ -294,10 +301,17 @@ impl ExecutionRepo for InMemoryExecutionRepo {
         &self,
         id: ExecutionId,
         holder: &str,
-        _ttl: Duration,
+        ttl: Duration,
     ) -> Result<bool, ExecutionRepoError> {
-        let leases = self.leases.read().await;
-        Ok(leases.get(&id).map(|h| h.as_str()) == Some(holder))
+        let mut leases = self.leases.write().await;
+        let now = Instant::now();
+        match leases.get_mut(&id) {
+            Some((current, expires_at)) if current == holder && *expires_at > now => {
+                *expires_at = now + ttl;
+                Ok(true)
+            }
+            _ => Ok(false),
+        }
     }
 
     async fn release_lease(
@@ -306,11 +320,13 @@ impl ExecutionRepo for InMemoryExecutionRepo {
         holder: &str,
     ) -> Result<bool, ExecutionRepoError> {
         let mut leases = self.leases.write().await;
-        let ok = leases.get(&id).map(|h| h.as_str()) == Some(holder);
-        if ok {
+        if let Some((current, _)) = leases.get(&id)
+            && current == holder
+        {
             leases.remove(&id);
+            return Ok(true);
         }
-        Ok(ok)
+        Ok(false)
     }
 
     async fn create(
@@ -506,6 +522,113 @@ mod tests {
             .await
             .unwrap();
         assert!(repo.check_idempotency(key).await.unwrap());
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn lease_acquire_blocks_other_holder_until_expiry() {
+        let repo = InMemoryExecutionRepo::default();
+        let id = ExecutionId::new();
+        assert!(
+            repo.acquire_lease(id, "A".into(), Duration::from_secs(5))
+                .await
+                .expect("acquire A")
+        );
+        // While A is still valid, B cannot steal.
+        assert!(
+            !repo
+                .acquire_lease(id, "B".into(), Duration::from_secs(5))
+                .await
+                .expect("acquire B during A")
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn lease_expires_after_ttl_allowing_reacquire() {
+        let repo = InMemoryExecutionRepo::default();
+        let id = ExecutionId::new();
+        assert!(
+            repo.acquire_lease(id, "A".into(), Duration::from_secs(5))
+                .await
+                .expect("acquire A")
+        );
+        tokio::time::advance(Duration::from_secs(6)).await;
+        // A's stale lease must not block B.
+        assert!(
+            repo.acquire_lease(id, "B".into(), Duration::from_secs(5))
+                .await
+                .expect("reacquire by B")
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn lease_renew_extends_expiry() {
+        let repo = InMemoryExecutionRepo::default();
+        let id = ExecutionId::new();
+        assert!(
+            repo.acquire_lease(id, "A".into(), Duration::from_secs(5))
+                .await
+                .expect("acquire")
+        );
+        tokio::time::advance(Duration::from_secs(3)).await;
+        assert!(
+            repo.renew_lease(id, "A", Duration::from_secs(5))
+                .await
+                .expect("renew")
+        );
+        tokio::time::advance(Duration::from_secs(3)).await;
+        // 6s elapsed since acquire, but renew at 3s pushed expiry to 8s.
+        // B must still see A's lease as live.
+        assert!(
+            !repo
+                .acquire_lease(id, "B".into(), Duration::from_secs(5))
+                .await
+                .expect("steal attempt")
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn lease_renew_rejects_wrong_holder() {
+        let repo = InMemoryExecutionRepo::default();
+        let id = ExecutionId::new();
+        assert!(
+            repo.acquire_lease(id, "A".into(), Duration::from_secs(5))
+                .await
+                .expect("acquire")
+        );
+        assert!(
+            !repo
+                .renew_lease(id, "B", Duration::from_secs(5))
+                .await
+                .expect("renew by B")
+        );
+        // A's lease must remain effective.
+        assert!(
+            !repo
+                .acquire_lease(id, "C".into(), Duration::from_secs(5))
+                .await
+                .expect("acquire by C")
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn lease_release_validates_holder() {
+        let repo = InMemoryExecutionRepo::default();
+        let id = ExecutionId::new();
+        assert!(
+            repo.acquire_lease(id, "A".into(), Duration::from_secs(5))
+                .await
+                .expect("acquire")
+        );
+        // Wrong holder cannot release.
+        assert!(!repo.release_lease(id, "B").await.expect("release by B"));
+        // Correct holder can release.
+        assert!(repo.release_lease(id, "A").await.expect("release by A"));
+        // After release, anyone may acquire.
+        assert!(
+            repo.acquire_lease(id, "C".into(), Duration::from_secs(5))
+                .await
+                .expect("reacquire by C")
+        );
     }
 
     #[tokio::test]

@@ -1,6 +1,11 @@
-//! Idempotency key generation and deduplication.
+//! Idempotency key generation.
+//!
+//! Deduplication itself is owned by [`nebula_storage::ExecutionRepo`] via
+//! `check_idempotency` / `mark_idempotent`. The engine constructs a key with
+//! [`IdempotencyKey::generate`] and routes the dedup decision through the
+//! repository so that durability and the key namespace stay in lock-step.
 
-use std::{collections::HashSet, fmt};
+use std::fmt;
 
 use nebula_core::{ExecutionId, NodeId};
 use serde::{Deserialize, Serialize};
@@ -26,51 +31,6 @@ impl IdempotencyKey {
 impl fmt::Display for IdempotencyKey {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "{}", self.0)
-    }
-}
-
-/// Tracks which idempotency keys have been seen to prevent duplicate execution.
-#[derive(Debug, Default)]
-pub struct IdempotencyManager {
-    seen: HashSet<String>,
-}
-
-impl IdempotencyManager {
-    /// Create a new empty manager.
-    #[must_use]
-    pub fn new() -> Self {
-        Self::default()
-    }
-
-    /// Check if the key has been seen before, and mark it as seen.
-    ///
-    /// Returns `true` if this is a new key (not seen before).
-    /// Returns `false` if the key was already seen (duplicate).
-    pub fn check_and_mark(&mut self, key: &IdempotencyKey) -> bool {
-        self.seen.insert(key.0.clone())
-    }
-
-    /// Check if a key has been seen without marking it.
-    #[must_use]
-    pub fn is_seen(&self, key: &IdempotencyKey) -> bool {
-        self.seen.contains(&key.0)
-    }
-
-    /// Clear all tracked keys.
-    pub fn clear(&mut self) {
-        self.seen.clear();
-    }
-
-    /// Number of tracked keys.
-    #[must_use]
-    pub fn len(&self) -> usize {
-        self.seen.len()
-    }
-
-    /// Returns `true` if no keys are tracked.
-    #[must_use]
-    pub fn is_empty(&self) -> bool {
-        self.seen.is_empty()
     }
 }
 
@@ -108,38 +68,10 @@ mod tests {
     }
 
     #[test]
-    fn check_and_mark_new_key() {
-        let mut mgr = IdempotencyManager::new();
-        let key = IdempotencyKey::generate(ExecutionId::new(), NodeId::new(), 0);
-        assert!(mgr.check_and_mark(&key)); // first time — true
-        assert!(!mgr.check_and_mark(&key)); // second time — false (duplicate)
-    }
-
-    #[test]
-    fn is_seen() {
-        let mut mgr = IdempotencyManager::new();
-        let key = IdempotencyKey::generate(ExecutionId::new(), NodeId::new(), 0);
-        assert!(!mgr.is_seen(&key));
-        mgr.check_and_mark(&key);
-        assert!(mgr.is_seen(&key));
-    }
-
-    #[test]
-    fn clear_resets() {
-        let mut mgr = IdempotencyManager::new();
-        let key = IdempotencyKey::generate(ExecutionId::new(), NodeId::new(), 0);
-        mgr.check_and_mark(&key);
-        assert_eq!(mgr.len(), 1);
-        mgr.clear();
-        assert!(mgr.is_empty());
-        assert!(!mgr.is_seen(&key));
-    }
-
-    #[test]
     fn serde_roundtrip() {
         let key = IdempotencyKey::generate(ExecutionId::new(), NodeId::new(), 3);
-        let json = serde_json::to_string(&key).unwrap();
-        let back: IdempotencyKey = serde_json::from_str(&json).unwrap();
+        let json = serde_json::to_string(&key).expect("serialize");
+        let back: IdempotencyKey = serde_json::from_str(&json).expect("deserialize");
         assert_eq!(key, back);
     }
 }
