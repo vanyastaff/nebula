@@ -256,10 +256,9 @@ async fn use_case_1_http_client_pool() {
     // Minor: `manager.graceful_shutdown(ShutdownConfig::default()).await` works
     // but there's no `manager.shutdown_with_defaults().await` shortcut.
     manager
-        .graceful_shutdown(ShutdownConfig {
-            drain_timeout: Duration::from_millis(100),
-        })
-        .await;
+        .graceful_shutdown(ShutdownConfig::default().with_drain_timeout(Duration::from_millis(100)))
+        .await
+        .expect("graceful_shutdown must succeed");
 }
 
 // ============================================================================
@@ -380,10 +379,9 @@ async fn use_case_2_resident_config_store() {
     drop(handle2);
 
     manager
-        .graceful_shutdown(ShutdownConfig {
-            drain_timeout: Duration::from_millis(100),
-        })
-        .await;
+        .graceful_shutdown(ShutdownConfig::default().with_drain_timeout(Duration::from_millis(100)))
+        .await
+        .expect("graceful_shutdown must succeed");
 }
 
 // ============================================================================
@@ -531,10 +529,9 @@ async fn use_case_3_db_pool_with_resilience_and_shutdown() {
     // SEVERITY: Minor
 
     manager
-        .graceful_shutdown(ShutdownConfig {
-            drain_timeout: Duration::from_secs(1),
-        })
-        .await;
+        .graceful_shutdown(ShutdownConfig::default().with_drain_timeout(Duration::from_secs(1)))
+        .await
+        .expect("graceful_shutdown must succeed");
 
     // Manager is shut down — new acquires should fail
     // FRICTION NOTE [ResourceHandle NOT DEBUG]: ResourceHandle<R> does not

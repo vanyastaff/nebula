@@ -7,7 +7,7 @@ Execution state machine types — persistent state, journals, idempotency, plans
 
 ## Key Decisions
 - `ExecutionPlan` is a pre-computed parallel schedule (levels) built from the workflow graph — computed by nebula-engine, consumed here as a data type.
-- `IdempotencyManager` enforces exactly-once execution via `IdempotencyKey`. Use it before re-running nodes.
+- `IdempotencyKey` is a deterministic `{execution}:{node}:{attempt}` token. Deduplication is owned by `nebula_storage::ExecutionRepo::{check_idempotency, mark_idempotent}`. `IdempotencyManager` remains only as a deprecated compatibility shim for downstream code; engine/runtime must not rely on it for durability.
 - `JournalEntry` provides an immutable audit log of execution events — append-only.
 - **`ReplayPlan` partition contract (issues #253, #254):** `partition_nodes(all_nodes, successors)` returns `(pinned, rerun)` where `rerun = {replay_from} ∪ forward-reachable(replay_from)` and `pinned = all_nodes \ rerun`. Pinned nodes include ancestors, unrelated siblings, and disconnected branches — every non-rerun node MUST have a stored output in `pinned_outputs`. The engine's `replay_execution` iterates the pinned set and errors with `PlanningFailed` on any missing entry; this is deliberate, the previous filter-on-key approach hid silent data corruption. `pinned_outputs` serializes normally (no `#[serde(skip)]`) so plans round-trip through storage without losing stored outputs.
 
@@ -24,4 +24,6 @@ Execution state machine types — persistent state, journals, idempotency, plans
 
 <!-- reviewed: 2026-04-14 — #247 added ExecutionTerminationReason + ExecutionTerminationCode newtype and ExecutionResult::termination_reason field; Phase 0 wiring is partial (local edge gate only, full scheduler propagation deferred) -->
 
-<!-- reviewed: 2026-04-14 -->
+<!-- reviewed: 2026-04-14 — PR #388 review-fixup: doc-comment on ExecutionBudget.max_concurrent_nodes (intra-doc link → backticks). No invariants changed. -->
+
+<!-- reviewed: 2026-04-14 — fixed rustdoc intra-doc link in ExecutionBudget docs (`tokio::sync::Semaphore` referenced as code, not unresolved intra-doc link) -->
