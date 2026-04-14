@@ -153,8 +153,7 @@ impl PluginHandle {
         if self.poisoned {
             return Err(SandboxError::TransportPoisoned);
         }
-        let encoded =
-            serde_json::to_vec(envelope).map_err(SandboxError::MalformedEnvelope)?;
+        let encoded = serde_json::to_vec(envelope).map_err(SandboxError::MalformedEnvelope)?;
         if let Err(e) = self.writer.write_all(&encoded).await {
             self.poisoned = true;
             return Err(SandboxError::Transport(e));
@@ -176,7 +175,9 @@ impl PluginHandle {
         }
         self.line_buf.clear();
         match read_bounded_line(&mut self.reader, ENVELOPE_LINE_CAP, &mut self.line_buf).await {
-            Ok(BoundedReadOutcome::Line { bytes_including_newline }) => {
+            Ok(BoundedReadOutcome::Line {
+                bytes_including_newline,
+            }) => {
                 // Strip the trailing newline before parsing.
                 let body = &self.line_buf[..bytes_including_newline - 1];
                 serde_json::from_slice::<PluginToHost>(body).map_err(|e| {
@@ -265,11 +266,9 @@ where
     // Three terminal conditions after a non-zero read:
     //   1. line_len <= cap AND newline-terminated → legal Line
     //   2. line_len  > cap (adapter yielded cap + 1) → Overflow (DoS signal)
-    //   3. line_len <= cap AND no newline → underlying reader hit EOF
-    //      mid-line. Treat as unexpected close; the handle is not reusable
-    //      either way so we surface it as Eof (poisons the handle the
-    //      same way a clean EOF would) rather than as a misleading
-    //      "exceeded cap" error.
+    //   3. line_len <= cap AND no newline → underlying reader hit EOF mid-line. Treat as unexpected
+    //      close; the handle is not reusable either way so we surface it as Eof (poisons the handle
+    //      the same way a clean EOF would) rather than as a misleading "exceeded cap" error.
     if ends_with_newline && payload_len <= cap {
         return Ok(BoundedReadOutcome::Line {
             bytes_including_newline: payload_len,
@@ -754,8 +753,9 @@ mod tests {
     //! from the production `PluginHandle` would be caught by the fact
     //! that both call into the same `read_bounded_line` primitive.
 
-    use super::*;
     use tokio::io::{AsyncWriteExt, BufReader as TokioBufReader, duplex};
+
+    use super::*;
 
     // ---- read_bounded_line primitive ---------------------------------
 
@@ -764,7 +764,9 @@ mod tests {
         let data: &[u8] = b"hello\n";
         let mut reader = TokioBufReader::new(data);
         let mut buf = Vec::new();
-        let outcome = read_bounded_line(&mut reader, 1024, &mut buf).await.unwrap();
+        let outcome = read_bounded_line(&mut reader, 1024, &mut buf)
+            .await
+            .unwrap();
         assert_eq!(
             outcome,
             BoundedReadOutcome::Line {
@@ -828,7 +830,9 @@ mod tests {
         let data: &[u8] = b"";
         let mut reader = TokioBufReader::new(data);
         let mut buf = Vec::new();
-        let outcome = read_bounded_line(&mut reader, 1024, &mut buf).await.unwrap();
+        let outcome = read_bounded_line(&mut reader, 1024, &mut buf)
+            .await
+            .unwrap();
         assert_eq!(outcome, BoundedReadOutcome::Eof);
     }
 
@@ -842,7 +846,9 @@ mod tests {
         let data: &[u8] = b"partial";
         let mut reader = TokioBufReader::new(data);
         let mut buf = Vec::new();
-        let outcome = read_bounded_line(&mut reader, 1024, &mut buf).await.unwrap();
+        let outcome = read_bounded_line(&mut reader, 1024, &mut buf)
+            .await
+            .unwrap();
         assert_eq!(outcome, BoundedReadOutcome::Eof);
     }
 
@@ -853,7 +859,9 @@ mod tests {
         let mut reader = TokioBufReader::new(data);
         let mut buf = Vec::new();
 
-        let out1 = read_bounded_line(&mut reader, 1024, &mut buf).await.unwrap();
+        let out1 = read_bounded_line(&mut reader, 1024, &mut buf)
+            .await
+            .unwrap();
         assert_eq!(
             out1,
             BoundedReadOutcome::Line {
@@ -863,7 +871,9 @@ mod tests {
         assert_eq!(&buf[..6], b"first\n");
 
         buf.clear();
-        let out2 = read_bounded_line(&mut reader, 1024, &mut buf).await.unwrap();
+        let out2 = read_bounded_line(&mut reader, 1024, &mut buf)
+            .await
+            .unwrap();
         assert_eq!(
             out2,
             BoundedReadOutcome::Line {
@@ -975,7 +985,10 @@ mod tests {
             }
             other => panic!("expected PluginLineTooLarge, got {other:?}"),
         }
-        assert!(handle.poisoned, "handle must be marked poisoned after overflow");
+        assert!(
+            handle.poisoned,
+            "handle must be marked poisoned after overflow"
+        );
 
         // Second recv: must short-circuit with TransportPoisoned. It must
         // NOT read more bytes from the plugin side. This is the
@@ -1017,7 +1030,10 @@ mod tests {
         let body = handle.recv_envelope_capped(cap).await.unwrap();
         assert_eq!(body.len(), cap - 1);
         assert!(body.iter().all(|&b| b == b'Y'));
-        assert!(!handle.poisoned, "exact-cap read must NOT poison the handle");
+        assert!(
+            !handle.poisoned,
+            "exact-cap read must NOT poison the handle"
+        );
     }
 
     #[tokio::test]
