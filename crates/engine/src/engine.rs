@@ -50,7 +50,17 @@ use crate::{
 };
 
 /// Type alias for the optional event sender.
-type EventSender = mpsc::UnboundedSender<ExecutionEvent>;
+///
+/// Bounded (rather than unbounded) so a slow consumer cannot drive engine
+/// memory to unbounded growth. A workflow with ~10k nodes emits ~50k events;
+/// the capacity below keeps roughly one in-flight workflow's worth of events
+/// buffered before the engine starts dropping.
+type EventSender = mpsc::Sender<ExecutionEvent>;
+
+/// Default capacity for the engine's event channel. Tuned so a typical
+/// interactive workflow (hundreds of nodes) never blocks, while a runaway
+/// producer with a dead consumer cannot inflate memory without bound.
+pub const DEFAULT_EVENT_CHANNEL_CAPACITY: usize = 1024;
 
 /// Type alias for the boxed async credential-refresh function stored on the engine.
 ///
@@ -271,18 +281,37 @@ impl WorkflowEngine {
     /// Attach an event sender for real-time execution monitoring.
     ///
     /// When set, the engine emits [`ExecutionEvent`]s for node lifecycle
-    /// transitions (started, completed, failed, skipped) and execution completion.
-    /// Used by the CLI TUI for live monitoring.
+    /// transitions (started, completed, failed, skipped) and execution
+    /// completion. Used by the CLI TUI for live monitoring.
+    ///
+    /// Pair with a receiver from [`mpsc::channel`] sized at
+    /// [`DEFAULT_EVENT_CHANNEL_CAPACITY`] or larger — events are *dropped*
+    /// (not blocked) when the buffer is full, so a stuck consumer cannot
+    /// stall the engine or grow memory without bound.
     #[must_use = "builder methods must be chained or built"]
-    pub fn with_event_sender(mut self, sender: mpsc::UnboundedSender<ExecutionEvent>) -> Self {
+    pub fn with_event_sender(mut self, sender: mpsc::Sender<ExecutionEvent>) -> Self {
         self.event_sender = Some(sender);
         self
     }
 
     /// Emit an execution event if a sender is configured.
+    ///
+    /// Uses `try_send` so a backed-up consumer cannot block the engine.
+    /// The channel is deliberately bounded; drops are observability-only.
     fn emit_event(&self, event: ExecutionEvent) {
-        if let Some(sender) = &self.event_sender {
-            let _ = sender.send(event);
+        if let Some(sender) = &self.event_sender
+            && let Err(e) = sender.try_send(event)
+        {
+            // Full or closed — drop. The alternative (block the engine on
+            // a slow TUI) would be far worse. Log once at the boundary.
+            match e {
+                mpsc::error::TrySendError::Full(_) => {
+                    tracing::warn!("engine event channel full; dropping event (slow consumer)");
+                }
+                mpsc::error::TrySendError::Closed(_) => {
+                    // Consumer disconnected — silent, expected on shutdown.
+                }
+            }
         }
     }
 
@@ -296,6 +325,10 @@ impl WorkflowEngine {
         plan: nebula_execution::ReplayPlan,
         budget: ExecutionBudget,
     ) -> Result<ExecutionResult, EngineError> {
+        budget
+            .validate_for_execution()
+            .map_err(|msg| EngineError::PlanningFailed(msg.to_string()))?;
+
         let execution_id = ExecutionId::new();
         let started = Instant::now();
 
@@ -306,24 +339,48 @@ impl WorkflowEngine {
         let node_map: HashMap<NodeId, &nebula_workflow::NodeDefinition> =
             workflow.nodes.iter().map(|n| (n.id, n)).collect();
 
-        // Build predecessor map for partitioning.
+        // Build both predecessor AND successor maps.
+        //
+        // - Predecessors are needed to compute seeds: a node whose entire incoming edge set is
+        //   pinned is ready to start.
+        // - Successors are needed by `ReplayPlan::partition_nodes` to forward-traverse from
+        //   `replay_from` and identify the re-run set. Issue #254 — the old predecessor-only
+        //   partition classified unrelated sibling branches as rerun, duplicating their side
+        //   effects on every replay.
         let mut predecessors: HashMap<NodeId, Vec<NodeId>> = HashMap::new();
+        let mut successors: HashMap<NodeId, Vec<NodeId>> = HashMap::new();
         for conn in &workflow.connections {
             predecessors
                 .entry(conn.to_node)
                 .or_default()
                 .push(conn.from_node);
+            successors
+                .entry(conn.from_node)
+                .or_default()
+                .push(conn.to_node);
         }
 
         // Partition nodes into pinned (use stored outputs) and rerun.
-        let (pinned, _rerun) = plan.partition_nodes(&node_ids, &predecessors);
+        let (pinned, _rerun) = plan.partition_nodes(&node_ids, &successors);
 
         // Pre-populate outputs with pinned values.
+        //
+        // The `ReplayPlan` contract requires `pinned_outputs` to be
+        // complete for every pinned node. Iterate the set and fail
+        // loudly on a missing entry — this surfaces stale or
+        // incomplete plans at replay start instead of letting the
+        // frontier loop silently feed `Null` to a downstream node. The
+        // previous filter-in-map-keys approach hid missing pins the
+        // same way `#[serde(skip)]` on `pinned_outputs` did (#253).
         let outputs: Arc<DashMap<NodeId, serde_json::Value>> = Arc::new(DashMap::new());
-        for (node_id, output) in &plan.pinned_outputs {
-            if pinned.contains(node_id) {
-                outputs.insert(*node_id, output.clone());
-            }
+        for node_id in &pinned {
+            let Some(output) = plan.pinned_outputs.get(node_id) else {
+                return Err(EngineError::PlanningFailed(format!(
+                    "replay plan is missing pinned output for node {node_id}; \
+                     every node in the partition's pinned set must have a stored output"
+                )));
+            };
+            outputs.insert(*node_id, output.clone());
         }
 
         // Build execution state — mark pinned nodes as Completed.
@@ -431,6 +488,10 @@ impl WorkflowEngine {
         input: serde_json::Value,
         budget: ExecutionBudget,
     ) -> Result<ExecutionResult, EngineError> {
+        budget
+            .validate_for_execution()
+            .map_err(|msg| EngineError::PlanningFailed(msg.to_string()))?;
+
         let execution_id = ExecutionId::new();
         let started = Instant::now();
 
