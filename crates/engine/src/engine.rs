@@ -701,9 +701,8 @@ impl WorkflowEngine {
             .map_err(|e| EngineError::PlanningFailed(e.to_string()))?;
 
         // 7. Reconstruct the execution state, resetting non-terminal nodes. Nodes that were Running
-        //    at crash time need to be re-executed. This is a recovery
-        //    path, so the reset bypasses the forward state machine via
-        //    `override_node_state` but still bumps the version per
+        //    at crash time need to be re-executed. This is a recovery path, so the reset bypasses
+        //    the forward state machine via `override_node_state` but still bumps the version per
         //    transition so CAS readers see the change (issue #255).
         let mut exec_state = exec_state;
         let non_terminal: Vec<NodeId> = exec_state
@@ -1536,15 +1535,13 @@ impl NodeTask {
         // so that any short-lived credential is rotated while still valid.
         //
         // Failure modes (Batch 5D / #306):
-        //   - cancel fires first → return EngineError::Cancelled. We must
-        //     NOT block shutdown on a dying credential store.
-        //   - refresh returns Err → surface a typed
-        //     ActionError::CredentialRefreshFailed through EngineError::Action.
-        //     The frontier loop routes this through `handle_node_failure`
-        //     so ErrorStrategy decides retry / dead-letter / fail. This
-        //     replaces the old "log a WARN and proceed with a potentially
-        //     stale credential" path, which leaked into N opaque downstream
-        //     auth errors per failure.
+        //   - cancel fires first → return EngineError::Cancelled. We must NOT block shutdown on a
+        //     dying credential store.
+        //   - refresh returns Err → surface a typed ActionError::CredentialRefreshFailed through
+        //     EngineError::Action. The frontier loop routes this through `handle_node_failure` so
+        //     ErrorStrategy decides retry / dead-letter / fail. This replaces the old "log a WARN
+        //     and proceed with a potentially stale credential" path, which leaked into N opaque
+        //     downstream auth errors per failure.
         //   - refresh returns Ok → fall through to the action dispatch.
         if let Some(ref refresh_fn) = self.credential_refresh {
             let refresh_fut = (refresh_fn)(&self.action_key);
@@ -1560,10 +1557,8 @@ impl NodeTask {
             match refresh_result {
                 Ok(()) => {}
                 Err(source) => {
-                    let action_err = ActionError::credential_refresh_failed(
-                        self.action_key.to_string(),
-                        source,
-                    );
+                    let action_err =
+                        ActionError::credential_refresh_failed(self.action_key.to_string(), source);
                     return (self.node_id, Err(EngineError::Action(action_err)));
                 }
             }
@@ -3604,14 +3599,13 @@ mod tests {
     /// `ActionError::CredentialRefreshFailed`, not a log-and-continue WARN.
     ///
     /// Verifies:
-    ///   1. The action handler is **never** invoked (refresh fails before
-    ///      dispatch).
+    ///   1. The action handler is **never** invoked (refresh fails before dispatch).
     ///   2. The execution result is not a success.
     ///   3. The emitted `NodeFailed` event carries the typed error code
-    ///      `ACTION:CREDENTIAL_REFRESH_FAILED` (visible to downstream
-    ///      consumers via the error string).
-    ///   4. The new `EngineError::Action` carries an `ActionError` that
-    ///      pattern-matches as `CredentialRefreshFailed`.
+    ///      `ACTION:CREDENTIAL_REFRESH_FAILED` (visible to downstream consumers via the error
+    ///      string).
+    ///   4. The new `EngineError::Action` carries an `ActionError` that pattern-matches as
+    ///      `CredentialRefreshFailed`.
     #[tokio::test]
     async fn credential_refresh_failure_surfaces_as_typed_error() {
         use std::sync::atomic::{AtomicU32, Ordering as AOrdering};
@@ -3665,10 +3659,7 @@ mod tests {
             });
 
         let n1 = NodeId::new();
-        let wf = make_workflow(
-            vec![NodeDefinition::new(n1, "A", "never").unwrap()],
-            vec![],
-        );
+        let wf = make_workflow(vec![NodeDefinition::new(n1, "A", "never").unwrap()], vec![]);
 
         let result = engine
             .execute_workflow(&wf, serde_json::json!("x"), ExecutionBudget::default())
@@ -3708,14 +3699,9 @@ mod tests {
 
         // (4) Construct the variant directly and confirm classifier
         // routing — this is the contract downstream consumers match on.
-        let typed = ActionError::credential_refresh_failed(
-            "never",
-            ActionError::retryable("store down"),
-        );
-        assert!(matches!(
-            typed,
-            ActionError::CredentialRefreshFailed { .. }
-        ));
+        let typed =
+            ActionError::credential_refresh_failed("never", ActionError::retryable("store down"));
+        assert!(matches!(typed, ActionError::CredentialRefreshFailed { .. }));
         assert!(typed.is_retryable(), "default classification is retryable");
         let engine_err = EngineError::Action(typed);
         assert!(matches!(

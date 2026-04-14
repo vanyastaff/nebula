@@ -943,19 +943,15 @@ mod tests {
     #[test]
     fn credential_refresh_failed_classify_code_is_stable() {
         use nebula_error::Classify;
-        let err = ActionError::credential_refresh_failed(
-            "http.fetch",
-            std::io::Error::other("boom"),
-        );
+        let err =
+            ActionError::credential_refresh_failed("http.fetch", std::io::Error::other("boom"));
         assert_eq!(err.code().as_str(), "ACTION:CREDENTIAL_REFRESH_FAILED");
     }
 
     #[test]
     fn credential_refresh_failed_is_clone() {
-        let err = ActionError::credential_refresh_failed(
-            "http.fetch",
-            std::io::Error::other("boom"),
-        );
+        let err =
+            ActionError::credential_refresh_failed("http.fetch", std::io::Error::other("boom"));
         // The whole point of wrapping `source` in `Arc` is that the
         // variant remains `Clone`-compatible with the rest of
         // `ActionError`.
