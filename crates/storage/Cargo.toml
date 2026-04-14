@@ -19,7 +19,7 @@ async-trait = { workspace = true }
 thiserror = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }
-tokio = { workspace = true, features = ["sync"] }
+tokio = { workspace = true, features = ["sync", "time"] }
 
 # Optional backends (см. docs/nebula-architecture-final.md)
 sqlx = { version = "0.8", optional = true, features = ["runtime-tokio", "postgres", "migrate", "uuid"] }
@@ -36,7 +36,7 @@ s3 = ["dep:aws-config", "dep:aws-sdk-s3"]
 msgpack-storage = ["dep:rmp-serde"]
 
 [dev-dependencies]
-tokio = { workspace = true, features = ["full"] }
+tokio = { workspace = true, features = ["full", "test-util"] }
 
 [lib]
 doctest = false
