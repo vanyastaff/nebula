@@ -18,6 +18,32 @@ use crate::{
     watchers::{ConfigWatchEvent, ConfigWatchEventType},
 };
 
+struct WatchingClaimGuard<'a> {
+    watching: &'a AtomicBool,
+    armed: bool,
+}
+
+impl<'a> WatchingClaimGuard<'a> {
+    fn new(watching: &'a AtomicBool) -> Self {
+        Self {
+            watching,
+            armed: true,
+        }
+    }
+
+    fn disarm(&mut self) {
+        self.armed = false;
+    }
+}
+
+impl Drop for WatchingClaimGuard<'_> {
+    fn drop(&mut self) {
+        if self.armed {
+            self.watching.store(false, Ordering::Release);
+        }
+    }
+}
+
 /// File system watcher for configuration files
 pub struct FileWatcher {
     /// File system watcher instance
@@ -81,6 +107,7 @@ impl FileWatcher {
     async fn start_event_processor(&self, mut rx: mpsc::Receiver<ConfigWatchEvent>) {
         let callback = Arc::clone(&self.callback);
         let debounce_duration = self.debounce_duration;
+        let watching = Arc::clone(&self.watching);
 
         tokio::spawn(async move {
             let mut last_events: HashMap<PathBuf, std::time::Instant> = HashMap::new();
@@ -102,6 +129,8 @@ impl FileWatcher {
                 // Call the callback
                 (callback)(event);
             }
+
+            watching.store(false, Ordering::Release);
         });
     }
 }
@@ -109,10 +138,16 @@ impl FileWatcher {
 #[async_trait]
 impl crate::core::ConfigWatcher for FileWatcher {
     async fn start_watching(&self, sources: &[ConfigSource]) -> ConfigResult<()> {
-        // Check if already watching
-        if self.watching.load(Ordering::Relaxed) {
+        // Atomically claim the watching slot before any async work starts.
+        // This prevents concurrent starts from racing through a load/store pair.
+        if self
+            .watching
+            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+            .is_err()
+        {
             return Err(ConfigError::watch_error("Already watching"));
         }
+        let mut claim_guard = WatchingClaimGuard::new(&self.watching);
 
         // Create channel for events
         let (tx, rx) = mpsc::channel(100);
@@ -235,9 +270,7 @@ impl crate::core::ConfigWatcher for FileWatcher {
 
         // Start event processor
         self.start_event_processor(rx).await;
-
-        // Mark as watching
-        self.watching.store(true, Ordering::Relaxed);
+        claim_guard.disarm();
 
         nebula_log::info!("Started watching {} sources", sources.len());
 

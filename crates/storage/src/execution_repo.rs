@@ -128,6 +128,9 @@ pub trait ExecutionRepo: Send + Sync {
     ) -> Result<Vec<serde_json::Value>, ExecutionRepoError>;
 
     /// Appends a single journal entry for an execution.
+    ///
+    /// Implementations must reject unknown `id` (no persisted execution row), matching
+    /// `execution_journal.execution_id` foreign-key semantics on Postgres.
     async fn append_journal(
         &self,
         id: ExecutionId,
@@ -363,6 +366,12 @@ impl ExecutionRepo for InMemoryExecutionRepo {
         id: ExecutionId,
         entry: serde_json::Value,
     ) -> Result<(), ExecutionRepoError> {
+        let state = self.state.read().await;
+        let workflows = self.workflows.read().await;
+        if !state.contains_key(&id) && !workflows.contains_key(&id) {
+            return Err(ExecutionRepoError::not_found("execution", id.to_string()));
+        }
+        drop((state, workflows));
         let mut journal = self.journal.write().await;
         journal.entry(id).or_default().push(entry);
         Ok(())
@@ -553,6 +562,35 @@ impl ExecutionRepo for InMemoryExecutionRepo {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn append_journal_unknown_execution_returns_not_found() {
+        let repo = InMemoryExecutionRepo::default();
+        let missing = ExecutionId::new();
+        let err = repo
+            .append_journal(missing, serde_json::json!({}))
+            .await
+            .unwrap_err();
+        assert!(matches!(
+            err,
+            ExecutionRepoError::NotFound { ref entity, ref id }
+                if entity == "execution" && id == &missing.to_string()
+        ));
+    }
+
+    #[tokio::test]
+    async fn append_journal_succeeds_after_create() {
+        let repo = InMemoryExecutionRepo::default();
+        let eid = ExecutionId::new();
+        let wid = WorkflowId::new();
+        repo.create(eid, wid, serde_json::json!({"status": "created"}))
+            .await
+            .unwrap();
+        let entry = serde_json::json!({"kind": "test"});
+        repo.append_journal(eid, entry.clone()).await.unwrap();
+        let journal = repo.get_journal(eid).await.unwrap();
+        assert_eq!(journal, vec![entry]);
+    }
 
     #[tokio::test]
     async fn create_and_get_state() {
