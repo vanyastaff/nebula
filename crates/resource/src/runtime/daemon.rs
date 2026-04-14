@@ -96,9 +96,7 @@ impl<R: Resource> DaemonRuntime<R> {
     /// [`RestartPolicy::Never`]).
     pub async fn is_running(&self) -> bool {
         let guard = self.inner.lock().await;
-        guard
-            .as_ref()
-            .is_some_and(|run| !run.handle.is_finished())
+        guard.as_ref().is_some_and(|run| !run.handle.is_finished())
     }
 }
 

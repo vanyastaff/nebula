@@ -3701,12 +3701,8 @@ async fn probe_boundary_serializes_callers_under_herd() {
         let mgr = Arc::clone(&manager);
         handles.push(tokio::spawn(async move {
             let ctx = test_ctx();
-            mgr.acquire_resident::<FailingResidentResource>(
-                &(),
-                &ctx,
-                &AcquireOptions::default(),
-            )
-            .await
+            mgr.acquire_resident::<FailingResidentResource>(&(), &ctx, &AcquireOptions::default())
+                .await
         }));
     }
 

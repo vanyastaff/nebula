@@ -163,7 +163,9 @@ pub enum ShutdownError {
     /// The drain phase did not finish within `drain_timeout` and the
     /// policy was [`DrainTimeoutPolicy::Abort`]. The registry was **not**
     /// cleared and any outstanding handles remain valid.
-    #[error("drain timeout expired with {outstanding} handle(s) still active; registry was NOT cleared (policy=Abort)")]
+    #[error(
+        "drain timeout expired with {outstanding} handle(s) still active; registry was NOT cleared (policy=Abort)"
+    )]
     DrainTimeout {
         /// Snapshot of the drain-tracker counter at the moment the timeout
         /// fired.
@@ -1343,12 +1345,7 @@ impl Manager {
         // rather than re-entering the drain logic against a half-torn state.
         if self
             .shutting_down
-            .compare_exchange(
-                false,
-                true,
-                AtomicOrdering::AcqRel,
-                AtomicOrdering::Acquire,
-            )
+            .compare_exchange(false, true, AtomicOrdering::AcqRel, AtomicOrdering::Acquire)
             .is_err()
         {
             return Err(ShutdownError::AlreadyShuttingDown);
@@ -1428,14 +1425,13 @@ impl Manager {
     /// The loop uses a `register-then-check` ordering to avoid the classic
     /// `Notify::notify_waiters` lost-wakeup:
     ///
-    /// 1. Construct + pin + `enable()` a fresh `Notified` future. Calling
-    ///    `enable()` registers this waiter on the `Notify` queue without
-    ///    requiring a `.await`, so any subsequent `notify_waiters()` (fired
-    ///    when a handle's `Drop` decrements the counter from 1 → 0) will
+    /// 1. Construct + pin + `enable()` a fresh `Notified` future. Calling `enable()` registers this
+    ///    waiter on the `Notify` queue without requiring a `.await`, so any subsequent
+    ///    `notify_waiters()` (fired when a handle's `Drop` decrements the counter from 1 → 0) will
     ///    reach us.
-    /// 2. Re-check the counter. If it already hit 0 between the outer
-    ///    initial check and our registration, return now — the wakeup we
-    ///    would otherwise wait for has already been consumed.
+    /// 2. Re-check the counter. If it already hit 0 between the outer initial check and our
+    ///    registration, return now — the wakeup we would otherwise wait for has already been
+    ///    consumed.
     /// 3. Only then await the `Notified` future.
     ///
     /// Without this ordering, a burst of handle drops that completes the
