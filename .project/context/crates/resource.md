@@ -14,6 +14,9 @@ topology-specific acquire dispatch.
 - `TopologyTag` is a `#[non_exhaustive]` enum, not `&str`.
 - `acquire_*_default` helpers constrain `Auth = ()` — all 5 topologies plus erased.
 - `Resource::Auth` uses `nebula_core::AuthScheme` (not a local trait).
+- **`Manager::graceful_shutdown` returns `Result<ShutdownReport, ShutdownError>` (#302).** On `DrainTimeoutPolicy::Abort` (default), drain timeout returns `Err(DrainTimeout { outstanding })` **without** clearing the registry — live handles stay valid. CAS-guarded; second concurrent call gets `AlreadyShuttingDown`. `#[non_exhaustive]` on `ShutdownConfig` — use `ShutdownConfig::default().with_drain_timeout(...)`.
+- **Recovery gate is end-to-end ticket-owned (#322).** `admit_through_gate` CAS-claims the probe slot up front; the acquire settles the ticket with `resolve` / `fail_transient` / `fail_permanent` based on the result. A `RecoveryTicket` that's dropped unresolved (panic, cancel) auto-fails via its `Drop` impl. Single-probe serialization holds even under herd after backoff expiry.
+- **`DaemonRuntime` is restart-safe (#318) and its backoff is cancel-responsive (#323).** Per-run cancel token is a child of the parent built on every `start()`; stale finished handles are dropped on restart. The restart-backoff sleep runs inside a `biased tokio::select!` against the per-run token.
 
 ## Traps
 
