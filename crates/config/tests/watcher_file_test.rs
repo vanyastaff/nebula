@@ -5,7 +5,7 @@
 
 mod common;
 
-use std::time::Duration;
+use std::{sync::Arc, time::Duration};
 
 use nebula_config::{ConfigSource, ConfigWatcher, FileWatcher};
 use tokio_util::sync::CancellationToken;
@@ -85,6 +85,55 @@ async fn already_watching_returns_err() {
         .stop_watching()
         .await
         .expect("stop should succeed after double-start test");
+    let _ = std::fs::remove_file(&path);
+}
+
+/// Concurrent `start_watching` calls must claim the watcher atomically:
+/// exactly one call succeeds and all others return `Already watching`.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn concurrent_start_watching_allows_only_single_winner() {
+    common::init_tracing();
+    tracing::debug!("test: concurrent_start_watching_allows_only_single_winner");
+
+    let path = common::write_temp_file("fw_concurrent_start", "toml", "x = 1\n");
+    let source = ConfigSource::File(path.clone());
+    let watcher = Arc::new(FileWatcher::new(|_| {}));
+
+    let attempts = 8usize;
+    let mut tasks = Vec::with_capacity(attempts);
+
+    for _ in 0..attempts {
+        let watcher = Arc::clone(&watcher);
+        let source = source.clone();
+        tasks.push(tokio::spawn(async move {
+            watcher.start_watching(&[source]).await
+        }));
+    }
+
+    let results = futures::future::join_all(tasks).await;
+    let successes = results
+        .iter()
+        .filter(|res| matches!(res, Ok(Ok(()))))
+        .count();
+    let already_watching_errors = results
+        .iter()
+        .filter(|res| match res {
+            Ok(Err(err)) => err.to_string().contains("Already watching"),
+            _ => false,
+        })
+        .count();
+
+    assert_eq!(successes, 1, "exactly one concurrent start must succeed");
+    assert_eq!(
+        already_watching_errors,
+        attempts - 1,
+        "all other concurrent starts must return `Already watching`"
+    );
+
+    watcher
+        .stop_watching()
+        .await
+        .expect("stop should succeed after concurrent-start test");
     let _ = std::fs::remove_file(&path);
 }
 

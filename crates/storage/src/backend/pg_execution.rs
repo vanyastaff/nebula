@@ -61,6 +61,15 @@ fn map_err(err: sqlx::Error) -> ExecutionRepoError {
     ExecutionRepoError::Connection(err.to_string())
 }
 
+fn map_journal_err(err: sqlx::Error, id: ExecutionId) -> ExecutionRepoError {
+    if let Some(db_err) = err.as_database_error() {
+        if db_err.code().as_deref() == Some("23503") {
+            return ExecutionRepoError::not_found("execution", id.to_string());
+        }
+    }
+    map_err(err)
+}
+
 /// Compute lease TTL as whole seconds, clamping to a safe range.
 ///
 /// Returns the number of seconds as `f64` for use in
@@ -143,7 +152,7 @@ impl ExecutionRepo for PgExecutionRepo {
         .bind(Json(&entry))
         .execute(&self.pool)
         .await
-        .map_err(map_err)?;
+        .map_err(|e| map_journal_err(e, id))?;
 
         Ok(())
     }
