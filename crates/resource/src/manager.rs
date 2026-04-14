@@ -35,7 +35,7 @@ use crate::{
     metrics::{ResourceOpsMetrics, ResourceOpsSnapshot},
     options::AcquireOptions,
     recovery::{
-        gate::{RecoveryGate, RecoveryTicket, TryBeginError},
+        gate::{GateState, RecoveryGate, RecoveryTicket, TryBeginError},
         group::RecoveryGroupRegistry,
     },
     registry::Registry,
@@ -1330,10 +1330,9 @@ impl Manager {
     /// # async fn example() {
     /// let manager = Manager::new();
     /// manager
-    ///     .graceful_shutdown(ShutdownConfig {
-    ///         drain_timeout: Duration::from_secs(5),
-    ///     })
-    ///     .await;
+    ///     .graceful_shutdown(ShutdownConfig::default().with_drain_timeout(Duration::from_secs(5)))
+    ///     .await
+    ///     .expect("graceful shutdown should succeed");
     /// # }
     /// ```
     pub async fn graceful_shutdown(
@@ -1373,6 +1372,7 @@ impl Manager {
                         "resource manager: drain timeout, policy=Abort — \
                          registry preserved, returning DrainTimeout"
                     );
+                    self.shutting_down.store(false, AtomicOrdering::Release);
                     return Err(ShutdownError::DrainTimeout { outstanding });
                 }
                 DrainTimeoutPolicy::Force => {
@@ -1592,6 +1592,10 @@ impl Manager {
 enum GateAdmission {
     /// No gate attached. Proceed normally; no ticket ownership.
     Open,
+    /// Gate attached and currently healthy (`Idle`). Proceed without a
+    /// ticket, but retain the gate so a retryable acquire error can mark it
+    /// failed and open the backoff window for subsequent callers.
+    OpenGated(Arc<RecoveryGate>),
     /// This caller has been granted the single recovery slot. The acquire
     /// **must** consume the ticket by calling `resolve()`, `fail_transient`,
     /// or `fail_permanent` based on the acquire result. Dropping it without
@@ -1602,25 +1606,37 @@ enum GateAdmission {
 
 /// Admits a caller through the optional recovery gate.
 ///
-/// Every acquire runs under its gate's ticket end-to-end: the healthy path
-/// is just `try_begin` on `Idle` (one CAS), transition to `InProgress`,
-/// run the acquire, then `resolve()`. The stampede-prevention path is the
-/// same code path — no separate "check" then "mark" window.
+/// Healthy gates (`Idle`) admit immediately with no CAS so regular traffic
+/// keeps full pool concurrency. Only callers entering while the gate is in a
+/// retryable `Failed` state claim a probe ticket.
 fn admit_through_gate(gate: &Option<Arc<RecoveryGate>>) -> Result<GateAdmission, Error> {
     let Some(gate) = gate else {
         return Ok(GateAdmission::Open);
     };
 
-    match gate.try_begin() {
-        Ok(ticket) => Ok(GateAdmission::Probe(ticket)),
-        Err(TryBeginError::AlreadyInProgress(_waiter)) => Err(Error::transient(
+    match gate.state() {
+        GateState::Idle => Ok(GateAdmission::OpenGated(Arc::clone(gate))),
+        GateState::InProgress { .. } => Err(Error::transient(
             "backend recovery in progress, retry later",
         )),
-        Err(TryBeginError::RetryLater { retry_at }) => {
-            let wait = retry_at.saturating_duration_since(Instant::now());
-            Err(Error::exhausted("backend recovering", Some(wait)))
+        GateState::Failed { retry_at, .. } => {
+            if Instant::now() < retry_at {
+                let wait = retry_at.saturating_duration_since(Instant::now());
+                return Err(Error::exhausted("backend recovering", Some(wait)));
+            }
+            match gate.try_begin() {
+                Ok(ticket) => Ok(GateAdmission::Probe(ticket)),
+                Err(TryBeginError::AlreadyInProgress(_waiter)) => Err(Error::transient(
+                    "backend recovery in progress, retry later",
+                )),
+                Err(TryBeginError::RetryLater { retry_at }) => {
+                    let wait = retry_at.saturating_duration_since(Instant::now());
+                    Err(Error::exhausted("backend recovering", Some(wait)))
+                }
+                Err(TryBeginError::PermanentlyFailed { message }) => Err(Error::permanent(message)),
+            }
         }
-        Err(TryBeginError::PermanentlyFailed { message }) => Err(Error::permanent(message)),
+        GateState::PermanentlyFailed { message } => Err(Error::permanent(message)),
     }
 }
 
@@ -1633,10 +1649,18 @@ fn settle_gate_admission<T>(admission: GateAdmission, result: &Result<T, Error>)
         (GateAdmission::Probe(ticket), Err(e)) if e.is_retryable() => {
             ticket.fail_transient(e.to_string());
         }
-        (GateAdmission::Probe(ticket), Err(e)) => {
-            ticket.fail_permanent(e.to_string());
+        (GateAdmission::Probe(ticket), Err(_e)) => {
+            // Non-retryable errors are not backend-health signals; keep the
+            // gate open to avoid permanently bricking acquires.
+            ticket.resolve();
         }
-        (GateAdmission::Open, _) => {}
+        (GateAdmission::OpenGated(gate), Err(e)) if e.is_retryable() => {
+            // First retryable failure on healthy path opens the backoff gate.
+            if let Ok(ticket) = gate.try_begin() {
+                ticket.fail_transient(e.to_string());
+            }
+        }
+        (GateAdmission::OpenGated(_), _) | (GateAdmission::Open, _) => {}
     }
 }
 

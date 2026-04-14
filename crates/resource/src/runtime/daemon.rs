@@ -175,17 +175,16 @@ where
     /// within the per-run join time even if the task was mid-backoff
     /// (#323).
     pub async fn stop(&self) {
-        let run = {
-            let mut guard = self.inner.lock().await;
-            guard.take()
-        };
-        if let Some(run) = run {
+        let mut guard = self.inner.lock().await;
+        if let Some(run) = guard.as_mut() {
             run.cancel.cancel();
-            // User rule: no `let _ = ` on Result. Treat a join error as a
-            // diagnostic warning rather than silent swallowing.
-            if let Err(e) = run.handle.await {
+            // Keep the run visible until join completes so concurrent
+            // start()/is_running() calls cannot observe a false "stopped"
+            // state while shutdown is still in progress.
+            if let Err(e) = (&mut run.handle).await {
                 tracing::warn!(error = %e, "daemon join error on stop");
             }
+            guard.take();
         }
     }
 }
