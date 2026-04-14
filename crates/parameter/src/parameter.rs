@@ -756,14 +756,14 @@ impl Parameter {
         match &mut self.param_type {
             ParameterType::Select { multiple, .. } | ParameterType::File { multiple, .. } => {
                 *multiple = true;
-            }
+            },
             _ => {
                 debug_assert_type!(
                     self,
                     ParameterType::Select { .. } | ParameterType::File { .. },
                     "multiple"
                 );
-            }
+            },
         }
         self
     }
@@ -800,7 +800,7 @@ impl Parameter {
             | ParameterType::Filter { depends_on, .. }
             | ParameterType::Dynamic { depends_on, .. } => {
                 *depends_on = paths;
-            }
+            },
             _ => {
                 debug_assert_type!(
                     self,
@@ -809,7 +809,7 @@ impl Parameter {
                         | ParameterType::Dynamic { .. },
                     "depends_on"
                 );
-            }
+            },
         }
         self
     }

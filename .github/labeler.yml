@@ -6,7 +6,6 @@ docs:
   - changed-files:
     - any-glob-to-any-file:
       - 'docs/**'
-      - 'vision/**'
       - '*.md'
       - '.github/*.md'
 

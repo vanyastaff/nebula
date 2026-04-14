@@ -124,7 +124,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 error = %err,
                 "Expected configuration error occurred"
             );
-        }
+        },
     }
 
     // Example 5: Flat configuration pairs for debugging

@@ -652,7 +652,7 @@ pub(crate) fn to_json_pointer(path: &str) -> Option<String> {
                 if !current.is_empty() {
                     segments.push(std::mem::take(&mut current));
                 }
-            }
+            },
             '[' => {
                 if !current.is_empty() {
                     segments.push(std::mem::take(&mut current));
@@ -674,7 +674,7 @@ pub(crate) fn to_json_pointer(path: &str) -> Option<String> {
                     current.push('[');
                     current.push_str(&idx);
                 }
-            }
+            },
             _ => current.push(ch),
         }
     }

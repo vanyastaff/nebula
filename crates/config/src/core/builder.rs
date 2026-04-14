@@ -250,7 +250,7 @@ impl ConfigBuilder {
                     );
 
                     merge_json(&mut merged_data, data)?;
-                }
+                },
                 Err(e) => {
                     if self.fail_on_missing || !source.is_optional() {
                         return Err(e);
@@ -262,7 +262,7 @@ impl ConfigBuilder {
                         optional = source.is_optional(),
                         "Failed to load optional configuration source"
                     );
-                }
+                },
             }
         }
 
@@ -311,7 +311,7 @@ impl ConfigBuilder {
                     // hot reload is a no-op for that watcher). Documented on
                     // `ConfigBuilder::with_watcher`.
                     custom
-                }
+                },
                 None => Arc::new(FileWatcher::new(move |event| {
                     let trigger = ReloadTrigger {
                         source: event.source.clone(),
@@ -321,15 +321,15 @@ impl ConfigBuilder {
                     // the debounced reloader catches up on the next event
                     // and `Config::reload` re-reads everything.
                     match reload_tx.try_send(trigger) {
-                        Ok(()) => {}
+                        Ok(()) => {},
                         Err(mpsc::error::TrySendError::Full(_)) => {
                             nebula_log::debug!(
                                 "hot reload trigger channel full; dropping redundant event"
                             );
-                        }
+                        },
                         Err(mpsc::error::TrySendError::Closed(_)) => {
                             // Reload task is gone — Config has been dropped.
-                        }
+                        },
                     }
                 })),
             };
@@ -544,7 +544,7 @@ mod tests {
                             source.name(),
                         ))
                     }
-                }
+                },
                 _ => Err(ConfigError::source_error("unsupported", source.name())),
             }
         }

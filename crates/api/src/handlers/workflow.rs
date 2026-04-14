@@ -296,7 +296,7 @@ pub async fn update_workflow(
             match e {
                 WorkflowRepoError::Conflict { .. } => {
                     ApiError::Conflict("Workflow was modified by another request".to_string())
-                }
+                },
                 _ => ApiError::Internal(format!("Failed to update workflow: {}", e)),
             }
         })?;
@@ -400,7 +400,7 @@ pub async fn activate_workflow(
             match e {
                 WorkflowRepoError::Conflict { .. } => {
                     ApiError::Conflict("Workflow was modified by another request".to_string())
-                }
+                },
                 _ => ApiError::Internal(format!("Failed to activate workflow: {}", e)),
             }
         })?;

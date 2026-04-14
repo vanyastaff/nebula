@@ -862,7 +862,7 @@ pub async fn auth_middleware(
 
     let mut validation = Validation::new(Algorithm::ES256); // ← ES256, НЕ HS256!
     validation.set_audience(&["nebula-api"]);
-    validation.set_issuer(&["nebula-auth"]);
+    validation.set_issuer(&["nebula-api"]);
     validation.leeway = 30; // 30 секунд leeway для clock skew
 
     let token_data = decode::<Claims>(

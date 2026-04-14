@@ -670,9 +670,9 @@ impl Rule {
                 for rule in rules {
                     rule.field_references(out);
                 }
-            }
+            },
             Self::Not { inner } => inner.field_references(out),
-            _ => {}
+            _ => {},
         }
     }
 
@@ -706,7 +706,7 @@ impl Rule {
                         .map_err(|e| override_message(e, message))?;
                 }
                 Ok(())
-            }
+            },
             Self::MaxLength {
                 max: max_val,
                 message,
@@ -717,7 +717,7 @@ impl Rule {
                         .map_err(|e| override_message(e, message))?;
                 }
                 Ok(())
-            }
+            },
             Self::Pattern { pattern, message } => {
                 if let Some(s) = value.as_str() {
                     let re = compile_regex(pattern)?;
@@ -728,7 +728,7 @@ impl Rule {
                     }
                 }
                 Ok(())
-            }
+            },
             Self::Min {
                 min: min_val,
                 message,
@@ -745,7 +745,7 @@ impl Rule {
                     return Err(override_message(err, message));
                 }
                 Ok(())
-            }
+            },
             Self::Max {
                 max: max_val,
                 message,
@@ -762,7 +762,7 @@ impl Rule {
                     return Err(override_message(err, message));
                 }
                 Ok(())
-            }
+            },
             Self::OneOf { values, message } => {
                 if values.is_empty() {
                     return Ok(());
@@ -782,7 +782,7 @@ impl Rule {
                     return Err(ValidationError::new("one_of", msg));
                 }
                 Ok(())
-            }
+            },
             Self::MinItems {
                 min: min_val,
                 message,
@@ -793,7 +793,7 @@ impl Rule {
                         .map_err(|e| override_message(e, message))?;
                 }
                 Ok(())
-            }
+            },
             Self::MaxItems {
                 max: max_val,
                 message,
@@ -804,7 +804,7 @@ impl Rule {
                         .map_err(|e| override_message(e, message))?;
                 }
                 Ok(())
-            }
+            },
 
             Self::Email { message } => {
                 if let Some(s) = value.as_str() {
@@ -818,7 +818,7 @@ impl Rule {
                     }
                 }
                 Ok(())
-            }
+            },
             Self::Url { message } => {
                 if let Some(s) = value.as_str() {
                     static URL_RE: std::sync::LazyLock<regex::Regex> =
@@ -831,7 +831,7 @@ impl Rule {
                     }
                 }
                 Ok(())
-            }
+            },
 
             // ── Deferred — skip at static time ──────────────────────
             Self::UniqueBy { .. } | Self::Custom { .. } => Ok(()),
@@ -870,7 +870,7 @@ impl Rule {
                             .with_nested(errors),
                     )
                 }
-            }
+            },
             Self::Any { rules } => {
                 if rules.is_empty() {
                     return Ok(());
@@ -887,7 +887,7 @@ impl Rule {
                     ValidationError::new("any_failed", format!("All {count} alternatives failed"))
                         .with_nested(errors),
                 )
-            }
+            },
             Self::Not { inner } => match inner.validate_value(value) {
                 Ok(()) => Err(ValidationError::new("not_failed", "negated rule passed")),
                 Err(_) => Ok(()),
@@ -918,22 +918,22 @@ impl Rule {
             Self::Ne { field, value } => values.get(field).is_none_or(|v| v != value),
             Self::Gt { field, value } => {
                 cmp_number_predicate(values.get(field), value, |o| o.is_gt())
-            }
+            },
             Self::Gte { field, value } => {
                 cmp_number_predicate(values.get(field), value, |o| o.is_ge())
-            }
+            },
             Self::Lt { field, value } => {
                 cmp_number_predicate(values.get(field), value, |o| o.is_lt())
-            }
+            },
             Self::Lte { field, value } => {
                 cmp_number_predicate(values.get(field), value, |o| o.is_le())
-            }
+            },
             Self::IsTrue { field } => {
                 values.get(field).and_then(serde_json::Value::as_bool) == Some(true)
-            }
+            },
             Self::IsFalse { field } => {
                 values.get(field).and_then(serde_json::Value::as_bool) == Some(false)
-            }
+            },
             Self::Set { field } => values.get(field).is_some_and(|v| {
                 !v.is_null()
                     && match v {
@@ -953,7 +953,7 @@ impl Rule {
             Self::Contains { field, value } => values.get(field).is_some_and(|v| match v {
                 serde_json::Value::String(s) => {
                     value.as_str().is_some_and(|needle| s.contains(needle))
-                }
+                },
                 serde_json::Value::Array(items) => items.contains(value),
                 _ => false,
             }),
@@ -968,7 +968,7 @@ impl Rule {
                     .is_some_and(|string| {
                         compile_regex(pattern).is_ok_and(|re| re.is_match(string))
                     })
-            }
+            },
             Self::In {
                 field,
                 values: candidates,

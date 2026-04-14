@@ -286,7 +286,7 @@ fn action_result_terminate_failure_serialization_contract() {
             TerminationReason::Failure { code, message } => {
                 assert_eq!(code.as_str(), "E_VALIDATION");
                 assert_eq!(message, "field missing");
-            }
+            },
             TerminationReason::Success { .. } => panic!("expected Failure"),
             _ => panic!("unexpected TerminationReason variant"),
         },

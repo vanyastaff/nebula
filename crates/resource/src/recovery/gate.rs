@@ -265,12 +265,12 @@ impl RecoveryGate {
                         });
                     }
                     // CAS failed — retry the loop.
-                }
+                },
                 GateState::InProgress { .. } => {
                     return Err(TryBeginError::AlreadyInProgress(RecoveryWaiter {
                         gate: Arc::clone(&self.inner),
                     }));
-                }
+                },
                 GateState::Failed {
                     retry_at, attempt, ..
                 } => {
@@ -283,12 +283,12 @@ impl RecoveryGate {
                         Some(result) => return result,
                         None => continue, // CAS failed — retry the loop.
                     }
-                }
+                },
                 GateState::PermanentlyFailed { message } => {
                     return Err(TryBeginError::PermanentlyFailed {
                         message: message.clone(),
                     });
-                }
+                },
             }
         }
     }
@@ -388,7 +388,7 @@ mod tests {
         let gate = default_gate();
         let _ticket = gate.try_begin().expect("first caller wins");
         match gate.try_begin() {
-            Err(TryBeginError::AlreadyInProgress(_)) => {} // expected
+            Err(TryBeginError::AlreadyInProgress(_)) => {}, // expected
             other => panic!("expected AlreadyInProgress, got: {other:?}"),
         }
     }
@@ -412,7 +412,7 @@ mod tests {
             } => {
                 assert_eq!(message, "connection refused");
                 assert_eq!(attempt, 1);
-            }
+            },
             other => panic!("expected Failed, got: {other:?}"),
         }
     }
@@ -425,7 +425,7 @@ mod tests {
         match gate.try_begin() {
             Err(TryBeginError::PermanentlyFailed { message }) => {
                 assert_eq!(message, "certificate expired");
-            }
+            },
             other => panic!("expected PermanentlyFailed, got: {other:?}"),
         }
     }
@@ -503,7 +503,7 @@ mod tests {
         match gate.try_begin() {
             Err(TryBeginError::PermanentlyFailed { message }) => {
                 assert!(message.contains("exceeded"), "msg: {message}");
-            }
+            },
             other => panic!("expected PermanentlyFailed, got: {other:?}"),
         }
     }
@@ -540,10 +540,10 @@ mod tests {
                 Ok(ticket) => {
                     winners += 1;
                     ticket.resolve();
-                }
+                },
                 Err(TryBeginError::AlreadyInProgress(_)) => {
                     waiters += 1;
-                }
+                },
                 Err(other) => panic!("unexpected: {other:?}"),
             }
         }

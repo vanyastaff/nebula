@@ -1,0 +1,37 @@
+name: Hygiene
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  typos-and-toml:
+    name: typos + taplo
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+
+      - name: Install typos-cli
+        uses: taiki-e/install-action@v2.75.10
+        with:
+          tool: typos-cli
+
+      - name: Install taplo-cli
+        uses: taiki-e/install-action@v2.75.10
+        with:
+          tool: taplo-cli
+
+      - name: Check spelling
+        run: typos
+
+      - name: Check TOML formatting
+        run: taplo fmt --check .

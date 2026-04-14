@@ -199,7 +199,7 @@ mod tests {
                 assert!(message.contains("help: set service.port to a valid value"));
                 assert!(message.contains("nested_errors=1"));
                 assert_eq!(field.as_deref(), Some("/service/port"));
-            }
+            },
             other => panic!("expected validation error, got {other:?}"),
         }
     }

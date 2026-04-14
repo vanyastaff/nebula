@@ -66,7 +66,7 @@ fn deferred_success_roundtrip_survives_persist_and_resume() {
                 ));
                 assert!(deferred.retry.is_some());
                 assert_eq!(deferred.timeout, Some(Duration::from_secs(120)));
-            }
+            },
             other => panic!("expected Deferred output, got {other:?}"),
         },
         other => panic!("expected Success, got {other:?}"),
@@ -97,10 +97,10 @@ fn wait_with_partial_deferred_roundtrip_survives_resume() {
             match partial_output {
                 Some(ActionOutput::Deferred(deferred)) => {
                     assert_eq!(deferred.handle_id, "job-99");
-                }
+                },
                 other => panic!("expected deferred partial output, got {other:?}"),
             }
-        }
+        },
         other => panic!("expected Wait, got {other:?}"),
     }
 }
@@ -133,7 +133,7 @@ fn recovered_deferred_can_transition_to_resolved_success() {
                     "status": "completed"
                 }))
             );
-        }
+        },
         other => panic!("expected resolved Success, got {other:?}"),
     }
 }

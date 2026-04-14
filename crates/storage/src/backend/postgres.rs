@@ -246,7 +246,7 @@ impl WorkflowRepo for PgWorkflowRepo {
                         version,
                         actual,
                     ))
-                }
+                },
                 Err(err) => Err(WorkflowRepoError::Connection(err.to_string())),
             }
         } else {

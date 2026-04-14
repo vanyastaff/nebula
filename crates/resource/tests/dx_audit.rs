@@ -575,7 +575,7 @@ async fn error_handling_not_found_on_unregistered_resource() {
     let err = result.err().unwrap();
 
     match err.kind() {
-        ErrorKind::NotFound => {} // expected
+        ErrorKind::NotFound => {}, // expected
         other => panic!("expected NotFound, got {other:?}"),
     }
 

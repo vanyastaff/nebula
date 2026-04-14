@@ -79,7 +79,7 @@ pub(crate) fn parse_content(
                 let _ = content;
                 Err(ConfigError::format_not_supported("toml"))
             }
-        }
+        },
         ConfigFormat::Yaml => {
             #[cfg(feature = "yaml")]
             {
@@ -92,7 +92,7 @@ pub(crate) fn parse_content(
                 let _ = content;
                 Err(ConfigError::format_not_supported("yaml"))
             }
-        }
+        },
         ConfigFormat::Json => serde_json::from_str::<serde_json::Value>(content)
             .map_err(|e| ConfigError::parse_error(path, format!("JSON parse error: {e}"))),
         _ => Err(ConfigError::format_not_supported(format.to_string())),
@@ -129,7 +129,7 @@ impl ConfigLoader for FileLoader {
 
                 let format = ConfigFormat::from_path(&resolved_path);
                 parse_content(&content, format, &resolved_path)
-            }
+            },
             ConfigSource::Directory(dir_path) => self.load_directory(dir_path).await,
             _ => Err(ConfigError::source_error(
                 "FileLoader does not support this source type",
@@ -180,7 +180,7 @@ impl ConfigLoader for FileLoader {
                             })
                             .unwrap_or_else(chrono::Utc::now),
                     ))
-            }
+            },
             ConfigSource::Directory(_path) => Ok(SourceMetadata::new(source.clone())
                 .with_format(ConfigFormat::Unknown("directory".to_string()))
                 .with_last_modified(chrono::Utc::now())),

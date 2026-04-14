@@ -298,7 +298,7 @@ mod tests {
             SnapshotError::SchemeMismatch { expected, actual } => {
                 assert_eq!(expected, "ConnectionUri");
                 assert_eq!(actual, "SecretToken");
-            }
+            },
         }
         // Verify error message
         assert!(err.to_string().contains("ConnectionUri"));
@@ -333,7 +333,7 @@ mod tests {
         match &err {
             SnapshotError::SchemeMismatch { expected, .. } => {
                 assert_eq!(expected, "ConnectionUri");
-            }
+            },
         }
     }
 

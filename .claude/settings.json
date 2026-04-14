@@ -1,52 +1,13 @@
 {
   "hooks": {
-    "Stop": [
-      {
-        "hooks": [
-          {
-            "type": "command",
-            "command": "bash .claude/hooks/check-context-freshness.sh",
-            "timeout": 15
-          },
-          {
-            "type": "command",
-            "command": "bash .claude/hooks/verify-rust.sh",
-            "timeout": 300
-          }
-        ]
-      }
-    ],
-    "SessionStart": [
-      {
-        "hooks": [
-          {
-            "type": "command",
-            "command": "bash .claude/hooks/load-context.sh",
-            "timeout": 10
-          }
-        ]
-      }
-    ],
     "PreToolUse": [
       {
-        "matcher": "Edit|Write",
+        "matcher": "Bash",
         "hooks": [
           {
             "type": "command",
-            "command": "bash .claude/hooks/guard-core.sh",
-            "timeout": 10
-          }
-        ]
-      }
-    ],
-    "PostToolUse": [
-      {
-        "matcher": "Edit|Write",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "bash .claude/hooks/check-context-budget.sh",
-            "timeout": 10
+            "command": "bash -lc 'root=\"${WORKSPACE_ROOT:-}\"; if [ -z \"$root\" ]; then root=$(git rev-parse --show-toplevel 2>/dev/null || true); fi; if command -v cygpath >/dev/null 2>&1; then root=$(cygpath -u \"$root\" 2>/dev/null || printf \"%s\" \"$root\"); fi; if [ -n \"$root\" ] && [ -f \"$root/.claude/hooks/guard-bash.sh\" ]; then bash \"$root/.claude/hooks/guard-bash.sh\"; else exit 0; fi'",
+            "timeout": 5
           }
         ]
       }

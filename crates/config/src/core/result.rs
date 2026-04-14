@@ -40,7 +40,7 @@ impl<T> ConfigResultExt<T> for ConfigResult<T> {
                     message: format!("{ctx}: {message}"),
                     origin,
                 }
-            }
+            },
             other => ConfigError::SourceError {
                 message: f(),
                 origin: other.to_string(),
@@ -61,7 +61,7 @@ impl<T> ConfigResultExt<T> for ConfigResult<T> {
             Err(e) => {
                 nebula_log::error!("Configuration error: {}", e);
                 None
-            }
+            },
         }
     }
 
@@ -74,7 +74,7 @@ impl<T> ConfigResultExt<T> for ConfigResult<T> {
             Err(e) => {
                 f(&e);
                 None
-            }
+            },
         }
     }
 }
@@ -109,7 +109,7 @@ impl ConfigResultAggregator {
             Err(e) => {
                 self.errors.push(e);
                 None
-            }
+            },
         }
     }
 
@@ -120,7 +120,7 @@ impl ConfigResultAggregator {
             Err(e) => {
                 self.errors.push(e);
                 false
-            }
+            },
         }
     }
 
@@ -199,11 +199,11 @@ where
             Ok(result) => {
                 nebula_log::debug!("Successfully loaded from source: {}", source);
                 return Ok(result);
-            }
+            },
             Err(e) => {
                 nebula_log::debug!("Failed to load from source {}: {}", source, e);
                 last_error = Some(e);
-            }
+            },
         }
     }
 

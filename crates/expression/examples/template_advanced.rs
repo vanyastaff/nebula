@@ -38,7 +38,7 @@ fn main() {
         match part {
             TemplatePart::Static { content, position } => {
                 println!("Part {}: Static at {} = {:?}", i, position, content);
-            }
+            },
             TemplatePart::Expression {
                 content,
                 position,
@@ -50,7 +50,7 @@ fn main() {
                     "Part {}: Expression at {} (length: {}, strip_left: {}, strip_right: {}) = {:?}",
                     i, position, length, strip_left, strip_right, content
                 );
-            }
+            },
         }
     }
     println!();

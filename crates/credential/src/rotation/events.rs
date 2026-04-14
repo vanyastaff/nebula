@@ -192,7 +192,7 @@ impl NotificationEvent {
                     "Rotation scheduled for credential {} at {}",
                     credential_id, scheduled_at
                 )
-            }
+            },
             NotificationEvent::RotationStarting {
                 credential_id,
                 transaction_id,
@@ -202,7 +202,7 @@ impl NotificationEvent {
                     "Rotation starting for credential {} (transaction: {})",
                     credential_id, transaction_id
                 )
-            }
+            },
             NotificationEvent::RotationComplete {
                 credential_id,
                 old_version,
@@ -213,7 +213,7 @@ impl NotificationEvent {
                     "Rotation complete for credential {} (v{} → v{})",
                     credential_id, old_version, new_version
                 )
-            }
+            },
             NotificationEvent::RotationFailed {
                 credential_id,
                 error,
@@ -226,7 +226,7 @@ impl NotificationEvent {
                     retry_attempt + 1,
                     error
                 )
-            }
+            },
             NotificationEvent::EmergencyRotation(data) => {
                 let revoke_status = if data.immediate_revoke {
                     "IMMEDIATE REVOCATION"
@@ -246,7 +246,7 @@ impl NotificationEvent {
                     data.reason,
                     incident_info
                 )
-            }
+            },
             NotificationEvent::RotationRolledBack(data) => {
                 let classification = data
                     .error_classification
@@ -261,7 +261,7 @@ impl NotificationEvent {
                     classification,
                     data.reason
                 )
-            }
+            },
         }
     }
 }

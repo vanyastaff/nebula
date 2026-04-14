@@ -87,7 +87,7 @@ impl ParameterValue {
             Self::Literal(value) => value,
             Self::Expression(expression) => {
                 serde_json::json!({ EXPRESSION_KEY: expression })
-            }
+            },
             Self::Mode { mode, value } => {
                 let mut object = serde_json::Map::new();
                 object.insert("mode".to_owned(), serde_json::Value::String(mode));
@@ -95,7 +95,7 @@ impl ParameterValue {
                     object.insert("value".to_owned(), value);
                 }
                 serde_json::Value::Object(object)
-            }
+            },
         }
     }
 }

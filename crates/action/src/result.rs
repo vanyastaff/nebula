@@ -695,7 +695,7 @@ impl<T> ActionResult<T> {
                     output: mapped_output,
                     alternatives: mapped_alts,
                 })
-            }
+            },
             Self::Route { port, data } => Ok(ActionResult::Route {
                 port,
                 data: data.try_map(&mut f)?,
@@ -712,7 +712,7 @@ impl<T> ActionResult<T> {
                     outputs: mapped_outputs,
                     main_output: main_output.map(|o| o.try_map(&mut f)).transpose()?,
                 })
-            }
+            },
             Self::Wait {
                 condition,
                 timeout,
@@ -776,7 +776,7 @@ mod tests {
             ActionResult::Skip { reason, output } => {
                 assert_eq!(reason, "no data");
                 assert!(output.is_none());
-            }
+            },
             _ => panic!("expected Skip"),
         }
     }
@@ -788,7 +788,7 @@ mod tests {
             ActionResult::Skip { reason, output } => {
                 assert_eq!(reason, "filtered");
                 assert_eq!(output.as_ref().unwrap().as_value().unwrap(), &vec![1, 2, 3]);
-            }
+            },
             _ => panic!("expected Skip"),
         }
     }
@@ -814,7 +814,7 @@ mod tests {
         match &result {
             ActionResult::Break { reason, .. } => {
                 assert_eq!(reason, &BreakReason::MaxIterations);
-            }
+            },
             _ => panic!("expected Break"),
         }
     }
@@ -837,7 +837,7 @@ mod tests {
             } => {
                 assert_eq!(selected, "true");
                 assert_eq!(alternatives.len(), 2);
-            }
+            },
             _ => panic!("expected Branch"),
         }
     }
@@ -905,7 +905,7 @@ mod tests {
             ActionResult::Skip { reason, output } => {
                 assert_eq!(reason, "skip");
                 assert_eq!(output.unwrap().as_value().map(|s| s.as_str()), Some("3"));
-            }
+            },
             _ => panic!("expected Skip"),
         }
     }
@@ -937,7 +937,7 @@ mod tests {
                 assert_eq!(output.into_value(), Some(8));
                 assert_eq!(progress, Some(0.5));
                 assert_eq!(delay, Some(Duration::from_secs(1)));
-            }
+            },
             _ => panic!("expected Continue"),
         }
     }
@@ -953,7 +953,7 @@ mod tests {
             ActionResult::Break { output, reason } => {
                 assert_eq!(output.as_value().map(|s| s.as_str()), Some("result:42"));
                 assert_eq!(reason, BreakReason::Completed);
-            }
+            },
             _ => panic!("expected Break"),
         }
     }
@@ -979,7 +979,7 @@ mod tests {
                 assert_eq!(output.into_value(), Some(100));
                 assert_eq!(alternatives.get("a").unwrap().as_value(), Some(&10));
                 assert_eq!(alternatives.get("b").unwrap().as_value(), Some(&20));
-            }
+            },
             _ => panic!("expected Branch"),
         }
     }
@@ -995,7 +995,7 @@ mod tests {
             ActionResult::Route { port, data } => {
                 assert_eq!(port, "out");
                 assert_eq!(data.into_value(), Some(99.0));
-            }
+            },
             _ => panic!("expected Route"),
         }
     }
@@ -1016,7 +1016,7 @@ mod tests {
             } => {
                 assert_eq!(outputs.get("x").unwrap().as_value(), Some(&101));
                 assert_eq!(main_output.unwrap().into_value(), Some(100));
-            }
+            },
             _ => panic!("expected MultiOutput"),
         }
     }
@@ -1039,7 +1039,7 @@ mod tests {
             } => {
                 assert_eq!(partial_output.unwrap().into_value(), Some(7));
                 assert_eq!(timeout, Some(Duration::from_secs(300)));
-            }
+            },
             _ => panic!("expected Wait"),
         }
     }
@@ -1055,7 +1055,7 @@ mod tests {
             ActionResult::Retry { after, reason } => {
                 assert_eq!(after, Duration::from_secs(5));
                 assert_eq!(reason, "rate limited");
-            }
+            },
             _ => panic!("expected Retry"),
         }
     }
@@ -1101,7 +1101,7 @@ mod tests {
             ActionResult::Skip { reason, output } => {
                 assert_eq!(reason, "filtered");
                 assert_eq!(output.unwrap().as_value().map(|s| s.as_str()), Some("3"));
-            }
+            },
             _ => panic!("expected Skip"),
         }
     }
@@ -1142,7 +1142,7 @@ mod tests {
             ActionResult::Retry { after, reason } => {
                 assert_eq!(after, Duration::from_secs(5));
                 assert_eq!(reason, "retry");
-            }
+            },
             _ => panic!("expected Retry"),
         }
     }
@@ -1331,7 +1331,7 @@ mod tests {
             ActionResult::Success { output } => {
                 assert!(output.is_deferred());
                 assert!(output.needs_resolution());
-            }
+            },
             _ => panic!("expected Success"),
         }
     }
@@ -1393,7 +1393,7 @@ mod tests {
                 ActionOutput::Collection(items) => {
                     assert_eq!(items[0].as_value(), Some(&10));
                     assert_eq!(items[1].as_value(), Some(&20));
-                }
+                },
                 _ => panic!("expected Collection"),
             },
             _ => panic!("expected Success"),
@@ -1415,7 +1415,7 @@ mod tests {
                 assert_eq!(output.as_value(), Some(&42));
                 assert_eq!(progress, Some(0.5));
                 assert!(delay.is_none());
-            }
+            },
             _ => panic!("expected Continue"),
         }
     }
@@ -1433,7 +1433,7 @@ mod tests {
                 assert_eq!(output.as_value(), Some(&7));
                 assert_eq!(progress, Some(0.8));
                 assert_eq!(delay, Some(Duration::from_secs(5)));
-            }
+            },
             _ => panic!("expected Continue"),
         }
     }
@@ -1446,7 +1446,7 @@ mod tests {
             ActionResult::Break { output, reason } => {
                 assert_eq!(output.as_value().map(|s| s.as_str()), Some("done"));
                 assert_eq!(reason, BreakReason::Completed);
-            }
+            },
             _ => panic!("expected Break"),
         }
     }
@@ -1459,7 +1459,7 @@ mod tests {
             ActionResult::Break { output, reason } => {
                 assert_eq!(output.as_value(), Some(&99));
                 assert_eq!(reason, BreakReason::MaxIterations);
-            }
+            },
             _ => panic!("expected Break"),
         }
     }
@@ -1483,7 +1483,7 @@ mod tests {
         match r {
             ActionResult::Drop { reason } => {
                 assert_eq!(reason.as_deref(), Some("rate limit exceeded"));
-            }
+            },
             _ => panic!("expected Drop"),
         }
     }
@@ -1501,7 +1501,7 @@ mod tests {
         match mapped {
             ActionResult::Drop { reason } => {
                 assert_eq!(reason.as_deref(), Some("bad item"));
-            }
+            },
             _ => panic!("expected Drop"),
         }
     }
@@ -1514,7 +1514,7 @@ mod tests {
         match decoded {
             ActionResult::Drop { reason } => {
                 assert_eq!(reason.as_deref(), Some("filtered"));
-            }
+            },
             _ => panic!("expected Drop"),
         }
     }
@@ -1529,7 +1529,7 @@ mod tests {
             ActionResult::Terminate { reason } => match reason {
                 TerminationReason::Success { note } => {
                     assert_eq!(note.as_deref(), Some("done early"));
-                }
+                },
                 TerminationReason::Failure { .. } => panic!("expected Success"),
             },
             _ => panic!("expected Terminate"),
@@ -1546,7 +1546,7 @@ mod tests {
                 TerminationReason::Failure { code, message } => {
                     assert_eq!(code.as_str(), "INVALID_STATE");
                     assert_eq!(message, "cannot proceed from current state");
-                }
+                },
                 TerminationReason::Success { .. } => panic!("expected Failure"),
             },
             _ => panic!("expected Terminate"),
@@ -1568,7 +1568,7 @@ mod tests {
                 TerminationReason::Failure { code, message } => {
                     assert_eq!(code.as_str(), "CODE");
                     assert_eq!(message, "msg");
-                }
+                },
                 TerminationReason::Success { .. } => panic!("expected Failure"),
             },
             _ => panic!("expected Terminate"),
@@ -1600,7 +1600,7 @@ mod tests {
                 TerminationReason::Failure { code, message } => {
                     assert_eq!(code.as_str(), "E_BAD");
                     assert_eq!(message, "something broke");
-                }
+                },
                 TerminationReason::Success { .. } => panic!("expected Failure"),
             },
             _ => panic!("expected Terminate"),

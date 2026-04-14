@@ -62,7 +62,7 @@ impl<E: Clone + Send + 'static> Stream for SubscriberStream<E> {
                 Poll::Ready(Some(Err(BroadcastStreamRecvError::Lagged(skipped)))) => {
                     self.lagged_count = self.lagged_count.saturating_add(skipped);
                     continue;
-                }
+                },
                 Poll::Ready(None) => return Poll::Ready(None),
                 Poll::Pending => return Poll::Pending,
             }
@@ -101,7 +101,7 @@ impl<E: Clone + Send + 'static> Stream for FilteredStream<E> {
                         return Poll::Ready(Some(event));
                     }
                     continue;
-                }
+                },
                 Poll::Ready(None) => return Poll::Ready(None),
                 Poll::Pending => return Poll::Pending,
             }

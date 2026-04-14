@@ -261,7 +261,7 @@ async fn claim_unwinds_on_setup_failure() {
     let watcher = FileWatcher::new(|_| {});
 
     let first = watcher
-        .start_watching(&[source.clone()], CancellationToken::new())
+        .start_watching(std::slice::from_ref(&source), CancellationToken::new())
         .await;
     assert!(
         first.is_err(),

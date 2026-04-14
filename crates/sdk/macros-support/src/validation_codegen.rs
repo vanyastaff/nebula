@@ -22,7 +22,7 @@ pub fn parse_usize(args: &attrs::AttrArgs, key: &str) -> syn::Result<Option<usiz
                 &value_token(value),
                 format!("`{key}` must be an integer literal"),
             ));
-        }
+        },
     };
 
     Ok(Some(parsed))

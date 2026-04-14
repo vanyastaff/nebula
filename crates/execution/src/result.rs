@@ -222,7 +222,7 @@ mod tests {
             Some(ExecutionTerminationReason::ExplicitStop { by_node, note }) => {
                 assert_eq!(by_node, node_id);
                 assert_eq!(note.as_deref(), Some("done early"));
-            }
+            },
             _ => panic!("expected ExplicitStop"),
         }
     }
@@ -241,7 +241,7 @@ mod tests {
             Some(ExecutionTerminationReason::ExplicitFail { code, message, .. }) => {
                 assert_eq!(code.as_str(), "E_BAD");
                 assert_eq!(message, "broken");
-            }
+            },
             _ => panic!("expected ExplicitFail"),
         }
     }

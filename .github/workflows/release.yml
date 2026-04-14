@@ -39,7 +39,7 @@ jobs:
         uses: dtolnay/rust-toolchain@stable
 
       - name: Install cargo-release and git-cliff
-        uses: taiki-e/install-action@v2
+        uses: taiki-e/install-action@v2.75.10
         with:
           tool: cargo-release,git-cliff
 

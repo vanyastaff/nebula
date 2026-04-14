@@ -118,7 +118,7 @@ fn classify_error_impl(input: &DeriveInput) -> syn::Result<TokenStream2> {
                 enum_name,
                 "ClassifyError can only be derived for enums",
             ));
-        }
+        },
     };
 
     let mut match_arms = Vec::new();
@@ -163,10 +163,10 @@ fn build_constructor(classification: &Classification) -> TokenStream2 {
     match &classification.kind {
         ClassifyKind::Transient => {
             quote! { nebula_resource::Error::transient(__msg) }
-        }
+        },
         ClassifyKind::Permanent => {
             quote! { nebula_resource::Error::permanent(__msg) }
-        }
+        },
         ClassifyKind::Exhausted { retry_after } => match retry_after {
             Some(dur) => {
                 let secs = dur.as_secs();
@@ -179,7 +179,7 @@ fn build_constructor(classification: &Classification) -> TokenStream2 {
                         ),
                     )
                 }
-            }
+            },
             None => {
                 quote! {
                     nebula_resource::Error::exhausted(
@@ -187,14 +187,14 @@ fn build_constructor(classification: &Classification) -> TokenStream2 {
                         ::core::option::Option::None,
                     )
                 }
-            }
+            },
         },
         ClassifyKind::Backpressure => {
             quote! { nebula_resource::Error::backpressure(__msg) }
-        }
+        },
         ClassifyKind::Cancelled => {
             quote! { nebula_resource::Error::cancelled() }
-        }
+        },
     }
 }
 
@@ -250,7 +250,7 @@ fn parse_classify_meta(attr: &syn::Attribute) -> syn::Result<Classification> {
                 }
                 kind_ident = Some(ident.clone());
                 Ok(())
-            }
+            },
             "retry_after" => {
                 let value = meta.value()?;
                 let lit: syn::LitStr = value.parse()?;
@@ -258,7 +258,7 @@ fn parse_classify_meta(attr: &syn::Attribute) -> syn::Result<Classification> {
                     .map_err(|msg| syn::Error::new_spanned(&lit, msg))?;
                 retry_after = Some(dur);
                 Ok(())
-            }
+            },
             _ => Err(syn::Error::new_spanned(
                 ident,
                 format!("unknown classify attribute `{name}`"),

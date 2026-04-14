@@ -587,7 +587,7 @@ impl CircuitBreaker {
                 } else {
                     class.into()
                 }
-            }
+            },
         };
 
         guard.defuse();
@@ -613,7 +613,7 @@ impl CircuitBreaker {
                     inner.half_open_probes = inner.half_open_probes.saturating_add(1);
                     Ok(())
                 }
-            }
+            },
             State::Open { opened_at } => {
                 let elapsed = self.clock.now().duration_since(opened_at);
                 let timeout = self.effective_reset_timeout(inner.consecutive_opens);
@@ -633,7 +633,7 @@ impl CircuitBreaker {
                 } else {
                     Err(CallError::CircuitOpen)
                 }
-            }
+            },
         };
         drop(inner);
         if let Some((from, to)) = transition {
@@ -726,7 +726,7 @@ impl CircuitBreaker {
                 // Never count cancellations as failures, but release the probe slot
                 // so that half-open probes aren't permanently leaked on drop/cancel.
                 inner.half_open_probes = inner.half_open_probes.saturating_sub(1);
-            }
+            },
             Outcome::Success => {
                 if inner.state == State::HalfOpen {
                     transition = Some(self.close_from_half_open(&mut inner));
@@ -737,7 +737,7 @@ impl CircuitBreaker {
                         window.record(false, false);
                     }
                 }
-            }
+            },
             Outcome::Failure | Outcome::Timeout => {
                 if matches!(outcome, Outcome::Timeout) && !self.config.count_timeouts_as_failures {
                     // Don't count as failure, but still release the probe slot
@@ -756,7 +756,7 @@ impl CircuitBreaker {
                 } else if self.should_trip_on_failure(&inner) {
                     transition = Some(self.trip_open(&mut inner));
                 }
-            }
+            },
             Outcome::SlowSuccess => {
                 inner.slow_calls = inner.slow_calls.saturating_add(1);
                 inner.total = inner.total.saturating_add(1);
@@ -771,7 +771,7 @@ impl CircuitBreaker {
                         transition = Some(self.trip_open(&mut inner));
                     }
                 }
-            }
+            },
             Outcome::SlowFailure => {
                 inner.slow_calls = inner.slow_calls.saturating_add(1);
                 inner.failures = inner.failures.saturating_add(1);
@@ -784,7 +784,7 @@ impl CircuitBreaker {
                 } else if self.should_trip_on_failure(&inner) || self.slow_rate_trips(&inner) {
                     transition = Some(self.trip_open(&mut inner));
                 }
-            }
+            },
         }
         drop(inner);
         if let Some((from, to)) = transition {

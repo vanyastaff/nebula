@@ -143,7 +143,7 @@ impl Transformer {
             Self::Uppercase => apply_to_string(value, |s| s.to_uppercase()),
             Self::Replace { from, to } => {
                 apply_to_string(value, |s| s.replace(from.as_str(), to.as_str()))
-            }
+            },
             Self::StripPrefix { prefix } => apply_to_string(value, |s| {
                 s.strip_prefix(prefix.as_str()).unwrap_or(s).to_owned()
             }),
@@ -164,7 +164,7 @@ impl Transformer {
                         .unwrap_or_else(|| value.clone()),
                     None => value.clone(),
                 }
-            }
+            },
             Self::JsonPath { path } => {
                 let mut current = value;
                 for segment in path.split('.') {
@@ -174,14 +174,14 @@ impl Transformer {
                     }
                 }
                 current.clone()
-            }
+            },
             Self::Chain { transformers } => {
                 let mut current = value.clone();
                 for t in transformers {
                     current = t.apply(&current);
                 }
                 current
-            }
+            },
             Self::FirstMatch { transformers } => {
                 for t in transformers {
                     let result = t.apply(value);
@@ -190,7 +190,7 @@ impl Transformer {
                     }
                 }
                 value.clone()
-            }
+            },
         }
     }
 }

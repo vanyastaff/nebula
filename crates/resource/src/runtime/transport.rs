@@ -91,7 +91,7 @@ where
                     return Err(Error::backpressure(
                         "transport: timed out waiting for available session",
                     ));
-                }
+                },
             };
 
         let session = resource

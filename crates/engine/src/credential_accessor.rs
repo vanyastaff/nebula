@@ -285,7 +285,7 @@ mod tests {
             } => {
                 assert_eq!(capability, "credential:secret_key");
                 assert_eq!(action_id, "test_action");
-            }
+            },
             other => panic!("expected AccessDenied, got {other:?}"),
         }
     }

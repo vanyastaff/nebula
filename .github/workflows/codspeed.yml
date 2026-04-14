@@ -6,16 +6,12 @@ on:
     paths-ignore:
       - "**.md"
       - "docs/**"
-      - "vision/**"
       - "LICENSE"
-      - "CHANGELOG.md"
   pull_request:
     paths-ignore:
       - "**.md"
       - "docs/**"
-      - "vision/**"
       - "LICENSE"
-      - "CHANGELOG.md"
   # `workflow_dispatch` allows CodSpeed to trigger backtest
   # performance analysis in order to generate initial data.
   workflow_dispatch:
@@ -52,7 +48,7 @@ jobs:
           cache-on-failure: true
 
       - name: Install cargo-codspeed
-        uses: taiki-e/install-action@v2
+        uses: taiki-e/install-action@v2.75.10
         with:
           tool: cargo-codspeed
 

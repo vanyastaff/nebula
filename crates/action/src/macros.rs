@@ -23,7 +23,7 @@
 macro_rules! assert_success {
     ($result:expr) => {
         match &$result {
-            Ok($crate::ActionResult::Success { .. }) => {}
+            Ok($crate::ActionResult::Success { .. }) => {},
             other => panic!("expected ActionResult::Success, got {:?}", other),
         }
     };
@@ -34,7 +34,7 @@ macro_rules! assert_success {
                     .as_value()
                     .expect("expected ActionOutput::Value in assert_success!");
                 assert_eq!(val, &$expected, "ActionResult::Success output mismatch");
-            }
+            },
             other => panic!("expected ActionResult::Success, got {:?}", other),
         }
     };
@@ -56,7 +56,7 @@ macro_rules! assert_branch {
                     "expected branch key '{}', got '{}'",
                     $key, selected
                 );
-            }
+            },
             other => panic!("expected ActionResult::Branch, got {:?}", other),
         }
     };
@@ -71,7 +71,7 @@ macro_rules! assert_branch {
 macro_rules! assert_continue {
     ($result:expr) => {
         match &$result {
-            Ok($crate::ActionResult::Continue { .. }) => {}
+            Ok($crate::ActionResult::Continue { .. }) => {},
             other => panic!("expected ActionResult::Continue, got {:?}", other),
         }
     };
@@ -86,7 +86,7 @@ macro_rules! assert_continue {
 macro_rules! assert_break {
     ($result:expr) => {
         match &$result {
-            Ok($crate::ActionResult::Break { .. }) => {}
+            Ok($crate::ActionResult::Break { .. }) => {},
             other => panic!("expected ActionResult::Break, got {:?}", other),
         }
     };
@@ -101,7 +101,7 @@ macro_rules! assert_break {
 macro_rules! assert_skip {
     ($result:expr) => {
         match &$result {
-            Ok($crate::ActionResult::Skip { .. }) => {}
+            Ok($crate::ActionResult::Skip { .. }) => {},
             other => panic!("expected ActionResult::Skip, got {:?}", other),
         }
     };
@@ -116,7 +116,7 @@ macro_rules! assert_skip {
 macro_rules! assert_wait {
     ($result:expr) => {
         match &$result {
-            Ok($crate::ActionResult::Wait { .. }) => {}
+            Ok($crate::ActionResult::Wait { .. }) => {},
             other => panic!("expected ActionResult::Wait, got {:?}", other),
         }
     };
@@ -131,7 +131,7 @@ macro_rules! assert_wait {
 macro_rules! assert_retry {
     ($result:expr) => {
         match &$result {
-            Ok($crate::ActionResult::Retry { .. }) => {}
+            Ok($crate::ActionResult::Retry { .. }) => {},
             other => panic!("expected ActionResult::Retry, got {:?}", other),
         }
     };
@@ -146,7 +146,7 @@ macro_rules! assert_retry {
 macro_rules! assert_retryable {
     ($result:expr) => {
         match &$result {
-            Err($crate::ActionError::Retryable { .. }) => {}
+            Err($crate::ActionError::Retryable { .. }) => {},
             other => panic!("expected ActionError::Retryable, got {:?}", other),
         }
     };
@@ -161,7 +161,7 @@ macro_rules! assert_retryable {
 macro_rules! assert_fatal {
     ($result:expr) => {
         match &$result {
-            Err($crate::ActionError::Fatal { .. }) => {}
+            Err($crate::ActionError::Fatal { .. }) => {},
             other => panic!("expected ActionError::Fatal, got {:?}", other),
         }
     };
@@ -176,7 +176,7 @@ macro_rules! assert_fatal {
 macro_rules! assert_validation_error {
     ($result:expr) => {
         match &$result {
-            Err($crate::ActionError::Validation { .. }) => {}
+            Err($crate::ActionError::Validation { .. }) => {},
             other => panic!("expected ActionError::Validation, got {:?}", other),
         }
     };
@@ -191,7 +191,7 @@ macro_rules! assert_validation_error {
 macro_rules! assert_cancelled {
     ($result:expr) => {
         match &$result {
-            Err($crate::ActionError::Cancelled) => {}
+            Err($crate::ActionError::Cancelled) => {},
             other => panic!("expected ActionError::Cancelled, got {:?}", other),
         }
     };

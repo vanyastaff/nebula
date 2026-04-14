@@ -302,7 +302,7 @@ impl<E: Send + 'static> ResiliencePipeline<E> {
                 } else {
                     Err(err)
                 }
-            }
+            },
         }
     }
 }
@@ -348,10 +348,10 @@ where
                 )
                 .await
                 .unwrap_or_else(|_| Err(CallError::Timeout(d)))
-            }
+            },
             Step::Retry(config) => {
                 run_retry_step(config, Arc::clone(&steps), classifier, idx, f).await
-            }
+            },
             Step::CircuitBreaker(cb) => {
                 cb.try_acquire()?;
                 let mut guard = ProbeGuard::new(cb);
@@ -363,24 +363,24 @@ where
                 let outcome = classify_cb_outcome(&result, classifier.as_ref());
                 cb.record_outcome(outcome);
                 result
-            }
+            },
             Step::Bulkhead(bh) => {
                 let _permit = bh.acquire().await?;
                 run_operation_with_shells(&steps, classifier, idx + 1, f).await
-            }
+            },
             Step::RateLimiter(check) => {
                 check().await.map_err(|e| CallError::RateLimited {
                     retry_after: e.retry_after(),
                 })?;
                 run_operation_with_shells(&steps, classifier, idx + 1, f).await
-            }
+            },
             Step::LoadShed(predicate) => {
                 if predicate() {
                     Err(CallError::LoadShed)
                 } else {
                     run_operation_with_shells(&steps, classifier, idx + 1, f).await
                 }
-            }
+            },
         }
     })
 }
@@ -398,10 +398,10 @@ fn classify_cb_outcome<T, E>(
         Ok(_) => Outcome::Success,
         Err(CallError::Operation(e)) => {
             classifier.map_or(Outcome::Failure, |c| c.classify(e).into())
-        }
+        },
         Err(CallError::RetriesExhausted { last, .. }) => {
             classifier.map_or(Outcome::Failure, |c| c.classify(last).into())
-        }
+        },
         Err(CallError::Timeout(_)) => Outcome::Timeout,
         Err(_) => Outcome::Cancelled,
     }
@@ -487,7 +487,7 @@ fn classify_inner<T, E>(
         Err(other) => {
             *bail.lock() = Some(other);
             Err(None)
-        }
+        },
     }
 }
 

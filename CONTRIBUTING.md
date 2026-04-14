@@ -12,13 +12,27 @@ cargo build --workspace
 cargo nextest run --workspace
 
 # Check everything (before PR)
-cargo fmt && cargo clippy --workspace -- -D warnings && cargo nextest run --workspace
+task dev:check
 ```
 
 ## Requirements
 
 - Rust 1.94+ (MSRV)
 - `cargo-nextest` for tests
+- Nightly `rustfmt` (`rustup toolchain install nightly --component rustfmt`)
+- [`task`](https://taskfile.dev/) recommended (`task --list`, `task dev:check`)
+- `lefthook` for local pre-commit checks (`cargo install --locked lefthook`)
+- `typos-cli` and `taplo-cli` for hygiene checks (`cargo install --locked typos-cli taplo-cli`)
+
+## Optional Local Automation
+
+```bash
+# Install and activate git hooks (uses lefthook.yml)
+lefthook install
+```
+
+- `pre-commit`: fast checks (`fmt`, `clippy`, `cargo check`)
+- `pre-push`: full workspace tests (`cargo nextest run --workspace`)
 
 ## Pull Requests
 

@@ -64,7 +64,7 @@ impl RoutingMap {
             dashmap::Entry::Vacant(v) => {
                 v.insert(Arc::new(entry));
                 true
-            }
+            },
         }
     }
 

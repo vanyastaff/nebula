@@ -301,21 +301,21 @@ impl ConfigError {
         match self {
             ConfigError::FileNotFound { .. } | ConfigError::EnvVarNotFound { .. } => {
                 ErrorCategory::NotFound
-            }
+            },
             ConfigError::FileReadError { .. } | ConfigError::WatchError { .. } => ErrorCategory::Io,
             ConfigError::ParseError { .. }
             | ConfigError::EnvVarParseError { .. }
             | ConfigError::FormatNotSupported { .. } => ErrorCategory::Parse,
             ConfigError::ValidationError { .. } | ConfigError::TypeError { .. } => {
                 ErrorCategory::Validation
-            }
+            },
             ConfigError::SourceError { .. }
             | ConfigError::ReloadError { .. }
             | ConfigError::MergeError { .. }
             | ConfigError::PathError { .. } => ErrorCategory::Operation,
             ConfigError::EncryptionError { .. } | ConfigError::DecryptionError { .. } => {
                 ErrorCategory::Security
-            }
+            },
             ConfigError::InterpolationError { .. } => ErrorCategory::Operation,
         }
     }

@@ -200,7 +200,7 @@ fn collect_all_errors_demo() {
             for nested in e.nested() {
                 println!("  - [{}] {}", nested.code, nested.message);
             }
-        }
+        },
     }
 }
 

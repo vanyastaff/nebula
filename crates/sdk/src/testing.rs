@@ -108,31 +108,29 @@ impl<A> ActionTester<A> {
 }
 
 // TODO: ProcessAction temporarily disabled
-/*
-impl<A, I, O> ActionTester<A>
-where
-    A: nebula_action::ProcessAction<Input = I, Output = O>,
-    I: serde::de::DeserializeOwned + Send + Sync,
-    O: serde::Serialize + Send + Sync,
-{
-    pub async fn execute(
-        &self,
-        input: I,
-    ) -> Result<nebula_action::ActionResult<O>, nebula_action::ActionError> {
-        use nebula_action::ActionContext;
-        use nebula_core::{ExecutionId, NodeId, WorkflowId};
-
-        let workflow_id = WorkflowId::new();
-        let ctx = ActionContext::new(
-            ExecutionId::new(),
-            NodeId::new(),
-            workflow_id,
-            tokio_util::sync::CancellationToken::new(),
-        );
-        self.action.execute(input, &ctx).await
-    }
-}
-*/
+// impl<A, I, O> ActionTester<A>
+// where
+// A: nebula_action::ProcessAction<Input = I, Output = O>,
+// I: serde::de::DeserializeOwned + Send + Sync,
+// O: serde::Serialize + Send + Sync,
+// {
+// pub async fn execute(
+// &self,
+// input: I,
+// ) -> Result<nebula_action::ActionResult<O>, nebula_action::ActionError> {
+// use nebula_action::ActionContext;
+// use nebula_core::{ExecutionId, NodeId, WorkflowId};
+//
+// let workflow_id = WorkflowId::new();
+// let ctx = ActionContext::new(
+// ExecutionId::new(),
+// NodeId::new(),
+// workflow_id,
+// tokio_util::sync::CancellationToken::new(),
+// );
+// self.action.execute(input, &ctx).await
+// }
+// }
 
 /// Check if an action result is successful.
 ///

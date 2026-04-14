@@ -122,7 +122,7 @@ mod tests {
                 assert_eq!(auth.identity(), "alice");
                 let pw = auth.password().expose_secret(|s| s.to_owned());
                 assert_eq!(pw, "p@ssw0rd");
-            }
+            },
             _ => panic!("expected Complete variant"),
         }
     }

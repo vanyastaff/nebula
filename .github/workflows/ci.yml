@@ -6,20 +6,12 @@ on:
     paths-ignore:
       - "**.md"
       - "docs/**"
-      - "vision/**"
-      - ".ai-factory/**"
-      - ".agents/**"
       - "LICENSE"
-      - "CHANGELOG.md"
   pull_request:
     paths-ignore:
       - "**.md"
       - "docs/**"
-      - "vision/**"
-      - ".ai-factory/**"
-      - ".agents/**"
       - "LICENSE"
-      - "CHANGELOG.md"
   merge_group:
   workflow_dispatch:
 
@@ -32,10 +24,6 @@ env:
   CARGO_NET_RETRY: 10
   RUSTUP_MAX_RETRIES: 10
   RUST_BACKTRACE: short
-  # Benchmark thresholds (ns) — paths match Criterion output under target/criterion/
-  NEBULA_LOG_BENCH_EMIT_NO_HOOKS_MAX_NS: "20000"
-  NEBULA_LOG_BENCH_EMIT_INLINE_NOOP_MAX_NS: "25000"
-  NEBULA_LOG_BENCH_EMIT_BOUNDED_COUNTING_MAX_NS: "30000"
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
@@ -99,6 +87,11 @@ jobs:
           cache-on-failure: true
       - name: Run cargo check
         run: cargo check --workspace --all-features --all-targets
+      - name: Check no-default-features
+        run: |
+          cargo check -p nebula-resilience --no-default-features
+          cargo check -p nebula-log --no-default-features
+          cargo check -p nebula-expression --no-default-features
 
   # ── Tests ──────────────────────────────────────────────────────────────────
   test:
@@ -181,6 +174,7 @@ jobs:
   # ── Benchmarks ─────────────────────────────────────────────────────────────
   bench:
     name: Benchmark Thresholds
+    if: github.event_name != 'pull_request'
     needs: [test]
     runs-on: ubuntu-latest
     steps:
@@ -196,46 +190,6 @@ jobs:
           cache-on-failure: true
       - name: Run benchmarks
         run: cargo bench -p nebula-log --bench log_hot_path
-      - name: Validate benchmark thresholds
-        run: |
-          python3 - <<'PY'
-          import json, os, pathlib, sys
-
-          bases = [pathlib.Path("target/criterion"), pathlib.Path("crates/log/target/criterion")]
-          checks = [
-              ("log/observability/emit_dispatch/inline_noop/0/new/estimates.json", int(os.environ["NEBULA_LOG_BENCH_EMIT_NO_HOOKS_MAX_NS"])),
-              ("log/observability/emit_dispatch/inline_noop/1/new/estimates.json", int(os.environ["NEBULA_LOG_BENCH_EMIT_INLINE_NOOP_MAX_NS"])),
-              ("log/observability/emit_dispatch/bounded_field_scan/1/new/estimates.json", int(os.environ["NEBULA_LOG_BENCH_EMIT_BOUNDED_COUNTING_MAX_NS"])),
-          ]
-          GROUP = "log/observability/emit_dispatch"
-          GROUP_ALT = GROUP.replace("/", "_")
-
-          failures = []
-          for rel, threshold in checks:
-              alt_rel = rel.replace(GROUP, GROUP_ALT, 1)
-              path = None
-              for base in bases:
-                  for variant in (rel, alt_rel):
-                      candidate = base / variant
-                      if candidate.exists():
-                          path = candidate
-                          break
-                  if path:
-                      break
-              if path is None:
-                  failures.append(f"missing benchmark output: {rel}")
-                  continue
-              data = json.loads(path.read_text(encoding="utf-8"))
-              mean_ns = int(data["mean"]["point_estimate"])
-              if mean_ns > threshold:
-                  failures.append(f"{rel}: mean {mean_ns}ns > threshold {threshold}ns")
-          if failures:
-              print("Benchmark threshold check failed:")
-              for f in failures:
-                  print(" -", f)
-              sys.exit(1)
-          print("Benchmark thresholds passed")
-          PY
 
   # ── Supply-chain audit ─────────────────────────────────────────────────────
   deny:

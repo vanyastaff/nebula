@@ -307,7 +307,7 @@ impl ApiError {
                         StatusCode::INTERNAL_SERVER_ERROR,
                     ),
                 )
-            }
+            },
             ApiError::ServiceUnavailable(msg) => (
                 StatusCode::SERVICE_UNAVAILABLE,
                 ProblemDetails::new(
@@ -327,7 +327,7 @@ impl ApiError {
                         StatusCode::INTERNAL_SERVER_ERROR,
                     ),
                 )
-            }
+            },
             ApiError::WorkflowRepo(err) => {
                 tracing::error!("Workflow repository error: {}", err);
                 (
@@ -338,7 +338,7 @@ impl ApiError {
                         StatusCode::INTERNAL_SERVER_ERROR,
                     ),
                 )
-            }
+            },
             ApiError::ExecutionRepo(err) => {
                 tracing::error!("Execution repository error: {}", err);
                 (
@@ -349,7 +349,7 @@ impl ApiError {
                         StatusCode::INTERNAL_SERVER_ERROR,
                     ),
                 )
-            }
+            },
         }
     }
 }

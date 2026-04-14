@@ -90,16 +90,16 @@ impl ObservabilityFieldVisitor for FieldScanVisitor {
         match value {
             ObservabilityFieldValue::Str(value) => {
                 self.approx_payload_bytes += value.len();
-            }
+            },
             ObservabilityFieldValue::Bool(_) => {
                 self.approx_payload_bytes += 1;
-            }
+            },
             ObservabilityFieldValue::I64(_) | ObservabilityFieldValue::U64(_) => {
                 self.approx_payload_bytes += 8;
-            }
+            },
             ObservabilityFieldValue::F64(_) => {
                 self.approx_payload_bytes += 8;
-            }
+            },
         }
     }
 }

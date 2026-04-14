@@ -110,7 +110,7 @@ async fn demo_if_routes_true() {
                 output.as_value(),
                 Some(&serde_json::json!({ "condition": true, "value": 42 }))
             );
-        }
+        },
         _ => panic!("expected Branch"),
     }
 }
@@ -132,7 +132,7 @@ async fn demo_if_missing_condition_is_validation_error() {
     match err {
         ActionError::Validation { reason, .. } => {
             assert_eq!(reason, ValidationReason::MissingField);
-        }
+        },
         _ => panic!("expected Validation error"),
     }
 }
@@ -144,7 +144,7 @@ async fn demo_if_wrong_type_is_validation_error() {
     match err {
         ActionError::Validation { reason, .. } => {
             assert_eq!(reason, ValidationReason::WrongType);
-        }
+        },
         _ => panic!("expected Validation error"),
     }
 }
@@ -294,7 +294,7 @@ impl ControlAction for DemoRouter {
                     selected: matches[0].into(),
                     output: value,
                 })
-            }
+            },
             (RouterMode::AllMatch, _) => {
                 let value = input.into_value();
                 let ports: std::collections::HashMap<_, _> = matches
@@ -302,7 +302,7 @@ impl ControlAction for DemoRouter {
                     .map(|port| ((*port).to_string(), value.clone()))
                     .collect();
                 Ok(ControlOutcome::Route { ports })
-            }
+            },
         }
     }
 }
@@ -331,7 +331,7 @@ async fn demo_router_all_match_fires_multiple_ports() {
             assert!(outputs.contains_key("high"));
             assert!(outputs.contains_key("medium"));
             assert!(main_output.is_none());
-        }
+        },
         _ => panic!("expected MultiOutput"),
     }
 }
@@ -437,7 +437,7 @@ async fn demo_filter_passes_above_threshold() {
     match result {
         ActionResult::Success { output } => {
             assert_eq!(output.as_value(), Some(&serde_json::json!({ "score": 75 })));
-        }
+        },
         _ => panic!("expected Success"),
     }
 }
@@ -449,7 +449,7 @@ async fn demo_filter_drops_below_threshold() {
     match result {
         ActionResult::Drop { reason } => {
             assert_eq!(reason.as_deref(), Some("score 10 below 50"));
-        }
+        },
         _ => panic!("expected Drop"),
     }
 }
@@ -510,7 +510,7 @@ async fn demo_noop_preserves_input() {
     match result {
         ActionResult::Success { output } => {
             assert_eq!(output.as_value(), Some(&input));
-        }
+        },
         _ => panic!("expected Success"),
     }
 }
@@ -572,7 +572,7 @@ async fn demo_stop_terminates_with_success() {
         ActionResult::Terminate { reason } => match reason {
             TerminationReason::Success { note } => {
                 assert_eq!(note.as_deref(), Some("duplicate detected"));
-            }
+            },
             TerminationReason::Failure { .. } => panic!("expected Success"),
             _ => panic!("unexpected TerminationReason variant"),
         },
@@ -642,7 +642,7 @@ async fn demo_fail_terminates_with_failure() {
             TerminationReason::Failure { code, message } => {
                 assert_eq!(code.as_str(), "E_VALIDATION");
                 assert_eq!(message, "input failed business rules");
-            }
+            },
             TerminationReason::Success { .. } => panic!("expected Failure"),
             _ => panic!("unexpected TerminationReason variant"),
         },
@@ -753,7 +753,7 @@ async fn pass_and_drop_have_distinct_runtime_shapes() {
     match pass_result {
         ActionResult::Success { output } => {
             assert!(matches!(output, ActionOutput::Value(_)));
-        }
+        },
         _ => panic!("expected Success"),
     }
 

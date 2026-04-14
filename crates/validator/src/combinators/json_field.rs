@@ -81,7 +81,7 @@ where
                 self.inner
                     .validate(converted.borrow())
                     .map_err(|e| e.with_field(self.pointer.clone()))
-            }
+            },
             None if !self.required => Ok(()),
             None => Err(ValidationError::new(
                 "path_not_found",

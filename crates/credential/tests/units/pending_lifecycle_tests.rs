@@ -113,7 +113,7 @@ impl Credential for InteractiveTestCredential {
                 Ok(ResolveResult::Complete(TestInteractiveState {
                     token: "final-token".into(),
                 }))
-            }
+            },
             _ => Err(CredentialError::InvalidInput(
                 "incorrect verification code".into(),
             )),
@@ -149,7 +149,7 @@ async fn pending_lifecycle_resolve_then_continue() {
                 "expected DisplayInfo interaction, got: {interaction:?}"
             );
             token
-        }
+        },
         other => panic!("expected Pending response, got: {other:?}"),
     };
 
@@ -165,7 +165,7 @@ async fn pending_lifecycle_resolve_then_continue() {
     match response {
         ResolveResponse::Complete(state) => {
             assert_eq!(state.token, "final-token");
-        }
+        },
         other => panic!("expected Complete response, got: {other:?}"),
     }
 }

@@ -60,7 +60,7 @@ async fn resolve_to_typed_snapshot() {
     match &err {
         SnapshotError::SchemeMismatch { expected, .. } => {
             assert_eq!(expected, "ConnectionUri");
-        }
+        },
         _ => panic!("unexpected error variant"),
     }
 

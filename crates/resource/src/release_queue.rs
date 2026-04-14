@@ -180,7 +180,7 @@ impl ReleaseQueue {
         let factory: TaskFactory = Box::new(factory);
 
         match self.senders[idx].try_send(factory) {
-            Ok(()) => {}
+            Ok(()) => {},
             Err(mpsc::error::TrySendError::Full(factory)) => {
                 // Primary is full — try bounded fallback.
                 let count = self.fallback_count.fetch_add(1, Ordering::Relaxed) + 1;
@@ -191,14 +191,14 @@ impl ReleaseQueue {
                     );
                 }
                 match self.fallback_tx.try_send(factory) {
-                    Ok(()) => {}
+                    Ok(()) => {},
                     Err(mpsc::error::TrySendError::Full(factory)) => {
                         // Both primary and fallback are full. Previously this
                         // path silently dropped the task. Now we hand it to a
                         // bounded-lifetime rescue task that awaits capacity on
                         // the fallback channel for up to `RESCUE_TIMEOUT`.
                         self.spawn_rescue(factory);
-                    }
+                    },
                     Err(mpsc::error::TrySendError::Closed(factory)) => {
                         // Fallback channel is closed — workers have exited.
                         // Record as a drop (with reason) instead of silently
@@ -206,23 +206,23 @@ impl ReleaseQueue {
                         // there is nowhere to send it.
                         drop(factory);
                         record_drop(&self.dropped_count, "fallback_channel_closed");
-                    }
+                    },
                 }
-            }
+            },
             Err(mpsc::error::TrySendError::Closed(factory)) => {
                 // Primary worker exited (e.g., panic). Try the fallback
                 // before recording a drop — fallback may still be alive.
                 match self.fallback_tx.try_send(factory) {
-                    Ok(()) => {}
+                    Ok(()) => {},
                     Err(mpsc::error::TrySendError::Full(factory)) => {
                         self.spawn_rescue(factory);
-                    }
+                    },
                     Err(mpsc::error::TrySendError::Closed(factory)) => {
                         drop(factory);
                         record_drop(&self.dropped_count, "primary_and_fallback_closed");
-                    }
+                    },
                 }
-            }
+            },
         }
     }
 

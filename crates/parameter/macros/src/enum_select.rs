@@ -27,7 +27,7 @@ fn expand(input: syn::DeriveInput) -> syn::Result<proc_macro2::TokenStream> {
                 &input.ident,
                 "EnumSelect can only be derived on enums",
             ));
-        }
+        },
     };
 
     let mut option_exprs = Vec::new();

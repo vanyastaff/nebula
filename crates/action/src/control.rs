@@ -344,7 +344,7 @@ impl From<ControlOutcome> for ActionResult<Value> {
                     outputs,
                     main_output: None,
                 }
-            }
+            },
             ControlOutcome::Pass { output } => ActionResult::Success {
                 output: crate::output::ActionOutput::Value(output),
             },
@@ -569,7 +569,7 @@ mod tests {
         match err {
             ActionError::Validation { reason, .. } => {
                 assert!(matches!(reason, ValidationReason::MissingField));
-            }
+            },
             _ => panic!("expected Validation"),
         }
     }
@@ -581,7 +581,7 @@ mod tests {
         match err {
             ActionError::Validation { reason, .. } => {
                 assert!(matches!(reason, ValidationReason::WrongType));
-            }
+            },
             _ => panic!("expected Validation"),
         }
     }
@@ -636,7 +636,7 @@ mod tests {
                 assert_eq!(selected, "true");
                 assert_eq!(output.as_value(), Some(&serde_json::json!({"v": 1})));
                 assert!(alternatives.is_empty());
-            }
+            },
             _ => panic!("expected Branch"),
         }
     }
@@ -659,7 +659,7 @@ mod tests {
                 assert!(outputs.contains_key("high"));
                 assert!(outputs.contains_key("low"));
                 assert!(main_output.is_none());
-            }
+            },
             _ => panic!("expected MultiOutput"),
         }
     }
@@ -673,7 +673,7 @@ mod tests {
         match result {
             ActionResult::Success { output } => {
                 assert_eq!(output.as_value(), Some(&serde_json::json!({"ok": true})));
-            }
+            },
             _ => panic!("expected Success"),
         }
     }
@@ -687,7 +687,7 @@ mod tests {
         match result {
             ActionResult::Drop { reason } => {
                 assert_eq!(reason.as_deref(), Some("rate limit"));
-            }
+            },
             _ => panic!("expected Drop"),
         }
     }
@@ -723,7 +723,7 @@ mod tests {
                 TerminationReason::Failure { code, message } => {
                     assert_eq!(code.as_str(), "E_BAD");
                     assert_eq!(message, "nope");
-                }
+                },
                 TerminationReason::Success { .. } => panic!("expected Failure"),
             },
             _ => panic!("expected Terminate"),
@@ -863,7 +863,7 @@ mod tests {
                     output.as_value(),
                     Some(&serde_json::json!({ "condition": true, "payload": 42 }))
                 );
-            }
+            },
             _ => panic!("expected Branch"),
         }
     }
@@ -909,7 +909,7 @@ mod tests {
             ActionResult::Terminate { reason } => match reason {
                 TerminationReason::Success { note } => {
                     assert_eq!(note.as_deref(), Some("stopped"));
-                }
+                },
                 TerminationReason::Failure { .. } => panic!("expected Success"),
             },
             _ => panic!("expected Terminate"),

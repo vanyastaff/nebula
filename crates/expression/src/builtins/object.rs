@@ -95,7 +95,7 @@ pub fn pick(
                     "string",
                     crate::value_utils::value_type_name(arg),
                 ));
-            }
+            },
         }
     }
 
@@ -128,7 +128,7 @@ pub fn omit(
                     "string",
                     crate::value_utils::value_type_name(arg),
                 ));
-            }
+            },
         }
     }
 

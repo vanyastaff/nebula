@@ -129,14 +129,14 @@ impl<S: CredentialStore> CredentialStore for ScopeLayer<S> {
                     credential
                         .metadata
                         .insert(OWNER_KEY.to_owned(), Value::String(owner.to_owned()));
-                }
+                },
                 PutMode::Overwrite | PutMode::CompareAndSwap { .. } => {
                     let existing = self.inner.get(&credential.id).await?;
                     verify_owner(&self.resolver, &credential.id, &existing)?;
                     credential
                         .metadata
                         .insert(OWNER_KEY.to_owned(), Value::String(owner.to_owned()));
-                }
+                },
             }
         }
         self.inner.put(credential, mode).await
@@ -232,7 +232,7 @@ fn verify_owner(
             // No owner_id or wrong type → only admin can access.
             // Non-admin callers get NotFound (fail-closed).
             Err(StoreError::NotFound { id: id.to_owned() })
-        }
+        },
     }
 }
 

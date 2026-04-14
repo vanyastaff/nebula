@@ -92,14 +92,14 @@ async fn watcher_task(
                         filter = %new_filter,
                         "detected config change, reloaded log filter"
                     );
-                }
+                },
                 Err(e) => {
                     tracing::warn!(
                         path = %path.display(),
                         error = %e,
                         "failed to reload log filter from config file"
                     );
-                }
+                },
             }
         }
 
@@ -117,7 +117,7 @@ async fn read_filter(path: &Path) -> Option<String> {
             } else {
                 Some(trimmed)
             }
-        }
+        },
         Err(e) => {
             tracing::warn!(
                 path = %path.display(),
@@ -125,7 +125,7 @@ async fn read_filter(path: &Path) -> Option<String> {
                 "failed to read config file for log level reload"
             );
             None
-        }
+        },
     }
 }
 

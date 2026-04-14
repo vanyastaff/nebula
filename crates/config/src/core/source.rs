@@ -78,7 +78,7 @@ impl std::fmt::Display for ConfigSource {
             ConfigSource::Env => write!(f, "environment variables"),
             ConfigSource::EnvWithPrefix(prefix) => {
                 write!(f, "environment variables (prefix: {})", prefix)
-            }
+            },
             ConfigSource::File(path) => write!(f, "file: {}", path.display()),
             ConfigSource::FileAuto(path) => write!(f, "file (auto): {}", path.display()),
             ConfigSource::Directory(path) => write!(f, "directory: {}", path.display()),
@@ -272,7 +272,7 @@ impl ConfigFormat {
                 {
                     ConfigFormat::Unknown(ext.to_string())
                 }
-            }
+            },
             "yaml" | "yml" => {
                 #[cfg(feature = "yaml")]
                 {
@@ -282,7 +282,7 @@ impl ConfigFormat {
                 {
                     ConfigFormat::Unknown(ext.to_string())
                 }
-            }
+            },
             _ => ConfigFormat::Unknown(ext.to_string()),
         }
     }

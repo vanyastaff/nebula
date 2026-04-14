@@ -26,7 +26,7 @@ fn main() {
             Ok(_) => println!("Success!"),
             Err(e) => {
                 println!("{}\n", e);
-            }
+            },
         },
         Err(e) => println!("Parse error: {}\n", e),
     }
@@ -43,7 +43,7 @@ fn main() {
             Ok(_) => println!("Success!"),
             Err(e) => {
                 println!("{}\n", e);
-            }
+            },
         },
         Err(e) => println!("Parse error: {}\n", e),
     }
@@ -59,7 +59,7 @@ Line 5"#;
         Ok(_) => println!("Parsed successfully"),
         Err(e) => {
             println!("{}\n", e);
-        }
+        },
     }
 
     println!("=== Example 4: Type Error ===\n");
@@ -74,7 +74,7 @@ Line 5"#;
             Ok(_) => println!("Success!"),
             Err(e) => {
                 println!("{}\n", e);
-            }
+            },
         },
         Err(e) => println!("Parse error: {}\n", e),
     }
@@ -100,7 +100,7 @@ Line 5"#;
             Ok(_) => println!("Success!"),
             Err(e) => {
                 println!("{}\n", e);
-            }
+            },
         },
         Err(e) => println!("Parse error: {}\n", e),
     }

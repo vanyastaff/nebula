@@ -158,7 +158,7 @@ fn test_decryption_with_wrong_key() {
     match result {
         Err(CryptoError::DecryptionFailed) => {
             // Expected error
-        }
+        },
         other => panic!("Expected DecryptionFailed, got {:?}", other),
     }
 }

@@ -12,7 +12,7 @@ fn multi_writer_policy_defaults_to_best_effort() {
     match config {
         WriterConfig::Multi { policy, .. } => {
             assert_eq!(policy, DestinationFailurePolicy::BestEffort);
-        }
+        },
         _ => panic!("unexpected writer config"),
     }
 }
@@ -27,7 +27,7 @@ fn multi_writer_can_use_fail_fast_policy() {
     match config {
         WriterConfig::Multi { policy, .. } => {
             assert_eq!(policy, DestinationFailurePolicy::FailFast);
-        }
+        },
         _ => panic!("unexpected writer config"),
     }
 }
@@ -42,7 +42,7 @@ fn multi_writer_can_use_primary_with_fallback_policy() {
     match config {
         WriterConfig::Multi { policy, .. } => {
             assert_eq!(policy, DestinationFailurePolicy::PrimaryWithFallback);
-        }
+        },
         _ => panic!("unexpected writer config"),
     }
 }

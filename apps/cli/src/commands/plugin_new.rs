@@ -94,7 +94,7 @@ fn to_pascal_case(s: &str) -> String {
                 Some(c) => {
                     let upper: String = c.to_uppercase().collect();
                     upper + chars.as_str()
-                }
+                },
                 None => String::new(),
             }
         })

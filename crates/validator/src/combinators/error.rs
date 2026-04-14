@@ -217,7 +217,7 @@ where
             ),
             CombinatorError::AndFailed(e) => {
                 ValidationError::new("and_failed", format!("AND combinator failed: {e}"))
-            }
+            },
             CombinatorError::NotValidatorPassed => ValidationError::new(
                 "not_validator_passed",
                 "Validation must NOT pass, but it did",
@@ -231,13 +231,13 @@ where
                     ve = ve.with_field(name);
                 }
                 ve
-            }
+            },
             CombinatorError::RequiredValueMissing => {
                 ValidationError::new("required", "Value is required but was None")
-            }
+            },
             CombinatorError::ValidationFailed(e) => {
                 ValidationError::new("validation_failed", format!("{e}"))
-            }
+            },
             CombinatorError::MultipleFailed(errors) => {
                 let mut ve = ValidationError::new(
                     "multiple_failures",
@@ -250,7 +250,7 @@ where
                     .collect();
                 ve = ve.with_nested(nested);
                 ve
-            }
+            },
             CombinatorError::Custom { code, message } => ValidationError::new(code, message),
         }
     }

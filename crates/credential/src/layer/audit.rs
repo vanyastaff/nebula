@@ -171,7 +171,7 @@ fn audit_result<T>(result: &Result<T, StoreError>) -> AuditResult {
         Err(StoreError::NotFound { .. }) => AuditResult::NotFound,
         Err(StoreError::VersionConflict { .. } | StoreError::AlreadyExists { .. }) => {
             AuditResult::Conflict
-        }
+        },
         Err(e) => AuditResult::Error(e.to_string()),
     }
 }

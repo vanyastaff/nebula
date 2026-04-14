@@ -103,12 +103,12 @@ pub(crate) async fn exchange_client_credentials(
             req = req
                 .header("Authorization", format!("Basic {credentials}"))
                 .form(&form);
-        }
+        },
         AuthStyle::PostBody => {
             form.push(("client_id", client_id.to_owned()));
             form.push(("client_secret", client_secret.to_owned()));
             req = req.form(&form);
-        }
+        },
     }
 
     let resp = req
@@ -159,10 +159,10 @@ pub(crate) async fn exchange_authorization_code(
             req = req
                 .header("Authorization", format!("Basic {credentials}"))
                 .form(&form);
-        }
+        },
         AuthStyle::PostBody => {
             req = req.form(&form);
-        }
+        },
     }
 
     let resp = req
@@ -325,12 +325,12 @@ pub(crate) async fn poll_device_code(
             req = req
                 .header("Authorization", format!("Basic {credentials}"))
                 .form(&form);
-        }
+        },
         AuthStyle::PostBody => {
             form.push(("client_id", client_id.to_owned()));
             form.push(("client_secret", client_secret.to_owned()));
             req = req.form(&form);
-        }
+        },
     }
 
     let resp = req
@@ -408,12 +408,12 @@ pub(crate) async fn refresh_token(
             req = req
                 .header("Authorization", format!("Basic {credentials}"))
                 .form(&form);
-        }
+        },
         AuthStyle::PostBody => {
             form.push(("client_id", client_id));
             form.push(("client_secret", client_secret_str));
             req = req.form(&form);
-        }
+        },
     }
 
     let resp = req

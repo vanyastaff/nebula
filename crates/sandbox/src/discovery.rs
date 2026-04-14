@@ -60,7 +60,7 @@ pub async fn discover_plugin(binary: &Path) -> Result<DiscoveredPlugin, String> 
                 version: plugin_version,
                 actions,
             })
-        }
+        },
         other => Err(format!(
             "{}: unexpected envelope from plugin: {}",
             binary.display(),
@@ -91,7 +91,7 @@ pub async fn discover_directory(
         Err(e) => {
             tracing::warn!(dir = %dir.display(), error = %e, "failed to read plugin directory");
             return results;
-        }
+        },
     };
 
     loop {
@@ -101,7 +101,7 @@ pub async fn discover_directory(
             Err(e) => {
                 tracing::warn!(error = %e, "failed to read directory entry");
                 continue;
-            }
+            },
         };
         let path = entry.path();
 
@@ -127,10 +127,10 @@ pub async fn discover_directory(
                 );
 
                 results.push((plugin.key.clone(), handlers));
-            }
+            },
             Err(e) => {
                 tracing::warn!(binary = %path.display(), error = %e, "skipping plugin");
-            }
+            },
         }
     }
 
@@ -157,7 +157,7 @@ fn create_handlers(
                 Err(e) => {
                     tracing::warn!(key = %full_key, error = %e, "invalid action key, skipping");
                     return None;
-                }
+                },
             };
 
             let metadata = ActionMetadata::new(action_key, &action.name, &action.description);

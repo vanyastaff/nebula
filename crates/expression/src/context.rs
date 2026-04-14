@@ -124,7 +124,7 @@ impl EvaluationContext {
                     obj.insert(key.to_string(), (**value).clone());
                 }
                 Some(Value::Object(obj))
-            }
+            },
             "execution" => {
                 // Return an object containing all execution variables
                 let mut obj = serde_json::Map::new();
@@ -132,17 +132,17 @@ impl EvaluationContext {
                     obj.insert(key.to_string(), (**value).clone());
                 }
                 Some(Value::Object(obj))
-            }
+            },
             "workflow" => Some((*self.workflow).clone()),
             "input" => Some((*self.input).clone()),
             "now" => {
                 let now = Utc::now();
                 Some(Value::String(now.to_rfc3339()))
-            }
+            },
             "today" => {
                 let today = Utc::now().format("%Y-%m-%d").to_string();
                 Some(Value::String(today))
-            }
+            },
             _ => None,
         }
     }

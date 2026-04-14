@@ -38,14 +38,14 @@ pub fn parse(input: &DeriveInput) -> syn::Result<ValidatorInput> {
                     input.ident.span(),
                     "Validator derive requires a struct with named fields",
                 ));
-            }
+            },
         },
         _ => {
             return Err(syn::Error::new(
                 input.ident.span(),
                 "Validator derive can only be used on structs",
             ));
-        }
+        },
     };
 
     let validator_attrs = attrs::parse_attrs(&input.attrs, "validator")?;
@@ -616,13 +616,13 @@ fn parse_validator_expr(args: &attrs::AttrArgs, key: &str) -> syn::Result<Option
             let parsed = syn::parse_str::<syn::Expr>(&s.value())
                 .map_err(|e| diag::error_spanned(s, format!("invalid `{key}` validator: {e}")))?;
             quote!(#parsed)
-        }
+        },
         _ => {
             return Err(syn::Error::new(
                 proc_macro2::Span::call_site(),
                 format!("`{key}` must be a path, expression, or string expression"),
             ));
-        }
+        },
     };
 
     Ok(Some(expr))
@@ -694,18 +694,18 @@ fn parse_validator_expr_values(
                 }
             }
             tokens.clone()
-        }
+        },
         attrs::AttrValue::Lit(syn::Lit::Str(s)) => {
             let parsed = syn::parse_str::<syn::Expr>(&s.value())
                 .map_err(|e| diag::error_spanned(s, format!("invalid `{key}` validator: {e}")))?;
             quote!(#parsed)
-        }
+        },
         _ => {
             return Err(syn::Error::new(
                 proc_macro2::Span::call_site(),
                 format!("`{key}` accepts only validator paths or expressions"),
             ));
-        }
+        },
     };
 
     Ok(vec![exprs])
@@ -743,39 +743,39 @@ fn parse_call_style_rules(
                     kind: StringFactoryKind::Contains,
                     arg: parse_single_string_call(values, "contains")?,
                 });
-            }
+            },
             "prefix" => {
                 require_string_type(original_ty, is_string, "prefix(...)")?;
                 rules.push(Rule::StringFactory {
                     kind: StringFactoryKind::StartsWith,
                     arg: parse_single_string_call(values, "prefix")?,
                 });
-            }
+            },
             "suffix" => {
                 require_string_type(original_ty, is_string, "suffix(...)")?;
                 rules.push(Rule::StringFactory {
                     kind: StringFactoryKind::EndsWith,
                     arg: parse_single_string_call(values, "suffix")?,
                 });
-            }
+            },
             "regex" => {
                 require_string_type(original_ty, is_string, "regex(...)")?;
                 rules.push(Rule::Regex(parse_single_string_call(values, "regex")?));
-            }
+            },
             "custom" => rules.push(Rule::Custom(parse_single_expr_call(values, "custom")?)),
             "using" => rules.push(Rule::Using(parse_single_expr_call(values, "using")?)),
             "and" => {
                 for value in values {
                     rules.extend(parse_rule_call_value(value, original_ty, value_ty)?);
                 }
-            }
+            },
             "or" => {
                 let mut exprs = Vec::with_capacity(values.len());
                 for value in values {
                     exprs.push(parse_rule_validator_expr(value, original_ty, value_ty)?);
                 }
                 rules.push(Rule::Any(exprs));
-            }
+            },
             "required" if values.is_empty() => {
                 if allows_required {
                     rules.push(Rule::Required);
@@ -785,16 +785,16 @@ fn parse_call_style_rules(
                         "`required()` requires `Option<T>` values",
                     ));
                 }
-            }
+            },
             "nested" if values.is_empty() => rules.push(Rule::Nested),
             "email" if values.is_empty() => {
                 require_string_type(original_ty, is_string, "email()")?;
                 rules.push(Rule::StringFormat(StringFormat::Email));
-            }
+            },
             "url" if values.is_empty() => {
                 require_string_type(original_ty, is_string, "url()")?;
                 rules.push(Rule::StringFormat(StringFormat::Url));
-            }
+            },
             "not_empty" if values.is_empty() => {
                 if is_string {
                     rules.push(Rule::StringFormat(StringFormat::NotEmpty));
@@ -806,16 +806,16 @@ fn parse_call_style_rules(
                         "`not_empty()` requires String-like or Vec-like fields",
                     ));
                 }
-            }
+            },
             "is_true" if values.is_empty() => {
                 require_bool_type(original_ty, is_bool, "is_true()")?;
                 rules.push(Rule::IsTrue);
-            }
+            },
             "is_false" if values.is_empty() => {
                 require_bool_type(original_ty, is_bool, "is_false()")?;
                 rules.push(Rule::IsFalse);
-            }
-            _ => {}
+            },
+            _ => {},
         }
     }
 
@@ -867,13 +867,13 @@ fn parse_length_call(
                 int.base10_parse::<usize>().map_err(|_| {
                     diag::error_spanned(&int, "`length(...)` bounds must be positive integers")
                 })?
-            }
+            },
             other => {
                 return Err(diag::error_spanned(
                     &value_token(&other),
                     "`length(...)` bounds must be integer literals",
                 ));
-            }
+            },
         };
 
         match key.to_string().as_str() {
@@ -885,7 +885,7 @@ fn parse_length_call(
                     key,
                     "`length(...)` only supports `min`, `max`, and `equal` keys",
                 ));
-            }
+            },
         }
     }
 
@@ -927,7 +927,7 @@ fn parse_length_call(
                 proc_macro2::Span::call_site(),
                 "`length(...)` requires either a positional integer or `min`/`max`/`equal`",
             ));
-        }
+        },
     }
 
     Ok(rules)
@@ -956,7 +956,7 @@ fn parse_range_call(values: &[attrs::AttrValue]) -> syn::Result<Vec<Rule>> {
                     key,
                     "`range(...)` only supports `min`, `max`, and `equal` keys",
                 ));
-            }
+            },
         }
     }
 
@@ -1081,7 +1081,7 @@ fn parse_rule_validator_expr(
         ),
         item @ attrs::AttrItem::List { .. } => {
             dsl_item_to_validator_expr(&item, original_ty, value_ty)
-        }
+        },
         attrs::AttrItem::KeyValue { .. } => Err(syn::Error::new(
             proc_macro2::Span::call_site(),
             "`or(...)` only accepts rule calls like `length(6)` or `max(10)`",
@@ -1107,72 +1107,72 @@ fn dsl_item_to_validator_expr(
         "min" => {
             let expr = parse_single_expr_call(values, "min")?;
             Ok(quote!(::nebula_validator::validators::min(#expr)))
-        }
+        },
         "max" => {
             let expr = parse_single_expr_call(values, "max")?;
             Ok(quote!(::nebula_validator::validators::max(#expr)))
-        }
+        },
         "length" => {
             let rules = parse_length_call(values, original_ty, value_ty, is_string, is_vec)?;
             rules_to_validator_expr(&rules, value_ty, element_ty)
-        }
+        },
         "range" => {
             let rules = parse_range_call(values)?;
             rules_to_validator_expr(&rules, value_ty, element_ty)
-        }
+        },
         "contains" => {
             let arg = parse_single_string_call(values, "contains")?;
             Ok(quote!(::nebula_validator::validators::contains(#arg)))
-        }
+        },
         "prefix" => {
             let arg = parse_single_string_call(values, "prefix")?;
             Ok(quote!(::nebula_validator::validators::starts_with(#arg)))
-        }
+        },
         "suffix" => {
             let arg = parse_single_string_call(values, "suffix")?;
             Ok(quote!(::nebula_validator::validators::ends_with(#arg)))
-        }
+        },
         "regex" => {
             let arg = parse_single_string_call(values, "regex")?;
             Ok(
                 quote!(::nebula_validator::validators::matches_regex(#arg).expect("regex validated by derive parser")),
             )
-        }
+        },
         "email" if values.is_empty() => Ok(quote!(::nebula_validator::validators::email())),
         "url" if values.is_empty() => Ok(quote!(::nebula_validator::validators::url())),
         "not_empty" if values.is_empty() && is_string => {
             Ok(quote!(::nebula_validator::validators::not_empty()))
-        }
+        },
         "not_empty" if values.is_empty() && is_vec => {
             Ok(quote!(::nebula_validator::validators::not_empty_collection::<#element_ty>()))
-        }
+        },
         "is_true" if values.is_empty() && is_bool => {
             Ok(quote!(::nebula_validator::validators::is_true()))
-        }
+        },
         "is_false" if values.is_empty() && is_bool => {
             Ok(quote!(::nebula_validator::validators::is_false()))
-        }
+        },
         "nested" if values.is_empty() => {
             Ok(quote!(::nebula_validator::combinators::nested_validator::<#value_ty>()))
-        }
+        },
         "using" => {
             let expr = parse_single_expr_call(values, "using")?;
             Ok(quote!((#expr)))
-        }
+        },
         "and" => {
             let exprs = values
                 .iter()
                 .map(|value| parse_rule_validator_expr(value, original_ty, value_ty))
                 .collect::<syn::Result<Vec<_>>>()?;
             chain_validator_exprs(exprs, true)
-        }
+        },
         "or" => {
             let exprs = values
                 .iter()
                 .map(|value| parse_rule_validator_expr(value, original_ty, value_ty))
                 .collect::<syn::Result<Vec<_>>>()?;
             chain_validator_exprs(exprs, false)
-        }
+        },
         _ => Err(syn::Error::new_spanned(
             key,
             "unsupported rule inside `or(...)`/`and(...)` group",
@@ -1255,13 +1255,13 @@ fn parse_min_max_list(
                 int.base10_parse::<usize>().map_err(|_| {
                     diag::error_spanned(&int, format!("`{key}` bounds must be positive integers"))
                 })?
-            }
+            },
             other => {
                 return Err(diag::error_spanned(
                     &value_token(&other),
                     format!("`{key}` bounds must be integer literals"),
                 ));
-            }
+            },
         };
 
         if entry_key == "min" {
@@ -1330,13 +1330,13 @@ fn parse_list_item_to_attr_item(item: &attrs::AttrValue) -> syn::Result<attrs::A
             let parsed = syn::parse_str::<syn::Expr>(&s.value())
                 .map_err(|e| diag::error_spanned(s, format!("invalid each(...) entry: {e}")))?;
             parse_expr_to_attr_item(parsed, item)
-        }
+        },
         attrs::AttrValue::Tokens(tokens) => {
             let parsed = syn::parse2::<syn::Expr>(tokens.clone()).map_err(|e| {
                 diag::error_spanned(tokens, format!("invalid each(...) entry: {e}"))
             })?;
             parse_expr_to_attr_item(parsed, item)
-        }
+        },
         attrs::AttrValue::Lit(other) => Err(diag::error_spanned(
             other,
             "unsupported each(...) entry; use flags or key-value entries",
@@ -1366,7 +1366,7 @@ fn parse_expr_to_attr_item(
                     "each(...) flags must be single identifiers",
                 ))
             }
-        }
+        },
         syn::Expr::Assign(assign) => {
             let syn::Expr::Path(left_path) = *assign.left else {
                 return Err(diag::error_spanned(
@@ -1389,7 +1389,7 @@ fn parse_expr_to_attr_item(
                 .ident;
             let value = expr_to_attr_value(*assign.right);
             Ok(attrs::AttrItem::KeyValue { key, value })
-        }
+        },
         syn::Expr::Call(call) => {
             let syn::Expr::Path(func_path) = *call.func else {
                 return Err(diag::error_spanned(
@@ -1414,7 +1414,7 @@ fn parse_expr_to_attr_item(
                 .ident;
             let values = call.args.into_iter().map(expr_to_attr_value).collect();
             Ok(attrs::AttrItem::List { key, values })
-        }
+        },
         _ => Err(diag::error_spanned(
             &value_token(span_source),
             "unsupported each(...) entry; use flags or key-value entries",
@@ -1438,7 +1438,7 @@ fn expr_to_attr_value(expr: syn::Expr) -> attrs::AttrValue {
             } else {
                 attrs::AttrValue::Tokens(quote!(#path))
             }
-        }
+        },
         syn::Expr::Lit(lit) => attrs::AttrValue::Lit(lit.lit),
         other => attrs::AttrValue::Tokens(quote!(#other)),
     }

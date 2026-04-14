@@ -130,7 +130,7 @@ async fn echo_roundtrip_simple_string() {
         PluginToHost::ActionResultOk { id, output } => {
             assert_eq!(id, 1);
             assert_eq!(output, json!("hello"));
-        }
+        },
         other => panic!("expected ActionResultOk, got {other:?}"),
     }
     p.shutdown().await;
@@ -156,7 +156,7 @@ async fn echo_roundtrip_structured_object() {
         PluginToHost::ActionResultOk { id, output } => {
             assert_eq!(id, 7);
             assert_eq!(output, payload);
-        }
+        },
         other => panic!("expected ActionResultOk, got {other:?}"),
     }
     p.shutdown().await;
@@ -177,7 +177,7 @@ async fn echo_handles_multiple_invocations_sequentially() {
             PluginToHost::ActionResultOk { id, output } => {
                 assert_eq!(id, i);
                 assert_eq!(output, json!({"iteration": i}));
-            }
+            },
             other => panic!("iteration {i}: expected ActionResultOk, got {other:?}"),
         }
     }
@@ -204,7 +204,7 @@ async fn unknown_action_returns_error() {
             assert_eq!(id, 1);
             assert_eq!(code, "UNKNOWN_ACTION");
             assert!(!retryable);
-        }
+        },
         other => panic!("expected ActionResultError, got {other:?}"),
     }
     p.shutdown().await;
@@ -229,7 +229,7 @@ async fn metadata_request_returns_plugin_info() {
             assert_eq!(plugin_version, "0.1.0");
             assert_eq!(actions.len(), 1);
             assert_eq!(actions[0].key, "echo");
-        }
+        },
         other => panic!("expected MetadataResponse, got {other:?}"),
     }
     p.shutdown().await;
@@ -270,7 +270,7 @@ async fn malformed_json_line_is_skipped_not_fatal() {
         PluginToHost::ActionResultOk { id, output } => {
             assert_eq!(id, 1);
             assert_eq!(output, json!("recovered"));
-        }
+        },
         other => panic!("expected ActionResultOk after recovery, got {other:?}"),
     }
     p.shutdown().await;
@@ -307,7 +307,7 @@ async fn cancel_and_rpc_response_messages_are_ignored_cleanly() {
         PluginToHost::ActionResultOk { id, output } => {
             assert_eq!(id, 10);
             assert_eq!(output, json!("still alive"));
-        }
+        },
         other => panic!("expected ActionResultOk, got {other:?}"),
     }
     p.shutdown().await;

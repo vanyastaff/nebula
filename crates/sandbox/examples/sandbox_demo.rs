@@ -53,7 +53,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             eprintln!("then run the demo again:");
             eprintln!("  cargo run -p nebula-sandbox --example sandbox_demo");
             std::process::exit(1);
-        }
+        },
     };
 
     println!("=== nebula-sandbox slice-1c demo ===");
@@ -169,7 +169,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 println!(
                     "big(kb={kb:>4}) → {size:>7} bytes in {elapsed:>10.3?} ({throughput_kbps:>8.1} KB/s)"
                 );
-            }
+            },
             Err(e) => println!("big(kb={kb}) error: {e}"),
         }
     }

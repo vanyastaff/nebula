@@ -101,7 +101,7 @@ impl RateLimitState {
                     .headers_mut()
                     .insert(header::RETRY_AFTER, HeaderValue::from_static("1"));
                 response
-            }
+            },
         }
     }
 }

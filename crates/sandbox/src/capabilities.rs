@@ -140,7 +140,7 @@ impl PluginCapabilities {
         self.capabilities.iter().any(|c| match c {
             Capability::FilesystemRead { paths } | Capability::FilesystemWrite { paths } => {
                 paths.iter().any(|p| path_under(path, p))
-            }
+            },
             _ => false,
         })
     }
@@ -198,10 +198,10 @@ fn path_under(path: &str, base: &str) -> bool {
         let mut out = PathBuf::new();
         for c in p.components() {
             match c {
-                Component::CurDir => {}
+                Component::CurDir => {},
                 Component::ParentDir => {
                     out.pop();
-                }
+                },
                 other => out.push(other.as_os_str()),
             }
         }

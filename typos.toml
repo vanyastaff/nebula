@@ -1,0 +1,22 @@
+[files]
+extend-exclude = [
+  "target",
+  ".worktrees",
+  ".claude/worktrees",
+  "docs/plans",
+  "docs/superpowers",
+  "crates/action/docs",
+  "docs/plans/archive",
+]
+
+[default]
+check-filename = true
+
+[default.extend-identifiers]
+AIMD = "AIMD"
+RTO = "RTO"
+nd = "nd"
+
+[default.extend-words]
+Hashi = "Hashi"
+mis = "mis"

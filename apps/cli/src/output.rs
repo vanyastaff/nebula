@@ -15,7 +15,7 @@ pub fn print_validation(errors: &[String], format: &OutputFormat) {
                 "errors": errors,
             });
             print_json(&result);
-        }
+        },
         OutputFormat::Text => {
             if errors.is_empty() {
                 println!("Workflow is valid.");
@@ -25,6 +25,6 @@ pub fn print_validation(errors: &[String], format: &OutputFormat) {
                     eprintln!("  {}. {err}", i + 1);
                 }
             }
-        }
+        },
     }
 }

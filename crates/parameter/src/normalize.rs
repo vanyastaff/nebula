@@ -68,7 +68,7 @@ fn normalize_one(param: &Parameter, values: &mut ParameterValues, depth: u8) {
         // Hidden parameters never get defaults backfilled.
         #[allow(deprecated)]
         ParameterType::Hidden => return,
-        _ => {}
+        _ => {},
     }
 
     let has_value = values.contains(&param.id);
@@ -117,17 +117,17 @@ fn normalize_nested(param: &Parameter, values: &mut ParameterValues, depth: u8) 
                 values,
                 depth,
             );
-        }
+        },
         ParameterType::Object {
             parameters,
             display_mode,
         } => {
             normalize_object(&param.id, parameters, *display_mode, values, depth);
-        }
+        },
         ParameterType::List { item, .. } => {
             normalize_list(&param.id, item, values, depth);
-        }
-        _ => {}
+        },
+        _ => {},
     }
 }
 
@@ -167,7 +167,7 @@ fn normalize_mode(
         None => {
             values.set(key, Value::Object(obj));
             return;
-        }
+        },
     };
 
     // Find the matching variant.
@@ -195,7 +195,7 @@ fn normalize_mode(
                     "value".to_owned(),
                     parameter_values_to_object(&inner_values),
                 );
-            }
+            },
             _ => {
                 // Scalar or other variant — backfill "value" from variant default.
                 if !obj.contains_key("value")
@@ -203,7 +203,7 @@ fn normalize_mode(
                 {
                     obj.insert("value".to_owned(), default.clone());
                 }
-            }
+            },
         }
     }
 
@@ -253,8 +253,8 @@ fn normalize_pick_mode(parameters: &[Parameter], values: &mut ParameterValues, d
             | ParameterType::Notice { .. }
             | ParameterType::Hidden => {
                 continue;
-            }
-            _ => {}
+            },
+            _ => {},
         }
 
         if !values.contains(&param.id) {

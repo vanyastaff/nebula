@@ -71,7 +71,7 @@ impl<E: Clone + Send> Subscriber<E> {
                 Err(broadcast::error::RecvError::Lagged(skipped)) => {
                     self.lagged_count = self.lagged_count.saturating_add(skipped);
                     continue;
-                }
+                },
                 Err(broadcast::error::RecvError::Closed) => return None,
             }
         }
@@ -87,7 +87,7 @@ impl<E: Clone + Send> Subscriber<E> {
                 Err(broadcast::error::TryRecvError::Lagged(skipped)) => {
                     self.lagged_count = self.lagged_count.saturating_add(skipped);
                     continue;
-                }
+                },
                 Err(_) => return None,
             }
         }

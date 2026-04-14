@@ -36,7 +36,7 @@ impl FormatTime for Timer {
                 let now = time::OffsetDateTime::now_utc();
                 let formatted = now.format(format).map_err(|_| fmt::Error)?;
                 write!(w, "{formatted}")
-            }
+            },
         }
     }
 }
@@ -57,7 +57,7 @@ pub fn make_timer(format: Option<&str>) -> Timer {
                     "invalid time format, falling back to SystemTime"
                 );
                 Timer::System(SystemTime)
-            }
+            },
         },
         None => Timer::System(SystemTime),
     }

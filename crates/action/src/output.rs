@@ -538,7 +538,7 @@ impl<T> ActionOutput<T> {
             Self::Streaming(s) => ActionOutput::Streaming(s),
             Self::Collection(items) => {
                 ActionOutput::Collection(items.into_iter().map(|item| item.map(f)).collect())
-            }
+            },
             Self::Empty => ActionOutput::Empty,
         }
     }
@@ -560,7 +560,7 @@ impl<T> ActionOutput<T> {
                     .map(|item| item.try_map(f))
                     .collect::<Result<Vec<_>, E>>()?;
                 Ok(ActionOutput::Collection(mapped))
-            }
+            },
             Self::Empty => Ok(ActionOutput::Empty),
         }
     }
@@ -972,7 +972,7 @@ mod tests {
                 assert_eq!(items[0].as_value(), Some(&10));
                 assert_eq!(items[1].as_value(), Some(&20));
                 assert!(items[2].is_empty());
-            }
+            },
             _ => panic!("expected Collection"),
         }
     }
@@ -1007,7 +1007,7 @@ mod tests {
             ActionOutput::Collection(items) => {
                 assert_eq!(items[0].as_value(), Some(&3));
                 assert_eq!(items[1].as_value(), Some(&6));
-            }
+            },
             _ => panic!("expected Collection"),
         }
     }
@@ -1079,7 +1079,7 @@ mod tests {
                 assert_eq!(d.producer.name.as_deref(), Some("dall-e-3"));
                 assert!(d.retry.is_some());
                 assert!(d.timeout.is_some());
-            }
+            },
             _ => panic!("expected Deferred"),
         }
     }
@@ -1099,7 +1099,7 @@ mod tests {
                 assert_eq!(d.producer.kind, ProducerKind::LocalCompute);
                 assert!(d.progress.is_some());
                 assert_eq!(d.timeout, Some(Duration::from_secs(300)));
-            }
+            },
             _ => panic!("expected Deferred"),
         }
     }
@@ -1119,7 +1119,7 @@ mod tests {
                 assert!(matches!(d.resolution, Resolution::Callback { .. }));
                 assert_eq!(d.producer.kind, ProducerKind::ExternalApi);
                 assert_eq!(d.timeout, Some(Duration::from_secs(3600)));
-            }
+            },
             _ => panic!("expected Deferred"),
         }
     }
@@ -1135,7 +1135,7 @@ mod tests {
                 assert_eq!(s.stream_id, "stream-1");
                 assert!(matches!(s.mode, StreamMode::Tokens { .. }));
                 assert_eq!(s.state, StreamState::Pending);
-            }
+            },
             _ => panic!("expected Streaming"),
         }
     }
@@ -1154,10 +1154,10 @@ mod tests {
                     } => {
                         assert_eq!(content_type, "video/mp4");
                         assert_eq!(*total_size, Some(1_000_000));
-                    }
+                    },
                     _ => panic!("expected Bytes mode"),
                 }
-            }
+            },
             _ => panic!("expected Streaming"),
         }
     }

@@ -128,7 +128,7 @@ impl App {
                 if key.kind == KeyEventKind::Press {
                     self.handle_key(key.code);
                 }
-            }
+            },
             TuiEvent::NodeStarted {
                 node_id,
                 name: _,
@@ -141,7 +141,7 @@ impl App {
                         format!("node \"{}\" started", self.nodes[idx].1.name),
                     );
                 }
-            }
+            },
             TuiEvent::NodeCompleted {
                 node_id,
                 elapsed,
@@ -158,7 +158,7 @@ impl App {
                         format!("node \"{name}\" completed ({elapsed:?})"),
                     );
                 }
-            }
+            },
             TuiEvent::NodeFailed {
                 node_id,
                 elapsed,
@@ -172,17 +172,17 @@ impl App {
                     info.error = Some(error.clone());
                     self.push_log(LogLevel::Error, format!("node \"{name}\" failed: {error}"));
                 }
-            }
+            },
             TuiEvent::WorkflowDone { success, .. } => {
                 self.done = true;
                 self.success = success;
                 let status = if success { "completed" } else { "failed" };
                 self.push_log(LogLevel::Info, format!("execution {status}"));
-            }
+            },
             TuiEvent::Log { level, message } => {
                 self.push_log(level, message);
-            }
-            TuiEvent::Tick | TuiEvent::Resize(..) => {}
+            },
+            TuiEvent::Tick | TuiEvent::Resize(..) => {},
         }
     }
 
@@ -191,11 +191,11 @@ impl App {
             KeyCode::Char('q') | KeyCode::Esc => self.should_quit = true,
             KeyCode::Up | KeyCode::Char('k') if self.selected_node > 0 => {
                 self.selected_node -= 1;
-            }
+            },
             KeyCode::Down | KeyCode::Char('j') if self.selected_node + 1 < self.nodes.len() => {
                 self.selected_node += 1;
-            }
-            _ => {}
+            },
+            _ => {},
         }
     }
 

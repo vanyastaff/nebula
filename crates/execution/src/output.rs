@@ -166,7 +166,7 @@ mod tests {
                 assert_eq!(key, "exec-123/node-456/output.json");
                 assert_eq!(*size, 1_500_000);
                 assert_eq!(mime, "application/json");
-            }
+            },
             _ => panic!("expected BlobRef"),
         }
     }

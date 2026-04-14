@@ -32,14 +32,14 @@ fn expand(input: DeriveInput) -> syn::Result<TokenStream2> {
                     struct_name.span(),
                     "Config derive requires a struct with named fields",
                 ));
-            }
+            },
         },
         _ => {
             return Err(syn::Error::new(
                 input.ident.span(),
                 "Config derive can only be used on structs",
             ));
-        }
+        },
     };
 
     let config_attrs = attrs::parse_attrs(&input.attrs, "config")?;
@@ -66,7 +66,7 @@ fn expand(input: DeriveInput) -> syn::Result<TokenStream2> {
 
     for loader in &loaders {
         match loader.as_str() {
-            "env" | "dotenv" | "file" => {}
+            "env" | "dotenv" | "file" => {},
             other => {
                 return Err(syn::Error::new(
                     struct_name.span(),
@@ -74,7 +74,7 @@ fn expand(input: DeriveInput) -> syn::Result<TokenStream2> {
                         "unsupported config loader `{other}`; expected one of: env, dotenv, file"
                     ),
                 ));
-            }
+            },
         }
     }
 

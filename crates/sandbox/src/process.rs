@@ -188,22 +188,22 @@ impl PluginHandle {
                     // should not prevent a retry on a fresh envelope.
                     SandboxError::MalformedEnvelope(e)
                 })
-            }
+            },
             Ok(BoundedReadOutcome::Eof) => {
                 self.poisoned = true;
                 Err(SandboxError::PluginClosed)
-            }
+            },
             Ok(BoundedReadOutcome::Overflow { observed }) => {
                 self.poisoned = true;
                 Err(SandboxError::PluginLineTooLarge {
                     limit: ENVELOPE_LINE_CAP,
                     observed,
                 })
-            }
+            },
             Err(e) => {
                 self.poisoned = true;
                 Err(SandboxError::Transport(e))
-            }
+            },
         }
     }
 }
@@ -350,7 +350,7 @@ impl ProcessSandbox {
                 } else {
                     Err(ActionError::fatal(msg))
                 }
-            }
+            },
             other => Err(ActionError::fatal(format!(
                 "plugin returned unexpected envelope (expected ActionResult*, got {})",
                 envelope_kind(&other)
@@ -412,7 +412,7 @@ impl ProcessSandbox {
                 }
                 *guard = None;
                 Err(sandbox_error_to_action_error(sandbox_err))
-            }
+            },
             Err(_) => {
                 // Timeout — also invalidate; we don't know if the plugin is
                 // still processing and we can't safely reuse the connection.
@@ -422,7 +422,7 @@ impl ProcessSandbox {
                     self.binary.display(),
                     self.timeout
                 )))
-            }
+            },
         }
     }
 
@@ -517,7 +517,7 @@ impl ProcessSandbox {
                     "plugin {} exited before printing handshake line",
                     self.binary.display()
                 )));
-            }
+            },
             Ok(BoundedReadOutcome::Overflow { observed }) => {
                 tracing::warn!(
                     plugin = %self.binary.display(),
@@ -531,13 +531,13 @@ impl ProcessSandbox {
                         observed,
                     },
                 ));
-            }
+            },
             Err(e) => {
                 return Err(ActionError::fatal(format!(
                     "plugin {} handshake read error: {e}",
                     self.binary.display()
                 )));
-            }
+            },
         };
 
         // Strip the trailing newline and decode as UTF-8 for the dial
@@ -619,7 +619,7 @@ impl SandboxRunner for ProcessSandbox {
                 } else {
                     Err(ActionError::fatal(msg))
                 }
-            }
+            },
             other => Err(ActionError::fatal(format!(
                 "plugin returned unexpected envelope (expected ActionResult*, got {})",
                 envelope_kind(&other)
@@ -670,7 +670,7 @@ async fn drain_plugin_stderr(stderr: tokio::process::ChildStderr, plugin_name: S
                     stderr = %sanitized,
                     "plugin stderr"
                 );
-            }
+            },
             Ok(BoundedReadOutcome::Eof) => return,
             Ok(BoundedReadOutcome::Overflow { observed }) => {
                 tracing::debug!(
@@ -685,7 +685,7 @@ async fn drain_plugin_stderr(stderr: tokio::process::ChildStderr, plugin_name: S
                 if !drop_until_newline(&mut reader).await {
                     return;
                 }
-            }
+            },
             Err(_) => return,
         }
     }
@@ -826,7 +826,7 @@ mod tests {
             BoundedReadOutcome::Overflow { observed } => {
                 // We should have read exactly cap + 1 bytes before giving up.
                 assert_eq!(observed, 1024 * 1024 + 1);
-            }
+            },
             other => panic!("expected Overflow, got {other:?}"),
         }
     }
@@ -928,18 +928,18 @@ mod tests {
                 Ok(BoundedReadOutcome::Eof) => {
                     self.poisoned = true;
                     Err(SandboxError::PluginClosed)
-                }
+                },
                 Ok(BoundedReadOutcome::Overflow { observed }) => {
                     self.poisoned = true;
                     Err(SandboxError::PluginLineTooLarge {
                         limit: cap,
                         observed,
                     })
-                }
+                },
                 Err(e) => {
                     self.poisoned = true;
                     Err(SandboxError::Transport(e))
-                }
+                },
             }
         }
 
@@ -988,7 +988,7 @@ mod tests {
                     observed > cap,
                     "observed={observed} must exceed cap={cap} to count as overflow",
                 );
-            }
+            },
             other => panic!("expected PluginLineTooLarge, got {other:?}"),
         }
         assert!(

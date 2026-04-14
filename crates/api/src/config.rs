@@ -435,7 +435,7 @@ mod tests {
             ApiConfigError::JwtSecretTooShort { got, min } => {
                 assert_eq!(got, 5);
                 assert_eq!(min, JwtSecret::MIN_BYTES);
-            }
+            },
             other => panic!("wrong variant: {other:?}"),
         }
 

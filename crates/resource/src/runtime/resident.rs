@@ -122,7 +122,7 @@ where
                         let _ =
                             tokio::time::timeout(Duration::from_secs(10), resource.destroy(owned))
                                 .await;
-                    }
+                    },
                     Err(arc) => {
                         warn!(
                             resource = %R::key(),
@@ -130,7 +130,7 @@ where
                             "cannot exclusively destroy resident runtime; \
                              another handle still held — dropping Arc"
                         );
-                    }
+                    },
                 }
             }
         }

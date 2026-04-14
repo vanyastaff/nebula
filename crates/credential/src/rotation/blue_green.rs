@@ -282,12 +282,12 @@ impl BlueGreenRotation {
                 // Complete swap on success
                 self.complete_swap()?;
                 Ok(())
-            }
+            },
             Err(e) => {
                 // Rollback on failure
                 self.rollback()?;
                 Err(e)
-            }
+            },
         }
     }
 }

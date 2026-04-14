@@ -572,7 +572,7 @@ These are documented in specs but explicitly out of scope for v1.0:
 | Multi-language plugin SDKs | governance §6 |
 | Redis/NATS queue backends | storage-v1 §2 |
 | Plugin Hub page | ecosystem strategy |
-| nebula-auth crate (JWT, RBAC, SSO) | governance |
+| Auth subsystem (JWT, RBAC, SSO) | governance |
 | Execution state encryption (PCI) | governance §5 |
 
 ---

@@ -179,7 +179,7 @@ impl TestRuntime {
                             health: None,
                         });
                     }
-                }
+                },
                 ActionResult::Break { reason, .. } => {
                     return Ok(RunReport {
                         kind: "stateful",
@@ -190,7 +190,7 @@ impl TestRuntime {
                         note: Some(format_break_reason(&reason)),
                         health: None,
                     });
-                }
+                },
                 other => {
                     return Ok(RunReport {
                         kind: "stateful",
@@ -201,7 +201,7 @@ impl TestRuntime {
                         note: Some(format!("non-iterative result: {other:?}")),
                         health: None,
                     });
-                }
+                },
             }
         }
     }

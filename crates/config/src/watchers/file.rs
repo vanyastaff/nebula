@@ -34,7 +34,7 @@ fn forward_event(
     dropped: &Arc<AtomicU64>,
 ) {
     match tx.try_send(event) {
-        Ok(()) => {}
+        Ok(()) => {},
         Err(mpsc::error::TrySendError::Full(_)) => {
             let n = dropped.fetch_add(1, Ordering::Relaxed) + 1;
             if n.is_power_of_two() {
@@ -43,10 +43,10 @@ fn forward_event(
                     "FileWatcher forwarding channel full; dropping fs event"
                 );
             }
-        }
+        },
         Err(mpsc::error::TrySendError::Closed(_)) => {
             // Forward task already exited — benign during shutdown.
-        }
+        },
     }
 }
 
@@ -231,14 +231,14 @@ impl crate::core::ConfigWatcher for FileWatcher {
                 ConfigSource::File(path) | ConfigSource::FileAuto(path) => {
                     path_to_source.insert(path.clone(), source.clone());
                     paths_to_watch.push(path.clone());
-                }
+                },
                 ConfigSource::Directory(dir) => {
                     path_to_source.insert(dir.clone(), source.clone());
                     paths_to_watch.push(dir.clone());
-                }
+                },
                 _ => {
                     // Skip non-file sources
-                }
+                },
             }
         }
 
@@ -295,7 +295,7 @@ impl crate::core::ConfigWatcher for FileWatcher {
                                 forward_event(&tx_clone, watch_event, &dropped);
                             }
                         }
-                    }
+                    },
                     Err(e) => {
                         nebula_log::error!("Watch error: {}", e);
 
@@ -305,7 +305,7 @@ impl crate::core::ConfigWatcher for FileWatcher {
                         );
 
                         forward_event(&tx_clone, error_event, &dropped);
-                    }
+                    },
                 }
             })
             .map_err(|e| ConfigError::watch_error(e.to_string()))?;

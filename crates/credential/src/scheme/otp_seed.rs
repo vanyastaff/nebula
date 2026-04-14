@@ -64,7 +64,7 @@ impl OtpSeed {
         &self.algorithm
     }
 
-    /// Returns the number of digits in generated OTPs.
+    /// Returns the number of digits in generated one-time passwords.
     pub fn digits(&self) -> u8 {
         self.digits
     }

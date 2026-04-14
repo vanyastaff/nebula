@@ -6,17 +6,11 @@ on:
     paths-ignore:
       - "**.md"
       - "docs/**"
-      - "vision/**"
-      - ".ai-factory/**"
-      - ".agents/**"
       - "LICENSE"
   pull_request:
     paths-ignore:
       - "**.md"
       - "docs/**"
-      - "vision/**"
-      - ".ai-factory/**"
-      - ".agents/**"
       - "LICENSE"
   merge_group:
   workflow_dispatch:
@@ -148,3 +142,27 @@ jobs:
           path: target/nextest/ci/junit.xml
           if-no-files-found: ignore
           retention-days: 3
+
+  cross-platform-sandbox-smoke:
+    name: Cross-platform sandbox smoke (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+      - name: Cache Cargo artifacts
+        uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: matrix-cross-platform
+          save-if: false
+          cache-on-failure: true
+      - name: Run platform-sensitive crate tests
+        run: |
+          cargo test -p nebula-sandbox
+          cargo test -p nebula-runtime
+          cargo test -p nebula-plugin-sdk

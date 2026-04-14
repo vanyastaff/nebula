@@ -55,7 +55,7 @@ impl<E: std::fmt::Display> std::fmt::Display for CallError<E> {
             Self::Timeout(d) => write!(f, "operation timed out after {d:?}"),
             Self::RetriesExhausted { attempts, last } => {
                 write!(f, "operation failed after {attempts} attempt(s): {last}")
-            }
+            },
             Self::Cancelled { reason: Some(r) } => write!(f, "operation cancelled: {r}"),
             Self::Cancelled { reason: None } => write!(f, "operation cancelled"),
             Self::LoadShed => write!(f, "request load-shed due to overload"),
@@ -227,7 +227,7 @@ impl<E: nebula_error::Classify> nebula_error::Classify for CallError<E> {
             Self::Operation(e) | Self::RetriesExhausted { last: e, .. } => e.category(),
             Self::CircuitOpen | Self::LoadShed | Self::BulkheadFull => {
                 nebula_error::ErrorCategory::Exhausted
-            }
+            },
             Self::Timeout(_) => nebula_error::ErrorCategory::Timeout,
             Self::Cancelled { .. } => nebula_error::ErrorCategory::Cancelled,
             Self::RateLimited { .. } => nebula_error::ErrorCategory::RateLimit,
@@ -246,7 +246,7 @@ impl<E: nebula_error::Classify> nebula_error::Classify for CallError<E> {
             Self::RateLimited { .. } => nebula_error::ErrorCode::new("RESILIENCE:RATE_LIMITED"),
             Self::FallbackFailed { .. } => {
                 nebula_error::ErrorCode::new("RESILIENCE:FALLBACK_FAILED")
-            }
+            },
         }
     }
 

@@ -60,141 +60,141 @@ impl<'a> Lexer<'a> {
                 self.advance();
                 self.advance();
                 Token::new(TokenKind::TemplateStart, Span::new(start, self.position))
-            }
+            },
             '}' if self.peek() == Some('}') => {
                 self.advance();
                 self.advance();
                 Token::new(TokenKind::TemplateEnd, Span::new(start, self.position))
-            }
+            },
 
             // Single character delimiters
             '(' => {
                 self.advance();
                 Token::new(TokenKind::LeftParen, Span::new(start, self.position))
-            }
+            },
             ')' => {
                 self.advance();
                 Token::new(TokenKind::RightParen, Span::new(start, self.position))
-            }
+            },
             '[' => {
                 self.advance();
                 Token::new(TokenKind::LeftBracket, Span::new(start, self.position))
-            }
+            },
             ']' => {
                 self.advance();
                 Token::new(TokenKind::RightBracket, Span::new(start, self.position))
-            }
+            },
             '{' => {
                 self.advance();
                 Token::new(TokenKind::LeftBrace, Span::new(start, self.position))
-            }
+            },
             '}' => {
                 self.advance();
                 Token::new(TokenKind::RightBrace, Span::new(start, self.position))
-            }
+            },
             ',' => {
                 self.advance();
                 Token::new(TokenKind::Comma, Span::new(start, self.position))
-            }
+            },
             '.' => {
                 self.advance();
                 Token::new(TokenKind::Dot, Span::new(start, self.position))
-            }
+            },
             ':' => {
                 self.advance();
                 Token::new(TokenKind::Colon, Span::new(start, self.position))
-            }
+            },
             '?' => {
                 self.advance();
                 Token::new(TokenKind::Question, Span::new(start, self.position))
-            }
+            },
 
             // Operators
             '+' => {
                 self.advance();
                 Token::new(TokenKind::Plus, Span::new(start, self.position))
-            }
+            },
             '-' => {
                 self.advance();
                 Token::new(TokenKind::Minus, Span::new(start, self.position))
-            }
+            },
             '*' if self.peek() == Some('*') => {
                 self.advance();
                 self.advance();
                 Token::new(TokenKind::Power, Span::new(start, self.position))
-            }
+            },
             '*' => {
                 self.advance();
                 Token::new(TokenKind::Star, Span::new(start, self.position))
-            }
+            },
             '/' => {
                 self.advance();
                 Token::new(TokenKind::Slash, Span::new(start, self.position))
-            }
+            },
             '%' => {
                 self.advance();
                 Token::new(TokenKind::Percent, Span::new(start, self.position))
-            }
+            },
 
             // Comparison operators
             '=' if self.peek() == Some('=') => {
                 self.advance();
                 self.advance();
                 Token::new(TokenKind::Equal, Span::new(start, self.position))
-            }
+            },
             '=' if self.peek() == Some('~') => {
                 self.advance();
                 self.advance();
                 Token::new(TokenKind::RegexMatch, Span::new(start, self.position))
-            }
+            },
             '=' if self.peek() == Some('>') => {
                 self.advance();
                 self.advance();
                 Token::new(TokenKind::Arrow, Span::new(start, self.position))
-            }
+            },
             '!' if self.peek() == Some('=') => {
                 self.advance();
                 self.advance();
                 Token::new(TokenKind::NotEqual, Span::new(start, self.position))
-            }
+            },
             '!' => {
                 self.advance();
                 Token::new(TokenKind::Not, Span::new(start, self.position))
-            }
+            },
             '<' if self.peek() == Some('=') => {
                 self.advance();
                 self.advance();
                 Token::new(TokenKind::LessEqual, Span::new(start, self.position))
-            }
+            },
             '<' => {
                 self.advance();
                 Token::new(TokenKind::LessThan, Span::new(start, self.position))
-            }
+            },
             '>' if self.peek() == Some('=') => {
                 self.advance();
                 self.advance();
                 Token::new(TokenKind::GreaterEqual, Span::new(start, self.position))
-            }
+            },
             '>' => {
                 self.advance();
                 Token::new(TokenKind::GreaterThan, Span::new(start, self.position))
-            }
+            },
 
             // Logical operators
             '&' if self.peek() == Some('&') => {
                 self.advance();
                 self.advance();
                 Token::new(TokenKind::And, Span::new(start, self.position))
-            }
+            },
             '|' if self.peek() == Some('|') => {
                 self.advance();
                 self.advance();
                 Token::new(TokenKind::Or, Span::new(start, self.position))
-            }
+            },
             '|' => {
                 self.advance();
                 Token::new(TokenKind::Pipe, Span::new(start, self.position))
-            }
+            },
 
             // String literals
             '"' | '\'' => self.read_string(ch)?,
@@ -213,7 +213,7 @@ impl<'a> Lexer<'a> {
                     "Unexpected character '{}' at position {}",
                     ch, self.position
                 )));
-            }
+            },
         };
 
         Ok(token)

@@ -50,7 +50,7 @@ nebula/
 │   ├── ...
 ```
 
-**Desktop binary** doesn't compile `nebula-api`, `nebula-auth`, Postgres driver.
+**Desktop binary** doesn't compile `nebula-api`, auth subsystem code, or Postgres driver.
 **Server binary** doesn't compile Tauri, desktop UI code.
 **Cloud binary** extends server with billing, managed credentials, Sentry always-on.
 
@@ -89,7 +89,7 @@ engine, runtime, metrics, telemetry, all macros crates
 | Component | Desktop | Server | Cloud |
 |-----------|---------|--------|-------|
 | **nebula-api** (HTTP server) | ❌ | ✅ | ✅ |
-| **nebula-auth** (JWT/session) | ❌ | ✅ | ✅ |
+| **Auth subsystem** (JWT/session) | ❌ | ✅ | ✅ |
 | **nebula-webhook** | ❌ | ✅ | ✅ |
 | **Tauri IPC** | ✅ | ❌ | ❌ |
 | **BillingCollector** | ❌ | ❌ | ✅ |
@@ -341,7 +341,7 @@ jobs:
   # This catches accidental mode-specific dependencies
 ```
 
-A contributor adding `use nebula_auth::*` inside `nebula-engine` → desktop build fails → PR blocked. The dependency tree IS the mode enforcement.
+A contributor adding `use crate::auth::*` inside `nebula-engine` → desktop build fails → PR blocked. The dependency tree IS the mode enforcement.
 
 ---
 
@@ -351,7 +351,7 @@ A contributor adding `use nebula_auth::*` inside `nebula-engine` → desktop bui
 |----------|--------|
 | "Is this code cloud-only?" | Is it in `apps/cloud/`? Then yes. Is it in `crates/`? Then no. |
 | "Will my change break desktop?" | CI builds both. If desktop fails, fix it. |
-| "Can I use nebula-auth in nebula-engine?" | No. Engine is in `crates/` (mode-independent). Auth is binary-level. |
+| "Can I use auth subsystem code in nebula-engine?" | No. Engine is in `crates/` (mode-independent). Auth is binary-level. |
 | "Where do I add billing logic?" | `apps/cloud/src/billing.rs`. Never in a library crate. |
 
 Simple rules:

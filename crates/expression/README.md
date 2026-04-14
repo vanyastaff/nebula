@@ -394,7 +394,7 @@ nebula-expression/
 
 - **serde_json::Value** - тип значений выражений
 - **nebula-core** - базовые типы платформы
-- **nebula-memory** - кеширование
+- **Встроенные кеши `nebula-expression`** - кеширование
 - **nebula-log** - логирование
 - **nebula-parameter** - параметры с MaybeExpression
 

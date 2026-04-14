@@ -81,7 +81,7 @@ async fn run_workflow(path: &Path, args: &WatchArgs) {
         Err(e) => {
             eprintln!("error reading file: {e}");
             return;
-        }
+        },
     };
 
     let mut definition = match super::validate::parse_workflow_lenient(&content, path) {
@@ -89,7 +89,7 @@ async fn run_workflow(path: &Path, args: &WatchArgs) {
         Err(e) => {
             eprintln!("parse error: {e}");
             return;
-        }
+        },
     };
 
     // Apply --set overrides.
@@ -115,7 +115,7 @@ async fn run_workflow(path: &Path, args: &WatchArgs) {
         Err(e) => {
             eprintln!("input error: {e}");
             return;
-        }
+        },
     };
 
     // Build engine (fresh each run for simplicity).
@@ -171,10 +171,10 @@ async fn run_workflow(path: &Path, args: &WatchArgs) {
             // Show suggestions.
             let suggestions = crate::suggestions::suggest(&result);
             crate::suggestions::print_suggestions(&suggestions);
-        }
+        },
         Err(e) => {
             eprintln!("execution error: {e}");
-        }
+        },
     }
 
     eprintln!();

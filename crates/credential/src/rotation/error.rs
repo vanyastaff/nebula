@@ -105,7 +105,7 @@ impl nebula_error::Classify for RotationError {
             | Self::Internal(_) => nebula_error::ErrorCategory::Internal,
             Self::NotificationFailed { .. } | Self::GracePeriodError { .. } => {
                 nebula_error::ErrorCategory::External
-            }
+            },
             Self::Timeout { .. } => nebula_error::ErrorCategory::Timeout,
             Self::Storage(e) => nebula_error::Classify::category(e),
             Self::ConcurrentRotation { .. } => nebula_error::ErrorCategory::Conflict,

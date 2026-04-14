@@ -122,7 +122,7 @@ mod tests {
             StaticResolveResult::Complete(token) => {
                 let exposed = token.token().expose_secret(|s| s.to_owned());
                 assert_eq!(exposed, "sk-secret-123");
-            }
+            },
             _ => panic!("expected Complete variant"),
         }
     }

@@ -80,7 +80,7 @@ impl ParamResolver {
                         error: e.to_string(),
                     }
                 })
-            }
+            },
 
             ParamValue::Template { template } => {
                 let tmpl = self
@@ -100,7 +100,7 @@ impl ParamResolver {
                         error: format!("template render error: {e}"),
                     })?;
                 Ok(serde_json::Value::String(rendered))
-            }
+            },
 
             ParamValue::Reference {
                 node_id: ref_node,
@@ -116,7 +116,7 @@ impl ParamResolver {
                         })?;
                 let value = navigate_path(output.value(), output_path);
                 Ok(value)
-            }
+            },
 
             _ => Err(EngineError::ParameterResolution {
                 node_id,
@@ -143,14 +143,14 @@ fn navigate_path(value: &serde_json::Value, path: &str) -> serde_json::Value {
         match current {
             serde_json::Value::Object(map) => {
                 current = map.get(segment).unwrap_or(&serde_json::Value::Null);
-            }
+            },
             serde_json::Value::Array(arr) => {
                 if let Ok(idx) = segment.parse::<usize>() {
                     current = arr.get(idx).unwrap_or(&serde_json::Value::Null);
                 } else {
                     return serde_json::Value::Null;
                 }
-            }
+            },
             _ => return serde_json::Value::Null,
         }
     }

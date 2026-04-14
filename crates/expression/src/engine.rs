@@ -73,11 +73,11 @@ impl<K: std::hash::Hash + Eq + Send + Sync + 'static, V: Clone + Send + Sync + '
             Some(v) => {
                 self.hits.fetch_add(1, Ordering::Relaxed);
                 Some(v)
-            }
+            },
             None => {
                 self.misses.fetch_add(1, Ordering::Relaxed);
                 None
-            }
+            },
         }
     }
 

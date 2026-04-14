@@ -281,7 +281,7 @@ impl ExpiryMonitor {
                     "TTL duration overflow in rotation trigger calculation, using zero"
                 );
                 Duration::ZERO
-            }
+            },
         };
 
         let threshold_trigger = created_at

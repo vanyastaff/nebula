@@ -45,7 +45,7 @@ fn test_error_messages() {
         Err(e) => {
             assert_eq!(e.code, "min_length");
             assert!(e.message.contains("5"));
-        }
+        },
         Ok(_) => panic!("Expected error"),
     }
 }

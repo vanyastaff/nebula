@@ -106,7 +106,7 @@ pub fn sort(
             x_val
                 .partial_cmp(&y_val)
                 .unwrap_or(std::cmp::Ordering::Equal)
-        }
+        },
         (Value::String(x), Value::String(y)) => x.cmp(y),
         _ => std::cmp::Ordering::Equal,
     });

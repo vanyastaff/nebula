@@ -300,7 +300,7 @@ async fn webhook_handler(
         None => {
             debug!(uuid = %trigger_uuid, "no webhook registered for path");
             return (StatusCode::NOT_FOUND, "").into_response();
-        }
+        },
     };
 
     // 5. Construct WebhookRequest. Limits are already enforced by
@@ -313,11 +313,11 @@ async fn webhook_handler(
         Ok(r) => r,
         Err(nebula_action::ActionError::DataLimitExceeded { .. }) => {
             return (StatusCode::PAYLOAD_TOO_LARGE, "").into_response();
-        }
+        },
         Err(e) => {
             debug!(error = %e, "webhook request construction failed");
             return (StatusCode::BAD_REQUEST, "").into_response();
-        }
+        },
     };
 
     // 6. Oneshot response channel.
@@ -346,9 +346,9 @@ async fn webhook_handler(
                 Err(_) => {
                     warn!("webhook handler returned Ok but oneshot sender was dropped");
                     (StatusCode::INTERNAL_SERVER_ERROR, "").into_response()
-                }
+                },
             }
-        }
+        },
         Ok(Err(e)) => {
             // Handler returned an error. The adapter (after H1 fix)
             // ALREADY sent a 500 via the oneshot before returning
@@ -358,14 +358,14 @@ async fn webhook_handler(
                 Ok(http) => http_response_to_axum(http),
                 Err(_) => (StatusCode::INTERNAL_SERVER_ERROR, "").into_response(),
             }
-        }
+        },
         Err(_) => {
             warn!(
                 timeout_secs = timeout.as_secs(),
                 "webhook handler dispatch timed out"
             );
             (StatusCode::GATEWAY_TIMEOUT, "").into_response()
-        }
+        },
     }
 }
 

@@ -133,7 +133,7 @@ impl PluginListener {
                     stream,
                     _cleanup: cleanup,
                 })
-            }
+            },
             #[cfg(windows)]
             PluginListener::NamedPipe { mut server } => {
                 let server = server
@@ -141,7 +141,7 @@ impl PluginListener {
                     .ok_or_else(|| io::Error::other("listener already consumed"))?;
                 server.connect().await?;
                 Ok(PluginStream::NamedPipeServer(server))
-            }
+            },
         }
     }
 }
@@ -185,7 +185,7 @@ pub async fn dial(handshake_line: &str) -> io::Result<PluginStream> {
                     "unix transport requested but this platform is not Unix",
                 ))
             }
-        }
+        },
         "pipe" => {
             #[cfg(windows)]
             {
@@ -200,7 +200,7 @@ pub async fn dial(handshake_line: &str) -> io::Result<PluginStream> {
                     "named pipe transport requested but this platform is not Windows",
                 ))
             }
-        }
+        },
         other => Err(io::Error::other(format!(
             "unknown transport kind in handshake: `{other}`"
         ))),

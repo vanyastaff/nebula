@@ -40,7 +40,7 @@ fn invalid_filter_returns_error() {
 
     let result = LoggerBuilder::from_config(config).build();
     match result {
-        Err(LogError::Filter(_)) => {}
+        Err(LogError::Filter(_)) => {},
         Err(other) => panic!("expected filter error, got: {other}"),
         Ok(_) => panic!("expected filter error, got success"),
     }

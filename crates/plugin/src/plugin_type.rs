@@ -51,7 +51,7 @@ impl PluginType {
                 } else {
                     Ok(Arc::clone(plugin))
                 }
-            }
+            },
             Self::Versions(v) => match version {
                 Some(ver) => v.get(ver),
                 None => v.latest(),
@@ -75,11 +75,11 @@ impl PluginType {
                 versions.add(plugin)?;
                 *self = Self::Versions(versions);
                 Ok(())
-            }
+            },
             Self::Versions(versions) => {
                 versions.add(plugin)?;
                 Ok(())
-            }
+            },
         }
     }
 

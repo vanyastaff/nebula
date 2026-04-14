@@ -276,7 +276,7 @@ pub fn emit_event(event: &dyn ObservabilityEvent) {
             queue_capacity: _,
         } => {
             emit_to_hooks_bounded(&hooks, event, timeout_ms);
-        }
+        },
     }
 }
 

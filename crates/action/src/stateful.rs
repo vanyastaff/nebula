@@ -341,7 +341,7 @@ macro_rules! impl_batch_action {
                                 .push($crate::stateful::BatchItemResult::Failed {
                                     error: e.to_string(),
                                 });
-                        }
+                        },
                     }
                 }
                 state.chunks_processed = state.chunks_processed.saturating_add(1);
@@ -571,13 +571,13 @@ where
         match (serde_json::to_value(&typed_state), &action_result) {
             (Ok(new_state), _) => {
                 *state = new_state;
-            }
+            },
             (Err(ser_err), Ok(_)) => {
                 // Success path: surface the serialization failure as fatal.
                 return Err(ActionError::fatal(format!(
                     "state serialization failed: {ser_err}"
                 )));
-            }
+            },
             (Err(ser_err), Err(action_err)) => {
                 // Error path: the action error is the actionable signal.
                 // Log the serde failure forensically and let the original
@@ -589,7 +589,7 @@ where
                     "stateful adapter: state serialization failed on error path; \
                      checkpoint lost, propagating original action error"
                 );
-            }
+            },
         }
 
         let result = action_result?;

@@ -34,7 +34,7 @@ pub fn interpolate(value: Value) -> ConfigResult<Value> {
                 *v = interpolate(owned)?;
             }
             Ok(Value::Object(map))
-        }
+        },
         Value::Array(mut arr) => {
             // On error, the partially-mutated map/arr is dropped along with the Err —
             // the Value::Null placeholder is never observable to callers.
@@ -43,7 +43,7 @@ pub fn interpolate(value: Value) -> ConfigResult<Value> {
                 *v = interpolate(owned)?;
             }
             Ok(Value::Array(arr))
-        }
+        },
         other => Ok(other),
     }
 }
@@ -74,7 +74,7 @@ fn interpolate_string(input: String) -> ConfigResult<Value> {
                     // Escaped `$$` → literal `$`
                     result.push('$');
                     pos += 2;
-                }
+                },
                 Some(b'{') => {
                     pos += 2; // consume '${'
                     let (resolved, key, new_pos) = resolve_reference(&input, pos)?;
@@ -82,12 +82,12 @@ fn interpolate_string(input: String) -> ConfigResult<Value> {
                     ref_count += 1;
                     nebula_log::trace!("resolved ${{{key}}} from environment");
                     pos = new_pos;
-                }
+                },
                 _ => {
                     // Bare `$` — pass through literally
                     result.push('$');
                     pos += 1;
-                }
+                },
             },
             _ => {
                 // Bulk-copy everything up to the next `$` in one slice operation,
@@ -99,7 +99,7 @@ fn interpolate_string(input: String) -> ConfigResult<Value> {
                     .unwrap_or(bytes.len());
                 result.push_str(&input[pos..next_dollar]);
                 pos = next_dollar;
-            }
+            },
         }
     }
 
@@ -164,7 +164,7 @@ fn resolve_reference(input: &str, start: usize) -> ConfigResult<(String, String,
                     Some(var_name.to_string()),
                 ))
             }
-        }
+        },
     }
 }
 

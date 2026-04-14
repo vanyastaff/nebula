@@ -156,7 +156,7 @@ impl<'a> Parser<'a> {
                         "Unexpected operator: {}",
                         self.current_token()
                     )));
-                }
+                },
             };
 
             self.advance();
@@ -195,12 +195,12 @@ impl<'a> Parser<'a> {
                 self.advance();
                 let expr = self.parse_unary_with_depth(depth + 1)?;
                 Ok(Expr::Negate(Box::new(expr)))
-            }
+            },
             TokenKind::Not => {
                 self.advance();
                 let expr = self.parse_unary_with_depth(depth + 1)?;
                 Ok(Expr::Not(Box::new(expr)))
-            }
+            },
             _ => self.parse_postfix_with_depth(depth + 1),
         }
     }
@@ -227,7 +227,7 @@ impl<'a> Parser<'a> {
                         object: Box::new(expr),
                         property,
                     };
-                }
+                },
                 TokenKind::LeftBracket => {
                     self.advance();
                     let index = self.parse_expression_with_depth(depth + 1)?;
@@ -237,7 +237,7 @@ impl<'a> Parser<'a> {
                         object: Box::new(expr),
                         index: Box::new(index),
                     };
-                }
+                },
                 _ => break,
             }
         }
@@ -253,33 +253,33 @@ impl<'a> Parser<'a> {
                 let n = *n;
                 self.advance();
                 Ok(Expr::Literal(Value::Number(n.into())))
-            }
+            },
             TokenKind::Float(n) => {
                 let n = *n;
                 self.advance();
                 Ok(Expr::Literal(serde_json::json!(n)))
-            }
+            },
             TokenKind::String(s) => {
                 let owned = s.to_string();
                 self.advance();
                 Ok(Expr::Literal(Value::String(owned)))
-            }
+            },
             TokenKind::Boolean(b) => {
                 let b = *b;
                 self.advance();
                 Ok(Expr::Literal(Value::Bool(b)))
-            }
+            },
             TokenKind::Null => {
                 self.advance();
                 Ok(Expr::Literal(Value::Null))
-            }
+            },
 
             // Variables
             TokenKind::Variable(name) => {
                 let name = Arc::from(*name);
                 self.advance();
                 Ok(Expr::Variable(name))
-            }
+            },
 
             // Identifiers (could be function calls)
             TokenKind::Identifier(name) => {
@@ -293,7 +293,7 @@ impl<'a> Parser<'a> {
                     // Just an identifier
                     Ok(Expr::Identifier(name))
                 }
-            }
+            },
 
             // Parenthesized expression
             TokenKind::LeftParen => {
@@ -301,7 +301,7 @@ impl<'a> Parser<'a> {
                 let expr = self.parse_expression_with_depth(depth + 1)?;
                 self.expect_token(TokenKind::RightParen)?;
                 Ok(expr)
-            }
+            },
 
             // Array literal
             TokenKind::LeftBracket => {
@@ -319,7 +319,7 @@ impl<'a> Parser<'a> {
 
                 self.expect_token(TokenKind::RightBracket)?;
                 Ok(Expr::Array(elements))
-            }
+            },
 
             // Object literal
             TokenKind::LeftBrace => {
@@ -334,17 +334,17 @@ impl<'a> Parser<'a> {
                                 let k: Arc<str> = Arc::from(*name);
                                 self.advance();
                                 k
-                            }
+                            },
                             TokenKind::String(s) => {
                                 let k: Arc<str> = Arc::from(s.as_ref());
                                 self.advance();
                                 k
-                            }
+                            },
                             _ => {
                                 return Err(ExpressionError::expression_parse_error(
                                     "Expected object key",
                                 ));
-                            }
+                            },
                         };
 
                         self.expect_token(TokenKind::Colon)?;
@@ -359,7 +359,7 @@ impl<'a> Parser<'a> {
 
                 self.expect_token(TokenKind::RightBrace)?;
                 Ok(Expr::Object(pairs))
-            }
+            },
 
             _ => Err(ExpressionError::expression_parse_error(format!(
                 "Unexpected token: {}",
@@ -432,7 +432,7 @@ impl<'a> Parser<'a> {
                         object: Box::new(expr),
                         property,
                     };
-                }
+                },
                 TokenKind::LeftBracket => {
                     self.advance();
                     let index = self.parse_expression_with_depth(depth + 1)?;
@@ -442,7 +442,7 @@ impl<'a> Parser<'a> {
                         object: Box::new(expr),
                         index: Box::new(index),
                     };
-                }
+                },
                 _ => break,
             }
         }

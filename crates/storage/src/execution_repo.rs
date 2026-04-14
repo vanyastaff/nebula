@@ -420,7 +420,7 @@ impl ExecutionRepo for InMemoryExecutionRepo {
             Some((current, expires_at)) if current == holder => {
                 *expires_at = lease_expires_at(now, ttl);
                 Ok(true)
-            }
+            },
             _ => Ok(false),
         }
     }

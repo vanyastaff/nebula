@@ -203,7 +203,7 @@ pub fn stats() -> ProcessStats {
             match process.status() {
                 sysinfo::ProcessStatus::Run => running += 1,
                 sysinfo::ProcessStatus::Sleep => sleeping += 1,
-                _ => {}
+                _ => {},
             }
             total_memory += process.memory() as usize;
             total_cpu += process.cpu_usage();

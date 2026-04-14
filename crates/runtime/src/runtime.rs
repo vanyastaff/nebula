@@ -277,7 +277,7 @@ impl ActionRuntime {
                 let r = self.execute_stateless(&metadata, h, input, context).await;
                 self.observe_dispatched(started, &r);
                 r
-            }
+            },
             ActionHandler::Stateful(h) => {
                 let started = Instant::now();
                 let r = self
@@ -285,25 +285,25 @@ impl ActionRuntime {
                     .await;
                 self.observe_dispatched(started, &r);
                 r
-            }
+            },
             ActionHandler::Trigger(_) => {
                 self.observe_rejected(dispatch_reject_reason::TRIGGER_NOT_EXECUTABLE);
                 return Err(RuntimeError::TriggerNotExecutable {
                     key: action_key.to_owned(),
                 });
-            }
+            },
             ActionHandler::Resource(_) => {
                 self.observe_rejected(dispatch_reject_reason::RESOURCE_NOT_EXECUTABLE);
                 return Err(RuntimeError::ResourceNotExecutable {
                     key: action_key.to_owned(),
                 });
-            }
+            },
             ActionHandler::Agent(_) => {
                 self.observe_rejected(dispatch_reject_reason::AGENT_NOT_SUPPORTED);
                 return Err(RuntimeError::AgentNotSupportedYet {
                     key: action_key.to_owned(),
                 });
-            }
+            },
             // `ActionHandler` is `#[non_exhaustive]`. Unknown future variants
             // are surfaced as an internal runtime error rather than silently
             // succeeding.
@@ -312,7 +312,7 @@ impl ActionRuntime {
                 return Err(RuntimeError::Internal(format!(
                     "unknown ActionHandler variant for action '{action_key}'"
                 )));
-            }
+            },
         };
 
         match result {
@@ -320,7 +320,7 @@ impl ActionRuntime {
                 self.enforce_data_limit(action_key, &mut action_result, &error_counter)
                     .await?;
                 Ok(action_result)
-            }
+            },
             Err(action_err) => Err(RuntimeError::ActionError(action_err)),
         }
     }
@@ -394,7 +394,7 @@ impl ActionRuntime {
             IsolationLevel::CapabilityGated | IsolationLevel::Isolated => {
                 let sandboxed = SandboxedContext::new(context);
                 self.sandbox.execute(sandboxed, metadata, input).await
-            }
+            },
             // IsolationLevel is `#[non_exhaustive]`. Any future variant must
             // fail-closed until we explicitly wire dispatch for it.
             _ => Err(ActionError::fatal(format!(
@@ -489,7 +489,7 @@ impl ActionRuntime {
                          iteration progress (if any) is lost"
                     );
                     (handler.init_state()?, 0u32)
-                }
+                },
             },
             None => (handler.init_state()?, 0u32),
         };
@@ -557,7 +557,7 @@ impl ActionRuntime {
                         }
                     }
                     // Loop continues with mutated state.
-                }
+                },
                 other => {
                     // Terminal iteration — drop the checkpoint so a
                     // completed stateful node does not leave rows behind.
@@ -578,7 +578,7 @@ impl ActionRuntime {
                         );
                     }
                     return Ok(other);
-                }
+                },
             }
         }
     }
@@ -641,7 +641,7 @@ impl ActionRuntime {
                         limit_bytes: limit,
                         actual_bytes: actual,
                     });
-                }
+                },
                 LargeDataStrategy::SpillToBlob => {
                     let Some(storage) = self.blob_storage.as_ref() else {
                         tracing::warn!(
@@ -669,7 +669,7 @@ impl ActionRuntime {
                                 limit_bytes: limit,
                                 actual_bytes: actual,
                             });
-                        }
+                        },
                     };
                     tracing::info!(
                         action_key,
@@ -683,7 +683,7 @@ impl ActionRuntime {
                         size: Some(blob_ref.size_bytes),
                         content_type: Some(blob_ref.content_type),
                     });
-                }
+                },
             }
         }
 
@@ -709,7 +709,7 @@ fn collect_output_slots_mut<'a>(
             if let Some(o) = output.as_mut() {
                 out.push(o);
             }
-        }
+        },
         ActionResult::Continue { output, .. } => out.push(output),
         ActionResult::Break { output, .. } => out.push(output),
         ActionResult::Branch {
@@ -721,7 +721,7 @@ fn collect_output_slots_mut<'a>(
             for alt in alternatives.values_mut() {
                 out.push(alt);
             }
-        }
+        },
         ActionResult::Route { data, .. } => out.push(data),
         ActionResult::MultiOutput {
             outputs,
@@ -733,17 +733,17 @@ fn collect_output_slots_mut<'a>(
             for o in outputs.values_mut() {
                 out.push(o);
             }
-        }
+        },
         ActionResult::Wait { partial_output, .. } => {
             if let Some(o) = partial_output.as_mut() {
                 out.push(o);
             }
-        }
+        },
         // `ActionResult` is `#[non_exhaustive]`. Variants without a
         // downstream-visible payload (Retry, Drop, Terminate, and any
         // future additions) contribute nothing here — a slot they own
         // cannot bypass the limit because there is no slot.
-        _ => {}
+        _ => {},
     }
 }
 
@@ -877,7 +877,7 @@ mod tests {
         match action_result {
             ActionResult::Success { output } => {
                 assert_eq!(output.as_value(), Some(&input));
-            }
+            },
             other => panic!("expected Success, got {other:?}"),
         }
     }
@@ -1115,7 +1115,7 @@ mod tests {
                 assert_eq!(data_ref.path, "mem://test/blob-1");
                 assert!(data_ref.size.is_some());
                 assert_eq!(data_ref.content_type.as_deref(), Some("application/json"));
-            }
+            },
             other => panic!("expected Success with Reference output after spill, got {other:?}"),
         }
     }
@@ -1637,7 +1637,7 @@ mod tests {
         match result {
             ActionResult::Break { output, .. } => {
                 assert_eq!(output.as_value(), Some(&serde_json::json!({"final": 5u32})));
-            }
+            },
             other => panic!("expected Break, got {other:?}"),
         }
 
@@ -1683,7 +1683,7 @@ mod tests {
         match result {
             ActionResult::Break { output, .. } => {
                 assert_eq!(output.as_value(), Some(&serde_json::json!({"final": 2u32})));
-            }
+            },
             other => panic!("expected Break, got {other:?}"),
         }
         // One Continue at 1, one Break at 2, starting from init_state.

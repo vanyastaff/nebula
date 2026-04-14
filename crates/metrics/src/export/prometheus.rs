@@ -46,13 +46,13 @@ fn counter_help(name: &str) -> &'static str {
         NEBULA_WORKFLOW_EXECUTIONS_STARTED_TOTAL => "Total workflow executions started.",
         NEBULA_WORKFLOW_EXECUTIONS_COMPLETED_TOTAL => {
             "Total workflow executions completed successfully."
-        }
+        },
         NEBULA_WORKFLOW_EXECUTIONS_FAILED_TOTAL => "Total workflow executions failed.",
         NEBULA_ACTION_EXECUTIONS_TOTAL => "Total action executions.",
         NEBULA_ACTION_FAILURES_TOTAL => "Total action failures.",
         NEBULA_ACTION_DISPATCH_REJECTED_TOTAL => {
             "Total action dispatches rejected before reaching a handler."
-        }
+        },
         NEBULA_RESOURCE_CREATE_TOTAL => "Total resource instances created.",
         NEBULA_RESOURCE_ACQUIRE_TOTAL => "Total resource acquisitions.",
         NEBULA_RESOURCE_RELEASE_TOTAL => "Total resource releases.",
@@ -76,7 +76,7 @@ fn gauge_help(name: &str) -> &'static str {
     match name {
         NEBULA_RESOURCE_HEALTH_STATE => {
             "Resource health state (1=healthy, 0.5=degraded, 0=unhealthy)."
-        }
+        },
         NEBULA_RESOURCE_POOL_WAITERS => "Number of waiters when pool exhausted.",
         NEBULA_EVENTBUS_SENT => "EventBus sent events snapshot.",
         NEBULA_EVENTBUS_DROPPED => "EventBus dropped events snapshot.",
@@ -97,7 +97,7 @@ fn histogram_help(name: &str) -> &'static str {
         NEBULA_ACTION_DURATION_SECONDS => "Action execution duration in seconds.",
         NEBULA_RESOURCE_ACQUIRE_WAIT_DURATION_SECONDS => {
             "Wait time before resource acquisition in seconds."
-        }
+        },
         NEBULA_RESOURCE_USAGE_DURATION_SECONDS => "Resource usage duration in seconds.",
         NEBULA_CREDENTIAL_ROTATION_DURATION_SECONDS => "Credential rotation duration in seconds.",
         _ => "Custom histogram.",
