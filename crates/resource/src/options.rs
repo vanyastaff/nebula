@@ -33,7 +33,10 @@ pub enum AcquireIntent {
     },
     /// Prefetch — low priority, may be deferred.
     Prefetch,
-    /// Critical — bypass queues if possible, never throttle.
+    /// Critical — reserved for future use. Will allow callers to
+    /// bypass queues or skip throttling once engine integration lands;
+    /// today it is informational only (see the enum-level `Status`
+    /// note, #391).
     Critical,
 }
 

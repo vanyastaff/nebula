@@ -1399,6 +1399,14 @@ impl Manager {
                         "resource manager: drain timeout, policy=Abort — \
                          registry preserved, returning DrainTimeout"
                     );
+                    // #387 / PR #399 review: we already flipped every
+                    // resource to `Draining` above. The Abort policy
+                    // preserves the "graceful" guarantee and keeps live
+                    // handles valid, so we must also restore the phase
+                    // back to `Ready` — otherwise `is_accepting()` would
+                    // falsely keep returning `false` and the manager
+                    // would reject new acquires forever.
+                    self.set_phase_all(crate::state::ResourcePhase::Ready);
                     self.shutting_down.store(false, AtomicOrdering::Release);
                     return Err(ShutdownError::DrainTimeout { outstanding });
                 },

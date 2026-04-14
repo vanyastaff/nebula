@@ -107,18 +107,31 @@ impl Registry {
         // reversal. We prevent that by doing all `entries` work in a
         // scoped block, dropping the guard, and only *then* touching
         // `type_index`.
+        //
+        // #382 nuance: it's not enough to compare the replaced entry's
+        // prior `TypeId` to the new one. If *another* scope under the
+        // same key still holds a `ManagedResource<OldR>` instance, we
+        // must NOT remove `OldR -> key` from `type_index` — doing so
+        // would break `get_typed::<OldR>` for that other scope. So we
+        // scan the rest of the entries while still holding the guard
+        // and only mark the stale row for removal if nobody else uses
+        // it.
         let stale_type_id = {
             let mut entries = self.entries.entry(key.clone()).or_default();
 
-            // #382: if we're replacing an entry at the same scope whose
-            // concrete `TypeId` differs from the new one, remember the
-            // prior id so we can scrub its `type_index` row below.
-            // Otherwise the stale row leaks and `get_typed::<OldR>` finds
-            // a key it can't downcast.
             if let Some(pos) = entries.iter().position(|e| e.scope == scope) {
                 let prev_type_id = entries[pos].managed.managed_type_id();
                 entries[pos] = RegistryEntry { scope, managed };
-                (prev_type_id != type_id).then_some(prev_type_id)
+
+                if prev_type_id != type_id
+                    && !entries
+                        .iter()
+                        .any(|e| e.managed.managed_type_id() == prev_type_id)
+                {
+                    Some(prev_type_id)
+                } else {
+                    None
+                }
             } else {
                 entries.push(RegistryEntry { scope, managed });
                 None
@@ -266,6 +279,44 @@ mod tests {
             TypeId::of::<FakeB>()
         }
         fn set_phase_erased(&self, _phase: crate::state::ResourcePhase) {}
+    }
+
+    #[test]
+    fn register_replace_preserves_type_id_still_used_by_another_scope() {
+        // Regression for a correctness hole raised in PR #399 review:
+        // if scope A and scope B both hold `TypeA`, replacing scope A
+        // with `TypeB` must NOT scrub `TypeA -> key` from `type_index`,
+        // otherwise `get_typed::<TypeA>(B)` would break.
+        let reg = Registry::new();
+        let key = ResourceKey::new("fake").unwrap();
+
+        reg.register(
+            key.clone(),
+            TypeId::of::<FakeA>(),
+            ScopeLevel::Global,
+            Arc::new(FakeA),
+        );
+        reg.register(
+            key.clone(),
+            TypeId::of::<FakeA>(),
+            ScopeLevel::Project("p".into()),
+            Arc::new(FakeA),
+        );
+
+        // Replace only the Global entry with FakeB. Workflow still
+        // holds FakeA, so the TypeA row in type_index must survive.
+        reg.register(
+            key.clone(),
+            TypeId::of::<FakeB>(),
+            ScopeLevel::Global,
+            Arc::new(FakeB),
+        );
+
+        assert!(
+            reg.type_index.contains_key(&TypeId::of::<FakeA>()),
+            "TypeA row must survive because the Project scope still uses it",
+        );
+        assert!(reg.type_index.contains_key(&TypeId::of::<FakeB>()));
     }
 
     #[test]

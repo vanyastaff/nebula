@@ -290,7 +290,7 @@ where
 
         // No idle instance available — create a new one with our permit.
         let entry = match self
-            .create_entry(resource, resource_config, auth, ctx)
+            .create_entry(resource, resource_config, auth, ctx, false)
             .await
         {
             Ok(e) => e,
@@ -444,30 +444,53 @@ where
     /// slow-creating backend cannot stall callers forever (also raised
     /// in PR #399 review: the create-semaphore acquire used to be
     /// unbounded).
+    ///
+    /// When `non_blocking` is `true` (the `try_acquire` path), the
+    /// create-semaphore wait is replaced with a `try_acquire_owned`
+    /// that returns `Backpressure` immediately instead of queueing,
+    /// preserving the non-blocking contract of `try_acquire`.
     async fn create_entry(
         &self,
         resource: &R,
         config: &R::Config,
         auth: &R::Auth,
         ctx: &dyn Ctx,
+        non_blocking: bool,
     ) -> Result<PoolEntry<R>, Error> {
         let deadline = Instant::now() + self.config.create_timeout;
 
-        let _create_permit = match tokio::time::timeout_at(
-            deadline.into(),
-            self.create_semaphore.clone().acquire_owned(),
-        )
-        .await
-        {
-            Ok(Ok(permit)) => permit,
-            Ok(Err(_)) => {
-                return Err(Error::permanent("pool: create semaphore closed"));
-            },
-            Err(_) => {
-                return Err(Error::backpressure(
-                    "pool: create timed out waiting for create-semaphore permit",
-                ));
-            },
+        let _create_permit = if non_blocking {
+            match self.create_semaphore.clone().try_acquire_owned() {
+                Ok(permit) => permit,
+                Err(tokio::sync::TryAcquireError::NoPermits) => {
+                    return Err(Error::backpressure(format!(
+                        "{}: create-semaphore full — all {} concurrent creates \
+                         in use (non-blocking acquire, #390)",
+                        R::key(),
+                        self.config.max_concurrent_creates,
+                    )));
+                },
+                Err(tokio::sync::TryAcquireError::Closed) => {
+                    return Err(Error::permanent("pool: create semaphore closed"));
+                },
+            }
+        } else {
+            match tokio::time::timeout_at(
+                deadline.into(),
+                self.create_semaphore.clone().acquire_owned(),
+            )
+            .await
+            {
+                Ok(Ok(permit)) => permit,
+                Ok(Err(_)) => {
+                    return Err(Error::permanent("pool: create semaphore closed"));
+                },
+                Err(_) => {
+                    return Err(Error::backpressure(
+                        "pool: create timed out waiting for create-semaphore permit",
+                    ));
+                },
+            }
         };
 
         // Use `timeout_at` with the same absolute deadline so the budget
@@ -617,9 +640,11 @@ where
             IdleResult::Empty(permit) => permit,
         };
 
-        // No idle instance — create a new one.
+        // No idle instance — create a new one. The `true` flag keeps
+        // the non-blocking contract: if the create semaphore is full,
+        // we return Backpressure instead of waiting (PR #399 review).
         let entry = match self
-            .create_entry(resource, resource_config, auth, ctx)
+            .create_entry(resource, resource_config, auth, ctx, true)
             .await
         {
             Ok(e) => e,
@@ -711,7 +736,7 @@ where
         let mut created = 0usize;
         for _ in 0..target {
             match self
-                .create_entry(resource, resource_config, auth, ctx)
+                .create_entry(resource, resource_config, auth, ctx, false)
                 .await
             {
                 Ok(mut entry) => {
@@ -759,7 +784,7 @@ where
                 tokio::time::sleep(interval).await;
             }
             match self
-                .create_entry(resource, resource_config, auth, ctx)
+                .create_entry(resource, resource_config, auth, ctx, false)
                 .await
             {
                 Ok(mut entry) => {
