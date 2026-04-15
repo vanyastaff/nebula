@@ -14,7 +14,7 @@
 //!
 //! Security enforcement (unchanged since slice 1b):
 //! - `env_clear()` + explicit env allowlist
-//! - `pre_exec` landlock + rlimits (Linux)
+//! - `pre_exec` landlock + configurable rlimits (Linux)
 //! - stderr size limit for log capture
 //! - `kill_on_drop` on the spawned child → plugin process dies with the sandbox
 //!
@@ -49,6 +49,7 @@ use crate::{
     SandboxRunner,
     capabilities::{Capability, PluginCapabilities},
     error::SandboxError,
+    os_sandbox::LinuxRlimits,
     runner::SandboxedContext,
 };
 
@@ -97,6 +98,8 @@ pub struct ProcessSandbox {
     timeout: Duration,
     /// Capabilities granted to this plugin.
     capabilities: PluginCapabilities,
+    /// Linux child-process resource limits (ignored on non-Linux).
+    linux_rlimits: LinuxRlimits,
     /// Long-lived handle to the spawned plugin process. Serialized via the
     /// mutex — slice 1c is sequential per sandbox instance. Slice 1d can
     /// replace this with a lock-free handle once concurrent dispatch lands.
@@ -296,8 +299,18 @@ impl ProcessSandbox {
             binary,
             timeout,
             capabilities,
+            linux_rlimits: LinuxRlimits::default(),
             handle: Mutex::new(None),
         }
+    }
+
+    /// Override Linux child-process rlimits for this sandbox instance.
+    ///
+    /// On non-Linux platforms the provided limits are ignored.
+    #[must_use]
+    pub fn with_linux_rlimits(mut self, linux_rlimits: LinuxRlimits) -> Self {
+        self.linux_rlimits = linux_rlimits;
+        self
     }
 
     /// Invoke an action and return the plugin's response envelope.
@@ -455,6 +468,7 @@ impl ProcessSandbox {
         {
             let caps_json = serde_json::to_string(&self.capabilities)
                 .map_err(|e| ActionError::fatal(format!("capabilities serialization: {e}")))?;
+            let rlimits = self.linux_rlimits;
 
             // SAFETY: pre_exec runs between fork() and exec() in the child.
             // We only call async-signal-safe operations (landlock, setrlimit).
@@ -463,7 +477,7 @@ impl ProcessSandbox {
                 cmd.pre_exec(move || {
                     let caps: PluginCapabilities = serde_json::from_str(&caps_json)
                         .map_err(|e| std::io::Error::other(format!("capability parse: {e}")))?;
-                    crate::os_sandbox::apply_sandbox(&caps)
+                    crate::os_sandbox::apply_sandbox(&caps, &rlimits)
                         .map_err(|e| std::io::Error::other(format!("sandbox setup: {e}")))
                 });
             }

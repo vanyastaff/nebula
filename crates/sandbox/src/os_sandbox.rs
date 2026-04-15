@@ -10,19 +10,51 @@
 use crate::capabilities::Capability;
 use crate::capabilities::PluginCapabilities;
 
+/// Linux resource limits applied to plugin child processes.
+///
+/// These values are ignored on non-Linux platforms.
+#[derive(Debug, Clone, Copy)]
+pub struct LinuxRlimits {
+    /// Address-space cap (`RLIMIT_AS`) in bytes.
+    pub address_space_bytes: u64,
+    /// Open file-descriptor cap (`RLIMIT_NOFILE`).
+    pub nofile: u64,
+    /// CPU-time cap (`RLIMIT_CPU`) in seconds.
+    pub cpu_seconds: u64,
+    /// Process-count cap (`RLIMIT_NPROC`).
+    pub nproc: u64,
+    /// Core-dump size cap (`RLIMIT_CORE`) in bytes.
+    pub core_size_bytes: u64,
+}
+
+impl Default for LinuxRlimits {
+    fn default() -> Self {
+        Self {
+            address_space_bytes: 512 * 1024 * 1024,
+            nofile: 256,
+            cpu_seconds: 30,
+            nproc: 1,
+            core_size_bytes: 0,
+        }
+    }
+}
+
 /// Apply OS-level sandbox restrictions to the current process.
 ///
 /// On Linux: applies Landlock + rlimits.
 /// On other platforms: no-op with warning.
-pub fn apply_sandbox(capabilities: &PluginCapabilities) -> Result<(), SandboxError> {
+pub fn apply_sandbox(
+    capabilities: &PluginCapabilities,
+    rlimits: &LinuxRlimits,
+) -> Result<(), SandboxError> {
     #[cfg(target_os = "linux")]
     {
-        linux::apply(capabilities)
+        linux::apply(capabilities, rlimits)
     }
 
     #[cfg(not(target_os = "linux"))]
     {
-        let _ = capabilities;
+        let _ = (capabilities, rlimits);
         tracing::warn!("OS-level sandboxing not available on this platform");
         Ok(())
     }
@@ -61,6 +93,21 @@ impl std::fmt::Display for SandboxError {
 
 impl std::error::Error for SandboxError {}
 
+#[cfg(test)]
+mod tests {
+    use super::LinuxRlimits;
+
+    #[test]
+    fn linux_rlimits_default_is_hardened_but_finite() {
+        let limits = LinuxRlimits::default();
+        assert_eq!(limits.address_space_bytes, 512 * 1024 * 1024);
+        assert_eq!(limits.nofile, 256);
+        assert_eq!(limits.cpu_seconds, 30);
+        assert_eq!(limits.nproc, 1);
+        assert_eq!(limits.core_size_bytes, 0);
+    }
+}
+
 #[cfg(target_os = "linux")]
 mod linux {
     use landlock::{
@@ -78,9 +125,12 @@ mod linux {
     }
 
     /// Apply all sandbox layers.
-    pub fn apply(capabilities: &PluginCapabilities) -> Result<(), SandboxError> {
+    pub fn apply(
+        capabilities: &PluginCapabilities,
+        rlimits: &LinuxRlimits,
+    ) -> Result<(), SandboxError> {
         apply_landlock(capabilities)?;
-        apply_rlimits()?;
+        apply_rlimits(rlimits)?;
         Ok(())
     }
 
@@ -130,30 +180,44 @@ mod linux {
     }
 
     /// Apply resource limits.
-    fn apply_rlimits() -> Result<(), SandboxError> {
+    fn apply_rlimits(rlimits: &LinuxRlimits) -> Result<(), SandboxError> {
         use nix::sys::resource::{Resource, setrlimit};
 
-        // Limit address space to 512MB.
-        setrlimit(Resource::RLIMIT_AS, 512 * 1024 * 1024, 512 * 1024 * 1024)
-            .map_err(|e| SandboxError::Rlimit(format!("RLIMIT_AS: {e}")))?;
+        setrlimit(
+            Resource::RLIMIT_AS,
+            rlimits.address_space_bytes,
+            rlimits.address_space_bytes,
+        )
+        .map_err(|e| SandboxError::Rlimit(format!("RLIMIT_AS: {e}")))?;
 
-        // Limit open file descriptors to 256.
-        setrlimit(Resource::RLIMIT_NOFILE, 256, 256)
+        setrlimit(Resource::RLIMIT_NOFILE, rlimits.nofile, rlimits.nofile)
             .map_err(|e| SandboxError::Rlimit(format!("RLIMIT_NOFILE: {e}")))?;
 
-        // No core dumps.
-        setrlimit(Resource::RLIMIT_CORE, 0, 0)
-            .map_err(|e| SandboxError::Rlimit(format!("RLIMIT_CORE: {e}")))?;
+        setrlimit(
+            Resource::RLIMIT_CORE,
+            rlimits.core_size_bytes,
+            rlimits.core_size_bytes,
+        )
+        .map_err(|e| SandboxError::Rlimit(format!("RLIMIT_CORE: {e}")))?;
 
-        // CPU time limit (30 seconds hard cap).
-        setrlimit(Resource::RLIMIT_CPU, 30, 30)
-            .map_err(|e| SandboxError::Rlimit(format!("RLIMIT_CPU: {e}")))?;
+        setrlimit(
+            Resource::RLIMIT_CPU,
+            rlimits.cpu_seconds,
+            rlimits.cpu_seconds,
+        )
+        .map_err(|e| SandboxError::Rlimit(format!("RLIMIT_CPU: {e}")))?;
 
-        // Prevent fork bombs — plugin cannot spawn child processes.
-        setrlimit(Resource::RLIMIT_NPROC, 1, 1)
+        setrlimit(Resource::RLIMIT_NPROC, rlimits.nproc, rlimits.nproc)
             .map_err(|e| SandboxError::Rlimit(format!("RLIMIT_NPROC: {e}")))?;
 
-        tracing::debug!("rlimits applied: 512MB mem, 256 fds, 30s CPU, no fork, no core dumps");
+        tracing::debug!(
+            mem = rlimits.address_space_bytes,
+            nofile = rlimits.nofile,
+            cpu_seconds = rlimits.cpu_seconds,
+            nproc = rlimits.nproc,
+            core = rlimits.core_size_bytes,
+            "rlimits applied"
+        );
         Ok(())
     }
 
