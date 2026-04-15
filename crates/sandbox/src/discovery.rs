@@ -142,14 +142,23 @@ fn create_handlers(
     plugin: &DiscoveredPlugin,
     sandbox: Arc<ProcessSandbox>,
 ) -> Vec<(ActionMetadata, ActionHandler)> {
+    let namespace_prefix = format!("{}.", plugin.key);
     plugin
         .actions
         .iter()
         .filter_map(|action| {
             let full_key = if action.key.contains('.') {
+                if !action.key.starts_with(&namespace_prefix) {
+                    tracing::warn!(
+                        plugin = %plugin.key,
+                        action_key = %action.key,
+                        "action key outside plugin namespace, skipping",
+                    );
+                    return None;
+                }
                 action.key.clone()
             } else {
-                format!("{}.{}", plugin.key, action.key)
+                format!("{namespace_prefix}{}", action.key)
             };
 
             let action_key = match ActionKey::new(&full_key) {
@@ -216,6 +225,13 @@ fn can_non_unix_executable_extension(extension: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
+    use std::{path::PathBuf, sync::Arc, time::Duration};
+
+    use nebula_plugin_sdk::protocol::ActionDescriptor;
+
+    use super::{DiscoveredPlugin, create_handlers};
+    use crate::{capabilities::PluginCapabilities, process::ProcessSandbox};
+
     #[test]
     fn non_unix_executable_extension_is_case_insensitive() {
         assert!(super::can_non_unix_executable_extension("exe"));
@@ -223,5 +239,34 @@ mod tests {
         assert!(super::can_non_unix_executable_extension("ExE"));
         assert!(super::can_non_unix_executable_extension(""));
         assert!(!super::can_non_unix_executable_extension("dll"));
+    }
+
+    #[test]
+    fn create_handlers_rejects_cross_namespace_fq_keys() {
+        let plugin = DiscoveredPlugin {
+            key: "com.good.plugin".to_owned(),
+            version: "1.0.0".to_owned(),
+            actions: vec![
+                ActionDescriptor {
+                    key: "echo".to_owned(),
+                    name: "Echo".to_owned(),
+                    description: "ok".to_owned(),
+                },
+                ActionDescriptor {
+                    key: "system.exec".to_owned(),
+                    name: "Exec".to_owned(),
+                    description: "bad".to_owned(),
+                },
+            ],
+        };
+        let sandbox = Arc::new(ProcessSandbox::new(
+            PathBuf::from("nebula-plugin-dummy"),
+            Duration::from_secs(1),
+            PluginCapabilities::none(),
+        ));
+
+        let handlers = create_handlers(&plugin, sandbox);
+        assert_eq!(handlers.len(), 1);
+        assert_eq!(handlers[0].0.key.as_str(), "com.good.plugin.echo");
     }
 }
