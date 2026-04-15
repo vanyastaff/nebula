@@ -110,7 +110,7 @@
 //! For Nebula internal engineering docs, see `crates/log/docs/README.md` in the
 //! repository.
 
-#![forbid(unsafe_code)]
+#![cfg_attr(not(test), forbid(unsafe_code))]
 #![warn(missing_docs, rust_2018_idioms)]
 
 pub mod core;
@@ -124,8 +124,7 @@ mod timing;
 mod writer;
 
 #[cfg(any(feature = "telemetry", feature = "sentry"))]
-#[doc(hidden)]
-pub mod telemetry;
+mod telemetry;
 
 // Observability module
 pub mod observability;
