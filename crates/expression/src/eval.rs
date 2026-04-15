@@ -250,19 +250,13 @@ impl Evaluator {
                                 )
                             })?;
                             Ok(Value::Number(neg.into()))
-                        } else if let Some(u) = n.as_u64() {
-                            // u64 values above i64::MAX cannot be represented as negated i64.
-                            let as_i: i64 = u.try_into().map_err(|_| {
-                                ExpressionError::expression_eval_error(
-                                    "Integer overflow: unsigned value exceeds i64 range",
-                                )
-                            })?;
-                            let neg = as_i.checked_neg().ok_or_else(|| {
-                                ExpressionError::expression_eval_error(
-                                    "Integer overflow: cannot negate i64::MIN",
-                                )
-                            })?;
-                            Ok(Value::Number(neg.into()))
+                        } else if n.as_u64().is_some() {
+                            // Reached only when the number is a u64 strictly greater than
+                            // i64::MAX (otherwise the `as_i64()` branch above would have
+                            // matched). Such a value has no representable negation in i64.
+                            Err(ExpressionError::expression_eval_error(
+                                "Integer overflow: unsigned value exceeds i64 range",
+                            ))
                         } else {
                             Err(ExpressionError::expression_eval_error(
                                 "Cannot negate number",
