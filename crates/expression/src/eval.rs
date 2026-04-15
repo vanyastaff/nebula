@@ -234,10 +234,35 @@ impl Evaluator {
                 let val = self.eval_with_frame(expr, context, frame)?;
                 match val {
                     Value::Number(ref n) => {
-                        if let Some(i) = crate::value_utils::number_as_i64(n) {
-                            Ok(Value::Number((-i).into()))
-                        } else if let Some(f) = crate::value_utils::number_as_f64(n) {
+                        // Dispatch on the concrete representation: floats must never be
+                        // routed through the i64 path (silent truncation of `-3.7` → `-3`),
+                        // and i64 negation must be checked to surface `-(i64::MIN)` as a
+                        // typed error instead of panicking in debug / wrapping in release.
+                        if n.is_f64() {
+                            let f = n.as_f64().ok_or_else(|| {
+                                ExpressionError::expression_eval_error("Cannot negate number")
+                            })?;
                             Ok(serde_json::json!(-f))
+                        } else if let Some(i) = n.as_i64() {
+                            let neg = i.checked_neg().ok_or_else(|| {
+                                ExpressionError::expression_eval_error(
+                                    "Integer overflow: cannot negate i64::MIN",
+                                )
+                            })?;
+                            Ok(Value::Number(neg.into()))
+                        } else if let Some(u) = n.as_u64() {
+                            // u64 values above i64::MAX cannot be represented as negated i64.
+                            let as_i: i64 = u.try_into().map_err(|_| {
+                                ExpressionError::expression_eval_error(
+                                    "Integer overflow: unsigned value exceeds i64 range",
+                                )
+                            })?;
+                            let neg = as_i.checked_neg().ok_or_else(|| {
+                                ExpressionError::expression_eval_error(
+                                    "Integer overflow: cannot negate i64::MIN",
+                                )
+                            })?;
+                            Ok(Value::Number(neg.into()))
                         } else {
                             Err(ExpressionError::expression_eval_error(
                                 "Cannot negate number",
@@ -2456,5 +2481,71 @@ mod tests {
         assert_eq!(arr.len(), 100);
         assert_eq!(arr.first().and_then(|v| v.as_i64()), Some(1));
         assert_eq!(arr.last().and_then(|v| v.as_i64()), Some(100));
+    }
+
+    #[test]
+    fn test_negate_integer() {
+        let evaluator = create_evaluator();
+        let context = EvaluationContext::new();
+        let expr = Expr::Negate(Box::new(Expr::Literal(Value::Number(42.into()))));
+        let result = evaluator.eval(&expr, &context).unwrap();
+        assert_eq!(result.as_i64(), Some(-42));
+    }
+
+    #[test]
+    fn test_negate_float_preserves_fraction() {
+        // Regression for #280: `-3.7` must NOT truncate to `-3`.
+        let evaluator = create_evaluator();
+        let context = EvaluationContext::new();
+        let expr = Expr::Negate(Box::new(Expr::Literal(serde_json::json!(3.7))));
+        let result = evaluator.eval(&expr, &context).unwrap();
+        assert_eq!(result.as_f64(), Some(-3.7));
+    }
+
+    #[test]
+    fn test_negate_negative_float() {
+        let evaluator = create_evaluator();
+        let context = EvaluationContext::new();
+        let expr = Expr::Negate(Box::new(Expr::Literal(serde_json::json!(-2.5))));
+        let result = evaluator.eval(&expr, &context).unwrap();
+        assert_eq!(result.as_f64(), Some(2.5));
+    }
+
+    #[test]
+    fn test_negate_i64_min_errors() {
+        // Regression for #280: negating `i64::MIN` must surface a typed error,
+        // not panic (debug) or silently wrap (release).
+        let evaluator = create_evaluator();
+        let context = EvaluationContext::new();
+        let expr = Expr::Negate(Box::new(Expr::Literal(Value::Number(i64::MIN.into()))));
+        let err = evaluator.eval(&expr, &context).unwrap_err();
+        let msg = format!("{err}");
+        assert!(
+            msg.to_lowercase().contains("overflow"),
+            "expected overflow error, got: {msg}"
+        );
+    }
+
+    #[test]
+    fn test_negate_u64_above_i64_max_errors() {
+        let evaluator = create_evaluator();
+        let context = EvaluationContext::new();
+        let big = (i64::MAX as u64) + 1;
+        let expr = Expr::Negate(Box::new(Expr::Literal(Value::Number(big.into()))));
+        let err = evaluator.eval(&expr, &context).unwrap_err();
+        let msg = format!("{err}");
+        assert!(
+            msg.to_lowercase().contains("overflow"),
+            "expected overflow error, got: {msg}"
+        );
+    }
+
+    #[test]
+    fn test_negate_non_number_type_error() {
+        let evaluator = create_evaluator();
+        let context = EvaluationContext::new();
+        let expr = Expr::Negate(Box::new(Expr::Literal(Value::Bool(true))));
+        let err = evaluator.eval(&expr, &context).unwrap_err();
+        assert!(format!("{err}").to_lowercase().contains("type"));
     }
 }
