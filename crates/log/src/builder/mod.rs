@@ -174,6 +174,10 @@ impl LoggerBuilder {
                         &self.config.fields,
                     )? {
                         Some(otel) => {
+                            // NB: store the provider in `inner` here only to keep
+                            // the #[cfg(feature = "telemetry")] gates minimal —
+                            // we `.take()` it back out below and only return it
+                            // to `inner` after `try_init` succeeds. See #380.
                             inner.otel_provider = Some(otel.provider);
                             Some(otel.layer)
                         },

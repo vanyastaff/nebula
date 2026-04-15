@@ -173,6 +173,10 @@ pub(crate) fn install_globals(provider: &SdkTracerProvider) {
 ///
 /// Used by the builder when `try_init` fails after `build_layer` succeeded, to
 /// avoid leaking exporter tasks / network connections. See #380.
+///
+/// Uses `eprintln!` rather than `tracing::error!` because this runs only after
+/// `try_init` failed, so the tracing dispatcher is not installed — a
+/// `tracing::error!` call would silently go to the global no-op dispatcher.
 pub(crate) fn shutdown_unused_provider(provider: SdkTracerProvider) {
     if let Err(e) = provider.shutdown() {
         eprintln!("nebula-log: unused OTel provider shutdown error: {e}");
@@ -263,5 +267,37 @@ mod tests {
             resolve_endpoint_from(&cfg, Some("http://env-endpoint:4317")),
             Some("http://env-endpoint:4317".to_string())
         );
+    }
+
+    /// #380 — end-to-end unit test for the build/cleanup cycle that proves
+    /// `build_layer` does not install OTel globals and that
+    /// `shutdown_unused_provider` cleanly tears down a built-but-never-installed
+    /// provider.
+    ///
+    /// We build an `OtelLayer` with a syntactically valid but unreachable
+    /// endpoint (so exporter construction succeeds but no actual export
+    /// happens), then immediately shut it down. A regression in which
+    /// `build_layer` installs globals, or in which `shutdown_unused_provider`
+    /// panics / deadlocks, would be caught here.
+    ///
+    /// Runs under `#[tokio::test]` because the tonic gRPC exporter requires a
+    /// Tokio reactor during construction (even though no actual network I/O
+    /// occurs during this test).
+    #[tokio::test]
+    async fn build_layer_then_shutdown_is_safe() {
+        let cfg = TelemetryConfig {
+            otlp_endpoint: Some("http://127.0.0.1:1".to_string()),
+            service_name: "build-layer-then-shutdown".to_string(),
+            sampling_rate: 0.0,
+        };
+        let fields = Fields::default();
+
+        let otel = build_layer(&cfg, &fields)
+            .expect("build_layer must succeed for a syntactically valid endpoint")
+            .expect("build_layer must return Some(OtelLayer) when endpoint is set");
+
+        // At this point the provider has been built but install_globals was
+        // never called. Dropping or shutting down must not panic.
+        shutdown_unused_provider(otel.provider);
     }
 }

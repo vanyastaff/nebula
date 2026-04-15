@@ -21,15 +21,16 @@ fn second_init_with_returns_already_initialized() {
     );
 }
 
-/// #380 — if subscriber `try_init` fails (because a dispatcher is already set
-/// from a prior test in the same binary), OTel globals must NOT have been
-/// installed and the provider must be cleaned up. We cannot easily inspect
-/// `opentelemetry::global` directly without poking at SDK internals, so we
-/// assert the happy-path invariant: on the error path the call returns
-/// cleanly without panicking from a dangling provider drop.
+/// #380 companion — verifies the Task 2 duplicate-init fast-path still
+/// short-circuits cleanly even when a telemetry config is present.
+///
+/// This does NOT directly exercise #380's error-path cleanup (the fast-path
+/// returns `AlreadyInitialized` before any OTel layer is built). The real
+/// #380 coverage lives in `crates/log/src/telemetry/otel.rs`'s unit tests —
+/// see `build_layer_then_shutdown_is_safe`.
 #[cfg(feature = "telemetry")]
 #[test]
-fn partial_otel_init_is_cleaned_up_on_subscriber_failure() {
+fn fast_path_survives_duplicate_init_with_telemetry_config() {
     use nebula_log::{Config, LogError, TelemetryConfig, init_with};
 
     // Force a prior init so the next one hits `AlreadyInitialized`.
