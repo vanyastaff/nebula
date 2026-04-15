@@ -300,6 +300,8 @@ impl WorkflowRepo for PgWorkflowRepo {
         Ok(result.rows_affected() > 0)
     }
 
+    /// Lists workflows in **`ORDER BY created_at, id`** — keep
+    /// [`InMemoryWorkflowRepo`](crate::InMemoryWorkflowRepo) in sync.
     async fn list(
         &self,
         offset: usize,

@@ -5,6 +5,7 @@
 use std::{collections::HashMap, sync::Arc};
 
 use async_trait::async_trait;
+use chrono::{DateTime, Utc};
 use nebula_core::WorkflowId;
 use thiserror::Error;
 use tokio::sync::RwLock;
@@ -101,6 +102,9 @@ pub trait WorkflowRepo: Send + Sync {
     async fn delete(&self, id: WorkflowId) -> Result<bool, WorkflowRepoError>;
 
     /// List with pagination.
+    ///
+    /// Ordering is stable across backends: **creation time ascending**, then **workflow id**
+    /// (UUID order), matching Postgres `ORDER BY created_at, id`.
     async fn list(
         &self,
         offset: usize,
@@ -113,10 +117,16 @@ pub trait WorkflowRepo: Send + Sync {
 }
 
 /// In-memory workflow repository for tests and desktop/single-process.
+///
+/// [`WorkflowRepo::list`] uses the same ordering contract as
+/// [`PgWorkflowRepo`](crate::PgWorkflowRepo): `created_at` is recorded on first insert and list
+/// sorts by `(created_at, id)`.
 #[derive(Default)]
 pub struct InMemoryWorkflowRepo {
     definitions: Arc<RwLock<HashMap<WorkflowId, serde_json::Value>>>,
     versions: Arc<RwLock<HashMap<WorkflowId, u64>>>,
+    /// First-insert time per workflow, aligned with Postgres `workflows.created_at`.
+    created_at: Arc<RwLock<HashMap<WorkflowId, DateTime<Utc>>>>,
 }
 
 impl InMemoryWorkflowRepo {
@@ -148,6 +158,7 @@ impl WorkflowRepo for InMemoryWorkflowRepo {
         version: u64,
         definition: serde_json::Value,
     ) -> Result<(), WorkflowRepoError> {
+        let is_new = !self.definitions.read().await.contains_key(&id);
         let mut versions = self.versions.write().await;
         let current = versions.get(&id).copied().unwrap_or(0);
         if current != version {
@@ -159,11 +170,15 @@ impl WorkflowRepo for InMemoryWorkflowRepo {
             ));
         }
         versions.insert(id, current + 1);
+        if is_new {
+            self.created_at.write().await.insert(id, Utc::now());
+        }
         self.definitions.write().await.insert(id, definition);
         Ok(())
     }
 
     async fn delete(&self, id: WorkflowId) -> Result<bool, WorkflowRepoError> {
+        self.created_at.write().await.remove(&id);
         self.versions.write().await.remove(&id);
         Ok(self.definitions.write().await.remove(&id).is_some())
     }
@@ -174,9 +189,15 @@ impl WorkflowRepo for InMemoryWorkflowRepo {
         limit: usize,
     ) -> Result<Vec<(WorkflowId, serde_json::Value)>, WorkflowRepoError> {
         let map = self.definitions.read().await;
+        let created = self.created_at.read().await;
+        let epoch = DateTime::<Utc>::from_timestamp(0, 0).expect("unix epoch");
         let mut rows: Vec<(WorkflowId, serde_json::Value)> =
             map.iter().map(|(id, value)| (*id, value.clone())).collect();
-        rows.sort_by_key(|(id, _)| id.to_string());
+        rows.sort_by(|(id_a, _), (id_b, _)| {
+            let ta = created.get(id_a).copied().unwrap_or(epoch);
+            let tb = created.get(id_b).copied().unwrap_or(epoch);
+            ta.cmp(&tb).then_with(|| id_a.cmp(id_b))
+        });
         Ok(rows.into_iter().skip(offset).take(limit).collect())
     }
 
