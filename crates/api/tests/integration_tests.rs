@@ -1656,3 +1656,130 @@ async fn cors_preflight_allows_authorization() {
         "authorization must appear in allow-headers, got: {allow_headers}"
     );
 }
+
+#[tokio::test]
+async fn update_workflow_rejects_immutable_identity_fields() {
+    // Regression for #344: update_workflow must refuse payloads that try to
+    // overwrite identity/control fields (id, version, owner_id, schema_version)
+    // smuggled inside the nested `definition` object.
+    use axum::{
+        body::Body,
+        http::{Request, StatusCode},
+    };
+    use tower::ServiceExt;
+
+    let state = create_test_state().await;
+    let api_config = ApiConfig::for_test();
+    let token = create_test_jwt();
+
+    // Create a workflow to update.
+    let create_request = serde_json::json!({
+        "name": "Identity Guard",
+        "description": "immutable-fields regression",
+        "definition": { "nodes": [], "edges": [] }
+    });
+    let app = app::build_app(state.clone(), &api_config);
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/v1/workflows")
+                .header("content-type", "application/json")
+                .header("authorization", format!("Bearer {}", token))
+                .body(Body::from(serde_json::to_string(&create_request).unwrap()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::CREATED);
+    let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let created: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    let workflow_id = created["id"].as_str().unwrap().to_string();
+
+    // Every protected field must cause a 4xx rejection.
+    for field in ["id", "version", "owner_id", "schema_version"] {
+        // NOTE: in `serde_json::json!`, bare identifiers on the left of `:`
+        // are stringified literally. Wrap the loop variable in parentheses
+        // so the macro interpolates the *value* ("id", "version", ...) as
+        // the object key, otherwise every iteration would test the same
+        // literal key `"field"`. (Flagged by Copilot on PR #406.)
+        let mut inner = serde_json::Map::new();
+        inner.insert(field.to_string(), serde_json::json!("attacker-supplied"));
+        let update_request = serde_json::json!({
+            "definition": serde_json::Value::Object(inner),
+        });
+        let app = app::build_app(state.clone(), &api_config);
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("PUT")
+                    .uri(format!("/api/v1/workflows/{workflow_id}"))
+                    .header("content-type", "application/json")
+                    .header("authorization", format!("Bearer {}", token))
+                    .body(Body::from(serde_json::to_string(&update_request).unwrap()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert!(
+            response.status().is_client_error(),
+            "update with `{field}` must be rejected, got status {}",
+            response.status()
+        );
+    }
+}
+
+#[tokio::test]
+async fn get_workflow_parses_rfc3339_timestamps() {
+    // Regression for #343: a stored workflow whose timestamps are RFC3339
+    // strings (canonical `WorkflowDefinition` shape) must round-trip through
+    // the API without collapsing to 0.
+    use axum::{
+        body::Body,
+        http::{Request, StatusCode},
+    };
+    use nebula_core::WorkflowId;
+    use tower::ServiceExt;
+
+    let state = create_test_state().await;
+    let api_config = ApiConfig::for_test();
+    let token = create_test_jwt();
+
+    // Write directly through the repo with canonical string timestamps so we
+    // skip the create_workflow handler's i64 write path and exercise the read
+    // path against exactly the shape that `WorkflowDefinition` serializes.
+    let workflow_id = WorkflowId::new();
+    let canonical = serde_json::json!({
+        "name": "Canonical Timestamps",
+        "description": "rfc3339-regression",
+        "created_at": "2024-01-15T12:34:56Z",
+        "updated_at": "2024-02-20T08:00:00Z",
+    });
+    state
+        .workflow_repo
+        .save(workflow_id, 0, canonical)
+        .await
+        .unwrap();
+
+    let app = app::build_app(state, &api_config);
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("GET")
+                .uri(format!("/api/v1/workflows/{}", workflow_id))
+                .header("authorization", format!("Bearer {}", token))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let workflow: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(workflow["created_at"].as_i64(), Some(1_705_322_096));
+    assert_eq!(workflow["updated_at"].as_i64(), Some(1_708_416_000));
+}
