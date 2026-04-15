@@ -113,7 +113,7 @@
 //! For Nebula internal engineering docs, see `crates/log/docs/README.md` in the
 //! repository.
 
-#![cfg_attr(not(test), forbid(unsafe_code))]
+#![forbid(unsafe_code)]
 #![warn(missing_docs, rust_2018_idioms)]
 
 pub mod core;
