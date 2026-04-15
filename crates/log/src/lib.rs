@@ -229,9 +229,9 @@ pub fn init() -> LogResult<LoggerGuard> {
 /// - File writer cannot be created (if using file output)
 /// - Telemetry setup fails (if enabled)
 ///
-/// Calling `init_with` a second time in the same process always returns
-/// [`LogError::AlreadyInitialized`]; callers that want idempotent init
-/// should treat that variant as success.
+/// Calling `init_with` after a tracing dispatcher has already been installed
+/// (by any code path in this process) returns [`LogError::AlreadyInitialized`];
+/// callers that want idempotent init should treat that variant as success.
 pub fn init_with(config: Config) -> LogResult<LoggerGuard> {
     LoggerBuilder::from_config(config).build()
 }
