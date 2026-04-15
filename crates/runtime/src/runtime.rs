@@ -1717,6 +1717,125 @@ mod tests {
         );
     }
 
+    #[tokio::test]
+    async fn resource_rejection_does_not_increment_execution_metrics() {
+        use std::any::Any;
+
+        use nebula_action::{handler::ActionHandler, resource::ResourceHandler};
+
+        struct FakeResourceHandler {
+            meta: ActionMetadata,
+        }
+
+        #[async_trait::async_trait]
+        impl ResourceHandler for FakeResourceHandler {
+            fn metadata(&self) -> &ActionMetadata {
+                &self.meta
+            }
+            async fn configure(
+                &self,
+                _config: serde_json::Value,
+                _ctx: &ActionContext,
+            ) -> Result<Box<dyn Any + Send + Sync>, ActionError> {
+                Ok(Box::new(()))
+            }
+            async fn cleanup(
+                &self,
+                _instance: Box<dyn Any + Send + Sync>,
+                _ctx: &ActionContext,
+            ) -> Result<(), ActionError> {
+                Ok(())
+            }
+        }
+
+        let registry = Arc::new(ActionRegistry::new());
+        let meta = ActionMetadata::new(action_key!("test.resource_reject"), "Res", "reject case");
+        registry.register(
+            meta.clone(),
+            ActionHandler::Resource(Arc::new(FakeResourceHandler { meta })),
+        );
+        let (rt, metrics) = make_runtime_with_metrics(registry);
+
+        let result = rt
+            .execute_action(
+                "test.resource_reject",
+                serde_json::json!(null),
+                test_context(),
+            )
+            .await;
+        assert!(
+            matches!(result, Err(RuntimeError::ResourceNotExecutable { .. })),
+            "expected ResourceNotExecutable, got {result:?}"
+        );
+
+        assert_eq!(metrics.histogram(NEBULA_ACTION_DURATION_SECONDS).count(), 0);
+        assert_eq!(metrics.counter(NEBULA_ACTION_EXECUTIONS_TOTAL).get(), 0);
+        assert_eq!(metrics.counter(NEBULA_ACTION_FAILURES_TOTAL).get(), 0);
+
+        let labels = metrics
+            .interner()
+            .label_set(&[("reason", dispatch_reject_reason::RESOURCE_NOT_EXECUTABLE)]);
+        assert_eq!(
+            metrics
+                .counter_labeled(NEBULA_ACTION_DISPATCH_REJECTED_TOTAL, &labels)
+                .get(),
+            1
+        );
+    }
+
+    #[tokio::test]
+    async fn agent_rejection_does_not_increment_execution_metrics() {
+        use nebula_action::handler::{ActionHandler, AgentHandler};
+
+        struct FakeAgentHandler {
+            meta: ActionMetadata,
+        }
+
+        #[async_trait::async_trait]
+        impl AgentHandler for FakeAgentHandler {
+            fn metadata(&self) -> &ActionMetadata {
+                &self.meta
+            }
+            async fn execute(
+                &self,
+                _input: serde_json::Value,
+                _ctx: &ActionContext,
+            ) -> Result<ActionResult<serde_json::Value>, ActionError> {
+                Ok(ActionResult::success(serde_json::json!(null)))
+            }
+        }
+
+        let registry = Arc::new(ActionRegistry::new());
+        let meta = ActionMetadata::new(action_key!("test.agent_reject"), "Agent", "reject case");
+        registry.register(
+            meta.clone(),
+            ActionHandler::Agent(Arc::new(FakeAgentHandler { meta })),
+        );
+        let (rt, metrics) = make_runtime_with_metrics(registry);
+
+        let result = rt
+            .execute_action("test.agent_reject", serde_json::json!(null), test_context())
+            .await;
+        assert!(
+            matches!(result, Err(RuntimeError::AgentNotSupportedYet { .. })),
+            "expected AgentNotSupportedYet, got {result:?}"
+        );
+
+        assert_eq!(metrics.histogram(NEBULA_ACTION_DURATION_SECONDS).count(), 0);
+        assert_eq!(metrics.counter(NEBULA_ACTION_EXECUTIONS_TOTAL).get(), 0);
+        assert_eq!(metrics.counter(NEBULA_ACTION_FAILURES_TOTAL).get(), 0);
+
+        let labels = metrics
+            .interner()
+            .label_set(&[("reason", dispatch_reject_reason::AGENT_NOT_SUPPORTED)]);
+        assert_eq!(
+            metrics
+                .counter_labeled(NEBULA_ACTION_DISPATCH_REJECTED_TOTAL, &labels)
+                .get(),
+            1
+        );
+    }
+
     /// Counterpart to the rejection test: a successful stateless dispatch
     /// must observe the histogram and bump the executions counter. Pin
     /// both so the rejection fix does not regress the dispatched path.
