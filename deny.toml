@@ -14,6 +14,7 @@ yanked = "deny"
 ignore = [
     { id = "RUSTSEC-2023-0071", reason = "rsa pulled by jsonwebtoken rust_crypto feature; project uses HS256 only, RSA code path never reached" },
     { id = "RUSTSEC-2026-0097", reason = "rand 0.10.0 unsound only under custom panic-logger + thread-local interaction, not our usage pattern; patched release pending upstream" },
+    { id = "RUSTSEC-2026-0098", reason = "webpki URI name-constraint handling is not used by Nebula; no URI SAN assertions are performed in current TLS paths" },
 ]
 
 [licenses]
