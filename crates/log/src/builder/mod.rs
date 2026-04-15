@@ -64,20 +64,19 @@ impl std::fmt::Debug for Inner {
     }
 }
 
-/// Helper macro to build and init the subscriber for a given format layer.
-/// Avoids repeating the same `Registry + filter + fmt + otel + sentry` chain.
-/// Global fields are injected via a root span (see below in `build()`).
-///
-/// The `$otel_layer` parameter is `Option<impl Layer>` — `None` when telemetry
-/// is disabled, which makes the layer a no-op in the subscriber stack.
 /// Type alias for a boxed layer on `Registry`.
 type BoxLayer = Box<dyn tracing_subscriber::Layer<Registry> + Send + Sync>;
 
-macro_rules! init_subscriber {
+/// Helper macro to assemble the layer stack for a given format layer.
+///
+/// The `$otel_layer` parameter is `Option<impl Layer>` — `None` when telemetry
+/// is disabled, which makes the layer a no-op in the subscriber stack.
+///
+/// Unlike the old `init_subscriber!`, this macro does NOT call `try_init` —
+/// it returns `Vec<BoxLayer>` so the caller can install the subscriber once
+/// and sequence OTel global setup around it (#380).
+macro_rules! build_subscriber {
     ($filter_layer:expr, $fmt_layer:expr, $otel_layer:expr) => {{
-        // All layers are collected into a Vec<BoxLayer> and added at once to
-        // Registry. This is necessary because Box<dyn Layer<Registry>> only
-        // implements Layer<Registry>, not Layer<Layered<..., Registry>>.
         let mut layers: Vec<BoxLayer> = Vec::new();
         layers.push($filter_layer);
         layers.push(Box::new($fmt_layer));
@@ -85,10 +84,7 @@ macro_rules! init_subscriber {
             layers.push(otel);
         }
         attach_sentry!(layers);
-        Registry::default()
-            .with(layers)
-            .try_init()
-            .map_err(|e| crate::core::LogError::Internal(e.to_string()))?;
+        layers
     }};
 }
 
@@ -190,24 +186,47 @@ impl LoggerBuilder {
         #[cfg(not(feature = "telemetry"))]
         let otel_layer: Option<Box<dyn tracing_subscriber::Layer<Registry> + Send + Sync>> = None;
 
-        // Build subscriber based on format
-        match self.config.format {
+        // Assemble the layer stack. Each arm produces a `Vec<BoxLayer>` via
+        // `build_subscriber!`. We then `try_init` the subscriber once, below.
+        let layers = match self.config.format {
             Format::Pretty => {
                 let fmt_layer = create_fmt_layer!(pretty, &self.config.display, writer);
-                init_subscriber!(filter_layer, fmt_layer, otel_layer);
+                build_subscriber!(filter_layer, fmt_layer, otel_layer)
             },
             Format::Compact => {
                 let fmt_layer = create_fmt_layer!(compact, &self.config.display, writer);
-                init_subscriber!(filter_layer, fmt_layer, otel_layer);
+                build_subscriber!(filter_layer, fmt_layer, otel_layer)
             },
             Format::Logfmt => {
                 let fmt_layer = create_logfmt_layer!(&self.config.display, writer);
-                init_subscriber!(filter_layer, fmt_layer, otel_layer);
+                build_subscriber!(filter_layer, fmt_layer, otel_layer)
             },
             Format::Json => {
                 let fmt_layer = create_json_layer!(&self.config.display, writer);
-                init_subscriber!(filter_layer, fmt_layer, otel_layer);
+                build_subscriber!(filter_layer, fmt_layer, otel_layer)
             },
+        };
+
+        // #380: move the pending provider OUT of `inner` so we can install it
+        // onto `opentelemetry::global` only after `try_init` succeeds. On
+        // failure, shut it down instead of leaking exporter tasks.
+        #[cfg(feature = "telemetry")]
+        let pending_provider = inner.otel_provider.take();
+
+        if let Err(e) = Registry::default().with(layers).try_init() {
+            #[cfg(feature = "telemetry")]
+            if let Some(provider) = pending_provider {
+                crate::telemetry::otel::shutdown_unused_provider(provider);
+            }
+            return Err(crate::core::LogError::Internal(e.to_string()));
+        }
+
+        // #380: install OTel globals only now that the subscriber owns the
+        // tracing pipeline.
+        #[cfg(feature = "telemetry")]
+        if let Some(provider) = pending_provider {
+            crate::telemetry::otel::install_globals(&provider);
+            inner.otel_provider = Some(provider);
         }
 
         // Create root span with global fields

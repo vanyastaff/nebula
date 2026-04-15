@@ -87,9 +87,6 @@ pub fn build_layer(config: &TelemetryConfig, fields: &Fields) -> LogResult<Optio
         None => return Ok(None),
     };
 
-    // Set up W3C trace-context propagator
-    global::set_text_map_propagator(TraceContextPropagator::new());
-
     // Configure sampler
     let sampler = if config.sampling_rate >= 1.0 {
         Sampler::AlwaysOn
@@ -122,9 +119,9 @@ pub fn build_layer(config: &TelemetryConfig, fields: &Fields) -> LogResult<Optio
 
     let tracer = provider.tracer("nebula-log");
 
-    // Set as global provider (for context propagation)
-    global::set_tracer_provider(provider.clone());
-
+    // #380: globals are NOT set here — the caller installs them after the
+    // subscriber is successfully `try_init`'d so a mid-init failure does not
+    // leave a dangling tracer provider in `opentelemetry::global`.
     Ok(Some(OtelLayer {
         layer: Box::new(OpenTelemetryLayer::new(tracer)),
         provider,
@@ -156,6 +153,30 @@ fn build_resource(service_name: &str, fields: &Fields) -> Resource {
     }
 
     Resource::builder_empty().with_attributes(attrs).build()
+}
+
+/// Install OTel globals from a successfully-built provider.
+///
+/// Must be called only **after** the tracing subscriber's `try_init` succeeds,
+/// so a subscriber-init failure cannot leave the OTel global state pointing at
+/// a provider whose lifecycle no longer matches the `LoggerGuard`. See #380.
+///
+/// Sets:
+/// - the W3C trace-context propagator as the global text-map propagator
+/// - the given provider as the global tracer provider
+pub(crate) fn install_globals(provider: &SdkTracerProvider) {
+    global::set_text_map_propagator(TraceContextPropagator::new());
+    global::set_tracer_provider(provider.clone());
+}
+
+/// Shut down a provider that was built but never installed globally.
+///
+/// Used by the builder when `try_init` fails after `build_layer` succeeded, to
+/// avoid leaking exporter tasks / network connections. See #380.
+pub(crate) fn shutdown_unused_provider(provider: SdkTracerProvider) {
+    if let Err(e) = provider.shutdown() {
+        eprintln!("nebula-log: unused OTel provider shutdown error: {e}");
+    }
 }
 
 fn build_exporter(endpoint: &str) -> LogResult<opentelemetry_otlp::SpanExporter> {
