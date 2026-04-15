@@ -109,14 +109,11 @@ impl LabelSet {
 /// interned it remains resident for the lifetime of the `LabelInterner`
 /// (and all its `Arc` clones), even if every `LabelSet` referencing it has
 /// been dropped. This means that metric eviction via
-/// [`crate::metrics::MetricsRegistry::retain_recent`] reclaims the series
-/// maps but **does not** reclaim interned strings — high-cardinality label
-/// values (e.g. `execution_id`, per-user dimensions) will grow the interner
-/// monotonically.
+/// [`crate::metrics::MetricsRegistry::retain_recent`] may rebuild the registry
+/// interner from active series, which drops unreachable historical strings at
+/// the registry level.
 ///
-/// Use [`Self::len`] to monitor interner cardinality. If bounded memory is
-/// required under high label churn, replace the `MetricsRegistry` (and its
-/// interner) wholesale rather than relying on `retain_recent`.
+/// Use [`Self::len`] to monitor interner cardinality on long-running paths.
 ///
 /// # Examples
 ///

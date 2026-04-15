@@ -65,7 +65,7 @@ fn main() {
     // Imagine 1 000 unique action label combinations were recorded in the past.
     // After a time window, only the currently active ones should remain.
 
-    let reg2 = Arc::new(MetricsRegistry::new());
+    let mut reg2 = MetricsRegistry::new();
     let interner2 = reg2.interner();
 
     // Record 1 000 unique series (one per simulated plugin instance ID).
@@ -84,7 +84,7 @@ fn main() {
     println!("Series after retain_recent  : {}", reg2.metric_count());
 
     // ── Step 3 — active series are retained ─────────────────────────────────
-    let reg3 = Arc::new(MetricsRegistry::new());
+    let mut reg3 = MetricsRegistry::new();
     let interner3 = reg3.interner();
 
     let labels = interner3.label_set(&[("action_type", "http.request")]);

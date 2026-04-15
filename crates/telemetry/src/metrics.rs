@@ -461,7 +461,7 @@ impl MetricsRegistry {
     /// ```
     /// use nebula_telemetry::metrics::MetricsRegistry;
     ///
-    /// let reg = MetricsRegistry::new();
+    /// let mut reg = MetricsRegistry::new();
     /// let labels = reg.interner().label_set(&[("action_type", "http.request")]);
     /// let counter = reg.counter_labeled("nebula_action_executions_total", &labels);
     /// counter.inc();
@@ -555,18 +555,11 @@ impl MetricsRegistry {
     /// with a fixed label set) are naturally retained because they are
     /// written to continuously.
     ///
-    /// # Memory caveat
+    /// # Memory behavior
     ///
-    /// This method reclaims *series*, not *interned strings*. The label
-    /// interner behind [`LabelInterner`] is append-only: any label key or
-    /// value that has ever been observed remains resident for the lifetime
-    /// of the registry. Under sustained high-cardinality label churn,
-    /// resident memory can therefore still grow over time despite repeated
-    /// `retain_recent` calls.
-    ///
-    /// Monitor interner pressure with [`Self::interner_len`] and, if
-    /// needed, replace the entire `MetricsRegistry` wholesale (dropping the
-    /// old interner) rather than relying on `retain_recent` alone.
+    /// After pruning stale series, this method compacts the label interner by
+    /// rebuilding it from the still-live metric keys. That keeps interner
+    /// cardinality bounded by active series rather than by historical churn.
     ///
     /// Call this periodically from a background task or at the end of a
     /// logical time window (e.g. after completing a batch of executions).
@@ -586,13 +579,14 @@ impl MetricsRegistry {
     /// reg.retain_recent(Duration::from_secs(300));
     /// assert_eq!(reg.metric_count(), 1); // still present — just updated
     /// ```
-    pub fn retain_recent(&self, max_age: Duration) {
+    pub fn retain_recent(&mut self, max_age: Duration) {
         let cutoff_ms = now_ms().saturating_sub(max_age.as_millis() as u64);
         self.counters
             .retain(|_, v| v.last_updated_ms() >= cutoff_ms);
         self.gauges.retain(|_, v| v.last_updated_ms() >= cutoff_ms);
         self.histograms
             .retain(|_, v| v.last_updated_ms() >= cutoff_ms);
+        self.compact_interner();
     }
 
     /// Total number of tracked metric series (counters + gauges + histograms).
@@ -613,6 +607,47 @@ impl MetricsRegistry {
     #[must_use]
     pub fn interner_len(&self) -> usize {
         self.interner.len()
+    }
+
+    fn compact_interner(&mut self) {
+        let old_interner = self.interner.clone();
+        let new_interner = LabelInterner::new();
+
+        let remap_key = |key: &MetricKey| {
+            let name = old_interner.resolve(key.name).to_owned();
+            let labels_owned: Vec<(String, String)> = key
+                .labels
+                .resolve(&old_interner)
+                .into_iter()
+                .map(|(k, v)| (k.to_owned(), v.to_owned()))
+                .collect();
+            let label_refs: Vec<(&str, &str)> = labels_owned
+                .iter()
+                .map(|(k, v)| (k.as_str(), v.as_str()))
+                .collect();
+            MetricKey::labeled(
+                new_interner.intern(&name),
+                new_interner.label_set(&label_refs),
+            )
+        };
+
+        let new_counters: DashMap<MetricKey, Counter> = DashMap::new();
+        for entry in self.counters.iter() {
+            new_counters.insert(remap_key(entry.key()), entry.value().clone());
+        }
+        let new_gauges: DashMap<MetricKey, Gauge> = DashMap::new();
+        for entry in self.gauges.iter() {
+            new_gauges.insert(remap_key(entry.key()), entry.value().clone());
+        }
+        let new_histograms: DashMap<MetricKey, Histogram> = DashMap::new();
+        for entry in self.histograms.iter() {
+            new_histograms.insert(remap_key(entry.key()), entry.value().clone());
+        }
+
+        self.interner = new_interner;
+        self.counters = Arc::new(new_counters);
+        self.gauges = Arc::new(new_gauges);
+        self.histograms = Arc::new(new_histograms);
     }
 }
 
@@ -905,12 +940,8 @@ mod tests {
     }
 
     #[test]
-    fn interner_len_survives_retain_recent() {
-        // Documents the caveat in the retain_recent docstring: series go
-        // away but interned strings stay resident. Guard against a silent
-        // future change that would claim full reclaim without actually
-        // rebuilding the interner.
-        let reg = MetricsRegistry::new();
+    fn interner_len_compacts_after_retain_recent() {
+        let mut reg = MetricsRegistry::new();
         let labels = reg.interner().label_set(&[("k", "v1")]);
         reg.counter_labeled("m", &labels).inc();
         let before = reg.interner_len();
@@ -919,13 +950,13 @@ mod tests {
         std::thread::sleep(Duration::from_millis(2));
         reg.retain_recent(Duration::ZERO);
         assert_eq!(reg.metric_count(), 0);
-        // Interner is append-only, so the strings must still be resident.
-        assert_eq!(reg.interner_len(), before);
+        // Compaction rebuilds the interner from live series (none left).
+        assert_eq!(reg.interner_len(), 0);
     }
 
     #[test]
     fn retain_recent_keeps_recently_updated_metrics() {
-        let reg = MetricsRegistry::new();
+        let mut reg = MetricsRegistry::new();
         reg.counter("fresh").inc();
         reg.gauge("also_fresh").set(1);
 
@@ -936,7 +967,7 @@ mod tests {
 
     #[test]
     fn retain_recent_removes_stale_metrics() {
-        let reg = MetricsRegistry::new();
+        let mut reg = MetricsRegistry::new();
 
         // Register a counter and immediately call retain_recent with zero
         // max_age so the cutoff is `now_ms()`.  Any metric whose timestamp
