@@ -203,6 +203,24 @@ fn is_executable(path: &Path) -> bool {
 
     #[cfg(not(unix))]
     {
-        ext == "exe" || ext.is_empty()
+        is_non_unix_executable_extension(ext)
+    }
+}
+
+#[cfg(not(unix))]
+fn is_non_unix_executable_extension(extension: &str) -> bool {
+    extension.eq_ignore_ascii_case("exe") || extension.is_empty()
+}
+
+#[cfg(test)]
+mod tests {
+    #[cfg(not(unix))]
+    #[test]
+    fn non_unix_executable_extension_is_case_insensitive() {
+        assert!(super::is_non_unix_executable_extension("exe"));
+        assert!(super::is_non_unix_executable_extension("EXE"));
+        assert!(super::is_non_unix_executable_extension("ExE"));
+        assert!(super::is_non_unix_executable_extension(""));
+        assert!(!super::is_non_unix_executable_extension("dll"));
     }
 }
