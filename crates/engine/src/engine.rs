@@ -443,6 +443,8 @@ impl WorkflowEngine {
             )
             .await;
 
+        self.runtime.clear_execution_output_totals(execution_id);
+
         let elapsed = started.elapsed();
         let final_status = determine_final_status(&failed_node, &cancel_token, &exec_state);
         let _ = exec_state.transition_status(final_status);
@@ -559,6 +561,8 @@ impl WorkflowEngine {
                 HashMap::new(),
             )
             .await;
+
+        self.runtime.clear_execution_output_totals(execution_id);
 
         let elapsed = started.elapsed();
 
@@ -829,6 +833,8 @@ impl WorkflowEngine {
                 resolved_edges,
             )
             .await;
+
+        self.runtime.clear_execution_output_totals(execution_id);
 
         let elapsed = started.elapsed();
 

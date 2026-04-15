@@ -142,14 +142,31 @@ fn create_handlers(
     plugin: &DiscoveredPlugin,
     sandbox: Arc<ProcessSandbox>,
 ) -> Vec<(ActionMetadata, ActionHandler)> {
+    let namespace_prefix = format!("{}.", plugin.key);
+    let interface_version = parse_interface_version(&plugin.version).unwrap_or_else(|| {
+        tracing::warn!(
+            plugin = %plugin.key,
+            version = %plugin.version,
+            "invalid plugin version; defaulting action interface version to 1.0",
+        );
+        (1, 0)
+    });
     plugin
         .actions
         .iter()
         .filter_map(|action| {
             let full_key = if action.key.contains('.') {
+                if !action.key.starts_with(&namespace_prefix) {
+                    tracing::warn!(
+                        plugin = %plugin.key,
+                        action_key = %action.key,
+                        "action key outside plugin namespace, skipping",
+                    );
+                    return None;
+                }
                 action.key.clone()
             } else {
-                format!("{}.{}", plugin.key, action.key)
+                format!("{namespace_prefix}{}", action.key)
             };
 
             let action_key = match ActionKey::new(&full_key) {
@@ -160,7 +177,8 @@ fn create_handlers(
                 },
             };
 
-            let metadata = ActionMetadata::new(action_key, &action.name, &action.description);
+            let metadata = ActionMetadata::new(action_key, &action.name, &action.description)
+                .with_version(interface_version.0, interface_version.1);
 
             let handler = ActionHandler::Stateless(Arc::new(ProcessSandboxHandler::new(
                 Arc::clone(&sandbox),
@@ -170,6 +188,13 @@ fn create_handlers(
             Some((metadata, handler))
         })
         .collect()
+}
+
+fn parse_interface_version(version: &str) -> Option<(u32, u32)> {
+    let mut parts = version.split('.');
+    let major = parts.next()?.parse::<u32>().ok()?;
+    let minor = parts.next()?.parse::<u32>().ok()?;
+    Some((major, minor))
 }
 
 /// Check if a file looks like an executable plugin binary.
@@ -216,6 +241,13 @@ fn can_non_unix_executable_extension(extension: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
+    use std::{path::PathBuf, sync::Arc, time::Duration};
+
+    use nebula_plugin_sdk::protocol::ActionDescriptor;
+
+    use super::{DiscoveredPlugin, create_handlers};
+    use crate::{capabilities::PluginCapabilities, process::ProcessSandbox};
+
     #[test]
     fn non_unix_executable_extension_is_case_insensitive() {
         assert!(super::can_non_unix_executable_extension("exe"));
@@ -223,5 +255,57 @@ mod tests {
         assert!(super::can_non_unix_executable_extension("ExE"));
         assert!(super::can_non_unix_executable_extension(""));
         assert!(!super::can_non_unix_executable_extension("dll"));
+    }
+
+    #[test]
+    fn create_handlers_rejects_cross_namespace_fq_keys() {
+        let plugin = DiscoveredPlugin {
+            key: "com.good.plugin".to_owned(),
+            version: "1.0.0".to_owned(),
+            actions: vec![
+                ActionDescriptor {
+                    key: "echo".to_owned(),
+                    name: "Echo".to_owned(),
+                    description: "ok".to_owned(),
+                },
+                ActionDescriptor {
+                    key: "system.exec".to_owned(),
+                    name: "Exec".to_owned(),
+                    description: "bad".to_owned(),
+                },
+            ],
+        };
+        let sandbox = Arc::new(ProcessSandbox::new(
+            PathBuf::from("nebula-plugin-dummy"),
+            Duration::from_secs(1),
+            PluginCapabilities::none(),
+        ));
+
+        let handlers = create_handlers(&plugin, sandbox);
+        assert_eq!(handlers.len(), 1);
+        assert_eq!(handlers[0].0.key.as_str(), "com.good.plugin.echo");
+    }
+
+    #[test]
+    fn create_handlers_use_plugin_major_minor_version() {
+        let plugin = DiscoveredPlugin {
+            key: "com.good.plugin".to_owned(),
+            version: "2.7.3".to_owned(),
+            actions: vec![ActionDescriptor {
+                key: "echo".to_owned(),
+                name: "Echo".to_owned(),
+                description: "ok".to_owned(),
+            }],
+        };
+        let sandbox = Arc::new(ProcessSandbox::new(
+            PathBuf::from("nebula-plugin-dummy"),
+            Duration::from_secs(1),
+            PluginCapabilities::none(),
+        ));
+
+        let handlers = create_handlers(&plugin, sandbox);
+        assert_eq!(handlers.len(), 1);
+        assert_eq!(handlers[0].0.version.major, 2);
+        assert_eq!(handlers[0].0.version.minor, 7);
     }
 }

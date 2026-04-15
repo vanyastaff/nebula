@@ -10,7 +10,11 @@
 //! - **`is_loopback`** detection is name-based (`"lo"` / `"lo0"`) and may miss renamed loopback
 //!   interfaces on non-standard configurations.
 
-use std::{collections::HashMap, sync::LazyLock};
+use std::{
+    collections::{HashMap, HashSet},
+    sync::LazyLock,
+    time::Instant,
+};
 
 use parking_lot::RwLock;
 #[cfg(feature = "serde")]
@@ -89,7 +93,14 @@ pub struct NetworkUsage {
 }
 
 // Static storage for network statistics tracking
-static NETWORK_STATS: LazyLock<RwLock<HashMap<String, NetworkStats>>> =
+#[derive(Debug, Clone)]
+struct CachedNetworkStats {
+    stats: NetworkStats,
+    observed_at: Instant,
+}
+
+// Static storage for network statistics tracking
+static NETWORK_STATS: LazyLock<RwLock<HashMap<String, CachedNetworkStats>>> =
     LazyLock::new(|| RwLock::new(HashMap::new()));
 
 /// List all network interfaces
@@ -151,48 +162,82 @@ pub fn usage() -> Vec<NetworkUsage> {
         let mut networks = Networks::new_with_refreshed_list();
         networks.refresh(false);
 
-        let mut stats = NETWORK_STATS.write();
-        let mut usage_list = Vec::new();
-
-        for (name, network) in networks.iter() {
-            let current_stats = NetworkStats {
-                rx_bytes: network.total_received(),
-                tx_bytes: network.total_transmitted(),
-                rx_packets: network.total_packets_received(),
-                tx_packets: network.total_packets_transmitted(),
-                rx_errors: network.total_errors_on_received(),
-                tx_errors: network.total_errors_on_transmitted(),
-                rx_dropped: 0,
-                tx_dropped: 0,
-            };
-
-            let (rx_rate, tx_rate) = if let Some(prev) = stats.get(name) {
+        let snapshot: Vec<(String, NetworkStats)> = networks
+            .iter()
+            .map(|(name, network)| {
                 (
-                    current_stats.rx_bytes.saturating_sub(prev.rx_bytes) as f64,
-                    current_stats.tx_bytes.saturating_sub(prev.tx_bytes) as f64,
+                    name.to_string(),
+                    NetworkStats {
+                        rx_bytes: network.total_received(),
+                        tx_bytes: network.total_transmitted(),
+                        rx_packets: network.total_packets_received(),
+                        tx_packets: network.total_packets_transmitted(),
+                        rx_errors: network.total_errors_on_received(),
+                        tx_errors: network.total_errors_on_transmitted(),
+                        rx_dropped: 0,
+                        tx_dropped: 0,
+                    },
                 )
-            } else {
-                (0.0, 0.0)
-            };
+            })
+            .collect();
 
-            usage_list.push(NetworkUsage {
-                interface: name.to_string(),
-                rx_rate,
-                tx_rate,
-                total_rx: current_stats.rx_bytes,
-                total_tx: current_stats.tx_bytes,
-            });
-
-            stats.insert(name.to_string(), current_stats);
-        }
-
-        usage_list
+        let mut stats = NETWORK_STATS.write();
+        apply_network_snapshot(&mut stats, snapshot, Instant::now())
     }
 
     #[cfg(not(feature = "network"))]
     {
         Vec::new()
     }
+}
+
+fn apply_network_snapshot(
+    cache: &mut HashMap<String, CachedNetworkStats>,
+    snapshot: Vec<(String, NetworkStats)>,
+    observed_at: Instant,
+) -> Vec<NetworkUsage> {
+    let mut usage_list = Vec::with_capacity(snapshot.len());
+    let mut current_names = HashSet::with_capacity(snapshot.len());
+
+    for (name, current_stats) in snapshot {
+        current_names.insert(name.clone());
+        let (rx_rate, tx_rate) = if let Some(prev) = cache.get(&name) {
+            let elapsed = observed_at
+                .saturating_duration_since(prev.observed_at)
+                .as_secs_f64();
+            if elapsed > 0.0 {
+                (
+                    current_stats.rx_bytes.saturating_sub(prev.stats.rx_bytes) as f64 / elapsed,
+                    current_stats.tx_bytes.saturating_sub(prev.stats.tx_bytes) as f64 / elapsed,
+                )
+            } else {
+                (0.0, 0.0)
+            }
+        } else {
+            (0.0, 0.0)
+        };
+
+        usage_list.push(NetworkUsage {
+            interface: name.clone(),
+            rx_rate,
+            tx_rate,
+            total_rx: current_stats.rx_bytes,
+            total_tx: current_stats.tx_bytes,
+        });
+
+        cache.insert(
+            name,
+            CachedNetworkStats {
+                stats: current_stats,
+                observed_at,
+            },
+        );
+    }
+
+    // Evict interfaces that disappeared from the current OS snapshot.
+    cache.retain(|name, _| current_names.contains(name));
+
+    usage_list
 }
 
 /// Get total network statistics across all interfaces
@@ -212,4 +257,90 @@ pub fn total_stats() -> NetworkStats {
             acc.tx_dropped += iface.stats.tx_dropped;
             acc
         })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn usage_rates_are_normalized_to_seconds() {
+        let mut cache = HashMap::new();
+        let t0 = Instant::now();
+
+        let first = apply_network_snapshot(
+            &mut cache,
+            vec![(
+                "eth0".to_owned(),
+                NetworkStats {
+                    rx_bytes: 100,
+                    tx_bytes: 50,
+                    ..NetworkStats::default()
+                },
+            )],
+            t0,
+        );
+        assert_eq!(first.len(), 1);
+        assert_eq!(first[0].rx_rate, 0.0);
+        assert_eq!(first[0].tx_rate, 0.0);
+
+        let second = apply_network_snapshot(
+            &mut cache,
+            vec![(
+                "eth0".to_owned(),
+                NetworkStats {
+                    rx_bytes: 300,
+                    tx_bytes: 250,
+                    ..NetworkStats::default()
+                },
+            )],
+            t0 + std::time::Duration::from_secs(2),
+        );
+        assert_eq!(second.len(), 1);
+        assert_eq!(second[0].rx_rate, 100.0);
+        assert_eq!(second[0].tx_rate, 100.0);
+    }
+
+    #[test]
+    fn stale_interfaces_are_evicted_from_cache() {
+        let mut cache = HashMap::new();
+        let t0 = Instant::now();
+        apply_network_snapshot(
+            &mut cache,
+            vec![
+                (
+                    "eth0".to_owned(),
+                    NetworkStats {
+                        rx_bytes: 1,
+                        ..NetworkStats::default()
+                    },
+                ),
+                (
+                    "veth123".to_owned(),
+                    NetworkStats {
+                        rx_bytes: 1,
+                        ..NetworkStats::default()
+                    },
+                ),
+            ],
+            t0,
+        );
+        assert_eq!(cache.len(), 2);
+
+        apply_network_snapshot(
+            &mut cache,
+            vec![(
+                "eth0".to_owned(),
+                NetworkStats {
+                    rx_bytes: 2,
+                    ..NetworkStats::default()
+                },
+            )],
+            t0 + std::time::Duration::from_secs(1),
+        );
+
+        assert_eq!(cache.len(), 1);
+        assert!(cache.contains_key("eth0"));
+        assert!(!cache.contains_key("veth123"));
+    }
 }

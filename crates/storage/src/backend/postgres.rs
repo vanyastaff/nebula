@@ -300,6 +300,8 @@ impl WorkflowRepo for PgWorkflowRepo {
         Ok(result.rows_affected() > 0)
     }
 
+    /// Lists workflows in **`ORDER BY created_at, id`** — keep
+    /// [`InMemoryWorkflowRepo`](crate::InMemoryWorkflowRepo) in sync.
     async fn list(
         &self,
         offset: usize,
@@ -318,6 +320,14 @@ impl WorkflowRepo for PgWorkflowRepo {
             .into_iter()
             .map(|(uuid, definition)| (WorkflowId::from_bytes(*uuid.as_bytes()), definition.0))
             .collect())
+    }
+
+    async fn count(&self) -> Result<usize, WorkflowRepoError> {
+        let n: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM workflows")
+            .fetch_one(&self.pool)
+            .await
+            .map_err(|err| WorkflowRepoError::Connection(err.to_string()))?;
+        Ok(n.max(0) as usize)
     }
 }
 

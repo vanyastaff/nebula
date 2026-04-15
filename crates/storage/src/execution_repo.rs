@@ -359,8 +359,13 @@ impl ExecutionRepo for InMemoryExecutionRepo {
         new_state: serde_json::Value,
     ) -> Result<bool, ExecutionRepoError> {
         let mut state = self.state.write().await;
-        let current = state.get(&id).map(|(v, _)| *v).unwrap_or(0);
-        if current != expected_version {
+        // Keep parity with Postgres UPDATE ... WHERE id = $1 AND version = $2:
+        // unknown execution IDs are treated as "no row updated" (false),
+        // not implicitly created at version 1.
+        let Some((current, _)) = state.get(&id) else {
+            return Ok(false);
+        };
+        if *current != expected_version {
             return Ok(false);
         }
         state.insert(id, (expected_version + 1, new_state));
@@ -540,9 +545,18 @@ impl ExecutionRepo for InMemoryExecutionRepo {
     async fn mark_idempotent(
         &self,
         key: &str,
-        _execution_id: ExecutionId,
+        execution_id: ExecutionId,
         _node_id: NodeId,
     ) -> Result<(), ExecutionRepoError> {
+        let state = self.state.read().await;
+        let workflows = self.workflows.read().await;
+        if !state.contains_key(&execution_id) && !workflows.contains_key(&execution_id) {
+            return Err(ExecutionRepoError::not_found(
+                "execution",
+                execution_id.to_string(),
+            ));
+        }
+        drop((state, workflows));
         self.idempotency.write().await.insert(key.to_owned());
         Ok(())
     }
@@ -631,6 +645,26 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn transition_unknown_execution_returns_false_without_creating_row() {
+        let repo = InMemoryExecutionRepo::default();
+        let missing = ExecutionId::new();
+
+        let updated = repo
+            .transition(missing, 0, serde_json::json!({"status": "ghost"}))
+            .await
+            .expect("transition should not error");
+        assert!(
+            !updated,
+            "unknown execution transition must behave like zero rows affected"
+        );
+        assert_eq!(
+            repo.get_state(missing).await.unwrap(),
+            None,
+            "transition must not create missing execution rows"
+        );
+    }
+
+    #[tokio::test]
     async fn create_duplicate_returns_conflict() {
         let repo = InMemoryExecutionRepo::default();
         let eid = ExecutionId::new();
@@ -694,11 +728,29 @@ mod tests {
     async fn idempotency_check_and_mark() {
         let repo = InMemoryExecutionRepo::default();
         let key = "exec1:node1:1";
-        assert!(!repo.check_idempotency(key).await.unwrap());
-        repo.mark_idempotent(key, ExecutionId::new(), NodeId::new())
+        let eid = ExecutionId::new();
+        let wid = WorkflowId::new();
+        repo.create(eid, wid, serde_json::json!({"status": "created"}))
             .await
             .unwrap();
+        assert!(!repo.check_idempotency(key).await.unwrap());
+        repo.mark_idempotent(key, eid, NodeId::new()).await.unwrap();
         assert!(repo.check_idempotency(key).await.unwrap());
+    }
+
+    #[tokio::test]
+    async fn mark_idempotent_unknown_execution_returns_not_found() {
+        let repo = InMemoryExecutionRepo::default();
+        let missing = ExecutionId::new();
+        let err = repo
+            .mark_idempotent("k", missing, NodeId::new())
+            .await
+            .unwrap_err();
+        assert!(matches!(
+            err,
+            ExecutionRepoError::NotFound { ref entity, ref id }
+                if entity == "execution" && id == &missing.to_string()
+        ));
     }
 
     // ── #308 regression: stateful checkpoint round-trips ───────────────────

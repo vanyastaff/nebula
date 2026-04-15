@@ -5,6 +5,7 @@
 use std::{collections::HashMap, sync::Arc};
 
 use async_trait::async_trait;
+use chrono::{DateTime, Utc};
 use nebula_core::WorkflowId;
 use thiserror::Error;
 use tokio::sync::RwLock;
@@ -101,18 +102,34 @@ pub trait WorkflowRepo: Send + Sync {
     async fn delete(&self, id: WorkflowId) -> Result<bool, WorkflowRepoError>;
 
     /// List with pagination.
+    ///
+    /// Ordering is stable across backends: **creation time ascending**, then **workflow id**
+    /// (UUID order), matching Postgres `ORDER BY created_at, id`.
     async fn list(
         &self,
         offset: usize,
         limit: usize,
     ) -> Result<Vec<(WorkflowId, serde_json::Value)>, WorkflowRepoError>;
+
+    /// Total number of stored workflows (matches the filter scope of [`WorkflowRepo::list`],
+    /// currently unfiltered).
+    async fn count(&self) -> Result<usize, WorkflowRepoError>;
 }
 
 /// In-memory workflow repository for tests and desktop/single-process.
+///
+/// [`WorkflowRepo::list`] uses the same ordering contract as Postgres workflow
+/// storage (`ORDER BY created_at, id`): `created_at` is recorded on first insert
+/// and list sorts by `(created_at, id)`.
+///
+/// Lock ordering for [`RwLock`] fields is always **`versions` → `definitions` → `created_at`**
+/// (read or write) so paths cannot deadlock each other.
 #[derive(Default)]
 pub struct InMemoryWorkflowRepo {
     definitions: Arc<RwLock<HashMap<WorkflowId, serde_json::Value>>>,
     versions: Arc<RwLock<HashMap<WorkflowId, u64>>>,
+    /// First-insert time per workflow, aligned with Postgres `workflows.created_at`.
+    created_at: Arc<RwLock<HashMap<WorkflowId, DateTime<Utc>>>>,
 }
 
 impl InMemoryWorkflowRepo {
@@ -129,12 +146,12 @@ impl WorkflowRepo for InMemoryWorkflowRepo {
         &self,
         id: WorkflowId,
     ) -> Result<Option<(u64, serde_json::Value)>, WorkflowRepoError> {
+        let versions = self.versions.read().await;
+        let version = versions.get(&id).copied().unwrap_or(0);
         let definitions = self.definitions.read().await;
         let Some(definition) = definitions.get(&id).cloned() else {
             return Ok(None);
         };
-        let versions = self.versions.read().await;
-        let version = versions.get(&id).copied().unwrap_or(0);
         Ok(Some((version, definition)))
     }
 
@@ -154,14 +171,25 @@ impl WorkflowRepo for InMemoryWorkflowRepo {
                 current,
             ));
         }
+        let is_new = {
+            let defs = self.definitions.read().await;
+            !defs.contains_key(&id)
+        };
         versions.insert(id, current + 1);
+        drop(versions);
+
+        if is_new {
+            self.created_at.write().await.insert(id, Utc::now());
+        }
         self.definitions.write().await.insert(id, definition);
         Ok(())
     }
 
     async fn delete(&self, id: WorkflowId) -> Result<bool, WorkflowRepoError> {
         self.versions.write().await.remove(&id);
-        Ok(self.definitions.write().await.remove(&id).is_some())
+        let removed = self.definitions.write().await.remove(&id).is_some();
+        self.created_at.write().await.remove(&id);
+        Ok(removed)
     }
 
     async fn list(
@@ -170,10 +198,21 @@ impl WorkflowRepo for InMemoryWorkflowRepo {
         limit: usize,
     ) -> Result<Vec<(WorkflowId, serde_json::Value)>, WorkflowRepoError> {
         let map = self.definitions.read().await;
+        let created = self.created_at.read().await;
+        let epoch = DateTime::<Utc>::from_timestamp(0, 0).expect("unix epoch");
         let mut rows: Vec<(WorkflowId, serde_json::Value)> =
             map.iter().map(|(id, value)| (*id, value.clone())).collect();
-        rows.sort_by_key(|(id, _)| id.to_string());
+        rows.sort_by(|(id_a, _), (id_b, _)| {
+            let ta = created.get(id_a).copied().unwrap_or(epoch);
+            let tb = created.get(id_b).copied().unwrap_or(epoch);
+            ta.cmp(&tb).then_with(|| id_a.cmp(id_b))
+        });
         Ok(rows.into_iter().skip(offset).take(limit).collect())
+    }
+
+    async fn count(&self) -> Result<usize, WorkflowRepoError> {
+        let n = self.definitions.read().await.len();
+        Ok(n)
     }
 }
 
@@ -293,6 +332,21 @@ macro_rules! workflow_repo_tests {
             for &id in &ids {
                 repo.delete(id).await.ok();
             }
+        }
+
+        #[tokio::test]
+        async fn count_matches_list_len() {
+            let repo = $factory.await;
+            assert_eq!(repo.count().await.expect("count"), 0);
+
+            let id = WorkflowId::new();
+            repo.save(id, 0, serde_json::json!({}))
+                .await
+                .expect("save");
+            assert_eq!(repo.count().await.expect("count"), 1);
+            assert_eq!(repo.list(0, 100).await.expect("list").len(), 1);
+
+            repo.delete(id).await.ok();
         }
 
         #[tokio::test]

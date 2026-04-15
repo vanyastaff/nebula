@@ -39,8 +39,18 @@ impl<'a> Parser<'a> {
     }
 
     /// Parse the tokens into an expression AST
+    ///
+    /// The entire token stream must be consumed: after the root expression, only [`TokenKind::Eof`]
+    /// is allowed. Extra tokens are rejected to avoid accepting valid prefixes of invalid inputs.
     pub fn parse(&mut self) -> ExpressionResult<Expr> {
-        self.parse_expression_with_depth(0)
+        let expr = self.parse_expression_with_depth(0)?;
+        if self.current_token().kind != TokenKind::Eof {
+            return Err(ExpressionError::expression_parse_error(format!(
+                "Unexpected trailing token: expected end of input, found {}",
+                self.current_token()
+            )));
+        }
+        Ok(expr)
     }
 
     /// Parse expression with depth tracking
@@ -577,5 +587,25 @@ mod tests {
         // Nested property access
         let expr = parse("$node.data.items.first.value").unwrap();
         assert!(matches!(expr, Expr::PropertyAccess { .. }));
+    }
+
+    #[test]
+    fn test_parse_rejects_trailing_tokens_after_expression() {
+        let err = parse("1 + 2 ) )").unwrap_err();
+        let msg = format!("{err}");
+        assert!(
+            msg.contains("Unexpected trailing token"),
+            "unexpected message: {msg}"
+        );
+    }
+
+    #[test]
+    fn test_parse_rejects_trailing_tokens_after_function_call() {
+        let err = parse("length('a') foo").unwrap_err();
+        let msg = format!("{err}");
+        assert!(
+            msg.contains("Unexpected trailing token"),
+            "unexpected message: {msg}"
+        );
     }
 }

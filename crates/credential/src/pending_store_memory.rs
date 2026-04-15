@@ -92,16 +92,21 @@ impl PendingStateStore for InMemoryPendingStore {
     }
 
     async fn get<P: PendingState>(&self, token: &PendingToken) -> Result<P, PendingStoreError> {
-        let entries = self.entries.read().await;
+        let mut entries = self.entries.write().await;
         let entry = entries
             .get(token.as_str())
             .ok_or(PendingStoreError::NotFound)?;
 
         if Utc::now() > entry.expires_at {
+            // Expiry is deterministic; evict here too so repeated `get`
+            // probes cannot retain stale rows forever.
+            entries.remove(token.as_str());
             return Err(PendingStoreError::Expired);
         }
+        let data = entry.data.clone();
+        drop(entries);
 
-        serde_json::from_slice(&entry.data).map_err(|e| PendingStoreError::Backend(Box::new(e)))
+        serde_json::from_slice(&data).map_err(|e| PendingStoreError::Backend(Box::new(e)))
     }
 
     async fn consume<P: PendingState>(
@@ -346,6 +351,12 @@ mod tests {
 
         let err = store.get::<ShortLivedPending>(&token).await.unwrap_err();
         assert!(matches!(err, PendingStoreError::Expired));
+        assert_eq!(store.entries.read().await.len(), 0);
+
+        // Once evicted, later reads are a clean miss instead of repeatedly
+        // returning Expired while retaining memory.
+        let second = store.get::<ShortLivedPending>(&token).await.unwrap_err();
+        assert!(matches!(second, PendingStoreError::NotFound));
     }
 
     #[tokio::test]

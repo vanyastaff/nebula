@@ -9,7 +9,9 @@ use serde::{Deserialize, Serialize};
 pub struct DataPassingPolicy {
     /// Maximum size of a single node's output in bytes (default: 10 MB).
     pub max_node_output_bytes: u64,
-    /// Maximum total data size across all nodes in an execution (default: 100 MB).
+    /// Maximum total estimated payload bytes across all action outputs in one execution
+    /// (default: 100 MB). `0` disables this cap (per-node [`Self::max_node_output_bytes`] still
+    /// applies).
     pub max_total_execution_bytes: u64,
     /// What to do when data exceeds limits.
     pub large_data_strategy: LargeDataStrategy,

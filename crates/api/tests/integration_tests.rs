@@ -198,10 +198,10 @@ async fn test_error_format_rfc9457() {
     assert_eq!(problem["status"], 400);
 
     // Test 3: Validation Error (400) - cancel already completed execution
-    use nebula_core::ExecutionId;
+    use nebula_core::{ExecutionId, WorkflowId};
 
     let execution_id = ExecutionId::new();
-    let workflow_id = "test-workflow-id";
+    let workflow_id = WorkflowId::new();
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap()
@@ -218,7 +218,7 @@ async fn test_error_format_rfc9457() {
 
     state
         .execution_repo
-        .transition(execution_id, 0, execution_state.clone())
+        .create(execution_id, workflow_id, execution_state.clone())
         .await
         .unwrap();
 
@@ -387,6 +387,85 @@ async fn test_workflow_list_with_data() {
     assert_eq!(response_data["workflows"].as_array().unwrap().len(), 1);
     assert_eq!(response_data["total"], 1);
     assert_eq!(response_data["workflows"][0]["name"], "Test Workflow");
+}
+
+/// `total` must reflect the full dataset size, not the current page length (issue #342).
+#[tokio::test]
+async fn test_workflow_list_total_matches_full_dataset_across_pages() {
+    use axum::{
+        body::Body,
+        http::{Request, StatusCode},
+    };
+    use tower::ServiceExt;
+
+    let state = create_test_state().await;
+    let api_config = ApiConfig::for_test();
+    let token = create_test_jwt();
+
+    for i in 0..3 {
+        let create_request = serde_json::json!({
+            "name": format!("Pagination Total {i}"),
+            "definition": { "nodes": [], "edges": [] }
+        });
+        let app = app::build_app(state.clone(), &api_config);
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/v1/workflows")
+                    .header("content-type", "application/json")
+                    .header("authorization", format!("Bearer {}", token))
+                    .body(Body::from(serde_json::to_string(&create_request).unwrap()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            response.status(),
+            StatusCode::CREATED,
+            "create workflow {i}"
+        );
+    }
+
+    let app = app::build_app(state.clone(), &api_config);
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("GET")
+                .uri("/api/v1/workflows?page=1&page_size=2")
+                .header("authorization", format!("Bearer {}", token))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let page1: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(page1["workflows"].as_array().unwrap().len(), 2);
+    assert_eq!(page1["total"], 3);
+
+    let app = app::build_app(state.clone(), &api_config);
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("GET")
+                .uri("/api/v1/workflows?page=2&page_size=2")
+                .header("authorization", format!("Bearer {}", token))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let page2: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(page2["workflows"].as_array().unwrap().len(), 1);
+    assert_eq!(page2["total"], 3);
 }
 
 #[tokio::test]
@@ -986,7 +1065,7 @@ async fn test_execution_get_by_id() {
         body::Body,
         http::{Request, StatusCode},
     };
-    use nebula_core::ExecutionId;
+    use nebula_core::{ExecutionId, WorkflowId};
     use tower::ServiceExt;
 
     let state = create_test_state().await;
@@ -995,14 +1074,14 @@ async fn test_execution_get_by_id() {
 
     // Create an execution directly in the repo
     let execution_id = ExecutionId::new();
-    let workflow_id = "test-workflow-id";
+    let workflow_id = WorkflowId::new();
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap()
         .as_secs() as i64;
 
     let execution_state = serde_json::json!({
-        "workflow_id": workflow_id,
+        "workflow_id": workflow_id.to_string(),
         "status": "running",
         "started_at": now,
         "input": {"key": "value"}
@@ -1010,7 +1089,7 @@ async fn test_execution_get_by_id() {
 
     state
         .execution_repo
-        .transition(execution_id, 0, execution_state.clone())
+        .create(execution_id, workflow_id, execution_state.clone())
         .await
         .unwrap();
 
@@ -1036,7 +1115,7 @@ async fn test_execution_get_by_id() {
     let execution: serde_json::Value = serde_json::from_slice(&body).unwrap();
 
     assert_eq!(execution["id"], execution_id.to_string());
-    assert_eq!(execution["workflow_id"], workflow_id);
+    assert_eq!(execution["workflow_id"], workflow_id.to_string());
     assert_eq!(execution["status"], "running");
     assert_eq!(execution["started_at"], now);
     assert_eq!(execution["input"]["key"], "value");
@@ -1156,7 +1235,7 @@ async fn test_execution_cancel() {
         body::Body,
         http::{Request, StatusCode},
     };
-    use nebula_core::ExecutionId;
+    use nebula_core::{ExecutionId, WorkflowId};
     use tower::ServiceExt;
 
     let state = create_test_state().await;
@@ -1165,14 +1244,14 @@ async fn test_execution_cancel() {
 
     // Create an execution directly in the repo
     let execution_id = ExecutionId::new();
-    let workflow_id = "test-workflow-id";
+    let workflow_id = WorkflowId::new();
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap()
         .as_secs() as i64;
 
     let execution_state = serde_json::json!({
-        "workflow_id": workflow_id,
+        "workflow_id": workflow_id.to_string(),
         "status": "running",
         "started_at": now,
         "input": {"key": "value"}
@@ -1180,7 +1259,7 @@ async fn test_execution_cancel() {
 
     state
         .execution_repo
-        .transition(execution_id, 0, execution_state.clone())
+        .create(execution_id, workflow_id, execution_state.clone())
         .await
         .unwrap();
 
@@ -1270,7 +1349,7 @@ async fn test_execution_cancel_already_completed() {
         body::Body,
         http::{Request, StatusCode},
     };
-    use nebula_core::ExecutionId;
+    use nebula_core::{ExecutionId, WorkflowId};
     use tower::ServiceExt;
 
     let state = create_test_state().await;
@@ -1279,14 +1358,14 @@ async fn test_execution_cancel_already_completed() {
 
     // Create a completed execution directly in the repo
     let execution_id = ExecutionId::new();
-    let workflow_id = "test-workflow-id";
+    let workflow_id = WorkflowId::new();
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap()
         .as_secs() as i64;
 
     let execution_state = serde_json::json!({
-        "workflow_id": workflow_id,
+        "workflow_id": workflow_id.to_string(),
         "status": "completed",
         "started_at": now,
         "finished_at": now + 10,
@@ -1296,7 +1375,7 @@ async fn test_execution_cancel_already_completed() {
 
     state
         .execution_repo
-        .transition(execution_id, 0, execution_state.clone())
+        .create(execution_id, workflow_id, execution_state.clone())
         .await
         .unwrap();
 

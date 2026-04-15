@@ -6,6 +6,9 @@ ignore = [
     # atomic-polyfill: unmaintained (transitive: postcard → heapless). Not a vulnerability.
     # Track: https://rustsec.org/advisories/RUSTSEC-2023-0089
     "RUSTSEC-2023-0089",
+    # rustls-webpki URI name-constraint handling issue; Nebula does not perform URI SAN assertions.
+    # Track: https://rustsec.org/advisories/RUSTSEC-2026-0098
+    "RUSTSEC-2026-0098",
 ]
 
 [output]

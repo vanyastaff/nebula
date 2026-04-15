@@ -6,12 +6,14 @@
 use std::{sync::Arc, time::Instant};
 
 use async_trait::async_trait;
+use dashmap::DashMap;
 use nebula_action::{
     ActionContext, ActionError, ActionHandler, ActionMetadata, IsolationLevel, StatefulHandler,
     StatelessHandler,
     output::{ActionOutput, DataReference},
     result::ActionResult,
 };
+use nebula_core::ExecutionId;
 use nebula_metrics::naming::{
     NEBULA_ACTION_DISPATCH_REJECTED_TOTAL, NEBULA_ACTION_DURATION_SECONDS,
     NEBULA_ACTION_EXECUTIONS_TOTAL, NEBULA_ACTION_FAILURES_TOTAL, dispatch_reject_reason,
@@ -102,6 +104,9 @@ pub struct ActionRuntime {
     data_policy: DataPassingPolicy,
     metrics: MetricsRegistry,
     blob_storage: Option<Arc<dyn BlobStorage>>,
+    /// Sum of estimated output bytes per execution for
+    /// [`DataPassingPolicy::max_total_execution_bytes`].
+    execution_output_totals: Arc<DashMap<ExecutionId, u64>>,
 }
 
 impl ActionRuntime {
@@ -118,7 +123,16 @@ impl ActionRuntime {
             data_policy,
             metrics,
             blob_storage: None,
+            execution_output_totals: Arc::new(DashMap::new()),
         }
+    }
+
+    /// Clears accumulated output-byte totals for an execution.
+    ///
+    /// The workflow engine calls this when a run completes so accounting
+    /// entries do not accumulate forever ([`DataPassingPolicy::max_total_execution_bytes`]).
+    pub fn clear_execution_output_totals(&self, execution_id: ExecutionId) {
+        self.execution_output_totals.remove(&execution_id);
     }
 
     /// Access the action registry.
@@ -267,6 +281,7 @@ impl ActionRuntime {
         checkpoint: Option<Arc<dyn StatefulCheckpointSink>>,
     ) -> Result<ActionResult<serde_json::Value>, RuntimeError> {
         let error_counter = self.metrics.counter(NEBULA_ACTION_FAILURES_TOTAL);
+        let execution_id = context.execution_id;
 
         // Commit to a dispatched path or a rejection path, then branch.
         // The rejection arms never sample the histogram — they only touch
@@ -317,8 +332,13 @@ impl ActionRuntime {
 
         match result {
             Ok(mut action_result) => {
-                self.enforce_data_limit(action_key, &mut action_result, &error_counter)
-                    .await?;
+                self.enforce_data_limit(
+                    action_key,
+                    execution_id,
+                    &mut action_result,
+                    &error_counter,
+                )
+                .await?;
                 Ok(action_result)
             },
             Err(action_err) => Err(RuntimeError::ActionError(action_err)),
@@ -595,41 +615,53 @@ impl ActionRuntime {
     ///   downstream; a misbehaving node must not smuggle a GB-sized alternative past the limit)
     /// - `MultiOutput` — the optional main output **and** every fan-out port
     ///
-    /// For each inline `Value` slot that exceeds the limit, applies the
-    /// configured strategy:
+    /// For each output slot that exceeds the limit, applies the configured
+    /// strategy:
     /// - `Reject` → returns `DataLimitExceeded` on the first offender
-    /// - `SpillToBlob` → writes the payload to blob storage and rewrites the slot to an
-    ///   `ActionOutput::Reference` so the large inline value is no longer carried downstream
+    /// - `SpillToBlob` → for `ActionOutput::Value` only, writes the payload to blob storage and
+    ///   rewrites the slot to an `ActionOutput::Reference` so the large inline value is no longer
+    ///   carried downstream.
     ///
-    /// Non-`Value` variants (`Binary` / `Reference` / `Deferred`) are
-    /// skipped — their size is managed by the owning storage backend.
+    /// `ActionOutput::Collection` is traversed recursively. `Binary` is
+    /// measured with `effective_size()`, and `Reference` is measured by
+    /// serialized metadata size.
     async fn enforce_data_limit(
         &self,
         action_key: &str,
+        execution_id: ExecutionId,
         action_result: &mut ActionResult<serde_json::Value>,
         error_counter: &nebula_telemetry::metrics::Counter,
     ) -> Result<(), RuntimeError> {
         let limit = self.data_policy.max_node_output_bytes;
+        let total_limit = self.data_policy.max_total_execution_bytes;
 
-        // Collect disjoint mut references to every output slot in the result.
+        // Collect disjoint mut references to every leaf output slot in the result.
         // The Vec itself holds unique borrows of distinct struct fields, so
         // iterating and mutating each in turn is sound.
         let mut slots: Vec<&mut ActionOutput<serde_json::Value>> = Vec::new();
         collect_output_slots_mut(action_result, &mut slots);
 
         for slot in slots {
-            // Only inline Value outputs participate in the size check;
-            // Binary / Reference / Deferred are already bounded by their
-            // respective backends.
-            let serialized = match &*slot {
-                ActionOutput::Value(v) => serde_json::to_vec(v).map_err(|e| {
-                    RuntimeError::Internal(format!(
-                        "failed to serialize output for size limit enforcement: {e}"
-                    ))
-                })?,
-                _ => continue,
+            let actual = match &*slot {
+                ActionOutput::Value(v) => serde_json::to_vec(v)
+                    .map_err(|e| {
+                        RuntimeError::Internal(format!(
+                            "failed to serialize output for size limit enforcement: {e}"
+                        ))
+                    })?
+                    .len() as u64,
+                ActionOutput::Binary(b) => b.effective_size(),
+                ActionOutput::Reference(r) => serde_json::to_vec(r)
+                    .map_err(|e| {
+                        RuntimeError::Internal(format!(
+                            "failed to serialize reference metadata for size limit enforcement: {e}"
+                        ))
+                    })?
+                    .len() as u64,
+                ActionOutput::Deferred(_) | ActionOutput::Streaming(_) | ActionOutput::Empty => 0,
+                ActionOutput::Collection(_) => 0, // collections are flattened before this loop
+                _ => 0,
             };
-            let actual = serialized.len() as u64;
             if actual <= limit {
                 continue;
             }
@@ -643,6 +675,15 @@ impl ActionRuntime {
                     });
                 },
                 LargeDataStrategy::SpillToBlob => {
+                    let ActionOutput::Value(_) = &*slot else {
+                        // Non-Value large payloads (Binary/Reference) cannot be
+                        // rewritten to JSON blob references safely here.
+                        error_counter.inc();
+                        return Err(RuntimeError::DataLimitExceeded {
+                            limit_bytes: limit,
+                            actual_bytes: actual,
+                        });
+                    };
                     let Some(storage) = self.blob_storage.as_ref() else {
                         tracing::warn!(
                             action_key,
@@ -656,6 +697,15 @@ impl ActionRuntime {
                             actual_bytes: actual,
                         });
                     };
+                    let serialized = serde_json::to_vec(match &*slot {
+                        ActionOutput::Value(v) => v,
+                        _ => unreachable!("guarded above"),
+                    })
+                    .map_err(|e| {
+                        RuntimeError::Internal(format!(
+                            "failed to serialize output for blob spill: {e}"
+                        ))
+                    })?;
                     let blob_ref = match storage.write(&serialized, "application/json").await {
                         Ok(r) => r,
                         Err(e) => {
@@ -687,7 +737,62 @@ impl ActionRuntime {
             }
         }
 
+        // Enforce max total bytes across all nodes in this execution (issue #357).
+        if total_limit > 0 {
+            let mut slots_after: Vec<&mut ActionOutput<serde_json::Value>> = Vec::new();
+            collect_output_slots_mut(action_result, &mut slots_after);
+            let node_total: u64 = slots_after
+                .iter()
+                .map(|s| estimated_action_output_payload_bytes(s))
+                .sum();
+
+            use dashmap::mapref::entry::Entry;
+            match self.execution_output_totals.entry(execution_id) {
+                Entry::Occupied(mut o) => {
+                    let new_total = *o.get() + node_total;
+                    if new_total > total_limit {
+                        error_counter.inc();
+                        return Err(RuntimeError::DataLimitExceeded {
+                            limit_bytes: total_limit,
+                            actual_bytes: new_total,
+                        });
+                    }
+                    *o.get_mut() = new_total;
+                },
+                Entry::Vacant(v) => {
+                    if node_total > total_limit {
+                        error_counter.inc();
+                        return Err(RuntimeError::DataLimitExceeded {
+                            limit_bytes: total_limit,
+                            actual_bytes: node_total,
+                        });
+                    }
+                    v.insert(node_total);
+                },
+            }
+        }
+
         Ok(())
+    }
+}
+
+/// Best-effort size of all payload bytes represented by an output slot after
+/// per-node enforcement (including nested collections).
+fn estimated_action_output_payload_bytes(slot: &ActionOutput<serde_json::Value>) -> u64 {
+    match slot {
+        ActionOutput::Value(v) => serde_json::to_vec(v).map(|b| b.len() as u64).unwrap_or(0),
+        ActionOutput::Binary(b) => b.effective_size(),
+        ActionOutput::Reference(r) => r
+            .size
+            .unwrap_or_else(|| serde_json::to_vec(r).map(|b| b.len() as u64).unwrap_or(0)),
+        ActionOutput::Deferred(_) => 0,
+        ActionOutput::Streaming(_) => 0,
+        ActionOutput::Collection(items) => items
+            .iter()
+            .map(estimated_action_output_payload_bytes)
+            .sum(),
+        ActionOutput::Empty => 0,
+        _ => 0,
     }
 }
 
@@ -703,40 +808,54 @@ fn collect_output_slots_mut<'a>(
     result: &'a mut ActionResult<serde_json::Value>,
     out: &mut Vec<&'a mut ActionOutput<serde_json::Value>>,
 ) {
+    fn collect_slot<'a>(
+        slot: &'a mut ActionOutput<serde_json::Value>,
+        out: &mut Vec<&'a mut ActionOutput<serde_json::Value>>,
+    ) {
+        match slot {
+            ActionOutput::Collection(items) => {
+                for item in items.iter_mut() {
+                    collect_slot(item, out);
+                }
+            },
+            _ => out.push(slot),
+        }
+    }
+
     match result {
-        ActionResult::Success { output } => out.push(output),
+        ActionResult::Success { output } => collect_slot(output, out),
         ActionResult::Skip { output, .. } => {
             if let Some(o) = output.as_mut() {
-                out.push(o);
+                collect_slot(o, out);
             }
         },
-        ActionResult::Continue { output, .. } => out.push(output),
-        ActionResult::Break { output, .. } => out.push(output),
+        ActionResult::Continue { output, .. } => collect_slot(output, out),
+        ActionResult::Break { output, .. } => collect_slot(output, out),
         ActionResult::Branch {
             output,
             alternatives,
             ..
         } => {
-            out.push(output);
+            collect_slot(output, out);
             for alt in alternatives.values_mut() {
-                out.push(alt);
+                collect_slot(alt, out);
             }
         },
-        ActionResult::Route { data, .. } => out.push(data),
+        ActionResult::Route { data, .. } => collect_slot(data, out),
         ActionResult::MultiOutput {
             outputs,
             main_output,
         } => {
             if let Some(m) = main_output.as_mut() {
-                out.push(m);
+                collect_slot(m, out);
             }
             for o in outputs.values_mut() {
-                out.push(o);
+                collect_slot(o, out);
             }
         },
         ActionResult::Wait { partial_output, .. } => {
             if let Some(o) = partial_output.as_mut() {
-                out.push(o);
+                collect_slot(o, out);
             }
         },
         // `ActionResult` is `#[non_exhaustive]`. Variants without a
@@ -859,6 +978,60 @@ mod tests {
             metrics.clone(),
         );
         (rt, metrics)
+    }
+
+    #[tokio::test]
+    async fn max_total_execution_bytes_across_dispatches() {
+        let registry = Arc::new(ActionRegistry::new());
+        registry.register_stateless(EchoAction {
+            meta: ActionMetadata::new(action_key!("test.echo"), "Echo", "echoes input"),
+        });
+
+        let executor: ActionExecutor = Arc::new(|_ctx, _meta, input| {
+            Box::pin(async move { Ok(ActionResult::success(input)) })
+        });
+        let sandbox = Arc::new(InProcessSandbox::new(executor));
+        let metrics = MetricsRegistry::new();
+        let rt = ActionRuntime::new(
+            registry,
+            sandbox,
+            DataPassingPolicy {
+                max_node_output_bytes: 1024,
+                max_total_execution_bytes: 10,
+                ..Default::default()
+            },
+            metrics,
+        );
+
+        let eid = ExecutionId::new();
+        let ctx = ActionContext::new(
+            eid,
+            NodeId::new(),
+            WorkflowId::new(),
+            tokio_util::sync::CancellationToken::new(),
+        );
+
+        rt.execute_action("test.echo", serde_json::json!(null), ctx.clone())
+            .await
+            .expect("first dispatch under total cap");
+
+        let err = rt
+            .execute_action("test.echo", serde_json::json!("1234567890"), ctx)
+            .await
+            .expect_err("second dispatch exceeds max_total_execution_bytes");
+
+        assert!(
+            matches!(
+                err,
+                RuntimeError::DataLimitExceeded {
+                    limit_bytes: 10,
+                    ..
+                }
+            ),
+            "expected total cap error, got {err:?}"
+        );
+
+        rt.clear_execution_output_totals(eid);
     }
 
     #[tokio::test]
@@ -1272,6 +1445,196 @@ mod tests {
         );
     }
 
+    #[tokio::test]
+    async fn collection_children_respect_reject_limit() {
+        use nebula_action::result::ActionResult as AR;
+
+        struct CollectionAction {
+            meta: ActionMetadata,
+        }
+        impl ActionDependencies for CollectionAction {}
+        impl Action for CollectionAction {
+            fn metadata(&self) -> &ActionMetadata {
+                &self.meta
+            }
+        }
+        impl StatelessAction for CollectionAction {
+            type Input = serde_json::Value;
+            type Output = serde_json::Value;
+            async fn execute(
+                &self,
+                _input: Self::Input,
+                _ctx: &impl Context,
+            ) -> Result<AR<Self::Output>, ActionError> {
+                Ok(AR::Success {
+                    output: ActionOutput::Collection(vec![
+                        ActionOutput::Value(serde_json::json!("ok")),
+                        ActionOutput::Value(serde_json::json!(
+                            "this payload is larger than 16 bytes"
+                        )),
+                    ]),
+                })
+            }
+        }
+
+        let registry = Arc::new(ActionRegistry::new());
+        registry.register_stateless(CollectionAction {
+            meta: ActionMetadata::new(
+                action_key!("test.collection"),
+                "Collection",
+                "nested values",
+            ),
+        });
+        let executor: ActionExecutor = Arc::new(|_ctx, _meta, input| {
+            Box::pin(async move { Ok(ActionResult::success(input)) })
+        });
+        let sandbox = Arc::new(InProcessSandbox::new(executor));
+        let metrics = MetricsRegistry::new();
+        let rt = ActionRuntime::new(
+            registry,
+            sandbox,
+            DataPassingPolicy {
+                max_node_output_bytes: 16,
+                large_data_strategy: LargeDataStrategy::Reject,
+                ..Default::default()
+            },
+            metrics,
+        );
+
+        let result = rt
+            .execute_action("test.collection", serde_json::json!(null), test_context())
+            .await;
+        assert!(
+            matches!(result, Err(RuntimeError::DataLimitExceeded { .. })),
+            "nested collection values must not bypass the data-passing limit — got {result:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn binary_inline_respects_reject_limit() {
+        use nebula_action::{
+            output::{BinaryData, BinaryStorage},
+            result::ActionResult as AR,
+        };
+
+        struct BinaryAction {
+            meta: ActionMetadata,
+        }
+        impl ActionDependencies for BinaryAction {}
+        impl Action for BinaryAction {
+            fn metadata(&self) -> &ActionMetadata {
+                &self.meta
+            }
+        }
+        impl StatelessAction for BinaryAction {
+            type Input = serde_json::Value;
+            type Output = serde_json::Value;
+            async fn execute(
+                &self,
+                _input: Self::Input,
+                _ctx: &impl Context,
+            ) -> Result<AR<Self::Output>, ActionError> {
+                Ok(AR::Success {
+                    output: ActionOutput::Binary(BinaryData {
+                        content_type: "application/octet-stream".to_owned(),
+                        data: BinaryStorage::Inline(vec![0_u8; 64]),
+                        size: 1, // intentionally wrong; effective_size() must win
+                        metadata: None,
+                    }),
+                })
+            }
+        }
+
+        let registry = Arc::new(ActionRegistry::new());
+        registry.register_stateless(BinaryAction {
+            meta: ActionMetadata::new(action_key!("test.binary"), "Binary", "inline bytes"),
+        });
+        let executor: ActionExecutor = Arc::new(|_ctx, _meta, input| {
+            Box::pin(async move { Ok(ActionResult::success(input)) })
+        });
+        let sandbox = Arc::new(InProcessSandbox::new(executor));
+        let metrics = MetricsRegistry::new();
+        let rt = ActionRuntime::new(
+            registry,
+            sandbox,
+            DataPassingPolicy {
+                max_node_output_bytes: 16,
+                large_data_strategy: LargeDataStrategy::Reject,
+                ..Default::default()
+            },
+            metrics,
+        );
+
+        let result = rt
+            .execute_action("test.binary", serde_json::json!(null), test_context())
+            .await;
+        assert!(
+            matches!(result, Err(RuntimeError::DataLimitExceeded { .. })),
+            "inline binary output must be checked via effective_size() — got {result:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn reference_metadata_respects_reject_limit() {
+        use nebula_action::result::ActionResult as AR;
+
+        struct RefAction {
+            meta: ActionMetadata,
+        }
+        impl ActionDependencies for RefAction {}
+        impl Action for RefAction {
+            fn metadata(&self) -> &ActionMetadata {
+                &self.meta
+            }
+        }
+        impl StatelessAction for RefAction {
+            type Input = serde_json::Value;
+            type Output = serde_json::Value;
+            async fn execute(
+                &self,
+                _input: Self::Input,
+                _ctx: &impl Context,
+            ) -> Result<AR<Self::Output>, ActionError> {
+                Ok(AR::Success {
+                    output: ActionOutput::Reference(DataReference {
+                        storage_type: "blob".to_owned(),
+                        path: "x".repeat(128),
+                        size: Some(1),
+                        content_type: Some("application/json".to_owned()),
+                    }),
+                })
+            }
+        }
+
+        let registry = Arc::new(ActionRegistry::new());
+        registry.register_stateless(RefAction {
+            meta: ActionMetadata::new(action_key!("test.ref"), "Reference", "large metadata"),
+        });
+        let executor: ActionExecutor = Arc::new(|_ctx, _meta, input| {
+            Box::pin(async move { Ok(ActionResult::success(input)) })
+        });
+        let sandbox = Arc::new(InProcessSandbox::new(executor));
+        let metrics = MetricsRegistry::new();
+        let rt = ActionRuntime::new(
+            registry,
+            sandbox,
+            DataPassingPolicy {
+                max_node_output_bytes: 32,
+                large_data_strategy: LargeDataStrategy::Reject,
+                ..Default::default()
+            },
+            metrics,
+        );
+
+        let result = rt
+            .execute_action("test.ref", serde_json::json!(null), test_context())
+            .await;
+        assert!(
+            matches!(result, Err(RuntimeError::DataLimitExceeded { .. })),
+            "reference metadata must be included in size enforcement — got {result:?}"
+        );
+    }
+
     // ── #305 regression: dispatch-rejection paths do not skew histogram ─────
 
     /// Register a handler that resolves to a kind which is *not* executable
@@ -1351,6 +1714,125 @@ mod tests {
                 .get(),
             1,
             "dispatch-rejected counter should be bumped once with reason=trigger_not_executable"
+        );
+    }
+
+    #[tokio::test]
+    async fn resource_rejection_does_not_increment_execution_metrics() {
+        use std::any::Any;
+
+        use nebula_action::{handler::ActionHandler, resource::ResourceHandler};
+
+        struct FakeResourceHandler {
+            meta: ActionMetadata,
+        }
+
+        #[async_trait::async_trait]
+        impl ResourceHandler for FakeResourceHandler {
+            fn metadata(&self) -> &ActionMetadata {
+                &self.meta
+            }
+            async fn configure(
+                &self,
+                _config: serde_json::Value,
+                _ctx: &ActionContext,
+            ) -> Result<Box<dyn Any + Send + Sync>, ActionError> {
+                Ok(Box::new(()))
+            }
+            async fn cleanup(
+                &self,
+                _instance: Box<dyn Any + Send + Sync>,
+                _ctx: &ActionContext,
+            ) -> Result<(), ActionError> {
+                Ok(())
+            }
+        }
+
+        let registry = Arc::new(ActionRegistry::new());
+        let meta = ActionMetadata::new(action_key!("test.resource_reject"), "Res", "reject case");
+        registry.register(
+            meta.clone(),
+            ActionHandler::Resource(Arc::new(FakeResourceHandler { meta })),
+        );
+        let (rt, metrics) = make_runtime_with_metrics(registry);
+
+        let result = rt
+            .execute_action(
+                "test.resource_reject",
+                serde_json::json!(null),
+                test_context(),
+            )
+            .await;
+        assert!(
+            matches!(result, Err(RuntimeError::ResourceNotExecutable { .. })),
+            "expected ResourceNotExecutable, got {result:?}"
+        );
+
+        assert_eq!(metrics.histogram(NEBULA_ACTION_DURATION_SECONDS).count(), 0);
+        assert_eq!(metrics.counter(NEBULA_ACTION_EXECUTIONS_TOTAL).get(), 0);
+        assert_eq!(metrics.counter(NEBULA_ACTION_FAILURES_TOTAL).get(), 0);
+
+        let labels = metrics
+            .interner()
+            .label_set(&[("reason", dispatch_reject_reason::RESOURCE_NOT_EXECUTABLE)]);
+        assert_eq!(
+            metrics
+                .counter_labeled(NEBULA_ACTION_DISPATCH_REJECTED_TOTAL, &labels)
+                .get(),
+            1
+        );
+    }
+
+    #[tokio::test]
+    async fn agent_rejection_does_not_increment_execution_metrics() {
+        use nebula_action::handler::{ActionHandler, AgentHandler};
+
+        struct FakeAgentHandler {
+            meta: ActionMetadata,
+        }
+
+        #[async_trait::async_trait]
+        impl AgentHandler for FakeAgentHandler {
+            fn metadata(&self) -> &ActionMetadata {
+                &self.meta
+            }
+            async fn execute(
+                &self,
+                _input: serde_json::Value,
+                _ctx: &ActionContext,
+            ) -> Result<ActionResult<serde_json::Value>, ActionError> {
+                Ok(ActionResult::success(serde_json::json!(null)))
+            }
+        }
+
+        let registry = Arc::new(ActionRegistry::new());
+        let meta = ActionMetadata::new(action_key!("test.agent_reject"), "Agent", "reject case");
+        registry.register(
+            meta.clone(),
+            ActionHandler::Agent(Arc::new(FakeAgentHandler { meta })),
+        );
+        let (rt, metrics) = make_runtime_with_metrics(registry);
+
+        let result = rt
+            .execute_action("test.agent_reject", serde_json::json!(null), test_context())
+            .await;
+        assert!(
+            matches!(result, Err(RuntimeError::AgentNotSupportedYet { .. })),
+            "expected AgentNotSupportedYet, got {result:?}"
+        );
+
+        assert_eq!(metrics.histogram(NEBULA_ACTION_DURATION_SECONDS).count(), 0);
+        assert_eq!(metrics.counter(NEBULA_ACTION_EXECUTIONS_TOTAL).get(), 0);
+        assert_eq!(metrics.counter(NEBULA_ACTION_FAILURES_TOTAL).get(), 0);
+
+        let labels = metrics
+            .interner()
+            .label_set(&[("reason", dispatch_reject_reason::AGENT_NOT_SUPPORTED)]);
+        assert_eq!(
+            metrics
+                .counter_labeled(NEBULA_ACTION_DISPATCH_REJECTED_TOTAL, &labels)
+                .get(),
+            1
         );
     }
 
