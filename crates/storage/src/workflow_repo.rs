@@ -121,6 +121,9 @@ pub trait WorkflowRepo: Send + Sync {
 /// [`WorkflowRepo::list`] uses the same ordering contract as
 /// [`PgWorkflowRepo`](crate::PgWorkflowRepo): `created_at` is recorded on first insert and list
 /// sorts by `(created_at, id)`.
+///
+/// Lock ordering for [`RwLock`] fields is always **`versions` → `definitions` → `created_at`**
+/// (read or write) so paths cannot deadlock each other.
 #[derive(Default)]
 pub struct InMemoryWorkflowRepo {
     definitions: Arc<RwLock<HashMap<WorkflowId, serde_json::Value>>>,
@@ -143,12 +146,12 @@ impl WorkflowRepo for InMemoryWorkflowRepo {
         &self,
         id: WorkflowId,
     ) -> Result<Option<(u64, serde_json::Value)>, WorkflowRepoError> {
+        let versions = self.versions.read().await;
+        let version = versions.get(&id).copied().unwrap_or(0);
         let definitions = self.definitions.read().await;
         let Some(definition) = definitions.get(&id).cloned() else {
             return Ok(None);
         };
-        let versions = self.versions.read().await;
-        let version = versions.get(&id).copied().unwrap_or(0);
         Ok(Some((version, definition)))
     }
 
@@ -158,7 +161,6 @@ impl WorkflowRepo for InMemoryWorkflowRepo {
         version: u64,
         definition: serde_json::Value,
     ) -> Result<(), WorkflowRepoError> {
-        let is_new = !self.definitions.read().await.contains_key(&id);
         let mut versions = self.versions.write().await;
         let current = versions.get(&id).copied().unwrap_or(0);
         if current != version {
@@ -169,7 +171,13 @@ impl WorkflowRepo for InMemoryWorkflowRepo {
                 current,
             ));
         }
+        let is_new = {
+            let defs = self.definitions.read().await;
+            !defs.contains_key(&id)
+        };
         versions.insert(id, current + 1);
+        drop(versions);
+
         if is_new {
             self.created_at.write().await.insert(id, Utc::now());
         }
@@ -178,9 +186,10 @@ impl WorkflowRepo for InMemoryWorkflowRepo {
     }
 
     async fn delete(&self, id: WorkflowId) -> Result<bool, WorkflowRepoError> {
-        self.created_at.write().await.remove(&id);
         self.versions.write().await.remove(&id);
-        Ok(self.definitions.write().await.remove(&id).is_some())
+        let removed = self.definitions.write().await.remove(&id).is_some();
+        self.created_at.write().await.remove(&id);
+        Ok(removed)
     }
 
     async fn list(
