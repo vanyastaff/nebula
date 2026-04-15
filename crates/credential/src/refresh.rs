@@ -119,13 +119,19 @@ pub enum RefreshAttempt {
 /// Default maximum number of concurrent refresh operations.
 const DEFAULT_MAX_CONCURRENT_REFRESHES: usize = 32;
 
+/// Raw LRU cap for per-credential circuit breakers (must stay > 0).
+const MAX_TRACKED_CIRCUIT_BREAKERS_CAP: usize = 4096;
+
 /// Maximum number of per-credential circuit breakers kept in memory.
 ///
 /// Failed refreshes insert entries that are only removed on success; without a
 /// cap, unbounded churn of distinct credential IDs could grow this map
 /// forever (see GitHub issue #278). Eviction follows LRU semantics: the least
 /// recently touched breaker may be dropped when the cap is exceeded.
-const MAX_TRACKED_CIRCUIT_BREAKERS: NonZeroUsize = NonZeroUsize::new(4096).unwrap();
+///
+/// The `unwrap` is evaluated at compile time: [`MAX_TRACKED_CIRCUIT_BREAKERS_CAP`] is non-zero.
+const MAX_TRACKED_CIRCUIT_BREAKERS: NonZeroUsize =
+    NonZeroUsize::new(MAX_TRACKED_CIRCUIT_BREAKERS_CAP).unwrap();
 
 /// Configuration errors returned by [`RefreshCoordinator`] constructors.
 ///
@@ -207,7 +213,20 @@ impl RefreshCoordinator {
             min_operations: 1,
             ..Default::default()
         };
-        let cb = Arc::new(CircuitBreaker::new(config).expect("valid CB config"));
+        let inner = CircuitBreaker::new(config).unwrap_or_else(|err| {
+            tracing::error!(
+                error = %err,
+                "unexpected: static refresh circuit breaker config invalid; using defaults"
+            );
+            CircuitBreaker::new(CircuitBreakerConfig::default()).unwrap_or_else(|err2| {
+                tracing::error!(
+                    error = %err2,
+                    "unexpected: default circuit breaker config invalid"
+                );
+                unreachable!("CircuitBreakerConfig::default must validate in nebula-resilience")
+            })
+        });
+        let cb = Arc::new(inner);
         cbs.put(credential_id.to_string(), Arc::clone(&cb));
         cb
     }
@@ -315,7 +334,7 @@ mod tests {
             coord.record_failure(&format!("cred-{i}"));
         }
         assert!(
-            coord.circuit_breaker_len_for_test() <= 4096,
+            coord.circuit_breaker_len_for_test() <= MAX_TRACKED_CIRCUIT_BREAKERS.get(),
             "LRU cap should prevent unbounded growth (issue #278)"
         );
     }

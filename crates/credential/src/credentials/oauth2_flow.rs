@@ -443,9 +443,10 @@ fn oauth_token_error_summary(body_text: &str) -> String {
     let mut out = error.to_owned();
     if let Some(desc) = value.get("error_description").and_then(Value::as_str) {
         out.push_str(": ");
-        let truncated: String = desc.chars().take(256).collect();
-        out.push_str(&truncated);
-        if desc.chars().count() > 256 {
+        // Bound work: at most 257 scalar values, never scan the full provider string.
+        let prefix: Vec<char> = desc.chars().take(257).collect();
+        out.extend(prefix.iter().take(256).copied());
+        if prefix.len() > 256 {
             out.push('…');
         }
     }
