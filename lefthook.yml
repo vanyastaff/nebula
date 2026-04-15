@@ -20,3 +20,7 @@ pre-push:
   commands:
     nextest:
       run: cargo nextest run --workspace
+    docs:
+      env:
+        RUSTDOCFLAGS: "-D warnings"
+      run: cargo doc --workspace --no-deps --all-features -q
