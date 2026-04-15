@@ -7,8 +7,8 @@
 //!
 //! # Future: v2 Credential trait integration
 //!
-//! This module currently defines its own [`TestableCredential`] and
-//! [`RotatableCredential`] traits. The plan is to integrate with the v2
+//! This module currently defines its own `TestableCredential` and
+//! `RotatableCredential` traits. The plan is to integrate with the v2
 //! [`Credential`](crate::Credential) trait:
 //!
 //! - `TestableCredential::test()` → use `Credential::test()` (via `TESTABLE` const)
@@ -252,7 +252,7 @@
 //! - [`BlueGreenRotation`](crate::rotation::blue_green::BlueGreenRotation) - Zero-downtime database
 //!   rotation
 //! - [`FailureHandler`](crate::rotation::validation::FailureHandler) - Failure handling
-//! - [`RotatableCredential`](crate::traits::RotatableCredential) - Trait for rotatable credentials
+//! - `RotatableCredential` - Trait for rotatable credentials
 
 // Module exports
 pub mod backup;

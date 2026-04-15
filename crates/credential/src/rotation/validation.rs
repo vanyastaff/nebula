@@ -5,8 +5,8 @@
 //! # Design Philosophy
 //!
 //! Validation is delegated to credential implementations through traits:
-//! - [`TestableCredential`] -- credentials that can test themselves
-//! - [`RotatableCredential`] -- credentials that support rotation
+//! - `TestableCredential` -- credentials that can test themselves
+//! - `RotatableCredential` -- credentials that support rotation
 //!
 //! This allows each credential type (MySQL, PostgreSQL, OAuth2, etc.) to implement
 //! their own validation logic using their specific client libraries.
