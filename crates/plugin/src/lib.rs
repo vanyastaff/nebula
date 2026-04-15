@@ -22,7 +22,9 @@
 //!
 //! ## Plugin Loading
 //!
-//! Plugin loading (WASM sandbox) is handled by the `nebula-sandbox` crate.
+//! Plugin loading and isolation (process sandbox, capability model, OS-level
+//! hardening) are handled by the `nebula-sandbox` crate. WASM is an explicit
+//! non-goal for plugin isolation — see `docs/PRODUCT_CANON.md` §12.6.
 //! This crate provides only the trait, metadata, and registry — no I/O or FFI.
 
 #![forbid(unsafe_code)]

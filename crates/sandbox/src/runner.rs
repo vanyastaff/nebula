@@ -37,7 +37,11 @@ impl SandboxedContext {
 ///
 /// Implementations provide different isolation levels:
 /// - [`InProcessSandbox`](crate::InProcessSandbox) — trusted, in-process (built-in actions)
-/// - Future: `WasmSandbox` — sandboxed WASM execution (community plugins)
+/// - [`ProcessSandbox`](crate::ProcessSandbox) — child-process dispatch over JSON envelope with
+///   `PluginCapabilities` allowlists and optional OS-level hardening in `os_sandbox` (community
+///   plugins)
+///
+/// WASM is an explicit non-goal — see `docs/PRODUCT_CANON.md` §12.6.
 #[async_trait]
 pub trait SandboxRunner: Send + Sync {
     /// Execute an action within the sandbox.
