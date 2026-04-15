@@ -33,8 +33,9 @@
 //! }
 //! ```
 
-use std::{collections::HashMap, fmt, sync::Arc, time::Duration};
+use std::{collections::HashMap, fmt, num::NonZeroUsize, sync::Arc, time::Duration};
 
+use lru::LruCache;
 use nebula_resilience::circuit_breaker::{CircuitBreaker, CircuitBreakerConfig, Outcome};
 use tokio::sync::Notify;
 
@@ -74,7 +75,7 @@ pub struct RefreshCoordinator {
     /// critical for calling it from a `scopeguard` drop (B8 fix).
     in_flight: parking_lot::Mutex<HashMap<String, Arc<Notify>>>,
     /// Per-credential circuit breakers via `nebula-resilience`.
-    circuit_breakers: parking_lot::Mutex<HashMap<String, Arc<CircuitBreaker>>>,
+    circuit_breakers: parking_lot::Mutex<LruCache<String, Arc<CircuitBreaker>>>,
     /// Global concurrency limiter for refresh operations.
     ///
     /// Prevents cascading failures when many credentials expire simultaneously
@@ -117,6 +118,20 @@ pub enum RefreshAttempt {
 
 /// Default maximum number of concurrent refresh operations.
 const DEFAULT_MAX_CONCURRENT_REFRESHES: usize = 32;
+
+/// Raw LRU cap for per-credential circuit breakers (must stay > 0).
+const MAX_TRACKED_CIRCUIT_BREAKERS_CAP: usize = 4096;
+
+/// Maximum number of per-credential circuit breakers kept in memory.
+///
+/// Failed refreshes insert entries that are only removed on success; without a
+/// cap, unbounded churn of distinct credential IDs could grow this map
+/// forever (see GitHub issue #278). Eviction follows LRU semantics: the least
+/// recently touched breaker may be dropped when the cap is exceeded.
+///
+/// The `unwrap` is evaluated at compile time: [`MAX_TRACKED_CIRCUIT_BREAKERS_CAP`] is non-zero.
+const MAX_TRACKED_CIRCUIT_BREAKERS: NonZeroUsize =
+    NonZeroUsize::new(MAX_TRACKED_CIRCUIT_BREAKERS_CAP).unwrap();
 
 /// Configuration errors returned by [`RefreshCoordinator`] constructors.
 ///
@@ -181,7 +196,7 @@ impl RefreshCoordinator {
         debug_assert!(max > 0, "with_max_concurrent_unchecked requires max >= 1");
         Self {
             in_flight: parking_lot::Mutex::new(HashMap::new()),
-            circuit_breakers: parking_lot::Mutex::new(HashMap::new()),
+            circuit_breakers: parking_lot::Mutex::new(LruCache::new(MAX_TRACKED_CIRCUIT_BREAKERS)),
             refresh_semaphore: Arc::new(tokio::sync::Semaphore::new(max)),
         }
     }
@@ -189,17 +204,31 @@ impl RefreshCoordinator {
     /// Returns or creates a per-credential circuit breaker.
     fn get_or_create_cb(&self, credential_id: &str) -> Arc<CircuitBreaker> {
         let mut cbs = self.circuit_breakers.lock();
-        cbs.entry(credential_id.to_string())
-            .or_insert_with(|| {
-                let config = CircuitBreakerConfig {
-                    failure_threshold: 5,
-                    reset_timeout: Duration::from_secs(300),
-                    min_operations: 1,
-                    ..Default::default()
-                };
-                Arc::new(CircuitBreaker::new(config).expect("valid CB config"))
+        if let Some(cb) = cbs.get(credential_id) {
+            return Arc::clone(cb);
+        }
+        let config = CircuitBreakerConfig {
+            failure_threshold: 5,
+            reset_timeout: Duration::from_secs(300),
+            min_operations: 1,
+            ..Default::default()
+        };
+        let inner = CircuitBreaker::new(config).unwrap_or_else(|err| {
+            tracing::error!(
+                error = %err,
+                "unexpected: static refresh circuit breaker config invalid; using defaults"
+            );
+            CircuitBreaker::new(CircuitBreakerConfig::default()).unwrap_or_else(|err2| {
+                tracing::error!(
+                    error = %err2,
+                    "unexpected: default circuit breaker config invalid"
+                );
+                unreachable!("CircuitBreakerConfig::default must validate in nebula-resilience")
             })
-            .clone()
+        });
+        let cb = Arc::new(inner);
+        cbs.put(credential_id.to_string(), Arc::clone(&cb));
+        cb
     }
 
     /// Attempts to begin a refresh for the given credential.
@@ -269,12 +298,12 @@ impl RefreshCoordinator {
     /// Records a successful refresh, resetting the circuit breaker.
     pub fn record_success(&self, credential_id: &str) {
         // Remove the CB entirely on success — full reset.
-        self.circuit_breakers.lock().remove(credential_id);
+        self.circuit_breakers.lock().pop(credential_id);
     }
 
     /// Returns `true` if the circuit breaker is open (too many failures).
     pub fn is_circuit_open(&self, credential_id: &str) -> bool {
-        let cbs = self.circuit_breakers.lock();
+        let mut cbs = self.circuit_breakers.lock();
         cbs.get(credential_id)
             .is_some_and(|cb| cb.try_acquire::<()>().is_err())
     }
@@ -287,8 +316,28 @@ impl Default for RefreshCoordinator {
 }
 
 #[cfg(test)]
+impl RefreshCoordinator {
+    /// Returns the number of circuit breaker entries currently tracked (test-only).
+    fn circuit_breaker_len_for_test(&self) -> usize {
+        self.circuit_breakers.lock().len()
+    }
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn circuit_breaker_tracking_is_bounded() {
+        let coord = RefreshCoordinator::new();
+        for i in 0..6000 {
+            coord.record_failure(&format!("cred-{i}"));
+        }
+        assert!(
+            coord.circuit_breaker_len_for_test() <= MAX_TRACKED_CIRCUIT_BREAKERS.get(),
+            "LRU cap should prevent unbounded growth (issue #278)"
+        );
+    }
 
     #[tokio::test]
     async fn first_caller_wins() {

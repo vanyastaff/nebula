@@ -3845,6 +3845,7 @@ dependencies = [
  "chrono",
  "futures",
  "humantime-serde",
+ "lru",
  "moka",
  "nebula-core",
  "nebula-credential-macros",
