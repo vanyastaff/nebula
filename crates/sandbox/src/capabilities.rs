@@ -191,6 +191,10 @@ impl PluginCapabilities {
 /// The fallback is component-wise: `"/tmp/file.txt".starts_with("/tmp")`
 /// returns `true`, `"/tmp_evil".starts_with("/tmp")` returns `false`.
 /// This is sep-agnostic — works the same on POSIX and Windows paths.
+///
+/// A **degenerate base** (`""`, `"."`, or any path that lexically normalises to an empty
+/// relative path) never matches: otherwise `Path::starts_with` would treat the empty prefix as
+/// matching every path, which would bypass filesystem capability checks.
 fn path_under(path: &str, base: &str) -> bool {
     use std::path::{Component, Path, PathBuf};
 
@@ -208,14 +212,48 @@ fn path_under(path: &str, base: &str) -> bool {
         out
     }
 
-    let path = Path::new(path);
-    let base = Path::new(base);
+    fn base_lex_is_degenerate(base_path: &Path) -> bool {
+        normalize_lex(base_path).as_os_str().is_empty()
+    }
 
-    match (path.canonicalize(), base.canonicalize()) {
-        (Ok(p), Ok(b)) => p.starts_with(&b),
-        // Either or both don't exist — use lexical normalisation on
-        // both so the comparison stays symmetric.
-        _ => normalize_lex(path).starts_with(normalize_lex(base)),
+    let path = Path::new(path);
+    let base_path = Path::new(base);
+
+    match (path.canonicalize(), base_path.canonicalize()) {
+        (Ok(p), Ok(b)) => {
+            if b.as_os_str().is_empty() {
+                return false;
+            }
+            p.starts_with(&b)
+        },
+        // Path missing on disk but base resolved — use lexical prefix when the base is not
+        // degenerate; otherwise compare against the canonical base (for example `"."` → cwd).
+        (Err(_), Ok(b)) => {
+            if b.as_os_str().is_empty() {
+                return false;
+            }
+            let path_lex = normalize_lex(path);
+            let base_lex = normalize_lex(base_path);
+            if base_lex.as_os_str().is_empty() {
+                path_lex.starts_with(&b)
+            } else {
+                path_lex.starts_with(&base_lex)
+            }
+        },
+        (Ok(p), Err(_)) => {
+            if base_lex_is_degenerate(base_path) {
+                return false;
+            }
+            let base_lex = normalize_lex(base_path);
+            p.starts_with(&base_lex)
+        },
+        (Err(_), Err(_)) => {
+            if base_lex_is_degenerate(base_path) {
+                return false;
+            }
+            let base_lex = normalize_lex(base_path);
+            normalize_lex(path).starts_with(&base_lex)
+        },
     }
 }
 
@@ -313,5 +351,25 @@ mod tests {
         assert!(caps.check_domain("api.telegram.org"));
         assert!(caps.has_capability(&Capability::Notifications));
         assert_eq!(caps.list().len(), 2);
+    }
+
+    #[test]
+    fn path_under_rejects_empty_base() {
+        assert!(!path_under("/etc/passwd", ""));
+        assert!(!path_under("/tmp/foo", ""));
+    }
+
+    #[test]
+    fn path_under_rejects_dot_base_for_nonexistent_path() {
+        let p = concat!("/nonexistent-nebula-path-under-test-", line!());
+        assert!(!path_under(p, "."));
+    }
+
+    #[test]
+    fn filesystem_empty_path_entry_does_not_grant_all_paths() {
+        let caps = PluginCapabilities::new(vec![Capability::FilesystemRead {
+            paths: vec!["".into()],
+        }]);
+        assert!(!caps.check_fs_read("/tmp/file.txt"));
     }
 }
