@@ -422,11 +422,40 @@ pub(crate) async fn refresh_token(
         .map_err(|e| provider_error(format!("refresh token request failed: {e}")))?;
 
     let body: Value = parse_token_response(resp).await?;
-    update_state_from_token_response(state, &body);
+    update_state_from_token_response(state, &body)?;
     Ok(())
 }
 
 // ── Internal helpers ────────────────────────────────────────────────────
+
+/// Builds a log-safe summary for a non-2xx OAuth2 token endpoint body.
+///
+/// Never interpolates the raw response body: some providers echo submitted
+/// secrets in error JSON. Only RFC 6749 §5.2 fields are included, with
+/// `error_description` truncated (see GitHub issue #277).
+fn oauth_token_error_summary(body_text: &str) -> String {
+    let Ok(value) = serde_json::from_str::<Value>(body_text) else {
+        return "<non-json body>".to_owned();
+    };
+    let Some(error) = value.get("error").and_then(Value::as_str) else {
+        return "<no error code>".to_owned();
+    };
+    let mut out = error.to_owned();
+    if let Some(desc) = value.get("error_description").and_then(Value::as_str) {
+        out.push_str(": ");
+        let truncated: String = desc.chars().take(256).collect();
+        out.push_str(&truncated);
+        if desc.chars().count() > 256 {
+            out.push('…');
+        }
+    }
+    if let Some(uri) = value.get("error_uri").and_then(Value::as_str) {
+        out.push_str(" (error_uri=");
+        out.push_str(uri);
+        out.push(')');
+    }
+    out
+}
 
 /// Parse an HTTP response as a JSON token response.
 ///
@@ -435,8 +464,9 @@ async fn parse_token_response(resp: reqwest::Response) -> Result<Value, Credenti
     let status = resp.status();
     if !status.is_success() {
         let body_text = resp.text().await.unwrap_or_default();
+        let summary = oauth_token_error_summary(&body_text);
         return Err(provider_error(format!(
-            "token endpoint returned {status}: {body_text}"
+            "token endpoint returned {status}: {summary}"
         )));
     }
     resp.json::<Value>()
@@ -499,12 +529,22 @@ fn state_from_token_response(
 
 /// Update an existing [`OAuth2State`] from a refresh token response.
 ///
-/// Only overwrites fields present in the response. A missing `refresh_token`
+/// RFC 6749 §5.1 requires `access_token` in a successful token response; a 2xx
+/// body without it is treated as an error so we do not bump `expires_at` while
+/// leaving a stale access token (GitHub issue #274).
+///
+/// Other fields are only overwritten when present. A missing `refresh_token`
 /// preserves the existing one (per RFC 6749 Section 6).
-fn update_state_from_token_response(state: &mut OAuth2State, body: &Value) {
-    if let Some(token) = body.get("access_token").and_then(Value::as_str) {
-        state.access_token = SecretString::new(token);
-    }
+fn update_state_from_token_response(
+    state: &mut OAuth2State,
+    body: &Value,
+) -> Result<(), CredentialError> {
+    let Some(token) = body.get("access_token").and_then(Value::as_str) else {
+        return Err(provider_error(
+            "refresh response missing required 'access_token' field".into(),
+        ));
+    };
+    state.access_token = SecretString::new(token);
     if let Some(tt) = body.get("token_type").and_then(Value::as_str) {
         state.token_type = tt.to_owned();
     }
@@ -517,6 +557,7 @@ fn update_state_from_token_response(state: &mut OAuth2State, body: &Value) {
     if let Some(scope) = body.get("scope").and_then(Value::as_str) {
         state.scopes = scope.split_whitespace().map(str::to_owned).collect();
     }
+    Ok(())
 }
 
 /// Build a `CredentialError::Provider` from an HTTP/network-related message.
@@ -707,7 +748,7 @@ mod tests {
             "access_token": "new_tok"
         });
 
-        update_state_from_token_response(&mut state, &body);
+        update_state_from_token_response(&mut state, &body).unwrap();
         state
             .access_token
             .expose_secret(|s| assert_eq!(s, "new_tok"));
@@ -740,7 +781,7 @@ mod tests {
             "scope": "write"
         });
 
-        update_state_from_token_response(&mut state, &body);
+        update_state_from_token_response(&mut state, &body).unwrap();
         state
             .access_token
             .expose_secret(|s| assert_eq!(s, "new_tok"));
@@ -752,6 +793,40 @@ mod tests {
             .expose_secret(|s| assert_eq!(s, "new_rt"));
         assert!(state.expires_at.is_some());
         assert_eq!(state.scopes, vec!["write"]);
+    }
+
+    #[test]
+    fn oauth_token_error_summary_omits_raw_body_and_echoed_secrets() {
+        let body = r#"{"error":"invalid_client","client_secret":"hunter2"}"#;
+        let summary = super::oauth_token_error_summary(body);
+        assert!(
+            !summary.contains("hunter2"),
+            "secret echoed by provider must not appear: {summary}"
+        );
+        assert!(summary.contains("invalid_client"), "{summary}");
+    }
+
+    #[test]
+    fn update_state_errors_when_access_token_missing() {
+        let mut state = OAuth2State {
+            access_token: SecretString::new("stale"),
+            token_type: "Bearer".into(),
+            refresh_token: None,
+            expires_at: None,
+            scopes: vec![],
+            client_id: SecretString::new("cid"),
+            client_secret: SecretString::new("cs"),
+            token_url: "https://t.com/token".into(),
+            auth_style: AuthStyle::default(),
+        };
+
+        let body = serde_json::json!({
+            "expires_in": 3600
+        });
+
+        let err = update_state_from_token_response(&mut state, &body).unwrap_err();
+        assert!(matches!(err, CredentialError::Provider(_)));
+        state.access_token.expose_secret(|s| assert_eq!(s, "stale"));
     }
 
     #[test]
