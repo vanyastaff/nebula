@@ -6,12 +6,14 @@
 use std::{sync::Arc, time::Instant};
 
 use async_trait::async_trait;
+use dashmap::DashMap;
 use nebula_action::{
     ActionContext, ActionError, ActionHandler, ActionMetadata, IsolationLevel, StatefulHandler,
     StatelessHandler,
     output::{ActionOutput, DataReference},
     result::ActionResult,
 };
+use nebula_core::ExecutionId;
 use nebula_metrics::naming::{
     NEBULA_ACTION_DISPATCH_REJECTED_TOTAL, NEBULA_ACTION_DURATION_SECONDS,
     NEBULA_ACTION_EXECUTIONS_TOTAL, NEBULA_ACTION_FAILURES_TOTAL, dispatch_reject_reason,
@@ -102,6 +104,9 @@ pub struct ActionRuntime {
     data_policy: DataPassingPolicy,
     metrics: MetricsRegistry,
     blob_storage: Option<Arc<dyn BlobStorage>>,
+    /// Sum of estimated output bytes per execution for
+    /// [`DataPassingPolicy::max_total_execution_bytes`].
+    execution_output_totals: Arc<DashMap<ExecutionId, u64>>,
 }
 
 impl ActionRuntime {
@@ -118,7 +123,16 @@ impl ActionRuntime {
             data_policy,
             metrics,
             blob_storage: None,
+            execution_output_totals: Arc::new(DashMap::new()),
         }
+    }
+
+    /// Clears accumulated output-byte totals for an execution.
+    ///
+    /// The workflow engine calls this when a run completes so accounting
+    /// entries do not accumulate forever ([`DataPassingPolicy::max_total_execution_bytes`]).
+    pub fn clear_execution_output_totals(&self, execution_id: ExecutionId) {
+        self.execution_output_totals.remove(&execution_id);
     }
 
     /// Access the action registry.
@@ -267,6 +281,7 @@ impl ActionRuntime {
         checkpoint: Option<Arc<dyn StatefulCheckpointSink>>,
     ) -> Result<ActionResult<serde_json::Value>, RuntimeError> {
         let error_counter = self.metrics.counter(NEBULA_ACTION_FAILURES_TOTAL);
+        let execution_id = context.execution_id;
 
         // Commit to a dispatched path or a rejection path, then branch.
         // The rejection arms never sample the histogram — they only touch
@@ -317,8 +332,13 @@ impl ActionRuntime {
 
         match result {
             Ok(mut action_result) => {
-                self.enforce_data_limit(action_key, &mut action_result, &error_counter)
-                    .await?;
+                self.enforce_data_limit(
+                    action_key,
+                    execution_id,
+                    &mut action_result,
+                    &error_counter,
+                )
+                .await?;
                 Ok(action_result)
             },
             Err(action_err) => Err(RuntimeError::ActionError(action_err)),
@@ -606,10 +626,12 @@ impl ActionRuntime {
     async fn enforce_data_limit(
         &self,
         action_key: &str,
+        execution_id: ExecutionId,
         action_result: &mut ActionResult<serde_json::Value>,
         error_counter: &nebula_telemetry::metrics::Counter,
     ) -> Result<(), RuntimeError> {
         let limit = self.data_policy.max_node_output_bytes;
+        let total_limit = self.data_policy.max_total_execution_bytes;
 
         // Collect disjoint mut references to every output slot in the result.
         // The Vec itself holds unique borrows of distinct struct fields, so
@@ -687,7 +709,62 @@ impl ActionRuntime {
             }
         }
 
+        // Enforce max total bytes across all nodes in this execution (issue #357).
+        if total_limit > 0 {
+            let mut slots_after: Vec<&mut ActionOutput<serde_json::Value>> = Vec::new();
+            collect_output_slots_mut(action_result, &mut slots_after);
+            let node_total: u64 = slots_after
+                .iter()
+                .map(|s| estimated_action_output_payload_bytes(s))
+                .sum();
+
+            use dashmap::mapref::entry::Entry;
+            match self.execution_output_totals.entry(execution_id) {
+                Entry::Occupied(mut o) => {
+                    let new_total = *o.get() + node_total;
+                    if new_total > total_limit {
+                        error_counter.inc();
+                        return Err(RuntimeError::DataLimitExceeded {
+                            limit_bytes: total_limit,
+                            actual_bytes: new_total,
+                        });
+                    }
+                    *o.get_mut() = new_total;
+                },
+                Entry::Vacant(v) => {
+                    if node_total > total_limit {
+                        error_counter.inc();
+                        return Err(RuntimeError::DataLimitExceeded {
+                            limit_bytes: total_limit,
+                            actual_bytes: node_total,
+                        });
+                    }
+                    v.insert(node_total);
+                },
+            }
+        }
+
         Ok(())
+    }
+}
+
+/// Best-effort size of all payload bytes represented by an output slot after
+/// per-node enforcement (including nested collections).
+fn estimated_action_output_payload_bytes(slot: &ActionOutput<serde_json::Value>) -> u64 {
+    match slot {
+        ActionOutput::Value(v) => serde_json::to_vec(v).map(|b| b.len() as u64).unwrap_or(0),
+        ActionOutput::Binary(b) => b.effective_size(),
+        ActionOutput::Reference(r) => r
+            .size
+            .unwrap_or_else(|| serde_json::to_vec(r).map(|b| b.len() as u64).unwrap_or(0)),
+        ActionOutput::Deferred(_) => 0,
+        ActionOutput::Streaming(_) => 0,
+        ActionOutput::Collection(items) => items
+            .iter()
+            .map(estimated_action_output_payload_bytes)
+            .sum(),
+        ActionOutput::Empty => 0,
+        _ => 0,
     }
 }
 
@@ -859,6 +936,60 @@ mod tests {
             metrics.clone(),
         );
         (rt, metrics)
+    }
+
+    #[tokio::test]
+    async fn max_total_execution_bytes_across_dispatches() {
+        let registry = Arc::new(ActionRegistry::new());
+        registry.register_stateless(EchoAction {
+            meta: ActionMetadata::new(action_key!("test.echo"), "Echo", "echoes input"),
+        });
+
+        let executor: ActionExecutor = Arc::new(|_ctx, _meta, input| {
+            Box::pin(async move { Ok(ActionResult::success(input)) })
+        });
+        let sandbox = Arc::new(InProcessSandbox::new(executor));
+        let metrics = MetricsRegistry::new();
+        let rt = ActionRuntime::new(
+            registry,
+            sandbox,
+            DataPassingPolicy {
+                max_node_output_bytes: 1024,
+                max_total_execution_bytes: 10,
+                ..Default::default()
+            },
+            metrics,
+        );
+
+        let eid = ExecutionId::new();
+        let ctx = ActionContext::new(
+            eid,
+            NodeId::new(),
+            WorkflowId::new(),
+            tokio_util::sync::CancellationToken::new(),
+        );
+
+        rt.execute_action("test.echo", serde_json::json!(null), ctx.clone())
+            .await
+            .expect("first dispatch under total cap");
+
+        let err = rt
+            .execute_action("test.echo", serde_json::json!("1234567890"), ctx)
+            .await
+            .expect_err("second dispatch exceeds max_total_execution_bytes");
+
+        assert!(
+            matches!(
+                err,
+                RuntimeError::DataLimitExceeded {
+                    limit_bytes: 10,
+                    ..
+                }
+            ),
+            "expected total cap error, got {err:?}"
+        );
+
+        rt.clear_execution_output_totals(eid);
     }
 
     #[tokio::test]
