@@ -1,8 +1,9 @@
 //! Integration tests for nebula-log init-hardening fixes (#375/#377/#379/#380).
 //!
-//! These tests share a process-global `tracing` dispatcher, so they are ordered
-//! and gated via `serial_test` where necessary. The first init always wins;
-//! subsequent calls must return `LogError::AlreadyInitialized`.
+//! These tests share a process-global `tracing` dispatcher. The first
+//! successful init always wins, and the assertions are written to tolerate
+//! the dispatcher already being installed by a prior test in the same
+//! process.
 
 use nebula_log::{Config, LogError, init_with};
 

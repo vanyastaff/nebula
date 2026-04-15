@@ -85,7 +85,7 @@
 //! - `OTEL_EXPORTER_OTLP_ENDPOINT` — OTLP export is opt-in. When neither this env var nor
 //!   `TelemetryConfig::otlp_endpoint` is set, OTLP is disabled. Use the literal string `"disabled"`
 //!   (or an empty string) to explicitly opt out at either layer.
-//! - `SENTRY_DSN` — when set but unparseable, a `tracing::warn!` is emitted at startup and Sentry
+//! - `SENTRY_DSN` — when set but unparsable, a `tracing::warn!` is emitted at startup and Sentry
 //!   reporting is disabled.
 //! - `SENTRY_ENV`
 //! - `SENTRY_RELEASE`

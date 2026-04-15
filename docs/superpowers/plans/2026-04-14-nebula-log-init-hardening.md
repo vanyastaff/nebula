@@ -745,7 +745,7 @@ Update the `auto_init` doc to mention that a duplicate dispatcher returns a no-o
 
 In the top-of-crate docs (`//!` lines 83–90), append a sentence under the `OTEL_EXPORTER_OTLP_ENDPOINT` bullet:
 
-```
+```text
 //! - `OTEL_EXPORTER_OTLP_ENDPOINT` — when neither this env var nor
 //!   `TelemetryConfig::otlp_endpoint` is set, OTLP export is disabled. Use
 //!   the literal string `"disabled"` (or an empty string) to explicitly
