@@ -26,6 +26,50 @@ pub struct OtelLayer {
     pub provider: SdkTracerProvider,
 }
 
+/// Resolve the OTLP endpoint from an explicit config value plus the externally
+/// supplied env-var value.
+///
+/// Precedence: explicit `config.otlp_endpoint` → provided `env_endpoint` → off.
+/// The literal values `"disabled"` and `""` are treated as explicit opt-out at
+/// both the config and env layers.
+///
+/// Returns `None` when OTLP should be disabled.
+///
+/// This helper is pure (no env-var reads) so it can be unit-tested without
+/// mutating process-global state. The production entry point `resolve_endpoint`
+/// is a thin wrapper that reads `OTEL_EXPORTER_OTLP_ENDPOINT` and delegates.
+fn resolve_endpoint_from(config: &TelemetryConfig, env_endpoint: Option<&str>) -> Option<String> {
+    // 1. Explicit config wins.
+    if let Some(endpoint) = config.otlp_endpoint.as_deref() {
+        let trimmed = endpoint.trim();
+        if trimmed.is_empty() || trimmed == "disabled" {
+            return None;
+        }
+        return Some(trimmed.to_string());
+    }
+
+    // 2. Env var falls through.
+    if let Some(endpoint) = env_endpoint {
+        let trimmed = endpoint.trim();
+        if trimmed.is_empty() || trimmed == "disabled" {
+            return None;
+        }
+        return Some(trimmed.to_string());
+    }
+
+    // 3. No config + no env = OTLP off (opt-in). Previously defaulted to http://localhost:4317,
+    //    which caused surprise network activity in environments that never ran a collector (see
+    //    #375).
+    None
+}
+
+/// Production entry point for endpoint resolution: reads the `OTEL_EXPORTER_OTLP_ENDPOINT`
+/// env var and delegates to [`resolve_endpoint_from`].
+fn resolve_endpoint(config: &TelemetryConfig) -> Option<String> {
+    let env_endpoint = std::env::var("OTEL_EXPORTER_OTLP_ENDPOINT").ok();
+    resolve_endpoint_from(config, env_endpoint.as_deref())
+}
+
 /// Build an OpenTelemetry tracing layer with OTLP gRPC export.
 ///
 /// Returns `Ok(None)` when the endpoint is `"disabled"` or empty.
@@ -38,17 +82,10 @@ pub struct OtelLayer {
 /// Returns `LogError::Telemetry` if the OTLP exporter or tracer provider cannot
 /// be constructed.
 pub fn build_layer(config: &TelemetryConfig, fields: &Fields) -> LogResult<Option<OtelLayer>> {
-    let endpoint_str = match &config.otlp_endpoint {
-        Some(endpoint) if !endpoint.is_empty() => endpoint.clone(),
-        _ => match std::env::var("OTEL_EXPORTER_OTLP_ENDPOINT") {
-            Ok(endpoint) if !endpoint.is_empty() => endpoint,
-            _ => "http://localhost:4317".to_string(),
-        },
+    let endpoint_str = match resolve_endpoint(config) {
+        Some(e) => e,
+        None => return Ok(None),
     };
-
-    if endpoint_str == "disabled" || endpoint_str.is_empty() {
-        return Ok(None);
-    }
 
     // Set up W3C trace-context propagator
     global::set_text_map_propagator(TraceContextPropagator::new());
@@ -127,4 +164,83 @@ fn build_exporter(endpoint: &str) -> LogResult<opentelemetry_otlp::SpanExporter>
         .with_endpoint(endpoint)
         .build()
         .map_err(|e| LogError::Telemetry(format!("OTLP exporter build failed: {e}")))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn config_with(endpoint: Option<&str>) -> TelemetryConfig {
+        TelemetryConfig {
+            otlp_endpoint: endpoint.map(str::to_string),
+            service_name: "test".to_string(),
+            sampling_rate: 1.0,
+        }
+    }
+
+    /// #375 — with no endpoint in config and no `OTEL_EXPORTER_OTLP_ENDPOINT`
+    /// env value, resolution must return `None` (opt-in), not silently point
+    /// at `http://localhost:4317`.
+    #[test]
+    fn unset_config_and_env_is_opt_out() {
+        let cfg = config_with(None);
+        assert_eq!(resolve_endpoint_from(&cfg, None), None);
+    }
+
+    /// Empty-string env is also treated as opt-out (trim-aware).
+    #[test]
+    fn empty_env_is_opt_out() {
+        let cfg = config_with(None);
+        assert_eq!(resolve_endpoint_from(&cfg, Some("")), None);
+        assert_eq!(resolve_endpoint_from(&cfg, Some("   ")), None);
+    }
+
+    /// `"disabled"` in env is an explicit opt-out.
+    #[test]
+    fn disabled_env_is_opt_out() {
+        let cfg = config_with(None);
+        assert_eq!(resolve_endpoint_from(&cfg, Some("disabled")), None);
+    }
+
+    /// Explicit empty config is opt-out even if the env has a real endpoint:
+    /// `config` wins.
+    #[test]
+    fn empty_config_wins_over_env() {
+        let cfg = config_with(Some(""));
+        assert_eq!(
+            resolve_endpoint_from(&cfg, Some("http://collector:4317")),
+            None
+        );
+    }
+
+    /// `"disabled"` in config is an explicit opt-out even if the env has a real
+    /// endpoint.
+    #[test]
+    fn disabled_config_wins_over_env() {
+        let cfg = config_with(Some("disabled"));
+        assert_eq!(
+            resolve_endpoint_from(&cfg, Some("http://collector:4317")),
+            None
+        );
+    }
+
+    /// Explicit config endpoint wins over env.
+    #[test]
+    fn config_endpoint_wins_over_env() {
+        let cfg = config_with(Some("http://config-endpoint:4317"));
+        assert_eq!(
+            resolve_endpoint_from(&cfg, Some("http://env-endpoint:4317")),
+            Some("http://config-endpoint:4317".to_string())
+        );
+    }
+
+    /// Env falls through when config is `None`.
+    #[test]
+    fn env_used_when_config_none() {
+        let cfg = config_with(None);
+        assert_eq!(
+            resolve_endpoint_from(&cfg, Some("http://env-endpoint:4317")),
+            Some("http://env-endpoint:4317".to_string())
+        );
+    }
 }
