@@ -15,6 +15,11 @@ pub enum Capability {
     /// Network access to specific domains.
     Network {
         /// Allowed domains (e.g., "api.telegram.org", "*.googleapis.com").
+        ///
+        /// Wildcards are literal suffix matches: `"*.example.com"` allows
+        /// `api.example.com` and `example.com`. Be careful with broad suffixes
+        /// like `"*.com"` or `"*.co.uk"` — they effectively allow huge parts
+        /// of the public internet.
         domains: Vec<String>,
     },
 
@@ -259,6 +264,9 @@ fn path_under(path: &str, base: &str) -> bool {
 
 /// Match a host against a domain pattern.
 /// Supports wildcard prefix: "*.example.com" matches "api.example.com".
+///
+/// Wildcards apply to the literal suffix after `"*."`; this function does
+/// not consult the Public Suffix List.
 fn match_domain(host: &str, pattern: &str) -> bool {
     let host = host.to_lowercase();
     let pattern = pattern.to_lowercase();
@@ -298,6 +306,16 @@ mod tests {
     fn network_all() {
         let caps = PluginCapabilities::trusted();
         assert!(caps.check_domain("anything.com"));
+    }
+
+    #[test]
+    fn wildcard_suffix_is_literal_and_can_be_broad() {
+        let caps = PluginCapabilities::new(vec![Capability::Network {
+            domains: vec!["*.com".into()],
+        }]);
+        assert!(caps.check_domain("example.com"));
+        assert!(caps.check_domain("evil.com"));
+        assert!(!caps.check_domain("example.org"));
     }
 
     #[test]
