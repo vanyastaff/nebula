@@ -100,8 +100,23 @@ impl LabelSet {
 /// Thread-safe string interner for label keys and values.
 ///
 /// Backed by [`lasso::ThreadedRodeo`].  Cheaply cloneable via `Arc`.
-/// All interning operations are lock-free for reads; first-time registrations  
+/// All interning operations are lock-free for reads; first-time registrations
 /// acquire an internal write lock.
+///
+/// # Memory semantics
+///
+/// The underlying `ThreadedRodeo` is **append-only**: once a string has been
+/// interned it remains resident for the lifetime of the `LabelInterner`
+/// (and all its `Arc` clones), even if every `LabelSet` referencing it has
+/// been dropped. This means that metric eviction via
+/// [`crate::metrics::MetricsRegistry::retain_recent`] reclaims the series
+/// maps but **does not** reclaim interned strings — high-cardinality label
+/// values (e.g. `execution_id`, per-user dimensions) will grow the interner
+/// monotonically.
+///
+/// Use [`Self::len`] to monitor interner cardinality. If bounded memory is
+/// required under high label churn, replace the `MetricsRegistry` (and its
+/// interner) wholesale rather than relying on `retain_recent`.
 ///
 /// # Examples
 ///
@@ -154,18 +169,54 @@ impl LabelInterner {
         self.rodeo.try_resolve(&spur)
     }
 
+    /// Number of distinct strings currently interned.
+    ///
+    /// The interner is append-only, so this value is monotonically
+    /// non-decreasing over the lifetime of a given `LabelInterner`. Use
+    /// it for cardinality monitoring and as a leading indicator that a
+    /// metric registry should be rebuilt.
+    #[must_use]
+    pub fn len(&self) -> usize {
+        self.rodeo.len()
+    }
+
+    /// Whether the interner has never observed any string.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.rodeo.is_empty()
+    }
+
     /// Build a [`LabelSet`] from string key-value pairs.
     ///
     /// All keys and values are interned; the resulting set is sorted by key.
+    ///
+    /// If the same key appears multiple times in `pairs` the **last**
+    /// occurrence wins. Prometheus text exposition forbids duplicate label
+    /// names on a single sample line, so deduplication here guarantees
+    /// deterministic, parser-safe series identity regardless of duplicate
+    /// input at the call site.
     #[must_use]
     pub fn label_set(&self, pairs: &[(&str, &str)]) -> LabelSet {
         let mut kv: Vec<(LabelKey, LabelValue)> = pairs
             .iter()
             .map(|(k, v)| (self.intern(k), self.intern(v)))
             .collect();
-        // Sort by key Spur so equal label sets compare and hash identically
-        // regardless of insertion order.
-        kv.sort_unstable_by_key(|(k, _)| *k);
+        // Stable sort by key so that when we collapse duplicate-key runs
+        // the surviving value is the *last* one from the original input
+        // (Prometheus-style last-wins).
+        kv.sort_by_key(|(k, _)| *k);
+        if kv.len() > 1 {
+            let mut write = 0usize;
+            for read in 1..kv.len() {
+                if kv[read].0 == kv[write].0 {
+                    kv[write].1 = kv[read].1;
+                } else {
+                    write += 1;
+                    kv[write] = kv[read];
+                }
+            }
+            kv.truncate(write + 1);
+        }
         LabelSet { pairs: kv }
     }
 
@@ -291,6 +342,51 @@ mod tests {
         let interner = LabelInterner::new();
         let ls = interner.label_set(&[("k1", "v1"), ("k2", "v2"), ("k3", "v3")]);
         assert_eq!(ls.len(), 3);
+    }
+
+    #[test]
+    fn label_set_dedupes_duplicate_keys_last_wins() {
+        let interner = LabelInterner::new();
+        let ls = interner.label_set(&[("status", "ok"), ("status", "error")]);
+        assert_eq!(ls.len(), 1, "duplicate key must collapse to one entry");
+        let pairs = ls.resolve(&interner);
+        assert_eq!(pairs, vec![("status", "error")]);
+    }
+
+    #[test]
+    fn label_set_dedupe_preserves_other_keys() {
+        let interner = LabelInterner::new();
+        let ls = interner.label_set(&[
+            ("status", "ok"),
+            ("action", "http.request"),
+            ("status", "error"),
+            ("env", "prod"),
+        ]);
+        assert_eq!(ls.len(), 3);
+        let pairs = ls.resolve(&interner);
+        assert!(pairs.contains(&("action", "http.request")));
+        assert!(pairs.contains(&("env", "prod")));
+        assert!(pairs.contains(&("status", "error")));
+        assert!(!pairs.iter().any(|(_, v)| *v == "ok"));
+    }
+
+    #[test]
+    fn label_set_dedupe_three_values_same_key() {
+        let interner = LabelInterner::new();
+        let ls = interner.label_set(&[("k", "a"), ("k", "b"), ("k", "c")]);
+        assert_eq!(ls.len(), 1);
+        assert_eq!(ls.resolve(&interner), vec![("k", "c")]);
+    }
+
+    #[test]
+    fn interner_len_tracks_distinct_strings_and_is_monotonic() {
+        let interner = LabelInterner::new();
+        assert!(interner.is_empty());
+        interner.intern("a");
+        interner.intern("b");
+        interner.intern("a"); // duplicate
+        assert_eq!(interner.len(), 2);
+        assert!(!interner.is_empty());
     }
 
     #[test]
