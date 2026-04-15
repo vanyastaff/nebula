@@ -359,8 +359,13 @@ impl ExecutionRepo for InMemoryExecutionRepo {
         new_state: serde_json::Value,
     ) -> Result<bool, ExecutionRepoError> {
         let mut state = self.state.write().await;
-        let current = state.get(&id).map(|(v, _)| *v).unwrap_or(0);
-        if current != expected_version {
+        // Keep parity with Postgres UPDATE ... WHERE id = $1 AND version = $2:
+        // unknown execution IDs are treated as "no row updated" (false),
+        // not implicitly created at version 1.
+        let Some((current, _)) = state.get(&id) else {
+            return Ok(false);
+        };
+        if *current != expected_version {
             return Ok(false);
         }
         state.insert(id, (expected_version + 1, new_state));
@@ -637,6 +642,26 @@ mod tests {
         let (version, loaded) = repo.get_state(eid).await.unwrap().unwrap();
         assert_eq!(version, 1);
         assert_eq!(loaded, state);
+    }
+
+    #[tokio::test]
+    async fn transition_unknown_execution_returns_false_without_creating_row() {
+        let repo = InMemoryExecutionRepo::default();
+        let missing = ExecutionId::new();
+
+        let updated = repo
+            .transition(missing, 0, serde_json::json!({"status": "ghost"}))
+            .await
+            .expect("transition should not error");
+        assert!(
+            !updated,
+            "unknown execution transition must behave like zero rows affected"
+        );
+        assert_eq!(
+            repo.get_state(missing).await.unwrap(),
+            None,
+            "transition must not create missing execution rows"
+        );
     }
 
     #[tokio::test]
