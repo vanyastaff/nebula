@@ -1700,8 +1700,15 @@ async fn update_workflow_rejects_immutable_identity_fields() {
 
     // Every protected field must cause a 4xx rejection.
     for field in ["id", "version", "owner_id", "schema_version"] {
+        // NOTE: in `serde_json::json!`, bare identifiers on the left of `:`
+        // are stringified literally. Wrap the loop variable in parentheses
+        // so the macro interpolates the *value* ("id", "version", ...) as
+        // the object key, otherwise every iteration would test the same
+        // literal key `"field"`. (Flagged by Copilot on PR #406.)
+        let mut inner = serde_json::Map::new();
+        inner.insert(field.to_string(), serde_json::json!("attacker-supplied"));
         let update_request = serde_json::json!({
-            "definition": { field: "attacker-supplied" }
+            "definition": serde_json::Value::Object(inner),
         });
         let app = app::build_app(state.clone(), &api_config);
         let response = app
