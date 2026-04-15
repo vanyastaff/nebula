@@ -2,6 +2,12 @@
 
 Operational guidance for coding agents in this repository.
 
+## Product canon (mandatory)
+
+- Read [`docs/PRODUCT_CANON.md`](docs/PRODUCT_CANON.md) before non-trivial design or execution-lifecycle changes.
+- Do not implement workarounds that violate its **Non-negotiable invariants**; fix the root cause, or stop and ask.
+- Definition of done includes: relevant tests/commands green **and** alignment with `docs/PRODUCT_CANON.md` (no silent semantic drift, no duplicate undocumented lifecycles). See §17 there.
+
 ## Project Snapshot
 
 Nebula is a modular, type-safe workflow automation engine in Rust (alpha stage).
