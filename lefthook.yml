@@ -1,10 +1,17 @@
+skip_output:
+  - meta
+  - summary
+  - success
+  - skips
+  - execution_info
+
 pre-commit:
   parallel: true
   commands:
     fmt-check:
       run: cargo +nightly fmt --all -- --check
     clippy:
-      run: cargo clippy --workspace --all-targets -- -D warnings
+      run: cargo clippy --workspace --all-targets -q -- -D warnings
     cargo-check:
       run: cargo check --workspace --all-targets -q
 
