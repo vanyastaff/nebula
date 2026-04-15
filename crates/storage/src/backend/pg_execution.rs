@@ -70,6 +70,15 @@ fn map_journal_err(err: sqlx::Error, id: ExecutionId) -> ExecutionRepoError {
     map_err(err)
 }
 
+fn map_idempotency_err(err: sqlx::Error, execution_id: ExecutionId) -> ExecutionRepoError {
+    if let Some(db_err) = err.as_database_error()
+        && db_err.code().as_deref() == Some("23503")
+    {
+        return ExecutionRepoError::not_found("execution", execution_id.to_string());
+    }
+    map_err(err)
+}
+
 /// Compute lease TTL as whole seconds, clamping to a safe range.
 ///
 /// Returns the number of seconds as `f64` for use in
@@ -414,7 +423,7 @@ impl ExecutionRepo for PgExecutionRepo {
         .bind(nid)
         .execute(&self.pool)
         .await
-        .map_err(map_err)?;
+        .map_err(|e| map_idempotency_err(e, execution_id))?;
 
         Ok(())
     }
@@ -573,7 +582,11 @@ mod tests {
         };
         let key = format!("test-idempotency-{}", ExecutionId::new());
         let exec_id = ExecutionId::new();
+        let wf_id = WorkflowId::new();
         let node_id = NodeId::new();
+        repo.create(exec_id, wf_id, serde_json::json!({"status":"created"}))
+            .await
+            .expect("create execution for idempotency");
 
         assert!(
             !repo.check_idempotency(&key).await.expect("check before"),
@@ -602,5 +615,24 @@ mod tests {
                 .expect("check after second mark"),
             "key should still exist after second mark"
         );
+    }
+
+    #[tokio::test]
+    async fn pg_mark_idempotent_unknown_execution_returns_not_found() {
+        let Some(repo) = pg_exec_repo().await else {
+            return;
+        };
+        let err = repo
+            .mark_idempotent(
+                &format!("test-idempotency-missing-{}", ExecutionId::new()),
+                ExecutionId::new(),
+                NodeId::new(),
+            )
+            .await
+            .expect_err("missing execution should reject idempotency mark");
+        assert!(matches!(
+            err,
+            ExecutionRepoError::NotFound { ref entity, .. } if entity == "execution"
+        ));
     }
 }

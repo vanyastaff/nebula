@@ -540,9 +540,18 @@ impl ExecutionRepo for InMemoryExecutionRepo {
     async fn mark_idempotent(
         &self,
         key: &str,
-        _execution_id: ExecutionId,
+        execution_id: ExecutionId,
         _node_id: NodeId,
     ) -> Result<(), ExecutionRepoError> {
+        let state = self.state.read().await;
+        let workflows = self.workflows.read().await;
+        if !state.contains_key(&execution_id) && !workflows.contains_key(&execution_id) {
+            return Err(ExecutionRepoError::not_found(
+                "execution",
+                execution_id.to_string(),
+            ));
+        }
+        drop((state, workflows));
         self.idempotency.write().await.insert(key.to_owned());
         Ok(())
     }
@@ -694,11 +703,29 @@ mod tests {
     async fn idempotency_check_and_mark() {
         let repo = InMemoryExecutionRepo::default();
         let key = "exec1:node1:1";
-        assert!(!repo.check_idempotency(key).await.unwrap());
-        repo.mark_idempotent(key, ExecutionId::new(), NodeId::new())
+        let eid = ExecutionId::new();
+        let wid = WorkflowId::new();
+        repo.create(eid, wid, serde_json::json!({"status": "created"}))
             .await
             .unwrap();
+        assert!(!repo.check_idempotency(key).await.unwrap());
+        repo.mark_idempotent(key, eid, NodeId::new()).await.unwrap();
         assert!(repo.check_idempotency(key).await.unwrap());
+    }
+
+    #[tokio::test]
+    async fn mark_idempotent_unknown_execution_returns_not_found() {
+        let repo = InMemoryExecutionRepo::default();
+        let missing = ExecutionId::new();
+        let err = repo
+            .mark_idempotent("k", missing, NodeId::new())
+            .await
+            .unwrap_err();
+        assert!(matches!(
+            err,
+            ExecutionRepoError::NotFound { ref entity, ref id }
+                if entity == "execution" && id == &missing.to_string()
+        ));
     }
 
     // ── #308 regression: stateful checkpoint round-trips ───────────────────
