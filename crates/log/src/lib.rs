@@ -124,7 +124,8 @@ mod timing;
 mod writer;
 
 #[cfg(any(feature = "telemetry", feature = "sentry"))]
-mod telemetry;
+#[doc(hidden)]
+pub mod telemetry;
 
 // Observability module
 pub mod observability;

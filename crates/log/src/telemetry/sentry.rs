@@ -25,8 +25,19 @@ pub fn init() -> Option<ClientInitGuard> {
         .and_then(|s| s.parse().ok())
         .unwrap_or(0.1);
 
+    let parsed_dsn = match dsn.parse::<sentry::types::Dsn>() {
+        Ok(d) => d,
+        Err(e) => {
+            tracing::warn!(
+                error = %e,
+                "SENTRY_DSN is set but invalid; Sentry reporting is disabled"
+            );
+            return None;
+        },
+    };
+
     let guard = sentry::init(sentry::ClientOptions {
-        dsn: Some(dsn.parse().ok()?),
+        dsn: Some(parsed_dsn),
         environment: Some(environment.into()),
         release: release.map(|s| s.into()),
         traces_sample_rate: sample_rate,
