@@ -62,8 +62,14 @@ mod tests {
     }
 
     #[test]
-    fn already_initialized_is_distinct_from_internal() {
+    fn already_initialized_has_stable_classification() {
+        use nebula_error::Classify;
+
         let err = LogError::AlreadyInitialized;
-        assert!(matches!(err, LogError::AlreadyInitialized));
+        // Lock in the error code string so downstream consumers can match on it.
+        assert_eq!(err.code(), "LOG:ALREADY_INITIALIZED");
+        // And distinct from the nearest neighbour we could have re-used instead.
+        let internal = LogError::Internal(String::new());
+        assert_ne!(err.code(), internal.code());
     }
 }
