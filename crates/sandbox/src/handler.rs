@@ -13,8 +13,9 @@ use crate::{SandboxRunner, process::ProcessSandbox, runner::SandboxedContext};
 /// Wraps a [`ProcessSandbox`] as a [`StatelessHandler`].
 ///
 /// Each `ProcessSandboxHandler` represents one action from a community plugin.
-/// When the engine calls `execute()`, it spawns the plugin binary with the
-/// action key and JSON input via stdin/stdout.
+/// When the engine calls `execute()`, the request is routed through the
+/// sandbox's long-lived plugin process using the duplex v2 envelope transport
+/// (handshake + dialed socket), not direct stdin/stdout action invocation.
 pub struct ProcessSandboxHandler {
     sandbox: Arc<ProcessSandbox>,
     metadata: ActionMetadata,

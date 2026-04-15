@@ -169,43 +169,49 @@ impl TelemetryAdapter {
     /// ```
     #[must_use]
     pub fn action_executions_labeled(&self, labels: &LabelSet) -> Counter {
+        let labels = self.filter_labels(labels);
         self.registry
-            .counter_labeled(NEBULA_ACTION_EXECUTIONS_TOTAL, labels)
+            .counter_labeled(NEBULA_ACTION_EXECUTIONS_TOTAL, &labels)
     }
 
     /// Counter: action failures with label dimensions.
     #[must_use]
     pub fn action_failures_labeled(&self, labels: &LabelSet) -> Counter {
+        let labels = self.filter_labels(labels);
         self.registry
-            .counter_labeled(NEBULA_ACTION_FAILURES_TOTAL, labels)
+            .counter_labeled(NEBULA_ACTION_FAILURES_TOTAL, &labels)
     }
 
     /// Histogram: action execution duration with label dimensions.
     #[must_use]
     pub fn action_duration_labeled(&self, labels: &LabelSet) -> Histogram {
+        let labels = self.filter_labels(labels);
         self.registry
-            .histogram_labeled(NEBULA_ACTION_DURATION_SECONDS, labels)
+            .histogram_labeled(NEBULA_ACTION_DURATION_SECONDS, &labels)
     }
 
     /// Counter: workflow executions started with label dimensions.
     #[must_use]
     pub fn workflow_executions_started_labeled(&self, labels: &LabelSet) -> Counter {
+        let labels = self.filter_labels(labels);
         self.registry
-            .counter_labeled(NEBULA_WORKFLOW_EXECUTIONS_STARTED_TOTAL, labels)
+            .counter_labeled(NEBULA_WORKFLOW_EXECUTIONS_STARTED_TOTAL, &labels)
     }
 
     /// Counter: workflow executions completed with label dimensions.
     #[must_use]
     pub fn workflow_executions_completed_labeled(&self, labels: &LabelSet) -> Counter {
+        let labels = self.filter_labels(labels);
         self.registry
-            .counter_labeled(NEBULA_WORKFLOW_EXECUTIONS_COMPLETED_TOTAL, labels)
+            .counter_labeled(NEBULA_WORKFLOW_EXECUTIONS_COMPLETED_TOTAL, &labels)
     }
 
     /// Counter: workflow executions failed with label dimensions.
     #[must_use]
     pub fn workflow_executions_failed_labeled(&self, labels: &LabelSet) -> Counter {
+        let labels = self.filter_labels(labels);
         self.registry
-            .counter_labeled(NEBULA_WORKFLOW_EXECUTIONS_FAILED_TOTAL, labels)
+            .counter_labeled(NEBULA_WORKFLOW_EXECUTIONS_FAILED_TOTAL, &labels)
     }
 
     /// Access the underlying label interner to build [`LabelSet`]s.
@@ -274,6 +280,7 @@ mod tests {
     use nebula_telemetry::metrics::MetricsRegistry;
 
     use super::TelemetryAdapter;
+    use crate::LabelAllowlist;
 
     #[test]
     fn adapter_records_under_standard_names() {
@@ -397,5 +404,34 @@ mod tests {
         assert_eq!(adapter.eventbus_sent().get(), i64::MAX);
         assert_eq!(adapter.eventbus_subscribers().get(), i64::MAX);
         assert_eq!(adapter.eventbus_drop_ratio_ppm().get(), 0);
+    }
+
+    #[test]
+    fn labeled_accessors_apply_allowlist_before_recording() {
+        let registry = Arc::new(MetricsRegistry::new());
+        let adapter = TelemetryAdapter::new(Arc::clone(&registry))
+            .with_allowlist(LabelAllowlist::only(["action_type"]));
+        let labels = registry.interner().label_set(&[
+            ("action_type", "http.request"),
+            ("execution_id", "exec-123"),
+        ]);
+
+        adapter.action_executions_labeled(&labels).inc();
+
+        let snapshots = registry.snapshot_counters();
+        let (key, counter) = snapshots
+            .iter()
+            .find(|(key, _)| {
+                registry.interner().resolve(key.name) == "nebula_action_executions_total"
+            })
+            .expect("counter should be recorded");
+        assert_eq!(counter.get(), 1);
+
+        let labels = key.labels.resolve(registry.interner());
+        assert_eq!(
+            labels,
+            vec![("action_type", "http.request")],
+            "high-cardinality execution_id must be filtered out",
+        );
     }
 }
