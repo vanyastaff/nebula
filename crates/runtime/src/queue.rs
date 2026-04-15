@@ -13,7 +13,10 @@ use std::{
 
 use async_trait::async_trait;
 use thiserror::Error;
-use tokio::sync::{Mutex, mpsc};
+use tokio::{
+    sync::{Mutex, mpsc},
+    time::Instant,
+};
 
 /// Errors returned by queue operations.
 #[derive(Debug, Error)]
@@ -77,27 +80,70 @@ struct QueueItem {
     payload: serde_json::Value,
 }
 
+#[derive(Debug, Clone)]
+struct InFlightEntry {
+    item: QueueItem,
+    lease_deadline: Instant,
+}
+
 /// In-memory bounded task queue.
 ///
 /// Tasks: Queued → In-flight (dequeued) → Done (acked) or requeued (nacked).
 pub struct MemoryQueue {
     sender: mpsc::Sender<QueueItem>,
     receiver: Arc<Mutex<mpsc::Receiver<QueueItem>>>,
-    in_flight: Arc<Mutex<HashMap<String, QueueItem>>>,
+    in_flight: Arc<Mutex<HashMap<String, InFlightEntry>>>,
     queued_count: AtomicUsize,
+    visibility_timeout: Duration,
 }
 
 impl MemoryQueue {
+    const DEFAULT_VISIBILITY_TIMEOUT: Duration = Duration::from_secs(30);
+
     /// Create a new memory queue with the given capacity.
     #[must_use]
     pub fn new(capacity: usize) -> Self {
+        Self::new_with_visibility_timeout(capacity, Self::DEFAULT_VISIBILITY_TIMEOUT)
+    }
+
+    /// Create a new memory queue with an explicit visibility timeout.
+    ///
+    /// A dequeued task must be acknowledged within this timeout; otherwise it
+    /// is considered stale and can be redelivered by a later [`TaskQueue::dequeue`].
+    #[must_use]
+    pub fn new_with_visibility_timeout(capacity: usize, visibility_timeout: Duration) -> Self {
         let (sender, receiver) = mpsc::channel(capacity);
         Self {
             sender,
             receiver: Arc::new(Mutex::new(receiver)),
             in_flight: Arc::new(Mutex::new(HashMap::new())),
             queued_count: AtomicUsize::new(0),
+            visibility_timeout,
         }
+    }
+
+    async fn try_reclaim_stale_in_flight(&self) -> Option<QueueItem> {
+        let now = Instant::now();
+        let mut in_flight = self.in_flight.lock().await;
+        let stale_task_id = in_flight
+            .iter()
+            .find(|(_, entry)| entry.lease_deadline <= now)
+            .map(|(task_id, _)| task_id.clone())?;
+        in_flight.remove(&stale_task_id).map(|entry| entry.item)
+    }
+
+    async fn lease_item(&self, item: QueueItem) -> (String, serde_json::Value) {
+        let id = item.id.clone();
+        let payload = item.payload.clone();
+        let lease_deadline = Instant::now() + self.visibility_timeout;
+        self.in_flight.lock().await.insert(
+            id.clone(),
+            InFlightEntry {
+                item,
+                lease_deadline,
+            },
+        );
+        (id, payload)
     }
 }
 
@@ -120,15 +166,18 @@ impl TaskQueue for MemoryQueue {
         &self,
         timeout: Duration,
     ) -> Result<Option<(String, serde_json::Value)>, QueueError> {
+        if let Some(item) = self.try_reclaim_stale_in_flight().await {
+            let leased = self.lease_item(item).await;
+            return Ok(Some(leased));
+        }
+
         let mut rx = self.receiver.lock().await;
         let result = tokio::time::timeout(timeout, rx.recv()).await;
         match result {
             Ok(Some(item)) => {
                 self.queued_count.fetch_sub(1, Ordering::Relaxed);
-                let id = item.id.clone();
-                let payload = item.payload.clone();
-                self.in_flight.lock().await.insert(id.clone(), item);
-                Ok(Some((id, payload)))
+                let leased = self.lease_item(item).await;
+                Ok(Some(leased))
             },
             Ok(None) => Ok(None),
             Err(_) => Ok(None),
@@ -148,7 +197,7 @@ impl TaskQueue for MemoryQueue {
         // at-least-once guarantees when the queue is saturated.
         let item = {
             let in_flight = self.in_flight.lock().await;
-            in_flight.get(task_id).cloned()
+            in_flight.get(task_id).map(|entry| entry.item.clone())
         };
         let Some(item) = item else {
             return Err(QueueError::not_found("Task", task_id));
@@ -217,5 +266,29 @@ mod tests {
             .unwrap()
             .expect("expected requeued task");
         assert_eq!(requeued_id, dequeued_id);
+    }
+
+    #[tokio::test]
+    async fn stale_in_flight_task_is_redelivered() {
+        let queue = MemoryQueue::new_with_visibility_timeout(1, Duration::from_millis(20));
+        let id = queue
+            .enqueue(serde_json::json!({"task":"stale"}))
+            .await
+            .unwrap();
+        let (first_delivery, _) = queue
+            .dequeue(Duration::from_millis(50))
+            .await
+            .unwrap()
+            .expect("expected first delivery");
+        assert_eq!(first_delivery, id);
+
+        tokio::time::sleep(Duration::from_millis(30)).await;
+
+        let (second_delivery, _) = queue
+            .dequeue(Duration::from_millis(50))
+            .await
+            .unwrap()
+            .expect("expected stale redelivery");
+        assert_eq!(second_delivery, id);
     }
 }
