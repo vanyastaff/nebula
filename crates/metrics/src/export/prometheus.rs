@@ -34,11 +34,6 @@ use crate::naming::{
 /// Prometheus exposition format version (text-based).
 const PROMETHEUS_CONTENT_TYPE: &str = "text/plain; version=0.0.4; charset=utf-8";
 
-/// Default Prometheus histogram bucket boundaries (in seconds).
-const DEFAULT_BUCKETS: &[f64] = &[
-    0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1.0, 2.5, 5.0, 10.0,
-];
-
 // ── Static metric descriptors ─────────────────────────────────────────────────
 
 fn counter_help(name: &str) -> &'static str {
@@ -120,12 +115,53 @@ fn render_labels(labels: &nebula_telemetry::labels::LabelSet, interner: &LabelIn
         }
         let k_str = interner.resolve(k);
         let v_str = interner.resolve(v);
-        // Escape double-quotes and backslashes in label values (Prometheus spec).
-        let v_escaped = v_str.replace('\\', "\\\\").replace('"', "\\\"");
-        let _ = write!(out, "{}=\"{v_escaped}\"", k_str);
+        let k_sanitized = sanitize_label_key(k_str);
+        let v_escaped = escape_label_value(v_str);
+        let _ = write!(out, "{k_sanitized}=\"{v_escaped}\"");
     }
     out.push('}');
     out
+}
+
+fn sanitize_metric_name(name: &str) -> String {
+    sanitize_identifier(name, true)
+}
+
+fn sanitize_label_key(key: &str) -> String {
+    sanitize_identifier(key, false)
+}
+
+fn sanitize_identifier(input: &str, allow_colon: bool) -> String {
+    if input.is_empty() {
+        return "_".to_owned();
+    }
+
+    let mut out = String::with_capacity(input.len());
+    for (index, ch) in input.chars().enumerate() {
+        let is_valid = if index == 0 {
+            ch.is_ascii_alphabetic() || ch == '_' || (allow_colon && ch == ':')
+        } else {
+            ch.is_ascii_alphanumeric() || ch == '_' || (allow_colon && ch == ':')
+        };
+        out.push(if is_valid { ch } else { '_' });
+    }
+
+    if out.is_empty() { "_".to_owned() } else { out }
+}
+
+fn escape_label_value(value: &str) -> String {
+    let mut escaped = String::with_capacity(value.len());
+    for ch in value.chars() {
+        match ch {
+            '\\' => escaped.push_str("\\\\"),
+            '"' => escaped.push_str("\\\""),
+            '\n' => escaped.push_str("\\n"),
+            '\r' => escaped.push_str("\\r"),
+            '\t' => escaped.push_str("\\t"),
+            _ => escaped.push(ch),
+        }
+    }
+    escaped
 }
 
 // ── snapshot function ─────────────────────────────────────────────────────────
@@ -146,7 +182,8 @@ pub fn snapshot(registry: &MetricsRegistry) -> String {
     // Group by metric name so each family emits one HELP+TYPE header.
     let mut counter_families: BTreeMap<String, Vec<_>> = BTreeMap::new();
     for (key, counter) in registry.snapshot_counters() {
-        let name = interner.resolve(key.name).to_owned();
+        let raw_name = interner.resolve(key.name);
+        let name = sanitize_metric_name(raw_name);
         counter_families
             .entry(name)
             .or_default()
@@ -164,7 +201,8 @@ pub fn snapshot(registry: &MetricsRegistry) -> String {
     // ── Gauges ────────────────────────────────────────────────────────────
     let mut gauge_families: BTreeMap<String, Vec<_>> = BTreeMap::new();
     for (key, gauge) in registry.snapshot_gauges() {
-        let name = interner.resolve(key.name).to_owned();
+        let raw_name = interner.resolve(key.name);
+        let name = sanitize_metric_name(raw_name);
         gauge_families
             .entry(name)
             .or_default()
@@ -182,7 +220,8 @@ pub fn snapshot(registry: &MetricsRegistry) -> String {
     // ── Histograms ────────────────────────────────────────────────────────
     let mut histogram_families: BTreeMap<String, Vec<_>> = BTreeMap::new();
     for (key, histogram) in registry.snapshot_histograms() {
-        let name = interner.resolve(key.name).to_owned();
+        let raw_name = interner.resolve(key.name);
+        let name = sanitize_metric_name(raw_name);
         histogram_families
             .entry(name)
             .or_default()
@@ -194,10 +233,11 @@ pub fn snapshot(registry: &MetricsRegistry) -> String {
         for (labels, hist) in entries {
             let count = hist.count();
             let sum = hist.sum();
-            let buckets = hist.bucket_counts(DEFAULT_BUCKETS);
+            let buckets = hist.buckets();
             let label_str = render_labels(labels, interner);
-            // Insert le label into label set for bucket lines.
-            for (le, cumulative) in &buckets {
+            // Emit finite buckets using this histogram's configured boundaries.
+            for (upper_bound, cumulative) in buckets.iter().filter(|(upper, _)| upper.is_finite()) {
+                let le = upper_bound.to_string();
                 if label_str.is_empty() {
                     let _ = writeln!(out, "{name}_bucket{{le=\"{le}\"}} {cumulative}");
                 } else {
@@ -412,5 +452,58 @@ mod tests {
         let exporter = PrometheusExporter::new(registry);
         let out = exporter.snapshot();
         assert!(out.contains("nebula_action_failures_total 3\n"));
+    }
+
+    #[test]
+    fn snapshot_uses_histogram_specific_bucket_boundaries() {
+        let registry = Arc::new(MetricsRegistry::new());
+        let labels = registry.interner().label_set(&[("kind", "custom")]);
+        let histogram = registry.histogram_with_buckets_labeled(
+            "nebula_custom_duration_seconds",
+            &labels,
+            vec![0.1, 0.5],
+        );
+        histogram.observe(0.03);
+        histogram.observe(0.3);
+        histogram.observe(1.2);
+
+        let out = snapshot(&registry);
+        assert!(
+            out.contains(r#"nebula_custom_duration_seconds_bucket{kind="custom",le="0.1"} 1"#),
+            "expected first custom bucket count:\n{out}"
+        );
+        assert!(
+            out.contains(r#"nebula_custom_duration_seconds_bucket{kind="custom",le="0.5"} 2"#),
+            "expected second custom bucket count:\n{out}"
+        );
+        assert!(
+            out.contains(r#"nebula_custom_duration_seconds_bucket{kind="custom",le="+Inf"} 3"#),
+            "expected +Inf bucket count:\n{out}"
+        );
+        assert!(
+            !out.contains(r#"nebula_custom_duration_seconds_bucket{kind="custom",le="0.005"}"#),
+            "default buckets should not be emitted for custom histogram:\n{out}"
+        );
+    }
+
+    #[test]
+    fn snapshot_sanitizes_metric_names_and_label_keys() {
+        let registry = Arc::new(MetricsRegistry::new());
+        let labels = registry
+            .interner()
+            .label_set(&[("bad key\nx", "a\"b\\c"), ("ok_key", "ok")]);
+        registry
+            .counter_labeled("bad metric\nname", &labels)
+            .inc_by(2);
+
+        let out = snapshot(&registry);
+        assert!(
+            out.contains("# TYPE bad_metric_name counter"),
+            "metric name should be sanitized:\n{out}"
+        );
+        assert!(
+            out.contains(r#"bad_metric_name{bad_key_x="a\"b\\c",ok_key="ok"} 2"#),
+            "label keys should be sanitized and values escaped:\n{out}"
+        );
     }
 }
