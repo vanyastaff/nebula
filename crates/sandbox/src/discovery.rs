@@ -143,6 +143,14 @@ fn create_handlers(
     sandbox: Arc<ProcessSandbox>,
 ) -> Vec<(ActionMetadata, ActionHandler)> {
     let namespace_prefix = format!("{}.", plugin.key);
+    let interface_version = parse_interface_version(&plugin.version).unwrap_or_else(|| {
+        tracing::warn!(
+            plugin = %plugin.key,
+            version = %plugin.version,
+            "invalid plugin version; defaulting action interface version to 1.0",
+        );
+        (1, 0)
+    });
     plugin
         .actions
         .iter()
@@ -169,7 +177,8 @@ fn create_handlers(
                 },
             };
 
-            let metadata = ActionMetadata::new(action_key, &action.name, &action.description);
+            let metadata = ActionMetadata::new(action_key, &action.name, &action.description)
+                .with_version(interface_version.0, interface_version.1);
 
             let handler = ActionHandler::Stateless(Arc::new(ProcessSandboxHandler::new(
                 Arc::clone(&sandbox),
@@ -179,6 +188,13 @@ fn create_handlers(
             Some((metadata, handler))
         })
         .collect()
+}
+
+fn parse_interface_version(version: &str) -> Option<(u32, u32)> {
+    let mut parts = version.split('.');
+    let major = parts.next()?.parse::<u32>().ok()?;
+    let minor = parts.next()?.parse::<u32>().ok()?;
+    Some((major, minor))
 }
 
 /// Check if a file looks like an executable plugin binary.
@@ -268,5 +284,28 @@ mod tests {
         let handlers = create_handlers(&plugin, sandbox);
         assert_eq!(handlers.len(), 1);
         assert_eq!(handlers[0].0.key.as_str(), "com.good.plugin.echo");
+    }
+
+    #[test]
+    fn create_handlers_use_plugin_major_minor_version() {
+        let plugin = DiscoveredPlugin {
+            key: "com.good.plugin".to_owned(),
+            version: "2.7.3".to_owned(),
+            actions: vec![ActionDescriptor {
+                key: "echo".to_owned(),
+                name: "Echo".to_owned(),
+                description: "ok".to_owned(),
+            }],
+        };
+        let sandbox = Arc::new(ProcessSandbox::new(
+            PathBuf::from("nebula-plugin-dummy"),
+            Duration::from_secs(1),
+            PluginCapabilities::none(),
+        ));
+
+        let handlers = create_handlers(&plugin, sandbox);
+        assert_eq!(handlers.len(), 1);
+        assert_eq!(handlers[0].0.version.major, 2);
+        assert_eq!(handlers[0].0.version.minor, 7);
     }
 }
