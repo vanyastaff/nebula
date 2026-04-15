@@ -17,12 +17,14 @@ pre-commit:
     cargo-deny:
       glob: "{Cargo.toml,Cargo.lock,deny.toml,**/Cargo.toml}"
       run: cargo deny check
+    typos:
+      run: typos
 
 pre-push:
   parallel: false
   commands:
     nextest:
-      run: cargo nextest run --workspace
+      run: cargo nextest run --workspace --status-level fail --final-status-level fail
     docs:
       env:
         RUSTDOCFLAGS: "-D warnings"

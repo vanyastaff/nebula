@@ -574,7 +574,7 @@ This is the **minimum bar** for “we did not break the product direction.” Ex
   - the **same logical operation** enqueues `**Cancel`** in `execution_control_queue`,
   - a dispatch consumer wired to the **real engine** observes the command and the engine’s cancel path runs,
   - the execution reaches a **terminal** `Cancelled` state without hand-waved stubs.
-6. Under test configuration where orchestration is intentionally absent: control endpoints return **503** — never fake success and never an unparseable 500.
+6. Under test configuration where orchestration is intentionally absent: control endpoints return **503** — never fake success and never an unparsable 500.
 
 **Integration bar (same spirit as execution — must stay green as these paths exist):**
 
