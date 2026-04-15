@@ -8,7 +8,12 @@
 //! renders each family with a single `# HELP` / `# TYPE` header followed by
 //! sample lines. Labels are rendered as `{key1="value1",key2="value2"}`.
 
-use std::{collections::BTreeMap, fmt::Write as _, sync::Arc};
+use std::{
+    collections::{BTreeMap, HashMap, HashSet, hash_map::DefaultHasher},
+    fmt::Write as _,
+    hash::{Hash, Hasher},
+    sync::Arc,
+};
 
 use nebula_telemetry::{labels::LabelInterner, metrics::MetricsRegistry};
 
@@ -33,11 +38,6 @@ use crate::naming::{
 
 /// Prometheus exposition format version (text-based).
 const PROMETHEUS_CONTENT_TYPE: &str = "text/plain; version=0.0.4; charset=utf-8";
-
-/// Default Prometheus histogram bucket boundaries (in seconds).
-const DEFAULT_BUCKETS: &[f64] = &[
-    0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1.0, 2.5, 5.0, 10.0,
-];
 
 // ── Static metric descriptors ─────────────────────────────────────────────────
 
@@ -113,19 +113,103 @@ fn render_labels(labels: &nebula_telemetry::labels::LabelSet, interner: &LabelIn
     if labels.is_empty() {
         return String::new();
     }
+    let mut used_keys = HashSet::<String>::new();
     let mut out = String::from("{");
     for (i, (k, v)) in labels.iter().enumerate() {
         if i > 0 {
             out.push(',');
         }
-        let k_str = interner.resolve(k);
+        let raw_k = interner.resolve(k);
         let v_str = interner.resolve(v);
-        // Escape double-quotes and backslashes in label values (Prometheus spec).
-        let v_escaped = v_str.replace('\\', "\\\\").replace('"', "\\\"");
-        let _ = write!(out, "{}=\"{v_escaped}\"", k_str);
+        // Sanitize then ensure uniqueness: distinct raw keys can map to the same
+        // identifier (e.g. "a-b" and "a b" → "a_b"), which would break Prometheus text format.
+        let base = sanitize_label_key(raw_k);
+        let mut key_out = base.clone();
+        if !used_keys.insert(key_out.clone()) {
+            let h = hash_raw(raw_k);
+            key_out = format!("{base}__{h:016x}");
+            while !used_keys.insert(key_out.clone()) {
+                key_out.push('_');
+            }
+        }
+        let v_escaped = escape_label_value(v_str);
+        let _ = write!(out, "{key_out}=\"{v_escaped}\"");
     }
     out.push('}');
     out
+}
+
+fn sanitize_metric_name(name: &str) -> String {
+    sanitize_identifier(name, true)
+}
+
+fn sanitize_label_key(key: &str) -> String {
+    sanitize_identifier(key, false)
+}
+
+fn sanitize_identifier(input: &str, allow_colon: bool) -> String {
+    if input.is_empty() {
+        return "_".to_owned();
+    }
+
+    let mut out = String::with_capacity(input.len());
+    for (index, ch) in input.chars().enumerate() {
+        let is_valid = if index == 0 {
+            ch.is_ascii_alphabetic() || ch == '_' || (allow_colon && ch == ':')
+        } else {
+            ch.is_ascii_alphanumeric() || ch == '_' || (allow_colon && ch == ':')
+        };
+        out.push(if is_valid { ch } else { '_' });
+    }
+
+    out
+}
+
+/// Stable hash for disambiguating colliding sanitized identifiers (label keys / metric names).
+fn hash_raw(s: &str) -> u64 {
+    let mut hasher = DefaultHasher::new();
+    s.hash(&mut hasher);
+    hasher.finish()
+}
+
+/// Assign a unique exported metric name for each distinct raw name. If sanitization maps two
+/// different raw names to the same string, the second and later names get a `__{hash}` suffix
+/// so families do not merge and `# TYPE` lines stay valid.
+fn allocate_exported_metric_name(
+    raw: &str,
+    raw_to_exported: &mut HashMap<String, String>,
+    taken: &mut HashSet<String>,
+) -> String {
+    if let Some(existing) = raw_to_exported.get(raw) {
+        return existing.clone();
+    }
+    let base = sanitize_metric_name(raw);
+    let mut exported = base.clone();
+    if taken.contains(&exported) {
+        let h = hash_raw(raw);
+        exported = format!("{base}__{h:016x}");
+        while taken.contains(&exported) {
+            exported.push('_');
+        }
+    }
+    taken.insert(exported.clone());
+    raw_to_exported.insert(raw.to_owned(), exported.clone());
+    exported
+}
+
+fn escape_label_value(value: &str) -> String {
+    let mut escaped = String::with_capacity(value.len());
+    for ch in value.chars() {
+        match ch {
+            '\\' => escaped.push_str("\\\\"),
+            '"' => escaped.push_str("\\\""),
+            '\n' => escaped.push_str("\\n"),
+            '\r' => escaped.push_str("\\r"),
+            '\t' => escaped.push_str("\\t"),
+            _ => escaped.push(ch),
+        }
+    }
+    escaped
 }
 
 // ── snapshot function ─────────────────────────────────────────────────────────
@@ -142,11 +226,21 @@ pub fn snapshot(registry: &MetricsRegistry) -> String {
     let interner = registry.interner();
     let mut out = String::new();
 
+    // One exported name per raw metric name string; disambiguate when sanitization collides
+    // (Copilot review: merged families / duplicate `# TYPE` for the same exported name).
+    let mut metric_raw_to_exported: HashMap<String, String> = HashMap::new();
+    let mut exported_metric_names: HashSet<String> = HashSet::new();
+
     // ── Counters ──────────────────────────────────────────────────────────
     // Group by metric name so each family emits one HELP+TYPE header.
     let mut counter_families: BTreeMap<String, Vec<_>> = BTreeMap::new();
     for (key, counter) in registry.snapshot_counters() {
-        let name = interner.resolve(key.name).to_owned();
+        let raw_name = interner.resolve(key.name);
+        let name = allocate_exported_metric_name(
+            raw_name,
+            &mut metric_raw_to_exported,
+            &mut exported_metric_names,
+        );
         counter_families
             .entry(name)
             .or_default()
@@ -164,7 +258,12 @@ pub fn snapshot(registry: &MetricsRegistry) -> String {
     // ── Gauges ────────────────────────────────────────────────────────────
     let mut gauge_families: BTreeMap<String, Vec<_>> = BTreeMap::new();
     for (key, gauge) in registry.snapshot_gauges() {
-        let name = interner.resolve(key.name).to_owned();
+        let raw_name = interner.resolve(key.name);
+        let name = allocate_exported_metric_name(
+            raw_name,
+            &mut metric_raw_to_exported,
+            &mut exported_metric_names,
+        );
         gauge_families
             .entry(name)
             .or_default()
@@ -182,7 +281,12 @@ pub fn snapshot(registry: &MetricsRegistry) -> String {
     // ── Histograms ────────────────────────────────────────────────────────
     let mut histogram_families: BTreeMap<String, Vec<_>> = BTreeMap::new();
     for (key, histogram) in registry.snapshot_histograms() {
-        let name = interner.resolve(key.name).to_owned();
+        let raw_name = interner.resolve(key.name);
+        let name = allocate_exported_metric_name(
+            raw_name,
+            &mut metric_raw_to_exported,
+            &mut exported_metric_names,
+        );
         histogram_families
             .entry(name)
             .or_default()
@@ -194,10 +298,11 @@ pub fn snapshot(registry: &MetricsRegistry) -> String {
         for (labels, hist) in entries {
             let count = hist.count();
             let sum = hist.sum();
-            let buckets = hist.bucket_counts(DEFAULT_BUCKETS);
+            let buckets = hist.buckets();
             let label_str = render_labels(labels, interner);
-            // Insert le label into label set for bucket lines.
-            for (le, cumulative) in &buckets {
+            // Emit finite buckets using this histogram's configured boundaries.
+            for (upper_bound, cumulative) in buckets.iter().filter(|(upper, _)| upper.is_finite()) {
+                let le = upper_bound.to_string();
                 if label_str.is_empty() {
                     let _ = writeln!(out, "{name}_bucket{{le=\"{le}\"}} {cumulative}");
                 } else {
@@ -412,5 +517,113 @@ mod tests {
         let exporter = PrometheusExporter::new(registry);
         let out = exporter.snapshot();
         assert!(out.contains("nebula_action_failures_total 3\n"));
+    }
+
+    #[test]
+    fn snapshot_uses_histogram_specific_bucket_boundaries() {
+        let registry = Arc::new(MetricsRegistry::new());
+        let labels = registry.interner().label_set(&[("kind", "custom")]);
+        let histogram = registry.histogram_with_buckets_labeled(
+            "nebula_custom_duration_seconds",
+            &labels,
+            vec![0.1, 0.5],
+        );
+        histogram.observe(0.03);
+        histogram.observe(0.3);
+        histogram.observe(1.2);
+
+        let out = snapshot(&registry);
+        assert!(
+            out.contains(r#"nebula_custom_duration_seconds_bucket{kind="custom",le="0.1"} 1"#),
+            "expected first custom bucket count:\n{out}"
+        );
+        assert!(
+            out.contains(r#"nebula_custom_duration_seconds_bucket{kind="custom",le="0.5"} 2"#),
+            "expected second custom bucket count:\n{out}"
+        );
+        assert!(
+            out.contains(r#"nebula_custom_duration_seconds_bucket{kind="custom",le="+Inf"} 3"#),
+            "expected +Inf bucket count:\n{out}"
+        );
+        assert!(
+            !out.contains(r#"nebula_custom_duration_seconds_bucket{kind="custom",le="0.005"}"#),
+            "default buckets should not be emitted for custom histogram:\n{out}"
+        );
+    }
+
+    #[test]
+    fn snapshot_sanitizes_metric_names_and_label_keys() {
+        let registry = Arc::new(MetricsRegistry::new());
+        let labels = registry
+            .interner()
+            .label_set(&[("bad key\nx", "a\"b\\c"), ("ok_key", "ok")]);
+        registry
+            .counter_labeled("bad metric\nname", &labels)
+            .inc_by(2);
+
+        let out = snapshot(&registry);
+        assert!(
+            out.contains("# TYPE bad_metric_name counter"),
+            "metric name should be sanitized:\n{out}"
+        );
+        assert!(
+            out.contains(r#"bad_metric_name{bad_key_x="a\"b\\c",ok_key="ok"} 2"#),
+            "label keys should be sanitized and values escaped:\n{out}"
+        );
+    }
+
+    #[test]
+    fn snapshot_disambiguates_sanitized_label_key_collisions() {
+        let registry = Arc::new(MetricsRegistry::new());
+        let labels = registry
+            .interner()
+            .label_set(&[("a-b", "dash"), ("a b", "space")]);
+        registry
+            .counter_labeled("nebula_collision_label_keys", &labels)
+            .inc();
+
+        let out = snapshot(&registry);
+        assert!(
+            out.contains(r#"a_b="dash""#),
+            "first label key should use the sanitized base name:\n{out}"
+        );
+        assert!(
+            out.contains("__") && out.contains(r#"a_b__"#),
+            "second colliding key should be suffixed with a stable hash:\n{out}"
+        );
+        assert!(
+            out.contains(r#"a_b__"#) && out.contains(r#"="space""#),
+            "both values should be present with distinct keys:\n{out}"
+        );
+    }
+
+    #[test]
+    fn snapshot_disambiguates_sanitized_metric_name_collisions() {
+        let registry = Arc::new(MetricsRegistry::new());
+        registry.counter("dup x").inc();
+        registry.counter("dup-x").inc_by(2);
+
+        let out = snapshot(&registry);
+        let type_lines = out.lines().filter(|l| l.starts_with("# TYPE ")).count();
+        assert_eq!(
+            type_lines, 2,
+            "expected two metric families when raw names collide after sanitization:\n{out}"
+        );
+        // Snapshot iteration order is not guaranteed; either raw name may claim the unsuffixed
+        // `dup_x` family — values must still appear on two distinct exported names.
+        assert!(
+            out.lines()
+                .any(|l| l.trim_end_matches('\r').ends_with(" 1")),
+            "expected a sample line ending with 1:\n{out}"
+        );
+        assert!(
+            out.lines()
+                .any(|l| l.trim_end_matches('\r').ends_with(" 2")),
+            "expected a sample line ending with 2:\n{out}"
+        );
+        assert!(
+            out.contains("dup_x ") && out.contains("dup_x__"),
+            "expected one base `dup_x` family and one `dup_x__{{hash}}` family:\n{out}"
+        );
     }
 }
