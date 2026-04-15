@@ -53,7 +53,10 @@ use crate::{
 ///     .context("while loading execution plan");
 ///
 /// assert_eq!(err.category(), ErrorCategory::NotFound);
-/// assert_eq!(err.to_string(), "workflow does not exist");
+/// assert_eq!(
+///     err.to_string(),
+///     "while loading execution plan → workflow does not exist"
+/// );
 /// ```
 pub struct NebulaError<E: Classify> {
     inner: E,
@@ -102,8 +105,9 @@ impl<E: Classify> NebulaError<E> {
 
     /// Overrides the display message.
     ///
-    /// When set, the Display impl uses this message instead of the inner
-    /// error's display.
+    /// When set, [`fmt::Display`] uses this message instead of the inner
+    /// error's display. Context entries still appear in display order (outermost
+    /// context first), separated by ` → `, before this message.
     #[must_use]
     pub fn with_message(mut self, msg: impl Into<Cow<'static, str>>) -> Self {
         self.message = Some(msg.into());
@@ -228,7 +232,7 @@ impl<E: Classify> NebulaError<E> {
     /// # }
     /// let err = NebulaError::new(A).with_message("msg").context("ctx");
     /// let mapped: NebulaError<B> = err.map_inner(|_| B);
-    /// assert_eq!(mapped.to_string(), "msg");
+    /// assert_eq!(mapped.to_string(), "ctx → msg");
     /// ```
     #[must_use]
     pub fn map_inner<F: Classify>(self, f: impl FnOnce(E) -> F) -> NebulaError<F> {
@@ -273,8 +277,24 @@ impl<E: Classify> NebulaError<E> {
 
 impl<E: Classify + fmt::Display> fmt::Display for NebulaError<E> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        const SEP: &str = " → ";
+        let mut needs_sep = false;
+
+        // Outermost context first (reverse of push order), then message or inner display.
+        for ctx in self.context_chain.iter().rev() {
+            if needs_sep {
+                f.write_str(SEP)?;
+            }
+            needs_sep = true;
+            f.write_str(ctx)?;
+        }
+
+        if needs_sep {
+            f.write_str(SEP)?;
+        }
+
         if let Some(msg) = &self.message {
-            f.write_str(msg)
+            f.write_str(msg.as_ref())
         } else {
             fmt::Display::fmt(&self.inner, f)
         }
@@ -408,6 +428,10 @@ mod tests {
         assert_eq!(chain.len(), 2);
         assert_eq!(chain[0], "loading workflow");
         assert_eq!(chain[1], "executing step 3");
+        assert_eq!(
+            err.to_string(),
+            "executing step 3 → loading workflow → test error (internal)"
+        );
     }
 
     #[test]
@@ -475,8 +499,16 @@ mod tests {
         let mapped = original.map_inner(|_inner| OtherError(ErrorCategory::External));
 
         assert_eq!(mapped.category(), ErrorCategory::External);
-        assert_eq!(mapped.to_string(), "test msg");
+        assert_eq!(mapped.to_string(), "ctx1 → test msg");
         assert_eq!(mapped.context_chain().len(), 1);
+    }
+
+    #[test]
+    fn display_includes_context_with_message_override() {
+        let err = NebulaError::new(make_error())
+            .with_message("db down")
+            .context("while loading workflow");
+        assert_eq!(err.to_string(), "while loading workflow → db down");
     }
 
     #[test]
