@@ -118,9 +118,9 @@ pub trait WorkflowRepo: Send + Sync {
 
 /// In-memory workflow repository for tests and desktop/single-process.
 ///
-/// [`WorkflowRepo::list`] uses the same ordering contract as
-/// [`PgWorkflowRepo`](crate::PgWorkflowRepo): `created_at` is recorded on first insert and list
-/// sorts by `(created_at, id)`.
+/// [`WorkflowRepo::list`] uses the same ordering contract as Postgres workflow
+/// storage (`ORDER BY created_at, id`): `created_at` is recorded on first insert
+/// and list sorts by `(created_at, id)`.
 ///
 /// Lock ordering for [`RwLock`] fields is always **`versions` → `definitions` → `created_at`**
 /// (read or write) so paths cannot deadlock each other.

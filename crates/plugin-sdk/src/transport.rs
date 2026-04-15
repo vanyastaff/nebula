@@ -39,6 +39,9 @@ use crate::protocol::DUPLEX_PROTOCOL_VERSION;
 /// [`DUPLEX_PROTOCOL_VERSION`].
 pub const HANDSHAKE_VERSION: u32 = DUPLEX_PROTOCOL_VERSION;
 
+#[cfg(unix)]
+const MAX_UNIX_SOCKET_PATH_BYTES: usize = 100;
+
 /// Bind a transport listener, return it paired with the handshake line the
 /// plugin should print on stdout before calling [`PluginListener::accept`].
 pub fn bind_listener() -> io::Result<(PluginListener, String)> {
@@ -54,40 +57,84 @@ pub fn bind_listener() -> io::Result<(PluginListener, String)> {
 
 #[cfg(unix)]
 fn bind_unix() -> io::Result<(PluginListener, String)> {
-    use std::os::unix::fs::PermissionsExt;
+    use std::os::unix::{ffi::OsStrExt, fs::PermissionsExt};
 
-    let temp_dir = std::env::temp_dir();
-    let mut dir = None;
-    for _ in 0..16 {
-        let candidate = temp_dir.join(format!("nebula-plugin-{}", uuid::Uuid::new_v4()));
-        match std::fs::create_dir(&candidate) {
-            Ok(()) => {
-                dir = Some(candidate);
-                break;
-            },
-            Err(e) if e.kind() == io::ErrorKind::AlreadyExists => continue,
-            Err(e) => return Err(e),
+    fn socket_path_len(path: &std::path::Path) -> usize {
+        path.as_os_str().as_bytes().len()
+    }
+
+    fn unix_temp_roots() -> Vec<PathBuf> {
+        let system_tmp = std::env::temp_dir();
+        let short_tmp = PathBuf::from("/tmp");
+        if system_tmp == short_tmp {
+            vec![system_tmp]
+        } else {
+            vec![short_tmp, system_tmp]
         }
     }
-    let dir =
-        dir.ok_or_else(|| io::Error::other("failed to allocate unique plugin socket directory"))?;
-    std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700))?;
 
-    let socket_path = dir.join("sock");
-    let listener = tokio::net::UnixListener::bind(&socket_path)?;
-    std::fs::set_permissions(&socket_path, std::fs::Permissions::from_mode(0o600))?;
+    let mut last_err: Option<io::Error> = None;
+    for root in unix_temp_roots() {
+        for _ in 0..32 {
+            let nonce = uuid::Uuid::new_v4().simple().to_string();
+            let candidate = root.join(format!("nebula-{}", &nonce[..8]));
+            let socket_path = candidate.join("sock");
+            if socket_path_len(&socket_path) > MAX_UNIX_SOCKET_PATH_BYTES {
+                continue;
+            }
+            match std::fs::create_dir(&candidate) {
+                Ok(()) => {
+                    if let Err(e) =
+                        std::fs::set_permissions(&candidate, std::fs::Permissions::from_mode(0o700))
+                    {
+                        let _ = std::fs::remove_dir_all(&candidate);
+                        last_err = Some(e);
+                        continue;
+                    }
 
-    let line = format!(
-        "NEBULA-PROTO-{HANDSHAKE_VERSION}|unix|{}",
-        socket_path.display()
-    );
-    Ok((
-        PluginListener::Unix {
-            listener,
-            cleanup: CleanupGuard { dir: Some(dir) },
-        },
-        line,
-    ))
+                    let listener = match tokio::net::UnixListener::bind(&socket_path) {
+                        Ok(listener) => listener,
+                        Err(e) => {
+                            let _ = std::fs::remove_dir_all(&candidate);
+                            last_err = Some(e);
+                            continue;
+                        },
+                    };
+                    if let Err(e) = std::fs::set_permissions(
+                        &socket_path,
+                        std::fs::Permissions::from_mode(0o600),
+                    ) {
+                        drop(listener);
+                        let _ = std::fs::remove_dir_all(&candidate);
+                        last_err = Some(e);
+                        continue;
+                    }
+
+                    let line = format!(
+                        "NEBULA-PROTO-{HANDSHAKE_VERSION}|unix|{}",
+                        socket_path.display()
+                    );
+                    return Ok((
+                        PluginListener::Unix {
+                            listener,
+                            cleanup: CleanupGuard {
+                                dir: Some(candidate),
+                            },
+                        },
+                        line,
+                    ));
+                },
+                Err(e) if e.kind() == io::ErrorKind::AlreadyExists => continue,
+                Err(e) => {
+                    last_err = Some(e);
+                    continue;
+                },
+            }
+        }
+    }
+    Err(last_err.unwrap_or_else(|| {
+        io::Error::other("failed to allocate unix socket path for plugin transport")
+    }))
 }
 
 #[cfg(windows)]

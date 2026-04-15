@@ -571,7 +571,7 @@ impl MetricsRegistry {
     ///
     /// use nebula_telemetry::metrics::MetricsRegistry;
     ///
-    /// let reg = MetricsRegistry::new();
+    /// let mut reg = MetricsRegistry::new();
     /// let c = reg.counter("nebula_actions_total");
     /// c.inc();
     ///
@@ -599,11 +599,9 @@ impl MetricsRegistry {
 
     /// Number of distinct strings held by the label interner.
     ///
-    /// Unlike [`Self::metric_count`], this value is **monotonically
-    /// non-decreasing** for the lifetime of the registry: the underlying
-    /// `ThreadedRodeo` is append-only and is not reclaimed by
-    /// [`Self::retain_recent`]. Use it to detect unbounded interner growth
-    /// under high-cardinality label churn.
+    /// This reflects the current interner cardinality and can decrease after
+    /// [`Self::retain_recent`] triggers compaction via `compact_interner`.
+    /// Use it to monitor label-cardinality pressure over time.
     #[must_use]
     pub fn interner_len(&self) -> usize {
         self.interner.len()
