@@ -109,6 +109,12 @@ pub async fn list_workflows(
         .await
         .map_err(|e| ApiError::Internal(format!("Failed to list workflows: {}", e)))?;
 
+    let total = state
+        .workflow_repo
+        .count()
+        .await
+        .map_err(|e| ApiError::Internal(format!("Failed to count workflows: {}", e)))?;
+
     // Map to response DTOs
     let workflow_responses: Vec<WorkflowResponse> = workflows
         .into_iter()
@@ -137,10 +143,6 @@ pub async fn list_workflows(
             }
         })
         .collect();
-
-    // Note: total count is approximated as we don't have a count() method yet
-    // For accurate pagination, we would need to add count() to WorkflowRepo
-    let total = workflow_responses.len();
 
     Ok(Json(ListWorkflowsResponse {
         workflows: workflow_responses,

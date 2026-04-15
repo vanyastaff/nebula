@@ -319,6 +319,14 @@ impl WorkflowRepo for PgWorkflowRepo {
             .map(|(uuid, definition)| (WorkflowId::from_bytes(*uuid.as_bytes()), definition.0))
             .collect())
     }
+
+    async fn count(&self) -> Result<usize, WorkflowRepoError> {
+        let n: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM workflows")
+            .fetch_one(&self.pool)
+            .await
+            .map_err(|err| WorkflowRepoError::Connection(err.to_string()))?;
+        Ok(n.max(0) as usize)
+    }
 }
 
 #[cfg(all(test, feature = "postgres"))]

@@ -389,6 +389,85 @@ async fn test_workflow_list_with_data() {
     assert_eq!(response_data["workflows"][0]["name"], "Test Workflow");
 }
 
+/// `total` must reflect the full dataset size, not the current page length (issue #342).
+#[tokio::test]
+async fn test_workflow_list_total_matches_full_dataset_across_pages() {
+    use axum::{
+        body::Body,
+        http::{Request, StatusCode},
+    };
+    use tower::ServiceExt;
+
+    let state = create_test_state().await;
+    let api_config = ApiConfig::for_test();
+    let token = create_test_jwt();
+
+    for i in 0..3 {
+        let create_request = serde_json::json!({
+            "name": format!("Pagination Total {i}"),
+            "definition": { "nodes": [], "edges": [] }
+        });
+        let app = app::build_app(state.clone(), &api_config);
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/v1/workflows")
+                    .header("content-type", "application/json")
+                    .header("authorization", format!("Bearer {}", token))
+                    .body(Body::from(serde_json::to_string(&create_request).unwrap()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            response.status(),
+            StatusCode::CREATED,
+            "create workflow {i}"
+        );
+    }
+
+    let app = app::build_app(state.clone(), &api_config);
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("GET")
+                .uri("/api/v1/workflows?page=1&page_size=2")
+                .header("authorization", format!("Bearer {}", token))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let page1: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(page1["workflows"].as_array().unwrap().len(), 2);
+    assert_eq!(page1["total"], 3);
+
+    let app = app::build_app(state.clone(), &api_config);
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("GET")
+                .uri("/api/v1/workflows?page=2&page_size=2")
+                .header("authorization", format!("Bearer {}", token))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let page2: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(page2["workflows"].as_array().unwrap().len(), 1);
+    assert_eq!(page2["total"], 3);
+}
+
 #[tokio::test]
 async fn test_get_workflow_by_id() {
     use axum::{

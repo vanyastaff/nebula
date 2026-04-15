@@ -106,6 +106,10 @@ pub trait WorkflowRepo: Send + Sync {
         offset: usize,
         limit: usize,
     ) -> Result<Vec<(WorkflowId, serde_json::Value)>, WorkflowRepoError>;
+
+    /// Total number of stored workflows (matches the filter scope of [`WorkflowRepo::list`],
+    /// currently unfiltered).
+    async fn count(&self) -> Result<usize, WorkflowRepoError>;
 }
 
 /// In-memory workflow repository for tests and desktop/single-process.
@@ -174,6 +178,11 @@ impl WorkflowRepo for InMemoryWorkflowRepo {
             map.iter().map(|(id, value)| (*id, value.clone())).collect();
         rows.sort_by_key(|(id, _)| id.to_string());
         Ok(rows.into_iter().skip(offset).take(limit).collect())
+    }
+
+    async fn count(&self) -> Result<usize, WorkflowRepoError> {
+        let n = self.definitions.read().await.len();
+        Ok(n)
     }
 }
 
@@ -293,6 +302,21 @@ macro_rules! workflow_repo_tests {
             for &id in &ids {
                 repo.delete(id).await.ok();
             }
+        }
+
+        #[tokio::test]
+        async fn count_matches_list_len() {
+            let repo = $factory.await;
+            assert_eq!(repo.count().await.expect("count"), 0);
+
+            let id = WorkflowId::new();
+            repo.save(id, 0, serde_json::json!({}))
+                .await
+                .expect("save");
+            assert_eq!(repo.count().await.expect("count"), 1);
+            assert_eq!(repo.list(0, 100).await.expect("list").len(), 1);
+
+            repo.delete(id).await.ok();
         }
 
         #[tokio::test]
