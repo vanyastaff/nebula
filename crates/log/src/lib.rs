@@ -201,9 +201,19 @@ pub fn auto_init() -> LogResult<LoggerGuard> {
         return Ok(LoggerGuard::noop());
     }
 
-    let (guard, source) = LoggerBuilder::build_startup(None)?;
-    info!(source = ?source, "logging initialized");
-    Ok(guard)
+    // #379 TOCTOU: even after the fast-path, another thread may install a
+    // dispatcher between our check and `build_startup`'s own fast-path /
+    // try_init. `build_startup` surfaces that race as
+    // `LogError::AlreadyInitialized`; treat it the same as the fast-path hit
+    // and return a no-op guard instead of propagating the error.
+    match LoggerBuilder::build_startup(None) {
+        Ok((guard, source)) => {
+            info!(source = ?source, "logging initialized");
+            Ok(guard)
+        },
+        Err(crate::core::LogError::AlreadyInitialized) => Ok(LoggerGuard::noop()),
+        Err(e) => Err(e),
+    }
 }
 
 /// Initialize with default configuration

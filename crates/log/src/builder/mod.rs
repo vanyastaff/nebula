@@ -222,6 +222,15 @@ impl LoggerBuilder {
             if let Some(provider) = pending_provider {
                 crate::telemetry::otel::shutdown_unused_provider(provider);
             }
+            // #379 TOCTOU: if another thread installed a dispatcher between
+            // our top-of-`build` fast-path check and `try_init`, treat the
+            // resulting failure as the structured AlreadyInitialized variant
+            // to honor the error-code contract. We re-check has_been_set
+            // because tracing-subscriber does not expose a typed variant for
+            // "already set" — the error type only carries a string.
+            if tracing::dispatcher::has_been_set() {
+                return Err(crate::core::LogError::AlreadyInitialized);
+            }
             return Err(crate::core::LogError::Internal(e.to_string()));
         }
 
