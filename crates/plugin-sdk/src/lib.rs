@@ -62,12 +62,22 @@ use std::sync::Arc;
 
 use serde_json::Value;
 use thiserror::Error;
-use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+use tokio::io::{AsyncBufRead, AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 
 use crate::protocol::{ActionDescriptor, DUPLEX_PROTOCOL_VERSION, HostToPlugin, PluginToHost};
 
 pub mod protocol;
 pub mod transport;
+
+const DEFAULT_HOST_TO_PLUGIN_FRAME_CAP_BYTES: usize = 1024 * 1024;
+const HOST_TO_PLUGIN_FRAME_CAP_ENV: &str = "NEBULA_PLUGIN_MAX_FRAME_BYTES";
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum BoundedReadOutcome {
+    Eof,
+    Line { bytes_including_newline: usize },
+    Overflow { observed: usize },
+}
 
 /// Error returned from a [`PluginHandler::execute`] call.
 #[derive(Debug, Clone, Error)]
@@ -238,31 +248,41 @@ async fn run_event_loop<H: PluginHandler>(
     stream: transport::PluginStream,
     handler: Arc<H>,
 ) -> std::io::Result<()> {
+    let frame_cap = host_to_plugin_frame_cap_bytes();
     let (read_half, write_half) = tokio::io::split(stream);
     let mut reader = BufReader::new(read_half);
     let mut writer = write_half;
     let ctx = PluginCtx::new();
-    let mut line = String::new();
+    let mut line_buf = Vec::new();
 
     loop {
-        line.clear();
-        let bytes = match reader.read_line(&mut line).await {
-            Ok(0) => {
+        line_buf.clear();
+        let bytes = match read_bounded_line(&mut reader, frame_cap, &mut line_buf).await {
+            Ok(BoundedReadOutcome::Eof) => {
                 tracing::debug!("plugin: transport EOF, exiting");
                 return Ok(());
             },
-            Ok(n) => n,
+            Ok(BoundedReadOutcome::Line {
+                bytes_including_newline,
+            }) => bytes_including_newline,
+            Ok(BoundedReadOutcome::Overflow { observed }) => {
+                tracing::warn!(
+                    observed,
+                    limit = frame_cap,
+                    "plugin: host frame exceeds max size, closing transport",
+                );
+                return Ok(());
+            },
             Err(e) => {
                 tracing::warn!(error = %e, "plugin: transport read error, exiting");
                 return Ok(());
             },
         };
-        let trimmed = line.trim();
-        if trimmed.is_empty() {
+        if line_buf.iter().all(|b| b.is_ascii_whitespace()) {
             continue;
         }
 
-        let msg: HostToPlugin = match serde_json::from_str(trimmed) {
+        let msg: HostToPlugin = match serde_json::from_slice(&line_buf) {
             Ok(m) => m,
             Err(e) => {
                 tracing::warn!(
@@ -318,6 +338,51 @@ async fn run_event_loop<H: PluginHandler>(
     }
 }
 
+fn host_to_plugin_frame_cap_bytes() -> usize {
+    let Ok(raw) = std::env::var(HOST_TO_PLUGIN_FRAME_CAP_ENV) else {
+        return DEFAULT_HOST_TO_PLUGIN_FRAME_CAP_BYTES;
+    };
+    match raw.parse::<usize>() {
+        Ok(0) | Err(_) => {
+            tracing::warn!(
+                env = HOST_TO_PLUGIN_FRAME_CAP_ENV,
+                value = %raw,
+                default = DEFAULT_HOST_TO_PLUGIN_FRAME_CAP_BYTES,
+                "plugin: invalid frame cap env value, using default",
+            );
+            DEFAULT_HOST_TO_PLUGIN_FRAME_CAP_BYTES
+        },
+        Ok(v) => v,
+    }
+}
+
+async fn read_bounded_line<R>(
+    reader: &mut R,
+    cap: usize,
+    buf: &mut Vec<u8>,
+) -> std::io::Result<BoundedReadOutcome>
+where
+    R: AsyncBufRead + Unpin,
+{
+    let before = buf.len();
+    let limit = cap as u64 + 1;
+    let mut limited = reader.take(limit);
+    let n = limited.read_until(b'\n', buf).await?;
+    if n == 0 {
+        return Ok(BoundedReadOutcome::Eof);
+    }
+    let ends_with_newline = buf.get(before + n - 1).copied() == Some(b'\n');
+    if ends_with_newline && n <= cap {
+        return Ok(BoundedReadOutcome::Line {
+            bytes_including_newline: n,
+        });
+    }
+    if n > cap {
+        return Ok(BoundedReadOutcome::Overflow { observed: n });
+    }
+    Ok(BoundedReadOutcome::Eof)
+}
+
 async fn write_line<W: AsyncWriteExt + Unpin>(
     writer: &mut W,
     msg: &PluginToHost,
@@ -331,6 +396,10 @@ async fn write_line<W: AsyncWriteExt + Unpin>(
 
 #[cfg(test)]
 mod tests {
+    use std::io::Cursor;
+
+    use tokio::io::BufReader;
+
     use super::*;
 
     struct TestHandler;
@@ -403,5 +472,41 @@ mod tests {
             .unwrap_err();
         assert_eq!(err.code, "UNKNOWN_ACTION");
         assert!(!err.retryable);
+    }
+
+    #[tokio::test]
+    async fn read_bounded_line_accepts_exact_cap_with_newline() {
+        let payload = b"{\"t\":1}\n";
+        let mut reader = BufReader::new(Cursor::new(payload.as_slice()));
+        let mut buf = Vec::new();
+        let outcome = read_bounded_line(&mut reader, payload.len(), &mut buf)
+            .await
+            .unwrap();
+        assert_eq!(
+            outcome,
+            BoundedReadOutcome::Line {
+                bytes_including_newline: payload.len()
+            }
+        );
+    }
+
+    #[tokio::test]
+    async fn read_bounded_line_reports_overflow_without_newline() {
+        let payload = b"12345";
+        let mut reader = BufReader::new(Cursor::new(payload.as_slice()));
+        let mut buf = Vec::new();
+        let outcome = read_bounded_line(&mut reader, 4, &mut buf).await.unwrap();
+        assert_eq!(outcome, BoundedReadOutcome::Overflow { observed: 5 });
+    }
+
+    #[tokio::test]
+    async fn read_bounded_line_reports_eof_for_partial_line() {
+        let payload = b"{\"t\":1}";
+        let mut reader = BufReader::new(Cursor::new(payload.as_slice()));
+        let mut buf = Vec::new();
+        let outcome = read_bounded_line(&mut reader, 1024, &mut buf)
+            .await
+            .unwrap();
+        assert_eq!(outcome, BoundedReadOutcome::Eof);
     }
 }
