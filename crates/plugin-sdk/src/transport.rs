@@ -9,7 +9,7 @@
 //! ## Handshake line format
 //!
 //! ```text
-//! NEBULA-PROTO-2|unix|/tmp/nebula-plugin-<pid>/sock     (Unix)
+//! NEBULA-PROTO-2|unix|/tmp/nebula-plugin-<random>/sock  (Unix)
 //! NEBULA-PROTO-2|pipe|\\.\pipe\LOCAL\nebula-plugin-<pid> (Windows)
 //! ```
 //!
@@ -56,11 +56,21 @@ pub fn bind_listener() -> io::Result<(PluginListener, String)> {
 fn bind_unix() -> io::Result<(PluginListener, String)> {
     use std::os::unix::fs::PermissionsExt;
 
-    let pid = std::process::id();
-    let dir = std::env::temp_dir().join(format!("nebula-plugin-{pid}"));
-    // Clean up stale directory from a previous crashed run.
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir(&dir)?;
+    let temp_dir = std::env::temp_dir();
+    let mut dir = None;
+    for _ in 0..16 {
+        let candidate = temp_dir.join(format!("nebula-plugin-{}", uuid::Uuid::new_v4()));
+        match std::fs::create_dir(&candidate) {
+            Ok(()) => {
+                dir = Some(candidate);
+                break;
+            },
+            Err(e) if e.kind() == io::ErrorKind::AlreadyExists => continue,
+            Err(e) => return Err(e),
+        }
+    }
+    let dir =
+        dir.ok_or_else(|| io::Error::other("failed to allocate unique plugin socket directory"))?;
     std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700))?;
 
     let socket_path = dir.join("sock");
