@@ -82,8 +82,11 @@
 //! - `NEBULA_SERVICE`, `NEBULA_ENV`, `NEBULA_VERSION`, `NEBULA_INSTANCE`, `NEBULA_REGION`
 //!
 //! Telemetry/Sentry related:
-//! - `OTEL_EXPORTER_OTLP_ENDPOINT`
-//! - `SENTRY_DSN`
+//! - `OTEL_EXPORTER_OTLP_ENDPOINT` — OTLP export is opt-in. When neither this env var nor
+//!   `TelemetryConfig::otlp_endpoint` is set, OTLP is disabled. Use the literal string `"disabled"`
+//!   (or an empty string) to explicitly opt out at either layer.
+//! - `SENTRY_DSN` — when set but unparseable, a `tracing::warn!` is emitted at startup and Sentry
+//!   reporting is disabled.
 //! - `SENTRY_ENV`
 //! - `SENTRY_RELEASE`
 //! - `SENTRY_TRACES_SAMPLE_RATE`
@@ -172,14 +175,19 @@ static TEST_INIT: std::sync::OnceLock<()> = std::sync::OnceLock::new();
 // Initialization Functions
 // ============================================================================
 
-/// Auto-detect and initialize the best logging configuration
+/// Auto-detect and initialize the best logging configuration.
 ///
 /// Checks environment variables (`NEBULA_LOG`, `RUST_LOG`) and debug assertions
 /// to choose between development, production, or custom configuration.
 ///
+/// Safe to call multiple times: once a dispatcher is already set, this returns
+/// a no-op [`LoggerGuard`] so library callers can opportunistically initialize
+/// logging without blowing up a host process that already owns it. See
+/// [`LogError::AlreadyInitialized`] for the [`init_with`] counterpart.
+///
 /// # Errors
 ///
-/// Returns error if filter parsing fails or logger initialization fails
+/// Returns error if filter parsing fails or logger initialization fails.
 pub fn auto_init() -> LogResult<LoggerGuard> {
     #[cfg(test)]
     {
@@ -209,16 +217,21 @@ pub fn init() -> LogResult<LoggerGuard> {
     init_with(Config::default())
 }
 
-/// Initialize with custom configuration
+/// Initialize with custom configuration.
 ///
 /// Allows full control over format, output, filters, and telemetry.
 ///
 /// # Errors
 ///
 /// Returns error if:
+/// - The logger is already initialized for this process ([`LogError::AlreadyInitialized`])
 /// - Filter string is invalid
 /// - File writer cannot be created (if using file output)
 /// - Telemetry setup fails (if enabled)
+///
+/// Calling `init_with` a second time in the same process always returns
+/// [`LogError::AlreadyInitialized`]; callers that want idempotent init
+/// should treat that variant as success.
 pub fn init_with(config: Config) -> LogResult<LoggerGuard> {
     LoggerBuilder::from_config(config).build()
 }

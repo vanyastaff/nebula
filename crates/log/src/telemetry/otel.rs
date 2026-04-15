@@ -72,10 +72,17 @@ fn resolve_endpoint(config: &TelemetryConfig) -> Option<String> {
 
 /// Build an OpenTelemetry tracing layer with OTLP gRPC export.
 ///
-/// Returns `Ok(None)` when the endpoint is `"disabled"` or empty.
+/// Returns `Ok(None)` when OTLP is not configured (no endpoint in config and
+/// no `OTEL_EXPORTER_OTLP_ENDPOINT` env var), or when the endpoint is
+/// explicitly `"disabled"` or empty at either layer.
 ///
 /// The layer is boxed to erase the concrete type, which allows it to compose
 /// with arbitrary subscriber stacks (e.g. when a Sentry layer is added on top).
+///
+/// Since #380, this function is pure with respect to `opentelemetry::global` —
+/// the caller is responsible for calling [`install_globals`] after the tracing
+/// subscriber is successfully installed, or [`shutdown_unused_provider`] if
+/// subscriber installation fails.
 ///
 /// # Errors
 ///
