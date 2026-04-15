@@ -8,6 +8,7 @@ use axum::{
 use chrono::Utc;
 use nebula_core::{ExecutionId, WorkflowId};
 use serde::Deserialize;
+use serde_json::Value;
 
 use crate::{
     errors::{ApiError, ApiResult},
@@ -17,6 +18,49 @@ use crate::{
     },
     state::AppState,
 };
+
+/// Identity and control fields inside a stored workflow definition that the
+/// API must never let a client overwrite via `update_workflow`.
+///
+/// Mutating these drifts the stored identity away from the repository key and
+/// corrupts downstream consumers that rely on canonical `WorkflowDefinition`
+/// invariants (version, ownership, schema version). See issue #344.
+const IMMUTABLE_DEFINITION_FIELDS: &[&str] = &[
+    "id",
+    "version",
+    "owner_id",
+    "schema_version",
+    "created_at",
+    "updated_at",
+    // `name` / `description` have dedicated top-level payload fields already,
+    // so they must not be smuggled through a nested `definition` update either.
+    "name",
+    "description",
+];
+
+/// Extract a Unix-epoch timestamp from a workflow definition field.
+///
+/// Canonical `WorkflowDefinition` serializes timestamps as RFC3339 strings
+/// (because `chrono::DateTime<Utc>` uses string representation), while the
+/// current API write path still stores them as raw i64 unix seconds. This
+/// helper accepts **both** shapes so responses remain correct regardless of
+/// which path produced the stored blob.
+///
+/// Returns `None` when the field is absent or has an unsupported shape — the
+/// caller decides whether to fall back to `0`, surface an internal error, or
+/// omit the field. Fixes issue #343.
+fn extract_timestamp(definition: &Value, key: &str) -> Option<i64> {
+    let field = definition.get(key)?;
+    if let Some(n) = field.as_i64() {
+        return Some(n);
+    }
+    if let Some(s) = field.as_str()
+        && let Ok(dt) = chrono::DateTime::parse_from_rfc3339(s)
+    {
+        return Some(dt.timestamp());
+    }
+    None
+}
 
 /// Pagination query parameters
 #[derive(Debug, Deserialize)]
@@ -81,15 +125,8 @@ pub async fn list_workflows(
                 .and_then(|v| v.as_str())
                 .map(|s| s.to_string());
 
-            let created_at = definition
-                .get("created_at")
-                .and_then(|v| v.as_i64())
-                .unwrap_or(0);
-
-            let updated_at = definition
-                .get("updated_at")
-                .and_then(|v| v.as_i64())
-                .unwrap_or(0);
+            let created_at = extract_timestamp(&definition, "created_at").unwrap_or(0);
+            let updated_at = extract_timestamp(&definition, "updated_at").unwrap_or(0);
 
             WorkflowResponse {
                 id: id.to_string(),
@@ -146,15 +183,8 @@ pub async fn get_workflow(
         .and_then(|v| v.as_str())
         .map(|s| s.to_string());
 
-    let created_at = definition
-        .get("created_at")
-        .and_then(|v| v.as_i64())
-        .unwrap_or(0);
-
-    let updated_at = definition
-        .get("updated_at")
-        .and_then(|v| v.as_i64())
-        .unwrap_or(0);
+    let created_at = extract_timestamp(&definition, "created_at").unwrap_or(0);
+    let updated_at = extract_timestamp(&definition, "updated_at").unwrap_or(0);
 
     Ok(Json(WorkflowResponse {
         id,
@@ -266,15 +296,25 @@ pub async fn update_workflow(
             obj.insert("description".to_string(), serde_json::json!(desc));
         }
 
-        // Merge definition if provided
+        // Merge definition if provided.
+        //
+        // Reject any attempt to mutate immutable identity/control fields
+        // inside the nested `definition` payload (issue #344). A client that
+        // wants a different identity must create a new workflow — otherwise
+        // the stored id/version/owner would silently diverge from the
+        // repository key used to route the request.
         if let Some(new_def) = &payload.definition
             && let Some(new_obj) = new_def.as_object()
         {
-            for (key, value) in new_obj {
-                // Don't allow overwriting metadata fields
-                if !["name", "description", "created_at", "updated_at"].contains(&key.as_str()) {
-                    obj.insert(key.clone(), value.clone());
+            for key in new_obj.keys() {
+                if IMMUTABLE_DEFINITION_FIELDS.contains(&key.as_str()) {
+                    return Err(ApiError::validation_message(format!(
+                        "Cannot modify immutable workflow field '{key}'",
+                    )));
                 }
+            }
+            for (key, value) in new_obj {
+                obj.insert(key.clone(), value.clone());
             }
         }
 
@@ -313,15 +353,8 @@ pub async fn update_workflow(
         .and_then(|v| v.as_str())
         .map(|s| s.to_string());
 
-    let created_at = definition
-        .get("created_at")
-        .and_then(|v| v.as_i64())
-        .unwrap_or(0);
-
-    let updated_at = definition
-        .get("updated_at")
-        .and_then(|v| v.as_i64())
-        .unwrap_or(0);
+    let created_at = extract_timestamp(&definition, "created_at").unwrap_or(0);
+    let updated_at = extract_timestamp(&definition, "updated_at").unwrap_or(0);
 
     Ok(Json(WorkflowResponse {
         id,
@@ -417,15 +450,8 @@ pub async fn activate_workflow(
         .and_then(|v| v.as_str())
         .map(|s| s.to_string());
 
-    let created_at = definition
-        .get("created_at")
-        .and_then(|v| v.as_i64())
-        .unwrap_or(0);
-
-    let updated_at = definition
-        .get("updated_at")
-        .and_then(|v| v.as_i64())
-        .unwrap_or(0);
+    let created_at = extract_timestamp(&definition, "created_at").unwrap_or(0);
+    let updated_at = extract_timestamp(&definition, "updated_at").unwrap_or(0);
 
     Ok(Json(WorkflowResponse {
         id,
@@ -549,5 +575,57 @@ pub async fn validate_workflow_handler(
             valid: false,
             errors: error_messages,
         }))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use serde_json::json;
+
+    use super::{IMMUTABLE_DEFINITION_FIELDS, extract_timestamp};
+
+    #[test]
+    fn extract_timestamp_parses_i64() {
+        let v = json!({ "created_at": 1_700_000_000_i64 });
+        assert_eq!(extract_timestamp(&v, "created_at"), Some(1_700_000_000));
+    }
+
+    #[test]
+    fn extract_timestamp_parses_rfc3339_string() {
+        // Regression for #343: canonical WorkflowDefinition stores
+        // `DateTime<Utc>` as an RFC3339 string, not a unix-seconds i64.
+        let v = json!({ "updated_at": "2024-01-15T12:34:56Z" });
+        let ts = extract_timestamp(&v, "updated_at").expect("rfc3339 parses");
+        assert_eq!(ts, 1_705_322_096);
+    }
+
+    #[test]
+    fn extract_timestamp_rejects_garbage() {
+        let v = json!({ "created_at": "not-a-date" });
+        assert_eq!(extract_timestamp(&v, "created_at"), None);
+    }
+
+    #[test]
+    fn extract_timestamp_handles_missing_field() {
+        let v = json!({});
+        assert_eq!(extract_timestamp(&v, "created_at"), None);
+    }
+
+    #[test]
+    fn immutable_fields_cover_identity_and_metadata() {
+        // Regression for #344: identity/control fields must be in the
+        // blocklist so a nested `definition` payload cannot overwrite them.
+        for key in ["id", "version", "owner_id", "schema_version"] {
+            assert!(
+                IMMUTABLE_DEFINITION_FIELDS.contains(&key),
+                "identity field `{key}` must be immutable in update_workflow",
+            );
+        }
+        for key in ["name", "description", "created_at", "updated_at"] {
+            assert!(
+                IMMUTABLE_DEFINITION_FIELDS.contains(&key),
+                "metadata field `{key}` must be immutable in update_workflow",
+            );
+        }
     }
 }
