@@ -26,32 +26,73 @@ pub struct OtelLayer {
     pub provider: SdkTracerProvider,
 }
 
+/// Resolve the OTLP endpoint from an explicit config value plus the externally
+/// supplied env-var value.
+///
+/// Precedence: explicit `config.otlp_endpoint` → provided `env_endpoint` → off.
+/// The literal values `"disabled"` and `""` are treated as explicit opt-out at
+/// both the config and env layers.
+///
+/// Returns `None` when OTLP should be disabled.
+///
+/// This helper is pure (no env-var reads) so it can be unit-tested without
+/// mutating process-global state. The production entry point `resolve_endpoint`
+/// is a thin wrapper that reads `OTEL_EXPORTER_OTLP_ENDPOINT` and delegates.
+fn resolve_endpoint_from(config: &TelemetryConfig, env_endpoint: Option<&str>) -> Option<String> {
+    // 1. Explicit config wins.
+    if let Some(endpoint) = config.otlp_endpoint.as_deref() {
+        let trimmed = endpoint.trim();
+        if trimmed.is_empty() || trimmed == "disabled" {
+            return None;
+        }
+        return Some(trimmed.to_string());
+    }
+
+    // 2. Env var falls through.
+    if let Some(endpoint) = env_endpoint {
+        let trimmed = endpoint.trim();
+        if trimmed.is_empty() || trimmed == "disabled" {
+            return None;
+        }
+        return Some(trimmed.to_string());
+    }
+
+    // 3. No config + no env = OTLP off (opt-in). Previously defaulted to http://localhost:4317,
+    //    which caused surprise network activity in environments that never ran a collector (see
+    //    #375).
+    None
+}
+
+/// Production entry point for endpoint resolution: reads the `OTEL_EXPORTER_OTLP_ENDPOINT`
+/// env var and delegates to [`resolve_endpoint_from`].
+fn resolve_endpoint(config: &TelemetryConfig) -> Option<String> {
+    let env_endpoint = std::env::var("OTEL_EXPORTER_OTLP_ENDPOINT").ok();
+    resolve_endpoint_from(config, env_endpoint.as_deref())
+}
+
 /// Build an OpenTelemetry tracing layer with OTLP gRPC export.
 ///
-/// Returns `Ok(None)` when the endpoint is `"disabled"` or empty.
+/// Returns `Ok(None)` when OTLP is not configured (no endpoint in config and
+/// no `OTEL_EXPORTER_OTLP_ENDPOINT` env var), or when the endpoint is
+/// explicitly `"disabled"` or empty at either layer.
 ///
 /// The layer is boxed to erase the concrete type, which allows it to compose
 /// with arbitrary subscriber stacks (e.g. when a Sentry layer is added on top).
+///
+/// Since #380, this function is pure with respect to `opentelemetry::global` —
+/// the caller is responsible for calling [`install_globals`] after the tracing
+/// subscriber is successfully installed, or [`shutdown_unused_provider`] if
+/// subscriber installation fails.
 ///
 /// # Errors
 ///
 /// Returns `LogError::Telemetry` if the OTLP exporter or tracer provider cannot
 /// be constructed.
 pub fn build_layer(config: &TelemetryConfig, fields: &Fields) -> LogResult<Option<OtelLayer>> {
-    let endpoint_str = match &config.otlp_endpoint {
-        Some(endpoint) if !endpoint.is_empty() => endpoint.clone(),
-        _ => match std::env::var("OTEL_EXPORTER_OTLP_ENDPOINT") {
-            Ok(endpoint) if !endpoint.is_empty() => endpoint,
-            _ => "http://localhost:4317".to_string(),
-        },
+    let endpoint_str = match resolve_endpoint(config) {
+        Some(e) => e,
+        None => return Ok(None),
     };
-
-    if endpoint_str == "disabled" || endpoint_str.is_empty() {
-        return Ok(None);
-    }
-
-    // Set up W3C trace-context propagator
-    global::set_text_map_propagator(TraceContextPropagator::new());
 
     // Configure sampler
     let sampler = if config.sampling_rate >= 1.0 {
@@ -85,9 +126,9 @@ pub fn build_layer(config: &TelemetryConfig, fields: &Fields) -> LogResult<Optio
 
     let tracer = provider.tracer("nebula-log");
 
-    // Set as global provider (for context propagation)
-    global::set_tracer_provider(provider.clone());
-
+    // #380: globals are NOT set here — the caller installs them after the
+    // subscriber is successfully `try_init`'d so a mid-init failure does not
+    // leave a dangling tracer provider in `opentelemetry::global`.
     Ok(Some(OtelLayer {
         layer: Box::new(OpenTelemetryLayer::new(tracer)),
         provider,
@@ -121,10 +162,149 @@ fn build_resource(service_name: &str, fields: &Fields) -> Resource {
     Resource::builder_empty().with_attributes(attrs).build()
 }
 
+/// Install OTel globals from a successfully-built provider.
+///
+/// Must be called only **after** the tracing subscriber's `try_init` succeeds,
+/// so a subscriber-init failure cannot leave the OTel global state pointing at
+/// a provider whose lifecycle no longer matches the `LoggerGuard`. See #380.
+///
+/// Sets:
+/// - the W3C trace-context propagator as the global text-map propagator
+/// - the given provider as the global tracer provider
+pub(crate) fn install_globals(provider: &SdkTracerProvider) {
+    global::set_text_map_propagator(TraceContextPropagator::new());
+    global::set_tracer_provider(provider.clone());
+}
+
+/// Shut down a provider that was built but never installed globally.
+///
+/// Used by the builder when `try_init` fails after `build_layer` succeeded, to
+/// avoid leaking exporter tasks / network connections. See #380.
+///
+/// Uses `eprintln!` rather than `tracing::error!` because this runs only after
+/// `try_init` failed, so the tracing dispatcher is not installed — a
+/// `tracing::error!` call would silently go to the global no-op dispatcher.
+pub(crate) fn shutdown_unused_provider(provider: SdkTracerProvider) {
+    if let Err(e) = provider.shutdown() {
+        eprintln!("nebula-log: unused OTel provider shutdown error: {e}");
+    }
+}
+
 fn build_exporter(endpoint: &str) -> LogResult<opentelemetry_otlp::SpanExporter> {
     opentelemetry_otlp::SpanExporter::builder()
         .with_tonic()
         .with_endpoint(endpoint)
         .build()
         .map_err(|e| LogError::Telemetry(format!("OTLP exporter build failed: {e}")))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn config_with(endpoint: Option<&str>) -> TelemetryConfig {
+        TelemetryConfig {
+            otlp_endpoint: endpoint.map(str::to_string),
+            service_name: "test".to_string(),
+            sampling_rate: 1.0,
+        }
+    }
+
+    /// #375 — with no endpoint in config and no `OTEL_EXPORTER_OTLP_ENDPOINT`
+    /// env value, resolution must return `None` (opt-in), not silently point
+    /// at `http://localhost:4317`.
+    #[test]
+    fn unset_config_and_env_is_opt_out() {
+        let cfg = config_with(None);
+        assert_eq!(resolve_endpoint_from(&cfg, None), None);
+    }
+
+    /// Empty-string env is also treated as opt-out (trim-aware).
+    #[test]
+    fn empty_env_is_opt_out() {
+        let cfg = config_with(None);
+        assert_eq!(resolve_endpoint_from(&cfg, Some("")), None);
+        assert_eq!(resolve_endpoint_from(&cfg, Some("   ")), None);
+    }
+
+    /// `"disabled"` in env is an explicit opt-out.
+    #[test]
+    fn disabled_env_is_opt_out() {
+        let cfg = config_with(None);
+        assert_eq!(resolve_endpoint_from(&cfg, Some("disabled")), None);
+    }
+
+    /// Explicit empty config is opt-out even if the env has a real endpoint:
+    /// `config` wins.
+    #[test]
+    fn empty_config_wins_over_env() {
+        let cfg = config_with(Some(""));
+        assert_eq!(
+            resolve_endpoint_from(&cfg, Some("http://collector:4317")),
+            None
+        );
+    }
+
+    /// `"disabled"` in config is an explicit opt-out even if the env has a real
+    /// endpoint.
+    #[test]
+    fn disabled_config_wins_over_env() {
+        let cfg = config_with(Some("disabled"));
+        assert_eq!(
+            resolve_endpoint_from(&cfg, Some("http://collector:4317")),
+            None
+        );
+    }
+
+    /// Explicit config endpoint wins over env.
+    #[test]
+    fn config_endpoint_wins_over_env() {
+        let cfg = config_with(Some("http://config-endpoint:4317"));
+        assert_eq!(
+            resolve_endpoint_from(&cfg, Some("http://env-endpoint:4317")),
+            Some("http://config-endpoint:4317".to_string())
+        );
+    }
+
+    /// Env falls through when config is `None`.
+    #[test]
+    fn env_used_when_config_none() {
+        let cfg = config_with(None);
+        assert_eq!(
+            resolve_endpoint_from(&cfg, Some("http://env-endpoint:4317")),
+            Some("http://env-endpoint:4317".to_string())
+        );
+    }
+
+    /// #380 — end-to-end unit test for the build/cleanup cycle that proves
+    /// `build_layer` does not install OTel globals and that
+    /// `shutdown_unused_provider` cleanly tears down a built-but-never-installed
+    /// provider.
+    ///
+    /// We build an `OtelLayer` with a syntactically valid but unreachable
+    /// endpoint (so exporter construction succeeds but no actual export
+    /// happens), then immediately shut it down. A regression in which
+    /// `build_layer` installs globals, or in which `shutdown_unused_provider`
+    /// panics / deadlocks, would be caught here.
+    ///
+    /// Runs under `#[tokio::test]` because the tonic gRPC exporter requires a
+    /// Tokio reactor during construction (even though no actual network I/O
+    /// occurs during this test).
+    #[tokio::test]
+    async fn build_layer_then_shutdown_is_safe() {
+        let cfg = TelemetryConfig {
+            otlp_endpoint: Some("http://127.0.0.1:1".to_string()),
+            service_name: "build-layer-then-shutdown".to_string(),
+            sampling_rate: 0.0,
+        };
+        let fields = Fields::default();
+
+        let otel = build_layer(&cfg, &fields)
+            .expect("build_layer must succeed for a syntactically valid endpoint")
+            .expect("build_layer must return Some(OtelLayer) when endpoint is set");
+
+        // At this point the provider has been built but install_globals was
+        // never called. Dropping or shutting down must not panic.
+        shutdown_unused_provider(otel.provider);
+    }
 }

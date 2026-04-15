@@ -37,4 +37,39 @@ pub enum LogError {
     #[classify(category = "internal", code = "LOG:INTERNAL")]
     #[error("Internal error: {0}")]
     Internal(String),
+    /// Logger already initialized for this process
+    ///
+    /// Returned by [`init_with`](crate::init_with) / [`init`](crate::init) /
+    /// [`auto_init`](crate::auto_init) when `tracing::dispatcher::has_been_set()`
+    /// is already true. Callers that expect idempotent initialization can treat
+    /// this variant as success.
+    #[classify(category = "validation", code = "LOG:ALREADY_INITIALIZED")]
+    #[error("Logger already initialized for this process")]
+    AlreadyInitialized,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn already_initialized_display_is_stable() {
+        let err = LogError::AlreadyInitialized;
+        assert_eq!(
+            err.to_string(),
+            "Logger already initialized for this process"
+        );
+    }
+
+    #[test]
+    fn already_initialized_has_stable_classification() {
+        use nebula_error::Classify;
+
+        let err = LogError::AlreadyInitialized;
+        // Lock in the error code string so downstream consumers can match on it.
+        assert_eq!(err.code(), "LOG:ALREADY_INITIALIZED");
+        // And distinct from the nearest neighbour we could have re-used instead.
+        let internal = LogError::Internal(String::new());
+        assert_ne!(err.code(), internal.code());
+    }
 }
