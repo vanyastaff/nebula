@@ -124,6 +124,13 @@ impl LoggerBuilder {
     /// - File writer initialization fails
     /// - Telemetry setup fails
     pub fn build(self) -> LogResult<LoggerGuard> {
+        // #379: fast-path a duplicate dispatcher so callers get a structured
+        // error instead of a generic subscriber failure. This must run BEFORE
+        // any telemetry or writer setup to avoid partial init side effects.
+        if tracing::dispatcher::has_been_set() {
+            return Err(crate::core::LogError::AlreadyInitialized);
+        }
+
         self.config.ensure_compatible()?;
 
         let mut inner = Inner {
@@ -242,7 +249,6 @@ impl LoggerGuard {
             .and_then(|inner| inner.reload_handle.as_ref())
     }
 
-    #[cfg(test)]
     pub(crate) fn noop() -> Self {
         Self { inner: None }
     }

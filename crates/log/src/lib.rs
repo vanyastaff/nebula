@@ -184,9 +184,13 @@ pub fn auto_init() -> LogResult<LoggerGuard> {
     #[cfg(test)]
     {
         TEST_INIT.get_or_init(|| ());
-        if tracing::dispatcher::has_been_set() {
-            return Ok(LoggerGuard::noop());
-        }
+    }
+
+    // #379: in any build, a duplicate dispatcher short-circuits to a no-op
+    // guard so callers that opportunistically call `auto_init` from library
+    // code do not blow up a host process that already owns logging.
+    if tracing::dispatcher::has_been_set() {
+        return Ok(LoggerGuard::noop());
     }
 
     let (guard, source) = LoggerBuilder::build_startup(None)?;
