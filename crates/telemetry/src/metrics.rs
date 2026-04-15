@@ -359,6 +359,15 @@ impl Histogram {
     pub fn last_updated_ms(&self) -> u64 {
         self.last_updated_ms.load(Ordering::Relaxed)
     }
+
+    /// Upper-bound boundaries configured for this histogram (excludes +Inf).
+    ///
+    /// Useful for callers that need to verify that a pre-existing histogram
+    /// series matches the bucket layout they expect.
+    #[must_use]
+    pub fn boundaries(&self) -> &[f64] {
+        &self.boundaries
+    }
 }
 
 impl Default for Histogram {
@@ -476,6 +485,14 @@ impl MetricsRegistry {
     }
 
     /// Get or create a histogram with custom bucket boundaries and a label set.
+    ///
+    /// Bucket boundaries are bound to the series at **first registration**.
+    /// If a subsequent call targets an already-registered `(name, labels)`
+    /// series with *different* `boundaries`, the existing histogram is
+    /// returned unchanged and a `tracing::warn!` is emitted — the later
+    /// layout is silently ignored, which can cause split-brain behaviour
+    /// between crates that disagree on bucket schemas. Callers that need
+    /// multiple layouts for the same metric name must vary the label set.
     pub fn histogram_with_buckets_labeled(
         &self,
         name: &str,
@@ -483,11 +500,21 @@ impl MetricsRegistry {
         boundaries: Vec<f64>,
     ) -> Histogram {
         let key = MetricKey::labeled(self.interner.intern(name), labels.clone());
-        self.histograms
+        let existing = self
+            .histograms
             .entry(key)
-            .or_insert_with(|| Histogram::with_buckets(boundaries))
+            .or_insert_with(|| Histogram::with_buckets(boundaries.clone()))
             .value()
-            .clone()
+            .clone();
+        if existing.boundaries() != boundaries.as_slice() {
+            tracing::warn!(
+                metric = name,
+                requested = ?boundaries,
+                existing = ?existing.boundaries(),
+                "histogram_with_buckets_labeled: ignoring new boundaries for already-registered series"
+            );
+        }
+        existing
     }
 
     // ── Snapshot / export ───────────────────────────────────────────────────
@@ -522,10 +549,24 @@ impl MetricsRegistry {
 
     /// Remove all metric series that have not been updated within `max_age`.
     ///
-    /// This prevents unbounded memory growth when dynamic labels (e.g.
-    /// `action_type`, `workflow_id`) create many high-cardinality series over
-    /// time. Stable global metrics (unlabeled or with a fixed label set) are
-    /// naturally retained because they are written to continuously.
+    /// Reclaims the counter / gauge / histogram entries for stale series so
+    /// that dynamic labels (e.g. `action_type`, `workflow_id`) do not grow
+    /// the series maps without bound. Stable global metrics (unlabeled or
+    /// with a fixed label set) are naturally retained because they are
+    /// written to continuously.
+    ///
+    /// # Memory caveat
+    ///
+    /// This method reclaims *series*, not *interned strings*. The label
+    /// interner behind [`LabelInterner`] is append-only: any label key or
+    /// value that has ever been observed remains resident for the lifetime
+    /// of the registry. Under sustained high-cardinality label churn,
+    /// resident memory can therefore still grow over time despite repeated
+    /// `retain_recent` calls.
+    ///
+    /// Monitor interner pressure with [`Self::interner_len`] and, if
+    /// needed, replace the entire `MetricsRegistry` wholesale (dropping the
+    /// old interner) rather than relying on `retain_recent` alone.
     ///
     /// Call this periodically from a background task or at the end of a
     /// logical time window (e.g. after completing a batch of executions).
@@ -560,6 +601,18 @@ impl MetricsRegistry {
     #[must_use]
     pub fn metric_count(&self) -> usize {
         self.counters.len() + self.gauges.len() + self.histograms.len()
+    }
+
+    /// Number of distinct strings held by the label interner.
+    ///
+    /// Unlike [`Self::metric_count`], this value is **monotonically
+    /// non-decreasing** for the lifetime of the registry: the underlying
+    /// `ThreadedRodeo` is append-only and is not reclaimed by
+    /// [`Self::retain_recent`]. Use it to detect unbounded interner growth
+    /// under high-cardinality label churn.
+    #[must_use]
+    pub fn interner_len(&self) -> usize {
+        self.interner.len()
     }
 }
 
@@ -824,6 +877,50 @@ mod tests {
         reg.gauge("g1").set(1);
         reg.histogram("h1").observe(1.0);
         assert_eq!(reg.metric_count(), 3);
+    }
+
+    #[test]
+    fn histogram_with_buckets_labeled_returns_first_layout_on_conflict() {
+        let reg = MetricsRegistry::new();
+        let labels = reg.interner().label_set(&[("route", "/health")]);
+
+        let first = reg.histogram_with_buckets_labeled("nebula_req", &labels, vec![0.1, 0.5, 1.0]);
+        assert_eq!(first.boundaries(), &[0.1, 0.5, 1.0]);
+
+        // Re-registering the same series with different boundaries must
+        // return the original histogram (bucket identity is pinned at
+        // first registration).
+        let second = reg.histogram_with_buckets_labeled("nebula_req", &labels, vec![2.0, 4.0, 8.0]);
+        assert_eq!(second.boundaries(), &[0.1, 0.5, 1.0]);
+
+        // And they must be the same underlying histogram.
+        first.observe(0.3);
+        assert_eq!(second.count(), 1);
+    }
+
+    #[test]
+    fn histogram_boundaries_accessor_excludes_inf() {
+        let h = Histogram::with_buckets(vec![1.0, 2.0, 3.0]);
+        assert_eq!(h.boundaries(), &[1.0, 2.0, 3.0]);
+    }
+
+    #[test]
+    fn interner_len_survives_retain_recent() {
+        // Documents the caveat in the retain_recent docstring: series go
+        // away but interned strings stay resident. Guard against a silent
+        // future change that would claim full reclaim without actually
+        // rebuilding the interner.
+        let reg = MetricsRegistry::new();
+        let labels = reg.interner().label_set(&[("k", "v1")]);
+        reg.counter_labeled("m", &labels).inc();
+        let before = reg.interner_len();
+        assert!(before >= 3); // at least "m", "k", "v1"
+
+        std::thread::sleep(Duration::from_millis(2));
+        reg.retain_recent(Duration::ZERO);
+        assert_eq!(reg.metric_count(), 0);
+        // Interner is append-only, so the strings must still be resident.
+        assert_eq!(reg.interner_len(), before);
     }
 
     #[test]
