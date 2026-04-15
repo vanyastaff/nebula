@@ -14,6 +14,9 @@ pre-commit:
       run: cargo clippy --workspace --all-targets -q -- -D warnings
     cargo-check:
       run: cargo check --workspace --all-targets -q
+    cargo-deny:
+      glob: "{Cargo.toml,Cargo.lock,deny.toml,**/Cargo.toml}"
+      run: cargo deny check
 
 pre-push:
   parallel: false
