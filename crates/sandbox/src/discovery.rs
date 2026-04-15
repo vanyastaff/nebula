@@ -203,6 +203,25 @@ fn is_executable(path: &Path) -> bool {
 
     #[cfg(not(unix))]
     {
-        ext == "exe" || ext.is_empty()
+        can_non_unix_executable_extension(ext)
+    }
+}
+
+/// Returns true when `extension` is valid for a Windows plugin binary (`.exe`, any ASCII case, or
+/// empty).
+#[cfg(any(test, not(unix)))]
+fn can_non_unix_executable_extension(extension: &str) -> bool {
+    extension.eq_ignore_ascii_case("exe") || extension.is_empty()
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn non_unix_executable_extension_is_case_insensitive() {
+        assert!(super::can_non_unix_executable_extension("exe"));
+        assert!(super::can_non_unix_executable_extension("EXE"));
+        assert!(super::can_non_unix_executable_extension("ExE"));
+        assert!(super::can_non_unix_executable_extension(""));
+        assert!(!super::can_non_unix_executable_extension("dll"));
     }
 }
