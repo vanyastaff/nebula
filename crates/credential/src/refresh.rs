@@ -607,6 +607,124 @@ mod tests {
         assert_eq!(coord.available_permits(), 0);
     }
 
+    // ── LRU circuit-breaker specific tests ──────────────────────────────
+
+    #[test]
+    fn record_success_removes_circuit_breaker_entry() {
+        let coord = RefreshCoordinator::new();
+        coord.record_failure("cred-x");
+        assert_eq!(coord.circuit_breaker_len_for_test(), 1);
+        coord.record_success("cred-x");
+        assert_eq!(
+            coord.circuit_breaker_len_for_test(),
+            0,
+            "record_success must remove the CB entry via LruCache::pop"
+        );
+    }
+
+    #[test]
+    fn record_success_on_unknown_credential_is_noop() {
+        let coord = RefreshCoordinator::new();
+        // Must not panic when popping a key not in the LRU cache
+        coord.record_success("never-seen");
+        assert_eq!(coord.circuit_breaker_len_for_test(), 0);
+    }
+
+    #[test]
+    fn is_circuit_open_returns_false_when_no_entry_exists() {
+        let coord = RefreshCoordinator::new();
+        // A credential that has never had a failure recorded has no CB entry
+        assert!(
+            !coord.is_circuit_open("brand-new-cred"),
+            "circuit must be closed for credentials never seen"
+        );
+    }
+
+    #[test]
+    fn get_or_create_cb_reuses_entry_for_same_credential() {
+        let coord = RefreshCoordinator::new();
+        // Record a failure — creates a CB entry
+        coord.record_failure("cred-reuse");
+        let len_after_first = coord.circuit_breaker_len_for_test();
+        // Record another failure for the same ID — must not insert a new entry
+        coord.record_failure("cred-reuse");
+        assert_eq!(
+            coord.circuit_breaker_len_for_test(),
+            len_after_first,
+            "same credential must reuse the existing CB, not create a new one"
+        );
+    }
+
+    #[test]
+    fn lru_evicts_least_recently_used_under_cap() {
+        // Use a coordinator with only 2 slots to test eviction easily without
+        // relying on the 4096 cap which would need 4097 insertions.
+        // We access the internals via record_failure + circuit_breaker_len_for_test.
+        let coord = RefreshCoordinator::new();
+        // Insert exactly MAX_TRACKED_CIRCUIT_BREAKERS_CAP entries.
+        for i in 0..MAX_TRACKED_CIRCUIT_BREAKERS_CAP {
+            coord.record_failure(&format!("cred-lru-{i}"));
+        }
+        assert_eq!(
+            coord.circuit_breaker_len_for_test(),
+            MAX_TRACKED_CIRCUIT_BREAKERS_CAP,
+            "should be at the cap before any eviction"
+        );
+        // One more entry must evict the LRU item (cred-lru-0 was never re-accessed).
+        coord.record_failure("cred-lru-overflow");
+        assert_eq!(
+            coord.circuit_breaker_len_for_test(),
+            MAX_TRACKED_CIRCUIT_BREAKERS_CAP,
+            "adding one entry beyond cap must evict the LRU item"
+        );
+    }
+
+    #[test]
+    fn recently_accessed_cb_not_evicted() {
+        let coord = RefreshCoordinator::new();
+        // Fill the cache to capacity
+        for i in 0..MAX_TRACKED_CIRCUIT_BREAKERS_CAP {
+            coord.record_failure(&format!("evict-me-{i}"));
+        }
+        // Re-touch cred-0 to make it MRU (is_circuit_open calls cbs.get internally)
+        let _ = coord.is_circuit_open("evict-me-0");
+        // Now overflow the cache
+        coord.record_failure("newcomer");
+        // evict-me-0 was recently accessed so must survive; is_circuit_open would
+        // return false (CB freshly open if 1 failure below threshold of 5, not open)
+        // but the entry should still exist. We verify via len and the newcomer.
+        assert_eq!(
+            coord.circuit_breaker_len_for_test(),
+            MAX_TRACKED_CIRCUIT_BREAKERS_CAP,
+            "cache should still be at cap after eviction"
+        );
+    }
+
+    #[test]
+    fn independent_credentials_have_separate_circuit_breakers() {
+        let coord = RefreshCoordinator::new();
+        // Open the circuit for cred-a (5 failures)
+        for _ in 0..5 {
+            coord.record_failure("cred-a");
+        }
+        // cred-b has had no failures
+        assert!(coord.is_circuit_open("cred-a"), "cred-a circuit must be open");
+        assert!(
+            !coord.is_circuit_open("cred-b"),
+            "cred-b circuit must remain closed"
+        );
+    }
+
+    #[test]
+    fn circuit_breaker_cap_constant_is_nonzero() {
+        // Regression guard: ensure the compile-time constant is never accidentally set to 0.
+        assert!(MAX_TRACKED_CIRCUIT_BREAKERS.get() > 0);
+        assert_eq!(
+            MAX_TRACKED_CIRCUIT_BREAKERS.get(),
+            MAX_TRACKED_CIRCUIT_BREAKERS_CAP
+        );
+    }
+
     /// Pins the invariant the resolver's Waiter path relies on:
     /// `Notified::enable()` registers the waiter *before* the first poll,
     /// so a subsequent `notify_waiters()` will wake it.

@@ -840,4 +840,292 @@ mod tests {
         let result = build_auth_url(&config, "cid", "chal", "st");
         assert!(result.is_err());
     }
+
+    // ── oauth_token_error_summary additional tests ───────────────────────
+
+    #[test]
+    fn oauth_token_error_summary_non_json_body() {
+        let summary = super::oauth_token_error_summary("not json at all");
+        assert_eq!(summary, "<non-json body>");
+    }
+
+    #[test]
+    fn oauth_token_error_summary_empty_string() {
+        let summary = super::oauth_token_error_summary("");
+        assert_eq!(summary, "<non-json body>");
+    }
+
+    #[test]
+    fn oauth_token_error_summary_json_without_error_field() {
+        let body = r#"{"status": 400, "message": "bad request"}"#;
+        let summary = super::oauth_token_error_summary(body);
+        assert_eq!(summary, "<no error code>");
+    }
+
+    #[test]
+    fn oauth_token_error_summary_json_error_field_non_string() {
+        // error field present but not a string value — should return "<no error code>"
+        let body = r#"{"error": 42}"#;
+        let summary = super::oauth_token_error_summary(body);
+        assert_eq!(summary, "<no error code>");
+    }
+
+    #[test]
+    fn oauth_token_error_summary_error_only_no_description_no_uri() {
+        let body = r#"{"error":"access_denied"}"#;
+        let summary = super::oauth_token_error_summary(body);
+        assert_eq!(summary, "access_denied");
+    }
+
+    #[test]
+    fn oauth_token_error_summary_short_description_included() {
+        let body = r#"{"error":"invalid_grant","error_description":"The token has expired"}"#;
+        let summary = super::oauth_token_error_summary(body);
+        assert_eq!(summary, "invalid_grant: The token has expired");
+    }
+
+    #[test]
+    fn oauth_token_error_summary_description_exactly_256_chars_no_ellipsis() {
+        let desc = "a".repeat(256);
+        let body = serde_json::json!({"error": "e", "error_description": desc}).to_string();
+        let summary = super::oauth_token_error_summary(&body);
+        let expected = format!("e: {}", "a".repeat(256));
+        assert_eq!(summary, expected, "exactly 256 chars should not get ellipsis");
+        assert!(!summary.contains('…'), "no ellipsis for 256-char description");
+    }
+
+    #[test]
+    fn oauth_token_error_summary_description_exactly_257_chars_gets_ellipsis() {
+        let desc = "b".repeat(257);
+        let body = serde_json::json!({"error": "e", "error_description": desc}).to_string();
+        let summary = super::oauth_token_error_summary(&body);
+        // Should include first 256 chars + ellipsis
+        assert!(summary.ends_with('…'), "257-char description must get ellipsis: {summary}");
+        // The first 256 'b's should be present
+        assert!(
+            summary.contains(&"b".repeat(256)),
+            "first 256 chars must be present: {summary}"
+        );
+        // But not all 257
+        assert!(
+            !summary.contains(&"b".repeat(257)),
+            "full 257-char string must not be present: {summary}"
+        );
+    }
+
+    #[test]
+    fn oauth_token_error_summary_very_long_description_truncated() {
+        let desc = "x".repeat(10_000);
+        let body = serde_json::json!({"error": "too_long", "error_description": desc}).to_string();
+        let summary = super::oauth_token_error_summary(&body);
+        assert!(
+            summary.ends_with('…'),
+            "long description must be truncated with ellipsis: {summary}"
+        );
+        // Summary should not contain the raw long desc
+        assert!(
+            !summary.contains(&"x".repeat(1000)),
+            "summary must not contain raw long description"
+        );
+    }
+
+    #[test]
+    fn oauth_token_error_summary_error_uri_appended() {
+        let body = r#"{"error":"invalid_request","error_uri":"https://tools.ietf.org/html/rfc6749#section-5.2"}"#;
+        let summary = super::oauth_token_error_summary(body);
+        assert!(
+            summary.contains("(error_uri=https://tools.ietf.org/html/rfc6749#section-5.2)"),
+            "error_uri must be appended: {summary}"
+        );
+        assert!(summary.starts_with("invalid_request"), "{summary}");
+    }
+
+    #[test]
+    fn oauth_token_error_summary_all_fields_combined() {
+        let body = r#"{
+            "error": "invalid_scope",
+            "error_description": "The requested scope is invalid",
+            "error_uri": "https://example.com/errors/invalid_scope",
+            "client_secret": "do_not_leak_me"
+        }"#;
+        let summary = super::oauth_token_error_summary(body);
+        assert!(summary.starts_with("invalid_scope"), "{summary}");
+        assert!(
+            summary.contains("The requested scope is invalid"),
+            "{summary}"
+        );
+        assert!(
+            summary.contains("error_uri=https://example.com/errors/invalid_scope"),
+            "{summary}"
+        );
+        assert!(
+            !summary.contains("do_not_leak_me"),
+            "client_secret must not be included: {summary}"
+        );
+    }
+
+    #[test]
+    fn oauth_token_error_summary_null_error_field() {
+        let body = r#"{"error": null, "error_description": "something"}"#;
+        let summary = super::oauth_token_error_summary(body);
+        assert_eq!(summary, "<no error code>");
+    }
+
+    // ── update_state_from_token_response additional tests ────────────────
+
+    #[test]
+    fn update_state_access_token_null_returns_error() {
+        let mut state = OAuth2State {
+            access_token: SecretString::new("stale"),
+            token_type: "Bearer".into(),
+            refresh_token: None,
+            expires_at: None,
+            scopes: vec![],
+            client_id: SecretString::new("cid"),
+            client_secret: SecretString::new("cs"),
+            token_url: "https://t.com/token".into(),
+            auth_style: AuthStyle::default(),
+        };
+
+        let body = serde_json::json!({"access_token": null});
+        let err = update_state_from_token_response(&mut state, &body).unwrap_err();
+        assert!(matches!(err, CredentialError::Provider(_)));
+        // Stale token must not have been overwritten
+        state.access_token.expose_secret(|s| assert_eq!(s, "stale"));
+    }
+
+    #[test]
+    fn update_state_access_token_non_string_returns_error() {
+        let mut state = OAuth2State {
+            access_token: SecretString::new("stale"),
+            token_type: "Bearer".into(),
+            refresh_token: None,
+            expires_at: None,
+            scopes: vec![],
+            client_id: SecretString::new("cid"),
+            client_secret: SecretString::new("cs"),
+            token_url: "https://t.com/token".into(),
+            auth_style: AuthStyle::default(),
+        };
+
+        let body = serde_json::json!({"access_token": 12345});
+        let err = update_state_from_token_response(&mut state, &body).unwrap_err();
+        assert!(matches!(err, CredentialError::Provider(_)));
+        state.access_token.expose_secret(|s| assert_eq!(s, "stale"));
+    }
+
+    #[test]
+    fn update_state_expires_in_updates_expires_at() {
+        let mut state = OAuth2State {
+            access_token: SecretString::new("old"),
+            token_type: "Bearer".into(),
+            refresh_token: None,
+            expires_at: None,
+            scopes: vec![],
+            client_id: SecretString::new("cid"),
+            client_secret: SecretString::new("cs"),
+            token_url: "https://t.com/token".into(),
+            auth_style: AuthStyle::default(),
+        };
+
+        let body = serde_json::json!({"access_token": "fresh", "expires_in": 3600});
+        update_state_from_token_response(&mut state, &body).unwrap();
+        assert!(
+            state.expires_at.is_some(),
+            "expires_at must be set when expires_in is present"
+        );
+    }
+
+    #[test]
+    fn update_state_without_expires_in_leaves_expires_at_unchanged() {
+        let original_expires_at = None;
+        let mut state = OAuth2State {
+            access_token: SecretString::new("old"),
+            token_type: "Bearer".into(),
+            refresh_token: None,
+            expires_at: original_expires_at,
+            scopes: vec![],
+            client_id: SecretString::new("cid"),
+            client_secret: SecretString::new("cs"),
+            token_url: "https://t.com/token".into(),
+            auth_style: AuthStyle::default(),
+        };
+
+        let body = serde_json::json!({"access_token": "fresh"});
+        update_state_from_token_response(&mut state, &body).unwrap();
+        assert!(
+            state.expires_at.is_none(),
+            "expires_at must remain None when expires_in absent"
+        );
+    }
+
+    #[test]
+    fn update_state_scope_split_on_whitespace() {
+        let mut state = OAuth2State {
+            access_token: SecretString::new("old"),
+            token_type: "Bearer".into(),
+            refresh_token: None,
+            expires_at: None,
+            scopes: vec!["original".into()],
+            client_id: SecretString::new("cid"),
+            client_secret: SecretString::new("cs"),
+            token_url: "https://t.com/token".into(),
+            auth_style: AuthStyle::default(),
+        };
+
+        let body =
+            serde_json::json!({"access_token": "fresh", "scope": "read write admin"});
+        update_state_from_token_response(&mut state, &body).unwrap();
+        assert_eq!(state.scopes, vec!["read", "write", "admin"]);
+    }
+
+    #[test]
+    fn update_state_without_scope_preserves_existing_scopes() {
+        let mut state = OAuth2State {
+            access_token: SecretString::new("old"),
+            token_type: "Bearer".into(),
+            refresh_token: None,
+            expires_at: None,
+            scopes: vec!["read".into(), "write".into()],
+            client_id: SecretString::new("cid"),
+            client_secret: SecretString::new("cs"),
+            token_url: "https://t.com/token".into(),
+            auth_style: AuthStyle::default(),
+        };
+
+        let body = serde_json::json!({"access_token": "fresh"});
+        update_state_from_token_response(&mut state, &body).unwrap();
+        assert_eq!(
+            state.scopes,
+            vec!["read", "write"],
+            "scopes must be preserved when not in response"
+        );
+    }
+
+    #[test]
+    fn update_state_error_message_names_missing_field() {
+        let mut state = OAuth2State {
+            access_token: SecretString::new("stale"),
+            token_type: "Bearer".into(),
+            refresh_token: None,
+            expires_at: None,
+            scopes: vec![],
+            client_id: SecretString::new("cid"),
+            client_secret: SecretString::new("cs"),
+            token_url: "https://t.com/token".into(),
+            auth_style: AuthStyle::default(),
+        };
+
+        let body = serde_json::json!({});
+        let err = update_state_from_token_response(&mut state, &body).unwrap_err();
+        match err {
+            CredentialError::Provider(msg) => {
+                assert!(
+                    msg.contains("access_token"),
+                    "error message should name the missing field: {msg}"
+                );
+            }
+            other => panic!("expected Provider error, got: {other:?}"),
+        }
+    }
 }
