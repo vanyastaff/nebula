@@ -46,17 +46,19 @@
 //! }
 //! ```
 //!
-//! ## Slice 1a scope
+//! ## Current wire scope
 //!
-//! Slice 1a of Phase 1 implements the **duplex JSON envelope protocol over
-//! stdio** without gRPC / TLS / UDS. The SDK surface is deliberately
-//! conservative: plugin authors see [`PluginHandler`] + [`PluginCtx`] only.
-//! Future slices extend [`PluginCtx`] with `.network().http(...)`,
-//! `.credentials().get(...)`, etc. via broker RPCs.
+//! The plugin process emits a single handshake line on stdout, then switches
+//! protocol traffic to an OS transport (Unix domain socket on Unix, named
+//! pipe on Windows). Envelopes are newline-delimited JSON frames over that
+//! transport — not over stdio.
 //!
-//! Actions are dispatched **sequentially** within a single plugin process —
-//! concurrent invocation support lands in slice 1b when message IDs enable
-//! multiplexing.
+//! The SDK surface is deliberately conservative: plugin authors see
+//! [`PluginHandler`] + [`PluginCtx`] only. Future slices extend
+//! [`PluginCtx`] with `.network().http(...)`, `.credentials().get(...)`,
+//! etc. via broker RPCs.
+//!
+//! Actions are dispatched **sequentially** within a single plugin process.
 
 use std::sync::Arc;
 
@@ -215,8 +217,9 @@ pub trait PluginHandler: Send + Sync + 'static {
 ///   [`HostToPlugin::RpcResponseError`] in slice 1c (concurrent dispatch and broker RPC flow land
 ///   in slice 1d).
 /// - Exits cleanly on stream EOF or [`HostToPlugin::Shutdown`].
-/// - Malformed JSON lines are logged via `tracing::warn!` and skipped; the loop continues. The host
-///   and plugin stay in sync because every legit envelope is self-contained.
+/// - Malformed JSON lines are logged via `tracing::warn!` and skipped; the plugin does **not** emit
+///   a response for those frames. Hosts must correlate by message IDs, not by positional "one
+///   response per received line".
 ///
 /// Slice 1c keeps plugin-side dispatch **sequential** — one action at a
 /// time, head-of-line blocking. Slice 1d adds `tokio::spawn` per invocation
