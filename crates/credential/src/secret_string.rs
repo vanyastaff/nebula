@@ -56,6 +56,20 @@ impl fmt::Display for SecretString {
 /// Sentinel written by the default `Serialize` impl.
 pub(crate) const REDACTED_SENTINEL: &str = "[REDACTED]";
 
+/// # Serde contract (non-roundtrippable by design)
+///
+/// `Serialize` always writes the `"[REDACTED]"` sentinel -- the real secret
+/// value is **never** emitted. This ensures secrets cannot leak through
+/// JSON logs, API responses, or debug dumps.
+///
+/// `Deserialize` accepts any string **except** `"[REDACTED]"`. Attempting
+/// to deserialize the sentinel is rejected with an error. This prevents
+/// accidentally round-tripping a redacted placeholder back into the system
+/// as if it were a real secret.
+///
+/// To serialize/deserialize a `SecretString` that preserves the actual value
+/// (e.g., for encrypted-at-rest storage), use the `serde_secret` helper
+/// module instead of the default impls.
 impl Serialize for SecretString {
     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
     where

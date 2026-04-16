@@ -40,6 +40,11 @@ pub enum CoreError {
     },
 
     /// Required dependency not registered.
+    ///
+    /// Both `name` and `required_by` are `&'static str` intentionally:
+    /// dependency names are compile-time constants defined in action/plugin
+    /// metadata, never user-supplied strings. This keeps `CoreError: Clone`
+    /// without allocating and makes the error zero-cost to construct.
     #[error("missing dependency: `{required_by}` requires `{name}`")]
     DependencyMissing {
         /// The name of the missing dependency.
@@ -64,6 +69,24 @@ impl CoreError {
             raw: raw.into(),
             domain,
         }
+    }
+
+    /// Create a scope violation error.
+    pub fn scope_violation(actor: impl Into<String>, target: impl Into<String>) -> Self {
+        Self::ScopeViolation {
+            actor: actor.into(),
+            target: target.into(),
+        }
+    }
+
+    /// Create a dependency cycle error.
+    pub fn dependency_cycle(path: Vec<&'static str>) -> Self {
+        Self::DependencyCycle { path }
+    }
+
+    /// Create a missing dependency error.
+    pub fn dependency_missing(name: &'static str, required_by: &'static str) -> Self {
+        Self::DependencyMissing { name, required_by }
     }
 }
 
@@ -114,20 +137,28 @@ mod tests {
         let errors = [
             CoreError::invalid_id("x", "exe"),
             CoreError::invalid_key("x", "action"),
-            CoreError::ScopeViolation {
-                actor: "a".into(),
-                target: "b".into(),
-            },
-            CoreError::DependencyCycle {
-                path: vec!["a", "b"],
-            },
-            CoreError::DependencyMissing {
-                name: "x",
-                required_by: "y",
-            },
+            CoreError::scope_violation("a", "b"),
+            CoreError::dependency_cycle(vec!["a", "b"]),
+            CoreError::dependency_missing("x", "y"),
         ];
         for e in &errors {
             assert!(!e.is_retryable());
         }
+    }
+
+    #[test]
+    fn helper_constructors_match_variants() {
+        assert!(matches!(
+            CoreError::scope_violation("actor", "target"),
+            CoreError::ScopeViolation { .. }
+        ));
+        assert!(matches!(
+            CoreError::dependency_cycle(vec!["a", "b"]),
+            CoreError::DependencyCycle { .. }
+        ));
+        assert!(matches!(
+            CoreError::dependency_missing("dep", "owner"),
+            CoreError::DependencyMissing { .. }
+        ));
     }
 }

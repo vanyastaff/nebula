@@ -13,14 +13,27 @@ fn scope_level_serialization_contract() {
     let global_json = serde_json::to_string(&ScopeLevel::Global).unwrap();
     assert_eq!(global_json, "\"Global\"");
 
-    // Organization, Workspace, Workflow, Execution all serialize with prefixed ULIDs
+    // Organization serializes as {"Organization":"org_<ULID>"}
     let org_id = OrgId::new();
     let org_scope = ScopeLevel::Organization(org_id);
-    let org_json = serde_json::to_string(&org_scope).unwrap();
+    let org_value: serde_json::Value = serde_json::to_value(&org_scope).unwrap();
+    let org_obj = org_value
+        .as_object()
+        .expect("Organization scope must serialize as JSON object");
     assert!(
-        org_json.contains("org_"),
-        "org scope should contain org_ prefix"
+        org_obj.contains_key("Organization"),
+        "key must be 'Organization'"
     );
+    let org_id_str = org_obj["Organization"]
+        .as_str()
+        .expect("value must be a string");
+    assert!(
+        org_id_str.starts_with("org_"),
+        "org ID must have org_ prefix, got: {org_id_str}"
+    );
+    // Verify the ID round-trips
+    let parsed_org: OrgId = org_id_str.parse().expect("org ID in JSON must parse back");
+    assert_eq!(parsed_org, org_id);
 }
 
 #[test]
@@ -50,24 +63,13 @@ fn core_error_code_stability() {
     let errors = [
         (CoreError::invalid_id("x", "exe"), "CORE:INVALID_ID"),
         (CoreError::invalid_key("x", "action"), "CORE:INVALID_KEY"),
+        (CoreError::scope_violation("a", "b"), "CORE:SCOPE_VIOLATION"),
         (
-            CoreError::ScopeViolation {
-                actor: "a".into(),
-                target: "b".into(),
-            },
-            "CORE:SCOPE_VIOLATION",
-        ),
-        (
-            CoreError::DependencyCycle {
-                path: vec!["a", "b"],
-            },
+            CoreError::dependency_cycle(vec!["a", "b"]),
             "CORE:DEPENDENCY_CYCLE",
         ),
         (
-            CoreError::DependencyMissing {
-                name: "x",
-                required_by: "y",
-            },
+            CoreError::dependency_missing("x", "y"),
             "CORE:DEPENDENCY_MISSING",
         ),
     ];

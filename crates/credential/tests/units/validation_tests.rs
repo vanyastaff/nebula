@@ -34,6 +34,21 @@ fn test_credential_id_parse_invalid() {
 }
 
 #[test]
+fn test_credential_id_rejects_wrong_prefix() {
+    // Take a valid CredentialId, swap its prefix to "exe_", and verify rejection.
+    let id = CredentialId::new();
+    let id_str = id.to_string();
+    let ulid_part = id_str
+        .strip_prefix("cred_")
+        .expect("CredentialId must start with cred_");
+    let wrong_prefix = format!("exe_{ulid_part}");
+    assert!(
+        wrong_prefix.parse::<CredentialId>().is_err(),
+        "a valid ULID with wrong prefix must be rejected"
+    );
+}
+
+#[test]
 fn test_credential_id_display() {
     let id = CredentialId::new();
     let display = format!("{}", id);

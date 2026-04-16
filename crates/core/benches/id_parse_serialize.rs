@@ -26,34 +26,56 @@ fn id_parse(c: &mut Criterion) {
     let node_s = NodeId::new().to_string();
     let mut group = c.benchmark_group("id/parse");
     group.bench_function("ExecutionId::parse", |b| {
-        b.iter(|| black_box(exe_s.parse::<ExecutionId>().unwrap()));
+        b.iter(|| {
+            black_box(
+                exe_s
+                    .parse::<ExecutionId>()
+                    .expect("pre-generated ExecutionId string must parse"),
+            )
+        });
     });
     group.bench_function("WorkflowId::parse", |b| {
-        b.iter(|| black_box(wf_s.parse::<WorkflowId>().unwrap()));
+        b.iter(|| {
+            black_box(
+                wf_s.parse::<WorkflowId>()
+                    .expect("pre-generated WorkflowId string must parse"),
+            )
+        });
     });
     group.bench_function("NodeId::parse", |b| {
-        b.iter(|| black_box(node_s.parse::<NodeId>().unwrap()));
+        b.iter(|| {
+            black_box(
+                node_s
+                    .parse::<NodeId>()
+                    .expect("pre-generated NodeId string must parse"),
+            )
+        });
     });
     group.finish();
 }
 
 fn id_serde_json_roundtrip(c: &mut Criterion) {
     let id = ExecutionId::new();
-    let json = serde_json::to_string(&id).unwrap();
+    let json = serde_json::to_string(&id).expect("ExecutionId must serialize");
     let mut group = c.benchmark_group("id/serde_json");
     group.bench_function("to_string", |b| {
-        b.iter(|| black_box(serde_json::to_string(black_box(&id)).unwrap()));
+        b.iter(|| {
+            black_box(serde_json::to_string(black_box(&id)).expect("ExecutionId must serialize"))
+        });
     });
     group.bench_function("from_str", |b| {
         b.iter(|| {
-            let parsed: ExecutionId = serde_json::from_str(black_box(&json)).unwrap();
+            let parsed: ExecutionId = serde_json::from_str(black_box(&json))
+                .expect("pre-serialized ExecutionId JSON must deserialize");
             black_box(parsed)
         });
     });
     group.bench_function("roundtrip", |b| {
         b.iter(|| {
-            let json = serde_json::to_string(black_box(&id)).unwrap();
-            let parsed: ExecutionId = serde_json::from_str(&json).unwrap();
+            let json = serde_json::to_string(black_box(&id))
+                .expect("ExecutionId must serialize in roundtrip");
+            let parsed: ExecutionId = serde_json::from_str(&json)
+                .expect("freshly-serialized ExecutionId must deserialize");
             black_box(parsed)
         });
     });

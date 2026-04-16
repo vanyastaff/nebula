@@ -57,5 +57,84 @@ impl Ord for Version {
             .cmp(&other.major)
             .then(self.minor.cmp(&other.minor))
             .then(self.patch.cmp(&other.patch))
+            .then(match (&self.pre, &other.pre) {
+                // Both have no pre-release: equal
+                (None, None) => std::cmp::Ordering::Equal,
+                // Release (no pre) sorts after pre-release per semver
+                (None, Some(_)) => std::cmp::Ordering::Greater,
+                (Some(_), None) => std::cmp::Ordering::Less,
+                // Both have pre-release: lexicographic
+                (Some(a), Some(b)) => a.cmp(b),
+            })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn pre_release_sorts_before_release() {
+        let alpha = Version {
+            pre: Some("alpha".into()),
+            ..Version::new(1, 0, 0)
+        };
+        let release = Version::new(1, 0, 0);
+        assert!(alpha < release, "1.0.0-alpha must sort before 1.0.0");
+    }
+
+    #[test]
+    fn pre_release_ordering_is_not_equal() {
+        // This was the original bug: Ord ignored `pre`, making these equal.
+        let alpha = Version {
+            pre: Some("alpha".into()),
+            ..Version::new(1, 0, 0)
+        };
+        let release = Version::new(1, 0, 0);
+        assert_ne!(
+            alpha.cmp(&release),
+            std::cmp::Ordering::Equal,
+            "1.0.0-alpha and 1.0.0 must not compare equal in Ord"
+        );
+    }
+
+    #[test]
+    fn pre_release_lexicographic() {
+        let alpha = Version {
+            pre: Some("alpha".into()),
+            ..Version::new(1, 0, 0)
+        };
+        let beta = Version {
+            pre: Some("beta".into()),
+            ..Version::new(1, 0, 0)
+        };
+        assert!(alpha < beta, "1.0.0-alpha must sort before 1.0.0-beta");
+    }
+
+    #[test]
+    fn partial_eq_considers_pre_and_build() {
+        // Derived PartialEq compares all fields including pre and build.
+        let a = Version::new(1, 0, 0);
+        let b = Version {
+            pre: Some("alpha".into()),
+            ..Version::new(1, 0, 0)
+        };
+        assert_ne!(a, b, "PartialEq must distinguish release from pre-release");
+
+        let c = Version {
+            build: Some("20240101".into()),
+            ..Version::new(1, 0, 0)
+        };
+        assert_ne!(a, c, "PartialEq must distinguish different build metadata");
+    }
+
+    #[test]
+    fn display_includes_pre_and_build() {
+        let v = Version {
+            pre: Some("rc.1".into()),
+            build: Some("sha.abc123".into()),
+            ..Version::new(2, 1, 0)
+        };
+        assert_eq!(v.to_string(), "2.1.0-rc.1+sha.abc123");
     }
 }

@@ -109,3 +109,18 @@ pub enum DependencyError {
     #[error("registry invariant violated: {0}")]
     RegistryInvariant(&'static str),
 }
+
+impl From<DependencyError> for crate::CoreError {
+    fn from(err: DependencyError) -> Self {
+        match err {
+            DependencyError::Missing { name, required_by } => {
+                crate::CoreError::DependencyMissing { name, required_by }
+            },
+            DependencyError::Cycle { path } => crate::CoreError::DependencyCycle { path },
+            DependencyError::RegistryInvariant(msg) => crate::CoreError::DependencyMissing {
+                name: msg,
+                required_by: "registry",
+            },
+        }
+    }
+}

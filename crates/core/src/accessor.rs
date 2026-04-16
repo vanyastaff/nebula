@@ -100,6 +100,10 @@ pub trait RefreshCoordinator: Send + Sync {
     fn release_refresh(&self, token: RefreshToken) -> BoxFuture<'_, Result<(), crate::CoreError>>;
 }
 
-/// Token returned by RefreshCoordinator.
+/// Token returned by [`RefreshCoordinator`].
+///
+/// The token is an opaque handle. TTL / timeout semantics (e.g., how long
+/// a refresh lock is held before auto-release) are deferred to the concrete
+/// `RefreshCoordinator` implementation.
 #[derive(Debug)]
 pub struct RefreshToken(pub u64);

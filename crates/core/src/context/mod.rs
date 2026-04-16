@@ -28,6 +28,10 @@ pub trait Context: Send + Sync {
 }
 
 /// Shared identity fields. Domain contexts embed and delegate.
+///
+/// `BaseContext` is intentionally not `Clone` because it holds a
+/// `Box<dyn Clock>` which is not cloneable. If cloning is needed,
+/// wrap the clock in `Arc<dyn Clock>` instead of boxing it.
 pub struct BaseContext {
     scope: Scope,
     principal: Principal,

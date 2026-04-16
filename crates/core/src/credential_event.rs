@@ -85,15 +85,26 @@ mod tests {
     }
 
     #[test]
-    fn display_formats_with_prefix() {
+    fn display_formats_with_prefix_and_valid_id() {
         let id = CredentialId::new();
         let refreshed = CredentialEvent::Refreshed { credential_id: id };
         let display = refreshed.to_string();
         assert!(display.starts_with("credential refreshed: cred_"));
+        // Verify the suffix is the full ID string (parseable back)
+        let id_suffix = display.strip_prefix("credential refreshed: ").unwrap();
+        let parsed: CredentialId = id_suffix
+            .parse()
+            .expect("display suffix must be a valid CredentialId");
+        assert_eq!(parsed, id);
 
         let revoked = CredentialEvent::Revoked { credential_id: id };
         let display = revoked.to_string();
         assert!(display.starts_with("credential revoked: cred_"));
+        let id_suffix = display.strip_prefix("credential revoked: ").unwrap();
+        let parsed: CredentialId = id_suffix
+            .parse()
+            .expect("display suffix must be a valid CredentialId");
+        assert_eq!(parsed, id);
     }
 
     #[test]

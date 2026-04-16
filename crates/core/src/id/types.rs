@@ -75,11 +75,14 @@ mod tests {
 
     #[test]
     fn id_ordering_is_deterministic() {
-        // Two different IDs are not equal
         let a = WorkspaceId::new();
         let b = WorkspaceId::new();
-        // They are ordered (one is less than or equal to the other)
-        let _ = a.cmp(&b);
+        assert_ne!(a, b, "two freshly created IDs must differ");
+        // Ordering must be consistent: a < b or a > b (never equal).
+        let ord = a.cmp(&b);
+        assert_ne!(ord, std::cmp::Ordering::Equal);
+        // Reverse comparison must be the mirror.
+        assert_eq!(b.cmp(&a), ord.reverse());
     }
 
     #[test]
@@ -93,6 +96,10 @@ mod tests {
 
     #[test]
     fn different_id_types_are_incompatible() {
+        // Type safety: ExecutionId and WorkflowId are distinct newtypes.
+        // Passing one where the other is expected is a compile error:
+        //   accepts_execution(wf);  // won't compile
+        //   accepts_workflow(exec); // won't compile
         fn accepts_execution(_id: ExecutionId) {}
         fn accepts_workflow(_id: WorkflowId) {}
 
