@@ -179,11 +179,11 @@ impl WorkflowBuilder {
             return Err(WorkflowError::NoNodes);
         }
 
-        // Check duplicate node IDs
+        // Check duplicate node keys
         let mut seen = std::collections::HashSet::new();
         for node in &self.nodes {
             if !seen.insert(node.id.clone()) {
-                return Err(WorkflowError::DuplicateNodeId(node.id.clone()));
+                return Err(WorkflowError::DuplicateNodeKey(node.id.clone()));
             }
         }
 
@@ -298,7 +298,7 @@ mod tests {
             .add_node(node(a))
             .build()
             .unwrap_err();
-        assert!(matches!(err, WorkflowError::DuplicateNodeId(_)));
+        assert!(matches!(err, WorkflowError::DuplicateNodeKey(_)));
     }
 
     #[test]

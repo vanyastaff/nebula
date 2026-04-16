@@ -33,7 +33,7 @@ impl DependencyGraph {
             // nodes inside `petgraph` while silently losing it from the
             // index map. Fail loudly here.
             if index_map.insert(node.id.clone(), idx).is_some() {
-                return Err(WorkflowError::DuplicateNodeId(node.id.clone()));
+                return Err(WorkflowError::DuplicateNodeKey(node.id.clone()));
             }
         }
 

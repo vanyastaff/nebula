@@ -133,7 +133,7 @@ async fn action_acquires_resource_through_engine() {
 
     // 5. Verify the action successfully acquired and used the resource
     assert!(result.is_success(), "workflow should succeed");
-    let output = result.node_output(node).expect("node should have output");
+    let output = result.node_output(&node).expect("node should have output");
     assert_eq!(
         output.get("resource_value").and_then(|v| v.as_str()),
         Some("mock-instance"),
@@ -180,7 +180,7 @@ async fn full_resource_lifecycle_with_shutdown() {
 
     // 5. Verify execution succeeded
     assert!(result.is_success(), "workflow should succeed");
-    let output = result.node_output(node).expect("node should have output");
+    let output = result.node_output(&node).expect("node should have output");
     assert_eq!(
         output.get("resource_value").and_then(|v| v.as_str()),
         Some("mock-instance"),

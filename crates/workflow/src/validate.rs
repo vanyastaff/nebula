@@ -29,11 +29,11 @@ pub fn validate_workflow(definition: &WorkflowDefinition) -> Vec<WorkflowError> 
         return errors; // Cannot check further without nodes
     }
 
-    // 3. Check duplicate node IDs
+    // 3. Check duplicate node keys
     let mut seen_ids = HashSet::new();
     for node in &definition.nodes {
         if !seen_ids.insert(node.id.clone()) {
-            errors.push(WorkflowError::DuplicateNodeId(node.id.clone()));
+            errors.push(WorkflowError::DuplicateNodeKey(node.id.clone()));
         }
     }
 

@@ -16,10 +16,10 @@ pub enum WorkflowError {
     #[error("workflow must have at least one node")]
     NoNodes,
 
-    /// Duplicate node id found.
-    #[classify(category = "validation", code = "WORKFLOW:DUPLICATE_NODE_ID")]
-    #[error("duplicate node id: {0}")]
-    DuplicateNodeId(NodeKey),
+    /// Duplicate node key found.
+    #[classify(category = "validation", code = "WORKFLOW:DUPLICATE_NODE_KEY")]
+    #[error("duplicate node key: {0}")]
+    DuplicateNodeKey(NodeKey),
 
     /// Connection references a node that does not exist.
     #[classify(category = "validation", code = "WORKFLOW:UNKNOWN_NODE")]

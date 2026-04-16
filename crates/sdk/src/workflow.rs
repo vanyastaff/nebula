@@ -17,7 +17,7 @@
 
 use std::collections::{HashMap, HashSet};
 
-use nebula_core::{ActionKey, NodeKey, WorkflowId, node_key};
+use nebula_core::{ActionKey, NodeKey, WorkflowId};
 use nebula_workflow::{
     CURRENT_SCHEMA_VERSION, ParamValue, Version, WorkflowConfig, WorkflowDefinition,
     connection::{Connection, EdgeCondition},
@@ -173,8 +173,14 @@ impl WorkflowBuilder {
         let node_id_by_name: HashMap<String, NodeKey> = self
             .nodes
             .iter()
-            .map(|node| {
-                let key = NodeKey::new(&node.id).unwrap_or_else(|_| node_key!("fallback"));
+            .enumerate()
+            .map(|(i, node)| {
+                let key = NodeKey::new(&node.id).unwrap_or_else(|_| {
+                    // Node id is not a valid key (e.g. contains uppercase or special
+                    // chars). Generate a unique fallback so nodes never collide.
+                    let fallback = format!("node_{i}");
+                    NodeKey::new(&fallback).unwrap()
+                });
                 (node.id.clone(), key)
             })
             .collect();

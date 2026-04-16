@@ -7,7 +7,7 @@ use nebula_engine::ExecutionResult;
 
 /// A recovery suggestion for a failed node.
 pub struct Suggestion {
-    /// Node ID that failed.
+    /// Node key that failed.
     pub node_key: String,
     /// What went wrong (short).
     pub problem: String,

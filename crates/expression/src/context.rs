@@ -47,7 +47,7 @@ impl EvaluationContext {
     }
 
     /// Get data for a specific node
-    pub fn get_node_data(&self, node_key: &str) -> Option<Arc<Value>> {
+    pub fn node_data(&self, node_key: &str) -> Option<Arc<Value>> {
         self.nodes.get(node_key).cloned()
     }
 
@@ -239,7 +239,7 @@ mod tests {
     fn test_set_and_get_node_data() {
         let mut ctx = EvaluationContext::new();
         ctx.set_node_data("node1", Value::String("test".to_string()));
-        assert_eq!(ctx.get_node_data("node1").unwrap().as_str(), Some("test"));
+        assert_eq!(ctx.node_data("node1").unwrap().as_str(), Some("test"));
     }
 
     #[test]
@@ -251,7 +251,7 @@ mod tests {
             .input(Value::Number(42.into()))
             .build();
 
-        assert_eq!(ctx.get_node_data("node1").unwrap().as_str(), Some("test"));
+        assert_eq!(ctx.node_data("node1").unwrap().as_str(), Some("test"));
         assert_eq!(
             ctx.get_execution_var("id").unwrap().as_str(),
             Some("exec-123")

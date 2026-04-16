@@ -393,6 +393,12 @@ impl WorkflowEngine {
         let mut exec_state = ExecutionState::new(execution_id, workflow.id, &node_ids);
         exec_state.transition_status(ExecutionStatus::Running)?;
         for node_key in &pinned {
+            // NOTE: errors are intentionally discarded here. Pinned nodes are
+            // forced through Ready→Running→Completed for bookkeeping; the
+            // transitions are best-effort. A failure (e.g. unexpected current
+            // state) is non-fatal because the node was already completed in a
+            // prior run. TODO: log a warning on failure once the engine has a
+            // structured logger handle.
             let _ = exec_state.transition_node(node_key.clone(), NodeState::Ready);
             let _ = exec_state.transition_node(node_key.clone(), NodeState::Running);
             let _ = exec_state.transition_node(node_key.clone(), NodeState::Completed);
@@ -2463,7 +2469,7 @@ mod tests {
             .unwrap();
 
         assert!(result.is_success());
-        assert_eq!(result.node_output(n), Some(&serde_json::json!("hello")));
+        assert_eq!(result.node_output(&n), Some(&serde_json::json!("hello")));
     }
 
     #[tokio::test]
@@ -2491,9 +2497,9 @@ mod tests {
             .unwrap();
 
         assert!(result.is_success());
-        assert_eq!(result.node_output(n1), Some(&serde_json::json!(42)));
+        assert_eq!(result.node_output(&n1), Some(&serde_json::json!(42)));
         // B echoes its input, which is A's output (42)
-        assert_eq!(result.node_output(n2), Some(&serde_json::json!(42)));
+        assert_eq!(result.node_output(&n2), Some(&serde_json::json!(42)));
     }
 
     #[tokio::test]
@@ -2531,11 +2537,11 @@ mod tests {
 
         assert!(result.is_success());
         assert_eq!(result.node_outputs.len(), 4);
-        assert_eq!(result.node_output(a), Some(&serde_json::json!("start")));
-        assert_eq!(result.node_output(b), Some(&serde_json::json!("start")));
-        assert_eq!(result.node_output(c), Some(&serde_json::json!("start")));
+        assert_eq!(result.node_output(&a), Some(&serde_json::json!("start")));
+        assert_eq!(result.node_output(&b), Some(&serde_json::json!("start")));
+        assert_eq!(result.node_output(&c), Some(&serde_json::json!("start")));
         // Join node gets merged outputs from b and c
-        let d_output = result.node_output(d).unwrap();
+        let d_output = result.node_output(&d).unwrap();
         assert!(d_output.is_object());
     }
 
@@ -2572,9 +2578,9 @@ mod tests {
             .unwrap();
 
         assert!(result.is_failure());
-        assert!(result.node_output(n1).is_some());
-        assert!(result.node_output(n2).is_none());
-        assert!(result.node_output(n3).is_none());
+        assert!(result.node_output(&n1).is_some());
+        assert!(result.node_output(&n2).is_none());
+        assert!(result.node_output(&n3).is_none());
     }
 
     #[tokio::test]
@@ -2797,13 +2803,13 @@ mod tests {
 
         assert!(result.is_success());
         // A executed (branch node)
-        assert!(result.node_output(a).is_some());
+        assert!(result.node_output(&a).is_some());
         // B executed (true branch)
-        assert!(result.node_output(b).is_some());
+        assert!(result.node_output(&b).is_some());
         // C was NOT executed (false branch, skipped)
-        assert!(result.node_output(c).is_none());
+        assert!(result.node_output(&c).is_none());
         // D executed (received input from B only)
-        assert!(result.node_output(d).is_some());
+        assert!(result.node_output(&d).is_some());
     }
 
     /// A → B(skip) → C. Verify C is skipped and doesn't execute.
@@ -2842,11 +2848,11 @@ mod tests {
         // Execution succeeds overall (skip is not a failure)
         assert!(result.is_success());
         // A executed
-        assert!(result.node_output(a).is_some());
+        assert!(result.node_output(&a).is_some());
         // B executed but produced Skip result (no output stored since skip has no output)
-        assert!(result.node_output(b).is_none());
+        assert!(result.node_output(&b).is_none());
         // C was skipped (never executed)
-        assert!(result.node_output(c).is_none());
+        assert!(result.node_output(&c).is_none());
     }
 
     /// A → B(fails) --OnError--> C. Verify C receives error data and execution succeeds.
@@ -2887,11 +2893,11 @@ mod tests {
         // Execution succeeds because the error was handled
         assert!(result.is_success());
         // A executed
-        assert!(result.node_output(a).is_some());
+        assert!(result.node_output(&a).is_some());
         // B failed but error data was stored
-        assert!(result.node_output(b).is_some());
+        assert!(result.node_output(&b).is_some());
         // C executed with error data from B
-        let c_output = result.node_output(c).unwrap();
+        let c_output = result.node_output(&c).unwrap();
         assert!(c_output.get("error").is_some());
     }
 
@@ -2929,9 +2935,9 @@ mod tests {
             .unwrap();
 
         assert!(result.is_failure());
-        assert!(result.node_output(a).is_some());
+        assert!(result.node_output(&a).is_some());
         // B failed, no error handler → fail-fast
-        assert!(result.node_output(c).is_none());
+        assert!(result.node_output(&c).is_none());
     }
 
     /// A → B with OnResult(Success) condition. B should run when A succeeds.
@@ -2964,8 +2970,8 @@ mod tests {
             .unwrap();
 
         assert!(result.is_success());
-        assert_eq!(result.node_output(a), Some(&serde_json::json!("hello")));
-        assert_eq!(result.node_output(b), Some(&serde_json::json!("hello")));
+        assert_eq!(result.node_output(&a), Some(&serde_json::json!("hello")));
+        assert_eq!(result.node_output(&b), Some(&serde_json::json!("hello")));
     }
 
     /// Diamond with mixed conditions:
@@ -3008,11 +3014,11 @@ mod tests {
 
         assert!(result.is_success());
         assert_eq!(result.node_outputs.len(), 4);
-        assert!(result.node_output(a).is_some());
-        assert!(result.node_output(b).is_some());
-        assert!(result.node_output(c).is_some());
+        assert!(result.node_output(&a).is_some());
+        assert!(result.node_output(&b).is_some());
+        assert!(result.node_output(&c).is_some());
         // D should have merged input from B and C
-        let d_output = result.node_output(d).unwrap();
+        let d_output = result.node_output(&d).unwrap();
         assert!(d_output.is_object());
     }
 
@@ -3283,11 +3289,11 @@ mod tests {
         // Workflow completes (not fail-fast)
         assert!(result.is_success() || result.status == ExecutionStatus::Completed);
         // Entry ran
-        assert!(result.node_output(entry).is_some());
+        assert!(result.node_output(&entry).is_some());
         // C is independent and should have run
-        assert!(result.node_output(c).is_some());
+        assert!(result.node_output(&c).is_some());
         // B depends on the failed node — should be skipped (no output)
-        assert!(result.node_output(b).is_none());
+        assert!(result.node_output(&b).is_none());
     }
 
     #[tokio::test]
@@ -3329,10 +3335,10 @@ mod tests {
         // Workflow should complete successfully
         assert_eq!(result.status, ExecutionStatus::Completed);
         // A's output was replaced with null
-        assert_eq!(result.node_output(a), Some(&serde_json::json!(null)));
+        assert_eq!(result.node_output(&a), Some(&serde_json::json!(null)));
         // B ran and received null as input
-        assert!(result.node_output(b.clone()).is_some());
-        assert_eq!(result.node_output(b), Some(&serde_json::json!(null)));
+        assert!(result.node_output(&b).is_some());
+        assert_eq!(result.node_output(&b), Some(&serde_json::json!(null)));
     }
 
     // -- resume_execution tests --
@@ -3518,14 +3524,14 @@ mod tests {
         assert!(result.is_success(), "resume should complete successfully");
         assert_eq!(result.execution_id, execution_id);
         // n1's output comes from the persisted outputs
-        assert_eq!(result.node_output(n1), Some(&serde_json::json!("from_n1")));
+        assert_eq!(result.node_output(&n1), Some(&serde_json::json!("from_n1")));
         // n2 and n3 should have been executed and produced outputs
         assert!(
-            result.node_output(n2).is_some(),
+            result.node_output(&n2).is_some(),
             "n2 should have been re-executed"
         );
         assert!(
-            result.node_output(n3).is_some(),
+            result.node_output(&n3).is_some(),
             "n3 should have been re-executed"
         );
     }
@@ -3718,12 +3724,12 @@ mod tests {
 
         assert!(result.is_success());
         assert_eq!(
-            result.node_output(n1),
+            result.node_output(&n1),
             Some(&serde_json::json!("v1")),
             "n1 should use the v1 handler"
         );
         assert_eq!(
-            result.node_output(n2),
+            result.node_output(&n2),
             Some(&serde_json::json!("v2")),
             "n2 should use the v2 handler"
         );
@@ -3838,7 +3844,7 @@ mod tests {
             result.status
         );
         assert!(
-            result.node_output(b).is_some(),
+            result.node_output(&b).is_some(),
             "target node B must execute and produce output"
         );
     }

@@ -313,8 +313,8 @@ async fn linear_pipeline_data_flows_through() {
         .unwrap();
 
     assert!(result.is_success());
-    assert_eq!(result.node_output(a), Some(&serde_json::json!(5)));
-    assert_eq!(result.node_output(b), Some(&serde_json::json!(10)));
+    assert_eq!(result.node_output(&a), Some(&serde_json::json!(5)));
+    assert_eq!(result.node_output(&b), Some(&serde_json::json!(10)));
 }
 
 /// Three-node fan-out: A → B and A → C (parallel).
@@ -355,9 +355,9 @@ async fn fan_out_parallel_execution() {
         .unwrap();
 
     assert!(result.is_success());
-    assert_eq!(result.node_output(a), Some(&serde_json::json!(7)));
-    assert_eq!(result.node_output(b), Some(&serde_json::json!(14)));
-    assert_eq!(result.node_output(c), Some(&serde_json::json!(17)));
+    assert_eq!(result.node_output(&a), Some(&serde_json::json!(7)));
+    assert_eq!(result.node_output(&b), Some(&serde_json::json!(14)));
+    assert_eq!(result.node_output(&c), Some(&serde_json::json!(17)));
 }
 
 /// Diamond workflow: A → B, A → C, B → D, C → D.
@@ -402,12 +402,12 @@ async fn diamond_merge_receives_combined_outputs() {
         .unwrap();
 
     assert!(result.is_success());
-    assert_eq!(result.node_output(a), Some(&serde_json::json!(3)));
-    assert_eq!(result.node_output(b.clone()), Some(&serde_json::json!(6)));
-    assert_eq!(result.node_output(c.clone()), Some(&serde_json::json!(13)));
+    assert_eq!(result.node_output(&a), Some(&serde_json::json!(3)));
+    assert_eq!(result.node_output(&b), Some(&serde_json::json!(6)));
+    assert_eq!(result.node_output(&c), Some(&serde_json::json!(13)));
 
     // D is a join node — its input is a merged object keyed by predecessor node IDs
-    let d_output = result.node_output(d).expect("D should have output");
+    let d_output = result.node_output(&d).expect("D should have output");
     assert!(d_output.is_object(), "join node output should be an object");
     let obj = d_output.as_object().unwrap();
     assert_eq!(obj.len(), 2, "should have outputs from B and C");
@@ -452,11 +452,11 @@ async fn error_propagation_stops_downstream() {
     assert!(result.is_failure());
     assert_eq!(result.status, ExecutionStatus::Failed);
     // A completed before B failed
-    assert!(result.node_output(a).is_some());
+    assert!(result.node_output(&a).is_some());
     // B failed, no output
-    assert!(result.node_output(b).is_none());
+    assert!(result.node_output(&b).is_none());
     // C was never reached
-    assert!(result.node_output(c).is_none());
+    assert!(result.node_output(&c).is_none());
 }
 
 /// Cancellation via sibling failure: parallel nodes A(slow) and B(fail).
@@ -510,11 +510,11 @@ async fn cancellation_via_sibling_failure() {
     let result = result.unwrap();
     assert!(result.is_failure());
     // Entry ran successfully
-    assert!(result.node_output(entry).is_some());
+    assert!(result.node_output(&entry).is_some());
     // Slow was cancelled (no output stored)
-    assert!(result.node_output(slow).is_none());
+    assert!(result.node_output(&slow).is_none());
     // Downstream never ran
-    assert!(result.node_output(downstream).is_none());
+    assert!(result.node_output(&downstream).is_none());
 }
 
 /// Verify metrics cover the full lifecycle.
@@ -666,10 +666,10 @@ async fn deep_chain_propagates_outputs() {
         .unwrap();
 
     assert!(result.is_success());
-    assert_eq!(result.node_output(a), Some(&serde_json::json!(2)));
-    assert_eq!(result.node_output(b), Some(&serde_json::json!(4)));
-    assert_eq!(result.node_output(c), Some(&serde_json::json!(8)));
-    assert_eq!(result.node_output(d), Some(&serde_json::json!(16)));
+    assert_eq!(result.node_output(&a), Some(&serde_json::json!(2)));
+    assert_eq!(result.node_output(&b), Some(&serde_json::json!(4)));
+    assert_eq!(result.node_output(&c), Some(&serde_json::json!(8)));
+    assert_eq!(result.node_output(&d), Some(&serde_json::json!(16)));
 }
 
 /// Metrics are accurate after a failed workflow.
@@ -757,19 +757,19 @@ async fn disabled_node_is_skipped_and_successor_executes() {
     );
     // A executed and produced its output
     assert_eq!(
-        result.node_output(a),
+        result.node_output(&a),
         Some(&serde_json::json!("hello")),
         "A should execute normally"
     );
     // B was skipped — no output entry
     assert!(
-        result.node_output(b).is_none(),
+        result.node_output(&b).is_none(),
         "B should be skipped (no output)"
     );
     // C executed — B's disabled-skip activated the B→C edge so C entered the frontier.
     // C receives null because B produced no output.
     assert_eq!(
-        result.node_output(c),
+        result.node_output(&c),
         Some(&serde_json::json!(null)),
         "C should execute after B is skipped, receiving null (B produced no output)"
     );

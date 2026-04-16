@@ -35,8 +35,8 @@ impl ExecutionResult {
 
     /// Get a specific node's output.
     #[must_use]
-    pub fn node_output(&self, node_key: NodeKey) -> Option<&serde_json::Value> {
-        self.node_outputs.get(&node_key)
+    pub fn node_output(&self, node_key: &NodeKey) -> Option<&serde_json::Value> {
+        self.node_outputs.get(node_key)
     }
 }
 
@@ -86,7 +86,7 @@ mod tests {
             duration: Duration::from_millis(10),
         };
 
-        assert_eq!(result.node_output(node_key), Some(&serde_json::json!(42)));
-        assert!(result.node_output(node_key!("test")).is_none());
+        assert_eq!(result.node_output(&node_key), Some(&serde_json::json!(42)));
+        assert!(result.node_output(&node_key!("test")).is_none());
     }
 }
