@@ -2,7 +2,8 @@
 
 use std::{collections::HashMap, time::Duration};
 
-use nebula_core::{ActionKey, InterfaceVersion, NodeId, prelude::KeyParseError};
+use nebula_action::InterfaceVersion;
+use nebula_core::{ActionKey, NodeId, prelude::KeyParseError};
 use serde::{Deserialize, Serialize};
 
 use crate::definition::RetryConfig;

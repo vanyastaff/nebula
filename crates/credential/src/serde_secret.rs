@@ -1,10 +1,6 @@
 //! Serde helpers for [`SecretString`] that preserve the actual value.
 //!
-//! The default `SecretString` `Serialize` impl writes `[REDACTED]` (safe for
-//! logs) — this module writes the real value so encrypted-at-rest state
-//! round-trips correctly.
-//!
-//! Use with `#[serde(with = "nebula_core::serde_secret")]` on `SecretString` fields.
+//! Use with `#[serde(with = "nebula_credential::serde_secret")]` on `SecretString` fields.
 
 use serde::{Deserialize, Deserializer, Serializer};
 

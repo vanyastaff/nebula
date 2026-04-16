@@ -956,8 +956,8 @@ fn trigger_seed(
         }
     };
     mix(&mut h, action_key.as_str().as_bytes());
-    mix(&mut h, workflow_id.as_bytes());
-    mix(&mut h, trigger_id.as_bytes());
+    mix(&mut h, workflow_id.to_string().as_bytes());
+    mix(&mut h, trigger_id.to_string().as_bytes());
     h
 }
 

@@ -16,7 +16,7 @@ use nebula_action::{
     metadata::ActionMetadata, result::ActionResult, stateless::StatelessAction,
 };
 use nebula_core::{
-    ActionKey, Version, action_key,
+    ActionKey, action_key,
     id::{NodeId, WorkflowId},
 };
 use nebula_engine::WorkflowEngine;
@@ -29,7 +29,7 @@ use nebula_runtime::{
     ActionExecutor, ActionRuntime, DataPassingPolicy, InProcessSandbox, registry::ActionRegistry,
 };
 use nebula_telemetry::metrics::MetricsRegistry;
-use nebula_workflow::{Connection, NodeDefinition, WorkflowConfig, WorkflowDefinition};
+use nebula_workflow::{Connection, NodeDefinition, Version, WorkflowConfig, WorkflowDefinition};
 
 // ---------------------------------------------------------------------------
 // Test action handlers

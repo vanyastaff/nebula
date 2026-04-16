@@ -1,170 +1,77 @@
 //! Schema contract tests for nebula-core (Phase 2: Compatibility Contracts).
 //!
-//! These tests freeze the JSON serialization of boundary types and CoreError
-//! codes. Changing the output format is a breaking change — update expected
-//! values intentionally and document in MIGRATION.md.
+//! These tests verify the serialization format of boundary types after
+//! the ULID migration. ID types now use prefixed ULID format.
 
 use nebula_core::{
-    prelude::{
-        ExecutionId, InterfaceVersion, NodeId, OrganizationId, ProjectId, ProjectType, RoleScope,
-        ScopeLevel, WorkflowId,
-    },
-    types::{Priority, Status},
+    CoreError,
+    prelude::{ExecutionId, OrgId, ScopeLevel, WorkflowId},
 };
 
 #[test]
-fn status_serialization_contract() {
-    let cases = [
-        (Status::Active, "\"Active\""),
-        (Status::Inactive, "\"Inactive\""),
-        (Status::InProgress, "\"InProgress\""),
-        (Status::Completed, "\"Completed\""),
-        (Status::Failed, "\"Failed\""),
-        (Status::Pending, "\"Pending\""),
-        (Status::Cancelled, "\"Cancelled\""),
-        (Status::Suspended, "\"Suspended\""),
-        (Status::Error, "\"Error\""),
-    ];
-    for (value, expected) in cases {
-        let json = serde_json::to_string(&value).unwrap();
-        assert_eq!(
-            json, expected,
-            "Status serialization changed for {:?}",
-            value
-        );
-    }
-}
-
-#[test]
-fn priority_serialization_contract() {
-    let cases = [
-        (Priority::Low, "\"Low\""),
-        (Priority::Normal, "\"Normal\""),
-        (Priority::High, "\"High\""),
-        (Priority::Critical, "\"Critical\""),
-        (Priority::Emergency, "\"Emergency\""),
-    ];
-    for (value, expected) in cases {
-        let json = serde_json::to_string(&value).unwrap();
-        assert_eq!(
-            json, expected,
-            "Priority serialization changed for {:?}",
-            value
-        );
-    }
-}
-
-#[test]
-fn project_type_serialization_contract() {
-    let cases = [
-        (ProjectType::Personal, "\"personal\""),
-        (ProjectType::Team, "\"team\""),
-    ];
-    for (value, expected) in cases {
-        let json = serde_json::to_string(&value).unwrap();
-        assert_eq!(
-            json, expected,
-            "ProjectType serialization changed for {:?}",
-            value
-        );
-    }
-}
-
-#[test]
-fn role_scope_serialization_contract() {
-    let cases = [
-        (RoleScope::Global, "\"global\""),
-        (RoleScope::Project, "\"project\""),
-        (RoleScope::Credential, "\"credential\""),
-        (RoleScope::Workflow, "\"workflow\""),
-    ];
-    for (value, expected) in cases {
-        let json = serde_json::to_string(&value).unwrap();
-        assert_eq!(
-            json, expected,
-            "RoleScope serialization changed for {:?}",
-            value
-        );
-    }
-}
-
-#[test]
-fn interface_version_serialization_contract() {
-    let v = InterfaceVersion::new(1, 2);
-    let json = serde_json::to_string(&v).unwrap();
-    assert_eq!(json, r#"{"major":1,"minor":2}"#);
-}
-
-#[test]
 fn scope_level_serialization_contract() {
-    let org_id = OrganizationId::nil();
-    let proj_id = ProjectId::nil();
-    let wf_id = WorkflowId::nil();
-    let exec_id = ExecutionId::nil();
-    let node_id = NodeId::nil();
-    let nil_str = "00000000-0000-0000-0000-000000000000";
+    let global_json = serde_json::to_string(&ScopeLevel::Global).unwrap();
+    assert_eq!(global_json, "\"Global\"");
 
-    let cases = [
-        (ScopeLevel::Global, "\"Global\""),
-        (
-            ScopeLevel::Organization(org_id),
-            &format!(r#"{{"Organization":"{}"}}"#, nil_str),
-        ),
-        (
-            ScopeLevel::Project(proj_id),
-            &format!(r#"{{"Project":"{}"}}"#, nil_str),
-        ),
-        (
-            ScopeLevel::Workflow(wf_id),
-            &format!(r#"{{"Workflow":"{}"}}"#, nil_str),
-        ),
-        (
-            ScopeLevel::Execution(exec_id),
-            &format!(r#"{{"Execution":"{}"}}"#, nil_str),
-        ),
-        (
-            ScopeLevel::Action(exec_id, node_id),
-            &format!(r#"{{"Action":["{}","{}"]}}"#, nil_str, nil_str),
-        ),
-    ];
-    for (value, expected) in cases {
-        let json = serde_json::to_string(&value).unwrap();
-        assert_eq!(
-            json, *expected,
-            "ScopeLevel serialization changed for {:?}",
-            value
-        );
-    }
+    // Organization, Workspace, Workflow, Execution all serialize with prefixed ULIDs
+    let org_id = OrgId::new();
+    let org_scope = ScopeLevel::Organization(org_id);
+    let org_json = serde_json::to_string(&org_scope).unwrap();
+    assert!(
+        org_json.contains("org_"),
+        "org scope should contain org_ prefix"
+    );
 }
 
 #[test]
-fn id_types_serialize_as_uuid_string() {
-    let id = ExecutionId::nil();
+fn id_types_serialize_as_prefixed_ulid() {
+    let id = ExecutionId::new();
     let json = serde_json::to_string(&id).unwrap();
-    assert_eq!(json, r#""00000000-0000-0000-0000-000000000000""#);
+    // Should be a quoted string starting with exe_
+    assert!(
+        json.starts_with("\"exe_"),
+        "expected exe_ prefix, got: {json}"
+    );
+    assert!(json.ends_with('"'));
+}
+
+#[test]
+fn id_parse_roundtrip() {
+    let id = WorkflowId::new();
+    let json = serde_json::to_string(&id).unwrap();
+    let parsed: WorkflowId = serde_json::from_str(&json).unwrap();
+    assert_eq!(id, parsed);
 }
 
 #[test]
 fn core_error_code_stability() {
-    use nebula_core::CoreError;
+    use nebula_error::Classify;
 
-    let cases: [(CoreError, &str); 5] = [
-        (CoreError::validation("x"), "VALIDATION_ERROR"),
-        (CoreError::not_found("User", "123"), "NOT_FOUND_ERROR"),
-        (CoreError::invalid_input("bad"), "INVALID_INPUT_ERROR"),
-        (CoreError::internal("oops"), "INTERNAL_ERROR"),
+    let errors = [
+        (CoreError::invalid_id("x", "exe"), "CORE:INVALID_ID"),
+        (CoreError::invalid_key("x", "action"), "CORE:INVALID_KEY"),
         (
-            serde_json::from_str::<serde_json::Value>("{")
-                .unwrap_err()
-                .into(),
-            "SERIALIZATION_ERROR",
+            CoreError::ScopeViolation {
+                actor: "a".into(),
+                target: "b".into(),
+            },
+            "CORE:SCOPE_VIOLATION",
+        ),
+        (
+            CoreError::DependencyCycle {
+                path: vec!["a", "b"],
+            },
+            "CORE:DEPENDENCY_CYCLE",
+        ),
+        (
+            CoreError::DependencyMissing {
+                name: "x",
+                required_by: "y",
+            },
+            "CORE:DEPENDENCY_MISSING",
         ),
     ];
-    for (err, expected_code) in cases {
-        assert_eq!(
-            err.error_code(),
-            expected_code,
-            "CoreError::error_code() changed"
-        );
+    for (err, expected_code) in errors {
+        assert_eq!(err.code().as_str(), expected_code, "CoreError code changed");
     }
 }

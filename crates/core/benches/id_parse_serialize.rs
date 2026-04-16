@@ -20,16 +20,19 @@ fn id_new(c: &mut Criterion) {
 }
 
 fn id_parse(c: &mut Criterion) {
-    let s = "550e8400-e29b-41d4-a716-446655440000";
+    // Use actual prefixed ULID strings for parse benchmarks
+    let exe_s = ExecutionId::new().to_string();
+    let wf_s = WorkflowId::new().to_string();
+    let node_s = NodeId::new().to_string();
     let mut group = c.benchmark_group("id/parse");
     group.bench_function("ExecutionId::parse", |b| {
-        b.iter(|| black_box(ExecutionId::parse(s).unwrap()));
+        b.iter(|| black_box(exe_s.parse::<ExecutionId>().unwrap()));
     });
     group.bench_function("WorkflowId::parse", |b| {
-        b.iter(|| black_box(WorkflowId::parse(s).unwrap()));
+        b.iter(|| black_box(wf_s.parse::<WorkflowId>().unwrap()));
     });
     group.bench_function("NodeId::parse", |b| {
-        b.iter(|| black_box(NodeId::parse(s).unwrap()));
+        b.iter(|| black_box(node_s.parse::<NodeId>().unwrap()));
     });
     group.finish();
 }

@@ -1,8 +1,38 @@
 use nebula_core::ActionKey;
-// Re-export from core so downstream code can continue using `nebula_action::InterfaceVersion`.
-pub use nebula_core::InterfaceVersion;
 use nebula_parameter::collection::ParameterCollection;
 use serde::{Deserialize, Serialize};
+
+/// Interface version -- tracks schema compatibility independently of package version.
+///
+/// - `major` increments on breaking schema changes.
+/// - `minor` increments on backward-compatible additions.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct InterfaceVersion {
+    /// Major version -- incremented on breaking schema changes.
+    pub major: u32,
+    /// Minor version -- incremented on backward-compatible additions.
+    pub minor: u32,
+}
+
+impl InterfaceVersion {
+    /// Create a new interface version.
+    pub fn new(major: u32, minor: u32) -> Self {
+        Self { major, minor }
+    }
+
+    /// Check if `other` is compatible with `self`.
+    ///
+    /// Compatible means same major version and `other.minor >= self.minor`.
+    pub fn is_compatible_with(&self, other: &InterfaceVersion) -> bool {
+        self.major == other.major && other.minor >= self.minor
+    }
+}
+
+impl std::fmt::Display for InterfaceVersion {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}.{}", self.major, self.minor)
+    }
+}
 
 use crate::port::{self, InputPort, OutputPort};
 

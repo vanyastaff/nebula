@@ -133,7 +133,10 @@ async fn test_error_format_rfc9457() {
         .oneshot(
             Request::builder()
                 .method("GET")
-                .uri("/api/v1/workflows/00000000-0000-0000-0000-000000000000")
+                .uri(format!(
+                    "/api/v1/workflows/{}",
+                    nebula_core::WorkflowId::new()
+                ))
                 .header("authorization", format!("Bearer {}", token))
                 .body(Body::empty())
                 .unwrap(),
@@ -552,7 +555,7 @@ async fn test_get_workflow_not_found() {
     let token = create_test_jwt();
 
     // Use a valid UUID format that doesn't exist
-    let nonexistent_id = "00000000-0000-0000-0000-000000000000";
+    let nonexistent_id = nebula_core::WorkflowId::new().to_string();
 
     let response = app
         .oneshot(
@@ -815,7 +818,7 @@ async fn test_activate_workflow_not_found() {
     let token = create_test_jwt();
 
     // Use a valid UUID format that doesn't exist
-    let nonexistent_id = "00000000-0000-0000-0000-000000000000";
+    let nonexistent_id = nebula_core::WorkflowId::new().to_string();
 
     let response = app
         .oneshot(
@@ -927,7 +930,7 @@ async fn test_execute_workflow_not_found() {
     let token = create_test_jwt();
 
     // Use a valid UUID format that doesn't exist
-    let nonexistent_id = "00000000-0000-0000-0000-000000000000";
+    let nonexistent_id = nebula_core::WorkflowId::new().to_string();
 
     let execute_request = serde_json::json!({
         "input": null
@@ -1134,8 +1137,8 @@ async fn test_execution_get_not_found() {
     let app = app::build_app(state, &api_config);
     let token = create_test_jwt();
 
-    // Use a valid UUID format that doesn't exist
-    let nonexistent_id = "00000000-0000-0000-0000-000000000000";
+    // Use a valid ULID format that doesn't exist
+    let nonexistent_id = nebula_core::ExecutionId::new().to_string();
 
     let response = app
         .oneshot(
@@ -1325,8 +1328,8 @@ async fn test_execution_cancel_not_found() {
     let app = app::build_app(state, &api_config);
     let token = create_test_jwt();
 
-    // Use a valid UUID format that doesn't exist
-    let nonexistent_id = "00000000-0000-0000-0000-000000000000";
+    // Use a valid ULID format that doesn't exist
+    let nonexistent_id = nebula_core::ExecutionId::new().to_string();
 
     let response = app
         .oneshot(

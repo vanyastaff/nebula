@@ -127,10 +127,11 @@ mod tests {
     use std::collections::HashMap;
 
     use chrono::Utc;
-    use nebula_core::{NodeId, Version, WorkflowId};
+    use nebula_core::{NodeId, WorkflowId};
 
     use super::*;
     use crate::{
+        Version,
         connection::Connection,
         definition::{WorkflowConfig, WorkflowDefinition},
         node::{NodeDefinition, ParamValue},

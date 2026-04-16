@@ -24,6 +24,7 @@ pub mod graph;
 pub mod node;
 pub mod state;
 pub mod validate;
+pub mod version;
 
 pub use builder::WorkflowBuilder;
 pub use connection::{Connection, EdgeCondition, ErrorMatcher, ResultMatcher};
@@ -38,3 +39,4 @@ pub(crate) use nebula_core::serde_helpers::duration_opt_ms as serde_duration_opt
 pub use node::{NodeDefinition, ParamValue, RateLimit};
 pub use state::NodeState;
 pub use validate::validate_workflow;
+pub use version::Version;

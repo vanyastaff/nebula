@@ -5,7 +5,8 @@
 //! or establishing any connection. The engine can enumerate capabilities from all
 //! registered plugins without touching any external system.
 
-use nebula_core::{ActionKey, CredentialKey, InterfaceVersion, ResourceKey};
+use nebula_action::InterfaceVersion;
+use nebula_core::{ActionKey, CredentialKey, ResourceKey};
 
 /// Describes an action provided by a plugin without constructing the handler.
 ///
@@ -16,7 +17,8 @@ use nebula_core::{ActionKey, CredentialKey, InterfaceVersion, ResourceKey};
 /// # Examples
 ///
 /// ```
-/// use nebula_core::{ActionKey, InterfaceVersion};
+/// use nebula_action::InterfaceVersion;
+/// use nebula_core::ActionKey;
 /// use nebula_plugin::descriptor::ActionDescriptor;
 ///
 /// let descriptor = ActionDescriptor {
@@ -100,7 +102,7 @@ pub struct ResourceDescriptor {
 
 #[cfg(test)]
 mod tests {
-    use nebula_core::InterfaceVersion;
+    use nebula_action::InterfaceVersion;
 
     use super::*;
 

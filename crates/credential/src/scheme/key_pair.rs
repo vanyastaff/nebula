@@ -1,9 +1,8 @@
 //! Asymmetric key pair authentication (SSH, PGP, crypto wallets).
 
-use nebula_core::SecretString;
 use serde::{Deserialize, Serialize};
 
-use crate::AuthScheme;
+use crate::{AuthScheme, SecretString};
 
 /// Asymmetric key pair with optional passphrase and algorithm hint.
 ///
@@ -13,8 +12,7 @@ use crate::AuthScheme;
 /// # Examples
 ///
 /// ```
-/// use nebula_core::SecretString;
-/// use nebula_credential::scheme::KeyPair;
+/// use nebula_credential::{SecretString, scheme::KeyPair};
 ///
 /// let kp = KeyPair::new(
 ///     "ssh-ed25519 AAAA...",
@@ -26,9 +24,9 @@ use crate::AuthScheme;
 #[auth_scheme(pattern = KeyPair)]
 pub struct KeyPair {
     public_key: String,
-    #[serde(with = "nebula_core::serde_secret")]
+    #[serde(with = "crate::serde_secret")]
     private_key: SecretString,
-    #[serde(with = "nebula_core::option_serde_secret")]
+    #[serde(with = "crate::option_serde_secret")]
     passphrase: Option<SecretString>,
     algorithm: Option<String>,
 }

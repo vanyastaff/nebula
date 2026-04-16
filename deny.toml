@@ -69,6 +69,7 @@ skip = [
     "hmac",
     "linux-raw-sys",
     "rand",
+    "rand_chacha",
     "rand_core",
     "rustix",
     "sha2",

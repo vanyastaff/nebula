@@ -70,8 +70,10 @@ impl ExecutionPlan {
 mod tests {
     use std::collections::HashMap;
 
-    use nebula_core::{Version, WorkflowId};
-    use nebula_workflow::{Connection, NodeDefinition, WorkflowConfig, WorkflowDefinition};
+    use nebula_core::WorkflowId;
+    use nebula_workflow::{
+        Connection, NodeDefinition, Version, WorkflowConfig, WorkflowDefinition,
+    };
 
     use super::*;
 
