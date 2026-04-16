@@ -1359,7 +1359,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "117725a109d387c937a1533ce01b450cbde6b88abceea8473c4d7a85853cda3c"
 dependencies = [
  "lazy_static",
- "windows-sys 0.48.0",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -1964,9 +1964,9 @@ dependencies = [
 
 [[package]]
 name = "domain-key"
-version = "0.5.0"
+version = "0.5.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "34119a99062e1c9e063e8e1136bbadc82d006c255320bb03644d1ba1631a3b29"
+checksum = "15dd2a398db0634ccef57041e6941f65781afccb71863ddc59085f14829270fa"
 dependencies = [
  "chrono",
  "serde",
