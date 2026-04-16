@@ -90,7 +90,7 @@ impl PostgresStorage {
         sqlx::migrate!("./migrations")
             .run(&self.pool)
             .await
-            .map_err(|err| StorageError::Backend(err.to_string()))
+            .map_err(|err| StorageError::Connection(err.to_string()))
     }
 
     /// Create a new [`PostgresStorage`] using explicit configuration.
@@ -101,7 +101,7 @@ impl PostgresStorage {
             .acquire_timeout(config.connect_timeout)
             .connect(&config.connection_string)
             .await
-            .map_err(|err| StorageError::Backend(err.to_string()))?;
+            .map_err(|err| StorageError::Connection(err.to_string()))?;
 
         let table = &config.table;
         let select_sql = format!("SELECT value FROM {} WHERE key = $1", table);
@@ -160,7 +160,7 @@ impl Storage for PostgresStorage {
             .bind(key)
             .fetch_optional(&self.pool)
             .await
-            .map_err(|err| StorageError::Backend(err.to_string()))?;
+            .map_err(|err| StorageError::Connection(err.to_string()))?;
 
         Ok(row.map(|v| v.0))
     }
@@ -171,7 +171,7 @@ impl Storage for PostgresStorage {
             .bind(Json(value.clone()))
             .execute(&self.pool)
             .await
-            .map_err(|err| StorageError::Backend(err.to_string()))?;
+            .map_err(|err| StorageError::Connection(err.to_string()))?;
 
         Ok(())
     }
@@ -181,7 +181,7 @@ impl Storage for PostgresStorage {
             .bind(key)
             .execute(&self.pool)
             .await
-            .map_err(|err| StorageError::Backend(err.to_string()))?;
+            .map_err(|err| StorageError::Connection(err.to_string()))?;
 
         Ok(())
     }
@@ -191,7 +191,7 @@ impl Storage for PostgresStorage {
             .bind(key)
             .fetch_optional(&self.pool)
             .await
-            .map_err(|err| StorageError::Backend(err.to_string()))?;
+            .map_err(|err| StorageError::Connection(err.to_string()))?;
 
         Ok(row.is_some())
     }

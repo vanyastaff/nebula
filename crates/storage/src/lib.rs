@@ -19,7 +19,26 @@ mod error;
 mod execution_repo;
 /// Serialization format abstraction (JSON / MessagePack).
 pub mod format;
+/// Row-to-domain type conversion utilities.
+pub mod mapping;
+/// Postgres implementations of [`repos`] traits.
+#[cfg(feature = "postgres")]
+pub mod pg;
+/// Connection pool configuration.
+pub mod pool;
+/// Repository trait API (spec-16 architecture).
+///
+/// New consumers should use `nebula_storage::repos::*` directly.
+/// The top-level re-exports (`ExecutionRepo`, `WorkflowRepo`) are the
+/// legacy in-memory/Postgres trait pair; they coexist with this module
+/// during migration.
+pub mod repos;
+/// Database row types.
+pub mod rows;
 mod workflow_repo;
+
+#[cfg(test)]
+pub mod test_support;
 
 pub use backend::{MemoryStorage, MemoryStorageTyped};
 #[cfg(feature = "postgres")]

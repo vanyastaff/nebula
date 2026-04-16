@@ -24,7 +24,8 @@ tokio = { workspace = true, features = ["sync", "time"] }
 chrono = { workspace = true }
 
 # Optional backends (см. docs/nebula-architecture-final.md)
-sqlx = { version = "0.8", optional = true, features = ["runtime-tokio", "postgres", "migrate", "uuid"] }
+sqlx = { version = "0.8", optional = true, features = ["runtime-tokio", "postgres", "migrate", "uuid", "chrono"] }
+hex = { version = "0.4", optional = true }
 redis = { version = "1.2", optional = true, features = ["tokio-comp"] }
 aws-config = { version = "1.8", optional = true }
 aws-sdk-s3 = { version = "1.129", optional = true }
@@ -32,7 +33,7 @@ rmp-serde = { version = "1", optional = true }
 
 [features]
 default = []
-postgres = ["dep:sqlx"]
+postgres = ["dep:sqlx", "dep:hex"]
 redis = ["dep:redis"]
 s3 = ["dep:aws-config", "dep:aws-sdk-s3"]
 msgpack-storage = ["dep:rmp-serde"]
