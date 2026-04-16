@@ -410,6 +410,41 @@ pub async fn activate_workflow(
         .map_err(|e| ApiError::Internal(format!("Failed to get workflow: {}", e)))?
         .ok_or_else(|| ApiError::NotFound(format!("Workflow {} not found", id)))?;
 
+    // Canon §10 step 2: validate the workflow definition before flipping the
+    // active flag.  Invalid definitions are rejected with RFC 9457 422
+    // (Unprocessable Entity) — activation must never silently enable a
+    // workflow that cannot pass structural validation.
+    //
+    // NOTE: `serde_json::from_value` cannot zero-copy borrow `&str` from a
+    // `Value::String`, which causes failures for types like `domain_key::Key<T>`
+    // that use `<&str>::deserialize` on human-readable formats.  Round-tripping
+    // through a JSON string (`to_string` → `from_str`) gives a proper streaming
+    // deserializer that does support `visit_borrowed_str`, so all key types
+    // parse correctly.
+    let raw_json = serde_json::to_string(&definition).map_err(|e| {
+        ApiError::Internal(format!("Failed to serialize workflow definition: {}", e))
+    })?;
+    let workflow_def: nebula_workflow::WorkflowDefinition = serde_json::from_str(&raw_json)
+        .map_err(|e| {
+            ApiError::validation_message(format!(
+                "Workflow definition cannot be parsed as WorkflowDefinition: {}",
+                e
+            ))
+        })?;
+
+    let validation_errors = nebula_workflow::validate_workflow(&workflow_def);
+    if !validation_errors.is_empty() {
+        let error_messages: Vec<String> = validation_errors.iter().map(|e| e.to_string()).collect();
+        let detail = format!(
+            "Workflow definition is invalid ({} error(s))",
+            error_messages.len()
+        );
+        return Err(ApiError::InvalidWorkflowDefinition {
+            detail,
+            errors: error_messages,
+        });
+    }
+
     // Current timestamp — `chrono::Utc::now()` is monotonic through time
     // shifts and does not panic on clocks set before 1970, unlike
     // `SystemTime::duration_since(UNIX_EPOCH).unwrap()`.

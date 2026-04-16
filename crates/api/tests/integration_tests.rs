@@ -733,6 +733,52 @@ async fn test_delete_workflow() {
     assert_eq!(response.status(), StatusCode::NOT_FOUND);
 }
 
+/// Build a minimal but structurally valid `WorkflowDefinition` JSON blob that
+/// can round-trip through `serde_json::from_value::<WorkflowDefinition>()` and
+/// pass `nebula_workflow::validate_workflow`.
+///
+/// The definition contains a single node with no incoming edges, satisfying:
+/// - non-empty name
+/// - at least one node
+/// - no cycles
+/// - has an entry node
+/// - schema_version == 1 (current)
+fn make_valid_workflow_definition(workflow_id: &nebula_core::WorkflowId) -> serde_json::Value {
+    serde_json::json!({
+        "id": workflow_id.to_string(),
+        "name": "Valid Workflow",
+        "version": { "major": 0, "minor": 1, "patch": 0 },
+        "nodes": [
+            { "id": "step_a", "name": "Step A", "action_key": "echo" }
+        ],
+        "connections": [],
+        "created_at": "2024-01-01T00:00:00Z",
+        "updated_at": "2024-01-01T00:00:00Z",
+        "schema_version": 1
+    })
+}
+
+/// Build a `WorkflowDefinition` JSON that parses correctly but fails
+/// `validate_workflow` due to a cycle (A -> B, B -> A).
+fn make_cyclic_workflow_definition(workflow_id: &nebula_core::WorkflowId) -> serde_json::Value {
+    serde_json::json!({
+        "id": workflow_id.to_string(),
+        "name": "Cyclic Workflow",
+        "version": { "major": 0, "minor": 1, "patch": 0 },
+        "nodes": [
+            { "id": "step_a", "name": "A", "action_key": "echo" },
+            { "id": "step_b", "name": "B", "action_key": "echo" }
+        ],
+        "connections": [
+            { "from_node": "step_a", "to_node": "step_b" },
+            { "from_node": "step_b", "to_node": "step_a" }
+        ],
+        "created_at": "2024-01-01T00:00:00Z",
+        "updated_at": "2024-01-01T00:00:00Z",
+        "schema_version": 1
+    })
+}
+
 #[tokio::test]
 async fn test_activate_workflow() {
     use axum::{
@@ -745,37 +791,14 @@ async fn test_activate_workflow() {
     let api_config = ApiConfig::for_test();
     let token = create_test_jwt();
 
-    // Create a workflow first
-    let create_request = serde_json::json!({
-        "name": "Test Workflow",
-        "description": "A test workflow",
-        "definition": {
-            "nodes": [],
-            "edges": []
-        }
-    });
-
-    let app = app::build_app(state.clone(), &api_config);
-    let response = app
-        .oneshot(
-            Request::builder()
-                .method("POST")
-                .uri("/api/v1/workflows")
-                .header("content-type", "application/json")
-                .header("authorization", format!("Bearer {}", token))
-                .body(Body::from(serde_json::to_string(&create_request).unwrap()))
-                .unwrap(),
-        )
+    // Write a structurally valid WorkflowDefinition directly to the repo so
+    // activate_workflow can parse and validate it successfully.
+    let workflow_id = nebula_core::WorkflowId::new();
+    state
+        .workflow_repo
+        .save(workflow_id, 0, make_valid_workflow_definition(&workflow_id))
         .await
         .unwrap();
-
-    assert_eq!(response.status(), StatusCode::CREATED);
-
-    let body = axum::body::to_bytes(response.into_body(), usize::MAX)
-        .await
-        .unwrap();
-    let created_workflow: serde_json::Value = serde_json::from_slice(&body).unwrap();
-    let workflow_id = created_workflow["id"].as_str().unwrap();
 
     // Activate the workflow
     let app = app::build_app(state, &api_config);
@@ -798,8 +821,8 @@ async fn test_activate_workflow() {
         .unwrap();
     let activated_workflow: serde_json::Value = serde_json::from_slice(&body).unwrap();
 
-    assert_eq!(activated_workflow["id"], workflow_id);
-    assert_eq!(activated_workflow["name"], "Test Workflow");
+    assert_eq!(activated_workflow["id"], workflow_id.to_string());
+    assert_eq!(activated_workflow["name"], "Valid Workflow");
     assert!(activated_workflow["created_at"].is_number());
     assert!(activated_workflow["updated_at"].is_number());
 }
@@ -1864,4 +1887,137 @@ async fn get_workflow_parses_rfc3339_timestamps() {
     let workflow: serde_json::Value = serde_json::from_slice(&body).unwrap();
     assert_eq!(workflow["created_at"].as_i64(), Some(1_705_322_096));
     assert_eq!(workflow["updated_at"].as_i64(), Some(1_708_416_000));
+}
+
+/// Activation of a valid workflow definition succeeds with 200 OK.
+/// Canon §10 step 2 regression lock: the validation gate must not block
+/// structurally correct definitions.
+#[tokio::test]
+async fn activate_valid_returns_200() {
+    use axum::{
+        body::Body,
+        http::{Request, StatusCode},
+    };
+    use tower::ServiceExt;
+
+    let state = create_test_state().await;
+    let api_config = ApiConfig::for_test();
+    let token = create_test_jwt();
+
+    let workflow_id = nebula_core::WorkflowId::new();
+    state
+        .workflow_repo
+        .save(workflow_id, 0, make_valid_workflow_definition(&workflow_id))
+        .await
+        .unwrap();
+
+    let app = app::build_app(state, &api_config);
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!("/api/v1/workflows/{}/activate", workflow_id))
+                .header("authorization", format!("Bearer {}", token))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::OK);
+
+    let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let result: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(result["id"], workflow_id.to_string());
+}
+
+/// Activation of a definitionally invalid workflow returns 422 Unprocessable
+/// Entity with a structured RFC 9457 body.
+/// Canon §10 step 2: activation MUST reject invalid definitions — not silently
+/// flip the active flag.
+#[tokio::test]
+async fn activate_invalid_returns_422() {
+    use axum::{
+        body::Body,
+        http::{Request, StatusCode},
+    };
+    use tower::ServiceExt;
+
+    let state = create_test_state().await;
+    let api_config = ApiConfig::for_test();
+    let token = create_test_jwt();
+
+    // Cyclic workflow: parses as WorkflowDefinition but fails validate_workflow
+    // (CycleDetected + NoEntryNodes).
+    let workflow_id = nebula_core::WorkflowId::new();
+    state
+        .workflow_repo
+        .save(
+            workflow_id,
+            0,
+            make_cyclic_workflow_definition(&workflow_id),
+        )
+        .await
+        .unwrap();
+
+    let app = app::build_app(state, &api_config);
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!("/api/v1/workflows/{}/activate", workflow_id))
+                .header("authorization", format!("Bearer {}", token))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
+
+    // RFC 9457: Content-Type must be application/problem+json
+    let content_type = response
+        .headers()
+        .get("content-type")
+        .and_then(|v| v.to_str().ok());
+    assert_eq!(content_type, Some("application/problem+json"));
+
+    let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let problem: serde_json::Value = serde_json::from_slice(&body).unwrap();
+
+    // RFC 9457 required fields
+    assert_eq!(
+        problem["type"],
+        "https://nebula.dev/problems/invalid-workflow-definition"
+    );
+    assert_eq!(problem["title"], "Invalid Workflow Definition");
+    assert_eq!(problem["status"], 422);
+    assert!(
+        problem["detail"].as_str().is_some(),
+        "detail must be present"
+    );
+
+    // errors array must be non-empty and well-formed
+    let errors = problem["errors"]
+        .as_array()
+        .expect("errors array must be present for invalid workflow activation");
+    assert!(
+        !errors.is_empty(),
+        "errors array must list at least one validation failure"
+    );
+    for err in errors {
+        assert!(err["code"].is_string(), "each error must have a code");
+        assert!(err["detail"].is_string(), "each error must have a detail");
+        assert!(
+            err["pointer"]
+                .as_str()
+                .map(|p| p.starts_with('/'))
+                .unwrap_or(false),
+            "pointer must be a JSON Pointer (starts with /)"
+        );
+    }
 }

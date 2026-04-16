@@ -154,6 +154,22 @@ pub enum ApiError {
     #[classify(category = "internal", code = "API:EXECUTION_REPO")]
     #[error("Execution repository error: {0}")]
     ExecutionRepo(#[from] nebula_storage::ExecutionRepoError),
+
+    /// Invalid workflow definition — structurally valid JSON but semantically
+    /// invalid per `nebula_workflow::validate_workflow` (RFC 9457 **422**).
+    ///
+    /// Distinct from [`Self::Validation`] (400), which covers request-level
+    /// parse/format errors. This variant is returned only from
+    /// `activate_workflow` after the stored definition fails structural
+    /// DAG/schema checks.
+    #[classify(category = "validation", code = "API:INVALID_WORKFLOW")]
+    #[error("Invalid workflow definition: {detail}")]
+    InvalidWorkflowDefinition {
+        /// Human-readable summary of all validation failures.
+        detail: String,
+        /// One entry per `WorkflowError` returned by `validate_workflow`.
+        errors: Vec<String>,
+    },
 }
 
 fn normalize_pointer(pointer: Option<&str>) -> String {
@@ -350,6 +366,26 @@ impl ApiError {
                     ),
                 )
             },
+            ApiError::InvalidWorkflowDefinition { detail, errors } => (
+                StatusCode::UNPROCESSABLE_ENTITY,
+                ProblemDetails::new(
+                    "https://nebula.dev/problems/invalid-workflow-definition",
+                    "Invalid Workflow Definition",
+                    StatusCode::UNPROCESSABLE_ENTITY,
+                )
+                .with_detail(detail)
+                .with_errors(
+                    errors
+                        .iter()
+                        .enumerate()
+                        .map(|(i, msg)| ValidationFieldError {
+                            code: "workflow_definition_invalid".to_string(),
+                            detail: msg.clone(),
+                            pointer: format!("/{i}"),
+                        })
+                        .collect(),
+                ),
+            ),
         }
     }
 }
