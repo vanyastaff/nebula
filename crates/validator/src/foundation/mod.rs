@@ -62,32 +62,29 @@ pub use field_path::FieldPath;
 pub use traits::{Validatable, Validate, ValidateExt};
 pub use validatable::AsValidatable;
 
-// Re-export combinator types that are part of the foundation API.
-// Canonical definitions live in `crate::combinators`; these re-exports
-// keep the public surface stable.
-pub use crate::combinators::and::And;
-pub use crate::combinators::{not::Not, or::Or, when::When};
-
 // ============================================================================
 // PRELUDE
 // ============================================================================
 
 /// Common imports for working with the validator core.
 ///
+/// Combinator types (`And`, `Or`, `Not`, `When`) live in [`crate::combinators`] —
+/// import them from there or use the top-level [`crate::prelude`] which re-exports both.
+///
 /// ```rust,ignore
 /// use nebula_validator::foundation::prelude::*;
 ///
 /// // Extension method style
-/// "hello".validate(&min_length(3))?;
-/// 42.validate(&min(10))?;
+/// "hello".validate_with(&min_length(3))?;
+/// 42.validate_with(&min(10))?;
 ///
 /// // Direct method style
 /// min_length(3).validate("hello")?;
 /// ```
 pub mod prelude {
     pub use super::{
-        And, AnyValidator, ErrorSeverity, Not, Or, Validatable, Validate, ValidateExt,
-        ValidationError, ValidationErrors, When,
+        AnyValidator, ErrorSeverity, Validatable, Validate, ValidateExt, ValidationError,
+        ValidationErrors,
     };
 }
 

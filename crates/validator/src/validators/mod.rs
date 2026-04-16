@@ -46,10 +46,12 @@ pub mod size;
 pub mod boolean;
 pub mod nullable;
 
-// Network validators
+// Network validators (optional)
+#[cfg(feature = "network")]
 pub mod network;
 
-// Temporal validators (date, time, datetime, uuid)
+// Temporal validators (optional)
+#[cfg(feature = "temporal")]
 pub mod temporal;
 
 pub use boolean::{IsFalse, IsTrue, is_false, is_true};
@@ -59,6 +61,7 @@ pub use length::{
     length_range, length_range_bytes, max_length, max_length_bytes, min_length, min_length_bytes,
     not_empty,
 };
+#[cfg(feature = "network")]
 pub use network::{Hostname, IpAddr, Ipv4, Ipv6, hostname, ip_addr, ipv4, ipv6};
 pub use nullable::{NotNull, Required, not_null, required};
 pub use pattern::{
@@ -74,4 +77,5 @@ pub use size::{
     ExactSize, MaxSize, MinSize, NotEmptyCollection, SizeRange, exact_size, max_size, min_size,
     not_empty_collection, size_range, try_size_range,
 };
+#[cfg(feature = "temporal")]
 pub use temporal::{Date, DateTime, Time, Uuid, date, date_time, time, uuid};

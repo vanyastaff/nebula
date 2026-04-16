@@ -5,10 +5,7 @@
 
 use std::{borrow::Cow, marker::PhantomData};
 
-use crate::{
-    combinators::error::CombinatorError,
-    foundation::{Validate, ValidationError, ValidationMode},
-};
+use crate::foundation::{Validate, ValidationError, ValidationMode};
 
 // ============================================================================
 // FIELD COMBINATOR
@@ -170,16 +167,6 @@ impl std::error::Error for FieldError {
 // ============================================================================
 // CONVERSIONS
 // ============================================================================
-
-/// Convert `FieldError` to `CombinatorError`
-impl From<FieldError> for CombinatorError<ValidationError> {
-    fn from(error: FieldError) -> Self {
-        CombinatorError::FieldFailed {
-            field_name: error.field_name.map(Cow::into_owned),
-            error: Box::new(error.inner),
-        }
-    }
-}
 
 /// Convert `FieldError` to `ValidationError`
 impl From<FieldError> for ValidationError {

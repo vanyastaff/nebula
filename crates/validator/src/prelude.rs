@@ -24,16 +24,16 @@
 pub use crate::validators::*;
 pub use crate::{
     combinators::{
-        AllOf, AnyOf, CollectJsonFields, CollectionNested, Each, Field, JsonField, MultiField,
-        NestedValidate, OptionalNested, SelfValidating, all_of, and, any_of, collect_json_fields,
-        collection_nested, each, field, json_field, json_field_optional, named_field,
-        nested_validator, not, optional_nested, or,
+        AllOf, And, AnyOf, CollectJsonFields, CollectionNested, Each, Field, JsonField, MultiField,
+        NestedValidate, Not, OptionalNested, Or, SelfValidating, When, all_of, and, any_of,
+        collect_json_fields, collection_nested, each, field, json_field, json_field_optional,
+        named_field, nested_validator, not, optional_nested, or,
     },
     engine::{ExecutionMode, validate_rules},
     error::ValidatorError,
     foundation::{
-        And, AnyValidator, AsValidatable, ErrorSeverity, FieldPath, Not, Or, Validatable, Validate,
-        ValidateExt, ValidationError, ValidationErrors, ValidationMode, When,
+        AnyValidator, AsValidatable, ErrorSeverity, FieldPath, Validatable, Validate, ValidateExt,
+        ValidationError, ValidationErrors, ValidationMode,
     },
     proof::Validated,
     rule::Rule,

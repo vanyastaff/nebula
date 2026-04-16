@@ -135,6 +135,7 @@ mod macros;
 // ── Re-exports ───────────────────────────────────────────────────────────────
 pub use engine::{ExecutionMode, validate_rules};
 pub use error::ValidatorError;
+#[cfg(feature = "derive")]
 pub use nebula_validator_macros::Validator;
 pub use proof::Validated;
 pub use rule::Rule;

@@ -76,7 +76,6 @@
 // Module declarations
 pub mod and;
 pub mod each;
-pub mod error;
 pub mod factories;
 pub mod field;
 pub mod lazy;
@@ -93,7 +92,6 @@ pub mod json_field;
 // Re-export all combinator types
 pub use and::{And, AndAll, and, and_all};
 pub use each::{Each, each, each_fail_fast};
-pub use error::CombinatorError;
 pub use factories::{AllOf, AnyOf, all_of, any_of};
 pub use field::{Field, FieldError, FieldValidateExt, MultiField, field, named_field};
 pub use json_field::{
@@ -176,29 +174,23 @@ mod laws {
 
     #[test]
     fn test_or_associativity() {
-        // Or combinator behavior is consistent
-        // Note: True associativity (a OR b) OR c === a OR (b OR c) is not supported
-        // due to Error type differences (OrError vs ValidationError)
-        // Instead we test that Or behaves correctly with simple validators
-        let or_validator = Or::new(AlwaysFails, AlwaysValid);
-        assert!(or_validator.validate("test").is_ok());
-
-        let or_fails = Or::new(AlwaysFails, AlwaysFails);
-        assert!(or_fails.validate("test").is_err());
+        // (a OR b) OR c ≡ a OR (b OR c)
+        let left = Or::new(Or::new(AlwaysFails, AlwaysFails), AlwaysValid);
+        let right = Or::new(AlwaysFails, Or::new(AlwaysFails, AlwaysValid));
+        assert_eq!(
+            left.validate("test").is_ok(),
+            right.validate("test").is_ok()
+        );
     }
 
     #[test]
-    fn test_and_or_distributivity() {
-        // Note: Mixing And and Or combinators is not supported architecturally
-        // due to Error type differences (And requires matching Error types,
-        // but Or<A, B> has OrError while A has ValidationError)
-        //
-        // Instead, test And and Or independently
-        let and_valid = And::new(AlwaysValid, AlwaysValid);
-        assert!(and_valid.validate("test").is_ok());
+    fn test_and_or_mixing() {
+        // And and Or freely compose; both return ValidationError.
+        let mixed = And::new(AlwaysValid, Or::new(AlwaysFails, AlwaysValid));
+        assert!(mixed.validate("test").is_ok());
 
-        let or_valid = Or::new(AlwaysFails, AlwaysValid);
-        assert!(or_valid.validate("test").is_ok());
+        let mixed_fail = And::new(AlwaysValid, Or::new(AlwaysFails, AlwaysFails));
+        assert!(mixed_fail.validate("test").is_err());
     }
 
     #[test]
@@ -273,8 +265,6 @@ mod integration_tests {
 
     #[test]
     fn test_complex_composition() {
-        // Build a simpler validator composition due to architectural constraints
-        // Complex chaining with And + When + Optional has trait bound issues
         let base_validator = And::new(MinLength { min: 5 }, MaxLength { max: 20 });
 
         // Test the base validator

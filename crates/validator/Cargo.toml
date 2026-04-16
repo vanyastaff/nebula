@@ -11,9 +11,21 @@ repository.workspace = true
 homepage.workspace = true
 documentation.workspace = true
 
+[features]
+default = ["derive", "network", "temporal"]
+
+## `#[derive(Validator)]` proc-macro.
+derive = ["dep:nebula-validator-macros"]
+
+## Network validators: `Ipv4`, `Ipv6`, `Hostname`, `IpAddr`.
+network = []
+
+## Temporal validators: `Date`, `Time`, `DateTime`, `Uuid`.
+temporal = []
+
 [dependencies]
-# Derive macros
-nebula-validator-macros = { path = "macros" }
+# Derive macros (optional, gated by `derive` feature)
+nebula-validator-macros = { path = "macros", optional = true }
 
 # Error handling
 thiserror = { workspace = true }
