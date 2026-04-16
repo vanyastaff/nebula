@@ -5,7 +5,10 @@
 //! caused it. A dispatcher drains pending rows and forwards them
 //! to the engine.
 
+use std::sync::Arc;
+
 use async_trait::async_trait;
+use tokio::sync::Mutex;
 
 use crate::error::StorageError;
 
@@ -82,4 +85,77 @@ pub trait ControlQueueRepo: Send + Sync {
 
     /// Delete rows older than `retention`. Returns count deleted.
     async fn cleanup(&self, retention: std::time::Duration) -> Result<u64, StorageError>;
+}
+
+/// In-memory control queue repository for tests and development servers.
+///
+/// All operations are backed by a `Vec` guarded by a `Mutex`. Not suitable
+/// for production — use the Postgres implementation instead.
+#[derive(Debug, Default, Clone)]
+pub struct InMemoryControlQueueRepo {
+    entries: Arc<Mutex<Vec<ControlQueueEntry>>>,
+}
+
+impl InMemoryControlQueueRepo {
+    /// Create an empty in-memory control queue.
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Return a snapshot of all enqueued entries (for test assertions).
+    pub async fn snapshot(&self) -> Vec<ControlQueueEntry> {
+        self.entries.lock().await.clone()
+    }
+}
+
+#[async_trait]
+impl ControlQueueRepo for InMemoryControlQueueRepo {
+    async fn enqueue(&self, entry: &ControlQueueEntry) -> Result<(), StorageError> {
+        self.entries.lock().await.push(entry.clone());
+        Ok(())
+    }
+
+    async fn claim_pending(
+        &self,
+        _processor: &[u8],
+        batch_size: u32,
+    ) -> Result<Vec<ControlQueueEntry>, StorageError> {
+        let mut entries = self.entries.lock().await;
+        let pending: Vec<ControlQueueEntry> = entries
+            .iter()
+            .filter(|e| e.status == "Pending")
+            .take(batch_size as usize)
+            .cloned()
+            .collect();
+        // Transition matched rows to Processing.
+        for e in &pending {
+            if let Some(row) = entries.iter_mut().find(|r| r.id == e.id) {
+                row.status = "Processing".to_string();
+            }
+        }
+        Ok(pending)
+    }
+
+    async fn mark_completed(&self, id: &[u8]) -> Result<(), StorageError> {
+        let mut entries = self.entries.lock().await;
+        if let Some(row) = entries.iter_mut().find(|e| e.id == id) {
+            row.status = "Completed".to_string();
+        }
+        Ok(())
+    }
+
+    async fn mark_failed(&self, id: &[u8], error: &str) -> Result<(), StorageError> {
+        let mut entries = self.entries.lock().await;
+        if let Some(row) = entries.iter_mut().find(|e| e.id == id) {
+            row.status = "Failed".to_string();
+            row.error_message = Some(error.to_string());
+        }
+        Ok(())
+    }
+
+    async fn cleanup(&self, _retention: std::time::Duration) -> Result<u64, StorageError> {
+        // In-memory entries have no real timestamps for age-based pruning; no-op.
+        Ok(0)
+    }
 }

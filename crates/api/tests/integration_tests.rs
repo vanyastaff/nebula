@@ -4,7 +4,9 @@ use std::sync::Arc;
 
 use nebula_api::{ApiConfig, AppState, app};
 use nebula_config::ConfigBuilder;
-use nebula_storage::{InMemoryExecutionRepo, InMemoryWorkflowRepo};
+use nebula_storage::{
+    InMemoryExecutionRepo, InMemoryWorkflowRepo, repos::InMemoryControlQueueRepo,
+};
 
 const TEST_JWT_SECRET: &str = "test-secret-for-integration-tests-0123456789";
 
@@ -22,13 +24,45 @@ async fn create_test_state() -> AppState {
         .unwrap();
     let workflow_repo = Arc::new(InMemoryWorkflowRepo::new());
     let execution_repo = Arc::new(InMemoryExecutionRepo::new());
+    let control_queue_repo = Arc::new(InMemoryControlQueueRepo::new());
     let api_config = ApiConfig::for_test();
     AppState::new(
         config,
         workflow_repo,
         execution_repo,
+        control_queue_repo,
         api_config.jwt_secret.clone(),
     )
+}
+
+/// Helper to create test state returning both the AppState and the control queue
+/// so tests can inspect enqueued signals.
+async fn create_test_state_with_queue() -> (AppState, Arc<InMemoryControlQueueRepo>) {
+    let config = ConfigBuilder::new()
+        .with_defaults(serde_json::json!({
+            "api": {
+                "port": 8080,
+                "host": "127.0.0.1"
+            }
+        }))
+        .build()
+        .await
+        .unwrap();
+    let workflow_repo = Arc::new(InMemoryWorkflowRepo::new());
+    let execution_repo = Arc::new(InMemoryExecutionRepo::new());
+    let control_queue_repo = Arc::new(InMemoryControlQueueRepo::new());
+    let api_config = ApiConfig::for_test();
+    // Keep a typed reference for later inspection, pass a trait-object clone to AppState.
+    let control_queue_dyn: Arc<dyn nebula_storage::repos::ControlQueueRepo> =
+        Arc::clone(&control_queue_repo) as _;
+    let state = AppState::new(
+        config,
+        workflow_repo,
+        execution_repo,
+        control_queue_dyn,
+        api_config.jwt_secret.clone(),
+    );
+    (state, control_queue_repo)
 }
 
 /// Helper to create a valid JWT token for testing
@@ -2020,4 +2054,186 @@ async fn activate_invalid_returns_422() {
             "pointer must be a JSON Pointer (starts with /)"
         );
     }
+}
+
+// ── §12.2 / audit §2.2 cancel control-queue wiring tests ────────────────────
+
+/// Canon §12.2 regression lock: cancelling a non-terminal execution must both
+/// (1) persist the `cancelled` state in the execution row, AND
+/// (2) enqueue a `Cancel` command in the durable control queue.
+///
+/// Before this fix only (1) happened — the engine never saw the cancel signal.
+///
+/// Audit ref: 2026-04-16-workspace-health-audit.md §2.2
+/// Knife ref: PRODUCT_CANON.md §13 step 5
+#[tokio::test]
+async fn cancel_enqueues_durable_control_signal() {
+    use axum::{
+        body::Body,
+        http::{Request, StatusCode},
+    };
+    use nebula_core::{ExecutionId, WorkflowId};
+    use nebula_storage::repos::ControlCommand;
+    use tower::ServiceExt;
+
+    let (state, control_queue) = create_test_state_with_queue().await;
+    let api_config = ApiConfig::for_test();
+    let token = create_test_jwt();
+
+    // Seed a running execution directly into the repo.
+    let execution_id = ExecutionId::new();
+    let workflow_id = WorkflowId::new();
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs() as i64;
+
+    state
+        .execution_repo
+        .create(
+            execution_id,
+            workflow_id,
+            serde_json::json!({
+                "workflow_id": workflow_id.to_string(),
+                "status": "running",
+                "started_at": now,
+                "input": {}
+            }),
+        )
+        .await
+        .unwrap();
+
+    // Pre-condition: queue is empty.
+    assert!(
+        control_queue.snapshot().await.is_empty(),
+        "control queue must be empty before cancel"
+    );
+
+    // Issue the cancel request.
+    let app = app::build_app(state, &api_config);
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!("/api/v1/executions/{}/cancel", execution_id))
+                .header("authorization", format!("Bearer {}", token))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::OK, "cancel must return 200");
+
+    let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let cancelled: serde_json::Value = serde_json::from_slice(&body).unwrap();
+
+    // (1) Execution row must reflect the cancelled state.
+    assert_eq!(
+        cancelled["status"], "cancelled",
+        "execution row must show `cancelled` status"
+    );
+    assert!(
+        cancelled["finished_at"].is_number(),
+        "finished_at must be set"
+    );
+
+    // (2) A Cancel command must have been written to the control queue — this is
+    //     the engine-visible signal required by canon §12.2 and §13 step 5.
+    let queued = control_queue.snapshot().await;
+    assert_eq!(
+        queued.len(),
+        1,
+        "exactly one control queue entry must exist after cancel"
+    );
+
+    let entry = &queued[0];
+    assert_eq!(
+        entry.command,
+        ControlCommand::Cancel,
+        "queued command must be Cancel"
+    );
+    assert_eq!(
+        entry.status, "Pending",
+        "entry must be in Pending state (not yet consumed by engine)"
+    );
+    // The entry's execution_id bytes must decode back to the cancelled execution.
+    let queued_eid = String::from_utf8(entry.execution_id.clone())
+        .expect("execution_id bytes must be valid UTF-8");
+    assert_eq!(
+        queued_eid,
+        execution_id.to_string(),
+        "queued entry must reference the cancelled execution"
+    );
+}
+
+/// Cancelling an already-terminal execution must NOT enqueue a second Cancel
+/// signal. The handler short-circuits at the terminal-status guard.
+///
+/// This locks the idempotency guarantee: re-trying a cancel on an already
+/// cancelled execution is safe — no duplicate signals are written.
+#[tokio::test]
+async fn cancel_terminal_execution_does_not_enqueue() {
+    use axum::{
+        body::Body,
+        http::{Request, StatusCode},
+    };
+    use nebula_core::{ExecutionId, WorkflowId};
+    use tower::ServiceExt;
+
+    let (state, control_queue) = create_test_state_with_queue().await;
+    let api_config = ApiConfig::for_test();
+    let token = create_test_jwt();
+
+    // Seed a completed execution.
+    let execution_id = ExecutionId::new();
+    let workflow_id = WorkflowId::new();
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs() as i64;
+
+    state
+        .execution_repo
+        .create(
+            execution_id,
+            workflow_id,
+            serde_json::json!({
+                "workflow_id": workflow_id.to_string(),
+                "status": "completed",
+                "started_at": now,
+                "finished_at": now + 5,
+                "input": {}
+            }),
+        )
+        .await
+        .unwrap();
+
+    // Issue cancel on the completed execution — must be rejected.
+    let app = app::build_app(state, &api_config);
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!("/api/v1/executions/{}/cancel", execution_id))
+                .header("authorization", format!("Bearer {}", token))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(
+        response.status(),
+        StatusCode::BAD_REQUEST,
+        "cancel on completed execution must return 400"
+    );
+
+    // Queue must remain empty — no spurious signal enqueued.
+    assert!(
+        control_queue.snapshot().await.is_empty(),
+        "control queue must be empty after rejected cancel of terminal execution"
+    );
 }

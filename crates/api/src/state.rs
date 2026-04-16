@@ -8,7 +8,7 @@ use std::sync::Arc;
 use nebula_config::Config;
 use nebula_plugin::PluginRegistry;
 use nebula_runtime::ActionRegistry;
-use nebula_storage::{ExecutionRepo, WorkflowRepo};
+use nebula_storage::{ExecutionRepo, WorkflowRepo, repos::ControlQueueRepo};
 use nebula_telemetry::metrics::MetricsRegistry;
 use tokio::sync::RwLock;
 
@@ -40,6 +40,13 @@ pub struct AppState {
     /// Execution Repository (port/trait)
     pub execution_repo: Arc<dyn ExecutionRepo>,
 
+    /// Execution control queue (durable outbox — canon §12.2).
+    ///
+    /// Every cancel signal is enqueued here in the same logical operation as
+    /// the corresponding state transition. The engine dispatcher drains this
+    /// queue to deliver signals to running executions.
+    pub control_queue_repo: Arc<dyn ControlQueueRepo>,
+
     /// Optional metrics registry for Prometheus export.
     /// When `None`, the `GET /metrics` endpoint returns 503.
     pub metrics_registry: Option<Arc<MetricsRegistry>>,
@@ -69,6 +76,7 @@ impl AppState {
         config: Config,
         workflow_repo: Arc<dyn WorkflowRepo>,
         execution_repo: Arc<dyn ExecutionRepo>,
+        control_queue_repo: Arc<dyn ControlQueueRepo>,
         jwt_secret: JwtSecret,
     ) -> Self {
         Self {
@@ -77,6 +85,7 @@ impl AppState {
             api_keys: Arc::new(Vec::new()),
             workflow_repo,
             execution_repo,
+            control_queue_repo,
             metrics_registry: None,
             action_registry: None,
             plugin_registry: None,

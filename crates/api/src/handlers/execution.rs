@@ -6,6 +6,8 @@ use axum::{
     http::StatusCode,
 };
 use nebula_core::{ExecutionId, WorkflowId};
+use nebula_storage::repos::{ControlCommand, ControlQueueEntry};
+use uuid::Uuid;
 
 use crate::{
     errors::{ApiError, ApiResult},
@@ -304,7 +306,14 @@ pub async fn cancel_execution(
         }
     }
 
-    // Apply state transition using CAS
+    // Apply state transition using CAS.
+    //
+    // Order: transition first, then enqueue — per canon §12.2 and audit §2.2.
+    // If enqueue fails after a successful transition the execution row is
+    // already `cancelled` but the engine will not see the signal (orphan).
+    // This is documented as a known limitation until a shared transaction
+    // wrapper is available across ExecutionRepo and ControlQueueRepo.
+    // The handler fails loudly on enqueue failure so the caller can retry.
     let transition_result = state
         .execution_repo
         .transition(execution_id, version, execution_state.clone())
@@ -316,6 +325,35 @@ pub async fn cancel_execution(
             "Failed to cancel execution: concurrent modification detected".to_string(),
         ));
     }
+
+    // Enqueue the Cancel signal to the durable control queue (canon §12.2).
+    //
+    // This MUST happen immediately after a successful CAS transition. If this
+    // call fails, we return a 500 so the caller knows to retry the cancel
+    // request — the retry will see the already-cancelled DB row and short-circuit
+    // at the terminal-status guard above without re-enqueuing (idempotent).
+    let entry = ControlQueueEntry {
+        id: Uuid::new_v4().as_bytes().to_vec(),
+        execution_id: execution_id.to_string().into_bytes(),
+        command: ControlCommand::Cancel,
+        issued_by: None,
+        issued_at: chrono::Utc::now(),
+        status: "Pending".to_string(),
+        processed_by: None,
+        processed_at: None,
+        error_message: None,
+    };
+    state
+        .control_queue_repo
+        .enqueue(&entry)
+        .await
+        .map_err(|e| {
+            ApiError::Internal(format!(
+                "Execution {} cancelled in DB but failed to enqueue Cancel signal \
+             (canon §12.2 orphan — caller should retry): {}",
+                execution_id, e
+            ))
+        })?;
 
     // Extract fields from updated execution state
     let workflow_id = execution_state

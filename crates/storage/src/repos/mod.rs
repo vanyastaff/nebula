@@ -39,7 +39,9 @@ mod workspace;
 
 pub use audit::AuditRepo;
 pub use blob::BlobRepo;
-pub use control_queue::{ControlCommand, ControlQueueRepo};
+pub use control_queue::{
+    ControlCommand, ControlQueueEntry, ControlQueueRepo, InMemoryControlQueueRepo,
+};
 pub use credential::CredentialRepo;
 pub use execution::ExecutionRepo;
 pub use execution_node::ExecutionNodeRepo;

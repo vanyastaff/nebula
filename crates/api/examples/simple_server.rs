@@ -9,7 +9,9 @@ use std::sync::Arc;
 
 use nebula_api::{ApiConfig, AppState, app};
 use nebula_config::ConfigBuilder;
-use nebula_storage::{InMemoryExecutionRepo, InMemoryWorkflowRepo};
+use nebula_storage::{
+    InMemoryExecutionRepo, InMemoryWorkflowRepo, repos::InMemoryControlQueueRepo,
+};
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -26,6 +28,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .await?;
     let workflow_repo = Arc::new(InMemoryWorkflowRepo::new());
     let execution_repo = Arc::new(InMemoryExecutionRepo::new());
+    // NOTE: InMemoryControlQueueRepo does not persist across restarts and has
+    // no real engine consumer — this server is DEMO ONLY for cancel signals.
+    // A production deployment must substitute a Postgres-backed implementation
+    // and wire a real dispatcher (canon §12.2, §13 step 5).
+    let control_queue_repo = Arc::new(InMemoryControlQueueRepo::new());
     let api_config = ApiConfig::from_env()?;
 
     // Wire api_keys from ApiConfig so X-API-Key auth is honoured.
@@ -33,6 +40,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         config,
         workflow_repo,
         execution_repo,
+        control_queue_repo,
         api_config.jwt_secret.clone(),
     )
     .with_api_keys(api_config.api_keys.clone());
