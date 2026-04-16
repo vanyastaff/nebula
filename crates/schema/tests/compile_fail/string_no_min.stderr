@@ -1,0 +1,24 @@
+error[E0599]: the method `min` exists for struct `StringField`, but its trait bounds were not satisfied
+ --> tests/compile_fail/string_no_min.rs:2:50
+  |
+2 |       let _ = nebula_schema::Field::string("name").min(1);
+  |                                                    ^^^ method cannot be called on `StringField` due to unsatisfied trait bounds
+  |
+ ::: src/field.rs
+  |
+  | /         pub struct $name {
+  | |             /// Stable field key.
+  | |             pub key: FieldKey,
+  | |             /// Human-readable label.
+... |
+  | |             $(pub $field: $type,)*
+  | |         }
+  | |_________- doesn't satisfy `StringField: Iterator` or `StringField: Ord`
+  |
+  = note: the following trait bounds were not satisfied:
+          `StringField: Ord`
+          which is required by `&StringField: Ord`
+          `StringField: Ord`
+          which is required by `&mut StringField: Ord`
+          `StringField: Iterator`
+          which is required by `&mut StringField: Iterator`

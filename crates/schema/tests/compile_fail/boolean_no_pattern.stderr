@@ -1,0 +1,5 @@
+error[E0599]: no method named `pattern` found for struct `BooleanField` in the current scope
+ --> tests/compile_fail/boolean_no_pattern.rs:2:54
+  |
+2 |     let _ = nebula_schema::Field::boolean("enabled").pattern("yes|no");
+  |                                                      ^^^^^^^ method not found in `BooleanField`
