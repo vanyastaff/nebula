@@ -3,10 +3,9 @@
 //! Each module in this directory implements exactly one repo trait from
 //! `crate::repos`. All implementations share:
 //!
-//! - a [`sqlx::Pool<Postgres>`] for connection management
-//! - the [`map_db_err`] helper for translating `sqlx::Error` into
-//!   [`StorageError`](crate::error::StorageError)
-//! - SQLSTATE `23505` (unique violation) → [`StorageError::Duplicate`]
+//! - a `sqlx::Pool<Postgres>` for connection management
+//! - the `map_db_err` helper for translating `sqlx::Error` into `StorageError`
+//! - SQLSTATE `23505` (unique violation) → `StorageError::Duplicate`
 //!
 //! # Testing
 //!
