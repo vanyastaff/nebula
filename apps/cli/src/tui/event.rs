@@ -2,7 +2,7 @@
 
 use std::time::Duration;
 
-use nebula_core::id::NodeId;
+use nebula_core::NodeKey;
 
 /// All events the TUI handles.
 #[allow(dead_code)] // Variants used when real-time engine events are wired.
@@ -15,19 +15,19 @@ pub enum TuiEvent {
     Tick,
     /// A workflow node started executing.
     NodeStarted {
-        node_id: NodeId,
+        node_key: NodeKey,
         name: String,
         action_key: String,
     },
     /// A workflow node completed successfully.
     NodeCompleted {
-        node_id: NodeId,
+        node_key: NodeKey,
         elapsed: Duration,
         output: serde_json::Value,
     },
     /// A workflow node failed.
     NodeFailed {
-        node_id: NodeId,
+        node_key: NodeKey,
         elapsed: Duration,
         error: String,
     },

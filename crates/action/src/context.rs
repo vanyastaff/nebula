@@ -7,8 +7,8 @@
 use std::{any::Any, fmt, sync::Arc};
 
 use nebula_core::{
-    AuthScheme,
-    id::{ExecutionId, NodeId, WorkflowId},
+    AuthScheme, NodeKey,
+    id::{ExecutionId, WorkflowId},
 };
 use nebula_credential::{
     CredentialAccessor, CredentialGuard, CredentialSnapshot, default_credential_accessor,
@@ -31,7 +31,7 @@ pub trait Context: Send + Sync {
     /// Execution identity.
     fn execution_id(&self) -> ExecutionId;
     /// Node identity within the workflow.
-    fn node_id(&self) -> NodeId;
+    fn node_key(&self) -> NodeKey;
     /// Workflow identity.
     fn workflow_id(&self) -> WorkflowId;
     /// Cancellation token; action may check before or during work.
@@ -48,7 +48,7 @@ pub struct ActionContext {
     /// Execution identity.
     pub execution_id: ExecutionId,
     /// Node identity within the workflow.
-    pub node_id: NodeId,
+    pub node_key: NodeKey,
     /// Workflow identity.
     pub workflow_id: WorkflowId,
     /// Cancellation token.
@@ -65,8 +65,8 @@ impl Context for ActionContext {
     fn execution_id(&self) -> ExecutionId {
         self.execution_id
     }
-    fn node_id(&self) -> NodeId {
-        self.node_id
+    fn node_key(&self) -> NodeKey {
+        self.node_key.clone()
     }
     fn workflow_id(&self) -> WorkflowId {
         self.workflow_id
@@ -81,13 +81,13 @@ impl ActionContext {
     #[must_use]
     pub fn new(
         execution_id: ExecutionId,
-        node_id: NodeId,
+        node_key: NodeKey,
         workflow_id: WorkflowId,
         cancellation: CancellationToken,
     ) -> Self {
         Self {
             execution_id,
-            node_id,
+            node_key,
             workflow_id,
             cancellation,
             resources: default_resource_accessor(),
@@ -132,7 +132,7 @@ impl fmt::Debug for ActionContext {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("ActionContext")
             .field("execution_id", &self.execution_id)
-            .field("node_id", &self.node_id)
+            .field("node_key", &self.node_key)
             .field("workflow_id", &self.workflow_id)
             .field("cancellation", &self.cancellation)
             .field("resources", &"<dyn ResourceAccessor>")
@@ -152,7 +152,7 @@ pub struct TriggerContext {
     /// Workflow this trigger belongs to.
     pub workflow_id: WorkflowId,
     /// Trigger (node) identity.
-    pub trigger_id: NodeId,
+    pub trigger_id: NodeKey,
     /// Cancellation token.
     pub cancellation: CancellationToken,
     /// Trigger scheduling capability.
@@ -180,7 +180,7 @@ impl TriggerContext {
     #[must_use]
     pub fn new(
         workflow_id: WorkflowId,
-        trigger_id: NodeId,
+        trigger_id: NodeKey,
         cancellation: CancellationToken,
     ) -> Self {
         Self {
@@ -427,6 +427,7 @@ mod tests {
     use std::time::Duration;
 
     use async_trait::async_trait;
+    use nebula_core::node_key;
     use nebula_credential::{
         CredentialAccessError, CredentialMetadata, CredentialSnapshot, SecretString, SecretToken,
         scheme::ConnectionUri,
@@ -449,8 +450,8 @@ mod tests {
         fn execution_id(&self) -> ExecutionId {
             ExecutionId::nil()
         }
-        fn node_id(&self) -> NodeId {
-            NodeId::nil()
+        fn node_key(&self) -> NodeKey {
+            node_key!("test")
         }
         fn workflow_id(&self) -> WorkflowId {
             WorkflowId::nil()
@@ -470,7 +471,7 @@ mod tests {
     async fn action_context_defaults_to_noop_capabilities() {
         let ctx = ActionContext::new(
             ExecutionId::new(),
-            NodeId::new(),
+            node_key!("test"),
             WorkflowId::new(),
             CancellationToken::new(),
         );
@@ -524,11 +525,15 @@ mod tests {
 
     #[tokio::test]
     async fn trigger_context_with_capabilities_can_schedule_and_emit() {
-        let ctx = TriggerContext::new(WorkflowId::new(), NodeId::new(), CancellationToken::new())
-            .with_scheduler(Arc::new(TestScheduler))
-            .with_emitter(Arc::new(TestEmitter))
-            .with_credentials(Arc::new(TestCredentialAccessor))
-            .with_logger(Arc::new(TestLogger));
+        let ctx = TriggerContext::new(
+            WorkflowId::new(),
+            node_key!("test"),
+            CancellationToken::new(),
+        )
+        .with_scheduler(Arc::new(TestScheduler))
+        .with_emitter(Arc::new(TestEmitter))
+        .with_credentials(Arc::new(TestCredentialAccessor))
+        .with_logger(Arc::new(TestLogger));
 
         assert!(ctx.schedule_after(Duration::from_millis(5)).await.is_ok());
         assert!(
@@ -544,7 +549,7 @@ mod tests {
     async fn action_context_credential_typed_returns_projected_scheme() {
         let ctx = ActionContext::new(
             ExecutionId::new(),
-            NodeId::new(),
+            node_key!("test"),
             WorkflowId::new(),
             CancellationToken::new(),
         )
@@ -561,7 +566,7 @@ mod tests {
     async fn action_context_credential_typed_mismatch_returns_fatal() {
         let ctx = ActionContext::new(
             ExecutionId::new(),
-            NodeId::new(),
+            node_key!("test"),
             WorkflowId::new(),
             CancellationToken::new(),
         )
@@ -576,8 +581,12 @@ mod tests {
 
     #[tokio::test]
     async fn trigger_context_credential_typed_returns_projected_scheme() {
-        let ctx = TriggerContext::new(WorkflowId::new(), NodeId::new(), CancellationToken::new())
-            .with_credentials(Arc::new(TestCredentialAccessor));
+        let ctx = TriggerContext::new(
+            WorkflowId::new(),
+            node_key!("test"),
+            CancellationToken::new(),
+        )
+        .with_credentials(Arc::new(TestCredentialAccessor));
 
         let token: SecretToken = ctx
             .credential_typed::<SecretToken>("api_key")
@@ -588,8 +597,12 @@ mod tests {
 
     #[tokio::test]
     async fn trigger_context_credential_typed_mismatch_returns_fatal() {
-        let ctx = TriggerContext::new(WorkflowId::new(), NodeId::new(), CancellationToken::new())
-            .with_credentials(Arc::new(TestCredentialAccessor));
+        let ctx = TriggerContext::new(
+            WorkflowId::new(),
+            node_key!("test"),
+            CancellationToken::new(),
+        )
+        .with_credentials(Arc::new(TestCredentialAccessor));
 
         let result = ctx.credential_typed::<ConnectionUri>("api_key").await;
         assert!(result.is_err());
@@ -658,7 +671,7 @@ mod tests {
     async fn action_context_credential_returns_guard() {
         let ctx = ActionContext::new(
             ExecutionId::new(),
-            NodeId::new(),
+            node_key!("test"),
             WorkflowId::new(),
             CancellationToken::new(),
         )
@@ -670,8 +683,12 @@ mod tests {
 
     #[tokio::test]
     async fn trigger_context_credential_returns_guard() {
-        let ctx = TriggerContext::new(WorkflowId::new(), NodeId::new(), CancellationToken::new())
-            .with_credentials(Arc::new(TypedCredentialAccessor));
+        let ctx = TriggerContext::new(
+            WorkflowId::new(),
+            node_key!("test"),
+            CancellationToken::new(),
+        )
+        .with_credentials(Arc::new(TypedCredentialAccessor));
 
         let guard = ctx.credential::<ZeroizableToken>().await.unwrap();
         assert_eq!(guard.value, "secret-42");
@@ -681,7 +698,7 @@ mod tests {
     async fn credential_noop_accessor_returns_not_supported() {
         let ctx = ActionContext::new(
             ExecutionId::new(),
-            NodeId::new(),
+            node_key!("test"),
             WorkflowId::new(),
             CancellationToken::new(),
         );

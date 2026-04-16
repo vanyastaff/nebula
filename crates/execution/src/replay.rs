@@ -21,7 +21,7 @@
 
 use std::collections::{HashMap, HashSet};
 
-use nebula_core::id::{ExecutionId, NodeId};
+use nebula_core::{NodeKey, id::ExecutionId};
 use serde::{Deserialize, Serialize};
 
 /// Plan for replaying a workflow execution from a specific node.
@@ -36,10 +36,10 @@ pub struct ReplayPlan {
     /// The source execution to replay from.
     pub source_execution_id: ExecutionId,
     /// The node to start re-executing from.
-    pub replay_from: NodeId,
+    pub replay_from: NodeKey,
     /// Optional input overrides for specific nodes.
     #[serde(default)]
-    pub input_overrides: HashMap<NodeId, serde_json::Value>,
+    pub input_overrides: HashMap<NodeKey, serde_json::Value>,
     /// Stored outputs from the source execution, keyed by node id.
     ///
     /// Populated at construction from the source execution's node-output
@@ -52,12 +52,12 @@ pub struct ReplayPlan {
     /// would have nothing to feed downstream nodes and the whole
     /// workflow would silently be re-executed (#253).
     #[serde(default)]
-    pub pinned_outputs: HashMap<NodeId, serde_json::Value>,
+    pub pinned_outputs: HashMap<NodeKey, serde_json::Value>,
 }
 
 impl ReplayPlan {
     /// Create a new replay plan.
-    pub fn new(source_execution_id: ExecutionId, replay_from: NodeId) -> Self {
+    pub fn new(source_execution_id: ExecutionId, replay_from: NodeKey) -> Self {
         Self {
             source_execution_id,
             replay_from,
@@ -68,14 +68,14 @@ impl ReplayPlan {
 
     /// Override input for a specific node.
     #[must_use]
-    pub fn with_override(mut self, node_id: NodeId, input: serde_json::Value) -> Self {
-        self.input_overrides.insert(node_id, input);
+    pub fn with_override(mut self, node_key: NodeKey, input: serde_json::Value) -> Self {
+        self.input_overrides.insert(node_key, input);
         self
     }
 
     /// Set pinned outputs from the source execution.
     #[must_use]
-    pub fn with_pinned_outputs(mut self, outputs: HashMap<NodeId, serde_json::Value>) -> Self {
+    pub fn with_pinned_outputs(mut self, outputs: HashMap<NodeKey, serde_json::Value>) -> Self {
         self.pinned_outputs = outputs;
         self
     }
@@ -108,27 +108,28 @@ impl ReplayPlan {
     /// membership before relying on this.
     pub fn partition_nodes(
         &self,
-        all_nodes: &[NodeId],
-        successors: &HashMap<NodeId, Vec<NodeId>>,
-    ) -> (HashSet<NodeId>, HashSet<NodeId>) {
+        all_nodes: &[NodeKey],
+        successors: &HashMap<NodeKey, Vec<NodeKey>>,
+    ) -> (HashSet<NodeKey>, HashSet<NodeKey>) {
         // Forward traversal: every node reachable from replay_from is
         // in the rerun set, including replay_from itself.
         let mut rerun = HashSet::new();
-        let mut frontier = vec![self.replay_from];
+        let mut frontier = vec![self.replay_from.clone()];
         while let Some(node) = frontier.pop() {
+            let succs = successors.get(&node);
             if rerun.insert(node)
-                && let Some(succs) = successors.get(&node)
+                && let Some(succs) = succs
             {
-                frontier.extend(succs.iter().copied());
+                frontier.extend(succs.iter().cloned());
             }
         }
 
         // Everything NOT in rerun is pinned — ancestors, unrelated
         // siblings, and any disconnected branch.
-        let pinned: HashSet<NodeId> = all_nodes
+        let pinned: HashSet<NodeKey> = all_nodes
             .iter()
-            .copied()
-            .filter(|n| !rerun.contains(n))
+            .filter(|n| !rerun.contains(*n))
+            .cloned()
             .collect();
 
         (pinned, rerun)
@@ -139,15 +140,15 @@ impl ReplayPlan {
 mod tests {
     use super::*;
 
-    fn nid(n: u128) -> NodeId {
-        NodeId::from(n.to_be_bytes())
+    fn nid(n: u128) -> NodeKey {
+        NodeKey::new(format!("node_{n}")).unwrap()
     }
 
     /// Build a successors map from `(from, to)` connection pairs.
-    fn successors_from(edges: &[(NodeId, NodeId)]) -> HashMap<NodeId, Vec<NodeId>> {
-        let mut out: HashMap<NodeId, Vec<NodeId>> = HashMap::new();
+    fn successors_from(edges: &[(NodeKey, NodeKey)]) -> HashMap<NodeKey, Vec<NodeKey>> {
+        let mut out: HashMap<NodeKey, Vec<NodeKey>> = HashMap::new();
         for (from, to) in edges {
-            out.entry(*from).or_default().push(*to);
+            out.entry(from.clone()).or_default().push(to.clone());
         }
         out
     }
@@ -159,10 +160,10 @@ mod tests {
         let a = nid(1);
         let b = nid(2);
         let c = nid(3);
-        let succ = successors_from(&[(a, b), (b, c)]);
+        let succ = successors_from(&[(a.clone(), b.clone()), (b.clone(), c.clone())]);
 
-        let plan = ReplayPlan::new(ExecutionId::new(), b);
-        let (pinned, rerun) = plan.partition_nodes(&[a, b, c], &succ);
+        let plan = ReplayPlan::new(ExecutionId::new(), b.clone());
+        let (pinned, rerun) = plan.partition_nodes(&[a.clone(), b.clone(), c.clone()], &succ);
 
         assert!(pinned.contains(&a));
         assert!(rerun.contains(&b));
@@ -179,10 +180,16 @@ mod tests {
         let b = nid(2);
         let c = nid(3);
         let d = nid(4);
-        let succ = successors_from(&[(a, b), (a, c), (b, d), (c, d)]);
+        let succ = successors_from(&[
+            (a.clone(), b.clone()),
+            (a.clone(), c.clone()),
+            (b.clone(), d.clone()),
+            (c.clone(), d.clone()),
+        ]);
 
-        let plan = ReplayPlan::new(ExecutionId::new(), d);
-        let (pinned, rerun) = plan.partition_nodes(&[a, b, c, d], &succ);
+        let plan = ReplayPlan::new(ExecutionId::new(), d.clone());
+        let (pinned, rerun) =
+            plan.partition_nodes(&[a.clone(), b.clone(), c.clone(), d.clone()], &succ);
 
         assert!(pinned.contains(&a));
         assert!(pinned.contains(&b));
@@ -205,10 +212,16 @@ mod tests {
         let b = nid(2);
         let c = nid(3);
         let d = nid(4);
-        let succ = successors_from(&[(a, b), (a, c), (b, d), (c, d)]);
+        let succ = successors_from(&[
+            (a.clone(), b.clone()),
+            (a.clone(), c.clone()),
+            (b.clone(), d.clone()),
+            (c.clone(), d.clone()),
+        ]);
 
-        let plan = ReplayPlan::new(ExecutionId::new(), b);
-        let (pinned, rerun) = plan.partition_nodes(&[a, b, c, d], &succ);
+        let plan = ReplayPlan::new(ExecutionId::new(), b.clone());
+        let (pinned, rerun) =
+            plan.partition_nodes(&[a.clone(), b.clone(), c.clone(), d.clone()], &succ);
 
         assert!(pinned.contains(&a), "ancestor A must be pinned");
         assert!(
@@ -231,10 +244,11 @@ mod tests {
         let b = nid(2);
         let x = nid(10);
         let y = nid(11);
-        let succ = successors_from(&[(a, b), (x, y)]);
+        let succ = successors_from(&[(a.clone(), b.clone()), (x.clone(), y.clone())]);
 
-        let plan = ReplayPlan::new(ExecutionId::new(), a);
-        let (pinned, rerun) = plan.partition_nodes(&[a, b, x, y], &succ);
+        let plan = ReplayPlan::new(ExecutionId::new(), a.clone());
+        let (pinned, rerun) =
+            plan.partition_nodes(&[a.clone(), b.clone(), x.clone(), y.clone()], &succ);
 
         assert!(pinned.contains(&x));
         assert!(pinned.contains(&y));
@@ -249,8 +263,8 @@ mod tests {
         let b = nid(2);
         let succ = HashMap::new();
 
-        let plan = ReplayPlan::new(ExecutionId::new(), a);
-        let (pinned, rerun) = plan.partition_nodes(&[a, b], &succ);
+        let plan = ReplayPlan::new(ExecutionId::new(), a.clone());
+        let (pinned, rerun) = plan.partition_nodes(&[a.clone(), b.clone()], &succ);
 
         // A is re-executed; B is unrelated (no edge A→B in this fixture).
         assert!(rerun.contains(&a));
@@ -263,9 +277,9 @@ mod tests {
         let a = nid(1);
         let b = nid(2);
         let c = nid(3);
-        let succ = successors_from(&[(a, b), (b, c)]);
+        let succ = successors_from(&[(a.clone(), b.clone()), (b.clone(), c.clone())]);
 
-        let plan = ReplayPlan::new(ExecutionId::new(), a);
+        let plan = ReplayPlan::new(ExecutionId::new(), a.clone());
         let (pinned, rerun) = plan.partition_nodes(&[a, b, c], &succ);
 
         assert!(pinned.is_empty());
@@ -280,10 +294,11 @@ mod tests {
         let a = nid(1);
         let b = nid(2);
         let mut outputs = HashMap::new();
-        outputs.insert(a, serde_json::json!({"result": "from_a"}));
-        outputs.insert(b, serde_json::json!(42));
+        outputs.insert(a.clone(), serde_json::json!({"result": "from_a"}));
+        outputs.insert(b.clone(), serde_json::json!(42));
 
-        let plan = ReplayPlan::new(ExecutionId::new(), b).with_pinned_outputs(outputs.clone());
+        let plan =
+            ReplayPlan::new(ExecutionId::new(), b.clone()).with_pinned_outputs(outputs.clone());
 
         let json = serde_json::to_string(&plan).expect("serialize");
         let restored: ReplayPlan = serde_json::from_str(&json).expect("deserialize");
@@ -310,9 +325,13 @@ mod tests {
         let a = nid(1);
         let b = nid(2);
         let c = nid(3);
-        let succ = successors_from(&[(a, b), (b, c), (c, a)]);
+        let succ = successors_from(&[
+            (a.clone(), b.clone()),
+            (b.clone(), c.clone()),
+            (c.clone(), a.clone()),
+        ]);
 
-        let plan = ReplayPlan::new(ExecutionId::new(), a);
+        let plan = ReplayPlan::new(ExecutionId::new(), a.clone());
         let (pinned, rerun) = plan.partition_nodes(&[a, b, c], &succ);
 
         // Whole cycle is forward-reachable from A.
@@ -331,10 +350,10 @@ mod tests {
         let a = nid(1);
         let b = nid(2);
         let ghost = nid(99);
-        let succ = successors_from(&[(a, b)]);
+        let succ = successors_from(&[(a.clone(), b.clone())]);
 
-        let plan = ReplayPlan::new(ExecutionId::new(), ghost);
-        let (pinned, rerun) = plan.partition_nodes(&[a, b], &succ);
+        let plan = ReplayPlan::new(ExecutionId::new(), ghost.clone());
+        let (pinned, rerun) = plan.partition_nodes(&[a.clone(), b.clone()], &succ);
 
         // The unknown node is the only rerun entry; real nodes are pinned.
         assert!(rerun.contains(&ghost));

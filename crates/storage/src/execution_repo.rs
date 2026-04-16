@@ -10,7 +10,7 @@ use std::{
 };
 
 use async_trait::async_trait;
-use nebula_core::{ExecutionId, NodeId, WorkflowId};
+use nebula_core::{ExecutionId, NodeKey, WorkflowId};
 use thiserror::Error;
 use tokio::{sync::RwLock, time::Instant};
 
@@ -178,7 +178,7 @@ pub trait ExecutionRepo: Send + Sync {
     async fn save_node_output(
         &self,
         execution_id: ExecutionId,
-        node_id: NodeId,
+        node_key: NodeKey,
         attempt: u32,
         output: serde_json::Value,
     ) -> Result<(), ExecutionRepoError>;
@@ -187,14 +187,14 @@ pub trait ExecutionRepo: Send + Sync {
     async fn load_node_output(
         &self,
         execution_id: ExecutionId,
-        node_id: NodeId,
+        node_key: NodeKey,
     ) -> Result<Option<serde_json::Value>, ExecutionRepoError>;
 
     /// Loads all node outputs for an execution (latest attempt per node).
     async fn load_all_outputs(
         &self,
         execution_id: ExecutionId,
-    ) -> Result<HashMap<NodeId, serde_json::Value>, ExecutionRepoError>;
+    ) -> Result<HashMap<NodeKey, serde_json::Value>, ExecutionRepoError>;
 
     /// Lists execution IDs in non-terminal states.
     async fn list_running(&self) -> Result<Vec<ExecutionId>, ExecutionRepoError>;
@@ -210,7 +210,7 @@ pub trait ExecutionRepo: Send + Sync {
         &self,
         key: &str,
         execution_id: ExecutionId,
-        node_id: NodeId,
+        node_key: NodeKey,
     ) -> Result<(), ExecutionRepoError>;
 
     // ── Stateful action checkpoints (#308) ──────────────────────────────────
@@ -226,18 +226,18 @@ pub trait ExecutionRepo: Send + Sync {
 
     /// Persist a stateful iteration checkpoint.
     ///
-    /// The key is `(execution_id, node_id, attempt)`. Calling twice with
+    /// The key is `(execution_id, node_key, attempt)`. Calling twice with
     /// the same key overwrites the prior checkpoint — only the latest
     /// iteration boundary is persisted.
     async fn save_stateful_checkpoint(
         &self,
         execution_id: ExecutionId,
-        node_id: NodeId,
+        node_key: NodeKey,
         attempt: u32,
         iteration: u32,
         state: serde_json::Value,
     ) -> Result<(), ExecutionRepoError> {
-        let _ = (execution_id, node_id, attempt, iteration, state);
+        let _ = (execution_id, node_key, attempt, iteration, state);
         Err(ExecutionRepoError::Internal(
             "save_stateful_checkpoint not implemented for this backend".to_owned(),
         ))
@@ -248,15 +248,15 @@ pub trait ExecutionRepo: Send + Sync {
     /// Returns `Ok(None)` when no checkpoint exists yet (fresh dispatch).
     /// Returns `Err` when the backend cannot be queried (connection,
     /// serialization, etc.) — the runtime logs WARN with full
-    /// `(action_key, execution_id, node_id)` context and falls through to
+    /// `(action_key, execution_id, node_key)` context and falls through to
     /// `init_state` so iteration progress loss is visible, never swallowed.
     async fn load_stateful_checkpoint(
         &self,
         execution_id: ExecutionId,
-        node_id: NodeId,
+        node_key: NodeKey,
         attempt: u32,
     ) -> Result<Option<StatefulCheckpointRecord>, ExecutionRepoError> {
-        let _ = (execution_id, node_id, attempt);
+        let _ = (execution_id, node_key, attempt);
         Err(ExecutionRepoError::Internal(
             "load_stateful_checkpoint not implemented for this backend".to_owned(),
         ))
@@ -270,10 +270,10 @@ pub trait ExecutionRepo: Send + Sync {
     async fn delete_stateful_checkpoint(
         &self,
         execution_id: ExecutionId,
-        node_id: NodeId,
+        node_key: NodeKey,
         attempt: u32,
     ) -> Result<(), ExecutionRepoError> {
-        let _ = (execution_id, node_id, attempt);
+        let _ = (execution_id, node_key, attempt);
         Err(ExecutionRepoError::Internal(
             "delete_stateful_checkpoint not implemented for this backend".to_owned(),
         ))
@@ -302,11 +302,11 @@ impl StatefulCheckpointRecord {
     }
 }
 
-/// Key for node output storage: `(execution_id, node_id, attempt)`.
-type NodeOutputKey = (ExecutionId, NodeId, u32);
+/// Key for node output storage: `(execution_id, node_key, attempt)`.
+type NodeOutputKey = (ExecutionId, NodeKey, u32);
 
-/// Key for stateful checkpoint storage: `(execution_id, node_id, attempt)`.
-type StatefulCheckpointKey = (ExecutionId, NodeId, u32);
+/// Key for stateful checkpoint storage: `(execution_id, node_key, attempt)`.
+type StatefulCheckpointKey = (ExecutionId, NodeKey, u32);
 
 /// Lease entry: `(holder, expires_at)`. Expiration is monotonic via
 /// [`tokio::time::Instant`] so paused-time tests behave deterministically.
@@ -469,26 +469,26 @@ impl ExecutionRepo for InMemoryExecutionRepo {
     async fn save_node_output(
         &self,
         execution_id: ExecutionId,
-        node_id: NodeId,
+        node_key: NodeKey,
         attempt: u32,
         output: serde_json::Value,
     ) -> Result<(), ExecutionRepoError> {
         self.node_outputs
             .write()
             .await
-            .insert((execution_id, node_id, attempt), output);
+            .insert((execution_id, node_key, attempt), output);
         Ok(())
     }
 
     async fn load_node_output(
         &self,
         execution_id: ExecutionId,
-        node_id: NodeId,
+        node_key: NodeKey,
     ) -> Result<Option<serde_json::Value>, ExecutionRepoError> {
         let outputs = self.node_outputs.read().await;
         let best = outputs
             .iter()
-            .filter(|((eid, nid, _), _)| *eid == execution_id && *nid == node_id)
+            .filter(|((eid, nid, _), _)| *eid == execution_id && *nid == node_key)
             .max_by_key(|((_, _, attempt), _)| *attempt)
             .map(|(_, v)| v.clone());
         Ok(best)
@@ -497,14 +497,14 @@ impl ExecutionRepo for InMemoryExecutionRepo {
     async fn load_all_outputs(
         &self,
         execution_id: ExecutionId,
-    ) -> Result<HashMap<NodeId, serde_json::Value>, ExecutionRepoError> {
+    ) -> Result<HashMap<NodeKey, serde_json::Value>, ExecutionRepoError> {
         let outputs = self.node_outputs.read().await;
-        let mut best: HashMap<NodeId, (u32, serde_json::Value)> = HashMap::new();
+        let mut best: HashMap<NodeKey, (u32, serde_json::Value)> = HashMap::new();
         for ((eid, nid, attempt), val) in outputs.iter() {
             if *eid != execution_id {
                 continue;
             }
-            let entry = best.entry(*nid).or_insert((*attempt, val.clone()));
+            let entry = best.entry(nid.clone()).or_insert((*attempt, val.clone()));
             if *attempt > entry.0 {
                 *entry = (*attempt, val.clone());
             }
@@ -546,7 +546,7 @@ impl ExecutionRepo for InMemoryExecutionRepo {
         &self,
         key: &str,
         execution_id: ExecutionId,
-        _node_id: NodeId,
+        _node_id: NodeKey,
     ) -> Result<(), ExecutionRepoError> {
         let state = self.state.read().await;
         let workflows = self.workflows.read().await;
@@ -564,14 +564,14 @@ impl ExecutionRepo for InMemoryExecutionRepo {
     async fn save_stateful_checkpoint(
         &self,
         execution_id: ExecutionId,
-        node_id: NodeId,
+        node_key: NodeKey,
         attempt: u32,
         iteration: u32,
         state: serde_json::Value,
     ) -> Result<(), ExecutionRepoError> {
         let mut cps = self.stateful_checkpoints.write().await;
         cps.insert(
-            (execution_id, node_id, attempt),
+            (execution_id, node_key, attempt),
             StatefulCheckpointRecord::new(iteration, state),
         );
         Ok(())
@@ -580,27 +580,29 @@ impl ExecutionRepo for InMemoryExecutionRepo {
     async fn load_stateful_checkpoint(
         &self,
         execution_id: ExecutionId,
-        node_id: NodeId,
+        node_key: NodeKey,
         attempt: u32,
     ) -> Result<Option<StatefulCheckpointRecord>, ExecutionRepoError> {
         let cps = self.stateful_checkpoints.read().await;
-        Ok(cps.get(&(execution_id, node_id, attempt)).cloned())
+        Ok(cps.get(&(execution_id, node_key, attempt)).cloned())
     }
 
     async fn delete_stateful_checkpoint(
         &self,
         execution_id: ExecutionId,
-        node_id: NodeId,
+        node_key: NodeKey,
         attempt: u32,
     ) -> Result<(), ExecutionRepoError> {
         let mut cps = self.stateful_checkpoints.write().await;
-        cps.remove(&(execution_id, node_id, attempt));
+        cps.remove(&(execution_id, node_key, attempt));
         Ok(())
     }
 }
 
 #[cfg(test)]
 mod tests {
+    use nebula_core::node_key;
+
     use super::*;
 
     #[tokio::test]
@@ -679,9 +681,9 @@ mod tests {
     async fn node_output_save_and_load() {
         let repo = InMemoryExecutionRepo::default();
         let eid = ExecutionId::new();
-        let nid = NodeId::new();
+        let nid = node_key!("nid");
         let output = serde_json::json!({"result": 42});
-        repo.save_node_output(eid, nid, 1, output.clone())
+        repo.save_node_output(eid, nid.clone(), 1, output.clone())
             .await
             .unwrap();
         let loaded = repo.load_node_output(eid, nid).await.unwrap();
@@ -692,11 +694,11 @@ mod tests {
     async fn node_output_returns_latest_attempt() {
         let repo = InMemoryExecutionRepo::default();
         let eid = ExecutionId::new();
-        let nid = NodeId::new();
-        repo.save_node_output(eid, nid, 1, serde_json::json!("first"))
+        let nid = node_key!("nid");
+        repo.save_node_output(eid, nid.clone(), 1, serde_json::json!("first"))
             .await
             .unwrap();
-        repo.save_node_output(eid, nid, 2, serde_json::json!("second"))
+        repo.save_node_output(eid, nid.clone(), 2, serde_json::json!("second"))
             .await
             .unwrap();
         let loaded = repo.load_node_output(eid, nid).await.unwrap();
@@ -707,15 +709,15 @@ mod tests {
     async fn load_all_outputs_returns_latest_per_node() {
         let repo = InMemoryExecutionRepo::default();
         let eid = ExecutionId::new();
-        let n1 = NodeId::new();
-        let n2 = NodeId::new();
-        repo.save_node_output(eid, n1, 1, serde_json::json!("n1_v1"))
+        let n1 = node_key!("n1");
+        let n2 = node_key!("n2");
+        repo.save_node_output(eid, n1.clone(), 1, serde_json::json!("n1_v1"))
             .await
             .unwrap();
-        repo.save_node_output(eid, n1, 2, serde_json::json!("n1_v2"))
+        repo.save_node_output(eid, n1.clone(), 2, serde_json::json!("n1_v2"))
             .await
             .unwrap();
-        repo.save_node_output(eid, n2, 1, serde_json::json!("n2_v1"))
+        repo.save_node_output(eid, n2.clone(), 1, serde_json::json!("n2_v1"))
             .await
             .unwrap();
         let all = repo.load_all_outputs(eid).await.unwrap();
@@ -734,7 +736,9 @@ mod tests {
             .await
             .unwrap();
         assert!(!repo.check_idempotency(key).await.unwrap());
-        repo.mark_idempotent(key, eid, NodeId::new()).await.unwrap();
+        repo.mark_idempotent(key, eid, node_key!("test"))
+            .await
+            .unwrap();
         assert!(repo.check_idempotency(key).await.unwrap());
     }
 
@@ -743,7 +747,7 @@ mod tests {
         let repo = InMemoryExecutionRepo::default();
         let missing = ExecutionId::new();
         let err = repo
-            .mark_idempotent("k", missing, NodeId::new())
+            .mark_idempotent("k", missing, node_key!("test"))
             .await
             .unwrap_err();
         assert!(matches!(
@@ -759,16 +763,18 @@ mod tests {
     async fn stateful_checkpoint_save_load_round_trip() {
         let repo = InMemoryExecutionRepo::default();
         let eid = ExecutionId::new();
-        let nid = NodeId::new();
+        let nid = node_key!("nid");
         let state = serde_json::json!({"cursor": "page-2", "count": 42u32});
 
         // Empty before first save.
         assert_eq!(
-            repo.load_stateful_checkpoint(eid, nid, 0).await.unwrap(),
+            repo.load_stateful_checkpoint(eid, nid.clone(), 0)
+                .await
+                .unwrap(),
             None
         );
 
-        repo.save_stateful_checkpoint(eid, nid, 0, 5, state.clone())
+        repo.save_stateful_checkpoint(eid, nid.clone(), 0, 5, state.clone())
             .await
             .unwrap();
         let loaded = repo
@@ -784,20 +790,24 @@ mod tests {
     async fn stateful_checkpoint_delete_removes_row() {
         let repo = InMemoryExecutionRepo::default();
         let eid = ExecutionId::new();
-        let nid = NodeId::new();
+        let nid = node_key!("nid");
 
-        repo.save_stateful_checkpoint(eid, nid, 2, 1, serde_json::json!({"k": 1}))
+        repo.save_stateful_checkpoint(eid, nid.clone(), 2, 1, serde_json::json!({"k": 1}))
             .await
             .unwrap();
         assert!(
-            repo.load_stateful_checkpoint(eid, nid, 2)
+            repo.load_stateful_checkpoint(eid, nid.clone(), 2)
                 .await
                 .unwrap()
                 .is_some()
         );
-        repo.delete_stateful_checkpoint(eid, nid, 2).await.unwrap();
+        repo.delete_stateful_checkpoint(eid, nid.clone(), 2)
+            .await
+            .unwrap();
         assert_eq!(
-            repo.load_stateful_checkpoint(eid, nid, 2).await.unwrap(),
+            repo.load_stateful_checkpoint(eid, nid.clone(), 2)
+                .await
+                .unwrap(),
             None
         );
         // Double-delete is idempotent.
@@ -808,22 +818,22 @@ mod tests {
     async fn stateful_checkpoint_is_scoped_by_attempt() {
         let repo = InMemoryExecutionRepo::default();
         let eid = ExecutionId::new();
-        let nid = NodeId::new();
+        let nid = node_key!("nid");
 
-        repo.save_stateful_checkpoint(eid, nid, 0, 1, serde_json::json!("attempt-0"))
+        repo.save_stateful_checkpoint(eid, nid.clone(), 0, 1, serde_json::json!("attempt-0"))
             .await
             .unwrap();
-        repo.save_stateful_checkpoint(eid, nid, 1, 1, serde_json::json!("attempt-1"))
+        repo.save_stateful_checkpoint(eid, nid.clone(), 1, 1, serde_json::json!("attempt-1"))
             .await
             .unwrap();
 
         let a0 = repo
-            .load_stateful_checkpoint(eid, nid, 0)
+            .load_stateful_checkpoint(eid, nid.clone(), 0)
             .await
             .unwrap()
             .unwrap();
         let a1 = repo
-            .load_stateful_checkpoint(eid, nid, 1)
+            .load_stateful_checkpoint(eid, nid.clone(), 1)
             .await
             .unwrap()
             .unwrap();
@@ -831,9 +841,13 @@ mod tests {
         assert_eq!(a1.state, serde_json::json!("attempt-1"));
 
         // Deleting one attempt does not touch the other.
-        repo.delete_stateful_checkpoint(eid, nid, 0).await.unwrap();
+        repo.delete_stateful_checkpoint(eid, nid.clone(), 0)
+            .await
+            .unwrap();
         assert_eq!(
-            repo.load_stateful_checkpoint(eid, nid, 0).await.unwrap(),
+            repo.load_stateful_checkpoint(eid, nid.clone(), 0)
+                .await
+                .unwrap(),
             None
         );
         assert!(

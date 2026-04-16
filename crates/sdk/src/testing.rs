@@ -119,12 +119,11 @@ impl<A> ActionTester<A> {
 // input: I,
 // ) -> Result<nebula_action::ActionResult<O>, nebula_action::ActionError> {
 // use nebula_action::ActionContext;
-// use nebula_core::{ExecutionId, NodeId, WorkflowId};
-//
+// use nebula_core::{ExecutionId, NodeKey, WorkflowId};
 // let workflow_id = WorkflowId::new();
 // let ctx = ActionContext::new(
 // ExecutionId::new(),
-// NodeId::new(),
+// node_key!("test"),
 // workflow_id,
 // tokio_util::sync::CancellationToken::new(),
 // );

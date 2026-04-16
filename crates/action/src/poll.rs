@@ -946,7 +946,7 @@ fn apply_jitter(secs: f64, jitter_fraction: f64, identity_seed: u64) -> f64 {
 fn trigger_seed(
     action_key: &nebula_core::ActionKey,
     workflow_id: &nebula_core::WorkflowId,
-    trigger_id: &nebula_core::NodeId,
+    trigger_id: &nebula_core::NodeKey,
 ) -> u64 {
     let mut h: u64 = 0xcbf2_9ce4_8422_2325; // FNV-1a offset basis
     let mix = |h: &mut u64, bytes: &[u8]| {
@@ -957,7 +957,7 @@ fn trigger_seed(
     };
     mix(&mut h, action_key.as_str().as_bytes());
     mix(&mut h, &workflow_id.get().to_bytes());
-    mix(&mut h, &trigger_id.get().to_bytes());
+    mix(&mut h, trigger_id.as_str().as_bytes());
     h
 }
 

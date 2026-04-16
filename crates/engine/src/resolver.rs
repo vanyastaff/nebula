@@ -9,7 +9,7 @@
 use std::{collections::HashMap, sync::Arc};
 
 use dashmap::DashMap;
-use nebula_core::id::NodeId;
+use nebula_core::NodeKey;
 use nebula_expression::{EvaluationContext, ExpressionEngine};
 use nebula_workflow::ParamValue;
 
@@ -32,10 +32,10 @@ impl ParamResolver {
     /// predecessor output as-is for backward compatibility).
     pub(crate) fn resolve(
         &self,
-        node_id: NodeId,
+        node_key: &NodeKey,
         params: &HashMap<String, ParamValue>,
         predecessor_input: &serde_json::Value,
-        outputs: &DashMap<NodeId, serde_json::Value>,
+        outputs: &DashMap<NodeKey, serde_json::Value>,
     ) -> Result<Option<serde_json::Value>, EngineError> {
         if params.is_empty() {
             return Ok(None);
@@ -47,13 +47,13 @@ impl ParamResolver {
 
         // Populate $node with all available outputs
         for entry in outputs.iter() {
-            ctx.set_node_data(entry.key().to_string(), entry.value().clone());
+            ctx.set_node_data(entry.key(), entry.value().clone());
         }
 
         // Resolve each parameter
         let mut resolved = serde_json::Map::new();
         for (key, param_value) in params {
-            let value = self.resolve_param(node_id, key, param_value, &ctx, outputs)?;
+            let value = self.resolve_param(node_key, key, param_value, &ctx, outputs)?;
             resolved.insert(key.clone(), value);
         }
 
@@ -63,11 +63,11 @@ impl ParamResolver {
     /// Resolve a single parameter value.
     fn resolve_param(
         &self,
-        node_id: NodeId,
+        node_key: &NodeKey,
         key: &str,
         param: &ParamValue,
         ctx: &EvaluationContext,
-        outputs: &DashMap<NodeId, serde_json::Value>,
+        outputs: &DashMap<NodeKey, serde_json::Value>,
     ) -> Result<serde_json::Value, EngineError> {
         match param {
             ParamValue::Literal { value } => Ok(value.clone()),
@@ -75,7 +75,7 @@ impl ParamResolver {
             ParamValue::Expression { expr } => {
                 self.expression_engine.evaluate(expr, ctx).map_err(|e| {
                     EngineError::ParameterResolution {
-                        node_id,
+                        node_key: node_key.clone(),
                         param_key: key.to_owned(),
                         error: e.to_string(),
                     }
@@ -87,7 +87,7 @@ impl ParamResolver {
                     .expression_engine
                     .parse_template(template)
                     .map_err(|e| EngineError::ParameterResolution {
-                        node_id,
+                        node_key: node_key.clone(),
                         param_key: key.to_owned(),
                         error: format!("template parse error: {e}"),
                     })?;
@@ -95,7 +95,7 @@ impl ParamResolver {
                     .expression_engine
                     .render_template(&tmpl, ctx)
                     .map_err(|e| EngineError::ParameterResolution {
-                        node_id,
+                        node_key: node_key.clone(),
                         param_key: key.to_owned(),
                         error: format!("template render error: {e}"),
                     })?;
@@ -103,14 +103,14 @@ impl ParamResolver {
             },
 
             ParamValue::Reference {
-                node_id: ref_node,
+                node_key: ref_node,
                 output_path,
             } => {
                 let output =
                     outputs
                         .get(ref_node)
                         .ok_or_else(|| EngineError::ParameterResolution {
-                            node_id,
+                            node_key: node_key.clone(),
                             param_key: key.to_owned(),
                             error: format!("referenced node {} has no output", ref_node),
                         })?;
@@ -119,7 +119,7 @@ impl ParamResolver {
             },
 
             _ => Err(EngineError::ParameterResolution {
-                node_id,
+                node_key: node_key.clone(),
                 param_key: key.to_owned(),
                 error: format!("unsupported parameter type for key `{key}`"),
             }),
@@ -159,6 +159,7 @@ fn navigate_path(value: &serde_json::Value, path: &str) -> serde_json::Value {
 
 #[cfg(test)]
 mod tests {
+    use nebula_core::node_key;
     use serde_json::json;
 
     use super::*;
@@ -219,7 +220,7 @@ mod tests {
         let resolver = make_resolver();
         let outputs = DashMap::new();
         let result = resolver
-            .resolve(NodeId::new(), &HashMap::new(), &json!(null), &outputs)
+            .resolve(&node_key!("test"), &HashMap::new(), &json!(null), &outputs)
             .unwrap();
         assert!(result.is_none());
     }
@@ -235,7 +236,7 @@ mod tests {
         );
 
         let result = resolver
-            .resolve(NodeId::new(), &params, &json!(null), &outputs)
+            .resolve(&node_key!("test"), &params, &json!(null), &outputs)
             .unwrap()
             .unwrap();
         assert_eq!(result["url"], json!("https://example.com"));
@@ -253,7 +254,7 @@ mod tests {
 
         let input = json!({"count": 5});
         let result = resolver
-            .resolve(NodeId::new(), &params, &input, &outputs)
+            .resolve(&node_key!("test"), &params, &input, &outputs)
             .unwrap()
             .unwrap();
         assert_eq!(result["count"], json!(6));
@@ -271,7 +272,7 @@ mod tests {
 
         let input = json!({"name": "World"});
         let result = resolver
-            .resolve(NodeId::new(), &params, &input, &outputs)
+            .resolve(&node_key!("test"), &params, &input, &outputs)
             .unwrap()
             .unwrap();
         assert_eq!(result["greeting"], json!("Hello World!"));
@@ -280,15 +281,15 @@ mod tests {
     #[test]
     fn reference_resolution_looks_up_output() {
         let resolver = make_resolver();
-        let source_id = NodeId::new();
+        let source_id = node_key!("source");
         let outputs = DashMap::new();
-        outputs.insert(source_id, json!({"data": "fetched"}));
+        outputs.insert(source_id.clone(), json!({"data": "fetched"}));
 
         let mut params = HashMap::new();
         params.insert("input".to_owned(), ParamValue::reference(source_id, ""));
 
         let result = resolver
-            .resolve(NodeId::new(), &params, &json!(null), &outputs)
+            .resolve(&node_key!("test"), &params, &json!(null), &outputs)
             .unwrap()
             .unwrap();
         assert_eq!(result["input"], json!({"data": "fetched"}));
@@ -297,9 +298,9 @@ mod tests {
     #[test]
     fn reference_with_path_navigates_output() {
         let resolver = make_resolver();
-        let source_id = NodeId::new();
+        let source_id = node_key!("source");
         let outputs = DashMap::new();
-        outputs.insert(source_id, json!({"nested": {"value": 42}}));
+        outputs.insert(source_id.clone(), json!({"nested": {"value": 42}}));
 
         let mut params = HashMap::new();
         params.insert(
@@ -308,7 +309,7 @@ mod tests {
         );
 
         let result = resolver
-            .resolve(NodeId::new(), &params, &json!(null), &outputs)
+            .resolve(&node_key!("test"), &params, &json!(null), &outputs)
             .unwrap()
             .unwrap();
         assert_eq!(result["val"], json!(42));
@@ -317,14 +318,14 @@ mod tests {
     #[test]
     fn reference_to_missing_node_returns_error() {
         let resolver = make_resolver();
-        let missing_id = NodeId::new();
+        let missing_id = node_key!("missing");
         let outputs = DashMap::new();
 
         let mut params = HashMap::new();
         params.insert("data".to_owned(), ParamValue::reference(missing_id, ""));
 
         let err = resolver
-            .resolve(NodeId::new(), &params, &json!(null), &outputs)
+            .resolve(&node_key!("test"), &params, &json!(null), &outputs)
             .unwrap_err();
         assert!(matches!(err, EngineError::ParameterResolution { .. }));
         assert!(err.to_string().contains("has no output"));
@@ -342,7 +343,7 @@ mod tests {
         );
 
         let err = resolver
-            .resolve(NodeId::new(), &params, &json!(null), &outputs)
+            .resolve(&node_key!("test"), &params, &json!(null), &outputs)
             .unwrap_err();
         assert!(matches!(err, EngineError::ParameterResolution { .. }));
     }
@@ -356,7 +357,7 @@ mod tests {
         params.insert("bad".to_owned(), ParamValue::template("Hello {{ unclosed"));
 
         let err = resolver
-            .resolve(NodeId::new(), &params, &json!(null), &outputs)
+            .resolve(&node_key!("test"), &params, &json!(null), &outputs)
             .unwrap_err();
         assert!(matches!(err, EngineError::ParameterResolution { .. }));
     }

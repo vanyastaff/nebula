@@ -54,7 +54,7 @@ impl ObservabilityEvent for BenchEvent {
             match index {
                 0 => visitor.record("operation", ObservabilityFieldValue::Str("http.request")),
                 1 => visitor.record("context", ObservabilityFieldValue::Str("workflow.execute")),
-                2 => visitor.record("node_id", ObservabilityFieldValue::Str("node-42")),
+                2 => visitor.record("node_key", ObservabilityFieldValue::Str("node-42")),
                 3 => visitor.record("tenant_id", ObservabilityFieldValue::Str("tenant-a")),
                 4 => visitor.record("attempt", ObservabilityFieldValue::U64(3)),
                 5 => visitor.record("success", ObservabilityFieldValue::Bool(false)),

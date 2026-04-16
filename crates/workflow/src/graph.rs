@@ -2,7 +2,7 @@
 
 use std::collections::{HashMap, HashSet};
 
-use nebula_core::NodeId;
+use nebula_core::NodeKey;
 use petgraph::{
     Direction, algo,
     graph::{DiGraph, NodeIndex},
@@ -13,8 +13,8 @@ use crate::{connection::Connection, definition::WorkflowDefinition, error::Workf
 /// A directed acyclic graph representing the execution dependencies between workflow nodes.
 #[derive(Debug)]
 pub struct DependencyGraph {
-    graph: DiGraph<NodeId, Connection>,
-    index_map: HashMap<NodeId, NodeIndex>,
+    graph: DiGraph<NodeKey, Connection>,
+    index_map: HashMap<NodeKey, NodeIndex>,
 }
 
 impl DependencyGraph {
@@ -26,26 +26,26 @@ impl DependencyGraph {
         let mut index_map = HashMap::new();
 
         for node in &definition.nodes {
-            let idx = graph.add_node(node.id);
+            let idx = graph.add_node(node.id.clone());
             // `validate_workflow` also checks duplicates, but plan builders
             // call this constructor directly without that pass, so an
             // unchecked `insert` would orphan the first of two duplicate
             // nodes inside `petgraph` while silently losing it from the
             // index map. Fail loudly here.
-            if index_map.insert(node.id, idx).is_some() {
-                return Err(WorkflowError::DuplicateNodeId(node.id));
+            if index_map.insert(node.id.clone(), idx).is_some() {
+                return Err(WorkflowError::DuplicateNodeId(node.id.clone()));
             }
         }
 
         for conn in &definition.connections {
             let from_idx = index_map
                 .get(&conn.from_node)
-                .ok_or(WorkflowError::UnknownNode(conn.from_node))?;
+                .ok_or(WorkflowError::UnknownNode(conn.from_node.clone()))?;
             let to_idx = index_map
                 .get(&conn.to_node)
-                .ok_or(WorkflowError::UnknownNode(conn.to_node))?;
+                .ok_or(WorkflowError::UnknownNode(conn.to_node.clone()))?;
             if conn.from_node == conn.to_node {
-                return Err(WorkflowError::SelfLoop(conn.from_node));
+                return Err(WorkflowError::SelfLoop(conn.from_node.clone()));
             }
             graph.add_edge(*from_idx, *to_idx, conn.clone());
         }
@@ -60,16 +60,19 @@ impl DependencyGraph {
     }
 
     /// Topological sort of the graph. Returns an error if a cycle exists.
-    pub fn topological_sort(&self) -> Result<Vec<NodeId>, WorkflowError> {
+    pub fn topological_sort(&self) -> Result<Vec<NodeKey>, WorkflowError> {
         let sorted = algo::toposort(&self.graph, None).map_err(|_| WorkflowError::CycleDetected)?;
-        Ok(sorted.into_iter().map(|idx| self.graph[idx]).collect())
+        Ok(sorted
+            .into_iter()
+            .map(|idx| self.graph[idx].clone())
+            .collect())
     }
 
     /// Compute parallel execution levels using Kahn's algorithm.
     ///
     /// Each level contains nodes whose predecessors all appear in earlier levels,
     /// meaning the nodes within a single level can execute concurrently.
-    pub fn compute_levels(&self) -> Result<Vec<Vec<NodeId>>, WorkflowError> {
+    pub fn compute_levels(&self) -> Result<Vec<Vec<NodeKey>>, WorkflowError> {
         let mut in_degree: HashMap<NodeIndex, usize> = HashMap::new();
         for idx in self.graph.node_indices() {
             in_degree.insert(
@@ -108,7 +111,7 @@ impl DependencyGraph {
             levels.push(
                 current_level
                     .into_iter()
-                    .map(|idx| self.graph[idx])
+                    .map(|idx| self.graph[idx].clone())
                     .collect(),
             );
         }
@@ -118,7 +121,7 @@ impl DependencyGraph {
 
     /// Get all incoming connections (edges pointing TO this node).
     #[must_use]
-    pub fn incoming_connections(&self, id: NodeId) -> Vec<&Connection> {
+    pub fn incoming_connections(&self, id: NodeKey) -> Vec<&Connection> {
         let Some(&idx) = self.index_map.get(&id) else {
             return Vec::new();
         };
@@ -130,7 +133,7 @@ impl DependencyGraph {
 
     /// Get all outgoing connections (edges leaving FROM this node).
     #[must_use]
-    pub fn outgoing_connections(&self, id: NodeId) -> Vec<&Connection> {
+    pub fn outgoing_connections(&self, id: NodeKey) -> Vec<&Connection> {
         let Some(&idx) = self.index_map.get(&id) else {
             return Vec::new();
         };
@@ -142,7 +145,7 @@ impl DependencyGraph {
 
     /// Nodes with no incoming edges (start points of the DAG).
     #[must_use]
-    pub fn entry_nodes(&self) -> Vec<NodeId> {
+    pub fn entry_nodes(&self) -> Vec<NodeKey> {
         self.graph
             .node_indices()
             .filter(|&idx| {
@@ -151,13 +154,13 @@ impl DependencyGraph {
                     .count()
                     == 0
             })
-            .map(|idx| self.graph[idx])
+            .map(|idx| self.graph[idx].clone())
             .collect()
     }
 
     /// Nodes with no outgoing edges (end points of the DAG).
     #[must_use]
-    pub fn exit_nodes(&self) -> Vec<NodeId> {
+    pub fn exit_nodes(&self) -> Vec<NodeKey> {
         self.graph
             .node_indices()
             .filter(|&idx| {
@@ -166,17 +169,17 @@ impl DependencyGraph {
                     .count()
                     == 0
             })
-            .map(|idx| self.graph[idx])
+            .map(|idx| self.graph[idx].clone())
             .collect()
     }
 
     /// Get the predecessor (upstream) node IDs of a given node.
     #[must_use]
-    pub fn predecessors(&self, id: NodeId) -> Vec<NodeId> {
+    pub fn predecessors(&self, id: NodeKey) -> Vec<NodeKey> {
         if let Some(&idx) = self.index_map.get(&id) {
             self.graph
                 .neighbors_directed(idx, Direction::Incoming)
-                .map(|i| self.graph[i])
+                .map(|i| self.graph[i].clone())
                 .collect()
         } else {
             Vec::new()
@@ -185,11 +188,11 @@ impl DependencyGraph {
 
     /// Get the successor (downstream) node IDs of a given node.
     #[must_use]
-    pub fn successors(&self, id: NodeId) -> Vec<NodeId> {
+    pub fn successors(&self, id: NodeKey) -> Vec<NodeKey> {
         if let Some(&idx) = self.index_map.get(&id) {
             self.graph
                 .neighbors_directed(idx, Direction::Outgoing)
-                .map(|i| self.graph[i])
+                .map(|i| self.graph[i].clone())
                 .collect()
         } else {
             Vec::new()
@@ -225,7 +228,7 @@ mod tests {
     use std::collections::HashMap;
 
     use chrono::Utc;
-    use nebula_core::{NodeId, WorkflowId};
+    use nebula_core::{NodeKey, WorkflowId, node_key};
 
     use super::*;
     use crate::{
@@ -260,36 +263,46 @@ mod tests {
         }
     }
 
-    fn node(id: NodeId) -> NodeDefinition {
+    fn node(id: NodeKey) -> NodeDefinition {
         NodeDefinition::new(id, "n", "n").unwrap()
     }
 
     // --- linear graph: A -> B -> C ---
 
-    fn linear_ids() -> (NodeId, NodeId, NodeId) {
-        (NodeId::new(), NodeId::new(), NodeId::new())
+    fn linear_ids() -> (NodeKey, NodeKey, NodeKey) {
+        (node_key!("a"), node_key!("b"), node_key!("c"))
     }
 
-    fn linear_definition(a: NodeId, b: NodeId, c: NodeId) -> WorkflowDefinition {
+    fn linear_definition(a: NodeKey, b: NodeKey, c: NodeKey) -> WorkflowDefinition {
         make_definition(
-            vec![node(a), node(b), node(c)],
-            vec![Connection::new(a, b), Connection::new(b, c)],
+            vec![node(a.clone()), node(b.clone()), node(c.clone())],
+            vec![Connection::new(a, b.clone()), Connection::new(b, c)],
         )
     }
 
     // --- diamond graph: A -> B, A -> C, B -> D, C -> D ---
 
-    fn diamond_ids() -> (NodeId, NodeId, NodeId, NodeId) {
-        (NodeId::new(), NodeId::new(), NodeId::new(), NodeId::new())
+    fn diamond_ids() -> (NodeKey, NodeKey, NodeKey, NodeKey) {
+        (
+            node_key!("a"),
+            node_key!("b"),
+            node_key!("c"),
+            node_key!("d"),
+        )
     }
 
-    fn diamond_definition(a: NodeId, b: NodeId, c: NodeId, d: NodeId) -> WorkflowDefinition {
+    fn diamond_definition(a: NodeKey, b: NodeKey, c: NodeKey, d: NodeKey) -> WorkflowDefinition {
         make_definition(
-            vec![node(a), node(b), node(c), node(d)],
             vec![
-                Connection::new(a, b),
-                Connection::new(a, c),
-                Connection::new(b, d),
+                node(a.clone()),
+                node(b.clone()),
+                node(c.clone()),
+                node(d.clone()),
+            ],
+            vec![
+                Connection::new(a.clone(), b.clone()),
+                Connection::new(a, c.clone()),
+                Connection::new(b, d.clone()),
                 Connection::new(c, d),
             ],
         )
@@ -315,28 +328,28 @@ mod tests {
 
     #[test]
     fn from_definition_rejects_unknown_node() {
-        let a = NodeId::new();
-        let unknown = NodeId::new();
-        let def = make_definition(vec![node(a)], vec![Connection::new(a, unknown)]);
+        let a = node_key!("a");
+        let unknown = node_key!("unknown");
+        let def = make_definition(vec![node(a.clone())], vec![Connection::new(a, unknown)]);
         let err = DependencyGraph::from_definition(&def).unwrap_err();
         assert!(matches!(err, WorkflowError::UnknownNode(_)));
     }
 
     #[test]
     fn from_definition_rejects_self_loop() {
-        let a = NodeId::new();
-        let def = make_definition(vec![node(a)], vec![Connection::new(a, a)]);
+        let a = node_key!("a");
+        let def = make_definition(vec![node(a.clone())], vec![Connection::new(a.clone(), a)]);
         let err = DependencyGraph::from_definition(&def).unwrap_err();
         assert!(matches!(err, WorkflowError::SelfLoop(_)));
     }
 
     #[test]
     fn has_cycle_detects_cycle() {
-        let a = NodeId::new();
-        let b = NodeId::new();
+        let a = node_key!("a");
+        let b = node_key!("b");
         let def = make_definition(
-            vec![node(a), node(b)],
-            vec![Connection::new(a, b), Connection::new(b, a)],
+            vec![node(a.clone()), node(b.clone())],
+            vec![Connection::new(a.clone(), b.clone()), Connection::new(b, a)],
         );
         let graph = DependencyGraph::from_definition(&def).unwrap();
         assert!(graph.has_cycle());
@@ -353,7 +366,7 @@ mod tests {
     #[test]
     fn topological_sort_linear() {
         let (a, b, c) = linear_ids();
-        let def = linear_definition(a, b, c);
+        let def = linear_definition(a.clone(), b.clone(), c.clone());
         let graph = DependencyGraph::from_definition(&def).unwrap();
         let sorted = graph.topological_sort().unwrap();
         assert_eq!(sorted, vec![a, b, c]);
@@ -362,7 +375,7 @@ mod tests {
     #[test]
     fn topological_sort_diamond() {
         let (a, b, c, d) = diamond_ids();
-        let def = diamond_definition(a, b, c, d);
+        let def = diamond_definition(a.clone(), b.clone(), c.clone(), d.clone());
         let graph = DependencyGraph::from_definition(&def).unwrap();
         let sorted = graph.topological_sort().unwrap();
 
@@ -377,7 +390,7 @@ mod tests {
     #[test]
     fn compute_levels_linear() {
         let (a, b, c) = linear_ids();
-        let def = linear_definition(a, b, c);
+        let def = linear_definition(a.clone(), b.clone(), c.clone());
         let graph = DependencyGraph::from_definition(&def).unwrap();
         let levels = graph.compute_levels().unwrap();
 
@@ -390,7 +403,7 @@ mod tests {
     #[test]
     fn compute_levels_diamond() {
         let (a, b, c, d) = diamond_ids();
-        let def = diamond_definition(a, b, c, d);
+        let def = diamond_definition(a.clone(), b.clone(), c.clone(), d.clone());
         let graph = DependencyGraph::from_definition(&def).unwrap();
         let levels = graph.compute_levels().unwrap();
 
@@ -406,7 +419,7 @@ mod tests {
     #[test]
     fn entry_and_exit_nodes() {
         let (a, b, c, d) = diamond_ids();
-        let def = diamond_definition(a, b, c, d);
+        let def = diamond_definition(a.clone(), b, c, d.clone());
         let graph = DependencyGraph::from_definition(&def).unwrap();
 
         let entries = graph.entry_nodes();
@@ -421,18 +434,18 @@ mod tests {
     #[test]
     fn predecessors_and_successors() {
         let (a, b, c, d) = diamond_ids();
-        let def = diamond_definition(a, b, c, d);
+        let def = diamond_definition(a.clone(), b.clone(), c.clone(), d.clone());
         let graph = DependencyGraph::from_definition(&def).unwrap();
 
         // a has no predecessors, two successors
-        assert!(graph.predecessors(a).is_empty());
+        assert!(graph.predecessors(a.clone()).is_empty());
         let a_succ = graph.successors(a);
         assert_eq!(a_succ.len(), 2);
         assert!(a_succ.contains(&b));
         assert!(a_succ.contains(&c));
 
         // d has two predecessors, no successors
-        let d_pred = graph.predecessors(d);
+        let d_pred = graph.predecessors(d.clone());
         assert_eq!(d_pred.len(), 2);
         assert!(d_pred.contains(&b));
         assert!(d_pred.contains(&c));
@@ -441,10 +454,10 @@ mod tests {
 
     #[test]
     fn predecessors_unknown_node_returns_empty() {
-        let a = NodeId::new();
+        let a = node_key!("a");
         let def = make_definition(vec![node(a)], vec![]);
         let graph = DependencyGraph::from_definition(&def).unwrap();
-        assert!(graph.predecessors(NodeId::new()).is_empty());
+        assert!(graph.predecessors(node_key!("test")).is_empty());
     }
 
     #[test]
@@ -457,11 +470,11 @@ mod tests {
 
     #[test]
     fn validate_cyclic_graph() {
-        let a = NodeId::new();
-        let b = NodeId::new();
+        let a = node_key!("a");
+        let b = node_key!("b");
         let def = make_definition(
-            vec![node(a), node(b)],
-            vec![Connection::new(a, b), Connection::new(b, a)],
+            vec![node(a.clone()), node(b.clone())],
+            vec![Connection::new(a.clone(), b.clone()), Connection::new(b, a)],
         );
         let graph = DependencyGraph::from_definition(&def).unwrap();
         let err = graph.validate().unwrap_err();

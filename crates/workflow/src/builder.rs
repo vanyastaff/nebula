@@ -3,7 +3,7 @@
 use std::{collections::HashMap, time::Duration};
 
 use chrono::Utc;
-use nebula_core::{NodeId, WorkflowId};
+use nebula_core::{NodeKey, WorkflowId};
 
 use crate::{
     Version,
@@ -79,7 +79,7 @@ impl WorkflowBuilder {
 
     /// Add an unconditional connection between two nodes.
     #[must_use]
-    pub fn connect(mut self, from: NodeId, to: NodeId) -> Self {
+    pub fn connect(mut self, from: NodeKey, to: NodeKey) -> Self {
         self.connections.push(Connection::new(from, to));
         self
     }
@@ -88,8 +88,8 @@ impl WorkflowBuilder {
     #[must_use]
     pub fn connect_with_condition(
         mut self,
-        from: NodeId,
-        to: NodeId,
+        from: NodeKey,
+        to: NodeKey,
         condition: EdgeCondition,
     ) -> Self {
         self.connections
@@ -101,9 +101,9 @@ impl WorkflowBuilder {
     #[must_use]
     pub fn connect_port(
         mut self,
-        from: NodeId,
+        from: NodeKey,
         from_port: impl Into<String>,
-        to: NodeId,
+        to: NodeKey,
         to_port: impl Into<String>,
     ) -> Self {
         self.connections
@@ -182,15 +182,15 @@ impl WorkflowBuilder {
         // Check duplicate node IDs
         let mut seen = std::collections::HashSet::new();
         for node in &self.nodes {
-            if !seen.insert(node.id) {
-                return Err(WorkflowError::DuplicateNodeId(node.id));
+            if !seen.insert(node.id.clone()) {
+                return Err(WorkflowError::DuplicateNodeId(node.id.clone()));
             }
         }
 
         // Check self-loops
         for conn in &self.connections {
             if conn.is_self_loop() {
-                return Err(WorkflowError::SelfLoop(conn.from_node));
+                return Err(WorkflowError::SelfLoop(conn.from_node.clone()));
             }
         }
 
@@ -223,25 +223,25 @@ impl WorkflowBuilder {
 
 #[cfg(test)]
 mod tests {
-    use nebula_core::NodeId;
+    use nebula_core::{NodeKey, node_key};
 
     use super::*;
 
-    fn node(id: NodeId) -> NodeDefinition {
+    fn node(id: NodeKey) -> NodeDefinition {
         NodeDefinition::new(id, "n", "n").unwrap()
     }
 
     #[test]
     fn build_linear_workflow() {
-        let a = NodeId::new();
-        let b = NodeId::new();
-        let c = NodeId::new();
+        let a = node_key!("a");
+        let b = node_key!("b");
+        let c = node_key!("c");
 
         let def = WorkflowBuilder::new("linear")
-            .add_node(node(a))
-            .add_node(node(b))
-            .add_node(node(c))
-            .connect(a, b)
+            .add_node(node(a.clone()))
+            .add_node(node(b.clone()))
+            .add_node(node(c.clone()))
+            .connect(a, b.clone())
             .connect(b, c)
             .build()
             .unwrap();
@@ -253,19 +253,19 @@ mod tests {
 
     #[test]
     fn build_diamond_workflow() {
-        let a = NodeId::new();
-        let b = NodeId::new();
-        let c = NodeId::new();
-        let d = NodeId::new();
+        let a = node_key!("a");
+        let b = node_key!("b");
+        let c = node_key!("c");
+        let d = node_key!("d");
 
         let def = WorkflowBuilder::new("diamond")
-            .add_node(node(a))
-            .add_node(node(b))
-            .add_node(node(c))
-            .add_node(node(d))
-            .connect(a, b)
-            .connect(a, c)
-            .connect(b, d)
+            .add_node(node(a.clone()))
+            .add_node(node(b.clone()))
+            .add_node(node(c.clone()))
+            .add_node(node(d.clone()))
+            .connect(a.clone(), b.clone())
+            .connect(a, c.clone())
+            .connect(b, d.clone())
             .connect(c, d)
             .build()
             .unwrap();
@@ -276,7 +276,7 @@ mod tests {
 
     #[test]
     fn build_empty_name_fails() {
-        let a = NodeId::new();
+        let a = node_key!("a");
         let err = WorkflowBuilder::new("")
             .add_node(node(a))
             .build()
@@ -292,9 +292,9 @@ mod tests {
 
     #[test]
     fn build_duplicate_node_ids_fails() {
-        let a = NodeId::new();
+        let a = node_key!("a");
         let err = WorkflowBuilder::new("dup")
-            .add_node(node(a))
+            .add_node(node(a.clone()))
             .add_node(node(a))
             .build()
             .unwrap_err();
@@ -303,10 +303,10 @@ mod tests {
 
     #[test]
     fn build_self_loop_fails() {
-        let a = NodeId::new();
+        let a = node_key!("a");
         let err = WorkflowBuilder::new("loop")
-            .add_node(node(a))
-            .connect(a, a)
+            .add_node(node(a.clone()))
+            .connect(a.clone(), a)
             .build()
             .unwrap_err();
         assert!(matches!(err, WorkflowError::SelfLoop(_)));
@@ -314,12 +314,12 @@ mod tests {
 
     #[test]
     fn build_cycle_detected() {
-        let a = NodeId::new();
-        let b = NodeId::new();
+        let a = node_key!("a");
+        let b = node_key!("b");
         let err = WorkflowBuilder::new("cycle")
-            .add_node(node(a))
-            .add_node(node(b))
-            .connect(a, b)
+            .add_node(node(a.clone()))
+            .add_node(node(b.clone()))
+            .connect(a.clone(), b.clone())
             .connect(b, a)
             .build()
             .unwrap_err();
@@ -328,7 +328,7 @@ mod tests {
 
     #[test]
     fn build_with_variables_tags_config() {
-        let a = NodeId::new();
+        let a = node_key!("a");
         let def = WorkflowBuilder::new("configured")
             .description("A test workflow")
             .version(Version::new(1, 0, 0))
@@ -366,7 +366,7 @@ mod tests {
 
     #[test]
     fn owner_accepts_valid_string() {
-        let a = NodeId::new();
+        let a = node_key!("a");
         let def = WorkflowBuilder::new("owned")
             .owner("user_123")
             .unwrap()

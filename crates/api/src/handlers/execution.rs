@@ -99,7 +99,7 @@ pub async fn list_executions(
 
 /// Get all node outputs for an execution.
 ///
-/// Returns a map of `node_id → output_value` for every node that has
+/// Returns a map of `node_key → output_value` for every node that has
 /// completed at least one attempt.
 ///
 /// # Errors
@@ -128,10 +128,10 @@ pub async fn get_execution_outputs(
         .await
         .map_err(|e| ApiError::Internal(format!("Failed to load outputs: {}", e)))?;
 
-    // Convert NodeId keys to strings for JSON serialisation.
+    // Convert NodeKey keys to strings for JSON serialisation.
     let string_outputs: std::collections::HashMap<String, serde_json::Value> = outputs
         .into_iter()
-        .map(|(node_id, val)| (node_id.to_string(), val))
+        .map(|(node_key, val)| (node_key.to_string(), val))
         .collect();
 
     Ok(Json(ExecutionOutputsResponse {

@@ -21,7 +21,7 @@ pub mod field {
     /// Distributed trace ID
     pub const TRACE_ID: &str = "trace_id";
     /// Node instance ID
-    pub const NODE_ID: &str = "node_id";
+    pub const NODE_ID: &str = "node_key";
     /// Action type ID (e.g., "http.request")
     pub const ACTION_ID: &str = "action_id";
     /// Retry attempt count

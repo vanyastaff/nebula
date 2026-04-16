@@ -199,7 +199,7 @@ fn print_text_result(result: &nebula_engine::ExecutionResult) {
 
     if !result.node_outputs.is_empty() {
         println!("\nNode outputs:");
-        for (node_id, output) in &result.node_outputs {
+        for (node_key, output) in &result.node_outputs {
             let json = serde_json::to_string(output).unwrap_or_else(|_| "???".to_owned());
             let truncated = if json.len() > 200 {
                 let end = json.char_indices().nth(200).map_or(json.len(), |(i, _)| i);
@@ -207,14 +207,14 @@ fn print_text_result(result: &nebula_engine::ExecutionResult) {
             } else {
                 json
             };
-            println!("  {node_id}: {truncated}");
+            println!("  {node_key}: {truncated}");
         }
     }
 
     if !result.node_errors.is_empty() {
         println!("\nNode errors:");
-        for (node_id, error) in &result.node_errors {
-            println!("  {node_id}: {error}");
+        for (node_key, error) in &result.node_errors {
+            println!("  {node_key}: {error}");
         }
     }
 }
@@ -351,14 +351,14 @@ fn dry_run(
             // Show node details per group.
             for (i, group) in plan.parallel_groups.iter().enumerate() {
                 println!("  Level {}:", i + 1);
-                for node_id in group {
+                for node_key in group {
                     let name = workflow
                         .nodes
                         .iter()
-                        .find(|n| n.id == *node_id)
+                        .find(|n| n.id == *node_key)
                         .map(|n| format!("{} ({})", n.name, n.action_key))
-                        .unwrap_or_else(|| node_id.to_string());
-                    println!("    {node_id}  {name}");
+                        .unwrap_or_else(|| node_key.to_string());
+                    println!("    {node_key}  {name}");
                 }
             }
         },
@@ -372,18 +372,20 @@ fn print_stream_event(event: &nebula_engine::ExecutionEvent) {
     use nebula_engine::ExecutionEvent;
     match event {
         ExecutionEvent::NodeStarted {
-            node_id,
+            node_key,
             action_key,
             ..
-        } => eprintln!("  ▶ {node_id} ({action_key}) started"),
+        } => eprintln!("  ▶ {node_key} ({action_key}) started"),
         ExecutionEvent::NodeCompleted {
-            node_id, elapsed, ..
-        } => eprintln!("  ✓ {node_id} completed ({elapsed:?})"),
-        ExecutionEvent::NodeFailed { node_id, error, .. } => {
-            eprintln!("  ✗ {node_id} failed: {error}")
+            node_key, elapsed, ..
+        } => eprintln!("  ✓ {node_key} completed ({elapsed:?})"),
+        ExecutionEvent::NodeFailed {
+            node_key, error, ..
+        } => {
+            eprintln!("  ✗ {node_key} failed: {error}")
         },
-        ExecutionEvent::NodeSkipped { node_id, .. } => {
-            eprintln!("  ⊘ {node_id} skipped");
+        ExecutionEvent::NodeSkipped { node_key, .. } => {
+            eprintln!("  ⊘ {node_key} skipped");
         },
         ExecutionEvent::ExecutionFinished {
             success, elapsed, ..
@@ -427,7 +429,7 @@ async fn run_tui_live(
     let node_order: Vec<_> = workflow
         .nodes
         .iter()
-        .map(|n| (n.id, n.name.clone(), n.action_key.to_string()))
+        .map(|n| (n.id.clone(), n.name.clone(), n.action_key.to_string()))
         .collect();
 
     let (_tui_tx, tui_rx) = tokio::sync::mpsc::unbounded_channel();
@@ -441,31 +443,31 @@ async fn run_tui_live(
     while let Ok(event) = engine_rx.try_recv() {
         let tui_event = match event {
             nebula_engine::ExecutionEvent::NodeStarted {
-                node_id,
+                node_key,
                 action_key,
                 ..
             } => TuiEvent::NodeStarted {
-                node_id,
+                node_key,
                 name: String::new(),
                 action_key,
             },
             nebula_engine::ExecutionEvent::NodeCompleted {
-                node_id, elapsed, ..
+                node_key, elapsed, ..
             } => TuiEvent::NodeCompleted {
-                node_id,
+                node_key,
                 elapsed,
                 output: serde_json::Value::Null,
             },
-            nebula_engine::ExecutionEvent::NodeFailed { node_id, error, .. } => {
-                TuiEvent::NodeFailed {
-                    node_id,
-                    elapsed: std::time::Duration::ZERO,
-                    error,
-                }
+            nebula_engine::ExecutionEvent::NodeFailed {
+                node_key, error, ..
+            } => TuiEvent::NodeFailed {
+                node_key,
+                elapsed: std::time::Duration::ZERO,
+                error,
             },
-            nebula_engine::ExecutionEvent::NodeSkipped { node_id, .. } => TuiEvent::Log {
+            nebula_engine::ExecutionEvent::NodeSkipped { node_key, .. } => TuiEvent::Log {
                 level: LogLevel::Info,
-                message: format!("node {node_id} skipped"),
+                message: format!("node {node_key} skipped"),
             },
             nebula_engine::ExecutionEvent::ExecutionFinished {
                 success, elapsed, ..
@@ -479,13 +481,13 @@ async fn run_tui_live(
     }
 
     // Also populate outputs/errors from result (events don't carry output data).
-    for (node_id, output) in &result.node_outputs {
-        if let Some(&idx) = app.node_index.get(node_id) {
+    for (node_key, output) in &result.node_outputs {
+        if let Some(&idx) = app.node_index.get(node_key) {
             app.nodes[idx].1.output = Some(output.clone());
         }
     }
-    for (node_id, error) in &result.node_errors {
-        if let Some(&idx) = app.node_index.get(node_id) {
+    for (node_key, error) in &result.node_errors {
+        if let Some(&idx) = app.node_index.get(node_key) {
             app.nodes[idx].1.error = Some(error.clone());
         }
     }

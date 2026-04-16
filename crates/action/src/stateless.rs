@@ -250,7 +250,7 @@ where
         let action_ctx = match &self.base_ctx {
             Some(base) => ActionContext::new(
                 ctx.execution_id(),
-                ctx.node_id(),
+                ctx.node_key(),
                 ctx.workflow_id(),
                 ctx.cancellation().clone(),
             )
@@ -259,7 +259,7 @@ where
             .with_logger(Arc::clone(&base.logger)),
             None => ActionContext::new(
                 ctx.execution_id(),
-                ctx.node_id(),
+                ctx.node_key(),
                 ctx.workflow_id(),
                 ctx.cancellation().clone(),
             ),
@@ -408,7 +408,10 @@ impl<A: Action> fmt::Debug for StatelessActionAdapter<A> {
 
 #[cfg(test)]
 mod tests {
-    use nebula_core::id::{ExecutionId, NodeId, WorkflowId};
+    use nebula_core::{
+        id::{ExecutionId, WorkflowId},
+        node_key,
+    };
     use serde::{Deserialize, Serialize};
     use tokio_util::sync::CancellationToken;
 
@@ -417,7 +420,7 @@ mod tests {
     fn make_ctx() -> ActionContext {
         ActionContext::new(
             ExecutionId::nil(),
-            NodeId::nil(),
+            node_key!("test"),
             WorkflowId::nil(),
             CancellationToken::new(),
         )
@@ -436,7 +439,7 @@ mod tests {
 
         let ctx = ActionContext::new(
             ExecutionId::new(),
-            NodeId::new(),
+            node_key!("test"),
             WorkflowId::new(),
             CancellationToken::new(),
         );
@@ -472,7 +475,7 @@ mod tests {
 
         let ctx = ActionContext::new(
             ExecutionId::new(),
-            NodeId::new(),
+            node_key!("test"),
             WorkflowId::new(),
             CancellationToken::new(),
         );

@@ -1,15 +1,15 @@
 //! Edge (connection) types linking workflow nodes.
 
-use nebula_core::NodeId;
+use nebula_core::NodeKey;
 use serde::{Deserialize, Serialize};
 
 /// A directed edge from one node to another, optionally conditional.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Connection {
     /// Source node.
-    pub from_node: NodeId,
+    pub from_node: NodeKey,
     /// Target node.
-    pub to_node: NodeId,
+    pub to_node: NodeKey,
     /// When the edge should be traversed.
     #[serde(default)]
     pub condition: EdgeCondition,
@@ -27,7 +27,7 @@ pub struct Connection {
 impl Connection {
     /// Create an unconditional connection.
     #[must_use]
-    pub fn new(from_node: NodeId, to_node: NodeId) -> Self {
+    pub fn new(from_node: NodeKey, to_node: NodeKey) -> Self {
         Self {
             from_node,
             to_node,
@@ -148,13 +148,15 @@ pub enum ErrorMatcher {
 
 #[cfg(test)]
 mod tests {
+    use nebula_core::node_key;
+
     use super::*;
 
     #[test]
     fn connection_new() {
-        let a = NodeId::new();
-        let b = NodeId::new();
-        let conn = Connection::new(a, b);
+        let a = node_key!("a");
+        let b = node_key!("b");
+        let conn = Connection::new(a.clone(), b.clone());
         assert_eq!(conn.from_node, a);
         assert_eq!(conn.to_node, b);
         assert!(matches!(conn.condition, EdgeCondition::Always));
@@ -165,16 +167,16 @@ mod tests {
 
     #[test]
     fn connection_is_self_loop() {
-        let a = NodeId::new();
-        let b = NodeId::new();
-        assert!(Connection::new(a, a).is_self_loop());
+        let a = node_key!("a");
+        let b = node_key!("b");
+        assert!(Connection::new(a.clone(), a.clone()).is_self_loop());
         assert!(!Connection::new(a, b).is_self_loop());
     }
 
     #[test]
     fn connection_builder_methods() {
-        let a = NodeId::new();
-        let b = NodeId::new();
+        let a = node_key!("a");
+        let b = node_key!("b");
         let conn = Connection::new(a, b)
             .with_condition(EdgeCondition::Expression {
                 expr: "x > 0".into(),
@@ -211,9 +213,9 @@ mod tests {
 
     #[test]
     fn connection_serde_roundtrip() {
-        let a = NodeId::new();
-        let b = NodeId::new();
-        let conn = Connection::new(a, b)
+        let a = node_key!("a");
+        let b = node_key!("b");
+        let conn = Connection::new(a.clone(), b.clone())
             .with_condition(EdgeCondition::OnResult {
                 matcher: ResultMatcher::FieldEquals {
                     field: "status".into(),

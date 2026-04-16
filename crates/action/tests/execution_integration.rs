@@ -11,7 +11,8 @@ use nebula_action::{
 };
 use nebula_core::{
     action_key,
-    id::{ExecutionId, NodeId, WorkflowId},
+    id::{ExecutionId, WorkflowId},
+    node_key,
 };
 use tokio_util::sync::CancellationToken;
 
@@ -49,7 +50,7 @@ async fn stateless_action_execute_returns_success() {
     };
     let ctx = ActionContext::new(
         ExecutionId::new(),
-        NodeId::new(),
+        node_key!("test"),
         WorkflowId::new(),
         CancellationToken::new(),
     );
@@ -117,7 +118,7 @@ async fn stateful_action_continue_then_break() {
     };
     let ctx = ActionContext::new(
         ExecutionId::new(),
-        NodeId::new(),
+        node_key!("test"),
         WorkflowId::new(),
         CancellationToken::new(),
     );
@@ -185,7 +186,11 @@ async fn trigger_action_start_stop_succeed() {
             "Start/stop no-op",
         ),
     };
-    let ctx = TriggerContext::new(WorkflowId::new(), NodeId::new(), CancellationToken::new());
+    let ctx = TriggerContext::new(
+        WorkflowId::new(),
+        node_key!("test"),
+        CancellationToken::new(),
+    );
     action.start(&ctx).await.unwrap();
     action.stop(&ctx).await.unwrap();
 }
@@ -259,7 +264,7 @@ async fn migrate_state_succeeds_from_v1() {
     let adapter = StatefulActionAdapter::new(action);
     let ctx = ActionContext::new(
         ExecutionId::new(),
-        NodeId::new(),
+        node_key!("test"),
         WorkflowId::new(),
         CancellationToken::new(),
     );
@@ -282,7 +287,7 @@ async fn migrate_state_propagates_error_when_none() {
     let adapter = StatefulActionAdapter::new(action);
     let ctx = ActionContext::new(
         ExecutionId::new(),
-        NodeId::new(),
+        node_key!("test"),
         WorkflowId::new(),
         CancellationToken::new(),
     );

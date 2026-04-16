@@ -5,7 +5,7 @@
 use std::hint::black_box;
 
 use criterion::{Criterion, criterion_group, criterion_main};
-use nebula_core::{ExecutionId, NodeId, WorkflowId};
+use nebula_core::{ExecutionId, NodeKey, WorkflowId, node_key};
 
 fn id_new(c: &mut Criterion) {
     let mut group = c.benchmark_group("id/new");
@@ -15,7 +15,7 @@ fn id_new(c: &mut Criterion) {
     group.bench_function("WorkflowId::new", |b| {
         b.iter(|| black_box(WorkflowId::new()));
     });
-    group.bench_function("NodeId::new", |b| b.iter(|| black_box(NodeId::new())));
+    group.bench_function("NodeKey::new", |b| b.iter(|| black_box(node_key!("test"))));
     group.finish();
 }
 
@@ -23,7 +23,7 @@ fn id_parse(c: &mut Criterion) {
     // Use actual prefixed ULID strings for parse benchmarks
     let exe_s = ExecutionId::new().to_string();
     let wf_s = WorkflowId::new().to_string();
-    let node_s = NodeId::new().to_string();
+    let node_s = node_key!("test").to_string();
     let mut group = c.benchmark_group("id/parse");
     group.bench_function("ExecutionId::parse", |b| {
         b.iter(|| {
@@ -42,12 +42,12 @@ fn id_parse(c: &mut Criterion) {
             )
         });
     });
-    group.bench_function("NodeId::parse", |b| {
+    group.bench_function("NodeKey::parse", |b| {
         b.iter(|| {
             black_box(
                 node_s
-                    .parse::<NodeId>()
-                    .expect("pre-generated NodeId string must parse"),
+                    .parse::<NodeKey>()
+                    .expect("pre-generated NodeKey string must parse"),
             )
         });
     });

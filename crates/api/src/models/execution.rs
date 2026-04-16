@@ -69,7 +69,7 @@ pub struct ExecutionOutputsResponse {
     /// Execution ID
     pub execution_id: String,
 
-    /// Map of node_id (string) → latest output value
+    /// Map of node_key (string) → latest output value
     pub outputs: HashMap<String, serde_json::Value>,
 }
 

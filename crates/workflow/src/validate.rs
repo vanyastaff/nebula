@@ -32,21 +32,21 @@ pub fn validate_workflow(definition: &WorkflowDefinition) -> Vec<WorkflowError> 
     // 3. Check duplicate node IDs
     let mut seen_ids = HashSet::new();
     for node in &definition.nodes {
-        if !seen_ids.insert(node.id) {
-            errors.push(WorkflowError::DuplicateNodeId(node.id));
+        if !seen_ids.insert(node.id.clone()) {
+            errors.push(WorkflowError::DuplicateNodeId(node.id.clone()));
         }
     }
 
     // 4. Check connections reference valid nodes and detect self-loops
     for conn in &definition.connections {
         if !seen_ids.contains(&conn.from_node) {
-            errors.push(WorkflowError::UnknownNode(conn.from_node));
+            errors.push(WorkflowError::UnknownNode(conn.from_node.clone()));
         }
         if !seen_ids.contains(&conn.to_node) {
-            errors.push(WorkflowError::UnknownNode(conn.to_node));
+            errors.push(WorkflowError::UnknownNode(conn.to_node.clone()));
         }
         if conn.is_self_loop() {
-            errors.push(WorkflowError::SelfLoop(conn.from_node));
+            errors.push(WorkflowError::SelfLoop(conn.from_node.clone()));
         }
     }
 
@@ -61,8 +61,8 @@ pub fn validate_workflow(definition: &WorkflowDefinition) -> Vec<WorkflowError> 
         let key = serde_json::to_string(conn).unwrap_or_default();
         if !seen_connections.insert(key) {
             errors.push(WorkflowError::DuplicateConnection {
-                from: conn.from_node,
-                to: conn.to_node,
+                from: conn.from_node.clone(),
+                to: conn.to_node.clone(),
             });
         }
     }
@@ -70,12 +70,12 @@ pub fn validate_workflow(definition: &WorkflowDefinition) -> Vec<WorkflowError> 
     // 5. Check parameter references
     for node in &definition.nodes {
         for param in node.parameters.values() {
-            if let ParamValue::Reference { node_id, .. } = param
-                && !seen_ids.contains(node_id)
+            if let ParamValue::Reference { node_key, .. } = param
+                && !seen_ids.contains(node_key)
             {
                 errors.push(WorkflowError::InvalidParameterReference {
-                    node_id: node.id,
-                    source_node_id: *node_id,
+                    node_key: node.id.clone(),
+                    source_node_key: node_key.clone(),
                 });
             }
         }
@@ -127,7 +127,7 @@ mod tests {
     use std::collections::HashMap;
 
     use chrono::Utc;
-    use nebula_core::{NodeId, WorkflowId};
+    use nebula_core::{NodeKey, WorkflowId, node_key};
 
     use super::*;
     use crate::{
@@ -162,22 +162,26 @@ mod tests {
         }
     }
 
-    fn node(id: NodeId) -> NodeDefinition {
+    fn node(id: NodeKey) -> NodeDefinition {
         NodeDefinition::new(id, "n", "n").unwrap()
     }
 
     #[test]
     fn valid_workflow_returns_empty() {
-        let a = NodeId::new();
-        let b = NodeId::new();
-        let def = make_definition("ok", vec![node(a), node(b)], vec![Connection::new(a, b)]);
+        let a = node_key!("a");
+        let b = node_key!("b");
+        let def = make_definition(
+            "ok",
+            vec![node(a.clone()), node(b.clone())],
+            vec![Connection::new(a, b)],
+        );
         let errors = validate_workflow(&def);
         assert!(errors.is_empty(), "expected no errors, got: {errors:?}");
     }
 
     #[test]
     fn detects_empty_name() {
-        let a = NodeId::new();
+        let a = node_key!("a");
         let def = make_definition("", vec![node(a)], vec![]);
         let errors = validate_workflow(&def);
         assert!(errors.iter().any(|e| matches!(e, WorkflowError::EmptyName)));
@@ -192,9 +196,13 @@ mod tests {
 
     #[test]
     fn detects_unknown_node_in_connection() {
-        let a = NodeId::new();
-        let unknown = NodeId::new();
-        let def = make_definition("bad", vec![node(a)], vec![Connection::new(a, unknown)]);
+        let a = node_key!("a");
+        let unknown = node_key!("unknown");
+        let def = make_definition(
+            "bad",
+            vec![node(a.clone())],
+            vec![Connection::new(a, unknown)],
+        );
         let errors = validate_workflow(&def);
         assert!(
             errors
@@ -205,8 +213,12 @@ mod tests {
 
     #[test]
     fn detects_self_loop() {
-        let a = NodeId::new();
-        let def = make_definition("loop", vec![node(a)], vec![Connection::new(a, a)]);
+        let a = node_key!("a");
+        let def = make_definition(
+            "loop",
+            vec![node(a.clone())],
+            vec![Connection::new(a.clone(), a)],
+        );
         let errors = validate_workflow(&def);
         assert!(
             errors
@@ -217,8 +229,8 @@ mod tests {
 
     #[test]
     fn detects_invalid_parameter_reference() {
-        let a = NodeId::new();
-        let ghost = NodeId::new();
+        let a = node_key!("a");
+        let ghost = node_key!("ghost");
         let mut n = node(a);
         n.parameters
             .insert("input".into(), ParamValue::reference(ghost, "$.data"));
@@ -234,12 +246,15 @@ mod tests {
     #[test]
     fn collects_multiple_errors() {
         // empty name + self-loop + unknown node
-        let a = NodeId::new();
-        let unknown = NodeId::new();
+        let a = node_key!("a");
+        let unknown = node_key!("unknown");
         let def = make_definition(
             "",
-            vec![node(a)],
-            vec![Connection::new(a, a), Connection::new(a, unknown)],
+            vec![node(a.clone())],
+            vec![
+                Connection::new(a.clone(), a.clone()),
+                Connection::new(a, unknown),
+            ],
         );
         let errors = validate_workflow(&def);
         // Should have at least: EmptyName, SelfLoop, UnknownNode
@@ -248,12 +263,12 @@ mod tests {
 
     #[test]
     fn detects_cycle() {
-        let a = NodeId::new();
-        let b = NodeId::new();
+        let a = node_key!("a");
+        let b = node_key!("b");
         let def = make_definition(
             "cycle",
-            vec![node(a), node(b)],
-            vec![Connection::new(a, b), Connection::new(b, a)],
+            vec![node(a.clone()), node(b.clone())],
+            vec![Connection::new(a.clone(), b.clone()), Connection::new(b, a)],
         );
         let errors = validate_workflow(&def);
         assert!(
@@ -265,7 +280,7 @@ mod tests {
 
     #[test]
     fn trigger_validation_rejects_invalid_webhook_path() {
-        let a = NodeId::new();
+        let a = node_key!("a");
         let mut def = make_definition("webhook-test", vec![node(a)], vec![]);
         def.trigger = Some(crate::definition::TriggerDefinition::Webhook {
             method: "POST".into(),
@@ -282,7 +297,7 @@ mod tests {
 
     #[test]
     fn trigger_validation_rejects_empty_cron_expression() {
-        let a = NodeId::new();
+        let a = node_key!("a");
         let mut def = make_definition("cron-test", vec![node(a)], vec![]);
         def.trigger = Some(crate::definition::TriggerDefinition::Cron {
             expression: String::new(),
@@ -298,7 +313,7 @@ mod tests {
 
     #[test]
     fn trigger_validation_accepts_valid_webhook() {
-        let a = NodeId::new();
+        let a = node_key!("a");
         let mut def = make_definition("webhook-ok", vec![node(a)], vec![]);
         def.trigger = Some(crate::definition::TriggerDefinition::Webhook {
             method: "POST".into(),
@@ -315,7 +330,7 @@ mod tests {
 
     #[test]
     fn trigger_validation_accepts_valid_cron() {
-        let a = NodeId::new();
+        let a = node_key!("a");
         let mut def = make_definition("cron-ok", vec![node(a)], vec![]);
         def.trigger = Some(crate::definition::TriggerDefinition::Cron {
             expression: "0 */5 * * *".into(),
@@ -331,7 +346,7 @@ mod tests {
 
     #[test]
     fn detects_unsupported_schema_version() {
-        let a = NodeId::new();
+        let a = node_key!("a");
         let mut def = make_definition("schema-test", vec![node(a)], vec![]);
         def.schema_version = 99;
         let errors = validate_workflow(&def);
@@ -345,10 +360,10 @@ mod tests {
 
     #[test]
     fn detects_duplicate_connection() {
-        let a = NodeId::new();
-        let b = NodeId::new();
+        let a = node_key!("a");
+        let b = node_key!("b");
         // Two identical connections: same from/to, same condition, same ports.
-        let conn = Connection::new(a, b);
+        let conn = Connection::new(a.clone(), b.clone());
         let def = make_definition("dup-conn", vec![node(a), node(b)], vec![conn.clone(), conn]);
         let errors = validate_workflow(&def);
         assert!(
@@ -362,15 +377,15 @@ mod tests {
     #[test]
     fn distinct_multi_edges_are_not_duplicate() {
         use crate::connection::EdgeCondition;
-        let a = NodeId::new();
-        let b = NodeId::new();
+        let a = node_key!("a");
+        let b = node_key!("b");
         // Two edges from A to B but with different conditions — these are
         // distinct (not duplicates) and must not trigger a validation error.
         let def = make_definition(
             "multi-edge",
-            vec![node(a), node(b)],
+            vec![node(a.clone()), node(b.clone())],
             vec![
-                Connection::new(a, b).with_condition(EdgeCondition::Always),
+                Connection::new(a.clone(), b.clone()).with_condition(EdgeCondition::Always),
                 Connection::new(a, b).with_from_port("alt"),
             ],
         );

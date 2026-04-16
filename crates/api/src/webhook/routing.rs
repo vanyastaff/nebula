@@ -93,6 +93,7 @@ impl RoutingMap {
 
 #[cfg(test)]
 mod tests {
+
     use super::*;
 
     // A minimal dummy TriggerHandler for the routing tests so we
@@ -125,7 +126,7 @@ mod tests {
         });
         let ctx = TriggerContext::new(
             nebula_core::WorkflowId::new(),
-            nebula_core::NodeId::new(),
+            nebula_core::node_key!("test"),
             CancellationToken::new(),
         );
         ActivationEntry { handler, ctx }

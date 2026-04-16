@@ -1,7 +1,7 @@
 //! Execution planning — builds a parallel execution schedule from a workflow.
 
 use chrono::{DateTime, Utc};
-use nebula_core::{ExecutionId, NodeId, WorkflowId};
+use nebula_core::{ExecutionId, NodeKey, WorkflowId};
 use nebula_workflow::{DependencyGraph, WorkflowDefinition};
 use serde::{Deserialize, Serialize};
 
@@ -15,11 +15,11 @@ pub struct ExecutionPlan {
     /// Workflow this plan was derived from.
     pub workflow_id: WorkflowId,
     /// Parallel execution groups (each group can run concurrently).
-    pub parallel_groups: Vec<Vec<NodeId>>,
+    pub parallel_groups: Vec<Vec<NodeKey>>,
     /// Nodes with no predecessors (start points).
-    pub entry_nodes: Vec<NodeId>,
+    pub entry_nodes: Vec<NodeKey>,
     /// Nodes with no successors (end points).
-    pub exit_nodes: Vec<NodeId>,
+    pub exit_nodes: Vec<NodeKey>,
     /// Total number of nodes in the plan.
     pub total_nodes: usize,
     /// Resource budget for this execution.
@@ -70,7 +70,7 @@ impl ExecutionPlan {
 mod tests {
     use std::collections::HashMap;
 
-    use nebula_core::WorkflowId;
+    use nebula_core::{WorkflowId, node_key};
     use nebula_workflow::{
         Connection, NodeDefinition, Version, WorkflowConfig, WorkflowDefinition,
     };
@@ -101,18 +101,21 @@ mod tests {
         }
     }
 
-    fn node(id: NodeId) -> NodeDefinition {
+    fn node(id: NodeKey) -> NodeDefinition {
         NodeDefinition::new(id, "n", "n").unwrap()
     }
 
     #[test]
     fn plan_from_linear_workflow() {
-        let a = NodeId::new();
-        let b = NodeId::new();
-        let c = NodeId::new();
+        let a = node_key!("a");
+        let b = node_key!("b");
+        let c = node_key!("c");
         let wf = make_workflow(
-            vec![node(a), node(b), node(c)],
-            vec![Connection::new(a, b), Connection::new(b, c)],
+            vec![node(a.clone()), node(b.clone()), node(c.clone())],
+            vec![
+                Connection::new(a.clone(), b.clone()),
+                Connection::new(b, c.clone()),
+            ],
         );
         let plan =
             ExecutionPlan::from_workflow(ExecutionId::new(), &wf, ExecutionBudget::default())
@@ -126,16 +129,21 @@ mod tests {
 
     #[test]
     fn plan_from_diamond_workflow() {
-        let a = NodeId::new();
-        let b = NodeId::new();
-        let c = NodeId::new();
-        let d = NodeId::new();
+        let a = node_key!("a");
+        let b = node_key!("b");
+        let c = node_key!("c");
+        let d = node_key!("d");
         let wf = make_workflow(
-            vec![node(a), node(b), node(c), node(d)],
             vec![
-                Connection::new(a, b),
-                Connection::new(a, c),
-                Connection::new(b, d),
+                node(a.clone()),
+                node(b.clone()),
+                node(c.clone()),
+                node(d.clone()),
+            ],
+            vec![
+                Connection::new(a.clone(), b.clone()),
+                Connection::new(a, c.clone()),
+                Connection::new(b, d.clone()),
                 Connection::new(c, d),
             ],
         );
@@ -160,7 +168,7 @@ mod tests {
     #[test]
     fn plan_preserves_ids() {
         let exec_id = ExecutionId::new();
-        let a = NodeId::new();
+        let a = node_key!("a");
         let wf = make_workflow(vec![node(a)], vec![]);
         let plan = ExecutionPlan::from_workflow(exec_id, &wf, ExecutionBudget::default()).unwrap();
 
@@ -170,23 +178,26 @@ mod tests {
 
     #[test]
     fn plan_single_node() {
-        let a = NodeId::new();
-        let wf = make_workflow(vec![node(a)], vec![]);
+        let a = node_key!("a");
+        let wf = make_workflow(vec![node(a.clone())], vec![]);
         let plan =
             ExecutionPlan::from_workflow(ExecutionId::new(), &wf, ExecutionBudget::default())
                 .unwrap();
 
         assert_eq!(plan.total_nodes, 1);
         assert_eq!(plan.parallel_groups.len(), 1);
-        assert_eq!(plan.entry_nodes, vec![a]);
+        assert_eq!(plan.entry_nodes, vec![a.clone()]);
         assert_eq!(plan.exit_nodes, vec![a]);
     }
 
     #[test]
     fn plan_serde_roundtrip() {
-        let a = NodeId::new();
-        let b = NodeId::new();
-        let wf = make_workflow(vec![node(a), node(b)], vec![Connection::new(a, b)]);
+        let a = node_key!("a");
+        let b = node_key!("b");
+        let wf = make_workflow(
+            vec![node(a.clone()), node(b.clone())],
+            vec![Connection::new(a, b)],
+        );
         let plan =
             ExecutionPlan::from_workflow(ExecutionId::new(), &wf, ExecutionBudget::default())
                 .unwrap();

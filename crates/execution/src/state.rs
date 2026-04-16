@@ -3,7 +3,7 @@
 use std::collections::HashMap;
 
 use chrono::{DateTime, Utc};
-use nebula_core::{ExecutionId, NodeId, WorkflowId};
+use nebula_core::{ExecutionId, NodeKey, WorkflowId};
 use nebula_workflow::NodeState;
 use serde::{Deserialize, Serialize};
 
@@ -101,7 +101,7 @@ pub struct ExecutionState {
     /// Current execution status.
     pub status: ExecutionStatus,
     /// Per-node execution states.
-    pub node_states: HashMap<NodeId, NodeExecutionState>,
+    pub node_states: HashMap<NodeKey, NodeExecutionState>,
     /// Optimistic concurrency version (bumped on each state change).
     pub version: u64,
     /// When the execution was created.
@@ -126,11 +126,11 @@ pub struct ExecutionState {
 impl ExecutionState {
     /// Create a new execution state.
     #[must_use]
-    pub fn new(execution_id: ExecutionId, workflow_id: WorkflowId, node_ids: &[NodeId]) -> Self {
+    pub fn new(execution_id: ExecutionId, workflow_id: WorkflowId, node_ids: &[NodeKey]) -> Self {
         let now = Utc::now();
         let mut node_states = HashMap::new();
-        for &nid in node_ids {
-            node_states.insert(nid, NodeExecutionState::new());
+        for nid in node_ids {
+            node_states.insert(nid.clone(), NodeExecutionState::new());
         }
 
         Self {
@@ -151,8 +151,8 @@ impl ExecutionState {
 
     /// Get a node's execution state.
     #[must_use]
-    pub fn node_state(&self, node_id: NodeId) -> Option<&NodeExecutionState> {
-        self.node_states.get(&node_id)
+    pub fn node_state(&self, node_key: NodeKey) -> Option<&NodeExecutionState> {
+        self.node_states.get(&node_key)
     }
 
     /// Set a node's execution state directly.
@@ -165,8 +165,8 @@ impl ExecutionState {
     /// tracking the parent [`ExecutionState::version`].
     ///
     /// [`transition_node`]: Self::transition_node
-    pub fn set_node_state(&mut self, node_id: NodeId, state: NodeExecutionState) {
-        self.node_states.insert(node_id, state);
+    pub fn set_node_state(&mut self, node_key: NodeKey, state: NodeExecutionState) {
+        self.node_states.insert(node_key, state);
     }
 
     /// Override a node's raw state without running transition
@@ -185,16 +185,16 @@ impl ExecutionState {
     /// [`transition_node`](Self::transition_node) instead — it
     /// enforces the transition rules.
     ///
-    /// Returns an error only if `node_id` is unknown.
+    /// Returns an error only if `node_key` is unknown.
     pub fn override_node_state(
         &mut self,
-        node_id: NodeId,
+        node_key: NodeKey,
         new_state: NodeState,
     ) -> Result<(), ExecutionError> {
         let ns = self
             .node_states
-            .get_mut(&node_id)
-            .ok_or(ExecutionError::NodeNotFound(node_id))?;
+            .get_mut(&node_key)
+            .ok_or(ExecutionError::NodeNotFound(node_key))?;
         ns.state = new_state;
         self.version += 1;
         self.updated_at = Utc::now();
@@ -215,18 +215,18 @@ impl ExecutionState {
     ///
     /// # Errors
     ///
-    /// - [`ExecutionError::NodeNotFound`] if `node_id` is not in this execution's node map.
+    /// - [`ExecutionError::NodeNotFound`] if `node_key` is not in this execution's node map.
     /// - Any error returned by [`NodeExecutionState::transition_to`] for invalid transitions — in
     ///   which case the version is NOT bumped (the state did not actually change).
     pub fn transition_node(
         &mut self,
-        node_id: NodeId,
+        node_key: NodeKey,
         new_state: NodeState,
     ) -> Result<(), ExecutionError> {
         let ns = self
             .node_states
-            .get_mut(&node_id)
-            .ok_or(ExecutionError::NodeNotFound(node_id))?;
+            .get_mut(&node_key)
+            .ok_or(ExecutionError::NodeNotFound(node_key))?;
         ns.transition_to(new_state)?;
         self.version += 1;
         self.updated_at = Utc::now();
@@ -241,31 +241,31 @@ impl ExecutionState {
 
     /// Get the IDs of all currently active (running/retrying) nodes.
     #[must_use]
-    pub fn active_node_ids(&self) -> Vec<NodeId> {
+    pub fn active_node_ids(&self) -> Vec<NodeKey> {
         self.node_states
             .iter()
             .filter(|(_, ns)| ns.state.is_active())
-            .map(|(&id, _)| id)
+            .map(|(id, _)| id.clone())
             .collect()
     }
 
     /// Get the IDs of all completed nodes.
     #[must_use]
-    pub fn completed_node_ids(&self) -> Vec<NodeId> {
+    pub fn completed_node_ids(&self) -> Vec<NodeKey> {
         self.node_states
             .iter()
             .filter(|(_, ns)| ns.state == NodeState::Completed)
-            .map(|(&id, _)| id)
+            .map(|(id, _)| id.clone())
             .collect()
     }
 
     /// Get the IDs of all failed nodes.
     #[must_use]
-    pub fn failed_node_ids(&self) -> Vec<NodeId> {
+    pub fn failed_node_ids(&self) -> Vec<NodeKey> {
         self.node_states
             .iter()
             .filter(|(_, ns)| ns.state == NodeState::Failed)
-            .map(|(&id, _)| id)
+            .map(|(id, _)| id.clone())
             .collect()
     }
 
@@ -289,12 +289,18 @@ impl ExecutionState {
 
 #[cfg(test)]
 mod tests {
+    use nebula_core::node_key;
+
     use super::*;
 
-    fn make_state() -> (ExecutionState, NodeId, NodeId) {
-        let n1 = NodeId::new();
-        let n2 = NodeId::new();
-        let state = ExecutionState::new(ExecutionId::new(), WorkflowId::new(), &[n1, n2]);
+    fn make_state() -> (ExecutionState, NodeKey, NodeKey) {
+        let n1 = node_key!("n1");
+        let n2 = node_key!("n2");
+        let state = ExecutionState::new(
+            ExecutionId::new(),
+            WorkflowId::new(),
+            &[n1.clone(), n2.clone()],
+        );
         (state, n1, n2)
     }
 
@@ -397,8 +403,8 @@ mod tests {
     #[test]
     fn set_node_state() {
         let (mut state, _n1, _n2) = make_state();
-        let new_node = NodeId::new();
-        state.set_node_state(new_node, NodeExecutionState::new());
+        let new_node = node_key!("new_node");
+        state.set_node_state(new_node.clone(), NodeExecutionState::new());
         assert!(state.node_state(new_node).is_some());
     }
 
@@ -415,16 +421,23 @@ mod tests {
         let t0 = state.updated_at;
 
         state
-            .transition_node(n1, NodeState::Ready)
+            .transition_node(n1.clone(), NodeState::Ready)
             .expect("valid transition");
-        assert_eq!(state.node_state(n1).unwrap().state, NodeState::Ready);
+        assert_eq!(
+            state.node_state(n1.clone()).unwrap().state,
+            NodeState::Ready
+        );
         assert_eq!(state.version, v0 + 1, "version must be bumped");
         assert!(state.updated_at >= t0, "updated_at must move forward");
 
         // Chained transitions each bump the version once.
-        state.transition_node(n1, NodeState::Running).unwrap();
+        state
+            .transition_node(n1.clone(), NodeState::Running)
+            .unwrap();
         assert_eq!(state.version, v0 + 2);
-        state.transition_node(n1, NodeState::Completed).unwrap();
+        state
+            .transition_node(n1.clone(), NodeState::Completed)
+            .unwrap();
         assert_eq!(state.version, v0 + 3);
         assert!(state.node_state(n1).unwrap().state.is_terminal());
     }
@@ -435,7 +448,7 @@ mod tests {
         let v0 = state.version;
         // Pending -> Completed is invalid (must pass through Ready/Running).
         let err = state
-            .transition_node(n1, NodeState::Completed)
+            .transition_node(n1.clone(), NodeState::Completed)
             .expect_err("invalid transition must error");
         assert!(err.to_string().contains("invalid transition"));
         // Version must NOT move on a rejected transition — if it did,
@@ -448,7 +461,7 @@ mod tests {
     #[test]
     fn transition_node_unknown_node_is_error() {
         let (mut state, _n1, _n2) = make_state();
-        let ghost = NodeId::new();
+        let ghost = node_key!("ghost");
         let err = state
             .transition_node(ghost, NodeState::Ready)
             .expect_err("unknown node id");

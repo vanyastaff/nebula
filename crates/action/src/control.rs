@@ -535,7 +535,8 @@ fn derive_category(meta: &ActionMetadata) -> ActionCategory {
 mod tests {
     use nebula_core::{
         action_key,
-        id::{ExecutionId, NodeId, WorkflowId},
+        id::{ExecutionId, WorkflowId},
+        node_key,
     };
     use tokio_util::sync::CancellationToken;
 
@@ -548,7 +549,7 @@ mod tests {
     fn make_ctx() -> ActionContext {
         ActionContext::new(
             ExecutionId::nil(),
-            NodeId::nil(),
+            node_key!("test"),
             WorkflowId::nil(),
             CancellationToken::new(),
         )

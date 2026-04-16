@@ -1,6 +1,6 @@
 //! Execution error types.
 
-use nebula_core::NodeId;
+use nebula_core::NodeKey;
 use thiserror::Error;
 
 use crate::status::ExecutionStatus;
@@ -21,7 +21,7 @@ pub enum ExecutionError {
     /// A referenced node does not exist in the execution state.
     #[classify(category = "not_found", code = "EXECUTION:NODE_NOT_FOUND")]
     #[error("node not found: {0}")]
-    NodeNotFound(NodeId),
+    NodeNotFound(NodeKey),
 
     /// The execution plan failed validation.
     #[classify(category = "validation", code = "EXECUTION:PLAN_VALIDATION")]
@@ -61,6 +61,8 @@ impl ExecutionError {
 
 #[cfg(test)]
 mod tests {
+    use nebula_core::node_key;
+
     use super::*;
 
     #[test]
@@ -77,7 +79,7 @@ mod tests {
 
     #[test]
     fn node_not_found_display() {
-        let id = NodeId::new();
+        let id = node_key!("test");
         let err = ExecutionError::NodeNotFound(id);
         assert!(err.to_string().contains("node not found"));
     }

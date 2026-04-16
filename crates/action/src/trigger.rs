@@ -436,7 +436,7 @@ mod tests {
         atomic::{AtomicBool, Ordering},
     };
 
-    use nebula_core::id::{NodeId, WorkflowId};
+    use nebula_core::{id::WorkflowId, node_key};
     use tokio_util::sync::CancellationToken;
 
     use super::*;
@@ -483,7 +483,11 @@ mod tests {
     }
 
     fn make_trigger_ctx() -> TriggerContext {
-        TriggerContext::new(WorkflowId::nil(), NodeId::nil(), CancellationToken::new())
+        TriggerContext::new(
+            WorkflowId::nil(),
+            node_key!("test"),
+            CancellationToken::new(),
+        )
     }
 
     #[test]

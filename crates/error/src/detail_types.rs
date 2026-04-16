@@ -187,7 +187,7 @@ pub struct PreconditionViolation {
 ///
 /// let mut details = ErrorDetails::new();
 /// details.insert(ExecutionContext {
-///     node_id: Some("http-fetch-1".into()),
+///     node_key: Some("http-fetch-1".into()),
 ///     workflow_id: Some("wf-daily-report".into()),
 ///     correlation_id: Some("req-abc-123".into()),
 ///     attempt: Some(2),
@@ -196,7 +196,7 @@ pub struct PreconditionViolation {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ExecutionContext {
     /// The node that produced this error, if known.
-    pub node_id: Option<String>,
+    pub node_key: Option<String>,
     /// The workflow run that this error belongs to.
     pub workflow_id: Option<String>,
     /// A correlation ID for distributed tracing (e.g. OTel trace ID).
@@ -421,14 +421,14 @@ mod tests {
     fn execution_context_stored_and_retrieved() {
         let mut details = ErrorDetails::new();
         details.insert(ExecutionContext {
-            node_id: Some("http-fetch-1".into()),
+            node_key: Some("http-fetch-1".into()),
             workflow_id: Some("wf-daily-report".into()),
             correlation_id: Some("req-abc-123".into()),
             attempt: Some(2),
         });
 
         let ctx = details.get::<ExecutionContext>().unwrap();
-        assert_eq!(ctx.node_id.as_deref(), Some("http-fetch-1"));
+        assert_eq!(ctx.node_key.as_deref(), Some("http-fetch-1"));
         assert_eq!(ctx.attempt, Some(2));
     }
 

@@ -9,7 +9,7 @@
 //! ## Key Components
 //!
 //! - **Identifiers**: Prefixed ULID types -- `ExecutionId` (`exe_01J9...`), `WorkflowId`
-//!   (`wf_01J9...`), `NodeId` (`node_01J9...`), etc.
+//!   (`wf_01J9...`), etc.
 //! - **Keys**: `PluginKey`, `ActionKey`, `ParameterKey`, `CredentialKey`, `ResourceKey`, `NodeKey`
 //!   -- normalized string keys.
 //! - **Scope System**: `ScopeLevel`, `Scope`, `Principal`, `ScopeResolver`.
@@ -79,8 +79,8 @@ pub mod prelude {
     // Identifiers (ULID-backed)
     #[allow(deprecated)] // OrganizationId re-exported for migration period
     pub use crate::id::{
-        AttemptId, CredentialId, ExecutionId, InstanceId, NodeId, OrgId, OrganizationId,
-        ResourceId, ServiceAccountId, SessionId, TriggerEventId, TriggerId, UserId, WorkflowId,
+        AttemptId, CredentialId, ExecutionId, InstanceId, OrgId, OrganizationId, ResourceId,
+        ServiceAccountId, SessionId, TriggerEventId, TriggerId, UserId, WorkflowId,
         WorkflowVersionId, WorkspaceId,
     };
     // Domain keys (normalized string keys)

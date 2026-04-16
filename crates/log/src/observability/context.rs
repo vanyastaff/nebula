@@ -3,7 +3,7 @@
 //! This module provides a hierarchical context system with three levels:
 //! - **GlobalContext**: Application-wide settings (service name, version, environment)
 //! - **ExecutionContext**: Workflow execution scope (execution_id, workflow_id, tenant_id)
-//! - **NodeContext**: Individual node execution (node_id, action_id, resource access)
+//! - **NodeContext**: Individual node execution (node_key, action_id, resource access)
 //!
 //! # Async-Safe Context Propagation
 //!
@@ -340,7 +340,7 @@ impl ExecutionContext {
 #[derive(Debug, Clone)]
 pub struct NodeContext {
     /// Node instance ID
-    pub node_id: String,
+    pub node_key: String,
     /// Action type ID (e.g., "http.request")
     pub action_id: String,
     /// Retry attempt number (0 for first attempt)
@@ -352,9 +352,9 @@ pub struct NodeContext {
 
 impl NodeContext {
     /// Create a new node context
-    pub fn new(node_id: impl Into<String>, action_id: impl Into<String>) -> Self {
+    pub fn new(node_key: impl Into<String>, action_id: impl Into<String>) -> Self {
         Self {
-            node_id: node_id.into(),
+            node_key: node_key.into(),
             action_id: action_id.into(),
             retry_count: 0,
             resources: Arc::new(ResourceMap::new()),
@@ -505,13 +505,13 @@ mod tests {
         let ctx2 = NodeContext::new("node-2", "action-2");
 
         ctx1.scope_sync(|| {
-            assert_eq!(NodeContext::current().unwrap().node_id, "node-1");
+            assert_eq!(NodeContext::current().unwrap().node_key, "node-1");
 
             ctx2.scope_sync(|| {
-                assert_eq!(NodeContext::current().unwrap().node_id, "node-2");
+                assert_eq!(NodeContext::current().unwrap().node_key, "node-2");
             });
 
-            assert_eq!(NodeContext::current().unwrap().node_id, "node-1");
+            assert_eq!(NodeContext::current().unwrap().node_key, "node-1");
         });
 
         assert!(NodeContext::current().is_none());
@@ -533,7 +533,7 @@ mod tests {
                 // service_name depends on test ordering.
                 assert!(snapshot.global.is_some());
                 assert_eq!(snapshot.execution.unwrap().execution_id, "exec-1");
-                assert_eq!(snapshot.node.unwrap().node_id, "node-1");
+                assert_eq!(snapshot.node.unwrap().node_key, "node-1");
             });
         });
     }
@@ -572,11 +572,11 @@ mod tests {
     mod async_tests {
         use super::*;
 
-        async fn assert_node_context_persists(node_id: &str) {
+        async fn assert_node_context_persists(node_key: &str) {
             assert!(ExecutionContext::current().is_some());
-            assert_eq!(NodeContext::current().unwrap().node_id, node_id);
+            assert_eq!(NodeContext::current().unwrap().node_key, node_key);
             tokio::task::yield_now().await;
-            assert_eq!(NodeContext::current().unwrap().node_id, node_id);
+            assert_eq!(NodeContext::current().unwrap().node_key, node_key);
         }
 
         async fn send_current_execution_id(tx: tokio::sync::mpsc::Sender<String>) {
@@ -607,9 +607,9 @@ mod tests {
         async fn test_node_context_survives_await() {
             let ctx = NodeContext::new("node-async", "action-async");
             ctx.scope(async {
-                assert_eq!(NodeContext::current().unwrap().node_id, "node-async");
+                assert_eq!(NodeContext::current().unwrap().node_key, "node-async");
                 tokio::task::yield_now().await;
-                assert_eq!(NodeContext::current().unwrap().node_id, "node-async");
+                assert_eq!(NodeContext::current().unwrap().node_key, "node-async");
             })
             .await;
         }

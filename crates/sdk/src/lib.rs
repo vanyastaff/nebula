@@ -165,7 +165,7 @@ macro_rules! workflow {
     (
         name: $name:expr,
         nodes: [
-            $($node_id:ident: $action:ty $(=> $next:ident)?),* $(,)?
+            $($node_key:ident: $action:ty $(=> $next:ident)?),* $(,)?
         ]
     ) => {{
         use $crate::workflow::WorkflowBuilder;
@@ -173,11 +173,11 @@ macro_rules! workflow {
         let mut builder = WorkflowBuilder::new($name);
         $(
             builder = builder.add_node(
-                stringify!($node_id),
+                stringify!($node_key),
                 stringify!($action)
             );
             $(
-                builder = builder.connect(stringify!($node_id), stringify!($next));
+                builder = builder.connect(stringify!($node_key), stringify!($next));
             )?
         )*
         builder
