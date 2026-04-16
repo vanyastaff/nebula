@@ -71,6 +71,7 @@ skip = [
     "rand",
     "rand_chacha",
     "rand_core",
+    "redox_syscall",
     "rustix",
     "sha2",
     "thiserror",
