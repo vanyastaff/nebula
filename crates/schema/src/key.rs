@@ -55,10 +55,7 @@ impl From<&'static str> for FieldKey {
     fn from(value: &'static str) -> Self {
         match Self::new(value) {
             Ok(key) => key,
-            Err(error) => {
-                debug_assert!(false, "invalid static FieldKey: {error}");
-                Self(value.to_owned())
-            },
+            Err(error) => panic!("invalid static FieldKey literal `{value}`: {error}"),
         }
     }
 }
