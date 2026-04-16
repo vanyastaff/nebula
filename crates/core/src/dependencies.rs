@@ -81,7 +81,12 @@ pub struct ResourceRequirement {
     pub purpose: Option<&'static str>,
 }
 
-/// Errors from dependency validation.
+/// Errors from dependency validation (registration-time).
+///
+/// Note: `CoreError::DependencyCycle` / `DependencyMissing` exist for the
+/// public API boundary. This error type is used internally by registry
+/// validation code. The overlap is intentional — `DependencyError` is
+/// converted to `CoreError` at the API boundary via `From` impl.
 #[derive(Debug, thiserror::Error)]
 pub enum DependencyError {
     /// A required dependency was not registered.
