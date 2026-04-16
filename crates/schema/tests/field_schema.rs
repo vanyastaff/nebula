@@ -1,6 +1,6 @@
 use nebula_schema::{
     BooleanWidget, ExecutionMode, Field, FieldValues, NumberWidget, RequiredMode, Schema,
-    SecretWidget, SelectWidget, StringWidget, VisibilityMode,
+    SecretWidget, SelectWidget, StringWidget, Transformer, VisibilityMode,
 };
 use serde_json::json;
 
@@ -129,6 +129,100 @@ fn normalize_backfills_defaults() {
 
     assert_eq!(normalized.get_string("host"), Some("db.internal"));
     assert_eq!(normalized.get("port"), Some(&json!(5432)));
+}
+
+#[test]
+fn normalize_recurses_for_object_list_and_mode_defaults() {
+    let schema = Schema::new()
+        .add(
+            Field::object("config")
+                .add(Field::string("host").default(json!("localhost")))
+                .add(Field::number("port").default(json!(8080))),
+        )
+        .add(
+            Field::list("items").item(
+                Field::object("item")
+                    .add(Field::string("name").default(json!("unnamed")))
+                    .add(Field::number("qty").default(json!(1))),
+            ),
+        )
+        .add(
+            Field::mode("auth")
+                .variant(
+                    "bearer",
+                    "Bearer",
+                    Field::object("payload").add(Field::secret("token").default(json!("secret"))),
+                )
+                .default_variant("bearer"),
+        );
+
+    let mut values = FieldValues::new();
+    values.set("config", json!({ "host": "db.internal" }));
+    values.set("items", json!([{ "name": "apple" }, {}]));
+
+    let normalized = schema.normalize(&values);
+    assert_eq!(
+        normalized.get("config"),
+        Some(&json!({ "host": "db.internal", "port": 8080 }))
+    );
+    assert_eq!(
+        normalized.get("items"),
+        Some(&json!([{ "name": "apple", "qty": 1 }, { "name": "unnamed", "qty": 1 }]))
+    );
+    assert_eq!(
+        normalized.get("auth"),
+        Some(&json!({ "mode": "bearer", "value": { "token": "secret" } }))
+    );
+}
+
+#[test]
+fn validate_enforces_scalar_type_mismatches() {
+    let schema = Schema::new()
+        .add(Field::string("name").required())
+        .add(Field::number("retries").required())
+        .add(Field::boolean("enabled").required());
+    let mut values = FieldValues::new();
+    values.set("name", json!(123));
+    values.set("retries", json!("bad"));
+    values.set("enabled", json!("true"));
+
+    let report = schema.validate(&values, ExecutionMode::StaticOnly);
+    assert!(report.has_errors());
+    assert!(report.errors().iter().any(|issue| issue.key == "name"));
+    assert!(report.errors().iter().any(|issue| issue.key == "retries"));
+    assert!(report.errors().iter().any(|issue| issue.key == "enabled"));
+}
+
+#[test]
+fn validate_applies_transformers_before_rules() {
+    let schema = Schema::new().add(
+        Field::string("api_key")
+            .with_transformer(Transformer::Trim)
+            .with_rule(nebula_validator::Rule::MaxLength {
+                max: 6,
+                message: None,
+            }),
+    );
+    let mut values = FieldValues::new();
+    values.set("api_key", json!("  SECRET  "));
+
+    let report = schema.validate(&values, ExecutionMode::StaticOnly);
+    assert!(!report.has_errors());
+}
+
+#[test]
+fn validate_enforces_file_value_shape() {
+    let schema = Schema::new()
+        .add(Field::file("single").required())
+        .add(Field::file("many").multiple().required());
+    let mut values = FieldValues::new();
+    values.set("single", json!(true));
+    values.set("many", json!(["a.txt", 42]));
+
+    let report = schema.validate(&values, ExecutionMode::StaticOnly);
+    assert!(report.has_errors());
+    assert!(report.errors().iter().any(|issue| issue.key == "single"));
+    assert!(report.errors().iter().any(|issue| issue.key == "many"));
 }
 
 #[test]

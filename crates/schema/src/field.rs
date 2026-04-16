@@ -132,6 +132,13 @@ macro_rules! define_field {
                 self
             }
 
+            /// Append a runtime transformer.
+            #[must_use]
+            pub fn with_transformer(mut self, transformer: Transformer) -> Self {
+                self.transformers.push(transformer);
+                self
+            }
+
             /// Finalize this typed field as enum wrapper.
             #[must_use]
             pub fn into_field(self) -> Field {
@@ -268,6 +275,7 @@ impl BooleanField {
 define_field!(SelectField {
     options: Vec<SelectOption> = Vec::new(),
     dynamic: bool = false,
+    loader: Option<String> = None,
     depends_on: Vec<FieldPath> = Vec::new(),
     multiple: bool = false,
     allow_custom: bool = false,
@@ -290,6 +298,28 @@ impl SelectField {
         self
     }
 
+    /// Resolve options dynamically from a named loader.
+    #[must_use]
+    pub fn loader(mut self, loader_key: impl Into<String>) -> Self {
+        self.dynamic = true;
+        self.loader = Some(loader_key.into());
+        self
+    }
+
+    /// Mark this field as dynamic without selecting a loader yet.
+    #[must_use]
+    pub fn dynamic(mut self) -> Self {
+        self.dynamic = true;
+        self
+    }
+
+    /// Add a dependency path used as loader context.
+    #[must_use]
+    pub fn depends_on(mut self, path: impl Into<FieldPath>) -> Self {
+        self.depends_on.push(path.into());
+        self
+    }
+
     /// Enable multi-select mode.
     #[must_use]
     pub fn multiple(mut self) -> Self {
@@ -301,6 +331,13 @@ impl SelectField {
     #[must_use]
     pub fn searchable(mut self) -> Self {
         self.searchable = true;
+        self
+    }
+
+    /// Allow values that are missing from static options.
+    #[must_use]
+    pub fn allow_custom(mut self) -> Self {
+        self.allow_custom = true;
         self
     }
 }
@@ -434,6 +471,29 @@ define_field!(FileField {
     multiple: bool = false,
 });
 
+impl FileField {
+    /// Limit accepted file MIME patterns.
+    #[must_use]
+    pub fn accept(mut self, mime: impl Into<String>) -> Self {
+        self.accept = Some(mime.into());
+        self
+    }
+
+    /// Set maximum file size in bytes.
+    #[must_use]
+    pub fn max_size(mut self, bytes: u64) -> Self {
+        self.max_size = Some(bytes);
+        self
+    }
+
+    /// Enable multi-file selection mode.
+    #[must_use]
+    pub fn multiple(mut self) -> Self {
+        self.multiple = true;
+        self
+    }
+}
+
 define_field!(HiddenField {});
 
 define_field!(ComputedField {
@@ -455,7 +515,24 @@ pub enum ComputedReturn {
 
 define_field!(DynamicField {
     depends_on: Vec<FieldPath> = Vec::new(),
+    loader: Option<String> = None,
 });
+
+impl DynamicField {
+    /// Resolve payload from a named loader.
+    #[must_use]
+    pub fn loader(mut self, loader_key: impl Into<String>) -> Self {
+        self.loader = Some(loader_key.into());
+        self
+    }
+
+    /// Add a dependency path used as loader context.
+    #[must_use]
+    pub fn depends_on(mut self, path: impl Into<FieldPath>) -> Self {
+        self.depends_on.push(path.into());
+        self
+    }
+}
 
 define_field!(NoticeField {
     severity: NoticeSeverity = NoticeSeverity::Info,
@@ -707,6 +784,30 @@ impl Field {
             Self::Computed(field) => field.rules.as_slice(),
             Self::Dynamic(field) => field.rules.as_slice(),
             Self::Notice(field) => field.rules.as_slice(),
+        }
+    }
+
+    /// Shared transformer accessor.
+    pub fn transformers(&self) -> &[Transformer] {
+        match self {
+            Self::String(field) => field.transformers.as_slice(),
+            Self::Secret(field) => field.transformers.as_slice(),
+            Self::Number(field) => field.transformers.as_slice(),
+            Self::Boolean(field) => field.transformers.as_slice(),
+            Self::Select(field) => field.transformers.as_slice(),
+            Self::Object(field) => field.transformers.as_slice(),
+            Self::List(field) => field.transformers.as_slice(),
+            Self::Mode(field) => field.transformers.as_slice(),
+            Self::Code(field) => field.transformers.as_slice(),
+            Self::Date(field) => field.transformers.as_slice(),
+            Self::DateTime(field) => field.transformers.as_slice(),
+            Self::Time(field) => field.transformers.as_slice(),
+            Self::Color(field) => field.transformers.as_slice(),
+            Self::File(field) => field.transformers.as_slice(),
+            Self::Hidden(field) => field.transformers.as_slice(),
+            Self::Computed(field) => field.transformers.as_slice(),
+            Self::Dynamic(field) => field.transformers.as_slice(),
+            Self::Notice(field) => field.transformers.as_slice(),
         }
     }
 

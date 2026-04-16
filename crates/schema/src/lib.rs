@@ -15,6 +15,10 @@ pub mod error;
 pub mod field;
 /// Strongly typed field identifiers.
 pub mod key;
+/// Static schema lint diagnostics.
+pub mod lint;
+/// Runtime loader registry and async loader types.
+pub mod loader;
 /// Visibility/required mode configuration.
 pub mod mode;
 /// Select-option models.
@@ -39,6 +43,11 @@ pub use field::{
     NoticeSeverity, NumberField, ObjectField, SecretField, SelectField, StringField, TimeField,
 };
 pub use key::FieldKey;
+pub use lint::{LintDiagnostic, LintLevel, LintReport, lint_schema};
+pub use loader::{
+    Loader, LoaderContext, LoaderError, LoaderFuture, LoaderRegistry, LoaderResult, OptionLoader,
+    RecordLoader,
+};
 pub use mode::{RequiredMode, VisibilityMode};
 pub use nebula_validator::ExecutionMode;
 pub use option::SelectOption;
@@ -57,9 +66,9 @@ pub mod prelude {
     pub use nebula_validator::Rule;
 
     pub use crate::{
-        BooleanField, BooleanWidget, CodeWidget, Field, FieldKey, ListWidget, NumberField,
-        NumberWidget, ObjectField, ObjectWidget, RequiredMode, Schema, SchemaError, SecretField,
-        SecretWidget, SelectField, SelectOption, SelectWidget, StringField, StringWidget,
-        VisibilityMode,
+        BooleanField, BooleanWidget, CodeWidget, Field, FieldKey, ListWidget, LoaderContext,
+        LoaderRegistry, NumberField, NumberWidget, ObjectField, ObjectWidget, RequiredMode, Schema,
+        SchemaError, SecretField, SecretWidget, SelectField, SelectOption, SelectWidget,
+        StringField, StringWidget, VisibilityMode,
     };
 }

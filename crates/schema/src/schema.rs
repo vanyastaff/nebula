@@ -2,9 +2,12 @@ use std::collections::HashMap;
 
 use nebula_validator::{ExecutionMode, validate_rules};
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
+use serde_json::{Map, Value};
 
-use crate::{Field, FieldValues, RequiredMode, ValidationIssue, ValidationReport, VisibilityMode};
+use crate::{
+    Field, FieldValues, LintReport, LoaderContext, LoaderRegistry, LoaderResult, RequiredMode,
+    SchemaError, SelectOption, ValidationIssue, ValidationReport, VisibilityMode, lint_schema,
+};
 
 /// Top-level schema definition for action/resource inputs.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
@@ -12,6 +15,8 @@ pub struct Schema {
     /// Ordered field list.
     fields: Vec<Field>,
 }
+
+const MAX_NESTED_DEPTH: u8 = 16;
 
 impl Schema {
     /// Create an empty schema.
@@ -59,6 +64,11 @@ impl Schema {
         self.fields.as_slice()
     }
 
+    /// Run static lint checks for schema structure and references.
+    pub fn lint(&self) -> LintReport {
+        lint_schema(self)
+    }
+
     /// Validate runtime values against this schema.
     pub fn validate(&self, values: &FieldValues, mode: ExecutionMode) -> ValidationReport {
         let mut report = ValidationReport::new();
@@ -77,15 +87,63 @@ impl Schema {
         let mut normalized = values.clone();
 
         for field in &self.fields {
-            let key = field.key().as_str();
-            if !normalized.contains(key)
-                && let Some(default) = field.default()
-            {
-                normalized.set(key.to_owned(), default.clone());
-            }
+            let key = field.key().as_str().to_owned();
+            self.normalize_field(field, &key, &mut normalized, 0);
         }
 
         normalized
+    }
+
+    /// Resolve dynamic options for a select field through loader registry.
+    pub async fn load_select_options(
+        &self,
+        key: &str,
+        registry: &LoaderRegistry,
+        context: LoaderContext,
+    ) -> Result<LoaderResult<SelectOption>, SchemaError> {
+        let field = self
+            .find(key)
+            .ok_or_else(|| SchemaError::FieldNotFound(key.to_owned()))?;
+        let Field::Select(select) = field else {
+            return Err(SchemaError::InvalidFieldType {
+                key: key.to_owned(),
+                expected: "select",
+                actual: Self::field_type_name(field),
+            });
+        };
+        let Some(loader_key) = select.loader.as_deref() else {
+            return Err(SchemaError::LoaderNotConfigured(key.to_owned()));
+        };
+        registry
+            .load_options(loader_key, context)
+            .await
+            .map_err(Into::into)
+    }
+
+    /// Resolve dynamic record payloads for a dynamic field through registry.
+    pub async fn load_dynamic_records(
+        &self,
+        key: &str,
+        registry: &LoaderRegistry,
+        context: LoaderContext,
+    ) -> Result<LoaderResult<Value>, SchemaError> {
+        let field = self
+            .find(key)
+            .ok_or_else(|| SchemaError::FieldNotFound(key.to_owned()))?;
+        let Field::Dynamic(dynamic) = field else {
+            return Err(SchemaError::InvalidFieldType {
+                key: key.to_owned(),
+                expected: "dynamic",
+                actual: Self::field_type_name(field),
+            });
+        };
+        let Some(loader_key) = dynamic.loader.as_deref() else {
+            return Err(SchemaError::LoaderNotConfigured(key.to_owned()));
+        };
+        registry
+            .load_records(loader_key, context)
+            .await
+            .map_err(Into::into)
     }
 
     fn validate_single_field(
@@ -97,6 +155,15 @@ impl Schema {
         mode: ExecutionMode,
         report: &mut ValidationReport,
     ) {
+        if Self::depth_from_path(path) > MAX_NESTED_DEPTH {
+            report.push_error(ValidationIssue::new(
+                path,
+                "max_depth",
+                format!("field nesting depth exceeds {MAX_NESTED_DEPTH}"),
+            ));
+            return;
+        }
+
         let is_visible = match field.visible() {
             VisibilityMode::Always => true,
             VisibilityMode::When(rule) => rule.evaluate(context),
@@ -125,7 +192,9 @@ impl Schema {
             return;
         };
 
-        if let Err(errors) = validate_rules(value, field.rules(), mode) {
+        let transformed = Self::apply_transformers(field, value);
+
+        if let Err(errors) = validate_rules(&transformed, field.rules(), mode) {
             for error in errors.errors() {
                 report.push_error(ValidationIssue::new(
                     path,
@@ -135,9 +204,13 @@ impl Schema {
             }
         }
 
-        self.validate_field_type(field, value, path, mode, report);
+        self.validate_field_type(field, &transformed, path, mode, report);
     }
 
+    #[expect(
+        clippy::excessive_nesting,
+        reason = "field-type dispatch includes nested validation branches by design"
+    )]
     fn validate_field_type(
         &self,
         field: &Field,
@@ -147,6 +220,112 @@ impl Schema {
         report: &mut ValidationReport,
     ) {
         match field {
+            Field::File(file) => {
+                if file.multiple {
+                    let Some(items) = value.as_array() else {
+                        report.push_error(ValidationIssue::new(
+                            path,
+                            "type_mismatch",
+                            "multi-file field expects array value",
+                        ));
+                        return;
+                    };
+                    if items.iter().any(|item| !item.is_string()) {
+                        report.push_error(ValidationIssue::new(
+                            path,
+                            "type_mismatch",
+                            "multi-file field expects array of string values",
+                        ));
+                    }
+                } else if !value.is_string() {
+                    report.push_error(ValidationIssue::new(
+                        path,
+                        "type_mismatch",
+                        "file field expects string value",
+                    ));
+                }
+            },
+            Field::String(_)
+            | Field::Secret(_)
+            | Field::Code(_)
+            | Field::Date(_)
+            | Field::DateTime(_)
+            | Field::Time(_)
+            | Field::Color(_)
+            | Field::Hidden(_) => {
+                if !value.is_string() {
+                    report.push_error(ValidationIssue::new(
+                        path,
+                        "type_mismatch",
+                        "field expects string value",
+                    ));
+                }
+            },
+            Field::Computed(_) | Field::Dynamic(_) | Field::Notice(_) => {},
+            Field::Number(number_field) => {
+                let Some(number) = value.as_f64() else {
+                    report.push_error(ValidationIssue::new(
+                        path,
+                        "type_mismatch",
+                        "number field expects numeric value",
+                    ));
+                    return;
+                };
+                if number_field.integer && number.fract() != 0.0 {
+                    report.push_error(ValidationIssue::new(
+                        path,
+                        "type_mismatch",
+                        "integer field expects whole number value",
+                    ));
+                }
+            },
+            Field::Boolean(_) => {
+                if !value.is_boolean() {
+                    report.push_error(ValidationIssue::new(
+                        path,
+                        "type_mismatch",
+                        "boolean field expects bool value",
+                    ));
+                }
+            },
+            Field::Select(select) => {
+                if select.multiple {
+                    let Some(values) = value.as_array() else {
+                        report.push_error(ValidationIssue::new(
+                            path,
+                            "type_mismatch",
+                            "multi-select field expects array value",
+                        ));
+                        return;
+                    };
+                    if select.allow_custom || select.options.is_empty() {
+                        return;
+                    }
+                    for (index, option_value) in values.iter().enumerate() {
+                        let is_allowed = select
+                            .options
+                            .iter()
+                            .any(|option| option.value == *option_value);
+                        if is_allowed {
+                            continue;
+                        }
+                        report.push_error(ValidationIssue::new(
+                            format!("{path}[{index}]"),
+                            "invalid_option",
+                            "value is not in allowed option set",
+                        ));
+                    }
+                } else if !select.allow_custom
+                    && !select.options.is_empty()
+                    && !select.options.iter().any(|option| option.value == *value)
+                {
+                    report.push_error(ValidationIssue::new(
+                        path,
+                        "invalid_option",
+                        "value is not in allowed option set",
+                    ));
+                }
+            },
             Field::List(list) => {
                 let Some(array) = value.as_array() else {
                     report.push_error(ValidationIssue::new(
@@ -267,14 +446,245 @@ impl Schema {
                     report,
                 );
             },
+        }
+    }
+
+    fn apply_transformers(field: &Field, value: &Value) -> Value {
+        field
+            .transformers()
+            .iter()
+            .fold(value.clone(), |current, transformer| {
+                transformer.apply(&current)
+            })
+    }
+
+    fn normalize_field(&self, field: &Field, path: &str, values: &mut FieldValues, depth: u8) {
+        if depth >= MAX_NESTED_DEPTH {
+            return;
+        }
+
+        if matches!(
+            field,
+            Field::Computed(_) | Field::Notice(_) | Field::Hidden(_)
+        ) {
+            return;
+        }
+
+        if !values.contains(path) {
+            if let Some(default) = field.default() {
+                values.set(path.to_owned(), default.clone());
+            } else if let Field::Mode(mode) = field
+                && let Some(default_variant) = mode.default_variant.as_deref()
+            {
+                values.set(
+                    path.to_owned(),
+                    serde_json::json!({ "mode": default_variant }),
+                );
+            } else {
+                return;
+            }
+        }
+
+        let Some(current) = values.get(path).cloned() else {
+            return;
+        };
+
+        match field {
+            Field::Object(object_field) => {
+                let Some(mut object) = current.as_object().cloned() else {
+                    return;
+                };
+                self.normalize_object_children(&object_field.fields, &mut object, depth + 1);
+                values.set(path.to_owned(), Value::Object(object));
+            },
+            Field::List(list) => {
+                let Some(array) = current.as_array() else {
+                    return;
+                };
+                let Some(item_schema) = list.item.as_deref() else {
+                    return;
+                };
+                let mut normalized = Vec::with_capacity(array.len());
+                for item in array {
+                    normalized.push(self.normalize_nested_value(item_schema, item, depth + 1));
+                }
+                values.set(path.to_owned(), Value::Array(normalized));
+            },
+            Field::Mode(mode) => {
+                let Some(mut object) = current.as_object().cloned() else {
+                    return;
+                };
+                let Some(mode_key) = object
+                    .get("mode")
+                    .and_then(Value::as_str)
+                    .or(mode.default_variant.as_deref())
+                else {
+                    values.set(path.to_owned(), Value::Object(object));
+                    return;
+                };
+                let mode_key = mode_key.to_owned();
+
+                object
+                    .entry("mode".to_owned())
+                    .or_insert_with(|| Value::String(mode_key.clone()));
+
+                if let Some(variant) = mode
+                    .variants
+                    .iter()
+                    .find(|candidate| candidate.key == mode_key)
+                {
+                    let normalized = if let Some(value) = object.get("value") {
+                        self.normalize_nested_value(&variant.field, value, depth + 1)
+                    } else if let Some(default) = variant.field.default() {
+                        self.normalize_nested_value(&variant.field, default, depth + 1)
+                    } else {
+                        self.normalize_nested_value(
+                            &variant.field,
+                            &Value::Object(Map::new()),
+                            depth + 1,
+                        )
+                    };
+                    object.insert("value".to_owned(), normalized);
+                }
+
+                values.set(path.to_owned(), Value::Object(object));
+            },
             _ => {},
         }
     }
 
-    fn object_to_context(object: &serde_json::Map<String, Value>) -> HashMap<String, Value> {
+    fn normalize_object_children(
+        &self,
+        fields: &[Field],
+        object: &mut Map<String, Value>,
+        depth: u8,
+    ) {
+        if depth >= MAX_NESTED_DEPTH {
+            return;
+        }
+
+        for child in fields {
+            let key = child.key().as_str().to_owned();
+            if !object.contains_key(&key)
+                && let Some(default) = child.default()
+            {
+                object.insert(key.clone(), default.clone());
+            }
+
+            if !object.contains_key(&key)
+                && let Field::Mode(mode_field) = child
+                && let Some(default_variant) = mode_field.default_variant.as_deref()
+            {
+                object.insert(key.clone(), serde_json::json!({ "mode": default_variant }));
+            }
+
+            if let Some(value) = object.get(&key).cloned() {
+                object.insert(key, self.normalize_nested_value(child, &value, depth + 1));
+            }
+        }
+    }
+
+    fn normalize_nested_value(&self, field: &Field, value: &Value, depth: u8) -> Value {
+        if depth >= MAX_NESTED_DEPTH {
+            return value.clone();
+        }
+
+        match field {
+            Field::Object(object_field) => {
+                let Some(mut object) = value.as_object().cloned() else {
+                    return value.clone();
+                };
+                self.normalize_object_children(&object_field.fields, &mut object, depth + 1);
+                Value::Object(object)
+            },
+            Field::List(list) => {
+                let Some(array) = value.as_array() else {
+                    return value.clone();
+                };
+                let Some(item_schema) = list.item.as_deref() else {
+                    return value.clone();
+                };
+                let normalized = array
+                    .iter()
+                    .map(|item| self.normalize_nested_value(item_schema, item, depth + 1))
+                    .collect();
+                Value::Array(normalized)
+            },
+            Field::Mode(mode) => {
+                let Some(mut object) = value.as_object().cloned() else {
+                    return value.clone();
+                };
+                let Some(mode_key) = object
+                    .get("mode")
+                    .and_then(Value::as_str)
+                    .or(mode.default_variant.as_deref())
+                else {
+                    return Value::Object(object);
+                };
+                let mode_key = mode_key.to_owned();
+
+                object
+                    .entry("mode".to_owned())
+                    .or_insert_with(|| Value::String(mode_key.clone()));
+                if let Some(variant) = mode
+                    .variants
+                    .iter()
+                    .find(|candidate| candidate.key == mode_key)
+                {
+                    let normalized = if let Some(value) = object.get("value") {
+                        self.normalize_nested_value(&variant.field, value, depth + 1)
+                    } else if let Some(default) = variant.field.default() {
+                        self.normalize_nested_value(&variant.field, default, depth + 1)
+                    } else {
+                        self.normalize_nested_value(
+                            &variant.field,
+                            &Value::Object(Map::new()),
+                            depth + 1,
+                        )
+                    };
+                    object.insert("value".to_owned(), normalized);
+                }
+                Value::Object(object)
+            },
+            _ => value.clone(),
+        }
+    }
+
+    fn depth_from_path(path: &str) -> u8 {
+        let separators = path
+            .chars()
+            .filter(|character| *character == '.' || *character == '[')
+            .count();
+        separators as u8
+    }
+
+    fn object_to_context(object: &Map<String, Value>) -> HashMap<String, Value> {
         object
             .iter()
             .map(|(key, value)| (key.clone(), value.clone()))
             .collect()
+    }
+
+    fn field_type_name(field: &Field) -> &'static str {
+        match field {
+            Field::String(_) => "string",
+            Field::Secret(_) => "secret",
+            Field::Number(_) => "number",
+            Field::Boolean(_) => "boolean",
+            Field::Select(_) => "select",
+            Field::Object(_) => "object",
+            Field::List(_) => "list",
+            Field::Mode(_) => "mode",
+            Field::Code(_) => "code",
+            Field::Date(_) => "date",
+            Field::DateTime(_) => "datetime",
+            Field::Time(_) => "time",
+            Field::Color(_) => "color",
+            Field::File(_) => "file",
+            Field::Hidden(_) => "hidden",
+            Field::Computed(_) => "computed",
+            Field::Dynamic(_) => "dynamic",
+            Field::Notice(_) => "notice",
+        }
     }
 }

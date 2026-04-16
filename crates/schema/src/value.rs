@@ -69,7 +69,46 @@ impl FieldValue {
     }
 
     fn contains_expression_marker(text: &str) -> bool {
-        text.contains("{{") && text.contains("}}")
+        let bytes = text.as_bytes();
+        let mut index = 0;
+        while index + 1 < bytes.len() {
+            if bytes[index] == b'{' && bytes[index + 1] == b'{' {
+                // Escaped "{{{{" should be treated as a literal.
+                if index + 3 < bytes.len() && bytes[index + 2] == b'{' && bytes[index + 3] == b'{' {
+                    index += 4;
+                    continue;
+                }
+                return true;
+            }
+            index += 1;
+        }
+        false
+    }
+}
+
+/// Trait for numeric extraction helpers.
+pub trait Numeric: Copy + Sized + 'static {
+    /// Parse value from JSON.
+    fn from_json(value: &Value) -> Option<Self>;
+}
+
+impl Numeric for f64 {
+    fn from_json(value: &Value) -> Option<Self> {
+        value.as_f64()
+    }
+}
+
+impl Numeric for i64 {
+    fn from_json(value: &Value) -> Option<Self> {
+        value
+            .as_i64()
+            .or_else(|| value.as_u64().and_then(|number| i64::try_from(number).ok()))
+    }
+}
+
+impl Numeric for u64 {
+    fn from_json(value: &Value) -> Option<Self> {
+        value.as_u64()
     }
 }
 
@@ -89,6 +128,11 @@ impl FieldValues {
         self.0.insert(key.into(), value);
     }
 
+    /// Remove value by key, returning previous value if any.
+    pub fn remove(&mut self, key: &str) -> Option<Value> {
+        self.0.remove(key)
+    }
+
     /// Borrow value by key.
     pub fn get(&self, key: &str) -> Option<&Value> {
         self.0.get(key)
@@ -97,6 +141,21 @@ impl FieldValues {
     /// Returns true when key exists.
     pub fn contains(&self, key: &str) -> bool {
         self.0.contains_key(key)
+    }
+
+    /// Number of values currently set.
+    pub fn len(&self) -> usize {
+        self.0.len()
+    }
+
+    /// Returns true if no values are set.
+    pub fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
+
+    /// Iterate over known keys.
+    pub fn keys(&self) -> impl Iterator<Item = &str> {
+        self.0.keys().map(String::as_str)
     }
 
     /// Parse value into typed runtime representation.
@@ -112,6 +171,11 @@ impl FieldValues {
     /// Get boolean value if present and bool-typed.
     pub fn get_bool(&self, key: &str) -> Option<bool> {
         self.0.get(key).and_then(Value::as_bool)
+    }
+
+    /// Get numeric value if present and convertible to `T`.
+    pub fn get_number<T: Numeric>(&self, key: &str) -> Option<T> {
+        self.0.get(key).and_then(T::from_json)
     }
 
     /// Consume values into raw map.
@@ -147,6 +211,15 @@ mod tests {
         ));
         assert!(matches!(
             FieldValue::from_json(&literal),
+            FieldValue::Literal(_)
+        ));
+    }
+
+    #[test]
+    fn escaped_braces_are_not_expression_markers() {
+        let escaped = json!("{{{{ literal }}}}");
+        assert!(matches!(
+            FieldValue::from_json(&escaped),
             FieldValue::Literal(_)
         ));
     }
@@ -191,5 +264,17 @@ mod tests {
             values.get_typed("expr"),
             Some(FieldValue::Expression(_))
         ));
+        assert_eq!(values.get_number::<i64>("enabled"), None);
+    }
+
+    #[test]
+    fn field_values_exposes_mutation_and_size_helpers() {
+        let mut values = FieldValues::new();
+        assert!(values.is_empty());
+        values.set("count", json!(3));
+        assert_eq!(values.len(), 1);
+        assert_eq!(values.get_number::<i64>("count"), Some(3));
+        assert_eq!(values.remove("count"), Some(json!(3)));
+        assert!(values.is_empty());
     }
 }
