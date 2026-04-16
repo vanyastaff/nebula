@@ -3900,6 +3900,7 @@ dependencies = [
  "anyhow",
  "chrono",
  "nebula-sdk",
+ "nebula-validator",
  "reqwest 0.13.2",
  "rss",
  "serde",
@@ -4236,6 +4237,7 @@ dependencies = [
  "serde_json",
  "smallvec",
  "thiserror 2.0.18",
+ "trybuild",
 ]
 
 [[package]]
@@ -4245,6 +4247,7 @@ dependencies = [
  "nebula-macro-support",
  "proc-macro2",
  "quote",
+ "regex",
  "syn 2.0.117",
 ]
 

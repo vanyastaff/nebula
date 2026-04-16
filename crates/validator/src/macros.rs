@@ -622,6 +622,47 @@ macro_rules! validator {
             $name::new($($passthrough)*)
         }
     };
+
+    // ====================================================================
+    // DIAGNOSTIC FALLBACKS — surface helpful errors for common mistakes
+    // ====================================================================
+    //
+    // Match attempts go top-down: these arms only fire when no user-facing
+    // entry above them matches. Catching unmatched input here gives users
+    // an actionable hint instead of a raw "no rules matched" error.
+
+    // Missing `for <Type>;` separator after header.
+    (@$($rest:tt)*) => {
+        compile_error!(
+            "validator! internal dispatch failed — this usually means an earlier arm \
+             emitted malformed tokens. File a bug with your invocation."
+        );
+    };
+
+    ($($anything:tt)*) => {
+        compile_error!(
+            "validator! could not parse input. Expected one of:\n\
+            \n\
+            \x20   pub Name for <Type>;                                  // unit\n\
+            \x20   pub Name { field: T, ... } for <Type>;                // struct\n\
+            \x20   pub Name<T> for Option<T>;                            // phantom\n\
+            \x20   pub Name<T: Bounds> { field: T } for T;               // generic\n\
+            \n\
+            Followed by:\n\
+            \n\
+            \x20   rule(input) { /* bool expr */ }\n\
+            \x20   error(input) { /* ValidationError::... */ }\n\
+            \n\
+            And optionally:\n\
+            \n\
+            \x20   new(args) { body }              // custom constructor\n\
+            \x20   new(args) -> E { body }         // fallible constructor\n\
+            \x20   fn factory(args);               // factory fn\n\
+            \n\
+            Common mistakes: missing `for <Type>;`, `rule(...)` without `(input)`, \
+            forgetting the `;` after the header."
+        );
+    };
 }
 
 // ============================================================================
@@ -630,11 +671,25 @@ macro_rules! validator {
 
 /// Composes multiple validators using AND logic.
 ///
+/// **Deprecated** — prefer `.and(...)` method chaining, which produces
+/// identical code with clearer semantics:
+///
 /// ```rust,ignore
-/// let validator = compose![min_length(5), max_length(20), alphanumeric()];
+/// // Old:
+/// let v = compose![min_length(5), max_length(20), alphanumeric()];
+/// // New:
+/// let v = min_length(5).and(max_length(20)).and(alphanumeric());
 /// ```
 #[macro_export]
+#[deprecated(
+    since = "0.1.0",
+    note = "use `.and(...)` method chaining instead: \
+            `v1.and(v2).and(v3)` replaces `compose![v1, v2, v3]`"
+)]
 macro_rules! compose {
+    () => {
+        compile_error!("compose! requires at least one validator expression");
+    };
     ($first:expr) => { $first };
     ($first:expr, $($rest:expr),+ $(,)?) => {
         $first$(.and($rest))+
@@ -647,11 +702,25 @@ macro_rules! compose {
 
 /// Composes multiple validators using OR logic.
 ///
+/// **Deprecated** — prefer `.or(...)` method chaining, which produces
+/// identical code with clearer semantics:
+///
 /// ```rust,ignore
-/// let validator = any_of![exact_length(5), exact_length(10)];
+/// // Old:
+/// let v = any_of![exact_length(5), exact_length(10)];
+/// // New:
+/// let v = exact_length(5).or(exact_length(10));
 /// ```
 #[macro_export]
+#[deprecated(
+    since = "0.1.0",
+    note = "use `.or(...)` method chaining instead: \
+            `v1.or(v2).or(v3)` replaces `any_of![v1, v2, v3]`"
+)]
 macro_rules! any_of {
+    () => {
+        compile_error!("any_of! requires at least one validator expression");
+    };
     ($first:expr) => { $first };
     ($first:expr, $($rest:expr),+ $(,)?) => {
         $first$(.or($rest))+
@@ -796,7 +865,9 @@ mod tests {
         assert!(v.validate(&11).is_err());
     }
 
-    // Test 7: compose! and any_of! still work
+    // Test 7: compose! and any_of! still work (deprecated, but kept for
+    // compatibility until removed)
+    #[allow(deprecated)]
     #[test]
     fn test_compose_still_works() {
         use crate::foundation::ValidateExt;
@@ -805,6 +876,7 @@ mod tests {
         assert!(v.validate("ab").is_err());
     }
 
+    #[allow(deprecated)]
     #[test]
     fn test_any_of_still_works() {
         use crate::foundation::ValidateExt;

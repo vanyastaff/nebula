@@ -1,0 +1,5 @@
+error: `is_true` cannot be combined with `is_false`
+ --> tests/ui/conflicting_bool_flags.rs:8:11
+  |
+8 |     flag: bool,
+  |           ^^^^

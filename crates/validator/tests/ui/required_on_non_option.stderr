@@ -1,0 +1,5 @@
+error: `required` requires `Option<T>` fields
+ --> tests/ui/required_on_non_option.rs:8:11
+  |
+8 |     name: String,
+  |           ^^^^^^

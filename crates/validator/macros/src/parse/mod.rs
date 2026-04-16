@@ -8,15 +8,36 @@
 
 use nebula_macro_support::{
     attrs, diag,
-    validation_codegen::{is_option_type, parse_number_lit, parse_usize, value_token},
+    validation_codegen::{is_option_type, value_token},
 };
 use proc_macro2::TokenStream as TokenStream2;
 use quote::quote;
 use syn::{DeriveInput, Type, parse::Parser};
 
 use crate::model::{
-    ContainerAttrs, EachRules, FieldDef, Rule, StringFactoryKind, StringFormat, ValidatorInput,
+    ContainerAttrs, FieldDef, Rule, StringFactoryKind, StringFormat, ValidatorInput,
 };
+
+mod each;
+mod rules;
+
+use each::parse_each_rules;
+use rules::parse_field_rules;
+
+/// Validate a regex pattern at macro-time so bad patterns surface as
+/// compile errors rather than runtime panics.
+///
+/// The `spanned` argument gives the diagnostic a span to point at — pass
+/// the field's `Type` or any other syn node near the attribute.
+pub(super) fn validate_regex_pattern<T: quote::ToTokens>(
+    pattern: &str,
+    spanned: &T,
+) -> syn::Result<()> {
+    regex::Regex::new(pattern).map_err(|e| {
+        syn::Error::new_spanned(spanned, format!("invalid regex pattern `{pattern}`: {e}"))
+    })?;
+    Ok(())
+}
 
 // ---------------------------------------------------------------------------
 // Public entry point
@@ -90,383 +111,11 @@ pub fn parse(input: &DeriveInput) -> syn::Result<ValidatorInput> {
 }
 
 // ---------------------------------------------------------------------------
-// Field-level rule parsing
-// ---------------------------------------------------------------------------
-
-/// Parse all `#[validate(...)]` attributes on a field into a list of [`Rule`]s.
-fn parse_field_rules(
-    attrs: &attrs::AttrArgs,
-    original_ty: &Type,
-    inner_ty: &Type,
-) -> syn::Result<Vec<Rule>> {
-    let is_option = is_option_type(original_ty);
-    let is_string = is_string_type(inner_ty);
-    let is_bool = is_bool_type(inner_ty);
-    let is_vec = vec_inner_type(inner_ty).is_some();
-
-    let mut rules = Vec::new();
-
-    // required — only valid for Option fields
-    if attrs.has_flag("required") {
-        if is_option {
-            rules.push(Rule::Required);
-        } else {
-            return Err(syn::Error::new_spanned(
-                original_ty,
-                "`required` requires `Option<T>` fields",
-            ));
-        }
-    }
-
-    // min_length / max_length / exact_length
-    let min_length = parse_usize(attrs, "min_length")?;
-    let max_length = parse_usize(attrs, "max_length")?;
-    let exact_length = parse_usize(attrs, "exact_length")?;
-
-    if exact_length.is_some() && (min_length.is_some() || max_length.is_some()) {
-        return Err(syn::Error::new_spanned(
-            original_ty,
-            "`exact_length` cannot be combined with `min_length` or `max_length`",
-        ));
-    }
-
-    if let Some(n) = min_length {
-        rules.push(Rule::MinLength(n));
-    }
-    if let Some(n) = max_length {
-        rules.push(Rule::MaxLength(n));
-    }
-    if let Some(n) = exact_length {
-        rules.push(Rule::ExactLength(n));
-    }
-
-    // length_range(min = N, max = M)
-    let length_range = parse_min_max_list(attrs, "length_range")?;
-    if length_range.is_some() && exact_length.is_some() {
-        return Err(syn::Error::new_spanned(
-            original_ty,
-            "`length_range(...)` cannot be combined with `exact_length`",
-        ));
-    }
-
-    if let Some((min, max)) = length_range {
-        require_string_type(original_ty, is_string, "length_range(...)")?;
-        rules.push(Rule::LengthRange { min, max });
-    }
-
-    // min / max (numeric)
-    if let Some(ts) = parse_number_lit(attrs, "min")? {
-        rules.push(Rule::Min(ts));
-    }
-    if let Some(ts) = parse_number_lit(attrs, "max")? {
-        rules.push(Rule::Max(ts));
-    }
-
-    // min_size / max_size / exact_size
-    let min_size = parse_usize(attrs, "min_size")?;
-    let max_size = parse_usize(attrs, "max_size")?;
-    let exact_size = parse_usize(attrs, "exact_size")?;
-
-    if exact_size.is_some() && (min_size.is_some() || max_size.is_some()) {
-        return Err(syn::Error::new_spanned(
-            original_ty,
-            "`exact_size` cannot be combined with `min_size` or `max_size`",
-        ));
-    }
-
-    if let Some(n) = min_size {
-        require_vec_type(original_ty, is_vec, "min_size")?;
-        rules.push(Rule::MinSize(n));
-    }
-    if let Some(n) = max_size {
-        require_vec_type(original_ty, is_vec, "max_size")?;
-        rules.push(Rule::MaxSize(n));
-    }
-    if let Some(n) = exact_size {
-        require_vec_type(original_ty, is_vec, "exact_size")?;
-        rules.push(Rule::ExactSize(n));
-    }
-
-    // not_empty_collection
-    if attrs.has_flag("not_empty_collection") {
-        require_vec_type(original_ty, is_vec, "not_empty_collection")?;
-        rules.push(Rule::NotEmptyCollection);
-    }
-
-    // size_range(min = N, max = M)
-    let size_range = parse_min_max_list(attrs, "size_range")?;
-    if size_range.is_some() && exact_size.is_some() {
-        return Err(syn::Error::new_spanned(
-            original_ty,
-            "`size_range(...)` cannot be combined with `exact_size`",
-        ));
-    }
-
-    if let Some((min, max)) = size_range {
-        require_vec_type(original_ty, is_vec, "size_range(...)")?;
-        rules.push(Rule::SizeRange { min, max });
-    }
-
-    // String format flags (not_empty, email, url, etc.)
-    for (flag, format) in string_format_flags().iter().copied() {
-        if attrs.has_flag(flag) {
-            require_string_type(original_ty, is_string, flag)?;
-            rules.push(Rule::StringFormat(format));
-        }
-    }
-
-    // String factory keys (contains, starts_with, ends_with)
-    for (key, kind) in string_factory_keys().iter().copied() {
-        if let Some(arg) = attrs.get_string(key) {
-            require_string_type(original_ty, is_string, &format!("{key} = ..."))?;
-            rules.push(Rule::StringFactory { kind, arg });
-        }
-    }
-
-    // is_true / is_false
-    let has_is_true = attrs.has_flag("is_true");
-    let has_is_false = attrs.has_flag("is_false");
-    if has_is_true && has_is_false {
-        return Err(syn::Error::new_spanned(
-            original_ty,
-            "`is_true` cannot be combined with `is_false`",
-        ));
-    }
-
-    if has_is_true {
-        require_bool_type(original_ty, is_bool, "is_true")?;
-        rules.push(Rule::IsTrue);
-    }
-    if has_is_false {
-        require_bool_type(original_ty, is_bool, "is_false")?;
-        rules.push(Rule::IsFalse);
-    }
-
-    // regex = "pattern"
-    if let Some(pattern) = attrs.get_string("regex") {
-        require_string_type(original_ty, is_string, "regex = ...")?;
-        rules.push(Rule::Regex(pattern));
-    }
-
-    // nested
-    if attrs.has_flag("nested") {
-        rules.push(Rule::Nested);
-    }
-
-    // custom = expr
-    if let Some(expr) = parse_validator_expr(attrs, "custom")? {
-        rules.push(Rule::Custom(expr));
-    }
-
-    // using = expr
-    if let Some(expr) = parse_validator_expr(attrs, "using")? {
-        rules.push(Rule::Using(expr));
-    }
-
-    // all(expr, ...)
-    if let Some(exprs) = parse_validator_expr_list(attrs, "all")? {
-        rules.push(Rule::All(exprs));
-    }
-
-    // any(expr, ...)
-    if let Some(exprs) = parse_validator_expr_list(attrs, "any")? {
-        rules.push(Rule::Any(exprs));
-    }
-
-    rules.extend(parse_call_style_rules(
-        attrs,
-        original_ty,
-        inner_ty,
-        is_option,
-        is_string,
-        is_bool,
-        is_vec,
-    )?);
-
-    Ok(rules)
-}
-
-// ---------------------------------------------------------------------------
-// Each-element rule parsing
-// ---------------------------------------------------------------------------
-
-/// Parse `each(...)` sub-attributes into [`EachRules`].
-fn parse_each_rules(
-    attrs: &attrs::AttrArgs,
-    original_ty: &Type,
-    inner_ty: &Type,
-) -> syn::Result<Option<EachRules>> {
-    let Some(each_attrs) = parse_inner_args(attrs)? else {
-        return Ok(None);
-    };
-
-    let element_source_type = option_inner_type(original_ty).unwrap_or(inner_ty);
-    let element_ty = vec_inner_type(element_source_type).ok_or_else(|| {
-        syn::Error::new_spanned(
-            original_ty,
-            "`inner(...)`/`each(...)` is supported for `Vec<T>` and `Option<Vec<T>>` fields",
-        )
-    })?;
-
-    let each_element_is_option = is_option_type(element_ty);
-    let each_inner_ty = option_inner_type(element_ty).unwrap_or(element_ty);
-    let each_element_is_string = is_string_type(each_inner_ty);
-    let each_element_is_bool = is_bool_type(each_inner_ty);
-    let mut rules = Vec::new();
-
-    // required on each element is meaningful only for Option elements
-    if each_attrs.has_flag("required") {
-        if each_element_is_option {
-            rules.push(Rule::Required);
-        } else {
-            return Err(syn::Error::new_spanned(
-                original_ty,
-                "`each(required)` requires `Vec<Option<T>>` or `Option<Vec<Option<T>>>`",
-            ));
-        }
-    }
-
-    // min_length / max_length / exact_length
-    let min_length = parse_usize(&each_attrs, "min_length")?;
-    let max_length = parse_usize(&each_attrs, "max_length")?;
-    let exact_length = parse_usize(&each_attrs, "exact_length")?;
-
-    if exact_length.is_some() && (min_length.is_some() || max_length.is_some()) {
-        return Err(syn::Error::new_spanned(
-            original_ty,
-            "`each(exact_length = ...)` cannot be combined with `each(min_length = ...)` or `each(max_length = ...)`",
-        ));
-    }
-
-    if let Some(n) = min_length {
-        rules.push(Rule::MinLength(n));
-    }
-    if let Some(n) = max_length {
-        rules.push(Rule::MaxLength(n));
-    }
-    if let Some(n) = exact_length {
-        rules.push(Rule::ExactLength(n));
-    }
-
-    // min / max (numeric)
-    if let Some(ts) = parse_number_lit(&each_attrs, "min")? {
-        rules.push(Rule::Min(ts));
-    }
-    if let Some(ts) = parse_number_lit(&each_attrs, "max")? {
-        rules.push(Rule::Max(ts));
-    }
-
-    let has_is_true = each_attrs.has_flag("is_true");
-    let has_is_false = each_attrs.has_flag("is_false");
-    if has_is_true && has_is_false {
-        return Err(syn::Error::new_spanned(
-            original_ty,
-            "`each(is_true)` cannot be combined with `each(is_false)`",
-        ));
-    }
-    if has_is_true {
-        if !each_element_is_bool {
-            return Err(syn::Error::new_spanned(
-                original_ty,
-                "`each(is_true)` requires `Vec<bool>`, `Vec<Option<bool>>`, or optional wrappers",
-            ));
-        }
-        rules.push(Rule::IsTrue);
-    }
-    if has_is_false {
-        if !each_element_is_bool {
-            return Err(syn::Error::new_spanned(
-                original_ty,
-                "`each(is_false)` requires `Vec<bool>`, `Vec<Option<bool>>`, or optional wrappers",
-            ));
-        }
-        rules.push(Rule::IsFalse);
-    }
-
-    // String format flags
-    for (flag, format) in string_format_flags().iter().copied() {
-        if each_attrs.has_flag(flag) {
-            if !each_element_is_string {
-                return Err(syn::Error::new_spanned(
-                    original_ty,
-                    format!("`each({flag})` requires `Vec<String>` or `Option<Vec<String>>`"),
-                ));
-            }
-            rules.push(Rule::StringFormat(format));
-        }
-    }
-
-    // String factory keys
-    for (key, kind) in string_factory_keys().iter().copied() {
-        if let Some(arg) = each_attrs.get_string(key) {
-            if !each_element_is_string {
-                return Err(syn::Error::new_spanned(
-                    original_ty,
-                    format!("`each({key} = ...)` requires `Vec<String>` or `Option<Vec<String>>`"),
-                ));
-            }
-            rules.push(Rule::StringFactory { kind, arg });
-        }
-    }
-
-    // regex
-    if let Some(pattern) = each_attrs.get_string("regex") {
-        if !each_element_is_string {
-            return Err(syn::Error::new_spanned(
-                original_ty,
-                "`each(regex = ...)` requires `Vec<String>` or `Option<Vec<String>>`",
-            ));
-        }
-        rules.push(Rule::Regex(pattern));
-    }
-
-    // nested
-    if each_attrs.has_flag("nested") {
-        rules.push(Rule::Nested);
-    }
-
-    // custom
-    if let Some(expr) = parse_validator_expr(&each_attrs, "custom")? {
-        rules.push(Rule::Custom(expr));
-    }
-
-    // using
-    if let Some(expr) = parse_validator_expr(&each_attrs, "using")? {
-        rules.push(Rule::Using(expr));
-    }
-
-    // all(...)
-    if let Some(exprs) = parse_validator_expr_list(&each_attrs, "all")? {
-        rules.push(Rule::All(exprs));
-    }
-
-    // any(...)
-    if let Some(exprs) = parse_validator_expr_list(&each_attrs, "any")? {
-        rules.push(Rule::Any(exprs));
-    }
-
-    rules.extend(parse_call_style_rules(
-        &each_attrs,
-        original_ty,
-        each_inner_ty,
-        each_element_is_option,
-        each_element_is_string,
-        each_element_is_bool,
-        vec_inner_type(each_inner_ty).is_some(),
-    )?);
-
-    Ok(Some(EachRules {
-        element_ty: element_ty.clone(),
-        rules,
-    }))
-}
-
-// ---------------------------------------------------------------------------
 // Type-checking helpers
 // ---------------------------------------------------------------------------
 
 /// Return an error if the field type is not `String` or `Option<String>`.
-fn require_string_type(ty: &Type, is_string: bool, attr_name: &str) -> syn::Result<()> {
+pub(super) fn require_string_type(ty: &Type, is_string: bool, attr_name: &str) -> syn::Result<()> {
     if !is_string {
         return Err(syn::Error::new_spanned(
             ty,
@@ -477,7 +126,7 @@ fn require_string_type(ty: &Type, is_string: bool, attr_name: &str) -> syn::Resu
 }
 
 /// Return an error if the field type is not `Vec<T>` or `Option<Vec<T>>`.
-fn require_vec_type(ty: &Type, is_vec: bool, attr_name: &str) -> syn::Result<()> {
+pub(super) fn require_vec_type(ty: &Type, is_vec: bool, attr_name: &str) -> syn::Result<()> {
     if !is_vec {
         return Err(syn::Error::new_spanned(
             ty,
@@ -488,7 +137,7 @@ fn require_vec_type(ty: &Type, is_vec: bool, attr_name: &str) -> syn::Result<()>
 }
 
 /// Return an error if the field type is not `bool` or `Option<bool>`.
-fn require_bool_type(ty: &Type, is_bool: bool, attr_name: &str) -> syn::Result<()> {
+pub(super) fn require_bool_type(ty: &Type, is_bool: bool, attr_name: &str) -> syn::Result<()> {
     if !is_bool {
         return Err(syn::Error::new_spanned(
             ty,
@@ -528,12 +177,12 @@ const STRING_FACTORY_KEYS: [(&str, StringFactoryKind); 3] = [
 ];
 
 /// Maps attribute flag names to [`StringFormat`] enum variants.
-fn string_format_flags() -> &'static [(&'static str, StringFormat)] {
+pub(super) fn string_format_flags() -> &'static [(&'static str, StringFormat)] {
     &STRING_FORMAT_FLAGS
 }
 
 /// Maps attribute key names to [`StringFactoryKind`] enum variants.
-fn string_factory_keys() -> &'static [(&'static str, StringFactoryKind)] {
+pub(super) fn string_factory_keys() -> &'static [(&'static str, StringFactoryKind)] {
     &STRING_FACTORY_KEYS
 }
 
@@ -541,70 +190,15 @@ fn string_factory_keys() -> &'static [(&'static str, StringFactoryKind)] {
 // Helpers ported from old validator.rs
 // ---------------------------------------------------------------------------
 
-/// Extract the inner type from `Option<T>`.
-fn option_inner_type(ty: &Type) -> Option<&Type> {
-    let Type::Path(type_path) = ty else {
-        return None;
-    };
-    let segment = type_path.path.segments.last()?;
-    if segment.ident != "Option" {
-        return None;
-    }
-    let syn::PathArguments::AngleBracketed(args) = &segment.arguments else {
-        return None;
-    };
-    let syn::GenericArgument::Type(inner) = args.args.first()? else {
-        return None;
-    };
-    Some(inner)
-}
-
-/// Extract the inner type from `Vec<T>`.
-fn vec_inner_type(ty: &Type) -> Option<&Type> {
-    let Type::Path(type_path) = ty else {
-        return None;
-    };
-    let segment = type_path.path.segments.last()?;
-    if segment.ident != "Vec" {
-        return None;
-    }
-    let syn::PathArguments::AngleBracketed(args) = &segment.arguments else {
-        return None;
-    };
-    let syn::GenericArgument::Type(inner) = args.args.first()? else {
-        return None;
-    };
-    Some(inner)
-}
-
-/// Check if a type is `String`.
-fn is_string_type(ty: &Type) -> bool {
-    let Type::Path(type_path) = ty else {
-        return false;
-    };
-    type_path
-        .path
-        .segments
-        .last()
-        .map(|segment| segment.ident == "String")
-        .unwrap_or(false)
-}
-
-/// Check if a type is `bool`.
-fn is_bool_type(ty: &Type) -> bool {
-    let Type::Path(type_path) = ty else {
-        return false;
-    };
-    type_path
-        .path
-        .segments
-        .last()
-        .map(|segment| segment.ident == "bool")
-        .unwrap_or(false)
-}
+// Type-introspection helpers live in `crate::types` and are used by both
+// parse and emit. Re-use them locally for brevity.
+use crate::types::{is_bool_type, is_string_type, option_inner_type, vec_inner_type};
 
 /// Parse a validator expression from attribute arguments.
-fn parse_validator_expr(args: &attrs::AttrArgs, key: &str) -> syn::Result<Option<TokenStream2>> {
+pub(super) fn parse_validator_expr(
+    args: &attrs::AttrArgs,
+    key: &str,
+) -> syn::Result<Option<TokenStream2>> {
     let Some(value) = args.get_value(key) else {
         return Ok(None);
     };
@@ -629,7 +223,7 @@ fn parse_validator_expr(args: &attrs::AttrArgs, key: &str) -> syn::Result<Option
 }
 
 /// Parse `key(expr1, expr2, ...)` into validator expressions.
-fn parse_validator_expr_list(
+pub(super) fn parse_validator_expr_list(
     args: &attrs::AttrArgs,
     key: &str,
 ) -> syn::Result<Option<Vec<TokenStream2>>> {
@@ -678,7 +272,7 @@ fn parse_validator_expr_list(
     Ok(Some(exprs))
 }
 
-fn parse_validator_expr_values(
+pub(super) fn parse_validator_expr_values(
     value: &attrs::AttrValue,
     key: &str,
 ) -> syn::Result<Vec<TokenStream2>> {
@@ -711,7 +305,7 @@ fn parse_validator_expr_values(
     Ok(vec![exprs])
 }
 
-fn parse_call_style_rules(
+pub(super) fn parse_call_style_rules(
     attrs: &attrs::AttrArgs,
     original_ty: &Type,
     value_ty: &Type,
@@ -760,7 +354,9 @@ fn parse_call_style_rules(
             },
             "regex" => {
                 require_string_type(original_ty, is_string, "regex(...)")?;
-                rules.push(Rule::Regex(parse_single_string_call(values, "regex")?));
+                let pattern = parse_single_string_call(values, "regex")?;
+                validate_regex_pattern(&pattern, original_ty)?;
+                rules.push(Rule::Regex(pattern));
             },
             "custom" => rules.push(Rule::Custom(parse_single_expr_call(values, "custom")?)),
             "using" => rules.push(Rule::Using(parse_single_expr_call(values, "using")?)),
@@ -822,7 +418,7 @@ fn parse_call_style_rules(
     Ok(rules)
 }
 
-fn parse_length_call(
+pub(super) fn parse_length_call(
     values: &[attrs::AttrValue],
     original_ty: &Type,
     value_ty: &Type,
@@ -933,7 +529,7 @@ fn parse_length_call(
     Ok(rules)
 }
 
-fn parse_range_call(values: &[attrs::AttrValue]) -> syn::Result<Vec<Rule>> {
+pub(super) fn parse_range_call(values: &[attrs::AttrValue]) -> syn::Result<Vec<Rule>> {
     let mut min = None;
     let mut max = None;
     let mut equal = None;
@@ -989,7 +585,10 @@ fn parse_range_call(values: &[attrs::AttrValue]) -> syn::Result<Vec<Rule>> {
     Ok(rules)
 }
 
-fn parse_single_expr_call(values: &[attrs::AttrValue], key: &str) -> syn::Result<TokenStream2> {
+pub(super) fn parse_single_expr_call(
+    values: &[attrs::AttrValue],
+    key: &str,
+) -> syn::Result<TokenStream2> {
     if values.len() != 1 {
         return Err(syn::Error::new(
             proc_macro2::Span::call_site(),
@@ -1000,7 +599,10 @@ fn parse_single_expr_call(values: &[attrs::AttrValue], key: &str) -> syn::Result
     parse_expr_from_attr_value(&values[0], key)
 }
 
-fn parse_single_string_call(values: &[attrs::AttrValue], key: &str) -> syn::Result<String> {
+pub(super) fn parse_single_string_call(
+    values: &[attrs::AttrValue],
+    key: &str,
+) -> syn::Result<String> {
     if values.len() != 1 {
         return Err(syn::Error::new(
             proc_macro2::Span::call_site(),
@@ -1017,7 +619,10 @@ fn parse_single_string_call(values: &[attrs::AttrValue], key: &str) -> syn::Resu
     }
 }
 
-fn parse_expr_from_attr_value(value: &attrs::AttrValue, _key: &str) -> syn::Result<TokenStream2> {
+pub(super) fn parse_expr_from_attr_value(
+    value: &attrs::AttrValue,
+    _key: &str,
+) -> syn::Result<TokenStream2> {
     match value {
         attrs::AttrValue::Ident(ident) => Ok(quote!(#ident)),
         attrs::AttrValue::Tokens(tokens) => Ok(tokens.clone()),
@@ -1025,7 +630,7 @@ fn parse_expr_from_attr_value(value: &attrs::AttrValue, _key: &str) -> syn::Resu
     }
 }
 
-fn parse_rule_call_value(
+pub(super) fn parse_rule_call_value(
     value: &attrs::AttrValue,
     original_ty: &Type,
     value_ty: &Type,
@@ -1064,7 +669,7 @@ fn parse_rule_call_value(
     }
 }
 
-fn parse_rule_validator_expr(
+pub(super) fn parse_rule_validator_expr(
     value: &attrs::AttrValue,
     original_ty: &Type,
     value_ty: &Type,
@@ -1089,7 +694,7 @@ fn parse_rule_validator_expr(
     }
 }
 
-fn dsl_item_to_validator_expr(
+pub(super) fn dsl_item_to_validator_expr(
     item: &attrs::AttrItem,
     original_ty: &Type,
     value_ty: &Type,
@@ -1134,6 +739,7 @@ fn dsl_item_to_validator_expr(
         },
         "regex" => {
             let arg = parse_single_string_call(values, "regex")?;
+            validate_regex_pattern(&arg, value_ty)?;
             Ok(
                 quote!(::nebula_validator::validators::matches_regex(#arg).expect("regex validated by derive parser")),
             )
@@ -1180,7 +786,7 @@ fn dsl_item_to_validator_expr(
     }
 }
 
-fn rules_to_validator_expr(
+pub(super) fn rules_to_validator_expr(
     rules: &[Rule],
     value_ty: &Type,
     element_ty: &Type,
@@ -1205,7 +811,10 @@ fn rules_to_validator_expr(
     chain_validator_exprs(exprs, true)
 }
 
-fn chain_validator_exprs(exprs: Vec<TokenStream2>, is_and: bool) -> syn::Result<TokenStream2> {
+pub(super) fn chain_validator_exprs(
+    exprs: Vec<TokenStream2>,
+    is_and: bool,
+) -> syn::Result<TokenStream2> {
     let mut iter = exprs.into_iter();
     let Some(first) = iter.next() else {
         return Err(syn::Error::new(
@@ -1226,7 +835,7 @@ fn chain_validator_exprs(exprs: Vec<TokenStream2>, is_and: bool) -> syn::Result<
 }
 
 /// Parse a `key(min = N, max = M)` list attribute into a `(min, max)` pair.
-fn parse_min_max_list(
+pub(super) fn parse_min_max_list(
     validate_attrs: &attrs::AttrArgs,
     key: &str,
 ) -> syn::Result<Option<(usize, usize)>> {
@@ -1300,7 +909,9 @@ fn parse_min_max_list(
 }
 
 /// Parse `each(...)` / `inner(...)` sub-attributes into an `AttrArgs`.
-fn parse_inner_args(validate_attrs: &attrs::AttrArgs) -> syn::Result<Option<attrs::AttrArgs>> {
+pub(super) fn parse_inner_args(
+    validate_attrs: &attrs::AttrArgs,
+) -> syn::Result<Option<attrs::AttrArgs>> {
     let mut items = Vec::new();
     for item in &validate_attrs.items {
         let attrs::AttrItem::List { key, values } = item else {
@@ -1323,7 +934,9 @@ fn parse_inner_args(validate_attrs: &attrs::AttrArgs) -> syn::Result<Option<attr
 }
 
 /// Convert a list item value into an `AttrItem`.
-fn parse_list_item_to_attr_item(item: &attrs::AttrValue) -> syn::Result<attrs::AttrItem> {
+pub(super) fn parse_list_item_to_attr_item(
+    item: &attrs::AttrValue,
+) -> syn::Result<attrs::AttrItem> {
     match item {
         attrs::AttrValue::Ident(ident) => Ok(attrs::AttrItem::Flag(ident.clone())),
         attrs::AttrValue::Lit(syn::Lit::Str(s)) => {
@@ -1345,7 +958,7 @@ fn parse_list_item_to_attr_item(item: &attrs::AttrValue) -> syn::Result<attrs::A
 }
 
 /// Convert a parsed expression into an `AttrItem`.
-fn parse_expr_to_attr_item(
+pub(super) fn parse_expr_to_attr_item(
     expr: syn::Expr,
     span_source: &attrs::AttrValue,
 ) -> syn::Result<attrs::AttrItem> {
@@ -1423,7 +1036,7 @@ fn parse_expr_to_attr_item(
 }
 
 /// Convert an expression into an `AttrValue`.
-fn expr_to_attr_value(expr: syn::Expr) -> attrs::AttrValue {
+pub(super) fn expr_to_attr_value(expr: syn::Expr) -> attrs::AttrValue {
     match expr {
         syn::Expr::Path(path) => {
             if path.path.segments.len() == 1 && path.path.leading_colon.is_none() {

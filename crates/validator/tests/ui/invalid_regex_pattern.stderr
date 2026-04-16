@@ -1,0 +1,8 @@
+error: invalid regex pattern `[invalid`: regex parse error:
+           [invalid
+           ^
+       error: unclosed character class
+ --> tests/ui/invalid_regex_pattern.rs:8:11
+  |
+8 |     code: String,
+  |           ^^^^^^

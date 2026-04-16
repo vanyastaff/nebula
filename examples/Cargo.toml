@@ -12,6 +12,7 @@ autobins = false
 
 [dependencies]
 nebula-sdk = { path = "../crates/sdk" }
+nebula-validator = { path = "../crates/validator" }
 
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "time"] }
 serde = { workspace = true }
@@ -33,3 +34,11 @@ path = "batch_products.rs"
 [[bin]]
 name = "poll_habr"
 path = "poll_habr.rs"
+
+[[bin]]
+name = "validator_derive"
+path = "validator_derive.rs"
+
+[[bin]]
+name = "validator_macro"
+path = "validator_macro.rs"

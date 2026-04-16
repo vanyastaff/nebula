@@ -1,0 +1,5 @@
+error: `email` requires `String` or `Option<String>` fields
+ --> tests/ui/email_on_non_string.rs:8:10
+  |
+8 |     age: i32,
+  |          ^^^

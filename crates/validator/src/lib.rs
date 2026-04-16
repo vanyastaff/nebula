@@ -139,3 +139,11 @@ pub use error::ValidatorError;
 pub use nebula_validator_macros::Validator;
 pub use proof::Validated;
 pub use rule::Rule;
+
+// `regex` is re-exported so code emitted by `#[derive(Validator)]` can
+// reference `nebula_validator::__private::regex` without requiring users to
+// add a direct `regex` dependency.
+#[doc(hidden)]
+pub mod __private {
+    pub use regex;
+}

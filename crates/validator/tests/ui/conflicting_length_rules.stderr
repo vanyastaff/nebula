@@ -1,0 +1,5 @@
+error: `exact_length` cannot be combined with `min_length` or `max_length`
+ --> tests/ui/conflicting_length_rules.rs:8:11
+  |
+8 |     name: String,
+  |           ^^^^^^
