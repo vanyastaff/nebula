@@ -209,7 +209,7 @@ impl WorkflowRepo for PgWorkflowRepo {
         let row = sqlx::query_as::<_, (i64, Json<serde_json::Value>)>(
             "SELECT version, definition FROM workflows WHERE id = $1",
         )
-        .bind(sqlx::types::Uuid::from_bytes(*id.get().as_bytes()))
+        .bind(sqlx::types::Uuid::from_bytes(*id.get().to_bytes()))
         .fetch_optional(&self.pool)
         .await
         .map_err(|err| WorkflowRepoError::Connection(err.to_string()))?;
@@ -223,7 +223,7 @@ impl WorkflowRepo for PgWorkflowRepo {
         version: u64,
         definition: serde_json::Value,
     ) -> Result<(), WorkflowRepoError> {
-        let uuid = sqlx::types::Uuid::from_bytes(*id.get().as_bytes());
+        let uuid = sqlx::types::Uuid::from_bytes(*id.get().to_bytes());
         let json_def = Json(&definition);
 
         if version == 0 {
@@ -290,7 +290,7 @@ impl WorkflowRepo for PgWorkflowRepo {
     }
 
     async fn delete(&self, id: WorkflowId) -> Result<bool, WorkflowRepoError> {
-        let uuid = sqlx::types::Uuid::from_bytes(*id.get().as_bytes());
+        let uuid = sqlx::types::Uuid::from_bytes(*id.get().to_bytes());
         let result = sqlx::query("DELETE FROM workflows WHERE id = $1")
             .bind(uuid)
             .execute(&self.pool)

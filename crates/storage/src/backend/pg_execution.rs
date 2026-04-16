@@ -33,7 +33,7 @@ impl PgExecutionRepo {
 
 /// Convert a domain `ExecutionId` to the sqlx UUID type.
 fn execution_to_uuid(id: ExecutionId) -> sqlx::types::Uuid {
-    sqlx::types::Uuid::from_bytes(*id.get().as_bytes())
+    sqlx::types::Uuid::from_bytes(*id.get().to_bytes())
 }
 
 /// Convert a sqlx UUID back to a domain `ExecutionId`.
@@ -43,12 +43,12 @@ fn execution_from_uuid(uuid: sqlx::types::Uuid) -> ExecutionId {
 
 /// Convert a domain `WorkflowId` to the sqlx UUID type.
 fn workflow_to_uuid(id: WorkflowId) -> sqlx::types::Uuid {
-    sqlx::types::Uuid::from_bytes(*id.get().as_bytes())
+    sqlx::types::Uuid::from_bytes(*id.get().to_bytes())
 }
 
 /// Convert a domain `NodeId` to the sqlx UUID type.
 fn node_to_uuid(id: NodeId) -> sqlx::types::Uuid {
-    sqlx::types::Uuid::from_bytes(*id.get().as_bytes())
+    sqlx::types::Uuid::from_bytes(*id.get().to_bytes())
 }
 
 /// Convert a sqlx UUID back to a domain `NodeId`.
