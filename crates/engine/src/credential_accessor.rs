@@ -15,13 +15,24 @@
 //! keeps `WorkflowEngine` concrete while still delegating to any store
 //! implementation.
 //!
-//! # Allowlist semantics
+//! # Allowlist semantics (deny-by-default)
 //!
-//! - An **empty** allowlist means **all credentials are permitted** (open/passthrough mode). This
-//!   is the current default until per-node credential declarations are wired in from action
-//!   dependency metadata.
-//! - A **non-empty** allowlist only permits the keys in the set. Requests for undeclared keys are
-//!   rejected with [`CredentialAccessError::AccessDenied`].
+//! Per `PRODUCT_CANON` §4.5 (operational honesty) and §12.5 (secrets and auth):
+//! an action may only acquire a credential it has **explicitly declared**.
+//!
+//! - An **empty** allowlist means **no credentials are permitted**. Every request is rejected with
+//!   [`CredentialAccessError::AccessDenied`]. This is the deny-by-default baseline when the engine
+//!   receives no declaration for the action being dispatched.
+//! - A **non-empty** allowlist only permits the keys in the set. Requests for any key not in the
+//!   set are rejected with [`CredentialAccessError::AccessDenied`].
+//!
+//! The engine populates the allowlist from per-action credential declarations
+//! supplied through [`WorkflowEngine::with_action_credentials`]
+//! (see [`crate::engine`]). An action that never had its credentials declared
+//! to the engine therefore falls through to the deny baseline — there is no
+//! "fail-open" escape hatch.
+//!
+//! [`WorkflowEngine::with_action_credentials`]: crate::WorkflowEngine::with_action_credentials
 
 use std::{collections::HashSet, fmt, future::Future, pin::Pin, sync::Arc};
 
@@ -70,9 +81,9 @@ type ResolveFn = Arc<
 pub struct EngineCredentialAccessor {
     /// Set of credential keys this accessor is permitted to resolve.
     ///
-    /// An empty set means **all** credentials are accessible (open/passthrough mode).
-    /// This is used when node-level credential declarations have not yet been populated
-    /// from action dependency metadata (current default).
+    /// An empty set means **no** credentials are accessible (deny-by-default).
+    /// Populated from per-action credential declarations supplied through
+    /// [`WorkflowEngine::with_action_credentials`](crate::WorkflowEngine::with_action_credentials).
     allowed_keys: HashSet<String>,
     /// Type-erased async resolution function.
     resolve_fn: ResolveFn,
@@ -85,9 +96,9 @@ impl EngineCredentialAccessor {
     ///
     /// # Parameters
     ///
-    /// - `allowed_keys` — the set of credential IDs this accessor may resolve. Pass an empty set to
-    ///   allow all credential access (open/passthrough mode, used when per-node declarations are
-    ///   not yet populated).
+    /// - `allowed_keys` — the set of credential IDs this accessor may resolve. An **empty** set
+    ///   denies every request (deny-by-default, per `PRODUCT_CANON` §4.5 / §12.5). A non-empty set
+    ///   permits only the listed keys.
     /// - `resolve_fn` — async closure that resolves a credential ID to a [`CredentialSnapshot`] or
     ///   a [`CredentialAccessError`].
     /// - `action_id` — the action key or node identifier for security attribution in
@@ -114,10 +125,10 @@ impl EngineCredentialAccessor {
 
     /// Returns `true` if `id` is permitted by the allowlist.
     ///
-    /// When the allowlist is **empty**, all keys are permitted (open/passthrough mode).
-    /// When the allowlist is **non-empty**, only listed keys are permitted.
+    /// Deny-by-default: an **empty** allowlist permits nothing.
+    /// A **non-empty** allowlist permits only listed keys.
     fn is_allowed(&self, id: &str) -> bool {
-        self.allowed_keys.is_empty() || self.allowed_keys.contains(id)
+        self.allowed_keys.contains(id)
     }
 }
 
@@ -137,8 +148,8 @@ impl CredentialAccessor for EngineCredentialAccessor {
     ///
     /// # Errors
     ///
-    /// - [`CredentialAccessError::AccessDenied`] — if `id` is not in the allowlist (when the
-    ///   allowlist is non-empty and `id` is not listed).
+    /// - [`CredentialAccessError::AccessDenied`] — if `id` is not in the allowlist (including the
+    ///   deny-by-default case of an empty allowlist).
     /// - Any error returned by the underlying resolver function.
     ///
     /// # Cancel safety
@@ -158,9 +169,8 @@ impl CredentialAccessor for EngineCredentialAccessor {
     /// Check whether a credential key is accessible and exists in the store.
     ///
     /// Returns `true` only if `id` is permitted by the allowlist **and** the
-    /// underlying resolver can successfully resolve it. When the allowlist is
-    /// empty (open/passthrough mode), all keys that resolve successfully are
-    /// considered available.
+    /// underlying resolver can successfully resolve it. Deny-by-default: an
+    /// empty allowlist always yields `false`.
     ///
     /// # Cancel safety
     ///
@@ -256,21 +266,21 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn has_returns_false_for_empty_allowlist_when_resolver_fails() {
-        // Empty allowlist = allow all, but resolver still fails -> has() = false.
+    async fn has_returns_false_for_empty_allowlist() {
+        // Deny-by-default: empty allowlist denies every key — resolver is never reached.
         let accessor = make_accessor([]);
         assert!(!accessor.has("anything").await);
     }
 
     #[tokio::test]
-    async fn get_allows_any_key_when_allowlist_is_empty() {
-        // Empty allowlist = open/passthrough mode: no AccessDenied, resolver is called.
+    async fn get_denies_every_key_when_allowlist_is_empty() {
+        // Deny-by-default: empty allowlist rejects every request with AccessDenied.
+        // The resolver is NOT invoked — enforcement happens before delegation.
         let accessor = make_accessor([]);
         let result = accessor.get("any_key").await;
-        // Stub resolver returns NotConfigured, not AccessDenied — resolver was reached.
         assert!(
-            matches!(result, Err(CredentialAccessError::NotConfigured(_))),
-            "expected NotConfigured from resolver (not AccessDenied), got {result:?}"
+            matches!(result, Err(CredentialAccessError::AccessDenied { .. })),
+            "empty allowlist must deny; got {result:?}"
         );
     }
 
@@ -309,5 +319,42 @@ mod tests {
         let debug = format!("{accessor:?}");
         assert!(debug.contains("<fn>"));
         assert!(!debug.contains("resolve_fn: Arc"));
+    }
+
+    #[tokio::test]
+    async fn denied_request_never_invokes_resolver() {
+        // Defense-in-depth: the resolver closure must not run when access is denied.
+        // A leaky implementation that called the resolver first would expose the
+        // underlying store to probing for undeclared keys.
+        use std::sync::atomic::{AtomicU32, Ordering as AOrdering};
+        let calls = Arc::new(AtomicU32::new(0));
+        let calls_inner = calls.clone();
+        let accessor = EngineCredentialAccessor::new(
+            HashSet::new(), // deny-by-default
+            move |_id: &str| {
+                let calls = calls_inner.clone();
+                async move {
+                    calls.fetch_add(1, AOrdering::Relaxed);
+                    Err(CredentialAccessError::NotFound(
+                        "resolver should not be called".to_owned(),
+                    ))
+                }
+            },
+            "test_action".to_owned(),
+        );
+
+        let _ = accessor.get("anything").await;
+        assert_eq!(
+            calls.load(AOrdering::Relaxed),
+            0,
+            "resolver must not run when denied"
+        );
+
+        let _ = accessor.has("anything").await;
+        assert_eq!(
+            calls.load(AOrdering::Relaxed),
+            0,
+            "has() must not invoke resolver when denied"
+        );
     }
 }

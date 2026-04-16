@@ -21,7 +21,7 @@ use dashmap::DashMap;
 use nebula_action::capability::{ResourceAccessor, default_resource_accessor};
 use nebula_action::{ActionContext, ActionError, ActionResult};
 use nebula_core::{
-    NodeKey,
+    ActionKey, NodeKey,
     id::{ExecutionId, WorkflowId},
     node_key,
 };
@@ -131,6 +131,14 @@ pub struct WorkflowEngine {
     /// credentials. The callee is responsible for refreshing the credential so
     /// the resolver returns a fresh snapshot when the action requests it.
     credential_refresh: Option<CredentialRefreshFn>,
+    /// Per-[`ActionKey`] credential allowlist (deny-by-default).
+    ///
+    /// Actions may only acquire credential IDs listed for their `ActionKey`.
+    /// Missing entry or empty set → every `acquire_credential` request for
+    /// that action is denied with [`nebula_credential::CredentialAccessError::AccessDenied`].
+    /// See `PRODUCT_CANON` §4.5 (operational honesty — no false capabilities) and §12.5
+    /// (secrets and auth). Populated via [`WorkflowEngine::with_action_credentials`].
+    action_credentials: HashMap<ActionKey, HashSet<String>>,
     /// Optional event sender for real-time execution monitoring (TUI, logging).
     event_sender: Option<EventSender>,
 }
@@ -150,6 +158,7 @@ impl WorkflowEngine {
             workflow_repo: None,
             credential_resolver: None,
             credential_refresh: None,
+            action_credentials: HashMap::new(),
             event_sender: None,
         }
     }
@@ -257,6 +266,39 @@ impl WorkflowEngine {
                     Box<dyn Future<Output = Result<(), nebula_action::error::ActionError>> + Send>,
                 >
         }));
+        self
+    }
+
+    /// Declare the credential IDs an action is permitted to acquire.
+    ///
+    /// The engine enforces a **deny-by-default** allowlist (see `PRODUCT_CANON` §4.5
+    /// and §12.5). When a node whose `action_key == action` runs, only the
+    /// credential IDs supplied here may be resolved — every other request fails
+    /// with [`nebula_credential::CredentialAccessError::AccessDenied`]. Actions
+    /// that are never declared here cannot acquire any credential at all.
+    ///
+    /// Multiple calls for the same `action` **merge** — the new entries are added
+    /// to the existing set rather than replacing it, so that composable fixtures
+    /// and plugin wiring can contribute independently.
+    ///
+    /// # Examples
+    ///
+    /// ```rust,ignore
+    /// use nebula_core::action_key;
+    /// use nebula_engine::WorkflowEngine;
+    ///
+    /// let engine = WorkflowEngine::new(runtime, metrics)
+    ///     .with_credential_resolver(/* ... */)
+    ///     .with_action_credentials(action_key!("http.request"), ["github_token"]);
+    /// ```
+    #[must_use = "builder methods must be chained or built"]
+    pub fn with_action_credentials<I, S>(mut self, action: ActionKey, credential_ids: I) -> Self
+    where
+        I: IntoIterator<Item = S>,
+        S: Into<String>,
+    {
+        let entry = self.action_credentials.entry(action).or_default();
+        entry.extend(credential_ids.into_iter().map(Into::into));
         self
     }
 
@@ -1352,15 +1394,24 @@ impl WorkflowEngine {
         let sem = semaphore.clone();
         let outputs_ref = outputs.clone();
 
-        // Build credential accessor: when a resolver is configured, use EngineCredentialAccessor
-        // with an empty allowlist (open/passthrough mode — allows all keys until per-node
-        // credential declarations are populated from action dependency metadata).
-        // TODO: populate allowed_keys from node_def's declared credential dependencies.
+        // Build credential accessor with a **deny-by-default** per-action allowlist.
+        //
+        // Per `PRODUCT_CANON` §4.5 / §12.5 + audit §2.4: an action can only
+        // acquire credential IDs explicitly declared for its `ActionKey` via
+        // `WorkflowEngine::with_action_credentials`. If the node's action was
+        // never declared — or was declared with an empty set — the accessor
+        // refuses every `get`/`has` request with
+        // `CredentialAccessError::AccessDenied`. No silent "allow all" fallback.
+        let allowed_keys: HashSet<String> = self
+            .action_credentials
+            .get(&node_def.action_key)
+            .cloned()
+            .unwrap_or_default();
         let credentials: Arc<dyn CredentialAccessor> =
             if let Some(resolver_fn) = &self.credential_resolver {
                 let resolver_fn = Arc::clone(resolver_fn);
                 Arc::new(EngineCredentialAccessor::new(
-                    std::collections::HashSet::new(),
+                    allowed_keys,
                     move |id: &str| {
                         let resolver_fn = Arc::clone(&resolver_fn);
                         let id = id.to_owned();
@@ -4019,5 +4070,251 @@ mod tests {
             engine_err,
             EngineError::Action(ActionError::CredentialRefreshFailed { .. })
         ));
+    }
+
+    // -- Credential allowlist enforcement (PRODUCT_CANON §4.5 / §12.5 — audit §2.4) --
+
+    /// Handler that attempts to acquire a credential by id and records the result.
+    ///
+    /// Used by the allowlist tests below: a single stateless action whose
+    /// parameter chooses which credential id to probe. Implemented directly as
+    /// a [`StatelessHandler`] (rather than as a [`StatelessAction`]) because
+    /// that trait receives a concrete `&ActionContext` from the adapter — which
+    /// lets us call [`CredentialContextExt::credential_by_id`] without needing
+    /// a downcast from `&impl Context`.
+    ///
+    /// The outcome (success vs typed error) is surfaced via the execution
+    /// result so tests can assert that denial propagates as a real error
+    /// rather than silently succeeding.
+    struct CredProbeHandler {
+        meta: ActionMetadata,
+    }
+
+    #[async_trait::async_trait]
+    impl nebula_action::StatelessHandler for CredProbeHandler {
+        fn metadata(&self) -> &ActionMetadata {
+            &self.meta
+        }
+
+        async fn execute(
+            &self,
+            input: serde_json::Value,
+            ctx: &nebula_action::ActionContext,
+        ) -> Result<ActionResult<serde_json::Value>, ActionError> {
+            let id = input
+                .get("credential_id")
+                .and_then(|v| v.as_str())
+                .ok_or_else(|| ActionError::fatal("missing credential_id"))?;
+            // `credential_by_id` forwards `CredentialAccessError::AccessDenied`
+            // as `ActionError::SandboxViolation` via the From impl in
+            // `nebula_action::error`. We want the typed error to bubble up so
+            // the engine records a NodeFailed — not to swallow it.
+            let _snapshot = ctx.credential_by_id(id).await?;
+            Ok(ActionResult::success(serde_json::json!({"ok": true})))
+        }
+    }
+
+    /// Register a `CredProbeHandler` under `key` into the given registry.
+    fn register_probe(registry: &ActionRegistry, key: ActionKey, name: &str) {
+        let meta = ActionMetadata::new(key, name, "acquires a credential");
+        registry.register(
+            meta.clone(),
+            nebula_action::ActionHandler::Stateless(Arc::new(CredProbeHandler { meta })),
+        );
+    }
+
+    /// Build a workflow with a single `CredProbeHandler` node that probes `cred_id`.
+    fn probe_workflow(action: &str, cred_id: &str) -> WorkflowDefinition {
+        let n1 = node_key!("probe");
+        let node = NodeDefinition::new(n1.clone(), "probe", action)
+            .unwrap()
+            .with_parameter(
+                "credential_id",
+                nebula_workflow::ParamValue::literal(serde_json::json!(cred_id)),
+            );
+        make_workflow(vec![node], vec![])
+    }
+
+    /// Build a snapshot the resolver can return for any id. Used to prove that
+    /// denial happens **before** the resolver is consulted, not as a side effect
+    /// of the store returning nothing — deny-by-default must be a real policy
+    /// check, not a lucky miss.
+    fn dummy_snapshot(id: &str) -> nebula_credential::CredentialSnapshot {
+        nebula_credential::CredentialSnapshot::new(
+            id,
+            nebula_credential::CredentialMetadata::new(),
+            nebula_credential::SecretToken::new(nebula_credential::SecretString::new("test-value")),
+        )
+    }
+
+    /// Default-deny: an action that was never declared to the engine cannot
+    /// acquire any credential — even one the resolver would happily return.
+    #[tokio::test]
+    async fn credential_access_denied_without_declaration() {
+        let registry = Arc::new(ActionRegistry::new());
+        register_probe(&registry, action_key!("probe"), "Probe");
+
+        let (engine, _) = make_engine(registry);
+        // No `with_action_credentials` — `probe` has no declaration.
+        let engine = engine.with_credential_resolver(|id: &str| {
+            let id = id.to_owned();
+            async move { Ok(dummy_snapshot(&id)) }
+        });
+
+        let wf = probe_workflow("probe", "api_key");
+        let result = engine
+            .execute_workflow(&wf, serde_json::json!(null), ExecutionBudget::default())
+            .await
+            .expect("engine returns Ok(ExecutionResult) even on node failure");
+
+        assert!(
+            !result.is_success(),
+            "undeclared action must not acquire credentials"
+        );
+        let err = result
+            .node_errors
+            .get(&node_key!("probe"))
+            .expect("failed node must carry an error message");
+        // `CredentialAccessError::AccessDenied` is mapped to
+        // `ActionError::SandboxViolation { capability, action_id }` (see
+        // `nebula_action::error::From<CredentialAccessError>`), whose Display
+        // is `"sandbox violation: capability `{capability}` denied for ..."`.
+        assert!(
+            err.contains("sandbox violation") && err.contains("denied"),
+            "error must surface sandbox-violation denial, got: {err}"
+        );
+        assert!(
+            err.contains("credential:api_key"),
+            "error must attribute the denied credential id, got: {err}"
+        );
+        assert!(
+            err.contains("for action `probe`"),
+            "error must attribute the action whose access was denied, got: {err}"
+        );
+    }
+
+    /// Declared: the engine permits exactly the credential ids explicitly
+    /// declared for the action's `ActionKey`.
+    #[tokio::test]
+    async fn credential_access_allowed_with_declaration() {
+        let registry = Arc::new(ActionRegistry::new());
+        register_probe(&registry, action_key!("probe"), "Probe");
+
+        let (engine, _) = make_engine(registry);
+        let engine = engine
+            .with_credential_resolver(|id: &str| {
+                let id = id.to_owned();
+                async move { Ok(dummy_snapshot(&id)) }
+            })
+            .with_action_credentials(action_key!("probe"), ["api_key"]);
+
+        let wf = probe_workflow("probe", "api_key");
+        let result = engine
+            .execute_workflow(&wf, serde_json::json!(null), ExecutionBudget::default())
+            .await
+            .expect("engine returns Ok(ExecutionResult)");
+
+        assert!(
+            result.is_success(),
+            "declared credential must be acquirable, errors: {:?}",
+            result.node_errors
+        );
+    }
+
+    /// Mismatched: an action that declares credential `A` still cannot acquire
+    /// credential `B`. Per-key enforcement, not per-action blanket allow.
+    #[tokio::test]
+    async fn credential_access_denied_for_mismatched_key() {
+        let registry = Arc::new(ActionRegistry::new());
+        register_probe(&registry, action_key!("probe"), "Probe");
+
+        let (engine, _) = make_engine(registry);
+        let engine = engine
+            .with_credential_resolver(|id: &str| {
+                let id = id.to_owned();
+                async move { Ok(dummy_snapshot(&id)) }
+            })
+            .with_action_credentials(action_key!("probe"), ["cred_a"]);
+
+        let wf = probe_workflow("probe", "cred_b");
+        let result = engine
+            .execute_workflow(&wf, serde_json::json!(null), ExecutionBudget::default())
+            .await
+            .expect("engine returns Ok(ExecutionResult) even on node failure");
+
+        assert!(
+            !result.is_success(),
+            "mismatched credential id must not be acquirable"
+        );
+        let err = result
+            .node_errors
+            .get(&node_key!("probe"))
+            .expect("failed node must carry an error message");
+        assert!(
+            err.contains("sandbox violation") && err.contains("denied"),
+            "error must surface sandbox-violation denial, got: {err}"
+        );
+        assert!(
+            err.contains("credential:cred_b"),
+            "error must attribute the denied credential id (cred_b), got: {err}"
+        );
+    }
+
+    /// Scoping: declarations for one `ActionKey` do not leak to others.
+    #[tokio::test]
+    async fn credential_declaration_is_per_action_key() {
+        let registry = Arc::new(ActionRegistry::new());
+        register_probe(&registry, action_key!("probe_a"), "Probe A");
+        register_probe(&registry, action_key!("probe_b"), "Probe B");
+
+        let (engine, _) = make_engine(registry);
+        let engine = engine
+            .with_credential_resolver(|id: &str| {
+                let id = id.to_owned();
+                async move { Ok(dummy_snapshot(&id)) }
+            })
+            // Only `probe_a` declares `shared_key`. `probe_b` must still be denied.
+            .with_action_credentials(action_key!("probe_a"), ["shared_key"]);
+
+        // probe_b tries shared_key → must fail even though probe_a has it declared.
+        let wf = probe_workflow("probe_b", "shared_key");
+        let result = engine
+            .execute_workflow(&wf, serde_json::json!(null), ExecutionBudget::default())
+            .await
+            .expect("engine returns Ok(ExecutionResult)");
+
+        assert!(
+            !result.is_success(),
+            "declaration for probe_a must not leak to probe_b"
+        );
+    }
+
+    /// Merging: repeat declarations for the same `ActionKey` add keys cumulatively
+    /// rather than replacing the set.
+    #[tokio::test]
+    async fn action_credentials_merge_across_builder_calls() {
+        let registry = Arc::new(ActionRegistry::new());
+        register_probe(&registry, action_key!("probe"), "Probe");
+
+        let (engine, _) = make_engine(registry);
+        let engine = engine
+            .with_credential_resolver(|id: &str| {
+                let id = id.to_owned();
+                async move { Ok(dummy_snapshot(&id)) }
+            })
+            .with_action_credentials(action_key!("probe"), ["first"])
+            .with_action_credentials(action_key!("probe"), ["second"]);
+
+        // Probing "second" must succeed — the second call adds, not replaces.
+        let wf = probe_workflow("probe", "second");
+        let result = engine
+            .execute_workflow(&wf, serde_json::json!(null), ExecutionBudget::default())
+            .await
+            .expect("engine returns Ok(ExecutionResult)");
+        assert!(
+            result.is_success(),
+            "repeated with_action_credentials must merge, not replace. errors: {:?}",
+            result.node_errors
+        );
     }
 }
