@@ -18,6 +18,7 @@ use nebula_metrics::naming::{
     NEBULA_ACTION_DISPATCH_REJECTED_TOTAL, NEBULA_ACTION_DURATION_SECONDS,
     NEBULA_ACTION_EXECUTIONS_TOTAL, NEBULA_ACTION_FAILURES_TOTAL, dispatch_reject_reason,
 };
+use nebula_sandbox::{SandboxRunner, SandboxedContext};
 use nebula_telemetry::metrics::{Counter, Histogram, MetricsRegistry};
 use serde::{Deserialize, Serialize};
 
@@ -26,7 +27,6 @@ use crate::{
     data_policy::{DataPassingPolicy, LargeDataStrategy},
     error::RuntimeError,
     registry::ActionRegistry,
-    sandbox::{SandboxRunner, SandboxedContext},
 };
 
 /// Persisted iteration state for a stateful action.
@@ -882,9 +882,9 @@ mod tests {
         id::{ExecutionId, WorkflowId},
         node_key,
     };
+    use nebula_sandbox::{ActionExecutor, InProcessSandbox};
 
     use super::*;
-    use crate::sandbox::{ActionExecutor, InProcessSandbox};
 
     struct EchoAction {
         meta: ActionMetadata,

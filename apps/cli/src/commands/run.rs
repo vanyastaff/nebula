@@ -5,6 +5,7 @@ use nebula_core::id::ExecutionId;
 use nebula_engine::WorkflowEngine;
 use nebula_execution::{ExecutionStatus, context::ExecutionBudget, plan::ExecutionPlan};
 use nebula_runtime::{ActionRegistry, ActionRuntime, DataPassingPolicy, InProcessSandbox};
+use nebula_sandbox::ActionExecutor;
 use nebula_telemetry::metrics::MetricsRegistry;
 
 use crate::cli::{OutputFormat, RunArgs, resolve_format};
@@ -58,7 +59,7 @@ pub async fn execute(args: RunArgs, quiet: bool) -> anyhow::Result<ExitCode> {
     // directly via the `ActionHandler` enum, and non-`None` levels return
     // `Fatal` (sandbox dispatch is Phase 7.6). This closure exists only to
     // satisfy `InProcessSandbox::new()` until the sandbox path is rewired.
-    let executor: nebula_runtime::sandbox::ActionExecutor = Arc::new(|_ctx, _metadata, _input| {
+    let executor: ActionExecutor = Arc::new(|_ctx, _metadata, _input| {
         Box::pin(async move {
             Err(nebula_action::ActionError::fatal(
                 "sandbox executor invoked unexpectedly — Phase 7.5 routes all execution \

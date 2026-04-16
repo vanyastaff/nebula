@@ -5,6 +5,7 @@ use nebula_core::{NodeKey, id::ExecutionId};
 use nebula_engine::WorkflowEngine;
 use nebula_execution::{ExecutionStatus, ReplayPlan, context::ExecutionBudget};
 use nebula_runtime::{ActionRegistry, ActionRuntime, DataPassingPolicy, InProcessSandbox};
+use nebula_sandbox::ActionExecutor;
 use nebula_telemetry::metrics::MetricsRegistry;
 
 use crate::cli::{OutputFormat, ReplayArgs, resolve_format};
@@ -72,7 +73,7 @@ pub async fn execute(args: ReplayArgs, quiet: bool) -> anyhow::Result<ExitCode> 
 
     let metrics = MetricsRegistry::new();
     // Sandbox executor is unreachable in Phase 7.5 — see run.rs for details.
-    let executor: nebula_runtime::sandbox::ActionExecutor = Arc::new(|_ctx, _metadata, _input| {
+    let executor: ActionExecutor = Arc::new(|_ctx, _metadata, _input| {
         Box::pin(async move {
             Err(nebula_action::ActionError::fatal(
                 "sandbox executor invoked unexpectedly — Phase 7.5 routes all execution \
