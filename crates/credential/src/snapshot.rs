@@ -261,10 +261,9 @@ impl fmt::Debug for CredentialSnapshot {
 
 #[cfg(test)]
 mod tests {
-    use nebula_core::SecretString;
-
     use super::*;
     use crate::{
+        SecretString,
         metadata::CredentialMetadata,
         scheme::{ConnectionUri, SecretToken},
     };

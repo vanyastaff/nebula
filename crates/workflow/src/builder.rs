@@ -3,9 +3,10 @@
 use std::{collections::HashMap, time::Duration};
 
 use chrono::Utc;
-use nebula_core::{NodeId, OwnerId, Version, WorkflowId};
+use nebula_core::{NodeId, WorkflowId};
 
 use crate::{
+    Version,
     connection::{Connection, EdgeCondition},
     definition::{CURRENT_SCHEMA_VERSION, UiMetadata, WorkflowConfig, WorkflowDefinition},
     error::WorkflowError,
@@ -25,7 +26,7 @@ pub struct WorkflowBuilder {
     variables: HashMap<String, serde_json::Value>,
     config: WorkflowConfig,
     tags: Vec<String>,
-    owner_id: Option<OwnerId>,
+    owner_id: Option<String>,
     ui_metadata: Option<UiMetadata>,
 }
 
@@ -147,8 +148,8 @@ impl WorkflowBuilder {
 
     /// Set the owner ID for multi-tenant workflows.
     #[must_use = "builder methods must be chained or built"]
-    pub fn owner(mut self, owner_id: OwnerId) -> Self {
-        self.owner_id = Some(owner_id);
+    pub fn owner(mut self, owner_id: impl Into<String>) -> Self {
+        self.owner_id = Some(owner_id.into());
         self
     }
 

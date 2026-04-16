@@ -21,12 +21,12 @@ use std::sync::Arc;
 
 use dashmap::DashMap;
 use nebula_action::{
-    Action, ActionHandler, ActionMetadata, PollAction, PollTriggerAdapter, ResourceAction,
-    ResourceActionAdapter, StatefulAction, StatefulActionAdapter, StatelessAction,
+    Action, ActionHandler, ActionMetadata, InterfaceVersion, PollAction, PollTriggerAdapter,
+    ResourceAction, ResourceActionAdapter, StatefulAction, StatefulActionAdapter, StatelessAction,
     StatelessActionAdapter, TriggerAction, TriggerActionAdapter, WebhookAction,
     WebhookTriggerAdapter,
 };
-use nebula_core::{ActionKey, InterfaceVersion};
+use nebula_core::ActionKey;
 
 /// A single entry in the registry: metadata paired with its handler.
 #[derive(Clone)]

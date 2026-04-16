@@ -16,9 +16,8 @@ impl From<OAuth2Token> for SecretToken {
 
 #[cfg(test)]
 mod tests {
-    use nebula_core::SecretString;
-
     use super::*;
+    use crate::SecretString;
 
     #[test]
     fn oauth2_to_secret_token() {

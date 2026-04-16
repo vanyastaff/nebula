@@ -38,11 +38,7 @@ pub async fn execute(args: ReplayArgs, quiet: bool) -> anyhow::Result<ExitCode> 
             let raw: HashMap<String, serde_json::Value> =
                 serde_json::from_str(&content).context("invalid outputs JSON")?;
             raw.into_iter()
-                .filter_map(|(k, v)| {
-                    k.parse::<uuid::Uuid>()
-                        .ok()
-                        .map(|uuid| (NodeId::from(uuid), v))
-                })
+                .filter_map(|(k, v)| k.parse::<NodeId>().ok().map(|id| (id, v)))
                 .collect()
         } else {
             HashMap::new()

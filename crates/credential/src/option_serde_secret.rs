@@ -1,10 +1,6 @@
 //! Serde helpers for [`Option<SecretString>`] that preserve the actual value.
 //!
-//! Companion to [`serde_secret`](crate::serde_secret) for optional secret fields.
-//! Serializes `None` as JSON `null` and `Some(secret)` as the plaintext value.
-//!
-//! Use with `#[serde(with = "nebula_core::option_serde_secret")]` on
-//! `Option<SecretString>` fields.
+//! Use with `#[serde(with = "nebula_credential::option_serde_secret")]`.
 
 use serde::{Deserialize, Deserializer, Serializer};
 

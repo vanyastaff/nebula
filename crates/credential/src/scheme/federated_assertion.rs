@@ -1,8 +1,10 @@
 //! Federated identity assertion (SAML, JWT, Kerberos ticket).
 
 use chrono::{DateTime, Utc};
-use nebula_core::{AuthPattern, AuthScheme, SecretString};
+use nebula_core::{AuthPattern, AuthScheme};
 use serde::{Deserialize, Serialize};
+
+use crate::SecretString;
 
 /// A third-party identity assertion such as a SAML assertion, JWT, or
 /// Kerberos ticket.
@@ -14,8 +16,7 @@ use serde::{Deserialize, Serialize};
 /// # Examples
 ///
 /// ```
-/// use nebula_core::SecretString;
-/// use nebula_credential::scheme::FederatedAssertion;
+/// use nebula_credential::{SecretString, scheme::FederatedAssertion};
 ///
 /// let assertion = FederatedAssertion::new(
 ///     SecretString::new("eyJhbGciOiJSUzI1NiJ9..."),
@@ -24,7 +25,7 @@ use serde::{Deserialize, Serialize};
 /// ```
 #[derive(Clone, Serialize, Deserialize)]
 pub struct FederatedAssertion {
-    #[serde(with = "nebula_core::serde_secret")]
+    #[serde(with = "crate::serde_secret")]
     assertion: SecretString,
     issuer: String,
     expires_at: Option<DateTime<Utc>>,

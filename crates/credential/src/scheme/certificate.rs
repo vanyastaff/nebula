@@ -1,9 +1,8 @@
 //! X.509 client certificate authentication (mTLS, TLS client auth).
 
-use nebula_core::SecretString;
 use serde::{Deserialize, Serialize};
 
-use crate::AuthScheme;
+use crate::{AuthScheme, SecretString};
 
 /// X.509 client certificate with private key for mutual TLS authentication.
 ///
@@ -14,8 +13,7 @@ use crate::AuthScheme;
 /// # Examples
 ///
 /// ```
-/// use nebula_core::SecretString;
-/// use nebula_credential::scheme::Certificate;
+/// use nebula_credential::{SecretString, scheme::Certificate};
 ///
 /// let cert = Certificate::new(
 ///     "-----BEGIN CERTIFICATE-----\n...".to_string(),
@@ -26,9 +24,9 @@ use crate::AuthScheme;
 #[auth_scheme(pattern = Certificate)]
 pub struct Certificate {
     cert_chain: String,
-    #[serde(with = "nebula_core::serde_secret")]
+    #[serde(with = "crate::serde_secret")]
     private_key: SecretString,
-    #[serde(with = "nebula_core::option_serde_secret")]
+    #[serde(with = "crate::option_serde_secret")]
     passphrase: Option<SecretString>,
 }
 

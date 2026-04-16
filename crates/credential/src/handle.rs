@@ -81,10 +81,8 @@ impl<S: AuthScheme + std::fmt::Debug> std::fmt::Debug for CredentialHandle<S> {
 
 #[cfg(test)]
 mod tests {
-    use nebula_core::SecretString;
-
     use super::*;
-    use crate::scheme::SecretToken;
+    use crate::{SecretString, scheme::SecretToken};
 
     #[test]
     fn snapshot_returns_current_scheme() {

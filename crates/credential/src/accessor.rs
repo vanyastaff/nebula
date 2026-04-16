@@ -162,10 +162,9 @@ mod tests {
     use std::{any::TypeId, collections::HashMap, sync::Arc};
 
     use async_trait::async_trait;
-    use nebula_core::SecretString;
 
     use super::*;
-    use crate::{CredentialMetadata, CredentialSnapshot, SecretToken};
+    use crate::{CredentialMetadata, CredentialSnapshot, SecretString, SecretToken};
 
     /// Test accessor that supports both string-based and type-based access.
     struct MockAccessor {

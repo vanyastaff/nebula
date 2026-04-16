@@ -1,10 +1,9 @@
 //! Opaque secret token authentication (API key, bearer token, session token).
 
-use nebula_core::SecretString;
 use serde::{Deserialize, Serialize};
 
 use crate::AuthScheme; // derive macro
-use crate::identity_state;
+use crate::{SecretString, identity_state};
 
 /// An opaque secret string used as an authentication token.
 ///
@@ -14,15 +13,14 @@ use crate::identity_state;
 /// # Examples
 ///
 /// ```
-/// use nebula_core::SecretString;
-/// use nebula_credential::scheme::SecretToken;
+/// use nebula_credential::{SecretString, scheme::SecretToken};
 ///
 /// let token = SecretToken::new(SecretString::new("sk-abc123"));
 /// ```
 #[derive(Clone, Serialize, Deserialize, AuthScheme)]
 #[auth_scheme(pattern = SecretToken)]
 pub struct SecretToken {
-    #[serde(with = "nebula_core::serde_secret")]
+    #[serde(with = "crate::serde_secret")]
     token: SecretString,
 }
 
