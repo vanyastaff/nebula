@@ -17,7 +17,7 @@
 
 use std::collections::{HashMap, HashSet};
 
-use nebula_core::{ActionKey, NodeId, WorkflowId};
+use nebula_core::{ActionKey, NodeKey, WorkflowId};
 use nebula_workflow::{
     CURRENT_SCHEMA_VERSION, ParamValue, Version, WorkflowConfig, WorkflowDefinition,
     connection::{Connection, EdgeCondition},
@@ -170,10 +170,19 @@ impl WorkflowBuilder {
         }
 
         // Stable mapping between user-facing node ids and typed ids.
-        let node_id_by_name: HashMap<String, NodeId> = self
+        let node_id_by_name: HashMap<String, NodeKey> = self
             .nodes
             .iter()
-            .map(|node| (node.id.clone(), NodeId::new()))
+            .enumerate()
+            .map(|(i, node)| {
+                let key = NodeKey::new(&node.id).unwrap_or_else(|_| {
+                    // Node id is not a valid key (e.g. contains uppercase or special
+                    // chars). Generate a unique fallback so nodes never collide.
+                    let fallback = format!("node_{i}");
+                    NodeKey::new(&fallback).unwrap()
+                });
+                (node.id.clone(), key)
+            })
             .collect();
 
         // Validate all edge references.
@@ -197,7 +206,7 @@ impl WorkflowBuilder {
             .nodes
             .into_iter()
             .map(|config| -> crate::Result<NodeDefinition> {
-                let node_id = node_id_by_name.get(&config.id).copied().ok_or_else(|| {
+                let node_key = node_id_by_name.get(&config.id).cloned().ok_or_else(|| {
                     crate::Error::workflow(format!("Node id not found in mapping: {}", config.id))
                 })?;
 
@@ -209,7 +218,7 @@ impl WorkflowBuilder {
                 })?;
 
                 Ok(NodeDefinition {
-                    id: node_id,
+                    id: node_key,
                     name: config.name,
                     action_key,
                     interface_version: None,
@@ -228,10 +237,10 @@ impl WorkflowBuilder {
             .connections
             .into_iter()
             .map(|(from, to)| -> crate::Result<Connection> {
-                let from_node = node_id_by_name.get(&from).copied().ok_or_else(|| {
+                let from_node = node_id_by_name.get(&from).cloned().ok_or_else(|| {
                     crate::Error::workflow(format!("Unknown source node in connection: {}", from))
                 })?;
-                let to_node = node_id_by_name.get(&to).copied().ok_or_else(|| {
+                let to_node = node_id_by_name.get(&to).cloned().ok_or_else(|| {
                     crate::Error::workflow(format!("Unknown target node in connection: {}", to))
                 })?;
 

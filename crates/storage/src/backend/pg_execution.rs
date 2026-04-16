@@ -6,7 +6,9 @@
 use std::{collections::HashMap, time::Duration};
 
 use async_trait::async_trait;
-use nebula_core::{ExecutionId, NodeId, WorkflowId};
+#[cfg(all(test, feature = "postgres"))]
+use nebula_core::node_key;
+use nebula_core::{ExecutionId, NodeKey, WorkflowId};
 use sqlx::{Pool, Postgres, types::Json};
 
 use crate::execution_repo::{ExecutionRepo, ExecutionRepoError};
@@ -256,7 +258,7 @@ impl ExecutionRepo for PgExecutionRepo {
     async fn save_node_output(
         &self,
         execution_id: ExecutionId,
-        node_id: NodeId,
+        node_key: NodeKey,
         attempt: u32,
         output: serde_json::Value,
     ) -> Result<(), ExecutionRepoError> {
@@ -270,7 +272,7 @@ impl ExecutionRepo for PgExecutionRepo {
              DO UPDATE SET output = EXCLUDED.output",
         )
         .bind(execution_id)
-        .bind(node_id)
+        .bind(node_key)
         .bind(attempt_i32)
         .bind(Json(&output))
         .execute(&self.pool)
@@ -283,7 +285,7 @@ impl ExecutionRepo for PgExecutionRepo {
     async fn load_node_output(
         &self,
         execution_id: ExecutionId,
-        node_id: NodeId,
+        node_key: NodeKey,
     ) -> Result<Option<serde_json::Value>, ExecutionRepoError> {
         let row = sqlx::query_as::<_, (Json<serde_json::Value>,)>(
             "SELECT output FROM node_outputs \
@@ -292,7 +294,7 @@ impl ExecutionRepo for PgExecutionRepo {
              LIMIT 1",
         )
         .bind(execution_id)
-        .bind(node_id)
+        .bind(node_key)
         .fetch_optional(&self.pool)
         .await
         .map_err(map_err)?;
@@ -303,8 +305,8 @@ impl ExecutionRepo for PgExecutionRepo {
     async fn load_all_outputs(
         &self,
         execution_id: ExecutionId,
-    ) -> Result<HashMap<NodeId, serde_json::Value>, ExecutionRepoError> {
-        let rows = sqlx::query_as::<_, (NodeId, Json<serde_json::Value>)>(
+    ) -> Result<HashMap<NodeKey, serde_json::Value>, ExecutionRepoError> {
+        let rows = sqlx::query_as::<_, (NodeKey, Json<serde_json::Value>)>(
             "SELECT DISTINCT ON (node_id) node_id, output \
              FROM node_outputs \
              WHERE execution_id = $1 \
@@ -317,7 +319,7 @@ impl ExecutionRepo for PgExecutionRepo {
 
         Ok(rows
             .into_iter()
-            .map(|(node_id, output)| (node_id, output.0))
+            .map(|(node_key, output)| (node_key, output.0))
             .collect())
     }
 
@@ -366,7 +368,7 @@ impl ExecutionRepo for PgExecutionRepo {
         &self,
         key: &str,
         execution_id: ExecutionId,
-        node_id: NodeId,
+        node_key: NodeKey,
     ) -> Result<(), ExecutionRepoError> {
         sqlx::query(
             "INSERT INTO idempotency_keys (key, execution_id, node_id) \
@@ -375,7 +377,7 @@ impl ExecutionRepo for PgExecutionRepo {
         )
         .bind(key)
         .bind(execution_id)
-        .bind(node_id)
+        .bind(node_key)
         .execute(&self.pool)
         .await
         .map_err(|e| map_idempotency_err(e, execution_id))?;
@@ -489,18 +491,18 @@ mod tests {
         };
         let exec_id = ExecutionId::new();
         let wf_id = WorkflowId::new();
-        let node_id = NodeId::new();
+        let node_key = node_key!("test_node");
         let output = serde_json::json!({"result": 42});
 
         repo.create(exec_id, wf_id, serde_json::json!({}))
             .await
             .expect("create");
-        repo.save_node_output(exec_id, node_id, 0, output.clone())
+        repo.save_node_output(exec_id, node_key.clone(), 0, output.clone())
             .await
             .expect("save output");
 
         let got = repo
-            .load_node_output(exec_id, node_id)
+            .load_node_output(exec_id, node_key.clone())
             .await
             .expect("load")
             .expect("some");
@@ -514,20 +516,23 @@ mod tests {
         };
         let exec_id = ExecutionId::new();
         let wf_id = WorkflowId::new();
-        let node_id = NodeId::new();
+        let node_key = node_key!("test_node");
 
         repo.create(exec_id, wf_id, serde_json::json!({}))
             .await
             .expect("create");
-        repo.save_node_output(exec_id, node_id, 0, serde_json::json!("attempt0"))
+        repo.save_node_output(exec_id, node_key.clone(), 0, serde_json::json!("attempt0"))
             .await
             .expect("save attempt 0");
-        repo.save_node_output(exec_id, node_id, 1, serde_json::json!("attempt1"))
+        repo.save_node_output(exec_id, node_key.clone(), 1, serde_json::json!("attempt1"))
             .await
             .expect("save attempt 1");
 
         let all = repo.load_all_outputs(exec_id).await.expect("load all");
-        assert_eq!(all.get(&node_id), Some(&serde_json::json!("attempt1")));
+        assert_eq!(
+            all.get(&node_key.clone()),
+            Some(&serde_json::json!("attempt1"))
+        );
     }
 
     #[tokio::test]
@@ -538,7 +543,7 @@ mod tests {
         let key = format!("test-idempotency-{}", ExecutionId::new());
         let exec_id = ExecutionId::new();
         let wf_id = WorkflowId::new();
-        let node_id = NodeId::new();
+        let node_key = node_key!("test_node");
         repo.create(exec_id, wf_id, serde_json::json!({"status":"created"}))
             .await
             .expect("create execution for idempotency");
@@ -548,7 +553,7 @@ mod tests {
             "key should not exist yet"
         );
 
-        repo.mark_idempotent(&key, exec_id, node_id)
+        repo.mark_idempotent(&key, exec_id, node_key.clone())
             .await
             .expect("first mark");
 
@@ -560,7 +565,7 @@ mod tests {
         );
 
         // Second mark with same key should be idempotent (ON CONFLICT DO NOTHING).
-        repo.mark_idempotent(&key, exec_id, node_id)
+        repo.mark_idempotent(&key, exec_id, node_key.clone())
             .await
             .expect("second mark should not fail");
 
@@ -581,7 +586,7 @@ mod tests {
             .mark_idempotent(
                 &format!("test-idempotency-missing-{}", ExecutionId::new()),
                 ExecutionId::new(),
-                NodeId::new(),
+                node_key!("test"),
             )
             .await
             .expect_err("missing execution should reject idempotency mark");

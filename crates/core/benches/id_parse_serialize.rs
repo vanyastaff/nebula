@@ -5,7 +5,7 @@
 use std::hint::black_box;
 
 use criterion::{Criterion, criterion_group, criterion_main};
-use nebula_core::{ExecutionId, NodeId, WorkflowId};
+use nebula_core::{ExecutionId, NodeKey, WorkflowId, node_key};
 
 fn id_new(c: &mut Criterion) {
     let mut group = c.benchmark_group("id/new");
@@ -15,7 +15,9 @@ fn id_new(c: &mut Criterion) {
     group.bench_function("WorkflowId::new", |b| {
         b.iter(|| black_box(WorkflowId::new()));
     });
-    group.bench_function("NodeId::new", |b| b.iter(|| black_box(NodeId::new())));
+    group.bench_function("NodeKey::new", |b| {
+        b.iter(|| black_box(NodeKey::new("test").unwrap()));
+    });
     group.finish();
 }
 
@@ -23,59 +25,37 @@ fn id_parse(c: &mut Criterion) {
     // Use actual prefixed ULID strings for parse benchmarks
     let exe_s = ExecutionId::new().to_string();
     let wf_s = WorkflowId::new().to_string();
-    let node_s = NodeId::new().to_string();
+    let node_s = node_key!("test").to_string();
     let mut group = c.benchmark_group("id/parse");
     group.bench_function("ExecutionId::parse", |b| {
-        b.iter(|| {
-            black_box(
-                exe_s
-                    .parse::<ExecutionId>()
-                    .expect("pre-generated ExecutionId string must parse"),
-            )
-        });
+        b.iter(|| black_box(exe_s.parse::<ExecutionId>().unwrap()));
     });
     group.bench_function("WorkflowId::parse", |b| {
-        b.iter(|| {
-            black_box(
-                wf_s.parse::<WorkflowId>()
-                    .expect("pre-generated WorkflowId string must parse"),
-            )
-        });
+        b.iter(|| black_box(wf_s.parse::<WorkflowId>().unwrap()));
     });
-    group.bench_function("NodeId::parse", |b| {
-        b.iter(|| {
-            black_box(
-                node_s
-                    .parse::<NodeId>()
-                    .expect("pre-generated NodeId string must parse"),
-            )
-        });
+    group.bench_function("NodeKey::parse", |b| {
+        b.iter(|| black_box(node_s.parse::<NodeKey>().unwrap()));
     });
     group.finish();
 }
 
 fn id_serde_json_roundtrip(c: &mut Criterion) {
     let id = ExecutionId::new();
-    let json = serde_json::to_string(&id).expect("ExecutionId must serialize");
+    let json = serde_json::to_string(&id).unwrap();
     let mut group = c.benchmark_group("id/serde_json");
     group.bench_function("to_string", |b| {
-        b.iter(|| {
-            black_box(serde_json::to_string(black_box(&id)).expect("ExecutionId must serialize"))
-        });
+        b.iter(|| black_box(serde_json::to_string(black_box(&id)).unwrap()));
     });
     group.bench_function("from_str", |b| {
         b.iter(|| {
-            let parsed: ExecutionId = serde_json::from_str(black_box(&json))
-                .expect("pre-serialized ExecutionId JSON must deserialize");
+            let parsed: ExecutionId = serde_json::from_str(black_box(&json)).unwrap();
             black_box(parsed)
         });
     });
     group.bench_function("roundtrip", |b| {
         b.iter(|| {
-            let json = serde_json::to_string(black_box(&id))
-                .expect("ExecutionId must serialize in roundtrip");
-            let parsed: ExecutionId = serde_json::from_str(&json)
-                .expect("freshly-serialized ExecutionId must deserialize");
+            let json = serde_json::to_string(black_box(&id)).unwrap();
+            let parsed: ExecutionId = serde_json::from_str(&json).unwrap();
             black_box(parsed)
         });
     });

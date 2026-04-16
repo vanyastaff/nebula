@@ -7,7 +7,7 @@ use std::{
 };
 
 use crossterm::event::{self, Event, KeyCode, KeyEventKind};
-use nebula_core::id::NodeId;
+use nebula_core::NodeKey;
 use tokio::sync::mpsc;
 
 use super::{
@@ -49,8 +49,8 @@ pub struct App {
     pub workflow_name: String,
     pub execution_id: String,
     pub started_at: Instant,
-    pub nodes: Vec<(NodeId, NodeInfo)>,
-    pub node_index: HashMap<NodeId, usize>,
+    pub nodes: Vec<(NodeKey, NodeInfo)>,
+    pub node_index: HashMap<NodeKey, usize>,
     pub selected_node: usize,
     pub logs: Vec<LogEntry>,
     #[allow(dead_code)]
@@ -64,13 +64,13 @@ impl App {
     pub fn new(
         workflow_name: String,
         execution_id: String,
-        node_order: Vec<(NodeId, String, String)>,
+        node_order: Vec<(NodeKey, String, String)>,
     ) -> Self {
         let mut nodes = Vec::with_capacity(node_order.len());
         let mut node_index = HashMap::new();
 
         for (i, (id, name, action_key)) in node_order.into_iter().enumerate() {
-            node_index.insert(id, i);
+            node_index.insert(id.clone(), i);
             nodes.push((
                 id,
                 NodeInfo {
@@ -130,11 +130,11 @@ impl App {
                 }
             },
             TuiEvent::NodeStarted {
-                node_id,
+                node_key,
                 name: _,
                 action_key: _,
             } => {
-                if let Some(&idx) = self.node_index.get(&node_id) {
+                if let Some(&idx) = self.node_index.get(&node_key) {
                     self.nodes[idx].1.status = NodeStatus::Running;
                     self.push_log(
                         LogLevel::Info,
@@ -143,11 +143,11 @@ impl App {
                 }
             },
             TuiEvent::NodeCompleted {
-                node_id,
+                node_key,
                 elapsed,
                 output,
             } => {
-                if let Some(&idx) = self.node_index.get(&node_id) {
+                if let Some(&idx) = self.node_index.get(&node_key) {
                     let name = self.nodes[idx].1.name.clone();
                     let info = &mut self.nodes[idx].1;
                     info.status = NodeStatus::Completed;
@@ -160,11 +160,11 @@ impl App {
                 }
             },
             TuiEvent::NodeFailed {
-                node_id,
+                node_key,
                 elapsed,
                 error,
             } => {
-                if let Some(&idx) = self.node_index.get(&node_id) {
+                if let Some(&idx) = self.node_index.get(&node_key) {
                     let name = self.nodes[idx].1.name.clone();
                     let info = &mut self.nodes[idx].1;
                     info.status = NodeStatus::Failed;

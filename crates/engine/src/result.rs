@@ -2,7 +2,7 @@
 
 use std::{collections::HashMap, time::Duration};
 
-use nebula_core::id::{ExecutionId, NodeId};
+use nebula_core::{NodeKey, id::ExecutionId};
 use nebula_execution::ExecutionStatus;
 
 /// The final result of a workflow execution.
@@ -13,9 +13,9 @@ pub struct ExecutionResult {
     /// Final execution status.
     pub status: ExecutionStatus,
     /// Per-node output values (only for successfully completed nodes).
-    pub node_outputs: HashMap<NodeId, serde_json::Value>,
+    pub node_outputs: HashMap<NodeKey, serde_json::Value>,
     /// Per-node error messages (only for failed nodes).
-    pub node_errors: HashMap<NodeId, String>,
+    pub node_errors: HashMap<NodeKey, String>,
     /// Wall-clock duration of the execution.
     pub duration: Duration,
 }
@@ -35,13 +35,15 @@ impl ExecutionResult {
 
     /// Get a specific node's output.
     #[must_use]
-    pub fn node_output(&self, node_id: NodeId) -> Option<&serde_json::Value> {
-        self.node_outputs.get(&node_id)
+    pub fn node_output(&self, node_key: &NodeKey) -> Option<&serde_json::Value> {
+        self.node_outputs.get(node_key)
     }
 }
 
 #[cfg(test)]
 mod tests {
+    use nebula_core::node_key;
+
     use super::*;
 
     #[test]
@@ -72,9 +74,9 @@ mod tests {
 
     #[test]
     fn node_output_lookup() {
-        let node_id = NodeId::new();
+        let node_key = node_key!("test_node");
         let mut outputs = HashMap::new();
-        outputs.insert(node_id, serde_json::json!(42));
+        outputs.insert(node_key.clone(), serde_json::json!(42));
 
         let result = ExecutionResult {
             execution_id: ExecutionId::new(),
@@ -84,7 +86,7 @@ mod tests {
             duration: Duration::from_millis(10),
         };
 
-        assert_eq!(result.node_output(node_id), Some(&serde_json::json!(42)));
-        assert!(result.node_output(NodeId::new()).is_none());
+        assert_eq!(result.node_output(&node_key), Some(&serde_json::json!(42)));
+        assert!(result.node_output(&node_key!("test")).is_none());
     }
 }

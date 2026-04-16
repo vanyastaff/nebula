@@ -15,10 +15,7 @@ use nebula_action::{
     ActionError, action::Action, context::Context, dependency::ActionDependencies,
     metadata::ActionMetadata, result::ActionResult, stateless::StatelessAction,
 };
-use nebula_core::{
-    ActionKey, action_key,
-    id::{NodeId, WorkflowId},
-};
+use nebula_core::{ActionKey, NodeKey, action_key, id::WorkflowId, node_key};
 use nebula_engine::WorkflowEngine;
 use nebula_execution::{ExecutionStatus, context::ExecutionBudget};
 use nebula_metrics::naming::{
@@ -263,7 +260,7 @@ async fn engine_and_runtime_share_metrics_registry() {
     ));
     let engine = WorkflowEngine::new(runtime, metrics.clone());
 
-    let n = NodeId::new();
+    let n = node_key!("n");
     let wf = make_workflow(
         vec![NodeDefinition::new(n, "echo", "echo").unwrap()],
         vec![],
@@ -300,14 +297,14 @@ async fn linear_pipeline_data_flows_through() {
 
     let (engine, _) = make_engine(registry);
 
-    let a = NodeId::new();
-    let b = NodeId::new();
+    let a = node_key!("a");
+    let b = node_key!("b");
     let wf = make_workflow(
         vec![
-            NodeDefinition::new(a, "A", "echo").unwrap(),
-            NodeDefinition::new(b, "B", "double").unwrap(),
+            NodeDefinition::new(a.clone(), "A", "echo").unwrap(),
+            NodeDefinition::new(b.clone(), "B", "double").unwrap(),
         ],
-        vec![Connection::new(a, b)],
+        vec![Connection::new(a.clone(), b.clone())],
     );
 
     let result = engine
@@ -316,8 +313,8 @@ async fn linear_pipeline_data_flows_through() {
         .unwrap();
 
     assert!(result.is_success());
-    assert_eq!(result.node_output(a), Some(&serde_json::json!(5)));
-    assert_eq!(result.node_output(b), Some(&serde_json::json!(10)));
+    assert_eq!(result.node_output(&a), Some(&serde_json::json!(5)));
+    assert_eq!(result.node_output(&b), Some(&serde_json::json!(10)));
 }
 
 /// Three-node fan-out: A → B and A → C (parallel).
@@ -337,16 +334,19 @@ async fn fan_out_parallel_execution() {
 
     let (engine, _) = make_engine(registry);
 
-    let a = NodeId::new();
-    let b = NodeId::new();
-    let c = NodeId::new();
+    let a = node_key!("a");
+    let b = node_key!("b");
+    let c = node_key!("c");
     let wf = make_workflow(
         vec![
-            NodeDefinition::new(a, "A", "echo").unwrap(),
-            NodeDefinition::new(b, "B", "double").unwrap(),
-            NodeDefinition::new(c, "C", "add10").unwrap(),
+            NodeDefinition::new(a.clone(), "A", "echo").unwrap(),
+            NodeDefinition::new(b.clone(), "B", "double").unwrap(),
+            NodeDefinition::new(c.clone(), "C", "add10").unwrap(),
         ],
-        vec![Connection::new(a, b), Connection::new(a, c)],
+        vec![
+            Connection::new(a.clone(), b.clone()),
+            Connection::new(a.clone(), c.clone()),
+        ],
     );
 
     let result = engine
@@ -355,9 +355,9 @@ async fn fan_out_parallel_execution() {
         .unwrap();
 
     assert!(result.is_success());
-    assert_eq!(result.node_output(a), Some(&serde_json::json!(7)));
-    assert_eq!(result.node_output(b), Some(&serde_json::json!(14)));
-    assert_eq!(result.node_output(c), Some(&serde_json::json!(17)));
+    assert_eq!(result.node_output(&a), Some(&serde_json::json!(7)));
+    assert_eq!(result.node_output(&b), Some(&serde_json::json!(14)));
+    assert_eq!(result.node_output(&c), Some(&serde_json::json!(17)));
 }
 
 /// Diamond workflow: A → B, A → C, B → D, C → D.
@@ -377,22 +377,22 @@ async fn diamond_merge_receives_combined_outputs() {
 
     let (engine, _) = make_engine(registry);
 
-    let a = NodeId::new();
-    let b = NodeId::new();
-    let c = NodeId::new();
-    let d = NodeId::new();
+    let a = node_key!("a");
+    let b = node_key!("b");
+    let c = node_key!("c");
+    let d = node_key!("d");
     let wf = make_workflow(
         vec![
-            NodeDefinition::new(a, "A", "echo").unwrap(),
-            NodeDefinition::new(b, "B", "double").unwrap(),
-            NodeDefinition::new(c, "C", "add10").unwrap(),
-            NodeDefinition::new(d, "D", "echo").unwrap(), // echoes merged input
+            NodeDefinition::new(a.clone(), "A", "echo").unwrap(),
+            NodeDefinition::new(b.clone(), "B", "double").unwrap(),
+            NodeDefinition::new(c.clone(), "C", "add10").unwrap(),
+            NodeDefinition::new(d.clone(), "D", "echo").unwrap(), // echoes merged input
         ],
         vec![
-            Connection::new(a, b),
-            Connection::new(a, c),
-            Connection::new(b, d),
-            Connection::new(c, d),
+            Connection::new(a.clone(), b.clone()),
+            Connection::new(a.clone(), c.clone()),
+            Connection::new(b.clone(), d.clone()),
+            Connection::new(c.clone(), d.clone()),
         ],
     );
 
@@ -402,12 +402,12 @@ async fn diamond_merge_receives_combined_outputs() {
         .unwrap();
 
     assert!(result.is_success());
-    assert_eq!(result.node_output(a), Some(&serde_json::json!(3)));
-    assert_eq!(result.node_output(b), Some(&serde_json::json!(6)));
-    assert_eq!(result.node_output(c), Some(&serde_json::json!(13)));
+    assert_eq!(result.node_output(&a), Some(&serde_json::json!(3)));
+    assert_eq!(result.node_output(&b), Some(&serde_json::json!(6)));
+    assert_eq!(result.node_output(&c), Some(&serde_json::json!(13)));
 
     // D is a join node — its input is a merged object keyed by predecessor node IDs
-    let d_output = result.node_output(d).expect("D should have output");
+    let d_output = result.node_output(&d).expect("D should have output");
     assert!(d_output.is_object(), "join node output should be an object");
     let obj = d_output.as_object().unwrap();
     assert_eq!(obj.len(), 2, "should have outputs from B and C");
@@ -429,16 +429,19 @@ async fn error_propagation_stops_downstream() {
 
     let (engine, _) = make_engine(registry);
 
-    let a = NodeId::new();
-    let b = NodeId::new();
-    let c = NodeId::new();
+    let a = node_key!("a");
+    let b = node_key!("b");
+    let c = node_key!("c");
     let wf = make_workflow(
         vec![
-            NodeDefinition::new(a, "A", "echo").unwrap(),
-            NodeDefinition::new(b, "B", "fail").unwrap(),
-            NodeDefinition::new(c, "C", "echo").unwrap(),
+            NodeDefinition::new(a.clone(), "A", "echo").unwrap(),
+            NodeDefinition::new(b.clone(), "B", "fail").unwrap(),
+            NodeDefinition::new(c.clone(), "C", "echo").unwrap(),
         ],
-        vec![Connection::new(a, b), Connection::new(b, c)],
+        vec![
+            Connection::new(a.clone(), b.clone()),
+            Connection::new(b.clone(), c.clone()),
+        ],
     );
 
     let result = engine
@@ -449,11 +452,11 @@ async fn error_propagation_stops_downstream() {
     assert!(result.is_failure());
     assert_eq!(result.status, ExecutionStatus::Failed);
     // A completed before B failed
-    assert!(result.node_output(a).is_some());
+    assert!(result.node_output(&a).is_some());
     // B failed, no output
-    assert!(result.node_output(b).is_none());
+    assert!(result.node_output(&b).is_none());
     // C was never reached
-    assert!(result.node_output(c).is_none());
+    assert!(result.node_output(&c).is_none());
 }
 
 /// Cancellation via sibling failure: parallel nodes A(slow) and B(fail).
@@ -478,22 +481,22 @@ async fn cancellation_via_sibling_failure() {
     // Entry → [Slow, Fail] → Downstream
     // Entry runs first, then Slow and Fail run in parallel,
     // Fail dies immediately, cancelling Slow. Downstream never runs.
-    let entry = NodeId::new();
-    let slow = NodeId::new();
-    let fail = NodeId::new();
-    let downstream = NodeId::new();
+    let entry = node_key!("entry");
+    let slow = node_key!("slow");
+    let fail = node_key!("fail");
+    let downstream = node_key!("downstream");
     let wf = make_workflow(
         vec![
-            NodeDefinition::new(entry, "Entry", "echo").unwrap(),
-            NodeDefinition::new(slow, "Slow", "slow").unwrap(),
-            NodeDefinition::new(fail, "Fail", "fail").unwrap(),
-            NodeDefinition::new(downstream, "Down", "echo").unwrap(),
+            NodeDefinition::new(entry.clone(), "Entry", "echo").unwrap(),
+            NodeDefinition::new(slow.clone(), "Slow", "slow").unwrap(),
+            NodeDefinition::new(fail.clone(), "Fail", "fail").unwrap(),
+            NodeDefinition::new(downstream.clone(), "Down", "echo").unwrap(),
         ],
         vec![
-            Connection::new(entry, slow),
-            Connection::new(entry, fail),
-            Connection::new(slow, downstream),
-            Connection::new(fail, downstream),
+            Connection::new(entry.clone(), slow.clone()),
+            Connection::new(entry.clone(), fail.clone()),
+            Connection::new(slow.clone(), downstream.clone()),
+            Connection::new(fail, downstream.clone()),
         ],
     );
 
@@ -507,11 +510,11 @@ async fn cancellation_via_sibling_failure() {
     let result = result.unwrap();
     assert!(result.is_failure());
     // Entry ran successfully
-    assert!(result.node_output(entry).is_some());
+    assert!(result.node_output(&entry).is_some());
     // Slow was cancelled (no output stored)
-    assert!(result.node_output(slow).is_none());
+    assert!(result.node_output(&slow).is_none());
     // Downstream never ran
-    assert!(result.node_output(downstream).is_none());
+    assert!(result.node_output(&downstream).is_none());
 }
 
 /// Verify metrics cover the full lifecycle.
@@ -524,12 +527,12 @@ async fn metrics_cover_full_lifecycle() {
 
     let (engine, metrics) = make_engine(registry);
 
-    let a = NodeId::new();
-    let b = NodeId::new();
+    let a = node_key!("a");
+    let b = node_key!("b");
     let wf = make_workflow(
         vec![
-            NodeDefinition::new(a, "A", "echo").unwrap(),
-            NodeDefinition::new(b, "B", "echo").unwrap(),
+            NodeDefinition::new(a.clone(), "A", "echo").unwrap(),
+            NodeDefinition::new(b.clone(), "B", "echo").unwrap(),
         ],
         vec![Connection::new(a, b)],
     );
@@ -572,7 +575,14 @@ async fn bounded_concurrency_with_multiple_parallel_nodes() {
 
     // Create 8 independent nodes (all entry nodes, no connections)
     let nodes: Vec<NodeDefinition> = (0..8)
-        .map(|i| NodeDefinition::new(NodeId::new(), format!("N{i}"), "counter").unwrap())
+        .map(|i| {
+            NodeDefinition::new(
+                NodeKey::new(format!("node_{i}")).unwrap(),
+                format!("N{i}"),
+                "counter",
+            )
+            .unwrap()
+        })
         .collect();
 
     let wf = make_workflow(nodes, vec![]);
@@ -599,7 +609,7 @@ async fn zero_concurrency_budget_returns_planning_error() {
 
     let (engine, _) = make_engine(registry);
 
-    let a = NodeId::new();
+    let a = node_key!("a");
     let wf = make_workflow(vec![NodeDefinition::new(a, "A", "echo").unwrap()], vec![]);
 
     let budget = ExecutionBudget {
@@ -632,21 +642,21 @@ async fn deep_chain_propagates_outputs() {
 
     let (engine, _) = make_engine(registry);
 
-    let a = NodeId::new();
-    let b = NodeId::new();
-    let c = NodeId::new();
-    let d = NodeId::new();
+    let a = node_key!("a");
+    let b = node_key!("b");
+    let c = node_key!("c");
+    let d = node_key!("d");
     let wf = make_workflow(
         vec![
-            NodeDefinition::new(a, "A", "echo").unwrap(), // echo(2) = 2
-            NodeDefinition::new(b, "B", "double").unwrap(), // double(2) = 4
-            NodeDefinition::new(c, "C", "double").unwrap(), // double(4) = 8
-            NodeDefinition::new(d, "D", "double").unwrap(), // double(8) = 16
+            NodeDefinition::new(a.clone(), "A", "echo").unwrap(), // echo(2) = 2
+            NodeDefinition::new(b.clone(), "B", "double").unwrap(), // double(2) = 4
+            NodeDefinition::new(c.clone(), "C", "double").unwrap(), // double(4) = 8
+            NodeDefinition::new(d.clone(), "D", "double").unwrap(), // double(8) = 16
         ],
         vec![
-            Connection::new(a, b),
-            Connection::new(b, c),
-            Connection::new(c, d),
+            Connection::new(a.clone(), b.clone()),
+            Connection::new(b.clone(), c.clone()),
+            Connection::new(c.clone(), d.clone()),
         ],
     );
 
@@ -656,10 +666,10 @@ async fn deep_chain_propagates_outputs() {
         .unwrap();
 
     assert!(result.is_success());
-    assert_eq!(result.node_output(a), Some(&serde_json::json!(2)));
-    assert_eq!(result.node_output(b), Some(&serde_json::json!(4)));
-    assert_eq!(result.node_output(c), Some(&serde_json::json!(8)));
-    assert_eq!(result.node_output(d), Some(&serde_json::json!(16)));
+    assert_eq!(result.node_output(&a), Some(&serde_json::json!(2)));
+    assert_eq!(result.node_output(&b), Some(&serde_json::json!(4)));
+    assert_eq!(result.node_output(&c), Some(&serde_json::json!(8)));
+    assert_eq!(result.node_output(&d), Some(&serde_json::json!(16)));
 }
 
 /// Metrics are accurate after a failed workflow.
@@ -672,7 +682,7 @@ async fn metrics_accurate_on_failure() {
 
     let (engine, metrics) = make_engine(registry);
 
-    let a = NodeId::new();
+    let a = node_key!("a");
     let wf = make_workflow(
         vec![NodeDefinition::new(a, "fail-node", "fail").unwrap()],
         vec![],
@@ -718,17 +728,22 @@ async fn disabled_node_is_skipped_and_successor_executes() {
 
     let (engine, _) = make_engine(registry);
 
-    let a = NodeId::new();
-    let b = NodeId::new();
-    let c = NodeId::new();
+    let a = node_key!("a");
+    let b = node_key!("b");
+    let c = node_key!("c");
 
     let wf = make_workflow(
         vec![
-            NodeDefinition::new(a, "A", "echo").unwrap(),
-            NodeDefinition::new(b, "B", "echo").unwrap().disabled(),
-            NodeDefinition::new(c, "C", "echo").unwrap(),
+            NodeDefinition::new(a.clone(), "A", "echo").unwrap(),
+            NodeDefinition::new(b.clone(), "B", "echo")
+                .unwrap()
+                .disabled(),
+            NodeDefinition::new(c.clone(), "C", "echo").unwrap(),
         ],
-        vec![Connection::new(a, b), Connection::new(b, c)],
+        vec![
+            Connection::new(a.clone(), b.clone()),
+            Connection::new(b.clone(), c.clone()),
+        ],
     );
 
     let result = engine
@@ -742,19 +757,19 @@ async fn disabled_node_is_skipped_and_successor_executes() {
     );
     // A executed and produced its output
     assert_eq!(
-        result.node_output(a),
+        result.node_output(&a),
         Some(&serde_json::json!("hello")),
         "A should execute normally"
     );
     // B was skipped — no output entry
     assert!(
-        result.node_output(b).is_none(),
+        result.node_output(&b).is_none(),
         "B should be skipped (no output)"
     );
     // C executed — B's disabled-skip activated the B→C edge so C entered the frontier.
     // C receives null because B produced no output.
     assert_eq!(
-        result.node_output(c),
+        result.node_output(&c),
         Some(&serde_json::json!(null)),
         "C should execute after B is skipped, receiving null (B produced no output)"
     );

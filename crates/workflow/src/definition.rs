@@ -3,7 +3,7 @@
 use std::{collections::HashMap, time::Duration};
 
 use chrono::{DateTime, Utc};
-use nebula_core::{NodeId, WorkflowId};
+use nebula_core::{NodeKey, WorkflowId};
 use serde::{Deserialize, Serialize};
 
 use crate::{Version, connection::Connection, node::NodeDefinition};
@@ -220,7 +220,7 @@ fn default_schema_version() -> u32 {
 pub struct UiMetadata {
     /// Per-node visual properties (position, color, collapsed state).
     #[serde(default)]
-    pub node_positions: HashMap<NodeId, NodePosition>,
+    pub node_positions: HashMap<NodeKey, NodePosition>,
     /// Editor viewport (zoom, scroll position).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub viewport: Option<Viewport>,
@@ -265,6 +265,8 @@ pub struct Annotation {
 
 #[cfg(test)]
 mod tests {
+    use nebula_core::node_key;
+
     use super::*;
 
     #[test]
@@ -405,7 +407,7 @@ mod tests {
     fn ui_metadata_round_trips() {
         let mut ui = UiMetadata::default();
         ui.node_positions
-            .insert(NodeId::new(), NodePosition { x: 100.0, y: 200.0 });
+            .insert(node_key!("test"), NodePosition { x: 100.0, y: 200.0 });
         ui.viewport = Some(Viewport {
             x: 0.0,
             y: 0.0,

@@ -41,14 +41,14 @@ impl EvaluationContext {
     }
 
     /// Set data for a specific node
-    pub fn set_node_data(&mut self, node_id: impl AsRef<str>, data: Value) {
-        let key: Arc<str> = Arc::from(node_id.as_ref());
+    pub fn set_node_data(&mut self, node_key: impl AsRef<str>, data: Value) {
+        let key: Arc<str> = Arc::from(node_key.as_ref());
         self.nodes.insert(key, Arc::new(data));
     }
 
     /// Get data for a specific node
-    pub fn get_node_data(&self, node_id: &str) -> Option<Arc<Value>> {
-        self.nodes.get(node_id).cloned()
+    pub fn node_data(&self, node_key: &str) -> Option<Arc<Value>> {
+        self.nodes.get(node_key).cloned()
     }
 
     /// Set an execution variable
@@ -176,8 +176,8 @@ impl EvaluationContextBuilder {
     }
 
     /// Add node data
-    pub fn node(mut self, node_id: impl AsRef<str>, data: Value) -> Self {
-        let key: Arc<str> = Arc::from(node_id.as_ref());
+    pub fn node(mut self, node_key: impl AsRef<str>, data: Value) -> Self {
+        let key: Arc<str> = Arc::from(node_key.as_ref());
         self.nodes.insert(key, Arc::new(data));
         self
     }
@@ -239,7 +239,7 @@ mod tests {
     fn test_set_and_get_node_data() {
         let mut ctx = EvaluationContext::new();
         ctx.set_node_data("node1", Value::String("test".to_string()));
-        assert_eq!(ctx.get_node_data("node1").unwrap().as_str(), Some("test"));
+        assert_eq!(ctx.node_data("node1").unwrap().as_str(), Some("test"));
     }
 
     #[test]
@@ -251,7 +251,7 @@ mod tests {
             .input(Value::Number(42.into()))
             .build();
 
-        assert_eq!(ctx.get_node_data("node1").unwrap().as_str(), Some("test"));
+        assert_eq!(ctx.node_data("node1").unwrap().as_str(), Some("test"));
         assert_eq!(
             ctx.get_execution_var("id").unwrap().as_str(),
             Some("exec-123")

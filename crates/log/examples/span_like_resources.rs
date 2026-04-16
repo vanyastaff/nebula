@@ -65,7 +65,7 @@ fn main() {
                 .with_resource(
                     LoggerResource::new()
                         .with_webhook("https://hooks.slack.com/payment-team")
-                        .with_tag("node_id", "node-payment")
+                        .with_tag("node_key", "node-payment")
                         .with_tag("action_id", "validate-card"),
                 )
                 .scope_sync(|| {

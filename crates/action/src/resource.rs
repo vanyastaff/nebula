@@ -187,7 +187,10 @@ impl<A: Action> fmt::Debug for ResourceActionAdapter<A> {
 mod tests {
     use std::sync::Arc;
 
-    use nebula_core::id::{ExecutionId, NodeId, WorkflowId};
+    use nebula_core::{
+        id::{ExecutionId, WorkflowId},
+        node_key,
+    };
     use tokio_util::sync::CancellationToken;
 
     use super::*;
@@ -232,7 +235,7 @@ mod tests {
     fn make_ctx() -> ActionContext {
         ActionContext::new(
             ExecutionId::nil(),
-            NodeId::nil(),
+            node_key!("test"),
             WorkflowId::nil(),
             CancellationToken::new(),
         )

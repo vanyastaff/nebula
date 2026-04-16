@@ -44,7 +44,7 @@ impl ResourceAwareHook for WebhookNotificationHook {
         {
             println!(
                 "[WEBHOOK] Node {} - Event: {} -> [CONFIGURED]",
-                ctx.node_id,
+                ctx.node_key,
                 event.name(),
             );
         }

@@ -3,7 +3,7 @@
 use std::{collections::HashMap, time::Duration};
 
 use chrono::{DateTime, Utc};
-use nebula_core::{ExecutionId, NodeId};
+use nebula_core::{ExecutionId, NodeKey};
 use serde::{Deserialize, Serialize};
 
 use crate::status::{ExecutionStatus, ExecutionTerminationReason};
@@ -48,7 +48,7 @@ pub struct ExecutionResult {
     pub nodes_skipped: usize,
     /// Collected outputs from terminal nodes (nodes with no outgoing edges).
     #[serde(default)]
-    pub outputs: HashMap<NodeId, serde_json::Value>,
+    pub outputs: HashMap<NodeKey, serde_json::Value>,
     /// Why this execution reached its terminal state.
     ///
     /// `None` for in-flight executions and for results serialised before
@@ -114,7 +114,7 @@ impl ExecutionResult {
 
     /// Set terminal-node outputs.
     #[must_use = "builder methods must be chained or built"]
-    pub fn with_outputs(mut self, outputs: HashMap<NodeId, serde_json::Value>) -> Self {
+    pub fn with_outputs(mut self, outputs: HashMap<NodeKey, serde_json::Value>) -> Self {
         self.outputs = outputs;
         self
     }
@@ -122,6 +122,8 @@ impl ExecutionResult {
 
 #[cfg(test)]
 mod tests {
+    use nebula_core::node_key;
+
     use super::*;
 
     #[test]
@@ -164,28 +166,28 @@ mod tests {
 
     #[test]
     fn builder_sets_outputs() {
-        let node_id = NodeId::new();
+        let node_key = node_key!("test_node");
         let mut outputs = HashMap::new();
-        outputs.insert(node_id, serde_json::json!({"key": "value"}));
+        outputs.insert(node_key.clone(), serde_json::json!({"key": "value"}));
 
         let result = ExecutionResult::new(ExecutionId::new(), ExecutionStatus::Completed)
             .with_outputs(outputs.clone());
 
         assert_eq!(result.outputs.len(), 1);
         assert_eq!(
-            result.outputs[&node_id],
+            result.outputs[&node_key],
             serde_json::json!({"key": "value"})
         );
     }
 
     #[test]
     fn serde_roundtrip() {
-        let node_id = NodeId::new();
+        let node_key = node_key!("test_node");
         let start = Utc::now();
         let end = start + chrono::Duration::seconds(42);
 
         let mut outputs = HashMap::new();
-        outputs.insert(node_id, serde_json::json!(42));
+        outputs.insert(node_key, serde_json::json!(42));
 
         let original = ExecutionResult::new(ExecutionId::new(), ExecutionStatus::Failed)
             .with_timing(start, end)
@@ -212,15 +214,15 @@ mod tests {
 
     #[test]
     fn with_termination_reason_builder() {
-        let node_id = NodeId::new();
+        let node_key = node_key!("test_node");
         let result = ExecutionResult::new(ExecutionId::new(), ExecutionStatus::Completed)
             .with_termination_reason(ExecutionTerminationReason::ExplicitStop {
-                by_node: node_id,
+                by_node: node_key.clone(),
                 note: Some("done early".into()),
             });
         match result.termination_reason {
             Some(ExecutionTerminationReason::ExplicitStop { by_node, note }) => {
-                assert_eq!(by_node, node_id);
+                assert_eq!(by_node, node_key);
                 assert_eq!(note.as_deref(), Some("done early"));
             },
             _ => panic!("expected ExplicitStop"),
@@ -231,7 +233,7 @@ mod tests {
     fn termination_reason_serde_roundtrip() {
         let original = ExecutionResult::new(ExecutionId::new(), ExecutionStatus::Failed)
             .with_termination_reason(ExecutionTerminationReason::ExplicitFail {
-                by_node: NodeId::new(),
+                by_node: node_key!("test"),
                 code: "E_BAD".into(),
                 message: "broken".into(),
             });

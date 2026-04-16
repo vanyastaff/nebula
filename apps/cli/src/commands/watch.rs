@@ -164,8 +164,8 @@ async fn run_workflow(path: &Path, args: &WatchArgs) {
             );
 
             // Show errors if any.
-            for (node_id, error) in &result.node_errors {
-                eprintln!("  error {node_id}: {error}");
+            for (node_key, error) in &result.node_errors {
+                eprintln!("  error {node_key}: {error}");
             }
 
             // Show suggestions.

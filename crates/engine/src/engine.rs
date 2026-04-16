@@ -20,7 +20,11 @@ use dashmap::DashMap;
 // TODO: ExecutionBudget moved to nebula-execution
 use nebula_action::capability::{ResourceAccessor, default_resource_accessor};
 use nebula_action::{ActionContext, ActionError, ActionResult};
-use nebula_core::id::{ExecutionId, NodeId, WorkflowId};
+use nebula_core::{
+    NodeKey,
+    id::{ExecutionId, WorkflowId},
+    node_key,
+};
 use nebula_credential::{CredentialAccessor, default_credential_accessor};
 // ScopeLevel removed from ActionContext
 // use nebula_core::scope::ScopeLevel;
@@ -335,9 +339,9 @@ impl WorkflowEngine {
         // Build graph and node map.
         let graph = DependencyGraph::from_definition(workflow)
             .map_err(|e| EngineError::PlanningFailed(e.to_string()))?;
-        let node_ids: Vec<NodeId> = workflow.nodes.iter().map(|n| n.id).collect();
-        let node_map: HashMap<NodeId, &nebula_workflow::NodeDefinition> =
-            workflow.nodes.iter().map(|n| (n.id, n)).collect();
+        let node_ids: Vec<NodeKey> = workflow.nodes.iter().map(|n| n.id.clone()).collect();
+        let node_map: HashMap<NodeKey, &nebula_workflow::NodeDefinition> =
+            workflow.nodes.iter().map(|n| (n.id.clone(), n)).collect();
 
         // Build both predecessor AND successor maps.
         //
@@ -347,17 +351,17 @@ impl WorkflowEngine {
         //   `replay_from` and identify the re-run set. Issue #254 — the old predecessor-only
         //   partition classified unrelated sibling branches as rerun, duplicating their side
         //   effects on every replay.
-        let mut predecessors: HashMap<NodeId, Vec<NodeId>> = HashMap::new();
-        let mut successors: HashMap<NodeId, Vec<NodeId>> = HashMap::new();
+        let mut predecessors: HashMap<NodeKey, Vec<NodeKey>> = HashMap::new();
+        let mut successors: HashMap<NodeKey, Vec<NodeKey>> = HashMap::new();
         for conn in &workflow.connections {
             predecessors
-                .entry(conn.to_node)
+                .entry(conn.to_node.clone())
                 .or_default()
-                .push(conn.from_node);
+                .push(conn.from_node.clone());
             successors
-                .entry(conn.from_node)
+                .entry(conn.from_node.clone())
                 .or_default()
-                .push(conn.to_node);
+                .push(conn.to_node.clone());
         }
 
         // Partition nodes into pinned (use stored outputs) and rerun.
@@ -372,15 +376,15 @@ impl WorkflowEngine {
         // frontier loop silently feed `Null` to a downstream node. The
         // previous filter-in-map-keys approach hid missing pins the
         // same way `#[serde(skip)]` on `pinned_outputs` did (#253).
-        let outputs: Arc<DashMap<NodeId, serde_json::Value>> = Arc::new(DashMap::new());
-        for node_id in &pinned {
-            let Some(output) = plan.pinned_outputs.get(node_id) else {
+        let outputs: Arc<DashMap<NodeKey, serde_json::Value>> = Arc::new(DashMap::new());
+        for node_key in &pinned {
+            let Some(output) = plan.pinned_outputs.get(node_key) else {
                 return Err(EngineError::PlanningFailed(format!(
-                    "replay plan is missing pinned output for node {node_id}; \
+                    "replay plan is missing pinned output for node {node_key}; \
                      every node in the partition's pinned set must have a stored output"
                 )));
             };
-            outputs.insert(*node_id, output.clone());
+            outputs.insert(node_key.clone(), output.clone());
         }
 
         // Build execution state — mark pinned nodes as Completed via
@@ -388,10 +392,16 @@ impl WorkflowEngine {
         // the version move (issue #255).
         let mut exec_state = ExecutionState::new(execution_id, workflow.id, &node_ids);
         exec_state.transition_status(ExecutionStatus::Running)?;
-        for &node_id in &pinned {
-            let _ = exec_state.transition_node(node_id, NodeState::Ready);
-            let _ = exec_state.transition_node(node_id, NodeState::Running);
-            let _ = exec_state.transition_node(node_id, NodeState::Completed);
+        for node_key in &pinned {
+            // NOTE: errors are intentionally discarded here. Pinned nodes are
+            // forced through Ready→Running→Completed for bookkeeping; the
+            // transitions are best-effort. A failure (e.g. unexpected current
+            // state) is non-fatal because the node was already completed in a
+            // prior run. TODO: log a warning on failure once the engine has a
+            // structured logger handle.
+            let _ = exec_state.transition_node(node_key.clone(), NodeState::Ready);
+            let _ = exec_state.transition_node(node_key.clone(), NodeState::Running);
+            let _ = exec_state.transition_node(node_key.clone(), NodeState::Completed);
         }
 
         let semaphore = Arc::new(Semaphore::new(budget.max_concurrent_nodes));
@@ -399,16 +409,16 @@ impl WorkflowEngine {
         let mut repo_version = 0u64;
 
         // Determine seed nodes: nodes in rerun set whose predecessors are all pinned.
-        let seed_nodes: Vec<NodeId> = node_ids
+        let seed_nodes: Vec<NodeKey> = node_ids
             .iter()
-            .copied()
-            .filter(|n| !pinned.contains(n))
+            .filter(|n| !pinned.contains(*n))
             .filter(|n| {
                 predecessors
-                    .get(n)
+                    .get(*n)
                     .map(|preds| preds.iter().all(|p| pinned.contains(p)))
                     .unwrap_or(true) // no predecessors = entry node
             })
+            .cloned()
             .collect();
 
         // Use override inputs if provided.
@@ -455,15 +465,19 @@ impl WorkflowEngine {
             elapsed,
         });
 
-        let node_outputs: HashMap<NodeId, serde_json::Value> = outputs
+        let node_outputs: HashMap<NodeKey, serde_json::Value> = outputs
             .iter()
-            .map(|r| (*r.key(), r.value().clone()))
+            .map(|r| (r.key().clone(), r.value().clone()))
             .collect();
 
-        let node_errors: HashMap<NodeId, String> = exec_state
+        let node_errors: HashMap<NodeKey, String> = exec_state
             .node_states
             .iter()
-            .filter_map(|(&id, ns)| ns.error_message.as_ref().map(|msg| (id, msg.clone())))
+            .filter_map(|(id, ns)| {
+                ns.error_message
+                    .as_ref()
+                    .map(|msg| (id.clone(), msg.clone()))
+            })
             .collect();
 
         Ok(ExecutionResult {
@@ -507,7 +521,7 @@ impl WorkflowEngine {
 
         // 3. Validate action key mappings exist for all nodes
         // 4. Initialize execution state
-        let node_ids: Vec<NodeId> = workflow.nodes.iter().map(|n| n.id).collect();
+        let node_ids: Vec<NodeKey> = workflow.nodes.iter().map(|n| n.id.clone()).collect();
         let mut exec_state = ExecutionState::new(execution_id, workflow.id, &node_ids);
         exec_state.transition_status(ExecutionStatus::Running)?;
 
@@ -531,16 +545,16 @@ impl WorkflowEngine {
             .inc();
 
         // 7. Build node lookup map
-        let node_map: HashMap<NodeId, &nebula_workflow::NodeDefinition> =
-            workflow.nodes.iter().map(|n| (n.id, n)).collect();
+        let node_map: HashMap<NodeKey, &nebula_workflow::NodeDefinition> =
+            workflow.nodes.iter().map(|n| (n.id.clone(), n)).collect();
 
         // 8. Shared output storage (concurrent access from worker tasks)
-        let outputs: Arc<DashMap<NodeId, serde_json::Value>> = Arc::new(DashMap::new());
+        let outputs: Arc<DashMap<NodeKey, serde_json::Value>> = Arc::new(DashMap::new());
         let semaphore = Arc::new(Semaphore::new(budget.max_concurrent_nodes));
 
         // 9. Execute using frontier-based loop
         let error_strategy = workflow.config.error_strategy;
-        let seed_nodes: Vec<NodeId> = graph.entry_nodes();
+        let seed_nodes: Vec<NodeKey> = graph.entry_nodes();
         let failed_node = self
             .run_frontier(
                 &graph,
@@ -603,15 +617,19 @@ impl WorkflowEngine {
         });
 
         // 11. Collect outputs and errors
-        let node_outputs: HashMap<NodeId, serde_json::Value> = outputs
+        let node_outputs: HashMap<NodeKey, serde_json::Value> = outputs
             .iter()
-            .map(|r| (*r.key(), r.value().clone()))
+            .map(|r| (r.key().clone(), r.value().clone()))
             .collect();
 
-        let node_errors: HashMap<NodeId, String> = exec_state
+        let node_errors: HashMap<NodeKey, String> = exec_state
             .node_states
             .iter()
-            .filter_map(|(&id, ns)| ns.error_message.as_ref().map(|msg| (id, msg.clone())))
+            .filter_map(|(id, ns)| {
+                ns.error_message
+                    .as_ref()
+                    .map(|msg| (id.clone(), msg.clone()))
+            })
             .collect();
 
         Ok(ExecutionResult {
@@ -665,7 +683,11 @@ impl WorkflowEngine {
                 EngineError::PlanningFailed(format!("execution not found: {execution_id}"))
             })?;
 
-        let exec_state: ExecutionState = serde_json::from_value(state_json)
+        // Deserialize via JSON string to avoid `serde_json::from_value` issues
+        // with Key<D> types that expect borrowed strings (domain-key serde impl).
+        let state_str = serde_json::to_string(&state_json)
+            .map_err(|e| EngineError::PlanningFailed(format!("serialize state: {e}")))?;
+        let exec_state: ExecutionState = serde_json::from_str(&state_str)
             .map_err(|e| EngineError::PlanningFailed(format!("deserialize state: {e}")))?;
 
         // 3. Guard against resuming a terminal execution.
@@ -709,11 +731,11 @@ impl WorkflowEngine {
         //    the forward state machine via `override_node_state` but still bumps the version per
         //    transition so CAS readers see the change (issue #255).
         let mut exec_state = exec_state;
-        let non_terminal: Vec<NodeId> = exec_state
+        let non_terminal: Vec<NodeKey> = exec_state
             .node_states
             .iter()
             .filter(|(_, ns)| !ns.state.is_terminal())
-            .map(|(id, _)| *id)
+            .map(|(id, _)| id.clone())
             .collect();
         for id in non_terminal {
             let _ = exec_state.override_node_state(id, NodeState::Pending);
@@ -728,9 +750,9 @@ impl WorkflowEngine {
         }
 
         // 8. Populate shared output map from persisted outputs.
-        let outputs: Arc<DashMap<NodeId, serde_json::Value>> = Arc::new(DashMap::new());
-        for (node_id, value) in persisted_outputs {
-            outputs.insert(node_id, value);
+        let outputs: Arc<DashMap<NodeKey, serde_json::Value>> = Arc::new(DashMap::new());
+        for (node_key, value) in persisted_outputs {
+            outputs.insert(node_key.clone(), value);
         }
 
         // 9. Compute the resume frontier and pre-populate edge-tracking maps.
@@ -742,28 +764,31 @@ impl WorkflowEngine {
         //    We also rebuild `activated_edges` and `resolved_edges` for terminal
         //    nodes so that `run_frontier`'s bookkeeping stays consistent when
         //    it evaluates edges from the frontier.
-        let node_map: HashMap<NodeId, &nebula_workflow::NodeDefinition> =
-            workflow.nodes.iter().map(|n| (n.id, n)).collect();
+        let node_map: HashMap<NodeKey, &nebula_workflow::NodeDefinition> =
+            workflow.nodes.iter().map(|n| (n.id.clone(), n)).collect();
 
-        let mut activated_edges: HashMap<NodeId, HashSet<NodeId>> = HashMap::new();
-        let mut resolved_edges: HashMap<NodeId, usize> = HashMap::new();
-        let mut seed_nodes: Vec<NodeId> = Vec::new();
+        let mut activated_edges: HashMap<NodeKey, HashSet<NodeKey>> = HashMap::new();
+        let mut resolved_edges: HashMap<NodeKey, usize> = HashMap::new();
+        let mut seed_nodes: Vec<NodeKey> = Vec::new();
 
         // Mark edges from terminal nodes as resolved (and activated, since they
         // completed successfully or were skipped).
-        for (&node_id, ns) in &exec_state.node_states {
+        for (node_key, ns) in &exec_state.node_states {
             if !ns.state.is_terminal() {
                 continue;
             }
-            for conn in graph.outgoing_connections(node_id) {
-                let target = conn.to_node;
+            for conn in graph.outgoing_connections(node_key.clone()) {
+                let target = conn.to_node.clone();
                 // Increment per-edge count so multiple edges from the same terminal
                 // source to the same target are each counted during resume.
-                *resolved_edges.entry(target).or_insert(0) += 1;
+                *resolved_edges.entry(target.clone()).or_insert(0) += 1;
                 // Completed and Skipped nodes activate their outgoing edges so
                 // that downstream nodes see a resolved predecessor.
                 if matches!(ns.state, NodeState::Completed | NodeState::Skipped) {
-                    activated_edges.entry(target).or_default().insert(node_id);
+                    activated_edges
+                        .entry(target.clone())
+                        .or_default()
+                        .insert(node_key.clone());
                 }
             }
         }
@@ -779,16 +804,16 @@ impl WorkflowEngine {
         // the activated_edges map reconstructed above from Completed/Skipped
         // predecessors gives run_frontier the correct activation context to
         // evaluate edge conditions normally once the node is dispatched.
-        for (&node_id, ns) in &exec_state.node_states {
+        for (node_key, ns) in &exec_state.node_states {
             if ns.state.is_terminal() {
                 continue;
             }
-            let incoming = graph.incoming_connections(node_id);
+            let incoming = graph.incoming_connections(node_key.clone());
             let required = incoming.len();
-            let resolved = resolved_edges.get(&node_id).copied().unwrap_or(0);
+            let resolved = resolved_edges.get(node_key).cloned().unwrap_or(0);
 
             if required == 0 || resolved == required {
-                seed_nodes.push(node_id);
+                seed_nodes.push(node_key.clone());
             }
         }
 
@@ -867,15 +892,19 @@ impl WorkflowEngine {
             elapsed,
         });
 
-        let node_outputs: HashMap<NodeId, serde_json::Value> = outputs
+        let node_outputs: HashMap<NodeKey, serde_json::Value> = outputs
             .iter()
-            .map(|r| (*r.key(), r.value().clone()))
+            .map(|r| (r.key().clone(), r.value().clone()))
             .collect();
 
-        let node_errors: HashMap<NodeId, String> = exec_state
+        let node_errors: HashMap<NodeKey, String> = exec_state
             .node_states
             .iter()
-            .filter_map(|(&id, ns)| ns.error_message.as_ref().map(|msg| (id, msg.clone())))
+            .filter_map(|(id, ns)| {
+                ns.error_message
+                    .as_ref()
+                    .map(|msg| (id.clone(), msg.clone()))
+            })
             .collect();
 
         Ok(ExecutionResult {
@@ -901,14 +930,14 @@ impl WorkflowEngine {
     /// state derived from already-completed nodes (populated for resume; empty
     /// for fresh executions).
     ///
-    /// Returns `Some((node_id, error))` if a node failed without an error handler,
+    /// Returns `Some((node_key, error))` if a node failed without an error handler,
     /// `None` if all reachable nodes completed (or were skipped).
     #[allow(clippy::too_many_arguments)]
     async fn run_frontier(
         &self,
         graph: &DependencyGraph,
-        node_map: &HashMap<NodeId, &nebula_workflow::NodeDefinition>,
-        outputs: &Arc<DashMap<NodeId, serde_json::Value>>,
+        node_map: &HashMap<NodeKey, &nebula_workflow::NodeDefinition>,
+        outputs: &Arc<DashMap<NodeKey, serde_json::Value>>,
         semaphore: &Arc<Semaphore>,
         cancel_token: &CancellationToken,
         exec_state: &mut ExecutionState,
@@ -919,16 +948,16 @@ impl WorkflowEngine {
         budget: &ExecutionBudget,
         started: &Instant,
         error_strategy: nebula_workflow::ErrorStrategy,
-        seed_nodes: Vec<NodeId>,
-        initial_activated: HashMap<NodeId, HashSet<NodeId>>,
-        initial_resolved: HashMap<NodeId, usize>,
-    ) -> Option<(NodeId, String)> {
+        seed_nodes: Vec<NodeKey>,
+        initial_activated: HashMap<NodeKey, HashSet<NodeKey>>,
+        initial_resolved: HashMap<NodeKey, usize>,
+    ) -> Option<(NodeKey, String)> {
         let total_output_bytes = Arc::new(AtomicU64::new(0));
         let total_retries = Arc::new(AtomicU32::new(0));
         // Precompute how many incoming edges each node has
-        let required_count: HashMap<NodeId, usize> = node_map
+        let required_count: HashMap<NodeKey, usize> = node_map
             .keys()
-            .map(|&nid| (nid, graph.incoming_connections(nid).len()))
+            .map(|nid| (nid.clone(), graph.incoming_connections(nid.clone()).len()))
             .collect();
 
         // Track edge resolution state (pre-populated for resume)
@@ -936,21 +965,23 @@ impl WorkflowEngine {
         let mut resolved_edges = initial_resolved;
 
         // Queue of nodes ready to execute
-        let mut ready_queue: VecDeque<NodeId> = VecDeque::new();
+        let mut ready_queue: VecDeque<NodeKey> = VecDeque::new();
 
         // Seed with the provided nodes (entry nodes for fresh; frontier for resume)
-        for node_id in seed_nodes {
-            ready_queue.push_back(node_id);
+        for node_key in seed_nodes {
+            ready_queue.push_back(node_key);
         }
 
         // In-flight tasks
-        let mut join_set: JoinSet<(NodeId, Result<ActionResult<serde_json::Value>, EngineError>)> =
-            JoinSet::new();
+        let mut join_set: JoinSet<(
+            NodeKey,
+            Result<ActionResult<serde_json::Value>, EngineError>,
+        )> = JoinSet::new();
 
         // Main frontier loop
         loop {
             // Phase 1: Drain ready queue → spawn into join_set
-            while let Some(node_id) = ready_queue.pop_front() {
+            while let Some(node_key) = ready_queue.pop_front() {
                 if cancel_token.is_cancelled() {
                     break;
                 }
@@ -960,15 +991,15 @@ impl WorkflowEngine {
                     check_budget(budget, started, &total_output_bytes, &total_retries)
                 {
                     cancel_token.cancel();
-                    return Some((node_id, violation));
+                    return Some((node_key, violation));
                 }
 
                 // Skip disabled nodes: mark as Skipped and activate outgoing edges
                 // with null output so successors continue normally.
-                if node_map.get(&node_id).is_some_and(|nd| !nd.enabled) {
-                    mark_node_skipped(exec_state, node_id);
+                if node_map.get(&node_key).is_some_and(|nd| !nd.enabled) {
+                    mark_node_skipped(exec_state, node_key.clone());
                     process_outgoing_edges(
-                        node_id,
+                        node_key.clone(),
                         None, // null output — Always edges activate
                         None, // not failed
                         graph,
@@ -987,7 +1018,7 @@ impl WorkflowEngine {
                 if self
                     .check_and_apply_idempotency(
                         execution_id,
-                        node_id,
+                        node_key.clone(),
                         outputs,
                         exec_state,
                         graph,
@@ -1002,7 +1033,7 @@ impl WorkflowEngine {
                 }
 
                 let spawned = self.spawn_node(
-                    node_id,
+                    node_key.clone(),
                     node_map,
                     graph,
                     outputs,
@@ -1017,12 +1048,12 @@ impl WorkflowEngine {
                 );
                 if spawned {
                     let action_key = node_map
-                        .get(&node_id)
+                        .get(&node_key)
                         .map(|n| n.action_key.to_string())
                         .unwrap_or_default();
                     self.emit_event(ExecutionEvent::NodeStarted {
                         execution_id,
-                        node_id,
+                        node_key: node_key.clone(),
                         action_key,
                     });
                     continue;
@@ -1030,7 +1061,7 @@ impl WorkflowEngine {
 
                 // Node failed during setup (e.g., param resolution).
                 let abort = handle_node_failure(
-                    node_id,
+                    node_key.clone(),
                     "parameter resolution failed",
                     error_strategy,
                     graph,
@@ -1043,7 +1074,7 @@ impl WorkflowEngine {
                 );
                 if let Some(err_msg) = abort {
                     cancel_token.cancel();
-                    return Some((node_id, err_msg));
+                    return Some((node_key, err_msg));
                 }
             }
 
@@ -1084,7 +1115,7 @@ impl WorkflowEngine {
                     join_set.abort_all();
                     while join_set.join_next().await.is_some() {}
                     return Some((
-                        NodeId::nil(),
+                        node_key!("_timeout"),
                         "execution budget exceeded: max_duration".to_string(),
                     ));
                 }
@@ -1097,7 +1128,7 @@ impl WorkflowEngine {
 
             // Phase 3: Process the completed task
             match join_result {
-                Ok((node_id, Ok(ActionResult::Retry { .. }))) => {
+                Ok((node_key, Ok(ActionResult::Retry { .. }))) => {
                     // ActionResult::Retry has no scheduler yet; treat it as a node
                     // failure for at-least-once semantics (#290/#296 short-term).
                     total_retries.fetch_add(1, Ordering::Relaxed);
@@ -1106,9 +1137,9 @@ impl WorkflowEngine {
                             "Action retry is not supported by the engine",
                         ),
                     ));
-                    mark_node_failed(exec_state, node_id, &err);
+                    mark_node_failed(exec_state, node_key.clone(), &err);
                     let abort = handle_node_failure(
-                        node_id,
+                        node_key.clone(),
                         &err.to_string(),
                         error_strategy,
                         graph,
@@ -1121,16 +1152,16 @@ impl WorkflowEngine {
                     );
                     if let Some(err_msg) = abort {
                         cancel_token.cancel();
-                        return Some((node_id, err_msg));
+                        return Some((node_key.clone(), err_msg));
                     }
 
                     if exec_state
-                        .node_state(node_id)
+                        .node_state(node_key.clone())
                         .is_some_and(|ns| ns.state == NodeState::Failed)
                     {
                         self.checkpoint_node(
                             execution_id,
-                            node_id,
+                            node_key.clone(),
                             outputs,
                             exec_state,
                             repo_version,
@@ -1138,16 +1169,16 @@ impl WorkflowEngine {
                         .await;
                         self.emit_event(ExecutionEvent::NodeFailed {
                             execution_id,
-                            node_id,
+                            node_key: node_key.clone(),
                             error: err.to_string(),
                         });
                     }
                 },
-                Ok((node_id, Ok(action_result))) => {
-                    mark_node_completed(exec_state, node_id);
+                Ok((node_key, Ok(action_result))) => {
+                    mark_node_completed(exec_state, node_key.clone());
 
                     // Track output size for budget enforcement
-                    if let Some(output) = outputs.get(&node_id) {
+                    if let Some(output) = outputs.get(&node_key) {
                         let bytes = serde_json::to_string(output.value())
                             .map(|s| s.len() as u64)
                             .unwrap_or(0);
@@ -1158,19 +1189,26 @@ impl WorkflowEngine {
                     // idempotency key, before any external observer learns the
                     // node is done. This guarantees durability precedes
                     // visibility (#297).
-                    self.checkpoint_node(execution_id, node_id, outputs, exec_state, repo_version)
+                    self.checkpoint_node(
+                        execution_id,
+                        node_key.clone(),
+                        outputs,
+                        exec_state,
+                        repo_version,
+                    )
+                    .await;
+                    self.record_idempotency(execution_id, node_key.clone())
                         .await;
-                    self.record_idempotency(execution_id, node_id).await;
 
                     self.emit_event(ExecutionEvent::NodeCompleted {
                         execution_id,
-                        node_id,
+                        node_key: node_key.clone(),
                         elapsed: started.elapsed(),
                     });
 
                     // Evaluate outgoing edges and update frontier
                     process_outgoing_edges(
-                        node_id,
+                        node_key.clone(),
                         Some(&action_result),
                         None, // not failed
                         graph,
@@ -1181,13 +1219,13 @@ impl WorkflowEngine {
                         exec_state,
                     );
                 },
-                Ok((node_id, Err(ref err))) => {
+                Ok((node_key, Err(ref err))) => {
                     // Node failed at runtime — persist before any observer
                     // learns the node is done and before successors advance
                     // (#297).
-                    mark_node_failed(exec_state, node_id, err);
+                    mark_node_failed(exec_state, node_key.clone(), err);
                     let abort = handle_node_failure(
-                        node_id,
+                        node_key.clone(),
                         &err.to_string(),
                         error_strategy,
                         graph,
@@ -1201,16 +1239,16 @@ impl WorkflowEngine {
 
                     if let Some(err_msg) = abort {
                         cancel_token.cancel();
-                        return Some((node_id, err_msg));
+                        return Some((node_key.clone(), err_msg));
                     }
 
                     if exec_state
-                        .node_state(node_id)
+                        .node_state(node_key.clone())
                         .is_some_and(|ns| ns.state == NodeState::Failed)
                     {
                         self.checkpoint_node(
                             execution_id,
-                            node_id,
+                            node_key.clone(),
                             outputs,
                             exec_state,
                             repo_version,
@@ -1218,7 +1256,7 @@ impl WorkflowEngine {
                         .await;
                         self.emit_event(ExecutionEvent::NodeFailed {
                             execution_id,
-                            node_id,
+                            node_key: node_key.clone(),
                             error: err.to_string(),
                         });
                     }
@@ -1226,7 +1264,7 @@ impl WorkflowEngine {
                 Err(join_err) => {
                     tracing::error!(?join_err, "node task panicked");
                     cancel_token.cancel();
-                    return Some((NodeId::new(), join_err.to_string()));
+                    return Some((node_key!("_panicked"), join_err.to_string()));
                 },
             }
         }
@@ -1241,34 +1279,42 @@ impl WorkflowEngine {
     #[allow(clippy::too_many_arguments)]
     fn spawn_node(
         &self,
-        node_id: NodeId,
-        node_map: &HashMap<NodeId, &nebula_workflow::NodeDefinition>,
+        node_key: NodeKey,
+        node_map: &HashMap<NodeKey, &nebula_workflow::NodeDefinition>,
         graph: &DependencyGraph,
-        outputs: &Arc<DashMap<NodeId, serde_json::Value>>,
+        outputs: &Arc<DashMap<NodeKey, serde_json::Value>>,
         semaphore: &Arc<Semaphore>,
         cancel_token: &CancellationToken,
         exec_state: &mut ExecutionState,
         execution_id: ExecutionId,
         workflow_id: WorkflowId,
         input: &serde_json::Value,
-        activated_edges: &HashMap<NodeId, HashSet<NodeId>>,
-        join_set: &mut JoinSet<(NodeId, Result<ActionResult<serde_json::Value>, EngineError>)>,
+        activated_edges: &HashMap<NodeKey, HashSet<NodeKey>>,
+        join_set: &mut JoinSet<(
+            NodeKey,
+            Result<ActionResult<serde_json::Value>, EngineError>,
+        )>,
     ) -> bool {
-        let Some(node_def) = node_map.get(&node_id) else {
+        let Some(node_def) = node_map.get(&node_key) else {
             return false;
         };
         let action_key = node_def.action_key.as_str().to_owned();
         let interface_version = node_def.interface_version;
 
         // Partition incoming connections into flow (to_port=None) and support (to_port=Some)
-        let (node_input, support_inputs) =
-            resolve_node_input_with_support(node_id, graph, outputs, input, activated_edges);
+        let (node_input, support_inputs) = resolve_node_input_with_support(
+            node_key.clone(),
+            graph,
+            outputs,
+            input,
+            activated_edges,
+        );
 
         // Resolve node parameters (expressions, templates, references)
         let action_input =
             match self
                 .resolver
-                .resolve(node_id, &node_def.parameters, &node_input, outputs)
+                .resolve(&node_key, &node_def.parameters, &node_input, outputs)
             {
                 Ok(Some(resolved_params)) => resolved_params,
                 Ok(None) => node_input, // No parameters → use predecessor output
@@ -1282,8 +1328,8 @@ impl WorkflowEngine {
                     // failed and want it in the Failed state
                     // regardless of its current position. Version is
                     // still bumped per issue #255.
-                    let _ = exec_state.override_node_state(node_id, NodeState::Failed);
-                    if let Some(ns) = exec_state.node_states.get_mut(&node_id) {
+                    let _ = exec_state.override_node_state(node_key.clone(), NodeState::Failed);
+                    if let Some(ns) = exec_state.node_states.get_mut(&node_key) {
                         ns.error_message = Some(e.to_string());
                     }
                     return false;
@@ -1294,11 +1340,11 @@ impl WorkflowEngine {
         // Log on failure so a rejected transition is not silently
         // swallowed — callers of the frontier loop need to know if
         // the execution state got out of sync with the scheduler.
-        if let Err(err) = exec_state.transition_node(node_id, NodeState::Ready) {
-            tracing::warn!(%node_id, %err, "failed to transition node to Ready");
+        if let Err(err) = exec_state.transition_node(node_key.clone(), NodeState::Ready) {
+            tracing::warn!(%node_key, %err, "failed to transition node to Ready");
         }
-        if let Err(err) = exec_state.transition_node(node_id, NodeState::Running) {
-            tracing::warn!(%node_id, %err, "failed to transition node to Running");
+        if let Err(err) = exec_state.transition_node(node_key.clone(), NodeState::Running) {
+            tracing::warn!(%node_key, %err, "failed to transition node to Running");
         }
 
         let runtime = self.runtime.clone();
@@ -1358,7 +1404,7 @@ impl WorkflowEngine {
                 sem,
                 outputs: outputs_ref,
                 execution_id,
-                node_id,
+                node_key: node_key.clone(),
                 workflow_id,
                 action_key,
                 interface_version,
@@ -1386,27 +1432,27 @@ impl WorkflowEngine {
     async fn check_and_apply_idempotency(
         &self,
         execution_id: ExecutionId,
-        node_id: NodeId,
-        outputs: &Arc<DashMap<NodeId, serde_json::Value>>,
+        node_key: NodeKey,
+        outputs: &Arc<DashMap<NodeKey, serde_json::Value>>,
         exec_state: &mut ExecutionState,
         graph: &DependencyGraph,
-        activated_edges: &mut HashMap<NodeId, HashSet<NodeId>>,
-        resolved_edges: &mut HashMap<NodeId, usize>,
-        required_count: &HashMap<NodeId, usize>,
-        ready_queue: &mut VecDeque<NodeId>,
+        activated_edges: &mut HashMap<NodeKey, HashSet<NodeKey>>,
+        resolved_edges: &mut HashMap<NodeKey, usize>,
+        required_count: &HashMap<NodeKey, usize>,
+        ready_queue: &mut VecDeque<NodeKey>,
     ) -> bool {
         let Some(repo) = &self.execution_repo else {
             return false;
         };
 
-        let idem_key = format!("{execution_id}:{node_id}:1");
+        let idem_key = format!("{execution_id}:{node_key}:1");
 
         let already_done = match repo.check_idempotency(&idem_key).await {
             Ok(v) => v,
             Err(e) => {
                 tracing::warn!(
                     %execution_id,
-                    %node_id,
+                    %node_key,
                     error = %e,
                     "idempotency check failed; proceeding with execution"
                 );
@@ -1419,7 +1465,7 @@ impl WorkflowEngine {
         }
 
         // Node was already executed — load the persisted output.
-        let output_value = match repo.load_node_output(execution_id, node_id).await {
+        let output_value = match repo.load_node_output(execution_id, node_key.clone()).await {
             Ok(Some(v)) => v,
             Ok(None) => {
                 // Idempotency key exists but no output was persisted. This indicates
@@ -1427,7 +1473,7 @@ impl WorkflowEngine {
                 // but before saving the output). Re-execute to produce a clean result.
                 tracing::warn!(
                     %execution_id,
-                    %node_id,
+                    %node_key,
                     "idempotency key present but output missing; re-executing node"
                 );
                 return false;
@@ -1435,7 +1481,7 @@ impl WorkflowEngine {
             Err(e) => {
                 tracing::warn!(
                     %execution_id,
-                    %node_id,
+                    %node_key,
                     error = %e,
                     "failed to load idempotent node output; re-executing"
                 );
@@ -1443,12 +1489,12 @@ impl WorkflowEngine {
             },
         };
 
-        outputs.insert(node_id, output_value.clone());
-        mark_node_completed(exec_state, node_id);
+        outputs.insert(node_key.clone(), output_value.clone());
+        mark_node_completed(exec_state, node_key.clone());
 
         let fake_result = ActionResult::success(output_value);
         process_outgoing_edges(
-            node_id,
+            node_key.clone(),
             Some(&fake_result),
             None,
             graph,
@@ -1466,15 +1512,18 @@ impl WorkflowEngine {
     ///
     /// Silently logs and ignores errors — idempotency key recording failures
     /// must not abort an otherwise healthy execution.
-    async fn record_idempotency(&self, execution_id: ExecutionId, node_id: NodeId) {
+    async fn record_idempotency(&self, execution_id: ExecutionId, node_key: NodeKey) {
         let Some(repo) = &self.execution_repo else {
             return;
         };
-        let idem_key = format!("{execution_id}:{node_id}:1");
-        if let Err(e) = repo.mark_idempotent(&idem_key, execution_id, node_id).await {
+        let idem_key = format!("{execution_id}:{node_key}:1");
+        if let Err(e) = repo
+            .mark_idempotent(&idem_key, execution_id, node_key.clone())
+            .await
+        {
             tracing::warn!(
                 %execution_id,
-                %node_id,
+                %node_key,
                 error = %e,
                 "failed to mark node as idempotent"
             );
@@ -1488,8 +1537,8 @@ impl WorkflowEngine {
     async fn checkpoint_node(
         &self,
         execution_id: ExecutionId,
-        node_id: NodeId,
-        outputs: &Arc<DashMap<NodeId, serde_json::Value>>,
+        node_key: NodeKey,
+        outputs: &Arc<DashMap<NodeKey, serde_json::Value>>,
         exec_state: &ExecutionState,
         repo_version: &mut u64,
     ) {
@@ -1498,17 +1547,22 @@ impl WorkflowEngine {
         };
 
         // Save node output individually
-        if let Some(output) = outputs.get(&node_id) {
+        if let Some(output) = outputs.get(&node_key) {
             let attempt = exec_state
                 .node_states
-                .get(&node_id)
+                .get(&node_key)
                 .map(|ns| ns.attempt_count().max(1) as u32)
                 .unwrap_or(1);
             if let Err(e) = repo
-                .save_node_output(execution_id, node_id, attempt, output.value().clone())
+                .save_node_output(
+                    execution_id,
+                    node_key.clone(),
+                    attempt,
+                    output.value().clone(),
+                )
                 .await
             {
-                tracing::warn!(%execution_id, %node_id, error = %e, "failed to persist node output");
+                tracing::warn!(%execution_id, %node_key, error = %e, "failed to persist node output");
             }
         }
 
@@ -1546,7 +1600,7 @@ impl WorkflowEngine {
         _execution_id: ExecutionId,
         status: ExecutionStatus,
         elapsed: std::time::Duration,
-        _failed_node: &Option<(NodeId, String)>,
+        _failed_node: &Option<(NodeKey, String)>,
     ) {
         match status {
             ExecutionStatus::Completed => {
@@ -1573,9 +1627,9 @@ struct NodeTask {
     runtime: Arc<ActionRuntime>,
     cancel: CancellationToken,
     sem: Arc<Semaphore>,
-    outputs: Arc<DashMap<NodeId, serde_json::Value>>,
+    outputs: Arc<DashMap<NodeKey, serde_json::Value>>,
     execution_id: ExecutionId,
-    node_id: NodeId,
+    node_key: NodeKey,
     workflow_id: WorkflowId,
     action_key: String,
     /// Pinned interface version for versioned action lookup.
@@ -1607,14 +1661,19 @@ struct NodeTask {
 
 impl NodeTask {
     /// Execute this node: acquire semaphore, check cancellation, run action.
-    async fn run(self) -> (NodeId, Result<ActionResult<serde_json::Value>, EngineError>) {
+    async fn run(
+        self,
+    ) -> (
+        NodeKey,
+        Result<ActionResult<serde_json::Value>, EngineError>,
+    ) {
         let _permit = match self.sem.acquire().await {
             Ok(permit) => permit,
-            Err(_) => return (self.node_id, Err(EngineError::Cancelled)),
+            Err(_) => return (self.node_key, Err(EngineError::Cancelled)),
         };
 
         if self.cancel.is_cancelled() {
-            return (self.node_id, Err(EngineError::Cancelled));
+            return (self.node_key, Err(EngineError::Cancelled));
         }
 
         // Proactive credential refresh: call the hook before the action runs
@@ -1636,7 +1695,7 @@ impl NodeTask {
             let refresh_result = tokio::select! {
                 biased;
                 () = self.cancel.cancelled() => {
-                    return (self.node_id, Err(EngineError::Cancelled));
+                    return (self.node_key, Err(EngineError::Cancelled));
                 }
                 res = &mut refresh_fut => res,
             };
@@ -1646,14 +1705,14 @@ impl NodeTask {
                 Err(source) => {
                     let action_err =
                         ActionError::credential_refresh_failed(self.action_key.to_string(), source);
-                    return (self.node_id, Err(EngineError::Action(action_err)));
+                    return (self.node_key, Err(EngineError::Action(action_err)));
                 },
             }
         }
 
         let action_ctx = ActionContext::new(
             self.execution_id,
-            self.node_id,
+            self.node_key.clone(),
             self.workflow_id,
             self.cancel.child_token(),
         )
@@ -1666,7 +1725,7 @@ impl NodeTask {
             use nebula_resilience::rate_limiter::RateLimiter;
             if let Err(e) = limiter.acquire().await {
                 tracing::warn!(
-                    node_id = %self.node_id,
+                    node_key = %self.node_key.clone(),
                     action_key = %self.action_key,
                     error = ?e,
                     "rate limit exceeded; failing node"
@@ -1676,7 +1735,7 @@ impl NodeTask {
                     nebula_action::error::RetryHintCode::RateLimited,
                 );
                 return (
-                    self.node_id,
+                    self.node_key.clone(),
                     Err(EngineError::Runtime(
                         nebula_runtime::RuntimeError::ActionError(action_err),
                     )),
@@ -1700,11 +1759,11 @@ impl NodeTask {
             Ok(action_result) => {
                 // Extract the primary output for downstream node input resolution.
                 if let Some(output) = extract_primary_output(&action_result) {
-                    self.outputs.insert(self.node_id, output);
+                    self.outputs.insert(self.node_key.clone(), output);
                 }
-                (self.node_id, Ok(action_result))
+                (self.node_key, Ok(action_result))
             },
-            Err(e) => (self.node_id, Err(EngineError::Runtime(e))),
+            Err(e) => (self.node_key, Err(EngineError::Runtime(e))),
         }
     }
 }
@@ -1720,37 +1779,40 @@ impl NodeTask {
 /// Returns `true` if the error was handled (at least one OnError edge activated).
 #[allow(clippy::too_many_arguments)]
 fn process_outgoing_edges(
-    source_id: NodeId,
+    source_id: NodeKey,
     result: Option<&ActionResult<serde_json::Value>>,
     error_msg: Option<&str>,
     graph: &DependencyGraph,
-    activated_edges: &mut HashMap<NodeId, HashSet<NodeId>>,
-    resolved_edges: &mut HashMap<NodeId, usize>,
-    required_count: &HashMap<NodeId, usize>,
-    ready_queue: &mut VecDeque<NodeId>,
+    activated_edges: &mut HashMap<NodeKey, HashSet<NodeKey>>,
+    resolved_edges: &mut HashMap<NodeKey, usize>,
+    required_count: &HashMap<NodeKey, usize>,
+    ready_queue: &mut VecDeque<NodeKey>,
     exec_state: &mut ExecutionState,
 ) -> bool {
-    let outgoing = graph.outgoing_connections(source_id);
+    let outgoing = graph.outgoing_connections(source_id.clone());
     let node_failed = error_msg.is_some();
     let mut error_handled = false;
 
     for conn in &outgoing {
-        let target = conn.to_node;
+        let target = conn.to_node.clone();
         let activate = evaluate_edge(conn, result, node_failed);
 
         // Increment the per-edge resolved count (not per-source, so that multiple
         // edges from the same source node to the same target are each counted).
-        *resolved_edges.entry(target).or_insert(0) += 1;
+        *resolved_edges.entry(target.clone()).or_insert(0) += 1;
         if activate {
-            activated_edges.entry(target).or_default().insert(source_id);
+            activated_edges
+                .entry(target.clone())
+                .or_default()
+                .insert(source_id.clone());
             if node_failed {
                 error_handled = true;
             }
         }
 
         // Check if target is now fully resolved
-        let resolved = resolved_edges.get(&target).copied().unwrap_or(0);
-        let required = required_count.get(&target).copied().unwrap_or(0);
+        let resolved = resolved_edges.get(&target).cloned().unwrap_or(0);
+        let required = required_count.get(&target).cloned().unwrap_or(0);
         let activated = activated_edges.get(&target).map_or(0, |s| s.len());
 
         if resolved == required {
@@ -1912,33 +1974,33 @@ fn evaluate_expression_condition(
 
 /// Recursively mark a node and its unreachable successors as skipped.
 fn propagate_skip(
-    node_id: NodeId,
+    node_key: NodeKey,
     graph: &DependencyGraph,
     exec_state: &mut ExecutionState,
-    resolved_edges: &mut HashMap<NodeId, usize>,
-    activated_edges: &HashMap<NodeId, HashSet<NodeId>>,
-    required_count: &HashMap<NodeId, usize>,
-    ready_queue: &mut VecDeque<NodeId>,
+    resolved_edges: &mut HashMap<NodeKey, usize>,
+    activated_edges: &HashMap<NodeKey, HashSet<NodeKey>>,
+    required_count: &HashMap<NodeKey, usize>,
+    ready_queue: &mut VecDeque<NodeKey>,
 ) {
     // Guard against double-processing
-    if let Some(ns) = exec_state.node_states.get(&node_id)
+    if let Some(ns) = exec_state.node_states.get(&node_key)
         && ns.state.is_terminal()
     {
         return;
     }
 
     // Versioned transition (issue #255).
-    let _ = exec_state.transition_node(node_id, NodeState::Skipped);
+    let _ = exec_state.transition_node(node_key.clone(), NodeState::Skipped);
 
     // Mark all outgoing edges as resolved (dead) for their targets
-    for conn in graph.outgoing_connections(node_id) {
-        let target = conn.to_node;
+    for conn in graph.outgoing_connections(node_key) {
+        let target = conn.to_node.clone();
         // Increment per-edge count (not per-source) so that multiple edges from
         // the same skipped source to the same target are each counted.
-        *resolved_edges.entry(target).or_insert(0) += 1;
+        *resolved_edges.entry(target.clone()).or_insert(0) += 1;
 
-        let resolved = resolved_edges.get(&target).copied().unwrap_or(0);
-        let required = required_count.get(&target).copied().unwrap_or(0);
+        let resolved = resolved_edges.get(&target).cloned().unwrap_or(0);
+        let required = required_count.get(&target).cloned().unwrap_or(0);
         let activated = activated_edges.get(&target).map_or(0, |s| s.len());
 
         if resolved == required {
@@ -1994,15 +2056,15 @@ fn check_budget(
 /// (i.e., fail-fast), or `None` when execution may continue.
 #[allow(clippy::too_many_arguments)]
 fn handle_node_failure(
-    node_id: NodeId,
+    node_key: NodeKey,
     error_msg: &str,
     error_strategy: nebula_workflow::ErrorStrategy,
     graph: &DependencyGraph,
-    outputs: &Arc<DashMap<NodeId, serde_json::Value>>,
-    activated_edges: &mut HashMap<NodeId, HashSet<NodeId>>,
-    resolved_edges: &mut HashMap<NodeId, usize>,
-    required_count: &HashMap<NodeId, usize>,
-    ready_queue: &mut VecDeque<NodeId>,
+    outputs: &Arc<DashMap<NodeKey, serde_json::Value>>,
+    activated_edges: &mut HashMap<NodeKey, HashSet<NodeKey>>,
+    resolved_edges: &mut HashMap<NodeKey, usize>,
+    required_count: &HashMap<NodeKey, usize>,
+    ready_queue: &mut VecDeque<NodeKey>,
     exec_state: &mut ExecutionState,
 ) -> Option<String> {
     // IgnoreErrors: treat the failure as a successful null result so
@@ -2013,13 +2075,13 @@ fn handle_node_failure(
         // `Failed → Completed` is not a valid forward transition, so this
         // uses `override_node_state` to reset the state; the version is
         // still bumped so CAS readers observe the recovery (issue #255).
-        let _ = exec_state.override_node_state(node_id, NodeState::Completed);
-        if let Some(ns) = exec_state.node_states.get_mut(&node_id) {
+        let _ = exec_state.override_node_state(node_key.clone(), NodeState::Completed);
+        if let Some(ns) = exec_state.node_states.get_mut(&node_key) {
             ns.error_message = None;
         }
-        outputs.insert(node_id, serde_json::json!(null));
+        outputs.insert(node_key.clone(), serde_json::json!(null));
         process_outgoing_edges(
-            node_id,
+            node_key.clone(),
             Some(&ActionResult::success(serde_json::json!(null))),
             None,
             graph,
@@ -2035,7 +2097,7 @@ fn handle_node_failure(
     // For FailFast / ContinueOnError: evaluate edges as a failure to
     // check for OnError handlers.
     let error_handled = process_outgoing_edges(
-        node_id,
+        node_key.clone(),
         None,
         Some(error_msg),
         graph,
@@ -2049,10 +2111,10 @@ fn handle_node_failure(
     if error_handled {
         // Store error info for the OnError handler's input.
         outputs.insert(
-            node_id,
+            node_key.clone(),
             serde_json::json!({
                 "error": error_msg,
-                "node_id": node_id.to_string(),
+                "node_id": node_key.to_string(),
             }),
         );
         return None;
@@ -2073,26 +2135,26 @@ fn handle_node_failure(
 ///
 /// Uses the versioned transition API (issue #255) so CAS readers see
 /// the parent version move.
-fn mark_node_skipped(exec_state: &mut ExecutionState, node_id: NodeId) {
-    let _ = exec_state.transition_node(node_id, NodeState::Skipped);
+fn mark_node_skipped(exec_state: &mut ExecutionState, node_key: NodeKey) {
+    let _ = exec_state.transition_node(node_key.clone(), NodeState::Skipped);
 }
 
 /// Mark a node as completed in the execution state.
-fn mark_node_completed(exec_state: &mut ExecutionState, node_id: NodeId) {
-    let _ = exec_state.transition_node(node_id, NodeState::Completed);
+fn mark_node_completed(exec_state: &mut ExecutionState, node_key: NodeKey) {
+    let _ = exec_state.transition_node(node_key.clone(), NodeState::Completed);
 }
 
 /// Mark a node as failed in the execution state.
-fn mark_node_failed(exec_state: &mut ExecutionState, node_id: NodeId, err: &EngineError) {
-    let _ = exec_state.transition_node(node_id, NodeState::Failed);
-    if let Some(ns) = exec_state.node_states.get_mut(&node_id) {
+fn mark_node_failed(exec_state: &mut ExecutionState, node_key: NodeKey, err: &EngineError) {
+    let _ = exec_state.transition_node(node_key.clone(), NodeState::Failed);
+    if let Some(ns) = exec_state.node_states.get_mut(&node_key) {
         ns.error_message = Some(err.to_string());
     }
 }
 
 /// Determine the final execution status.
 fn determine_final_status(
-    failed_node: &Option<(NodeId, String)>,
+    failed_node: &Option<(NodeKey, String)>,
     cancel_token: &CancellationToken,
     exec_state: &ExecutionState,
 ) -> ExecutionStatus {
@@ -2109,7 +2171,7 @@ fn determine_final_status(
             .node_states
             .iter()
             .filter(|(_, ns)| !ns.state.is_terminal())
-            .map(|(&id, ns)| (id, ns.state))
+            .map(|(id, ns)| (id, ns.state))
             .collect();
         tracing::warn!(
             execution_id = %exec_state.execution_id,
@@ -2132,21 +2194,21 @@ fn determine_final_status(
 /// Connections with `to_port = Some(port_name)` are collected into a per-port
 /// map of values, delivered to the action via `ActionContext::support_inputs`.
 fn resolve_node_input_with_support(
-    node_id: NodeId,
+    node_key: NodeKey,
     graph: &DependencyGraph,
-    outputs: &DashMap<NodeId, serde_json::Value>,
+    outputs: &DashMap<NodeKey, serde_json::Value>,
     workflow_input: &serde_json::Value,
-    activated_edges: &HashMap<NodeId, HashSet<NodeId>>,
+    activated_edges: &HashMap<NodeKey, HashSet<NodeKey>>,
 ) -> (serde_json::Value, HashMap<String, Vec<serde_json::Value>>) {
-    let activated: HashSet<NodeId> = activated_edges.get(&node_id).cloned().unwrap_or_default();
+    let activated: HashSet<NodeKey> = activated_edges.get(&node_key).cloned().unwrap_or_default();
 
     // Partition incoming connections by to_port
-    let incoming = graph.incoming_connections(node_id);
-    let mut flow_predecessors: Vec<NodeId> = Vec::new();
+    let incoming = graph.incoming_connections(node_key);
+    let mut flow_predecessors: Vec<NodeKey> = Vec::new();
     let mut support_inputs: HashMap<String, Vec<serde_json::Value>> = HashMap::new();
 
     for conn in &incoming {
-        let source = conn.from_node;
+        let source = conn.from_node.clone();
         if !activated.contains(&source) {
             continue;
         }
@@ -2395,9 +2457,9 @@ mod tests {
 
         let (engine, _) = make_engine(registry);
 
-        let n = NodeId::new();
+        let n = node_key!("n");
         let wf = make_workflow(
-            vec![NodeDefinition::new(n, "echo", "echo").unwrap()],
+            vec![NodeDefinition::new(n.clone(), "echo", "echo").unwrap()],
             vec![],
         );
 
@@ -2407,7 +2469,7 @@ mod tests {
             .unwrap();
 
         assert!(result.is_success());
-        assert_eq!(result.node_output(n), Some(&serde_json::json!("hello")));
+        assert_eq!(result.node_output(&n), Some(&serde_json::json!("hello")));
     }
 
     #[tokio::test]
@@ -2419,14 +2481,14 @@ mod tests {
 
         let (engine, _) = make_engine(registry);
 
-        let n1 = NodeId::new();
-        let n2 = NodeId::new();
+        let n1 = node_key!("n1");
+        let n2 = node_key!("n2");
         let wf = make_workflow(
             vec![
-                NodeDefinition::new(n1, "A", "echo").unwrap(),
-                NodeDefinition::new(n2, "B", "echo").unwrap(),
+                NodeDefinition::new(n1.clone(), "A", "echo").unwrap(),
+                NodeDefinition::new(n2.clone(), "B", "echo").unwrap(),
             ],
-            vec![Connection::new(n1, n2)],
+            vec![Connection::new(n1.clone(), n2.clone())],
         );
 
         let result = engine
@@ -2435,9 +2497,9 @@ mod tests {
             .unwrap();
 
         assert!(result.is_success());
-        assert_eq!(result.node_output(n1), Some(&serde_json::json!(42)));
+        assert_eq!(result.node_output(&n1), Some(&serde_json::json!(42)));
         // B echoes its input, which is A's output (42)
-        assert_eq!(result.node_output(n2), Some(&serde_json::json!(42)));
+        assert_eq!(result.node_output(&n2), Some(&serde_json::json!(42)));
     }
 
     #[tokio::test]
@@ -2449,22 +2511,22 @@ mod tests {
 
         let (engine, _) = make_engine(registry);
 
-        let a = NodeId::new();
-        let b = NodeId::new();
-        let c = NodeId::new();
-        let d = NodeId::new();
+        let a = node_key!("a");
+        let b = node_key!("b");
+        let c = node_key!("c");
+        let d = node_key!("d");
         let wf = make_workflow(
             vec![
-                NodeDefinition::new(a, "A", "echo").unwrap(),
-                NodeDefinition::new(b, "B", "echo").unwrap(),
-                NodeDefinition::new(c, "C", "echo").unwrap(),
-                NodeDefinition::new(d, "D", "echo").unwrap(),
+                NodeDefinition::new(a.clone(), "A", "echo").unwrap(),
+                NodeDefinition::new(b.clone(), "B", "echo").unwrap(),
+                NodeDefinition::new(c.clone(), "C", "echo").unwrap(),
+                NodeDefinition::new(d.clone(), "D", "echo").unwrap(),
             ],
             vec![
-                Connection::new(a, b),
-                Connection::new(a, c),
-                Connection::new(b, d),
-                Connection::new(c, d),
+                Connection::new(a.clone(), b.clone()),
+                Connection::new(a.clone(), c.clone()),
+                Connection::new(b.clone(), d.clone()),
+                Connection::new(c.clone(), d.clone()),
             ],
         );
 
@@ -2475,11 +2537,11 @@ mod tests {
 
         assert!(result.is_success());
         assert_eq!(result.node_outputs.len(), 4);
-        assert_eq!(result.node_output(a), Some(&serde_json::json!("start")));
-        assert_eq!(result.node_output(b), Some(&serde_json::json!("start")));
-        assert_eq!(result.node_output(c), Some(&serde_json::json!("start")));
+        assert_eq!(result.node_output(&a), Some(&serde_json::json!("start")));
+        assert_eq!(result.node_output(&b), Some(&serde_json::json!("start")));
+        assert_eq!(result.node_output(&c), Some(&serde_json::json!("start")));
         // Join node gets merged outputs from b and c
-        let d_output = result.node_output(d).unwrap();
+        let d_output = result.node_output(&d).unwrap();
         assert!(d_output.is_object());
     }
 
@@ -2495,16 +2557,19 @@ mod tests {
 
         let (engine, _) = make_engine(registry);
 
-        let n1 = NodeId::new();
-        let n2 = NodeId::new();
-        let n3 = NodeId::new();
+        let n1 = node_key!("n1");
+        let n2 = node_key!("n2");
+        let n3 = node_key!("n3");
         let wf = make_workflow(
             vec![
-                NodeDefinition::new(n1, "A", "echo").unwrap(),
-                NodeDefinition::new(n2, "B", "fail").unwrap(),
-                NodeDefinition::new(n3, "C", "echo").unwrap(),
+                NodeDefinition::new(n1.clone(), "A", "echo").unwrap(),
+                NodeDefinition::new(n2.clone(), "B", "fail").unwrap(),
+                NodeDefinition::new(n3.clone(), "C", "echo").unwrap(),
             ],
-            vec![Connection::new(n1, n2), Connection::new(n2, n3)],
+            vec![
+                Connection::new(n1.clone(), n2.clone()),
+                Connection::new(n2.clone(), n3.clone()),
+            ],
         );
 
         let result = engine
@@ -2513,9 +2578,9 @@ mod tests {
             .unwrap();
 
         assert!(result.is_failure());
-        assert!(result.node_output(n1).is_some());
-        assert!(result.node_output(n2).is_none());
-        assert!(result.node_output(n3).is_none());
+        assert!(result.node_output(&n1).is_some());
+        assert!(result.node_output(&n2).is_none());
+        assert!(result.node_output(&n3).is_none());
     }
 
     #[tokio::test]
@@ -2523,7 +2588,7 @@ mod tests {
         let registry = Arc::new(ActionRegistry::new());
         let (engine, _) = make_engine(registry);
 
-        let n = NodeId::new();
+        let n = node_key!("n");
         let wf = make_workflow(
             vec![NodeDefinition::new(n, "A", "unknown").unwrap()],
             vec![],
@@ -2560,7 +2625,7 @@ mod tests {
 
         let (engine, metrics) = make_engine(registry);
 
-        let n = NodeId::new();
+        let n = node_key!("n");
         let wf = make_workflow(
             vec![NodeDefinition::new(n, "echo", "echo").unwrap()],
             vec![],
@@ -2594,7 +2659,7 @@ mod tests {
 
         let (engine, metrics) = make_engine(registry);
 
-        let n = NodeId::new();
+        let n = node_key!("n");
         let wf = make_workflow(
             vec![NodeDefinition::new(n, "fail", "fail").unwrap()],
             vec![],
@@ -2624,7 +2689,7 @@ mod tests {
     async fn trigger_context_construction_is_usable_in_engine() {
         let ctx = TriggerContext::new(
             WorkflowId::new(),
-            NodeId::new(),
+            node_key!("test"),
             tokio_util::sync::CancellationToken::new(),
         );
         assert!(!ctx.has_credential_id("missing").await);
@@ -2712,22 +2777,22 @@ mod tests {
 
         let (engine, _) = make_engine(registry);
 
-        let a = NodeId::new();
-        let b = NodeId::new();
-        let c = NodeId::new();
-        let d = NodeId::new();
+        let a = node_key!("a");
+        let b = node_key!("b");
+        let c = node_key!("c");
+        let d = node_key!("d");
         let wf = make_workflow(
             vec![
-                NodeDefinition::new(a, "A", "branch").unwrap(),
-                NodeDefinition::new(b, "B", "echo").unwrap(),
-                NodeDefinition::new(c, "C", "echo").unwrap(),
-                NodeDefinition::new(d, "D", "echo").unwrap(),
+                NodeDefinition::new(a.clone(), "A", "branch").unwrap(),
+                NodeDefinition::new(b.clone(), "B", "echo").unwrap(),
+                NodeDefinition::new(c.clone(), "C", "echo").unwrap(),
+                NodeDefinition::new(d.clone(), "D", "echo").unwrap(),
             ],
             vec![
-                Connection::new(a, b).with_branch_key("true"),
-                Connection::new(a, c).with_branch_key("false"),
-                Connection::new(b, d),
-                Connection::new(c, d),
+                Connection::new(a.clone(), b.clone()).with_branch_key("true"),
+                Connection::new(a.clone(), c.clone()).with_branch_key("false"),
+                Connection::new(b.clone(), d.clone()),
+                Connection::new(c.clone(), d.clone()),
             ],
         );
 
@@ -2738,13 +2803,13 @@ mod tests {
 
         assert!(result.is_success());
         // A executed (branch node)
-        assert!(result.node_output(a).is_some());
+        assert!(result.node_output(&a).is_some());
         // B executed (true branch)
-        assert!(result.node_output(b).is_some());
+        assert!(result.node_output(&b).is_some());
         // C was NOT executed (false branch, skipped)
-        assert!(result.node_output(c).is_none());
+        assert!(result.node_output(&c).is_none());
         // D executed (received input from B only)
-        assert!(result.node_output(d).is_some());
+        assert!(result.node_output(&d).is_some());
     }
 
     /// A → B(skip) → C. Verify C is skipped and doesn't execute.
@@ -2760,16 +2825,19 @@ mod tests {
 
         let (engine, _) = make_engine(registry);
 
-        let a = NodeId::new();
-        let b = NodeId::new();
-        let c = NodeId::new();
+        let a = node_key!("a");
+        let b = node_key!("b");
+        let c = node_key!("c");
         let wf = make_workflow(
             vec![
-                NodeDefinition::new(a, "A", "echo").unwrap(),
-                NodeDefinition::new(b, "B", "skip").unwrap(),
-                NodeDefinition::new(c, "C", "echo").unwrap(),
+                NodeDefinition::new(a.clone(), "A", "echo").unwrap(),
+                NodeDefinition::new(b.clone(), "B", "skip").unwrap(),
+                NodeDefinition::new(c.clone(), "C", "echo").unwrap(),
             ],
-            vec![Connection::new(a, b), Connection::new(b, c)],
+            vec![
+                Connection::new(a.clone(), b.clone()),
+                Connection::new(b.clone(), c.clone()),
+            ],
         );
 
         let result = engine
@@ -2780,11 +2848,11 @@ mod tests {
         // Execution succeeds overall (skip is not a failure)
         assert!(result.is_success());
         // A executed
-        assert!(result.node_output(a).is_some());
+        assert!(result.node_output(&a).is_some());
         // B executed but produced Skip result (no output stored since skip has no output)
-        assert!(result.node_output(b).is_none());
+        assert!(result.node_output(&b).is_none());
         // C was skipped (never executed)
-        assert!(result.node_output(c).is_none());
+        assert!(result.node_output(&c).is_none());
     }
 
     /// A → B(fails) --OnError--> C. Verify C receives error data and execution succeeds.
@@ -2800,18 +2868,18 @@ mod tests {
 
         let (engine, _) = make_engine(registry);
 
-        let a = NodeId::new();
-        let b = NodeId::new();
-        let c = NodeId::new();
+        let a = node_key!("a");
+        let b = node_key!("b");
+        let c = node_key!("c");
         let wf = make_workflow(
             vec![
-                NodeDefinition::new(a, "A", "echo").unwrap(),
-                NodeDefinition::new(b, "B", "fail").unwrap(),
-                NodeDefinition::new(c, "C", "echo").unwrap(),
+                NodeDefinition::new(a.clone(), "A", "echo").unwrap(),
+                NodeDefinition::new(b.clone(), "B", "fail").unwrap(),
+                NodeDefinition::new(c.clone(), "C", "echo").unwrap(),
             ],
             vec![
-                Connection::new(a, b),
-                Connection::new(b, c).with_condition(EdgeCondition::OnError {
+                Connection::new(a.clone(), b.clone()),
+                Connection::new(b.clone(), c.clone()).with_condition(EdgeCondition::OnError {
                     matcher: ErrorMatcher::Any,
                 }),
             ],
@@ -2825,11 +2893,11 @@ mod tests {
         // Execution succeeds because the error was handled
         assert!(result.is_success());
         // A executed
-        assert!(result.node_output(a).is_some());
+        assert!(result.node_output(&a).is_some());
         // B failed but error data was stored
-        assert!(result.node_output(b).is_some());
+        assert!(result.node_output(&b).is_some());
         // C executed with error data from B
-        let c_output = result.node_output(c).unwrap();
+        let c_output = result.node_output(&c).unwrap();
         assert!(c_output.get("error").is_some());
     }
 
@@ -2846,16 +2914,19 @@ mod tests {
 
         let (engine, _) = make_engine(registry);
 
-        let a = NodeId::new();
-        let b = NodeId::new();
-        let c = NodeId::new();
+        let a = node_key!("a");
+        let b = node_key!("b");
+        let c = node_key!("c");
         let wf = make_workflow(
             vec![
-                NodeDefinition::new(a, "A", "echo").unwrap(),
-                NodeDefinition::new(b, "B", "fail").unwrap(),
-                NodeDefinition::new(c, "C", "echo").unwrap(),
+                NodeDefinition::new(a.clone(), "A", "echo").unwrap(),
+                NodeDefinition::new(b.clone(), "B", "fail").unwrap(),
+                NodeDefinition::new(c.clone(), "C", "echo").unwrap(),
             ],
-            vec![Connection::new(a, b), Connection::new(b, c)],
+            vec![
+                Connection::new(a.clone(), b.clone()),
+                Connection::new(b, c.clone()),
+            ],
         );
 
         let result = engine
@@ -2864,9 +2935,9 @@ mod tests {
             .unwrap();
 
         assert!(result.is_failure());
-        assert!(result.node_output(a).is_some());
+        assert!(result.node_output(&a).is_some());
         // B failed, no error handler → fail-fast
-        assert!(result.node_output(c).is_none());
+        assert!(result.node_output(&c).is_none());
     }
 
     /// A → B with OnResult(Success) condition. B should run when A succeeds.
@@ -2879,15 +2950,15 @@ mod tests {
 
         let (engine, _) = make_engine(registry);
 
-        let a = NodeId::new();
-        let b = NodeId::new();
+        let a = node_key!("a");
+        let b = node_key!("b");
         let wf = make_workflow(
             vec![
-                NodeDefinition::new(a, "A", "echo").unwrap(),
-                NodeDefinition::new(b, "B", "echo").unwrap(),
+                NodeDefinition::new(a.clone(), "A", "echo").unwrap(),
+                NodeDefinition::new(b.clone(), "B", "echo").unwrap(),
             ],
             vec![
-                Connection::new(a, b).with_condition(EdgeCondition::OnResult {
+                Connection::new(a.clone(), b.clone()).with_condition(EdgeCondition::OnResult {
                     matcher: ResultMatcher::Success,
                 }),
             ],
@@ -2899,8 +2970,8 @@ mod tests {
             .unwrap();
 
         assert!(result.is_success());
-        assert_eq!(result.node_output(a), Some(&serde_json::json!("hello")));
-        assert_eq!(result.node_output(b), Some(&serde_json::json!("hello")));
+        assert_eq!(result.node_output(&a), Some(&serde_json::json!("hello")));
+        assert_eq!(result.node_output(&b), Some(&serde_json::json!("hello")));
     }
 
     /// Diamond with mixed conditions:
@@ -2915,24 +2986,24 @@ mod tests {
 
         let (engine, _) = make_engine(registry);
 
-        let a = NodeId::new();
-        let b = NodeId::new();
-        let c = NodeId::new();
-        let d = NodeId::new();
+        let a = node_key!("a");
+        let b = node_key!("b");
+        let c = node_key!("c");
+        let d = node_key!("d");
         let wf = make_workflow(
             vec![
-                NodeDefinition::new(a, "A", "echo").unwrap(),
-                NodeDefinition::new(b, "B", "echo").unwrap(),
-                NodeDefinition::new(c, "C", "echo").unwrap(),
-                NodeDefinition::new(d, "D", "echo").unwrap(),
+                NodeDefinition::new(a.clone(), "A", "echo").unwrap(),
+                NodeDefinition::new(b.clone(), "B", "echo").unwrap(),
+                NodeDefinition::new(c.clone(), "C", "echo").unwrap(),
+                NodeDefinition::new(d.clone(), "D", "echo").unwrap(),
             ],
             vec![
-                Connection::new(a, b), // Always
-                Connection::new(a, c).with_condition(EdgeCondition::OnResult {
+                Connection::new(a.clone(), b.clone()), // Always
+                Connection::new(a.clone(), c.clone()).with_condition(EdgeCondition::OnResult {
                     matcher: ResultMatcher::Success,
                 }),
-                Connection::new(b, d),
-                Connection::new(c, d),
+                Connection::new(b.clone(), d.clone()),
+                Connection::new(c.clone(), d.clone()),
             ],
         );
 
@@ -2943,11 +3014,11 @@ mod tests {
 
         assert!(result.is_success());
         assert_eq!(result.node_outputs.len(), 4);
-        assert!(result.node_output(a).is_some());
-        assert!(result.node_output(b).is_some());
-        assert!(result.node_output(c).is_some());
+        assert!(result.node_output(&a).is_some());
+        assert!(result.node_output(&b).is_some());
+        assert!(result.node_output(&c).is_some());
         // D should have merged input from B and C
-        let d_output = result.node_output(d).unwrap();
+        let d_output = result.node_output(&d).unwrap();
         assert!(d_output.is_object());
     }
 
@@ -2964,9 +3035,9 @@ mod tests {
         let (engine, _) = make_engine(registry);
         let engine = engine.with_execution_repo(repo.clone());
 
-        let n = NodeId::new();
+        let n = node_key!("n");
         let wf = make_workflow(
-            vec![NodeDefinition::new(n, "echo", "echo").unwrap()],
+            vec![NodeDefinition::new(n.clone(), "echo", "echo").unwrap()],
             vec![],
         );
 
@@ -3003,7 +3074,7 @@ mod tests {
         let (engine, _) = make_engine(registry);
         let engine = engine.with_execution_repo(repo.clone());
 
-        let n = NodeId::new();
+        let n = node_key!("n");
         let wf = make_workflow(
             vec![NodeDefinition::new(n, "fail", "fail").unwrap()],
             vec![],
@@ -3034,14 +3105,14 @@ mod tests {
         let (engine, _) = make_engine(registry);
         let engine = engine.with_execution_repo(repo.clone());
 
-        let n1 = NodeId::new();
-        let n2 = NodeId::new();
+        let n1 = node_key!("n1");
+        let n2 = node_key!("n2");
         let wf = make_workflow(
             vec![
-                NodeDefinition::new(n1, "A", "echo").unwrap(),
-                NodeDefinition::new(n2, "B", "echo").unwrap(),
+                NodeDefinition::new(n1.clone(), "A", "echo").unwrap(),
+                NodeDefinition::new(n2.clone(), "B", "echo").unwrap(),
             ],
-            vec![Connection::new(n1, n2)],
+            vec![Connection::new(n1.clone(), n2.clone())],
         );
 
         let result = engine
@@ -3074,12 +3145,12 @@ mod tests {
         let (engine, _) = make_engine(registry);
 
         // Slow → Echo. Budget allows only 1ms.
-        let a = NodeId::new();
-        let b = NodeId::new();
+        let a = node_key!("a");
+        let b = node_key!("b");
         let wf = make_workflow(
             vec![
-                NodeDefinition::new(a, "Slow", "slow").unwrap(),
-                NodeDefinition::new(b, "B", "echo").unwrap(),
+                NodeDefinition::new(a.clone(), "Slow", "slow").unwrap(),
+                NodeDefinition::new(b.clone(), "B", "echo").unwrap(),
             ],
             vec![Connection::new(a, b)],
         );
@@ -3106,12 +3177,12 @@ mod tests {
         let (engine, _) = make_engine(registry);
 
         // A → B. Each echoes a payload. Budget allows very few bytes.
-        let a = NodeId::new();
-        let b = NodeId::new();
+        let a = node_key!("a");
+        let b = node_key!("b");
         let wf = make_workflow(
             vec![
-                NodeDefinition::new(a, "A", "echo").unwrap(),
-                NodeDefinition::new(b, "B", "echo").unwrap(),
+                NodeDefinition::new(a.clone(), "A", "echo").unwrap(),
+                NodeDefinition::new(b.clone(), "B", "echo").unwrap(),
             ],
             vec![Connection::new(a, b)],
         );
@@ -3185,10 +3256,10 @@ mod tests {
         // Entry → [Fail, Echo(C)]
         // Fail → B
         // With ContinueOnError: Fail fails, B is skipped, C still runs.
-        let entry = NodeId::new();
-        let fail_node = NodeId::new();
-        let b = NodeId::new();
-        let c = NodeId::new();
+        let entry = node_key!("entry");
+        let fail_node = node_key!("fail_node");
+        let b = node_key!("b");
+        let c = node_key!("c");
 
         let config = WorkflowConfig {
             error_strategy: ErrorStrategy::ContinueOnError,
@@ -3197,15 +3268,15 @@ mod tests {
 
         let wf = make_workflow_with_config(
             vec![
-                NodeDefinition::new(entry, "Entry", "echo").unwrap(),
-                NodeDefinition::new(fail_node, "Fail", "fail").unwrap(),
-                NodeDefinition::new(b, "B", "echo").unwrap(),
-                NodeDefinition::new(c, "C", "echo").unwrap(),
+                NodeDefinition::new(entry.clone(), "Entry", "echo").unwrap(),
+                NodeDefinition::new(fail_node.clone(), "Fail", "fail").unwrap(),
+                NodeDefinition::new(b.clone(), "B", "echo").unwrap(),
+                NodeDefinition::new(c.clone(), "C", "echo").unwrap(),
             ],
             vec![
-                Connection::new(entry, fail_node),
-                Connection::new(entry, c),
-                Connection::new(fail_node, b),
+                Connection::new(entry.clone(), fail_node.clone()),
+                Connection::new(entry.clone(), c.clone()),
+                Connection::new(fail_node, b.clone()),
             ],
             config,
         );
@@ -3218,11 +3289,11 @@ mod tests {
         // Workflow completes (not fail-fast)
         assert!(result.is_success() || result.status == ExecutionStatus::Completed);
         // Entry ran
-        assert!(result.node_output(entry).is_some());
+        assert!(result.node_output(&entry).is_some());
         // C is independent and should have run
-        assert!(result.node_output(c).is_some());
+        assert!(result.node_output(&c).is_some());
         // B depends on the failed node — should be skipped (no output)
-        assert!(result.node_output(b).is_none());
+        assert!(result.node_output(&b).is_none());
     }
 
     #[tokio::test]
@@ -3239,8 +3310,8 @@ mod tests {
 
         // A(fail) → B(echo)
         // With IgnoreErrors: A fails but B should still run with null input
-        let a = NodeId::new();
-        let b = NodeId::new();
+        let a = node_key!("a");
+        let b = node_key!("b");
 
         let config = WorkflowConfig {
             error_strategy: ErrorStrategy::IgnoreErrors,
@@ -3249,10 +3320,10 @@ mod tests {
 
         let wf = make_workflow_with_config(
             vec![
-                NodeDefinition::new(a, "A", "fail").unwrap(),
-                NodeDefinition::new(b, "B", "echo").unwrap(),
+                NodeDefinition::new(a.clone(), "A", "fail").unwrap(),
+                NodeDefinition::new(b.clone(), "B", "echo").unwrap(),
             ],
-            vec![Connection::new(a, b)],
+            vec![Connection::new(a.clone(), b.clone())],
             config,
         );
 
@@ -3264,10 +3335,10 @@ mod tests {
         // Workflow should complete successfully
         assert_eq!(result.status, ExecutionStatus::Completed);
         // A's output was replaced with null
-        assert_eq!(result.node_output(a), Some(&serde_json::json!(null)));
+        assert_eq!(result.node_output(&a), Some(&serde_json::json!(null)));
         // B ran and received null as input
-        assert!(result.node_output(b).is_some());
-        assert_eq!(result.node_output(b), Some(&serde_json::json!(null)));
+        assert!(result.node_output(&b).is_some());
+        assert_eq!(result.node_output(&b), Some(&serde_json::json!(null)));
     }
 
     // -- resume_execution tests --
@@ -3319,7 +3390,7 @@ mod tests {
         let registry = Arc::new(ActionRegistry::new());
         let (engine, _) = make_engine(registry);
         let exec_repo = Arc::new(nebula_storage::InMemoryExecutionRepo::new());
-        let n = NodeId::new();
+        let n = node_key!("n");
         let wf = make_workflow(
             vec![NodeDefinition::new(n, "echo", "echo").unwrap()],
             vec![],
@@ -3347,7 +3418,7 @@ mod tests {
         });
         let exec_repo = Arc::new(nebula_storage::InMemoryExecutionRepo::new());
         let (engine, _) = make_engine(registry);
-        let n = NodeId::new();
+        let n = node_key!("n");
         let wf = make_workflow(
             vec![NodeDefinition::new(n, "echo", "echo").unwrap()],
             vec![],
@@ -3388,23 +3459,26 @@ mod tests {
         let exec_repo = Arc::new(nebula_storage::InMemoryExecutionRepo::new());
         let (engine, _) = make_engine(registry);
 
-        let n1 = NodeId::new();
-        let n2 = NodeId::new();
-        let n3 = NodeId::new();
+        let n1 = node_key!("n1");
+        let n2 = node_key!("n2");
+        let n3 = node_key!("n3");
         let wf = make_workflow(
             vec![
-                NodeDefinition::new(n1, "A", "echo").unwrap(),
-                NodeDefinition::new(n2, "B", "echo").unwrap(),
-                NodeDefinition::new(n3, "C", "echo").unwrap(),
+                NodeDefinition::new(n1.clone(), "A", "echo").unwrap(),
+                NodeDefinition::new(n2.clone(), "B", "echo").unwrap(),
+                NodeDefinition::new(n3.clone(), "C", "echo").unwrap(),
             ],
-            vec![Connection::new(n1, n2), Connection::new(n2, n3)],
+            vec![
+                Connection::new(n1.clone(), n2.clone()),
+                Connection::new(n2.clone(), n3.clone()),
+            ],
         );
         let workflow_repo = save_workflow_to_repo(&wf).await;
 
         // Manually build a partial execution state where n1 is Completed but
         // n2 and n3 are still Pending (simulating a crash after n1 finished).
         let execution_id = ExecutionId::new();
-        let node_ids = vec![n1, n2, n3];
+        let node_ids = vec![n1.clone(), n2.clone(), n3.clone()];
         let mut exec_state = ExecutionState::new(execution_id, wf.id, &node_ids);
         exec_state
             .transition_status(ExecutionStatus::Running)
@@ -3437,7 +3511,7 @@ mod tests {
 
         // Persist n1's output.
         exec_repo
-            .save_node_output(execution_id, n1, 1, serde_json::json!("from_n1"))
+            .save_node_output(execution_id, n1.clone(), 1, serde_json::json!("from_n1"))
             .await
             .unwrap();
 
@@ -3450,14 +3524,14 @@ mod tests {
         assert!(result.is_success(), "resume should complete successfully");
         assert_eq!(result.execution_id, execution_id);
         // n1's output comes from the persisted outputs
-        assert_eq!(result.node_output(n1), Some(&serde_json::json!("from_n1")));
+        assert_eq!(result.node_output(&n1), Some(&serde_json::json!("from_n1")));
         // n2 and n3 should have been executed and produced outputs
         assert!(
-            result.node_output(n2).is_some(),
+            result.node_output(&n2).is_some(),
             "n2 should have been re-executed"
         );
         assert!(
-            result.node_output(n3).is_some(),
+            result.node_output(&n3).is_some(),
             "n3 should have been re-executed"
         );
     }
@@ -3510,9 +3584,9 @@ mod tests {
         let (engine, _) = make_engine(registry);
         let engine = engine.with_execution_repo(exec_repo.clone());
 
-        let n = NodeId::new();
+        let n = node_key!("n");
         let wf = make_workflow(
-            vec![NodeDefinition::new(n, "count_node", "counting").unwrap()],
+            vec![NodeDefinition::new(n.clone(), "count_node", "counting").unwrap()],
             vec![],
         );
 
@@ -3535,7 +3609,7 @@ mod tests {
 
         // Manually inject the same execution_id's idempotency key so that if
         // we simulate re-running the same execution, the node is skipped.
-        // (The engine generates the key as "{execution_id}:{node_id}:1".)
+        // (The engine generates the key as "{execution_id}:{node_key}:1".)
         let execution_id = result1.execution_id;
         let idem_key = format!("{execution_id}:{n}:1");
 
@@ -3628,15 +3702,15 @@ mod tests {
 
         let (engine, _) = make_engine(registry);
 
-        let n1 = NodeId::new();
-        let n2 = NodeId::new();
+        let n1 = node_key!("n1");
+        let n2 = node_key!("n2");
 
         let wf = make_workflow(
             vec![
-                NodeDefinition::new(n1, "pinned_v1", "versioned")
+                NodeDefinition::new(n1.clone(), "pinned_v1", "versioned")
                     .unwrap()
                     .with_interface_version(v1),
-                NodeDefinition::new(n2, "pinned_v2", "versioned")
+                NodeDefinition::new(n2.clone(), "pinned_v2", "versioned")
                     .unwrap()
                     .with_interface_version(v2),
             ],
@@ -3650,12 +3724,12 @@ mod tests {
 
         assert!(result.is_success());
         assert_eq!(
-            result.node_output(n1),
+            result.node_output(&n1),
             Some(&serde_json::json!("v1")),
             "n1 should use the v1 handler"
         );
         assert_eq!(
-            result.node_output(n2),
+            result.node_output(&n2),
             Some(&serde_json::json!("v2")),
             "n2 should use the v2 handler"
         );
@@ -3692,12 +3766,12 @@ mod tests {
                 }
             });
 
-        let n1 = NodeId::new();
-        let n2 = NodeId::new();
+        let n1 = node_key!("n1");
+        let n2 = node_key!("n2");
         let wf = make_workflow(
             vec![
-                NodeDefinition::new(n1, "A", "echo").unwrap(),
-                NodeDefinition::new(n2, "B", "echo").unwrap(),
+                NodeDefinition::new(n1.clone(), "A", "echo").unwrap(),
+                NodeDefinition::new(n2.clone(), "B", "echo").unwrap(),
             ],
             vec![Connection::new(n1, n2)],
         );
@@ -3721,10 +3795,10 @@ mod tests {
     /// Regression: two distinct edges from the same source to the same target
     /// must not stall the target node.
     ///
-    /// Previously, `resolved_edges` used `HashSet<NodeId>` (source-node cardinality)
+    /// Previously, `resolved_edges` used `HashSet<NodeKey>` (source-node cardinality)
     /// while `required_count` counted edges. With two edges A → B, the set deduped
     /// them to one entry, so `resolved(1) != required(2)` forever and B never ran.
-    /// The fix changes `resolved_edges` to `HashMap<NodeId, usize>` (edge-count
+    /// The fix changes `resolved_edges` to `HashMap<NodeKey, usize>` (edge-count
     /// cardinality), so both increments are counted and B correctly becomes ready.
     #[tokio::test]
     async fn multi_edge_from_same_source_executes_target() {
@@ -3737,19 +3811,19 @@ mod tests {
 
         let (engine, _) = make_engine(registry);
 
-        let a = NodeId::new();
-        let b = NodeId::new();
+        let a = node_key!("a");
+        let b = node_key!("b");
 
         // Two distinct (non-identical) edges from A to B: one unconditional,
         // one via a named source port. Both activate on success.
         let wf = make_workflow(
             vec![
-                NodeDefinition::new(a, "A", "echo").unwrap(),
-                NodeDefinition::new(b, "B", "echo").unwrap(),
+                NodeDefinition::new(a.clone(), "A", "echo").unwrap(),
+                NodeDefinition::new(b.clone(), "B", "echo").unwrap(),
             ],
             vec![
-                Connection::new(a, b).with_condition(EdgeCondition::Always),
-                Connection::new(a, b)
+                Connection::new(a.clone(), b.clone()).with_condition(EdgeCondition::Always),
+                Connection::new(a, b.clone())
                     .with_condition(EdgeCondition::Always)
                     .with_from_port("alt"),
             ],
@@ -3770,7 +3844,7 @@ mod tests {
             result.status
         );
         assert!(
-            result.node_output(b).is_some(),
+            result.node_output(&b).is_some(),
             "target node B must execute and produce output"
         );
     }
@@ -3786,11 +3860,11 @@ mod tests {
     fn final_status_guard_returns_failed_for_non_terminal_nodes() {
         let exec_id = ExecutionId::new();
         let wf_id = WorkflowId::new();
-        let n1 = NodeId::new();
-        let n2 = NodeId::new();
+        let n1 = node_key!("n1");
+        let n2 = node_key!("n2");
 
         // n1 completed, n2 still Pending (simulates a stalled node).
-        let mut exec_state = ExecutionState::new(exec_id, wf_id, &[n1, n2]);
+        let mut exec_state = ExecutionState::new(exec_id, wf_id, &[n1.clone(), n2]);
         exec_state.node_states.get_mut(&n1).unwrap().state = NodeState::Completed;
         // n2 stays NodeState::Pending
 
@@ -3810,10 +3884,10 @@ mod tests {
     fn final_status_completed_when_all_terminal() {
         let exec_id = ExecutionId::new();
         let wf_id = WorkflowId::new();
-        let n1 = NodeId::new();
-        let n2 = NodeId::new();
+        let n1 = node_key!("n1");
+        let n2 = node_key!("n2");
 
-        let mut exec_state = ExecutionState::new(exec_id, wf_id, &[n1, n2]);
+        let mut exec_state = ExecutionState::new(exec_id, wf_id, &[n1.clone(), n2.clone()]);
         exec_state.node_states.get_mut(&n1).unwrap().state = NodeState::Completed;
         exec_state.node_states.get_mut(&n2).unwrap().state = NodeState::Skipped;
 
@@ -3892,8 +3966,11 @@ mod tests {
                 Err(ActionError::retryable("credential store down"))
             });
 
-        let n1 = NodeId::new();
-        let wf = make_workflow(vec![NodeDefinition::new(n1, "A", "never").unwrap()], vec![]);
+        let n1 = node_key!("n1");
+        let wf = make_workflow(
+            vec![NodeDefinition::new(n1.clone(), "A", "never").unwrap()],
+            vec![],
+        );
 
         let result = engine
             .execute_workflow(&wf, serde_json::json!("x"), ExecutionBudget::default())

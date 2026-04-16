@@ -2,7 +2,7 @@
 
 use std::sync::Arc;
 
-use nebula_core::NodeId;
+use nebula_core::NodeKey;
 use serde::{Deserialize, Serialize};
 
 /// The overall status of a workflow execution.
@@ -107,7 +107,7 @@ pub enum ExecutionTerminationReason {
     /// Parallel branches still running at the time are cancelled cleanly.
     ExplicitStop {
         /// The node that requested termination.
-        by_node: NodeId,
+        by_node: NodeKey,
         /// Optional note describing why the node chose to stop early.
         note: Option<String>,
     },
@@ -119,7 +119,7 @@ pub enum ExecutionTerminationReason {
     /// Parallel branches still running at the time are cancelled cleanly.
     ExplicitFail {
         /// The node that requested termination.
-        by_node: NodeId,
+        by_node: NodeKey,
         /// Opaque error code identifier.
         ///
         /// See [`ExecutionTerminationCode`] — a thin newtype over
@@ -194,6 +194,8 @@ impl std::fmt::Display for ExecutionTerminationCode {
 
 #[cfg(test)]
 mod tests {
+    use nebula_core::node_key;
+
     use super::*;
 
     #[test]
@@ -298,7 +300,7 @@ mod tests {
     #[test]
     fn termination_reason_explicit_stop_roundtrip() {
         let reason = ExecutionTerminationReason::ExplicitStop {
-            by_node: NodeId::new(),
+            by_node: node_key!("test"),
             note: Some("duplicate detected".into()),
         };
         let json = serde_json::to_string(&reason).unwrap();
@@ -314,7 +316,7 @@ mod tests {
     #[test]
     fn termination_reason_explicit_fail_roundtrip() {
         let reason = ExecutionTerminationReason::ExplicitFail {
-            by_node: NodeId::new(),
+            by_node: node_key!("test"),
             code: "E_VALIDATION".into(),
             message: "field `name` is required".into(),
         };

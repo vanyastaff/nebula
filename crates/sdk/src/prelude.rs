@@ -41,7 +41,7 @@ pub use nebula_action::{
 // without reaching into `nebula_action::`.
 pub use nebula_action::{impl_batch_action, impl_paginated_action};
 pub use nebula_core::{
-    ActionKey, ExecutionId, NodeId, PluginKey, ScopeLevel, WorkflowId, action_key,
+    ActionKey, ExecutionId, NodeKey, PluginKey, ScopeLevel, WorkflowId, action_key,
 };
 // Credential types (v2)
 pub use nebula_credential::{

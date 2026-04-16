@@ -14,7 +14,7 @@ use nebula_action::{
     EmitFailurePolicy, ExecutionEmitter, PollAction, PollConfig, PollCursor, PollOutcome,
     PollResult, PollTriggerAdapter, TestContextBuilder, TriggerContext, TriggerHandler,
 };
-use nebula_core::ExecutionId;
+use nebula_core::{ExecutionId, node_key};
 
 struct TickPoller {
     meta: ActionMetadata,
@@ -1076,7 +1076,7 @@ fn jitter_seed_differs_for_different_trigger_identities() {
     // need direct access to the private seed function via a
     // `#[cfg(test)]` pub-export. Current test just asserts that
     // the adapter doesn't panic and that both instances poll.
-    use nebula_core::{NodeId, WorkflowId};
+    use nebula_core::WorkflowId;
     use tokio_util::sync::CancellationToken;
 
     // We verify the public contract by running both adapters and
@@ -1086,10 +1086,10 @@ fn jitter_seed_differs_for_different_trigger_identities() {
     // confirms the plumbing reaches TriggerContext IDs.
     let wf1 = WorkflowId::new();
     let wf2 = WorkflowId::new();
-    let n1 = NodeId::new();
-    let n2 = NodeId::new();
+    let n1 = node_key!("trigger_a");
+    let n2 = node_key!("trigger_b");
     assert_ne!(wf1, wf2, "WorkflowId::new must produce unique ids");
-    assert_ne!(n1, n2, "NodeId::new must produce unique ids");
+    assert_ne!(n1, n2, "different node keys must differ");
 
     // Build two TriggerContexts with different identities and run
     // them through the adapter briefly; no panic, no fatal, and

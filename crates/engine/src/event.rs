@@ -6,7 +6,7 @@
 
 use std::time::Duration;
 
-use nebula_core::id::{ExecutionId, NodeId};
+use nebula_core::{NodeKey, id::ExecutionId};
 
 /// Events emitted during workflow execution.
 #[derive(Debug, Clone)]
@@ -17,7 +17,7 @@ pub enum ExecutionEvent {
         /// Execution this node belongs to.
         execution_id: ExecutionId,
         /// The node that started.
-        node_id: NodeId,
+        node_key: NodeKey,
         /// Action key being executed.
         action_key: String,
     },
@@ -27,7 +27,7 @@ pub enum ExecutionEvent {
         /// Execution this node belongs to.
         execution_id: ExecutionId,
         /// The node that completed.
-        node_id: NodeId,
+        node_key: NodeKey,
         /// How long the node took.
         elapsed: Duration,
     },
@@ -37,7 +37,7 @@ pub enum ExecutionEvent {
         /// Execution this node belongs to.
         execution_id: ExecutionId,
         /// The node that failed.
-        node_id: NodeId,
+        node_key: NodeKey,
         /// Error message.
         error: String,
     },
@@ -47,7 +47,7 @@ pub enum ExecutionEvent {
         /// Execution this node belongs to.
         execution_id: ExecutionId,
         /// The node that was skipped.
-        node_id: NodeId,
+        node_key: NodeKey,
     },
 
     /// Workflow execution completed.

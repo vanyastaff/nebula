@@ -43,7 +43,7 @@ fn top_level_type_sizes_are_stable() {
         "ActionOutput<Value> grew — `BinaryData` is the inline variant \
          that drives this size, check it first."
     );
-    assert_eq!(size_of::<ActionContext>(), 112);
+    assert_eq!(size_of::<ActionContext>(), 128);
     assert_eq!(size_of::<ActionMetadata>(), 168);
     assert_eq!(size_of::<ActionError>(), 64);
     assert_eq!(size_of::<ActionHandler>(), 24);

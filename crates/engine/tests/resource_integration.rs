@@ -13,10 +13,7 @@ use nebula_action::{
     ActionError, action::Action, context::Context, dependency::ActionDependencies,
     metadata::ActionMetadata, result::ActionResult, stateless::StatelessAction,
 };
-use nebula_core::{
-    ActionKey, action_key,
-    id::{NodeId, WorkflowId},
-};
+use nebula_core::{ActionKey, action_key, id::WorkflowId, node_key};
 use nebula_engine::WorkflowEngine;
 use nebula_execution::context::ExecutionBudget;
 use nebula_resource::Manager;
@@ -124,9 +121,9 @@ async fn action_acquires_resource_through_engine() {
     let engine = WorkflowEngine::new(runtime, metrics).with_resource_manager(manager);
 
     // 4. Build and execute a single-node workflow
-    let node = NodeId::new();
+    let node = node_key!("test");
     let wf = make_workflow(vec![
-        NodeDefinition::new(node, "A", "resource-consumer").unwrap(),
+        NodeDefinition::new(node.clone(), "A", "resource-consumer").unwrap(),
     ]);
 
     let result = engine
@@ -136,7 +133,7 @@ async fn action_acquires_resource_through_engine() {
 
     // 5. Verify the action successfully acquired and used the resource
     assert!(result.is_success(), "workflow should succeed");
-    let output = result.node_output(node).expect("node should have output");
+    let output = result.node_output(&node).expect("node should have output");
     assert_eq!(
         output.get("resource_value").and_then(|v| v.as_str()),
         Some("mock-instance"),
@@ -171,9 +168,9 @@ async fn full_resource_lifecycle_with_shutdown() {
     let engine = WorkflowEngine::new(runtime, metrics).with_resource_manager(manager.clone());
 
     // 4. Execute a single-node workflow
-    let node = NodeId::new();
+    let node = node_key!("test");
     let wf = make_workflow(vec![
-        NodeDefinition::new(node, "A", "resource-consumer").unwrap(),
+        NodeDefinition::new(node.clone(), "A", "resource-consumer").unwrap(),
     ]);
 
     let result = engine
@@ -183,7 +180,7 @@ async fn full_resource_lifecycle_with_shutdown() {
 
     // 5. Verify execution succeeded
     assert!(result.is_success(), "workflow should succeed");
-    let output = result.node_output(node).expect("node should have output");
+    let output = result.node_output(&node).expect("node should have output");
     assert_eq!(
         output.get("resource_value").and_then(|v| v.as_str()),
         Some("mock-instance"),
@@ -222,7 +219,7 @@ async fn action_resource_fails_without_manager() {
     let engine = WorkflowEngine::new(runtime, metrics);
     // No .with_resource_manager() — intentionally omitted
 
-    let node = NodeId::new();
+    let node = node_key!("test");
     let wf = make_workflow(vec![
         NodeDefinition::new(node, "A", "resource-consumer").unwrap(),
     ]);

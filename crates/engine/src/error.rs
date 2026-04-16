@@ -1,16 +1,16 @@
 //! Engine error types.
 
 use nebula_action::ActionError;
-use nebula_core::id::NodeId;
+use nebula_core::NodeKey;
 
 /// Errors from the engine layer.
 #[derive(Debug, thiserror::Error)]
 pub enum EngineError {
     /// A referenced node was not found in the workflow.
-    #[error("node not found: {node_id}")]
+    #[error("node not found: {node_key}")]
     NodeNotFound {
         /// The missing node ID.
-        node_id: NodeId,
+        node_key: NodeKey,
     },
 
     /// Execution planning failed.
@@ -18,10 +18,10 @@ pub enum EngineError {
     PlanningFailed(String),
 
     /// A node failed during execution.
-    #[error("node {node_id} failed: {error}")]
+    #[error("node {node_key} failed: {error}")]
     NodeFailed {
         /// The node that failed.
-        node_id: NodeId,
+        node_key: NodeKey,
         /// The error message.
         error: String,
     },
@@ -31,10 +31,10 @@ pub enum EngineError {
     Cancelled,
 
     /// Parameter resolution failed (expression eval, reference lookup, etc.)
-    #[error("parameter resolution failed for node {node_id}, param '{param_key}': {error}")]
+    #[error("parameter resolution failed for node {node_key}, param '{param_key}': {error}")]
     ParameterResolution {
         /// The node whose parameter could not be resolved.
-        node_id: NodeId,
+        node_key: NodeKey,
         /// The parameter key that failed.
         param_key: String,
         /// The underlying error.
@@ -42,10 +42,10 @@ pub enum EngineError {
     },
 
     /// Parameter validation failed against the action's schema.
-    #[error("parameter validation failed for node {node_id}: {errors}")]
+    #[error("parameter validation failed for node {node_key}: {errors}")]
     ParameterValidation {
         /// The node whose parameters failed validation.
-        node_id: NodeId,
+        node_key: NodeKey,
         /// Combined validation error messages.
         errors: String,
     },
@@ -54,9 +54,9 @@ pub enum EngineError {
     #[error("edge evaluation failed from {from_node} to {to_node}: {error}")]
     EdgeEvaluationFailed {
         /// Source node of the edge.
-        from_node: NodeId,
+        from_node: NodeKey,
         /// Target node of the edge.
-        to_node: NodeId,
+        to_node: NodeKey,
         /// The underlying error.
         error: String,
     },
@@ -136,6 +136,8 @@ impl nebula_error::Classify for EngineError {
 
 #[cfg(test)]
 mod tests {
+    use nebula_core::node_key;
+
     use super::*;
 
     #[test]
@@ -158,9 +160,9 @@ mod tests {
 
     #[test]
     fn node_failed_display() {
-        let node_id = NodeId::new();
+        let node_key = node_key!("test_node");
         let err = EngineError::NodeFailed {
-            node_id,
+            node_key,
             error: "timeout".into(),
         };
         let msg = err.to_string();

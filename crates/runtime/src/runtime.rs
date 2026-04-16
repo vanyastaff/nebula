@@ -490,7 +490,7 @@ impl ActionRuntime {
         //      pre-validate here — the handler owns the schema.
         //
         // Any error from the sink itself (transport, serialization, etc.)
-        // is logged at WARN with full (action_key, execution_id, node_id)
+        // is logged at WARN with full (action_key, execution_id, node_key)
         // context and we fall through to init_state. This is the
         // "checkpoint-deser-failure" contract: the runtime MUST NOT
         // silently swallow sink errors — losing iteration progress has to
@@ -503,7 +503,7 @@ impl ActionRuntime {
                     tracing::warn!(
                         action_key = %metadata.key.as_str(),
                         execution_id = %context.execution_id,
-                        node_id = %context.node_id,
+                        node_key = %context.node_key,
                         error = %load_err,
                         "stateful checkpoint load failed — falling back to init_state, \
                          iteration progress (if any) is lost"
@@ -591,7 +591,7 @@ impl ActionRuntime {
                         tracing::warn!(
                             action_key = %metadata.key.as_str(),
                             execution_id = %context.execution_id,
-                            node_id = %context.node_id,
+                            node_key = %context.node_key,
                             error = %clear_err,
                             "stateful checkpoint clear failed on terminal iteration; \
                              orphaned row left for engine GC"
@@ -879,7 +879,8 @@ mod tests {
     };
     use nebula_core::{
         action_key,
-        id::{ExecutionId, NodeId, WorkflowId},
+        id::{ExecutionId, WorkflowId},
+        node_key,
     };
 
     use super::*;
@@ -936,7 +937,7 @@ mod tests {
     fn test_context() -> ActionContext {
         ActionContext::new(
             ExecutionId::new(),
-            NodeId::new(),
+            node_key!("test"),
             WorkflowId::new(),
             tokio_util::sync::CancellationToken::new(),
         )
@@ -945,7 +946,7 @@ mod tests {
     fn test_trigger_context() -> TriggerContext {
         TriggerContext::new(
             WorkflowId::new(),
-            NodeId::new(),
+            node_key!("test"),
             tokio_util::sync::CancellationToken::new(),
         )
     }
@@ -1006,7 +1007,7 @@ mod tests {
         let eid = ExecutionId::new();
         let ctx = ActionContext::new(
             eid,
-            NodeId::new(),
+            node_key!("test"),
             WorkflowId::new(),
             tokio_util::sync::CancellationToken::new(),
         );

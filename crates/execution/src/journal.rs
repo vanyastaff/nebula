@@ -1,7 +1,7 @@
 //! Execution journal for audit and replay.
 
 use chrono::{DateTime, Utc};
-use nebula_core::NodeId;
+use nebula_core::NodeKey;
 use serde::{Deserialize, Serialize};
 
 use crate::status::ExecutionStatus;
@@ -21,7 +21,7 @@ pub enum JournalEntry {
         /// When the event occurred.
         timestamp: DateTime<Utc>,
         /// The node that was scheduled.
-        node_id: NodeId,
+        node_key: NodeKey,
     },
 
     /// A node started executing.
@@ -29,7 +29,7 @@ pub enum JournalEntry {
         /// When the event occurred.
         timestamp: DateTime<Utc>,
         /// The node that started.
-        node_id: NodeId,
+        node_key: NodeKey,
         /// Which attempt number (0-indexed).
         attempt: u32,
     },
@@ -39,7 +39,7 @@ pub enum JournalEntry {
         /// When the event occurred.
         timestamp: DateTime<Utc>,
         /// The node that completed.
-        node_id: NodeId,
+        node_key: NodeKey,
         /// Output size in bytes.
         output_bytes: u64,
     },
@@ -49,7 +49,7 @@ pub enum JournalEntry {
         /// When the event occurred.
         timestamp: DateTime<Utc>,
         /// The node that failed.
-        node_id: NodeId,
+        node_key: NodeKey,
         /// Error message.
         error: String,
     },
@@ -59,7 +59,7 @@ pub enum JournalEntry {
         /// When the event occurred.
         timestamp: DateTime<Utc>,
         /// The node that was skipped.
-        node_id: NodeId,
+        node_key: NodeKey,
         /// Reason for skipping.
         reason: String,
     },
@@ -69,7 +69,7 @@ pub enum JournalEntry {
         /// When the event occurred.
         timestamp: DateTime<Utc>,
         /// The node being retried.
-        node_id: NodeId,
+        node_key: NodeKey,
         /// Which attempt is being made (0-indexed).
         attempt: u32,
     },
@@ -119,14 +119,14 @@ impl JournalEntry {
 
     /// Get the node ID associated with this entry, if any.
     #[must_use]
-    pub fn node_id(&self) -> Option<NodeId> {
+    pub fn node_key(&self) -> Option<NodeKey> {
         match self {
-            Self::NodeScheduled { node_id, .. }
-            | Self::NodeStarted { node_id, .. }
-            | Self::NodeCompleted { node_id, .. }
-            | Self::NodeFailed { node_id, .. }
-            | Self::NodeSkipped { node_id, .. }
-            | Self::NodeRetrying { node_id, .. } => Some(*node_id),
+            Self::NodeScheduled { node_key, .. }
+            | Self::NodeStarted { node_key, .. }
+            | Self::NodeCompleted { node_key, .. }
+            | Self::NodeFailed { node_key, .. }
+            | Self::NodeSkipped { node_key, .. }
+            | Self::NodeRetrying { node_key, .. } => Some(node_key.clone()),
             Self::ExecutionStarted { .. }
             | Self::ExecutionCompleted { .. }
             | Self::ExecutionFailed { .. }
@@ -137,13 +137,13 @@ impl JournalEntry {
     /// Returns `true` if this is a node-level event.
     #[must_use]
     pub fn is_node_event(&self) -> bool {
-        self.node_id().is_some()
+        self.node_key().is_some()
     }
 
     /// Returns `true` if this is an execution-level event.
     #[must_use]
     pub fn is_execution_event(&self) -> bool {
-        self.node_id().is_none()
+        self.node_key().is_none()
     }
 
     /// Serialize this entry to JSON.
@@ -159,6 +159,8 @@ impl JournalEntry {
 
 #[cfg(test)]
 mod tests {
+    use nebula_core::node_key;
+
     use super::*;
 
     fn now() -> DateTime<Utc> {
@@ -172,18 +174,18 @@ mod tests {
         assert_eq!(entry.timestamp(), ts);
         assert!(entry.is_execution_event());
         assert!(!entry.is_node_event());
-        assert!(entry.node_id().is_none());
+        assert!(entry.node_key().is_none());
     }
 
     #[test]
     fn node_scheduled_entry() {
         let ts = now();
-        let nid = NodeId::new();
+        let nid = node_key!("nid");
         let entry = JournalEntry::NodeScheduled {
             timestamp: ts,
-            node_id: nid,
+            node_key: nid.clone(),
         };
-        assert_eq!(entry.node_id(), Some(nid));
+        assert_eq!(entry.node_key(), Some(nid));
         assert!(entry.is_node_event());
         assert!(!entry.is_execution_event());
     }
@@ -192,7 +194,7 @@ mod tests {
     fn node_started_entry() {
         let entry = JournalEntry::NodeStarted {
             timestamp: now(),
-            node_id: NodeId::new(),
+            node_key: node_key!("test"),
             attempt: 0,
         };
         assert!(entry.is_node_event());
@@ -200,20 +202,20 @@ mod tests {
 
     #[test]
     fn node_completed_entry() {
-        let nid = NodeId::new();
+        let nid = node_key!("nid");
         let entry = JournalEntry::NodeCompleted {
             timestamp: now(),
-            node_id: nid,
+            node_key: nid.clone(),
             output_bytes: 1024,
         };
-        assert_eq!(entry.node_id(), Some(nid));
+        assert_eq!(entry.node_key(), Some(nid));
     }
 
     #[test]
     fn node_failed_entry() {
         let entry = JournalEntry::NodeFailed {
             timestamp: now(),
-            node_id: NodeId::new(),
+            node_key: node_key!("test"),
             error: "timeout".into(),
         };
         assert!(entry.is_node_event());
@@ -223,7 +225,7 @@ mod tests {
     fn node_skipped_entry() {
         let entry = JournalEntry::NodeSkipped {
             timestamp: now(),
-            node_id: NodeId::new(),
+            node_key: node_key!("test"),
             reason: "condition not met".into(),
         };
         assert!(entry.is_node_event());
@@ -233,7 +235,7 @@ mod tests {
     fn node_retrying_entry() {
         let entry = JournalEntry::NodeRetrying {
             timestamp: now(),
-            node_id: NodeId::new(),
+            node_key: node_key!("test"),
             attempt: 2,
         };
         assert!(entry.is_node_event());
@@ -255,43 +257,43 @@ mod tests {
             reason: "user requested".into(),
         };
         assert!(entry.is_execution_event());
-        assert!(entry.node_id().is_none());
+        assert!(entry.node_key().is_none());
     }
 
     #[test]
     fn serde_roundtrip_all_variants() {
-        let nid = NodeId::new();
+        let nid = node_key!("nid");
         let ts = now();
 
         let entries = vec![
             JournalEntry::ExecutionStarted { timestamp: ts },
             JournalEntry::NodeScheduled {
                 timestamp: ts,
-                node_id: nid,
+                node_key: nid.clone(),
             },
             JournalEntry::NodeStarted {
                 timestamp: ts,
-                node_id: nid,
+                node_key: nid.clone(),
                 attempt: 0,
             },
             JournalEntry::NodeCompleted {
                 timestamp: ts,
-                node_id: nid,
+                node_key: nid.clone(),
                 output_bytes: 512,
             },
             JournalEntry::NodeFailed {
                 timestamp: ts,
-                node_id: nid,
+                node_key: nid.clone(),
                 error: "err".into(),
             },
             JournalEntry::NodeSkipped {
                 timestamp: ts,
-                node_id: nid,
+                node_key: nid.clone(),
                 reason: "skip".into(),
             },
             JournalEntry::NodeRetrying {
                 timestamp: ts,
-                node_id: nid,
+                node_key: nid,
                 attempt: 1,
             },
             JournalEntry::ExecutionCompleted {
@@ -312,7 +314,7 @@ mod tests {
             let json = entry.to_json().unwrap();
             let back = JournalEntry::from_json(&json).unwrap();
             assert_eq!(entry.timestamp(), back.timestamp());
-            assert_eq!(entry.node_id(), back.node_id());
+            assert_eq!(entry.node_key(), back.node_key());
         }
     }
 }

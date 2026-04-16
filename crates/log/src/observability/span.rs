@@ -115,7 +115,7 @@ mod tests {
                     .with_resource(
                         LoggerResource::new()
                             .with_webhook("https://hooks.slack.com/...")
-                            .with_tag("node_id", "node-1"),
+                            .with_tag("node_key", "node-1"),
                     )
                     .scope_sync(|| {
                         let merged = get_current_logger_resource().unwrap();
@@ -126,7 +126,7 @@ mod tests {
                         let tag_keys: Vec<_> =
                             merged.tags.iter().map(|(k, _)| k.as_str()).collect();
                         assert!(tag_keys.contains(&"execution_id"));
-                        assert!(tag_keys.contains(&"node_id"));
+                        assert!(tag_keys.contains(&"node_key"));
                     });
             });
     }

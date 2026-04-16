@@ -10,8 +10,6 @@ define_ulid!(pub WorkspaceIdDomain => WorkspaceId, prefix = "ws");
 define_ulid!(pub WorkflowIdDomain => WorkflowId, prefix = "wf");
 define_ulid!(pub WorkflowVersionIdDomain => WorkflowVersionId, prefix = "wfv");
 define_ulid!(pub ExecutionIdDomain => ExecutionId, prefix = "exe");
-// TODO(spec-24): NodeId is superseded by NodeKey. Migrate all consumers then remove.
-define_ulid!(pub NodeIdDomain => NodeId, prefix = "node");
 
 define_ulid!(pub AttemptIdDomain => AttemptId, prefix = "att");
 define_ulid!(pub InstanceIdDomain => InstanceId, prefix = "nbl");
@@ -54,9 +52,9 @@ mod tests {
 
     #[test]
     fn id_serde_json_roundtrip() {
-        let id = NodeId::new();
+        let id = ExecutionId::new();
         let json = serde_json::to_string(&id).unwrap();
-        let deserialized: NodeId = serde_json::from_str(&json).unwrap();
+        let deserialized: ExecutionId = serde_json::from_str(&json).unwrap();
         assert_eq!(id, deserialized);
     }
 
@@ -117,7 +115,6 @@ mod tests {
         let _ = WorkflowId::new();
         let _ = WorkflowVersionId::new();
         let _ = ExecutionId::new();
-        let _ = NodeId::new();
         let _ = AttemptId::new();
         let _ = InstanceId::new();
         let _ = TriggerId::new();

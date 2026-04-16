@@ -14,7 +14,10 @@ use std::{
 };
 
 use async_trait::async_trait;
-use nebula_core::id::{ExecutionId, NodeId, WorkflowId};
+use nebula_core::{
+    id::{ExecutionId, WorkflowId},
+    node_key,
+};
 use nebula_credential::{CredentialAccessError, CredentialAccessor, CredentialSnapshot};
 use tokio_util::sync::CancellationToken;
 
@@ -167,7 +170,7 @@ impl TestContextBuilder {
     pub fn build(self) -> ActionContext {
         ActionContext::new(
             ExecutionId::new(),
-            NodeId::new(),
+            node_key!("test"),
             WorkflowId::new(),
             CancellationToken::new(),
         )
@@ -189,14 +192,18 @@ impl TestContextBuilder {
     pub fn build_trigger(self) -> (TriggerContext, Arc<SpyEmitter>, Arc<SpyScheduler>) {
         let emitter = Arc::new(SpyEmitter::new());
         let scheduler = Arc::new(SpyScheduler::new());
-        let ctx = TriggerContext::new(WorkflowId::new(), NodeId::new(), CancellationToken::new())
-            .with_credentials(Arc::new(TestCredentialAccessor {
-                credentials: self.credentials,
-                typed_credentials: self.typed_credentials,
-            }))
-            .with_emitter(Arc::clone(&emitter) as Arc<dyn ExecutionEmitter>)
-            .with_scheduler(Arc::clone(&scheduler) as Arc<dyn TriggerScheduler>)
-            .with_logger(self.logs);
+        let ctx = TriggerContext::new(
+            WorkflowId::new(),
+            node_key!("test"),
+            CancellationToken::new(),
+        )
+        .with_credentials(Arc::new(TestCredentialAccessor {
+            credentials: self.credentials,
+            typed_credentials: self.typed_credentials,
+        }))
+        .with_emitter(Arc::clone(&emitter) as Arc<dyn ExecutionEmitter>)
+        .with_scheduler(Arc::clone(&scheduler) as Arc<dyn TriggerScheduler>)
+        .with_logger(self.logs);
         (ctx, emitter, scheduler)
     }
 }
@@ -651,7 +658,7 @@ mod tests {
         let builder = TestContextBuilder::new();
         let ctx = builder.build();
         let _ = ctx.execution_id;
-        let _ = ctx.node_id;
+        let _ = ctx.node_key;
     }
 
     #[test]

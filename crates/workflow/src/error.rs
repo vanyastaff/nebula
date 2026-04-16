@@ -1,6 +1,6 @@
 //! Workflow-specific error types.
 
-use nebula_core::NodeId;
+use nebula_core::NodeKey;
 use thiserror::Error;
 
 /// Errors that can occur during workflow definition, validation, or graph construction.
@@ -16,20 +16,20 @@ pub enum WorkflowError {
     #[error("workflow must have at least one node")]
     NoNodes,
 
-    /// Duplicate node id found.
-    #[classify(category = "validation", code = "WORKFLOW:DUPLICATE_NODE_ID")]
-    #[error("duplicate node id: {0}")]
-    DuplicateNodeId(NodeId),
+    /// Duplicate node key found.
+    #[classify(category = "validation", code = "WORKFLOW:DUPLICATE_NODE_KEY")]
+    #[error("duplicate node key: {0}")]
+    DuplicateNodeKey(NodeKey),
 
     /// Connection references a node that does not exist.
     #[classify(category = "validation", code = "WORKFLOW:UNKNOWN_NODE")]
     #[error("connection references unknown node: {0}")]
-    UnknownNode(NodeId),
+    UnknownNode(NodeKey),
 
     /// A connection has the same source and target node.
     #[classify(category = "validation", code = "WORKFLOW:SELF_LOOP")]
     #[error("self-loop detected on node: {0}")]
-    SelfLoop(NodeId),
+    SelfLoop(NodeKey),
 
     /// The workflow graph contains a cycle and is not a DAG.
     #[classify(category = "validation", code = "WORKFLOW:CYCLE_DETECTED")]
@@ -43,12 +43,12 @@ pub enum WorkflowError {
 
     /// A parameter reference points to a node that does not exist.
     #[classify(category = "validation", code = "WORKFLOW:INVALID_PARAM_REF")]
-    #[error("node {node_id} references unknown parameter source node: {source_node_id}")]
+    #[error("node {node_key} references unknown parameter source node: {source_node_key}")]
     InvalidParameterReference {
         /// The node containing the bad reference.
-        node_id: NodeId,
+        node_key: NodeKey,
         /// The referenced node that does not exist.
-        source_node_id: NodeId,
+        source_node_key: NodeKey,
     },
 
     /// Invalid action key format.
@@ -99,8 +99,8 @@ pub enum WorkflowError {
     #[error("duplicate connection from {from} to {to}")]
     DuplicateConnection {
         /// Source node of the duplicated connection.
-        from: NodeId,
+        from: NodeKey,
         /// Target node of the duplicated connection.
-        to: NodeId,
+        to: NodeKey,
     },
 }

@@ -138,7 +138,7 @@ async fn register_webhook(
 
     let ctx_template = TriggerContext::new(
         nebula_core::WorkflowId::new(),
-        nebula_core::NodeId::new(),
+        nebula_core::node_key!("test"),
         CancellationToken::new(),
     );
 
@@ -342,7 +342,7 @@ async fn handler_timeout_returns_504() {
     }));
     let ctx_template = TriggerContext::new(
         nebula_core::WorkflowId::new(),
-        nebula_core::NodeId::new(),
+        nebula_core::node_key!("test"),
         CancellationToken::new(),
     );
     let handle = transport.activate(adapter.clone(), ctx_template).unwrap();

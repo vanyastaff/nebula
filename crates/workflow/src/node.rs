@@ -3,7 +3,7 @@
 use std::{collections::HashMap, time::Duration};
 
 use nebula_action::InterfaceVersion;
-use nebula_core::{ActionKey, NodeId, prelude::KeyParseError};
+use nebula_core::{ActionKey, NodeKey, prelude::KeyParseError};
 use serde::{Deserialize, Serialize};
 
 use crate::definition::RetryConfig;
@@ -12,7 +12,7 @@ use crate::definition::RetryConfig;
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct NodeDefinition {
     /// Unique node identifier within this workflow.
-    pub id: NodeId,
+    pub id: NodeKey,
     /// Human-readable label.
     pub name: String,
     /// Which action/plugin this node runs (e.g. `"http_request"`, `"echo"`).
@@ -74,7 +74,7 @@ impl NodeDefinition {
     /// Returns [`InvalidActionKey`](crate::WorkflowError::InvalidActionKey) if `action_key` is not
     /// a valid [`ActionKey`] (lowercase alphanumeric, underscores, dots, hyphens).
     pub fn new(
-        id: NodeId,
+        id: NodeKey,
         name: impl Into<String>,
         action_key: impl AsRef<str>,
     ) -> Result<Self, crate::WorkflowError> {
@@ -166,7 +166,7 @@ pub enum ParamValue {
     /// A reference to the output of another node.
     Reference {
         /// The source node producing the output.
-        node_id: NodeId,
+        node_key: NodeKey,
         /// JSONPath-like path into the source node's output.
         output_path: String,
     },
@@ -195,9 +195,9 @@ impl ParamValue {
 
     /// Construct a reference parameter.
     #[must_use]
-    pub fn reference(node_id: NodeId, output_path: impl Into<String>) -> Self {
+    pub fn reference(node_key: NodeKey, output_path: impl Into<String>) -> Self {
         Self::Reference {
-            node_id,
+            node_key,
             output_path: output_path.into(),
         }
     }
@@ -205,24 +205,26 @@ impl ParamValue {
 
 #[cfg(test)]
 mod tests {
+    use nebula_core::node_key;
+
     use super::*;
 
     #[test]
     fn new_rejects_invalid_action_key() {
-        let result = NodeDefinition::new(NodeId::new(), "test", "INVALID KEY!!!");
+        let result = NodeDefinition::new(node_key!("test"), "test", "INVALID KEY!!!");
         assert!(result.is_err());
     }
 
     #[test]
     fn new_accepts_valid_action_key() {
-        let result = NodeDefinition::new(NodeId::new(), "test", "http_request");
+        let result = NodeDefinition::new(node_key!("test"), "test", "http_request");
         assert!(result.is_ok());
     }
 
     #[test]
     fn node_definition_new() {
-        let id = NodeId::new();
-        let node = NodeDefinition::new(id, "fetch", "http_request").unwrap();
+        let id = node_key!("test");
+        let node = NodeDefinition::new(id.clone(), "fetch", "http_request").unwrap();
 
         assert_eq!(node.id, id);
         assert_eq!(node.name, "fetch");
@@ -236,7 +238,7 @@ mod tests {
 
     #[test]
     fn node_definition_builder_methods() {
-        let id = NodeId::new();
+        let id = node_key!("test");
         let node = NodeDefinition::new(id, "fetch", "http_request")
             .unwrap()
             .with_interface_version(InterfaceVersion::new(1, 0))
@@ -289,14 +291,14 @@ mod tests {
 
     #[test]
     fn param_value_reference() {
-        let source = NodeId::new();
-        let pv = ParamValue::reference(source, "$.data.items");
+        let source = node_key!("source");
+        let pv = ParamValue::reference(source.clone(), "$.data.items");
         match pv {
             ParamValue::Reference {
-                node_id,
+                node_key,
                 output_path,
             } => {
-                assert_eq!(node_id, source);
+                assert_eq!(node_key, source);
                 assert_eq!(output_path, "$.data.items");
             },
             _ => panic!("expected Reference"),
@@ -305,7 +307,7 @@ mod tests {
 
     #[test]
     fn param_value_serde_roundtrip_all_variants() {
-        let source = NodeId::new();
+        let source = node_key!("source");
         let values = [
             ParamValue::literal(serde_json::json!({"key": "value"})),
             ParamValue::expression("1 + 2"),
@@ -332,8 +334,8 @@ mod tests {
 
     #[test]
     fn node_definition_serde_roundtrip() {
-        let id = NodeId::new();
-        let node = NodeDefinition::new(id, "transform", "echo")
+        let id = node_key!("test");
+        let node = NodeDefinition::new(id.clone(), "transform", "echo")
             .unwrap()
             .with_parameter("input", ParamValue::literal(serde_json::json!("data")))
             .with_timeout(Duration::from_secs(30));
@@ -350,7 +352,7 @@ mod tests {
 
     #[test]
     fn interface_version_serde_roundtrip_in_node() {
-        let id = NodeId::new();
+        let id = node_key!("test");
         let iv = InterfaceVersion::new(2, 3);
         let node = NodeDefinition::new(id, "versioned", "echo")
             .unwrap()

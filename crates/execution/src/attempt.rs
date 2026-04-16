@@ -86,12 +86,12 @@ impl NodeAttempt {
 
 #[cfg(test)]
 mod tests {
-    use nebula_core::{ExecutionId, NodeId};
+    use nebula_core::{ExecutionId, node_key};
 
     use super::*;
 
     fn test_key() -> IdempotencyKey {
-        IdempotencyKey::generate(ExecutionId::new(), NodeId::new(), 0)
+        IdempotencyKey::generate(ExecutionId::new(), node_key!("test"), 0)
     }
 
     #[test]

@@ -3,7 +3,10 @@ use std::{sync::Arc, time::Duration};
 use nebula_action::{
     ActionContext, ActionHandler, ActionResult, BreakReason, TriggerContext, testing::SpyEmitter,
 };
-use nebula_core::id::{ExecutionId, NodeId, WorkflowId};
+use nebula_core::{
+    id::{ExecutionId, WorkflowId},
+    node_key,
+};
 use nebula_runtime::ActionRegistry;
 use tokio_util::sync::CancellationToken;
 
@@ -143,7 +146,7 @@ pub async fn test(args: ActionsTestArgs) {
     // Build a minimal ActionContext.
     let ctx = ActionContext::new(
         ExecutionId::new(),
-        NodeId::new(),
+        node_key!("test"),
         WorkflowId::new(),
         CancellationToken::new(),
     );
@@ -278,7 +281,7 @@ async fn run_trigger(
 
     let cancel = CancellationToken::new();
     let spy = Arc::new(SpyEmitter::new());
-    let ctx = TriggerContext::new(WorkflowId::new(), NodeId::new(), cancel.clone())
+    let ctx = TriggerContext::new(WorkflowId::new(), node_key!("test"), cancel.clone())
         .with_emitter(spy.clone());
 
     eprintln!("  trigger window: {timeout_ms}ms");
