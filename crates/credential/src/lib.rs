@@ -56,6 +56,8 @@ pub mod handle;
 pub mod key;
 /// Credential metadata.
 pub mod metadata;
+/// Serde helpers for [`Option<SecretString>`] that preserve the actual value.
+pub mod option_serde_secret;
 /// Typed pending state for interactive flows.
 pub mod pending;
 /// Pending state store trait for interactive credential flows.
@@ -73,6 +75,10 @@ pub mod retry;
 pub mod rotation;
 /// Authentication scheme types.
 pub mod scheme;
+/// Secret string type with automatic zeroization.
+pub mod secret_string;
+/// Serde helpers for [`SecretString`] that preserve the actual value.
+pub mod serde_secret;
 /// Credential snapshot.
 pub mod snapshot;
 /// Credential state trait for stored credential data.
@@ -131,7 +137,7 @@ pub use layer::{
     AuditEvent, AuditLayer, AuditOperation, AuditResult, AuditSink, CacheConfig, CacheLayer,
     CacheStats, EncryptionLayer, ScopeLayer, ScopeResolver,
 };
-pub use nebula_core::{AuthPattern, AuthScheme, CredentialEvent, CredentialId, SecretString};
+pub use nebula_core::{AuthPattern, AuthScheme, CredentialEvent, CredentialId};
 pub use nebula_credential_macros::{AuthScheme, Credential};
 // Pending state
 pub use pending::{NoPendingState, PendingState, PendingToken};
@@ -154,6 +160,7 @@ pub use scheme::{
     Certificate, ChallengeSecret, ConnectionUri, FederatedAssertion, IdentityPassword,
     InstanceBinding, KeyPair, OAuth2Token, OtpSeed, SecretToken, SharedKey, SigningKey,
 };
+pub use secret_string::SecretString;
 // Credential state
 pub use state::CredentialState;
 // Static protocol pattern

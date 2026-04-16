@@ -2,7 +2,8 @@
 
 use std::{collections::HashMap, time::Duration};
 
-use nebula_core::{ActionKey, InterfaceVersion, NodeId, prelude::KeyParseError};
+use nebula_action::InterfaceVersion;
+use nebula_core::{ActionKey, NodeId, prelude::KeyParseError};
 use serde::{Deserialize, Serialize};
 
 use crate::definition::RetryConfig;
@@ -345,5 +346,23 @@ mod tests {
         assert_eq!(back.action_key.as_str(), "echo");
         assert_eq!(back.timeout, Some(Duration::from_secs(30)));
         assert_eq!(back.parameters.len(), 1);
+    }
+
+    #[test]
+    fn interface_version_serde_roundtrip_in_node() {
+        let id = NodeId::new();
+        let iv = InterfaceVersion::new(2, 3);
+        let node = NodeDefinition::new(id, "versioned", "echo")
+            .unwrap()
+            .with_interface_version(iv);
+
+        let json = serde_json::to_string(&node).unwrap();
+        let back: NodeDefinition = serde_json::from_str(&json).unwrap();
+
+        assert_eq!(
+            back.interface_version,
+            Some(InterfaceVersion::new(2, 3)),
+            "InterfaceVersion must survive serde roundtrip after move to nebula-action"
+        );
     }
 }

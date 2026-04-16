@@ -299,7 +299,7 @@ mod tests {
         reg.register(
             key.clone(),
             TypeId::of::<FakeA>(),
-            ScopeLevel::Project("p".into()),
+            ScopeLevel::Workspace("p".into()),
             Arc::new(FakeA),
         );
 
@@ -314,7 +314,7 @@ mod tests {
 
         assert!(
             reg.type_index.contains_key(&TypeId::of::<FakeA>()),
-            "TypeA row must survive because the Project scope still uses it",
+            "TypeA row must survive because the Workspace scope still uses it",
         );
         assert!(reg.type_index.contains_key(&TypeId::of::<FakeB>()));
     }

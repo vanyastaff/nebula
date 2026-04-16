@@ -79,6 +79,11 @@ pub enum WorkflowError {
         max: u32,
     },
 
+    /// Owner ID must not be empty or blank.
+    #[classify(category = "validation", code = "WORKFLOW:INVALID_OWNER_ID")]
+    #[error("owner_id must not be empty or blank")]
+    InvalidOwnerId,
+
     /// Generic graph construction error.
     #[classify(category = "validation", code = "WORKFLOW:GRAPH_ERROR")]
     #[error("graph error: {0}")]

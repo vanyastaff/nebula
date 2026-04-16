@@ -27,13 +27,13 @@ fn top_level_type_sizes_are_stable() {
     // growth here needs deliberate justification.
     assert_eq!(
         size_of::<ActionResult<serde_json::Value>>(),
-        216,
+        224,
         "ActionResult<Value> grew — did you add a large inline variant? \
          Prefer boxing the cold variant or update this baseline."
     );
     assert_eq!(
         size_of::<ActionResult<()>>(),
-        216,
+        224,
         "ActionResult<T> should not depend on T — the biggest variants \
          do not carry T."
     );
@@ -43,7 +43,7 @@ fn top_level_type_sizes_are_stable() {
         "ActionOutput<Value> grew — `BinaryData` is the inline variant \
          that drives this size, check it first."
     );
-    assert_eq!(size_of::<ActionContext>(), 104);
+    assert_eq!(size_of::<ActionContext>(), 112);
     assert_eq!(size_of::<ActionMetadata>(), 168);
     assert_eq!(size_of::<ActionError>(), 64);
     assert_eq!(size_of::<ActionHandler>(), 24);

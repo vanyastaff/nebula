@@ -138,13 +138,10 @@ impl PgWorkflowRepo {
         Self { pool }
     }
 
-    /// Query the current version of a workflow by UUID.
-    async fn query_current_version(
-        &self,
-        uuid: sqlx::types::Uuid,
-    ) -> Result<u64, WorkflowRepoError> {
+    /// Query the current version of a workflow by its domain id.
+    async fn query_current_version(&self, id: WorkflowId) -> Result<u64, WorkflowRepoError> {
         let version = sqlx::query_scalar::<_, i64>("SELECT version FROM workflows WHERE id = $1")
-            .bind(uuid)
+            .bind(id)
             .fetch_one(&self.pool)
             .await
             .map_err(|err| WorkflowRepoError::Connection(err.to_string()))?;
@@ -209,7 +206,7 @@ impl WorkflowRepo for PgWorkflowRepo {
         let row = sqlx::query_as::<_, (i64, Json<serde_json::Value>)>(
             "SELECT version, definition FROM workflows WHERE id = $1",
         )
-        .bind(sqlx::types::Uuid::from_bytes(*id.get().as_bytes()))
+        .bind(id)
         .fetch_optional(&self.pool)
         .await
         .map_err(|err| WorkflowRepoError::Connection(err.to_string()))?;
@@ -223,14 +220,13 @@ impl WorkflowRepo for PgWorkflowRepo {
         version: u64,
         definition: serde_json::Value,
     ) -> Result<(), WorkflowRepoError> {
-        let uuid = sqlx::types::Uuid::from_bytes(*id.get().as_bytes());
         let json_def = Json(&definition);
 
         if version == 0 {
             // New workflow: INSERT with version 1.
             let result =
                 sqlx::query("INSERT INTO workflows (id, version, definition) VALUES ($1, 1, $2)")
-                    .bind(uuid)
+                    .bind(id)
                     .bind(json_def)
                     .execute(&self.pool)
                     .await;
@@ -239,7 +235,7 @@ impl WorkflowRepo for PgWorkflowRepo {
                 Ok(_) => Ok(()),
                 Err(sqlx::Error::Database(db_err)) if db_err.code().as_deref() == Some("23505") => {
                     // Unique violation — row already exists. Query current version for conflict.
-                    let actual = self.query_current_version(uuid).await?;
+                    let actual = self.query_current_version(id).await?;
                     Err(WorkflowRepoError::conflict(
                         "workflow",
                         id.to_string(),
@@ -255,7 +251,7 @@ impl WorkflowRepo for PgWorkflowRepo {
                 "UPDATE workflows SET version = $3 + 1, definition = $2, updated_at = NOW() \
                  WHERE id = $1 AND version = $3",
             )
-            .bind(uuid)
+            .bind(id)
             .bind(json_def)
             .bind(version as i64)
             .execute(&self.pool)
@@ -266,7 +262,7 @@ impl WorkflowRepo for PgWorkflowRepo {
                 // Either wrong version or row missing.
                 let row =
                     sqlx::query_scalar::<_, i64>("SELECT version FROM workflows WHERE id = $1")
-                        .bind(uuid)
+                        .bind(id)
                         .fetch_optional(&self.pool)
                         .await
                         .map_err(|err| WorkflowRepoError::Connection(err.to_string()))?;
@@ -290,9 +286,8 @@ impl WorkflowRepo for PgWorkflowRepo {
     }
 
     async fn delete(&self, id: WorkflowId) -> Result<bool, WorkflowRepoError> {
-        let uuid = sqlx::types::Uuid::from_bytes(*id.get().as_bytes());
         let result = sqlx::query("DELETE FROM workflows WHERE id = $1")
-            .bind(uuid)
+            .bind(id)
             .execute(&self.pool)
             .await
             .map_err(|err| WorkflowRepoError::Connection(err.to_string()))?;
@@ -307,7 +302,7 @@ impl WorkflowRepo for PgWorkflowRepo {
         offset: usize,
         limit: usize,
     ) -> Result<Vec<(WorkflowId, serde_json::Value)>, WorkflowRepoError> {
-        let rows = sqlx::query_as::<_, (sqlx::types::Uuid, Json<serde_json::Value>)>(
+        let rows = sqlx::query_as::<_, (WorkflowId, Json<serde_json::Value>)>(
             "SELECT id, definition FROM workflows ORDER BY created_at, id LIMIT $1 OFFSET $2",
         )
         .bind(limit as i64)
@@ -318,7 +313,7 @@ impl WorkflowRepo for PgWorkflowRepo {
 
         Ok(rows
             .into_iter()
-            .map(|(uuid, definition)| (WorkflowId::from_bytes(*uuid.as_bytes()), definition.0))
+            .map(|(id, definition)| (id, definition.0))
             .collect())
     }
 

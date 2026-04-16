@@ -2,6 +2,7 @@
 //!
 //! **PluginKey** = key of the plugin *type* (e.g. `telegram_bot`, `http_request`).
 //! **ActionKey** = key of a specific *action* within a plugin (e.g. `send_message`, `get_updates`).
+//! **NodeKey** = author-defined key for a workflow graph node (e.g. `fetch_users`).
 //!
 //! # Examples
 //!
@@ -38,6 +39,9 @@ key_type!(pub ResourceKey, ResourceDomain);
 
 define_domain!(pub PluginDomain, "plugin");
 key_type!(pub PluginKey, PluginDomain);
+
+define_domain!(pub NodeDomain, "node");
+key_type!(pub NodeKey, NodeDomain);
 
 /// Constructs a [`ResourceKey`] from a string literal, validated at **compile time**.
 ///
@@ -107,14 +111,32 @@ macro_rules! parameter_key {
     }};
 }
 
+/// Constructs a [`NodeKey`] from a string literal, validated at compile time.
+#[macro_export]
+macro_rules! node_key {
+    ($s:literal) => {{
+        const _: () = assert!(
+            $crate::NodeKey::is_valid_key_const($s),
+            "invalid node key literal"
+        );
+        $crate::NodeKey::new($s).unwrap()
+    }};
+}
+
 #[cfg(test)]
 mod tests {
-    use crate::{CredentialKey, ResourceKey};
+    use crate::{CredentialKey, NodeKey, ResourceKey};
 
     #[test]
     fn macro_produces_correct_key() {
         let k = resource_key!("postgres");
         assert_eq!(k, ResourceKey::new("postgres").unwrap());
+    }
+
+    #[test]
+    fn node_key_works() {
+        let k = node_key!("fetch_users");
+        assert_eq!(k, NodeKey::new("fetch_users").unwrap());
     }
 
     #[test]

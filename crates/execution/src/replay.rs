@@ -140,7 +140,7 @@ mod tests {
     use super::*;
 
     fn nid(n: u128) -> NodeId {
-        NodeId::from(uuid::Uuid::from_u128(n))
+        NodeId::from(n.to_be_bytes())
     }
 
     /// Build a successors map from `(from, to)` connection pairs.

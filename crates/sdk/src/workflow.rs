@@ -17,9 +17,9 @@
 
 use std::collections::{HashMap, HashSet};
 
-use nebula_core::{ActionKey, NodeId, Version, WorkflowId};
+use nebula_core::{ActionKey, NodeId, WorkflowId};
 use nebula_workflow::{
-    CURRENT_SCHEMA_VERSION, ParamValue, WorkflowConfig, WorkflowDefinition,
+    CURRENT_SCHEMA_VERSION, ParamValue, Version, WorkflowConfig, WorkflowDefinition,
     connection::{Connection, EdgeCondition},
     node::NodeDefinition,
 };

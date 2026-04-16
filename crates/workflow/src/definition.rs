@@ -3,10 +3,10 @@
 use std::{collections::HashMap, time::Duration};
 
 use chrono::{DateTime, Utc};
-use nebula_core::{NodeId, OwnerId, Version, WorkflowId};
+use nebula_core::{NodeId, WorkflowId};
 use serde::{Deserialize, Serialize};
 
-use crate::{connection::Connection, node::NodeDefinition};
+use crate::{Version, connection::Connection, node::NodeDefinition};
 
 /// Current schema version of the workflow definition format.
 pub const CURRENT_SCHEMA_VERSION: u32 = 1;
@@ -46,7 +46,7 @@ pub struct WorkflowDefinition {
     /// Who owns this workflow (user/team/org ID for multi-tenant).
     /// Required for storage with Row-Level Security.
     #[serde(default)]
-    pub owner_id: Option<OwnerId>,
+    pub owner_id: Option<String>,
     /// UI metadata: node positions, viewport, annotations.
     /// Opaque to the engine — only desktop/web app reads this.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -364,33 +364,39 @@ mod tests {
 
     #[test]
     fn schema_version_defaults_to_one() {
-        let json = r#"{
-            "id": "550e8400-e29b-41d4-a716-446655440000",
-            "name": "test",
-            "version": {"major": 1, "minor": 0, "patch": 0},
-            "nodes": [],
-            "connections": [],
-            "created_at": "2026-01-01T00:00:00Z",
-            "updated_at": "2026-01-01T00:00:00Z"
-        }"#;
-        let def: WorkflowDefinition = serde_json::from_str(json).unwrap();
+        let wf_id = WorkflowId::new();
+        let json = format!(
+            "{{\
+            \"id\": \"{wf_id}\",\
+            \"name\": \"test\",\
+            \"version\": {{\"major\": 1, \"minor\": 0, \"patch\": 0}},\
+            \"nodes\": [],\
+            \"connections\": [],\
+            \"created_at\": \"2026-01-01T00:00:00Z\",\
+            \"updated_at\": \"2026-01-01T00:00:00Z\"\
+            }}"
+        );
+        let def: WorkflowDefinition = serde_json::from_str(&json).unwrap();
         assert_eq!(def.schema_version, 1);
         assert!(def.is_schema_supported());
     }
 
     #[test]
     fn future_schema_version_not_supported() {
-        let json = r#"{
-            "id": "550e8400-e29b-41d4-a716-446655440000",
-            "name": "test",
-            "version": {"major": 1, "minor": 0, "patch": 0},
-            "nodes": [],
-            "connections": [],
-            "created_at": "2026-01-01T00:00:00Z",
-            "updated_at": "2026-01-01T00:00:00Z",
-            "schema_version": 99
-        }"#;
-        let def: WorkflowDefinition = serde_json::from_str(json).unwrap();
+        let wf_id = WorkflowId::new();
+        let json = format!(
+            "{{\
+            \"id\": \"{wf_id}\",\
+            \"name\": \"test\",\
+            \"version\": {{\"major\": 1, \"minor\": 0, \"patch\": 0}},\
+            \"nodes\": [],\
+            \"connections\": [],\
+            \"created_at\": \"2026-01-01T00:00:00Z\",\
+            \"updated_at\": \"2026-01-01T00:00:00Z\",\
+            \"schema_version\": 99\
+            }}"
+        );
+        let def: WorkflowDefinition = serde_json::from_str(&json).unwrap();
         assert_eq!(def.schema_version, 99);
         assert!(!def.is_schema_supported());
     }
@@ -418,41 +424,38 @@ mod tests {
     }
 
     #[test]
-    fn owner_id_serializes_as_uuid() {
-        use nebula_core::OwnerId;
-        let owner = OwnerId::new();
-        let json = serde_json::to_value(owner).unwrap();
-        // UUID format: 8-4-4-4-12 hex digits separated by hyphens
-        assert!(json.as_str().unwrap().contains('-'));
-    }
-
-    #[test]
     fn owner_id_defaults_to_none() {
-        let json = r#"{
-            "id": "550e8400-e29b-41d4-a716-446655440000",
-            "name": "test",
-            "version": {"major": 1, "minor": 0, "patch": 0},
-            "nodes": [],
-            "connections": [],
-            "created_at": "2026-01-01T00:00:00Z",
-            "updated_at": "2026-01-01T00:00:00Z"
-        }"#;
-        let def: WorkflowDefinition = serde_json::from_str(json).unwrap();
+        let wf_id = WorkflowId::new();
+        let json = format!(
+            "{{\
+            \"id\": \"{wf_id}\",\
+            \"name\": \"test\",\
+            \"version\": {{\"major\": 1, \"minor\": 0, \"patch\": 0}},\
+            \"nodes\": [],\
+            \"connections\": [],\
+            \"created_at\": \"2026-01-01T00:00:00Z\",\
+            \"updated_at\": \"2026-01-01T00:00:00Z\"\
+            }}"
+        );
+        let def: WorkflowDefinition = serde_json::from_str(&json).unwrap();
         assert!(def.owner_id.is_none());
     }
 
     #[test]
     fn ui_metadata_skipped_when_none() {
-        let json = r#"{
-            "id": "550e8400-e29b-41d4-a716-446655440000",
-            "name": "test",
-            "version": {"major": 1, "minor": 0, "patch": 0},
-            "nodes": [],
-            "connections": [],
-            "created_at": "2026-01-01T00:00:00Z",
-            "updated_at": "2026-01-01T00:00:00Z"
-        }"#;
-        let def: WorkflowDefinition = serde_json::from_str(json).unwrap();
+        let wf_id = WorkflowId::new();
+        let json = format!(
+            "{{\
+            \"id\": \"{wf_id}\",\
+            \"name\": \"test\",\
+            \"version\": {{\"major\": 1, \"minor\": 0, \"patch\": 0}},\
+            \"nodes\": [],\
+            \"connections\": [],\
+            \"created_at\": \"2026-01-01T00:00:00Z\",\
+            \"updated_at\": \"2026-01-01T00:00:00Z\"\
+            }}"
+        );
+        let def: WorkflowDefinition = serde_json::from_str(&json).unwrap();
         assert!(def.ui_metadata.is_none());
 
         // Roundtrip: ui_metadata should be absent from serialized output

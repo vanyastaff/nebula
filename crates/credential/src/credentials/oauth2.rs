@@ -11,7 +11,6 @@
 use std::{fmt, fmt::Formatter, time::Duration};
 
 use chrono::{DateTime, Utc};
-use nebula_core::SecretString;
 use nebula_parameter::{Parameter, ParameterCollection, values::ParameterValues};
 use serde::{Deserialize, Serialize};
 use subtle::ConstantTimeEq;
@@ -22,6 +21,7 @@ use super::{
     oauth2_flow,
 };
 use crate::{
+    SecretString,
     context::CredentialContext,
     credential::Credential,
     description::CredentialDescription,
@@ -45,22 +45,22 @@ use crate::{
 #[derive(Clone, Serialize, Deserialize)]
 pub struct OAuth2State {
     /// Current access token.
-    #[serde(with = "nebula_core::serde_secret")]
+    #[serde(with = "crate::serde_secret")]
     pub access_token: SecretString,
     /// Token type (typically `"Bearer"`).
     pub token_type: String,
     /// Refresh token, if granted by the provider.
-    #[serde(default, with = "nebula_core::option_serde_secret")]
+    #[serde(default, with = "crate::option_serde_secret")]
     pub refresh_token: Option<SecretString>,
     /// When the access token expires, if known.
     pub expires_at: Option<DateTime<Utc>>,
     /// Granted scopes.
     pub scopes: Vec<String>,
     /// Stored for refresh operations.
-    #[serde(with = "nebula_core::serde_secret")]
+    #[serde(with = "crate::serde_secret")]
     pub client_id: SecretString,
     /// Stored for refresh operations (encrypted at rest via `EncryptionLayer`).
-    #[serde(with = "nebula_core::serde_secret")]
+    #[serde(with = "crate::serde_secret")]
     pub client_secret: SecretString,
     /// Token endpoint URL for refresh requests.
     pub token_url: String,
@@ -140,7 +140,7 @@ pub struct OAuth2Pending {
     /// OAuth2 client identifier.
     pub client_id: String,
     /// OAuth2 client secret (zeroized on drop).
-    #[serde(with = "nebula_core::serde_secret")]
+    #[serde(with = "crate::serde_secret")]
     pub client_secret: SecretString,
     /// Grant type for this pending flow.
     pub grant_type: GrantType,
@@ -156,7 +156,7 @@ pub struct OAuth2Pending {
     /// Generated fresh on every `resolve()`. Sent as `code_verifier` on
     /// the token exchange so the provider can recompute and match the
     /// `code_challenge` carried on the auth URL.
-    #[serde(default, with = "nebula_core::option_serde_secret")]
+    #[serde(default, with = "crate::option_serde_secret")]
     pub pkce_verifier: Option<SecretString>,
     /// Anti-CSRF `state` parameter for AuthorizationCode flows.
     ///

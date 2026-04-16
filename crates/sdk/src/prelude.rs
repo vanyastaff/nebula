@@ -13,6 +13,8 @@
 pub use anyhow::{Context, Result as AnyhowResult, anyhow, bail};
 // Async traits
 pub use async_trait::async_trait;
+// Core macros
+pub use nebula_action::InterfaceVersion;
 // DX trait families: stateful, trigger
 pub use nebula_action::poll::{
     DeduplicatingCursor, PollAction, PollConfig, PollCursor, PollResult,
@@ -38,10 +40,8 @@ pub use nebula_action::{
 // DX codegen macros — re-exported so authors can write `impl_paginated_action!(...)`
 // without reaching into `nebula_action::`.
 pub use nebula_action::{impl_batch_action, impl_paginated_action};
-// Core macros
-pub use nebula_core::action_key;
 pub use nebula_core::{
-    ActionKey, ExecutionId, InterfaceVersion, NodeId, PluginKey, ScopeLevel, Version, WorkflowId,
+    ActionKey, ExecutionId, NodeId, PluginKey, ScopeLevel, WorkflowId, action_key,
 };
 // Credential types (v2)
 pub use nebula_credential::{
@@ -78,6 +78,7 @@ pub use nebula_resource::Resource;
 pub use nebula_validator::Validator;
 // Validator traits
 pub use nebula_validator::foundation::{Validate, ValidateExt, ValidationError, ValidationErrors};
+pub use nebula_workflow::Version;
 // Workflow traits and types
 pub use nebula_workflow::{
     ParamValue, WorkflowBuilder as CoreWorkflowBuilder, WorkflowDefinition, connection::Connection,

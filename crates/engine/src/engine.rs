@@ -2226,13 +2226,13 @@ mod tests {
         result::ActionResult,
         stateless::StatelessAction,
     };
-    use nebula_core::{Version, action_key};
+    use nebula_core::action_key;
     use nebula_runtime::{
         ActionExecutor, DataPassingPolicy, InProcessSandbox, registry::ActionRegistry,
     };
     use nebula_storage::{ExecutionRepo, WorkflowRepo};
     use nebula_workflow::{
-        Connection, ErrorStrategy, NodeDefinition, WorkflowConfig, WorkflowDefinition,
+        Connection, ErrorStrategy, NodeDefinition, Version, WorkflowConfig, WorkflowDefinition,
     };
 
     use super::*;

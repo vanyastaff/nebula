@@ -31,31 +31,6 @@ impl PgExecutionRepo {
     }
 }
 
-/// Convert a domain `ExecutionId` to the sqlx UUID type.
-fn execution_to_uuid(id: ExecutionId) -> sqlx::types::Uuid {
-    sqlx::types::Uuid::from_bytes(*id.get().as_bytes())
-}
-
-/// Convert a sqlx UUID back to a domain `ExecutionId`.
-fn execution_from_uuid(uuid: sqlx::types::Uuid) -> ExecutionId {
-    ExecutionId::from_bytes(*uuid.as_bytes())
-}
-
-/// Convert a domain `WorkflowId` to the sqlx UUID type.
-fn workflow_to_uuid(id: WorkflowId) -> sqlx::types::Uuid {
-    sqlx::types::Uuid::from_bytes(*id.get().as_bytes())
-}
-
-/// Convert a domain `NodeId` to the sqlx UUID type.
-fn node_to_uuid(id: NodeId) -> sqlx::types::Uuid {
-    sqlx::types::Uuid::from_bytes(*id.get().as_bytes())
-}
-
-/// Convert a sqlx UUID back to a domain `NodeId`.
-fn node_from_uuid(uuid: sqlx::types::Uuid) -> NodeId {
-    NodeId::from_bytes(*uuid.as_bytes())
-}
-
 /// Map a sqlx error to an [`ExecutionRepoError`].
 fn map_err(err: sqlx::Error) -> ExecutionRepoError {
     ExecutionRepoError::Connection(err.to_string())
@@ -95,11 +70,10 @@ impl ExecutionRepo for PgExecutionRepo {
         &self,
         id: ExecutionId,
     ) -> Result<Option<(u64, serde_json::Value)>, ExecutionRepoError> {
-        let uuid = execution_to_uuid(id);
         let row = sqlx::query_as::<_, (i64, Json<serde_json::Value>)>(
             "SELECT version, state FROM executions WHERE id = $1",
         )
-        .bind(uuid)
+        .bind(id)
         .fetch_optional(&self.pool)
         .await
         .map_err(map_err)?;
@@ -113,13 +87,12 @@ impl ExecutionRepo for PgExecutionRepo {
         expected_version: u64,
         new_state: serde_json::Value,
     ) -> Result<bool, ExecutionRepoError> {
-        let uuid = execution_to_uuid(id);
         let result = sqlx::query(
             "UPDATE executions \
              SET version = $3 + 1, state = $2, updated_at = NOW() \
              WHERE id = $1 AND version = $3",
         )
-        .bind(uuid)
+        .bind(id)
         .bind(Json(&new_state))
         .bind(expected_version as i64)
         .execute(&self.pool)
@@ -133,13 +106,12 @@ impl ExecutionRepo for PgExecutionRepo {
         &self,
         id: ExecutionId,
     ) -> Result<Vec<serde_json::Value>, ExecutionRepoError> {
-        let uuid = execution_to_uuid(id);
         let rows = sqlx::query_as::<_, (Json<serde_json::Value>,)>(
             "SELECT entry FROM execution_journal \
              WHERE execution_id = $1 \
              ORDER BY created_at, id",
         )
-        .bind(uuid)
+        .bind(id)
         .fetch_all(&self.pool)
         .await
         .map_err(map_err)?;
@@ -152,12 +124,11 @@ impl ExecutionRepo for PgExecutionRepo {
         id: ExecutionId,
         entry: serde_json::Value,
     ) -> Result<(), ExecutionRepoError> {
-        let uuid = execution_to_uuid(id);
         sqlx::query(
             "INSERT INTO execution_journal (execution_id, entry) \
              VALUES ($1, $2)",
         )
-        .bind(uuid)
+        .bind(id)
         .bind(Json(&entry))
         .execute(&self.pool)
         .await
@@ -172,7 +143,6 @@ impl ExecutionRepo for PgExecutionRepo {
         holder: String,
         ttl: Duration,
     ) -> Result<bool, ExecutionRepoError> {
-        let uuid = execution_to_uuid(id);
         let secs = ttl_seconds(ttl);
         let result = sqlx::query(
             "UPDATE executions \
@@ -181,7 +151,7 @@ impl ExecutionRepo for PgExecutionRepo {
              WHERE id = $1 \
                AND (lease_holder IS NULL OR lease_expires_at < NOW())",
         )
-        .bind(uuid)
+        .bind(id)
         .bind(&holder)
         .bind(secs)
         .execute(&self.pool)
@@ -197,14 +167,13 @@ impl ExecutionRepo for PgExecutionRepo {
         holder: &str,
         ttl: Duration,
     ) -> Result<bool, ExecutionRepoError> {
-        let uuid = execution_to_uuid(id);
         let secs = ttl_seconds(ttl);
         let result = sqlx::query(
             "UPDATE executions \
              SET lease_expires_at = NOW() + make_interval(secs => $3) \
              WHERE id = $1 AND lease_holder = $2",
         )
-        .bind(uuid)
+        .bind(id)
         .bind(holder)
         .bind(secs)
         .execute(&self.pool)
@@ -219,13 +188,12 @@ impl ExecutionRepo for PgExecutionRepo {
         id: ExecutionId,
         holder: &str,
     ) -> Result<bool, ExecutionRepoError> {
-        let uuid = execution_to_uuid(id);
         let result = sqlx::query(
             "UPDATE executions \
              SET lease_holder = NULL, lease_expires_at = NULL \
              WHERE id = $1 AND lease_holder = $2",
         )
-        .bind(uuid)
+        .bind(id)
         .bind(holder)
         .execute(&self.pool)
         .await
@@ -240,14 +208,12 @@ impl ExecutionRepo for PgExecutionRepo {
         workflow_id: WorkflowId,
         state: serde_json::Value,
     ) -> Result<(), ExecutionRepoError> {
-        let exec_uuid = execution_to_uuid(id);
-        let wf_uuid = workflow_to_uuid(workflow_id);
         let result = sqlx::query(
             "INSERT INTO executions (id, workflow_id, version, state) \
              VALUES ($1, $2, 1, $3)",
         )
-        .bind(exec_uuid)
-        .bind(wf_uuid)
+        .bind(id)
+        .bind(workflow_id)
         .bind(Json(&state))
         .execute(&self.pool)
         .await;
@@ -259,7 +225,7 @@ impl ExecutionRepo for PgExecutionRepo {
                 // fetch its current version to provide an accurate Conflict error.
                 let actual_version =
                     sqlx::query_scalar::<_, i64>("SELECT version FROM executions WHERE id = $1")
-                        .bind(exec_uuid)
+                        .bind(id)
                         .fetch_optional(&self.pool)
                         .await
                         .map_err(map_err)?
@@ -294,8 +260,6 @@ impl ExecutionRepo for PgExecutionRepo {
         attempt: u32,
         output: serde_json::Value,
     ) -> Result<(), ExecutionRepoError> {
-        let eid = execution_to_uuid(execution_id);
-        let nid = node_to_uuid(node_id);
         let attempt_i32 = i32::try_from(attempt).map_err(|_| {
             ExecutionRepoError::Internal(format!("attempt value {attempt} exceeds i32::MAX"))
         })?;
@@ -305,8 +269,8 @@ impl ExecutionRepo for PgExecutionRepo {
              ON CONFLICT (execution_id, node_id, attempt) \
              DO UPDATE SET output = EXCLUDED.output",
         )
-        .bind(eid)
-        .bind(nid)
+        .bind(execution_id)
+        .bind(node_id)
         .bind(attempt_i32)
         .bind(Json(&output))
         .execute(&self.pool)
@@ -321,16 +285,14 @@ impl ExecutionRepo for PgExecutionRepo {
         execution_id: ExecutionId,
         node_id: NodeId,
     ) -> Result<Option<serde_json::Value>, ExecutionRepoError> {
-        let eid = execution_to_uuid(execution_id);
-        let nid = node_to_uuid(node_id);
         let row = sqlx::query_as::<_, (Json<serde_json::Value>,)>(
             "SELECT output FROM node_outputs \
              WHERE execution_id = $1 AND node_id = $2 \
              ORDER BY attempt DESC \
              LIMIT 1",
         )
-        .bind(eid)
-        .bind(nid)
+        .bind(execution_id)
+        .bind(node_id)
         .fetch_optional(&self.pool)
         .await
         .map_err(map_err)?;
@@ -342,26 +304,25 @@ impl ExecutionRepo for PgExecutionRepo {
         &self,
         execution_id: ExecutionId,
     ) -> Result<HashMap<NodeId, serde_json::Value>, ExecutionRepoError> {
-        let eid = execution_to_uuid(execution_id);
-        let rows = sqlx::query_as::<_, (sqlx::types::Uuid, Json<serde_json::Value>)>(
+        let rows = sqlx::query_as::<_, (NodeId, Json<serde_json::Value>)>(
             "SELECT DISTINCT ON (node_id) node_id, output \
              FROM node_outputs \
              WHERE execution_id = $1 \
              ORDER BY node_id, attempt DESC",
         )
-        .bind(eid)
+        .bind(execution_id)
         .fetch_all(&self.pool)
         .await
         .map_err(map_err)?;
 
         Ok(rows
             .into_iter()
-            .map(|(uuid, output)| (node_from_uuid(uuid), output.0))
+            .map(|(node_id, output)| (node_id, output.0))
             .collect())
     }
 
     async fn list_running(&self) -> Result<Vec<ExecutionId>, ExecutionRepoError> {
-        let rows = sqlx::query_as::<_, (sqlx::types::Uuid,)>(
+        let rows = sqlx::query_as::<_, (ExecutionId,)>(
             "SELECT id FROM executions \
              WHERE state->>'status' IN ('created', 'running', 'paused', 'cancelling')",
         )
@@ -369,18 +330,14 @@ impl ExecutionRepo for PgExecutionRepo {
         .await
         .map_err(map_err)?;
 
-        Ok(rows
-            .into_iter()
-            .map(|(uuid,)| execution_from_uuid(uuid))
-            .collect())
+        Ok(rows.into_iter().map(|(id,)| id).collect())
     }
 
     async fn count(&self, workflow_id: Option<WorkflowId>) -> Result<u64, ExecutionRepoError> {
         let count: i64 = match workflow_id {
             Some(wid) => {
-                let uuid = workflow_to_uuid(wid);
                 sqlx::query_scalar("SELECT COUNT(*) FROM executions WHERE workflow_id = $1")
-                    .bind(uuid)
+                    .bind(wid)
                     .fetch_one(&self.pool)
                     .await
                     .map_err(map_err)?
@@ -411,16 +368,14 @@ impl ExecutionRepo for PgExecutionRepo {
         execution_id: ExecutionId,
         node_id: NodeId,
     ) -> Result<(), ExecutionRepoError> {
-        let eid = execution_to_uuid(execution_id);
-        let nid = node_to_uuid(node_id);
         sqlx::query(
             "INSERT INTO idempotency_keys (key, execution_id, node_id) \
              VALUES ($1, $2, $3) \
              ON CONFLICT (key) DO NOTHING",
         )
         .bind(key)
-        .bind(eid)
-        .bind(nid)
+        .bind(execution_id)
+        .bind(node_id)
         .execute(&self.pool)
         .await
         .map_err(|e| map_idempotency_err(e, execution_id))?;
