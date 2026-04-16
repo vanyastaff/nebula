@@ -24,8 +24,8 @@ pub enum ScopeLevel {
     Global,
     /// Scoped to an organization.
     Organization(String),
-    /// Scoped to a project.
-    Project(String),
+    /// Scoped to a workspace (formerly "project").
+    Workspace(String),
     /// Scoped to a workflow definition.
     Workflow(WorkflowId),
     /// Scoped to a single execution run.

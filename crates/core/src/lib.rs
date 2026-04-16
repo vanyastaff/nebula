@@ -1,96 +1,96 @@
 //! # Nebula Core
 //!
-//! Core types and traits for the Nebula workflow engine.
-//! This crate provides the fundamental building blocks used by all other Nebula crates.
+//! Vocabulary crate for the Nebula workflow engine.
+//!
+//! Provides typed identifiers (prefixed ULIDs), domain keys, scope system,
+//! auth contracts, error types, and spec 23 context/accessor/guard/lifecycle
+//! primitives.
 //!
 //! ## Key Components
 //!
-//! - **Identifiers**: UserId, TenantId, ExecutionId, WorkflowId, NodeId, ResourceId, CredentialId, ProjectId, RoleId, OrganizationId, OwnerId.  
-//!   (Node = workflow step / graph vertex; which action/plugin runs there is given by [`ActionKey`] = [`PluginKey`]; [`NodeDefinition`](https://docs.rs/nebula-workflow) has `action_key: ActionKey`.)
-//! - **Keys**: PluginKey (plugin type, e.g. `telegram_bot`), ActionKey (action within a plugin,
-//!   e.g. `send_message`), ParameterKey, CredentialKey.
-//! - **Scope System**: Resource lifecycle management with different scope levels (Global,
-//!   Organization, Project, Workflow, Execution, Action)
-//! - **Base Traits**: Scoped, HasContext, Identifiable for common functionality
-//! - **Common Types**: Utilities and constants used throughout the system
-//! - **Multi-tenancy Types**: ProjectType, RoleScope for identity and access management
-//!
-//! ## Usage
-//!
-//! ```rust
-//! use nebula_core::{ExecutionId, HasContext, NodeId, ScopeLevel, Scoped, WorkflowId};
-//!
-//! let execution_id = ExecutionId::new();
-//! let workflow_id = WorkflowId::new();
-//! let node_id = NodeId::new();
-//!
-//! let scope = ScopeLevel::Execution(execution_id);
-//! ```
+//! - **Identifiers**: Prefixed ULID types -- `ExecutionId` (`exe_01J9...`), `WorkflowId`
+//!   (`wf_01J9...`), `NodeId` (`node_01J9...`), etc.
+//! - **Keys**: `PluginKey`, `ActionKey`, `ParameterKey`, `CredentialKey`, `ResourceKey`, `NodeKey`
+//!   -- normalized string keys.
+//! - **Scope System**: `ScopeLevel`, `Scope`, `Principal`, `ScopeResolver`.
+//! - **Auth Contracts**: `AuthScheme`, `AuthPattern`.
+//! - **Context**: `Context` trait, `BaseContext`, capability traits.
+//! - **Accessors**: `ResourceAccessor`, `CredentialAccessor`, `Logger`, `MetricsEmitter`,
+//!   `EventEmitter`, `Clock`.
+//! - **Guards**: `Guard`, `TypedGuard` RAII traits.
+//! - **Lifecycle**: `LayerLifecycle`, `ShutdownOutcome`.
+//! - **Observability**: `TraceId`, `SpanId`.
 
+// ── Modules ─────────────────────────────────────────────────────────────────
+
+/// Accessor trait definitions for capability injection.
+pub mod accessor;
+/// Authentication scheme contract types and pattern classification.
 pub mod auth;
-/// Classification of authentication patterns for UI, logging, and tooling.
-pub mod auth_pattern;
-pub mod constants;
+/// Context system -- base trait + capabilities.
+pub mod context;
 /// Credential lifecycle events for cross-crate signaling.
 pub mod credential_event;
-/// Dependency graph primitives shared across crates.
-pub mod deps;
+/// Dependency declaration types.
+pub mod dependencies;
+/// Guard traits for RAII resource/credential wrappers.
+pub mod guard;
+/// Unique identifiers for Nebula entities (prefixed ULIDs).
 pub mod id;
-/// Serde helpers for [`Option<SecretString>`] that preserve the actual value.
-pub mod option_serde_secret;
+/// Hierarchical cancellation primitive.
+pub mod lifecycle;
+/// Observability identity types.
+pub mod obs;
+/// Scope system for resource lifecycle management.
 pub mod scope;
-/// Secret string type with automatic zeroization.
-pub mod secret_string;
 /// Shared serde helpers (duration serialization, etc.).
 pub mod serde_helpers;
-/// Serde helpers for [`SecretString`] that preserve the actual value.
-pub mod serde_secret;
-pub mod traits;
-pub mod types;
-
-// Re-export main types for convenience at the crate root. Downstream crates
-// should prefer `nebula_core::prelude::*` for a stable import surface.
-pub use auth::AuthScheme;
-pub use auth_pattern::AuthPattern;
-pub use constants::*;
-pub use credential_event::CredentialEvent;
-pub use deps::*;
-pub use error::*;
-pub use id::*;
-pub use keys::*;
-pub use scope::*;
-pub use secret_string::SecretString;
-pub use traits::*;
-pub use types::*;
 
 mod error;
 mod keys;
 
-/// Result type used throughout Nebula
-pub type Result<T> = std::result::Result<T, error::CoreError>;
+// ── Re-exports ──────────────────────────────────────────────────────────────
 
-/// Common prelude for Nebula crates
+pub use auth::{AuthPattern, AuthScheme};
+pub use context::{
+    BaseContext, BaseContextBuilder, Context, HasCredentials, HasEventBus, HasLogger, HasMetrics,
+    HasResources,
+};
+pub use credential_event::CredentialEvent;
+pub use dependencies::*;
+pub use error::*;
+pub use guard::{Guard, TypedGuard};
+#[allow(deprecated)] // OrganizationId re-exported for migration period
+pub use id::*;
+pub use keys::*;
+pub use lifecycle::{LayerLifecycle, ShutdownOutcome};
+pub use obs::{SpanId, TraceId};
+pub use scope::*;
+
+/// Common prelude for Nebula crates.
 pub mod prelude {
-    // Identifiers (UUID-backed ids)
-    pub use domain_key::{KeyParseError, UuidParseError};
-
     // Core result alias
-    pub use crate::Result;
+    // Parse errors
+    pub use domain_key::{KeyParseError, UlidParseError};
+
     // Dependency error type
-    pub use crate::deps::DependencyError;
-    // Core errors and parse errors
-    pub use crate::error::CoreError;
+    pub use crate::dependencies::DependencyError;
+    pub use crate::error::{CoreError, CoreResult};
+    // Identifiers (ULID-backed)
+    #[allow(deprecated)] // OrganizationId re-exported for migration period
+    pub use crate::id::{
+        AttemptId, CredentialId, ExecutionId, InstanceId, NodeId, OrgId, OrganizationId,
+        ResourceId, ServiceAccountId, SessionId, TriggerEventId, TriggerId, UserId, WorkflowId,
+        WorkflowVersionId, WorkspaceId,
+    };
     // Domain keys (normalized string keys)
-    pub use crate::keys::{ActionKey, CredentialKey, ParameterKey, PluginKey, ResourceKey};
+    pub use crate::keys::{
+        ActionKey, CredentialKey, NodeKey, ParameterKey, PluginKey, ResourceKey,
+    };
+    // Scope
+    pub use crate::scope::{Principal, Scope, ScopeLevel, ScopeResolver};
     // Compile-time-validated key construction macros
-    pub use crate::{action_key, credential_key, parameter_key, plugin_key, resource_key};
     pub use crate::{
-        id::{
-            CredentialId, ExecutionId, NodeId, OrganizationId, OwnerId, ProjectId, ResourceId,
-            RoleId, TenantId, UserId, WorkflowId,
-        },
-        scope::{ScopeLevel, ScopeResolver},
-        traits::{HasContext, Scoped},
-        types::{InterfaceVersion, ProjectType, RoleScope},
+        action_key, credential_key, node_key, parameter_key, plugin_key, resource_key,
     };
 }

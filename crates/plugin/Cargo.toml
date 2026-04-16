@@ -15,6 +15,7 @@ documentation.workspace = true
 default = []
 
 [dependencies]
+nebula-action = { path = "../action" }
 nebula-plugin-macros = { path = "macros" }
 nebula-core = { path = "../core" }
 nebula-error = { workspace = true, features = ["derive"] }

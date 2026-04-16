@@ -31,22 +31,25 @@ pub async fn execute(args: ReplayArgs, quiet: bool) -> anyhow::Result<ExitCode> 
         })?;
 
     // 3. Load pinned outputs (from file or empty).
-    let pinned_outputs: HashMap<NodeId, serde_json::Value> =
-        if let Some(ref outputs_file) = args.outputs_file {
-            let content = std::fs::read_to_string(outputs_file)
-                .with_context(|| format!("failed to read {}", outputs_file.display()))?;
-            let raw: HashMap<String, serde_json::Value> =
-                serde_json::from_str(&content).context("invalid outputs JSON")?;
-            raw.into_iter()
-                .filter_map(|(k, v)| {
-                    k.parse::<uuid::Uuid>()
-                        .ok()
-                        .map(|uuid| (NodeId::from(uuid), v))
+    let pinned_outputs: HashMap<NodeId, serde_json::Value> = if let Some(ref outputs_file) =
+        args.outputs_file
+    {
+        let content = std::fs::read_to_string(outputs_file)
+            .with_context(|| format!("failed to read {}", outputs_file.display()))?;
+        let raw: HashMap<String, serde_json::Value> =
+            serde_json::from_str(&content).context("invalid outputs JSON")?;
+        raw.into_iter()
+                .filter_map(|(k, v)| match k.parse::<NodeId>() {
+                    Ok(id) => Some((id, v)),
+                    Err(e) => {
+                        tracing::warn!(key = %k, error = %e, "skipping pinned output with unparsable NodeId");
+                        None
+                    },
                 })
                 .collect()
-        } else {
-            HashMap::new()
-        };
+    } else {
+        HashMap::new()
+    };
 
     // 4. Build replay plan.
     let input_override: serde_json::Value =

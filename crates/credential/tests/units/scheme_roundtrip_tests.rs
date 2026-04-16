@@ -3,10 +3,12 @@
 //! Verifies that `SecretString` fields serialize their actual value (not
 //! `[REDACTED]`) and deserialize back correctly.
 
-use nebula_core::SecretString;
-use nebula_credential::scheme::{
-    Certificate, ChallengeSecret, ConnectionUri, FederatedAssertion, IdentityPassword,
-    InstanceBinding, KeyPair, OAuth2Token, OtpSeed, SecretToken, SharedKey, SigningKey,
+use nebula_credential::{
+    SecretString,
+    scheme::{
+        Certificate, ChallengeSecret, ConnectionUri, FederatedAssertion, IdentityPassword,
+        InstanceBinding, KeyPair, OAuth2Token, OtpSeed, SecretToken, SharedKey, SigningKey,
+    },
 };
 
 #[test]

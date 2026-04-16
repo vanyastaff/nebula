@@ -42,15 +42,15 @@ pub trait CredentialResolverRef: Send + Sync {
 /// # Examples
 ///
 /// ```
-/// use nebula_core::{ProjectId, ScopeLevel};
+/// use nebula_core::{ScopeLevel, WorkspaceId};
 /// use nebula_credential::CredentialContext;
 ///
 /// // Basic context
 /// let ctx = CredentialContext::new("user_123");
 ///
 /// // With scope for multi-tenancy
-/// let project_id = ProjectId::new();
-/// let ctx = CredentialContext::new("user_123").with_scope(ScopeLevel::Project(project_id));
+/// let ws_id = WorkspaceId::new();
+/// let ctx = CredentialContext::new("user_123").with_scope(ScopeLevel::Workspace(ws_id));
 ///
 /// // With custom trace ID
 /// use uuid::Uuid;
@@ -213,10 +213,10 @@ impl CredentialContext {
 
 #[cfg(test)]
 mod tests {
-    use nebula_core::{ProjectId, ScopeLevel, SecretString};
+    use nebula_core::{ScopeLevel, WorkspaceId};
 
     use super::*;
-    use crate::scheme::SecretToken;
+    use crate::{SecretString, scheme::SecretToken};
 
     struct MockResolverForComposition;
     impl CredentialResolverRef for MockResolverForComposition {
@@ -237,12 +237,12 @@ mod tests {
 
     #[test]
     fn test_context_with_scope() {
-        let project_id = ProjectId::new();
-        let ctx = CredentialContext::new("user_123").with_scope(ScopeLevel::Project(project_id));
+        let ws_id = WorkspaceId::new();
+        let ctx = CredentialContext::new("user_123").with_scope(ScopeLevel::Workspace(ws_id));
 
         assert_eq!(ctx.owner_id, "user_123");
         assert!(
-            matches!(ctx.caller_scope.as_ref(), Some(ScopeLevel::Project(id)) if *id == project_id)
+            matches!(ctx.caller_scope.as_ref(), Some(ScopeLevel::Workspace(id)) if *id == ws_id)
         );
     }
 
@@ -257,9 +257,9 @@ mod tests {
     #[test]
     fn test_context_builder_pattern() {
         let trace = Uuid::new_v4();
-        let project_id = ProjectId::new();
+        let ws_id = WorkspaceId::new();
         let ctx = CredentialContext::new("user_123")
-            .with_scope(ScopeLevel::Project(project_id))
+            .with_scope(ScopeLevel::Workspace(ws_id))
             .with_trace_id(trace);
 
         assert_eq!(ctx.owner_id, "user_123");
@@ -269,8 +269,8 @@ mod tests {
 
     #[test]
     fn test_context_clone() {
-        let project_id = ProjectId::new();
-        let ctx1 = CredentialContext::new("user_123").with_scope(ScopeLevel::Project(project_id));
+        let ws_id = WorkspaceId::new();
+        let ctx1 = CredentialContext::new("user_123").with_scope(ScopeLevel::Workspace(ws_id));
         let ctx2 = ctx1.clone();
 
         assert_eq!(ctx1.owner_id, ctx2.owner_id);
@@ -308,7 +308,7 @@ mod tests {
     #[test]
     fn test_full_builder_chain() {
         let ctx = CredentialContext::new("user_123")
-            .with_scope(ScopeLevel::Project(ProjectId::new()))
+            .with_scope(ScopeLevel::Workspace(WorkspaceId::new()))
             .with_callback_url("https://app/callback")
             .with_app_url("https://app")
             .with_session_id("sess-1");

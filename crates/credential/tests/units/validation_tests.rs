@@ -20,21 +20,42 @@ fn test_credential_key_invalid() {
 }
 
 #[test]
-fn test_credential_id_parse_valid_uuid() {
-    let id = CredentialId::parse("550e8400-e29b-41d4-a716-446655440000").unwrap();
-    assert_eq!(id.to_string(), "550e8400-e29b-41d4-a716-446655440000");
+fn test_credential_id_parse_roundtrip() {
+    let id = CredentialId::new();
+    let s = id.to_string();
+    let parsed: CredentialId = s.parse().unwrap();
+    assert_eq!(id, parsed);
 }
 
 #[test]
 fn test_credential_id_parse_invalid() {
-    assert!(CredentialId::parse("not-a-uuid").is_err());
-    assert!(CredentialId::parse("github_token").is_err());
+    assert!("not-a-ulid".parse::<CredentialId>().is_err());
+    assert!("github_token".parse::<CredentialId>().is_err());
+}
+
+#[test]
+fn test_credential_id_rejects_wrong_prefix() {
+    // Take a valid CredentialId, swap its prefix to "exe_", and verify rejection.
+    let id = CredentialId::new();
+    let id_str = id.to_string();
+    let ulid_part = id_str
+        .strip_prefix("cred_")
+        .expect("CredentialId must start with cred_");
+    let wrong_prefix = format!("exe_{ulid_part}");
+    assert!(
+        wrong_prefix.parse::<CredentialId>().is_err(),
+        "a valid ULID with wrong prefix must be rejected"
+    );
 }
 
 #[test]
 fn test_credential_id_display() {
-    let id = CredentialId::parse("550e8400-e29b-41d4-a716-446655440000").unwrap();
-    assert_eq!(format!("{}", id), "550e8400-e29b-41d4-a716-446655440000");
+    let id = CredentialId::new();
+    let display = format!("{}", id);
+    assert!(
+        display.starts_with("cred_"),
+        "expected cred_ prefix, got: {display}"
+    );
 }
 
 #[test]

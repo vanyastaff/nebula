@@ -1,9 +1,8 @@
 //! X.509 client certificate authentication (mTLS, TLS client auth).
 
-use nebula_core::SecretString;
 use serde::{Deserialize, Serialize};
 
-use crate::AuthScheme;
+use crate::{AuthScheme, SecretString};
 
 /// X.509 client certificate with private key for mutual TLS authentication.
 ///
@@ -14,8 +13,7 @@ use crate::AuthScheme;
 /// # Examples
 ///
 /// ```
-/// use nebula_core::SecretString;
-/// use nebula_credential::scheme::Certificate;
+/// use nebula_credential::{SecretString, scheme::Certificate};
 ///
 /// let cert = Certificate::new(
 ///     "-----BEGIN CERTIFICATE-----\n...".to_string(),
@@ -26,9 +24,9 @@ use crate::AuthScheme;
 #[auth_scheme(pattern = Certificate)]
 pub struct Certificate {
     cert_chain: String,
-    #[serde(with = "nebula_core::serde_secret")]
+    #[serde(with = "crate::serde_secret")]
     private_key: SecretString,
-    #[serde(with = "nebula_core::option_serde_secret")]
+    #[serde(with = "crate::option_serde_secret")]
     passphrase: Option<SecretString>,
 }
 
@@ -113,5 +111,30 @@ mod tests {
         cert.private_key()
             .expose_secret(|v| assert_eq!(v, "key-data"));
         assert!(cert.passphrase().is_none());
+    }
+
+    #[test]
+    fn serde_roundtrip_preserves_secrets() {
+        // Certificate uses `#[serde(with = "serde_secret")]` which preserves
+        // the actual value (unlike the default SecretString Serialize that
+        // writes "[REDACTED]"). This test verifies that contract.
+        let original = Certificate::new(
+            "-----BEGIN CERTIFICATE-----\nMIIB...",
+            SecretString::new("-----BEGIN PRIVATE KEY-----\nMIIE..."),
+        )
+        .with_passphrase(SecretString::new("hunter2"));
+
+        let json = serde_json::to_string(&original).expect("Certificate must serialize");
+        let decoded: Certificate =
+            serde_json::from_str(&json).expect("Certificate must deserialize");
+
+        assert_eq!(decoded.cert_chain(), original.cert_chain());
+        decoded
+            .private_key()
+            .expose_secret(|v| assert_eq!(v, "-----BEGIN PRIVATE KEY-----\nMIIE..."));
+        decoded
+            .passphrase()
+            .expect("passphrase must survive roundtrip")
+            .expose_secret(|v| assert_eq!(v, "hunter2"));
     }
 }

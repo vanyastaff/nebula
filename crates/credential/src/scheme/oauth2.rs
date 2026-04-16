@@ -1,7 +1,9 @@
 //! OAuth2 token -- consumer-facing (no refresh internals).
 
-use nebula_core::{AuthPattern, AuthScheme, SecretString};
+use nebula_core::{AuthPattern, AuthScheme};
 use serde::{Deserialize, Serialize};
+
+use crate::SecretString;
 
 /// OAuth2 bearer token with metadata.
 ///
@@ -14,7 +16,7 @@ use serde::{Deserialize, Serialize};
 /// [`CredentialState`]: crate::state::CredentialState
 #[derive(Clone, Serialize, Deserialize)]
 pub struct OAuth2Token {
-    #[serde(with = "nebula_core::serde_secret")]
+    #[serde(with = "crate::serde_secret")]
     access_token: SecretString,
     /// Token type (typically `"Bearer"`).
     pub token_type: String,

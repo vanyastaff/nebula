@@ -3,9 +3,10 @@
 use std::{collections::HashMap, time::Duration};
 
 use chrono::Utc;
-use nebula_core::{NodeId, OwnerId, Version, WorkflowId};
+use nebula_core::{NodeId, WorkflowId};
 
 use crate::{
+    Version,
     connection::{Connection, EdgeCondition},
     definition::{CURRENT_SCHEMA_VERSION, UiMetadata, WorkflowConfig, WorkflowDefinition},
     error::WorkflowError,
@@ -25,7 +26,7 @@ pub struct WorkflowBuilder {
     variables: HashMap<String, serde_json::Value>,
     config: WorkflowConfig,
     tags: Vec<String>,
-    owner_id: Option<OwnerId>,
+    owner_id: Option<String>,
     ui_metadata: Option<UiMetadata>,
 }
 
@@ -146,10 +147,17 @@ impl WorkflowBuilder {
     }
 
     /// Set the owner ID for multi-tenant workflows.
-    #[must_use = "builder methods must be chained or built"]
-    pub fn owner(mut self, owner_id: OwnerId) -> Self {
-        self.owner_id = Some(owner_id);
-        self
+    ///
+    /// # Errors
+    ///
+    /// Returns [`WorkflowError::EmptyName`] if `owner_id` is empty or blank.
+    pub fn owner(mut self, owner_id: impl Into<String>) -> Result<Self, WorkflowError> {
+        let id = owner_id.into();
+        if id.trim().is_empty() {
+            return Err(WorkflowError::InvalidOwnerId);
+        }
+        self.owner_id = Some(id);
+        Ok(self)
     }
 
     /// Set UI metadata (node positions, viewport, annotations).
@@ -342,5 +350,29 @@ mod tests {
         assert_eq!(def.tags, vec!["test", "v1"]);
         assert_eq!(def.config.timeout, Some(Duration::from_secs(60)));
         assert_eq!(def.config.max_parallel_nodes, 4);
+    }
+
+    #[test]
+    fn owner_rejects_empty_string() {
+        let result = WorkflowBuilder::new("test").owner("");
+        assert!(matches!(result, Err(WorkflowError::InvalidOwnerId)));
+    }
+
+    #[test]
+    fn owner_rejects_blank_string() {
+        let result = WorkflowBuilder::new("test").owner("   ");
+        assert!(matches!(result, Err(WorkflowError::InvalidOwnerId)));
+    }
+
+    #[test]
+    fn owner_accepts_valid_string() {
+        let a = NodeId::new();
+        let def = WorkflowBuilder::new("owned")
+            .owner("user_123")
+            .unwrap()
+            .add_node(node(a))
+            .build()
+            .unwrap();
+        assert_eq!(def.owner_id.as_deref(), Some("user_123"));
     }
 }

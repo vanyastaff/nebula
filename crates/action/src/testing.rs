@@ -632,8 +632,8 @@ where
 mod tests {
     use std::collections::HashMap;
 
-    use nebula_core::{SecretString, action_key};
-    use nebula_credential::{CredentialMetadata, SecretToken};
+    use nebula_core::action_key;
+    use nebula_credential::{CredentialMetadata, SecretString, SecretToken};
 
     use super::*;
     use crate::{

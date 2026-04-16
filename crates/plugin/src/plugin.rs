@@ -47,7 +47,8 @@ pub trait Plugin: Send + Sync + Debug + 'static {
     /// # Examples
     ///
     /// ```
-    /// use nebula_core::{ActionKey, InterfaceVersion};
+    /// use nebula_action::InterfaceVersion;
+    /// use nebula_core::ActionKey;
     /// use nebula_plugin::{Plugin, PluginMetadata, descriptor::ActionDescriptor};
     ///
     /// #[derive(Debug)]
@@ -243,7 +244,8 @@ pub trait Plugin: Send + Sync + Debug + 'static {
 mod tests {
     use std::sync::Arc;
 
-    use nebula_core::{ActionKey, CredentialKey, InterfaceVersion, ResourceKey};
+    use nebula_action::InterfaceVersion;
+    use nebula_core::{ActionKey, CredentialKey, ResourceKey};
 
     use super::*;
     use crate::descriptor::{ActionDescriptor, CredentialDescriptor, ResourceDescriptor};
