@@ -6,7 +6,9 @@
 use std::{collections::HashMap, time::Duration};
 
 use async_trait::async_trait;
-use nebula_core::{ExecutionId, NodeKey, WorkflowId, node_key};
+#[cfg(all(test, feature = "postgres"))]
+use nebula_core::node_key;
+use nebula_core::{ExecutionId, NodeKey, WorkflowId};
 use sqlx::{Pool, Postgres, types::Json};
 
 use crate::execution_repo::{ExecutionRepo, ExecutionRepoError};
@@ -266,7 +268,7 @@ impl ExecutionRepo for PgExecutionRepo {
         sqlx::query(
             "INSERT INTO node_outputs (execution_id, node_id, attempt, output) \
              VALUES ($1, $2, $3, $4) \
-             ON CONFLICT (execution_id, node_key, attempt) \
+             ON CONFLICT (execution_id, node_id, attempt) \
              DO UPDATE SET output = EXCLUDED.output",
         )
         .bind(execution_id)
@@ -287,7 +289,7 @@ impl ExecutionRepo for PgExecutionRepo {
     ) -> Result<Option<serde_json::Value>, ExecutionRepoError> {
         let row = sqlx::query_as::<_, (Json<serde_json::Value>,)>(
             "SELECT output FROM node_outputs \
-             WHERE execution_id = $1 AND node_key = $2 \
+             WHERE execution_id = $1 AND node_id = $2 \
              ORDER BY attempt DESC \
              LIMIT 1",
         )
@@ -308,7 +310,7 @@ impl ExecutionRepo for PgExecutionRepo {
             "SELECT DISTINCT ON (node_id) node_id, output \
              FROM node_outputs \
              WHERE execution_id = $1 \
-             ORDER BY node_key, attempt DESC",
+             ORDER BY node_id, attempt DESC",
         )
         .bind(execution_id)
         .fetch_all(&self.pool)
@@ -495,12 +497,12 @@ mod tests {
         repo.create(exec_id, wf_id, serde_json::json!({}))
             .await
             .expect("create");
-        repo.save_node_output(exec_id, node_key, 0, output.clone())
+        repo.save_node_output(exec_id, node_key.clone(), 0, output.clone())
             .await
             .expect("save output");
 
         let got = repo
-            .load_node_output(exec_id, node_key)
+            .load_node_output(exec_id, node_key.clone())
             .await
             .expect("load")
             .expect("some");
@@ -519,15 +521,18 @@ mod tests {
         repo.create(exec_id, wf_id, serde_json::json!({}))
             .await
             .expect("create");
-        repo.save_node_output(exec_id, node_key, 0, serde_json::json!("attempt0"))
+        repo.save_node_output(exec_id, node_key.clone(), 0, serde_json::json!("attempt0"))
             .await
             .expect("save attempt 0");
-        repo.save_node_output(exec_id, node_key, 1, serde_json::json!("attempt1"))
+        repo.save_node_output(exec_id, node_key.clone(), 1, serde_json::json!("attempt1"))
             .await
             .expect("save attempt 1");
 
         let all = repo.load_all_outputs(exec_id).await.expect("load all");
-        assert_eq!(all.get(&node_key), Some(&serde_json::json!("attempt1")));
+        assert_eq!(
+            all.get(&node_key.clone()),
+            Some(&serde_json::json!("attempt1"))
+        );
     }
 
     #[tokio::test]
@@ -548,7 +553,7 @@ mod tests {
             "key should not exist yet"
         );
 
-        repo.mark_idempotent(&key, exec_id, node_key)
+        repo.mark_idempotent(&key, exec_id, node_key.clone())
             .await
             .expect("first mark");
 
@@ -560,7 +565,7 @@ mod tests {
         );
 
         // Second mark with same key should be idempotent (ON CONFLICT DO NOTHING).
-        repo.mark_idempotent(&key, exec_id, node_key)
+        repo.mark_idempotent(&key, exec_id, node_key.clone())
             .await
             .expect("second mark should not fail");
 

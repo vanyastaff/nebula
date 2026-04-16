@@ -173,7 +173,10 @@ impl WorkflowBuilder {
         let node_id_by_name: HashMap<String, NodeKey> = self
             .nodes
             .iter()
-            .map(|node| (node.id.clone(), node_key!("test")))
+            .map(|node| {
+                let key = NodeKey::new(&node.id).unwrap_or_else(|_| node_key!("fallback"));
+                (node.id.clone(), key)
+            })
             .collect();
 
         // Validate all edge references.

@@ -96,8 +96,7 @@ pub async fn execute(args: ReplayArgs, quiet: bool) -> anyhow::Result<ExitCode> 
     if !quiet {
         eprintln!(
             "Replaying from node \"{}\" ({})",
-            target_node.name,
-            target_node.id.clone()
+            target_node.name, target_node.id
         );
     }
 

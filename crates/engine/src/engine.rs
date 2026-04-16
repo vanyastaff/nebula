@@ -2108,7 +2108,7 @@ fn handle_node_failure(
             node_key.clone(),
             serde_json::json!({
                 "error": error_msg,
-                "node_key": node_key.to_string(),
+                "node_id": node_key.to_string(),
             }),
         );
         return None;
