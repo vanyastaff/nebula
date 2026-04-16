@@ -10,7 +10,9 @@ define_ulid!(pub WorkspaceIdDomain => WorkspaceId, prefix = "ws");
 define_ulid!(pub WorkflowIdDomain => WorkflowId, prefix = "wf");
 define_ulid!(pub WorkflowVersionIdDomain => WorkflowVersionId, prefix = "wfv");
 define_ulid!(pub ExecutionIdDomain => ExecutionId, prefix = "exe");
+// TODO(spec-24): NodeId is superseded by NodeKey. Migrate all consumers then remove.
 define_ulid!(pub NodeIdDomain => NodeId, prefix = "node");
+
 define_ulid!(pub AttemptIdDomain => AttemptId, prefix = "att");
 define_ulid!(pub InstanceIdDomain => InstanceId, prefix = "nbl");
 define_ulid!(pub TriggerIdDomain => TriggerId, prefix = "trg");
@@ -20,7 +22,9 @@ define_ulid!(pub ServiceAccountIdDomain => ServiceAccountId, prefix = "svc");
 define_ulid!(pub CredentialIdDomain => CredentialId, prefix = "cred");
 define_ulid!(pub ResourceIdDomain => ResourceId, prefix = "res");
 define_ulid!(pub SessionIdDomain => SessionId, prefix = "sess");
-define_ulid!(pub OrganizationIdDomain => OrganizationId, prefix = "org");
+// OrganizationId duplicates OrgId with the same "org" prefix.
+#[deprecated(note = "Use OrgId instead")]
+pub type OrganizationId = OrgId;
 
 #[cfg(test)]
 mod tests {
@@ -99,6 +103,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(deprecated)]
     fn all_id_types_create_successfully() {
         let _ = OrgId::new();
         let _ = WorkspaceId::new();

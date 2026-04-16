@@ -60,6 +60,7 @@ pub use credential_event::CredentialEvent;
 pub use dependencies::*;
 pub use error::*;
 pub use guard::{Guard, TypedGuard};
+#[allow(deprecated)] // OrganizationId re-exported for migration period
 pub use id::*;
 pub use keys::*;
 pub use lifecycle::{LayerLifecycle, ShutdownOutcome};
@@ -76,6 +77,7 @@ pub mod prelude {
     pub use crate::dependencies::DependencyError;
     pub use crate::error::{CoreError, CoreResult};
     // Identifiers (ULID-backed)
+    #[allow(deprecated)] // OrganizationId re-exported for migration period
     pub use crate::id::{
         AttemptId, CredentialId, ExecutionId, InstanceId, NodeId, OrgId, OrganizationId,
         ResourceId, ServiceAccountId, SessionId, TriggerEventId, TriggerId, UserId, WorkflowId,

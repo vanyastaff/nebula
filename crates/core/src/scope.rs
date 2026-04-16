@@ -11,7 +11,13 @@ use std::fmt;
 
 use serde::{Deserialize, Serialize};
 
-use crate::id::{ExecutionId, NodeId, OrgId, WorkflowId, WorkspaceId};
+use crate::{
+    NodeKey,
+    id::{
+        AttemptId, ExecutionId, InstanceId, OrgId, TriggerId, WorkflowId, WorkflowVersionId,
+        WorkspaceId,
+    },
+};
 
 /// Defines the scope level for a resource.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -189,10 +195,18 @@ pub struct Scope {
     pub workspace_id: Option<WorkspaceId>,
     /// Workflow ID, if known.
     pub workflow_id: Option<WorkflowId>,
+    /// Workflow version ID, if known.
+    pub workflow_version_id: Option<WorkflowVersionId>,
     /// Execution ID, if known.
     pub execution_id: Option<ExecutionId>,
-    /// Node ID, if known.
-    pub node_id: Option<NodeId>,
+    /// Author-defined node key, if known.
+    pub node_key: Option<NodeKey>,
+    /// Attempt ID, if known.
+    pub attempt_id: Option<AttemptId>,
+    /// Trigger ID, if known.
+    pub trigger_id: Option<TriggerId>,
+    /// Instance ID, if known.
+    pub instance_id: Option<InstanceId>,
 }
 
 /// Actor identity within the system.
@@ -202,8 +216,13 @@ pub enum Principal {
     User(crate::id::UserId),
     /// Automated service account.
     ServiceAccount(crate::id::ServiceAccountId),
-    /// Workflow acting on its own behalf.
-    Workflow(WorkflowId),
+    /// Workflow acting on its own behalf, optionally triggered by a specific trigger.
+    Workflow {
+        /// The workflow performing the action.
+        workflow_id: WorkflowId,
+        /// The trigger that initiated the workflow, if any.
+        trigger_id: Option<TriggerId>,
+    },
     /// System-internal operation.
     System,
 }
