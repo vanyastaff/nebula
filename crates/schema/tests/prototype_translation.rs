@@ -76,6 +76,14 @@ fn oauth2_credential_schema() -> Schema {
         )
 }
 
+fn nested_object_schema() -> Schema {
+    Schema::new().add(
+        Field::object("config")
+            .add(Field::string("host").required())
+            .add(Field::number("port").required()),
+    )
+}
+
 #[test]
 fn telegram_schema_validates_resource_operation_flow() {
     let schema = telegram_send_message_schema();
@@ -113,4 +121,28 @@ fn oauth_schema_list_rules_are_enforced() {
     let report = schema.validate(&values, ExecutionMode::StaticOnly);
     assert!(report.has_errors());
     assert_eq!(report.errors()[0].key, "scopes");
+}
+
+#[test]
+fn mode_variant_payload_is_validated() {
+    let schema = http_request_schema();
+    let mut values = FieldValues::new();
+    values.set("method", json!("GET"));
+    values.set("url", json!("https://example.com"));
+    values.set("auth", json!({ "mode": "bearer" }));
+
+    let report = schema.validate(&values, ExecutionMode::StaticOnly);
+    assert!(report.has_errors());
+    assert_eq!(report.errors()[0].key, "auth.value");
+}
+
+#[test]
+fn object_children_are_validated() {
+    let schema = nested_object_schema();
+    let mut values = FieldValues::new();
+    values.set("config", json!({ "host": "localhost" }));
+
+    let report = schema.validate(&values, ExecutionMode::StaticOnly);
+    assert!(report.has_errors());
+    assert_eq!(report.errors()[0].key, "config.port");
 }

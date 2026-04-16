@@ -1,9 +1,9 @@
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize};
 
 use crate::SchemaError;
 
 /// Stable identifier for a schema field.
-#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize)]
 #[serde(transparent)]
 pub struct FieldKey(String);
 
@@ -53,7 +53,23 @@ impl FieldKey {
 
 impl From<&'static str> for FieldKey {
     fn from(value: &'static str) -> Self {
-        Self::new(value).expect("invalid static FieldKey")
+        match Self::new(value) {
+            Ok(key) => key,
+            Err(error) => {
+                debug_assert!(false, "invalid static FieldKey: {error}");
+                Self(value.to_owned())
+            },
+        }
+    }
+}
+
+impl<'de> Deserialize<'de> for FieldKey {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let raw = String::deserialize(deserializer)?;
+        Self::new(raw).map_err(serde::de::Error::custom)
     }
 }
 
@@ -74,5 +90,12 @@ mod tests {
         assert!(FieldKey::new("1starts_with_digit").is_err());
         assert!(FieldKey::new("has-dash").is_err());
         assert!(FieldKey::new("contains space").is_err());
+    }
+
+    #[test]
+    fn rejects_invalid_deserialization() {
+        let invalid = "\"invalid-key\"";
+        let deserialized = serde_json::from_str::<FieldKey>(invalid);
+        assert!(deserialized.is_err());
     }
 }

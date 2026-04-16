@@ -32,7 +32,10 @@ impl FieldValue {
                 return Self::Expression(expr.to_owned());
             }
 
-            if let Some(mode) = object.get("mode").and_then(Value::as_str) {
+            let has_only_mode_shape = object
+                .keys()
+                .all(|key| key.as_str() == "mode" || key.as_str() == "value");
+            if has_only_mode_shape && let Some(mode) = object.get("mode").and_then(Value::as_str) {
                 return Self::Mode {
                     mode: mode.to_owned(),
                     value: object.get("value").cloned(),
@@ -158,6 +161,20 @@ mod tests {
         assert!(matches!(
             FieldValue::from_json(&mode),
             FieldValue::Mode { mode, .. } if mode == "oauth2"
+        ));
+    }
+
+    #[test]
+    fn mode_with_extra_keys_is_literal() {
+        let ambiguous = json!({
+            "mode": "oauth2",
+            "value": { "scope": "read" },
+            "extra": true
+        });
+
+        assert!(matches!(
+            FieldValue::from_json(&ambiguous),
+            FieldValue::Literal(_)
         ));
     }
 

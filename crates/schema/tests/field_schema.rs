@@ -52,6 +52,17 @@ fn schema_add_and_find_work() {
 }
 
 #[test]
+fn schema_add_replaces_duplicate_key() {
+    let schema = Schema::new()
+        .add(Field::string("name").min_length(2))
+        .add(Field::string("name").min_length(10));
+
+    assert_eq!(schema.len(), 1);
+    let name = schema.find("name").expect("name field exists");
+    assert_eq!(name.rules().len(), 1);
+}
+
+#[test]
 fn serde_roundtrip_field_and_schema() {
     let schema = Schema::new().add(
         Field::string("username")
