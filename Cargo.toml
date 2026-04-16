@@ -83,7 +83,7 @@ arc-swap = "1.9"
 
 # Graph
 petgraph = "0.8"
-domain-key = { version = "0.5.1", features = ["serde", "ulid"] }
+domain-key = { version = "0.5.1", features = ["serde", "ulid", "uuid", "sqlx-postgres", "sqlx-sqlite"] }
 uuid = { version = "1.23", features = ["v4", "serde"] }
 chrono = { version = "0.4.44", default-features = false, features = ["clock"] }
 smallvec = { version = "1.15", features = ["union", "const_generics", "serde"] }
