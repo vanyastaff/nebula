@@ -206,16 +206,17 @@ impl FieldValues {
 
     /// Get the raw JSON representation of a value by string key.
     ///
-    /// Used by schema.rs internals which still operate on `Value`.
+    /// Uses `Borrow<str>` on `FieldKey` — no allocation for the lookup.
+    /// Returns `None` for invalid keys or missing entries.
     pub fn get_raw_by_str(&self, key: &str) -> Option<Value> {
-        let fk = FieldKey::new(key).ok()?;
-        self.0.get(&fk).map(FieldValue::to_json)
+        self.0.get(key).map(FieldValue::to_json)
     }
 
     /// Get a `FieldValue` by string key (convenience for migration code).
+    ///
+    /// Uses `Borrow<str>` on `FieldKey` — no allocation for the lookup.
     pub fn get_by_str(&self, key: &str) -> Option<&FieldValue> {
-        let fk = FieldKey::new(key).ok()?;
-        self.0.get(&fk)
+        self.0.get(key)
     }
 
     /// Navigate to a nested value using a typed path.

@@ -16,7 +16,12 @@ use std::{future::Future, pin::Pin, sync::Arc};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use crate::{FieldValues, SelectOption, error::ValidationError};
+use crate::{
+    FieldValues, SelectOption,
+    error::ValidationError,
+    key::FieldKey,
+    path::{FieldPath, PathSegment},
+};
 
 /// Boxed future used by async loader functions.
 pub type LoaderFuture<T> =
@@ -161,6 +166,24 @@ pub type OptionLoader = Loader<SelectOption>;
 /// Loader returning dynamic record payloads.
 pub type RecordLoader = Loader<Value>;
 
+/// Build a single-key `FieldPath` from a `LoaderContext::field_key` string.
+/// Falls back to root if the key is not a valid `FieldKey`.
+fn field_path_from_key(key: &str) -> FieldPath {
+    FieldKey::new(key)
+        .map(|fk| FieldPath::root().join(PathSegment::Key(fk)))
+        .unwrap_or_else(|_| FieldPath::root())
+}
+
+/// Use the path from a loader-returned error if it's non-root, otherwise build
+/// one from the registry lookup key.
+fn field_path_from_err_or(key: &str, err: &ValidationError) -> FieldPath {
+    if err.path.is_root() {
+        field_path_from_key(key)
+    } else {
+        err.path.clone()
+    }
+}
+
 /// Runtime registry for named loader functions.
 #[derive(Debug, Clone, Default)]
 pub struct LoaderRegistry {
@@ -204,19 +227,23 @@ impl LoaderRegistry {
     ///
     /// Returns `ValidationError` with code `loader.not_registered` when `key`
     /// is not registered, or `loader.failed` if the loader returns an error.
+    /// Both errors carry the requesting field's path (from `context.field_key`).
     pub async fn load_options(
         &self,
         key: &str,
         context: LoaderContext,
     ) -> Result<LoaderResult<SelectOption>, ValidationError> {
+        let field_path = field_path_from_key(&context.field_key);
         let Some(loader) = self.option_loaders.get(key) else {
             return Err(ValidationError::builder("loader.not_registered")
+                .at(field_path)
                 .message(format!("option loader `{key}` is not registered"))
                 .param("loader", serde_json::Value::String(key.to_owned()))
                 .build());
         };
         loader.call(context).await.map_err(|e| {
             ValidationError::builder("loader.failed")
+                .at(field_path_from_err_or(key, &e))
                 .message(format!("option loader `{key}` failed: {e}"))
                 .param("loader", serde_json::Value::String(key.to_owned()))
                 .source(e)
@@ -230,19 +257,23 @@ impl LoaderRegistry {
     ///
     /// Returns `ValidationError` with code `loader.not_registered` when `key`
     /// is not registered, or `loader.failed` if the loader returns an error.
+    /// Both errors carry the requesting field's path (from `context.field_key`).
     pub async fn load_records(
         &self,
         key: &str,
         context: LoaderContext,
     ) -> Result<LoaderResult<Value>, ValidationError> {
+        let field_path = field_path_from_key(&context.field_key);
         let Some(loader) = self.record_loaders.get(key) else {
             return Err(ValidationError::builder("loader.not_registered")
+                .at(field_path)
                 .message(format!("record loader `{key}` is not registered"))
                 .param("loader", serde_json::Value::String(key.to_owned()))
                 .build());
         };
         loader.call(context).await.map_err(|e| {
             ValidationError::builder("loader.failed")
+                .at(field_path_from_err_or(key, &e))
                 .message(format!("record loader `{key}` failed: {e}"))
                 .param("loader", serde_json::Value::String(key.to_owned()))
                 .source(e)
@@ -268,6 +299,8 @@ mod tests {
                 .iter()
                 .any(|(k, v)| k == "loader" && v == "missing")
         );
+        // Error path should reflect the requesting field key.
+        assert_eq!(err.path.to_string(), "field");
     }
 
     #[tokio::test]
@@ -276,6 +309,8 @@ mod tests {
         let ctx = LoaderContext::new("field", FieldValues::new());
         let err = registry.load_records("missing", ctx).await.unwrap_err();
         assert_eq!(err.code, "loader.not_registered");
+        // Error path should reflect the requesting field key.
+        assert_eq!(err.path.to_string(), "field");
     }
 
     #[tokio::test]

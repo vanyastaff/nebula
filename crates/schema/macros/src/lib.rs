@@ -1,6 +1,8 @@
 //! Compile-time macros for nebula-schema.
 
 use proc_macro::TokenStream;
+use proc_macro_crate::{FoundCrate, crate_name};
+use proc_macro2::Span;
 use quote::quote;
 use syn::{LitStr, parse_macro_input};
 
@@ -21,8 +23,22 @@ pub fn field_key(input: TokenStream) -> TokenStream {
             .into();
     }
 
+    // Resolve the crate path robustly: supports renamed dependencies.
+    //
+    // We do NOT use `crate::` for FoundCrate::Itself because proc-macro
+    // doctests are compiled as external crates — `crate` would resolve to
+    // the synthetic doctest crate, not to nebula_schema.  Using the
+    // absolute path `::nebula_schema` is safe for all call sites.
+    let crate_path = match crate_name("nebula-schema") {
+        Ok(FoundCrate::Itself) | Err(_) => quote!(::nebula_schema),
+        Ok(FoundCrate::Name(name)) => {
+            let ident = syn::Ident::new(&name, Span::call_site());
+            quote!(::#ident)
+        },
+    };
+
     let out = quote! {
-        ::nebula_schema::FieldKey::new(#lit)
+        #crate_path::FieldKey::new(#lit)
             .expect("field_key! validated at compile time")
     };
     out.into()

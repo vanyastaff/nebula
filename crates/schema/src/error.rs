@@ -52,12 +52,16 @@ impl ValidationError {
     /// assert_eq!(err.code, "required");
     /// ```
     pub fn builder(code: impl Into<Cow<'static, str>>) -> ValidationErrorBuilder {
+        let code = code.into();
+        // Default message = code so that build() without .message() produces
+        // "[code]: code" rather than "[code]: " (empty message looks broken).
+        let default_message = code.clone();
         ValidationErrorBuilder {
-            code: code.into(),
+            code,
             path: FieldPath::root(),
             severity: Severity::Error,
             params: Vec::new(),
-            message: Cow::Borrowed(""),
+            message: default_message,
             source: None,
         }
     }

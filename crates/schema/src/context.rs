@@ -17,8 +17,9 @@ pub(crate) struct RootContext<'a>(pub &'a FieldValues);
 
 impl RuleContext for RootContext<'_> {
     fn get(&self, key: &str) -> Option<&Value> {
-        let fk = FieldKey::new(key).ok()?;
-        match self.0.get(&fk)? {
+        // FieldKey: Borrow<str> — get_by_str queries the inner IndexMap without
+        // constructing a FieldKey (no Arc allocation for the lookup).
+        match self.0.get_by_str(key)? {
             FieldValue::Literal(v) => Some(v),
             _ => None,
         }
@@ -30,8 +31,9 @@ pub(crate) struct ObjectContext<'a>(pub &'a IndexMap<FieldKey, FieldValue>);
 
 impl RuleContext for ObjectContext<'_> {
     fn get(&self, key: &str) -> Option<&Value> {
-        let fk = FieldKey::new(key).ok()?;
-        match self.0.get(&fk)? {
+        // IndexMap<FieldKey, _>::get accepts Q: Hash + Eq where FieldKey: Borrow<Q>.
+        // Passing &str directly avoids constructing a FieldKey.
+        match self.0.get(key)? {
             FieldValue::Literal(v) => Some(v),
             _ => None,
         }
