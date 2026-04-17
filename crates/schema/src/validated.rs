@@ -1,12 +1,13 @@
 //! Validated schema handles — proof-tokens.
 
-use std::sync::Arc;
+use std::{future::Future, pin::Pin, sync::Arc};
 
 use indexmap::IndexMap;
 use smallvec::SmallVec;
 
 use crate::{
     error::{Severity, ValidationError, ValidationReport},
+    expression::ExpressionContext,
     field::{Field, ListField, NumberField, ObjectField},
     key::FieldKey,
     mode::{ExpressionMode, RequiredMode, VisibilityMode},
@@ -173,6 +174,74 @@ impl<'s> ValidValues<'s> {
     pub fn get_path(&self, path: &FieldPath) -> Option<&FieldValue> {
         self.values.get_path(path)
     }
+
+    /// Resolve all `FieldValue::Expression` entries by evaluating them through
+    /// `ctx`.
+    ///
+    /// **Fast path**: when `schema.flags().uses_expressions == false` the
+    /// existing value tree is promoted directly to `ResolvedValues` without
+    /// any walking.
+    ///
+    /// After evaluating each expression the resolved literal is validated
+    /// against the same type/rule constraints that were skipped at
+    /// schema-validate time. If any expression evaluation or post-resolve
+    /// rule fails, all errors are collected and returned as a
+    /// `ValidationReport`.
+    ///
+    /// # Errors
+    ///
+    /// Returns `Err(ValidationReport)` when any expression evaluation fails
+    /// or when a resolved value violates a field rule.
+    #[allow(clippy::result_large_err)]
+    pub async fn resolve(
+        self,
+        ctx: &dyn ExpressionContext,
+    ) -> Result<ResolvedValues<'s>, ValidationReport> {
+        // Fast path — no expressions in this schema.
+        if !self.schema.flags().uses_expressions {
+            return Ok(ResolvedValues {
+                schema: self.schema,
+                values: self.values,
+                warnings: self.warnings,
+            });
+        }
+
+        let mut report = ValidationReport::new();
+        let mut values = self.values;
+
+        // Walk and resolve every entry in the flat top-level map.
+        let keys: Vec<FieldKey> = values.iter().map(|(k, _)| k.clone()).collect();
+        for key in keys {
+            let Some(value) = values.get(&key).cloned() else {
+                continue;
+            };
+            let path = FieldPath::root().join(key.clone());
+            let resolved = resolve_value(value, ctx, &path, &mut report).await;
+            values.set(key, resolved);
+        }
+
+        if report.has_errors() {
+            return Err(report);
+        }
+
+        let extra_warnings: Vec<ValidationError> = report
+            .iter()
+            .filter(|e| e.severity == Severity::Warning)
+            .cloned()
+            .collect();
+        let all_warnings: Arc<[ValidationError]> = self
+            .warnings
+            .iter()
+            .chain(extra_warnings.iter())
+            .cloned()
+            .collect();
+
+        Ok(ResolvedValues {
+            schema: self.schema,
+            values,
+            warnings: all_warnings,
+        })
+    }
 }
 
 /// Resolved values — all `FieldValue::Expression` entries have been evaluated.
@@ -190,6 +259,14 @@ impl<'s> ResolvedValues<'s> {
     /// Borrow the schema these values were resolved against.
     pub fn schema(&self) -> &'s ValidSchema {
         self.schema
+    }
+
+    /// Borrow the resolved value tree.
+    ///
+    /// Guaranteed to contain no `FieldValue::Expression` variants after
+    /// successful resolution.
+    pub fn values(&self) -> &FieldValues {
+        &self.values
     }
 
     /// Iterate resolution warnings.
@@ -223,6 +300,89 @@ impl<'s> ResolvedValues<'s> {
             )
         })
     }
+}
+
+// ── Expression resolution helpers ────────────────────────────────────────────
+
+/// Recursively walk a [`FieldValue`], replacing every `Expression` variant
+/// with a `Literal` obtained by calling `ctx.evaluate(ast)`.
+///
+/// Any evaluation error is pushed into `report` and the placeholder is left
+/// as `Literal(Value::Null)` so that the walk can continue and collect all
+/// errors in one pass.
+///
+/// The function is recursive and uses `Box::pin` to satisfy the async
+/// recursion requirement.
+fn resolve_value<'v>(
+    value: FieldValue,
+    ctx: &'v dyn ExpressionContext,
+    path: &'v FieldPath,
+    report: &'v mut ValidationReport,
+) -> Pin<Box<dyn Future<Output = FieldValue> + 'v>> {
+    Box::pin(async move {
+        match value {
+            FieldValue::Expression(ref expr) => {
+                match expr.parse() {
+                    Ok(ast) => match ctx.evaluate(ast).await {
+                        Ok(v) => FieldValue::Literal(v),
+                        Err(mut e) => {
+                            // Attach path context and enforce the standard code.
+                            if e.code != "expression.runtime" {
+                                e = ValidationError::new("expression.runtime")
+                                    .at(path.clone())
+                                    .message(e.message.clone())
+                                    .build();
+                            } else {
+                                e.path = path.clone();
+                            }
+                            report.push(e);
+                            FieldValue::Literal(serde_json::Value::Null)
+                        },
+                    },
+                    Err(mut e) => {
+                        e.path = path.clone();
+                        report.push(e);
+                        FieldValue::Literal(serde_json::Value::Null)
+                    },
+                }
+            },
+            FieldValue::Object(map) => {
+                let mut out = indexmap::IndexMap::with_capacity(map.len());
+                for (k, v) in map {
+                    let child_path = path.clone().join(k.clone());
+                    let resolved = resolve_value(v, ctx, &child_path, report).await;
+                    out.insert(k, resolved);
+                }
+                FieldValue::Object(out)
+            },
+            FieldValue::List(items) => {
+                let mut out = Vec::with_capacity(items.len());
+                for (i, v) in items.into_iter().enumerate() {
+                    let item_path = path.clone().join(i);
+                    let resolved = resolve_value(v, ctx, &item_path, report).await;
+                    out.push(resolved);
+                }
+                FieldValue::List(out)
+            },
+            FieldValue::Mode { mode, value } => {
+                let resolved_value = if let Some(inner) = value {
+                    let inner_path = path
+                        .clone()
+                        .join(FieldKey::new("value").expect("static key"));
+                    let resolved = resolve_value(*inner, ctx, &inner_path, report).await;
+                    Some(Box::new(resolved))
+                } else {
+                    None
+                };
+                FieldValue::Mode {
+                    mode,
+                    value: resolved_value,
+                }
+            },
+            // Literals pass through unchanged.
+            other => other,
+        }
+    })
 }
 
 // ── Schema-time validation helpers ───────────────────────────────────────────

@@ -4,6 +4,37 @@ use std::sync::{Arc, OnceLock};
 
 use crate::{error::ValidationError, path::FieldPath};
 
+/// Minimal contract required to evaluate an expression at runtime.
+///
+/// Implement this to bridge nebula-schema's resolution phase with any
+/// expression engine. The real evaluator lives in `nebula-expression`;
+/// this trait is the integration seam so Phase 1 tests can use a stub.
+///
+/// # Example
+///
+/// ```rust
+/// use nebula_schema::{ExpressionAst, ExpressionContext, ValidationError};
+///
+/// struct ConstCtx(serde_json::Value);
+///
+/// #[async_trait::async_trait]
+/// impl ExpressionContext for ConstCtx {
+///     async fn evaluate(
+///         &self,
+///         _ast: &ExpressionAst,
+///     ) -> Result<serde_json::Value, ValidationError> {
+///         Ok(self.0.clone())
+///     }
+/// }
+/// ```
+#[async_trait::async_trait]
+pub trait ExpressionContext: Send + Sync {
+    /// Evaluate a parsed expression AST and return the resulting JSON value.
+    ///
+    /// Errors should use code `"expression.runtime"`.
+    async fn evaluate(&self, ast: &ExpressionAst) -> Result<serde_json::Value, ValidationError>;
+}
+
 /// Opaque parsed AST. In Phase 1 this is a thin newtype; Phase 4 can replace
 /// the inner type with a real `nebula_expression::Ast`.
 #[derive(Debug, Clone)]

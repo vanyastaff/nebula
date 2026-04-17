@@ -4204,6 +4204,7 @@ dependencies = [
 name = "nebula-schema"
 version = "0.1.0"
 dependencies = [
+ "async-trait",
  "codspeed-criterion-compat",
  "futures",
  "indexmap",
