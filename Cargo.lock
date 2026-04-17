@@ -3720,14 +3720,12 @@ version = "0.1.0"
 dependencies = [
  "async-trait",
  "axum",
- "bytes",
  "chrono",
  "dashmap",
  "futures",
  "governor",
  "hex",
  "hmac 0.13.0",
- "http 1.4.0",
  "jsonwebtoken",
  "nebula-action",
  "nebula-api",
@@ -3773,7 +3771,6 @@ dependencies = [
  "nebula-engine",
  "nebula-execution",
  "nebula-log",
- "nebula-plugin",
  "nebula-runtime",
  "nebula-sandbox",
  "nebula-telemetry",
@@ -3783,7 +3780,6 @@ dependencies = [
  "serde",
  "serde_json",
  "serde_yaml",
- "thiserror 2.0.18",
  "tokio",
  "tokio-util",
  "toml",
@@ -3980,7 +3976,6 @@ dependencies = [
  "serde",
  "serde_json",
  "thiserror 2.0.18",
- "uuid",
 ]
 
 [[package]]
@@ -4086,7 +4081,6 @@ dependencies = [
  "serde",
  "serde_json",
  "thiserror 2.0.18",
- "tracing",
 ]
 
 [[package]]
@@ -4166,7 +4160,6 @@ name = "nebula-runtime"
 version = "0.1.0"
 dependencies = [
  "async-trait",
- "bytes",
  "dashmap",
  "nebula-action",
  "nebula-core",
@@ -4233,7 +4226,6 @@ dependencies = [
  "serde_json",
  "thiserror 2.0.18",
  "tokio",
- "tokio-util",
  "uuid",
 ]
 
@@ -4245,10 +4237,8 @@ dependencies = [
  "aws-config",
  "aws-sdk-s3",
  "chrono",
- "domain-key",
  "hex",
  "nebula-core",
- "nebula-error",
  "redis",
  "rmp-serde",
  "serde",
@@ -4270,8 +4260,6 @@ dependencies = [
  "serde_json",
  "sysinfo",
  "thiserror 2.0.18",
- "tracing",
- "tracing-subscriber",
 ]
 
 [[package]]

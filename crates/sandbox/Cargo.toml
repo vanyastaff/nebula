@@ -28,6 +28,3 @@ tokio = { workspace = true, features = ["process", "io-util", "sync", "net"] }
 [target.'cfg(target_os = "linux")'.dependencies]
 landlock = "0.4"
 nix = { version = "0.31", features = ["resource"] }
-
-[lib]
-doctest = false

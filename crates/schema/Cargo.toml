@@ -43,3 +43,6 @@ harness = false
 [[bench]]
 name = "bench_memory"
 harness = false
+
+[lib]
+doctest = false

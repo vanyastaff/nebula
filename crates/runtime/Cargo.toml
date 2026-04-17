@@ -26,7 +26,6 @@ tracing = { workspace = true }
 thiserror = { workspace = true }
 dashmap = { workspace = true }
 uuid = { workspace = true }
-bytes = { workspace = true }
 
 [dev-dependencies]
 nebula-core = { path = "../core" }

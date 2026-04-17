@@ -59,8 +59,6 @@ rand = { workspace = true }
 # Webhook transport
 dashmap = { workspace = true }
 url = { workspace = true }
-bytes = { workspace = true }
-http = { workspace = true }
 
 [dev-dependencies]
 nebula-api = { path = ".", features = ["test-util"] }
@@ -78,6 +76,3 @@ default = []
 # enable this in production builds — it exposes a constructor that
 # bypasses the JwtSecret validation gate.
 test-util = []
-
-[lib]
-doctest = false
