@@ -13,6 +13,8 @@
 pub mod error;
 /// Typed field definitions and wrappers.
 pub mod field;
+/// UI hints for string input rendering.
+pub mod input_hint;
 /// Strongly typed field identifiers.
 pub mod key;
 /// Static schema lint diagnostics.
@@ -43,6 +45,7 @@ pub use field::{
     DynamicField, Field, FileField, HiddenField, ListField, ModeField, ModeVariant, NoticeField,
     NoticeSeverity, NumberField, ObjectField, SecretField, SelectField, StringField, TimeField,
 };
+pub use input_hint::InputHint;
 pub use key::FieldKey;
 pub use lint::{LintDiagnostic, LintLevel, LintReport, lint_schema};
 pub use loader::{
