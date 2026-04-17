@@ -51,8 +51,8 @@ pub struct ValidSchemaInner {
 ///
 /// Cheap to clone — backed by `Arc`.
 ///
-/// Serde: serializes as the ordered field list (same wire format as [`Schema`]).
-/// Deserialization rebuilds through [`Schema::builder`] and panics if lint
+/// Serde: serializes as the ordered field list (same wire format as `Schema`).
+/// Deserialization rebuilds through `Schema::builder` and panics if lint
 /// fails (only valid schemas may be persisted).
 #[derive(Debug, Clone)]
 pub struct ValidSchema(pub(crate) Arc<ValidSchemaInner>);

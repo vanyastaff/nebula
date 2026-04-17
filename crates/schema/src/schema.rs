@@ -19,8 +19,8 @@ use crate::{
 
 /// Schema aggregate — a collection of typed field definitions.
 ///
-/// Build a schema with [`Schema::builder`] then call [`SchemaBuilder::build`]
-/// to get a [`ValidSchema`] proof-token.
+/// Build a schema with `Schema::builder()` then call `SchemaBuilder::build()`
+/// to get a `ValidSchema` proof-token.
 ///
 /// # Example
 ///

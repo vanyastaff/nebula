@@ -1,10 +1,10 @@
 //! `nebula-schema` — schema definition system for Nebula workflow surfaces.
 //!
 //! This crate provides:
-//! - Typed field definitions and the [`Field`] enum.
-//! - [`Schema`] builder with structural lint passes via [`Schema::lint`].
-//! - Schema-time validation via [`ValidSchema::validate`] returning a [`ValidValues`] proof-token.
-//! - Runtime expression resolution via [`ValidValues::resolve`] returning a [`ResolvedValues`]
+//! - Typed field definitions and the `Field` enum.
+//! - `Schema` builder with structural lint passes via `Schema::lint`.
+//! - Schema-time validation via `ValidSchema::validate` returning a `ValidValues` proof-token.
+//! - Runtime expression resolution via `ValidValues::resolve` returning a `ResolvedValues`
 //!   proof-token.
 //! - Strongly-typed error and path types.
 //!
