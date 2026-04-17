@@ -10,6 +10,11 @@ description = "Runnable examples for Nebula DX traits (stateless, stateful, trig
 publish = false
 autobins = false
 
+[package.metadata.cargo-shear]
+# serde used via #[derive(Deserialize)] in the HTTP response structs of each
+# demo; cargo shear's static-only scan doesn't detect derive-time usage.
+ignored = ["serde"]
+
 [dependencies]
 nebula-sdk = { path = "../crates/sdk" }
 nebula-validator = { path = "../crates/validator" }
