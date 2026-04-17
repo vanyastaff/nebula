@@ -9,6 +9,7 @@ skip_output:
   - success
   - skips
   - execution_info
+  - execution_out      # suppress stdout of green commands; failures still printed via execution_err
 
 pre-commit:
   parallel: true
@@ -20,13 +21,15 @@ pre-commit:
       glob: "*.rs"
       run: cargo clippy --workspace --all-targets -q -- -D warnings
     typos:
-      run: typos
+      run: typos --quiet
     taplo:
       glob: "**/*.toml"
+      env:
+        RUST_LOG: "warn"
       run: taplo fmt --check
     cargo-deny:
       glob: "{Cargo.toml,Cargo.lock,deny.toml}"
-      run: cargo deny check
+      run: cargo deny --log-level error check 2>&1
 
 commit-msg:
   commands:
@@ -37,30 +40,32 @@ pre-push:
   parallel: true
   commands:
     nextest:
-      run: cargo nextest run --workspace --status-level fail --final-status-level fail
+      run: cargo nextest run --workspace --profile agent
     doctests:
-      run: cargo test --workspace --doc
+      run: cargo test --workspace --doc --quiet
     check-all-features:
-      run: cargo check --workspace --all-features --all-targets
+      run: cargo check --workspace --all-features --all-targets --quiet
     check-no-default:
       run: |
-        cargo check -p nebula-resilience --no-default-features
-        cargo check -p nebula-log --no-default-features
-        cargo check -p nebula-expression --no-default-features
+        cargo check -p nebula-resilience --no-default-features --quiet
+        cargo check -p nebula-log --no-default-features --quiet
+        cargo check -p nebula-expression --no-default-features --quiet
     docs:
       env:
         RUSTDOCFLAGS: "-D warnings"
-      run: cargo doc --workspace --no-deps --all-features -q
+      run: cargo doc --workspace --no-deps --all-features --quiet
     msrv:
       # Graceful skip if 1.94 toolchain not installed locally.
       # Install with: rustup install 1.94
       run: |
         if rustup toolchain list | grep -q '^1.94'; then
-          cargo +1.94 check --workspace --all-targets
+          cargo +1.94 check --workspace --all-targets --quiet
         else
           echo "MSRV skipped: rustup install 1.94 to enable"
         fi
     shear:
       run: cargo shear
+
+# Note: 'cargo udeps' is NOT in pre-push. It requires nightly + is slow. Kept in weekly CI workflow.
 
 # Note: 'cargo udeps' is NOT in pre-push. It requires nightly + is slow. Kept in weekly CI workflow.
