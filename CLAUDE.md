@@ -8,6 +8,46 @@ Operational guidance for coding agents in this repository.
 - Do not implement workarounds that violate its **Non-negotiable invariants**; fix the root cause, or stop and ask.
 - Definition of done includes: relevant tests/commands green **and** alignment with `docs/PRODUCT_CANON.md` (no silent semantic drift, no duplicate undocumented lifecycles). See §17 there.
 
+### Session read order (priming layer)
+
+Every session, before proposing changes, load in this order:
+
+1. `CLAUDE.md` (you are here) — commands, conventions, this read-order.
+2. `docs/PRODUCT_CANON.md` — normative core. If you hit a rule that seems to block a good improvement, check §0.2 canon revision triggers before giving up.
+3. `docs/MATURITY.md` — which crates are frontier vs stable; calibrates proposal ambition.
+4. `docs/STYLE.md` — idioms, antipatterns, naming, error taxonomy. Gate on any new public type or API.
+5. When working inside a specific crate: that crate's `README.md` and `lib.rs //!`.
+
+Satellites loaded on demand:
+- `docs/INTEGRATION_MODEL.md` — integration model details (Resource / Credential / Action / Plugin / Schema).
+- `docs/COMPETITIVE.md` — positioning, peer analysis.
+- `docs/OBSERVABILITY.md` — SLI / SLO / events / core analysis loop.
+- `docs/GLOSSARY.md` — terms and architectural patterns.
+- `docs/adr/` — past decisions; search by filename or frontmatter.
+
+### Decision gate (before proposing an architectural change)
+
+Answer these six questions to yourself. If any answer implies a canon violation,
+stop and open an ADR — see `docs/PRODUCT_CANON.md §0.2`.
+
+1. Does this strengthen the golden path (PRODUCT_CANON §10) or divert it?
+2. Does this introduce a public surface the engine does not yet honor end-to-end (§4.5)?
+3. Does this change an L2 invariant without an ADR?
+4. Does this leak detail upward (cross-cutting crate depending on integration crate)?
+5. Does this introduce an implicit durable backbone via in-memory channel (§12.2)?
+6. Does this advertise a capability in docs that the code does not deliver (§11.6)?
+
+### Quick Win trap catalog
+
+Recognize these traps; prefer the deeper fix:
+
+- **Rename / redefine to avoid a contract.** If a type conflicts with an invariant, do not rename the type — open an ADR about the invariant.
+- **`Clone` to satisfy the borrow checker.** Consider `Cow<'_, T>`, lifetime redesign, or typestate first. Document the tradeoff if cloning is the right answer.
+- **Suppress the error with `.unwrap_or_default()` / `.ok()`.** Surface the error with proper classification (`NebulaError`, `Classify`) unless the default is documented-correct.
+- **Add a `_` prefix to an "unused" var to silence the lint.** The variable is either needed (use it) or not (delete it). Shim-naming is canon-level feedback (see memory `feedback_direct_state_mutation.md` equivalent).
+- **Patch a symptom in a downstream crate.** Root cause may be upstream; propose the fix there even if the PR is bigger.
+- **Log-and-discard on an outbox consumer.** Violates §12.2. Either wire a real consumer or mark the path `// DEMO ONLY`.
+
 ## Project Snapshot
 
 Nebula is a modular, type-safe workflow automation engine in Rust (alpha stage).
