@@ -248,14 +248,7 @@ impl Schema {
                     ));
                 }
             },
-            Field::String(_)
-            | Field::Secret(_)
-            | Field::Code(_)
-            | Field::Date(_)
-            | Field::DateTime(_)
-            | Field::Time(_)
-            | Field::Color(_)
-            | Field::Hidden(_) => {
+            Field::String(_) | Field::Secret(_) | Field::Code(_) => {
                 if !value.is_string() {
                     report.push_error(ValidationIssue::new(
                         path,
@@ -466,10 +459,7 @@ impl Schema {
             return;
         }
 
-        if matches!(
-            field,
-            Field::Computed(_) | Field::Notice(_) | Field::Hidden(_)
-        ) {
+        if matches!(field, Field::Computed(_) | Field::Notice(_)) {
             return;
         }
 
@@ -666,25 +656,6 @@ impl Schema {
     }
 
     fn field_type_name(field: &Field) -> &'static str {
-        match field {
-            Field::String(_) => "string",
-            Field::Secret(_) => "secret",
-            Field::Number(_) => "number",
-            Field::Boolean(_) => "boolean",
-            Field::Select(_) => "select",
-            Field::Object(_) => "object",
-            Field::List(_) => "list",
-            Field::Mode(_) => "mode",
-            Field::Code(_) => "code",
-            Field::Date(_) => "date",
-            Field::DateTime(_) => "datetime",
-            Field::Time(_) => "time",
-            Field::Color(_) => "color",
-            Field::File(_) => "file",
-            Field::Hidden(_) => "hidden",
-            Field::Computed(_) => "computed",
-            Field::Dynamic(_) => "dynamic",
-            Field::Notice(_) => "notice",
-        }
+        field.type_name()
     }
 }

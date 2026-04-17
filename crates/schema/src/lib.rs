@@ -44,9 +44,9 @@ pub mod widget;
 pub use error::{SchemaError, Severity, ValidationError, ValidationErrorBuilder, ValidationReport};
 pub use expression::{Expression, ExpressionAst};
 pub use field::{
-    BooleanField, CodeField, ColorField, ComputedField, ComputedReturn, DateField, DateTimeField,
-    DynamicField, Field, FileField, HiddenField, ListField, ModeField, ModeVariant, NoticeField,
-    NoticeSeverity, NumberField, ObjectField, SecretField, SelectField, StringField, TimeField,
+    BooleanField, CodeField, ComputedField, ComputedReturn, DynamicField, Field, FileField,
+    ListField, ModeField, ModeVariant, NoticeField, NoticeSeverity, NumberField, ObjectField,
+    SecretField, SelectField, StringField,
 };
 pub use input_hint::InputHint;
 pub use key::FieldKey;

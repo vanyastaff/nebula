@@ -59,6 +59,13 @@ pub enum ExpressionMode {
     Required,
 }
 
+impl ExpressionMode {
+    /// Returns true when mode is the default variant (`Allowed`).
+    pub fn is_default(&self) -> bool {
+        matches!(self, Self::Allowed)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

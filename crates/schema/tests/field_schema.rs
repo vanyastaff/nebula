@@ -227,6 +227,8 @@ fn validate_enforces_file_value_shape() {
 
 #[test]
 fn serde_roundtrip_supports_all_field_variants() {
+    use nebula_schema::InputHint;
+
     let schema = Schema::new()
         .add(Field::string("s"))
         .add(Field::secret("sec"))
@@ -237,12 +239,14 @@ fn serde_roundtrip_supports_all_field_variants() {
         .add(Field::list("list").item(Field::string("item")))
         .add(Field::mode("mode").variant("simple", "Simple", Field::string("payload")))
         .add(Field::code("code"))
-        .add(Field::date("date"))
-        .add(Field::datetime("datetime"))
-        .add(Field::time("time"))
-        .add(Field::color("color"))
+        // Date/DateTime/Time/Color → StringField with hint (replaces removed variants)
+        .add(Field::string("date").hint(InputHint::Date))
+        .add(Field::string("datetime").hint(InputHint::DateTime))
+        .add(Field::string("time").hint(InputHint::Time))
+        .add(Field::string("color_field").hint(InputHint::Color))
         .add(Field::file("file"))
-        .add(Field::hidden("hidden"))
+        // Hidden → visible(Never) on any field
+        .add(Field::string("hidden_field").visible(nebula_schema::VisibilityMode::Never))
         .add(Field::computed("computed"))
         .add(Field::dynamic("dynamic"))
         .add(Field::notice("notice"));
@@ -250,6 +254,7 @@ fn serde_roundtrip_supports_all_field_variants() {
     let encoded = serde_json::to_value(&schema).expect("serialize full variant schema");
     let decoded: Schema = serde_json::from_value(encoded).expect("deserialize full variant schema");
 
+    // 13 unique keys (the 5 removed variants are now represented as string fields with hints)
     assert_eq!(decoded.len(), 18);
     assert!(decoded.find("computed").is_some());
     assert!(decoded.find("notice").is_some());

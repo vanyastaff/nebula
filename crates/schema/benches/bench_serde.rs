@@ -7,7 +7,12 @@ fn sample_schema() -> Schema {
         .add(Field::secret("api_key").required().reveal_last(4))
         .add(Field::list("tags").item(Field::string("tag")))
         .add(Field::object("config").add(Field::boolean("enabled")))
-        .add(Field::mode("auth").variant("none", "None", Field::hidden("none")))
+        .add(Field::mode("auth").variant(
+            "none",
+            "None",
+            // "hidden" role: VisibilityMode::Never (HiddenField removed)
+            Field::string("none").visible(nebula_schema::VisibilityMode::Never),
+        ))
 }
 
 fn bench_schema_serde(c: &mut Criterion) {

@@ -44,7 +44,13 @@ fn http_request_schema() -> Schema {
         .add(Field::string("url").required().url())
         .add(
             Field::mode("auth")
-                .variant("none", "None", Field::hidden("none_payload"))
+                // "hidden" role: use VisibilityMode::Never (hidden variant removed)
+                .variant(
+                    "none",
+                    "None",
+                    Field::string("none_payload")
+                        .visible(nebula_schema::VisibilityMode::Never),
+                )
                 .variant(
                     "bearer",
                     "Bearer",
