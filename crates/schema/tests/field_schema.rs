@@ -106,12 +106,12 @@ fn validate_applies_visibility_and_rules() {
     );
 
     let mut values = FieldValues::new();
-    values.set("enabled", json!(false));
+    values.set_raw("enabled", json!(false));
     let report_hidden = schema.validate(&values, ExecutionMode::StaticOnly);
     assert!(!report_hidden.has_errors());
 
-    values.set("enabled", json!(true));
-    values.set("api_key", json!("abc"));
+    values.set_raw("enabled", json!(true));
+    values.set_raw("api_key", json!("abc"));
     let report_short = schema.validate(&values, ExecutionMode::StaticOnly);
     assert!(report_short.has_errors());
     assert_eq!(report_short.errors()[0].key, "api_key");
@@ -123,12 +123,12 @@ fn normalize_backfills_defaults() {
         .add(Field::string("host").default(json!("localhost")))
         .add(Field::number("port").default(json!(5432)));
     let mut values = FieldValues::new();
-    values.set("host", json!("db.internal"));
+    values.set_raw("host", json!("db.internal"));
 
     let normalized = schema.normalize(&values);
 
-    assert_eq!(normalized.get_string("host"), Some("db.internal"));
-    assert_eq!(normalized.get("port"), Some(&json!(5432)));
+    assert_eq!(normalized.get_string_by_str("host"), Some("db.internal"));
+    assert_eq!(normalized.get_raw_by_str("port"), Some(json!(5432)));
 }
 
 #[test]
@@ -157,21 +157,21 @@ fn normalize_recurses_for_object_list_and_mode_defaults() {
         );
 
     let mut values = FieldValues::new();
-    values.set("config", json!({ "host": "db.internal" }));
-    values.set("items", json!([{ "name": "apple" }, {}]));
+    values.set_raw("config", json!({ "host": "db.internal" }));
+    values.set_raw("items", json!([{ "name": "apple" }, {}]));
 
     let normalized = schema.normalize(&values);
     assert_eq!(
-        normalized.get("config"),
-        Some(&json!({ "host": "db.internal", "port": 8080 }))
+        normalized.get_raw_by_str("config"),
+        Some(json!({ "host": "db.internal", "port": 8080 }))
     );
     assert_eq!(
-        normalized.get("items"),
-        Some(&json!([{ "name": "apple", "qty": 1 }, { "name": "unnamed", "qty": 1 }]))
+        normalized.get_raw_by_str("items"),
+        Some(json!([{ "name": "apple", "qty": 1 }, { "name": "unnamed", "qty": 1 }]))
     );
     assert_eq!(
-        normalized.get("auth"),
-        Some(&json!({ "mode": "bearer", "value": { "token": "secret" } }))
+        normalized.get_raw_by_str("auth"),
+        Some(json!({ "mode": "bearer", "value": { "token": "secret" } }))
     );
 }
 
@@ -182,9 +182,9 @@ fn validate_enforces_scalar_type_mismatches() {
         .add(Field::number("retries").required())
         .add(Field::boolean("enabled").required());
     let mut values = FieldValues::new();
-    values.set("name", json!(123));
-    values.set("retries", json!("bad"));
-    values.set("enabled", json!("true"));
+    values.set_raw("name", json!(123));
+    values.set_raw("retries", json!("bad"));
+    values.set_raw("enabled", json!("true"));
 
     let report = schema.validate(&values, ExecutionMode::StaticOnly);
     assert!(report.has_errors());
@@ -204,7 +204,7 @@ fn validate_applies_transformers_before_rules() {
             }),
     );
     let mut values = FieldValues::new();
-    values.set("api_key", json!("  SECRET  "));
+    values.set_raw("api_key", json!("  SECRET  "));
 
     let report = schema.validate(&values, ExecutionMode::StaticOnly);
     assert!(!report.has_errors());
@@ -216,8 +216,8 @@ fn validate_enforces_file_value_shape() {
         .add(Field::file("single").required())
         .add(Field::file("many").multiple().required());
     let mut values = FieldValues::new();
-    values.set("single", json!(true));
-    values.set("many", json!(["a.txt", 42]));
+    values.set_raw("single", json!(true));
+    values.set_raw("many", json!(["a.txt", 42]));
 
     let report = schema.validate(&values, ExecutionMode::StaticOnly);
     assert!(report.has_errors());

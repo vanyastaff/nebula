@@ -106,7 +106,7 @@ async fn loader_registry_resolves_select_and_dynamic_loaders() {
         .register_record("resource_loader", |ctx| async move {
             let workspace = ctx
                 .values
-                .get_string("workspace")
+                .get_string_by_str("workspace")
                 .unwrap_or("none")
                 .to_owned();
             Ok(LoaderResult::done(vec![json!({
@@ -116,8 +116,8 @@ async fn loader_registry_resolves_select_and_dynamic_loaders() {
         });
 
     let mut values = FieldValues::new();
-    values.set("workspace", json!("ws_1"));
-    values.set("team_id", json!("team_1"));
+    values.set_raw("workspace", json!("ws_1"));
+    values.set_raw("team_id", json!("team_1"));
     let context = LoaderContext::new("workspace", values.clone()).with_filter("prod");
 
     let options = schema
@@ -178,8 +178,8 @@ fn runtime_validation_still_works_with_linted_schema() {
             .min_length(3),
     );
     let mut values = FieldValues::new();
-    values.set("enabled", json!(true));
-    values.set("name", json!("ab"));
+    values.set_raw("enabled", json!(true));
+    values.set_raw("name", json!("ab"));
 
     let report = schema.validate(&values, ExecutionMode::StaticOnly);
     assert!(report.has_errors());

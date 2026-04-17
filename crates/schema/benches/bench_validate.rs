@@ -15,9 +15,9 @@ fn sample_schema() -> Schema {
 
 fn sample_values() -> FieldValues {
     let mut values = FieldValues::new();
-    values.set("name", json!("nebula"));
-    values.set("retries", json!(3));
-    values.set("mode", json!("sync"));
+    values.set_raw("name", json!("nebula"));
+    values.set_raw("retries", json!(3));
+    values.set_raw("mode", json!("sync"));
     values
 }
 

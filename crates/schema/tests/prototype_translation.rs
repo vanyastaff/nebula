@@ -88,10 +88,10 @@ fn nested_object_schema() -> Schema {
 fn telegram_schema_validates_resource_operation_flow() {
     let schema = telegram_send_message_schema();
     let mut values = FieldValues::new();
-    values.set("resource", json!("message"));
-    values.set("operation", json!("sendMessage"));
-    values.set("text", json!("Hello from Nebula"));
-    values.set("api_key", json!("sk_test_1234567890abcdef"));
+    values.set_raw("resource", json!("message"));
+    values.set_raw("operation", json!("sendMessage"));
+    values.set_raw("text", json!("Hello from Nebula"));
+    values.set_raw("api_key", json!("sk_test_1234567890abcdef"));
 
     let report = schema.validate(&values, ExecutionMode::StaticOnly);
     assert!(!report.has_errors());
@@ -101,9 +101,9 @@ fn telegram_schema_validates_resource_operation_flow() {
 fn http_schema_rejects_invalid_url() {
     let schema = http_request_schema();
     let mut values = FieldValues::new();
-    values.set("method", json!("GET"));
-    values.set("url", json!("not-a-url"));
-    values.set("auth", json!({ "mode": "none" }));
+    values.set_raw("method", json!("GET"));
+    values.set_raw("url", json!("not-a-url"));
+    values.set_raw("auth", json!({ "mode": "none" }));
 
     let report = schema.validate(&values, ExecutionMode::StaticOnly);
     assert!(report.has_errors());
@@ -114,9 +114,9 @@ fn http_schema_rejects_invalid_url() {
 fn oauth_schema_list_rules_are_enforced() {
     let schema = oauth2_credential_schema();
     let mut values = FieldValues::new();
-    values.set("grant_type", json!("client_credentials"));
-    values.set("client_secret", json!("top-secret-value"));
-    values.set("scopes", json!([]));
+    values.set_raw("grant_type", json!("client_credentials"));
+    values.set_raw("client_secret", json!("top-secret-value"));
+    values.set_raw("scopes", json!([]));
 
     let report = schema.validate(&values, ExecutionMode::StaticOnly);
     assert!(report.has_errors());
@@ -127,9 +127,9 @@ fn oauth_schema_list_rules_are_enforced() {
 fn mode_variant_payload_is_validated() {
     let schema = http_request_schema();
     let mut values = FieldValues::new();
-    values.set("method", json!("GET"));
-    values.set("url", json!("https://example.com"));
-    values.set("auth", json!({ "mode": "bearer" }));
+    values.set_raw("method", json!("GET"));
+    values.set_raw("url", json!("https://example.com"));
+    values.set_raw("auth", json!({ "mode": "bearer" }));
 
     let report = schema.validate(&values, ExecutionMode::StaticOnly);
     assert!(report.has_errors());
@@ -140,7 +140,7 @@ fn mode_variant_payload_is_validated() {
 fn object_children_are_validated() {
     let schema = nested_object_schema();
     let mut values = FieldValues::new();
-    values.set("config", json!({ "host": "localhost" }));
+    values.set_raw("config", json!({ "host": "localhost" }));
 
     let report = schema.validate(&values, ExecutionMode::StaticOnly);
     assert!(report.has_errors());

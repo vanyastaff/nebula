@@ -73,11 +73,12 @@ impl Schema {
     /// Validate runtime values against this schema.
     pub fn validate(&self, values: &FieldValues, mode: ExecutionMode) -> ValidationReport {
         let mut report = ValidationReport::new();
-        let context = values.as_map();
+        let context = values.to_context_map();
 
         for field in &self.fields {
             let key = field.key().as_str();
-            self.validate_single_field(field, context, values.get(key), key, mode, &mut report);
+            let raw = values.get_raw_by_str(key);
+            self.validate_single_field(field, &context, raw.as_ref(), key, mode, &mut report);
         }
 
         report
@@ -472,22 +473,19 @@ impl Schema {
             return;
         }
 
-        if !values.contains(path) {
+        if !values.contains_str(path) {
             if let Some(default) = field.default() {
-                values.set(path.to_owned(), default.clone());
+                values.set_raw(path, default.clone());
             } else if let Field::Mode(mode) = field
                 && let Some(default_variant) = mode.default_variant.as_deref()
             {
-                values.set(
-                    path.to_owned(),
-                    serde_json::json!({ "mode": default_variant }),
-                );
+                values.set_raw(path, serde_json::json!({ "mode": default_variant }));
             } else {
                 return;
             }
         }
 
-        let Some(current) = values.get(path).cloned() else {
+        let Some(current) = values.get_raw_by_str(path) else {
             return;
         };
 
@@ -497,7 +495,7 @@ impl Schema {
                     return;
                 };
                 self.normalize_object_children(&object_field.fields, &mut object, depth + 1);
-                values.set(path.to_owned(), Value::Object(object));
+                values.set_raw(path, Value::Object(object));
             },
             Field::List(list) => {
                 let Some(array) = current.as_array() else {
@@ -510,7 +508,7 @@ impl Schema {
                 for item in array {
                     normalized.push(self.normalize_nested_value(item_schema, item, depth + 1));
                 }
-                values.set(path.to_owned(), Value::Array(normalized));
+                values.set_raw(path, Value::Array(normalized));
             },
             Field::Mode(mode) => {
                 let Some(mut object) = current.as_object().cloned() else {
@@ -521,10 +519,10 @@ impl Schema {
                     .and_then(Value::as_str)
                     .or(mode.default_variant.as_deref())
                 else {
-                    values.set(path.to_owned(), Value::Object(object));
+                    values.set_raw(path, Value::Object(object));
                     return;
                 };
-                let mode_key = mode_key.to_owned();
+                let mode_key: String = mode_key.to_owned();
 
                 object
                     .entry("mode".to_owned())
@@ -549,7 +547,7 @@ impl Schema {
                     object.insert("value".to_owned(), normalized);
                 }
 
-                values.set(path.to_owned(), Value::Object(object));
+                values.set_raw(path, Value::Object(object));
             },
             _ => {},
         }

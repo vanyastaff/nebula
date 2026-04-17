@@ -11,6 +11,8 @@
 
 /// Error types for schema operations.
 pub mod error;
+/// Expression value wrapper (Task 14 adds lazy parse + OnceLock).
+pub mod expression;
 /// Typed field definitions and wrappers.
 pub mod field;
 /// UI hints for string input rendering.
@@ -40,6 +42,7 @@ pub mod value;
 pub mod widget;
 
 pub use error::{SchemaError, Severity, ValidationError, ValidationErrorBuilder, ValidationReport};
+pub use expression::Expression;
 pub use field::{
     BooleanField, CodeField, ColorField, ComputedField, ComputedReturn, DateField, DateTimeField,
     DynamicField, Field, FileField, HiddenField, ListField, ModeField, ModeVariant, NoticeField,
