@@ -1,0 +1,5 @@
+error: invalid FieldKey literal: key cannot be empty
+ --> tests/compile_fail/field_key_empty.rs:4:24
+  |
+4 |     let _ = field_key!("");
+  |                        ^^
