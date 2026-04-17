@@ -106,8 +106,7 @@ impl Rule {
             Self::Value(v) => v.validate_value(input),
             Self::Predicate(p) => match ctx {
                 Some(c) if p.evaluate(c) => Ok(()),
-                Some(_) => Err(ValidationError::new(predicate_code(p), "predicate failed")
-                    .with_field_path(p.field().clone())),
+                Some(_) => Err(predicate_error(p)),
                 None => Ok(()),
             },
             Self::Logic(l) => l.validate(input, ctx, mode),
@@ -138,11 +137,12 @@ impl Rule {
         matches!(self.kind(), RuleKind::Deferred)
     }
 
-    /// Collects all field paths referenced by context predicates in this rule.
+    /// Collects all field IDs referenced by **context predicates** in this rule.
     ///
-    /// Recurses into logical combinators (`All`, `Any`, `Not`) and the
-    /// `Described` decorator. Value-only rules and deferred rules return
-    /// no references.
+    /// Recurses into `Logic` combinators and `Described` wrappers. `Value` rules
+    /// have no field refs; `Deferred::UniqueBy` carries a sub-path but is not
+    /// collected here — it's evaluated at runtime against array elements, not
+    /// a sibling field context.
     pub fn field_references<'a>(&'a self, out: &mut Vec<&'a str>) {
         match self {
             Self::Predicate(p) => out.push(p.field().as_str()),
@@ -156,12 +156,28 @@ impl Rule {
         }
     }
 
-    /// Evaluates the rule as a boolean predicate against a [`RuleContext`].
+    /// Evaluates this rule as a boolean predicate against field values.
+    ///
+    /// **Compat bridge**: this method exists for callers that still pass a
+    /// flat `HashMap<String, Value>` (via [`RuleContext`]). New code should
+    /// use [`Rule::validate`] with a [`PredicateContext`], which handles
+    /// nested JSON Pointer paths (`/user/email`) correctly.
     ///
     /// Value and Deferred rules always return `true` (they are not
     /// predicates). Predicates look up their field via `ctx.get(key)` where
-    /// the lookup key is the predicate's path with the leading `/` stripped,
-    /// preserving backward compatibility with flat-key contexts.
+    /// the lookup key is the predicate's path with the leading `/` stripped.
+    ///
+    /// # Known limitation
+    ///
+    /// For nested paths like `/user/email`, this method strips the leading
+    /// `/` and does a flat key lookup for `"user/email"`. Flat `RuleContext`
+    /// implementations won't have such a key, so nested predicates will
+    /// silently evaluate to `false`. Use
+    /// `Rule::validate(input, Some(&ctx), mode)` instead for nested-path
+    /// predicate evaluation.
+    ///
+    /// TODO(post-refactor): retire this method once `schema::validated`
+    /// migrates to `PredicateContext::from_json`.
     #[must_use]
     pub fn evaluate(&self, ctx: &dyn RuleContext) -> bool {
         match self {
@@ -284,6 +300,37 @@ fn predicate_code(p: &Predicate) -> &'static str {
         Predicate::Contains(_, _) => "contains_failed",
         Predicate::Matches(_, _) => "matches_failed",
         Predicate::In(_, _) => "in_failed",
+    }
+}
+
+/// Constructs a `ValidationError` for a failed predicate, injecting
+/// variant-specific operand params so message templates can render
+/// `{expected}` / `{allowed}` placeholders.
+fn predicate_error(p: &Predicate) -> ValidationError {
+    let err = ValidationError::new(predicate_code(p), "predicate failed")
+        .with_field_path(p.field().clone());
+    match p {
+        Predicate::Eq(_, v) | Predicate::Ne(_, v) | Predicate::Contains(_, v) => {
+            err.with_param("expected", format!("{v}"))
+        },
+        Predicate::Gt(_, n) | Predicate::Gte(_, n) | Predicate::Lt(_, n) | Predicate::Lte(_, n) => {
+            err.with_param("expected", n.to_string())
+        },
+        Predicate::In(_, vs) => {
+            let allowed = vs
+                .iter()
+                .map(|v| format!("{v}"))
+                .collect::<Vec<_>>()
+                .join(", ");
+            err.with_param("allowed", allowed)
+        },
+        // IsTrue / IsFalse / Set / Empty / Matches carry no operand
+        // expected-value — no param injection needed.
+        Predicate::IsTrue(_)
+        | Predicate::IsFalse(_)
+        | Predicate::Set(_)
+        | Predicate::Empty(_)
+        | Predicate::Matches(_, _) => err,
     }
 }
 

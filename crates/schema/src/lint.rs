@@ -311,9 +311,10 @@ fn lint_rule_refs_new(
             }
             continue;
         }
+        // Transitional: accepts both JSON-pointer (`/path`) and legacy dotted
+        // (`a.b.c`) ref forms. Remove the `.` separator once schema refs fully
+        // migrate to JSON Pointer.
         let stripped = field_ref.strip_prefix('/').unwrap_or(field_ref);
-        // First segment of the path; separator is `/` in JSON pointer form,
-        // but legacy refs may use `.` — accept either.
         let lk = stripped.split(['/', '.']).next().unwrap_or_default();
         if !local_keys.contains(lk) {
             report.push(
@@ -592,6 +593,9 @@ fn lint_visibility_cycles_new(fields: &[Field], prefix: &FieldPath, report: &mut
                 if target.starts_with("$root.") {
                     continue;
                 }
+                // Transitional: accepts both JSON-pointer (`/path`) and legacy
+                // dotted (`a.b.c`) ref forms. Remove the `.` separator once
+                // schema refs fully migrate to JSON Pointer.
                 let stripped = target.strip_prefix('/').unwrap_or(target);
                 let target = stripped.split(['/', '.']).next().unwrap_or_default();
                 edges.push((source, target));
