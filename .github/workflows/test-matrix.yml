@@ -66,8 +66,13 @@ jobs:
 
           mapfile -t PACKAGES < <(
             echo "$CHANGED_FILES" \
-              | sed -n 's#^crates/\([^/]*\)/.*#nebula-\1#p' \
-              | sort -u
+              | sed -n 's#^crates/\([^/]*\)/.*#\1#p' \
+              | sort -u \
+              | while IFS= read -r crate; do
+                  if [[ -d "crates/$crate" ]]; then
+                    echo "nebula-$crate"
+                  fi
+                done
           )
 
           if [[ ${#PACKAGES[@]} -eq 0 ]]; then
