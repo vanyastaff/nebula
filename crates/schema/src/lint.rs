@@ -187,7 +187,7 @@ fn lint_fields(fields: &[Field], prefix: &str, root_ids: &HashSet<&str>, report:
                 {
                     report.push_warning(
                         path.clone(),
-                        "notice_misuse",
+                        "notice.misuse",
                         "notice field should stay display-only (no required/default/rules/transformers)",
                     );
                 }
@@ -445,7 +445,7 @@ fn lint_contradictory_rules(rules: &[Rule], path: &str, report: &mut LintReport)
     {
         report.push_error(
             path.to_owned(),
-            "contradictory_rules",
+            "rule.contradictory",
             format!("min_length ({min}) is greater than max_length ({max})"),
         );
     }
@@ -454,7 +454,7 @@ fn lint_contradictory_rules(rules: &[Rule], path: &str, report: &mut LintReport)
     {
         report.push_error(
             path.to_owned(),
-            "contradictory_rules",
+            "rule.contradictory",
             format!("min_items ({min}) is greater than max_items ({max})"),
         );
     }
@@ -501,7 +501,7 @@ fn lint_single_rule_compatibility(field: &Field, rule: &Rule, path: &str, report
     if !compatible {
         report.push_warning(
             path.to_owned(),
-            "rule_type_mismatch",
+            "rule.incompatible",
             format!(
                 "rule `{}` is not compatible with `{}` field",
                 rule_name(rule),

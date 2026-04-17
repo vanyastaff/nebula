@@ -58,7 +58,7 @@ fn lint_schema_reports_dangling_refs_and_structural_issues() {
     assert!(has_lint(
         &report,
         LintLevel::Error,
-        "contradictory_rules",
+        "rule.contradictory",
         "name.rules"
     ));
     assert!(has_lint(
@@ -186,7 +186,7 @@ fn runtime_validation_still_works_with_linted_schema() {
 }
 
 #[test]
-fn lint_schema_reports_rule_type_mismatch_warnings() {
+fn lint_schema_reports_rule_incompatible_warnings() {
     let schema = Schema::new()
         .add(
             Field::number("retries")
@@ -223,19 +223,19 @@ fn lint_schema_reports_rule_type_mismatch_warnings() {
     assert!(has_lint(
         &report,
         LintLevel::Warning,
-        "rule_type_mismatch",
+        "rule.incompatible",
         "retries.rules"
     ));
     assert!(has_lint(
         &report,
         LintLevel::Warning,
-        "rule_type_mismatch",
+        "rule.incompatible",
         "name.rules"
     ));
     assert!(has_lint(
         &report,
         LintLevel::Warning,
-        "rule_type_mismatch",
+        "rule.incompatible",
         "flag.rules"
     ));
 }
@@ -274,7 +274,7 @@ fn lint_schema_accepts_compatible_rule_types() {
         !has_lint(
             &report,
             LintLevel::Warning,
-            "rule_type_mismatch",
+            "rule.incompatible",
             "title.rules"
         ),
         "compatible string rules should not be flagged: {:?}",
@@ -284,7 +284,7 @@ fn lint_schema_accepts_compatible_rule_types() {
         !has_lint(
             &report,
             LintLevel::Warning,
-            "rule_type_mismatch",
+            "rule.incompatible",
             "timeout.rules"
         ),
         "compatible numeric rules should not be flagged: {:?}",
@@ -294,7 +294,7 @@ fn lint_schema_accepts_compatible_rule_types() {
         !has_lint(
             &report,
             LintLevel::Warning,
-            "rule_type_mismatch",
+            "rule.incompatible",
             "tags.rules"
         ),
         "compatible list rules should not be flagged: {:?}",

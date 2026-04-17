@@ -549,8 +549,8 @@ fn emits_notice_misuse() {
     let schema = Schema::new().add(Field::Notice(nf));
     let lint = schema.lint();
     assert!(
-        lint.diagnostics().iter().any(|d| d.code == "notice_misuse"),
-        "expected notice_misuse, got: {:?}",
+        lint.diagnostics().iter().any(|d| d.code == "notice.misuse"),
+        "expected notice.misuse, got: {:?}",
         lint.diagnostics()
             .iter()
             .map(|d| &d.code)
@@ -587,19 +587,18 @@ fn emits_rule_incompatible_warning() {
     use nebula_validator::Rule;
 
     // SchemaBuilder warns but doesn't block on rule.incompatible.
-    // We verify via the legacy lint_schema path which uses "rule_type_mismatch".
+    // Both legacy and new lint_tree now emit "rule.incompatible" (aligned in Task 26).
     let schema = Schema::new().add(Field::number(fk("n")).with_rule(Rule::Pattern {
         pattern: "^[0-9]+$".to_owned(),
         message: None,
     }));
     let lint = schema.lint();
-    // Legacy lint emits "rule_type_mismatch"; new lint_tree emits "rule.incompatible".
-    // Both are in STANDARD_CODES (rule.incompatible is listed).
+    // Both legacy and new lint emit "rule.incompatible" (aligned in Task 26 cleanup).
     assert!(
         lint.diagnostics()
             .iter()
-            .any(|d| d.code == "rule_type_mismatch" || d.code == "rule.incompatible"),
-        "expected rule_type_mismatch or rule.incompatible, got: {:?}",
+            .any(|d| d.code == "rule.incompatible"),
+        "expected rule.incompatible, got: {:?}",
         lint.diagnostics()
             .iter()
             .map(|d| &d.code)
