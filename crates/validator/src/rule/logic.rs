@@ -16,7 +16,9 @@ use crate::{
 pub enum Logic {
     /// All children must pass.
     All(Vec<Rule>),
-    /// At least one child must pass.
+    /// At least one child must pass. Evaluation short-circuits on the first
+    /// success; remaining children are not evaluated, so errors from earlier
+    /// children that failed are also discarded.
     Any(Vec<Rule>),
     /// Negates the child.
     Not(Rule),
@@ -66,6 +68,7 @@ impl Logic {
             },
             Self::Not(inner) => match inner.validate(input, ctx, mode) {
                 Ok(()) => Err(ValidationError::new("not_failed", "negated rule passed")),
+                // Inner error is intentionally ignored: Not succeeds when its child fails.
                 Err(_) => Ok(()),
             },
         }
