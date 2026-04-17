@@ -1,14 +1,14 @@
 //! Integration tests for Nebula API
 
+mod common;
 use std::sync::Arc;
 
+use common::*;
 use nebula_api::{ApiConfig, AppState, app};
 use nebula_config::ConfigBuilder;
 use nebula_storage::{
     InMemoryExecutionRepo, InMemoryWorkflowRepo, repos::InMemoryControlQueueRepo,
 };
-
-const TEST_JWT_SECRET: &str = "test-secret-for-integration-tests-0123456789";
 
 /// Helper to create test app state
 async fn create_test_state() -> AppState {
@@ -33,67 +33,6 @@ async fn create_test_state() -> AppState {
         control_queue_repo,
         api_config.jwt_secret.clone(),
     )
-}
-
-/// Helper to create test state returning both the AppState and the control queue
-/// so tests can inspect enqueued signals.
-async fn create_test_state_with_queue() -> (AppState, Arc<InMemoryControlQueueRepo>) {
-    let config = ConfigBuilder::new()
-        .with_defaults(serde_json::json!({
-            "api": {
-                "port": 8080,
-                "host": "127.0.0.1"
-            }
-        }))
-        .build()
-        .await
-        .unwrap();
-    let workflow_repo = Arc::new(InMemoryWorkflowRepo::new());
-    let execution_repo = Arc::new(InMemoryExecutionRepo::new());
-    let control_queue_repo = Arc::new(InMemoryControlQueueRepo::new());
-    let api_config = ApiConfig::for_test();
-    // Keep a typed reference for later inspection, pass a trait-object clone to AppState.
-    let control_queue_dyn: Arc<dyn nebula_storage::repos::ControlQueueRepo> =
-        Arc::clone(&control_queue_repo) as _;
-    let state = AppState::new(
-        config,
-        workflow_repo,
-        execution_repo,
-        control_queue_dyn,
-        api_config.jwt_secret.clone(),
-    );
-    (state, control_queue_repo)
-}
-
-/// Helper to create a valid JWT token for testing
-fn create_test_jwt() -> String {
-    use jsonwebtoken::{EncodingKey, Header, encode};
-    use serde::{Deserialize, Serialize};
-
-    #[derive(Debug, Serialize, Deserialize)]
-    struct Claims {
-        sub: String,
-        exp: u64,
-        iat: u64,
-    }
-
-    let now = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap()
-        .as_secs();
-
-    let claims = Claims {
-        sub: "test-user".to_string(),
-        exp: now + 3600, // Expires in 1 hour
-        iat: now,
-    };
-
-    encode(
-        &Header::default(),
-        &claims,
-        &EncodingKey::from_secret(TEST_JWT_SECRET.as_bytes()),
-    )
-    .unwrap()
 }
 
 #[tokio::test]
@@ -765,52 +704,6 @@ async fn test_delete_workflow() {
         .unwrap();
 
     assert_eq!(response.status(), StatusCode::NOT_FOUND);
-}
-
-/// Build a minimal but structurally valid `WorkflowDefinition` JSON blob that
-/// can round-trip through `serde_json::from_value::<WorkflowDefinition>()` and
-/// pass `nebula_workflow::validate_workflow`.
-///
-/// The definition contains a single node with no incoming edges, satisfying:
-/// - non-empty name
-/// - at least one node
-/// - no cycles
-/// - has an entry node
-/// - schema_version == 1 (current)
-fn make_valid_workflow_definition(workflow_id: &nebula_core::WorkflowId) -> serde_json::Value {
-    serde_json::json!({
-        "id": workflow_id.to_string(),
-        "name": "Valid Workflow",
-        "version": { "major": 0, "minor": 1, "patch": 0 },
-        "nodes": [
-            { "id": "step_a", "name": "Step A", "action_key": "echo" }
-        ],
-        "connections": [],
-        "created_at": "2024-01-01T00:00:00Z",
-        "updated_at": "2024-01-01T00:00:00Z",
-        "schema_version": 1
-    })
-}
-
-/// Build a `WorkflowDefinition` JSON that parses correctly but fails
-/// `validate_workflow` due to a cycle (A -> B, B -> A).
-fn make_cyclic_workflow_definition(workflow_id: &nebula_core::WorkflowId) -> serde_json::Value {
-    serde_json::json!({
-        "id": workflow_id.to_string(),
-        "name": "Cyclic Workflow",
-        "version": { "major": 0, "minor": 1, "patch": 0 },
-        "nodes": [
-            { "id": "step_a", "name": "A", "action_key": "echo" },
-            { "id": "step_b", "name": "B", "action_key": "echo" }
-        ],
-        "connections": [
-            { "from_node": "step_a", "to_node": "step_b" },
-            { "from_node": "step_b", "to_node": "step_a" }
-        ],
-        "created_at": "2024-01-01T00:00:00Z",
-        "updated_at": "2024-01-01T00:00:00Z",
-        "schema_version": 1
-    })
 }
 
 #[tokio::test]
@@ -2046,12 +1939,15 @@ async fn activate_invalid_returns_422() {
     for err in errors {
         assert!(err["code"].is_string(), "each error must have a code");
         assert!(err["detail"].is_string(), "each error must have a detail");
+        // RFC 6901 JSON Pointer: either the root pointer ("") or a path starting with "/".
+        // Structural errors (CycleDetected, NoEntryNodes, …) produce "" (root);
+        // node/connection errors produce "/nodes/<key>" or "/connections/<from>/<to>".
         assert!(
             err["pointer"]
                 .as_str()
-                .map(|p| p.starts_with('/'))
+                .map(|p| p.is_empty() || p.starts_with('/'))
                 .unwrap_or(false),
-            "pointer must be a JSON Pointer (starts with /)"
+            "pointer must be a valid RFC 6901 JSON Pointer (empty string or starts with /)"
         );
     }
 }
