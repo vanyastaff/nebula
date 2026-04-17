@@ -15,6 +15,9 @@ mod common;
 
 mod api_payload;
 mod combinator_interop;
+mod deep_nesting;
 mod derive_form;
 mod error_semantics;
+mod proof_tokens;
 mod rule_roundtrip;
+mod unicode_lengths;
