@@ -216,6 +216,45 @@ impl IntoIterator for ValidationReport {
     }
 }
 
+impl fmt::Display for ValidationReport {
+    /// Formats the report as a newline-separated list of issues.
+    ///
+    /// Each line is the `Display` of the individual [`ValidationError`].
+    /// An empty report formats as `"(no issues)"`.
+    ///
+    /// # Example
+    ///
+    /// ```rust
+    /// use nebula_schema::{FieldPath, ValidationError, ValidationReport};
+    ///
+    /// let mut report = ValidationReport::new();
+    /// report.push(
+    ///     ValidationError::builder("required")
+    ///         .at(FieldPath::parse("name").unwrap())
+    ///         .message("field is required")
+    ///         .build(),
+    /// );
+    ///
+    /// let text = report.to_string();
+    /// assert!(text.contains("[required]"));
+    /// assert!(text.contains("name"));
+    /// ```
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        if self.issues.is_empty() {
+            return write!(f, "(no issues)");
+        }
+        for (i, issue) in self.issues.iter().enumerate() {
+            if i > 0 {
+                writeln!(f)?;
+            }
+            write!(f, "{issue}")?;
+        }
+        Ok(())
+    }
+}
+
+impl std::error::Error for ValidationReport {}
+
 /// Canonical set of stable error codes emitted by the schema crate.
 ///
 /// Plugins may add their own under a namespace prefix (e.g. `my_plugin.foo`).
@@ -321,6 +360,52 @@ mod tests {
         assert!(report.has_warnings());
         assert_eq!(report.errors().count(), 1);
         assert_eq!(report.warnings().count(), 1);
+    }
+
+    #[test]
+    fn report_display_empty() {
+        let report = ValidationReport::new();
+        assert_eq!(report.to_string(), "(no issues)");
+    }
+
+    #[test]
+    fn report_display_single_error() {
+        let mut report = ValidationReport::new();
+        report.push(
+            ValidationError::builder("required")
+                .at(FieldPath::parse("name").unwrap())
+                .message("field is required")
+                .build(),
+        );
+        let text = report.to_string();
+        assert!(text.contains("[required]"), "code missing: {text}");
+        assert!(text.contains("name"), "path missing: {text}");
+        assert!(
+            text.contains("field is required"),
+            "message missing: {text}"
+        );
+    }
+
+    #[test]
+    fn report_display_multiple_issues_newline_separated() {
+        let mut report = ValidationReport::new();
+        report.push(
+            ValidationError::builder("required")
+                .at(FieldPath::parse("a").unwrap())
+                .message("missing a")
+                .build(),
+        );
+        report.push(
+            ValidationError::builder("type_mismatch")
+                .at(FieldPath::parse("b").unwrap())
+                .message("wrong type for b")
+                .build(),
+        );
+        let text = report.to_string();
+        let lines: Vec<&str> = text.lines().collect();
+        assert_eq!(lines.len(), 2, "expected 2 lines, got: {text:?}");
+        assert!(lines[0].contains("[required]"));
+        assert!(lines[1].contains("[type_mismatch]"));
     }
 
     #[test]
