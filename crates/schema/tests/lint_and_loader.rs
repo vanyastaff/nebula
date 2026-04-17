@@ -93,7 +93,7 @@ async fn loader_registry_resolves_select_and_dynamic_loaders() {
         .add(
             Field::dynamic("resource")
                 .loader("resource_loader")
-                .depends_on(FieldPath::root("workspace")),
+                .depends_on(FieldPath::local("workspace")),
         );
 
     let registry = LoaderRegistry::new()

@@ -25,7 +25,8 @@ pub mod mode;
 pub mod option;
 /// Typed references to schema fields.
 pub mod path;
-/// Validation report models.
+/// Legacy validation report models (kept for schema.rs; will be deleted in a later task).
+#[doc(hidden)]
 pub mod report;
 /// Top-level schema aggregate.
 pub mod schema;
@@ -36,7 +37,7 @@ pub mod value;
 /// Typed widget hints by field family.
 pub mod widget;
 
-pub use error::SchemaError;
+pub use error::{SchemaError, Severity, ValidationError, ValidationErrorBuilder, ValidationReport};
 pub use field::{
     BooleanField, CodeField, ColorField, ComputedField, ComputedReturn, DateField, DateTimeField,
     DynamicField, Field, FileField, HiddenField, ListField, ModeField, ModeVariant, NoticeField,
@@ -52,7 +53,7 @@ pub use mode::{RequiredMode, VisibilityMode};
 pub use nebula_validator::ExecutionMode;
 pub use option::SelectOption;
 pub use path::FieldPath;
-pub use report::{ValidationIssue, ValidationReport};
+pub use report::ValidationIssue;
 pub use schema::Schema;
 pub use transformer::Transformer;
 pub use value::{EXPRESSION_KEY, FieldValue, FieldValues};

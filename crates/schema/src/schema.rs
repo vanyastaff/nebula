@@ -6,7 +6,8 @@ use serde_json::{Map, Value};
 
 use crate::{
     Field, FieldValues, LintReport, LoaderContext, LoaderRegistry, LoaderResult, RequiredMode,
-    SchemaError, SelectOption, ValidationIssue, ValidationReport, VisibilityMode, lint_schema,
+    SchemaError, SelectOption, VisibilityMode, lint_schema,
+    report::{ValidationIssue, ValidationReport},
 };
 
 /// Top-level schema definition for action/resource inputs.
