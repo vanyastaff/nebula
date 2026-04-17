@@ -354,12 +354,71 @@ impl ValidationError {
     }
 }
 
+/// Renders a message template by substituting `{name}` placeholders with
+/// the matching entry from `params`. `{{` and `}}` are literal braces.
+/// Unknown `{name}` is left as-is. Zero allocation when the template has
+/// no `{` at all.
+fn render_template<'a>(
+    template: &'a str,
+    params: &[(Cow<'static, str>, Cow<'static, str>)],
+) -> Cow<'a, str> {
+    if !template.contains('{') {
+        return Cow::Borrowed(template);
+    }
+
+    let mut out = String::with_capacity(template.len());
+    let mut chars = template.char_indices().peekable();
+    while let Some((_, c)) = chars.next() {
+        if c == '{' {
+            if matches!(chars.peek(), Some((_, '{'))) {
+                out.push('{');
+                chars.next();
+                continue;
+            }
+            let mut name = String::new();
+            let mut closed = false;
+            for (_, nc) in chars.by_ref() {
+                if nc == '}' {
+                    closed = true;
+                    break;
+                }
+                name.push(nc);
+            }
+            if !closed {
+                out.push('{');
+                out.push_str(&name);
+                continue;
+            }
+            match params.iter().find(|(k, _)| k.as_ref() == name) {
+                Some((_, v)) => out.push_str(v.as_ref()),
+                None => {
+                    out.push('{');
+                    out.push_str(&name);
+                    out.push('}');
+                },
+            }
+        } else if c == '}' {
+            if matches!(chars.peek(), Some((_, '}'))) {
+                out.push('}');
+                chars.next();
+            } else {
+                out.push('}');
+            }
+        } else {
+            out.push(c);
+        }
+    }
+    Cow::Owned(out)
+}
+
 impl fmt::Display for ValidationError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let params = self.params();
+        let rendered = render_template(self.message.as_ref(), params);
         if let Some(field) = &self.field {
-            write!(f, "[{}] {}: {}", field, self.code, self.message)?;
+            write!(f, "[{}] {}: {}", field, self.code, rendered)?;
         } else {
-            write!(f, "{}: {}", self.code, self.message)?;
+            write!(f, "{}: {}", self.code, rendered)?;
         }
 
         let params = self.params();
