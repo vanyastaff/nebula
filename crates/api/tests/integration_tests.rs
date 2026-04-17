@@ -5,29 +5,17 @@ use std::sync::Arc;
 
 use common::*;
 use nebula_api::{ApiConfig, AppState, app};
-use nebula_config::ConfigBuilder;
 use nebula_storage::{
     InMemoryExecutionRepo, InMemoryWorkflowRepo, repos::InMemoryControlQueueRepo,
 };
 
 /// Helper to create test app state
 async fn create_test_state() -> AppState {
-    let config = ConfigBuilder::new()
-        .with_defaults(serde_json::json!({
-            "api": {
-                "port": 8080,
-                "host": "127.0.0.1"
-            }
-        }))
-        .build()
-        .await
-        .unwrap();
     let workflow_repo = Arc::new(InMemoryWorkflowRepo::new());
     let execution_repo = Arc::new(InMemoryExecutionRepo::new());
     let control_queue_repo = Arc::new(InMemoryControlQueueRepo::new());
     let api_config = ApiConfig::for_test();
     AppState::new(
-        config,
         workflow_repo,
         execution_repo,
         control_queue_repo,

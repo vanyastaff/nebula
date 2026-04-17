@@ -2,13 +2,17 @@
 //!
 //! Resolution order (later overrides earlier):
 //! 1. Built-in defaults
-//! 2. `~/.nebula/config.toml` (user-global)
+//! 2. `~/.config/nebula/config.toml` (user-global, via `dirs::config_dir`)
 //! 3. `./nebula.toml` (project-local)
-//! 4. Environment variables (`NEBULA_*`)
-//! 5. CLI flags (highest priority)
+//! 4. Environment variables (`NEBULA_*` — e.g. `NEBULA_RUN_CONCURRENCY` → `run.concurrency`)
+//! 5. CLI flags (highest priority; applied by the caller after `load()` returns)
 
 use std::path::PathBuf;
 
+use figment::{
+    Figment,
+    providers::{Env, Format, Serialized, Toml},
+};
 use serde::{Deserialize, Serialize};
 
 /// CLI configuration.
@@ -74,27 +78,28 @@ impl Default for LogConfig {
 impl CliConfig {
     /// Load configuration from standard locations.
     ///
-    /// Merges: defaults → ~/.nebula/config.toml → ./nebula.toml → env vars.
+    /// Merges: defaults → global TOML → local `nebula.toml` → `NEBULA_*` env vars.
+    /// Extraction errors (parse failures, unknown fields) silently fall back to
+    /// defaults; the CLI prefers to keep running with sane values rather than
+    /// abort on a misformatted user config.
     pub async fn load() -> Self {
-        let mut builder = nebula_config::ConfigBuilder::new().with_defaults(default_config_json());
+        let mut fig = Figment::from(Serialized::defaults(CliConfig::default()));
 
-        // User-global config.
         if let Some(global_path) = global_config_path()
             && global_path.exists()
         {
-            builder = builder.with_source(nebula_config::ConfigSource::File(global_path));
+            fig = fig.merge(Toml::file(global_path));
         }
 
-        // Project-local config.
         let local_path = PathBuf::from("nebula.toml");
         if local_path.exists() {
-            builder = builder.with_source(nebula_config::ConfigSource::File(local_path));
+            fig = fig.merge(Toml::file(local_path));
         }
 
-        match builder.build().await {
-            Ok(config) => config.get_all::<CliConfig>().await.unwrap_or_default(),
-            Err(_) => Self::default(),
-        }
+        // `NEBULA_RUN_CONCURRENCY` → `run.concurrency`, etc.
+        fig = fig.merge(Env::prefixed("NEBULA_").split("_"));
+
+        fig.extract().unwrap_or_default()
     }
 
     /// Generate the default config file content as TOML.
@@ -148,8 +153,4 @@ pub fn find_config_file() -> Option<PathBuf> {
         return Some(global);
     }
     None
-}
-
-fn default_config_json() -> serde_json::Value {
-    serde_json::to_value(CliConfig::default()).expect("default config serialization")
 }

@@ -29,7 +29,6 @@ use axum::{
 };
 use common::*;
 use nebula_api::{ApiConfig, AppState, app};
-use nebula_config::ConfigBuilder;
 use nebula_storage::{InMemoryExecutionRepo, InMemoryWorkflowRepo};
 use tower::ServiceExt;
 
@@ -79,14 +78,6 @@ impl nebula_storage::repos::ControlQueueRepo for AlwaysFailControlQueueRepo {
 /// Create an `AppState` wired with the always-failing control queue repo.
 /// All other repos are fully functional in-memory implementations.
 async fn create_state_with_failing_queue() -> AppState {
-    let config = ConfigBuilder::new()
-        .with_defaults(serde_json::json!({
-            "api": { "port": 8080, "host": "127.0.0.1" }
-        }))
-        .build()
-        .await
-        .unwrap();
-
     let workflow_repo = Arc::new(InMemoryWorkflowRepo::new());
     let execution_repo = Arc::new(InMemoryExecutionRepo::new());
     let control_queue_repo: Arc<dyn nebula_storage::repos::ControlQueueRepo> =
@@ -94,7 +85,6 @@ async fn create_state_with_failing_queue() -> AppState {
     let api_config = ApiConfig::for_test();
 
     AppState::new(
-        config,
         workflow_repo,
         execution_repo,
         control_queue_repo,

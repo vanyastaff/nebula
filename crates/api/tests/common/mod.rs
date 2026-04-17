@@ -9,7 +9,6 @@
 use std::sync::Arc;
 
 use nebula_api::{ApiConfig, AppState};
-use nebula_config::ConfigBuilder;
 use nebula_storage::{
     InMemoryExecutionRepo, InMemoryWorkflowRepo, repos::InMemoryControlQueueRepo,
 };
@@ -95,14 +94,6 @@ pub fn create_test_jwt() -> String {
 /// Create an `AppState` with fully functional in-memory repos; return both the
 /// state and a typed reference to the control queue so tests can inspect it.
 pub async fn create_state_with_queue() -> (AppState, Arc<InMemoryControlQueueRepo>) {
-    let config = ConfigBuilder::new()
-        .with_defaults(serde_json::json!({
-            "api": { "port": 8080, "host": "127.0.0.1" }
-        }))
-        .build()
-        .await
-        .unwrap();
-
     let workflow_repo = Arc::new(InMemoryWorkflowRepo::new());
     let execution_repo = Arc::new(InMemoryExecutionRepo::new());
     let control_queue_repo = Arc::new(InMemoryControlQueueRepo::new());
@@ -112,7 +103,6 @@ pub async fn create_state_with_queue() -> (AppState, Arc<InMemoryControlQueueRep
         Arc::clone(&control_queue_repo) as _;
 
     let state = AppState::new(
-        config,
         workflow_repo,
         execution_repo,
         control_queue_dyn,

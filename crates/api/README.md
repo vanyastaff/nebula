@@ -83,7 +83,7 @@ pub struct AppState {
 ```rust
 use nebula_api::{build_app, ApiConfig, AppState};
 use nebula_storage::{InMemoryWorkflowRepo, InMemoryExecutionRepo};
-use nebula_config::Config;
+use nebula_storage::repos::InMemoryControlQueueRepo;
 use std::sync::Arc;
 
 #[tokio::main]
@@ -92,18 +92,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     tracing_subscriber::fmt::init();
 
     // Create state with in-memory repos
-    let config = Config::default();
     let workflow_repo = Arc::new(InMemoryWorkflowRepo::new());
     let execution_repo = Arc::new(InMemoryExecutionRepo::new());
-    
+    let control_queue_repo = Arc::new(InMemoryControlQueueRepo::new());
+
     // Build app with config. `from_env` reads `API_JWT_SECRET`,
     // which must be 32+ bytes unless `NEBULA_ENV=development`
     // (dev mode generates an ephemeral per-process secret).
     let api_config = ApiConfig::from_env()?;
     let state = AppState::new(
-        config,
         workflow_repo,
         execution_repo,
+        control_queue_repo,
         api_config.jwt_secret.clone(),
     );
     let app = build_app(state, &api_config);

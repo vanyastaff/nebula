@@ -60,7 +60,6 @@ jobs:
         # See https://github.com/CodSpeedHQ/codspeed-rust
         run: |
           cargo codspeed build -m walltime \
-            -p nebula-config \
             -p nebula-core \
             -p nebula-eventbus \
             -p nebula-expression \
