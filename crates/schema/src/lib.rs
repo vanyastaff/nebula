@@ -50,6 +50,7 @@ pub use loader::{
     RecordLoader,
 };
 pub use mode::{RequiredMode, VisibilityMode};
+pub use nebula_schema_macros::field_key;
 pub use nebula_validator::ExecutionMode;
 pub use option::SelectOption;
 pub use path::FieldPath;

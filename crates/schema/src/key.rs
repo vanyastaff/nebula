@@ -7,6 +7,14 @@ use serde::{Deserialize, Deserializer, Serialize};
 use crate::{error::ValidationError, path::FieldPath};
 
 /// Stable field identifier. Cheap to clone (Arc-backed).
+///
+/// # Examples
+///
+/// ```
+/// use nebula_schema::field_key;
+/// let k = field_key!("alpha");
+/// assert_eq!(k.as_str(), "alpha");
+/// ```
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize)]
 #[serde(transparent)]
 pub struct FieldKey(Arc<str>);
