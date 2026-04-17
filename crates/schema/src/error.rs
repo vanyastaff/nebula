@@ -53,7 +53,11 @@ impl ValidationError {
 
 impl fmt::Display for ValidationError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "[{}] at {}: {}", self.code, self.path, self.message)
+        if self.path.is_root() {
+            write!(f, "[{}]: {}", self.code, self.message)
+        } else {
+            write!(f, "[{}] at {}: {}", self.code, self.path, self.message)
+        }
     }
 }
 
@@ -66,6 +70,7 @@ impl std::error::Error for ValidationError {
 }
 
 /// Builder for [`ValidationError`].
+#[must_use = "call .build() to produce a ValidationError"]
 #[derive(Debug)]
 pub struct ValidationErrorBuilder {
     code: Cow<'static, str>,
@@ -78,26 +83,31 @@ pub struct ValidationErrorBuilder {
 
 impl ValidationErrorBuilder {
     /// Set the path at which the error occurred.
+    #[must_use = "builder methods must be chained or built"]
     pub fn at(mut self, path: FieldPath) -> Self {
         self.path = path;
         self
     }
     /// Downgrade severity to [`Severity::Warning`].
+    #[must_use = "builder methods must be chained or built"]
     pub fn warn(mut self) -> Self {
         self.severity = Severity::Warning;
         self
     }
     /// Set the human-readable message.
+    #[must_use = "builder methods must be chained or built"]
     pub fn message(mut self, msg: impl Into<Cow<'static, str>>) -> Self {
         self.message = msg.into();
         self
     }
     /// Attach a named parameter to the error.
+    #[must_use = "builder methods must be chained or built"]
     pub fn param(mut self, key: &'static str, value: impl Into<Value>) -> Self {
         self.params.push((Cow::Borrowed(key), value.into()));
         self
     }
     /// Attach an underlying error cause.
+    #[must_use = "builder methods must be chained or built"]
     pub fn source<E>(mut self, err: E) -> Self
     where
         E: std::error::Error + Send + Sync + 'static,
@@ -311,6 +321,12 @@ mod tests {
             .message("missing")
             .build();
         assert_eq!(format!("{err}"), "[required] at x: missing");
+    }
+
+    #[test]
+    fn display_omits_at_for_root_path() {
+        let err = ValidationError::new("required").message("missing").build();
+        assert_eq!(format!("{err}"), "[required]: missing");
     }
 
     #[test]
