@@ -16,6 +16,7 @@ jobs:
   lint-metadata:
     name: Validate PR metadata
     runs-on: ubuntu-latest
+    if: github.event.action != 'edited' || github.event.changes.title != null
     steps:
       - name: Checkout
         uses: actions/checkout@v6
