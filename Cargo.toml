@@ -128,6 +128,9 @@ tempfile = "3.27.0"
 proptest = "1.11"
 criterion = { package = "codspeed-criterion-compat", version = "4" }
 
+# Semantic versioning
+semver = { version = "1", features = ["serde"] }
+
 # Nebula internal
 nebula-error = { path = "crates/error" }
 nebula-error-macros = { path = "crates/error/macros" }

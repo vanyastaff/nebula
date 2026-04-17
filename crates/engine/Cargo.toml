@@ -28,6 +28,7 @@ nebula-metrics = { path = "../metrics" }
 nebula-telemetry = { path = "../telemetry" }
 
 async-trait = { workspace = true }
+semver = { workspace = true }
 tokio = { workspace = true }
 tokio-util = { workspace = true }
 dashmap = { workspace = true }

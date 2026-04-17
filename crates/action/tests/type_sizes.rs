@@ -44,7 +44,13 @@ fn top_level_type_sizes_are_stable() {
          that drives this size, check it first."
     );
     assert_eq!(size_of::<ActionContext>(), 128);
-    assert_eq!(size_of::<ActionMetadata>(), 168);
+    // NOTE: ActionMetadata.version is `semver::Version` (56 bytes) after
+    // replacing the 8-byte custom `InterfaceVersion` — see spec
+    // `2026-04-17-replace-interfaceversion-with-semver`. Net growth of
+    // ~32 bytes reflects pre-release / build metadata string slots; the
+    // engine holds ActionMetadata off the per-dispatch hot path so this
+    // is acceptable.
+    assert_eq!(size_of::<ActionMetadata>(), 200);
     assert_eq!(size_of::<ActionError>(), 64);
     assert_eq!(size_of::<ActionHandler>(), 24);
 

@@ -1341,7 +1341,7 @@ impl WorkflowEngine {
             return false;
         };
         let action_key = node_def.action_key.as_str().to_owned();
-        let interface_version = node_def.interface_version;
+        let interface_version = node_def.interface_version.clone();
 
         // Partition incoming connections into flow (to_port=None) and support (to_port=Some)
         let (node_input, support_inputs) = resolve_node_input_with_support(
@@ -1687,7 +1687,7 @@ struct NodeTask {
     ///
     /// When `Some`, the runtime uses [`execute_action_versioned`] with this
     /// exact version. When `None`, the latest registered handler is used.
-    interface_version: Option<nebula_action::InterfaceVersion>,
+    interface_version: Option<semver::Version>,
     input: serde_json::Value,
     /// Data for support input ports, keyed by port name.
     #[allow(dead_code)] // reserved for multi-input actions
@@ -3686,7 +3686,7 @@ mod tests {
     /// handler instead of the latest.
     #[tokio::test]
     async fn version_pinned_node_uses_specified_handler() {
-        use nebula_action::InterfaceVersion;
+        use semver::Version;
 
         // V1 handler returns "v1".
         struct V1Handler {
@@ -3739,16 +3739,16 @@ mod tests {
         }
 
         let registry = Arc::new(ActionRegistry::new());
-        let v1 = InterfaceVersion::new(1, 0);
-        let v2 = InterfaceVersion::new(2, 0);
+        let v1 = Version::new(1, 0, 0);
+        let v2 = Version::new(2, 0, 0);
         // Register v1 first; v2 will become the "latest" (handlers map entry).
         registry.register_stateless(V1Handler {
             meta: ActionMetadata::new(action_key!("versioned"), "V1", "v1 handler")
-                .with_version(v1.major, v1.minor),
+                .with_version_full(v1.clone()),
         });
         registry.register_stateless(V2Handler {
             meta: ActionMetadata::new(action_key!("versioned"), "V2", "v2 handler")
-                .with_version(v2.major, v2.minor),
+                .with_version_full(v2.clone()),
         });
 
         let (engine, _) = make_engine(registry);

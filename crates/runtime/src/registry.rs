@@ -21,12 +21,13 @@ use std::sync::Arc;
 
 use dashmap::DashMap;
 use nebula_action::{
-    Action, ActionHandler, ActionMetadata, InterfaceVersion, PollAction, PollTriggerAdapter,
-    ResourceAction, ResourceActionAdapter, StatefulAction, StatefulActionAdapter, StatelessAction,
+    Action, ActionHandler, ActionMetadata, PollAction, PollTriggerAdapter, ResourceAction,
+    ResourceActionAdapter, StatefulAction, StatefulActionAdapter, StatelessAction,
     StatelessActionAdapter, TriggerAction, TriggerActionAdapter, WebhookAction,
     WebhookTriggerAdapter,
 };
 use nebula_core::ActionKey;
+use semver::Version;
 
 /// A single entry in the registry: metadata paired with its handler.
 #[derive(Clone)]
@@ -56,20 +57,14 @@ impl ActionRegistry {
     /// is appended. Entries are kept sorted from lowest to highest version so
     /// that [`get`](Self::get) can return the latest in O(1).
     pub fn register(&self, metadata: ActionMetadata, handler: ActionHandler) {
-        let version = metadata.version;
+        let version = metadata.version.clone();
         let mut entries = self.actions.entry(metadata.key.clone()).or_default();
 
         if let Some(pos) = entries.iter().position(|e| e.metadata.version == version) {
             entries[pos] = ActionEntry { metadata, handler };
         } else {
             entries.push(ActionEntry { metadata, handler });
-            entries.sort_by(|a, b| {
-                a.metadata
-                    .version
-                    .major
-                    .cmp(&b.metadata.version.major)
-                    .then(a.metadata.version.minor.cmp(&b.metadata.version.minor))
-            });
+            entries.sort_by(|a, b| a.metadata.version.cmp(&b.metadata.version));
         }
     }
 
@@ -99,7 +94,7 @@ impl ActionRegistry {
     pub fn get_versioned(
         &self,
         key: &ActionKey,
-        version: &InterfaceVersion,
+        version: &Version,
     ) -> Option<(ActionMetadata, ActionHandler)> {
         let entries = self.actions.get(key)?;
         let entry = entries.iter().find(|e| e.metadata.version == *version)?;
@@ -263,7 +258,7 @@ mod tests {
     }
 
     impl NoopAction {
-        fn new(key: &'static str, major: u32, minor: u32) -> Self {
+        fn new(key: &'static str, major: u64, minor: u64) -> Self {
             Self {
                 meta: ActionMetadata::new(ActionKey::new(key).unwrap(), "Noop", "Does nothing")
                     .with_version(major, minor),
@@ -314,8 +309,8 @@ mod tests {
         registry.register_stateless(NoopAction::new("test.noop", 2, 0));
 
         let key = ActionKey::new("test.noop").unwrap();
-        let v1 = InterfaceVersion::new(1, 0);
-        let v2 = InterfaceVersion::new(2, 0);
+        let v1 = Version::new(1, 0, 0);
+        let v2 = Version::new(2, 0, 0);
 
         assert!(registry.get_versioned(&key, &v1).is_some());
         assert!(registry.get_versioned(&key, &v2).is_some());

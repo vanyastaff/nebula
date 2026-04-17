@@ -125,9 +125,7 @@ pub use error::{
     ActionError, ActionErrorExt, MAX_VALIDATION_DETAIL, RetryHintCode, ValidationReason,
 };
 pub use handler::{ActionHandler, AgentHandler};
-pub use metadata::{
-    ActionCategory, ActionMetadata, InterfaceVersion, IsolationLevel, MetadataCompatibilityError,
-};
+pub use metadata::{ActionCategory, ActionMetadata, IsolationLevel, MetadataCompatibilityError};
 pub use nebula_action_macros::Action;
 pub use nebula_credential::CredentialGuard;
 pub use nebula_parameter::{Parameter, ParameterCollection};

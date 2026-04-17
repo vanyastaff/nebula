@@ -47,9 +47,9 @@ pub trait Plugin: Send + Sync + Debug + 'static {
     /// # Examples
     ///
     /// ```
-    /// use nebula_action::InterfaceVersion;
     /// use nebula_core::ActionKey;
     /// use nebula_plugin::{Plugin, PluginMetadata, descriptor::ActionDescriptor};
+    /// use semver::Version;
     ///
     /// #[derive(Debug)]
     /// struct MyPlugin {
@@ -66,7 +66,7 @@ pub trait Plugin: Send + Sync + Debug + 'static {
     ///             key: ActionKey::new("send_message").unwrap(),
     ///             name: "Send Message".into(),
     ///             description: "Sends a message.".into(),
-    ///             version: InterfaceVersion::new(1, 0),
+    ///             version: Version::new(1, 0, 0),
     ///         }]
     ///     }
     /// }
@@ -244,8 +244,8 @@ pub trait Plugin: Send + Sync + Debug + 'static {
 mod tests {
     use std::sync::Arc;
 
-    use nebula_action::InterfaceVersion;
     use nebula_core::{ActionKey, CredentialKey, ResourceKey};
+    use semver::Version;
 
     use super::*;
     use crate::descriptor::{ActionDescriptor, CredentialDescriptor, ResourceDescriptor};
@@ -278,7 +278,7 @@ mod tests {
                 key: ActionKey::new("send_message").unwrap(),
                 name: "Send Message".into(),
                 description: "Sends a message.".into(),
-                version: InterfaceVersion::new(1, 0),
+                version: Version::new(1, 0, 0),
             }]
         }
 

@@ -12,10 +12,10 @@ homepage.workspace = true
 documentation.workspace = true
 
 [dependencies]
-nebula-action = { path = "../action" }
 nebula-core = { path = "../core" }
 nebula-error = { workspace = true, features = ["derive"] }
 petgraph = { workspace = true }
+semver = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }

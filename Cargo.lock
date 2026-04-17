@@ -3712,6 +3712,7 @@ dependencies = [
  "nebula-parameter",
  "nebula-resource",
  "parking_lot",
+ "semver",
  "serde",
  "serde_json",
  "sha2 0.11.0",
@@ -3731,6 +3732,7 @@ dependencies = [
  "nebula-macro-support",
  "proc-macro2",
  "quote",
+ "semver",
  "syn 2.0.117",
 ]
 
@@ -3892,6 +3894,7 @@ dependencies = [
  "nebula-storage",
  "nebula-telemetry",
  "nebula-workflow",
+ "semver",
  "serde_json",
  "thiserror 2.0.18",
  "tokio",
@@ -4055,10 +4058,10 @@ dependencies = [
 name = "nebula-plugin"
 version = "0.1.0"
 dependencies = [
- "nebula-action",
  "nebula-core",
  "nebula-error",
  "nebula-plugin-macros",
+ "semver",
  "serde",
  "serde_json",
  "thiserror 2.0.18",
@@ -4148,6 +4151,7 @@ dependencies = [
  "nebula-metrics",
  "nebula-sandbox",
  "nebula-telemetry",
+ "semver",
  "serde",
  "serde_json",
  "thiserror 2.0.18",
@@ -4167,6 +4171,7 @@ dependencies = [
  "nebula-core",
  "nebula-plugin-sdk",
  "nix 0.31.2",
+ "semver",
  "serde",
  "serde_json",
  "thiserror 2.0.18",
@@ -4286,10 +4291,10 @@ name = "nebula-workflow"
 version = "0.1.0"
 dependencies = [
  "chrono",
- "nebula-action",
  "nebula-core",
  "nebula-error",
  "petgraph",
+ "semver",
  "serde",
  "serde_json",
  "thiserror 2.0.18",
@@ -6163,6 +6168,10 @@ name = "semver"
 version = "1.0.28"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "8a7852d02fc848982e0c167ef163aaff9cd91dc640ba85e263cb1ce46fae51cd"
+dependencies = [
+ "serde",
+ "serde_core",
+]
 
 [[package]]
 name = "sentry"

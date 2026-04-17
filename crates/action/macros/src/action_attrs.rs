@@ -14,10 +14,12 @@ pub struct ActionAttrs {
     pub name: String,
     /// Short description.
     pub description: String,
-    /// Parsed version major.
-    pub version_major: u32,
-    /// Parsed version minor.
-    pub version_minor: u32,
+    /// Parsed semver major component.
+    pub version_major: u64,
+    /// Parsed semver minor component.
+    pub version_minor: u64,
+    /// Parsed semver patch component.
+    pub version_patch: u64,
     /// Optional parameters type (e.g. `parameters = HttpConfig`).
     pub parameters: Option<Type>,
     /// Single credential type.
@@ -49,7 +51,7 @@ impl ActionAttrs {
         let version_str = attr_args
             .get_string("version")
             .unwrap_or_else(|| "1.0".to_string());
-        let (version_major, version_minor) = parse_version(&version_str)?;
+        let (version_major, version_minor, version_patch) = parse_version(&version_str)?;
 
         let parameters = attr_args.get_type("parameters")?;
 
@@ -88,6 +90,7 @@ impl ActionAttrs {
             description,
             version_major,
             version_minor,
+            version_patch,
             parameters,
             credential,
             credentials,
@@ -121,6 +124,7 @@ impl ActionAttrs {
         let description = &self.description;
         let major = self.version_major;
         let minor = self.version_minor;
+        let patch = self.version_patch;
 
         let params_expr = match &self.parameters {
             Some(ty) => quote! {
@@ -135,7 +139,7 @@ impl ActionAttrs {
                 #name,
                 #description,
             )
-                .with_version(#major, #minor)
+                .with_version_full(::semver::Version::new(#major, #minor, #patch))
                 #params_expr
         }
     }
@@ -215,23 +219,47 @@ impl ActionAttrs {
     }
 }
 
-fn parse_version(version: &str) -> Result<(u32, u32)> {
-    let mut parts = version.split('.');
-    let major = parts
-        .next()
-        .ok_or_else(|| syn::Error::new(proc_macro2::Span::call_site(), "empty version"))?
-        .parse::<u32>()
-        .map_err(|_| {
-            syn::Error::new(
-                proc_macro2::Span::call_site(),
-                "invalid version format, expected `major.minor` (e.g. `1.0`)",
-            )
-        })?;
-    let minor = parts.next().unwrap_or("0").parse::<u32>().map_err(|_| {
+/// Parse a `#[action(version = "…")]` string into `(major, minor, patch)` components.
+///
+/// Accepts both the short `"X.Y"` shape (promoted to `X.Y.0`) and the full
+/// semver `"X.Y.Z"` shape, plus any additional pre-release / build metadata
+/// that `semver::Version::parse` understands. The parsed triple is emitted
+/// into the action metadata expansion as `::semver::Version::new(...)`.
+fn parse_version(version: &str) -> Result<(u64, u64, u64)> {
+    let trimmed = version.trim();
+    if trimmed.is_empty() {
+        return Err(syn::Error::new(
+            proc_macro2::Span::call_site(),
+            "empty version string; expected semver like `1.0` or `1.0.0`",
+        ));
+    }
+
+    // `semver::Version::parse` requires three components. Promote `X.Y` to
+    // `X.Y.0` first so authors can keep writing the shorter form.
+    let mut owned_buf;
+    let normalized: &str = if trimmed.split('.').take(3).count() < 3
+        && !trimmed.contains('-')
+        && !trimmed.contains('+')
+    {
+        owned_buf = trimmed.to_owned();
+        // Pad with ".0" until we have at least three dot-separated segments.
+        while owned_buf.split('.').take(3).count() < 3 {
+            owned_buf.push_str(".0");
+        }
+        owned_buf.as_str()
+    } else {
+        trimmed
+    };
+
+    let parsed = semver::Version::parse(normalized).map_err(|err| {
         syn::Error::new(
             proc_macro2::Span::call_site(),
-            "invalid version format, expected `major.minor` (e.g. `1.0`)",
+            format!(
+                "invalid version `{version}`: {err} \
+                 — expected semver like `1.0` or `1.0.0`"
+            ),
         )
     })?;
-    Ok((major, minor))
+
+    Ok((parsed.major, parsed.minor, parsed.patch))
 }

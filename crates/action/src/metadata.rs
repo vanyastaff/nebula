@@ -1,38 +1,7 @@
 use nebula_core::ActionKey;
 use nebula_parameter::collection::ParameterCollection;
+use semver::Version;
 use serde::{Deserialize, Serialize};
-
-/// Interface version -- tracks schema compatibility independently of package version.
-///
-/// - `major` increments on breaking schema changes.
-/// - `minor` increments on backward-compatible additions.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
-pub struct InterfaceVersion {
-    /// Major version -- incremented on breaking schema changes.
-    pub major: u32,
-    /// Minor version -- incremented on backward-compatible additions.
-    pub minor: u32,
-}
-
-impl InterfaceVersion {
-    /// Create a new interface version.
-    pub fn new(major: u32, minor: u32) -> Self {
-        Self { major, minor }
-    }
-
-    /// Check if `other` is compatible with `self`.
-    ///
-    /// Compatible means same major version and `other.minor >= self.minor`.
-    pub fn is_compatible_with(&self, other: &InterfaceVersion) -> bool {
-        self.major == other.major && other.minor >= self.minor
-    }
-}
-
-impl std::fmt::Display for InterfaceVersion {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}.{}", self.major, self.minor)
-    }
-}
 
 use crate::port::{self, InputPort, OutputPort};
 
@@ -110,18 +79,12 @@ pub enum MetadataCompatibilityError {
         current: ActionKey,
     },
     /// Interface version regressed.
-    #[error(
-        "interface version regressed from {previous_major}.{previous_minor} to {current_major}.{current_minor}"
-    )]
+    #[error("interface version regressed from {previous} to {current}")]
     VersionRegressed {
-        /// Previous major.
-        previous_major: u32,
-        /// Previous minor.
-        previous_minor: u32,
-        /// Current major.
-        current_major: u32,
-        /// Current minor.
-        current_minor: u32,
+        /// Previous version.
+        previous: Version,
+        /// Current version.
+        current: Version,
     },
     /// Breaking schema change without a major version bump.
     #[error("breaking metadata change detected without major version bump")]
@@ -141,7 +104,12 @@ pub struct ActionMetadata {
     /// Short description of what this action does.
     pub description: String,
     /// Interface version — changes only when input/output schema changes.
-    pub version: InterfaceVersion,
+    ///
+    /// Stored as a full `semver::Version`. Exact-match dispatch is used by
+    /// the engine (see [`crate::handler::ActionHandler`]). Range-based pinning
+    /// (`^1.0`, `~1.2`) is a future-work item — see the
+    /// `2026-04-17-replace-interfaceversion-with-semver` spec.
+    pub version: Version,
     /// Input ports this action accepts.
     /// Defaults to a single flow input `"in"`.
     pub inputs: Vec<InputPort>,
@@ -169,7 +137,7 @@ impl ActionMetadata {
             key,
             name: name.into(),
             description: description.into(),
-            version: InterfaceVersion::new(1, 0),
+            version: Version::new(1, 0, 0),
             inputs: port::default_input_ports(),
             outputs: port::default_output_ports(),
             parameters: ParameterCollection::new(),
@@ -178,10 +146,19 @@ impl ActionMetadata {
         }
     }
 
-    /// Set the interface version (major, minor).
+    /// Set the interface version from `(major, minor)` components.
+    ///
+    /// Equivalent to `with_version_full(Version::new(major, minor, 0))`.
     #[must_use = "builder methods must be chained or built"]
-    pub fn with_version(mut self, major: u32, minor: u32) -> Self {
-        self.version = InterfaceVersion::new(major, minor);
+    pub fn with_version(mut self, major: u64, minor: u64) -> Self {
+        self.version = Version::new(major, minor, 0);
+        self
+    }
+
+    /// Set the full interface version, including patch and pre-release data.
+    #[must_use = "builder methods must be chained or built"]
+    pub fn with_version_full(mut self, version: Version) -> Self {
+        self.version = version;
         self
     }
 
@@ -228,7 +205,7 @@ impl ActionMetadata {
     ///
     /// Rules:
     /// - `key` is immutable across versions.
-    /// - Interface version cannot go backwards.
+    /// - Interface version cannot go backwards (full `semver::Version` ordering).
     /// - If input/output/parameter schema changed, major must increase.
     pub fn validate_compatibility(
         &self,
@@ -241,15 +218,10 @@ impl ActionMetadata {
             });
         }
 
-        let regressed = self.version.major < previous.version.major
-            || (self.version.major == previous.version.major
-                && self.version.minor < previous.version.minor);
-        if regressed {
+        if self.version < previous.version {
             return Err(MetadataCompatibilityError::VersionRegressed {
-                previous_major: previous.version.major,
-                previous_minor: previous.version.minor,
-                current_major: self.version.major,
-                current_minor: self.version.minor,
+                previous: previous.version.clone(),
+                current: self.version.clone(),
             });
         }
 
@@ -281,26 +253,7 @@ mod tests {
 
         assert_eq!(meta.key, action_key!("http.request"));
         assert_eq!(meta.name, "HTTP Request");
-        assert_eq!(meta.version, InterfaceVersion::new(2, 1));
-    }
-
-    #[test]
-    fn interface_version_compatibility() {
-        let v1_0 = InterfaceVersion::new(1, 0);
-        let v1_2 = InterfaceVersion::new(1, 2);
-        let v2_0 = InterfaceVersion::new(2, 0);
-
-        // v1.2 is compatible with v1.0 requirement
-        assert!(v1_0.is_compatible_with(&v1_2));
-        // v1.0 is NOT compatible with v1.2 requirement (minor too low)
-        assert!(!v1_2.is_compatible_with(&v1_0));
-        // Different major = incompatible
-        assert!(!v1_0.is_compatible_with(&v2_0));
-    }
-
-    #[test]
-    fn interface_version_display() {
-        assert_eq!(InterfaceVersion::new(1, 3).to_string(), "1.3");
+        assert_eq!(meta.version, Version::new(2, 1, 0));
     }
 
     #[test]
@@ -386,7 +339,7 @@ mod tests {
     #[test]
     fn default_metadata_values() {
         let meta = ActionMetadata::new(action_key!("test"), "Test", "A test action");
-        assert_eq!(meta.version, InterfaceVersion::new(1, 0));
+        assert_eq!(meta.version, Version::new(1, 0, 0));
         // Default ports
         assert_eq!(meta.inputs.len(), 1);
         assert!(meta.inputs[0].is_flow());
@@ -472,7 +425,7 @@ mod tests {
             .with_inputs(vec![InputPort::flow("in")])
             .with_outputs(vec![OutputPort::flow("out"), OutputPort::error("error")]);
 
-        assert_eq!(meta.version, InterfaceVersion::new(2, 0));
+        assert_eq!(meta.version, Version::new(2, 0, 0));
         assert_eq!(meta.inputs.len(), 1);
         assert_eq!(meta.outputs.len(), 2);
     }

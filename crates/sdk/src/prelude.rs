@@ -13,8 +13,6 @@
 pub use anyhow::{Context, Result as AnyhowResult, anyhow, bail};
 // Async traits
 pub use async_trait::async_trait;
-// Core macros
-pub use nebula_action::InterfaceVersion;
 // DX trait families: stateful, trigger
 pub use nebula_action::poll::{
     DeduplicatingCursor, PollAction, PollConfig, PollCursor, PollResult,

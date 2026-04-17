@@ -5,8 +5,8 @@
 //! or establishing any connection. The engine can enumerate capabilities from all
 //! registered plugins without touching any external system.
 
-use nebula_action::InterfaceVersion;
 use nebula_core::{ActionKey, CredentialKey, ResourceKey};
+use semver::Version;
 
 /// Describes an action provided by a plugin without constructing the handler.
 ///
@@ -17,15 +17,15 @@ use nebula_core::{ActionKey, CredentialKey, ResourceKey};
 /// # Examples
 ///
 /// ```
-/// use nebula_action::InterfaceVersion;
 /// use nebula_core::ActionKey;
 /// use nebula_plugin::descriptor::ActionDescriptor;
+/// use semver::Version;
 ///
 /// let descriptor = ActionDescriptor {
 ///     key: ActionKey::new("send_message").unwrap(),
 ///     name: "Send Message".into(),
 ///     description: "Sends a message to a Slack channel.".into(),
-///     version: InterfaceVersion::new(1, 0),
+///     version: Version::new(1, 0, 0),
 /// };
 ///
 /// assert_eq!(descriptor.name, "Send Message");
@@ -39,7 +39,7 @@ pub struct ActionDescriptor {
     /// Description of what the action does.
     pub description: String,
     /// Interface version for this action, used for compatibility checks.
-    pub version: InterfaceVersion,
+    pub version: Version,
 }
 
 /// Describes a credential type provided by a plugin.
@@ -102,8 +102,6 @@ pub struct ResourceDescriptor {
 
 #[cfg(test)]
 mod tests {
-    use nebula_action::InterfaceVersion;
-
     use super::*;
 
     #[test]
@@ -112,7 +110,7 @@ mod tests {
             key: ActionKey::new("send_message").unwrap(),
             name: "Send Message".into(),
             description: "Sends a message.".into(),
-            version: InterfaceVersion::new(1, 0),
+            version: Version::new(1, 0, 0),
         };
 
         assert_eq!(descriptor.key.as_str(), "send_message");
@@ -150,7 +148,7 @@ mod tests {
             key: ActionKey::new("my_action").unwrap(),
             name: "My Action".into(),
             description: "Does something.".into(),
-            version: InterfaceVersion::new(2, 1),
+            version: Version::new(2, 1, 0),
         };
         let cloned = action.clone();
         assert_eq!(cloned.key.as_str(), action.key.as_str());
