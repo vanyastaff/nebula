@@ -35,7 +35,7 @@ impl PredicateContext {
     pub fn from_json(obj: &serde_json::Value) -> Self {
         let mut fields = HashMap::new();
         if let Some(m) = obj.as_object() {
-            collect_paths(&mut fields, "", m);
+            collect_paths(&mut fields, None, m);
         }
         Self { fields }
     }
@@ -58,20 +58,17 @@ impl PredicateContext {
 
 fn collect_paths(
     out: &mut HashMap<FieldPath, serde_json::Value>,
-    prefix: &str,
+    prefix: Option<&FieldPath>,
     obj: &serde_json::Map<String, serde_json::Value>,
 ) {
     for (k, v) in obj {
-        let full = if prefix.is_empty() {
-            format!("/{k}")
-        } else {
-            format!("{prefix}/{k}")
+        let path = match prefix {
+            None => FieldPath::single(k),
+            Some(p) => p.push(k),
         };
-        if let Some(path) = FieldPath::parse(&full) {
-            out.insert(path, v.clone());
-        }
+        out.insert(path.clone(), v.clone());
         if let Some(nested) = v.as_object() {
-            collect_paths(out, &full, nested);
+            collect_paths(out, Some(&path), nested);
         }
     }
 }
@@ -106,5 +103,16 @@ mod tests {
     fn empty_context_is_empty() {
         let ctx = PredicateContext::new();
         assert!(ctx.is_empty());
+    }
+
+    #[test]
+    fn keys_with_pointer_metacharacters_are_escaped() {
+        // JSON keys containing `/` or `~` must be stored under escaped pointer paths.
+        let ctx = PredicateContext::from_json(&serde_json::json!({"a/b": 1, "c~d": 2}));
+        // Lookup via FieldPath::from_segments which applies the same escaping.
+        let slash_key = FieldPath::from_segments(["a/b"]).unwrap();
+        let tilde_key = FieldPath::from_segments(["c~d"]).unwrap();
+        assert_eq!(ctx.get(&slash_key), Some(&serde_json::json!(1)));
+        assert_eq!(ctx.get(&tilde_key), Some(&serde_json::json!(2)));
     }
 }
