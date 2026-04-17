@@ -44,8 +44,6 @@ pub mod credential;
 pub mod credentials;
 /// Cryptographic utilities: AES-256-GCM, key derivation, PKCE, serde_base64.
 pub mod crypto;
-/// Credential type description schema.
-pub mod description;
 /// Error types for credential operations.
 pub mod error;
 /// Credential guard — secure wrapper with Deref + Zeroize on drop.
@@ -54,7 +52,7 @@ pub mod guard;
 pub mod handle;
 /// Newtype for credential type keys.
 pub mod key;
-/// Credential metadata.
+/// Credential type metadata schema (integration catalog).
 pub mod metadata;
 /// Serde helpers for [`Option<SecretString>`] that preserve the actual value.
 pub mod option_serde_secret;
@@ -64,6 +62,8 @@ pub mod pending;
 pub mod pending_store;
 /// In-memory pending state store for testing and development.
 pub mod pending_store_memory;
+/// Credential record — runtime operational state.
+pub mod record;
 /// Type-erased credential registry for runtime dispatch.
 pub mod registry;
 /// Resolve result types: interaction, refresh, test.
@@ -180,11 +180,11 @@ pub use crate::rotation::{
     CredentialRotationEvent, GracePeriodConfig, RotationError, RotationResult,
 };
 pub use crate::{
-    description::CredentialDescription,
     error::{
         CredentialError, CryptoError, RefreshErrorKind, ResolutionStage, RetryAdvice,
         ValidationError,
     },
-    metadata::CredentialMetadata,
+    metadata::{CredentialMetadata, CredentialMetadataBuilder},
+    record::CredentialRecord,
     snapshot::{CredentialSnapshot, SnapshotError},
 };

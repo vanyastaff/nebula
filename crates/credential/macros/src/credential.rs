@@ -107,11 +107,11 @@ fn expand(input: DeriveInput) -> syn::Result<proc_macro2::TokenStream> {
 
             const KEY: &'static str = #key;
 
-            fn description() -> ::nebula_credential::CredentialDescription
+            fn metadata() -> ::nebula_credential::CredentialMetadata
             where
                 Self: Sized,
             {
-                ::nebula_credential::CredentialDescription {
+                ::nebula_credential::CredentialMetadata {
                     key: #key.to_owned(),
                     name: #name.to_owned(),
                     description: #name.to_owned(),

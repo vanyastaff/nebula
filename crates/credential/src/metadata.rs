@@ -1,255 +1,157 @@
-//! Credential metadata
-//!
-//! Provides non-sensitive metadata about credential instances
-//! for management and tracking (not security-critical).
-
-use std::collections::HashMap;
-
-use chrono::{DateTime, Utc};
+use nebula_core::AuthPattern;
+use nebula_parameter::collection::ParameterCollection;
 use serde::{Deserialize, Serialize};
 
-#[cfg(feature = "rotation")]
-use crate::rotation::policy::RotationPolicy;
-
-/// Credential metadata (non-sensitive)
+/// Describes a credential type (OAuth2, API Key, Database, etc.)
 ///
-/// Tracks creation time, access patterns, and user-defined tags
-/// for credential management and organization.
+/// This is the static schema that defines what fields a credential type requires.
+/// Used for:
+/// - UI form generation
+/// - Validation of user input
+/// - Type registry
+/// - Auto-generated documentation
+///
+/// # Example
+///
+/// ```
+/// use nebula_core::AuthPattern;
+/// use nebula_credential::CredentialMetadata;
+/// use nebula_parameter::{Parameter, ParameterCollection};
+///
+/// let properties = ParameterCollection::new()
+///     .add(Parameter::string("client_id").label("Client ID").required())
+///     .add(
+///         Parameter::string("client_secret")
+///             .label("Client Secret")
+///             .required()
+///             .secret(),
+///     );
+///
+/// let github_oauth2 = CredentialMetadata {
+///     key: "github_oauth2".to_string(),
+///     name: "GitHub OAuth2".to_string(),
+///     description: "OAuth2 authentication for GitHub API".to_string(),
+///     icon: Some("github".to_string()),
+///     icon_url: None,
+///     documentation_url: Some("https://docs.github.com/en/apps/oauth-apps".to_string()),
+///     properties,
+///     pattern: AuthPattern::OAuth2,
+/// };
+/// ```
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CredentialMetadata {
-    /// When credential was created
-    pub created_at: DateTime<Utc>,
+    /// Unique identifier for this credential type (e.g., "github_oauth2", "postgres_db")
+    pub key: String,
 
-    /// When credential was last accessed (None if never)
-    pub last_accessed: Option<DateTime<Utc>>,
+    /// Human-readable name (e.g., "GitHub OAuth2", "PostgreSQL Database")
+    pub name: String,
 
-    /// When credential was last modified
-    pub last_modified: DateTime<Utc>,
+    /// Description of what this credential is used for
+    pub description: String,
 
-    /// Optional scope for multi-tenant isolation.
-    /// Uses `ScopeLevel` from nebula-core for platform consistency.
-    pub owner_scope: Option<nebula_core::ScopeLevel>,
+    /// Optional icon identifier (e.g., "github", "database")
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub icon: Option<String>,
 
-    /// Optional rotation policy (for automatic credential rotation)
-    #[cfg(feature = "rotation")]
-    pub rotation_policy: Option<RotationPolicy>,
+    /// Optional icon URL for custom icons
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub icon_url: Option<String>,
 
-    /// Version number for rotation tracking (incremented on each rotation)
-    ///
-    /// Used to distinguish between old and new credentials during grace periods.
-    /// Starts at 1 for initial credential, incremented with each rotation.
-    pub version: u32,
+    /// Optional documentation URL
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub documentation_url: Option<String>,
 
-    /// When the credential expires (None if no expiration)
-    ///
-    /// Used for time-limited credentials like OAuth2 tokens, JWT tokens, temporary passwords.
-    /// The ExpiryMonitor uses this field to determine when to trigger rotation based on
-    /// BeforeExpiry policy.
-    pub expires_at: Option<DateTime<Utc>>,
+    /// Parameter definitions - what fields this credential type requires.
+    pub properties: ParameterCollection,
 
-    /// Time-to-live in seconds (None if unlimited)
-    ///
-    /// Original TTL of the credential when created. Used in combination with created_at
-    /// to calculate expiration time and rotation trigger points.
-    ///
-    /// For renewable credentials (OAuth2 access tokens), this represents the TTL of
-    /// a single token instance, not the overall credential lifetime.
-    pub ttl_seconds: Option<u64>,
-
-    /// User-defined tags for organization
-    pub tags: HashMap<String, String>,
+    /// Authentication pattern classification for UI and tooling.
+    pub pattern: AuthPattern,
 }
 
 impl CredentialMetadata {
-    /// Create new metadata with current timestamp
-    pub fn new() -> Self {
-        let now = Utc::now();
-        Self {
-            created_at: now,
-            last_accessed: None,
-            last_modified: now,
-            owner_scope: None,
-            #[cfg(feature = "rotation")]
-            rotation_policy: None,
-            version: 1, // Initial version
-            expires_at: None,
-            ttl_seconds: None,
-            tags: HashMap::new(),
-        }
-    }
-
-    /// Increment version number for rotation
-    ///
-    /// Called when credential is rotated to track the new version.
-    ///
-    /// # Example
-    ///
-    /// ```
-    /// use nebula_credential::CredentialMetadata;
-    ///
-    /// let mut metadata = CredentialMetadata::new();
-    /// assert_eq!(metadata.version, 1);
-    ///
-    /// metadata.increment_version();
-    /// assert_eq!(metadata.version, 2);
-    /// ```
-    pub fn increment_version(&mut self) {
-        self.version = self.version.saturating_add(1);
-        self.mark_modified();
-    }
-
-    /// Set expiration time and TTL
-    ///
-    /// Helper to set both expires_at and ttl_seconds based on a TTL duration.
-    /// Uses created_at as the base time.
-    ///
-    /// # Arguments
-    ///
-    /// * `ttl` - Time-to-live duration
-    ///
-    /// # Example
-    ///
-    /// ```
-    /// use std::time::Duration;
-    ///
-    /// use nebula_credential::CredentialMetadata;
-    ///
-    /// let mut metadata = CredentialMetadata::new();
-    /// metadata.set_expiration(Duration::from_secs(3600)); // 1 hour TTL
-    ///
-    /// assert!(metadata.expires_at.is_some());
-    /// assert_eq!(metadata.ttl_seconds, Some(3600));
-    /// ```
-    pub fn set_expiration(&mut self, ttl: std::time::Duration) {
-        self.ttl_seconds = Some(ttl.as_secs());
-        self.expires_at = Some(
-            self.created_at + chrono::Duration::from_std(ttl).unwrap_or(chrono::Duration::zero()),
-        );
-        self.mark_modified();
-    }
-
-    /// Check if credential has expired
-    ///
-    /// Returns `true` if expires_at is set and has passed.
-    ///
-    /// # Example
-    ///
-    /// ```
-    /// use std::time::Duration;
-    ///
-    /// use nebula_credential::CredentialMetadata;
-    ///
-    /// let mut metadata = CredentialMetadata::new();
-    ///
-    /// // No expiration set
-    /// assert!(!metadata.is_expired());
-    ///
-    /// // Set expiration in future
-    /// metadata.set_expiration(Duration::from_secs(3600));
-    /// assert!(!metadata.is_expired());
-    /// ```
-    pub fn is_expired(&self) -> bool {
-        self.expires_at
-            .map(|exp| exp <= Utc::now())
-            .unwrap_or(false)
-    }
-
-    /// Update last accessed timestamp
-    pub fn mark_accessed(&mut self) {
-        self.last_accessed = Some(Utc::now());
-    }
-
-    /// Update last modified timestamp
-    pub fn mark_modified(&mut self) {
-        self.last_modified = Utc::now();
+    /// Create a new credential metadata builder
+    pub fn builder() -> CredentialMetadataBuilder {
+        CredentialMetadataBuilder::default()
     }
 }
 
-impl Default for CredentialMetadata {
-    fn default() -> Self {
-        Self::new()
-    }
+/// Builder for CredentialMetadata
+#[derive(Debug, Default)]
+pub struct CredentialMetadataBuilder {
+    key: Option<String>,
+    name: Option<String>,
+    description: Option<String>,
+    icon: Option<String>,
+    icon_url: Option<String>,
+    documentation_url: Option<String>,
+    properties: Option<ParameterCollection>,
+    pattern: Option<AuthPattern>,
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_metadata_new() {
-        let metadata = CredentialMetadata::new();
-        assert!(metadata.last_accessed.is_none());
-        assert_eq!(metadata.created_at, metadata.last_modified);
-        assert!(metadata.tags.is_empty());
+impl CredentialMetadataBuilder {
+    /// Set the unique identifier for this credential type
+    pub fn key(mut self, key: impl Into<String>) -> Self {
+        self.key = Some(key.into());
+        self
     }
 
-    #[test]
-    fn test_metadata_mark_accessed() {
-        let mut metadata = CredentialMetadata::new();
-        assert!(metadata.last_accessed.is_none());
-
-        metadata.mark_accessed();
-        assert!(metadata.last_accessed.is_some());
+    /// Set the human-readable name
+    pub fn name(mut self, name: impl Into<String>) -> Self {
+        self.name = Some(name.into());
+        self
     }
 
-    #[test]
-    fn test_metadata_mark_modified() {
-        let mut metadata = CredentialMetadata::new();
-        let original_modified = metadata.last_modified;
-
-        std::thread::sleep(std::time::Duration::from_millis(10));
-        metadata.mark_modified();
-
-        assert!(metadata.last_modified > original_modified);
+    /// Set the description
+    pub fn description(mut self, description: impl Into<String>) -> Self {
+        self.description = Some(description.into());
+        self
     }
 
-    #[test]
-    fn test_metadata_default() {
-        let metadata = CredentialMetadata::default();
-        assert!(metadata.last_accessed.is_none());
+    /// Set the icon identifier
+    pub fn icon(mut self, icon: impl Into<String>) -> Self {
+        self.icon = Some(icon.into());
+        self
     }
 
-    #[test]
-    fn test_metadata_tags() {
-        let mut metadata = CredentialMetadata::new();
-        metadata
-            .tags
-            .insert("environment".to_string(), "production".to_string());
-        metadata
-            .tags
-            .insert("service".to_string(), "api-gateway".to_string());
-
-        assert_eq!(metadata.tags.len(), 2);
-        assert_eq!(
-            metadata.tags.get("environment"),
-            Some(&"production".to_string())
-        );
+    /// Set the icon URL
+    pub fn icon_url(mut self, icon_url: impl Into<String>) -> Self {
+        self.icon_url = Some(icon_url.into());
+        self
     }
 
-    #[test]
-    #[cfg(feature = "rotation")]
-    fn test_rotation_policy() {
-        use std::time::Duration;
+    /// Set the documentation URL
+    pub fn documentation_url(mut self, documentation_url: impl Into<String>) -> Self {
+        self.documentation_url = Some(documentation_url.into());
+        self
+    }
 
-        use crate::rotation::policy::{PeriodicConfig, RotationPolicy};
+    /// Set the parameter schema
+    pub fn properties(mut self, properties: ParameterCollection) -> Self {
+        self.properties = Some(properties);
+        self
+    }
 
-        let policy = RotationPolicy::Periodic(
-            PeriodicConfig::new(
-                Duration::from_secs(90 * 24 * 3600), // 90 days
-                Duration::from_secs(24 * 3600),      // 1 day
-                true,
-            )
-            .unwrap(),
-        );
-        let mut metadata = CredentialMetadata::new();
-        metadata.rotation_policy = Some(policy);
+    /// Set the authentication pattern
+    pub fn pattern(mut self, pattern: AuthPattern) -> Self {
+        self.pattern = Some(pattern);
+        self
+    }
 
-        assert!(metadata.rotation_policy.is_some());
-        match metadata.rotation_policy.unwrap() {
-            RotationPolicy::Periodic(config) => {
-                assert_eq!(config.interval(), Duration::from_secs(90 * 24 * 3600));
-            },
-            _ => panic!("Expected Periodic policy"),
-        }
+    /// Build the CredentialMetadata
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if required fields (key, name, description, properties) are not set
+    pub fn build(self) -> Result<CredentialMetadata, String> {
+        Ok(CredentialMetadata {
+            key: self.key.ok_or("key is required")?,
+            name: self.name.ok_or("name is required")?,
+            description: self.description.ok_or("description is required")?,
+            icon: self.icon,
+            icon_url: self.icon_url,
+            documentation_url: self.documentation_url,
+            properties: self.properties.ok_or("properties is required")?,
+            pattern: self.pattern.ok_or("pattern is required")?,
+        })
     }
 }

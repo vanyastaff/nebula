@@ -53,14 +53,14 @@ pub struct Credential {
     pub id: String,
     pub name: String,
     pub kind: String,
-    pub metadata: CredentialMetadata,
+    pub record: CredentialRecord,
     #[specta(type = String)]
     pub state: serde_json::Value,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Type)]
 #[serde(rename_all = "camelCase")]
-pub struct CredentialMetadata {
+pub struct CredentialRecord {
     pub created_at: String,
     pub last_accessed: Option<String>,
     pub last_modified: String,

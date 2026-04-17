@@ -6,9 +6,9 @@
 use nebula_parameter::{Parameter, ParameterCollection, values::ParameterValues};
 
 use crate::{
-    SecretString, context::CredentialContext, credential::Credential,
-    description::CredentialDescription, error::CredentialError, pending::NoPendingState,
-    resolve::StaticResolveResult, scheme::IdentityPassword,
+    SecretString, context::CredentialContext, credential::Credential, error::CredentialError,
+    metadata::CredentialMetadata, pending::NoPendingState, resolve::StaticResolveResult,
+    scheme::IdentityPassword,
 };
 
 /// HTTP Basic Auth credential -- resolves username + password into
@@ -26,8 +26,8 @@ impl Credential for BasicAuthCredential {
 
     const KEY: &'static str = "basic_auth";
 
-    fn description() -> CredentialDescription {
-        CredentialDescription {
+    fn metadata() -> CredentialMetadata {
+        CredentialMetadata {
             key: Self::KEY.to_owned(),
             name: "Basic Auth".to_owned(),
             description: "HTTP Basic authentication (username + password).".to_owned(),

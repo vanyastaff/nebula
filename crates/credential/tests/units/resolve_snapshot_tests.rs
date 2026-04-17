@@ -6,7 +6,7 @@
 use std::sync::Arc;
 
 use nebula_credential::{
-    Credential, CredentialMetadata, CredentialResolver, CredentialSnapshot, CredentialStore,
+    Credential, CredentialRecord, CredentialResolver, CredentialSnapshot, CredentialStore,
     InMemoryStore, SnapshotError,
     credentials::ApiKeyCredential,
     scheme::{ConnectionUri, SecretToken},
@@ -45,7 +45,7 @@ async fn resolve_to_typed_snapshot() {
     // Build snapshot (simulating what the runtime does)
     let snapshot = CredentialSnapshot::new(
         ApiKeyCredential::KEY,
-        CredentialMetadata::new(),
+        CredentialRecord::new(),
         (*handle.snapshot()).clone(),
     );
 

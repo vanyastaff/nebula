@@ -3,7 +3,7 @@ use serde_json::json;
 use tauri::{AppHandle, Emitter};
 use tauri_plugin_store::StoreExt;
 
-use crate::types::{Credential, CredentialMetadata, CreateCredentialRequest, UpdateCredentialRequest};
+use crate::types::{Credential, CredentialRecord, CreateCredentialRequest, UpdateCredentialRequest};
 
 const STORE_PATH: &str = "nebula-credentials.json";
 const KEY_PREFIX: &str = "credential_";
@@ -106,7 +106,7 @@ pub async fn create_credential(
         id: id.clone(),
         name: request.name,
         kind: request.kind,
-        metadata: CredentialMetadata {
+        record: CredentialRecord {
             created_at: now.to_rfc3339(),
             last_accessed: None,
             last_modified: now.to_rfc3339(),
@@ -143,11 +143,11 @@ pub async fn update_credential(
         credential.state = state;
     }
     if let Some(tags) = request.tags {
-        credential.metadata.tags = tags;
+        credential.record.tags = tags;
     }
 
-    // Update metadata
-    credential.metadata.last_modified = Utc::now().to_rfc3339();
+    // Update record
+    credential.record.last_modified = Utc::now().to_rfc3339();
 
     save_credential(&app, &credential)?;
     app.emit("credential_updated", &credential)
@@ -175,16 +175,16 @@ pub async fn rotate_credential(id: String, app: AppHandle) -> Result<Credential,
     let mut credential = load_one(&app, &id)
         .ok_or_else(|| format!("Credential not found: {}", id))?;
 
-    // Update metadata with rotation timestamp
+    // Update record with rotation timestamp
     let now = Utc::now();
-    credential.metadata.last_modified = now.to_rfc3339();
-    credential.metadata.version += 1;
+    credential.record.last_modified = now.to_rfc3339();
+    credential.record.version += 1;
 
     // Note: In a real implementation, this would:
     // 1. Generate new credential values based on the protocol type
     // 2. Update the encrypted state with new values
     // 3. Optionally revoke the old credentials with the provider
-    // For now, we just update the metadata to simulate rotation
+    // For now, we just update the record to simulate rotation
 
     save_credential(&app, &credential)?;
     app.emit("credential_rotated", &credential)

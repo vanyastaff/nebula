@@ -4142,7 +4142,7 @@ mod tests {
     fn dummy_snapshot(id: &str) -> nebula_credential::CredentialSnapshot {
         nebula_credential::CredentialSnapshot::new(
             id,
-            nebula_credential::CredentialMetadata::new(),
+            nebula_credential::CredentialRecord::new(),
             nebula_credential::SecretToken::new(nebula_credential::SecretString::new("test-value")),
         )
     }

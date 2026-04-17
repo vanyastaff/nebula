@@ -473,8 +473,8 @@ mod tests {
         context::CredentialContext,
         credential::Credential,
         credentials::ApiKeyCredential,
-        description::CredentialDescription,
         error::CredentialError,
+        metadata::CredentialMetadata,
         pending::NoPendingState,
         resolve::{RefreshOutcome, RefreshPolicy, StaticResolveResult},
         scheme::SecretToken,
@@ -513,8 +513,8 @@ mod tests {
             ..RefreshPolicy::DEFAULT
         };
 
-        fn description() -> CredentialDescription {
-            CredentialDescription {
+        fn metadata() -> CredentialMetadata {
+            CredentialMetadata {
                 key: Self::KEY.to_owned(),
                 name: "Refreshable Test".to_owned(),
                 description: "Test credential for early refresh".to_owned(),
@@ -569,8 +569,8 @@ mod tests {
             ..RefreshPolicy::DEFAULT
         };
 
-        fn description() -> CredentialDescription {
-            CredentialDescription {
+        fn metadata() -> CredentialMetadata {
+            CredentialMetadata {
                 key: Self::KEY.to_owned(),
                 name: "Tiny Jitter Refreshable Test".to_owned(),
                 description: "Test credential with sub-ms jitter".to_owned(),
@@ -1074,8 +1074,8 @@ mod tests {
             ..RefreshPolicy::DEFAULT
         };
 
-        fn description() -> CredentialDescription {
-            CredentialDescription {
+        fn metadata() -> CredentialMetadata {
+            CredentialMetadata {
                 key: Self::KEY.to_owned(),
                 name: "CAS Retry Test".to_owned(),
                 description: "Test credential for CAS retry".to_owned(),

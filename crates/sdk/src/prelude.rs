@@ -47,8 +47,11 @@ pub use nebula_credential::{
     ApiKeyCredential,
     BasicAuthCredential,
     Credential,
-    CredentialDescription,
     CredentialError,
+    // Integration-catalog metadata (key, name, parameters, pattern)
+    CredentialMetadata,
+    // Runtime operational state (created_at, version, ...)
+    CredentialRecord,
     // Typed credential access
     CredentialSnapshot,
     CredentialState,

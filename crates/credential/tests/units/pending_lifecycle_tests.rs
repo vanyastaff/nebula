@@ -9,9 +9,9 @@ use nebula_credential::{
     SecretString,
     context::CredentialContext,
     credential::Credential,
-    description::CredentialDescription,
     error::CredentialError,
     executor::{ResolveResponse, execute_continue, execute_resolve},
+    metadata::CredentialMetadata,
     pending::PendingState,
     pending_store_memory::InMemoryPendingStore,
     resolve::{DisplayData, InteractionRequest, RefreshOutcome, ResolveResult, UserInput},
@@ -64,8 +64,8 @@ impl Credential for InteractiveTestCredential {
     const KEY: &'static str = "interactive_test";
     const INTERACTIVE: bool = true;
 
-    fn description() -> CredentialDescription {
-        CredentialDescription {
+    fn metadata() -> CredentialMetadata {
+        CredentialMetadata {
             key: Self::KEY.to_owned(),
             name: "Interactive Test".to_owned(),
             description: "Test credential for pending lifecycle".to_owned(),
