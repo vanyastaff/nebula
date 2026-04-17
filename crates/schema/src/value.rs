@@ -199,6 +199,7 @@ impl FieldValues {
     }
 
     /// Borrow a value by key.
+    #[inline]
     pub fn get(&self, key: &FieldKey) -> Option<&FieldValue> {
         self.0.get(key)
     }

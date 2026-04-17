@@ -168,8 +168,12 @@ impl Schema {
         mode: ExecutionMode,
         report: &mut LegacyReport,
     ) {
+        // Path-depth lint — only meaningful on recursive descents where the
+        // path grows via `.` or `[` separators. Top-level leaf keys never
+        // contain those, so the fast `memchr` probe skips the full count
+        // entirely.
         const MAX_NESTED_DEPTH: u8 = 16;
-        if Self::depth_from_path(path) > MAX_NESTED_DEPTH {
+        if Self::path_has_separator(path) && Self::depth_from_path(path) > MAX_NESTED_DEPTH {
             report.push_error(ValidationIssue::new(
                 path,
                 "max_depth",
@@ -849,6 +853,22 @@ impl Schema {
             }
         }
         count.min(u8::MAX as u32) as u8
+    }
+
+    /// Cheap probe: does `path` contain any segment separator at all?
+    ///
+    /// Used as an early-out before the full `depth_from_path` byte scan. A
+    /// top-level leaf key like `"name"` never contains `.` or `[`, so the
+    /// depth-limit check can be skipped entirely without changing the
+    /// observable result.
+    #[inline]
+    fn path_has_separator(path: &str) -> bool {
+        for &b in path.as_bytes() {
+            if b == b'.' || b == b'[' {
+                return true;
+            }
+        }
+        false
     }
 
     fn object_to_context(object: &Map<String, Value>) -> HashMap<String, Value> {
