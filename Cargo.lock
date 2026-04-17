@@ -4030,31 +4030,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "nebula-parameter"
-version = "0.1.0"
-dependencies = [
- "nebula-error",
- "nebula-parameter-macros",
- "nebula-validator",
- "regex",
- "reqwest 0.13.2",
- "serde",
- "serde_json",
- "thiserror 2.0.18",
- "tokio",
-]
-
-[[package]]
-name = "nebula-parameter-macros"
-version = "0.1.0"
-dependencies = [
- "nebula-macro-support",
- "proc-macro2",
- "quote",
- "syn 2.0.117",
-]
-
-[[package]]
 name = "nebula-plugin"
 version = "0.1.0"
 dependencies = [
