@@ -27,8 +27,10 @@ pub(super) fn emit_field_rule(field: &FieldDef, rule: &Rule) -> TokenStream2 {
         Rule::MaxLength(n) => emit_len_check(field, *n, false),
         Rule::ExactLength(n) => emit_exact_len_check(field, *n),
         Rule::LengthRange { min, max } => emit_length_range(field, *min, *max),
-        Rule::Min(bound) => emit_cmp_check(field, bound, true),
-        Rule::Max(bound) => emit_cmp_check(field, bound, false),
+        Rule::Min(bound) => emit_cmp_check(field, bound, true, false),
+        Rule::Max(bound) => emit_cmp_check(field, bound, false, false),
+        Rule::GreaterThan(bound) => emit_cmp_check(field, bound, true, true),
+        Rule::LessThan(bound) => emit_cmp_check(field, bound, false, true),
         Rule::MinSize(n) => emit_size_validator(field, "min_size", *n),
         Rule::MaxSize(n) => emit_size_validator(field, "max_size", *n),
         Rule::ExactSize(n) => emit_size_validator(field, "exact_size", *n),
@@ -162,17 +164,23 @@ fn emit_length_range(field: &FieldDef, min: usize, max: usize) -> TokenStream2 {
 // Numeric comparison (min, max)
 // ---------------------------------------------------------------------------
 
-/// Emit min or max numeric comparison check.
-fn emit_cmp_check(field: &FieldDef, bound: &TokenStream2, is_min: bool) -> TokenStream2 {
+/// Emit a numeric comparison check for `min` / `max` / `greater_than` /
+/// `less_than` rules. `is_min` picks the direction, `is_exclusive` picks
+/// strict (`>` / `<`) vs inclusive (`>=` / `<=`) semantics.
+fn emit_cmp_check(
+    field: &FieldDef,
+    bound: &TokenStream2,
+    is_min: bool,
+    is_exclusive: bool,
+) -> TokenStream2 {
     let field_key = field.ident.to_string();
 
-    let (code, cmp) = if is_min {
-        ("min", quote!(value < &#bound))
-    } else {
-        ("max", quote!(value > &#bound))
+    let (code, cmp, op) = match (is_min, is_exclusive) {
+        (true, false) => ("min", quote!(value < &#bound), ">="),
+        (false, false) => ("max", quote!(value > &#bound), "<="),
+        (true, true) => ("greater_than", quote!(value <= &#bound), ">"),
+        (false, true) => ("less_than", quote!(value >= &#bound), "<"),
     };
-
-    let op = if is_min { ">=" } else { "<=" };
 
     let inner = quote! {
         if #cmp {

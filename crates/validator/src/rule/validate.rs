@@ -100,6 +100,40 @@ impl Rule {
                 }
                 Ok(())
             },
+            Self::GreaterThan {
+                min: min_val,
+                message,
+            } => {
+                if let Some(ord) = json_number_cmp(value, min_val)
+                    && !ord.is_gt()
+                {
+                    let err = ValidationError::new(
+                        "greater_than",
+                        format!("Value must be greater than {}", format_json_number(min_val)),
+                    )
+                    .with_param("min", format_json_number(min_val))
+                    .with_param("actual", value.to_string());
+                    return Err(override_message(err, message));
+                }
+                Ok(())
+            },
+            Self::LessThan {
+                max: max_val,
+                message,
+            } => {
+                if let Some(ord) = json_number_cmp(value, max_val)
+                    && !ord.is_lt()
+                {
+                    let err = ValidationError::new(
+                        "less_than",
+                        format!("Value must be less than {}", format_json_number(max_val)),
+                    )
+                    .with_param("max", format_json_number(max_val))
+                    .with_param("actual", value.to_string());
+                    return Err(override_message(err, message));
+                }
+                Ok(())
+            },
             Self::OneOf { values, message } => {
                 if values.is_empty() {
                     return Ok(());

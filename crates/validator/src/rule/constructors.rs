@@ -94,6 +94,46 @@ impl Rule {
         })
     }
 
+    /// Creates a [`GreaterThan`](Self::GreaterThan) rule from an `i64`.
+    #[must_use]
+    pub fn greater_than(min: i64) -> Self {
+        Self::GreaterThan {
+            min: serde_json::Number::from(min),
+            message: None,
+        }
+    }
+
+    /// Creates a [`LessThan`](Self::LessThan) rule from an `i64`.
+    #[must_use]
+    pub fn less_than(max: i64) -> Self {
+        Self::LessThan {
+            max: serde_json::Number::from(max),
+            message: None,
+        }
+    }
+
+    /// Creates a [`GreaterThan`](Self::GreaterThan) rule from an `f64`.
+    ///
+    /// Returns `None` if `min` is NaN or infinite.
+    #[must_use]
+    pub fn greater_than_f64(min: f64) -> Option<Self> {
+        Some(Self::GreaterThan {
+            min: serde_json::Number::from_f64(min)?,
+            message: None,
+        })
+    }
+
+    /// Creates a [`LessThan`](Self::LessThan) rule from an `f64`.
+    ///
+    /// Returns `None` if `max` is NaN or infinite.
+    #[must_use]
+    pub fn less_than_f64(max: f64) -> Option<Self> {
+        Some(Self::LessThan {
+            max: serde_json::Number::from_f64(max)?,
+            message: None,
+        })
+    }
+
     /// Creates a [`OneOf`](Self::OneOf) rule.
     #[must_use]
     pub fn one_of<V: Into<serde_json::Value>>(values: impl IntoIterator<Item = V>) -> Self {
@@ -162,6 +202,8 @@ impl Rule {
             Self::MaxLength { max, .. } => Self::MaxLength { max, message: msg },
             Self::Min { min, .. } => Self::Min { min, message: msg },
             Self::Max { max, .. } => Self::Max { max, message: msg },
+            Self::GreaterThan { min, .. } => Self::GreaterThan { min, message: msg },
+            Self::LessThan { max, .. } => Self::LessThan { max, message: msg },
             Self::OneOf { values, .. } => Self::OneOf {
                 values,
                 message: msg,

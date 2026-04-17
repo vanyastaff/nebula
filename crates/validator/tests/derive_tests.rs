@@ -1064,3 +1064,95 @@ fn optional_nested_some_invalid_fails() {
     };
     assert!(v.validate_fields().is_err());
 }
+
+// ---------------------------------------------------------------------------
+// Exclusive numeric bounds: greater_than / less_than
+// ---------------------------------------------------------------------------
+
+#[derive(Validator)]
+struct ExclusiveBounds {
+    #[validate(greater_than = 0_i32)]
+    positive_count: i32,
+
+    #[validate(less_than = 100_u32)]
+    under_hundred: u32,
+
+    #[validate(greater_than = 0.0_f64, less_than = 1.0_f64)]
+    probability: f64,
+}
+
+#[test]
+fn greater_than_derive_passes_above_bound() {
+    let v = ExclusiveBounds {
+        positive_count: 1,
+        under_hundred: 0,
+        probability: 0.5,
+    };
+    assert!(v.validate_fields().is_ok());
+}
+
+#[test]
+fn greater_than_derive_rejects_bound_value() {
+    let v = ExclusiveBounds {
+        positive_count: 0, // fails: bound is exclusive
+        under_hundred: 99,
+        probability: 0.5,
+    };
+    let errs = v.validate_fields().unwrap_err();
+    assert!(
+        errs.errors()
+            .iter()
+            .any(|e| e.code.as_ref() == "greater_than")
+    );
+}
+
+#[test]
+fn less_than_derive_rejects_bound_value() {
+    let v = ExclusiveBounds {
+        positive_count: 5,
+        under_hundred: 100, // fails: bound is exclusive
+        probability: 0.5,
+    };
+    let errs = v.validate_fields().unwrap_err();
+    assert!(errs.errors().iter().any(|e| e.code.as_ref() == "less_than"));
+}
+
+#[test]
+fn exclusive_bounds_float_boundary() {
+    // Both 0.0 and 1.0 must fail because bounds are exclusive.
+    let v = ExclusiveBounds {
+        positive_count: 1,
+        under_hundred: 0,
+        probability: 0.0,
+    };
+    assert!(v.validate_fields().is_err());
+
+    let v = ExclusiveBounds {
+        positive_count: 1,
+        under_hundred: 0,
+        probability: 1.0,
+    };
+    assert!(v.validate_fields().is_err());
+}
+
+#[derive(Validator)]
+struct ExclusiveBoundsEach {
+    #[validate(each(greater_than = 0_i32, less_than = 10_i32))]
+    values: Vec<i32>,
+}
+
+#[test]
+fn exclusive_bounds_on_each_element() {
+    let valid = ExclusiveBoundsEach {
+        values: vec![1, 5, 9],
+    };
+    assert!(valid.validate_fields().is_ok());
+
+    let with_zero = ExclusiveBoundsEach { values: vec![0, 5] };
+    assert!(with_zero.validate_fields().is_err());
+
+    let with_ten = ExclusiveBoundsEach {
+        values: vec![5, 10],
+    };
+    assert!(with_ten.validate_fields().is_err());
+}

@@ -81,12 +81,20 @@ pub(super) fn parse_field_rules(
         rules.push(Rule::LengthRange { min, max });
     }
 
-    // min / max (numeric)
+    // min / max (numeric, inclusive)
     if let Some(ts) = parse_number_lit(attrs, "min")? {
         rules.push(Rule::Min(ts));
     }
     if let Some(ts) = parse_number_lit(attrs, "max")? {
         rules.push(Rule::Max(ts));
+    }
+
+    // greater_than / less_than (numeric, exclusive)
+    if let Some(ts) = parse_number_lit(attrs, "greater_than")? {
+        rules.push(Rule::GreaterThan(ts));
+    }
+    if let Some(ts) = parse_number_lit(attrs, "less_than")? {
+        rules.push(Rule::LessThan(ts));
     }
 
     // min_size / max_size / exact_size

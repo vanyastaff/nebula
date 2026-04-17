@@ -77,12 +77,20 @@ pub(super) fn parse_each_rules(
         rules.push(Rule::ExactLength(n));
     }
 
-    // min / max (numeric)
+    // min / max (numeric, inclusive)
     if let Some(ts) = parse_number_lit(&each_attrs, "min")? {
         rules.push(Rule::Min(ts));
     }
     if let Some(ts) = parse_number_lit(&each_attrs, "max")? {
         rules.push(Rule::Max(ts));
+    }
+
+    // greater_than / less_than (numeric, exclusive)
+    if let Some(ts) = parse_number_lit(&each_attrs, "greater_than")? {
+        rules.push(Rule::GreaterThan(ts));
+    }
+    if let Some(ts) = parse_number_lit(&each_attrs, "less_than")? {
+        rules.push(Rule::LessThan(ts));
     }
 
     let has_is_true = each_attrs.has_flag("is_true");

@@ -67,3 +67,15 @@ harness = false
 name = "integration"
 path = "tests/integration/main.rs"
 
+[[bench]]
+name = "derive_regex"
+harness = false
+
+[[bench]]
+name = "rule_engine"
+harness = false
+
+[[bench]]
+name = "derive_large_struct"
+harness = false
+

@@ -80,10 +80,14 @@ pub enum Rule {
         max: usize,
     },
 
-    /// Minimum numeric value: `min = N`.
+    /// Minimum numeric value (inclusive): `min = N`.
     Min(TokenStream2),
-    /// Maximum numeric value: `max = N`.
+    /// Maximum numeric value (inclusive): `max = N`.
     Max(TokenStream2),
+    /// Strictly greater than (exclusive): `greater_than = N`.
+    GreaterThan(TokenStream2),
+    /// Strictly less than (exclusive): `less_than = N`.
+    LessThan(TokenStream2),
 
     /// Minimum collection size: `min_size = N`.
     MinSize(usize),

@@ -17,7 +17,7 @@
 //!
 //! | Category | Variants | Method | Classification |
 //! |---|---|---|---|
-//! | Value validation | `MinLength`, `MaxLength`, `Pattern`, `Min`, `Max`, `OneOf`, `MinItems`, `MaxItems`, `Email`, `Url` | [`Rule::validate_value`] | [`Rule::is_value_rule`] |
+//! | Value validation | `MinLength`, `MaxLength`, `Pattern`, `Min`, `Max`, `GreaterThan`, `LessThan`, `OneOf`, `MinItems`, `MaxItems`, `Email`, `Url` | [`Rule::validate_value`] | [`Rule::is_value_rule`] |
 //! | Context predicate | `Eq`, `Ne`, `Gt`, `Gte`, `Lt`, `Lte`, `IsTrue`, `IsFalse`, `Set`, `Empty`, `Contains`, `Matches`, `In` | [`Rule::evaluate`] | [`Rule::is_predicate`] |
 //! | Deferred | `Custom`, `UniqueBy` | skipped at schema time | [`Rule::is_deferred`] |
 //! | Logical combinator | `All`, `Any`, `Not` | both methods | — |
@@ -164,6 +164,24 @@ pub enum Rule {
     /// Number must be ≤ `max`.
     Max {
         /// Upper bound (inclusive).
+        max: serde_json::Number,
+        /// Optional custom error message.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        message: Option<String>,
+    },
+
+    /// Number must be strictly greater than `min` (exclusive lower bound).
+    GreaterThan {
+        /// Lower bound (exclusive).
+        min: serde_json::Number,
+        /// Optional custom error message.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        message: Option<String>,
+    },
+
+    /// Number must be strictly less than `max` (exclusive upper bound).
+    LessThan {
+        /// Upper bound (exclusive).
         max: serde_json::Number,
         /// Optional custom error message.
         #[serde(default, skip_serializing_if = "Option::is_none")]

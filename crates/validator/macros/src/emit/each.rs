@@ -62,8 +62,14 @@ fn emit_each_rule(rule: &Rule, field: &FieldDef, each: &EachRules) -> TokenStrea
         Rule::MinLength(n) => emit_each_len_check(*n, true, message, element_is_option),
         Rule::MaxLength(n) => emit_each_len_check(*n, false, message, element_is_option),
         Rule::ExactLength(n) => emit_each_exact_len(*n, message, element_is_option),
-        Rule::Min(bound) => emit_each_cmp_check(bound, true, message, element_is_option),
-        Rule::Max(bound) => emit_each_cmp_check(bound, false, message, element_is_option),
+        Rule::Min(bound) => emit_each_cmp_check(bound, true, false, message, element_is_option),
+        Rule::Max(bound) => emit_each_cmp_check(bound, false, false, message, element_is_option),
+        Rule::GreaterThan(bound) => {
+            emit_each_cmp_check(bound, true, true, message, element_is_option)
+        },
+        Rule::LessThan(bound) => {
+            emit_each_cmp_check(bound, false, true, message, element_is_option)
+        },
         Rule::StringFormat(fmt) => {
             emit_each_str_validator(string_format_to_tokens(*fmt), message, element_is_option)
         },
@@ -156,20 +162,21 @@ fn emit_each_exact_len(
     wrap_each_option(element_is_option, check)
 }
 
-/// Emit element-level min or max numeric comparison check.
+/// Emit element-level numeric comparison check. `is_min` chooses direction,
+/// `is_exclusive` picks strict vs inclusive comparison.
 fn emit_each_cmp_check(
     bound: &TokenStream2,
     is_min: bool,
+    is_exclusive: bool,
     message: &Option<String>,
     element_is_option: bool,
 ) -> TokenStream2 {
-    let code = if is_min { "min" } else { "max" };
-    let cmp = if is_min {
-        quote!(value < &#bound)
-    } else {
-        quote!(value > &#bound)
+    let (code, cmp, op_str) = match (is_min, is_exclusive) {
+        (true, false) => ("min", quote!(value < &#bound), ">="),
+        (false, false) => ("max", quote!(value > &#bound), "<="),
+        (true, true) => ("greater_than", quote!(value <= &#bound), ">"),
+        (false, true) => ("less_than", quote!(value >= &#bound), "<"),
     };
-    let op_str = if is_min { ">=" } else { "<=" };
 
     let check = if let Some(msg) = message {
         quote! {

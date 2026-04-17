@@ -111,6 +111,67 @@ fn max_numeric_fails() {
 }
 
 #[test]
+fn greater_than_passes_strictly() {
+    let rule = Rule::greater_than(10);
+    assert!(rule.validate_value(&json!(11)).is_ok());
+    assert!(rule.validate_value(&json!(10)).is_err());
+    assert!(rule.validate_value(&json!(5)).is_err());
+}
+
+#[test]
+fn less_than_passes_strictly() {
+    let rule = Rule::less_than(10);
+    assert!(rule.validate_value(&json!(9)).is_ok());
+    assert!(rule.validate_value(&json!(10)).is_err());
+    assert!(rule.validate_value(&json!(11)).is_err());
+}
+
+#[test]
+fn greater_than_and_less_than_classified_as_value_rules() {
+    assert!(Rule::greater_than(0).is_value_rule());
+    assert!(Rule::less_than(0).is_value_rule());
+    assert!(!Rule::greater_than(0).is_predicate());
+    assert!(!Rule::less_than(0).is_deferred());
+}
+
+#[test]
+fn exclusive_bound_error_codes() {
+    let gt = Rule::greater_than(5);
+    let err = gt.validate_value(&json!(5)).unwrap_err();
+    assert_eq!(err.code.as_ref(), "greater_than");
+
+    let lt = Rule::less_than(5);
+    let err = lt.validate_value(&json!(5)).unwrap_err();
+    assert_eq!(err.code.as_ref(), "less_than");
+}
+
+#[test]
+fn exclusive_bound_with_floats() {
+    let rule = Rule::greater_than_f64(4.5).unwrap();
+    assert!(rule.validate_value(&json!(4.6)).is_ok());
+    assert!(rule.validate_value(&json!(4.5)).is_err());
+}
+
+#[test]
+fn exclusive_bound_custom_message() {
+    let rule = Rule::greater_than(0).with_message("must be positive");
+    let err = rule.validate_value(&json!(-1)).unwrap_err();
+    assert_eq!(err.message.as_ref(), "must be positive");
+}
+
+#[test]
+fn exclusive_bounds_roundtrip_via_serde() {
+    let rule = Rule::GreaterThan {
+        min: serde_json::Number::from(18),
+        message: Some("adults only".into()),
+    };
+    let json = serde_json::to_value(&rule).unwrap();
+    assert_eq!(json["rule"], "greater_than");
+    let back: Rule = serde_json::from_value(json).unwrap();
+    assert_eq!(back, rule);
+}
+
+#[test]
 fn one_of_passes() {
     let rule = Rule::OneOf {
         values: vec![json!("a"), json!("b"), json!("c")],

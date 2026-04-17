@@ -33,7 +33,8 @@
 //! | `required` | `Option<T>` | Field must be `Some` |
 //! | `min_length = N` / `max_length = N` / `exact_length = N` | `String` | Character-count bounds |
 //! | `length_range(min = N, max = M)` | `String` | Inclusive length range |
-//! | `min = E` / `max = E` / `range(min = A, max = B)` | numeric | Numeric bounds |
+//! | `min = E` / `max = E` / `range(min = A, max = B)` | numeric | Inclusive numeric bounds |
+//! | `greater_than = E` / `less_than = E` | numeric | Exclusive numeric bounds |
 //! | `min_size = N` / `max_size = N` / `exact_size = N` / `size_range(...)` / `not_empty_collection` | `Vec<T>` | Collection-size bounds |
 //! | `email`, `url`, `uuid`, `ipv4`, `ipv6`, `hostname`, `date`, `date_time`, `time` | `String` | Built-in format checks |
 //! | `alphanumeric`, `alphabetic`, `numeric`, `lowercase`, `uppercase`, `not_empty` | `String` | Character-class checks |

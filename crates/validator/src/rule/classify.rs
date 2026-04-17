@@ -19,6 +19,8 @@ impl Rule {
                 | Self::MaxLength { .. }
                 | Self::Min { .. }
                 | Self::Max { .. }
+                | Self::GreaterThan { .. }
+                | Self::LessThan { .. }
                 | Self::OneOf { .. }
                 | Self::MinItems { .. }
                 | Self::MaxItems { .. }
