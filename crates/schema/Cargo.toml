@@ -64,3 +64,11 @@ harness = false
 [[bench]]
 name = "bench_memory"
 harness = false
+
+[[bench]]
+name = "bench_resolve"
+harness = false
+
+[[bench]]
+name = "bench_lookup"
+harness = false
