@@ -5,7 +5,7 @@
 //! `normalize`, `load_select_options`, `load_dynamic_records`) are preserved
 //! here and delegated from `ValidSchema` in Task 21.
 
-use std::{borrow::Cow, collections::HashMap};
+use std::collections::HashMap;
 
 use indexmap::IndexMap;
 use nebula_validator::{ExecutionMode, validate_rules};
@@ -220,20 +220,34 @@ impl Schema {
             return;
         };
 
-        // Cheap borrow when the value is a plain literal and no transformers
-        // are attached; fall back to clone/to_json otherwise.
-        let transformed: Cow<'_, Value> = if transformers.is_empty() {
-            match raw {
-                crate::value::FieldValue::Literal(v) => Cow::Borrowed(v),
-                other => Cow::Owned(other.to_json()),
+        // Ultra-hot path: literal value + no transformers. Borrow the
+        // underlying `&Value` directly through the rules/type-check pipeline.
+        if transformers.is_empty()
+            && let crate::value::FieldValue::Literal(v) = raw
+        {
+            if !rules.is_empty()
+                && let Err(errors) = validate_rules(v, rules, mode)
+            {
+                for error in errors.errors() {
+                    report.push_error(ValidationIssue::new(
+                        path,
+                        error.code.to_string(),
+                        error.message.to_string(),
+                    ));
+                }
             }
-        } else {
-            let base = match raw {
-                crate::value::FieldValue::Literal(v) => v.clone(),
-                other => other.to_json(),
-            };
-            Cow::Owned(transformers.iter().fold(base, |cur, t| t.apply(&cur)))
+            self.validate_field_type(field, v, path, mode, report);
+            return;
+        }
+
+        // Transformers present or value is a non-literal (Expression / Object
+        // / List / Mode). Materialise into an owned `Value` once and run the
+        // same pipeline against the transformed result.
+        let base = match raw {
+            crate::value::FieldValue::Literal(v) => v.clone(),
+            other => other.to_json(),
         };
+        let transformed = transformers.iter().fold(base, |cur, t| t.apply(&cur));
 
         if !rules.is_empty()
             && let Err(errors) = validate_rules(&transformed, rules, mode)
