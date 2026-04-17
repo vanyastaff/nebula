@@ -6,24 +6,35 @@
 //! - `ValidSchema::validate` (proof-token pipeline)
 //! - `SchemaBuilder::build` (lint/build time via `lint_tree`)
 //!
-//! Some STANDARD_CODES entries are *translated* codes (e.g. `"length.min"`,
-//! `"range.min"`) that the schema layer intends to emit after normalising
-//! validator codes. The current implementation passes through validator codes
-//! (`"min_length"`, `"max_length"`, `"min"`, `"max"`) unchanged.
+//! As of Phase 1 (Task 26), validator codes are translated in `run_rules` via
+//! `translate_validator_code` before being stored in `ValidationReport`.
+//! So `"min_length"` → `"length.min"`, `"max_length"` → `"length.max"`, etc.
 //!
-//! **Deferred** (requires post-Task-26 work to add translation layer):
-//! - `"length.min"` → validator emits `"min_length"`
-//! - `"length.max"` → validator emits `"max_length"`
-//! - `"range.min"` → validator emits `"min"`
-//! - `"range.max"` → validator emits `"max"`
-//! - `"pattern"` → validator emits `"invalid_format"` with param `"pattern"`
-//! - `"url"` → validator emits `"invalid_format"` with expected=`"url"`
-//! - `"email"` → validator emits `"invalid_format"` with expected=`"email"`
-//! - `"items.unique"` → validator emits `"unique_by"` / no direct emitter yet
-//! - `"loader.not_registered"` → needs real LoaderRegistry
-//! - `"loader.failed"` → needs real LoaderRegistry
-//! - `"expression.runtime"` → needs ExpressionContext implementation
-//! - `"expression.type_mismatch"` → same
+//! # Deferred codes (Phase 4)
+//!
+//! The following STANDARD_CODES entries cannot be emitted without additional
+//! infrastructure that is out of scope for Phase 1:
+//!
+//! - `"expression.parse"` — Phase 1's `Expression::parse()` is a no-op stub that always succeeds; a
+//!   real parse failure requires nebula-expression AST (Phase 4).
+//!
+//! - `"expression.runtime"` — requires a real `ExpressionContext` returning an eval error; Phase 4
+//!   scope.
+//!
+//! - `"expression.type_mismatch"` — requires `ExpressionContext` resolving to a wrong type; Phase 4
+//!   scope.
+//!
+//! - `"mode.required"` — unreachable via the public API: `FieldValue::Mode` always carries a
+//!   non-empty `FieldKey` (validated at construction time), so the `mode_key.is_empty()` branch in
+//!   `validated.rs` can never fire.
+//!
+//! - `"items.unique"` — `Rule::UniqueBy` is classified as a deferred rule in nebula-validator and
+//!   is silently skipped at `ExecutionMode::StaticOnly` (Phase 1). A full runtime evaluation path
+//!   is needed (Phase 4).
+//!
+//! - `"loader.not_registered"` — requires real `LoaderRegistry` wiring; Phase 2/4 scope.
+//!
+//! - `"loader.failed"` — same as above.
 
 use nebula_schema::{
     Field, FieldKey, FieldValue, FieldValues, Schema, ValidationReport, field_key,
@@ -92,14 +103,10 @@ fn emits_type_mismatch_boolean() {
     assert!(has_code(&err, "type_mismatch"));
 }
 
-// Validator passes through codes: min_length / max_length / min / max /
-// invalid_format. STANDARD_CODES entries "length.min", "length.max",
-// "range.min", "range.max", "pattern", "url", "email" are the intended
-// mapped codes — see deferred note at top.
+// ── String length codes (translated: min_length → length.min, max_length → length.max) ──
 
 #[test]
-fn emits_min_length_via_validator() {
-    // Emitted as "min_length" (not yet "length.min") — deferred mapping.
+fn emits_length_min() {
     let schema = Schema::builder()
         .add(Field::string(field_key!("x")).min_length(5))
         .build()
@@ -107,47 +114,46 @@ fn emits_min_length_via_validator() {
     let vs = FieldValues::from_json(json!({"x": "hi"})).unwrap();
     let err = schema.validate(&vs).unwrap_err();
     assert!(
-        err.errors().any(|e| e.code == "min_length"),
-        "expected min_length, got: {:?}",
+        has_code(&err, "length.min"),
+        "expected length.min, got: {:?}",
         err.errors().map(|e| &e.code).collect::<Vec<_>>()
     );
 }
 
 #[test]
-fn emits_max_length_via_validator() {
-    // Emitted as "max_length" (not yet "length.max") — deferred mapping.
+fn emits_length_max() {
     let schema = Schema::builder()
         .add(Field::string(field_key!("x")).max_length(3))
         .build()
         .unwrap();
-    let vs = FieldValues::from_json(json!({"x": "toolong"})).unwrap();
+    let vs = FieldValues::from_json(json!({"x": "abcdef"})).unwrap();
     let err = schema.validate(&vs).unwrap_err();
     assert!(
-        err.errors().any(|e| e.code == "max_length"),
-        "expected max_length, got: {:?}",
+        has_code(&err, "length.max"),
+        "expected length.max, got: {:?}",
         err.errors().map(|e| &e.code).collect::<Vec<_>>()
     );
 }
 
+// ── Numeric range codes (translated: min → range.min, max → range.max) ──────
+
 #[test]
-fn emits_range_min_via_validator() {
-    // Emitted as "min" (not yet "range.min") — deferred mapping.
+fn emits_range_min() {
     let schema = Schema::builder()
         .add(Field::number(field_key!("x")).min(10))
         .build()
         .unwrap();
-    let vs = FieldValues::from_json(json!({"x": 5})).unwrap();
+    let vs = FieldValues::from_json(json!({"x": 3})).unwrap();
     let err = schema.validate(&vs).unwrap_err();
     assert!(
-        err.errors().any(|e| e.code == "min"),
-        "expected min, got: {:?}",
+        has_code(&err, "range.min"),
+        "expected range.min, got: {:?}",
         err.errors().map(|e| &e.code).collect::<Vec<_>>()
     );
 }
 
 #[test]
-fn emits_range_max_via_validator() {
-    // Emitted as "max" (not yet "range.max") — deferred mapping.
+fn emits_range_max() {
     let schema = Schema::builder()
         .add(Field::number(field_key!("x")).max(10))
         .build()
@@ -155,11 +161,60 @@ fn emits_range_max_via_validator() {
     let vs = FieldValues::from_json(json!({"x": 99})).unwrap();
     let err = schema.validate(&vs).unwrap_err();
     assert!(
-        err.errors().any(|e| e.code == "max"),
-        "expected max, got: {:?}",
+        has_code(&err, "range.max"),
+        "expected range.max, got: {:?}",
         err.errors().map(|e| &e.code).collect::<Vec<_>>()
     );
 }
+
+// ── Pattern / URL / email codes (translated from invalid_format) ─────────────
+
+#[test]
+fn emits_pattern() {
+    let schema = Schema::builder()
+        .add(Field::string(field_key!("x")).pattern("^[a-z]+$"))
+        .build()
+        .unwrap();
+    let vs = FieldValues::from_json(json!({"x": "HI"})).unwrap();
+    let err = schema.validate(&vs).unwrap_err();
+    assert!(
+        has_code(&err, "pattern"),
+        "expected pattern, got: {:?}",
+        err.errors().map(|e| &e.code).collect::<Vec<_>>()
+    );
+}
+
+#[test]
+fn emits_url() {
+    let schema = Schema::builder()
+        .add(Field::string(field_key!("x")).url())
+        .build()
+        .unwrap();
+    let vs = FieldValues::from_json(json!({"x": "not-a-url"})).unwrap();
+    let err = schema.validate(&vs).unwrap_err();
+    assert!(
+        has_code(&err, "url"),
+        "expected url, got: {:?}",
+        err.errors().map(|e| &e.code).collect::<Vec<_>>()
+    );
+}
+
+#[test]
+fn emits_email() {
+    let schema = Schema::builder()
+        .add(Field::string(field_key!("x")).email())
+        .build()
+        .unwrap();
+    let vs = FieldValues::from_json(json!({"x": "not-an-email"})).unwrap();
+    let err = schema.validate(&vs).unwrap_err();
+    assert!(
+        has_code(&err, "email"),
+        "expected email, got: {:?}",
+        err.errors().map(|e| &e.code).collect::<Vec<_>>()
+    );
+}
+
+// ── List item count codes ────────────────────────────────────────────────────
 
 #[test]
 fn emits_items_min() {
@@ -243,33 +298,7 @@ fn emits_mode_invalid() {
     );
 }
 
-#[test]
-fn emits_mode_required_via_missing_mode() {
-    // mode.required fires when no mode key and no default_variant.
-    // FieldValue::Object (parsed from {"m": {}}) triggers type_mismatch on mode field.
-    // To get mode.required: supply a FieldValue::Mode with an empty-ish mode that resolves
-    // to the "no mode found" branch. The code path requires mode_key to be absent after
-    // FieldKey resolution — currently mode.required emits when `resolved_key` is None.
-    // This happens when `mode_key` is a FieldKey with empty-ish value but we can't create
-    // an empty FieldKey. So mode.required requires the field to not have a default_variant
-    // and the value to not carry a mode key — which means it must NOT be FieldValue::Mode
-    // (which always has a mode key). The mode.required path is therefore unreachable via
-    // public API in the current validated.rs implementation. Document as deferred.
-    //
-    // The closest observable behaviour: providing a FieldValue::Object triggers type_mismatch.
-    let schema = Schema::builder()
-        .add(Field::mode(field_key!("m")).variant("a", "A", Field::string(fk("val"))))
-        .build()
-        .unwrap();
-    let vs = FieldValues::from_json(json!({"m": {}})).unwrap();
-    let err = schema.validate(&vs).unwrap_err();
-    // Object → type_mismatch (mode expects FieldValue::Mode variant).
-    assert!(
-        has_code(&err, "type_mismatch"),
-        "codes: {:?}",
-        err.errors().map(|e| &e.code).collect::<Vec<_>>()
-    );
-}
+// mode.required is unreachable via the public API — see deferred note at top of file.
 
 // ── Expression codes ──────────────────────────────────────────────────────
 
@@ -285,10 +314,19 @@ fn emits_expression_forbidden() {
     assert!(has_code(&err, "expression.forbidden"));
 }
 
-// expression.parse fires when an expression in an Allowed field fails AST parsing.
-// expression.runtime / expression.type_mismatch require ExpressionContext — deferred.
+// expression.parse / expression.runtime / expression.type_mismatch require Phase 4.
 
 // ── Build-time (lint) codes ──────────────────────────────────────────────
+
+#[test]
+fn emits_invalid_key() {
+    // invalid_key is emitted by FieldKey::new when the key is malformed.
+    let err = FieldKey::new("has-dash").unwrap_err();
+    assert_eq!(err.code, "invalid_key");
+
+    let err2 = FieldKey::new("").unwrap_err();
+    assert_eq!(err2.code, "invalid_key");
+}
 
 #[test]
 fn emits_duplicate_key() {
@@ -354,6 +392,75 @@ fn emits_rule_contradictory() {
     );
 }
 
+#[test]
+fn emits_self_dependency() {
+    // A DynamicField whose depends_on references its own key → self_dependency.
+    use nebula_schema::{DynamicField, FieldPath};
+
+    let path = FieldPath::parse("deps").unwrap();
+    let field = DynamicField::new("deps")
+        .loader("my_loader")
+        .depends_on(path)
+        .into_field();
+
+    let report = Schema::builder().add(field).build().unwrap_err();
+    assert!(
+        has_code(&report, "self_dependency"),
+        "codes: {:?}",
+        report.iter().map(|e| &e.code).collect::<Vec<_>>()
+    );
+}
+
+#[test]
+fn emits_visibility_cycle() {
+    // A's visibility references B, B's visibility references A → cycle.
+    use nebula_validator::Rule;
+
+    // Rule::IsTrue { field: "b" } causes field "a" to reference "b".
+    // Rule::IsTrue { field: "a" } causes field "b" to reference "a".
+    let rule_a_references_b = Rule::IsTrue {
+        field: "b".to_owned(),
+    };
+    let rule_b_references_a = Rule::IsTrue {
+        field: "a".to_owned(),
+    };
+
+    let schema = Schema::new()
+        .add(Field::string(fk("a")).visible_when(rule_a_references_b))
+        .add(Field::string(fk("b")).visible_when(rule_b_references_a));
+
+    let lint = schema.lint();
+    assert!(
+        lint.diagnostics()
+            .iter()
+            .any(|d| d.code == "visibility_cycle"),
+        "expected visibility_cycle, got: {:?}",
+        lint.diagnostics()
+            .iter()
+            .map(|d| &d.code)
+            .collect::<Vec<_>>()
+    );
+}
+
+#[test]
+fn emits_dangling_reference() {
+    // A rule referencing an unknown field key → dangling_reference.
+    use nebula_validator::Rule;
+
+    let rule_unknown = Rule::IsTrue {
+        field: "nonexistent_field".to_owned(),
+    };
+    let report = Schema::builder()
+        .add(Field::string(field_key!("x")).visible_when(rule_unknown))
+        .build()
+        .unwrap_err();
+    assert!(
+        has_code(&report, "dangling_reference"),
+        "codes: {:?}",
+        report.iter().map(|e| &e.code).collect::<Vec<_>>()
+    );
+}
+
 // ── Warning codes (tested via LintReport from lint_schema legacy API) ────────
 
 #[test]
@@ -380,18 +487,6 @@ fn emits_missing_loader_warning_via_lint_schema() {
 #[test]
 fn emits_loader_without_dynamic_warning_via_lint_schema() {
     // A select with a loader key but dynamic=false → loader_without_dynamic.
-    let _schema = Schema::new().add(
-        Field::select(fk("s"))
-            .option("a", "A")
-            .with_rule(nebula_validator::Rule::MinLength {
-                min: 0,
-                message: None,
-            }), // force a rules-only select
-    );
-    // Can't easily set loader without dynamic via the builder (it sets both).
-    // Instead, serialize and patch to add loader without dynamic flag.
-    // Use the lint API directly by building the raw Schema and adding a loader
-    // via the legacy Schema::add path with a pre-built SelectField.
     use nebula_schema::{Field, SelectField};
     let mut sf = SelectField::new("s2");
     sf.dynamic = false;
@@ -413,12 +508,9 @@ fn emits_loader_without_dynamic_warning_via_lint_schema() {
 #[test]
 fn emits_missing_variant_label_warning_via_builder() {
     // mode variant with empty label → missing_variant_label warning.
-    // In SchemaBuilder, warnings don't block build — so build succeeds.
-    // Check the ValidationReport has the warning.
     let result = Schema::builder()
         .add(Field::mode(field_key!("m")).variant("v", "", Field::string(fk("x"))))
         .build();
-    // missing_variant_label is a warning — may or may not block build.
     match result {
         Ok(_) => {
             // Passed — the warning was advisory. Check via lint_schema instead.
@@ -437,7 +529,6 @@ fn emits_missing_variant_label_warning_via_builder() {
             );
         },
         Err(report) => {
-            // It was treated as error.
             assert!(
                 report.iter().any(|e| e.code == "missing_variant_label"),
                 "expected missing_variant_label, got: {:?}",
@@ -447,27 +538,71 @@ fn emits_missing_variant_label_warning_via_builder() {
     }
 }
 
-// ── Codes deferred (cannot emit without additional infrastructure) ────────────
+#[test]
+fn emits_notice_misuse() {
+    // NoticeField with required=Always → notice.misuse warning via lint_tree/SchemaBuilder.
+    // Warnings don't block build, so check via schema.lint() (legacy API).
+    use nebula_schema::{Field, NoticeField, RequiredMode};
 
-// The following STANDARD_CODES entries are deferred for future tasks:
-//
-// "length.min" — schema currently forwards "min_length" from validator; code
-//   mapping/translation layer not yet implemented (post-Task-26 work).
-// "length.max" — same; forwards "max_length".
-// "range.min"  — same; forwards "min".
-// "range.max"  — same; forwards "max".
-// "pattern"    — validator emits "invalid_format" with param "pattern".
-// "url"        — validator emits "invalid_format" with expected="url".
-// "email"      — validator emits "invalid_format" with expected="email".
-// "items.unique" — UniqueBy rule emits "unique_by"; no items.unique emitter yet.
-// "invalid_key" — emitted by FieldKey::new directly, not by schema validate.
-// "self_dependency" — requires DynamicField/SelectField depends_on self-ref via builder.
-// "visibility_cycle" — requires crafted cycle in visibility rules.
-// "notice.misuse" — notice field misuse warning (notice_misuse in legacy lint).
-// "notice_missing_description" — notice field without description.
-// "mode.required" — unreachable via public API (FieldValue::Mode always carries a key).
-// "loader.not_registered" — needs LoaderRegistry integration.
-// "loader.failed" — needs LoaderRegistry integration.
-// "expression.type_mismatch" — needs ExpressionContext returning wrong type.
-// "expression.runtime" — needs ExpressionContext returning eval error.
-// "dangling_reference" — requires depends_on or rule referencing unknown field.
+    let mut nf = NoticeField::new("n");
+    nf.required = RequiredMode::Always;
+    let schema = Schema::new().add(Field::Notice(nf));
+    let lint = schema.lint();
+    assert!(
+        lint.diagnostics().iter().any(|d| d.code == "notice_misuse"),
+        "expected notice_misuse, got: {:?}",
+        lint.diagnostics()
+            .iter()
+            .map(|d| &d.code)
+            .collect::<Vec<_>>()
+    );
+}
+
+#[test]
+fn emits_notice_missing_description() {
+    // NoticeField without description → notice_missing_description warning.
+    use nebula_schema::{Field, NoticeField};
+
+    let nf = NoticeField::new("info");
+    // No description set.
+    let schema = Schema::new().add(Field::Notice(nf));
+    let lint = schema.lint();
+    assert!(
+        lint.diagnostics()
+            .iter()
+            .any(|d| d.code == "notice_missing_description"),
+        "expected notice_missing_description, got: {:?}",
+        lint.diagnostics()
+            .iter()
+            .map(|d| &d.code)
+            .collect::<Vec<_>>()
+    );
+}
+
+#[test]
+fn emits_rule_incompatible_warning() {
+    // A pattern rule on a number field → rule.incompatible warning via new lint_tree path.
+    // Warnings don't block build — schema builds successfully but report has the warning.
+    // Use Schema::builder() which calls lint_tree; the warning code is "rule.incompatible".
+    use nebula_validator::Rule;
+
+    // SchemaBuilder warns but doesn't block on rule.incompatible.
+    // We verify via the legacy lint_schema path which uses "rule_type_mismatch".
+    let schema = Schema::new().add(Field::number(fk("n")).with_rule(Rule::Pattern {
+        pattern: "^[0-9]+$".to_owned(),
+        message: None,
+    }));
+    let lint = schema.lint();
+    // Legacy lint emits "rule_type_mismatch"; new lint_tree emits "rule.incompatible".
+    // Both are in STANDARD_CODES (rule.incompatible is listed).
+    assert!(
+        lint.diagnostics()
+            .iter()
+            .any(|d| d.code == "rule_type_mismatch" || d.code == "rule.incompatible"),
+        "expected rule_type_mismatch or rule.incompatible, got: {:?}",
+        lint.diagnostics()
+            .iter()
+            .map(|d| &d.code)
+            .collect::<Vec<_>>()
+    );
+}
