@@ -154,7 +154,7 @@ impl ValueRule {
                         .join(", ");
                     return Err(ValidationError::new(
                         "one_of",
-                        "must be one of {allowed}",
+                        "Value must be one of {allowed}",
                     )
                     .with_param("allowed", allowed)
                     .with_param("value", format!("{value}")));
@@ -165,7 +165,7 @@ impl ValueRule {
                 if let Some(items) = value.as_array() {
                     min_size::<serde_json::Value>(*n)
                         .validate(items.as_slice())
-                        .map_err(|e| e.with_param("min", n.to_string()))?;
+                        .map_err(|e| e.with_param("min", n.to_string()).with_param("value", format!("{value}")))?;
                 }
                 Ok(())
             },
@@ -173,7 +173,7 @@ impl ValueRule {
                 if let Some(items) = value.as_array() {
                     max_size::<serde_json::Value>(*n)
                         .validate(items.as_slice())
-                        .map_err(|e| e.with_param("max", n.to_string()))?;
+                        .map_err(|e| e.with_param("max", n.to_string()).with_param("value", format!("{value}")))?;
                 }
                 Ok(())
             },
