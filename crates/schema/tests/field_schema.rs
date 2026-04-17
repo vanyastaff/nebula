@@ -1,6 +1,6 @@
 use nebula_schema::{
-    BooleanWidget, ExecutionMode, Field, FieldValues, NumberWidget, RequiredMode, Schema,
-    SecretWidget, SelectWidget, StringWidget, Transformer, VisibilityMode,
+    BooleanWidget, Field, FieldValues, NumberWidget, RequiredMode, Schema, SecretWidget,
+    SelectWidget, StringWidget, Transformer, VisibilityMode,
 };
 use serde_json::json;
 
@@ -83,146 +83,120 @@ fn serde_roundtrip_field_and_schema() {
 
 #[test]
 fn validate_reports_missing_required() {
-    let schema = Schema::new().add(Field::string("username").required());
+    let schema = Schema::builder()
+        .add(Field::string("username").required())
+        .build()
+        .expect("valid schema");
     let values = FieldValues::new();
-    let report = schema.validate(&values, ExecutionMode::StaticOnly);
+    let report = schema.validate(&values).unwrap_err();
 
     assert!(report.has_errors());
-    assert_eq!(report.errors().len(), 1);
-    assert_eq!(report.errors()[0].key, "username");
-    assert_eq!(report.errors()[0].code, "required");
+    assert_eq!(report.errors().count(), 1);
+    assert!(report.errors().any(|e| e.path.to_string() == "username"));
+    assert!(report.errors().any(|e| e.code == "required"));
 }
 
 #[test]
 fn validate_applies_visibility_and_rules() {
-    let schema = Schema::new().add(Field::boolean("enabled").required()).add(
-        Field::string("api_key")
-            .visible_when(nebula_validator::Rule::Eq {
-                field: "enabled".to_owned(),
-                value: json!(true),
-            })
-            .required()
-            .min_length(5),
-    );
+    let schema = Schema::builder()
+        .add(Field::boolean("enabled").required())
+        .add(
+            Field::string("api_key")
+                .visible_when(nebula_validator::Rule::Eq {
+                    field: "enabled".to_owned(),
+                    value: json!(true),
+                })
+                .required()
+                .min_length(5),
+        )
+        .build()
+        .expect("valid schema");
 
     let mut values = FieldValues::new();
     values.set_raw("enabled", json!(false));
-    let report_hidden = schema.validate(&values, ExecutionMode::StaticOnly);
-    assert!(!report_hidden.has_errors());
+    assert!(schema.validate(&values).is_ok());
 
     values.set_raw("enabled", json!(true));
     values.set_raw("api_key", json!("abc"));
-    let report_short = schema.validate(&values, ExecutionMode::StaticOnly);
-    assert!(report_short.has_errors());
-    assert_eq!(report_short.errors()[0].key, "api_key");
-}
-
-#[test]
-fn normalize_backfills_defaults() {
-    let schema = Schema::new()
-        .add(Field::string("host").default(json!("localhost")))
-        .add(Field::number("port").default(json!(5432)));
-    let mut values = FieldValues::new();
-    values.set_raw("host", json!("db.internal"));
-
-    let normalized = schema.normalize(&values);
-
-    assert_eq!(normalized.get_string_by_str("host"), Some("db.internal"));
-    assert_eq!(normalized.get_raw_by_str("port"), Some(json!(5432)));
-}
-
-#[test]
-fn normalize_recurses_for_object_list_and_mode_defaults() {
-    let schema = Schema::new()
-        .add(
-            Field::object("config")
-                .add(Field::string("host").default(json!("localhost")))
-                .add(Field::number("port").default(json!(8080))),
-        )
-        .add(
-            Field::list("items").item(
-                Field::object("item")
-                    .add(Field::string("name").default(json!("unnamed")))
-                    .add(Field::number("qty").default(json!(1))),
-            ),
-        )
-        .add(
-            Field::mode("auth")
-                .variant(
-                    "bearer",
-                    "Bearer",
-                    Field::object("payload").add(Field::secret("token").default(json!("secret"))),
-                )
-                .default_variant("bearer"),
-        );
-
-    let mut values = FieldValues::new();
-    values.set_raw("config", json!({ "host": "db.internal" }));
-    values.set_raw("items", json!([{ "name": "apple" }, {}]));
-
-    let normalized = schema.normalize(&values);
-    assert_eq!(
-        normalized.get_raw_by_str("config"),
-        Some(json!({ "host": "db.internal", "port": 8080 }))
-    );
-    assert_eq!(
-        normalized.get_raw_by_str("items"),
-        Some(json!([{ "name": "apple", "qty": 1 }, { "name": "unnamed", "qty": 1 }]))
-    );
-    assert_eq!(
-        normalized.get_raw_by_str("auth"),
-        Some(json!({ "mode": "bearer", "value": { "token": "secret" } }))
-    );
+    let report = schema.validate(&values).unwrap_err();
+    assert!(report.has_errors());
+    assert!(report.errors().any(|e| e.path.to_string() == "api_key"));
 }
 
 #[test]
 fn validate_enforces_scalar_type_mismatches() {
-    let schema = Schema::new()
+    let schema = Schema::builder()
         .add(Field::string("name").required())
         .add(Field::number("retries").required())
-        .add(Field::boolean("enabled").required());
+        .add(Field::boolean("enabled").required())
+        .build()
+        .expect("valid schema");
     let mut values = FieldValues::new();
     values.set_raw("name", json!(123));
     values.set_raw("retries", json!("bad"));
     values.set_raw("enabled", json!("true"));
 
-    let report = schema.validate(&values, ExecutionMode::StaticOnly);
+    let report = schema.validate(&values).unwrap_err();
     assert!(report.has_errors());
-    assert!(report.errors().iter().any(|issue| issue.key == "name"));
-    assert!(report.errors().iter().any(|issue| issue.key == "retries"));
-    assert!(report.errors().iter().any(|issue| issue.key == "enabled"));
+    assert!(
+        report
+            .errors()
+            .any(|e| e.path.to_string() == "name" && e.code == "type_mismatch")
+    );
+    assert!(
+        report
+            .errors()
+            .any(|e| e.path.to_string() == "retries" && e.code == "type_mismatch")
+    );
+    assert!(
+        report
+            .errors()
+            .any(|e| e.path.to_string() == "enabled" && e.code == "type_mismatch")
+    );
 }
 
 #[test]
 fn validate_applies_transformers_before_rules() {
-    let schema = Schema::new().add(
-        Field::string("api_key")
-            .with_transformer(Transformer::Trim)
-            .with_rule(nebula_validator::Rule::MaxLength {
-                max: 6,
-                message: None,
-            }),
-    );
+    let schema = Schema::builder()
+        .add(
+            Field::string("api_key")
+                .with_transformer(Transformer::Trim)
+                .with_rule(nebula_validator::Rule::MaxLength {
+                    max: 6,
+                    message: None,
+                }),
+        )
+        .build()
+        .expect("valid schema");
     let mut values = FieldValues::new();
     values.set_raw("api_key", json!("  SECRET  "));
 
-    let report = schema.validate(&values, ExecutionMode::StaticOnly);
-    assert!(!report.has_errors());
+    assert!(schema.validate(&values).is_ok());
 }
 
 #[test]
 fn validate_enforces_file_value_shape() {
-    let schema = Schema::new()
+    let schema = Schema::builder()
         .add(Field::file("single").required())
-        .add(Field::file("many").multiple().required());
+        .add(Field::file("many").multiple().required())
+        .build()
+        .expect("valid schema");
     let mut values = FieldValues::new();
     values.set_raw("single", json!(true));
     values.set_raw("many", json!(["a.txt", 42]));
 
-    let report = schema.validate(&values, ExecutionMode::StaticOnly);
+    let report = schema.validate(&values).unwrap_err();
     assert!(report.has_errors());
-    assert!(report.errors().iter().any(|issue| issue.key == "single"));
-    assert!(report.errors().iter().any(|issue| issue.key == "many"));
+    assert!(
+        report
+            .errors()
+            .any(|e| e.path.to_string() == "single" && e.code == "type_mismatch")
+    );
+    assert!(
+        report
+            .errors()
+            .any(|e| e.path.to_string() == "many" && e.code == "type_mismatch")
+    );
 }
 
 #[test]

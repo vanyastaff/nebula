@@ -1,19 +1,19 @@
 use nebula_schema::{
-    ExecutionMode, Field, FieldPath, FieldValues, LintLevel, LoaderContext, LoaderRegistry,
-    LoaderResult, Schema,
+    Field, FieldPath, FieldValues, LoaderContext, LoaderRegistry, LoaderResult, Schema,
+    ValidationReport,
 };
 use serde_json::json;
 
-fn has_lint(
-    report: &nebula_schema::LintReport,
-    level: LintLevel,
-    code: &str,
-    path_prefix: &str,
-) -> bool {
+fn has_error(report: &ValidationReport, code: &str, path_prefix: &str) -> bool {
     report
-        .diagnostics()
-        .iter()
-        .any(|diag| diag.level == level && diag.code == code && diag.path.starts_with(path_prefix))
+        .errors()
+        .any(|e| e.code == code && e.path.to_string().starts_with(path_prefix))
+}
+
+fn has_warning(report: &ValidationReport, code: &str, path_prefix: &str) -> bool {
+    report
+        .warnings()
+        .any(|e| e.code == code && e.path.to_string().starts_with(path_prefix))
 }
 
 #[test]
@@ -49,36 +49,30 @@ fn lint_schema_reports_dangling_refs_and_structural_issues() {
 
     let report = schema.lint();
     assert!(report.has_errors());
-    assert!(has_lint(
-        &report,
-        LintLevel::Error,
-        "dangling_reference",
-        "name.visible"
-    ));
-    assert!(has_lint(
-        &report,
-        LintLevel::Error,
-        "rule.contradictory",
-        "name.rules"
-    ));
-    assert!(has_lint(
-        &report,
-        LintLevel::Error,
-        "dangling_dependency",
-        "region.depends_on"
-    ));
-    assert!(has_lint(
-        &report,
-        LintLevel::Error,
-        "invalid_default_variant",
-        "auth"
-    ));
-    assert!(has_lint(
-        &report,
-        LintLevel::Warning,
-        "missing_variant_label",
-        "auth.variants.token"
-    ));
+    assert!(
+        has_error(&report, "dangling_reference", "name"),
+        "expected dangling_reference at name, got: {:?}",
+        report
+            .errors()
+            .map(|e| (&e.code, e.path.to_string()))
+            .collect::<Vec<_>>()
+    );
+    assert!(
+        has_error(&report, "rule.contradictory", "name"),
+        "expected rule.contradictory at name"
+    );
+    assert!(
+        has_error(&report, "dangling_reference", "region"),
+        "expected dangling_reference at region"
+    );
+    assert!(
+        has_error(&report, "invalid_default_variant", "auth"),
+        "expected invalid_default_variant at auth"
+    );
+    assert!(
+        has_warning(&report, "missing_variant_label", "auth"),
+        "expected missing_variant_label warning at auth"
+    );
 }
 
 #[tokio::test]
@@ -159,29 +153,36 @@ fn lint_schema_detects_visibility_cycles() {
         }));
 
     let report = schema.lint();
-    assert!(has_lint(
-        &report,
-        LintLevel::Error,
-        "visibility_cycle",
-        "a.visible"
-    ));
+    assert!(
+        has_error(&report, "visibility_cycle", "a"),
+        "expected visibility_cycle at a, got: {:?}",
+        report
+            .errors()
+            .map(|e| (&e.code, e.path.to_string()))
+            .collect::<Vec<_>>()
+    );
 }
 
 #[test]
 fn runtime_validation_still_works_with_linted_schema() {
-    let schema = Schema::new().add(Field::boolean("enabled").required()).add(
-        Field::string("name")
-            .required_when(nebula_validator::Rule::Eq {
-                field: "enabled".to_owned(),
-                value: json!(true),
-            })
-            .min_length(3),
-    );
+    let schema = Schema::builder()
+        .add(Field::boolean("enabled").required())
+        .add(
+            Field::string("name")
+                .required_when(nebula_validator::Rule::Eq {
+                    field: "enabled".to_owned(),
+                    value: json!(true),
+                })
+                .min_length(3),
+        )
+        .build()
+        .expect("valid schema");
+
     let mut values = FieldValues::new();
     values.set_raw("enabled", json!(true));
     values.set_raw("name", json!("ab"));
 
-    let report = schema.validate(&values, ExecutionMode::StaticOnly);
+    let report = schema.validate(&values).unwrap_err();
     assert!(report.has_errors());
 }
 
@@ -220,24 +221,18 @@ fn lint_schema_reports_rule_incompatible_warnings() {
         );
 
     let report = schema.lint();
-    assert!(has_lint(
-        &report,
-        LintLevel::Warning,
-        "rule.incompatible",
-        "retries.rules"
-    ));
-    assert!(has_lint(
-        &report,
-        LintLevel::Warning,
-        "rule.incompatible",
-        "name.rules"
-    ));
-    assert!(has_lint(
-        &report,
-        LintLevel::Warning,
-        "rule.incompatible",
-        "flag.rules"
-    ));
+    assert!(
+        has_warning(&report, "rule.incompatible", "retries"),
+        "expected rule.incompatible warning at retries"
+    );
+    assert!(
+        has_warning(&report, "rule.incompatible", "name"),
+        "expected rule.incompatible warning at name"
+    );
+    assert!(
+        has_warning(&report, "rule.incompatible", "flag"),
+        "expected rule.incompatible warning at flag"
+    );
 }
 
 #[test]
@@ -271,33 +266,19 @@ fn lint_schema_accepts_compatible_rule_types() {
 
     let report = schema.lint();
     assert!(
-        !has_lint(
-            &report,
-            LintLevel::Warning,
-            "rule.incompatible",
-            "title.rules"
-        ),
+        !has_warning(&report, "rule.incompatible", "title"),
         "compatible string rules should not be flagged: {:?}",
-        report.diagnostics()
+        report
+            .warnings()
+            .map(|e| (&e.code, e.path.to_string()))
+            .collect::<Vec<_>>()
     );
     assert!(
-        !has_lint(
-            &report,
-            LintLevel::Warning,
-            "rule.incompatible",
-            "timeout.rules"
-        ),
-        "compatible numeric rules should not be flagged: {:?}",
-        report.diagnostics()
+        !has_warning(&report, "rule.incompatible", "timeout"),
+        "compatible numeric rules should not be flagged"
     );
     assert!(
-        !has_lint(
-            &report,
-            LintLevel::Warning,
-            "rule.incompatible",
-            "tags.rules"
-        ),
-        "compatible list rules should not be flagged: {:?}",
-        report.diagnostics()
+        !has_warning(&report, "rule.incompatible", "tags"),
+        "compatible list rules should not be flagged"
     );
 }

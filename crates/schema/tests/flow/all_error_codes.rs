@@ -431,14 +431,9 @@ fn emits_visibility_cycle() {
 
     let lint = schema.lint();
     assert!(
-        lint.diagnostics()
-            .iter()
-            .any(|d| d.code == "visibility_cycle"),
+        lint.errors().any(|d| d.code == "visibility_cycle"),
         "expected visibility_cycle, got: {:?}",
-        lint.diagnostics()
-            .iter()
-            .map(|d| &d.code)
-            .collect::<Vec<_>>()
+        lint.errors().map(|d| &d.code).collect::<Vec<_>>()
     );
 }
 
@@ -461,72 +456,57 @@ fn emits_dangling_reference() {
     );
 }
 
-// ── Warning codes (tested via LintReport from lint_schema legacy API) ────────
+// ── Warning codes (tested via ValidationReport from Schema::lint()) ────────
 
 #[test]
-fn emits_missing_loader_warning_via_lint_schema() {
-    // lint_schema (legacy) reports missing_loader warning for dynamic select without loader.
+fn emits_missing_loader_warning() {
     let schema = Schema::new().add(Field::select(fk("s")).dynamic());
     let lint = schema.lint();
     assert!(
         lint.has_warnings(),
-        "expected warnings from lint_schema for dynamic select without loader"
+        "expected warnings for dynamic select without loader"
     );
     assert!(
-        lint.diagnostics()
-            .iter()
-            .any(|d| d.code == "missing_loader"),
+        lint.warnings().any(|d| d.code == "missing_loader"),
         "expected missing_loader, got: {:?}",
-        lint.diagnostics()
-            .iter()
-            .map(|d| &d.code)
-            .collect::<Vec<_>>()
+        lint.warnings().map(|d| &d.code).collect::<Vec<_>>()
     );
 }
 
 #[test]
-fn emits_loader_without_dynamic_warning_via_lint_schema() {
+fn emits_loader_without_dynamic_warning() {
     // A select with a loader key but dynamic=false → loader_without_dynamic.
     use nebula_schema::{Field, SelectField};
     let mut sf = SelectField::new("s2");
     sf.dynamic = false;
     sf.loader = Some("my_loader".into());
-    let schema2 = Schema::new().add(Field::Select(sf));
-    let lint = schema2.lint();
+    let schema = Schema::new().add(Field::Select(sf));
+    let lint = schema.lint();
     assert!(
-        lint.diagnostics()
-            .iter()
-            .any(|d| d.code == "loader_without_dynamic"),
+        lint.warnings().any(|d| d.code == "loader_without_dynamic"),
         "expected loader_without_dynamic, got: {:?}",
-        lint.diagnostics()
-            .iter()
-            .map(|d| &d.code)
-            .collect::<Vec<_>>()
+        lint.warnings().map(|d| &d.code).collect::<Vec<_>>()
     );
 }
 
 #[test]
-fn emits_missing_variant_label_warning_via_builder() {
+fn emits_missing_variant_label_warning() {
     // mode variant with empty label → missing_variant_label warning.
     let result = Schema::builder()
         .add(Field::mode(field_key!("m")).variant("v", "", Field::string(fk("x"))))
         .build();
     match result {
-        Ok(_) => {
-            // Passed — the warning was advisory. Check via lint_schema instead.
-            let schema =
-                Schema::new().add(Field::mode(fk("m")).variant("v", "", Field::string(fk("x"))));
-            let lint = schema.lint();
+        Ok(schema) => {
+            // Warning is advisory — build succeeded. Verify via lint().
+            let lint = Schema::new()
+                .add(Field::mode(fk("m")).variant("v", "", Field::string(fk("x"))))
+                .lint();
             assert!(
-                lint.diagnostics()
-                    .iter()
-                    .any(|d| d.code == "missing_variant_label"),
+                lint.warnings().any(|d| d.code == "missing_variant_label"),
                 "expected missing_variant_label in lint output, got: {:?}",
-                lint.diagnostics()
-                    .iter()
-                    .map(|d| &d.code)
-                    .collect::<Vec<_>>()
+                lint.warnings().map(|d| &d.code).collect::<Vec<_>>()
             );
+            let _ = schema;
         },
         Err(report) => {
             assert!(
@@ -541,7 +521,6 @@ fn emits_missing_variant_label_warning_via_builder() {
 #[test]
 fn emits_notice_misuse() {
     // NoticeField with required=Always → notice.misuse warning via lint_tree/SchemaBuilder.
-    // Warnings don't block build, so check via schema.lint() (legacy API).
     use nebula_schema::{Field, NoticeField, RequiredMode};
 
     let mut nf = NoticeField::new("n");
@@ -549,12 +528,9 @@ fn emits_notice_misuse() {
     let schema = Schema::new().add(Field::Notice(nf));
     let lint = schema.lint();
     assert!(
-        lint.diagnostics().iter().any(|d| d.code == "notice.misuse"),
+        lint.warnings().any(|d| d.code == "notice.misuse"),
         "expected notice.misuse, got: {:?}",
-        lint.diagnostics()
-            .iter()
-            .map(|d| &d.code)
-            .collect::<Vec<_>>()
+        lint.warnings().map(|d| &d.code).collect::<Vec<_>>()
     );
 }
 
@@ -564,44 +540,28 @@ fn emits_notice_missing_description() {
     use nebula_schema::{Field, NoticeField};
 
     let nf = NoticeField::new("info");
-    // No description set.
     let schema = Schema::new().add(Field::Notice(nf));
     let lint = schema.lint();
     assert!(
-        lint.diagnostics()
-            .iter()
+        lint.warnings()
             .any(|d| d.code == "notice_missing_description"),
         "expected notice_missing_description, got: {:?}",
-        lint.diagnostics()
-            .iter()
-            .map(|d| &d.code)
-            .collect::<Vec<_>>()
+        lint.warnings().map(|d| &d.code).collect::<Vec<_>>()
     );
 }
 
 #[test]
 fn emits_rule_incompatible_warning() {
-    // A pattern rule on a number field → rule.incompatible warning via new lint_tree path.
-    // Warnings don't block build — schema builds successfully but report has the warning.
-    // Use Schema::builder() which calls lint_tree; the warning code is "rule.incompatible".
     use nebula_validator::Rule;
 
-    // SchemaBuilder warns but doesn't block on rule.incompatible.
-    // Both legacy and new lint_tree now emit "rule.incompatible" (aligned in Task 26).
     let schema = Schema::new().add(Field::number(fk("n")).with_rule(Rule::Pattern {
         pattern: "^[0-9]+$".to_owned(),
         message: None,
     }));
     let lint = schema.lint();
-    // Both legacy and new lint emit "rule.incompatible" (aligned in Task 26 cleanup).
     assert!(
-        lint.diagnostics()
-            .iter()
-            .any(|d| d.code == "rule.incompatible"),
+        lint.warnings().any(|d| d.code == "rule.incompatible"),
         "expected rule.incompatible, got: {:?}",
-        lint.diagnostics()
-            .iter()
-            .map(|d| &d.code)
-            .collect::<Vec<_>>()
+        lint.warnings().map(|d| &d.code).collect::<Vec<_>>()
     );
 }

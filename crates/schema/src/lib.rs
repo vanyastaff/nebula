@@ -2,7 +2,7 @@
 //!
 //! This crate provides:
 //! - Typed field definitions and the [`Field`] enum.
-//! - [`Schema`] builder with structural lint passes.
+//! - [`Schema`] builder with structural lint passes via [`Schema::lint`].
 //! - Schema-time validation via [`ValidSchema::validate`] returning a [`ValidValues`] proof-token.
 //! - Runtime expression resolution via [`ValidValues::resolve`] returning a [`ResolvedValues`]
 //!   proof-token.
@@ -53,9 +53,6 @@ pub mod option;
 pub mod path;
 /// Common imports for schema-definition code.
 pub mod prelude;
-/// Legacy validation report models — kept internal; will be deleted with schema.rs legacy API.
-#[doc(hidden)]
-pub(crate) mod report;
 /// Top-level schema aggregate.
 pub mod schema;
 /// Value transformer definitions.
@@ -78,15 +75,11 @@ pub use field::{
 };
 pub use input_hint::InputHint;
 pub use key::FieldKey;
-pub use lint::{LintDiagnostic, LintLevel, LintReport, lint_schema};
 pub use loader::{
     Loader, LoaderContext, LoaderFuture, LoaderRegistry, LoaderResult, OptionLoader, RecordLoader,
 };
 pub use mode::{ExpressionMode, RequiredMode, VisibilityMode};
 pub use nebula_schema_macros::field_key;
-// Re-exported for tests using the legacy Schema::validate(values, mode) API.
-// Tasks 28-30 will migrate these callers.
-pub use nebula_validator::ExecutionMode;
 pub use option::SelectOption;
 pub use path::{FieldPath, PathSegment};
 pub use schema::{Schema, SchemaBuilder};

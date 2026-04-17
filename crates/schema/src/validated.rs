@@ -732,11 +732,17 @@ fn validate_literal_value(
                 );
                 return;
             };
-            if let Some(payload) = mode_value {
+            {
                 let payload_path = path
                     .clone()
                     .join(FieldKey::new("value").expect("static key"));
-                validate_field(&variant.field, Some(payload), ctx, &payload_path, report);
+                validate_field(
+                    &variant.field,
+                    mode_value.as_deref(),
+                    ctx,
+                    &payload_path,
+                    report,
+                );
             }
         },
         // File, Computed, Dynamic, Notice — no type-check rule at schema time.
@@ -745,13 +751,25 @@ fn validate_literal_value(
                 return;
             };
             if f.multiple {
-                if !lit.is_array() {
-                    report.push(
+                match lit.as_array() {
+                    None => report.push(
                         ValidationError::new("type_mismatch")
                             .at(path.clone())
                             .message(format!("field `{path}` expects an array of file paths"))
                             .build(),
-                    );
+                    ),
+                    Some(items) => {
+                        if items.iter().any(|v| !v.is_string()) {
+                            report.push(
+                                ValidationError::new("type_mismatch")
+                                    .at(path.clone())
+                                    .message(format!(
+                                        "field `{path}` expects an array of string file paths"
+                                    ))
+                                    .build(),
+                            );
+                        }
+                    },
                 }
             } else if !lit.is_string() {
                 report.push(

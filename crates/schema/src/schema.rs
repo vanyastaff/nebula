@@ -1,25 +1,17 @@
 //! Schema container and builder.
 //!
 //! `SchemaBuilder::build()` runs structural lint passes and produces a
-//! `ValidSchema` proof-token. The legacy `Schema` methods (`validate`,
-//! `normalize`, `load_select_options`, `load_dynamic_records`) are preserved
-//! here and delegated from `ValidSchema` in Task 21.
-
-use std::collections::HashMap;
+//! `ValidSchema` proof-token.
 
 use indexmap::IndexMap;
-use nebula_validator::{ExecutionMode, validate_rules};
 use serde::{Deserialize, Serialize};
-use serde_json::{Map, Value};
+use serde_json::Value;
 use smallvec::SmallVec;
 
 use crate::{
-    Field, FieldValues, LintReport, LoaderContext, LoaderRegistry, LoaderResult, RequiredMode,
-    SelectOption, VisibilityMode,
-    error::{SchemaError, ValidationReport},
-    lint_schema,
+    Field, LoaderContext, LoaderRegistry, LoaderResult, SelectOption,
+    error::{ValidationError, ValidationReport},
     path::FieldPath,
-    report::{ValidationIssue, ValidationReport as LegacyReport},
     validated::{FieldHandle, SchemaFlags, ValidSchema, ValidSchemaInner},
 };
 
@@ -55,9 +47,7 @@ impl Schema {
         SchemaBuilder::default()
     }
 
-    // ── Legacy API (kept to avoid breaking existing callers) ──────────────
-
-    /// Create an empty schema (legacy entry point).
+    /// Create an empty schema.
     pub fn new() -> Self {
         Self::default()
     }
@@ -105,212 +95,13 @@ impl Schema {
     }
 
     /// Run static lint checks for schema structure and references.
-    pub fn lint(&self) -> LintReport {
-        lint_schema(self)
-    }
-
-    /// Validate runtime values against this schema.
-    pub fn validate(&self, values: &FieldValues, mode: ExecutionMode) -> LegacyReport {
-        use std::sync::LazyLock;
-
-        // Thread-safe shared empty context — reused on every validate call
-        // that does not need any `When(rule)` evaluation. Replaces the
-        // per-call `HashMap::new()` stack init.
-        static EMPTY_CONTEXT: LazyLock<HashMap<String, Value>> = LazyLock::new(HashMap::new);
-
-        let mut report = LegacyReport::new();
-
-        // Decide whether we need to build a HashMap context for predicate rule
-        // evaluation. Most schemas use only `Always`/`Never` visibility/required
-        // modes, so we can skip the allocation entirely on the fast path.
-        let needs_context = self.fields.iter().any(Self::field_needs_context);
-        let context_storage: HashMap<String, Value>;
-        let context: &HashMap<String, Value> = if needs_context {
-            context_storage = values.to_context_map();
-            &context_storage
-        } else {
-            &EMPTY_CONTEXT
-        };
-
-        for field in &self.fields {
-            let key_fk = field.key();
-            let key = key_fk.as_str();
-            let raw = values.get(key_fk);
-            self.validate_single_field_ref(field, context, raw, key, mode, &mut report);
-        }
-
+    ///
+    /// Returns a [`ValidationReport`] — warnings are advisory, errors indicate
+    /// structural problems.
+    pub fn lint(&self) -> ValidationReport {
+        let mut report = ValidationReport::new();
+        crate::lint::lint_tree(&self.fields, &FieldPath::root(), &mut report);
         report
-    }
-
-    /// Check whether a field or any nested field requires a context HashMap
-    /// (i.e. any `When(rule)` visibility/required mode).
-    fn field_needs_context(field: &Field) -> bool {
-        if matches!(field.visible(), VisibilityMode::When(_))
-            || matches!(field.required(), RequiredMode::When(_))
-        {
-            return true;
-        }
-        match field {
-            Field::Object(obj) => obj.fields.iter().any(Self::field_needs_context),
-            Field::List(list) => list.item.as_deref().is_some_and(Self::field_needs_context),
-            Field::Mode(mode) => mode
-                .variants
-                .iter()
-                .any(|v| Self::field_needs_context(&v.field)),
-            _ => false,
-        }
-    }
-
-    /// Reference-friendly validation path that accepts `&FieldValue` directly,
-    /// avoiding the per-field `FieldValue::to_json` clone used by the old
-    /// `get_raw_by_str`-based path. Type-level fast paths skip the
-    /// `apply_transformers` clone when the transformer list is empty.
-    fn validate_single_field_ref(
-        &self,
-        field: &Field,
-        context: &HashMap<String, Value>,
-        raw_value: Option<&crate::value::FieldValue>,
-        path: &str,
-        mode: ExecutionMode,
-        report: &mut LegacyReport,
-    ) {
-        // Path-depth lint — only meaningful on recursive descents where the
-        // path grows via `.` or `[` separators. Top-level leaf keys never
-        // contain those, so the fast `memchr` probe skips the full count
-        // entirely.
-        const MAX_NESTED_DEPTH: u8 = 16;
-        if Self::path_has_separator(path) && Self::depth_from_path(path) > MAX_NESTED_DEPTH {
-            report.push_error(ValidationIssue::new(
-                path,
-                "max_depth",
-                format!("field nesting depth exceeds {MAX_NESTED_DEPTH}"),
-            ));
-            return;
-        }
-
-        // Borrow shared metadata once so the Field enum is matched only twice
-        // (once here for the common header, once in validate_field_type).
-        let (visible_mode, required_mode, transformers, rules) = Self::field_header(field);
-
-        let is_visible = match visible_mode {
-            VisibilityMode::Always => true,
-            VisibilityMode::Never => false,
-            VisibilityMode::When(rule) => rule.evaluate(context),
-        };
-
-        if !is_visible && raw_value.is_none() {
-            return;
-        }
-
-        let is_required = match required_mode {
-            RequiredMode::Never => false,
-            RequiredMode::Always => true,
-            RequiredMode::When(rule) => rule.evaluate(context),
-        };
-
-        // Determine null-or-absent without materialising a full JSON Value.
-        let value_is_null_or_absent = matches!(
-            raw_value,
-            None | Some(crate::value::FieldValue::Literal(Value::Null))
-        );
-        if is_required && value_is_null_or_absent {
-            report.push_error(ValidationIssue::new(
-                path,
-                "required",
-                format!("field `{path}` is required"),
-            ));
-            return;
-        }
-
-        let Some(raw) = raw_value else {
-            return;
-        };
-
-        // Ultra-hot path: literal value + no transformers. Borrow the
-        // underlying `&Value` directly through the rules/type-check pipeline.
-        if transformers.is_empty()
-            && let crate::value::FieldValue::Literal(v) = raw
-        {
-            if !rules.is_empty()
-                && let Err(errors) = validate_rules(v, rules, mode)
-            {
-                for error in errors.errors() {
-                    report.push_error(ValidationIssue::new(
-                        path,
-                        error.code.to_string(),
-                        error.message.to_string(),
-                    ));
-                }
-            }
-            self.validate_field_type(field, v, path, mode, report);
-            return;
-        }
-
-        // Transformers present or value is a non-literal (Expression / Object
-        // / List / Mode). Materialise into an owned `Value` once and run the
-        // same pipeline against the transformed result.
-        let base = match raw {
-            crate::value::FieldValue::Literal(v) => v.clone(),
-            other => other.to_json(),
-        };
-        let transformed = transformers.iter().fold(base, |cur, t| t.apply(&cur));
-
-        if !rules.is_empty()
-            && let Err(errors) = validate_rules(&transformed, rules, mode)
-        {
-            for error in errors.errors() {
-                report.push_error(ValidationIssue::new(
-                    path,
-                    error.code.to_string(),
-                    error.message.to_string(),
-                ));
-            }
-        }
-
-        self.validate_field_type(field, &transformed, path, mode, report);
-    }
-
-    /// Single-match accessor for the four "common" field attributes that the
-    /// validation walker reads on every call. Borrow-checker-friendly: all
-    /// four references tie to the same Field borrow, so there is no aliasing
-    /// hazard and the compiler can lower it to four direct field loads after
-    /// inlining.
-    #[inline]
-    fn field_header(
-        field: &Field,
-    ) -> (
-        &VisibilityMode,
-        &RequiredMode,
-        &[crate::Transformer],
-        &[nebula_validator::Rule],
-    ) {
-        match field {
-            Field::String(f) => (&f.visible, &f.required, &f.transformers, &f.rules),
-            Field::Secret(f) => (&f.visible, &f.required, &f.transformers, &f.rules),
-            Field::Number(f) => (&f.visible, &f.required, &f.transformers, &f.rules),
-            Field::Boolean(f) => (&f.visible, &f.required, &f.transformers, &f.rules),
-            Field::Select(f) => (&f.visible, &f.required, &f.transformers, &f.rules),
-            Field::Object(f) => (&f.visible, &f.required, &f.transformers, &f.rules),
-            Field::List(f) => (&f.visible, &f.required, &f.transformers, &f.rules),
-            Field::Mode(f) => (&f.visible, &f.required, &f.transformers, &f.rules),
-            Field::Code(f) => (&f.visible, &f.required, &f.transformers, &f.rules),
-            Field::File(f) => (&f.visible, &f.required, &f.transformers, &f.rules),
-            Field::Computed(f) => (&f.visible, &f.required, &f.transformers, &f.rules),
-            Field::Dynamic(f) => (&f.visible, &f.required, &f.transformers, &f.rules),
-            Field::Notice(f) => (&f.visible, &f.required, &f.transformers, &f.rules),
-        }
-    }
-
-    /// Normalize runtime values by backfilling missing defaults.
-    pub fn normalize(&self, values: &FieldValues) -> FieldValues {
-        let mut normalized = values.clone();
-
-        for field in &self.fields {
-            let key = field.key().as_str().to_owned();
-            self.normalize_field(field, &key, &mut normalized, 0);
-        }
-
-        normalized
     }
 
     /// Resolve dynamic options for a select field through loader registry.
@@ -319,24 +110,26 @@ impl Schema {
         key: &str,
         registry: &LoaderRegistry,
         context: LoaderContext,
-    ) -> Result<LoaderResult<SelectOption>, SchemaError> {
-        let field = self
-            .find(key)
-            .ok_or_else(|| SchemaError::FieldNotFound(key.to_owned()))?;
+    ) -> Result<LoaderResult<SelectOption>, ValidationError> {
+        let field = self.find(key).ok_or_else(|| {
+            ValidationError::new("loader.not_registered")
+                .message(format!("field `{key}` not found in schema"))
+                .build()
+        })?;
         let Field::Select(select) = field else {
-            return Err(SchemaError::InvalidFieldType {
-                key: key.to_owned(),
-                expected: "select",
-                actual: Self::field_type_name(field),
-            });
+            return Err(ValidationError::new("loader.not_registered")
+                .message(format!(
+                    "field `{key}` is not a select field (got {})",
+                    field.type_name()
+                ))
+                .build());
         };
         let Some(loader_key) = select.loader.as_deref() else {
-            return Err(SchemaError::LoaderNotConfigured(key.to_owned()));
+            return Err(ValidationError::new("loader.not_registered")
+                .message(format!("field `{key}` has no loader configured"))
+                .build());
         };
-        registry
-            .load_options(loader_key, context)
-            .await
-            .map_err(Into::into)
+        registry.load_options(loader_key, context).await
     }
 
     /// Resolve dynamic record payloads for a dynamic field through registry.
@@ -345,561 +138,26 @@ impl Schema {
         key: &str,
         registry: &LoaderRegistry,
         context: LoaderContext,
-    ) -> Result<LoaderResult<Value>, SchemaError> {
-        let field = self
-            .find(key)
-            .ok_or_else(|| SchemaError::FieldNotFound(key.to_owned()))?;
+    ) -> Result<LoaderResult<Value>, ValidationError> {
+        let field = self.find(key).ok_or_else(|| {
+            ValidationError::new("loader.not_registered")
+                .message(format!("field `{key}` not found in schema"))
+                .build()
+        })?;
         let Field::Dynamic(dynamic) = field else {
-            return Err(SchemaError::InvalidFieldType {
-                key: key.to_owned(),
-                expected: "dynamic",
-                actual: Self::field_type_name(field),
-            });
+            return Err(ValidationError::new("loader.not_registered")
+                .message(format!(
+                    "field `{key}` is not a dynamic field (got {})",
+                    field.type_name()
+                ))
+                .build());
         };
         let Some(loader_key) = dynamic.loader.as_deref() else {
-            return Err(SchemaError::LoaderNotConfigured(key.to_owned()));
+            return Err(ValidationError::new("loader.not_registered")
+                .message(format!("field `{key}` has no loader configured"))
+                .build());
         };
-        registry
-            .load_records(loader_key, context)
-            .await
-            .map_err(Into::into)
-    }
-
-    fn validate_single_field(
-        &self,
-        field: &Field,
-        context: &HashMap<String, Value>,
-        raw_value: Option<&Value>,
-        path: &str,
-        mode: ExecutionMode,
-        report: &mut LegacyReport,
-    ) {
-        const MAX_NESTED_DEPTH: u8 = 16;
-        if Self::depth_from_path(path) > MAX_NESTED_DEPTH {
-            report.push_error(ValidationIssue::new(
-                path,
-                "max_depth",
-                format!("field nesting depth exceeds {MAX_NESTED_DEPTH}"),
-            ));
-            return;
-        }
-
-        let is_visible = match field.visible() {
-            VisibilityMode::Always => true,
-            VisibilityMode::Never => false,
-            VisibilityMode::When(rule) => rule.evaluate(context),
-        };
-
-        if !is_visible && raw_value.is_none() {
-            return;
-        }
-
-        let is_required = match field.required() {
-            RequiredMode::Never => false,
-            RequiredMode::Always => true,
-            RequiredMode::When(rule) => rule.evaluate(context),
-        };
-
-        if is_required && raw_value.is_none_or(Value::is_null) {
-            report.push_error(ValidationIssue::new(
-                path,
-                "required",
-                format!("field `{path}` is required"),
-            ));
-            return;
-        }
-
-        let Some(value) = raw_value else {
-            return;
-        };
-
-        let transformed = Self::apply_transformers(field, value);
-
-        if let Err(errors) = validate_rules(&transformed, field.rules(), mode) {
-            for error in errors.errors() {
-                report.push_error(ValidationIssue::new(
-                    path,
-                    error.code.to_string(),
-                    error.message.to_string(),
-                ));
-            }
-        }
-
-        self.validate_field_type(field, &transformed, path, mode, report);
-    }
-
-    #[expect(
-        clippy::excessive_nesting,
-        reason = "field-type dispatch includes nested validation branches by design"
-    )]
-    #[inline]
-    fn validate_field_type(
-        &self,
-        field: &Field,
-        value: &Value,
-        path: &str,
-        mode: ExecutionMode,
-        report: &mut LegacyReport,
-    ) {
-        match field {
-            Field::File(file) => {
-                if file.multiple {
-                    let Some(items) = value.as_array() else {
-                        report.push_error(ValidationIssue::new(
-                            path,
-                            "type_mismatch",
-                            "multi-file field expects array value",
-                        ));
-                        return;
-                    };
-                    if items.iter().any(|item| !item.is_string()) {
-                        report.push_error(ValidationIssue::new(
-                            path,
-                            "type_mismatch",
-                            "multi-file field expects array of string values",
-                        ));
-                    }
-                } else if !value.is_string() {
-                    report.push_error(ValidationIssue::new(
-                        path,
-                        "type_mismatch",
-                        "file field expects string value",
-                    ));
-                }
-            },
-            Field::String(_) | Field::Secret(_) | Field::Code(_) => {
-                if !value.is_string() {
-                    report.push_error(ValidationIssue::new(
-                        path,
-                        "type_mismatch",
-                        "field expects string value",
-                    ));
-                }
-            },
-            Field::Computed(_) | Field::Dynamic(_) | Field::Notice(_) => {},
-            Field::Number(number_field) => {
-                let Some(number) = value.as_f64() else {
-                    report.push_error(ValidationIssue::new(
-                        path,
-                        "type_mismatch",
-                        "number field expects numeric value",
-                    ));
-                    return;
-                };
-                if number_field.integer && number.fract() != 0.0 {
-                    report.push_error(ValidationIssue::new(
-                        path,
-                        "type_mismatch",
-                        "integer field expects whole number value",
-                    ));
-                }
-            },
-            Field::Boolean(_) => {
-                if !value.is_boolean() {
-                    report.push_error(ValidationIssue::new(
-                        path,
-                        "type_mismatch",
-                        "boolean field expects bool value",
-                    ));
-                }
-            },
-            Field::Select(select) => {
-                if select.multiple {
-                    let Some(values) = value.as_array() else {
-                        report.push_error(ValidationIssue::new(
-                            path,
-                            "type_mismatch",
-                            "multi-select field expects array value",
-                        ));
-                        return;
-                    };
-                    if select.allow_custom || select.options.is_empty() {
-                        return;
-                    }
-                    for (index, option_value) in values.iter().enumerate() {
-                        let is_allowed = select
-                            .options
-                            .iter()
-                            .any(|option| option.value == *option_value);
-                        if is_allowed {
-                            continue;
-                        }
-                        report.push_error(ValidationIssue::new(
-                            format!("{path}[{index}]"),
-                            "invalid_option",
-                            "value is not in allowed option set",
-                        ));
-                    }
-                } else if !select.allow_custom
-                    && !select.options.is_empty()
-                    && !select.options.iter().any(|option| option.value == *value)
-                {
-                    report.push_error(ValidationIssue::new(
-                        path,
-                        "invalid_option",
-                        "value is not in allowed option set",
-                    ));
-                }
-            },
-            Field::List(list) => {
-                let Some(array) = value.as_array() else {
-                    report.push_error(ValidationIssue::new(
-                        path,
-                        "type_mismatch",
-                        "list field expects array value",
-                    ));
-                    return;
-                };
-
-                if let Some(min_items) = list.min_items
-                    && array.len() < min_items as usize
-                {
-                    report.push_error(ValidationIssue::new(
-                        path,
-                        "min_items",
-                        format!("expected at least {min_items} items, got {}", array.len()),
-                    ));
-                }
-
-                if let Some(max_items) = list.max_items
-                    && array.len() > max_items as usize
-                {
-                    report.push_error(ValidationIssue::new(
-                        path,
-                        "max_items",
-                        format!("expected at most {max_items} items, got {}", array.len()),
-                    ));
-                }
-
-                if let Some(item_schema) = list.item.as_deref() {
-                    for (index, item_value) in array.iter().enumerate() {
-                        let item_context = match item_value.as_object() {
-                            Some(object) => Self::object_to_context(object),
-                            None => HashMap::new(),
-                        };
-                        let item_path = format!("{path}[{index}]");
-                        self.validate_single_field(
-                            item_schema,
-                            &item_context,
-                            Some(item_value),
-                            &item_path,
-                            mode,
-                            report,
-                        );
-                    }
-                }
-            },
-            Field::Object(object_field) => {
-                let Some(object) = value.as_object() else {
-                    report.push_error(ValidationIssue::new(
-                        path,
-                        "type_mismatch",
-                        "object field expects object value",
-                    ));
-                    return;
-                };
-
-                let nested_context = Self::object_to_context(object);
-                for child in &object_field.fields {
-                    let child_key = child.key().as_str();
-                    let child_path = format!("{path}.{child_key}");
-                    self.validate_single_field(
-                        child,
-                        &nested_context,
-                        object.get(child_key),
-                        &child_path,
-                        mode,
-                        report,
-                    );
-                }
-            },
-            Field::Mode(mode_field) => {
-                let Some(object) = value.as_object() else {
-                    report.push_error(ValidationIssue::new(
-                        path,
-                        "type_mismatch",
-                        "mode field expects object value",
-                    ));
-                    return;
-                };
-
-                let Some(mode_key) = object
-                    .get("mode")
-                    .and_then(Value::as_str)
-                    .or(mode_field.default_variant.as_deref())
-                else {
-                    report.push_error(ValidationIssue::new(
-                        path,
-                        "mode_required",
-                        "mode object must include `mode` key or provide default_variant",
-                    ));
-                    return;
-                };
-
-                let Some(variant) = mode_field.variants.iter().find(|item| item.key == mode_key)
-                else {
-                    report.push_error(ValidationIssue::new(
-                        path,
-                        "invalid_mode",
-                        format!("unknown mode variant `{mode_key}`"),
-                    ));
-                    return;
-                };
-
-                let variant_value = object.get("value");
-                let variant_context = match variant_value.and_then(Value::as_object) {
-                    Some(nested) => Self::object_to_context(nested),
-                    None => HashMap::new(),
-                };
-                let variant_path = format!("{path}.value");
-                self.validate_single_field(
-                    &variant.field,
-                    &variant_context,
-                    variant_value,
-                    &variant_path,
-                    mode,
-                    report,
-                );
-            },
-        }
-    }
-
-    fn apply_transformers(field: &Field, value: &Value) -> Value {
-        field
-            .transformers()
-            .iter()
-            .fold(value.clone(), |current, transformer| {
-                transformer.apply(&current)
-            })
-    }
-
-    fn normalize_field(&self, field: &Field, path: &str, values: &mut FieldValues, depth: u8) {
-        const MAX_NESTED_DEPTH: u8 = 16;
-        if depth >= MAX_NESTED_DEPTH {
-            return;
-        }
-
-        if matches!(field, Field::Computed(_) | Field::Notice(_)) {
-            return;
-        }
-
-        if !values.contains_str(path) {
-            if let Some(default) = field.default() {
-                values.set_raw(path, default.clone());
-            } else if let Field::Mode(mode) = field
-                && let Some(default_variant) = mode.default_variant.as_deref()
-            {
-                values.set_raw(path, serde_json::json!({ "mode": default_variant }));
-            } else {
-                return;
-            }
-        }
-
-        let Some(current) = values.get_raw_by_str(path) else {
-            return;
-        };
-
-        match field {
-            Field::Object(object_field) => {
-                let Some(mut object) = current.as_object().cloned() else {
-                    return;
-                };
-                self.normalize_object_children(&object_field.fields, &mut object, depth + 1);
-                values.set_raw(path, Value::Object(object));
-            },
-            Field::List(list) => {
-                let Some(array) = current.as_array() else {
-                    return;
-                };
-                let Some(item_schema) = list.item.as_deref() else {
-                    return;
-                };
-                let mut normalized = Vec::with_capacity(array.len());
-                for item in array {
-                    normalized.push(self.normalize_nested_value(item_schema, item, depth + 1));
-                }
-                values.set_raw(path, Value::Array(normalized));
-            },
-            Field::Mode(mode) => {
-                let Some(mut object) = current.as_object().cloned() else {
-                    return;
-                };
-                let Some(mode_key) = object
-                    .get("mode")
-                    .and_then(Value::as_str)
-                    .or(mode.default_variant.as_deref())
-                else {
-                    values.set_raw(path, Value::Object(object));
-                    return;
-                };
-                let mode_key: String = mode_key.to_owned();
-
-                object
-                    .entry("mode".to_owned())
-                    .or_insert_with(|| Value::String(mode_key.clone()));
-
-                if let Some(variant) = mode
-                    .variants
-                    .iter()
-                    .find(|candidate| candidate.key == mode_key)
-                {
-                    let normalized = if let Some(value) = object.get("value") {
-                        self.normalize_nested_value(&variant.field, value, depth + 1)
-                    } else if let Some(default) = variant.field.default() {
-                        self.normalize_nested_value(&variant.field, default, depth + 1)
-                    } else {
-                        self.normalize_nested_value(
-                            &variant.field,
-                            &Value::Object(Map::new()),
-                            depth + 1,
-                        )
-                    };
-                    object.insert("value".to_owned(), normalized);
-                }
-
-                values.set_raw(path, Value::Object(object));
-            },
-            _ => {},
-        }
-    }
-
-    fn normalize_object_children(
-        &self,
-        fields: &[Field],
-        object: &mut Map<String, Value>,
-        depth: u8,
-    ) {
-        const MAX_NESTED_DEPTH: u8 = 16;
-        if depth >= MAX_NESTED_DEPTH {
-            return;
-        }
-
-        for child in fields {
-            let key = child.key().as_str().to_owned();
-            if !object.contains_key(&key)
-                && let Some(default) = child.default()
-            {
-                object.insert(key.clone(), default.clone());
-            }
-
-            if !object.contains_key(&key)
-                && let Field::Mode(mode_field) = child
-                && let Some(default_variant) = mode_field.default_variant.as_deref()
-            {
-                object.insert(key.clone(), serde_json::json!({ "mode": default_variant }));
-            }
-
-            if let Some(value) = object.get(&key).cloned() {
-                object.insert(key, self.normalize_nested_value(child, &value, depth + 1));
-            }
-        }
-    }
-
-    fn normalize_nested_value(&self, field: &Field, value: &Value, depth: u8) -> Value {
-        const MAX_NESTED_DEPTH: u8 = 16;
-        if depth >= MAX_NESTED_DEPTH {
-            return value.clone();
-        }
-
-        match field {
-            Field::Object(object_field) => {
-                let Some(mut object) = value.as_object().cloned() else {
-                    return value.clone();
-                };
-                self.normalize_object_children(&object_field.fields, &mut object, depth + 1);
-                Value::Object(object)
-            },
-            Field::List(list) => {
-                let Some(array) = value.as_array() else {
-                    return value.clone();
-                };
-                let Some(item_schema) = list.item.as_deref() else {
-                    return value.clone();
-                };
-                let normalized = array
-                    .iter()
-                    .map(|item| self.normalize_nested_value(item_schema, item, depth + 1))
-                    .collect();
-                Value::Array(normalized)
-            },
-            Field::Mode(mode) => {
-                let Some(mut object) = value.as_object().cloned() else {
-                    return value.clone();
-                };
-                let Some(mode_key) = object
-                    .get("mode")
-                    .and_then(Value::as_str)
-                    .or(mode.default_variant.as_deref())
-                else {
-                    return Value::Object(object);
-                };
-                let mode_key = mode_key.to_owned();
-
-                object
-                    .entry("mode".to_owned())
-                    .or_insert_with(|| Value::String(mode_key.clone()));
-                if let Some(variant) = mode
-                    .variants
-                    .iter()
-                    .find(|candidate| candidate.key == mode_key)
-                {
-                    let normalized = if let Some(value) = object.get("value") {
-                        self.normalize_nested_value(&variant.field, value, depth + 1)
-                    } else if let Some(default) = variant.field.default() {
-                        self.normalize_nested_value(&variant.field, default, depth + 1)
-                    } else {
-                        self.normalize_nested_value(
-                            &variant.field,
-                            &Value::Object(Map::new()),
-                            depth + 1,
-                        )
-                    };
-                    object.insert("value".to_owned(), normalized);
-                }
-                Value::Object(object)
-            },
-            _ => value.clone(),
-        }
-    }
-
-    #[inline]
-    fn depth_from_path(path: &str) -> u8 {
-        // Byte-slice scan is strictly faster than `.chars().filter(...)`:
-        // ASCII separators can be matched without UTF-8 decoding.
-        let mut count: u32 = 0;
-        for &b in path.as_bytes() {
-            if b == b'.' || b == b'[' {
-                count = count.saturating_add(1);
-            }
-        }
-        count.min(u8::MAX as u32) as u8
-    }
-
-    /// Cheap probe: does `path` contain any segment separator at all?
-    ///
-    /// Used as an early-out before the full `depth_from_path` byte scan. A
-    /// top-level leaf key like `"name"` never contains `.` or `[`, so the
-    /// depth-limit check can be skipped entirely without changing the
-    /// observable result.
-    #[inline]
-    fn path_has_separator(path: &str) -> bool {
-        for &b in path.as_bytes() {
-            if b == b'.' || b == b'[' {
-                return true;
-            }
-        }
-        false
-    }
-
-    fn object_to_context(object: &Map<String, Value>) -> HashMap<String, Value> {
-        object
-            .iter()
-            .map(|(key, value)| (key.clone(), value.clone()))
-            .collect()
-    }
-
-    fn field_type_name(field: &Field) -> &'static str {
-        field.type_name()
+        registry.load_records(loader_key, context).await
     }
 }
 

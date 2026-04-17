@@ -1,16 +1,23 @@
 use criterion::{Criterion, black_box, criterion_group, criterion_main};
-use nebula_schema::{ExecutionMode, Field, FieldValues, Schema};
+use nebula_schema::{Field, FieldValues, Schema, field_key};
 use serde_json::json;
 
-fn sample_schema() -> Schema {
-    Schema::new()
-        .add(Field::string("name").required().min_length(2))
-        .add(Field::number("retries").min(0).max(10).required())
+fn sample_schema() -> nebula_schema::ValidSchema {
+    Schema::builder()
+        .add(Field::string(field_key!("name")).required().min_length(2))
         .add(
-            Field::select("mode")
+            Field::number(field_key!("retries"))
+                .min(0)
+                .max(10)
+                .required(),
+        )
+        .add(
+            Field::select(field_key!("mode"))
                 .option("sync", "Sync")
                 .option("async", "Async"),
         )
+        .build()
+        .expect("valid bench schema")
 }
 
 fn sample_values() -> FieldValues {
@@ -27,8 +34,8 @@ fn bench_validate_static(c: &mut Criterion) {
 
     c.bench_function("schema_validate_static", |b| {
         b.iter(|| {
-            let report = schema.validate(black_box(&values), ExecutionMode::StaticOnly);
-            black_box(report);
+            let result = schema.validate(black_box(&values));
+            let _ = black_box(result);
         })
     });
 }
@@ -37,20 +44,22 @@ fn bench_validate_static(c: &mut Criterion) {
 /// directly. Phase 0 allocated a fresh `HashMap<String, Value>` on every
 /// nested-object descent for predicate rule evaluation; the new walker
 /// borrows from the live value tree via `RuleContext`.
-fn nested_schema() -> Schema {
-    Schema::new()
+fn nested_schema() -> nebula_schema::ValidSchema {
+    Schema::builder()
         .add(
-            Field::object("user")
-                .add(Field::string("name").required().min_length(2))
-                .add(Field::string("email"))
-                .add(Field::number("age").min(0).max(120))
+            Field::object(field_key!("user"))
+                .add(Field::string(field_key!("name")).required().min_length(2))
+                .add(Field::string(field_key!("email")))
+                .add(Field::number(field_key!("age")).min(0).max(120))
                 .required(),
         )
         .add(
-            Field::object("settings")
-                .add(Field::boolean("notify"))
-                .add(Field::string("locale")),
+            Field::object(field_key!("settings"))
+                .add(Field::boolean(field_key!("notify")))
+                .add(Field::string(field_key!("locale"))),
         )
+        .build()
+        .expect("valid nested bench schema")
 }
 
 fn nested_values() -> FieldValues {
@@ -69,8 +78,8 @@ fn bench_validate_nested(c: &mut Criterion) {
 
     c.bench_function("schema_validate_nested", |b| {
         b.iter(|| {
-            let report = schema.validate(black_box(&values), ExecutionMode::StaticOnly);
-            black_box(report);
+            let result = schema.validate(black_box(&values));
+            let _ = black_box(result);
         })
     });
 }
