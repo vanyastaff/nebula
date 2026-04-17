@@ -7,6 +7,14 @@ use serde::de::{self, Deserializer, MapAccess, Visitor};
 use super::{DeferredRule, Logic, Predicate, Rule, ValueRule};
 use crate::foundation::FieldPath;
 
+// ─── Known-variant catalog ────────────────────────────────────────────────
+//
+// Keep these lists in sync with the `visit_map` match arms below. They are
+// only used to produce friendly "Known rules: ..." hints when a payload
+// carries an unknown key — adding a new variant without updating these will
+// NOT silently accept bad input (the match arm is authoritative), but the
+// error message will omit the new variant from the hint list.
+
 const VALUE_RULES: &[&str] = &[
     "min_length",
     "max_length",
