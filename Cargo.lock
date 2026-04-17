@@ -4211,7 +4211,6 @@ dependencies = [
  "nebula-expression",
  "nebula-schema-macros",
  "nebula-validator",
- "once_cell",
  "proptest",
  "regex",
  "schemars",
