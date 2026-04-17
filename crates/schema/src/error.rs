@@ -211,8 +211,8 @@ impl IntoIterator for ValidationReport {
 
 /// Legacy error enum.
 ///
-/// Kept temporarily so `key.rs` and `schema.rs` continue to compile while
-/// Tasks 5 and 6 rewrite those callers. Will be deleted in a later task.
+/// Kept temporarily so `schema.rs` continues to compile while Task 24 rewrites
+/// the caller. Will be deleted in Task 24 (`lib.rs` cleanup).
 #[doc(hidden)]
 #[allow(dead_code)]
 #[derive(Debug)]
@@ -236,8 +236,8 @@ pub enum SchemaError {
     LoaderNotConfigured(String),
     /// Rule validation failure from the validator crate.
     Validation(nebula_validator::ValidatorError),
-    /// Runtime loader invocation failed.
-    Loader(crate::loader::LoaderError),
+    /// Runtime loader invocation failed (now carries a `ValidationError`).
+    Loader(ValidationError),
 }
 
 impl fmt::Display for SchemaError {
@@ -279,8 +279,8 @@ impl From<nebula_validator::ValidatorError> for SchemaError {
     }
 }
 
-impl From<crate::loader::LoaderError> for SchemaError {
-    fn from(e: crate::loader::LoaderError) -> Self {
+impl From<ValidationError> for SchemaError {
+    fn from(e: ValidationError) -> Self {
         Self::Loader(e)
     }
 }

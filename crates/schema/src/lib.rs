@@ -56,8 +56,7 @@ pub use input_hint::InputHint;
 pub use key::FieldKey;
 pub use lint::{LintDiagnostic, LintLevel, LintReport, lint_schema};
 pub use loader::{
-    Loader, LoaderContext, LoaderError, LoaderFuture, LoaderRegistry, LoaderResult, OptionLoader,
-    RecordLoader,
+    Loader, LoaderContext, LoaderFuture, LoaderRegistry, LoaderResult, OptionLoader, RecordLoader,
 };
 pub use mode::{ExpressionMode, RequiredMode, VisibilityMode};
 pub use nebula_schema_macros::field_key;
