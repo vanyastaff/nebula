@@ -15,10 +15,10 @@ legacy API (for apples-to-apples comparison) and the new proof-token API
 |-----|-----|--------:|-----------:|
 | Phase 0 (Task 1) | Legacy `Schema::validate` on `HashMap<String, Value>` | 121.87 ns | 1.00× |
 | Phase 1 pre-opt  | Legacy `Schema::validate` (after Task 12 tree FieldValue) | ~481 ns | 0.25× (regression) |
-| **Phase 1 final**| **Legacy `Schema::validate` (after hot-path rewrite)** | **~80 ns** | **1.52× faster** |
+| **Phase 1 final**| **Legacy `Schema::validate` (after hot-path rewrite)** | **~79 ns** | **1.54× faster** |
 | Phase 1 new API  | `ValidSchema::validate` (bench_resolve) | ~348 ns | 0.35× |
 
-**Acceptance target**: ≥2× faster than phase0 (≤61 ns). **NOT FULLY MET — 1.52× achieved.**
+**Acceptance target**: ≥2× faster than phase0 (≤61 ns). **NOT FULLY MET — 1.54× achieved.**
 
 ### Honest interpretation
 
@@ -46,12 +46,12 @@ What the Phase 1 hot-path rewrite removed:
    scan plus a `memchr`-style early probe that skips the full count when the path
    contains no separator (top-level leaf keys).
 
-Net effect: the legacy API on the flat-3-field workload goes from **481 ns → 80 ns**, a
-**6× improvement within Phase 1** and **1.52× faster than Phase 0's 121.87 ns**.
+Net effect: the legacy API on the flat-3-field workload goes from **481 ns → 79 ns**, a
+**6.1× improvement within Phase 1** and **1.54× faster than Phase 0's 121.87 ns**.
 
 ### Why not ≥2×?
 
-Getting from 80 ns to ≤61 ns requires removing one of the three IndexMap key lookups or
+Getting from 79 ns to ≤61 ns requires removing one of the three IndexMap key lookups or
 eliminating the Select options scan for `mode`, both of which would be workload-specific
 micro-optimisations that do not translate to real-world schemas.
 
@@ -124,7 +124,7 @@ the `RuleContext` descent path that Phase 0 could not measure (the old HashMap-f
 
 ## Notes
 
-- **≥2× acceptance criterion**: 1.52× achieved (80 ns vs Phase 0's 121.87 ns, -34%).
+- **≥2× acceptance criterion**: 1.54× achieved (79 ns vs Phase 0's 121.87 ns, -35%).
   Full 2× would require ≤61 ns, which is not reachable on this workload without
   workload-specific micro-optimisations that do not generalise. The core mechanical
   wins — skipping the HashMap context, borrowing literals in-place, short-circuiting
