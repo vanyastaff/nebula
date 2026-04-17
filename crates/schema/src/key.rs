@@ -57,7 +57,7 @@ impl FieldKey {
         ValidationError::new("invalid_key")
             .at(FieldPath::root())
             .message(msg)
-            .param("key", serde_json::Value::String(value.to_owned()))
+            .param("key", value.to_owned())
             .build()
     }
 }
@@ -70,6 +70,12 @@ impl std::fmt::Display for FieldKey {
 
 impl AsRef<str> for FieldKey {
     fn as_ref(&self) -> &str {
+        &self.0
+    }
+}
+
+impl std::borrow::Borrow<str> for FieldKey {
+    fn borrow(&self) -> &str {
         &self.0
     }
 }

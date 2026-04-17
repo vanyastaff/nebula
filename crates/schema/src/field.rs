@@ -53,6 +53,7 @@ macro_rules! define_field {
             /// Create a typed field with defaults.
             pub fn new(key: impl AsRef<str>) -> Self {
                 Self {
+                    // TODO(task-6): replace with field_key!() macro for compile-time key validation
                     key: FieldKey::new(key).expect("field key must be valid"),
                     label: None,
                     description: None,
