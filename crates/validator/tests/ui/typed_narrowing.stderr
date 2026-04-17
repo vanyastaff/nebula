@@ -1,0 +1,5 @@
+error[E0599]: no method named `validate_value` found for enum `nebula_validator::Predicate` in the current scope
+ --> tests/ui/typed_narrowing.rs:9:15
+  |
+9 |     let _ = p.validate_value(&json!(1));
+  |               ^^^^^^^^^^^^^^ method not found in `nebula_validator::Predicate`
