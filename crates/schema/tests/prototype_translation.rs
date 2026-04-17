@@ -1,8 +1,8 @@
-use nebula_schema::{ExecutionMode, Field, FieldValues, Schema};
+use nebula_schema::{Field, FieldValues, Schema};
 use serde_json::json;
 
-fn telegram_send_message_schema() -> Schema {
-    Schema::new()
+fn telegram_send_message_schema() -> nebula_schema::ValidSchema {
+    Schema::builder()
         .add(
             Field::select("resource")
                 .option("message", "Message")
@@ -30,10 +30,12 @@ fn telegram_send_message_schema() -> Schema {
                 .min_length(20)
                 .reveal_last(4),
         )
+        .build()
+        .expect("valid telegram schema")
 }
 
-fn http_request_schema() -> Schema {
-    Schema::new()
+fn http_request_schema() -> nebula_schema::ValidSchema {
+    Schema::builder()
         .add(
             Field::select("method")
                 .option("GET", "GET")
@@ -44,7 +46,13 @@ fn http_request_schema() -> Schema {
         .add(Field::string("url").required().url())
         .add(
             Field::mode("auth")
-                .variant("none", "None", Field::hidden("none_payload"))
+                // "hidden" role: use VisibilityMode::Never (hidden variant removed)
+                .variant(
+                    "none",
+                    "None",
+                    Field::string("none_payload")
+                        .visible(nebula_schema::VisibilityMode::Never),
+                )
                 .variant(
                     "bearer",
                     "Bearer",
@@ -52,10 +60,12 @@ fn http_request_schema() -> Schema {
                 )
                 .default_variant("none"),
         )
+        .build()
+        .expect("valid http schema")
 }
 
-fn oauth2_credential_schema() -> Schema {
-    Schema::new()
+fn oauth2_credential_schema() -> nebula_schema::ValidSchema {
+    Schema::builder()
         .add(
             Field::select("grant_type")
                 .option("client_credentials", "Client Credentials")
@@ -74,75 +84,101 @@ fn oauth2_credential_schema() -> Schema {
                 .min_items(1)
                 .max_items(20),
         )
+        .build()
+        .expect("valid oauth2 schema")
 }
 
-fn nested_object_schema() -> Schema {
-    Schema::new().add(
-        Field::object("config")
-            .add(Field::string("host").required())
-            .add(Field::number("port").required()),
-    )
+fn nested_object_schema() -> nebula_schema::ValidSchema {
+    Schema::builder()
+        .add(
+            Field::object("config")
+                .add(Field::string("host").required())
+                .add(Field::number("port").required()),
+        )
+        .build()
+        .expect("valid nested schema")
 }
 
 #[test]
 fn telegram_schema_validates_resource_operation_flow() {
     let schema = telegram_send_message_schema();
-    let mut values = FieldValues::new();
-    values.set("resource", json!("message"));
-    values.set("operation", json!("sendMessage"));
-    values.set("text", json!("Hello from Nebula"));
-    values.set("api_key", json!("sk_test_1234567890abcdef"));
+    let values = FieldValues::from_json(json!({
+        "resource": "message",
+        "operation": "sendMessage",
+        "text": "Hello from Nebula",
+        "api_key": "sk_test_1234567890abcdef"
+    }))
+    .unwrap();
 
-    let report = schema.validate(&values, ExecutionMode::StaticOnly);
-    assert!(!report.has_errors());
+    assert!(schema.validate(&values).is_ok());
 }
 
 #[test]
 fn http_schema_rejects_invalid_url() {
     let schema = http_request_schema();
-    let mut values = FieldValues::new();
-    values.set("method", json!("GET"));
-    values.set("url", json!("not-a-url"));
-    values.set("auth", json!({ "mode": "none" }));
+    let values = FieldValues::from_json(json!({
+        "method": "GET",
+        "url": "not-a-url",
+        "auth": { "mode": "none" }
+    }))
+    .unwrap();
 
-    let report = schema.validate(&values, ExecutionMode::StaticOnly);
+    let report = schema.validate(&values).unwrap_err();
     assert!(report.has_errors());
-    assert_eq!(report.errors()[0].key, "url");
+    assert!(report.errors().any(|e| e.path.to_string() == "url"));
 }
 
 #[test]
 fn oauth_schema_list_rules_are_enforced() {
     let schema = oauth2_credential_schema();
-    let mut values = FieldValues::new();
-    values.set("grant_type", json!("client_credentials"));
-    values.set("client_secret", json!("top-secret-value"));
-    values.set("scopes", json!([]));
+    let values = FieldValues::from_json(json!({
+        "grant_type": "client_credentials",
+        "client_secret": "top-secret-value",
+        "scopes": []
+    }))
+    .unwrap();
 
-    let report = schema.validate(&values, ExecutionMode::StaticOnly);
+    let report = schema.validate(&values).unwrap_err();
     assert!(report.has_errors());
-    assert_eq!(report.errors()[0].key, "scopes");
+    assert!(
+        report
+            .errors()
+            .any(|e| e.path.to_string() == "scopes" && e.code == "items.min")
+    );
 }
 
 #[test]
 fn mode_variant_payload_is_validated() {
     let schema = http_request_schema();
-    let mut values = FieldValues::new();
-    values.set("method", json!("GET"));
-    values.set("url", json!("https://example.com"));
-    values.set("auth", json!({ "mode": "bearer" }));
+    let values = FieldValues::from_json(json!({
+        "method": "GET",
+        "url": "https://example.com",
+        "auth": { "mode": "bearer" }
+    }))
+    .unwrap();
 
-    let report = schema.validate(&values, ExecutionMode::StaticOnly);
+    let report = schema.validate(&values).unwrap_err();
     assert!(report.has_errors());
-    assert_eq!(report.errors()[0].key, "auth.value");
+    // The bearer token is required — the error path is auth.value (the mode payload slot)
+    assert!(
+        report.errors().any(|e| e.path.to_string().contains("auth")),
+        "expected required error under auth, got: {:?}",
+        report
+            .errors()
+            .map(|e| (&e.code, e.path.to_string()))
+            .collect::<Vec<_>>()
+    );
 }
 
 #[test]
 fn object_children_are_validated() {
     let schema = nested_object_schema();
-    let mut values = FieldValues::new();
-    values.set("config", json!({ "host": "localhost" }));
+    let values = FieldValues::from_json(json!({
+        "config": { "host": "localhost" }
+    }))
+    .unwrap();
 
-    let report = schema.validate(&values, ExecutionMode::StaticOnly);
+    let report = schema.validate(&values).unwrap_err();
     assert!(report.has_errors());
-    assert_eq!(report.errors()[0].key, "config.port");
+    assert!(report.errors().any(|e| e.path.to_string() == "config.port"));
 }

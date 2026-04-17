@@ -1,23 +1,30 @@
 use criterion::{Criterion, black_box, criterion_group, criterion_main};
-use nebula_schema::{ExecutionMode, Field, FieldValues, Schema};
+use nebula_schema::{Field, FieldValues, Schema, field_key};
 use serde_json::json;
 
-fn sample_schema() -> Schema {
-    Schema::new()
-        .add(Field::string("name").required().min_length(2))
-        .add(Field::number("retries").min(0).max(10).required())
+fn sample_schema() -> nebula_schema::ValidSchema {
+    Schema::builder()
+        .add(Field::string(field_key!("name")).required().min_length(2))
         .add(
-            Field::select("mode")
+            Field::number(field_key!("retries"))
+                .min(0)
+                .max(10)
+                .required(),
+        )
+        .add(
+            Field::select(field_key!("mode"))
                 .option("sync", "Sync")
                 .option("async", "Async"),
         )
+        .build()
+        .expect("valid bench schema")
 }
 
 fn sample_values() -> FieldValues {
     let mut values = FieldValues::new();
-    values.set("name", json!("nebula"));
-    values.set("retries", json!(3));
-    values.set("mode", json!("sync"));
+    values.set_raw("name", json!("nebula"));
+    values.set_raw("retries", json!(3));
+    values.set_raw("mode", json!("sync"));
     values
 }
 
@@ -27,11 +34,55 @@ fn bench_validate_static(c: &mut Criterion) {
 
     c.bench_function("schema_validate_static", |b| {
         b.iter(|| {
-            let report = schema.validate(black_box(&values), ExecutionMode::StaticOnly);
-            black_box(report);
+            let result = schema.validate(black_box(&values));
+            let _ = black_box(result);
         })
     });
 }
 
-criterion_group!(benches, bench_validate_static);
+/// Nested-field bench — exercises the RuleContext win from Task 16 more
+/// directly. Phase 0 allocated a fresh `HashMap<String, Value>` on every
+/// nested-object descent for predicate rule evaluation; the new walker
+/// borrows from the live value tree via `RuleContext`.
+fn nested_schema() -> nebula_schema::ValidSchema {
+    Schema::builder()
+        .add(
+            Field::object(field_key!("user"))
+                .add(Field::string(field_key!("name")).required().min_length(2))
+                .add(Field::string(field_key!("email")))
+                .add(Field::number(field_key!("age")).min(0).max(120))
+                .required(),
+        )
+        .add(
+            Field::object(field_key!("settings"))
+                .add(Field::boolean(field_key!("notify")))
+                .add(Field::string(field_key!("locale"))),
+        )
+        .build()
+        .expect("valid nested bench schema")
+}
+
+fn nested_values() -> FieldValues {
+    let mut values = FieldValues::new();
+    values.set_raw(
+        "user",
+        json!({ "name": "alice", "email": "a@b.com", "age": 30 }),
+    );
+    values.set_raw("settings", json!({ "notify": true, "locale": "en-US" }));
+    values
+}
+
+fn bench_validate_nested(c: &mut Criterion) {
+    let schema = nested_schema();
+    let values = nested_values();
+
+    c.bench_function("schema_validate_nested", |b| {
+        b.iter(|| {
+            let result = schema.validate(black_box(&values));
+            let _ = black_box(result);
+        })
+    });
+}
+
+criterion_group!(benches, bench_validate_static, bench_validate_nested);
 criterion_main!(benches);

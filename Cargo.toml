@@ -11,8 +11,8 @@ members = [
   "crates/log",
   "crates/metrics",
   "crates/plugin",
-  "crates/parameter",
   "crates/schema",
+  "crates/schema/macros",
   "crates/resilience",
   "crates/resource",
   "crates/runtime",
@@ -29,7 +29,6 @@ members = [
   "crates/action/macros",
   "crates/credential/macros",
   "crates/plugin/macros",
-  "crates/parameter/macros",
   "crates/validator/macros",
   "crates/sandbox",
   "crates/plugin-sdk",
@@ -90,6 +89,7 @@ domain-key = { version = "0.5.1", features = [
 uuid = { version = "1.23", features = ["v4", "serde"] }
 chrono = { version = "0.4.44", default-features = false, features = ["clock"] }
 smallvec = { version = "1.15", features = ["union", "const_generics", "serde"] }
+indexmap = { version = "2", features = ["serde"] }
 
 # String and data processing
 regex = "1.12"

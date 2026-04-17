@@ -1,0 +1,7 @@
+error[E0277]: the trait bound `FieldKey: From<&str>` is not satisfied
+ --> tests/compile_fail/field_key_from_str_removed.rs:5:31
+  |
+5 |     let _: FieldKey = "alpha".into();
+  |                               ^^^^ the trait `From<&str>` is not implemented for `FieldKey`
+  |
+  = note: required for `&str` to implement `Into<FieldKey>`

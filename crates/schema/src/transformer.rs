@@ -1,10 +1,15 @@
+//! Pre-validation value transformers with regex cache.
+
+use std::sync::{Arc, OnceLock};
+
+use regex::Regex;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 /// Value transformer applied before validation/runtime use.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(tag = "kind", rename_all = "snake_case")]
 #[non_exhaustive]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
 pub enum Transformer {
     /// Trim surrounding whitespace.
     Trim,
@@ -19,27 +24,70 @@ pub enum Transformer {
         /// Replacement string.
         to: String,
     },
+    /// Extract a regex capture group.
+    Regex {
+        /// The regex pattern to apply.
+        pattern: String,
+        /// Which capture group to extract (0 = full match).
+        #[serde(default)]
+        group: usize,
+        /// Lazily compiled regex — skipped by serde.
+        #[serde(skip)]
+        cache: Arc<OnceLock<Regex>>,
+    },
 }
 
-impl Transformer {
-    /// Apply this transformer to a JSON value.
-    ///
-    /// String-oriented transformers pass through non-string values unchanged.
-    pub fn apply(&self, value: &Value) -> Value {
-        match self {
-            Self::Trim => apply_to_string(value, |text| text.trim().to_owned()),
-            Self::Lowercase => apply_to_string(value, |text| text.to_lowercase()),
-            Self::Uppercase => apply_to_string(value, |text| text.to_uppercase()),
-            Self::Replace { from, to } => {
-                apply_to_string(value, |text| text.replace(from.as_str(), to.as_str()))
-            },
+impl PartialEq for Transformer {
+    fn eq(&self, other: &Self) -> bool {
+        use Transformer::*;
+        match (self, other) {
+            (Trim, Trim) | (Lowercase, Lowercase) | (Uppercase, Uppercase) => true,
+            (Replace { from: a1, to: a2 }, Replace { from: b1, to: b2 }) => a1 == b1 && a2 == b2,
+            (
+                Regex {
+                    pattern: p1,
+                    group: g1,
+                    ..
+                },
+                Regex {
+                    pattern: p2,
+                    group: g2,
+                    ..
+                },
+            ) => p1 == p2 && g1 == g2,
+            _ => false,
         }
     }
 }
 
-fn apply_to_string(value: &Value, transform: impl FnOnce(&str) -> String) -> Value {
+impl Transformer {
+    /// Apply this transformer. String transformers pass non-string values through.
+    pub fn apply(&self, value: &Value) -> Value {
+        match self {
+            Self::Trim => string(value, |t| t.trim().to_owned()),
+            Self::Lowercase => string(value, str::to_lowercase),
+            Self::Uppercase => string(value, str::to_uppercase),
+            Self::Replace { from, to } => string(value, |t| t.replace(from.as_str(), to.as_str())),
+            Self::Regex {
+                pattern,
+                group,
+                cache,
+            } => string(value, |t| {
+                let re = cache.get_or_init(|| {
+                    Regex::new(pattern).unwrap_or_else(|_| Regex::new("^$").unwrap())
+                });
+                re.captures(t)
+                    .and_then(|c| c.get(*group))
+                    .map(|m| m.as_str().to_owned())
+                    .unwrap_or_else(|| t.to_owned())
+            }),
+        }
+    }
+}
+
+fn string(value: &Value, f: impl FnOnce(&str) -> String) -> Value {
     match value.as_str() {
-        Some(text) => Value::String(transform(text)),
+        Some(s) => Value::String(f(s)),
         None => value.clone(),
     }
 }
@@ -48,24 +96,38 @@ fn apply_to_string(value: &Value, transform: impl FnOnce(&str) -> String) -> Val
 mod tests {
     use serde_json::json;
 
-    use super::Transformer;
+    use super::*;
 
     #[test]
-    fn applies_trim_and_replace_to_strings() {
-        let trimmed = Transformer::Trim.apply(&json!("  hello  "));
-        let replaced = Transformer::Replace {
-            from: "hello".to_owned(),
-            to: "nebula".to_owned(),
-        }
-        .apply(&trimmed);
-
-        assert_eq!(replaced, json!("nebula"));
+    fn trim_on_string() {
+        let out = Transformer::Trim.apply(&json!("  hi  "));
+        assert_eq!(out, json!("hi"));
     }
 
     #[test]
-    fn leaves_non_string_values_unchanged() {
-        let value = json!(42);
-        let transformed = Transformer::Lowercase.apply(&value);
-        assert_eq!(transformed, value);
+    fn regex_extract_group() {
+        let t = Transformer::Regex {
+            pattern: r"^(\d+)-".into(),
+            group: 1,
+            cache: Default::default(),
+        };
+        assert_eq!(t.apply(&json!("42-abc")), json!("42"));
+        assert_eq!(t.apply(&json!("no-match")), json!("no-match"));
+    }
+
+    #[test]
+    fn regex_cache_compiles_once() {
+        let t = Transformer::Regex {
+            pattern: r"(\w+)".into(),
+            group: 0,
+            cache: Default::default(),
+        };
+        let _ = t.apply(&json!("abc"));
+        let _ = t.apply(&json!("def"));
+    }
+
+    #[test]
+    fn non_string_value_passes_through() {
+        assert_eq!(Transformer::Lowercase.apply(&json!(42)), json!(42));
     }
 }

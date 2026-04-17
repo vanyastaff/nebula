@@ -38,9 +38,9 @@ pub use async_trait::async_trait;
 pub use nebula_action;
 pub use nebula_core;
 pub use nebula_credential;
-pub use nebula_parameter;
 pub use nebula_plugin;
 pub use nebula_resource;
+pub use nebula_schema;
 pub use nebula_validator;
 pub use nebula_workflow;
 pub use serde;
@@ -133,12 +133,12 @@ pub use serde_json::json;
 #[macro_export]
 macro_rules! params {
     ($($key:expr => $value:expr),* $(,)?) => {{
-        use $crate::nebula_parameter::values::ParameterValues;
+        use $crate::nebula_schema::value::FieldValues;
         use $crate::serde_json::json;
 
-        let mut values = ParameterValues::default();
+        let mut values = FieldValues::new();
         $(
-            values.insert($key.into(), json!($value));
+            values.set_raw($key, json!($value));
         )*
         values
     }};

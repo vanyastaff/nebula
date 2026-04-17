@@ -128,7 +128,7 @@ pub use handler::{ActionHandler, AgentHandler};
 pub use metadata::{ActionCategory, ActionMetadata, IsolationLevel, MetadataCompatibilityError};
 pub use nebula_action_macros::Action;
 pub use nebula_credential::CredentialGuard;
-pub use nebula_parameter::{Parameter, ParameterCollection};
+pub use nebula_schema::{Field, Schema, ValidSchema, field_key};
 pub use output::{
     ActionOutput, BinaryData, BinaryStorage, BufferConfig, CacheInfo, Cost, DataReference,
     DeferredOutput, DeferredRetryConfig, DeltaFormat, ExpectedOutput, OutputEnvelope, OutputMeta,

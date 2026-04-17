@@ -78,6 +78,11 @@ pub fn validate_rules(
     rules: &[Rule],
     mode: ExecutionMode,
 ) -> Result<(), ValidationErrors> {
+    // Fast path: empty rules slice — avoids all allocation and control flow.
+    if rules.is_empty() {
+        return Ok(());
+    }
+
     let mut errors = Vec::new();
 
     for rule in rules {

@@ -47,7 +47,7 @@ jobs:
         run: |
           set -euo pipefail
 
-          FULL='["nebula-action","nebula-api","nebula-core","nebula-credential","nebula-engine","nebula-error","nebula-eventbus","nebula-execution","nebula-expression","nebula-log","nebula-metrics","nebula-parameter","nebula-plugin","nebula-resilience","nebula-resource","nebula-runtime","nebula-sdk","nebula-storage","nebula-system","nebula-telemetry","nebula-validator","nebula-workflow"]'
+          FULL='["nebula-action","nebula-api","nebula-core","nebula-credential","nebula-engine","nebula-error","nebula-eventbus","nebula-execution","nebula-expression","nebula-log","nebula-metrics","nebula-plugin","nebula-resilience","nebula-resource","nebula-runtime","nebula-schema","nebula-sdk","nebula-storage","nebula-system","nebula-telemetry","nebula-validator","nebula-workflow"]'
           SMOKE='["nebula-core","nebula-engine","nebula-runtime"]'
 
           if [[ "${{ github.event_name }}" == "push" ]]; then
@@ -66,8 +66,13 @@ jobs:
 
           mapfile -t PACKAGES < <(
             echo "$CHANGED_FILES" \
-              | sed -n 's#^crates/\([^/]*\)/.*#nebula-\1#p' \
-              | sort -u
+              | sed -n 's#^crates/\([^/]*\)/.*#\1#p' \
+              | sort -u \
+              | while IFS= read -r crate; do
+                  if [[ -d "crates/$crate" ]]; then
+                    echo "nebula-$crate"
+                  fi
+                done
           )
 
           if [[ ${#PACKAGES[@]} -eq 0 ]]; then

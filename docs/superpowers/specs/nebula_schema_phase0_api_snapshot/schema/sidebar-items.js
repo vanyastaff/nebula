@@ -1,0 +1,1 @@
+window.SIDEBAR_ITEMS = {"constant":["MAX_NESTED_DEPTH"],"struct":["Schema"]};

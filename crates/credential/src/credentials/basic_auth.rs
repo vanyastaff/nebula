@@ -3,7 +3,7 @@
 //! Resolves a username + password pair into [`IdentityPassword`]. State and
 //! Scheme are the same type via [`identity_state!`](crate::identity_state).
 
-use nebula_parameter::{Parameter, ParameterCollection, values::ParameterValues};
+use nebula_schema::{Field, FieldValues, Schema, ValidSchema};
 
 use crate::{
     SecretString, context::CredentialContext, credential::Credential, error::CredentialError,
@@ -39,21 +39,22 @@ impl Credential for BasicAuthCredential {
         }
     }
 
-    fn parameters() -> ParameterCollection {
-        ParameterCollection::new()
+    fn parameters() -> ValidSchema {
+        Schema::builder()
             .add(
-                Parameter::string("username")
+                Field::string("username")
                     .label("Username")
                     .description("Username for HTTP Basic authentication")
                     .required(),
             )
             .add(
-                Parameter::string("password")
+                Field::secret("password")
                     .label("Password")
                     .description("Password for HTTP Basic authentication")
-                    .required()
-                    .secret(),
+                    .required(),
             )
+            .build()
+            .expect("basic_auth schema is always valid")
     }
 
     fn project(state: &IdentityPassword) -> IdentityPassword {
@@ -61,13 +62,13 @@ impl Credential for BasicAuthCredential {
     }
 
     async fn resolve(
-        values: &ParameterValues,
+        values: &FieldValues,
         _ctx: &CredentialContext,
     ) -> Result<StaticResolveResult<IdentityPassword>, CredentialError> {
-        let username = values.get_string("username").ok_or_else(|| {
+        let username = values.get_string_by_str("username").ok_or_else(|| {
             CredentialError::Provider("missing required field 'username'".to_owned())
         })?;
-        let password = values.get_string("password").ok_or_else(|| {
+        let password = values.get_string_by_str("password").ok_or_else(|| {
             CredentialError::Provider("missing required field 'password'".to_owned())
         })?;
         let secret = SecretString::new(password.to_owned());
@@ -106,15 +107,9 @@ mod tests {
 
     #[tokio::test]
     async fn resolve_extracts_username_and_password() {
-        let mut values = ParameterValues::new();
-        values.set(
-            "username".to_owned(),
-            serde_json::Value::String("alice".into()),
-        );
-        values.set(
-            "password".to_owned(),
-            serde_json::Value::String("p@ssw0rd".into()),
-        );
+        let mut values = FieldValues::new();
+        values.set_raw("username", serde_json::Value::String("alice".into()));
+        values.set_raw("password", serde_json::Value::String("p@ssw0rd".into()));
         let ctx = CredentialContext::new("test-user");
         let result = BasicAuthCredential::resolve(&values, &ctx).await.unwrap();
         match result {
@@ -129,11 +124,8 @@ mod tests {
 
     #[tokio::test]
     async fn resolve_returns_error_on_missing_username() {
-        let mut values = ParameterValues::new();
-        values.set(
-            "password".to_owned(),
-            serde_json::Value::String("secret".into()),
-        );
+        let mut values = FieldValues::new();
+        values.set_raw("password", serde_json::Value::String("secret".into()));
         let ctx = CredentialContext::new("test-user");
         let result = BasicAuthCredential::resolve(&values, &ctx).await;
         assert!(result.is_err());
@@ -141,11 +133,8 @@ mod tests {
 
     #[tokio::test]
     async fn resolve_returns_error_on_missing_password() {
-        let mut values = ParameterValues::new();
-        values.set(
-            "username".to_owned(),
-            serde_json::Value::String("alice".into()),
-        );
+        let mut values = FieldValues::new();
+        values.set_raw("username", serde_json::Value::String("alice".into()));
         let ctx = CredentialContext::new("test-user");
         let result = BasicAuthCredential::resolve(&values, &ctx).await;
         assert!(result.is_err());

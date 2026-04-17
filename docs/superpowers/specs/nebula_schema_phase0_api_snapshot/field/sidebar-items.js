@@ -1,0 +1,1 @@
+window.SIDEBAR_ITEMS = {"enum":["ComputedReturn","Field","NoticeSeverity"],"macro":["define_field"],"struct":["BooleanField","CodeField","ColorField","ComputedField","DateField","DateTimeField","DynamicField","FileField","HiddenField","ListField","ModeField","ModeVariant","NoticeField","NumberField","ObjectField","SecretField","SelectField","StringField","TimeField"]};

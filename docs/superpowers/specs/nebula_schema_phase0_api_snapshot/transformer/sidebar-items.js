@@ -1,0 +1,1 @@
+window.SIDEBAR_ITEMS = {"enum":["Transformer"],"fn":["apply_to_string"]};

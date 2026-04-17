@@ -16,7 +16,7 @@
 use std::future::Future;
 
 use nebula_core::AuthScheme;
-use nebula_parameter::{ParameterCollection, values::ParameterValues};
+use nebula_schema::{FieldValues, ValidSchema};
 
 use crate::{
     context::CredentialContext,
@@ -77,11 +77,11 @@ use crate::{
 ///     const KEY: &'static str = "slack_bot_token";
 ///
 ///     fn metadata() -> CredentialMetadata { /* ... */ }
-///     fn parameters() -> ParameterCollection { /* ... */ }
+///     fn parameters() -> ValidSchema { /* ... */ }
 ///     fn project(state: &SecretToken) -> SecretToken { state.clone() }
 ///
 ///     fn resolve(
-///         values: &ParameterValues,
+///         values: &FieldValues,
 ///         _ctx: &CredentialContext,
 ///     ) -> impl Future<Output = Result<StaticResolveResult<SecretToken>, CredentialError>> + Send {
 ///         async move {
@@ -133,7 +133,7 @@ pub trait Credential: Send + Sync + 'static {
         Self: Sized;
 
     /// Parameter schema for the setup form.
-    fn parameters() -> ParameterCollection
+    fn parameters() -> ValidSchema
     where
         Self: Sized;
 
@@ -152,7 +152,7 @@ pub trait Credential: Send + Sync + 'static {
     /// For non-interactive credentials: use
     /// [`StaticResolveResult<S>`](crate::resolve::StaticResolveResult).
     fn resolve(
-        values: &ParameterValues,
+        values: &FieldValues,
         ctx: &CredentialContext,
     ) -> impl Future<Output = Result<ResolveResult<Self::State, Self::Pending>, CredentialError>> + Send
     where

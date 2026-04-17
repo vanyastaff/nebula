@@ -1,0 +1,1 @@
+window.SIDEBAR_ITEMS = {"struct":["Loader","LoaderContext","LoaderError","LoaderRegistry","LoaderResult"],"type":["LoaderFuture","OptionLoader","RecordLoader"]};

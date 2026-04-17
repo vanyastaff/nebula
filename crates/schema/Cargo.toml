@@ -17,9 +17,13 @@ schemars = ["dep:schemars"]
 
 [dependencies]
 nebula-validator = { path = "../validator" }
+nebula-schema-macros = { path = "macros" }
 serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }
-thiserror = { workspace = true }
+indexmap = { workspace = true }
+smallvec = { workspace = true }
+regex = { workspace = true }
+async-trait = { workspace = true }
 schemars = { version = "1.0", optional = true }
 
 [dev-dependencies]
@@ -27,6 +31,19 @@ criterion = { workspace = true }
 serde_json = { workspace = true }
 tokio = { workspace = true, features = ["macros", "rt"] }
 trybuild = "1"
+proptest = { workspace = true }
+
+[[test]]
+name = "flow_all_error_codes"
+path = "tests/flow/all_error_codes.rs"
+
+[[test]]
+name = "proptest_path_roundtrip"
+path = "tests/proptest/path_roundtrip.rs"
+
+[[test]]
+name = "proptest_serde_preserves"
+path = "tests/proptest/serde_preserves.rs"
 
 [[bench]]
 name = "bench_build"
@@ -44,5 +61,10 @@ harness = false
 name = "bench_memory"
 harness = false
 
-[lib]
-doctest = false
+[[bench]]
+name = "bench_resolve"
+harness = false
+
+[[bench]]
+name = "bench_lookup"
+harness = false

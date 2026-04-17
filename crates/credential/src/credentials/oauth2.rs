@@ -11,7 +11,7 @@
 use std::{fmt, fmt::Formatter, time::Duration};
 
 use chrono::{DateTime, Utc};
-use nebula_parameter::{Parameter, ParameterCollection, values::ParameterValues};
+use nebula_schema::{Field, FieldValues, Schema, ValidSchema};
 use serde::{Deserialize, Serialize};
 use subtle::ConstantTimeEq;
 use zeroize::Zeroize;
@@ -247,7 +247,7 @@ impl PendingState for OAuth2Pending {
 ///
 /// Configuration (auth URL, token URL, grant type, scopes) is provided
 /// via [`parameters()`](OAuth2Credential::parameters) and extracted from
-/// [`ParameterValues`] in [`resolve()`](OAuth2Credential::resolve).
+/// [`FieldValues`] in [`resolve()`](OAuth2Credential::resolve).
 ///
 /// # Grant types
 ///
@@ -291,36 +291,35 @@ impl Credential for OAuth2Credential {
         }
     }
 
-    fn parameters() -> ParameterCollection {
-        ParameterCollection::new()
+    fn parameters() -> ValidSchema {
+        Schema::builder()
             .add(
-                Parameter::string("client_id")
+                Field::string("client_id")
                     .label("Client ID")
                     .description("OAuth2 client identifier")
                     .required(),
             )
             .add(
-                Parameter::string("client_secret")
+                Field::secret("client_secret")
                     .label("Client Secret")
                     .description("OAuth2 client secret")
-                    .required()
-                    .secret(),
+                    .required(),
             )
             .add(
-                Parameter::string("auth_url")
+                Field::string("auth_url")
                     .label("Authorization URL")
                     .description("OAuth2 authorization endpoint URL")
                     .placeholder("https://provider.example.com/oauth2/authorize"),
             )
             .add(
-                Parameter::string("token_url")
+                Field::string("token_url")
                     .label("Token URL")
                     .description("OAuth2 token endpoint URL")
                     .required()
                     .placeholder("https://provider.example.com/oauth2/token"),
             )
             .add(
-                Parameter::string("grant_type")
+                Field::string("grant_type")
                     .label("Grant Type")
                     .description(
                         "OAuth2 grant type: authorization_code, client_credentials, or device_code",
@@ -328,18 +327,20 @@ impl Credential for OAuth2Credential {
                     .default(serde_json::json!("authorization_code")),
             )
             .add(
-                Parameter::string("scopes")
+                Field::string("scopes")
                     .label("Scopes")
                     .description("Space-separated list of OAuth2 scopes"),
             )
             .add(
-                Parameter::string("redirect_uri")
+                Field::string("redirect_uri")
                     .label("Redirect URI")
                     .description(
                         "OAuth2 redirect URI (required for authorization_code grant; must match the URI registered with the provider)",
                     )
                     .placeholder("https://app.example.com/oauth2/callback"),
             )
+            .build()
+            .expect("oauth2 schema is always valid")
     }
 
     fn project(state: &OAuth2State) -> OAuth2Token {
@@ -354,7 +355,7 @@ impl Credential for OAuth2Credential {
     }
 
     async fn resolve(
-        values: &ParameterValues,
+        values: &FieldValues,
         _ctx: &CredentialContext,
     ) -> Result<ResolveResult<OAuth2State, OAuth2Pending>, CredentialError> {
         let client_id = extract_required(values, "client_id")?;
@@ -362,16 +363,16 @@ impl Credential for OAuth2Credential {
         let token_url = extract_required(values, "token_url")?;
 
         let grant_type_str = values
-            .get_string("grant_type")
+            .get_string_by_str("grant_type")
             .unwrap_or("authorization_code");
         let grant_type = parse_grant_type(grant_type_str)?;
 
-        let auth_url = values.get_string("auth_url").unwrap_or_default();
+        let auth_url = values.get_string_by_str("auth_url").unwrap_or_default();
         let scopes = parse_scopes(values);
 
         // `redirect_uri` is required for AuthorizationCode (RFC 6749
         // §4.1.3), ignored for the other grants.
-        let redirect_uri_opt = values.get_string("redirect_uri").map(str::to_owned);
+        let redirect_uri_opt = values.get_string_by_str("redirect_uri").map(str::to_owned);
         let config = build_config(grant_type, auth_url, token_url, &scopes, redirect_uri_opt)?;
 
         match grant_type {
@@ -588,12 +589,9 @@ impl Credential for OAuth2Credential {
 // ── Private helpers ────────────────────────────────────────────────────
 
 /// Extract a required string parameter, returning an error if missing.
-fn extract_required<'a>(
-    values: &'a ParameterValues,
-    key: &str,
-) -> Result<&'a str, CredentialError> {
+fn extract_required<'a>(values: &'a FieldValues, key: &str) -> Result<&'a str, CredentialError> {
     values
-        .get_string(key)
+        .get_string_by_str(key)
         .ok_or_else(|| CredentialError::InvalidInput(format!("missing required field: {key}")))
 }
 
@@ -610,9 +608,9 @@ fn parse_grant_type(s: &str) -> Result<GrantType, CredentialError> {
 }
 
 /// Parse space-separated scopes from parameter values.
-fn parse_scopes(values: &ParameterValues) -> Vec<String> {
+fn parse_scopes(values: &FieldValues) -> Vec<String> {
     values
-        .get_string("scopes")
+        .get_string_by_str("scopes")
         .map(|s| s.split_whitespace().map(str::to_owned).collect())
         .unwrap_or_default()
 }
@@ -726,14 +724,15 @@ mod tests {
     #[test]
     fn parameters_has_all_fields() {
         let params = OAuth2Credential::parameters();
-        assert!(params.contains("client_id"));
-        assert!(params.contains("client_secret"));
-        assert!(params.contains("auth_url"));
-        assert!(params.contains("token_url"));
-        assert!(params.contains("grant_type"));
-        assert!(params.contains("scopes"));
-        assert!(params.contains("redirect_uri"));
-        assert_eq!(params.len(), 7);
+        let has = |k: &str| params.fields().iter().any(|f| f.key().as_str() == k);
+        assert!(has("client_id"));
+        assert!(has("client_secret"));
+        assert!(has("auth_url"));
+        assert!(has("token_url"));
+        assert!(has("grant_type"));
+        assert!(has("scopes"));
+        assert!(has("redirect_uri"));
+        assert_eq!(params.fields().len(), 7);
     }
 
     #[test]
@@ -759,21 +758,21 @@ mod tests {
 
     #[test]
     fn parse_scopes_empty() {
-        let values = ParameterValues::new();
+        let values = FieldValues::new();
         assert!(parse_scopes(&values).is_empty());
     }
 
     #[test]
     fn parse_scopes_splits_whitespace() {
-        let mut values = ParameterValues::new();
-        values.set("scopes", serde_json::json!("read write admin"));
+        let mut values = FieldValues::new();
+        values.set_raw("scopes", serde_json::json!("read write admin"));
         let scopes = parse_scopes(&values);
         assert_eq!(scopes, vec!["read", "write", "admin"]);
     }
 
     #[tokio::test]
     async fn resolve_rejects_missing_client_id() {
-        let values = ParameterValues::new();
+        let values = FieldValues::new();
         let ctx = CredentialContext::new("test-user");
         let result = OAuth2Credential::resolve(&values, &ctx).await;
         assert!(result.is_err());
@@ -781,9 +780,9 @@ mod tests {
 
     #[tokio::test]
     async fn resolve_rejects_missing_token_url() {
-        let mut values = ParameterValues::new();
-        values.set("client_id", serde_json::json!("cid"));
-        values.set("client_secret", serde_json::json!("cs"));
+        let mut values = FieldValues::new();
+        values.set_raw("client_id", serde_json::json!("cid"));
+        values.set_raw("client_secret", serde_json::json!("cs"));
         let ctx = CredentialContext::new("test-user");
         let result = OAuth2Credential::resolve(&values, &ctx).await;
         assert!(result.is_err());
@@ -815,12 +814,12 @@ mod tests {
         // attacker can actually reach — a deployment that forgets to
         // supply `redirect_uri` must fail loudly rather than build a
         // PKCE flow with an empty callback URL.
-        let mut values = ParameterValues::new();
-        values.set("client_id", serde_json::json!("cid"));
-        values.set("client_secret", serde_json::json!("cs"));
-        values.set("auth_url", serde_json::json!("https://a.com/auth"));
-        values.set("token_url", serde_json::json!("https://a.com/token"));
-        values.set("grant_type", serde_json::json!("authorization_code"));
+        let mut values = FieldValues::new();
+        values.set_raw("client_id", serde_json::json!("cid"));
+        values.set_raw("client_secret", serde_json::json!("cs"));
+        values.set_raw("auth_url", serde_json::json!("https://a.com/auth"));
+        values.set_raw("token_url", serde_json::json!("https://a.com/token"));
+        values.set_raw("grant_type", serde_json::json!("authorization_code"));
         // deliberately no `redirect_uri`
 
         let ctx = CredentialContext::new("test-user");

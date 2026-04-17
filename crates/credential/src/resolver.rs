@@ -464,7 +464,7 @@ pub enum ResolveError {
 
 #[cfg(test)]
 mod tests {
-    use nebula_parameter::{ParameterCollection, values::ParameterValues};
+    use nebula_schema::{FieldValues, Schema, ValidSchema};
 
     use super::*;
     // ── Test credential for early refresh ──────────────────────────────
@@ -526,8 +526,10 @@ mod tests {
             }
         }
 
-        fn parameters() -> ParameterCollection {
-            ParameterCollection::new()
+        fn parameters() -> ValidSchema {
+            Schema::builder()
+                .build()
+                .expect("empty schema is always valid")
         }
 
         fn project(state: &ExpiringState) -> SecretToken {
@@ -535,7 +537,7 @@ mod tests {
         }
 
         async fn resolve(
-            _values: &ParameterValues,
+            _values: &FieldValues,
             _ctx: &CredentialContext,
         ) -> Result<StaticResolveResult<ExpiringState>, CredentialError> {
             unreachable!("not used in refresh tests")
@@ -582,8 +584,10 @@ mod tests {
             }
         }
 
-        fn parameters() -> ParameterCollection {
-            ParameterCollection::new()
+        fn parameters() -> ValidSchema {
+            Schema::builder()
+                .build()
+                .expect("empty schema is always valid")
         }
 
         fn project(state: &ExpiringState) -> SecretToken {
@@ -591,7 +595,7 @@ mod tests {
         }
 
         async fn resolve(
-            _values: &ParameterValues,
+            _values: &FieldValues,
             _ctx: &CredentialContext,
         ) -> Result<StaticResolveResult<ExpiringState>, CredentialError> {
             unreachable!("not used in refresh tests")
@@ -1087,8 +1091,10 @@ mod tests {
             }
         }
 
-        fn parameters() -> ParameterCollection {
-            ParameterCollection::new()
+        fn parameters() -> ValidSchema {
+            Schema::builder()
+                .build()
+                .expect("empty schema is always valid")
         }
 
         fn project(state: &ExpiringState) -> SecretToken {
@@ -1096,7 +1102,7 @@ mod tests {
         }
 
         async fn resolve(
-            _values: &ParameterValues,
+            _values: &FieldValues,
             _ctx: &CredentialContext,
         ) -> Result<StaticResolveResult<ExpiringState>, CredentialError> {
             unreachable!("not used in CAS retry tests")

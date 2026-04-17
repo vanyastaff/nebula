@@ -113,6 +113,28 @@ mod tests;
 
 use serde::{Deserialize, Serialize};
 
+/// Borrowed view over a value bag used by predicate rules.
+///
+/// This trait abstracts over the context passed to [`Rule::evaluate`],
+/// allowing callers to avoid building a `HashMap` allocation per call.
+/// Any type that can look up a `serde_json::Value` by string key can
+/// implement this trait and be used directly with `evaluate`.
+///
+/// # Blanket impl
+///
+/// `HashMap<String, serde_json::Value>` implements this trait out of the box,
+/// so existing callers continue to compile without modification.
+pub trait RuleContext {
+    /// Fetch a value by key. Returns `None` when the key is absent.
+    fn get(&self, key: &str) -> Option<&serde_json::Value>;
+}
+
+impl RuleContext for std::collections::HashMap<String, serde_json::Value> {
+    fn get(&self, key: &str) -> Option<&serde_json::Value> {
+        std::collections::HashMap::get(self, key)
+    }
+}
+
 /// Unified declarative rule.
 ///
 /// Covers value validation, context predicates, deferred runtime checks,

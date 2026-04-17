@@ -62,46 +62,6 @@ fn derive_works_on_struct_with_fields() {
     assert_eq!(meta.name, "Fields Action");
 }
 
-// -- Combined Action + Parameters derive ------------------------------------
-
-/// Verifies that `#[derive(Action)]` and `#[derive(Parameters)]` work
-/// together on the same struct (Phase 2b requirement).
-#[derive(Action, nebula_parameter::Parameters, Clone, serde::Deserialize)]
-#[action(
-    key = "combined.derive",
-    name = "Combined",
-    description = "combined derive test"
-)]
-#[allow(dead_code)]
-// Fields exist only to exercise `#[derive(Action)]` + `#[derive(Parameters)]`
-// expansion — the tests assert on metadata and generated parameter list,
-// not on field values.
-struct CombinedDeriveAction {
-    #[param(label = "URL", hint = "url")]
-    url: String,
-
-    #[param(label = "Timeout (s)")]
-    timeout: Option<u32>,
-}
-
-#[test]
-fn combined_derive_metadata_works() {
-    let action = CombinedDeriveAction {
-        url: "https://example.com".into(),
-        timeout: Some(30),
-    };
-    let meta = action.metadata();
-    assert_eq!(meta.key.as_str(), "combined.derive");
-}
-
-#[test]
-fn combined_derive_parameters_generated() {
-    let params = CombinedDeriveAction::parameters();
-    assert!(params.len() >= 2);
-    assert!(params.iter().any(|p| p.id == "url"));
-    assert!(params.iter().any(|p| p.id == "timeout"));
-}
-
 // -- Credential type IDs (compile-time verification) ------------------------
 //
 // Full integration tests with `#[action(credential = Type)]` require types

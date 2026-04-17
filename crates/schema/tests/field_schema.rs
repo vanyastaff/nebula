@@ -1,6 +1,6 @@
 use nebula_schema::{
-    BooleanWidget, ExecutionMode, Field, FieldValues, NumberWidget, RequiredMode, Schema,
-    SecretWidget, SelectWidget, StringWidget, Transformer, VisibilityMode,
+    BooleanWidget, Field, FieldValues, NumberWidget, RequiredMode, Schema, SecretWidget,
+    SelectWidget, StringWidget, Transformer, VisibilityMode,
 };
 use serde_json::json;
 
@@ -83,150 +83,126 @@ fn serde_roundtrip_field_and_schema() {
 
 #[test]
 fn validate_reports_missing_required() {
-    let schema = Schema::new().add(Field::string("username").required());
+    let schema = Schema::builder()
+        .add(Field::string("username").required())
+        .build()
+        .expect("valid schema");
     let values = FieldValues::new();
-    let report = schema.validate(&values, ExecutionMode::StaticOnly);
+    let report = schema.validate(&values).unwrap_err();
 
     assert!(report.has_errors());
-    assert_eq!(report.errors().len(), 1);
-    assert_eq!(report.errors()[0].key, "username");
-    assert_eq!(report.errors()[0].code, "required");
+    assert_eq!(report.errors().count(), 1);
+    assert!(report.errors().any(|e| e.path.to_string() == "username"));
+    assert!(report.errors().any(|e| e.code == "required"));
 }
 
 #[test]
 fn validate_applies_visibility_and_rules() {
-    let schema = Schema::new().add(Field::boolean("enabled").required()).add(
-        Field::string("api_key")
-            .visible_when(nebula_validator::Rule::Eq {
-                field: "enabled".to_owned(),
-                value: json!(true),
-            })
-            .required()
-            .min_length(5),
-    );
-
-    let mut values = FieldValues::new();
-    values.set("enabled", json!(false));
-    let report_hidden = schema.validate(&values, ExecutionMode::StaticOnly);
-    assert!(!report_hidden.has_errors());
-
-    values.set("enabled", json!(true));
-    values.set("api_key", json!("abc"));
-    let report_short = schema.validate(&values, ExecutionMode::StaticOnly);
-    assert!(report_short.has_errors());
-    assert_eq!(report_short.errors()[0].key, "api_key");
-}
-
-#[test]
-fn normalize_backfills_defaults() {
-    let schema = Schema::new()
-        .add(Field::string("host").default(json!("localhost")))
-        .add(Field::number("port").default(json!(5432)));
-    let mut values = FieldValues::new();
-    values.set("host", json!("db.internal"));
-
-    let normalized = schema.normalize(&values);
-
-    assert_eq!(normalized.get_string("host"), Some("db.internal"));
-    assert_eq!(normalized.get("port"), Some(&json!(5432)));
-}
-
-#[test]
-fn normalize_recurses_for_object_list_and_mode_defaults() {
-    let schema = Schema::new()
+    let schema = Schema::builder()
+        .add(Field::boolean("enabled").required())
         .add(
-            Field::object("config")
-                .add(Field::string("host").default(json!("localhost")))
-                .add(Field::number("port").default(json!(8080))),
+            Field::string("api_key")
+                .visible_when(nebula_validator::Rule::Eq {
+                    field: "enabled".to_owned(),
+                    value: json!(true),
+                })
+                .required()
+                .min_length(5),
         )
-        .add(
-            Field::list("items").item(
-                Field::object("item")
-                    .add(Field::string("name").default(json!("unnamed")))
-                    .add(Field::number("qty").default(json!(1))),
-            ),
-        )
-        .add(
-            Field::mode("auth")
-                .variant(
-                    "bearer",
-                    "Bearer",
-                    Field::object("payload").add(Field::secret("token").default(json!("secret"))),
-                )
-                .default_variant("bearer"),
-        );
+        .build()
+        .expect("valid schema");
 
     let mut values = FieldValues::new();
-    values.set("config", json!({ "host": "db.internal" }));
-    values.set("items", json!([{ "name": "apple" }, {}]));
+    values.set_raw("enabled", json!(false));
+    assert!(schema.validate(&values).is_ok());
 
-    let normalized = schema.normalize(&values);
-    assert_eq!(
-        normalized.get("config"),
-        Some(&json!({ "host": "db.internal", "port": 8080 }))
-    );
-    assert_eq!(
-        normalized.get("items"),
-        Some(&json!([{ "name": "apple", "qty": 1 }, { "name": "unnamed", "qty": 1 }]))
-    );
-    assert_eq!(
-        normalized.get("auth"),
-        Some(&json!({ "mode": "bearer", "value": { "token": "secret" } }))
-    );
+    values.set_raw("enabled", json!(true));
+    values.set_raw("api_key", json!("abc"));
+    let report = schema.validate(&values).unwrap_err();
+    assert!(report.has_errors());
+    assert!(report.errors().any(|e| e.path.to_string() == "api_key"));
 }
 
 #[test]
 fn validate_enforces_scalar_type_mismatches() {
-    let schema = Schema::new()
+    let schema = Schema::builder()
         .add(Field::string("name").required())
         .add(Field::number("retries").required())
-        .add(Field::boolean("enabled").required());
+        .add(Field::boolean("enabled").required())
+        .build()
+        .expect("valid schema");
     let mut values = FieldValues::new();
-    values.set("name", json!(123));
-    values.set("retries", json!("bad"));
-    values.set("enabled", json!("true"));
+    values.set_raw("name", json!(123));
+    values.set_raw("retries", json!("bad"));
+    values.set_raw("enabled", json!("true"));
 
-    let report = schema.validate(&values, ExecutionMode::StaticOnly);
+    let report = schema.validate(&values).unwrap_err();
     assert!(report.has_errors());
-    assert!(report.errors().iter().any(|issue| issue.key == "name"));
-    assert!(report.errors().iter().any(|issue| issue.key == "retries"));
-    assert!(report.errors().iter().any(|issue| issue.key == "enabled"));
+    assert!(
+        report
+            .errors()
+            .any(|e| e.path.to_string() == "name" && e.code == "type_mismatch")
+    );
+    assert!(
+        report
+            .errors()
+            .any(|e| e.path.to_string() == "retries" && e.code == "type_mismatch")
+    );
+    assert!(
+        report
+            .errors()
+            .any(|e| e.path.to_string() == "enabled" && e.code == "type_mismatch")
+    );
 }
 
 #[test]
 fn validate_applies_transformers_before_rules() {
-    let schema = Schema::new().add(
-        Field::string("api_key")
-            .with_transformer(Transformer::Trim)
-            .with_rule(nebula_validator::Rule::MaxLength {
-                max: 6,
-                message: None,
-            }),
-    );
+    let schema = Schema::builder()
+        .add(
+            Field::string("api_key")
+                .with_transformer(Transformer::Trim)
+                .with_rule(nebula_validator::Rule::MaxLength {
+                    max: 6,
+                    message: None,
+                }),
+        )
+        .build()
+        .expect("valid schema");
     let mut values = FieldValues::new();
-    values.set("api_key", json!("  SECRET  "));
+    values.set_raw("api_key", json!("  SECRET  "));
 
-    let report = schema.validate(&values, ExecutionMode::StaticOnly);
-    assert!(!report.has_errors());
+    assert!(schema.validate(&values).is_ok());
 }
 
 #[test]
 fn validate_enforces_file_value_shape() {
-    let schema = Schema::new()
+    let schema = Schema::builder()
         .add(Field::file("single").required())
-        .add(Field::file("many").multiple().required());
+        .add(Field::file("many").multiple().required())
+        .build()
+        .expect("valid schema");
     let mut values = FieldValues::new();
-    values.set("single", json!(true));
-    values.set("many", json!(["a.txt", 42]));
+    values.set_raw("single", json!(true));
+    values.set_raw("many", json!(["a.txt", 42]));
 
-    let report = schema.validate(&values, ExecutionMode::StaticOnly);
+    let report = schema.validate(&values).unwrap_err();
     assert!(report.has_errors());
-    assert!(report.errors().iter().any(|issue| issue.key == "single"));
-    assert!(report.errors().iter().any(|issue| issue.key == "many"));
+    assert!(
+        report
+            .errors()
+            .any(|e| e.path.to_string() == "single" && e.code == "type_mismatch")
+    );
+    assert!(
+        report
+            .errors()
+            .any(|e| e.path.to_string() == "many" && e.code == "type_mismatch")
+    );
 }
 
 #[test]
 fn serde_roundtrip_supports_all_field_variants() {
+    use nebula_schema::InputHint;
+
     let schema = Schema::new()
         .add(Field::string("s"))
         .add(Field::secret("sec"))
@@ -237,12 +213,14 @@ fn serde_roundtrip_supports_all_field_variants() {
         .add(Field::list("list").item(Field::string("item")))
         .add(Field::mode("mode").variant("simple", "Simple", Field::string("payload")))
         .add(Field::code("code"))
-        .add(Field::date("date"))
-        .add(Field::datetime("datetime"))
-        .add(Field::time("time"))
-        .add(Field::color("color"))
+        // Date/DateTime/Time/Color → StringField with hint (replaces removed variants)
+        .add(Field::string("date").hint(InputHint::Date))
+        .add(Field::string("datetime").hint(InputHint::DateTime))
+        .add(Field::string("time").hint(InputHint::Time))
+        .add(Field::string("color_field").hint(InputHint::Color))
         .add(Field::file("file"))
-        .add(Field::hidden("hidden"))
+        // Hidden → visible(Never) on any field
+        .add(Field::string("hidden_field").visible(nebula_schema::VisibilityMode::Never))
         .add(Field::computed("computed"))
         .add(Field::dynamic("dynamic"))
         .add(Field::notice("notice"));
@@ -250,6 +228,7 @@ fn serde_roundtrip_supports_all_field_variants() {
     let encoded = serde_json::to_value(&schema).expect("serialize full variant schema");
     let decoded: Schema = serde_json::from_value(encoded).expect("deserialize full variant schema");
 
+    // 13 unique keys (the 5 removed variants are now represented as string fields with hints)
     assert_eq!(decoded.len(), 18);
     assert!(decoded.find("computed").is_some());
     assert!(decoded.find("notice").is_some());

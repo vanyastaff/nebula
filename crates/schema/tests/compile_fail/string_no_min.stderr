@@ -11,7 +11,7 @@ error[E0599]: the method `min` exists for struct `StringField`, but its trait bo
   | |             pub key: FieldKey,
   | |             /// Human-readable label.
 ... |
-  | |             $(pub $field: $type,)*
+  | |             $(pub $extra: $ty,)*
   | |         }
   | |_________- doesn't satisfy `StringField: Iterator` or `StringField: Ord`
   |

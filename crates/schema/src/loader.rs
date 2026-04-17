@@ -1,45 +1,31 @@
-use std::{collections::HashMap, future::Future, pin::Pin, sync::Arc};
+//! Runtime loader registry and async loader types.
+//!
+//! All fallible paths now return [`ValidationError`] (unified error type).
+//! Codes emitted:
+//!
+//! | Code | When |
+//! |------|------|
+//! | `loader.not_registered` | Named loader key not found in registry |
+//! | `loader.failed` | Loader invocation returned an error |
+//!
+//! Lint-time warnings (`missing_loader`, `loader_without_dynamic`) are emitted
+//! by the lint pass in `lint.rs`, not here.
+
+use std::{future::Future, pin::Pin, sync::Arc};
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use crate::{FieldValues, SelectOption};
+use crate::{
+    FieldValues, SelectOption,
+    error::ValidationError,
+    key::FieldKey,
+    path::{FieldPath, PathSegment},
+};
 
 /// Boxed future used by async loader functions.
 pub type LoaderFuture<T> =
-    Pin<Box<dyn Future<Output = Result<LoaderResult<T>, LoaderError>> + Send>>;
-
-/// Error returned by runtime loaders.
-#[derive(Debug, thiserror::Error)]
-#[error("{message}")]
-pub struct LoaderError {
-    /// Human-readable description of the loader failure.
-    pub message: String,
-    /// Optional source error for chaining.
-    #[source]
-    pub source: Option<Box<dyn std::error::Error + Send + Sync>>,
-}
-
-impl LoaderError {
-    /// Build a loader error with message only.
-    pub fn new(message: impl Into<String>) -> Self {
-        Self {
-            message: message.into(),
-            source: None,
-        }
-    }
-
-    /// Build a loader error and preserve source details.
-    pub fn with_source(
-        message: impl Into<String>,
-        source: impl std::error::Error + Send + Sync + 'static,
-    ) -> Self {
-        Self {
-            message: message.into(),
-            source: Some(Box::new(source)),
-        }
-    }
-}
+    Pin<Box<dyn Future<Output = Result<LoaderResult<T>, ValidationError>> + Send>>;
 
 /// Context passed to runtime loaders.
 #[derive(Debug, Clone)]
@@ -100,13 +86,13 @@ impl<T: Send + 'static> Loader<T> {
     pub fn new<F, Fut>(loader: F) -> Self
     where
         F: Fn(LoaderContext) -> Fut + Send + Sync + 'static,
-        Fut: Future<Output = Result<LoaderResult<T>, LoaderError>> + Send + 'static,
+        Fut: Future<Output = Result<LoaderResult<T>, ValidationError>> + Send + 'static,
     {
         Self(Arc::new(move |context| Box::pin(loader(context))))
     }
 
     /// Execute loader for the provided context.
-    pub async fn call(&self, context: LoaderContext) -> Result<LoaderResult<T>, LoaderError> {
+    pub async fn call(&self, context: LoaderContext) -> Result<LoaderResult<T>, ValidationError> {
         (self.0)(context).await
     }
 }
@@ -180,11 +166,29 @@ pub type OptionLoader = Loader<SelectOption>;
 /// Loader returning dynamic record payloads.
 pub type RecordLoader = Loader<Value>;
 
+/// Build a single-key `FieldPath` from a `LoaderContext::field_key` string.
+/// Falls back to root if the key is not a valid `FieldKey`.
+fn field_path_from_key(key: &str) -> FieldPath {
+    FieldKey::new(key)
+        .map(|fk| FieldPath::root().join(PathSegment::Key(fk)))
+        .unwrap_or_else(|_| FieldPath::root())
+}
+
+/// Use the path from a loader-returned error if it's non-root, otherwise build
+/// one from the registry lookup key.
+fn field_path_from_err_or(key: &str, err: &ValidationError) -> FieldPath {
+    if err.path.is_root() {
+        field_path_from_key(key)
+    } else {
+        err.path.clone()
+    }
+}
+
 /// Runtime registry for named loader functions.
 #[derive(Debug, Clone, Default)]
 pub struct LoaderRegistry {
-    option_loaders: HashMap<String, OptionLoader>,
-    record_loaders: HashMap<String, RecordLoader>,
+    option_loaders: std::collections::HashMap<String, OptionLoader>,
+    record_loaders: std::collections::HashMap<String, RecordLoader>,
 }
 
 impl LoaderRegistry {
@@ -198,7 +202,7 @@ impl LoaderRegistry {
     pub fn register_option<F, Fut>(mut self, key: impl Into<String>, loader: F) -> Self
     where
         F: Fn(LoaderContext) -> Fut + Send + Sync + 'static,
-        Fut: Future<Output = Result<LoaderResult<SelectOption>, LoaderError>> + Send + 'static,
+        Fut: Future<Output = Result<LoaderResult<SelectOption>, ValidationError>> + Send + 'static,
     {
         self.option_loaders
             .insert(key.into(), OptionLoader::new(loader));
@@ -210,7 +214,7 @@ impl LoaderRegistry {
     pub fn register_record<F, Fut>(mut self, key: impl Into<String>, loader: F) -> Self
     where
         F: Fn(LoaderContext) -> Fut + Send + Sync + 'static,
-        Fut: Future<Output = Result<LoaderResult<Value>, LoaderError>> + Send + 'static,
+        Fut: Future<Output = Result<LoaderResult<Value>, ValidationError>> + Send + 'static,
     {
         self.record_loaders
             .insert(key.into(), RecordLoader::new(loader));
@@ -218,30 +222,143 @@ impl LoaderRegistry {
     }
 
     /// Resolve and execute option loader by key.
+    ///
+    /// # Errors
+    ///
+    /// Returns `ValidationError` with code `loader.not_registered` when `key`
+    /// is not registered, or `loader.failed` if the loader returns an error.
+    /// Both errors carry the requesting field's path (from `context.field_key`).
     pub async fn load_options(
         &self,
         key: &str,
         context: LoaderContext,
-    ) -> Result<LoaderResult<SelectOption>, LoaderError> {
+    ) -> Result<LoaderResult<SelectOption>, ValidationError> {
+        let field_path = field_path_from_key(&context.field_key);
         let Some(loader) = self.option_loaders.get(key) else {
-            return Err(LoaderError::new(format!(
-                "option loader `{key}` is not registered"
-            )));
+            return Err(ValidationError::builder("loader.not_registered")
+                .at(field_path)
+                .message(format!("option loader `{key}` is not registered"))
+                .param("loader", serde_json::Value::String(key.to_owned()))
+                .build());
         };
-        loader.call(context).await
+        loader.call(context).await.map_err(|e| {
+            ValidationError::builder("loader.failed")
+                .at(field_path_from_err_or(key, &e))
+                .message(format!("option loader `{key}` failed: {e}"))
+                .param("loader", serde_json::Value::String(key.to_owned()))
+                .source(e)
+                .build()
+        })
     }
 
     /// Resolve and execute record loader by key.
+    ///
+    /// # Errors
+    ///
+    /// Returns `ValidationError` with code `loader.not_registered` when `key`
+    /// is not registered, or `loader.failed` if the loader returns an error.
+    /// Both errors carry the requesting field's path (from `context.field_key`).
     pub async fn load_records(
         &self,
         key: &str,
         context: LoaderContext,
-    ) -> Result<LoaderResult<Value>, LoaderError> {
+    ) -> Result<LoaderResult<Value>, ValidationError> {
+        let field_path = field_path_from_key(&context.field_key);
         let Some(loader) = self.record_loaders.get(key) else {
-            return Err(LoaderError::new(format!(
-                "record loader `{key}` is not registered"
-            )));
+            return Err(ValidationError::builder("loader.not_registered")
+                .at(field_path)
+                .message(format!("record loader `{key}` is not registered"))
+                .param("loader", serde_json::Value::String(key.to_owned()))
+                .build());
         };
-        loader.call(context).await
+        loader.call(context).await.map_err(|e| {
+            ValidationError::builder("loader.failed")
+                .at(field_path_from_err_or(key, &e))
+                .message(format!("record loader `{key}` failed: {e}"))
+                .param("loader", serde_json::Value::String(key.to_owned()))
+                .source(e)
+                .build()
+        })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use serde_json::json;
+
+    use super::*;
+
+    #[tokio::test]
+    async fn load_options_unregistered_returns_not_registered() {
+        let registry = LoaderRegistry::new();
+        let ctx = LoaderContext::new("field", FieldValues::new());
+        let err = registry.load_options("missing", ctx).await.unwrap_err();
+        assert_eq!(err.code, "loader.not_registered");
+        assert!(
+            err.params
+                .iter()
+                .any(|(k, v)| k == "loader" && v == "missing")
+        );
+        // Error path should reflect the requesting field key.
+        assert_eq!(err.path.to_string(), "field");
+    }
+
+    #[tokio::test]
+    async fn load_records_unregistered_returns_not_registered() {
+        let registry = LoaderRegistry::new();
+        let ctx = LoaderContext::new("field", FieldValues::new());
+        let err = registry.load_records("missing", ctx).await.unwrap_err();
+        assert_eq!(err.code, "loader.not_registered");
+        // Error path should reflect the requesting field key.
+        assert_eq!(err.path.to_string(), "field");
+    }
+
+    #[tokio::test]
+    async fn load_options_registered_returns_result() {
+        let registry = LoaderRegistry::new().register_option("opts", |_ctx| async {
+            Ok(LoaderResult::done(vec![SelectOption::new(
+                json!("a"),
+                "Option A",
+            )]))
+        });
+        let ctx = LoaderContext::new("field", FieldValues::new());
+        let result = registry.load_options("opts", ctx).await.unwrap();
+        assert_eq!(result.items.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn loader_failure_wraps_as_loader_failed() {
+        let registry = LoaderRegistry::new().register_option("fail", |_ctx| async {
+            Err(ValidationError::builder("loader.failed")
+                .message("downstream error")
+                .build())
+        });
+        let ctx = LoaderContext::new("field", FieldValues::new());
+        let err = registry.load_options("fail", ctx).await.unwrap_err();
+        assert_eq!(err.code, "loader.failed");
+    }
+
+    #[test]
+    fn loader_context_builder() {
+        let ctx = LoaderContext::new("my_field", FieldValues::new())
+            .with_filter("query")
+            .with_cursor("tok")
+            .with_metadata(json!({"page": 1}));
+        assert_eq!(ctx.field_key, "my_field");
+        assert_eq!(ctx.filter.as_deref(), Some("query"));
+        assert_eq!(ctx.cursor.as_deref(), Some("tok"));
+        assert!(ctx.metadata.is_some());
+    }
+
+    #[test]
+    fn loader_result_constructors() {
+        let r: LoaderResult<i32> = LoaderResult::done(vec![1, 2]);
+        assert!(r.next_cursor.is_none());
+
+        let p: LoaderResult<i32> = LoaderResult::page(vec![1], "next");
+        assert_eq!(p.next_cursor.as_deref(), Some("next"));
+
+        let t = p.with_total(100);
+        assert_eq!(t.total, Some(100));
     }
 }

@@ -30,7 +30,15 @@ jobs:
         uses: actions/checkout@v6
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
-      - name: Run cargo-semver-checks
-        uses: obi1kenobi/cargo-semver-checks-action@v2
-        with:
-          rust-toolchain: stable
+      - name: Run cargo-semver-checks (advisory, skip if unpublished)
+        run: |
+          set +e
+          cargo install cargo-semver-checks --locked 2>&1 || true
+          cargo semver-checks check-release --workspace 2>&1 | tee semver-output.log
+          exit_code=${PIPESTATUS[0]}
+          # Graceful skip: if crates aren't published yet, this is expected in alpha.
+          if grep -qE "not found in registry|no such crate" semver-output.log 2>/dev/null; then
+            echo "::warning::Some crates not yet published — semver check skipped (alpha)"
+            exit 0
+          fi
+          exit $exit_code

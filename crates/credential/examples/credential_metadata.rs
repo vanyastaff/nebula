@@ -4,18 +4,19 @@
 //! that can be used for type registry and documentation.
 
 use nebula_credential::CredentialMetadata;
-use nebula_parameter::{Parameter, ParameterCollection};
+use nebula_schema::{Field, Schema};
 
 fn main() {
     // Example 1: GitHub OAuth2 credential type
-    let github_properties = ParameterCollection::new()
-        .add(Parameter::string("client_id").label("Client ID").required())
+    let github_properties = Schema::builder()
+        .add(Field::string("client_id").label("Client ID").required())
         .add(
-            Parameter::string("client_secret")
+            Field::secret("client_secret")
                 .label("Client Secret")
-                .required()
-                .secret(),
-        );
+                .required(),
+        )
+        .build()
+        .expect("github schema is always valid");
 
     let github_oauth2 = CredentialMetadata::builder()
         .key("github_oauth2")
@@ -34,19 +35,19 @@ fn main() {
     println!("  Description: {}", github_oauth2.description);
     println!("  Icon: {:?}", github_oauth2.icon);
     println!("  Documentation: {:?}", github_oauth2.documentation_url);
-    println!("  Properties: {} fields", github_oauth2.properties.len());
+    println!(
+        "  Properties: {} fields",
+        github_oauth2.properties.fields().len()
+    );
     println!();
 
     // Example 2: PostgreSQL database credential type
-    let postgres_properties = ParameterCollection::new()
-        .add(Parameter::string("host").label("Host").required())
-        .add(Parameter::string("username").label("Username").required())
-        .add(
-            Parameter::string("password")
-                .label("Password")
-                .required()
-                .secret(),
-        );
+    let postgres_properties = Schema::builder()
+        .add(Field::string("host").label("Host").required())
+        .add(Field::string("username").label("Username").required())
+        .add(Field::secret("password").label("Password").required())
+        .build()
+        .expect("postgres schema is always valid");
 
     let postgres_db = CredentialMetadata::builder()
         .key("postgres_db")
@@ -72,12 +73,10 @@ fn main() {
         icon: Some("key".to_string()),
         icon_url: None,
         documentation_url: None,
-        properties: ParameterCollection::new().add(
-            Parameter::string("api_key")
-                .label("API Key")
-                .required()
-                .secret(),
-        ),
+        properties: Schema::builder()
+            .add(Field::secret("api_key").label("API Key").required())
+            .build()
+            .expect("api_key schema is always valid"),
         pattern: nebula_core::AuthPattern::SecretToken,
     };
 

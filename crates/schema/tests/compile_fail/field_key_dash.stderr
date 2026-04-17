@@ -1,0 +1,5 @@
+error: invalid FieldKey literal: key must be ASCII alphanumeric or underscore
+ --> tests/compile_fail/field_key_dash.rs:4:24
+  |
+4 |     let _ = field_key!("has-dash");
+  |                        ^^^^^^^^^^

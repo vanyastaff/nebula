@@ -5,7 +5,7 @@
 //! ```
 
 pub use nebula_credential::CredentialGuard;
-pub use nebula_parameter::{Parameter, ParameterCollection};
+pub use nebula_schema::{Field, Schema, ValidSchema, field_key};
 
 pub use crate::{
     action::Action,
