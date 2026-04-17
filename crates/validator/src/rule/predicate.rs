@@ -95,9 +95,7 @@ impl Predicate {
                     }
             }),
             Self::Contains(f, v) => ctx.get(f).is_some_and(|x| match x {
-                serde_json::Value::String(s) => {
-                    v.as_str().is_some_and(|needle| s.contains(needle))
-                },
+                serde_json::Value::String(s) => v.as_str().is_some_and(|needle| s.contains(needle)),
                 serde_json::Value::Array(items) => items.contains(v),
                 _ => false,
             }),

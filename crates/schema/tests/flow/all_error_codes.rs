@@ -414,16 +414,11 @@ fn emits_self_dependency() {
 #[test]
 fn emits_visibility_cycle() {
     // A's visibility references B, B's visibility references A → cycle.
-    use nebula_validator::Rule;
+    use nebula_validator::{Predicate, Rule, foundation::FieldPath};
 
-    // Rule::IsTrue { field: "b" } causes field "a" to reference "b".
-    // Rule::IsTrue { field: "a" } causes field "b" to reference "a".
-    let rule_a_references_b = Rule::IsTrue {
-        field: "b".to_owned(),
-    };
-    let rule_b_references_a = Rule::IsTrue {
-        field: "a".to_owned(),
-    };
+    // IsTrue predicate on field `b` causes field `a` to reference `b`.
+    let rule_a_references_b = Rule::predicate(Predicate::IsTrue(FieldPath::parse("b").unwrap()));
+    let rule_b_references_a = Rule::predicate(Predicate::IsTrue(FieldPath::parse("a").unwrap()));
 
     let schema = Schema::new()
         .add(Field::string(fk("a")).visible_when(rule_a_references_b))
@@ -440,11 +435,11 @@ fn emits_visibility_cycle() {
 #[test]
 fn emits_dangling_reference() {
     // A rule referencing an unknown field key → dangling_reference.
-    use nebula_validator::Rule;
+    use nebula_validator::{Predicate, Rule, foundation::FieldPath};
 
-    let rule_unknown = Rule::IsTrue {
-        field: "nonexistent_field".to_owned(),
-    };
+    let rule_unknown = Rule::predicate(Predicate::IsTrue(
+        FieldPath::parse("nonexistent_field").unwrap(),
+    ));
     let report = Schema::builder()
         .add(Field::string(field_key!("x")).visible_when(rule_unknown))
         .build()
@@ -554,10 +549,7 @@ fn emits_notice_missing_description() {
 fn emits_rule_incompatible_warning() {
     use nebula_validator::Rule;
 
-    let schema = Schema::new().add(Field::number(fk("n")).with_rule(Rule::Pattern {
-        pattern: "^[0-9]+$".to_owned(),
-        message: None,
-    }));
+    let schema = Schema::new().add(Field::number(fk("n")).with_rule(Rule::pattern("^[0-9]+$")));
     let lint = schema.lint();
     assert!(
         lint.warnings().any(|d| d.code == "rule.incompatible"),

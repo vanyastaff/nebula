@@ -59,17 +59,19 @@ impl ValueRule {
         match self {
             Self::MinLength(n) => {
                 if let Some(s) = value.as_str() {
-                    min_length(*n)
-                        .validate(s)
-                        .map_err(|e| e.with_param("min", n.to_string()).with_param("value", format!("{value}")))?;
+                    min_length(*n).validate(s).map_err(|e| {
+                        e.with_param("min", n.to_string())
+                            .with_param("value", format!("{value}"))
+                    })?;
                 }
                 Ok(())
             },
             Self::MaxLength(n) => {
                 if let Some(s) = value.as_str() {
-                    max_length(*n)
-                        .validate(s)
-                        .map_err(|e| e.with_param("max", n.to_string()).with_param("value", format!("{value}")))?;
+                    max_length(*n).validate(s).map_err(|e| {
+                        e.with_param("max", n.to_string())
+                            .with_param("value", format!("{value}"))
+                    })?;
                 }
                 Ok(())
             },
@@ -88,12 +90,9 @@ impl ValueRule {
                 if let Some(ord) = json_number_cmp(value, bound)
                     && ord.is_lt()
                 {
-                    return Err(ValidationError::new(
-                        "min",
-                        "Value must be at least {min}",
-                    )
-                    .with_param("min", format_json_number(bound))
-                    .with_param("value", format!("{value}")));
+                    return Err(ValidationError::new("min", "Value must be at least {min}")
+                        .with_param("min", format_json_number(bound))
+                        .with_param("value", format!("{value}")));
                 }
                 Ok(())
             },
@@ -101,12 +100,9 @@ impl ValueRule {
                 if let Some(ord) = json_number_cmp(value, bound)
                     && ord.is_gt()
                 {
-                    return Err(ValidationError::new(
-                        "max",
-                        "Value must be at most {max}",
-                    )
-                    .with_param("max", format_json_number(bound))
-                    .with_param("value", format!("{value}")));
+                    return Err(ValidationError::new("max", "Value must be at most {max}")
+                        .with_param("max", format_json_number(bound))
+                        .with_param("value", format!("{value}")));
                 }
                 Ok(())
             },
@@ -127,12 +123,11 @@ impl ValueRule {
                 if let Some(ord) = json_number_cmp(value, bound)
                     && !ord.is_lt()
                 {
-                    return Err(ValidationError::new(
-                        "less_than",
-                        "Value must be less than {max}",
-                    )
-                    .with_param("max", format_json_number(bound))
-                    .with_param("value", format!("{value}")));
+                    return Err(
+                        ValidationError::new("less_than", "Value must be less than {max}")
+                            .with_param("max", format_json_number(bound))
+                            .with_param("value", format!("{value}")),
+                    );
                 }
                 Ok(())
             },
@@ -152,12 +147,11 @@ impl ValueRule {
                         .map(|v| format!("{v}"))
                         .collect::<Vec<_>>()
                         .join(", ");
-                    return Err(ValidationError::new(
-                        "one_of",
-                        "Value must be one of {allowed}",
-                    )
-                    .with_param("allowed", allowed)
-                    .with_param("value", format!("{value}")));
+                    return Err(
+                        ValidationError::new("one_of", "Value must be one of {allowed}")
+                            .with_param("allowed", allowed)
+                            .with_param("value", format!("{value}")),
+                    );
                 }
                 Ok(())
             },
@@ -165,7 +159,10 @@ impl ValueRule {
                 if let Some(items) = value.as_array() {
                     min_size::<serde_json::Value>(*n)
                         .validate(items.as_slice())
-                        .map_err(|e| e.with_param("min", n.to_string()).with_param("value", format!("{value}")))?;
+                        .map_err(|e| {
+                            e.with_param("min", n.to_string())
+                                .with_param("value", format!("{value}"))
+                        })?;
                 }
                 Ok(())
             },
@@ -173,14 +170,19 @@ impl ValueRule {
                 if let Some(items) = value.as_array() {
                     max_size::<serde_json::Value>(*n)
                         .validate(items.as_slice())
-                        .map_err(|e| e.with_param("max", n.to_string()).with_param("value", format!("{value}")))?;
+                        .map_err(|e| {
+                            e.with_param("max", n.to_string())
+                                .with_param("value", format!("{value}"))
+                        })?;
                 }
                 Ok(())
             },
             Self::Email => {
                 if let Some(s) = value.as_str() {
                     static EMAIL_RE: std::sync::LazyLock<regex::Regex> =
-                        std::sync::LazyLock::new(|| regex::Regex::new(EMAIL_PATTERN).expect("email regex"));
+                        std::sync::LazyLock::new(|| {
+                            regex::Regex::new(EMAIL_PATTERN).expect("email regex")
+                        });
                     if !EMAIL_RE.is_match(s) {
                         return Err(ValidationError::invalid_format("", "email")
                             .with_param("value", format!("{value}")));
@@ -191,7 +193,9 @@ impl ValueRule {
             Self::Url => {
                 if let Some(s) = value.as_str() {
                     static URL_RE: std::sync::LazyLock<regex::Regex> =
-                        std::sync::LazyLock::new(|| regex::Regex::new(URL_PATTERN).expect("url regex"));
+                        std::sync::LazyLock::new(|| {
+                            regex::Regex::new(URL_PATTERN).expect("url regex")
+                        });
                     if !URL_RE.is_match(s) {
                         return Err(ValidationError::invalid_format("", "url")
                             .with_param("value", format!("{value}")));
@@ -211,8 +215,16 @@ mod tests {
 
     #[test]
     fn min_length_ok_and_err() {
-        assert!(ValueRule::MinLength(3).validate_value(&json!("alice")).is_ok());
-        assert!(ValueRule::MinLength(3).validate_value(&json!("ab")).is_err());
+        assert!(
+            ValueRule::MinLength(3)
+                .validate_value(&json!("alice"))
+                .is_ok()
+        );
+        assert!(
+            ValueRule::MinLength(3)
+                .validate_value(&json!("ab"))
+                .is_err()
+        );
     }
 
     #[test]
@@ -248,7 +260,9 @@ mod tests {
 
     #[test]
     fn error_injects_params_for_template_rendering() {
-        let err = ValueRule::MinLength(3).validate_value(&json!("hi")).unwrap_err();
+        let err = ValueRule::MinLength(3)
+            .validate_value(&json!("hi"))
+            .unwrap_err();
         assert_eq!(err.param("min"), Some("3"));
     }
 }

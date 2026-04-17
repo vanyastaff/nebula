@@ -3,11 +3,7 @@
 use serde::{Deserialize, Serialize};
 
 use super::Rule;
-use crate::{
-    engine::ExecutionMode,
-    foundation::ValidationError,
-    rule::context::PredicateContext,
-};
+use crate::{engine::ExecutionMode, foundation::ValidationError, rule::context::PredicateContext};
 
 /// Logical combinator. Children are `Rule`, so combinators can mix kinds
 /// (e.g. an `All` containing both `ValueRule::Email` and a `Predicate`).
@@ -47,8 +43,10 @@ impl Logic {
                     Err(errs.into_iter().next().unwrap())
                 } else {
                     let n = errs.len();
-                    Err(ValidationError::new("all_failed", format!("{n} of the rules failed"))
-                        .with_nested(errs))
+                    Err(
+                        ValidationError::new("all_failed", format!("{n} of the rules failed"))
+                            .with_nested(errs),
+                    )
                 }
             },
             Self::Any(rules) => {
@@ -63,8 +61,10 @@ impl Logic {
                     }
                 }
                 let n = errs.len();
-                Err(ValidationError::new("any_failed", format!("All {n} alternatives failed"))
-                    .with_nested(errs))
+                Err(
+                    ValidationError::new("any_failed", format!("All {n} alternatives failed"))
+                        .with_nested(errs),
+                )
             },
             Self::Not(inner) => match inner.validate(input, ctx, mode) {
                 Ok(()) => Err(ValidationError::new("not_failed", "negated rule passed")),

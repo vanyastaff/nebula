@@ -15,22 +15,11 @@ fn programmatic_composition_matches_rule_equivalent() {
     // Two validators that should behave the same: one programmatic, one declarative.
     let programmatic = min_length(3).and(max_length(32)).and(alphanumeric());
 
-    let declarative = Rule::All {
-        rules: vec![
-            Rule::MinLength {
-                min: 3,
-                message: None,
-            },
-            Rule::MaxLength {
-                max: 32,
-                message: None,
-            },
-            Rule::Pattern {
-                pattern: r"^[A-Za-z0-9]+$".into(),
-                message: None,
-            },
-        ],
-    };
+    let declarative = Rule::all([
+        Rule::min_length(3),
+        Rule::max_length(32),
+        Rule::pattern(r"^[A-Za-z0-9]+$"),
+    ]);
 
     for input in [
         "alice42",
@@ -40,9 +29,11 @@ fn programmatic_composition_matches_rule_equivalent() {
         "this-is-way-too-long-for-32-chars-at-last-count",
     ] {
         let prog_ok = programmatic.validate(input).is_ok();
-        let decl_ok = declarative
-            .validate_value(&serde_json::json!(input))
-            .is_ok();
+        let decl_ok = <Rule as Validate<serde_json::Value>>::validate(
+            &declarative,
+            &serde_json::json!(input),
+        )
+        .is_ok();
         assert_eq!(
             prog_ok, decl_ok,
             "surfaces disagree on `{input:?}`: prog={prog_ok}, decl={decl_ok}"

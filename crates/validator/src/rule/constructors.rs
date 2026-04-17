@@ -1,252 +1,199 @@
-//! Constructor methods for [`Rule`]: shorthand builders for common rule
-//! variants plus composition helpers (`all`, `any`, `not`, `with_message`).
+//! Ergonomic constructors for [`Rule`] and inner sub-enums.
 
-use super::Rule;
+use super::{DeferredRule, Logic, Predicate, Rule, ValueRule};
+use crate::foundation::FieldPath;
 
+// ── ValueRule ────────────────────────────────────────────────────────────
+impl ValueRule {
+    /// Creates a [`ValueRule::MinLength`].
+    #[must_use]
+    pub fn min_length(n: usize) -> Self {
+        Self::MinLength(n)
+    }
+    /// Creates a [`ValueRule::MaxLength`].
+    #[must_use]
+    pub fn max_length(n: usize) -> Self {
+        Self::MaxLength(n)
+    }
+    /// Creates a [`ValueRule::Pattern`].
+    #[must_use]
+    pub fn pattern(p: impl Into<String>) -> Self {
+        Self::Pattern(p.into())
+    }
+}
+
+// ── Predicate ────────────────────────────────────────────────────────────
+impl Predicate {
+    /// Creates a [`Predicate::Eq`]. Returns `None` if the path is invalid.
+    #[must_use]
+    pub fn eq(field: impl AsRef<str>, value: impl Into<serde_json::Value>) -> Option<Self> {
+        Some(Self::Eq(FieldPath::parse(field)?, value.into()))
+    }
+}
+
+// ── Rule: shorthand wrappers ─────────────────────────────────────────────
 impl Rule {
-    // ── Shorthand constructors ──────────────────────────────────────────
-
-    /// Creates a [`Pattern`](Self::Pattern) rule.
-    ///
-    /// The regex is **not** validated at construction time. If the pattern is
-    /// invalid, [`validate_value`](Self::validate_value) will return an error
-    /// with code `"invalid_pattern"`. Use [`try_pattern`](Self::try_pattern)
-    /// when the pattern comes from user input.
+    /// Wraps a [`ValueRule`] into [`Rule::Value`].
     #[must_use]
-    pub fn pattern(pattern: impl Into<String>) -> Self {
-        Self::Pattern {
-            pattern: pattern.into(),
-            message: None,
-        }
+    pub fn value(v: ValueRule) -> Self {
+        Self::Value(v)
     }
 
-    /// Creates a [`Pattern`](Self::Pattern) rule, validating the regex upfront.
-    ///
-    /// Returns `None` if the pattern is not a valid regular expression.
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// use nebula_validator::Rule;
-    ///
-    /// assert!(Rule::try_pattern(r"^\d+$").is_some());
-    /// assert!(Rule::try_pattern(r"[invalid").is_none());
-    /// ```
+    /// Wraps a [`Predicate`] into [`Rule::Predicate`].
     #[must_use]
-    pub fn try_pattern(pattern: impl Into<String>) -> Option<Self> {
-        let pattern = pattern.into();
-        regex::Regex::new(&pattern).ok()?;
-        Some(Self::Pattern {
-            pattern,
-            message: None,
-        })
+    pub fn predicate(p: Predicate) -> Self {
+        Self::Predicate(p)
     }
 
-    /// Creates a [`MinLength`](Self::MinLength) rule.
+    /// Creates a [`Rule::Value`] carrying a [`ValueRule::MinLength`].
     #[must_use]
-    pub fn min_length(min: usize) -> Self {
-        Self::MinLength { min, message: None }
+    pub fn min_length(n: usize) -> Self {
+        Self::Value(ValueRule::MinLength(n))
     }
 
-    /// Creates a [`MaxLength`](Self::MaxLength) rule.
+    /// Creates a [`Rule::Value`] carrying a [`ValueRule::MaxLength`].
     #[must_use]
-    pub fn max_length(max: usize) -> Self {
-        Self::MaxLength { max, message: None }
+    pub fn max_length(n: usize) -> Self {
+        Self::Value(ValueRule::MaxLength(n))
     }
 
-    /// Creates a [`Min`](Self::Min) rule from an `i64`.
+    /// Creates a [`Rule::Value`] carrying a [`ValueRule::Pattern`]. Regex is not
+    /// validated at construction.
     #[must_use]
-    pub fn min_value(min: i64) -> Self {
-        Self::Min {
-            min: serde_json::Number::from(min),
-            message: None,
-        }
+    pub fn pattern(p: impl Into<String>) -> Self {
+        Self::Value(ValueRule::Pattern(p.into()))
     }
 
-    /// Creates a [`Max`](Self::Max) rule from an `i64`.
+    /// Creates a [`Rule::Value`] carrying a [`ValueRule::Pattern`], validating
+    /// the regex. Returns `None` if the pattern is invalid.
     #[must_use]
-    pub fn max_value(max: i64) -> Self {
-        Self::Max {
-            max: serde_json::Number::from(max),
-            message: None,
-        }
+    pub fn try_pattern(p: impl Into<String>) -> Option<Self> {
+        let p = p.into();
+        regex::Regex::new(&p).ok()?;
+        Some(Self::Value(ValueRule::Pattern(p)))
     }
 
-    /// Creates a [`Min`](Self::Min) rule from an `f64`.
-    ///
-    /// Returns `None` if `min` is NaN or infinite.
+    /// Creates a [`Rule::Value`] carrying a [`ValueRule::Min`] from an `i64`.
     #[must_use]
-    pub fn min_value_f64(min: f64) -> Option<Self> {
-        Some(Self::Min {
-            min: serde_json::Number::from_f64(min)?,
-            message: None,
-        })
+    pub fn min_value(n: i64) -> Self {
+        Self::Value(ValueRule::Min(serde_json::Number::from(n)))
     }
 
-    /// Creates a [`Max`](Self::Max) rule from an `f64`.
-    ///
-    /// Returns `None` if `max` is NaN or infinite.
+    /// Creates a [`Rule::Value`] carrying a [`ValueRule::Max`] from an `i64`.
     #[must_use]
-    pub fn max_value_f64(max: f64) -> Option<Self> {
-        Some(Self::Max {
-            max: serde_json::Number::from_f64(max)?,
-            message: None,
-        })
+    pub fn max_value(n: i64) -> Self {
+        Self::Value(ValueRule::Max(serde_json::Number::from(n)))
     }
 
-    /// Creates a [`GreaterThan`](Self::GreaterThan) rule from an `i64`.
+    /// Creates a [`Rule::Value`] carrying a [`ValueRule::Min`] from an `f64`.
+    /// Returns `None` if the value is NaN or infinite.
     #[must_use]
-    pub fn greater_than(min: i64) -> Self {
-        Self::GreaterThan {
-            min: serde_json::Number::from(min),
-            message: None,
-        }
+    pub fn min_value_f64(n: f64) -> Option<Self> {
+        Some(Self::Value(ValueRule::Min(serde_json::Number::from_f64(
+            n,
+        )?)))
     }
 
-    /// Creates a [`LessThan`](Self::LessThan) rule from an `i64`.
+    /// Creates a [`Rule::Value`] carrying a [`ValueRule::Max`] from an `f64`.
+    /// Returns `None` if the value is NaN or infinite.
     #[must_use]
-    pub fn less_than(max: i64) -> Self {
-        Self::LessThan {
-            max: serde_json::Number::from(max),
-            message: None,
-        }
+    pub fn max_value_f64(n: f64) -> Option<Self> {
+        Some(Self::Value(ValueRule::Max(serde_json::Number::from_f64(
+            n,
+        )?)))
     }
 
-    /// Creates a [`GreaterThan`](Self::GreaterThan) rule from an `f64`.
-    ///
-    /// Returns `None` if `min` is NaN or infinite.
+    /// Creates a [`Rule::Value`] carrying a [`ValueRule::GreaterThan`] from an `i64`.
     #[must_use]
-    pub fn greater_than_f64(min: f64) -> Option<Self> {
-        Some(Self::GreaterThan {
-            min: serde_json::Number::from_f64(min)?,
-            message: None,
-        })
+    pub fn greater_than(n: i64) -> Self {
+        Self::Value(ValueRule::GreaterThan(serde_json::Number::from(n)))
     }
 
-    /// Creates a [`LessThan`](Self::LessThan) rule from an `f64`.
-    ///
-    /// Returns `None` if `max` is NaN or infinite.
+    /// Creates a [`Rule::Value`] carrying a [`ValueRule::LessThan`] from an `i64`.
     #[must_use]
-    pub fn less_than_f64(max: f64) -> Option<Self> {
-        Some(Self::LessThan {
-            max: serde_json::Number::from_f64(max)?,
-            message: None,
-        })
+    pub fn less_than(n: i64) -> Self {
+        Self::Value(ValueRule::LessThan(serde_json::Number::from(n)))
     }
 
-    /// Creates a [`OneOf`](Self::OneOf) rule.
+    /// Creates a [`Rule::Value`] carrying a [`ValueRule::OneOf`].
     #[must_use]
     pub fn one_of<V: Into<serde_json::Value>>(values: impl IntoIterator<Item = V>) -> Self {
-        Self::OneOf {
-            values: values.into_iter().map(Into::into).collect(),
-            message: None,
-        }
+        Self::Value(ValueRule::OneOf(
+            values.into_iter().map(Into::into).collect(),
+        ))
     }
 
-    /// Creates a [`MinItems`](Self::MinItems) rule.
+    /// Creates a [`Rule::Value`] carrying a [`ValueRule::MinItems`].
     #[must_use]
-    pub fn min_items(min: usize) -> Self {
-        Self::MinItems { min, message: None }
+    pub fn min_items(n: usize) -> Self {
+        Self::Value(ValueRule::MinItems(n))
     }
 
-    /// Creates a [`MaxItems`](Self::MaxItems) rule.
+    /// Creates a [`Rule::Value`] carrying a [`ValueRule::MaxItems`].
     #[must_use]
-    pub fn max_items(max: usize) -> Self {
-        Self::MaxItems { max, message: None }
+    pub fn max_items(n: usize) -> Self {
+        Self::Value(ValueRule::MaxItems(n))
     }
 
-    /// Creates an [`Email`](Self::Email) rule.
+    /// Creates a [`Rule::Value`] carrying a [`ValueRule::Email`].
     #[must_use]
     pub fn email() -> Self {
-        Self::Email { message: None }
+        Self::Value(ValueRule::Email)
     }
 
-    /// Creates a [`Url`](Self::Url) rule.
+    /// Creates a [`Rule::Value`] carrying a [`ValueRule::Url`].
     #[must_use]
     pub fn url() -> Self {
-        Self::Url { message: None }
+        Self::Value(ValueRule::Url)
     }
 
-    /// Creates a [`UniqueBy`](Self::UniqueBy) rule.
-    #[must_use]
-    pub fn unique_by(key: impl Into<String>) -> Self {
-        Self::UniqueBy {
-            key: key.into(),
-            message: None,
-        }
-    }
-
-    /// Creates a [`Custom`](Self::Custom) rule.
+    /// Creates a [`Rule::Deferred`] carrying a [`DeferredRule::Custom`].
     #[must_use]
     pub fn custom(expression: impl Into<String>) -> Self {
-        Self::Custom {
-            expression: expression.into(),
-            message: None,
-        }
+        Self::Deferred(DeferredRule::Custom(expression.into()))
     }
 
-    /// Attaches a custom error message to this rule.
-    ///
-    /// Applies to value-validation rules and deferred rules. **No-op** for
-    /// context predicates (`Eq`, `Ne`, etc.) and logical combinators (`All`,
-    /// `Any`, `Not`) — these variants do not carry a `message` field.
+    /// Creates a [`Rule::Deferred`] carrying a [`DeferredRule::UniqueBy`].
+    /// Returns `None` if the path is invalid.
     #[must_use]
-    pub fn with_message(self, msg: impl Into<String>) -> Self {
-        let msg = Some(msg.into());
-        match self {
-            Self::Pattern { pattern, .. } => Self::Pattern {
-                pattern,
-                message: msg,
-            },
-            Self::MinLength { min, .. } => Self::MinLength { min, message: msg },
-            Self::MaxLength { max, .. } => Self::MaxLength { max, message: msg },
-            Self::Min { min, .. } => Self::Min { min, message: msg },
-            Self::Max { max, .. } => Self::Max { max, message: msg },
-            Self::GreaterThan { min, .. } => Self::GreaterThan { min, message: msg },
-            Self::LessThan { max, .. } => Self::LessThan { max, message: msg },
-            Self::OneOf { values, .. } => Self::OneOf {
-                values,
-                message: msg,
-            },
-            Self::MinItems { min, .. } => Self::MinItems { min, message: msg },
-            Self::MaxItems { max, .. } => Self::MaxItems { max, message: msg },
-            Self::Email { .. } => Self::Email { message: msg },
-            Self::Url { .. } => Self::Url { message: msg },
-            Self::UniqueBy { key, .. } => Self::UniqueBy { key, message: msg },
-            Self::Custom { expression, .. } => Self::Custom {
-                expression,
-                message: msg,
-            },
-            // Predicate variants don't have messages
-            other => other,
-        }
+    pub fn unique_by(path: impl AsRef<str>) -> Option<Self> {
+        Some(Self::Deferred(DeferredRule::UniqueBy(FieldPath::parse(
+            path,
+        )?)))
     }
 
-    /// Creates an [`All`](Self::All) rule (logical AND).
+    /// Creates a [`Rule::Logic`] carrying a [`Logic::All`].
     #[must_use]
-    pub fn all(rules: impl IntoIterator<Item = Self>) -> Self {
-        Self::All {
-            rules: rules.into_iter().collect(),
-        }
+    pub fn all(rules: impl IntoIterator<Item = Rule>) -> Self {
+        Self::Logic(Box::new(Logic::All(rules.into_iter().collect())))
     }
 
-    /// Creates an [`Any`](Self::Any) rule (logical OR).
+    /// Creates a [`Rule::Logic`] carrying a [`Logic::Any`].
     #[must_use]
-    pub fn any(rules: impl IntoIterator<Item = Self>) -> Self {
-        Self::Any {
-            rules: rules.into_iter().collect(),
-        }
+    pub fn any(rules: impl IntoIterator<Item = Rule>) -> Self {
+        Self::Logic(Box::new(Logic::Any(rules.into_iter().collect())))
     }
 
-    /// Creates a [`Not`](Self::Not) rule (logical negation).
+    /// Creates a [`Rule::Logic`] carrying a [`Logic::Not`].
     #[must_use]
     #[expect(
         clippy::should_implement_trait,
         reason = "this is a rule constructor, not boolean negation"
     )]
-    pub fn not(inner: Self) -> Self {
-        Self::Not {
-            inner: Box::new(inner),
-        }
+    pub fn not(inner: Rule) -> Self {
+        Self::Logic(Box::new(Logic::Not(inner)))
+    }
+
+    /// Wraps the rule with a custom error message.
+    #[must_use]
+    pub fn described(rule: Rule, message: impl Into<String>) -> Self {
+        Self::Described(Box::new(rule), message.into())
+    }
+
+    /// Consumes `self` and wraps it in [`Rule::Described`] with a message.
+    /// Sugar for building rules in method-chain style.
+    #[must_use]
+    pub fn with_message(self, message: impl Into<String>) -> Self {
+        Self::described(self, message)
     }
 }

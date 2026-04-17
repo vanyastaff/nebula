@@ -13,32 +13,14 @@ use super::common::{assert_codes_exactly, assert_has_code, expect_errors};
 /// entry represents one field; the engine validates each independently.
 fn username_rules() -> Vec<Rule> {
     vec![
-        Rule::MinLength {
-            min: 3,
-            message: None,
-        },
-        Rule::MaxLength {
-            max: 32,
-            message: None,
-        },
-        Rule::Pattern {
-            pattern: r"^[a-z0-9_]+$".into(),
-            message: Some("lowercase letters, digits, underscore only".into()),
-        },
+        Rule::min_length(3),
+        Rule::max_length(32),
+        Rule::pattern(r"^[a-z0-9_]+$").with_message("lowercase letters, digits, underscore only"),
     ]
 }
 
 fn age_rules() -> Vec<Rule> {
-    vec![
-        Rule::Min {
-            min: serde_json::Number::from(18),
-            message: None,
-        },
-        Rule::Max {
-            max: serde_json::Number::from(120),
-            message: None,
-        },
-    ]
+    vec![Rule::min_value(18), Rule::max_value(120)]
 }
 
 #[test]
@@ -80,6 +62,8 @@ fn custom_message_overrides_default() {
         ExecutionMode::StaticOnly,
     ));
 
+    // With the Described decorator, the error code is still the inner rule's
+    // code; the message has been overridden to the custom one.
     let pattern_err = errors
         .errors()
         .iter()
@@ -94,18 +78,9 @@ fn custom_message_overrides_default() {
 #[test]
 fn deferred_rules_are_skipped_in_static_mode() {
     let rules = vec![
-        Rule::MinLength {
-            min: 3,
-            message: None,
-        },
-        Rule::Custom {
-            expression: "sibling_match('email')".into(),
-            message: None,
-        },
-        Rule::UniqueBy {
-            key: "id".into(),
-            message: None,
-        },
+        Rule::min_length(3),
+        Rule::custom("sibling_match('email')"),
+        Rule::unique_by("id").unwrap(),
     ];
 
     // Only MinLength runs; Custom and UniqueBy are deferred.
@@ -118,18 +93,7 @@ fn deferred_rules_are_skipped_in_static_mode() {
 
 #[test]
 fn combinator_rules_short_circuit_on_any() {
-    let rules = vec![Rule::Any {
-        rules: vec![
-            Rule::MinLength {
-                min: 10,
-                message: None,
-            },
-            Rule::MaxLength {
-                max: 3,
-                message: None,
-            },
-        ],
-    }];
+    let rules = vec![Rule::any([Rule::min_length(10), Rule::max_length(3)])];
 
     // "hello" is neither >=10 nor <=3 — both alternatives fail.
     let errors = expect_errors(validate_rules(

@@ -19,10 +19,9 @@ fn telegram_send_message_schema() -> nebula_schema::ValidSchema {
             Field::string("text")
                 .min_length(1)
                 .max_length(4096)
-                .active_when(nebula_validator::Rule::Eq {
-                    field: "operation".to_owned(),
-                    value: json!("sendMessage"),
-                }),
+                .active_when(nebula_validator::Rule::predicate(
+                    nebula_validator::Predicate::eq("operation", json!("sendMessage")).unwrap(),
+                )),
         )
         .add(
             Field::secret("api_key")
