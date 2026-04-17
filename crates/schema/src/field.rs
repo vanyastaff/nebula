@@ -51,9 +51,9 @@ macro_rules! define_field {
 
         impl $name {
             /// Create a typed field with defaults.
-            pub fn new(key: impl Into<FieldKey>) -> Self {
+            pub fn new(key: impl AsRef<str>) -> Self {
                 Self {
-                    key: key.into(),
+                    key: FieldKey::new(key).expect("field key must be valid"),
                     label: None,
                     description: None,
                     placeholder: None,
@@ -597,97 +597,97 @@ pub enum Field {
 
 impl Field {
     /// Create `StringField`.
-    pub fn string(key: impl Into<FieldKey>) -> StringField {
+    pub fn string(key: impl AsRef<str>) -> StringField {
         StringField::new(key)
     }
 
     /// Create `SecretField`.
-    pub fn secret(key: impl Into<FieldKey>) -> SecretField {
+    pub fn secret(key: impl AsRef<str>) -> SecretField {
         SecretField::new(key)
     }
 
     /// Create `NumberField`.
-    pub fn number(key: impl Into<FieldKey>) -> NumberField {
+    pub fn number(key: impl AsRef<str>) -> NumberField {
         NumberField::new(key)
     }
 
     /// Create integer `NumberField`.
-    pub fn integer(key: impl Into<FieldKey>) -> NumberField {
+    pub fn integer(key: impl AsRef<str>) -> NumberField {
         NumberField::new(key).integer()
     }
 
     /// Create `BooleanField`.
-    pub fn boolean(key: impl Into<FieldKey>) -> BooleanField {
+    pub fn boolean(key: impl AsRef<str>) -> BooleanField {
         BooleanField::new(key)
     }
 
     /// Create `SelectField`.
-    pub fn select(key: impl Into<FieldKey>) -> SelectField {
+    pub fn select(key: impl AsRef<str>) -> SelectField {
         SelectField::new(key)
     }
 
     /// Create `ObjectField`.
-    pub fn object(key: impl Into<FieldKey>) -> ObjectField {
+    pub fn object(key: impl AsRef<str>) -> ObjectField {
         ObjectField::new(key)
     }
 
     /// Create `ListField`.
-    pub fn list(key: impl Into<FieldKey>) -> ListField {
+    pub fn list(key: impl AsRef<str>) -> ListField {
         ListField::new(key)
     }
 
     /// Create `ModeField`.
-    pub fn mode(key: impl Into<FieldKey>) -> ModeField {
+    pub fn mode(key: impl AsRef<str>) -> ModeField {
         ModeField::new(key)
     }
 
     /// Create `CodeField`.
-    pub fn code(key: impl Into<FieldKey>) -> CodeField {
+    pub fn code(key: impl AsRef<str>) -> CodeField {
         CodeField::new(key)
     }
 
     /// Create `DateField`.
-    pub fn date(key: impl Into<FieldKey>) -> DateField {
+    pub fn date(key: impl AsRef<str>) -> DateField {
         DateField::new(key)
     }
 
     /// Create `DateTimeField`.
-    pub fn datetime(key: impl Into<FieldKey>) -> DateTimeField {
+    pub fn datetime(key: impl AsRef<str>) -> DateTimeField {
         DateTimeField::new(key)
     }
 
     /// Create `TimeField`.
-    pub fn time(key: impl Into<FieldKey>) -> TimeField {
+    pub fn time(key: impl AsRef<str>) -> TimeField {
         TimeField::new(key)
     }
 
     /// Create `ColorField`.
-    pub fn color(key: impl Into<FieldKey>) -> ColorField {
+    pub fn color(key: impl AsRef<str>) -> ColorField {
         ColorField::new(key)
     }
 
     /// Create `FileField`.
-    pub fn file(key: impl Into<FieldKey>) -> FileField {
+    pub fn file(key: impl AsRef<str>) -> FileField {
         FileField::new(key)
     }
 
     /// Create `HiddenField`.
-    pub fn hidden(key: impl Into<FieldKey>) -> HiddenField {
+    pub fn hidden(key: impl AsRef<str>) -> HiddenField {
         HiddenField::new(key)
     }
 
     /// Create `ComputedField`.
-    pub fn computed(key: impl Into<FieldKey>) -> ComputedField {
+    pub fn computed(key: impl AsRef<str>) -> ComputedField {
         ComputedField::new(key)
     }
 
     /// Create `DynamicField`.
-    pub fn dynamic(key: impl Into<FieldKey>) -> DynamicField {
+    pub fn dynamic(key: impl AsRef<str>) -> DynamicField {
         DynamicField::new(key)
     }
 
     /// Create `NoticeField`.
-    pub fn notice(key: impl Into<FieldKey>) -> NoticeField {
+    pub fn notice(key: impl AsRef<str>) -> NoticeField {
         NoticeField::new(key)
     }
 
