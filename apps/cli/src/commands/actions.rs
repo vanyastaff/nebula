@@ -90,7 +90,7 @@ pub fn info(args: ActionsInfoArgs) {
                 println!("Isolation:   {:?}", meta.isolation_level);
                 println!(
                     "Parameters:  {}",
-                    if meta.parameters.is_empty() {
+                    if meta.parameters.fields().is_empty() {
                         "none"
                     } else {
                         "(defined)"

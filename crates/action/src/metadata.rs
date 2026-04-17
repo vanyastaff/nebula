@@ -1,5 +1,5 @@
 use nebula_core::ActionKey;
-use nebula_parameter::collection::ParameterCollection;
+use nebula_schema::ValidSchema;
 use semver::Version;
 use serde::{Deserialize, Serialize};
 
@@ -116,8 +116,8 @@ pub struct ActionMetadata {
     /// Output ports this action produces.
     /// Defaults to a single main flow output `"out"`.
     pub outputs: Vec<OutputPort>,
-    /// Parameter definitions for this action (from nebula-parameter).
-    pub parameters: ParameterCollection,
+    /// Parameter definitions for this action (schema).
+    pub parameters: ValidSchema,
     /// Isolation level for this action's execution.
     pub isolation_level: IsolationLevel,
     /// Broad category of this action for UI grouping, validator rules,
@@ -140,7 +140,9 @@ impl ActionMetadata {
             version: Version::new(1, 0, 0),
             inputs: port::default_input_ports(),
             outputs: port::default_output_ports(),
-            parameters: ParameterCollection::new(),
+            parameters: nebula_schema::Schema::builder()
+                .build()
+                .expect("empty schema is always valid"),
             isolation_level: IsolationLevel::None,
             category: ActionCategory::Data,
         }
@@ -178,7 +180,7 @@ impl ActionMetadata {
 
     /// Set the parameter definitions for this action.
     #[must_use = "builder methods must be chained or built"]
-    pub fn with_parameters(mut self, parameters: ParameterCollection) -> Self {
+    pub fn with_parameters(mut self, parameters: ValidSchema) -> Self {
         self.parameters = parameters;
         self
     }
@@ -348,7 +350,7 @@ mod tests {
         assert!(meta.outputs[0].is_flow());
         assert_eq!(meta.outputs[0].key(), "out");
         // Default parameters
-        assert!(meta.parameters.is_empty());
+        assert!(meta.parameters.fields().is_empty());
     }
 
     // ── Port builder tests ──────────────────────────────────────────

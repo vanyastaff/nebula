@@ -3,6 +3,7 @@
 use std::{future::Future, pin::Pin, sync::Arc};
 
 use indexmap::IndexMap;
+use serde::{Deserialize, Serialize};
 use smallvec::SmallVec;
 
 use crate::{
@@ -49,8 +50,47 @@ pub struct ValidSchemaInner {
 /// Proof-token: schema has been built and linted successfully.
 ///
 /// Cheap to clone — backed by `Arc`.
+///
+/// Serde: serializes as the ordered field list (same wire format as [`Schema`]).
+/// Deserialization rebuilds through [`Schema::builder`] and panics if lint
+/// fails (only valid schemas may be persisted).
 #[derive(Debug, Clone)]
 pub struct ValidSchema(pub(crate) Arc<ValidSchemaInner>);
+
+impl PartialEq for ValidSchema {
+    fn eq(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.0, &other.0) || self.0.fields == other.0.fields
+    }
+}
+
+impl Eq for ValidSchema {}
+
+impl Serialize for ValidSchema {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        // Serialize as `{"fields": [...]}` — same wire format as `Schema`.
+        use serde::ser::SerializeStruct;
+        let mut s = serializer.serialize_struct("ValidSchema", 1)?;
+        s.serialize_field("fields", &self.0.fields)?;
+        s.end()
+    }
+}
+
+impl<'de> Deserialize<'de> for ValidSchema {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        /// Transparent wrapper that mirrors `Schema`'s serde representation.
+        #[derive(Deserialize)]
+        struct ValidSchemaRepr {
+            #[serde(default)]
+            fields: Vec<Field>,
+        }
+        let repr = ValidSchemaRepr::deserialize(deserializer)?;
+        repr.fields
+            .into_iter()
+            .fold(crate::schema::SchemaBuilder::default(), |b, f| b.add(f))
+            .build()
+            .map_err(|report| serde::de::Error::custom(format!("invalid schema: {report:?}")))
+    }
+}
 
 impl ValidSchema {
     pub(crate) fn from_inner(inner: ValidSchemaInner) -> Self {

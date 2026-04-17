@@ -24,9 +24,9 @@ pub use nebula_action::testing::{
 };
 // Action traits and types
 pub use nebula_action::{
-    Action, ActionDependencies, ActionError, ActionResult, Parameter, ParameterCollection,
-    StatelessAction, context::Context as ActionContext, metadata::ActionMetadata, port::InputPort,
-    port::OutputPort,
+    Action, ActionDependencies, ActionError, ActionResult, Field, Schema, StatelessAction,
+    ValidSchema, context::Context as ActionContext, field_key, metadata::ActionMetadata,
+    port::InputPort, port::OutputPort,
 };
 pub use nebula_action::{
     PollTriggerAdapter, StatefulActionAdapter, StatelessActionAdapter, TriggerContext,

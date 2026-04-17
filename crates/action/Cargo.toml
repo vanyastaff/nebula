@@ -16,7 +16,7 @@ nebula-action-macros = { path = "macros" }
 nebula-core = { path = "../core" }
 nebula-credential = { path = "../credential" }
 nebula-error = { workspace = true }
-nebula-parameter = { path = "../parameter" }
+nebula-schema = { path = "../schema" }
 nebula-resource = { path = "../resource" }
 semver = { workspace = true }
 anyhow = { workspace = true }
