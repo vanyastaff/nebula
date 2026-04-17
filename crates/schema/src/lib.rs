@@ -9,6 +9,8 @@
 #![forbid(unsafe_code)]
 #![warn(missing_docs)]
 
+/// [`nebula_validator::RuleContext`] adapters backed by [`FieldValues`].
+pub(crate) mod context;
 /// Error types for schema operations.
 pub mod error;
 /// Expression value wrapper (Task 14 adds lazy parse + OnceLock).
@@ -65,7 +67,7 @@ pub use path::FieldPath;
 pub use report::ValidationIssue;
 pub use schema::{Schema, SchemaBuilder};
 pub use transformer::Transformer;
-pub use validated::{FieldHandle, SchemaFlags, ValidSchema};
+pub use validated::{FieldHandle, ResolvedValues, SchemaFlags, ValidSchema, ValidValues};
 pub use value::{EXPRESSION_KEY, FieldValue, FieldValues};
 pub use widget::{
     BooleanWidget, CodeWidget, ListWidget, NumberWidget, ObjectWidget, SecretWidget, SelectWidget,
