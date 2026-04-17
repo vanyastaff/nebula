@@ -37,6 +37,18 @@ trybuild = "1"
 proptest = { workspace = true }
 futures = { workspace = true }
 
+[[test]]
+name = "flow_all_error_codes"
+path = "tests/flow/all_error_codes.rs"
+
+[[test]]
+name = "proptest_path_roundtrip"
+path = "tests/proptest/path_roundtrip.rs"
+
+[[test]]
+name = "proptest_serde_preserves"
+path = "tests/proptest/serde_preserves.rs"
+
 [[bench]]
 name = "bench_build"
 harness = false
