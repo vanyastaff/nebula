@@ -172,7 +172,7 @@ impl FieldValues {
     pub fn from_json(value: Value) -> Result<Self, crate::error::ValidationError> {
         match FieldValue::from_json(value) {
             FieldValue::Object(map) => Ok(Self(map)),
-            _ => Err(crate::error::ValidationError::new("type_mismatch")
+            _ => Err(crate::error::ValidationError::builder("type_mismatch")
                 .message("top-level values must be a JSON object")
                 .build()),
         }

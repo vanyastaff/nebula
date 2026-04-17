@@ -77,7 +77,7 @@ impl Expression {
         &self,
         msg: impl Into<std::borrow::Cow<'static, str>>,
     ) -> ValidationError {
-        ValidationError::new("expression.parse")
+        ValidationError::builder("expression.parse")
             .at(FieldPath::root())
             .message(msg)
             .param("source", self.source.to_string())

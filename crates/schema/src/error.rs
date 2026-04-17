@@ -44,15 +44,14 @@ impl ValidationError {
     /// ```rust
     /// use nebula_schema::{FieldPath, ValidationError};
     ///
-    /// let err = ValidationError::new("required")
+    /// let err = ValidationError::builder("required")
     ///     .at(FieldPath::parse("user.email").unwrap())
     ///     .message("field is required")
     ///     .build();
     ///
     /// assert_eq!(err.code, "required");
     /// ```
-    #[allow(clippy::new_ret_no_self)]
-    pub fn new(code: impl Into<Cow<'static, str>>) -> ValidationErrorBuilder {
+    pub fn builder(code: impl Into<Cow<'static, str>>) -> ValidationErrorBuilder {
         ValidationErrorBuilder {
             code: code.into(),
             path: FieldPath::root(),
@@ -276,7 +275,7 @@ mod tests {
     #[test]
     fn builder_produces_full_error() {
         let path = FieldPath::parse("user.email").unwrap();
-        let err = ValidationError::new("length.max")
+        let err = ValidationError::builder("length.max")
             .at(path.clone())
             .message("value too long")
             .param("max", json!(20))
@@ -292,13 +291,13 @@ mod tests {
 
     #[test]
     fn warn_lowers_severity() {
-        let err = ValidationError::new("notice.misuse").warn().build();
+        let err = ValidationError::builder("notice.misuse").warn().build();
         assert_eq!(err.severity, Severity::Warning);
     }
 
     #[test]
     fn display_format_is_stable() {
-        let err = ValidationError::new("required")
+        let err = ValidationError::builder("required")
             .at(FieldPath::parse("x").unwrap())
             .message("missing")
             .build();
@@ -307,15 +306,17 @@ mod tests {
 
     #[test]
     fn display_omits_at_for_root_path() {
-        let err = ValidationError::new("required").message("missing").build();
+        let err = ValidationError::builder("required")
+            .message("missing")
+            .build();
         assert_eq!(format!("{err}"), "[required]: missing");
     }
 
     #[test]
     fn report_splits_errors_and_warnings() {
         let mut report = ValidationReport::new();
-        report.push(ValidationError::new("required").build());
-        report.push(ValidationError::new("notice.misuse").warn().build());
+        report.push(ValidationError::builder("required").build());
+        report.push(ValidationError::builder("notice.misuse").warn().build());
         assert!(report.has_errors());
         assert!(report.has_warnings());
         assert_eq!(report.errors().count(), 1);

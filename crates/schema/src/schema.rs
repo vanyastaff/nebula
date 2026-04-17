@@ -112,12 +112,12 @@ impl Schema {
         context: LoaderContext,
     ) -> Result<LoaderResult<SelectOption>, ValidationError> {
         let field = self.find(key).ok_or_else(|| {
-            ValidationError::new("loader.not_registered")
+            ValidationError::builder("loader.not_registered")
                 .message(format!("field `{key}` not found in schema"))
                 .build()
         })?;
         let Field::Select(select) = field else {
-            return Err(ValidationError::new("loader.not_registered")
+            return Err(ValidationError::builder("loader.not_registered")
                 .message(format!(
                     "field `{key}` is not a select field (got {})",
                     field.type_name()
@@ -125,7 +125,7 @@ impl Schema {
                 .build());
         };
         let Some(loader_key) = select.loader.as_deref() else {
-            return Err(ValidationError::new("loader.not_registered")
+            return Err(ValidationError::builder("loader.not_registered")
                 .message(format!("field `{key}` has no loader configured"))
                 .build());
         };
@@ -140,12 +140,12 @@ impl Schema {
         context: LoaderContext,
     ) -> Result<LoaderResult<Value>, ValidationError> {
         let field = self.find(key).ok_or_else(|| {
-            ValidationError::new("loader.not_registered")
+            ValidationError::builder("loader.not_registered")
                 .message(format!("field `{key}` not found in schema"))
                 .build()
         })?;
         let Field::Dynamic(dynamic) = field else {
-            return Err(ValidationError::new("loader.not_registered")
+            return Err(ValidationError::builder("loader.not_registered")
                 .message(format!(
                     "field `{key}` is not a dynamic field (got {})",
                     field.type_name()
@@ -153,7 +153,7 @@ impl Schema {
                 .build());
         };
         let Some(loader_key) = dynamic.loader.as_deref() else {
-            return Err(ValidationError::new("loader.not_registered")
+            return Err(ValidationError::builder("loader.not_registered")
                 .message(format!("field `{key}` has no loader configured"))
                 .build());
         };

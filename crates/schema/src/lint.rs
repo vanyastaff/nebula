@@ -34,7 +34,7 @@ fn lint_fields_new(
         if !seen.insert(key) {
             let path = prefix.clone().join(field.key().clone());
             report.push(
-                ValidationError::new("duplicate_key")
+                ValidationError::builder("duplicate_key")
                     .at(path)
                     .message(format!("duplicate field key `{key}`"))
                     .build(),
@@ -87,7 +87,7 @@ fn lint_fields_new(
                 );
                 if select.dynamic && select.loader.is_none() {
                     report.push(
-                        ValidationError::new("missing_loader")
+                        ValidationError::builder("missing_loader")
                             .at(path.clone())
                             .message("dynamic select has no loader key configured")
                             .warn()
@@ -96,7 +96,7 @@ fn lint_fields_new(
                 }
                 if !select.dynamic && select.loader.is_some() {
                     report.push(
-                        ValidationError::new("loader_without_dynamic")
+                        ValidationError::builder("loader_without_dynamic")
                             .at(path.clone())
                             .message("select has loader key but dynamic flag is disabled")
                             .warn()
@@ -115,7 +115,7 @@ fn lint_fields_new(
                 );
                 if dynamic.loader.is_none() {
                     report.push(
-                        ValidationError::new("missing_loader")
+                        ValidationError::builder("missing_loader")
                             .at(path.clone())
                             .message("dynamic field has no loader key configured")
                             .warn()
@@ -139,7 +139,7 @@ fn lint_fields_new(
                     || !notice.transformers.is_empty()
                 {
                     report.push(
-                        ValidationError::new("notice.misuse")
+                        ValidationError::builder("notice.misuse")
                             .at(path.clone())
                             .message(
                                 "notice field should stay display-only \
@@ -151,7 +151,7 @@ fn lint_fields_new(
                 }
                 if notice.description.is_none() {
                     report.push(
-                        ValidationError::new("notice_missing_description")
+                        ValidationError::builder("notice_missing_description")
                             .at(path.clone())
                             .message("notice field should include description text")
                             .warn()
@@ -172,7 +172,7 @@ fn lint_list_new(
 ) {
     if list.item.is_none() {
         report.push(
-            ValidationError::new("missing_item_schema")
+            ValidationError::builder("missing_item_schema")
                 .at(path.clone())
                 .message("list field must define item schema")
                 .build(),
@@ -194,7 +194,7 @@ fn lint_mode_new(
         && !mode.variants.iter().any(|v| v.key == default_variant)
     {
         report.push(
-            ValidationError::new("invalid_default_variant")
+            ValidationError::builder("invalid_default_variant")
                 .at(path.clone())
                 .message(format!(
                     "default variant `{default_variant}` does not exist in mode variants"
@@ -207,7 +207,7 @@ fn lint_mode_new(
     for variant in &mode.variants {
         if !seen.insert(variant.key.as_str()) {
             report.push(
-                ValidationError::new("duplicate_variant")
+                ValidationError::builder("duplicate_variant")
                     .at(path.clone())
                     .message(format!("duplicate mode variant key `{}`", variant.key))
                     .build(),
@@ -218,7 +218,7 @@ fn lint_mode_new(
             if let Ok(vk) = crate::key::FieldKey::new(variant.key.as_str()) {
                 let vpath = path.clone().join(vk);
                 report.push(
-                    ValidationError::new("missing_variant_label")
+                    ValidationError::builder("missing_variant_label")
                         .at(vpath)
                         .message("mode variant label is empty")
                         .warn()
@@ -255,7 +255,7 @@ fn lint_depends_on_new(
 
         if first_key == Some(field_key) {
             report.push(
-                ValidationError::new("self_dependency")
+                ValidationError::builder("self_dependency")
                     .at(path.clone())
                     .message(format!("depends_on contains self reference `{dependency}`"))
                     .build(),
@@ -265,7 +265,7 @@ fn lint_depends_on_new(
 
         if dependency.is_root() {
             report.push(
-                ValidationError::new("dangling_reference")
+                ValidationError::builder("dangling_reference")
                     .at(path.clone())
                     .message("depends_on references an empty path")
                     .build(),
@@ -276,7 +276,7 @@ fn lint_depends_on_new(
         let root_key = first_key.unwrap_or_default();
         if !local_keys.contains(root_key) && !root_keys.contains(root_key) {
             report.push(
-                ValidationError::new("dangling_reference")
+                ValidationError::builder("dangling_reference")
                     .at(path.clone())
                     .message(format!("depends_on references unknown key `{root_key}`"))
                     .build(),
@@ -300,7 +300,7 @@ fn lint_rule_refs_new(
             let rk = rp.split('.').next().unwrap_or_default();
             if !root_keys.contains(rk) {
                 report.push(
-                    ValidationError::new("dangling_reference")
+                    ValidationError::builder("dangling_reference")
                         .at(path.clone())
                         .message(format!("rule references unknown root key `{rk}`"))
                         .build(),
@@ -311,7 +311,7 @@ fn lint_rule_refs_new(
         let lk = field_ref.split('.').next().unwrap_or_default();
         if !local_keys.contains(lk) {
             report.push(
-                ValidationError::new("dangling_reference")
+                ValidationError::builder("dangling_reference")
                     .at(path.clone())
                     .message(format!("rule references unknown local key `{lk}`"))
                     .build(),
@@ -360,7 +360,7 @@ fn lint_single_compat_new(
 
     if !compatible {
         report.push(
-            ValidationError::new("rule.incompatible")
+            ValidationError::builder("rule.incompatible")
                 .at(path.clone())
                 .message(format!(
                     "rule `{}` is not compatible with `{}` field",
@@ -390,7 +390,7 @@ fn lint_contradictory_rules_new(rules: &[Rule], path: &FieldPath, report: &mut V
         && min > max
     {
         report.push(
-            ValidationError::new("rule.contradictory")
+            ValidationError::builder("rule.contradictory")
                 .at(path.clone())
                 .message(format!(
                     "min_length ({min}) is greater than max_length ({max})"
@@ -402,7 +402,7 @@ fn lint_contradictory_rules_new(rules: &[Rule], path: &FieldPath, report: &mut V
         && min > max
     {
         report.push(
-            ValidationError::new("rule.contradictory")
+            ValidationError::builder("rule.contradictory")
                 .at(path.clone())
                 .message(format!(
                     "min_items ({min}) is greater than max_items ({max})"
@@ -527,7 +527,7 @@ fn emit_visibility_cycle(start: &str, prefix: &FieldPath, report: &mut Validatio
         .map(|k| prefix.clone().join(k))
         .unwrap_or_else(|_| prefix.clone());
     report.push(
-        ValidationError::new("visibility_cycle")
+        ValidationError::builder("visibility_cycle")
             .at(cycle_path)
             .message(format!(
                 "visibility rule graph contains cycle involving `{start}`"

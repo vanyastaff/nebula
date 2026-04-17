@@ -314,7 +314,7 @@ impl<'s> ResolvedValues<'s> {
     pub fn into_typed<T: serde::de::DeserializeOwned>(self) -> Result<T, Box<ValidationError>> {
         serde_json::from_value(self.into_json()).map_err(|e| {
             Box::new(
-                ValidationError::new("type_mismatch")
+                ValidationError::builder("type_mismatch")
                     .message(format!("deserialize failed: {e}"))
                     .build(),
             )
@@ -348,7 +348,7 @@ fn resolve_value<'v>(
                         Err(mut e) => {
                             // Attach path context and enforce the standard code.
                             if e.code != "expression.runtime" {
-                                e = ValidationError::new("expression.runtime")
+                                e = ValidationError::builder("expression.runtime")
                                     .at(path.clone())
                                     .message(e.message.clone())
                                     .build();
@@ -437,7 +437,7 @@ fn validate_field(
         raw.is_none() || matches!(raw, Some(FieldValue::Literal(serde_json::Value::Null)));
     if required && value_is_null_or_absent {
         report.push(
-            ValidationError::new("required")
+            ValidationError::builder("required")
                 .at(path.clone())
                 .message(format!("field `{path}` is required"))
                 .build(),
@@ -453,7 +453,7 @@ fn validate_field(
     match (field.expression(), value) {
         (ExpressionMode::Forbidden, FieldValue::Expression(_)) => {
             report.push(
-                ValidationError::new("expression.forbidden")
+                ValidationError::builder("expression.forbidden")
                     .at(path.clone())
                     .message(format!("field `{path}` does not allow expression values"))
                     .build(),
@@ -506,7 +506,7 @@ fn validate_literal_value(
             let transformed = apply_transformers(&f.transformers, lit.clone());
             if !transformed.is_string() {
                 report.push(
-                    ValidationError::new("type_mismatch")
+                    ValidationError::builder("type_mismatch")
                         .at(path.clone())
                         .message(format!("field `{path}` expects a string value"))
                         .build(),
@@ -522,7 +522,7 @@ fn validate_literal_value(
             let transformed = apply_transformers(&f.transformers, lit.clone());
             if !transformed.is_string() {
                 report.push(
-                    ValidationError::new("type_mismatch")
+                    ValidationError::builder("type_mismatch")
                         .at(path.clone())
                         .message(format!("field `{path}` expects a string value"))
                         .build(),
@@ -538,7 +538,7 @@ fn validate_literal_value(
             let transformed = apply_transformers(&f.transformers, lit.clone());
             if !transformed.is_string() {
                 report.push(
-                    ValidationError::new("type_mismatch")
+                    ValidationError::builder("type_mismatch")
                         .at(path.clone())
                         .message(format!("field `{path}` expects a string value"))
                         .build(),
@@ -559,7 +559,7 @@ fn validate_literal_value(
             let transformed = apply_transformers(transformers, lit.clone());
             let Some(num) = transformed.as_f64() else {
                 report.push(
-                    ValidationError::new("type_mismatch")
+                    ValidationError::builder("type_mismatch")
                         .at(path.clone())
                         .message(format!("field `{path}` expects a numeric value"))
                         .build(),
@@ -568,7 +568,7 @@ fn validate_literal_value(
             };
             if *integer && num.fract() != 0.0 {
                 report.push(
-                    ValidationError::new("type_mismatch")
+                    ValidationError::builder("type_mismatch")
                         .at(path.clone())
                         .message(format!("field `{path}` expects a whole number"))
                         .build(),
@@ -583,7 +583,7 @@ fn validate_literal_value(
             };
             if !lit.is_boolean() {
                 report.push(
-                    ValidationError::new("type_mismatch")
+                    ValidationError::builder("type_mismatch")
                         .at(path.clone())
                         .message(format!("field `{path}` expects a boolean value"))
                         .build(),
@@ -621,7 +621,7 @@ fn validate_literal_value(
                 FieldValue::Literal(serde_json::Value::Array(a)) => (a.len(), None),
                 _ => {
                     report.push(
-                        ValidationError::new("type_mismatch")
+                        ValidationError::builder("type_mismatch")
                             .at(path.clone())
                             .message(format!("field `{path}` expects an array value"))
                             .build(),
@@ -634,7 +634,7 @@ fn validate_literal_value(
                 && item_count < *min as usize
             {
                 report.push(
-                    ValidationError::new("items.min")
+                    ValidationError::builder("items.min")
                         .at(path.clone())
                         .param("min", serde_json::json!(min))
                         .param("actual", serde_json::json!(item_count))
@@ -648,7 +648,7 @@ fn validate_literal_value(
                 && item_count > *max as usize
             {
                 report.push(
-                    ValidationError::new("items.max")
+                    ValidationError::builder("items.max")
                         .at(path.clone())
                         .param("max", serde_json::json!(max))
                         .param("actual", serde_json::json!(item_count))
@@ -674,7 +674,7 @@ fn validate_literal_value(
         }) => {
             let FieldValue::Object(map) = value else {
                 report.push(
-                    ValidationError::new("type_mismatch")
+                    ValidationError::builder("type_mismatch")
                         .at(path.clone())
                         .message(format!("field `{path}` expects an object value"))
                         .build(),
@@ -700,7 +700,7 @@ fn validate_literal_value(
             } = value
             else {
                 report.push(
-                    ValidationError::new("type_mismatch")
+                    ValidationError::builder("type_mismatch")
                         .at(path.clone())
                         .message(format!(
                             "field `{path}` expects a mode value ({{\"mode\": \"...\", ...}})"
@@ -713,7 +713,7 @@ fn validate_literal_value(
             let resolved_key = Some(mode_key.as_str()).or(default_variant.as_deref());
             let Some(resolved_key) = resolved_key else {
                 report.push(
-                    ValidationError::new("mode.required")
+                    ValidationError::builder("mode.required")
                         .at(path.clone())
                         .message(format!("field `{path}` requires a mode key"))
                         .build(),
@@ -722,7 +722,7 @@ fn validate_literal_value(
             };
             let Some(variant) = variants.iter().find(|v| v.key == resolved_key) else {
                 report.push(
-                    ValidationError::new("mode.invalid")
+                    ValidationError::builder("mode.invalid")
                         .at(path.clone())
                         .param("mode", serde_json::Value::String(resolved_key.to_owned()))
                         .message(format!(
@@ -753,7 +753,7 @@ fn validate_literal_value(
             if f.multiple {
                 match lit.as_array() {
                     None => report.push(
-                        ValidationError::new("type_mismatch")
+                        ValidationError::builder("type_mismatch")
                             .at(path.clone())
                             .message(format!("field `{path}` expects an array of file paths"))
                             .build(),
@@ -761,7 +761,7 @@ fn validate_literal_value(
                     Some(items) => {
                         if items.iter().any(|v| !v.is_string()) {
                             report.push(
-                                ValidationError::new("type_mismatch")
+                                ValidationError::builder("type_mismatch")
                                     .at(path.clone())
                                     .message(format!(
                                         "field `{path}` expects an array of string file paths"
@@ -773,7 +773,7 @@ fn validate_literal_value(
                 }
             } else if !lit.is_string() {
                 report.push(
-                    ValidationError::new("type_mismatch")
+                    ValidationError::builder("type_mismatch")
                         .at(path.clone())
                         .message(format!("field `{path}` expects a string file path"))
                         .build(),
@@ -797,7 +797,7 @@ fn check_select_options(
             for (i, v) in arr.iter().enumerate() {
                 if !options.iter().any(|o| o.value == *v) {
                     report.push(
-                        ValidationError::new("option.invalid")
+                        ValidationError::builder("option.invalid")
                             .at(path.clone())
                             .param("index", serde_json::json!(i))
                             .message(format!("field `{path}[{i}]` is not in allowed option set"))
@@ -808,7 +808,7 @@ fn check_select_options(
         }
     } else if !options.iter().any(|o| o.value == *transformed) {
         report.push(
-            ValidationError::new("option.invalid")
+            ValidationError::builder("option.invalid")
                 .at(path.clone())
                 .message(format!("field `{path}` value is not in allowed option set"))
                 .build(),
@@ -869,7 +869,7 @@ fn run_rules(
             let msg: String = e.message.as_ref().to_owned();
             let code = translate_validator_code(raw_code, e.params());
             report.push(
-                ValidationError::new(code)
+                ValidationError::builder(code)
                     .at(path.clone())
                     .message(msg)
                     .build(),

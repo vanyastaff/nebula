@@ -129,7 +129,7 @@ impl FieldPath {
     }
 
     fn err(value: &str, msg: &'static str) -> ValidationError {
-        ValidationError::new("invalid_path")
+        ValidationError::builder("invalid_path")
             .at(FieldPath::root())
             .message(msg)
             .param("path", value.to_owned())

@@ -210,13 +210,13 @@ impl LoaderRegistry {
         context: LoaderContext,
     ) -> Result<LoaderResult<SelectOption>, ValidationError> {
         let Some(loader) = self.option_loaders.get(key) else {
-            return Err(ValidationError::new("loader.not_registered")
+            return Err(ValidationError::builder("loader.not_registered")
                 .message(format!("option loader `{key}` is not registered"))
                 .param("loader", serde_json::Value::String(key.to_owned()))
                 .build());
         };
         loader.call(context).await.map_err(|e| {
-            ValidationError::new("loader.failed")
+            ValidationError::builder("loader.failed")
                 .message(format!("option loader `{key}` failed: {e}"))
                 .param("loader", serde_json::Value::String(key.to_owned()))
                 .source(e)
@@ -236,13 +236,13 @@ impl LoaderRegistry {
         context: LoaderContext,
     ) -> Result<LoaderResult<Value>, ValidationError> {
         let Some(loader) = self.record_loaders.get(key) else {
-            return Err(ValidationError::new("loader.not_registered")
+            return Err(ValidationError::builder("loader.not_registered")
                 .message(format!("record loader `{key}` is not registered"))
                 .param("loader", serde_json::Value::String(key.to_owned()))
                 .build());
         };
         loader.call(context).await.map_err(|e| {
-            ValidationError::new("loader.failed")
+            ValidationError::builder("loader.failed")
                 .message(format!("record loader `{key}` failed: {e}"))
                 .param("loader", serde_json::Value::String(key.to_owned()))
                 .source(e)
@@ -294,7 +294,7 @@ mod tests {
     #[tokio::test]
     async fn loader_failure_wraps_as_loader_failed() {
         let registry = LoaderRegistry::new().register_option("fail", |_ctx| async {
-            Err(ValidationError::new("loader.failed")
+            Err(ValidationError::builder("loader.failed")
                 .message("downstream error")
                 .build())
         });

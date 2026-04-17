@@ -65,7 +65,7 @@ impl FieldKey {
     }
 
     fn err(value: &str, msg: &'static str) -> ValidationError {
-        ValidationError::new("invalid_key")
+        ValidationError::builder("invalid_key")
             .at(FieldPath::root())
             .message(msg)
             .param("key", value.to_owned())

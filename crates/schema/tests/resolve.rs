@@ -24,7 +24,7 @@ struct FailCtx;
 #[async_trait::async_trait]
 impl ExpressionContext for FailCtx {
     async fn evaluate(&self, _ast: &ExpressionAst) -> Result<serde_json::Value, ValidationError> {
-        Err(ValidationError::new("expression.runtime")
+        Err(ValidationError::builder("expression.runtime")
             .message("evaluation failed")
             .build())
     }
