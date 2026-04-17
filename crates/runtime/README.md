@@ -31,7 +31,6 @@ Action execution orchestration for the Nebula workflow engine.
 
 **Smells tracked as open debt:**
 
-- ⚠️ **`src/sandbox.rs` is a dead compatibility shim.** Its own doc comment says: *"This module re-exports sandbox types for backward compatibility. New code should depend on `nebula-sandbox` directly."* This directly violates canon §14 ("compatibility shims that preserve bad shapes 'for now'"). **Recommended action:** delete the module, update any remaining in-crate imports to `nebula_sandbox::` directly. No consumers should be referencing `nebula_runtime::sandbox::*` today.
 - **Module `blob.rs` sits awkwardly between runtime and storage** — `BlobStorage` is a trait defined here. If blobs become a first-class side channel (large-payload path), their storage contract may belong in `nebula-storage` with a trait re-export here. Flag when blob usage grows.
 - **Module `queue.rs`** — `MemoryQueue` is the only implementation today. If/when a durable queue is added, consider whether it belongs here or in `nebula-storage`. Canon §12.2 control queue is separate from this task queue by design.
 
@@ -55,7 +54,7 @@ The runtime sits between the engine (which schedules work level-by-level) and th
 | `StatefulCheckpoint`, `StatefulCheckpointSink` | Checkpoint sink for `StatefulAction` types. |
 | `BoundedStreamBuffer`, `PushOutcome` | Streaming with backpressure. |
 | `RuntimeError` | Typed error for the runtime layer. |
-| `ActionExecutor`, `InProcessSandbox`, `SandboxRunner`, `SandboxedContext` | Re-exported from `nebula-sandbox` via the `sandbox` module — **to be removed** (see Architecture notes). |
+| `ActionExecutor`, `InProcessSandbox`, `SandboxRunner`, `SandboxedContext` | Re-exported from `nebula-sandbox` directly via `pub use nebula_sandbox::...` in `lib.rs`. |
 
 ## Where the contract lives
 
