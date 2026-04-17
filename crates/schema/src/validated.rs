@@ -5,7 +5,13 @@ use std::sync::Arc;
 use indexmap::IndexMap;
 use smallvec::SmallVec;
 
-use crate::{field::Field, key::FieldKey, path::FieldPath};
+use crate::{
+    error::ValidationError,
+    field::Field,
+    key::FieldKey,
+    path::FieldPath,
+    value::{FieldValue, FieldValues},
+};
 
 /// Flags computed once at build time.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -77,6 +83,94 @@ impl ValidSchema {
             };
         }
         Some(cur)
+    }
+}
+
+/// Validated values — tied to a specific `ValidSchema`.
+///
+/// Produced by `ValidSchema::validate()` (Task 21). Proof-token that values
+/// have been checked against the schema at least once.
+#[derive(Debug, Clone)]
+pub struct ValidValues<'s> {
+    pub(crate) schema: &'s ValidSchema,
+    pub(crate) values: FieldValues,
+    pub(crate) warnings: Arc<[ValidationError]>,
+}
+
+impl<'s> ValidValues<'s> {
+    /// Borrow the schema these values were validated against.
+    pub fn schema(&self) -> &'s ValidSchema {
+        self.schema
+    }
+
+    /// Borrow the raw value tree.
+    pub fn raw(&self) -> &FieldValues {
+        &self.values
+    }
+
+    /// Iterate validation warnings that were non-fatal.
+    pub fn warnings(&self) -> &[ValidationError] {
+        &self.warnings
+    }
+
+    /// Look up a top-level value by key.
+    pub fn get(&self, key: &FieldKey) -> Option<&FieldValue> {
+        self.values.get(key)
+    }
+
+    /// Look up a value by dotted path.
+    pub fn get_path(&self, path: &FieldPath) -> Option<&FieldValue> {
+        self.values.get_path(path)
+    }
+}
+
+/// Resolved values — all `FieldValue::Expression` entries have been evaluated.
+///
+/// Produced by `ValidValues::resolve()` (Task 23). Proof-token that no
+/// expression placeholders remain in the value tree.
+#[derive(Debug, Clone)]
+pub struct ResolvedValues<'s> {
+    pub(crate) schema: &'s ValidSchema,
+    pub(crate) values: FieldValues,
+    pub(crate) warnings: Arc<[ValidationError]>,
+}
+
+impl<'s> ResolvedValues<'s> {
+    /// Borrow the schema these values were resolved against.
+    pub fn schema(&self) -> &'s ValidSchema {
+        self.schema
+    }
+
+    /// Iterate resolution warnings.
+    pub fn warnings(&self) -> &[ValidationError] {
+        &self.warnings
+    }
+
+    /// Look up a resolved literal value by key.
+    ///
+    /// Returns `None` if the field is absent or still an expression
+    /// (should not happen in a properly resolved set).
+    pub fn get(&self, key: &FieldKey) -> Option<&serde_json::Value> {
+        match self.values.get(key)? {
+            FieldValue::Literal(v) => Some(v),
+            _ => None,
+        }
+    }
+
+    /// Consume into a flat JSON object.
+    pub fn into_json(self) -> serde_json::Value {
+        self.values.to_json()
+    }
+
+    /// Consume and deserialize into a typed value.
+    pub fn into_typed<T: serde::de::DeserializeOwned>(self) -> Result<T, Box<ValidationError>> {
+        serde_json::from_value(self.into_json()).map_err(|e| {
+            Box::new(
+                ValidationError::new("type_mismatch")
+                    .message(format!("deserialize failed: {e}"))
+                    .build(),
+            )
+        })
     }
 }
 
