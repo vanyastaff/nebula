@@ -37,6 +37,12 @@ updates:
       - "skip-coderabbit"
     commit-message:
       prefix: "chore(ci)"
+    ignore:
+      # MSRV pin in ci.yml uses @1.94 intentionally. Dependabot can't tell
+      # that's a deliberate version pin (not a stale dep) and tries to bump
+      # to whatever Rust version is current (1.95, 1.96, ..., 1.100, ...).
+      # @stable / @nightly references in other jobs don't need version bumps.
+      - dependency-name: "dtolnay/rust-toolchain"
     groups:
       # Group all action updates into one PR
       actions:
