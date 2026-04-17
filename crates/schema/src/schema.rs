@@ -178,7 +178,11 @@ impl Schema {
             return;
         }
 
-        let is_visible = match field.visible() {
+        // Borrow shared metadata once so the Field enum is matched only twice
+        // (once here for the common header, once in validate_field_type).
+        let (visible_mode, required_mode, transformers, rules) = Self::field_header(field);
+
+        let is_visible = match visible_mode {
             VisibilityMode::Always => true,
             VisibilityMode::Never => false,
             VisibilityMode::When(rule) => rule.evaluate(context),
@@ -188,7 +192,7 @@ impl Schema {
             return;
         }
 
-        let is_required = match field.required() {
+        let is_required = match required_mode {
             RequiredMode::Never => false,
             RequiredMode::Always => true,
             RequiredMode::When(rule) => rule.evaluate(context),
@@ -214,7 +218,6 @@ impl Schema {
 
         // Cheap borrow when the value is a plain literal and no transformers
         // are attached; fall back to clone/to_json otherwise.
-        let transformers = field.transformers();
         let transformed: Cow<'_, Value> = if transformers.is_empty() {
             match raw {
                 crate::value::FieldValue::Literal(v) => Cow::Borrowed(v),
@@ -228,7 +231,6 @@ impl Schema {
             Cow::Owned(transformers.iter().fold(base, |cur, t| t.apply(&cur)))
         };
 
-        let rules = field.rules();
         if !rules.is_empty()
             && let Err(errors) = validate_rules(&transformed, rules, mode)
         {
@@ -242,6 +244,37 @@ impl Schema {
         }
 
         self.validate_field_type(field, &transformed, path, mode, report);
+    }
+
+    /// Single-match accessor for the four "common" field attributes that the
+    /// validation walker reads on every call. Borrow-checker-friendly: all
+    /// four references tie to the same Field borrow, so there is no aliasing
+    /// hazard and the compiler can lower it to four direct field loads after
+    /// inlining.
+    #[inline]
+    fn field_header(
+        field: &Field,
+    ) -> (
+        &VisibilityMode,
+        &RequiredMode,
+        &[crate::Transformer],
+        &[nebula_validator::Rule],
+    ) {
+        match field {
+            Field::String(f) => (&f.visible, &f.required, &f.transformers, &f.rules),
+            Field::Secret(f) => (&f.visible, &f.required, &f.transformers, &f.rules),
+            Field::Number(f) => (&f.visible, &f.required, &f.transformers, &f.rules),
+            Field::Boolean(f) => (&f.visible, &f.required, &f.transformers, &f.rules),
+            Field::Select(f) => (&f.visible, &f.required, &f.transformers, &f.rules),
+            Field::Object(f) => (&f.visible, &f.required, &f.transformers, &f.rules),
+            Field::List(f) => (&f.visible, &f.required, &f.transformers, &f.rules),
+            Field::Mode(f) => (&f.visible, &f.required, &f.transformers, &f.rules),
+            Field::Code(f) => (&f.visible, &f.required, &f.transformers, &f.rules),
+            Field::File(f) => (&f.visible, &f.required, &f.transformers, &f.rules),
+            Field::Computed(f) => (&f.visible, &f.required, &f.transformers, &f.rules),
+            Field::Dynamic(f) => (&f.visible, &f.required, &f.transformers, &f.rules),
+            Field::Notice(f) => (&f.visible, &f.required, &f.transformers, &f.rules),
+        }
     }
 
     /// Normalize runtime values by backfilling missing defaults.
@@ -375,6 +408,7 @@ impl Schema {
         clippy::excessive_nesting,
         reason = "field-type dispatch includes nested validation branches by design"
     )]
+    #[inline]
     fn validate_field_type(
         &self,
         field: &Field,
