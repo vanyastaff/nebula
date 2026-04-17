@@ -4160,9 +4160,7 @@ version = "0.1.0"
 dependencies = [
  "async-trait",
  "codspeed-criterion-compat",
- "futures",
  "indexmap",
- "nebula-expression",
  "nebula-schema-macros",
  "nebula-validator",
  "proptest",
@@ -4171,7 +4169,6 @@ dependencies = [
  "serde",
  "serde_json",
  "smallvec",
- "thiserror 2.0.18",
  "tokio",
  "trybuild",
 ]
@@ -4180,7 +4177,6 @@ dependencies = [
 name = "nebula-schema-macros"
 version = "0.1.0"
 dependencies = [
- "proc-macro2",
  "quote",
  "syn 2.0.117",
 ]
