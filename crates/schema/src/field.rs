@@ -821,6 +821,7 @@ impl Field {
 
 impl Field {
     /// Shared key accessor.
+    #[inline]
     pub fn key(&self) -> &FieldKey {
         match self {
             Self::String(f) => &f.key,
@@ -840,6 +841,7 @@ impl Field {
     }
 
     /// Shared visibility accessor.
+    #[inline]
     pub fn visible(&self) -> &VisibilityMode {
         match self {
             Self::String(f) => &f.visible,
@@ -859,6 +861,7 @@ impl Field {
     }
 
     /// Shared required accessor.
+    #[inline]
     pub fn required(&self) -> &RequiredMode {
         match self {
             Self::String(f) => &f.required,
@@ -878,6 +881,7 @@ impl Field {
     }
 
     /// Shared expression mode accessor.
+    #[inline]
     pub fn expression(&self) -> &ExpressionMode {
         match self {
             Self::String(f) => &f.expression,
@@ -897,6 +901,7 @@ impl Field {
     }
 
     /// Shared rules accessor.
+    #[inline]
     pub fn rules(&self) -> &[Rule] {
         match self {
             Self::String(f) => f.rules.as_slice(),
@@ -916,6 +921,7 @@ impl Field {
     }
 
     /// Shared transformer accessor.
+    #[inline]
     pub fn transformers(&self) -> &[Transformer] {
         match self {
             Self::String(f) => f.transformers.as_slice(),
@@ -935,6 +941,7 @@ impl Field {
     }
 
     /// Shared default-value accessor.
+    #[inline]
     pub fn default(&self) -> Option<&Value> {
         match self {
             Self::String(f) => f.default.as_ref(),
@@ -954,6 +961,7 @@ impl Field {
     }
 
     /// Return the static type name for error messages and diagnostics.
+    #[inline]
     pub fn type_name(&self) -> &'static str {
         match self {
             Self::String(_) => "string",

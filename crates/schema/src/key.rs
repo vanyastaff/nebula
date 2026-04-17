@@ -53,11 +53,13 @@ impl FieldKey {
     }
 
     /// Borrow the key as `&str`.
+    #[inline]
     pub fn as_str(&self) -> &str {
         &self.0
     }
 
     /// Access the underlying `Arc<str>` handle.
+    #[inline]
     pub fn as_arc(&self) -> &Arc<str> {
         &self.0
     }

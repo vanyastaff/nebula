@@ -54,6 +54,7 @@ impl Rule {
     /// Returns `true` if this rule requires runtime expression context.
     ///
     /// Deferred rules are skipped during static schema validation.
+    #[inline]
     #[must_use]
     pub fn is_deferred(&self) -> bool {
         matches!(self, Self::UniqueBy { .. } | Self::Custom { .. })
