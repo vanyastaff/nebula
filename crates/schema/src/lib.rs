@@ -42,7 +42,7 @@ pub mod value;
 pub mod widget;
 
 pub use error::{SchemaError, Severity, ValidationError, ValidationErrorBuilder, ValidationReport};
-pub use expression::Expression;
+pub use expression::{Expression, ExpressionAst};
 pub use field::{
     BooleanField, CodeField, ColorField, ComputedField, ComputedReturn, DateField, DateTimeField,
     DynamicField, Field, FileField, HiddenField, ListField, ModeField, ModeVariant, NoticeField,
