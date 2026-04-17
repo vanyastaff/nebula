@@ -17,7 +17,7 @@ use nebula_credential::{
     resolve::{DisplayData, InteractionRequest, RefreshOutcome, ResolveResult, UserInput},
     scheme::SecretToken,
 };
-use nebula_parameter::{ParameterCollection, values::ParameterValues};
+use nebula_schema::{FieldValues, Schema, ValidSchema};
 
 // ── Test pending state ───────────────────────────────────────────────
 
@@ -77,8 +77,10 @@ impl Credential for InteractiveTestCredential {
         }
     }
 
-    fn parameters() -> ParameterCollection {
-        ParameterCollection::new()
+    fn parameters() -> ValidSchema {
+        Schema::builder()
+            .build()
+            .expect("empty schema is always valid")
     }
 
     fn project(state: &TestInteractiveState) -> SecretToken {
@@ -86,7 +88,7 @@ impl Credential for InteractiveTestCredential {
     }
 
     async fn resolve(
-        _values: &ParameterValues,
+        _values: &FieldValues,
         _ctx: &CredentialContext,
     ) -> Result<ResolveResult<TestInteractiveState, TestPending>, CredentialError> {
         Ok(ResolveResult::Pending {
@@ -134,7 +136,7 @@ impl Credential for InteractiveTestCredential {
 async fn pending_lifecycle_resolve_then_continue() {
     let pending_store = InMemoryPendingStore::new();
     let ctx = CredentialContext::new("test-user").with_session_id("sess-1");
-    let values = ParameterValues::new();
+    let values = FieldValues::new();
 
     // Step 1: initial resolve → should return Pending
     let response = execute_resolve::<InteractiveTestCredential, _>(&values, &ctx, &pending_store)
@@ -174,7 +176,7 @@ async fn pending_lifecycle_resolve_then_continue() {
 async fn pending_token_is_single_use() {
     let pending_store = InMemoryPendingStore::new();
     let ctx = CredentialContext::new("test-user").with_session_id("sess-1");
-    let values = ParameterValues::new();
+    let values = FieldValues::new();
 
     // Resolve → Pending
     let response = execute_resolve::<InteractiveTestCredential, _>(&values, &ctx, &pending_store)
@@ -205,7 +207,7 @@ async fn pending_token_is_single_use() {
 async fn continue_with_wrong_code_returns_error() {
     let pending_store = InMemoryPendingStore::new();
     let ctx = CredentialContext::new("test-user").with_session_id("sess-1");
-    let values = ParameterValues::new();
+    let values = FieldValues::new();
 
     // Resolve → Pending
     let response = execute_resolve::<InteractiveTestCredential, _>(&values, &ctx, &pending_store)

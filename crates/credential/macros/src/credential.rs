@@ -123,7 +123,7 @@ fn expand(input: DeriveInput) -> syn::Result<proc_macro2::TokenStream> {
                 }
             }
 
-            fn parameters() -> ::nebula_parameter::ParameterCollection
+            fn parameters() -> ::nebula_schema::ValidSchema
             where
                 Self: Sized,
             {
@@ -138,7 +138,7 @@ fn expand(input: DeriveInput) -> syn::Result<proc_macro2::TokenStream> {
             }
 
             fn resolve(
-                values: &::nebula_parameter::values::ParameterValues,
+                values: &::nebula_schema::FieldValues,
                 _ctx: &::nebula_credential::CredentialContext,
             ) -> impl ::std::future::Future<
                 Output = ::std::result::Result<

@@ -6,7 +6,7 @@
 
 use std::time::Duration;
 
-use nebula_parameter::values::ParameterValues;
+use nebula_schema::FieldValues;
 
 use crate::{
     context::CredentialContext,
@@ -82,7 +82,7 @@ pub enum ExecutorError {
 /// - [`ExecutorError::Credential`] if the credential returns an error.
 /// - [`ExecutorError::PendingStore`] if pending state storage fails.
 pub async fn execute_resolve<C, S>(
-    values: &ParameterValues,
+    values: &FieldValues,
     ctx: &CredentialContext,
     pending_store: &S,
 ) -> Result<ResolveResponse<C::State>, ExecutorError>
@@ -175,11 +175,8 @@ mod tests {
         let store = InMemoryPendingStore::new();
         let ctx = CredentialContext::new("user-1");
 
-        let mut values = ParameterValues::new();
-        values.set(
-            "api_key".to_owned(),
-            serde_json::Value::String("sk-test-key".into()),
-        );
+        let mut values = FieldValues::new();
+        values.set_raw("api_key", serde_json::Value::String("sk-test-key".into()));
 
         let result = execute_resolve::<ApiKeyCredential, _>(&values, &ctx, &store).await;
 
@@ -193,7 +190,7 @@ mod tests {
     async fn execute_resolve_propagates_credential_error() {
         let store = InMemoryPendingStore::new();
         let ctx = CredentialContext::new("user-1");
-        let values = ParameterValues::new(); // missing required api_key
+        let values = FieldValues::new(); // missing required api_key
 
         let result = execute_resolve::<ApiKeyCredential, _>(&values, &ctx, &store).await;
 

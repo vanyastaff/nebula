@@ -1,5 +1,5 @@
 use nebula_core::AuthPattern;
-use nebula_parameter::collection::ParameterCollection;
+use nebula_schema::ValidSchema;
 use serde::{Deserialize, Serialize};
 
 /// Describes a credential type (OAuth2, API Key, Database, etc.)
@@ -13,19 +13,16 @@ use serde::{Deserialize, Serialize};
 ///
 /// # Example
 ///
-/// ```
+/// ```rust,ignore
 /// use nebula_core::AuthPattern;
 /// use nebula_credential::CredentialMetadata;
-/// use nebula_parameter::{Parameter, ParameterCollection};
+/// use nebula_schema::{Field, Schema};
 ///
-/// let properties = ParameterCollection::new()
-///     .add(Parameter::string("client_id").label("Client ID").required())
-///     .add(
-///         Parameter::string("client_secret")
-///             .label("Client Secret")
-///             .required()
-///             .secret(),
-///     );
+/// let properties = Schema::builder()
+///     .add(Field::string("client_id").label("Client ID").required())
+///     .add(Field::secret("client_secret").label("Client Secret").required())
+///     .build()
+///     .expect("static schema is valid");
 ///
 /// let github_oauth2 = CredentialMetadata {
 ///     key: "github_oauth2".to_string(),
@@ -61,8 +58,8 @@ pub struct CredentialMetadata {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub documentation_url: Option<String>,
 
-    /// Parameter definitions - what fields this credential type requires.
-    pub properties: ParameterCollection,
+    /// Parameter definitions — what fields this credential type requires.
+    pub properties: ValidSchema,
 
     /// Authentication pattern classification for UI and tooling.
     pub pattern: AuthPattern,
@@ -84,7 +81,7 @@ pub struct CredentialMetadataBuilder {
     icon: Option<String>,
     icon_url: Option<String>,
     documentation_url: Option<String>,
-    properties: Option<ParameterCollection>,
+    properties: Option<ValidSchema>,
     pattern: Option<AuthPattern>,
 }
 
@@ -126,7 +123,7 @@ impl CredentialMetadataBuilder {
     }
 
     /// Set the parameter schema
-    pub fn properties(mut self, properties: ParameterCollection) -> Self {
+    pub fn properties(mut self, properties: ValidSchema) -> Self {
         self.properties = Some(properties);
         self
     }

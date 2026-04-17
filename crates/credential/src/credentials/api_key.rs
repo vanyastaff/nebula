@@ -4,7 +4,7 @@
 //! input. State and Scheme are the same type ([`SecretToken`]) via
 //! [`identity_state!`](crate::identity_state).
 
-use nebula_parameter::{Parameter, ParameterCollection, values::ParameterValues};
+use nebula_schema::{Field, FieldValues, Schema, ValidSchema};
 
 use crate::{
     SecretString, context::CredentialContext, credential::Credential, error::CredentialError,
@@ -50,21 +50,22 @@ impl Credential for ApiKeyCredential {
         }
     }
 
-    fn parameters() -> ParameterCollection {
-        ParameterCollection::new()
+    fn parameters() -> ValidSchema {
+        Schema::builder()
             .add(
-                Parameter::string("server")
+                Field::string("server")
                     .label("Server URL")
                     .description("Base URL of the service (e.g. https://api.example.com)")
                     .placeholder("https://api.example.com"),
             )
             .add(
-                Parameter::string("api_key")
+                Field::secret("api_key")
                     .label("API Key")
                     .description("Secret API token or personal access token")
-                    .required()
-                    .secret(),
+                    .required(),
             )
+            .build()
+            .expect("api_key schema is always valid")
     }
 
     fn project(state: &SecretToken) -> SecretToken {
@@ -72,10 +73,10 @@ impl Credential for ApiKeyCredential {
     }
 
     async fn resolve(
-        values: &ParameterValues,
+        values: &FieldValues,
         _ctx: &CredentialContext,
     ) -> Result<StaticResolveResult<SecretToken>, CredentialError> {
-        let token = values.get_string("api_key").ok_or_else(|| {
+        let token = values.get_string_by_str("api_key").ok_or_else(|| {
             CredentialError::Provider("missing required field 'api_key'".to_owned())
         })?;
         let secret = SecretString::new(token.to_owned());
@@ -111,11 +112,8 @@ mod tests {
 
     #[tokio::test]
     async fn resolve_extracts_api_key_field() {
-        let mut values = ParameterValues::new();
-        values.set(
-            "api_key".to_owned(),
-            serde_json::Value::String("sk-secret-123".into()),
-        );
+        let mut values = FieldValues::new();
+        values.set_raw("api_key", serde_json::Value::String("sk-secret-123".into()));
         let ctx = CredentialContext::new("test-user");
         let result = ApiKeyCredential::resolve(&values, &ctx).await.unwrap();
         match result {
@@ -129,7 +127,7 @@ mod tests {
 
     #[tokio::test]
     async fn resolve_returns_error_on_missing_field() {
-        let values = ParameterValues::new();
+        let values = FieldValues::new();
         let ctx = CredentialContext::new("test-user");
         let result = ApiKeyCredential::resolve(&values, &ctx).await;
         assert!(result.is_err());
@@ -138,15 +136,27 @@ mod tests {
     #[test]
     fn parameters_contains_server_and_api_key() {
         let params = ApiKeyCredential::parameters();
-        assert!(params.contains("server"));
-        assert!(params.contains("api_key"));
-        assert_eq!(params.len(), 2);
+        assert!(params.fields().iter().any(|f| f.key().as_str() == "server"));
+        assert!(
+            params
+                .fields()
+                .iter()
+                .any(|f| f.key().as_str() == "api_key")
+        );
+        assert_eq!(params.fields().len(), 2);
     }
 
     #[test]
     fn server_is_optional() {
         let params = ApiKeyCredential::parameters();
-        let server = params.get("server").unwrap();
-        assert!(!server.required);
+        let server = params
+            .fields()
+            .iter()
+            .find(|f| f.key().as_str() == "server")
+            .unwrap();
+        assert!(!matches!(
+            server.required(),
+            nebula_schema::RequiredMode::Always
+        ));
     }
 }

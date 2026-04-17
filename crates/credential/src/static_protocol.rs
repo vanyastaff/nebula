@@ -15,14 +15,16 @@
 //! impl StaticProtocol for PostgresProtocol {
 //!     type Scheme = ConnectionUri;
 //!
-//!     fn parameters() -> ParameterCollection {
-//!         ParameterCollection::new()
-//!             .add(Parameter::string("host").required())
-//!             .add(Parameter::integer("port").default(json!(5432)))
+//!     fn parameters() -> ValidSchema {
+//!         Schema::builder()
+//!             .add(Field::string("host").required())
+//!             .add(Field::integer("port").default(json!(5432)))
+//!             .build()
+//!             .expect("static schema is valid")
 //!     }
 //!
-//!     fn build(values: &ParameterValues) -> Result<ConnectionUri, CredentialError> {
-//!         let host = values.get_string("host").unwrap_or_default();
+//!     fn build(values: &FieldValues) -> Result<ConnectionUri, CredentialError> {
+//!         let host = values.get_string_by_str("host").unwrap_or_default();
 //!         Ok(ConnectionUri::new(SecretString::new(
 //!             format!("postgres://user:pass@{host}:5432/db")
 //!         )))
@@ -31,7 +33,7 @@
 //! ```
 
 use nebula_core::AuthScheme;
-use nebula_parameter::{ParameterCollection, values::ParameterValues};
+use nebula_schema::{FieldValues, ValidSchema};
 
 use crate::error::CredentialError;
 
@@ -52,21 +54,20 @@ use crate::error::CredentialError;
 /// use nebula_credential::scheme::SecretToken;
 /// use nebula_credential::SecretString;
 /// use nebula_credential::CredentialError;
-/// use nebula_parameter::ParameterCollection;
-/// use nebula_parameter::values::ParameterValues;
+/// use nebula_schema::{FieldValues, Schema, ValidSchema};
 ///
 /// struct ApiKeyProtocol;
 ///
 /// impl StaticProtocol for ApiKeyProtocol {
 ///     type Scheme = SecretToken;
 ///
-///     fn parameters() -> ParameterCollection {
-///         ParameterCollection::new()
+///     fn parameters() -> ValidSchema {
+///         Schema::builder().build().expect("empty schema is valid")
 ///     }
 ///
-///     fn build(values: &ParameterValues) -> Result<SecretToken, CredentialError> {
+///     fn build(values: &FieldValues) -> Result<SecretToken, CredentialError> {
 ///         let token = values
-///             .get_string("token")
+///             .get_string_by_str("token")
 ///             .ok_or_else(|| CredentialError::InvalidInput("missing token".into()))?;
 ///         Ok(SecretToken::new(SecretString::new(token.to_owned())))
 ///     }
@@ -79,7 +80,7 @@ pub trait StaticProtocol: Send + Sync + 'static {
     /// Parameter schema for the credential setup form.
     ///
     /// Returned as JSON to the frontend for form rendering.
-    fn parameters() -> ParameterCollection
+    fn parameters() -> ValidSchema
     where
         Self: Sized;
 
@@ -91,13 +92,15 @@ pub trait StaticProtocol: Send + Sync + 'static {
     ///
     /// Returns [`CredentialError::InvalidInput`] for missing or
     /// malformed parameters.
-    fn build(values: &ParameterValues) -> Result<Self::Scheme, CredentialError>
+    fn build(values: &FieldValues) -> Result<Self::Scheme, CredentialError>
     where
         Self: Sized;
 }
 
 #[cfg(test)]
 mod tests {
+    use nebula_schema::{FieldValues, Schema};
+
     use super::*;
     use crate::{SecretString, scheme::SecretToken};
 
@@ -106,13 +109,13 @@ mod tests {
     impl StaticProtocol for TestProtocol {
         type Scheme = SecretToken;
 
-        fn parameters() -> ParameterCollection {
-            ParameterCollection::new()
+        fn parameters() -> ValidSchema {
+            Schema::builder().build().expect("empty schema is valid")
         }
 
-        fn build(values: &ParameterValues) -> Result<SecretToken, CredentialError> {
+        fn build(values: &FieldValues) -> Result<SecretToken, CredentialError> {
             let token = values
-                .get_string("token")
+                .get_string_by_str("token")
                 .ok_or_else(|| CredentialError::InvalidInput("missing token".into()))?;
             Ok(SecretToken::new(SecretString::new(token.to_owned())))
         }
@@ -120,15 +123,15 @@ mod tests {
 
     #[test]
     fn build_returns_error_on_missing_parameter() {
-        let values = ParameterValues::new();
+        let values = FieldValues::new();
         let result = TestProtocol::build(&values);
         assert!(result.is_err());
     }
 
     #[test]
     fn build_produces_scheme_from_valid_parameters() {
-        let mut values = ParameterValues::new();
-        values.set("token", serde_json::json!("test-token"));
+        let mut values = FieldValues::new();
+        values.set_raw("token", serde_json::json!("test-token"));
         let token = TestProtocol::build(&values).unwrap();
         let value = token.token().expose_secret(|s| s.to_owned());
         assert_eq!(value, "test-token");
@@ -137,6 +140,6 @@ mod tests {
     #[test]
     fn parameters_returns_empty_collection() {
         let params = TestProtocol::parameters();
-        assert_eq!(params.len(), 0);
+        assert_eq!(params.fields().len(), 0);
     }
 }
