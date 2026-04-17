@@ -1,0 +1,60 @@
+name: Cleanup Workflow Runs
+
+on:
+  delete:
+  schedule:
+    - cron: "0 5 * * 0" # weekly Sunday 05:00 UTC
+  workflow_dispatch:
+    inputs:
+      retain_days:
+        description: "Keep runs newer than N days"
+        default: "14"
+      keep_minimum:
+        description: "Always keep at least N most recent runs per workflow"
+        default: "10"
+
+permissions:
+  actions: write
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}
+  cancel-in-progress: false
+
+jobs:
+  # ── 1. Branch deletion → orphan runs from that branch ─────────────────────
+  cleanup-deleted-branch:
+    name: Cleanup runs from deleted branch
+    if: github.event_name == 'delete' && github.event.ref_type == 'branch'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Delete workflow runs for ${{ github.event.ref }}
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          BRANCH: ${{ github.event.ref }}
+          REPO: ${{ github.repository }}
+        run: |
+          deleted=0
+          while :; do
+            ids=$(gh api "repos/$REPO/actions/runs?branch=$BRANCH&per_page=100" --jq '.workflow_runs[].id' 2>/dev/null)
+            [ -z "$ids" ] && break
+            for id in $ids; do
+              gh api -X DELETE "repos/$REPO/actions/runs/$id" 2>/dev/null && deleted=$((deleted+1)) || true
+            done
+          done
+          echo "Deleted $deleted runs from branch $BRANCH"
+          echo "::notice::Deleted $deleted workflow runs for branch $BRANCH"
+
+  # ── 2. Weekly retention sweep — delete runs older than retain_days ───────
+  cleanup-old:
+    name: Cleanup old runs (retention sweep)
+    if: github.event_name != 'delete'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Delete runs older than ${{ inputs.retain_days || 14 }} days
+        uses: Mattraks/delete-workflow-runs@v2
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          repository: ${{ github.repository }}
+          retain_days: ${{ inputs.retain_days || 14 }}
+          keep_minimum_runs: ${{ inputs.keep_minimum || 10 }}
