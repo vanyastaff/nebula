@@ -305,43 +305,53 @@ fn lint_depends_on(
     root_ids: &HashSet<&str>,
     report: &mut LintReport,
 ) {
+    use crate::path::PathSegment;
+
     for dependency in depends_on {
-        let dep = dependency.as_str();
+        let dep_display = dependency.to_string();
         let dep_path = format!("{path}.depends_on");
-        if dep == field_key || dep.strip_prefix("$root.") == Some(field_key) {
+
+        // Detect self-reference by comparing the first key segment.
+        let first_key = dependency.segments().iter().find_map(|s| {
+            if let PathSegment::Key(k) = s {
+                Some(k.as_str())
+            } else {
+                None
+            }
+        });
+
+        if first_key == Some(field_key) {
             report.push_error(
                 dep_path.clone(),
                 "self_dependency",
-                format!("depends_on contains self reference `{dep}`"),
+                format!("depends_on contains self reference `{dep_display}`"),
             );
             continue;
         }
 
         if dependency.is_root() {
-            let root = dep
-                .strip_prefix("$root.")
-                .unwrap_or(dep)
-                .split('.')
-                .next()
-                .unwrap_or_default();
-            if !root_ids.contains(root) {
-                report.push_error(
-                    dep_path.clone(),
-                    "dangling_dependency",
-                    format!("depends_on references unknown root key `{root}`"),
-                );
-            }
-            continue;
-        }
-
-        let local = dep.split('.').next().unwrap_or_default();
-        if !local_ids.contains(local) {
+            // Root path means no segments — treat as dangling.
             report.push_error(
                 dep_path,
                 "dangling_dependency",
-                format!("depends_on references unknown local key `{local}`"),
+                "depends_on references an empty path",
             );
+            continue;
         }
+
+        // Check the first key segment against local IDs; fall back to root IDs.
+        let root_key = first_key.unwrap_or_default();
+        if local_ids.contains(root_key) {
+            continue;
+        }
+        if root_ids.contains(root_key) {
+            continue;
+        }
+        report.push_error(
+            dep_path,
+            "dangling_dependency",
+            format!("depends_on references unknown key `{root_key}`"),
+        );
     }
 }
 

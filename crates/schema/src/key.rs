@@ -27,6 +27,7 @@ impl FieldKey {
     /// - max 64 chars
     /// - starts with ASCII letter or underscore
     /// - only ASCII alphanumeric or underscore afterwards
+    #[allow(clippy::result_large_err)]
     pub fn new(value: impl AsRef<str>) -> Result<Self, ValidationError> {
         let value = value.as_ref();
         let bytes = value.as_bytes();

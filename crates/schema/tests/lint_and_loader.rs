@@ -39,7 +39,7 @@ fn lint_schema_reports_dangling_refs_and_structural_issues() {
             Field::select("region")
                 .dynamic()
                 .loader("regions_loader")
-                .depends_on(FieldPath::local("unknown_ref")),
+                .depends_on(FieldPath::parse("unknown_ref").unwrap()),
         )
         .add(
             Field::mode("auth")
@@ -88,12 +88,12 @@ async fn loader_registry_resolves_select_and_dynamic_loaders() {
             Field::select("workspace")
                 .dynamic()
                 .loader("workspace_loader")
-                .depends_on(FieldPath::local("team_id")),
+                .depends_on(FieldPath::parse("team_id").unwrap()),
         )
         .add(
             Field::dynamic("resource")
                 .loader("resource_loader")
-                .depends_on(FieldPath::local("workspace")),
+                .depends_on(FieldPath::parse("workspace").unwrap()),
         );
 
     let registry = LoaderRegistry::new()
