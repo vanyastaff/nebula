@@ -6,6 +6,8 @@
 debug/
 target/
 **/target/
+# Isolated MSRV target dir (see lefthook.yml pre-push msrv hook)
+target-msrv/
 
 # Cargo lock file (for libraries, should be committed for binaries)
 # Cargo.lock

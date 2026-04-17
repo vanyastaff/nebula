@@ -57,6 +57,15 @@ pre-push:
     msrv:
       # Graceful skip if 1.94 toolchain not installed locally.
       # Install with: rustup install 1.94
+      #
+      # Isolated target directory prevents races against the parallel nextest /
+      # doctests / check-all-features jobs that share the default `target/` —
+      # cargo's target lock is per-directory, so without this the parallel
+      # invocations serialize on the same lock and the msrv job has been
+      # observed to exit fast (0.2-0.4s) with exit code 101 while the others
+      # hold the lock.
+      env:
+        CARGO_TARGET_DIR: "target-msrv"
       run: |
         if rustup toolchain list | grep -q '^1.94'; then
           cargo +1.94 check --workspace --all-targets --quiet
