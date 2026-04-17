@@ -5,7 +5,7 @@
 //! `normalize`, `load_select_options`, `load_dynamic_records`) are preserved
 //! here and delegated from `ValidSchema` in Task 21.
 
-use std::collections::HashMap;
+use std::{borrow::Cow, collections::HashMap};
 
 use indexmap::IndexMap;
 use nebula_validator::{ExecutionMode, validate_rules};
@@ -112,15 +112,136 @@ impl Schema {
     /// Validate runtime values against this schema.
     pub fn validate(&self, values: &FieldValues, mode: ExecutionMode) -> LegacyReport {
         let mut report = LegacyReport::new();
-        let context = values.to_context_map();
+
+        // Decide whether we need to build a HashMap context for predicate rule
+        // evaluation. Most schemas use only `Always`/`Never` visibility/required
+        // modes, so we can skip the allocation entirely on the fast path.
+        let needs_context = self.fields.iter().any(Self::field_needs_context);
+        let empty_context: HashMap<String, Value> = HashMap::new();
+        let context_storage: HashMap<String, Value>;
+        let context: &HashMap<String, Value> = if needs_context {
+            context_storage = values.to_context_map();
+            &context_storage
+        } else {
+            &empty_context
+        };
 
         for field in &self.fields {
-            let key = field.key().as_str();
-            let raw = values.get_raw_by_str(key);
-            self.validate_single_field(field, &context, raw.as_ref(), key, mode, &mut report);
+            let key_fk = field.key();
+            let key = key_fk.as_str();
+            let raw = values.get(key_fk);
+            self.validate_single_field_ref(field, context, raw, key, mode, &mut report);
         }
 
         report
+    }
+
+    /// Check whether a field or any nested field requires a context HashMap
+    /// (i.e. any `When(rule)` visibility/required mode).
+    fn field_needs_context(field: &Field) -> bool {
+        if matches!(field.visible(), VisibilityMode::When(_))
+            || matches!(field.required(), RequiredMode::When(_))
+        {
+            return true;
+        }
+        match field {
+            Field::Object(obj) => obj.fields.iter().any(Self::field_needs_context),
+            Field::List(list) => list.item.as_deref().is_some_and(Self::field_needs_context),
+            Field::Mode(mode) => mode
+                .variants
+                .iter()
+                .any(|v| Self::field_needs_context(&v.field)),
+            _ => false,
+        }
+    }
+
+    /// Reference-friendly validation path that accepts `&FieldValue` directly,
+    /// avoiding the per-field `FieldValue::to_json` clone used by the old
+    /// `get_raw_by_str`-based path. Type-level fast paths skip the
+    /// `apply_transformers` clone when the transformer list is empty.
+    fn validate_single_field_ref(
+        &self,
+        field: &Field,
+        context: &HashMap<String, Value>,
+        raw_value: Option<&crate::value::FieldValue>,
+        path: &str,
+        mode: ExecutionMode,
+        report: &mut LegacyReport,
+    ) {
+        const MAX_NESTED_DEPTH: u8 = 16;
+        if Self::depth_from_path(path) > MAX_NESTED_DEPTH {
+            report.push_error(ValidationIssue::new(
+                path,
+                "max_depth",
+                format!("field nesting depth exceeds {MAX_NESTED_DEPTH}"),
+            ));
+            return;
+        }
+
+        let is_visible = match field.visible() {
+            VisibilityMode::Always => true,
+            VisibilityMode::Never => false,
+            VisibilityMode::When(rule) => rule.evaluate(context),
+        };
+
+        if !is_visible && raw_value.is_none() {
+            return;
+        }
+
+        let is_required = match field.required() {
+            RequiredMode::Never => false,
+            RequiredMode::Always => true,
+            RequiredMode::When(rule) => rule.evaluate(context),
+        };
+
+        // Determine null-or-absent without materialising a full JSON Value.
+        let value_is_null_or_absent = matches!(
+            raw_value,
+            None | Some(crate::value::FieldValue::Literal(Value::Null))
+        );
+        if is_required && value_is_null_or_absent {
+            report.push_error(ValidationIssue::new(
+                path,
+                "required",
+                format!("field `{path}` is required"),
+            ));
+            return;
+        }
+
+        let Some(raw) = raw_value else {
+            return;
+        };
+
+        // Cheap borrow when the value is a plain literal and no transformers
+        // are attached; fall back to clone/to_json otherwise.
+        let transformers = field.transformers();
+        let transformed: Cow<'_, Value> = if transformers.is_empty() {
+            match raw {
+                crate::value::FieldValue::Literal(v) => Cow::Borrowed(v),
+                other => Cow::Owned(other.to_json()),
+            }
+        } else {
+            let base = match raw {
+                crate::value::FieldValue::Literal(v) => v.clone(),
+                other => other.to_json(),
+            };
+            Cow::Owned(transformers.iter().fold(base, |cur, t| t.apply(&cur)))
+        };
+
+        let rules = field.rules();
+        if !rules.is_empty()
+            && let Err(errors) = validate_rules(&transformed, rules, mode)
+        {
+            for error in errors.errors() {
+                report.push_error(ValidationIssue::new(
+                    path,
+                    error.code.to_string(),
+                    error.message.to_string(),
+                ));
+            }
+        }
+
+        self.validate_field_type(field, &transformed, path, mode, report);
     }
 
     /// Normalize runtime values by backfilling missing defaults.
@@ -683,12 +804,17 @@ impl Schema {
         }
     }
 
+    #[inline]
     fn depth_from_path(path: &str) -> u8 {
-        let separators = path
-            .chars()
-            .filter(|character| *character == '.' || *character == '[')
-            .count();
-        separators as u8
+        // Byte-slice scan is strictly faster than `.chars().filter(...)`:
+        // ASCII separators can be matched without UTF-8 decoding.
+        let mut count: u32 = 0;
+        for &b in path.as_bytes() {
+            if b == b'.' || b == b'[' {
+                count = count.saturating_add(1);
+            }
+        }
+        count.min(u8::MAX as u32) as u8
     }
 
     fn object_to_context(object: &Map<String, Value>) -> HashMap<String, Value> {
