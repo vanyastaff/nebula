@@ -9,8 +9,8 @@
 allow_dirty = false
 changelog_update = true
 git_release_enable = true
-publish = false                   # alpha: do not publish to crates.io yet; flip to true at 1.0
+publish = false                            # alpha: do not publish to crates.io yet; flip to true at 1.0
 publish_no_verify = false
-semver_check = true               # uses cargo-semver-checks
+semver_check = true                        # uses cargo-semver-checks
 pr_branch_prefix = "release-plz/"
 pr_labels = ["release", "skip-coderabbit"]

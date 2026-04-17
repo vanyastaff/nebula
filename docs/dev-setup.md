@@ -51,16 +51,29 @@ when cargo reuses cached artifacts.
 
 ## Linker
 
-The repo's `.cargo/config.toml` configures fast linkers:
+The repo's `.cargo/config.toml` configures `rust-lld` for Windows MSVC (bundled with
+rustup since 1.81 — no install needed). On Linux/Mac the default linker is used.
 
-| Platform | Linker | Install |
-|---|---|---|
-| Windows MSVC | `rust-lld.exe` | Bundled with rustup since 1.81 — no action |
-| Linux GNU | `mold` (via clang) | `apt install mold clang` or [github.com/rui314/mold](https://github.com/rui314/mold) |
-| macOS | `lld` | `brew install llvm` (provides lld) |
+For contributors who want the 3-5× faster Linux/Mac linker, add this to your
+**personal** `~/.cargo/config.toml` (NOT the repo `.cargo/config.toml` — GitHub
+Linux runners don't have `mold` and would fail to build):
 
-If you see "linker not found" errors after `mise install`, install the linker for your
-platform per the table above.
+```toml
+# Linux: install mold first — apt install mold clang
+[target.x86_64-unknown-linux-gnu]
+linker = "clang"
+rustflags = ["-C", "link-arg=-fuse-ld=mold"]
+
+# macOS: install lld first — brew install llvm
+[target.aarch64-apple-darwin]
+rustflags = ["-C", "link-arg=-fuse-ld=lld"]
+
+[target.x86_64-apple-darwin]
+rustflags = ["-C", "link-arg=-fuse-ld=lld"]
+```
+
+If you see "linker not found" errors locally, either install the linker per the
+above commands, or remove the override from your personal `~/.cargo/config.toml`.
 
 ## Lefthook hooks
 
