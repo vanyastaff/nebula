@@ -421,7 +421,6 @@ impl fmt::Display for ValidationError {
             write!(f, "{}: {}", self.code, rendered)?;
         }
 
-        let params = self.params();
         if !params.is_empty() {
             write!(f, " (params: [")?;
             for (i, (k, v)) in params.iter().enumerate() {
