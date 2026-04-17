@@ -1,14 +1,19 @@
+//! Visibility / required / expression policy enums.
+
 use nebula_validator::Rule;
 use serde::{Deserialize, Serialize};
 
-/// Visibility policy for a field.
+/// When a field is visible in the UI.
+#[non_exhaustive]
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum VisibilityMode {
-    /// Field is always visible.
+    /// Field is always visible (default).
     #[default]
     Always,
-    /// Field is visible only when rule evaluates to true.
+    /// Never visible — replaces the removed `Field::Hidden`.
+    Never,
+    /// Visible only when rule evaluates true.
     When(Rule),
 }
 
@@ -19,11 +24,12 @@ impl VisibilityMode {
     }
 }
 
-/// Requiredness policy for a field.
+/// When a field is required.
+#[non_exhaustive]
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum RequiredMode {
-    /// Field is optional.
+    /// Field is optional (default).
     #[default]
     Never,
     /// Field is always required.
@@ -39,13 +45,43 @@ impl RequiredMode {
     }
 }
 
+/// Whether the field accepts expression values (`{{ ... }}` or `{"$expr": "..."}`).
+#[non_exhaustive]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ExpressionMode {
+    /// Only literal values allowed.
+    Forbidden,
+    /// Both literal and expression values allowed (default).
+    #[default]
+    Allowed,
+    /// Only expression values (e.g. Computed field).
+    Required,
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{RequiredMode, VisibilityMode};
+    use super::*;
 
     #[test]
-    fn defaults_match_contract() {
+    fn visibility_default_is_always() {
+        assert!(matches!(VisibilityMode::default(), VisibilityMode::Always));
         assert!(VisibilityMode::default().is_default());
+    }
+
+    #[test]
+    fn required_default_is_never() {
+        assert!(matches!(RequiredMode::default(), RequiredMode::Never));
         assert!(RequiredMode::default().is_default());
+    }
+
+    #[test]
+    fn expression_default_is_allowed() {
+        assert!(matches!(ExpressionMode::default(), ExpressionMode::Allowed));
+    }
+
+    #[test]
+    fn visibility_never_hides_always() {
+        assert!(!VisibilityMode::Never.is_default());
     }
 }

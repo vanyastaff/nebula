@@ -167,6 +167,7 @@ impl Schema {
 
         let is_visible = match field.visible() {
             VisibilityMode::Always => true,
+            VisibilityMode::Never => false,
             VisibilityMode::When(rule) => rule.evaluate(context),
         };
 

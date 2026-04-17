@@ -589,7 +589,7 @@ fn make_path(prefix: &str, key: &str) -> String {
 
 fn field_visible_rule(field: &Field) -> Option<&Rule> {
     match field.visible() {
-        VisibilityMode::Always => None,
+        VisibilityMode::Always | VisibilityMode::Never => None,
         VisibilityMode::When(rule) => Some(rule),
     }
 }
