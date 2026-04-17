@@ -6,18 +6,18 @@ tone_instructions: >-
   silent fallbacks, and missing regression tests. Be terse. Skip style nits.
 
 reviews:
-  profile: "assertive"
-  request_changes_workflow: true
+  profile: "chill"
+  request_changes_workflow: false
   high_level_summary: true
   review_status: true
-  collapse_walkthrough: false
+  collapse_walkthrough: true
   changed_files_summary: true
-  sequence_diagrams: true
+  sequence_diagrams: false
 
   auto_review:
     enabled: true
-    drafts: true
-    incremental_reviews: true
+    drafts: false
+    incremental_reviews: false
     base_branches:
       - "main"
       - "release/.*"
@@ -28,10 +28,29 @@ reviews:
   path_filters:
     - "!**/.claude/worktrees/**"
     - "!docs/plans/archive/**"
+    - "!docs/superpowers/**"
     - "!target/**"
+    - "!**/*.snap"
+    - "!**/Cargo.lock"
+
+  path_instructions:
+    - path: "crates/credential/**"
+      instructions: |
+        Critical: check for secret leaks in logs/debug/error text.
+        Verify zeroization on drop. Check encryption boundaries.
+    - path: "crates/sandbox/**"
+      instructions: |
+        Critical: check for sandbox escape vectors, resource limits, IPC safety.
+    - path: "crates/{engine,runtime,execution}/**"
+      instructions: |
+        Critical: check lock ordering, race conditions, version-bump invariants
+        on state mutations. Flag direct ns.state = X without transition_node().
+    - path: "**/tests/**"
+      instructions: |
+        Skip style/naming nits. Focus only on missing edge cases.
 
 chat:
-  auto_reply: true
+  auto_reply: false
 
 knowledge_base:
   opt_out: false
@@ -42,5 +61,4 @@ knowledge_base:
   pull_requests:
     enabled: true
   linear:
-    enabled: true
-
+    enabled: false
