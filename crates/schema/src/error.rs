@@ -285,6 +285,56 @@ impl From<crate::loader::LoaderError> for SchemaError {
     }
 }
 
+/// Canonical set of stable error codes emitted by the schema crate.
+///
+/// Plugins may add their own under a namespace prefix (e.g. `my_plugin.foo`).
+/// A test in the schema crate guarantees every entry here is emittable from
+/// an integration test (see `tests/flow/all_error_codes.rs`).
+pub const STANDARD_CODES: &[&str] = &[
+    // value validation
+    "required",
+    "type_mismatch",
+    "length.min",
+    "length.max",
+    "range.min",
+    "range.max",
+    "pattern",
+    "url",
+    "email",
+    "items.min",
+    "items.max",
+    "items.unique",
+    "option.invalid",
+    // mode
+    "mode.required",
+    "mode.invalid",
+    // expression
+    "expression.forbidden",
+    "expression.parse",
+    "expression.type_mismatch",
+    "expression.runtime",
+    // loader
+    "loader.not_registered",
+    "loader.failed",
+    // build-time
+    "invalid_key",
+    "duplicate_key",
+    "dangling_reference",
+    "self_dependency",
+    "visibility_cycle",
+    "rule.contradictory",
+    "missing_item_schema",
+    "invalid_default_variant",
+    "duplicate_variant",
+    // warnings
+    "rule.incompatible",
+    "notice.misuse",
+    "missing_loader",
+    "loader_without_dynamic",
+    "missing_variant_label",
+    "notice_missing_description",
+];
+
 #[cfg(test)]
 mod tests {
     use serde_json::json;
@@ -338,5 +388,22 @@ mod tests {
         assert!(report.has_warnings());
         assert_eq!(report.errors().count(), 1);
         assert_eq!(report.warnings().count(), 1);
+    }
+
+    #[test]
+    fn standard_codes_are_unique_and_nonempty() {
+        assert!(!STANDARD_CODES.is_empty());
+        let mut sorted: Vec<&str> = STANDARD_CODES.to_vec();
+        sorted.sort_unstable();
+        let before = sorted.len();
+        sorted.dedup();
+        assert_eq!(before, sorted.len(), "duplicate code in STANDARD_CODES");
+        for code in STANDARD_CODES {
+            assert!(!code.is_empty());
+            assert!(
+                code.chars()
+                    .all(|c| c.is_ascii_lowercase() || c == '_' || c == '.')
+            );
+        }
     }
 }
