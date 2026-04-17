@@ -36,6 +36,8 @@ pub mod report;
 pub mod schema;
 /// Value transformer definitions.
 pub mod transformer;
+/// Validated schema proof-tokens (ValidSchema, FieldHandle, SchemaFlags).
+pub mod validated;
 /// Runtime value wrappers and wire-format helpers.
 pub mod value;
 /// Typed widget hints by field family.
@@ -61,8 +63,9 @@ pub use nebula_validator::ExecutionMode;
 pub use option::SelectOption;
 pub use path::FieldPath;
 pub use report::ValidationIssue;
-pub use schema::Schema;
+pub use schema::{Schema, SchemaBuilder};
 pub use transformer::Transformer;
+pub use validated::{FieldHandle, SchemaFlags, ValidSchema};
 pub use value::{EXPRESSION_KEY, FieldValue, FieldValues};
 pub use widget::{
     BooleanWidget, CodeWidget, ListWidget, NumberWidget, ObjectWidget, SecretWidget, SelectWidget,

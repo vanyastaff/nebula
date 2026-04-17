@@ -1,31 +1,57 @@
+//! Schema container and builder.
+//!
+//! `SchemaBuilder::build()` runs structural lint passes and produces a
+//! `ValidSchema` proof-token. The legacy `Schema` methods (`validate`,
+//! `normalize`, `load_select_options`, `load_dynamic_records`) are preserved
+//! here and delegated from `ValidSchema` in Task 21.
+
 use std::collections::HashMap;
 
+use indexmap::IndexMap;
 use nebula_validator::{ExecutionMode, validate_rules};
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
+use smallvec::SmallVec;
 
 use crate::{
     Field, FieldValues, LintReport, LoaderContext, LoaderRegistry, LoaderResult, RequiredMode,
-    SchemaError, SelectOption, VisibilityMode, lint_schema,
-    report::{ValidationIssue, ValidationReport},
+    SchemaError, SelectOption, VisibilityMode,
+    error::ValidationReport,
+    lint_schema,
+    path::FieldPath,
+    report::{ValidationIssue, ValidationReport as LegacyReport},
+    validated::{FieldHandle, SchemaFlags, ValidSchema, ValidSchemaInner},
 };
 
-/// Top-level schema definition for action/resource inputs.
+// ── Builder entry point ───────────────────────────────────────────────────────
+
+/// Marker type — entry point for `Schema::builder()`.
+///
+/// The old `Schema::new() / .add() / .validate()` API is preserved for
+/// backward compatibility. Prefer `Schema::builder().add(...).build()` for
+/// new code.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct Schema {
     /// Ordered field list.
     fields: Vec<Field>,
 }
 
-const MAX_NESTED_DEPTH: u8 = 16;
-
 impl Schema {
-    /// Create an empty schema.
+    /// Create a new `SchemaBuilder`.
+    pub fn builder() -> SchemaBuilder {
+        SchemaBuilder::default()
+    }
+
+    // ── Legacy API (kept to avoid breaking existing callers) ──────────────
+
+    /// Create an empty schema (legacy entry point).
     pub fn new() -> Self {
         Self::default()
     }
 
     /// Add field and return updated schema.
+    ///
+    /// If a field with the same key already exists it is replaced.
     #[expect(
         clippy::should_implement_trait,
         reason = "builder API mirrors existing add-style schema DSL"
@@ -55,7 +81,7 @@ impl Schema {
         self.fields.is_empty()
     }
 
-    /// Find field by key.
+    /// Find field by key (string slice).
     pub fn find(&self, key: &str) -> Option<&Field> {
         self.fields.iter().find(|field| field.key().as_str() == key)
     }
@@ -71,8 +97,8 @@ impl Schema {
     }
 
     /// Validate runtime values against this schema.
-    pub fn validate(&self, values: &FieldValues, mode: ExecutionMode) -> ValidationReport {
-        let mut report = ValidationReport::new();
+    pub fn validate(&self, values: &FieldValues, mode: ExecutionMode) -> LegacyReport {
+        let mut report = LegacyReport::new();
         let context = values.to_context_map();
 
         for field in &self.fields {
@@ -155,8 +181,9 @@ impl Schema {
         raw_value: Option<&Value>,
         path: &str,
         mode: ExecutionMode,
-        report: &mut ValidationReport,
+        report: &mut LegacyReport,
     ) {
+        const MAX_NESTED_DEPTH: u8 = 16;
         if Self::depth_from_path(path) > MAX_NESTED_DEPTH {
             report.push_error(ValidationIssue::new(
                 path,
@@ -220,7 +247,7 @@ impl Schema {
         value: &Value,
         path: &str,
         mode: ExecutionMode,
-        report: &mut ValidationReport,
+        report: &mut LegacyReport,
     ) {
         match field {
             Field::File(file) => {
@@ -455,6 +482,7 @@ impl Schema {
     }
 
     fn normalize_field(&self, field: &Field, path: &str, values: &mut FieldValues, depth: u8) {
+        const MAX_NESTED_DEPTH: u8 = 16;
         if depth >= MAX_NESTED_DEPTH {
             return;
         }
@@ -549,6 +577,7 @@ impl Schema {
         object: &mut Map<String, Value>,
         depth: u8,
     ) {
+        const MAX_NESTED_DEPTH: u8 = 16;
         if depth >= MAX_NESTED_DEPTH {
             return;
         }
@@ -575,6 +604,7 @@ impl Schema {
     }
 
     fn normalize_nested_value(&self, field: &Field, value: &Value, depth: u8) -> Value {
+        const MAX_NESTED_DEPTH: u8 = 16;
         if depth >= MAX_NESTED_DEPTH {
             return value.clone();
         }
@@ -657,5 +687,204 @@ impl Schema {
 
     fn field_type_name(field: &Field) -> &'static str {
         field.type_name()
+    }
+}
+
+// ── SchemaBuilder ─────────────────────────────────────────────────────────────
+
+/// Mutable builder state. Consumed by `build()`.
+#[derive(Debug, Default)]
+pub struct SchemaBuilder {
+    fields: Vec<Field>,
+}
+
+impl SchemaBuilder {
+    /// Append a field to the builder.
+    #[expect(
+        clippy::should_implement_trait,
+        reason = "builder API mirrors add-style schema DSL"
+    )]
+    pub fn add(mut self, field: impl Into<Field>) -> Self {
+        self.fields.push(field.into());
+        self
+    }
+
+    /// Run lint passes and produce a validated schema, or a report of errors.
+    pub fn build(self) -> Result<ValidSchema, ValidationReport> {
+        let mut report = ValidationReport::new();
+
+        // Lint passes (Task 19 fills these out fully).
+        crate::lint::lint_tree(&self.fields, &FieldPath::root(), &mut report);
+
+        if report.has_errors() {
+            return Err(report);
+        }
+
+        // Build the flat path index for O(1) path lookup.
+        let mut index: IndexMap<FieldPath, FieldHandle> = IndexMap::new();
+        let mut flags = SchemaFlags::default();
+        build_index(
+            &self.fields,
+            &FieldPath::root(),
+            SmallVec::new(),
+            0,
+            &mut index,
+            &mut flags,
+        );
+
+        Ok(ValidSchema::from_inner(ValidSchemaInner {
+            fields: self.fields,
+            index,
+            flags,
+        }))
+    }
+}
+
+// ── Index builder ─────────────────────────────────────────────────────────────
+
+fn build_index(
+    fields: &[Field],
+    prefix: &FieldPath,
+    parent_cursor: SmallVec<[u16; 4]>,
+    depth: u8,
+    index: &mut IndexMap<FieldPath, FieldHandle>,
+    flags: &mut SchemaFlags,
+) {
+    use crate::mode::ExpressionMode;
+
+    for (i, f) in fields.iter().enumerate() {
+        let mut cursor = parent_cursor.clone();
+        cursor.push(i as u16);
+        let path = prefix.clone().join(f.key().clone());
+        flags.max_depth = flags.max_depth.max(depth + 1);
+
+        // Track expression usage.
+        if !matches!(f.expression(), ExpressionMode::Forbidden) {
+            flags.uses_expressions = true;
+        }
+
+        // Track async loader usage.
+        let has_loader = match f {
+            Field::Select(s) => s.loader.is_some(),
+            Field::Dynamic(d) => d.loader.is_some(),
+            _ => false,
+        };
+        if has_loader {
+            flags.has_async_loaders = true;
+        }
+
+        index.insert(
+            path.clone(),
+            FieldHandle {
+                cursor: cursor.clone(),
+                depth: depth + 1,
+            },
+        );
+
+        // Recurse for container types.
+        match f {
+            Field::Object(obj) => {
+                build_index(&obj.fields, &path, cursor, depth + 1, index, flags);
+            },
+            Field::List(list) => {
+                if let Some(item) = list.item.as_deref() {
+                    // Index the item schema itself under the list path.
+                    let mut child_cursor = cursor.clone();
+                    child_cursor.push(0);
+                    let item_path = path.clone().join(f.key().clone());
+                    // If item is an object, recurse into its fields.
+                    if let Field::Object(o) = item {
+                        build_index(&o.fields, &path, cursor, depth + 1, index, flags);
+                    }
+                    let _ = item_path; // suppress unused warning
+                }
+            },
+            Field::Mode(mode) => {
+                index_mode_variants(mode, &path, &cursor, depth, index, flags);
+            },
+            _ => {},
+        }
+    }
+}
+
+fn index_mode_variants(
+    mode: &crate::field::ModeField,
+    path: &FieldPath,
+    parent_cursor: &SmallVec<[u16; 4]>,
+    depth: u8,
+    index: &mut IndexMap<FieldPath, FieldHandle>,
+    flags: &mut SchemaFlags,
+) {
+    for (vi, variant) in mode.variants.iter().enumerate() {
+        let Ok(vk) = crate::key::FieldKey::new(variant.key.as_str()) else {
+            continue;
+        };
+        let mut v_cursor = parent_cursor.clone();
+        v_cursor.push(vi as u16);
+        let variant_path = path.clone().join(vk);
+        index.insert(
+            variant_path.clone(),
+            FieldHandle {
+                cursor: v_cursor.clone(),
+                depth: depth + 2,
+            },
+        );
+        if let Field::Object(o) = variant.field.as_ref() {
+            build_index(&o.fields, &variant_path, v_cursor, depth + 2, index, flags);
+        }
+    }
+}
+
+// ── Tests ─────────────────────────────────────────────────────────────────────
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{Field, FieldKey};
+
+    fn fk(s: &str) -> FieldKey {
+        FieldKey::new(s).unwrap()
+    }
+
+    #[test]
+    fn build_empty_schema_ok() {
+        let s = Schema::builder().build().unwrap();
+        assert_eq!(s.fields().len(), 0);
+    }
+
+    #[test]
+    fn build_detects_duplicate_key() {
+        let r = Schema::builder()
+            .add(Field::string(fk("x")))
+            .add(Field::number(fk("x")))
+            .build();
+        let err = r.unwrap_err();
+        assert!(err.errors().any(|e| e.code == "duplicate_key"));
+    }
+
+    #[test]
+    fn build_finds_field_by_key() {
+        let s = Schema::builder()
+            .add(Field::string(fk("a")))
+            .build()
+            .unwrap();
+        let key = FieldKey::new("a").unwrap();
+        assert!(s.find(&key).is_some());
+    }
+
+    #[test]
+    fn schema_flags_track_depth() {
+        let s = Schema::builder()
+            .add(Field::string(fk("a")))
+            .add(Field::number(fk("b")))
+            .build()
+            .unwrap();
+        assert_eq!(s.flags().max_depth, 1);
+    }
+
+    #[test]
+    fn legacy_new_add_still_compiles() {
+        let schema = Schema::new().add(Field::string(fk("x")));
+        assert_eq!(schema.len(), 1);
     }
 }
