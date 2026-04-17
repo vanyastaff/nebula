@@ -5,7 +5,10 @@
 //! This crate defines **what** actions are and **how they communicate** with
 //! the engine, but not how the engine orchestrates them. It follows the
 //! Ports & Drivers architecture: core types live here, concrete execution
-//! environments (in-process, WASM sandbox) are implemented as drivers.
+//! environments (in-process trusted execution, child-process `ProcessSandbox`
+//! with capability allowlists and optional OS-level hardening) are implemented
+//! as drivers in `nebula-sandbox`. WASM / WASI is an explicit non-goal — see
+//! `docs/PRODUCT_CANON.md` §12.6.
 //!
 //! ## Core Types
 //!

@@ -105,8 +105,8 @@ Every concept in Nebula’s integration layer is described by two things:
 
 | Piece                     | Role                                                                                                                                                                                                                                                                                              |
 | ------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `***Metadata`**           | UI-facing description — id, display name, icon, version, and concept-specific fields (e.g. `ActionMetadata`: ports, `ActionCategory`, embedded `ParameterCollection` — execution semantics follow the action **traits** in §3.8).                                                                 |
-| `**ParameterCollection`** | The **typed configuration schema** — one parameter system (typed, validated, transformer pipeline, dynamic fields, display modes) used **across** concepts. An author learns it once; it applies to Resource config, Credential setup, and Action inputs **without** a different API per concept. |
+| **`*Metadata`**           | UI-facing description — id, display name, icon, version, and concept-specific fields (e.g. `ActionMetadata`: ports, `ActionCategory`, embedded `ParameterCollection` — execution semantics follow the action **traits** in §3.8).                                                                 |
+| **`ParameterCollection`** | The **typed configuration schema** — one parameter system (typed, validated, transformer pipeline, dynamic fields, display modes) used **across** concepts. An author learns it once; it applies to Resource config, Credential setup, and Action inputs **without** a different API per concept. |
 
 
 The **parameter subsystem** (`ParameterCollection` and friends) is the **fifth concept** — cross-cutting configuration machinery, not an afterthought bolted onto each node. **Concrete shape:** see §3.9 (`nebula-parameter`).
@@ -125,13 +125,13 @@ Long-lived managed object: connection pool, SDK client, file handle. Engine owns
 
 **Action** — `[ ActionMetadata + ParameterCollection ]` — **declares zero or more Resource and/or Credential kinds it needs** (by stable id / type reference in the **integration schema**, not ad hoc runtime lookup).
 
-**What** the step does — with explicit semantics. The engine dispatches by **which action trait** the type implements (`StatelessAction`, `StatefulAction`, `TriggerAction`, `ResourceAction`, …) — not by a single metadata “kind” field. `**ActionMetadata`** carries key, ports, parameters, isolation, `**ActionCategory`** (Data / Control / Trigger / …), and checkpoint behavior declaration (e.g. `**CheckpointPolicy`**) for UI/validation/runtime policy; this metadata supplements but does not replace trait-based routing. The trait family determines iteration (Continue / Break), trigger lifecycle, graph-scoped resource nodes, and flow-control `**ActionResult`** variants; the **runtime** applies checkpoint, retry, and cancel rules from those contracts — the author does not re-implement those invariants per action (aligned with `nebula-resilience`). **Concrete shape:** see §3.8 (`nebula-action`).
+**What** the step does — with explicit semantics. The engine dispatches by **which action trait** the type implements (`StatelessAction`, `StatefulAction`, `TriggerAction`, `ResourceAction`, …) — not by a single metadata “kind” field. **`ActionMetadata`** carries key, ports, parameters, isolation, **`ActionCategory`** (Data / Control / Trigger / …), and checkpoint behavior declaration (e.g. **`CheckpointPolicy`**) for UI/validation/runtime policy; this metadata supplements but does not replace trait-based routing. The trait family determines iteration (Continue / Break), trigger lifecycle, graph-scoped resource nodes, and flow-control **`ActionResult`** variants; the **runtime** applies checkpoint, retry, and cancel rules from those contracts — the author does not re-implement those invariants per action (aligned with `nebula-resilience`). **Concrete shape:** see §3.8 (`nebula-action`).
 
-**Wiring rule:** every Resource and Credential an Action references must be **provided by this plugin’s own `impl Plugin` registry** **or** by a type from **another plugin crate** that is a **declared dependency** in `**Cargo.toml`** (engine loads providers before dependents; see §7.1). Referencing a type that is “in the process” but **not** reachable through that **closed dependency graph** — even if another plugin registered it — is a **misconfiguration**, caught at **activation** (or equivalent validation), not a silent runtime grab.
+**Wiring rule:** every Resource and Credential an Action references must be **provided by this plugin’s own `impl Plugin` registry** **or** by a type from **another plugin crate** that is a **declared dependency** in **`Cargo.toml`** (engine loads providers before dependents; see §7.1). Referencing a type that is “in the process” but **not** reachable through that **closed dependency graph** — even if another plugin registered it — is a **misconfiguration**, caught at **activation** (or equivalent validation), not a silent runtime grab.
 
 **Plugin** — `[ registry: Actions + Resources + Credentials ]` → **+ localization + additional features**
 
-**Distribution and registration unit.** A Plugin is not only a bundle — it is the **registry** that wires Actions, Resources, and Credentials together under a **versioned** identity, with localization and metadata for the UI. Types **defined in other plugins** are available only when the dependent crate **depends on the provider plugin crate** in `**Cargo.toml`** and the engine respects that **acyclic** graph at load/activation — same closure idea as **Cargo**, not an open global namespace. **Plugin is the unit of registration, not the unit of size:** a “full” integration crate and a **micro-plugin** (one or two registry entries) are **the same kind of thing** — same `plugin.toml` contract, same registration story; see §7.1. Deployment strategies: **native** in-process (maximum performance), **process-isolated** via IPC (third-party sandboxing), **FFI** via stabby (cross-language, stable ABI). Third-party plugins are **first-class by design**; document any gap vs native until the model is complete.
+**Distribution and registration unit.** A Plugin is not only a bundle — it is the **registry** that wires Actions, Resources, and Credentials together under a **versioned** identity, with localization and metadata for the UI. Types **defined in other plugins** are available only when the dependent crate **depends on the provider plugin crate** in **`Cargo.toml`** and the engine respects that **acyclic** graph at load/activation — same closure idea as **Cargo**, not an open global namespace. **Plugin is the unit of registration, not the unit of size:** a “full” integration crate and a **micro-plugin** (one or two registry entries) are **the same kind of thing** — same `plugin.toml` contract, same registration story; see §7.1. Deployment strategies: **native** in-process (maximum performance), **process-isolated** via IPC (third-party sandboxing), **FFI** via stabby (cross-language, stable ABI). Third-party plugins are **first-class by design**; document any gap vs native until the model is complete.
 
 #### Why the uniform pattern matters
 
@@ -159,7 +159,7 @@ Long-lived managed object: connection pool, SDK client, file handle. Engine owns
 
 ### 3.8 `nebula-action`
 
-**What / why:** **Action** traits, declared dependencies, `**ActionResult`** flow, and metadata-declared execution policy (including `**CheckpointPolicy`** in `ActionMetadata`) so the engine can enforce checkpoints, branching, and retries **honestly** — not untyped “JSON in / out.”
+**What / why:** **Action** traits, declared dependencies, **`ActionResult`** flow, and metadata-declared execution policy (including **`CheckpointPolicy`** in `ActionMetadata`) so the engine can enforce checkpoints, branching, and retries **honestly** — not untyped “JSON in / out.”
 
 **Where to read:** `crates/action/src/lib.rs` (module map; crate `README.md` may lag).
 
@@ -173,20 +173,20 @@ Long-lived managed object: connection pool, SDK client, file handle. Engine owns
 
 Besides the **integration** reference crates (§3.6–§3.9), the workspace ships **shared infrastructure** — depended on from many layers; they **support** the model above without replacing it.
 
-- `**nebula-core`** — shared identifiers and keys (`ExecutionId`, `ActionKey`, `CredentialKey`, …), `**AuthScheme`** / `**AuthPattern`**, scope levels, `**SecretString`**, credential lifecycle **events**, dependency-graph helpers — the **vocabulary** other crates agree on.
-- `**nebula-error`** — `**Classify`**, `**NebulaError`**, categories/codes, structured details — **one** error taxonomy at boundaries instead of ad hoc strings.
-- `**nebula-resilience`** — composable **pipelines** (retry, timeout, circuit breaker, bulkhead, …); pairs with `**ActionError`** / retry hints in `**nebula-action`** (§3.8).
-- `**nebula-validator`** — programmatic validators + declarative `**Rule`**; `**nebula-parameter`** embeds rules in `**Parameter**` (§3.9).
-- `**nebula-config**` — multi-source, merged, optionally hot-reloaded **host** configuration (binaries/services) — **not** the per-node `**ParameterCollection`** story.
-- `**nebula-log`** — structured `**tracing`** pipeline (init, sinks, optional OTel/Sentry hooks).
-- `**nebula-telemetry`** — in-memory **metric** primitives (registry, histograms, label interning).
-- `**nebula-metrics`** — `**nebula_*` naming**, adapters, Prometheus-style **export** and label-safety guards — sits on top of `**nebula-telemetry`**.
-- `**nebula-eventbus`** — typed **broadcast** bus with back-pressure policy; **transport only** — domain `**E`** types live in owning crates.
-- `**nebula-expression`** — workflow **expression** evaluation (variable access, operators, functions) for dynamic fields — headless, not a UI.
-- `**nebula-system`** — cross-platform **host** probes (CPU/memory/network/disk pressure) for ops and telemetry inputs.
-- `**nebula-workflow`** + `**nebula-execution`** — the execution semantics core: workflow validation/shape and durable execution lifecycle/state transitions. Read these when the question is “what does the engine guarantee at runtime,” not just “how integrations are authored.”
+- **`nebula-core`** — shared identifiers and keys (`ExecutionId`, `ActionKey`, `CredentialKey`, …), **`AuthScheme`** / **`AuthPattern`**, scope levels, **`SecretString`**, credential lifecycle **events**, dependency-graph helpers — the **vocabulary** other crates agree on.
+- **`nebula-error`** — **`Classify`**, **`NebulaError`**, categories/codes, structured details — **one** error taxonomy at boundaries instead of ad hoc strings.
+- **`nebula-resilience`** — composable **pipelines** (retry, timeout, circuit breaker, bulkhead, …); pairs with **`ActionError`** / retry hints in **`nebula-action`** (§3.8).
+- **`nebula-validator`** — programmatic validators + declarative **`Rule`**; **`nebula-parameter`** embeds rules in **`Parameter`** (§3.9).
+- **`nebula-config`** — multi-source, merged, optionally hot-reloaded **host** configuration (binaries/services) — **not** the per-node **`ParameterCollection`** story.
+- **`nebula-log`** — structured **`tracing`** pipeline (init, sinks, optional OTel/Sentry hooks).
+- **`nebula-telemetry`** — in-memory **metric** primitives (registry, histograms, label interning).
+- **`nebula-metrics`** — **`nebula_*` naming**, adapters, Prometheus-style **export** and label-safety guards — sits on top of **`nebula-telemetry`**.
+- **`nebula-eventbus`** — typed **broadcast** bus with back-pressure policy; **transport only** — domain **`E`** types live in owning crates.
+- **`nebula-expression`** — workflow **expression** evaluation (variable access, operators, functions) for dynamic fields — headless, not a UI.
+- **`nebula-system`** — cross-platform **host** probes (CPU/memory/network/disk pressure) for ops and telemetry inputs.
+- **`nebula-workflow`** + **`nebula-execution`** — the execution semantics core: workflow validation/shape and durable execution lifecycle/state transitions. Read these when the question is “what does the engine guarantee at runtime,” not just “how integrations are authored.”
 
-**Layering:** cross-cutting crates sit **below** API/engine-specific surfaces (see CLAUDE.md boundaries); they must not **depend upward** on integration-only crates. **Canon use:** reuse these crates for their domains instead of duplicating helpers; if something truly belongs in `**nebula-core`** (a new stable key or auth primitive), extend it deliberately rather than inventing a parallel type in a leaf crate.
+**Layering:** cross-cutting crates sit **below** API/engine-specific surfaces (see CLAUDE.md boundaries); they must not **depend upward** on integration-only crates. **Canon use:** reuse these crates for their domains instead of duplicating helpers; if something truly belongs in **`nebula-core`** (a new stable key or auth primitive), extend it deliberately rather than inventing a parallel type in a leaf crate.
 
 ---
 
@@ -237,12 +237,12 @@ Integration authors assume unreliable networks; the runtime assumes **restartabl
 | Engine + storage + API + runtime as **composable crates** with one-way layers                                       | A single “god binary” that hides all structure                        |
 | **Local-first:** core flows runnable with **SQLite** (file or `sqlite::memory:`), no mandatory Docker/Redis for dev | Default path that requires Redis/Kafka “just to start”                |
 | **Rust-first** integration model (FFI/plugin evolution is additive, not a second-class hack)                        | A low-code platform where the primary author is non-developer glue    |
-| Honest docs: in-process sandbox = **capability / correctness**, not attacker-grade isolation                        | Claims of full untrusted-code isolation without WASM/VM-grade backend |
+| Honest docs: in-process sandbox = **capability / correctness**, not attacker-grade isolation                        | Claims of full untrusted-code isolation without an OS-hardened child-process boundary or a microVM-grade backend (see §12.6 — WASM is **not** on the isolation roadmap) |
 | **Self-hosted identity** first; cloud-style deployment is “Nebula on infra,” not a different product                | Hosted-service-first product with different core guarantees           |
 | Breaking **wrong** internal APIs when the cost of shims exceeds clarity                                             | Compatibility shims that preserve bad shapes “for now”                |
 
 
-> **Local storage truth:** v1-era wording suggested two backends (“SQLite or in-memory”). There is **one** local storage path — **SQLite** — usable against a file or `sqlite::memory:`. In-process tests use `**nebula_storage::test_support`** (`sqlite_memory_*` helpers), not a separate HashMap “memory backend.” README / onboarding that still advertise a distinct in-memory backend must be updated to match.
+> **Local storage truth:** v1-era wording suggested two backends (“SQLite or in-memory”). There is **one** local storage path — **SQLite** — usable against a file or `sqlite::memory:`. In-process tests use **`nebula_storage::test_support`** (`sqlite_memory_*` helpers), not a separate HashMap “memory backend.” README / onboarding that still advertise a distinct in-memory backend must be updated to match.
 
 > **Supported production path:** the deployment configuration Nebula claims operators can rely on **today** is **SQLite local** and **Postgres self-hosted**. Anything outside this set (e.g. Redis dependencies, FFI isolation, cloud multi-tenant modes) is additive and must be explicitly marked **experimental** or **planned** until this canon says otherwise.
 
@@ -291,18 +291,18 @@ Avoid **double declaration** — listing every action in TOML **and** in `fn act
 
 | Artifact                             | Responsibility                                                                                                                                                                                                                                                                   |
 | ------------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `**Cargo.toml`**                     | Rust **package** identity: `[package].name`, `version`, `authors`, `license`, `homepage`, `description`, and `**[dependencies]`** on other crates — **including other plugin crates**. This is the **dependency graph** the host already knows how to resolve.                   |
-| `**plugin.toml`**                    | **Trust + compatibility boundary** — read **without compiling**: **SDK constraint**, optional stable **plugin id**, and (when used) **signing** over a **stable** manifest (see **Signing** below). **Do not** duplicate registry contents (actions/resources/credentials) here. |
-| `**impl Plugin` + `PluginMetadata`** | **Runtime source of truth** for **what** gets registered (`actions()`, `resources()`, `credentials()`, locales) and for **display metadata** (`PluginMetadata`: human name, icon, categories, long description, etc.) **after** load.                                            |
+| **`Cargo.toml`**                     | Rust **package** identity: `[package].name`, `version`, `authors`, `license`, `homepage`, `description`, and **`[dependencies]`** on other crates — **including other plugin crates**. This is the **dependency graph** the host already knows how to resolve.                   |
+| **`plugin.toml`**                    | **Trust + compatibility boundary** — read **without compiling**: **SDK constraint**, optional stable **plugin id**, and (when used) **signing** over a **stable** manifest (see **Signing** below). **Do not** duplicate registry contents (actions/resources/credentials) here. |
+| **`impl Plugin` + `PluginMetadata`** | **Runtime source of truth** for **what** gets registered (`actions()`, `resources()`, `credentials()`, locales) and for **display metadata** (`PluginMetadata`: human name, icon, categories, long description, etc.) **after** load.                                            |
 
 
-**Pre-compile discovery** (registry, CLI list) uses `**Cargo.toml` + minimal `plugin.toml`** only. Full `**PluginMetadata`** is authoritative **once the plugin is loaded**; do not require a second copy of every field in TOML.
+**Pre-compile discovery** (registry, CLI list) uses **`Cargo.toml` + minimal `plugin.toml`** only. Full **`PluginMetadata`** is authoritative **once the plugin is loaded**; do not require a second copy of every field in TOML.
 
 **Versioning:** `Cargo.toml` `[package].version` is the **crate** version — do **not** duplicate it in `plugin.toml`.
 
-`**Cargo.toml` stays Rust-standard:** no Nebula-specific tables in `Cargo.toml` — Nebula-specific policy lives in `**plugin.toml`** + Rust code.
+**`Cargo.toml` stays Rust-standard:** no Nebula-specific tables in `Cargo.toml` — Nebula-specific policy lives in **`plugin.toml`** + Rust code.
 
-**The boundary “this is a Nebula plugin”:** a `**plugin.toml`** file exists at the crate root with at least:
+**The boundary “this is a Nebula plugin”:** a **`plugin.toml`** file exists at the crate root with at least:
 
 ```toml
 [nebula]
@@ -316,17 +316,17 @@ sdk = "^0.8"   # semver constraint on nebula-api / plugin SDK — read by cargo-
 id = "nebula-plugin-slack"   # if [package].name is e.g. "slack-plugin"
 ```
 
-**If `id` is omitted**, the **effective plugin id** for discovery and compatibility is `**[package].name`** from `Cargo.toml` — hosts and pre-compile tooling **must** use that string (no other implicit default). Internal mapping to typed keys (e.g. `PluginKey`) must be **deterministic** and **documented** in loader/tooling; if the package name does not map cleanly, authors **must** set `id` explicitly. **Do not** silently derive a different id from Cargo without an explicit `[plugin].id`.
+**If `id` is omitted**, the **effective plugin id** for discovery and compatibility is **`[package].name`** from `Cargo.toml` — hosts and pre-compile tooling **must** use that string (no other implicit default). Internal mapping to typed keys (e.g. `PluginKey`) must be **deterministic** and **documented** in loader/tooling; if the package name does not map cleanly, authors **must** set `id` explicitly. **Do not** silently derive a different id from Cargo without an explicit `[plugin].id`.
 
 #### Signing: why `plugin.toml`, not `Cargo.toml`
 
-`**Cargo.toml` mutates** whenever dependencies are added, bumped, or re-resolved (`cargo update`, new crates). Signing it would mean **signatures churn constantly** or cover irrelevant churn — a poor trust anchor.
+**`Cargo.toml` mutates** whenever dependencies are added, bumped, or re-resolved (`cargo update`, new crates). Signing it would mean **signatures churn constantly** or cover irrelevant churn — a poor trust anchor.
 
-`**plugin.toml` is intentionally stable:** it holds **identity-for-trust**, **SDK compatibility**, and (when enabled) **cryptographic attestation** — not the full registry. That is what you **sign**: the author attests “this **plugin identity** and **policy** are mine.” Same idea as **Android** signing `**AndroidManifest.xml`** (policy/identity), not every `.java` file; or treating a **lockfile** / manifest as the attested surface while sources ship beside it.
+**`plugin.toml` is intentionally stable:** it holds **identity-for-trust**, **SDK compatibility**, and (when enabled) **cryptographic attestation** — not the full registry. That is what you **sign**: the author attests “this **plugin identity** and **policy** are mine.” Same idea as **Android** signing **`AndroidManifest.xml`** (policy/identity), not every `.java` file; or treating a **lockfile** / manifest as the attested surface while sources ship beside it.
 
-- **Canonical signed payload:** the **bytes of `plugin.toml`** (or a defined canonical serialization of it — tooling decides). `**impl Plugin` / `PluginMetadata` are not the signed blob** — they describe **content** and can change without invalidating publisher identity, as long as the **attested manifest** is unchanged or re-signed.
+- **Canonical signed payload:** the **bytes of `plugin.toml`** (or a defined canonical serialization of it — tooling decides). **`impl Plugin` / `PluginMetadata` are not the signed blob** — they describe **content** and can change without invalidating publisher identity, as long as the **attested manifest** is unchanged or re-signed.
 
-Illustrative `**[signing]`** shape (field names and algorithms are **tooling-defined** until frozen):
+Illustrative **`[signing]`** shape (field names and algorithms are **tooling-defined** until frozen):
 
 ```toml
 [nebula]
@@ -346,18 +346,18 @@ signature   = "base64:..."
 
 | Layer             | Role                                                                                            |
 | ----------------- | ----------------------------------------------------------------------------------------------- |
-| `**plugin.toml`** | **Trust + compatibility** — SDK bound, optional id, **signature** (what the publisher attests). |
-| `**Cargo.toml`**  | **Build graph** — what compiles; **not** the Nebula trust document.                             |
-| `**impl Plugin`** | **Content** — what registers at runtime.                                                        |
+| **`plugin.toml`** | **Trust + compatibility** — SDK bound, optional id, **signature** (what the publisher attests). |
+| **`Cargo.toml`**  | **Build graph** — what compiles; **not** the Nebula trust document.                             |
+| **`impl Plugin`** | **Content** — what registers at runtime.                                                        |
 
 
 #### Why not list `[[actions]]` in `plugin.toml`?
 
-Flutter-style **pubspec** asset lists work because there is no second source. Here, `**impl Plugin`** already returns the registry — a parallel TOML table would **duplicate** it. **SDK constraint + Cargo metadata + Rust registry** keeps a **single** responsibility per layer.
+Flutter-style **pubspec** asset lists work because there is no second source. Here, **`impl Plugin`** already returns the registry — a parallel TOML table would **duplicate** it. **SDK constraint + Cargo metadata + Rust registry** keeps a **single** responsibility per layer.
 
 #### Plugin dependency rule (cross-plugin types)
 
-For **Rust** plugins, **another plugin’s** types are brought in only via `**Cargo.toml` `[dependencies]`** on the **provider plugin crate**. The engine loads / activates providers **before** dependents according to that **acyclic** graph (topological order).
+For **Rust** plugins, **another plugin’s** types are brought in only via **`Cargo.toml` `[dependencies]`** on the **provider plugin crate**. The engine loads / activates providers **before** dependents according to that **acyclic** graph (topological order).
 
 - **Versioning & discoverability:** `cargo tree`, lockfiles, and `Cargo.toml` already say “A depends on B.”
 - **Isolation:** an Action in crate A that references a Resource type from crate B **without** a Cargo dependency on B is **invalid** — fail at **activation** / compile time, not a silent global lookup.
@@ -366,7 +366,7 @@ If a future **non-Rust** host needs a manifest-only dependency list, that can be
 
 #### Layout
 
-Directories such as `actions/`, `credentials/`, `resources/`, `locales/` are **recommended**; only `**plugin.toml`** (minimal) + `**Cargo.toml`** are **required** at the canon level for the marker story above.
+Directories such as `actions/`, `credentials/`, `resources/`, `locales/` are **recommended**; only **`plugin.toml`** (minimal) + **`Cargo.toml`** are **required** at the canon level for the marker story above.
 
 Illustrative (non-normative) layouts:
 
@@ -459,11 +459,21 @@ These must stay **explicit in code and operator-facing docs**, not split across 
 
 ### 11.2 Retry
 
-Retry is a **runtime semantic** owned by the **engine** and `**nebula-resilience`** pipelines around **outbound** calls inside an action — not a decorative hint on a return type. The engine **does not** schedule re-execution of a failed node from an `ActionResult::Retry`-style return unless that path is wired with **persisted attempt accounting**. If such a variant exists but is not honored end-to-end, it is a **false capability** (remove it or implement it). Until durable per-attempt retry accounting exists, the canonical retry surface is the **resilience pipeline** an action uses internally.
+Retry is a **runtime semantic** owned by the **engine** and **`nebula-resilience`** pipelines around **outbound** calls inside an action — not a decorative hint on a return type. The engine **does not** schedule re-execution of a failed node from an `ActionResult::Retry`-style return unless that path is wired with **persisted attempt accounting**. If such a variant exists but is not honored end-to-end, it is a **false capability** (remove it or implement it). Until durable per-attempt retry accounting exists, the canonical retry surface is the **resilience pipeline** an action uses internally.
+
+**Status (per §11.6 vocabulary):**
+
+| Surface | Status | Notes |
+| --- | --- | --- |
+| `nebula-resilience` pipeline inside an action (in-memory retry around outbound calls) | `implemented` | The **canonical** retry surface today. Author composes retry/timeout/circuit-breaker at the call site. |
+| Engine-level node re-execution from `ActionResult::Retry` with persisted attempt accounting | `planned` | No persisted `attempts` row, no CAS-protected bump, no consumer wired through `ExecutionRepo`. Any return variant that implies it is a **false capability** under §4.5 — hide or delete until end-to-end. |
+| Cross-restart retry of a checkpointed step | `best-effort` | Relies on checkpoint boundaries (§11.5); work since the last checkpoint may be replayed or lost. Not a per-attempt contract. |
+
+Canon debt: until the `planned` row above moves to `implemented`, no public API, trait variant, or docs comment may describe engine-level retry as a current capability. Track this row as an **open invariant debt** — revisit whenever `ActionResult`, `ExecutionRepo`, or attempt accounting is touched.
 
 ### 11.3 Idempotency
 
-**One** idempotency story: deterministic key shape `**{execution_id}:{node_id}:{attempt}`**, persisted in `idempotency_keys`, checked and marked through `ExecutionRepo` before the side effect. **Engine guarantee:** it will not double-dispatch a **marked** attempt. Whether the **external** system de-duplicates is the integration author’s contract with that system — document per node.
+**One** idempotency story: deterministic key shape **`{execution_id}:{node_id}:{attempt}`**, persisted in `idempotency_keys`, checked and marked through `ExecutionRepo` before the side effect. **Engine guarantee:** it will not double-dispatch a **marked** attempt. Whether the **external** system de-duplicates is the integration author’s contract with that system — document per node.
 
 For **non-idempotent or risky side effects** (payments, writes without natural upsert, external one-shot operations), action handlers must guard execution with this idempotency path (or an equivalent documented key contract) before calling the remote system.
 
@@ -522,9 +532,9 @@ Docs must distinguish **implemented**, **best-effort**, **experimental**, and **
 
 ### 12.2 Execution: single semantic core, durable control plane
 
-- **Authoritative execution state** lives in `nebula-execution` + `ExecutionRepo`. Handlers and API DTOs **do not invent a parallel lifecycle**, do not mutate state without going through `**ExecutionRepo::transition`** (CAS on `version`), and do not return **synthesized** timestamps or fake defaults for missing fields.
+- **Authoritative execution state** lives in `nebula-execution` + `ExecutionRepo`. Handlers and API DTOs **do not invent a parallel lifecycle**, do not mutate state without going through **`ExecutionRepo::transition`** (CAS on `version`), and do not return **synthesized** timestamps or fake defaults for missing fields.
 - **Every “run this” / “cancel this” signal must be durable and engine-consumable.** The contract is:
-  1. The signal is written to `**execution_control_queue`** (outbox) **in the same logical operation** as the corresponding state transition. A handler that flips state to `cancelling` **without** enqueueing — or enqueues **without** transitioning — is broken.
+  1. The signal is written to **`execution_control_queue`** (outbox) **in the same logical operation** as the corresponding state transition. A handler that flips state to `cancelling` **without** enqueueing — or enqueues **without** transitioning — is broken.
   2. A dispatch worker drains the queue and forwards commands to a consumer that **the engine actually listens to**. Removing rows **before** the engine has acted is broken.
   3. There is **one** consumer wiring story per deployment mode, **documented in code**.
 - **A demo handler that logs the command and discards it does not satisfy this invariant.** Examples and `simple_server.rs` must either wire a **real** engine consumer or be marked `// DEMO ONLY — does not honor cancel` so nothing mistakes them for the contract.
@@ -544,13 +554,14 @@ Docs must distinguish **implemented**, **best-effort**, **experimental**, and **
 
 ### 12.5 Secrets and auth
 
-- No secrets in logs, error strings, or metrics labels. `**Zeroize` / `ZeroizeOnDrop`** on key material; redacted `Debug` on credential wrappers (`SecretToken`, etc.). Encryption at rest uses authenticated encryption with a KDF — do not bypass “for debugging.” Details: `crates/credential/README.md`.
+- No secrets in logs, error strings, or metrics labels. **`Zeroize` / `ZeroizeOnDrop`** on key material; redacted `Debug` on credential wrappers (`SecretToken`, etc.). Encryption at rest uses authenticated encryption with a KDF — do not bypass “for debugging.” Details: `crates/credential/README.md`.
 - Every new `tracing::*!` that takes a credential or token argument must use **redacted** forms.
 
 ### 12.6 Isolation honesty
 
 - In-process sandbox / capability checks: **correctness and least privilege for accidental misuse**, not a security boundary against malicious native code. Keep `crates/sandbox` doc comments aligned with this canon and `docs/` threat models.
 - **Plugin IPC today:** sequential dispatch over a **JSON envelope** to a child process — that **is** the trust model; do not describe it as **sandboxed execution of untrusted native code**.
+- **WASM / WASI is an explicit non-goal for plugin isolation.** The Rust plugin ecosystem integration authors actually need — `redis`, `sqlx` with native drivers, `rdkafka`, `tonic` with native TLS, any `*-sys` crate — does **not** compile to `wasm32-wasip2`, and where parts compile, the feature surface forces authors into host-polyfill folklore that violates the §3.5 promise ("Write Stripe logic; do not write credential rotation, connection management, or retry folklore"). Offering WASM as "the future sandbox" would be a §4.5 false capability and a §4.4 DX regression at the same time. **The real isolation roadmap is:** `ProcessSandbox` (already shipping) → full `PluginCapabilities` enforcement wired from `plugin.toml` through discovery (closes `nebula-sandbox/src/discovery.rs:117`) → `plugin.toml` signing verification in tooling (canon §7.1) → per-platform OS hardening in `os_sandbox` (seccomp-bpf / landlock on Linux, `sandbox_init` on macOS, `AppContainer` / job objects on Windows) → parallelism within `ProcessSandbox` for throughput (§4.1). Revisit WASM only if the Rust WASM ecosystem crosses a specific, documented capability threshold — not as aspiration, and never as docs drift in crate-level `lib.rs` or README.
 
 ### 12.7 No god files, no orphan modules
 
@@ -570,8 +581,8 @@ This is the **minimum bar** for “we did not break the product direction.” Ex
 3. **Start an execution** (API or equivalent). The execution row exists with consistent `status`, monotonic `version`, and a real `started_at` (no synthetic zero, no placeholder `now()` where the field should be `None`).
 4. **Observe** via GET — `finished_at` is `None` (not `0`) until terminal; `status` reflects the latest persisted value.
 5. **Request cancellation** on a non-terminal execution:
-  - the handler transitions through `**ExecutionRepo`** (CAS),
-  - the **same logical operation** enqueues `**Cancel`** in `execution_control_queue`,
+  - the handler transitions through **`ExecutionRepo`** (CAS),
+  - the **same logical operation** enqueues **`Cancel`** in `execution_control_queue`,
   - a dispatch consumer wired to the **real engine** observes the command and the engine’s cancel path runs,
   - the execution reaches a **terminal** `Cancelled` state without hand-waved stubs.
 6. Under test configuration where orchestration is intentionally absent: control endpoints return **503** — never fake success and never an unparsable 500.
@@ -608,7 +619,7 @@ This is the **minimum bar** for “we did not break the product direction.” Ex
 - **README drift:** advertising a backend, capability, or step the code no longer supports.
 - **God files:** continuing to add unrelated logic to a file that already exceeds reasonable responsibility instead of splitting (module or crate) when boundaries are clear.
 - **Orphan modules:** services, queues, or repos **produced but never consumed** (or vice versa). See §12.7.
-- **Spec theater:** long `docs/` plans that contradict this file without a canon revision — **plans follow canon**, not the reverse. The same applies to **this** file: if the change is really about `nebula-resource` APIs, update `**crates/resource/README.md`**, not a three-page **§3.6** essay in `docs/PRODUCT_CANON.md`.
+- **Spec theater:** long `docs/` plans that contradict this file without a canon revision — **plans follow canon**, not the reverse. The same applies to **this** file: if the change is really about `nebula-resource` APIs, update **`crates/resource/README.md`**, not a three-page **§3.6** essay in `docs/PRODUCT_CANON.md`.
 
 ---
 
@@ -622,6 +633,7 @@ This is the **minimum bar** for “we did not break the product direction.” Ex
 | `README.md`                                                                     | Operator-facing summary; **must not contradict** §5 / §11.5 / §12.3 — fix drift **on the same PR**                                                                                                            |
 | `docs/` specs                                                                   | Detailed design — **subordinate**; conflict ⇒ fix spec or update canon deliberately                                                                                                                           |
 | `docs/PLUGIN_MODEL.md` / `docs/ENGINE_GUARANTEES.md` / `docs/UPGRADE_COMPAT.md` | Satellite detail docs for §7.1, §11, §7.2 respectively; keep mechanics there, keep canon normative.                                                                                                           |
+| `docs/GLOSSARY.md`                                                              | Navigation aid: canonical identifiers (types, traits, tables) referenced by this file, grouped by layer, with canon status. Not normative — canon wins on conflict.                                          |
 | `crates/storage/migrations/{sqlite,postgres}/README.md`                         | Source of truth for **schema parity** between dialects (where present)                                                                                                                                        |
 
 

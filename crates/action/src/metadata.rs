@@ -46,7 +46,10 @@ pub enum IsolationLevel {
     None,
     /// Capability-gated in-process. SandboxedContext checks declared deps.
     CapabilityGated,
-    /// Full isolation via WASM or microVM.
+    /// Full isolation — separate process with OS-level hardening
+    /// (seccomp/landlock/AppContainer/macOS sandbox) or a microVM.
+    /// See `nebula-sandbox`. WASM is an explicit non-goal
+    /// (`docs/PRODUCT_CANON.md` §12.6).
     Isolated,
 }
 

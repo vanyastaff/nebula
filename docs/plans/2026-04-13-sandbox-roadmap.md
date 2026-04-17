@@ -27,12 +27,12 @@ Plugin processes **must not** do their own network, FS, credentials, or resource
 - Enforceable. Every network request / file read / credential fetch is a message we can policy-check, log, meter, and cancel.
 - Secret-safe. Plugin never sees raw credentials — it asks the broker "make an HTTPS POST to `api.slack.com` with the `slack_bot_token` credential" and the broker injects the header.
 - Auditable. Broker becomes a single chokepoint for "what did this plugin do" — metrics, event bus, violation events.
-- Compatible with future WASI. The broker interface is the same whether the plugin runs as a child process, a WASI module, or (one day) an in-process WASM module.
+- Transport-neutral. The broker interface is identical whether the plugin runs as a child process today or a microVM later; it is **not** a bridge to WASI/WASM (explicit non-goal per canon §12.6).
 
 **Cost:** breaks the current plugin protocol. Plugins must use a new SDK (`nebula-plugin-sdk`) that wraps broker RPC. We own both sides, so that's acceptable — nobody ships community plugins yet.
 
-### D2. Process isolation first, WASI later
-Keep the existing "plugin = OS child process" decision from `sandbox.md:10`. Plugins get to use `tokio`, `reqwest`, `teloxide`, anything. WASI stays as a separate, non-blocking experimental track.
+### D2. Process isolation, full stop — no WASI / WASM track
+Keep the existing "plugin = OS child process" decision from `sandbox.md:10`. Plugins get to use `tokio`, `reqwest`, `teloxide`, `redis`, `sqlx` with native drivers, `rdkafka`, and any `*-sys` crate — **this is the point**. WASM / WASI is an **explicit non-goal** per canon §12.6: the Rust ecosystem integration authors need does not compile to `wasm32-wasip2`, and pretending it will "later" would be a §4.5 false capability and a §4.4 DX regression. The isolation roadmap that replaces it is: `ProcessSandbox` → capability wiring → `plugin.toml` signing → per-platform `os_sandbox` hardening → `ProcessSandbox` parallelism.
 
 ### D3. Linux is Tier 1, macOS/Windows are Tier 2
 We ship **production-grade** guarantees only on Linux (landlock + seccomp-bpf + cgroups v2 + user/network namespaces). macOS and Windows get the broker plus best-effort OS jails (`sandbox-exec`, AppContainer + Job Object) and a clearly-documented "defense in depth only, not a hard boundary" label. The desktop app (`apps/desktop`) is Tier 2 by definition and must refuse to run un-audited community plugins unless the user explicitly grants it.
@@ -168,7 +168,7 @@ The broker emits, at minimum:
 
 ## 7. Out of scope (for now)
 
-- In-process WASM sandbox (cranelift/wasmtime). Tracked as a separate spike in Phase 3 — no dependency on main roadmap.
+- **In-process WASM sandbox (cranelift/wasmtime) — explicit non-goal, not a deferred item.** Canon §12.6 makes WASM / WASI a non-goal for plugin isolation; the Rust plugin ecosystem (`redis`, `sqlx` native, `rdkafka`, `tonic` native-TLS, `*-sys` crates) does not compile to `wasm32-wasip2` and pretending it will "later" is exactly the §4.5 false capability the canon bans. Revisit only if the Rust WASM ecosystem crosses a specific, documented threshold — and that revisit requires a canon update, not a quiet plan edit.
 - Network metering at the packet level (we meter at the RPC byte level, which is enough for policy but not for QoS).
 - GPU / camera / microphone / notifications — these are broker verbs exposed in Phase 5, gated only by the host app's OS-level TCC/Privacy grant. Phase 4 deals with plugin install/uninstall in the desktop app; finer-grained per-plugin permission model is deferred (§D4).
 - Full supply-chain signing (Sigstore / Notary). Phase 4 covers manifest signing as a starting point; full attestation is a separate initiative.
