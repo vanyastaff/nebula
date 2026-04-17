@@ -4205,14 +4205,26 @@ name = "nebula-schema"
 version = "0.1.0"
 dependencies = [
  "codspeed-criterion-compat",
+ "futures",
+ "indexmap",
+ "nebula-expression",
+ "nebula-schema-macros",
  "nebula-validator",
+ "once_cell",
+ "proptest",
+ "regex",
  "schemars",
  "serde",
  "serde_json",
+ "smallvec",
  "thiserror 2.0.18",
  "tokio",
  "trybuild",
 ]
+
+[[package]]
+name = "nebula-schema-macros"
+version = "0.1.0"
 
 [[package]]
 name = "nebula-sdk"
