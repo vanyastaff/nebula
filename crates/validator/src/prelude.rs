@@ -36,5 +36,5 @@ pub use crate::{
         ValidationError, ValidationErrors, ValidationMode,
     },
     proof::Validated,
-    rule::Rule,
+    rule::{DeferredRule, Logic, Predicate, PredicateContext, Rule, RuleKind, ValueRule},
 };
