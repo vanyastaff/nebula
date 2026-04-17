@@ -25,10 +25,26 @@ nebula-runtime = { path = "../runtime" }
 nebula-plugin = { path = "../plugin" }
 nebula-resilience = { path = "../resilience" }
 
-tokio = { workspace = true, features = ["rt", "rt-multi-thread", "macros", "sync", "net", "signal", "time"] }
+tokio = { workspace = true, features = [
+  "rt",
+  "rt-multi-thread",
+  "macros",
+  "sync",
+  "net",
+  "signal",
+  "time",
+] }
 axum = { workspace = true }
 tower = { version = "0.5", features = ["timeout", "util", "limit", "load-shed"] }
-tower-http = { workspace = true, features = ["trace", "cors", "compression-full", "limit", "timeout", "catch-panic", "set-header"] }
+tower-http = { workspace = true, features = [
+  "trace",
+  "cors",
+  "compression-full",
+  "limit",
+  "timeout",
+  "catch-panic",
+  "set-header",
+] }
 governor = { version = "0.10", default-features = false, features = ["std", "dashmap"] }
 serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }

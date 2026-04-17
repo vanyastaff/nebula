@@ -1,46 +1,44 @@
 [workspace]
 members = [
-    "crates/action",
-    "crates/config",
-    "crates/storage",
-    "crates/core",
-    "crates/credential",
-    "crates/engine",
-    "crates/eventbus",
-    "crates/execution",
-    "crates/expression",
-    "crates/log",
-    "crates/metrics",
-    "crates/plugin",
-    "crates/parameter",
-    "crates/schema",
-    "crates/resilience",
-    "crates/resource",
-    "crates/runtime",
-    "crates/system",
-    "crates/telemetry",
-    "crates/validator",
-    "crates/api",
-    "crates/workflow",
-    "crates/sdk/macros-support",
-    "crates/resource/macros",
-    "crates/sdk",
-    "crates/error",
-    "crates/error/macros",
-    "crates/action/macros",
-    "crates/credential/macros",
-    "crates/plugin/macros",
-    "crates/parameter/macros",
-    "crates/validator/macros",
-    "crates/config/macros",
-    "crates/sandbox",
-    "crates/plugin-sdk",
-    "apps/cli",
-    "examples",
+  "crates/action",
+  "crates/config",
+  "crates/storage",
+  "crates/core",
+  "crates/credential",
+  "crates/engine",
+  "crates/eventbus",
+  "crates/execution",
+  "crates/expression",
+  "crates/log",
+  "crates/metrics",
+  "crates/plugin",
+  "crates/parameter",
+  "crates/schema",
+  "crates/resilience",
+  "crates/resource",
+  "crates/runtime",
+  "crates/system",
+  "crates/telemetry",
+  "crates/validator",
+  "crates/api",
+  "crates/workflow",
+  "crates/sdk/macros-support",
+  "crates/resource/macros",
+  "crates/sdk",
+  "crates/error",
+  "crates/error/macros",
+  "crates/action/macros",
+  "crates/credential/macros",
+  "crates/plugin/macros",
+  "crates/parameter/macros",
+  "crates/validator/macros",
+  "crates/config/macros",
+  "crates/sandbox",
+  "crates/plugin-sdk",
+  "apps/cli",
+  "examples",
 ]
-exclude = [
-    "crates/*/fuzz",
-]
+exclude = ["crates/*/fuzz"]
 resolver = "3"
 
 [workspace.package]
@@ -84,7 +82,13 @@ arc-swap = "1.9"
 
 # Graph
 petgraph = "0.8"
-domain-key = { version = "0.5.1", features = ["serde", "ulid", "uuid", "sqlx-postgres", "sqlx-sqlite"] }
+domain-key = { version = "0.5.1", features = [
+  "serde",
+  "ulid",
+  "uuid",
+  "sqlx-postgres",
+  "sqlx-sqlite",
+] }
 uuid = { version = "1.23", features = ["v4", "serde"] }
 chrono = { version = "0.4.44", default-features = false, features = ["clock"] }
 smallvec = { version = "1.15", features = ["union", "const_generics", "serde"] }
@@ -132,7 +136,6 @@ nebula-error = { path = "crates/error" }
 nebula-error-macros = { path = "crates/error/macros" }
 
 
-
 [profile.dev]
 # Standard dev mode
 opt-level = 0
@@ -141,11 +144,11 @@ debug = 2
 
 [profile.release]
 # Optimized release builds (tuned for Windows stability)
-lto = "thin"        # Link-time optimization without ICE issues
-codegen-units = 16  # Parallel compilation, more stable than 1
-opt-level = 3       # Maximum optimization level
-strip = "symbols"   # Remove symbols for smaller binary
-panic = 'abort'     # Smaller binary, faster unwinding
+lto = "thin"       # Link-time optimization without ICE issues
+codegen-units = 16 # Parallel compilation, more stable than 1
+opt-level = 3      # Maximum optimization level
+strip = "symbols"  # Remove symbols for smaller binary
+panic = 'abort'    # Smaller binary, faster unwinding
 
 [profile.profiling]
 inherits = "release"

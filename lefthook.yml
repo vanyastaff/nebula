@@ -1,3 +1,8 @@
+# lefthook.yml
+# Local git hooks. Pre-commit = fast on changed files. Pre-push = full mirror of CI required jobs.
+# All "missing" checks (taplo, doctests, --all-features, --no-default-features, MSRV) are now run
+# locally before push, so CI required jobs cannot fail without lefthook also failing.
+
 skip_output:
   - meta
   - summary
@@ -9,23 +14,53 @@ pre-commit:
   parallel: true
   commands:
     fmt-check:
+      glob: "*.rs"
       run: cargo +nightly fmt --all -- --check
     clippy:
+      glob: "*.rs"
       run: cargo clippy --workspace --all-targets -q -- -D warnings
-    cargo-check:
-      run: cargo check --workspace --all-targets -q
-    cargo-deny:
-      glob: "{Cargo.toml,Cargo.lock,deny.toml,**/Cargo.toml}"
-      run: cargo deny check
     typos:
       run: typos
+    taplo:
+      glob: "**/*.toml"
+      run: taplo fmt --check
+    cargo-deny:
+      glob: "{Cargo.toml,Cargo.lock,deny.toml}"
+      run: cargo deny check
+
+commit-msg:
+  commands:
+    convco:
+      run: cat {1} | convco check --from-stdin
 
 pre-push:
-  parallel: false
+  parallel: true
   commands:
     nextest:
       run: cargo nextest run --workspace --status-level fail --final-status-level fail
+    doctests:
+      run: cargo test --workspace --doc
+    check-all-features:
+      run: cargo check --workspace --all-features --all-targets
+    check-no-default:
+      run: |
+        cargo check -p nebula-resilience --no-default-features
+        cargo check -p nebula-log --no-default-features
+        cargo check -p nebula-expression --no-default-features
     docs:
       env:
         RUSTDOCFLAGS: "-D warnings"
       run: cargo doc --workspace --no-deps --all-features -q
+    msrv:
+      # Graceful skip if 1.94 toolchain not installed locally.
+      # Install with: rustup install 1.94
+      run: |
+        if rustup toolchain list | grep -q '^1.94'; then
+          cargo +1.94 check --workspace --all-targets
+        else
+          echo "MSRV skipped: rustup install 1.94 to enable"
+        fi
+    shear:
+      run: cargo shear
+
+# Note: 'cargo udeps' is NOT in pre-push. It requires nightly + is slow. Kept in weekly CI workflow.

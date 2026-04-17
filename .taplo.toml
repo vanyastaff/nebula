@@ -1,0 +1,22 @@
+include = ["**/*.toml"]
+exclude = [
+  "target/**",
+  "**/target/**",
+  "node_modules/**",
+  "**/node_modules/**",
+  ".worktrees/**",
+  "apps/desktop/src-tauri/gen/**",
+]
+
+[formatting]
+align_entries = false
+array_auto_collapse = true
+array_auto_expand = true
+column_width = 100
+compact_arrays = true
+compact_inline_tables = false
+indent_string = "  "
+inline_table_expand = true
+reorder_arrays = false
+reorder_keys = false
+trailing_newline = true

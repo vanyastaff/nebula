@@ -21,7 +21,16 @@ tracing = { workspace = true }
 uuid = { workspace = true }
 
 [dev-dependencies]
-tokio = { workspace = true, features = ["rt", "rt-multi-thread", "macros", "process", "time", "io-std", "io-util", "sync"] }
+tokio = { workspace = true, features = [
+  "rt",
+  "rt-multi-thread",
+  "macros",
+  "process",
+  "time",
+  "io-std",
+  "io-util",
+  "sync",
+] }
 
 [[bin]]
 name = "nebula-echo-fixture"

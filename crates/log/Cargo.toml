@@ -19,14 +19,14 @@ tracing = { workspace = true }
 tracing-appender = { version = "0.2.4", optional = true }
 tracing-log = { version = "0.2", optional = true }
 tracing-subscriber = { workspace = true, features = [
-    "env-filter",
-    "fmt",
-    "json",
-    "ansi",
-    "registry",
-    "std",
-    "time",
-    "tracing-log",
+  "env-filter",
+  "fmt",
+  "json",
+  "ansi",
+  "registry",
+  "std",
+  "time",
+  "tracing-log",
 ], default-features = false }
 
 

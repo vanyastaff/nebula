@@ -1,0 +1,27 @@
+# mise.toml
+# Tool version manifest for the Nebula workspace.
+# Run `mise install` after cloning to install all tools at the pinned versions.
+# Install mise itself: `winget install jdx.mise` (Windows), `curl https://mise.run | sh` (Linux/Mac).
+
+[tools]
+rust = "1.94"
+taplo = "0.9.3"
+typos = "1.27"
+"cargo:cargo-nextest" = "0.9"
+"cargo:cargo-deny" = "0.16"
+"cargo:cargo-shear" = "1.1"
+"cargo:cargo-semver-checks" = "0.40"
+"cargo:cargo-udeps" = "0.1"
+"cargo:cargo-audit" = "0.21"
+"cargo:cargo-release" = "0.25"
+"cargo:sccache" = "0.8"
+"cargo:convco" = "0.6"
+"cargo:release-plz" = "latest"
+
+[env]
+# Enable sccache by default for everyone
+RUSTC_WRAPPER = "sccache"
+# 20 GB cache (default is 10 GB, project is large with many features)
+SCCACHE_CACHE_SIZE = "20G"
+# Cargo always-color is fine in interactive; set to "never" only in agent scripts
+CARGO_TERM_COLOR = "always"

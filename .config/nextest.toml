@@ -18,3 +18,12 @@ fail-fast = true
 # JUnit output for CI integration (GitHub annotations, Codecov, etc.)
 [profile.ci.junit]
 path = "junit.xml"
+
+[profile.agent]
+# Optimized for LLM-driven invocation: tight, fail-fast, no spinner/emoji.
+status-level = "fail"
+final-status-level = "fail"
+failure-output = "immediate"
+success-output = "never"
+fail-fast = true
+slow-timeout = { period = "30s", terminate-after = 2 }

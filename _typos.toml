@@ -6,10 +6,10 @@ RTO = "RTO"
 
 [files]
 extend-exclude = [
-    "target/",
-    "*.lock",
-    "CHANGELOG.md",
-    "migrations/",
-    "deny.toml",
-    "skills-lock.json",
+  "target/",
+  "*.lock",
+  "CHANGELOG.md",
+  "migrations/",
+  "deny.toml",
+  "skills-lock.json",
 ]

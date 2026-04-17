@@ -78,4 +78,3 @@ harness = false
 [[bench]]
 name = "derive_large_struct"
 harness = false
-

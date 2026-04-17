@@ -16,13 +16,7 @@ allow-dbg-in-tests = true
 allow-print-in-tests = true
 
 # Domain docs use these identifiers frequently; avoid false positives.
-doc-valid-idents = [
-    "GitHub",
-    "OpenTelemetry",
-    "OAuth2",
-    "PostgreSQL",
-    "WebSocket",
-]
+doc-valid-idents = ["GitHub", "OpenTelemetry", "OAuth2", "PostgreSQL", "WebSocket"]
 
 # Data-shape / memory-footprint heuristics.
 enum-variant-size-threshold = 200

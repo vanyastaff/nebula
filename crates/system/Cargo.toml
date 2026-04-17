@@ -41,7 +41,10 @@ serde = { workspace = true, optional = true, features = ["derive"] }
 serde_json = { workspace = true, optional = true }
 
 # System info
-sysinfo = { version = "0.38.4", optional = true, default-features = false, features = ["system", "multithread"] }
+sysinfo = { version = "0.38.4", optional = true, default-features = false, features = [
+  "system",
+  "multithread",
+] }
 
 [target.'cfg(target_os = "linux")'.dependencies]
 libc = { workspace = true }
@@ -59,11 +62,7 @@ required-features = ["sysinfo"]
 [package.metadata.docs.rs]
 all-features = true
 rustdoc-args = ["--cfg", "docsrs"]
-targets = [
-    "x86_64-unknown-linux-gnu",
-    "x86_64-apple-darwin",
-    "x86_64-pc-windows-msvc"
-]
+targets = ["x86_64-unknown-linux-gnu", "x86_64-apple-darwin", "x86_64-pc-windows-msvc"]
 
 [[example]]
 name = "system_basic"
