@@ -798,6 +798,45 @@ fn check_select_options(
     }
 }
 
+/// Translate a raw validator error code to the STANDARD_CODES vocabulary.
+///
+/// The nebula-validator crate uses its own code names (e.g. `"min_length"`,
+/// `"invalid_format"`). The schema crate STANDARD_CODES use a different
+/// namespace (`"length.min"`, `"pattern"`, etc.). This function performs the
+/// one-way mapping so that callers observe only STANDARD_CODES values.
+fn translate_validator_code(
+    raw_code: &str,
+    params: &[(
+        std::borrow::Cow<'static, str>,
+        std::borrow::Cow<'static, str>,
+    )],
+) -> String {
+    match raw_code {
+        "min_length" => "length.min".to_owned(),
+        "max_length" => "length.max".to_owned(),
+        "min" => "range.min".to_owned(),
+        "max" => "range.max".to_owned(),
+        // "invalid_format" is emitted by Pattern, Email, and Url rules.
+        // Pattern rule includes a "pattern" param; Email/Url set "expected" to "email"/"url".
+        "invalid_format" => {
+            let has_pattern_param = params.iter().any(|(k, _)| k.as_ref() == "pattern");
+            if has_pattern_param {
+                return "pattern".to_owned();
+            }
+            let expected = params
+                .iter()
+                .find(|(k, _)| k.as_ref() == "expected")
+                .map(|(_, v)| v.as_ref());
+            match expected {
+                Some("email") => "email".to_owned(),
+                Some("url") => "url".to_owned(),
+                _ => "pattern".to_owned(),
+            }
+        },
+        other => other.to_owned(),
+    }
+}
+
 /// Apply a slice of rules to a JSON literal value, pushing errors into `report`.
 fn run_rules(
     rules: &[nebula_validator::Rule],
@@ -808,9 +847,9 @@ fn run_rules(
     use nebula_validator::ExecutionMode;
     if let Err(errs) = nebula_validator::validate_rules(value, rules, ExecutionMode::StaticOnly) {
         for e in errs.errors() {
-            // Clone into owned strings to satisfy `Cow<'static, str>` constraint.
-            let code: String = e.code.as_ref().to_owned();
+            let raw_code: &str = e.code.as_ref();
             let msg: String = e.message.as_ref().to_owned();
+            let code = translate_validator_code(raw_code, e.params());
             report.push(
                 ValidationError::new(code)
                     .at(path.clone())

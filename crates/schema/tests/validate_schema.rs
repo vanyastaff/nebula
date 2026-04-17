@@ -161,8 +161,8 @@ fn length_max_rule_violated() {
     let values = FieldValues::from_json(json!({"name": "toolongvalue"})).unwrap();
     let report = schema.validate(&values).unwrap_err();
     assert!(
-        report.errors().any(|e| e.code == "max_length"),
-        "expected max_length error, codes: {:?}",
+        report.errors().any(|e| e.code == "length.max"),
+        "expected length.max error, codes: {:?}",
         report.errors().map(|e| &e.code).collect::<Vec<_>>()
     );
 }
