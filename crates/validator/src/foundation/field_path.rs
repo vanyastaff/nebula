@@ -258,6 +258,20 @@ impl fmt::Display for FieldPath {
     }
 }
 
+impl serde::Serialize for FieldPath {
+    fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+        s.serialize_str(self.as_str())
+    }
+}
+
+impl<'de> serde::Deserialize<'de> for FieldPath {
+    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        let raw = <std::borrow::Cow<'de, str>>::deserialize(d)?;
+        FieldPath::parse(raw.as_ref())
+            .ok_or_else(|| serde::de::Error::custom(format!("invalid field path: {raw:?}")))
+    }
+}
+
 impl From<FieldPath> for Cow<'static, str> {
     fn from(path: FieldPath) -> Self {
         path.0
@@ -395,5 +409,32 @@ mod tests {
         assert_eq!(path.as_str(), "/a~1b/c~0d");
         let segments: Vec<_> = path.segments().collect();
         assert_eq!(segments, ["a/b", "c~d"]);
+    }
+
+    #[test]
+    fn serialize_is_plain_string() {
+        let p = FieldPath::parse("user.email").unwrap();
+        let json = serde_json::to_value(&p).unwrap();
+        assert_eq!(json, serde_json::json!("/user/email"));
+    }
+
+    #[test]
+    fn deserialize_from_string() {
+        let p: FieldPath = serde_json::from_value(serde_json::json!("/user/email")).unwrap();
+        assert_eq!(p.as_str(), "/user/email");
+    }
+
+    #[test]
+    fn deserialize_rejects_empty() {
+        let result: Result<FieldPath, _> = serde_json::from_value(serde_json::json!(""));
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn roundtrip_stable_across_formats() {
+        let p = FieldPath::parse("items[0].city").unwrap();
+        let encoded = serde_json::to_value(&p).unwrap();
+        let decoded: FieldPath = serde_json::from_value(encoded).unwrap();
+        assert_eq!(p, decoded);
     }
 }
