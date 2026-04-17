@@ -1,0 +1,36 @@
+name: SemVer Checks
+
+on:
+  pull_request:
+    paths:
+      - "crates/**/Cargo.toml"
+      - "crates/**/src/**"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pull-requests: write
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  semver:
+    name: cargo-semver-checks
+    runs-on: ubuntu-latest
+    # Advisory only during alpha — does not block merge.
+    # Make this `required: true` in branch protection when leaving alpha.
+    continue-on-error: true
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+      - name: Run cargo-semver-checks
+        uses: obi1kenobi/cargo-semver-checks-action@v2
+        with:
+          rust-toolchain: stable
