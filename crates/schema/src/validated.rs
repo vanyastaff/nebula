@@ -96,11 +96,31 @@ impl ValidSchema {
     ///   (visibility/required `When(rule)`) only.
     ///
     /// Full value rules (type check, range, pattern …) run on literal values
-    /// here; expression resolution happens in `ValidValues::resolve` (Task 23).
+    /// here; expression resolution happens in [`ValidValues::resolve`].
     ///
     /// # Errors
     ///
     /// Returns `Err(ValidationReport)` when any hard error is found.
+    ///
+    /// # Example
+    ///
+    /// ```rust
+    /// use nebula_schema::{Field, FieldValues, Schema, field_key};
+    /// use serde_json::json;
+    ///
+    /// let schema = Schema::builder()
+    ///     .add(Field::string(field_key!("name")).required())
+    ///     .build()
+    ///     .unwrap();
+    ///
+    /// // Missing required field → error.
+    /// let empty = FieldValues::from_json(json!({})).unwrap();
+    /// assert!(schema.validate(&empty).is_err());
+    ///
+    /// // Present required field → ok.
+    /// let full = FieldValues::from_json(json!({"name": "Alice"})).unwrap();
+    /// assert!(schema.validate(&full).is_ok());
+    /// ```
     #[allow(clippy::result_large_err)]
     pub fn validate<'s>(
         &'s self,

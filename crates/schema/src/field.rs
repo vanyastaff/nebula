@@ -717,7 +717,19 @@ pub enum Field {
 // ── Factory methods ───────────────────────────────────────────────────────────
 
 impl Field {
-    /// Create `StringField`.
+    /// Create a [`StringField`] with the given key.
+    ///
+    /// # Example
+    ///
+    /// ```rust
+    /// use nebula_schema::{Field, Schema, field_key};
+    ///
+    /// let schema = Schema::builder()
+    ///     .add(Field::string(field_key!("greeting")).required())
+    ///     .build()
+    ///     .unwrap();
+    /// assert!(schema.find(&field_key!("greeting")).is_some());
+    /// ```
     pub fn string(key: impl AsRef<str>) -> StringField {
         StringField::new(key)
     }
@@ -737,7 +749,24 @@ impl Field {
         NumberField::new(key).integer()
     }
 
-    /// Create `BooleanField`.
+    /// Create a [`BooleanField`] with the given key.
+    ///
+    /// Boolean fields forbid expression values by default.
+    ///
+    /// # Example
+    ///
+    /// ```rust
+    /// use nebula_schema::{Field, FieldValues, Schema, field_key};
+    /// use serde_json::json;
+    ///
+    /// let schema = Schema::builder()
+    ///     .add(Field::boolean(field_key!("enabled")))
+    ///     .build()
+    ///     .unwrap();
+    ///
+    /// let values = FieldValues::from_json(json!({"enabled": false})).unwrap();
+    /// assert!(schema.validate(&values).is_ok());
+    /// ```
     pub fn boolean(key: impl AsRef<str>) -> BooleanField {
         BooleanField::new(key)
     }

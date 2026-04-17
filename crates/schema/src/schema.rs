@@ -15,8 +15,8 @@ use smallvec::SmallVec;
 
 use crate::{
     Field, FieldValues, LintReport, LoaderContext, LoaderRegistry, LoaderResult, RequiredMode,
-    SchemaError, SelectOption, VisibilityMode,
-    error::ValidationReport,
+    SelectOption, VisibilityMode,
+    error::{SchemaError, ValidationReport},
     lint_schema,
     path::FieldPath,
     report::{ValidationIssue, ValidationReport as LegacyReport},
@@ -25,11 +25,24 @@ use crate::{
 
 // ── Builder entry point ───────────────────────────────────────────────────────
 
-/// Marker type — entry point for `Schema::builder()`.
+/// Schema aggregate — a collection of typed field definitions.
 ///
-/// The old `Schema::new() / .add() / .validate()` API is preserved for
-/// backward compatibility. Prefer `Schema::builder().add(...).build()` for
-/// new code.
+/// Build a schema with [`Schema::builder`] then call [`SchemaBuilder::build`]
+/// to get a [`ValidSchema`] proof-token.
+///
+/// # Example
+///
+/// ```rust
+/// use nebula_schema::{Field, Schema, field_key};
+///
+/// let schema = Schema::builder()
+///     .add(Field::string(field_key!("name")).required())
+///     .add(Field::number(field_key!("score")))
+///     .build()
+///     .expect("valid schema");
+///
+/// assert_eq!(schema.fields().len(), 2);
+/// ```
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct Schema {
     /// Ordered field list.

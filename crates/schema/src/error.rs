@@ -38,6 +38,19 @@ impl ValidationError {
     /// Begin building a new `ValidationError` with the given machine-readable code.
     ///
     /// Returns a [`ValidationErrorBuilder`] — call `.build()` to finalise.
+    ///
+    /// # Example
+    ///
+    /// ```rust
+    /// use nebula_schema::{FieldPath, ValidationError};
+    ///
+    /// let err = ValidationError::new("required")
+    ///     .at(FieldPath::parse("user.email").unwrap())
+    ///     .message("field is required")
+    ///     .build();
+    ///
+    /// assert_eq!(err.code, "required");
+    /// ```
     #[allow(clippy::new_ret_no_self)]
     pub fn new(code: impl Into<Cow<'static, str>>) -> ValidationErrorBuilder {
         ValidationErrorBuilder {

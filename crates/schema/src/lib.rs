@@ -1,10 +1,30 @@
-//! Schema system for Nebula workflow surfaces.
+//! `nebula-schema` — schema definition system for Nebula workflow surfaces.
 //!
-//! `nebula-schema` is the replacement for `nebula-parameter`.
-//! It provides:
-//! - typed schema field definitions
-//! - shared validation rules via `nebula-validator::Rule`
-//! - serde-friendly schema wire formats
+//! This crate provides:
+//! - Typed field definitions and the [`Field`] enum.
+//! - [`Schema`] builder with structural lint passes.
+//! - Schema-time validation via [`ValidSchema::validate`] returning a [`ValidValues`] proof-token.
+//! - Runtime expression resolution via [`ValidValues::resolve`] returning a [`ResolvedValues`]
+//!   proof-token.
+//! - Strongly-typed error and path types.
+//!
+//! # Quick start
+//!
+//! ```rust
+//! use nebula_schema::{Field, FieldValues, Schema, field_key};
+//! use serde_json::json;
+//!
+//! let schema = Schema::builder()
+//!     .add(Field::string(field_key!("name")).required())
+//!     .add(Field::number(field_key!("age")))
+//!     .build()
+//!     .expect("schema is valid");
+//!
+//! let values = FieldValues::from_json(json!({"name": "Alice", "age": 30})).unwrap();
+//! let valid = schema.validate(&values).expect("values are valid");
+//!
+//! assert_eq!(valid.warnings().len(), 0);
+//! ```
 
 #![forbid(unsafe_code)]
 #![warn(missing_docs)]
@@ -13,7 +33,7 @@
 pub(crate) mod context;
 /// Error types for schema operations.
 pub mod error;
-/// Expression value wrapper (Task 14 adds lazy parse + OnceLock).
+/// Expression wrapper and [`ExpressionContext`] trait.
 pub mod expression;
 /// Typed field definitions and wrappers.
 pub mod field;
@@ -31,21 +51,25 @@ pub mod mode;
 pub mod option;
 /// Typed references to schema fields.
 pub mod path;
-/// Legacy validation report models (kept for schema.rs; will be deleted in a later task).
+/// Common imports for schema-definition code.
+pub mod prelude;
+/// Legacy validation report models — kept internal; will be deleted with schema.rs legacy API.
 #[doc(hidden)]
-pub mod report;
+pub(crate) mod report;
 /// Top-level schema aggregate.
 pub mod schema;
 /// Value transformer definitions.
 pub mod transformer;
-/// Validated schema proof-tokens (ValidSchema, FieldHandle, SchemaFlags).
+/// Validated schema proof-tokens.
 pub mod validated;
 /// Runtime value wrappers and wire-format helpers.
 pub mod value;
 /// Typed widget hints by field family.
 pub mod widget;
 
-pub use error::{SchemaError, Severity, ValidationError, ValidationErrorBuilder, ValidationReport};
+pub use error::{
+    STANDARD_CODES, Severity, ValidationError, ValidationErrorBuilder, ValidationReport,
+};
 pub use expression::{Expression, ExpressionAst, ExpressionContext};
 pub use field::{
     BooleanField, CodeField, ComputedField, ComputedReturn, DynamicField, Field, FileField,
@@ -60,10 +84,11 @@ pub use loader::{
 };
 pub use mode::{ExpressionMode, RequiredMode, VisibilityMode};
 pub use nebula_schema_macros::field_key;
+// Re-exported for tests using the legacy Schema::validate(values, mode) API.
+// Tasks 28-30 will migrate these callers.
 pub use nebula_validator::ExecutionMode;
 pub use option::SelectOption;
-pub use path::FieldPath;
-pub use report::ValidationIssue;
+pub use path::{FieldPath, PathSegment};
 pub use schema::{Schema, SchemaBuilder};
 pub use transformer::Transformer;
 pub use validated::{FieldHandle, ResolvedValues, SchemaFlags, ValidSchema, ValidValues};
@@ -73,14 +98,5 @@ pub use widget::{
     StringWidget,
 };
 
-/// Common imports for schema definition code.
-pub mod prelude {
-    pub use nebula_validator::Rule;
-
-    pub use crate::{
-        BooleanField, BooleanWidget, CodeWidget, Field, FieldKey, ListWidget, LoaderContext,
-        LoaderRegistry, NumberField, NumberWidget, ObjectField, ObjectWidget, RequiredMode, Schema,
-        SchemaError, SecretField, SecretWidget, SelectField, SelectOption, SelectWidget,
-        StringField, StringWidget, VisibilityMode,
-    };
-}
+/// Schema wire-format version emitted in serialized output (Phase 2+ plugins read this).
+pub const SCHEMA_WIRE_VERSION: u16 = 1;

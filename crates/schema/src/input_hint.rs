@@ -3,6 +3,17 @@
 use serde::{Deserialize, Serialize};
 
 /// Semantic hint for rendering a string input.
+///
+/// Attach to a [`StringField`](crate::StringField) to give the UI a rendering
+/// hint without changing validation semantics.
+///
+/// # Example
+///
+/// ```rust
+/// use nebula_schema::{Field, InputHint, field_key};
+///
+/// let field = Field::string(field_key!("contact_email")).hint(InputHint::Email);
+/// ```
 #[non_exhaustive]
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
