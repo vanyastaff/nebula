@@ -80,6 +80,7 @@ skip = [
   "hashbrown",
   "hmac",
   "linux-raw-sys",
+  "r-efi",
   "rand",
   "rand_chacha",
   "rand_core",
