@@ -54,24 +54,12 @@ pre-push:
       env:
         RUSTDOCFLAGS: "-D warnings"
       run: cargo doc --workspace --no-deps --all-features --quiet
-    msrv:
-      # Graceful skip if 1.94 toolchain not installed locally.
-      # Install with: rustup install 1.94
-      #
-      # Isolated target directory prevents races against the parallel nextest /
-      # doctests / check-all-features jobs that share the default `target/` —
-      # cargo's target lock is per-directory, so without this the parallel
-      # invocations serialize on the same lock and the msrv job has been
-      # observed to exit fast (0.2-0.4s) with exit code 101 while the others
-      # hold the lock.
-      env:
-        CARGO_TARGET_DIR: "target-msrv"
-      run: |
-        if rustup toolchain list | grep -q '^1.94'; then
-          cargo +1.94 check --workspace --all-targets --quiet
-        else
-          echo "MSRV skipped: rustup install 1.94 to enable"
-        fi
+    # MSRV check is owned by CI (.github/workflows/ci.yml job `msrv`) — running
+    # it locally duplicates that guard and, on Git Bash for Windows, the
+    # `env:` + multi-line `run:` combination hits a lefthook shell-parsing bug
+    # (syntax error, unrelated to cargo itself). Relying on CI keeps the
+    # memory pitfall `feedback_lefthook_mirrors_ci.md` satisfied — MSRV is
+    # still a required job on push.
     shear:
       run: cargo shear
 
