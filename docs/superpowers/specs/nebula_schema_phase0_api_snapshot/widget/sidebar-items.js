@@ -1,0 +1,1 @@
+window.SIDEBAR_ITEMS = {"enum":["BooleanWidget","CodeWidget","ListWidget","NumberWidget","ObjectWidget","SecretWidget","SelectWidget","StringWidget"]};
