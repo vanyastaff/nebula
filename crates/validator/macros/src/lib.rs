@@ -51,13 +51,13 @@
 //!
 //! Three phases, each in its own module:
 //!
-//! 1. [`parse`] — `syn::DeriveInput` → [`model::ValidatorInput`] IR. Validates attribute
-//!    combinations and regex patterns at macro-time.
-//! 2. [`model`] — pure intermediate representation, zero `syn` types.
-//! 3. [`emit`] — [`model::ValidatorInput`] → `proc_macro2::TokenStream`. Pre-compiles regex
-//!    patterns via `LazyLock` for runtime performance.
+//! 1. `parse` — `syn::DeriveInput` → `model::ValidatorInput` IR. Validates attribute combinations
+//!    and regex patterns at macro-time.
+//! 2. `model` — pure intermediate representation, zero `syn` types.
+//! 3. `emit` — `model::ValidatorInput` → `proc_macro2::TokenStream`. Pre-compiles regex patterns
+//!    via `LazyLock` for runtime performance.
 //!
-//! Shared [`types`] introspection helpers (`Option<T>`, `Vec<T>`, `String`,
+//! Shared `types` introspection helpers (`Option<T>`, `Vec<T>`, `String`,
 //! `bool` recognition) are used by both parse and emit.
 
 #![forbid(unsafe_code)]
@@ -77,7 +77,7 @@ mod types;
 ///
 /// Emits:
 /// - `impl Validate<Self> for Self` — forwards to `validate_fields()` and collapses accumulated
-///   errors into a single [`ValidationError`].
+///   errors into a single `ValidationError`.
 /// - `impl SelfValidating for Self` — enables `#[validate(nested)]` in parents.
 /// - An inherent `validate_fields(&self) -> Result<(), ValidationErrors>` that returns the full
 ///   collection of field-level failures.
