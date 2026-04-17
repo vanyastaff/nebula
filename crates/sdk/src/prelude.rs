@@ -64,21 +64,27 @@ pub use nebula_credential::{
     SnapshotError,
 };
 pub use nebula_credential::{CredentialContext, CredentialId};
-// Derive macros (re-exported from their respective domain crates)
-// Action, Credential, and Plugin derive macros are already in scope from the
-// domain crate imports above (same names, macro namespace).
-pub use nebula_parameter::Parameters;
-// Parameter types
-pub use nebula_parameter::prelude::*;
 // Plugin types
 pub use nebula_plugin::{
     Plugin, PluginMetadata,
     descriptor::{ActionDescriptor, CredentialDescriptor, ResourceDescriptor},
 };
 pub use nebula_resource::Resource;
+// Derive macros (re-exported from their respective domain crates)
+// Action, Credential, and Plugin derive macros are already in scope from the
+// domain crate imports above (same names, macro namespace).
+// Schema types — Field/Schema/ValidSchema/field_key already re-exported via nebula_action
+// above.
+pub use nebula_schema::{
+    BooleanField, CodeField, ComputedField, DynamicField, Expression, ExpressionMode, FieldKey,
+    FieldPath, FieldValue, FieldValues, FileField, InputHint, ListField, LoaderContext,
+    LoaderRegistry, ModeField, NoticeField, NumberField, ObjectField, RequiredMode, ResolvedValues,
+    SchemaBuilder, SecretField, SelectField, SelectOption, Severity, StringField, Transformer,
+    ValidValues, ValidationError, ValidationReport, VisibilityMode,
+};
 pub use nebula_validator::Validator;
 // Validator traits
-pub use nebula_validator::foundation::{Validate, ValidateExt, ValidationError, ValidationErrors};
+pub use nebula_validator::foundation::{Validate, ValidateExt};
 pub use nebula_workflow::Version;
 // Workflow traits and types
 pub use nebula_workflow::{
