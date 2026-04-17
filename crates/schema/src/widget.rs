@@ -144,11 +144,19 @@ pub enum CodeWidget {
 
 #[cfg(test)]
 mod tests {
-    use super::{CodeWidget, StringWidget};
+    use super::{BooleanWidget, CodeWidget, NumberWidget, StringWidget};
 
     #[test]
     fn widget_defaults_are_stable() {
         assert_eq!(StringWidget::default(), StringWidget::Plain);
         assert_eq!(CodeWidget::default(), CodeWidget::Monaco);
+    }
+
+    #[test]
+    fn widgets_are_non_exhaustive_and_small() {
+        use std::mem::size_of;
+        assert!(size_of::<StringWidget>() <= 1);
+        assert!(size_of::<NumberWidget>() <= 1);
+        assert!(size_of::<BooleanWidget>() <= 1);
     }
 }
