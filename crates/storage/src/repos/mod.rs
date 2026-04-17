@@ -1,25 +1,40 @@
-//! Repository traits — the public API of `nebula-storage`.
+//! Repository traits — **planned spec-16 architecture**, per canon §11.6.
 //!
-//! Each domain has its own trait. All traits are `Send + Sync` and async.
-//! Implementations live in this crate (in-memory, Postgres) or downstream.
+//! ## Status — read before depending on these traits
 //!
-//! # Design
+//! | Trait | Status | Notes |
+//! |---|---|---|
+//! | `ControlQueueRepo` + `InMemoryControlQueueRepo` | **implemented** | Consumed by the API cancel handler (canon §12.2). Safe to depend on. |
+//! | `ExecutionRepo`, `WorkflowRepo`, `ExecutionNodeRepo`, `JournalRepo` | **planned** | Trait definitions only — zero in-memory / Postgres implementations exist in this crate. Engine and API cannot compile against these signatures today. |
+//! | `AuditRepo`, `BlobRepo`, `CredentialRepo`, `QuotaRepo`, `ResourceRepo`, `TriggerRepo`, `UserRepo`, `OrgRepo`, `WorkspaceRepo` | **planned** (some with partial Postgres glue) | Same caveat. |
+//!
+//! For execution / workflow persistence **use the layer-1 traits**
+//! re-exported at the crate root (`nebula_storage::ExecutionRepo`,
+//! `nebula_storage::WorkflowRepo`). Those are the production contract
+//! the knife scenario exercises end-to-end.
+//!
+//! Adopting this module's design as the production contract requires
+//! engine + API + runtime refactor tracked as "Sprint E — adopt spec-16
+//! row model" in the workspace health audit spec
+//! (`docs/superpowers/specs/2026-04-16-workspace-health-audit.md`).
+//!
+//! ## Design (when / if adopted)
 //!
 //! - Traits accept **raw byte slices** for IDs; callers encode their domain newtypes. This keeps
 //!   the storage layer independent of `nebula-core` ID types and avoids cross-crate compile-time
 //!   coupling.
-//! - Return types are row structs from `crate::rows::*`.
+//! - Return types are row structs from `crate::rows::*` — multi-tenant by construction
+//!   (`workspace_id` / `org_id` are mandatory columns).
 //! - All errors funnel through [`crate::StorageError`].
 //!
-//! # Example
+//! # Example (layer-1 production path)
 //!
 //! ```ignore
-//! use nebula_storage::{OrgRepo, rows::OrgRow};
+//! use nebula_storage::{ExecutionRepo, InMemoryExecutionRepo};
 //!
-//! async fn create_acme(repo: &dyn OrgRepo) -> Result<OrgRow, nebula_storage::StorageError> {
-//!     let row = /* build OrgRow */ unimplemented!();
-//!     repo.create(&row).await
-//! }
+//! let repo: std::sync::Arc<dyn ExecutionRepo> =
+//!     std::sync::Arc::new(InMemoryExecutionRepo::new());
+//! // Use repo with the engine / API today — see canon §13 knife scenario.
 //! ```
 
 mod audit;

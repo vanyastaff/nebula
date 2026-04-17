@@ -23,6 +23,8 @@ Nebula's architecture (per canon §3.5, §3.10, §12) is sound. The workspace is
 
 **Single biggest win:** closing the §12.2 loop (API cancel → control queue → engine consumer → terminal state) would flip knife §13 from failing to passing. Everything else is quality/hygiene around a working core, with the schema migration (spec 21 Task 6) as the largest breaking-change axis.
 
+**Revision 2026-04-16 (post-A2.4 investigation):** §2.3's "storage two-truths" framing was corrected — the `repos/*` layer is not a pending migration but a planned architectural pivot (spec-16 multi-tenant row model) with no implementations yet. Audit solution is canon §11.6 status clarification; full adoption moved to Sprint E (§8) as a separate track. See §2.3 for the corrected narrative.
+
 ---
 
 ## 1. Crate health matrix
@@ -119,20 +121,43 @@ These block §13 knife or violate §14 "implement end-to-end or delete." Every i
 
 ---
 
-### 2.3 Storage two-truths — §12.2 + §14 + §12.7
+### 2.3 Storage — two trait layers, NOT a mechanical migration (superseded 2026-04-16)
 
-**Location:** `crates/storage/src/{execution_repo.rs, workflow_repo.rs}` (legacy) coexist with `crates/storage/src/repos/*` (new). Both are public. Control queue lives only in `repos/control_queue.rs`.
+**First-draft diagnosis (wrong):** this audit originally framed the coexistence of legacy `execution_repo.rs` / `workflow_repo.rs` and new `repos/*` as a §14 two-truths "finish the migration" task (Q5=A single atomic PR).
 
-**Risk:** a caller using the legacy trait never sees the control queue. §12.2 "single wired consumer" is not enforceable while two APIs coexist.
+**Corrected diagnosis (after deep investigation by A2.4 agent):** the two layers are not the same contract in two presentations — they encode **two different product architectures**:
 
-**Canon:** §12.2 + §14 anti-pattern "two truths" + §12.7 "no orphan modules."
+| Legacy layer (implemented, production) | New layer (`repos/*`, planned) |
+|---|---|
+| `nebula_storage::ExecutionRepo` / `WorkflowRepo` — state-as-JSON-blob model | `repos::ExecutionRepo` / `WorkflowRepo` — spec-16 structured-row model |
+| Typed IDs (`ExecutionId`, etc.), `u64` CAS version | Raw `&[u8]` IDs, `i64` version |
+| `transition(id, version, state_json) → bool` | `transition(id, version, status_str, Option<patch>) → ExecutionRow` |
+| No multi-tenancy | Mandatory `workspace_id` + `org_id` on every create |
+| `workflows.definition` JSON column | `WorkflowRow` + `WorkflowVersionRow` split |
+| Idempotency as method on `ExecutionRepo` | Idempotency as column on `ExecutionNodeRow` (different repo) |
+| Implementations: `InMemoryExecutionRepo`, `InMemoryWorkflowRepo`, `PgExecutionRepo`, `PgWorkflowRepo` | **Zero implementations** for `ExecutionRepo`, `WorkflowRepo`, `ExecutionNodeRepo`, `JournalRepo`. Only `InMemoryControlQueueRepo` is wired. |
+| Engine, API, runtime, tests, examples — all depend on this | **Only** `InMemoryControlQueueRepo` has a real consumer (API cancel — A1.2) |
+| 8 flat migrations | 19+19 spec-16 migrations (Postgres + SQLite) |
 
-**Fix (staged — this is the biggest change):**
+**Why the original "delete legacy" fix is wrong:** the new traits cannot compile without engine + API + runtime rewrite (different method signatures, multi-tenancy requirement, split workflow model, new idempotency model). There is no mechanical path and no adapter path that honours Q1=A.
 
-1. Audit callers of legacy `ExecutionRepo`/`WorkflowRepo` — every caller must move to `repos/*`.
-2. For each `repos/*` module, verify at least one consumer (otherwise §12.7 orphan).
-3. Delete `execution_repo.rs`, `workflow_repo.rs`, legacy backend glue once callers are migrated.
-4. Feature-matrix tests: CI runs both `--features sqlite` and `--features postgres`.
+**Decision (user, 2026-04-16): Option C — explicit canon §11.6 status split.** Keep both layers, mark them honestly:
+
+1. **Layer 1 (top-level `ExecutionRepo` / `WorkflowRepo` re-exports)** — status **`implemented`**. Production path. Knife §13 runs against this. New consumers default here.
+2. **Layer 2 (`repos/*` module)** — status **`planned`** for Execution/Workflow/Node/Journal/etc. **Exception:** `ControlQueueRepo` + `InMemoryControlQueueRepo` are `implemented` (A1.2 wired them into the API cancel handler).
+3. No deletion. No adapter. Docs make the split explicit (canon §11.6): crate-level doc in `crates/storage/src/lib.rs`, module-level doc in `crates/storage/src/repos/mod.rs`, audit spec (this §2.3), and the roadmap (§8 Sprint E).
+
+**Why this does not violate §14 two-truths:** canon §14 anti-pattern is "execution state in DB says X, channel/queue says Y, with no formal reconciliation story." Here the reconciliation story is explicit: layer 1 is the production contract, layer 2 is a planned future contract with one already-shipped construct (control queue). There is exactly one authoritative path per concern at any given time.
+
+**Follow-up work:** "Sprint E — adopt spec-16 row model" (§8) is a dedicated future plan: write in-memory implementations of all new-layer traits, rewrite engine/API/runtime to use them, wire multi-tenancy, delete layer 1 in a final PR. Not in scope for this audit's Sprints A–D.
+
+**Implementation of decision C (shipped with audit update):**
+
+- `crates/storage/src/lib.rs` — crate doc explicitly labels both layers
+- `crates/storage/src/repos/mod.rs` — module doc table of per-trait status
+- This audit §2.3 — corrected narrative (above)
+- §6 breaking-changes list — "storage two-truths resolution" removed; replaced with "storage status markers + Sprint E adoption plan"
+- §8 roadmap — Sprint A2 renamed to "storage canon status documentation" (docs only); Sprint E added as the real adoption plan
 
 ---
 
@@ -267,7 +292,7 @@ These are the breaking changes implied by §2 + §3. Each is an independent plan
 **Track A — knife & honesty:**
 
 1. **API: activation validation + cancel control-queue wiring + typed status.** (§2.1, §2.2)
-2. **Storage two-truths resolution** → remove legacy `ExecutionRepo`/`WorkflowRepo`; migrate all callers to `repos/*`. Single atomic PR. (§2.3, per Q5=A)
+2. **Storage canon status documentation** (docs only) → explicitly mark layer 1 `implemented`, layer 2 `planned` per canon §11.6. See §2.3 corrected. The actual spec-16 adoption is Sprint E (§8), not this audit's scope. (§2.3)
 3. **Engine credential allowlist** → deny-by-default from `ActionDependencies`. (§2.4)
 4. **Delete `runtime/src/sandbox.rs`**. (§2.5)
 
@@ -330,9 +355,9 @@ Tracks don't collide — Track A touches `crates/api`, `crates/storage`, `crates
 2. `2026-04-17-api-cancel-control-queue.md` — wire control-queue enqueue into cancel handler. (§2.2)
 3. `2026-04-18-knife-e2e-test.md` — end-to-end integration test covering §13 steps 1–6.
 
-**Sprint A2 — storage truth (1 week, single atomic PR per Q5=A):**
+**Sprint A2 — storage canon status markers (docs only, ~30 min):**
 
-4. `2026-04-21-storage-single-repo-api.md` — audit legacy callers, migrate all to `repos/*`, delete `execution_repo.rs`/`workflow_repo.rs`, verify sqlite + postgres feature matrix. Single PR. (§2.3)
+4. `2026-04-21-storage-canon-status.md` — mark layer 1 `implemented` / layer 2 `planned` in crate docs, module docs, README. No code changes. **Supersedes original A2.4 "delete legacy" framing** (investigation showed layer 2 has no implementations and demands architectural refactor, not a mechanical migration). Adoption work moves to Sprint E.
 
 **Sprint A3 — honesty closure (3–4 days):**
 
@@ -377,6 +402,25 @@ Dependency order (per Q2): action → credential → resource → engine → cli
 22. `2026-05-19-system-platform-tests.md`.
 
 **Note:** `parameter.rs` god-file split **dropped** — the crate goes away in Track B.
+
+---
+
+### Sprint E — adopt spec-16 storage row model (deferred, 2–4 weeks)
+
+Separate design track, **not** part of this audit's closure. Added after A2.4 investigation revealed that the `repos/*` layer is a product-architecture redesign, not a mechanical migration (see §2.3).
+
+**Scope:**
+
+23. `YYYY-MM-DD-spec-16-inmemory-impls.md` — implement `InMemoryExecutionRepo`/`WorkflowRepo`/`WorkflowVersionRepo`/`ExecutionNodeRepo`/`JournalRepo` against the new trait signatures. Pure data structures, no consumers yet.
+24. `YYYY-MM-DD-spec-16-engine-refactor.md` — rewrite `crates/engine` against `repos::*` traits. Split `ExecutionState` JSON blob into `(status column, patch)`, introduce `workspace_id`/`org_id` threading, rework node-output and idempotency key models, rework checkpoint model.
+25. `YYYY-MM-DD-spec-16-api-refactor.md` — rewrite `crates/api` against `repos::*` traits. Split workflow persistence into `WorkflowRow` + `WorkflowVersionRow`. Decide multi-tenancy source (default single-tenant dev workspace? auth-provided? test scaffold?).
+26. `YYYY-MM-DD-spec-16-postgres-impls.md` — wire Postgres implementations of all new repos. Validate feature matrix.
+27. `YYYY-MM-DD-spec-16-delete-layer-1.md` — once every consumer is migrated, delete `execution_repo.rs`, `workflow_repo.rs`, `backend/`. Update canon §11.5 persistence matrix to reflect the new row model.
+28. `YYYY-MM-DD-spec-16-canon-update.md` — update `docs/PRODUCT_CANON.md` §11.5 table + §3.10 storage description. Announce in release notes (canon §7.2).
+
+**Pre-requisite:** a design decision on multi-tenancy defaults for single-binary local-first path (canon §12.3) — spec-16 demands `workspace_id`/`org_id` everywhere, local-first wants zero config. Reconcile before step 23.
+
+**Explicit non-goal for Sprint E:** retaining any legacy `ExecutionRepo`/`WorkflowRepo` API surface after step 27. The point of Sprint E is to eliminate layer 1.
 
 ---
 
