@@ -13,8 +13,12 @@ export default {
         "perf",
         "test",
         "chore",
+        "ci",
+        "build",
       ],
     ],
+    // Rust convention uses PascalCase type names in commit subjects (e.g. ValidSchema, FieldKey).
+    "subject-case": [0],
     "body-max-line-length": [0],
   },
 };
