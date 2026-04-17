@@ -111,19 +111,25 @@ impl Schema {
 
     /// Validate runtime values against this schema.
     pub fn validate(&self, values: &FieldValues, mode: ExecutionMode) -> LegacyReport {
+        use std::sync::LazyLock;
+
+        // Thread-safe shared empty context — reused on every validate call
+        // that does not need any `When(rule)` evaluation. Replaces the
+        // per-call `HashMap::new()` stack init.
+        static EMPTY_CONTEXT: LazyLock<HashMap<String, Value>> = LazyLock::new(HashMap::new);
+
         let mut report = LegacyReport::new();
 
         // Decide whether we need to build a HashMap context for predicate rule
         // evaluation. Most schemas use only `Always`/`Never` visibility/required
         // modes, so we can skip the allocation entirely on the fast path.
         let needs_context = self.fields.iter().any(Self::field_needs_context);
-        let empty_context: HashMap<String, Value> = HashMap::new();
         let context_storage: HashMap<String, Value>;
         let context: &HashMap<String, Value> = if needs_context {
             context_storage = values.to_context_map();
             &context_storage
         } else {
-            &empty_context
+            &EMPTY_CONTEXT
         };
 
         for field in &self.fields {
