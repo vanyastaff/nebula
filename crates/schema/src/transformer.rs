@@ -1,8 +1,7 @@
 //! Pre-validation value transformers with regex cache.
 
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 
-use once_cell::sync::OnceCell;
 use regex::Regex;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -34,7 +33,7 @@ pub enum Transformer {
         group: usize,
         /// Lazily compiled regex — skipped by serde.
         #[serde(skip)]
-        cache: Arc<OnceCell<Regex>>,
+        cache: Arc<OnceLock<Regex>>,
     },
 }
 
