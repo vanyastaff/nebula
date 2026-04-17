@@ -164,7 +164,7 @@ impl ActionRuntime {
     pub async fn execute_action_versioned(
         &self,
         action_key: &str,
-        version: Option<&nebula_action::InterfaceVersion>,
+        version: Option<&semver::Version>,
         input: serde_json::Value,
         context: ActionContext,
     ) -> Result<ActionResult<serde_json::Value>, RuntimeError> {
@@ -198,7 +198,7 @@ impl ActionRuntime {
     pub async fn execute_action_with_checkpoint(
         &self,
         action_key: &str,
-        version: Option<&nebula_action::InterfaceVersion>,
+        version: Option<&semver::Version>,
         input: serde_json::Value,
         context: ActionContext,
         checkpoint: Option<Arc<dyn StatefulCheckpointSink>>,

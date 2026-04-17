@@ -19,6 +19,7 @@ nebula-sandbox = { path = "../sandbox" }
 nebula-metrics = { path = "../metrics" }
 nebula-telemetry = { path = "../telemetry" }
 async-trait = { workspace = true }
+semver = { workspace = true }
 tokio = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
@@ -26,7 +27,6 @@ tracing = { workspace = true }
 thiserror = { workspace = true }
 dashmap = { workspace = true }
 uuid = { workspace = true }
-bytes = { workspace = true }
 
 [dev-dependencies]
 nebula-core = { path = "../core" }

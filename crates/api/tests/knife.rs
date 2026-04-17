@@ -18,133 +18,19 @@
 //! | 3 | `POST /workflows/:id/executions` → 202, `status=pending`, `started_at > 0`, `finished_at` absent | `knife_scenario_end_to_end` |
 //! | 4 | `GET /executions/:id` → `finished_at` is null/absent, `status` = latest persisted value | `knife_scenario_end_to_end` |
 //! | 5 | `POST /executions/:id/cancel` → DB row = `cancelled`, control queue has exactly one `Cancel` entry | `knife_scenario_end_to_end` |
-//! | 6 | Enqueue failure → 500 (handler uses `Internal` not `ServiceUnavailable`; documented discrepancy) | `knife_step6_queue_failure_returns_error` |
-//!
-//! ### Step 6 — known discrepancy
-//!
-//! Canon §13 step 6 mandates **503** when "orchestration is intentionally
-//! absent". The current `cancel_execution` handler maps enqueue failures to
-//! `ApiError::Internal` → HTTP 500. Changing this requires a handler edit,
-//! which is out of scope for this test-only task. The test below documents the
-//! actual behavior (500) and is marked with `// CANON-GAP §13-step6` so a
-//! future PR can flip the assertion to 503 once the handler is corrected.
+//! | 6 | Enqueue failure → 503 (orchestration absent; canon §13 step 6) | `knife_step6_queue_failure_returns_error` |
 
+mod common;
 use std::sync::Arc;
 
 use axum::{
     body::Body,
     http::{Request, StatusCode},
 };
+use common::*;
 use nebula_api::{ApiConfig, AppState, app};
-use nebula_config::ConfigBuilder;
-use nebula_storage::{
-    InMemoryExecutionRepo, InMemoryWorkflowRepo, repos::InMemoryControlQueueRepo,
-};
+use nebula_storage::{InMemoryExecutionRepo, InMemoryWorkflowRepo};
 use tower::ServiceExt;
-
-// ── shared constants ─────────────────────────────────────────────────────────
-
-const TEST_JWT_SECRET: &str = "test-secret-for-integration-tests-0123456789";
-
-// ── helpers ──────────────────────────────────────────────────────────────────
-
-/// Build a minimal, structurally valid `WorkflowDefinition` JSON that passes
-/// `nebula_workflow::validate_workflow` (single node, no cycles, schema_version=1).
-fn make_valid_workflow_definition(workflow_id: &nebula_core::WorkflowId) -> serde_json::Value {
-    serde_json::json!({
-        "id": workflow_id.to_string(),
-        "name": "Knife Valid Workflow",
-        "version": { "major": 0, "minor": 1, "patch": 0 },
-        "nodes": [
-            { "id": "step_a", "name": "Step A", "action_key": "echo" }
-        ],
-        "connections": [],
-        "created_at": "2024-01-01T00:00:00Z",
-        "updated_at": "2024-01-01T00:00:00Z",
-        "schema_version": 1
-    })
-}
-
-/// Build a `WorkflowDefinition` JSON that parses correctly but fails
-/// `validate_workflow` due to a cycle (A → B, B → A) and therefore also
-/// fails entry-node detection.
-fn make_cyclic_workflow_definition(workflow_id: &nebula_core::WorkflowId) -> serde_json::Value {
-    serde_json::json!({
-        "id": workflow_id.to_string(),
-        "name": "Knife Cyclic Workflow",
-        "version": { "major": 0, "minor": 1, "patch": 0 },
-        "nodes": [
-            { "id": "step_a", "name": "A", "action_key": "echo" },
-            { "id": "step_b", "name": "B", "action_key": "echo" }
-        ],
-        "connections": [
-            { "from_node": "step_a", "to_node": "step_b" },
-            { "from_node": "step_b", "to_node": "step_a" }
-        ],
-        "created_at": "2024-01-01T00:00:00Z",
-        "updated_at": "2024-01-01T00:00:00Z",
-        "schema_version": 1
-    })
-}
-
-/// Build a valid JWT token for the test secret.
-fn create_test_jwt() -> String {
-    use jsonwebtoken::{EncodingKey, Header, encode};
-    use serde::{Deserialize, Serialize};
-
-    #[derive(Debug, Serialize, Deserialize)]
-    struct Claims {
-        sub: String,
-        exp: u64,
-        iat: u64,
-    }
-
-    let now = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap()
-        .as_secs();
-
-    encode(
-        &Header::default(),
-        &Claims {
-            sub: "knife-test-user".to_string(),
-            exp: now + 3600,
-            iat: now,
-        },
-        &EncodingKey::from_secret(TEST_JWT_SECRET.as_bytes()),
-    )
-    .unwrap()
-}
-
-/// Create an `AppState` with fully functional in-memory repos; return both the
-/// state and a typed reference to the control queue so tests can inspect it.
-async fn create_state_with_queue() -> (AppState, Arc<InMemoryControlQueueRepo>) {
-    let config = ConfigBuilder::new()
-        .with_defaults(serde_json::json!({
-            "api": { "port": 8080, "host": "127.0.0.1" }
-        }))
-        .build()
-        .await
-        .unwrap();
-
-    let workflow_repo = Arc::new(InMemoryWorkflowRepo::new());
-    let execution_repo = Arc::new(InMemoryExecutionRepo::new());
-    let control_queue_repo = Arc::new(InMemoryControlQueueRepo::new());
-    let api_config = ApiConfig::for_test();
-
-    let control_queue_dyn: Arc<dyn nebula_storage::repos::ControlQueueRepo> =
-        Arc::clone(&control_queue_repo) as _;
-
-    let state = AppState::new(
-        config,
-        workflow_repo,
-        execution_repo,
-        control_queue_dyn,
-        api_config.jwt_secret.clone(),
-    );
-
-    (state, control_queue_repo)
-}
 
 /// A control-queue repo that always fails on `enqueue` — used to simulate
 /// the "orchestration backend unavailable" scenario in §13 step 6.
@@ -192,14 +78,6 @@ impl nebula_storage::repos::ControlQueueRepo for AlwaysFailControlQueueRepo {
 /// Create an `AppState` wired with the always-failing control queue repo.
 /// All other repos are fully functional in-memory implementations.
 async fn create_state_with_failing_queue() -> AppState {
-    let config = ConfigBuilder::new()
-        .with_defaults(serde_json::json!({
-            "api": { "port": 8080, "host": "127.0.0.1" }
-        }))
-        .build()
-        .await
-        .unwrap();
-
     let workflow_repo = Arc::new(InMemoryWorkflowRepo::new());
     let execution_repo = Arc::new(InMemoryExecutionRepo::new());
     let control_queue_repo: Arc<dyn nebula_storage::repos::ControlQueueRepo> =
@@ -207,7 +85,6 @@ async fn create_state_with_failing_queue() -> AppState {
     let api_config = ApiConfig::for_test();
 
     AppState::new(
-        config,
         workflow_repo,
         execution_repo,
         control_queue_repo,
@@ -427,6 +304,25 @@ async fn knife_scenario_end_to_end() {
         problem["errors"].as_array().is_some_and(|e| !e.is_empty()),
         "step 2b: RFC 9457 errors array must be present and non-empty"
     );
+
+    // Each error entry must carry a real JSON Pointer (RFC 6901) — not a
+    // synthetic positional index like "/0", "/1". The pointer is either:
+    //   - "/nodes/<key>"  for node-keyed errors
+    //   - "/connections/<from>/<to>" for connection errors
+    //   - "" (root) for structural errors (CycleDetected, NoEntryNodes, etc.)
+    let errors_arr = problem["errors"].as_array().unwrap();
+    for entry in errors_arr {
+        let pointer = entry["pointer"].as_str().unwrap_or("");
+        let is_real_pointer = pointer.is_empty()  // RFC 6901 root
+            || pointer.starts_with("/nodes/")
+            || pointer.starts_with("/connections/")
+            || pointer.starts_with("/trigger");
+        assert!(
+            is_real_pointer,
+            "step 2b: error pointer must be a real RFC 6901 JSON Pointer, \
+             not a synthetic positional index; got: {pointer:?}"
+        );
+    }
 
     // ── Step 3: Start an execution ───────────────────────────────────────────
     //
@@ -669,17 +565,13 @@ async fn knife_scenario_end_to_end() {
 /// Canon §13 step 6 — "orchestration absent" scenario.
 ///
 /// When the control queue backend is unavailable, the cancel endpoint must
-/// return an error (not fake success).
+/// return **503 Service Unavailable** with RFC 9457 problem+json — not fake
+/// success and not an unparsable 500.
 ///
-/// **Known canon gap:** §13 step 6 specifies **503** Service Unavailable.
-/// The current `cancel_execution` handler maps enqueue failures to
-/// `ApiError::Internal` → **500**. This test documents the actual behavior
-/// (500) so the discrepancy is explicit and tracked.
-///
-/// To fix: change the cancel handler to map `StorageError` from enqueue to
-/// `ApiError::ServiceUnavailable` (503). The assertion below is marked
-/// `// CANON-GAP §13-step6` — flip it to `SERVICE_UNAVAILABLE` once the
-/// handler is corrected.
+/// The `AlwaysFailControlQueueRepo` simulates the case where the orchestration
+/// layer is intentionally absent (test/demo server with no queue wired up).
+/// `cancel_execution` maps `StorageError::Internal` from enqueue to
+/// `ApiError::ServiceUnavailable` → HTTP 503 per canon §13 step 6.
 ///
 /// Audit ref: 2026-04-16-workspace-health-audit.md §8 Sprint A1 item #3
 #[tokio::test]
@@ -723,20 +615,11 @@ async fn knife_step6_queue_failure_returns_error() {
         .await
         .unwrap();
 
-    // CANON-GAP §13-step6: canon mandates 503 but handler currently returns 500.
-    // This assertion documents the actual behavior — change to SERVICE_UNAVAILABLE
-    // once the handler is corrected to use ApiError::ServiceUnavailable for
-    // control-queue enqueue failures.
+    // Canon §13 step 6: control-queue backend unavailable must return 503.
     assert_eq!(
         response.status(),
-        StatusCode::INTERNAL_SERVER_ERROR,
-        "step 6: queue failure must not return fake success; \
-         expected 500 (actual) — should become 503 after handler fix (canon §13 step 6)"
-    );
-
-    // Whatever the error code, it must NOT be 2xx (no fake success).
-    assert!(
-        response.status().is_server_error(),
-        "step 6: a queue-backend failure must always result in a server error, not 2xx"
+        StatusCode::SERVICE_UNAVAILABLE,
+        "step 6: orchestration-absent enqueue failure must return 503 Service Unavailable \
+         (canon §13 step 6)"
     );
 }

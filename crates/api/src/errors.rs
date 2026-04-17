@@ -168,8 +168,66 @@ pub enum ApiError {
         /// Human-readable summary of all validation failures.
         detail: String,
         /// One entry per `WorkflowError` returned by `validate_workflow`.
-        errors: Vec<String>,
+        /// Carrying the typed errors allows `to_problem_details` to produce
+        /// real RFC 6901 JSON Pointers rather than synthetic positional ones.
+        errors: Vec<nebula_workflow::WorkflowError>,
     },
+}
+
+/// Map a [`nebula_workflow::WorkflowError`] to a JSON Pointer (RFC 6901)
+/// that identifies the offending location in the workflow JSON document.
+///
+/// The workflow JSON schema is:
+/// ```json
+/// {
+///   "nodes":       [ { "id": "<key>", … }, … ],
+///   "connections": [ { "from_node": "<f>", "to_node": "<t>", … }, … ],
+///   "trigger":     { … },
+///   …
+/// }
+/// ```
+///
+/// Pointer conventions used here:
+/// - Node-specific errors: `/nodes/<node_key>`
+/// - Connection-specific: `/connections/<from>/<to>`
+/// - Trigger errors:      `/trigger`
+/// - Structural / whole-document errors: `""` (the root pointer, RFC 6901 §4)
+fn workflow_error_pointer(err: &nebula_workflow::WorkflowError) -> String {
+    use nebula_workflow::WorkflowError;
+    match err {
+        // Node-keyed errors
+        WorkflowError::DuplicateNodeKey(key)
+        | WorkflowError::UnknownNode(key)
+        | WorkflowError::SelfLoop(key) => format!("/nodes/{key}"),
+
+        WorkflowError::InvalidParameterReference { node_key, .. } => {
+            format!("/nodes/{node_key}")
+        },
+
+        WorkflowError::InvalidActionKey { key, .. } => {
+            // The key string is the node's action_key; best we can do without
+            // the node key is to point at the nodes array.
+            let _ = key;
+            "/nodes".to_owned()
+        },
+
+        // Connection-keyed errors
+        WorkflowError::DuplicateConnection { from, to } => {
+            format!("/connections/{from}/{to}")
+        },
+
+        // Trigger errors
+        WorkflowError::InvalidTrigger { .. } => "/trigger".to_owned(),
+
+        // Schema-level / structural — point at root
+        WorkflowError::EmptyName
+        | WorkflowError::NoNodes
+        | WorkflowError::CycleDetected
+        | WorkflowError::NoEntryNodes
+        | WorkflowError::UnsupportedSchema { .. }
+        | WorkflowError::InvalidOwnerId
+        | WorkflowError::GraphError(_) => String::new(), // RFC 6901 root pointer
+    }
 }
 
 fn normalize_pointer(pointer: Option<&str>) -> String {
@@ -377,11 +435,10 @@ impl ApiError {
                 .with_errors(
                     errors
                         .iter()
-                        .enumerate()
-                        .map(|(i, msg)| ValidationFieldError {
+                        .map(|err| ValidationFieldError {
                             code: "workflow_definition_invalid".to_string(),
-                            detail: msg.clone(),
-                            pointer: format!("/{i}"),
+                            detail: err.to_string(),
+                            pointer: workflow_error_pointer(err),
                         })
                         .collect(),
                 ),
@@ -450,6 +507,76 @@ mod tests {
             errors
                 .iter()
                 .any(|e| e.code == "required" && e.pointer == "/email")
+        );
+    }
+
+    #[test]
+    fn invalid_workflow_definition_node_error_produces_node_pointer() {
+        use nebula_core::node_key;
+        use nebula_workflow::WorkflowError;
+
+        let node = node_key!("step_a");
+        let api_error = ApiError::InvalidWorkflowDefinition {
+            detail: "1 error(s)".to_string(),
+            errors: vec![WorkflowError::DuplicateNodeKey(node)],
+        };
+        let (status, problem) = api_error.to_problem_details();
+
+        assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
+        let errors = problem.errors.expect("errors must be present");
+        assert_eq!(errors.len(), 1);
+        assert!(
+            errors[0].pointer.starts_with("/nodes/"),
+            "DuplicateNodeKey must produce a /nodes/<key> pointer, got: {:?}",
+            errors[0].pointer
+        );
+        assert_eq!(errors[0].pointer, "/nodes/step_a");
+    }
+
+    #[test]
+    fn invalid_workflow_definition_structural_error_produces_root_pointer() {
+        use nebula_workflow::WorkflowError;
+
+        let api_error = ApiError::InvalidWorkflowDefinition {
+            detail: "1 error(s)".to_string(),
+            errors: vec![WorkflowError::CycleDetected],
+        };
+        let (status, problem) = api_error.to_problem_details();
+
+        assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
+        let errors = problem.errors.expect("errors must be present");
+        assert_eq!(errors.len(), 1);
+        // Structural errors (cycle, no entry nodes, etc.) point at root — RFC 6901 empty string.
+        assert_eq!(
+            errors[0].pointer, "",
+            "CycleDetected must produce the RFC 6901 root pointer (empty string), got: {:?}",
+            errors[0].pointer
+        );
+    }
+
+    #[test]
+    fn invalid_workflow_definition_connection_error_produces_connection_pointer() {
+        use nebula_core::node_key;
+        use nebula_workflow::WorkflowError;
+
+        let from = node_key!("a");
+        let to = node_key!("b");
+        let api_error = ApiError::InvalidWorkflowDefinition {
+            detail: "1 error(s)".to_string(),
+            errors: vec![WorkflowError::DuplicateConnection {
+                from: from.clone(),
+                to: to.clone(),
+            }],
+        };
+        let (status, problem) = api_error.to_problem_details();
+
+        assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
+        let errors = problem.errors.expect("errors must be present");
+        assert_eq!(errors.len(), 1);
+        assert_eq!(
+            errors[0].pointer, "/connections/a/b",
+            "DuplicateConnection must produce /connections/<from>/<to>, got: {:?}",
+            errors[0].pointer
         );
     }
 }

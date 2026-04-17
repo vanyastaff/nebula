@@ -434,14 +434,13 @@ pub async fn activate_workflow(
 
     let validation_errors = nebula_workflow::validate_workflow(&workflow_def);
     if !validation_errors.is_empty() {
-        let error_messages: Vec<String> = validation_errors.iter().map(|e| e.to_string()).collect();
         let detail = format!(
             "Workflow definition is invalid ({} error(s))",
-            error_messages.len()
+            validation_errors.len()
         );
         return Err(ApiError::InvalidWorkflowDefinition {
             detail,
-            errors: error_messages,
+            errors: validation_errors,
         });
     }
 

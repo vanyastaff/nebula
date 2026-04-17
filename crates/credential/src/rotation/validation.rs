@@ -19,7 +19,7 @@ use serde::{Deserialize, Serialize};
 use tokio::time::timeout;
 
 use super::error::{RotationError, RotationResult};
-use crate::metadata::CredentialMetadata;
+use crate::record::CredentialRecord;
 
 // ── Rotation-specific traits ──────────────────────────────────────────────
 
@@ -76,8 +76,8 @@ pub struct TestContext {
     /// Credential being validated
     pub credential_id: CredentialId,
 
-    /// Credential metadata
-    pub metadata: CredentialMetadata,
+    /// Credential record (runtime state)
+    pub record: CredentialRecord,
 
     /// Timeout for validation
     pub timeout: Duration,
@@ -91,10 +91,10 @@ pub struct TestContext {
 
 impl TestContext {
     /// Create a new test context
-    pub fn new(credential_id: CredentialId, metadata: CredentialMetadata) -> Self {
+    pub fn new(credential_id: CredentialId, record: CredentialRecord) -> Self {
         Self {
             credential_id,
-            metadata,
+            record,
             timeout: Duration::from_secs(30), // Default 30s timeout
             is_retry: false,
             retry_attempt: 0,
@@ -493,7 +493,7 @@ mod tests {
     #[tokio::test]
     async fn test_validation_context() {
         let cred_id = CredentialId::new();
-        let metadata = CredentialMetadata {
+        let record = CredentialRecord {
             created_at: chrono::Utc::now(),
             last_accessed: None,
             last_modified: chrono::Utc::now(),
@@ -505,7 +505,7 @@ mod tests {
             tags: std::collections::HashMap::new(),
         };
 
-        let context = TestContext::new(cred_id, metadata)
+        let context = TestContext::new(cred_id, record)
             .with_timeout(Duration::from_secs(10))
             .with_retry(2);
 

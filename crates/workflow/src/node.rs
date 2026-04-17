@@ -2,8 +2,8 @@
 
 use std::{collections::HashMap, time::Duration};
 
-use nebula_action::InterfaceVersion;
 use nebula_core::{ActionKey, NodeKey, prelude::KeyParseError};
+use semver::Version;
 use serde::{Deserialize, Serialize};
 
 use crate::definition::RetryConfig;
@@ -18,8 +18,12 @@ pub struct NodeDefinition {
     /// Which action/plugin this node runs (e.g. `"http_request"`, `"echo"`).
     pub action_key: ActionKey,
     /// Optional pinned interface version for the action.
+    ///
+    /// Uses `semver::Version` for exact-match dispatch. Flexible pinning
+    /// (`VersionReq`, e.g. `^1.0` / `~1.2`) is a future-work item — see
+    /// the `2026-04-17-replace-interfaceversion-with-semver` spec.
     #[serde(default)]
-    pub interface_version: Option<InterfaceVersion>,
+    pub interface_version: Option<Version>,
     /// Parameters passed to the action at runtime.
     #[serde(default)]
     pub parameters: HashMap<String, ParamValue>,
@@ -102,7 +106,7 @@ impl NodeDefinition {
 
     /// Pin an interface version.
     #[must_use]
-    pub fn with_interface_version(mut self, version: InterfaceVersion) -> Self {
+    pub fn with_interface_version(mut self, version: Version) -> Self {
         self.interface_version = Some(version);
         self
     }
@@ -241,7 +245,7 @@ mod tests {
         let id = node_key!("test");
         let node = NodeDefinition::new(id, "fetch", "http_request")
             .unwrap()
-            .with_interface_version(InterfaceVersion::new(1, 0))
+            .with_interface_version(Version::new(1, 0, 0))
             .with_parameter(
                 "url",
                 ParamValue::literal(serde_json::json!("https://example.com")),
@@ -250,7 +254,7 @@ mod tests {
             .with_timeout(Duration::from_secs(10))
             .with_description("Fetches data from the API");
 
-        assert_eq!(node.interface_version, Some(InterfaceVersion::new(1, 0)));
+        assert_eq!(node.interface_version, Some(Version::new(1, 0, 0)));
         assert_eq!(node.parameters.len(), 1);
         assert!(node.retry_policy.is_some());
         assert_eq!(node.timeout, Some(Duration::from_secs(10)));
@@ -353,7 +357,7 @@ mod tests {
     #[test]
     fn interface_version_serde_roundtrip_in_node() {
         let id = node_key!("test");
-        let iv = InterfaceVersion::new(2, 3);
+        let iv = Version::new(2, 3, 0);
         let node = NodeDefinition::new(id, "versioned", "echo")
             .unwrap()
             .with_interface_version(iv);
@@ -363,8 +367,8 @@ mod tests {
 
         assert_eq!(
             back.interface_version,
-            Some(InterfaceVersion::new(2, 3)),
-            "InterfaceVersion must survive serde roundtrip after move to nebula-action"
+            Some(Version::new(2, 3, 0)),
+            "semver::Version must survive serde roundtrip on NodeDefinition"
         );
     }
 }

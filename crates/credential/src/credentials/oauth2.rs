@@ -24,8 +24,8 @@ use crate::{
     SecretString,
     context::CredentialContext,
     credential::Credential,
-    description::CredentialDescription,
     error::CredentialError,
+    metadata::CredentialMetadata,
     pending::PendingState,
     resolve::{DisplayData, InteractionRequest, RefreshOutcome, ResolveResult, UserInput},
     scheme::OAuth2Token,
@@ -278,8 +278,8 @@ impl Credential for OAuth2Credential {
     const INTERACTIVE: bool = true;
     const REFRESHABLE: bool = true;
 
-    fn description() -> CredentialDescription {
-        CredentialDescription {
+    fn metadata() -> CredentialMetadata {
+        CredentialMetadata {
             key: Self::KEY.to_owned(),
             name: "OAuth2".to_owned(),
             description: "OAuth2 authentication supporting Authorization Code, Client Credentials, and Device Code grant types.".to_owned(),
@@ -716,11 +716,11 @@ mod tests {
     }
 
     #[test]
-    fn description_has_correct_metadata() {
-        let desc = OAuth2Credential::description();
-        assert_eq!(desc.key, "oauth2");
-        assert_eq!(desc.name, "OAuth2");
-        assert!(desc.description.contains("OAuth2"));
+    fn metadata_has_correct_fields() {
+        let meta = OAuth2Credential::metadata();
+        assert_eq!(meta.key, "oauth2");
+        assert_eq!(meta.name, "OAuth2");
+        assert!(meta.description.contains("OAuth2"));
     }
 
     #[test]

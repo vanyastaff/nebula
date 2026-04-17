@@ -12,8 +12,8 @@ use nebula_credential::{
     CredentialResolver, CredentialStore, InMemoryStore, SecretString,
     context::CredentialContext,
     credential::Credential,
-    description::CredentialDescription,
     error::CredentialError,
+    metadata::CredentialMetadata,
     pending::NoPendingState,
     resolve::{RefreshOutcome, RefreshPolicy, StaticResolveResult},
     scheme::SecretToken,
@@ -58,8 +58,8 @@ impl Credential for ThunderingHerdCredential {
         ..RefreshPolicy::DEFAULT
     };
 
-    fn description() -> CredentialDescription {
-        CredentialDescription {
+    fn metadata() -> CredentialMetadata {
+        CredentialMetadata {
             key: Self::KEY.to_owned(),
             name: "Thundering Herd Test".to_owned(),
             description: "Test credential for thundering herd prevention".to_owned(),

@@ -215,12 +215,12 @@
 //!
 //! # Configuration Storage
 //!
-//! Rotation policies are stored in `CredentialMetadata.rotation_policy`.
+//! Rotation policies are stored in `CredentialRecord.rotation_policy`.
 //! This allows per-credential configuration without code changes.
 //!
 //! ```rust,ignore
-//! // Store policy in metadata when creating credential
-//! let metadata = CredentialMetadata {
+//! // Store policy in record when creating credential
+//! let record = CredentialRecord {
 //!     rotation_policy: Some(RotationPolicy::Periodic(
 //!         PeriodicConfig::new(
 //!             Duration::from_secs(90 * 24 * 3600),
@@ -231,11 +231,11 @@
 //!     ..Default::default()
 //! };
 //!
-//! manager.store(&id, encrypted_data, metadata, &context).await?;
+//! manager.store(&id, encrypted_data, record, &context).await?;
 //!
-//! // Retrieve policy from metadata during rotation
-//! let (data, metadata) = manager.retrieve(&id, &context).await?;
-//! if let Some(policy) = metadata.rotation_policy {
+//! // Retrieve policy from record during rotation
+//! let (data, record) = manager.retrieve(&id, &context).await?;
+//! if let Some(policy) = record.rotation_policy {
 //!     // Use policy to schedule rotation
 //!     scheduler.schedule_rotation(&id, &policy).await?;
 //! }

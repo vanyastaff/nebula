@@ -429,7 +429,7 @@ mod tests {
     use async_trait::async_trait;
     use nebula_core::node_key;
     use nebula_credential::{
-        CredentialAccessError, CredentialMetadata, CredentialSnapshot, SecretString, SecretToken,
+        CredentialAccessError, CredentialRecord, CredentialSnapshot, SecretString, SecretToken,
         scheme::ConnectionUri,
     };
 
@@ -507,7 +507,7 @@ mod tests {
         async fn get(&self, _id: &str) -> Result<CredentialSnapshot, CredentialAccessError> {
             Ok(CredentialSnapshot::new(
                 "api_key",
-                CredentialMetadata::new(),
+                CredentialRecord::new(),
                 SecretToken::new(SecretString::new("test-token")),
             ))
         }
@@ -654,7 +654,7 @@ mod tests {
             if type_id == std::any::TypeId::of::<ZeroizableToken>() {
                 Ok(CredentialSnapshot::new(
                     "typed",
-                    CredentialMetadata::new(),
+                    CredentialRecord::new(),
                     ZeroizableToken {
                         value: "secret-42".to_owned(),
                     },

@@ -2,7 +2,7 @@
 
 use std::any::Any;
 
-use crate::description::CredentialDescription;
+use crate::metadata::CredentialMetadata;
 
 /// Object-safe supertrait for declaring credential dependencies.
 ///
@@ -14,8 +14,8 @@ use crate::description::CredentialDescription;
 pub trait AnyCredential: Any + Send + Sync + 'static {
     /// The normalized key identifying this credential type.
     fn credential_key(&self) -> &str;
-    /// Human-readable description of this credential type.
-    fn description(&self) -> CredentialDescription;
+    /// Integration-catalog metadata describing this credential type.
+    fn metadata(&self) -> CredentialMetadata;
 }
 
 /// Blanket impl: every `Credential` is automatically an `AnyCredential`.
@@ -25,7 +25,7 @@ impl<C: crate::Credential + 'static> AnyCredential for C {
         C::KEY
     }
 
-    fn description(&self) -> CredentialDescription {
-        C::description()
+    fn metadata(&self) -> CredentialMetadata {
+        C::metadata()
     }
 }

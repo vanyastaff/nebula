@@ -18,6 +18,7 @@ nebula-credential = { path = "../credential" }
 nebula-error = { workspace = true }
 nebula-parameter = { path = "../parameter" }
 nebula-resource = { path = "../resource" }
+semver = { workspace = true }
 anyhow = { workspace = true }
 async-trait = { workspace = true }
 serde = { workspace = true }
@@ -49,6 +50,3 @@ subtle = { workspace = true }
 nebula-core = { path = "../core" }
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "time", "test-util"] }
 hex = { workspace = true }
-
-[lib]
-doctest = false

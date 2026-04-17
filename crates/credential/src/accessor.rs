@@ -164,7 +164,7 @@ mod tests {
     use async_trait::async_trait;
 
     use super::*;
-    use crate::{CredentialMetadata, CredentialSnapshot, SecretString, SecretToken};
+    use crate::{CredentialRecord, CredentialSnapshot, SecretString, SecretToken};
 
     /// Test accessor that supports both string-based and type-based access.
     struct MockAccessor {
@@ -217,7 +217,7 @@ mod tests {
     fn test_snapshot(name: &str) -> CredentialSnapshot {
         CredentialSnapshot::new(
             name,
-            CredentialMetadata::new(),
+            CredentialRecord::new(),
             SecretToken::new(SecretString::new("test-value")),
         )
     }

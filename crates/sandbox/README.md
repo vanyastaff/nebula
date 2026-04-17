@@ -43,8 +43,7 @@ In priority order — these are the actual work items the crate tracks, replacin
 
 **Smells tracked as open debt:**
 
-- **`runtime::sandbox.rs` is a dead re-export shim of this crate.** `nebula-runtime/src/sandbox.rs` exists only for "backward compatibility" per its own doc comment. It should be deleted and call sites moved to `nebula_sandbox::*` directly. See `nebula-runtime/README.md` Architecture notes.
-- **Naming overlap with `InProcessSandbox` in other crates.** The re-exports `ActionExecutor` / `SandboxRunner` / `InProcessSandbox` appear in both `nebula-sandbox` (this crate, the owner) and `nebula-runtime` (re-exporter). After the runtime shim is removed, this crate is the single source.
+- **`ActionExecutor`, `SandboxRunner`, `InProcessSandbox`, `SandboxedContext` are owned by this crate** and re-exported by `nebula-runtime` directly via `pub use nebula_sandbox::...`. The legacy `nebula-runtime/src/sandbox.rs` re-export shim was deleted in commit `eae0b54e` (audit task A3.7, canon §14).
 - **`capabilities.rs` and `discovery.rs` have a TODO that makes the module's primary promise unenforced.** Consider whether the capability allowlist should be surfaced as `experimental` in `PluginCapabilities`' doc comments until the discovery-path TODO is closed.
 
 **Not smells — intentional:**

@@ -20,8 +20,8 @@ use nebula_parameter::{ParameterCollection, values::ParameterValues};
 
 use crate::{
     context::CredentialContext,
-    description::CredentialDescription,
     error::CredentialError,
+    metadata::CredentialMetadata,
     pending::PendingState,
     resolve::{RefreshOutcome, RefreshPolicy, ResolveResult, TestResult, UserInput},
     state::CredentialState,
@@ -76,7 +76,7 @@ use crate::{
 ///
 ///     const KEY: &'static str = "slack_bot_token";
 ///
-///     fn description() -> CredentialDescription { /* ... */ }
+///     fn metadata() -> CredentialMetadata { /* ... */ }
 ///     fn parameters() -> ParameterCollection { /* ... */ }
 ///     fn project(state: &SecretToken) -> SecretToken { state.clone() }
 ///
@@ -127,8 +127,8 @@ pub trait Credential: Send + Sync + 'static {
     /// and jitter.
     const REFRESH_POLICY: RefreshPolicy = RefreshPolicy::DEFAULT;
 
-    /// Human-readable metadata: name, icon, documentation URL.
-    fn description() -> CredentialDescription
+    /// Integration-catalog metadata: key, name, icon, documentation URL, parameters.
+    fn metadata() -> CredentialMetadata
     where
         Self: Sized;
 

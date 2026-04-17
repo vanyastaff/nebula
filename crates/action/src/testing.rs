@@ -113,7 +113,7 @@ impl TestContextBuilder {
         let type_id = TypeId::of::<S>();
         let snapshot = CredentialSnapshot::new(
             std::any::type_name::<S>(),
-            nebula_credential::CredentialMetadata::new(),
+            nebula_credential::CredentialRecord::new(),
             scheme,
         );
         self.typed_credentials.insert(type_id, snapshot);
@@ -640,7 +640,7 @@ mod tests {
     use std::collections::HashMap;
 
     use nebula_core::action_key;
-    use nebula_credential::{CredentialMetadata, SecretString, SecretToken};
+    use nebula_credential::{CredentialRecord, SecretString, SecretToken};
 
     use super::*;
     use crate::{
@@ -671,7 +671,7 @@ mod tests {
     async fn test_context_builder_with_credential_snapshot() {
         let snapshot = CredentialSnapshot::new(
             "api_key",
-            CredentialMetadata::new(),
+            CredentialRecord::new(),
             SecretToken::new(SecretString::new("test-secret")),
         );
 

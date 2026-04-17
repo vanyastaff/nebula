@@ -39,11 +39,20 @@ impl ControlCommand {
 }
 
 /// Queued control command record.
+///
+/// # Invariant: ID Encoding
+///
+/// All byte-slice ID fields (`execution_id`) are currently stored as **UTF-8 bytes** of the
+/// identifier's ULID string (e.g., `ExecutionId::to_string().into_bytes()`), NOT raw 16-byte
+/// ULID values. Consumers must decode via `str::from_utf8` and parse into the corresponding ID
+/// type. When a Postgres implementation lands, producers and consumers must be updated atomically
+/// to preserve this encoding (as `TEXT` column or `BYTEA` of the ASCII string), or migrated
+/// together to raw 16-byte ULIDs.
 #[derive(Debug, Clone)]
 pub struct ControlQueueEntry {
     /// 16-byte BYTEA (ULID) primary key.
     pub id: Vec<u8>,
-    /// Target execution.
+    /// Target execution. Encoded as UTF-8 bytes of the ULID string.
     pub execution_id: Vec<u8>,
     /// The command to deliver.
     pub command: ControlCommand,

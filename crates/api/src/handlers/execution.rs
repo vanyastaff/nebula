@@ -348,11 +348,32 @@ pub async fn cancel_execution(
         .enqueue(&entry)
         .await
         .map_err(|e| {
-            ApiError::Internal(format!(
-                "Execution {} cancelled in DB but failed to enqueue Cancel signal \
-             (canon §12.2 orphan — caller should retry): {}",
-                execution_id, e
-            ))
+            // Canon §13 step 6: when the control-queue / orchestration backend is
+            // intentionally absent or unreachable, return 503 Service Unavailable
+            // so the caller knows the infrastructure is down (not a logic bug).
+            //
+            // `StorageError::Internal` is the sentinel returned by the
+            // `AlwaysFailControlQueueRepo` test double, and is also the natural
+            // variant for a backend that fails to start or has no driver wired up.
+            // `StorageError::Connection` covers TCP/socket-level failures.
+            // All other variants (Conflict, NotFound, etc.) indicate unexpected
+            // write failures and fall back to 500 Internal.
+            use nebula_storage::StorageError;
+            match &e {
+                StorageError::Internal(_) | StorageError::Connection(_) => {
+                    ApiError::ServiceUnavailable(format!(
+                        "Execution {} cancelled in DB but control-queue backend is \
+                         unavailable — orchestration absent (canon §13 step 6, §12.2 \
+                         orphan): {}",
+                        execution_id, e
+                    ))
+                },
+                _ => ApiError::Internal(format!(
+                    "Execution {} cancelled in DB but failed to enqueue Cancel signal \
+                     (canon §12.2 orphan — caller should retry): {}",
+                    execution_id, e
+                )),
+            }
         })?;
 
     // Extract fields from updated execution state

@@ -10,7 +10,7 @@
 //!
 //! ```
 //! use nebula_core::{AuthPattern, AuthScheme};
-//! use nebula_credential::{CredentialMetadata, CredentialSnapshot};
+//! use nebula_credential::{CredentialRecord, CredentialSnapshot};
 //! use serde::{Deserialize, Serialize};
 //!
 //! #[derive(Clone, Serialize, Deserialize)]
@@ -26,7 +26,7 @@
 //!
 //! let snapshot = CredentialSnapshot::new(
 //!     "api_key",
-//!     CredentialMetadata::new(),
+//!     CredentialRecord::new(),
 //!     MyToken {
 //!         value: "secret".into(),
 //!     },
@@ -49,7 +49,7 @@
 //! let scheme: Arc<SecretToken> = handle.snapshot();
 //! let snapshot = CredentialSnapshot::new(
 //!     ApiKeyCredential::KEY,
-//!     metadata,
+//!     record,
 //!     (*scheme).clone(),
 //! );
 //! ```
@@ -58,7 +58,7 @@ use std::{any::Any, fmt};
 
 use nebula_core::AuthScheme;
 
-use crate::metadata::CredentialMetadata;
+use crate::record::CredentialRecord;
 
 /// Error returned by [`CredentialSnapshot`] projection methods.
 ///
@@ -83,7 +83,7 @@ pub enum SnapshotError {
 ///
 /// Returned when an action or context requests a credential by ID.
 /// Contains the credential kind, the projected [`AuthScheme`] (type-erased),
-/// and associated metadata.
+/// and the associated runtime [`CredentialRecord`].
 ///
 /// # Type safety
 ///
@@ -106,8 +106,8 @@ pub struct CredentialSnapshot {
     kind: String,
     /// The scheme pattern name from `AuthScheme::pattern()` (e.g. `"SecretToken"`, `"OAuth2"`).
     scheme_pattern: String,
-    /// Associated credential metadata.
-    metadata: CredentialMetadata,
+    /// Associated credential record (runtime state).
+    record: CredentialRecord,
     /// Type-erased projected `AuthScheme`.
     projected: Box<dyn Any + Send + Sync>,
     /// Clone function captured at construction time from `S: AuthScheme + Clone`.
@@ -115,7 +115,7 @@ pub struct CredentialSnapshot {
 }
 
 impl CredentialSnapshot {
-    /// Creates a new snapshot from a credential kind, metadata, and projected scheme.
+    /// Creates a new snapshot from a credential kind, record, and projected scheme.
     ///
     /// `scheme_pattern` is derived from `S::pattern()` automatically.
     ///
@@ -123,7 +123,7 @@ impl CredentialSnapshot {
     ///
     /// ```
     /// use nebula_core::{AuthPattern, AuthScheme};
-    /// use nebula_credential::{CredentialMetadata, CredentialSnapshot};
+    /// use nebula_credential::{CredentialRecord, CredentialSnapshot};
     /// use serde::{Deserialize, Serialize};
     ///
     /// #[derive(Clone, Serialize, Deserialize)]
@@ -138,7 +138,7 @@ impl CredentialSnapshot {
     ///
     /// let snap = CredentialSnapshot::new(
     ///     "api_key",
-    ///     CredentialMetadata::new(),
+    ///     CredentialRecord::new(),
     ///     Bearer { token: "t".into() },
     /// );
     /// assert_eq!(snap.scheme_pattern(), "SecretToken");
@@ -146,7 +146,7 @@ impl CredentialSnapshot {
     #[must_use]
     pub fn new<S: AuthScheme>(
         kind: impl Into<String>,
-        metadata: CredentialMetadata,
+        record: CredentialRecord,
         scheme: S,
     ) -> Self {
         fn clone_projected<S: AuthScheme>(
@@ -163,7 +163,7 @@ impl CredentialSnapshot {
         Self {
             kind: kind.into(),
             scheme_pattern: format!("{:?}", S::pattern()),
-            metadata,
+            record,
             projected: Box::new(scheme),
             clone_fn: clone_projected::<S>,
         }
@@ -229,10 +229,10 @@ impl CredentialSnapshot {
         &self.scheme_pattern
     }
 
-    /// Associated credential metadata.
+    /// Associated credential record (runtime state).
     #[must_use]
-    pub fn metadata(&self) -> &CredentialMetadata {
-        &self.metadata
+    pub fn record(&self) -> &CredentialRecord {
+        &self.record
     }
 }
 
@@ -241,7 +241,7 @@ impl Clone for CredentialSnapshot {
         Self {
             kind: self.kind.clone(),
             scheme_pattern: self.scheme_pattern.clone(),
-            metadata: self.metadata.clone(),
+            record: self.record.clone(),
             projected: (self.clone_fn)(&*self.projected),
             clone_fn: self.clone_fn,
         }
@@ -253,7 +253,7 @@ impl fmt::Debug for CredentialSnapshot {
         f.debug_struct("CredentialSnapshot")
             .field("kind", &self.kind)
             .field("scheme_pattern", &self.scheme_pattern)
-            .field("metadata", &self.metadata)
+            .field("record", &self.record)
             .field("projected", &"[REDACTED]")
             .finish()
     }
@@ -264,14 +264,14 @@ mod tests {
     use super::*;
     use crate::{
         SecretString,
-        metadata::CredentialMetadata,
+        record::CredentialRecord,
         scheme::{ConnectionUri, SecretToken},
     };
 
     fn token_snapshot() -> CredentialSnapshot {
         CredentialSnapshot::new(
             "api_key",
-            CredentialMetadata::new(),
+            CredentialRecord::new(),
             SecretToken::new(SecretString::new("test-token")),
         )
     }
@@ -316,11 +316,11 @@ mod tests {
     }
 
     #[test]
-    fn kind_and_metadata_accessors() {
+    fn kind_and_record_accessors() {
         let snap = token_snapshot();
         assert_eq!(snap.kind(), "api_key");
         assert_eq!(snap.scheme_pattern(), "SecretToken");
-        assert_eq!(snap.metadata().version, 1);
+        assert_eq!(snap.record().version, 1);
     }
 
     #[test]

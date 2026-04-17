@@ -7,9 +7,9 @@
 use nebula_parameter::{Parameter, ParameterCollection, values::ParameterValues};
 
 use crate::{
-    SecretString, context::CredentialContext, credential::Credential,
-    description::CredentialDescription, error::CredentialError, pending::NoPendingState,
-    resolve::StaticResolveResult, scheme::SecretToken,
+    SecretString, context::CredentialContext, credential::Credential, error::CredentialError,
+    metadata::CredentialMetadata, pending::NoPendingState, resolve::StaticResolveResult,
+    scheme::SecretToken,
 };
 
 /// API Key credential -- resolves a single token into a [`SecretToken`].
@@ -37,8 +37,8 @@ impl Credential for ApiKeyCredential {
 
     const KEY: &'static str = "api_key";
 
-    fn description() -> CredentialDescription {
-        CredentialDescription {
+    fn metadata() -> CredentialMetadata {
+        CredentialMetadata {
             key: Self::KEY.to_owned(),
             name: "API Key".to_owned(),
             description: "Static API key or bearer token for HTTP APIs.".to_owned(),

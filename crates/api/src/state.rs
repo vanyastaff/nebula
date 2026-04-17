@@ -5,7 +5,6 @@
 
 use std::sync::Arc;
 
-use nebula_config::Config;
 use nebula_plugin::PluginRegistry;
 use nebula_runtime::ActionRegistry;
 use nebula_storage::{ExecutionRepo, WorkflowRepo, repos::ControlQueueRepo};
@@ -17,9 +16,6 @@ use crate::{config::JwtSecret, webhook::WebhookTransport};
 /// Application state passed through `Router::with_state`.
 #[derive(Clone)]
 pub struct AppState {
-    /// Configuration
-    pub config: Arc<Config>,
-
     /// JWT secret used to validate Bearer tokens.
     ///
     /// Wrapped in [`JwtSecret`] so construction enforces a
@@ -73,14 +69,12 @@ impl AppState {
     /// [`crate::config::ApiConfig::from_env`] (production) or
     /// `ApiConfig::for_test` (tests with the `test-util` feature).
     pub fn new(
-        config: Config,
         workflow_repo: Arc<dyn WorkflowRepo>,
         execution_repo: Arc<dyn ExecutionRepo>,
         control_queue_repo: Arc<dyn ControlQueueRepo>,
         jwt_secret: JwtSecret,
     ) -> Self {
         Self {
-            config: Arc::new(config),
             jwt_secret,
             api_keys: Arc::new(Vec::new()),
             workflow_repo,

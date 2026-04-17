@@ -34,7 +34,7 @@ pub struct ActionBuilder {
     key: ActionKey,
     name: String,
     description: String,
-    version: (u32, u32),
+    version: (u64, u64),
 }
 
 impl ActionBuilder {
@@ -59,8 +59,8 @@ impl ActionBuilder {
         self
     }
 
-    /// Set the interface version.
-    pub fn with_version(mut self, major: u32, minor: u32) -> Self {
+    /// Set the interface version (major, minor components; patch defaults to 0).
+    pub fn with_version(mut self, major: u64, minor: u64) -> Self {
         self.version = (major, minor);
         self
     }

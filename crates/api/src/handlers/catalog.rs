@@ -39,8 +39,8 @@ pub async fn list_actions(State(state): State<AppState>) -> ApiResult<Json<ListA
                 .map(|(meta, _)| meta.name.clone())
                 .unwrap_or_else(|| key.as_str().to_string());
             let version = entry
-                .map(|(meta, _)| format!("{}.{}", meta.version.major, meta.version.minor))
-                .unwrap_or_else(|| "1.0".to_string());
+                .map(|(meta, _)| meta.version.to_string())
+                .unwrap_or_else(|| "1.0.0".to_string());
             ActionSummary {
                 key: key.as_str().to_string(),
                 name,
@@ -81,7 +81,7 @@ pub async fn get_action(
         key: meta.key.as_str().to_string(),
         name: meta.name.clone(),
         description: meta.description.clone(),
-        version: format!("{}.{}", meta.version.major, meta.version.minor),
+        version: meta.version.to_string(),
         // IsolationLevel does not implement Display; {:?} produces the variant name.
         isolation_level: format!("{:?}", meta.isolation_level),
     }))

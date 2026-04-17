@@ -6,6 +6,7 @@ use std::{path::Path, sync::Arc, time::Duration};
 use nebula_action::{ActionHandler, ActionMetadata};
 use nebula_core::ActionKey;
 use nebula_plugin_sdk::protocol::{ActionDescriptor, DUPLEX_PROTOCOL_VERSION, PluginToHost};
+use semver::Version;
 
 use crate::{
     capabilities::PluginCapabilities, handler::ProcessSandboxHandler, process::ProcessSandbox,
@@ -147,9 +148,9 @@ fn create_handlers(
         tracing::warn!(
             plugin = %plugin.key,
             version = %plugin.version,
-            "invalid plugin version; defaulting action interface version to 1.0",
+            "invalid plugin version; defaulting action interface version to 1.0.0",
         );
-        (1, 0)
+        Version::new(1, 0, 0)
     });
     plugin
         .actions
@@ -178,7 +179,7 @@ fn create_handlers(
             };
 
             let metadata = ActionMetadata::new(action_key, &action.name, &action.description)
-                .with_version(interface_version.0, interface_version.1);
+                .with_version_full(interface_version.clone());
 
             let handler = ActionHandler::Stateless(Arc::new(ProcessSandboxHandler::new(
                 Arc::clone(&sandbox),
@@ -190,11 +191,8 @@ fn create_handlers(
         .collect()
 }
 
-fn parse_interface_version(version: &str) -> Option<(u32, u32)> {
-    let mut parts = version.split('.');
-    let major = parts.next()?.parse::<u32>().ok()?;
-    let minor = parts.next()?.parse::<u32>().ok()?;
-    Some((major, minor))
+fn parse_interface_version(version: &str) -> Option<Version> {
+    Version::parse(version).ok()
 }
 
 /// Check if a file looks like an executable plugin binary.
@@ -307,5 +305,6 @@ mod tests {
         assert_eq!(handlers.len(), 1);
         assert_eq!(handlers[0].0.version.major, 2);
         assert_eq!(handlers[0].0.version.minor, 7);
+        assert_eq!(handlers[0].0.version.patch, 3);
     }
 }
