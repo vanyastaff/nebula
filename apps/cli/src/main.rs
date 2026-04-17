@@ -34,7 +34,7 @@ fn main() -> ExitCode {
 }
 
 async fn run(cli: Cli) -> anyhow::Result<ExitCode> {
-    let cfg = config::CliConfig::load().await;
+    let cfg = config::CliConfig::load().await?;
     let _guard = init_logging(cli.verbose, &cfg);
     dispatch(cli).await
 }
@@ -92,7 +92,7 @@ async fn dispatch(cli: Cli) -> anyhow::Result<ExitCode> {
         },
         Command::Config { command } => {
             match command {
-                ConfigCommand::Show => commands::config::show().await,
+                ConfigCommand::Show => commands::config::show().await?,
                 ConfigCommand::Init(args) => commands::config::init(args.global)?,
             }
             Ok(ExitCode::SUCCESS)

@@ -5,8 +5,8 @@ use anyhow::{Context, bail};
 use crate::config::{self, CliConfig};
 
 /// Execute the `config show` command.
-pub async fn show() {
-    let config = CliConfig::load().await;
+pub async fn show() -> anyhow::Result<()> {
+    let config = CliConfig::load().await?;
     let toml = toml::to_string_pretty(&config).expect("config serialization");
     println!("{toml}");
 
@@ -15,6 +15,7 @@ pub async fn show() {
     } else {
         eprintln!("# no config file found, showing defaults");
     }
+    Ok(())
 }
 
 /// Execute the `config init` command.

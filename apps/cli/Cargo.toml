@@ -64,6 +64,10 @@ nebula-log = { path = "../../crates/log" }
 nebula-telemetry = { path = "../../crates/telemetry" }
 nebula-action = { path = "../../crates/action" }
 
+[dev-dependencies]
+tempfile = { workspace = true }
+tokio = { workspace = true, features = ["rt"] }
+
 [features]
 default = ["tui"]
 tui = ["dep:ratatui", "dep:crossterm"]
