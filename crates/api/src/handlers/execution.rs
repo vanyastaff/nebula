@@ -67,21 +67,18 @@ pub async fn list_executions(
     let workflow_id_parsed = WorkflowId::parse(&workflow_id)
         .map_err(|e| ApiError::validation_message(format!("Invalid workflow ID: {}", e)))?;
 
-    let total = state
-        .execution_repo
-        .count(Some(workflow_id_parsed))
-        .await
-        .map_err(|e| ApiError::Internal(format!("Failed to count executions: {}", e)))?;
-
-    // TODO: list_running() returns ALL running execution IDs with no workflow filter.
-    // Replace with a workflow-scoped query once ExecutionRepo gains a list(workflow_id)
-    // method. The `workflow_id` parameter is validated above but not yet applied.
+    // Scope the list to the requested workflow (#286, #288, #328). Using the
+    // global `list_running()` here would leak execution IDs from every other
+    // workflow on the instance — a contained info leak today (shared-trust
+    // JWT) but a tenant-crossing read the moment real multi-tenant auth
+    // lands.
     let running_ids = state
         .execution_repo
-        .list_running()
+        .list_running_for_workflow(workflow_id_parsed)
         .await
         .map_err(|e| ApiError::Internal(format!("Failed to list executions: {}", e)))?;
 
+    let total = running_ids.len();
     let offset = params.offset();
     let limit = params.limit();
     let executions: Vec<RunningExecutionSummary> = running_ids
@@ -93,7 +90,7 @@ pub async fn list_executions(
 
     Ok(Json(ListExecutionsResponse {
         executions,
-        total: total as usize,
+        total,
         page: params.page,
         page_size: params.limit(),
     }))
