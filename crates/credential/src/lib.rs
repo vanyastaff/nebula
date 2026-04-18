@@ -1,33 +1,33 @@
-//! Nebula Credential — Universal credential management system.
+//! # nebula-credential
 //!
-//! Secure, extensible credential management for workflow automation.
-//! 12 universal auth scheme types, open [`AuthScheme`] trait, composable
-//! storage layers, encryption key rotation, and derive macros.
+//! **Role:** Credential Contract — stored state vs projected auth material;
+//! engine-owned rotation and refresh. Canon §3.5, §12.5.
 //!
-//! # Architecture
+//! The engine owns the split between stored `State` (encrypted at rest) and the
+//! projected auth material action code receives. Action authors bind to a
+//! `Credential` type; they never hand-roll token refresh, never hold plaintext
+//! secrets longer than necessary, and never see secrets in logs.
 //!
-//! - **[`Credential`] trait** — unified trait for the full credential lifecycle: `resolve()`,
-//!   `refresh()`, `test()`, `project()`.
+//! ## Key types
 //!
-//! - **[`AuthScheme`]** — open trait (in nebula-core) classifying auth material via
-//!   [`AuthPattern`]. 12 built-in scheme types + `Custom` for plugins.
+//! - `Credential` — unified trait: `resolve()`, `refresh()`, `test()`, `project()`.
+//! - `CredentialMetadata` — static type descriptor: key, name, schema, `AuthPattern`.
+//! - `CredentialRecord` — runtime operational state (created_at, version, expiry, tags). Previously
+//!   named `Metadata` (ADR 0004).
+//! - `CredentialStore`, `EncryptionLayer`, `CacheLayer`, `AuditLayer`, `ScopeLayer` — composable
+//!   storage with layered decoration.
+//! - `CredentialRegistry`, `CredentialResolver` — type-erased dispatch and resolution.
+//! - `SecretString`, `CredentialGuard` — zeroizing secret wrappers.
+//! - `EncryptedData`, `EncryptionKey`, `encrypt`, `decrypt` — AES-256-GCM primitives.
+//! - `#[derive(Credential)]`, `#[derive(AuthScheme)]` — proc-macro derivations.
 //!
-//! - **[`CredentialStore`]** — composable storage with layered encryption, caching, scoping, and
-//!   audit via the [`layer`] module.
+//! ## Security invariant (canon §12.5)
 //!
-//! - **[`CredentialRegistry`]** — type-erased runtime dispatch for credential resolution.
+//! Encryption at rest: AES-256-GCM with Argon2id KDF, credential ID bound as AAD.
+//! No bypass for debugging. All intermediate plaintext in `Zeroizing<Vec<u8>>`.
+//! `Debug` impls on credential wrappers redact secret fields.
 //!
-//! - **[`CredentialResolver`]** — runtime resolution engine: resolve, refresh, test credentials via
-//!   the registry.
-//!
-//! # Quick Start
-//!
-//! ```rust,ignore
-//! use nebula_credential::{
-//!     Credential, CredentialStore, InMemoryStore,
-//!     ApiKeyCredential, SecretToken,
-//! };
-//! ```
+//! See `crates/credential/README.md` for the full contract and canon invariants.
 #![forbid(unsafe_code)]
 
 /// Error type for credential access operations.
