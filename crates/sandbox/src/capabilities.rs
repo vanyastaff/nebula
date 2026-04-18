@@ -182,26 +182,42 @@ impl PluginCapabilities {
 /// "/tmp/foo" is under "/tmp", but "/tmp_evil" is NOT under "/tmp" —
 /// comparison is component-wise via [`Path::starts_with`], not substring.
 ///
-/// # Security
+/// # Security (#284)
 ///
-/// Traversal attacks like `/tmp/../etc/passwd` are defused in two layers:
+/// The pre-#284 implementation fell back to a purely lexical prefix check
+/// whenever `canonicalize` failed on either side. That fallback was
+/// exploitable: an attacker with write access to a granted directory
+/// could drop a symlink (`/allowed/tmp/escape → /etc`) and then request
+/// `/allowed/tmp/escape/passwd`. `canonicalize` would fail (target not
+/// accessible or not yet a valid path), the lexical fallback would keep
+/// the path unchanged, the prefix check against `/allowed/tmp` would
+/// succeed, and the subsequent `open()` call in the kernel would follow
+/// the symlink and read `/etc/passwd`.
 ///
-/// 1. **Preferred path** — if both `path` and `base` canonicalize successfully (both exist on
-///    disk), the canonical forms are used, so `..` is resolved by the OS before comparison.
-/// 2. **Fallback** — if either path does not exist, both are run through a lexical normalisation
-///    pass that drops `.` components and resolves `..` by popping the previous component. This
-///    keeps the function usable in tests and sandboxed environments where paths are abstract,
-///    without opening a traversal hole.
+/// The current rule defuses that by being strict about the base and
+/// only falling back to lexical when the filesystem clearly isn't in
+/// play:
 ///
-/// The fallback is component-wise: `"/tmp/file.txt".starts_with("/tmp")`
-/// returns `true`, `"/tmp_evil".starts_with("/tmp")` returns `false`.
-/// This is sep-agnostic — works the same on POSIX and Windows paths.
+/// 1. `..` components are banned in either argument. A capability declaration should never contain
+///    parent-traversal, and a requested path with `..` can't be resolved safely without a canonical
+///    form.
+/// 2. Degenerate bases (`""`, `"."` that normalises empty) never match.
+/// 3. If the base canonicalizes, the path must either canonicalize under it, or have its **deepest
+///    existing ancestor** canonicalize under it. Any other error on `canonicalize` (EACCES, ELOOP,
+///    ENOTDIR) fails closed — a path that references something we cannot verify is treated as
+///    denied.
+/// 4. If the base does **not** canonicalize (abstract test fixtures or a capability pointing at a
+///    path that doesn't exist yet), a lexical prefix check is used. There is no real filesystem at
+///    the base, so there is no symlink attack surface — and `..` has already been banned in (1).
 ///
-/// A **degenerate base** (`""`, `"."`, or any path that lexically normalises to an empty
-/// relative path) never matches: otherwise `Path::starts_with` would treat the empty prefix as
-/// matching every path, which would bypass filesystem capability checks.
+/// On-disk ancestor walk-up treats only `ErrorKind::NotFound` as
+/// "keep climbing". Every other error kind is a trust violation and
+/// returns `false`.
 fn path_under(path: &str, base: &str) -> bool {
-    use std::path::{Component, Path, PathBuf};
+    use std::{
+        io::ErrorKind,
+        path::{Component, Path, PathBuf},
+    };
 
     fn normalize_lex(p: &Path) -> PathBuf {
         let mut out = PathBuf::new();
@@ -221,43 +237,65 @@ fn path_under(path: &str, base: &str) -> bool {
         normalize_lex(base_path).as_os_str().is_empty()
     }
 
+    fn contains_parent_dir(p: &Path) -> bool {
+        p.components().any(|c| matches!(c, Component::ParentDir))
+    }
+
     let path = Path::new(path);
     let base_path = Path::new(base);
 
-    match (path.canonicalize(), base_path.canonicalize()) {
-        (Ok(p), Ok(b)) => {
-            if b.as_os_str().is_empty() {
-                return false;
+    // (1) Reject parent-traversal in either argument.
+    if contains_parent_dir(path) || contains_parent_dir(base_path) {
+        return false;
+    }
+
+    // (2) Degenerate base never matches.
+    if base_lex_is_degenerate(base_path) {
+        return false;
+    }
+
+    match base_path.canonicalize() {
+        Ok(canon_base) if !canon_base.as_os_str().is_empty() => {
+            // (3) Filesystem-grounded check. Prefer full-path canonicalisation; otherwise walk up
+            //     through `NotFound` ancestors until one canonicalises, and check that resolved
+            //     point against the canonical base. Every other error kind fails closed.
+            match path.canonicalize() {
+                Ok(canon_path) => canon_path.starts_with(&canon_base),
+                Err(e) if e.kind() == ErrorKind::NotFound => {
+                    let mut ancestor = path.parent();
+                    while let Some(a) = ancestor {
+                        match a.canonicalize() {
+                            Ok(canon_a) => return canon_a.starts_with(&canon_base),
+                            Err(e) if e.kind() == ErrorKind::NotFound => {
+                                ancestor = a.parent();
+                            },
+                            // EACCES, ELOOP, ENOTDIR, etc. — the path
+                            // references a filesystem object we can't
+                            // verify. Fail closed per #284.
+                            Err(_) => return false,
+                        }
+                    }
+                    false
+                },
+                // Same "fail closed on unknown error" policy for the
+                // top-level canonicalize (e.g., EACCES on a symlink's
+                // parent): we can't reason about where the symlink
+                // actually points, so deny.
+                Err(_) => false,
             }
-            p.starts_with(&b)
         },
-        // Path missing on disk but base resolved — use lexical prefix when the base is not
-        // degenerate; otherwise compare against the canonical base (for example `"."` → cwd).
-        (Err(_), Ok(b)) => {
-            if b.as_os_str().is_empty() {
-                return false;
-            }
-            let path_lex = normalize_lex(path);
+        // (4) Base is abstract — lexical comparison only. `..` is already banned, so this is safe
+        //     against traversal. Symlink attacks are not in scope here because there is no real
+        //     filesystem at the base.
+        _ => {
             let base_lex = normalize_lex(base_path);
             if base_lex.as_os_str().is_empty() {
-                path_lex.starts_with(&b)
-            } else {
-                path_lex.starts_with(&base_lex)
-            }
-        },
-        (Ok(p), Err(_)) => {
-            if base_lex_is_degenerate(base_path) {
                 return false;
             }
-            let base_lex = normalize_lex(base_path);
-            p.starts_with(&base_lex)
-        },
-        (Err(_), Err(_)) => {
-            if base_lex_is_degenerate(base_path) {
-                return false;
+            match path.canonicalize() {
+                Ok(canon_path) => canon_path.starts_with(&base_lex),
+                Err(_) => normalize_lex(path).starts_with(&base_lex),
             }
-            let base_lex = normalize_lex(base_path);
-            normalize_lex(path).starts_with(&base_lex)
         },
     }
 }
@@ -389,5 +427,107 @@ mod tests {
             paths: vec!["".into()],
         }]);
         assert!(!caps.check_fs_read("/tmp/file.txt"));
+    }
+
+    // ---- #284 symlink-bypass regression tests ------------------------
+
+    #[test]
+    fn path_under_rejects_parent_dir_in_path() {
+        // Lexical escape via `..` must be rejected even when the base
+        // doesn't canonicalize (the attack surface the pre-#284 lexical
+        // fallback otherwise kept open).
+        assert!(!path_under("/allowed/../etc/passwd", "/allowed"));
+        assert!(!path_under("/allowed/nested/../../etc/passwd", "/allowed"));
+    }
+
+    #[test]
+    fn path_under_rejects_parent_dir_in_base() {
+        assert!(!path_under("/etc/passwd", "/allowed/.."));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn path_under_rejects_symlink_escape_to_existing_target() {
+        // Classic symlink escape: the symlink resolves to a real path
+        // OUTSIDE the granted base. canonicalize sees this, starts_with
+        // against the base fails, request is rejected.
+        let base = tempfile::tempdir().expect("base tempdir");
+        let outside = tempfile::tempdir().expect("outside tempdir");
+        let outside_file = outside.path().join("secret");
+        std::fs::write(&outside_file, b"secret").expect("write secret");
+        let escape = base.path().join("escape");
+        std::os::unix::fs::symlink(&outside_file, &escape).expect("create symlink");
+
+        let base_str = base.path().to_str().expect("utf8 tempdir path");
+        let escape_str = escape.to_str().expect("utf8 symlink path");
+        assert!(
+            !path_under(escape_str, base_str),
+            "symlink escape to {outside_file:?} must be rejected under base {base:?}",
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn path_under_rejects_symlink_to_nonexistent_target_outside_base() {
+        // Core #284 bypass: symlink's target does not exist yet, so
+        // canonicalize fails — the old lexical fallback happily
+        // accepted the path as being under the granted base. With the
+        // new rule, the deepest existing ancestor (the symlink itself)
+        // canonicalizes to the target's PARENT outside the base and is
+        // rejected by starts_with.
+        let base = tempfile::tempdir().expect("base tempdir");
+        let outside = tempfile::tempdir().expect("outside tempdir");
+        // Note: the target does NOT exist — only `outside` exists.
+        let outside_target = outside.path().join("not-yet");
+        let escape = base.path().join("escape");
+        std::os::unix::fs::symlink(&outside_target, &escape).expect("create symlink");
+
+        let requested = escape.join("passwd");
+        let base_str = base.path().to_str().expect("utf8 base");
+        let requested_str = requested.to_str().expect("utf8 requested");
+        assert!(
+            !path_under(requested_str, base_str),
+            "symlink to nonexistent target outside base must be rejected, \
+             base={base:?} requested={requested:?}",
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn path_under_accepts_symlink_resolving_inside_base() {
+        // Sanity: if the symlink resolves to a location INSIDE the
+        // granted base, the request IS legitimate (`real/` lives under
+        // the same tempdir as the symlink).
+        let base = tempfile::tempdir().expect("base tempdir");
+        let real_dir = base.path().join("real");
+        std::fs::create_dir(&real_dir).expect("create real dir");
+        let real_file = real_dir.join("data");
+        std::fs::write(&real_file, b"data").expect("write data");
+        let link = base.path().join("alias");
+        std::os::unix::fs::symlink(&real_file, &link).expect("create symlink");
+
+        let base_str = base.path().to_str().expect("utf8 base");
+        let link_str = link.to_str().expect("utf8 link");
+        assert!(
+            path_under(link_str, base_str),
+            "symlink resolving inside base must be accepted, base={base:?} link={link:?}",
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn path_under_accepts_nonexistent_leaf_under_real_base() {
+        // Common legitimate case: the base exists, the caller wants to
+        // write to a not-yet-existing file inside it. Walking up from
+        // the requested path finds the base itself as the deepest
+        // canonicalizable ancestor, and the prefix check passes.
+        let base = tempfile::tempdir().expect("base tempdir");
+        let requested = base.path().join("does-not-exist-yet.txt");
+        let base_str = base.path().to_str().expect("utf8 base");
+        let requested_str = requested.to_str().expect("utf8 requested");
+        assert!(
+            path_under(requested_str, base_str),
+            "nonexistent leaf under a real base must be accepted",
+        );
     }
 }
