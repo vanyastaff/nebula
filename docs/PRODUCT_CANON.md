@@ -42,7 +42,7 @@ operational honesty (§4.5) more than explicitly revising it.
 
 ## 1. One-line definition
 
-**Nebula is a high-throughput workflow orchestration engine with a first-class integration SDK** — the typed surface in §3.5 (`nebula-parameter`, `nebula-resource`, `nebula-credential`, `nebula-action`, plugin registry) — **Rust-native, self-hosted, owned by you.**
+**[L1]** **Nebula is a high-throughput workflow orchestration engine with a first-class integration SDK** — the typed integration surface (`nebula-schema`, `nebula-resource`, `nebula-credential`, `nebula-action`, plus the plugin registry — see `docs/INTEGRATION_MODEL.md`) — **Rust-native, self-hosted, owned by you.**
 
 ---
 
