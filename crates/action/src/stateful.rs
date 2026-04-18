@@ -592,7 +592,7 @@ where
                 // Log the serde failure forensically and let the original
                 // error propagate — masking it would break retry classification.
                 tracing::error!(
-                    action = %self.action.metadata().key,
+                    action = %self.action.metadata().base.key,
                     serialization_error = %ser_err,
                     action_error = %action_err,
                     "stateful adapter: state serialization failed on error path; \
@@ -613,7 +613,7 @@ where
 impl<A: Action> fmt::Debug for StatefulActionAdapter<A> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("StatefulActionAdapter")
-            .field("action", &self.action.metadata().key)
+            .field("action", &self.action.metadata().base.key)
             .finish_non_exhaustive()
     }
 }
@@ -887,7 +887,7 @@ mod tests {
         let adapter = StatefulActionAdapter::new(CounterAction::new());
         let action = adapter.into_inner();
         assert_eq!(
-            action.metadata().key,
+            action.metadata().base.key,
             nebula_core::action_key!("test.counter")
         );
     }

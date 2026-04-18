@@ -57,14 +57,17 @@ impl ActionRegistry {
     /// is appended. Entries are kept sorted from lowest to highest version so
     /// that [`get`](Self::get) can return the latest in O(1).
     pub fn register(&self, metadata: ActionMetadata, handler: ActionHandler) {
-        let version = metadata.version.clone();
-        let mut entries = self.actions.entry(metadata.key.clone()).or_default();
+        let version = metadata.base.version.clone();
+        let mut entries = self.actions.entry(metadata.base.key.clone()).or_default();
 
-        if let Some(pos) = entries.iter().position(|e| e.metadata.version == version) {
+        if let Some(pos) = entries
+            .iter()
+            .position(|e| e.metadata.base.version == version)
+        {
             entries[pos] = ActionEntry { metadata, handler };
         } else {
             entries.push(ActionEntry { metadata, handler });
-            entries.sort_by(|a, b| a.metadata.version.cmp(&b.metadata.version));
+            entries.sort_by(|a, b| a.metadata.base.version.cmp(&b.metadata.base.version));
         }
     }
 
@@ -97,7 +100,9 @@ impl ActionRegistry {
         version: &Version,
     ) -> Option<(ActionMetadata, ActionHandler)> {
         let entries = self.actions.get(key)?;
-        let entry = entries.iter().find(|e| e.metadata.version == *version)?;
+        let entry = entries
+            .iter()
+            .find(|e| e.metadata.base.version == *version)?;
         Some((entry.metadata.clone(), entry.handler.clone()))
     }
 
@@ -316,6 +321,6 @@ mod tests {
         assert!(registry.get_versioned(&key, &v2).is_some());
 
         let (meta, _) = registry.get(&key).unwrap();
-        assert_eq!(meta.version, v2);
+        assert_eq!(meta.base.version, v2);
     }
 }

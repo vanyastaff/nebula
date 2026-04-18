@@ -9,9 +9,7 @@
 //! `#[derive(EnumSelect)]`) and the validator / engine — given a type `T`, a
 //! caller can always obtain the schema by name without referring to the derive.
 
-use std::sync::OnceLock;
-
-use crate::{option::SelectOption, schema::Schema, validated::ValidSchema, value::FieldValues};
+use crate::{option::SelectOption, validated::ValidSchema, value::FieldValues};
 
 /// Types that expose a canonical [`ValidSchema`].
 ///
@@ -32,16 +30,9 @@ pub trait HasSelectOptions {
     fn select_options() -> Vec<SelectOption>;
 }
 
-/// Shared empty schema — cheap `Arc` clone for all baseline impls.
+/// Shared empty schema — delegates to [`ValidSchema::empty`].
 fn empty_schema() -> ValidSchema {
-    static EMPTY: OnceLock<ValidSchema> = OnceLock::new();
-    EMPTY
-        .get_or_init(|| {
-            Schema::builder()
-                .build()
-                .expect("empty schema always builds")
-        })
-        .clone()
+    ValidSchema::empty()
 }
 
 /// Baseline `HasSchema` impl for the unit type — actions / credentials /
@@ -104,9 +95,7 @@ macro_rules! impl_empty_has_schema {
         $(
             impl $crate::has_schema::HasSchema for $t {
                 fn schema() -> $crate::validated::ValidSchema {
-                    $crate::schema::Schema::builder()
-                        .build()
-                        .expect("empty schema is always valid")
+                    $crate::validated::ValidSchema::empty()
                 }
             }
         )*

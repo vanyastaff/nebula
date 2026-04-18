@@ -97,6 +97,25 @@ impl ValidSchema {
         Self(Arc::new(inner))
     }
 
+    /// Shared empty `ValidSchema` — cheap `Arc` clone.
+    ///
+    /// Use this anywhere a `ValidSchema` is required but the entity has no
+    /// user-configurable inputs (actions that take `()`, stub credentials,
+    /// baseline `HasSchema` impls for primitives). Avoids the
+    /// `Schema::builder().build().expect("empty schema always valid")`
+    /// incantation in three dozen call sites.
+    pub fn empty() -> Self {
+        use std::sync::OnceLock;
+        static EMPTY: OnceLock<ValidSchema> = OnceLock::new();
+        EMPTY
+            .get_or_init(|| {
+                crate::schema::Schema::builder()
+                    .build()
+                    .expect("empty schema always builds")
+            })
+            .clone()
+    }
+
     /// Borrow all top-level fields in insertion order.
     pub fn fields(&self) -> &[Field] {
         &self.0.fields

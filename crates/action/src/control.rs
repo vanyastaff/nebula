@@ -507,7 +507,7 @@ where
 impl<A: ControlAction> fmt::Debug for ControlActionAdapter<A> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("ControlActionAdapter")
-            .field("action", &self.cached_metadata.key)
+            .field("action", &self.cached_metadata.base.key)
             .field("category", &self.cached_metadata.category)
             .finish_non_exhaustive()
     }
@@ -839,7 +839,7 @@ mod tests {
     #[test]
     fn adapter_preserves_action_key() {
         let adapter = ControlActionAdapter::new(TestIf::new());
-        assert_eq!(adapter.metadata().key, action_key!("test.if"));
+        assert_eq!(adapter.metadata().base.key, action_key!("test.if"));
     }
 
     #[tokio::test]
@@ -927,7 +927,7 @@ mod tests {
     fn adapter_into_inner_returns_action() {
         let adapter = ControlActionAdapter::new(TestIf::new());
         let action = adapter.into_inner();
-        assert_eq!(action.metadata().key, action_key!("test.if"));
+        assert_eq!(action.metadata().base.key, action_key!("test.if"));
     }
 
     #[test]

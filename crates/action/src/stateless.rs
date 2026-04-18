@@ -164,7 +164,7 @@ pub fn stateless_fn<F, Input, Output>(
 impl<F, Input, Output> std::fmt::Debug for FnStatelessAction<F, Input, Output> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("FnStatelessAction")
-            .field("action", &self.metadata.key)
+            .field("action", &self.metadata.base.key)
             .finish_non_exhaustive()
     }
 }
@@ -304,7 +304,7 @@ pub fn stateless_ctx_fn<F, Input, Output>(
 impl<F, Input, Output> fmt::Debug for FnStatelessCtxAction<F, Input, Output> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("FnStatelessCtxAction")
-            .field("action", &self.metadata.key)
+            .field("action", &self.metadata.base.key)
             .field(
                 "base_ctx",
                 if self.base_ctx.is_some() {
@@ -406,7 +406,7 @@ where
 impl<A: Action> fmt::Debug for StatelessActionAdapter<A> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("StatelessActionAdapter")
-            .field("action", &self.action.metadata().key)
+            .field("action", &self.action.metadata().base.key)
             .finish_non_exhaustive()
     }
 }
@@ -596,7 +596,7 @@ mod tests {
     async fn adapter_exposes_metadata() {
         let adapter = StatelessActionAdapter::new(AddAction::new());
         assert_eq!(
-            StatelessHandler::metadata(&adapter).key,
+            StatelessHandler::metadata(&adapter).base.key,
             nebula_core::action_key!("math.add")
         );
     }
@@ -630,6 +630,9 @@ mod tests {
     fn stateless_adapter_into_inner_returns_action() {
         let adapter = StatelessActionAdapter::new(AddAction::new());
         let action = adapter.into_inner();
-        assert_eq!(action.metadata().key, nebula_core::action_key!("math.add"));
+        assert_eq!(
+            action.metadata().base.key,
+            nebula_core::action_key!("math.add")
+        );
     }
 }

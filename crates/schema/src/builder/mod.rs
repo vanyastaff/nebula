@@ -38,6 +38,19 @@ pub trait FieldCollector: Sized {
     #[doc(hidden)]
     fn push_field(self, field: Field) -> Self;
 
+    /// Append many built fields at once — works on any collector
+    /// (`SchemaBuilder` / `ObjectBuilder` / `GroupBuilder`).
+    #[must_use]
+    fn extend<I, F>(self, fields: I) -> Self
+    where
+        I: IntoIterator<Item = F>,
+        F: Into<Field>,
+    {
+        fields
+            .into_iter()
+            .fold(self, |acc, f| acc.push_field(f.into()))
+    }
+
     /// Append a string child built via a typed closure.
     #[must_use]
     fn string(self, key: impl AsRef<str>, f: impl FnOnce(StringBuilder) -> StringBuilder) -> Self {

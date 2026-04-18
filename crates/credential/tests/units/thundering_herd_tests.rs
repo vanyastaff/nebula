@@ -60,16 +60,13 @@ impl Credential for ThunderingHerdCredential {
     };
 
     fn metadata() -> CredentialMetadata {
-        CredentialMetadata {
-            key: Self::KEY.to_owned(),
-            name: "Thundering Herd Test".to_owned(),
-            description: "Test credential for thundering herd prevention".to_owned(),
-            icon: None,
-            icon_url: None,
-            documentation_url: None,
-            properties: Self::parameters(),
-            pattern: nebula_core::AuthPattern::SecretToken,
-        }
+        CredentialMetadata::new(
+            nebula_core::credential_key!("thundering_herd_test"),
+            "Thundering Herd Test",
+            "Test credential for thundering herd prevention",
+            Self::parameters(),
+            nebula_core::AuthPattern::SecretToken,
+        )
     }
 
     fn project(state: &ThunderingHerdState) -> SecretToken {

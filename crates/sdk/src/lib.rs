@@ -19,7 +19,7 @@
 //!     .add_node("greet", "example_greet")
 //!     .build();
 //!
-//! assert_eq!(metadata.name, "Greet");
+//! assert_eq!(metadata.base.name, "Greet");
 //! assert!(workflow.is_ok());
 //! ```
 //!

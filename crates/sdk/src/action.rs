@@ -152,8 +152,8 @@ mod tests {
             .with_version(2, 1)
             .build();
 
-        assert_eq!(metadata.key, action_key!("test.action"));
-        assert_eq!(metadata.name, "Test Action");
-        assert_eq!(metadata.description, "A test action");
+        assert_eq!(metadata.base.key, action_key!("test.action"));
+        assert_eq!(metadata.base.name, "Test Action");
+        assert_eq!(metadata.base.description, "A test action");
     }
 }

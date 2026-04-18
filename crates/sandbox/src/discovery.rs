@@ -281,7 +281,7 @@ mod tests {
 
         let handlers = create_handlers(&plugin, sandbox);
         assert_eq!(handlers.len(), 1);
-        assert_eq!(handlers[0].0.key.as_str(), "com.good.plugin.echo");
+        assert_eq!(handlers[0].0.base.key.as_str(), "com.good.plugin.echo");
     }
 
     #[test]
@@ -303,8 +303,8 @@ mod tests {
 
         let handlers = create_handlers(&plugin, sandbox);
         assert_eq!(handlers.len(), 1);
-        assert_eq!(handlers[0].0.version.major, 2);
-        assert_eq!(handlers[0].0.version.minor, 7);
-        assert_eq!(handlers[0].0.version.patch, 3);
+        assert_eq!(handlers[0].0.base.version.major, 2);
+        assert_eq!(handlers[0].0.base.version.minor, 7);
+        assert_eq!(handlers[0].0.base.version.patch, 3);
     }
 }

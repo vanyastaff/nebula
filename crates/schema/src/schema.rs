@@ -180,6 +180,19 @@ impl SchemaBuilder {
         self
     }
 
+    /// Append many fields at once — accepts `Vec<Field>`, `[Field; N]`,
+    /// iterators, and anything `Into<Field>` per item. Preferred over
+    /// chaining `.add(...)` for statically known bulk additions.
+    #[must_use]
+    pub fn add_many<I, F>(mut self, fields: I) -> Self
+    where
+        I: IntoIterator<Item = F>,
+        F: Into<Field>,
+    {
+        self.fields.extend(fields.into_iter().map(Into::into));
+        self
+    }
+
     /// Append a group of fields that share a common label and optional
     /// `visible_when` / `required_when` conditions.
     ///

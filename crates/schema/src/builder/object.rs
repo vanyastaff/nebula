@@ -103,6 +103,17 @@ impl ObjectBuilder {
         self
     }
 
+    /// Append many already-built fields at once.
+    #[must_use]
+    pub fn add_many<I, F>(mut self, fields: I) -> Self
+    where
+        I: IntoIterator<Item = F>,
+        F: Into<Field>,
+    {
+        self.inner.fields.extend(fields.into_iter().map(Into::into));
+        self
+    }
+
     /// Consume the builder and wrap the result in the top-level [`Field`] enum.
     #[must_use]
     pub fn into_field(self) -> Field {

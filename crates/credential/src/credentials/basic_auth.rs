@@ -51,16 +51,15 @@ impl Credential for BasicAuthCredential {
     const KEY: &'static str = "basic_auth";
 
     fn metadata() -> CredentialMetadata {
-        CredentialMetadata {
-            key: Self::KEY.to_owned(),
-            name: "Basic Auth".to_owned(),
-            description: "HTTP Basic authentication (username + password).".to_owned(),
-            icon: Some("lock".to_owned()),
-            icon_url: None,
-            documentation_url: None,
-            properties: Self::parameters(),
-            pattern: nebula_core::AuthPattern::IdentityPassword,
-        }
+        CredentialMetadata::builder()
+            .key(nebula_core::credential_key!("basic_auth"))
+            .name("Basic Auth")
+            .description("HTTP Basic authentication (username + password).")
+            .schema(Self::parameters())
+            .pattern(nebula_core::AuthPattern::IdentityPassword)
+            .icon("lock")
+            .build()
+            .expect("basic_auth metadata is valid")
     }
 
     fn project(state: &IdentityPassword) -> IdentityPassword {

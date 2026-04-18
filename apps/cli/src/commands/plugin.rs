@@ -31,7 +31,11 @@ pub async fn list() {
         for (name, handlers) in &plugins {
             println!("  {name}");
             for (meta, _handler) in handlers {
-                println!("    action: {:<30} {}", meta.key.as_str(), meta.description);
+                println!(
+                    "    action: {:<30} {}",
+                    meta.base.key.as_str(),
+                    meta.base.description
+                );
             }
             total += handlers.len();
             println!();

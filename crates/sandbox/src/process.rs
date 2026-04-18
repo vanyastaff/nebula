@@ -610,7 +610,7 @@ impl SandboxRunner for ProcessSandbox {
     ) -> Result<ActionResult<serde_json::Value>, ActionError> {
         context.check_cancelled()?;
 
-        let action_key = metadata.key.as_str();
+        let action_key = metadata.base.key.as_str();
 
         tracing::debug!(
             action_key = %action_key,

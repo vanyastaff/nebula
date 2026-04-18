@@ -337,16 +337,15 @@ impl Credential for OAuth2Credential {
     const REFRESHABLE: bool = true;
 
     fn metadata() -> CredentialMetadata {
-        CredentialMetadata {
-            key: Self::KEY.to_owned(),
-            name: "OAuth2".to_owned(),
-            description: "OAuth2 authentication supporting Authorization Code, Client Credentials, and Device Code grant types.".to_owned(),
-            icon: Some("oauth2".to_owned()),
-            icon_url: None,
-            documentation_url: None,
-            properties: Self::parameters(),
-            pattern: nebula_core::AuthPattern::OAuth2,
-        }
+        CredentialMetadata::builder()
+            .key(nebula_core::credential_key!("oauth2"))
+            .name("OAuth2")
+            .description("OAuth2 authentication supporting Authorization Code, Client Credentials, and Device Code grant types.")
+            .schema(Self::parameters())
+            .pattern(nebula_core::AuthPattern::OAuth2)
+            .icon("oauth2")
+            .build()
+            .expect("oauth2 metadata is valid")
     }
 
     fn project(state: &OAuth2State) -> OAuth2Token {
@@ -721,10 +720,11 @@ mod tests {
 
     #[test]
     fn metadata_has_correct_fields() {
+        use nebula_metadata::Metadata;
         let meta = OAuth2Credential::metadata();
-        assert_eq!(meta.key, "oauth2");
-        assert_eq!(meta.name, "OAuth2");
-        assert!(meta.description.contains("OAuth2"));
+        assert_eq!(meta.key().as_str(), "oauth2");
+        assert_eq!(meta.name(), "OAuth2");
+        assert!(meta.description().contains("OAuth2"));
     }
 
     #[test]

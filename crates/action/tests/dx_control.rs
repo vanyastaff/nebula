@@ -678,7 +678,10 @@ fn all_demo_fixtures_are_dyn_stateless_handlers() {
     assert_eq!(handlers.len(), 7);
 
     // Each must report its own distinct action key.
-    let keys: Vec<_> = handlers.iter().map(|h| h.metadata().key.clone()).collect();
+    let keys: Vec<_> = handlers
+        .iter()
+        .map(|h| h.metadata().base.key.clone())
+        .collect();
     let unique: std::collections::HashSet<_> = keys.iter().collect();
     assert_eq!(unique.len(), 7, "action keys must be distinct");
 }
@@ -716,7 +719,7 @@ fn category_inference_matches_expectation() {
             handler.metadata().category,
             *expected,
             "unexpected category for {}",
-            handler.metadata().key
+            handler.metadata().base.key
         );
     }
 }

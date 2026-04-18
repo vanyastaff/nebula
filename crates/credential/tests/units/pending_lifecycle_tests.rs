@@ -66,16 +66,13 @@ impl Credential for InteractiveTestCredential {
     const INTERACTIVE: bool = true;
 
     fn metadata() -> CredentialMetadata {
-        CredentialMetadata {
-            key: Self::KEY.to_owned(),
-            name: "Interactive Test".to_owned(),
-            description: "Test credential for pending lifecycle".to_owned(),
-            icon: None,
-            icon_url: None,
-            documentation_url: None,
-            properties: Self::parameters(),
-            pattern: nebula_core::AuthPattern::SecretToken,
-        }
+        CredentialMetadata::new(
+            nebula_core::credential_key!("interactive_test"),
+            "Interactive Test",
+            "Test credential for pending lifecycle",
+            Self::parameters(),
+            nebula_core::AuthPattern::SecretToken,
+        )
     }
 
     fn project(state: &TestInteractiveState) -> SecretToken {

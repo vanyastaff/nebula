@@ -35,8 +35,8 @@ pub async fn discover_and_register(registry: &ActionRegistry) -> usize {
 
         for (plugin_name, handlers) in plugins {
             for (metadata, handler) in handlers {
-                let key = metadata.key.as_str().to_owned();
-                if registry.get(&metadata.key).is_some() {
+                let key = metadata.base.key.as_str().to_owned();
+                if registry.get(&metadata.base.key).is_some() {
                     tracing::warn!(
                         action = %key,
                         plugin = %plugin_name,

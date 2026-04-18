@@ -51,27 +51,67 @@ pub trait ResourceConfig: nebula_schema::HasSchema + Send + Sync + Clone + 'stat
 }
 
 /// Resource metadata for UI and diagnostics.
+///
+/// The shared catalog prefix (`key`, `name`, `description`, `schema`, `icon`,
+/// `documentation_url`, `tags`, `maturity`, `deprecation`) lives on the
+/// composed [`BaseMetadata`](nebula_metadata::BaseMetadata). Resource has no
+/// additional top-level metadata fields today — every catalog-level concern
+/// lives on the shared base.
+#[non_exhaustive]
 #[derive(Debug, Clone)]
 pub struct ResourceMetadata {
-    /// The unique key identifying this resource type.
-    pub key: ResourceKey,
-    /// Human-readable name.
-    pub name: String,
-    /// Optional longer description.
-    pub description: Option<String>,
-    /// Freeform tags for categorization.
-    pub tags: Vec<String>,
+    /// Shared catalog prefix.
+    pub base: nebula_metadata::BaseMetadata<ResourceKey>,
+}
+
+impl nebula_metadata::Metadata for ResourceMetadata {
+    type Key = ResourceKey;
+    fn base(&self) -> &nebula_metadata::BaseMetadata<ResourceKey> {
+        &self.base
+    }
 }
 
 impl ResourceMetadata {
-    /// Creates metadata with defaults derived from a resource key.
-    pub fn from_key(key: &ResourceKey) -> Self {
+    /// Build resource metadata with explicit catalog-level fields.
+    pub fn new(
+        key: ResourceKey,
+        name: impl Into<String>,
+        description: impl Into<String>,
+        schema: nebula_schema::ValidSchema,
+    ) -> Self {
         Self {
-            key: key.clone(),
-            name: key.to_string(),
-            description: None,
-            tags: Vec::new(),
+            base: nebula_metadata::BaseMetadata::new(key, name, description, schema),
         }
+    }
+
+    /// Build resource metadata whose schema is auto-derived from a
+    /// [`Resource`] implementation's `Config` type.
+    pub fn for_resource<R>(
+        key: ResourceKey,
+        name: impl Into<String>,
+        description: impl Into<String>,
+    ) -> Self
+    where
+        R: Resource,
+    {
+        Self::new(
+            key,
+            name,
+            description,
+            <R::Config as nebula_schema::HasSchema>::schema(),
+        )
+    }
+
+    /// Create minimal metadata derived from a key — uses the key as the
+    /// display name, an empty description, and an empty schema. Convenient
+    /// for in-process resources that never show up in a user-facing catalog.
+    pub fn from_key(key: &ResourceKey) -> Self {
+        Self::new(
+            key.clone(),
+            key.to_string(),
+            String::new(),
+            nebula_schema::ValidSchema::empty(),
+        )
     }
 }
 

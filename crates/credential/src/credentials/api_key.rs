@@ -66,16 +66,15 @@ impl Credential for ApiKeyCredential {
     const KEY: &'static str = "api_key";
 
     fn metadata() -> CredentialMetadata {
-        CredentialMetadata {
-            key: Self::KEY.to_owned(),
-            name: "API Key".to_owned(),
-            description: "Static API key or bearer token for HTTP APIs.".to_owned(),
-            icon: Some("key".to_owned()),
-            icon_url: None,
-            documentation_url: None,
-            properties: Self::parameters(),
-            pattern: nebula_core::AuthPattern::SecretToken,
-        }
+        CredentialMetadata::builder()
+            .key(nebula_core::credential_key!("api_key"))
+            .name("API Key")
+            .description("Static API key or bearer token for HTTP APIs.")
+            .schema(Self::parameters())
+            .pattern(nebula_core::AuthPattern::SecretToken)
+            .icon("key")
+            .build()
+            .expect("api_key metadata is valid")
     }
 
     fn project(state: &SecretToken) -> SecretToken {

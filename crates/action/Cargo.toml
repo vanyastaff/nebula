@@ -24,6 +24,7 @@ nebula-action-macros = { path = "macros" }
 nebula-core = { path = "../core" }
 nebula-credential = { path = "../credential" }
 nebula-error = { workspace = true }
+nebula-metadata = { path = "../metadata" }
 nebula-schema = { path = "../schema" }
 nebula-resource = { path = "../resource" }
 semver = { workspace = true }
