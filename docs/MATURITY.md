@@ -1,7 +1,7 @@
 ---
 name: Nebula crate maturity dashboard
 description: Manual per-crate state dashboard. Edited in PRs that change a crate's API stability, test coverage, doc state, engine integration, or SLI-readiness.
-status: skeleton
+status: accepted
 last-reviewed: 2026-04-17
 related: [PRODUCT_CANON.md, STYLE.md]
 ---
@@ -18,29 +18,35 @@ Legend:
 
 | Crate | API stability | Test coverage | Doc completeness | Engine integration | SLI ready |
 |---|---|---|---|---|---|
-| nebula-action        |   |   |   |   |   |
-| nebula-api           |   |   |   |   |   |
-| nebula-core          |   |   |   |   |   |
-| nebula-credential    |   |   |   |   |   |
-| nebula-engine        |   |   |   |   |   |
-| nebula-error         |   |   |   |   |   |
-| nebula-eventbus      |   |   |   |   |   |
-| nebula-execution     |   |   |   |   |   |
-| nebula-expression    |   |   |   |   |   |
-| nebula-log           |   |   |   |   |   |
-| nebula-metrics       |   |   |   |   |   |
-| nebula-plugin        |   |   |   |   |   |
-| nebula-plugin-sdk    |   |   |   |   |   |
-| nebula-resilience    |   |   |   |   |   |
-| nebula-resource      |   |   |   |   |   |
-| nebula-runtime       |   |   |   |   |   |
-| nebula-sandbox       |   |   |   |   |   |
-| nebula-schema        |   |   |   |   |   |
-| nebula-sdk           |   |   |   |   |   |
-| nebula-storage       |   |   |   |   |   |
-| nebula-system        |   |   |   |   |   |
-| nebula-telemetry     |   |   |   |   |   |
-| nebula-validator     |   |   |   |   |   |
-| nebula-workflow      |   |   |   |   |   |
+| nebula-action        | frontier | stable  | stable | partial (webhook sig covered; CheckpointPolicy planned) | n/a |
+| nebula-api           | frontier | stable  | stable | partial (step 5 cancel consumer partial) | partial |
+| nebula-core          | frontier | stable  | stable | stable | n/a |
+| nebula-credential    | frontier | stable  | stable | partial (rotation in integration tests) | n/a |
+| nebula-engine        | partial  | stable  | stable | stable | n/a |
+| nebula-error         | stable   | stable  | stable | n/a | n/a |
+| nebula-eventbus      | stable   | stable  | stable | n/a | n/a |
+| nebula-execution     | stable   | stable  | stable | stable | partial |
+| nebula-expression    | stable   | stable  | stable | stable | n/a |
+| nebula-log           | stable   | stable  | stable | n/a | n/a |
+| nebula-metrics       | stable   | stable  | stable | n/a | n/a |
+| nebula-plugin        | partial  | stable  | stable | partial (registry wired; load path partial) | n/a |
+| nebula-plugin-sdk    | partial  | stable  | stable | n/a | n/a |
+| nebula-resilience    | stable   | stable  | stable | n/a | n/a |
+| nebula-resource      | frontier | stable  | stable | partial (lifecycle visible; CAS guards partial) | n/a |
+| nebula-runtime       | partial  | stable  | stable | stable | partial |
+| nebula-sandbox       | partial  | stable  | stable | partial (process isolation; signing planned) | n/a |
+| nebula-schema        | frontier | stable  | stable | stable | n/a |
+| nebula-sdk           | partial  | stable  | stable | n/a | n/a |
+| nebula-storage       | partial  | stable  | stable | stable | partial |
+| nebula-system        | partial  | partial | stable | n/a | n/a |
+| nebula-telemetry     | stable   | stable  | stable | n/a | n/a |
+| nebula-validator     | frontier | stable  | stable | stable | n/a |
+| nebula-workflow      | stable   | stable  | stable | stable | n/a |
 
-Cell values populate in Pass 4 (crate sweep).
+---
+
+## Review cadence
+
+This file is a living dashboard. Reviewers check truthfulness on every PR that touches a crate's public surface, test suite, or docs. Canon §17 DoD includes "MATURITY.md row updated if the PR changes crate state."
+
+Last full sweep: 2026-04-17 (Pass 4 of docs architecture redesign).
