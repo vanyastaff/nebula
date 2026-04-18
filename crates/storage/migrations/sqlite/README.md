@@ -17,6 +17,9 @@ Spec-16 compliant schema for Nebula's SQLite backend (local-first / dev / tests)
 ## Migration order
 
 Same structure as `../postgres/` — see that README for the table index.
+Migration `0020_add_resume_result_persistence.sql` lands in both dialects in
+parity with Layer 1 migration `00000000000009_add_resume_persistence.sql`
+(ADR-0009 resume persistence schema).
 
 ## Schema parity
 

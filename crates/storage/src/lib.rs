@@ -7,8 +7,8 @@
 //! ## Layer 1 — production interfaces (use these today)
 //!
 //! Top-level re-exports: `ExecutionRepo`, `WorkflowRepo`, `InMemoryExecutionRepo`,
-//! `InMemoryWorkflowRepo`. Feature `postgres` adds `PgExecutionRepo`,
-//! `PgWorkflowRepo`, `PostgresStorage`.
+//! `InMemoryWorkflowRepo`, `NodeResultRecord`, `MAX_SUPPORTED_RESULT_SCHEMA_VERSION`.
+//! Feature `postgres` adds `PgExecutionRepo`, `PgWorkflowRepo`, `PostgresStorage`.
 //!
 //! This is the layer the knife scenario (`docs/PRODUCT_CANON.md` §13) exercises
 //! end-to-end.
@@ -31,6 +31,9 @@
 //!   transitions.
 //! - §12.3 local path: SQLite is the default; `test_support` provides `sqlite_memory_*` helpers for
 //!   in-process tests.
+//! - ADR-0009 resume-persistence schema: `set_workflow_input` / `get_workflow_input` and
+//!   `save_node_result` / `load_node_result` / `load_all_results` expose the seam; engine consumers
+//!   (chips B2 / B3 / B4) wire the resume path.
 //!
 //! See `crates/storage/README.md` for the full durability matrix and
 //! backend status table.
@@ -75,7 +78,8 @@ pub use backend::{MemoryStorage, MemoryStorageTyped};
 pub use backend::{PgExecutionRepo, PgWorkflowRepo, PostgresStorage, PostgresStorageConfig};
 pub use error::StorageError;
 pub use execution_repo::{
-    ExecutionRepo, ExecutionRepoError, InMemoryExecutionRepo, StatefulCheckpointRecord,
+    ExecutionRepo, ExecutionRepoError, InMemoryExecutionRepo, MAX_SUPPORTED_RESULT_SCHEMA_VERSION,
+    NodeResultRecord, StatefulCheckpointRecord,
 };
 pub use format::StorageFormat;
 pub use storage::Storage;
