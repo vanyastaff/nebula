@@ -37,7 +37,7 @@ If this PR touches any L2 invariant (execution lifecycle, storage CAS, durable o
 - [ ] The canon section is either updated OR confirmed unchanged because the ADR preserves it.
 - [ ] The seam test covering the invariant is updated **in the same PR** (§17 DoD requirement).
 
-If touching L1 (pillars, principles) — that is a product-level revision. Hand off to `architect`.
+If touching L1 (pillars, principles) — that is a product-level revision. Hand off to `tech-lead` and open an ADR per `docs/PRODUCT_CANON.md §0.2`.
 
 ### 3. Crate README + `lib.rs //!`
 

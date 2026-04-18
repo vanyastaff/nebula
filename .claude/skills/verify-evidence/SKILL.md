@@ -38,13 +38,14 @@ Every `cargo` invocation. Every time. Capture the last ~10 lines of each, especi
 
 ### 2. Full gate (before PR)
 
-Add:
+Match root `CLAUDE.md` §"Canonical Commands" "Full validation" exactly. Add to §1:
 
 ```bash
 cargo test --workspace --doc
 cargo deny check
-cargo check --workspace --all-features --all-targets
 ```
+
+`lefthook` pre-push additionally runs `cargo check --workspace --all-features --all-targets`, `cargo check --no-default-features` for selected crates, `cargo doc`, and `cargo shear`. You do not need to run those by hand — the push-time mirror handles them. If CI fails on one, diagnose root cause (do not `--no-verify`).
 
 ### 3. Single-crate iteration mode
 
@@ -73,23 +74,20 @@ Never silently drop a step.
 
 ### 6. Planned deletions
 
-Per memory `feedback_incomplete_work.md` — if the plan said to remove X, confirm X is gone:
+If the plan said to remove X, confirm X is actually gone — do not ship a partial removal:
 
 - [ ] `git grep "X"` returns only legitimate references (tests asserting removal, changelog).
 - [ ] `cargo build` does not reference X.
 
 ### 7. Doctest discipline
 
-Per memory `feedback_intra_doc_links.md`:
-
-- [ ] No newly-introduced intra-doc-link brackets to out-of-scope paths in `//!` / attribute docs — `rustdoc -D warnings` will fail.
+- [ ] No newly-introduced intra-doc-link brackets to out-of-scope paths in `//!` / attribute docs — `rustdoc -D warnings` will fail on paths it cannot resolve.
 
 ### 8. Lefthook mirror check
 
-Per memory `feedback_lefthook_mirrors_ci.md`:
+`lefthook.yml` pre-push is the local mirror of CI required jobs (see root `CLAUDE.md` §"Canonical Commands" and the repo's own `lefthook.yml`):
 
-- [ ] Pre-push is the local mirror of CI required jobs.
-- [ ] If this PR adds a CI required job, `lefthook.yml` pre-push gains the same check.
+- [ ] If this PR adds a CI required job, `lefthook.yml` pre-push gains the same check in the same PR, so local push and CI cannot diverge.
 
 ## Output format
 
