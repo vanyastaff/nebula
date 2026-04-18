@@ -265,6 +265,8 @@ These must stay **explicit in code and operator-facing docs**, not split across 
 
 **[L2]** `nebula-execution` + `ExecutionRepo` are the **single source of truth** for execution state. Transitions use **optimistic CAS** against persisted `version`. There is no ephemeral “usually DB wins” mode: if persistence is unavailable, the operation **fails** — it does not silently mutate in-memory state.
 
+Seam: `crates/storage/src/execution_repo.rs` — `ExecutionRepo::transition`. Test coverage: see `docs/MATURITY.md`.
+
 ### 11.2 Retry
 
 **[L2]** Retry is a **runtime semantic** owned by the **engine** and **`nebula-resilience`** pipelines around **outbound** calls inside an action — not a decorative hint on a return type. The engine **does not** schedule re-execution of a failed node from an `ActionResult::Retry`-style return unless that path is wired with **persisted attempt accounting**. If such a variant exists but is not honored end-to-end, it is a **false capability** (remove it or implement it). Until durable per-attempt retry accounting exists, the canonical retry surface is the **resilience pipeline** an action uses internally.
@@ -291,6 +293,8 @@ These must stay **explicit in code and operator-facing docs**, not split across 
 
 **[L2]** Resources are first-class because **acquisition** and **scope-bounded release** are **engine-owned**. The async release path is **best-effort on crash** — orphaned resources rely on the next process to drain (mechanism types: see `crates/resource/README.md`). Operators must be told this; authors must not assume “release ran” without an explicit checkpoint.
 
+Seam: `crates/resource/src/release_queue.rs` — `ReleaseQueue`. Test coverage: see `docs/MATURITY.md`.
+
 **[L1]** For long-lived exclusive/external resources (locks, leased cloud instances), deployments need external TTL / dead-man strategy; Nebula v1 does not provide an external lease arbiter by itself.
 
 ### 11.5 Persistence & operators
@@ -309,6 +313,8 @@ These must stay **explicit in code and operator-facing docs**, not split across 
 | `execution_leases` (schema)        | **Schema may exist before full enforcement**                          | If the engine does not consume leases yet, **say so** — do not imply lease safety                                                                                                |
 | In-process `mpsc` / channels       | **Ephemeral**                                                         | Never authoritative truth                                                                                                                                                        |
 
+
+Seams: `crates/storage/src/execution_repo.rs` — `ExecutionRepo::save_stateful_checkpoint` (checkpoint write) + `ExecutionRepo::append_journal` (journal append). Test coverage: see `docs/MATURITY.md`.
 
 **[L2]** If an operator cannot answer durability questions from this section plus code/docstrings, the product is not yet operationally honest.
 
@@ -385,14 +391,18 @@ This is the **minimum bar** for “we did not break the product direction.” Ex
 **Scenario (current bar):**
 
 1. **[L2]** **Define and persist** a workflow through the API — definition **round-trips**.
+   Seam: `crates/api/src/handlers/workflow.rs` — `create_workflow`. Test coverage: see `docs/MATURITY.md`.
 2. **[L2]** **Activate** the workflow. Activation runs validation and **rejects** invalid definitions with structured RFC 9457 errors — it does **not** silently flip a flag.
+   Seam: `crates/api/src/handlers/workflow.rs` — `activate_workflow`. Test coverage: see `docs/MATURITY.md`.
 3. **[L2]** **Start an execution** (API or equivalent). The execution row exists with consistent `status`, monotonic `version`, and a real `started_at` (no synthetic zero, no placeholder `now()` where the field should be `None`).
+   Seam: `crates/api/src/handlers/execution.rs` — `start_execution` + `crates/storage/src/execution_repo.rs` — `ExecutionRepo::transition`. Test coverage: see `docs/MATURITY.md`.
 4. **[L2]** **Observe** via GET — `finished_at` is `None` (not `0`) until terminal; `status` reflects the latest persisted value.
 5. **[L2]** **Request cancellation** on a non-terminal execution:
   - the handler transitions through **`ExecutionRepo`** (CAS),
   - the **same logical operation** enqueues **`Cancel`** in `execution_control_queue`,
   - a dispatch consumer wired to the **real engine** observes the command and the engine’s cancel path runs,
   - the execution reaches a **terminal** `Cancelled` state without hand-waved stubs.
+   Seam: `crates/api/src/handlers/execution.rs` — `cancel_execution` + `crates/storage/src/execution_repo.rs` — `ExecutionRepo::transition`. Test coverage: see `docs/MATURITY.md`.
 6. **[L2]** Under test configuration where orchestration is intentionally absent: control endpoints return **503** — never fake success and never an unparsable 500.
 
 **Integration bar (same spirit as execution — must stay green as these paths exist):**
