@@ -77,8 +77,9 @@ impl<E: Clone + Send> EventBus<E> {
     /// Emits an event to all current subscribers (non-blocking).
     ///
     /// When the buffer is full:
-    /// - **DropOldest**: event is sent (oldest overwritten).
-    /// - **DropNewest**: event is dropped and counted in stats.
+    /// - **DropOldest**: new event is queued; the oldest unread event is evicted and counted in
+    ///   [`EventBusStats::dropped_count`].
+    /// - **DropNewest**: new event is dropped and counted in stats.
     /// - **Block**: behaves as DropOldest; use [`emit_awaited`](Self::emit_awaited) for blocking.
     #[inline]
     pub fn emit(&self, event: E) -> PublishOutcome {
@@ -94,8 +95,18 @@ impl<E: Clone + Send> EventBus<E> {
 
     #[inline]
     fn publish_drop_oldest(&self, event: E) -> PublishOutcome {
+        // `tokio::sync::broadcast::send` returns `Ok` whenever any receiver
+        // exists — even when the ring buffer is full and the oldest unread
+        // event is being overwritten. Snapshot the queue depth before send so
+        // we can attribute the eviction to `dropped_count`. Issue #262.
+        let was_full = self.sender.len() >= self.buffer_size;
         match self.sender.send(event) {
-            Ok(_) => PublishOutcome::Sent,
+            Ok(_) => {
+                if was_full {
+                    self.dropped_count.fetch_add(1, Ordering::Relaxed);
+                }
+                PublishOutcome::Sent
+            },
             Err(_) => PublishOutcome::DroppedNoSubscribers,
         }
     }
@@ -486,6 +497,69 @@ mod tests {
         assert!(bus.pending_len() <= bus.buffer_size());
         let stats = bus.stats();
         assert_eq!(stats.sent_count, 10_000);
+        // Buffer of 32 with a non-draining subscriber: the first 32 emits fill
+        // the ring; every subsequent emit evicts the oldest unread event.
+        assert_eq!(
+            stats.dropped_count,
+            10_000 - 32,
+            "DropOldest must count each evicted event in dropped_count"
+        );
+    }
+
+    #[test]
+    fn drop_oldest_overflow_increments_dropped_count() {
+        // Issue #262: under DropOldest with overflow, broadcast::send returns Ok
+        // (because at least one receiver exists), so the bus used to mark every
+        // emit as Sent and never bumped dropped_count. Each overflow must now be
+        // counted as a drop.
+        let bus = EventBus::<TestEvent>::with_policy(4, BackPressurePolicy::DropOldest);
+        let _sub = bus.subscribe();
+
+        for i in 0..4 {
+            assert_eq!(bus.emit(TestEvent(i)), PublishOutcome::Sent);
+        }
+
+        let stats_after_fill = bus.stats();
+        assert_eq!(stats_after_fill.sent_count, 4);
+        assert_eq!(
+            stats_after_fill.dropped_count, 0,
+            "buffer not yet full — no eviction expected"
+        );
+
+        for i in 4..10 {
+            assert_eq!(bus.emit(TestEvent(i)), PublishOutcome::Sent);
+        }
+
+        let stats_after_overflow = bus.stats();
+        assert_eq!(stats_after_overflow.sent_count, 10);
+        assert_eq!(
+            stats_after_overflow.dropped_count, 6,
+            "each emit past capacity evicts one event and must bump dropped_count"
+        );
+    }
+
+    #[test]
+    fn block_policy_emit_overflow_increments_dropped_count() {
+        // Block policy synchronously falls through to publish_drop_oldest, so the
+        // overflow accounting must apply there too.
+        let bus = EventBus::<TestEvent>::with_policy(
+            2,
+            BackPressurePolicy::Block {
+                timeout: Duration::from_millis(10),
+            },
+        );
+        let _sub = bus.subscribe();
+
+        for i in 0..5 {
+            let _ = bus.emit(TestEvent(i));
+        }
+
+        let stats = bus.stats();
+        assert_eq!(stats.sent_count, 5);
+        assert_eq!(
+            stats.dropped_count, 3,
+            "Block falls through to DropOldest in sync emit; overflows must count"
+        );
     }
 
     #[tokio::test]
