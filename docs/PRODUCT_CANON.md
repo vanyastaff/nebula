@@ -173,122 +173,20 @@ Major choices should map to a pillar; if a feature maps to none, it is probably 
 - **Ecosystem quality over node count:** one solid canonical integration per external service beats many half-finished duplicates.
 - **Third-party nodes** are first-class in intent: same capabilities as first-party where the plugin model allows; **document** what is shipped vs planned.
 
-### 7.1 Plugin packaging: `Cargo.toml`, `plugin.toml`, and `impl Plugin`
+### 7.1 Plugin packaging
 
-Nebula recognizes **two legitimate packaging patterns** — not “official vs hack.” Both use the same **Rust crate + `plugin.toml` marker + `impl Plugin`** story.
+**[L1]** Plugin is the unit of **registration**, not the unit of size. Full plugins and micro-plugins use the same contract: Rust crate + `plugin.toml` marker + `impl Plugin`.
 
-**Full plugin** — e.g. `nebula-plugin-slack/`: many actions, credentials, resources, locales.
-
-**Micro-plugin** — e.g. `nebula-resource-slack/`: one or two registry entries.
-
-**Principle:** **Plugin is the unit of registration, not the unit of size.** Same loader and respect for both shapes.
-
-#### Three sources of truth (no drift)
-
-Avoid **double declaration** — listing every action in TOML **and** in `fn actions()` is **spec theater** (§14): two sources that will diverge.
+**[L2]** Three sources of truth, no duplication:
 
 
-| Artifact                             | Responsibility                                                                                                                                                                                                                                                                   |
-| ------------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| **`Cargo.toml`**                     | Rust **package** identity: `[package].name`, `version`, `authors`, `license`, `homepage`, `description`, and **`[dependencies]`** on other crates — **including other plugin crates**. This is the **dependency graph** the host already knows how to resolve.                   |
-| **`plugin.toml`**                    | **Trust + compatibility boundary** — read **without compiling**: **SDK constraint**, optional stable **plugin id**, and (when used) **signing** over a **stable** manifest (see **Signing** below). **Do not** duplicate registry contents (actions/resources/credentials) here. |
-| **`impl Plugin` + `PluginMetadata`** | **Runtime source of truth** for **what** gets registered (`actions()`, `resources()`, `credentials()`, locales) and for **display metadata** (`PluginMetadata`: human name, icon, categories, long description, etc.) **after** load.                                            |
+- **`Cargo.toml`** — Rust package identity and dependency graph (including cross-plugin `[dependencies]`).
+- **`plugin.toml`** — trust + compatibility boundary (SDK constraint, optional stable plugin id, signing when enabled). Read without compiling.
+- **`impl Plugin` + `PluginMetadata`** — runtime source of truth for registered actions / resources / credentials / locales.
 
+**[L2]** Cross-plugin types come in via `Cargo.toml` `[dependencies]` on the provider plugin crate. Engine loads providers before dependents (acyclic graph). Referencing a type outside the declared dependency closure is a misconfiguration caught at activation.
 
-**Pre-compile discovery** (registry, CLI list) uses **`Cargo.toml` + minimal `plugin.toml`** only. Full **`PluginMetadata`** is authoritative **once the plugin is loaded**; do not require a second copy of every field in TOML.
-
-**Versioning:** `Cargo.toml` `[package].version` is the **crate** version — do **not** duplicate it in `plugin.toml`.
-
-**`Cargo.toml` stays Rust-standard:** no Nebula-specific tables in `Cargo.toml` — Nebula-specific policy lives in **`plugin.toml`** + Rust code.
-
-**The boundary “this is a Nebula plugin”:** a **`plugin.toml`** file exists at the crate root with at least:
-
-```toml
-[nebula]
-sdk = "^0.8"   # semver constraint on nebula-api / plugin SDK — read by cargo-nebula / CLI without `cargo build`
-```
-
-**Optional `[plugin].id`** — set this **only** when the stable Nebula plugin id must **differ** from the Cargo package name (registry/UI **before** load):
-
-```toml
-[plugin]
-id = "nebula-plugin-slack"   # if [package].name is e.g. "slack-plugin"
-```
-
-**If `id` is omitted**, the **effective plugin id** for discovery and compatibility is **`[package].name`** from `Cargo.toml` — hosts and pre-compile tooling **must** use that string (no other implicit default). Internal mapping to typed keys (e.g. `PluginKey`) must be **deterministic** and **documented** in loader/tooling; if the package name does not map cleanly, authors **must** set `id` explicitly. **Do not** silently derive a different id from Cargo without an explicit `[plugin].id`.
-
-#### Signing: why `plugin.toml`, not `Cargo.toml`
-
-**`Cargo.toml` mutates** whenever dependencies are added, bumped, or re-resolved (`cargo update`, new crates). Signing it would mean **signatures churn constantly** or cover irrelevant churn — a poor trust anchor.
-
-**`plugin.toml` is intentionally stable:** it holds **identity-for-trust**, **SDK compatibility**, and (when enabled) **cryptographic attestation** — not the full registry. That is what you **sign**: the author attests “this **plugin identity** and **policy** are mine.” Same idea as **Android** signing **`AndroidManifest.xml`** (policy/identity), not every `.java` file; or treating a **lockfile** / manifest as the attested surface while sources ship beside it.
-
-- **Canonical signed payload:** the **bytes of `plugin.toml`** (or a defined canonical serialization of it — tooling decides). **`impl Plugin` / `PluginMetadata` are not the signed blob** — they describe **content** and can change without invalidating publisher identity, as long as the **attested manifest** is unchanged or re-signed.
-
-Illustrative **`[signing]`** shape (field names and algorithms are **tooling-defined** until frozen):
-
-```toml
-[nebula]
-sdk = "^0.8"
-
-[plugin]
-id = "nebula-plugin-slack"
-
-[signing]
-publisher   = "vanya@example.com"
-fingerprint = "sha256:abc123..."
-signature   = "base64:..."
-```
-
-**Three layers (summary):**
-
-
-| Layer             | Role                                                                                            |
-| ----------------- | ----------------------------------------------------------------------------------------------- |
-| **`plugin.toml`** | **Trust + compatibility** — SDK bound, optional id, **signature** (what the publisher attests). |
-| **`Cargo.toml`**  | **Build graph** — what compiles; **not** the Nebula trust document.                             |
-| **`impl Plugin`** | **Content** — what registers at runtime.                                                        |
-
-
-#### Why not list `[[actions]]` in `plugin.toml`?
-
-Flutter-style **pubspec** asset lists work because there is no second source. Here, **`impl Plugin`** already returns the registry — a parallel TOML table would **duplicate** it. **SDK constraint + Cargo metadata + Rust registry** keeps a **single** responsibility per layer.
-
-#### Plugin dependency rule (cross-plugin types)
-
-For **Rust** plugins, **another plugin’s** types are brought in only via **`Cargo.toml` `[dependencies]`** on the **provider plugin crate**. The engine loads / activates providers **before** dependents according to that **acyclic** graph (topological order).
-
-- **Versioning & discoverability:** `cargo tree`, lockfiles, and `Cargo.toml` already say “A depends on B.”
-- **Isolation:** an Action in crate A that references a Resource type from crate B **without** a Cargo dependency on B is **invalid** — fail at **activation** / compile time, not a silent global lookup.
-
-If a future **non-Rust** host needs a manifest-only dependency list, that can be a **separate** extension — the canon for **Rust-native** plugins is **Cargo-first**.
-
-#### Layout
-
-Directories such as `actions/`, `credentials/`, `resources/`, `locales/` are **recommended**; only **`plugin.toml`** (minimal) + **`Cargo.toml`** are **required** at the canon level for the marker story above.
-
-Illustrative (non-normative) layouts:
-
-```text
-nebula-plugin-slack/          # full plugin
-  plugin.toml                 # required manifest
-  actions/
-    send_message.rs
-    create_channel.rs
-  credentials/
-    oauth.rs
-    bot_token.rs
-  resources/
-    http_client.rs
-  locales/
-    en.json
-    ru.json
-
-nebula-resource-slack/        # micro-plugin
-  plugin.toml                 # same manifest contract
-  resource.rs
-  credential.rs
-```
+**[L4]** Full packaging mechanics — `[nebula]` / `[plugin]` / `[signing]` table shapes, signing rationale, layout examples, FFI-path notes — live in `docs/INTEGRATION_MODEL.md`.
 
 ### 7.2 Engine upgrade and workflow compatibility
 
