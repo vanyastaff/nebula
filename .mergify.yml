@@ -44,8 +44,8 @@ pull_request_rules:
       - "-draft"
       - "-conflict"
       - or:
-          - 'title~=^chore\(deps\): bump the .+ group'
-          - 'title~=^chore\(ci\): bump the .+ group'
+          - 'title~=(?i)^chore\(deps\): bump the .+ group'
+          - 'title~=(?i)^chore\(ci\): bump the .+ group'
     actions:
       queue:
         name: default
@@ -62,8 +62,8 @@ pull_request_rules:
           - conflicts
       comment:
         message: |
-          :warning: @{{author}} this PR has merge conflicts with `main`.
-          Rebase or merge `main` into your branch to resolve.
+          :warning: @{{author}} this PR has merge conflicts with `{{base}}`.
+          Rebase or merge `{{base}}` into your branch to resolve.
 
   - name: Remove conflicts label when resolved
     conditions:
@@ -91,10 +91,13 @@ pull_request_rules:
           This PR has been inactive for 14 days. Push new commits or remove the
           `stale` label to keep it open; otherwise it may be closed after 30 days.
 
-  - name: Remove stale label on new activity
+  # Keys off `commits[*].date_committer`, not `updated-at`: the latter is bumped
+  # by Mergify's own label/comment actions and would remove the `stale` label
+  # immediately after it was applied. Commit-time checks fire only on real pushes.
+  - name: Remove stale label on new commits
     conditions:
       - label=stale
-      - updated-at>=1 day ago
+      - commits[*].date_committer>=1 day ago
     actions:
       label:
         remove:
