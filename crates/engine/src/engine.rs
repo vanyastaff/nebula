@@ -1748,7 +1748,7 @@ impl WorkflowEngine {
             return false;
         };
 
-        let idem_key = exec_state.idempotency_key_for_node(execution_id, node_key.clone());
+        let idem_key = exec_state.idempotency_key_for_node(node_key.clone());
 
         let already_done = match repo.check_idempotency(idem_key.as_str()).await {
             Ok(v) => v,
@@ -1919,7 +1919,7 @@ impl WorkflowEngine {
         let Some(repo) = &self.execution_repo else {
             return;
         };
-        let idem_key = exec_state.idempotency_key_for_node(execution_id, node_key.clone());
+        let idem_key = exec_state.idempotency_key_for_node(node_key.clone());
         if let Err(e) = repo
             .mark_idempotent(idem_key.as_str(), execution_id, node_key.clone())
             .await
@@ -4889,7 +4889,7 @@ mod tests {
         let state_str = serde_json::to_string(&state_json).unwrap();
         let exec_state: nebula_execution::state::ExecutionState =
             serde_json::from_str(&state_str).expect("deserialize persisted execution state");
-        let idem_key = exec_state.idempotency_key_for_node(execution_id, n.clone());
+        let idem_key = exec_state.idempotency_key_for_node(n.clone());
 
         let already_marked = exec_repo
             .check_idempotency(idem_key.as_str())

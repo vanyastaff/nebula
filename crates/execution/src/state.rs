@@ -206,25 +206,30 @@ impl ExecutionState {
     /// retried or restart-replayed attempt does not collide with a
     /// previous attempt's persisted output (issue #266, canon §11.3).
     ///
-    /// When `attempts` is empty (the common case while engine-level
-    /// retry accounting is still `planned` per §11.2), the key uses
-    /// attempt number `1` — matching what `save_node_output` records
-    /// via `attempt_count().max(1)`. When the retry scheduler lands and
-    /// begins pushing [`NodeAttempt`]s into `attempts`, this helper
-    /// automatically starts differentiating attempts without any engine
-    /// change.
+    /// The execution id is taken from `self` — callers cannot pass a
+    /// mismatched id by accident.
+    ///
+    /// When the node's `attempts` is empty (the common case while
+    /// engine-level retry accounting is still `planned` per §11.2), the
+    /// key uses attempt number `1` — matching what `save_node_output`
+    /// records via `attempt_count().max(1)`. When the retry scheduler
+    /// lands and begins pushing [`NodeAttempt`]s into `attempts`, this
+    /// helper automatically starts differentiating attempts without any
+    /// engine change.
+    ///
+    /// If `node_key` is not present in `node_states` (a programming
+    /// error in practice — the engine only generates keys for nodes it
+    /// has dispatched), the helper also defaults to attempt number `1`,
+    /// mirroring the `.unwrap_or(1)` fallback `save_node_output` uses
+    /// for the same input.
     #[must_use]
-    pub fn idempotency_key_for_node(
-        &self,
-        execution_id: ExecutionId,
-        node_key: NodeKey,
-    ) -> IdempotencyKey {
+    pub fn idempotency_key_for_node(&self, node_key: NodeKey) -> IdempotencyKey {
         let attempt = self
             .node_states
             .get(&node_key)
             .map(|ns| ns.attempt_count().max(1) as u32)
             .unwrap_or(1);
-        IdempotencyKey::generate(execution_id, node_key, attempt)
+        IdempotencyKey::generate(self.execution_id, node_key, attempt)
     }
 
     /// Set a node's execution state directly.
@@ -711,7 +716,7 @@ mod tests {
         let (mut state, n1, _n2) = make_state();
         let eid = state.execution_id;
 
-        let fresh = state.idempotency_key_for_node(eid, n1.clone());
+        let fresh = state.idempotency_key_for_node(n1.clone());
         assert_eq!(
             fresh,
             IdempotencyKey::generate(eid, n1.clone(), 1),
@@ -726,7 +731,7 @@ mod tests {
             IdempotencyKey::generate(eid, n1.clone(), 2),
         ));
 
-        let after_two = state.idempotency_key_for_node(eid, n1.clone());
+        let after_two = state.idempotency_key_for_node(n1.clone());
         assert_eq!(
             after_two,
             IdempotencyKey::generate(eid, n1, 2),
@@ -742,7 +747,7 @@ mod tests {
         let phantom = node_key!("not_in_state");
         let eid = state.execution_id;
 
-        let key = state.idempotency_key_for_node(eid, phantom.clone());
+        let key = state.idempotency_key_for_node(phantom.clone());
         assert_eq!(key, IdempotencyKey::generate(eid, phantom, 1));
     }
 }
