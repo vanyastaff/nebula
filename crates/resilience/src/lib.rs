@@ -1,4 +1,26 @@
-//! Resilience patterns for building fault-tolerant Rust services.
+//! # nebula-resilience
+//!
+//! Stability patterns pipeline for fault-tolerant outbound calls inside Nebula actions.
+//!
+//! ## Purpose
+//!
+//! Actions that call external APIs face flaky networks, rate limits, and transient failures.
+//! This crate provides the canonical in-process resilience layer: seven composable patterns
+//! (retry, circuit breaker, bulkhead, rate limiter, timeout, hedge, load shed) that action
+//! authors wire at outbound call sites. Retry filtering is driven by `nebula-error::Classify`
+//! so transient vs permanent is explicit — not folklore.
+//!
+//! Per canon §11.2, `nebula-resilience` pipelines are the **canonical retry surface today**.
+//! Engine-level node re-execution with persisted attempt accounting is `planned`. See
+//! `crates/resilience/README.md` for the full role description and contract invariants.
+//!
+//! ## Role
+//!
+//! **Stability Patterns Pipeline** (Release It! — Circuit Breaker + Timeout + Retry-with-Backoff
+//! composition; `docs/GLOSSARY.md` Architectural Patterns). Cross-cutting infrastructure;
+//! no upward dependencies.
+//!
+//! ## Public API (summary)
 //!
 //! Seven patterns — retry, circuit breaker, bulkhead, rate limiter, timeout,
 //! hedge, load shed — composable via [`ResiliencePipeline`].

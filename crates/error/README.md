@@ -1,66 +1,67 @@
+---
+name: nebula-error
+role: Error Taxonomy and Classification Boundary
+status: stable
+last-reviewed: 2026-04-17
+canon-invariants: [L2-12.4]
+related: [nebula-resilience, nebula-core, nebula-api]
+---
+
 # nebula-error
 
-Enterprise error infrastructure for the Nebula workflow engine — classification traits, generic error wrapper, extensible typed details.
+## Purpose
 
-**Layer:** Cross-cutting (depended on by every other crate)
-**Canon:** §3.10 (cross-cutting vocabulary), §12.4 (errors and contracts — library crates use typed errors, not `anyhow`)
+Rust crates that each define their own error enum and retry logic end up with incompatible
+classification strategies — one crate treats `TIMEOUT` as retryable, another treats the same
+timeout as terminal. `nebula-error` solves this by providing a single workspace-wide error
+taxonomy: a `Classify` trait that every error type implements, a `NebulaError<E>` generic wrapper
+that adds extensible details and a context chain, and structured retry guidance through `RetryHint`.
+This makes transient vs permanent failure an explicit decision rather than folklore scattered across
+individual action implementations.
 
-## Status
+## Role
 
-**Overall:** `implemented` — the authoritative error taxonomy for the workspace.
+**Error Taxonomy and Classification Boundary** — the foundation error crate that every library
+crate in the workspace depends on. Pattern: *ErrorClassifier* (canon §4.2, `docs/GLOSSARY.md` §6).
+Every library crate uses `thiserror` + `Classify` + `NebulaError`; only binaries use `anyhow`.
+`nebula-api` maps `NebulaError` to RFC 9457 `problem+json` at the API boundary.
 
-**Works today:**
+## Public API
 
-- `Classify` trait — core classification surface: category, code, severity, retryability
-- `ErrorClassifier` pattern — makes transient/permanent an explicit decision instead of folklore (canon §4.2)
-- `NebulaError<E>` — generic wrapper adding details + context chain (see closed bug #405 — `Display` now includes full context chain)
-- `ErrorDetails` / `ErrorDetail` — TypeId-keyed extensible detail storage (Google / AWS SDK inspired)
-- `ErrorCategory` — canonical "what happened" classification
-- `ErrorSeverity` — `Error` / `Warning` / `Info`
-- `ErrorCode` + `codes` — machine-readable code newtype
-- `ErrorCollection` / `BatchResult` — aggregation for batch/validation errors
-- `RetryHint` — structured retry guidance returned by `Classify`
-- `Result<T, E>` type alias using `NebulaError<E>`
-- `#[derive(Classify)]` via `nebula-error-macros`
-- 10 unit test markers, 2 integration tests
+- `Classify` — core trait: `category()`, `code()`, `severity()`, `retry_hint()`.
+- `ErrorClassifier` — the `Classify`-at-decision-points pattern (canon §4.2).
+- `NebulaError<E>` — generic wrapper over any `Classify` type; adds `ErrorDetails` chain and context.
+- `ErrorDetails`, `ErrorDetail` — TypeId-keyed extensible detail storage (Google / AWS SDK style).
+- `ErrorCategory` — canonical "what happened" classification (`Transient`, `Permanent`, `Internal`, …).
+- `ErrorSeverity` — `Error` / `Warning` / `Info`.
+- `ErrorCode`, `codes` — machine-readable code newtype.
+- `ErrorCollection`, `BatchResult` — aggregation for batch and validation errors.
+- `RetryHint` — structured retry guidance returned by `Classify::retry_hint()`.
+- `Result<T, E>` — alias for `std::result::Result<T, NebulaError<E>>`.
+- `#[derive(Classify)]` — proc-macro from `nebula-error-macros` (feature `derive`).
+- Pre-built detail types: `BadRequest`, `FieldViolation`, `ResourceInfo`, `RequestInfo`, `ExecutionContext`, `DebugInfo`, and others in `detail_types`.
 
-**Known gaps / deferred:**
+## Contract
 
-- None significant. The error taxonomy is stable and in active use across the workspace.
-- Historical issue: `Display` used to omit the context chain — fixed in commit `0f047d32` (#405). Referenced here so future authors don't re-introduce the regression.
+- **[L2-§12.4]** All library crates in the workspace use typed errors (`thiserror` + `Classify` + `NebulaError`), not `anyhow`. `anyhow` is reserved for binaries. Seam: `crates/error/src/traits.rs` — `Classify`. Test coverage: see `docs/MATURITY.md`.
+- **[L3-§12.4]** `Display` for `NebulaError<E>` must include the full context chain (regression: fixed in commit `0f047d32`, #405 — do not regress).
+- **[L1-§4.2]** `Classify::retry_hint()` is the explicit decision surface for transient vs permanent failure — `nebula-resilience` consumes `RetryHint` to compose retry policies without re-implementing classification in each crate.
 
-## Architecture notes
+## Non-goals
 
-- **Clean module layout.** One file per concept: `category`, `code`, `collection`, `convert`, `detail_types`, `details`, `error`, `retry`, `severity`, `traits`. Eleven modules for 3111 lines — each file is modest.
-- **Proc-macros in a separate sibling crate** (`nebula-error-macros`) — correct Rust practice. Keeps compile surface separate.
-- **Single intra-workspace dependency** (the macros crate). Correct for a foundational cross-cutting crate.
-- **No dead code or compat shims.**
-- **DRY caveat:** `detail_types.rs` provides a library of pre-built `ErrorDetail` implementations; if it starts mirroring what domain crates already define, review for whether the detail type belongs closer to its producer.
+- Not a resilience pipeline — `RetryHint` is data; the actual retry execution lives in `nebula-resilience`.
+- Not an API error formatter — `nebula-api` maps `NebulaError` to RFC 9457 `problem+json`.
+- Not a logging system — error display and structured logging are handled by `nebula-log`.
 
-## What this crate provides
+## Maturity
 
-| Type / trait | Role |
-| --- | --- |
-| `Classify` | Core trait — category, code, severity, retryability. |
-| `NebulaError<E>` | Generic wrapper with details + context chain. |
-| `ErrorDetails`, `ErrorDetail` | TypeId-keyed extensible detail storage. |
-| `ErrorCategory` | Canonical classification. |
-| `ErrorSeverity` | Error / Warning / Info. |
-| `ErrorCode`, `codes` | Machine-readable code newtype. |
-| `ErrorCollection`, `BatchResult` | Batch/validation aggregation. |
-| `RetryHint` | Structured retry guidance. |
-| `ErrorClassifier` | The pattern of using `Classify` at decision points. |
-| `#[derive(Classify)]` | Proc-macro from `nebula-error-macros`. |
-| `Result<T, E>` | Alias for `std::result::Result<T, NebulaError<E>>`. |
+See `docs/MATURITY.md` row for `nebula-error`.
 
-## Where the contract lives
+- API stability: `stable` — `Classify`, `NebulaError`, `ErrorCategory`, and `RetryHint` are in active use across the full workspace; no known planned breaking changes.
+- `detail_types` module may grow new pre-built detail structs as domain crates identify common error shapes.
 
-- Source: `src/lib.rs`, `src/error.rs`, `src/traits.rs`, `src/category.rs`, `src/details.rs`
-- Canon: `docs/PRODUCT_CANON.md` §3.10, §12.4
-- Glossary: `docs/GLOSSARY.md` §6 (errors)
+## Related
 
-## See also
-
-- `nebula-error-macros` — sibling proc-macro crate
-- `nebula-resilience` — consumes `RetryHint` for retry policy composition
-- `nebula-api` — maps `NebulaError` to RFC 9457 `problem+json` at the API boundary
+- Canon: `docs/PRODUCT_CANON.md` §3.10 (cross-cutting vocabulary), §4.2 (ErrorClassifier pattern), §12.4 (errors and contracts).
+- Glossary: `docs/GLOSSARY.md` §6 (errors: `NebulaError`, `Classify`, `ErrorClassifier`, `ApiError`).
+- Siblings: `nebula-error-macros` (sibling proc-macro crate), `nebula-resilience` (consumes `RetryHint`), `nebula-api` (maps to RFC 9457).

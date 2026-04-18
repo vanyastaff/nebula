@@ -1,41 +1,84 @@
+---
+name: nebula-resilience
+role: Stability Patterns Pipeline (Circuit Breaker + Timeout + Retry-with-Backoff composition)
+status: stable
+last-reviewed: 2026-04-17
+canon-invariants: [L2-11.2]
+related: [nebula-error, nebula-action]
+---
+
 # nebula-resilience
 
-`nebula-resilience` provides resilience patterns for Nebula services: retry, circuit breaker,
-timeout, bulkhead, rate limiting, fallback, hedge, composition, and observability hooks.
+## Purpose
 
-## Source of Truth Documentation
+Actions that call external APIs face flaky networks, rate limits, and transient failures. Without
+a shared resilience layer, each action author re-implements retry loops, circuit breakers, and
+timeout logic inconsistently — some retry permanent errors, others do not retry transient ones.
+`nebula-resilience` provides a composable pipeline of seven patterns (retry, circuit breaker,
+timeout, bulkhead, rate limiter, fallback, hedge) that action authors wire at outbound call sites.
+The patterns share `nebula-error`'s `Classify` trait to distinguish transient from permanent errors
+automatically.
 
-Crate-local docs are now the canonical source and live under `crates/resilience/docs/`.
+## Role
 
-- Overview: [`docs/README.md`](docs/README.md)
-- Pattern guide: [`docs/PATTERNS.md`](docs/PATTERNS.md)
-- API surface: [`docs/API.md`](docs/API.md)
-- Reliability: [`docs/RELIABILITY.md`](docs/RELIABILITY.md)
-- Migration / compatibility: [`docs/MIGRATION.md`](docs/MIGRATION.md)
+**Stability Patterns Pipeline** — the canonical in-process fault-tolerance layer for outbound calls
+inside actions. Pattern: *Circuit Breaker + Timeout + Retry-with-Backoff* composition (Release It!;
+`docs/GLOSSARY.md` Architectural Patterns). Per canon §11.2, this is the **canonical retry surface
+today** — engine-level node re-execution from an `ActionResult::Retry` variant is `planned`, not
+yet implemented.
 
-## Quick Use
+## Public API
 
-```toml
-[dependencies]
-nebula-resilience = { path = "../crates/resilience" }
-```
+- `ResiliencePipeline<E>` — composable pipeline builder: `.timeout()`, `.retry()`, `.circuit_breaker()`, `.bulkhead()`, `.rate_limit()`, `.fallback()`, `.hedge()`, `.build()`.
+- `CallError<E>` — wrapper error returned by all pipeline calls; no type erasure, no forced mapping.
+- `retry::RetryConfig`, `retry::BackoffConfig`, `retry::retry_with` — standalone retry with `Classify`-aware error filtering.
+- `circuit_breaker::CircuitBreaker`, `circuit_breaker::CircuitBreakerConfig` — half-open/open/closed state machine.
+- `bulkhead::Bulkhead`, `bulkhead::BulkheadConfig` — concurrency-limiting bulkhead.
+- `rate_limiter::RateLimiter` (+ optional `governor` feature for GCRA algorithm).
+- `timeout::timeout` — standalone timeout combinator.
+- `fallback::Fallback` — default-value fallback on failure.
+- `hedge::Hedge` — speculative execution (hedged requests).
+- `observe::ObservabilityHooks` — observability hooks for pipeline events.
 
-See crate-level docs in `src/lib.rs` and the guides in `docs/` for end-to-end examples.
+## Contract
 
-## Verify Locally
+- **[L2-§11.2]** This crate is the **canonical retry surface for outbound calls inside an action**. Engine-level node re-execution with persisted attempt accounting is `planned`; until that row moves to `implemented`, no public API may describe engine-level retry as a current capability. Seam: action call sites that compose `ResiliencePipeline`. Test coverage: see `docs/MATURITY.md`.
+- **[L1-§4.2]** Retry filtering is driven by `nebula-error::Classify::retry_hint()` — transient vs permanent is an explicit classification, not folklore in individual action bodies.
+- **[L1-§4.3]** This crate is listed in the canon architecture table as the *Keep-alive + Safety* pillar implementation.
+
+## Non-goals
+
+- Not an engine-level retry scheduler — the engine orchestrating node re-execution with persisted attempt accounting is a separate `planned` capability (see canon §11.2).
+- Not a durable control plane — in-process patterns only; durable cancel/dispatch lives in `execution_control_queue` (canon §12.2, §4.5).
+- Not a metrics export layer — resilience events feed `nebula-metrics` via observability hooks, not the reverse.
+
+## Maturity
+
+See `docs/MATURITY.md` row for `nebula-resilience`.
+
+- API stability: `stable` — `ResiliencePipeline`, `RetryConfig`, `CircuitBreaker`, and `CallError` are in active use; benchmarks cover all seven patterns.
+- Observability hooks and `hedge` pattern are newer and may have minor API refinements.
+
+## Related
+
+- Canon: `docs/PRODUCT_CANON.md` §4.2 (Safety pillar / ErrorClassifier), §4.3 (Keep-alive), §6 (architecture ↔ pillars table), §11.2 (retry contract table).
+- Glossary: `docs/GLOSSARY.md` Architectural Patterns (*Circuit Breaker + Timeout + Retry-with-Backoff*, Release It!).
+- Siblings: `nebula-error` (provides `Classify` / `RetryHint`), `nebula-action` (primary consumer).
+
+## Appendix: Crate-local guides
+
+Extended documentation lives in `crates/resilience/docs/`:
+
+- `README.md` — overview and pattern guide
+- `PATTERNS.md` — per-pattern usage
+- `api-reference.md` — full API surface reference
+- `composition.md` — pipeline composition guide
+- `observability.md` — observability hooks
+- `architecture.md` — internal architecture notes
 
 ```bash
+# Verify locally
 cargo check -p nebula-resilience --all-features
 cargo test -p nebula-resilience
-cargo clippy -p nebula-resilience -- -D warnings
-cargo doc --no-deps -p nebula-resilience
-```
-
-## Benchmarks
-
-```bash
 cargo bench -p nebula-resilience
 ```
-
-Benchmark suites include `manager`, `rate_limiter`, `circuit_breaker`, `retry`, `compose`,
-`timeout`, `bulkhead`, `fallback`, `hedge`, and `observability`.

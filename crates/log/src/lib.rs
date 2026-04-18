@@ -1,7 +1,21 @@
 //! # nebula-log
 //!
-//! Structured logging and observability foundation for Nebula, built on top of
-//! [`tracing`].
+//! Structured tracing initialization for Nebula — single logging pipeline,
+//! multi-format, multi-backend, built on top of `tracing`.
+//!
+//! ## Purpose
+//!
+//! Provides one call to `auto_init` or `init_with` that configures the `tracing`
+//! subscriber for any Nebula process — consistent structured fields, multiple
+//! formats (pretty/compact/JSON/logfmt), pluggable writers, runtime reload, and
+//! optional OTLP / Sentry integrations. Enforces the observability contract:
+//! no secret material in log output (canon §12.5), consistent service/env/version
+//! fields (canon §4.6). See `crates/log/README.md` for full role and contract.
+//!
+//! ## Role
+//!
+//! **Structured Tracing Initialization** — cross-cutting infrastructure, no upward
+//! dependencies. Primary entry points: `auto_init`, `init`, `init_with`.
 //!
 //! This crate provides a single logging pipeline for development and
 //! production:

@@ -1,61 +1,64 @@
+---
+name: nebula-eventbus
+role: Publish-Subscribe Channel with Back-Pressure (transport only, no domain event types)
+status: stable
+last-reviewed: 2026-04-17
+canon-invariants: []
+related: [nebula-metrics]
+---
+
 # nebula-eventbus
 
-Generic event distribution — a typed broadcast `EventBus<E>` with configurable backpressure policy. **Transport only** — no domain event types.
+## Purpose
 
-**Layer:** Cross-cutting
-**Canon:** §3.10 (cross-cutting; transport only — domain `E` types live in owning crates)
+Domain crates (engine, resource, telemetry) need to broadcast events to multiple in-process
+subscribers without coupling producer to consumer. Without a shared transport, each crate builds
+its own `tokio::sync::broadcast` wrapper with different back-pressure semantics, lag handling, and
+filter APIs. `nebula-eventbus` provides a single generic `EventBus<E>` that any domain crate
+parameterizes with its own event type. The crate is deliberately transport-only: it defines no
+domain event types itself, ensuring zero upward coupling.
 
-## Status
+## Role
 
-**Overall:** `implemented` — the broadcast backbone used by engine, resource, telemetry, and other crates.
+**Publish-Subscribe Channel with Back-Pressure** — the in-process broadcast backbone for
+event-driven communication between cross-cutting and domain layers. Zero intra-workspace
+dependencies (the cleanest layer boundary in the workspace). Pattern: async bounded broadcast with
+`Lagged` recovery semantics (backed by `tokio::sync::broadcast`). This is an **in-process,
+ephemeral** channel — not a durable control plane. Canon §4.5 / §12.2: anything requiring
+reliable delivery (cancel, dispatch signals) must use `execution_control_queue`, not this crate.
 
-**Works today:**
+## Public API
 
-- `EventBus<E>` — generic typed event bus backed by `tokio::sync::broadcast` (bounded, `Lagged` semantics, zero-copy clone on send, no per-send allocation)
-- `BackPressurePolicy` — configurable policy for slow subscribers
-- `Subscriber`, `FilteredSubscriber` — subscribe with optional filter predicate
-- `Stream` integration — treat a subscriber as a `futures::Stream`
-- `Filter` — composable filter predicates
-- `Outcome` — `emit()` return type (`Sent`, `NoSubscribers`, `Lagged`, etc.)
-- `Registry` — manage multiple buses by scope
-- `Scope` — hierarchical scoping of buses
-- `Stats` — bus-level statistics
-- `prelude` — convenience re-exports
-- 3 unit test markers, 2 integration tests
+- `EventBus<E>` — generic typed broadcast bus; parameterized by domain event type `E: Clone`.
+- `BackPressurePolicy` — configurable behavior for slow subscribers (block, drop, lag).
+- `Subscriber<E>` — subscription handle with `recv()`, `try_recv()`, `lagged_count()`.
+- `FilteredSubscriber<E>` — subscription handle with an attached `Filter<E>`.
+- `Filter<E>` — composable filter predicate.
+- `Outcome` — `emit()` return type (`Sent`, `NoSubscribers`, `Lagged`, …).
+- `Registry` — manage multiple buses by scope.
+- `Scope` — hierarchical bus scoping.
+- `Stats` — bus-level statistics (sent, dropped, subscriber count).
+- `prelude` — convenience re-exports.
 
-**Known gaps / deferred:**
+## Contract
 
-- **Persistence** — this is deliberately an **in-process** broadcast bus. It is **not** the durable control plane (canon §12.2). Anything that needs durability must use `execution_control_queue`, not this crate. `lib.rs` is explicit about this.
-- **Cross-process delivery** is not in scope.
+- **[L1-§4.5 / §12.2]** This bus is **in-process and ephemeral** — not authoritative. Anything needing durability must use `execution_control_queue` (the durable outbox). A `receive-and-log` subscriber over this bus does **not** satisfy canon §12.2's durable delivery requirement.
+- **[L3-§3.10]** Domain event types (`ExecutionEvent`, `ResourceEvent`, etc.) must be defined in their owning crates, not here. This crate never defines concrete event structs.
 
-## Architecture notes
+## Non-goals
 
-- **Zero intra-workspace dependencies.** Transport-only crates should not depend on domain crates — this is the cleanest layer in the workspace.
-- **Domain event types live in owning crates.** `ExecutionEvent` lives in `nebula-engine`, `ResourceEvent` lives in `nebula-resource`, etc. This crate never defines `struct MyEvent` — canon §3.10 is explicit.
-- **Twelve modules for 1425 lines** — cleanly factored: `bus` (core), `policy` (backpressure), `subscriber` + `filtered_subscriber` + `filter`, `stream`, `stats`, `registry`, `scope`, `outcome`, `prelude`.
-- **No dead code or compat shims.**
-- **No SRP/DRY violations observed.**
+- Not a durable message broker — cross-process delivery and persistence are out of scope.
+- Not a metrics export layer — `nebula-metrics` uses this crate, not the reverse.
+- Not a log system — see `nebula-log`.
 
-## What this crate provides
+## Maturity
 
-| Type | Role |
-| --- | --- |
-| `EventBus<E>` | Broadcast bus parameterised by domain event type. |
-| `BackPressurePolicy` | Policy for slow subscribers. |
-| `Subscriber<E>`, `FilteredSubscriber<E>` | Subscription handles. |
-| `Filter<E>` | Composable filter predicate. |
-| `Outcome` | `emit()` result. |
-| `Registry` | Multiple-bus management by scope. |
-| `Scope` | Hierarchical bus scoping. |
-| `Stats` | Bus statistics. |
+See `docs/MATURITY.md` row for `nebula-eventbus`.
 
-## Where the contract lives
+- API stability: `stable` — `EventBus<E>`, `Subscriber`, `BackPressurePolicy`, `Outcome` are in active use with 3 unit tests and 2 integration tests.
+- `Registry` and `Scope` are functional; multi-bus management patterns may be refined as engine usage grows.
 
-- Source: `src/lib.rs`, `src/bus.rs`, `src/policy.rs`
-- Canon: `docs/PRODUCT_CANON.md` §3.10 ("transport only — domain `E` types live in owning crates")
-- Glossary: `docs/GLOSSARY.md` §2 (where consumers like `ExecutionEvent` are listed)
+## Related
 
-## See also
-
-- `nebula-engine` — owns `ExecutionEvent`
-- Any domain crate that needs pub/sub — import this and define its own `E`
+- Canon: `docs/PRODUCT_CANON.md` §3.10 (cross-cutting transport), §4.5 (operational honesty), §12.2 (durable control plane vs. in-process channels).
+- Siblings: `nebula-metrics` (depends on this crate for event dispatch), domain crates (`nebula-engine`, `nebula-resource`) that define their own event types and construct `EventBus<TheirEvent>`.
