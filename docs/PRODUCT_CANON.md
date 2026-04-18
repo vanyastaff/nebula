@@ -15,6 +15,31 @@ Nebula is judged by **what operators and integration authors can trust**, not by
 
 ---
 
+## 0.1 Layer legend
+
+Canon rules are tagged by **revision cost**:
+
+- **[L1 Principle]** — strategic product intent. Changing means Nebula is a different product. Requires product-level rethink.
+- **[L2 Invariant]** — testable contract with a named code seam. Material semantic change requires an ADR (`docs/adr/`) and an updated seam test in the same PR. Wording polish does not.
+- **[L3 Convention]** — default style answer. Changing requires a PR with rationale and, if it touches behavior, a test.
+- **[L4 Implementation detail]** — not a canon rule. Lives in the owning crate's README. If you find an L4 rule in this file, open a revision per §0.2 and move it.
+
+## 0.2 When canon is wrong (revision triggers)
+
+Canon rules can be stale, premature, or plain wrong. If any of these apply,
+**stop, open an ADR, propose revision, then proceed** — do not blind-follow.
+
+- **Dead reference.** Rule mentions a crate, type, or endpoint that no longer exists or has been renamed.
+- **Intimacy violation.** Rule can only be changed by editing canon when a single crate refactors. L4 detail leaked into canon. Fix: move to crate README, revise canon to describe the invariant rather than the mechanism.
+- **Capability lag.** Rule freezes an implementation that predates a better architectural move, and the improvement is measurable (perf / safety / DX).
+- **False capability.** Rule names a type or variant the engine does not honor end-to-end. Per §4.5 the type must be hidden or the rule must drop.
+- **Uncovered case.** New failure mode or integration shape the canon is silent on. Write an ADR before blind-applying the nearest rule.
+
+Canon is an articulation, not a prison. Blind-obeying a wrong rule violates
+operational honesty (§4.5) more than explicitly revising it.
+
+---
+
 ## 1. One-line definition
 
 **Nebula is a high-throughput workflow orchestration engine with a first-class integration SDK** — the typed surface in §3.5 (`nebula-parameter`, `nebula-resource`, `nebula-credential`, `nebula-action`, plugin registry) — **Rust-native, self-hosted, owned by you.**
