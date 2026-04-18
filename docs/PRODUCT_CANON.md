@@ -131,7 +131,11 @@ See also `docs/STYLE.md` §5 (type design bets) for the Rust patterns that make 
 
 ### 4.6 Observability
 
-**Durable is not enough — runs must be explainable.** Execution state, append-only journal, structured errors, and metrics should let an **operator** answer what happened and why a run failed **without reading Rust source** — this is the operational half of §2’s success sentence. Observability is **not** optional polish layered on top of throughput; it is how we earn trust that “honest execution” is real. Where the engine is still thin (e.g. lease enforcement), **say so** (§11.6) — do not imply full auditability from partial signals.
+**[L1]** Durable is not enough — runs must be explainable. Execution state, append-only journal, structured errors, and metrics let an operator answer what happened and why a run failed without reading Rust source.
+
+**[L1]** Observability is a first-class contract, not polish. SLIs, SLOs, structured event schema for `execution_journal`, and the core analysis loop live in `docs/OBSERVABILITY.md`.
+
+**[L2]** Where a feature is still thin (e.g. lease enforcement at §11.6), say so — do not imply full auditability from partial signals.
 
 ---
 
