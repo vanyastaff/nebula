@@ -16,17 +16,19 @@ queue_rules:
     merge_conditions:
       - check-success=CI
       - check-success=Tests
-      - "-review-threads-unresolved"
+      - "#review-threads-unresolved=0"
 
 pull_request_rules:
   # ── Human PRs: opt-in auto-merge via `automerge` label ──────────────────
-  - name: Queue approved PRs labeled automerge
+  # Solo-dev setup: the `automerge` label is the approval signal (no separate
+  # approving reviewer required). `changes-requested` still blocks in case a
+  # reviewer — human or bot — flags issues that must be addressed first.
+  - name: Queue PRs labeled automerge
     conditions:
       - base=main
       - label=automerge
       - "-draft"
       - "-conflict"
-      - "#approved-reviews-by>=1"
       - "#changes-requested-reviews-by=0"
     actions:
       queue:
@@ -42,8 +44,8 @@ pull_request_rules:
       - "-draft"
       - "-conflict"
       - or:
-          - title~=^chore\(deps\): bump the .+ group
-          - title~=^chore\(ci\): bump the .+ group
+          - 'title~=^chore\(deps\): bump the .+ group'
+          - 'title~=^chore\(ci\): bump the .+ group'
     actions:
       queue:
         name: default
