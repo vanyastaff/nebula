@@ -44,6 +44,7 @@ use tokio::{
     process::{Child, Command},
     sync::Mutex,
 };
+use tokio_util::sync::CancellationToken;
 
 use crate::{
     SandboxRunner,
@@ -299,6 +300,59 @@ where
     Ok(BoundedReadOutcome::Eof)
 }
 
+/// Outcome of a [`race_cancel_timeout`] call.
+#[derive(Debug, PartialEq, Eq)]
+enum RaceOutcome<T> {
+    /// The inner future produced a value within the deadline and before
+    /// the cancellation token fired.
+    Ready(T),
+    /// The wall-clock deadline elapsed first. The inner future was
+    /// dropped mid-flight; callers must assume its side effects are
+    /// partially applied (writes may have reached the peer).
+    Timeout,
+    /// The optional cancellation token fired first. Same partial-side-effect
+    /// caveat as `Timeout` applies — the race only wins a snapshot of
+    /// progress, not a clean rollback.
+    Cancelled,
+}
+
+/// Race `fut` against a wall-clock deadline and (optionally) a
+/// [`CancellationToken`]. Used by [`ProcessSandbox::try_dispatch`] to
+/// honour both the per-call plugin timeout and the engine-wide
+/// cancellation contract — see #257.
+///
+/// When `cancel` is `Some`, the select is `biased` so a token that is
+/// already cancelled on entry is observed on the very first poll, before
+/// the roundtrip future is driven. When `cancel` is `None` (public helpers
+/// like `invoke` / `get_metadata` that run outside an execution context)
+/// the helper degrades to a plain `tokio::time::timeout`.
+async fn race_cancel_timeout<F, T>(
+    fut: F,
+    timeout: std::time::Duration,
+    cancel: Option<&CancellationToken>,
+) -> RaceOutcome<T>
+where
+    F: std::future::Future<Output = T>,
+{
+    let timed = tokio::time::timeout(timeout, fut);
+    match cancel {
+        Some(token) => {
+            tokio::select! {
+                biased;
+                () = token.cancelled() => RaceOutcome::Cancelled,
+                r = timed => match r {
+                    Ok(v) => RaceOutcome::Ready(v),
+                    Err(_) => RaceOutcome::Timeout,
+                },
+            }
+        },
+        None => match timed.await {
+            Ok(v) => RaceOutcome::Ready(v),
+            Err(_) => RaceOutcome::Timeout,
+        },
+    }
+}
+
 impl ProcessSandbox {
     /// Create a new process sandbox for a plugin binary.
     #[must_use]
@@ -326,19 +380,20 @@ impl ProcessSandbox {
         &self,
         action_key: &str,
         input: serde_json::Value,
+        cancel: Option<&CancellationToken>,
     ) -> Result<PluginToHost, ActionError> {
         let request = HostToPlugin::ActionInvoke {
             id: ONE_SHOT_ID,
             action_key: action_key.to_owned(),
             input,
         };
-        self.dispatch_envelope(request).await
+        self.dispatch_envelope(request, cancel).await
     }
 
     /// Query plugin metadata via a `MetadataRequest` envelope.
     pub async fn get_metadata(&self) -> Result<PluginToHost, ActionError> {
         let request = HostToPlugin::MetadataRequest { id: ONE_SHOT_ID };
-        self.dispatch_envelope(request).await
+        self.dispatch_envelope(request, None).await
     }
 
     /// High-level action invocation for host code outside the engine flow
@@ -356,7 +411,7 @@ impl ProcessSandbox {
         action_key: &str,
         input: serde_json::Value,
     ) -> Result<serde_json::Value, ActionError> {
-        let envelope = self.call_action(action_key, input).await?;
+        let envelope = self.call_action(action_key, input, None).await?;
         match envelope {
             PluginToHost::ActionResultOk { output, .. } => Ok(output),
             PluginToHost::ActionResultError {
@@ -382,39 +437,52 @@ impl ProcessSandbox {
     /// Core long-lived dispatch. Reuses the cached [`PluginHandle`] if any,
     /// spawns fresh otherwise. On transport error, clears the handle and
     /// retries once.
-    async fn dispatch_envelope(&self, envelope: HostToPlugin) -> Result<PluginToHost, ActionError> {
-        let first_attempt = self.try_dispatch(envelope.clone()).await;
+    async fn dispatch_envelope(
+        &self,
+        envelope: HostToPlugin,
+        cancel: Option<&CancellationToken>,
+    ) -> Result<PluginToHost, ActionError> {
+        let first_attempt = self.try_dispatch(envelope.clone(), cancel).await;
         if first_attempt.is_ok() {
             return first_attempt;
         }
         // Clear the stale handle and retry once with a fresh spawn.
         *self.handle.lock().await = None;
-        self.try_dispatch(envelope).await
+        self.try_dispatch(envelope, cancel).await
     }
 
-    async fn try_dispatch(&self, envelope: HostToPlugin) -> Result<PluginToHost, ActionError> {
+    async fn try_dispatch(
+        &self,
+        envelope: HostToPlugin,
+        cancel: Option<&CancellationToken>,
+    ) -> Result<PluginToHost, ActionError> {
         let mut guard = self.handle.lock().await;
         if guard.is_none() {
             *guard = Some(self.spawn_and_dial().await?);
         }
         let handle = guard.as_mut().expect("handle set above");
 
-        // Round-trip the envelope with a per-call timeout.
+        // Round-trip the envelope with a per-call timeout AND a race
+        // against the engine's cancellation token. Without the cancel
+        // arm, a cancelled workflow would have to wait out `self.timeout`
+        // on a hung or slow plugin before the engine could reclaim the
+        // slot — see #257.
         let envelope_tag = match &envelope {
             HostToPlugin::ActionInvoke { .. } => "action_invoke",
             HostToPlugin::MetadataRequest { .. } => "metadata_request",
             _ => "other",
         };
 
-        let result = tokio::time::timeout(self.timeout, async {
+        let roundtrip = async {
             handle.send_envelope(&envelope).await?;
             handle.recv_envelope().await
-        })
-        .await;
+        };
 
-        match result {
-            Ok(Ok(response)) => Ok(response),
-            Ok(Err(sandbox_err)) => {
+        let outcome = race_cancel_timeout(roundtrip, self.timeout, cancel).await;
+
+        match outcome {
+            RaceOutcome::Ready(Ok(response)) => Ok(response),
+            RaceOutcome::Ready(Err(sandbox_err)) => {
                 // Transport/protocol error — invalidate the handle so the
                 // next call respawns. Log PluginLineTooLarge at warn so it
                 // shows up in security dashboards.
@@ -434,7 +502,7 @@ impl ProcessSandbox {
                 *guard = None;
                 Err(sandbox_error_to_action_error(sandbox_err))
             },
-            Err(_) => {
+            RaceOutcome::Timeout => {
                 // Timeout — also invalidate; we don't know if the plugin is
                 // still processing and we can't safely reuse the connection.
                 *guard = None;
@@ -443,6 +511,20 @@ impl ProcessSandbox {
                     self.binary.display(),
                     self.timeout
                 )))
+            },
+            RaceOutcome::Cancelled => {
+                // Cancellation observed mid-round-trip. We may have
+                // written part of an envelope to the plugin; the stream
+                // position is undefined, so drop the handle and force a
+                // respawn on the next call. Surface as `ActionError::Cancelled`
+                // so the engine honours the standard cancellation path.
+                *guard = None;
+                tracing::debug!(
+                    plugin = %self.binary.display(),
+                    envelope = %envelope_tag,
+                    "plugin dispatch cancelled via CancellationToken; clearing handle",
+                );
+                Err(ActionError::Cancelled)
             },
         }
     }
@@ -793,7 +875,9 @@ impl SandboxRunner for ProcessSandbox {
             "executing action in process sandbox"
         );
 
-        let envelope = self.call_action(action_key, input).await?;
+        let envelope = self
+            .call_action(action_key, input, Some(context.cancellation()))
+            .await?;
         match envelope {
             PluginToHost::ActionResultOk { output, .. } => Ok(ActionResult::success(output)),
             PluginToHost::ActionResultError {
@@ -1424,5 +1508,81 @@ mod tests {
             a.starts_with(r"\\.\pipe\LOCAL\nebula-plugin-host-"),
             "pipe name must carry the host-plugin prefix, was {a:?}",
         );
+    }
+
+    // ---- race_cancel_timeout (#257 regression guard) -----------------
+
+    #[tokio::test]
+    async fn race_cancel_timeout_returns_ready_when_future_completes_first() {
+        let fut = async { 42u32 };
+        let outcome = race_cancel_timeout(fut, Duration::from_secs(1), None).await;
+        assert_eq!(outcome, RaceOutcome::Ready(42));
+    }
+
+    #[tokio::test]
+    async fn race_cancel_timeout_returns_timeout_without_cancel_arm() {
+        // A future that never completes, no cancel token → must time out
+        // within roughly the configured duration.
+        let fut = std::future::pending::<()>();
+        let outcome = race_cancel_timeout(fut, Duration::from_millis(25), None).await;
+        assert_eq!(outcome, RaceOutcome::Timeout);
+    }
+
+    #[tokio::test]
+    async fn race_cancel_timeout_observes_pre_cancelled_token_promptly() {
+        // If the cancellation token is already cancelled when we enter
+        // the race, the biased select must observe it on first poll
+        // WITHOUT polling the inner future. This is the core fix for
+        // #257: a cancelled workflow does not wait for `timeout`.
+        let token = CancellationToken::new();
+        token.cancel();
+
+        let start = std::time::Instant::now();
+        // `pending` future so the only way out is the cancel arm.
+        let fut = std::future::pending::<()>();
+        let outcome = race_cancel_timeout(fut, Duration::from_secs(30), Some(&token)).await;
+        let elapsed = start.elapsed();
+
+        assert_eq!(outcome, RaceOutcome::Cancelled);
+        assert!(
+            elapsed < Duration::from_millis(200),
+            "pre-cancelled token must resolve promptly, took {elapsed:?}",
+        );
+    }
+
+    #[tokio::test]
+    async fn race_cancel_timeout_wins_when_cancel_fires_mid_flight() {
+        // Future that never completes; fire the token shortly after the
+        // race starts. The cancel arm must win, not the timeout.
+        let token = CancellationToken::new();
+        let cancel_clone = token.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+            cancel_clone.cancel();
+        });
+
+        let fut = std::future::pending::<()>();
+        // Long enough timeout that the cancel arm is the one that wins.
+        let outcome = race_cancel_timeout(fut, Duration::from_secs(30), Some(&token)).await;
+        assert_eq!(outcome, RaceOutcome::Cancelled);
+    }
+
+    #[tokio::test]
+    async fn race_cancel_timeout_ready_wins_over_never_fired_cancel() {
+        // Token exists but is never cancelled → the inner future's
+        // Ready result wins normally.
+        let token = CancellationToken::new();
+        let fut = async { "ok" };
+        let outcome = race_cancel_timeout(fut, Duration::from_secs(1), Some(&token)).await;
+        assert_eq!(outcome, RaceOutcome::Ready("ok"));
+    }
+
+    #[tokio::test]
+    async fn race_cancel_timeout_timeout_wins_over_never_fired_cancel() {
+        // Token exists but is never cancelled → deadline still applies.
+        let token = CancellationToken::new();
+        let fut = std::future::pending::<()>();
+        let outcome = race_cancel_timeout(fut, Duration::from_millis(25), Some(&token)).await;
+        assert_eq!(outcome, RaceOutcome::Timeout);
     }
 }
