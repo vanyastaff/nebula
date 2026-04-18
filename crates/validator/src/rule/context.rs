@@ -1,4 +1,4 @@
-//! `PredicateContext` — typed context for [`Predicate::evaluate`].
+//! `PredicateContext` — typed context for `Predicate::evaluate`.
 //!
 //! Wraps a `FieldPath`-keyed map of values. Callers build it from JSON
 //! once per evaluation round.

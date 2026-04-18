@@ -12,7 +12,7 @@
 //! | [`Full`](ExecutionMode::Full) | All value + deferred rules | — |
 //!
 //! Predicates require a `PredicateContext` — call
-//! [`validate_rules_with_ctx`] to thread one in; predicates dispatched via
+//! `validate_rules_with_ctx` to thread one in; predicates dispatched via
 //! [`validate_rules`] (no ctx) are treated as `Ok(())`.
 //!
 //! # Examples
@@ -52,7 +52,7 @@ pub enum ExecutionMode {
 /// [`ExecutionMode`], and collects all errors (non-short-circuiting).
 ///
 /// Predicates with no ctx short-circuit to `Ok(())`. Call
-/// [`validate_rules_with_ctx`] when predicate evaluation is required.
+/// `validate_rules_with_ctx` when predicate evaluation is required.
 ///
 /// # Arguments
 ///
