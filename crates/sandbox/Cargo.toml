@@ -24,6 +24,7 @@ serde_json = { workspace = true }
 thiserror = { workspace = true }
 tracing = { workspace = true }
 tokio = { workspace = true, features = ["process", "io-util", "sync", "net"] }
+tokio-util = { workspace = true }
 
 # OS-level sandbox (Linux only)
 [target.'cfg(target_os = "linux")'.dependencies]
