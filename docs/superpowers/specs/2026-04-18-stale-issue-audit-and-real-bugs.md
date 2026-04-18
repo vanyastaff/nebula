@@ -48,19 +48,20 @@ Already closed by a prior pass (rediscovered): #310, #313, #315.
 
 Each bug was spot-checked against current code this session. File:line refs below are verified present.
 
-### Group A — API handler edges (cheap, ~1 PR, ~50 lines)
+### Group A — API handler edges (cheap, ~1 PR, ~50 lines) — **FIXED IN THIS PR**
 
-Scope: `crates/api/src/handlers/execution.rs`.
+Scope: [`/crates/api/src/handlers/execution.rs`](/crates/api/src/handlers/execution.rs).
+The file:line refs below point at `main @ 2b205abf` (pre-fix); the fixes in this PR no longer match those line numbers. Evidence trail kept for future audits.
 
-- **#329 — `get_execution` misparses canonical timestamps.** [execution.rs:181-186](crates/api/src/handlers/execution.rs:181) still uses `.as_i64()` on RFC3339 strings, silently returns `0`. Fix: reuse `extract_timestamp` helper that already exists in `crates/api/src/handlers/workflow.rs:52` (landed in PR #406). Lift to a shared helper or duplicate — tech-lead's call.
-- **#331 — `cancel_execution` allows rewriting terminal `timed_out`.** [execution.rs:290](crates/api/src/handlers/execution.rs:290) terminal-status check covers `completed|failed|cancelled` but **not** `timed_out`. Fix: add `timed_out` to the guard set.
-- **#335 — `cancel_execution` maps CAS conflict to 500.** [execution.rs:324-326](crates/api/src/handlers/execution.rs:324) returns `ApiError::Internal` on `transition_result == false`. Fix: map to `ApiError::Conflict` (409) with retry hint.
+- **#329 — `get_execution` / `cancel_execution` misparse canonical timestamps.** At `main @ 2b205abf`, `crates/api/src/handlers/execution.rs:181-186` and `:392-397` used `.as_i64()` on RFC3339 strings, silently returning `0`. Fix (this PR): both sites route through `extract_timestamp` (promoted to `pub(crate)` from [`/crates/api/src/handlers/workflow.rs`](/crates/api/src/handlers/workflow.rs), where it already landed via PR #406 for #343). `get_execution` prefers the canonical `completed_at` field (see [`/crates/execution/src/state.rs`](/crates/execution/src/state.rs)) and falls back to legacy `finished_at`; `cancel_execution` prefers `finished_at` (just written by the handler) with the reverse fallback.
+- **#331 — `cancel_execution` allows rewriting terminal `timed_out`.** At `main @ 2b205abf`, `execution.rs:290` checked `completed|failed|cancelled` but not `timed_out`. Fix (this PR): added `timed_out` to the guard set.
+- **#335 — `cancel_execution` maps CAS conflict to 500.** At `main @ 2b205abf`, `execution.rs:324-326` returned `ApiError::Internal` on `transition_result == false`. Fix (this PR): maps to `ApiError::Conflict` (409).
 
 **Cost:** ~1 hour + tests. Zero architectural risk. Good "warm-up" PR.
 
 ### Group B — Tenant-boundary bug (duplicates, 1 repo method + handler swap)
 
-- **#286 / #288 / #328 — `list_executions` ignores `workflow_id` filter.** Three duplicate issues. [execution.rs:76](crates/api/src/handlers/execution.rs:76) has a TODO and still calls `list_running()` globally. Fix: add `ExecutionRepo::list_running_for_workflow(WorkflowId)` with in-memory + Postgres impls, switch handler, backfill integration test.
+- **#286 / #288 / #328 — `list_executions` ignores `workflow_id` filter.** Three duplicate issues. [`/crates/api/src/handlers/execution.rs`](/crates/api/src/handlers/execution.rs) has a TODO around line 76 (at `main @ 2b205abf`) and still calls `list_running()` globally. Fix: add `ExecutionRepo::list_running_for_workflow(WorkflowId)` with in-memory + Postgres impls, switch handler, backfill integration test.
 
 **Cost:** ~2 hours. Mechanical. Close the two duplicates as `duplicate` when the canonical one is fixed.
 
@@ -68,7 +69,7 @@ Scope: `crates/api/src/handlers/execution.rs`.
 
 ### Group C — Resurrect PR #346 (5 bugs, work already done)
 
-**Situation:** PR [#346](https://github.com/vanyastaff/nebula/pull/346) was a "batch 2 execution-state correctness" PR with code + tests for **#299, #300, #301, #311, #321**. It was **closed without merging** (`state: CLOSED, mergedAt: null`). Post-#346, at least one other PR (#386 / `6c12a127`) was authored as if #346 had landed — specifically, batch 5C's body says "the engine path already routes through the repo (added in batch 2 PR #346 for #299)", but [engine.rs:1546](crates/engine/src/engine.rs:1546) still shows the exact `ActionResult::success(output_value)` reconstruction that #299 describes.
+**Situation:** PR [#346](https://github.com/vanyastaff/nebula/pull/346) was a "batch 2 execution-state correctness" PR with code + tests for **#299, #300, #301, #311, #321**. It was **closed without merging** (`state: CLOSED, mergedAt: null`). Post-#346, at least one other PR (#386 / `6c12a127`) was authored as if #346 had landed — specifically, batch 5C's body says "the engine path already routes through the repo (added in batch 2 PR #346 for #299)", but at `main @ 2b205abf`, `crates/engine/src/engine.rs:1546` still shows the exact `ActionResult::success(output_value)` reconstruction that #299 describes. Direct link (pinned): [engine.rs#L1546 @ 2b205abf](https://github.com/vanyastaff/nebula/blob/2b205abf/crates/engine/src/engine.rs#L1546).
 
 **What #346 covered:**
 - **#321** — setup-failure now calls `checkpoint_node` + emits `NodeFailed` (ordering parity with runtime-failure branch).
@@ -85,8 +86,8 @@ Scope: `crates/api/src/handlers/execution.rs`.
 
 ### Group D — Architectural, larger scope
 
-- **#279 — `MemoryQueue::dequeue` holds receiver `Mutex` across `tokio::time::timeout`.** [queue.rs:195-196](crates/runtime/src/queue.rs:195). Issue suggests swap to `flume` or `async-channel` (multi-consumer, drop-in-ish). Throughput ceiling is `1/timeout` per second — not correctness, but the "N workers" story in runtime design is silently false.
-- **#325 — Execution leases exist but are never acquired/renewed/released in engine.** Verified: `acquire_lease` / `renew_lease` are not called anywhere in `crates/engine/src/`. Concurrent runners for the same execution can both execute nodes. HIGH per issue body; relevant for any multi-runner deployment.
+- **#279 — `MemoryQueue::dequeue` holds receiver `Mutex` across `tokio::time::timeout`.** [`/crates/runtime/src/queue.rs`](/crates/runtime/src/queue.rs) around lines 195-196 (at `main @ 2b205abf`). Issue suggests swap to `flume` or `async-channel` (multi-consumer, drop-in-ish). Throughput ceiling is `1/timeout` per second — not correctness, but the "N workers" story in runtime design is silently false.
+- **#325 — Execution leases exist but are never acquired/renewed/released in engine.** Verified: `acquire_lease` / `renew_lease` are not called anywhere in [`/crates/engine/src/`](/crates/engine/src/). Concurrent runners for the same execution can both execute nodes. HIGH per issue body; relevant for any multi-runner deployment.
 
 **Cost:** #279 is a focused swap + benchmark delta. #325 is genuine lifecycle design (acquire → heartbeat loop → release on shutdown/cancel/error) and needs an ADR-level decision first.
 

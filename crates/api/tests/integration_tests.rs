@@ -2124,6 +2124,10 @@ async fn cancel_terminal_execution_does_not_enqueue() {
 
 /// Regression for #329: `get_execution` must parse canonical RFC3339 timestamps
 /// from engine-persisted `ExecutionState` blobs, not silently collapse to 0.
+///
+/// Canonical shape per `crates/execution/src/state.rs`: `started_at` and
+/// `completed_at` are `Option<DateTime<Utc>>` serialized as RFC3339 strings.
+/// The API response maps both into `started_at` / `finished_at` fields.
 #[tokio::test]
 async fn get_execution_parses_rfc3339_timestamps() {
     use axum::{
@@ -2140,7 +2144,8 @@ async fn get_execution_parses_rfc3339_timestamps() {
     let execution_id = ExecutionId::new();
     let workflow_id = WorkflowId::new();
 
-    // Seed with canonical engine-shape state: RFC3339 string timestamps.
+    // Seed with canonical engine-shape state: RFC3339 string timestamps
+    // under the canonical field names (`completed_at`, not `finished_at`).
     state
         .execution_repo
         .create(
@@ -2148,9 +2153,9 @@ async fn get_execution_parses_rfc3339_timestamps() {
             workflow_id,
             serde_json::json!({
                 "workflow_id": workflow_id.to_string(),
-                "status": "running",
+                "status": "completed",
                 "started_at": "2024-01-15T12:34:56Z",
-                "finished_at": "2024-02-20T08:00:00Z",
+                "completed_at": "2024-02-20T08:00:00Z",
                 "input": {}
             }),
         )

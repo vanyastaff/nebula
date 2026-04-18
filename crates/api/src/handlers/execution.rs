@@ -179,7 +179,11 @@ pub async fn get_execution(
         .to_string();
 
     let started_at = extract_timestamp(&execution_state, "started_at").unwrap_or(0);
-    let finished_at = extract_timestamp(&execution_state, "finished_at");
+    // Canonical engine state uses `completed_at` (see `ExecutionState` in
+    // `crates/execution/src/state.rs`); the legacy API write path uses
+    // `finished_at`. Accept either, prefer canonical.
+    let finished_at = extract_timestamp(&execution_state, "completed_at")
+        .or_else(|| extract_timestamp(&execution_state, "finished_at"));
 
     let input = execution_state.get("input").cloned();
 
@@ -388,7 +392,10 @@ pub async fn cancel_execution(
         .to_string();
 
     let started_at = extract_timestamp(&execution_state, "started_at").unwrap_or(0);
-    let finished_at = extract_timestamp(&execution_state, "finished_at");
+    // This handler just wrote `finished_at` above; prefer that, then fall
+    // back to canonical `completed_at` if the engine had already set it.
+    let finished_at = extract_timestamp(&execution_state, "finished_at")
+        .or_else(|| extract_timestamp(&execution_state, "completed_at"));
 
     let input = execution_state.get("input").cloned();
 
