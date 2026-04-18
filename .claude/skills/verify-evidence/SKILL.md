@@ -26,24 +26,13 @@ Required phrases: actual tool output — a test summary line, a clippy "0 warnin
 
 ### 1. Canonical fast gate (root `CLAUDE.md`)
 
-Run and capture:
+Read the current fast-gate commands from root `CLAUDE.md` §"Canonical Commands", then run each one and capture the output. Every listed `cargo` invocation. Every time. Capture the last ~10 lines of each, especially the summary line from `nextest`.
 
-```bash
-cargo +nightly fmt --all
-cargo clippy --workspace -- -D warnings
-cargo nextest run --workspace
-```
-
-Every `cargo` invocation. Every time. Capture the last ~10 lines of each, especially the summary line from `nextest`.
+Do not hardcode the command list here — it would drift from the canon. `CLAUDE.md` is the source of truth for the gate.
 
 ### 2. Full gate (before PR)
 
-Match root `CLAUDE.md` §"Canonical Commands" "Full validation" exactly. Add to §1:
-
-```bash
-cargo test --workspace --doc
-cargo deny check
-```
+Use the current "Full validation" commands from root `CLAUDE.md` §"Canonical Commands".
 
 `lefthook` pre-push additionally runs `cargo check --workspace --all-features --all-targets`, `cargo check --no-default-features` for selected crates, `cargo doc`, and `cargo shear`. You do not need to run those by hand — the push-time mirror handles them. If CI fails on one, diagnose root cause (do not `--no-verify`).
 
@@ -96,16 +85,19 @@ Paste **actual tool output**. Do not paraphrase. Do not summarize "all green" wi
 ```
 ## Verification evidence
 
+(One section per fast-gate / full-gate command you ran, using the current
+canonical list from root `CLAUDE.md`. Headers are named after the step,
+not the exact invocation — the command itself lives in `CLAUDE.md`.)
+
 ### fmt
-<last 3 lines of `cargo +nightly fmt --all`, or "(no output — clean)">
+<last 3 lines of the fmt step's output, or "(no output — clean)">
 
 ### clippy
-<last 10 lines of `cargo clippy --workspace -- -D warnings`>
+<last 10 lines of the clippy step's output>
 (clippy: 0 warnings across <N> crates)
 
 ### nextest
-<the "Summary" line at minimum:
- "Summary [  X.YZs] N tests run: N passed, 0 failed, 0 skipped">
+<at minimum the final Summary line, e.g. "Summary [  X.YZs] N tests run: N passed, 0 failed, 0 skipped">
 
 ### doctests (if ran)
 <summary>
