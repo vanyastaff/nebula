@@ -726,8 +726,8 @@ impl ExecutionRepo for InMemoryExecutionRepo {
         &self,
         workflow_id: WorkflowId,
     ) -> Result<Vec<ExecutionId>, ExecutionRepoError> {
-        let workflows = self.workflows.read().await;
         let state = self.state.read().await;
+        let workflows = self.workflows.read().await;
         let running = state
             .iter()
             .filter(|(id, _)| workflows.get(*id) == Some(&workflow_id))
