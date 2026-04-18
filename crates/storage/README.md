@@ -49,9 +49,10 @@ Feature `postgres` adds: `PgExecutionRepo`, `PgWorkflowRepo`, `PostgresStorage`,
 
 Layer 2 — planned / experimental (`repos` module):
 
-- `repos::ControlQueueRepo` + `repos::InMemoryControlQueueRepo` — **implemented**; wired into
-  the API cancel path. All other `repos::*` traits are spec-16 design placeholders with no
-  implementations — see Appendix.
+- `repos::ControlQueueRepo` + `repos::InMemoryControlQueueRepo` — **implemented**; produced by
+  the API cancel path and consumed by `nebula_engine::ControlConsumer` (skeleton — dispatch
+  lands with ADR-0008 follow-ups A2 / A3). All other `repos::*` traits are spec-16 design
+  placeholders with no implementations — see Appendix.
 
 ## Contract
 
@@ -125,9 +126,10 @@ definitions only — no in-memory or Postgres implementations exist yet; the eng
 compile against these signatures without a broader refactor ("Sprint E — adopt spec-16 row
 model" in `docs/superpowers/specs/2026-04-16-workspace-health-audit.md`).
 
-**Exception:** `repos::ControlQueueRepo` + `repos::InMemoryControlQueueRepo` are implemented
-and wired into the API cancel path. They are the only Layer-2 contract consumers should depend
-on today.
+**Exception:** `repos::ControlQueueRepo` + `repos::InMemoryControlQueueRepo` are implemented;
+the API cancel path produces into them and `nebula_engine::ControlConsumer` (ADR-0008) is the
+engine-side consumer (skeleton today; dispatch lands with A2 / A3). They are the only Layer-2
+contract consumers should depend on today.
 
 ### Persistence durability matrix (reference from §11.5)
 

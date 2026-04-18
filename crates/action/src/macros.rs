@@ -124,9 +124,15 @@ macro_rules! assert_wait {
 
 /// Assert that the result is `Ok(ActionResult::Retry { .. })`.
 ///
+/// Gated behind the `unstable-retry-scheduler` feature: the `Retry` variant is
+/// not part of the public contract until the engine retry scheduler lands
+/// (canon §11.2).
+///
 /// # Panics
 ///
 /// Panics if the result is not `Ok(ActionResult::Retry { .. })`.
+#[cfg(feature = "unstable-retry-scheduler")]
+#[cfg_attr(docsrs, doc(cfg(feature = "unstable-retry-scheduler")))]
 #[macro_export]
 macro_rules! assert_retry {
     ($result:expr) => {

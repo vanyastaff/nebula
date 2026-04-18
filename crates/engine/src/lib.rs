@@ -8,13 +8,23 @@
 //! state through `ExecutionRepo` (CAS on `version` — canon §11.1), and
 //! delegates action dispatch to `nebula-runtime`.
 //!
-//! This crate is the **single real consumer** of `execution_control_queue`
-//! in production deployment modes (canon §12.2). A handler that only logs
-//! and discards control-queue rows does not satisfy the canon.
+//! Canon §12.2 names this crate as the location of the `execution_control_queue`
+//! consumer (`ControlConsumer`, see [`control_consumer`]). Status per §11.6:
+//!
+//! - **implemented** — consumer skeleton: construction, polling loop with graceful shutdown,
+//!   `claim_pending` / `mark_completed` / `mark_failed` plumbing, command observation with typed
+//!   `ExecutionId` decoding.
+//! - **planned** — `Resume` / `Restart` dispatch into the engine start path (ADR-0008 follow-up
+//!   A2).
+//! - **planned** — `Cancel` / `Terminate` dispatch into the engine cancel path (ADR-0008 follow-up
+//!   A3).
+//!
+//! Wiring and atomicity decisions live in `docs/adr/0008-execution-control-queue-consumer.md`.
 //!
 //! ## Key types
 //!
 //! - `WorkflowEngine` — entry point; level-by-level DAG execution with bounded concurrency.
+//! - `ControlConsumer` / `ControlDispatch` — durable control-queue consumer (§12.2, ADR-0008).
 //! - `ExecutionResult` — post-run summary returned to the API layer.
 //! - `EngineError` — typed engine-layer error.
 //! - `ExecutionEvent` — broadcast event type for `nebula-eventbus`.
@@ -25,11 +35,12 @@
 //!
 //! - §10 golden path (orchestrator schedules activated workflows).
 //! - §11.1 execution authority via `ExecutionRepo`.
-//! - §12.2 durable control plane; engine is the `execution_control_queue` consumer.
+//! - §12.2 durable control plane; engine owns the `execution_control_queue` consumer.
 //!
 //! See `crates/engine/README.md` for known open debts (budget ephemerality,
 //! fail-open credential allowlist, edge-gate narrowness).
 
+pub mod control_consumer;
 pub mod credential_accessor;
 pub mod engine;
 pub mod error;
@@ -40,6 +51,10 @@ pub(crate) mod resolver;
 pub mod resource_accessor;
 pub mod result;
 
+pub use control_consumer::{
+    ControlConsumer, ControlDispatch, ControlDispatchError, DEFAULT_BATCH_SIZE,
+    DEFAULT_POLL_INTERVAL, MAX_CLAIM_ERROR_BACKOFF,
+};
 pub use credential_accessor::EngineCredentialAccessor;
 pub use engine::{DEFAULT_EVENT_CHANNEL_CAPACITY, WorkflowEngine};
 pub use error::EngineError;
