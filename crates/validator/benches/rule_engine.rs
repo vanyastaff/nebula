@@ -11,86 +11,31 @@ use serde_json::json;
 
 fn small_value_ruleset() -> Vec<Rule> {
     vec![
-        Rule::MinLength {
-            min: 3,
-            message: None,
-        },
-        Rule::MaxLength {
-            max: 32,
-            message: None,
-        },
-        Rule::Pattern {
-            pattern: r"^[a-z0-9_]+$".into(),
-            message: None,
-        },
+        Rule::min_length(3),
+        Rule::max_length(32),
+        Rule::pattern(r"^[a-z0-9_]+$"),
     ]
 }
 
 fn mixed_ruleset() -> Vec<Rule> {
     vec![
-        Rule::MinLength {
-            min: 3,
-            message: None,
-        },
-        Rule::Pattern {
-            pattern: r"^[a-z]+$".into(),
-            message: None,
-        },
-        Rule::Custom {
-            expression: "skipped".into(),
-            message: None,
-        },
-        Rule::UniqueBy {
-            key: "id".into(),
-            message: None,
-        },
-        Rule::All {
-            rules: vec![
-                Rule::MinLength {
-                    min: 1,
-                    message: None,
-                },
-                Rule::MaxLength {
-                    max: 64,
-                    message: None,
-                },
-            ],
-        },
+        Rule::min_length(3),
+        Rule::pattern(r"^[a-z]+$"),
+        Rule::custom("skipped"),
+        Rule::unique_by("id").unwrap(),
+        Rule::all([Rule::min_length(1), Rule::max_length(64)]),
     ]
 }
 
 fn combinator_ruleset() -> Vec<Rule> {
-    vec![Rule::All {
-        rules: vec![
-            Rule::Any {
-                rules: vec![
-                    Rule::MinLength {
-                        min: 10,
-                        message: None,
-                    },
-                    Rule::MaxLength {
-                        max: 3,
-                        message: None,
-                    },
-                ],
-            },
-            Rule::Not {
-                inner: Box::new(Rule::Pattern {
-                    pattern: r"[0-9]".into(),
-                    message: None,
-                }),
-            },
-        ],
-    }]
+    vec![Rule::all([
+        Rule::any([Rule::min_length(10), Rule::max_length(3)]),
+        Rule::not(Rule::pattern(r"[0-9]")),
+    ])]
 }
 
 fn large_ruleset(n: usize) -> Vec<Rule> {
-    (0..n)
-        .map(|i| Rule::MinLength {
-            min: i % 5,
-            message: None,
-        })
-        .collect()
+    (0..n).map(|i| Rule::min_length(i % 5)).collect()
 }
 
 fn bench_value_rules(c: &mut Criterion) {

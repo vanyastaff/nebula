@@ -22,6 +22,7 @@ pub use mode::ValidationMode;
 pub(crate) use pointer::to_json_pointer;
 pub use severity::ErrorSeverity;
 pub use validation_error::ValidationError;
+pub(crate) use validation_error::render_template;
 pub use validation_errors::ValidationErrors;
 
 // ============================================================================
@@ -197,5 +198,54 @@ mod tests {
         assert_eq!(error.param("password"), Some("[REDACTED]"));
         assert_eq!(error.param("token"), Some("[REDACTED]"));
         assert_eq!(error.param("username"), Some("alice"));
+    }
+
+    #[test]
+    fn template_substitutes_named_placeholder() {
+        let err = ValidationError::new("min_length", "got {value}, expected at least {min} chars")
+            .with_param("min", "3")
+            .with_param("value", "\"hi\"");
+        let rendered = format!("{err}");
+        assert!(rendered.contains("got \"hi\", expected at least 3 chars"));
+    }
+
+    #[test]
+    fn template_leaves_unknown_placeholder_literal() {
+        let err = ValidationError::new("test", "value is {unknown}");
+        let rendered = format!("{err}");
+        assert!(rendered.contains("value is {unknown}"));
+    }
+
+    #[test]
+    fn template_escape_double_brace() {
+        let err = ValidationError::new("test", "literal {{ and {{value}}");
+        let rendered = format!("{err}");
+        assert!(rendered.contains("literal { and {value}"));
+    }
+
+    #[test]
+    fn plain_message_bypasses_template_path() {
+        let err = ValidationError::new("test", "no placeholders here");
+        let rendered = format!("{err}");
+        assert!(rendered.contains("no placeholders here"));
+    }
+
+    #[test]
+    fn display_does_not_leak_params_tail() {
+        // Templates consume params in the rendered message, so the debug
+        // `(params: [...])` tail was removed from Display to avoid double
+        // exposure (and accidental info disclosure for non-redacted keys).
+        let err = ValidationError::new("test", "value is {secret}")
+            .with_param("secret", "shh")
+            .with_param("other", "leaked");
+        let rendered = format!("{err}");
+        assert!(
+            !rendered.contains("(params:"),
+            "Display should not re-list params after template rendering: {rendered}"
+        );
+        assert!(
+            !rendered.contains("other=leaked"),
+            "param values not referenced by template must not appear in Display: {rendered}"
+        );
     }
 }

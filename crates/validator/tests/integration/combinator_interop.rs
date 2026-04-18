@@ -15,22 +15,11 @@ fn programmatic_composition_matches_rule_equivalent() {
     // Two validators that should behave the same: one programmatic, one declarative.
     let programmatic = min_length(3).and(max_length(32)).and(alphanumeric());
 
-    let declarative = Rule::All {
-        rules: vec![
-            Rule::MinLength {
-                min: 3,
-                message: None,
-            },
-            Rule::MaxLength {
-                max: 32,
-                message: None,
-            },
-            Rule::Pattern {
-                pattern: r"^[A-Za-z0-9]+$".into(),
-                message: None,
-            },
-        ],
-    };
+    let declarative = Rule::all([
+        Rule::min_length(3),
+        Rule::max_length(32),
+        Rule::pattern(r"^[A-Za-z0-9]+$"),
+    ]);
 
     for input in [
         "alice42",
@@ -40,9 +29,11 @@ fn programmatic_composition_matches_rule_equivalent() {
         "this-is-way-too-long-for-32-chars-at-last-count",
     ] {
         let prog_ok = programmatic.validate(input).is_ok();
-        let decl_ok = declarative
-            .validate_value(&serde_json::json!(input))
-            .is_ok();
+        let decl_ok = <Rule as Validate<serde_json::Value>>::validate(
+            &declarative,
+            &serde_json::json!(input),
+        )
+        .is_ok();
         assert_eq!(
             prog_ok, decl_ok,
             "surfaces disagree on `{input:?}`: prog={prog_ok}, decl={decl_ok}"
@@ -95,4 +86,41 @@ fn derive_custom_accepts_combinator_function() {
 
     let too_short = UsingCustomCombinator { name: "ab".into() };
     assert!(!expect_errors(too_short.validate_fields()).is_empty());
+}
+
+#[test]
+fn not_over_predicate_propagates_skip_when_no_ctx() {
+    // Regression for PR #415 review: `Rule::Not` must propagate the skip
+    // semantics of its child. A Predicate with `ctx = None` returns Ok(())
+    // as a "skip" signal; unconditionally inverting that in Not wrongly
+    // errors when no predicate context is available.
+    use nebula_validator::Predicate;
+    use serde_json::json;
+
+    let rule = Rule::not(Rule::predicate(
+        Predicate::eq("status", json!("active")).unwrap(),
+    ));
+
+    // Validate<Value> threads ctx = None + ExecutionMode::StaticOnly through.
+    // Expected: Ok(()) — the predicate skips because no ctx was provided,
+    // and `not(skip)` must also skip, not fail as "not_failed".
+    let result = Validate::validate(&rule, &json!(null));
+    assert!(
+        result.is_ok(),
+        "not(predicate) with no ctx should skip, got: {result:?}"
+    );
+}
+
+#[test]
+fn not_over_deferred_propagates_skip_in_static_only() {
+    // Regression: Deferred rules return Ok(()) in StaticOnly mode as a skip
+    // signal; Not must preserve it, not flip to "not_failed".
+    use serde_json::json;
+
+    let rule = Rule::not(Rule::custom("dynamic_check()"));
+    let result = Validate::validate(&rule, &json!("any"));
+    assert!(
+        result.is_ok(),
+        "not(deferred) in StaticOnly should skip, got: {result:?}"
+    );
 }

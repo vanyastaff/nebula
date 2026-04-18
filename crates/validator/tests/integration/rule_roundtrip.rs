@@ -1,113 +1,78 @@
-//! Scenario: `Rule` serialization contract — rules pulled from JSON
-//! config must roundtrip losslessly, cover every category, and validate
-//! the same values regardless of whether they went through serde.
+//! Scenario: `Rule` serialization contract — new externally-tagged
+//! tuple-compact wire format. Rules pulled from JSON config must
+//! roundtrip losslessly and validate the same values post-roundtrip.
 
-use nebula_validator::Rule;
+use nebula_validator::{Predicate, Rule};
 use serde_json::json;
 
 #[test]
-fn value_rule_roundtrip() {
-    let rule = Rule::MinLength {
-        min: 3,
-        message: Some("too short".into()),
-    };
+fn value_rule_compact_wire_form() {
+    let rule = Rule::min_length(3);
     let encoded = serde_json::to_value(&rule).unwrap();
-    assert_eq!(encoded["rule"], "min_length");
+    assert_eq!(encoded, json!({"min_length": 3}));
     let decoded: Rule = serde_json::from_value(encoded).unwrap();
     assert_eq!(decoded, rule);
 }
 
 #[test]
-fn predicate_rule_roundtrip() {
-    let rule = Rule::Eq {
-        field: "status".into(),
-        value: json!("active"),
-    };
+fn unit_rule_bare_string_wire_form() {
+    let rule = Rule::email();
     let encoded = serde_json::to_value(&rule).unwrap();
-    assert_eq!(encoded["rule"], "eq");
+    assert_eq!(encoded, json!("email"));
     let decoded: Rule = serde_json::from_value(encoded).unwrap();
     assert_eq!(decoded, rule);
 }
 
 #[test]
-fn combinator_rule_roundtrip() {
-    let rule = Rule::All {
-        rules: vec![
-            Rule::MinLength {
-                min: 3,
-                message: None,
-            },
-            Rule::Eq {
-                field: "kind".into(),
-                value: json!("user"),
-            },
-        ],
-    };
+fn predicate_rule_tuple_wire_form() {
+    let rule = Rule::predicate(Predicate::eq("status", json!("active")).unwrap());
     let encoded = serde_json::to_value(&rule).unwrap();
+    assert_eq!(encoded, json!({"eq": ["/status", "active"]}));
+    let decoded: Rule = serde_json::from_value(encoded).unwrap();
+    assert_eq!(decoded, rule);
+}
+
+#[test]
+fn combinator_wire_form() {
+    let rule = Rule::all([Rule::min_length(3), Rule::max_length(20)]);
+    let encoded = serde_json::to_value(&rule).unwrap();
+    assert_eq!(
+        encoded,
+        json!({"all": [{"min_length": 3}, {"max_length": 20}]})
+    );
+    let decoded: Rule = serde_json::from_value(encoded).unwrap();
+    assert_eq!(decoded, rule);
+}
+
+#[test]
+fn described_wire_form() {
+    let rule = Rule::min_length(3).with_message("too short");
+    let encoded = serde_json::to_value(&rule).unwrap();
+    assert_eq!(
+        encoded,
+        json!({"described": [{"min_length": 3}, "too short"]})
+    );
     let decoded: Rule = serde_json::from_value(encoded).unwrap();
     assert_eq!(decoded, rule);
 }
 
 #[test]
 fn roundtrip_preserves_validation_behavior() {
-    let original = Rule::Pattern {
-        pattern: r"^[a-z]+$".into(),
-        message: None,
-    };
+    let original = Rule::pattern(r"^[a-z]+$");
     let decoded: Rule = serde_json::from_value(serde_json::to_value(&original).unwrap()).unwrap();
 
-    // Both rules must agree on every probe input.
     for probe in [json!("hello"), json!("Bad1"), json!(42), json!(null)] {
-        assert_eq!(
-            original.validate_value(&probe).is_ok(),
-            decoded.validate_value(&probe).is_ok(),
-            "roundtripped rule disagrees on input {probe:?}",
-        );
+        let a = nebula_validator::foundation::Validate::validate(&original, &probe).is_ok();
+        let b = nebula_validator::foundation::Validate::validate(&decoded, &probe).is_ok();
+        assert_eq!(a, b, "rules disagree on {probe:?}");
     }
 }
 
 #[test]
-fn message_override_survives_roundtrip() {
-    let rule = Rule::MinLength {
-        min: 5,
-        message: Some("please enter at least 5 characters".into()),
-    };
+fn described_roundtrip_with_template() {
+    let rule = Rule::min_length(5).with_message("got {value}, need {min}");
     let decoded: Rule = serde_json::from_value(serde_json::to_value(&rule).unwrap()).unwrap();
-
-    let err = decoded.validate_value(&json!("ab")).unwrap_err();
-    assert_eq!(err.message.as_ref(), "please enter at least 5 characters");
-}
-
-#[test]
-fn classification_round_trip_is_stable() {
-    let rules: Vec<Rule> = vec![
-        Rule::MinLength {
-            min: 1,
-            message: None,
-        },
-        Rule::Eq {
-            field: "x".into(),
-            value: json!(1),
-        },
-        Rule::Custom {
-            expression: "y > 0".into(),
-            message: None,
-        },
-    ];
-
-    for rule in &rules {
-        let decoded: Rule = serde_json::from_value(serde_json::to_value(rule).unwrap()).unwrap();
-        assert_eq!(decoded.is_value_rule(), rule.is_value_rule());
-        assert_eq!(decoded.is_predicate(), rule.is_predicate());
-        assert_eq!(decoded.is_deferred(), rule.is_deferred());
-    }
-}
-
-#[test]
-fn unknown_rule_tag_is_rejected() {
-    let bad = json!({ "rule": "teleport", "to": "mars" });
-    assert!(
-        serde_json::from_value::<Rule>(bad).is_err(),
-        "deserialization must reject unknown rule tags"
-    );
+    let err = nebula_validator::foundation::Validate::validate(&decoded, &json!("hi")).unwrap_err();
+    let rendered = format!("{err}");
+    assert!(rendered.contains("got \"hi\", need 5"), "got: {rendered}");
 }

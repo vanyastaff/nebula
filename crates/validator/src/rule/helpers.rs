@@ -43,17 +43,6 @@ pub(super) fn format_json_number(n: &serde_json::Number) -> String {
     n.to_string()
 }
 
-/// Replaces the error message if an override is provided.
-pub(super) fn override_message(
-    mut error: ValidationError,
-    message: &Option<String>,
-) -> ValidationError {
-    if let Some(msg) = message {
-        error.message = std::borrow::Cow::Owned(msg.clone());
-    }
-    error
-}
-
 /// Precision-safe numeric comparison for predicate evaluation.
 pub(super) fn cmp_number_predicate(
     value: Option<&serde_json::Value>,

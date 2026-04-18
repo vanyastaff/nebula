@@ -22,18 +22,11 @@ fn lint_schema_reports_dangling_refs_and_structural_issues() {
         .add(Field::string("toggle"))
         .add(
             Field::string("name")
-                .visible_when(nebula_validator::Rule::Eq {
-                    field: "missing".to_owned(),
-                    value: json!(true),
-                })
-                .with_rule(nebula_validator::Rule::MinLength {
-                    min: 5,
-                    message: None,
-                })
-                .with_rule(nebula_validator::Rule::MaxLength {
-                    max: 2,
-                    message: None,
-                }),
+                .visible_when(nebula_validator::Rule::predicate(
+                    nebula_validator::Predicate::eq("missing", json!(true)).unwrap(),
+                ))
+                .with_rule(nebula_validator::Rule::min_length(5))
+                .with_rule(nebula_validator::Rule::max_length(2)),
         )
         .add(
             Field::select("region")
@@ -143,14 +136,16 @@ async fn loader_registry_reports_missing_loader_registration() {
 #[test]
 fn lint_schema_detects_visibility_cycles() {
     let schema = Schema::new()
-        .add(Field::string("a").visible_when(nebula_validator::Rule::Eq {
-            field: "b".to_owned(),
-            value: json!(true),
-        }))
-        .add(Field::string("b").visible_when(nebula_validator::Rule::Eq {
-            field: "a".to_owned(),
-            value: json!(true),
-        }));
+        .add(
+            Field::string("a").visible_when(nebula_validator::Rule::predicate(
+                nebula_validator::Predicate::eq("b", json!(true)).unwrap(),
+            )),
+        )
+        .add(
+            Field::string("b").visible_when(nebula_validator::Rule::predicate(
+                nebula_validator::Predicate::eq("a", json!(true)).unwrap(),
+            )),
+        );
 
     let report = schema.lint();
     assert!(
@@ -169,10 +164,9 @@ fn runtime_validation_still_works_with_linted_schema() {
         .add(Field::boolean("enabled").required())
         .add(
             Field::string("name")
-                .required_when(nebula_validator::Rule::Eq {
-                    field: "enabled".to_owned(),
-                    value: json!(true),
-                })
+                .required_when(nebula_validator::Rule::predicate(
+                    nebula_validator::Predicate::eq("enabled", json!(true)).unwrap(),
+                ))
                 .min_length(3),
         )
         .build()
@@ -191,33 +185,19 @@ fn lint_schema_reports_rule_incompatible_warnings() {
     let schema = Schema::new()
         .add(
             Field::number("retries")
-                .with_rule(nebula_validator::Rule::Pattern {
-                    pattern: "^\\d+$".to_owned(),
-                    message: None,
-                })
-                .with_rule(nebula_validator::Rule::Email { message: None }),
+                .with_rule(nebula_validator::Rule::pattern("^\\d+$"))
+                .with_rule(nebula_validator::Rule::email()),
         )
         .add(
-            Field::string("name").with_rule(nebula_validator::Rule::Min {
-                min: serde_json::Number::from(1),
-                message: None,
-            }),
+            Field::string("name").with_rule(nebula_validator::Rule::Value(
+                nebula_validator::ValueRule::Min(serde_json::Number::from(1)),
+            )),
         )
         .add(
-            Field::boolean("flag").with_rule(nebula_validator::Rule::All {
-                rules: vec![
-                    nebula_validator::Rule::MaxLength {
-                        max: 10,
-                        message: None,
-                    },
-                    nebula_validator::Rule::Not {
-                        inner: Box::new(nebula_validator::Rule::MinItems {
-                            min: 1,
-                            message: None,
-                        }),
-                    },
-                ],
-            }),
+            Field::boolean("flag").with_rule(nebula_validator::Rule::all([
+                nebula_validator::Rule::max_length(10),
+                nebula_validator::Rule::not(nebula_validator::Rule::min_items(1)),
+            ])),
         );
 
     let report = schema.lint();
@@ -241,27 +221,22 @@ fn lint_schema_accepts_compatible_rule_types() {
         .add(
             Field::string("title")
                 .min_length(3)
-                .with_rule(nebula_validator::Rule::Url { message: None }),
+                .with_rule(nebula_validator::Rule::url()),
         )
         .add(
-            Field::number("timeout").with_rule(nebula_validator::Rule::Min {
-                min: serde_json::Number::from(1),
-                message: None,
-            }),
+            Field::number("timeout").with_rule(nebula_validator::Rule::Value(
+                nebula_validator::ValueRule::Min(serde_json::Number::from(1)),
+            )),
         )
-        .add(Field::list("tags").item(Field::string("tag")).with_rule(
-            nebula_validator::Rule::MinItems {
-                min: 1,
-                message: None,
-            },
-        ))
+        .add(
+            Field::list("tags")
+                .item(Field::string("tag"))
+                .with_rule(nebula_validator::Rule::min_items(1)),
+        )
         .add(
             Field::select("regions")
                 .multiple()
-                .with_rule(nebula_validator::Rule::MaxItems {
-                    max: 3,
-                    message: None,
-                }),
+                .with_rule(nebula_validator::Rule::max_items(3)),
         );
 
     let report = schema.lint();

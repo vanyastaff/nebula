@@ -2,7 +2,7 @@
 
 use std::collections::HashSet;
 
-use nebula_validator::Rule;
+use nebula_validator::{DeferredRule, Logic, Predicate, Rule, ValueRule};
 
 use crate::{
     Field, FieldPath, ListField, ModeField, RequiredMode, VisibilityMode,
@@ -296,6 +296,9 @@ fn lint_rule_refs_new(
     let mut refs = Vec::new();
     rule.field_references(&mut refs);
     for field_ref in refs {
+        // Predicates now emit JSON-Pointer-shaped references ("/foo/bar").
+        // Strip the leading `/` and resolve the first segment as the key to
+        // check. Legacy `$root.` prefix is preserved for back-compat.
         if let Some(rp) = field_ref.strip_prefix("$root.") {
             let rk = rp.split('.').next().unwrap_or_default();
             if !root_keys.contains(rk) {
@@ -308,7 +311,16 @@ fn lint_rule_refs_new(
             }
             continue;
         }
-        let lk = field_ref.split('.').next().unwrap_or_default();
+        // Transitional: JSON-pointer form (`/path`) splits only on `/`; legacy
+        // dotted form (`a.b.c`) splits on `.`. Dual-splitting would chop a
+        // valid JSON-pointer segment like `/user.name` at the dot (RFC 6901
+        // allows `.` inside segments). Remove the dotted arm once schema refs
+        // fully migrate to JSON Pointer.
+        let lk = if let Some(rest) = field_ref.strip_prefix('/') {
+            rest.split('/').next().unwrap_or_default()
+        } else {
+            field_ref.split('.').next().unwrap_or_default()
+        };
         if !local_keys.contains(lk) {
             report.push(
                 ValidationError::builder("dangling_reference")
@@ -338,20 +350,32 @@ fn lint_single_compat_new(
     report: &mut ValidationReport,
 ) {
     let compatible = match rule {
-        Rule::Pattern { .. }
-        | Rule::MinLength { .. }
-        | Rule::MaxLength { .. }
-        | Rule::Email { .. }
-        | Rule::Url { .. } => supports_string_rules(field),
-        Rule::Min { .. } | Rule::Max { .. } => supports_number_rules(field),
-        Rule::MinItems { .. } | Rule::MaxItems { .. } => supports_collection_rules(field),
-        Rule::All { rules } | Rule::Any { rules } => {
-            for nested in rules {
-                lint_single_compat_new(field, nested, path, report);
-            }
-            true
+        Rule::Value(v) => match v {
+            ValueRule::Pattern(_)
+            | ValueRule::MinLength(_)
+            | ValueRule::MaxLength(_)
+            | ValueRule::Email
+            | ValueRule::Url => supports_string_rules(field),
+            ValueRule::Min(_)
+            | ValueRule::Max(_)
+            | ValueRule::GreaterThan(_)
+            | ValueRule::LessThan(_) => supports_number_rules(field),
+            ValueRule::MinItems(_) | ValueRule::MaxItems(_) => supports_collection_rules(field),
+            _ => true,
         },
-        Rule::Not { inner } => {
+        Rule::Logic(l) => match l.as_ref() {
+            Logic::All(rules) | Logic::Any(rules) => {
+                for nested in rules {
+                    lint_single_compat_new(field, nested, path, report);
+                }
+                true
+            },
+            Logic::Not(inner) => {
+                lint_single_compat_new(field, inner, path, report);
+                true
+            },
+        },
+        Rule::Described(inner, _) => {
             lint_single_compat_new(field, inner, path, report);
             true
         },
@@ -452,34 +476,48 @@ fn field_type_name(field: &Field) -> &'static str {
 
 fn rule_name(rule: &Rule) -> &'static str {
     match rule {
-        Rule::Pattern { .. } => "pattern",
-        Rule::MinLength { .. } => "min_length",
-        Rule::MaxLength { .. } => "max_length",
-        Rule::Min { .. } => "min",
-        Rule::Max { .. } => "max",
-        Rule::OneOf { .. } => "one_of",
-        Rule::MinItems { .. } => "min_items",
-        Rule::MaxItems { .. } => "max_items",
-        Rule::Email { .. } => "email",
-        Rule::Url { .. } => "url",
-        Rule::UniqueBy { .. } => "unique_by",
-        Rule::Custom { .. } => "custom",
-        Rule::Eq { .. } => "eq",
-        Rule::Ne { .. } => "ne",
-        Rule::Gt { .. } => "gt",
-        Rule::Gte { .. } => "gte",
-        Rule::Lt { .. } => "lt",
-        Rule::Lte { .. } => "lte",
-        Rule::IsTrue { .. } => "is_true",
-        Rule::IsFalse { .. } => "is_false",
-        Rule::Set { .. } => "set",
-        Rule::Empty { .. } => "empty",
-        Rule::Contains { .. } => "contains",
-        Rule::Matches { .. } => "matches",
-        Rule::In { .. } => "in",
-        Rule::All { .. } => "all",
-        Rule::Any { .. } => "any",
-        Rule::Not { .. } => "not",
+        Rule::Value(v) => match v {
+            ValueRule::Pattern(_) => "pattern",
+            ValueRule::MinLength(_) => "min_length",
+            ValueRule::MaxLength(_) => "max_length",
+            ValueRule::Min(_) => "min",
+            ValueRule::Max(_) => "max",
+            ValueRule::GreaterThan(_) => "greater_than",
+            ValueRule::LessThan(_) => "less_than",
+            ValueRule::OneOf(_) => "one_of",
+            ValueRule::MinItems(_) => "min_items",
+            ValueRule::MaxItems(_) => "max_items",
+            ValueRule::Email => "email",
+            ValueRule::Url => "url",
+            _ => "unknown_rule",
+        },
+        Rule::Deferred(d) => match d {
+            DeferredRule::UniqueBy(_) => "unique_by",
+            DeferredRule::Custom(_) => "custom",
+            _ => "unknown_rule",
+        },
+        Rule::Predicate(p) => match p {
+            Predicate::Eq(_, _) => "eq",
+            Predicate::Ne(_, _) => "ne",
+            Predicate::Gt(_, _) => "gt",
+            Predicate::Gte(_, _) => "gte",
+            Predicate::Lt(_, _) => "lt",
+            Predicate::Lte(_, _) => "lte",
+            Predicate::IsTrue(_) => "is_true",
+            Predicate::IsFalse(_) => "is_false",
+            Predicate::Set(_) => "set",
+            Predicate::Empty(_) => "empty",
+            Predicate::Contains(_, _) => "contains",
+            Predicate::Matches(_, _) => "matches",
+            Predicate::In(_, _) => "in",
+            _ => "unknown_rule",
+        },
+        Rule::Logic(l) => match l.as_ref() {
+            Logic::All(_) => "all",
+            Logic::Any(_) => "any",
+            Logic::Not(_) => "not",
+        },
+        Rule::Described(inner, _) => rule_name(inner),
         _ => "unknown_rule",
     }
 }
@@ -493,22 +531,33 @@ fn collect_min_max(
 ) {
     for rule in rules {
         match rule {
-            Rule::MinLength { min, .. } => {
+            Rule::Value(ValueRule::MinLength(min)) => {
                 *min_length = Some(min_length.map_or(*min, |current| current.max(*min)));
             },
-            Rule::MaxLength { max, .. } => {
+            Rule::Value(ValueRule::MaxLength(max)) => {
                 *max_length = Some(max_length.map_or(*max, |current| current.min(*max)));
             },
-            Rule::MinItems { min, .. } => {
+            Rule::Value(ValueRule::MinItems(min)) => {
                 *min_items = Some(min_items.map_or(*min, |current| current.max(*min)));
             },
-            Rule::MaxItems { max, .. } => {
+            Rule::Value(ValueRule::MaxItems(max)) => {
                 *max_items = Some(max_items.map_or(*max, |current| current.min(*max)));
             },
-            Rule::All { rules } | Rule::Any { rules } => {
-                collect_min_max(rules, min_length, max_length, min_items, max_items);
+            Rule::Logic(l) => match l.as_ref() {
+                Logic::All(rules) | Logic::Any(rules) => {
+                    collect_min_max(rules, min_length, max_length, min_items, max_items);
+                },
+                Logic::Not(inner) => {
+                    collect_min_max(
+                        std::slice::from_ref(inner),
+                        min_length,
+                        max_length,
+                        min_items,
+                        max_items,
+                    );
+                },
             },
-            Rule::Not { inner } => {
+            Rule::Described(inner, _) => {
                 collect_min_max(
                     std::slice::from_ref(inner.as_ref()),
                     min_length,
@@ -549,7 +598,16 @@ fn lint_visibility_cycles_new(fields: &[Field], prefix: &FieldPath, report: &mut
                 if target.starts_with("$root.") {
                     continue;
                 }
-                let target = target.split('.').next().unwrap_or_default();
+                // Transitional: JSON-pointer form (`/path`) splits only on
+                // `/`; legacy dotted form (`a.b.c`) splits on `.`. Dual-split
+                // would mangle a valid pointer segment containing `.` (RFC
+                // 6901 allows it). Remove the dotted arm once schema refs
+                // fully migrate to JSON Pointer.
+                let target = if let Some(rest) = target.strip_prefix('/') {
+                    rest.split('/').next().unwrap_or_default()
+                } else {
+                    target.split('.').next().unwrap_or_default()
+                };
                 edges.push((source, target));
             }
         }

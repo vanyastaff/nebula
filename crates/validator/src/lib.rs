@@ -42,33 +42,33 @@
 //! Rules are JSON-serializable and cover four categories:
 //!
 //! ```rust
-//! use nebula_validator::{Rule, ExecutionMode, validate_rules};
+//! use nebula_validator::{ExecutionMode, Rule, validate_rules};
 //! use serde_json::json;
 //!
 //! // Value validation — checks a single JSON value
-//! let rule = Rule::MinLength { min: 3, message: None };
-//! assert!(rule.validate_value(&json!("alice")).is_ok());
-//!
-//! // Context predicate — checks a sibling field
-//! let rule = Rule::Eq { field: "status".into(), value: json!("active") };
-//! let ctx: std::collections::HashMap<String, serde_json::Value> =
-//!     serde_json::from_value(json!({ "status": "active" })).unwrap();
-//! assert!(rule.evaluate(&ctx));
+//! let rule = Rule::min_length(3);
+//! assert!(
+//!     validate_rules(
+//!         &json!("alice"),
+//!         std::slice::from_ref(&rule),
+//!         ExecutionMode::StaticOnly
+//!     )
+//!     .is_ok()
+//! );
 //!
 //! // Logical combinator — compose rules
-//! let rule = Rule::All {
-//!     rules: vec![
-//!         Rule::MinLength { min: 3, message: None },
-//!         Rule::MaxLength { max: 20, message: None },
-//!     ],
-//! };
-//! assert!(rule.validate_value(&json!("hello")).is_ok());
+//! let rule = Rule::all([Rule::min_length(3), Rule::max_length(20)]);
+//! assert!(
+//!     validate_rules(
+//!         &json!("hello"),
+//!         std::slice::from_ref(&rule),
+//!         ExecutionMode::StaticOnly
+//!     )
+//!     .is_ok()
+//! );
 //!
 //! // Engine — batch-validate with execution mode
-//! let rules = vec![
-//!     Rule::MinLength { min: 3, message: None },
-//!     Rule::Pattern { pattern: "^[a-z]+$".into(), message: None },
-//! ];
+//! let rules = vec![Rule::min_length(3), Rule::pattern("^[a-z]+$")];
 //! assert!(validate_rules(&json!("alice"), &rules, ExecutionMode::StaticOnly).is_ok());
 //! ```
 //!
@@ -138,7 +138,9 @@ pub use error::ValidatorError;
 #[cfg(feature = "derive")]
 pub use nebula_validator_macros::Validator;
 pub use proof::Validated;
-pub use rule::{Rule, RuleContext};
+pub use rule::{
+    DeferredRule, Logic, Predicate, PredicateContext, Rule, RuleContext, RuleKind, ValueRule,
+};
 
 // `regex` is re-exported so code emitted by `#[derive(Validator)]` can
 // reference `nebula_validator::__private::regex` without requiring users to

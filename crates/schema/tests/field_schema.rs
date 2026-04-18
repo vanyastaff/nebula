@@ -66,10 +66,9 @@ fn schema_add_replaces_duplicate_key() {
 fn serde_roundtrip_field_and_schema() {
     let schema = Schema::new().add(
         Field::string("username")
-            .visible_when(nebula_validator::Rule::Eq {
-                field: "enabled".to_owned(),
-                value: json!(true),
-            })
+            .visible_when(nebula_validator::Rule::predicate(
+                nebula_validator::Predicate::eq("enabled", json!(true)).unwrap(),
+            ))
             .required(),
     );
 
@@ -102,10 +101,9 @@ fn validate_applies_visibility_and_rules() {
         .add(Field::boolean("enabled").required())
         .add(
             Field::string("api_key")
-                .visible_when(nebula_validator::Rule::Eq {
-                    field: "enabled".to_owned(),
-                    value: json!(true),
-                })
+                .visible_when(nebula_validator::Rule::predicate(
+                    nebula_validator::Predicate::eq("enabled", json!(true)).unwrap(),
+                ))
                 .required()
                 .min_length(5),
         )
@@ -161,10 +159,7 @@ fn validate_applies_transformers_before_rules() {
         .add(
             Field::string("api_key")
                 .with_transformer(Transformer::Trim)
-                .with_rule(nebula_validator::Rule::MaxLength {
-                    max: 6,
-                    message: None,
-                }),
+                .with_rule(nebula_validator::Rule::max_length(6)),
         )
         .build()
         .expect("valid schema");

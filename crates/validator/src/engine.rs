@@ -7,13 +7,13 @@
 //!
 //! | Mode | Runs | Skips |
 //! |------|------|-------|
-//! | [`StaticOnly`](ExecutionMode::StaticOnly) | Value rules, predicates, combinators | Deferred (`Custom`, `UniqueBy`) |
+//! | [`StaticOnly`](ExecutionMode::StaticOnly) | Value rules, combinators | Deferred (`Custom`, `UniqueBy`) |
 //! | [`Deferred`](ExecutionMode::Deferred) | Deferred rules only | Everything else |
-//! | [`Full`](ExecutionMode::Full) | All value + deferred rules | Predicates (use [`Rule::evaluate`] directly) |
+//! | [`Full`](ExecutionMode::Full) | All value + deferred rules | — |
 //!
-//! **Important:** Predicate rules (`Eq`, `Ne`, `Gt`, etc.) always return
-//! `Ok(())` from `validate_value` regardless of mode. To evaluate predicates,
-//! call [`Rule::evaluate`] directly with a context map.
+//! Predicates require a `PredicateContext` — call
+//! `validate_rules_with_ctx` to thread one in; predicates dispatched via
+//! [`validate_rules`] (no ctx) are treated as `Ok(())`.
 //!
 //! # Examples
 //!
@@ -21,16 +21,7 @@
 //! use nebula_validator::{ExecutionMode, Rule, validate_rules};
 //! use serde_json::json;
 //!
-//! let rules = vec![
-//!     Rule::MinLength {
-//!         min: 3,
-//!         message: None,
-//!     },
-//!     Rule::MaxLength {
-//!         max: 20,
-//!         message: None,
-//!     },
-//! ];
+//! let rules = vec![Rule::min_length(3), Rule::max_length(20)];
 //!
 //! assert!(validate_rules(&json!("alice"), &rules, ExecutionMode::StaticOnly).is_ok());
 //! assert!(validate_rules(&json!("ab"), &rules, ExecutionMode::StaticOnly).is_err());
@@ -52,9 +43,6 @@ pub enum ExecutionMode {
     Deferred,
 
     /// Execute all value + deferred rules in deterministic order.
-    ///
-    /// Note: predicate rules still return `Ok(())` from `validate_value` —
-    /// they require `Rule::evaluate()` with a context map.
     Full,
 }
 
@@ -62,6 +50,9 @@ pub enum ExecutionMode {
 ///
 /// Iterates through all rules, skipping those not applicable to the given
 /// [`ExecutionMode`], and collects all errors (non-short-circuiting).
+///
+/// Predicates with no ctx short-circuit to `Ok(())`. Call
+/// `validate_rules_with_ctx` when predicate evaluation is required.
 ///
 /// # Arguments
 ///
@@ -76,6 +67,17 @@ pub enum ExecutionMode {
 pub fn validate_rules(
     value: &serde_json::Value,
     rules: &[Rule],
+    mode: ExecutionMode,
+) -> Result<(), ValidationErrors> {
+    validate_rules_with_ctx(value, rules, None, mode)
+}
+
+/// Validates with an optional predicate context. Rules whose kind doesn't
+/// match `mode` are skipped.
+pub fn validate_rules_with_ctx(
+    value: &serde_json::Value,
+    rules: &[Rule],
+    ctx: Option<&crate::rule::PredicateContext>,
     mode: ExecutionMode,
 ) -> Result<(), ValidationErrors> {
     // Fast path: empty rules slice — avoids all allocation and control flow.
@@ -96,7 +98,7 @@ pub fn validate_rules(
             continue;
         }
 
-        if let Err(e) = rule.validate_value(value) {
+        if let Err(e) = rule.validate(value, ctx, mode) {
             errors.push(e);
         }
     }
@@ -117,28 +119,17 @@ mod tests {
     use serde_json::json;
 
     use super::*;
+    use crate::rule::Predicate;
 
     #[test]
     fn static_only_skips_deferred() {
-        let rules = vec![
-            Rule::MinLength {
-                min: 3,
-                message: None,
-            },
-            Rule::Custom {
-                expression: "should_skip".into(),
-                message: None,
-            },
-        ];
+        let rules = vec![Rule::min_length(3), Rule::custom("should_skip")];
         assert!(validate_rules(&json!("alice"), &rules, ExecutionMode::StaticOnly).is_ok());
     }
 
     #[test]
     fn static_only_catches_errors() {
-        let rules = vec![Rule::MinLength {
-            min: 5,
-            message: None,
-        }];
+        let rules = vec![Rule::min_length(5)];
         let errs = validate_rules(&json!("ab"), &rules, ExecutionMode::StaticOnly).unwrap_err();
         assert_eq!(errs.len(), 1);
         assert_eq!(errs.errors()[0].code.as_ref(), "min_length");
@@ -146,32 +137,14 @@ mod tests {
 
     #[test]
     fn full_mode_runs_all() {
-        let rules = vec![
-            Rule::MinLength {
-                min: 3,
-                message: None,
-            },
-            Rule::UniqueBy {
-                key: "id".into(),
-                message: None,
-            },
-        ];
-        // Deferred rules return Ok by default in validate_value
+        let rules = vec![Rule::min_length(3), Rule::unique_by("id").unwrap()];
+        // Deferred rules return Ok by default in validate (no ctx)
         assert!(validate_rules(&json!("alice"), &rules, ExecutionMode::Full).is_ok());
     }
 
     #[test]
     fn collects_multiple_errors() {
-        let rules = vec![
-            Rule::MinLength {
-                min: 10,
-                message: None,
-            },
-            Rule::Pattern {
-                pattern: "^[0-9]+$".into(),
-                message: None,
-            },
-        ];
+        let rules = vec![Rule::min_length(10), Rule::pattern("^[0-9]+$")];
         let errs = validate_rules(&json!("abc"), &rules, ExecutionMode::StaticOnly).unwrap_err();
         assert_eq!(errs.len(), 2);
     }
@@ -183,55 +156,31 @@ mod tests {
 
     #[test]
     fn deferred_mode_skips_static_rules() {
-        let rules = vec![
-            Rule::MinLength {
-                min: 100,
-                message: None,
-            },
-            Rule::UniqueBy {
-                key: "id".into(),
-                message: None,
-            },
-        ];
-        // Deferred mode skips MinLength, UniqueBy returns Ok
+        let rules = vec![Rule::min_length(100), Rule::unique_by("id").unwrap()];
+        // Deferred mode skips MinLength; UniqueBy returns Ok
         assert!(validate_rules(&json!("short"), &rules, ExecutionMode::Deferred).is_ok());
     }
 
     #[test]
     fn deferred_mode_runs_deferred_rules() {
-        let rules = vec![Rule::UniqueBy {
-            key: "id".into(),
-            message: None,
-        }];
+        let rules = vec![Rule::unique_by("id").unwrap()];
         // UniqueBy is deferred and returns Ok by default
         assert!(validate_rules(&json!([1, 2]), &rules, ExecutionMode::Deferred).is_ok());
     }
 
     #[test]
-    fn static_only_skips_predicates() {
-        let rules = vec![Rule::Eq {
-            field: "x".into(),
-            value: json!(1),
-        }];
-        // Predicates return Ok in validate_value
+    fn static_only_skips_predicates_without_ctx() {
+        let rules = vec![Rule::predicate(Predicate::eq("x", json!(1)).unwrap())];
+        // Predicates return Ok in validate when ctx is None
         assert!(validate_rules(&json!("whatever"), &rules, ExecutionMode::StaticOnly).is_ok());
     }
 
     #[test]
     fn full_mode_collects_all_errors() {
         let rules = vec![
-            Rule::MinLength {
-                min: 10,
-                message: None,
-            },
-            Rule::MaxLength {
-                max: 2,
-                message: None,
-            },
-            Rule::Pattern {
-                pattern: "^[0-9]+$".into(),
-                message: None,
-            },
+            Rule::min_length(10),
+            Rule::max_length(2),
+            Rule::pattern("^[0-9]+$"),
         ];
         // "abc" fails all three
         let errs = validate_rules(&json!("abc"), &rules, ExecutionMode::Full).unwrap_err();
@@ -240,18 +189,7 @@ mod tests {
 
     #[test]
     fn validate_rules_with_combinator() {
-        let rules = vec![Rule::All {
-            rules: vec![
-                Rule::MinLength {
-                    min: 3,
-                    message: None,
-                },
-                Rule::MaxLength {
-                    max: 10,
-                    message: None,
-                },
-            ],
-        }];
+        let rules = vec![Rule::all([Rule::min_length(3), Rule::max_length(10)])];
         assert!(validate_rules(&json!("hello"), &rules, ExecutionMode::StaticOnly).is_ok());
         assert!(validate_rules(&json!("ab"), &rules, ExecutionMode::StaticOnly).is_err());
     }

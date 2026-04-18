@@ -4,7 +4,7 @@
 //! - Date-like fields → `StringField` with `hint: InputHint::{Date, DateTime, Time, Color}`.
 //! - "Hidden" role → any field with `visible: VisibilityMode::Never`.
 
-use nebula_validator::Rule;
+use nebula_validator::{Rule, ValueRule};
 use serde::{Deserialize, Serialize};
 use serde_json::{Number, Value};
 
@@ -227,38 +227,35 @@ impl StringField {
     /// Add a min-length rule.
     #[must_use]
     pub fn min_length(mut self, min: usize) -> Self {
-        self.rules.push(Rule::MinLength { min, message: None });
+        self.rules.push(Rule::min_length(min));
         self
     }
 
     /// Add a max-length rule.
     #[must_use]
     pub fn max_length(mut self, max: usize) -> Self {
-        self.rules.push(Rule::MaxLength { max, message: None });
+        self.rules.push(Rule::max_length(max));
         self
     }
 
     /// Add a pattern rule.
     #[must_use]
     pub fn pattern(mut self, p: impl Into<String>) -> Self {
-        self.rules.push(Rule::Pattern {
-            pattern: p.into(),
-            message: None,
-        });
+        self.rules.push(Rule::pattern(p));
         self
     }
 
     /// Add URL-format validation rule.
     #[must_use]
     pub fn url(mut self) -> Self {
-        self.rules.push(Rule::Url { message: None });
+        self.rules.push(Rule::url());
         self
     }
 
     /// Add email-format validation rule.
     #[must_use]
     pub fn email(mut self) -> Self {
-        self.rules.push(Rule::Email { message: None });
+        self.rules.push(Rule::email());
         self
     }
 }
@@ -286,7 +283,7 @@ impl SecretField {
     /// Add min-length validation rule.
     #[must_use]
     pub fn min_length(mut self, min: usize) -> Self {
-        self.rules.push(Rule::MinLength { min, message: None });
+        self.rules.push(Rule::min_length(min));
         self
     }
 
@@ -322,20 +319,14 @@ impl NumberField {
     /// Add minimum numeric rule.
     #[must_use]
     pub fn min(mut self, min: impl Into<Number>) -> Self {
-        self.rules.push(Rule::Min {
-            min: min.into(),
-            message: None,
-        });
+        self.rules.push(Rule::Value(ValueRule::Min(min.into())));
         self
     }
 
     /// Add maximum numeric rule.
     #[must_use]
     pub fn max(mut self, max: impl Into<Number>) -> Self {
-        self.rules.push(Rule::Max {
-            max: max.into(),
-            message: None,
-        });
+        self.rules.push(Rule::Value(ValueRule::Max(max.into())));
         self
     }
 

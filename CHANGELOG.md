@@ -33,6 +33,32 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- **nebula-validator**: **Breaking** — replaced flat 30-variant `Rule` enum
+  with a typed sum-of-sums: `Rule::{Value(ValueRule), Predicate(Predicate),
+  Logic(Box<Logic>), Deferred(DeferredRule), Described(Box<Rule>, String)}`.
+  Each kind has a single method that makes sense for it (`validate_value`
+  on `ValueRule`, `evaluate` on `Predicate`, etc.). Cross-kind silent-pass
+  is gone (calling `validate_value` on a `Predicate` no longer compiles).
+  Predicates now carry `FieldPath` instead of raw `String` — paths
+  validated at construction. See
+  `docs/superpowers/specs/2026-04-17-nebula-validator-rule-refactor-design.md`.
+- **nebula-validator**: **Breaking wire format** — externally-tagged
+  tuple-compact encoding for `Rule`: `{"min_length":3}`, `{"eq":["/path",value]}`,
+  `"email"` for unit variants. ~60% shorter than the old `{"rule":"min_length","min":3}`.
+  Manual `Deserialize` produces friendly `unknown rule "X". Known rules: ...`
+  errors instead of serde's generic "data did not match any variant".
+- **nebula-validator**: `Described(Box<Rule>, String)` decorator replaces
+  per-variant `message: Option<String>` fields and now works across
+  combinators (not just leaf rules). Messages can contain `{placeholder}`
+  templates that render from the error's params at `Display` time; zero
+  allocation for plain messages.
+- **nebula-validator**: `FieldPath` now implements `Serialize`/`Deserialize`
+  (wire form is the inner JSON Pointer string).
+- **nebula-validator**: `PredicateContext` typed newtype replaces raw
+  `HashMap<String, Value>` for predicate evaluation; auto-flattens nested
+  JSON objects into `/path` keys.
+- **nebula-schema**: consumer updated for new `Rule` shape — `lint.rs`
+  classification and `field.rs` builder calls migrated.
 - **BREAKING — nebula-action, nebula-credential, nebula-sdk**: Migrated from
   `nebula-parameter` to `nebula-schema`. API mapping:
   `ParameterCollection` → `ValidSchema`, `Parameter::*` variants →
