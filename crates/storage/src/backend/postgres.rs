@@ -134,8 +134,10 @@ impl PostgresStorage {
 /// that require no double-quoting and cannot contain SQL-injection payloads.
 /// Schema-qualified names (`schema.table`), quoted identifiers, and non-ASCII
 /// characters are rejected; if those are needed, add a dedicated code path
-/// that uses `sqlx::QueryBuilder::push_bind` or a safe quoter rather than
-/// loosening this regex.
+/// that applies proper identifier quoting (PostgreSQL double-quoting with
+/// embedded `"` escaped as `""`) rather than loosening this regex. Note that
+/// SQL bind parameters (`$1`, `push_bind`, etc.) are for values only and
+/// cannot be used to substitute identifiers.
 fn validate_table_name(name: &str) -> Result<(), StorageError> {
     let bad = |reason: &str| {
         StorageError::Configuration(format!(
