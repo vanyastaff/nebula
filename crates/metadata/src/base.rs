@@ -27,7 +27,7 @@ fn is_default_version(v: &Version) -> bool {
 /// fields (API catalog, search, UI listings) can work generically
 /// against any `M: Metadata`.
 #[non_exhaustive]
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct BaseMetadata<K> {
     /// Unique typed identifier of this entity.
     pub key: K,

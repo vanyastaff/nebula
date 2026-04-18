@@ -53,7 +53,7 @@ mod tests {
     }
 
     #[test]
-    fn serde_kebab_case() {
+    fn serde_snake_case() {
         assert_eq!(
             serde_json::to_string(&MaturityLevel::Experimental).unwrap(),
             r#""experimental""#

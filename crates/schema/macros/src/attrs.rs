@@ -11,7 +11,7 @@
 //! the offending token, not a silent skip.
 
 use syn::{
-    Attribute, Expr, ExprLit, Lit, LitInt, LitStr, Token,
+    Attribute, Expr, ExprLit, Lit, LitInt, Token,
     parse::{Parse, ParseStream},
     punctuated::Punctuated,
 };
@@ -45,12 +45,6 @@ pub(crate) struct ValidateAttrs {
     pub email: bool,
 }
 
-/// Struct-level `#[schema(...)]` options.
-#[derive(Default, Debug)]
-pub(crate) struct SchemaAttrs {
-    pub rename_all: Option<String>,
-}
-
 impl ParamAttrs {
     pub fn from_attrs(attrs: &[Attribute]) -> syn::Result<Self> {
         let mut out = Self::default();
@@ -70,20 +64,6 @@ impl ValidateAttrs {
         let mut out = Self::default();
         for attr in attrs.iter().filter(|a| a.path().is_ident("validate")) {
             let entries: Punctuated<ValidateEntry, Token![,]> =
-                attr.parse_args_with(Punctuated::parse_terminated)?;
-            for entry in entries {
-                entry.apply(&mut out)?;
-            }
-        }
-        Ok(out)
-    }
-}
-
-impl SchemaAttrs {
-    pub fn from_attrs(attrs: &[Attribute]) -> syn::Result<Self> {
-        let mut out = Self::default();
-        for attr in attrs.iter().filter(|a| a.path().is_ident("schema")) {
-            let entries: Punctuated<SchemaEntry, Token![,]> =
                 attr.parse_args_with(Punctuated::parse_terminated)?;
             for entry in entries {
                 entry.apply(&mut out)?;
@@ -254,6 +234,7 @@ impl Parse for ValidateEntry {
 }
 
 fn parse_length(input: ParseStream) -> syn::Result<ValidateEntry> {
+    let span = input.span();
     let mut min = None;
     let mut max = None;
     let entries: Punctuated<LengthEntry, Token![,]> = Punctuated::parse_terminated(input)?;
@@ -262,6 +243,14 @@ fn parse_length(input: ParseStream) -> syn::Result<ValidateEntry> {
             LengthEntry::Min(v) => min = Some(v),
             LengthEntry::Max(v) => max = Some(v),
         }
+    }
+    if let (Some(min_v), Some(max_v)) = (min, max)
+        && min_v > max_v
+    {
+        return Err(syn::Error::new(
+            span,
+            format!("#[validate(length(..))]: min ({min_v}) cannot exceed max ({max_v})"),
+        ));
     }
     Ok(ValidateEntry::Length { min, max })
 }
@@ -289,6 +278,7 @@ impl Parse for LengthEntry {
 }
 
 fn parse_range(input: ParseStream) -> syn::Result<ValidateEntry> {
+    let span = input.span();
     // Accept `min..=max`, `min..max`, or standalone ranges.
     let expr: Expr = input.parse()?;
     let (min, max) = match expr {
@@ -308,6 +298,14 @@ fn parse_range(input: ParseStream) -> syn::Result<ValidateEntry> {
             ));
         },
     };
+    if let (Some(min_v), Some(max_v)) = (min, max)
+        && min_v > max_v
+    {
+        return Err(syn::Error::new(
+            span,
+            format!("#[validate(range(..))]: min ({min_v}) cannot exceed max ({max_v})"),
+        ));
+    }
     Ok(ValidateEntry::Range { min, max })
 }
 
@@ -319,38 +317,5 @@ fn lit_to_i64(expr: &Expr) -> Option<i64> {
         i.base10_parse::<i64>().ok()
     } else {
         None
-    }
-}
-
-enum SchemaEntry {
-    RenameAll(String),
-}
-
-impl SchemaEntry {
-    fn apply(self, out: &mut SchemaAttrs) -> syn::Result<()> {
-        match self {
-            SchemaEntry::RenameAll(v) => {
-                out.rename_all = Some(v);
-                Ok(())
-            },
-        }
-    }
-}
-
-impl Parse for SchemaEntry {
-    fn parse(input: ParseStream) -> syn::Result<Self> {
-        let name: syn::Ident = input.parse()?;
-        input.parse::<Token![=]>()?;
-        let lit: LitStr = input.parse()?;
-        match name.to_string().as_str() {
-            "rename_all" => {
-                let _ = name;
-                Ok(SchemaEntry::RenameAll(lit.value()))
-            },
-            other => Err(syn::Error::new(
-                name.span(),
-                format!("unknown #[schema(..)] option `{other}`"),
-            )),
-        }
     }
 }

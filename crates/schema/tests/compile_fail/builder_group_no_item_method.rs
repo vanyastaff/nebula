@@ -1,4 +1,4 @@
-use nebula_schema::{FieldCollector, Schema};
+use nebula_schema::Schema;
 
 fn main() {
     // `item` is on ListBuilder, not GroupBuilder.

@@ -102,16 +102,20 @@ impl ValidSchema {
     /// Use this anywhere a `ValidSchema` is required but the entity has no
     /// user-configurable inputs (actions that take `()`, stub credentials,
     /// baseline `HasSchema` impls for primitives). Avoids the
-    /// `Schema::builder().build().expect("empty schema always valid")`
-    /// incantation in three dozen call sites.
+    /// `Schema::builder().build().expect(..)` incantation in several dozen
+    /// call sites, and — unlike that pattern — cannot panic: the empty
+    /// `ValidSchemaInner` is constructed directly, bypassing lint passes
+    /// whose only job is to reject non-empty schemas.
     pub fn empty() -> Self {
         use std::sync::OnceLock;
         static EMPTY: OnceLock<ValidSchema> = OnceLock::new();
         EMPTY
             .get_or_init(|| {
-                crate::schema::Schema::builder()
-                    .build()
-                    .expect("empty schema always builds")
+                Self::from_inner(ValidSchemaInner {
+                    fields: Vec::new(),
+                    index: IndexMap::new(),
+                    flags: SchemaFlags::default(),
+                })
             })
             .clone()
     }

@@ -8,7 +8,7 @@ use quote::quote;
 use syn::{Data, DataStruct, DeriveInput, Fields, Ident};
 
 use crate::{
-    attrs::{ParamAttrs, SchemaAttrs, ValidateAttrs},
+    attrs::{ParamAttrs, ValidateAttrs},
     type_infer::{FieldKind, classify},
 };
 
@@ -17,8 +17,6 @@ pub(crate) fn expand(input: DeriveInput) -> syn::Result<TokenStream2> {
     let ty_name = &input.ident;
     let generics = &input.generics;
     let (impl_g, ty_g, where_g) = generics.split_for_impl();
-
-    let _schema_attrs = SchemaAttrs::from_attrs(&input.attrs)?;
 
     let fields = match &input.data {
         Data::Struct(DataStruct {
@@ -55,6 +53,7 @@ pub(crate) fn expand(input: DeriveInput) -> syn::Result<TokenStream2> {
         field_exprs.push(expr);
     }
 
+    let ty_name_str = ty_name.to_string();
     Ok(quote! {
         impl #impl_g #crate_path::HasSchema for #ty_name #ty_g #where_g {
             fn schema() -> #crate_path::ValidSchema {
@@ -62,10 +61,20 @@ pub(crate) fn expand(input: DeriveInput) -> syn::Result<TokenStream2> {
                     ::std::sync::OnceLock::new();
                 __CACHE
                     .get_or_init(|| {
-                        #crate_path::Schema::builder()
+                        match #crate_path::Schema::builder()
                             #( .add(#field_exprs) )*
                             .build()
-                            .expect("#[derive(Schema)] produced an invalid schema — this is a bug")
+                        {
+                            ::core::result::Result::Ok(s) => s,
+                            ::core::result::Result::Err(report) => ::core::panic!(
+                                "#[derive(Schema)] on `{}` produced an invalid schema — \
+                                 attribute combinations conflict with a schema-level lint. \
+                                 Fix the `#[param(..)]` / `#[validate(..)]` attributes on this type. \
+                                 Report: {:?}",
+                                #ty_name_str,
+                                report,
+                            ),
+                        }
                     })
                     .clone()
             }

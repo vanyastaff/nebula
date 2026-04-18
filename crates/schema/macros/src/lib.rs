@@ -51,9 +51,14 @@ pub fn field_key(input: TokenStream) -> TokenStream {
 
 /// Derive `HasSchema` (from `nebula-schema`) for a struct.
 ///
-/// See the `nebula-schema` crate docs for supported attributes:
-/// `#[param(...)]`, `#[validate(...)]`, and struct-level `#[schema(...)]`.
-#[proc_macro_derive(Schema, attributes(param, validate, schema))]
+/// Supported attributes:
+/// - `#[param(...)]` — label/description/placeholder/default/hint/secret/
+///   multiline/no_expression/expression_required/skip/group.
+/// - `#[validate(...)]` — required/length(min,max)/range(min..=max)/ pattern/url/email.
+///
+/// Struct-level `#[schema(...)]` is reserved for a future pass (no options
+/// functional today).
+#[proc_macro_derive(Schema, attributes(param, validate))]
 pub fn derive_schema(input: TokenStream) -> TokenStream {
     let input = parse_macro_input!(input as DeriveInput);
     derive_schema::expand(input)

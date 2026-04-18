@@ -103,7 +103,7 @@ pub enum MetadataCompatibilityError {
 /// fields (`version`, ports, `isolation_level`, `category`) stay on this
 /// struct.
 #[non_exhaustive]
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ActionMetadata {
     /// Shared catalog prefix — see [`BaseMetadata`]. Carries `version`
     /// (bumped when schema/ports change; exact-match dispatch in the engine).
@@ -124,20 +124,6 @@ pub struct ActionMetadata {
     /// with metadata serialized before this field existed.
     #[serde(default)]
     pub category: ActionCategory,
-}
-
-impl PartialEq for ActionMetadata {
-    fn eq(&self, other: &Self) -> bool {
-        self.base.key == other.base.key
-            && self.base.name == other.base.name
-            && self.base.description == other.base.description
-            && self.base.schema == other.base.schema
-            && self.base.version == other.base.version
-            && self.inputs == other.inputs
-            && self.outputs == other.outputs
-            && self.isolation_level == other.isolation_level
-            && self.category == other.category
-    }
 }
 
 impl Metadata for ActionMetadata {
