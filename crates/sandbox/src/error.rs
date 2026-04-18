@@ -97,4 +97,21 @@ pub enum SandboxError {
         /// The address announced by the plugin in its handshake line.
         got: String,
     },
+
+    /// The plugin's response envelope carried a correlation id that did
+    /// not match the id the host sent in the request (#285). Signals a
+    /// stale response (e.g. a late reply to a cancelled call) or a
+    /// protocol violation. The transport is poisoned after this error
+    /// so the next request respawns the plugin on a fresh connection —
+    /// defense-in-depth against cross-request id confusion.
+    #[error(
+        "plugin response id mismatch: sent {expected}, got {got} — \
+         possible stale response or protocol violation; connection poisoned"
+    )]
+    ResponseIdMismatch {
+        /// The correlation id the host placed in the outgoing request.
+        expected: u64,
+        /// The correlation id the plugin echoed back in its response.
+        got: u64,
+    },
 }
