@@ -1,4 +1,113 @@
+# Mergify configuration for nebula
+# Docs: https://docs.mergify.com/configuration/
+#
+# Branch protection (main) requires:
+#   - Status checks: CI (ci.yml), Tests (test-matrix.yml)
+#   - Conversation resolution
+#   - Linear history (squash merges only)
+#   - Branches up to date
+#
+# The queue handles "up to date" automatically by rebasing before merge.
+
 queue_rules:
   - name: default
     merge_method: squash
     update_method: rebase
+    merge_conditions:
+      - check-success=CI
+      - check-success=Tests
+      - "#review-threads-unresolved=0"
+
+pull_request_rules:
+  # ── Human PRs: opt-in auto-merge via `automerge` label ──────────────────
+  # Solo-dev setup: the `automerge` label is the approval signal (no separate
+  # approving reviewer required). `changes-requested` still blocks in case a
+  # reviewer — human or bot — flags issues that must be addressed first.
+  - name: Queue PRs labeled automerge
+    conditions:
+      - base=main
+      - label=automerge
+      - "-draft"
+      - "-conflict"
+      - "#changes-requested-reviews-by=0"
+    actions:
+      queue:
+        name: default
+
+  # ── Dependabot: grouped minor/patch updates auto-queue on green CI ─────
+  # Major version bumps are NOT grouped by Dependabot (see .github/dependabot.yml)
+  # so they fall through to manual review via the `automerge` label.
+  - name: Queue Dependabot grouped updates
+    conditions:
+      - base=main
+      - author=dependabot[bot]
+      - "-draft"
+      - "-conflict"
+      - or:
+          - 'title~=^chore\(deps\): bump the .+ group'
+          - 'title~=^chore\(ci\): bump the .+ group'
+    actions:
+      queue:
+        name: default
+
+  # ── Conflict hygiene ────────────────────────────────────────────────────
+  - name: Label and notify on merge conflicts
+    conditions:
+      - conflict
+      - "-closed"
+      - "-label=conflicts"
+    actions:
+      label:
+        add:
+          - conflicts
+      comment:
+        message: |
+          :warning: @{{author}} this PR has merge conflicts with `main`.
+          Rebase or merge `main` into your branch to resolve.
+
+  - name: Remove conflicts label when resolved
+    conditions:
+      - "-conflict"
+      - label=conflicts
+    actions:
+      label:
+        remove:
+          - conflicts
+
+  # ── Stale PR hygiene ────────────────────────────────────────────────────
+  - name: Mark stale after 14 days of inactivity
+    conditions:
+      - "-draft"
+      - "-closed"
+      - "-merged"
+      - "-label=stale"
+      - updated-at<14 days ago
+    actions:
+      label:
+        add:
+          - stale
+      comment:
+        message: |
+          This PR has been inactive for 14 days. Push new commits or remove the
+          `stale` label to keep it open; otherwise it may be closed after 30 days.
+
+  - name: Remove stale label on new activity
+    conditions:
+      - label=stale
+      - updated-at>=1 day ago
+    actions:
+      label:
+        remove:
+          - stale
+
+  - name: Close abandoned stale PRs
+    conditions:
+      - "-draft"
+      - "-closed"
+      - "-merged"
+      - label=stale
+      - updated-at<30 days ago
+    actions:
+      close:
+        message: |
+          Closing due to 30 days of inactivity. Reopen if you pick this up again.
