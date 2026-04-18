@@ -23,6 +23,7 @@ Satellites loaded on demand:
 - `docs/COMPETITIVE.md` — positioning, peer analysis.
 - `docs/OBSERVABILITY.md` — SLI / SLO / events / core analysis loop.
 - `docs/GLOSSARY.md` — terms and architectural patterns.
+- `docs/pitfalls.md` — recurring traps (expression builtin re-entry, two-valued skip, OTLP/tonic test reactor, serde MapAccess); read on review of new public types or dispatch surfaces.
 - `docs/adr/` — past decisions; search by filename or frontmatter.
 
 ### Decision gate (before proposing an architectural change)
