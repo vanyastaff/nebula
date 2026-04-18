@@ -71,107 +71,27 @@ For peer analysis, our explicit bets against n8n / Temporal / Windmill / Make / 
 
 > **Nebula is a serious orchestration core with honest contracts.** Prefer **fewer real guarantees** over many attractive but soft capabilities.
 
-### 3.5 The integration model — one pattern, five concepts
+### 3.5 Integration model (one pattern, five concepts)
 
-Most engines give integration authors one abstraction: a **“node”** that receives credentials and config as loosely typed JSON and returns output. **Authentication, connection management, retry, and validation** are the author’s problem, solved ad hoc per integration.
+**[L1]** Nebula’s integration surface is a small set of orthogonal concepts, each with a single clear responsibility, all sharing the same structural contract:
 
-**Nebula’s bet:** the right model is a **small set of orthogonal concepts**, each with a single clear responsibility — and **all sharing the same structural contract**. This complements our competitive positioning (see `docs/COMPETITIVE.md`) and represents a **different authoring and operations model**.
+- **Resource** — long-lived managed object (connection pool, SDK client). Engine owns lifecycle.
+- **Credential** — who you are and how authentication is maintained. Engine owns rotation and the stored-state vs consumer-facing auth-material split.
+- **Action** — what a step does. Dispatch via action trait family (`StatelessAction`, `StatefulAction`, `TriggerAction`, `ResourceAction`). Adding a trait requires canon revision (§0.2).
+- **Plugin** — distribution and registration unit. Plugin is the unit of registration, not the unit of size — full plugins and micro-plugins use the same contract.
+- **Schema** — the cross-cutting typed configuration system (`nebula-schema`: `Field`, `Schema`, `ValidValues`, `ResolvedValues` with proof-token pipeline). Shared across Actions, Credentials, Resources.
 
-#### Structural contract (uniform across concepts)
+**[L1]** Structural contract: every integration concept is `*Metadata + Schema` — UI-facing identity plus typed, validated configuration.
 
-Every concept in Nebula’s integration layer is described by two things:
+For the full model — structural-contract types, wiring rules, plugin packaging (`Cargo.toml` / `plugin.toml` / `impl Plugin`), plugin signing (status: planned), cross-plugin dependency rules — see `docs/INTEGRATION_MODEL.md`. That document is the authoritative source for integration mechanics; this canon states the invariants.
 
-
-| Piece                     | Role                                                                                                                                                                                                                                                                                              |
-| ------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| **`*Metadata`**           | UI-facing description — id, display name, icon, version, and concept-specific fields (e.g. `ActionMetadata`: ports, `ActionCategory`, embedded `ParameterCollection` — execution semantics follow the action **traits** in §3.8).                                                                 |
-| **`ParameterCollection`** | The **typed configuration schema** — one parameter system (typed, validated, transformer pipeline, dynamic fields, display modes) used **across** concepts. An author learns it once; it applies to Resource config, Credential setup, and Action inputs **without** a different API per concept. |
-
-
-The **parameter subsystem** (`ParameterCollection` and friends) is the **fifth concept** — cross-cutting configuration machinery, not an afterthought bolted onto each node. **Concrete shape:** see §3.9 (`nebula-parameter`).
-
-#### How the four integration kinds relate (structural, not “whatever exists at runtime”)
-
-These are **schema-level** links: metadata and parameter types say what an Action **requires** and what a Credential **composes** — the engine **resolves** them from registered types. Nothing is satisfied by implicit global lookup.
-
-**Resource** — `[ ResourceMetadata + ParameterCollection ]` — **base, independent.**
-
-Long-lived managed object: connection pool, SDK client, file handle. Engine owns lifecycle: init, health-check, hot-reload via **ReloadOutcome**, scope-aware teardown. The author declares what the Resource **is**; the engine provides it **healthy** or fails loudly. **Concrete shape:** see §3.6 (`nebula-resource`).
-
-**Credential** — `[ CredentialMetadata + ParameterCollection ]` — **optionally composes a Resource** in metadata/schema (e.g. HTTP client **Resource** for token refresh).
-
-**Who** you are and **how** authentication is maintained. Engine owns rotation, refresh, and the **stored state vs consumer-facing auth material** split — the author binds to a Credential type, never hand-rolls refresh or pending OAuth steps, and never relies on secrets appearing in logs. **Twelve universal auth schemes** (plus extensibility via `AuthScheme`) cover OAuth2, API key, mTLS, and similar; the author picks a type and fills the schema. **Concrete shape:** see §3.7 (`nebula-credential`).
-
-**Action** — `[ ActionMetadata + ParameterCollection ]` — **declares zero or more Resource and/or Credential kinds it needs** (by stable id / type reference in the **integration schema**, not ad hoc runtime lookup).
-
-**What** the step does — with explicit semantics. The engine dispatches by **which action trait** the type implements (`StatelessAction`, `StatefulAction`, `TriggerAction`, `ResourceAction`, …) — not by a single metadata “kind” field. **`ActionMetadata`** carries key, ports, parameters, isolation, **`ActionCategory`** (Data / Control / Trigger / …), and checkpoint behavior declaration (e.g. **`CheckpointPolicy`**) for UI/validation/runtime policy; this metadata supplements but does not replace trait-based routing. The trait family determines iteration (Continue / Break), trigger lifecycle, graph-scoped resource nodes, and flow-control **`ActionResult`** variants; the **runtime** applies checkpoint, retry, and cancel rules from those contracts — the author does not re-implement those invariants per action (aligned with `nebula-resilience`). **Concrete shape:** see §3.8 (`nebula-action`).
-
-**Wiring rule:** every Resource and Credential an Action references must be **provided by this plugin’s own `impl Plugin` registry** **or** by a type from **another plugin crate** that is a **declared dependency** in **`Cargo.toml`** (engine loads providers before dependents; see §7.1). Referencing a type that is “in the process” but **not** reachable through that **closed dependency graph** — even if another plugin registered it — is a **misconfiguration**, caught at **activation** (or equivalent validation), not a silent runtime grab.
-
-**Plugin** — `[ registry: Actions + Resources + Credentials ]` → **+ localization + additional features**
-
-**Distribution and registration unit.** A Plugin is not only a bundle — it is the **registry** that wires Actions, Resources, and Credentials together under a **versioned** identity, with localization and metadata for the UI. Types **defined in other plugins** are available only when the dependent crate **depends on the provider plugin crate** in **`Cargo.toml`** and the engine respects that **acyclic** graph at load/activation — same closure idea as **Cargo**, not an open global namespace. **Plugin is the unit of registration, not the unit of size:** a “full” integration crate and a **micro-plugin** (one or two registry entries) are **the same kind of thing** — same `plugin.toml` contract, same registration story; see §7.1. Deployment strategies: **native** in-process (maximum performance), **process-isolated** via IPC (third-party sandboxing), **FFI** via stabby (cross-language, stable ABI). Third-party plugins are **first-class by design**; document any gap vs native until the model is complete.
-
-#### Why the uniform pattern matters
-
-**For authors:** learn `{ *Metadata + ParameterCollection }` once — apply to any concept. Write Stripe logic; do not write credential rotation, connection management, or retry folklore. Each concept has one job.
-
-**For operators:** each concept has a clear **owner**. Credential rotation fails → Credential layer. Connection pool leaks → Resource layer. “Something went wrong in the node” is no longer the only diagnostic category.
-
-**For the ecosystem:** Plugin is the **unit of distribution**. Actions, Resources, and Credentials **version together** under one identity; **cross-plugin composition** is explicit via **Cargo dependencies** between plugin crates plus activation-time checks (§7.1), so versioning and install sets stay honest. The UI consumes metadata uniformly. Localization is a **Plugin** concern, not a per-action afterthought.
-
-**Positioning:** this **pattern + separation** is **rare** in our competitive set (§2.5). Treat it as a **primary architectural differentiator** — and **defend it**: do not collapse metadata, parameters, Resources, Credentials, Actions, or Plugin registration back into a single untyped “node struct” in new public APIs without a canon update.
-
-**Canon vs crate docs:** §3.6–§3.9 name the **Rust crates** that realize each integration concept. **Authoritative mechanics** — APIs, topology names, crypto parameters, benchmarks — belong in `crates/*/README.md` and source. This file states **what and why** so the product story does not rot when internals refactor (contrast §14 *spec theater*).
-
-### 3.6 `nebula-resource`
-
-**What / why:** typed **Resource** implementations with **engine-owned** lifecycle (acquire, health, release) instead of ad hoc singletons — so connection pools and clients are **scoped and inspectable**.
-
-**Where to read:** `crates/resource/README.md`, `crates/resource/src/lib.rs`.
-
-### 3.7 `nebula-credential`
-
-**What / why:** unified **Credential** contract — stored state vs projected auth material, refresh/resolve/test paths — so secrets and rotation stay **out of Action code** and logs.
-
-**Where to read:** `crates/credential/README.md`, `crates/credential/src/lib.rs`.
-
-### 3.8 `nebula-action`
-
-**What / why:** **Action** traits, declared dependencies, **`ActionResult`** flow, and metadata-declared execution policy (including **`CheckpointPolicy`** in `ActionMetadata`) so the engine can enforce checkpoints, branching, and retries **honestly** — not untyped “JSON in / out.”
-
-**Where to read:** `crates/action/src/lib.rs` (module map; crate `README.md` may lag).
-
-### 3.9 `nebula-parameter`
-
-**What / why:** one **parameter schema** system (`Parameter`, `ParameterCollection`, validation, conditions) shared by Actions, Credentials, Resources — so configuration is **typed and validated once**, not re-invented per integration.
-
-**Where to read:** `crates/parameter/README.md`, `crates/parameter/src/lib.rs`.
-
-### 3.10 Cross-cutting crates (at a glance)
-
-Besides the **integration** reference crates (§3.6–§3.9), the workspace ships **shared infrastructure** — depended on from many layers; they **support** the model above without replacing it.
-
-- **`nebula-core`** — shared identifiers and keys (`ExecutionId`, `ActionKey`, `CredentialKey`, …), **`AuthScheme`** / **`AuthPattern`**, scope levels, **`SecretString`**, credential lifecycle **events**, dependency-graph helpers — the **vocabulary** other crates agree on.
-- **`nebula-error`** — **`Classify`**, **`NebulaError`**, categories/codes, structured details — **one** error taxonomy at boundaries instead of ad hoc strings.
-- **`nebula-resilience`** — composable **pipelines** (retry, timeout, circuit breaker, bulkhead, …); pairs with **`ActionError`** / retry hints in **`nebula-action`** (§3.8).
-- **`nebula-validator`** — programmatic validators + declarative **`Rule`**; **`nebula-parameter`** embeds rules in **`Parameter`** (§3.9).
-- **`nebula-config`** — multi-source, merged, optionally hot-reloaded **host** configuration (binaries/services) — **not** the per-node **`ParameterCollection`** story.
-- **`nebula-log`** — structured **`tracing`** pipeline (init, sinks, optional OTel/Sentry hooks).
-- **`nebula-telemetry`** — in-memory **metric** primitives (registry, histograms, label interning).
-- **`nebula-metrics`** — **`nebula_*` naming**, adapters, Prometheus-style **export** and label-safety guards — sits on top of **`nebula-telemetry`**.
-- **`nebula-eventbus`** — typed **broadcast** bus with back-pressure policy; **transport only** — domain **`E`** types live in owning crates.
-- **`nebula-expression`** — workflow **expression** evaluation (variable access, operators, functions) for dynamic fields — headless, not a UI.
-- **`nebula-system`** — cross-platform **host** probes (CPU/memory/network/disk pressure) for ops and telemetry inputs.
-- **`nebula-workflow`** + **`nebula-execution`** — the execution semantics core: workflow validation/shape and durable execution lifecycle/state transitions. Read these when the question is “what does the engine guarantee at runtime,” not just “how integrations are authored.”
-
-**Layering:** cross-cutting crates sit **below** API/engine-specific surfaces (see CLAUDE.md boundaries); they must not **depend upward** on integration-only crates. **Canon use:** reuse these crates for their domains instead of duplicating helpers; if something truly belongs in **`nebula-core`** (a new stable key or auth primitive), extend it deliberately rather than inventing a parallel type in a leaf crate.
+Sections 3.6 through 3.10 (per-crate pointers) are consolidated in `docs/INTEGRATION_MODEL.md`.
 
 ---
 
 ## 4. Pillars
 
-Directional goals; binding engineering rules live in §12–§14. The **integration model** (§3.5) and **crate pointers** (§3.6–§3.9) explain *what* authors ship; **§3.10** names **cross-cutting infrastructure**. The pillars below explain *runtime* and *operations* priorities.
+Directional goals; binding engineering rules live in §12–§14. The **integration model** (§3.5) explains *what* authors ship; full per-crate and cross-cutting details are in `docs/INTEGRATION_MODEL.md`. The pillars below explain *runtime* and *operations* priorities.
 
 ### 4.1 Throughput
 
@@ -395,7 +315,7 @@ nebula-resource-slack/        # micro-plugin
 
 ## 9. North star & success
 
-**North star — integration author:** A Rust developer with no prior Nebula experience can open the integration SDK / traits (§3.5–§3.9), and ship a **working, tested** node for a new service in **a focused day** — without hand-rolling orchestration, credential plumbing, or concurrency bugs.
+**North star — integration author:** A Rust developer with no prior Nebula experience can open the integration SDK / traits (§3.5 + `docs/INTEGRATION_MODEL.md`), and ship a **working, tested** node for a new service in **a focused day** — without hand-rolling orchestration, credential plumbing, or concurrency bugs.
 
 **North star — operator:** After **any** failed or stuck run, an operator can **explain what happened** — which step, what error, what durable state — using **logs, API, journal, and metrics alone**, without reading integration **source code** (aligned with §2 and §4.6).
 
@@ -598,7 +518,7 @@ This is the **minimum bar** for “we did not break the product direction.” Ex
 - **README drift:** advertising a backend, capability, or step the code no longer supports.
 - **God files:** continuing to add unrelated logic to a file that already exceeds reasonable responsibility instead of splitting (module or crate) when boundaries are clear.
 - **Orphan modules:** services, queues, or repos **produced but never consumed** (or vice versa). See §12.7.
-- **Spec theater:** long `docs/` plans that contradict this file without a canon revision — **plans follow canon**, not the reverse. The same applies to **this** file: if the change is really about `nebula-resource` APIs, update **`crates/resource/README.md`**, not a three-page **§3.6** essay in `docs/PRODUCT_CANON.md`.
+- **Spec theater:** long `docs/` plans that contradict this file without a canon revision — **plans follow canon**, not the reverse. The same applies to **this** file: if the change is really about `nebula-resource` APIs, update **`crates/resource/README.md`** or **`docs/INTEGRATION_MODEL.md`**, not a long integration-mechanics section in `docs/PRODUCT_CANON.md`.
 
 ---
 
@@ -608,7 +528,7 @@ This is the **minimum bar** for “we did not break the product direction.” Ex
 | Document                                                                        | Role                                                                                                                                                                                                          |
 | ------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `CLAUDE.md`                                                                     | Commands, formatting, layer diagram, agent workflow                                                                                                                                                           |
-| `docs/PRODUCT_CANON.md` (this file)                                             | Product direction, competitive bets (§2.5), integration model (§3.5) + crate pointers (§3.6–§3.9) + cross-cutting (§3.10), OSS / plugin (§7.1–§7.2), pillars (incl. §4.6), contracts, invariants, knife (§13) |
+| `docs/PRODUCT_CANON.md` (this file)                                             | Product direction, competitive bets (§2.5), integration model summary (§3.5), OSS / plugin (§7.1–§7.2), pillars (incl. §4.6), contracts, invariants, knife (§13) |
 | `README.md`                                                                     | Operator-facing summary; **must not contradict** §5 / §11.5 / §12.3 — fix drift **on the same PR**                                                                                                            |
 | `docs/` specs                                                                   | Detailed design — **subordinate**; conflict ⇒ fix spec or update canon deliberately                                                                                                                           |
 | `docs/PLUGIN_MODEL.md` / `docs/ENGINE_GUARANTEES.md` / `docs/UPGRADE_COMPAT.md` | Satellite detail docs for §7.1, §11, §7.2 respectively; keep mechanics there, keep canon normative.                                                                                                           |
@@ -638,7 +558,7 @@ Before merging substantial surface-area or behavior changes, ask:
 7. Is this **foundational now**, or speculative future-proofing?
 8. If we ship this, are we making a **real promise**?
 9. Does this **align with the competitive bets** in §2.5 (typed durability vs soft ecosystem, checkpoint/local-first vs replay/compose-heavy, Rust contracts vs script glue) — or does it blur those lines without updating the canon?
-10. Does this **preserve the §3.5 integration model** (orthogonal concepts, `*Metadata` + `ParameterCollection`, plugin wiring rules) **and** avoid **spec theater** — duplicating crate-level API detail in this file instead of updating `crates/*/README.md` — or **duplicate** cross-cutting concerns §3.10 already owns, without a deliberate canon update?
+10. Does this **preserve the §3.5 integration model** (orthogonal concepts, `*Metadata + Schema`, plugin wiring rules) **and** avoid **spec theater** — duplicating crate-level API detail in this file instead of updating `crates/*/README.md` or `docs/INTEGRATION_MODEL.md`?
 11. If this introduces a **queue, channel, or worker:** are **producer**, **consumer**, and **failure mode** all in **this PR** (or explicitly documented as out of scope with no orphan half)?
 
 If the answer implies a **false capability**, the change is not ready — hide, narrow, or implement to completion first.
