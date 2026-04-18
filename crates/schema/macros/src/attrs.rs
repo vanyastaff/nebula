@@ -1,10 +1,13 @@
 //! Attribute parsers for `#[derive(Schema)]` / `#[derive(EnumSelect)]`.
 //!
-//! Three namespaces are recognised:
+//! Two namespaces are recognised today:
 //!
 //! - `#[param(...)]`     — UI / metadata options (label, hint, default, secret, multiline…)
 //! - `#[validate(...)]`  — value rules (required, length, range, pattern, url, email)
-//! - `#[schema(...)]`    — struct-level (rename_all, custom)
+//!
+//! Struct-level `#[schema(...)]` is reserved for a future pass (no options
+//! functional today) — removed from the derive's attribute list so the
+//! name stays free until the implementation lands.
 //!
 //! The parsers are intentionally forgiving on ordering and strict on
 //! semantics: unknown keys inside a namespace produce a compile error at
