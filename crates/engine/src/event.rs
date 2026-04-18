@@ -7,6 +7,7 @@
 use std::time::Duration;
 
 use nebula_core::{NodeKey, id::ExecutionId};
+use nebula_workflow::NodeState;
 
 /// Events emitted during workflow execution.
 #[derive(Debug, Clone)]
@@ -48,6 +49,22 @@ pub enum ExecutionEvent {
         execution_id: ExecutionId,
         /// The node that was skipped.
         node_key: NodeKey,
+    },
+
+    /// The frontier loop exited while one or more nodes were still in a
+    /// non-terminal state.
+    ///
+    /// Per `docs/PRODUCT_CANON.md` §11.1, the engine must not silently report
+    /// `Completed` on inconsistent state. This event is emitted just before
+    /// [`ExecutionEvent::ExecutionFinished`] so operators observing the event
+    /// stream see the integrity violation rather than only a successful-looking
+    /// final event.
+    FrontierIntegrityViolation {
+        /// The execution whose frontier loop produced the inconsistent state.
+        execution_id: ExecutionId,
+        /// Nodes that were still non-terminal at the time the frontier loop
+        /// exited, paired with their observed `NodeState`.
+        non_terminal_nodes: Vec<(NodeKey, NodeState)>,
     },
 
     /// Workflow execution completed.
