@@ -1,6 +1,6 @@
 <!--
 PR title must follow Conventional Commits (enforced by .github/workflows/pr-validation.yml):
-  type(scope): description
+  type(scope)?: description    — scope is optional
   types: feat | fix | docs | style | refactor | perf | test | chore | ci | build | revert
 -->
 
@@ -21,11 +21,15 @@ PR title must follow Conventional Commits (enforced by .github/workflows/pr-vali
 
 - [ ] `feat` — new capability
 - [ ] `fix` — bug fix
+- [ ] `docs` — documentation only
+- [ ] `style` — formatting / non-functional style change
 - [ ] `refactor` — internal restructuring, no behavior change
 - [ ] `perf` — performance improvement
-- [ ] `docs` — documentation only
 - [ ] `test` — tests only
-- [ ] `chore` / `ci` / `build` — tooling, infra, dependencies
+- [ ] `chore` — tooling, maintenance, dependencies
+- [ ] `ci` — CI configuration or workflow changes
+- [ ] `build` — build system or packaging changes
+- [ ] `revert` — reverts a previous change
 
 ## Affected crates / areas
 
