@@ -8,8 +8,8 @@ use crate::{PluginError, plugin::Plugin};
 
 /// Container that stores multiple versions of the same plugin, keyed by `u32`.
 ///
-/// The first plugin added sets the container's key; subsequent additions must
-/// have a matching key.
+/// Always contains at least one version — the plugin passed to `PluginVersions::new`
+/// fixes the container's key, and subsequent `add` calls must match that key.
 ///
 /// ```
 /// use nebula_plugin::{Plugin, PluginMetadata, PluginVersions};
@@ -22,7 +22,6 @@ use crate::{PluginError, plugin::Plugin};
 ///     }
 /// }
 ///
-/// let mut versions = PluginVersions::new();
 /// let m1 = PluginMetadata::builder("slack", "Slack")
 ///     .version(1)
 ///     .build()
@@ -32,7 +31,7 @@ use crate::{PluginError, plugin::Plugin};
 ///     .build()
 ///     .unwrap();
 ///
-/// versions.add(MyPlugin(m1)).unwrap();
+/// let mut versions = PluginVersions::new(MyPlugin(m1));
 /// versions.add(MyPlugin(m2)).unwrap();
 ///
 /// assert_eq!(versions.len(), 2);
@@ -40,17 +39,18 @@ use crate::{PluginError, plugin::Plugin};
 /// ```
 #[derive(Clone)]
 pub struct PluginVersions {
-    key: Option<PluginKey>,
+    key: PluginKey,
     versions: HashMap<u32, Arc<dyn Plugin>>,
 }
 
 impl PluginVersions {
-    /// Create an empty container.
-    pub fn new() -> Self {
-        Self {
-            key: None,
-            versions: HashMap::new(),
-        }
+    /// Create a container seeded with `first`. Its key becomes the container's key.
+    pub fn new<P: Plugin + 'static>(first: P) -> Self {
+        let key = first.key().clone();
+        let version = first.version();
+        let mut versions = HashMap::new();
+        versions.insert(version, Arc::new(first) as Arc<dyn Plugin>);
+        Self { key, versions }
     }
 
     /// Add a plugin version. Returns `&mut Self` for chaining.
@@ -63,12 +63,10 @@ impl PluginVersions {
         let version = plugin.version();
         let key = plugin.key().clone();
 
-        if self.versions.is_empty() {
-            self.key = Some(key.clone());
-        } else if self.key.as_ref() != Some(&key) {
+        if self.key != key {
             return Err(PluginError::KeyMismatch {
                 plugin_key: key,
-                container_key: self.key.clone().unwrap(),
+                container_key: self.key.clone(),
             });
         }
 
@@ -82,29 +80,27 @@ impl PluginVersions {
 
     /// Get a specific version.
     pub fn get(&self, version: u32) -> Result<Arc<dyn Plugin>, PluginError> {
-        let key = self.require_key()?;
         self.versions
             .get(&version)
             .cloned()
             .ok_or_else(|| PluginError::VersionNotFound {
                 version,
-                key: key.clone(),
+                key: self.key.clone(),
             })
     }
 
     /// Get the latest (highest version number) plugin.
     pub fn latest(&self) -> Result<Arc<dyn Plugin>, PluginError> {
-        let key = self.require_key()?;
         self.versions
             .values()
             .max_by_key(|p| p.version())
             .cloned()
-            .ok_or_else(|| PluginError::NoVersionsAvailable(key.clone()))
+            .ok_or_else(|| PluginError::NoVersionsAvailable(self.key.clone()))
     }
 
-    /// The container's key (set by the first added plugin).
-    pub fn key(&self) -> Option<&PluginKey> {
-        self.key.as_ref()
+    /// The container's key (fixed at construction).
+    pub fn key(&self) -> &PluginKey {
+        &self.key
     }
 
     /// All version numbers present.
@@ -114,27 +110,10 @@ impl PluginVersions {
         v
     }
 
-    /// Number of versions stored.
+    /// Number of versions stored (always ≥ 1 by construction).
+    #[allow(clippy::len_without_is_empty)]
     pub fn len(&self) -> usize {
         self.versions.len()
-    }
-
-    /// Whether the container is empty.
-    pub fn is_empty(&self) -> bool {
-        self.versions.is_empty()
-    }
-
-    /// Helper: return the key or an error if the container is empty.
-    fn require_key(&self) -> Result<&PluginKey, PluginError> {
-        self.key
-            .as_ref()
-            .ok_or_else(|| PluginError::NoVersionsAvailable("unknown".parse().unwrap()))
-    }
-}
-
-impl Default for PluginVersions {
-    fn default() -> Self {
-        Self::new()
     }
 }
 
@@ -170,9 +149,16 @@ mod tests {
     }
 
     #[test]
+    fn new_seeds_with_first_plugin() {
+        let v = PluginVersions::new(stub("slack", 1));
+        assert_eq!(v.len(), 1);
+        assert_eq!(v.key().as_str(), "slack");
+        assert_eq!(v.latest().unwrap().version(), 1);
+    }
+
+    #[test]
     fn add_and_get() {
-        let mut v = PluginVersions::new();
-        v.add(stub("slack", 1)).unwrap();
+        let mut v = PluginVersions::new(stub("slack", 1));
         v.add(stub("slack", 2)).unwrap();
 
         assert_eq!(v.len(), 2);
@@ -182,8 +168,7 @@ mod tests {
 
     #[test]
     fn latest_returns_highest() {
-        let mut v = PluginVersions::new();
-        v.add(stub("a", 3)).unwrap();
+        let mut v = PluginVersions::new(stub("a", 3));
         v.add(stub("a", 1)).unwrap();
         v.add(stub("a", 5)).unwrap();
 
@@ -192,8 +177,7 @@ mod tests {
 
     #[test]
     fn rejects_duplicate_version() {
-        let mut v = PluginVersions::new();
-        v.add(stub("a", 1)).unwrap();
+        let mut v = PluginVersions::new(stub("a", 1));
         let err = v.add(stub("a", 1)).unwrap_err();
         assert_eq!(
             err,
@@ -206,8 +190,7 @@ mod tests {
 
     #[test]
     fn rejects_key_mismatch() {
-        let mut v = PluginVersions::new();
-        v.add(stub("a", 1)).unwrap();
+        let mut v = PluginVersions::new(stub("a", 1));
         let err = v.add(stub("b", 2)).unwrap_err();
         assert_eq!(
             err,
@@ -219,15 +202,8 @@ mod tests {
     }
 
     #[test]
-    fn empty_latest_errors() {
-        let v = PluginVersions::new();
-        assert!(v.latest().is_err());
-    }
-
-    #[test]
     fn version_numbers_sorted() {
-        let mut v = PluginVersions::new();
-        v.add(stub("x", 3)).unwrap();
+        let mut v = PluginVersions::new(stub("x", 3));
         v.add(stub("x", 1)).unwrap();
         v.add(stub("x", 2)).unwrap();
         assert_eq!(v.version_numbers(), vec![1, 2, 3]);

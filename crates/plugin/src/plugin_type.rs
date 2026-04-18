@@ -21,17 +21,15 @@ impl PluginType {
     }
 
     /// Create a versioned container starting with the given plugin.
-    pub fn versioned<P: Plugin + 'static>(plugin: P) -> Result<Self, PluginError> {
-        let mut versions = PluginVersions::new();
-        versions.add(plugin)?;
-        Ok(Self::Versions(versions))
+    pub fn versioned<P: Plugin + 'static>(plugin: P) -> Self {
+        Self::Versions(PluginVersions::new(plugin))
     }
 
     /// The key of the contained plugin(s).
     pub fn key(&self) -> &PluginKey {
         match self {
             Self::Single(p) => p.key(),
-            Self::Versions(v) => v.key().expect("non-empty PluginVersions always has a key"),
+            Self::Versions(v) => v.key(),
         }
     }
 
@@ -69,9 +67,8 @@ impl PluginType {
     pub fn add_version<P: Plugin + 'static>(&mut self, plugin: P) -> Result<(), PluginError> {
         match self {
             Self::Single(existing) => {
-                let mut versions = PluginVersions::new();
                 let existing_clone = Arc::clone(existing);
-                versions.add(ArcPlugin(existing_clone))?;
+                let mut versions = PluginVersions::new(ArcPlugin(existing_clone));
                 versions.add(plugin)?;
                 *self = Self::Versions(versions);
                 Ok(())
@@ -149,7 +146,7 @@ mod tests {
 
     #[test]
     fn versioned_get_plugin() {
-        let pt = PluginType::versioned(stub("a", 1)).unwrap();
+        let pt = PluginType::versioned(stub("a", 1));
         assert!(pt.is_versioned());
         assert_eq!(pt.get_plugin(Some(1)).unwrap().version(), 1);
     }
@@ -167,7 +164,7 @@ mod tests {
 
     #[test]
     fn version_numbers() {
-        let mut pt = PluginType::versioned(stub("a", 3)).unwrap();
+        let mut pt = PluginType::versioned(stub("a", 3));
         pt.add_version(stub("a", 1)).unwrap();
         pt.add_version(stub("a", 5)).unwrap();
 
