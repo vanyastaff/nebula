@@ -1,18 +1,12 @@
 ---
 name: Nebula integration model
-description: Draft extraction from PRODUCT_CANON.md §3.5 + §3.6–§3.9 + §3.10 + §7.1. Content unchanged in this pass. Pass 2 rewrites with nebula-schema replacing nebula-parameter and sealed-trait form.
-status: draft — extracted from canon, surgery in Pass 2
+description: Authoritative integration-model mechanics — Resource / Credential / Action / Schema / Plugin contract, plugin packaging, cross-plugin dependency rules. Canon §3.5 states invariants; this document carries the mechanics.
+status: accepted
 last-reviewed: 2026-04-17
 related: [PRODUCT_CANON.md, GLOSSARY.md, STYLE.md]
 ---
 
 # Nebula integration model
-
-> **Status:** this document was extracted verbatim from `PRODUCT_CANON.md` in Pass 1
-> of the docs architecture redesign. Pass 2 will rewrite references to the deleted
-> `nebula-parameter` crate, apply `nebula-schema` as the shared schema crate, and
-> introduce sealed-trait form for the structural contract. Until Pass 2 lands,
-> treat naming in this file as pre-surgery.
 
 ---
 
@@ -27,27 +21,26 @@ Most engines give integration authors one abstraction: a **"node"** that receive
 Every concept in Nebula's integration layer is described by two things:
 
 
-| Piece                     | Role                                                                                                                                                                                                                                                                                              |
-| ------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| **`*Metadata`**           | UI-facing description — id, display name, icon, version, and concept-specific fields (e.g. `ActionMetadata`: ports, `ActionCategory`, embedded `ParameterCollection` — execution semantics follow the action **traits** in §3.8).                                                                 |
-| **`ParameterCollection`** | The **typed configuration schema** — one parameter system (typed, validated, transformer pipeline, dynamic fields, display modes) used **across** concepts. An author learns it once; it applies to Resource config, Credential setup, and Action inputs **without** a different API per concept. |
+| Piece | Role |
+|---|---|
+| `*Metadata` | UI-facing description — id, display name, icon, version, concept-specific fields (categories, isolation, checkpoint policy for Actions). |
+| `Schema` | Typed configuration schema (`nebula-schema`: `Field`, `Schema`, `ValidValues`, `ResolvedValues`). One schema system used across Resource config, Credential setup, and Action inputs. |
 
-
-The **parameter subsystem** (`ParameterCollection` and friends) is the **fifth concept** — cross-cutting configuration machinery, not an afterthought bolted onto each node. **Concrete shape:** see §3.9 (`nebula-parameter`).
+The **schema subsystem** (`nebula-schema` crate) is the **fifth concept** — cross-cutting configuration machinery, shared across integration kinds. It provides a **proof-token pipeline**: `ValidSchema::validate` returns `ValidValues` only after schema-time validation succeeds; `ValidValues::resolve` returns `ResolvedValues` only after runtime expression resolution succeeds. A caller cannot skip validation or resolution — the types enforce the sequence.
 
 ### How the four integration kinds relate (structural, not "whatever exists at runtime")
 
 These are **schema-level** links: metadata and parameter types say what an Action **requires** and what a Credential **composes** — the engine **resolves** them from registered types. Nothing is satisfied by implicit global lookup.
 
-**Resource** — `[ ResourceMetadata + ParameterCollection ]` — **base, independent.**
+**Resource** — `[ ResourceMetadata + Schema ]` — **base, independent.**
 
 Long-lived managed object: connection pool, SDK client, file handle. Engine owns lifecycle: init, health-check, hot-reload via **ReloadOutcome**, scope-aware teardown. The author declares what the Resource **is**; the engine provides it **healthy** or fails loudly. **Concrete shape:** see §3.6 (`nebula-resource`).
 
-**Credential** — `[ CredentialMetadata + ParameterCollection ]` — **optionally composes a Resource** in metadata/schema (e.g. HTTP client **Resource** for token refresh).
+**Credential** — `[ CredentialMetadata + Schema ]` — **optionally composes a Resource** in metadata/schema (e.g. HTTP client **Resource** for token refresh).
 
-**Who** you are and **how** authentication is maintained. Engine owns rotation, refresh, and the **stored state vs consumer-facing auth material** split — the author binds to a Credential type, never hand-rolls refresh or pending OAuth steps, and never relies on secrets appearing in logs. **Twelve universal auth schemes** (plus extensibility via `AuthScheme`) cover OAuth2, API key, mTLS, and similar; the author picks a type and fills the schema. **Concrete shape:** see §3.7 (`nebula-credential`).
+**Who** you are and **how** authentication is maintained. Engine owns rotation, refresh, and the **stored state vs consumer-facing auth material** split — the author binds to a Credential type, never hand-rolls refresh or pending OAuth steps, and never relies on secrets appearing in logs. A set of universal auth schemes (OAuth2, API key, mTLS, and others — full list in `crates/credential/README.md`) plus extensibility via the `AuthScheme` trait defined in `crates/core/src/auth.rs`; the author picks a type and fills the schema. **Concrete shape:** see §3.7 (`nebula-credential`).
 
-**Action** — `[ ActionMetadata + ParameterCollection ]` — **declares zero or more Resource and/or Credential kinds it needs** (by stable id / type reference in the **integration schema**, not ad hoc runtime lookup).
+**Action** — `[ ActionMetadata + Schema ]` — **declares zero or more Resource and/or Credential kinds it needs** (by stable id / type reference in the **integration schema**, not ad hoc runtime lookup).
 
 **What** the step does — with explicit semantics. The engine dispatches by **which action trait** the type implements (`StatelessAction`, `StatefulAction`, `TriggerAction`, `ResourceAction`, …) — not by a single metadata "kind" field. **`ActionMetadata`** carries key, ports, parameters, isolation, **`ActionCategory`** (Data / Control / Trigger / …), and checkpoint behavior declaration (e.g. **`CheckpointPolicy`**) for UI/validation/runtime policy; this metadata supplements but does not replace trait-based routing. The trait family determines iteration (Continue / Break), trigger lifecycle, graph-scoped resource nodes, and flow-control **`ActionResult`** variants; the **runtime** applies checkpoint, retry, and cancel rules from those contracts — the author does not re-implement those invariants per action (aligned with `nebula-resilience`). **Concrete shape:** see §3.8 (`nebula-action`).
 
@@ -59,7 +52,7 @@ Long-lived managed object: connection pool, SDK client, file handle. Engine owns
 
 ### Why the uniform pattern matters
 
-**For authors:** learn `{ *Metadata + ParameterCollection }` once — apply to any concept. Write Stripe logic; do not write credential rotation, connection management, or retry folklore. Each concept has one job.
+**For authors:** learn `{ *Metadata + Schema }` once — apply to any concept. Write Stripe logic; do not write credential rotation, connection management, or retry folklore. Each concept has one job.
 
 **For operators:** each concept has a clear **owner**. Credential rotation fails → Credential layer. Connection pool leaks → Resource layer. "Something went wrong in the node" is no longer the only diagnostic category.
 
@@ -85,13 +78,15 @@ Long-lived managed object: connection pool, SDK client, file handle. Engine owns
 
 **What / why:** **Action** traits, declared dependencies, **`ActionResult`** flow, and metadata-declared execution policy (including **`CheckpointPolicy`** in `ActionMetadata`) so the engine can enforce checkpoints, branching, and retries **honestly** — not untyped "JSON in / out."
 
+> **Status of `CheckpointPolicy`:** see `crates/action/README.md` for implementation state; current engine honoring of this policy is tracked in `docs/MATURITY.md` row for `nebula-action`.
+
 **Where to read:** `crates/action/src/lib.rs` (module map; crate `README.md` may lag).
 
-## `nebula-parameter`
+## `nebula-schema`
 
-**What / why:** one **parameter schema** system (`Parameter`, `ParameterCollection`, validation, conditions) shared by Actions, Credentials, Resources — so configuration is **typed and validated once**, not re-invented per integration.
+**What / why:** one **schema** system (`Field`, `Schema`, `ValidValues`, `ResolvedValues`, proof-token pipeline) shared by Actions, Credentials, Resources — so configuration is **typed and validated once**, not re-invented per integration.
 
-**Where to read:** `crates/parameter/README.md`, `crates/parameter/src/lib.rs`.
+**Where to read:** `crates/schema/README.md`, `crates/schema/src/lib.rs`.
 
 ## Cross-cutting crates (at a glance)
 
@@ -100,8 +95,8 @@ Besides the **integration** reference crates (§3.6–§3.9), the workspace ship
 - **`nebula-core`** — shared identifiers and keys (`ExecutionId`, `ActionKey`, `CredentialKey`, …), **`AuthScheme`** / **`AuthPattern`**, scope levels, **`SecretString`**, credential lifecycle **events**, dependency-graph helpers — the **vocabulary** other crates agree on.
 - **`nebula-error`** — **`Classify`**, **`NebulaError`**, categories/codes, structured details — **one** error taxonomy at boundaries instead of ad hoc strings.
 - **`nebula-resilience`** — composable **pipelines** (retry, timeout, circuit breaker, bulkhead, …); pairs with **`ActionError`** / retry hints in **`nebula-action`** (§3.8).
-- **`nebula-validator`** — programmatic validators + declarative **`Rule`**; **`nebula-parameter`** embeds rules in **`Parameter`** (§3.9).
-- **`nebula-config`** — multi-source, merged, optionally hot-reloaded **host** configuration (binaries/services) — **not** the per-node **`ParameterCollection`** story.
+- **`nebula-validator`** — programmatic validators + declarative **`Rule`**; **`nebula-schema`** embeds rules in **`Field`** definitions.
+- **`nebula-config`** — multi-source, merged, optionally hot-reloaded **host** configuration (binaries/services) — **not** the per-node **`Schema`** story.
 - **`nebula-log`** — structured **`tracing`** pipeline (init, sinks, optional OTel/Sentry hooks).
 - **`nebula-telemetry`** — in-memory **metric** primitives (registry, histograms, label interning).
 - **`nebula-metrics`** — **`nebula_*` naming**, adapters, Prometheus-style **export** and label-safety guards — sits on top of **`nebula-telemetry`**.
@@ -159,6 +154,8 @@ id = "nebula-plugin-slack"   # if [package].name is e.g. "slack-plugin"
 **If `id` is omitted**, the **effective plugin id** for discovery and compatibility is **`[package].name`** from `Cargo.toml` — hosts and pre-compile tooling **must** use that string (no other implicit default). Internal mapping to typed keys (e.g. `PluginKey`) must be **deterministic** and **documented** in loader/tooling; if the package name does not map cleanly, authors **must** set `id` explicitly. **Do not** silently derive a different id from Cargo without an explicit `[plugin].id`.
 
 ### Signing: why `plugin.toml`, not `Cargo.toml`
+
+> **Status: planned.** The `[signing]` block fields and canonical serialization are tooling-defined and not frozen. Verification logic is on the isolation roadmap (see canon §12.6). Do not rely on signing as an active trust boundary until this status changes.
 
 **`Cargo.toml` mutates** whenever dependencies are added, bumped, or re-resolved (`cargo update`, new crates). Signing it would mean **signatures churn constantly** or cover irrelevant churn — a poor trust anchor.
 
