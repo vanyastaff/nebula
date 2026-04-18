@@ -1,6 +1,6 @@
--- 0020: Resume result persistence (ADR-0008)
+-- 0020: Resume result persistence (ADR-0009)
 -- Layer: Execution
--- Spec: ADR-0008 (resume persistence schema)
+-- Spec: ADR-0009 (resume persistence schema)
 --
 -- Parity with Layer 1 migration 00000000000009_add_resume_persistence.sql.
 -- `executions.input` already exists in Layer 2 (0011_executions.sql).
@@ -9,7 +9,7 @@
 --
 -- Schema only; engine consumers land in chips B2 / B3 / B4.
 
--- Forward-compat guard (ADR-0008 §2): callers that see an unknown version
+-- Forward-compat guard (ADR-0009 §2): callers that see an unknown version
 -- MUST surface a typed error, never fall back.
 ALTER TABLE execution_nodes
     ADD COLUMN IF NOT EXISTS result_schema_version INTEGER NOT NULL DEFAULT 1;

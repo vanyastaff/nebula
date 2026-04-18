@@ -289,7 +289,7 @@ impl ExecutionRepo for PgExecutionRepo {
         execution_id: ExecutionId,
         node_key: NodeKey,
     ) -> Result<Option<serde_json::Value>, ExecutionRepoError> {
-        // `output` is nullable since ADR-0008 migration 0009; rows written
+        // `output` is nullable since ADR-0009 migration 0009; rows written
         // only via `save_node_result` carry NULL in the legacy column and
         // are skipped here.
         let row = sqlx::query_as::<_, (Json<serde_json::Value>,)>(
@@ -390,7 +390,7 @@ impl ExecutionRepo for PgExecutionRepo {
         Ok(())
     }
 
-    // ── ADR-0008: workflow input + node results (B1 foundation) ────────────
+    // ── ADR-0009: workflow input + node results (B1 foundation) ────────────
 
     async fn set_workflow_input(
         &self,
@@ -741,7 +741,7 @@ mod tests {
         );
     }
 
-    // ── ADR-0008 B1: migration + round-trip + forward-compat ─────────────
+    // ── ADR-0009 B1: migration + round-trip + forward-compat ─────────────
 
     #[tokio::test]
     async fn pg_migration_creates_resume_persistence_columns() {
@@ -787,7 +787,7 @@ mod tests {
         .expect("query output nullability");
         assert_eq!(
             output_is_nullable, "YES",
-            "output must be nullable so save_node_result can omit it (ADR-0008)"
+            "output must be nullable so save_node_result can omit it (ADR-0009)"
         );
     }
 

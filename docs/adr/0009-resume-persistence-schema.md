@@ -1,5 +1,5 @@
 ---
-id: 0008
+id: 0009
 title: resume-persistence-schema
 status: accepted
 date: 2026-04-18
@@ -14,7 +14,7 @@ related:
   - docs/PRODUCT_CANON.md#10
 ---
 
-# 0008. Resume persistence schema
+# 0009. Resume persistence schema
 
 ## Context
 
@@ -146,10 +146,11 @@ Both are **forward-only**. Rollback means dropping the added columns, which
 loses any persisted resume context; this is acceptable because the columns
 are nullable and pre-migration engines never read them.
 
-### 5. Coordination with A1 (control plane consumer ADR)
+### 5. Coordination with A1 (ADR-0008 — control plane consumer)
 
-B1 assumes **nothing** about A1's choice of control-plane consumer wiring.
-The schema changes are orthogonal:
+B1 assumes **nothing** about A1's choice of control-plane consumer wiring
+([ADR-0008](./0008-execution-control-queue-consumer.md)). The schema changes
+are orthogonal:
 
 - A1 decides how cancel/dispatch signals reach the engine from
   `execution_control_queue` (§12.2). That does not constrain what each node
@@ -157,10 +158,9 @@ The schema changes are orthogonal:
 - B1 decides what is durable per node attempt for replay. That does not
   constrain how control signals are consumed.
 
-If A1 lands first with a consumer that needs to read persisted results, it
-reads through the trait surface defined here. If A1 lands later, nothing in
-B1 has to change. The two ADRs close the loop independently; any
-integration friction surfaces in B4 or A2 where both paths meet the engine.
+A1 landed first; this ADR took the next free ID (0009). The two ADRs close
+the loop independently; any integration friction surfaces in B4 or A2 where
+both paths meet the engine.
 
 ## Consequences
 

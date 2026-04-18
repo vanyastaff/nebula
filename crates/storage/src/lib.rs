@@ -31,7 +31,7 @@
 //!   transitions.
 //! - §12.3 local path: SQLite is the default; `test_support` provides `sqlite_memory_*` helpers for
 //!   in-process tests.
-//! - ADR-0008 resume-persistence schema: `set_workflow_input` / `get_workflow_input` and
+//! - ADR-0009 resume-persistence schema: `set_workflow_input` / `get_workflow_input` and
 //!   `save_node_result` / `load_node_result` / `load_all_results` expose the seam; engine consumers
 //!   (chips B2 / B3 / B4) wire the resume path.
 //!

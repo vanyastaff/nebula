@@ -73,7 +73,7 @@ pub enum ExecutionRepoError {
     /// Emitted by [`ExecutionRepo::load_node_result`] / [`ExecutionRepo::load_all_results`]
     /// when a newer writer stored a record the current binary does not understand.
     /// Surface to operators as a resume failure — never fall back silently
-    /// (ADR-0008 §2, PRODUCT_CANON §4.5).
+    /// (ADR-0009 §2, PRODUCT_CANON §4.5).
     #[error("unknown node-result schema version: {version} (max supported: {max_supported})")]
     UnknownSchemaVersion {
         /// Schema version found in the persisted row.
@@ -210,7 +210,7 @@ pub trait ExecutionRepo: Send + Sync {
         execution_id: ExecutionId,
     ) -> Result<HashMap<NodeKey, serde_json::Value>, ExecutionRepoError>;
 
-    // ── Workflow input (ADR-0008 §3, issue #311 foundation) ────────────────
+    // ── Workflow input (ADR-0009 §3, issue #311 foundation) ────────────────
     //
     // The workflow trigger / start input is persisted alongside the execution
     // row so that resume can replay entry nodes with the original payload.
@@ -239,7 +239,7 @@ pub trait ExecutionRepo: Send + Sync {
     /// Returns `Ok(None)` when no input has been persisted yet — the caller
     /// (engine resume path, B2) converts `None` into a typed resume failure
     /// so missing input is loud, not a silent `Value::Null` default
-    /// (ADR-0008 §3, PRODUCT_CANON §4.5).
+    /// (ADR-0009 §3, PRODUCT_CANON §4.5).
     async fn get_workflow_input(
         &self,
         execution_id: ExecutionId,
@@ -250,7 +250,7 @@ pub trait ExecutionRepo: Send + Sync {
         ))
     }
 
-    // ── Node results (ADR-0008 §1, issue #299 foundation) ──────────────────
+    // ── Node results (ADR-0009 §1, issue #299 foundation) ──────────────────
     //
     // Persists the full `ActionResult<Value>` variant per node attempt so
     // that resume can replay edge decisions through the engine's own
@@ -284,7 +284,7 @@ pub trait ExecutionRepo: Send + Sync {
     /// [`ExecutionRepoError::UnknownSchemaVersion`] when a persisted row
     /// carries a `result_schema_version` greater than
     /// [`MAX_SUPPORTED_RESULT_SCHEMA_VERSION`]; the caller surfaces this as
-    /// a resume failure rather than falling back (ADR-0008 §2).
+    /// a resume failure rather than falling back (ADR-0009 §2).
     async fn load_node_result(
         &self,
         execution_id: ExecutionId,
@@ -403,7 +403,7 @@ pub trait ExecutionRepo: Send + Sync {
 /// Bumped whenever a change to `ActionResult` (or the [`NodeResultRecord`]
 /// shape) could make an older binary fail to decode a record written by a
 /// newer one — new variants, new required fields, changed field semantics
-/// (ADR-0008 §2). Records with a higher `schema_version` cause
+/// (ADR-0009 §2). Records with a higher `schema_version` cause
 /// [`ExecutionRepoError::UnknownSchemaVersion`] on load, never a silent
 /// fall-back.
 pub const MAX_SUPPORTED_RESULT_SCHEMA_VERSION: u32 = 1;
@@ -416,7 +416,7 @@ pub const MAX_SUPPORTED_RESULT_SCHEMA_VERSION: u32 = 1;
 /// neutral JSON blob plus a `kind` tag for SQL-side filtering and a
 /// `schema_version` for forward-compat guarding.
 ///
-/// ADR-0008 §1 pins this as the canonical persistence shape for issue #299
+/// ADR-0009 §1 pins this as the canonical persistence shape for issue #299
 /// (resume reconstructs `ActionResult::Branch` / `Route` / `MultiOutput` /
 /// `Skip` / `Wait` through the engine's own `evaluate_edge` path, not via
 /// synthesized `Success`).
@@ -425,7 +425,7 @@ pub const MAX_SUPPORTED_RESULT_SCHEMA_VERSION: u32 = 1;
 pub struct NodeResultRecord {
     /// Schema version this record was written under.
     ///
-    /// `1` is the initial shape; future changes bump per ADR-0008 §2.
+    /// `1` is the initial shape; future changes bump per ADR-0009 §2.
     pub schema_version: u32,
     /// Variant tag (`"Success"`, `"Branch"`, `"Route"`, `"MultiOutput"`,
     /// `"Skip"`, `"Wait"`, `"Retry"`, `"Break"`, `"Continue"`, `"Drop"`,
@@ -1332,7 +1332,7 @@ mod tests {
         );
     }
 
-    // ── ADR-0008 B1: workflow input + node-result persistence ─────────────
+    // ── ADR-0009 B1: workflow input + node-result persistence ─────────────
 
     /// Fixture: a sample JSON shape for each `ActionResult` variant as
     /// `serde_json` would emit it. The storage layer treats these as opaque

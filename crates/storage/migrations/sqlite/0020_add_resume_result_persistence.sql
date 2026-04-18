@@ -1,6 +1,6 @@
--- 0020: Resume result persistence (ADR-0008)
+-- 0020: Resume result persistence (ADR-0009)
 -- Layer: Execution
--- Spec: ADR-0008 (resume persistence schema)
+-- Spec: ADR-0009 (resume persistence schema)
 --
 -- Parity with Postgres migration 0020 and Layer 1 migration 00000000000009.
 -- `executions.input` already exists in Layer 2 (0011_executions.sql).

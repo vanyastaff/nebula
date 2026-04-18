@@ -1,4 +1,4 @@
--- 0009: Resume persistence schema (ADR-0008)
+-- 0009: Resume persistence schema (ADR-0009)
 -- Foundation for resume replay-completeness (issues #299, #311, #324, #336).
 -- Schema only; engine consumers land in chips B2 (workflow input), B3 (result
 -- writes), B4 (resume reconstruction).
@@ -10,7 +10,7 @@ ALTER TABLE executions
     ADD COLUMN IF NOT EXISTS input JSONB;
 
 -- Full ActionResult variant per node attempt (issue #299).
---   * result_schema_version: forward-compat guard (ADR-0008 §2); callers that
+--   * result_schema_version: forward-compat guard (ADR-0009 §2); callers that
 --     see an unknown version MUST surface a typed error, never fall back.
 --   * result_kind: variant tag mirror ('Success' | 'Branch' | 'Route' |
 --     'MultiOutput' | 'Skip' | 'Wait' | 'Retry' | 'Break' | 'Continue' |
