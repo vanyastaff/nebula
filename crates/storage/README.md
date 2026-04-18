@@ -32,9 +32,18 @@ the knife scenario (canon §13) exercises end-to-end.
 Layer 1 — production interfaces (use these today):
 
 - `ExecutionRepo` — repository trait; seam for §11.1 CAS transitions, §11.3 idempotency
-  check-and-mark, §11.5 journal + checkpoint writes, §12.2 outbox atomicity.
-- `ExecutionRepoError` — typed error for CAS conflicts, not-found, timeout, lease unavailable.
+  check-and-mark, §11.5 journal + checkpoint writes, §12.2 outbox atomicity. Also carries the
+  ADR-0008 resume-persistence seams (`set_workflow_input` / `get_workflow_input` and
+  `save_node_result` / `load_node_result` / `load_all_results`).
+- `ExecutionRepoError` — typed error for CAS conflicts, not-found, timeout, lease unavailable,
+  and `UnknownSchemaVersion` (surfaced when a persisted node-result record carries a schema
+  version the binary cannot decode; ADR-0008 §2).
 - `InMemoryExecutionRepo` — in-memory implementation for tests (via `test_support`).
+- `NodeResultRecord` — persisted `ActionResult<Value>` variant (kind tag + JSON + schema
+  version); written by `save_node_result`, read by `load_node_result` / `load_all_results`
+  (ADR-0008 §1).
+- `MAX_SUPPORTED_RESULT_SCHEMA_VERSION` — highest `NodeResultRecord.schema_version` the current
+  binary can decode; callers compare against this on mixed-binary deploys.
 - `StatefulCheckpointRecord` — checkpoint record persisted by `ExecutionRepo::save_stateful_checkpoint`.
 - `WorkflowRepo` — repository trait for workflow definition persistence.
 - `WorkflowRepoError` — typed error for workflow repo operations.
@@ -67,6 +76,14 @@ Layer 2 — planned / experimental (`repos` module):
   (append-only, replayable). `ExecutionRepo::save_stateful_checkpoint` is **best-effort**: a
   checkpoint write failure may log and not abort execution; work since the last checkpoint may
   be replayed or lost. Seam: `crates/storage/src/execution_repo.rs`.
+
+- **[ADR-0008]** Resume-persistence schema foundation. `ExecutionRepo::set_workflow_input` /
+  `get_workflow_input` persist the workflow trigger payload alongside the execution row
+  (issue #311). `save_node_result` / `load_node_result` / `load_all_results` persist the full
+  `ActionResult<Value>` variant per node attempt (issue #299) so resume can replay edge
+  decisions through `evaluate_edge` (foundation for #324, #336). `NodeResultRecord` carries a
+  `schema_version`; an unknown version surfaces as `ExecutionRepoError::UnknownSchemaVersion`
+  rather than a silent fall-back. Engine consumers land in downstream chips B2 / B3 / B4.
 
 - **[L2-§12.2]** The `execution_control_queue` outbox is written in the **same logical
   operation** as the state transition it accompanies. Cancel signals must be enqueued atomically

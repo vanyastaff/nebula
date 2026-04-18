@@ -11,7 +11,9 @@ use nebula_core::node_key;
 use nebula_core::{ExecutionId, NodeKey, WorkflowId};
 use sqlx::{Pool, Postgres, types::Json};
 
-use crate::execution_repo::{ExecutionRepo, ExecutionRepoError};
+use crate::execution_repo::{
+    ExecutionRepo, ExecutionRepoError, MAX_SUPPORTED_RESULT_SCHEMA_VERSION, NodeResultRecord,
+};
 
 /// Postgres-backed execution repository.
 #[derive(Clone, Debug)]
@@ -39,10 +41,10 @@ fn map_err(err: sqlx::Error) -> ExecutionRepoError {
 }
 
 fn map_journal_err(err: sqlx::Error, id: ExecutionId) -> ExecutionRepoError {
-    if let Some(db_err) = err.as_database_error() {
-        if db_err.code().as_deref() == Some("23503") {
-            return ExecutionRepoError::not_found("execution", id.to_string());
-        }
+    if let Some(db_err) = err.as_database_error()
+        && db_err.code().as_deref() == Some("23503")
+    {
+        return ExecutionRepoError::not_found("execution", id.to_string());
     }
     map_err(err)
 }
@@ -287,9 +289,12 @@ impl ExecutionRepo for PgExecutionRepo {
         execution_id: ExecutionId,
         node_key: NodeKey,
     ) -> Result<Option<serde_json::Value>, ExecutionRepoError> {
+        // `output` is nullable since ADR-0008 migration 0009; rows written
+        // only via `save_node_result` carry NULL in the legacy column and
+        // are skipped here.
         let row = sqlx::query_as::<_, (Json<serde_json::Value>,)>(
             "SELECT output FROM node_outputs \
-             WHERE execution_id = $1 AND node_id = $2 \
+             WHERE execution_id = $1 AND node_id = $2 AND output IS NOT NULL \
              ORDER BY attempt DESC \
              LIMIT 1",
         )
@@ -309,7 +314,7 @@ impl ExecutionRepo for PgExecutionRepo {
         let rows = sqlx::query_as::<_, (NodeKey, Json<serde_json::Value>)>(
             "SELECT DISTINCT ON (node_id) node_id, output \
              FROM node_outputs \
-             WHERE execution_id = $1 \
+             WHERE execution_id = $1 AND output IS NOT NULL \
              ORDER BY node_id, attempt DESC",
         )
         .bind(execution_id)
@@ -383,6 +388,165 @@ impl ExecutionRepo for PgExecutionRepo {
         .map_err(|e| map_idempotency_err(e, execution_id))?;
 
         Ok(())
+    }
+
+    // ── ADR-0008: workflow input + node results (B1 foundation) ────────────
+
+    async fn set_workflow_input(
+        &self,
+        execution_id: ExecutionId,
+        input: serde_json::Value,
+    ) -> Result<(), ExecutionRepoError> {
+        let result =
+            sqlx::query("UPDATE executions SET input = $2, updated_at = NOW() WHERE id = $1")
+                .bind(execution_id)
+                .bind(Json(&input))
+                .execute(&self.pool)
+                .await
+                .map_err(map_err)?;
+
+        if result.rows_affected() == 0 {
+            return Err(ExecutionRepoError::not_found(
+                "execution",
+                execution_id.to_string(),
+            ));
+        }
+        Ok(())
+    }
+
+    async fn get_workflow_input(
+        &self,
+        execution_id: ExecutionId,
+    ) -> Result<Option<serde_json::Value>, ExecutionRepoError> {
+        let row = sqlx::query_as::<_, (Option<Json<serde_json::Value>>,)>(
+            "SELECT input FROM executions WHERE id = $1",
+        )
+        .bind(execution_id)
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(map_err)?;
+
+        Ok(row.and_then(|(input,)| input.map(|j| j.0)))
+    }
+
+    async fn save_node_result(
+        &self,
+        execution_id: ExecutionId,
+        node_key: NodeKey,
+        attempt: u32,
+        record: NodeResultRecord,
+    ) -> Result<(), ExecutionRepoError> {
+        let attempt_i32 = i32::try_from(attempt).map_err(|_| {
+            ExecutionRepoError::Internal(format!("attempt value {attempt} exceeds i32::MAX"))
+        })?;
+        let version_i32 = i32::try_from(record.schema_version).map_err(|_| {
+            ExecutionRepoError::Internal(format!(
+                "result_schema_version {} exceeds i32::MAX",
+                record.schema_version
+            ))
+        })?;
+
+        // Preserves any existing `output` on conflict (set by `save_node_output`)
+        // and updates only the new variant columns — legacy and new writers
+        // compose on the same (execution_id, node_id, attempt) row.
+        sqlx::query(
+            "INSERT INTO node_outputs \
+             (execution_id, node_id, attempt, output, result_schema_version, result_kind, result) \
+             VALUES ($1, $2, $3, NULL, $4, $5, $6) \
+             ON CONFLICT (execution_id, node_id, attempt) \
+             DO UPDATE SET \
+                 result_schema_version = EXCLUDED.result_schema_version, \
+                 result_kind           = EXCLUDED.result_kind, \
+                 result                = EXCLUDED.result",
+        )
+        .bind(execution_id)
+        .bind(node_key)
+        .bind(attempt_i32)
+        .bind(version_i32)
+        .bind(&record.kind)
+        .bind(Json(&record.result))
+        .execute(&self.pool)
+        .await
+        .map_err(map_err)?;
+
+        Ok(())
+    }
+
+    async fn load_node_result(
+        &self,
+        execution_id: ExecutionId,
+        node_key: NodeKey,
+    ) -> Result<Option<NodeResultRecord>, ExecutionRepoError> {
+        // Filter on `result IS NOT NULL` so rows written only by legacy
+        // `save_node_output` are invisible to the new reader (they have
+        // no variant information). Pre-migration rows also carry
+        // `result_schema_version = 1` via DEFAULT but no `result`, and
+        // are correctly skipped here.
+        let row = sqlx::query_as::<_, (i32, String, Json<serde_json::Value>)>(
+            "SELECT result_schema_version, result_kind, result FROM node_outputs \
+             WHERE execution_id = $1 AND node_id = $2 AND result IS NOT NULL \
+             ORDER BY attempt DESC \
+             LIMIT 1",
+        )
+        .bind(execution_id)
+        .bind(node_key)
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(map_err)?;
+
+        let Some((version_i32, kind, result)) = row else {
+            return Ok(None);
+        };
+        let version = u32::try_from(version_i32).map_err(|_| {
+            ExecutionRepoError::Internal(format!(
+                "result_schema_version {version_i32} is negative in database"
+            ))
+        })?;
+        if version > MAX_SUPPORTED_RESULT_SCHEMA_VERSION {
+            return Err(ExecutionRepoError::UnknownSchemaVersion {
+                version,
+                max_supported: MAX_SUPPORTED_RESULT_SCHEMA_VERSION,
+            });
+        }
+        Ok(Some(NodeResultRecord::with_version(
+            version, kind, result.0,
+        )))
+    }
+
+    async fn load_all_results(
+        &self,
+        execution_id: ExecutionId,
+    ) -> Result<HashMap<NodeKey, NodeResultRecord>, ExecutionRepoError> {
+        let rows = sqlx::query_as::<_, (NodeKey, i32, String, Json<serde_json::Value>)>(
+            "SELECT DISTINCT ON (node_id) node_id, result_schema_version, result_kind, result \
+             FROM node_outputs \
+             WHERE execution_id = $1 AND result IS NOT NULL \
+             ORDER BY node_id, attempt DESC",
+        )
+        .bind(execution_id)
+        .fetch_all(&self.pool)
+        .await
+        .map_err(map_err)?;
+
+        let mut out = HashMap::with_capacity(rows.len());
+        for (node_key, version_i32, kind, result) in rows {
+            let version = u32::try_from(version_i32).map_err(|_| {
+                ExecutionRepoError::Internal(format!(
+                    "result_schema_version {version_i32} is negative in database"
+                ))
+            })?;
+            if version > MAX_SUPPORTED_RESULT_SCHEMA_VERSION {
+                return Err(ExecutionRepoError::UnknownSchemaVersion {
+                    version,
+                    max_supported: MAX_SUPPORTED_RESULT_SCHEMA_VERSION,
+                });
+            }
+            out.insert(
+                node_key,
+                NodeResultRecord::with_version(version, kind, result.0),
+            );
+        }
+        Ok(out)
     }
 }
 
@@ -575,6 +739,320 @@ mod tests {
                 .expect("check after second mark"),
             "key should still exist after second mark"
         );
+    }
+
+    // ── ADR-0008 B1: migration + round-trip + forward-compat ─────────────
+
+    #[tokio::test]
+    async fn pg_migration_creates_resume_persistence_columns() {
+        let Some(repo) = pg_exec_repo().await else {
+            return;
+        };
+
+        let executions_has_input: bool = sqlx::query_scalar(
+            "SELECT EXISTS (
+                 SELECT 1 FROM information_schema.columns
+                 WHERE table_name = 'executions' AND column_name = 'input'
+             )",
+        )
+        .fetch_one(repo.pool())
+        .await
+        .expect("query executions.input");
+        assert!(
+            executions_has_input,
+            "executions.input column must exist after migration 0009"
+        );
+
+        let expected = ["result_schema_version", "result_kind", "result"];
+        for col in expected {
+            let exists: bool = sqlx::query_scalar(
+                "SELECT EXISTS (
+                     SELECT 1 FROM information_schema.columns
+                     WHERE table_name = 'node_outputs' AND column_name = $1
+                 )",
+            )
+            .bind(col)
+            .fetch_one(repo.pool())
+            .await
+            .unwrap_or_else(|e| panic!("query node_outputs.{col}: {e}"));
+            assert!(exists, "node_outputs.{col} must exist after migration 0009");
+        }
+
+        let output_is_nullable: String = sqlx::query_scalar(
+            "SELECT is_nullable FROM information_schema.columns
+             WHERE table_name = 'node_outputs' AND column_name = 'output'",
+        )
+        .fetch_one(repo.pool())
+        .await
+        .expect("query output nullability");
+        assert_eq!(
+            output_is_nullable, "YES",
+            "output must be nullable so save_node_result can omit it (ADR-0008)"
+        );
+    }
+
+    #[tokio::test]
+    async fn pg_workflow_input_round_trip() {
+        let Some(repo) = pg_exec_repo().await else {
+            return;
+        };
+        let eid = ExecutionId::new();
+        let wid = WorkflowId::new();
+        repo.create(eid, wid, serde_json::json!({"status": "created"}))
+            .await
+            .expect("create");
+
+        assert_eq!(
+            repo.get_workflow_input(eid).await.expect("get empty"),
+            None,
+            "unset input must be None, never synthesized Null"
+        );
+
+        let payload = serde_json::json!({"trigger": "http", "body": [1, 2, 3]});
+        repo.set_workflow_input(eid, payload.clone())
+            .await
+            .expect("set");
+        assert_eq!(
+            repo.get_workflow_input(eid).await.expect("get after set"),
+            Some(payload),
+        );
+    }
+
+    #[tokio::test]
+    async fn pg_set_workflow_input_unknown_execution_returns_not_found() {
+        let Some(repo) = pg_exec_repo().await else {
+            return;
+        };
+        let err = repo
+            .set_workflow_input(ExecutionId::new(), serde_json::json!({}))
+            .await
+            .expect_err("missing execution must reject");
+        assert!(matches!(
+            err,
+            ExecutionRepoError::NotFound { ref entity, .. } if entity == "execution"
+        ));
+    }
+
+    #[tokio::test]
+    async fn pg_save_and_load_node_result_round_trip() {
+        let Some(repo) = pg_exec_repo().await else {
+            return;
+        };
+        let eid = ExecutionId::new();
+        let wid = WorkflowId::new();
+        repo.create(eid, wid, serde_json::json!({}))
+            .await
+            .expect("create");
+
+        let nid = node_key!("branch_node");
+        let result_json = serde_json::json!({
+            "type": "Branch",
+            "selected": "true",
+            "output": {"Value": {"matched": true}},
+            "alternatives": {"false": {"Value": {"matched": false}}},
+        });
+        let record = NodeResultRecord::new("Branch", result_json.clone());
+        repo.save_node_result(eid, nid.clone(), 0, record)
+            .await
+            .expect("save result");
+
+        let loaded = repo
+            .load_node_result(eid, nid)
+            .await
+            .expect("load")
+            .expect("some");
+        assert_eq!(loaded.schema_version, MAX_SUPPORTED_RESULT_SCHEMA_VERSION);
+        assert_eq!(loaded.kind, "Branch");
+        assert_eq!(loaded.result, result_json);
+    }
+
+    #[tokio::test]
+    async fn pg_save_node_result_composes_with_save_node_output_on_same_row() {
+        let Some(repo) = pg_exec_repo().await else {
+            return;
+        };
+        let eid = ExecutionId::new();
+        let wid = WorkflowId::new();
+        repo.create(eid, wid, serde_json::json!({}))
+            .await
+            .expect("create");
+
+        let nid = node_key!("dual_writer");
+        let primary = serde_json::json!({"answer": 42});
+        repo.save_node_output(eid, nid.clone(), 0, primary.clone())
+            .await
+            .expect("legacy save_node_output");
+
+        let result_json = serde_json::json!({
+            "type": "Success",
+            "output": {"Value": {"answer": 42}},
+        });
+        repo.save_node_result(
+            eid,
+            nid.clone(),
+            0,
+            NodeResultRecord::new("Success", result_json.clone()),
+        )
+        .await
+        .expect("save_node_result onto existing row");
+
+        assert_eq!(
+            repo.load_node_output(eid, nid.clone())
+                .await
+                .expect("legacy read")
+                .expect("some"),
+            primary,
+            "save_node_result must not wipe legacy `output`"
+        );
+        let record = repo
+            .load_node_result(eid, nid)
+            .await
+            .expect("new read")
+            .expect("some");
+        assert_eq!(record.result, result_json);
+    }
+
+    #[tokio::test]
+    async fn pg_load_node_result_skips_legacy_rows_without_result() {
+        let Some(repo) = pg_exec_repo().await else {
+            return;
+        };
+        let eid = ExecutionId::new();
+        let wid = WorkflowId::new();
+        repo.create(eid, wid, serde_json::json!({}))
+            .await
+            .expect("create");
+
+        let nid = node_key!("legacy");
+        repo.save_node_output(eid, nid.clone(), 0, serde_json::json!({"legacy": true}))
+            .await
+            .expect("legacy only");
+
+        let loaded = repo.load_node_result(eid, nid).await.expect("load");
+        assert_eq!(
+            loaded, None,
+            "legacy rows without persisted variant must be invisible to load_node_result"
+        );
+    }
+
+    #[tokio::test]
+    async fn pg_load_node_result_returns_latest_attempt() {
+        let Some(repo) = pg_exec_repo().await else {
+            return;
+        };
+        let eid = ExecutionId::new();
+        let wid = WorkflowId::new();
+        repo.create(eid, wid, serde_json::json!({}))
+            .await
+            .expect("create");
+
+        let nid = node_key!("retried");
+        repo.save_node_result(
+            eid,
+            nid.clone(),
+            0,
+            NodeResultRecord::new("Success", serde_json::json!({"v": 0})),
+        )
+        .await
+        .expect("attempt 0");
+        repo.save_node_result(
+            eid,
+            nid.clone(),
+            1,
+            NodeResultRecord::new("Success", serde_json::json!({"v": 1})),
+        )
+        .await
+        .expect("attempt 1");
+
+        let loaded = repo
+            .load_node_result(eid, nid)
+            .await
+            .expect("load")
+            .expect("some");
+        assert_eq!(loaded.result, serde_json::json!({"v": 1}));
+    }
+
+    #[tokio::test]
+    async fn pg_load_node_result_forward_compat_unknown_schema_version() {
+        let Some(repo) = pg_exec_repo().await else {
+            return;
+        };
+        let eid = ExecutionId::new();
+        let wid = WorkflowId::new();
+        repo.create(eid, wid, serde_json::json!({}))
+            .await
+            .expect("create");
+
+        let nid = node_key!("future");
+        let future = NodeResultRecord::with_version(
+            MAX_SUPPORTED_RESULT_SCHEMA_VERSION + 1,
+            "FutureVariant",
+            serde_json::json!({"type": "FutureVariant"}),
+        );
+        repo.save_node_result(eid, nid.clone(), 0, future)
+            .await
+            .expect("save future record");
+
+        let err = repo
+            .load_node_result(eid, nid)
+            .await
+            .expect_err("unknown schema version must not fall back");
+        match err {
+            ExecutionRepoError::UnknownSchemaVersion {
+                version,
+                max_supported,
+            } => {
+                assert_eq!(version, MAX_SUPPORTED_RESULT_SCHEMA_VERSION + 1);
+                assert_eq!(max_supported, MAX_SUPPORTED_RESULT_SCHEMA_VERSION);
+            },
+            other => panic!("unexpected error: {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn pg_load_all_results_returns_latest_per_node() {
+        let Some(repo) = pg_exec_repo().await else {
+            return;
+        };
+        let eid = ExecutionId::new();
+        let wid = WorkflowId::new();
+        repo.create(eid, wid, serde_json::json!({}))
+            .await
+            .expect("create");
+
+        let n1 = node_key!("n1");
+        let n2 = node_key!("n2");
+
+        repo.save_node_result(
+            eid,
+            n1.clone(),
+            0,
+            NodeResultRecord::new("Success", serde_json::json!("n1_v0")),
+        )
+        .await
+        .unwrap();
+        repo.save_node_result(
+            eid,
+            n1.clone(),
+            1,
+            NodeResultRecord::new("Branch", serde_json::json!("n1_v1")),
+        )
+        .await
+        .unwrap();
+        repo.save_node_result(
+            eid,
+            n2.clone(),
+            0,
+            NodeResultRecord::new("Skip", serde_json::json!("n2_v0")),
+        )
+        .await
+        .unwrap();
+
+        let all = repo.load_all_results(eid).await.expect("load all");
+        assert_eq!(all.len(), 2);
+        assert_eq!(all[&n1].kind, "Branch");
+        assert_eq!(all[&n1].result, serde_json::json!("n1_v1"));
+        assert_eq!(all[&n2].kind, "Skip");
     }
 
     #[tokio::test]
