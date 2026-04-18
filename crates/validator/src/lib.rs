@@ -79,7 +79,9 @@ pub use error::ValidatorError;
 #[cfg(feature = "derive")]
 pub use nebula_validator_macros::Validator;
 pub use proof::Validated;
-pub use rule::{Rule, RuleContext};
+pub use rule::{
+    DeferredRule, Logic, Predicate, PredicateContext, Rule, RuleContext, RuleKind, ValueRule,
+};
 
 // `regex` is re-exported so code emitted by `#[derive(Validator)]` can
 // reference `nebula_validator::__private::regex` without requiring users to
