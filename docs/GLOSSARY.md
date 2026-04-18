@@ -77,15 +77,17 @@ Canon §3.5 makes actions typed and engine-dispatched by trait, not by a single 
 
 ---
 
-## 5. Parameter and validation (`nebula-parameter`, `nebula-validator`)
+## 5. Schema and validation (`nebula-schema`, `nebula-validator`)
 
-Canon §3.5 requires **one** parameter system shared by actions, credentials, and resources. Canon §3.9 is the crate pointer.
+Canon §3.5 requires **one** schema system shared by actions, credentials, and resources. Canon §3.9 is the crate pointer for validators.
 
 | Name | Kind | Status | Role | Canon |
 | --- | --- | --- | --- | --- |
-| `Parameter` | type | `implemented` | Single parameter schema element — typed, validated, with embedded `Rule`s. | §3.5, §3.9 |
-| `ParameterCollection` | type | `implemented` | Grouped, validated configuration schema used across Action / Credential / Resource. | §3.5, §3.9 |
-| `Rule` | type | `implemented` | Declarative validator composed into `Parameter`. | §3.10 |
+| `Field` | type | `implemented` | Consolidated field kind enum (string / number / bool / enum / nested / …). Single public surface for all schema fields. | §3.5 |
+| `Schema` | type | `implemented` | Typed configuration schema built from `Field` enum; shared across Action / Credential / Resource config via `nebula-schema`. | §3.5 |
+| `ValidValues` | type | `implemented` | Proof-token returned by `ValidSchema::validate` — indicates schema-time validation has succeeded. Required to call `resolve`. | §3.5, §4.5 |
+| `ResolvedValues` | type | `implemented` | Proof-token returned by `ValidValues::resolve` — indicates runtime expression resolution has succeeded. Required to access resolved field values. | §3.5, §4.5 |
+| `Rule` | type | `implemented` | Declarative validator composed into schema fields. | §3.10 |
 
 ---
 
