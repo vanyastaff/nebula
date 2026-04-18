@@ -6,12 +6,44 @@ on:
     paths-ignore:
       - "**.md"
       - "docs/**"
-      - "LICENSE"
+      - "LICENSE*"
+      - ".gitignore"
+      - ".gitattributes"
+      - ".editorconfig"
+      - ".vscode/**"
+      - ".idea/**"
+      - ".claude/**"
+      - ".github/ISSUE_TEMPLATE/**"
+      - ".github/PULL_REQUEST_TEMPLATE.md"
+      - ".github/labeler.yml"
+      - ".github/dependabot.yml"
+      - "CODEOWNERS"
+      - "assets/**"
+      - "**.png"
+      - "**.jpg"
+      - "**.svg"
   pull_request:
+    branches: [main]
+    types: [opened, synchronize, reopened, ready_for_review]
     paths-ignore:
       - "**.md"
       - "docs/**"
-      - "LICENSE"
+      - "LICENSE*"
+      - ".gitignore"
+      - ".gitattributes"
+      - ".editorconfig"
+      - ".vscode/**"
+      - ".idea/**"
+      - ".claude/**"
+      - ".github/ISSUE_TEMPLATE/**"
+      - ".github/PULL_REQUEST_TEMPLATE.md"
+      - ".github/labeler.yml"
+      - ".github/dependabot.yml"
+      - "CODEOWNERS"
+      - "assets/**"
+      - "**.png"
+      - "**.jpg"
+      - "**.svg"
   # `workflow_dispatch` allows CodSpeed to trigger backtest
   # performance analysis in order to generate initial data.
   workflow_dispatch:
@@ -42,25 +74,90 @@ concurrency:
 # and triggers "Unknown Walltime execution environment detected" warnings.
 # Simulation runs each bench once under cachegrind — deterministic, ignores
 # criterion's sample_size/measurement_time, dramatically faster on hosted runners.
+#
+# Partial runs: on PR we build/run only shards whose crates changed. CodSpeed
+# fills missing benches from the baseline (see codspeed.io/docs/features/partial-runs).
+# On `main` and `workflow_dispatch` all shards run to refresh the baseline.
 jobs:
+  changes:
+    name: Select shards
+    runs-on: ubuntu-latest
+    outputs:
+      shards: ${{ steps.plan.outputs.shards }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+
+      - name: Detect changed crates
+        id: filter
+        uses: dorny/paths-filter@v3
+        with:
+          filters: |
+            resilience:
+              - 'crates/resilience/**'
+              - 'Cargo.lock'
+              - '.github/workflows/codspeed.yml'
+            validator:
+              - 'crates/validator/**'
+              - 'Cargo.lock'
+              - '.github/workflows/codspeed.yml'
+            misc:
+              - 'crates/core/**'
+              - 'crates/eventbus/**'
+              - 'crates/expression/**'
+              - 'crates/log/**'
+              - 'crates/system/**'
+              - 'Cargo.lock'
+              - '.github/workflows/codspeed.yml'
+
+      - name: Plan shards
+        id: plan
+        shell: bash
+        env:
+          R: ${{ steps.filter.outputs.resilience }}
+          V: ${{ steps.filter.outputs.validator }}
+          M: ${{ steps.filter.outputs.misc }}
+          EVENT: ${{ github.event_name }}
+          REF: ${{ github.ref }}
+          LABELS: ${{ toJSON(github.event.pull_request.labels.*.name) }}
+        run: |
+          set -euo pipefail
+
+          # Full run on main push, manual dispatch, or `run-full-ci` label.
+          force=0
+          if [[ "$EVENT" == "workflow_dispatch" ]] || [[ "$REF" == "refs/heads/main" ]]; then
+            force=1
+          fi
+          if [[ -n "${LABELS:-}" ]] && jq -e '. | index("run-full-ci")' <<<"$LABELS" >/dev/null 2>&1; then
+            force=1
+          fi
+          if [[ "$force" == "1" ]]; then
+            R=true; V=true; M=true
+          fi
+
+          SHARDS='[]'
+          add() { SHARDS=$(jq --argjson x "$1" '. + [$x]' <<<"$SHARDS"); }
+
+          [[ "$R" == "true" ]] && add '{"shard":"resilience","packages":"-p nebula-resilience"}'
+          [[ "$V" == "true" ]] && add '{"shard":"validator","packages":"-p nebula-validator"}'
+          [[ "$M" == "true" ]] && add '{"shard":"misc","packages":"-p nebula-core -p nebula-eventbus -p nebula-expression -p nebula-log -p nebula-system"}'
+
+          echo "shards=$SHARDS" >> "$GITHUB_OUTPUT"
+          echo "Planned shards: $SHARDS"
+
   codspeed:
     name: Run benchmarks (${{ matrix.shard }})
+    needs: [changes]
+    if: >-
+      needs.changes.outputs.shards != '[]' &&
+      (github.event_name != 'pull_request' ||
+       github.event.pull_request.draft == false ||
+       contains(github.event.pull_request.labels.*.name, 'run-full-ci'))
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
       matrix:
-        include:
-          - shard: resilience
-            packages: -p nebula-resilience
-          - shard: validator
-            packages: -p nebula-validator
-          - shard: misc
-            packages: >-
-              -p nebula-core
-              -p nebula-eventbus
-              -p nebula-expression
-              -p nebula-log
-              -p nebula-system
+        include: ${{ fromJson(needs.changes.outputs.shards) }}
     steps:
       - name: Checkout repository
         uses: actions/checkout@v6
