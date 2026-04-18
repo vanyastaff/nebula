@@ -1150,9 +1150,45 @@ impl WorkflowEngine {
                 // Node failed during setup (e.g., param resolution).
                 // `spawn_node` already marked the node as Failed and stored
                 // the typed error message on `NodeExecutionState`.
-                let abort = handle_node_failure(
+                //
+                // Ordering (§11.5, #297): classify outcome → apply
+                // IgnoreErrors recovery → persist → emit observable
+                // event → route edges. Route AFTER checkpoint so
+                // OnError successors are a function of persisted state.
+                let err_msg = exec_state
+                    .node_state(node_key.clone())
+                    .and_then(|ns| ns.error_message.clone())
+                    .unwrap_or_else(|| "parameter resolution failed".to_string());
+
+                let outcome = classify_failure(error_strategy);
+                apply_failure_recovery(outcome, node_key.clone(), exec_state, outputs);
+
+                if let Err(e) = self
+                    .checkpoint_node(
+                        execution_id,
+                        node_key.clone(),
+                        outputs,
+                        exec_state,
+                        repo_version,
+                    )
+                    .await
+                {
+                    cancel_token.cancel();
+                    return Some((node_key, e.to_string()));
+                }
+
+                if outcome == FailureOutcome::Fail {
+                    self.emit_event(ExecutionEvent::NodeFailed {
+                        execution_id,
+                        node_key: node_key.clone(),
+                        error: err_msg.clone(),
+                    });
+                }
+
+                let abort = route_failure_edges(
+                    outcome,
                     node_key.clone(),
-                    "parameter resolution failed",
+                    &err_msg,
                     error_strategy,
                     graph,
                     outputs,
@@ -1165,37 +1201,6 @@ impl WorkflowEngine {
                 if let Some(err_msg) = abort {
                     cancel_token.cancel();
                     return Some((node_key, err_msg));
-                }
-
-                // Mirror the runtime-failure branch (§11.5, #297/#321):
-                // when the node remains Failed after handle_node_failure
-                // (i.e., not recovered by IgnoreErrors), persist the
-                // failure decision and any OnError/ContinueOnError
-                // edge-routing it triggered before any observer sees the
-                // node as done. Without this, a crash between here and
-                // the final-state checkpoint would lose both the Failed
-                // state and the edge-routing already applied in memory.
-                if exec_state
-                    .node_state(node_key.clone())
-                    .is_some_and(|ns| ns.state == NodeState::Failed)
-                {
-                    self.checkpoint_node(
-                        execution_id,
-                        node_key.clone(),
-                        outputs,
-                        exec_state,
-                        repo_version,
-                    )
-                    .await;
-                    let err = exec_state
-                        .node_state(node_key.clone())
-                        .and_then(|ns| ns.error_message.clone())
-                        .unwrap_or_else(|| "parameter resolution failed".to_string());
-                    self.emit_event(ExecutionEvent::NodeFailed {
-                        execution_id,
-                        node_key: node_key.clone(),
-                        error: err,
-                    });
                 }
             }
 
@@ -1269,7 +1274,37 @@ impl WorkflowEngine {
                         ),
                     ));
                     mark_node_failed(exec_state, node_key.clone(), &err);
-                    let abort = handle_node_failure(
+
+                    // Ordering (§11.5, #297): classify → apply recovery →
+                    // persist → emit → route. Identical shape to the
+                    // runtime-failure branch below; see its comment block.
+                    let outcome = classify_failure(error_strategy);
+                    apply_failure_recovery(outcome, node_key.clone(), exec_state, outputs);
+
+                    if let Err(e) = self
+                        .checkpoint_node(
+                            execution_id,
+                            node_key.clone(),
+                            outputs,
+                            exec_state,
+                            repo_version,
+                        )
+                        .await
+                    {
+                        cancel_token.cancel();
+                        return Some((node_key.clone(), e.to_string()));
+                    }
+
+                    if outcome == FailureOutcome::Fail {
+                        self.emit_event(ExecutionEvent::NodeFailed {
+                            execution_id,
+                            node_key: node_key.clone(),
+                            error: err.to_string(),
+                        });
+                    }
+
+                    let abort = route_failure_edges(
+                        outcome,
                         node_key.clone(),
                         &err.to_string(),
                         error_strategy,
@@ -1284,25 +1319,6 @@ impl WorkflowEngine {
                     if let Some(err_msg) = abort {
                         cancel_token.cancel();
                         return Some((node_key.clone(), err_msg));
-                    }
-
-                    if exec_state
-                        .node_state(node_key.clone())
-                        .is_some_and(|ns| ns.state == NodeState::Failed)
-                    {
-                        self.checkpoint_node(
-                            execution_id,
-                            node_key.clone(),
-                            outputs,
-                            exec_state,
-                            repo_version,
-                        )
-                        .await;
-                        self.emit_event(ExecutionEvent::NodeFailed {
-                            execution_id,
-                            node_key: node_key.clone(),
-                            error: err.to_string(),
-                        });
                     }
                 },
                 Ok((node_key, Ok(action_result))) => {
@@ -1319,15 +1335,23 @@ impl WorkflowEngine {
                     // Persist node output + execution state, then record the
                     // idempotency key, before any external observer learns the
                     // node is done. This guarantees durability precedes
-                    // visibility (#297).
-                    self.checkpoint_node(
-                        execution_id,
-                        node_key.clone(),
-                        outputs,
-                        exec_state,
-                        repo_version,
-                    )
-                    .await;
+                    // visibility (§11.5, #297). Checkpoint failure aborts the
+                    // node's progression so observers never see an
+                    // unpersisted transition and the frontier never advances
+                    // on an undurable decision (§12.4).
+                    if let Err(e) = self
+                        .checkpoint_node(
+                            execution_id,
+                            node_key.clone(),
+                            outputs,
+                            exec_state,
+                            repo_version,
+                        )
+                        .await
+                    {
+                        cancel_token.cancel();
+                        return Some((node_key.clone(), e.to_string()));
+                    }
                     self.record_idempotency(execution_id, node_key.clone())
                         .await;
 
@@ -1351,11 +1375,47 @@ impl WorkflowEngine {
                     );
                 },
                 Ok((node_key, Err(ref err))) => {
-                    // Node failed at runtime — persist before any observer
-                    // learns the node is done and before successors advance
-                    // (#297).
+                    // Node failed at runtime. Ordering (§11.5, #297):
+                    //   1. `mark_node_failed`  — in-memory state mutation
+                    //   2. classify + apply    — IgnoreErrors recovery (in-memory)
+                    //   3. `checkpoint_node`   — durable commit (abort on Err)
+                    //   4. `emit_event`        — observers (only if Fail)
+                    //   5. `route_failure_edges` — frontier advancement
+                    //
+                    // Routing edges BEFORE checkpoint (the pre-#297 shape)
+                    // let a crash after edge activation but before persist
+                    // land with `ready_queue` holding successors that the
+                    // persisted state could not reconstruct on resume —
+                    // duplicate or dropped side-effects, per §13 knife #5.
                     mark_node_failed(exec_state, node_key.clone(), err);
-                    let abort = handle_node_failure(
+
+                    let outcome = classify_failure(error_strategy);
+                    apply_failure_recovery(outcome, node_key.clone(), exec_state, outputs);
+
+                    if let Err(e) = self
+                        .checkpoint_node(
+                            execution_id,
+                            node_key.clone(),
+                            outputs,
+                            exec_state,
+                            repo_version,
+                        )
+                        .await
+                    {
+                        cancel_token.cancel();
+                        return Some((node_key.clone(), e.to_string()));
+                    }
+
+                    if outcome == FailureOutcome::Fail {
+                        self.emit_event(ExecutionEvent::NodeFailed {
+                            execution_id,
+                            node_key: node_key.clone(),
+                            error: err.to_string(),
+                        });
+                    }
+
+                    let abort = route_failure_edges(
+                        outcome,
                         node_key.clone(),
                         &err.to_string(),
                         error_strategy,
@@ -1367,29 +1427,9 @@ impl WorkflowEngine {
                         &mut ready_queue,
                         exec_state,
                     );
-
                     if let Some(err_msg) = abort {
                         cancel_token.cancel();
                         return Some((node_key.clone(), err_msg));
-                    }
-
-                    if exec_state
-                        .node_state(node_key.clone())
-                        .is_some_and(|ns| ns.state == NodeState::Failed)
-                    {
-                        self.checkpoint_node(
-                            execution_id,
-                            node_key.clone(),
-                            outputs,
-                            exec_state,
-                            repo_version,
-                        )
-                        .await;
-                        self.emit_event(ExecutionEvent::NodeFailed {
-                            execution_id,
-                            node_key: node_key.clone(),
-                            error: err.to_string(),
-                        });
                     }
                 },
                 Err(join_err) => {
@@ -1670,10 +1710,14 @@ impl WorkflowEngine {
         }
     }
 
-    /// Persist node output and execution state to the repository (best-effort).
+    /// Persist node output and execution state to the repository.
     ///
-    /// Silently ignores errors — checkpoint failures must not abort
-    /// an otherwise healthy execution.
+    /// Returns `Err(EngineError::CheckpointFailed)` when the store cannot
+    /// durably commit — `save_node_output` failure, `transition()` error,
+    /// or CAS mismatch (the row moved beneath the engine). Callers in
+    /// `run_frontier` MUST abort the node's progression (no edge routing,
+    /// no event emission) on `Err` so that observers and the frontier
+    /// never act on an unpersisted transition (§11.5, §12.4, #297).
     async fn checkpoint_node(
         &self,
         execution_id: ExecutionId,
@@ -1681,12 +1725,15 @@ impl WorkflowEngine {
         outputs: &Arc<DashMap<NodeKey, serde_json::Value>>,
         exec_state: &ExecutionState,
         repo_version: &mut u64,
-    ) {
+    ) -> Result<(), EngineError> {
         let Some(repo) = &self.execution_repo else {
-            return;
+            return Ok(());
         };
 
-        // Save node output individually
+        // Save node output individually. A write failure here is a real
+        // durability gap — replayers load outputs from this table, so
+        // losing one means a downstream consumer may reconstruct a
+        // node as "ran and returned nothing" after restart (§11.5).
         if let Some(output) = outputs.get(&node_key) {
             let attempt = exec_state
                 .node_states
@@ -1702,35 +1749,54 @@ impl WorkflowEngine {
                 )
                 .await
             {
-                tracing::warn!(%execution_id, %node_key, error = %e, "failed to persist node output");
+                return Err(EngineError::CheckpointFailed {
+                    node_key,
+                    reason: format!("save_node_output: {e}"),
+                });
             }
         }
 
-        // Save execution state snapshot
-        if let Ok(state_json) = serde_json::to_value(exec_state) {
-            match repo
-                .transition(execution_id, *repo_version, state_json)
-                .await
-            {
-                Ok(true) => *repo_version += 1,
-                Ok(false) => {
-                    // CAS mismatch — re-read current version to recover
-                    tracing::warn!(
-                        %execution_id,
-                        "checkpoint CAS mismatch, re-reading version"
-                    );
-                    if let Ok(Some((current_version, _))) = repo.get_state(execution_id).await {
-                        *repo_version = current_version;
-                    }
-                },
-                Err(e) => {
-                    tracing::warn!(
-                        %execution_id,
-                        error = %e,
-                        "checkpoint persist failed"
-                    );
-                },
-            }
+        // Save execution state snapshot.
+        let state_json =
+            serde_json::to_value(exec_state).map_err(|e| EngineError::CheckpointFailed {
+                node_key: node_key.clone(),
+                reason: format!("serialize state: {e}"),
+            })?;
+
+        match repo
+            .transition(execution_id, *repo_version, state_json)
+            .await
+        {
+            Ok(true) => {
+                *repo_version += 1;
+                Ok(())
+            },
+            Ok(false) => {
+                // CAS mismatch: another actor moved the row (API cancel,
+                // second engine worker, etc.). We cannot durably commit
+                // this node's transition on top of a stale version, so
+                // the frontier must abort this progression rather than
+                // silently advance — the reconcile path belongs to
+                // Group C's #333. Re-read version so that a caller which
+                // has already aborted can still see the current view.
+                tracing::warn!(
+                    %execution_id,
+                    %node_key,
+                    expected_version = *repo_version,
+                    "checkpoint CAS mismatch — aborting node progression (§11.1)"
+                );
+                if let Ok(Some((current_version, _))) = repo.get_state(execution_id).await {
+                    *repo_version = current_version;
+                }
+                Err(EngineError::CheckpointFailed {
+                    node_key,
+                    reason: "CAS mismatch — state moved beneath the engine".to_owned(),
+                })
+            },
+            Err(e) => Err(EngineError::CheckpointFailed {
+                node_key,
+                reason: e.to_string(),
+            }),
         }
     }
 
@@ -1823,9 +1889,10 @@ impl NodeTask {
         //   - cancel fires first → return EngineError::Cancelled. We must NOT block shutdown on a
         //     dying credential store.
         //   - refresh returns Err → surface a typed ActionError::CredentialRefreshFailed through
-        //     EngineError::Action. The frontier loop routes this through `handle_node_failure`,
-        //     where the workflow-level ErrorStrategy decides whether execution fails fast or
-        //     continues/ignores the failure, and whether any `OnError` edge is activated. This
+        //     EngineError::Action. The frontier loop routes this through `classify_failure` +
+        //     `route_failure_edges`, where the workflow-level ErrorStrategy decides whether
+        //     execution fails fast or continues/ignores the failure, and whether any `OnError` edge
+        //     is activated (split from the old `handle_node_failure` per #297 / §11.5). This
         //     replaces the old "log a WARN and proceed with a potentially stale credential" path,
         //     which leaked into N opaque downstream auth errors per failure.
         //   - refresh returns Ok → fall through to the action dispatch.
@@ -2190,12 +2257,75 @@ fn check_budget(
     None
 }
 
-/// Handle a node failure according to the configured error strategy.
+/// Classification of a node failure against the workflow's error strategy.
 ///
-/// Returns `Some(error_message)` when the caller should cancel + return
-/// (i.e., fail-fast), or `None` when execution may continue.
+/// Pure function of the strategy: splits the outcome from the state
+/// mutation + edge routing that used to live together in the old
+/// `handle_node_failure`. Split lets `run_frontier` order `state-mutation
+/// → persist → emit → route` per §11.5 / #297 — routing outgoing edges
+/// may push successors into `ready_queue`, which must be a deterministic
+/// function of the persisted state, not of an in-memory decision that
+/// a crash can lose.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum FailureOutcome {
+    /// `IgnoreErrors`: the node is recovered to `Completed` with a null
+    /// output. No `NodeFailed` event is emitted; downstream edges activate
+    /// as if the node had returned `ActionResult::success(null)`.
+    Recover,
+    /// `FailFast` or `ContinueOnError`: the node stays `Failed`. The
+    /// caller emits `NodeFailed` and then routes failure edges, which
+    /// may activate an OnError handler, resolve-without-activate for
+    /// ContinueOnError, or request abort for FailFast.
+    Fail,
+}
+
+/// Classify a failure outcome. Pure — does not touch `exec_state`.
+fn classify_failure(error_strategy: nebula_workflow::ErrorStrategy) -> FailureOutcome {
+    match error_strategy {
+        nebula_workflow::ErrorStrategy::IgnoreErrors => FailureOutcome::Recover,
+        _ => FailureOutcome::Fail,
+    }
+}
+
+/// Apply the IgnoreErrors in-memory recovery before checkpoint.
+///
+/// For `FailureOutcome::Fail` this is a no-op: the caller already marked
+/// the node `Failed` (via `mark_node_failed` or `spawn_node`'s override),
+/// and that Failed state is what checkpoint must commit.
+///
+/// For `FailureOutcome::Recover` this overrides the state to `Completed`,
+/// clears the error message, and inserts a `null` output — mirroring
+/// the old `handle_node_failure` IgnoreErrors path. The override bumps
+/// the version per #255 so CAS readers see the recovery.
+fn apply_failure_recovery(
+    outcome: FailureOutcome,
+    node_key: NodeKey,
+    exec_state: &mut ExecutionState,
+    outputs: &Arc<DashMap<NodeKey, serde_json::Value>>,
+) {
+    if outcome == FailureOutcome::Recover {
+        let _ = exec_state.override_node_state(node_key.clone(), NodeState::Completed);
+        if let Some(ns) = exec_state.node_states.get_mut(&node_key) {
+            ns.error_message = None;
+        }
+        outputs.insert(node_key, serde_json::json!(null));
+    }
+}
+
+/// Route outgoing edges after the node's state has been durably committed.
+///
+/// MUST be called AFTER `checkpoint_node` succeeds (§11.5, #297): the
+/// frontier advancement this produces must be a function of persisted
+/// state, not an in-memory decision that a crash can discard while
+/// observers act on it.
+///
+/// Returns `Some(error_message)` if the frontier must abort — FailFast
+/// strategy with no OnError handler took the failure. Returns `None`
+/// when routing completed cleanly (OnError handled, ContinueOnError
+/// resolved, or IgnoreErrors routed-as-success).
 #[allow(clippy::too_many_arguments)]
-fn handle_node_failure(
+fn route_failure_edges(
+    outcome: FailureOutcome,
     node_key: NodeKey,
     error_msg: &str,
     error_strategy: nebula_workflow::ErrorStrategy,
@@ -2207,67 +2337,59 @@ fn handle_node_failure(
     ready_queue: &mut VecDeque<NodeKey>,
     exec_state: &mut ExecutionState,
 ) -> Option<String> {
-    // IgnoreErrors: treat the failure as a successful null result so
-    // downstream nodes activate normally.
-    if error_strategy == nebula_workflow::ErrorStrategy::IgnoreErrors {
-        // The node was already marked Failed by the caller; recover it to
-        // Completed since we are ignoring the error, keeping state consistent.
-        // `Failed → Completed` is not a valid forward transition, so this
-        // uses `override_node_state` to reset the state; the version is
-        // still bumped so CAS readers observe the recovery (issue #255).
-        let _ = exec_state.override_node_state(node_key.clone(), NodeState::Completed);
-        if let Some(ns) = exec_state.node_states.get_mut(&node_key) {
-            ns.error_message = None;
-        }
-        outputs.insert(node_key.clone(), serde_json::json!(null));
-        process_outgoing_edges(
-            node_key.clone(),
-            Some(&ActionResult::success(serde_json::json!(null))),
-            None,
-            graph,
-            activated_edges,
-            resolved_edges,
-            required_count,
-            ready_queue,
-            exec_state,
-        );
-        return None;
-    }
-
-    // For FailFast / ContinueOnError: evaluate edges as a failure to
-    // check for OnError handlers.
-    let error_handled = process_outgoing_edges(
-        node_key.clone(),
-        None,
-        Some(error_msg),
-        graph,
-        activated_edges,
-        resolved_edges,
-        required_count,
-        ready_queue,
-        exec_state,
-    );
-
-    if error_handled {
-        // Store error info for the OnError handler's input.
-        outputs.insert(
-            node_key.clone(),
-            serde_json::json!({
-                "error": error_msg,
-                "node_id": node_key.to_string(),
-            }),
-        );
-        return None;
-    }
-
-    match error_strategy {
-        nebula_workflow::ErrorStrategy::ContinueOnError => {
-            // Edges already resolved (not activated) above — dependents
-            // will be skipped; unaffected branches continue.
+    match outcome {
+        FailureOutcome::Recover => {
+            process_outgoing_edges(
+                node_key,
+                Some(&ActionResult::success(serde_json::json!(null))),
+                None,
+                graph,
+                activated_edges,
+                resolved_edges,
+                required_count,
+                ready_queue,
+                exec_state,
+            );
             None
         },
-        // FailFast and future variants
-        _ => Some(error_msg.to_owned()),
+        FailureOutcome::Fail => {
+            // Evaluate outgoing edges as a failure: OnError handlers,
+            // if any, are activated; otherwise edges are resolved
+            // without activation so dependents get Skipped.
+            let error_handled = process_outgoing_edges(
+                node_key.clone(),
+                None,
+                Some(error_msg),
+                graph,
+                activated_edges,
+                resolved_edges,
+                required_count,
+                ready_queue,
+                exec_state,
+            );
+
+            if error_handled {
+                // Store error info for the OnError handler's input.
+                outputs.insert(
+                    node_key.clone(),
+                    serde_json::json!({
+                        "error": error_msg,
+                        "node_id": node_key.to_string(),
+                    }),
+                );
+                return None;
+            }
+
+            match error_strategy {
+                nebula_workflow::ErrorStrategy::ContinueOnError => {
+                    // Edges resolved (not activated) — dependents will be
+                    // Skipped; unaffected branches continue.
+                    None
+                },
+                // FailFast and future variants
+                _ => Some(error_msg.to_owned()),
+            }
+        },
     }
 }
 
@@ -3876,6 +3998,438 @@ mod tests {
             "resumed node B must still report the injected setup-failure \
              message; re-execution would have replaced it. errors: {:?}",
             resumed.node_errors
+        );
+    }
+
+    // -- Crash-window regression tests for #297 / D2 --
+
+    /// Wraps an inner [`ExecutionRepo`] and returns `Err` on the Nth
+    /// `transition()` call (1-indexed). All other trait methods delegate.
+    /// Used to simulate a storage failure during `checkpoint_node`.
+    struct FailAtTransitionN {
+        inner: Arc<nebula_storage::InMemoryExecutionRepo>,
+        fail_on: u32,
+        calls: std::sync::atomic::AtomicU32,
+    }
+
+    impl FailAtTransitionN {
+        fn new(inner: Arc<nebula_storage::InMemoryExecutionRepo>, fail_on: u32) -> Self {
+            Self {
+                inner,
+                fail_on,
+                calls: std::sync::atomic::AtomicU32::new(0),
+            }
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl nebula_storage::ExecutionRepo for FailAtTransitionN {
+        async fn get_state(
+            &self,
+            id: ExecutionId,
+        ) -> Result<Option<(u64, serde_json::Value)>, nebula_storage::ExecutionRepoError> {
+            self.inner.get_state(id).await
+        }
+
+        async fn transition(
+            &self,
+            id: ExecutionId,
+            expected_version: u64,
+            new_state: serde_json::Value,
+        ) -> Result<bool, nebula_storage::ExecutionRepoError> {
+            let n = self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst) + 1;
+            if n == self.fail_on {
+                return Err(nebula_storage::ExecutionRepoError::Connection(format!(
+                    "injected transition failure at call #{n}"
+                )));
+            }
+            self.inner.transition(id, expected_version, new_state).await
+        }
+
+        async fn get_journal(
+            &self,
+            id: ExecutionId,
+        ) -> Result<Vec<serde_json::Value>, nebula_storage::ExecutionRepoError> {
+            self.inner.get_journal(id).await
+        }
+
+        async fn append_journal(
+            &self,
+            id: ExecutionId,
+            entry: serde_json::Value,
+        ) -> Result<(), nebula_storage::ExecutionRepoError> {
+            self.inner.append_journal(id, entry).await
+        }
+
+        async fn acquire_lease(
+            &self,
+            id: ExecutionId,
+            holder: String,
+            ttl: Duration,
+        ) -> Result<bool, nebula_storage::ExecutionRepoError> {
+            self.inner.acquire_lease(id, holder, ttl).await
+        }
+
+        async fn renew_lease(
+            &self,
+            id: ExecutionId,
+            holder: &str,
+            ttl: Duration,
+        ) -> Result<bool, nebula_storage::ExecutionRepoError> {
+            self.inner.renew_lease(id, holder, ttl).await
+        }
+
+        async fn release_lease(
+            &self,
+            id: ExecutionId,
+            holder: &str,
+        ) -> Result<bool, nebula_storage::ExecutionRepoError> {
+            self.inner.release_lease(id, holder).await
+        }
+
+        async fn create(
+            &self,
+            id: ExecutionId,
+            workflow_id: WorkflowId,
+            state: serde_json::Value,
+        ) -> Result<(), nebula_storage::ExecutionRepoError> {
+            self.inner.create(id, workflow_id, state).await
+        }
+
+        async fn save_node_output(
+            &self,
+            execution_id: ExecutionId,
+            node_key: NodeKey,
+            attempt: u32,
+            output: serde_json::Value,
+        ) -> Result<(), nebula_storage::ExecutionRepoError> {
+            self.inner
+                .save_node_output(execution_id, node_key, attempt, output)
+                .await
+        }
+
+        async fn load_node_output(
+            &self,
+            execution_id: ExecutionId,
+            node_key: NodeKey,
+        ) -> Result<Option<serde_json::Value>, nebula_storage::ExecutionRepoError> {
+            self.inner.load_node_output(execution_id, node_key).await
+        }
+
+        async fn load_all_outputs(
+            &self,
+            execution_id: ExecutionId,
+        ) -> Result<HashMap<NodeKey, serde_json::Value>, nebula_storage::ExecutionRepoError>
+        {
+            self.inner.load_all_outputs(execution_id).await
+        }
+
+        async fn list_running(
+            &self,
+        ) -> Result<Vec<ExecutionId>, nebula_storage::ExecutionRepoError> {
+            self.inner.list_running().await
+        }
+
+        async fn count(
+            &self,
+            workflow_id: Option<WorkflowId>,
+        ) -> Result<u64, nebula_storage::ExecutionRepoError> {
+            self.inner.count(workflow_id).await
+        }
+
+        async fn check_idempotency(
+            &self,
+            key: &str,
+        ) -> Result<bool, nebula_storage::ExecutionRepoError> {
+            self.inner.check_idempotency(key).await
+        }
+
+        async fn mark_idempotent(
+            &self,
+            key: &str,
+            execution_id: ExecutionId,
+            node_key: NodeKey,
+        ) -> Result<(), nebula_storage::ExecutionRepoError> {
+            self.inner
+                .mark_idempotent(key, execution_id, node_key)
+                .await
+        }
+
+        async fn save_stateful_checkpoint(
+            &self,
+            execution_id: ExecutionId,
+            node_key: NodeKey,
+            attempt: u32,
+            iteration: u32,
+            state: serde_json::Value,
+        ) -> Result<(), nebula_storage::ExecutionRepoError> {
+            self.inner
+                .save_stateful_checkpoint(execution_id, node_key, attempt, iteration, state)
+                .await
+        }
+
+        async fn load_stateful_checkpoint(
+            &self,
+            execution_id: ExecutionId,
+            node_key: NodeKey,
+            attempt: u32,
+        ) -> Result<
+            Option<nebula_storage::StatefulCheckpointRecord>,
+            nebula_storage::ExecutionRepoError,
+        > {
+            self.inner
+                .load_stateful_checkpoint(execution_id, node_key, attempt)
+                .await
+        }
+
+        async fn delete_stateful_checkpoint(
+            &self,
+            execution_id: ExecutionId,
+            node_key: NodeKey,
+            attempt: u32,
+        ) -> Result<(), nebula_storage::ExecutionRepoError> {
+            self.inner
+                .delete_stateful_checkpoint(execution_id, node_key, attempt)
+                .await
+        }
+    }
+
+    /// Regression for [#297](https://github.com/vanyastaff/nebula/issues/297) (D2).
+    ///
+    /// When `checkpoint_node` fails on the runtime-failure branch, the
+    /// engine MUST abort the node's progression: the `Failed` state is
+    /// not durably persisted, therefore no OnError successor may be
+    /// spawned and no `NodeFailed` event may be emitted. Pre-fix the
+    /// checkpoint error was silently logged (`tracing::warn!`) and
+    /// `handle_node_failure` had already routed the OnError edge in
+    /// memory, so the successor `B` was spawned off an undurable
+    /// failure decision — the §11.5 "durability precedes visibility"
+    /// invariant was violated.
+    #[tokio::test]
+    async fn runtime_failure_checkpoint_error_aborts_before_edge_routing() {
+        use nebula_workflow::{EdgeCondition, ErrorMatcher};
+
+        let registry = Arc::new(ActionRegistry::new());
+        registry.register_stateless(FailHandler {
+            meta: ActionMetadata::new(action_key!("fail"), "Fail", "fails"),
+        });
+        registry.register_stateless(EchoHandler {
+            meta: ActionMetadata::new(action_key!("echo"), "Echo", "echoes"),
+        });
+
+        // A (fail) --OnError--> B (echo). ContinueOnError so the frontier
+        // loop reaches the failure branch (FailFast would early-return
+        // before checkpoint).
+        let a = node_key!("a");
+        let b = node_key!("b");
+        let wf = make_workflow_with_config(
+            vec![
+                NodeDefinition::new(a.clone(), "A", "fail").unwrap(),
+                NodeDefinition::new(b.clone(), "B", "echo").unwrap(),
+            ],
+            vec![
+                Connection::new(a.clone(), b.clone()).with_condition(EdgeCondition::OnError {
+                    matcher: ErrorMatcher::Any,
+                }),
+            ],
+            WorkflowConfig {
+                error_strategy: ErrorStrategy::ContinueOnError,
+                ..WorkflowConfig::default()
+            },
+        );
+        let workflow_repo = save_workflow_to_repo(&wf).await;
+
+        // First transition() call corresponds to the checkpoint_node
+        // invocation after A's runtime failure. Fail it.
+        let base = Arc::new(nebula_storage::InMemoryExecutionRepo::new());
+        let failing_repo = Arc::new(FailAtTransitionN::new(base, 1));
+
+        let (engine, _) = make_engine(registry);
+        let (event_tx, mut event_rx) = tokio::sync::mpsc::channel(64);
+        let engine = engine
+            .with_execution_repo(failing_repo)
+            .with_workflow_repo(workflow_repo)
+            .with_event_sender(event_tx);
+
+        let _ = engine
+            .execute_workflow(&wf, serde_json::json!(null), ExecutionBudget::default())
+            .await;
+
+        // Drop engine so the event channel closes; drain.
+        drop(engine);
+        let mut events = Vec::new();
+        while let Some(e) = event_rx.recv().await {
+            events.push(e);
+        }
+
+        let b_started = events.iter().any(|e| {
+            matches!(
+                e,
+                ExecutionEvent::NodeStarted { node_key, .. } if node_key == &b
+            )
+        });
+        assert!(
+            !b_started,
+            "B must not be spawned after A's checkpoint failed — \
+             checkpoint must precede edge routing (§11.5, #297). events: {events:#?}"
+        );
+
+        let a_failed_announced = events.iter().any(|e| {
+            matches!(
+                e,
+                ExecutionEvent::NodeFailed { node_key, .. } if node_key == &a
+            )
+        });
+        assert!(
+            !a_failed_announced,
+            "NodeFailed must not fire when A's checkpoint failed — \
+             external observers must never see a transition the store \
+             did not commit (§11.5, #297). events: {events:#?}"
+        );
+    }
+
+    /// Regression for [#297](https://github.com/vanyastaff/nebula/issues/297) (D2).
+    ///
+    /// `IgnoreErrors` strategy recovers a failed node to `Completed`. The
+    /// recovery MUST survive a checkpoint boundary: the sequence
+    /// `Failed → Completed` in memory must be persisted as `Completed`
+    /// before successors (which see a "success with null" payload) are
+    /// routed. Pre-fix, `handle_node_failure` applied the override in
+    /// memory and routed edges, then the outer `if state == Failed`
+    /// guard skipped the checkpoint — so persistence lagged the
+    /// observable recovery by up to one final-state flush.
+    #[tokio::test]
+    async fn ignore_errors_persists_recovered_completed_state() {
+        let registry = Arc::new(ActionRegistry::new());
+        registry.register_stateless(FailHandler {
+            meta: ActionMetadata::new(action_key!("fail"), "Fail", "fails"),
+        });
+
+        let a = node_key!("a");
+        let wf = make_workflow_with_config(
+            vec![NodeDefinition::new(a.clone(), "A", "fail").unwrap()],
+            vec![],
+            WorkflowConfig {
+                error_strategy: ErrorStrategy::IgnoreErrors,
+                ..WorkflowConfig::default()
+            },
+        );
+        let workflow_repo = save_workflow_to_repo(&wf).await;
+
+        let repo = Arc::new(nebula_storage::InMemoryExecutionRepo::new());
+        let (engine, _) = make_engine(registry);
+        let engine = engine
+            .with_execution_repo(repo.clone())
+            .with_workflow_repo(workflow_repo);
+
+        let result = engine
+            .execute_workflow(&wf, serde_json::json!(null), ExecutionBudget::default())
+            .await
+            .unwrap();
+
+        assert!(
+            result.is_success(),
+            "IgnoreErrors workflow must finish Completed, got {:?}",
+            result.status
+        );
+
+        let (version, final_state) = repo
+            .get_state(result.execution_id)
+            .await
+            .unwrap()
+            .expect("state must be persisted");
+
+        // Expected version bumps: create (v1) → IgnoreErrors recovery
+        // checkpoint (v2) → final (v3). Pre-fix path skips the recovery
+        // checkpoint and lands at v2. Using `>=` so later legitimate
+        // checkpoint additions do not break the signal.
+        assert!(
+            version >= 3,
+            "expected at least three version bumps: create + recovery \
+             checkpoint + final. Pre-fix path persists the recovered \
+             state only at the final flush; got {version}"
+        );
+
+        assert_eq!(
+            final_state
+                .get("node_states")
+                .and_then(|ns| ns.get(a.as_str()))
+                .and_then(|na| na.get("state"))
+                .and_then(|v| v.as_str()),
+            Some("completed"),
+            "IgnoreErrors must persist the recovered Completed state, \
+             not the intermediate Failed"
+        );
+    }
+
+    /// Regression for [#297](https://github.com/vanyastaff/nebula/issues/297) (D2) —
+    /// setup-failure branch symmetry with runtime-failure branch.
+    ///
+    /// Parameter-resolution failure goes through the setup-failure arm
+    /// of `run_frontier`. The checkpoint-before-routing discipline
+    /// must hold there too: if the setup-failure checkpoint errors,
+    /// the engine aborts instead of logging-and-continuing onto the
+    /// OnError successor.
+    #[tokio::test]
+    async fn setup_failure_checkpoint_error_aborts_before_edge_routing() {
+        use nebula_workflow::{EdgeCondition, ErrorMatcher, ParamValue};
+
+        let registry = Arc::new(ActionRegistry::new());
+        registry.register_stateless(EchoHandler {
+            meta: ActionMetadata::new(action_key!("echo"), "Echo", "echoes"),
+        });
+
+        let a = node_key!("a");
+        let b = node_key!("b");
+        let wf = make_workflow_with_config(
+            vec![
+                NodeDefinition::new(a.clone(), "A", "echo")
+                    .unwrap()
+                    .with_parameter("bad", ParamValue::template("Hello {{ unclosed")),
+                NodeDefinition::new(b.clone(), "B", "echo").unwrap(),
+            ],
+            vec![
+                Connection::new(a.clone(), b.clone()).with_condition(EdgeCondition::OnError {
+                    matcher: ErrorMatcher::Any,
+                }),
+            ],
+            WorkflowConfig {
+                error_strategy: ErrorStrategy::ContinueOnError,
+                ..WorkflowConfig::default()
+            },
+        );
+        let workflow_repo = save_workflow_to_repo(&wf).await;
+
+        let base = Arc::new(nebula_storage::InMemoryExecutionRepo::new());
+        let failing_repo = Arc::new(FailAtTransitionN::new(base, 1));
+
+        let (engine, _) = make_engine(registry);
+        let (event_tx, mut event_rx) = tokio::sync::mpsc::channel(64);
+        let engine = engine
+            .with_execution_repo(failing_repo)
+            .with_workflow_repo(workflow_repo)
+            .with_event_sender(event_tx);
+
+        let _ = engine
+            .execute_workflow(&wf, serde_json::json!(null), ExecutionBudget::default())
+            .await;
+
+        drop(engine);
+        let mut events = Vec::new();
+        while let Some(e) = event_rx.recv().await {
+            events.push(e);
+        }
+
+        let b_started = events.iter().any(|e| {
+            matches!(
+                e,
+                ExecutionEvent::NodeStarted { node_key, .. } if node_key == &b
+            )
+        });
+        assert!(
+            !b_started,
+            "B must not be spawned after A's setup-failure checkpoint \
+             failed (§11.5, #297). events: {events:#?}"
         );
     }
 
