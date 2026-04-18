@@ -1195,11 +1195,16 @@ impl WorkflowEngine {
                 )
                 .await;
 
-                self.emit_event(ExecutionEvent::NodeFailed {
-                    execution_id,
-                    node_key: node_key.clone(),
-                    error: setup_err_msg.clone(),
-                });
+                if exec_state
+                    .node_state(node_key.clone())
+                    .is_some_and(|ns| ns.state == NodeState::Failed)
+                {
+                    self.emit_event(ExecutionEvent::NodeFailed {
+                        execution_id,
+                        node_key: node_key.clone(),
+                        error: setup_err_msg.clone(),
+                    });
+                }
 
                 if let Some(err_msg) = abort {
                     cancel_token.cancel();
