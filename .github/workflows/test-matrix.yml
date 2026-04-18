@@ -6,12 +6,28 @@ on:
     paths-ignore:
       - "**.md"
       - "docs/**"
-      - "LICENSE"
+      - "LICENSE*"
+      - ".gitignore"
+      - ".gitattributes"
+      - ".editorconfig"
+      - ".vscode/**"
+      - ".idea/**"
+      - ".claude/**"
+      - ".github/ISSUE_TEMPLATE/**"
+      - ".github/PULL_REQUEST_TEMPLATE.md"
+      - ".github/labeler.yml"
+      - ".github/dependabot.yml"
+      - "CODEOWNERS"
+      - "assets/**"
+      - "**.png"
+      - "**.jpg"
+      - "**.svg"
+  # No `paths-ignore` on `pull_request`: `Tests` is a required check and
+  # would stick in "waiting" on doc-only PRs if the workflow never fires.
+  # Diff-scope already shrinks matrix to SMOKE when no crates changed — cost
+  # is bounded (~3 crates × 1 runner). `push:` keeps paths-ignore.
   pull_request:
-    paths-ignore:
-      - "**.md"
-      - "docs/**"
-      - "LICENSE"
+    types: [opened, synchronize, reopened, ready_for_review]
   merge_group:
   workflow_dispatch:
 

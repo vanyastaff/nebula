@@ -6,12 +6,28 @@ on:
     paths-ignore:
       - "**.md"
       - "docs/**"
-      - "LICENSE"
+      - "LICENSE*"
+      - ".gitignore"
+      - ".gitattributes"
+      - ".editorconfig"
+      - ".vscode/**"
+      - ".idea/**"
+      - ".claude/**"
+      - ".github/ISSUE_TEMPLATE/**"
+      - ".github/PULL_REQUEST_TEMPLATE.md"
+      - ".github/labeler.yml"
+      - ".github/dependabot.yml"
+      - "CODEOWNERS"
+      - "assets/**"
+      - "**.png"
+      - "**.jpg"
+      - "**.svg"
+  # `pull_request` intentionally has no `paths-ignore`: required checks would
+  # be stuck in "waiting" on doc-only PRs if the workflow never triggers. Tier
+  # 1 runs are cheap (~3 min) even for doc changes. `push:` keeps paths-ignore
+  # because cost matters for main-branch cache warming.
   pull_request:
-    paths-ignore:
-      - "**.md"
-      - "docs/**"
-      - "LICENSE"
+    types: [opened, synchronize, reopened, ready_for_review]
   merge_group:
   workflow_dispatch:
 
@@ -94,9 +110,14 @@ jobs:
           cargo check -p nebula-expression --no-default-features
 
   # ── Doctests (workspace-wide, off the critical path) ──────────────────────
+  # Tier 2: skipped on draft PRs — re-runs on `ready_for_review`.
   doctests:
     name: Doctests
     needs: [check]
+    if: >-
+      github.event_name != 'pull_request' ||
+      github.event.pull_request.draft != true ||
+      contains(github.event.pull_request.labels.*.name, 'run-full-ci')
     runs-on: ubuntu-latest
     steps:
       - name: Checkout repository
@@ -113,9 +134,14 @@ jobs:
         run: cargo test --workspace --doc
 
   # ── MSRV ───────────────────────────────────────────────────────────────────
+  # Tier 2: skipped on draft PRs.
   msrv:
     name: MSRV (1.94)
     needs: [check]
+    if: >-
+      github.event_name != 'pull_request' ||
+      github.event.pull_request.draft != true ||
+      contains(github.event.pull_request.labels.*.name, 'run-full-ci')
     runs-on: ubuntu-latest
     steps:
       - name: Checkout repository
@@ -132,9 +158,14 @@ jobs:
         run: cargo check --workspace --all-targets
 
   # ── Documentation ──────────────────────────────────────────────────────────
+  # Tier 2: skipped on draft PRs.
   doc:
     name: Documentation
     needs: [check]
+    if: >-
+      github.event_name != 'pull_request' ||
+      github.event.pull_request.draft != true ||
+      contains(github.event.pull_request.labels.*.name, 'run-full-ci')
     runs-on: ubuntu-latest
     env:
       RUSTDOCFLAGS: -D warnings
@@ -173,8 +204,13 @@ jobs:
         run: cargo bench -p nebula-log --bench log_hot_path
 
   # ── Supply-chain audit ─────────────────────────────────────────────────────
+  # Tier 2: skipped on draft PRs.
   deny:
     name: Supply-chain audit (cargo deny)
+    if: >-
+      github.event_name != 'pull_request' ||
+      github.event.pull_request.draft != true ||
+      contains(github.event.pull_request.labels.*.name, 'run-full-ci')
     runs-on: ubuntu-latest
     steps:
       - name: Checkout repository
@@ -183,3 +219,36 @@ jobs:
         uses: taiki-e/install-action@cargo-deny
       - name: Run cargo deny
         run: cargo deny check
+
+  # ── Required aggregator ───────────────────────────────────────────────────
+  # Single required check for branch protection. Treats `skipped` (draft-gated
+  # tier 2 jobs) as success, but `failure`/`cancelled` fails the whole suite.
+  # Replace the 6 individual required checks in the ruleset with just `CI`.
+  required:
+    name: CI
+    if: always()
+    needs: [fmt, clippy, check, doctests, msrv, doc, deny]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Verify required jobs
+        env:
+          FMT: ${{ needs.fmt.result }}
+          CLIPPY: ${{ needs.clippy.result }}
+          CHECK: ${{ needs.check.result }}
+          DOCTESTS: ${{ needs.doctests.result }}
+          MSRV: ${{ needs.msrv.result }}
+          DOC: ${{ needs.doc.result }}
+          DENY: ${{ needs.deny.result }}
+        run: |
+          set -euo pipefail
+          fail=0
+          for pair in "fmt=$FMT" "clippy=$CLIPPY" "check=$CHECK" \
+                     "doctests=$DOCTESTS" "msrv=$MSRV" "doc=$DOC" "deny=$DENY"; do
+            name="${pair%%=*}"
+            result="${pair#*=}"
+            if [[ "$result" != "success" && "$result" != "skipped" ]]; then
+              echo "::error::$name: $result"
+              fail=1
+            fi
+          done
+          exit "$fail"
