@@ -23,9 +23,18 @@ jobs:
         with:
           fetch-depth: 0
 
+      - name: Install convco
+        if: github.actor != 'dependabot[bot]'
+        uses: taiki-e/install-action@v2
+        with:
+          tool: convco
+
       - name: Check commit messages
         if: github.actor != 'dependabot[bot]'
-        uses: wagoid/commitlint-github-action@v6
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: convco check "$BASE_SHA..$HEAD_SHA"
 
       - name: Check PR title
         env:
