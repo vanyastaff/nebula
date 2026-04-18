@@ -22,27 +22,12 @@ on:
       - "**.png"
       - "**.jpg"
       - "**.svg"
+  # `pull_request` intentionally has no `paths-ignore`: required checks would
+  # be stuck in "waiting" on doc-only PRs if the workflow never triggers. Tier
+  # 1 runs are cheap (~3 min) even for doc changes. `push:` keeps paths-ignore
+  # because cost matters for main-branch cache warming.
   pull_request:
     types: [opened, synchronize, reopened, ready_for_review]
-    paths-ignore:
-      - "**.md"
-      - "docs/**"
-      - "LICENSE*"
-      - ".gitignore"
-      - ".gitattributes"
-      - ".editorconfig"
-      - ".vscode/**"
-      - ".idea/**"
-      - ".claude/**"
-      - ".github/ISSUE_TEMPLATE/**"
-      - ".github/PULL_REQUEST_TEMPLATE.md"
-      - ".github/labeler.yml"
-      - ".github/dependabot.yml"
-      - "CODEOWNERS"
-      - "assets/**"
-      - "**.png"
-      - "**.jpg"
-      - "**.svg"
   merge_group:
   workflow_dispatch:
 
@@ -130,6 +115,7 @@ jobs:
     name: Doctests
     needs: [check]
     if: >-
+      github.event_name != 'pull_request' ||
       github.event.pull_request.draft != true ||
       contains(github.event.pull_request.labels.*.name, 'run-full-ci')
     runs-on: ubuntu-latest
@@ -153,6 +139,7 @@ jobs:
     name: MSRV (1.94)
     needs: [check]
     if: >-
+      github.event_name != 'pull_request' ||
       github.event.pull_request.draft != true ||
       contains(github.event.pull_request.labels.*.name, 'run-full-ci')
     runs-on: ubuntu-latest
@@ -176,6 +163,7 @@ jobs:
     name: Documentation
     needs: [check]
     if: >-
+      github.event_name != 'pull_request' ||
       github.event.pull_request.draft != true ||
       contains(github.event.pull_request.labels.*.name, 'run-full-ci')
     runs-on: ubuntu-latest
@@ -220,6 +208,7 @@ jobs:
   deny:
     name: Supply-chain audit (cargo deny)
     if: >-
+      github.event_name != 'pull_request' ||
       github.event.pull_request.draft != true ||
       contains(github.event.pull_request.labels.*.name, 'run-full-ci')
     runs-on: ubuntu-latest

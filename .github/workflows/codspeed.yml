@@ -22,28 +22,12 @@ on:
       - "**.png"
       - "**.jpg"
       - "**.svg"
+  # No `paths-ignore` on `pull_request`: the per-shard dorny filter already
+  # skips shards whose crates didn't change. Doc-only PR → shards == [] →
+  # `codspeed` job skipped, aggregator-free (no required check to stick).
   pull_request:
     branches: [main]
     types: [opened, synchronize, reopened, ready_for_review]
-    paths-ignore:
-      - "**.md"
-      - "docs/**"
-      - "LICENSE*"
-      - ".gitignore"
-      - ".gitattributes"
-      - ".editorconfig"
-      - ".vscode/**"
-      - ".idea/**"
-      - ".claude/**"
-      - ".github/ISSUE_TEMPLATE/**"
-      - ".github/PULL_REQUEST_TEMPLATE.md"
-      - ".github/labeler.yml"
-      - ".github/dependabot.yml"
-      - "CODEOWNERS"
-      - "assets/**"
-      - "**.png"
-      - "**.jpg"
-      - "**.svg"
   # `workflow_dispatch` allows CodSpeed to trigger backtest
   # performance analysis in order to generate initial data.
   workflow_dispatch:
@@ -136,7 +120,10 @@ jobs:
           fi
 
           SHARDS='[]'
-          add() { SHARDS=$(jq --argjson x "$1" '. + [$x]' <<<"$SHARDS"); }
+          # `jq -c` is required: `GITHUB_OUTPUT` only accepts single-line
+          # values (or <<delimiter syntax); default pretty-print breaks
+          # `fromJson()` in the matrix consumer.
+          add() { SHARDS=$(jq -c --argjson x "$1" '. + [$x]' <<<"$SHARDS"); }
 
           [[ "$R" == "true" ]] && add '{"shard":"resilience","packages":"-p nebula-resilience"}'
           [[ "$V" == "true" ]] && add '{"shard":"validator","packages":"-p nebula-validator"}'
@@ -148,11 +135,11 @@ jobs:
   codspeed:
     name: Run benchmarks (${{ matrix.shard }})
     needs: [changes]
-    if: >-
-      needs.changes.outputs.shards != '[]' &&
-      (github.event_name != 'pull_request' ||
-       github.event.pull_request.draft == false ||
-       contains(github.event.pull_request.labels.*.name, 'run-full-ci'))
+    # Gate is shard-level only: draft PRs still get partial CodSpeed feedback
+    # on the shards they touch (matches per-shard partial-run design). Full
+    # baseline runs are forced by main push, workflow_dispatch, or the
+    # `run-full-ci` label (see `plan` step).
+    if: needs.changes.outputs.shards != '[]'
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
