@@ -74,13 +74,19 @@ fn type_mismatch(value: &serde_json::Value, expected: &'static str) -> Validatio
 impl ValueRule {
     /// Validates a JSON value against this rule.
     ///
-    /// Returns `ValidationError::type_mismatch` (code `type_mismatch`,
-    /// params `expected` / `actual` / `value`) when the input's JSON kind
-    /// does not match this rule's expected kind. Callers that want
-    /// tolerant behaviour on mismatched kinds should check the shape
-    /// upstream — see `nebula-schema::validated` for the canonical pattern.
+    /// Kind-bound rules (`MinLength`, `MaxLength`, `Pattern`, `Email`, `Url`
+    /// → string; `Min`, `Max`, `GreaterThan`, `LessThan` → number;
+    /// `MinItems`, `MaxItems` → array) return `ValidationError::type_mismatch`
+    /// (code `type_mismatch`, params `expected` / `actual` / `value`) when
+    /// the input's JSON kind does not match. Callers that want tolerant
+    /// behaviour on mismatched kinds should check the shape upstream — see
+    /// `nebula-schema::validated` for the canonical pattern.
     ///
-    /// Successful rule-specific failures carry `params` for
+    /// `OneOf` is kind-agnostic: a value that is not in the allowed set
+    /// reports `one_of` regardless of kind (mismatched kind is just a
+    /// non-member). An empty allowed set passes.
+    ///
+    /// Rule-specific validation failures carry `params` for
     /// message-template rendering: `{min}`, `{max}`, `{pattern}`,
     /// `{allowed}`, plus always `{value}`.
     ///
