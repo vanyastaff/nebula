@@ -85,16 +85,19 @@ Paste **actual tool output**. Do not paraphrase. Do not summarize "all green" wi
 ```
 ## Verification evidence
 
+(One section per fast-gate / full-gate command you ran, using the current
+canonical list from root `CLAUDE.md`. Headers are named after the step,
+not the exact invocation — the command itself lives in `CLAUDE.md`.)
+
 ### fmt
-<last 3 lines of `cargo +nightly fmt --all`, or "(no output — clean)">
+<last 3 lines of the fmt step's output, or "(no output — clean)">
 
 ### clippy
-<last 10 lines of `cargo clippy --workspace -- -D warnings`>
+<last 10 lines of the clippy step's output>
 (clippy: 0 warnings across <N> crates)
 
 ### nextest
-<the "Summary" line at minimum:
- "Summary [  X.YZs] N tests run: N passed, 0 failed, 0 skipped">
+<at minimum the final Summary line, e.g. "Summary [  X.YZs] N tests run: N passed, 0 failed, 0 skipped">
 
 ### doctests (if ran)
 <summary>
