@@ -1171,17 +1171,45 @@ impl WorkflowEngine {
                 // `spawn_node` already marked the node as Failed and stored
                 // the typed error message on `NodeExecutionState`.
                 //
-                // Ordering (§11.5, #297): classify outcome → apply
-                // IgnoreErrors recovery → persist → emit observable
-                // event → route edges. Route AFTER checkpoint so
-                // OnError successors are a function of persisted state.
+                // Ordering (§11.5, #297 review): classify → apply
+                // recovery → route (stages OnError payload into
+                // outputs) → checkpoint (durably commits state +
+                // staged payload) → emit. Route runs BEFORE
+                // checkpoint so `load_all_outputs` on resume finds
+                // the OnError handler's input.
                 let err_msg = exec_state
                     .node_state(node_key.clone())
                     .and_then(|ns| ns.error_message.clone())
                     .unwrap_or_else(|| "parameter resolution failed".to_string());
 
                 let outcome = classify_failure(error_strategy);
-                apply_failure_recovery(outcome, node_key.clone(), exec_state, outputs);
+                if let Err(e) =
+                    apply_failure_recovery(outcome, node_key.clone(), exec_state, outputs)
+                {
+                    cancel_token.cancel();
+                    return Some((node_key, e.to_string()));
+                }
+
+                // Route BEFORE checkpoint so the OnError input payload
+                // (`outputs[node_key] = {error, node_id}`) written by
+                // `route_failure_edges` is captured by the checkpoint.
+                // Successors enqueued into `ready_queue` are invisible
+                // until Phase 1 of the next loop iteration, which runs
+                // strictly after the checkpoint below — nothing external
+                // observes the routing before the store commits it.
+                let abort = route_failure_edges(
+                    outcome,
+                    node_key.clone(),
+                    &err_msg,
+                    error_strategy,
+                    graph,
+                    outputs,
+                    &mut activated_edges,
+                    &mut resolved_edges,
+                    &required_count,
+                    &mut ready_queue,
+                    exec_state,
+                );
 
                 if let Err(e) = self
                     .checkpoint_node(
@@ -1208,19 +1236,6 @@ impl WorkflowEngine {
                     });
                 }
 
-                let abort = route_failure_edges(
-                    outcome,
-                    node_key.clone(),
-                    &err_msg,
-                    error_strategy,
-                    graph,
-                    outputs,
-                    &mut activated_edges,
-                    &mut resolved_edges,
-                    &required_count,
-                    &mut ready_queue,
-                    exec_state,
-                );
                 if let Some(err_msg) = abort {
                     cancel_token.cancel();
                     return Some((node_key, err_msg));
@@ -1301,12 +1316,34 @@ impl WorkflowEngine {
                         ),
                     ));
                     mark_node_failed(exec_state, node_key.clone(), &err);
+                    let err_str = err.to_string();
 
-                    // Ordering (§11.5, #297): classify → apply recovery →
-                    // persist → emit → route. Identical shape to the
-                    // runtime-failure branch below; see its comment block.
+                    // Ordering (§11.5, #297 review): classify → apply
+                    // recovery → route (stages OnError payload) →
+                    // checkpoint → emit. Identical shape to the
+                    // runtime-failure branch below; see its comment
+                    // block.
                     let outcome = classify_failure(error_strategy);
-                    apply_failure_recovery(outcome, node_key.clone(), exec_state, outputs);
+                    if let Err(e) =
+                        apply_failure_recovery(outcome, node_key.clone(), exec_state, outputs)
+                    {
+                        cancel_token.cancel();
+                        return Some((node_key.clone(), e.to_string()));
+                    }
+
+                    let abort = route_failure_edges(
+                        outcome,
+                        node_key.clone(),
+                        &err_str,
+                        error_strategy,
+                        graph,
+                        outputs,
+                        &mut activated_edges,
+                        &mut resolved_edges,
+                        &required_count,
+                        &mut ready_queue,
+                        exec_state,
+                    );
 
                     if let Err(e) = self
                         .checkpoint_node(
@@ -1326,23 +1363,10 @@ impl WorkflowEngine {
                         self.emit_event(ExecutionEvent::NodeFailed {
                             execution_id,
                             node_key: node_key.clone(),
-                            error: err.to_string(),
+                            error: err_str.clone(),
                         });
                     }
 
-                    let abort = route_failure_edges(
-                        outcome,
-                        node_key.clone(),
-                        &err.to_string(),
-                        error_strategy,
-                        graph,
-                        outputs,
-                        &mut activated_edges,
-                        &mut resolved_edges,
-                        &required_count,
-                        &mut ready_queue,
-                        exec_state,
-                    );
                     if let Some(err_msg) = abort {
                         cancel_token.cancel();
                         return Some((node_key.clone(), err_msg));
@@ -1420,22 +1444,49 @@ impl WorkflowEngine {
                 },
                 Ok((task_id, (node_key, Err(ref err)))) => {
                     task_nodes.remove(&task_id);
-                    // Node failed at runtime. Ordering (§11.5, #297):
-                    //   1. `mark_node_failed`  — in-memory state mutation
-                    //   2. classify + apply    — IgnoreErrors recovery (in-memory)
-                    //   3. `checkpoint_node`   — durable commit (abort on Err)
-                    //   4. `emit_event`        — observers (only if Fail)
-                    //   5. `route_failure_edges` — frontier advancement
+                    // Node failed at runtime. Ordering (§11.5, #297 PR
+                    // review by Copilot — route stages OnError payload
+                    // that checkpoint must capture so resume can read
+                    // it from `load_all_outputs`):
+                    //   1. `mark_node_failed`      — in-memory Failed
+                    //   2. `apply_failure_recovery` — IgnoreErrors-only override of state + null
+                    //      output (in-memory)
+                    //   3. `route_failure_edges`    — evaluate outgoing edges; may write `{error,
+                    //      node_id}` payload into `outputs[node_key]` for OnError input; may
+                    //      enqueue successors into `ready_queue`
+                    //   4. `checkpoint_node`        — durable commit of state + outputs (abort on
+                    //      Err; the discarded `ready_queue` mutations never surface)
+                    //   5. `emit_event`             — observers (only for Fail outcome), strictly
+                    //      after persist
                     //
-                    // Routing edges BEFORE checkpoint (the pre-#297 shape)
-                    // let a crash after edge activation but before persist
-                    // land with `ready_queue` holding successors that the
-                    // persisted state could not reconstruct on resume —
-                    // duplicate or dropped side-effects, per §13 knife #5.
+                    // Successors in `ready_queue` do NOT dispatch until
+                    // Phase 1 of the next loop iteration; that runs
+                    // after checkpoint. Nothing external observes a
+                    // state the store has not committed (§11.5).
                     mark_node_failed(exec_state, node_key.clone(), err);
+                    let err_str = err.to_string();
 
                     let outcome = classify_failure(error_strategy);
-                    apply_failure_recovery(outcome, node_key.clone(), exec_state, outputs);
+                    if let Err(e) =
+                        apply_failure_recovery(outcome, node_key.clone(), exec_state, outputs)
+                    {
+                        cancel_token.cancel();
+                        return Some((node_key.clone(), e.to_string()));
+                    }
+
+                    let abort = route_failure_edges(
+                        outcome,
+                        node_key.clone(),
+                        &err_str,
+                        error_strategy,
+                        graph,
+                        outputs,
+                        &mut activated_edges,
+                        &mut resolved_edges,
+                        &required_count,
+                        &mut ready_queue,
+                        exec_state,
+                    );
 
                     if let Err(e) = self
                         .checkpoint_node(
@@ -1455,23 +1506,10 @@ impl WorkflowEngine {
                         self.emit_event(ExecutionEvent::NodeFailed {
                             execution_id,
                             node_key: node_key.clone(),
-                            error: err.to_string(),
+                            error: err_str.clone(),
                         });
                     }
 
-                    let abort = route_failure_edges(
-                        outcome,
-                        node_key.clone(),
-                        &err.to_string(),
-                        error_strategy,
-                        graph,
-                        outputs,
-                        &mut activated_edges,
-                        &mut resolved_edges,
-                        &required_count,
-                        &mut ready_queue,
-                        exec_state,
-                    );
                     if let Some(err_msg) = abort {
                         cancel_token.cancel();
                         return Some((node_key.clone(), err_msg));
@@ -2509,37 +2547,51 @@ fn classify_failure(error_strategy: nebula_workflow::ErrorStrategy) -> FailureOu
     }
 }
 
-/// Apply the IgnoreErrors in-memory recovery before checkpoint.
+/// Apply the IgnoreErrors in-memory recovery before routing + checkpoint.
 ///
-/// For `FailureOutcome::Fail` this is a no-op: the caller already marked
-/// the node `Failed` (via `mark_node_failed` or `spawn_node`'s override),
-/// and that Failed state is what checkpoint must commit.
-///
-/// For `FailureOutcome::Recover` this overrides the state to `Completed`,
-/// clears the error message, and inserts a `null` output — mirroring
+/// For `FailureOutcome::Recover` (IgnoreErrors): overrides the state to
+/// `Completed`, clears `error_message`, inserts a `null` output. Mirrors
 /// the old `handle_node_failure` IgnoreErrors path. The override bumps
 /// the version per #255 so CAS readers see the recovery.
+///
+/// For `FailureOutcome::Fail`: no-op. The failed state was set by the
+/// caller's `mark_node_failed` (or `spawn_node`'s override); the OnError
+/// input payload (if any edge matches) is written by
+/// `route_failure_edges` and captured by the following checkpoint.
+///
+/// Returns `Err(EngineError::Execution)` if `override_node_state`
+/// cannot find the node — the caller MUST abort the node's progression
+/// rather than leave state + outputs half-applied (§12.4). Pre-review
+/// (PR #436 / Copilot) this function discarded the `Result` via
+/// `let _ = ...`, silently masking a real consistency error.
 fn apply_failure_recovery(
     outcome: FailureOutcome,
     node_key: NodeKey,
     exec_state: &mut ExecutionState,
     outputs: &Arc<DashMap<NodeKey, serde_json::Value>>,
-) {
+) -> Result<(), EngineError> {
     if outcome == FailureOutcome::Recover {
-        let _ = exec_state.override_node_state(node_key.clone(), NodeState::Completed);
+        exec_state.override_node_state(node_key.clone(), NodeState::Completed)?;
         if let Some(ns) = exec_state.node_states.get_mut(&node_key) {
             ns.error_message = None;
         }
         outputs.insert(node_key, serde_json::json!(null));
     }
+    Ok(())
 }
 
-/// Route outgoing edges after the node's state has been durably committed.
+/// Route outgoing edges. MUST be called BEFORE `checkpoint_node` so
+/// the OnError input payload this function writes into
+/// `outputs[node_key]` is captured by the following checkpoint — that
+/// is what `resume_execution`'s `load_all_outputs` reads when a
+/// crashed OnError handler is replayed.
 ///
-/// MUST be called AFTER `checkpoint_node` succeeds (§11.5, #297): the
-/// frontier advancement this produces must be a function of persisted
-/// state, not an in-memory decision that a crash can discard while
-/// observers act on it.
+/// Successors pushed into `ready_queue` are invisible to external
+/// observers until the next `Phase 1` dispatch, which runs strictly
+/// after the outer match arm's `checkpoint_node`. If the following
+/// checkpoint returns `Err`, the caller aborts the frontier (cancel
+/// token + early return); the discarded `ready_queue` mutations never
+/// surface — §11.5 invariant holds.
 ///
 /// Returns `Some(error_message)` if the frontier must abort — FailFast
 /// strategy with no OnError handler took the failure. Returns `None`
@@ -2591,7 +2643,11 @@ fn route_failure_edges(
             );
 
             if error_handled {
-                // Store error info for the OnError handler's input.
+                // Stage OnError handler input into outputs BEFORE the
+                // checkpoint that will run next — guarantees the
+                // payload is durably captured so a resumed OnError
+                // successor can read it from persisted state via
+                // `load_all_outputs` (#297 review / Copilot).
                 outputs.insert(
                     node_key.clone(),
                     serde_json::json!({
@@ -4659,6 +4715,84 @@ mod tests {
             !b_started,
             "B must not be spawned after A's setup-failure checkpoint \
              failed (§11.5, #297). events: {events:#?}"
+        );
+    }
+
+    /// Regression for PR [#436](https://github.com/vanyastaff/nebula/pull/436)
+    /// review (Copilot) — the OnError input payload
+    /// (`{error, node_id}`) must be staged into `outputs[failed_node]`
+    /// BEFORE `checkpoint_node` commits the failure, so that a crashed-
+    /// then-resumed workflow loads it via `load_all_outputs` rather
+    /// than finding the OnError successor's input missing.
+    #[tokio::test]
+    async fn on_error_payload_is_persisted_before_checkpoint_commits() {
+        use nebula_workflow::{EdgeCondition, ErrorMatcher};
+
+        let registry = Arc::new(ActionRegistry::new());
+        registry.register_stateless(FailHandler {
+            meta: ActionMetadata::new(action_key!("fail"), "Fail", "fails"),
+        });
+        registry.register_stateless(EchoHandler {
+            meta: ActionMetadata::new(action_key!("echo"), "Echo", "echoes"),
+        });
+
+        let a = node_key!("a");
+        let b = node_key!("b");
+        let wf = make_workflow_with_config(
+            vec![
+                NodeDefinition::new(a.clone(), "A", "fail").unwrap(),
+                NodeDefinition::new(b.clone(), "B", "echo").unwrap(),
+            ],
+            vec![
+                Connection::new(a.clone(), b.clone()).with_condition(EdgeCondition::OnError {
+                    matcher: ErrorMatcher::Any,
+                }),
+            ],
+            WorkflowConfig {
+                error_strategy: ErrorStrategy::ContinueOnError,
+                ..WorkflowConfig::default()
+            },
+        );
+        let workflow_repo = save_workflow_to_repo(&wf).await;
+        let repo = Arc::new(nebula_storage::InMemoryExecutionRepo::new());
+
+        let (engine, _) = make_engine(registry);
+        let engine = engine
+            .with_execution_repo(repo.clone())
+            .with_workflow_repo(workflow_repo);
+
+        let result = engine
+            .execute_workflow(&wf, serde_json::json!(null), ExecutionBudget::default())
+            .await
+            .unwrap();
+
+        // The OnError handler B completed, so the workflow reports
+        // success (ContinueOnError + handled error).
+        assert!(result.is_success(), "status: {:?}", result.status);
+
+        // The OnError input payload must have been loadable from the
+        // persistence store — i.e. captured by the checkpoint that
+        // commits A's Failed state, not written ephemerally after.
+        let persisted = repo
+            .load_node_output(result.execution_id, a.clone())
+            .await
+            .unwrap()
+            .expect(
+                "outputs[A] must be persisted: resume's load_all_outputs \
+                 depends on it for the OnError handler's input",
+            );
+
+        let error_field = persisted.get("error").and_then(|v| v.as_str());
+        let node_id_field = persisted.get("node_id").and_then(|v| v.as_str());
+        assert_eq!(
+            node_id_field,
+            Some(a.as_str()),
+            "persisted payload must carry node_id for the OnError \
+             handler; got {persisted:?}"
+        );
+        assert!(
+            error_field.is_some_and(|s| s.contains("intentional failure")),
+            "persisted payload must carry the error message; got {persisted:?}"
         );
     }
 
