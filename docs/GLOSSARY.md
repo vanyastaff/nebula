@@ -40,10 +40,12 @@ The single source of truth for what a run did and where it is. Canon §11.1 make
 | `executions` row | table | `implemented` (durable) | Authoritative per-run state + monotonic `version`. | §11.5 |
 | `execution_journal` | table | `implemented` (durable) | Append-only replayable timeline of an execution. | §11.5 |
 | `execution_control_queue` | table | `implemented` (durable) | Outbox for run/cancel signals. Writes happen **in the same logical operation** as the state transition (§12.2). | §11.5, §12.2 |
-| `ExecutionControlQueue` | concept | `implemented` | Logical name for the outbox surface; backed by `execution_control_queue` + a dispatch worker wired to a real engine consumer. | §12.2 |
+| `ExecutionControlQueue` | concept | `partial` | Logical name for the outbox surface; backed by `execution_control_queue` + a consumer (`nebula_engine::ControlConsumer`). The skeleton drains and acks rows; dispatch into the engine lands with ADR-0008 follow-ups A2 (`Resume` / `Restart`) and A3 (`Cancel` / `Terminate`). | §12.2 |
+| `ControlConsumer` | type | `implemented` (skeleton) | Engine-owned consumer that drains `execution_control_queue` via `ControlQueueRepo` and hands typed commands to `ControlDispatch`. See ADR-0008. | §12.2 |
+| `ControlDispatch` | trait | `partial` | Engine-owned dispatch surface. `ControlConsumer` translates storage rows → typed `ExecutionId` + command; implementors must be idempotent per `(execution_id, command)`. Method bodies are stubs today; A2 / A3 wire real engine paths. | §12.2 |
 | `stateful_checkpoints` | table | `best-effort` (failure mode) | Resume anchor at checkpoint boundaries. Write failure logs and does not abort execution; work since last successful checkpoint may be replayed or lost. | §11.5 |
 | `execution_leases` | table | `planned` / partial | Schema may exist before enforcement. Do not imply lease safety unless the engine consumes leases in the deployment path. | §11.5 |
-| `Cancel` | variant | `implemented` | Control-queue command that, when consumed by the engine, drives a run to terminal `Cancelled`. | §12.2, §13 |
+| `Cancel` | variant | `partial` | Control-queue command. Enqueue / observation / ack path is `implemented`; engine-side dispatch into the cancel path is `planned` via ADR-0008 chip A3. Once A3 lands, consuming `Cancel` drives a run to terminal `Cancelled`. | §12.2, §13 |
 | `Cancelled` | state | `implemented` | Terminal status reached when cancel propagates end-to-end. | §13 |
 
 ---

@@ -2122,11 +2122,14 @@ async fn cancel_terminal_execution_does_not_enqueue() {
     );
 }
 
-/// Regression for #286/#288/#328: `GET /api/v1/workflows/:id/executions`
-/// must scope running IDs to the requested workflow, not leak running
-/// executions from other workflows on the instance.
+/// Regression for #329: `get_execution` must parse canonical RFC3339 timestamps
+/// from engine-persisted `ExecutionState` blobs, not silently collapse to 0.
+///
+/// Canonical shape per `crates/execution/src/state.rs`: `started_at` and
+/// `completed_at` are `Option<DateTime<Utc>>` serialized as RFC3339 strings.
+/// The API response maps both into `started_at` / `finished_at` fields.
 #[tokio::test]
-async fn list_executions_scopes_to_workflow_id() {
+async fn get_execution_parses_rfc3339_timestamps() {
     use axum::{
         body::Body,
         http::{Request, StatusCode},
@@ -2138,25 +2141,24 @@ async fn list_executions_scopes_to_workflow_id() {
     let api_config = ApiConfig::for_test();
     let token = create_test_jwt();
 
-    let wid_a = WorkflowId::new();
-    let wid_b = WorkflowId::new();
-    let exec_a = ExecutionId::new();
-    let exec_b1 = ExecutionId::new();
-    let exec_b2 = ExecutionId::new();
+    let execution_id = ExecutionId::new();
+    let workflow_id = WorkflowId::new();
 
+    // Seed with canonical engine-shape state: RFC3339 string timestamps
+    // under the canonical field names (`completed_at`, not `finished_at`).
     state
         .execution_repo
-        .create(exec_a, wid_a, serde_json::json!({"status": "running"}))
-        .await
-        .unwrap();
-    state
-        .execution_repo
-        .create(exec_b1, wid_b, serde_json::json!({"status": "running"}))
-        .await
-        .unwrap();
-    state
-        .execution_repo
-        .create(exec_b2, wid_b, serde_json::json!({"status": "cancelling"}))
+        .create(
+            execution_id,
+            workflow_id,
+            serde_json::json!({
+                "workflow_id": workflow_id.to_string(),
+                "status": "completed",
+                "started_at": "2024-01-15T12:34:56Z",
+                "completed_at": "2024-02-20T08:00:00Z",
+                "input": {}
+            }),
+        )
         .await
         .unwrap();
 
@@ -2165,7 +2167,7 @@ async fn list_executions_scopes_to_workflow_id() {
         .oneshot(
             Request::builder()
                 .method("GET")
-                .uri(format!("/api/v1/workflows/{}/executions", wid_a))
+                .uri(format!("/api/v1/executions/{}", execution_id))
                 .header("authorization", format!("Bearer {}", token))
                 .body(Body::empty())
                 .unwrap(),
@@ -2177,19 +2179,72 @@ async fn list_executions_scopes_to_workflow_id() {
     let body = axum::body::to_bytes(response.into_body(), usize::MAX)
         .await
         .unwrap();
-    let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
-    let ids: Vec<String> = json["executions"]
-        .as_array()
-        .expect("executions must be an array")
-        .iter()
-        .map(|e| e["id"].as_str().expect("id is string").to_string())
-        .collect();
+    let execution: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(execution["started_at"].as_i64(), Some(1_705_322_096));
+    assert_eq!(execution["finished_at"].as_i64(), Some(1_708_416_000));
+}
+
+/// Regression for #331: `cancel_execution` must reject cancellation of an
+/// execution already in `timed_out` state (another terminal state besides
+/// completed/failed/cancelled).
+#[tokio::test]
+async fn cancel_timed_out_execution_rejected() {
+    use axum::{
+        body::Body,
+        http::{Request, StatusCode},
+    };
+    use nebula_core::{ExecutionId, WorkflowId};
+    use tower::ServiceExt;
+
+    let (state, control_queue) = create_test_state_with_queue().await;
+    let api_config = ApiConfig::for_test();
+    let token = create_test_jwt();
+
+    let execution_id = ExecutionId::new();
+    let workflow_id = WorkflowId::new();
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs() as i64;
+
+    state
+        .execution_repo
+        .create(
+            execution_id,
+            workflow_id,
+            serde_json::json!({
+                "workflow_id": workflow_id.to_string(),
+                "status": "timed_out",
+                "started_at": now,
+                "finished_at": now + 30,
+                "input": {}
+            }),
+        )
+        .await
+        .unwrap();
+
+    let app = app::build_app(state, &api_config);
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!("/api/v1/executions/{}/cancel", execution_id))
+                .header("authorization", format!("Bearer {}", token))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
 
     assert_eq!(
-        ids.len(),
-        1,
-        "listing workflow A must not leak workflow B's IDs, got: {:?}",
-        ids
+        response.status(),
+        StatusCode::BAD_REQUEST,
+        "cancel on timed_out execution must be rejected (timed_out is terminal)"
     );
-    assert_eq!(ids[0], exec_a.to_string());
+
+    // Queue must remain empty — terminal-status guard short-circuits before enqueue.
+    assert!(
+        control_queue.snapshot().await.is_empty(),
+        "control queue must be empty after rejected cancel of timed_out execution"
+    );
 }

@@ -49,7 +49,7 @@ const IMMUTABLE_DEFINITION_FIELDS: &[&str] = &[
 /// Returns `None` when the field is absent or has an unsupported shape — the
 /// caller decides whether to fall back to `0`, surface an internal error, or
 /// omit the field. Fixes issue #343.
-fn extract_timestamp(definition: &Value, key: &str) -> Option<i64> {
+pub(crate) fn extract_timestamp(definition: &Value, key: &str) -> Option<i64> {
     let field = definition.get(key)?;
     if let Some(n) = field.as_i64() {
         return Some(n);
