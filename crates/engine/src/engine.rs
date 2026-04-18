@@ -1148,6 +1148,8 @@ impl WorkflowEngine {
                 }
 
                 // Node failed during setup (e.g., param resolution).
+                // `spawn_node` already marked the node as Failed and stored
+                // the typed error message on `NodeExecutionState`.
                 let abort = handle_node_failure(
                     node_key.clone(),
                     "parameter resolution failed",
@@ -1163,6 +1165,37 @@ impl WorkflowEngine {
                 if let Some(err_msg) = abort {
                     cancel_token.cancel();
                     return Some((node_key, err_msg));
+                }
+
+                // Mirror the runtime-failure branch (§11.5, #297/#321):
+                // when the node remains Failed after handle_node_failure
+                // (i.e., not recovered by IgnoreErrors), persist the
+                // failure decision and any OnError/ContinueOnError
+                // edge-routing it triggered before any observer sees the
+                // node as done. Without this, a crash between here and
+                // the final-state checkpoint would lose both the Failed
+                // state and the edge-routing already applied in memory.
+                if exec_state
+                    .node_state(node_key.clone())
+                    .is_some_and(|ns| ns.state == NodeState::Failed)
+                {
+                    self.checkpoint_node(
+                        execution_id,
+                        node_key.clone(),
+                        outputs,
+                        exec_state,
+                        repo_version,
+                    )
+                    .await;
+                    let err = exec_state
+                        .node_state(node_key.clone())
+                        .and_then(|ns| ns.error_message.clone())
+                        .unwrap_or_else(|| "parameter resolution failed".to_string());
+                    self.emit_event(ExecutionEvent::NodeFailed {
+                        execution_id,
+                        node_key: node_key.clone(),
+                        error: err,
+                    });
                 }
             }
 
@@ -3662,6 +3695,176 @@ mod tests {
         assert!(
             result.node_output(&n3).is_some(),
             "n3 should have been re-executed"
+        );
+    }
+
+    /// Regression for [#321](https://github.com/vanyastaff/nebula/issues/321).
+    ///
+    /// The setup-failure branch of `run_frontier` (parameter resolution
+    /// error before the action is spawned) routed the failure through
+    /// `handle_node_failure` but SKIPPED the `checkpoint_node` call the
+    /// runtime-failure branch makes. A crash between setup-failure
+    /// handling and the next final-state checkpoint therefore lost both
+    /// the node's `Failed` state and any OnError / ContinueOnError
+    /// edge-routing already applied in memory by `handle_node_failure`.
+    /// PRODUCT_CANON §11.5 (durability precedes visibility, §12.2 /
+    /// #297).
+    ///
+    /// This test covers the fix in two parts:
+    ///   1. Running a ContinueOnError workflow with one node that fails at parameter resolution.
+    ///      Symmetric persistence means the frontier loop emits one extra `transition()` against
+    ///      the repo — observable as an additional repo-version bump (create → setup-failure
+    ///      checkpoint → final = v3 vs the pre-fix create → final = v2).
+    ///   2. Simulating a crash at that intermediate checkpoint by injecting a matching state
+    ///      snapshot into a fresh repo and resuming. The resumed engine must keep the node in
+    ///      `Failed` (terminal states are not reset by `resume_execution`) and must NOT re-execute
+    ///      the node from scratch.
+    #[tokio::test]
+    async fn setup_failure_persists_before_final_checkpoint() {
+        use nebula_workflow::ParamValue;
+
+        let registry = Arc::new(ActionRegistry::new());
+        registry.register_stateless(EchoHandler {
+            meta: ActionMetadata::new(action_key!("echo"), "Echo", "echoes input"),
+        });
+
+        // `ContinueOnError` ensures `handle_node_failure` returns `None`
+        // so the frontier loop reaches the new setup-failure checkpoint.
+        // FailFast would return early (cancel + propagate) before the
+        // branch this test is exercising; the same durability gap exists
+        // there, but this is the exercise path that lets the test
+        // observe the new transition directly.
+        let b = node_key!("b");
+        let wf = make_workflow_with_config(
+            vec![
+                NodeDefinition::new(b.clone(), "B", "echo")
+                    .unwrap()
+                    .with_parameter("bad", ParamValue::template("Hello {{ unclosed")),
+            ],
+            vec![],
+            WorkflowConfig {
+                error_strategy: ErrorStrategy::ContinueOnError,
+                ..WorkflowConfig::default()
+            },
+        );
+        let workflow_repo = save_workflow_to_repo(&wf).await;
+
+        // Part 1: run the workflow and observe the extra checkpoint via
+        // the repo-version counter.
+        let repo1 = Arc::new(nebula_storage::InMemoryExecutionRepo::new());
+        let (engine1, _) = make_engine(registry.clone());
+        let engine1 = engine1
+            .with_execution_repo(repo1.clone())
+            .with_workflow_repo(workflow_repo.clone());
+
+        let result = engine1
+            .execute_workflow(&wf, serde_json::json!(null), ExecutionBudget::default())
+            .await
+            .unwrap();
+
+        let (version, final_state) = repo1
+            .get_state(result.execution_id)
+            .await
+            .unwrap()
+            .expect("execution state must be persisted");
+        // Using `>=` rather than `==` so a future legitimate mid-execution
+        // checkpoint (e.g. a per-status-transition persist) does not break
+        // this test. The regression signal is preserved either way: the
+        // pre-fix path lands at v2 (create + final only), which always
+        // fails `>= 3`.
+        assert!(
+            version >= 3,
+            "expected at least three version bumps: create (v1) + \
+             setup-failure checkpoint (v2 — the fix) + final (v3). Pre-fix \
+             path skips the setup-failure checkpoint and lands at v2; got \
+             {version}"
+        );
+        assert_eq!(
+            final_state
+                .get("node_states")
+                .and_then(|ns| ns.get(b.as_str()))
+                .and_then(|nb| nb.get("state"))
+                .and_then(|v| v.as_str()),
+            Some("failed"),
+            "final persisted state must record node B as Failed"
+        );
+        assert!(
+            result.node_errors.contains_key(&b),
+            "execution result must carry the setup-failure error for B"
+        );
+
+        // Part 2: simulate a crash at the intermediate checkpoint. Build
+        // a state snapshot matching what the setup-failure checkpoint
+        // writes (status=Running, node B Failed with error message) and
+        // resume in a fresh repo.
+        let execution_id = ExecutionId::new();
+        let node_ids = vec![b.clone()];
+        let mut crashed_state = ExecutionState::new(execution_id, wf.id, &node_ids);
+        crashed_state
+            .transition_status(ExecutionStatus::Running)
+            .unwrap();
+        // Mirror spawn_node's override on parameter-resolution failure:
+        // the node was still Pending when resolution failed, so we use
+        // override_node_state (Pending → Failed is not a valid forward
+        // transition). The bump is implicit.
+        crashed_state
+            .override_node_state(b.clone(), NodeState::Failed)
+            .unwrap();
+        if let Some(ns) = crashed_state.node_states.get_mut(&b) {
+            ns.error_message = Some("parameter resolution failed: template parse error".into());
+        }
+
+        let repo2 = Arc::new(nebula_storage::InMemoryExecutionRepo::new());
+        repo2
+            .create(
+                execution_id,
+                wf.id,
+                serde_json::to_value(&crashed_state).unwrap(),
+            )
+            .await
+            .unwrap();
+
+        let (engine2, _) = make_engine(registry);
+        let engine2 = engine2
+            .with_execution_repo(repo2.clone())
+            .with_workflow_repo(workflow_repo);
+        let resumed = engine2.resume_execution(execution_id).await.unwrap();
+
+        // Resume must land in a terminal status — the Failed node is
+        // already terminal, so the frontier has nothing to run.
+        assert!(
+            resumed.status.is_terminal(),
+            "resume must reach a terminal status, got {:?}",
+            resumed.status
+        );
+
+        // Node B must still carry its setup-failure error: resume leaves
+        // terminal nodes untouched (engine.rs §resume_execution step 7).
+        // If B had been re-dispatched, its attempts vector would grow or
+        // the error message would be overwritten by a new failure.
+        let persisted = repo2
+            .get_state(execution_id)
+            .await
+            .unwrap()
+            .expect("state must still be persisted after resume");
+        assert_eq!(
+            persisted
+                .1
+                .get("node_states")
+                .and_then(|ns| ns.get(b.as_str()))
+                .and_then(|nb| nb.get("state"))
+                .and_then(|v| v.as_str()),
+            Some("failed"),
+            "resume must not have reset node B's terminal Failed state"
+        );
+        assert!(
+            resumed
+                .node_errors
+                .get(&b)
+                .is_some_and(|err| err.contains("parameter resolution failed")),
+            "resumed node B must still report the injected setup-failure \
+             message; re-execution would have replaced it. errors: {:?}",
+            resumed.node_errors
         );
     }
 
