@@ -47,10 +47,15 @@ external-default-features = "allow"
 allow = []
 deny = [
   { crate = "openssl", reason = "Prefer rustls-based TLS stack across the workspace" },
+
+  # ---- Layer enforcement: API (top) ----
+  # nebula-api may only be depended on by itself (dev-dep for test-util feature).
+  # nebula-cli talks to the engine directly, not through the API crate.
   { crate = "nebula-api", wrappers = [
-    "nebula-cli",
     "nebula-api",
   ], reason = "API is top layer; lower-level crates must not depend on it directly" },
+
+  # ---- Layer enforcement: Exec ----
   { crate = "nebula-engine", wrappers = [
     "nebula-cli",
   ], reason = "Engine is exec-layer orchestration; business/core crates must not depend on it" },
@@ -62,7 +67,17 @@ deny = [
   { crate = "nebula-sandbox", wrappers = [
     "nebula-runtime",
     "nebula-cli",
-  ], reason = "Sandbox is infra/exec boundary and should only be used through runtime-facing crates" },
+  ], reason = "Sandbox is exec/infra boundary; only runtime and CLI may depend on it directly" },
+  { crate = "nebula-storage", wrappers = [
+    "nebula-engine",
+    "nebula-api",
+  ], reason = "Storage is exec-layer; business and core crates must not depend on it directly" },
+  { crate = "nebula-sdk", wrappers = [
+    "nebula-examples",
+  ], reason = "SDK is the external integration surface; only the examples workspace member may depend on it" },
+  { crate = "nebula-plugin-sdk", wrappers = [
+    "nebula-sandbox",
+  ], reason = "Plugin-SDK is the out-of-process plugin protocol; only sandbox may depend on it" },
 ]
 skip = [
   "bitflags",
