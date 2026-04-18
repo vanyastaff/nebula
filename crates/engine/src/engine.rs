@@ -1197,7 +1197,10 @@ impl WorkflowEngine {
                     return Some((node_key, e.to_string()));
                 }
 
-                if outcome == FailureOutcome::Fail {
+                if exec_state
+                    .node_state(node_key.clone())
+                    .is_some_and(|ns| ns.state == NodeState::Failed)
+                {
                     self.emit_event(ExecutionEvent::NodeFailed {
                         execution_id,
                         node_key: node_key.clone(),
@@ -1218,30 +1221,6 @@ impl WorkflowEngine {
                     &mut ready_queue,
                     exec_state,
                 );
-
-                // Checkpoint *after* handle_node_failure so the persisted
-                // node state reflects the final resolved state — symmetrical
-                // to the runtime-failure branch below (issue #321).
-                self.checkpoint_node(
-                    execution_id,
-                    node_key.clone(),
-                    outputs,
-                    exec_state,
-                    repo_version,
-                )
-                .await;
-
-                if exec_state
-                    .node_state(node_key.clone())
-                    .is_some_and(|ns| ns.state == NodeState::Failed)
-                {
-                    self.emit_event(ExecutionEvent::NodeFailed {
-                        execution_id,
-                        node_key: node_key.clone(),
-                        error: setup_err_msg.clone(),
-                    });
-                }
-
                 if let Some(err_msg) = abort {
                     cancel_token.cancel();
                     return Some((node_key, err_msg));
@@ -1313,7 +1292,8 @@ impl WorkflowEngine {
                 // handed to the generic `Ok(action_result)` success arm.
                 // Handling stays a synthetic failure until the real scheduler
                 // lands (#290 / #296).
-                Ok((node_key, Ok(ref action_result))) if action_result.is_retry() => {
+                Ok((task_id, (node_key, Ok(ref action_result)))) if action_result.is_retry() => {
+                    task_nodes.remove(&task_id);
                     total_retries.fetch_add(1, Ordering::Relaxed);
                     let err = EngineError::Runtime(nebula_runtime::RuntimeError::ActionError(
                         nebula_action::error::ActionError::retryable(
@@ -1438,7 +1418,8 @@ impl WorkflowEngine {
                         exec_state,
                     );
                 },
-                Ok((node_key, Err(ref err))) => {
+                Ok((task_id, (node_key, Err(ref err)))) => {
+                    task_nodes.remove(&task_id);
                     // Node failed at runtime. Ordering (§11.5, #297):
                     //   1. `mark_node_failed`  — in-memory state mutation
                     //   2. classify + apply    — IgnoreErrors recovery (in-memory)
@@ -1512,25 +1493,15 @@ impl WorkflowEngine {
                     );
 
                     if let Some(node_key) = panicked_node {
-                        // Best-effort accounting so the panicked node
-                        // ends up Failed with a real error message
-                        // and its final state is persisted — same
-                        // shape as the runtime-failure branch above.
-                        let panic_err = EngineError::TaskPanicked(err_msg.clone());
-                        mark_node_failed(exec_state, node_key.clone(), &panic_err);
-                        self.checkpoint_node(
+                        self.handle_panicked_node(
                             execution_id,
                             node_key.clone(),
+                            &err_msg,
                             outputs,
                             exec_state,
                             repo_version,
                         )
                         .await;
-                        self.emit_event(ExecutionEvent::NodeFailed {
-                            execution_id,
-                            node_key: node_key.clone(),
-                            error: err_msg.clone(),
-                        });
                         cancel_token.cancel();
                         return Some((node_key, err_msg));
                     }
@@ -1791,18 +1762,20 @@ impl WorkflowEngine {
         // Branch/Route/MultiOutput/Skip routing semantics on replay —
         // every branch edge would fire unconditionally (issue #299).
         let stored_result = match repo.load_node_result(execution_id, node_key.clone()).await {
-            Ok(Some(raw)) => match serde_json::from_value::<ActionResult<serde_json::Value>>(raw) {
-                Ok(result) => Some(result),
-                Err(e) => {
-                    tracing::warn!(
-                        %execution_id,
-                        %node_key,
-                        error = %e,
-                        "failed to deserialize persisted action result; \
-                         falling back to synthesized Success"
-                    );
-                    None
-                },
+            Ok(Some(record)) => {
+                match serde_json::from_value::<ActionResult<serde_json::Value>>(record.result) {
+                    Ok(result) => Some(result),
+                    Err(e) => {
+                        tracing::warn!(
+                            %execution_id,
+                            %node_key,
+                            error = %e,
+                            "failed to deserialize persisted action result; \
+                             falling back to synthesized Success"
+                        );
+                        None
+                    },
+                }
             },
             Ok(None) => {
                 // Backend has no stored result (legacy rows, or a
@@ -1876,8 +1849,14 @@ impl WorkflowEngine {
                 return;
             },
         };
+        let kind = value
+            .get("type")
+            .and_then(|v| v.as_str())
+            .unwrap_or("Unknown")
+            .to_owned();
+        let record = nebula_storage::NodeResultRecord::new(kind, value);
         if let Err(e) = repo
-            .save_node_result(execution_id, node_key.clone(), attempt, value)
+            .save_node_result(execution_id, node_key.clone(), attempt, record)
             .await
         {
             tracing::warn!(
@@ -1919,6 +1898,48 @@ impl WorkflowEngine {
     /// `run_frontier` MUST abort the node's progression (no edge routing,
     /// no event emission) on `Err` so that observers and the frontier
     /// never act on an unpersisted transition (§11.5, §12.4, #297).
+    /// Persist final Failed state + emit NodeFailed for a panicked task.
+    ///
+    /// Best-effort: checkpoint failures are logged at `warn!` level (not
+    /// propagated) so that the engine still returns a cohesive panic
+    /// error to `run_frontier`'s caller. The real durability gap —
+    /// `save_node_output` after panic — is already logged by
+    /// `checkpoint_node` itself.
+    async fn handle_panicked_node(
+        &self,
+        execution_id: ExecutionId,
+        node_key: NodeKey,
+        err_msg: &str,
+        outputs: &Arc<DashMap<NodeKey, serde_json::Value>>,
+        exec_state: &mut ExecutionState,
+        repo_version: &mut u64,
+    ) {
+        let panic_err = EngineError::TaskPanicked(err_msg.to_owned());
+        mark_node_failed(exec_state, node_key.clone(), &panic_err);
+        let checkpoint_result = self
+            .checkpoint_node(
+                execution_id,
+                node_key.clone(),
+                outputs,
+                exec_state,
+                repo_version,
+            )
+            .await;
+        if let Err(e) = checkpoint_result {
+            tracing::warn!(
+                %execution_id,
+                %node_key,
+                error = %e,
+                "failed to checkpoint panicked node state"
+            );
+        }
+        self.emit_event(ExecutionEvent::NodeFailed {
+            execution_id,
+            node_key,
+            error: err_msg.to_owned(),
+        });
+    }
+
     async fn checkpoint_node(
         &self,
         execution_id: ExecutionId,
@@ -5786,18 +5807,21 @@ mod tests {
         // Verify the persisted ActionResult encodes a Branch variant
         // rather than bare output — this is the byte-level check
         // behind issue #299's fix.
-        let persisted_result = repo
+        let persisted_record = repo
             .load_node_result(first.execution_id, a.clone())
             .await
             .unwrap()
             .expect("load_node_result should return the persisted ActionResult after #299");
         assert_eq!(
-            persisted_result.get("type").and_then(|v| v.as_str()),
-            Some("Branch"),
-            "persisted ActionResult for A should be the Branch variant, got: {persisted_result}"
+            persisted_record.kind, "Branch",
+            "persisted ActionResult for A should be the Branch variant, got: {:?}",
+            persisted_record
         );
         assert_eq!(
-            persisted_result.get("selected").and_then(|v| v.as_str()),
+            persisted_record
+                .result
+                .get("selected")
+                .and_then(|v| v.as_str()),
             Some("true"),
             "Branch selector should be persisted verbatim"
         );
