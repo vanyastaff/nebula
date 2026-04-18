@@ -1,0 +1,13 @@
+warning: unused import: `FieldCollector`
+ --> tests/compile_fail/builder_group_no_item_method.rs:1:21
+  |
+1 | use nebula_schema::{FieldCollector, Schema};
+  |                     ^^^^^^^^^^^^^^
+  |
+  = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+error[E0599]: no method named `item` found for struct `GroupBuilder` in the current scope
+ --> tests/compile_fail/builder_group_no_item_method.rs:6:27
+  |
+6 |         .group("g", |g| g.item("x"))
+  |                           ^^^^ method not found in `GroupBuilder`

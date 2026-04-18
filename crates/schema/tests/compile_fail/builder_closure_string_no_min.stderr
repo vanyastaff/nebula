@@ -1,8 +1,8 @@
 error[E0599]: the method `min` exists for struct `StringBuilder`, but its trait bounds were not satisfied
- --> tests/compile_fail/string_no_min.rs:2:50
+ --> tests/compile_fail/builder_closure_string_no_min.rs:5:52
   |
-2 |       let _ = nebula_schema::Field::string("name").min(1);
-  |                                                    ^^^ method cannot be called on `StringBuilder` due to unsatisfied trait bounds
+5 |       let _ = Schema::builder().string("name", |s| s.min(1)).build();
+  |                                                      ^^^ method cannot be called on `StringBuilder` due to unsatisfied trait bounds
   |
  ::: src/field.rs
   |
