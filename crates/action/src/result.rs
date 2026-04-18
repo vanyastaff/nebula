@@ -25,11 +25,33 @@ pub use crate::port::PortKey;
 /// - `Branch` → activate a specific branch path
 /// - `Route` / `MultiOutput` → fan-out to output ports
 /// - `Wait` → pause until external event, timer, or approval
-/// - `Retry` → request re-execution after a delay
+/// - `Retry` → reserved for a future engine retry scheduler; gated behind the
+///   `unstable-retry-scheduler` feature and **not** honored end-to-end (canon §11.2). The canonical
+///   retry surface today is the `nebula-resilience` pipeline composed inside an action around
+///   outbound calls.
 /// - `Terminate` → end the whole execution explicitly (Stop / Fail nodes)
 ///
 /// All output fields are wrapped in [`ActionOutput<T>`] to support binary,
 /// reference, and stream data alongside structured values.
+#[cfg_attr(
+    not(feature = "unstable-retry-scheduler"),
+    doc = r#"
+
+# Feature gating
+
+The `ActionResult::Retry` variant is hidden behind the default-off
+`unstable-retry-scheduler` feature flag (canon §11.2). On default features,
+consumers cannot name the variant — the following fails to compile:
+
+```compile_fail
+use nebula_action::ActionResult;
+let _: ActionResult<()> = ActionResult::Retry {
+    after: std::time::Duration::from_secs(1),
+    reason: "gated".into(),
+};
+```
+"#
+)]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type")]
 #[non_exhaustive]
@@ -144,11 +166,27 @@ pub enum ActionResult<T> {
         partial_output: Option<ActionOutput<T>>,
     },
 
-    /// Request a retry after a delay.
+    /// **Unstable.** Reserved for a future engine retry scheduler.
     ///
-    /// Unlike `ActionError::Retryable`, this is a *successful* signal that the
-    /// action wants to be re-executed (e.g. upstream data not ready, rate-limit
-    /// cooldown). The engine re-enqueues the node after `after` elapses.
+    /// Gated behind the `unstable-retry-scheduler` feature flag. The engine
+    /// does **not** honor this variant end-to-end today: there is no persisted
+    /// attempt accounting, no CAS-protected counter bump, and no consumer wired
+    /// through `ExecutionRepo`. Per canon §11.2 / §4.5 this variant is a
+    /// `planned` capability that must be hidden until the scheduler lands.
+    ///
+    /// Returning this variant from a stable handler is a **logic error**: the
+    /// variant is only reachable when the crate is compiled with the
+    /// `unstable-retry-scheduler` feature, which is opt-in and not part of the
+    /// public contract. For retry semantics today, compose
+    /// [`nebula-resilience`](https://docs.rs/nebula-resilience) inside the
+    /// action around the outbound call.
+    ///
+    /// Unlike `ActionError::Retryable`, this would be a *successful* signal
+    /// that the action wants to be re-executed (e.g. upstream data not ready,
+    /// rate-limit cooldown). Once the scheduler lands, the engine will
+    /// re-enqueue the node after `after` elapses.
+    #[cfg(feature = "unstable-retry-scheduler")]
+    #[cfg_attr(docsrs, doc(cfg(feature = "unstable-retry-scheduler")))]
     Retry {
         /// Suggested delay before re-execution.
         #[serde(with = "duration_ms")]
@@ -569,9 +607,29 @@ impl<T> ActionResult<T> {
     }
 
     /// Returns `true` if the action is requesting a retry.
+    ///
+    /// The `Retry` variant itself is gated behind the
+    /// `unstable-retry-scheduler` feature (canon §11.2), but this predicate
+    /// is **always available** so that consumers can ask the question in a
+    /// feature-unification-safe way. Without the feature the variant cannot
+    /// be constructed, so this always returns `false`; with the feature, it
+    /// returns `true` iff the result is `Retry`.
+    ///
+    /// The engine uses this method as a runtime guard to keep `Retry` out of
+    /// the normal success path even when Cargo feature unification lands the
+    /// variant in `nebula-action` without enabling the mirror feature in
+    /// `nebula-engine`.
     #[must_use]
     pub fn is_retry(&self) -> bool {
-        matches!(self, Self::Retry { .. })
+        #[cfg(feature = "unstable-retry-scheduler")]
+        {
+            matches!(self, Self::Retry { .. })
+        }
+        #[cfg(not(feature = "unstable-retry-scheduler"))]
+        {
+            let _ = self;
+            false
+        }
     }
 
     /// Returns `true` if the action dropped its item without stopping the branch.
@@ -646,6 +704,7 @@ impl<T> ActionResult<T> {
                 timeout,
                 partial_output: partial_output.map(|o| o.map(&mut f)),
             },
+            #[cfg(feature = "unstable-retry-scheduler")]
             Self::Retry { after, reason } => ActionResult::Retry { after, reason },
             Self::Drop { reason } => ActionResult::Drop { reason },
             Self::Terminate { reason } => ActionResult::Terminate { reason },
@@ -722,6 +781,7 @@ impl<T> ActionResult<T> {
                 timeout,
                 partial_output: partial_output.map(|o| o.try_map(&mut f)).transpose()?,
             }),
+            #[cfg(feature = "unstable-retry-scheduler")]
             Self::Retry { after, reason } => Ok(ActionResult::Retry { after, reason }),
             Self::Drop { reason } => Ok(ActionResult::Drop { reason }),
             Self::Terminate { reason } => Ok(ActionResult::Terminate { reason }),
@@ -732,7 +792,8 @@ impl<T> ActionResult<T> {
     ///
     /// Returns `Some(ActionOutput<T>)` for variants that carry a primary output.
     /// Returns `None` for `Skip` without output, `Wait` without partial
-    /// output, `MultiOutput` without main output, and `Retry`.
+    /// output, `MultiOutput` without main output, and `Retry` (when the
+    /// `unstable-retry-scheduler` feature is enabled).
     ///
     /// To extract the inner `T` directly, chain with [`ActionOutput::into_value`]:
     ///
@@ -750,6 +811,7 @@ impl<T> ActionResult<T> {
             Self::Route { data, .. } => Some(data),
             Self::MultiOutput { main_output, .. } => main_output,
             Self::Wait { partial_output, .. } => partial_output,
+            #[cfg(feature = "unstable-retry-scheduler")]
             Self::Retry { .. } => None,
             Self::Drop { .. } => None,
             Self::Terminate { .. } => None,
@@ -1044,6 +1106,7 @@ mod tests {
         }
     }
 
+    #[cfg(feature = "unstable-retry-scheduler")]
     #[test]
     fn map_output_retry() {
         let r: ActionResult<i32> = ActionResult::Retry {
@@ -1062,6 +1125,7 @@ mod tests {
 
     // ── retry tests ──────────────────────────────────────────────────
 
+    #[cfg(feature = "unstable-retry-scheduler")]
     #[test]
     fn retry_result() {
         let result: ActionResult<()> = ActionResult::Retry {
@@ -1131,6 +1195,7 @@ mod tests {
         assert_eq!(mapped.unwrap_err(), "bad value");
     }
 
+    #[cfg(feature = "unstable-retry-scheduler")]
     #[test]
     fn try_map_output_retry() {
         let r: ActionResult<i32> = ActionResult::Retry {
@@ -1201,6 +1266,7 @@ mod tests {
         assert_eq!(out.into_value(), Some(55));
     }
 
+    #[cfg(feature = "unstable-retry-scheduler")]
     #[test]
     fn into_primary_output_retry() {
         let r: ActionResult<i32> = ActionResult::Retry {

@@ -17,9 +17,11 @@ from "activated workflow" to "terminal state." Without a composition root, calle
 risk diverging from the canon §12.2 control-plane contract. `nebula-engine` is that root: it
 builds an `ExecutionPlan` from the workflow DAG, resolves node inputs from predecessor outputs,
 transitions execution state through `ExecutionRepo` (CAS on `version`), and delegates action
-dispatch to `nebula-runtime`. It is also the only component that canon §12.2 names as the
-**real consumer** of `execution_control_queue` — a demo handler that logs and discards commands
-does not satisfy the canon.
+dispatch to `nebula-runtime`. Canon §12.2 names this crate as the location of the
+`execution_control_queue` consumer (`ControlConsumer`). The consumer skeleton — polling,
+claim/ack, graceful shutdown — ships today; the `Resume` / `Restart` dispatch (A2, closes #332 /
+#327) and the `Cancel` / `Terminate` dispatch (A3, closes #330) are planned follow-ups on the
+ADR-0008 chip stack. A demo handler that logs and discards commands does not satisfy the canon.
 
 ## Role
 
@@ -31,6 +33,14 @@ bounded concurrency.
 ## Public API
 
 - `WorkflowEngine` — entry point: executes workflows level-by-level with bounded concurrency.
+- `ControlConsumer` — durable control-queue consumer drained via `ControlQueueRepo`
+  (canon §12.2, ADR-0008). Skeleton today; `Resume` / `Restart` and `Cancel` / `Terminate`
+  dispatch land with A2 / A3.
+- `ControlDispatch` — engine-owned trait implementors provide to deliver typed commands
+  (`ExecutionId` + command kind) to the engine's start / cancel paths. Must be idempotent
+  per `(execution_id, command)` pair (ADR-0008 §5).
+- `ControlDispatchError` — typed error returned from `ControlDispatch` methods; recorded on
+  the control-queue row via `mark_failed` (no auto-retry — ADR-0008 §5).
 - `ExecutionResult` — post-run summary returned to the API layer.
 - `EngineError` — typed engine-layer error.
 - `ExecutionEvent` — broadcast event type emitted via `nebula-eventbus`.
@@ -38,6 +48,7 @@ bounded concurrency.
 - `EngineResourceAccessor` — scoped resource accessor injected into action contexts.
 - `NodeOutput` — per-node output threaded between execution levels.
 - `DEFAULT_EVENT_CHANNEL_CAPACITY` — default backpressure bound for the event channel.
+- `DEFAULT_BATCH_SIZE` / `DEFAULT_POLL_INTERVAL` — tunables for `ControlConsumer`.
 
 Re-exports from `nebula-plugin`: `Plugin`, `PluginKey`, `PluginMetadata`, `PluginRegistry`,
 `PluginType`.
@@ -48,10 +59,14 @@ Re-exports from `nebula-plugin`: `Plugin`, `PluginKey`, `PluginMetadata`, `Plugi
   `version`). No handler inside the engine mutates execution state in-memory or invents a
   parallel lifecycle. Seam: `crates/storage/src/execution_repo.rs — ExecutionRepo::transition`.
 
-- **[L2-§12.2]** The engine is the **single real consumer** of `execution_control_queue` in
-  production deployment modes. Cancel signals are written to the outbox in the same logical
-  operation as the state transition and the engine's cancel path processes them. A handler that
-  only logs and discards control-queue rows violates this invariant.
+- **[L2-§12.2]** The engine owns the `execution_control_queue` consumer
+  (`ControlConsumer`; wiring decisions in ADR-0008). Cancel signals are written to the outbox in
+  the same logical operation as the state transition and the engine's `ControlConsumer` drains
+  the queue. Today the skeleton observes and acks each command; the engine-facing `Cancel` /
+  `Terminate` path (chip A3) and `Resume` / `Restart` path (chip A2) land on top of the
+  skeleton. A handler that only logs and discards control-queue rows violates this invariant —
+  the skeleton's `planned` markers bound the transition to the immediate follow-up PRs, after
+  which the invariant is honoured end-to-end.
 
 - **[L2-§10]** The golden-path knife scenario (canon §13) — define, activate, start, observe,
   cancel — exercises this crate's integration with `ExecutionRepo` end-to-end. Integration
