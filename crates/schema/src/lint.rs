@@ -311,11 +311,16 @@ fn lint_rule_refs_new(
             }
             continue;
         }
-        // Transitional: accepts both JSON-pointer (`/path`) and legacy dotted
-        // (`a.b.c`) ref forms. Remove the `.` separator once schema refs fully
-        // migrate to JSON Pointer.
-        let stripped = field_ref.strip_prefix('/').unwrap_or(field_ref);
-        let lk = stripped.split(['/', '.']).next().unwrap_or_default();
+        // Transitional: JSON-pointer form (`/path`) splits only on `/`; legacy
+        // dotted form (`a.b.c`) splits on `.`. Dual-splitting would chop a
+        // valid JSON-pointer segment like `/user.name` at the dot (RFC 6901
+        // allows `.` inside segments). Remove the dotted arm once schema refs
+        // fully migrate to JSON Pointer.
+        let lk = if let Some(rest) = field_ref.strip_prefix('/') {
+            rest.split('/').next().unwrap_or_default()
+        } else {
+            field_ref.split('.').next().unwrap_or_default()
+        };
         if !local_keys.contains(lk) {
             report.push(
                 ValidationError::builder("dangling_reference")
@@ -593,11 +598,16 @@ fn lint_visibility_cycles_new(fields: &[Field], prefix: &FieldPath, report: &mut
                 if target.starts_with("$root.") {
                     continue;
                 }
-                // Transitional: accepts both JSON-pointer (`/path`) and legacy
-                // dotted (`a.b.c`) ref forms. Remove the `.` separator once
-                // schema refs fully migrate to JSON Pointer.
-                let stripped = target.strip_prefix('/').unwrap_or(target);
-                let target = stripped.split(['/', '.']).next().unwrap_or_default();
+                // Transitional: JSON-pointer form (`/path`) splits only on
+                // `/`; legacy dotted form (`a.b.c`) splits on `.`. Dual-split
+                // would mangle a valid pointer segment containing `.` (RFC
+                // 6901 allows it). Remove the dotted arm once schema refs
+                // fully migrate to JSON Pointer.
+                let target = if let Some(rest) = target.strip_prefix('/') {
+                    rest.split('/').next().unwrap_or_default()
+                } else {
+                    target.split('.').next().unwrap_or_default()
+                };
                 edges.push((source, target));
             }
         }

@@ -22,6 +22,7 @@ pub use mode::ValidationMode;
 pub(crate) use pointer::to_json_pointer;
 pub use severity::ErrorSeverity;
 pub use validation_error::ValidationError;
+pub(crate) use validation_error::render_template;
 pub use validation_errors::ValidationErrors;
 
 // ============================================================================
@@ -227,5 +228,24 @@ mod tests {
         let err = ValidationError::new("test", "no placeholders here");
         let rendered = format!("{err}");
         assert!(rendered.contains("no placeholders here"));
+    }
+
+    #[test]
+    fn display_does_not_leak_params_tail() {
+        // Templates consume params in the rendered message, so the debug
+        // `(params: [...])` tail was removed from Display to avoid double
+        // exposure (and accidental info disclosure for non-redacted keys).
+        let err = ValidationError::new("test", "value is {secret}")
+            .with_param("secret", "shh")
+            .with_param("other", "leaked");
+        let rendered = format!("{err}");
+        assert!(
+            !rendered.contains("(params:"),
+            "Display should not re-list params after template rendering: {rendered}"
+        );
+        assert!(
+            !rendered.contains("other=leaked"),
+            "param values not referenced by template must not appear in Display: {rendered}"
+        );
     }
 }

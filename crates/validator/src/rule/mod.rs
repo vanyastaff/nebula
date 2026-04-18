@@ -113,7 +113,12 @@ impl Rule {
             Self::Deferred(_) if mode == ExecutionMode::StaticOnly => Ok(()),
             Self::Deferred(d) => d.validate(input, ctx),
             Self::Described(inner, msg) => inner.validate(input, ctx, mode).map_err(|mut e| {
-                e.message = std::borrow::Cow::Owned(msg.clone());
+                // Render the user-provided template against the inner error's
+                // params eagerly — consumers that read `err.message` directly
+                // (not via Display) expect the substituted string, not the raw
+                // `{name}` template. Fast path for plain messages costs nothing.
+                let rendered = crate::foundation::error::render_template(msg, e.params());
+                e.message = std::borrow::Cow::Owned(rendered.into_owned());
                 e
             }),
         }

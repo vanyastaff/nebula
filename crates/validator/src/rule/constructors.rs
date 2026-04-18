@@ -65,12 +65,12 @@ impl Rule {
     }
 
     /// Creates a [`Rule::Value`] carrying a [`ValueRule::Pattern`], validating
-    /// the regex. Returns `None` if the pattern is invalid.
-    #[must_use]
-    pub fn try_pattern(p: impl Into<String>) -> Option<Self> {
+    /// the regex at construction. Returns the regex parse error on failure so
+    /// callers can surface a specific diagnostic.
+    pub fn try_pattern(p: impl Into<String>) -> Result<Self, regex::Error> {
         let p = p.into();
-        regex::Regex::new(&p).ok()?;
-        Some(Self::Value(ValueRule::Pattern(p)))
+        regex::Regex::new(&p)?;
+        Ok(Self::Value(ValueRule::Pattern(p)))
     }
 
     /// Creates a [`Rule::Value`] carrying a [`ValueRule::Min`] from an `i64`.

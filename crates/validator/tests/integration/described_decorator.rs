@@ -19,6 +19,42 @@ fn described_wraps_combinator() {
         Rule::all([Rule::min_length(3), Rule::pattern("^[a-z]+$")]).with_message("combined fail");
     let err = Validate::validate(&rule, &json!("A")).unwrap_err();
     assert_eq!(err.message.as_ref(), "combined fail");
+    // Both inner rules fail, so `Logic::All` aggregates them into the
+    // `all_failed` parent code — Described overrides only message, not code.
+    assert_eq!(err.code.as_ref(), "all_failed");
+}
+
+#[test]
+fn described_preserves_leaf_code_when_only_one_inner_fails() {
+    // Single failing inner rule bypasses the `all_failed` wrapper in
+    // Logic::All (see logic.rs: if errs.len() == 1 the sole error is
+    // returned directly). Described then overlays the message without
+    // touching that preserved code.
+    let rule =
+        Rule::all([Rule::min_length(3), Rule::pattern("^[a-z]+$")]).with_message("combined fail");
+    // "ab" passes pattern but fails min_length → single inner error.
+    let err = Validate::validate(&rule, &json!("ab")).unwrap_err();
+    assert_eq!(err.message.as_ref(), "combined fail");
+    assert_eq!(err.code.as_ref(), "min_length");
+}
+
+#[test]
+fn described_template_renders_eagerly_in_message() {
+    // PR contract: err.message contains the rendered string, not the raw
+    // template. Consumers reading err.message directly (e.g. JSON output)
+    // should see substituted placeholders.
+    let rule = Rule::min_length(3).with_message("got {value}, need {min}");
+    let err = Validate::validate(&rule, &json!("x")).unwrap_err();
+    assert!(
+        err.message.contains("got \"x\""),
+        "expected rendered {{value}} in err.message, got: {}",
+        err.message
+    );
+    assert!(
+        err.message.contains("need 3"),
+        "expected rendered {{min}} in err.message, got: {}",
+        err.message
+    );
 }
 
 #[test]

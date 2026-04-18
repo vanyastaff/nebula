@@ -358,7 +358,10 @@ impl ValidationError {
 /// the matching entry from `params`. `{{` and `}}` are literal braces.
 /// Unknown `{name}` is left as-is. Zero allocation when the template has
 /// no `{` at all.
-fn render_template<'a>(
+///
+/// Crate-visible so `rule::Rule::validate` can eagerly render the user
+/// template stored in `Rule::Described` against the inner error's params.
+pub(crate) fn render_template<'a>(
     template: &'a str,
     params: &[(Cow<'static, str>, Cow<'static, str>)],
 ) -> Cow<'a, str> {
@@ -411,6 +414,20 @@ fn render_template<'a>(
     Cow::Owned(out)
 }
 
+impl ValidationError {
+    /// Renders the message template against this error's params, returning
+    /// the substituted string. Zero-allocation fast path when the message
+    /// contains no `{` placeholders.
+    ///
+    /// This is the same rendering used by [`fmt::Display`], exposed so
+    /// callers that need to read the rendered message without going through
+    /// formatter overhead (e.g. to store it back into the error or attach
+    /// it to a log record) can do so directly.
+    pub fn rendered_message(&self) -> Cow<'_, str> {
+        render_template(self.message.as_ref(), self.params())
+    }
+}
+
 impl fmt::Display for ValidationError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let params = self.params();
@@ -421,16 +438,10 @@ impl fmt::Display for ValidationError {
             write!(f, "{}: {}", self.code, rendered)?;
         }
 
-        if !params.is_empty() {
-            write!(f, " (params: [")?;
-            for (i, (k, v)) in params.iter().enumerate() {
-                if i > 0 {
-                    write!(f, ", ")?;
-                }
-                write!(f, "{k}={v}")?;
-            }
-            write!(f, "])")?;
-        }
+        // The (params: [...]) debug tail is intentionally removed: templates
+        // now consume params in `rendered`, so re-listing them here would be
+        // redundant and bypass the caller's intended message surface.
+        // Raw params remain accessible via `params()` and `to_json_value()`.
 
         if let Some(help) = self.help() {
             write!(f, "\n  Help: {help}")?;

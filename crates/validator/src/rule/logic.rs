@@ -66,10 +66,21 @@ impl Logic {
                         .with_nested(errs),
                 )
             },
-            Self::Not(inner) => match inner.validate(input, ctx, mode) {
-                Ok(()) => Err(ValidationError::new("not_failed", "negated rule passed")),
-                // Inner error is intentionally ignored: Not succeeds when its child fails.
-                Err(_) => Ok(()),
+            Self::Not(inner) => {
+                // Skip propagation: when the inner rule would be silently
+                // skipped at this dispatch point (Predicate without ctx,
+                // Deferred in StaticOnly), Not must also skip. Otherwise
+                // `not(predicate)` in a context-free run wrongly errors.
+                // Deep propagation through nested Logic is a known limitation
+                // of the two-state Result shape (see PR #415 follow-up).
+                if inner_would_skip(inner, ctx, mode) {
+                    return Ok(());
+                }
+                match inner.validate(input, ctx, mode) {
+                    Ok(()) => Err(ValidationError::new("not_failed", "negated rule passed")),
+                    // Inner error is intentionally ignored: Not succeeds when its child fails.
+                    Err(_) => Ok(()),
+                }
             },
         }
     }
@@ -80,5 +91,19 @@ impl Logic {
             Self::All(v) | Self::Any(v) => v.as_slice(),
             Self::Not(inner) => std::slice::from_ref(inner),
         }
+    }
+}
+
+/// Returns true if `rule` would be silently skipped at this dispatch point —
+/// `Rule::validate` returns `Ok(())` without actually enforcing anything.
+/// Used by `Logic::Not` to propagate the skip instead of inverting it to a
+/// false failure. Looks through `Described` wrappers; does not recurse into
+/// nested `Logic`.
+fn inner_would_skip(rule: &Rule, ctx: Option<&PredicateContext>, mode: ExecutionMode) -> bool {
+    match rule {
+        Rule::Predicate(_) => ctx.is_none(),
+        Rule::Deferred(_) => mode == ExecutionMode::StaticOnly,
+        Rule::Described(inner, _) => inner_would_skip(inner, ctx, mode),
+        _ => false,
     }
 }
