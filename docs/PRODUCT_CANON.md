@@ -276,10 +276,10 @@ Seam: `crates/storage/src/execution_repo.rs` — `ExecutionRepo::transition`. Te
 | Surface | Status | Notes |
 | --- | --- | --- |
 | `nebula-resilience` pipeline inside an action (in-memory retry around outbound calls) | `implemented` | The **canonical** retry surface today. Author composes retry/timeout/circuit-breaker at the call site. |
-| Engine-level node re-execution from `ActionResult::Retry` with persisted attempt accounting | `planned` | No persisted `attempts` row, no CAS-protected bump, no consumer wired through `ExecutionRepo`. Any return variant that implies it is a **false capability** under §4.5 — hide or delete until end-to-end. |
+| Engine-level node re-execution from `ActionResult::Retry` with persisted attempt accounting | `planned` | No persisted `attempts` row, no CAS-protected bump, no consumer wired through `ExecutionRepo`. The `ActionResult::Retry` variant is hidden behind the `unstable-retry-scheduler` feature flag in `nebula-action` / `nebula-engine` (default-off) to honor §4.5 — the public surface does not advertise a capability the engine cannot yet deliver. Remove the gate only when the scheduler ships end-to-end (#290). |
 | Cross-restart retry of a checkpointed step | `best-effort` | Relies on checkpoint boundaries (§11.5); work since the last checkpoint may be replayed or lost. Not a per-attempt contract. |
 
-**[L2]** Canon debt: until the `planned` row above moves to `implemented`, no public API, trait variant, or docs comment may describe engine-level retry as a current capability. Track this row as an **open invariant debt** — revisit whenever `ActionResult`, `ExecutionRepo`, or attempt accounting is touched.
+**[L2]** Canon debt: until the `planned` row above moves to `implemented`, no public API, trait variant, or docs comment may describe engine-level retry as a current capability. The `ActionResult::Retry` variant is gated behind the `unstable-retry-scheduler` feature flag in `nebula-action` (and mirrored by `nebula-engine`) so that default builds do not expose the type. Track this row as an **open invariant debt** — revisit whenever `ActionResult`, `ExecutionRepo`, or attempt accounting is touched; the gate must be removed and the scheduler wired in the same PR that promotes this row to `implemented`.
 
 ### 11.3 Idempotency
 
