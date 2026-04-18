@@ -444,6 +444,17 @@ impl ObjectField {
         self.fields.push(field.into());
         self
     }
+
+    /// Append many nested fields at once.
+    #[must_use]
+    pub fn add_many<I, F>(mut self, fields: I) -> Self
+    where
+        I: IntoIterator<Item = F>,
+        F: Into<Field>,
+    {
+        self.fields.extend(fields.into_iter().map(Into::into));
+        self
+    }
 }
 
 define_field!(ListField {

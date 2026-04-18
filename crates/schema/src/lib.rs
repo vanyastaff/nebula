@@ -88,7 +88,7 @@ pub use loader::{
     Loader, LoaderContext, LoaderFuture, LoaderRegistry, LoaderResult, OptionLoader, RecordLoader,
 };
 pub use mode::{ExpressionMode, RequiredMode, VisibilityMode};
-pub use nebula_schema_macros::field_key;
+pub use nebula_schema_macros::{EnumSelect, Schema, field_key};
 pub use option::SelectOption;
 pub use path::{FieldPath, PathSegment};
 pub use schema::{Schema, SchemaBuilder};
