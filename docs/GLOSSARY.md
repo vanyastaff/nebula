@@ -126,6 +126,24 @@ Copied from canon §11.6 for convenience. If the two diverge, the canon wins.
 
 ---
 
+## 9. Architectural patterns
+
+Named patterns Nebula uses. Shared vocabulary with the industry corpus (EIP, DDIA, Release It!). Canon rules refer to these by name — this section is the authoritative source for each pattern's Nebula implementation.
+
+| Pattern | Book reference | Nebula implementation |
+|---|---|---|
+| **Transactional Outbox** | DDIA ch 11; EIP "Guaranteed Delivery" | `ExecutionControlQueue` (`crates/execution/src/control_queue.rs`). Signals written in the same tx as state transitions. |
+| **Write-Ahead Log** | DDIA ch 3, 11 | `execution_journal` append-only table; replayable event history. |
+| **Idempotent Receiver** | EIP | `crates/execution/src/idempotency.rs` — deterministic per-attempt key checked before side effect. |
+| **Optimistic Concurrency Control** | DDIA ch 7 | CAS on `version` column via `ExecutionRepo::transition`. |
+| **Bulkhead** | Release It! | `crates/resource/src/release_queue.rs` — scope-bounded resource release; failure in one scope does not cascade. |
+| **Circuit Breaker + Timeout + Retry-with-Backoff** | Release It! | `nebula-resilience` composable pipelines — applied at outbound call sites inside actions. |
+| **Layered Architecture with cross-cutting infrastructure** | Fundamentals of SW Architecture | `CLAUDE.md` layer direction: API → Exec → Business → Core, cross-cutting below. |
+| **Sealed trait + typestate** | Rust for Rustaceans, ch Designing Interfaces | Integration extension points (`Action`, `Credential`, `Resource`) and execution lifecycle (`Execution<State>`). |
+| **Make illegal states unrepresentable** | Domain Modeling Made Functional | Applied to public surfaces (§4.5): a type exists ⇔ engine honors it. |
+
+---
+
 ## See also
 
 - `docs/PRODUCT_CANON.md` — normative product truth
