@@ -10,6 +10,15 @@ repository.workspace = true
 
 [features]
 default = []
+# Convenience alias that forwards `nebula-action`'s `unstable-retry-scheduler`
+# feature. Enabling this feature does **not** install a retry scheduler
+# (canon §11.2, #290); it only un-hides `ActionResult::Retry` in
+# `nebula-action`. The engine's retry-detection path uses the always-
+# available `ActionResult::is_retry()` predicate so it is correct under
+# Cargo feature unification regardless of whether this mirror feature is
+# enabled — the alias exists purely so downstream crates can turn on the
+# variant via a single feature on the engine dependency.
+unstable-retry-scheduler = ["nebula-action/unstable-retry-scheduler"]
 
 [dependencies]
 nebula-core = { path = "../core" }
