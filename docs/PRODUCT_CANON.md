@@ -95,23 +95,23 @@ Directional goals; binding engineering rules live in §12–§14. The **integrat
 
 ### 4.1 Throughput
 
-Async-native execution (Tokio): many concurrent workflow executions should share a small thread pool without one slow I/O blocking others. Memory per execution should stay in the **hundreds-of-KB** order for common paths (not tens of MB per execution by default shape). **Throughput and latency regressions in benchmarked paths are treated as bugs** where benchmarks exist (e.g. CodSpeed in CI).
+**[L1]** Async-native execution (Tokio): many concurrent workflow executions should share a small thread pool without one slow I/O blocking others. Memory per execution should stay in the **hundreds-of-KB** order for common paths (not tens of MB per execution by default shape). **Throughput and latency regressions in benchmarked paths are treated as bugs** where benchmarks exist (e.g. CodSpeed in CI).
 
 ### 4.2 Safety
 
-**Fail fast and loudly on misuse:** typed errors, validated node contracts where declared, no silent shape mismatches in production. **Credentials** stay behind existing abstractions (no leakage across boundaries; rotation is not the node author’s ad-hoc problem). **Unsafe** stays in engine/runtime layers — integration-facing APIs remain safe Rust. Resilience classifiers (`nebula-resilience` / `ErrorClassifier` pattern) make transient vs permanent failure an explicit decision, not folklore.
+**[L1]** **Fail fast and loudly on misuse:** typed errors, validated node contracts where declared, no silent shape mismatches in production. **Credentials** stay behind existing abstractions (no leakage across boundaries; rotation is not the node author’s ad-hoc problem). **Unsafe** stays in engine/runtime layers — integration-facing APIs remain safe Rust. Resilience classifiers (`nebula-resilience` / `ErrorClassifier` pattern) make transient vs permanent failure an explicit decision, not folklore.
 
 ### 4.3 Keep-alive
 
-**Duration:** runs that last **minutes through days** (and longer when storage and checkpoints keep up) are a **normal** design target — not only sub-second HTTP hops.
+**[L1]** **Duration:** runs that last **minutes through days** (and longer when storage and checkpoints keep up) are a **normal** design target — not only sub-second HTTP hops.
 
-**Process death:** if the **host process** dies mid-run (deploy, OOM, crash), truth is **only what is persisted** (§11). Work **after the last durable checkpoint / journal line** may be **re-executed**, **rolled back**, or **lost** to the extent those paths are best-effort — the operator must see **status, errors, and journal** that say so, not green-washed success. Cancellation, leases, and the control queue (§12.2) exist so “long-lived” does not mean “hope the process lives forever.”
+**[L1]** **Process death:** if the **host process** dies mid-run (deploy, OOM, crash), truth is **only what is persisted** (§11). Work **after the last durable checkpoint / journal line** may be **re-executed**, **rolled back**, or **lost** to the extent those paths are best-effort — the operator must see **status, errors, and journal** that say so, not green-washed success. Cancellation, leases, and the control queue (§12.2) exist so “long-lived” does not mean “hope the process lives forever.”
 
-Integration authors assume unreliable networks; the runtime assumes **restartable processes** and makes resume and cancel **inspectable** (§4.6).
+**[L1]** Integration authors assume unreliable networks; the runtime assumes **restartable processes** and makes resume and cancel **inspectable** (§4.6).
 
 ### 4.4 DX
 
-**Integration authoring is the product surface for contributors:** fast scaffolding, test harnesses (`nebula-testing` and friends), actionable errors at API boundaries, integration tests as the reference for how to ship a node. Trait-driven contracts should make missing pieces a **compile-time** story where possible.
+**[L1]** **Integration authoring is the product surface for contributors:** fast scaffolding, test harnesses (`nebula-testing` and friends), actionable errors at API boundaries, integration tests as the reference for how to ship a node. Trait-driven contracts should make missing pieces a **compile-time** story where possible.
 
 ### 4.5 Operational honesty — no false capabilities
 
@@ -179,10 +179,10 @@ Major choices should map to a pillar; if a feature maps to none, it is probably 
 
 ## 7. Open source contract
 
-- **Public integration / plugin SDK surface:** stability matters; breaking changes deserve an RFC-style decision, not drive-by commits.
-- **Workspace internals:** may break when wrong — but **not** silently: canon + migration note + tests (see §17).
-- **Ecosystem quality over node count:** one solid canonical integration per external service beats many half-finished duplicates.
-- **Third-party nodes** are first-class in intent: same capabilities as first-party where the plugin model allows; **document** what is shipped vs planned.
+- **[L1]** **Public integration / plugin SDK surface:** stability matters; breaking changes deserve an RFC-style decision, not drive-by commits.
+- **[L2]** **Workspace internals:** may break when wrong — but **not** silently: canon + migration note + tests (see §17).
+- **[L1]** **Ecosystem quality over node count:** one solid canonical integration per external service beats many half-finished duplicates.
+- **[L1]** **Third-party nodes** are first-class in intent: same capabilities as first-party where the plugin model allows; **document** what is shipped vs planned.
 
 ### 7.1 Plugin packaging
 
@@ -203,32 +203,32 @@ Major choices should map to a pillar; if a feature maps to none, it is probably 
 
 **Operators** need a clear story when the **engine** version changes — not only plugin authors.
 
-- **Persisted workflow definitions** and **plugins** (binaries / SDK linkage) are **two compatibility surfaces**; breaking either belongs in **release notes** and migration guidance.
-- **Patch and minor** releases **must** keep **forward-compatible** workflow JSON and documented **plugin SDK** boundaries unless the release **explicitly** announces a break.
-- **Plugin binary compatibility:** Rust plugin crates are compiled artifacts tied to SDK/engine versions; upgrades may require recompilation against the target `nebula-api` / SDK version. Binary-stable ABI is an **FFI path** concern (e.g. stabby), not an implicit guarantee for native Rust plugin binaries.
-- **Breaking** workflow schema, execution semantics, or public SDK types require **documented migration**, tests, and upgrade notes — not an assumption that existing installs “should work.”
-- Do **not** claim “all v1 workflows run unchanged on v2” without a **published compatibility matrix** or equivalent — platform trust requires **honest** upgrade paths.
+- **[L2]** **Persisted workflow definitions** and **plugins** (binaries / SDK linkage) are **two compatibility surfaces**; breaking either belongs in **release notes** and migration guidance.
+- **[L2]** **Patch and minor** releases **must** keep **forward-compatible** workflow JSON and documented **plugin SDK** boundaries unless the release **explicitly** announces a break.
+- **[L3]** **Plugin binary compatibility:** Rust plugin crates are compiled artifacts tied to SDK/engine versions; upgrades may require recompilation against the target `nebula-api` / SDK version. Binary-stable ABI is an **FFI path** concern (e.g. stabby), not an implicit guarantee for native Rust plugin binaries.
+- **[L2]** **Breaking** workflow schema, execution semantics, or public SDK types require **documented migration**, tests, and upgrade notes — not an assumption that existing installs “should work.”
+- **[L1]** Do **not** claim “all v1 workflows run unchanged on v2” without a **published compatibility matrix** or equivalent — platform trust requires **honest** upgrade paths.
 
 ---
 
 ## 8. What Nebula is not
 
-- **Not a low-code tool** — operators may compose graphs; **authors** target Rust (and future FFI), not replacement of typed integration work.
-- **Not optimized for one-shot 50 ms scripts** — value shows up at **scale, duration, and integration depth**.
-- **Not “most nodes wins”** — the metric is **SDK quality and reliability**, not inventory size.
-- **Not a generic framework playground** or **trait zoo** optimized for elegance over usability and engine truth.
-- **Not “JSON everywhere and hope for the best”** — interchange types are deliberate; product-level truth needs validation and boundaries.
-- **Not advertising** retry, durability, resource lifecycle, or plugin trust models **before the engine actually owns them** end-to-end.
+- **[L1]** **Not a low-code tool** — operators may compose graphs; **authors** target Rust (and future FFI), not replacement of typed integration work.
+- **[L1]** **Not optimized for one-shot 50 ms scripts** — value shows up at **scale, duration, and integration depth**.
+- **[L1]** **Not “most nodes wins”** — the metric is **SDK quality and reliability**, not inventory size.
+- **[L1]** **Not a generic framework playground** or **trait zoo** optimized for elegance over usability and engine truth.
+- **[L1]** **Not “JSON everywhere and hope for the best”** — interchange types are deliberate; product-level truth needs validation and boundaries.
+- **[L1]** **Not advertising** retry, durability, resource lifecycle, or plugin trust models **before the engine actually owns them** end-to-end.
 
 ---
 
 ## 9. North star & success
 
-**North star — integration author:** A Rust developer with no prior Nebula experience can open the integration SDK / traits (§3.5 + `docs/INTEGRATION_MODEL.md`), and ship a **working, tested** node for a new service in **a focused day** — without hand-rolling orchestration, credential plumbing, or concurrency bugs.
+**[L1]** **North star — integration author:** A Rust developer with no prior Nebula experience can open the integration SDK / traits (§3.5 + `docs/INTEGRATION_MODEL.md`), and ship a **working, tested** node for a new service in **a focused day** — without hand-rolling orchestration, credential plumbing, or concurrency bugs.
 
-**North star — operator:** After **any** failed or stuck run, an operator can **explain what happened** — which step, what error, what durable state — using **logs, API, journal, and metrics alone**, without reading integration **source code** (aligned with §2 and §4.6).
+**[L1]** **North star — operator:** After **any** failed or stuck run, an operator can **explain what happened** — which step, what error, what durable state — using **logs, API, journal, and metrics alone**, without reading integration **source code** (aligned with §2 and §4.6).
 
-**North star — trigger delivery:** Trigger-driven flows have an **explicit, testable delivery contract**: no silent event drop; delivery semantics are documented (typically **at-least-once**), and duplicate events are controlled via event identity + idempotency/dedup rules rather than wishful “exactly once” claims (see §11.3).
+**[L1]** **North star — trigger delivery:** Trigger-driven flows have an **explicit, testable delivery contract**: no silent event drop; delivery semantics are documented (typically **at-least-once**), and duplicate events are controlled via event identity + idempotency/dedup rules rather than wishful “exactly once” claims (see §11.3).
 
 **Success sounds like (author):** *“Writing a Nebula node was the easiest integration I’ve ever written; it kept working under load and failure.”*
 
@@ -236,7 +236,7 @@ Major choices should map to a pillar; if a feature maps to none, it is probably 
 
 **Success sounds like (trigger ops):** *“Incoming trigger events were either processed once or safely de-duplicated — never silently lost.”*
 
-**Progress looks like:** engine behavior and **public contracts align**; vertical slices are **boringly reliable**; workflow validity **shifts left** into validation; docs get **shorter and truer**, not larger and wishful.
+**[L1]** **Progress looks like:** engine behavior and **public contracts align**; vertical slices are **boringly reliable**; workflow validity **shifts left** into validation; docs get **shorter and truer**, not larger and wishful.
 
 ---
 
@@ -244,14 +244,14 @@ Major choices should map to a pillar; if a feature maps to none, it is probably 
 
 Nebula must **protect one coherent path** before multiplying half-supported options. In intent:
 
-1. Author defines a workflow; definition is persisted and **validatable** (round-trip).
-2. **Activate** the workflow where the product supports activation. Activation runs `nebula_workflow::validate_workflow` (or equivalent) and **rejects** invalid definitions with structured **RFC 9457** errors — it does not silently flip a flag. A standalone `/validate` endpoint is a **tool**, not a substitute: activation that enables a workflow **without** validation is a **§10 violation**.
-3. Trigger or API starts execution.
-4. Engine schedules **executable step semantics** only — triggers, resources, and steps remain **distinct concepts** in validation, not only in dispatch errors.
-5. Execution state transitions are **visible and attributable** through `ExecutionRepo` with **version-checked CAS**; no handler invents an out-of-band lifecycle.
-6. Failure, cancellation, retry, and timeout behavior match **documented** contracts — not folklore in traits. **Cancel** requests must be **durable and engine-consumable** (see §12.2), not “only the DB row changed.”
-7. **Persistence story is explicit:** what is durable vs best-effort; what resume/replay may assume; what happens on checkpoint failure.
-8. Operator can **inspect** what happened and what is trustworthy.
+1. **[L1]** Author defines a workflow; definition is persisted and **validatable** (round-trip).
+2. **[L2]** **Activate** the workflow where the product supports activation. Activation runs `nebula_workflow::validate_workflow` (or equivalent) and **rejects** invalid definitions with structured **RFC 9457** errors — it does not silently flip a flag. A standalone `/validate` endpoint is a **tool**, not a substitute: activation that enables a workflow **without** validation is a **§10 violation**.
+3. **[L1]** Trigger or API starts execution.
+4. **[L2]** Engine schedules **executable step semantics** only — triggers, resources, and steps remain **distinct concepts** in validation, not only in dispatch errors.
+5. **[L2]** Execution state transitions are **visible and attributable** through `ExecutionRepo` with **version-checked CAS**; no handler invents an out-of-band lifecycle.
+6. **[L2]** Failure, cancellation, retry, and timeout behavior match **documented** contracts — not folklore in traits. **Cancel** requests must be **durable and engine-consumable** (see §12.2), not “only the DB row changed.”
+7. **[L1]** **Persistence story is explicit:** what is durable vs best-effort; what resume/replay may assume; what happens on checkpoint failure.
+8. **[L1]** Operator can **inspect** what happened and what is trustworthy.
 
 Anything that does not strengthen this path is secondary until the canon says otherwise.
 
@@ -263,11 +263,11 @@ These must stay **explicit in code and operator-facing docs**, not split across 
 
 ### 11.1 Execution authority
 
-`nebula-execution` + `ExecutionRepo` are the **single source of truth** for execution state. Transitions use **optimistic CAS** against persisted `version`. There is no ephemeral “usually DB wins” mode: if persistence is unavailable, the operation **fails** — it does not silently mutate in-memory state.
+**[L2]** `nebula-execution` + `ExecutionRepo` are the **single source of truth** for execution state. Transitions use **optimistic CAS** against persisted `version`. There is no ephemeral “usually DB wins” mode: if persistence is unavailable, the operation **fails** — it does not silently mutate in-memory state.
 
 ### 11.2 Retry
 
-Retry is a **runtime semantic** owned by the **engine** and **`nebula-resilience`** pipelines around **outbound** calls inside an action — not a decorative hint on a return type. The engine **does not** schedule re-execution of a failed node from an `ActionResult::Retry`-style return unless that path is wired with **persisted attempt accounting**. If such a variant exists but is not honored end-to-end, it is a **false capability** (remove it or implement it). Until durable per-attempt retry accounting exists, the canonical retry surface is the **resilience pipeline** an action uses internally.
+**[L2]** Retry is a **runtime semantic** owned by the **engine** and **`nebula-resilience`** pipelines around **outbound** calls inside an action — not a decorative hint on a return type. The engine **does not** schedule re-execution of a failed node from an `ActionResult::Retry`-style return unless that path is wired with **persisted attempt accounting**. If such a variant exists but is not honored end-to-end, it is a **false capability** (remove it or implement it). Until durable per-attempt retry accounting exists, the canonical retry surface is the **resilience pipeline** an action uses internally.
 
 **Status (per §11.6 vocabulary):**
 
@@ -277,27 +277,27 @@ Retry is a **runtime semantic** owned by the **engine** and **`nebula-resilience
 | Engine-level node re-execution from `ActionResult::Retry` with persisted attempt accounting | `planned` | No persisted `attempts` row, no CAS-protected bump, no consumer wired through `ExecutionRepo`. Any return variant that implies it is a **false capability** under §4.5 — hide or delete until end-to-end. |
 | Cross-restart retry of a checkpointed step | `best-effort` | Relies on checkpoint boundaries (§11.5); work since the last checkpoint may be replayed or lost. Not a per-attempt contract. |
 
-Canon debt: until the `planned` row above moves to `implemented`, no public API, trait variant, or docs comment may describe engine-level retry as a current capability. Track this row as an **open invariant debt** — revisit whenever `ActionResult`, `ExecutionRepo`, or attempt accounting is touched.
+**[L2]** Canon debt: until the `planned` row above moves to `implemented`, no public API, trait variant, or docs comment may describe engine-level retry as a current capability. Track this row as an **open invariant debt** — revisit whenever `ActionResult`, `ExecutionRepo`, or attempt accounting is touched.
 
 ### 11.3 Idempotency
 
-**One** idempotency story: deterministic key shape **`{execution_id}:{node_id}:{attempt}`**, persisted in `idempotency_keys`, checked and marked through `ExecutionRepo` before the side effect. **Engine guarantee:** it will not double-dispatch a **marked** attempt. Whether the **external** system de-duplicates is the integration author’s contract with that system — document per node.
+**[L2]** **One** idempotency story: deterministic key shape **`{execution_id}:{node_id}:{attempt}`**, persisted in `idempotency_keys`, checked and marked through `ExecutionRepo` before the side effect. **Engine guarantee:** it will not double-dispatch a **marked** attempt. Whether the **external** system de-duplicates is the integration author’s contract with that system — document per node.
 
-For **non-idempotent or risky side effects** (payments, writes without natural upsert, external one-shot operations), action handlers must guard execution with this idempotency path (or an equivalent documented key contract) before calling the remote system.
+**[L2]** For **non-idempotent or risky side effects** (payments, writes without natural upsert, external one-shot operations), action handlers must guard execution with this idempotency path (or an equivalent documented key contract) before calling the remote system.
 
-For **TriggerAction** sources, each inbound event should carry or derive a stable event identity (provider event id / cursor offset / hash) so at-least-once delivery can be made safe via dedup/idempotent handling; “no duplicates” is not a claim unless the source + runtime can prove it end-to-end.
+**[L2]** For **TriggerAction** sources, each inbound event should carry or derive a stable event identity (provider event id / cursor offset / hash) so at-least-once delivery can be made safe via dedup/idempotent handling; “no duplicates” is not a claim unless the source + runtime can prove it end-to-end.
 
 ### 11.4 Resource lifecycle
 
-Resources are first-class because **acquisition** and **scope-bounded release** are **engine-owned**. The async release path is **best-effort on crash** — orphaned resources rely on the next process to drain via `DrainTimeoutPolicy` / `ReleaseQueue`. Operators must be told this; authors must not assume “release ran” without an explicit checkpoint.
+**[L2]** Resources are first-class because **acquisition** and **scope-bounded release** are **engine-owned**. The async release path is **best-effort on crash** — orphaned resources rely on the next process to drain via `DrainTimeoutPolicy` / `ReleaseQueue`. Operators must be told this; authors must not assume “release ran” without an explicit checkpoint.
 
-For long-lived exclusive/external resources (locks, leased cloud instances), deployments need external TTL / dead-man strategy; Nebula v1 does not provide an external lease arbiter by itself.
+**[L1]** For long-lived exclusive/external resources (locks, leased cloud instances), deployments need external TTL / dead-man strategy; Nebula v1 does not provide an external lease arbiter by itself.
 
 ### 11.5 Persistence & operators
 
-Checkpointing is **policy-driven**, not “fsync every step.” The engine checkpoints at declared boundaries (workflow/action policy) and on workflow completion. Between checkpoints, progress is in-memory: process death can lose work since the last checkpoint.
+**[L2]** Checkpointing is **policy-driven**, not “fsync every step.” The engine checkpoints at declared boundaries (workflow/action policy) and on workflow completion. Between checkpoints, progress is in-memory: process death can lose work since the last checkpoint.
 
-Authors should place checkpoint boundaries before irreversible or expensive side effects; the engine does not guess those boundaries for you.
+**[L2]** Authors should place checkpoint boundaries before irreversible or expensive side effects; the engine does not guess those boundaries for you.
 
 
 | Artifact                           | Status                                                                | Operator-visible truth                                                                                                                                                           |
@@ -310,13 +310,13 @@ Authors should place checkpoint boundaries before irreversible or expensive side
 | In-process `mpsc` / channels       | **Ephemeral**                                                         | Never authoritative truth                                                                                                                                                        |
 
 
-If an operator cannot answer durability questions from this section plus code/docstrings, the product is not yet operationally honest.
+**[L2]** If an operator cannot answer durability questions from this section plus code/docstrings, the product is not yet operationally honest.
 
-Checkpoint / side-effect race is a real failure mode: if a side effect commits externally and the checkpoint write fails afterward, replay can re-enter that step. Protection is by design through idempotency keys (§11.3), not by pretending exactly-once.
+**[L2]** Checkpoint / side-effect race is a real failure mode: if a side effect commits externally and the checkpoint write fails afterward, replay can re-enter that step. Protection is by design through idempotency keys (§11.3), not by pretending exactly-once.
 
 ### 11.6 Documentation truth
 
-Docs must distinguish **implemented**, **best-effort**, **experimental**, and **planned** behavior. A short **guarantees** narrative (in `docs/` or README) should answer durability, validation, retry, resume, and current plugin trust — without collapsing future intent into today’s contract. **README drift** (advertising a removed backend, endpoint, or capability) is a **bug** — fix in the same PR as the code change.
+**[L2]** Docs must distinguish **implemented**, **best-effort**, **experimental**, and **planned** behavior. A short **guarantees** narrative (in `docs/` or README) should answer durability, validation, retry, resume, and current plugin trust — without collapsing future intent into today’s contract. **README drift** (advertising a removed backend, endpoint, or capability) is a **bug** — fix in the same PR as the code change.
 
 
 | Status             | Meaning                                                                                |
@@ -335,46 +335,46 @@ Docs must distinguish **implemented**, **best-effort**, **experimental**, and **
 
 ### 12.1 Layering and dependencies
 
-- Follow `CLAUDE.md` dependency direction. **No upward dependencies** between layers.
-- `crates/api` does not embed SQL drivers or storage schema knowledge beyond declared ports; **storage and orchestration details live in their crates**.
+- **[L2]** Follow `CLAUDE.md` dependency direction. **No upward dependencies** between layers.
+- **[L2]** `crates/api` does not embed SQL drivers or storage schema knowledge beyond declared ports; **storage and orchestration details live in their crates**.
 
 ### 12.2 Execution: single semantic core, durable control plane
 
-- **Authoritative execution state** lives in `nebula-execution` + `ExecutionRepo`. Handlers and API DTOs **do not invent a parallel lifecycle**, do not mutate state without going through **`ExecutionRepo::transition`** (CAS on `version`), and do not return **synthesized** timestamps or fake defaults for missing fields.
-- **Every “run this” / “cancel this” signal must be durable and engine-consumable.** The contract is:
+- **[L2]** **Authoritative execution state** lives in `nebula-execution` + `ExecutionRepo`. Handlers and API DTOs **do not invent a parallel lifecycle**, do not mutate state without going through **`ExecutionRepo::transition`** (CAS on `version`), and do not return **synthesized** timestamps or fake defaults for missing fields.
+- **[L2]** **Every “run this” / “cancel this” signal must be durable and engine-consumable.** The contract is:
   1. The signal is written to **`execution_control_queue`** (outbox) **in the same logical operation** as the corresponding state transition. A handler that flips state to `cancelling` **without** enqueueing — or enqueues **without** transitioning — is broken.
   2. A dispatch worker drains the queue and forwards commands to a consumer that **the engine actually listens to**. Removing rows **before** the engine has acted is broken.
   3. There is **one** consumer wiring story per deployment mode, **documented in code**.
-- **A demo handler that logs the command and discards it does not satisfy this invariant.** Examples and `simple_server.rs` must either wire a **real** engine consumer or be marked `// DEMO ONLY — does not honor cancel` so nothing mistakes them for the contract.
-- **Batching outbox writes for throughput is valid only if per-transition atomicity is preserved.** Never batch as a workaround that breaks “state transition + control signal” integrity.
-- Any second control channel (HTTP webhook, in-memory event) is **forbidden** unless this canon is updated with a **reconciliation** story.
+- **[L2]** **A demo handler that logs the command and discards it does not satisfy this invariant.** Examples and `simple_server.rs` must either wire a **real** engine consumer or be marked `// DEMO ONLY — does not honor cancel` so nothing mistakes them for the contract.
+- **[L2]** **Batching outbox writes for throughput is valid only if per-transition atomicity is preserved.** Never batch as a workaround that breaks “state transition + control signal” integrity.
+- **[L2]** Any second control channel (HTTP webhook, in-memory event) is **forbidden** unless this canon is updated with a **reconciliation** story.
 
 ### 12.3 Local path
 
-- The **default developer experience** must allow: build, run tests, run core flows **without** Docker, Redis, or external brokers. **SQLite** is the default local storage; `sqlite::memory:` via `nebula_storage::test_support` is the reference in-process path.
-- Optional production paths (**Postgres**, later Redis, etc.) are **additive**, not prerequisites for “hello world” or CI sanity. `examples/simple_server.rs` (and similar) must continue to start **without** external services unless explicitly documented as integration-only.
+- **[L3]** The **default developer experience** must allow: build, run tests, run core flows **without** Docker, Redis, or external brokers. **SQLite** is the default local storage; `sqlite::memory:` via `nebula_storage::test_support` is the reference in-process path.
+- **[L3]** Optional production paths (**Postgres**, later Redis, etc.) are **additive**, not prerequisites for “hello world” or CI sanity. `examples/simple_server.rs` (and similar) must continue to start **without** external services unless explicitly documented as integration-only.
 
 ### 12.4 Errors and contracts
 
-- Library crates: `thiserror`, not `anyhow`, in public library surfaces.
-- API boundary: **RFC 9457 `problem+json`** (see `crates/api/src/errors.rs`). **No new ad-hoc `500`** for business-logic mistakes — map new failure modes into typed `ApiError` variants with an explicit status.
-- `serde_json::Value` is allowed **where it is the deliberate interchange type**; new **stringly protocols** (magic field names without schema validation) require explicit review.
+- **[L3]** Library crates: `thiserror`, not `anyhow`, in public library surfaces.
+- **[L2]** API boundary: **RFC 9457 `problem+json`** (see `crates/api/src/errors.rs`). **No new ad-hoc `500`** for business-logic mistakes — map new failure modes into typed `ApiError` variants with an explicit status.
+- **[L3]** `serde_json::Value` is allowed **where it is the deliberate interchange type**; new **stringly protocols** (magic field names without schema validation) require explicit review.
 
 ### 12.5 Secrets and auth
 
-- No secrets in logs, error strings, or metrics labels. **`Zeroize` / `ZeroizeOnDrop`** on key material; redacted `Debug` on credential wrappers (`SecretToken`, etc.). Encryption at rest uses authenticated encryption with a KDF — do not bypass “for debugging.” Details: `crates/credential/README.md`.
-- Every new `tracing::*!` that takes a credential or token argument must use **redacted** forms.
+- **[L2]** No secrets in logs, error strings, or metrics labels. **`Zeroize` / `ZeroizeOnDrop`** on key material; redacted `Debug` on credential wrappers (`SecretToken`, etc.). Encryption at rest uses authenticated encryption with a KDF — do not bypass “for debugging.” Details: `crates/credential/README.md`.
+- **[L2]** Every new `tracing::*!` that takes a credential or token argument must use **redacted** forms.
 
 ### 12.6 Isolation honesty
 
-- In-process sandbox / capability checks: **correctness and least privilege for accidental misuse**, not a security boundary against malicious native code. Keep `crates/sandbox` doc comments aligned with this canon and `docs/` threat models.
-- **Plugin IPC today:** sequential dispatch over a **JSON envelope** to a child process — that **is** the trust model; do not describe it as **sandboxed execution of untrusted native code**.
-- **WASM / WASI is an explicit non-goal for plugin isolation.** The Rust plugin ecosystem integration authors actually need — `redis`, `sqlx` with native drivers, `rdkafka`, `tonic` with native TLS, any `*-sys` crate — does **not** compile to `wasm32-wasip2`, and where parts compile, the feature surface forces authors into host-polyfill folklore that violates the §3.5 promise ("Write Stripe logic; do not write credential rotation, connection management, or retry folklore"). Offering WASM as "the future sandbox" would be a §4.5 false capability and a §4.4 DX regression at the same time. **The real isolation roadmap is:** `ProcessSandbox` (already shipping) → full `PluginCapabilities` enforcement wired from `plugin.toml` through discovery (closes `nebula-sandbox/src/discovery.rs:117`) → `plugin.toml` signing verification in tooling (canon §7.1) → per-platform OS hardening in `os_sandbox` (seccomp-bpf / landlock on Linux, `sandbox_init` on macOS, `AppContainer` / job objects on Windows) → parallelism within `ProcessSandbox` for throughput (§4.1). Revisit WASM only if the Rust WASM ecosystem crosses a specific, documented capability threshold — not as aspiration, and never as docs drift in crate-level `lib.rs` or README.
+- **[L1]** In-process sandbox / capability checks: **correctness and least privilege for accidental misuse**, not a security boundary against malicious native code. Keep `crates/sandbox` doc comments aligned with this canon and `docs/` threat models.
+- **[L1]** **Plugin IPC today:** sequential dispatch over a **JSON envelope** to a child process — that **is** the trust model; do not describe it as **sandboxed execution of untrusted native code**.
+- **[L1]** **WASM / WASI is an explicit non-goal for plugin isolation.** The Rust plugin ecosystem integration authors actually need — `redis`, `sqlx` with native drivers, `rdkafka`, `tonic` with native TLS, any `*-sys` crate — does **not** compile to `wasm32-wasip2`, and where parts compile, the feature surface forces authors into host-polyfill folklore that violates the §3.5 promise ("Write Stripe logic; do not write credential rotation, connection management, or retry folklore"). Offering WASM as "the future sandbox" would be a §4.5 false capability and a §4.4 DX regression at the same time. **The real isolation roadmap is:** `ProcessSandbox` (already shipping) → full `PluginCapabilities` enforcement wired from `plugin.toml` through discovery (closes `nebula-sandbox/src/discovery.rs:117`) → `plugin.toml` signing verification in tooling (canon §7.1) → per-platform OS hardening in `os_sandbox` (seccomp-bpf / landlock on Linux, `sandbox_init` on macOS, `AppContainer` / job objects on Windows) → parallelism within `ProcessSandbox` for throughput (§4.1). Revisit WASM only if the Rust WASM ecosystem crosses a specific, documented capability threshold — not as aspiration, and never as docs drift in crate-level `lib.rs` or README.
 
 ### 12.7 No god files, no orphan modules
 
-- A module that grows past a few hundred lines and mixes unrelated responsibilities is a **refactor**, not a feature — **split before adding**.
-- A new file under `crates/*/src/services/`, `crates/storage/src/`, or similar must have an **obvious caller** in the same PR. Code that is **enqueued but never consumed** (or consumed but never produced) is an **integrity bug**, not a TODO.
+- **[L3]** A module that grows past a few hundred lines and mixes unrelated responsibilities is a **refactor**, not a feature — **split before adding**.
+- **[L2]** A new file under `crates/*/src/services/`, `crates/storage/src/`, or similar must have an **obvious caller** in the same PR. Code that is **enqueued but never consumed** (or consumed but never produced) is an **integrity bug**, not a TODO.
 
 ---
 
@@ -384,50 +384,50 @@ This is the **minimum bar** for “we did not break the product direction.” Ex
 
 **Scenario (current bar):**
 
-1. **Define and persist** a workflow through the API — definition **round-trips**.
-2. **Activate** the workflow. Activation runs validation and **rejects** invalid definitions with structured RFC 9457 errors — it does **not** silently flip a flag.
-3. **Start an execution** (API or equivalent). The execution row exists with consistent `status`, monotonic `version`, and a real `started_at` (no synthetic zero, no placeholder `now()` where the field should be `None`).
-4. **Observe** via GET — `finished_at` is `None` (not `0`) until terminal; `status` reflects the latest persisted value.
-5. **Request cancellation** on a non-terminal execution:
+1. **[L2]** **Define and persist** a workflow through the API — definition **round-trips**.
+2. **[L2]** **Activate** the workflow. Activation runs validation and **rejects** invalid definitions with structured RFC 9457 errors — it does **not** silently flip a flag.
+3. **[L2]** **Start an execution** (API or equivalent). The execution row exists with consistent `status`, monotonic `version`, and a real `started_at` (no synthetic zero, no placeholder `now()` where the field should be `None`).
+4. **[L2]** **Observe** via GET — `finished_at` is `None` (not `0`) until terminal; `status` reflects the latest persisted value.
+5. **[L2]** **Request cancellation** on a non-terminal execution:
   - the handler transitions through **`ExecutionRepo`** (CAS),
   - the **same logical operation** enqueues **`Cancel`** in `execution_control_queue`,
   - a dispatch consumer wired to the **real engine** observes the command and the engine’s cancel path runs,
   - the execution reaches a **terminal** `Cancelled` state without hand-waved stubs.
-6. Under test configuration where orchestration is intentionally absent: control endpoints return **503** — never fake success and never an unparsable 500.
+6. **[L2]** Under test configuration where orchestration is intentionally absent: control endpoints return **503** — never fake success and never an unparsable 500.
 
 **Integration bar (same spirit as execution — must stay green as these paths exist):**
 
-1. **Plugin load → registry:** a plugin loads; **Actions / Resources / Credentials** from `impl Plugin` appear in the catalog (or equivalent) **without** a second manifest that duplicates `fn actions()` / `fn resources()` / `fn credentials()` (§7.1).
-2. **Credential refresh / rotation:** where rotation or refresh is implemented, it does **not** silently strand or corrupt **in-flight** executions that hold valid material — failure is **explicit** in status or errors if the system cannot reconcile.
-3. **Resource lifecycle visibility:** acquire → use → **release** for Resource-backed steps is **attributable** in **durable journal** or an **operator-visible** trace (aligned with §11.4) — not only in ephemeral logs.
-4. **Trigger delivery semantics:** for TriggerAction-backed starts, tests cover the declared delivery contract (**at-least-once** unless explicitly stronger): no silent drop, and duplicate delivery is handled via stable event identity + dedup/idempotency (aligned with §9 and §11.3).
-5. **Non-idempotent side effects:** for ordinary Actions that can cause irreversible external effects (e.g. charge/refund/payout), integration tests prove **single-effect safety** under retry/restart/duplicate-dispatch pressure: idempotency key guard is applied before the side effect, and re-entry does **not** execute the external effect twice.
+1. **[L2]** **Plugin load → registry:** a plugin loads; **Actions / Resources / Credentials** from `impl Plugin` appear in the catalog (or equivalent) **without** a second manifest that duplicates `fn actions()` / `fn resources()` / `fn credentials()` (§7.1).
+2. **[L2]** **Credential refresh / rotation:** where rotation or refresh is implemented, it does **not** silently strand or corrupt **in-flight** executions that hold valid material — failure is **explicit** in status or errors if the system cannot reconcile.
+3. **[L2]** **Resource lifecycle visibility:** acquire → use → **release** for Resource-backed steps is **attributable** in **durable journal** or an **operator-visible** trace (aligned with §11.4) — not only in ephemeral logs.
+4. **[L2]** **Trigger delivery semantics:** for TriggerAction-backed starts, tests cover the declared delivery contract (**at-least-once** unless explicitly stronger): no silent drop, and duplicate delivery is handled via stable event identity + dedup/idempotency (aligned with §9 and §11.3).
+5. **[L2]** **Non-idempotent side effects:** for ordinary Actions that can cause irreversible external effects (e.g. charge/refund/payout), integration tests prove **single-effect safety** under retry/restart/duplicate-dispatch pressure: idempotency key guard is applied before the side effect, and re-entry does **not** execute the external effect twice.
 
 **What “done” means for a change touching execution / API / storage / plugins:**
 
-- **Integration tests** exercise the path end-to-end, including **step 5** (engine-visible cancel), not only DB metadata.
-- Changes to **plugin registration**, **credential refresh**, **resource release**, **trigger ingestion**, or **non-idempotent action execution** that affect §3.5 claims require **coverage** for steps **7–11** where those features are touched — or an explicit canon note that the bar is **narrowed** (not silent regression).
-- No new dispatch path, queue, or in-memory channel without an explicit **§12.2** update.
-- `simple_server.rs` (and similar) either **honors cancel end-to-end** or carries `// DEMO ONLY` naming exactly which steps are stubbed.
+- **[L2]** **Integration tests** exercise the path end-to-end, including **step 5** (engine-visible cancel), not only DB metadata.
+- **[L2]** Changes to **plugin registration**, **credential refresh**, **resource release**, **trigger ingestion**, or **non-idempotent action execution** that affect §3.5 claims require **coverage** for steps **7–11** where those features are touched — or an explicit canon note that the bar is **narrowed** (not silent regression).
+- **[L2]** No new dispatch path, queue, or in-memory channel without an explicit **§12.2** update.
+- **[L2]** `simple_server.rs` (and similar) either **honors cancel end-to-end** or carries `// DEMO ONLY` naming exactly which steps are stubbed.
 
 ---
 
 ## 14. Anti-patterns — do not ship
 
-- **Two truths:** execution state in DB says X, channel/queue says Y, with no formal reconciliation story. (See §12.2.)
-- **Phantom types:** enum variants or trait methods the engine **rejects at runtime** — e.g. `ActionResult::Retry` with no persisted accounting. **Implement end-to-end or delete.**
-- **Discard-and-log workers:** a dispatch loop that drains an outbox and “handles” commands with `tracing::info!` only — **not** a consumer; it is a leak.
-- **Validation-as-a-side-tool:** workflow validation only at `/validate` while **activation skips** it.
-- **Green tests, wrong product:** shortcuts that pass tests but violate §12 (e.g. `String` errors in new library crates, new `ExecutionControl` semantics that bypass storage).
-- **Framework before product:** abstractions multiplying faster than invariants; types ahead of engine-owned semantics.
-- **Trait surface faster than engine truth** — new public trait families or result variants without end-to-end behavior.
-- **Runtime rejection instead of validation** for workflow shape where validation is feasible.
-- **Best-effort persistence presented as durable truth** — or ambiguous ownership of “what happened.”
-- **Docs that describe future intent as current contract** — or internal channels treated as durable infrastructure.
-- **README drift:** advertising a backend, capability, or step the code no longer supports.
-- **God files:** continuing to add unrelated logic to a file that already exceeds reasonable responsibility instead of splitting (module or crate) when boundaries are clear.
-- **Orphan modules:** services, queues, or repos **produced but never consumed** (or vice versa). See §12.7.
-- **Spec theater:** long `docs/` plans that contradict this file without a canon revision — **plans follow canon**, not the reverse. The same applies to **this** file: if the change is really about `nebula-resource` APIs, update **`crates/resource/README.md`** or **`docs/INTEGRATION_MODEL.md`**, not a long integration-mechanics section in `docs/PRODUCT_CANON.md`.
+- **[L1]** **Two truths:** execution state in DB says X, channel/queue says Y, with no formal reconciliation story. (See §12.2.)
+- **[L1]** **Phantom types:** enum variants or trait methods the engine **rejects at runtime** — e.g. `ActionResult::Retry` with no persisted accounting. **Implement end-to-end or delete.**
+- **[L1]** **Discard-and-log workers:** a dispatch loop that drains an outbox and “handles” commands with `tracing::info!` only — **not** a consumer; it is a leak.
+- **[L1]** **Validation-as-a-side-tool:** workflow validation only at `/validate` while **activation skips** it.
+- **[L1]** **Green tests, wrong product:** shortcuts that pass tests but violate §12 (e.g. `String` errors in new library crates, new `ExecutionControl` semantics that bypass storage).
+- **[L1]** **Framework before product:** abstractions multiplying faster than invariants; types ahead of engine-owned semantics.
+- **[L1]** **Trait surface faster than engine truth** — new public trait families or result variants without end-to-end behavior.
+- **[L1]** **Runtime rejection instead of validation** for workflow shape where validation is feasible.
+- **[L1]** **Best-effort persistence presented as durable truth** — or ambiguous ownership of “what happened.”
+- **[L1]** **Docs that describe future intent as current contract** — or internal channels treated as durable infrastructure.
+- **[L1]** **README drift:** advertising a backend, capability, or step the code no longer supports.
+- **[L1]** **God files:** continuing to add unrelated logic to a file that already exceeds reasonable responsibility instead of splitting (module or crate) when boundaries are clear.
+- **[L1]** **Orphan modules:** services, queues, or repos **produced but never consumed** (or vice versa). See §12.7.
+- **[L1]** **Spec theater:** long `docs/` plans that contradict this file without a canon revision — **plans follow canon**, not the reverse. The same applies to **this** file: if the change is really about `nebula-resource` APIs, update **`crates/resource/README.md`** or **`docs/INTEGRATION_MODEL.md`**, not a long integration-mechanics section in `docs/PRODUCT_CANON.md`.
 
 ---
 
@@ -458,17 +458,17 @@ Every substantial spec or phase plan must include:
 
 Before merging substantial surface-area or behavior changes, ask:
 
-1. Does this **strengthen the golden path** (§10)?
-2. Does this **clarify or blur** the product contract (§11)?
-3. Does the engine **actually honor** the behavior now? If **not**, the type, handler, or endpoint does **not** ship.
-4. Does this **reduce or increase** contributor cognitive load?
-5. Does this make local / self-hosted / future hosted stories **more coherent**, or only broader on paper?
-6. Does this help operators **understand failures**?
-7. Is this **foundational now**, or speculative future-proofing?
-8. If we ship this, are we making a **real promise**?
-9. Does this **align with the competitive bets** in §2.5 (typed durability vs soft ecosystem, checkpoint/local-first vs replay/compose-heavy, Rust contracts vs script glue) — or does it blur those lines without updating the canon?
-10. Does this **preserve the §3.5 integration model** (orthogonal concepts, `*Metadata + Schema`, plugin wiring rules) **and** avoid **spec theater** — duplicating crate-level API detail in this file instead of updating `crates/*/README.md` or `docs/INTEGRATION_MODEL.md`?
-11. If this introduces a **queue, channel, or worker:** are **producer**, **consumer**, and **failure mode** all in **this PR** (or explicitly documented as out of scope with no orphan half)?
+1. **[L1]** Does this **strengthen the golden path** (§10)?
+2. **[L1]** Does this **clarify or blur** the product contract (§11)?
+3. **[L1]** Does the engine **actually honor** the behavior now? If **not**, the type, handler, or endpoint does **not** ship.
+4. **[L1]** Does this **reduce or increase** contributor cognitive load?
+5. **[L1]** Does this make local / self-hosted / future hosted stories **more coherent**, or only broader on paper?
+6. **[L1]** Does this help operators **understand failures**?
+7. **[L1]** Is this **foundational now**, or speculative future-proofing?
+8. **[L1]** If we ship this, are we making a **real promise**?
+9. **[L1]** Does this **align with the competitive bets** in §2.5 (typed durability vs soft ecosystem, checkpoint/local-first vs replay/compose-heavy, Rust contracts vs script glue) — or does it blur those lines without updating the canon?
+10. **[L1]** Does this **preserve the §3.5 integration model** (orthogonal concepts, `*Metadata + Schema`, plugin wiring rules) **and** avoid **spec theater** — duplicating crate-level API detail in this file instead of updating `crates/*/README.md` or `docs/INTEGRATION_MODEL.md`?
+11. **[L2]** If this introduces a **queue, channel, or worker:** are **producer**, **consumer**, and **failure mode** all in **this PR** (or explicitly documented as out of scope with no orphan half)?
 
 If the answer implies a **false capability**, the change is not ready — hide, narrow, or implement to completion first.
 
