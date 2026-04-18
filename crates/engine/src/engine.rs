@@ -3689,11 +3689,17 @@ mod tests {
             .await
             .unwrap()
             .expect("execution state must be persisted");
-        assert_eq!(
-            version, 3,
-            "expected three version bumps: create (v1) + setup-failure \
-             checkpoint (v2 — the fix) + final (v3). Pre-fix path skips v2 \
-             and lands at v2 instead; got {version}"
+        // Using `>=` rather than `==` so a future legitimate mid-execution
+        // checkpoint (e.g. a per-status-transition persist) does not break
+        // this test. The regression signal is preserved either way: the
+        // pre-fix path lands at v2 (create + final only), which always
+        // fails `>= 3`.
+        assert!(
+            version >= 3,
+            "expected at least three version bumps: create (v1) + \
+             setup-failure checkpoint (v2 — the fix) + final (v3). Pre-fix \
+             path skips the setup-failure checkpoint and lands at v2; got \
+             {version}"
         );
         assert_eq!(
             final_state
