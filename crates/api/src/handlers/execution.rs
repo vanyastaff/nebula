@@ -11,7 +11,7 @@ use uuid::Uuid;
 
 use crate::{
     errors::{ApiError, ApiResult},
-    handlers::workflow::PaginationParams,
+    handlers::workflow::{PaginationParams, extract_timestamp},
     models::{
         ExecutionLogsResponse, ExecutionOutputsResponse, ExecutionResponse, ListExecutionsResponse,
         RunningExecutionSummary, StartExecutionRequest,
@@ -178,12 +178,8 @@ pub async fn get_execution(
         .unwrap_or("unknown")
         .to_string();
 
-    let started_at = execution_state
-        .get("started_at")
-        .and_then(|v| v.as_i64())
-        .unwrap_or(0);
-
-    let finished_at = execution_state.get("finished_at").and_then(|v| v.as_i64());
+    let started_at = extract_timestamp(&execution_state, "started_at").unwrap_or(0);
+    let finished_at = extract_timestamp(&execution_state, "finished_at");
 
     let input = execution_state.get("input").cloned();
 
@@ -287,8 +283,10 @@ pub async fn cancel_execution(
         .and_then(|v| v.as_str())
         .unwrap_or("unknown");
 
-    if current_status == "completed" || current_status == "failed" || current_status == "cancelled"
-    {
+    if matches!(
+        current_status,
+        "completed" | "failed" | "cancelled" | "timed_out"
+    ) {
         return Err(ApiError::validation_message(format!(
             "Cannot cancel execution in '{}' state",
             current_status
@@ -321,8 +319,8 @@ pub async fn cancel_execution(
         .map_err(|e| ApiError::Internal(format!("Failed to cancel execution: {}", e)))?;
 
     if !transition_result {
-        return Err(ApiError::Internal(
-            "Failed to cancel execution: concurrent modification detected".to_string(),
+        return Err(ApiError::Conflict(
+            "concurrent modification detected; refetch execution state and retry".to_string(),
         ));
     }
 
@@ -389,12 +387,8 @@ pub async fn cancel_execution(
         .unwrap_or("cancelled")
         .to_string();
 
-    let started_at = execution_state
-        .get("started_at")
-        .and_then(|v| v.as_i64())
-        .unwrap_or(0);
-
-    let finished_at = execution_state.get("finished_at").and_then(|v| v.as_i64());
+    let started_at = extract_timestamp(&execution_state, "started_at").unwrap_or(0);
+    let finished_at = extract_timestamp(&execution_state, "finished_at");
 
     let input = execution_state.get("input").cloned();
 
