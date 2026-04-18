@@ -28,12 +28,15 @@ pub struct DiscoveredPlugin {
 
 /// Discover a plugin by spawning its binary and sending a `MetadataRequest`
 /// envelope.
-pub async fn discover_plugin(binary: &Path) -> Result<DiscoveredPlugin, String> {
-    let sandbox = ProcessSandbox::new(
-        binary.to_path_buf(),
-        Duration::from_secs(5),
-        PluginCapabilities::none(),
-    );
+///
+/// The metadata probe itself runs with the given `capabilities`; in most
+/// deployments this can be [`PluginCapabilities::none`] since metadata
+/// enumeration does not require network or filesystem access.
+pub async fn discover_plugin(
+    binary: &Path,
+    capabilities: PluginCapabilities,
+) -> Result<DiscoveredPlugin, String> {
+    let sandbox = ProcessSandbox::new(binary.to_path_buf(), Duration::from_secs(5), capabilities);
 
     let envelope = sandbox
         .get_metadata()
@@ -81,9 +84,14 @@ fn response_kind(env: &PluginToHost) -> &'static str {
 }
 
 /// Discover all plugins in a directory and create handlers.
+///
+/// `default_capabilities` is applied to every discovered plugin's runtime
+/// sandbox (and the metadata probe). Callers are expected to source this
+/// from host configuration per deployment policy.
 pub async fn discover_directory(
     dir: &Path,
     default_timeout: Duration,
+    default_capabilities: PluginCapabilities,
 ) -> Vec<(String, Vec<(ActionMetadata, ActionHandler)>)> {
     let mut results = Vec::new();
 
@@ -110,12 +118,12 @@ pub async fn discover_directory(
             continue;
         }
 
-        match discover_plugin(&path).await {
+        match discover_plugin(&path, default_capabilities.clone()).await {
             Ok(plugin) => {
                 let sandbox = Arc::new(ProcessSandbox::new(
                     path.clone(),
                     default_timeout,
-                    PluginCapabilities::none(), // TODO: load from config
+                    default_capabilities.clone(),
                 ));
                 let handlers = create_handlers(&plugin, sandbox);
 

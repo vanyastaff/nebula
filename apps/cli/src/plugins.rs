@@ -14,7 +14,7 @@
 use std::{path::PathBuf, time::Duration};
 
 use nebula_runtime::ActionRegistry;
-use nebula_sandbox::discovery;
+use nebula_sandbox::{capabilities::PluginCapabilities, discovery};
 
 /// Default timeout for plugin actions.
 const DEFAULT_PLUGIN_TIMEOUT: Duration = Duration::from_secs(30);
@@ -31,7 +31,10 @@ pub async fn discover_and_register(registry: &ActionRegistry) -> usize {
             continue;
         }
 
-        let plugins = discovery::discover_directory(dir, DEFAULT_PLUGIN_TIMEOUT).await;
+        // TODO: load per-deployment capability policy from CLI config.
+        let plugins =
+            discovery::discover_directory(dir, DEFAULT_PLUGIN_TIMEOUT, PluginCapabilities::none())
+                .await;
 
         for (plugin_name, handlers) in plugins {
             for (metadata, handler) in handlers {
