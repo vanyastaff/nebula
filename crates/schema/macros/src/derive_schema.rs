@@ -8,7 +8,7 @@ use quote::quote;
 use syn::{Data, DataStruct, DeriveInput, Fields, Ident};
 
 use crate::{
-    attrs::{ParamAttrs, ValidateAttrs},
+    attrs::{DefaultLit, ParamAttrs, ValidateAttrs},
     type_infer::{FieldKind, classify},
 };
 
@@ -127,6 +127,17 @@ fn build_field_expr(
                     .cloned(),
             )
         },
+        FieldKind::UnsupportedInteger(name) => {
+            return Err(syn::Error::new_spanned(
+                field_name,
+                format!(
+                    "#[derive(Schema)]: integer type `{name}` is not yet supported \
+                     because `serde_json::Number` only round-trips through `i64`/`u64`. \
+                     Use a narrower integer type (`i8`..`i64`, `u8`..`u64`) or wrap \
+                     the value in a newtype that implements `HasSchema` manually."
+                ),
+            ));
+        },
     };
 
     if let Some(label) = &param.label {
@@ -139,9 +150,8 @@ fn build_field_expr(
         expr = quote! { #expr.placeholder(#placeholder) };
     }
     if let Some(default) = &param.default {
-        expr = quote! {
-            #expr.default(::serde_json::Value::String(#default.to_owned()))
-        };
+        let default_tokens = default_lit_tokens(default, inner, field_name)?;
+        expr = quote! { #expr.default(#default_tokens) };
     }
     if let Some(hint) = &param.hint {
         let hint_ident = input_hint_ident(hint, field_name)?;
@@ -228,10 +238,75 @@ fn list_field_expr(
                 "nested `Vec<Vec<..>>` or `Vec<Option<..>>` are not supported yet",
             ));
         },
+        FieldKind::UnsupportedInteger(name) => {
+            return Err(syn::Error::new_spanned(
+                field_name,
+                format!(
+                    "#[derive(Schema)]: `Vec<{name}>` is not supported because \
+                     `{name}` does not round-trip through `serde_json::Number`."
+                ),
+            ));
+        },
     };
     Ok(quote! {
         #crate_path::Field::list(#key).item(#item_expr.into_field())
     })
+}
+
+/// Emit the correct `serde_json::Value` constructor for a typed default,
+/// rejecting combinations that would ship a wrong-typed default (e.g.
+/// `default = "42"` on a `bool` field).
+fn default_lit_tokens(
+    lit: &DefaultLit,
+    inner: &FieldKind,
+    field_name: &Ident,
+) -> syn::Result<TokenStream2> {
+    let mismatch = |expected: &str, got: &str| {
+        syn::Error::new_spanned(
+            field_name,
+            format!("#[param(default = ..)]: field expects {expected}, got {got}"),
+        )
+    };
+    match (inner, lit) {
+        // String-ish targets accept only string defaults.
+        (FieldKind::String, DefaultLit::Str(s)) => Ok(quote! {
+            ::serde_json::Value::String(#s.to_owned())
+        }),
+        (FieldKind::String, _) => Err(mismatch("a string literal", "non-string literal")),
+
+        // Integer targets accept integer defaults.
+        (FieldKind::IntegerNumber, DefaultLit::Int(i)) => Ok(quote! {
+            ::serde_json::Value::Number(::serde_json::Number::from(#i))
+        }),
+        (FieldKind::IntegerNumber, _) => Err(mismatch("an integer literal", "non-integer literal")),
+
+        // Float targets accept both integer (coerced) and float literals.
+        (FieldKind::FloatNumber, DefaultLit::Float(f)) => Ok(quote! {
+            ::serde_json::Value::Number(
+                ::serde_json::Number::from_f64(#f)
+                    .expect("derive-provided float default is finite")
+            )
+        }),
+        (FieldKind::FloatNumber, DefaultLit::Int(i)) => Ok(quote! {
+            ::serde_json::Value::Number(::serde_json::Number::from(#i))
+        }),
+        (FieldKind::FloatNumber, _) => Err(mismatch("a numeric literal", "non-numeric literal")),
+
+        (FieldKind::Boolean, DefaultLit::Bool(b)) => Ok(quote! {
+            ::serde_json::Value::Bool(#b)
+        }),
+        (FieldKind::Boolean, _) => Err(mismatch("a bool literal", "non-bool literal")),
+
+        // List / Optional / UserDefined / UnsupportedInteger defaults are
+        // explicitly out of scope — container defaults need JSON literals,
+        // which aren't expressible through the simple-literal attribute
+        // surface. Callers should drop `#[param(default = ..)]` for those.
+        _ => Err(syn::Error::new_spanned(
+            field_name,
+            "#[param(default = ..)] is only supported on String / Number / Boolean fields; \
+             Vec / nested object / Option fields cannot carry a literal default",
+        )),
+    }
 }
 
 /// Map `#[param(hint = "...")]` string to the corresponding `InputHint` variant.

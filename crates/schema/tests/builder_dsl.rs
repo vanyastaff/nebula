@@ -234,3 +234,62 @@ fn group_builder_name_accessor() {
     let g = GroupBuilder::new("g-label").visible_when(eq_rule("x", "y"));
     assert_eq!(g.name(), "g-label");
 }
+
+#[test]
+fn group_required_when_composes_with_always_and_never_children() {
+    let rule = eq_rule("enabled", true);
+    let schema = Schema::builder()
+        .boolean("enabled", |b| b)
+        // A field declared `.required()` before the group applies its
+        // `required_when` must stay `Always` (compose_required's
+        // `Always` branch).
+        .group("details", |g| {
+            g.required_when(rule.clone())
+                .string("always_required", |s| s.required())
+                .string("optional_by_default", |s| s)
+        })
+        .build()
+        .unwrap();
+
+    match &schema.fields()[1] {
+        Field::String(s) => {
+            assert!(
+                matches!(s.required, RequiredMode::Always),
+                "an explicitly-required child must stay Always after group compose"
+            );
+        },
+        other => panic!("expected StringField, got {other:?}"),
+    }
+    match &schema.fields()[2] {
+        Field::String(s) => {
+            assert!(
+                matches!(s.required, RequiredMode::When(_)),
+                "an optional child must flip to When(..) after group compose"
+            );
+        },
+        other => panic!("expected StringField, got {other:?}"),
+    }
+}
+
+#[test]
+fn group_preserves_explicit_child_group_label() {
+    let schema = Schema::builder()
+        .group("outer", |g| {
+            g.string("inherits", |s| s)
+                .string("overrides", |s| s.group("inner"))
+        })
+        .build()
+        .unwrap();
+
+    // Child without an explicit `.group(..)` inherits the group label.
+    match &schema.fields()[0] {
+        Field::String(s) => assert_eq!(s.group.as_deref(), Some("outer")),
+        other => panic!("expected StringField, got {other:?}"),
+    }
+    // Child with its own `.group("inner")` is preserved — `set_group`'s
+    // None-guard must not overwrite it.
+    match &schema.fields()[1] {
+        Field::String(s) => assert_eq!(s.group.as_deref(), Some("inner")),
+        other => panic!("expected StringField, got {other:?}"),
+    }
+}

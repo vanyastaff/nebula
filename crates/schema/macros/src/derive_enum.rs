@@ -4,6 +4,18 @@
 //! — one [`SelectOption`](nebula_schema::SelectOption) per unit variant. Only
 //! unit-style enums are supported; the derive rejects variants that carry
 //! payloads with a compile error.
+//!
+//! # Value encoding
+//!
+//! Each variant's stored value is `snake_case(variant_name)` — this is
+//! **hardcoded** and does not read `serde` attributes. If an enum also
+//! derives `Serialize` / `Deserialize` and intends the catalog options
+//! to round-trip back into the enum, the enum author must pin
+//! `#[serde(rename_all = "snake_case")]` (or `#[serde(rename = "...")]`
+//! per variant) to match. Reading serde attrs here is tracked for a
+//! follow-up — at this point in the lifecycle the only consumers of
+//! `EnumSelect` are not also `Serialize`-derivers, so hardcoding the
+//! safe default is the simplest honest implementation.
 
 use proc_macro2::TokenStream as TokenStream2;
 use quote::quote;

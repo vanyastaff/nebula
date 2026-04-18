@@ -19,7 +19,6 @@
 //!
 //! ```no_run
 //! use nebula_metadata::{BaseMetadata, Icon, MaturityLevel, Metadata};
-//! # use nebula_schema::{Schema, ValidSchema};
 //!
 //! pub struct MyKey;
 //!

@@ -25,7 +25,10 @@ pub(crate) struct ParamAttrs {
     pub label: Option<String>,
     pub description: Option<String>,
     pub placeholder: Option<String>,
-    pub default: Option<String>,
+    /// Default value — stored as a typed literal so the derive can emit
+    /// a correctly-typed `serde_json::Value` for the target field kind
+    /// (number → `Value::Number`, bool → `Value::Bool`, string → `Value::String`).
+    pub default: Option<DefaultLit>,
     pub hint: Option<String>,
     pub secret: bool,
     pub multiline: bool,
@@ -33,6 +36,15 @@ pub(crate) struct ParamAttrs {
     pub expression_required: bool,
     pub group: Option<String>,
     pub skip: bool,
+}
+
+/// Typed literal carried by `#[param(default = ...)]`.
+#[derive(Debug, Clone)]
+pub(crate) enum DefaultLit {
+    Str(String),
+    Int(i64),
+    Float(f64),
+    Bool(bool),
 }
 
 /// Options gathered from `#[validate(...)]`.
@@ -102,7 +114,21 @@ impl ParamEntry {
                     "label" => out.label = Some(string_lit(&value, "label")?),
                     "description" => out.description = Some(string_lit(&value, "description")?),
                     "placeholder" => out.placeholder = Some(string_lit(&value, "placeholder")?),
-                    "default" => out.default = Some(string_lit(&value, "default")?),
+                    "default" => {
+                        out.default = Some(match &value {
+                            Lit::Str(s) => DefaultLit::Str(s.value()),
+                            Lit::Int(i) => DefaultLit::Int(i.base10_parse::<i64>()?),
+                            Lit::Float(f) => DefaultLit::Float(f.base10_parse::<f64>()?),
+                            Lit::Bool(b) => DefaultLit::Bool(b.value),
+                            other => {
+                                return Err(syn::Error::new_spanned(
+                                    other,
+                                    "#[param(default = ..)] expects a string, integer, \
+                                     float, or bool literal",
+                                ));
+                            },
+                        });
+                    },
                     "hint" => out.hint = Some(string_lit(&value, "hint")?),
                     "group" => out.group = Some(string_lit(&value, "group")?),
                     other => {
@@ -286,10 +312,21 @@ fn parse_range(input: ParseStream) -> syn::Result<ValidateEntry> {
     let expr: Expr = input.parse()?;
     let (min, max) = match expr {
         Expr::Range(r) => {
-            let min = r.start.as_deref().and_then(lit_to_i64);
+            let min = match r.start.as_deref() {
+                Some(start) => Some(lit_to_i64(start)?),
+                None => None,
+            };
             let max = match (r.end.as_deref(), r.limits) {
-                (Some(end), syn::RangeLimits::Closed(_)) => lit_to_i64(end),
-                (Some(end), syn::RangeLimits::HalfOpen(_)) => lit_to_i64(end).map(|v| v - 1),
+                (Some(end), syn::RangeLimits::Closed(_)) => Some(lit_to_i64(end)?),
+                (Some(end_expr), syn::RangeLimits::HalfOpen(_)) => {
+                    let end_val = lit_to_i64(end_expr)?;
+                    Some(end_val.checked_sub(1).ok_or_else(|| {
+                        syn::Error::new_spanned(
+                            end_expr,
+                            "#[validate(range(..))]: half-open upper bound underflows i64::MIN",
+                        )
+                    })?)
+                },
                 (None, _) => None,
             };
             (min, max)
@@ -312,13 +349,22 @@ fn parse_range(input: ParseStream) -> syn::Result<ValidateEntry> {
     Ok(ValidateEntry::Range { min, max })
 }
 
-fn lit_to_i64(expr: &Expr) -> Option<i64> {
+/// Parse an integer literal bound for `#[validate(range(..))]`.
+///
+/// Returns a `syn::Error` anchored at the offending expression when the
+/// bound is not an integer literal or does not fit in `i64`; this is
+/// strictly better than the earlier `Option` signature, which silently
+/// dropped invalid bounds and weakened the enforced range.
+fn lit_to_i64(expr: &Expr) -> syn::Result<i64> {
     if let Expr::Lit(ExprLit {
         lit: Lit::Int(i), ..
     }) = expr
     {
-        i.base10_parse::<i64>().ok()
+        i.base10_parse::<i64>()
     } else {
-        None
+        Err(syn::Error::new_spanned(
+            expr,
+            "#[validate(range(..))]: bounds must be integer literals",
+        ))
     }
 }

@@ -1,0 +1,18 @@
+error: #[validate(range(..))]: bounds must be integer literals
+ --> tests/compile_fail/derive_range_non_literal.rs:8:22
+  |
+8 |     #[validate(range("low".."high"))]
+  |                      ^^^^^
+
+error[E0599]: no function or associated item named `schema` found for struct `Bad` in the current scope
+  --> tests/compile_fail/derive_range_non_literal.rs:13:18
+   |
+ 5 | struct Bad {
+   | ---------- function or associated item `schema` not found for this struct
+...
+13 |     let _ = Bad::schema();
+   |                  ^^^^^^ function or associated item not found in `Bad`
+   |
+   = help: items from traits can only be used if the trait is implemented and in scope
+   = note: the following trait defines an item `schema`, perhaps you need to implement it:
+           candidate #1: `HasSchema`

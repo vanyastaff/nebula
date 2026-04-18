@@ -120,6 +120,15 @@ impl ValidSchema {
             .clone()
     }
 
+    /// Return `true` when two `ValidSchema` values share the same backing
+    /// `Arc` — i.e. they're the same instance, not just structurally
+    /// equivalent. Used to assert identity-preserving caches (e.g. the
+    /// `OnceLock` inside `#[derive(Schema)]`).
+    #[must_use]
+    pub fn ptr_eq(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.0, &other.0)
+    }
+
     /// Borrow all top-level fields in insertion order.
     pub fn fields(&self) -> &[Field] {
         &self.0.fields

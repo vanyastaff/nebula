@@ -1,0 +1,18 @@
+error: #[derive(Schema)]: integer type `i128` is not yet supported because `serde_json::Number` only round-trips through `i64`/`u64`. Use a narrower integer type (`i8`..`i64`, `u8`..`u64`) or wrap the value in a newtype that implements `HasSchema` manually.
+ --> tests/compile_fail/derive_unsupported_int_width.rs:8:5
+  |
+8 |     count: i128,
+  |     ^^^^^
+
+error[E0599]: no function or associated item named `schema` found for struct `Bad` in the current scope
+  --> tests/compile_fail/derive_unsupported_int_width.rs:12:18
+   |
+ 5 | struct Bad {
+   | ---------- function or associated item `schema` not found for this struct
+...
+12 |     let _ = Bad::schema();
+   |                  ^^^^^^ function or associated item not found in `Bad`
+   |
+   = help: items from traits can only be used if the trait is implemented and in scope
+   = note: the following trait defines an item `schema`, perhaps you need to implement it:
+           candidate #1: `HasSchema`

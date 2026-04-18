@@ -2,6 +2,29 @@ use nebula_core::{AuthPattern, CredentialKey};
 use nebula_metadata::{BaseMetadata, Metadata};
 use nebula_schema::ValidSchema;
 use serde::{Deserialize, Serialize};
+use thiserror::Error;
+
+/// Error returned by [`CredentialMetadataBuilder::build`] when a required
+/// field is missing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Error)]
+#[non_exhaustive]
+pub enum CredentialMetadataBuildError {
+    /// `key` was never set on the builder.
+    #[error("credential metadata `key` is required")]
+    MissingKey,
+    /// `name` was never set on the builder.
+    #[error("credential metadata `name` is required")]
+    MissingName,
+    /// `description` was never set on the builder.
+    #[error("credential metadata `description` is required")]
+    MissingDescription,
+    /// `schema` was never set on the builder.
+    #[error("credential metadata `schema` is required")]
+    MissingSchema,
+    /// `pattern` was never set on the builder.
+    #[error("credential metadata `pattern` is required")]
+    MissingPattern,
+}
 
 /// Describes a credential type (OAuth2, API Key, Database, etc.)
 ///
@@ -145,13 +168,16 @@ impl CredentialMetadataBuilder {
         self
     }
 
-    /// Finalise, returning an error when a required field is missing.
-    pub fn build(self) -> Result<CredentialMetadata, &'static str> {
+    /// Finalise, returning a typed [`CredentialMetadataBuildError`] variant
+    /// when a required field is missing.
+    pub fn build(self) -> Result<CredentialMetadata, CredentialMetadataBuildError> {
         let mut base = BaseMetadata::new(
-            self.key.ok_or("key is required")?,
-            self.name.ok_or("name is required")?,
-            self.description.ok_or("description is required")?,
-            self.schema.ok_or("schema is required")?,
+            self.key.ok_or(CredentialMetadataBuildError::MissingKey)?,
+            self.name.ok_or(CredentialMetadataBuildError::MissingName)?,
+            self.description
+                .ok_or(CredentialMetadataBuildError::MissingDescription)?,
+            self.schema
+                .ok_or(CredentialMetadataBuildError::MissingSchema)?,
         );
         if let Some(icon) = self.icon {
             base.icon = icon;
@@ -159,7 +185,9 @@ impl CredentialMetadataBuilder {
         base.documentation_url = self.documentation_url;
         Ok(CredentialMetadata {
             base,
-            pattern: self.pattern.ok_or("pattern is required")?,
+            pattern: self
+                .pattern
+                .ok_or(CredentialMetadataBuildError::MissingPattern)?,
         })
     }
 }

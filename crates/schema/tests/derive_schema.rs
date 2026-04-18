@@ -107,8 +107,12 @@ fn derive_schema_matches_hand_written_schema() {
 fn derive_schema_is_cached() {
     let a = HttpInput::schema();
     let b = HttpInput::schema();
-    // Both reads return the same Arc.
-    assert_eq!(a, b);
+    // `PartialEq` would succeed on structural equality even if the cache
+    // is broken — `ptr_eq` is the actual invariant we care about.
+    assert!(
+        a.ptr_eq(&b),
+        "derive(Schema) must cache the built schema behind a shared Arc"
+    );
 }
 
 #[derive(Schema)]

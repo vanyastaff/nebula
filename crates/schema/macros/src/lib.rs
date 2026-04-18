@@ -11,8 +11,19 @@ mod derive_enum;
 mod derive_schema;
 mod type_infer;
 
-/// Resolve an absolute path to the `nebula-schema` crate so the generated
-/// code works whether the caller renamed the dependency or not.
+/// Resolve the path to the `nebula-schema` crate so the generated code
+/// works whether the caller renamed the dependency or derives are
+/// expanded from inside `nebula-schema` itself.
+///
+/// Both [`FoundCrate::Itself`] and `Err(_)` map to the absolute path
+/// `::nebula_schema`, **not** `crate` — `cargo test --doc` compiles
+/// every doctest as a separate binary that links against nebula-schema
+/// as an external dependency, so from that binary's perspective `crate`
+/// resolves to the synthetic doctest crate, not to `nebula_schema`.
+/// Using the absolute path is safe for all call sites (doctests,
+/// integration tests, external crates) and was the original design —
+/// restoring it here after an earlier review suggestion that missed
+/// the doctest linkage.
 pub(crate) fn crate_path() -> TokenStream2 {
     match crate_name("nebula-schema") {
         Ok(FoundCrate::Itself) | Err(_) => quote!(::nebula_schema),

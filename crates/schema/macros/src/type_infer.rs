@@ -31,6 +31,12 @@ pub(crate) enum FieldKind {
     /// `<T as HasSchema>::schema()` at runtime (Task 10 blanket object
     /// inference).
     UserDefined(Box<Type>),
+    /// Unsupported integer width — the schema layer's rules only handle
+    /// values that fit in `i64` / `u64` (via `serde_json::Number`), so
+    /// wider integer types like `i128`/`u128`/`isize`/`usize` are
+    /// rejected at macro expansion rather than silently mapped to
+    /// `IntegerNumber` and breaking at runtime.
+    UnsupportedInteger(String),
 }
 
 impl FieldKind {
@@ -58,9 +64,14 @@ pub(crate) fn classify(ty: &Type) -> FieldKind {
         Some(name) => match name.as_str() {
             "String" | "str" => FieldKind::String,
             "bool" => FieldKind::Boolean,
-            "i8" | "i16" | "i32" | "i64" | "i128" | "isize" | "u8" | "u16" | "u32" | "u64"
-            | "u128" | "usize" => FieldKind::IntegerNumber,
+            // Narrow integer types that round-trip cleanly through
+            // `serde_json::Number` (via `From<i64>` / `From<u64>`).
+            "i8" | "i16" | "i32" | "i64" | "u8" | "u16" | "u32" | "u64" => FieldKind::IntegerNumber,
             "f32" | "f64" => FieldKind::FloatNumber,
+            // Wider integer widths — no `Number::from_i128/u128` impl
+            // without the `serde_json/arbitrary_precision` feature, and
+            // the validator's rule layer is `i64`-bounded anyway.
+            "i128" | "u128" | "isize" | "usize" => FieldKind::UnsupportedInteger(name),
             _ => FieldKind::UserDefined(Box::new(ty.clone())),
         },
         None => FieldKind::UserDefined(Box::new(ty.clone())),
