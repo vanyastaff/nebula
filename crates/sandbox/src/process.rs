@@ -448,19 +448,29 @@ impl ProcessSandbox {
     }
 
     /// Core long-lived dispatch. Reuses the cached [`PluginHandle`] if any,
-    /// spawns fresh otherwise. On transport error, clears the handle and
-    /// retries once.
+    /// spawns fresh otherwise.
+    ///
+    /// # No implicit retry (#259)
+    ///
+    /// This method deliberately does NOT retry on failure. An earlier
+    /// implementation ran `try_dispatch` a second time after clearing
+    /// the cached handle on any error — which silently double-invoked
+    /// non-idempotent `ActionInvoke`s whenever the plugin had already
+    /// performed its side effect (sent a message, charged a card) but
+    /// the response read failed. Blind host-level retry is unsafe
+    /// without an idempotency token in `HostToPlugin::ActionInvoke`;
+    /// the configurable engine-level retry policy is the right layer
+    /// for deciding whether a specific action is safe to retry.
+    ///
+    /// The single-shot shape is still fault-tolerant by design: a
+    /// stale/dead handle clears itself inside `try_dispatch` on error,
+    /// and the next call that reaches `dispatch_envelope` transparently
+    /// respawns the plugin via `spawn_and_dial`.
     async fn dispatch_envelope(
         &self,
         envelope: HostToPlugin,
         cancel: Option<&CancellationToken>,
     ) -> Result<PluginToHost, ActionError> {
-        let first_attempt = self.try_dispatch(envelope.clone(), cancel).await;
-        if first_attempt.is_ok() {
-            return first_attempt;
-        }
-        // Clear the stale handle and retry once with a fresh spawn.
-        *self.handle.lock().await = None;
         self.try_dispatch(envelope, cancel).await
     }
 
