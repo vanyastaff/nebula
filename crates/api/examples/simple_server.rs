@@ -18,10 +18,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let workflow_repo = Arc::new(InMemoryWorkflowRepo::new());
     let execution_repo = Arc::new(InMemoryExecutionRepo::new());
-    // NOTE: InMemoryControlQueueRepo does not persist across restarts and has
-    // no real engine consumer — this server is DEMO ONLY for cancel signals.
-    // A production deployment must substitute a Postgres-backed implementation
-    // and wire a real dispatcher (canon §12.2, §13 step 5).
+    // DEMO ONLY — does not honor cancel/start (canon §12.2).
+    //
+    // This example wires the API producer side of `execution_control_queue`
+    // but does NOT construct a `WorkflowEngine` or spawn a
+    // `nebula_engine::ControlConsumer`, so enqueued commands are never
+    // dispatched. Use ADR-0008's consumer skeleton from a production
+    // composition root once A2 / A3 land the dispatch paths.
+    // `InMemoryControlQueueRepo` also does not persist across restarts; a
+    // real deployment additionally requires a Postgres-backed repo.
     let control_queue_repo = Arc::new(InMemoryControlQueueRepo::new());
     let api_config = ApiConfig::from_env()?;
 
