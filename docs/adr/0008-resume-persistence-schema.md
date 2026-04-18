@@ -90,7 +90,7 @@ over the two alternatives:
   (current value: `1`).
 - Any change that could make an older binary fail to decode — new variant,
   new required field, changed field semantics — **must** bump the version.
-- On load, if `result_schema_version > MAX_SUPPORTED_SCHEMA_VERSION`,
+- On load, if `result_schema_version > MAX_SUPPORTED_RESULT_SCHEMA_VERSION`,
   `ExecutionRepo::load_node_result` returns
   `ExecutionRepoError::UnknownSchemaVersion { version, max_supported }`.
   Callers (the engine) surface this as a resume failure with operator-

@@ -260,9 +260,10 @@ pub trait ExecutionRepo: Send + Sync {
     /// Persist a full node-result record for a specific attempt.
     ///
     /// Overwrites on duplicate `(execution_id, node_key, attempt)` — the
-    /// latest write wins. Rejects records whose `schema_version` exceeds
-    /// [`MAX_SUPPORTED_RESULT_SCHEMA_VERSION`] is the caller's responsibility;
-    /// the repo stores whatever it is given.
+    /// latest write wins. Callers must ensure they do not attempt to persist
+    /// a record whose `schema_version` exceeds
+    /// [`MAX_SUPPORTED_RESULT_SCHEMA_VERSION`]; the repo stores whatever it is
+    /// given.
     async fn save_node_result(
         &self,
         execution_id: ExecutionId,
@@ -818,16 +819,15 @@ impl ExecutionRepo for InMemoryExecutionRepo {
         execution_id: ExecutionId,
     ) -> Result<HashMap<NodeKey, NodeResultRecord>, ExecutionRepoError> {
         let results = self.node_results.read().await;
+        // Pick highest-attempt record per node first — matching
+        // Postgres's `DISTINCT ON (node_id) ... ORDER BY attempt DESC`.
+        // Schema-version validation runs only against the chosen finalists
+        // so that an older (non-latest) attempt with a future version does
+        // not block a load whose latest attempt is well-formed.
         let mut best: HashMap<NodeKey, (u32, NodeResultRecord)> = HashMap::new();
         for ((eid, nid, attempt), record) in results.iter() {
             if *eid != execution_id {
                 continue;
-            }
-            if record.schema_version > MAX_SUPPORTED_RESULT_SCHEMA_VERSION {
-                return Err(ExecutionRepoError::UnknownSchemaVersion {
-                    version: record.schema_version,
-                    max_supported: MAX_SUPPORTED_RESULT_SCHEMA_VERSION,
-                });
             }
             let entry = best
                 .entry(nid.clone())
@@ -836,7 +836,17 @@ impl ExecutionRepo for InMemoryExecutionRepo {
                 *entry = (*attempt, record.clone());
             }
         }
-        Ok(best.into_iter().map(|(nid, (_, r))| (nid, r)).collect())
+        let mut out = HashMap::with_capacity(best.len());
+        for (nid, (_, record)) in best {
+            if record.schema_version > MAX_SUPPORTED_RESULT_SCHEMA_VERSION {
+                return Err(ExecutionRepoError::UnknownSchemaVersion {
+                    version: record.schema_version,
+                    max_supported: MAX_SUPPORTED_RESULT_SCHEMA_VERSION,
+                });
+            }
+            out.insert(nid, record);
+        }
+        Ok(out)
     }
 
     async fn save_stateful_checkpoint(
@@ -1598,6 +1608,47 @@ mod tests {
             err,
             ExecutionRepoError::UnknownSchemaVersion { .. }
         ));
+    }
+
+    #[tokio::test]
+    async fn load_all_results_ignores_future_version_on_non_latest_attempt() {
+        // A node retried after a rollback: attempt 0 was written by a newer
+        // binary (unknown schema_version), attempt 1 is fresh and valid.
+        // `load_all_results` must surface only the latest attempt per node,
+        // so the future-version attempt 0 is not reachable and must not
+        // poison the whole batch — matching `load_node_result` and
+        // `PgExecutionRepo::load_all_results` (`DISTINCT ON ... ORDER BY
+        // attempt DESC`).
+        let repo = InMemoryExecutionRepo::default();
+        let eid = ExecutionId::new();
+        let nid = node_key!("n");
+
+        repo.save_node_result(
+            eid,
+            nid.clone(),
+            0,
+            NodeResultRecord::with_version(
+                MAX_SUPPORTED_RESULT_SCHEMA_VERSION + 7,
+                "FutureStale",
+                serde_json::json!({}),
+            ),
+        )
+        .await
+        .unwrap();
+        repo.save_node_result(
+            eid,
+            nid.clone(),
+            1,
+            NodeResultRecord::new("Success", serde_json::json!({"ok": true})),
+        )
+        .await
+        .unwrap();
+
+        let all = repo.load_all_results(eid).await.expect(
+            "latest attempt is decodable; earlier future-version attempt must be invisible",
+        );
+        assert_eq!(all.len(), 1);
+        assert_eq!(all[&nid].kind, "Success");
     }
 
     #[tokio::test]

@@ -1010,6 +1010,51 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn pg_load_all_results_ignores_future_version_on_non_latest_attempt() {
+        // Mirror of the InMem regression: earlier attempt carries a future
+        // schema_version, latest attempt is valid. DISTINCT ON (node_id)
+        // ORDER BY attempt DESC must drop the stale record entirely, so
+        // load_all_results succeeds instead of surfacing UnknownSchemaVersion.
+        let Some(repo) = pg_exec_repo().await else {
+            return;
+        };
+        let eid = ExecutionId::new();
+        let wid = WorkflowId::new();
+        repo.create(eid, wid, serde_json::json!({}))
+            .await
+            .expect("create");
+
+        let nid = node_key!("retried");
+        repo.save_node_result(
+            eid,
+            nid.clone(),
+            0,
+            NodeResultRecord::with_version(
+                MAX_SUPPORTED_RESULT_SCHEMA_VERSION + 7,
+                "FutureStale",
+                serde_json::json!({}),
+            ),
+        )
+        .await
+        .expect("stale future-version attempt");
+        repo.save_node_result(
+            eid,
+            nid.clone(),
+            1,
+            NodeResultRecord::new("Success", serde_json::json!({"ok": true})),
+        )
+        .await
+        .expect("fresh valid attempt");
+
+        let all = repo
+            .load_all_results(eid)
+            .await
+            .expect("latest attempt decodable; stale future-version row must be invisible");
+        assert_eq!(all.len(), 1);
+        assert_eq!(all[&nid].kind, "Success");
+    }
+
+    #[tokio::test]
     async fn pg_load_all_results_returns_latest_per_node() {
         let Some(repo) = pg_exec_repo().await else {
             return;
