@@ -10,6 +10,7 @@ use serde::{Deserialize, Serialize};
 use crate::{
     attempt::NodeAttempt,
     error::ExecutionError,
+    idempotency::IdempotencyKey,
     output::NodeOutput,
     status::ExecutionStatus,
     transition::{validate_execution_transition, validate_node_transition},
@@ -196,6 +197,34 @@ impl ExecutionState {
     #[must_use]
     pub fn node_state(&self, node_key: NodeKey) -> Option<&NodeExecutionState> {
         self.node_states.get(&node_key)
+    }
+
+    /// Build the idempotency key for a node at its current attempt
+    /// count. This is the single source of truth the engine uses on
+    /// both the check and mark sides of the canonical
+    /// (`check_idempotency` → act → `mark_idempotent`) flow, so that a
+    /// retried or restart-replayed attempt does not collide with a
+    /// previous attempt's persisted output (issue #266, canon §11.3).
+    ///
+    /// When `attempts` is empty (the common case while engine-level
+    /// retry accounting is still `planned` per §11.2), the key uses
+    /// attempt number `1` — matching what `save_node_output` records
+    /// via `attempt_count().max(1)`. When the retry scheduler lands and
+    /// begins pushing [`NodeAttempt`]s into `attempts`, this helper
+    /// automatically starts differentiating attempts without any engine
+    /// change.
+    #[must_use]
+    pub fn idempotency_key_for_node(
+        &self,
+        execution_id: ExecutionId,
+        node_key: NodeKey,
+    ) -> IdempotencyKey {
+        let attempt = self
+            .node_states
+            .get(&node_key)
+            .map(|ns| ns.attempt_count().max(1) as u32)
+            .unwrap_or(1);
+        IdempotencyKey::generate(execution_id, node_key, attempt)
     }
 
     /// Set a node's execution state directly.
@@ -669,5 +698,51 @@ mod tests {
         assert_eq!(back.workflow_id, state.workflow_id);
         assert_eq!(back.status, state.status);
         assert_eq!(back.node_states.len(), state.node_states.len());
+    }
+
+    // Regression for #266: idempotency key must reflect the node's real
+    // attempt count, not a hardcoded ":1". The engine calls this helper on
+    // both check and record paths so that cross-restart replay does not
+    // collapse all attempts into one key.
+    #[test]
+    fn idempotency_key_for_node_uses_attempt_count() {
+        use crate::{attempt::NodeAttempt, idempotency::IdempotencyKey};
+
+        let (mut state, n1, _n2) = make_state();
+        let eid = state.execution_id;
+
+        let fresh = state.idempotency_key_for_node(eid, n1.clone());
+        assert_eq!(
+            fresh,
+            IdempotencyKey::generate(eid, n1.clone(), 1),
+            "a node with no attempts should key on attempt=1 (first dispatch)"
+        );
+
+        let ns = state.node_states.get_mut(&n1).unwrap();
+        let seed_key = IdempotencyKey::generate(eid, n1.clone(), 1);
+        ns.attempts.push(NodeAttempt::new(0, seed_key));
+        ns.attempts.push(NodeAttempt::new(
+            1,
+            IdempotencyKey::generate(eid, n1.clone(), 2),
+        ));
+
+        let after_two = state.idempotency_key_for_node(eid, n1.clone());
+        assert_eq!(
+            after_two,
+            IdempotencyKey::generate(eid, n1, 2),
+            "a node with two prior attempts should key on attempt=2"
+        );
+    }
+
+    #[test]
+    fn idempotency_key_for_node_unknown_node_defaults_to_one() {
+        use crate::idempotency::IdempotencyKey;
+
+        let (state, _n1, _n2) = make_state();
+        let phantom = node_key!("not_in_state");
+        let eid = state.execution_id;
+
+        let key = state.idempotency_key_for_node(eid, phantom.clone());
+        assert_eq!(key, IdempotencyKey::generate(eid, phantom, 1));
     }
 }
