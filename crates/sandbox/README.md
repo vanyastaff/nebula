@@ -82,3 +82,11 @@ In priority order — these are the actual work items the crate tracks, replacin
 - `nebula-plugin` — plugin trait + registry (not loading)
 - `nebula-plugin-sdk` — plugin-side wire protocol (this crate's counterpart)
 - `nebula-runtime` — dispatches actions through sandbox runners
+
+### Discovery TODO (evicted from PRODUCT_CANON.md §12.6)
+
+The `PluginCapabilities` enforcement path from `plugin.toml` through discovery is currently marked TODO in `src/discovery.rs` (the specific file:line moves as code evolves). Closing this TODO is part of the isolation roadmap (canon §12.6) and requires:
+
+1. Parse capabilities from `plugin.toml` at plugin load.
+2. Enforce capabilities in the broker on each dispatched call.
+3. Test coverage proving a capability-deny is actually rejected end-to-end.

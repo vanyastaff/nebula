@@ -100,3 +100,12 @@ cargo clippy -p nebula-resource -- -D warnings
 cargo nextest run -p nebula-resource
 cargo test -p nebula-resource --doc
 ```
+
+### Drain mechanism types (evicted from PRODUCT_CANON.md §11.4)
+
+Orphaned resources are drained by the next process through:
+
+- `DrainTimeoutPolicy` — policy controlling how long a drain operation waits.
+- `ReleaseQueue` (`src/release_queue.rs`) — the queue of releases awaiting drain.
+
+These types are L4 implementation detail — rename/refactor without canon revision. The L2 invariant ("async release is best-effort on crash; orphaned resources rely on next process") lives in canon §11.4.

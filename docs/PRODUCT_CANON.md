@@ -281,7 +281,7 @@ These must stay **explicit in code and operator-facing docs**, not split across 
 
 ### 11.3 Idempotency
 
-**[L2]** **One** idempotency story: deterministic key shape **`{execution_id}:{node_id}:{attempt}`**, persisted in `idempotency_keys`, checked and marked through `ExecutionRepo` before the side effect. **Engine guarantee:** it will not double-dispatch a **marked** attempt. Whether the **external** system de-duplicates is the integration author’s contract with that system — document per node.
+**[L2]** **One** idempotency story: deterministic per-attempt key, persisted in `idempotency_keys`, checked and marked through `ExecutionRepo` before the side effect. **Engine guarantee:** it will not double-dispatch a **marked** attempt. Whether the **external** system de-duplicates is the integration author’s contract with that system — document per node. Exact key format: see `crates/execution/README.md`. Seam: `crates/execution/src/idempotency.rs`.
 
 **[L2]** For **non-idempotent or risky side effects** (payments, writes without natural upsert, external one-shot operations), action handlers must guard execution with this idempotency path (or an equivalent documented key contract) before calling the remote system.
 
@@ -289,7 +289,7 @@ These must stay **explicit in code and operator-facing docs**, not split across 
 
 ### 11.4 Resource lifecycle
 
-**[L2]** Resources are first-class because **acquisition** and **scope-bounded release** are **engine-owned**. The async release path is **best-effort on crash** — orphaned resources rely on the next process to drain via `DrainTimeoutPolicy` / `ReleaseQueue`. Operators must be told this; authors must not assume “release ran” without an explicit checkpoint.
+**[L2]** Resources are first-class because **acquisition** and **scope-bounded release** are **engine-owned**. The async release path is **best-effort on crash** — orphaned resources rely on the next process to drain (mechanism types: see `crates/resource/README.md`). Operators must be told this; authors must not assume “release ran” without an explicit checkpoint.
 
 **[L1]** For long-lived exclusive/external resources (locks, leased cloud instances), deployments need external TTL / dead-man strategy; Nebula v1 does not provide an external lease arbiter by itself.
 
@@ -362,14 +362,14 @@ These must stay **explicit in code and operator-facing docs**, not split across 
 
 ### 12.5 Secrets and auth
 
-- **[L2]** No secrets in logs, error strings, or metrics labels. **`Zeroize` / `ZeroizeOnDrop`** on key material; redacted `Debug` on credential wrappers (`SecretToken`, etc.). Encryption at rest uses authenticated encryption with a KDF — do not bypass “for debugging.” Details: `crates/credential/README.md`.
+- **[L2]** No secrets in logs, error strings, or metrics labels. **`Zeroize` / `ZeroizeOnDrop`** on key material; redacted `Debug` on credential wrappers (`SecretToken`, etc.). Encryption at rest uses authenticated encryption. Specific algorithm / key-derivation / parameter choices: see `crates/credential/README.md`. Do not bypass encryption “for debugging.”
 - **[L2]** Every new `tracing::*!` that takes a credential or token argument must use **redacted** forms.
 
 ### 12.6 Isolation honesty
 
 - **[L1]** In-process sandbox / capability checks: **correctness and least privilege for accidental misuse**, not a security boundary against malicious native code. Keep `crates/sandbox` doc comments aligned with this canon and `docs/` threat models.
 - **[L1]** **Plugin IPC today:** sequential dispatch over a **JSON envelope** to a child process — that **is** the trust model; do not describe it as **sandboxed execution of untrusted native code**.
-- **[L1]** **WASM / WASI is an explicit non-goal for plugin isolation.** The Rust plugin ecosystem integration authors actually need — `redis`, `sqlx` with native drivers, `rdkafka`, `tonic` with native TLS, any `*-sys` crate — does **not** compile to `wasm32-wasip2`, and where parts compile, the feature surface forces authors into host-polyfill folklore that violates the §3.5 promise ("Write Stripe logic; do not write credential rotation, connection management, or retry folklore"). Offering WASM as "the future sandbox" would be a §4.5 false capability and a §4.4 DX regression at the same time. **The real isolation roadmap is:** `ProcessSandbox` (already shipping) → full `PluginCapabilities` enforcement wired from `plugin.toml` through discovery (closes `nebula-sandbox/src/discovery.rs:117`) → `plugin.toml` signing verification in tooling (canon §7.1) → per-platform OS hardening in `os_sandbox` (seccomp-bpf / landlock on Linux, `sandbox_init` on macOS, `AppContainer` / job objects on Windows) → parallelism within `ProcessSandbox` for throughput (§4.1). Revisit WASM only if the Rust WASM ecosystem crosses a specific, documented capability threshold — not as aspiration, and never as docs drift in crate-level `lib.rs` or README.
+- **[L1]** **WASM / WASI is an explicit non-goal for plugin isolation.** The Rust plugin ecosystem integration authors actually need — `redis`, `sqlx` with native drivers, `rdkafka`, `tonic` with native TLS, any `*-sys` crate — does **not** compile to `wasm32-wasip2`, and where parts compile, the feature surface forces authors into host-polyfill folklore that violates the §3.5 promise ("Write Stripe logic; do not write credential rotation, connection management, or retry folklore"). Offering WASM as "the future sandbox" would be a §4.5 false capability and a §4.4 DX regression at the same time. **The real isolation roadmap is:** `ProcessSandbox` (already shipping) → full `PluginCapabilities` enforcement wired from `plugin.toml` through discovery (the discovery-wiring TODO lives in `crates/sandbox/README.md`) → `plugin.toml` signing verification in tooling (canon §7.1) → per-platform OS hardening in `os_sandbox` (seccomp-bpf / landlock on Linux, `sandbox_init` on macOS, `AppContainer` / job objects on Windows) → parallelism within `ProcessSandbox` for throughput (§4.1). Revisit WASM only if the Rust WASM ecosystem crosses a specific, documented capability threshold — not as aspiration, and never as docs drift in crate-level `lib.rs` or README.
 
 ### 12.7 No god files, no orphan modules
 

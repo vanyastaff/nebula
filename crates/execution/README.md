@@ -67,3 +67,7 @@ This crate models **execution-time concepts**. It does not contain the orchestra
 - `nebula-engine` — drives these types
 - `nebula-storage` — persists them via `ExecutionRepo`
 - `nebula-workflow` — defines the DAG that `ExecutionPlan` derives from
+
+### Idempotency key format (evicted from PRODUCT_CANON.md §11.3)
+
+The deterministic key shape is `{execution_id}:{node_id}:{attempt}`, persisted in `idempotency_keys`. The format string itself is an implementation detail (L4) — changing it requires only this README and the corresponding code; no canon revision. The invariant ("deterministic per-attempt, checked before side-effect") is canonical (L2).
