@@ -1,0 +1,93 @@
+name: Auto-close linked issues on merge
+
+# Post-merge hook that closes issues referenced in commit messages but not
+# caught by GitHub's built-in `closes #N` auto-close.
+#
+# Squash-merge subjects in this repo routinely use the form
+# `fix(scope): subject (#issue, #issue) (#PR)` — GitHub's keyword parser does
+# not recognize bare `(#N)` references, so the issues remain OPEN after merge.
+# Three manual-sweep passes in one week (2026-04-12, 2026-04-15, 2026-04-18)
+# triggered this hook; see `docs/superpowers/specs/2026-04-18-stale-issue-audit-and-real-bugs.md`.
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  issues: write
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  close-linked-issues:
+    name: Close linked issues
+    runs-on: ubuntu-latest
+    # Skip on initial branch creation (no diff range to scan).
+    if: github.event.before != '0000000000000000000000000000000000000000'
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Close issues referenced in pushed commits
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          BEFORE: ${{ github.event.before }}
+          AFTER: ${{ github.event.after }}
+        run: |
+          set -euo pipefail
+
+          # Per-commit cap: prevent runaway when a commit body accidentally
+          # enumerates many issue-looking numbers.
+          MAX_REFS_PER_COMMIT=20
+
+          range="${BEFORE}..${AFTER}"
+          commits=$(git log --format="%H" "$range")
+          if [ -z "$commits" ]; then
+            echo "No commits in range $range — nothing to do."
+            exit 0
+          fi
+
+          closed_total=0
+
+          for sha in $commits; do
+            subject=$(git log -1 --format="%s" "$sha")
+            body=$(git log -1 --format="%B" "$sha")
+
+            # Extract all #N refs from the full commit message, dedupe, cap.
+            refs=$(printf '%s\n' "$body" \
+              | grep -oE '#[0-9]+' \
+              | tr -d '#' \
+              | sort -un \
+              | head -n "$MAX_REFS_PER_COMMIT")
+            [ -z "$refs" ] && continue
+
+            for n in $refs; do
+              item=$(gh api "repos/$REPO/issues/$n" 2>/dev/null || echo '{}')
+              state=$(printf '%s' "$item" | jq -r '.state // "unknown"')
+              is_pr=$(printf '%s' "$item" | jq -r 'has("pull_request")')
+
+              # Only close open, non-PR issues. PRs share the #N namespace with
+              # issues; `pull_request` field presence distinguishes them.
+              if [ "$state" = "open" ] && [ "$is_pr" = "false" ]; then
+                short_sha="${sha:0:10}"
+                # Escape backticks and double quotes in the subject for safe
+                # interpolation into the Markdown comment.
+                safe_subject=$(printf '%s' "$subject" | sed 's/`/\\`/g; s/"/\\"/g')
+                comment="Fixed in main as \`$short_sha\` — \"$safe_subject\". Auto-closed by [post-merge hook](.github/workflows/auto-close-linked-issues.yml)."
+                if gh issue close "$n" --reason completed --repo "$REPO" --comment "$comment"; then
+                  closed_total=$((closed_total + 1))
+                  echo "Closed #$n (via $short_sha)"
+                else
+                  echo "::warning::Failed to close #$n (via $short_sha) — continuing"
+                fi
+              fi
+            done
+          done
+
+          echo "Summary: closed $closed_total issue(s) across $(echo "$commits" | wc -l) commit(s)."
