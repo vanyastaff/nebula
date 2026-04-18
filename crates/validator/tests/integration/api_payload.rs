@@ -108,10 +108,16 @@ fn combinator_rules_short_circuit_on_any() {
 }
 
 #[test]
-fn type_mismatch_passes_silently_by_design() {
-    // A number input does not trigger string rules; this is the documented
-    // "permissive" behaviour that keeps rules composable across fields
-    // with varying types.
+fn type_mismatch_surfaces_as_error() {
+    // Issue #264: a number input against string rules must surface a
+    // typed `type_mismatch` failure rather than silently passing. Schema
+    // layers that want tolerant behaviour type-check upstream (see
+    // `nebula-schema::validated`) before dispatching rules.
     let rules = username_rules();
-    assert!(validate_rules(&json!(42), &rules, ExecutionMode::StaticOnly).is_ok());
+    let errors = expect_errors(validate_rules(
+        &json!(42),
+        &rules,
+        ExecutionMode::StaticOnly,
+    ));
+    assert_has_code(&errors, "type_mismatch");
 }
