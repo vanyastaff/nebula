@@ -108,6 +108,21 @@ pub enum EngineError {
         /// loop exited, paired with their observed `NodeState`.
         non_terminal_nodes: Vec<(NodeKey, NodeState)>,
     },
+
+    /// The engine could not persist a node-level checkpoint.
+    ///
+    /// Surfaced so that `run_frontier` aborts the node's progression instead
+    /// of continuing on undurable state: per `docs/PRODUCT_CANON.md` §11.5
+    /// (durability precedes visibility) and §12.4 (no silent log-and-continue
+    /// on state-transition failures), an unpersisted transition must never
+    /// leak to observers or the frontier.
+    #[error("checkpoint persist failed for node {node_key}: {reason}")]
+    CheckpointFailed {
+        /// The node whose checkpoint could not be committed.
+        node_key: NodeKey,
+        /// Underlying storage failure reason.
+        reason: String,
+    },
 }
 
 impl nebula_error::Classify for EngineError {
@@ -118,9 +133,10 @@ impl nebula_error::Classify for EngineError {
             | Self::ParameterResolution { .. }
             | Self::ParameterValidation { .. }
             | Self::EdgeEvaluationFailed { .. } => nebula_error::ErrorCategory::Validation,
-            Self::NodeFailed { .. } | Self::TaskPanicked(_) | Self::FrontierIntegrity { .. } => {
-                nebula_error::ErrorCategory::Internal
-            },
+            Self::NodeFailed { .. }
+            | Self::TaskPanicked(_)
+            | Self::FrontierIntegrity { .. }
+            | Self::CheckpointFailed { .. } => nebula_error::ErrorCategory::Internal,
             Self::Cancelled => nebula_error::ErrorCategory::Cancelled,
             Self::BudgetExceeded(_) => nebula_error::ErrorCategory::Exhausted,
             Self::Runtime(e) => nebula_error::Classify::category(e),
@@ -144,6 +160,7 @@ impl nebula_error::Classify for EngineError {
             Self::Action(e) => return nebula_error::Classify::code(e),
             Self::TaskPanicked(_) => "ENGINE:TASK_PANICKED",
             Self::FrontierIntegrity { .. } => "ENGINE:FRONTIER_INTEGRITY",
+            Self::CheckpointFailed { .. } => "ENGINE:CHECKPOINT_FAILED",
         })
     }
 
