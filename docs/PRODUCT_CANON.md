@@ -484,17 +484,23 @@ If the answer implies a **false capability**, the change is not ready — hide, 
 
 ---
 
-## 17. Definition of done (beyond green tests)
+## 17. Definition of done — by canon layer
 
 Incomplete if:
 
-- §12 violated without updating this file and a short migration note in the PR.
-- §13 knife scenario (execution **and** integration bar where those features exist) broken or narrowed without replacing it with a **stronger** scenario.
-- New public API surface that contradicts typed-error / layering rules “temporarily.”
-- New **public behavioral** contract (retry, idempotency, resource scope, etc.) without §11-level honesty — or docs that mislabel implementation state.
-- A new **outbox / queue / worker** landed **without** its consumer (or vice versa) in the same PR — unless explicitly exempted with **no orphan wiring** (§12.7).
-- A removed backend, endpoint, or capability is still **advertised** in `README.md` or `docs/`.
-- “Works on my machine” only via undocumented env vars that become mandatory for basic dev — **local path must stay documented** in `CLAUDE.md` or `README` (where applicable).
+- **[L1]** violated without an explicit canon revision + product-level rationale in the PR description.
+- **[L2]** violated without an ADR in `docs/adr/` + a seam test update in the same PR.
+- **[L3]** violated without a PR rationale (one paragraph in the PR body) and, if behavior changed, a test.
+- **[L4]** “violation” is not a violation — it is a move of detail into the owning crate's README. If you think an L4 rule is in canon, open an ADR per §0.2 and move it.
+
+Additional DoD items (unchanged from prior canon):
+
+- §13 knife scenario (execution and integration bar where those features exist) not broken or narrowed without replacement by a stronger scenario.
+- No new public API surface that contradicts typed-error / layering rules.
+- A new public behavioral contract requires §11-level honesty; docs must not mislabel implementation state.
+- A new outbox / queue / worker lands with its consumer (or explicit §12.7 exemption) in the same PR.
+- A removed backend, endpoint, or capability is not still advertised in `README.md` or `docs/`.
+- Local path stays documented in `CLAUDE.md` or `README` where applicable.
 
 ---
 
