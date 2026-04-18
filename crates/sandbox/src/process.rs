@@ -31,7 +31,11 @@
 //! (`poisoned` flag inside `PluginHandle`) and a sandbox-level one
 //! (`*self.handle.lock().await = None`).
 
-use std::{path::PathBuf, time::Duration};
+use std::{
+    path::PathBuf,
+    sync::atomic::{AtomicU64, Ordering},
+    time::Duration,
+};
 
 use async_trait::async_trait;
 use nebula_action::{ActionError, ActionMetadata, result::ActionResult};
@@ -79,12 +83,6 @@ const ENVELOPE_LINE_CAP: usize = 1024 * 1024;
 /// newline-starved garbage and starve the host of memory).
 const STDERR_LINE_CAP: usize = 8 * 1024;
 
-/// Correlation id used for the single envelope sent per invocation.
-///
-/// Slice 1c still does one envelope exchange at a time per call. Slice 1d's
-/// concurrent dispatch assigns unique ids across multiple in-flight calls.
-const ONE_SHOT_ID: u64 = 1;
-
 /// Process sandbox: spawns the plugin binary once and keeps the connection
 /// alive for the lifetime of this sandbox instance.
 ///
@@ -105,6 +103,17 @@ pub struct ProcessSandbox {
     /// mutex — slice 1c is sequential per sandbox instance. Slice 1d can
     /// replace this with a lock-free handle once concurrent dispatch lands.
     handle: Mutex<Option<PluginHandle>>,
+    /// Monotonic correlation id source (#285). Each outbound envelope
+    /// gets a fresh id; `try_dispatch` verifies the response echoes it
+    /// back. A stale response (e.g. late reply to a cancelled call)
+    /// therefore can't be silently mis-associated with a fresh request
+    /// — ID mismatch poisons the transport.
+    ///
+    /// Persisted across plugin respawns — the plugin only sees a
+    /// monotone sequence from its own perspective (fresh process,
+    /// fresh socket, fresh id stream), but the host never reuses an
+    /// id across invocations within this sandbox instance's lifetime.
+    next_id: AtomicU64,
 }
 
 /// Live connection to a running plugin process.
@@ -355,7 +364,17 @@ impl ProcessSandbox {
             capabilities,
             linux_rlimits: LinuxRlimits::default(),
             handle: Mutex::new(None),
+            next_id: AtomicU64::new(1),
         }
+    }
+
+    /// Reserve the next monotonic correlation id for an outbound
+    /// envelope (#285). Uses `Relaxed` ordering — id allocation has no
+    /// happens-before requirement against any other memory op; we only
+    /// need uniqueness, which `fetch_add` guarantees regardless of
+    /// ordering.
+    fn next_envelope_id(&self) -> u64 {
+        self.next_id.fetch_add(1, Ordering::Relaxed)
     }
 
     /// Override Linux child-process rlimits for this sandbox instance.
@@ -375,7 +394,7 @@ impl ProcessSandbox {
         cancel: Option<&CancellationToken>,
     ) -> Result<PluginToHost, ActionError> {
         let request = HostToPlugin::ActionInvoke {
-            id: ONE_SHOT_ID,
+            id: self.next_envelope_id(),
             action_key: action_key.to_owned(),
             input,
         };
@@ -384,7 +403,9 @@ impl ProcessSandbox {
 
     /// Query plugin metadata via a `MetadataRequest` envelope.
     pub async fn get_metadata(&self) -> Result<PluginToHost, ActionError> {
-        let request = HostToPlugin::MetadataRequest { id: ONE_SHOT_ID };
+        let request = HostToPlugin::MetadataRequest {
+            id: self.next_envelope_id(),
+        };
         self.dispatch_envelope(request, None).await
     }
 
@@ -464,6 +485,9 @@ impl ProcessSandbox {
             HostToPlugin::MetadataRequest { .. } => "metadata_request",
             _ => "other",
         };
+        // Remember the outbound correlation id so we can validate the
+        // response echoes it back (#285).
+        let expected_id = request_id(&envelope);
 
         let roundtrip = async {
             handle.send_envelope(&envelope).await?;
@@ -473,7 +497,24 @@ impl ProcessSandbox {
         let outcome = race_cancel_timeout(roundtrip, self.timeout, cancel).await;
 
         match outcome {
-            RaceOutcome::Ready(Ok(response)) => Ok(response),
+            RaceOutcome::Ready(Ok(response)) => {
+                if let (Some(expected), Some(got)) = (expected_id, response_id(&response))
+                    && expected != got
+                {
+                    tracing::warn!(
+                        plugin = %self.binary.display(),
+                        envelope = %envelope_tag,
+                        expected,
+                        got,
+                        "plugin response id mismatch — poisoning handle",
+                    );
+                    *guard = None;
+                    return Err(sandbox_error_to_action_error(
+                        SandboxError::ResponseIdMismatch { expected, got },
+                    ));
+                }
+                Ok(response)
+            },
             RaceOutcome::Ready(Err(sandbox_err)) => {
                 // Transport/protocol error — invalidate the handle so the
                 // next call respawns. Log PluginLineTooLarge at warn so it
@@ -675,10 +716,38 @@ fn sandbox_error_to_action_error(err: SandboxError) -> ActionError {
         // Fatal: DoS / protocol-abuse signals. Do not paper over with retry.
         SandboxError::PluginLineTooLarge { .. }
         | SandboxError::HandshakeLineTooLarge { .. }
+        | SandboxError::ResponseIdMismatch { .. }
         | SandboxError::TransportPoisoned
         | SandboxError::Transport(_)
         | SandboxError::MalformedEnvelope(_)
         | SandboxError::HostMalformedEnvelope(_) => ActionError::fatal_from(err),
+    }
+}
+
+/// Correlation id carried by an outbound host→plugin envelope, if any.
+/// `Shutdown` has no id (it's one-way, no response expected); every
+/// other variant carries a `u64`.
+fn request_id(env: &HostToPlugin) -> Option<u64> {
+    match env {
+        HostToPlugin::ActionInvoke { id, .. }
+        | HostToPlugin::MetadataRequest { id }
+        | HostToPlugin::Cancel { id }
+        | HostToPlugin::RpcResponseOk { id, .. }
+        | HostToPlugin::RpcResponseError { id, .. } => Some(*id),
+        HostToPlugin::Shutdown => None,
+    }
+}
+
+/// Correlation id carried by an inbound plugin→host envelope, if any.
+/// `Log` is one-way and carries no correlation id; every other variant
+/// carries a `u64`.
+fn response_id(env: &PluginToHost) -> Option<u64> {
+    match env {
+        PluginToHost::ActionResultOk { id, .. }
+        | PluginToHost::ActionResultError { id, .. }
+        | PluginToHost::RpcCall { id, .. }
+        | PluginToHost::MetadataResponse { id, .. } => Some(*id),
+        PluginToHost::Log { .. } => None,
     }
 }
 
@@ -1299,5 +1368,110 @@ mod tests {
         let fut = std::future::pending::<()>();
         let outcome = race_cancel_timeout(fut, Duration::from_millis(25), Some(&token)).await;
         assert_eq!(outcome, RaceOutcome::Timeout);
+    }
+
+    // ---- #285 monotonic-id + id-matching regression tests ------------
+
+    #[test]
+    fn next_envelope_id_is_monotonic_and_unique() {
+        let sandbox = ProcessSandbox::new(
+            PathBuf::from("/nonexistent"),
+            Duration::from_secs(1),
+            PluginCapabilities::none(),
+        );
+        // Starts at 1 (not 0) so a default-zeroed response id is
+        // visibly stale.
+        let first = sandbox.next_envelope_id();
+        let second = sandbox.next_envelope_id();
+        let third = sandbox.next_envelope_id();
+        assert_eq!(first, 1);
+        assert_eq!(second, 2);
+        assert_eq!(third, 3);
+    }
+
+    #[test]
+    fn request_id_extracts_all_id_bearing_variants() {
+        let action = HostToPlugin::ActionInvoke {
+            id: 7,
+            action_key: String::from("k"),
+            input: serde_json::json!({}),
+        };
+        let meta = HostToPlugin::MetadataRequest { id: 8 };
+        let cancel = HostToPlugin::Cancel { id: 9 };
+        let rpc_ok = HostToPlugin::RpcResponseOk {
+            id: 10,
+            result: serde_json::json!({}),
+        };
+        let rpc_err = HostToPlugin::RpcResponseError {
+            id: 11,
+            code: String::from("c"),
+            message: String::from("m"),
+        };
+        let shutdown = HostToPlugin::Shutdown;
+
+        assert_eq!(request_id(&action), Some(7));
+        assert_eq!(request_id(&meta), Some(8));
+        assert_eq!(request_id(&cancel), Some(9));
+        assert_eq!(request_id(&rpc_ok), Some(10));
+        assert_eq!(request_id(&rpc_err), Some(11));
+        assert_eq!(
+            request_id(&shutdown),
+            None,
+            "Shutdown is one-way and has no correlation id",
+        );
+    }
+
+    #[test]
+    fn response_id_extracts_all_id_bearing_variants() {
+        let ok = PluginToHost::ActionResultOk {
+            id: 42,
+            output: serde_json::json!({}),
+        };
+        let err = PluginToHost::ActionResultError {
+            id: 43,
+            code: String::from("c"),
+            message: String::from("m"),
+            retryable: false,
+        };
+        let rpc = PluginToHost::RpcCall {
+            id: 44,
+            verb: String::from("v"),
+            params: serde_json::json!({}),
+        };
+        let meta = PluginToHost::MetadataResponse {
+            id: 45,
+            protocol_version: 2,
+            plugin_key: String::from("k"),
+            plugin_version: String::from("1.0.0"),
+            actions: Vec::new(),
+        };
+        let log = PluginToHost::Log {
+            level: nebula_plugin_sdk::protocol::LogLevel::Info,
+            message: String::from("hi"),
+            fields: serde_json::json!({}),
+        };
+
+        assert_eq!(response_id(&ok), Some(42));
+        assert_eq!(response_id(&err), Some(43));
+        assert_eq!(response_id(&rpc), Some(44));
+        assert_eq!(response_id(&meta), Some(45));
+        assert_eq!(
+            response_id(&log),
+            None,
+            "Log is one-way and has no correlation id",
+        );
+    }
+
+    #[test]
+    fn response_id_mismatch_converts_to_fatal_action_error() {
+        let err = SandboxError::ResponseIdMismatch {
+            expected: 42,
+            got: 41,
+        };
+        let ae = sandbox_error_to_action_error(err);
+        assert!(
+            matches!(ae, ActionError::Fatal { .. }),
+            "ResponseIdMismatch must classify as Fatal, got {ae:?}",
+        );
     }
 }
