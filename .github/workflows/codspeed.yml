@@ -30,10 +30,37 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
+# Sharding rationale:
+# Suite is ~765 bench points across 22 files. CodSpeed recommends <1000 points
+# per shard but a single shard at that size still takes too long. Splitting by
+# package weight: resilience (12 files, ~400 points) and validator (6 files,
+# ~150 points) get their own shards; the rest fit into one "misc" shard.
+# All shards run in the same workflow so CodSpeed aggregates them into one report.
+#
+# Mode: simulation (default). Walltime mode requires CodSpeed Macro Runners
+# (`runs-on: codspeed-macro`); on `ubuntu-latest` it produces unreliable data
+# and triggers "Unknown Walltime execution environment detected" warnings.
+# Simulation runs each bench once under cachegrind — deterministic, ignores
+# criterion's sample_size/measurement_time, dramatically faster on hosted runners.
 jobs:
   codspeed:
-    name: Run benchmarks
+    name: Run benchmarks (${{ matrix.shard }})
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - shard: resilience
+            packages: -p nebula-resilience
+          - shard: validator
+            packages: -p nebula-validator
+          - shard: misc
+            packages: >-
+              -p nebula-core
+              -p nebula-eventbus
+              -p nebula-expression
+              -p nebula-log
+              -p nebula-system
     steps:
       - name: Checkout repository
         uses: actions/checkout@v6
@@ -46,6 +73,7 @@ jobs:
         with:
           save-if: ${{ github.ref == 'refs/heads/main' }}
           cache-on-failure: true
+          shared-key: codspeed-${{ matrix.shard }}
 
       - name: Install cargo-codspeed
         uses: taiki-e/install-action@v2.75.10
@@ -53,23 +81,10 @@ jobs:
           tool: cargo-codspeed
 
       - name: Build the benchmark targets
-        # `-m walltime` is required so cargo-codspeed compiles the bench
-        # targets for the walltime runner. Without this flag the default
-        # `instrumentation` build is produced and `CodSpeedHQ/action` fails
-        # at the run step with "No benchmarks found for the walltime mode".
-        # See https://github.com/CodSpeedHQ/codspeed-rust
-        run: |
-          cargo codspeed build -m walltime \
-            -p nebula-core \
-            -p nebula-eventbus \
-            -p nebula-expression \
-            -p nebula-log \
-            -p nebula-resilience \
-            -p nebula-system \
-            -p nebula-validator
+        run: cargo codspeed build ${{ matrix.packages }}
 
       - name: Run the benchmarks
         uses: CodSpeedHQ/action@v4
         with:
-          mode: walltime
-          run: cargo codspeed run -m walltime
+          mode: simulation
+          run: cargo codspeed run ${{ matrix.packages }}

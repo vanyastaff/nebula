@@ -40,7 +40,7 @@ jobs:
         env:
           TITLE: ${{ github.event.pull_request.title }}
         run: |
-          if ! echo "$TITLE" | grep -qP '^(feat|fix|docs|style|refactor|perf|test|chore)(\(.+\))?: .+'; then
+          if ! echo "$TITLE" | grep -qP '^(feat|fix|docs|style|refactor|perf|test|chore|ci|build|revert)(\(.+\))?: .+'; then
             echo "::error::PR title must follow conventional commits: type(scope): description"
             echo "  Got: $TITLE"
             exit 1

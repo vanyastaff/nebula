@@ -148,3 +148,33 @@ jobs:
           if-no-files-found: ignore
           retention-days: 3
 
+  # Aggregator that branch protection's required `Tests` check points at.
+  # Without this, the dynamic matrix job names (`Test nebula-core`, ...)
+  # never satisfy the single required-check name, leaving PRs stuck on
+  # "Tests — Expected — Waiting for status to be reported".
+  tests:
+    name: Tests
+    needs: [select-matrix, warm-cache, test-crates]
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - name: Aggregate matrix results
+        run: |
+          set -euo pipefail
+          fail=0
+          for job in select-matrix warm-cache test-crates; do
+            case "$job" in
+              select-matrix) result="${{ needs.select-matrix.result }}" ;;
+              warm-cache)    result="${{ needs.warm-cache.result }}" ;;
+              test-crates)   result="${{ needs.test-crates.result }}" ;;
+            esac
+            if [[ "$result" != "success" ]]; then
+              echo "::error::$job result: $result"
+              fail=1
+            fi
+          done
+          if [[ "$fail" -eq 1 ]]; then
+            exit 1
+          fi
+          echo "All upstream jobs passed."
+
