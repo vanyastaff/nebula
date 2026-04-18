@@ -62,12 +62,33 @@ impl<S> EncryptionLayer<S> {
     /// Create a new single-key encryption layer.
     ///
     /// The key is registered as `"default"` and used for all new writes.
-    /// An empty-string alias is also registered for migration compatibility
-    /// with pre-rotation data.
+    ///
+    /// # Legacy `""` records
+    ///
+    /// Earlier builds of this layer aliased the key under the empty string
+    /// `""` so that legacy envelopes with `key_id: ""` would silently decrypt
+    /// with the current key. That alias was removed (GitHub issue #281):
+    /// silent cross-identity decryption breaks the key-rotation invariant
+    /// (PRODUCT_CANON §4.2 / §12.5) and makes `key_id`-based audit provenance
+    /// unreliable. Deployments that still hold `""` envelopes must register
+    /// the empty alias explicitly via [`with_keys`](Self::with_keys) — e.g.
+    ///
+    /// ```rust,ignore
+    /// EncryptionLayer::with_keys(
+    ///     inner,
+    ///     "default",
+    ///     vec![
+    ///         (String::new(), legacy_key),   // explicit, audit-visible
+    ///         ("default".into(), current_key),
+    ///     ],
+    /// );
+    /// ```
+    ///
+    /// The lazy rotation path (see module docs) will then re-encrypt any
+    /// `""` record with `"default"` on next read.
     pub fn new(inner: S, key: Arc<EncryptionKey>) -> Self {
         let mut keys = HashMap::new();
-        keys.insert("default".into(), key.clone());
-        keys.insert(String::new(), key); // alias for pre-rotation data
+        keys.insert("default".into(), key);
         Self {
             inner,
             current_key_id: "default".into(),
@@ -439,5 +460,60 @@ mod tests {
         let raw = inner.get("lazy-1").await.unwrap();
         let envelope: crate::crypto::EncryptedData = serde_json::from_slice(&raw.data).unwrap();
         assert_eq!(envelope.key_id, "key-2");
+    }
+
+    /// Regression for GitHub issue #281: `new()` no longer aliases the key
+    /// under `""`, so legacy envelopes with `key_id: ""` cannot silently
+    /// decrypt with the current key. Operators who still hold such records
+    /// must register the alias explicitly via `with_keys`.
+    ///
+    /// The current `encrypt_with_key_id` refuses to produce new envelopes
+    /// with an empty `key_id`, so this test mutates a legitimately-encrypted
+    /// envelope to simulate a pre-guard legacy record.
+    #[tokio::test]
+    async fn new_does_not_silently_decrypt_empty_key_id_envelopes() {
+        let inner = InMemoryStore::new();
+        let key = test_key();
+
+        // Encrypt normally under "default", then mutate key_id to "" to
+        // simulate a legacy pre-guard envelope persisted by an older build.
+        let plaintext = b"legacy-record";
+        let mut legacy_envelope =
+            crate::crypto::encrypt_with_key_id(&key, "default", plaintext, b"legacy-1").unwrap();
+        legacy_envelope.key_id = String::new();
+        let envelope_bytes = serde_json::to_vec(&legacy_envelope).unwrap();
+
+        let cred = StoredCredential {
+            id: "legacy-1".into(),
+            credential_key: "test_credential".into(),
+            data: envelope_bytes,
+            state_kind: "test".into(),
+            state_version: 1,
+            version: 0,
+            created_at: chrono::Utc::now(),
+            updated_at: chrono::Utc::now(),
+            expires_at: None,
+            metadata: Default::default(),
+        };
+        inner.put(cred, PutMode::CreateOnly).await.unwrap();
+
+        // `new(_, key)` must refuse to decrypt the `""`-tagged record — the
+        // empty alias no longer maps to the default key.
+        let store = EncryptionLayer::new(inner.clone(), key.clone());
+        let err = store.get("legacy-1").await.unwrap_err();
+        assert!(
+            matches!(&err, StoreError::Backend(_)),
+            "expected a Backend error for unknown key_id, got {err:?}",
+        );
+
+        // Explicit opt-in via `with_keys` still works — the migration path
+        // documented on `new()` succeeds.
+        let store_with_legacy = EncryptionLayer::with_keys(
+            inner,
+            "default".to_string(),
+            vec![(String::new(), key.clone()), ("default".to_string(), key)],
+        );
+        let fetched = store_with_legacy.get("legacy-1").await.unwrap();
+        assert_eq!(fetched.data, plaintext);
     }
 }
