@@ -4130,6 +4130,13 @@ mod tests {
             self.inner.list_running().await
         }
 
+        async fn list_running_for_workflow(
+            &self,
+            workflow_id: WorkflowId,
+        ) -> Result<Vec<ExecutionId>, nebula_storage::ExecutionRepoError> {
+            self.inner.list_running_for_workflow(workflow_id).await
+        }
+
         async fn count(
             &self,
             workflow_id: Option<WorkflowId>,
