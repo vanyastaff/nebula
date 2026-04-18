@@ -19,10 +19,10 @@ Legend:
 | Crate | API stability | Test coverage | Doc completeness | Engine integration | SLI ready |
 |---|---|---|---|---|---|
 | nebula-action        | frontier | stable  | stable | partial (webhook sig covered; CheckpointPolicy planned) | n/a |
-| nebula-api           | frontier | stable  | stable | partial (step 5 cancel consumer partial) | partial |
+| nebula-api           | frontier | stable  | stable | partial (step 5 cancel: producer side stable; consumer skeleton in nebula-engine, dispatch A2/A3 planned — ADR-0008) | partial |
 | nebula-core          | frontier | stable  | stable | stable | n/a |
 | nebula-credential    | frontier | stable  | stable | partial (rotation in integration tests) | n/a |
-| nebula-engine        | partial  | stable  | stable | stable | n/a |
+| nebula-engine        | partial  | stable  | stable | partial (ControlConsumer skeleton lands §12.2; dispatch A2/A3 planned — ADR-0008) | n/a |
 | nebula-error         | stable   | stable  | stable | n/a | n/a |
 | nebula-eventbus      | stable   | stable  | stable | n/a | n/a |
 | nebula-execution     | stable   | stable  | stable | stable | partial |
@@ -50,3 +50,4 @@ Legend:
 This file is a living dashboard. Reviewers check truthfulness on every PR that touches a crate's public surface, test suite, or docs. Canon §17 DoD includes "MATURITY.md row updated if the PR changes crate state."
 
 Last full sweep: 2026-04-17 (Pass 4 of docs architecture redesign).
+Last targeted revision: 2026-04-18 (ADR-0008, chip A1 — ControlConsumer skeleton).
