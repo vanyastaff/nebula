@@ -361,6 +361,40 @@ impl WorkflowEngine {
         }
     }
 
+    /// Emit [`ExecutionEvent::FrontierIntegrityViolation`] when the §11.1
+    /// guard has populated a non-terminal payload. Called at every finish
+    /// site *before* [`ExecutionEvent::ExecutionFinished`]; isolating it in
+    /// one helper keeps that ordering contract in a single place.
+    ///
+    /// Unlike [`Self::emit_event`], this helper escalates a dropped event
+    /// to `tracing::error!` — the integrity violation is the one event
+    /// whose contract is "operators must see it", so a slow consumer
+    /// leaves an attributable log record instead of a `warn!` drop.
+    fn emit_frontier_integrity_if_violated(
+        &self,
+        execution_id: ExecutionId,
+        non_terminal_nodes: Option<Vec<(NodeKey, NodeState)>>,
+    ) {
+        let Some(non_terminal_nodes) = non_terminal_nodes else {
+            return;
+        };
+        let non_terminal_count = non_terminal_nodes.len();
+        let event = ExecutionEvent::FrontierIntegrityViolation {
+            execution_id,
+            non_terminal_nodes,
+        };
+        let Some(sender) = &self.event_sender else {
+            return;
+        };
+        if sender.try_send(event).is_err() {
+            tracing::error!(
+                %execution_id,
+                non_terminal_count,
+                "frontier integrity violation event dropped (channel full or closed)"
+            );
+        }
+    }
+
     /// Replay a workflow execution from a specific node.
     ///
     /// Nodes upstream of `replay_from` use pinned (stored) outputs.
@@ -498,9 +532,13 @@ impl WorkflowEngine {
         self.runtime.clear_execution_output_totals(execution_id);
 
         let elapsed = started.elapsed();
-        let final_status = determine_final_status(&failed_node, &cancel_token, &exec_state);
+        let FinalStatusDecision {
+            status: final_status,
+            integrity_violation,
+        } = determine_final_status(&failed_node, &cancel_token, &exec_state);
         let _ = exec_state.transition_status(final_status);
 
+        self.emit_frontier_integrity_if_violated(execution_id, integrity_violation);
         self.emit_event(ExecutionEvent::ExecutionFinished {
             execution_id,
             success: final_status == ExecutionStatus::Completed,
@@ -623,7 +661,10 @@ impl WorkflowEngine {
         let elapsed = started.elapsed();
 
         // 10. Determine final status and emit events
-        let final_status = determine_final_status(&failed_node, &cancel_token, &exec_state);
+        let FinalStatusDecision {
+            status: final_status,
+            integrity_violation,
+        } = determine_final_status(&failed_node, &cancel_token, &exec_state);
         let _ = exec_state.transition_status(final_status);
 
         // Persist final execution state (best-effort)
@@ -652,6 +693,7 @@ impl WorkflowEngine {
         }
 
         self.emit_final_event(execution_id, final_status, elapsed, &failed_node);
+        self.emit_frontier_integrity_if_violated(execution_id, integrity_violation);
         self.emit_event(ExecutionEvent::ExecutionFinished {
             execution_id,
             success: final_status == ExecutionStatus::Completed,
@@ -905,7 +947,10 @@ impl WorkflowEngine {
 
         let elapsed = started.elapsed();
 
-        let final_status = determine_final_status(&failed_node, &cancel_token, &exec_state);
+        let FinalStatusDecision {
+            status: final_status,
+            integrity_violation,
+        } = determine_final_status(&failed_node, &cancel_token, &exec_state);
         // Use the validated transition path. Ignoring the result is intentional:
         // if the current status is already terminal (e.g. the execution was
         // cancelled during the frontier loop), we do not overwrite it.
@@ -928,6 +973,7 @@ impl WorkflowEngine {
         }
 
         self.emit_final_event(execution_id, final_status, elapsed, &failed_node);
+        self.emit_frontier_integrity_if_violated(execution_id, integrity_violation);
         self.emit_event(ExecutionEvent::ExecutionFinished {
             execution_id,
             success: final_status == ExecutionStatus::Completed,
@@ -2203,37 +2249,69 @@ fn mark_node_failed(exec_state: &mut ExecutionState, node_key: NodeKey, err: &En
     }
 }
 
+/// Outcome of the final-status decision at the end of a frontier loop.
+///
+/// Combines the chosen [`ExecutionStatus`] with optional integrity-violation
+/// detail so the caller can emit a diagnostic
+/// [`ExecutionEvent::FrontierIntegrityViolation`] before the usual
+/// [`ExecutionEvent::ExecutionFinished`]. Keeping the decision pure (no
+/// event emission inside the function) lets us unit-test it without
+/// a live `WorkflowEngine`.
+#[derive(Debug)]
+struct FinalStatusDecision {
+    status: ExecutionStatus,
+    /// `Some(nodes)` when the frontier exited without `failed_node` or
+    /// cancellation but not all nodes reached a terminal state — see
+    /// `docs/PRODUCT_CANON.md` §11.1.
+    integrity_violation: Option<Vec<(NodeKey, NodeState)>>,
+}
+
 /// Determine the final execution status.
+///
+/// Gates `Completed` on [`ExecutionState::all_nodes_terminal`] to satisfy the
+/// §11.1 invariant: if the frontier drains without a failure or cancellation
+/// but some nodes are still non-terminal, we return `Failed` with an attached
+/// integrity-violation payload so the caller can emit a diagnostic event and
+/// (optionally) surface [`EngineError::FrontierIntegrity`] to operators.
 fn determine_final_status(
     failed_node: &Option<(NodeKey, String)>,
     cancel_token: &CancellationToken,
     exec_state: &ExecutionState,
-) -> ExecutionStatus {
+) -> FinalStatusDecision {
     if failed_node.is_some() {
-        ExecutionStatus::Failed
-    } else if cancel_token.is_cancelled() {
-        ExecutionStatus::Cancelled
-    } else if !exec_state.all_nodes_terminal() {
-        // All reachable paths finished but some nodes are still non-terminal —
-        // this indicates a bookkeeping inconsistency (e.g., a node that was
-        // never enqueued because its incoming-edge count was never satisfied).
-        // Returning Failed prevents a false Completed status.
-        let non_terminal: Vec<_> = exec_state
+        return FinalStatusDecision {
+            status: ExecutionStatus::Failed,
+            integrity_violation: None,
+        };
+    }
+    if cancel_token.is_cancelled() {
+        return FinalStatusDecision {
+            status: ExecutionStatus::Cancelled,
+            integrity_violation: None,
+        };
+    }
+    if !exec_state.all_nodes_terminal() {
+        let non_terminal: Vec<(NodeKey, NodeState)> = exec_state
             .node_states
             .iter()
             .filter(|(_, ns)| !ns.state.is_terminal())
-            .map(|(id, ns)| (id, ns.state))
+            .map(|(id, ns)| (id.clone(), ns.state))
             .collect();
-        tracing::warn!(
+        tracing::error!(
             execution_id = %exec_state.execution_id,
             non_terminal_count = non_terminal.len(),
             ?non_terminal,
-            "execution loop finished but not all nodes are terminal; \
-             marking execution as failed to prevent false Completed status"
+            "frontier integrity violation: loop exited with non-terminal nodes; \
+             marking execution as Failed to satisfy PRODUCT_CANON §11.1"
         );
-        ExecutionStatus::Failed
-    } else {
-        ExecutionStatus::Completed
+        return FinalStatusDecision {
+            status: ExecutionStatus::Failed,
+            integrity_violation: Some(non_terminal),
+        };
+    }
+    FinalStatusDecision {
+        status: ExecutionStatus::Completed,
+        integrity_violation: None,
     }
 }
 
@@ -3900,13 +3978,15 @@ mod tests {
         );
     }
 
-    /// Regression: `determine_final_status` must return `Failed` (not `Completed`)
-    /// when at least one node has not reached a terminal state, even when no node
-    /// explicitly failed and the cancellation token is not set.
+    /// Regression for #341: `determine_final_status` must return `Failed`
+    /// (not `Completed`) when at least one node has not reached a terminal
+    /// state, even when no node explicitly failed and the cancellation token
+    /// is not set.
     ///
-    /// This guards against the false-Completed scenario described in the issue:
-    /// the frontier can drain and the execution incorrectly returns Completed while
-    /// some nodes are still Pending due to edge-resolution bookkeeping bugs.
+    /// Additionally, it must attach an `integrity_violation` payload naming
+    /// the non-terminal nodes, so the caller can emit
+    /// `ExecutionEvent::FrontierIntegrityViolation` rather than silently
+    /// reporting success (PRODUCT_CANON §11.1).
     #[test]
     fn final_status_guard_returns_failed_for_non_terminal_nodes() {
         let exec_id = ExecutionId::new();
@@ -3915,17 +3995,26 @@ mod tests {
         let n2 = node_key!("n2");
 
         // n1 completed, n2 still Pending (simulates a stalled node).
-        let mut exec_state = ExecutionState::new(exec_id, wf_id, &[n1.clone(), n2]);
+        let mut exec_state = ExecutionState::new(exec_id, wf_id, &[n1.clone(), n2.clone()]);
         exec_state.node_states.get_mut(&n1).unwrap().state = NodeState::Completed;
         // n2 stays NodeState::Pending
 
         let cancel_token = CancellationToken::new();
-        let status = determine_final_status(&None, &cancel_token, &exec_state);
+        let decision = determine_final_status(&None, &cancel_token, &exec_state);
 
         assert_eq!(
-            status,
+            decision.status,
             ExecutionStatus::Failed,
             "non-terminal nodes must prevent a false Completed status"
+        );
+        let non_terminal = decision
+            .integrity_violation
+            .expect("integrity_violation must be populated when guard fires");
+        assert_eq!(non_terminal.len(), 1, "exactly one node is non-terminal");
+        assert_eq!(
+            non_terminal[0],
+            (n2, NodeState::Pending),
+            "payload must name the stalled node and its observed state"
         );
     }
 
@@ -3943,13 +4032,122 @@ mod tests {
         exec_state.node_states.get_mut(&n2).unwrap().state = NodeState::Skipped;
 
         let cancel_token = CancellationToken::new();
-        let status = determine_final_status(&None, &cancel_token, &exec_state);
+        let decision = determine_final_status(&None, &cancel_token, &exec_state);
 
         assert_eq!(
-            status,
+            decision.status,
             ExecutionStatus::Completed,
             "all-terminal nodes with no failure must yield Completed"
         );
+        assert!(
+            decision.integrity_violation.is_none(),
+            "no integrity payload when the invariant holds"
+        );
+    }
+
+    /// Invariant: no combination of `(failed_node, cancel_token, exec_state)`
+    /// may produce `Completed` when `all_nodes_terminal` is false.
+    ///
+    /// Acts as a lightweight property-style check — enumerates the cartesian
+    /// product of the three input axes for a two-node workflow and asserts
+    /// the canon §11.1 rule across every combination.
+    #[test]
+    fn final_status_never_completed_with_non_terminal_nodes() {
+        use NodeState::*;
+        let states = [
+            Pending, Ready, Running, Retrying, Completed, Failed, Skipped, Cancelled,
+        ];
+        let failure_cases = [None, Some((node_key!("n1"), "boom".to_owned()))];
+        let cancel_cases = [false, true];
+
+        let combinations = states
+            .iter()
+            .flat_map(|&a| std::iter::repeat(a).zip(states.iter().copied()))
+            .flat_map(|(a, b)| failure_cases.iter().map(move |f| (a, b, f)))
+            .flat_map(|(a, b, f)| cancel_cases.iter().map(move |&c| (a, b, f, c)));
+        for (a, b, failed, cancel) in combinations {
+            check_no_false_completed(a, b, failed, cancel);
+        }
+    }
+
+    fn check_no_false_completed(
+        a: NodeState,
+        b: NodeState,
+        failed: &Option<(NodeKey, String)>,
+        cancel: bool,
+    ) {
+        let exec_id = ExecutionId::new();
+        let wf_id = WorkflowId::new();
+        let n1 = node_key!("n1");
+        let n2 = node_key!("n2");
+        let mut state = ExecutionState::new(exec_id, wf_id, &[n1.clone(), n2.clone()]);
+        state.node_states.get_mut(&n1).unwrap().state = a;
+        state.node_states.get_mut(&n2).unwrap().state = b;
+
+        let token = CancellationToken::new();
+        if cancel {
+            token.cancel();
+        }
+
+        let decision = determine_final_status(failed, &token, &state);
+        if decision.status != ExecutionStatus::Completed {
+            return;
+        }
+        assert!(
+            state.all_nodes_terminal(),
+            "Completed must imply all_nodes_terminal; \
+             violated with a={a:?} b={b:?} failed={failed:?} cancel={cancel}"
+        );
+        assert!(
+            decision.integrity_violation.is_none(),
+            "Completed decisions must not carry an integrity payload"
+        );
+    }
+
+    /// Regression for #341: when the guard populates a non-terminal payload,
+    /// `emit_frontier_integrity_if_violated` must send exactly one
+    /// `ExecutionEvent::FrontierIntegrityViolation`. Covers the helper all
+    /// three finish sites call, so a reorder or drop at any site is caught
+    /// centrally.
+    #[tokio::test]
+    async fn emit_frontier_integrity_helper_delivers_one_event_on_violation() {
+        let registry = Arc::new(ActionRegistry::new());
+        let (engine, _) = make_engine(registry);
+        let (tx, mut rx) = mpsc::channel::<ExecutionEvent>(8);
+        let engine = engine.with_event_sender(tx);
+
+        let exec_id = ExecutionId::new();
+        let n2 = node_key!("n2");
+        let payload = Some(vec![(n2.clone(), NodeState::Pending)]);
+        engine.emit_frontier_integrity_if_violated(exec_id, payload);
+
+        match rx.try_recv().expect("violation event") {
+            ExecutionEvent::FrontierIntegrityViolation {
+                execution_id,
+                non_terminal_nodes,
+            } => {
+                assert_eq!(execution_id, exec_id);
+                assert_eq!(non_terminal_nodes, vec![(n2, NodeState::Pending)]);
+            },
+            other => panic!("expected FrontierIntegrityViolation, got {other:?}"),
+        }
+        // No further events from this helper — the finish event is the
+        // caller's responsibility and is intentionally out of scope here.
+        assert!(rx.try_recv().is_err(), "helper must emit exactly one event");
+    }
+
+    /// When the guard does not fire, `emit_frontier_integrity_if_violated`
+    /// must stay silent so the finish-event stream is unchanged in the
+    /// happy path.
+    #[tokio::test]
+    async fn emit_frontier_integrity_helper_silent_when_no_violation() {
+        let registry = Arc::new(ActionRegistry::new());
+        let (engine, _) = make_engine(registry);
+        let (tx, mut rx) = mpsc::channel::<ExecutionEvent>(8);
+        let engine = engine.with_event_sender(tx);
+
+        engine.emit_frontier_integrity_if_violated(ExecutionId::new(), None);
+        assert!(rx.try_recv().is_err());
     }
 
     /// Regression for #306: when the proactive credential-refresh hook

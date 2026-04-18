@@ -1,7 +1,8 @@
 //! Engine error types.
 
 use nebula_action::ActionError;
-use nebula_core::NodeKey;
+use nebula_core::{NodeKey, id::ExecutionId};
+use nebula_workflow::NodeState;
 
 /// Errors from the engine layer.
 #[derive(Debug, thiserror::Error)]
@@ -86,6 +87,27 @@ pub enum EngineError {
     /// `CredentialRefreshFailed` from other failure modes.
     #[error("action failed: {0}")]
     Action(#[from] ActionError),
+
+    /// The frontier loop exited while one or more nodes were still in a
+    /// non-terminal state (e.g. `Pending` / `Running` / `Retrying`).
+    ///
+    /// Per `docs/PRODUCT_CANON.md` §11.1, the engine must be the single source
+    /// of truth for execution status and must not silently report `Completed`
+    /// on inconsistent state. This variant is produced when the frontier
+    /// drains without `failed_node` or cancellation, yet `all_nodes_terminal`
+    /// is false — almost always a scheduler bookkeeping bug.
+    #[error(
+        "frontier integrity violation: execution {execution_id} exited with \
+         {} non-terminal node(s)",
+        non_terminal_nodes.len()
+    )]
+    FrontierIntegrity {
+        /// The execution whose frontier loop produced the inconsistent state.
+        execution_id: ExecutionId,
+        /// Nodes that were still non-terminal at the time the frontier
+        /// loop exited, paired with their observed `NodeState`.
+        non_terminal_nodes: Vec<(NodeKey, NodeState)>,
+    },
 }
 
 impl nebula_error::Classify for EngineError {
@@ -96,7 +118,7 @@ impl nebula_error::Classify for EngineError {
             | Self::ParameterResolution { .. }
             | Self::ParameterValidation { .. }
             | Self::EdgeEvaluationFailed { .. } => nebula_error::ErrorCategory::Validation,
-            Self::NodeFailed { .. } | Self::TaskPanicked(_) => {
+            Self::NodeFailed { .. } | Self::TaskPanicked(_) | Self::FrontierIntegrity { .. } => {
                 nebula_error::ErrorCategory::Internal
             },
             Self::Cancelled => nebula_error::ErrorCategory::Cancelled,
@@ -121,6 +143,7 @@ impl nebula_error::Classify for EngineError {
             Self::Execution(e) => return nebula_error::Classify::code(e),
             Self::Action(e) => return nebula_error::Classify::code(e),
             Self::TaskPanicked(_) => "ENGINE:TASK_PANICKED",
+            Self::FrontierIntegrity { .. } => "ENGINE:FRONTIER_INTEGRITY",
         })
     }
 
@@ -168,5 +191,32 @@ mod tests {
         let msg = err.to_string();
         assert!(msg.contains("timeout"));
         assert!(msg.contains("failed"));
+    }
+
+    #[test]
+    fn frontier_integrity_display_and_classification() {
+        use nebula_core::id::ExecutionId;
+        use nebula_error::{Classify, ErrorCategory};
+
+        let exec_id = ExecutionId::new();
+        let err = EngineError::FrontierIntegrity {
+            execution_id: exec_id,
+            non_terminal_nodes: vec![
+                (node_key!("a"), NodeState::Pending),
+                (node_key!("b"), NodeState::Running),
+            ],
+        };
+
+        let msg = err.to_string();
+        assert!(msg.contains("frontier integrity violation"));
+        assert!(msg.contains("2 non-terminal"));
+        assert!(msg.contains(&exec_id.to_string()));
+
+        assert_eq!(Classify::category(&err), ErrorCategory::Internal);
+        assert_eq!(
+            Classify::code(&err).as_str(),
+            "ENGINE:FRONTIER_INTEGRITY",
+            "stable error code for operators / dashboards"
+        );
     }
 }
