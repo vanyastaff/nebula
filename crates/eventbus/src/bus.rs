@@ -1,6 +1,9 @@
 //! Generic broadcast event bus.
 
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{
+    Arc,
+    atomic::{AtomicU64, Ordering},
+};
 
 use tokio::sync::broadcast;
 
@@ -41,7 +44,12 @@ pub struct EventBus<E> {
     policy: BackPressurePolicy,
     buffer_size: usize,
     sent_count: AtomicU64,
-    dropped_count: AtomicU64,
+    /// Shared with every [`Subscriber`] so they can attribute the precise
+    /// `Lagged(n)` count tokio reports at recv-time (issue #262). Keeping the
+    /// counter on the receiver side avoids the `Sender::len()` lock in the
+    /// emit hot path and uses tokio's authoritative drop signal instead of a
+    /// racy producer-side snapshot.
+    dropped_count: Arc<AtomicU64>,
 }
 
 impl<E: Clone + Send> EventBus<E> {
@@ -70,16 +78,18 @@ impl<E: Clone + Send> EventBus<E> {
             policy,
             buffer_size,
             sent_count: AtomicU64::new(0),
-            dropped_count: AtomicU64::new(0),
+            dropped_count: Arc::new(AtomicU64::new(0)),
         }
     }
 
     /// Emits an event to all current subscribers (non-blocking).
     ///
     /// When the buffer is full:
-    /// - **DropOldest**: new event is queued; the oldest unread event is evicted and counted in
-    ///   [`EventBusStats::dropped_count`].
-    /// - **DropNewest**: new event is dropped and counted in stats.
+    /// - **DropOldest**: new event is queued; the oldest unread event is evicted. Each subscriber
+    ///   reports its own observed lag back into [`EventBusStats::dropped_count`] when it next calls
+    ///   [`Subscriber::recv`] / [`Subscriber::try_recv`] — so the counter only updates when
+    ///   subscribers actually pull (eventually consistent).
+    /// - **DropNewest**: new event is dropped and counted in stats immediately.
     /// - **Block**: behaves as DropOldest; use [`emit_awaited`](Self::emit_awaited) for blocking.
     #[inline]
     pub fn emit(&self, event: E) -> PublishOutcome {
@@ -96,17 +106,14 @@ impl<E: Clone + Send> EventBus<E> {
     #[inline]
     fn publish_drop_oldest(&self, event: E) -> PublishOutcome {
         // `tokio::sync::broadcast::send` returns `Ok` whenever any receiver
-        // exists — even when the ring buffer is full and the oldest unread
-        // event is being overwritten. Snapshot the queue depth before send so
-        // we can attribute the eviction to `dropped_count`. Issue #262.
-        let was_full = self.sender.len() >= self.buffer_size;
+        // exists. When the ring buffer is full it overwrites the oldest unread
+        // slot — but neither the producer nor `send` itself can observe that
+        // eviction reliably or cheaply (issue #262). Each `Subscriber` instead
+        // attributes its own `RecvError::Lagged(n)` count into the bus's
+        // `dropped_count` at recv-time; that signal comes straight from tokio
+        // and is exact per subscriber.
         match self.sender.send(event) {
-            Ok(_) => {
-                if was_full {
-                    self.dropped_count.fetch_add(1, Ordering::Relaxed);
-                }
-                PublishOutcome::Sent
-            },
+            Ok(_) => PublishOutcome::Sent,
             Err(_) => PublishOutcome::DroppedNoSubscribers,
         }
     }
@@ -202,10 +209,11 @@ impl<E: Clone + Send> EventBus<E> {
     ///
     /// Returns a [`Subscriber`] that receives all events emitted after this call.
     /// If the subscriber falls behind by more than `buffer_size` events, it
-    /// skips to the latest (handles `Lagged` internally).
+    /// skips to the latest (handles `Lagged` internally) and attributes the
+    /// skipped count into [`EventBusStats::dropped_count`].
     #[must_use]
     pub fn subscribe(&self) -> Subscriber<E> {
-        Subscriber::new(self.sender.subscribe())
+        Subscriber::new(self.sender.subscribe(), Arc::clone(&self.dropped_count))
     }
 
     /// Subscribes with a custom filter predicate.
@@ -488,17 +496,23 @@ mod tests {
     #[test]
     fn sustained_emit_keeps_pending_len_bounded_by_buffer() {
         let bus = EventBus::<TestEvent>::new(32);
-        let _sub = bus.subscribe();
+        let mut sub = bus.subscribe();
 
         for i in 0..10_000_u64 {
             let _ = bus.emit(TestEvent(i));
         }
 
         assert!(bus.pending_len() <= bus.buffer_size());
+
+        // Drain the subscriber so the broadcast channel surfaces its
+        // `RecvError::Lagged(n)` and the bus's `dropped_count` is updated.
+        while sub.try_recv().is_some() {}
+
         let stats = bus.stats();
         assert_eq!(stats.sent_count, 10_000);
-        // Buffer of 32 with a non-draining subscriber: the first 32 emits fill
-        // the ring; every subsequent emit evicts the oldest unread event.
+        // Buffer of 32 with a single subscriber that drains only after the run:
+        // the first 32 emits fill the ring; every subsequent emit evicts the
+        // oldest unread event. tokio reports the exact lag count at recv-time.
         assert_eq!(
             stats.dropped_count,
             10_000 - 32,
@@ -511,9 +525,9 @@ mod tests {
         // Issue #262: under DropOldest with overflow, broadcast::send returns Ok
         // (because at least one receiver exists), so the bus used to mark every
         // emit as Sent and never bumped dropped_count. Each overflow must now be
-        // counted as a drop.
+        // counted as a drop — observed via tokio's `Lagged(n)` at recv-time.
         let bus = EventBus::<TestEvent>::with_policy(4, BackPressurePolicy::DropOldest);
-        let _sub = bus.subscribe();
+        let mut sub = bus.subscribe();
 
         for i in 0..4 {
             assert_eq!(bus.emit(TestEvent(i)), PublishOutcome::Sent);
@@ -530,11 +544,19 @@ mod tests {
             assert_eq!(bus.emit(TestEvent(i)), PublishOutcome::Sent);
         }
 
+        // Materialize the lag observation by draining the subscriber.
+        while sub.try_recv().is_some() {}
+
         let stats_after_overflow = bus.stats();
         assert_eq!(stats_after_overflow.sent_count, 10);
         assert_eq!(
             stats_after_overflow.dropped_count, 6,
-            "each emit past capacity evicts one event and must bump dropped_count"
+            "subscriber must report the 6 evicted events into dropped_count"
+        );
+        assert_eq!(
+            sub.lagged_count(),
+            6,
+            "per-subscriber lagged_count mirrors the bus drop attribution"
         );
     }
 
@@ -548,17 +570,43 @@ mod tests {
                 timeout: Duration::from_millis(10),
             },
         );
-        let _sub = bus.subscribe();
+        let mut sub = bus.subscribe();
 
         for i in 0..5 {
             let _ = bus.emit(TestEvent(i));
         }
+        while sub.try_recv().is_some() {}
 
         let stats = bus.stats();
         assert_eq!(stats.sent_count, 5);
         assert_eq!(
             stats.dropped_count, 3,
             "Block falls through to DropOldest in sync emit; overflows must count"
+        );
+    }
+
+    #[tokio::test]
+    async fn drop_oldest_dropped_count_aggregates_across_subscribers() {
+        // Multi-subscriber: each reports its own observed lag, so dropped_count
+        // is the sum across subscribers (subscriber-event drop count, not unique
+        // slot evictions). Documented in EventBusStats.
+        let bus = EventBus::<TestEvent>::with_policy(2, BackPressurePolicy::DropOldest);
+        let mut sub_a = bus.subscribe();
+        let mut sub_b = bus.subscribe();
+
+        for i in 0..5 {
+            let _ = bus.emit(TestEvent(i));
+        }
+        while sub_a.try_recv().is_some() {}
+        while sub_b.try_recv().is_some() {}
+
+        let stats = bus.stats();
+        assert_eq!(stats.sent_count, 5);
+        assert_eq!(sub_a.lagged_count(), 3);
+        assert_eq!(sub_b.lagged_count(), 3);
+        assert_eq!(
+            stats.dropped_count, 6,
+            "two subscribers each missed 3 events: dropped_count sums their lag"
         );
     }
 

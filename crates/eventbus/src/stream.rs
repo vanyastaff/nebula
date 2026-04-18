@@ -2,6 +2,10 @@
 
 use std::{
     pin::Pin,
+    sync::{
+        Arc,
+        atomic::{AtomicU64, Ordering},
+    },
     task::{Context, Poll},
 };
 
@@ -33,13 +37,19 @@ use crate::EventFilter;
 pub struct SubscriberStream<E: Clone + Send + 'static> {
     inner: BroadcastStream<E>,
     lagged_count: u64,
+    bus_dropped: Arc<AtomicU64>,
 }
 
 impl<E: Clone + Send + 'static> SubscriberStream<E> {
-    pub(crate) fn new(receiver: tokio::sync::broadcast::Receiver<E>, lagged_count: u64) -> Self {
+    pub(crate) fn new(
+        receiver: tokio::sync::broadcast::Receiver<E>,
+        lagged_count: u64,
+        bus_dropped: Arc<AtomicU64>,
+    ) -> Self {
         Self {
             inner: BroadcastStream::new(receiver),
             lagged_count,
+            bus_dropped,
         }
     }
 
@@ -61,6 +71,7 @@ impl<E: Clone + Send + 'static> Stream for SubscriberStream<E> {
                 Poll::Ready(Some(Ok(event))) => return Poll::Ready(Some(event)),
                 Poll::Ready(Some(Err(BroadcastStreamRecvError::Lagged(skipped)))) => {
                     self.lagged_count = self.lagged_count.saturating_add(skipped);
+                    self.bus_dropped.fetch_add(skipped, Ordering::Relaxed);
                     continue;
                 },
                 Poll::Ready(None) => return Poll::Ready(None),
