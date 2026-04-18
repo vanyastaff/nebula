@@ -51,8 +51,6 @@ pub use attempt::NodeAttempt;
 pub use context::{ExecutionBudget, ExecutionContext};
 pub use error::ExecutionError;
 pub use idempotency::IdempotencyKey;
-#[allow(deprecated)]
-pub use idempotency::IdempotencyManager;
 pub use journal::JournalEntry;
 /// Re-export the shared serde helper so internal `crate::serde_duration_opt` still resolves.
 pub(crate) use nebula_core::serde_helpers::duration_opt_ms as serde_duration_opt;
