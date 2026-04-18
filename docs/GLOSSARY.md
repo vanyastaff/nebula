@@ -77,15 +77,17 @@ Canon §3.5 makes actions typed and engine-dispatched by trait, not by a single 
 
 ---
 
-## 5. Parameter and validation (`nebula-parameter`, `nebula-validator`)
+## 5. Schema and validation (`nebula-schema`, `nebula-validator`)
 
-Canon §3.5 requires **one** parameter system shared by actions, credentials, and resources. Canon §3.9 is the crate pointer.
+Canon §3.5 requires **one** schema system shared by actions, credentials, and resources. Canon §3.9 is the crate pointer for validators.
 
 | Name | Kind | Status | Role | Canon |
 | --- | --- | --- | --- | --- |
-| `Parameter` | type | `implemented` | Single parameter schema element — typed, validated, with embedded `Rule`s. | §3.5, §3.9 |
-| `ParameterCollection` | type | `implemented` | Grouped, validated configuration schema used across Action / Credential / Resource. | §3.5, §3.9 |
-| `Rule` | type | `implemented` | Declarative validator composed into `Parameter`. | §3.10 |
+| `Field` | type | `implemented` | Consolidated field kind enum (string / number / bool / enum / nested / …). Single public surface for all schema fields. | §3.5 |
+| `Schema` | type | `implemented` | Typed configuration schema built from `Field` enum; shared across Action / Credential / Resource config via `nebula-schema`. | §3.5 |
+| `ValidValues` | type | `implemented` | Proof-token returned by `ValidSchema::validate` — indicates schema-time validation has succeeded. Required to call `resolve`. | §3.5, §4.5 |
+| `ResolvedValues` | type | `implemented` | Proof-token returned by `ValidValues::resolve` — indicates runtime expression resolution has succeeded. Required to access resolved field values. | §3.5, §4.5 |
+| `Rule` | type | `implemented` | Declarative validator composed into schema fields. | §3.10 |
 
 ---
 
@@ -123,6 +125,24 @@ Copied from canon §11.6 for convenience. If the two diverge, the canon wins.
 | `planned` | Not implemented yet; do not promise to operators as current behavior. |
 | `demo-only` | Works in examples/dev flows; explicitly not a product contract. |
 | `false capability` | Type/endpoint exists but engine does not own behavior end-to-end; remove or implement. |
+
+---
+
+## 9. Architectural patterns
+
+Named patterns Nebula uses. Shared vocabulary with the industry corpus (EIP, DDIA, Release It!). Canon rules refer to these by name — this section is the authoritative source for each pattern's Nebula implementation.
+
+| Pattern | Book reference | Nebula implementation |
+|---|---|---|
+| **Transactional Outbox** | DDIA ch 11; EIP "Guaranteed Delivery" | `ExecutionControlQueue` (`crates/execution/src/control_queue.rs`). Signals written in the same tx as state transitions. |
+| **Write-Ahead Log** | DDIA ch 3, 11 | `execution_journal` append-only table; replayable event history. |
+| **Idempotent Receiver** | EIP | `crates/execution/src/idempotency.rs` — deterministic per-attempt key checked before side effect. |
+| **Optimistic Concurrency Control** | DDIA ch 7 | CAS on `version` column via `ExecutionRepo::transition`. |
+| **Bulkhead** | Release It! | `crates/resource/src/release_queue.rs` — scope-bounded resource release; failure in one scope does not cascade. |
+| **Circuit Breaker + Timeout + Retry-with-Backoff** | Release It! | `nebula-resilience` composable pipelines — applied at outbound call sites inside actions. |
+| **Layered Architecture with cross-cutting infrastructure** | Fundamentals of SW Architecture | `CLAUDE.md` layer direction: API → Exec → Business → Core, cross-cutting below. |
+| **Sealed trait + typestate** | Rust for Rustaceans, ch Designing Interfaces | Integration extension points (`Action`, `Credential`, `Resource`) and execution lifecycle (`Execution<State>`). |
+| **Make illegal states unrepresentable** | Domain Modeling Made Functional | Applied to public surfaces (§4.5): a type exists ⇔ engine honors it. |
 
 ---
 

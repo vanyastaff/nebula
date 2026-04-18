@@ -1,16 +1,16 @@
 #![forbid(unsafe_code)]
 #![warn(missing_docs)]
 
-//! # Nebula Plugin SDK
+//! # nebula-plugin-sdk — Plugin Author SDK
 //!
-//! Ergonomic API for authoring community plugins against the Nebula duplex
-//! broker protocol. Plugin authors implement [`PluginHandler`] and call
-//! [`run_duplex`] from `main` — the SDK handles the wire protocol, line
-//! framing, and dispatch.
+//! Plugin-process counterpart to `nebula-sandbox`'s `ProcessSandbox`. Implement
+//! `PluginHandler` and call `run_duplex` from `main` — the SDK handles the
+//! handshake, transport binding, line framing, and dispatch loop.
 //!
-//! The wire envelope types live in the [`protocol`] submodule. Plugin authors
-//! never touch them directly; the host (`nebula-sandbox`) imports them to
-//! (de)serialize messages over the transport.
+//! Wire protocol: duplex line-delimited JSON over OS-native transport (UDS on
+//! Unix, Named Pipe on Windows) per ADR 0006. Actions are dispatched
+//! sequentially within a single plugin process (slice 1c; parallelism is
+//! planned for slice 1d).
 //!
 //! ## Quick start
 //!
@@ -33,7 +33,7 @@
 //!     async fn execute(
 //!         &self,
 //!         _ctx: &PluginCtx,
-//!         _action_key: &str,
+//!         _key: &str,
 //!         input: Value,
 //!     ) -> Result<Value, PluginError> {
 //!         Ok(input)
@@ -46,19 +46,23 @@
 //! }
 //! ```
 //!
-//! ## Current wire scope
+//! ## Key types
 //!
-//! The plugin process emits a single handshake line on stdout, then switches
-//! protocol traffic to an OS transport (Unix domain socket on Unix, named
-//! pipe on Windows). Envelopes are newline-delimited JSON frames over that
-//! transport — not over stdio.
+//! - `PluginHandler` — implement this trait + call `run_duplex`.
+//! - `PluginCtx` — execution context (placeholder in slice 1c).
+//! - `PluginMeta` — plugin metadata builder.
+//! - `PluginError` — typed error; `fatal` and `retryable` constructors.
+//! - `run_duplex` — main entry point; owns transport + event loop.
+//! - `protocol` — wire envelope types (`HostToPlugin`, `PluginToHost`).
+//! - `transport` — UDS / Named Pipe binding and `PluginStream`.
 //!
-//! The SDK surface is deliberately conservative: plugin authors see
-//! [`PluginHandler`] + [`PluginCtx`] only. Future slices extend
-//! [`PluginCtx`] with `.network().http(...)`, `.credentials().get(...)`,
-//! etc. via broker RPCs.
+//! ## Canon
 //!
-//! Actions are dispatched **sequentially** within a single plugin process.
+//! - §12.6: plugin IPC is sequential JSON envelope dispatch to a child process; not attacker-grade
+//!   isolation. WASM is an explicit non-goal.
+//! - §7.1: zero intra-workspace dependencies — plugin authors link only this crate.
+//!
+//! See `crates/plugin-sdk/README.md` and ADR 0006 for wire protocol status.
 
 use std::sync::Arc;
 

@@ -4,21 +4,28 @@
 
 //! # nebula-expression
 //!
-//! Expression language for workflow automation, compatible with n8n syntax.
+//! Expression evaluator for dynamic workflow field resolution. Evaluates
+//! `{{ expression }}` templates against execution-time context, providing the
+//! resolution backend used by `nebula-schema`'s `ValidValues::resolve` step.
 //!
-//! This crate provides a powerful expression language for evaluating dynamic values
-//! in workflow automation contexts. It supports:
+//! **Role:** Expression Evaluator. See `crates/expression/README.md`.
 //!
-//! - Variable access: `$node`, `$execution`, `$workflow`, `$input`
-//! - Property access: `$node.data`, `$execution.id`
-//! - Arithmetic operators: `+`, `-`, `*`, `/`, `%`, `**`
-//! - Comparison operators: `==`, `!=`, `>`, `<`, `>=`, `<=`, `=~`
-//! - Logical operators: `&&`, `||`, `!`
-//! - Conditionals: `if condition then value1 else value2`
-//! - Function calls: `functionName(arg1, arg2)`
-//! - Index access: `array[0]`, `object['key']`
-//! - Pipeline operator: `|` for function chaining
-//! - Lambda expressions: `x => x > 5` (in filter/map/reduce)
+//! **Canon:** §3.5 (expression context used at the resolve step of the proof-token pipeline).
+//!
+//! **Maturity:** `stable` — `ExpressionEngine`, `EvaluationContext`, `Template`,
+//! `MaybeExpression`, and `MaybeTemplate` are in active use.
+//!
+//! ## Core Types
+//!
+//! | Type | Purpose |
+//! |------|---------|
+//! | [`ExpressionEngine`] | Parse and evaluate expressions; optional LRU cache |
+//! | [`EvaluationContext`] | Runtime variable bindings (`$node`, `$execution`, `$workflow`, `$input`) |
+//! | [`EvaluationPolicy`] | DoS budget (step limit, max recursion depth) |
+//! | [`Template`] | Pre-parsed `{{ }}` template; call `.render(engine, ctx)` |
+//! | [`MaybeExpression`] | Typed wrapper: literal `T` or expression string |
+//! | [`MaybeTemplate`] | Text template wrapper with auto-detection |
+//! | [`ExpressionError`] | Typed evaluation error |
 //!
 //! ## Quick Start
 //!
@@ -26,106 +33,23 @@
 //! use nebula_expression::{EvaluationContext, ExpressionEngine};
 //! use serde_json::Value;
 //!
-//! // Create an engine
 //! let engine = ExpressionEngine::new();
 //! let mut context = EvaluationContext::new();
-//!
-//! // Evaluate an expression
 //! context.set_execution_var("id", Value::String("exec-123".to_string()));
 //! let result = engine.evaluate("$execution.id", &context).unwrap();
 //! assert_eq!(result.as_str(), Some("exec-123"));
 //! ```
 //!
-//! ## With Caching
+//! ## Non-goals
 //!
-//! ```
-//! use nebula_expression::ExpressionEngine;
+//! Not a validation rules engine (`nebula-validator`), not a schema system (`nebula-schema`).
 //!
-//! // Create an engine with caching for better performance
-//! let engine = ExpressionEngine::with_cache_size(1000);
-//! ```
+//! ## Known limitation: BuiltinFunction re-entry
 //!
-//! ## Template Rendering
-//!
-//! Use `evaluate_template()` to process templates with multiple `{{ }}` expressions:
-//!
-//! - Template delimiters: `{{ expression }}`
-//! - Text outside expressions is preserved as-is
-//! - Supports HTML, JSON, Markdown, and any text format
-//! - All `{{ expression }}` patterns are replaced with their evaluated results
-//!
-//! ## Built-in Functions
-//!
-//! The expression language includes comprehensive built-in functions:
-//!
-//! ### String Functions
-//! - `uppercase(str)` - Convert to uppercase
-//! - `lowercase(str)` - Convert to lowercase
-//! - `trim(str)` - Trim whitespace
-//! - `split(str, delimiter)` - Split string
-//! - `replace(str, from, to)` - Replace substring
-//! - `substring(str, start, end)` - Get substring
-//! - `contains(str, needle)` - Check if contains
-//! - `starts_with(str, prefix)` - Check if starts with
-//! - `ends_with(str, suffix)` - Check if ends with
-//! - `length(str)` - Get string length
-//!
-//! ### Math Functions
-//! - `abs(n)` - Absolute value
-//! - `round(n)` - Round to nearest integer
-//! - `floor(n)` - Floor function
-//! - `ceil(n)` - Ceiling function
-//! - `min(a, b, ...)` - Minimum value
-//! - `max(a, b, ...)` - Maximum value
-//! - `pow(base, exp)` - Power function
-//! - `sqrt(n)` - Square root
-//!
-//! ### Array Functions
-//! - `length(arr)` - Get array length
-//! - `first(arr)` - Get first element
-//! - `last(arr)` - Get last element
-//! - `join(arr, separator)` - Join array to string
-//! - `slice(arr, start, end)` - Slice array
-//! - `reverse(arr)` - Reverse array
-//! - `sort(arr)` - Sort array
-//! - `concat(arr1, arr2, ...)` - Concatenate arrays
-//! - `flatten(arr)` - Flatten nested array
-//!
-//! ### Object Functions
-//! - `keys(obj)` - Get object keys
-//! - `values(obj)` - Get object values
-//! - `has(obj, key)` - Check if key exists
-//!
-//! ### Date/Time Functions
-//! - `now()` - Get current timestamp
-//! - `now_iso()` - Current time as ISO 8601 string
-//! - `parse_date(str)` - Parse date string to timestamp
-//! - `format_date(timestamp, format)` - Format timestamp
-//! - `date_add(timestamp, amount, unit)` - Add duration
-//! - `date_subtract(timestamp, amount, unit)` - Subtract duration
-//! - `date_diff(ts1, ts2, unit)` - Difference between dates
-//! - `date_year(timestamp)` - Extract year
-//! - `date_month(timestamp)` - Extract month (1-12)
-//! - `date_day(timestamp)` - Extract day (1-31)
-//! - `date_hour(timestamp)` - Extract hour (0-23)
-//! - `date_minute(timestamp)` - Extract minute (0-59)
-//! - `date_second(timestamp)` - Extract second (0-59)
-//! - `date_day_of_week(timestamp)` - Day of week (0=Sunday)
-//!
-//! ### Conversion Functions
-//! - `to_string(value)` - Convert to string
-//! - `to_number(value)` - Convert to number
-//! - `to_boolean(value)` - Convert to boolean
-//! - `to_json(value)` - Convert to JSON string
-//! - `parse_json(str)` - Parse JSON string
-//!
-//! ### Utility Functions
-//! - `is_null(value)` - Check if null
-//! - `is_array(value)` - Check if array
-//! - `is_object(value)` - Check if object
-//! - `is_string(value)` - Check if string
-//! - `is_number(value)` - Check if number
-//! - `uuid()` - Generate UUID
+//! `BuiltinFunction` receives `&Evaluator`, allowing built-ins to call `eval` recursively.
+//! `EvaluationPolicy` step budget is the only guard. Built-in functions must be first-party
+//! only — untrusted builtins can re-enter the evaluator. See `crates/expression/README.md`
+//! Contract section and memory note `pitfall_expression_builtin_frame.md`.
 
 // Public modules - exposed for external use
 #[doc(hidden)]

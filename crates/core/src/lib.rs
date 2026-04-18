@@ -1,25 +1,33 @@
-//! # Nebula Core
+//! # nebula-core
 //!
-//! Vocabulary crate for the Nebula workflow engine.
+//! Shared vocabulary for the Nebula workflow engine — the one crate every other crate
+//! can safely depend on for typed identifiers, normalized keys, scope levels, auth scheme
+//! enums, context contracts, and lifecycle signals.
 //!
-//! Provides typed identifiers (prefixed ULIDs), domain keys, scope system,
-//! auth contracts, error types, and spec 23 context/accessor/guard/lifecycle
-//! primitives.
+//! See `crates/core/README.md` for the full role description and contract invariants.
 //!
-//! ## Key Components
+//! ## Purpose
 //!
-//! - **Identifiers**: Prefixed ULID types -- `ExecutionId` (`exe_01J9...`), `WorkflowId`
-//!   (`wf_01J9...`), etc.
-//! - **Keys**: `PluginKey`, `ActionKey`, `ParameterKey`, `CredentialKey`, `ResourceKey`, `NodeKey`
-//!   -- normalized string keys.
-//! - **Scope System**: `ScopeLevel`, `Scope`, `Principal`, `ScopeResolver`.
-//! - **Auth Contracts**: `AuthScheme`, `AuthPattern`.
-//! - **Context**: `Context` trait, `BaseContext`, capability traits.
-//! - **Accessors**: `ResourceAccessor`, `CredentialAccessor`, `Logger`, `MetricsEmitter`,
+//! Provides the stable opaque handles shared by every other crate. Without this crate,
+//! each would invent its own ULID newtype, scope concept, or auth enum — and diverge.
+//!
+//! ## Public API
+//!
+//! - **Identifiers** — `ExecutionId` (`exe_…`), `WorkflowId` (`wf_…`), `NodeId`, `UserId`,
+//!   `TenantId`, `ProjectId`, `OrganizationId`, `ResourceId`, `CredentialId`, `RoleId`.
+//! - **Keys** — `PluginKey`, `ActionKey`, `CredentialKey`, `ParameterKey`, `ResourceKey`, `NodeKey`
+//!   — normalized string keys with validation.
+//! - **Scope** — `ScopeLevel`, `Scope`, `Principal`, `ScopeResolver` (Global → … → Action).
+//! - **Auth** — `AuthScheme`, `AuthPattern` — explicit auth classification (canon §4.2).
+//! - **Context** — `Context` trait, `BaseContext`, `BaseContextBuilder`, capability traits
+//!   (`HasCredentials`, `HasResources`, `HasMetrics`, `HasEventBus`, `HasLogger`).
+//! - **Accessors** — `ResourceAccessor`, `CredentialAccessor`, `Logger`, `MetricsEmitter`,
 //!   `EventEmitter`, `Clock`.
-//! - **Guards**: `Guard`, `TypedGuard` RAII traits.
-//! - **Lifecycle**: `LayerLifecycle`, `ShutdownOutcome`.
-//! - **Observability**: `TraceId`, `SpanId`.
+//! - **Guards** — `Guard`, `TypedGuard` RAII guard traits.
+//! - **Lifecycle** — `LayerLifecycle`, `ShutdownOutcome`.
+//! - **Observability** — `TraceId`, `SpanId`.
+//! - **Events** — `CredentialEvent` for cross-crate credential lifecycle signaling.
+//! - **Errors** — `CoreError` (typed, thiserror; no anyhow).
 
 // ── Modules ─────────────────────────────────────────────────────────────────
 

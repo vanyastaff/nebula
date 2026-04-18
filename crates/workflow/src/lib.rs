@@ -1,20 +1,31 @@
 #![forbid(unsafe_code)]
 #![warn(missing_docs)]
 
-//! # Nebula Workflow
+//! # nebula-workflow
 //!
-//! Workflow definition, DAG graph, and validation for the Nebula workflow engine.
+//! Workflow definition, DAG graph, and activation-time validator for the Nebula engine.
 //!
-//! This crate provides the types for defining workflows as directed acyclic graphs
-//! (DAGs) of action nodes connected by conditional edges. It includes:
+//! **Role:** Workflow Definition + DAG + Validation. See `crates/workflow/README.md`.
 //!
-//! - [`WorkflowDefinition`] and supporting config types
-//! - [`NodeDefinition`] and [`ParamValue`] for individual steps
-//! - [`Connection`] and [`EdgeCondition`] for edges between nodes
-//! - [`DependencyGraph`] (a `petgraph` wrapper) for topological sorting and level computation
-//! - [`WorkflowBuilder`] for fluent, validated construction
-//! - [`validate_workflow`] for comprehensive multi-error validation
-//! - [`NodeState`] for tracking execution progress
+//! **Canon:** §10 (golden path — activation runs `validate_workflow`), §12.2 (shift-left
+//! validation contract).
+//!
+//! **Maturity:** `stable` — definition types, builder, DAG, and validator are in active use.
+//!
+//! ## Core Types
+//!
+//! - [`WorkflowDefinition`] — top-level workflow; carries nodes, connections, config, UI metadata.
+//! - [`NodeDefinition`] and [`ParamValue`] — individual steps and typed parameter values.
+//! - [`Connection`] and [`EdgeCondition`] — directed edges with conditional routing.
+//! - [`DependencyGraph`] — `petgraph` wrapper; topological sort + per-level batching.
+//! - [`WorkflowBuilder`] — fluent, validated construction API.
+//! - [`validate_workflow`] — multi-error validator; **canon §10 requires this at activation**.
+//! - [`NodeState`] — execution progress tracking per node.
+//!
+//! ## Non-goals
+//!
+//! Not the execution state machine (`nebula-execution`), not the storage layer
+//! (`nebula-storage` + `nebula-api`), not an expression evaluator (`nebula-expression`).
 
 pub mod builder;
 pub mod connection;

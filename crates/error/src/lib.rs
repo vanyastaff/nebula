@@ -1,22 +1,36 @@
 //! # nebula-error
 //!
-//! Enterprise error infrastructure for the Nebula workflow engine.
+//! Error taxonomy and classification boundary for the Nebula workflow engine.
 //!
-//! This crate provides the foundational error primitives used across all Nebula
-//! crates — classification traits, a generic error wrapper, and extensible
-//! typed details inspired by Google's error model and the AWS SDK.
+//! Every library crate in the workspace uses `thiserror` + `Classify` + `NebulaError`
+//! so that transient vs permanent failure is an explicit decision, not folklore
+//! scattered across individual action implementations. See `crates/error/README.md`
+//! for the full role description and contract invariants.
 //!
-//! ## Key Types
+//! ## Purpose
+//!
+//! Provides the foundational error primitives — classification traits, a generic
+//! wrapper with extensible typed details (inspired by Google's error model and the
+//! AWS SDK), and structured retry guidance that `nebula-resilience` consumes.
+//!
+//! ## Role
+//!
+//! **Error Taxonomy and Classification Boundary** (canon §3.10, §4.2, §12.4).
+//! `nebula-api` maps `NebulaError` to RFC 9457 `problem+json` at the HTTP boundary.
+//!
+//! ## Public API
 //!
 //! | Type | Purpose |
 //! |------|---------|
 //! | [`Classify`] | Core trait — category, code, severity, retryability |
+//! | [`ErrorClassifier`] | Pattern: use `Classify` at decision points, not folklore |
 //! | [`NebulaError`] | Generic wrapper adding details + context chain |
 //! | [`ErrorDetails`] | TypeId-keyed extensible detail storage |
 //! | [`ErrorCategory`] | Canonical "what happened" classification |
 //! | [`ErrorSeverity`] | Error / Warning / Info severity levels |
 //! | [`ErrorCode`] | Machine-readable error code newtype |
 //! | [`ErrorCollection`] | Batch/validation error aggregation |
+//! | [`RetryHint`] | Structured retry guidance consumed by `nebula-resilience` |
 
 #![warn(missing_docs)]
 #![forbid(unsafe_code)]

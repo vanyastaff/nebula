@@ -4,10 +4,10 @@
 //!
 //! | Kind | Inner type | Method | Wire tag |
 //! |---|---|---|---|
-//! | Value validation | [`ValueRule`] | `validate_value(&Value)` | `{"min_length": 3}` etc. |
-//! | Context predicate | [`Predicate`] | `evaluate(&PredicateContext)` | `{"eq": ["/path", value]}` |
-//! | Logical combinator | [`Logic`] | recursive `validate` | `{"all": [...]}` |
-//! | Deferred | [`DeferredRule`] | runtime-evaluated | `{"custom": "expr"}` |
+//! | Value validation | `ValueRule` | `validate_value(&Value)` | `{"min_length": 3}` etc. |
+//! | Context predicate | `Predicate` | `evaluate(&PredicateContext)` | `{"eq": ["/path", value]}` |
+//! | Logical combinator | `Logic` | recursive `validate` | `{"all": [...]}` |
+//! | Deferred | `DeferredRule` | runtime-evaluated | `{"custom": "expr"}` |
 //!
 //! The `Described(Box<Rule>, String)` decorator wraps any rule with a
 //! custom message (may contain `{placeholder}` templates).

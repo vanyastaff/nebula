@@ -1,83 +1,89 @@
+---
+name: nebula-log
+role: Structured Tracing Initialization (single logging pipeline, multi-format, multi-backend)
+status: stable
+last-reviewed: 2026-04-17
+canon-invariants: [L2-12.5]
+related: [nebula-telemetry, nebula-metrics]
+---
+
 # nebula-log
 
-Structured logging and observability foundation for Nebula, built on top of `tracing`.
+## Purpose
 
-## Capabilities
+A workflow engine that processes credentials and sensitive data must ensure that no secret material
+appears in log output, that structured logs carry consistent service/env/version fields, and that
+the same configuration works in development (pretty/colored) and production (JSON/logfmt, rolling
+files, OTLP). Without a shared initialization crate, each binary invents its own `tracing`
+subscriber setup — different fields, different rotation policies, inconsistent Sentry/OTLP wiring.
+`nebula-log` provides a single logging pipeline for all Nebula processes: one call to `auto_init`
+or `init_with`, and the subscriber is configured, including the runtime reload handle if needed.
 
-- startup presets (`development`, `production`, env overrides)
-- formats: `pretty`, `compact`, `json`, `logfmt`
-- writer backends: stderr/stdout/file, fanout with failure policy
-- rolling files: hourly/daily/size/size+retention
-- timing utilities and macros
-- observability hooks/events with typed event kinds
-- optional telemetry integrations: OpenTelemetry OTLP and Sentry
+## Role
 
-## Quick Start
+**Structured Tracing Initialization** — the single entry point for `tracing` subscriber setup
+across all Nebula binaries and integration tests. Cross-cutting infrastructure (no upward
+dependencies). The canon observability contract (§4.6, §12.5) is enforced at the logging
+boundary: no secrets in log output, structured events with typed event kinds.
 
-```rust
-use nebula_log::prelude::*;
+## Public API
 
-fn main() -> LogResult<()> {
-    let _guard = nebula_log::auto_init()?;
-    info!(service = "api", "server started");
-    Ok(())
-}
-```
+- `auto_init() -> LogResult<LoggerGuard>` — zero-config startup (reads env, falls back to preset).
+- `init() -> LogResult<LoggerGuard>` — default config.
+- `init_with(Config) -> LogResult<LoggerGuard>` — fully explicit, deterministic production setup.
+- `Config` — full configuration struct: `format`, `writer`, `fields`, `level`, `reloadable`, `telemetry`, etc.
+- `Config::development()`, `Config::production()` — preset constructors.
+- `Format` — `Pretty` / `Compact` / `Json` / `Logfmt`.
+- `WriterConfig` — `Stderr` / `Stdout` / `File(path)` / `Fanout(Vec<WriterConfig>)`.
+- `LoggerGuard` — RAII handle; must stay alive for the process lifetime.
+- `ReloadHandle` — runtime log-level reload (when `reloadable: true`).
+- `LogResult<T>` — `Result<T, LogError>` alias.
+- `prelude` — convenience re-exports of `tracing` macros.
 
-`LoggerGuard` must stay alive for the process lifetime (or until you intentionally shut logging down).
+## Contract
 
-## Explicit Configuration
+- **[L2-§12.5]** Every `tracing::*!` macro call that touches credential or token arguments must use redacted forms. `nebula-log` provides the subscriber setup; individual call sites in other crates must not pass raw secret values to structured fields. Seam: `tracing` spans in credential-handling code paths. Test coverage: see `docs/MATURITY.md`.
+- **[L1-§4.6]** Observability is a first-class contract — structured logs with consistent fields (service, env, version, instance, region) are not polish but a product invariant.
 
-```rust
-use nebula_log::{Config, Format, WriterConfig};
+## Non-goals
 
-fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let mut cfg = Config::production();
-    cfg.format = Format::Json;
-    cfg.writer = WriterConfig::Stderr;
-    cfg.fields.service = Some("nebula-api".to_string());
-    cfg.fields.env = Some("prod".to_string());
+- Not a metrics system — metric counters, gauges, and histograms live in `nebula-telemetry` / `nebula-metrics`.
+- Not an event bus — domain event distribution lives in `nebula-eventbus`.
+- Not responsible for secret redaction itself — callers must use redacted wrappers before passing values to `tracing` macros.
 
-    let _guard = nebula_log::init_with(cfg)?;
-    Ok(())
-}
-```
+## Maturity
 
-## Feature Flags
+See `docs/MATURITY.md` row for `nebula-log`.
 
-- `default`: `ansi`, `async`
-- `file`: file writer + rolling support
-- `log-compat`: bridge `log` crate events into `tracing`
-- `observability`: metrics helpers + hook APIs
-- `telemetry`: OpenTelemetry OTLP tracing
-- `sentry`: Sentry integration
-- `full`: enables all major capabilities
+- API stability: `stable` — `auto_init`, `init_with`, `Config`, and `LoggerGuard` are in active use; runtime reload and file rolling are stable.
+- OTLP (`telemetry` feature) and Sentry (`sentry` feature) integrations are functional but depend on external services; treat as `partial` until tested end-to-end in CI.
 
-## Telemetry and Sentry
+## Related
 
-- OTLP endpoint is read from config telemetry section or `OTEL_EXPORTER_OTLP_ENDPOINT`.
-- Sentry is enabled when `sentry` feature is active and `SENTRY_DSN` is set.
-- Useful env vars:
-  - `SENTRY_DSN`
-  - `SENTRY_ENV`
-  - `SENTRY_RELEASE`
-  - `SENTRY_TRACES_SAMPLE_RATE`
+- Canon: `docs/PRODUCT_CANON.md` §4.6 (Observability pillar), §12.5 (secrets and auth), `docs/OBSERVABILITY.md`.
+- Siblings: `nebula-telemetry` (metric primitives), `nebula-metrics` (metric export).
 
-## Environment Variables
+## Appendix: Feature flags
 
-- `NEBULA_LOG` or `RUST_LOG`: log level/filter
-- `NEBULA_LOG_FORMAT`: `pretty|compact|json|logfmt`
-- `NEBULA_LOG_TIME`, `NEBULA_LOG_SOURCE`, `NEBULA_LOG_COLORS`
-- `NEBULA_SERVICE`, `NEBULA_ENV`, `NEBULA_VERSION`, `NEBULA_INSTANCE`, `NEBULA_REGION`
+| Feature | What it enables |
+|---|---|
+| `default` | `ansi`, `async` |
+| `file` | File writer + rolling support |
+| `log-compat` | Bridge `log` crate events into `tracing` |
+| `observability` | Metrics helpers + hook APIs |
+| `telemetry` | OpenTelemetry OTLP tracing |
+| `sentry` | Sentry integration |
+| `full` | All major capabilities |
 
-## Development Checks
+## Appendix: Environment variables
 
-```bash
-cargo test -p nebula-log
-cargo clippy -p nebula-log --all-targets --all-features --locked -- -D warnings
-```
+| Variable | Purpose |
+|---|---|
+| `NEBULA_LOG` / `RUST_LOG` | Log level / filter |
+| `NEBULA_LOG_FORMAT` | `pretty\|compact\|json\|logfmt` |
+| `NEBULA_LOG_TIME`, `NEBULA_LOG_SOURCE`, `NEBULA_LOG_COLORS` | Display options |
+| `NEBULA_SERVICE`, `NEBULA_ENV`, `NEBULA_VERSION`, `NEBULA_INSTANCE`, `NEBULA_REGION` | Structured field defaults |
+| `OTEL_EXPORTER_OTLP_ENDPOINT` | OTLP endpoint (telemetry feature) |
+| `SENTRY_DSN`, `SENTRY_ENV`, `SENTRY_RELEASE`, `SENTRY_TRACES_SAMPLE_RATE` | Sentry (sentry feature) |
 
-## Internal Documentation
-
-For architecture decisions, API contracts, reliability notes, and roadmap:
-- [docs/README.md](./docs/README.md)
+Extended documentation: `crates/log/docs/README.md`.

@@ -1,26 +1,36 @@
 //! # nebula-resource
 //!
-//! Type-safe, topology-agnostic resource management for the Nebula workflow
-//! engine.
+//! **Role:** Bulkhead Pool — engine-owned resource lifecycle (acquire / health /
+//! release). Canon §11.4, §13.3. Pattern: Release It! "Bulkhead."
 //!
-//! This crate provides the foundational primitives for managing external
-//! resources (databases, HTTP clients, message brokers, etc.) with a unified
-//! lifecycle: create, health-check, shutdown, destroy.
+//! The engine is the owner of the resource lifecycle: acquire, health-check,
+//! hot-reload via `ReloadOutcome`, and scope-bounded release. Action code
+//! receives a `ResourceHandle` that derefs to the lease type and releases on
+//! drop. Seven topology traits cover the full integration space.
 //!
 //! ## Key types
 //!
 //! | Type | Purpose |
 //! |------|---------|
-//! | [`Resource`] | Core trait — 5 associated types, 4 lifecycle methods |
-//! | [`ResourceHandle`] | RAII lease handle with Owned/Guarded/Shared modes |
-//! | [`Cell`] | Lock-free `ArcSwap`-based cell for resident topologies |
-//! | [`ReleaseQueue`] | Background worker pool for async cleanup |
-//! | [`Error`] | Unified error with [`ErrorKind`] + [`ErrorScope`] |
-//! | [`Ctx`] | Execution context with cancellation and extensions |
-//! | [`Manager`] | Central registry with acquire dispatch and shutdown |
-//! | [`Registry`] | Type-erased storage for managed resources |
-//! | [`ResourceEvent`] | Lifecycle events for observability |
-//! | [`ResourceOpsMetrics`] | Registry-backed operation counters |
+//! | `Resource` | Core trait — 5 associated types, 4 lifecycle methods |
+//! | `ResourceHandle` | RAII lease handle with Owned/Guarded/Shared modes |
+//! | `Manager` | Central registry with acquire dispatch and shutdown |
+//! | `ReleaseQueue` | Background worker pool for async cleanup (best-effort on crash) |
+//! | `DrainTimeoutPolicy` | Drain operation timeout policy |
+//! | `Cell` | Lock-free `ArcSwap`-based cell for resident topologies |
+//! | `Error`, `ErrorKind` | Unified typed error with retry classification |
+//! | `Ctx` | Execution context with cancellation and extensions |
+//! | `ResourceEvent` | Lifecycle events for observability |
+//! | `ResourceOpsMetrics` | Registry-backed operation counters |
+//!
+//! ## Canon note — §11.4
+//!
+//! Async release is best-effort on crash. Orphaned resources rely on the next
+//! process to drain via `ReleaseQueue`. Authors must not assume "release ran"
+//! without an explicit checkpoint.
+//!
+//! See `crates/resource/README.md` for the full contract, topology reference,
+//! and drain mechanism details.
 
 #![warn(missing_docs)]
 #![forbid(unsafe_code)]

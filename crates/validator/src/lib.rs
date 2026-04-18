@@ -1,13 +1,30 @@
 //! # nebula-validator
 //!
-//! A composable, type-safe validation framework for the Nebula workflow engine.
+//! Validation rules engine for the Nebula workflow engine. Provides two complementary
+//! surfaces: composable programmatic validators via the [`foundation::Validate`] trait,
+//! and a JSON-serializable [`Rule`] enum for declarative schema-field constraints.
 //!
-//! This crate provides two complementary validation approaches:
+//! **Role:** Validation Rules Engine + Declarative Rule. See `crates/validator/README.md`.
 //!
-//! - **Programmatic validators** — composable Rust types using the
-//!   [`Validate`](foundation::Validate) trait with `.and()`, `.or()`, `.not()` combinators.
-//! - **Declarative rules** — a unified [`Rule`] enum that can be serialized to/from JSON and
-//!   evaluated at runtime for value validation, context predicates, and logical combinators.
+//! **Canon:** §3.5 (schema system), §4.5 (proof-token pipeline).
+//!
+//! **Maturity:** `frontier` — the programmatic validator API (`Validate`, `ValidateExt`,
+//! `Validated`, `ValidationError`) is stable; [`Rule`] has just moved to a typed sum-of-sums
+//! (`Value` / `Predicate` / `Logic` / `Deferred` / `Described`) with a new externally-tagged
+//! wire format. See the spec at
+//! `docs/superpowers/specs/2026-04-17-nebula-validator-rule-refactor-design.md`.
+//!
+//! ## Core Types
+//!
+//! | Type | Purpose |
+//! |------|---------|
+//! | [`foundation::Validate`] | Core trait every validator implements |
+//! | [`foundation::ValidateExt`] | Combinator methods (`.and()`, `.or()`, `.not()`) |
+//! | [`proof::Validated`] | Proof-token certifying a value passed validation |
+//! | [`foundation::ValidationError`] | Structured error (80 bytes, `Cow`-based) |
+//! | [`Rule`] | Unified declarative rule (value, predicate, combinator, deferred) |
+//! | [`ExecutionMode`] | Controls which categories run (`StaticOnly`, `Deferred`, `Full`) |
+//! | [`ValidatorError`] | Crate-level operational error type |
 //!
 //! ## Quick Start
 //!
@@ -18,89 +35,15 @@
 //! let username = min_length(3).and(max_length(20)).and(alphanumeric());
 //! assert!(username.validate("alice").is_ok());
 //!
-//! // Proof tokens: validate once, carry proof through the system
+//! // Proof token: validate once, carry the guarantee in the type system
 //! let name: Validated<String> = min_length(3).validate_into("alice".to_string())?;
-//! println!("Validated name: {}", name.as_ref());
+//! // fn process(name: Validated<String>) — compiler enforces the check happened
 //! ```
 //!
-//! ## Core Types
+//! ## Non-goals
 //!
-//! | Type | Purpose |
-//! |------|---------|
-//! | [`Validate<T>`](foundation::Validate) | Core trait every validator implements |
-//! | [`ValidateExt<T>`](foundation::ValidateExt) | Combinator methods (`.and()`, `.or()`, `.not()`) |
-//! | [`Validated<T>`](proof::Validated) | Proof token certifying a value passed validation |
-//! | [`ValidationError`](foundation::ValidationError) | Structured error (80 bytes, `Cow`-based) |
-//! | [`AnyValidator<T>`](foundation::AnyValidator) | Type-erased validator for dynamic dispatch |
-//! | [`Rule`] | Unified declarative rule (value, predicate, combinator) |
-//! | [`ExecutionMode`] | Controls which rule categories run (`StaticOnly`, `Deferred`, `Full`) |
-//! | [`ValidatorError`] | Crate-level operational error type |
-//!
-//! ## Declarative Rules
-//!
-//! The [`Rule`] enum is the single source of truth for declarative validation.
-//! Rules are JSON-serializable and cover four categories:
-//!
-//! ```rust
-//! use nebula_validator::{ExecutionMode, Rule, validate_rules};
-//! use serde_json::json;
-//!
-//! // Value validation — checks a single JSON value
-//! let rule = Rule::min_length(3);
-//! assert!(
-//!     validate_rules(
-//!         &json!("alice"),
-//!         std::slice::from_ref(&rule),
-//!         ExecutionMode::StaticOnly
-//!     )
-//!     .is_ok()
-//! );
-//!
-//! // Logical combinator — compose rules
-//! let rule = Rule::all([Rule::min_length(3), Rule::max_length(20)]);
-//! assert!(
-//!     validate_rules(
-//!         &json!("hello"),
-//!         std::slice::from_ref(&rule),
-//!         ExecutionMode::StaticOnly
-//!     )
-//!     .is_ok()
-//! );
-//!
-//! // Engine — batch-validate with execution mode
-//! let rules = vec![Rule::min_length(3), Rule::pattern("^[a-z]+$")];
-//! assert!(validate_rules(&json!("alice"), &rules, ExecutionMode::StaticOnly).is_ok());
-//! ```
-//!
-//! ## Creating Validators
-//!
-//! Use the [`validator!`] macro for zero-boilerplate validators,
-//! or implement [`Validate`](foundation::Validate) manually for complex cases.
-//!
-//! ## Built-in Validators
-//!
-//! - **String**: [`MinLength`](validators::MinLength), [`MaxLength`](validators::MaxLength),
-//!   [`NotEmpty`](validators::NotEmpty), [`Contains`](validators::Contains),
-//!   [`Alphanumeric`](validators::Alphanumeric)
-//! - **Numeric**: [`Min`](validators::Min), [`Max`](validators::Max),
-//!   [`InRange`](validators::InRange)
-//! - **Collection**: [`MinSize`](validators::MinSize), [`MaxSize`](validators::MaxSize)
-//! - **Boolean**: [`IsTrue`](validators::IsTrue), [`IsFalse`](validators::IsFalse)
-//! - **Nullable**: [`Required`](validators::Required)
-//! - **Network**: [`Ipv4`](validators::Ipv4), [`Hostname`](validators::Hostname)
-//! - **Temporal**: [`DateTime`](validators::DateTime), [`Uuid`](validators::Uuid)
-//!
-//! ## Module Overview
-//!
-//! | Module | Contents |
-//! |--------|----------|
-//! | [`foundation`] | Core traits, errors, type-erased validators |
-//! | [`validators`] | Built-in validator implementations |
-//! | [`combinators`] | Composition types (`.and()`, `.or()`, [`.not()`](combinators::not())) |
-//! | [`rule`] | Unified [`Rule`] enum for declarative validation |
-//! | [`engine`] | [`validate_rules`] batch evaluation with [`ExecutionMode`] |
-//! | [`proof`] | [`Validated<T>`](proof::Validated) proof tokens |
-//! | [`error`] | Crate-level [`ValidatorError`] |
+//! Not a schema system (`nebula-schema`), not an expression evaluator (`nebula-expression`),
+//! not a resilience pipeline (`nebula-resilience`).
 
 #![forbid(unsafe_code)]
 #![warn(missing_docs)]

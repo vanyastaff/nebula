@@ -1,11 +1,37 @@
-//! Generic event distribution layer for Nebula.
+//! # nebula-eventbus
 //!
-//! This crate provides a broadcast-based [`EventBus<E>`] with configurable
-//! [`BackPressurePolicy`]. Domain crates (telemetry, resource, etc.) own their
-//! event types and construct `EventBus<ExecutionEvent>`, `EventBus<ResourceEvent>`, etc.
-//! Eventbus is transport-only: no domain event types are defined here.
+//! Publish-subscribe channel with back-pressure for the Nebula workflow engine.
 //!
-//! Backed by [`tokio::sync::broadcast`] per architecture: bounded, Lagged semantics,
+//! ## Purpose
+//!
+//! Domain crates need to broadcast events to multiple in-process subscribers
+//! without coupling producer to consumer. This crate provides a single generic
+//! `EventBus<E>` that any domain crate parameterizes with its own event type.
+//! Transport-only: no domain event types are defined here.
+//!
+//! This is an **in-process, ephemeral** channel — not a durable control plane.
+//! Per canon §4.5 / §12.2: anything requiring reliable delivery (cancel, dispatch
+//! signals) must use `execution_control_queue`, not this crate.
+//! See `crates/eventbus/README.md` for the full role description.
+//!
+//! ## Role
+//!
+//! **Publish-Subscribe Channel with Back-Pressure** — zero intra-workspace
+//! dependencies. Domain crates own their event types and construct
+//! `EventBus<ExecutionEvent>`, `EventBus<ResourceEvent>`, etc.
+//!
+//! ## Public API
+//!
+//! - `EventBus<E>` — generic broadcast bus; bounded, `Lagged` semantics, zero-copy clone.
+//! - `BackPressurePolicy` — configurable behavior for slow subscribers.
+//! - `Subscriber<E>`, `FilteredSubscriber<E>` — subscription handles.
+//! - `Filter<E>` — composable filter predicate.
+//! - `Outcome` — `emit()` result (`Sent`, `NoSubscribers`, `Lagged`, …).
+//! - `Registry` — manage multiple buses by scope.
+//! - `Scope` — hierarchical bus scoping.
+//! - `Stats` — bus-level statistics.
+//!
+//! Backed by `tokio::sync::broadcast`: bounded, Lagged semantics,
 //! zero-copy clone, minimal hot-path overhead (no extra allocations on send).
 //!
 //! ## Quick Start

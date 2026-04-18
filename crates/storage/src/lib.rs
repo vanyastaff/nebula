@@ -1,52 +1,39 @@
-//! # Nebula Storage
+//! # nebula-storage — Storage Port
 //!
-//! Persistence abstraction (Infrastructure layer).
+//! Persistence seam for the Nebula execution engine. Provides `ExecutionRepo`
+//! and `WorkflowRepo` as the production persistence interfaces, backed by
+//! SQLite (dev / test) or PostgreSQL (production).
 //!
-//! ## Two coexisting trait layers — status, per canon §11.6
+//! ## Layer 1 — production interfaces (use these today)
 //!
-//! This crate currently exposes **two** trait layers for execution / workflow
-//! persistence. The engine, API, and runtime consume the first; the second
-//! is a roadmap design that is not yet wired end-to-end. Both are public
-//! today so that downstream code can migrate incrementally.
+//! Top-level re-exports: `ExecutionRepo`, `WorkflowRepo`, `InMemoryExecutionRepo`,
+//! `InMemoryWorkflowRepo`. Feature `postgres` adds `PgExecutionRepo`,
+//! `PgWorkflowRepo`, `PostgresStorage`.
 //!
-//! ### Layer 1 — `ExecutionRepo` / `WorkflowRepo` (top-level re-exports) — **implemented**
+//! This is the layer the knife scenario (`docs/PRODUCT_CANON.md` §13) exercises
+//! end-to-end.
 //!
-//! The production path. State is stored as opaque `serde_json::Value` blobs
-//! with typed ID keys and `u64` optimistic-CAS versions. Implementations:
-//! [`InMemoryExecutionRepo`], [`InMemoryWorkflowRepo`], and (feature `postgres`)
-//! `PgExecutionRepo`, `PgWorkflowRepo`, `PostgresStorage`.
+//! ## Layer 2 — `repos` module — planned / experimental (canon §11.6)
 //!
-//! This is the layer the **knife scenario** (`docs/PRODUCT_CANON.md` §13)
-//! exercises end-to-end. If you are writing an engine, handler, or test
-//! today, depend on this layer.
+//! Spec-16 row model: structured rows, mandatory multi-tenancy, split workflow
+//! versioning. Trait definitions only — no implementations exist yet; the engine
+//! cannot compile against these without a broader refactor.
 //!
-//! ### Layer 2 — [`repos`] (`repos::ExecutionRepo`, `repos::WorkflowRepo`, ...) — **planned / experimental**
+//! **Exception:** `repos::ControlQueueRepo` + `repos::InMemoryControlQueueRepo`
+//! are implemented and wired into the API cancel path today.
 //!
-//! The spec-16 row model (see `docs/plans/2026-04-15-arch-specs/16-storage-schema.md`):
-//! structured rows, mandatory multi-tenancy (`workspace_id` / `org_id`),
-//! split `WorkflowRow` + `WorkflowVersionRow`, idempotency as a column on
-//! `ExecutionNodeRow`, etc. Trait definitions only — **no in-memory or
-//! Postgres implementations exist yet**, and the engine / API cannot
-//! compile against these signatures without a broader refactor.
+//! ## Canon
 //!
-//! **Exception — [`repos::ControlQueueRepo`] is implemented** via
-//! [`repos::InMemoryControlQueueRepo`] and is already wired into the API
-//! cancel path (`crates/api/src/handlers/execution.rs`). It is the only
-//! new-layer contract consumers should depend on today.
+//! - §11.1 CAS transitions via `ExecutionRepo::transition`.
+//! - §11.3 idempotency check-and-mark via `ExecutionRepo`.
+//! - §11.5 journal (`append_journal`) and checkpoint (`save_stateful_checkpoint`).
+//! - §12.2 outbox atomicity: `execution_control_queue` writes share the same operation as state
+//!   transitions.
+//! - §12.3 local path: SQLite is the default; `test_support` provides `sqlite_memory_*` helpers for
+//!   in-process tests.
 //!
-//! Adopting the rest of layer 2 requires a dedicated design + plan
-//! ("Sprint E — adopt spec-16 row model" in
-//! `docs/superpowers/specs/2026-04-16-workspace-health-audit.md`). Until
-//! that lands, the new traits are `planned` per canon §11.6 — they should
-//! not be presented as a current contract in docs or error messages.
-//!
-//! ## Supported backends (layer 1)
-//!
-//! - **In-memory** — development and tests (always available, no feature flag).
-//! - **PostgreSQL** — optional, feature `postgres`.
-//! - **Redis** — optional, feature `redis` (Storage KV only, not execution).
-//! - **S3 / MinIO** — optional, feature `s3` (blob storage).
-//! - **Local filesystem** — planned.
+//! See `crates/storage/README.md` for the full durability matrix and
+//! backend status table.
 
 #![warn(missing_docs)]
 #![warn(clippy::all)]

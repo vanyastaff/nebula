@@ -1,16 +1,34 @@
 #![cfg_attr(docsrs, feature(doc_cfg))]
 #![warn(missing_docs)]
 #![allow(unsafe_code)] // CPU affinity on Linux requires unsafe
-//! # Nebula System
+//! # nebula-system
 //!
-//! Cross-platform system information and utilities for Nebula ecosystem.
+//! Cross-platform host probes for the Nebula ecosystem.
 //!
-//! Provides a unified interface for:
-//! - System information (CPU, memory, OS, hardware)
-//! - Memory and CPU pressure detection
-//! - Process information and monitoring
-//! - Network interface statistics
-//! - Disk usage and pressure
+//! ## Purpose
+//!
+//! The engine needs to make scheduling decisions and surface operator-visible
+//! health signals based on host resource pressure. This crate provides a
+//! unified interface for host probes — CPU, memory, disk, network, process —
+//! with a `MemoryPressure` classifier that returns actionable thresholds.
+//! Does not emit metrics; recording from system data is the caller's job
+//! (typically via `nebula-metrics`). See `crates/system/README.md` for
+//! the full role description and known platform limitations.
+//!
+//! ## Role
+//!
+//! **Host Probes** — cross-cutting infrastructure; `#[allow(unsafe_code)]`
+//! is intentional (CPU affinity on Linux requires unsafe).
+//!
+//! ## Public API
+//!
+//! - `init() -> SystemResult<()>` — one-time initialization at process startup.
+//! - `SystemInfo::get() -> SystemInfo` — CPU, memory, OS, hardware snapshot.
+//! - `memory::info()`, `memory::pressure() -> MemoryPressure` — memory stats and pressure.
+//! - `MemoryPressure` — `Normal` / `Warning` / `Critical` classifier.
+//! - `cpu::info()`, `cpu::usage()` — CPU stats (feature: `sysinfo`).
+//! - `SystemError`, `SystemResult<T>` — typed error and result alias.
+//! - Optional modules (feature-gated): `process`, `network`, `disk`, `load`.
 //!
 //! ## Features
 //!

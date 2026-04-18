@@ -1,239 +1,101 @@
+---
+name: nebula-sdk
+role: Integration Author SDK (Re-export Façade)
+status: partial
+last-reviewed: 2026-04-17
+canon-invariants: [L1-3.5, L1-4.4, L1-7]
+related: [nebula-action, nebula-credential, nebula-resource, nebula-schema, nebula-workflow, nebula-plugin, nebula-validator, nebula-core]
+---
+
 # nebula-sdk
 
-Public SDK for building workflows and actions with the Nebula workflow engine.
+## Purpose
 
-## Overview
+An integration author writing a Nebula node should not need to know which of the eight-plus
+workspace crates to add to `Cargo.toml` — they should import one crate and get the action
+traits, schema types, credential model, resource model, workflow builder, and test harness.
+Without a façade, every new contributor discovers the dependency graph by trial and error, which
+violates the §4.4 north star (focused day, no plumbing). `nebula-sdk` is that façade: a single
+crate that re-exports the common integration surface and provides the `prelude`, workflow
+builder, and test runtime that cover the canonical use cases.
 
-The `nebula-sdk` crate provides a unified public API for developers building on the Nebula platform. It re-exports core functionality from internal crates and provides convenient builders, macros, and testing utilities.
+## Role
 
-## Features
+*Integration Author SDK (Re-export Façade).* Re-exports the cross-cutting integration surface
+— `nebula-action`, `nebula-credential`, `nebula-resource`, `nebula-schema`, `nebula-workflow`,
+`nebula-plugin`, `nebula-validator` — through a single dependency. Provides `prelude`,
+`WorkflowBuilder`, `ActionBuilder`, and a `TestRuntime` / `RunReport` for integration testing.
 
-- **Prelude** - Commonly used types and traits
-- **Action Builders** - Helper for creating action metadata
-- **Workflow Builders** - Programmatic workflow construction
-- **Testing Utilities** - Test helpers and fixtures
-- **Macros** - Convenient macros for common patterns
-- **Validator Derive** - Field-based validation via `#[derive(Validator)]`
+## Public API
 
-## Usage
+Top-level re-exports (full crates):
 
-Add to your `Cargo.toml`:
+- `nebula_action` — action trait family (`StatelessAction`, `StatefulAction`, `TriggerAction`,
+  `ResourceAction`), `ActionContext`, `ActionResult`, `ActionError`, `ActionMetadata`.
+- `nebula_credential` — credential model and accessor trait.
+- `nebula_resource` — resource model and lifecycle types.
+- `nebula_schema` — `Field`, `Schema`, `FieldValues`, proof-token pipeline.
+- `nebula_workflow` — workflow definition types, `DependencyGraph`.
+- `nebula_plugin` — `Plugin` trait, `PluginMetadata`, `PluginRegistry`.
+- `nebula_validator` — validation traits.
+- `nebula_core` — core ID types (`ExecutionId`, `NodeKey`, `WorkflowId`).
 
-```toml
-[dependencies]
-nebula-sdk = { path = "../crates/sdk" }
-```
+Modules provided by this crate:
 
-## Quick Start
+- `prelude` — one-stop `use nebula_sdk::prelude::*` import for common types and traits.
+- `action` — `ActionBuilder` for programmatic action metadata construction.
+- `workflow` — `WorkflowBuilder` for programmatic workflow construction.
+- `runtime` — `TestRuntime`, `RunReport` — in-process test execution harness.
+- `testing` (feature `testing`) — test helpers and fixtures.
 
-### Creating an Action
+Macros:
 
-```rust
-use nebula_sdk::prelude::*;
+- `params!` — create `FieldValues` from key-value pairs.
+- `json!` — re-export of `serde_json::json!`.
+- `workflow!` — declarative workflow definition macro.
+- `simple_action!` — convenience macro for simple `ProcessAction` implementations.
 
-#[derive(Action)]
-#[action(
-    key = "example.greet",
-    name = "Greet",
-    description = "A simple greeting action"
-)]
-struct GreetAction;
+SDK-level error:
 
-#[derive(Parameters)]
-struct GreetInput {
-    #[param(description = "Name to greet", required)]
-    name: String,
-}
+- `Error` — `Workflow`, `Action`, `Parameter`, `Serialization`, `Other` variants.
 
-#[derive(Parameters)]
-struct GreetOutput {
-    #[param(description = "Greeting message")]
-    message: String,
-}
+## Contract
 
-#[async_trait]
-impl ProcessAction for GreetAction {
-    type Input = GreetInput;
-    type Output = GreetOutput;
-    
-    async fn execute(
-        &self,
-        input: Self::Input,
-        _ctx: &ActionContext,
-    ) -> std::result::Result<ActionResult<Self::Output>, ActionError> {
-        Ok(ActionResult::Success(GreetOutput {
-            message: format!("Hello, {}!", input.name),
-        }))
-    }
-}
-```
+- **[L1-§3.5]** The SDK surface covers the five integration concepts: Action, Credential,
+  Resource, Schema, Plugin. It does not introduce new integration concepts — adding a sixth
+  requires canon revision (§0.2).
 
-### Building a Workflow
+- **[L1-§4.4]** DX is a first-class contract. Breaking changes to the `prelude` or
+  `WorkflowBuilder` API affect all integration authors — treat with the same care as a public
+  SDK surface (§7, open source contract).
 
-```rust
-use nebula_sdk::workflow::WorkflowBuilder;
+- **[L1-§7]** Public integration / plugin SDK surface: stability matters; breaking changes
+  need explicit announcement and migration guidance, not drive-by commits.
 
-let workflow = WorkflowBuilder::new("data_pipeline")
-    .with_description("ETL pipeline for user data")
-    .add_node("extract", "550e8400-e29b-41d4-a716-446655440000")
-    .add_node("transform", "550e8400-e29b-41d4-a716-446655440001")
-    .add_node("load", "550e8400-e29b-41d4-a716-446655440002")
-    .connect("extract", "transform")
-    .connect("transform", "load")
-    .build()
-    .expect("valid workflow");
-```
+## Non-goals
 
-### Using the Workflow Macro
+- Not the engine or runtime — this crate is for writing integrations, not for deploying or
+  driving executions. See `nebula-engine` for that.
+- Not an expression evaluator — see `nebula-expression`.
+- Not a plugin process binary entry point — see `nebula-plugin-sdk` (`run_duplex`).
+- Does not re-export `nebula-resilience` directly — resilience pipelines are composed at the
+  action call site; authors import `nebula-resilience` explicitly if needed.
 
-```rust
-use nebula_sdk::workflow;
+## Maturity
 
-let workflow = workflow! {
-    name: "my_workflow",
-    nodes: [
-        start: StartAction => process,
-        process: ProcessAction => end,
-        end: EndAction
-    ]
-};
-```
+See `docs/MATURITY.md` row for `nebula-sdk`.
 
-### Testing
+- API stability: `partial` — `prelude`, `WorkflowBuilder`, `ActionBuilder` are in active use;
+  the `testing` module and `TestRuntime` are usable but the harness coverage is still growing.
+- `anyhow` is re-exported for convenience despite `CLAUDE.md` preferring `thiserror` in
+  library crates — this is a deliberate ergonomics choice for integration authors (scripts and
+  one-off nodes) but new first-party integrations should prefer typed errors.
+- `simple_action!` macro covers the common case but more complex action shapes (stateful,
+  trigger, resource-backed) require direct trait implementation.
 
-```rust
-use nebula_sdk::testing::{ActionTester, assert_success};
+## Related
 
-#[tokio::test]
-async fn test_greet_action() {
-    let tester = ActionTester::new(GreetAction);
-    let result = tester.execute(GreetInput {
-        name: "World".into(),
-    }).await;
-    
-    assert_success(&result);
-}
-```
-
-## Modules
-
-### `prelude`
-
-Re-exports commonly used types:
-
-```rust
-use nebula_sdk::prelude::*;
-
-// Actions
-Action, ProcessAction, SimpleAction, TriggerAction, etc.
-
-// Workflow
-Workflow, WorkflowBuilder, Node, Edge
-
-// Parameters
-Parameters, ParameterDef, ParameterValue, ParameterCollection
-
-// Macros
-#[derive(Action)], #[derive(Parameters)], #[derive(Validator)], etc.
-```
-
-### `action`
-
-Builders and helpers for action development:
-
-```rust
-use nebula_sdk::action::ActionBuilder;
-
-let metadata = ActionBuilder::new("http.request", "HTTP Request")
-    .with_description("Makes HTTP requests")
-    .with_version(2, 0)
-    .with_capability(Capability::Network)
-    .with_isolation(IsolationLevel::Sandbox)
-    .build();
-```
-
-### `workflow`
-
-Builders for constructing workflows:
-
-```rust
-use nebula_sdk::workflow::{WorkflowBuilder, NodeBuilder};
-
-let workflow = WorkflowBuilder::new("my_flow")
-    .add_node_with_inputs(
-        "process",
-        "action.process",
-        params! {
-            "input1" => "value1",
-            "input2" => 42
-        }
-    )
-    .with_node_position("process", 100.0, 200.0)
-    .connect("start", "process")
-    .build()?;
-```
-
-### `testing`
-
-Testing utilities:
-
-```rust
-use nebula_sdk::testing::{TestContext, ActionTester, fixtures};
-
-let mut ctx = TestContext::new();
-ctx.log("Test started");
-ctx.record_metric("duration", 100.0);
-ctx.set_variable("key", "value");
-
-let exec_id = fixtures::execution_id();
-```
-
-## Macros
-
-### `params!`
-
-Create parameter values:
-
-```rust
-use nebula_sdk::params;
-
-let values = params! {
-    "name" => "test",
-    "count" => 42,
-    "enabled" => true
-};
-```
-
-### `json!`
-
-Create JSON values (re-exported from `serde_json`):
-
-```rust
-use nebula_sdk::json;
-
-let data = json!({
-    "name": "test",
-    "items": [1, 2, 3]
-});
-```
-
-### `workflow!`
-
-Define workflows declaratively:
-
-```rust
-use nebula_sdk::workflow;
-
-let wf = workflow! {
-    name: "pipeline",
-    nodes: [
-        extract: ExtractAction => transform,
-        transform: TransformAction => load,
-        load: LoadAction
-    ]
-};
-```
-
-## License
-
-MIT OR Apache-2.0
+- Canon: `docs/PRODUCT_CANON.md` §3.5, §4.4, §7, `docs/INTEGRATION_MODEL.md`.
+- Glossary: `docs/GLOSSARY.md` §1 (integration model), §3 (action model).
+- Siblings: `nebula-action`, `nebula-credential`, `nebula-resource`, `nebula-schema`,
+  `nebula-workflow`, `nebula-plugin`, `nebula-validator`.

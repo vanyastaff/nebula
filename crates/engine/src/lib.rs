@@ -1,18 +1,34 @@
 #![forbid(unsafe_code)]
 #![warn(missing_docs)]
 
-//! # Nebula Engine
+//! # nebula-engine — Composition Root
 //!
-//! Workflow execution orchestrator for the Nebula workflow engine.
+//! Workflow execution orchestrator. Builds an `ExecutionPlan` from a workflow
+//! DAG, resolves node inputs from predecessor outputs, transitions execution
+//! state through `ExecutionRepo` (CAS on `version` — canon §11.1), and
+//! delegates action dispatch to `nebula-runtime`.
 //!
-//! This crate provides:
-//! - [`WorkflowEngine`] — executes workflows level-by-level with bounded concurrency
-//! - [`ExecutionResult`] — final result of a workflow execution
-//! - [`EngineError`] — error types for the engine layer
+//! This crate is the **single real consumer** of `execution_control_queue`
+//! in production deployment modes (canon §12.2). A handler that only logs
+//! and discards control-queue rows does not satisfy the canon.
 //!
-//! The engine sits between the user-facing API and the runtime. It builds
-//! an execution plan from the workflow graph, resolves node inputs from
-//! predecessor outputs, and delegates action execution to the runtime.
+//! ## Key types
+//!
+//! - `WorkflowEngine` — entry point; level-by-level DAG execution with bounded concurrency.
+//! - `ExecutionResult` — post-run summary returned to the API layer.
+//! - `EngineError` — typed engine-layer error.
+//! - `ExecutionEvent` — broadcast event type for `nebula-eventbus`.
+//! - `EngineCredentialAccessor` / `EngineResourceAccessor` — scoped accessors injected into action
+//!   contexts.
+//!
+//! ## Canon
+//!
+//! - §10 golden path (orchestrator schedules activated workflows).
+//! - §11.1 execution authority via `ExecutionRepo`.
+//! - §12.2 durable control plane; engine is the `execution_control_queue` consumer.
+//!
+//! See `crates/engine/README.md` for known open debts (budget ephemerality,
+//! fail-open credential allowlist, edge-gate narrowness).
 
 pub mod credential_accessor;
 pub mod engine;

@@ -1,25 +1,38 @@
 #![forbid(unsafe_code)]
 #![warn(missing_docs)]
 
-//! # Nebula Execution
+//! # nebula-execution
 //!
-//! Runtime execution state, journals, idempotency, and planning for the Nebula
-//! workflow engine.
+//! Execution state machine, journal, idempotency, and planning types for the Nebula engine.
+//! Models execution-time concepts; does NOT contain the orchestrator or the storage implementation.
 //!
-//! This crate models execution-time concepts — it does NOT contain the engine
-//! orchestrator. It defines:
+//! **Role:** Execution State Machine + Journal + Idempotency Types.
+//! See `crates/execution/README.md`.
 //!
-//! - [`ExecutionStatus`] — execution-level state machine (8 states)
-//! - [`ExecutionState`] and [`NodeExecutionState`] — persistent state tracking
-//! - [`ExecutionPlan`] — pre-computed parallel execution schedule
-//! - [`ExecutionContext`] — lightweight runtime context (execution_id, budget)
-//! - [`ExecutionResult`] — post-execution summary (status, timing, node counts, outputs)
-//! - [`JournalEntry`] — audit log of execution events
-//! - [`NodeOutput`] — node output data with metadata
-//! - [`NodeAttempt`] — individual execution attempt tracking
-//! - [`IdempotencyKey`] — deterministic key for exactly-once dedup (deduplication is owned by
-//!   `nebula_storage::ExecutionRepo`)
-//! - State machine transitions validated by the [`transition`] module
+//! **Canon:** §11.1 (execution authority), §11.2 (retry debt), §11.3 (idempotency),
+//! §11.5 (persistence matrix), §12.2 (single lifecycle).
+//!
+//! **Maturity:** `stable` — state machine, journal, and plan types in active use.
+//! Engine-level retry accounting (`NodeAttempt` → re-execution) is `planned` (§11.2).
+//!
+//! ## Core Types
+//!
+//! - [`ExecutionStatus`] — 8-state machine; transitions validated by [`transition`] module.
+//! - [`ExecutionState`], [`NodeExecutionState`] — persistent state tracking.
+//! - [`ExecutionPlan`] — pre-computed parallel schedule derived from the workflow DAG.
+//! - [`ExecutionContext`] — lightweight runtime context (`execution_id`, [`ExecutionBudget`]).
+//! - [`ExecutionResult`] — post-execution summary.
+//! - [`JournalEntry`] — audit log entry; backs `execution_journal` append-only table.
+//! - [`NodeOutput`], [`ExecutionOutput`] — node output data with metadata.
+//! - [`NodeAttempt`] — attempt tracking; engine re-execution is `planned`, not `implemented`.
+//! - [`IdempotencyKey`] — deterministic key `{execution_id}:{node_id}:{attempt}`; dedup enforcement
+//!   lives in `nebula_storage::ExecutionRepo`.
+//! - [`ExecutionError`] — typed error for state machine violations.
+//!
+//! ## Non-goals
+//!
+//! Not the orchestrator (`nebula-engine`), not the storage implementation (`nebula-storage`),
+//! not a retry scheduler (`nebula-resilience` inside an action is the canonical retry surface).
 
 pub mod attempt;
 pub mod context;

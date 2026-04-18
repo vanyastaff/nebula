@@ -1,56 +1,35 @@
-//! # Nebula Action System
+//! # nebula-action
 //!
-//! Execution abstraction layer for Nebula workflow nodes.
+//! **Role:** Action Trait Family + Execution Policy Metadata (Ports & Adapters).
+//! Canon §3.5 (trait family; adding a trait requires canon revision), §11.2, §11.3.
 //!
-//! This crate defines **what** actions are and **how they communicate** with
-//! the engine, but not how the engine orchestrates them. It follows the
-//! Ports & Drivers architecture: core types live here, concrete execution
-//! environments (in-process trusted execution, child-process `ProcessSandbox`
-//! with capability allowlists and optional OS-level hardening) are implemented
-//! as drivers in `nebula-sandbox`. WASM / WASI is an explicit non-goal — see
-//! `docs/PRODUCT_CANON.md` §12.6.
+//! Defines what actions are and how they communicate with the engine. Core types
+//! live here; execution environments (in-process, ProcessSandbox with capability
+//! allowlists and OS-level hardening) are drivers in `nebula-sandbox`.
+//! WASM is an explicit non-goal — see `docs/PRODUCT_CANON.md` §12.6.
 //!
-//! ## Core Types
+//! ## Trait family (canon §3.5)
 //!
-//! - [`Action`] — base trait providing identity and metadata
-//! - [`StatelessAction`] — pure, stateless single-execution action
-//! - [`StatefulAction`] — iterative action with persistent state (Continue/Break)
-//! - [`TriggerAction`] — workflow starter (start/stop), outside execution graph
-//! - [`ResourceAction`] — graph-level DI (configure/cleanup), scoped to downstream branch
-//! - [`PaginatedAction`] — cursor-driven pagination (DX over StatefulAction)
-//! - [`BatchAction`] — fixed-size chunk processing (DX over StatefulAction)
-//! - [`WebhookAction`] — webhook lifecycle (DX over TriggerAction)
-//! - [`PollAction`] — periodic polling (DX over TriggerAction)
-//! - [`ActionResult`] — execution result carrying data and flow-control intent
-//! - [`ActionOutput`] — first-class output type (value, binary, reference, stream)
-//! - [`ActionError`] — error type distinguishing retryable from fatal failures
-//! - [`Context`] — base trait for execution contexts
-//! - [`ActionMetadata`] — static descriptor (key, version, capabilities)
+//! - `Action` — base trait providing identity and metadata.
+//! - `StatelessAction` — pure, stateless single-execution.
+//! - `StatefulAction` — iterative with persistent state (Continue/Break).
+//! - `TriggerAction` — workflow starter (start/stop); outside the execution graph.
+//! - `ResourceAction` — graph-level DI; configures/cleans up scoped resource.
+//! - `PaginatedAction`, `BatchAction` — DX over `StatefulAction`.
+//! - `WebhookAction`, `PollAction` — DX over `TriggerAction`.
+//! - `ControlAction` — flow-control nodes (If, Switch, Router, NoOp, Stop, Fail).
 //!
-//! ## Quick Start
+//! ## Key metadata and result types
 //!
-//! ```rust,ignore
-//! use nebula_action::*;
+//! - `ActionMetadata` — key, version, ports, `ValidSchema` parameters, `IsolationLevel`,
+//!   `ActionCategory`. NOTE: `CheckpointPolicy` is planned but not yet a field — see
+//!   `crates/action/README.md` Contract section.
+//! - `ActionResult` — execution result with flow-control intent.
+//! - `ActionError` — typed error distinguishing retryable from fatal.
+//! - `ActionHandler` — top-level enum dispatcher over all handler variants.
 //!
-//! struct MyAction { meta: ActionMetadata }
-//!
-//! impl ActionDependencies for MyAction {}
-//!
-//! impl Action for MyAction {
-//!     fn metadata(&self) -> &ActionMetadata { &self.meta }
-//! }
-//!
-//! impl StatelessAction for MyAction {
-//!     type Input = serde_json::Value;
-//!     type Output = serde_json::Value;
-//!
-//!     async fn execute(&self, input: Self::Input, _ctx: &impl Context)
-//!         -> Result<ActionResult<Self::Output>, ActionError>
-//!     {
-//!         Ok(ActionResult::success(input))
-//!     }
-//! }
-//! ```
+//! See `crates/action/README.md` for the full contract, canon invariants,
+//! and CheckpointPolicy status note.
 
 #![forbid(unsafe_code)]
 #![warn(missing_docs)]

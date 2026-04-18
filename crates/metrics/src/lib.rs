@@ -1,22 +1,36 @@
 #![forbid(unsafe_code)]
 #![warn(missing_docs)]
 
-//! # Nebula Metrics
+//! # nebula-metrics
 //!
-//! Unified metric naming and export adapters for the Nebula workflow engine.
+//! Metric export and label-safety layer for the Nebula workflow engine.
 //!
-//! This crate provides:
-//! - **[`naming`]** — standard `nebula_*` metric name constants
-//! - **[`TelemetryAdapter`]** — adapter over `nebula-telemetry::MetricsRegistry` that records using
-//!   those names
-//! - **[`snapshot`]** — Prometheus text-format export with `# HELP`, `# TYPE` metadata and
-//!   per-bucket histogram output
-//! - **[`filter::LabelAllowlist`]** — allowlist that strips high-cardinality label keys before they
-//!   reach the registry (prevents cardinality explosion)
-//! - **[`prelude`]** — convenience re-exports for common types
+//! ## Purpose
 //!
-//! In-memory primitives (Counter, Gauge, Histogram) remain in `nebula-telemetry`; this crate
-//! adds naming convention, a thin adapter, Prometheus text export, and label safety guards.
+//! Sits on top of `nebula-telemetry` primitives and adds what operators need:
+//! consistent `nebula_*` naming, a cardinality guard that strips high-cardinality
+//! label keys before they reach the registry, and Prometheus text-format export.
+//! Consumers import this crate — it re-exports `Counter`, `Gauge`, `Histogram`, and
+//! `MetricsRegistry` from `nebula-telemetry` so only one import is needed.
+//! See `crates/metrics/README.md` for the full role description.
+//!
+//! ## Role
+//!
+//! **Metric Export and Label-Safety** — sits on top of `nebula-telemetry`; the
+//! `/metrics` HTTP scrape endpoint lives in `nebula-api`.
+//!
+//! ## Public API
+//!
+//! - [`naming`] — standard `nebula_*` metric name constants
+//! - [`TelemetryAdapter`] — adapter over `nebula-telemetry::MetricsRegistry` using `nebula_*` names
+//! - [`snapshot`] — Prometheus text-format export with `# HELP`, `# TYPE` metadata and per-bucket
+//!   histogram output
+//! - [`filter::LabelAllowlist`] — strips high-cardinality label keys (prevents cardinality
+//!   explosion)
+//! - [`prelude`] — convenience re-exports for common types
+//!
+//! In-memory primitives (`Counter`, `Gauge`, `Histogram`) remain in `nebula-telemetry`;
+//! this crate adds naming convention, a thin adapter, Prometheus text export, and label safety.
 
 pub mod adapter;
 pub mod export;

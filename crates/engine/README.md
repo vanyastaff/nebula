@@ -1,81 +1,115 @@
+---
+name: nebula-engine
+role: Composition Root (Orchestrator)
+status: partial
+last-reviewed: 2026-04-17
+canon-invariants: [L2-10, L2-11.1, L2-12.2]
+related: [nebula-execution, nebula-storage, nebula-runtime, nebula-workflow, nebula-resilience, nebula-plugin, nebula-credential, nebula-resource]
+---
+
 # nebula-engine
 
-Workflow execution orchestrator for the Nebula workflow engine.
+## Purpose
 
-**Layer:** Exec
-**Canon:** §10 (golden path — orchestrator schedules activated workflows), §11.1 (execution authority via `ExecutionRepo`), §12.2 (durable control plane)
+A workflow engine needs one component that assembles all the other crates and drives an execution
+from "activated workflow" to "terminal state." Without a composition root, callers must wire
+`nebula-runtime`, `nebula-storage`, `nebula-execution`, and the plugin registry themselves and
+risk diverging from the canon §12.2 control-plane contract. `nebula-engine` is that root: it
+builds an `ExecutionPlan` from the workflow DAG, resolves node inputs from predecessor outputs,
+transitions execution state through `ExecutionRepo` (CAS on `version`), and delegates action
+dispatch to `nebula-runtime`. It is also the only component that canon §12.2 names as the
+**real consumer** of `execution_control_queue` — a demo handler that logs and discards commands
+does not satisfy the canon.
 
-## Status
+## Role
 
-**Overall:** `implemented` for the default level-by-level DAG execution path, with **known open debts** listed below. The engine is the real consumer of the `execution_control_queue` in production deployment modes — canon §12.2.
+*Composition Root.* Wires the exec layer (`nebula-runtime`, `nebula-storage`, plugin registry,
+credential/resource accessors) into a single `WorkflowEngine` entry point. Drives the §10
+golden path — activate → schedule → transition → observe — using DAG-level parallelism and
+bounded concurrency.
 
-**Works today:**
+## Public API
 
-- `WorkflowEngine` — level-by-level DAG execution with bounded concurrency
-- `ExecutionResult` — post-run summary flowing back to the API layer
-- `EngineCredentialAccessor` / `EngineResourceAccessor` — scoped accessors injected into action contexts
-- `ExecutionEvent` — broadcast events via `nebula-eventbus`
-- Integration tests (`tests/`) exercise the control-queue cancel path end-to-end
-- Re-export of `nebula-plugin` registry types used during dispatch
+- `WorkflowEngine` — entry point: executes workflows level-by-level with bounded concurrency.
+- `ExecutionResult` — post-run summary returned to the API layer.
+- `EngineError` — typed engine-layer error.
+- `ExecutionEvent` — broadcast event type emitted via `nebula-eventbus`.
+- `EngineCredentialAccessor` — scoped credential accessor injected into action contexts.
+- `EngineResourceAccessor` — scoped resource accessor injected into action contexts.
+- `NodeOutput` — per-node output threaded between execution levels.
+- `DEFAULT_EVENT_CHANNEL_CAPACITY` — default backpressure bound for the event channel.
 
-**Known gaps (tracked as in-source `TODO`s — treat as canon debt):**
+Re-exports from `nebula-plugin`: `Plugin`, `PluginKey`, `PluginMetadata`, `PluginRegistry`,
+`PluginType`.
+
+## Contract
+
+- **[L2-§11.1]** Execution state transitions go through `ExecutionRepo::transition` (CAS on
+  `version`). No handler inside the engine mutates execution state in-memory or invents a
+  parallel lifecycle. Seam: `crates/storage/src/execution_repo.rs — ExecutionRepo::transition`.
+
+- **[L2-§12.2]** The engine is the **single real consumer** of `execution_control_queue` in
+  production deployment modes. Cancel signals are written to the outbox in the same logical
+  operation as the state transition and the engine's cancel path processes them. A handler that
+  only logs and discards control-queue rows violates this invariant.
+
+- **[L2-§10]** The golden-path knife scenario (canon §13) — define, activate, start, observe,
+  cancel — exercises this crate's integration with `ExecutionRepo` end-to-end. Integration
+  tests in `tests/` cover the control-queue cancel path.
+
+## Non-goals
+
+- Not a storage implementation — see `nebula-storage` (`ExecutionRepo`, storage backends).
+- Not an action dispatcher — delegated to `nebula-runtime`.
+- Not a plugin loader or isolator — see `nebula-sandbox`.
+- Not an expression evaluator — see `nebula-expression`.
+- Not a retry scheduler — engine-level node re-execution from `ActionResult::Retry` is
+  `planned` (§11.2); canonical retry surface is `nebula-resilience` inside an action.
+
+## Maturity
+
+See `docs/MATURITY.md` row for `nebula-engine`.
+
+- API stability: `partial` — `WorkflowEngine` and `ExecutionResult` are in active use;
+  known open debts (see Appendix) affect correctness boundaries.
+- `ExecutionBudget` is ephemeral (not persisted on resume) — §11.5 debt.
+- Per-node credential `allowed_keys` is not populated from declared dependencies — the
+  credential allowlist is currently fail-open (§12.5 debt; see Appendix).
+- Downstream-edge gate only blocks local edges, not the full graph (§10 narrower than
+  advertised for multi-hop conditional flows).
+
+## Related
+
+- Canon: `docs/PRODUCT_CANON.md` §10, §11.1, §12.2, §13.
+- Engine guarantees: `docs/ENGINE_GUARANTEES.md`.
+- Glossary: `docs/GLOSSARY.md` §2 (execution authority).
+- Siblings: `nebula-execution` (state types), `nebula-storage` (repo), `nebula-runtime`
+  (dispatcher), `nebula-workflow` (DAG → `ExecutionPlan`), `nebula-resilience`
+  (in-action retry), `nebula-plugin` (registry).
+
+## Appendix
+
+### Known open debts (L4 detail)
 
 | Gap | Location | Canon impact |
-| --- | --- | --- |
-| `ExecutionBudget` is not persisted in `ExecutionState` — re-read on resume loses the original budget | `src/engine.rs:796` | §11.5 durability matrix: budget is **ephemeral**, not authoritative on restart |
-| Original workflow input is not persisted in `ExecutionState` — resume cannot replay from input | `src/engine.rs:809` | §11.5 + §11.2 retry / resume story is narrower than it could be |
-| Per-node credential `allowed_keys` is not populated from declared credential dependencies — gate is weaker than the §12.5 promise | `src/engine.rs:1312`, `:1601` | §12.5 secrets boundary partially enforced until this lands |
-| Downstream-edge gate only blocks **local** edges, not the full graph | `src/engine.rs:1808` | §10 golden path narrower than advertised for multi-hop conditional flows |
-| `ExecutionBudget` is a historical type moved to `nebula-execution` — cleanup pending | `src/engine.rs:20` | documentation / import hygiene |
+|---|---|---|
+| `ExecutionBudget` not persisted in `ExecutionState` — budget is lost on resume | `src/engine.rs:796` | §11.5 durability matrix: budget is **ephemeral** |
+| Original workflow input not persisted — resume cannot replay from input | `src/engine.rs:809` | §11.5 + §11.2 retry/resume story narrower than optimal |
+| Per-node `allowed_keys` not populated from declared credential dependencies | `src/engine.rs:1312, :1601` | §12.5 credential boundary **fail-open** until fixed |
+| Downstream-edge gate blocks only **local** edges, not the full graph | `src/engine.rs:1808` | §10 conditional-flow gate is narrower than advertised |
+| `ExecutionBudget` moved to `nebula-execution` — import cleanup pending | `src/engine.rs:20` | documentation / import hygiene |
 
-**Not implemented here (by design):**
+### Architecture notes
 
-- **Retry scheduling** from `ActionResult::Retry` with persisted attempt accounting — canon §11.2 `planned`. Action-level retry lives in `nebula-resilience`.
-- **Storage implementation** — engine drives `ExecutionRepo`, does not own it. See `nebula-storage`.
-- **Action execution** — delegated to `nebula-runtime`.
-- **Plugin loading / isolation** — see `nebula-sandbox`.
-
-## Architecture notes
-
-**Smells tracked as open debt:**
-
-- **Fail-open credential allowlist** (`credential_accessor.rs`): an empty allowlist means **all credentials are permitted** ("open / passthrough mode"). Canon §12.5 implies a fail-closed secrets boundary, but today the default is the opposite until `TODO: populate allowed_keys from node_def's declared credential dependencies` (`src/engine.rs:1312`) is implemented. **Before that lands, per-node credential dependency enforcement is a `false capability` (§4.5).**
-- **No resource allowlist at all** (`resource_accessor.rs`): unlike credentials, there is no allowlist for resources — any registered key may be acquired by any action. If the `nebula-resource` model needs scoped access, this bridge is the place to enforce it.
-- **Cross-layer bridges in engine.** `credential_accessor.rs` and `resource_accessor.rs` bridge business-layer traits (`CredentialAccessor`, `ResourceAccessor`) into engine concrete types. Architecturally these belong to `nebula-credential` / `nebula-resource` as extension points — engine should depend on a trait, not own the bridge. Move is a candidate refactor when the two gaps above get fixed.
-- **Fourteen intra-workspace dependencies** — the engine reaches into most of the workspace (`nebula-core`, `-error`, `-action`, `-expression`, `-plugin`, `-workflow`, `-execution`, `-credential`, `-resource`, `-runtime`, `-resilience`, `-storage`, `-metrics`, `-telemetry`). This is the natural centre of gravity, but every new dep should be questioned against the layer rules in `CLAUDE.md`.
-
-**Not smells — intentional:**
-
-- The engine is the single consumer of `execution_control_queue` (canon §12.2). That is by design and not a violation of its focused scope.
-- The event/result modules look similar to types in `nebula-execution` but serve a different role (outbound engine events vs. persistent state); this is intentional, not DRY violation.
-
-## Scope
-
-The engine sits between the user-facing API and the runtime. It builds an execution plan from a workflow graph, resolves node inputs from predecessor outputs, transitions execution state through `ExecutionRepo` (CAS on `version`), and delegates action execution to the runtime. It is the component that canon §12.2 names as the **real consumer** of `execution_control_queue` — a demo handler that logs and discards commands does **not** satisfy the canon.
-
-## What this crate provides
-
-| Type | Role |
-| --- | --- |
-| `WorkflowEngine` | Entry point — executes workflows level-by-level with bounded concurrency. |
-| `ExecutionResult` | Final result of an execution run. |
-| `EngineError` | Typed engine-layer error. |
-| `ExecutionEvent` | Broadcast event type for the eventbus. |
-| `EngineCredentialAccessor` | Scoped credential accessor passed into action contexts. |
-| `EngineResourceAccessor` | Scoped resource accessor passed into action contexts. |
-| `NodeOutput` | Per-node output threaded between levels. |
-| `DEFAULT_EVENT_CHANNEL_CAPACITY` | Default backpressure bound for the event channel. |
-
-## Where the contract lives
-
-- Source: `src/lib.rs`, `src/engine.rs` (orchestrator), `src/credential_accessor.rs`, `src/resource_accessor.rs`
-- Integration tests: `tests/` — exercise the control-queue cancel path (canon §13 step 5)
-- Canon: `docs/PRODUCT_CANON.md` §10, §11.1, §12.2, §13
-- Glossary: `docs/GLOSSARY.md` §2
-
-## See also
-
-- `nebula-execution` — state types the engine drives
-- `nebula-storage` — `ExecutionRepo` the engine transitions through
-- `nebula-runtime` — action dispatcher the engine delegates to
-- `nebula-workflow` — DAG definition the engine builds `ExecutionPlan` from
+- **Fail-open credential allowlist** (`credential_accessor.rs`): an empty allowlist means all
+  credentials are permitted ("open / passthrough mode"). Canon §12.5 implies fail-closed; the
+  default is the opposite until the `TODO: populate allowed_keys` is implemented. Until then,
+  per-node credential-dependency enforcement is a `false capability` (§4.5).
+- **No resource allowlist** (`resource_accessor.rs`): unlike credentials, there is no allowlist
+  for resources — any registered key may be acquired by any action.
+- **Cross-layer bridges**: `credential_accessor.rs` and `resource_accessor.rs` bridge business-
+  layer traits into engine concrete types. Architecturally these belong to `nebula-credential`
+  / `nebula-resource` as extension points; the move is a candidate refactor when the gaps above
+  are fixed.
+- **14 intra-workspace dependencies** — intentional for a composition root, but every new dep
+  must be justified against the layer rules in `CLAUDE.md`.
