@@ -36,7 +36,9 @@ Related DMMF / typestate discussion: `docs/GLOSSARY.md` §9, `docs/STYLE.md`.
 - `Validated<T>` (`proof::Validated`) — proof-token certifying a value passed validation.
 - `ValidationError` (`foundation::ValidationError`) — structured error (80 bytes, `Cow`-based, RFC 6901 field paths).
 - `AnyValidator<T>` (`foundation::AnyValidator`) — type-erased validator for dynamic dispatch.
-- `Rule` — unified declarative rule enum (value, predicate, combinator, deferred).
+- `Rule` — typed sum-of-sums: `Value(ValueRule)` / `Predicate(Predicate)` / `Logic(Box<Logic>)` / `Deferred(DeferredRule)` / `Described(Box<Rule>, String)`. Each inner kind owns exactly one method that makes sense for it; cross-kind silent-pass is a compile error.
+- `FieldPath` — RFC 6901 JSON-pointer with construction-time validation (replaces raw `String` paths in predicates).
+- `Described` — decorator with `{placeholder}` message templates (replaces per-variant `message: Option<String>` fields).
 - `RuleContext` — context map for predicate evaluation (sibling field lookups).
 - `ExecutionMode` — controls which rule categories run (`StaticOnly`, `Deferred`, `Full`).
 - `validate_rules` — batch-evaluate a slice of `Rule` against a `serde_json::Value`.
@@ -58,10 +60,8 @@ temporal (`DateTime`, `Uuid`).
 - **[L1-§4.5]** `Validated<T>` is a proof-token: a caller cannot obtain one without calling
   `validate`. `Validated<T>` deliberately does not implement `Deserialize` — deserialized
   data must be re-validated.
-- **Rule cross-method silent-pass** — value rules return `Ok` from `validate_value` when the
-  JSON type does not match (e.g. `MinLength` on a number). Predicate rules return `true`
-  from `evaluate` when called on a value-only path. Both behaviors are documented ergonomics,
-  not bugs. Seam: `crates/validator/src/rule/mod.rs`. Tests: `crates/validator/tests/`.
+- **Rule cross-kind safety** — each inner kind (`ValueRule`, `Predicate`, `Logic`, `DeferredRule`) exposes only the method that makes sense for it. Calling a value-only method on a predicate-carrying `Rule` is a compile error (typed narrowing). This replaces the old flat enum's documented silent-pass ergonomics. Seam: `crates/validator/src/rule/mod.rs`. Tests: `crates/validator/tests/`.
+- **Wire format compactness** — externally-tagged tuple-compact encoding keeps compound-rule JSON ~60% smaller than the old flat variants.
 
 ## Non-goals
 
@@ -75,12 +75,12 @@ temporal (`DateTime`, `Uuid`).
 
 See `docs/MATURITY.md` row for `nebula-validator`.
 
-- API stability: `frontier` — the `Rule` type is currently a flat 30-variant enum; a
-  typed sum-of-sums refactor is designed and pending implementation (see
-  `docs/superpowers/specs/2026-04-17-nebula-validator-rule-refactor-design.md`). The
-  programmatic validator API (`Validate<T>`, `ValidateExt`, `Validated<T>`,
-  `ValidationError`) is stable and will not change in the refactor. Wire format for `Rule`
-  JSON **will break** when the refactor lands (alpha stage; no stored data commitments).
+- API stability: `frontier` — the `Rule` type just moved from a flat 30-variant enum to the
+  typed sum-of-sums above (commit landed; `docs/superpowers/specs/2026-04-17-nebula-validator-rule-refactor-design.md`).
+  The programmatic validator API (`Validate<T>`, `ValidateExt`, `Validated<T>`,
+  `ValidationError`) is stable and unchanged. Wire format for `Rule` JSON has changed
+  (externally-tagged tuple-compact encoding); consumers must re-serialize any stored
+  rule data. Alpha-stage breakage acknowledged.
 - The `#[derive(Validator)]` macro public attribute syntax is stable across the refactor.
 
 ## Related

@@ -8,9 +8,11 @@
 //!
 //! **Canon:** §3.5 (schema system), §4.5 (proof-token pipeline).
 //!
-//! **Maturity:** `frontier` — programmatic validator API is stable; [`Rule`] wire format
-//! will change in the pending sum-of-sums refactor (see
-//! `docs/superpowers/specs/2026-04-17-nebula-validator-rule-refactor-design.md`).
+//! **Maturity:** `frontier` — the programmatic validator API (`Validate`, `ValidateExt`,
+//! `Validated`, `ValidationError`) is stable; [`Rule`] has just moved to a typed sum-of-sums
+//! (`Value` / `Predicate` / `Logic` / `Deferred` / `Described`) with a new externally-tagged
+//! wire format. See the spec at
+//! `docs/superpowers/specs/2026-04-17-nebula-validator-rule-refactor-design.md`.
 //!
 //! ## Core Types
 //!
