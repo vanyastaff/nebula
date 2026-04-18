@@ -464,7 +464,7 @@ pub enum ResolveError {
 
 #[cfg(test)]
 mod tests {
-    use nebula_schema::{FieldValues, Schema, ValidSchema};
+    use nebula_schema::FieldValues;
 
     use super::*;
     // ── Test credential for early refresh ──────────────────────────────
@@ -502,6 +502,7 @@ mod tests {
     struct RefreshableTestCredential;
 
     impl Credential for RefreshableTestCredential {
+        type Input = FieldValues;
         type Scheme = SecretToken;
         type State = ExpiringState;
         type Pending = NoPendingState;
@@ -514,22 +515,13 @@ mod tests {
         };
 
         fn metadata() -> CredentialMetadata {
-            CredentialMetadata {
-                key: Self::KEY.to_owned(),
-                name: "Refreshable Test".to_owned(),
-                description: "Test credential for early refresh".to_owned(),
-                icon: None,
-                icon_url: None,
-                documentation_url: None,
-                properties: Self::parameters(),
-                pattern: nebula_core::AuthPattern::SecretToken,
-            }
-        }
-
-        fn parameters() -> ValidSchema {
-            Schema::builder()
-                .build()
-                .expect("empty schema is always valid")
+            CredentialMetadata::new(
+                nebula_core::credential_key!("refreshable_test"),
+                "Refreshable Test",
+                "Test credential for early refresh",
+                Self::parameters(),
+                nebula_core::AuthPattern::SecretToken,
+            )
         }
 
         fn project(state: &ExpiringState) -> SecretToken {
@@ -559,6 +551,7 @@ mod tests {
     struct TinyJitterRefreshableTestCredential;
 
     impl Credential for TinyJitterRefreshableTestCredential {
+        type Input = FieldValues;
         type Scheme = SecretToken;
         type State = ExpiringState;
         type Pending = NoPendingState;
@@ -572,22 +565,13 @@ mod tests {
         };
 
         fn metadata() -> CredentialMetadata {
-            CredentialMetadata {
-                key: Self::KEY.to_owned(),
-                name: "Tiny Jitter Refreshable Test".to_owned(),
-                description: "Test credential with sub-ms jitter".to_owned(),
-                icon: None,
-                icon_url: None,
-                documentation_url: None,
-                properties: Self::parameters(),
-                pattern: nebula_core::AuthPattern::SecretToken,
-            }
-        }
-
-        fn parameters() -> ValidSchema {
-            Schema::builder()
-                .build()
-                .expect("empty schema is always valid")
+            CredentialMetadata::new(
+                nebula_core::credential_key!("tiny_jitter_refreshable_test"),
+                "Tiny Jitter Refreshable Test",
+                "Test credential with sub-ms jitter",
+                Self::parameters(),
+                nebula_core::AuthPattern::SecretToken,
+            )
         }
 
         fn project(state: &ExpiringState) -> SecretToken {
@@ -1066,6 +1050,7 @@ mod tests {
     struct CasRetryTestCredential;
 
     impl Credential for CasRetryTestCredential {
+        type Input = FieldValues;
         type Scheme = SecretToken;
         type State = ExpiringState;
         type Pending = NoPendingState;
@@ -1079,22 +1064,13 @@ mod tests {
         };
 
         fn metadata() -> CredentialMetadata {
-            CredentialMetadata {
-                key: Self::KEY.to_owned(),
-                name: "CAS Retry Test".to_owned(),
-                description: "Test credential for CAS retry".to_owned(),
-                icon: None,
-                icon_url: None,
-                documentation_url: None,
-                properties: Self::parameters(),
-                pattern: nebula_core::AuthPattern::SecretToken,
-            }
-        }
-
-        fn parameters() -> ValidSchema {
-            Schema::builder()
-                .build()
-                .expect("empty schema is always valid")
+            CredentialMetadata::new(
+                nebula_core::credential_key!("cas_retry_test"),
+                "CAS Retry Test",
+                "Test credential for CAS retry",
+                Self::parameters(),
+                nebula_core::AuthPattern::SecretToken,
+            )
         }
 
         fn project(state: &ExpiringState) -> SecretToken {

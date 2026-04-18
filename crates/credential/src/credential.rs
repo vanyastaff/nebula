@@ -92,6 +92,15 @@ use crate::{
 /// }
 /// ```
 pub trait Credential: Send + Sync + 'static {
+    /// Typed shape of the setup-form fields.
+    ///
+    /// The canonical [`parameters()`](Credential::parameters) schema is
+    /// auto-derived via `<Self::Input as HasSchema>::schema()`. Use
+    /// [`FieldValues`] for legacy credentials that do not yet declare a
+    /// typed input (the blanket [`HasSchema`](nebula_schema::HasSchema)
+    /// impl returns an empty schema).
+    type Input: nebula_schema::HasSchema + Send + Sync + 'static;
+
     /// What this credential produces -- the consumer-facing auth material.
     type Scheme: AuthScheme;
 
@@ -133,9 +142,16 @@ pub trait Credential: Send + Sync + 'static {
         Self: Sized;
 
     /// Parameter schema for the setup form.
+    ///
+    /// The default implementation derives the schema from [`Self::Input`],
+    /// which must implement [`HasSchema`](nebula_schema::HasSchema). Override
+    /// only if the form layout must differ from the `Input` struct (rare).
     fn parameters() -> ValidSchema
     where
-        Self: Sized;
+        Self: Sized,
+    {
+        <Self::Input as nebula_schema::HasSchema>::schema()
+    }
 
     /// Extract consumer-facing auth material from stored state.
     fn project(state: &Self::State) -> Self::Scheme

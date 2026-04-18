@@ -97,6 +97,38 @@ impl ValidSchema {
         Self(Arc::new(inner))
     }
 
+    /// Shared empty `ValidSchema` — cheap `Arc` clone.
+    ///
+    /// Use this anywhere a `ValidSchema` is required but the entity has no
+    /// user-configurable inputs (actions that take `()`, stub credentials,
+    /// baseline `HasSchema` impls for primitives). Avoids the
+    /// `Schema::builder().build().expect(..)` incantation in several dozen
+    /// call sites, and — unlike that pattern — cannot panic: the empty
+    /// `ValidSchemaInner` is constructed directly, bypassing lint passes
+    /// whose only job is to reject non-empty schemas.
+    pub fn empty() -> Self {
+        use std::sync::OnceLock;
+        static EMPTY: OnceLock<ValidSchema> = OnceLock::new();
+        EMPTY
+            .get_or_init(|| {
+                Self::from_inner(ValidSchemaInner {
+                    fields: Vec::new(),
+                    index: IndexMap::new(),
+                    flags: SchemaFlags::default(),
+                })
+            })
+            .clone()
+    }
+
+    /// Return `true` when two `ValidSchema` values share the same backing
+    /// `Arc` — i.e. they're the same instance, not just structurally
+    /// equivalent. Used to assert identity-preserving caches (e.g. the
+    /// `OnceLock` inside `#[derive(Schema)]`).
+    #[must_use]
+    pub fn ptr_eq(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.0, &other.0)
+    }
+
     /// Borrow all top-level fields in insertion order.
     pub fn fields(&self) -> &[Field] {
         &self.0.fields

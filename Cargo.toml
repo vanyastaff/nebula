@@ -9,6 +9,7 @@ members = [
   "crates/execution",
   "crates/expression",
   "crates/log",
+  "crates/metadata",
   "crates/metrics",
   "crates/plugin",
   "crates/schema",

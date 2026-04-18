@@ -76,13 +76,13 @@ pub fn validate_action_package(
 ) -> Result<(), ActionPackageValidationErrors> {
     let mut errors = Vec::new();
 
-    if metadata.key.as_str().is_empty() {
+    if metadata.base.key.as_str().is_empty() {
         errors.push(ActionPackageValidationError::EmptyMetadataField { field: "key" });
     }
-    if metadata.name.trim().is_empty() {
+    if metadata.base.name.trim().is_empty() {
         errors.push(ActionPackageValidationError::EmptyMetadataField { field: "name" });
     }
-    if metadata.description.trim().is_empty() {
+    if metadata.base.description.trim().is_empty() {
         errors.push(ActionPackageValidationError::EmptyMetadataField {
             field: "description",
         });

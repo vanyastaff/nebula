@@ -419,7 +419,7 @@ impl ActionRuntime {
             // fail-closed until we explicitly wire dispatch for it.
             _ => Err(ActionError::fatal(format!(
                 "unknown isolation level for action '{}' — refusing to dispatch",
-                metadata.key.as_str()
+                metadata.base.key.as_str()
             ))),
         }
     }
@@ -501,7 +501,7 @@ impl ActionRuntime {
                 Ok(None) => (handler.init_state()?, 0u32),
                 Err(load_err) => {
                     tracing::warn!(
-                        action_key = %metadata.key.as_str(),
+                        action_key = %metadata.base.key.as_str(),
                         execution_id = %context.execution_id,
                         node_key = %context.node_key,
                         error = %load_err,
@@ -523,7 +523,7 @@ impl ActionRuntime {
             if iteration >= MAX_ITERATIONS {
                 return Err(ActionError::fatal(format!(
                     "stateful action '{}' exceeded max iterations ({MAX_ITERATIONS})",
-                    metadata.key.as_str()
+                    metadata.base.key.as_str()
                 )));
             }
 
@@ -589,7 +589,7 @@ impl ActionRuntime {
                         && let Err(clear_err) = sink.clear().await
                     {
                         tracing::warn!(
-                            action_key = %metadata.key.as_str(),
+                            action_key = %metadata.base.key.as_str(),
                             execution_id = %context.execution_id,
                             node_key = %context.node_key,
                             error = %clear_err,

@@ -180,6 +180,54 @@ impl SchemaBuilder {
         self
     }
 
+    /// Append many fields at once — accepts `Vec<Field>`, `[Field; N]`,
+    /// iterators, and anything `Into<Field>` per item. Preferred over
+    /// chaining `.add(...)` for statically known bulk additions.
+    #[must_use]
+    pub fn add_many<I, F>(mut self, fields: I) -> Self
+    where
+        I: IntoIterator<Item = F>,
+        F: Into<Field>,
+    {
+        self.fields.extend(fields.into_iter().map(Into::into));
+        self
+    }
+
+    /// Append a group of fields that share a common label and optional
+    /// `visible_when` / `required_when` conditions.
+    ///
+    /// ```rust
+    /// use nebula_schema::{FieldCollector, Schema, StringWidget};
+    /// use nebula_validator::{Predicate, Rule};
+    ///
+    /// let rule = Rule::predicate(Predicate::eq("method", "POST").unwrap());
+    /// let schema = Schema::builder()
+    ///     .string("method", |s| s.required())
+    ///     .group("body_section", |g| {
+    ///         g.visible_when(rule)
+    ///             .string("body", |s| s.widget(StringWidget::Multiline))
+    ///     })
+    ///     .build()
+    ///     .unwrap();
+    /// assert_eq!(schema.fields().len(), 2);
+    /// ```
+    #[must_use]
+    pub fn group(
+        mut self,
+        name: impl Into<String>,
+        f: impl FnOnce(crate::builder::GroupBuilder) -> crate::builder::GroupBuilder,
+    ) -> Self {
+        let builder = f(crate::builder::GroupBuilder::new(name));
+        self.fields.extend(builder.into_fields());
+        self
+    }
+
+    /// Borrow the fields currently staged on the builder.
+    #[must_use]
+    pub fn fields(&self) -> &[Field] {
+        &self.fields
+    }
+
     /// Run lint passes and produce a validated schema, or a report of errors.
     pub fn build(self) -> Result<ValidSchema, ValidationReport> {
         let mut report = ValidationReport::new();
@@ -208,6 +256,13 @@ impl SchemaBuilder {
             index,
             flags,
         }))
+    }
+}
+
+impl crate::builder::FieldCollector for SchemaBuilder {
+    fn push_field(mut self, field: Field) -> Self {
+        self.fields.push(field);
+        self
     }
 }
 

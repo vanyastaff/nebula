@@ -1,0 +1,24 @@
+error[E0599]: the method `min` exists for struct `StringBuilder`, but its trait bounds were not satisfied
+ --> tests/compile_fail/builder_closure_string_no_min.rs:5:52
+  |
+5 |       let _ = Schema::builder().string("name", |s| s.min(1)).build();
+  |                                                      ^^^ method cannot be called on `StringBuilder` due to unsatisfied trait bounds
+  |
+ ::: src/field.rs
+  |
+  | /         pub struct $name {
+  | |             /// Stable field key.
+  | |             pub key: FieldKey,
+  | |             /// Human-readable label.
+... |
+  | |             $(pub $extra: $ty,)*
+  | |         }
+  | |_________- doesn't satisfy `StringBuilder: Iterator` or `StringBuilder: Ord`
+  |
+  = note: the following trait bounds were not satisfied:
+          `StringBuilder: Ord`
+          which is required by `&StringBuilder: Ord`
+          `StringBuilder: Ord`
+          which is required by `&mut StringBuilder: Ord`
+          `StringBuilder: Iterator`
+          which is required by `&mut StringBuilder: Iterator`

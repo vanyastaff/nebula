@@ -30,9 +30,9 @@ fn no_credentials_returns_empty_resources() {
 fn metadata_key_matches_attribute() {
     let action = NoCredAction;
     let meta = action.metadata();
-    assert_eq!(meta.key.as_str(), "test.no_cred");
-    assert_eq!(meta.name, "No Cred");
-    assert_eq!(meta.description, "no credentials");
+    assert_eq!(meta.base.key.as_str(), "test.no_cred");
+    assert_eq!(meta.base.name, "No Cred");
+    assert_eq!(meta.base.description, "no credentials");
 }
 
 // -- Struct with fields -----------------------------------------------------
@@ -58,8 +58,8 @@ fn derive_works_on_struct_with_fields() {
         timeout: 30,
     };
     let meta = action.metadata();
-    assert_eq!(meta.key.as_str(), "with_fields");
-    assert_eq!(meta.name, "Fields Action");
+    assert_eq!(meta.base.key.as_str(), "with_fields");
+    assert_eq!(meta.base.name, "Fields Action");
 }
 
 // -- Credential type IDs (compile-time verification) ------------------------

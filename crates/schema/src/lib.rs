@@ -29,6 +29,8 @@
 #![forbid(unsafe_code)]
 #![warn(missing_docs)]
 
+/// Typed-closure builder DSL (leaf aliases + Object/List/Group composite builders).
+pub mod builder;
 /// [`nebula_validator::RuleContext`] adapters backed by [`FieldValues`].
 pub(crate) mod context;
 /// Error types for schema operations.
@@ -37,6 +39,8 @@ pub mod error;
 pub mod expression;
 /// Typed field definitions and wrappers.
 pub mod field;
+/// Traits linking Rust types to schema definitions.
+pub mod has_schema;
 /// UI hints for string input rendering.
 pub mod input_hint;
 /// Strongly typed field identifiers.
@@ -64,6 +68,10 @@ pub mod value;
 /// Typed widget hints by field family.
 pub mod widget;
 
+pub use builder::{
+    BooleanBuilder, CodeBuilder, FieldCollector, GroupBuilder, ListBuilder, NumberBuilder,
+    ObjectBuilder, SecretBuilder, SelectBuilder, StringBuilder,
+};
 pub use error::{
     STANDARD_CODES, Severity, ValidationError, ValidationErrorBuilder, ValidationReport,
 };
@@ -73,13 +81,14 @@ pub use field::{
     ListField, ModeField, ModeVariant, NoticeField, NoticeSeverity, NumberField, ObjectField,
     SecretField, SelectField, StringField,
 };
+pub use has_schema::{HasSchema, HasSelectOptions};
 pub use input_hint::InputHint;
 pub use key::FieldKey;
 pub use loader::{
     Loader, LoaderContext, LoaderFuture, LoaderRegistry, LoaderResult, OptionLoader, RecordLoader,
 };
 pub use mode::{ExpressionMode, RequiredMode, VisibilityMode};
-pub use nebula_schema_macros::field_key;
+pub use nebula_schema_macros::{EnumSelect, Schema, field_key};
 pub use option::SelectOption;
 pub use path::{FieldPath, PathSegment};
 pub use schema::{Schema, SchemaBuilder};

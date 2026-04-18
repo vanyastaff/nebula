@@ -11,7 +11,7 @@
 use std::{fmt, fmt::Formatter, time::Duration};
 
 use chrono::{DateTime, Utc};
-use nebula_schema::{Field, FieldValues, Schema, ValidSchema};
+use nebula_schema::{Field, FieldValues, HasSchema, Schema, ValidSchema};
 use serde::{Deserialize, Serialize};
 use subtle::ConstantTimeEq;
 use zeroize::Zeroize;
@@ -269,29 +269,11 @@ impl PendingState for OAuth2Pending {
 /// ```
 pub struct OAuth2Credential;
 
-impl Credential for OAuth2Credential {
-    type Scheme = OAuth2Token;
-    type State = OAuth2State;
-    type Pending = OAuth2Pending;
+/// Typed shape of the `oauth2` credential setup form.
+pub struct OAuth2Input;
 
-    const KEY: &'static str = "oauth2";
-    const INTERACTIVE: bool = true;
-    const REFRESHABLE: bool = true;
-
-    fn metadata() -> CredentialMetadata {
-        CredentialMetadata {
-            key: Self::KEY.to_owned(),
-            name: "OAuth2".to_owned(),
-            description: "OAuth2 authentication supporting Authorization Code, Client Credentials, and Device Code grant types.".to_owned(),
-            icon: Some("oauth2".to_owned()),
-            icon_url: None,
-            documentation_url: None,
-            properties: Self::parameters(),
-            pattern: nebula_core::AuthPattern::OAuth2,
-        }
-    }
-
-    fn parameters() -> ValidSchema {
+impl HasSchema for OAuth2Input {
+    fn schema() -> ValidSchema {
         Schema::builder()
             .add(
                 Field::string("client_id")
@@ -341,6 +323,29 @@ impl Credential for OAuth2Credential {
             )
             .build()
             .expect("oauth2 schema is always valid")
+    }
+}
+
+impl Credential for OAuth2Credential {
+    type Input = OAuth2Input;
+    type Scheme = OAuth2Token;
+    type State = OAuth2State;
+    type Pending = OAuth2Pending;
+
+    const KEY: &'static str = "oauth2";
+    const INTERACTIVE: bool = true;
+    const REFRESHABLE: bool = true;
+
+    fn metadata() -> CredentialMetadata {
+        CredentialMetadata::builder()
+            .key(nebula_core::credential_key!("oauth2"))
+            .name("OAuth2")
+            .description("OAuth2 authentication supporting Authorization Code, Client Credentials, and Device Code grant types.")
+            .schema(Self::parameters())
+            .pattern(nebula_core::AuthPattern::OAuth2)
+            .icon("oauth2")
+            .build()
+            .expect("oauth2 metadata is valid")
     }
 
     fn project(state: &OAuth2State) -> OAuth2Token {
@@ -715,10 +720,11 @@ mod tests {
 
     #[test]
     fn metadata_has_correct_fields() {
+        use nebula_metadata::Metadata;
         let meta = OAuth2Credential::metadata();
-        assert_eq!(meta.key, "oauth2");
-        assert_eq!(meta.name, "OAuth2");
-        assert!(meta.description.contains("OAuth2"));
+        assert_eq!(meta.key().as_str(), "oauth2");
+        assert_eq!(meta.name(), "OAuth2");
+        assert!(meta.description().contains("OAuth2"));
     }
 
     #[test]

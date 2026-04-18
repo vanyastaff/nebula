@@ -986,6 +986,8 @@ mod tests {
     #[derive(Clone)]
     struct PoolTestConfig;
 
+    nebula_schema::impl_empty_has_schema!(PoolTestConfig);
+
     impl ResourceConfig for PoolTestConfig {
         fn validate(&self) -> Result<(), Error> {
             Ok(())

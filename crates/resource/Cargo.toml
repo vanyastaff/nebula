@@ -19,7 +19,9 @@ default = []
 nebula-core = { path = "../core" }
 nebula-metrics = { path = "../metrics" }
 nebula-resilience = { path = "../resilience" }
+nebula-metadata = { path = "../metadata" }
 nebula-resource-macros = { path = "macros" }
+nebula-schema = { path = "../schema" }
 nebula-telemetry = { path = "../telemetry" }
 
 # Async runtime

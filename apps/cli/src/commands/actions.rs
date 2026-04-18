@@ -37,10 +37,10 @@ pub fn list(args: ActionsListArgs) {
                 .filter_map(|k| registry.get(k))
                 .map(|(meta, _)| {
                     serde_json::json!({
-                        "key": meta.key.as_str(),
-                        "name": meta.name,
-                        "description": meta.description,
-                        "version": meta.version.to_string(),
+                        "key": meta.base.key.as_str(),
+                        "name": meta.base.name,
+                        "description": meta.base.description,
+                        "version": meta.base.version.to_string(),
                     })
                 })
                 .collect();
@@ -54,10 +54,10 @@ pub fn list(args: ActionsListArgs) {
                 if let Some((meta, _)) = registry.get(key) {
                     println!(
                         "{:<12} {:<10} {:<8} {}",
-                        meta.key.as_str(),
-                        meta.name,
-                        meta.version,
-                        meta.description,
+                        meta.base.key.as_str(),
+                        meta.base.name,
+                        meta.base.version,
+                        meta.base.description,
                     );
                 }
             }
@@ -74,23 +74,23 @@ pub fn info(args: ActionsInfoArgs) {
         Some((meta, _)) => match format {
             OutputFormat::Json => {
                 let json = serde_json::json!({
-                    "key": meta.key.as_str(),
-                    "name": meta.name,
-                    "version": meta.version.to_string(),
-                    "description": meta.description,
+                    "key": meta.base.key.as_str(),
+                    "name": meta.base.name,
+                    "version": meta.base.version.to_string(),
+                    "description": meta.base.description,
                     "isolation": format!("{:?}", meta.isolation_level),
                 });
                 println!("{}", serde_json::to_string_pretty(&json).expect("json"));
             },
             OutputFormat::Text => {
-                println!("Key:         {}", meta.key.as_str());
-                println!("Name:        {}", meta.name);
-                println!("Version:     {}", meta.version);
-                println!("Description: {}", meta.description);
+                println!("Key:         {}", meta.base.key.as_str());
+                println!("Name:        {}", meta.base.name);
+                println!("Version:     {}", meta.base.version);
+                println!("Description: {}", meta.base.description);
                 println!("Isolation:   {:?}", meta.isolation_level);
                 println!(
                     "Parameters:  {}",
-                    if meta.parameters.fields().is_empty() {
+                    if meta.base.schema.fields().is_empty() {
                         "none"
                     } else {
                         "(defined)"
@@ -151,7 +151,7 @@ pub async fn test(args: ActionsTestArgs) {
         CancellationToken::new(),
     );
 
-    eprintln!("Testing: {} ({})", meta.name, meta.key);
+    eprintln!("Testing: {} ({})", meta.base.name, meta.base.key);
     eprintln!(
         "Input:   {}",
         serde_json::to_string(&input).unwrap_or_default()

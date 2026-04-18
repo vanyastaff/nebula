@@ -67,7 +67,12 @@ use crate::{
 /// ```
 pub trait StatelessAction: Action {
     /// Input type for this action.
-    type Input: Send + Sync;
+    ///
+    /// Must implement [`HasSchema`](nebula_schema::HasSchema) so the action
+    /// metadata can auto-derive its parameter schema from the input type.
+    /// Use `()` / `serde_json::Value` for schema-less inputs — both have
+    /// baseline `HasSchema` impls returning an empty schema.
+    type Input: nebula_schema::HasSchema + Send + Sync;
     /// Output type produced on success (wrapped in [`ActionResult`]).
     type Output: Send + Sync;
 
@@ -131,7 +136,7 @@ impl<F, Fut, Input, Output> StatelessAction for FnStatelessAction<F, Input, Outp
 where
     F: Fn(Input) -> Fut + Send + Sync + 'static,
     Fut: Future<Output = Result<Output, ActionError>> + Send + 'static,
-    Input: Send + Sync + 'static,
+    Input: nebula_schema::HasSchema + Send + Sync + 'static,
     Output: Send + Sync + 'static,
 {
     type Input = Input;
@@ -159,7 +164,7 @@ pub fn stateless_fn<F, Input, Output>(
 impl<F, Input, Output> std::fmt::Debug for FnStatelessAction<F, Input, Output> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("FnStatelessAction")
-            .field("action", &self.metadata.key)
+            .field("action", &self.metadata.base.key)
             .finish_non_exhaustive()
     }
 }
@@ -236,7 +241,7 @@ impl<F, Fut, Input, Output> StatelessAction for FnStatelessCtxAction<F, Input, O
 where
     F: Fn(Input, ActionContext) -> Fut + Send + Sync + 'static,
     Fut: Future<Output = Result<Output, ActionError>> + Send + 'static,
-    Input: Send + Sync + 'static,
+    Input: nebula_schema::HasSchema + Send + Sync + 'static,
     Output: Send + Sync + 'static,
 {
     type Input = Input;
@@ -299,7 +304,7 @@ pub fn stateless_ctx_fn<F, Input, Output>(
 impl<F, Input, Output> fmt::Debug for FnStatelessCtxAction<F, Input, Output> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("FnStatelessCtxAction")
-            .field("action", &self.metadata.key)
+            .field("action", &self.metadata.base.key)
             .field(
                 "base_ctx",
                 if self.base_ctx.is_some() {
@@ -401,7 +406,7 @@ where
 impl<A: Action> fmt::Debug for StatelessActionAdapter<A> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("StatelessActionAdapter")
-            .field("action", &self.action.metadata().key)
+            .field("action", &self.action.metadata().base.key)
             .finish_non_exhaustive()
     }
 }
@@ -500,6 +505,17 @@ mod tests {
         b: i64,
     }
 
+    impl nebula_schema::HasSchema for AddInput {
+        fn schema() -> nebula_schema::ValidSchema {
+            use nebula_schema::{FieldCollector, Schema};
+            Schema::builder()
+                .integer("a", |n| n)
+                .integer("b", |n| n)
+                .build()
+                .expect("AddInput schema is valid")
+        }
+    }
+
     #[derive(Debug, Serialize, Deserialize, PartialEq)]
     struct AddOutput {
         sum: i64,
@@ -580,7 +596,7 @@ mod tests {
     async fn adapter_exposes_metadata() {
         let adapter = StatelessActionAdapter::new(AddAction::new());
         assert_eq!(
-            StatelessHandler::metadata(&adapter).key,
+            StatelessHandler::metadata(&adapter).base.key,
             nebula_core::action_key!("math.add")
         );
     }
@@ -614,6 +630,9 @@ mod tests {
     fn stateless_adapter_into_inner_returns_action() {
         let adapter = StatelessActionAdapter::new(AddAction::new());
         let action = adapter.into_inner();
-        assert_eq!(action.metadata().key, nebula_core::action_key!("math.add"));
+        assert_eq!(
+            action.metadata().base.key,
+            nebula_core::action_key!("math.add")
+        );
     }
 }

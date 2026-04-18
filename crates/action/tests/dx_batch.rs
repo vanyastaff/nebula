@@ -27,6 +27,16 @@ struct NumberList {
     numbers: Vec<i32>,
 }
 
+impl nebula_schema::HasSchema for NumberList {
+    fn schema() -> nebula_schema::ValidSchema {
+        use nebula_schema::{FieldCollector, Schema};
+        Schema::builder()
+            .list("numbers", |l| l.item_number("n", |n| n.integer()))
+            .build()
+            .expect("NumberList schema is valid")
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 struct BatchOutput {
     processed: Vec<i32>,

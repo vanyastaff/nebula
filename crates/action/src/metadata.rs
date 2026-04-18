@@ -1,4 +1,5 @@
 use nebula_core::ActionKey;
+use nebula_metadata::{BaseMetadata, Metadata};
 use nebula_schema::ValidSchema;
 use semver::Version;
 use serde::{Deserialize, Serialize};
@@ -95,29 +96,25 @@ pub enum MetadataCompatibilityError {
 ///
 /// Used by the engine for action discovery, capability checks, schema
 /// validation, and interface versioning.
+///
+/// The shared catalog prefix (`key`, `name`, `description`, `schema`, `icon`,
+/// `documentation_url`, `tags`, `maturity`, `deprecation`) lives on the
+/// composed [`BaseMetadata`]. Entity-specific
+/// fields (`version`, ports, `isolation_level`, `category`) stay on this
+/// struct.
+#[non_exhaustive]
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ActionMetadata {
-    /// Unique key identifying this action type (e.g. `"http.request"`).
-    pub key: ActionKey,
-    /// Human-readable display name (e.g. `"HTTP Request"`).
-    pub name: String,
-    /// Short description of what this action does.
-    pub description: String,
-    /// Interface version — changes only when input/output schema changes.
-    ///
-    /// Stored as a full `semver::Version`. Exact-match dispatch is used by
-    /// the engine (see [`crate::handler::ActionHandler`]). Range-based pinning
-    /// (`^1.0`, `~1.2`) is a future-work item — see the
-    /// `2026-04-17-replace-interfaceversion-with-semver` spec.
-    pub version: Version,
+    /// Shared catalog prefix — see [`BaseMetadata`]. Carries `version`
+    /// (bumped when schema/ports change; exact-match dispatch in the engine).
+    #[serde(flatten)]
+    pub base: BaseMetadata<ActionKey>,
     /// Input ports this action accepts.
     /// Defaults to a single flow input `"in"`.
     pub inputs: Vec<InputPort>,
     /// Output ports this action produces.
     /// Defaults to a single main flow output `"out"`.
     pub outputs: Vec<OutputPort>,
-    /// Parameter definitions for this action (schema).
-    pub parameters: ValidSchema,
     /// Isolation level for this action's execution.
     pub isolation_level: IsolationLevel,
     /// Broad category of this action for UI grouping, validator rules,
@@ -129,23 +126,108 @@ pub struct ActionMetadata {
     pub category: ActionCategory,
 }
 
+impl Metadata for ActionMetadata {
+    type Key = ActionKey;
+    fn base(&self) -> &BaseMetadata<ActionKey> {
+        &self.base
+    }
+}
+
 impl ActionMetadata {
     /// Create metadata with the minimum required fields.
     #[must_use]
     pub fn new(key: ActionKey, name: impl Into<String>, description: impl Into<String>) -> Self {
         Self {
-            key,
-            name: name.into(),
-            description: description.into(),
-            version: Version::new(1, 0, 0),
+            base: BaseMetadata::new(key, name, description, ValidSchema::empty()),
             inputs: port::default_input_ports(),
             outputs: port::default_output_ports(),
-            parameters: nebula_schema::Schema::builder()
-                .build()
-                .expect("empty schema is always valid"),
             isolation_level: IsolationLevel::None,
             category: ActionCategory::Data,
         }
+    }
+
+    /// Create metadata whose `parameters` schema is auto-derived from a
+    /// [`StatelessAction`](crate::StatelessAction) implementation's `Input`
+    /// type.
+    ///
+    /// Prefer this over [`ActionMetadata::new`] + [`ActionMetadata::with_schema`]
+    /// when the author owns a typed `Input` struct — the compiler then
+    /// enforces that the declared `Input` type agrees with the schema the
+    /// engine, UI, and validator will see.
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// use nebula_action::{ActionMetadata, StatelessAction};
+    /// use nebula_core::action_key;
+    ///
+    /// struct MyAction;
+    /// impl StatelessAction for MyAction {
+    ///     type Input = MyInput;  // must impl HasSchema
+    ///     type Output = MyOutput;
+    ///     // ...
+    /// }
+    ///
+    /// let meta = ActionMetadata::for_stateless::<MyAction>(
+    ///     action_key!("my.action"), "My Action", "desc",
+    /// );
+    /// ```
+    #[must_use]
+    pub fn for_stateless<A>(
+        key: ActionKey,
+        name: impl Into<String>,
+        description: impl Into<String>,
+    ) -> Self
+    where
+        A: crate::stateless::StatelessAction,
+    {
+        Self::new(key, name, description)
+            .with_schema(<A::Input as nebula_schema::HasSchema>::schema())
+    }
+
+    /// Create metadata whose `parameters` schema is auto-derived from a
+    /// [`StatefulAction`](crate::StatefulAction)'s `Input` type.
+    #[must_use]
+    pub fn for_stateful<A>(
+        key: ActionKey,
+        name: impl Into<String>,
+        description: impl Into<String>,
+    ) -> Self
+    where
+        A: crate::stateful::StatefulAction,
+    {
+        Self::new(key, name, description)
+            .with_schema(<A::Input as nebula_schema::HasSchema>::schema())
+    }
+
+    /// Create metadata whose `parameters` schema is auto-derived from a
+    /// [`PaginatedAction`](crate::PaginatedAction)'s `Input` type.
+    #[must_use]
+    pub fn for_paginated<A>(
+        key: ActionKey,
+        name: impl Into<String>,
+        description: impl Into<String>,
+    ) -> Self
+    where
+        A: crate::stateful::PaginatedAction,
+    {
+        Self::new(key, name, description)
+            .with_schema(<A::Input as nebula_schema::HasSchema>::schema())
+    }
+
+    /// Create metadata whose `parameters` schema is auto-derived from a
+    /// [`BatchAction`](crate::BatchAction)'s `Input` type.
+    #[must_use]
+    pub fn for_batch<A>(
+        key: ActionKey,
+        name: impl Into<String>,
+        description: impl Into<String>,
+    ) -> Self
+    where
+        A: crate::stateful::BatchAction,
+    {
+        Self::new(key, name, description)
+            .with_schema(<A::Input as nebula_schema::HasSchema>::schema())
     }
 
     /// Set the interface version from `(major, minor)` components.
@@ -153,14 +235,14 @@ impl ActionMetadata {
     /// Equivalent to `with_version_full(Version::new(major, minor, 0))`.
     #[must_use = "builder methods must be chained or built"]
     pub fn with_version(mut self, major: u64, minor: u64) -> Self {
-        self.version = Version::new(major, minor, 0);
+        self.base.version = Version::new(major, minor, 0);
         self
     }
 
     /// Set the full interface version, including patch and pre-release data.
     #[must_use = "builder methods must be chained or built"]
     pub fn with_version_full(mut self, version: Version) -> Self {
-        self.version = version;
+        self.base.version = version;
         self
     }
 
@@ -171,6 +253,13 @@ impl ActionMetadata {
         self
     }
 
+    /// Append a single input port, preserving already-declared ones.
+    #[must_use = "builder methods must be chained or built"]
+    pub fn add_input(mut self, port: InputPort) -> Self {
+        self.inputs.push(port);
+        self
+    }
+
     /// Set the output port definitions for this action.
     #[must_use = "builder methods must be chained or built"]
     pub fn with_outputs(mut self, outputs: Vec<OutputPort>) -> Self {
@@ -178,10 +267,39 @@ impl ActionMetadata {
         self
     }
 
-    /// Set the parameter definitions for this action.
+    /// Append a single output port, preserving already-declared ones.
     #[must_use = "builder methods must be chained or built"]
-    pub fn with_parameters(mut self, parameters: ValidSchema) -> Self {
-        self.parameters = parameters;
+    pub fn add_output(mut self, port: OutputPort) -> Self {
+        self.outputs.push(port);
+        self
+    }
+
+    /// Bump the major version to `new_major`, zeroing minor and patch.
+    #[must_use = "builder methods must be chained or built"]
+    pub fn bump_major(mut self, new_major: u64) -> Self {
+        self.base.version = Version::new(new_major, 0, 0);
+        self
+    }
+
+    /// Bump the minor version to `new_minor`, zeroing patch.
+    #[must_use = "builder methods must be chained or built"]
+    pub fn bump_minor(mut self, new_minor: u64) -> Self {
+        self.base.version = Version::new(self.base.version.major, new_minor, 0);
+        self
+    }
+
+    /// Bump the patch version to `new_patch`.
+    #[must_use = "builder methods must be chained or built"]
+    pub fn bump_patch(mut self, new_patch: u64) -> Self {
+        self.base.version =
+            Version::new(self.base.version.major, self.base.version.minor, new_patch);
+        self
+    }
+
+    /// Set the parameter schema for this action.
+    #[must_use = "builder methods must be chained or built"]
+    pub fn with_schema(mut self, schema: ValidSchema) -> Self {
+        self.base.schema = schema;
         self
     }
 
@@ -213,24 +331,24 @@ impl ActionMetadata {
         &self,
         previous: &Self,
     ) -> Result<(), MetadataCompatibilityError> {
-        if self.key != previous.key {
+        if self.base.key != previous.base.key {
             return Err(MetadataCompatibilityError::KeyChanged {
-                previous: previous.key.clone(),
-                current: self.key.clone(),
+                previous: previous.base.key.clone(),
+                current: self.base.key.clone(),
             });
         }
 
-        if self.version < previous.version {
+        if self.base.version < previous.base.version {
             return Err(MetadataCompatibilityError::VersionRegressed {
-                previous: previous.version.clone(),
-                current: self.version.clone(),
+                previous: previous.base.version.clone(),
+                current: self.base.version.clone(),
             });
         }
 
         let schema_changed = self.inputs != previous.inputs
             || self.outputs != previous.outputs
-            || self.parameters != previous.parameters;
-        if schema_changed && self.version.major == previous.version.major {
+            || self.base.schema != previous.base.schema;
+        if schema_changed && self.base.version.major == previous.base.version.major {
             return Err(MetadataCompatibilityError::BreakingChangeWithoutMajorBump);
         }
 
@@ -253,9 +371,9 @@ mod tests {
         )
         .with_version(2, 1);
 
-        assert_eq!(meta.key, action_key!("http.request"));
-        assert_eq!(meta.name, "HTTP Request");
-        assert_eq!(meta.version, Version::new(2, 1, 0));
+        assert_eq!(meta.base.key, action_key!("http.request"));
+        assert_eq!(meta.base.name, "HTTP Request");
+        assert_eq!(meta.base.version, Version::new(2, 1, 0));
     }
 
     #[test]
@@ -341,7 +459,7 @@ mod tests {
     #[test]
     fn default_metadata_values() {
         let meta = ActionMetadata::new(action_key!("test"), "Test", "A test action");
-        assert_eq!(meta.version, Version::new(1, 0, 0));
+        assert_eq!(meta.base.version, Version::new(1, 0, 0));
         // Default ports
         assert_eq!(meta.inputs.len(), 1);
         assert!(meta.inputs[0].is_flow());
@@ -350,7 +468,7 @@ mod tests {
         assert!(meta.outputs[0].is_flow());
         assert_eq!(meta.outputs[0].key(), "out");
         // Default parameters
-        assert!(meta.parameters.fields().is_empty());
+        assert!(meta.base.schema.fields().is_empty());
     }
 
     // ── Port builder tests ──────────────────────────────────────────
@@ -427,7 +545,7 @@ mod tests {
             .with_inputs(vec![InputPort::flow("in")])
             .with_outputs(vec![OutputPort::flow("out"), OutputPort::error("error")]);
 
-        assert_eq!(meta.version, Version::new(2, 0, 0));
+        assert_eq!(meta.base.version, Version::new(2, 0, 0));
         assert_eq!(meta.inputs.len(), 1);
         assert_eq!(meta.outputs.len(), 2);
     }

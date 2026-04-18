@@ -1,0 +1,5 @@
+error[E0599]: no method named `option` found for struct `BooleanBuilder` in the current scope
+ --> tests/compile_fail/builder_closure_boolean_no_option.rs:7:32
+  |
+7 |         .boolean("flag", |b| b.option(json!(1), "X"))
+  |                                ^^^^^^ method not found in `BooleanBuilder`

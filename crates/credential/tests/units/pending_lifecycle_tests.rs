@@ -17,7 +17,7 @@ use nebula_credential::{
     resolve::{DisplayData, InteractionRequest, RefreshOutcome, ResolveResult, UserInput},
     scheme::SecretToken,
 };
-use nebula_schema::{FieldValues, Schema, ValidSchema};
+use nebula_schema::FieldValues;
 
 // ── Test pending state ───────────────────────────────────────────────
 
@@ -57,6 +57,7 @@ impl nebula_credential::state::CredentialState for TestInteractiveState {
 struct InteractiveTestCredential;
 
 impl Credential for InteractiveTestCredential {
+    type Input = FieldValues;
     type Scheme = SecretToken;
     type State = TestInteractiveState;
     type Pending = TestPending;
@@ -65,22 +66,13 @@ impl Credential for InteractiveTestCredential {
     const INTERACTIVE: bool = true;
 
     fn metadata() -> CredentialMetadata {
-        CredentialMetadata {
-            key: Self::KEY.to_owned(),
-            name: "Interactive Test".to_owned(),
-            description: "Test credential for pending lifecycle".to_owned(),
-            icon: None,
-            icon_url: None,
-            documentation_url: None,
-            properties: Self::parameters(),
-            pattern: nebula_core::AuthPattern::SecretToken,
-        }
-    }
-
-    fn parameters() -> ValidSchema {
-        Schema::builder()
-            .build()
-            .expect("empty schema is always valid")
+        CredentialMetadata::new(
+            nebula_core::credential_key!("interactive_test"),
+            "Interactive Test",
+            "Test credential for pending lifecycle",
+            Self::parameters(),
+            nebula_core::AuthPattern::SecretToken,
+        )
     }
 
     fn project(state: &TestInteractiveState) -> SecretToken {

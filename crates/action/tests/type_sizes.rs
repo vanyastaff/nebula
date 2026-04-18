@@ -44,10 +44,13 @@ fn top_level_type_sizes_are_stable() {
          that drives this size, check it first."
     );
     assert_eq!(size_of::<ActionContext>(), 128);
-    // NOTE: ActionMetadata.parameters migrated from nebula-parameter
-    // ParameterCollection (Vec-backed) to nebula-schema ValidSchema (Arc-backed
-    // proof-token, 8 bytes). Net shrink of 16 bytes — from 200 to 184.
-    assert_eq!(size_of::<ActionMetadata>(), 184);
+    // NOTE: ActionMetadata was flattened into a composed `BaseMetadata<ActionKey>`
+    // plus action-specific fields (version / inputs / outputs / isolation / category).
+    // The shared prefix brings Icon, documentation_url, tags (Box<[String]>),
+    // MaturityLevel, and Option<DeprecationNotice>. Allocation is once-per-action
+    // type — not a hot path — so we accept the growth in exchange for the
+    // unified catalog contract.
+    assert_eq!(size_of::<ActionMetadata>(), 376);
     assert_eq!(size_of::<ActionError>(), 64);
     assert_eq!(size_of::<ActionHandler>(), 24);
 

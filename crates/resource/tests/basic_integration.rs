@@ -65,6 +65,8 @@ struct TestConfig {
     name: String,
 }
 
+nebula_schema::impl_empty_has_schema!(TestConfig);
+
 impl ResourceConfig for TestConfig {
     fn validate(&self) -> Result<(), Error> {
         if self.name.is_empty() {
@@ -3556,6 +3558,8 @@ struct ReloadConfig {
     fingerprint: u64,
     valid: bool,
 }
+
+nebula_schema::impl_empty_has_schema!(ReloadConfig);
 
 impl ReloadConfig {
     fn new(fingerprint: u64) -> Self {

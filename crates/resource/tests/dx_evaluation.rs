@@ -60,6 +60,8 @@ struct HttpConfig {
     base_url: String,
 }
 
+nebula_schema::impl_empty_has_schema!(HttpConfig);
+
 impl ResourceConfig for HttpConfig {
     fn validate(&self) -> Result<(), Error> {
         if self.base_url.is_empty() {
@@ -201,6 +203,8 @@ struct ConfigStoreConfig {
     env: String,
 }
 
+nebula_schema::impl_empty_has_schema!(ConfigStoreConfig);
+
 impl ResourceConfig for ConfigStoreConfig {}
 
 /// Our config store runtime — an in-memory map.
@@ -304,6 +308,8 @@ struct DbConfig {
     dsn: String,
     pool_size: u32,
 }
+
+nebula_schema::impl_empty_has_schema!(DbConfig);
 
 impl ResourceConfig for DbConfig {
     fn validate(&self) -> Result<(), Error> {

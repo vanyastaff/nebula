@@ -422,7 +422,7 @@ where
 impl<A: Action> fmt::Debug for TriggerActionAdapter<A> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("TriggerActionAdapter")
-            .field("action", &self.action.metadata().key)
+            .field("action", &self.action.metadata().base.key)
             .finish_non_exhaustive()
     }
 }
@@ -514,7 +514,7 @@ mod tests {
         let adapter = TriggerActionAdapter::new(MockTriggerAction::new());
         let action = adapter.into_inner();
         assert_eq!(
-            action.metadata().key,
+            action.metadata().base.key,
             nebula_core::action_key!("test.trigger_action")
         );
     }

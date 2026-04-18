@@ -3,7 +3,7 @@
 //! Resolves a username + password pair into [`IdentityPassword`]. State and
 //! Scheme are the same type via [`identity_state!`](crate::identity_state).
 
-use nebula_schema::{Field, FieldValues, Schema, ValidSchema};
+use nebula_schema::{Field, FieldValues, HasSchema, Schema, ValidSchema};
 
 use crate::{
     SecretString, context::CredentialContext, credential::Credential, error::CredentialError,
@@ -11,35 +11,11 @@ use crate::{
     scheme::IdentityPassword,
 };
 
-/// HTTP Basic Auth credential -- resolves username + password into
-/// [`IdentityPassword`].
-///
-/// - **Non-interactive:** resolves in one step from user input.
-/// - **Non-refreshable:** static credentials have no expiry.
-/// - **Identity projection:** stored state is the scheme itself.
-pub struct BasicAuthCredential;
+/// Typed shape of the `basic_auth` credential setup form.
+pub struct BasicAuthInput;
 
-impl Credential for BasicAuthCredential {
-    type Scheme = IdentityPassword;
-    type State = IdentityPassword;
-    type Pending = NoPendingState;
-
-    const KEY: &'static str = "basic_auth";
-
-    fn metadata() -> CredentialMetadata {
-        CredentialMetadata {
-            key: Self::KEY.to_owned(),
-            name: "Basic Auth".to_owned(),
-            description: "HTTP Basic authentication (username + password).".to_owned(),
-            icon: Some("lock".to_owned()),
-            icon_url: None,
-            documentation_url: None,
-            properties: Self::parameters(),
-            pattern: nebula_core::AuthPattern::IdentityPassword,
-        }
-    }
-
-    fn parameters() -> ValidSchema {
+impl HasSchema for BasicAuthInput {
+    fn schema() -> ValidSchema {
         Schema::builder()
             .add(
                 Field::string("username")
@@ -55,6 +31,35 @@ impl Credential for BasicAuthCredential {
             )
             .build()
             .expect("basic_auth schema is always valid")
+    }
+}
+
+/// HTTP Basic Auth credential -- resolves username + password into
+/// [`IdentityPassword`].
+///
+/// - **Non-interactive:** resolves in one step from user input.
+/// - **Non-refreshable:** static credentials have no expiry.
+/// - **Identity projection:** stored state is the scheme itself.
+pub struct BasicAuthCredential;
+
+impl Credential for BasicAuthCredential {
+    type Input = BasicAuthInput;
+    type Scheme = IdentityPassword;
+    type State = IdentityPassword;
+    type Pending = NoPendingState;
+
+    const KEY: &'static str = "basic_auth";
+
+    fn metadata() -> CredentialMetadata {
+        CredentialMetadata::builder()
+            .key(nebula_core::credential_key!("basic_auth"))
+            .name("Basic Auth")
+            .description("HTTP Basic authentication (username + password).")
+            .schema(Self::parameters())
+            .pattern(nebula_core::AuthPattern::IdentityPassword)
+            .icon("lock")
+            .build()
+            .expect("basic_auth metadata is valid")
     }
 
     fn project(state: &IdentityPassword) -> IdentityPassword {

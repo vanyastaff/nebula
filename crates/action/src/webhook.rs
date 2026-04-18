@@ -781,7 +781,7 @@ where
         if let Some(orphan) = rollback_state {
             if let Err(e) = self.action.on_deactivate(orphan, ctx).await {
                 tracing::warn!(
-                    action = %self.action.metadata().key,
+                    action = %self.action.metadata().base.key,
                     error = %e,
                     "webhook rollback on_deactivate failed after double-start race; \
                      external hook may leak"
@@ -964,7 +964,7 @@ where
 impl<A: WebhookAction> fmt::Debug for WebhookTriggerAdapter<A> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("WebhookTriggerAdapter")
-            .field("action", &self.action.metadata().key)
+            .field("action", &self.action.metadata().base.key)
             .finish_non_exhaustive()
     }
 }

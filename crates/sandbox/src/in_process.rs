@@ -35,13 +35,13 @@ impl SandboxRunner for InProcessSandbox {
         input: serde_json::Value,
     ) -> Result<ActionResult<serde_json::Value>, ActionError> {
         tracing::debug!(
-            action_key = %metadata.key,
+            action_key = %metadata.base.key,
             "executing action in-process"
         );
         context.check_cancelled()?;
         let result = (self.executor)(context, metadata, input).await;
         if let Err(e) = &result {
-            tracing::warn!(action_key = %metadata.key, error = %e, "action failed");
+            tracing::warn!(action_key = %metadata.base.key, error = %e, "action failed");
         }
         result
     }

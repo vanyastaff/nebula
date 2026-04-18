@@ -131,11 +131,26 @@ impl ActionHandler {
 impl fmt::Debug for ActionHandler {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::Stateless(h) => f.debug_tuple("Stateless").field(&h.metadata().key).finish(),
-            Self::Stateful(h) => f.debug_tuple("Stateful").field(&h.metadata().key).finish(),
-            Self::Trigger(h) => f.debug_tuple("Trigger").field(&h.metadata().key).finish(),
-            Self::Resource(h) => f.debug_tuple("Resource").field(&h.metadata().key).finish(),
-            Self::Agent(h) => f.debug_tuple("Agent").field(&h.metadata().key).finish(),
+            Self::Stateless(h) => f
+                .debug_tuple("Stateless")
+                .field(&h.metadata().base.key)
+                .finish(),
+            Self::Stateful(h) => f
+                .debug_tuple("Stateful")
+                .field(&h.metadata().base.key)
+                .finish(),
+            Self::Trigger(h) => f
+                .debug_tuple("Trigger")
+                .field(&h.metadata().base.key)
+                .finish(),
+            Self::Resource(h) => f
+                .debug_tuple("Resource")
+                .field(&h.metadata().base.key)
+                .finish(),
+            Self::Agent(h) => f
+                .debug_tuple("Agent")
+                .field(&h.metadata().base.key)
+                .finish(),
         }
     }
 }
@@ -353,7 +368,7 @@ mod tests {
 
         for (expected_key, handler) in &cases {
             assert_eq!(
-                handler.metadata().key,
+                handler.metadata().base.key,
                 nebula_core::ActionKey::new(expected_key).expect("valid test key")
             );
         }

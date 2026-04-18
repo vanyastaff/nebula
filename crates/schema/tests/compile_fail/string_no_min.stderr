@@ -1,8 +1,8 @@
-error[E0599]: the method `min` exists for struct `StringField`, but its trait bounds were not satisfied
+error[E0599]: the method `min` exists for struct `StringBuilder`, but its trait bounds were not satisfied
  --> tests/compile_fail/string_no_min.rs:2:50
   |
 2 |       let _ = nebula_schema::Field::string("name").min(1);
-  |                                                    ^^^ method cannot be called on `StringField` due to unsatisfied trait bounds
+  |                                                    ^^^ method cannot be called on `StringBuilder` due to unsatisfied trait bounds
   |
  ::: src/field.rs
   |
@@ -13,12 +13,12 @@ error[E0599]: the method `min` exists for struct `StringField`, but its trait bo
 ... |
   | |             $(pub $extra: $ty,)*
   | |         }
-  | |_________- doesn't satisfy `StringField: Iterator` or `StringField: Ord`
+  | |_________- doesn't satisfy `StringBuilder: Iterator` or `StringBuilder: Ord`
   |
   = note: the following trait bounds were not satisfied:
-          `StringField: Ord`
-          which is required by `&StringField: Ord`
-          `StringField: Ord`
-          which is required by `&mut StringField: Ord`
-          `StringField: Iterator`
-          which is required by `&mut StringField: Iterator`
+          `StringBuilder: Ord`
+          which is required by `&StringBuilder: Ord`
+          `StringBuilder: Ord`
+          which is required by `&mut StringBuilder: Ord`
+          `StringBuilder: Iterator`
+          which is required by `&mut StringBuilder: Iterator`
