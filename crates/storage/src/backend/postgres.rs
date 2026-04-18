@@ -95,6 +95,8 @@ impl PostgresStorage {
 
     /// Create a new [`PostgresStorage`] using explicit configuration.
     pub async fn with_config(config: PostgresStorageConfig) -> Result<Self, StorageError> {
+        validate_table_name(&config.table)?;
+
         let pool = PgPoolOptions::new()
             .max_connections(config.max_connections)
             .min_connections(config.min_connections)
@@ -123,6 +125,40 @@ impl PostgresStorage {
             exists_sql: Arc::from(exists_sql),
         })
     }
+}
+
+/// Validates a PostgreSQL table name before interpolating it into SQL.
+///
+/// Accepts only simple unquoted identifiers matching
+/// `[A-Za-z_][A-Za-z0-9_]{0,62}` — the safe subset of PostgreSQL identifiers
+/// that require no double-quoting and cannot contain SQL-injection payloads.
+/// Schema-qualified names (`schema.table`), quoted identifiers, and non-ASCII
+/// characters are rejected; if those are needed, add a dedicated code path
+/// that uses `sqlx::QueryBuilder::push_bind` or a safe quoter rather than
+/// loosening this regex.
+fn validate_table_name(name: &str) -> Result<(), StorageError> {
+    let bad = |reason: &str| {
+        StorageError::Configuration(format!(
+            "invalid table name {name:?}: {reason} (must match [A-Za-z_][A-Za-z0-9_]{{0,62}})"
+        ))
+    };
+    let bytes = name.as_bytes();
+    if bytes.is_empty() {
+        return Err(bad("empty"));
+    }
+    if bytes.len() > 63 {
+        return Err(bad("exceeds PostgreSQL identifier length (63)"));
+    }
+    let first = bytes[0];
+    if !(first.is_ascii_alphabetic() || first == b'_') {
+        return Err(bad("must start with an ASCII letter or underscore"));
+    }
+    for &b in &bytes[1..] {
+        if !(b.is_ascii_alphanumeric() || b == b'_') {
+            return Err(bad("may only contain [A-Za-z0-9_]"));
+        }
+    }
+    Ok(())
 }
 
 /// Postgres-backed workflow repository.
@@ -329,6 +365,68 @@ impl WorkflowRepo for PgWorkflowRepo {
 #[cfg(all(test, feature = "postgres"))]
 mod tests {
     use super::*;
+
+    #[test]
+    fn validate_table_name_accepts_valid_identifiers() {
+        for name in ["storage_kv", "kv", "_kv", "Kv1", "a", "_", "_9"] {
+            validate_table_name(name).unwrap_or_else(|e| panic!("{name:?} should be valid: {e}"));
+        }
+    }
+
+    #[test]
+    fn validate_table_name_accepts_max_length() {
+        let ok = "a".repeat(63);
+        validate_table_name(&ok).expect("63-char identifier should be valid");
+    }
+
+    #[test]
+    fn validate_table_name_rejects_empty() {
+        let err = validate_table_name("").unwrap_err();
+        assert!(matches!(err, StorageError::Configuration(_)));
+    }
+
+    #[test]
+    fn validate_table_name_rejects_sql_injection_shape() {
+        let err = validate_table_name("kv; DROP TABLE workflows; --").unwrap_err();
+        assert!(matches!(err, StorageError::Configuration(_)));
+    }
+
+    #[test]
+    fn validate_table_name_rejects_leading_digit() {
+        let err = validate_table_name("1kv").unwrap_err();
+        assert!(matches!(err, StorageError::Configuration(_)));
+    }
+
+    #[test]
+    fn validate_table_name_rejects_dash() {
+        let err = validate_table_name("kv-1").unwrap_err();
+        assert!(matches!(err, StorageError::Configuration(_)));
+    }
+
+    #[test]
+    fn validate_table_name_rejects_schema_qualified() {
+        let err = validate_table_name("audit.kv").unwrap_err();
+        assert!(matches!(err, StorageError::Configuration(_)));
+    }
+
+    #[test]
+    fn validate_table_name_rejects_double_quotes() {
+        let err = validate_table_name("\"kv\"").unwrap_err();
+        assert!(matches!(err, StorageError::Configuration(_)));
+    }
+
+    #[test]
+    fn validate_table_name_rejects_overlong() {
+        let too_long = "a".repeat(64);
+        let err = validate_table_name(&too_long).unwrap_err();
+        assert!(matches!(err, StorageError::Configuration(_)));
+    }
+
+    #[test]
+    fn validate_table_name_rejects_whitespace() {
+        let err = validate_table_name("kv table").unwrap_err();
+        assert!(matches!(err, StorageError::Configuration(_)));
+    }
 
     #[tokio::test]
     async fn postgres_new_from_connection_string() {
