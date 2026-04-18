@@ -40,18 +40,22 @@ None already fixed in `main`. Issue **#298** is **partially mitigated** in curre
 
 > *"This crate is the **single real consumer** of `execution_control_queue` in production deployment modes (canon §12.2). A handler that only logs and discards control-queue rows does not satisfy the canon."*
 
-`grep -rn "ControlQueueRepo\|ControlCommand::" crates/engine/src/` returns **zero** non-test hits. The engine **never imports**, **never instantiates**, and **never drains** the control queue. The only production references are in `crates/api/src/handlers/execution.rs` (enqueue on cancel) and `crates/api/examples/simple_server.rs` (sets up the in-memory repo).
+`grep -rn "ControlQueueRepo\|ControlCommand::" crates/engine/src/` returns **zero** non-test hits. The engine **never imports**, **never instantiates**, and **never drains** the control queue. Production references all live on the API side: `crates/api/src/handlers/execution.rs:338` (enqueue on cancel), `crates/api/src/state.rs:10,44` (`AppState` holds an `Arc<dyn ControlQueueRepo>`), and `crates/api/examples/simple_server.rs` (sets up the in-memory repo). No engine-side consumer or dispatcher implementation exists.
+
+Worse — there are **three** doc-truth sites that all claim the consumer exists:
+
+- `crates/engine/src/lib.rs:11-13` — *"This crate is the **single real consumer** of `execution_control_queue` in production deployment modes."*
+- `crates/api/src/state.rs:39-43` — *"The engine dispatcher drains this queue to deliver signals to running executions."*
+- `crates/storage/src/repos/mod.rs:7` — *"Consumed by the API cancel handler"* (also wrong on direction — the API is the producer).
 
 This is simultaneously:
 
-- A **canon §11.6 docs-truth violation** — `lib.rs //!` advertises a capability the crate does not deliver.
+- A **canon §11.6 docs-truth violation** at all three sites above — the crate / module / state docs advertise a capability the code does not deliver.
 - A **canon §14 anti-pattern** — "Discard-and-log workers": rows are produced but no consumer exists. (Worse than discard-and-log: there isn't even a discarding loop.)
 - A **canon §12.7 orphan-module violation** — queue produced but never consumed.
 - The **root cause of #330**, and the missing peer of **#332** (no enqueue on start, no consumer for either).
 
-**Implication for grouping:** Group A is not "two API bugs that share a theme." It is one architectural gap (the consumer half of `execution_control_queue`) with three symptoms. Solving it requires building the consumer **and** wiring start-side enqueue **and** removing the misleading `lib.rs //!` claim.
-
-`crates/storage/src/repos/mod.rs:7` claim that `ControlQueueRepo` is "Consumed by the API cancel handler" is also wrong — the API is the **producer**, not the consumer. Fix in same PR.
+**Implication for grouping:** Group A is not "two API bugs that share a theme." It is one architectural gap (the consumer half of `execution_control_queue`) with three symptoms. Solving it requires building the consumer **and** wiring start-side enqueue **and** correcting all three doc-truth sites in the same PR.
 
 ---
 
@@ -66,7 +70,7 @@ This is simultaneously:
 **Canon impact:**
 - §12.2 (durable control plane) — currently violated end-to-end.
 - §13 knife step 3 (start) and step 5 (engine-visible cancel) — both currently fail.
-- §11.6 (docs truth) — `crates/engine/src/lib.rs //!` and `crates/storage/src/repos/mod.rs` both lie about consumer status.
+- §11.6 (docs truth) — `crates/engine/src/lib.rs //!`, `crates/api/src/state.rs:39-43`, and `crates/storage/src/repos/mod.rs:7` all lie about consumer status.
 - §14 anti-patterns — discard-and-log workers, orphan modules.
 
 **ADR needed:** **YES.** Producer/consumer wiring choice (in-process direct dispatch via shared `Arc<WorkflowEngine>` vs polling loop vs notify channel + outbox) is an L2 design decision that future deployment modes (cloud / multi-worker) will inherit. Suggested ADR title: *"`execution_control_queue` consumer wiring and start-side enqueue contract."*
@@ -81,7 +85,7 @@ This is simultaneously:
 1. New `crates/engine/src/control_consumer.rs` that holds an `Arc<dyn ControlQueueRepo>` + an `Arc<WorkflowEngine>` (or equivalent dispatch handle), runs as a Tokio task spawned from the composition root.
 2. API `start_execution` rewrites: build canonical `ExecutionState` with `ExecutionStatus::Created`, persist via `ExecutionRepo::create`, enqueue `ControlCommand::Start { execution_id }` in the same logical operation (per §12.2 atomicity rule — share a transaction or document the orphan window with explicit reconciliation).
 3. API `cancel_execution` keeps existing CAS + enqueue, but the comment at `crates/api/src/handlers/execution.rs:311-315` (acknowledging orphan window) becomes a TODO retired by the consumer wiring.
-4. `crates/engine/src/lib.rs` `//!` and `crates/storage/src/repos/mod.rs` truth strings updated to match reality in same PR.
+4. `crates/engine/src/lib.rs` `//!`, `crates/api/src/state.rs:39-43` doc comment, and `crates/storage/src/repos/mod.rs:7` truth strings all updated to match reality in same PR.
 5. Integration test extending the §13 knife: real engine + real consumer; cancel actually stops a running task; start actually causes node execution.
 
 **Recommended PR sequencing within Group A:**
