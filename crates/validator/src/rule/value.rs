@@ -55,6 +55,10 @@ impl ValueRule {
     ///
     /// Errors carry rule-specific `params` for message-template rendering:
     /// `{min}`, `{max}`, `{pattern}`, `{allowed}`, plus always `{value}`.
+    ///
+    /// Exception: when `Pattern` holds a malformed regex, this returns a
+    /// compile-time error with code `invalid_pattern` — no `{value}` param,
+    /// because the rule is mis-configured independently of the input value.
     pub fn validate_value(&self, value: &serde_json::Value) -> Result<(), ValidationError> {
         match self {
             Self::MinLength(n) => {

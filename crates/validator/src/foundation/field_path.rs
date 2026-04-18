@@ -266,7 +266,7 @@ impl serde::Serialize for FieldPath {
 
 impl<'de> serde::Deserialize<'de> for FieldPath {
     fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
-        let raw = <std::borrow::Cow<'de, str>>::deserialize(d)?;
+        let raw = <std::borrow::Cow<'de, str> as serde::Deserialize>::deserialize(d)?;
         FieldPath::parse(raw.as_ref())
             .ok_or_else(|| serde::de::Error::custom(format!("invalid field path: {raw:?}")))
     }

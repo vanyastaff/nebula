@@ -107,8 +107,18 @@ impl<'de> Visitor<'de> for RuleVisitor {
             "one_of" => Rule::Value(ValueRule::OneOf(m.next_value()?)),
             "min_items" => Rule::Value(ValueRule::MinItems(m.next_value()?)),
             "max_items" => Rule::Value(ValueRule::MaxItems(m.next_value()?)),
-            "email" => Rule::Value(ValueRule::Email),
-            "url" => Rule::Value(ValueRule::Url),
+            // Unit variants in map form: consume the value (serde contract
+            // requires next_value() after next_key()) but ignore its content.
+            // Bare-string form `"email"` / `"url"` is the canonical wire shape;
+            // map form is accepted leniently for robustness across formats.
+            "email" => {
+                let _: serde::de::IgnoredAny = m.next_value()?;
+                Rule::Value(ValueRule::Email)
+            },
+            "url" => {
+                let _: serde::de::IgnoredAny = m.next_value()?;
+                Rule::Value(ValueRule::Url)
+            },
 
             // ── Predicates ─────────────────────────────────────────────
             "eq" => {
