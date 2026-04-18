@@ -1249,19 +1249,19 @@ impl WorkflowEngine {
 
             // Phase 3: Process the completed task
             match join_result {
-                // `ActionResult::Retry` is gated behind `unstable-retry-scheduler`
-                // per canon §11.2 (engine retry is a `planned` capability with no
-                // persisted attempt accounting). When the feature is off the
-                // variant does not exist, so this arm is compiled out and the
-                // generic `Ok(action_result)` arm below cannot receive it. When
-                // the feature is on, this dead short-term handler routes
-                // `Retry` through the failure branch so operators see a clear
-                // error instead of silent success — the real scheduler is
-                // future work (#290 / #296).
-                #[cfg(feature = "unstable-retry-scheduler")]
-                Ok((node_key, Ok(ActionResult::Retry { .. }))) => {
-                    // ActionResult::Retry has no scheduler yet; treat it as a node
-                    // failure for at-least-once semantics (#290/#296 short-term).
+                // `ActionResult::Retry` is a `planned` capability under canon
+                // §11.2 — there is no persisted attempt accounting yet. The
+                // variant itself is gated behind `unstable-retry-scheduler`
+                // in `nebula-action`, but Cargo feature unification can still
+                // make the variant present in the `nebula-action` the engine
+                // sees even if `nebula-engine/unstable-retry-scheduler` is
+                // off. We therefore route retry detection through the always-
+                // available `ActionResult::is_retry()` predicate instead of
+                // cfg-gating this arm — that way `Retry` is never silently
+                // handed to the generic `Ok(action_result)` success arm.
+                // Handling stays a synthetic failure until the real scheduler
+                // lands (#290 / #296).
+                Ok((node_key, Ok(ref action_result))) if action_result.is_retry() => {
                     total_retries.fetch_add(1, Ordering::Relaxed);
                     let err = EngineError::Runtime(nebula_runtime::RuntimeError::ActionError(
                         nebula_action::error::ActionError::retryable(
@@ -2442,8 +2442,8 @@ fn extract_primary_output(result: &ActionResult<serde_json::Value>) -> Option<se
         ActionResult::Wait { partial_output, .. } => {
             partial_output.as_ref().and_then(|o| o.as_value().cloned())
         },
-        #[cfg(feature = "unstable-retry-scheduler")]
-        ActionResult::Retry { .. } => None,
+        // `ActionResult::Retry` has no primary output; the `_` arm below
+        // handles it identically regardless of feature-unification state.
         _ => None,
     }
 }

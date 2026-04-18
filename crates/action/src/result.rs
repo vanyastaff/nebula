@@ -608,13 +608,28 @@ impl<T> ActionResult<T> {
 
     /// Returns `true` if the action is requesting a retry.
     ///
-    /// Gated behind the `unstable-retry-scheduler` feature; the engine does
-    /// not honor `Retry` end-to-end today (canon §11.2).
-    #[cfg(feature = "unstable-retry-scheduler")]
-    #[cfg_attr(docsrs, doc(cfg(feature = "unstable-retry-scheduler")))]
+    /// The `Retry` variant itself is gated behind the
+    /// `unstable-retry-scheduler` feature (canon §11.2), but this predicate
+    /// is **always available** so that consumers can ask the question in a
+    /// feature-unification-safe way. Without the feature the variant cannot
+    /// be constructed, so this always returns `false`; with the feature, it
+    /// returns `true` iff the result is `Retry`.
+    ///
+    /// The engine uses this method as a runtime guard to keep `Retry` out of
+    /// the normal success path even when Cargo feature unification lands the
+    /// variant in `nebula-action` without enabling the mirror feature in
+    /// `nebula-engine`.
     #[must_use]
     pub fn is_retry(&self) -> bool {
-        matches!(self, Self::Retry { .. })
+        #[cfg(feature = "unstable-retry-scheduler")]
+        {
+            matches!(self, Self::Retry { .. })
+        }
+        #[cfg(not(feature = "unstable-retry-scheduler"))]
+        {
+            let _ = self;
+            false
+        }
     }
 
     /// Returns `true` if the action dropped its item without stopping the branch.

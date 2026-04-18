@@ -57,4 +57,19 @@ mod disabled {
         let r: ActionResult<i32> = ActionResult::success(42);
         assert!(r.is_success());
     }
+
+    #[test]
+    fn is_retry_is_callable_without_feature_and_returns_false() {
+        // `is_retry` must be feature-unification-safe: always callable,
+        // and `false` for every constructable variant when the feature is
+        // off. The engine relies on this to keep `Retry` out of the
+        // success path even if another crate enables
+        // `nebula-action/unstable-retry-scheduler` without also enabling
+        // `nebula-engine/unstable-retry-scheduler`.
+        let r: ActionResult<i32> = ActionResult::success(7);
+        assert!(!r.is_retry());
+
+        let r: ActionResult<i32> = ActionResult::skip("no data");
+        assert!(!r.is_retry());
+    }
 }
