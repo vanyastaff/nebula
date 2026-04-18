@@ -335,6 +335,23 @@ impl ExecutionRepo for PgExecutionRepo {
         Ok(rows.into_iter().map(|(id,)| id).collect())
     }
 
+    async fn list_running_for_workflow(
+        &self,
+        workflow_id: WorkflowId,
+    ) -> Result<Vec<ExecutionId>, ExecutionRepoError> {
+        let rows = sqlx::query_as::<_, (ExecutionId,)>(
+            "SELECT id FROM executions \
+             WHERE workflow_id = $1 \
+               AND state->>'status' IN ('created', 'running', 'paused', 'cancelling')",
+        )
+        .bind(workflow_id)
+        .fetch_all(&self.pool)
+        .await
+        .map_err(map_err)?;
+
+        Ok(rows.into_iter().map(|(id,)| id).collect())
+    }
+
     async fn count(&self, workflow_id: Option<WorkflowId>) -> Result<u64, ExecutionRepoError> {
         let count: i64 = match workflow_id {
             Some(wid) => {

@@ -199,6 +199,17 @@ pub trait ExecutionRepo: Send + Sync {
     /// Lists execution IDs in non-terminal states.
     async fn list_running(&self) -> Result<Vec<ExecutionId>, ExecutionRepoError>;
 
+    /// Lists execution IDs in non-terminal states for a specific workflow.
+    ///
+    /// Same status filter as [`Self::list_running`] but scoped to a single
+    /// `workflow_id`. Used by the per-workflow API endpoints so callers
+    /// cannot enumerate IDs from workflows they did not ask for (see #286,
+    /// #288, #328).
+    async fn list_running_for_workflow(
+        &self,
+        workflow_id: WorkflowId,
+    ) -> Result<Vec<ExecutionId>, ExecutionRepoError>;
+
     /// Counts executions, optionally filtered by workflow_id.
     async fn count(&self, workflow_id: Option<WorkflowId>) -> Result<u64, ExecutionRepoError>;
 
@@ -516,6 +527,26 @@ impl ExecutionRepo for InMemoryExecutionRepo {
         let state = self.state.read().await;
         let running = state
             .iter()
+            .filter(|(_, (_, val))| {
+                matches!(
+                    val.get("status").and_then(|s| s.as_str()),
+                    Some("created" | "running" | "paused" | "cancelling")
+                )
+            })
+            .map(|(id, _)| *id)
+            .collect();
+        Ok(running)
+    }
+
+    async fn list_running_for_workflow(
+        &self,
+        workflow_id: WorkflowId,
+    ) -> Result<Vec<ExecutionId>, ExecutionRepoError> {
+        let workflows = self.workflows.read().await;
+        let state = self.state.read().await;
+        let running = state
+            .iter()
+            .filter(|(id, _)| workflows.get(*id) == Some(&workflow_id))
             .filter(|(_, (_, val))| {
                 matches!(
                     val.get("status").and_then(|s| s.as_str()),
@@ -1064,5 +1095,47 @@ mod tests {
         assert_eq!(running.len(), 2);
         assert!(running.contains(&e1));
         assert!(running.contains(&e3));
+    }
+
+    /// Regression for #286/#288/#328: `list_running_for_workflow` must scope
+    /// to a single workflow_id AND apply the non-terminal status filter.
+    #[tokio::test]
+    async fn list_running_for_workflow_scopes_to_workflow_id() {
+        let repo = InMemoryExecutionRepo::default();
+        let wid_a = WorkflowId::new();
+        let wid_b = WorkflowId::new();
+        let e_a_running = ExecutionId::new();
+        let e_a_completed = ExecutionId::new();
+        let e_b_running = ExecutionId::new();
+        let e_b_cancelling = ExecutionId::new();
+        repo.create(e_a_running, wid_a, serde_json::json!({"status": "running"}))
+            .await
+            .unwrap();
+        repo.create(
+            e_a_completed,
+            wid_a,
+            serde_json::json!({"status": "completed"}),
+        )
+        .await
+        .unwrap();
+        repo.create(e_b_running, wid_b, serde_json::json!({"status": "running"}))
+            .await
+            .unwrap();
+        repo.create(
+            e_b_cancelling,
+            wid_b,
+            serde_json::json!({"status": "cancelling"}),
+        )
+        .await
+        .unwrap();
+
+        let a = repo.list_running_for_workflow(wid_a).await.unwrap();
+        assert_eq!(a.len(), 1, "workflow A must not leak workflow B's IDs");
+        assert!(a.contains(&e_a_running));
+
+        let b = repo.list_running_for_workflow(wid_b).await.unwrap();
+        assert_eq!(b.len(), 2, "workflow B must return both non-terminal IDs");
+        assert!(b.contains(&e_b_running));
+        assert!(b.contains(&e_b_cancelling));
     }
 }

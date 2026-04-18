@@ -2121,3 +2121,75 @@ async fn cancel_terminal_execution_does_not_enqueue() {
         "control queue must be empty after rejected cancel of terminal execution"
     );
 }
+
+/// Regression for #286/#288/#328: `GET /api/v1/workflows/:id/executions`
+/// must scope running IDs to the requested workflow, not leak running
+/// executions from other workflows on the instance.
+#[tokio::test]
+async fn list_executions_scopes_to_workflow_id() {
+    use axum::{
+        body::Body,
+        http::{Request, StatusCode},
+    };
+    use nebula_core::{ExecutionId, WorkflowId};
+    use tower::ServiceExt;
+
+    let state = create_test_state().await;
+    let api_config = ApiConfig::for_test();
+    let token = create_test_jwt();
+
+    let wid_a = WorkflowId::new();
+    let wid_b = WorkflowId::new();
+    let exec_a = ExecutionId::new();
+    let exec_b1 = ExecutionId::new();
+    let exec_b2 = ExecutionId::new();
+
+    state
+        .execution_repo
+        .create(exec_a, wid_a, serde_json::json!({"status": "running"}))
+        .await
+        .unwrap();
+    state
+        .execution_repo
+        .create(exec_b1, wid_b, serde_json::json!({"status": "running"}))
+        .await
+        .unwrap();
+    state
+        .execution_repo
+        .create(exec_b2, wid_b, serde_json::json!({"status": "cancelling"}))
+        .await
+        .unwrap();
+
+    let app = app::build_app(state, &api_config);
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("GET")
+                .uri(format!("/api/v1/workflows/{}/executions", wid_a))
+                .header("authorization", format!("Bearer {}", token))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+
+    let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    let ids: Vec<String> = json["executions"]
+        .as_array()
+        .expect("executions must be an array")
+        .iter()
+        .map(|e| e["id"].as_str().expect("id is string").to_string())
+        .collect();
+
+    assert_eq!(
+        ids.len(),
+        1,
+        "listing workflow A must not leak workflow B's IDs, got: {:?}",
+        ids
+    );
+    assert_eq!(ids[0], exec_a.to_string());
+}
