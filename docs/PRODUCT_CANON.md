@@ -443,17 +443,24 @@ This is the **minimum bar** for “we did not break the product direction.” Ex
 
 ## 15. How other docs relate
 
-
-| Document                                                                        | Role                                                                                                                                                                                                          |
-| ------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `CLAUDE.md`                                                                     | Commands, formatting, layer diagram, agent workflow                                                                                                                                                           |
-| `docs/PRODUCT_CANON.md` (this file)                                             | Product direction, competitive bets (§2.5), integration model summary (§3.5), OSS / plugin (§7.1–§7.2), pillars (incl. §4.6), contracts, invariants, knife (§13) |
-| `README.md`                                                                     | Operator-facing summary; **must not contradict** §5 / §11.5 / §12.3 — fix drift **on the same PR**                                                                                                            |
-| `docs/` specs                                                                   | Detailed design — **subordinate**; conflict ⇒ fix spec or update canon deliberately                                                                                                                           |
-| `docs/PLUGIN_MODEL.md` / `docs/ENGINE_GUARANTEES.md` / `docs/UPGRADE_COMPAT.md` | Satellite detail docs for §7.1, §11, §7.2 respectively; keep mechanics there, keep canon normative.                                                                                                           |
-| `docs/GLOSSARY.md`                                                              | Navigation aid: canonical identifiers (types, traits, tables) referenced by this file, grouped by layer, with canon status. Not normative — canon wins on conflict.                                          |
-| `crates/storage/migrations/{sqlite,postgres}/README.md`                         | Source of truth for **schema parity** between dialects (where present)                                                                                                                                        |
-
+| Document | Role |
+|---|---|
+| `CLAUDE.md` | Commands, formatting, session read-order, decision gate, trap catalog. |
+| `docs/PRODUCT_CANON.md` (this file) | Normative core — pillars (§4), golden path (§10), contracts (§11), invariants (§12), knife (§13), anti-patterns (§14), decision filter (§16), DoD (§17). Layer-tagged. |
+| `docs/INTEGRATION_MODEL.md` | Integration model mechanics — Resource / Credential / Action / Schema / Plugin contract, wiring rules, plugin packaging, status of aspirational surfaces. |
+| `docs/COMPETITIVE.md` | Peer analysis and our bets against n8n / Temporal / Windmill / Make / Zapier. Explicitly persuasive. |
+| `docs/OBSERVABILITY.md` | SLI / SLO / error budgets, structured event schema, operator core-analysis loop. |
+| `docs/STYLE.md` | Idioms / antipatterns / naming / error taxonomy / type-design bets. |
+| `docs/GLOSSARY.md` | Terms and architectural patterns (Outbox, WAL, Idempotent Receiver, Bulkhead, Circuit Breaker, OCC). |
+| `docs/MATURITY.md` | Per-crate state dashboard (API stability, test coverage, doc completeness, engine integration, SLI-ready). |
+| `docs/dev-setup.md` | Local dev environment setup. |
+| `docs/ENGINE_GUARANTEES.md` | Operator-facing guarantees narrative (satellite of §11). |
+| `docs/UPGRADE_COMPAT.md` | Engine upgrade and workflow compatibility rules (satellite of §7.2). |
+| `docs/PLUGIN_MODEL.md` | Plugin packaging mechanics (overlaps INTEGRATION_MODEL — consider merging in a later pass). |
+| `docs/adr/` | Architecture Decision Records — `NNNN-kebab-title.md`, no central index. |
+| `README.md` | Operator-facing summary. Must not contradict §5 / §11.5 / §12.3. |
+| `crates/*/README.md` + `lib.rs //!` | Per-crate: Role (named pattern), Contract (invariants + seam tests), Public API, Non-goals, Maturity. |
+| `crates/storage/migrations/{sqlite,postgres}/README.md` | Schema parity between dialects. |
 
 Every substantial spec or phase plan must include:
 
