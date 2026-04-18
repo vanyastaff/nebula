@@ -21,14 +21,13 @@ async-trait = { workspace = true }
 semver = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
+tempfile = { workspace = true }
 thiserror = { workspace = true }
 tracing = { workspace = true }
 tokio = { workspace = true, features = ["process", "io-util", "sync", "net"] }
+uuid = { workspace = true }
 
 # OS-level sandbox (Linux only)
 [target.'cfg(target_os = "linux")'.dependencies]
 landlock = "0.4"
 nix = { version = "0.31", features = ["resource"] }
-
-[dev-dependencies]
-tempfile = { workspace = true }

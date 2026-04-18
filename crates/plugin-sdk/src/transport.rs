@@ -42,17 +42,125 @@ pub const HANDSHAKE_VERSION: u32 = DUPLEX_PROTOCOL_VERSION;
 #[cfg(unix)]
 const MAX_UNIX_SOCKET_PATH_BYTES: usize = 100;
 
+/// Environment variable the host uses to tell the plugin exactly which
+/// socket address to bind (#260). When set, the plugin MUST bind this
+/// address and announce it in the handshake — no plugin-chosen path.
+///
+/// The corresponding [`ENV_SOCKET_KIND`] indicates `"unix"` or `"pipe"`.
+pub const ENV_SOCKET_ADDR: &str = "NEBULA_PLUGIN_SOCKET_ADDR";
+
+/// Environment variable that pairs with [`ENV_SOCKET_ADDR`] and names the
+/// transport kind (`"unix"` for Unix domain sockets, `"pipe"` for Windows
+/// named pipes). Required when [`ENV_SOCKET_ADDR`] is set.
+pub const ENV_SOCKET_KIND: &str = "NEBULA_PLUGIN_SOCKET_KIND";
+
 /// Bind a transport listener, return it paired with the handshake line the
 /// plugin should print on stdout before calling [`PluginListener::accept`].
+///
+/// # Host-controlled address (#260)
+///
+/// If the host sets [`ENV_SOCKET_ADDR`] + [`ENV_SOCKET_KIND`] (which the
+/// Nebula `ProcessSandbox` always does), the plugin MUST bind exactly that
+/// address. A compromised plugin that tries to print a different address
+/// in its handshake is rejected by the host-side validator in
+/// `nebula-sandbox`, preventing the "forged handshake → hijack sibling
+/// plugin socket" attack.
+///
+/// When the env vars are not set (standalone plugin development, ad-hoc
+/// tests) the plugin falls back to self-allocating a per-plugin directory
+/// — the pre-#260 behaviour, kept for DX.
 pub fn bind_listener() -> io::Result<(PluginListener, String)> {
-    #[cfg(unix)]
-    {
-        bind_unix()
+    match (
+        std::env::var(ENV_SOCKET_ADDR),
+        std::env::var(ENV_SOCKET_KIND),
+    ) {
+        (Ok(addr), Ok(kind)) => bind_listener_at(&addr, &kind),
+        _ => {
+            #[cfg(unix)]
+            {
+                bind_unix()
+            }
+            #[cfg(windows)]
+            {
+                bind_named_pipe()
+            }
+        },
     }
-    #[cfg(windows)]
-    {
-        bind_named_pipe()
+}
+
+fn bind_listener_at(addr: &str, kind: &str) -> io::Result<(PluginListener, String)> {
+    match kind {
+        "unix" => {
+            #[cfg(unix)]
+            {
+                bind_unix_at(addr)
+            }
+            #[cfg(not(unix))]
+            {
+                let _ = addr;
+                Err(io::Error::other(format!(
+                    "{ENV_SOCKET_KIND}=unix requested but this platform is not Unix"
+                )))
+            }
+        },
+        "pipe" => {
+            #[cfg(windows)]
+            {
+                bind_pipe_at(addr)
+            }
+            #[cfg(not(windows))]
+            {
+                let _ = addr;
+                Err(io::Error::other(format!(
+                    "{ENV_SOCKET_KIND}=pipe requested but this platform is not Windows"
+                )))
+            }
+        },
+        other => Err(io::Error::other(format!(
+            "unknown value for {ENV_SOCKET_KIND}: `{other}` (expected `unix` or `pipe`)"
+        ))),
     }
+}
+
+#[cfg(unix)]
+fn bind_unix_at(addr: &str) -> io::Result<(PluginListener, String)> {
+    use std::os::unix::fs::PermissionsExt;
+
+    let socket_path = PathBuf::from(addr);
+    // Host is responsible for creating the parent directory with 0700
+    // before spawn. Plugin binds the socket file itself and sets 0600.
+    let listener = tokio::net::UnixListener::bind(&socket_path)?;
+    std::fs::set_permissions(&socket_path, std::fs::Permissions::from_mode(0o600))?;
+
+    let line = format!(
+        "NEBULA-PROTO-{HANDSHAKE_VERSION}|unix|{}",
+        socket_path.display()
+    );
+    Ok((
+        PluginListener::Unix {
+            listener,
+            // Cleanup is the host's responsibility — we didn't create
+            // the directory, so we don't remove it.
+            cleanup: CleanupGuard { dir: None },
+        },
+        line,
+    ))
+}
+
+#[cfg(windows)]
+fn bind_pipe_at(addr: &str) -> io::Result<(PluginListener, String)> {
+    use tokio::net::windows::named_pipe::ServerOptions;
+
+    let server = ServerOptions::new()
+        .first_pipe_instance(true)
+        .create(addr)?;
+    let line = format!("NEBULA-PROTO-{HANDSHAKE_VERSION}|pipe|{addr}");
+    Ok((
+        PluginListener::NamedPipe {
+            server: Some(server),
+        },
+        line,
+    ))
 }
 
 #[cfg(unix)]
