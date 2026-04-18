@@ -1,73 +1,146 @@
+---
+name: nebula-execution
+role: Execution State Machine + Journal + Idempotency Types (WAL, Idempotent Receiver)
+status: stable
+last-reviewed: 2026-04-17
+canon-invariants: [L2-11.1, L2-11.2, L2-11.3, L2-11.5, L2-12.2]
+related: [nebula-storage, nebula-engine, nebula-workflow, nebula-resilience, nebula-core, nebula-error]
+---
+
 # nebula-execution
 
-Runtime execution state, journals, idempotency, and planning types for the Nebula workflow engine.
+## Purpose
 
-**Layer:** Core
-**Canon:** §10 (golden path), §11.1 (execution authority), §11.3 (idempotency), §11.5 (durability matrix)
+A durable workflow engine needs an authoritative model of what a run *is*: its state machine,
+its append-only event history, its pre-computed parallel schedule, and the key that makes
+individual action invocations idempotent. Without a shared model, the engine orchestrator and
+the storage layer each invent their own state representation, producing the "two truths"
+anti-pattern canon §14 forbids. `nebula-execution` is that shared model. It defines the
+8-state `ExecutionStatus` machine with validated transitions, the `JournalEntry` type that
+backs the durable `execution_journal` table, the `IdempotencyKey` shape, and the
+`ExecutionPlan` that the engine derives from the workflow DAG. It deliberately does not own a
+repository interface — persistence is `nebula-storage::ExecutionRepo`'s job.
 
-## Status
+## Role
 
-**Overall:** `implemented` — the state machine, journal entry types, and idempotency key are the authoritative runtime model used by `nebula-engine` and persisted by `nebula-storage::ExecutionRepo`.
+**Execution State Machine + Journal + Idempotency Types.**
 
-**Works today:**
+Patterns:
+- *Write-Ahead Log* (DDIA ch 3, 11) — `JournalEntry` backs the `execution_journal`
+  append-only durable timeline.
+- *Idempotent Receiver* (EIP) — `IdempotencyKey` shape `{execution_id}:{node_id}:{attempt}`
+  is the deterministic per-attempt key checked through `ExecutionRepo` before side effects.
+- *Optimistic Concurrency Control* (DDIA ch 7) — `ExecutionStatus` transitions are guarded
+  by CAS on `version` in `nebula-storage::ExecutionRepo::transition`.
 
-- 8-state execution state machine with validated transitions (`transition` module)
-- `ExecutionState` / `NodeExecutionState` durable state tracking
-- `ExecutionPlan` — pre-computed parallel schedule derived from a DAG
-- `JournalEntry` — append-only audit log feeding the durable `execution_journal` table
-- `IdempotencyKey` deterministic shape `{execution_id}:{node_id}:{attempt}`
-- 12 unit tests covering state transitions, plan computation, idempotency, and journal
+## Public API
 
-**Known gaps / deferred to other crates:**
+- `ExecutionStatus` — 8-state execution state machine: `Pending`, `Running`, `Paused`,
+  `Completed`, `Failed`, `Cancelled`, `Cancelling`, `TimedOut`. Transitions validated by
+  the `transition` module.
+- `ExecutionState`, `NodeExecutionState` — persistent state tracking per execution and per
+  node; serialized into the `executions` table row.
+- `ExecutionPlan` — pre-computed parallel execution schedule derived from `DependencyGraph`.
+  Feeds the engine scheduler.
+- `ReplayPlan` — resume plan for restarting from a checkpoint.
+- `ExecutionContext` — lightweight runtime context: `execution_id`, `ExecutionBudget`.
+- `ExecutionResult` — post-execution summary: status, timing, node counts, outputs.
+- `JournalEntry` — audit log entry type. Each entry is appended to the durable
+  `execution_journal` table via `ExecutionRepo::append_journal`.
+- `NodeOutput`, `ExecutionOutput` — node output data with metadata.
+- `NodeAttempt` — individual attempt tracking (attempt number, started/finished timestamps,
+  node status). Used by retry accounting; see §11.2 debt note.
+- `IdempotencyKey` — deterministic key `{execution_id}:{node_id}:{attempt}`. The actual
+  dedup enforcement (check-and-mark) lives in `nebula-storage::ExecutionRepo`.
+- `ExecutionError` — typed error for state machine violations and execution failures.
 
-- **Idempotency enforcement** — this crate only defines the `IdempotencyKey` shape. Actual dedup (checked-and-marked-through-ExecutionRepo) lives in `nebula-storage`. Canon §11.3.
-- **Retry accounting** — `NodeAttempt` tracks attempts, but **engine-level** re-execution from `ActionResult::Retry` is `planned` per canon §11.2 (no persisted attempt bump, no CAS-protected consumer). Until that lands, the canonical retry surface is `nebula-resilience` inside an action.
-- **Integration tests** — 0 end-to-end tests in `tests/`; coverage relies on unit tests + engine-level integ tests.
+## Contract
 
-## Architecture notes
+- **[L2-§11.1]** `nebula-execution` defines the state machine; `ExecutionRepo` in
+  `nebula-storage` is the **single source of truth** for persisted execution state.
+  Transitions use optimistic CAS on `version`. No handler may mutate execution state
+  except through `ExecutionRepo::transition`. Seam: `crates/storage/src/execution_repo.rs`.
+  The `transition` module in this crate validates state-machine legality; storage enforces
+  persistence and CAS.
 
-- **Clean separation of types vs persistence.** This crate defines the state machine and types; `nebula-storage::ExecutionRepo` persists them. Canon §11.1 makes the persistence layer the single authority — this crate deliberately does not own a repository interface.
-- **No cross-layer dependencies.** Only `nebula-core`, `nebula-error`, `nebula-workflow`. No imports from engine, runtime, storage, or API — the layer direction in `CLAUDE.md` is respected.
-- **Panics in state code** (5 `panic!` sites) — used as state-machine invariant guards in `transition` and `status` modules. Review periodically: every panic should be an invariant the type system or `#[must_use]` could carry instead.
-- **No obvious SRP/DRY violations.** Thirteen modules each own a single concept; no dead compat shims.
+- **[L2-§11.2]** `NodeAttempt` tracks attempt counts, but **engine-level node re-execution
+  from an `ActionResult::Retry`-style variant is `planned`, not `implemented`**. No persisted
+  attempt-accounting row, no CAS-protected bump, no consumer wired through `ExecutionRepo`
+  today. The canonical retry surface is `nebula-resilience` inside an action. Any public
+  variant or doc claiming engine-level retry is a false capability under §4.5 until the
+  planned accounting lands.
 
-## Scope
+- **[L2-§11.3]** `IdempotencyKey` shape is `{execution_id}:{node_id}:{attempt}`. Seam:
+  `crates/execution/src/idempotency.rs`. Enforcement (check before side effect, mark after)
+  lives in `nebula-storage::ExecutionRepo`. For non-idempotent actions (payments, writes
+  without upsert) the idempotency guard must be applied before calling the remote system.
 
-This crate models **execution-time concepts**. It does not contain the orchestrator (that is `nebula-engine`) and it does not contain the storage implementation (that is `nebula-storage`). It defines the types that the engine drives and that `ExecutionRepo` persists.
+- **[L2-§11.5]** `JournalEntry` type backs the durable `execution_journal` (append-only,
+  replayable). Seam: `crates/storage/src/execution_repo.rs` — `ExecutionRepo::append_journal`.
+  Checkpoint state is best-effort: a checkpoint write failure logs and does not abort; work
+  since the last successful checkpoint may be replayed or lost.
 
-## What this crate provides
-
-| Type / module | Role |
-| --- | --- |
-| `ExecutionStatus` | Execution-level state machine (8 states). Transitions validated by `transition` module. |
-| `ExecutionState`, `NodeExecutionState` | Persistent state tracking per execution and per node. |
-| `ExecutionPlan` | Pre-computed parallel execution schedule derived from a workflow DAG. |
-| `ExecutionContext` | Lightweight runtime context (`execution_id`, budget). |
-| `ExecutionResult` | Post-execution summary — status, timing, node counts, outputs. |
-| `JournalEntry` | Audit log entry; backs the `execution_journal` append-only durable timeline. |
-| `NodeOutput` | Node output data with metadata. |
-| `NodeAttempt` | Individual execution attempt tracking. |
-| `IdempotencyKey` | Deterministic key `{execution_id}:{node_id}:{attempt}` for deduplication. The actual dedup enforcement lives in `nebula_storage::ExecutionRepo`. |
-| `transition` module | Validates `ExecutionStatus` state transitions. |
+- **[L2-§12.2]** `ExecutionStatus` machine defines what states exist and what transitions
+  are legal. The `transition` module enforces legality. Persistence and CAS are in
+  `nebula-storage`. No handler invents a parallel lifecycle.
 
 ## Non-goals
 
-- **Not** the engine orchestrator — see `nebula-engine`.
-- **Not** the storage implementation — see `nebula-storage` (`ExecutionRepo`, `executions` row, `execution_journal`, `execution_control_queue`).
-- **Not** a retry scheduler — canon §11.2 defines engine-level retry as `planned`; the canonical retry surface today is `nebula-resilience` inside an action.
+- Not the engine orchestrator — see `nebula-engine` (drives these types).
+- Not the storage implementation — see `nebula-storage` (`ExecutionRepo`, `executions`
+  table, `execution_journal`, `execution_control_queue`). The `ExecutionControlQueue`
+  (durable outbox for cancel/dispatch signals) and the `Transactional Outbox` pattern live
+  in `nebula-storage`, not here.
+- Not a retry scheduler — engine-level node retry is `planned` (§11.2); today's canonical
+  retry surface is `nebula-resilience` inside an action.
+- Not a resource lifecycle manager — see `nebula-resource` for `ReleaseQueue` / `Bulkhead`.
 
-## Where the contract lives
+## Maturity
 
-- Source: `src/lib.rs`, `src/status.rs`, `src/state.rs`, `src/plan.rs`, `src/idempotency.rs`, `src/journal.rs`
-- Canon: `docs/PRODUCT_CANON.md` §10, §11.1, §11.3, §11.5
-- Glossary: `docs/GLOSSARY.md` §2 (execution authority)
+See `docs/MATURITY.md` row for `nebula-execution`.
 
-## See also
+- API stability: `stable` — state machine, journal, idempotency key, and plan types are
+  in active use by `nebula-engine` and `nebula-storage`; no known planned breaking changes.
+- **Retry accounting** (`NodeAttempt` → engine re-execution) remains `planned`; do not
+  advertise as current capability.
+- `execution_leases` schema may exist before full engine enforcement; see §11.5 debt.
+- Integration tests: 0 in `tests/`; state machine and plan coverage via unit tests +
+  engine-level integration tests.
+- 5 `panic!` sites in `transition` and `status` modules serve as state-machine invariant
+  guards; these are technical debt (candidates for `#[must_use]` or typed errors).
 
-- `nebula-engine` — drives these types
-- `nebula-storage` — persists them via `ExecutionRepo`
-- `nebula-workflow` — defines the DAG that `ExecutionPlan` derives from
+## Related
 
-### Idempotency key format (evicted from PRODUCT_CANON.md §11.3)
+- Canon: `docs/PRODUCT_CANON.md` §11.1, §11.2, §11.3, §11.5, §12.2.
+- Glossary: `docs/GLOSSARY.md` §2 (execution authority: `ExecutionRepo`, `executions`,
+  `execution_journal`, `execution_control_queue`, `IdempotencyKey`, `Cancel`, `Cancelled`).
+- Engine guarantees: `docs/ENGINE_GUARANTEES.md`.
+- Siblings: `nebula-storage` (persists via `ExecutionRepo`), `nebula-engine` (drives),
+  `nebula-workflow` (DAG → `ExecutionPlan`), `nebula-resilience` (in-action retry).
 
-The deterministic key shape is `{execution_id}:{node_id}:{attempt}`, persisted in `idempotency_keys`. The format string itself is an implementation detail (L4) — changing it requires only this README and the corresponding code; no canon revision. The invariant ("deterministic per-attempt, checked before side-effect") is canonical (L2).
+## Appendix
+
+### Idempotency key format (L4 detail, evicted from PRODUCT_CANON.md §11.3)
+
+The deterministic key shape is `{execution_id}:{node_id}:{attempt}`, persisted in
+`idempotency_keys`. The format string is an implementation detail (L4) — changing it
+requires updating this README and the corresponding code; no canon revision. The invariant
+("deterministic per-attempt, checked before side-effect") is canonical (L2-§11.3).
+
+### Persistence durability matrix (reference from §11.5)
+
+| Artifact | Status | Notes |
+|---|---|---|
+| `executions` row + state JSON | **Durable** (CAS via `ExecutionRepo`) | Source of truth |
+| `execution_journal` | **Durable** (append-only) | Replayable history |
+| `execution_control_queue` | **Durable** (outbox) | At-least-once cancel/dispatch |
+| `stateful_checkpoints` | **Best-effort** | Failure logs, does not abort; may replay |
+| `execution_leases` | **Schema may precede enforcement** | Do not imply lease safety |
+
+### Architecture notes
+
+- Clean separation of types vs persistence: this crate defines the state machine and types;
+  `nebula-storage::ExecutionRepo` persists them. Canon §11.1 makes the persistence layer
+  authoritative — this crate deliberately does not own a repository interface.
+- No cross-layer dependencies: only `nebula-core`, `nebula-error`, `nebula-workflow`.
+  No imports from engine, runtime, storage, or API.

@@ -1,12 +1,116 @@
+---
+name: nebula-validator
+role: Validation Rules Engine + Declarative Rule
+status: frontier
+last-reviewed: 2026-04-17
+canon-invariants: [L1-3.5, L1-4.5]
+related: [nebula-schema, nebula-expression, nebula-error, nebula-core]
+---
+
 # nebula-validator
 
-Composable, type-safe validation for the Nebula workflow engine.
+## Purpose
 
-Provides a generic `Validate<T>` trait with zero-cost combinator composition, a structured
-`ValidationError` type with RFC 6901 field paths and nested error trees, `Validated<T>` proof
-tokens, and a JSON-serializable `Rule` enum for runtime-configured validation.
+Integration code and schema fields need validation at two points: structural checks at
+schema-lint time, and runtime value checks when an execution resolves field values. Without a
+shared validation layer each integration author re-implements their own length checks, pattern
+tests, and combinator logic, which fragments error message quality and makes cross-field
+conditional rules impossible to express declaratively. `nebula-validator` provides the single
+shared rules engine: composable programmatic validators for use in Rust code, and a
+JSON-serializable `Rule` enum that schema fields carry for engine-evaluated validation at
+activation and runtime.
 
-## Quick Start
+## Role
+
+**Validation Rules Engine + Declarative Rule.** The crate that `nebula-schema` delegates
+rule evaluation to when schema fields declare constraints. Pattern inspiration: *Make illegal
+states unrepresentable* (Domain Modeling Made Functional) — `Validated<T>` is a proof-token
+that a value passed validation; the type cannot be constructed without calling `validate`.
+
+Related DMMF / typestate discussion: `docs/GLOSSARY.md` §9, `docs/STYLE.md`.
+
+## Public API
+
+- `Validate<T>` (`foundation::Validate`) — core trait every validator implements.
+- `ValidateExt<T>` (`foundation::ValidateExt`) — combinator methods: `.and()`, `.or()`, `.not()`.
+- `Validated<T>` (`proof::Validated`) — proof-token certifying a value passed validation.
+- `ValidationError` (`foundation::ValidationError`) — structured error (80 bytes, `Cow`-based, RFC 6901 field paths).
+- `AnyValidator<T>` (`foundation::AnyValidator`) — type-erased validator for dynamic dispatch.
+- `Rule` — unified declarative rule enum (value, predicate, combinator, deferred).
+- `RuleContext` — context map for predicate evaluation (sibling field lookups).
+- `ExecutionMode` — controls which rule categories run (`StaticOnly`, `Deferred`, `Full`).
+- `validate_rules` — batch-evaluate a slice of `Rule` against a `serde_json::Value`.
+- `ValidatorError` — crate-level operational error type.
+- `validator!` macro — zero-boilerplate custom validator.
+- `#[derive(Validator)]` — derive macro (feature `derive`) for struct-level validation.
+- `prelude` — single-import convenience module.
+
+Built-in validators: string (`MinLength`, `MaxLength`, `NotEmpty`, `Contains`,
+`Alphanumeric`), numeric (`Min`, `Max`, `InRange`), collection (`MinSize`, `MaxSize`),
+boolean (`IsTrue`, `IsFalse`), nullable (`Required`), network (`Ipv4`, `Hostname`),
+temporal (`DateTime`, `Uuid`).
+
+## Contract
+
+- **[L1-§3.5]** Schema is the typed-configuration surface for all integration concepts;
+  `nebula-validator` is the rules engine that `nebula-schema` delegates Rule evaluation to.
+  See `docs/INTEGRATION_MODEL.md`.
+- **[L1-§4.5]** `Validated<T>` is a proof-token: a caller cannot obtain one without calling
+  `validate`. `Validated<T>` deliberately does not implement `Deserialize` — deserialized
+  data must be re-validated.
+- **Rule cross-method silent-pass** — value rules return `Ok` from `validate_value` when the
+  JSON type does not match (e.g. `MinLength` on a number). Predicate rules return `true`
+  from `evaluate` when called on a value-only path. Both behaviors are documented ergonomics,
+  not bugs. Seam: `crates/validator/src/rule/mod.rs`. Tests: `crates/validator/tests/`.
+
+## Non-goals
+
+- Not a schema system — see `nebula-schema` for `Field`, `Schema`, and the proof-token
+  pipeline (`ValidValues` → `ResolvedValues`).
+- Not an expression evaluator — see `nebula-expression` for dynamic field resolution.
+- Not a resilience pipeline — see `nebula-resilience` for retry / circuit-breaker.
+- Not an API error formatter — see `nebula-api` for RFC 9457 `problem+json` mapping.
+
+## Maturity
+
+See `docs/MATURITY.md` row for `nebula-validator`.
+
+- API stability: `frontier` — the `Rule` type is currently a flat 30-variant enum; a
+  typed sum-of-sums refactor is designed and pending implementation (see
+  `docs/superpowers/specs/2026-04-17-nebula-validator-rule-refactor-design.md`). The
+  programmatic validator API (`Validate<T>`, `ValidateExt`, `Validated<T>`,
+  `ValidationError`) is stable and will not change in the refactor. Wire format for `Rule`
+  JSON **will break** when the refactor lands (alpha stage; no stored data commitments).
+- The `#[derive(Validator)]` macro public attribute syntax is stable across the refactor.
+
+## Related
+
+- Canon: `docs/PRODUCT_CANON.md` §3.5, §4.5.
+- Glossary: `docs/GLOSSARY.md` §5 (`Rule`, `ValidValues`, `ResolvedValues`).
+- Siblings: `nebula-schema` (consumes `Rule`), `nebula-error` (error taxonomy).
+- Spec: `docs/superpowers/specs/2026-04-17-nebula-validator-rule-refactor-design.md` — Rule type split (Refactor 1).
+
+## Appendix
+
+### Existing extended documentation
+
+The crate carries a rich secondary docs set in `crates/validator/docs/`:
+
+| Document | Contents |
+|----------|----------|
+| `docs/README.md` | Core concepts, feature matrix, crate layout |
+| `docs/architecture.md` | Design decisions, module map, data flow, invariants |
+| `docs/api-reference.md` | Every public type, trait, and method |
+| `docs/combinators.md` | Full combinator catalog and composition patterns |
+| `docs/extending.md` | Writing custom validators, the `validator!` macro |
+| `docs/migration.md` | Versioning policy, breaking changes, migration paths |
+
+### Error code stability
+
+Error codes are stable across minor releases; the registry lives in
+`tests/fixtures/compat/error_registry_v1.json`.
+
+### Quick Start
 
 ```rust
 use nebula_validator::prelude::*;
@@ -14,28 +118,9 @@ use nebula_validator::prelude::*;
 // Compose validators with .and() / .or() / .not()
 let username = min_length(3).and(max_length(20)).and(alphanumeric());
 assert!(username.validate("alice").is_ok());
-assert!(username.validate("ab").is_err()); // min_length
+assert!(username.validate("ab").is_err()); // min_length fails
 
 // Proof token: validate once, carry the guarantee in the type system
 let name: Validated<String> = min_length(3).validate_into("alice".to_string())?;
 // fn process(name: Validated<String>) — the compiler enforces the check happened
 ```
-
-## Notes
-
-- `use nebula_validator::prelude::*` imports all built-in validators and core combinators.
-- `Validated<T>` intentionally does not implement `Deserialize` — deserialized data must
-  be re-validated before a proof token can be issued.
-- Error codes are stable across minor releases; the registry lives in
-  `tests/fixtures/compat/error_registry_v1.json`.
-
-## Documentation
-
-| Document | Contents |
-|----------|----------|
-| [`docs/README.md`](docs/README.md) | Core concepts, feature matrix, crate layout |
-| [`docs/architecture.md`](docs/architecture.md) | Design decisions, module map, data flow, invariants |
-| [`docs/api-reference.md`](docs/api-reference.md) | Every public type, trait, and method |
-| [`docs/combinators.md`](docs/combinators.md) | Full combinator catalog and composition patterns |
-| [`docs/extending.md`](docs/extending.md) | Writing custom validators, the `validator!` macro |
-| [`docs/migration.md`](docs/migration.md) | Versioning policy, breaking changes, migration paths |
