@@ -278,6 +278,8 @@ mod tests {
     #[derive(Clone, Debug, Default)]
     struct EmptyCfg;
 
+    nebula_schema::impl_empty_has_schema!(EmptyCfg);
+
     impl ResourceConfig for EmptyCfg {
         fn fingerprint(&self) -> u64 {
             0

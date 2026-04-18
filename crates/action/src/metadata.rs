@@ -148,6 +148,90 @@ impl ActionMetadata {
         }
     }
 
+    /// Create metadata whose `parameters` schema is auto-derived from a
+    /// [`StatelessAction`](crate::StatelessAction) implementation's `Input`
+    /// type.
+    ///
+    /// Prefer this over [`ActionMetadata::new`] + [`ActionMetadata::with_parameters`]
+    /// when the author owns a typed `Input` struct — the compiler then
+    /// enforces that the declared `Input` type agrees with the schema the
+    /// engine, UI, and validator will see.
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// use nebula_action::{ActionMetadata, StatelessAction};
+    /// use nebula_core::action_key;
+    ///
+    /// struct MyAction;
+    /// impl StatelessAction for MyAction {
+    ///     type Input = MyInput;  // must impl HasSchema
+    ///     type Output = MyOutput;
+    ///     // ...
+    /// }
+    ///
+    /// let meta = ActionMetadata::for_stateless::<MyAction>(
+    ///     action_key!("my.action"), "My Action", "desc",
+    /// );
+    /// ```
+    #[must_use]
+    pub fn for_stateless<A>(
+        key: ActionKey,
+        name: impl Into<String>,
+        description: impl Into<String>,
+    ) -> Self
+    where
+        A: crate::stateless::StatelessAction,
+    {
+        Self::new(key, name, description)
+            .with_parameters(<A::Input as nebula_schema::HasSchema>::schema())
+    }
+
+    /// Create metadata whose `parameters` schema is auto-derived from a
+    /// [`StatefulAction`](crate::StatefulAction)'s `Input` type.
+    #[must_use]
+    pub fn for_stateful<A>(
+        key: ActionKey,
+        name: impl Into<String>,
+        description: impl Into<String>,
+    ) -> Self
+    where
+        A: crate::stateful::StatefulAction,
+    {
+        Self::new(key, name, description)
+            .with_parameters(<A::Input as nebula_schema::HasSchema>::schema())
+    }
+
+    /// Create metadata whose `parameters` schema is auto-derived from a
+    /// [`PaginatedAction`](crate::PaginatedAction)'s `Input` type.
+    #[must_use]
+    pub fn for_paginated<A>(
+        key: ActionKey,
+        name: impl Into<String>,
+        description: impl Into<String>,
+    ) -> Self
+    where
+        A: crate::stateful::PaginatedAction,
+    {
+        Self::new(key, name, description)
+            .with_parameters(<A::Input as nebula_schema::HasSchema>::schema())
+    }
+
+    /// Create metadata whose `parameters` schema is auto-derived from a
+    /// [`BatchAction`](crate::BatchAction)'s `Input` type.
+    #[must_use]
+    pub fn for_batch<A>(
+        key: ActionKey,
+        name: impl Into<String>,
+        description: impl Into<String>,
+    ) -> Self
+    where
+        A: crate::stateful::BatchAction,
+    {
+        Self::new(key, name, description)
+            .with_parameters(<A::Input as nebula_schema::HasSchema>::schema())
+    }
+
     /// Set the interface version from `(major, minor)` components.
     ///
     /// Equivalent to `with_version_full(Version::new(major, minor, 0))`.

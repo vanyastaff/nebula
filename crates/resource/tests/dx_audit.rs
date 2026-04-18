@@ -102,6 +102,8 @@ struct HttpClientConfig {
     pool_size: u32,
 }
 
+nebula_schema::impl_empty_has_schema!(HttpClientConfig);
+
 impl ResourceConfig for HttpClientConfig {}
 
 // FRICTION NOTE [ResourceConfig::validate]: The default impl accepts
@@ -279,6 +281,8 @@ struct ConfigStoreConfig {
     path: String,
 }
 
+nebula_schema::impl_empty_has_schema!(ConfigStoreConfig);
+
 impl ResourceConfig for ConfigStoreConfig {}
 
 #[derive(Clone)]
@@ -400,6 +404,8 @@ struct FakeDbConnection {
 struct DbConfig {
     host: String,
 }
+
+nebula_schema::impl_empty_has_schema!(DbConfig);
 
 impl ResourceConfig for DbConfig {
     fn validate(&self) -> Result<(), Error> {
@@ -598,6 +604,7 @@ async fn error_handling_invalid_config_validate() {
 
     #[derive(Clone)]
     struct AlwaysInvalidConfig;
+    nebula_schema::impl_empty_has_schema!(AlwaysInvalidConfig);
     impl ResourceConfig for AlwaysInvalidConfig {
         fn validate(&self) -> Result<(), Error> {
             Err(Error::permanent("invalid config"))

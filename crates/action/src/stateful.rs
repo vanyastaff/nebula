@@ -34,7 +34,10 @@ use crate::{
 /// [`StatelessAction`](crate::stateless::StatelessAction)).
 pub trait StatefulAction: Action {
     /// Input type for each iteration.
-    type Input: Send + Sync;
+    ///
+    /// Must implement [`HasSchema`](nebula_schema::HasSchema) so the action
+    /// metadata can auto-derive its parameter schema from the input type.
+    type Input: nebula_schema::HasSchema + Send + Sync;
     /// Output type (wrapped in [`ActionResult`]); `Continue` and `Break` carry output.
     type Output: Send + Sync;
     /// Persistent state type (saved between iterations by the engine).
@@ -114,7 +117,10 @@ pub struct PaginationState<C> {
 /// ```
 pub trait PaginatedAction: Action {
     /// Input type for the paginated request.
-    type Input: Send + Sync;
+    ///
+    /// Must implement [`HasSchema`](nebula_schema::HasSchema) so the action
+    /// metadata can auto-derive its parameter schema from the input type.
+    type Input: nebula_schema::HasSchema + Send + Sync;
     /// Output type produced per page.
     type Output: Send + Sync;
     /// Cursor type for tracking pagination position.
@@ -257,7 +263,10 @@ pub struct BatchState<I, T> {
 /// Other errors are captured as [`BatchItemResult::Failed`].
 pub trait BatchAction: Action {
     /// Input type containing the items to process.
-    type Input: Send + Sync;
+    ///
+    /// Must implement [`HasSchema`](nebula_schema::HasSchema) so the action
+    /// metadata can auto-derive its parameter schema from the input type.
+    type Input: nebula_schema::HasSchema + Send + Sync;
     /// Individual work item type.
     type Item: Serialize + DeserializeOwned + Clone + Send + Sync;
     /// Output type per item and as the final merged result.

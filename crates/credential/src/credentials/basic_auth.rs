@@ -3,13 +3,36 @@
 //! Resolves a username + password pair into [`IdentityPassword`]. State and
 //! Scheme are the same type via [`identity_state!`](crate::identity_state).
 
-use nebula_schema::{Field, FieldValues, Schema, ValidSchema};
+use nebula_schema::{Field, FieldValues, HasSchema, Schema, ValidSchema};
 
 use crate::{
     SecretString, context::CredentialContext, credential::Credential, error::CredentialError,
     metadata::CredentialMetadata, pending::NoPendingState, resolve::StaticResolveResult,
     scheme::IdentityPassword,
 };
+
+/// Typed shape of the `basic_auth` credential setup form.
+pub struct BasicAuthInput;
+
+impl HasSchema for BasicAuthInput {
+    fn schema() -> ValidSchema {
+        Schema::builder()
+            .add(
+                Field::string("username")
+                    .label("Username")
+                    .description("Username for HTTP Basic authentication")
+                    .required(),
+            )
+            .add(
+                Field::secret("password")
+                    .label("Password")
+                    .description("Password for HTTP Basic authentication")
+                    .required(),
+            )
+            .build()
+            .expect("basic_auth schema is always valid")
+    }
+}
 
 /// HTTP Basic Auth credential -- resolves username + password into
 /// [`IdentityPassword`].
@@ -20,6 +43,7 @@ use crate::{
 pub struct BasicAuthCredential;
 
 impl Credential for BasicAuthCredential {
+    type Input = BasicAuthInput;
     type Scheme = IdentityPassword;
     type State = IdentityPassword;
     type Pending = NoPendingState;
@@ -37,24 +61,6 @@ impl Credential for BasicAuthCredential {
             properties: Self::parameters(),
             pattern: nebula_core::AuthPattern::IdentityPassword,
         }
-    }
-
-    fn parameters() -> ValidSchema {
-        Schema::builder()
-            .add(
-                Field::string("username")
-                    .label("Username")
-                    .description("Username for HTTP Basic authentication")
-                    .required(),
-            )
-            .add(
-                Field::secret("password")
-                    .label("Password")
-                    .description("Password for HTTP Basic authentication")
-                    .required(),
-            )
-            .build()
-            .expect("basic_auth schema is always valid")
     }
 
     fn project(state: &IdentityPassword) -> IdentityPassword {

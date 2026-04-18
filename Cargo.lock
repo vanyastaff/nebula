@@ -4096,6 +4096,7 @@ dependencies = [
  "nebula-metrics",
  "nebula-resilience",
  "nebula-resource-macros",
+ "nebula-schema",
  "nebula-telemetry",
  "smallvec",
  "thiserror 2.0.18",

@@ -4,13 +4,40 @@
 //! input. State and Scheme are the same type ([`SecretToken`]) via
 //! [`identity_state!`](crate::identity_state).
 
-use nebula_schema::{Field, FieldValues, Schema, ValidSchema};
+use nebula_schema::{Field, FieldValues, HasSchema, Schema, ValidSchema};
 
 use crate::{
     SecretString, context::CredentialContext, credential::Credential, error::CredentialError,
     metadata::CredentialMetadata, pending::NoPendingState, resolve::StaticResolveResult,
     scheme::SecretToken,
 };
+
+/// Typed shape of the `api_key` credential setup form.
+///
+/// Used solely as the [`Credential::Input`] — the value is carried through
+/// the resolver as [`FieldValues`] for now; this struct exists to advertise
+/// the canonical schema via [`HasSchema`].
+pub struct ApiKeyInput;
+
+impl HasSchema for ApiKeyInput {
+    fn schema() -> ValidSchema {
+        Schema::builder()
+            .add(
+                Field::string("server")
+                    .label("Server URL")
+                    .description("Base URL of the service (e.g. https://api.example.com)")
+                    .placeholder("https://api.example.com"),
+            )
+            .add(
+                Field::secret("api_key")
+                    .label("API Key")
+                    .description("Secret API token or personal access token")
+                    .required(),
+            )
+            .build()
+            .expect("api_key schema is always valid")
+    }
+}
 
 /// API Key credential -- resolves a single token into a [`SecretToken`].
 ///
@@ -31,6 +58,7 @@ use crate::{
 pub struct ApiKeyCredential;
 
 impl Credential for ApiKeyCredential {
+    type Input = ApiKeyInput;
     type Scheme = SecretToken;
     type State = SecretToken;
     type Pending = NoPendingState;
@@ -48,24 +76,6 @@ impl Credential for ApiKeyCredential {
             properties: Self::parameters(),
             pattern: nebula_core::AuthPattern::SecretToken,
         }
-    }
-
-    fn parameters() -> ValidSchema {
-        Schema::builder()
-            .add(
-                Field::string("server")
-                    .label("Server URL")
-                    .description("Base URL of the service (e.g. https://api.example.com)")
-                    .placeholder("https://api.example.com"),
-            )
-            .add(
-                Field::secret("api_key")
-                    .label("API Key")
-                    .description("Secret API token or personal access token")
-                    .required(),
-            )
-            .build()
-            .expect("api_key schema is always valid")
     }
 
     fn project(state: &SecretToken) -> SecretToken {

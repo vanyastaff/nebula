@@ -28,7 +28,12 @@ pub trait AnyResource: Send + Sync + 'static {
 ///
 /// Implementors typically derive `serde::Deserialize` and hold fields like
 /// host, port, pool size, timeouts, etc.
-pub trait ResourceConfig: Send + Sync + Clone + 'static {
+///
+/// Must implement [`HasSchema`](nebula_schema::HasSchema) so the resource
+/// metadata can auto-derive its configuration schema from the config type.
+/// Use `()` / `bool` / `String` for schema-less stubs — baseline impls in
+/// `nebula-schema` cover primitives with empty schemas.
+pub trait ResourceConfig: nebula_schema::HasSchema + Send + Sync + Clone + 'static {
     /// Validates the configuration, returning an error if invalid.
     ///
     /// The default implementation accepts all configurations.

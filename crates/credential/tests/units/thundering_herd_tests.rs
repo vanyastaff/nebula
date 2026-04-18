@@ -19,7 +19,7 @@ use nebula_credential::{
     scheme::SecretToken,
     store::{PutMode, StoredCredential},
 };
-use nebula_schema::{FieldValues, Schema, ValidSchema};
+use nebula_schema::FieldValues;
 
 /// Global counter tracking how many times `refresh()` is actually called.
 static REFRESH_COUNT: AtomicU32 = AtomicU32::new(0);
@@ -46,6 +46,7 @@ impl nebula_credential::state::CredentialState for ThunderingHerdState {
 struct ThunderingHerdCredential;
 
 impl Credential for ThunderingHerdCredential {
+    type Input = FieldValues;
     type Scheme = SecretToken;
     type State = ThunderingHerdState;
     type Pending = NoPendingState;
@@ -69,12 +70,6 @@ impl Credential for ThunderingHerdCredential {
             properties: Self::parameters(),
             pattern: nebula_core::AuthPattern::SecretToken,
         }
-    }
-
-    fn parameters() -> ValidSchema {
-        Schema::builder()
-            .build()
-            .expect("empty schema is always valid")
     }
 
     fn project(state: &ThunderingHerdState) -> SecretToken {

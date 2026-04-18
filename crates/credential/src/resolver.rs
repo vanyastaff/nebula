@@ -502,6 +502,7 @@ mod tests {
     struct RefreshableTestCredential;
 
     impl Credential for RefreshableTestCredential {
+        type Input = FieldValues;
         type Scheme = SecretToken;
         type State = ExpiringState;
         type Pending = NoPendingState;
@@ -559,6 +560,7 @@ mod tests {
     struct TinyJitterRefreshableTestCredential;
 
     impl Credential for TinyJitterRefreshableTestCredential {
+        type Input = FieldValues;
         type Scheme = SecretToken;
         type State = ExpiringState;
         type Pending = NoPendingState;
@@ -582,12 +584,6 @@ mod tests {
                 properties: Self::parameters(),
                 pattern: nebula_core::AuthPattern::SecretToken,
             }
-        }
-
-        fn parameters() -> ValidSchema {
-            Schema::builder()
-                .build()
-                .expect("empty schema is always valid")
         }
 
         fn project(state: &ExpiringState) -> SecretToken {
@@ -1066,6 +1062,7 @@ mod tests {
     struct CasRetryTestCredential;
 
     impl Credential for CasRetryTestCredential {
+        type Input = FieldValues;
         type Scheme = SecretToken;
         type State = ExpiringState;
         type Pending = NoPendingState;
@@ -1089,12 +1086,6 @@ mod tests {
                 properties: Self::parameters(),
                 pattern: nebula_core::AuthPattern::SecretToken,
             }
-        }
-
-        fn parameters() -> ValidSchema {
-            Schema::builder()
-                .build()
-                .expect("empty schema is always valid")
         }
 
         fn project(state: &ExpiringState) -> SecretToken {

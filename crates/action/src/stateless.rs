@@ -67,7 +67,12 @@ use crate::{
 /// ```
 pub trait StatelessAction: Action {
     /// Input type for this action.
-    type Input: Send + Sync;
+    ///
+    /// Must implement [`HasSchema`](nebula_schema::HasSchema) so the action
+    /// metadata can auto-derive its parameter schema from the input type.
+    /// Use `()` / `serde_json::Value` for schema-less inputs — both have
+    /// baseline `HasSchema` impls returning an empty schema.
+    type Input: nebula_schema::HasSchema + Send + Sync;
     /// Output type produced on success (wrapped in [`ActionResult`]).
     type Output: Send + Sync;
 
@@ -131,7 +136,7 @@ impl<F, Fut, Input, Output> StatelessAction for FnStatelessAction<F, Input, Outp
 where
     F: Fn(Input) -> Fut + Send + Sync + 'static,
     Fut: Future<Output = Result<Output, ActionError>> + Send + 'static,
-    Input: Send + Sync + 'static,
+    Input: nebula_schema::HasSchema + Send + Sync + 'static,
     Output: Send + Sync + 'static,
 {
     type Input = Input;
@@ -236,7 +241,7 @@ impl<F, Fut, Input, Output> StatelessAction for FnStatelessCtxAction<F, Input, O
 where
     F: Fn(Input, ActionContext) -> Fut + Send + Sync + 'static,
     Fut: Future<Output = Result<Output, ActionError>> + Send + 'static,
-    Input: Send + Sync + 'static,
+    Input: nebula_schema::HasSchema + Send + Sync + 'static,
     Output: Send + Sync + 'static,
 {
     type Input = Input;
@@ -498,6 +503,17 @@ mod tests {
     struct AddInput {
         a: i64,
         b: i64,
+    }
+
+    impl nebula_schema::HasSchema for AddInput {
+        fn schema() -> nebula_schema::ValidSchema {
+            use nebula_schema::{FieldCollector, Schema};
+            Schema::builder()
+                .integer("a", |n| n)
+                .integer("b", |n| n)
+                .build()
+                .expect("AddInput schema is valid")
+        }
     }
 
     #[derive(Debug, Serialize, Deserialize, PartialEq)]
