@@ -5,11 +5,17 @@ use nebula_workflow::NodeState;
 use crate::{error::ExecutionError, status::ExecutionStatus};
 
 /// Returns `true` if the execution-level transition from `from` to `to` is valid.
+///
+/// `Created → Cancelled`, `Paused → Failed`, and `Paused → TimedOut` are
+/// reachable under normal operation (pre-start cancel, out-of-band failure
+/// on a paused run, global deadline firing on a paused run) and must not
+/// force a phantom `Running` bridge into the audit trail (issue #273).
 #[must_use]
 pub fn can_transition_execution(from: ExecutionStatus, to: ExecutionStatus) -> bool {
     matches!(
         (from, to),
         (ExecutionStatus::Created, ExecutionStatus::Running)
+            | (ExecutionStatus::Created, ExecutionStatus::Cancelled)
             | (ExecutionStatus::Running, ExecutionStatus::Paused)
             | (ExecutionStatus::Running, ExecutionStatus::Cancelling)
             | (ExecutionStatus::Running, ExecutionStatus::Completed)
@@ -17,6 +23,8 @@ pub fn can_transition_execution(from: ExecutionStatus, to: ExecutionStatus) -> b
             | (ExecutionStatus::Running, ExecutionStatus::TimedOut)
             | (ExecutionStatus::Paused, ExecutionStatus::Running)
             | (ExecutionStatus::Paused, ExecutionStatus::Cancelling)
+            | (ExecutionStatus::Paused, ExecutionStatus::Failed)
+            | (ExecutionStatus::Paused, ExecutionStatus::TimedOut)
             | (ExecutionStatus::Cancelling, ExecutionStatus::Cancelled)
             | (ExecutionStatus::Cancelling, ExecutionStatus::Failed)
             | (ExecutionStatus::Cancelling, ExecutionStatus::Completed)
@@ -143,6 +151,76 @@ mod tests {
         assert!(!can_transition_execution(
             ExecutionStatus::Created,
             ExecutionStatus::Created
+        ));
+    }
+
+    /// Regression for issue #273: out-of-band failures (credential rotation,
+    /// downstream outage, supervisor death) can land on a Paused execution;
+    /// they must be expressible without a phantom `Paused → Running → Failed`
+    /// detour that pollutes the audit trail.
+    #[test]
+    fn paused_can_transition_to_failed() {
+        assert!(can_transition_execution(
+            ExecutionStatus::Paused,
+            ExecutionStatus::Failed
+        ));
+    }
+
+    /// Regression for issue #273: global deadline timers fire regardless of
+    /// execution status. A paused execution that blows its deadline must
+    /// reach TimedOut directly.
+    #[test]
+    fn paused_can_transition_to_timed_out() {
+        assert!(can_transition_execution(
+            ExecutionStatus::Paused,
+            ExecutionStatus::TimedOut
+        ));
+    }
+
+    /// Regression for issue #273: cancelling a scheduled execution before
+    /// the worker picks it up must be expressible in one step; the previous
+    /// table forced `Created → Running → Cancelling → Cancelled`, which lies
+    /// in the audit log about the run ever having run.
+    #[test]
+    fn created_can_transition_to_cancelled() {
+        assert!(can_transition_execution(
+            ExecutionStatus::Created,
+            ExecutionStatus::Cancelled
+        ));
+    }
+
+    /// Guard: the three new edges must not leak into illegal targets.
+    /// `Created → Completed/Failed/TimedOut/Paused` stay invalid — only
+    /// pre-start cancellation is allowed from `Created`.
+    #[test]
+    fn created_still_cannot_reach_other_terminals_directly() {
+        assert!(!can_transition_execution(
+            ExecutionStatus::Created,
+            ExecutionStatus::Completed
+        ));
+        assert!(!can_transition_execution(
+            ExecutionStatus::Created,
+            ExecutionStatus::Failed
+        ));
+        assert!(!can_transition_execution(
+            ExecutionStatus::Created,
+            ExecutionStatus::TimedOut
+        ));
+        assert!(!can_transition_execution(
+            ExecutionStatus::Created,
+            ExecutionStatus::Paused
+        ));
+    }
+
+    /// Guard: `Paused → Completed` is deliberately *not* in the table yet —
+    /// the semantics of "done from paused" need engine-level agreement
+    /// (see issue #273 "worth considering" note). Keep it rejected until
+    /// that decision is explicit.
+    #[test]
+    fn paused_cannot_transition_to_completed_yet() {
+        assert!(!can_transition_execution(
+            ExecutionStatus::Paused,
+            ExecutionStatus::Completed
         ));
     }
 
