@@ -1249,6 +1249,16 @@ impl WorkflowEngine {
 
             // Phase 3: Process the completed task
             match join_result {
+                // `ActionResult::Retry` is gated behind `unstable-retry-scheduler`
+                // per canon §11.2 (engine retry is a `planned` capability with no
+                // persisted attempt accounting). When the feature is off the
+                // variant does not exist, so this arm is compiled out and the
+                // generic `Ok(action_result)` arm below cannot receive it. When
+                // the feature is on, this dead short-term handler routes
+                // `Retry` through the failure branch so operators see a clear
+                // error instead of silent success — the real scheduler is
+                // future work (#290 / #296).
+                #[cfg(feature = "unstable-retry-scheduler")]
                 Ok((node_key, Ok(ActionResult::Retry { .. }))) => {
                     // ActionResult::Retry has no scheduler yet; treat it as a node
                     // failure for at-least-once semantics (#290/#296 short-term).
@@ -2432,6 +2442,7 @@ fn extract_primary_output(result: &ActionResult<serde_json::Value>) -> Option<se
         ActionResult::Wait { partial_output, .. } => {
             partial_output.as_ref().and_then(|o| o.as_value().cloned())
         },
+        #[cfg(feature = "unstable-retry-scheduler")]
         ActionResult::Retry { .. } => None,
         _ => None,
     }

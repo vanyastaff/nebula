@@ -643,9 +643,11 @@ mod tests {
     use nebula_credential::{CredentialRecord, SecretString, SecretToken};
 
     use super::*;
+    #[cfg(feature = "unstable-retry-scheduler")]
+    use crate::assert_retry;
     use crate::{
         action::Action,
-        assert_branch, assert_break, assert_cancelled, assert_continue, assert_fatal, assert_retry,
+        assert_branch, assert_break, assert_cancelled, assert_continue, assert_fatal,
         assert_retryable, assert_skip, assert_success, assert_validation_error, assert_wait,
         context::{Context, CredentialContextExt},
         dependency::ActionDependencies,
@@ -939,6 +941,7 @@ mod tests {
         assert_wait!(result);
     }
 
+    #[cfg(feature = "unstable-retry-scheduler")]
     #[test]
     fn assert_retry_macro_ok() {
         let result: Result<ActionResult<i32>, ActionError> = Ok(ActionResult::Retry {

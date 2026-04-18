@@ -79,7 +79,7 @@ Pattern inspiration: *Ports & Adapters / Hexagonal Architecture* — action auth
 ## Contract
 
 - **[L1-§3.5]** The action trait family (`StatelessAction`, `StatefulAction`, `TriggerAction`, `ResourceAction`) is the typed dispatch surface. Adding a new trait requires a canon revision (§0.2). The engine routes by trait, not by `ActionCategory` — that field is metadata for UI and tooling only.
-- **[L2-§11.2]** Engine-level node re-execution from an `ActionResult` retry variant requires persisted attempt accounting. Status: `planned` — no persisted `attempts` row exists yet. The **canonical retry surface today** is the `nebula-resilience` pipeline an action uses internally for outbound calls. No public variant may describe engine-level retry as a current capability until this row moves to `implemented`. See canon §11.2 status table.
+- **[L2-§11.2]** Engine-level node re-execution from an `ActionResult` retry variant requires persisted attempt accounting. Status: `planned` — no persisted `attempts` row exists yet. The `ActionResult::Retry` variant is hidden behind the **`unstable-retry-scheduler`** feature flag (default-off) so default builds do not expose the type. The **canonical retry surface today** is the `nebula-resilience` pipeline an action uses internally for outbound calls. No public variant may describe engine-level retry as a current capability until this row moves to `implemented` (#290). See canon §11.2 status table.
 - **[L2-§11.3]** For non-idempotent or risky side effects (payments, writes without natural upsert), action handlers must guard execution with the engine idempotency key path before calling the remote system. See `crates/execution/src/idempotency.rs`.
 - **[L2-§13.4]** For `TriggerAction`-backed workflow starts, tests must cover the declared delivery contract (at-least-once): no silent drop, and duplicate delivery is handled via stable event identity and dedup/idempotency. Seam: `TriggerAction::start`, `TriggerEvent`.
 - **[L2-§13.5]** For ordinary `StatelessAction` instances that cause irreversible external effects, integration tests must prove single-effect safety under retry/restart pressure. Seam: `StatelessAction::execute` + idempotency key guard.
@@ -100,7 +100,11 @@ See `docs/MATURITY.md` row for `nebula-action`.
 - API stability: `frontier` — trait family, metadata, result/output types, and DX specializations are actively used by engine and plugin-sdk; `ActionHandler` dispatch is the evolving integration point.
 - `#![forbid(unsafe_code)]`, `#![warn(missing_docs)]` enforced.
 - `CheckpointPolicy`: `planned` — not in `ActionMetadata` yet; engine does not consume it end-to-end.
-- Engine-level retry from `ActionResult` variant: `planned` — see §11.2 debt note above.
+- Engine-level retry from `ActionResult` variant: `planned` — the `Retry` variant is gated behind the `unstable-retry-scheduler` feature (default-off); see §11.2 debt note above.
+
+## Feature flags
+
+- `unstable-retry-scheduler` (default-off) — exposes the `ActionResult::Retry` variant reserved for the future engine retry scheduler. Enabling the flag does **not** install a scheduler; it only un-hides the type so the crate can be inspected by consumers who are preparing to integrate the feature once it lands. The engine mirrors the flag (`nebula-engine/unstable-retry-scheduler`) and routes `Retry` through a synthetic failure path. Per canon §11.2 / §4.5, do **not** enable this flag in production.
 - DX specializations (`PaginatedAction`, `BatchAction`, `WebhookAction`, `PollAction`) are implemented and tested; cross-action-type integration tests: partial.
 
 ## Related

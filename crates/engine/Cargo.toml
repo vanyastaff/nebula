@@ -10,6 +10,12 @@ repository.workspace = true
 
 [features]
 default = []
+# Forwards `nebula-action`'s `unstable-retry-scheduler` feature so the
+# engine's match arms for `ActionResult::Retry` compile. The underlying
+# variant is a planned capability (canon §11.2) — enabling this feature
+# does not install a retry scheduler, only un-hides the dead handling path
+# that routes `Retry` through the existing failure branch.
+unstable-retry-scheduler = ["nebula-action/unstable-retry-scheduler"]
 
 [dependencies]
 nebula-core = { path = "../core" }
