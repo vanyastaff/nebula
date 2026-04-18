@@ -1,19 +1,12 @@
 ---
 name: Nebula competitive positioning
 description: Position vs n8n / Temporal / Windmill / Make / Zapier and our bets against each. Extracted from PRODUCT_CANON.md §2 + §2.5 in Pass 1. Explicitly persuasive, not normative.
-status: draft — extracted from canon, surgery in Pass 2
+status: accepted
 last-reviewed: 2026-04-17
 related: [PRODUCT_CANON.md]
 ---
 
 # Nebula competitive positioning
-
-> **Status:** extracted verbatim from `PRODUCT_CANON.md`. This file is
-> **persuasive** content — positioning and bets. Normative rules live in
-> `PRODUCT_CANON.md`. If this file contradicts the canon, canon wins; open an
-> issue to update this file.
-
----
 
 ## Position
 
@@ -70,3 +63,7 @@ We have studied the leading tools. Each has a real insight. Each has a real ceil
 - From **n8n:** the **visual graph** as the primary artifact; **open plugin ecosystem** shape.
 - From **Temporal:** **durable execution as a contract**, not a convention in docs alone.
 - From **Windmill:** **local-first, single-deployment simplicity** as a goal worth defending in product.
+
+## Today vs aspiration
+
+The bets above describe where Nebula intends to win. Current engine maturity — which bets are delivered end-to-end, which are in-progress — is tracked per-crate in `docs/MATURITY.md` and per-invariant in `docs/PRODUCT_CANON.md §11`. Do not read this document as a capabilities matrix; read it as an articulation of direction.
