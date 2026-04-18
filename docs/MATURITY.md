@@ -18,7 +18,7 @@ Legend:
 
 | Crate | API stability | Test coverage | Doc completeness | Engine integration | SLI ready |
 |---|---|---|---|---|---|
-| nebula-action        | frontier | stable  | stable | partial (webhook sig covered; CheckpointPolicy planned) | n/a |
+| nebula-action        | frontier | stable  | stable | partial (webhook sig covered; CheckpointPolicy planned; `ActionResult::Retry` gated behind `unstable-retry-scheduler`, #290) | n/a |
 | nebula-api           | frontier | stable  | stable | partial (step 5 cancel: producer side stable; consumer skeleton in nebula-engine, dispatch A2/A3 planned — ADR-0008) | partial |
 | nebula-core          | frontier | stable  | stable | stable | n/a |
 | nebula-credential    | frontier | stable  | stable | partial (rotation in integration tests) | n/a |
