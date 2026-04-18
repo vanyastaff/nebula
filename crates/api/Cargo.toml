@@ -57,6 +57,7 @@ rand = { workspace = true }
 
 # Webhook transport
 dashmap = { workspace = true }
+moka = { workspace = true, features = ["future"] }
 url = { workspace = true }
 
 [dev-dependencies]
