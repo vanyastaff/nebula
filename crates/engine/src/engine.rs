@@ -468,6 +468,15 @@ impl WorkflowEngine {
         // the version move (issue #255).
         let mut exec_state = ExecutionState::new(execution_id, workflow.id, &node_ids);
         exec_state.transition_status(ExecutionStatus::Running)?;
+        // Use override inputs if provided — computed up front so the
+        // same value is persisted on the execution state (issue #311)
+        // and fed to the frontier loop.
+        let input = plan
+            .input_overrides
+            .get(&plan.replay_from)
+            .cloned()
+            .unwrap_or(serde_json::Value::Null);
+        exec_state.set_workflow_input(input.clone());
         for node_key in &pinned {
             // NOTE: errors are intentionally discarded here. Pinned nodes are
             // forced through Ready→Running→Completed for bookkeeping; the
@@ -496,13 +505,6 @@ impl WorkflowEngine {
             })
             .cloned()
             .collect();
-
-        // Use override inputs if provided.
-        let input = plan
-            .input_overrides
-            .get(&plan.replay_from)
-            .cloned()
-            .unwrap_or(serde_json::Value::Null);
 
         let error_strategy = workflow.config.error_strategy;
 
@@ -604,6 +606,10 @@ impl WorkflowEngine {
         let node_ids: Vec<NodeKey> = workflow.nodes.iter().map(|n| n.id.clone()).collect();
         let mut exec_state = ExecutionState::new(execution_id, workflow.id, &node_ids);
         exec_state.transition_status(ExecutionStatus::Running)?;
+        // Persist the original trigger payload so that resume can
+        // feed entry nodes the same input instead of substituting
+        // Null (issue #311).
+        exec_state.set_workflow_input(input.clone());
 
         // 4b. Persist initial execution state
         let mut repo_version: u64 = 0;
@@ -915,13 +921,22 @@ impl WorkflowEngine {
             .inc();
 
         let error_strategy = workflow.config.error_strategy;
-        // TODO: the original workflow input is not persisted in ExecutionState.
-        // Resume passes Null, which means re-running entry nodes will not receive
-        // the original trigger data. Entry nodes that have already completed are
-        // skipped via idempotency, so this only affects entry nodes that crashed
-        // mid-execution without completing. To fix, persist `workflow_input` in
-        // ExecutionState alongside the execution ID.
-        let workflow_input = serde_json::Value::Null;
+        // Restore the original trigger payload from the persisted
+        // execution state. Legacy states that predate #311 deserialize
+        // the field as `None` — fall back to `Null` with a warning so
+        // the regression is visible in logs.
+        let workflow_input = match exec_state.workflow_input.clone() {
+            Some(v) => v,
+            None => {
+                tracing::warn!(
+                    %execution_id,
+                    "resume: persisted execution state is missing workflow_input; \
+                     falling back to Null — entry nodes that did not complete \
+                     on the original run will receive Null input"
+                );
+                serde_json::Value::Null
+            },
+        };
         let failed_node = self
             .run_frontier(
                 &graph,
@@ -1060,11 +1075,15 @@ impl WorkflowEngine {
             ready_queue.push_back(node_key);
         }
 
-        // In-flight tasks
+        // In-flight tasks + a side map from tokio task id → NodeKey so
+        // that panics (where the inner future's `(NodeKey, _)` payload
+        // is lost) can still be attributed to the real node instead
+        // of a synthesized placeholder (issue #301).
         let mut join_set: JoinSet<(
             NodeKey,
             Result<ActionResult<serde_json::Value>, EngineError>,
         )> = JoinSet::new();
+        let mut task_nodes: HashMap<tokio::task::Id, NodeKey> = HashMap::new();
 
         // Main frontier loop
         loop {
@@ -1133,6 +1152,7 @@ impl WorkflowEngine {
                     input,
                     &activated_edges,
                     &mut join_set,
+                    &mut task_nodes,
                 );
                 if spawned {
                     let action_key = node_map
@@ -1177,7 +1197,10 @@ impl WorkflowEngine {
                     return Some((node_key, e.to_string()));
                 }
 
-                if outcome == FailureOutcome::Fail {
+                if exec_state
+                    .node_state(node_key.clone())
+                    .is_some_and(|ns| ns.state == NodeState::Failed)
+                {
                     self.emit_event(ExecutionEvent::NodeFailed {
                         execution_id,
                         node_key: node_key.clone(),
@@ -1211,7 +1234,8 @@ impl WorkflowEngine {
 
             if cancel_token.is_cancelled() {
                 join_set.abort_all();
-                while join_set.join_next().await.is_some() {}
+                while join_set.join_next_with_id().await.is_some() {}
+                task_nodes.clear();
                 break;
             }
 
@@ -1232,14 +1256,15 @@ impl WorkflowEngine {
             tokio::pin!(sleep_fut);
 
             let join_result = tokio::select! {
-                result = join_set.join_next() => match result {
+                result = join_set.join_next_with_id() => match result {
                     Some(r) => r,
                     None => break,
                 },
                 () = &mut sleep_fut => {
                     cancel_token.cancel();
                     join_set.abort_all();
-                    while join_set.join_next().await.is_some() {}
+                    while join_set.join_next_with_id().await.is_some() {}
+                    task_nodes.clear();
                     return Some((
                         node_key!("_timeout"),
                         "execution budget exceeded: max_duration".to_string(),
@@ -1247,7 +1272,8 @@ impl WorkflowEngine {
                 }
                 () = cancel_token.cancelled() => {
                     join_set.abort_all();
-                    while join_set.join_next().await.is_some() {}
+                    while join_set.join_next_with_id().await.is_some() {}
+                    task_nodes.clear();
                     break;
                 }
             };
@@ -1266,7 +1292,8 @@ impl WorkflowEngine {
                 // handed to the generic `Ok(action_result)` success arm.
                 // Handling stays a synthetic failure until the real scheduler
                 // lands (#290 / #296).
-                Ok((node_key, Ok(ref action_result))) if action_result.is_retry() => {
+                Ok((task_id, (node_key, Ok(ref action_result)))) if action_result.is_retry() => {
+                    task_nodes.remove(&task_id);
                     total_retries.fetch_add(1, Ordering::Relaxed);
                     let err = EngineError::Runtime(nebula_runtime::RuntimeError::ActionError(
                         nebula_action::error::ActionError::retryable(
@@ -1321,7 +1348,8 @@ impl WorkflowEngine {
                         return Some((node_key.clone(), err_msg));
                     }
                 },
-                Ok((node_key, Ok(action_result))) => {
+                Ok((task_id, (node_key, Ok(action_result)))) => {
+                    task_nodes.remove(&task_id);
                     mark_node_completed(exec_state, node_key.clone());
 
                     // Track output size for budget enforcement
@@ -1355,6 +1383,22 @@ impl WorkflowEngine {
                     self.record_idempotency(execution_id, node_key.clone())
                         .await;
 
+                    // Persist the full ActionResult alongside the raw
+                    // output so that idempotent replay can reconstruct
+                    // the exact routing semantics (issue #299).
+                    let attempt = exec_state
+                        .node_states
+                        .get(&node_key)
+                        .map(|ns| ns.attempt_count().max(1) as u32)
+                        .unwrap_or(1);
+                    self.record_node_result(
+                        execution_id,
+                        node_key.clone(),
+                        attempt,
+                        &action_result,
+                    )
+                    .await;
+
                     self.emit_event(ExecutionEvent::NodeCompleted {
                         execution_id,
                         node_key: node_key.clone(),
@@ -1374,7 +1418,8 @@ impl WorkflowEngine {
                         exec_state,
                     );
                 },
-                Ok((node_key, Err(ref err))) => {
+                Ok((task_id, (node_key, Err(ref err)))) => {
+                    task_nodes.remove(&task_id);
                     // Node failed at runtime. Ordering (§11.5, #297):
                     //   1. `mark_node_failed`  — in-memory state mutation
                     //   2. classify + apply    — IgnoreErrors recovery (in-memory)
@@ -1433,9 +1478,43 @@ impl WorkflowEngine {
                     }
                 },
                 Err(join_err) => {
-                    tracing::error!(?join_err, "node task panicked");
+                    // Recover the real NodeKey via the task-id side
+                    // map; falling back to a synthetic key would
+                    // report a phantom node and lose the identity of
+                    // the actually-panicked task (issue #301).
+                    let task_id = join_err.id();
+                    let panicked_node = task_nodes.remove(&task_id);
+                    let err_msg = join_err.to_string();
+                    tracing::error!(
+                        ?task_id,
+                        ?panicked_node,
+                        error = %err_msg,
+                        "node task panicked"
+                    );
+
+                    if let Some(node_key) = panicked_node {
+                        self.handle_panicked_node(
+                            execution_id,
+                            node_key.clone(),
+                            &err_msg,
+                            outputs,
+                            exec_state,
+                            repo_version,
+                        )
+                        .await;
+                        cancel_token.cancel();
+                        return Some((node_key, err_msg));
+                    }
+
+                    // No matching task id — this should be unreachable
+                    // as we insert every spawn into `task_nodes`, but
+                    // fall through defensively rather than inventing
+                    // a node identity.
                     cancel_token.cancel();
-                    return Some((node_key!("_panicked"), join_err.to_string()));
+                    return Some((
+                        node_key!("_panicked"),
+                        format!("panicked task with unknown id: {err_msg}"),
+                    ));
                 },
             }
         }
@@ -1465,8 +1544,16 @@ impl WorkflowEngine {
             NodeKey,
             Result<ActionResult<serde_json::Value>, EngineError>,
         )>,
+        task_nodes: &mut HashMap<tokio::task::Id, NodeKey>,
     ) -> bool {
         let Some(node_def) = node_map.get(&node_key) else {
+            // Unknown node — route through the setup-failure path so
+            // the frontier loop records the error and checkpoints the
+            // state (issues #300, #321).
+            let _ = exec_state.mark_setup_failed(
+                node_key.clone(),
+                format!("node {node_key} is not in the workflow's node map"),
+            );
             return false;
         };
         let action_key = node_def.action_key.as_str().to_owned();
@@ -1490,32 +1577,29 @@ impl WorkflowEngine {
                 Ok(Some(resolved_params)) => resolved_params,
                 Ok(None) => node_input, // No parameters → use predecessor output
                 Err(e) => {
-                    // Mark node as failed. Using `override_node_state`
-                    // rather than a Ready→Running→Failed sequence
-                    // because (a) parameter resolution failed BEFORE
-                    // the node was scheduled so it is still Pending
-                    // here, and Pending→Failed is not a valid forward
-                    // transition; (b) we know for a fact the node
-                    // failed and want it in the Failed state
-                    // regardless of its current position. Version is
-                    // still bumped per issue #255.
-                    let _ = exec_state.override_node_state(node_key.clone(), NodeState::Failed);
-                    if let Some(ns) = exec_state.node_states.get_mut(&node_key) {
-                        ns.error_message = Some(e.to_string());
-                    }
+                    // Parameter resolution failed. `mark_setup_failed`
+                    // handles the Pending/Failed/Retrying source states
+                    // uniformly via `override_node_state` (Pending →
+                    // Failed is not a valid forward transition) and
+                    // bumps the parent version for CAS readers
+                    // (issues #255, #300).
+                    let _ = exec_state.mark_setup_failed(node_key.clone(), e.to_string());
                     return false;
                 },
             };
 
-        // Mark node as running in execution state (versioned).
-        // Log on failure so a rejected transition is not silently
-        // swallowed — callers of the frontier loop need to know if
-        // the execution state got out of sync with the scheduler.
-        if let Err(err) = exec_state.transition_node(node_key.clone(), NodeState::Ready) {
-            tracing::warn!(%node_key, %err, "failed to transition node to Ready");
-        }
-        if let Err(err) = exec_state.transition_node(node_key.clone(), NodeState::Running) {
-            tracing::warn!(%node_key, %err, "failed to transition node to Running");
+        // Drive the node to Running via the typed state-machine
+        // helper. `start_node_attempt` models the legal transitions
+        // (Pending → Ready → Running, Failed → Retrying → Running,
+        // Retrying → Running) and returns an error for anything else.
+        // On error we do NOT silently spawn the task on stale state —
+        // route through the setup-failure path instead (issue #300).
+        if let Err(err) = exec_state.start_node_attempt(node_key.clone()) {
+            let _ = exec_state.mark_setup_failed(
+                node_key.clone(),
+                format!("cannot start node attempt: {err}"),
+            );
+            return false;
         }
 
         let runtime = self.runtime.clone();
@@ -1577,7 +1661,7 @@ impl WorkflowEngine {
                 .map(Arc::new)
         });
 
-        join_set.spawn(
+        let handle = join_set.spawn(
             NodeTask {
                 runtime,
                 cancel,
@@ -1597,6 +1681,7 @@ impl WorkflowEngine {
             }
             .run(),
         );
+        task_nodes.insert(handle.id(), node_key);
 
         true
     }
@@ -1672,10 +1757,56 @@ impl WorkflowEngine {
         outputs.insert(node_key.clone(), output_value.clone());
         mark_node_completed(exec_state, node_key.clone());
 
-        let fake_result = ActionResult::success(output_value);
+        // Prefer the fully-typed persisted ActionResult when
+        // available. Falling back to a synthesized `Success` loses
+        // Branch/Route/MultiOutput/Skip routing semantics on replay —
+        // every branch edge would fire unconditionally (issue #299).
+        let stored_result = match repo.load_node_result(execution_id, node_key.clone()).await {
+            Ok(Some(record)) => {
+                match serde_json::from_value::<ActionResult<serde_json::Value>>(record.result) {
+                    Ok(result) => Some(result),
+                    Err(e) => {
+                        tracing::warn!(
+                            %execution_id,
+                            %node_key,
+                            error = %e,
+                            "failed to deserialize persisted action result; \
+                             falling back to synthesized Success"
+                        );
+                        None
+                    },
+                }
+            },
+            Ok(None) => {
+                // Backend has no stored result (legacy rows, or a
+                // backend that does not override save_node_result).
+                // Fall back to the old behaviour but log so the
+                // regression is visible.
+                tracing::warn!(
+                    %execution_id,
+                    %node_key,
+                    "idempotency replay has no persisted ActionResult; \
+                     synthesizing Success — Branch/Route/MultiOutput \
+                     routing will not be preserved"
+                );
+                None
+            },
+            Err(e) => {
+                tracing::warn!(
+                    %execution_id,
+                    %node_key,
+                    error = %e,
+                    "failed to load persisted action result; \
+                     falling back to synthesized Success"
+                );
+                None
+            },
+        };
+
+        let effective_result = stored_result.unwrap_or_else(|| ActionResult::success(output_value));
         process_outgoing_edges(
             node_key.clone(),
-            Some(&fake_result),
+            Some(&effective_result),
             None,
             graph,
             activated_edges,
@@ -1686,6 +1817,55 @@ impl WorkflowEngine {
         );
 
         true
+    }
+
+    /// Persist the full [`ActionResult`] variant for a successfully
+    /// executed node so that idempotent replay can reconstruct the
+    /// exact routing semantics (Branch/Route/MultiOutput/Skip) instead
+    /// of synthesising a flat `Success` (issue #299).
+    ///
+    /// Best-effort: failures are logged and ignored. Backends that do
+    /// not override `save_node_result` no-op via the default trait
+    /// implementation.
+    async fn record_node_result(
+        &self,
+        execution_id: ExecutionId,
+        node_key: NodeKey,
+        attempt: u32,
+        action_result: &ActionResult<serde_json::Value>,
+    ) {
+        let Some(repo) = &self.execution_repo else {
+            return;
+        };
+        let value = match serde_json::to_value(action_result) {
+            Ok(v) => v,
+            Err(e) => {
+                tracing::warn!(
+                    %execution_id,
+                    %node_key,
+                    error = %e,
+                    "failed to serialize action result for persistence"
+                );
+                return;
+            },
+        };
+        let kind = value
+            .get("type")
+            .and_then(|v| v.as_str())
+            .unwrap_or("Unknown")
+            .to_owned();
+        let record = nebula_storage::NodeResultRecord::new(kind, value);
+        if let Err(e) = repo
+            .save_node_result(execution_id, node_key.clone(), attempt, record)
+            .await
+        {
+            tracing::warn!(
+                %execution_id,
+                %node_key,
+                error = %e,
+                "failed to persist action result"
+            );
+        }
     }
 
     /// Record an idempotency key for a successfully executed node (best-effort).
@@ -1718,6 +1898,48 @@ impl WorkflowEngine {
     /// `run_frontier` MUST abort the node's progression (no edge routing,
     /// no event emission) on `Err` so that observers and the frontier
     /// never act on an unpersisted transition (§11.5, §12.4, #297).
+    /// Persist final Failed state + emit NodeFailed for a panicked task.
+    ///
+    /// Best-effort: checkpoint failures are logged at `warn!` level (not
+    /// propagated) so that the engine still returns a cohesive panic
+    /// error to `run_frontier`'s caller. The real durability gap —
+    /// `save_node_output` after panic — is already logged by
+    /// `checkpoint_node` itself.
+    async fn handle_panicked_node(
+        &self,
+        execution_id: ExecutionId,
+        node_key: NodeKey,
+        err_msg: &str,
+        outputs: &Arc<DashMap<NodeKey, serde_json::Value>>,
+        exec_state: &mut ExecutionState,
+        repo_version: &mut u64,
+    ) {
+        let panic_err = EngineError::TaskPanicked(err_msg.to_owned());
+        mark_node_failed(exec_state, node_key.clone(), &panic_err);
+        let checkpoint_result = self
+            .checkpoint_node(
+                execution_id,
+                node_key.clone(),
+                outputs,
+                exec_state,
+                repo_version,
+            )
+            .await;
+        if let Err(e) = checkpoint_result {
+            tracing::warn!(
+                %execution_id,
+                %node_key,
+                error = %e,
+                "failed to checkpoint panicked node state"
+            );
+        }
+        self.emit_event(ExecutionEvent::NodeFailed {
+            execution_id,
+            node_key,
+            error: err_msg.to_owned(),
+        });
+    }
+
     async fn checkpoint_node(
         &self,
         execution_id: ExecutionId,
@@ -4712,7 +4934,6 @@ mod tests {
         registry.register_stateless(EchoHandler {
             meta: ActionMetadata::new(action_key!("echo"), "Echo", "echoes input"),
         });
-
         let (engine, _) = make_engine(registry);
 
         let a = node_key!("a");
@@ -5288,6 +5509,328 @@ mod tests {
             result.is_success(),
             "repeated with_action_credentials must merge, not replace. errors: {:?}",
             result.node_errors
+        );
+    }
+
+    // -- Regression tests for batch 2 (#299, #300, #301, #311, #321) --
+
+    /// Issue #321 — the setup-failure path (parameter resolution error,
+    /// missing node definition, invalid state-machine start) must
+    /// checkpoint the execution state, symmetrical with the runtime-
+    /// failure path. Previously only the runtime branch checkpointed,
+    /// so a setup failure left the persisted state describing the node
+    /// as Pending even though it was Failed in memory.
+    #[tokio::test]
+    async fn setup_failure_checkpoints_execution_state() {
+        // Force parameter resolution to fail by referencing a node
+        // that has no output in the shared outputs map.
+        let registry = Arc::new(ActionRegistry::new());
+        registry.register_stateless(EchoHandler {
+            meta: ActionMetadata::new(action_key!("echo"), "Echo", "echoes input"),
+        });
+
+        let repo = Arc::new(nebula_storage::InMemoryExecutionRepo::new());
+        let (engine, _) = make_engine(registry);
+        let engine = engine.with_execution_repo(repo.clone());
+
+        let n1 = node_key!("n1");
+        let ghost = node_key!("ghost");
+        let mut params: HashMap<String, nebula_workflow::ParamValue> = HashMap::new();
+        params.insert(
+            "input".into(),
+            nebula_workflow::ParamValue::Reference {
+                node_key: ghost,
+                output_path: String::new(),
+            },
+        );
+        let mut node = NodeDefinition::new(n1.clone(), "A", "echo").unwrap();
+        node.parameters = params;
+
+        let wf = make_workflow(vec![node], vec![]);
+
+        let result = engine
+            .execute_workflow(&wf, serde_json::json!("hello"), ExecutionBudget::default())
+            .await
+            .unwrap();
+
+        assert!(result.is_failure(), "setup failure should fail execution");
+
+        // The critical assertion: the execution state was checkpointed
+        // after the setup failure. The persisted status must be
+        // `failed` and the failed node's state must be `failed` with
+        // an error_message populated.
+        let (_version, state_json) = repo
+            .get_state(result.execution_id)
+            .await
+            .unwrap()
+            .expect("execution state should be persisted after setup failure");
+        assert_eq!(
+            state_json.get("status").and_then(|s| s.as_str()),
+            Some("failed"),
+            "execution status should be persisted as failed"
+        );
+        let node_state = state_json
+            .pointer(&format!("/node_states/{n1}/state"))
+            .and_then(|v| v.as_str());
+        assert_eq!(
+            node_state,
+            Some("failed"),
+            "node state should be persisted as failed after setup failure (issue #321)"
+        );
+        let err_msg = state_json
+            .pointer(&format!("/node_states/{n1}/error_message"))
+            .and_then(|v| v.as_str());
+        assert!(
+            err_msg.is_some(),
+            "setup-failure error message should be persisted, got state: {state_json}"
+        );
+    }
+
+    /// Issue #311 — resume_execution must restore the original
+    /// workflow input from the persisted state, not substitute Null.
+    /// Regression: `ExecutionState::workflow_input` is now persisted
+    /// at execution start and read back on resume.
+    #[tokio::test]
+    async fn resume_restores_original_workflow_input() {
+        let registry = Arc::new(ActionRegistry::new());
+        registry.register_stateless(EchoHandler {
+            meta: ActionMetadata::new(action_key!("echo"), "Echo", "echoes input"),
+        });
+
+        let exec_repo = Arc::new(nebula_storage::InMemoryExecutionRepo::new());
+        let (engine, _) = make_engine(registry);
+
+        let n1 = node_key!("n1");
+        let wf = make_workflow(
+            vec![NodeDefinition::new(n1.clone(), "A", "echo").unwrap()],
+            vec![],
+        );
+        let workflow_repo = save_workflow_to_repo(&wf).await;
+
+        // Build a partial execution state for a FRESH execution where
+        // the entry node has not yet run. Persist it with the original
+        // trigger payload set via `set_workflow_input`.
+        let execution_id = ExecutionId::new();
+        let mut exec_state = ExecutionState::new(execution_id, wf.id, std::slice::from_ref(&n1));
+        exec_state
+            .transition_status(ExecutionStatus::Running)
+            .unwrap();
+        exec_state.set_workflow_input(serde_json::json!({"trigger": "webhook-payload"}));
+        let state_json = serde_json::to_value(&exec_state).unwrap();
+        exec_repo
+            .create(execution_id, wf.id, state_json)
+            .await
+            .unwrap();
+
+        let engine = engine
+            .with_execution_repo(exec_repo.clone())
+            .with_workflow_repo(workflow_repo);
+
+        let result = engine.resume_execution(execution_id).await.unwrap();
+
+        assert!(result.is_success());
+        // Echo pipes the input through — so n1's output is exactly
+        // the workflow input the engine restored from storage.
+        assert_eq!(
+            result.node_output(&n1),
+            Some(&serde_json::json!({"trigger": "webhook-payload"})),
+            "resume should feed the entry node the persisted trigger payload, not Null (issue #311)"
+        );
+    }
+
+    /// Issue #300 — spawn_node must NOT silently spawn a task on a
+    /// node whose state machine cannot reach Running from its current
+    /// position. When the engine is asked to spawn a node that is
+    /// already Completed (e.g. via a manually-manipulated state), the
+    /// typed `start_node_attempt` helper rejects the transition and
+    /// the node is routed through the setup-failure path.
+    #[test]
+    fn start_node_attempt_rejects_terminal_state() {
+        let n1 = node_key!("n1");
+        let mut state = ExecutionState::new(
+            ExecutionId::new(),
+            WorkflowId::new(),
+            std::slice::from_ref(&n1),
+        );
+        // Drive n1 to Completed via the legal transition chain.
+        state.transition_node(n1.clone(), NodeState::Ready).unwrap();
+        state
+            .transition_node(n1.clone(), NodeState::Running)
+            .unwrap();
+        state
+            .transition_node(n1.clone(), NodeState::Completed)
+            .unwrap();
+
+        let err = state
+            .start_node_attempt(n1.clone())
+            .expect_err("start_node_attempt must reject Completed source state");
+        assert!(
+            err.to_string().contains("invalid transition"),
+            "error should be InvalidTransition, got: {err}"
+        );
+        // State must not have moved.
+        assert_eq!(state.node_state(n1).unwrap().state, NodeState::Completed);
+    }
+
+    /// Issue #301 — when a node task panics, the engine must report
+    /// the real NodeKey, not a synthesized placeholder. Regression
+    /// verified via a panicking handler.
+    #[tokio::test]
+    async fn panicked_task_reports_real_node_id() {
+        struct PanicHandler {
+            meta: ActionMetadata,
+        }
+
+        impl ActionDependencies for PanicHandler {}
+        impl Action for PanicHandler {
+            fn metadata(&self) -> &ActionMetadata {
+                &self.meta
+            }
+        }
+
+        impl StatelessAction for PanicHandler {
+            type Input = serde_json::Value;
+            type Output = serde_json::Value;
+
+            async fn execute(
+                &self,
+                _input: Self::Input,
+                _ctx: &impl Context,
+            ) -> Result<ActionResult<Self::Output>, ActionError> {
+                panic!("intentional panic for test");
+            }
+        }
+
+        let registry = Arc::new(ActionRegistry::new());
+        registry.register_stateless(PanicHandler {
+            meta: ActionMetadata::new(action_key!("boom"), "Boom", "panics"),
+        });
+
+        let repo = Arc::new(nebula_storage::InMemoryExecutionRepo::new());
+        let (engine, _) = make_engine(registry);
+        let engine = engine.with_execution_repo(repo.clone());
+
+        let n1 = node_key!("n1");
+        let wf = make_workflow(
+            vec![NodeDefinition::new(n1.clone(), "Boom", "boom").unwrap()],
+            vec![],
+        );
+
+        let result = engine
+            .execute_workflow(
+                &wf,
+                serde_json::json!("ignored"),
+                ExecutionBudget::default(),
+            )
+            .await
+            .unwrap();
+
+        assert!(result.is_failure(), "panicked workflow must fail");
+
+        // The node errors map must list the real n1 key with a
+        // non-empty message, not some synthetic NodeKey.
+        let err_msg = result
+            .node_errors
+            .get(&n1)
+            .expect("panicked node must be recorded under its real NodeKey (issue #301)");
+        assert!(
+            !err_msg.is_empty(),
+            "panic error message should not be empty, got: {err_msg:?}"
+        );
+
+        // Persisted state should also reflect n1 as the failed node.
+        let (_v, state_json) = repo
+            .get_state(result.execution_id)
+            .await
+            .unwrap()
+            .expect("state persisted after panic");
+        let node_state = state_json
+            .pointer(&format!("/node_states/{n1}/state"))
+            .and_then(|v| v.as_str());
+        assert_eq!(
+            node_state,
+            Some("failed"),
+            "panicked node should be checkpointed as Failed"
+        );
+    }
+
+    /// Issue #299 — idempotency replay must reconstruct the exact
+    /// ActionResult variant so that Branch edges gate correctly.
+    /// Regression: with the old code a persisted Branch result was
+    /// replayed as a flat `Success`, and every branch edge fired
+    /// regardless of `branch_key`, causing unintended downstream
+    /// execution on replay.
+    #[tokio::test]
+    async fn idempotency_replay_preserves_branch_routing() {
+        let registry = Arc::new(ActionRegistry::new());
+        registry.register_stateless(BranchHandler {
+            meta: ActionMetadata::new(action_key!("branch"), "Branch", "branches"),
+            selected: "true".into(),
+        });
+        registry.register_stateless(EchoHandler {
+            meta: ActionMetadata::new(action_key!("echo"), "Echo", "echoes input"),
+        });
+
+        let repo = Arc::new(nebula_storage::InMemoryExecutionRepo::new());
+        let (engine, _) = make_engine(registry);
+        let engine = engine.with_execution_repo(repo.clone());
+
+        // A → B (branch_key="true") / C (branch_key="false")
+        let a = node_key!("a");
+        let b = node_key!("b");
+        let c = node_key!("c");
+        let wf = make_workflow(
+            vec![
+                NodeDefinition::new(a.clone(), "A", "branch").unwrap(),
+                NodeDefinition::new(b.clone(), "B", "echo").unwrap(),
+                NodeDefinition::new(c.clone(), "C", "echo").unwrap(),
+            ],
+            vec![
+                Connection::new(a.clone(), b.clone()).with_branch_key("true"),
+                Connection::new(a.clone(), c.clone()).with_branch_key("false"),
+            ],
+        );
+
+        // First run: A emits Branch{selected=true}. Only B fires.
+        let first = engine
+            .execute_workflow(
+                &wf,
+                serde_json::json!("payload"),
+                ExecutionBudget::default(),
+            )
+            .await
+            .unwrap();
+
+        assert!(first.is_success());
+        assert!(
+            first.node_output(&b).is_some(),
+            "B should run on first pass"
+        );
+        assert!(
+            first.node_output(&c).is_none(),
+            "C should NOT run on first pass (false branch)"
+        );
+
+        // Verify the persisted ActionResult encodes a Branch variant
+        // rather than bare output — this is the byte-level check
+        // behind issue #299's fix.
+        let persisted_record = repo
+            .load_node_result(first.execution_id, a.clone())
+            .await
+            .unwrap()
+            .expect("load_node_result should return the persisted ActionResult after #299");
+        assert_eq!(
+            persisted_record.kind, "Branch",
+            "persisted ActionResult for A should be the Branch variant, got: {:?}",
+            persisted_record
+        );
+        assert_eq!(
+            persisted_record
+                .result
+                .get("selected")
+                .and_then(|v| v.as_str()),
+            Some("true"),
+            "Branch selector should be persisted verbatim"
         );
     }
 }
