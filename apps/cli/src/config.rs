@@ -26,7 +26,10 @@
 //! Rust field name verbatim (underscores intact). Top-level fields with no
 //! section use just `NEBULA__{FIELD}`.
 
-use std::path::{Path, PathBuf};
+use std::{
+    io::Read,
+    path::{Path, PathBuf},
+};
 
 use anyhow::Context;
 use figment::{
@@ -34,6 +37,14 @@ use figment::{
     providers::{Env, Format, Serialized, Toml},
 };
 use serde::{Deserialize, Serialize};
+
+/// Maximum size of a TOML config file, in bytes.
+///
+/// A real Nebula config is a few KB. Any file larger than this is almost
+/// certainly a misconfigured path (pointing at a log file, `/dev/urandom`, or
+/// a symlink-swapped victim). Reading it uncapped would OOM the process
+/// before logging is initialized, leaving no usable diagnostic.
+pub const MAX_CONFIG_BYTES: u64 = 10 * 1024 * 1024;
 
 /// CLI configuration.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -102,12 +113,48 @@ impl Default for LogConfig {
 /// syntactically invalid TOML — we never silently fall back to defaults when
 /// the user has a broken config file.
 fn read_toml_file(path: &Path) -> anyhow::Result<Option<String>> {
+    read_toml_file_capped(path, MAX_CONFIG_BYTES)
+}
+
+/// Implementation of [`read_toml_file`] with an explicit byte cap.
+///
+/// Separate from [`read_toml_file`] so tests can assert the guard without
+/// materializing a 10 MiB fixture.
+fn read_toml_file_capped(path: &Path, max_bytes: u64) -> anyhow::Result<Option<String>> {
     if !path.exists() {
         return Ok(None);
     }
-    let contents = std::fs::read_to_string(path)
+    let meta = std::fs::metadata(path)
+        .with_context(|| format!("failed to stat config file: {}", path.display()))?;
+    if meta.len() > max_bytes {
+        anyhow::bail!(
+            "config file {} is {} bytes, exceeds the {}-byte size limit",
+            path.display(),
+            meta.len(),
+            max_bytes,
+        );
+    }
+    let file = std::fs::File::open(path)
+        .with_context(|| format!("failed to open config file: {}", path.display()))?;
+    let capacity = usize::try_from(meta.len()).unwrap_or(0);
+    let mut contents = String::with_capacity(capacity);
+    // `take(max_bytes + 1)` bounds the read even when `metadata().len()` lies
+    // — e.g. a symlink to `/dev/urandom` returns `len() == 0` but streams
+    // infinite bytes. Reading `max_bytes + 1` lets us detect overflow without
+    // swallowing one extra byte silently.
+    let read_bytes = file
+        .take(max_bytes + 1)
+        .read_to_string(&mut contents)
         .with_context(|| format!("failed to read config file: {}", path.display()))?;
-    // Validate TOML syntax before handing to figment.
+    if read_bytes as u64 > max_bytes {
+        anyhow::bail!(
+            "config file {} exceeds the {}-byte size limit while streaming \
+             (metadata reported {} bytes); aborting before OOM",
+            path.display(),
+            max_bytes,
+            meta.len(),
+        );
+    }
     toml::from_str::<toml::Value>(&contents)
         .with_context(|| format!("invalid TOML in config file: {}", path.display()))?;
     Ok(Some(contents))
@@ -269,6 +316,97 @@ mod tests {
         assert!(
             msg.contains("nebula.toml"),
             "error message should name the file; got: {msg}"
+        );
+    }
+
+    #[test]
+    fn read_toml_file_capped_rejects_metadata_over_cap() {
+        // Small cap keeps the fixture trivial — we don't want to write 10 MiB
+        // per test run just to exercise the early metadata guard.
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("big.toml");
+        let payload = format!("# {}", "a".repeat(128));
+        std::fs::write(&path, payload).unwrap();
+
+        let err = read_toml_file_capped(&path, 64)
+            .expect_err("expected size-limit rejection for oversized config");
+        let msg = format!("{err:#}");
+        assert!(
+            msg.contains("exceeds") && msg.contains("size limit"),
+            "error should mention the size limit; got: {msg}"
+        );
+    }
+
+    #[test]
+    fn read_toml_file_capped_rejects_streaming_overflow() {
+        // Build a file larger than the cap, then read with a cap the metadata
+        // guard could in theory bypass. Confirms the `take()` streaming guard
+        // also rejects — this is the /dev/urandom-style path where metadata
+        // cannot be trusted.
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("streaming.toml");
+        std::fs::write(&path, format!("k = \"{}\"\n", "x".repeat(256))).unwrap();
+
+        // Cap below actual size — simulates metadata-under-cap + large stream.
+        let err = read_toml_file_capped(&path, 32)
+            .expect_err("expected size-limit rejection for streaming overflow");
+        let msg = format!("{err:#}");
+        assert!(
+            msg.contains("size limit"),
+            "error should mention the size limit; got: {msg}"
+        );
+    }
+
+    #[test]
+    fn read_toml_file_capped_accepts_within_cap() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("ok.toml");
+        std::fs::write(&path, "[run]\nconcurrency = 4\n").unwrap();
+
+        let contents = read_toml_file_capped(&path, MAX_CONFIG_BYTES)
+            .expect("load should succeed within cap")
+            .expect("file exists");
+        assert!(contents.contains("concurrency = 4"));
+    }
+
+    #[test]
+    fn oversized_config_file_is_rejected_end_to_end() {
+        // Sparse file of MAX_CONFIG_BYTES + 1 via set_len — materializing a
+        // 10 MiB dense file per test run would be wasteful; set_len creates
+        // a sparse hole on both NTFS and ext4 that metadata still reports at
+        // full length.
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("nebula.toml");
+        let file = std::fs::File::create(&path).unwrap();
+        file.set_len(MAX_CONFIG_BYTES + 1).unwrap();
+        drop(file);
+        let _guard = std::env::set_current_dir(tmp.path());
+
+        let err = load_sync().expect_err("expected size-limit rejection");
+        let msg = format!("{err:#}");
+        assert!(
+            msg.contains("size limit"),
+            "error should mention the size limit; got: {msg}"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn symlink_to_dev_zero_is_rejected() {
+        // `/dev/zero` is the canonical metadata-lies case: `metadata().len()`
+        // returns 0, but reads stream infinite NUL bytes. NULs are valid
+        // UTF-8, so `read_to_string` would happily fill memory — only the
+        // `take()` streaming guard stops it.
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("zero.toml");
+        std::os::unix::fs::symlink("/dev/zero", &path).unwrap();
+
+        let err = read_toml_file_capped(&path, 1024)
+            .expect_err("/dev/zero must be rejected by the streaming guard");
+        let msg = format!("{err:#}");
+        assert!(
+            msg.contains("size limit"),
+            "error should mention the size limit; got: {msg}"
         );
     }
 
