@@ -115,12 +115,19 @@ Integration authors assume unreliable networks; the runtime assumes **restartabl
 
 ### 4.5 Operational honesty — no false capabilities
 
-**If the engine does not own the behavior, the product does not promise it.**
+**[L1]** **Public surface exists iff the engine honors it end-to-end.** A type, variant, or endpoint that can be called but the engine rejects at runtime is a **false capability** — per canon, such types must not ship publicly. Options:
 
-- **Public surface must not outrun the behavioral core** — retry, resource lifecycle, durability, plugin semantics, and similar are **contracts**, not types alone. A type that exists but is **rejected at runtime** (e.g. an unsupported `ActionResult` variant) is a **false capability** — remove it or implement it end-to-end, do not document around it.
-- **Misconfiguration should move left** — validation or activation-time checks where possible; **runtime rejection alone** is not an acceptable primary safety boundary for workflow shape.
-- **JSON at edges** is fine; **JSON instead of validated boundaries** is not the long-term direction — schemas and explicit compatibility rules at workflow/action boundaries win over unstructured blobs.
-- **In-process channels** (`mpsc`, internal buses) may decouple components; they are **not** an implicit durable backbone. Anything that requires reliable delivery — including **cancel and dispatch signals** — must either share the **same transactional story** as persisted state, or live in an **explicit durable outbox** with documented at-least-once semantics. A channel whose consumer **logs and discards** is not a contract.
+1. **Implement end-to-end** — wire the behavior through `ExecutionRepo`, resilience pipeline, persistence, observability.
+2. **Make the surface private or feature-gated** — `pub(crate)` or gated under `unstable-*` feature so consumers cannot bind to what the engine does not yet deliver.
+3. **Remove the surface entirely.**
+
+**[L1]** Corollaries:
+
+- **Misconfiguration moves left.** Validation / activation-time checks over runtime rejection, wherever feasible for workflow shape.
+- **JSON at edges is fine; JSON instead of validated boundaries is not.** Schemas and compatibility rules at workflow / action boundaries win over unstructured blobs.
+- **In-process channels decouple components but are not a durable backbone.** Anything requiring reliable delivery — including cancel and dispatch signals — must share the persistence transaction with the owning state transition, or live in an explicit durable outbox with documented at-least-once semantics (see §12.2). A channel whose consumer logs and discards is not a contract.
+
+See also `docs/STYLE.md` §5 (type design bets) for the Rust patterns that make this invariant easy to uphold: sealed traits, typestate, `#[non_exhaustive]`, `#[unstable]` feature gates.
 
 ### 4.6 Observability
 
