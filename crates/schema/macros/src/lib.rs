@@ -49,7 +49,7 @@ pub fn field_key(input: TokenStream) -> TokenStream {
     out.into()
 }
 
-/// Derive [`HasSchema`](nebula_schema::HasSchema) for a struct.
+/// Derive `HasSchema` (from `nebula-schema`) for a struct.
 ///
 /// See the `nebula-schema` crate docs for supported attributes:
 /// `#[param(...)]`, `#[validate(...)]`, and struct-level `#[schema(...)]`.
@@ -61,8 +61,8 @@ pub fn derive_schema(input: TokenStream) -> TokenStream {
         .into()
 }
 
-/// Derive [`HasSelectOptions`](nebula_schema::HasSelectOptions) for a unit-only
-/// enum. Variant names snake_case into stored values; use
+/// Derive `HasSelectOptions` (from `nebula-schema`) for a unit-only enum.
+/// Variant names snake_case into stored values; use
 /// `#[param(label = "...")]` to override the display label.
 #[proc_macro_derive(EnumSelect, attributes(param))]
 pub fn derive_enum_select(input: TokenStream) -> TokenStream {

@@ -9,7 +9,7 @@
 //!   inputs,
 //! - optional catalog ornaments — [`icon`](Metadata::icon), documentation URL,
 //!   [`tags`](Metadata::tags),
-//! - a [`MaturityLevel`](MaturityLevel) and optional [`DeprecationNotice`](DeprecationNotice).
+//! - a [`MaturityLevel`] and optional [`DeprecationNotice`].
 //!
 //! This crate owns those shared concerns as concrete types and a small trait,
 //! so each business-layer crate (action, credential, resource, …) composes
@@ -21,7 +21,8 @@
 //! use nebula_metadata::{BaseMetadata, Icon, MaturityLevel, Metadata};
 //! # use nebula_schema::{Schema, ValidSchema};
 //!
-//! # struct MyKey;
+//! pub struct MyKey;
+//!
 //! pub struct MyEntityMetadata {
 //!     pub base: BaseMetadata<MyKey>,
 //!     pub extra_field: u32,

@@ -99,7 +99,7 @@ pub enum MetadataCompatibilityError {
 ///
 /// The shared catalog prefix (`key`, `name`, `description`, `schema`, `icon`,
 /// `documentation_url`, `tags`, `maturity`, `deprecation`) lives on the
-/// composed [`BaseMetadata`](nebula_metadata::BaseMetadata). Entity-specific
+/// composed [`BaseMetadata`]. Entity-specific
 /// fields (`version`, ports, `isolation_level`, `category`) stay on this
 /// struct.
 #[non_exhaustive]
@@ -164,7 +164,7 @@ impl ActionMetadata {
     /// [`StatelessAction`](crate::StatelessAction) implementation's `Input`
     /// type.
     ///
-    /// Prefer this over [`ActionMetadata::new`] + [`ActionMetadata::with_parameters`]
+    /// Prefer this over [`ActionMetadata::new`] + [`ActionMetadata::with_schema`]
     /// when the author owns a typed `Input` struct — the compiler then
     /// enforces that the declared `Input` type agrees with the schema the
     /// engine, UI, and validator will see.
