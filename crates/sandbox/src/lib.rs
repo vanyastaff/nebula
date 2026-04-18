@@ -1,15 +1,38 @@
 #![deny(unsafe_code)]
 #![warn(missing_docs)]
 
-//! # Nebula Sandbox
+//! # nebula-sandbox — Process Sandboxing (Correctness Boundary)
 //!
-//! Plugin isolation and sandboxing for the Nebula workflow engine.
+//! Provides two execution modes and the plugin discovery / capability model.
 //!
-//! - [`InProcessSandbox`] — trusted in-process execution (built-in actions)
-//! - [`ProcessSandbox`] — isolated child process execution (community plugins)
-//! - [`ProcessSandboxHandler`] — bridges ProcessSandbox into ActionRegistry
-//! - [`capabilities`] — iOS-style per-plugin capability model
-//! - [`discovery`] — scan directories for plugin binaries
+//! **This is not a security boundary against malicious native code.**
+//! Canon §12.6 is the normative statement: in-process execution provides
+//! correctness and cooperative cancellation; child-process execution provides
+//! OS-namespace separation via a duplex JSON envelope over UDS / Named Pipe
+//! (ADR 0006). WASM / WASI is an explicit non-goal (§12.6).
+//!
+//! ## Key types
+//!
+//! - `InProcessSandbox` — trusted in-process dispatch; no isolation.
+//! - `ProcessSandbox` — child-process execution via JSON envelope (ADR 0006).
+//! - `ProcessSandboxHandler` — bridge into `ActionRegistry`.
+//! - `SandboxRunner`, `ActionExecutor`, `SandboxedContext` — runner abstraction.
+//! - `capabilities::PluginCapabilities` — iOS-style capability declarations. Currently unenforced
+//!   (discovery TODO — see README Appendix).
+//! - `discovery` — scan directories for plugin binaries via `plugin.toml`.
+//! - `os_sandbox` — OS-level hardening primitives (best-effort, partial).
+//! - `SandboxError` — typed error.
+//!
+//! ## Canon
+//!
+//! - §4.5 operational honesty: capability allowlist is a false capability until the discovery
+//!   wiring TODO is closed.
+//! - §7.1 plugin packaging: this crate is the host side of the duplex broker; `nebula-plugin-sdk`
+//!   is the plugin side.
+//! - §12.6 isolation honesty: correctness boundary, not attacker-grade.
+//!
+//! See `crates/sandbox/README.md` for the real isolation roadmap and ADR 0006
+//! status.
 
 pub mod capabilities;
 pub mod discovery;

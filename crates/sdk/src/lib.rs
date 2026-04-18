@@ -1,8 +1,11 @@
-//! # Nebula SDK
+//! # nebula-sdk — Integration Author SDK
 //!
-//! Public SDK for building workflows and actions with the Nebula workflow engine.
+//! Single-crate façade for writing Nebula integrations. Re-exports the full
+//! integration surface (`nebula-action`, `nebula-credential`, `nebula-resource`,
+//! `nebula-schema`, `nebula-workflow`, `nebula-plugin`, `nebula-validator`) and
+//! adds `prelude`, `WorkflowBuilder`, `ActionBuilder`, and `TestRuntime`.
 //!
-//! ## Quick Start
+//! ## Quick start
 //!
 //! ```rust,no_run
 //! use nebula_core::action_key;
@@ -22,10 +25,19 @@
 //!
 //! ## Modules
 //!
-//! - [`prelude`] - Commonly used types and traits
-//! - [`action`] - Action development utilities
-//! - [`mod@workflow`] - Workflow building utilities
-//! - [`testing`] - Testing utilities (requires `testing` feature)
+//! - `prelude` — one-stop import for common types and traits.
+//! - `action` — `ActionBuilder` for programmatic action metadata.
+//! - `workflow` — `WorkflowBuilder` for programmatic workflow construction.
+//! - `runtime` — `TestRuntime`, `RunReport` — in-process test harness.
+//! - `testing` (feature `testing`) — test helpers and fixtures.
+//!
+//! ## Canon
+//!
+//! - §3.5 integration model: Action, Credential, Resource, Schema, Plugin.
+//! - §4.4 DX: stable `prelude` + `WorkflowBuilder` API is a public contract.
+//! - §7 open source contract: breaking changes need explicit announcement.
+//!
+//! See `crates/sdk/README.md` for the full re-export list and maturity notes.
 
 #![forbid(unsafe_code)]
 #![warn(missing_docs)]
