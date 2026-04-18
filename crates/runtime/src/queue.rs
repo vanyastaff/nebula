@@ -11,12 +11,10 @@ use std::{
     time::Duration,
 };
 
+use async_channel::{Receiver, Sender};
 use async_trait::async_trait;
 use thiserror::Error;
-use tokio::{
-    sync::{Mutex, mpsc},
-    time::Instant,
-};
+use tokio::{sync::Mutex, time::Instant};
 
 /// Errors returned by queue operations.
 #[derive(Debug, Error)]
@@ -113,9 +111,14 @@ struct InFlightEntry {
 /// In-memory bounded task queue.
 ///
 /// Tasks: Queued → In-flight (dequeued) → Done (acked) or requeued (nacked).
+///
+/// The receiver is multi-consumer (`async_channel`), so multiple concurrent
+/// `dequeue` callers may park inside `recv()` simultaneously. A previous
+/// `Arc<Mutex<mpsc::Receiver>>` design forced workers to serialize on the
+/// mutex, capping effective parallelism at 1 (issue #279).
 pub struct MemoryQueue {
-    sender: mpsc::Sender<QueueItem>,
-    receiver: Arc<Mutex<mpsc::Receiver<QueueItem>>>,
+    sender: Sender<QueueItem>,
+    receiver: Receiver<QueueItem>,
     in_flight: Arc<Mutex<HashMap<String, InFlightEntry>>>,
     queued_count: AtomicUsize,
     visibility_timeout: Duration,
@@ -136,10 +139,10 @@ impl MemoryQueue {
     /// is considered stale and can be redelivered by a later [`TaskQueue::dequeue`].
     #[must_use]
     pub fn new_with_visibility_timeout(capacity: usize, visibility_timeout: Duration) -> Self {
-        let (sender, receiver) = mpsc::channel(capacity);
+        let (sender, receiver) = async_channel::bounded(capacity);
         Self {
             sender,
-            receiver: Arc::new(Mutex::new(receiver)),
+            receiver,
             in_flight: Arc::new(Mutex::new(HashMap::new())),
             queued_count: AtomicUsize::new(0),
             visibility_timeout,
@@ -192,15 +195,17 @@ impl TaskQueue for MemoryQueue {
             return Ok(DequeueResult::Item { task_id, payload });
         }
 
-        let mut rx = self.receiver.lock().await;
-        let result = tokio::time::timeout(timeout, rx.recv()).await;
+        // No mutex around `recv()` — `async_channel::Receiver` is multi-consumer
+        // and `recv()` takes `&self`, so concurrent workers register independent
+        // wakers and park in parallel.
+        let result = tokio::time::timeout(timeout, self.receiver.recv()).await;
         match result {
-            Ok(Some(item)) => {
+            Ok(Ok(item)) => {
                 self.queued_count.fetch_sub(1, Ordering::Relaxed);
                 let (task_id, payload) = self.lease_item(item).await;
                 Ok(DequeueResult::Item { task_id, payload })
             },
-            Ok(None) => Ok(DequeueResult::Closed),
+            Ok(Err(_)) => Ok(DequeueResult::Closed),
             Err(_) => Ok(DequeueResult::Timeout),
         }
     }
@@ -332,6 +337,83 @@ mod tests {
             other => panic!("expected requeued task, got {other:?}"),
         };
         assert_eq!(requeued_id, dequeued_id);
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn dequeue_supports_concurrent_consumers() {
+        // Regression for issue #279 — the previous `Arc<Mutex<Receiver>>`
+        // design serialized all workers onto one in-flight `recv()` at a
+        // time. With a multi-consumer channel, N workers can each park in
+        // `recv()` independently and drain a saturated queue concurrently.
+        const ITEMS: usize = 64;
+        const WORKERS: usize = 8;
+
+        let queue = Arc::new(MemoryQueue::new(ITEMS));
+        for i in 0..ITEMS {
+            queue.enqueue(serde_json::json!({ "i": i })).await.unwrap();
+        }
+
+        async fn drain(queue: Arc<MemoryQueue>, processed: Arc<AtomicUsize>) {
+            while let DequeueResult::Item { task_id, .. } =
+                queue.dequeue(Duration::from_millis(50)).await.unwrap()
+            {
+                queue.ack(&task_id).await.unwrap();
+                processed.fetch_add(1, Ordering::Relaxed);
+            }
+        }
+
+        let processed = Arc::new(AtomicUsize::new(0));
+        let mut handles = Vec::with_capacity(WORKERS);
+        for _ in 0..WORKERS {
+            handles.push(tokio::spawn(drain(
+                Arc::clone(&queue),
+                Arc::clone(&processed),
+            )));
+        }
+
+        for h in handles {
+            h.await.unwrap();
+        }
+
+        assert_eq!(processed.load(Ordering::Relaxed), ITEMS);
+        assert_eq!(queue.queued_len().await.unwrap(), 0);
+        assert_eq!(queue.in_flight_len().await.unwrap(), 0);
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn dequeue_does_not_block_other_workers_during_long_timeout() {
+        // Regression for issue #279 — with the receiver mutex held across
+        // `tokio::time::timeout(timeout, rx.recv())`, a worker stuck in a
+        // long timeout would prevent any other worker from observing newly
+        // enqueued items. We start two workers with a long timeout, enqueue
+        // two items 50 ms apart, and assert both workers complete well
+        // within the timeout window.
+        let queue = Arc::new(MemoryQueue::new(2));
+        let long_timeout = Duration::from_secs(5);
+
+        let q1 = Arc::clone(&queue);
+        let h1 = tokio::spawn(async move { q1.dequeue(long_timeout).await });
+        let q2 = Arc::clone(&queue);
+        let h2 = tokio::spawn(async move { q2.dequeue(long_timeout).await });
+
+        // Give both workers a moment to register their wakers in `recv()`.
+        tokio::time::sleep(Duration::from_millis(20)).await;
+
+        queue.enqueue(serde_json::json!({"i": 1})).await.unwrap();
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        queue.enqueue(serde_json::json!({"i": 2})).await.unwrap();
+
+        let start = std::time::Instant::now();
+        let r1 = h1.await.unwrap().unwrap();
+        let r2 = h2.await.unwrap().unwrap();
+        let elapsed = start.elapsed();
+
+        assert!(matches!(r1, DequeueResult::Item { .. }));
+        assert!(matches!(r2, DequeueResult::Item { .. }));
+        assert!(
+            elapsed < Duration::from_secs(1),
+            "both dequeues should resolve well before the {long_timeout:?} timeout, got {elapsed:?}"
+        );
     }
 
     #[tokio::test]

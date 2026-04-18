@@ -18,6 +18,7 @@ nebula-action = { path = "../action" }
 nebula-sandbox = { path = "../sandbox" }
 nebula-metrics = { path = "../metrics" }
 nebula-telemetry = { path = "../telemetry" }
+async-channel = { workspace = true }
 async-trait = { workspace = true }
 semver = { workspace = true }
 tokio = { workspace = true }
@@ -32,6 +33,11 @@ uuid = { workspace = true }
 nebula-core = { path = "../core" }
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "time", "test-util"] }
 tokio-util = { workspace = true }
+criterion = { workspace = true }
 
 [lib]
 doctest = false
+
+[[bench]]
+name = "queue_bench"
+harness = false
