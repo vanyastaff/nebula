@@ -15,6 +15,25 @@
       "Bash(task --list)",
       "Bash(git worktree:*)",
       "Bash(lefthook run:*)"
+    ],
+    "ask": [
+      "Bash(git worktree remove:*)",
+      "Bash(git branch -D:*)",
+      "Bash(git push --force:*)",
+      "Bash(git push -f:*)",
+      "Bash(git push --force-with-lease:*)",
+      "Bash(git reset --hard:*)",
+      "Bash(git checkout .)",
+      "Bash(git checkout --:*)",
+      "Bash(git restore .)",
+      "Bash(git restore --staged:*)",
+      "Bash(git clean -f:*)",
+      "Bash(git clean -fd:*)",
+      "Bash(git clean -fdx:*)",
+      "Bash(git clean -d:*)",
+      "Bash(rm -rf:*)",
+      "Bash(rm -fr:*)",
+      "Bash(rm -r -f:*)"
     ]
   },
   "hooks": {
