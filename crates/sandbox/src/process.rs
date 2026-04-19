@@ -493,8 +493,30 @@ impl ProcessSandbox {
         // Spawn a background task that drains the plugin's stderr and logs
         // each line via `tracing`. We do this BEFORE reading the handshake
         // so that any crash diagnostics the plugin writes during startup
-        // are captured. The task ends when the child's stderr closes —
-        // usually on plugin exit.
+        // are captured.
+        //
+        // Fire-and-forget: the returned JoinHandle is intentionally
+        // dropped (#270). The task's lifecycle is bounded implicitly via
+        // the chain:
+        //
+        //   cmd.kill_on_drop(true)             (above, ~"kill_on_drop")
+        //     → dropping PluginHandle drops Child
+        //     → Child's Drop terminates the plugin process
+        //       (SIGKILL on Unix, TerminateProcess on Windows — both
+        //       close the child's stderr pipe handle as a side effect)
+        //     → plugin's stderr pipe closes
+        //     → drain_plugin_stderr observes EOF and returns
+        //     → detached task completes and is reaped
+        //
+        // If a future refactor removes `kill_on_drop(true)`, make sure
+        // the replacement shutdown path still reliably terminates the
+        // child so stderr closes and the drainer reaches EOF, and/or
+        // keep an owned JoinHandle that can be aborted explicitly on
+        // ProcessSandbox::drop. The leak risk is not "explicit
+        // shutdown" by itself; it is any shutdown path that leaves the
+        // stderr drainer with no guaranteed completion signal — at
+        // that point tokio's task slab grows unbounded per plugin
+        // spawn.
         if let Some(stderr) = child.stderr.take() {
             let plugin_name = self.binary.display().to_string();
             tokio::spawn(drain_plugin_stderr(stderr, plugin_name));
