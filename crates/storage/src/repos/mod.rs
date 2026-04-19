@@ -4,7 +4,7 @@
 //!
 //! | Trait | Status | Notes |
 //! |---|---|---|
-//! | `ControlQueueRepo` + `InMemoryControlQueueRepo` | **implemented** | Produced by the API cancel handler; consumed by `nebula_engine::ControlConsumer` (skeleton — real dispatch lands with ADR-0008 follow-ups A2 / A3). Safe to depend on as a storage port. |
+//! | `ControlQueueRepo` + `InMemoryControlQueueRepo` | **implemented** | Produced by the API start / cancel handlers; consumed by `nebula_engine::ControlConsumer`. `Start` / `Resume` / `Restart` are dispatched via `nebula_engine::EngineControlDispatch` (ADR-0008 A2); `Cancel` / `Terminate` dispatch lands with A3. Safe to depend on as a storage port. |
 //! | `ExecutionRepo`, `WorkflowRepo`, `ExecutionNodeRepo`, `JournalRepo` | **planned** | Trait definitions only — zero in-memory / Postgres implementations exist in this crate. Engine and API cannot compile against these signatures today. |
 //! | `AuditRepo`, `BlobRepo`, `CredentialRepo`, `QuotaRepo`, `ResourceRepo`, `TriggerRepo`, `UserRepo`, `OrgRepo`, `WorkspaceRepo` | **planned** (some with partial Postgres glue) | Same caveat. |
 //!

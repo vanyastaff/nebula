@@ -19,9 +19,10 @@ builds an `ExecutionPlan` from the workflow DAG, resolves node inputs from prede
 transitions execution state through `ExecutionRepo` (CAS on `version`), and delegates action
 dispatch to `nebula-runtime`. Canon §12.2 names this crate as the location of the
 `execution_control_queue` consumer (`ControlConsumer`). The consumer skeleton — polling,
-claim/ack, graceful shutdown — ships today; the `Resume` / `Restart` dispatch (A2, closes #332 /
-#327) and the `Cancel` / `Terminate` dispatch (A3, closes #330) are planned follow-ups on the
-ADR-0008 chip stack. A demo handler that logs and discards commands does not satisfy the canon.
+claim/ack, graceful shutdown — ships today; the engine-side `Start` / `Resume` / `Restart`
+dispatch lives in `EngineControlDispatch` (A2, closes #332 / #327); the `Cancel` / `Terminate`
+dispatch (A3, closes #330) is the remaining planned follow-up on the ADR-0008 chip stack. A
+demo handler that logs and discards commands does not satisfy the canon.
 
 ## Role
 
@@ -34,11 +35,15 @@ bounded concurrency.
 
 - `WorkflowEngine` — entry point: executes workflows level-by-level with bounded concurrency.
 - `ControlConsumer` — durable control-queue consumer drained via `ControlQueueRepo`
-  (canon §12.2, ADR-0008). Skeleton today; `Resume` / `Restart` and `Cancel` / `Terminate`
-  dispatch land with A2 / A3.
+  (canon §12.2, ADR-0008). `Start` / `Resume` / `Restart` wired via
+  `EngineControlDispatch` (A2); `Cancel` / `Terminate` dispatch lands with A3.
 - `ControlDispatch` — engine-owned trait implementors provide to deliver typed commands
   (`ExecutionId` + command kind) to the engine's start / cancel paths. Must be idempotent
   per `(execution_id, command)` pair (ADR-0008 §5).
+- `EngineControlDispatch` — the canonical engine-owned `ControlDispatch` impl. Reads
+  the current `ExecutionStatus` for the ADR-0008 §5 idempotency guard, then delegates
+  `Start` / `Resume` / `Restart` to `WorkflowEngine::resume_execution` under the
+  ADR-0015 lease scope.
 - `ControlDispatchError` — typed error returned from `ControlDispatch` methods; recorded on
   the control-queue row via `mark_failed` (no auto-retry — ADR-0008 §5).
 - `ExecutionResult` — post-run summary returned to the API layer.
@@ -62,11 +67,11 @@ Re-exports from `nebula-plugin`: `Plugin`, `PluginKey`, `PluginMetadata`, `Plugi
 - **[L2-§12.2]** The engine owns the `execution_control_queue` consumer
   (`ControlConsumer`; wiring decisions in ADR-0008). Cancel signals are written to the outbox in
   the same logical operation as the state transition and the engine's `ControlConsumer` drains
-  the queue. Today the skeleton observes and acks each command; the engine-facing `Cancel` /
-  `Terminate` path (chip A3) and `Resume` / `Restart` path (chip A2) land on top of the
-  skeleton. A handler that only logs and discards control-queue rows violates this invariant —
-  the skeleton's `planned` markers bound the transition to the immediate follow-up PRs, after
-  which the invariant is honoured end-to-end.
+  the queue. The `Start` / `Resume` / `Restart` path is now wired end-to-end via
+  `EngineControlDispatch` (chip A2); the `Cancel` / `Terminate` path (chip A3) remains planned
+  and ships on top of the same trait. A handler that only logs and discards control-queue rows
+  violates this invariant — the `planned` marker on A3 bounds the transition to the immediate
+  follow-up PR, after which the invariant is honoured end-to-end for every command kind.
 
 - **[L2-§10]** The golden-path knife scenario (canon §13) — define, activate, start, observe,
   cancel — exercises this crate's integration with `ExecutionRepo` end-to-end. Integration

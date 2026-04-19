@@ -51,6 +51,11 @@ impl RecordingDispatch {
 
 #[async_trait]
 impl ControlDispatch for RecordingDispatch {
+    async fn dispatch_start(&self, execution_id: ExecutionId) -> Result<(), ControlDispatchError> {
+        self.record(ControlCommand::Start, execution_id);
+        Ok(())
+    }
+
     async fn dispatch_cancel(&self, execution_id: ExecutionId) -> Result<(), ControlDispatchError> {
         self.record(ControlCommand::Cancel, execution_id);
         Ok(())
@@ -145,11 +150,15 @@ async fn consumer_observes_each_command_variant_via_dispatch_trait() {
     let recorder = RecordingDispatch::new();
     let dispatch: Arc<dyn ControlDispatch> = recorder.clone();
 
+    let exec_start = ExecutionId::new();
     let exec_cancel = ExecutionId::new();
     let exec_terminate = ExecutionId::new();
     let exec_resume = ExecutionId::new();
     let exec_restart = ExecutionId::new();
 
+    repo.enqueue(&queue_entry(&exec_start, ControlCommand::Start, 0))
+        .await
+        .unwrap();
     repo.enqueue(&queue_entry(&exec_cancel, ControlCommand::Cancel, 1))
         .await
         .unwrap();
@@ -169,27 +178,28 @@ async fn consumer_observes_each_command_variant_via_dispatch_trait() {
     let shutdown = CancellationToken::new();
     let handle = consumer.spawn(shutdown.clone());
 
-    // Wait for the consumer to observe all four rows.
+    // Wait for the consumer to observe all five rows.
     tokio::time::timeout(Duration::from_secs(2), async {
         loop {
-            if recorder.snapshot().len() >= 4 {
+            if recorder.snapshot().len() >= 5 {
                 break;
             }
             recorder.notify.notified().await;
         }
     })
     .await
-    .expect("all four commands observed within 2s");
+    .expect("all five commands observed within 2s");
 
     shutdown.cancel();
     handle.await.expect("graceful shutdown");
 
     let mut seen = recorder.snapshot();
     seen.sort_by_key(|(cmd, _)| cmd.as_str());
-    assert_eq!(seen.len(), 4, "all commands observed exactly once");
+    assert_eq!(seen.len(), 5, "all commands observed exactly once");
 
     let has =
         |cmd: ControlCommand, id: ExecutionId| seen.iter().any(|(c, i)| *c == cmd && *i == id);
+    assert!(has(ControlCommand::Start, exec_start), "Start observed");
     assert!(has(ControlCommand::Cancel, exec_cancel), "Cancel observed");
     assert!(
         has(ControlCommand::Terminate, exec_terminate),

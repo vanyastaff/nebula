@@ -635,3 +635,220 @@ async fn knife_step6_queue_failure_returns_error() {
          (canon §13 step 6)"
     );
 }
+
+// ── Step 3 end-to-end (ADR-0008 A2) ───────────────────────────────────────────
+//
+// The `knife_scenario_end_to_end` test above asserts the PRODUCER side of §13
+// step 3 — the API writes the execution row and enqueues `Start` onto the
+// durable control queue (#332). This separate test asserts the CONSUMER side:
+// the engine-owned `EngineControlDispatch` (ADR-0008 A2) drains the queue and
+// actually drives the workflow to `Completed`, closing the §4.5 gap that was
+// still open after #332 landed.
+//
+// The two tests intentionally stand up separate `AppState`s — the producer
+// test pins a pre-consumer snapshot of the queue (Start still Pending when
+// step 5 runs), while this test spawns the consumer so the Start row is
+// drained end-to-end.
+
+/// A hand-built echo `Action` that the engine can dispatch. Mirrors the
+/// workflow definition saved below (`action_key = "echo"`).
+struct KnifeEcho {
+    meta: nebula_action::metadata::ActionMetadata,
+}
+
+impl nebula_action::dependency::ActionDependencies for KnifeEcho {}
+impl nebula_action::action::Action for KnifeEcho {
+    fn metadata(&self) -> &nebula_action::metadata::ActionMetadata {
+        &self.meta
+    }
+}
+impl nebula_action::stateless::StatelessAction for KnifeEcho {
+    type Input = serde_json::Value;
+    type Output = serde_json::Value;
+
+    async fn execute(
+        &self,
+        input: Self::Input,
+        _ctx: &impl nebula_action::context::Context,
+    ) -> Result<nebula_action::result::ActionResult<Self::Output>, nebula_action::ActionError> {
+        Ok(nebula_action::result::ActionResult::success(input))
+    }
+}
+
+/// Canon §13 step 3 end-to-end (ADR-0008 A2).
+///
+/// Wires API producer + `ControlConsumer` + `EngineControlDispatch` + engine
+/// over shared in-memory repos, POSTs `/workflows/:id/executions`, and polls
+/// the repo until the execution transitions all the way to `Completed`. This
+/// exercises the full §12.2 loop that ADR-0008 promised:
+///
+/// ```text
+/// POST /executions
+///   → execution_repo.create (Created)
+///   → execution_control_queue.enqueue(Start)
+///   → ControlConsumer.claim_pending
+///   → EngineControlDispatch::dispatch_start
+///   → WorkflowEngine::resume_execution (ADR-0015 lease scope)
+///   → node run → transition to Completed
+///   → mark_completed on the queue row
+/// ```
+#[tokio::test]
+async fn knife_step3_engine_dispatches_start_end_to_end() {
+    use std::time::Duration;
+
+    use nebula_core::action_key;
+    use nebula_engine::{ControlConsumer, EngineControlDispatch, WorkflowEngine};
+    use nebula_execution::ExecutionStatus;
+    use nebula_runtime::{
+        ActionExecutor, ActionRuntime, DataPassingPolicy, InProcessSandbox,
+        registry::ActionRegistry,
+    };
+    use nebula_workflow::{
+        Connection, NodeDefinition, Version, WorkflowConfig, WorkflowDefinition,
+    };
+    use tokio_util::sync::CancellationToken;
+
+    let (state, _control_queue) = create_state_with_queue().await;
+    let api_config = ApiConfig::for_test();
+    let token = create_test_jwt();
+
+    // ── Persist a valid workflow (`action_key = "echo"`) directly ────────────
+    //
+    // Avoids the HTTP activation round-trip — that path is exercised by the
+    // producer-side knife test above. Here we care about the engine-side
+    // dispatch of the Start command that the API will enqueue below.
+    let workflow_id = nebula_core::WorkflowId::new();
+    let now = chrono::Utc::now();
+    let wf = WorkflowDefinition {
+        id: workflow_id,
+        name: "knife-a2-dispatch".into(),
+        description: None,
+        version: Version::new(0, 1, 0),
+        nodes: vec![NodeDefinition::new(nebula_core::node_key!("step"), "Step", "echo").unwrap()],
+        connections: Vec::<Connection>::new(),
+        variables: std::collections::HashMap::new(),
+        config: WorkflowConfig::default(),
+        trigger: None,
+        tags: Vec::new(),
+        created_at: now,
+        updated_at: now,
+        owner_id: None,
+        ui_metadata: None,
+        schema_version: 1,
+    };
+    state
+        .workflow_repo
+        .save(workflow_id, 0, serde_json::to_value(&wf).unwrap())
+        .await
+        .unwrap();
+
+    // ── Build the engine bound to the same repos the API wrote to ────────────
+    let registry = Arc::new(ActionRegistry::new());
+    registry.register_stateless(KnifeEcho {
+        meta: nebula_action::metadata::ActionMetadata::new(
+            action_key!("echo"),
+            "echo",
+            "knife echo handler",
+        ),
+    });
+
+    let executor: ActionExecutor = Arc::new(|_ctx, _meta, input| {
+        Box::pin(async move { Ok(nebula_action::result::ActionResult::success(input)) })
+    });
+    let sandbox = Arc::new(InProcessSandbox::new(executor));
+    let metrics = nebula_telemetry::metrics::MetricsRegistry::new();
+    let runtime = Arc::new(ActionRuntime::new(
+        registry,
+        sandbox,
+        DataPassingPolicy::default(),
+        metrics.clone(),
+    ));
+
+    let engine = Arc::new(
+        WorkflowEngine::new(runtime, metrics)
+            .with_execution_repo(Arc::clone(&state.execution_repo))
+            .with_workflow_repo(Arc::clone(&state.workflow_repo)),
+    );
+
+    // ── Spawn the consumer so `Start` rows are drained continuously ──────────
+    let dispatch = Arc::new(EngineControlDispatch::new(
+        engine,
+        Arc::clone(&state.execution_repo),
+    ));
+    let consumer = ControlConsumer::new(
+        Arc::clone(&state.control_queue_repo),
+        dispatch,
+        b"knife-a2".to_vec(),
+    )
+    .with_poll_interval(Duration::from_millis(10));
+    let shutdown = CancellationToken::new();
+    let consumer_handle = consumer.spawn(shutdown.clone());
+
+    // ── POST /executions — the A1 producer path ──────────────────────────────
+    let start_request = serde_json::json!({
+        "input": { "knife_e2e": "a2" }
+    });
+    let app = app::build_app(state.clone(), &api_config);
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!("/api/v1/workflows/{workflow_id}/executions"))
+                .header("content-type", "application/json")
+                .header("authorization", format!("Bearer {token}"))
+                .body(Body::from(serde_json::to_string(&start_request).unwrap()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(
+        response.status(),
+        StatusCode::ACCEPTED,
+        "step 3 end-to-end: start execution must return 202"
+    );
+    let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let execution_response: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    let execution_id_str = execution_response["id"]
+        .as_str()
+        .expect("execution response must carry an id")
+        .to_string();
+    let execution_id = nebula_core::ExecutionId::parse(&execution_id_str).unwrap();
+
+    // ── Wait for the consumer + engine to drive the execution to Completed ───
+    //
+    // Poll the repo because the consumer loop is cross-task; a small timeout
+    // tolerates scheduler jitter on slow test hosts. A fail here means the
+    // §4.5 gap #332 was only half-closed — producer works, consumer does not.
+    let final_status = tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            let (_version, json) = state
+                .execution_repo
+                .get_state(execution_id)
+                .await
+                .unwrap()
+                .expect("execution row is present");
+            let status: ExecutionStatus =
+                serde_json::from_value(json.get("status").cloned().unwrap()).unwrap();
+            if status.is_terminal() {
+                return status;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    })
+    .await
+    .expect("engine drove execution to terminal within 5s (A2 consumer + engine wired)");
+
+    assert_eq!(
+        final_status,
+        ExecutionStatus::Completed,
+        "step 3 end-to-end: the A2 engine dispatch must transition the execution to \
+         Completed — the §4.5 gap named in #332 is now closed on both halves"
+    );
+
+    // Graceful shutdown so the spawned task doesn't leak across tests.
+    shutdown.cancel();
+    let _ = consumer_handle.await;
+}

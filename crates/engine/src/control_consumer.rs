@@ -9,21 +9,19 @@
 //!
 //! ## Status
 //!
-//! This module is the **A1 skeleton**:
-//!
 //! - construction, spawning, graceful shutdown, polling, claim/ack plumbing — **implemented**
 //!   (§11.6);
-//! - dispatch of `Resume` / `Restart` to the engine start path — **planned**, lands with A2 (closes
-//!   #332, #327);
+//! - dispatch of `Start` / `Resume` / `Restart` to the engine start/resume path — **implemented**
+//!   (A2, closes #332 / #327). The engine-owned implementation lives in
+//!   [`crate::control_dispatch::EngineControlDispatch`];
 //! - dispatch of `Cancel` / `Terminate` to the engine cancel path — **planned**, lands with A3
 //!   (closes #330).
 //!
-//! Until A2 / A3 land, the consumer logs each observed command at `info`
-//! level with a `TODO(A2)` / `TODO(A3)` marker and acks the row via
-//! `mark_completed`. This is an explicit, time-bounded transition — not a
-//! §12.2 "log and discard" antipattern, because the module's docs and the
-//! crate-level `//!` use §11.6 `planned` vocabulary and the chip schedule
-//! bounds the transition to the immediate follow-up PRs.
+//! Until A3 lands, the default [`EngineControlDispatch`] body for
+//! `Cancel` / `Terminate` returns a typed [`ControlDispatchError::Rejected`]
+//! so the consumer marks the row `Failed` rather than silently acking it.
+//!
+//! [`EngineControlDispatch`]: crate::control_dispatch::EngineControlDispatch
 
 use std::{sync::Arc, time::Duration};
 
@@ -95,24 +93,18 @@ pub trait ControlDispatch: Send + Sync {
     /// §13 step 3, #332).
     ///
     /// Enqueued by the API `start_execution` / `execute_workflow` handlers
-    /// once the `ExecutionState::Created` row has been persisted. The A1
-    /// skeleton provides a default implementation that returns `Ok(())` so
-    /// downstream consumers compile without change; A2 overrides it with the
-    /// engine's start-path dispatch so a POST to `/executions` actually causes
-    /// node execution.
+    /// once the `ExecutionState::Created` row has been persisted. A2 wired
+    /// the canonical engine-side body in
+    /// [`crate::control_dispatch::EngineControlDispatch`] — no default
+    /// implementation is provided, so every `ControlDispatch` implementor
+    /// must supply a real dispatch (the ADR-0008 A2 merge-checklist
+    /// requirement).
     ///
     /// **Idempotency (critical):** double-start re-runs the workflow twice.
-    /// Implementations must guard with CAS on `ExecutionRepo::transition` —
+    /// Implementations must guard via CAS on `ExecutionRepo::transition` —
     /// a `Start` arriving for an already-running or already-terminal
     /// execution must be `Ok(())`, not a second run. See ADR-0008 §5.
-    async fn dispatch_start(&self, execution_id: ExecutionId) -> Result<(), ControlDispatchError> {
-        // Default no-op so the A1 skeleton stays green while A2 wires the
-        // engine-owned implementation. Removing the default — and thus
-        // forcing every `ControlDispatch` implementor to supply a real
-        // dispatch — is tracked as part of A2's merge checklist.
-        let _ = execution_id;
-        Ok(())
-    }
+    async fn dispatch_start(&self, execution_id: ExecutionId) -> Result<(), ControlDispatchError>;
 
     /// Deliver a `Cancel` command to a running execution.
     ///
@@ -141,19 +133,24 @@ pub trait ControlDispatch: Send + Sync {
 
     /// Deliver a `Resume` command to a suspended execution.
     ///
-    /// A2 wires this into the engine's start / resume path. A1 stub
-    /// returns `Ok(())`.
+    /// A2 wired the canonical body in
+    /// [`crate::control_dispatch::EngineControlDispatch`].
     ///
     /// **Idempotency (critical):** double-resume starts the workflow twice.
-    /// A2's implementation must guard with CAS on `ExecutionRepo::transition`
-    /// — a `Resume` arriving for an already-running or already-terminal
+    /// Implementations must guard via CAS on `ExecutionRepo::transition` —
+    /// a `Resume` arriving for an already-running or already-terminal
     /// execution must be `Ok(())`, not a second start. See ADR-0008 §5.
     async fn dispatch_resume(&self, execution_id: ExecutionId) -> Result<(), ControlDispatchError>;
 
     /// Deliver a `Restart` command to an execution.
     ///
-    /// A2 wires this into the engine's restart-from-input path. A1 stub
-    /// returns `Ok(())`.
+    /// A2 wired the canonical body in
+    /// [`crate::control_dispatch::EngineControlDispatch`]. Full
+    /// rewind-from-input semantics require durable output purge and a
+    /// monotonic restart counter — both are tracked as follow-ups under
+    /// ADR-0008; the A2 body honors idempotency for non-terminal states
+    /// and surfaces a typed [`ControlDispatchError::Rejected`] for
+    /// already-terminal executions until the rewind path is wired.
     ///
     /// **Idempotency:** same `Resume` contract applies — double-restart
     /// rewinds twice. Guard with a monotonic restart counter or CAS.
@@ -300,10 +297,7 @@ impl ControlConsumer {
 
         let dispatch_result = match entry.command {
             ControlCommand::Start => {
-                tracing::info!(
-                    %execution_id,
-                    "control-queue: observed Start (TODO(A2): wire to engine start path, #332)"
-                );
+                tracing::debug!(%execution_id, "control-queue: dispatching Start (A2)");
                 self.dispatch.dispatch_start(execution_id).await
             },
             ControlCommand::Cancel => {
@@ -321,17 +315,11 @@ impl ControlConsumer {
                 self.dispatch.dispatch_terminate(execution_id).await
             },
             ControlCommand::Resume => {
-                tracing::info!(
-                    %execution_id,
-                    "control-queue: observed Resume (TODO(A2): wire to engine resume path)"
-                );
+                tracing::debug!(%execution_id, "control-queue: dispatching Resume (A2)");
                 self.dispatch.dispatch_resume(execution_id).await
             },
             ControlCommand::Restart => {
-                tracing::info!(
-                    %execution_id,
-                    "control-queue: observed Restart (TODO(A2): wire to engine restart path)"
-                );
+                tracing::debug!(%execution_id, "control-queue: dispatching Restart (A2)");
                 self.dispatch.dispatch_restart(execution_id).await
             },
         };
