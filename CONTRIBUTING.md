@@ -56,8 +56,9 @@ lefthook install
 
 - `pre-commit` (≤10s): fmt, clippy, typos, taplo, cargo-deny
 - `commit-msg`: conventional-commit validation via `convco`
-- `pre-push` (≤90s): full mirror of CI's required jobs (nextest, doctests,
-  `--all-features`, `--no-default-features`, MSRV 1.94, cargo-shear)
+- `pre-push` (≤90s): nextest, doctests, `--all-features`,
+  `--no-default-features`, docs (`RUSTDOCFLAGS=-D warnings`), cargo-shear.
+  The MSRV-1.94 check runs in CI only (see the note in `lefthook.yml`).
 
 See [docs/dev-setup.md](docs/dev-setup.md) for lefthook troubleshooting and
 agent-profile notes.
@@ -99,7 +100,9 @@ Wider idioms, antipatterns, and the error taxonomy live in
 
 ### Commit messages
 
-Conventional Commits, enforced by `pr-validation.yml` (commitlint):
+Conventional Commits are required and validated in CI by `convco` (commit
+messages) and a regex check on the PR title — see
+[`.github/workflows/pr-validation.yml`](.github/workflows/pr-validation.yml):
 
 ```
 <type>(<scope>): <description>
@@ -121,7 +124,8 @@ Conventional Commits, enforced by `pr-validation.yml` (commitlint):
 3. PR title must also follow Conventional Commits.
 4. Required CI jobs must be green: `fmt`, `clippy -D warnings`, `nextest`,
    `doctests`, `MSRV 1.94`, `--all-features`, `--no-default-features`,
-   `cargo deny`. If `lefthook pre-push` passed locally, CI will too.
+   `cargo deny`. A green `lefthook pre-push` catches most of these locally,
+   but some jobs (notably the MSRV check) run only in CI.
 5. **Squash-merge only** — keep `main` history linear.
 
 ### Code review
