@@ -166,7 +166,16 @@ impl<S: CredentialStore> CredentialStore for EncryptionLayer<S> {
                 )
                 .await
             {
-                Ok(_) | Err(StoreError::VersionConflict { .. }) => {},
+                Ok(stored_after_rotation) => {
+                    // The CAS write bumped `version` (and `updated_at`) to the
+                    // post-rotation row. Propagate that to the caller so its
+                    // own subsequent CAS updates target the fresh row rather
+                    // than phantom-conflicting against our lazy re-encrypt
+                    // write (GitHub issue #282).
+                    credential.version = stored_after_rotation.version;
+                    credential.updated_at = stored_after_rotation.updated_at;
+                },
+                Err(StoreError::VersionConflict { .. }) => {},
                 Err(other) => return Err(other),
             }
         }
@@ -430,6 +439,50 @@ mod tests {
 
         let fetched = store_new.get("rotate-1").await.unwrap();
         assert_eq!(fetched.data, b"old-key-data");
+    }
+
+    /// Regression for GitHub issue #282: `get()` on a record that triggers
+    /// lazy re-encryption used to return the `StoredCredential` with the
+    /// pre-CAS `version`. Downstream callers then hit a phantom
+    /// [`StoreError::VersionConflict`] on their own CAS update against the
+    /// row we just bumped. The returned struct must carry the post-rotation
+    /// `version` (and `updated_at`) so downstream CAS targets the fresh row.
+    #[tokio::test]
+    async fn lazy_reencryption_returns_post_rotation_version() {
+        let inner = InMemoryStore::new();
+        let key1 = Arc::new(EncryptionKey::from_bytes([0x01; 32]));
+        let key2 = Arc::new(EncryptionKey::from_bytes([0x02; 32]));
+
+        let store_old = EncryptionLayer::with_keys(
+            inner.clone(),
+            "key-1".to_string(),
+            vec![("key-1".to_string(), key1.clone())],
+        );
+        let cred = make_credential("rotate-version-1", b"needs-rotation");
+        let pre_rotation = store_old.put(cred, PutMode::CreateOnly).await.unwrap();
+        let version_before_rotation = pre_rotation.version;
+
+        // Read through new layer — triggers lazy rotation + CAS write.
+        let store_new = EncryptionLayer::with_keys(
+            inner.clone(),
+            "key-2".to_string(),
+            vec![("key-1".to_string(), key1), ("key-2".to_string(), key2)],
+        );
+        let fetched = store_new.get("rotate-version-1").await.unwrap();
+
+        let current_raw = inner.get("rotate-version-1").await.unwrap();
+        assert_eq!(
+            fetched.version, current_raw.version,
+            "returned version must match persisted post-rotation row"
+        );
+        assert_eq!(
+            fetched.updated_at, current_raw.updated_at,
+            "returned updated_at must match persisted post-rotation row"
+        );
+        assert!(
+            fetched.version > version_before_rotation,
+            "returned version must be bumped past pre-rotation value"
+        );
     }
 
     #[tokio::test]
