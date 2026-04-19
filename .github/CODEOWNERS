@@ -16,7 +16,6 @@
 /rustfmt.toml                   @vanyastaff
 /clippy.toml                    @vanyastaff
 /lefthook.yml                   @vanyastaff
-/rust-toolchain.toml            @vanyastaff
 /Taskfile.yml                   @vanyastaff
 /typos.toml                     @vanyastaff
 /_typos.toml                    @vanyastaff
