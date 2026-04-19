@@ -22,7 +22,7 @@ use nebula_action::capability::{ResourceAccessor, default_resource_accessor};
 use nebula_action::{ActionContext, ActionError, ActionResult};
 use nebula_core::{
     ActionKey, NodeKey,
-    id::{ExecutionId, WorkflowId},
+    id::{ExecutionId, InstanceId, WorkflowId},
     node_key,
 };
 use nebula_credential::{CredentialAccessor, default_credential_accessor};
@@ -32,8 +32,9 @@ use nebula_execution::ExecutionStatus;
 use nebula_execution::{context::ExecutionBudget, plan::ExecutionPlan, state::ExecutionState};
 use nebula_expression::{EvaluationContext, ExpressionEngine};
 use nebula_metrics::naming::{
-    NEBULA_WORKFLOW_EXECUTION_DURATION_SECONDS, NEBULA_WORKFLOW_EXECUTIONS_COMPLETED_TOTAL,
-    NEBULA_WORKFLOW_EXECUTIONS_FAILED_TOTAL, NEBULA_WORKFLOW_EXECUTIONS_STARTED_TOTAL,
+    NEBULA_ENGINE_LEASE_CONTENTION_TOTAL, NEBULA_WORKFLOW_EXECUTION_DURATION_SECONDS,
+    NEBULA_WORKFLOW_EXECUTIONS_COMPLETED_TOTAL, NEBULA_WORKFLOW_EXECUTIONS_FAILED_TOTAL,
+    NEBULA_WORKFLOW_EXECUTIONS_STARTED_TOTAL, engine_lease_contention_reason,
 };
 use nebula_plugin::PluginRegistry;
 use nebula_runtime::ActionRuntime;
@@ -65,6 +66,20 @@ type EventSender = mpsc::Sender<ExecutionEvent>;
 /// interactive workflow (hundreds of nodes) never blocks, while a runaway
 /// producer with a dead consumer cannot inflate memory without bound.
 pub const DEFAULT_EVENT_CHANNEL_CAPACITY: usize = 1024;
+
+/// Default execution-lease TTL.
+///
+/// Long enough to survive a GC pause or a slow checkpoint write; short
+/// enough that a crashed runner's lease expires inside a minute and
+/// redelivery doesn't feel stuck. See ADR 0008.
+pub const DEFAULT_EXECUTION_LEASE_TTL: Duration = Duration::from_secs(30);
+
+/// Default interval between execution-lease heartbeat renewals.
+///
+/// Set to `DEFAULT_EXECUTION_LEASE_TTL / 3` so that two consecutive
+/// heartbeat misses still leave the lease valid for at least another TTL
+/// cycle before acquire-on-expiry can kick in. See ADR 0008.
+pub const DEFAULT_EXECUTION_LEASE_HEARTBEAT_INTERVAL: Duration = Duration::from_secs(10);
 
 /// Type alias for the boxed async credential-refresh function stored on the engine.
 ///
@@ -141,12 +156,36 @@ pub struct WorkflowEngine {
     action_credentials: HashMap<ActionKey, HashSet<String>>,
     /// Optional event sender for real-time execution monitoring (TUI, logging).
     event_sender: Option<EventSender>,
+    /// Stable per-instance identifier used as the execution-lease holder.
+    ///
+    /// Generated once at [`WorkflowEngine::new`] via [`InstanceId::new`]
+    /// (monotonic ULID). A single process runs exactly one instance id
+    /// for its lifetime; restarts rotate it so a post-restart runner
+    /// cannot inadvertently inherit a lease from its previous
+    /// incarnation. See ADR 0008.
+    instance_id: InstanceId,
+    /// TTL to apply when acquiring or renewing an execution lease.
+    ///
+    /// Defaults to [`DEFAULT_EXECUTION_LEASE_TTL`]. Tuned down only in
+    /// tests via [`WorkflowEngine::with_lease_ttl`] to shorten
+    /// time-based behavior.
+    lease_ttl: Duration,
+    /// Interval between heartbeat renewals while a frontier loop runs.
+    ///
+    /// Defaults to [`DEFAULT_EXECUTION_LEASE_HEARTBEAT_INTERVAL`]. Tuned
+    /// down only in tests via [`WorkflowEngine::with_lease_heartbeat_interval`].
+    lease_heartbeat_interval: Duration,
 }
 
 impl WorkflowEngine {
     /// Create a new engine with the given components.
     pub fn new(runtime: Arc<ActionRuntime>, metrics: MetricsRegistry) -> Self {
         let expression_engine = Arc::new(ExpressionEngine::with_cache_size(1024));
+        let instance_id = InstanceId::new();
+        tracing::info!(
+            instance_id = %instance_id,
+            "workflow engine starting; lease holder string bound for this process's lifetime"
+        );
         Self {
             runtime,
             metrics,
@@ -160,7 +199,44 @@ impl WorkflowEngine {
             credential_refresh: None,
             action_credentials: HashMap::new(),
             event_sender: None,
+            instance_id,
+            lease_ttl: DEFAULT_EXECUTION_LEASE_TTL,
+            lease_heartbeat_interval: DEFAULT_EXECUTION_LEASE_HEARTBEAT_INTERVAL,
         }
+    }
+
+    /// This engine instance's execution-lease holder identifier.
+    ///
+    /// Rendered in [`EngineError::Leased`] so operators can see which
+    /// runner currently owns an execution. Stable for the lifetime of
+    /// this process. See ADR 0008.
+    #[must_use]
+    pub fn instance_id(&self) -> InstanceId {
+        self.instance_id
+    }
+
+    /// Override the execution-lease TTL.
+    ///
+    /// Primarily for tests that need to exercise expiry behavior under
+    /// `tokio::time::pause()`. Production callers should leave this at
+    /// [`DEFAULT_EXECUTION_LEASE_TTL`]; changing it alters redelivery
+    /// latency after a hard crash.
+    #[must_use = "builder methods must be chained or built"]
+    pub fn with_lease_ttl(mut self, ttl: Duration) -> Self {
+        self.lease_ttl = ttl;
+        self
+    }
+
+    /// Override the execution-lease heartbeat interval.
+    ///
+    /// Primarily for tests that need sub-second heartbeats under
+    /// `tokio::time::pause()`. Production callers should leave this at
+    /// [`DEFAULT_EXECUTION_LEASE_HEARTBEAT_INTERVAL`]; setting it too
+    /// large relative to `lease_ttl` makes heartbeats skippable.
+    #[must_use = "builder methods must be chained or built"]
+    pub fn with_lease_heartbeat_interval(mut self, interval: Duration) -> Self {
+        self.lease_heartbeat_interval = interval;
+        self
     }
 
     /// Access the node registry.
@@ -571,6 +647,181 @@ impl WorkflowEngine {
         })
     }
 
+    /// Acquire the execution lease and spawn a heartbeat task.
+    ///
+    /// Implements the ADR 0008 lease lifecycle: the engine is the
+    /// authoritative "who runs this execution right now" signal. Second
+    /// runners find a live lease and return [`EngineError::Leased`]
+    /// rather than dispatch nodes in parallel.
+    ///
+    /// On success, returns a [`LeaseGuard`] that must be shut down with
+    /// [`LeaseGuard::shutdown`] after the frontier loop exits. The guard
+    /// also exposes [`LeaseGuard::heartbeat_lost`] so the caller can
+    /// detect stolen / expired leases and refuse to persist further
+    /// state (a §12.2 durability invariant).
+    ///
+    /// Returns `Ok(None)` when no `execution_repo` is configured — in
+    /// that mode the engine is a single-process library with no
+    /// coordination seam, and the caller proceeds without a lease.
+    async fn acquire_and_heartbeat_lease(
+        &self,
+        execution_id: ExecutionId,
+        frontier_cancel: CancellationToken,
+    ) -> Result<Option<LeaseGuard>, EngineError> {
+        let Some(repo) = self.execution_repo.clone() else {
+            return Ok(None);
+        };
+        let holder = self.instance_id.to_string();
+        let ttl = self.lease_ttl;
+        let heartbeat_interval = self.lease_heartbeat_interval;
+
+        // Try to acquire the lease.
+        let acquired = repo
+            .acquire_lease(execution_id, holder.clone(), ttl)
+            .await
+            .map_err(|e| EngineError::PlanningFailed(format!("acquire lease: {e}")))?;
+
+        if !acquired {
+            // Someone else holds the lease (or it's our own holder
+            // string from an earlier, still-live attempt — ADR 0008
+            // "same-holder re-acquire" — but for safety we still
+            // report as Leased so the caller can decide). Surface with
+            // the held holder for operator visibility.
+            //
+            // The exact holder string isn't returned by acquire_lease
+            // when it fails, so we surface the contention counter and
+            // the execution id; operators correlate via storage row.
+            let labels = self
+                .metrics
+                .interner()
+                .single("reason", engine_lease_contention_reason::ALREADY_HELD);
+            self.metrics
+                .counter_labeled(NEBULA_ENGINE_LEASE_CONTENTION_TOTAL, &labels)
+                .inc();
+            tracing::warn!(
+                %execution_id,
+                %holder,
+                "execution lease is held by another runner; refusing to dispatch (§12.2, #325)"
+            );
+            return Err(EngineError::Leased {
+                execution_id,
+                holder,
+            });
+        }
+
+        tracing::debug!(
+            %execution_id,
+            %holder,
+            ttl_secs = ttl.as_secs(),
+            heartbeat_secs = heartbeat_interval.as_secs(),
+            "execution lease acquired"
+        );
+
+        // Spawn a heartbeat task. A shared `heartbeat_lost` token
+        // trips when a renew_lease returns `Ok(false)` (stolen or
+        // expired) or errors — the frontier loop observes it via
+        // the caller-provided `frontier_cancel` which we mirror.
+        let heartbeat_lost = CancellationToken::new();
+        let heartbeat_repo = repo.clone();
+        let heartbeat_holder = holder.clone();
+        let heartbeat_shutdown = CancellationToken::new();
+        let metrics = self.metrics.clone();
+        let heartbeat_lost_cloned = heartbeat_lost.clone();
+        let heartbeat_shutdown_cloned = heartbeat_shutdown.clone();
+        let frontier_cancel_cloned = frontier_cancel.clone();
+        let handle = tokio::spawn(async move {
+            let mut ticker = tokio::time::interval(heartbeat_interval);
+            // The first tick fires immediately; skip it — we just
+            // acquired.
+            ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+            ticker.tick().await;
+            loop {
+                tokio::select! {
+                    _ = heartbeat_shutdown_cloned.cancelled() => {
+                        // Normal shutdown from the caller after frontier exits.
+                        break;
+                    }
+                    _ = ticker.tick() => {
+                        match heartbeat_repo
+                            .renew_lease(execution_id, &heartbeat_holder, ttl)
+                            .await
+                        {
+                            Ok(true) => {
+                                tracing::trace!(
+                                    %execution_id,
+                                    holder = %heartbeat_holder,
+                                    "execution lease renewed"
+                                );
+                            }
+                            Ok(false) => {
+                                let labels = metrics
+                                    .interner()
+                                    .single(
+                                        "reason",
+                                        engine_lease_contention_reason::HEARTBEAT_LOST,
+                                    );
+                                metrics
+                                    .counter_labeled(
+                                        NEBULA_ENGINE_LEASE_CONTENTION_TOTAL,
+                                        &labels,
+                                    )
+                                    .inc();
+                                tracing::error!(
+                                    %execution_id,
+                                    holder = %heartbeat_holder,
+                                    "execution lease heartbeat lost — another runner or \
+                                     expiry took it; aborting this runner to avoid corrupting \
+                                     state the new holder now drives (ADR 0008, §12.2)"
+                                );
+                                heartbeat_lost_cloned.cancel();
+                                frontier_cancel_cloned.cancel();
+                                break;
+                            }
+                            Err(e) => {
+                                // Storage-layer error on renew — conservative:
+                                // treat as loss and stop the runner. The
+                                // alternative (continue despite unknown lease
+                                // state) risks two runners — the exact
+                                // failure mode #325 is fixing.
+                                let labels = metrics
+                                    .interner()
+                                    .single(
+                                        "reason",
+                                        engine_lease_contention_reason::HEARTBEAT_LOST,
+                                    );
+                                metrics
+                                    .counter_labeled(
+                                        NEBULA_ENGINE_LEASE_CONTENTION_TOTAL,
+                                        &labels,
+                                    )
+                                    .inc();
+                                tracing::error!(
+                                    %execution_id,
+                                    holder = %heartbeat_holder,
+                                    error = %e,
+                                    "execution lease heartbeat renew failed; aborting \
+                                     runner conservatively (ADR 0008, §12.2)"
+                                );
+                                heartbeat_lost_cloned.cancel();
+                                frontier_cancel_cloned.cancel();
+                                break;
+                            }
+                        }
+                    }
+                }
+            }
+        });
+
+        Ok(Some(LeaseGuard {
+            repo,
+            execution_id,
+            holder,
+            handle: Some(handle),
+            shutdown: heartbeat_shutdown,
+            heartbeat_lost,
+        }))
+    }
+
     /// Execute a workflow from start to finish.
     ///
     /// Builds an execution plan for validation, then processes nodes
@@ -625,6 +876,21 @@ impl WorkflowEngine {
         // 5. Create cancellation token
         let cancel_token = CancellationToken::new();
 
+        // 5b. Acquire the execution lease before dispatching nodes (ADR
+        // 0008, #325). Second runners that race in after the
+        // `create` above but before lease acquire will observe a held
+        // lease and get `EngineError::Leased`; we do not sleep-retry.
+        //
+        // The lease row is a column on the `executions` row so we must
+        // acquire strictly after `create`. The lease scope covers the
+        // frontier loop AND the final persist — holding through
+        // persist is load-bearing: a stale writer whose heartbeat has
+        // just died must not overwrite the canonical state a new
+        // holder already began driving.
+        let lease = self
+            .acquire_and_heartbeat_lease(execution_id, cancel_token.clone())
+            .await?;
+
         // 6. Record start metric
         self.metrics
             .counter(NEBULA_WORKFLOW_EXECUTIONS_STARTED_TOTAL)
@@ -667,22 +933,44 @@ impl WorkflowEngine {
         let elapsed = started.elapsed();
 
         // 10. Determine final status and emit events
+        let heartbeat_lost = lease.as_ref().is_some_and(LeaseGuard::heartbeat_lost);
         let FinalStatusDecision {
             status: final_status,
             integrity_violation,
         } = determine_final_status(&failed_node, &cancel_token, &exec_state);
         let _ = exec_state.transition_status(final_status);
 
-        // Persist final execution state with CAS-conflict
-        // reconciliation (issue #333). The pre-fix branch was
-        // log-and-continue on CAS mismatch, which let the engine
-        // report `Completed` on an un-persisted row and silently
-        // overwrite concurrent external transitions. `persist_final_state`
-        // now reloads the persisted state on mismatch, honors
-        // external terminal transitions, and retries once on
-        // non-terminal conflicts before surfacing a typed
-        // `CasConflict` error.
-        let reported_status = if let Some(repo) = &self.execution_repo {
+        // If the heartbeat lost the lease mid-run, a sibling runner
+        // now owns the canonical state. We MUST NOT persist the final
+        // state or emit ExecutionFinished from this runner — the new
+        // holder will drive completion. ADR 0008 / §12.2.
+        let reported_status = if heartbeat_lost {
+            tracing::error!(
+                %execution_id,
+                "final state persistence skipped: heartbeat lost this runner's lease; \
+                 another runner now owns the execution (ADR 0008, §12.2, #325)"
+            );
+            // Release whatever lease state we hold cleanly, then bubble
+            // the typed error — this runner does not own the terminal
+            // transition, so reporting a status would silently overwrite
+            // the new holder's state.
+            if let Some(guard) = lease {
+                guard.shutdown().await;
+            }
+            return Err(EngineError::Leased {
+                execution_id,
+                holder: self.instance_id.to_string(),
+            });
+        } else if let Some(repo) = &self.execution_repo {
+            // Persist final execution state with CAS-conflict
+            // reconciliation (issue #333). The pre-fix branch was
+            // log-and-continue on CAS mismatch, which let the engine
+            // report `Completed` on an un-persisted row and silently
+            // overwrite concurrent external transitions. `persist_final_state`
+            // now reloads the persisted state on mismatch, honors
+            // external terminal transitions, and retries once on
+            // non-terminal conflicts before surfacing a typed
+            // `CasConflict` error.
             match self
                 .persist_final_state(repo, execution_id, &mut exec_state, &mut repo_version)
                 .await
@@ -722,6 +1010,14 @@ impl WorkflowEngine {
         } else {
             final_status
         };
+
+        // Release the lease after final-state persistence. Release
+        // strictly after persist is load-bearing: a sibling runner
+        // must not observe an available lease while our terminal
+        // write is still in flight.
+        if let Some(guard) = lease {
+            guard.shutdown().await;
+        }
 
         self.emit_final_event(execution_id, reported_status, elapsed, &failed_node);
         self.emit_frontier_integrity_if_violated(execution_id, integrity_violation);
@@ -941,6 +1237,17 @@ impl WorkflowEngine {
         let cancel_token = CancellationToken::new();
         let mut repo_version = repo_version_loaded;
 
+        // Acquire the execution lease before running the frontier (ADR
+        // 0008, #325). Resume is explicitly a second entry point for an
+        // existing execution — if another runner is already driving it
+        // (whether because the crash recovery loop picked it up or an
+        // operator issued two resumes back-to-back), we fence this call
+        // with `EngineError::Leased` instead of running nodes in parallel
+        // with the existing runner.
+        let lease = self
+            .acquire_and_heartbeat_lease(execution_id, cancel_token.clone())
+            .await?;
+
         self.metrics
             .counter(NEBULA_WORKFLOW_EXECUTIONS_STARTED_TOTAL)
             .inc();
@@ -987,6 +1294,7 @@ impl WorkflowEngine {
 
         let elapsed = started.elapsed();
 
+        let heartbeat_lost = lease.as_ref().is_some_and(LeaseGuard::heartbeat_lost);
         let FinalStatusDecision {
             status: final_status,
             integrity_violation,
@@ -996,41 +1304,64 @@ impl WorkflowEngine {
         // cancelled during the frontier loop), we do not overwrite it.
         let _ = exec_state.transition_status(final_status);
 
-        // Persist final state with CAS-conflict reconciliation (issue
-        // #333). Mirrors `execute_workflow` — see its comment for the
-        // full contract.
-        let reported_status = match self
-            .persist_final_state(exec_repo, execution_id, &mut exec_state, &mut repo_version)
-            .await
-        {
-            Ok(None) => final_status,
-            Ok(Some(external_status)) => external_status,
-            Err(EngineError::CasConflict {
-                expected_version,
-                observed_version,
-                observed_status,
-                ..
-            }) => {
-                tracing::error!(
-                    %execution_id,
+        // Heartbeat loss: another runner now owns the canonical state.
+        // Skip final persist and surface as Leased — mirrors the
+        // execute_workflow contract. ADR 0008 / §12.2 / #325.
+        let reported_status = if heartbeat_lost {
+            tracing::error!(
+                %execution_id,
+                "resume: final state persistence skipped: heartbeat lost this runner's lease; \
+                 another runner now owns the execution (ADR 0008, §12.2, #325)"
+            );
+            if let Some(guard) = lease {
+                guard.shutdown().await;
+            }
+            return Err(EngineError::Leased {
+                execution_id,
+                holder: self.instance_id.to_string(),
+            });
+        } else {
+            // Persist final state with CAS-conflict reconciliation
+            // (issue #333). Mirrors `execute_workflow` — see its comment
+            // for the full contract.
+            match self
+                .persist_final_state(exec_repo, execution_id, &mut exec_state, &mut repo_version)
+                .await
+            {
+                Ok(None) => final_status,
+                Ok(Some(external_status)) => external_status,
+                Err(EngineError::CasConflict {
                     expected_version,
                     observed_version,
-                    %observed_status,
-                    "resume: final state CAS conflict could not be reconciled; \
-                     reporting Failed instead of silently completing (§11.5, #333)"
-                );
-                ExecutionStatus::Failed
-            },
-            Err(e) => {
-                tracing::error!(
-                    %execution_id,
-                    error = %e,
-                    "resume: final state persist failed; \
-                     reporting Failed instead of silently completing (§11.5, #333)"
-                );
-                ExecutionStatus::Failed
-            },
+                    observed_status,
+                    ..
+                }) => {
+                    tracing::error!(
+                        %execution_id,
+                        expected_version,
+                        observed_version,
+                        %observed_status,
+                        "resume: final state CAS conflict could not be reconciled; \
+                         reporting Failed instead of silently completing (§11.5, #333)"
+                    );
+                    ExecutionStatus::Failed
+                },
+                Err(e) => {
+                    tracing::error!(
+                        %execution_id,
+                        error = %e,
+                        "resume: final state persist failed; \
+                         reporting Failed instead of silently completing (§11.5, #333)"
+                    );
+                    ExecutionStatus::Failed
+                },
+            }
         };
+
+        // Release the lease after the final persist completes.
+        if let Some(guard) = lease {
+            guard.shutdown().await;
+        }
 
         self.emit_final_event(execution_id, reported_status, elapsed, &failed_node);
         self.emit_frontier_integrity_if_violated(execution_id, integrity_violation);
@@ -2940,6 +3271,109 @@ struct FinalStatusDecision {
     /// cancellation but not all nodes reached a terminal state — see
     /// `docs/PRODUCT_CANON.md` §11.1.
     integrity_violation: Option<Vec<(NodeKey, NodeState)>>,
+}
+
+/// RAII guard for an acquired execution lease with a running heartbeat.
+///
+/// Lifecycle:
+/// - constructed by [`WorkflowEngine::acquire_and_heartbeat_lease`]
+/// - held for the duration of the frontier loop (heartbeat task renews every
+///   [`WorkflowEngine::lease_heartbeat_interval`])
+/// - explicitly shut down via [`LeaseGuard::shutdown`] after the final state is persisted
+///
+/// If the guard is dropped without `shutdown`, the heartbeat task
+/// aborts and no explicit `release_lease` is sent — the lease expires
+/// naturally after its TTL. `shutdown` is the preferred path because
+/// it frees the lease immediately, shortening redelivery latency for
+/// legitimate successor runs.
+struct LeaseGuard {
+    repo: Arc<dyn nebula_storage::ExecutionRepo>,
+    execution_id: ExecutionId,
+    holder: String,
+    handle: Option<tokio::task::JoinHandle<()>>,
+    /// Signalled by `shutdown` to stop the heartbeat loop cleanly.
+    shutdown: CancellationToken,
+    /// Tripped by the heartbeat loop when renew returns `Ok(false)` or
+    /// errors — the caller uses this to refuse final-state persistence.
+    heartbeat_lost: CancellationToken,
+}
+
+impl LeaseGuard {
+    /// Whether the heartbeat loop lost the lease while the frontier ran.
+    ///
+    /// True means another runner acquired the lease (or a storage error
+    /// made the current runner unsafe to continue). Per ADR 0008 the
+    /// caller must not persist further state — the new holder now owns
+    /// the execution's canonical state.
+    fn heartbeat_lost(&self) -> bool {
+        self.heartbeat_lost.is_cancelled()
+    }
+
+    /// Stop the heartbeat loop and release the lease.
+    ///
+    /// Best-effort: release failures (storage unavailable, holder
+    /// already reassigned) are logged but do not surface as engine
+    /// errors — a TTL-driven natural expiry is the ultimate fallback.
+    async fn shutdown(mut self) {
+        self.shutdown.cancel();
+        if let Some(handle) = self.handle.take() {
+            // Wait for the heartbeat loop to notice and exit cleanly.
+            let _ = handle.await;
+        }
+        if self.heartbeat_lost.is_cancelled() {
+            // We never owned the lease at shutdown time — do not send
+            // a release that might wipe a new holder's record. The
+            // natural TTL takes care of eventual reacquisition.
+            tracing::debug!(
+                execution_id = %self.execution_id,
+                holder = %self.holder,
+                "lease heartbeat lost; skipping explicit release (TTL will expire)"
+            );
+            return;
+        }
+        match self
+            .repo
+            .release_lease(self.execution_id, &self.holder)
+            .await
+        {
+            Ok(true) => {
+                tracing::debug!(
+                    execution_id = %self.execution_id,
+                    holder = %self.holder,
+                    "execution lease released"
+                );
+            },
+            Ok(false) => {
+                // Lease not owned at release time — could be a race
+                // where TTL expired just before. Not actionable.
+                tracing::debug!(
+                    execution_id = %self.execution_id,
+                    holder = %self.holder,
+                    "release_lease returned false; lease was not owned at release time"
+                );
+            },
+            Err(e) => {
+                tracing::warn!(
+                    execution_id = %self.execution_id,
+                    holder = %self.holder,
+                    error = %e,
+                    "release_lease failed; TTL will eventually expire the lease"
+                );
+            },
+        }
+    }
+}
+
+impl Drop for LeaseGuard {
+    fn drop(&mut self) {
+        // If shutdown was not called, abort the heartbeat task so it
+        // doesn't outlive the engine handle. The lease itself expires
+        // via TTL.
+        self.shutdown.cancel();
+        if let Some(handle) = self.handle.take() {
+            handle.abort();
+        }
+    }
 }
 
 /// Determine the final execution status.
@@ -6824,6 +7258,193 @@ mod tests {
             Some("cancelled"),
             "engine must not overwrite the external Cancelled row \
              with its local Completed decision (§11.5, #333)"
+        );
+    }
+
+    // ── #325 execution lease lifecycle (ADR 0008) ─────────────────────────
+
+    /// Regression for #325: a second `resume_execution` on the same row
+    /// while a first runner still holds the lease must get
+    /// [`EngineError::Leased`] instead of racing the frontier loop.
+    ///
+    /// This is the core multi-runner correctness property. We construct
+    /// the repo by hand, seed a non-terminal execution row, and call
+    /// `resume_execution` twice concurrently. Only one runner may
+    /// dispatch nodes.
+    #[tokio::test]
+    async fn two_concurrent_resume_runners_are_fenced_by_lease() {
+        let registry = Arc::new(ActionRegistry::new());
+        // Slow echo so the first runner is still inside the frontier
+        // loop when the second call arrives.
+        registry.register_stateless(SlowHandler {
+            meta: ActionMetadata::new(action_key!("slow"), "Slow", "slow echoes"),
+            delay: Duration::from_millis(300),
+        });
+
+        let exec_repo = Arc::new(nebula_storage::InMemoryExecutionRepo::new());
+        let n = node_key!("n");
+        let wf = make_workflow(
+            vec![NodeDefinition::new(n.clone(), "Slow", "slow").unwrap()],
+            vec![],
+        );
+        let workflow_repo = save_workflow_to_repo(&wf).await;
+
+        // Seed a non-terminal execution row the two runners will target.
+        let execution_id = ExecutionId::new();
+        let node_ids = vec![n.clone()];
+        let exec_state = ExecutionState::new(execution_id, wf.id, &node_ids);
+        let state_json = serde_json::to_value(&exec_state).unwrap();
+        exec_repo
+            .create(execution_id, wf.id, state_json)
+            .await
+            .unwrap();
+
+        // Two independent engines, each with its own InstanceId, sharing
+        // the same storage. One of them should win the lease.
+        let (engine_a, _) = make_engine(registry.clone());
+        let engine_a = engine_a
+            .with_execution_repo(exec_repo.clone())
+            .with_workflow_repo(workflow_repo.clone());
+        let (engine_b, _) = make_engine(registry);
+        let engine_b = engine_b
+            .with_execution_repo(exec_repo.clone())
+            .with_workflow_repo(workflow_repo);
+
+        assert_ne!(
+            engine_a.instance_id(),
+            engine_b.instance_id(),
+            "independent engines must produce distinct lease holder strings"
+        );
+
+        // Spawn both calls concurrently — whoever acquires first wins,
+        // the other must see `EngineError::Leased`.
+        let handle_a = tokio::spawn(async move { engine_a.resume_execution(execution_id).await });
+        let handle_b = tokio::spawn(async move { engine_b.resume_execution(execution_id).await });
+
+        let result_a = handle_a.await.unwrap();
+        let result_b = handle_b.await.unwrap();
+
+        let losses: Vec<_> = [&result_a, &result_b]
+            .iter()
+            .filter_map(|r| match r {
+                Err(EngineError::Leased {
+                    execution_id: eid,
+                    holder,
+                }) => Some((*eid, holder.clone())),
+                _ => None,
+            })
+            .collect();
+        let successes: Vec<_> = [&result_a, &result_b]
+            .iter()
+            .filter_map(|r| r.as_ref().ok())
+            .collect();
+
+        assert_eq!(
+            losses.len() + successes.len(),
+            2,
+            "both calls must return either Ok or a typed Leased error, no panics; \
+             got a={result_a:?}, b={result_b:?}"
+        );
+        assert_eq!(
+            losses.len(),
+            1,
+            "exactly one runner must be fenced by the lease; got a={result_a:?}, b={result_b:?}"
+        );
+        assert_eq!(
+            successes.len(),
+            1,
+            "exactly one runner must dispatch nodes; got a={result_a:?}, b={result_b:?}"
+        );
+        assert_eq!(
+            losses[0].0, execution_id,
+            "Leased error must carry the execution id that was contested"
+        );
+        assert!(
+            successes[0].is_success(),
+            "the winning runner must complete the workflow successfully; \
+             got status={:?}",
+            successes[0].status
+        );
+    }
+
+    /// After the first runner releases the lease on terminal completion,
+    /// a later `resume_execution` on a non-terminal row can acquire it
+    /// cleanly. Covers the release-on-terminal branch of ADR 0008.
+    #[tokio::test]
+    async fn lease_is_released_after_terminal_completion_so_next_runner_can_acquire() {
+        let registry = Arc::new(ActionRegistry::new());
+        registry.register_stateless(EchoHandler {
+            meta: ActionMetadata::new(action_key!("echo"), "Echo", "echoes input"),
+        });
+
+        let exec_repo = Arc::new(nebula_storage::InMemoryExecutionRepo::new());
+        let (engine, _) = make_engine(registry);
+        let n = node_key!("n");
+        let wf = make_workflow(
+            vec![NodeDefinition::new(n.clone(), "echo", "echo").unwrap()],
+            vec![],
+        );
+        let workflow_repo = save_workflow_to_repo(&wf).await;
+        let engine = engine
+            .with_execution_repo(exec_repo.clone())
+            .with_workflow_repo(workflow_repo);
+
+        // First run acquires + releases the lease on completion.
+        let first = engine
+            .execute_workflow(&wf, serde_json::json!("v1"), ExecutionBudget::default())
+            .await
+            .unwrap();
+        assert!(first.is_success());
+
+        // Lease must be free immediately — a brand-new acquire with a
+        // fresh holder should succeed without waiting for TTL.
+        let acquired = exec_repo
+            .acquire_lease(first.execution_id, "probe".into(), Duration::from_secs(5))
+            .await
+            .unwrap();
+        assert!(
+            acquired,
+            "lease must be released on terminal completion, not pending TTL expiry"
+        );
+    }
+
+    /// Once the engine has run an execution to completion, a second
+    /// `execute_workflow` call produces a brand-new `ExecutionId`, so
+    /// its lease is independent and acquires without contention.
+    /// Defense-in-depth: confirms we don't share lease state across
+    /// unrelated ids.
+    #[tokio::test]
+    async fn execute_workflow_produces_independent_lease_per_execution_id() {
+        let registry = Arc::new(ActionRegistry::new());
+        registry.register_stateless(EchoHandler {
+            meta: ActionMetadata::new(action_key!("echo"), "Echo", "echoes input"),
+        });
+
+        let exec_repo = Arc::new(nebula_storage::InMemoryExecutionRepo::new());
+        let (engine, _) = make_engine(registry);
+        let n = node_key!("n");
+        let wf = make_workflow(
+            vec![NodeDefinition::new(n.clone(), "echo", "echo").unwrap()],
+            vec![],
+        );
+        let workflow_repo = save_workflow_to_repo(&wf).await;
+        let engine = engine
+            .with_execution_repo(exec_repo)
+            .with_workflow_repo(workflow_repo);
+
+        let first = engine
+            .execute_workflow(&wf, serde_json::json!("v1"), ExecutionBudget::default())
+            .await
+            .unwrap();
+        let second = engine
+            .execute_workflow(&wf, serde_json::json!("v2"), ExecutionBudget::default())
+            .await
+            .unwrap();
+        assert!(first.is_success());
+        assert!(second.is_success());
+        assert_ne!(
+            first.execution_id, second.execution_id,
+            "each execute_workflow call must produce its own ExecutionId"
         );
     }
 }

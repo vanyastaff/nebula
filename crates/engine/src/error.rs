@@ -150,6 +150,30 @@ pub enum EngineError {
         /// Rendered for operator diagnostics; not used for control flow.
         observed_status: String,
     },
+
+    /// Another engine instance currently holds the execution lease.
+    ///
+    /// Surfaced by [`WorkflowEngine::execute_workflow`] and
+    /// [`WorkflowEngine::resume_execution`] when `acquire_lease` fails
+    /// because a live (non-expired) lease with a different holder is
+    /// already recorded in storage. Per ADR 0008 and
+    /// `docs/PRODUCT_CANON.md` §12.2, exactly one runner may dispatch
+    /// nodes for an execution at a time; the second caller must back off
+    /// rather than run in parallel.
+    ///
+    /// The caller (API handler, scheduler) is responsible for deciding
+    /// how to react — the engine does not sleep-and-retry.
+    ///
+    /// [`WorkflowEngine::execute_workflow`]: crate::WorkflowEngine::execute_workflow
+    /// [`WorkflowEngine::resume_execution`]: crate::WorkflowEngine::resume_execution
+    #[error("execution {execution_id} is leased by another runner: {holder}")]
+    Leased {
+        /// The execution whose lease is already held.
+        execution_id: ExecutionId,
+        /// Holder string recorded in storage — surfaced for operator
+        /// diagnostics ("which instance is running execution X right now").
+        holder: String,
+    },
 }
 
 impl nebula_error::Classify for EngineError {
@@ -167,6 +191,10 @@ impl nebula_error::Classify for EngineError {
             | Self::CasConflict { .. } => nebula_error::ErrorCategory::Internal,
             Self::Cancelled => nebula_error::ErrorCategory::Cancelled,
             Self::BudgetExceeded(_) => nebula_error::ErrorCategory::Exhausted,
+            // Leased is a transient coordination conflict — a second
+            // runner saw the execution already in flight. Conflict
+            // matches HTTP 409 at the API edge.
+            Self::Leased { .. } => nebula_error::ErrorCategory::Conflict,
             Self::Runtime(e) => nebula_error::Classify::category(e),
             Self::Execution(e) => nebula_error::Classify::category(e),
             Self::Action(e) => nebula_error::Classify::category(e),
@@ -190,6 +218,7 @@ impl nebula_error::Classify for EngineError {
             Self::FrontierIntegrity { .. } => "ENGINE:FRONTIER_INTEGRITY",
             Self::CheckpointFailed { .. } => "ENGINE:CHECKPOINT_FAILED",
             Self::CasConflict { .. } => "ENGINE:CAS_CONFLICT",
+            Self::Leased { .. } => "ENGINE:LEASED",
         })
     }
 
@@ -237,6 +266,30 @@ mod tests {
         let msg = err.to_string();
         assert!(msg.contains("timeout"));
         assert!(msg.contains("failed"));
+    }
+
+    #[test]
+    fn leased_display_and_classification() {
+        use nebula_core::id::ExecutionId;
+        use nebula_error::{Classify, ErrorCategory};
+
+        let exec_id = ExecutionId::new();
+        let err = EngineError::Leased {
+            execution_id: exec_id,
+            holder: "nbl_01HZABC".into(),
+        };
+
+        let msg = err.to_string();
+        assert!(msg.contains("leased"));
+        assert!(msg.contains("nbl_01HZABC"));
+        assert!(msg.contains(&exec_id.to_string()));
+
+        // Leased maps to Conflict — HTTP 409 at the API edge, client-
+        // side error because the caller should back off rather than
+        // treat it as retryable-server-error (ADR 0008).
+        assert_eq!(Classify::category(&err), ErrorCategory::Conflict);
+        assert_eq!(Classify::code(&err).as_str(), "ENGINE:LEASED");
+        assert!(!Classify::is_retryable(&err));
     }
 
     #[test]

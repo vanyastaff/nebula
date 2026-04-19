@@ -22,6 +22,31 @@ pub const NEBULA_WORKFLOW_EXECUTIONS_FAILED_TOTAL: &str = "nebula_workflow_execu
 pub const NEBULA_WORKFLOW_EXECUTION_DURATION_SECONDS: &str =
     "nebula_workflow_execution_duration_seconds";
 
+/// Counter: engine execution-lease contention events.
+///
+/// Labeled by `reason` (see [`engine_lease_contention_reason`]). Incremented
+/// each time the engine tries to acquire or renew a lease and loses: either
+/// another holder is already live (`already_held`) or the current heartbeat
+/// detected the lease was taken over / expired (`heartbeat_lost`). Per
+/// ADR 0008, `reason=heartbeat_lost` crossing zero is a real multi-runner
+/// incident — the engine self-aborted a dispatch rather than produce
+/// corrupt checkpoints.
+pub const NEBULA_ENGINE_LEASE_CONTENTION_TOTAL: &str = "nebula_engine_lease_contention_total";
+
+/// Reason labels for [`NEBULA_ENGINE_LEASE_CONTENTION_TOTAL`].
+///
+/// These are the exact static strings emitted as the `reason` label so
+/// call sites and tests can compare without stringifying a value twice.
+pub mod engine_lease_contention_reason {
+    /// Another engine instance holds a live (non-expired) lease — the
+    /// caller returned `EngineError::Leased` and did not run.
+    pub const ALREADY_HELD: &str = "already_held";
+    /// A running engine's heartbeat failed: the lease was stolen or
+    /// expired beneath the frontier loop. The engine cancels in-flight
+    /// work and refuses to persist further state.
+    pub const HEARTBEAT_LOST: &str = "heartbeat_lost";
+}
+
 // ---------------------------------------------------------------------------
 // Action (runtime)
 // ---------------------------------------------------------------------------
