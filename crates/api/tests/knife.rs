@@ -55,13 +55,18 @@ impl nebula_storage::repos::ControlQueueRepo for AlwaysFailControlQueueRepo {
         Ok(vec![])
     }
 
-    async fn mark_completed(&self, _id: &[u8]) -> Result<(), nebula_storage::StorageError> {
+    async fn mark_completed(
+        &self,
+        _id: &[u8],
+        _processor: &[u8],
+    ) -> Result<(), nebula_storage::StorageError> {
         Ok(())
     }
 
     async fn mark_failed(
         &self,
         _id: &[u8],
+        _processor: &[u8],
         _error: &str,
     ) -> Result<(), nebula_storage::StorageError> {
         Ok(())

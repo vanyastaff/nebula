@@ -122,10 +122,28 @@ pub trait ControlQueueRepo: Send + Sync {
     ) -> Result<Vec<ControlQueueEntry>, StorageError>;
 
     /// Mark a claimed command as successfully processed.
-    async fn mark_completed(&self, id: &[u8]) -> Result<(), StorageError>;
+    ///
+    /// `processor` must match the id currently recorded in the row's
+    /// `processed_by` column — i.e. the runner calling `mark_completed`
+    /// is the one that claimed the row. This prevents a stale worker whose
+    /// row was reclaimed and re-claimed by another runner from overwriting
+    /// the newer claim's state. A mismatch is an idempotent no-op under
+    /// the at-least-once contract of ADR-0008 §5.
+    async fn mark_completed(&self, id: &[u8], processor: &[u8]) -> Result<(), StorageError>;
 
     /// Mark a claimed command as failed (records `error_message`).
-    async fn mark_failed(&self, id: &[u8], error: &str) -> Result<(), StorageError>;
+    ///
+    /// Same `processor` fencing as [`Self::mark_completed`] — only the
+    /// runner that owns the claim may transition the row to `Failed`.
+    /// Prevents a stale worker from overwriting a reclaim-exhausted
+    /// `Failed` message or a newly-claimed `Processing` row from a
+    /// different runner.
+    async fn mark_failed(
+        &self,
+        id: &[u8],
+        processor: &[u8],
+        error: &str,
+    ) -> Result<(), StorageError>;
 
     /// Reclaim rows stuck in `Processing` whose owning runner is presumed
     /// dead (ADR-0017, ADR-0008 B1).
@@ -208,17 +226,28 @@ impl ControlQueueRepo for InMemoryControlQueueRepo {
             .collect())
     }
 
-    async fn mark_completed(&self, id: &[u8]) -> Result<(), StorageError> {
+    async fn mark_completed(&self, id: &[u8], processor: &[u8]) -> Result<(), StorageError> {
         let mut entries = self.entries.lock().await;
-        if let Some(row) = entries.iter_mut().find(|e| e.id == id) {
+        if let Some(row) = entries.iter_mut().find(|e| e.id == id)
+            && row.status == "Processing"
+            && row.processed_by.as_deref() == Some(processor)
+        {
             row.status = "Completed".to_string();
         }
         Ok(())
     }
 
-    async fn mark_failed(&self, id: &[u8], error: &str) -> Result<(), StorageError> {
+    async fn mark_failed(
+        &self,
+        id: &[u8],
+        processor: &[u8],
+        error: &str,
+    ) -> Result<(), StorageError> {
         let mut entries = self.entries.lock().await;
-        if let Some(row) = entries.iter_mut().find(|e| e.id == id) {
+        if let Some(row) = entries.iter_mut().find(|e| e.id == id)
+            && row.status == "Processing"
+            && row.processed_by.as_deref() == Some(processor)
+        {
             row.status = "Failed".to_string();
             row.error_message = Some(error.to_string());
         }
@@ -298,6 +327,41 @@ fn hex_encode_bytes(bytes: &[u8]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn mark_completed_rejects_stale_worker_after_reclaim() {
+        // Parity with `pg::PgControlQueueRepo::mark_completed_rejects_stale_worker_after_reclaim`:
+        // after a reclaim+re-claim cycle, the original runner's ack must
+        // be a no-op; only the current claimant can transition to Completed.
+        let repo = InMemoryControlQueueRepo::new();
+        let now = chrono::Utc::now();
+        let entry = ControlQueueEntry {
+            id: vec![9u8; 16],
+            execution_id: b"01JXYZ00000000000000000000".to_vec(),
+            command: ControlCommand::Cancel,
+            issued_by: None,
+            issued_at: now,
+            status: "Processing".to_string(),
+            processed_by: Some(b"runner-b".to_vec()),
+            processed_at: Some(now),
+            error_message: None,
+            reclaim_count: 1,
+        };
+        repo.enqueue(&entry).await.unwrap();
+
+        // Stale Runner A acks — must be a no-op.
+        repo.mark_completed(&[9u8; 16], b"runner-a").await.unwrap();
+        let snap = repo.snapshot().await;
+        let row = snap.iter().find(|r| r.id == vec![9u8; 16]).unwrap();
+        assert_eq!(row.status, "Processing", "stale A must not flip the row");
+        assert_eq!(row.processed_by.as_deref(), Some(b"runner-b".as_slice()));
+
+        // Active Runner B acks — must succeed.
+        repo.mark_completed(&[9u8; 16], b"runner-b").await.unwrap();
+        let snap = repo.snapshot().await;
+        let row = snap.iter().find(|r| r.id == vec![9u8; 16]).unwrap();
+        assert_eq!(row.status, "Completed");
+    }
 
     #[tokio::test]
     async fn claim_pending_stamps_processed_at_and_processed_by() {

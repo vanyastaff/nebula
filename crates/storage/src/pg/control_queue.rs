@@ -150,35 +150,44 @@ impl ControlQueueRepo for PgControlQueueRepo {
         rows.into_iter().map(tuple_to_entry).collect()
     }
 
-    async fn mark_completed(&self, id: &[u8]) -> Result<(), StorageError> {
-        // Fence on `status = 'Processing'`: a stale worker whose row was
-        // reclaimed (→ Pending, now re-claimed by someone else) or moved
-        // to a terminal state must not be able to overwrite the newer
-        // state. A missed update is an idempotent no-op under the
-        // at-least-once contract of ADR-0008 §5.
+    async fn mark_completed(&self, id: &[u8], processor: &[u8]) -> Result<(), StorageError> {
+        // Fence on `(status = 'Processing', processed_by = $processor)`:
+        // only the runner that owns the current claim can ack it. A stale
+        // worker whose row was reclaimed and re-claimed by a different
+        // runner sees `processed_by != $processor` → zero rows affected,
+        // the newer claim's state is preserved. An idempotent no-op under
+        // the at-least-once contract of ADR-0008 §5.
         sqlx::query(
             "UPDATE execution_control_queue \
              SET status = 'Completed' \
-             WHERE id = $1 AND status = 'Processing'",
+             WHERE id = $1 AND status = 'Processing' AND processed_by = $2",
         )
         .bind(id)
+        .bind(processor)
         .execute(&self.pool)
         .await
         .map_err(|e| map_db_err("control_queue", e))?;
         Ok(())
     }
 
-    async fn mark_failed(&self, id: &[u8], error: &str) -> Result<(), StorageError> {
-        // Same CAS fence as `mark_completed` — a stale worker must not
-        // overwrite an already-terminal or re-claimed row. In particular,
-        // this prevents flipping a `reclaim_exhausted` Failed row back
-        // to a worker-reported Failed with a different error message.
+    async fn mark_failed(
+        &self,
+        id: &[u8],
+        processor: &[u8],
+        error: &str,
+    ) -> Result<(), StorageError> {
+        // Same `(status, processed_by)` fence as `mark_completed`. In
+        // particular, prevents a stale worker from overwriting a
+        // `reclaim_exhausted` Failed message or from terminalising a row
+        // that another runner is still processing after a successful
+        // reclaim round.
         sqlx::query(
             "UPDATE execution_control_queue \
-             SET status = 'Failed', error_message = $2 \
-             WHERE id = $1 AND status = 'Processing'",
+             SET status = 'Failed', error_message = $3 \
+             WHERE id = $1 AND status = 'Processing' AND processed_by = $2",
         )
         .bind(id)
+        .bind(processor)
         .bind(error)
         .execute(&self.pool)
         .await
@@ -608,7 +617,7 @@ mod tests {
         repo.enqueue(&entry).await.unwrap();
         let _ = repo.claim_pending(b"runner-a", 1).await.unwrap();
 
-        repo.mark_completed(&row_id).await.unwrap();
+        repo.mark_completed(&row_id, b"runner-a").await.unwrap();
 
         let status: String =
             sqlx::query_scalar("SELECT status FROM execution_control_queue WHERE id = $1")
@@ -631,7 +640,9 @@ mod tests {
         repo.enqueue(&entry).await.unwrap();
         let _ = repo.claim_pending(b"runner-a", 1).await.unwrap();
 
-        repo.mark_failed(&row_id, "dispatch boom").await.unwrap();
+        repo.mark_failed(&row_id, b"runner-a", "dispatch boom")
+            .await
+            .unwrap();
 
         type Row = (String, Option<String>);
         let row: Row = sqlx::query_as(
@@ -647,11 +658,11 @@ mod tests {
 
     #[tokio::test]
     async fn mark_completed_is_noop_when_row_not_processing() {
-        // Stale-worker safety: an ack arriving after the row has been
-        // reclaimed (→ Pending) or already terminalised must not
-        // overwrite the newer status. The guarded UPDATE returns zero
-        // rows; the repo method still returns Ok under at-least-once
-        // semantics (ADR-0008 §5).
+        // Stale-worker safety (terminal-state side): an ack arriving
+        // after the row has already been terminalised (e.g. by
+        // reclaim-exhaustion → Failed, or never-claimed → Pending) must
+        // not overwrite the newer status. Guarded UPDATE returns zero
+        // rows; the repo method still returns Ok per ADR-0008 §5.
         let Some(pool) = pool().await else { return };
         let _guard = TEST_LOCK.lock().await;
         clean_control_queue(&pool).await;
@@ -662,7 +673,7 @@ mod tests {
         let pending = pending_entry(&exec_id);
         let pending_id = pending.id.clone();
         repo.enqueue(&pending).await.unwrap();
-        repo.mark_completed(&pending_id).await.unwrap();
+        repo.mark_completed(&pending_id, b"runner-a").await.unwrap();
         let status: String =
             sqlx::query_scalar("SELECT status FROM execution_control_queue WHERE id = $1")
                 .bind(&pending_id)
@@ -683,7 +694,7 @@ mod tests {
         );
         let exhausted_id = exhausted.id.clone();
         repo.enqueue(&exhausted).await.unwrap();
-        repo.mark_failed(&exhausted_id, "late worker error")
+        repo.mark_failed(&exhausted_id, b"runner-a", "late worker error")
             .await
             .unwrap();
         type Row = (String, Option<String>);
@@ -702,6 +713,75 @@ mod tests {
             "mark_failed must not overwrite an exhaust message, got: {:?}",
             row.1
         );
+    }
+
+    #[tokio::test]
+    async fn mark_completed_rejects_stale_worker_after_reclaim() {
+        // Regression: the race Copilot flagged on PR #487. Runner A
+        // claims a row, then stalls past `reclaim_after`. The sweep
+        // moves the row back to Pending. Runner B claims the same row,
+        // making its status Processing again — but now owned by B.
+        // Runner A finally wakes up and calls `mark_completed`. Without
+        // a `processed_by = $processor` fence, A's guarded `status =
+        // 'Processing'` check matches and overwrites B's in-progress
+        // state. With the fence it must be a no-op.
+        let Some(pool) = pool().await else { return };
+        let _guard = TEST_LOCK.lock().await;
+        clean_control_queue(&pool).await;
+        let repo = PgControlQueueRepo::new(pool.clone());
+        let exec_id = seed_execution_parent_chain(&pool).await;
+
+        let entry = pending_entry(&exec_id);
+        let row_id = entry.id.clone();
+        repo.enqueue(&entry).await.unwrap();
+
+        // Runner A claims.
+        let _ = repo.claim_pending(b"runner-a", 1).await.unwrap();
+        // Simulate: A's row goes stale, reclaim sweep moves it to
+        // Pending, then B claims. Easiest shortcut: rewrite the row
+        // directly to reflect the post-reclaim-and-reclaim state.
+        sqlx::query(
+            "UPDATE execution_control_queue \
+             SET status = 'Processing', processed_by = $2, \
+                 processed_at = NOW(), reclaim_count = 1 \
+             WHERE id = $1",
+        )
+        .bind(&row_id)
+        .bind(b"runner-b".as_slice())
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        // Stale Runner A acks. Must be a no-op under the new fence.
+        repo.mark_completed(&row_id, b"runner-a").await.unwrap();
+        type Row = (String, Option<Vec<u8>>);
+        let row: Row = sqlx::query_as(
+            "SELECT status, processed_by FROM execution_control_queue \
+             WHERE id = $1",
+        )
+        .bind(&row_id)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(
+            row.0, "Processing",
+            "stale A must not flip B's in-progress row to Completed"
+        );
+        assert_eq!(
+            row.1.as_deref(),
+            Some(b"runner-b".as_slice()),
+            "processed_by must remain the active claimant"
+        );
+
+        // Runner B legitimately acks. Must succeed.
+        repo.mark_completed(&row_id, b"runner-b").await.unwrap();
+        let status: String =
+            sqlx::query_scalar("SELECT status FROM execution_control_queue WHERE id = $1")
+                .bind(&row_id)
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert_eq!(status, "Completed");
     }
 
     #[tokio::test]
