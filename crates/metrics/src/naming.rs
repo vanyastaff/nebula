@@ -47,6 +47,32 @@ pub mod engine_lease_contention_reason {
     pub const HEARTBEAT_LOST: &str = "heartbeat_lost";
 }
 
+/// Counter: control-queue reclaim sweep outcomes (ADR-0017).
+///
+/// Labeled by `outcome` (see [`control_reclaim_outcome`]). The
+/// `ControlConsumer` reclaim sweep increments this counter by the per-row
+/// count for each outcome on every successful sweep — `reclaimed` tracks
+/// rows moved `Processing → Pending` for redelivery (a steady climb is a
+/// crashed-runner signal), and `exhausted` tracks rows moved
+/// `Processing → Failed` once `reclaim_count` reached the budget (any
+/// crossing-zero is a genuine incident; cross-reference with
+/// [`NEBULA_ENGINE_LEASE_CONTENTION_TOTAL`] heartbeat metrics).
+pub const NEBULA_ENGINE_CONTROL_RECLAIM_TOTAL: &str = "nebula_engine_control_reclaim_total";
+
+/// Outcome labels for [`NEBULA_ENGINE_CONTROL_RECLAIM_TOTAL`].
+///
+/// These are the exact static strings emitted as the `outcome` label so
+/// call sites and tests can compare without stringifying a value twice.
+/// Only these two values are ever emitted — cardinality hygiene
+/// (no `processor_id` label).
+pub mod control_reclaim_outcome {
+    /// Row transitioned `Processing → Pending` for fresh dispatch.
+    pub const RECLAIMED: &str = "reclaimed";
+    /// Row transitioned `Processing → Failed` because `reclaim_count`
+    /// reached `max_reclaim_count`.
+    pub const EXHAUSTED: &str = "exhausted";
+}
+
 // ---------------------------------------------------------------------------
 // Action (runtime)
 // ---------------------------------------------------------------------------

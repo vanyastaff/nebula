@@ -22,13 +22,19 @@
 //!   ADR-0017). A periodic `tokio::time::interval` arm calls `ControlQueueRepo::reclaim_stuck`
 //!   every [`DEFAULT_RECLAIM_INTERVAL`]; rows whose `processed_at` is older than
 //!   [`DEFAULT_RECLAIM_AFTER`] are moved back to `Pending` (retry budget
-//!   [`DEFAULT_MAX_RECLAIM_COUNT`]) or to `Failed` once the budget is exhausted.
+//!   [`DEFAULT_MAX_RECLAIM_COUNT`]) or to `Failed` once the budget is exhausted. Each sweep emits
+//!   the `nebula_engine_control_reclaim_total{outcome}` counter (ADR-0017 Seam) — wire the shared
+//!   registry via [`ControlConsumer::with_metrics`].
 //!
 //! [`EngineControlDispatch`]: crate::control_dispatch::EngineControlDispatch
 
 use std::{sync::Arc, time::Duration};
 
 use nebula_core::id::ExecutionId;
+use nebula_metrics::{
+    MetricsRegistry,
+    naming::{NEBULA_ENGINE_CONTROL_RECLAIM_TOTAL, control_reclaim_outcome},
+};
 use nebula_storage::repos::{ControlCommand, ControlQueueEntry, ControlQueueRepo};
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
@@ -204,6 +210,13 @@ pub struct ControlConsumer {
     reclaim_after: Duration,
     reclaim_interval: Duration,
     max_reclaim_count: u32,
+    /// Registry the reclaim sweep increments
+    /// `nebula_engine_control_reclaim_total{outcome}` against (ADR-0017
+    /// Seam). Defaults to a private fresh [`MetricsRegistry`] so the
+    /// consumer is always emit-safe; production composition roots inject
+    /// the shared registry via [`Self::with_metrics`] so the counter
+    /// reaches the Prometheus scrape endpoint.
+    metrics: MetricsRegistry,
 }
 
 impl ControlConsumer {
@@ -227,6 +240,7 @@ impl ControlConsumer {
             reclaim_after: DEFAULT_RECLAIM_AFTER,
             reclaim_interval: DEFAULT_RECLAIM_INTERVAL,
             max_reclaim_count: DEFAULT_MAX_RECLAIM_COUNT,
+            metrics: MetricsRegistry::new(),
         }
     }
 
@@ -266,6 +280,19 @@ impl ControlConsumer {
     #[must_use]
     pub fn with_max_reclaim_count(mut self, max_reclaim_count: u32) -> Self {
         self.max_reclaim_count = max_reclaim_count;
+        self
+    }
+
+    /// Inject the shared [`MetricsRegistry`] the reclaim sweep should
+    /// emit `nebula_engine_control_reclaim_total{outcome}` against.
+    ///
+    /// Without this builder the consumer still increments the counter, but
+    /// against a private registry no scraper sees — composition roots
+    /// (`apps/server`) must wire the runtime registry so operators can
+    /// alert on `outcome="exhausted"` (ADR-0017 Seam).
+    #[must_use]
+    pub fn with_metrics(mut self, metrics: MetricsRegistry) -> Self {
+        self.metrics = metrics;
         self
     }
 
@@ -345,6 +372,32 @@ impl ControlConsumer {
             .await
         {
             Ok(outcome) => {
+                // ADR-0017 Seam: bump the per-outcome counter by the row
+                // count for this sweep (not by 1 per sweep) so operators
+                // can alert on `outcome="exhausted" > 0` and watch
+                // `outcome="reclaimed"` for crashed-runner load.
+                // `processor_id` is intentionally NOT a label —
+                // cardinality hygiene; the structured `tracing` log
+                // below carries the per-runner correlation.
+                if outcome.reclaimed > 0 {
+                    let labels = self
+                        .metrics
+                        .interner()
+                        .single("outcome", control_reclaim_outcome::RECLAIMED);
+                    self.metrics
+                        .counter_labeled(NEBULA_ENGINE_CONTROL_RECLAIM_TOTAL, &labels)
+                        .inc_by(outcome.reclaimed);
+                }
+                if outcome.exhausted > 0 {
+                    let labels = self
+                        .metrics
+                        .interner()
+                        .single("outcome", control_reclaim_outcome::EXHAUSTED);
+                    self.metrics
+                        .counter_labeled(NEBULA_ENGINE_CONTROL_RECLAIM_TOTAL, &labels)
+                        .inc_by(outcome.exhausted);
+                }
+
                 if outcome.reclaimed > 0 || outcome.exhausted > 0 {
                     tracing::warn!(
                         processor = %hex_display(&self.processor_id),
@@ -361,6 +414,8 @@ impl ControlConsumer {
                 }
             },
             Err(e) => {
+                // No counter emit on the Err arm — a transient storage
+                // failure is not a reclaim outcome.
                 tracing::error!(
                     processor = %hex_display(&self.processor_id),
                     error = %e,

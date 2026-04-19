@@ -162,9 +162,16 @@ courtesy.
   crash mid-dispatch, runs the reclaim sweep, and verifies a fresh
   consumer picks up the redelivered row and drives it to `Completed`.
 - Metric: `nebula_engine_control_reclaim_total{outcome="reclaimed|exhausted"}`
-  — a non-zero `exhausted` counter crossing zero is a genuine incident
-  signal; `reclaimed` climbing steadily is a crashed-runner signal (cross-
-  reference with ADR-0015 heartbeat metrics).
+  — emitted from `ControlConsumer::sweep_reclaim` on every successful
+  sweep; the counter increments by the per-row count for each outcome
+  (not 1 per sweep). Constant + label values live in
+  `nebula_metrics::naming` (`NEBULA_ENGINE_CONTROL_RECLAIM_TOTAL`,
+  `control_reclaim_outcome::{RECLAIMED, EXHAUSTED}`) so call sites and
+  tests stay in lockstep. Composition roots inject the shared registry
+  via `ControlConsumer::with_metrics`. A non-zero `exhausted` counter
+  crossing zero is a genuine incident signal; `reclaimed` climbing
+  steadily is a crashed-runner signal (cross-reference with ADR-0015
+  heartbeat metrics).
 
 ## Open questions
 
