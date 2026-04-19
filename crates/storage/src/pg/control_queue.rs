@@ -845,4 +845,68 @@ mod tests {
             );
         }
     }
+
+    #[tokio::test]
+    async fn reclaim_stuck_safe_under_concurrent_sweep() {
+        let Some(pool) = pool().await else { return };
+        let _guard = TEST_LOCK.lock().await;
+        clean_control_queue(&pool).await;
+        let repo = std::sync::Arc::new(PgControlQueueRepo::new(pool.clone()));
+        let exec_id = seed_execution_parent_chain(&pool).await;
+
+        // One stuck row. Two sweepers race to reclaim it.
+        let entry = pending_entry(&exec_id);
+        let row_id = entry.id.clone();
+        repo.enqueue(&entry).await.unwrap();
+        let stale_at = Utc::now() - chrono::Duration::seconds(600);
+        sqlx::query(
+            "UPDATE execution_control_queue \
+             SET status = 'Processing', processed_at = $2, \
+                 processed_by = $3, reclaim_count = 0 \
+             WHERE id = $1",
+        )
+        .bind(&row_id)
+        .bind(stale_at)
+        .bind(b"dead-runner".as_slice())
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        let repo_a = repo.clone();
+        let repo_b = repo.clone();
+        let h_a = tokio::spawn(async move {
+            repo_a
+                .reclaim_stuck(std::time::Duration::from_secs(150), 3)
+                .await
+                .unwrap()
+        });
+        let h_b = tokio::spawn(async move {
+            repo_b
+                .reclaim_stuck(std::time::Duration::from_secs(150), 3)
+                .await
+                .unwrap()
+        });
+        let out_a = h_a.await.unwrap();
+        let out_b = h_b.await.unwrap();
+
+        // Exactly one sweeper reclaimed exactly one row; the other
+        // sweeper observed zero-rows-affected. No sweeper exhausted
+        // anything (reclaim_count was 0).
+        assert_eq!(out_a.reclaimed + out_b.reclaimed, 1);
+        assert_eq!(out_a.exhausted + out_b.exhausted, 0);
+
+        // Row is now Pending with reclaim_count == 1 — exactly once,
+        // not twice.
+        type Row = (String, i64);
+        let row: Row = sqlx::query_as(
+            "SELECT status, reclaim_count FROM execution_control_queue \
+             WHERE id = $1",
+        )
+        .bind(&row_id)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(row.0, "Pending");
+        assert_eq!(row.1, 1, "reclaim_count bumped exactly once");
+    }
 }
