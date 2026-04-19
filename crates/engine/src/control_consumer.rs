@@ -302,7 +302,16 @@ impl ControlConsumer {
         reclaim_ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
         let _ = reclaim_ticker.tick().await;
 
+        // Deadline at which the next `claim_pending` is allowed to fire. Held
+        // in scope across the `tokio::select!` below so that a reclaim
+        // interruption does not reset the backoff / poll_interval clock —
+        // see the review finding for PR #483 and ADR-0008 §5.
+        let mut claim_deadline = tokio::time::Instant::now();
+
         loop {
+            let claim_sleep = tokio::time::sleep_until(claim_deadline);
+            tokio::pin!(claim_sleep);
+
             tokio::select! {
                 biased;
                 () = shutdown.cancelled() => {
@@ -314,8 +323,14 @@ impl ControlConsumer {
                 }
                 _ = reclaim_ticker.tick() => {
                     self.sweep_reclaim().await;
+                    // `claim_deadline` is preserved — reclaim does not
+                    // short-circuit the backoff or the idle poll delay.
                 }
-                () = self.tick(&mut consecutive_errors) => {}
+                () = &mut claim_sleep => {
+                    let next_delay = self.tick(&mut consecutive_errors).await;
+                    claim_deadline = tokio::time::Instant::now()
+                        + next_delay.unwrap_or(std::time::Duration::ZERO);
+                }
             }
         }
     }
@@ -355,7 +370,14 @@ impl ControlConsumer {
         }
     }
 
-    async fn tick(&self, consecutive_errors: &mut u32) {
+    /// Drain a single batch. Returns the duration the caller should wait
+    /// before the next claim attempt (backoff on error, poll interval on
+    /// empty queue) or `None` if a batch was just processed and the loop
+    /// should claim again immediately.
+    ///
+    /// The outer loop persists this delay as a deadline so that a reclaim
+    /// interruption does not cancel the backoff — see `run`.
+    async fn tick(&self, consecutive_errors: &mut u32) -> Option<Duration> {
         let claimed = match self
             .queue
             .claim_pending(&self.processor_id, self.batch_size)
@@ -374,19 +396,18 @@ impl ControlConsumer {
                     backoff_ms = backoff.as_millis() as u64,
                     "control-queue claim_pending failed; backing off"
                 );
-                tokio::time::sleep(backoff).await;
-                return;
+                return Some(backoff);
             },
         };
 
         if claimed.is_empty() {
-            tokio::time::sleep(self.poll_interval).await;
-            return;
+            return Some(self.poll_interval);
         }
 
         for entry in claimed {
             self.handle_entry(entry).await;
         }
+        None
     }
 
     async fn handle_entry(&self, entry: ControlQueueEntry) {
