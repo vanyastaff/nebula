@@ -37,6 +37,7 @@
 
 #![forbid(unsafe_code)]
 #![warn(missing_docs)]
+#![doc = include_str!("../README.md")]
 
 /// Core [`BaseMetadata`] struct and [`Metadata`] trait.
 pub mod base;
