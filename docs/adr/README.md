@@ -20,6 +20,7 @@ changes land as a new ADR that `supersedes` it.
 | [0009](./0009-resume-persistence-schema.md) | Resume persistence schema (persist full `ActionResult` per node) | accepted | 2026-04-18 |
 | [0010](./0010-rust-2024-edition.md) | Rust 2024 edition + MSRV 1.94 | accepted | 2026-04-19 |
 | [0011](./0011-serde-json-value-interchange.md) | `serde_json::Value` as the workflow data interchange type | accepted | 2026-04-19 |
+| [0012](./0012-checkpoint-recovery.md) | Checkpoint-based recovery (not event sourcing) | proposed | 2026-04-19 |
 
 > ⚠️ **Number collision on 0008.** Two files share `id: 0008`:
 > `0008-execution-control-queue-consumer` (accepted) and
@@ -32,7 +33,7 @@ changes land as a new ADR that `supersedes` it.
 1. Copy the frontmatter block from any existing ADR (keep the keys: `id`,
    `title`, `status`, `date`, `supersedes`, `superseded_by`, `tags`,
    `related`, optional `linear`).
-2. Pick the next free number (currently **0012**). Do not reuse.
+2. Pick the next free number (currently **0013**). Do not reuse.
 3. File name: `NNNN-kebab-case-title.md` matching the `title:` field.
 4. Start `status: proposed`. Move to `accepted` only after review and merge.
 5. **Do not substantively edit an accepted ADR.** Open a new one with

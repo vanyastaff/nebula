@@ -354,6 +354,7 @@ Seams: `crates/storage/src/execution_repo.rs` — `ExecutionRepo::save_stateful_
 - **[L2]** **A demo handler that logs the command and discards it does not satisfy this invariant.** Examples and `simple_server.rs` must either wire a **real** engine consumer or be marked `// DEMO ONLY — does not honor cancel` so nothing mistakes them for the contract.
 - **[L2]** **Batching outbox writes for throughput is valid only if per-transition atomicity is preserved.** Never batch as a workaround that breaks “state transition + control signal” integrity.
 - **[L2]** Any second control channel (HTTP webhook, in-memory event) is **forbidden** unless this canon is updated with a **reconciliation** story.
+- **Recovery model:** checkpoint snapshots, not event sourcing. See [ADR-0012](./adr/0012-checkpoint-recovery.md) for the rationale and the contract with §11.5.
 
 ### 12.3 Local path
 
