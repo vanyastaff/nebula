@@ -40,7 +40,8 @@
 
 /// Core [`BaseMetadata`] struct and [`Metadata`] trait.
 pub mod base;
-/// Version-compatibility helpers shared across metadata families.
+/// [`BaseCompatError`] + [`validate_base_compat`] — generic compat rules
+/// shared by every catalog citizen.
 pub mod compat;
 /// [`DeprecationNotice`] — standard deprecation payload.
 pub mod deprecation;
@@ -50,6 +51,7 @@ pub mod icon;
 pub mod maturity;
 
 pub use base::{BaseMetadata, Metadata};
+pub use compat::{BaseCompatError, validate_base_compat};
 pub use deprecation::DeprecationNotice;
 pub use icon::Icon;
 pub use maturity::MaturityLevel;

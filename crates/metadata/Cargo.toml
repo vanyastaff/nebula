@@ -15,6 +15,7 @@ documentation.workspace = true
 nebula-schema = { path = "../schema" }
 semver = { workspace = true, features = ["serde"] }
 serde = { workspace = true, features = ["derive"] }
+thiserror = { workspace = true }
 
 [dev-dependencies]
 serde_json = { workspace = true }
