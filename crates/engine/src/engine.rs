@@ -1151,6 +1151,22 @@ impl WorkflowEngine {
         //    the forward state machine via `override_node_state` but still bumps the version per
         //    transition so CAS readers see the change (issue #255).
         let mut exec_state = exec_state;
+        // Cold-start seam (ADR-0008 A2, §5): the API's start handler persists an
+        // `ExecutionState::new(id, workflow_id, &[])` row — no per-node entries,
+        // because the handler does not load the workflow on the hot path. The
+        // first `ControlCommand::Start` that drains via `EngineControlDispatch`
+        // lands here; seed `node_states` from the workflow definition so the
+        // frontier seeder below treats graph entry nodes as the natural starting
+        // set. A warm resume (post-crash, with persisted per-node state) skips
+        // this branch untouched.
+        if exec_state.node_states.is_empty() {
+            for node in &workflow.nodes {
+                exec_state.set_node_state(
+                    node.id.clone(),
+                    nebula_execution::state::NodeExecutionState::new(),
+                );
+            }
+        }
         let non_terminal: Vec<NodeKey> = exec_state
             .node_states
             .iter()

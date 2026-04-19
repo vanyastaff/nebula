@@ -14,8 +14,9 @@
 //! - **implemented** — consumer skeleton: construction, polling loop with graceful shutdown,
 //!   `claim_pending` / `mark_completed` / `mark_failed` plumbing, command observation with typed
 //!   `ExecutionId` decoding.
-//! - **planned** — `Resume` / `Restart` dispatch into the engine start path (ADR-0008 follow-up
-//!   A2).
+//! - **implemented** — `Start` / `Resume` / `Restart` dispatch into the engine start / resume path
+//!   (ADR-0008 follow-up A2; closes #332 / #327). The engine-owned implementation lives in
+//!   [`control_dispatch::EngineControlDispatch`].
 //! - **planned** — `Cancel` / `Terminate` dispatch into the engine cancel path (ADR-0008 follow-up
 //!   A3).
 //!
@@ -25,6 +26,7 @@
 //!
 //! - `WorkflowEngine` — entry point; level-by-level DAG execution with bounded concurrency.
 //! - `ControlConsumer` / `ControlDispatch` — durable control-queue consumer (§12.2, ADR-0008).
+//! - `EngineControlDispatch` — canonical engine-side `ControlDispatch` impl (ADR-0008 A2).
 //! - `ExecutionResult` — post-run summary returned to the API layer.
 //! - `EngineError` — typed engine-layer error.
 //! - `ExecutionEvent` — broadcast event type for `nebula-eventbus`.
@@ -41,6 +43,7 @@
 //! fail-open credential allowlist, edge-gate narrowness).
 
 pub mod control_consumer;
+pub mod control_dispatch;
 pub mod credential_accessor;
 pub mod engine;
 pub mod error;
@@ -55,6 +58,7 @@ pub use control_consumer::{
     ControlConsumer, ControlDispatch, ControlDispatchError, DEFAULT_BATCH_SIZE,
     DEFAULT_POLL_INTERVAL, MAX_CLAIM_ERROR_BACKOFF,
 };
+pub use control_dispatch::EngineControlDispatch;
 pub use credential_accessor::EngineCredentialAccessor;
 pub use engine::{DEFAULT_EVENT_CHANNEL_CAPACITY, WorkflowEngine};
 pub use error::EngineError;

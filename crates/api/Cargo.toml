@@ -63,6 +63,11 @@ url = { workspace = true }
 
 [dev-dependencies]
 nebula-api = { path = ".", features = ["test-util"] }
+# Dev-only: the knife integration test wires the A2 consumer + engine
+# end-to-end alongside the API producer (see `tests/knife.rs`). Listed in
+# `deny.toml` wrappers for the same reason. `InProcessSandbox` is re-exported
+# through `nebula-runtime` so we don't need a direct `nebula-sandbox` dep.
+nebula-engine = { path = "../engine" }
 tracing-subscriber = { workspace = true, features = ["env-filter", "fmt"] }
 hex = { workspace = true }
 hmac = { workspace = true }

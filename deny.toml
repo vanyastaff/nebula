@@ -58,6 +58,11 @@ deny = [
   # ---- Layer enforcement: Exec ----
   { crate = "nebula-engine", wrappers = [
     "nebula-cli",
+    # Dev-only: `crates/api/tests/knife.rs` wires the API + Engine composition
+    # for the §13 knife integration test (ADR-0008 follow-up A2). A dedicated
+    # `apps/server` composition root is still tracked as a separate follow-up;
+    # until it exists this is the only place the two layers meet in-process.
+    "nebula-api",
   ], reason = "Engine is exec-layer orchestration; business/core crates must not depend on it" },
   { crate = "nebula-runtime", wrappers = [
     "nebula-engine",
