@@ -33,8 +33,14 @@ if [[ -z "$CMD" ]]; then
 fi
 
 # Block destructive git operations even if deny-list misses a variant.
-if printf '%s' "$CMD" | grep -qE 'git.*(push.*--force|push.*-f([^a-zA-Z]|$)|reset --hard|clean -[a-zA-Z]*f|branch -D)'; then
+if printf '%s' "$CMD" | grep -qE 'git.*(push.*--force|push.*-f([^a-zA-Z]|$)|reset --hard|clean -[a-zA-Z]*f)'; then
   echo "Blocked by guard-bash.sh: destructive git operation detected." >&2
+  exit 2
+fi
+
+# Allow branch deletion workflows, but protect force-deletion of primary branches.
+if printf '%s' "$CMD" | grep -qiE 'git[[:space:]].*branch[[:space:]]+-D[[:space:]]+(main|master|develop|dev)([[:space:];]|$)'; then
+  echo "Blocked by guard-bash.sh: refusing force-delete of protected branch." >&2
   exit 2
 fi
 
