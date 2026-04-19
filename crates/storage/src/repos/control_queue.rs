@@ -286,10 +286,11 @@ impl ControlQueueRepo for InMemoryControlQueueRepo {
 /// logs sane — the engine consumer logs `processor_id` via the same encoding
 /// in `tracing` fields.
 fn hex_encode_bytes(bytes: &[u8]) -> String {
-    use std::fmt::Write;
+    const HEX: &[u8; 16] = b"0123456789abcdef";
     let mut s = String::with_capacity(bytes.len() * 2);
-    for b in bytes {
-        let _ = write!(s, "{b:02x}");
+    for &b in bytes {
+        s.push(HEX[(b >> 4) as usize] as char);
+        s.push(HEX[(b & 0x0f) as usize] as char);
     }
     s
 }
