@@ -167,7 +167,7 @@ impl ControlQueueRepo for PgControlQueueRepo {
         reclaim_after: std::time::Duration,
         max_reclaim_count: u32,
     ) -> Result<ReclaimOutcome, StorageError> {
-        let secs = reclaim_after_seconds(reclaim_after);
+        let secs = duration_to_interval_secs(reclaim_after);
         let max_count = i64::from(max_reclaim_count);
 
         let mut tx = self
@@ -236,7 +236,7 @@ impl ControlQueueRepo for PgControlQueueRepo {
         // treats "removing rows before the engine has acted" as broken,
         // so Pending / Processing rows must never be pruned regardless
         // of `issued_at` age.
-        let secs = reclaim_after_seconds(retention);
+        let secs = duration_to_interval_secs(retention);
         let result = sqlx::query(
             "DELETE FROM execution_control_queue \
              WHERE status IN ('Completed', 'Failed') \
@@ -250,20 +250,22 @@ impl ControlQueueRepo for PgControlQueueRepo {
     }
 }
 
-/// Normalize `reclaim_after` into positive seconds bounded by a sane
-/// upper limit. Matches the in-memory impl's intent: a huge
-/// `reclaim_after` means "never reclaim anything under realistic
-/// processing ages", so we clamp to ~10 years. A negative / NaN /
-/// infinite value collapses to 0 so the caller still sees a deterministic
-/// result (nothing younger than `now` is reclaimable, but everything
-/// older than `now` is — same as the in-memory no-fallback path).
-fn reclaim_after_seconds(d: std::time::Duration) -> f64 {
-    const TEN_YEARS_SECS: f64 = 86_400.0 * 365.0 * 10.0;
+/// Convert a `std::time::Duration` into `make_interval(secs => ...)`-safe
+/// seconds. Clamps to `[0, i32::MAX]` seconds (~68 years) so non-finite or
+/// absurdly large inputs never overflow Postgres's interval arithmetic.
+///
+/// For `reclaim_stuck`, a clamp of ~68 years mirrors the in-memory impl's
+/// intent — `reclaim_after` values that dwarf real processing ages make
+/// the staleness cutoff effectively unreachable, so no row is reclaimed.
+/// For `cleanup`, the same clamp lets `retention = Duration::MAX` act as
+/// "prune rows older than 68 years" — again, a practical never.
+fn duration_to_interval_secs(d: std::time::Duration) -> f64 {
+    const MAX_INTERVAL_SECS: f64 = i32::MAX as f64;
     let secs = d.as_secs_f64();
     if !secs.is_finite() {
         return 0.0;
     }
-    secs.clamp(0.0, TEN_YEARS_SECS)
+    secs.clamp(0.0, MAX_INTERVAL_SECS)
 }
 
 #[cfg(all(test, feature = "postgres"))]
@@ -272,7 +274,7 @@ mod tests {
     use sqlx::{Pool, Postgres};
 
     use super::*;
-    use crate::backend::PostgresStorage;
+    use crate::{backend::PostgresStorage, test_support::random_id};
 
     /// Connect to `DATABASE_URL` and run migrations, or return `None` to skip.
     async fn pool() -> Option<Pool<Postgres>> {
@@ -300,26 +302,6 @@ mod tests {
             .execute(pool)
             .await
             .expect("clean control queue");
-    }
-
-    /// Generate a pseudo-unique 16-byte ID (nanosecond timestamp + counter).
-    /// Mirrors `test_support::random_id` without pulling it through a new
-    /// cfg path.
-    fn random_id() -> Vec<u8> {
-        use std::{
-            sync::atomic::{AtomicU64, Ordering},
-            time::{SystemTime, UNIX_EPOCH},
-        };
-        static COUNTER: AtomicU64 = AtomicU64::new(0);
-        let nanos = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_nanos();
-        let seq = COUNTER.fetch_add(1, Ordering::Relaxed);
-        let mut bytes = [0u8; 16];
-        bytes[..8].copy_from_slice(&nanos.to_le_bytes()[..8]);
-        bytes[8..16].copy_from_slice(&seq.to_le_bytes());
-        bytes.to_vec()
     }
 
     /// Seed a minimal `orgs → workspaces → workflows → workflow_versions →
