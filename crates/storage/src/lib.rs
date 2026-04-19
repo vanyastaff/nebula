@@ -19,11 +19,14 @@
 //! versioning. Trait definitions only — no implementations exist yet; the engine
 //! cannot compile against these without a broader refactor.
 //!
-//! **Exception:** `repos::ControlQueueRepo` is production-wired today —
-//! backed by `repos::InMemoryControlQueueRepo` (tests / local) and
-//! `pg::PgControlQueueRepo` (multi-process / restart-tolerant, `FOR UPDATE
-//! SKIP LOCKED` per ADR-0008 §1). Both are consumed by
-//! `nebula_engine::ControlConsumer`.
+//! **Exception:** `repos::ControlQueueRepo` is a production trait consumed
+//! by `nebula_engine::ControlConsumer`. Two backings live in this crate:
+//! `repos::InMemoryControlQueueRepo` is the currently-wired runtime
+//! (tests, local, `simple_server` example), and `pg::PgControlQueueRepo`
+//! is available behind the `postgres` feature for multi-process /
+//! restart-tolerant deployments (`FOR UPDATE SKIP LOCKED` per ADR-0008
+//! §1). No composition root selects the Postgres backing by default
+//! yet — a future `apps/server` (ADR-0008 follow-up) wires it in.
 //!
 //! ## Canon
 //!
@@ -58,17 +61,23 @@ pub mod pg;
 pub mod pool;
 /// Repository trait API (spec-16 architecture) — **planned / experimental**, per canon §11.6.
 ///
-/// Only [`repos::ControlQueueRepo`] is production-wired today —
-/// backed by [`repos::InMemoryControlQueueRepo`] (tests / local) and
-/// `pg::PgControlQueueRepo` (multi-process / restart-tolerant;
-/// `FOR UPDATE SKIP LOCKED` per ADR-0008 §1). `pg::PgControlQueueRepo`
-/// is only present under the `postgres` feature, so this reference is
-/// kept non-linked to keep default-feature rustdoc clean.
-/// Both backends are consumed by `nebula_engine::ControlConsumer`.
-/// The rest of the traits in this
-/// module are design placeholders with no implementations yet —
-/// adopting them requires an engine + API refactor tracked as
-/// "Sprint E — adopt spec-16 row model" in the workspace health audit spec.
+/// Only [`repos::ControlQueueRepo`] has a production-wired consumer today
+/// (`nebula_engine::ControlConsumer`). Two backings live in this crate:
+/// [`repos::InMemoryControlQueueRepo`] is the currently selected runtime
+/// (tests, local, `simple_server` example); `pg::PgControlQueueRepo` is
+/// available behind the `postgres` feature for multi-process /
+/// restart-tolerant deployments (`FOR UPDATE SKIP LOCKED` per ADR-0008
+/// §1) but is not yet selected by any composition root — a future
+/// `apps/server` binary (ADR-0008 follow-up) wires it in.
+///
+/// `pg::PgControlQueueRepo` is only present under the `postgres` feature,
+/// so this reference is intentionally kept as plain backticks (not an
+/// intra-doc link) to keep default-feature rustdoc clean.
+///
+/// The rest of the traits in this module are design placeholders with
+/// no implementations yet — adopting them requires an engine + API
+/// refactor tracked as "Sprint E — adopt spec-16 row model" in the
+/// workspace health audit spec.
 ///
 /// For execution / workflow persistence, use the top-level [`ExecutionRepo`]
 /// and [`WorkflowRepo`] re-exports (layer 1) — they are the production
