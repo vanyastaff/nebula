@@ -38,7 +38,13 @@
 //!         coord.complete("cred-1");
 //!     }
 //!     RefreshAttempt::Waiter(rx) => {
-//!         let _ = rx.await; // Err means the winner dropped the entry
+//!         // `Ok(())` on normal completion. `Err(RecvError)` means the
+//!         // sender was dropped without firing — only happens on abnormal
+//!         // paths (coordinator teardown, or a bug where `complete()` is
+//!         // skipped). A winner that simply forgets `complete()` leaves
+//!         // the sender alive in the map, so the receiver hangs until the
+//!         // caller's timeout rather than erroring.
+//!         let _ = rx.await;
 //!         // Re-read credential from store
 //!     }
 //! }
@@ -131,9 +137,17 @@ pub enum RefreshAttempt {
     /// in-flight entry. Wrapping the call in a `scopeguard` is recommended
     /// so the guarantee survives panics and error paths.
     Winner,
-    /// Another caller is already refreshing. Await the receiver; it resolves
-    /// (either `Ok(())` or `Err(_)` when the winner drops the sender) as
-    /// soon as the winner completes.
+    /// Another caller is already refreshing. Await the receiver; it
+    /// resolves to `Ok(())` as soon as the winner calls
+    /// [`RefreshCoordinator::complete()`].
+    ///
+    /// `Err(oneshot::error::RecvError)` means the sender was dropped
+    /// **without being fired** — only reachable on abnormal paths
+    /// (coordinator teardown, or a bug that removes the in-flight entry
+    /// without draining its senders). It is *not* the signal for a normal
+    /// winner completion. A winner that forgets `complete()` leaves the
+    /// sender alive in the map: the receiver hangs until the caller-side
+    /// timeout rather than erroring.
     ///
     /// No lost-wakeup race: the sender was pushed into the in-flight entry
     /// while holding the map mutex — the same mutex the winner holds when
