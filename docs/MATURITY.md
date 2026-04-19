@@ -19,10 +19,10 @@ Legend:
 | Crate | API stability | Test coverage | Doc completeness | Engine integration | SLI ready |
 |---|---|---|---|---|---|
 | nebula-action        | frontier | stable  | stable | partial (webhook sig covered; CheckpointPolicy planned; `ActionResult::Retry` gated behind `unstable-retry-scheduler`, #290) | n/a |
-| nebula-api           | frontier | stable  | stable | partial (knife steps 3+5: Start/Cancel producers stable, #332/#330; engine-side Start/Resume/Restart dispatch wired via EngineControlDispatch — ADR-0008 A2; Cancel/Terminate dispatch still planned — A3) | partial |
+| nebula-api           | frontier | stable  | stable | partial (knife steps 3+5: Start/Cancel producers stable, #332/#330; engine-side Start/Resume/Restart dispatch wired via EngineControlDispatch — ADR-0008 A2; Cancel/Terminate dispatch wired via engine cancel registry — ADR-0008 A3 / ADR-0016) | partial |
 | nebula-core          | frontier | stable  | stable | stable | n/a |
 | nebula-credential    | frontier | stable  | stable | partial (rotation in integration tests) | n/a |
-| nebula-engine        | partial  | stable  | stable | partial (ControlConsumer skeleton lands §12.2; Start/Resume/Restart dispatch via EngineControlDispatch — ADR-0008 A2; Cancel/Terminate dispatch planned — A3) | n/a |
+| nebula-engine        | partial  | stable  | stable | partial (ControlConsumer skeleton lands §12.2; all five control commands dispatched via EngineControlDispatch — ADR-0008 A2 (Start/Resume/Restart) + A3 (Cancel/Terminate) + ADR-0016 cancel registry; ADR-0008 B1 reclaim path for stuck Processing rows still planned) | n/a |
 | nebula-error         | stable   | stable  | stable | n/a | n/a |
 | nebula-eventbus      | stable   | stable  | stable | n/a | n/a |
 | nebula-execution     | stable   | stable  | stable | stable | partial |
@@ -50,4 +50,4 @@ Legend:
 This file is a living dashboard. Reviewers check truthfulness on every PR that touches a crate's public surface, test suite, or docs. Canon §17 DoD includes "MATURITY.md row updated if the PR changes crate state."
 
 Last full sweep: 2026-04-17 (Pass 4 of docs architecture redesign).
-Last targeted revision: 2026-04-19 (Engine lifecycle cluster doc-sync: all 15 P1 issues landed; ADR-0015 lease-lifecycle promoted from proposed-0008 to accepted).
+Last targeted revision: 2026-04-19 (ADR-0008 A3 landed: engine cancel registry + dispatch_cancel / dispatch_terminate wired end-to-end; ADR-0016 documents the cooperative-cancel contract and the forced-shutdown gap).

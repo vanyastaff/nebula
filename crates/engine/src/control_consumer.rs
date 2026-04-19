@@ -14,12 +14,10 @@
 //! - dispatch of `Start` / `Resume` / `Restart` to the engine start/resume path — **implemented**
 //!   (A2, closes #332 / #327). The engine-owned implementation lives in
 //!   [`crate::control_dispatch::EngineControlDispatch`];
-//! - dispatch of `Cancel` / `Terminate` to the engine cancel path — **planned**, lands with A3
-//!   (closes #330).
-//!
-//! Until A3 lands, the default [`EngineControlDispatch`] body for
-//! `Cancel` / `Terminate` returns a typed [`ControlDispatchError::Rejected`]
-//! so the consumer marks the row `Failed` rather than silently acking it.
+//! - dispatch of `Cancel` / `Terminate` to the engine cancel path — **implemented** (A3, closes
+//!   #330). The `Cancel` command now reaches the live frontier loop via
+//!   [`crate::WorkflowEngine::cancel_execution`]; `Terminate` shares the cooperative-cancel body
+//!   until a distinct forced-shutdown path is wired (see ADR-0016).
 //!
 //! [`EngineControlDispatch`]: crate::control_dispatch::EngineControlDispatch
 
@@ -108,24 +106,32 @@ pub trait ControlDispatch: Send + Sync {
 
     /// Deliver a `Cancel` command to a running execution.
     ///
-    /// A3 wires this into the engine's cooperative-cancel path. A1 stub
-    /// returns `Ok(())`.
+    /// A3 wired this into the engine's cooperative-cancel path (closes
+    /// #330). The canonical engine-owned body lives in
+    /// [`crate::control_dispatch::EngineControlDispatch`] and signals
+    /// [`crate::WorkflowEngine::cancel_execution`] on every non-orphan
+    /// delivery, regardless of persisted status.
     ///
-    /// **Idempotency (load-bearing, ADR-0008 §5):** Must return `Ok(())`
-    /// when the execution is already terminal or already being cancelled.
-    /// The consumer's ack path (`mark_completed`) can fail after a
-    /// successful dispatch, and the reclaim path (B1) will redeliver; a
-    /// non-idempotent implementation double-cancels.
+    /// **Idempotency (load-bearing, ADR-0008 §5):** The underlying
+    /// `CancellationToken::cancel` is idempotent per token, and a missing
+    /// registry entry (cross-runner case, or this runner has already
+    /// cleaned up) is a no-op. The consumer's ack path (`mark_completed`)
+    /// can fail after a successful dispatch, and the reclaim path (B1)
+    /// will redeliver; because the signal itself is idempotent, re-delivery
+    /// is safe without a short-circuit on persisted status. See ADR-0016.
     async fn dispatch_cancel(&self, execution_id: ExecutionId) -> Result<(), ControlDispatchError>;
 
-    /// Deliver a `Terminate` command (forced termination) to a running
-    /// execution.
+    /// Deliver a `Terminate` command to a running execution.
     ///
-    /// A3 wires this into the engine's forced-shutdown path. A1 stub
-    /// returns `Ok(())`.
+    /// ADR-0008 calls this "forced termination", but there is no distinct
+    /// forced-shutdown path in the engine today — cooperative cancel via
+    /// the same [`tokio_util::sync::CancellationToken`] is the honest A3
+    /// minimum (see ADR-0016). The canonical
+    /// [`crate::control_dispatch::EngineControlDispatch`] body delegates
+    /// to [`dispatch_cancel`](Self::dispatch_cancel) until a process-level
+    /// kill / `JoinSet` abort is wired as a separate chip.
     ///
-    /// **Idempotency:** same contract as [`dispatch_cancel`](Self::dispatch_cancel) —
-    /// a repeat for a terminal execution must be `Ok(())`.
+    /// **Idempotency:** same contract as [`dispatch_cancel`](Self::dispatch_cancel).
     async fn dispatch_terminate(
         &self,
         execution_id: ExecutionId,
@@ -301,17 +307,11 @@ impl ControlConsumer {
                 self.dispatch.dispatch_start(execution_id).await
             },
             ControlCommand::Cancel => {
-                tracing::info!(
-                    %execution_id,
-                    "control-queue: observed Cancel (TODO(A3): wire to engine cancel path)"
-                );
+                tracing::debug!(%execution_id, "control-queue: dispatching Cancel (A3)");
                 self.dispatch.dispatch_cancel(execution_id).await
             },
             ControlCommand::Terminate => {
-                tracing::info!(
-                    %execution_id,
-                    "control-queue: observed Terminate (TODO(A3): wire to engine terminate path)"
-                );
+                tracing::debug!(%execution_id, "control-queue: dispatching Terminate (A3)");
                 self.dispatch.dispatch_terminate(execution_id).await
             },
             ControlCommand::Resume => {

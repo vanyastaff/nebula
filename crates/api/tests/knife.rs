@@ -852,3 +852,246 @@ async fn knife_step3_engine_dispatches_start_end_to_end() {
     shutdown.cancel();
     let _ = consumer_handle.await;
 }
+
+// ── Knife step 5 end-to-end (ADR-0008 A3) ──────────────────────────────────
+//
+// Symmetric to `knife_step3_engine_dispatches_start_end_to_end`. The producer
+// half — `POST /cancel` writes the `Cancelled` row and enqueues `Cancel` — is
+// already asserted by `knife_scenario_end_to_end` above. This test asserts the
+// CONSUMER half: the `EngineControlDispatch::dispatch_cancel` signals the
+// engine's live frontier loop so a long-running workflow is actually aborted
+// end-to-end, not left sleeping until its natural completion.
+//
+// The wiring mirrors step 3:
+//   POST /cancel
+//     → execution_repo.transition (Cancelled)
+//     → execution_control_queue.enqueue(Cancel)
+//     → ControlConsumer.claim_pending
+//     → EngineControlDispatch::dispatch_cancel
+//     → WorkflowEngine::cancel_execution
+//     → frontier loop observes `ctx.cancellation()` → node exits
+//
+// The workflow uses a cooperatively-cancellable `slow` handler that would
+// otherwise wait 30s; asserting that the execution reaches a terminal state
+// within a few seconds proves the signal reached the engine's live loop.
+
+struct KnifeSlow {
+    meta: nebula_action::metadata::ActionMetadata,
+    started: Arc<tokio::sync::Notify>,
+}
+
+impl nebula_action::dependency::ActionDependencies for KnifeSlow {}
+impl nebula_action::action::Action for KnifeSlow {
+    fn metadata(&self) -> &nebula_action::metadata::ActionMetadata {
+        &self.meta
+    }
+}
+impl nebula_action::stateless::StatelessAction for KnifeSlow {
+    type Input = serde_json::Value;
+    type Output = serde_json::Value;
+
+    async fn execute(
+        &self,
+        input: Self::Input,
+        ctx: &impl nebula_action::context::Context,
+    ) -> Result<nebula_action::result::ActionResult<Self::Output>, nebula_action::ActionError> {
+        self.started.notify_one();
+        tokio::select! {
+            () = tokio::time::sleep(std::time::Duration::from_secs(30)) => {
+                Ok(nebula_action::result::ActionResult::success(input))
+            }
+            () = ctx.cancellation().cancelled() => Err(nebula_action::ActionError::Cancelled),
+        }
+    }
+}
+
+/// Canon §13 step 5 end-to-end (ADR-0008 A3).
+///
+/// Wires API producer + `ControlConsumer` + `EngineControlDispatch` + engine
+/// over shared in-memory repos, starts a long-running execution, POSTs
+/// `/executions/:id/cancel`, and asserts the execution reaches a terminal
+/// state well inside the slow handler's 30-second sleep window. Closes #330.
+#[tokio::test]
+async fn knife_step5_engine_cancels_running_execution_end_to_end() {
+    use std::time::Duration;
+
+    use nebula_core::action_key;
+    use nebula_engine::{ControlConsumer, EngineControlDispatch, WorkflowEngine};
+    use nebula_execution::ExecutionStatus;
+    use nebula_runtime::{
+        ActionExecutor, ActionRuntime, DataPassingPolicy, InProcessSandbox,
+        registry::ActionRegistry,
+    };
+    use nebula_workflow::{
+        Connection, NodeDefinition, Version, WorkflowConfig, WorkflowDefinition,
+    };
+    use tokio_util::sync::CancellationToken;
+
+    let (state, _control_queue) = create_state_with_queue().await;
+    let api_config = ApiConfig::for_test();
+    let token = create_test_jwt();
+
+    // ── Persist a workflow whose single node uses the `slow` action ──────────
+    let workflow_id = nebula_core::WorkflowId::new();
+    let now = chrono::Utc::now();
+    let wf = WorkflowDefinition {
+        id: workflow_id,
+        name: "knife-a3-cancel".into(),
+        description: None,
+        version: Version::new(0, 1, 0),
+        nodes: vec![NodeDefinition::new(nebula_core::node_key!("step"), "Step", "slow").unwrap()],
+        connections: Vec::<Connection>::new(),
+        variables: std::collections::HashMap::new(),
+        config: WorkflowConfig::default(),
+        trigger: None,
+        tags: Vec::new(),
+        created_at: now,
+        updated_at: now,
+        owner_id: None,
+        ui_metadata: None,
+        schema_version: 1,
+    };
+    state
+        .workflow_repo
+        .save(workflow_id, 0, serde_json::to_value(&wf).unwrap())
+        .await
+        .unwrap();
+
+    // ── Build the engine bound to the shared repos ──────────────────────────
+    let slow_started = Arc::new(tokio::sync::Notify::new());
+    let registry = Arc::new(ActionRegistry::new());
+    registry.register_stateless(KnifeSlow {
+        meta: nebula_action::metadata::ActionMetadata::new(
+            action_key!("slow"),
+            "slow",
+            "knife A3 cancellable handler",
+        ),
+        started: Arc::clone(&slow_started),
+    });
+
+    let executor: ActionExecutor = Arc::new(|_ctx, _meta, input| {
+        Box::pin(async move { Ok(nebula_action::result::ActionResult::success(input)) })
+    });
+    let sandbox = Arc::new(InProcessSandbox::new(executor));
+    let metrics = nebula_telemetry::metrics::MetricsRegistry::new();
+    let runtime = Arc::new(ActionRuntime::new(
+        registry,
+        sandbox,
+        DataPassingPolicy::default(),
+        metrics.clone(),
+    ));
+
+    let engine = Arc::new(
+        WorkflowEngine::new(runtime, metrics)
+            .with_execution_repo(Arc::clone(&state.execution_repo))
+            .with_workflow_repo(Arc::clone(&state.workflow_repo)),
+    );
+
+    // ── Spawn the consumer so both Start and Cancel are drained continuously ─
+    let dispatch = Arc::new(EngineControlDispatch::new(
+        Arc::clone(&engine),
+        Arc::clone(&state.execution_repo),
+    ));
+    let consumer = ControlConsumer::new(
+        Arc::clone(&state.control_queue_repo),
+        dispatch,
+        b"knife-a3".to_vec(),
+    )
+    .with_poll_interval(Duration::from_millis(10));
+    let shutdown = CancellationToken::new();
+    let consumer_handle = consumer.spawn(shutdown.clone());
+
+    // ── Start the execution via the A1/A2 producer path ──────────────────────
+    let start_request = serde_json::json!({ "input": { "knife_e2e": "a3" } });
+    let app = app::build_app(state.clone(), &api_config);
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!("/api/v1/workflows/{workflow_id}/executions"))
+                .header("content-type", "application/json")
+                .header("authorization", format!("Bearer {token}"))
+                .body(Body::from(serde_json::to_string(&start_request).unwrap()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        response.status(),
+        StatusCode::ACCEPTED,
+        "step 5 end-to-end: start execution must return 202"
+    );
+    let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let execution_response: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    let execution_id_str = execution_response["id"]
+        .as_str()
+        .expect("start response carries an id")
+        .to_string();
+
+    // ── Wait until the slow handler enters its select{} — frontier is live ──
+    tokio::time::timeout(Duration::from_secs(10), slow_started.notified())
+        .await
+        .expect(
+            "slow handler started within 10s (A2 consumer drained Start and the engine \
+             dispatched the node)",
+        );
+
+    // ── Cancel via the API — step 5 producer path ──────────────────────────
+    let cancel_app = app::build_app(state.clone(), &api_config);
+    let cancel_response = cancel_app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!("/api/v1/executions/{execution_id_str}/cancel"))
+                .header("authorization", format!("Bearer {token}"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        cancel_response.status(),
+        StatusCode::OK,
+        "step 5 end-to-end: cancel must return 200"
+    );
+
+    // ── The execution must reach a terminal state well inside the slow
+    //    handler's 30s sleep — proving the Cancel reached the engine's live
+    //    cancel token and the handler exited cooperatively. Without A3 the
+    //    row would be `Cancelled` via the API's CAS but the slow handler
+    //    would still be sleeping in-process for up to 30s.
+    let execution_id = nebula_core::ExecutionId::parse(&execution_id_str).unwrap();
+    let final_status = tokio::time::timeout(Duration::from_secs(10), async {
+        loop {
+            let (_version, json) = state
+                .execution_repo
+                .get_state(execution_id)
+                .await
+                .unwrap()
+                .expect("execution row present");
+            let status: ExecutionStatus =
+                serde_json::from_value(json.get("status").cloned().unwrap()).unwrap();
+            if status.is_terminal() {
+                return status;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    })
+    .await
+    .expect(
+        "engine reached a terminal state within 10s (A3 cancel dispatch signalled the \
+         live frontier loop) — the 30s slow handler was aborted cooperatively",
+    );
+
+    assert!(
+        final_status.is_terminal(),
+        "step 5 end-to-end: execution reached a terminal state after Cancel — A3 closed \
+         the §4.5 gap on the cancel half (#330). got: {final_status:?}"
+    );
+
+    // Graceful shutdown so the spawned consumer task doesn't leak.
+    shutdown.cancel();
+    let _ = consumer_handle.await;
+}

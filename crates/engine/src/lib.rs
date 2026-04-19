@@ -17,10 +17,13 @@
 //! - **implemented** — `Start` / `Resume` / `Restart` dispatch into the engine start / resume path
 //!   (ADR-0008 follow-up A2; closes #332 / #327). The engine-owned implementation lives in
 //!   [`control_dispatch::EngineControlDispatch`].
-//! - **planned** — `Cancel` / `Terminate` dispatch into the engine cancel path (ADR-0008 follow-up
-//!   A3).
+//! - **implemented** — `Cancel` / `Terminate` dispatch into the engine cancel path (ADR-0008
+//!   follow-up A3; closes #330). `Cancel` signals the live frontier loop via
+//!   [`WorkflowEngine::cancel_execution`]; `Terminate` shares the cooperative-cancel body until a
+//!   distinct forced-shutdown path is wired (see ADR-0016).
 //!
-//! Wiring and atomicity decisions live in `docs/adr/0008-execution-control-queue-consumer.md`.
+//! Wiring and atomicity decisions live in `docs/adr/0008-execution-control-queue-consumer.md`
+//! and `docs/adr/0016-engine-cancel-registry.md`.
 //!
 //! ## Key types
 //!
