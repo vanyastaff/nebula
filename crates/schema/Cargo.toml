@@ -68,3 +68,9 @@ harness = false
 [[bench]]
 name = "bench_lookup"
 harness = false
+
+[package.metadata.cargo-shear]
+# schemars is optional (feature = "schemars") and used via
+# `#[cfg_attr(feature = "schemars", derive(JsonSchema))]` attributes on
+# schema types; cargo-shear doesn't follow derive-macro call paths.
+ignored = ["schemars"]

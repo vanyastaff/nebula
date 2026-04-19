@@ -100,3 +100,9 @@ harness = false
 [[bench]]
 name = "hedge"
 harness = false
+
+[package.metadata.cargo-shear]
+# humantime-serde is behind the `humantime` feature and is consumed via
+# `#[serde(with = "humantime_serde")]` in config types that the feature
+# toggles on; cargo-shear does not trace the serde attribute path.
+ignored = ["humantime-serde"]

@@ -47,3 +47,10 @@ tokio = { workspace = true, features = ["full", "test-util"] }
 
 [lib]
 doctest = false
+
+[package.metadata.cargo-shear]
+# Optional backend deps: declared under feature flags (`redis`, `s3`)
+# whose backend implementations live behind the feature guard. Kept
+# declared so the backend surface is stable even while implementation
+# is landing incrementally.
+ignored = ["aws-config", "aws-sdk-s3", "redis"]

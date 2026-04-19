@@ -91,3 +91,13 @@ required-features = ["sentry"]
 [[bench]]
 name = "log_hot_path"
 harness = false
+
+[package.metadata.cargo-shear]
+# Optional deps pulled in via feature-gated code paths that cargo-shear
+# doesn't always trace:
+#   - flate2: used when the `file` feature enables gzipped log rotation
+#     through tracing-appender (enabled via feature, exercised in the
+#     file-rotation integration, not a direct `use` in src/).
+#   - tracing-log: activated through tracing-subscriber's `tracing-log`
+#     feature; the `log-compat` feature re-exposes it for downstream.
+ignored = ["flate2", "tracing-log"]

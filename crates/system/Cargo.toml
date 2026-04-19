@@ -85,3 +85,9 @@ required-features = ["process"]
 [[example]]
 name = "disk"
 required-features = ["disk"]
+
+[package.metadata.cargo-shear]
+# serde_json is pulled in by the `serde` feature (`serde = ["dep:serde",
+# "serde_json"]`) for JSON output of system snapshots; cargo-shear does
+# not always trace feature-composed optional deps.
+ignored = ["serde_json"]
