@@ -43,7 +43,7 @@
 //! - §12.2 durable control plane; engine owns the `execution_control_queue` consumer.
 //!
 //! See `crates/engine/README.md` for known open debts (budget ephemerality,
-//! fail-open credential allowlist, edge-gate narrowness).
+//! edge-gate narrowness).
 
 pub mod control_consumer;
 pub mod control_dispatch;

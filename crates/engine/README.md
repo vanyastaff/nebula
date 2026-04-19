@@ -98,8 +98,6 @@ See `docs/MATURITY.md` row for `nebula-engine`.
 - API stability: `partial` — `WorkflowEngine` and `ExecutionResult` are in active use;
   known open debts (see Appendix) affect correctness boundaries.
 - `ExecutionBudget` is ephemeral (not persisted on resume) — §11.5 debt.
-- Per-node credential `allowed_keys` is not populated from declared dependencies — the
-  credential allowlist is currently fail-open (§12.5 debt; see Appendix).
 - Downstream-edge gate only blocks local edges, not the full graph (§10 narrower than
   advertised for multi-hop conditional flows).
 
@@ -120,18 +118,18 @@ See `docs/MATURITY.md` row for `nebula-engine`.
 |---|---|---|
 | `ExecutionBudget` not persisted in `ExecutionState` — budget is lost on resume | `src/engine.rs:796` | §11.5 durability matrix: budget is **ephemeral** |
 | Original workflow input not persisted — resume cannot replay from input | `src/engine.rs:809` | §11.5 + §11.2 retry/resume story narrower than optimal |
-| Per-node `allowed_keys` not populated from declared credential dependencies | `src/engine.rs:1312, :1601` | §12.5 credential boundary **fail-open** until fixed |
 | Downstream-edge gate blocks only **local** edges, not the full graph | `src/engine.rs:1808` | §10 conditional-flow gate is narrower than advertised |
 | `ExecutionBudget` moved to `nebula-execution` — import cleanup pending | `src/engine.rs:20` | documentation / import hygiene |
 
 ### Architecture notes
 
-- **Fail-open credential allowlist** (`credential_accessor.rs`): an empty allowlist means all
-  credentials are permitted ("open / passthrough mode"). Canon §12.5 implies fail-closed; the
-  default is the opposite until the `TODO: populate allowed_keys` is implemented. Until then,
-  per-node credential-dependency enforcement is a `false capability` (§4.5).
+- **Deny-by-default credential allowlist** (`credential_accessor.rs`): an empty allowlist denies
+  every request (canon §12.5, §4.5). Per-action allowlists are populated via
+  `WorkflowEngine::with_action_credentials`; an action whose credentials were never declared to
+  the engine falls through to the deny baseline. There is no "fail-open" escape hatch.
 - **No resource allowlist** (`resource_accessor.rs`): unlike credentials, there is no allowlist
-  for resources — any registered key may be acquired by any action.
+  for resources — any registered key may be acquired by any action. Resource scoping is
+  intentionally owned by the topology layer (e.g. pool scope, daemon scope), not the engine.
 - **Cross-layer bridges**: `credential_accessor.rs` and `resource_accessor.rs` bridge business-
   layer traits into engine concrete types. Architecturally these belong to `nebula-credential`
   / `nebula-resource` as extension points; the move is a candidate refactor when the gaps above
