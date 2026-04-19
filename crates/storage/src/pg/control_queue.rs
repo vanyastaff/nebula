@@ -139,12 +139,27 @@ impl ControlQueueRepo for PgControlQueueRepo {
         rows.into_iter().map(tuple_to_entry).collect()
     }
 
-    async fn mark_completed(&self, _id: &[u8]) -> Result<(), StorageError> {
-        unimplemented!()
+    async fn mark_completed(&self, id: &[u8]) -> Result<(), StorageError> {
+        sqlx::query("UPDATE execution_control_queue SET status = 'Completed' WHERE id = $1")
+            .bind(id)
+            .execute(&self.pool)
+            .await
+            .map_err(|e| map_db_err("control_queue", e))?;
+        Ok(())
     }
 
-    async fn mark_failed(&self, _id: &[u8], _error: &str) -> Result<(), StorageError> {
-        unimplemented!()
+    async fn mark_failed(&self, id: &[u8], error: &str) -> Result<(), StorageError> {
+        sqlx::query(
+            "UPDATE execution_control_queue \
+             SET status = 'Failed', error_message = $2 \
+             WHERE id = $1",
+        )
+        .bind(id)
+        .bind(error)
+        .execute(&self.pool)
+        .await
+        .map_err(|e| map_db_err("control_queue", e))?;
+        Ok(())
     }
 
     async fn reclaim_stuck(
@@ -417,5 +432,54 @@ mod tests {
             ts >= before && ts <= after,
             "processed_at inside the claim window"
         );
+    }
+
+    #[tokio::test]
+    async fn mark_completed_transitions_status() {
+        let Some(pool) = pool().await else { return };
+        let _guard = TEST_LOCK.lock().await;
+        clean_control_queue(&pool).await;
+        let repo = PgControlQueueRepo::new(pool.clone());
+        let exec_id = seed_execution_parent_chain(&pool).await;
+        let entry = pending_entry(&exec_id);
+        let row_id = entry.id.clone();
+        repo.enqueue(&entry).await.unwrap();
+        let _ = repo.claim_pending(b"runner-a", 1).await.unwrap();
+
+        repo.mark_completed(&row_id).await.unwrap();
+
+        let status: String =
+            sqlx::query_scalar("SELECT status FROM execution_control_queue WHERE id = $1")
+                .bind(&row_id)
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert_eq!(status, "Completed");
+    }
+
+    #[tokio::test]
+    async fn mark_failed_records_error_message() {
+        let Some(pool) = pool().await else { return };
+        let _guard = TEST_LOCK.lock().await;
+        clean_control_queue(&pool).await;
+        let repo = PgControlQueueRepo::new(pool.clone());
+        let exec_id = seed_execution_parent_chain(&pool).await;
+        let entry = pending_entry(&exec_id);
+        let row_id = entry.id.clone();
+        repo.enqueue(&entry).await.unwrap();
+        let _ = repo.claim_pending(b"runner-a", 1).await.unwrap();
+
+        repo.mark_failed(&row_id, "dispatch boom").await.unwrap();
+
+        type Row = (String, Option<String>);
+        let row: Row = sqlx::query_as(
+            "SELECT status, error_message FROM execution_control_queue WHERE id = $1",
+        )
+        .bind(&row_id)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(row.0, "Failed");
+        assert_eq!(row.1.as_deref(), Some("dispatch boom"));
     }
 }
