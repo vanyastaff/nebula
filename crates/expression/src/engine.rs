@@ -7,7 +7,9 @@ use std::sync::Arc;
 #[cfg(feature = "cache")]
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use nebula_log::{debug, trace};
+#[cfg(feature = "cache")]
+use nebula_log::debug;
+use nebula_log::trace;
 use serde_json::Value;
 
 use crate::{
