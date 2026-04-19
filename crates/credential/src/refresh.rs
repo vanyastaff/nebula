@@ -38,13 +38,9 @@
 //!         coord.complete("cred-1");
 //!     }
 //!     RefreshAttempt::Waiter(rx) => {
-//!         // `Ok(())` on normal completion. `Err(RecvError)` means the
-//!         // sender was dropped without firing — only happens on abnormal
-//!         // paths (coordinator teardown, or a bug where `complete()` is
-//!         // skipped). A winner that simply forgets `complete()` leaves
-//!         // the sender alive in the map, so the receiver hangs until the
-//!         // caller's timeout rather than erroring.
-//!         let _ = rx.await;
+//!         let _ = rx.await; // Err means the sender was dropped without sending
+//!                           // (for example, coordinator shutdown or a bug/cancellation
+//!                           // path that prevents `complete()` from running)
 //!         // Re-read credential from store
 //!     }
 //! }
