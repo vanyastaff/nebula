@@ -85,10 +85,12 @@ pub(crate) fn build_auth_url(
 ///
 /// `client_secret` must be borrowed from a zeroizing buffer (typically
 /// `Zeroizing<String>` materialised from a `SecretString` at the caller).
-/// This function never owns a plaintext `String` copy of the secret — the
-/// form body is built from `&str` borrows so our intermediate heap is bounded
-/// by the caller's zeroize discipline. `reqwest` still maintains its own
-/// URL-encoded body buffer which we cannot zeroize.
+/// This function avoids non-zeroized owned plaintext copies: the form body
+/// is built from `&str` borrows, and the `Authorization: Basic …` header
+/// intermediates (colon-joined plaintext, BASE64 output, full header value)
+/// all live in `Zeroizing<String>` buffers that scrub on drop. `reqwest`
+/// still maintains its own URL-encoded body buffer and `HeaderValue` copy,
+/// neither of which we can zeroize.
 pub(crate) async fn exchange_client_credentials(
     config: &OAuth2Config,
     client_id: &str,
@@ -96,25 +98,29 @@ pub(crate) async fn exchange_client_credentials(
 ) -> Result<OAuth2State, CredentialError> {
     let client = http_client();
 
-    let scope_joined = config.scopes.join(" ");
+    let scope_joined: Option<String> = (!config.scopes.is_empty()).then(|| config.scopes.join(" "));
     let mut form: Vec<(&str, &str)> = vec![("grant_type", "client_credentials")];
-
-    if !config.scopes.is_empty() {
-        form.push(("scope", &scope_joined));
+    if let Some(ref s) = scope_joined {
+        form.push(("scope", s));
     }
 
     let mut req = client.post(&config.token_url);
 
     match config.auth_style {
         AuthStyle::Header => {
-            // Wrap the colon-joined plaintext so the intermediate scrubs on drop;
-            // the BASE64 output is still fed to reqwest unzeroized (out of our hands).
+            // Wrap every intermediate — colon-joined plaintext, BASE64 output,
+            // and the full `Authorization` header value — in `Zeroizing` so
+            // each is scrubbed on drop. `.header(&str, &str)` leaves reqwest
+            // to copy bytes into its own `HeaderValue` buffer (out of our
+            // hands), but our local copies do not linger as plain `String`s.
             let basic_plaintext: Zeroizing<String> =
                 Zeroizing::new(format!("{client_id}:{client_secret}"));
             let credentials: Zeroizing<String> =
                 Zeroizing::new(BASE64.encode(basic_plaintext.as_bytes()));
+            let auth_header: Zeroizing<String> =
+                Zeroizing::new(format!("Basic {}", credentials.as_str()));
             req = req
-                .header("Authorization", format!("Basic {}", credentials.as_str()))
+                .header("Authorization", auth_header.as_str())
                 .form(&form);
         },
         AuthStyle::PostBody => {
@@ -176,8 +182,10 @@ pub(crate) async fn exchange_authorization_code(
                 Zeroizing::new(format!("{client_id}:{client_secret}"));
             let credentials: Zeroizing<String> =
                 Zeroizing::new(BASE64.encode(basic_plaintext.as_bytes()));
+            let auth_header: Zeroizing<String> =
+                Zeroizing::new(format!("Basic {}", credentials.as_str()));
             req = req
-                .header("Authorization", format!("Basic {}", credentials.as_str()))
+                .header("Authorization", auth_header.as_str())
                 .form(&form);
         },
         AuthStyle::PostBody => {
@@ -258,10 +266,10 @@ pub(crate) async fn request_device_code(
 ) -> Result<DeviceCodeResponse, CredentialError> {
     let client = http_client();
 
-    let scope_joined = config.scopes.join(" ");
+    let scope_joined: Option<String> = (!config.scopes.is_empty()).then(|| config.scopes.join(" "));
     let mut form: Vec<(&str, &str)> = vec![("client_id", client_id)];
-    if !config.scopes.is_empty() {
-        form.push(("scope", &scope_joined));
+    if let Some(ref s) = scope_joined {
+        form.push(("scope", s));
     }
 
     let resp = client
@@ -347,8 +355,10 @@ pub(crate) async fn poll_device_code(
                 Zeroizing::new(format!("{client_id}:{client_secret}"));
             let credentials: Zeroizing<String> =
                 Zeroizing::new(BASE64.encode(basic_plaintext.as_bytes()));
+            let auth_header: Zeroizing<String> =
+                Zeroizing::new(format!("Basic {}", credentials.as_str()));
             req = req
-                .header("Authorization", format!("Basic {}", credentials.as_str()))
+                .header("Authorization", auth_header.as_str())
                 .form(&form);
         },
         AuthStyle::PostBody => {
@@ -427,13 +437,13 @@ pub(crate) async fn refresh_token(
     let client_secret: Zeroizing<String> =
         Zeroizing::new(state.client_secret.expose_secret(|s| s.to_owned()));
 
-    let scope_joined = config.scopes.join(" ");
+    let scope_joined: Option<String> = (!config.scopes.is_empty()).then(|| config.scopes.join(" "));
     let mut form: Vec<(&str, &str)> = vec![
         ("grant_type", "refresh_token"),
         ("refresh_token", refresh_tok.as_str()),
     ];
-    if !config.scopes.is_empty() {
-        form.push(("scope", &scope_joined));
+    if let Some(ref s) = scope_joined {
+        form.push(("scope", s));
     }
 
     let client = http_client();
@@ -445,8 +455,10 @@ pub(crate) async fn refresh_token(
                 Zeroizing::new(format!("{}:{}", client_id.as_str(), client_secret.as_str()));
             let credentials: Zeroizing<String> =
                 Zeroizing::new(BASE64.encode(basic_plaintext.as_bytes()));
+            let auth_header: Zeroizing<String> =
+                Zeroizing::new(format!("Basic {}", credentials.as_str()));
             req = req
-                .header("Authorization", format!("Basic {}", credentials.as_str()))
+                .header("Authorization", auth_header.as_str())
                 .form(&form);
         },
         AuthStyle::PostBody => {
