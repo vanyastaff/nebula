@@ -547,15 +547,23 @@ async fn dispatch_cancel_aborts_running_execution() {
     );
 }
 
-/// ADR-0008 §5 idempotency: a `Cancel` re-delivered for an already-terminal
-/// execution is a no-op. Crucially, `cancel_execution` must NOT be invoked a
-/// second time (the in-flight run has long since dropped its token and
-/// cleared the registry, so a second `cancel_execution` lookup would return
-/// `false` — but more importantly, the dispatch must short-circuit before
-/// reaching the engine so observers cannot mistake a re-delivery for a
-/// fresh cancel signal). Also covers the case where the Cancel loses the
-/// race and arrives after the engine already drove the run to a natural
-/// terminal state.
+/// ADR-0008 §5 idempotency on terminal: a `Cancel` re-delivered for an
+/// already-terminal execution must be `Ok(())` without disturbing state or
+/// triggering a second dispatch of the workflow.
+///
+/// The A3 contract (ADR-0016) makes this property hold through **two
+/// layers**, not a status short-circuit:
+///
+///   1. `dispatch_cancel` signals the engine on every non-orphan delivery, including terminal.
+///      `engine.cancel_execution(id)` looks up the registry — by the time the run is terminal, its
+///      `RunningRegistration` guard has already removed the entry, so the lookup returns `false`
+///      and the call is a no-op.
+///   2. The underlying `CancellationToken::cancel` is idempotent per token, so even a racy delivery
+///      where the registry entry is still live cannot re-run the workflow (the frontier loop
+///      already observed the original cancel or completed naturally).
+///
+/// This test asserts the observable effect: no second dispatch of the
+/// echo handler, terminal row untouched.
 #[tokio::test]
 async fn dispatch_cancel_is_idempotent_on_terminal() {
     let harness = Harness::new().await;
@@ -572,8 +580,10 @@ async fn dispatch_cancel_is_idempotent_on_terminal() {
     );
     assert_eq!(harness.action_count.load(Ordering::SeqCst), 1);
 
-    // Re-deliver Cancel. Dispatch must short-circuit on the terminal status
-    // read and return `Ok(())` — no engine re-entry, no second signal.
+    // Re-deliver Cancel. The A3 body signals `engine.cancel_execution`
+    // unconditionally — but the registry entry was removed when the run
+    // finished, so the lookup is a no-op and the workflow is not
+    // re-dispatched. The return value is `Ok(())`.
     harness
         .dispatch
         .dispatch_cancel(execution_id)
@@ -588,10 +598,11 @@ async fn dispatch_cancel_is_idempotent_on_terminal() {
     assert_eq!(
         harness.action_count.load(Ordering::SeqCst),
         1,
-        "no second dispatch happened"
+        "no second dispatch happened — registry entry was already cleared \
+         when the run finished, so the engine signal was a no-op"
     );
-    // The engine's registry entry was removed when the run finished —
-    // calling cancel_execution now must report false (no live runner).
+    // Confirm the registry is indeed empty for this id — the observable
+    // truth behind point (1) above.
     assert!(
         !harness.engine.cancel_execution(execution_id),
         "registry entry was removed on run completion"
