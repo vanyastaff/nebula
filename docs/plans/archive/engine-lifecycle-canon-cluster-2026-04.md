@@ -1,6 +1,27 @@
 # Engine Lifecycle Canon Cluster — Planning Document
 
-> **Status:** PLANNING — group / sequence / handoff document, **not** an implementation plan.
+> **Status:** COMPLETED (archived 2026-04-19). All 15 P1 issues from §0 closed in `main`; cross-reference below.
+>
+> | # | Fix commit |
+> |---|---|
+> | 290 | batch landed via `b2b0c6fc` (`ActionResult::Retry` gated behind `unstable-retry-scheduler`) |
+> | 297 | `15092823` (persist OnError payload) + `54d416b5` (persist before edge routing) |
+> | 298 | batch 1 `a130ea93` (run_frontier fixes) |
+> | 299 | batch 2 `646d11e6` (execution-state correctness) |
+> | 308 | `54d416b5` (persist before edge routing) |
+> | 311 | batch 2 `646d11e6` + `7dd3d00d` (ExecutionBudget restore) |
+> | 321 | batch 2 `646d11e6` + `58740664` (setup-failure checkpoint symmetry) |
+> | 324 | `54d416b5` (persist before edge routing) |
+> | 325 | `3d7db131` (acquire and renew execution lease) — ADR-0015 (ex-0008 lease-lifecycle) promoted to accepted |
+> | 327 | `926a2d5f` (persist canonical state on start) |
+> | 330 | `9134fb45` (control-queue consumer skeleton, ADR-0008) |
+> | 332 | `df1c996a` (dispatch execution to engine on start) |
+> | 333 | `d51f9c5c` (surface CAS conflicts) |
+> | 336 | `54d416b5` (persist before edge routing) |
+> | 341 | `8c47623f` (gate Completed on all_nodes_terminal invariant) |
+>
+> Residual follow-ups flagged during closure: engine-side **real** dispatch for Start/Resume/Restart (ADR-0008 A2) and Cancel/Terminate (ADR-0008 A3) remain `planned` — producer side is done, engine consumer is currently a skeleton with no-op dispatch defaults. Out of scope for this cluster; lives as ongoing work under ADR-0008.
+>
 > **Date:** 2026-04-18
 > **Scope:** 15 P1 issues against `vanyastaff/nebula` clustered around execution lifecycle (canon §11–§12). Output: grouping, root-cause hypothesis per group, canon impact, ADR-needed flag, recommended PR sequencing.
 > **Authority:** Subordinate to [`docs/PRODUCT_CANON.md`](../PRODUCT_CANON.md). All groups below are framed against §11 (core contracts) and §12 (non-negotiable invariants).
