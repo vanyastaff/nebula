@@ -42,7 +42,7 @@ Trade-offs:
 
 Use **checkpoint-based recovery** as the authoritative durability model.
 
-- The engine writes a `FrontierState` + per-node outputs at checkpoint
+- The engine writes a frontier snapshot plus per-node outputs at checkpoint
   boundaries.
 - Checkpoints are written via `nebula-storage` (SQLite or Postgres).
 - Recovery loads the latest valid checkpoint and resumes from the frontier.
