@@ -178,11 +178,19 @@ pub struct WorkflowEngine {
     lease_heartbeat_interval: Duration,
     /// Volatile index of in-flight executions this runner owns.
     ///
-    /// Populated on entry to [`execute_workflow`] / [`resume_execution`] right
-    /// after the per-run [`CancellationToken`] is minted, and removed via an
-    /// RAII guard on exit. [`cancel_execution`] looks up the token here and
-    /// cancels it, closing the ADR-0008 A3 control-queue `Cancel` path into
-    /// the cooperative-cancel signal the frontier loop already observes.
+    /// Published **after** `acquire_and_heartbeat_lease` succeeds — the lease
+    /// is the authoritative single-runner fence (ADR-0015), so publishing
+    /// after the lease prevents an overlapping attempt for the same
+    /// [`ExecutionId`] from overwriting the live token. Each entry is
+    /// tagged with a monotonically-increasing [`RunningRegistrationId`]
+    /// nonce, and the [`RunningRegistration`] guard's `Drop` uses
+    /// [`DashMap::remove_if`] to remove only entries that still carry its
+    /// own nonce — a defensive guard against an out-of-order drop from a
+    /// losing attempt clobbering the winner's registration.
+    ///
+    /// [`cancel_execution`] looks up the token here and cancels it,
+    /// closing the ADR-0008 A3 control-queue `Cancel` path into the
+    /// cooperative-cancel signal the frontier loop already observes.
     ///
     /// **Not durable.** This map lives only as long as the `WorkflowEngine`
     /// instance. On process crash the entries vanish with the runner; the
@@ -192,21 +200,49 @@ pub struct WorkflowEngine {
     /// [`execute_workflow`]: Self::execute_workflow
     /// [`resume_execution`]: Self::resume_execution
     /// [`cancel_execution`]: Self::cancel_execution
-    running: Arc<DashMap<ExecutionId, CancellationToken>>,
+    running: Arc<DashMap<ExecutionId, RunningEntry>>,
+}
+
+/// Monotonic per-registration identifier used to fence out-of-order drops
+/// from concurrent attempts on the same [`ExecutionId`] (ADR-0016 / #482
+/// Copilot review). A `u64` is fine — we'd need billions of registrations
+/// per runner lifetime to wrap, and the counter resets on process restart
+/// anyway.
+type RunningRegistrationId = u64;
+
+/// Process-wide monotonic counter for registration nonces.
+static NEXT_REGISTRATION_ID: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+
+/// Value stored in [`WorkflowEngine::running`]. Pairs the live
+/// [`CancellationToken`] with the [`RunningRegistrationId`] nonce so the
+/// drop guard can use [`DashMap::remove_if`] instead of unconditional
+/// `remove`.
+struct RunningEntry {
+    registration_id: RunningRegistrationId,
+    token: CancellationToken,
 }
 
 /// RAII guard that removes an execution from the [`WorkflowEngine::running`]
-/// registry when dropped. Covers the normal exit path and every early-return
-/// branch (e.g. the heartbeat-lost `EngineError::Leased`) without manually
-/// threading a `remove` call through each site.
+/// registry when dropped **only if the entry still carries its own
+/// [`RunningRegistrationId`]**. Covers the normal exit path and every
+/// early-return branch (e.g. heartbeat-lost `EngineError::Leased`) without
+/// manually threading a `remove` call through each site. The nonce check
+/// prevents a losing attempt from removing the winning attempt's token —
+/// see [`WorkflowEngine::running`] doc for the hazard.
 struct RunningRegistration {
-    running: Arc<DashMap<ExecutionId, CancellationToken>>,
+    running: Arc<DashMap<ExecutionId, RunningEntry>>,
     execution_id: ExecutionId,
+    registration_id: RunningRegistrationId,
 }
 
 impl Drop for RunningRegistration {
     fn drop(&mut self) {
-        self.running.remove(&self.execution_id);
+        // `remove_if` only removes when the predicate matches; if a winner
+        // has already published a newer `RunningEntry` we leave theirs
+        // intact (fence against the hazard Copilot flagged on #482).
+        self.running.remove_if(&self.execution_id, |_k, entry| {
+            entry.registration_id == self.registration_id
+        });
     }
 }
 
@@ -260,8 +296,8 @@ impl WorkflowEngine {
     /// `Cancel` command reaches the consumer (canon §12.2, §13 step 5).
     pub fn cancel_execution(&self, execution_id: ExecutionId) -> bool {
         match self.running.get(&execution_id) {
-            Some(token) => {
-                token.cancel();
+            Some(entry) => {
+                entry.value().token.cancel();
                 true
             },
             None => false,
@@ -961,18 +997,7 @@ impl WorkflowEngine {
         // 5. Create cancellation token
         let cancel_token = CancellationToken::new();
 
-        // 5a. Register this run's cancel token so a durable `Cancel`
-        // control command can reach the live frontier loop (ADR-0008 A3,
-        // canon §12.2). The guard's `Drop` removes the entry on every exit
-        // path — normal completion, heartbeat-lost `Leased`, final-persist
-        // errors — so the registry cannot leak stale tokens across runs.
-        self.running.insert(execution_id, cancel_token.clone());
-        let _cancel_registration = RunningRegistration {
-            running: Arc::clone(&self.running),
-            execution_id,
-        };
-
-        // 5b. Acquire the execution lease before dispatching nodes (ADR
+        // 5a. Acquire the execution lease before dispatching nodes (ADR
         // 0008, #325). Second runners that race in after the
         // `create` above but before lease acquire will observe a held
         // lease and get `EngineError::Leased`; we do not sleep-retry.
@@ -986,6 +1011,31 @@ impl WorkflowEngine {
         let lease = self
             .acquire_and_heartbeat_lease(execution_id, cancel_token.clone())
             .await?;
+
+        // 5b. Publish the cancel token into the running registry ONLY
+        // after the lease is ours. The lease is the authoritative
+        // single-runner fence (ADR-0015); publishing after it prevents
+        // an overlapping attempt for the same `ExecutionId` from
+        // overwriting the live token (#482 Copilot review). The guard's
+        // nonce-scoped `Drop` (`RunningRegistration::drop`) removes the
+        // entry on every exit path — normal completion, heartbeat-lost
+        // `Leased`, final-persist errors — and is defensive against
+        // clobbering a winner's registration if a losing attempt ever
+        // slips through.
+        let registration_id =
+            NEXT_REGISTRATION_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        self.running.insert(
+            execution_id,
+            RunningEntry {
+                registration_id,
+                token: cancel_token.clone(),
+            },
+        );
+        let _cancel_registration = RunningRegistration {
+            running: Arc::clone(&self.running),
+            execution_id,
+            registration_id,
+        };
 
         // 6. Record start metric
         self.metrics
@@ -1379,16 +1429,6 @@ impl WorkflowEngine {
         let cancel_token = CancellationToken::new();
         let mut repo_version = repo_version_loaded;
 
-        // Register this run's cancel token so an ADR-0008 A3 `Cancel`
-        // control command can reach the live resume frontier (canon §12.2).
-        // Guard's Drop removes the entry on every exit path, including the
-        // heartbeat-lost `Leased` early-return below.
-        self.running.insert(execution_id, cancel_token.clone());
-        let _cancel_registration = RunningRegistration {
-            running: Arc::clone(&self.running),
-            execution_id,
-        };
-
         // Acquire the execution lease before running the frontier (ADR
         // 0008, #325). Resume is explicitly a second entry point for an
         // existing execution — if another runner is already driving it
@@ -1399,6 +1439,25 @@ impl WorkflowEngine {
         let lease = self
             .acquire_and_heartbeat_lease(execution_id, cancel_token.clone())
             .await?;
+
+        // Publish the cancel token into the running registry ONLY after
+        // the lease is ours (ADR-0015 single-runner fence). Symmetric to
+        // `execute_workflow` — see its comment for the full rationale
+        // and the #482 Copilot review context.
+        let registration_id =
+            NEXT_REGISTRATION_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        self.running.insert(
+            execution_id,
+            RunningEntry {
+                registration_id,
+                token: cancel_token.clone(),
+            },
+        );
+        let _cancel_registration = RunningRegistration {
+            running: Arc::clone(&self.running),
+            execution_id,
+            registration_id,
+        };
 
         self.metrics
             .counter(NEBULA_WORKFLOW_EXECUTIONS_STARTED_TOTAL)
@@ -7669,6 +7728,100 @@ mod tests {
              got status={:?}",
             successes[0].status
         );
+    }
+
+    /// Registry race regression (ADR-0016 / #482 Copilot review).
+    ///
+    /// Two `resume_execution` calls overlap on the **same engine** for the
+    /// **same execution_id**. The winner acquires the lease and publishes
+    /// its token into `running`; the loser hits `EngineError::Leased`
+    /// before it ever inserts — so no drop guard can clobber the winner's
+    /// entry. This asserts the observable contract: while the winner's
+    /// frontier loop is live, `engine.cancel_execution(id)` still finds a
+    /// registered token even after the loser has returned.
+    #[tokio::test]
+    async fn overlapping_resume_losers_do_not_clobber_winners_registry_entry() {
+        let registry = Arc::new(ActionRegistry::new());
+        registry.register_stateless(SlowHandler {
+            meta: ActionMetadata::new(action_key!("slow"), "Slow", "slow echoes"),
+            delay: Duration::from_millis(500),
+        });
+
+        let exec_repo = Arc::new(nebula_storage::InMemoryExecutionRepo::new());
+        let n = node_key!("n");
+        let wf = make_workflow(
+            vec![NodeDefinition::new(n.clone(), "Slow", "slow").unwrap()],
+            vec![],
+        );
+        let workflow_repo = save_workflow_to_repo(&wf).await;
+
+        let execution_id = ExecutionId::new();
+        let node_ids = vec![n.clone()];
+        let exec_state = ExecutionState::new(execution_id, wf.id, &node_ids);
+        exec_repo
+            .create(
+                execution_id,
+                wf.id,
+                serde_json::to_value(&exec_state).unwrap(),
+            )
+            .await
+            .unwrap();
+
+        // Single engine, so both calls share the same `running` registry —
+        // this is the path the Copilot review flagged. Wrap in `Arc` so we
+        // can drive the second call from a background task and still
+        // observe the registry from the test thread.
+        let (engine, _) = make_engine(registry);
+        let engine = Arc::new(
+            engine
+                .with_execution_repo(exec_repo.clone())
+                .with_workflow_repo(workflow_repo),
+        );
+
+        // Winner: drive the workflow in the background. Its frontier loop
+        // will be live (500ms sleep) long enough for the loser to race.
+        let winner_engine = Arc::clone(&engine);
+        let winner =
+            tokio::spawn(async move { winner_engine.resume_execution(execution_id).await });
+
+        // Poll the registry until the winner has published its token.
+        // This synchronises on the exact moment the race window opens.
+        let t_wait = std::time::Instant::now();
+        loop {
+            if engine.running.contains_key(&execution_id) {
+                break;
+            }
+            assert!(
+                t_wait.elapsed() < Duration::from_secs(2),
+                "winner failed to register its token within 2s"
+            );
+            tokio::task::yield_now().await;
+        }
+
+        // Loser: a second resume call on the same engine for the same id.
+        // Must fail fast with `Leased` — and crucially must NOT clobber
+        // the registry entry the winner just published.
+        let loser = engine.resume_execution(execution_id).await;
+        assert!(
+            matches!(loser, Err(EngineError::Leased { .. })),
+            "overlapping resume must be fenced by the lease; got {loser:?}"
+        );
+
+        // The winner is still running — its token must still be live.
+        // This is the property that would have failed without the
+        // vacant-only insert + nonce-scoped remove_if (Copilot hazard).
+        assert!(
+            engine.cancel_execution(execution_id),
+            "winner's registry entry must survive the loser's failed attempt \
+             (if this fails, the loser's Drop clobbered the winner's token)"
+        );
+
+        // Signalling cancel aborts the winner quickly.
+        let winner_result = tokio::time::timeout(Duration::from_secs(5), winner)
+            .await
+            .expect("winner returns within 5s of cancel")
+            .expect("join ok");
+        let _ = winner_result; // Ok(Cancelled) or Ok(Failed) — both acceptable terminal outcomes.
     }
 
     /// After the first runner releases the lease on terminal completion,
