@@ -20,17 +20,19 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let execution_repo = Arc::new(InMemoryExecutionRepo::new());
     // DEMO ONLY — does not honor start / cancel (canon §12.2, ADR-0008 §4).
     //
-    // ADR-0008 A2 landed `nebula_engine::EngineControlDispatch`, so a
-    // production composition root can now wire the engine into this
-    // example's `AppState` and spawn a real `ControlConsumer`. This
-    // `simple_server.rs` intentionally does not pull in the full engine
-    // stack (plugin registry, action runtime, sandbox, metrics, credential
-    // / resource managers) — the dedicated `apps/server` composition root is
-    // still tracked as a separate follow-up. Until then this example stays
-    // DEMO ONLY: `POST /executions` persists the row and enqueues `Start`,
-    // but with no consumer wired here the row never transitions to
-    // `Running`. `crates/api/tests/knife.rs` exercises the full producer →
-    // consumer → engine path end-to-end for regression coverage.
+    // ADR-0008 A2 + A3 landed `nebula_engine::EngineControlDispatch` with
+    // full Start / Resume / Restart / Cancel / Terminate dispatch wired into
+    // the engine, so a production composition root can now drop this file's
+    // repos into an `AppState` and spawn a real `ControlConsumer` bound to a
+    // `WorkflowEngine`. This `simple_server.rs` intentionally does not pull
+    // in the full engine stack (plugin registry, action runtime, sandbox,
+    // metrics, credential / resource managers) — the dedicated `apps/server`
+    // composition root is still tracked as a separate follow-up. Until then
+    // this example stays DEMO ONLY: `POST /executions` persists the row and
+    // enqueues `Start`, but with no consumer wired here the row never
+    // transitions to `Running`. `crates/api/tests/knife.rs` exercises the
+    // full producer → consumer → engine path end-to-end for both Start
+    // (step 3) and Cancel (step 5) regression coverage.
     // `InMemoryControlQueueRepo` also does not persist across restarts; a
     // real deployment additionally requires a Postgres-backed repo.
     let control_queue_repo = Arc::new(InMemoryControlQueueRepo::new());

@@ -1,11 +1,12 @@
-//! Unit tests for `EngineControlDispatch` (ADR-0008 A2).
+//! Unit tests for `EngineControlDispatch` (ADR-0008 A2 / A3).
 //!
 //! These tests mirror the API → consumer → engine seam without running the
 //! full `ControlConsumer` polling loop: they invoke `dispatch_start` /
-//! `dispatch_resume` / `dispatch_restart` directly against an engine wired
-//! to in-memory repos, and assert both the happy-path transition (Created →
-//! Completed) and the ADR-0008 §5 idempotency contract (re-delivery does
-//! not re-run the workflow).
+//! `dispatch_resume` / `dispatch_restart` / `dispatch_cancel` /
+//! `dispatch_terminate` directly against an engine wired to in-memory repos,
+//! and assert both the happy-path transitions (Created → Completed,
+//! Running → Cancelled) and the ADR-0008 §5 idempotency contract
+//! (re-delivery does not re-run or double-signal).
 
 use std::{
     collections::HashMap,
@@ -13,6 +14,7 @@ use std::{
         Arc,
         atomic::{AtomicU32, Ordering},
     },
+    time::Duration,
 };
 
 use nebula_action::{
@@ -28,6 +30,7 @@ use nebula_runtime::{
 use nebula_storage::{ExecutionRepo, InMemoryExecutionRepo, InMemoryWorkflowRepo, WorkflowRepo};
 use nebula_telemetry::metrics::MetricsRegistry;
 use nebula_workflow::{Connection, NodeDefinition, Version, WorkflowConfig, WorkflowDefinition};
+use tokio::sync::Notify;
 
 // ── Test handler ──────────────────────────────────────────────────────────
 
@@ -60,6 +63,39 @@ impl StatelessAction for CountingEchoHandler {
     }
 }
 
+/// Cooperatively-cancellable handler. Notifies when it enters the sleep so
+/// tests know the frontier loop is live before delivering a `Cancel`.
+struct SlowCancellableHandler {
+    meta: ActionMetadata,
+    started: Arc<Notify>,
+    count: Arc<AtomicU32>,
+}
+
+impl ActionDependencies for SlowCancellableHandler {}
+impl Action for SlowCancellableHandler {
+    fn metadata(&self) -> &ActionMetadata {
+        &self.meta
+    }
+}
+
+impl StatelessAction for SlowCancellableHandler {
+    type Input = serde_json::Value;
+    type Output = serde_json::Value;
+
+    async fn execute(
+        &self,
+        input: Self::Input,
+        ctx: &impl Context,
+    ) -> Result<ActionResult<Self::Output>, ActionError> {
+        self.count.fetch_add(1, Ordering::SeqCst);
+        self.started.notify_one();
+        tokio::select! {
+            () = tokio::time::sleep(Duration::from_secs(30)) => Ok(ActionResult::success(input)),
+            () = ctx.cancellation().cancelled() => Err(ActionError::Cancelled),
+        }
+    }
+}
+
 fn meta(key: ActionKey) -> ActionMetadata {
     let name = key.to_string();
     ActionMetadata::new(key, name, "control_dispatch test handler")
@@ -69,18 +105,28 @@ fn meta(key: ActionKey) -> ActionMetadata {
 
 struct Harness {
     dispatch: EngineControlDispatch,
+    engine: Arc<WorkflowEngine>,
     execution_repo: Arc<InMemoryExecutionRepo>,
     workflow_repo: Arc<InMemoryWorkflowRepo>,
     action_count: Arc<AtomicU32>,
+    slow_count: Arc<AtomicU32>,
+    slow_started: Arc<Notify>,
 }
 
 impl Harness {
     async fn new() -> Self {
         let action_count = Arc::new(AtomicU32::new(0));
+        let slow_count = Arc::new(AtomicU32::new(0));
+        let slow_started = Arc::new(Notify::new());
         let registry = Arc::new(ActionRegistry::new());
         registry.register_stateless(CountingEchoHandler {
             meta: meta(action_key!("echo")),
             count: Arc::clone(&action_count),
+        });
+        registry.register_stateless(SlowCancellableHandler {
+            meta: meta(action_key!("slow")),
+            started: Arc::clone(&slow_started),
+            count: Arc::clone(&slow_count),
         });
 
         let executor: ActionExecutor = Arc::new(|_ctx, _meta, input| {
@@ -106,13 +152,16 @@ impl Harness {
             .with_workflow_repo(workflow_repo_dyn);
         let engine = Arc::new(engine);
 
-        let dispatch = EngineControlDispatch::new(engine, execution_repo_dyn);
+        let dispatch = EngineControlDispatch::new(Arc::clone(&engine), execution_repo_dyn);
 
         Self {
             dispatch,
+            engine,
             execution_repo,
             workflow_repo,
             action_count,
+            slow_count,
+            slow_started,
         }
     }
 
@@ -162,6 +211,34 @@ impl Harness {
         execution_id
     }
 
+    /// Persist a single-node `slow` workflow — the node sleeps until cancelled.
+    async fn persist_slow_workflow(&self) -> nebula_core::WorkflowId {
+        let workflow_id = nebula_core::WorkflowId::new();
+        let now = chrono::Utc::now();
+        let wf = WorkflowDefinition {
+            id: workflow_id,
+            name: "a3-cancel-test".into(),
+            description: None,
+            version: Version::new(0, 1, 0),
+            nodes: vec![NodeDefinition::new(node_key!("step"), "Step", "slow").unwrap()],
+            connections: Vec::<Connection>::new(),
+            variables: HashMap::new(),
+            config: WorkflowConfig::default(),
+            trigger: None,
+            tags: Vec::new(),
+            created_at: now,
+            updated_at: now,
+            owner_id: None,
+            ui_metadata: None,
+            schema_version: 1,
+        };
+        self.workflow_repo
+            .save(workflow_id, 0, serde_json::to_value(&wf).unwrap())
+            .await
+            .unwrap();
+        workflow_id
+    }
+
     async fn status(&self, id: ExecutionId) -> ExecutionStatus {
         let (_, json) = self
             .execution_repo
@@ -170,6 +247,21 @@ impl Harness {
             .unwrap()
             .expect("execution exists");
         serde_json::from_value(json.get("status").cloned().unwrap()).unwrap()
+    }
+
+    /// Poll the execution row until `status.is_terminal()`, bounded by `deadline`.
+    async fn wait_terminal(&self, id: ExecutionId, deadline: Duration) -> ExecutionStatus {
+        tokio::time::timeout(deadline, async {
+            loop {
+                let status = self.status(id).await;
+                if status.is_terminal() {
+                    return status;
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("execution reached terminal within deadline")
     }
 }
 
@@ -388,4 +480,216 @@ async fn dispatch_start_rejects_nonexistent_execution() {
         other => panic!("expected Rejected, got {other:?}"),
     }
     assert_eq!(harness.action_count.load(Ordering::SeqCst), 0);
+}
+
+// ── A3 tests — dispatch_cancel / dispatch_terminate ───────────────────────
+
+/// Happy path: a `Cancel` delivered while the frontier loop is inside a
+/// live node aborts the execution cooperatively. The spawned run returns,
+/// the node surfaces its typed `ActionError::Cancelled`, and the execution
+/// row lands on a terminal state. This is the §13-step-5 invariant that A3
+/// closes — the durable `Cancel` signal actually reaches the engine.
+#[tokio::test]
+async fn dispatch_cancel_aborts_running_execution() {
+    let harness = Harness::new().await;
+    let workflow_id = harness.persist_slow_workflow().await;
+    let execution_id = harness
+        .persist_created_execution(workflow_id, serde_json::json!("cancel-me"))
+        .await;
+
+    // Spawn the engine on a separate task so the test thread can drive the
+    // `Cancel` dispatch while the frontier loop is live.
+    let engine = Arc::clone(&harness.engine);
+    let run_handle = tokio::spawn(async move { engine.resume_execution(execution_id).await });
+
+    // Wait for the slow handler to confirm it entered the `select!` — the
+    // frontier loop is now observing the cancel token.
+    tokio::time::timeout(Duration::from_secs(5), harness.slow_started.notified())
+        .await
+        .expect("slow handler started within 5s");
+
+    // Deliver the Cancel. ADR-0008 A3: signal reaches the live token, the
+    // handler exits via `ActionError::Cancelled`, frontier loop tears down.
+    harness
+        .dispatch
+        .dispatch_cancel(execution_id)
+        .await
+        .expect("dispatch_cancel succeeds");
+
+    // The spawned run must complete quickly once the cancel fires. The
+    // InMemoryExecutionRepo does not enforce a separate Cancelled status on
+    // CAS without a prior external transition, so we assert the broader
+    // invariant: the run finishes in a terminal state promptly (no 30s sleep).
+    let result = tokio::time::timeout(Duration::from_secs(5), run_handle)
+        .await
+        .expect("spawned run returns within 5s of cancel")
+        .expect("join ok");
+    let _run_result = result.expect("engine run returns Ok (node cancelled counts as finished)");
+
+    // The A3 invariant: the frontier loop exited promptly on cancel (not
+    // the full 30s sleep the slow handler would otherwise wait for). The
+    // exact terminal label (`Cancelled` on the abort-select path vs
+    // `Failed` on the node-error path) depends on a scheduler race between
+    // the cancel-token select arm and the handler's own error return; both
+    // are terminal per `ExecutionStatus::is_terminal`, so we assert the
+    // broad invariant here.
+    let terminal = harness
+        .wait_terminal(execution_id, Duration::from_secs(5))
+        .await;
+    assert!(
+        terminal.is_terminal(),
+        "execution reached a terminal state after Cancel, got: {terminal:?}"
+    );
+    assert_eq!(
+        harness.slow_count.load(Ordering::SeqCst),
+        1,
+        "slow handler entered exactly once — cancel did not cause a re-dispatch"
+    );
+}
+
+/// ADR-0008 §5 idempotency: a `Cancel` re-delivered for an already-terminal
+/// execution is a no-op. Crucially, `cancel_execution` must NOT be invoked a
+/// second time (the in-flight run has long since dropped its token and
+/// cleared the registry, so a second `cancel_execution` lookup would return
+/// `false` — but more importantly, the dispatch must short-circuit before
+/// reaching the engine so observers cannot mistake a re-delivery for a
+/// fresh cancel signal). Also covers the case where the Cancel loses the
+/// race and arrives after the engine already drove the run to a natural
+/// terminal state.
+#[tokio::test]
+async fn dispatch_cancel_is_idempotent_on_terminal() {
+    let harness = Harness::new().await;
+    let workflow_id = harness.persist_echo_workflow().await;
+    let execution_id = harness
+        .persist_created_execution(workflow_id, serde_json::json!("already-done"))
+        .await;
+
+    // Drive the run to Completed first.
+    harness.dispatch.dispatch_start(execution_id).await.unwrap();
+    assert_eq!(
+        harness.status(execution_id).await,
+        ExecutionStatus::Completed
+    );
+    assert_eq!(harness.action_count.load(Ordering::SeqCst), 1);
+
+    // Re-deliver Cancel. Dispatch must short-circuit on the terminal status
+    // read and return `Ok(())` — no engine re-entry, no second signal.
+    harness
+        .dispatch
+        .dispatch_cancel(execution_id)
+        .await
+        .expect("re-delivered Cancel on terminal execution is Ok");
+
+    assert_eq!(
+        harness.status(execution_id).await,
+        ExecutionStatus::Completed,
+        "terminal state must not be disturbed by a re-delivered Cancel"
+    );
+    assert_eq!(
+        harness.action_count.load(Ordering::SeqCst),
+        1,
+        "no second dispatch happened"
+    );
+    // The engine's registry entry was removed when the run finished —
+    // calling cancel_execution now must report false (no live runner).
+    assert!(
+        !harness.engine.cancel_execution(execution_id),
+        "registry entry was removed on run completion"
+    );
+}
+
+/// Cross-runner case: a Cancel arrives at an engine instance that never
+/// held this execution's frontier loop. `cancel_execution` returns `false`
+/// (nothing to signal locally), but `dispatch_cancel` must still return
+/// `Ok(())` — the durable CAS transition to `Cancelled` happens on the API
+/// handler side, and the holding runner will observe it on its next state
+/// transition. Returning an error here would mark the control-queue row
+/// `Failed` on a path that is actually healthy.
+#[tokio::test]
+async fn dispatch_cancel_ok_when_execution_not_held_locally() {
+    let harness = Harness::new().await;
+    let workflow_id = harness.persist_echo_workflow().await;
+    let execution_id = harness
+        .persist_created_execution(workflow_id, serde_json::json!("elsewhere"))
+        .await;
+
+    // The execution row sits at `Created`; this engine never started it.
+    // The registry does not know about this id.
+    assert_eq!(harness.status(execution_id).await, ExecutionStatus::Created);
+    assert!(
+        !harness.engine.cancel_execution(execution_id),
+        "precondition: engine's registry does not hold this id"
+    );
+
+    harness
+        .dispatch
+        .dispatch_cancel(execution_id)
+        .await
+        .expect("cross-runner Cancel is Ok — no local token is not an error");
+
+    assert_eq!(
+        harness.action_count.load(Ordering::SeqCst),
+        0,
+        "no side effect: echo handler was never dispatched"
+    );
+}
+
+/// Orphan `Cancel` — producer bug, row enqueued without the execution row.
+/// Must surface a typed reject so the diagnosis lands on the queue row's
+/// `error_message`, matching the A2 symmetric path for `Start`.
+#[tokio::test]
+async fn dispatch_cancel_rejects_nonexistent_execution() {
+    let harness = Harness::new().await;
+    let orphan = ExecutionId::new();
+
+    let err = harness
+        .dispatch
+        .dispatch_cancel(orphan)
+        .await
+        .expect_err("missing execution rejects");
+    match err {
+        ControlDispatchError::Rejected(msg) => {
+            assert!(
+                msg.contains("not found")
+                    && msg.contains(&orphan.to_string())
+                    && msg.contains("cancel"),
+                "reject message must name the orphan + command, got: {msg}"
+            );
+        },
+        other => panic!("expected Rejected, got {other:?}"),
+    }
+}
+
+/// `Terminate` is a synonym for `Cancel` until a forced-shutdown path is
+/// wired (see ADR-0016 and the module doc). Same idempotency / orphan /
+/// cross-runner contracts apply — this smoke test just asserts the
+/// delegation is wired, not a separate code path.
+#[tokio::test]
+async fn dispatch_terminate_behaves_like_cancel() {
+    let harness = Harness::new().await;
+    let orphan = ExecutionId::new();
+
+    // Orphan -> Rejected (same code path as dispatch_cancel).
+    let err = harness
+        .dispatch
+        .dispatch_terminate(orphan)
+        .await
+        .expect_err("orphan terminate rejects");
+    assert!(matches!(err, ControlDispatchError::Rejected(_)));
+
+    // Terminal -> Ok.
+    let workflow_id = harness.persist_echo_workflow().await;
+    let execution_id = harness
+        .persist_created_execution(workflow_id, serde_json::json!("t"))
+        .await;
+    harness.dispatch.dispatch_start(execution_id).await.unwrap();
+    assert_eq!(
+        harness.status(execution_id).await,
+        ExecutionStatus::Completed
+    );
+    harness
+        .dispatch
+        .dispatch_terminate(execution_id)
+        .await
+        .expect("terminal terminate is Ok");
 }

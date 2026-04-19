@@ -1,29 +1,39 @@
-//! Engine-owned [`ControlDispatch`] implementation — ADR-0008 follow-up A2.
+//! Engine-owned [`ControlDispatch`] implementation — ADR-0008 follow-ups A2
+//! (Start / Resume / Restart) and A3 (Cancel / Terminate).
 //!
 //! The [`ControlConsumer`] (skeleton landed in A1) drains
 //! `execution_control_queue` rows and hands each typed command to an
 //! implementation of [`ControlDispatch`]. [`EngineControlDispatch`] wires the
 //! `Start` / `Resume` / `Restart` paths into the engine so that a POST to
 //! `/executions` actually causes node execution — closing the §4.5 gap named
-//! in #332.
-//!
-//! A3 (Cancel / Terminate) lands in a follow-up PR; in this module those two
-//! methods return a typed [`ControlDispatchError::Rejected`] so the consumer
-//! marks the row `Failed` rather than silently acknowledging it.
+//! in #332. The `Cancel` / `Terminate` path closes the §12.2 / §13-step-5
+//! symmetric gap named in #330: the durable `Cancel` signal the API's
+//! `cancel_execution` handler enqueues now reaches the live frontier loop
+//! via [`WorkflowEngine::cancel_execution`].
 //!
 //! ## Idempotency contract (ADR-0008 §5)
 //!
 //! Control-queue delivery is at-least-once: the ack path on `mark_completed`
 //! may fail after a successful dispatch, and the reclaim path (B1) will
-//! redeliver. Every dispatch method in this impl therefore guards against
-//! re-delivery:
+//! redeliver. Each dispatch method guards against re-delivery through one of
+//! two mechanisms:
 //!
-//! - a command arriving for an already-terminal execution is `Ok(())`;
-//! - a command arriving for an `Running` / `Cancelling` execution is `Ok(())` (a sibling runner
-//!   already owns the dispatch);
-//! - a race where a second dispatcher wins the lease between our read and the engine's own lease
-//!   acquire surfaces as [`EngineError::Leased`], which this impl maps to `Ok(())` so the same
-//!   execution is not fenced as a consumer failure.
+//! - **Start / Resume / Restart** short-circuit on persisted status. A command arriving for an
+//!   already-terminal execution is `Ok(())`; a command arriving for a `Running` / `Cancelling`
+//!   execution is `Ok(())` (a sibling runner already owns the dispatch). A race where a second
+//!   dispatcher wins the lease between our read and the engine's own lease acquire surfaces as
+//!   [`EngineError::Leased`], which this impl maps to `Ok(())` so the same execution is not fenced
+//!   as a consumer failure.
+//!
+//! - **Cancel / Terminate** always signal the engine's cancel registry (except for orphan commands,
+//!   which are [`ControlDispatchError::Rejected`]). The underlying
+//!   [`tokio_util::sync::CancellationToken::cancel`] is idempotent per token, and a missing
+//!   registry entry — cross-runner case or this runner already cleaned up — is a no-op that returns
+//!   [`WorkflowEngine::cancel_execution`] `= false` without side effects. Short-circuiting on
+//!   terminal status would leave a live frontier loop orphaned after the API handler's CAS
+//!   transitioned the row to `Cancelled` in the same logical operation as the enqueue (canon §12.2
+//!   / §13 step 5) — the durable state would say the run is over while the in-process `JoinSet`
+//!   kept waiting on a slow handler.
 //!
 //! The authoritative single-runner fence still lives inside
 //! [`WorkflowEngine::resume_execution`] (ADR-0015 lease lifecycle); this
@@ -33,6 +43,7 @@
 //! [`ControlConsumer`]: crate::ControlConsumer
 //! [`ControlDispatch`]: crate::ControlDispatch
 //! [`WorkflowEngine::resume_execution`]: crate::WorkflowEngine::resume_execution
+//! [`WorkflowEngine::cancel_execution`]: crate::WorkflowEngine::cancel_execution
 
 use std::sync::Arc;
 
@@ -227,24 +238,61 @@ impl ControlDispatch for EngineControlDispatch {
     }
 
     async fn dispatch_cancel(&self, execution_id: ExecutionId) -> Result<(), ControlDispatchError> {
-        // Cancel is owned by ADR-0008 follow-up A3 (#330). Surface a typed
-        // reject so the consumer records the diagnosis on the row instead of
-        // silently acking it — any `Cancel` signal delivered before A3 lands
-        // is an engine-visible capability gap, not a benign no-op.
-        let _ = execution_id;
-        Err(ControlDispatchError::Rejected(
-            "Cancel dispatch lands with ADR-0008 follow-up A3 (#330) — not yet wired".to_string(),
-        ))
+        // ADR-0008 A3 — every non-orphan `Cancel` signals the engine's
+        // cancel registry, regardless of the persisted status.
+        //
+        // The API handler's `cancel_execution` writes the row to `Cancelled`
+        // in the same logical operation as the enqueue (canon §12.2 / §13
+        // step 5), so by the time the consumer drains this command, the
+        // read here will typically report a terminal status even for a
+        // live frontier loop. Short-circuiting on terminal would leave a
+        // running slow handler orphaned — the durable state says the run
+        // is over, but the in-process JoinSet is still blocked in a node.
+        //
+        // `engine.cancel_execution` is idempotent in both dimensions we
+        // care about: the underlying `CancellationToken::cancel()` is a
+        // no-op on a token that is already cancelled, and a missing
+        // registry entry (cross-runner, or this runner already cleaned up)
+        // returns `false` without side effects. Signalling always is the
+        // honest minimum: it closes the live-loop gap and is safe under
+        // at-least-once redelivery (ADR-0008 §5).
+        match self.read_status(execution_id).await? {
+            // Producer bug: queue row written without the execution row (or a
+            // row that disappeared between enqueue and drain). Surface so the
+            // diagnosis lands on `execution_control_queue.error_message`.
+            None => Err(ControlDispatchError::Rejected(format!(
+                "execution {execution_id} not found — cancel command orphaned"
+            ))),
+            Some(status) => {
+                let signalled = self.engine.cancel_execution(execution_id);
+                tracing::debug!(
+                    %execution_id,
+                    %status,
+                    signalled,
+                    "control-queue: Cancel dispatched (ADR-0008 A3) — signalled local runner={signalled}"
+                );
+                Ok(())
+            },
+        }
     }
 
     async fn dispatch_terminate(
         &self,
         execution_id: ExecutionId,
     ) -> Result<(), ControlDispatchError> {
-        // Same rationale as `dispatch_cancel` — owned by A3.
-        let _ = execution_id;
-        Err(ControlDispatchError::Rejected(
-            "Terminate dispatch lands with ADR-0008 follow-up A3 — not yet wired".to_string(),
-        ))
+        // ADR-0008 names `Terminate` "forced termination", but there is no
+        // distinct forced-shutdown path in the engine today — the frontier
+        // loop aborts in-flight `JoinSet` tasks via the same cooperative
+        // `CancellationToken` that `Cancel` trips. Treating `Terminate` as a
+        // synonym for `Cancel` is the honest minimum: the operator-visible
+        // contract is identical (in-flight work aborts, state reaches a
+        // terminal `Cancelled`), and the capability gap — process-level kill
+        // or task-set abort — is tracked separately as a future chip. Do not
+        // emit half-implemented forced-abort machinery here (canon §4.5).
+        //
+        // See ADR-0016 (cancel-registry and cooperative-cancel contract) for
+        // the design rationale and the upgrade path to a true forced-shutdown
+        // distinction.
+        self.dispatch_cancel(execution_id).await
     }
 }

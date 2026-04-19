@@ -176,6 +176,38 @@ pub struct WorkflowEngine {
     /// Defaults to [`DEFAULT_EXECUTION_LEASE_HEARTBEAT_INTERVAL`]. Tuned
     /// down only in tests via [`WorkflowEngine::with_lease_heartbeat_interval`].
     lease_heartbeat_interval: Duration,
+    /// Volatile index of in-flight executions this runner owns.
+    ///
+    /// Populated on entry to [`execute_workflow`] / [`resume_execution`] right
+    /// after the per-run [`CancellationToken`] is minted, and removed via an
+    /// RAII guard on exit. [`cancel_execution`] looks up the token here and
+    /// cancels it, closing the ADR-0008 A3 control-queue `Cancel` path into
+    /// the cooperative-cancel signal the frontier loop already observes.
+    ///
+    /// **Not durable.** This map lives only as long as the `WorkflowEngine`
+    /// instance. On process crash the entries vanish with the runner; the
+    /// durable truth is `executions` + `execution_control_queue`, and the
+    /// replacement runner reloads from storage (ADR-0008 §5, canon §12.2).
+    ///
+    /// [`execute_workflow`]: Self::execute_workflow
+    /// [`resume_execution`]: Self::resume_execution
+    /// [`cancel_execution`]: Self::cancel_execution
+    running: Arc<DashMap<ExecutionId, CancellationToken>>,
+}
+
+/// RAII guard that removes an execution from the [`WorkflowEngine::running`]
+/// registry when dropped. Covers the normal exit path and every early-return
+/// branch (e.g. the heartbeat-lost `EngineError::Leased`) without manually
+/// threading a `remove` call through each site.
+struct RunningRegistration {
+    running: Arc<DashMap<ExecutionId, CancellationToken>>,
+    execution_id: ExecutionId,
+}
+
+impl Drop for RunningRegistration {
+    fn drop(&mut self) {
+        self.running.remove(&self.execution_id);
+    }
 }
 
 impl WorkflowEngine {
@@ -203,6 +235,36 @@ impl WorkflowEngine {
             instance_id,
             lease_ttl: DEFAULT_EXECUTION_LEASE_TTL,
             lease_heartbeat_interval: DEFAULT_EXECUTION_LEASE_HEARTBEAT_INTERVAL,
+            running: Arc::new(DashMap::new()),
+        }
+    }
+
+    /// Signal a cooperative cancel to an in-flight execution this runner owns.
+    ///
+    /// Returns `true` if the execution's [`CancellationToken`] was found in
+    /// this engine's registry and cancelled; `false` if this runner has no
+    /// frontier loop for that `execution_id`. A `false` return is not an
+    /// error — it is the honest answer for the cross-runner case where a
+    /// sibling runner owns the live loop.
+    ///
+    /// Cancellation is idempotent: calling this twice for the same id while
+    /// the loop is still draining is a no-op on the second call. The map
+    /// entry is removed when the frontier loop's `RunningRegistration`
+    /// guard drops, not by this call — so repeat observers of the token see
+    /// the same cancelled state.
+    ///
+    /// This is the engine-side hook that
+    /// [`crate::control_dispatch::EngineControlDispatch`]'s `dispatch_cancel`
+    /// calls after the §5 idempotency guard; the durable API-level CAS to
+    /// `Cancelled` has already landed on the execution row by the time a
+    /// `Cancel` command reaches the consumer (canon §12.2, §13 step 5).
+    pub fn cancel_execution(&self, execution_id: ExecutionId) -> bool {
+        match self.running.get(&execution_id) {
+            Some(token) => {
+                token.cancel();
+                true
+            },
+            None => false,
         }
     }
 
@@ -618,6 +680,20 @@ impl WorkflowEngine {
             status: final_status,
             integrity_violation,
         } = determine_final_status(&failed_node, &cancel_token, &exec_state);
+        // `Running → Cancelled` is not a one-step transition (see
+        // `nebula_execution::transition` — issue #273 documents the shortcuts
+        // the state machine carved out). When the frontier loop tore down on
+        // a cancel token, bridge through `Cancelling` so the subsequent
+        // `transition_status(Cancelled)` is valid and the persisted row
+        // records the terminal outcome. Without the bridge, the `let _`
+        // swallows the invalid-transition error and the row stays at
+        // `Running`, producing a two-truth violation against the
+        // `ExecutionResult` the engine returns (ADR-0008 A3).
+        if final_status == ExecutionStatus::Cancelled
+            && exec_state.status == ExecutionStatus::Running
+        {
+            let _ = exec_state.transition_status(ExecutionStatus::Cancelling);
+        }
         let _ = exec_state.transition_status(final_status);
 
         self.emit_frontier_integrity_if_violated(execution_id, integrity_violation);
@@ -885,6 +961,17 @@ impl WorkflowEngine {
         // 5. Create cancellation token
         let cancel_token = CancellationToken::new();
 
+        // 5a. Register this run's cancel token so a durable `Cancel`
+        // control command can reach the live frontier loop (ADR-0008 A3,
+        // canon §12.2). The guard's `Drop` removes the entry on every exit
+        // path — normal completion, heartbeat-lost `Leased`, final-persist
+        // errors — so the registry cannot leak stale tokens across runs.
+        self.running.insert(execution_id, cancel_token.clone());
+        let _cancel_registration = RunningRegistration {
+            running: Arc::clone(&self.running),
+            execution_id,
+        };
+
         // 5b. Acquire the execution lease before dispatching nodes (ADR
         // 0008, #325). Second runners that race in after the
         // `create` above but before lease acquire will observe a held
@@ -947,6 +1034,20 @@ impl WorkflowEngine {
             status: final_status,
             integrity_violation,
         } = determine_final_status(&failed_node, &cancel_token, &exec_state);
+        // `Running → Cancelled` is not a one-step transition (see
+        // `nebula_execution::transition` — issue #273 documents the shortcuts
+        // the state machine carved out). When the frontier loop tore down on
+        // a cancel token, bridge through `Cancelling` so the subsequent
+        // `transition_status(Cancelled)` is valid and the persisted row
+        // records the terminal outcome. Without the bridge, the `let _`
+        // swallows the invalid-transition error and the row stays at
+        // `Running`, producing a two-truth violation against the
+        // `ExecutionResult` the engine returns (ADR-0008 A3).
+        if final_status == ExecutionStatus::Cancelled
+            && exec_state.status == ExecutionStatus::Running
+        {
+            let _ = exec_state.transition_status(ExecutionStatus::Cancelling);
+        }
         let _ = exec_state.transition_status(final_status);
 
         // If the heartbeat lost the lease mid-run, a sibling runner
@@ -1278,6 +1379,16 @@ impl WorkflowEngine {
         let cancel_token = CancellationToken::new();
         let mut repo_version = repo_version_loaded;
 
+        // Register this run's cancel token so an ADR-0008 A3 `Cancel`
+        // control command can reach the live resume frontier (canon §12.2).
+        // Guard's Drop removes the entry on every exit path, including the
+        // heartbeat-lost `Leased` early-return below.
+        self.running.insert(execution_id, cancel_token.clone());
+        let _cancel_registration = RunningRegistration {
+            running: Arc::clone(&self.running),
+            execution_id,
+        };
+
         // Acquire the execution lease before running the frontier (ADR
         // 0008, #325). Resume is explicitly a second entry point for an
         // existing execution — if another runner is already driving it
@@ -1343,6 +1454,17 @@ impl WorkflowEngine {
         // Use the validated transition path. Ignoring the result is intentional:
         // if the current status is already terminal (e.g. the execution was
         // cancelled during the frontier loop), we do not overwrite it.
+        //
+        // Bridge `Running → Cancelling → Cancelled` when the cancel token
+        // fired mid-flight — one-step `Running → Cancelled` is not in the
+        // valid-transition table (issue #273), so without the bridge the
+        // invalid-transition error is silently swallowed and the row stays
+        // at `Running`, producing a two-truth violation (ADR-0008 A3).
+        if final_status == ExecutionStatus::Cancelled
+            && exec_state.status == ExecutionStatus::Running
+        {
+            let _ = exec_state.transition_status(ExecutionStatus::Cancelling);
+        }
         let _ = exec_state.transition_status(final_status);
 
         // Heartbeat loss: another runner now owns the canonical state.
