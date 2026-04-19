@@ -231,8 +231,22 @@ impl ControlQueueRepo for PgControlQueueRepo {
         })
     }
 
-    async fn cleanup(&self, _retention: std::time::Duration) -> Result<u64, StorageError> {
-        unimplemented!()
+    async fn cleanup(&self, retention: std::time::Duration) -> Result<u64, StorageError> {
+        // Only delete rows in terminal states. Canon §12.2 explicitly
+        // treats "removing rows before the engine has acted" as broken,
+        // so Pending / Processing rows must never be pruned regardless
+        // of `issued_at` age.
+        let secs = reclaim_after_seconds(retention);
+        let result = sqlx::query(
+            "DELETE FROM execution_control_queue \
+             WHERE status IN ('Completed', 'Failed') \
+               AND issued_at < NOW() - make_interval(secs => $1)",
+        )
+        .bind(secs)
+        .execute(&self.pool)
+        .await
+        .map_err(|e| map_db_err("control_queue", e))?;
+        Ok(result.rows_affected())
     }
 }
 
@@ -729,5 +743,61 @@ mod tests {
             msg.contains("646561642d72756e6e6572"),
             "processor_id encoded as lowercase hex, got: {msg}"
         );
+    }
+
+    #[tokio::test]
+    async fn cleanup_deletes_old_terminal_rows_only() {
+        let Some(pool) = pool().await else { return };
+        let _guard = TEST_LOCK.lock().await;
+        clean_control_queue(&pool).await;
+        let repo = PgControlQueueRepo::new(pool.clone());
+        let exec_id = seed_execution_parent_chain(&pool).await;
+
+        // Insert three old rows: Completed, Failed, Pending; one fresh
+        // Completed row that must survive because of age.
+        let old = Utc::now() - chrono::Duration::seconds(3600);
+        let fresh = Utc::now();
+        let mut ids_old = Vec::new();
+        for status in ["Completed", "Failed", "Pending"] {
+            let mut entry = pending_entry(&exec_id);
+            entry.status = status.to_string();
+            entry.issued_at = old;
+            ids_old.push((entry.id.clone(), status));
+            repo.enqueue(&entry).await.unwrap();
+        }
+        let mut fresh_entry = pending_entry(&exec_id);
+        fresh_entry.status = "Completed".to_string();
+        fresh_entry.issued_at = fresh;
+        let fresh_id = fresh_entry.id.clone();
+        repo.enqueue(&fresh_entry).await.unwrap();
+
+        // retention = 10 minutes — old rows are past, fresh row is under.
+        let deleted = repo
+            .cleanup(std::time::Duration::from_secs(600))
+            .await
+            .unwrap();
+        assert_eq!(deleted, 2, "only old Completed + old Failed removed");
+
+        // Verify survivors.
+        for (id, status) in ids_old {
+            let rows: i64 =
+                sqlx::query_scalar("SELECT COUNT(*) FROM execution_control_queue WHERE id = $1")
+                    .bind(&id)
+                    .fetch_one(&pool)
+                    .await
+                    .unwrap();
+            let expected_rows = if status == "Pending" { 1 } else { 0 };
+            assert_eq!(
+                rows, expected_rows,
+                "row with status {status} expected {expected_rows} row(s)"
+            );
+        }
+        let fresh_rows: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM execution_control_queue WHERE id = $1")
+                .bind(&fresh_id)
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert_eq!(fresh_rows, 1, "fresh Completed row survives cleanup");
     }
 }
