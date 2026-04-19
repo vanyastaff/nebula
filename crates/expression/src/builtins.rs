@@ -463,7 +463,6 @@ mod tests {
         assert!(result.is_err());
         let err = result.unwrap_err();
         let msg = err.to_string();
-        println!("Error message: {}", msg);
         assert!(msg.contains("Argument 'text' must be a string"));
         assert!(msg.contains("number"));
     }
