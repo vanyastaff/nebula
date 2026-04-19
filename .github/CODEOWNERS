@@ -6,27 +6,80 @@
 #
 # Syntax: https://docs.github.com/en/repositories/managing-your-repositorys-settings-and-features/customizing-your-repository/about-code-owners
 
-# Default owner for everything
-*                           @vanyastaff
+# Default owner for everything not matched below
+*                               @vanyastaff
 
-# Core crates
-/crates/core/               @vanyastaff
-/crates/workflow/           @vanyastaff
-/crates/execution/          @vanyastaff
+# ── Workspace root config ────────────────────────────────────────────────────
+/Cargo.toml                     @vanyastaff
+/Cargo.lock                     @vanyastaff
+/deny.toml                      @vanyastaff
+/rustfmt.toml                   @vanyastaff
+/clippy.toml                    @vanyastaff
+/lefthook.yml                   @vanyastaff
+/Taskfile.yml                   @vanyastaff
+/typos.toml                     @vanyastaff
+/_typos.toml                    @vanyastaff
+/commitlint.config.mjs          @vanyastaff
 
-# Engine layer
-/crates/engine/             @vanyastaff
-/crates/runtime/            @vanyastaff
-/crates/action/             @vanyastaff
+# ── CI / GitHub config ────────────────────────────────────────────────────────
+/.github/                       @vanyastaff
 
-# Security-sensitive areas — require explicit review
-/crates/credential/         @vanyastaff
-/.github/SECURITY.md        @vanyastaff
+# ── Core layer ────────────────────────────────────────────────────────────────
+/crates/core/                   @vanyastaff
+/crates/error/                  @vanyastaff
+/crates/validator/              @vanyastaff
+/crates/expression/             @vanyastaff
+/crates/workflow/               @vanyastaff
+/crates/execution/              @vanyastaff
+/crates/schema/                 @vanyastaff
+/crates/metadata/               @vanyastaff
 
-# CI/CD and tooling
-/.github/                   @vanyastaff
-/deploy/                    @vanyastaff
+# ── Cross-cutting layer ───────────────────────────────────────────────────────
+/crates/log/                    @vanyastaff
+/crates/system/                 @vanyastaff
+/crates/eventbus/               @vanyastaff
+/crates/telemetry/              @vanyastaff
+/crates/metrics/                @vanyastaff
+/crates/resilience/             @vanyastaff
 
-# Documentation
-/docs/                      @vanyastaff
-*.md                        @vanyastaff
+# ── Business layer ────────────────────────────────────────────────────────────
+/crates/credential/             @vanyastaff
+/crates/resource/               @vanyastaff
+/crates/action/                 @vanyastaff
+/crates/plugin/                 @vanyastaff
+
+# ── Exec layer ────────────────────────────────────────────────────────────────
+/crates/engine/                 @vanyastaff
+/crates/runtime/                @vanyastaff
+/crates/storage/                @vanyastaff
+/crates/sandbox/                @vanyastaff
+/crates/plugin-sdk/             @vanyastaff
+
+# ── API / Public layer ────────────────────────────────────────────────────────
+/crates/api/                    @vanyastaff
+/crates/sdk/                    @vanyastaff
+
+# ── Documentation ─────────────────────────────────────────────────────────────
+/docs/                          @vanyastaff
+/docs/adr/                      @vanyastaff
+/docs/plans/                    @vanyastaff
+/docs/superpowers/              @vanyastaff
+
+# ── Top-level docs ────────────────────────────────────────────────────────────
+/CLAUDE.md                      @vanyastaff
+/README.md                      @vanyastaff
+/CHANGELOG.md                   @vanyastaff
+/CONTRIBUTING.md                @vanyastaff
+/CODE_OF_CONDUCT.md             @vanyastaff
+/IDEA.md                        @vanyastaff
+
+# ── Deploy / infra ────────────────────────────────────────────────────────────
+/deploy/                        @vanyastaff
+/migrations/                    @vanyastaff
+/scripts/                       @vanyastaff
+
+# ── Apps ──────────────────────────────────────────────────────────────────────
+/apps/                          @vanyastaff
+
+# ── Examples ──────────────────────────────────────────────────────────────────
+/examples/                      @vanyastaff
