@@ -11,8 +11,52 @@ use sqlx::{Pool, Postgres};
 use crate::{
     error::StorageError,
     pg::map_db_err,
-    repos::{ControlQueueEntry, ControlQueueRepo, ReclaimOutcome},
+    repos::{ControlCommand, ControlQueueEntry, ControlQueueRepo, ReclaimOutcome},
 };
+
+type EntryTuple = (
+    Vec<u8>,                               // id
+    Vec<u8>,                               // execution_id
+    String,                                // command
+    Option<Vec<u8>>,                       // issued_by
+    chrono::DateTime<chrono::Utc>,         // issued_at
+    String,                                // status
+    Option<Vec<u8>>,                       // processed_by
+    Option<chrono::DateTime<chrono::Utc>>, // processed_at
+    Option<String>,                        // error_message
+    i64,                                   // reclaim_count
+);
+
+const SELECT_COLS: &str = "id, execution_id, command, issued_by, issued_at, status, processed_by, \
+     processed_at, error_message, reclaim_count";
+
+fn decode_command(s: &str) -> Result<ControlCommand, StorageError> {
+    match s {
+        "Start" => Ok(ControlCommand::Start),
+        "Cancel" => Ok(ControlCommand::Cancel),
+        "Terminate" => Ok(ControlCommand::Terminate),
+        "Resume" => Ok(ControlCommand::Resume),
+        "Restart" => Ok(ControlCommand::Restart),
+        other => Err(StorageError::Serialization(format!(
+            "unknown control_queue.command: {other}"
+        ))),
+    }
+}
+
+fn tuple_to_entry(t: EntryTuple) -> Result<ControlQueueEntry, StorageError> {
+    Ok(ControlQueueEntry {
+        id: t.0,
+        execution_id: t.1,
+        command: decode_command(&t.2)?,
+        issued_by: t.3,
+        issued_at: t.4,
+        status: t.5,
+        processed_by: t.6,
+        processed_at: t.7,
+        error_message: t.8,
+        reclaim_count: u32::try_from(t.9.max(0)).unwrap_or(u32::MAX),
+    })
+}
 
 /// Postgres-backed durable control queue (canon §12.2).
 ///
@@ -65,10 +109,34 @@ impl ControlQueueRepo for PgControlQueueRepo {
 
     async fn claim_pending(
         &self,
-        _processor: &[u8],
-        _batch_size: u32,
+        processor: &[u8],
+        batch_size: u32,
     ) -> Result<Vec<ControlQueueEntry>, StorageError> {
-        unimplemented!()
+        // Canonical Postgres SKIP LOCKED claim (ADR-0008 §1).
+        // The CTE's SELECT ... FOR UPDATE SKIP LOCKED skips rows another
+        // runner has already locked; the outer UPDATE stamps the survivors
+        // atomically and returns them via RETURNING.
+        let sql = format!(
+            "WITH claimed AS ( \
+                 SELECT id FROM execution_control_queue \
+                 WHERE status = 'Pending' \
+                 ORDER BY issued_at \
+                 LIMIT $1 \
+                 FOR UPDATE SKIP LOCKED \
+             ) \
+             UPDATE execution_control_queue e \
+             SET status = 'Processing', processed_at = NOW(), processed_by = $2 \
+             FROM claimed \
+             WHERE e.id = claimed.id \
+             RETURNING {SELECT_COLS}"
+        );
+        let rows = sqlx::query_as::<_, EntryTuple>(&sql)
+            .bind(i64::from(batch_size))
+            .bind(processor)
+            .fetch_all(&self.pool)
+            .await
+            .map_err(|e| map_db_err("control_queue", e))?;
+        rows.into_iter().map(tuple_to_entry).collect()
     }
 
     async fn mark_completed(&self, _id: &[u8]) -> Result<(), StorageError> {
@@ -98,7 +166,7 @@ mod tests {
     use sqlx::{Pool, Postgres};
 
     use super::*;
-    use crate::{backend::PostgresStorage, repos::ControlCommand};
+    use crate::backend::PostgresStorage;
 
     /// Connect to `DATABASE_URL` and run migrations, or return `None` to skip.
     async fn pool() -> Option<Pool<Postgres>> {
@@ -310,5 +378,44 @@ mod tests {
         assert!(row.7.is_none());
         assert!(row.8.is_none());
         assert_eq!(row.9, 0);
+    }
+
+    #[tokio::test]
+    async fn claim_pending_stamps_processed_at_and_processed_by() {
+        let Some(pool) = pool().await else { return };
+        let _guard = TEST_LOCK.lock().await;
+        clean_control_queue(&pool).await;
+        let repo = PgControlQueueRepo::new(pool.clone());
+        let exec_id = seed_execution_parent_chain(&pool).await;
+        let entry = pending_entry(&exec_id);
+        let row_id = entry.id.clone();
+        repo.enqueue(&entry).await.unwrap();
+
+        let before = Utc::now();
+        let claimed = repo.claim_pending(b"runner-a", 16).await.unwrap();
+        let after = Utc::now();
+
+        assert!(
+            claimed.iter().any(|e| e.id == row_id),
+            "our enqueued row should be in the claim batch"
+        );
+
+        type Row = (String, Option<Vec<u8>>, Option<DateTime<Utc>>);
+        let row: Row = sqlx::query_as(
+            "SELECT status, processed_by, processed_at FROM execution_control_queue \
+             WHERE id = $1",
+        )
+        .bind(&row_id)
+        .fetch_one(&pool)
+        .await
+        .expect("select");
+
+        assert_eq!(row.0, "Processing");
+        assert_eq!(row.1.as_deref(), Some(b"runner-a".as_slice()));
+        let ts = row.2.expect("processed_at stamped");
+        assert!(
+            ts >= before && ts <= after,
+            "processed_at inside the claim window"
+        );
     }
 }
