@@ -74,7 +74,13 @@ pub struct ControlQueueEntry {
     pub status: String,
     /// Node/instance that processed the command.
     pub processed_by: Option<Vec<u8>>,
-    /// When processing finished.
+    /// When this row was claimed for processing (stamped by `claim_pending`).
+    ///
+    /// Used by [`ControlQueueRepo::reclaim_stuck`] as the staleness signal
+    /// for crashed-runner recovery — rows whose `processed_at` is older
+    /// than the `reclaim_after` window are redelivered. Cleared on a
+    /// successful reclaim so the next `claim_pending` resets the clock.
+    /// See ADR-0017 / ADR-0008 B1.
     pub processed_at: Option<chrono::DateTime<chrono::Utc>>,
     /// Error message if processing failed.
     pub error_message: Option<String>,
@@ -89,13 +95,13 @@ pub struct ControlQueueEntry {
 ///
 /// `reclaimed` counts rows moved `Processing → Pending` for a fresh dispatch
 /// attempt; `exhausted` counts rows moved `Processing → Failed` because
-/// their `reclaim_count` exceeded `max_reclaim_count`. Both are per-sweep
-/// counters — callers aggregate across ticks for observability.
+/// their `reclaim_count` reached or exceeded `max_reclaim_count`. Both are
+/// per-sweep counters — callers aggregate across ticks for observability.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct ReclaimOutcome {
     /// Rows transitioned back to `Pending` for redelivery.
     pub reclaimed: u64,
-    /// Rows transitioned to `Failed` because `reclaim_count` > `max_reclaim_count`.
+    /// Rows transitioned to `Failed` because `reclaim_count` >= `max_reclaim_count`.
     pub exhausted: u64,
 }
 
