@@ -141,7 +141,7 @@ Don't:
 
 Be bold on design, strict on safety:
 
-- Keep security guarantees intact (credentials, secrets, auth boundaries).
+- Keep security guarantees intact (credentials, secrets, auth boundaries). See [`docs/STYLE.md §6 — Secret handling`](docs/STYLE.md#6-secret-handling) for mandatory patterns, anti-patterns, and the log-redaction test helper.
 - Preserve or improve test coverage around changed behavior.
 - For high-risk changes, validate with targeted checks before finishing.
 - If a refactor changes behavior intentionally, state that explicitly in the summary.

@@ -73,6 +73,114 @@ Defended pre-1.0 — changing any of these is an ADR-level decision:
 - **`#[non_exhaustive]` on public enums and structs we intend to grow.** Consumers must use `_` or `..` in matches / destructuring, leaving us room to add variants / fields without SemVer breakage.
 - **`#[unstable(feature = "...")]`-gated public API for aspirational surface.** Anything not yet engine-honored hides behind an unstable feature flag with an issue tracker link — never ships on a stable release path.
 
-## 6. When to fight canon
+## 6. Secret handling
+
+Anchors [`PRODUCT_CANON.md §12.5 — Secrets and auth`](PRODUCT_CANON.md#125-secrets-and-auth)
+in practical rules. Every rule below is **non-negotiable**; a PR that trips one is a blocker, not a nit.
+
+### 6.1 What counts as "secret material"
+
+- User-supplied credentials: API keys, OAuth tokens, passwords, client secrets, session tokens.
+- Cryptographic key bytes: signing keys, shared keys, key-derivation inputs.
+- Pre-decrypt ciphertext + nonce pairs *while decryption is in-flight*.
+- Any value a credential scheme wraps in `SecretString` or a scheme-specific secret newtype.
+
+### 6.2 Mandatory patterns
+
+1. **Wrap it.** Raw `String` / `Vec<u8>` is **not** acceptable for secret material at a public API boundary. Wrap with
+   `nebula_credential::SecretString` (or equivalent newtype) so `Zeroize` / `ZeroizeOnDrop` / redacted `Debug` come for free.
+2. **Access via closure scope.** Use `secret.expose_secret(|s| { ... })` — do **not** store the raw `&str` in a longer-lived local.
+   Scope the exposure to the smallest block that needs the plaintext.
+3. **Redacted `Debug` and `Display`.** Any type carrying secret material implements `Debug` (and `Display` if it exists)
+   to emit `"[REDACTED]"`. Deriving `#[derive(Debug)]` on a struct that contains a secret field is the most common bug —
+   write `Debug` by hand and redact the field.
+4. **Default `Serialize` redacts, too.** For a credential wrapper, default `Serialize` emits the `"[REDACTED]"` sentinel.
+   If a call site needs the actual value on the wire (encrypted-at-rest storage), it uses the explicit
+   `serde_secret` module — never the default impl.
+5. **No `tracing::*!` of raw secrets.** Any `tracing` event that takes a secret must log the wrapper (so its redacted
+   `Debug` / `Display` fires) — never `expose_secret`-extract a plaintext value and then feed it to a format string.
+6. **No secret in error strings.** Error variants carry structured identifiers (credential id, token id) + a classified
+   reason enum; they do not carry the secret. See §4 (Error taxonomy).
+
+### 6.3 Right vs wrong
+
+**Right:**
+
+```rust
+#[derive(Clone)]
+pub struct ApiKey {
+    key: SecretString,
+}
+
+impl fmt::Debug for ApiKey {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("ApiKey").field("key", &"[REDACTED]").finish()
+    }
+}
+
+pub fn authorize(k: &ApiKey) -> Result<(), AuthError> {
+    k.key.expose_secret(|raw| {
+        // short-lived borrow; nothing leaves this closure
+        send_http_header("Authorization", &format!("Bearer {raw}"));
+    });
+    Ok(())
+}
+```
+
+**Wrong:**
+
+```rust
+#[derive(Debug, Clone)]            // ← derived Debug leaks the key
+pub struct ApiKey {
+    pub key: String,               // ← raw String, no zeroize, public field
+}
+
+pub fn authorize(k: &ApiKey) -> Result<(), AuthError> {
+    tracing::info!("auth for key {}", k.key); // ← logs the raw key
+    Err(AuthError::Forbidden(format!("bad key {}", k.key))) // ← secret in error
+}
+```
+
+### 6.4 Verifying it
+
+`crates/credential/tests/redaction.rs` ships a
+**log-redaction test helper** — `assert_no_secret_in_logs(forbidden, || { ... })` — that captures
+current-thread `tracing` output (all levels, including `DEBUG` / `TRACE`) while the closure runs
+and fails if the forbidden substring shows up. It covers both the *positive* case (secrets
+formatted as `[REDACTED]`) and a `#[should_panic]` negative case (a raw leak must fail the
+assertion, so a silently-passing test cannot mask a real regression).
+
+**Scope caveat.** The subscriber is installed via `tracing::subscriber::with_default` and is
+thread-local. Events emitted from threads spawned inside the closure — or from work that an async
+runtime moves onto a worker thread — will **not** be captured. Keep redaction tests on a
+single-thread logging path; do not `tokio::spawn` / `std::thread::spawn` inside `body`.
+
+New credential-adjacent types add a targeted test there:
+
+```rust
+#[test]
+fn my_new_credential_never_leaks() {
+    let raw = "my-unique-test-value-do-not-use-in-prod";
+    let cred = MyCredential::new(SecretString::new(raw));
+
+    assert_no_secret_in_logs(raw, || {
+        tracing::info!(cred = ?cred, "sanity");
+        tracing::error!("error path: {cred:?}");
+    });
+}
+```
+
+### 6.5 Review checklist
+
+Paste this into a credential-touching PR's self-review:
+
+- [ ] Every new struct carrying secret material wraps it (`SecretString` / newtype) — no raw `String` / `Vec<u8>` fields.
+- [ ] Custom `Debug` (and `Display` if any) written by hand; field formatted as `"[REDACTED]"`.
+- [ ] Default `Serialize` emits the redacted sentinel; explicit `serde_secret` used only where justified in code.
+- [ ] No `tracing::*!` format argument is a raw plaintext secret.
+- [ ] No error variant carries the secret in its payload or `Display`.
+- [ ] A targeted `assert_no_secret_in_logs` test in `crates/credential/tests/redaction.rs` for the new type.
+
+## 7. When to fight canon
 
 See `docs/PRODUCT_CANON.md §0.2 canon revision triggers`.
