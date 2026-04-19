@@ -57,7 +57,7 @@ Legend: **S** = stable, **H** = half-done, **B** = broken, **O** = orphan (no re
 
 | Crate | SLOC | Health | Top issues | Pri | Recommendation |
 |---|---|---|---|---|---|
-| `nebula-engine` | ~4 400 | H | `engine.rs` ~4 000 lines god file; **fail-open credential allowlist** (§4.5); no resource allowlist; 4 undocumented panic sites | P0 | fix allowlists; split orchestrator; replace panics |
+| `nebula-engine` | ~4 400 | H | `engine.rs` ~4 000 lines god file; ~~**fail-open credential allowlist** (§4.5)~~ resolved via `7b811372` (deny-by-default); no resource allowlist (intentional per Q4=B); 4 undocumented panic sites | P0 | split orchestrator; replace panics |
 | `nebula-runtime` | ~2 700 | H | **`src/sandbox.rs` is a self-documented dead compat shim (§14)**; 4 panic sites | P0 | **delete `sandbox.rs`**; typed errors for panics |
 | `nebula-storage` | ~2 000 | H | **§12.2 two-truths**: old `execution_repo.rs`/`workflow_repo.rs` + new `repos/` coexist; new control queue only in new layer | P0 | finish migration; delete old trait files; verify engine calls new API |
 | `nebula-sandbox` | ~1 600 | S | no e2e test of in-process + process paths together | P3 | keep; add integration test |
@@ -161,15 +161,17 @@ These block §13 knife or violate §14 "implement end-to-end or delete." Every i
 
 ---
 
-### 2.4 Engine credential allowlist is fail-open — §4.5 + §12.5
+### 2.4 Engine credential allowlist was fail-open — RESOLVED (§4.5 + §12.5)
 
-**Location:** `crates/engine/src/engine.rs::EngineCredentialAccessor` (around line 1312).
+**Status:** **RESOLVED** — landed via commit `7b811372 fix(engine): credential access denies by default without declaration`. `EngineCredentialAccessor` now denies every request when the allowlist is empty; per-action allowlists are populated via `WorkflowEngine::with_action_credentials` and merge on repeated declarations. TDD coverage: `credential_accessor::tests::{get_denies_every_key_when_allowlist_is_empty, has_returns_false_for_empty_allowlist, denied_request_never_invokes_resolver}` plus five engine-level integration tests (`credential_access_denied_without_declaration`, `credential_access_allowed_with_declaration`, `credential_access_denied_for_mismatched_key`, `credential_declaration_is_per_action_key`, `action_credentials_merge_across_builder_calls`).
 
-**Current behavior:** empty allowlist = "allow all." Docs say enforcement will come when per-node declarations are wired from action dependency metadata — **unimplemented today**.
+**Location (historical):** `crates/engine/src/engine.rs::EngineCredentialAccessor` (around line 1312).
+
+**Prior behavior:** empty allowlist = "allow all." Docs said enforcement would come when per-node declarations are wired from action dependency metadata — unimplemented at audit time.
 
 **Canon:** §4.5 "operational honesty — no false capabilities" + §12.5 "secrets and auth."
 
-**Fix:** wire per-node allowlist from `ActionMetadata` / `ActionDependencies` (already declared in `nebula-action`). Deny by default; explicit allow via declaration. Add test: action without credential declaration fails to acquire; action with declaration succeeds.
+**Fix (landed):** `EngineCredentialAccessor::is_allowed` now checks membership unconditionally — no "empty means all" escape hatch. Per-action allowlists are populated via `WorkflowEngine::with_action_credentials(ActionKey, [credential_ids])`; nodes whose action was never declared to the engine fall through to the deny baseline.
 
 **Resource access scoping — decision Q4 (resolved):** engine does **not** grow a resource allowlist. Resource scoping lives at the **topology** layer (e.g. pool scope, daemon scope) per user direction. The current engine-side `resource_accessor.rs` stays "allow all" intentionally; document this in its module docs so it's not read as a false-capability stub. Remove any dead allowlist-shaped code that implies enforcement.
 
