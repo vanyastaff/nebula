@@ -1,15 +1,17 @@
 ---
-id: 0008
+id: 0015
 title: execution-lease-lifecycle
-status: proposed
-date: 2026-04-18
+status: accepted
+date: 2026-04-19
 supersedes: []
 superseded_by: []
 tags: [engine, execution, storage, concurrency, multi-runner]
 related: [crates/engine/src/engine.rs, crates/storage/src/execution_repo.rs, docs/PRODUCT_CANON.md]
+linear:
+  - NEB-325
 ---
 
-# 0008. Execution lease lifecycle
+# 0015. Execution lease lifecycle
 
 ## Context
 

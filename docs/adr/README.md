@@ -16,26 +16,20 @@ changes land as a new ADR that `supersedes` it.
 | [0006](./0006-sandbox-phase1-broker.md) | Sandbox Phase 1 broker — duplex JSON-RPC over UDS / Named Pipe | proposed | 2026-04-17 |
 | [0007](./0007-prefixed-ulid-identifiers.md) | Prefixed ULID identifiers (Stripe-style) | accepted | 2026-04-17 |
 | [0008](./0008-execution-control-queue-consumer.md) | Execution control-queue consumer | accepted | 2026-04-18 |
-| 0008 ⚠️ [lease-lifecycle](./0008-execution-lease-lifecycle.md) | Execution lease lifecycle | proposed | 2026-04-18 |
 | [0009](./0009-resume-persistence-schema.md) | Resume persistence schema (persist full `ActionResult` per node) | accepted | 2026-04-18 |
 | [0010](./0010-rust-2024-edition.md) | Rust 2024 edition + MSRV 1.94 | accepted | 2026-04-19 |
 | [0011](./0011-serde-json-value-interchange.md) | `serde_json::Value` as the workflow data interchange type | accepted | 2026-04-19 |
 | [0012](./0012-checkpoint-recovery.md) | Checkpoint recovery model (policy-driven, best-effort writes, idempotency over exactly-once) | accepted | 2026-04-19 |
 | [0013](./0013-compile-time-modes.md) | Compile-time deployment modes (`mode-desktop` / `mode-self-hosted` / `mode-cloud` + `build.rs` gate) | accepted | 2026-04-19 |
 | [0014](./0014-dynosaur-macro.md) | `dynosaur` for `dyn`-compatible async traits (replaces `#[async_trait]`) | accepted | 2026-04-19 |
-
-> ⚠️ **Number collision on 0008.** Two files share `id: 0008`:
-> `0008-execution-control-queue-consumer` (accepted) and
-> `0008-execution-lease-lifecycle` (proposed). The lease-lifecycle ADR must
-> be renumbered when it moves to `accepted` — tracked separately, out of
-> scope for this index.
+| [0015](./0015-execution-lease-lifecycle.md) | Execution lease lifecycle (renumbered from 0008; promoted on #325 implementation) | accepted | 2026-04-19 |
 
 ## Writing a new ADR
 
 1. Copy the frontmatter block from any existing ADR (keep the keys: `id`,
    `title`, `status`, `date`, `supersedes`, `superseded_by`, `tags`,
    `related`, optional `linear`).
-2. Pick the next free number (currently **0015**). Do not reuse.
+2. Pick the next free number (currently **0016**). Do not reuse.
 3. File name: `NNNN-kebab-case-title.md` matching the `title:` field.
 4. Start `status: proposed`. Move to `accepted` only after review and merge.
 5. **Do not substantively edit an accepted ADR.** Open a new one with
