@@ -7816,12 +7816,28 @@ mod tests {
              (if this fails, the loser's Drop clobbered the winner's token)"
         );
 
-        // Signalling cancel aborts the winner quickly.
+        // Signalling cancel aborts the winner quickly. Assert the outcome
+        // explicitly — `Err(EngineError::Leased)` or any non-terminal status
+        // would indicate a real regression (e.g. the heartbeat unexpectedly
+        // stole the lease during the 500ms slow handler); silently dropping
+        // the `Result` would mask that.
         let winner_result = tokio::time::timeout(Duration::from_secs(5), winner)
             .await
             .expect("winner returns within 5s of cancel")
-            .expect("join ok");
-        let _ = winner_result; // Ok(Cancelled) or Ok(Failed) — both acceptable terminal outcomes.
+            .expect("join ok")
+            .expect("winner returns Ok(ExecutionResult) after cancel");
+        // Both labels are acceptable: the abort-select arm ends in `Cancelled`;
+        // the node-error arm (handler returned `ActionError::Cancelled`, processed
+        // as node failure) ends in `Failed`. The scheduler race between the two is
+        // pre-existing behaviour covered by `integration::cancellation_via_sibling_failure`.
+        assert!(
+            matches!(
+                winner_result.status,
+                ExecutionStatus::Cancelled | ExecutionStatus::Failed
+            ),
+            "winner must reach a terminal non-success status after cancel; got {:?}",
+            winner_result.status
+        );
     }
 
     /// After the first runner releases the lease on terminal completion,
