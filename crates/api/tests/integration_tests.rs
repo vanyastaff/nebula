@@ -2423,3 +2423,215 @@ async fn test_issue_327_start_execution_persists_canonical_execution_state() {
          (split-brain check — status is canonical and the filter matches)"
     );
 }
+
+// ── Issue #332 regression ────────────────────────────────────────────────────
+//
+// Canon §4.5: a public surface exists iff the engine honors it end-to-end.
+// Canon §12.2: every engine-visible signal must travel the durable control
+// queue — in-process channels are not a durable backbone.
+// Knife §13 step 3: starting an execution must cause node dispatch.
+//
+// Before this fix the API `start_execution` / `execute_workflow` handlers
+// persisted a row and returned 202 without ever notifying the engine — so
+// the execution sat in `Created` forever and no node ran. This is the
+// §4.5 "advertise capability engine doesn't deliver end-to-end" violation.
+//
+// The fix enqueues `ControlCommand::Start` on the shared durable control
+// queue immediately after persisting the row (ADR-0008). The engine-side
+// `ControlConsumer` drains that queue to drive the actual run.
+//
+// These regression tests pin the exact contract that was missing:
+//   a) POST /workflows/:id/executions writes a `Start` row for the new id.
+//   b) POST /workflows/:id/execute writes a `Start` row for the new id.
+//   c) The queue entry shape matches the cancel-side contract (so the
+//      engine consumer can decode both without special-casing either).
+
+#[tokio::test]
+async fn test_issue_332_start_execution_enqueues_control_start() {
+    use axum::{
+        body::Body,
+        http::{Request, StatusCode},
+    };
+    use nebula_storage::repos::ControlCommand;
+    use tower::ServiceExt;
+
+    let (state, control_queue) = create_state_with_queue().await;
+    let api_config = ApiConfig::for_test();
+    let token = create_test_jwt();
+
+    // Seed a workflow via the real POST /workflows path.
+    let create_request = serde_json::json!({
+        "name": "Issue 332 Workflow",
+        "description": "API start must emit a Start command on the control queue",
+        "definition": { "nodes": [], "edges": [] }
+    });
+    let app = app::build_app(state.clone(), &api_config);
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/v1/workflows")
+                .header("content-type", "application/json")
+                .header("authorization", format!("Bearer {token}"))
+                .body(Body::from(serde_json::to_string(&create_request).unwrap()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::CREATED);
+    let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let created_workflow: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    let workflow_id_str = created_workflow["id"].as_str().unwrap().to_string();
+
+    // Pre-condition: queue is empty — no other path has written to it.
+    assert!(
+        control_queue.snapshot().await.is_empty(),
+        "#332: control queue must be empty before start"
+    );
+
+    // POST /api/v1/workflows/:id/executions — the exact path the bug names.
+    let start_request = serde_json::json!({ "input": { "k": "v" } });
+    let app = app::build_app(state, &api_config);
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!("/api/v1/workflows/{workflow_id_str}/executions"))
+                .header("content-type", "application/json")
+                .header("authorization", format!("Bearer {token}"))
+                .body(Body::from(serde_json::to_string(&start_request).unwrap()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        response.status(),
+        StatusCode::ACCEPTED,
+        "#332: POST must return 202"
+    );
+    let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let execution_response: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    let execution_id_str = execution_response["id"].as_str().unwrap().to_string();
+
+    // Assert: exactly one Start entry exists on the queue, targeting the
+    // execution id the API just returned. This is the engine-visible signal
+    // canon §12.2 requires — without it the engine never dispatches and
+    // the execution stays `Created` forever (the bug).
+    let queued = control_queue.snapshot().await;
+    assert_eq!(
+        queued.len(),
+        1,
+        "#332: exactly one control queue entry must exist after start_execution, got {queued:?}"
+    );
+    let entry = &queued[0];
+    assert_eq!(
+        entry.command,
+        ControlCommand::Start,
+        "#332: queued command must be Start, got {:?}",
+        entry.command
+    );
+    assert_eq!(
+        entry.status, "Pending",
+        "#332: entry must be in Pending state until the engine consumer processes it"
+    );
+    let queued_eid = String::from_utf8(entry.execution_id.clone())
+        .expect("execution_id bytes must be valid UTF-8");
+    assert_eq!(
+        queued_eid, execution_id_str,
+        "#332: queued entry must reference the newly-created execution id"
+    );
+}
+
+#[tokio::test]
+async fn test_issue_332_execute_workflow_enqueues_control_start() {
+    use axum::{
+        body::Body,
+        http::{Request, StatusCode},
+    };
+    use nebula_storage::repos::ControlCommand;
+    use tower::ServiceExt;
+
+    let (state, control_queue) = create_state_with_queue().await;
+    let api_config = ApiConfig::for_test();
+    let token = create_test_jwt();
+
+    // Seed a workflow so the handler can locate it.
+    let create_request = serde_json::json!({
+        "name": "Issue 332 Execute Workflow",
+        "description": "POST /workflows/:id/execute must also emit a Start command",
+        "definition": { "nodes": [], "edges": [] }
+    });
+    let app = app::build_app(state.clone(), &api_config);
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/v1/workflows")
+                .header("content-type", "application/json")
+                .header("authorization", format!("Bearer {token}"))
+                .body(Body::from(serde_json::to_string(&create_request).unwrap()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::CREATED);
+    let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let created_workflow: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    let workflow_id_str = created_workflow["id"].as_str().unwrap().to_string();
+
+    assert!(
+        control_queue.snapshot().await.is_empty(),
+        "#332: control queue must be empty before execute"
+    );
+
+    // POST /api/v1/workflows/:id/execute — the second audit-cited failure site.
+    let execute_request = serde_json::json!({ "input": { "k": "v" } });
+    let app = app::build_app(state, &api_config);
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!("/api/v1/workflows/{workflow_id_str}/execute"))
+                .header("content-type", "application/json")
+                .header("authorization", format!("Bearer {token}"))
+                .body(Body::from(serde_json::to_string(&execute_request).unwrap()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        response.status(),
+        StatusCode::ACCEPTED,
+        "#332: /execute must return 202"
+    );
+    let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let execution_response: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    let execution_id_str = execution_response["id"].as_str().unwrap().to_string();
+
+    let queued = control_queue.snapshot().await;
+    assert_eq!(
+        queued.len(),
+        1,
+        "#332: exactly one control queue entry must exist after execute_workflow"
+    );
+    let entry = &queued[0];
+    assert_eq!(
+        entry.command,
+        ControlCommand::Start,
+        "#332: queued command from /execute must also be Start"
+    );
+    let queued_eid = String::from_utf8(entry.execution_id.clone())
+        .expect("execution_id bytes must be valid UTF-8");
+    assert_eq!(
+        queued_eid, execution_id_str,
+        "#332: queued entry must reference the newly-created execution id"
+    );
+}

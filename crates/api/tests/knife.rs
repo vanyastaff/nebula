@@ -463,10 +463,21 @@ async fn knife_scenario_end_to_end() {
     // We assert both the durable row and the queue entry in a single test body,
     // proving the §12.2 same-logical-operation guarantee.
 
-    // Pre-condition: queue is empty before cancel.
-    assert!(
-        control_queue.snapshot().await.is_empty(),
-        "step 5 pre-condition: control queue must be empty before cancel"
+    // Pre-condition: the queue already holds exactly one `Start` entry from
+    // step 3 (issue #332 fix — start must dispatch via the durable control
+    // queue). Step 5 must append a `Cancel` for the SAME execution id so the
+    // engine consumer sees both signals in order.
+    let pre_cancel_entries = control_queue.snapshot().await;
+    assert_eq!(
+        pre_cancel_entries.len(),
+        1,
+        "step 5 pre-condition (#332): queue must hold the Start entry written by step 3, got {:?}",
+        pre_cancel_entries
+    );
+    assert_eq!(
+        pre_cancel_entries[0].command,
+        ControlCommand::Start,
+        "step 5 pre-condition (#332): step-3 entry must be Start"
     );
 
     let app = app::build_app(state.clone(), &api_config);
@@ -505,32 +516,32 @@ async fn knife_scenario_end_to_end() {
         cancelled.get("finished_at")
     );
 
-    // Observation 2: control queue must have exactly one Cancel entry.
-    // Both observations are in this single test body — §12.2 same-logical-operation.
+    // Observation 2: control queue must now hold TWO entries — the `Start`
+    // from step 3 and the fresh `Cancel` from this step. Both observations
+    // are in this single test body — §12.2 same-logical-operation.
     let queued = control_queue.snapshot().await;
     assert_eq!(
         queued.len(),
-        1,
-        "step 5: exactly one control queue entry must exist after cancel"
+        2,
+        "step 5: control queue must hold Start (step 3) + Cancel (step 5), got {queued:?}"
     );
 
-    let entry = &queued[0];
+    // Isolate the Cancel entry; the Start entry is already asserted above.
+    let cancel_entry = queued
+        .iter()
+        .find(|e| e.command == ControlCommand::Cancel)
+        .expect("step 5: Cancel entry must be present");
     assert_eq!(
-        entry.command,
-        ControlCommand::Cancel,
-        "step 5: queued command must be Cancel"
-    );
-    assert_eq!(
-        entry.status, "Pending",
-        "step 5: queue entry must be in Pending state (not yet consumed by engine)"
+        cancel_entry.status, "Pending",
+        "step 5: Cancel entry must be in Pending state (not yet consumed by engine)"
     );
 
     // The entry's execution_id bytes must decode back to the cancelled execution.
     let queued_eid =
-        String::from_utf8(entry.execution_id.clone()).expect("execution_id must be UTF-8");
+        String::from_utf8(cancel_entry.execution_id.clone()).expect("execution_id must be UTF-8");
     assert_eq!(
         queued_eid, execution_id,
-        "step 5: queue entry must reference the cancelled execution"
+        "step 5: Cancel entry must reference the cancelled execution"
     );
 
     // Verify DB state persisted via a GET (not just the cancel response).

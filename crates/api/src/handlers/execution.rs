@@ -263,6 +263,19 @@ pub async fn start_execution(
         .await
         .map_err(|e| ApiError::Internal(format!("Failed to create execution: {}", e)))?;
 
+    // Enqueue the Start signal onto the durable control queue (canon §12.2,
+    // §13 step 3, #332). Before this PR the API persisted the row but never
+    // dispatched it — the §4.5 violation ("advertise capability engine
+    // doesn't deliver end-to-end"). The engine-side `ControlConsumer`
+    // (ADR-0008) drains this queue and drives the actual workflow run.
+    //
+    // Order matches the `cancel_execution` contract: create the row first,
+    // then enqueue. If enqueue fails after a successful create, the row
+    // exists but the engine will not see the Start signal — the handler
+    // fails loudly so the caller can retry. The retry is idempotent
+    // at the consumer layer via CAS (ADR-0008 §5).
+    enqueue_start(&state, execution_id).await?;
+
     // Build response. `started_at` is omitted on a Created execution —
     // canon §13 step 3 forbids synthetic timestamps for fields the engine
     // has not actually populated yet. `ExecutionState::started_at` is
@@ -289,6 +302,52 @@ pub async fn start_execution(
     };
 
     Ok((StatusCode::ACCEPTED, Json(response)))
+}
+
+/// Enqueue a `ControlCommand::Start` onto the durable control queue (canon
+/// §12.2, §13 step 3, #332).
+///
+/// Shared by `start_execution` (this module) and `execute_workflow`
+/// (`handlers::workflow`) so the dispatch contract lives in exactly one
+/// place. Any future start-path entry point MUST route through this helper
+/// to preserve the §4.5 invariant that "persist a row" and "dispatch to the
+/// engine" travel together.
+///
+/// Returns `ApiError::ServiceUnavailable` when the control-queue backend
+/// is down (mirrors the 503 contract in `cancel_execution` — canon §13
+/// step 6) and `ApiError::Internal` for other write failures so the caller
+/// can retry. The engine-side consumer guards against double-start via CAS
+/// (ADR-0008 §5), so a retry after a partial failure is safe.
+pub(crate) async fn enqueue_start(state: &AppState, execution_id: ExecutionId) -> ApiResult<()> {
+    let entry = ControlQueueEntry {
+        id: Uuid::new_v4().as_bytes().to_vec(),
+        execution_id: execution_id.to_string().into_bytes(),
+        command: ControlCommand::Start,
+        issued_by: None,
+        issued_at: chrono::Utc::now(),
+        status: "Pending".to_string(),
+        processed_by: None,
+        processed_at: None,
+        error_message: None,
+    };
+    state.control_queue_repo.enqueue(&entry).await.map_err(|e| {
+        use nebula_storage::StorageError;
+        match &e {
+            StorageError::Internal(_) | StorageError::Connection(_) => {
+                ApiError::ServiceUnavailable(format!(
+                    "Execution {} persisted but control-queue backend is \
+                     unavailable — engine will not see Start signal \
+                     (canon §13 step 6, §12.2 orphan): {}",
+                    execution_id, e
+                ))
+            },
+            _ => ApiError::Internal(format!(
+                "Execution {} persisted but failed to enqueue Start signal \
+                 (canon §12.2 orphan — caller should retry): {}",
+                execution_id, e
+            )),
+        }
+    })
 }
 
 /// Cancel execution
