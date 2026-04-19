@@ -32,6 +32,7 @@ Spec-16 compliant schema for Nebula's PostgreSQL backend.
 | 0014 | `quotas` | Quotas | `org_quotas`, `org_quota_usage`, `workspace_quota_usage`, `workspace_dispatch_state` |
 | 0015 | `audit` | Audit | `slug_history`, `audit_log` |
 | 0020 | `add_resume_result_persistence` | Execution | `execution_nodes` — adds `result_schema_version`, `result_kind`, `result` (ADR-0009) |
+| 0021 | `add_control_queue_reclaim_count` | Execution | `execution_control_queue` — adds `reclaim_count` (ADR-0017 / ADR-0008 B1) |
 
 ## Schema parity
 
