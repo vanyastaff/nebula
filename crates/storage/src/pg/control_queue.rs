@@ -672,4 +672,62 @@ mod tests {
         assert_eq!(outcome.reclaimed, 0);
         assert_eq!(outcome.exhausted, 0);
     }
+
+    #[tokio::test]
+    async fn reclaim_stuck_exhausts_after_max_count() {
+        let Some(pool) = pool().await else { return };
+        let _guard = TEST_LOCK.lock().await;
+        clean_control_queue(&pool).await;
+        let repo = PgControlQueueRepo::new(pool.clone());
+        let exec_id = seed_execution_parent_chain(&pool).await;
+
+        let entry = pending_entry(&exec_id);
+        let row_id = entry.id.clone();
+        repo.enqueue(&entry).await.unwrap();
+        let stale_at = Utc::now() - chrono::Duration::seconds(600);
+        sqlx::query(
+            "UPDATE execution_control_queue \
+             SET status = 'Processing', processed_at = $2, \
+                 processed_by = $3, reclaim_count = 3 \
+             WHERE id = $1",
+        )
+        .bind(&row_id)
+        .bind(stale_at)
+        .bind(b"dead-runner".as_slice())
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        let outcome = repo
+            .reclaim_stuck(std::time::Duration::from_secs(150), 3)
+            .await
+            .unwrap();
+        assert_eq!(outcome.reclaimed, 0, "past budget — not requeued");
+        assert_eq!(outcome.exhausted, 1, "moved to Failed");
+
+        type Row = (String, Option<String>);
+        let row: Row = sqlx::query_as(
+            "SELECT status, error_message FROM execution_control_queue \
+             WHERE id = $1",
+        )
+        .bind(&row_id)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(row.0, "Failed");
+        let msg = row.1.as_deref().expect("error_message set");
+        // Byte-for-byte parity with InMemoryControlQueueRepo.
+        assert!(
+            msg.starts_with("reclaim exhausted: processor "),
+            "canonical prefix, got: {msg}"
+        );
+        assert!(
+            msg.contains("presumed dead after 3 reclaims"),
+            "includes reclaim count, got: {msg}"
+        );
+        assert!(
+            msg.contains("646561642d72756e6e6572"),
+            "processor_id encoded as lowercase hex, got: {msg}"
+        );
+    }
 }
