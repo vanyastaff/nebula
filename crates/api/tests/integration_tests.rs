@@ -851,7 +851,7 @@ async fn test_execute_workflow() {
         execution_response["workflow_id"].as_str().unwrap(),
         workflow_id
     );
-    assert_eq!(execution_response["status"].as_str().unwrap(), "pending");
+    assert_eq!(execution_response["status"].as_str().unwrap(), "created");
 }
 
 #[tokio::test]
@@ -1167,7 +1167,7 @@ async fn test_execution_start() {
         .unwrap();
     let execution_response: serde_json::Value = serde_json::from_slice(&body).unwrap();
     assert!(execution_response["id"].is_string());
-    assert_eq!(execution_response["status"].as_str().unwrap(), "pending");
+    assert_eq!(execution_response["status"].as_str().unwrap(), "created");
 }
 
 #[tokio::test]
@@ -2246,5 +2246,180 @@ async fn cancel_timed_out_execution_rejected() {
     assert!(
         control_queue.snapshot().await.is_empty(),
         "control queue must be empty after rejected cancel of timed_out execution"
+    );
+}
+
+// ── Issue #327 regression ─────────────────────────────────────────────────────
+//
+// Canon §4.5: a public surface exists iff the engine honors it end-to-end.
+// The API's `start_execution` previously persisted a hand-rolled JSON with
+// `status: "pending"` — a string that is not in `ExecutionStatus` and that
+// neither `list_running` (storage filter) nor `ExecutionState::deserialize`
+// (engine resume path) would accept. Starting an execution therefore produced
+// a row the engine could never read back: split-brain schema.
+//
+// This test pins the fix by asserting the exact contract that failed:
+//
+//   1. `POST /workflows/:id/executions` → 202.
+//   2. The persisted `execution_repo.get_state(id)` row round-trips through
+//      `serde_json::from_value::<ExecutionState>` without error — the same operation the engine's
+//      `resume_execution` performs.
+//   3. The deserialized `ExecutionStatus` is the canonical `Created`, not a synthetic "pending"
+//      variant.
+//   4. The `list_running` storage query — which filters on canonical status names — actually
+//      returns the newly-created execution ID (it did not before, because `"pending"` is not in the
+//      filter).
+#[tokio::test]
+async fn test_issue_327_start_execution_persists_canonical_execution_state() {
+    use axum::{
+        body::Body,
+        http::{Request, StatusCode},
+    };
+    use nebula_core::ExecutionId;
+    use nebula_execution::{ExecutionState, ExecutionStatus};
+    use tower::ServiceExt;
+
+    let (state, _control_queue) = create_state_with_queue().await;
+    let api_config = ApiConfig::for_test();
+    let token = create_test_jwt();
+
+    // Seed a workflow via POST /workflows — the same path a real client uses.
+    let create_request = serde_json::json!({
+        "name": "Issue 327 Workflow",
+        "description": "Contract test: API-created execution must round-trip through ExecutionState",
+        "definition": { "nodes": [], "edges": [] }
+    });
+    let app = app::build_app(state.clone(), &api_config);
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/v1/workflows")
+                .header("content-type", "application/json")
+                .header("authorization", format!("Bearer {token}"))
+                .body(Body::from(serde_json::to_string(&create_request).unwrap()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        response.status(),
+        StatusCode::CREATED,
+        "#327: seed workflow must return 201"
+    );
+    let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let created_workflow: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    let workflow_id_str = created_workflow["id"].as_str().unwrap().to_string();
+    let workflow_id = nebula_core::WorkflowId::parse(&workflow_id_str).unwrap();
+
+    // POST /api/v1/workflows/:id/executions with a real input.
+    let input = serde_json::json!({ "knife_key": "knife_value" });
+    let app = app::build_app(state.clone(), &api_config);
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!("/api/v1/workflows/{workflow_id_str}/executions"))
+                .header("content-type", "application/json")
+                .header("authorization", format!("Bearer {token}"))
+                .body(Body::from(
+                    serde_json::to_string(&serde_json::json!({ "input": input })).unwrap(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(
+        response.status(),
+        StatusCode::ACCEPTED,
+        "#327: POST must return 202"
+    );
+
+    let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let execution_response: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    let execution_id_str = execution_response["id"]
+        .as_str()
+        .expect("id field")
+        .to_string();
+    let execution_id = ExecutionId::parse(&execution_id_str).expect("parse id");
+
+    // Response status must be canonical.
+    assert_eq!(
+        execution_response["status"].as_str(),
+        Some("created"),
+        "#327: API response status must be canonical 'created', not 'pending'"
+    );
+
+    // Load the persisted row directly through the repo — same path the engine
+    // uses in `resume_execution`.
+    let (_version, state_json) = state
+        .execution_repo
+        .get_state(execution_id)
+        .await
+        .expect("get_state must not error")
+        .expect("row must exist after start_execution");
+
+    // The exact contract `resume_execution` performs at
+    // `crates/engine/src/engine.rs` lines 778-781: serialize the stored
+    // Value to a string and deserialize back into `ExecutionState`. If this
+    // fails, the engine cannot resume the execution — the exact bug #327.
+    let state_str = serde_json::to_string(&state_json).expect("state must serialize");
+    let exec_state: ExecutionState = serde_json::from_str(&state_str).unwrap_or_else(|e| {
+        panic!(
+            "#327: persisted row must deserialize into canonical ExecutionState \
+             (engine resume_execution contract); got error: {e}; row was: {state_json}"
+        )
+    });
+
+    // Canonical status — not the deprecated "pending".
+    assert_eq!(
+        exec_state.status,
+        ExecutionStatus::Created,
+        "#327: persisted status must be canonical Created, not a drifted variant"
+    );
+    assert_eq!(
+        exec_state.execution_id, execution_id,
+        "#327: persisted execution_id must round-trip"
+    );
+    assert_eq!(
+        exec_state.workflow_id, workflow_id,
+        "#327: persisted workflow_id must round-trip"
+    );
+    // `started_at` is None for a Created execution — the engine has not
+    // transitioned to Running yet.
+    assert!(
+        exec_state.started_at.is_none(),
+        "#327: started_at must be None until the engine transitions to Running \
+         (canon §11.1: authority over lifecycle transitions lives in the engine)"
+    );
+    assert!(
+        exec_state.completed_at.is_none(),
+        "#327: completed_at must be None on a non-terminal execution"
+    );
+    // Workflow input (#311) round-trips.
+    assert_eq!(
+        exec_state.workflow_input,
+        Some(input),
+        "#327 (and #311): workflow_input must be persisted so resume can replay entry nodes"
+    );
+
+    // The list_running storage filter — which only accepts canonical statuses —
+    // must actually see the newly-created execution. Before the fix this list
+    // was empty because "pending" is not in the accepted set
+    // (created|running|paused|cancelling).
+    let running = state
+        .execution_repo
+        .list_running()
+        .await
+        .expect("list_running must not error");
+    assert!(
+        running.contains(&execution_id),
+        "#327: list_running must include the newly-created execution \
+         (split-brain check — status is canonical and the filter matches)"
     );
 }

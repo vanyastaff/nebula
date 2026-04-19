@@ -15,7 +15,7 @@
 //! | 1 | `POST /workflows` round-trips through `GET /workflows/:id` | `knife_scenario_end_to_end` |
 //! | 2a | `POST /workflows/:id/activate` valid → 200 | `knife_scenario_end_to_end` |
 //! | 2b | `POST /workflows/:id/activate` cyclic → 422 RFC 9457 | `knife_scenario_end_to_end` |
-//! | 3 | `POST /workflows/:id/executions` → 202, `status=pending`, `started_at > 0`, `finished_at` absent | `knife_scenario_end_to_end` |
+//! | 3 | `POST /workflows/:id/executions` → 202, `status=created`, `started_at > 0`, `finished_at` absent | `knife_scenario_end_to_end` |
 //! | 4 | `GET /executions/:id` → `finished_at` is null/absent, `status` = latest persisted value | `knife_scenario_end_to_end` |
 //! | 5 | `POST /executions/:id/cancel` → DB row = `cancelled`, control queue has exactly one `Cancel` entry | `knife_scenario_end_to_end` |
 //! | 6 | Enqueue failure → 503 (orchestration absent; canon §13 step 6) | `knife_step6_queue_failure_returns_error` |
@@ -334,7 +334,8 @@ async fn knife_scenario_end_to_end() {
     // `started_at` must be > 0 (real chrono timestamp).
     // `finished_at` must be absent from the JSON (Option::None, skipped by
     // serde).
-    // `status` must be "pending".
+    // `status` must be the canonical `"created"` (the only valid
+    // `ExecutionStatus` for a freshly-enqueued row; #327).
     //
     // Note: `ExecutionResponse` does not expose a `version` field — the repo
     // stores a version but the DTO omits it. The "monotonic version" invariant
@@ -376,8 +377,8 @@ async fn knife_scenario_end_to_end() {
 
     assert_eq!(
         execution_response["status"].as_str(),
-        Some("pending"),
-        "step 3: initial status must be 'pending'"
+        Some("created"),
+        "step 3: initial status must be canonical 'created' (#327)"
     );
 
     let started_at = execution_response["started_at"]
@@ -392,7 +393,7 @@ async fn knife_scenario_end_to_end() {
     assert!(
         execution_response.get("finished_at").is_none()
             || execution_response["finished_at"].is_null(),
-        "step 3: finished_at must be absent (None) on a pending execution, got: {:?}",
+        "step 3: finished_at must be absent (None) on a newly-created execution, got: {:?}",
         execution_response.get("finished_at")
     );
 
@@ -432,8 +433,8 @@ async fn knife_scenario_end_to_end() {
     );
     assert_eq!(
         observed["status"].as_str(),
-        Some("pending"),
-        "step 4: status must reflect the latest persisted value (pending)"
+        Some("created"),
+        "step 4: status must reflect the latest persisted value (canonical 'created')"
     );
 
     // finished_at must be absent (not "0") — canon explicitly forbids synthetic zero.
@@ -446,7 +447,7 @@ async fn knife_scenario_end_to_end() {
         !finished_at_is_zero,
         "step 4: finished_at must NOT be synthetic 0 — must be absent or a real timestamp"
     );
-    // Also verify it is either absent or null — not a number for a pending execution.
+    // Also verify it is either absent or null — not a number for a non-terminal execution.
     let is_absent_or_null = finished_at_value.is_none() || finished_at_value.unwrap().is_null();
     assert!(
         is_absent_or_null,

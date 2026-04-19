@@ -6,6 +6,7 @@ use axum::{
     http::StatusCode,
 };
 use nebula_core::{ExecutionId, WorkflowId};
+use nebula_execution::{ExecutionState, ExecutionStatus};
 use nebula_storage::repos::{ControlCommand, ControlQueueEntry};
 use uuid::Uuid;
 
@@ -175,14 +176,24 @@ pub async fn get_execution(
         .unwrap_or("unknown")
         .to_string();
 
-    let started_at = extract_timestamp(&execution_state, "started_at").unwrap_or(0);
+    // Canonical `ExecutionState` exposes `started_at` (engine run start,
+    // `None` until transitioned to `Running`) and `created_at` (always set
+    // at construction). Fall back to `created_at` so the API response
+    // retains a meaningful timestamp for executions that have not yet been
+    // dispatched (#327).
+    let started_at = extract_timestamp(&execution_state, "started_at")
+        .or_else(|| extract_timestamp(&execution_state, "created_at"))
+        .unwrap_or(0);
     // Canonical engine state uses `completed_at` (see `ExecutionState` in
-    // `crates/execution/src/state.rs`); the legacy API write path uses
-    // `finished_at`. Accept either, prefer canonical.
+    // `crates/execution/src/state.rs`); legacy rows used `finished_at`.
     let finished_at = extract_timestamp(&execution_state, "completed_at")
         .or_else(|| extract_timestamp(&execution_state, "finished_at"));
 
-    let input = execution_state.get("input").cloned();
+    // Canonical field is `workflow_input`; legacy rows used `input`.
+    let input = execution_state
+        .get("workflow_input")
+        .or_else(|| execution_state.get("input"))
+        .cloned();
 
     let output = execution_state.get("output").cloned();
 
@@ -219,16 +230,27 @@ pub async fn start_execution(
     // Generate new execution ID
     let execution_id = ExecutionId::new();
 
-    // Current timestamp via chrono — does not panic on misconfigured clocks.
-    let now = chrono::Utc::now().timestamp();
+    // Build the canonical execution state directly from the typed enum so
+    // that the persisted row matches the schema the engine's
+    // `resume_execution` reads (canon §4.5: public surface must be honored
+    // end-to-end). The legacy hand-rolled JSON with `status: "pending"` was
+    // a false capability — `ExecutionStatus` has no `Pending` variant, and
+    // neither `list_running` (storage filter) nor `ExecutionState::deserialize`
+    // (engine resume path) would accept it (#327).
+    //
+    // `ExecutionState::new` seeds with `ExecutionStatus::Created` — the only
+    // correct initial state per the transition table. The node map is empty
+    // at API-start time: the dispatcher will populate per-node rows once the
+    // workflow is loaded and a plan is built. The workflow input (trigger
+    // payload) is attached so resume can feed entry nodes the same value
+    // (#311).
+    let mut exec_state = ExecutionState::new(execution_id, workflow_id_parsed, &[]);
+    if let Some(input) = payload.input.clone() {
+        exec_state.set_workflow_input(input);
+    }
 
-    // Create initial execution state
-    let execution_state = serde_json::json!({
-        "workflow_id": workflow_id,
-        "status": "pending",
-        "started_at": now,
-        "input": payload.input,
-    });
+    let state_json = serde_json::to_value(&exec_state)
+        .map_err(|e| ApiError::Internal(format!("serialize execution state: {}", e)))?;
 
     // Create execution record. We must call `create` here — the previous
     // implementation called `transition(id, expected_version = 0, ...)`,
@@ -237,16 +259,30 @@ pub async fn start_execution(
     // surfaced an Internal error unconditionally.
     state
         .execution_repo
-        .create(execution_id, workflow_id_parsed, execution_state.clone())
+        .create(execution_id, workflow_id_parsed, state_json)
         .await
         .map_err(|e| ApiError::Internal(format!("Failed to create execution: {}", e)))?;
 
-    // Build response
+    // Build response. `started_at` is omitted on a Created execution —
+    // canon §13 step 3 forbids synthetic timestamps for fields the engine
+    // has not actually populated yet. `ExecutionState::started_at` is
+    // `None` until the engine transitions the status to `Running`, and the
+    // API response must reflect that.
+    //
+    // The legacy response returned `chrono::Utc::now().timestamp()` as a
+    // placeholder, which conflated "row was created" with "engine started
+    // the run" — two different events under canon §11.1. Downstream tools
+    // that graphed `started_at` therefore measured API-enqueue latency, not
+    // engine dispatch latency. The DTO field stays `i64` (wire-compatible),
+    // but we now return `created_at` as the observable timestamp so clients
+    // still get a real time for "when did this execution exist?" — which
+    // is what `started_at` was used for in practice pre-fix.
+    let created_at = exec_state.created_at.timestamp();
     let response = ExecutionResponse {
         id: execution_id.to_string(),
         workflow_id,
-        status: "pending".to_string(),
-        started_at: now,
+        status: exec_state.status.to_string(),
+        started_at: created_at,
         finished_at: None,
         input: payload.input,
         output: None,
@@ -294,14 +330,32 @@ pub async fn cancel_execution(
         )));
     }
 
-    // Update state to cancelled
+    // Update state to cancelled. Write the status as the canonical
+    // snake-case string that `ExecutionStatus::Cancelled` serializes to,
+    // so that engine-side reads via `ExecutionStatus::deserialize` round-
+    // trip cleanly (#327, canon §4.5). Persist `completed_at` (not the
+    // legacy `finished_at`) because that is the field `ExecutionState`
+    // actually declares — see `crates/execution/src/state.rs`.
     if let Some(state_obj) = execution_state.as_object_mut() {
-        state_obj.insert("status".to_string(), serde_json::json!("cancelled"));
+        state_obj.insert(
+            "status".to_string(),
+            serde_json::json!(ExecutionStatus::Cancelled.to_string()),
+        );
 
-        // Set finished_at timestamp if not already set
-        if !state_obj.contains_key("finished_at") {
-            let now = chrono::Utc::now().timestamp();
-            state_obj.insert("finished_at".to_string(), serde_json::json!(now));
+        // Set completed_at timestamp. The canonical `ExecutionState`
+        // serializes `Option::None` as `null`, not as an absent field —
+        // so `contains_key` alone is not enough; we must also overwrite
+        // explicit nulls. RFC 3339 string matches what `DateTime<Utc>`
+        // serializes to via serde.
+        let needs_write = state_obj
+            .get("completed_at")
+            .is_none_or(serde_json::Value::is_null);
+        if needs_write {
+            let now = chrono::Utc::now();
+            state_obj.insert(
+                "completed_at".to_string(),
+                serde_json::json!(now.to_rfc3339()),
+            );
         }
     }
 
@@ -388,13 +442,23 @@ pub async fn cancel_execution(
         .unwrap_or("cancelled")
         .to_string();
 
-    let started_at = extract_timestamp(&execution_state, "started_at").unwrap_or(0);
-    // This handler just wrote `finished_at` above; prefer that, then fall
-    // back to canonical `completed_at` if the engine had already set it.
-    let finished_at = extract_timestamp(&execution_state, "finished_at")
-        .or_else(|| extract_timestamp(&execution_state, "completed_at"));
+    // Canonical `ExecutionState` exposes `started_at` (engine run start,
+    // `None` until the engine transitions to `Running`) and `created_at`
+    // (always set at construction). Fall back to `created_at` so the API
+    // response retains a meaningful timestamp for executions that have
+    // not yet been dispatched (#327).
+    let started_at = extract_timestamp(&execution_state, "started_at")
+        .or_else(|| extract_timestamp(&execution_state, "created_at"))
+        .unwrap_or(0);
+    // Canonical field is `completed_at`; legacy rows used `finished_at`.
+    let finished_at = extract_timestamp(&execution_state, "completed_at")
+        .or_else(|| extract_timestamp(&execution_state, "finished_at"));
 
-    let input = execution_state.get("input").cloned();
+    // Canonical field is `workflow_input`; legacy rows used `input`.
+    let input = execution_state
+        .get("workflow_input")
+        .or_else(|| execution_state.get("input"))
+        .cloned();
 
     let output = execution_state.get("output").cloned();
 

@@ -7,6 +7,7 @@ use axum::{
 };
 use chrono::Utc;
 use nebula_core::{ExecutionId, WorkflowId};
+use nebula_execution::ExecutionState;
 use serde::Deserialize;
 use serde_json::Value;
 
@@ -520,34 +521,39 @@ pub async fn execute_workflow(
     // Generate new execution ID
     let execution_id = ExecutionId::new();
 
-    // Current timestamp — `chrono::Utc::now()` is monotonic through time
-    // shifts and does not panic on clocks set before 1970, unlike
-    // `SystemTime::duration_since(UNIX_EPOCH).unwrap()`.
-    let now = Utc::now().timestamp();
+    // Build the canonical execution state — same rationale as
+    // `start_execution` in `handlers/execution.rs` (#327, canon §4.5): the
+    // persisted row must match `ExecutionState` so the engine's
+    // `resume_execution` can deserialize it, and the status must be the
+    // canonical `Created`, not the non-existent `"pending"` that the
+    // storage `list_running` filter would also drop.
+    let mut exec_state = ExecutionState::new(execution_id, workflow_id, &[]);
+    if let Some(input) = payload.input.clone() {
+        exec_state.set_workflow_input(input);
+    }
 
-    // Create initial execution state
-    let execution_state = serde_json::json!({
-        "workflow_id": id,
-        "status": "pending",
-        "started_at": now,
-        "input": payload.input,
-    });
+    let state_json = serde_json::to_value(&exec_state)
+        .map_err(|e| ApiError::Internal(format!("serialize execution state: {}", e)))?;
 
     // Create execution record via `create` — `transition` is a CAS UPDATE
     // and was hitting zero rows for every brand-new ID, so every call to
     // this handler previously returned a 500.
     state
         .execution_repo
-        .create(execution_id, workflow_id, execution_state.clone())
+        .create(execution_id, workflow_id, state_json)
         .await
         .map_err(|e| ApiError::Internal(format!("Failed to create execution: {}", e)))?;
 
-    // Build response
+    // Report `created_at` as the observable timestamp — the engine has not
+    // transitioned `started_at` yet (that happens at dispatch time). See
+    // the parallel comment in `handlers::execution::start_execution` for
+    // the full rationale.
+    let created_at = exec_state.created_at.timestamp();
     let response = ExecutionResponse {
         id: execution_id.to_string(),
         workflow_id: id,
-        status: "pending".to_string(),
-        started_at: now,
+        status: exec_state.status.to_string(),
+        started_at: created_at,
         finished_at: None,
         input: payload.input,
         output: None,

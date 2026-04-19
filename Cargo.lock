@@ -3767,6 +3767,7 @@ dependencies = [
  "nebula-api",
  "nebula-core",
  "nebula-error",
+ "nebula-execution",
  "nebula-metrics",
  "nebula-plugin",
  "nebula-resilience",
