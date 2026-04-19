@@ -1404,7 +1404,7 @@ impl WorkflowEngine {
                         cancel_token.cancel();
                         return Some((node_key.clone(), e.to_string()));
                     }
-                    self.record_idempotency(execution_id, node_key.clone())
+                    self.record_idempotency(exec_state, execution_id, node_key.clone())
                         .await;
 
                     // Persist the full ActionResult alongside the raw
@@ -1748,9 +1748,9 @@ impl WorkflowEngine {
             return false;
         };
 
-        let idem_key = format!("{execution_id}:{node_key}:1");
+        let idem_key = exec_state.idempotency_key_for_node(node_key.clone());
 
-        let already_done = match repo.check_idempotency(&idem_key).await {
+        let already_done = match repo.check_idempotency(idem_key.as_str()).await {
             Ok(v) => v,
             Err(e) => {
                 tracing::warn!(
@@ -1910,13 +1910,18 @@ impl WorkflowEngine {
     ///
     /// Silently logs and ignores errors — idempotency key recording failures
     /// must not abort an otherwise healthy execution.
-    async fn record_idempotency(&self, execution_id: ExecutionId, node_key: NodeKey) {
+    async fn record_idempotency(
+        &self,
+        exec_state: &ExecutionState,
+        execution_id: ExecutionId,
+        node_key: NodeKey,
+    ) {
         let Some(repo) = &self.execution_repo else {
             return;
         };
-        let idem_key = format!("{execution_id}:{node_key}:1");
+        let idem_key = exec_state.idempotency_key_for_node(node_key.clone());
         if let Err(e) = repo
-            .mark_idempotent(&idem_key, execution_id, node_key.clone())
+            .mark_idempotent(idem_key.as_str(), execution_id, node_key.clone())
             .await
         {
             tracing::warn!(
@@ -4867,14 +4872,29 @@ mod tests {
             "handler should be called exactly once on first run"
         );
 
-        // Manually inject the same execution_id's idempotency key so that if
-        // we simulate re-running the same execution, the node is skipped.
-        // (The engine generates the key as "{execution_id}:{node_key}:1".)
+        // Reconstruct the idempotency key via the same seam the engine
+        // uses (issue #266) — `ExecutionState::idempotency_key_for_node`
+        // — so the test is not coupled to a literal `:1` suffix and
+        // still asserts the key was durably recorded by the first run.
+        //
+        // Deserializing via a JSON string (rather than `from_value`)
+        // avoids `#[serde(borrow)]` issues on domain keys — the same
+        // workaround `resume_execution` applies when loading state.
         let execution_id = result1.execution_id;
-        let idem_key = format!("{execution_id}:{n}:1");
+        let (_, state_json) = exec_repo
+            .get_state(execution_id)
+            .await
+            .unwrap()
+            .expect("execution state must be persisted after first run");
+        let state_str = serde_json::to_string(&state_json).unwrap();
+        let exec_state: nebula_execution::state::ExecutionState =
+            serde_json::from_str(&state_str).expect("deserialize persisted execution state");
+        let idem_key = exec_state.idempotency_key_for_node(n.clone());
 
-        // Verify the key was recorded by the first run.
-        let already_marked = exec_repo.check_idempotency(&idem_key).await.unwrap();
+        let already_marked = exec_repo
+            .check_idempotency(idem_key.as_str())
+            .await
+            .unwrap();
         assert!(
             already_marked,
             "idempotency key should be recorded after first execution"
