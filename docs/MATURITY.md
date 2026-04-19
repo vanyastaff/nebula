@@ -22,7 +22,7 @@ Legend:
 | nebula-api           | frontier | stable  | stable | partial (knife steps 3+5: Start/Cancel producers stable, #332/#330; engine-side Start/Resume/Restart dispatch wired via EngineControlDispatch — ADR-0008 A2; Cancel/Terminate dispatch wired via engine cancel registry — ADR-0008 A3 / ADR-0016) | partial |
 | nebula-core          | frontier | stable  | stable | stable | n/a |
 | nebula-credential    | frontier | stable  | stable | partial (rotation in integration tests) | n/a |
-| nebula-engine        | partial  | stable  | stable | partial (ControlConsumer skeleton lands §12.2; all five control commands dispatched via EngineControlDispatch — ADR-0008 A2 (Start/Resume/Restart) + A3 (Cancel/Terminate) + ADR-0016 cancel registry; ADR-0008 B1 reclaim path for stuck Processing rows still planned) | n/a |
+| nebula-engine        | partial  | stable  | stable | partial (ControlConsumer skeleton lands §12.2; all five control commands dispatched via EngineControlDispatch — ADR-0008 A2 (Start/Resume/Restart) + A3 (Cancel/Terminate) + ADR-0016 cancel registry; ADR-0008 B1 reclaim sweep implemented via ControlQueueRepo::reclaim_stuck + ADR-0017) | n/a |
 | nebula-error         | stable   | stable  | stable | n/a | n/a |
 | nebula-eventbus      | stable   | stable  | stable | n/a | n/a |
 | nebula-execution     | stable   | stable  | stable | stable | partial |

@@ -18,6 +18,11 @@
 //!   #330). The `Cancel` command now reaches the live frontier loop via
 //!   [`crate::WorkflowEngine::cancel_execution`]; `Terminate` shares the cooperative-cancel body
 //!   until a distinct forced-shutdown path is wired (see ADR-0016).
+//! - reclaim sweep for stuck `Processing` rows after a crashed runner — **implemented** (B1,
+//!   ADR-0017). A periodic `tokio::time::interval` arm calls `ControlQueueRepo::reclaim_stuck`
+//!   every [`DEFAULT_RECLAIM_INTERVAL`]; rows whose `processed_at` is older than
+//!   [`DEFAULT_RECLAIM_AFTER`] are moved back to `Pending` (retry budget
+//!   [`DEFAULT_MAX_RECLAIM_COUNT`]) or to `Failed` once the budget is exhausted.
 //!
 //! [`EngineControlDispatch`]: crate::control_dispatch::EngineControlDispatch
 
@@ -46,6 +51,27 @@ pub const DEFAULT_POLL_INTERVAL: Duration = Duration::from_millis(100);
 /// Maximum backoff between `claim_pending` retries after repeated storage
 /// errors. Prevents a 10Hz error-log flood when the backend is down.
 pub const MAX_CLAIM_ERROR_BACKOFF: Duration = Duration::from_secs(30);
+
+/// Default staleness window before a `Processing` row is considered
+/// reclaimable.
+///
+/// Set to 5× the ADR-0015 lease TTL (30s) so a runner that has missed 15
+/// heartbeats is presumed dead. Intentionally wider than any plausible GC
+/// pause. See ADR-0017.
+pub const DEFAULT_RECLAIM_AFTER: Duration = Duration::from_secs(150);
+
+/// Default cadence of the reclaim sweep.
+///
+/// Matches the lease TTL shape — a runner that died less than 30s ago still
+/// has a valid lease from another observer's perspective, so sweeping more
+/// often buys nothing. See ADR-0017.
+pub const DEFAULT_RECLAIM_INTERVAL: Duration = Duration::from_secs(30);
+
+/// Default retry budget before a reclaim-eligible row moves to `Failed`.
+///
+/// Three crashed runners in a row on the same command makes the command
+/// itself the suspect, not the runners. See ADR-0017.
+pub const DEFAULT_MAX_RECLAIM_COUNT: u32 = 3;
 
 /// Errors returned from [`ControlDispatch`] methods.
 ///
@@ -175,6 +201,9 @@ pub struct ControlConsumer {
     processor_id: Vec<u8>,
     batch_size: u32,
     poll_interval: Duration,
+    reclaim_after: Duration,
+    reclaim_interval: Duration,
+    max_reclaim_count: u32,
 }
 
 impl ControlConsumer {
@@ -195,6 +224,9 @@ impl ControlConsumer {
             processor_id: processor_id.into(),
             batch_size: DEFAULT_BATCH_SIZE,
             poll_interval: DEFAULT_POLL_INTERVAL,
+            reclaim_after: DEFAULT_RECLAIM_AFTER,
+            reclaim_interval: DEFAULT_RECLAIM_INTERVAL,
+            max_reclaim_count: DEFAULT_MAX_RECLAIM_COUNT,
         }
     }
 
@@ -213,14 +245,38 @@ impl ControlConsumer {
         self
     }
 
+    /// Override the staleness window before a `Processing` row is eligible
+    /// for reclaim. Default: [`DEFAULT_RECLAIM_AFTER`] (ADR-0017).
+    #[must_use]
+    pub fn with_reclaim_after(mut self, reclaim_after: Duration) -> Self {
+        self.reclaim_after = reclaim_after;
+        self
+    }
+
+    /// Override the cadence of the reclaim sweep tick. Default:
+    /// [`DEFAULT_RECLAIM_INTERVAL`] (ADR-0017).
+    #[must_use]
+    pub fn with_reclaim_interval(mut self, reclaim_interval: Duration) -> Self {
+        self.reclaim_interval = reclaim_interval;
+        self
+    }
+
+    /// Override the max retry budget before a reclaim-eligible row moves to
+    /// `Failed`. Default: [`DEFAULT_MAX_RECLAIM_COUNT`] (ADR-0017).
+    #[must_use]
+    pub fn with_max_reclaim_count(mut self, max_reclaim_count: u32) -> Self {
+        self.max_reclaim_count = max_reclaim_count;
+        self
+    }
+
     /// Spawn the consumer as a Tokio task. The returned handle completes
     /// when the task observes `shutdown` being cancelled.
     ///
     /// The consumer flushes any already-claimed commands before returning;
     /// it does not begin a fresh `claim_pending` once shutdown is requested.
     /// Rows that were claimed but not acknowledged remain in the `Processing`
-    /// state for the reclaim path to pick up (tracked with B1; see
-    /// ADR-0008 §5).
+    /// state and are recovered by the next runner via the reclaim sweep
+    /// (ADR-0008 B1 / ADR-0017).
     pub fn spawn(self, shutdown: CancellationToken) -> JoinHandle<()> {
         tokio::spawn(async move { self.run(shutdown).await })
     }
@@ -233,10 +289,19 @@ impl ControlConsumer {
             processor = %hex_display(&self.processor_id),
             batch_size = self.batch_size,
             poll_ms = self.poll_interval.as_millis() as u64,
-            "control-queue consumer started (canon §12.2, ADR-0008)"
+            reclaim_after_ms = self.reclaim_after.as_millis() as u64,
+            reclaim_interval_ms = self.reclaim_interval.as_millis() as u64,
+            max_reclaim_count = self.max_reclaim_count,
+            "control-queue consumer started (canon §12.2, ADR-0008, ADR-0017)"
         );
 
         let mut consecutive_errors: u32 = 0;
+        let mut reclaim_ticker = tokio::time::interval(self.reclaim_interval);
+        // Skip the immediate first tick — we just started, nothing is stuck
+        // yet and the first `claim_pending` call has priority.
+        reclaim_ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+        let _ = reclaim_ticker.tick().await;
+
         loop {
             tokio::select! {
                 biased;
@@ -247,8 +312,46 @@ impl ControlConsumer {
                     );
                     return;
                 }
+                _ = reclaim_ticker.tick() => {
+                    self.sweep_reclaim().await;
+                }
                 () = self.tick(&mut consecutive_errors) => {}
             }
+        }
+    }
+
+    /// Run a single reclaim sweep, logging the outcome. Does not propagate
+    /// storage errors — a transient failure on one sweep should not abort
+    /// the consumer; the next tick will retry.
+    async fn sweep_reclaim(&self) {
+        match self
+            .queue
+            .reclaim_stuck(self.reclaim_after, self.max_reclaim_count)
+            .await
+        {
+            Ok(outcome) => {
+                if outcome.reclaimed > 0 || outcome.exhausted > 0 {
+                    tracing::warn!(
+                        processor = %hex_display(&self.processor_id),
+                        reclaimed = outcome.reclaimed,
+                        exhausted = outcome.exhausted,
+                        reclaim_after_ms = self.reclaim_after.as_millis() as u64,
+                        "control-queue reclaim sweep recovered stuck rows (ADR-0008 B1)"
+                    );
+                } else {
+                    tracing::debug!(
+                        processor = %hex_display(&self.processor_id),
+                        "control-queue reclaim sweep: no stuck rows"
+                    );
+                }
+            },
+            Err(e) => {
+                tracing::error!(
+                    processor = %hex_display(&self.processor_id),
+                    error = %e,
+                    "control-queue reclaim sweep failed; will retry next tick"
+                );
+            },
         }
     }
 
@@ -342,9 +445,10 @@ impl ControlConsumer {
     async fn ack_completed(&self, id: &[u8]) {
         // NOTE: dispatch already ran successfully at this point. If
         // `mark_completed` fails, the row stays in `Processing` and the B1
-        // reclaim path will redeliver the command. Correctness under redelivery
-        // depends entirely on `ControlDispatch` impls being idempotent per
-        // `(execution_id, command)` — see the trait-level docs and ADR-0008 §5.
+        // reclaim path (ADR-0017 + `sweep_reclaim` above) redelivers the
+        // command. Correctness under redelivery depends entirely on
+        // `ControlDispatch` impls being idempotent per `(execution_id, command)`
+        // — see the trait-level docs and ADR-0008 §5.
         if let Err(e) = self.queue.mark_completed(id).await {
             tracing::error!(
                 id = %hex_display(id),

@@ -134,11 +134,14 @@ Postgres-only concern tracked as a follow-up. The comment at
 **Consumer-side semantics — at-least-once + idempotent:**
 
 - `claim_pending` moves rows to `Processing` before dispatch. A crash
-  between claim and dispatch leaves the row in `Processing`; a follow-up
-  ADR (tracked with B1 resume-schema) will add a reclaim path for
-  `Processing` rows older than a lease. For A1, `Processing` rows are **not
-  retried** by the consumer — they remain for operator visibility and the
-  next chip handles reclaim.
+  between claim and dispatch leaves the row in `Processing`; the reclaim
+  sweep (B1, ADR-0017) recovers it by moving the row back to `Pending`
+  after `reclaim_after` (default 150s, 5× the ADR-0015 lease TTL) and
+  bumping `reclaim_count`. Rows past `max_reclaim_count` (default 3) are
+  moved to `Failed` with error `"reclaim exhausted: processor <id> presumed
+  dead after <N> reclaims"` so an operator sees genuinely poisoned
+  commands. The sweep is safe under concurrent runners — CAS on the
+  `Processing → Pending` status transition fences duplicates.
 - Idempotency contract on the `ControlDispatch` trait: implementors must
   treat a repeated command for a terminal execution as a no-op (e.g. a
   second `Cancel` on an already-`Cancelled` execution returns `Ok`, not an
@@ -234,8 +237,10 @@ Follow-up:
   `dispatch_terminate` (chip A3, closes #330).
 - A4 adds the knife integration test across producer → consumer → engine
   (chip A4).
-- Reclaim path for stuck `Processing` rows lands alongside B1 (resume
-  schema ADR) where leases / locks get canonicalised.
+- Reclaim path for stuck `Processing` rows — **implemented** (B1 /
+  ADR-0017, #482 follow-up). `ControlQueueRepo::reclaim_stuck` + periodic
+  sweep in `ControlConsumer` moves abandoned rows back to `Pending` with a
+  bounded retry budget before surfacing them as `Failed`.
 - `apps/server` (or equivalent) single production composition root —
   tracked separately; this ADR only names the need.
 

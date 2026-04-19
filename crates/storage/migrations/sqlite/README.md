@@ -21,6 +21,9 @@ Migration `0020_add_resume_result_persistence.sql` lands in both dialects in
 parity with Layer 1 migration `00000000000009_add_resume_persistence.sql`
 (ADR-0009 resume persistence schema).
 
+Migration `0021_add_control_queue_reclaim_count.sql` lands in both dialects
+in parity with ADR-0017 (control-queue reclaim policy, ADR-0008 B1 follow-up).
+
 ## Schema parity
 
 This directory and `../postgres/` must define logically identical tables.
