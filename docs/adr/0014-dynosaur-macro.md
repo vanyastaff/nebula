@@ -8,7 +8,6 @@ superseded_by: []
 tags: [traits, async, dyn-compatibility, macros, api-design]
 related:
   - docs/STYLE.md#1-idioms-we-use
-  - docs/PRODUCT_CANON.md#125-secrets-and-auth
   - docs/adr/0010-rust-2024-edition.md
 linear:
   - NEB-152

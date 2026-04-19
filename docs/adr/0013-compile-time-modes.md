@@ -53,8 +53,9 @@ starts coding against the choice.
 ## Decision
 
 1. **Deployment mode is a build-time selection, exposed as cargo features
-   on the top-level binary crates** (`apps/cli`, `apps/desktop`,
-   `crates/api`):
+   on the top-level binary crates** (`apps/cli`, `apps/desktop/src-tauri`,
+   and any server binary introduced later — `crates/api` stays a library
+   and is composed from those binaries):
    - `mode-desktop` — SQLite storage, in-process control-queue consumer,
      single-tenant, no Redis.
    - `mode-self-hosted` — Postgres storage, `LISTEN/NOTIFY` consumer,
@@ -144,8 +145,11 @@ starts coding against the choice.
 
 ## Follow-ups
 
-- Add `build.rs` with the assertion above to `apps/cli`, `apps/desktop/src-tauri`,
-  and `crates/api` (binary targets only).
+- Add `build.rs` with the assertion above to `apps/cli` and
+  `apps/desktop/src-tauri` (binary targets only). If a server binary
+  package is introduced later, that binary — **not** the current
+  `crates/api` library crate — owns the mutually-exclusive `mode-*`
+  feature gate and `build.rs`.
 - Extend the CI test matrix in `.github/workflows/test-matrix.yml` with
   a `build-modes` dimension (`mode-desktop | mode-self-hosted | mode-cloud`)
   so feature-gating regressions are caught before merge.
