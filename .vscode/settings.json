@@ -1,4 +1,12 @@
 {
+    "//-rust-analyzer": "Use a separate target dir so RA doesn't fight cargo/agent for file locks in target/.",
+    "rust-analyzer.cargo.targetDir": "target/ra",
+    "rust-analyzer.check.extraEnv": {
+        "CARGO_TARGET_DIR": "target/ra"
+    },
+    "rust-analyzer.cargo.extraEnv": {
+        "CARGO_TARGET_DIR": "target/ra"
+    },
     "chat.mcp.serverSampling": {
         "nebula/.vscode/mcp.json: sequential-thinking": {
             "allowedModels": [

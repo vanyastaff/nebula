@@ -22,3 +22,13 @@
 
 [target.x86_64-pc-windows-msvc]
 linker = "rust-lld.exe"
+
+[build]
+# REQUIRED when using sccache: incremental builds bypass the cache, produce
+# stale fingerprints across processes (multiple worktrees / agent + IDE), and
+# are the #1 cause of "lock hang" and ghost rebuilds. Universal off.
+incremental = false
+
+[net]
+# Retry transient network failures (crates.io, git deps). Mirrors CARGO_NET_RETRY in agent hook.
+retry = 3

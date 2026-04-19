@@ -3,14 +3,13 @@
     "cratesio-mcp": {
       "command": "cratesio-mcp"
     },
-    "serena": {
-      "command": "uvx",
-      "args": [
-        "--from",
-        "git+https://github.com/oraios/serena",
-        "serena",
-        "start-mcp-server"
-      ]
+    "deepwiki": {
+      "type": "http",
+      "url": "https://mcp.deepwiki.com/mcp"
+    },
+    "gitkraken": {
+      "command": "gk",
+      "args": ["mcp"]
     }
   }
 }
