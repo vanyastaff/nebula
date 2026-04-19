@@ -142,6 +142,52 @@ mod tests {
         }
     }
 
+    /// Workflow repo whose `count()` sleeps for longer than `PROBE_TIMEOUT` —
+    /// used to force the `Err(_)` timeout branch in `probe_database` (#291
+    /// review). Pair with `#[tokio::test(start_paused = true)]` so the sleep
+    /// is virtual and the test does not block for real seconds.
+    struct SlowWorkflowRepo;
+
+    #[async_trait]
+    impl WorkflowRepo for SlowWorkflowRepo {
+        async fn get_with_version(
+            &self,
+            _id: WorkflowId,
+        ) -> Result<Option<(u64, serde_json::Value)>, WorkflowRepoError> {
+            unimplemented!("not exercised by readiness tests")
+        }
+
+        async fn save(
+            &self,
+            _id: WorkflowId,
+            _version: u64,
+            _definition: serde_json::Value,
+        ) -> Result<(), WorkflowRepoError> {
+            unimplemented!("not exercised by readiness tests")
+        }
+
+        async fn delete(&self, _id: WorkflowId) -> Result<bool, WorkflowRepoError> {
+            unimplemented!("not exercised by readiness tests")
+        }
+
+        async fn list(
+            &self,
+            _offset: usize,
+            _limit: usize,
+        ) -> Result<Vec<(WorkflowId, serde_json::Value)>, WorkflowRepoError> {
+            unimplemented!("not exercised by readiness tests")
+        }
+
+        async fn count(&self) -> Result<usize, WorkflowRepoError> {
+            // Far longer than PROBE_TIMEOUT (2s). Under paused time, the
+            // runtime auto-advances to whichever timer fires first — that's
+            // the timeout, so this sleep gets cancelled and never elapses
+            // in wall-clock time.
+            tokio::time::sleep(Duration::from_secs(60)).await;
+            Ok(0)
+        }
+    }
+
     fn app_state_with_repo(repo: Arc<dyn WorkflowRepo>) -> AppState {
         let execution_repo = Arc::new(InMemoryExecutionRepo::new());
         let control_queue_repo: Arc<dyn nebula_storage::repos::ControlQueueRepo> =
@@ -167,6 +213,20 @@ mod tests {
     #[tokio::test]
     async fn readiness_returns_503_when_database_probe_fails() {
         let state = app_state_with_repo(Arc::new(AlwaysFailWorkflowRepo));
+        let (status, Json(body)) = readiness_check(State(state)).await;
+        assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
+        assert!(!body.ready);
+        assert!(!body.dependencies.database);
+    }
+
+    /// Covers the `Err(_)` timeout branch in `probe_database`: when
+    /// `count()` exceeds `PROBE_TIMEOUT`, readiness must flip to `false`
+    /// and the handler must respond with 503 so orchestrators drain the
+    /// pod (#291 review). Uses paused time so the test completes in
+    /// virtual microseconds rather than waiting 2 real seconds.
+    #[tokio::test(start_paused = true)]
+    async fn readiness_returns_503_when_database_probe_times_out() {
+        let state = app_state_with_repo(Arc::new(SlowWorkflowRepo));
         let (status, Json(body)) = readiness_check(State(state)).await;
         assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
         assert!(!body.ready);
