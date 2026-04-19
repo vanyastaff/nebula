@@ -25,6 +25,7 @@ from `CLAUDE.md` read-order.
 - **`#[must_use]`** — on every `Result`, every builder, every function returning a cleanup or cancellation token.
 - **`Cow<'_, T>`** — prefer over premature cloning for read-mostly borrows with occasional mutation.
 - **Sealed traits** for extension points — define via private supertrait when Nebula owns all implementations; opens later if we decide to allow downstream impls.
+- **`dynosaur` for `dyn`-compatible async traits** — author the trait in AFIT form (`async fn` in trait), apply `#[dynosaur::dynosaur(DynFoo)]`, and let the macro generate the `dyn`-compatible sibling. Static signatures name `impl Foo`; dynamic boundaries name `dyn DynFoo`. Never introduce `#[async_trait]` in new code. See [ADR-0014](adr/0014-dynosaur-macro.md).
 
 ## 2. Antipatterns we reject
 
