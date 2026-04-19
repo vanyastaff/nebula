@@ -622,6 +622,13 @@ impl ProcessSandbox {
 /// [`PluginHandle`] so the directory persists for as long as the socket
 /// is in use and is cleaned up on drop.
 ///
+/// Prefers `/tmp` when available over the platform temp dir (macOS
+/// defaults to `/var/folders/...` paths that can exceed
+/// [`transport::MAX_UNIX_SOCKET_PATH_BYTES`]). Falls back to the platform
+/// temp dir, and skips any candidate whose resulting socket path would
+/// overflow `sun_path`. This mirrors the plugin-side self-allocation
+/// policy so the host and plugin cannot disagree on what's bindable.
+///
 /// On Windows: generates an unpredictable named-pipe path under
 /// `\\.\pipe\LOCAL\` (session-scoped namespace). The pipe is bound by
 /// the plugin and released when the plugin process exits; no
@@ -630,18 +637,60 @@ fn allocate_host_socket_addr()
 -> Result<(String, &'static str, Option<tempfile::TempDir>), ActionError> {
     #[cfg(unix)]
     {
-        let dir = tempfile::Builder::new()
-            .prefix("nebula-plugin-host-")
-            .tempdir()
-            .map_err(|e| {
-                ActionError::fatal(format!("failed to allocate plugin socket tempdir: {e}"))
-            })?;
-        let socket_path = dir.path().join("sock");
-        let addr = socket_path
-            .to_str()
-            .ok_or_else(|| ActionError::fatal("plugin socket tempdir path is not valid UTF-8"))?
-            .to_owned();
-        Ok((addr, "unix", Some(dir)))
+        use std::{os::unix::ffi::OsStrExt, path::PathBuf};
+
+        // Candidate roots in preference order: short `/tmp` first (macOS
+        // `/var/folders/…` often exceeds the `sun_path` cap), then the
+        // platform temp dir. Deduplicate so `/tmp`-is-temp_dir callers
+        // don't try the same root twice.
+        let mut candidate_roots: Vec<PathBuf> = Vec::new();
+        let short_tmp = PathBuf::from("/tmp");
+        if short_tmp.is_dir() {
+            candidate_roots.push(short_tmp);
+        }
+        let platform_tmp = std::env::temp_dir();
+        if !candidate_roots.iter().any(|root| root == &platform_tmp) {
+            candidate_roots.push(platform_tmp);
+        }
+
+        let mut last_alloc_error: Option<(PathBuf, std::io::Error)> = None;
+        for root in candidate_roots {
+            let dir = match tempfile::Builder::new()
+                .prefix("nebula-plugin-host-")
+                .tempdir_in(&root)
+            {
+                Ok(dir) => dir,
+                Err(e) => {
+                    last_alloc_error = Some((root, e));
+                    continue;
+                },
+            };
+
+            let socket_path = dir.path().join("sock");
+            let socket_path_len = socket_path.as_os_str().as_bytes().len();
+            if socket_path_len > transport::MAX_UNIX_SOCKET_PATH_BYTES {
+                // Drop the oversized tempdir (Drop cleans up) and try
+                // the next candidate root.
+                continue;
+            }
+
+            let addr = socket_path
+                .to_str()
+                .ok_or_else(|| ActionError::fatal("plugin socket tempdir path is not valid UTF-8"))?
+                .to_owned();
+            return Ok((addr, "unix", Some(dir)));
+        }
+
+        if let Some((root, e)) = last_alloc_error {
+            return Err(ActionError::fatal(format!(
+                "failed to allocate plugin socket tempdir in {}: {e}",
+                root.display()
+            )));
+        }
+        Err(ActionError::fatal(format!(
+            "failed to allocate a Unix socket path within {} bytes",
+            transport::MAX_UNIX_SOCKET_PATH_BYTES
+        )))
     }
     #[cfg(windows)]
     {

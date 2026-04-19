@@ -39,8 +39,16 @@ use crate::protocol::DUPLEX_PROTOCOL_VERSION;
 /// [`DUPLEX_PROTOCOL_VERSION`].
 pub const HANDSHAKE_VERSION: u32 = DUPLEX_PROTOCOL_VERSION;
 
+/// Upper bound on the byte length of a Unix-domain-socket path the plugin
+/// transport is willing to bind. `sun_path` in `sockaddr_un` is only
+/// 108 bytes on Linux / 104 on macOS; leaving headroom for the trailing
+/// NUL and for platforms with tighter limits keeps `UnixListener::bind()`
+/// from surprising callers with `ENAMETOOLONG`.
+///
+/// Exposed so host-side callers (nebula-sandbox) that allocate the socket
+/// path themselves can enforce the same cap before spawning the plugin.
 #[cfg(unix)]
-const MAX_UNIX_SOCKET_PATH_BYTES: usize = 100;
+pub const MAX_UNIX_SOCKET_PATH_BYTES: usize = 100;
 
 /// Environment variable the host uses to tell the plugin exactly which
 /// socket address to bind (#260). When set, the plugin MUST bind this
@@ -70,12 +78,12 @@ pub const ENV_SOCKET_KIND: &str = "NEBULA_PLUGIN_SOCKET_KIND";
 /// tests) the plugin falls back to self-allocating a per-plugin directory
 /// — the pre-#260 behaviour, kept for DX.
 pub fn bind_listener() -> io::Result<(PluginListener, String)> {
-    match (
-        std::env::var(ENV_SOCKET_ADDR),
-        std::env::var(ENV_SOCKET_KIND),
+    match classify_env(
+        std::env::var(ENV_SOCKET_ADDR).ok(),
+        std::env::var(ENV_SOCKET_KIND).ok(),
     ) {
-        (Ok(addr), Ok(kind)) => bind_listener_at(&addr, &kind),
-        _ => {
+        EnvBindMode::HostProvided { addr, kind } => bind_listener_at(&addr, &kind),
+        EnvBindMode::SelfAllocate => {
             #[cfg(unix)]
             {
                 bind_unix()
@@ -85,6 +93,46 @@ pub fn bind_listener() -> io::Result<(PluginListener, String)> {
                 bind_named_pipe()
             }
         },
+        EnvBindMode::PartialError(err) => Err(err),
+    }
+}
+
+/// Decision the plugin transport makes from the `(ADDR, KIND)` env pair.
+enum EnvBindMode {
+    /// Both env vars set — bind at the host-provided address.
+    HostProvided { addr: String, kind: String },
+    /// Neither set — self-allocate a per-plugin directory (ad-hoc/dev).
+    SelfAllocate,
+    /// Exactly one set — misconfiguration, fail fast.
+    PartialError(io::Error),
+}
+
+/// Pure classifier split out of [`bind_listener`] so the decision logic
+/// can be exercised without mutating process-global env state.
+///
+/// Partial configuration is a host bug (or tampering): one env var alone
+/// cannot express the host's chosen transport. Silently falling through
+/// to self-allocation would hide the misconfigured spawn and defeat the
+/// #260 handshake-forgery mitigation whenever the sandbox expected to
+/// enforce a host-chosen address.
+fn classify_env(addr: Option<String>, kind: Option<String>) -> EnvBindMode {
+    match (addr, kind) {
+        (Some(addr), Some(kind)) => EnvBindMode::HostProvided { addr, kind },
+        (Some(_), None) => EnvBindMode::PartialError(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!(
+                "{ENV_SOCKET_ADDR} is set but {ENV_SOCKET_KIND} is missing; \
+                 both must be set together"
+            ),
+        )),
+        (None, Some(_)) => EnvBindMode::PartialError(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!(
+                "{ENV_SOCKET_KIND} is set but {ENV_SOCKET_ADDR} is missing; \
+                 both must be set together"
+            ),
+        )),
+        (None, None) => EnvBindMode::SelfAllocate,
     }
 }
 
@@ -464,5 +512,66 @@ impl Drop for CleanupGuard {
         if let Some(dir) = self.dir.take() {
             let _ = std::fs::remove_dir_all(&dir);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn assert_partial_env_error(mode: EnvBindMode) {
+        match mode {
+            EnvBindMode::PartialError(err) => {
+                assert_eq!(err.kind(), io::ErrorKind::InvalidInput);
+                let msg = err.to_string();
+                assert!(
+                    msg.contains(ENV_SOCKET_ADDR) && msg.contains(ENV_SOCKET_KIND),
+                    "error must name both env vars; got: {msg}",
+                );
+            },
+            EnvBindMode::HostProvided { .. } => {
+                panic!("partial env must not be classified as host-provided")
+            },
+            EnvBindMode::SelfAllocate => panic!(
+                "partial env must not fall through to self-allocation \
+                 (would defeat #260 handshake mitigation)"
+            ),
+        }
+    }
+
+    #[test]
+    fn classify_env_rejects_addr_without_kind() {
+        assert_partial_env_error(classify_env(Some("/tmp/should-not-be-used".into()), None));
+    }
+
+    #[test]
+    fn classify_env_rejects_kind_without_addr() {
+        assert_partial_env_error(classify_env(None, Some("unix".into())));
+    }
+
+    #[test]
+    fn classify_env_both_set_is_host_provided() {
+        match classify_env(Some("/tmp/ok".into()), Some("unix".into())) {
+            EnvBindMode::HostProvided { addr, kind } => {
+                assert_eq!(addr, "/tmp/ok");
+                assert_eq!(kind, "unix");
+            },
+            other => panic!(
+                "both env vars set must classify as HostProvided, got other variant: {}",
+                match other {
+                    EnvBindMode::PartialError(e) => format!("PartialError({e})"),
+                    EnvBindMode::SelfAllocate => "SelfAllocate".into(),
+                    EnvBindMode::HostProvided { .. } => unreachable!(),
+                },
+            ),
+        }
+    }
+
+    #[test]
+    fn classify_env_neither_set_is_self_allocate() {
+        assert!(matches!(
+            classify_env(None, None),
+            EnvBindMode::SelfAllocate
+        ));
     }
 }

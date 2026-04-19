@@ -212,12 +212,54 @@ impl PluginCapabilities {
 ///
 /// On-disk ancestor walk-up treats only `ErrorKind::NotFound` as
 /// "keep climbing". Every other error kind is a trust violation and
-/// returns `false`.
+/// returns `false`. A `NotFound` from `canonicalize` is further cross-checked
+/// against `symlink_metadata`: if the component itself exists on disk (i.e.
+/// it IS a symlink, but its target is broken or outside the base), the walk
+/// stops and we fail closed. Otherwise the component really is absent and
+/// we continue climbing to find the deepest existing ancestor. This closes
+/// the #284 bypass where a symlink pointing at a not-yet-created outside
+/// target would slip past the walk and let the parent base match.
 fn path_under(path: &str, base: &str) -> bool {
     use std::{
         io::ErrorKind,
         path::{Component, Path, PathBuf},
     };
+
+    /// `canonicalize(a)` returning `NotFound` is ambiguous:
+    /// - the component does not exist at all → safe to climb to parent;
+    /// - the component IS a symlink whose target is broken or absent → NOT safe to climb, because
+    ///   once the target materialises the kernel will follow it wherever it points.
+    ///
+    /// Differentiate via `symlink_metadata`, which inspects the link itself
+    /// (no traversal). Any success = the component exists on disk, so a
+    /// `canonicalize NotFound` must be a broken symlink → fail closed.
+    fn ancestor_is_broken_symlink(a: &Path) -> bool {
+        std::fs::symlink_metadata(a).is_ok()
+    }
+
+    /// Walk up from `start`'s parent until an ancestor canonicalises,
+    /// then return whether it sits under `canon_base`. A `NotFound`
+    /// whose subject is a broken symlink (see `ancestor_is_broken_symlink`)
+    /// fails closed rather than climbing further — this is the #284
+    /// bypass fix.
+    fn canonical_ancestor_is_under(start: &Path, canon_base: &Path) -> bool {
+        let mut ancestor = start.parent();
+        while let Some(a) = ancestor {
+            match a.canonicalize() {
+                Ok(canon_a) => return canon_a.starts_with(canon_base),
+                Err(e) if e.kind() == ErrorKind::NotFound => {
+                    if ancestor_is_broken_symlink(a) {
+                        return false;
+                    }
+                    ancestor = a.parent();
+                },
+                // EACCES, ELOOP, ENOTDIR, etc. — the path references a
+                // filesystem object we can't verify. Fail closed per #284.
+                Err(_) => return false,
+            }
+        }
+        false
+    }
 
     fn normalize_lex(p: &Path) -> PathBuf {
         let mut out = PathBuf::new();
@@ -262,20 +304,15 @@ fn path_under(path: &str, base: &str) -> bool {
             match path.canonicalize() {
                 Ok(canon_path) => canon_path.starts_with(&canon_base),
                 Err(e) if e.kind() == ErrorKind::NotFound => {
-                    let mut ancestor = path.parent();
-                    while let Some(a) = ancestor {
-                        match a.canonicalize() {
-                            Ok(canon_a) => return canon_a.starts_with(&canon_base),
-                            Err(e) if e.kind() == ErrorKind::NotFound => {
-                                ancestor = a.parent();
-                            },
-                            // EACCES, ELOOP, ENOTDIR, etc. — the path
-                            // references a filesystem object we can't
-                            // verify. Fail closed per #284.
-                            Err(_) => return false,
-                        }
+                    // Leaf might legitimately not exist yet (common:
+                    // write to a new file under a granted dir). But if
+                    // the leaf itself IS a broken symlink on disk, fail
+                    // closed — otherwise the #284 bypass resurfaces when
+                    // the target appears later.
+                    if ancestor_is_broken_symlink(path) {
+                        return false;
                     }
-                    false
+                    canonical_ancestor_is_under(path, &canon_base)
                 },
                 // Same "fail closed on unknown error" policy for the
                 // top-level canonicalize (e.g., EACCES on a symlink's
@@ -489,6 +526,52 @@ mod tests {
             !path_under(requested_str, base_str),
             "symlink to nonexistent target outside base must be rejected, \
              base={base:?} requested={requested:?}",
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn path_under_rejects_broken_symlink_mid_path() {
+        // Defense-in-depth for the #284 regression the previous commit
+        // left open: the symlink is in the MIDDLE of the requested
+        // path (`base/escape/passwd`), its target is a not-yet-existing
+        // file outside the base. canonicalize(base/escape/passwd)
+        // returns NotFound, and canonicalize(base/escape) ALSO returns
+        // NotFound because the symlink target is broken — but
+        // symlink_metadata succeeds, so we must NOT climb to `base`.
+        let base = tempfile::tempdir().expect("base tempdir");
+        let outside = tempfile::tempdir().expect("outside tempdir");
+        let outside_target = outside.path().join("not-yet");
+        let escape = base.path().join("escape");
+        std::os::unix::fs::symlink(&outside_target, &escape).expect("create symlink");
+
+        let requested = escape.join("passwd");
+        let base_str = base.path().to_str().expect("utf8 base");
+        let requested_str = requested.to_str().expect("utf8 requested");
+        assert!(
+            !path_under(requested_str, base_str),
+            "broken symlink in the middle of the path must fail closed, \
+             base={base:?} requested={requested:?}",
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn path_under_rejects_broken_symlink_as_leaf() {
+        // Complementary case: the symlink IS the leaf, target missing,
+        // target outside base. Without the symlink_metadata check the
+        // walk would climb to `base` and accept.
+        let base = tempfile::tempdir().expect("base tempdir");
+        let outside = tempfile::tempdir().expect("outside tempdir");
+        let outside_target = outside.path().join("not-yet");
+        let escape = base.path().join("escape");
+        std::os::unix::fs::symlink(&outside_target, &escape).expect("create symlink");
+
+        let base_str = base.path().to_str().expect("utf8 base");
+        let escape_str = escape.to_str().expect("utf8 escape");
+        assert!(
+            !path_under(escape_str, base_str),
+            "broken symlink as leaf must fail closed, base={base:?} escape={escape:?}",
         );
     }
 
