@@ -15,6 +15,15 @@ use crate::error::StorageError;
 /// Control commands delivered through the queue.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ControlCommand {
+    /// First-time dispatch of a newly-created execution.
+    ///
+    /// Enqueued by the API `start_execution` / `execute_workflow` handlers
+    /// once the `ExecutionState::Created` row has been persisted (canon §12.2,
+    /// §13 step 3, #332). The engine-side consumer picks this up and drives
+    /// the execution through its initial transition to `Running` — closing
+    /// the §4.5 public-surface gap where the API advertised workflow
+    /// dispatch but never reached the engine.
+    Start,
     /// Cooperative cancel (graceful shutdown of running work).
     Cancel,
     /// Forced termination (escalation after grace period).
@@ -30,6 +39,7 @@ impl ControlCommand {
     #[must_use]
     pub const fn as_str(&self) -> &'static str {
         match self {
+            Self::Start => "Start",
             Self::Cancel => "Cancel",
             Self::Terminate => "Terminate",
             Self::Resume => "Resume",

@@ -91,6 +91,29 @@ pub enum ControlDispatchError {
 /// no storage / api types) is stabilised by A1's public-surface test.
 #[async_trait::async_trait]
 pub trait ControlDispatch: Send + Sync {
+    /// Deliver a `Start` command to a newly-created execution (canon §12.2,
+    /// §13 step 3, #332).
+    ///
+    /// Enqueued by the API `start_execution` / `execute_workflow` handlers
+    /// once the `ExecutionState::Created` row has been persisted. The A1
+    /// skeleton provides a default implementation that returns `Ok(())` so
+    /// downstream consumers compile without change; A2 overrides it with the
+    /// engine's start-path dispatch so a POST to `/executions` actually causes
+    /// node execution.
+    ///
+    /// **Idempotency (critical):** double-start re-runs the workflow twice.
+    /// Implementations must guard with CAS on `ExecutionRepo::transition` —
+    /// a `Start` arriving for an already-running or already-terminal
+    /// execution must be `Ok(())`, not a second run. See ADR-0008 §5.
+    async fn dispatch_start(&self, execution_id: ExecutionId) -> Result<(), ControlDispatchError> {
+        // Default no-op so the A1 skeleton stays green while A2 wires the
+        // engine-owned implementation. Removing the default — and thus
+        // forcing every `ControlDispatch` implementor to supply a real
+        // dispatch — is tracked as part of A2's merge checklist.
+        let _ = execution_id;
+        Ok(())
+    }
+
     /// Deliver a `Cancel` command to a running execution.
     ///
     /// A3 wires this into the engine's cooperative-cancel path. A1 stub
@@ -276,6 +299,13 @@ impl ControlConsumer {
         };
 
         let dispatch_result = match entry.command {
+            ControlCommand::Start => {
+                tracing::info!(
+                    %execution_id,
+                    "control-queue: observed Start (TODO(A2): wire to engine start path, #332)"
+                );
+                self.dispatch.dispatch_start(execution_id).await
+            },
             ControlCommand::Cancel => {
                 tracing::info!(
                     %execution_id,

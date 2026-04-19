@@ -13,6 +13,7 @@ use serde_json::Value;
 
 use crate::{
     errors::{ApiError, ApiResult},
+    handlers::execution::enqueue_start,
     models::{
         CreateWorkflowRequest, ExecutionResponse, ListWorkflowsResponse, StartExecutionRequest,
         UpdateWorkflowRequest, WorkflowResponse, WorkflowValidateResponse,
@@ -543,6 +544,12 @@ pub async fn execute_workflow(
         .create(execution_id, workflow_id, state_json)
         .await
         .map_err(|e| ApiError::Internal(format!("Failed to create execution: {}", e)))?;
+
+    // Enqueue the Start signal on the durable control queue — closes the
+    // §4.5 gap where the API advertised dispatch but never reached the
+    // engine (#332). Shared with `start_execution` via the `enqueue_start`
+    // helper so the create + enqueue contract lives in one place.
+    enqueue_start(&state, execution_id).await?;
 
     // Report `created_at` as the observable timestamp — the engine has not
     // transitioned `started_at` yet (that happens at dispatch time). See
