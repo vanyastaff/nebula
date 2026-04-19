@@ -20,6 +20,10 @@ use std::{
 use async_trait::async_trait;
 use nebula_core::id::ExecutionId;
 use nebula_engine::{ControlConsumer, ControlDispatch, ControlDispatchError};
+use nebula_metrics::{
+    MetricsRegistry,
+    naming::{NEBULA_ENGINE_CONTROL_RECLAIM_TOTAL, control_reclaim_outcome},
+};
 use nebula_storage::repos::{
     ControlCommand, ControlQueueEntry, ControlQueueRepo, InMemoryControlQueueRepo,
 };
@@ -471,4 +475,91 @@ async fn reclaim_sweep_recovers_orphaned_processing_row_end_to_end() {
         "exactly one successful dispatch recorded (first stalled), got {:?}",
         observed
     );
+}
+
+/// ADR-0017 Seam: every reclaim sweep must increment
+/// `nebula_engine_control_reclaim_total{outcome}` by the per-row count, so a
+/// non-zero `exhausted` is alertable and a steady `reclaimed` flags
+/// crashed-runner load. Pre-seeds two stale-but-budgeted rows + one stale
+/// past-budget row, runs one sweep, and asserts both label values bump
+/// exactly once per row (not once per sweep).
+#[tokio::test]
+async fn reclaim_sweep_emits_counter_metric_per_outcome() {
+    let repo = Arc::new(InMemoryControlQueueRepo::new());
+    let queue: Arc<dyn ControlQueueRepo> = repo.clone();
+
+    // 600s in the past is far past the 50ms reclaim window we'll configure
+    // below — every row qualifies as stuck on the first sweep.
+    let stale = chrono::Utc::now() - chrono::Duration::seconds(600);
+    let mk_row = |row_id: u8, exec: &ExecutionId, reclaim_count: u32| ControlQueueEntry {
+        id: vec![row_id; 16],
+        execution_id: exec.to_string().into_bytes(),
+        command: ControlCommand::Cancel,
+        issued_by: None,
+        issued_at: chrono::Utc::now(),
+        status: "Processing".to_string(),
+        processed_by: Some(b"dead-runner".to_vec()),
+        processed_at: Some(stale),
+        error_message: None,
+        reclaim_count,
+    };
+    let exec_a = ExecutionId::new();
+    let exec_b = ExecutionId::new();
+    let exec_c = ExecutionId::new();
+    repo.enqueue(&mk_row(1, &exec_a, 0)).await.unwrap();
+    repo.enqueue(&mk_row(2, &exec_b, 0)).await.unwrap();
+    // reclaim_count == max_reclaim_count → moves to Failed, not requeued.
+    repo.enqueue(&mk_row(3, &exec_c, 3)).await.unwrap();
+
+    let registry = MetricsRegistry::new();
+    let dispatch: Arc<dyn ControlDispatch> = RecordingDispatch::new();
+    let consumer = ControlConsumer::new(queue.clone(), dispatch, b"runner-test".to_vec())
+        .with_batch_size(8)
+        .with_poll_interval(Duration::from_millis(20))
+        .with_reclaim_after(Duration::from_millis(50))
+        .with_reclaim_interval(Duration::from_millis(30))
+        .with_max_reclaim_count(3)
+        .with_metrics(registry.clone());
+
+    let shutdown = CancellationToken::new();
+    let handle = consumer.spawn(shutdown.clone());
+
+    let reclaimed_labels = registry
+        .interner()
+        .single("outcome", control_reclaim_outcome::RECLAIMED);
+    let exhausted_labels = registry
+        .interner()
+        .single("outcome", control_reclaim_outcome::EXHAUSTED);
+
+    tokio::time::timeout(Duration::from_secs(2), async {
+        loop {
+            let r = registry
+                .counter_labeled(NEBULA_ENGINE_CONTROL_RECLAIM_TOTAL, &reclaimed_labels)
+                .get();
+            let e = registry
+                .counter_labeled(NEBULA_ENGINE_CONTROL_RECLAIM_TOTAL, &exhausted_labels)
+                .get();
+            if r >= 2 && e >= 1 {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("counters reached expected values within 2s");
+
+    shutdown.cancel();
+    handle.await.expect("graceful shutdown");
+
+    // Once the two reclaimed rows are picked up by the claim arm and
+    // acked Completed, and the exhausted row sits in Failed, no further
+    // sweep finds work — counters stay at 2 and 1 (per-row, not per-sweep).
+    let reclaimed = registry
+        .counter_labeled(NEBULA_ENGINE_CONTROL_RECLAIM_TOTAL, &reclaimed_labels)
+        .get();
+    let exhausted = registry
+        .counter_labeled(NEBULA_ENGINE_CONTROL_RECLAIM_TOTAL, &exhausted_labels)
+        .get();
+    assert_eq!(reclaimed, 2, "reclaimed counter bumps by row count");
+    assert_eq!(exhausted, 1, "exhausted counter bumps by row count");
 }
