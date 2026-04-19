@@ -470,7 +470,7 @@ impl ControlConsumer {
         // command. Correctness under redelivery depends entirely on
         // `ControlDispatch` impls being idempotent per `(execution_id, command)`
         // — see the trait-level docs and ADR-0008 §5.
-        if let Err(e) = self.queue.mark_completed(id).await {
+        if let Err(e) = self.queue.mark_completed(id, &self.processor_id).await {
             tracing::error!(
                 id = %hex_display(id),
                 error = %e,
@@ -480,7 +480,7 @@ impl ControlConsumer {
     }
 
     async fn ack_failed(&self, id: &[u8], reason: &str) {
-        if let Err(e) = self.queue.mark_failed(id, reason).await {
+        if let Err(e) = self.queue.mark_failed(id, &self.processor_id, reason).await {
             tracing::error!(
                 id = %hex_display(id),
                 error = %e,
