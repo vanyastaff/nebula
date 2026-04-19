@@ -1,0 +1,121 @@
+name: RFC (Request for Comments)
+description: Propose a significant design change, new abstraction, or architecture revision
+title: "rfc: <short description>"
+labels: ["type:rfc", "status:needs-discussion"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        An RFC is for changes that affect architecture, public contracts, or product canon — not for routine feature requests or bug fixes.
+
+        Before submitting, review:
+        - [`docs/PRODUCT_CANON.md §0.2`](https://github.com/vanyastaff/nebula/blob/main/docs/PRODUCT_CANON.md) — canon revision triggers
+        - [`docs/adr/`](https://github.com/vanyastaff/nebula/tree/main/docs/adr) — prior decisions this might interact with
+
+  - type: textarea
+    id: motivation
+    attributes:
+      label: Motivation
+      description: |
+        Why is this change needed? What problem does the status quo create?
+        Be specific about which canon invariant, layer boundary, or user-facing contract is at stake.
+      placeholder: |
+        The current `ExecutionContext` type leaks runtime-layer detail into the Core layer
+        (PRODUCT_CANON §4 — layer invariants). This makes unit-testing Core-layer logic
+        impossible without wiring a full engine.
+    validations:
+      required: true
+
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposal
+      description: |
+        Describe the change in enough detail that a reviewer can assess correctness and impact.
+        Include type signatures, trait definitions, or API sketches where relevant.
+      placeholder: |
+        Extract `ContextView` (a read-only, Core-layer trait) from `ExecutionContext`.
+        The engine implements `ContextView`; Core-layer consumers accept `&dyn ContextView`.
+
+        ```rust
+        // nebula-core
+        pub trait ContextView: Send + Sync {
+            fn workflow_id(&self) -> &WorkflowId;
+            fn node_id(&self) -> &NodeId;
+        }
+        ```
+    validations:
+      required: true
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives Considered
+      description: What other approaches did you evaluate? Why did you reject them?
+      placeholder: |
+        - Pass individual fields instead of a trait: rejected — combinatorial explosion as
+          nodes gain more context needs.
+        - Keep status quo, add re-export: rejected — does not fix the layering violation.
+
+  - type: textarea
+    id: canon-impact
+    attributes:
+      label: Impact on Product Canon
+      description: |
+        Does this change, extend, or contradict any invariant in `docs/PRODUCT_CANON.md`?
+        Reference specific sections (e.g., §4.3, §12.2). If a canon revision is needed,
+        state that explicitly — see §0.2 for revision triggers.
+      placeholder: |
+        Affects §4 (layer invariants) — this change *fixes* a violation rather than
+        introducing one. No canon revision needed; the proposal aligns with §4.3.
+    validations:
+      required: true
+
+  - type: textarea
+    id: migration
+    attributes:
+      label: Migration Plan
+      description: |
+        How are existing callers, tests, and integrations migrated?
+        What is the rollout order? Are there deprecation periods?
+      placeholder: |
+        1. Add `ContextView` trait in `nebula-core` (non-breaking).
+        2. Implement `ContextView` on `ExecutionContext` in `nebula-engine` (non-breaking).
+        3. Migrate Core-layer consumers to `&dyn ContextView` in one PR.
+        4. Remove `ExecutionContext` re-export from `nebula-core` (breaking — minor bump).
+
+        No external API surface affected at alpha stage.
+    validations:
+      required: true
+
+  - type: textarea
+    id: open-questions
+    attributes:
+      label: Open Questions
+      description: What is still uncertain? What do you want reviewers to focus on?
+      placeholder: |
+        - Should `ContextView` expose `span_context()` for tracing, or keep that runtime-only?
+        - Do we need a `ContextViewMut` for write access, or is that always runtime-scoped?
+
+  - type: textarea
+    id: context
+    attributes:
+      label: Related Issues, ADRs, or Canon Sections
+      description: Link to anything that provides relevant prior context.
+      placeholder: |
+        ADR: docs/adr/0012-execution-context-design.md
+        Related: #234 (original `ExecutionContext` PR), #456 (Core-layer test pain)
+
+  - type: checkboxes
+    id: checklist
+    attributes:
+      label: Checklist
+      options:
+        - label: I have read PRODUCT_CANON.md §0.2 (canon revision triggers) before filing.
+          required: true
+        - label: I have checked docs/adr/ for prior decisions that apply.
+          required: true
+        - label: This RFC proposes a design, not a bug fix or routine feature (use the other templates for those).
+          required: true
+        - label: I have described the canon impact explicitly, even if it is "none."
+          required: true
