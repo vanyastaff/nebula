@@ -423,8 +423,9 @@ mod tests {
     /// Regression for GitHub issue #282: `get()` on a record that triggers
     /// lazy re-encryption used to return the `StoredCredential` with the
     /// pre-CAS `version`. Downstream callers then hit a phantom
-    /// `VersionMismatch` on their own CAS update against the row we just
-    /// bumped. The returned struct must carry the post-rotation `version`.
+    /// [`StoreError::VersionConflict`] on their own CAS update against the
+    /// row we just bumped. The returned struct must carry the post-rotation
+    /// `version` (and `updated_at`) so downstream CAS targets the fresh row.
     #[tokio::test]
     async fn lazy_reencryption_returns_post_rotation_version() {
         let inner = InMemoryStore::new();
@@ -452,6 +453,10 @@ mod tests {
         assert_eq!(
             fetched.version, current_raw.version,
             "returned version must match persisted post-rotation row"
+        );
+        assert_eq!(
+            fetched.updated_at, current_raw.updated_at,
+            "returned updated_at must match persisted post-rotation row"
         );
         assert!(
             fetched.version > version_before_rotation,
