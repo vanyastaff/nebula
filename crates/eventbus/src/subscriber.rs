@@ -1,5 +1,10 @@
 //! Subscription handle for receiving events.
 
+use std::sync::{
+    Arc,
+    atomic::{AtomicU64, Ordering},
+};
+
 use tokio::sync::broadcast;
 
 /// Subscription handle that receives events from an [`EventBus`](crate::EventBus).
@@ -50,13 +55,19 @@ use tokio::sync::broadcast;
 pub struct Subscriber<E> {
     receiver: broadcast::Receiver<E>,
     lagged_count: u64,
+    /// Shared with the originating [`EventBus`](crate::EventBus). Each Lagged
+    /// event observed at recv-time is added here, exposing real drops in
+    /// [`EventBusStats::dropped_count`](crate::EventBusStats::dropped_count)
+    /// under the default `DropOldest` policy (issue #262).
+    bus_dropped: Arc<AtomicU64>,
 }
 
 impl<E: Clone + Send> Subscriber<E> {
-    pub(crate) fn new(receiver: broadcast::Receiver<E>) -> Self {
+    pub(crate) fn new(receiver: broadcast::Receiver<E>, bus_dropped: Arc<AtomicU64>) -> Self {
         Self {
             receiver,
             lagged_count: 0,
+            bus_dropped,
         }
     }
 
@@ -69,7 +80,7 @@ impl<E: Clone + Send> Subscriber<E> {
             match self.receiver.recv().await {
                 Ok(event) => return Some(event),
                 Err(broadcast::error::RecvError::Lagged(skipped)) => {
-                    self.lagged_count = self.lagged_count.saturating_add(skipped);
+                    self.record_lag(skipped);
                     continue;
                 },
                 Err(broadcast::error::RecvError::Closed) => return None,
@@ -85,12 +96,18 @@ impl<E: Clone + Send> Subscriber<E> {
             match self.receiver.try_recv() {
                 Ok(event) => return Some(event),
                 Err(broadcast::error::TryRecvError::Lagged(skipped)) => {
-                    self.lagged_count = self.lagged_count.saturating_add(skipped);
+                    self.record_lag(skipped);
                     continue;
                 },
                 Err(_) => return None,
             }
         }
+    }
+
+    #[inline]
+    fn record_lag(&mut self, skipped: u64) {
+        self.lagged_count = self.lagged_count.saturating_add(skipped);
+        self.bus_dropped.fetch_add(skipped, Ordering::Relaxed);
     }
 
     /// Returns the total count of events skipped due to lag.
@@ -108,11 +125,12 @@ impl<E: Clone + Send> Subscriber<E> {
     /// Converts this subscriber into a [`Stream`](futures_core::Stream).
     ///
     /// The stream yields events until the bus is closed. Lagged events are
-    /// skipped automatically (same semantics as [`recv()`](Self::recv)).
+    /// skipped automatically (same semantics as [`recv()`](Self::recv)) and
+    /// continue to feed [`EventBusStats::dropped_count`](crate::EventBusStats::dropped_count).
     pub fn into_stream(self) -> crate::stream::SubscriberStream<E>
     where
         E: 'static,
     {
-        crate::stream::SubscriberStream::new(self.receiver, self.lagged_count)
+        crate::stream::SubscriberStream::new(self.receiver, self.lagged_count, self.bus_dropped)
     }
 }
