@@ -17,9 +17,10 @@ use std::{
 };
 
 use dashmap::DashMap;
-// TODO: ExecutionBudget moved to nebula-execution
-use nebula_action::capability::{ResourceAccessor, default_resource_accessor};
-use nebula_action::{ActionContext, ActionError, ActionResult};
+use nebula_action::{
+    ActionContext, ActionError, ActionResult,
+    capability::{ResourceAccessor, default_resource_accessor},
+};
 use nebula_core::{
     ActionKey, NodeKey,
     id::{ExecutionId, InstanceId, WorkflowId},
@@ -553,6 +554,9 @@ impl WorkflowEngine {
             .cloned()
             .unwrap_or(serde_json::Value::Null);
         exec_state.set_workflow_input(input.clone());
+        // Persist the budget so a later resume of this replayed
+        // execution honours the same limits (issue #289).
+        exec_state.set_budget(budget.clone());
         for node_key in &pinned {
             // NOTE: errors are intentionally discarded here. Pinned nodes are
             // forced through Ready→Running→Completed for bookkeeping; the
@@ -861,6 +865,11 @@ impl WorkflowEngine {
         // feed entry nodes the same input instead of substituting
         // Null (issue #311).
         exec_state.set_workflow_input(input.clone());
+        // Persist the execution budget so that resume enforces the
+        // same concurrency / retry / timeout limits the original run
+        // was configured with, rather than falling back to
+        // `ExecutionBudget::default()` (issue #289).
+        exec_state.set_budget(budget.clone());
 
         // 4b. Persist initial execution state
         let mut repo_version: u64 = 0;
@@ -1229,10 +1238,26 @@ impl WorkflowEngine {
         }
 
         // 10. Build remaining infrastructure for the frontier loop.
-        // TODO: the original ExecutionBudget is not persisted in ExecutionState.
-        // For now, resume uses the default budget. To fix, add `budget` to
-        // ExecutionState and restore it here.
-        let budget = ExecutionBudget::default();
+        //
+        // Restore the `ExecutionBudget` the original run was configured
+        // with (issue #289). Legacy states that predate budget
+        // persistence deserialize the field as `None` — fall back to
+        // `ExecutionBudget::default()` with a warning so the degraded
+        // limits are visible in logs instead of silently swapping
+        // operator-configured limits for default ones.
+        let budget = match exec_state.budget.clone() {
+            Some(b) => b,
+            None => {
+                tracing::warn!(
+                    %execution_id,
+                    "resume: persisted execution state is missing budget; \
+                     falling back to ExecutionBudget::default() — \
+                     concurrency, retry, and timeout limits from the \
+                     original run are not being honoured (issue #289)"
+                );
+                ExecutionBudget::default()
+            },
+        };
         let semaphore = Arc::new(Semaphore::new(budget.max_concurrent_nodes));
         let cancel_token = CancellationToken::new();
         let mut repo_version = repo_version_loaded;
@@ -6492,6 +6517,147 @@ mod tests {
             Some(&serde_json::json!({"trigger": "webhook-payload"})),
             "resume should feed the entry node the persisted trigger payload, not Null (issue #311)"
         );
+    }
+
+    /// Issue #289 — `resume_execution` must restore the persisted
+    /// `ExecutionBudget` instead of silently reverting to
+    /// `ExecutionBudget::default()`. Before the fix, a run configured
+    /// with a tight concurrency / retry / timeout budget would resume
+    /// with the default 10-way concurrency and unbounded retries,
+    /// changing behavior vs operator expectations. See
+    /// `PRODUCT_CANON.md §4.5` (public surface honored end-to-end).
+    #[tokio::test]
+    async fn resume_restores_persisted_budget() {
+        use std::time::Duration;
+
+        let registry = Arc::new(ActionRegistry::new());
+        registry.register_stateless(EchoHandler {
+            meta: ActionMetadata::new(action_key!("echo"), "Echo", "echoes input"),
+        });
+
+        // Start an execution on "engine A" with a non-default budget
+        // (max_concurrent_nodes=3 + retries + timeout + output cap),
+        // persist it, then resume on a fresh "engine B" that has never
+        // seen the budget in-memory. The persisted row is the only
+        // channel for the budget to reach the resumed run.
+        let exec_repo = Arc::new(nebula_storage::InMemoryExecutionRepo::new());
+        let n1 = node_key!("n1");
+        let wf = make_workflow(
+            vec![NodeDefinition::new(n1.clone(), "A", "echo").unwrap()],
+            vec![],
+        );
+        let workflow_repo = save_workflow_to_repo(&wf).await;
+
+        let configured = ExecutionBudget::default()
+            .with_max_concurrent_nodes(3)
+            .with_max_duration(Duration::from_secs(97))
+            .with_max_output_bytes(7 * 1024)
+            .with_max_total_retries(11);
+
+        // Simulate the state "engine A" would have written right
+        // after `execute_workflow` began but before the node ran:
+        // status=Running, entry node still Pending, budget persisted.
+        // This mirrors the real crash window the fix covers (the
+        // setup-failure / post-create checkpoint).
+        let execution_id = ExecutionId::new();
+        let mut exec_state = ExecutionState::new(execution_id, wf.id, std::slice::from_ref(&n1));
+        exec_state
+            .transition_status(ExecutionStatus::Running)
+            .unwrap();
+        exec_state.set_budget(configured.clone());
+        let state_json = serde_json::to_value(&exec_state).unwrap();
+        exec_repo
+            .create(execution_id, wf.id, state_json)
+            .await
+            .unwrap();
+
+        // Resume on a fresh engine ("engine B" — new runner, new
+        // instance, no memory of the original budget).
+        let (engine, _) = make_engine(registry);
+        let engine = engine
+            .with_execution_repo(exec_repo.clone())
+            .with_workflow_repo(workflow_repo);
+        let result = engine.resume_execution(execution_id).await.unwrap();
+        assert!(result.is_success());
+
+        // Re-load the persisted state and assert the budget survived
+        // the resume unchanged — this proves the resume path reads
+        // the budget off the row rather than substituting a default.
+        //
+        // Deserialize via a JSON string (not `serde_json::from_value`)
+        // because `ExecutionState::node_states` uses `NodeKey` which
+        // has a borrowed-string `Deserialize` impl incompatible with
+        // `from_value` (docs/pitfalls — serde MapAccess).
+        let (_v, state_after) = exec_repo.get_state(execution_id).await.unwrap().unwrap();
+        let state_after_str = serde_json::to_string(&state_after).unwrap();
+        let round_tripped: ExecutionState = serde_json::from_str(&state_after_str).unwrap();
+        let restored = round_tripped
+            .budget
+            .expect("resume must preserve the persisted budget on the execution row");
+        assert_eq!(
+            restored, configured,
+            "resume must use the persisted budget, not ExecutionBudget::default() (issue #289)"
+        );
+        // And specifically NOT the default — guards against a silent
+        // regression where the code accidentally overwrites the field
+        // with `default()` before the final persist.
+        assert_ne!(
+            restored,
+            ExecutionBudget::default(),
+            "the configured budget must not collapse to default() on resume"
+        );
+    }
+
+    /// Issue #289 — legacy persisted states that predate budget
+    /// persistence must still resume (falling back to
+    /// `ExecutionBudget::default()` with a warning log), so the fix
+    /// does not break old rows.
+    #[tokio::test]
+    async fn resume_falls_back_to_default_budget_on_legacy_state() {
+        let registry = Arc::new(ActionRegistry::new());
+        registry.register_stateless(EchoHandler {
+            meta: ActionMetadata::new(action_key!("echo"), "Echo", "echoes input"),
+        });
+
+        let exec_repo = Arc::new(nebula_storage::InMemoryExecutionRepo::new());
+        let n1 = node_key!("n1");
+        let wf = make_workflow(
+            vec![NodeDefinition::new(n1.clone(), "A", "echo").unwrap()],
+            vec![],
+        );
+        let workflow_repo = save_workflow_to_repo(&wf).await;
+
+        // Build a state snapshot with NO `budget` field — simulates a
+        // pre-#289 row. We build the state normally, serialize it,
+        // then strip the field before persist so the resume path
+        // observes it as `None` (the legacy deserialization outcome).
+        let execution_id = ExecutionId::new();
+        let mut exec_state = ExecutionState::new(execution_id, wf.id, std::slice::from_ref(&n1));
+        exec_state
+            .transition_status(ExecutionStatus::Running)
+            .unwrap();
+        // Don't set the budget. Confirm the field is absent after
+        // roundtrip — catches a future default change that would
+        // accidentally inject a value.
+        assert!(exec_state.budget.is_none());
+        let mut state_json = serde_json::to_value(&exec_state).unwrap();
+        if let Some(obj) = state_json.as_object_mut() {
+            obj.remove("budget");
+        }
+        exec_repo
+            .create(execution_id, wf.id, state_json)
+            .await
+            .unwrap();
+
+        let (engine, _) = make_engine(registry);
+        let engine = engine
+            .with_execution_repo(exec_repo.clone())
+            .with_workflow_repo(workflow_repo);
+
+        // Resume must succeed despite the missing budget — the engine
+        // logs a warning and falls back to the default.
+        let result = engine.resume_execution(execution_id).await.unwrap();
+        assert!(result.is_success());
     }
 
     /// Issue #300 — spawn_node must NOT silently spawn a task on a

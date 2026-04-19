@@ -9,6 +9,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::{
     attempt::NodeAttempt,
+    context::ExecutionBudget,
     error::ExecutionError,
     idempotency::IdempotencyKey,
     output::NodeOutput,
@@ -155,6 +156,18 @@ pub struct ExecutionState {
     /// `None` and the engine falls back to `Null` with a warning log.
     #[serde(default)]
     pub workflow_input: Option<serde_json::Value>,
+    /// The [`ExecutionBudget`] the execution was started with.
+    ///
+    /// Persisted so that `resume_execution` enforces the same
+    /// concurrency, retry, and timeout limits the original run was
+    /// configured with, rather than silently falling back to
+    /// [`ExecutionBudget::default()`] on recovery (issue #289).
+    ///
+    /// Legacy persisted states that predate this field deserialize as
+    /// `None`; the engine falls back to the default budget with a
+    /// warning log so the degradation is visible.
+    #[serde(default)]
+    pub budget: Option<ExecutionBudget>,
 }
 
 impl ExecutionState {
@@ -181,6 +194,7 @@ impl ExecutionState {
             total_output_bytes: 0,
             variables: serde_json::Map::new(),
             workflow_input: None,
+            budget: None,
         }
     }
 
@@ -191,6 +205,18 @@ impl ExecutionState {
     /// original run saw (issue #311).
     pub fn set_workflow_input(&mut self, input: serde_json::Value) {
         self.workflow_input = Some(input);
+    }
+
+    /// Attach the [`ExecutionBudget`] the execution was configured
+    /// with.
+    ///
+    /// Called by the engine at execution start so that
+    /// `resume_execution` can restore the same concurrency, retry, and
+    /// timeout limits the original run was configured with, rather
+    /// than silently falling back to [`ExecutionBudget::default()`] on
+    /// recovery (issue #289).
+    pub fn set_budget(&mut self, budget: ExecutionBudget) {
+        self.budget = Some(budget);
     }
 
     /// Get a node's execution state.
@@ -673,6 +699,49 @@ mod tests {
             back.workflow_input,
             Some(serde_json::json!({"trigger": "webhook"}))
         );
+    }
+
+    /// Issue #289 — `ExecutionBudget` must round-trip through serde
+    /// so `resume_execution` can restore the original run's
+    /// concurrency / retry / timeout limits instead of silently
+    /// falling back to [`ExecutionBudget::default()`].
+    #[test]
+    fn budget_roundtrip_via_serde() {
+        use std::time::Duration;
+
+        let (mut state, _n1, _n2) = make_state();
+        assert!(state.budget.is_none());
+
+        let budget = ExecutionBudget::default()
+            .with_max_concurrent_nodes(4)
+            .with_max_duration(Duration::from_secs(120))
+            .with_max_output_bytes(4 * 1024 * 1024)
+            .with_max_total_retries(7);
+        state.set_budget(budget.clone());
+
+        let json = serde_json::to_string(&state).unwrap();
+        let back: ExecutionState = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.budget, Some(budget));
+    }
+
+    /// Issue #289 — legacy states that predate `budget` must still
+    /// deserialize as `None` so the engine can fall back to
+    /// `ExecutionBudget::default()` with a warning.
+    #[test]
+    fn budget_missing_field_deserializes_as_none() {
+        let legacy = serde_json::json!({
+            "execution_id": ExecutionId::new(),
+            "workflow_id": WorkflowId::new(),
+            "status": "created",
+            "node_states": {},
+            "version": 0,
+            "created_at": chrono::Utc::now(),
+            "updated_at": chrono::Utc::now(),
+            "total_retries": 0,
+            "total_output_bytes": 0,
+        });
+        let state: ExecutionState = serde_json::from_value(legacy).unwrap();
+        assert!(state.budget.is_none());
     }
 
     #[test]
