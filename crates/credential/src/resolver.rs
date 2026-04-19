@@ -196,21 +196,21 @@ impl<S: CredentialStore> CredentialResolver<S> {
 
         // Coordinate refresh -- only one caller does the work
         match self.refresh_coordinator.try_refresh(credential_id) {
-            RefreshAttempt::Winner(notify) => {
+            RefreshAttempt::Winner => {
                 // Acquire a global concurrency permit BEFORE the refresh HTTP
                 // call. This prevents 429 cascades when many credentials expire
                 // simultaneously. The permit drops when this block exits (on
                 // success, error, or panic), freeing a slot for the next caller.
                 let _permit = self.refresh_coordinator.acquire_permit().await;
 
-                // scopeguard: always clean up in-flight entry and notify waiters,
-                // even on panic/timeout. Both complete() and notify_waiters() are
-                // sync, so they're safe to call from Drop (B8 fix).
+                // scopeguard: always clean up the in-flight entry AND drain
+                // every registered waiter's oneshot sender, even on
+                // panic/timeout. `complete()` is sync, so it is safe to call
+                // from Drop.
                 let credential_id_for_guard = credential_id.to_string();
                 let coordinator = &self.refresh_coordinator;
-                let _guard = scopeguard::guard(notify, |n| {
+                let _guard = scopeguard::guard((), |_| {
                     coordinator.complete(&credential_id_for_guard);
-                    n.notify_waiters();
                 });
                 let result = self
                     .perform_refresh::<C>(credential_id, state, stored, ctx)
@@ -221,44 +221,31 @@ impl<S: CredentialStore> CredentialResolver<S> {
                 } else {
                     self.refresh_coordinator.record_failure(credential_id);
                 }
-                // complete() and notify_waiters() called by guard on drop
+                // complete() called by guard on drop
                 result
             },
-            RefreshAttempt::Waiter(notify) => {
-                // Race note: `Notify::notify_waiters()` only wakes waiters that
-                // are *already registered* at the moment it fires. If the
-                // winner completes its refresh faster than this waiter can
-                // poll `notify.notified()` for the first time, the wakeup is
-                // lost and we would stall until timeout.
-                //
-                // Mitigations:
-                // 1. Eagerly construct and `enable()` the `Notified` future — this registers the
-                //    waiter immediately, narrowing the race window from "await-first-poll" down to
-                //    "the handful of instructions between returning from try_refresh and enable()".
-                // 2. Short (5 s) timeout — the post-wait `resolve` re-read always fetches the fresh
-                //    value from the store, so the timeout is not fatal. Staying on 60 s meant a
-                //    lost wakeup produced a 60-second latency spike. 5 s bounds worst-case waiter
-                //    latency to a value humans still tolerate while leaving room for a slow
-                //    legitimate refresh (which itself holds a `refresh_semaphore` permit and is
-                //    normally sub-second).
-                let notified = notify.notified();
-                tokio::pin!(notified);
-                // Pre-register before any await so a concurrent
-                // `notify_waiters()` will see us.
-                notified.as_mut().enable();
-
-                if tokio::time::timeout(std::time::Duration::from_secs(5), notified)
+            RefreshAttempt::Waiter(rx) => {
+                // No lost-wakeup race: the oneshot sender for this waiter was
+                // pushed into the in-flight entry while the coordinator held
+                // its map mutex, and the winner drains that same list under
+                // the same mutex in `complete()` (GitHub issue #268). A short
+                // timeout is kept as a belt-and-suspenders for the pathological
+                // case where the winner is wedged holding the refresh
+                // semaphore indefinitely — the post-wait store re-read then
+                // serves the current value (possibly stale) instead of
+                // stalling forever.
+                if tokio::time::timeout(std::time::Duration::from_secs(5), rx)
                     .await
                     .is_err()
                 {
                     tracing::debug!(
                         credential_id,
-                        "refresh waiter did not observe notify within 5s, re-reading from store"
+                        "refresh waiter timed out after 5s, re-reading from store"
                     );
                 }
-                // Re-read from store regardless — this is both the
-                // normal success path (winner wrote a fresh value) and
-                // the race-recovery path (wakeup was lost).
+                // Re-read from store regardless — both the normal success
+                // path (winner wrote a fresh value) and the timeout path
+                // land here with the same contract.
                 self.resolve::<C>(credential_id).await
             },
         }

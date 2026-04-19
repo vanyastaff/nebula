@@ -9,10 +9,21 @@
 //! Per-credential refresh state is tracked in a `HashMap` behind a `Mutex`.
 //! The first caller to request a refresh for a given credential ID becomes
 //! the "winner" and performs the refresh. Subsequent callers receive a
-//! [`Notify`](tokio::sync::Notify) handle and wait until the winner completes.
+//! [`tokio::sync::oneshot::Receiver`] and wait until the winner completes.
+//!
+//! # Lost-wakeup safety
+//!
+//! Waiters register a `oneshot::Sender` into the in-flight entry **under
+//! the same mutex** that the winner holds when inserting or removing the
+//! entry. A winner cannot `complete()` past a waiter's registration — the
+//! race window that existed with [`tokio::sync::Notify::notify_waiters`]
+//! (where the waiter had to `enable()` its `Notified` future after the
+//! lock was released) is closed by construction. See GitHub issue #268.
 //!
 //! The winner **must** call [`RefreshCoordinator::complete()`] when done
 //! (success or failure) to wake waiters and remove the in-flight entry.
+//! Wrapping the call in a `scopeguard` is recommended so the guarantee
+//! survives panics and error paths.
 //!
 //! # Examples
 //!
@@ -22,12 +33,12 @@
 //! let coord = RefreshCoordinator::new();
 //!
 //! match coord.try_refresh("cred-1") {
-//!     RefreshAttempt::Winner(_notify) => {
+//!     RefreshAttempt::Winner => {
 //!         // Perform refresh...
 //!         coord.complete("cred-1");
 //!     }
-//!     RefreshAttempt::Waiter(notify) => {
-//!         notify.notified().await;
+//!     RefreshAttempt::Waiter(rx) => {
+//!         let _ = rx.await; // Err means the winner dropped the entry
 //!         // Re-read credential from store
 //!     }
 //! }
@@ -37,7 +48,19 @@ use std::{collections::HashMap, fmt, num::NonZeroUsize, sync::Arc, time::Duratio
 
 use lru::LruCache;
 use nebula_resilience::circuit_breaker::{CircuitBreaker, CircuitBreakerConfig, Outcome};
-use tokio::sync::Notify;
+use tokio::sync::oneshot;
+
+/// In-flight refresh entry.
+///
+/// Holds the pending `oneshot::Sender`s of every waiter registered for this
+/// credential. Waiters push a sender under the coordinator's map lock; the
+/// winner drains and fires every sender on completion.
+struct InFlightEntry {
+    /// Senders to wake on completion. `parking_lot::Mutex` because the list
+    /// is touched only while holding (or having just released) the outer
+    /// map lock, with no `.await` in between.
+    senders: parking_lot::Mutex<Vec<oneshot::Sender<()>>>,
+}
 
 /// Coordinates credential refresh to prevent thundering herd.
 ///
@@ -57,7 +80,7 @@ use tokio::sync::Notify;
 /// // First caller wins
 /// assert!(matches!(
 ///     coord.try_refresh("cred-1"),
-///     RefreshAttempt::Winner(_),
+///     RefreshAttempt::Winner,
 /// ));
 ///
 /// // Second caller waits
@@ -73,7 +96,7 @@ pub struct RefreshCoordinator {
     /// because the lock is held only for brief `HashMap` insert/remove/get operations
     /// with no `.await` while locked. This allows `complete()` to be sync, which is
     /// critical for calling it from a `scopeguard` drop (B8 fix).
-    in_flight: parking_lot::Mutex<HashMap<String, Arc<Notify>>>,
+    in_flight: parking_lot::Mutex<HashMap<String, Arc<InFlightEntry>>>,
     /// Per-credential circuit breakers via `nebula-resilience`.
     circuit_breakers: parking_lot::Mutex<LruCache<String, Arc<CircuitBreaker>>>,
     /// Global concurrency limiter for refresh operations.
@@ -97,23 +120,26 @@ impl fmt::Debug for RefreshCoordinator {
 }
 
 /// Result of attempting to begin a refresh for a credential.
+///
+/// Variants are intentionally **not** `#[non_exhaustive]` — the enum has
+/// exactly two cases by construction (either you're the first caller or
+/// you're not) and the caller must pattern-match both.
 #[derive(Debug)]
 pub enum RefreshAttempt {
-    /// This caller won the race -- should perform the refresh,
-    /// then call [`RefreshCoordinator::complete()`].
+    /// This caller won the race -- should perform the refresh, then call
+    /// [`RefreshCoordinator::complete()`] to wake waiters and release the
+    /// in-flight entry. Wrapping the call in a `scopeguard` is recommended
+    /// so the guarantee survives panics and error paths.
+    Winner,
+    /// Another caller is already refreshing. Await the receiver; it resolves
+    /// (either `Ok(())` or `Err(_)` when the winner drops the sender) as
+    /// soon as the winner completes.
     ///
-    /// Carries the [`Notify`] handle so the caller can wrap it in a
-    /// `scopeguard` to guarantee waiters are woken on any exit path
-    /// (panic, timeout, error).
-    Winner(
-        /// Handle to notify waiters when refresh completes.
-        Arc<Notify>,
-    ),
-    /// Another caller is already refreshing -- wait on the [`Notify`].
-    Waiter(
-        /// Handle to wait on until the winner completes.
-        Arc<Notify>,
-    ),
+    /// No lost-wakeup race: the sender was pushed into the in-flight entry
+    /// while holding the map mutex — the same mutex the winner holds when
+    /// it removes the entry — so a waiter's registration and a winner's
+    /// `complete()` are strictly ordered (GitHub issue #268).
+    Waiter(oneshot::Receiver<()>),
 }
 
 /// Default maximum number of concurrent refresh operations.
@@ -234,27 +260,46 @@ impl RefreshCoordinator {
     /// Attempts to begin a refresh for the given credential.
     ///
     /// Returns [`RefreshAttempt::Winner`] if this is the first caller
-    /// (should perform the refresh), or [`RefreshAttempt::Waiter`] if
-    /// another refresh is already in progress (should wait on the
-    /// returned [`Notify`]).
+    /// (should perform the refresh), or [`RefreshAttempt::Waiter`] with a
+    /// [`oneshot::Receiver`] if another refresh is already in progress.
+    ///
+    /// The waiter's sender is pushed into the in-flight entry while the
+    /// map mutex is still held. This closes the lost-wakeup race present
+    /// when the coordination primitive was `tokio::sync::Notify`: see
+    /// GitHub issue #268 and the module-level docs.
     pub fn try_refresh(&self, credential_id: &str) -> RefreshAttempt {
         let mut map = self.in_flight.lock();
-        if let Some(notify) = map.get(credential_id) {
-            RefreshAttempt::Waiter(Arc::clone(notify))
+        if let Some(entry) = map.get(credential_id) {
+            let (tx, rx) = oneshot::channel();
+            entry.senders.lock().push(tx);
+            RefreshAttempt::Waiter(rx)
         } else {
-            let notify = Arc::new(Notify::new());
-            map.insert(credential_id.to_string(), Arc::clone(&notify));
-            RefreshAttempt::Winner(notify)
+            let entry = Arc::new(InFlightEntry {
+                senders: parking_lot::Mutex::new(Vec::new()),
+            });
+            map.insert(credential_id.to_string(), entry);
+            RefreshAttempt::Winner
         }
     }
 
-    /// Removes the in-flight entry for the given credential.
+    /// Removes the in-flight entry for the given credential and wakes
+    /// every waiter registered against it.
     ///
     /// Called by the winner after refresh completes (success or failure).
     /// Sync so it can be called from a `scopeguard` drop to prevent
     /// permanent in-flight map poisoning on panic.
+    ///
+    /// A `oneshot::Sender::send` that fails (receiver dropped by a
+    /// cancelled waiter) is silently ignored — the cancelled task does
+    /// not need to be woken.
     pub fn complete(&self, credential_id: &str) {
-        self.in_flight.lock().remove(credential_id);
+        let entry = self.in_flight.lock().remove(credential_id);
+        if let Some(entry) = entry {
+            let senders = std::mem::take(&mut *entry.senders.lock());
+            for tx in senders {
+                let _ = tx.send(());
+            }
+        }
     }
 
     /// Returns the number of credentials currently being refreshed.
@@ -343,7 +388,7 @@ mod tests {
     async fn first_caller_wins() {
         let coord = RefreshCoordinator::new();
         let attempt = coord.try_refresh("cred-1");
-        assert!(matches!(attempt, RefreshAttempt::Winner(_)));
+        assert!(matches!(attempt, RefreshAttempt::Winner));
         assert_eq!(coord.in_flight_count(), 1);
     }
 
@@ -351,7 +396,7 @@ mod tests {
     async fn second_caller_waits() {
         let coord = RefreshCoordinator::new();
         let first = coord.try_refresh("cred-1");
-        assert!(matches!(first, RefreshAttempt::Winner(_)));
+        assert!(matches!(first, RefreshAttempt::Winner));
 
         let second = coord.try_refresh("cred-1");
         assert!(matches!(second, RefreshAttempt::Waiter(_)));
@@ -368,40 +413,27 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn complete_and_notify_wakes_waiters() {
+    async fn complete_wakes_waiters() {
         let coord = Arc::new(RefreshCoordinator::new());
 
-        // Winner starts refresh -- extract the Notify handle
-        let winner_notify = match coord.try_refresh("cred-1") {
-            RefreshAttempt::Winner(n) => n,
-            RefreshAttempt::Waiter(_) => panic!("expected Winner"),
+        // Winner starts refresh
+        assert!(matches!(
+            coord.try_refresh("cred-1"),
+            RefreshAttempt::Winner
+        ));
+
+        // Waiter gets the receiver
+        let waiter_rx = match coord.try_refresh("cred-1") {
+            RefreshAttempt::Waiter(rx) => rx,
+            RefreshAttempt::Winner => panic!("expected Waiter"),
         };
 
-        // Waiter gets Notify
-        let waiter_notify = match coord.try_refresh("cred-1") {
-            RefreshAttempt::Waiter(n) => n,
-            RefreshAttempt::Winner(_) => panic!("expected Waiter"),
-        };
+        let waiter = tokio::spawn(async move { waiter_rx.await.is_ok() });
 
-        // Use a oneshot to signal the waiter task is ready
-        let (ready_tx, ready_rx) = tokio::sync::oneshot::channel::<()>();
-
-        let waiter = tokio::spawn(async move {
-            let notified = waiter_notify.notified();
-            // Signal that we've registered interest
-            let _ = ready_tx.send(());
-            notified.await;
-            true
-        });
-
-        // Wait for waiter to register
-        ready_rx.await.unwrap();
-
-        // Winner completes: remove entry + notify (as scopeguard does in resolver)
+        // Winner completes: remove entry + drain senders
         coord.complete("cred-1");
-        winner_notify.notify_waiters();
 
-        // Waiter should have been woken
+        // Waiter observes the completion
         let result = waiter.await.unwrap();
         assert!(result);
     }
@@ -414,8 +446,8 @@ mod tests {
         let b = coord.try_refresh("cred-b");
 
         // Both should win -- different credentials
-        assert!(matches!(a, RefreshAttempt::Winner(_)));
-        assert!(matches!(b, RefreshAttempt::Winner(_)));
+        assert!(matches!(a, RefreshAttempt::Winner));
+        assert!(matches!(b, RefreshAttempt::Winner));
         assert_eq!(coord.in_flight_count(), 2);
 
         coord.complete("cred-a");
@@ -439,12 +471,12 @@ mod tests {
 
         // First round
         let first = coord.try_refresh("cred-1");
-        assert!(matches!(first, RefreshAttempt::Winner(_)));
+        assert!(matches!(first, RefreshAttempt::Winner));
         coord.complete("cred-1");
 
         // Second round -- same credential can be refreshed again
         let second = coord.try_refresh("cred-1");
-        assert!(matches!(second, RefreshAttempt::Winner(_)));
+        assert!(matches!(second, RefreshAttempt::Winner));
         coord.complete("cred-1");
     }
 
@@ -452,43 +484,60 @@ mod tests {
     async fn multiple_waiters_all_notified() {
         let coord = Arc::new(RefreshCoordinator::new());
 
-        // Winner -- extract Notify handle
-        let winner_notify = match coord.try_refresh("cred-1") {
-            RefreshAttempt::Winner(n) => n,
-            RefreshAttempt::Waiter(_) => panic!("expected Winner"),
-        };
+        // Winner
+        assert!(matches!(
+            coord.try_refresh("cred-1"),
+            RefreshAttempt::Winner
+        ));
 
-        // Create 5 waiters with readiness signals
+        // Create 5 waiters; each just awaits its receiver.
         let mut handles = Vec::new();
-        let mut ready_rxs = Vec::new();
         for _ in 0..5 {
-            let attempt = coord.try_refresh("cred-1");
-            let notify = match attempt {
-                RefreshAttempt::Waiter(n) => n,
-                RefreshAttempt::Winner(_) => panic!("expected Waiter"),
+            let rx = match coord.try_refresh("cred-1") {
+                RefreshAttempt::Waiter(rx) => rx,
+                RefreshAttempt::Winner => panic!("expected Waiter"),
             };
-            let (ready_tx, ready_rx) = tokio::sync::oneshot::channel::<()>();
-            ready_rxs.push(ready_rx);
-            handles.push(tokio::spawn(async move {
-                let notified = notify.notified();
-                let _ = ready_tx.send(());
-                notified.await;
-                true
-            }));
+            handles.push(tokio::spawn(async move { rx.await.is_ok() }));
         }
 
-        // Wait for all waiters to register
-        for rx in ready_rxs {
-            rx.await.unwrap();
-        }
-
-        // Complete + notify -- all waiters should wake
+        // Complete drains every sender
         coord.complete("cred-1");
-        winner_notify.notify_waiters();
 
         for handle in handles {
             assert!(handle.await.unwrap());
         }
+    }
+
+    /// Regression for GitHub issue #268: pushing the waiter's sender into
+    /// the in-flight entry happens under the same map mutex the winner
+    /// acquires in `complete()`, so the winner cannot race past a waiter's
+    /// registration. Exercises the tight timing that used to lose wakeups
+    /// under `Notify::notify_waiters()` (where the waiter had to
+    /// `enable()` its `Notified` future after the lock was released).
+    #[tokio::test]
+    async fn waiter_registered_under_lock_is_never_missed() {
+        let coord = Arc::new(RefreshCoordinator::new());
+
+        // Winner takes the entry.
+        assert!(matches!(
+            coord.try_refresh("cred-1"),
+            RefreshAttempt::Winner
+        ));
+
+        // Register a waiter then immediately complete — with the old
+        // Notify-based design, a post-return `enable()` could miss the
+        // wakeup fired here. With oneshot-under-lock, the sender is
+        // already in the entry's Vec when `complete()` drains it.
+        let rx = match coord.try_refresh("cred-1") {
+            RefreshAttempt::Waiter(rx) => rx,
+            RefreshAttempt::Winner => panic!("expected Waiter"),
+        };
+        coord.complete("cred-1");
+
+        tokio::time::timeout(Duration::from_millis(50), rx)
+            .await
+            .expect("waiter must observe completion even when it fires immediately")
+            .expect("sender must be fired, not dropped");
     }
 
     #[tokio::test]
@@ -541,7 +590,7 @@ mod tests {
 
         // Get Winner
         let attempt = coord.try_refresh("cred-1");
-        assert!(matches!(attempt, RefreshAttempt::Winner(_)));
+        assert!(matches!(attempt, RefreshAttempt::Winner));
         assert_eq!(coord.in_flight_count(), 1);
 
         // Drop without calling complete -- simulates panic before scopeguard
@@ -556,7 +605,7 @@ mod tests {
 
         // Next call should get Winner (entry was cleaned)
         let attempt2 = coord.try_refresh("cred-1");
-        assert!(matches!(attempt2, RefreshAttempt::Winner(_)));
+        assert!(matches!(attempt2, RefreshAttempt::Winner));
         coord.complete("cred-1");
     }
 
@@ -607,34 +656,26 @@ mod tests {
         assert_eq!(coord.available_permits(), 0);
     }
 
-    /// Pins the invariant the resolver's Waiter path relies on:
-    /// `Notified::enable()` registers the waiter *before* the first poll,
-    /// so a subsequent `notify_waiters()` will wake it.
-    ///
-    /// Without `enable()`, this is a classic lost-wakeup race: a winner
-    /// that calls `notify_waiters()` between `notify.notified()` returning
-    /// and the waiter polling it will find an empty waiter queue and leave
-    /// the waiter stalled. In the resolver that used to mean a 60-second
-    /// stall per lost wakeup before the post-wait store re-read could
-    /// rescue latency.
+    /// Regression guard: a waiter that drops its receiver (cancellation)
+    /// must not prevent the winner from completing — `oneshot::Sender::send`
+    /// on a dropped receiver returns `Err(_)` which we silently ignore.
     #[tokio::test]
-    async fn pre_enabled_notified_receives_notify_waiters() {
-        let notify = Arc::new(Notify::new());
+    async fn cancelled_waiter_does_not_stall_winner() {
+        let coord = Arc::new(RefreshCoordinator::new());
+        assert!(matches!(
+            coord.try_refresh("cred-1"),
+            RefreshAttempt::Winner
+        ));
 
-        // Create + pre-enable BEFORE the notify_waiters() call. This is
-        // the exact pattern in `resolver.rs::resolve_and_refresh`.
-        let notified = notify.notified();
-        tokio::pin!(notified);
-        notified.as_mut().enable();
+        // Register a waiter and then immediately drop the receiver
+        // (simulates the waiting task being cancelled before the winner
+        // completes). `complete()` must still run cleanly.
+        match coord.try_refresh("cred-1") {
+            RefreshAttempt::Waiter(rx) => drop(rx),
+            RefreshAttempt::Winner => panic!("expected Waiter"),
+        }
 
-        // Now fire notify_waiters *before* we poll the future for the
-        // first time. With enable() this is fine; without it this test
-        // would hang until timeout.
-        notify.notify_waiters();
-
-        // Pre-enabled future must complete effectively immediately.
-        tokio::time::timeout(Duration::from_millis(50), notified)
-            .await
-            .expect("pre-enabled Notified must wake after notify_waiters");
+        coord.complete("cred-1");
+        assert_eq!(coord.in_flight_count(), 0);
     }
 }
