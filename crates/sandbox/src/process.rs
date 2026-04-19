@@ -31,7 +31,11 @@
 //! (`poisoned` flag inside `PluginHandle`) and a sandbox-level one
 //! (`*self.handle.lock().await = None`).
 
-use std::{path::PathBuf, time::Duration};
+use std::{
+    path::PathBuf,
+    sync::atomic::{AtomicU64, Ordering},
+    time::Duration,
+};
 
 use async_trait::async_trait;
 use nebula_action::{ActionError, ActionMetadata, result::ActionResult};
@@ -44,6 +48,7 @@ use tokio::{
     process::{Child, Command},
     sync::Mutex,
 };
+use tokio_util::sync::CancellationToken;
 
 use crate::{
     SandboxRunner,
@@ -78,12 +83,6 @@ const ENVELOPE_LINE_CAP: usize = 1024 * 1024;
 /// newline-starved garbage and starve the host of memory).
 const STDERR_LINE_CAP: usize = 8 * 1024;
 
-/// Correlation id used for the single envelope sent per invocation.
-///
-/// Slice 1c still does one envelope exchange at a time per call. Slice 1d's
-/// concurrent dispatch assigns unique ids across multiple in-flight calls.
-const ONE_SHOT_ID: u64 = 1;
-
 /// Process sandbox: spawns the plugin binary once and keeps the connection
 /// alive for the lifetime of this sandbox instance.
 ///
@@ -104,6 +103,17 @@ pub struct ProcessSandbox {
     /// mutex — slice 1c is sequential per sandbox instance. Slice 1d can
     /// replace this with a lock-free handle once concurrent dispatch lands.
     handle: Mutex<Option<PluginHandle>>,
+    /// Monotonic correlation id source (#285). Each outbound envelope
+    /// gets a fresh id; `try_dispatch` verifies the response echoes it
+    /// back. A stale response (e.g. late reply to a cancelled call)
+    /// therefore can't be silently mis-associated with a fresh request
+    /// — ID mismatch poisons the transport.
+    ///
+    /// Persisted across plugin respawns — the plugin only sees a
+    /// monotone sequence from its own perspective (fresh process,
+    /// fresh socket, fresh id stream), but the host never reuses an
+    /// id across invocations within this sandbox instance's lifetime.
+    next_id: AtomicU64,
 }
 
 /// Live connection to a running plugin process.
@@ -299,6 +309,121 @@ where
     Ok(BoundedReadOutcome::Eof)
 }
 
+/// Classification of a [`ProcessSandbox::try_dispatch`] failure.
+///
+/// `dispatch_envelope` uses this to decide whether a failed attempt is
+/// eligible for a single respawn-and-retry. Only failures that demonstrably
+/// occurred **before** any envelope bytes landed on a running plugin
+/// process are retried — any other failure (cancellation, timeout,
+/// mid-round-trip transport error, protocol violation) is terminal because
+/// a retry would risk re-invoking a non-idempotent action on the plugin
+/// side. See `dispatch_envelope` docs and the #257 review for the full
+/// rationale.
+#[derive(Debug)]
+enum TryDispatchError {
+    /// The first attempt observed a stale handle (plugin crashed or
+    /// exited between calls). No envelope bytes reached a running plugin
+    /// process, so the outer [`ProcessSandbox::dispatch_envelope`] is
+    /// safe to respawn and retry exactly once.
+    Respawnable(ActionError),
+    /// Terminal for this dispatch — either cancellation, timeout, a
+    /// mid-round-trip transport error, a protocol violation, or a spawn
+    /// failure. Must NOT be retried silently; the engine's higher-level
+    /// retry policy (if any) remains free to retry externally, but the
+    /// sandbox itself has to surface the error as-is so cancellation and
+    /// fatal classifications round-trip correctly.
+    Terminal(ActionError),
+}
+
+impl TryDispatchError {
+    /// Classify a transport-layer [`SandboxError`] observed mid-round-trip.
+    ///
+    /// Only [`SandboxError::PluginClosed`] is respawn-eligible — every
+    /// other variant means we already put bytes on the wire to a plugin
+    /// process that either crashed mid-processing or violated the
+    /// protocol, and a blind retry would risk double-execution of a
+    /// non-idempotent action (see #257 review). The outer
+    /// [`ProcessSandbox::dispatch_envelope`] reads this classification
+    /// to decide whether to respawn and retry once.
+    fn from_sandbox_error(err: SandboxError) -> Self {
+        let respawnable = matches!(err, SandboxError::PluginClosed);
+        let action_err = sandbox_error_to_action_error(err);
+        if respawnable {
+            Self::Respawnable(action_err)
+        } else {
+            Self::Terminal(action_err)
+        }
+    }
+
+    /// `true` if [`ProcessSandbox::dispatch_envelope`] is allowed to
+    /// respawn the plugin and retry this envelope once.
+    #[cfg(test)]
+    fn is_respawnable(&self) -> bool {
+        matches!(self, Self::Respawnable(_))
+    }
+
+    /// Unwrap the carried [`ActionError`] once the dispatch-level retry
+    /// decision has been made.
+    fn into_action_error(self) -> ActionError {
+        match self {
+            Self::Respawnable(err) | Self::Terminal(err) => err,
+        }
+    }
+}
+
+/// Outcome of a [`race_cancel_timeout`] call.
+#[derive(Debug, PartialEq, Eq)]
+enum RaceOutcome<T> {
+    /// The inner future produced a value within the deadline and before
+    /// the cancellation token fired.
+    Ready(T),
+    /// The wall-clock deadline elapsed first. The inner future was
+    /// dropped mid-flight; callers must assume its side effects are
+    /// partially applied (writes may have reached the peer).
+    Timeout,
+    /// The optional cancellation token fired first. Same partial-side-effect
+    /// caveat as `Timeout` applies — the race only wins a snapshot of
+    /// progress, not a clean rollback.
+    Cancelled,
+}
+
+/// Race `fut` against a wall-clock deadline and (optionally) a
+/// [`CancellationToken`]. Used by [`ProcessSandbox::try_dispatch`] to
+/// honour both the per-call plugin timeout and the engine-wide
+/// cancellation contract — see #257.
+///
+/// When `cancel` is `Some`, the select is `biased` so a token that is
+/// already cancelled on entry is observed on the very first poll, before
+/// the roundtrip future is driven. When `cancel` is `None` (public helpers
+/// like `invoke` / `get_metadata` that run outside an execution context)
+/// the helper degrades to a plain `tokio::time::timeout`.
+async fn race_cancel_timeout<F, T>(
+    fut: F,
+    timeout: std::time::Duration,
+    cancel: Option<&CancellationToken>,
+) -> RaceOutcome<T>
+where
+    F: std::future::Future<Output = T>,
+{
+    let timed = tokio::time::timeout(timeout, fut);
+    match cancel {
+        Some(token) => {
+            tokio::select! {
+                biased;
+                () = token.cancelled() => RaceOutcome::Cancelled,
+                r = timed => match r {
+                    Ok(v) => RaceOutcome::Ready(v),
+                    Err(_) => RaceOutcome::Timeout,
+                },
+            }
+        },
+        None => match timed.await {
+            Ok(v) => RaceOutcome::Ready(v),
+            Err(_) => RaceOutcome::Timeout,
+        },
+    }
+}
+
 impl ProcessSandbox {
     /// Create a new process sandbox for a plugin binary.
     #[must_use]
@@ -309,7 +434,17 @@ impl ProcessSandbox {
             capabilities,
             linux_rlimits: LinuxRlimits::default(),
             handle: Mutex::new(None),
+            next_id: AtomicU64::new(1),
         }
+    }
+
+    /// Reserve the next monotonic correlation id for an outbound
+    /// envelope (#285). Uses `Relaxed` ordering — id allocation has no
+    /// happens-before requirement against any other memory op; we only
+    /// need uniqueness, which `fetch_add` guarantees regardless of
+    /// ordering.
+    fn next_envelope_id(&self) -> u64 {
+        self.next_id.fetch_add(1, Ordering::Relaxed)
     }
 
     /// Override Linux child-process rlimits for this sandbox instance.
@@ -326,19 +461,22 @@ impl ProcessSandbox {
         &self,
         action_key: &str,
         input: serde_json::Value,
+        cancel: Option<&CancellationToken>,
     ) -> Result<PluginToHost, ActionError> {
         let request = HostToPlugin::ActionInvoke {
-            id: ONE_SHOT_ID,
+            id: self.next_envelope_id(),
             action_key: action_key.to_owned(),
             input,
         };
-        self.dispatch_envelope(request).await
+        self.dispatch_envelope(request, cancel).await
     }
 
     /// Query plugin metadata via a `MetadataRequest` envelope.
     pub async fn get_metadata(&self) -> Result<PluginToHost, ActionError> {
-        let request = HostToPlugin::MetadataRequest { id: ONE_SHOT_ID };
-        self.dispatch_envelope(request).await
+        let request = HostToPlugin::MetadataRequest {
+            id: self.next_envelope_id(),
+        };
+        self.dispatch_envelope(request, None).await
     }
 
     /// High-level action invocation for host code outside the engine flow
@@ -356,7 +494,7 @@ impl ProcessSandbox {
         action_key: &str,
         input: serde_json::Value,
     ) -> Result<serde_json::Value, ActionError> {
-        let envelope = self.call_action(action_key, input).await?;
+        let envelope = self.call_action(action_key, input, None).await?;
         match envelope {
             PluginToHost::ActionResultOk { output, .. } => Ok(output),
             PluginToHost::ActionResultError {
@@ -380,41 +518,114 @@ impl ProcessSandbox {
     }
 
     /// Core long-lived dispatch. Reuses the cached [`PluginHandle`] if any,
-    /// spawns fresh otherwise. On transport error, clears the handle and
-    /// retries once.
-    async fn dispatch_envelope(&self, envelope: HostToPlugin) -> Result<PluginToHost, ActionError> {
-        let first_attempt = self.try_dispatch(envelope.clone()).await;
-        if first_attempt.is_ok() {
-            return first_attempt;
+    /// spawns fresh otherwise.
+    ///
+    /// Retry policy (review feedback on #257): we retry **only** when the
+    /// first attempt failed with [`TryDispatchError::Respawnable`] —
+    /// concretely, [`SandboxError::PluginClosed`] (stale handle, plugin
+    /// crashed between calls). Every other failure is terminal on the
+    /// first attempt:
+    ///
+    /// - `Cancelled` is returned as-is to honour the engine's cancellation contract (re-sending
+    ///   could duplicate a non-idempotent action after the caller gave up — see #257 review).
+    /// - Timeout, protocol violations (`ResponseIdMismatch`, `PluginLineTooLarge`,
+    ///   `HandshakeLineTooLarge`, `TransportPoisoned`, `MalformedEnvelope`), and I/O failures
+    ///   mid-round-trip are treated as terminal because the stream position is undefined after a
+    ///   partial write; a blind retry would risk duplicate side-effects on the plugin process.
+    async fn dispatch_envelope(
+        &self,
+        envelope: HostToPlugin,
+        cancel: Option<&CancellationToken>,
+    ) -> Result<PluginToHost, ActionError> {
+        match self.try_dispatch(envelope.clone(), cancel).await {
+            Ok(response) => Ok(response),
+            Err(TryDispatchError::Respawnable(_)) => {
+                // Stale handle — the plugin crashed or exited before we
+                // sent this envelope. Respawning and resending is safe
+                // because no bytes reached a running plugin process.
+                *self.handle.lock().await = None;
+                match self.try_dispatch(envelope, cancel).await {
+                    Ok(response) => Ok(response),
+                    Err(err) => Err(err.into_action_error()),
+                }
+            },
+            Err(err) => Err(err.into_action_error()),
         }
-        // Clear the stale handle and retry once with a fresh spawn.
-        *self.handle.lock().await = None;
-        self.try_dispatch(envelope).await
     }
 
-    async fn try_dispatch(&self, envelope: HostToPlugin) -> Result<PluginToHost, ActionError> {
+    async fn try_dispatch(
+        &self,
+        envelope: HostToPlugin,
+        cancel: Option<&CancellationToken>,
+    ) -> Result<PluginToHost, TryDispatchError> {
         let mut guard = self.handle.lock().await;
         if guard.is_none() {
-            *guard = Some(self.spawn_and_dial().await?);
+            // Spawn failure before any bytes are on the wire — no
+            // side-effect risk, but respawn-retrying a binary that just
+            // failed to start almost never helps. Classify as terminal.
+            let handle = self
+                .spawn_and_dial()
+                .await
+                .map_err(TryDispatchError::Terminal)?;
+            *guard = Some(handle);
         }
-        let handle = guard.as_mut().expect("handle set above");
+        let Some(handle) = guard.as_mut() else {
+            // Unreachable in practice: we just set `*guard = Some(..)`
+            // above. Prefer a typed fatal error over `expect(..)` so a
+            // hypothetical logic bug surfaces through the engine's
+            // standard error path instead of panicking inside the
+            // sandbox lock.
+            return Err(TryDispatchError::Terminal(ActionError::fatal(
+                "process sandbox handle missing after successful spawn",
+            )));
+        };
 
-        // Round-trip the envelope with a per-call timeout.
+        // Round-trip the envelope with a per-call timeout AND a race
+        // against the engine's cancellation token. Without the cancel
+        // arm, a cancelled workflow would have to wait out `self.timeout`
+        // on a hung or slow plugin before the engine could reclaim the
+        // slot — see #257.
         let envelope_tag = match &envelope {
             HostToPlugin::ActionInvoke { .. } => "action_invoke",
             HostToPlugin::MetadataRequest { .. } => "metadata_request",
             _ => "other",
         };
+        // Remember the outbound correlation id so we can validate the
+        // response echoes it back (#285).
+        let expected_id = request_id(&envelope);
 
-        let result = tokio::time::timeout(self.timeout, async {
+        let roundtrip = async {
             handle.send_envelope(&envelope).await?;
             handle.recv_envelope().await
-        })
-        .await;
+        };
 
-        match result {
-            Ok(Ok(response)) => Ok(response),
-            Ok(Err(sandbox_err)) => {
+        let outcome = race_cancel_timeout(roundtrip, self.timeout, cancel).await;
+
+        match outcome {
+            RaceOutcome::Ready(Ok(response)) => {
+                if let (Some(expected), Some(got)) = (expected_id, response_id(&response))
+                    && expected != got
+                {
+                    tracing::warn!(
+                        plugin = %self.binary.display(),
+                        envelope = %envelope_tag,
+                        expected,
+                        got,
+                        "plugin response id mismatch — poisoning handle",
+                    );
+                    *guard = None;
+                    // Protocol violation — must not retry. A stale
+                    // response on a fresh connection is indistinguishable
+                    // from an attacker replaying a prior reply, and a
+                    // retry on a fresh handle would still send a fresh
+                    // request the plugin may already have processed.
+                    return Err(TryDispatchError::Terminal(sandbox_error_to_action_error(
+                        SandboxError::ResponseIdMismatch { expected, got },
+                    )));
+                }
+                Ok(response)
+            },
+            RaceOutcome::Ready(Err(sandbox_err)) => {
                 // Transport/protocol error — invalidate the handle so the
                 // next call respawns. Log PluginLineTooLarge at warn so it
                 // shows up in security dashboards.
@@ -432,17 +643,36 @@ impl ProcessSandbox {
                     );
                 }
                 *guard = None;
-                Err(sandbox_error_to_action_error(sandbox_err))
+                Err(TryDispatchError::from_sandbox_error(sandbox_err))
             },
-            Err(_) => {
+            RaceOutcome::Timeout => {
                 // Timeout — also invalidate; we don't know if the plugin is
                 // still processing and we can't safely reuse the connection.
+                // Classified as terminal: silently retrying after the
+                // engine already gave up on this call would risk the
+                // plugin running the action twice (#257 review).
                 *guard = None;
-                Err(ActionError::retryable(format!(
+                Err(TryDispatchError::Terminal(ActionError::retryable(format!(
                     "plugin {} timed out on {envelope_tag} after {:?}",
                     self.binary.display(),
                     self.timeout
-                )))
+                ))))
+            },
+            RaceOutcome::Cancelled => {
+                // Cancellation observed mid-round-trip. We may have
+                // written part of an envelope to the plugin; the stream
+                // position is undefined, so drop the handle and force a
+                // respawn on the next call. Surface as `ActionError::Cancelled`
+                // so the engine honours the standard cancellation path —
+                // and crucially do NOT retry (would duplicate work the
+                // engine already asked us to abort; see #257 review).
+                *guard = None;
+                tracing::debug!(
+                    plugin = %self.binary.display(),
+                    envelope = %envelope_tag,
+                    "plugin dispatch cancelled via CancellationToken; clearing handle",
+                );
+                Err(TryDispatchError::Terminal(ActionError::Cancelled))
             },
         }
     }
@@ -768,10 +998,38 @@ fn sandbox_error_to_action_error(err: SandboxError) -> ActionError {
         SandboxError::PluginLineTooLarge { .. }
         | SandboxError::HandshakeLineTooLarge { .. }
         | SandboxError::HandshakeAddrMismatch { .. }
+        | SandboxError::ResponseIdMismatch { .. }
         | SandboxError::TransportPoisoned
         | SandboxError::Transport(_)
         | SandboxError::MalformedEnvelope(_)
         | SandboxError::HostMalformedEnvelope(_) => ActionError::fatal_from(err),
+    }
+}
+
+/// Correlation id carried by an outbound host→plugin envelope, if any.
+/// `Shutdown` has no id (it's one-way, no response expected); every
+/// other variant carries a `u64`.
+fn request_id(env: &HostToPlugin) -> Option<u64> {
+    match env {
+        HostToPlugin::ActionInvoke { id, .. }
+        | HostToPlugin::MetadataRequest { id }
+        | HostToPlugin::Cancel { id }
+        | HostToPlugin::RpcResponseOk { id, .. }
+        | HostToPlugin::RpcResponseError { id, .. } => Some(*id),
+        HostToPlugin::Shutdown => None,
+    }
+}
+
+/// Correlation id carried by an inbound plugin→host envelope, if any.
+/// `Log` is one-way and carries no correlation id; every other variant
+/// carries a `u64`.
+fn response_id(env: &PluginToHost) -> Option<u64> {
+    match env {
+        PluginToHost::ActionResultOk { id, .. }
+        | PluginToHost::ActionResultError { id, .. }
+        | PluginToHost::RpcCall { id, .. }
+        | PluginToHost::MetadataResponse { id, .. } => Some(*id),
+        PluginToHost::Log { .. } => None,
     }
 }
 
@@ -793,7 +1051,9 @@ impl SandboxRunner for ProcessSandbox {
             "executing action in process sandbox"
         );
 
-        let envelope = self.call_action(action_key, input).await?;
+        let envelope = self
+            .call_action(action_key, input, Some(context.cancellation()))
+            .await?;
         match envelope {
             PluginToHost::ActionResultOk { output, .. } => Ok(ActionResult::success(output)),
             PluginToHost::ActionResultError {
@@ -1424,5 +1684,307 @@ mod tests {
             a.starts_with(r"\\.\pipe\LOCAL\nebula-plugin-host-"),
             "pipe name must carry the host-plugin prefix, was {a:?}",
         );
+    }
+
+    // ---- race_cancel_timeout (#257 regression guard) -----------------
+
+    #[tokio::test]
+    async fn race_cancel_timeout_returns_ready_when_future_completes_first() {
+        let fut = async { 42u32 };
+        let outcome = race_cancel_timeout(fut, Duration::from_secs(1), None).await;
+        assert_eq!(outcome, RaceOutcome::Ready(42));
+    }
+
+    #[tokio::test]
+    async fn race_cancel_timeout_returns_timeout_without_cancel_arm() {
+        // A future that never completes, no cancel token → must time out
+        // within roughly the configured duration.
+        let fut = std::future::pending::<()>();
+        let outcome = race_cancel_timeout(fut, Duration::from_millis(25), None).await;
+        assert_eq!(outcome, RaceOutcome::Timeout);
+    }
+
+    #[tokio::test]
+    async fn race_cancel_timeout_observes_pre_cancelled_token_promptly() {
+        // If the cancellation token is already cancelled when we enter
+        // the race, the biased select must observe it on first poll
+        // WITHOUT polling the inner future. This is the core fix for
+        // #257: a cancelled workflow does not wait for `timeout`.
+        let token = CancellationToken::new();
+        token.cancel();
+
+        let start = std::time::Instant::now();
+        // `pending` future so the only way out is the cancel arm.
+        let fut = std::future::pending::<()>();
+        let outcome = race_cancel_timeout(fut, Duration::from_secs(30), Some(&token)).await;
+        let elapsed = start.elapsed();
+
+        assert_eq!(outcome, RaceOutcome::Cancelled);
+        assert!(
+            elapsed < Duration::from_millis(200),
+            "pre-cancelled token must resolve promptly, took {elapsed:?}",
+        );
+    }
+
+    #[tokio::test]
+    async fn race_cancel_timeout_wins_when_cancel_fires_mid_flight() {
+        // Future that never completes; fire the token shortly after the
+        // race starts. The cancel arm must win, not the timeout.
+        let token = CancellationToken::new();
+        let cancel_clone = token.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+            cancel_clone.cancel();
+        });
+
+        let fut = std::future::pending::<()>();
+        // Long enough timeout that the cancel arm is the one that wins.
+        let outcome = race_cancel_timeout(fut, Duration::from_secs(30), Some(&token)).await;
+        assert_eq!(outcome, RaceOutcome::Cancelled);
+    }
+
+    #[tokio::test]
+    async fn race_cancel_timeout_ready_wins_over_never_fired_cancel() {
+        // Token exists but is never cancelled → the inner future's
+        // Ready result wins normally.
+        let token = CancellationToken::new();
+        let fut = async { "ok" };
+        let outcome = race_cancel_timeout(fut, Duration::from_secs(1), Some(&token)).await;
+        assert_eq!(outcome, RaceOutcome::Ready("ok"));
+    }
+
+    #[tokio::test]
+    async fn race_cancel_timeout_timeout_wins_over_never_fired_cancel() {
+        // Token exists but is never cancelled → deadline still applies.
+        let token = CancellationToken::new();
+        let fut = std::future::pending::<()>();
+        let outcome = race_cancel_timeout(fut, Duration::from_millis(25), Some(&token)).await;
+        assert_eq!(outcome, RaceOutcome::Timeout);
+    }
+
+    // ---- #285 monotonic-id + id-matching regression tests ------------
+
+    #[test]
+    fn next_envelope_id_is_monotonic_and_unique() {
+        let sandbox = ProcessSandbox::new(
+            PathBuf::from("/nonexistent"),
+            Duration::from_secs(1),
+            PluginCapabilities::none(),
+        );
+        // Starts at 1 (not 0) so a default-zeroed response id is
+        // visibly stale.
+        let first = sandbox.next_envelope_id();
+        let second = sandbox.next_envelope_id();
+        let third = sandbox.next_envelope_id();
+        assert_eq!(first, 1);
+        assert_eq!(second, 2);
+        assert_eq!(third, 3);
+    }
+
+    #[test]
+    fn request_id_extracts_all_id_bearing_variants() {
+        let action = HostToPlugin::ActionInvoke {
+            id: 7,
+            action_key: String::from("k"),
+            input: serde_json::json!({}),
+        };
+        let meta = HostToPlugin::MetadataRequest { id: 8 };
+        let cancel = HostToPlugin::Cancel { id: 9 };
+        let rpc_ok = HostToPlugin::RpcResponseOk {
+            id: 10,
+            result: serde_json::json!({}),
+        };
+        let rpc_err = HostToPlugin::RpcResponseError {
+            id: 11,
+            code: String::from("c"),
+            message: String::from("m"),
+        };
+        let shutdown = HostToPlugin::Shutdown;
+
+        assert_eq!(request_id(&action), Some(7));
+        assert_eq!(request_id(&meta), Some(8));
+        assert_eq!(request_id(&cancel), Some(9));
+        assert_eq!(request_id(&rpc_ok), Some(10));
+        assert_eq!(request_id(&rpc_err), Some(11));
+        assert_eq!(
+            request_id(&shutdown),
+            None,
+            "Shutdown is one-way and has no correlation id",
+        );
+    }
+
+    #[test]
+    fn response_id_extracts_all_id_bearing_variants() {
+        let ok = PluginToHost::ActionResultOk {
+            id: 42,
+            output: serde_json::json!({}),
+        };
+        let err = PluginToHost::ActionResultError {
+            id: 43,
+            code: String::from("c"),
+            message: String::from("m"),
+            retryable: false,
+        };
+        let rpc = PluginToHost::RpcCall {
+            id: 44,
+            verb: String::from("v"),
+            params: serde_json::json!({}),
+        };
+        let meta = PluginToHost::MetadataResponse {
+            id: 45,
+            protocol_version: 2,
+            plugin_key: String::from("k"),
+            plugin_version: String::from("1.0.0"),
+            actions: Vec::new(),
+        };
+        let log = PluginToHost::Log {
+            level: nebula_plugin_sdk::protocol::LogLevel::Info,
+            message: String::from("hi"),
+            fields: serde_json::json!({}),
+        };
+
+        assert_eq!(response_id(&ok), Some(42));
+        assert_eq!(response_id(&err), Some(43));
+        assert_eq!(response_id(&rpc), Some(44));
+        assert_eq!(response_id(&meta), Some(45));
+        assert_eq!(
+            response_id(&log),
+            None,
+            "Log is one-way and has no correlation id",
+        );
+    }
+
+    #[test]
+    fn response_id_mismatch_converts_to_fatal_action_error() {
+        let err = SandboxError::ResponseIdMismatch {
+            expected: 42,
+            got: 41,
+        };
+        let ae = sandbox_error_to_action_error(err);
+        assert!(
+            matches!(ae, ActionError::Fatal { .. }),
+            "ResponseIdMismatch must classify as Fatal, got {ae:?}",
+        );
+    }
+
+    // ---- #257 review: narrowed dispatch retry policy -----------------
+    //
+    // The `dispatch_envelope` retry must only fire for
+    // [`SandboxError::PluginClosed`]. Retrying on `Cancelled`, `Timeout`,
+    // protocol violations, or mid-round-trip transport errors could
+    // double-invoke a non-idempotent action on the plugin side after the
+    // engine already gave up on the call.
+
+    #[test]
+    fn plugin_closed_classifies_as_respawnable() {
+        // The ONE respawn-eligible transport failure: plugin exited
+        // before we could read a response. Retrying respawns a fresh
+        // process and resends; no replay-on-the-wire risk because the
+        // original bytes were consumed by a now-dead process that
+        // produced no ActionResult.
+        let tde = TryDispatchError::from_sandbox_error(SandboxError::PluginClosed);
+        assert!(
+            tde.is_respawnable(),
+            "PluginClosed must classify as Respawnable, got {tde:?}",
+        );
+    }
+
+    #[test]
+    fn plugin_line_too_large_classifies_as_terminal() {
+        // DoS / protocol-abuse signal — MUST NOT be retried. A retry
+        // would simply respawn and forward another opportunity to abuse
+        // the cap; the security dashboard would also see one warn per
+        // attempt instead of a single clean failure.
+        let tde = TryDispatchError::from_sandbox_error(SandboxError::PluginLineTooLarge {
+            limit: 1024,
+            observed: 2048,
+        });
+        assert!(
+            !tde.is_respawnable(),
+            "PluginLineTooLarge must be Terminal (no retry), got {tde:?}",
+        );
+    }
+
+    #[test]
+    fn response_id_mismatch_classifies_as_terminal() {
+        // Protocol violation: a stale response must poison the call
+        // rather than silently retrying onto a fresh connection.
+        let tde = TryDispatchError::from_sandbox_error(SandboxError::ResponseIdMismatch {
+            expected: 42,
+            got: 41,
+        });
+        assert!(
+            !tde.is_respawnable(),
+            "ResponseIdMismatch must be Terminal, got {tde:?}",
+        );
+    }
+
+    #[test]
+    fn transport_poisoned_classifies_as_terminal() {
+        let tde = TryDispatchError::from_sandbox_error(SandboxError::TransportPoisoned);
+        assert!(
+            !tde.is_respawnable(),
+            "TransportPoisoned must be Terminal, got {tde:?}",
+        );
+    }
+
+    #[test]
+    fn handshake_line_too_large_classifies_as_terminal() {
+        let tde = TryDispatchError::from_sandbox_error(SandboxError::HandshakeLineTooLarge {
+            limit: 4096,
+            observed: 8192,
+        });
+        assert!(
+            !tde.is_respawnable(),
+            "HandshakeLineTooLarge must be Terminal, got {tde:?}",
+        );
+    }
+
+    #[test]
+    fn malformed_envelope_classifies_as_terminal() {
+        // The plugin spoke but produced a non-envelope. The outer
+        // handle is already dropped by try_dispatch; retrying would
+        // spawn fresh and blindly resend — but the reviewer's concern
+        // is that any envelope that reached the plugin may have had a
+        // side effect. Classify terminal to match the general rule.
+        let parse_err = serde_json::from_str::<serde_json::Value>("{")
+            .expect_err("fixture must produce serde_json::Error");
+        let tde = TryDispatchError::from_sandbox_error(SandboxError::MalformedEnvelope(parse_err));
+        assert!(
+            !tde.is_respawnable(),
+            "MalformedEnvelope must be Terminal, got {tde:?}",
+        );
+    }
+
+    #[test]
+    fn host_malformed_envelope_classifies_as_terminal() {
+        // Host-side serialize failure — no bytes on the wire, but no
+        // point retrying a deterministic host bug.
+        let parse_err = serde_json::from_str::<serde_json::Value>("{")
+            .expect_err("fixture must produce serde_json::Error");
+        let tde =
+            TryDispatchError::from_sandbox_error(SandboxError::HostMalformedEnvelope(parse_err));
+        assert!(
+            !tde.is_respawnable(),
+            "HostMalformedEnvelope must be Terminal, got {tde:?}",
+        );
+    }
+
+    #[test]
+    fn terminal_and_respawnable_into_action_error_round_trip() {
+        // Both classifications must carry the underlying ActionError
+        // through unmodified — the classification only governs the
+        // dispatch-level retry decision, never the error surfaced to
+        // the engine.
+        let respawn = TryDispatchError::Respawnable(ActionError::fatal("r"));
+        assert!(matches!(
+            respawn.into_action_error(),
+            ActionError::Fatal { .. }
+        ));
+        let terminal = TryDispatchError::Terminal(ActionError::Cancelled);
+        assert!(matches!(
+            terminal.into_action_error(),
+            ActionError::Cancelled
+        ));
     }
 }

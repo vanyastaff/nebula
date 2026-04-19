@@ -25,6 +25,7 @@ tempfile = { workspace = true }
 thiserror = { workspace = true }
 tracing = { workspace = true }
 tokio = { workspace = true, features = ["process", "io-util", "sync", "net"] }
+tokio-util = { workspace = true }
 uuid = { workspace = true }
 
 # OS-level sandbox (Linux only)

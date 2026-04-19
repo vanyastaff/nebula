@@ -4,6 +4,7 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use nebula_action::{ActionContext, ActionError, ActionMetadata, result::ActionResult};
+use tokio_util::sync::CancellationToken;
 
 /// Sandboxed execution context wrapping an [`ActionContext`].
 ///
@@ -25,6 +26,13 @@ impl SandboxedContext {
         } else {
             Ok(())
         }
+    }
+
+    /// Borrow the cancellation token for long-running dispatch paths that
+    /// need to `select!` against it (e.g. the process-sandbox plugin
+    /// round-trip).
+    pub fn cancellation(&self) -> &CancellationToken {
+        &self.context.cancellation
     }
 
     /// Access the inner [`ActionContext`].
