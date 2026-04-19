@@ -15,6 +15,7 @@ documentation.workspace = true
 nebula-error = { workspace = true, features = ["derive"] }
 nebula-storage = { path = "../storage" }
 nebula-core = { path = "../core" }
+nebula-execution = { path = "../execution" }
 nebula-validator = { path = "../validator" }
 nebula-metrics = { path = "../metrics" }
 nebula-telemetry = { path = "../telemetry" }
