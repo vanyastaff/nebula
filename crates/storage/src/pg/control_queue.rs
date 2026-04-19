@@ -800,4 +800,49 @@ mod tests {
                 .unwrap();
         assert_eq!(fresh_rows, 1, "fresh Completed row survives cleanup");
     }
+
+    #[tokio::test]
+    async fn claim_pending_skip_locked_prevents_double_claim() {
+        let Some(pool) = pool().await else { return };
+        let _guard = TEST_LOCK.lock().await;
+        clean_control_queue(&pool).await;
+        let repo = std::sync::Arc::new(PgControlQueueRepo::new(pool.clone()));
+        let exec_id = seed_execution_parent_chain(&pool).await;
+
+        // Enqueue a batch of 20 pending rows.
+        let mut enqueued_ids = std::collections::HashSet::new();
+        for _ in 0..20 {
+            let entry = pending_entry(&exec_id);
+            enqueued_ids.insert(entry.id.clone());
+            repo.enqueue(&entry).await.unwrap();
+        }
+
+        // Fire two concurrent claimers; together they should cover
+        // exactly 20 rows with zero overlap.
+        let repo_a = repo.clone();
+        let repo_b = repo.clone();
+        let h_a = tokio::spawn(async move { repo_a.claim_pending(b"runner-a", 20).await.unwrap() });
+        let h_b = tokio::spawn(async move { repo_b.claim_pending(b"runner-b", 20).await.unwrap() });
+        let claimed_a = h_a.await.unwrap();
+        let claimed_b = h_b.await.unwrap();
+
+        let ids_a: std::collections::HashSet<_> = claimed_a.iter().map(|e| e.id.clone()).collect();
+        let ids_b: std::collections::HashSet<_> = claimed_b.iter().map(|e| e.id.clone()).collect();
+        let overlap: Vec<_> = ids_a.intersection(&ids_b).collect();
+        assert!(
+            overlap.is_empty(),
+            "runners claimed the same row twice: {:?}",
+            overlap
+        );
+        // The 20 rows we enqueued here must all be among the claimed set
+        // (union). Other test runs may have left rows; we don't assert
+        // the total, just our slice.
+        let union: std::collections::HashSet<_> = ids_a.union(&ids_b).cloned().collect();
+        for id in &enqueued_ids {
+            assert!(
+                union.contains(id),
+                "our enqueued row missing from claim union: {id:?}"
+            );
+        }
+    }
 }
