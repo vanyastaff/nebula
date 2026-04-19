@@ -1,6 +1,6 @@
 use std::time::Duration;
 
-use nebula_sandbox::discovery;
+use nebula_sandbox::{capabilities::PluginCapabilities, discovery};
 
 use crate::plugins;
 
@@ -26,7 +26,10 @@ pub async fn list() {
             continue;
         }
 
-        let plugins = discovery::discover_directory(dir, Duration::from_secs(5)).await;
+        // TODO: load per-deployment capability policy from CLI config.
+        let plugins =
+            discovery::discover_directory(dir, Duration::from_secs(5), PluginCapabilities::none())
+                .await;
 
         for (name, handlers) in &plugins {
             println!("  {name}");
