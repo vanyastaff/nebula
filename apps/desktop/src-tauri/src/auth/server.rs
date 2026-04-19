@@ -1,8 +1,10 @@
 use std::time::Duration;
 
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
-use tokio::net::TcpListener;
-use tokio::time::timeout;
+use tokio::{
+    io::{AsyncReadExt, AsyncWriteExt},
+    net::TcpListener,
+    time::timeout,
+};
 
 /// Result of a successful OAuth callback capture.
 #[derive(Debug)]
@@ -44,7 +46,8 @@ pub const CALLBACK_PATH: &str = "/auth/github/callback";
 /// and returns the first one that succeeds; fails only when every port in the
 /// range is already in use. Returns the chosen port alongside a future that
 /// resolves to the callback result (#293).
-pub async fn start_callback_server() -> Result<(u16, tokio::task::JoinHandle<Result<CallbackResult, String>>), String> {
+pub async fn start_callback_server(
+) -> Result<(u16, tokio::task::JoinHandle<Result<CallbackResult, String>>), String> {
     let (listener, port) = bind_in_range(CALLBACK_PORT_MIN, CALLBACK_PORT_MAX).await?;
 
     let handle = tokio::spawn(async move {
@@ -59,11 +62,23 @@ pub async fn start_callback_server() -> Result<(u16, tokio::task::JoinHandle<Res
 }
 
 async fn bind_in_range(min: u16, max: u16) -> Result<(TcpListener, u16), String> {
+    if min > max {
+        return Err(format!(
+            "invalid OAuth callback port range: min ({min}) must be <= max ({max})"
+        ));
+    }
     let mut last_err: Option<String> = None;
     for port in min..=max {
         match TcpListener::bind(("127.0.0.1", port)).await {
             Ok(listener) => return Ok((listener, port)),
-            Err(e) => last_err = Some(e.to_string()),
+            Err(e) if e.kind() == std::io::ErrorKind::AddrInUse => {
+                last_err = Some(e.to_string());
+            },
+            Err(e) => {
+                return Err(format!(
+                    "failed to bind OAuth callback server on port {port}: {e}"
+                ));
+            },
         }
     }
     Err(format!(
@@ -114,10 +129,7 @@ fn parse_callback_params(request: &str) -> Result<CallbackResult, String> {
         .and_then(|line| line.split_whitespace().nth(1))
         .ok_or("invalid HTTP request")?;
 
-    let query = path
-        .split_once('?')
-        .map(|(_, q)| q)
-        .unwrap_or("");
+    let query = path.split_once('?').map(|(_, q)| q).unwrap_or("");
 
     let params: Vec<(String, String)> = url::form_urlencoded::parse(query.as_bytes())
         .map(|(k, v)| (k.to_string(), v.to_string()))
@@ -144,7 +156,8 @@ mod tests {
 
     #[test]
     fn parse_valid_callback() {
-        let req = "GET /auth/github/callback?code=abc123&state=xyz HTTP/1.1\r\nHost: localhost\r\n\r\n";
+        let req =
+            "GET /auth/github/callback?code=abc123&state=xyz HTTP/1.1\r\nHost: localhost\r\n\r\n";
         let result = parse_callback_params(req).unwrap();
         assert_eq!(result.code, "abc123");
         assert_eq!(result.state, "xyz");
@@ -167,20 +180,21 @@ mod tests {
     /// of returning `AddrInUse`.
     #[tokio::test]
     async fn bind_in_range_falls_through_to_next_free_port() {
-        // Hold the first port in the range so the first bind attempt fails.
-        let _blocker = TcpListener::bind(("127.0.0.1", CALLBACK_PORT_MIN))
+        // Use an ephemeral base port to avoid colliding with whatever is bound
+        // at the fixed CALLBACK_PORT_MIN on the host running the test.
+        let blocker = TcpListener::bind(("127.0.0.1", 0))
             .await
-            .expect("first port should be bindable in a fresh test env");
+            .expect("ephemeral bind works");
+        let base = blocker.local_addr().unwrap().port();
+        // Small runtime-selected range starting at the blocked port.
+        let max = base.saturating_add(4);
 
-        let (_listener, port) = bind_in_range(CALLBACK_PORT_MIN, CALLBACK_PORT_MAX)
+        let (_listener, port) = bind_in_range(base, max)
             .await
-            .expect("second port in range should be free");
+            .expect("a free port above the blocker should be available");
         assert!(
-            port > CALLBACK_PORT_MIN && port <= CALLBACK_PORT_MAX,
-            "expected port in range ({}, {}], got {}",
-            CALLBACK_PORT_MIN,
-            CALLBACK_PORT_MAX,
-            port,
+            port > base && port <= max,
+            "expected port in range ({base}, {max}], got {port}",
         );
     }
 
@@ -189,22 +203,14 @@ mod tests {
     /// in use" message for a range bind.
     #[tokio::test]
     async fn bind_in_range_reports_when_fully_saturated() {
-        // Grab a single narrow two-port range and occupy both ports.
-        let a = TcpListener::bind(("127.0.0.1", 0))
+        // Two ephemeral ports from the OS are rarely contiguous, so hold a
+        // single ephemeral port and ask the helper for a one-port range.
+        let held = TcpListener::bind(("127.0.0.1", 0))
             .await
             .expect("ephemeral bind works");
-        let b = TcpListener::bind(("127.0.0.1", 0))
-            .await
-            .expect("ephemeral bind works");
-        let port_a = a.local_addr().unwrap().port();
-        let port_b = b.local_addr().unwrap().port();
-        let (lo, hi) = if port_a <= port_b {
-            (port_a, port_b)
-        } else {
-            (port_b, port_a)
-        };
+        let port = held.local_addr().unwrap().port();
 
-        let err = bind_in_range(lo, hi)
+        let err = bind_in_range(port, port)
             .await
             .expect_err("range fully occupied must error");
         assert!(
