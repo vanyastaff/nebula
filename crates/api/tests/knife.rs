@@ -67,6 +67,14 @@ impl nebula_storage::repos::ControlQueueRepo for AlwaysFailControlQueueRepo {
         Ok(())
     }
 
+    async fn reclaim_stuck(
+        &self,
+        _reclaim_after: std::time::Duration,
+        _max_reclaim_count: u32,
+    ) -> Result<nebula_storage::repos::ReclaimOutcome, nebula_storage::StorageError> {
+        Ok(nebula_storage::repos::ReclaimOutcome::default())
+    }
+
     async fn cleanup(
         &self,
         _retention: std::time::Duration,

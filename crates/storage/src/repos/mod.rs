@@ -4,7 +4,7 @@
 //!
 //! | Trait | Status | Notes |
 //! |---|---|---|
-//! | `ControlQueueRepo` + `InMemoryControlQueueRepo` | **implemented** | Produced by the API start / cancel handlers; consumed by `nebula_engine::ControlConsumer`. All five commands — `Start` / `Resume` / `Restart` / `Cancel` / `Terminate` — are dispatched via `nebula_engine::EngineControlDispatch` (ADR-0008 A2 + A3). Safe to depend on as a storage port. |
+//! | `ControlQueueRepo` + `InMemoryControlQueueRepo` | **implemented** | Produced by the API start / cancel handlers; consumed by `nebula_engine::ControlConsumer`. All five commands — `Start` / `Resume` / `Restart` / `Cancel` / `Terminate` — are dispatched via `nebula_engine::EngineControlDispatch` (ADR-0008 A2 + A3). Crashed-runner reclaim sweep wired via `reclaim_stuck` (ADR-0008 B1 / ADR-0017). Safe to depend on as a storage port. |
 //! | `ExecutionRepo`, `WorkflowRepo`, `ExecutionNodeRepo`, `JournalRepo` | **planned** | Trait definitions only — zero in-memory / Postgres implementations exist in this crate. Engine and API cannot compile against these signatures today. |
 //! | `AuditRepo`, `BlobRepo`, `CredentialRepo`, `QuotaRepo`, `ResourceRepo`, `TriggerRepo`, `UserRepo`, `OrgRepo`, `WorkspaceRepo` | **planned** (some with partial Postgres glue) | Same caveat. |
 //!
@@ -55,7 +55,7 @@ mod workspace;
 pub use audit::AuditRepo;
 pub use blob::BlobRepo;
 pub use control_queue::{
-    ControlCommand, ControlQueueEntry, ControlQueueRepo, InMemoryControlQueueRepo,
+    ControlCommand, ControlQueueEntry, ControlQueueRepo, InMemoryControlQueueRepo, ReclaimOutcome,
 };
 pub use credential::CredentialRepo;
 pub use execution::ExecutionRepo;

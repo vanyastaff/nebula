@@ -329,6 +329,7 @@ pub(crate) async fn enqueue_start(state: &AppState, execution_id: ExecutionId) -
         processed_by: None,
         processed_at: None,
         error_message: None,
+        reclaim_count: 0,
     };
     state.control_queue_repo.enqueue(&entry).await.map_err(|e| {
         use nebula_storage::StorageError;
@@ -454,6 +455,7 @@ pub async fn cancel_execution(
         processed_by: None,
         processed_at: None,
         error_message: None,
+        reclaim_count: 0,
     };
     state
         .control_queue_repo

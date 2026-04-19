@@ -98,6 +98,7 @@ fn queue_entry(
         processed_by: None,
         processed_at: None,
         error_message: None,
+        reclaim_count: 0,
     }
 }
 
