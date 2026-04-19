@@ -8,6 +8,7 @@ use std::time::Duration;
 use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64};
 use chrono::Utc;
 use serde_json::Value;
+use zeroize::Zeroizing;
 
 use super::{
     oauth2::OAuth2State,
@@ -81,6 +82,13 @@ pub(crate) fn build_auth_url(
 }
 
 /// Exchange client credentials for an access token (Client Credentials grant).
+///
+/// `client_secret` must be borrowed from a zeroizing buffer (typically
+/// `Zeroizing<String>` materialised from a `SecretString` at the caller).
+/// This function never owns a plaintext `String` copy of the secret — the
+/// form body is built from `&str` borrows so our intermediate heap is bounded
+/// by the caller's zeroize discipline. `reqwest` still maintains its own
+/// URL-encoded body buffer which we cannot zeroize.
 pub(crate) async fn exchange_client_credentials(
     config: &OAuth2Config,
     client_id: &str,
@@ -88,24 +96,30 @@ pub(crate) async fn exchange_client_credentials(
 ) -> Result<OAuth2State, CredentialError> {
     let client = http_client();
 
-    let mut form: Vec<(&str, String)> = vec![("grant_type", "client_credentials".into())];
+    let scope_joined = config.scopes.join(" ");
+    let mut form: Vec<(&str, &str)> = vec![("grant_type", "client_credentials")];
 
     if !config.scopes.is_empty() {
-        form.push(("scope", config.scopes.join(" ")));
+        form.push(("scope", &scope_joined));
     }
 
     let mut req = client.post(&config.token_url);
 
     match config.auth_style {
         AuthStyle::Header => {
-            let credentials = BASE64.encode(format!("{client_id}:{client_secret}"));
+            // Wrap the colon-joined plaintext so the intermediate scrubs on drop;
+            // the BASE64 output is still fed to reqwest unzeroized (out of our hands).
+            let basic_plaintext: Zeroizing<String> =
+                Zeroizing::new(format!("{client_id}:{client_secret}"));
+            let credentials: Zeroizing<String> =
+                Zeroizing::new(BASE64.encode(basic_plaintext.as_bytes()));
             req = req
-                .header("Authorization", format!("Basic {credentials}"))
+                .header("Authorization", format!("Basic {}", credentials.as_str()))
                 .form(&form);
         },
         AuthStyle::PostBody => {
-            form.push(("client_id", client_id.to_owned()));
-            form.push(("client_secret", client_secret.to_owned()));
+            form.push(("client_id", client_id));
+            form.push(("client_secret", client_secret));
             req = req.form(&form);
         },
     }
@@ -131,6 +145,10 @@ pub(crate) async fn exchange_client_credentials(
 /// `code_verifier` must be the same value whose SHA256 was sent as
 /// `code_challenge` in [`build_auth_url`]. `redirect_uri` must byte-match
 /// the one on the original auth request (RFC 6749 §4.1.3).
+///
+/// `code_verifier` and `client_secret` should be borrowed from zeroizing
+/// buffers at the caller — this function builds the form body from `&str`
+/// references so no plaintext `String` copy is produced on our heap.
 pub(crate) async fn exchange_authorization_code(
     config: &OAuth2Config,
     client_id: &str,
@@ -154,9 +172,12 @@ pub(crate) async fn exchange_authorization_code(
 
     match config.auth_style {
         AuthStyle::Header => {
-            let credentials = BASE64.encode(format!("{client_id}:{client_secret}"));
+            let basic_plaintext: Zeroizing<String> =
+                Zeroizing::new(format!("{client_id}:{client_secret}"));
+            let credentials: Zeroizing<String> =
+                Zeroizing::new(BASE64.encode(basic_plaintext.as_bytes()));
             req = req
-                .header("Authorization", format!("Basic {credentials}"))
+                .header("Authorization", format!("Basic {}", credentials.as_str()))
                 .form(&form);
         },
         AuthStyle::PostBody => {
@@ -191,23 +212,27 @@ pub(crate) async fn exchange_authorization_code(
 /// `redirect_uri`. When [`AuthStyle::PostBody`] is used, `client_id` and
 /// `client_secret` are appended; otherwise they are carried in the
 /// `Authorization: Basic` header by the caller.
-pub(crate) fn compose_auth_code_form(
-    code: &str,
-    code_verifier: &str,
-    redirect_uri: &str,
-    client_id: &str,
-    client_secret: &str,
+///
+/// Returns borrowed `&str` slices rather than owned `String`s so the
+/// caller's zeroizing buffers are not duplicated onto an extra heap copy
+/// (GitHub issue #265).
+pub(crate) fn compose_auth_code_form<'a>(
+    code: &'a str,
+    code_verifier: &'a str,
+    redirect_uri: &'a str,
+    client_id: &'a str,
+    client_secret: &'a str,
     auth_style: AuthStyle,
-) -> Vec<(&'static str, String)> {
-    let mut form: Vec<(&'static str, String)> = vec![
-        ("grant_type", "authorization_code".into()),
-        ("code", code.to_owned()),
-        ("code_verifier", code_verifier.to_owned()),
-        ("redirect_uri", redirect_uri.to_owned()),
+) -> Vec<(&'static str, &'a str)> {
+    let mut form: Vec<(&'static str, &'a str)> = vec![
+        ("grant_type", "authorization_code"),
+        ("code", code),
+        ("code_verifier", code_verifier),
+        ("redirect_uri", redirect_uri),
     ];
     if matches!(auth_style, AuthStyle::PostBody) {
-        form.push(("client_id", client_id.to_owned()));
-        form.push(("client_secret", client_secret.to_owned()));
+        form.push(("client_id", client_id));
+        form.push(("client_secret", client_secret));
     }
     form
 }
@@ -233,9 +258,10 @@ pub(crate) async fn request_device_code(
 ) -> Result<DeviceCodeResponse, CredentialError> {
     let client = http_client();
 
-    let mut form = vec![("client_id", client_id.to_owned())];
+    let scope_joined = config.scopes.join(" ");
+    let mut form: Vec<(&str, &str)> = vec![("client_id", client_id)];
     if !config.scopes.is_empty() {
-        form.push(("scope", config.scopes.join(" ")));
+        form.push(("scope", &scope_joined));
     }
 
     let resp = client
@@ -308,26 +334,26 @@ pub(crate) async fn poll_device_code(
 
     let client = http_client();
 
-    let mut form: Vec<(&str, String)> = vec![
-        (
-            "grant_type",
-            "urn:ietf:params:oauth:grant-type:device_code".into(),
-        ),
-        ("device_code", device_code.to_owned()),
+    let mut form: Vec<(&str, &str)> = vec![
+        ("grant_type", "urn:ietf:params:oauth:grant-type:device_code"),
+        ("device_code", device_code),
     ];
 
     let mut req = client.post(&config.token_url);
 
     match config.auth_style {
         AuthStyle::Header => {
-            let credentials = BASE64.encode(format!("{client_id}:{client_secret}"));
+            let basic_plaintext: Zeroizing<String> =
+                Zeroizing::new(format!("{client_id}:{client_secret}"));
+            let credentials: Zeroizing<String> =
+                Zeroizing::new(BASE64.encode(basic_plaintext.as_bytes()));
             req = req
-                .header("Authorization", format!("Basic {credentials}"))
+                .header("Authorization", format!("Basic {}", credentials.as_str()))
                 .form(&form);
         },
         AuthStyle::PostBody => {
-            form.push(("client_id", client_id.to_owned()));
-            form.push(("client_secret", client_secret.to_owned()));
+            form.push(("client_id", client_id));
+            form.push(("client_secret", client_secret));
             req = req.form(&form);
         },
     }
@@ -372,6 +398,15 @@ pub(crate) async fn poll_device_code(
 /// Mutates `state` in place: updates `access_token`, `expires_at`, and
 /// optionally `refresh_token` and `token_type` from the response.
 ///
+/// # Secret materialization (GitHub issue #265)
+///
+/// `refresh_token`, `client_id`, and `client_secret` are materialised into
+/// `Zeroizing<String>` buffers that scrub on drop. The form body is built
+/// from `&str` borrows into these buffers — we do not give `reqwest`
+/// ownership of our plaintext copies. `reqwest` still maintains an internal
+/// URL-encoded body buffer (and TLS write buffer) that we cannot zeroize;
+/// that residency is bounded by the HTTP round-trip.
+///
 /// # Errors
 ///
 /// Returns `CredentialError::Provider` if no `refresh_token` is available
@@ -380,22 +415,25 @@ pub(crate) async fn refresh_token(
     state: &mut OAuth2State,
     config: &OAuth2Config,
 ) -> Result<(), CredentialError> {
-    let refresh_tok = state
-        .refresh_token
-        .as_ref()
-        .ok_or_else(|| provider_error("no refresh_token available for token refresh".into()))?
-        .expose_secret(|s| s.to_owned());
+    let refresh_tok: Zeroizing<String> = Zeroizing::new(
+        state
+            .refresh_token
+            .as_ref()
+            .ok_or_else(|| provider_error("no refresh_token available for token refresh".into()))?
+            .expose_secret(|s| s.to_owned()),
+    );
+    let client_id: Zeroizing<String> =
+        Zeroizing::new(state.client_id.expose_secret(|s| s.to_owned()));
+    let client_secret: Zeroizing<String> =
+        Zeroizing::new(state.client_secret.expose_secret(|s| s.to_owned()));
 
-    let client_id = state.client_id.expose_secret(|s| s.to_owned());
-    let client_secret_str = state.client_secret.expose_secret(|s| s.to_owned());
-
-    let mut form: Vec<(&str, String)> = vec![
-        ("grant_type", "refresh_token".into()),
-        ("refresh_token", refresh_tok),
+    let scope_joined = config.scopes.join(" ");
+    let mut form: Vec<(&str, &str)> = vec![
+        ("grant_type", "refresh_token"),
+        ("refresh_token", refresh_tok.as_str()),
     ];
-
     if !config.scopes.is_empty() {
-        form.push(("scope", config.scopes.join(" ")));
+        form.push(("scope", &scope_joined));
     }
 
     let client = http_client();
@@ -403,14 +441,17 @@ pub(crate) async fn refresh_token(
 
     match config.auth_style {
         AuthStyle::Header => {
-            let credentials = BASE64.encode(format!("{client_id}:{client_secret_str}"));
+            let basic_plaintext: Zeroizing<String> =
+                Zeroizing::new(format!("{}:{}", client_id.as_str(), client_secret.as_str()));
+            let credentials: Zeroizing<String> =
+                Zeroizing::new(BASE64.encode(basic_plaintext.as_bytes()));
             req = req
-                .header("Authorization", format!("Basic {credentials}"))
+                .header("Authorization", format!("Basic {}", credentials.as_str()))
                 .form(&form);
         },
         AuthStyle::PostBody => {
-            form.push(("client_id", client_id));
-            form.push(("client_secret", client_secret_str));
+            form.push(("client_id", client_id.as_str()));
+            form.push(("client_secret", client_secret.as_str()));
             req = req.form(&form);
         },
     }
@@ -648,10 +689,10 @@ mod tests {
         assert_eq!(
             form,
             vec![
-                ("grant_type", "authorization_code".into()),
-                ("code", "the_code".into()),
-                ("code_verifier", "the_verifier".into()),
-                ("redirect_uri", "https://cb.example/path".into()),
+                ("grant_type", "authorization_code"),
+                ("code", "the_code"),
+                ("code_verifier", "the_verifier"),
+                ("redirect_uri", "https://cb.example/path"),
             ]
         );
     }
@@ -662,12 +703,12 @@ mod tests {
         assert_eq!(
             form,
             vec![
-                ("grant_type", "authorization_code".into()),
-                ("code", "c".into()),
-                ("code_verifier", "v".into()),
-                ("redirect_uri", "r".into()),
-                ("client_id", "cid".into()),
-                ("client_secret", "csecret".into()),
+                ("grant_type", "authorization_code"),
+                ("code", "c"),
+                ("code_verifier", "v"),
+                ("redirect_uri", "r"),
+                ("client_id", "cid"),
+                ("client_secret", "csecret"),
             ]
         );
     }

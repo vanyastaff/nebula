@@ -511,22 +511,20 @@ impl Credential for OAuth2Credential {
                     .as_deref()
                     .ok_or_else(|| CredentialError::InvalidInput(FAILED.into()))?;
 
-                // TODO(BL-C7-13, issue #265): these materialise plaintext
-                // `String`s that live until the HTTP round-trip drops them
-                // without zeroization. Wrap in `Zeroizing<String>` when
-                // that issue lands so the heap is scrubbed on drop. The
-                // window is narrow — `PendingStoreMemory::consume` wipes
-                // the pending row in the same call — but narrow is not
-                // zero.
-                let client_secret = pending.client_secret.expose_secret(|s| s.to_owned());
-                let code_verifier = verifier_secret.expose_secret(|s| s.to_owned());
+                // Zeroizing<String> scrubs the intermediate plaintext on drop.
+                // Downstream oauth2_flow::exchange_authorization_code builds the
+                // form body from &str borrows (GitHub issue #265).
+                let client_secret: zeroize::Zeroizing<String> =
+                    zeroize::Zeroizing::new(pending.client_secret.expose_secret(|s| s.to_owned()));
+                let code_verifier: zeroize::Zeroizing<String> =
+                    zeroize::Zeroizing::new(verifier_secret.expose_secret(|s| s.to_owned()));
 
                 let state = oauth2_flow::exchange_authorization_code(
                     &pending.config,
                     &pending.client_id,
-                    &client_secret,
+                    client_secret.as_str(),
                     code,
-                    &code_verifier,
+                    code_verifier.as_str(),
                     redirect_uri,
                 )
                 .await?;
@@ -542,12 +540,15 @@ impl Credential for OAuth2Credential {
                     CredentialError::InvalidInput("pending state missing device_code".into())
                 })?;
                 let interval = pending.interval.unwrap_or(5);
-                let client_secret = pending.client_secret.expose_secret(|s| s.to_owned());
+                // Zeroizing<String>: intermediate plaintext scrubs on drop;
+                // poll_device_code builds its form from &str borrows (#265).
+                let client_secret: zeroize::Zeroizing<String> =
+                    zeroize::Zeroizing::new(pending.client_secret.expose_secret(|s| s.to_owned()));
 
                 match oauth2_flow::poll_device_code(
                     &pending.config,
                     &pending.client_id,
-                    &client_secret,
+                    client_secret.as_str(),
                     device_code,
                     interval,
                 )
