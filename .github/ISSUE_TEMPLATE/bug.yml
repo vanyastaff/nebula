@@ -1,0 +1,116 @@
+name: Bug Report
+description: Report something that's broken or not working as expected
+title: "bug: <short description>"
+labels: ["type:bug", "status:needs-triage"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thank you for reporting a bug. Please fill in as much detail as possible so we can reproduce and fix it quickly.
+
+        > **Security vulnerability?** Do not open a public issue. See [SECURITY.md](https://github.com/vanyastaff/nebula/blob/main/SECURITY.md) or [report a private advisory](https://github.com/vanyastaff/nebula/security/advisories/new).
+
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to Reproduce
+      description: Minimal, complete steps to trigger the bug.
+      placeholder: |
+        1. Define a workflow with ...
+        2. Execute via `cargo nextest run -p nebula-engine -- test_name`
+        3. Observe ...
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected Behavior
+      description: What should happen?
+      placeholder: "The workflow should complete successfully and return ..."
+    validations:
+      required: true
+
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual Behavior
+      description: What actually happens instead?
+      placeholder: "The engine panics / returns an error / silently skips ..."
+    validations:
+      required: true
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs / Tracing Output
+      description: |
+        Paste relevant log output, stack traces, or `RUST_BACKTRACE=1` output.
+        **Redact any secrets, tokens, credentials, or PII before posting.**
+      placeholder: |
+        ```
+        thread 'tokio-runtime-worker' panicked at 'called `Result::unwrap()` on an `Err` value: ...'
+        note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+        ```
+      render: shell
+
+  - type: dropdown
+    id: affected-crate
+    attributes:
+      label: Affected Crate(s)
+      description: Which crate(s) are affected? Select all that apply.
+      multiple: true
+      options:
+        - nebula-action
+        - nebula-engine
+        - nebula-runtime
+        - nebula-storage
+        - nebula-credential
+        - nebula-resource
+        - nebula-api
+        - nebula-workflow
+        - nebula-execution
+        - nebula-expression
+        - nebula-plugin
+        - nebula-resilience
+        - nebula-schema
+        - Other (describe in additional context)
+    validations:
+      required: true
+
+  - type: input
+    id: rust-version
+    attributes:
+      label: Rust Version
+      description: Output of `rustc --version`
+      placeholder: "rustc 1.94.0 (2025-...)"
+    validations:
+      required: true
+
+  - type: input
+    id: os
+    attributes:
+      label: Operating System
+      description: Linux, macOS, Windows, Docker, etc.
+      placeholder: "Ubuntu 24.04 / macOS 15.0 / Windows 11"
+    validations:
+      required: true
+
+  - type: textarea
+    id: context
+    attributes:
+      label: Additional Context
+      description: Related issues, workarounds you've tried, or anything else relevant.
+      placeholder: "This regressed in #456 / workaround: ..."
+
+  - type: checkboxes
+    id: checklist
+    attributes:
+      label: Checklist
+      options:
+        - label: I have searched for existing issues and this is not a duplicate.
+          required: true
+        - label: This is NOT a security vulnerability (see SECURITY.md for private disclosure).
+          required: true
+        - label: I have redacted all secrets, credentials, and PII from logs above.
+          required: true

@@ -1,0 +1,108 @@
+name: Feature Request
+description: Propose a new capability or improvement to Nebula
+title: "feat: <short description>"
+labels: ["type:feature", "status:needs-discussion"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thank you for helping shape Nebula. A strong feature request includes a clear problem statement, a concrete proposal, and consideration of alternatives.
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem Statement
+      description: |
+        What limitation, gap, or pain point are you encountering?
+        Frame this as a user need, not a solution.
+      placeholder: |
+        When building high-throughput order workflows, there is no way to bound
+        concurrency at the tenant level. This causes downstream APIs to receive
+        burst traffic they cannot handle.
+    validations:
+      required: true
+
+  - type: textarea
+    id: solution
+    attributes:
+      label: Proposed Solution
+      description: How would you solve this? Include API sketches, type signatures, or config examples where helpful.
+      placeholder: |
+        Add a `max_concurrent_executions` field to `TenantConfig`:
+
+        ```rust
+        TenantConfig {
+            max_concurrent_executions: Some(10),
+            // ...
+        }
+        ```
+
+        The engine's dispatcher would acquire a semaphore permit per tenant before
+        scheduling a new execution.
+    validations:
+      required: true
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives Considered
+      description: What other approaches did you evaluate, and why did you rule them out?
+      placeholder: |
+        - Rate-limiting at the API gateway: shifts the problem upstream, doesn't help
+          internal worker dispatch.
+        - Per-workflow limits: too granular, creates N configuration points.
+
+  - type: textarea
+    id: acceptance-criteria
+    attributes:
+      label: Acceptance Criteria
+      description: How would you verify this feature is complete and correct?
+      placeholder: |
+        - [ ] `TenantConfig::max_concurrent_executions` is respected by the engine dispatcher.
+        - [ ] Excess executions are queued (not rejected) and drained in FIFO order.
+        - [ ] Integration test: 20 concurrent starts with limit=5 — at most 5 run simultaneously.
+        - [ ] Telemetry: `execution.queue_depth` metric is emitted per tenant.
+    validations:
+      required: true
+
+  - type: dropdown
+    id: area
+    attributes:
+      label: Primary Area
+      description: Which layer or crate does this affect most?
+      options:
+        - engine / runtime (execution lifecycle)
+        - action (action primitives)
+        - resource / credential (integration layer)
+        - storage (persistence)
+        - api (HTTP / webhook surface)
+        - plugin / sandbox (out-of-process plugins)
+        - workflow / execution (definition model)
+        - expression / schema (data model)
+        - resilience (retry / circuit-breaker)
+        - telemetry / metrics / observability
+        - cli / tooling
+        - docs
+        - other
+    validations:
+      required: true
+
+  - type: textarea
+    id: context
+    attributes:
+      label: Related Issues or Discussions
+      description: Link to related items, prior art, or canon sections that apply.
+      placeholder: |
+        Related: #789 (load-shedding RFC)
+        Canon: PRODUCT_CANON.md §12 (execution lifecycle invariants)
+
+  - type: checkboxes
+    id: checklist
+    attributes:
+      label: Checklist
+      options:
+        - label: I have searched for existing feature requests and this is not a duplicate.
+          required: true
+        - label: I have described the problem, not just the solution.
+          required: true
+        - label: I have considered at least one alternative approach.

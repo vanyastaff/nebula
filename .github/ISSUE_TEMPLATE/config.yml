@@ -1,12 +1,15 @@
 blank_issues_enabled: false
 contact_links:
-  - name: 💬 GitHub Discussions
+  - name: Security vulnerability
+    url: https://github.com/vanyastaff/nebula/security/advisories/new
+    about: Please report security vulnerabilities privately, not as public issues.
+  - name: GitHub Discussions
     url: https://github.com/vanyastaff/nebula/discussions
     about: Ask questions and discuss ideas with the community
-  - name: 📖 Documentation
+  - name: Documentation
     url: https://github.com/vanyastaff/nebula/blob/main/README.md
     about: Read the project documentation and guides
-  - name: 🏗️ Architecture
+  - name: Architecture
     url: https://github.com/vanyastaff/nebula/tree/main/docs
     about: Learn about the system architecture and design
 
