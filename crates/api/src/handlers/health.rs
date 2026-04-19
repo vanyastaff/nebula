@@ -40,7 +40,7 @@ pub async fn health_check() -> Json<HealthResponse> {
 
 /// Readiness endpoint — reports whether every declared dependency is reachable.
 ///
-/// Probes storage via a cheap `count()` query bounded by [`PROBE_TIMEOUT`].
+/// Probes storage via a cheap `count()` query bounded by `PROBE_TIMEOUT`.
 /// A failure or timeout flips `ready` to `false` **and** returns HTTP 503 so
 /// orchestrators understand the process cannot currently serve traffic.
 /// The body always carries the per-dependency breakdown for operator
