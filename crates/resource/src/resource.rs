@@ -113,6 +113,20 @@ impl ResourceMetadata {
             nebula_schema::ValidSchema::empty(),
         )
     }
+
+    /// Validate that this metadata update is version-compatible with `previous`.
+    ///
+    /// Resource metadata has no entity-specific fields beyond the shared
+    /// base, so this is a direct delegation to
+    /// [`nebula_metadata::validate_base_compat`]. If a future
+    /// `ResourceMetadata` gains entity-specific fields, wrap the result in
+    /// a `MetadataCompatibilityError` like `nebula-action` does.
+    pub fn validate_compatibility(
+        &self,
+        previous: &Self,
+    ) -> Result<(), nebula_metadata::BaseCompatError<nebula_core::ResourceKey>> {
+        nebula_metadata::validate_base_compat(&self.base, &previous.base)
+    }
 }
 
 /// Core resource trait — 5 associated types + 4 lifecycle methods.
@@ -201,5 +215,40 @@ pub trait Resource: Send + Sync + 'static {
     /// Returns metadata for UI and diagnostics.
     fn metadata() -> ResourceMetadata {
         ResourceMetadata::from_key(&Self::key())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use nebula_core::resource_key;
+    use nebula_metadata::BaseCompatError;
+    use nebula_schema::Schema;
+    use semver::Version;
+
+    use super::ResourceMetadata;
+
+    fn empty_schema() -> nebula_schema::ValidSchema {
+        Schema::builder().build().unwrap()
+    }
+
+    fn md(major: u64, minor: u64) -> ResourceMetadata {
+        let mut m = ResourceMetadata::new(resource_key!("postgres"), "pg", "d", empty_schema());
+        m.base.version = Version::new(major, minor, 0);
+        m
+    }
+
+    #[test]
+    fn version_monotonic_accepted() {
+        let prev = md(1, 0);
+        let next = md(1, 1);
+        assert!(next.validate_compatibility(&prev).is_ok());
+    }
+
+    #[test]
+    fn version_regression_rejected() {
+        let prev = md(2, 1);
+        let next = md(2, 0);
+        let err = next.validate_compatibility(&prev).unwrap_err();
+        assert!(matches!(err, BaseCompatError::VersionRegressed { .. }));
     }
 }
