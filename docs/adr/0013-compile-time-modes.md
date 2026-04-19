@@ -64,22 +64,30 @@ starts coding against the choice.
      multi-tenant middleware, Redis required.
 
 2. **Exactly one mode feature must be active.** A `build.rs` in each
-   binary crate asserts mutual exclusivity:
+   binary crate asserts mutual exclusivity. Build scripts must inspect
+   the parent crate's features via the `CARGO_FEATURE_<NAME>`
+   environment variables (`cfg!(feature = "...")` inside `build.rs`
+   would check the *build script's* own features, not the crate being
+   built — a subtle footgun we have to call out here so this pattern is
+   copied correctly):
 
    ```rust
    // apps/<binary>/build.rs
    fn main() {
-       let modes = [
-           cfg!(feature = "mode-desktop"),
-           cfg!(feature = "mode-self-hosted"),
-           cfg!(feature = "mode-cloud"),
-       ];
-       let active = modes.iter().filter(|x| **x).count();
+       let desktop     = std::env::var_os("CARGO_FEATURE_MODE_DESKTOP").is_some();
+       let self_hosted = std::env::var_os("CARGO_FEATURE_MODE_SELF_HOSTED").is_some();
+       let cloud       = std::env::var_os("CARGO_FEATURE_MODE_CLOUD").is_some();
+
+       let active = [desktop, self_hosted, cloud].iter().filter(|x| **x).count();
        assert!(
            active == 1,
            "exactly one of mode-desktop/mode-self-hosted/mode-cloud \
             must be selected (got {active})"
        );
+
+       println!("cargo:rerun-if-env-changed=CARGO_FEATURE_MODE_DESKTOP");
+       println!("cargo:rerun-if-env-changed=CARGO_FEATURE_MODE_SELF_HOSTED");
+       println!("cargo:rerun-if-env-changed=CARGO_FEATURE_MODE_CLOUD");
    }
    ```
 
