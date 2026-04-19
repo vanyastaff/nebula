@@ -164,15 +164,92 @@ impl ControlQueueRepo for PgControlQueueRepo {
 
     async fn reclaim_stuck(
         &self,
-        _reclaim_after: std::time::Duration,
-        _max_reclaim_count: u32,
+        reclaim_after: std::time::Duration,
+        max_reclaim_count: u32,
     ) -> Result<ReclaimOutcome, StorageError> {
-        unimplemented!()
+        let secs = reclaim_after_seconds(reclaim_after);
+        let max_count = i64::from(max_reclaim_count);
+
+        let mut tx = self
+            .pool
+            .begin()
+            .await
+            .map_err(|e| map_db_err("control_queue", e))?;
+
+        // Reclaim branch: Processing → Pending, bump reclaim_count, clear
+        // processed_at / processed_by. CAS fence: status = 'Processing'
+        // (another sweeper's commit flipping status out from under us
+        // makes our UPDATE return zero rows for that row).
+        let reclaimed = sqlx::query_scalar::<_, Vec<u8>>(
+            "UPDATE execution_control_queue \
+             SET status = 'Pending', \
+                 reclaim_count = reclaim_count + 1, \
+                 processed_at = NULL, \
+                 processed_by = NULL \
+             WHERE status = 'Processing' \
+               AND processed_at < NOW() - make_interval(secs => $1) \
+               AND reclaim_count < $2 \
+             RETURNING id",
+        )
+        .bind(secs)
+        .bind(max_count)
+        .fetch_all(&mut *tx)
+        .await
+        .map_err(|e| map_db_err("control_queue", e))?;
+
+        // Exhaust branch: Processing → Failed with canonical message.
+        // `encode(processed_by, 'hex')` produces lowercase hex, matching
+        // the in-memory `hex_encode_bytes` helper byte-for-byte.
+        // `reclaim_count` in the message is the pre-transition value —
+        // consistent with the in-memory impl which bumps *after* the
+        // decision in the reclaim branch and never bumps in the exhaust
+        // branch.
+        let exhausted = sqlx::query_scalar::<_, Vec<u8>>(
+            "UPDATE execution_control_queue \
+             SET status = 'Failed', \
+                 error_message = 'reclaim exhausted: processor ' || \
+                                 COALESCE(encode(processed_by, 'hex'), '<unknown>') || \
+                                 ' presumed dead after ' || reclaim_count || ' reclaims' \
+             WHERE status = 'Processing' \
+               AND processed_at < NOW() - make_interval(secs => $1) \
+               AND reclaim_count >= $2 \
+             RETURNING id",
+        )
+        .bind(secs)
+        .bind(max_count)
+        .fetch_all(&mut *tx)
+        .await
+        .map_err(|e| map_db_err("control_queue", e))?;
+
+        tx.commit()
+            .await
+            .map_err(|e| map_db_err("control_queue", e))?;
+
+        Ok(ReclaimOutcome {
+            reclaimed: reclaimed.len() as u64,
+            exhausted: exhausted.len() as u64,
+        })
     }
 
     async fn cleanup(&self, _retention: std::time::Duration) -> Result<u64, StorageError> {
         unimplemented!()
     }
+}
+
+/// Normalize `reclaim_after` into positive seconds bounded by a sane
+/// upper limit. Matches the in-memory impl's intent: a huge
+/// `reclaim_after` means "never reclaim anything under realistic
+/// processing ages", so we clamp to ~10 years. A negative / NaN /
+/// infinite value collapses to 0 so the caller still sees a deterministic
+/// result (nothing younger than `now` is reclaimable, but everything
+/// older than `now` is — same as the in-memory no-fallback path).
+fn reclaim_after_seconds(d: std::time::Duration) -> f64 {
+    const TEN_YEARS_SECS: f64 = 86_400.0 * 365.0 * 10.0;
+    let secs = d.as_secs_f64();
+    if !secs.is_finite() {
+        return 0.0;
+    }
+    secs.clamp(0.0, TEN_YEARS_SECS)
 }
 
 #[cfg(all(test, feature = "postgres"))]
@@ -481,5 +558,118 @@ mod tests {
         .unwrap();
         assert_eq!(row.0, "Failed");
         assert_eq!(row.1.as_deref(), Some("dispatch boom"));
+    }
+
+    #[tokio::test]
+    async fn reclaim_stuck_moves_expired_processing_to_pending() {
+        let Some(pool) = pool().await else { return };
+        let _guard = TEST_LOCK.lock().await;
+        clean_control_queue(&pool).await;
+        let repo = PgControlQueueRepo::new(pool.clone());
+        let exec_id = seed_execution_parent_chain(&pool).await;
+
+        // Enqueue a row then force it into Processing with an ancient
+        // processed_at and processed_by so reclaim_stuck picks it up.
+        let entry = pending_entry(&exec_id);
+        let row_id = entry.id.clone();
+        repo.enqueue(&entry).await.unwrap();
+        let stale_at = Utc::now() - chrono::Duration::seconds(600);
+        sqlx::query(
+            "UPDATE execution_control_queue \
+             SET status = 'Processing', processed_at = $2, processed_by = $3, \
+                 reclaim_count = 0 \
+             WHERE id = $1",
+        )
+        .bind(&row_id)
+        .bind(stale_at)
+        .bind(b"dead-runner".as_slice())
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        let outcome = repo
+            .reclaim_stuck(std::time::Duration::from_secs(150), 3)
+            .await
+            .unwrap();
+        assert_eq!(outcome.reclaimed, 1);
+        assert_eq!(outcome.exhausted, 0);
+
+        type Row = (String, i64, Option<DateTime<Utc>>, Option<Vec<u8>>);
+        let row: Row = sqlx::query_as(
+            "SELECT status, reclaim_count, processed_at, processed_by \
+             FROM execution_control_queue WHERE id = $1",
+        )
+        .bind(&row_id)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(row.0, "Pending");
+        assert_eq!(row.1, 1);
+        assert!(row.2.is_none(), "processed_at cleared on reclaim");
+        assert!(row.3.is_none(), "processed_by cleared on reclaim");
+    }
+
+    #[tokio::test]
+    async fn reclaim_stuck_leaves_fresh_processing_alone() {
+        let Some(pool) = pool().await else { return };
+        let _guard = TEST_LOCK.lock().await;
+        clean_control_queue(&pool).await;
+        let repo = PgControlQueueRepo::new(pool.clone());
+        let exec_id = seed_execution_parent_chain(&pool).await;
+
+        let entry = pending_entry(&exec_id);
+        let row_id = entry.id.clone();
+        repo.enqueue(&entry).await.unwrap();
+        let fresh_at = Utc::now() - chrono::Duration::seconds(10);
+        sqlx::query(
+            "UPDATE execution_control_queue \
+             SET status = 'Processing', processed_at = $2, \
+                 processed_by = $3, reclaim_count = 0 \
+             WHERE id = $1",
+        )
+        .bind(&row_id)
+        .bind(fresh_at)
+        .bind(b"runner-a".as_slice())
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        let outcome = repo
+            .reclaim_stuck(std::time::Duration::from_secs(150), 3)
+            .await
+            .unwrap();
+        assert_eq!(outcome.reclaimed, 0);
+        assert_eq!(outcome.exhausted, 0);
+
+        let status: String =
+            sqlx::query_scalar("SELECT status FROM execution_control_queue WHERE id = $1")
+                .bind(&row_id)
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert_eq!(status, "Processing", "fresh row untouched");
+    }
+
+    #[tokio::test]
+    async fn reclaim_stuck_leaves_non_processing_rows_alone() {
+        let Some(pool) = pool().await else { return };
+        let _guard = TEST_LOCK.lock().await;
+        clean_control_queue(&pool).await;
+        let repo = PgControlQueueRepo::new(pool.clone());
+        let exec_id = seed_execution_parent_chain(&pool).await;
+
+        // Three rows: Completed, Failed, Pending — none in Processing.
+        for status in ["Completed", "Failed", "Pending"] {
+            let mut entry = pending_entry(&exec_id);
+            entry.status = status.to_string();
+            repo.enqueue(&entry).await.unwrap();
+        }
+
+        let outcome = repo
+            .reclaim_stuck(std::time::Duration::from_secs(150), 3)
+            .await
+            .unwrap();
+        assert_eq!(outcome.reclaimed, 0);
+        assert_eq!(outcome.exhausted, 0);
     }
 }
