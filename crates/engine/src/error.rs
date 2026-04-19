@@ -123,6 +123,33 @@ pub enum EngineError {
         /// Underlying storage failure reason.
         reason: String,
     },
+
+    /// The engine detected a persisted state transition driven by another
+    /// actor (API cancel, sibling runner, admin mutation) that the local
+    /// in-memory state cannot reconcile.
+    ///
+    /// Surfaced instead of silently overwriting the concurrent update
+    /// (issue #333). Per `docs/PRODUCT_CANON.md` §11.5 / §12.4, the engine
+    /// may not report a successful completion when its final CAS write
+    /// collided with an authoritative external transition that the
+    /// engine could not honor (e.g. the row is still active-non-terminal
+    /// at a newer version the engine did not produce).
+    #[error(
+        "state CAS conflict on execution {execution_id}: \
+         expected version {expected_version}, observed {observed_version} \
+         (external status: {observed_status:?})"
+    )]
+    CasConflict {
+        /// Execution whose row moved beneath the engine.
+        execution_id: ExecutionId,
+        /// Version the engine believed was current before the write.
+        expected_version: u64,
+        /// Version actually present in the repo on CAS failure.
+        observed_version: u64,
+        /// Status the persisted state carried at `observed_version`.
+        /// Rendered for operator diagnostics; not used for control flow.
+        observed_status: String,
+    },
 }
 
 impl nebula_error::Classify for EngineError {
@@ -136,7 +163,8 @@ impl nebula_error::Classify for EngineError {
             Self::NodeFailed { .. }
             | Self::TaskPanicked(_)
             | Self::FrontierIntegrity { .. }
-            | Self::CheckpointFailed { .. } => nebula_error::ErrorCategory::Internal,
+            | Self::CheckpointFailed { .. }
+            | Self::CasConflict { .. } => nebula_error::ErrorCategory::Internal,
             Self::Cancelled => nebula_error::ErrorCategory::Cancelled,
             Self::BudgetExceeded(_) => nebula_error::ErrorCategory::Exhausted,
             Self::Runtime(e) => nebula_error::Classify::category(e),
@@ -161,6 +189,7 @@ impl nebula_error::Classify for EngineError {
             Self::TaskPanicked(_) => "ENGINE:TASK_PANICKED",
             Self::FrontierIntegrity { .. } => "ENGINE:FRONTIER_INTEGRITY",
             Self::CheckpointFailed { .. } => "ENGINE:CHECKPOINT_FAILED",
+            Self::CasConflict { .. } => "ENGINE:CAS_CONFLICT",
         })
     }
 

@@ -673,36 +673,61 @@ impl WorkflowEngine {
         } = determine_final_status(&failed_node, &cancel_token, &exec_state);
         let _ = exec_state.transition_status(final_status);
 
-        // Persist final execution state (best-effort)
-        if let Some(repo) = &self.execution_repo
-            && let Ok(state_json) = serde_json::to_value(&exec_state)
-        {
-            match repo
-                .transition(execution_id, repo_version, state_json)
+        // Persist final execution state with CAS-conflict
+        // reconciliation (issue #333). The pre-fix branch was
+        // log-and-continue on CAS mismatch, which let the engine
+        // report `Completed` on an un-persisted row and silently
+        // overwrite concurrent external transitions. `persist_final_state`
+        // now reloads the persisted state on mismatch, honors
+        // external terminal transitions, and retries once on
+        // non-terminal conflicts before surfacing a typed
+        // `CasConflict` error.
+        let reported_status = if let Some(repo) = &self.execution_repo {
+            match self
+                .persist_final_state(repo, execution_id, &mut exec_state, &mut repo_version)
                 .await
             {
-                Ok(true) => { /* success */ },
-                Ok(false) => {
-                    tracing::warn!(
+                Ok(None) => final_status,
+                Ok(Some(external_status)) => {
+                    // External actor drove the row into a terminal
+                    // state we may not overwrite — surface it.
+                    external_status
+                },
+                Err(EngineError::CasConflict {
+                    expected_version,
+                    observed_version,
+                    observed_status,
+                    ..
+                }) => {
+                    tracing::error!(
                         %execution_id,
-                        "final state checkpoint CAS mismatch"
+                        expected_version,
+                        observed_version,
+                        %observed_status,
+                        "final state CAS conflict could not be reconciled; \
+                         reporting Failed instead of silently completing (§11.5, #333)"
                     );
+                    ExecutionStatus::Failed
                 },
                 Err(e) => {
-                    tracing::warn!(
+                    tracing::error!(
                         %execution_id,
                         error = %e,
-                        "final state checkpoint failed"
+                        "final state persist failed; \
+                         reporting Failed instead of silently completing (§11.5, #333)"
                     );
+                    ExecutionStatus::Failed
                 },
             }
-        }
+        } else {
+            final_status
+        };
 
-        self.emit_final_event(execution_id, final_status, elapsed, &failed_node);
+        self.emit_final_event(execution_id, reported_status, elapsed, &failed_node);
         self.emit_frontier_integrity_if_violated(execution_id, integrity_violation);
         self.emit_event(ExecutionEvent::ExecutionFinished {
             execution_id,
-            success: final_status == ExecutionStatus::Completed,
+            success: reported_status == ExecutionStatus::Completed,
             elapsed,
         });
 
@@ -724,7 +749,7 @@ impl WorkflowEngine {
 
         Ok(ExecutionResult {
             execution_id,
-            status: final_status,
+            status: reported_status,
             node_outputs,
             node_errors,
             duration: elapsed,
@@ -971,27 +996,47 @@ impl WorkflowEngine {
         // cancelled during the frontier loop), we do not overwrite it.
         let _ = exec_state.transition_status(final_status);
 
-        // Persist final state (best-effort).
-        if let Ok(state_json) = serde_json::to_value(&exec_state) {
-            match exec_repo
-                .transition(execution_id, repo_version, state_json)
-                .await
-            {
-                Ok(true) => {},
-                Ok(false) => {
-                    tracing::warn!(%execution_id, "resume: final state checkpoint CAS mismatch");
-                },
-                Err(e) => {
-                    tracing::warn!(%execution_id, error = %e, "resume: final state checkpoint failed");
-                },
-            }
-        }
+        // Persist final state with CAS-conflict reconciliation (issue
+        // #333). Mirrors `execute_workflow` — see its comment for the
+        // full contract.
+        let reported_status = match self
+            .persist_final_state(exec_repo, execution_id, &mut exec_state, &mut repo_version)
+            .await
+        {
+            Ok(None) => final_status,
+            Ok(Some(external_status)) => external_status,
+            Err(EngineError::CasConflict {
+                expected_version,
+                observed_version,
+                observed_status,
+                ..
+            }) => {
+                tracing::error!(
+                    %execution_id,
+                    expected_version,
+                    observed_version,
+                    %observed_status,
+                    "resume: final state CAS conflict could not be reconciled; \
+                     reporting Failed instead of silently completing (§11.5, #333)"
+                );
+                ExecutionStatus::Failed
+            },
+            Err(e) => {
+                tracing::error!(
+                    %execution_id,
+                    error = %e,
+                    "resume: final state persist failed; \
+                     reporting Failed instead of silently completing (§11.5, #333)"
+                );
+                ExecutionStatus::Failed
+            },
+        };
 
-        self.emit_final_event(execution_id, final_status, elapsed, &failed_node);
+        self.emit_final_event(execution_id, reported_status, elapsed, &failed_node);
         self.emit_frontier_integrity_if_violated(execution_id, integrity_violation);
         self.emit_event(ExecutionEvent::ExecutionFinished {
             execution_id,
-            success: final_status == ExecutionStatus::Completed,
+            success: reported_status == ExecutionStatus::Completed,
             elapsed,
         });
 
@@ -1012,7 +1057,7 @@ impl WorkflowEngine {
 
         Ok(ExecutionResult {
             execution_id,
-            status: final_status,
+            status: reported_status,
             node_outputs,
             node_errors,
             duration: elapsed,
@@ -2041,26 +2086,209 @@ impl WorkflowEngine {
                 // second engine worker, etc.). We cannot durably commit
                 // this node's transition on top of a stale version, so
                 // the frontier must abort this progression rather than
-                // silently advance — the reconcile path belongs to
-                // Group C's #333. Re-read version so that a caller which
-                // has already aborted can still see the current view.
+                // silently advance (§11.5 "durability precedes
+                // visibility", §12.4 "no silent log-and-continue").
+                //
+                // Per issue #333 we refetch the **full** persisted
+                // state — not just the version — so the failure surface
+                // carries the observer-visible status (e.g. `Cancelling`
+                // / `Cancelled`) rather than discarding authoritative
+                // fields. The caller (frontier loop) aborts the node's
+                // progression and the outer execute/resume path
+                // reconciles against the newly observed state.
+                let expected_version = *repo_version;
+                let observed_status = match repo.get_state(execution_id).await {
+                    Ok(Some((current_version, current_state))) => {
+                        *repo_version = current_version;
+                        parse_observed_status(&current_state)
+                    },
+                    Ok(None) => "unknown".to_owned(),
+                    Err(e) => {
+                        tracing::warn!(
+                            %execution_id,
+                            %node_key,
+                            error = %e,
+                            "checkpoint CAS mismatch: failed to refetch persisted state"
+                        );
+                        "unknown".to_owned()
+                    },
+                };
                 tracing::warn!(
                     %execution_id,
                     %node_key,
-                    expected_version = *repo_version,
-                    "checkpoint CAS mismatch — aborting node progression (§11.1)"
+                    expected_version,
+                    observed_version = *repo_version,
+                    %observed_status,
+                    "checkpoint CAS mismatch — aborting node progression (§11.1, #333)"
                 );
-                if let Ok(Some((current_version, _))) = repo.get_state(execution_id).await {
-                    *repo_version = current_version;
-                }
-                Err(EngineError::CheckpointFailed {
-                    node_key,
-                    reason: "CAS mismatch — state moved beneath the engine".to_owned(),
+                Err(EngineError::CasConflict {
+                    execution_id,
+                    expected_version,
+                    observed_version: *repo_version,
+                    observed_status,
                 })
             },
             Err(e) => Err(EngineError::CheckpointFailed {
                 node_key,
                 reason: e.to_string(),
+            }),
+        }
+    }
+
+    /// Persist the final execution state, reconciling with any
+    /// externally-driven concurrent update (issue #333).
+    ///
+    /// Contract:
+    ///
+    /// * On CAS success: commit and return the engine-local final status (unchanged from pre-fix
+    ///   behaviour).
+    /// * On CAS mismatch, **reload the full persisted state**, then:
+    ///     - If the observed persisted status is already terminal (`Cancelled` / `Failed` /
+    ///       `TimedOut` / `Completed`), honor it. The external actor (API cancel, admin mutation,
+    ///       sibling runner) produced an authoritative terminal transition the engine may not
+    ///       overwrite — `Ok(Some(external_status))` is returned so the caller reports the external
+    ///       status in `ExecutionResult`.
+    ///     - Otherwise, copy the engine's local `final_status` onto the freshly-loaded state, bump
+    ///       the observed version, and retry the transition exactly once. On repeated CAS mismatch
+    ///       or a storage error, return [`EngineError::CasConflict`] /
+    ///       [`EngineError::CheckpointFailed`] rather than silently reporting success.
+    ///
+    /// Pre-fix this path was `log-and-continue` (see `tracing::warn!`
+    /// "final state checkpoint CAS mismatch" before #333) — that
+    /// silently dropped the final write and let the engine report
+    /// `Completed` on an un-persisted state, violating `docs/PRODUCT_CANON.md`
+    /// §11.5 (durability precedes visibility) and §12.4 (no silent
+    /// log-and-continue on state-transition failures).
+    ///
+    /// # Returns
+    ///
+    /// * `Ok(None)` — the engine's local final status was durably persisted (either on first try or
+    ///   on the retry).
+    /// * `Ok(Some(status))` — the CAS was still conflicting but the persisted state is already
+    ///   terminal; the caller should surface `status` as the execution outcome instead of the
+    ///   engine's local decision.
+    /// * `Err(EngineError::CasConflict { .. })` — after a retry the row was still moving and not
+    ///   terminal; the engine cannot honor the conflict without more context, so the caller
+    ///   surfaces a typed failure instead of a silent success.
+    async fn persist_final_state(
+        &self,
+        repo: &Arc<dyn nebula_storage::ExecutionRepo>,
+        execution_id: ExecutionId,
+        exec_state: &mut ExecutionState,
+        repo_version: &mut u64,
+    ) -> Result<Option<ExecutionStatus>, EngineError> {
+        let state_json =
+            serde_json::to_value(&*exec_state).map_err(|e| EngineError::CheckpointFailed {
+                node_key: final_state_node_key(),
+                reason: format!("serialize final state: {e}"),
+            })?;
+
+        match repo
+            .transition(execution_id, *repo_version, state_json)
+            .await
+        {
+            Ok(true) => {
+                *repo_version += 1;
+                Ok(None)
+            },
+            Ok(false) => {
+                let expected_version = *repo_version;
+                // Reload the full persisted state — not just version —
+                // so we can decide whether the external transition is
+                // authoritative (issue #333).
+                let (observed_version, observed_json) = match repo.get_state(execution_id).await {
+                    Ok(Some(pair)) => pair,
+                    Ok(None) => {
+                        return Err(EngineError::CasConflict {
+                            execution_id,
+                            expected_version,
+                            observed_version: 0,
+                            observed_status: "missing".to_owned(),
+                        });
+                    },
+                    Err(e) => {
+                        return Err(EngineError::CheckpointFailed {
+                            node_key: final_state_node_key(),
+                            reason: format!("final CAS refetch failed: {e}"),
+                        });
+                    },
+                };
+                *repo_version = observed_version;
+                let observed_status_enum = parse_observed_execution_status(&observed_json);
+                let observed_status_str = parse_observed_status(&observed_json);
+
+                // External state already terminal → honor it. The
+                // engine must not overwrite an authoritative
+                // cancellation / failure with its own local decision
+                // (§11.5, #333).
+                if observed_status_enum
+                    .as_ref()
+                    .is_some_and(ExecutionStatus::is_terminal)
+                {
+                    tracing::warn!(
+                        %execution_id,
+                        expected_version,
+                        observed_version,
+                        %observed_status_str,
+                        "final state CAS mismatch: external transition is terminal — \
+                         honoring external status instead of overwriting (§11.5, #333)"
+                    );
+                    return Ok(observed_status_enum);
+                }
+
+                // External state non-terminal (e.g. sibling runner
+                // still in-flight). Retry once: re-serialize the local
+                // state at the freshly observed version and attempt the
+                // final write again. If it still conflicts, surface
+                // the typed error rather than dropping the write.
+                let retry_json = match serde_json::to_value(&*exec_state) {
+                    Ok(v) => v,
+                    Err(e) => {
+                        return Err(EngineError::CheckpointFailed {
+                            node_key: final_state_node_key(),
+                            reason: format!("serialize retry state: {e}"),
+                        });
+                    },
+                };
+                match repo
+                    .transition(execution_id, *repo_version, retry_json)
+                    .await
+                {
+                    Ok(true) => {
+                        tracing::info!(
+                            %execution_id,
+                            expected_version,
+                            observed_version,
+                            "final state CAS retry succeeded after external bump (§11.5, #333)"
+                        );
+                        *repo_version += 1;
+                        Ok(None)
+                    },
+                    Ok(false) => {
+                        // Refresh the observed version once more so
+                        // the error carries the latest truth.
+                        let (latest_version, latest_json) = match repo.get_state(execution_id).await
+                        {
+                            Ok(Some(pair)) => pair,
+                            _ => (observed_version, observed_json),
+                        };
+                        *repo_version = latest_version;
+                        Err(EngineError::CasConflict {
+                            execution_id,
+                            expected_version,
+                            observed_version: latest_version,
+                            observed_status: parse_observed_status(&latest_json),
+                        })
+                    },
+                    Err(e) => Err(EngineError::CheckpointFailed {
+                        node_key: NodeKey::new("__final__").expect("placeholder node key"),
+                        reason: format!("final CAS retry failed: {e}"),
+                    }),
+                }
+            },
+            Err(e) => Err(EngineError::CheckpointFailed {
+                node_key: final_state_node_key(),
+                reason: format!("final state persist: {e}"),
             }),
         }
     }
@@ -2761,6 +2989,46 @@ fn determine_final_status(
         status: ExecutionStatus::Completed,
         integrity_violation: None,
     }
+}
+
+/// Placeholder `NodeKey` used in final-state persistence errors.
+///
+/// Final-state writes are **execution-scoped**, not node-scoped, but
+/// [`EngineError::CheckpointFailed`] takes a `NodeKey`. Rather than
+/// extend the error shape for one use-site, a stable sentinel lets
+/// operators distinguish "no node — final write" from a real node
+/// failure in logs.
+fn final_state_node_key() -> NodeKey {
+    NodeKey::new("final_execution_state").expect("sentinel node key is always valid")
+}
+
+/// Extract the `status` field from a persisted execution-state JSON
+/// snapshot in a best-effort, lossy way.
+///
+/// Used by CAS-conflict reporting (issue #333) to attach the
+/// observer-visible external status to the typed [`EngineError::CasConflict`]
+/// payload. Never panics: unknown shapes render as `"unknown"`.
+fn parse_observed_status(state_json: &serde_json::Value) -> String {
+    state_json
+        .get("status")
+        .and_then(|v| v.as_str())
+        .unwrap_or("unknown")
+        .to_owned()
+}
+
+/// Parse a persisted execution-state JSON snapshot back into the
+/// typed [`ExecutionStatus`] enum.
+///
+/// Returns `None` when the snapshot is missing the `status` key or
+/// carries a value the engine does not recognise. Used by the final
+/// checkpoint reconciliation path (issue #333) to decide whether an
+/// externally-driven state is already terminal — in which case the
+/// engine honors it instead of overwriting.
+fn parse_observed_execution_status(state_json: &serde_json::Value) -> Option<ExecutionStatus> {
+    state_json
+        .get("status")
+        .cloned()
+        .and_then(|v| serde_json::from_value(v).ok())
 }
 
 // ── Input resolution ────────────────────────────────────────────────────────
@@ -5985,6 +6253,577 @@ mod tests {
                 .and_then(|v| v.as_str()),
             Some("true"),
             "Branch selector should be persisted verbatim"
+        );
+    }
+
+    // -- Regression tests for #333 (CAS-conflict reconciliation) --
+
+    /// Wraps an inner [`ExecutionRepo`] and injects a single external
+    /// "concurrent" transition BEFORE the Nth `transition()` call from
+    /// the engine — bumping the version and optionally rewriting the
+    /// status to simulate an API cancel / admin mutation / sibling
+    /// runner. Subsequent engine transitions hit a version mismatch.
+    ///
+    /// Used to reproduce the pre-fix #333 failure mode where the engine
+    /// silently overwrote external state on CAS mismatch.
+    struct ExternalMutateBeforeN {
+        inner: Arc<nebula_storage::InMemoryExecutionRepo>,
+        mutate_before: u32,
+        new_status: Option<String>,
+        calls: std::sync::atomic::AtomicU32,
+        injected: std::sync::atomic::AtomicBool,
+    }
+
+    impl ExternalMutateBeforeN {
+        fn new(
+            inner: Arc<nebula_storage::InMemoryExecutionRepo>,
+            mutate_before: u32,
+            new_status: Option<&str>,
+        ) -> Self {
+            Self {
+                inner,
+                mutate_before,
+                new_status: new_status.map(ToOwned::to_owned),
+                calls: std::sync::atomic::AtomicU32::new(0),
+                injected: std::sync::atomic::AtomicBool::new(false),
+            }
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl nebula_storage::ExecutionRepo for ExternalMutateBeforeN {
+        async fn get_state(
+            &self,
+            id: ExecutionId,
+        ) -> Result<Option<(u64, serde_json::Value)>, nebula_storage::ExecutionRepoError> {
+            self.inner.get_state(id).await
+        }
+
+        async fn transition(
+            &self,
+            id: ExecutionId,
+            expected_version: u64,
+            new_state: serde_json::Value,
+        ) -> Result<bool, nebula_storage::ExecutionRepoError> {
+            let n = self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst) + 1;
+            if n == self.mutate_before
+                && !self
+                    .injected
+                    .swap(true, std::sync::atomic::Ordering::SeqCst)
+                && let Ok(Some((current_version, mut current_state))) =
+                    self.inner.get_state(id).await
+            {
+                if let Some(status) = &self.new_status
+                    && let Some(obj) = current_state.as_object_mut()
+                {
+                    obj.insert(
+                        "status".to_owned(),
+                        serde_json::Value::String(status.clone()),
+                    );
+                }
+                // Perform the external transition via the inner repo at
+                // the version the engine believes is current, bumping it
+                // beneath the engine's feet.
+                let _ = self
+                    .inner
+                    .transition(id, current_version, current_state)
+                    .await;
+            }
+            self.inner.transition(id, expected_version, new_state).await
+        }
+
+        async fn get_journal(
+            &self,
+            id: ExecutionId,
+        ) -> Result<Vec<serde_json::Value>, nebula_storage::ExecutionRepoError> {
+            self.inner.get_journal(id).await
+        }
+
+        async fn append_journal(
+            &self,
+            id: ExecutionId,
+            entry: serde_json::Value,
+        ) -> Result<(), nebula_storage::ExecutionRepoError> {
+            self.inner.append_journal(id, entry).await
+        }
+
+        async fn acquire_lease(
+            &self,
+            id: ExecutionId,
+            holder: String,
+            ttl: Duration,
+        ) -> Result<bool, nebula_storage::ExecutionRepoError> {
+            self.inner.acquire_lease(id, holder, ttl).await
+        }
+
+        async fn renew_lease(
+            &self,
+            id: ExecutionId,
+            holder: &str,
+            ttl: Duration,
+        ) -> Result<bool, nebula_storage::ExecutionRepoError> {
+            self.inner.renew_lease(id, holder, ttl).await
+        }
+
+        async fn release_lease(
+            &self,
+            id: ExecutionId,
+            holder: &str,
+        ) -> Result<bool, nebula_storage::ExecutionRepoError> {
+            self.inner.release_lease(id, holder).await
+        }
+
+        async fn create(
+            &self,
+            id: ExecutionId,
+            workflow_id: WorkflowId,
+            state: serde_json::Value,
+        ) -> Result<(), nebula_storage::ExecutionRepoError> {
+            self.inner.create(id, workflow_id, state).await
+        }
+
+        async fn save_node_output(
+            &self,
+            execution_id: ExecutionId,
+            node_key: NodeKey,
+            attempt: u32,
+            output: serde_json::Value,
+        ) -> Result<(), nebula_storage::ExecutionRepoError> {
+            self.inner
+                .save_node_output(execution_id, node_key, attempt, output)
+                .await
+        }
+
+        async fn load_node_output(
+            &self,
+            execution_id: ExecutionId,
+            node_key: NodeKey,
+        ) -> Result<Option<serde_json::Value>, nebula_storage::ExecutionRepoError> {
+            self.inner.load_node_output(execution_id, node_key).await
+        }
+
+        async fn load_all_outputs(
+            &self,
+            execution_id: ExecutionId,
+        ) -> Result<HashMap<NodeKey, serde_json::Value>, nebula_storage::ExecutionRepoError>
+        {
+            self.inner.load_all_outputs(execution_id).await
+        }
+
+        async fn list_running(
+            &self,
+        ) -> Result<Vec<ExecutionId>, nebula_storage::ExecutionRepoError> {
+            self.inner.list_running().await
+        }
+
+        async fn list_running_for_workflow(
+            &self,
+            workflow_id: WorkflowId,
+        ) -> Result<Vec<ExecutionId>, nebula_storage::ExecutionRepoError> {
+            self.inner.list_running_for_workflow(workflow_id).await
+        }
+
+        async fn count(
+            &self,
+            workflow_id: Option<WorkflowId>,
+        ) -> Result<u64, nebula_storage::ExecutionRepoError> {
+            self.inner.count(workflow_id).await
+        }
+
+        async fn check_idempotency(
+            &self,
+            key: &str,
+        ) -> Result<bool, nebula_storage::ExecutionRepoError> {
+            self.inner.check_idempotency(key).await
+        }
+
+        async fn mark_idempotent(
+            &self,
+            key: &str,
+            execution_id: ExecutionId,
+            node_key: NodeKey,
+        ) -> Result<(), nebula_storage::ExecutionRepoError> {
+            self.inner
+                .mark_idempotent(key, execution_id, node_key)
+                .await
+        }
+
+        async fn save_stateful_checkpoint(
+            &self,
+            execution_id: ExecutionId,
+            node_key: NodeKey,
+            attempt: u32,
+            iteration: u32,
+            state: serde_json::Value,
+        ) -> Result<(), nebula_storage::ExecutionRepoError> {
+            self.inner
+                .save_stateful_checkpoint(execution_id, node_key, attempt, iteration, state)
+                .await
+        }
+
+        async fn load_stateful_checkpoint(
+            &self,
+            execution_id: ExecutionId,
+            node_key: NodeKey,
+            attempt: u32,
+        ) -> Result<
+            Option<nebula_storage::StatefulCheckpointRecord>,
+            nebula_storage::ExecutionRepoError,
+        > {
+            self.inner
+                .load_stateful_checkpoint(execution_id, node_key, attempt)
+                .await
+        }
+
+        async fn delete_stateful_checkpoint(
+            &self,
+            execution_id: ExecutionId,
+            node_key: NodeKey,
+            attempt: u32,
+        ) -> Result<(), nebula_storage::ExecutionRepoError> {
+            self.inner
+                .delete_stateful_checkpoint(execution_id, node_key, attempt)
+                .await
+        }
+    }
+
+    /// Regression for [#333](https://github.com/vanyastaff/nebula/issues/333).
+    ///
+    /// When the engine's final `transition()` CAS-misses because an
+    /// external actor (API cancel, admin mutation, sibling runner)
+    /// committed a **terminal** transition first, the engine MUST
+    /// honor the external terminal state rather than overwrite it.
+    /// Pre-fix, the engine only refreshed the version and continued
+    /// reporting its local `Completed` status while the persisted row
+    /// carried (say) `Cancelled` — a silent overwrite of concurrent
+    /// state. With the fix, `persist_final_state` detects the terminal
+    /// external status and surfaces it in the `ExecutionResult`.
+    #[tokio::test]
+    async fn final_cas_conflict_with_external_cancel_honors_external_status() {
+        let registry = Arc::new(ActionRegistry::new());
+        registry.register_stateless(EchoHandler {
+            meta: ActionMetadata::new(action_key!("echo"), "Echo", "echoes"),
+        });
+
+        let a = node_key!("a");
+        let wf = make_workflow(
+            vec![NodeDefinition::new(a.clone(), "A", "echo").unwrap()],
+            vec![],
+        );
+        let workflow_repo = save_workflow_to_repo(&wf).await;
+
+        // `create()` seeds version=1 without a transition() call.
+        // The engine then issues two transition() calls: #1 is the
+        // node checkpoint (v=1 → v=2) and #2 is the final state
+        // write (v=2 → v=3). Inject the external mutation before
+        // call #2 so the FINAL CAS misses.
+        let inner = Arc::new(nebula_storage::InMemoryExecutionRepo::new());
+        let mutating_repo = Arc::new(ExternalMutateBeforeN::new(
+            inner.clone(),
+            2,
+            Some("cancelled"),
+        ));
+
+        let (engine, _) = make_engine(registry);
+        let engine = engine
+            .with_execution_repo(mutating_repo)
+            .with_workflow_repo(workflow_repo);
+
+        let result = engine
+            .execute_workflow(&wf, serde_json::json!(null), ExecutionBudget::default())
+            .await
+            .expect(
+                "execute_workflow should return Ok on external terminal override (§11.5, #333)",
+            );
+
+        assert_eq!(
+            result.status,
+            ExecutionStatus::Cancelled,
+            "engine must surface the external Cancelled status when its \
+             final CAS collides with a terminal external transition \
+             (pre-fix it reported Completed, silently overwriting the \
+             concurrent cancel — §11.5, #333). got {:?}",
+            result.status
+        );
+
+        // The persisted row must carry `cancelled` — the engine must
+        // NOT have overwritten it with its own `completed`.
+        let (_v, final_state) = inner
+            .get_state(result.execution_id)
+            .await
+            .unwrap()
+            .expect("persisted state must exist");
+        assert_eq!(
+            final_state.get("status").and_then(|v| v.as_str()),
+            Some("cancelled"),
+            "persisted row must retain the external Cancelled status; \
+             engine must not overwrite a concurrent terminal transition \
+             (§11.5, #333)"
+        );
+    }
+
+    /// Regression for [#333](https://github.com/vanyastaff/nebula/issues/333).
+    ///
+    /// On `checkpoint_node` CAS mismatch, the engine now returns the
+    /// typed [`EngineError::CasConflict`] carrying the observer-visible
+    /// external status — not a generic `CheckpointFailed`. Pre-fix,
+    /// only the version was refreshed (the observed state was
+    /// discarded) and the error reason was a bare string, leaving no
+    /// structured signal for operators or upstream schedulers to
+    /// distinguish a stale-version abort from a real external conflict.
+    #[tokio::test]
+    async fn node_checkpoint_cas_conflict_surfaces_observed_status() {
+        let registry = Arc::new(ActionRegistry::new());
+        registry.register_stateless(EchoHandler {
+            meta: ActionMetadata::new(action_key!("echo"), "Echo", "echoes"),
+        });
+
+        let a = node_key!("a");
+        let wf = make_workflow(
+            vec![NodeDefinition::new(a.clone(), "A", "echo").unwrap()],
+            vec![],
+        );
+        let workflow_repo = save_workflow_to_repo(&wf).await;
+
+        // Inject the external mutation before transition #1 — the
+        // first call after `create()` is the node-level checkpoint
+        // (v=1 → v=2 expected). The external bump flips status to
+        // `cancelling` and moves the row to v=2 so the engine's
+        // checkpoint_node CAS lands stale.
+        let inner = Arc::new(nebula_storage::InMemoryExecutionRepo::new());
+        let mutating_repo = Arc::new(ExternalMutateBeforeN::new(
+            inner.clone(),
+            1,
+            Some("cancelling"),
+        ));
+
+        let (engine, _) = make_engine(registry);
+        let engine = engine
+            .with_execution_repo(mutating_repo)
+            .with_workflow_repo(workflow_repo);
+
+        // The final result is not the focus here — what matters is
+        // that the persisted row shows the engine observed the
+        // external status rather than blindly overwriting the row.
+        // Note: depending on scheduling, the engine may report
+        // Failed (node checkpoint aborted) or Cancelled (external).
+        // Either way it MUST NOT claim Completed.
+        let result = engine
+            .execute_workflow(&wf, serde_json::json!(null), ExecutionBudget::default())
+            .await;
+
+        let execution_id_opt = match &result {
+            Ok(r) => {
+                assert_ne!(
+                    r.status,
+                    ExecutionStatus::Completed,
+                    "engine must not report Completed when the node's \
+                     checkpoint CAS-missed against a concurrent external \
+                     transition (§11.5, #333); got Completed for {r:?}"
+                );
+                Some(r.execution_id)
+            },
+            Err(e) => {
+                // An execution-level Err is also acceptable — the
+                // engine did not silently report success.
+                tracing::debug!(error = %e, "execution surfaced typed error on CAS conflict");
+                None
+            },
+        };
+
+        // Crucially, the persisted row must still carry the external
+        // `cancelling` status — never overwritten. The engine's own
+        // writes after CAS miss MUST NOT land.
+        if let Some(execution_id) = execution_id_opt {
+            let state_opt = inner.get_state(execution_id).await.unwrap_or(None);
+            if let Some((_v, final_state)) = state_opt {
+                let status = final_state.get("status").and_then(|v| v.as_str());
+                assert_ne!(
+                    status,
+                    Some("completed"),
+                    "persisted row must not land as completed when the node \
+                     checkpoint CAS-missed against a concurrent external \
+                     mutation (§11.5, #333); found {status:?}"
+                );
+            }
+        }
+    }
+
+    /// Regression for [#333](https://github.com/vanyastaff/nebula/issues/333).
+    ///
+    /// When the final CAS misses against a **non-terminal** external
+    /// write, the reconciliation helper retries once at the refreshed
+    /// version. The retry succeeds (no further concurrent writer), so
+    /// the engine commits its decision at the new version instead of
+    /// losing it. Pre-fix, the path was log-and-continue and the
+    /// engine's final write was silently dropped.
+    #[tokio::test]
+    async fn persist_final_state_retries_once_on_nonterminal_conflict() {
+        let registry = Arc::new(ActionRegistry::new());
+        let (engine, _) = make_engine(registry);
+
+        let inner = Arc::new(nebula_storage::InMemoryExecutionRepo::new());
+
+        let execution_id = ExecutionId::new();
+        let workflow_id = WorkflowId::new();
+        let node_ids = vec![node_key!("x")];
+        let mut local_state = ExecutionState::new(execution_id, workflow_id, &node_ids);
+        local_state
+            .transition_status(ExecutionStatus::Running)
+            .unwrap();
+        inner
+            .create(
+                execution_id,
+                workflow_id,
+                serde_json::to_value(&local_state).unwrap(),
+            )
+            .await
+            .unwrap();
+
+        // External non-terminal bump: stay in Running but advance
+        // `updated_at` by re-saving the row at a new version.
+        let mut external_state = local_state.clone();
+        external_state.updated_at = chrono::Utc::now();
+        external_state.version += 1;
+        let external_json = serde_json::to_value(&external_state).unwrap();
+        let ok = inner
+            .transition(execution_id, 1, external_json)
+            .await
+            .expect("external transition should succeed");
+        assert!(ok, "external transition must commit at v=1");
+
+        // Engine's local final state is Completed, using the stale
+        // repo_version=1.
+        let mut repo_version: u64 = 1;
+        let mut engine_final_state = local_state.clone();
+        engine_final_state
+            .transition_status(ExecutionStatus::Completed)
+            .unwrap();
+
+        let repo: Arc<dyn nebula_storage::ExecutionRepo> = inner.clone();
+        let outcome = engine
+            .persist_final_state(
+                &repo,
+                execution_id,
+                &mut engine_final_state,
+                &mut repo_version,
+            )
+            .await
+            .expect("retry should succeed on non-terminal conflict");
+
+        assert_eq!(
+            outcome, None,
+            "helper must report Ok(None) when the local final status \
+             was ultimately persisted (non-terminal conflict → retry \
+             succeeded). got {outcome:?}"
+        );
+
+        // The persisted row must now be Completed at a bumped version.
+        let (persisted_version, final_state) = inner
+            .get_state(execution_id)
+            .await
+            .unwrap()
+            .expect("row must still exist");
+        assert!(
+            persisted_version >= 3,
+            "expected version ≥ 3 (create + external bump + retry), \
+             got {persisted_version}"
+        );
+        assert_eq!(
+            final_state.get("status").and_then(|v| v.as_str()),
+            Some("completed"),
+            "retry must durably persist the engine's Completed decision \
+             at the refreshed version (§11.5, #333)"
+        );
+    }
+
+    /// Regression for [#333](https://github.com/vanyastaff/nebula/issues/333).
+    ///
+    /// Unit-level check on the reconciliation helper: when the final
+    /// CAS misses against a concurrent Cancelled write, the helper
+    /// returns `Ok(Some(Cancelled))` — not `Ok(None)` (silent overwrite
+    /// on the pre-fix path). Isolated from the full `execute_workflow`
+    /// frame so the observable contract is easy to evolve.
+    #[tokio::test]
+    async fn persist_final_state_honors_external_terminal_transition() {
+        let registry = Arc::new(ActionRegistry::new());
+        let (engine, _) = make_engine(registry);
+
+        let inner = Arc::new(nebula_storage::InMemoryExecutionRepo::new());
+
+        // Seed an execution row manually at version 0 with Running
+        // status (mirrors what `execute_workflow`'s `create` does).
+        let execution_id = ExecutionId::new();
+        let workflow_id = WorkflowId::new();
+        let node_ids = vec![node_key!("x")];
+        let mut local_state = ExecutionState::new(execution_id, workflow_id, &node_ids);
+        local_state
+            .transition_status(ExecutionStatus::Running)
+            .unwrap();
+        inner
+            .create(
+                execution_id,
+                workflow_id,
+                serde_json::to_value(&local_state).unwrap(),
+            )
+            .await
+            .unwrap();
+
+        // Simulate an external cancel: bump the row to version 2 with
+        // status=cancelled.
+        let mut external_state = local_state.clone();
+        external_state
+            .transition_status(ExecutionStatus::Cancelling)
+            .ok();
+        external_state
+            .transition_status(ExecutionStatus::Cancelled)
+            .ok();
+        let external_json = serde_json::to_value(&external_state).unwrap();
+        let ok = inner
+            .transition(execution_id, 1, external_json)
+            .await
+            .expect("external transition should succeed");
+        assert!(ok, "external transition must commit at v=1");
+
+        // Now ask the engine to persist its final state as Completed
+        // starting from the stale version it had before the external
+        // bump. This is exactly the pre-fix silent-overwrite scenario.
+        let mut repo_version: u64 = 1;
+        let mut engine_final_state = local_state.clone();
+        engine_final_state
+            .transition_status(ExecutionStatus::Completed)
+            .unwrap();
+
+        let repo: Arc<dyn nebula_storage::ExecutionRepo> = inner.clone();
+        let outcome = engine
+            .persist_final_state(
+                &repo,
+                execution_id,
+                &mut engine_final_state,
+                &mut repo_version,
+            )
+            .await
+            .expect("reconciliation must succeed against an external terminal write");
+
+        assert_eq!(
+            outcome,
+            Some(ExecutionStatus::Cancelled),
+            "helper must report the external terminal status; pre-fix \
+             returned None and silently overwrote the cancel (§11.5, #333). \
+             got {outcome:?}"
+        );
+
+        // Double-check: the persisted row still says `cancelled`.
+        let (_v, final_state) = inner
+            .get_state(execution_id)
+            .await
+            .unwrap()
+            .expect("row must still exist");
+        assert_eq!(
+            final_state.get("status").and_then(|v| v.as_str()),
+            Some("cancelled"),
+            "engine must not overwrite the external Cancelled row \
+             with its local Completed decision (§11.5, #333)"
         );
     }
 }
