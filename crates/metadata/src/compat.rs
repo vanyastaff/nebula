@@ -53,7 +53,7 @@ where
 /// Rules:
 /// - `key` must be equal.
 /// - `version` must be `>= previous.version` (full `semver::Version` ordering, including
-///   pre-release + build).
+///   pre-release tags; build metadata is ignored per the SemVer 2.0 spec).
 /// - If `schema` changed, `version.major` must exceed `previous.version.major`.
 ///
 /// Entity-specific rules (ports, auth pattern) are **not** checked here —
@@ -98,10 +98,6 @@ mod tests {
     }
 
     fn schema_with_one_field() -> ValidSchema {
-        // Real API: `SchemaBuilder: FieldCollector` exposes a closure-style
-        // `.string(key, |s| s)` child — see `crates/schema/src/builder/mod.rs:56`.
-        // `FieldCollector` is re-exported at `nebula_schema::FieldCollector`
-        // (see `crates/schema/src/lib.rs:72`).
         Schema::builder()
             .string("extra", |s| s)
             .build()
