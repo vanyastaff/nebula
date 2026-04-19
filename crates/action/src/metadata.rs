@@ -317,6 +317,11 @@ impl ActionMetadata {
     /// Delegates `key immutable / version monotonic / schema-break-requires-
     /// major` to [`nebula_metadata::validate_base_compat`]; layers the action-
     /// specific port-change rule on top.
+    ///
+    /// The ports rule lives on this type rather than in `nebula-metadata`
+    /// because no other catalog citizen exposes a typed input/output port
+    /// graph — only actions declare ports that the workflow validator wires
+    /// between nodes, so the rule has no meaningful shared form.
     pub fn validate_compatibility(
         &self,
         previous: &Self,
@@ -528,7 +533,7 @@ mod tests {
     }
 
     #[test]
-    fn schema_change_requires_major_bump() {
+    fn ports_change_requires_major_bump() {
         let prev = ActionMetadata::new(action_key!("http.request"), "HTTP Request", "desc")
             .with_version(1, 0)
             .with_outputs(vec![OutputPort::flow("out")]);
@@ -551,10 +556,10 @@ mod tests {
             .with_schema(Schema::builder().string("added", |s| s).build().unwrap());
 
         let err = next.validate_compatibility(&prev).unwrap_err();
-        assert!(matches!(
+        assert_eq!(
             err,
             MetadataCompatibilityError::Base(BaseCompatError::SchemaChangeWithoutMajorBump)
-        ));
+        );
     }
 
     #[test]
