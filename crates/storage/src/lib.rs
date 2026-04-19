@@ -19,8 +19,11 @@
 //! versioning. Trait definitions only — no implementations exist yet; the engine
 //! cannot compile against these without a broader refactor.
 //!
-//! **Exception:** `repos::ControlQueueRepo` + `repos::InMemoryControlQueueRepo`
-//! are implemented and wired into the API cancel path today.
+//! **Exception:** `repos::ControlQueueRepo` is production-wired today —
+//! backed by `repos::InMemoryControlQueueRepo` (tests / local) and
+//! `pg::PgControlQueueRepo` (multi-process / restart-tolerant, `FOR UPDATE
+//! SKIP LOCKED` per ADR-0008 §1). Both are consumed by
+//! `nebula_engine::ControlConsumer`.
 //!
 //! ## Canon
 //!
@@ -55,12 +58,14 @@ pub mod pg;
 pub mod pool;
 /// Repository trait API (spec-16 architecture) — **planned / experimental**, per canon §11.6.
 ///
-/// Only [`repos::ControlQueueRepo`] + [`repos::InMemoryControlQueueRepo`]
-/// are implemented and actually consumed today (by the API cancel path).
-/// The rest of the traits in this module are design placeholders with
-/// no implementations yet — adopting them requires an engine + API
-/// refactor tracked as "Sprint E — adopt spec-16 row model" in the
-/// workspace health audit spec.
+/// Only [`repos::ControlQueueRepo`] is production-wired today —
+/// backed by [`repos::InMemoryControlQueueRepo`] (tests / local) and
+/// [`pg::PgControlQueueRepo`] (multi-process / restart-tolerant;
+/// `FOR UPDATE SKIP LOCKED` per ADR-0008 §1). Both are consumed by
+/// `nebula_engine::ControlConsumer`. The rest of the traits in this
+/// module are design placeholders with no implementations yet —
+/// adopting them requires an engine + API refactor tracked as
+/// "Sprint E — adopt spec-16 row model" in the workspace health audit spec.
 ///
 /// For execution / workflow persistence, use the top-level [`ExecutionRepo`]
 /// and [`WorkflowRepo`] re-exports (layer 1) — they are the production
