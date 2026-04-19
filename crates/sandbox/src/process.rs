@@ -37,7 +37,7 @@ use async_trait::async_trait;
 use nebula_action::{ActionError, ActionMetadata, result::ActionResult};
 use nebula_plugin_sdk::{
     protocol::{HostToPlugin, PluginToHost},
-    transport::{self, PluginStream},
+    transport::{self, ENV_SOCKET_ADDR, ENV_SOCKET_KIND, PluginStream},
 };
 use tokio::{
     io::{AsyncBufRead, AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader},
@@ -118,6 +118,13 @@ struct PluginHandle {
     /// child. Read nowhere; the underscore prefix silences dead-code
     /// warnings.
     _child: Child,
+    /// Host-allocated temp directory holding the UDS socket on Unix.
+    /// Kept alive for the lifetime of the handle so the directory (and
+    /// its 0700 perms) survive as long as the plugin process. Dropping
+    /// the `TempDir` removes the directory tree. `None` on Windows —
+    /// named pipes aren't in a filesystem directory. Dead code at
+    /// read-time; the `_` prefix silences warnings.
+    _socket_dir: Option<tempfile::TempDir>,
     /// Buffered reader over the stream's read half. Crucial for
     /// throughput — byte-at-a-time reads hit ~4 MB/s, BufReader reaches
     /// hundreds of MB/s on local sockets/pipes.
@@ -141,10 +148,11 @@ struct PluginHandle {
 }
 
 impl PluginHandle {
-    fn new(child: Child, stream: PluginStream) -> Self {
+    fn new(child: Child, stream: PluginStream, socket_dir: Option<tempfile::TempDir>) -> Self {
         let (read_half, write_half) = tokio::io::split(stream);
         Self {
             _child: child,
+            _socket_dir: socket_dir,
             reader: BufReader::new(read_half),
             writer: write_half,
             line_buf: Vec::with_capacity(512),
@@ -455,13 +463,25 @@ impl ProcessSandbox {
             .filter_map(|key| std::env::var(&key).ok().map(|val| (key, val)))
             .collect();
 
+        // #260: host allocates the plugin's socket address up-front and
+        // passes it via env so the child cannot forge a handshake that
+        // redirects the host at a sibling plugin's socket. `socket_dir`
+        // is `Some` on Unix (TempDir that owns the 0700 parent) and
+        // `None` on Windows (named pipes aren't in a filesystem dir).
+        let (expected_addr, kind, socket_dir) = allocate_host_socket_addr()?;
+
         let mut cmd = Command::new(&self.binary);
         cmd.stdin(std::process::Stdio::null())
             .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::piped())
             .kill_on_drop(true)
             .env_clear()
-            .envs(allowed_env);
+            .envs(allowed_env)
+            // Host-controlled transport env: always set, regardless of
+            // the plugin's declared capability set. `env()` applied
+            // after `envs()` adds on top of the capability allowlist.
+            .env(ENV_SOCKET_ADDR, &expected_addr)
+            .env(ENV_SOCKET_KIND, kind);
 
         // Apply OS-level sandbox in child process before exec (Linux only).
         #[cfg(target_os = "linux")]
@@ -594,13 +614,145 @@ impl ProcessSandbox {
             "plugin handshake received"
         );
 
+        // #260: validate the announced address against what we pre-allocated
+        // before dialling. A compromised plugin that prints a sibling
+        // plugin's socket path here is rejected, not connected to.
+        if let Err(err) = validate_handshake_addr(handshake_line, &expected_addr, kind) {
+            tracing::warn!(
+                plugin = %self.binary.display(),
+                expected = %expected_addr,
+                error = %err,
+                "plugin handshake address mismatch — refusing to dial",
+            );
+            return Err(sandbox_error_to_action_error(err));
+        }
+
         // Dial the announced transport.
         let stream = transport::dial(handshake_line)
             .await
             .map_err(|e| ActionError::fatal(format!("plugin transport dial failed: {e}")))?;
 
-        Ok(PluginHandle::new(child, stream))
+        Ok(PluginHandle::new(child, stream, socket_dir))
     }
+}
+
+/// Allocate a host-controlled socket address for the plugin to bind (#260).
+///
+/// On Unix: creates a tempdir with `0700` permissions (via `tempfile`) and
+/// returns a socket path inside it. Keeping the `TempDir` alive is the
+/// caller's responsibility — it must be stored on the resulting
+/// [`PluginHandle`] so the directory persists for as long as the socket
+/// is in use and is cleaned up on drop.
+///
+/// Prefers `/tmp` when available over the platform temp dir (macOS
+/// defaults to `/var/folders/...` paths that can exceed
+/// [`transport::MAX_UNIX_SOCKET_PATH_BYTES`]). Falls back to the platform
+/// temp dir, and skips any candidate whose resulting socket path would
+/// overflow `sun_path`. This mirrors the plugin-side self-allocation
+/// policy so the host and plugin cannot disagree on what's bindable.
+///
+/// On Windows: generates an unpredictable named-pipe path under
+/// `\\.\pipe\LOCAL\` (session-scoped namespace). The pipe is bound by
+/// the plugin and released when the plugin process exits; no
+/// directory-level cleanup is needed.
+fn allocate_host_socket_addr()
+-> Result<(String, &'static str, Option<tempfile::TempDir>), ActionError> {
+    #[cfg(unix)]
+    {
+        use std::{os::unix::ffi::OsStrExt, path::PathBuf};
+
+        // Candidate roots in preference order: short `/tmp` first (macOS
+        // `/var/folders/…` often exceeds the `sun_path` cap), then the
+        // platform temp dir. Deduplicate so `/tmp`-is-temp_dir callers
+        // don't try the same root twice.
+        let mut candidate_roots: Vec<PathBuf> = Vec::new();
+        let short_tmp = PathBuf::from("/tmp");
+        if short_tmp.is_dir() {
+            candidate_roots.push(short_tmp);
+        }
+        let platform_tmp = std::env::temp_dir();
+        if !candidate_roots.iter().any(|root| root == &platform_tmp) {
+            candidate_roots.push(platform_tmp);
+        }
+
+        let mut last_alloc_error: Option<(PathBuf, std::io::Error)> = None;
+        for root in candidate_roots {
+            let dir = match tempfile::Builder::new()
+                .prefix("nebula-plugin-host-")
+                .tempdir_in(&root)
+            {
+                Ok(dir) => dir,
+                Err(e) => {
+                    last_alloc_error = Some((root, e));
+                    continue;
+                },
+            };
+
+            let socket_path = dir.path().join("sock");
+            let socket_path_len = socket_path.as_os_str().as_bytes().len();
+            if socket_path_len > transport::MAX_UNIX_SOCKET_PATH_BYTES {
+                // Drop the oversized tempdir (Drop cleans up) and try
+                // the next candidate root.
+                continue;
+            }
+
+            let addr = socket_path
+                .to_str()
+                .ok_or_else(|| ActionError::fatal("plugin socket tempdir path is not valid UTF-8"))?
+                .to_owned();
+            return Ok((addr, "unix", Some(dir)));
+        }
+
+        if let Some((root, e)) = last_alloc_error {
+            return Err(ActionError::fatal(format!(
+                "failed to allocate plugin socket tempdir in {}: {e}",
+                root.display()
+            )));
+        }
+        Err(ActionError::fatal(format!(
+            "failed to allocate a Unix socket path within {} bytes",
+            transport::MAX_UNIX_SOCKET_PATH_BYTES
+        )))
+    }
+    #[cfg(windows)]
+    {
+        let nonce = uuid::Uuid::new_v4().simple().to_string();
+        let pipe = format!(r"\\.\pipe\LOCAL\nebula-plugin-host-{nonce}");
+        Ok((pipe, "pipe", None))
+    }
+}
+
+/// Verify that the handshake line's `kind|addr` pair matches the
+/// host-allocated values from [`allocate_host_socket_addr`]. Returns
+/// [`SandboxError::HandshakeAddrMismatch`] on any deviation.
+///
+/// Exact string comparison is used — the plugin is expected to echo the
+/// address we passed via `NEBULA_PLUGIN_SOCKET_ADDR` verbatim. An
+/// attacker-controlled plugin that prints a different address (to
+/// redirect the host at a sibling plugin's UDS or pipe) fails this check
+/// and never reaches `transport::dial`.
+fn validate_handshake_addr(
+    handshake_line: &str,
+    expected_addr: &str,
+    expected_kind: &'static str,
+) -> Result<(), SandboxError> {
+    let line = handshake_line.trim();
+    let mut parts = line.splitn(3, '|');
+    let _version = parts.next(); // already checked by the caller's length cap and UTF-8 decode
+    let announced_kind = parts.next().unwrap_or("");
+    let announced_addr = parts.next().unwrap_or("");
+    if announced_kind != expected_kind || announced_addr != expected_addr {
+        let got = if announced_kind.is_empty() && announced_addr.is_empty() {
+            String::from("<malformed handshake>")
+        } else {
+            format!("{announced_kind}|{announced_addr}")
+        };
+        return Err(SandboxError::HandshakeAddrMismatch {
+            expected: format!("{expected_kind}|{expected_addr}"),
+            got,
+        });
+    }
+    Ok(())
 }
 
 /// Convert an internal [`SandboxError`] into the public `ActionError` the
@@ -615,6 +767,7 @@ fn sandbox_error_to_action_error(err: SandboxError) -> ActionError {
         // Fatal: DoS / protocol-abuse signals. Do not paper over with retry.
         SandboxError::PluginLineTooLarge { .. }
         | SandboxError::HandshakeLineTooLarge { .. }
+        | SandboxError::HandshakeAddrMismatch { .. }
         | SandboxError::TransportPoisoned
         | SandboxError::Transport(_)
         | SandboxError::MalformedEnvelope(_)
@@ -1161,5 +1314,115 @@ mod tests {
             .expect_err("fixture must produce serde_json::Error");
         let ae = sandbox_error_to_action_error(SandboxError::HostMalformedEnvelope(parse_err));
         assert!(matches!(ae, ActionError::Fatal { .. }));
+    }
+
+    // ---- #260 forged-handshake regression guard ----------------------
+
+    #[test]
+    fn validate_handshake_addr_accepts_matching_pair() {
+        let line = "NEBULA-PROTO-2|unix|/tmp/nebula-plugin-host-abc/sock\n";
+        let result = validate_handshake_addr(line, "/tmp/nebula-plugin-host-abc/sock", "unix");
+        assert!(result.is_ok(), "matching addr+kind must be accepted");
+    }
+
+    #[test]
+    fn validate_handshake_addr_rejects_forged_sibling_socket() {
+        // The exact #260 scenario: a compromised plugin prints a path
+        // that belongs to a DIFFERENT plugin's socket tree. The host
+        // allocated `/tmp/nebula-plugin-host-ours/sock`, but the plugin
+        // announces `/tmp/nebula-plugin-host-other/sock`. Must fail
+        // BEFORE `dial` so the host never connects to the sibling.
+        let line = "NEBULA-PROTO-2|unix|/tmp/nebula-plugin-host-other/sock\n";
+        let err = validate_handshake_addr(line, "/tmp/nebula-plugin-host-ours/sock", "unix")
+            .expect_err("forged sibling path must be rejected");
+        match err {
+            SandboxError::HandshakeAddrMismatch { expected, got } => {
+                assert!(
+                    expected.contains("/tmp/nebula-plugin-host-ours/sock"),
+                    "expected field should contain the host-allocated addr, got {expected:?}",
+                );
+                assert!(
+                    got.contains("/tmp/nebula-plugin-host-other/sock"),
+                    "got field should contain the announced addr, got {got:?}",
+                );
+            },
+            other => panic!("expected HandshakeAddrMismatch, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn validate_handshake_addr_rejects_mismatched_kind() {
+        // Plugin tries to smuggle a pipe address on a Unix host (or
+        // vice versa). Kind mismatch is a protocol violation and must
+        // be rejected with the same error type.
+        let line = "NEBULA-PROTO-2|pipe|some-pipe-name\n";
+        let err = validate_handshake_addr(line, "/tmp/nebula/sock", "unix")
+            .expect_err("kind mismatch must be rejected");
+        assert!(matches!(err, SandboxError::HandshakeAddrMismatch { .. }));
+    }
+
+    #[test]
+    fn validate_handshake_addr_rejects_malformed_handshake() {
+        // Missing kind/addr entirely → mismatch error (with a clear
+        // "<malformed handshake>" marker on the got side).
+        let line = "NEBULA-PROTO-2\n";
+        let err = validate_handshake_addr(line, "/tmp/nebula/sock", "unix")
+            .expect_err("malformed handshake must be rejected");
+        match err {
+            SandboxError::HandshakeAddrMismatch { got, .. } => {
+                assert!(
+                    got.contains("malformed"),
+                    "got should flag the malformed handshake, was {got:?}",
+                );
+            },
+            other => panic!("expected HandshakeAddrMismatch, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn handshake_addr_mismatch_converts_to_fatal_action_error() {
+        let err = SandboxError::HandshakeAddrMismatch {
+            expected: String::from("unix|/tmp/ok"),
+            got: String::from("unix|/tmp/evil"),
+        };
+        let ae = sandbox_error_to_action_error(err);
+        assert!(
+            matches!(ae, ActionError::Fatal { .. }),
+            "HandshakeAddrMismatch must classify as Fatal (no retry on forged handshake), got {ae:?}",
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn allocate_host_socket_addr_gives_distinct_tempdirs() {
+        // Two successive allocations must produce distinct addresses and
+        // distinct tempdirs — otherwise two concurrent plugin spawns
+        // would race on the same socket path.
+        let (a, kind_a, dir_a) = allocate_host_socket_addr().expect("alloc a");
+        let (b, kind_b, dir_b) = allocate_host_socket_addr().expect("alloc b");
+        assert_eq!(kind_a, "unix");
+        assert_eq!(kind_b, "unix");
+        assert_ne!(a, b, "two allocations must produce distinct socket paths");
+        assert_ne!(
+            dir_a.as_ref().map(|d| d.path().to_path_buf()),
+            dir_b.as_ref().map(|d| d.path().to_path_buf()),
+            "two allocations must produce distinct tempdirs",
+        );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn allocate_host_socket_addr_gives_distinct_pipe_names() {
+        let (a, kind_a, dir_a) = allocate_host_socket_addr().expect("alloc a");
+        let (b, kind_b, dir_b) = allocate_host_socket_addr().expect("alloc b");
+        assert_eq!(kind_a, "pipe");
+        assert_eq!(kind_b, "pipe");
+        assert!(dir_a.is_none(), "no tempdir on windows");
+        assert!(dir_b.is_none(), "no tempdir on windows");
+        assert_ne!(a, b, "two allocations must produce distinct pipe names");
+        assert!(
+            a.starts_with(r"\\.\pipe\LOCAL\nebula-plugin-host-"),
+            "pipe name must carry the host-plugin prefix, was {a:?}",
+        );
     }
 }

@@ -81,4 +81,20 @@ pub enum SandboxError {
     /// to the plugin transport.
     #[error("host failed to serialize outbound envelope")]
     HostMalformedEnvelope(#[source] serde_json::Error),
+
+    /// The plugin announced a handshake address that does not match the
+    /// host-allocated one. Protects against the "forged handshake →
+    /// hijack sibling plugin socket" attack (#260).
+    #[error(
+        "plugin announced handshake address `{got}` but host expected `{expected}` — \
+         refusing to dial; a compromised plugin may be attempting to redirect \
+         to another process's socket"
+    )]
+    HandshakeAddrMismatch {
+        /// The address the host set via the `NEBULA_PLUGIN_SOCKET_ADDR`
+        /// env var before spawn.
+        expected: String,
+        /// The address announced by the plugin in its handshake line.
+        got: String,
+    },
 }
