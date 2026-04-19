@@ -83,7 +83,7 @@ in practical rules. Every rule below is **non-negotiable**; a PR that trips one 
 - User-supplied credentials: API keys, OAuth tokens, passwords, client secrets, session tokens.
 - Cryptographic key bytes: signing keys, shared keys, key-derivation inputs.
 - Pre-decrypt ciphertext + nonce pairs *while decryption is in-flight*.
-- Any value a credential scheme wraps in `SecretString` / `SecretBytes` / a newtype around either.
+- Any value a credential scheme wraps in `SecretString` or a scheme-specific secret newtype.
 
 ### 6.2 Mandatory patterns
 
@@ -145,10 +145,15 @@ pub fn authorize(k: &ApiKey) -> Result<(), AuthError> {
 
 `crates/credential/tests/redaction.rs` ships a
 **log-redaction test helper** — `assert_no_secret_in_logs(forbidden, || { ... })` — that captures
-all `tracing` output emitted inside the closure and fails if the forbidden substring shows up.
-It covers both the *positive* case (secrets formatted as `[REDACTED]`) and a `#[should_panic]`
-negative case (a raw leak must fail the assertion, so a silently-passing test cannot mask a real
-regression).
+current-thread `tracing` output (all levels, including `DEBUG` / `TRACE`) while the closure runs
+and fails if the forbidden substring shows up. It covers both the *positive* case (secrets
+formatted as `[REDACTED]`) and a `#[should_panic]` negative case (a raw leak must fail the
+assertion, so a silently-passing test cannot mask a real regression).
+
+**Scope caveat.** The subscriber is installed via `tracing::subscriber::with_default` and is
+thread-local. Events emitted from threads spawned inside the closure — or from work that an async
+runtime moves onto a worker thread — will **not** be captured. Keep redaction tests on a
+single-thread logging path; do not `tokio::spawn` / `std::thread::spawn` inside `body`.
 
 New credential-adjacent types add a targeted test there:
 
