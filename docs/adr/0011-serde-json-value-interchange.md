@@ -7,7 +7,7 @@ supersedes: []
 superseded_by: []
 tags: [data-model, interchange, schema, engine]
 related:
-  - docs/PRODUCT_CANON.md#125
+  - docs/PRODUCT_CANON.md#124-errors-and-contracts
   - docs/STYLE.md
   - crates/schema/src/lib.rs
   - crates/engine/src/engine.rs
@@ -40,16 +40,20 @@ We need a single in-memory type that:
 
 - Serializes losslessly to/from JSON (the wire format for checkpoints,
   HTTP, persistence);
-- Is cheap to `clone` and `serde`-round-trip;
+- Interoperates naturally with `serde` and JSON tooling; `clone` and
+  `serde`-round-trip costs are proportional to payload size (a deep clone
+  of a large tree is not free — the interchange chooses ergonomics over
+  aliasing);
 - Is tree-shaped so the expression engine (`nebula-expression`) can walk it
   with JSONPath / template lookups;
 - Imposes **zero** static schema on node-to-node data flow.
 
 `serde_json::Value` fits all four. Alternatives considered below.
 
-Product-canon reference: [`§12.5`](../PRODUCT_CANON.md#125) — *"`serde_json::Value`
-is allowed where it is the deliberate interchange type; new stringly protocols
-(magic field names without schema validation) require explicit review."*
+Product-canon reference: [`§12.4`](../PRODUCT_CANON.md#124-errors-and-contracts) —
+*"`serde_json::Value` is allowed where it is the deliberate interchange type;
+new stringly protocols (magic field names without schema validation) require
+explicit review."*
 
 This ADR records the decision already in force and scopes **what it is and
 what it is not**.

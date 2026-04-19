@@ -54,9 +54,11 @@ decision that is de-facto in force.
 3. CI enforces the MSRV on every PR (`rust-toolchain: 1.94` matrix entry plus
    a stable channel entry). The local `lefthook` pre-push mirrors the CI MSRV
    job so divergence is caught before CI.
-4. `cargo-deny` (see `deny.toml`) fails the build if a new dependency
-   advertises a higher MSRV than 1.94 — the build must break loudly, not
-   silently.
+4. A new dependency that effectively raises the compiler floor above 1.94
+   must fail the dedicated 1.94 CI/MSRV job (and the matching local
+   `lefthook` pre-push check) loudly rather than being accepted silently.
+   (`deny.toml` does not currently encode an MSRV gate; if one is added
+   later, it becomes the primary enforcement point.)
 5. **Bumping the MSRV is a breaking change.** Any raise requires:
    - an update to this ADR (supersede, not edit in place);
    - a CHANGELOG entry flagged `breaking`;
