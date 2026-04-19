@@ -1,4 +1,4 @@
-# [CLAUDE.md](http://CLAUDE.md)
+# CLAUDE.md
 
 Operational guidance for coding agents in this repository.
 
@@ -85,26 +85,31 @@ Notes:
 
 - `cargo +nightly fmt` is required (unstable rustfmt options are enabled).
 - Doctests are run separately with `cargo test --doc`.
+- `lefthook run pre-push` is the local mirror of CI required jobs (fmt, clippy, tests, doctests, taplo, MSRV 1.94, `--all-features`, `--no-default-features`). When adding or removing a CI required job, update `lefthook.yml` in the same PR.
+- Commit messages use conventional commits (`feat:`, `fix(scope):`, `chore:` …); `pr-validation.yml` enforces this via commitlint.
+- Releases are manual: `cargo release -p <crate> <patch|minor|major> --execute` (see `docs/dev-setup.md`).
 
 ## Architecture Boundaries
 
 Layer direction is one-way:
 
 ```
-API            api (+ webhook module)
+API / Public   api (HTTP + webhook module) · sdk (integration author façade)
   ↑
-Exec           engine · runtime · storage · sandbox · sdk · plugin-sdk
+Exec           engine · runtime · storage · sandbox · plugin-sdk
   ↑
 Business       credential · resource · action · plugin
   ↑
-Core           core · validator · parameter · expression · workflow · execution
+Core           core · validator · expression · workflow · execution · schema · metadata
 
-Cross-cutting  log · system · eventbus · telemetry · metrics · config · resilience · error
+Cross-cutting  log · system · eventbus · telemetry · metrics · resilience · error
 ```
 
 - No upward dependencies.
 - Enforced partly by `deny.toml` (`cargo deny`) and partly by code review.
 - Webhook is a module under `crates/api/src/webhook/`, not a separate crate.
+- `nebula-sdk` is the external integration-author surface (re-exports action / credential / resource / schema / workflow / plugin / validator). Only `examples` may depend on it (see `deny.toml`).
+- `nebula-plugin-sdk` is the out-of-process plugin protocol; only `sandbox` may depend on it directly.
 
 ## Engineering Defaults
 

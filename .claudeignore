@@ -1,5 +1,11 @@
 # Build artifacts
 target/
+target/release/
+target/debug/deps/
+target/debug/incremental/
+target/criterion/
+target/debug/coverage/
+target/doc/
 Cargo.lock
 
 # IDE files
@@ -14,9 +20,11 @@ Cargo.lock
 .DS_Store
 Thumbs.db
 
-# Test artifacts
+# Test / coverage artifacts
 *.profraw
 *.profdata
+*.gcda
+*.gcno
 
 # Temporary files
 tmp/
@@ -37,76 +45,25 @@ temp/
 *.sqlite
 *.sqlite3
 
-# Documentation build
-target/doc/
-book/
-
-# Benchmark results
-target/criterion/
-
-# Code coverage
-target/debug/coverage/
-*.gcda
-*.gcno
-
 # Large binary files
 *.so
 *.dylib
 *.dll
 *.exe
 
-# Package manager
-node_modules/
-package-lock.json
-yarn.lock
-
-# Python
-__pycache__/
-*.py[cod]
-*$py.class
-.Python
-venv/
-env/
-
 # Backup files
 *.bak
 *.backup
-*~
+*.bak.*
 
 # Generated files
 *.generated.*
 *_generated.*
 
-# Documentation that's auto-generated
-docs/target/
-docs/book/
-
-# Cache directories
-.cache/
-.cargo-cache/
-
-# Don't index large data files
+# Large data files
 *.csv
 *.json.gz
 *.parquet
-data/
-datasets/
-
-# Git files (already tracked by git)
-.git/
-
-# Rust-specific large artifacts
-target/release/
-target/debug/deps/
-target/debug/incremental/
-
-# Documentation examples output
-examples/output/
-examples/temp/
-
-# Fuzzing artifacts
-fuzz/artifacts/
-fuzz/corpus/
 
 # Security sensitive (just in case)
 secrets/
@@ -115,20 +72,12 @@ credentials/
 *.pem
 *.crt
 
-# Large test fixtures
-tests/fixtures/large/
-tests/data/
-
-# Claude local settings (machine-specific)
+# Claude local / machine-specific
 .claude/settings.local.json
 .claude/summaries/
-
-# Generated reports and reviews
-review_report.md
-coverage_checklist.md
-nul
-
-# Machine-specific MCP/AI config
+.claude/agent-memory-local/
+.claude/worktrees/
+.worktrees/
 .mcp.json
 .serena/
 .code-review-graph/
@@ -136,6 +85,15 @@ nul
 .auto-claude-security.json
 .claude_settings.json
 
-# Worktrees
-.worktrees/
-.claude/worktrees/
+# Generated reports / reviews
+review_report.md
+coverage_checklist.md
+nul
+
+# Archived / session-scoped docs (large, low signal for code work)
+docs/plans/archive/
+docs/superpowers/plans/
+docs/superpowers/specs/
+
+# Fuzzing (workspace-excluded per root Cargo.toml)
+crates/*/fuzz/
