@@ -74,7 +74,13 @@ pub struct ControlQueueEntry {
     pub status: String,
     /// Node/instance that processed the command.
     pub processed_by: Option<Vec<u8>>,
-    /// When processing finished.
+    /// When this row was claimed for processing (stamped by `claim_pending`).
+    ///
+    /// Used by [`ControlQueueRepo::reclaim_stuck`] as the staleness signal
+    /// for crashed-runner recovery — rows whose `processed_at` is older
+    /// than the `reclaim_after` window are redelivered. Cleared on a
+    /// successful reclaim so the next `claim_pending` resets the clock.
+    /// See ADR-0017 / ADR-0008 B1.
     pub processed_at: Option<chrono::DateTime<chrono::Utc>>,
     /// Error message if processing failed.
     pub error_message: Option<String>,
@@ -89,13 +95,13 @@ pub struct ControlQueueEntry {
 ///
 /// `reclaimed` counts rows moved `Processing → Pending` for a fresh dispatch
 /// attempt; `exhausted` counts rows moved `Processing → Failed` because
-/// their `reclaim_count` exceeded `max_reclaim_count`. Both are per-sweep
-/// counters — callers aggregate across ticks for observability.
+/// their `reclaim_count` reached or exceeded `max_reclaim_count`. Both are
+/// per-sweep counters — callers aggregate across ticks for observability.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct ReclaimOutcome {
     /// Rows transitioned back to `Pending` for redelivery.
     pub reclaimed: u64,
-    /// Rows transitioned to `Failed` because `reclaim_count` > `max_reclaim_count`.
+    /// Rows transitioned to `Failed` because `reclaim_count` >= `max_reclaim_count`.
     pub exhausted: u64,
 }
 
@@ -225,8 +231,13 @@ impl ControlQueueRepo for InMemoryControlQueueRepo {
         max_reclaim_count: u32,
     ) -> Result<ReclaimOutcome, StorageError> {
         let mut entries = self.entries.lock().await;
-        let cutoff = chrono::Utc::now()
-            - chrono::Duration::from_std(reclaim_after).unwrap_or(chrono::Duration::zero());
+        // If `reclaim_after` overflows `chrono::Duration` (i64 milliseconds),
+        // clamp to the maximum representable value rather than falling back
+        // to zero — a zero fallback would make `cutoff == now`, which would
+        // reclaim EVERY `Processing` row regardless of age.
+        let reclaim_chrono =
+            chrono::Duration::from_std(reclaim_after).unwrap_or(chrono::Duration::MAX);
+        let cutoff = chrono::Utc::now() - reclaim_chrono;
         let mut outcome = ReclaimOutcome::default();
 
         for row in entries.iter_mut() {
@@ -244,7 +255,7 @@ impl ControlQueueRepo for InMemoryControlQueueRepo {
                 let processor = row
                     .processed_by
                     .as_deref()
-                    .map(|b| String::from_utf8_lossy(b).into_owned())
+                    .map(hex_encode_bytes)
                     .unwrap_or_else(|| "<unknown>".to_string());
                 row.status = "Failed".to_string();
                 row.error_message = Some(format!(
@@ -268,6 +279,20 @@ impl ControlQueueRepo for InMemoryControlQueueRepo {
         // In-memory entries have no real timestamps for age-based pruning; no-op.
         Ok(0)
     }
+}
+
+/// Render opaque byte fields as lowercase hex for inclusion in user-visible
+/// strings (error messages, diagnostics). Keeps correlation with structured
+/// logs sane — the engine consumer logs `processor_id` via the same encoding
+/// in `tracing` fields.
+fn hex_encode_bytes(bytes: &[u8]) -> String {
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+    let mut s = String::with_capacity(bytes.len() * 2);
+    for &b in bytes {
+        s.push(HEX[(b >> 4) as usize] as char);
+        s.push(HEX[(b & 0x0f) as usize] as char);
+    }
+    s
 }
 
 #[cfg(test)]
@@ -419,12 +444,19 @@ mod tests {
         assert_eq!(row.status, "Failed");
         let msg = row.error_message.as_deref().expect("error_message set");
         assert!(
-            msg.starts_with("reclaim exhausted: "),
+            msg.starts_with("reclaim exhausted: processor "),
             "canonical prefix, got: {msg}"
         );
         assert!(
-            msg.contains("dead-runner"),
-            "includes processor_id, got: {msg}"
+            msg.contains("presumed dead after 3 reclaims"),
+            "includes reclaim count, got: {msg}"
+        );
+        // processor_id is hex-encoded ("dead-runner" -> 22 hex chars) so the
+        // correlation with structured `processor=...` log fields is lossless.
+        let hex_expected = "646561642d72756e6e6572";
+        assert!(
+            msg.contains(hex_expected),
+            "includes hex-encoded processor_id, got: {msg}"
         );
     }
 }
