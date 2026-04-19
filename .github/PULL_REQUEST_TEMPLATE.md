@@ -6,14 +6,14 @@ PR title must follow Conventional Commits (enforced by .github/workflows/pr-vali
 
 ## Summary
 
-<!-- What does this PR do, and why? Keep it to a few sentences. -->
+<!-- What does this PR do, and why? One paragraph. -->
 
-## Related issues
+## Linked issue
 
-<!-- Link issues this PR closes or references. Leave blank if none. -->
+<!-- Link the Linear issue and any GitHub issues this PR closes or references. -->
 
-- Closes #
-- Refs #
+- Closes NEB-
+- Refs NEB-
 
 ## Type of change
 
@@ -43,7 +43,7 @@ PR title must follow Conventional Commits (enforced by .github/workflows/pr-vali
 
 -
 
-## Testing
+## Test plan
 
 <!-- How did you verify this change? Name the tests or scenarios, not just "ran CI". -->
 
@@ -63,21 +63,25 @@ PR title must follow Conventional Commits (enforced by .github/workflows/pr-vali
 
 None
 
-## Canon alignment
+## Docs checklist
 
 <!--
 Required for non-trivial design or execution-lifecycle changes.
 See docs/PRODUCT_CANON.md §17 (Definition of Done).
-Delete this section for pure bug fixes, docs, or mechanical refactors.
+Delete items that do not apply, or delete this section for pure bug fixes and mechanical refactors.
 -->
 
 - [ ] Reviewed `docs/PRODUCT_CANON.md` — no silent semantic drift, no new undocumented lifecycle
-- [ ] Layer direction preserved (core ← business ← exec ← api; no upward deps)
-- [ ] If an L2 invariant moved: ADR added under `docs/adr/`
+- [ ] Layer direction preserved (core → business → exec → api; no upward deps)
+- [ ] If an L2 invariant changed: ADR added under `docs/adr/` with seam test in this PR
 - [ ] `docs/MATURITY.md` row updated if crate maturity changed
 - [ ] Crate `README.md` / `lib.rs //!` updated if public surface changed
+- [ ] `docs/INTEGRATION_MODEL.md` updated if Resource / Credential / Action / Plugin / Schema surface changed
+- [ ] `docs/STYLE.md` updated if a new idiom or antipattern surfaced
+- [ ] `docs/GLOSSARY.md` updated if a new term was introduced
+- [ ] Plan or spec that motivated this change archived or updated (link: <!-- path or URL -->)
 
-## Safety checklist
+## Safety / security impact
 
 - [ ] No new `unwrap()` / `expect()` / `panic!()` in library code (tests and binaries excepted)
 - [ ] No silent error suppression (`let _ = …` on `Result`, `.ok()`, `.unwrap_or_default()` on fallible IO)
@@ -88,4 +92,3 @@ Delete this section for pure bug fixes, docs, or mechanical refactors.
 ## Notes for reviewers
 
 <!-- Anything reviewers should focus on, known follow-ups, or out-of-scope items. Optional. -->
-
