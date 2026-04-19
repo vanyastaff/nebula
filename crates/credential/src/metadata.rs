@@ -236,7 +236,7 @@ impl CredentialMetadata {
 }
 
 #[cfg(test)]
-mod compat_tests {
+mod tests {
     use nebula_core::{AuthPattern, credential_key};
     use nebula_metadata::BaseCompatError;
     use nebula_schema::Schema;

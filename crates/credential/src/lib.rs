@@ -184,7 +184,7 @@ pub use crate::{
         CredentialError, CryptoError, RefreshErrorKind, ResolutionStage, RetryAdvice,
         ValidationError,
     },
-    metadata::{CredentialMetadata, CredentialMetadataBuilder},
+    metadata::{CredentialMetadata, CredentialMetadataBuilder, MetadataCompatibilityError},
     record::CredentialRecord,
     snapshot::{CredentialSnapshot, SnapshotError},
 };
