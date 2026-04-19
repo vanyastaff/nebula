@@ -909,4 +909,40 @@ mod tests {
         assert_eq!(row.0, "Pending");
         assert_eq!(row.1, 1, "reclaim_count bumped exactly once");
     }
+
+    #[tokio::test]
+    async fn enqueue_roundtrip_preserves_every_command_variant() {
+        let Some(pool) = pool().await else { return };
+        let _guard = TEST_LOCK.lock().await;
+        clean_control_queue(&pool).await;
+        let repo = PgControlQueueRepo::new(pool.clone());
+        let exec_id = seed_execution_parent_chain(&pool).await;
+
+        let variants = [
+            ControlCommand::Start,
+            ControlCommand::Cancel,
+            ControlCommand::Terminate,
+            ControlCommand::Resume,
+            ControlCommand::Restart,
+        ];
+        let mut enqueued_ids = Vec::new();
+        for cmd in variants {
+            let mut entry = pending_entry(&exec_id);
+            entry.command = cmd;
+            enqueued_ids.push((entry.id.clone(), cmd));
+            repo.enqueue(&entry).await.unwrap();
+        }
+
+        let claimed = repo.claim_pending(b"variant-runner", 64).await.unwrap();
+        // Build a map of id → decoded command so ordering doesn't matter.
+        let decoded: std::collections::HashMap<_, _> =
+            claimed.iter().map(|e| (e.id.clone(), e.command)).collect();
+        for (id, expected) in enqueued_ids {
+            let got = decoded
+                .get(&id)
+                .copied()
+                .unwrap_or_else(|| panic!("row {id:?} missing from claim batch"));
+            assert_eq!(got, expected, "command roundtrip mismatch");
+        }
+    }
 }
