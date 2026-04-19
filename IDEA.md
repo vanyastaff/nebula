@@ -129,7 +129,7 @@ Nebula бьёт в обе дыры одним движением: **делает
 
 Моя проекция, не обязательство. Актуальный статус крейтов — [`docs/MATURITY.md`](docs/MATURITY.md).
 
-- **Сейчас (alpha):** стабилизация execution core, честные invariants (см. свежие фиксы `ExecutionBudget`, leases, CAS), SDK façade оформлен.
+- **Сейчас (alpha):** стабилизация execution core, честные invariants (lease-управление, CAS на переходах состояний, восстановление `ExecutionBudget` на resume), SDK façade оформлен.
 - **Следующий горизонт:** Agent actions как полноценная integration family, health trait унификация (когда появится второй consumer), distributed execution с multi-node leases.
 - **За горизонтом:** UI, marketplace интеграций, managed hosting — но только когда ядро станет скучным и надёжным.
 
