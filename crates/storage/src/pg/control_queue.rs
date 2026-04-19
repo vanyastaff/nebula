@@ -44,6 +44,17 @@ fn decode_command(s: &str) -> Result<ControlCommand, StorageError> {
 }
 
 fn tuple_to_entry(t: EntryTuple) -> Result<ControlQueueEntry, StorageError> {
+    // `reclaim_count` is BIGINT in the DB and u32 on the trait. A negative
+    // or overflowing value would be persisted corruption — silently
+    // saturating (`max(0).unwrap_or(u32::MAX)`) would hide the bug from
+    // reclaim/exhaust decision paths. Surface it instead.
+    let reclaim_count = u32::try_from(t.9).map_err(|_| {
+        StorageError::Serialization(format!(
+            "invalid control_queue.reclaim_count: {} (id={})",
+            t.9,
+            hex::encode(&t.0)
+        ))
+    })?;
     Ok(ControlQueueEntry {
         id: t.0,
         execution_id: t.1,
@@ -54,7 +65,7 @@ fn tuple_to_entry(t: EntryTuple) -> Result<ControlQueueEntry, StorageError> {
         processed_by: t.6,
         processed_at: t.7,
         error_message: t.8,
-        reclaim_count: u32::try_from(t.9.max(0)).unwrap_or(u32::MAX),
+        reclaim_count,
     })
 }
 
@@ -140,19 +151,32 @@ impl ControlQueueRepo for PgControlQueueRepo {
     }
 
     async fn mark_completed(&self, id: &[u8]) -> Result<(), StorageError> {
-        sqlx::query("UPDATE execution_control_queue SET status = 'Completed' WHERE id = $1")
-            .bind(id)
-            .execute(&self.pool)
-            .await
-            .map_err(|e| map_db_err("control_queue", e))?;
+        // Fence on `status = 'Processing'`: a stale worker whose row was
+        // reclaimed (→ Pending, now re-claimed by someone else) or moved
+        // to a terminal state must not be able to overwrite the newer
+        // state. A missed update is an idempotent no-op under the
+        // at-least-once contract of ADR-0008 §5.
+        sqlx::query(
+            "UPDATE execution_control_queue \
+             SET status = 'Completed' \
+             WHERE id = $1 AND status = 'Processing'",
+        )
+        .bind(id)
+        .execute(&self.pool)
+        .await
+        .map_err(|e| map_db_err("control_queue", e))?;
         Ok(())
     }
 
     async fn mark_failed(&self, id: &[u8], error: &str) -> Result<(), StorageError> {
+        // Same CAS fence as `mark_completed` — a stale worker must not
+        // overwrite an already-terminal or re-claimed row. In particular,
+        // this prevents flipping a `reclaim_exhausted` Failed row back
+        // to a worker-reported Failed with a different error message.
         sqlx::query(
             "UPDATE execution_control_queue \
              SET status = 'Failed', error_message = $2 \
-             WHERE id = $1",
+             WHERE id = $1 AND status = 'Processing'",
         )
         .bind(id)
         .bind(error)
@@ -271,17 +295,68 @@ fn duration_to_interval_secs(d: std::time::Duration) -> f64 {
 #[cfg(all(test, feature = "postgres"))]
 mod tests {
     use chrono::{DateTime, Utc};
-    use sqlx::{Pool, Postgres};
+    use sqlx::{Pool, Postgres, postgres::PgPoolOptions};
 
     use super::*;
-    use crate::{backend::PostgresStorage, test_support::random_id};
+    use crate::test_support::random_id;
 
-    /// Connect to `DATABASE_URL` and run migrations, or return `None` to skip.
+    /// Spec-16 Postgres migrator. Distinct from `PostgresStorage::run_migrations`,
+    /// which runs the layer-1 (storage_kv / simple workflow) schema. Our tests
+    /// bind against the `orgs / workspaces / workflows / workflow_versions /
+    /// executions / execution_control_queue` family defined by migrations
+    /// 0001-0021 under `crates/storage/migrations/postgres/`.
+    static SPEC16_MIGRATOR: sqlx::migrate::Migrator = sqlx::migrate!("./migrations/postgres");
+
+    /// Runs spec-16 migrations at most once per test-binary run. `sqlx::Migrator`
+    /// itself is idempotent (tracked via `_sqlx_migrations`), but serialising
+    /// the call across tests avoids wasted round-trips and the migrator's
+    /// internal advisory-lock contention.
+    static SCHEMA_READY: tokio::sync::OnceCell<()> = tokio::sync::OnceCell::const_new();
+
+    /// Connect to `DATABASE_URL`, apply spec-16 migrations (once), or return
+    /// `None` to skip this test. `DATABASE_URL` absent → skip; `DATABASE_URL`
+    /// present but invalid Unicode → fail with context so Postgres coverage
+    /// is never silently disabled by a misconfigured environment.
     async fn pool() -> Option<Pool<Postgres>> {
-        let url = std::env::var("DATABASE_URL").ok()?;
-        let storage = PostgresStorage::new(url).await.expect("connect");
-        storage.run_migrations().await.expect("migrations");
-        Some(storage.pool().clone())
+        let url = match std::env::var("DATABASE_URL") {
+            Ok(url) => url,
+            Err(std::env::VarError::NotPresent) => return None,
+            Err(err) => panic!("DATABASE_URL is set but invalid: {err}"),
+        };
+        let pool = PgPoolOptions::new()
+            .max_connections(8)
+            .connect(&url)
+            .await
+            .expect("connect");
+        SCHEMA_READY
+            .get_or_init(|| async {
+                SPEC16_MIGRATOR
+                    .run(&pool)
+                    .await
+                    .expect("spec-16 postgres migrations");
+                // 0007 adds `workflows.current_version_id` as a NOT NULL FK
+                // to `workflow_versions(id)` with the default NOT DEFERRABLE
+                // semantics, creating a chicken-and-egg cycle at INSERT time
+                // (workflow needs a real version_id; version_id needs a real
+                // workflow_id). We can't resolve this via a normal seed.
+                // Relax the constraint for the test binary so the seed
+                // helper can wrap both inserts in a transaction and commit
+                // them atomically. The production composition root would
+                // either use the repo-root `migrations/` schema (which
+                // already marks this FK DEFERRABLE INITIALLY DEFERRED) or
+                // land a targeted migration for the spec-16 schema; this is
+                // a test-only workaround, not a canonical fix.
+                sqlx::query(
+                    "ALTER TABLE workflows \
+                     ALTER CONSTRAINT fk_workflows_current_version \
+                     DEFERRABLE INITIALLY DEFERRED",
+                )
+                .execute(&pool)
+                .await
+                .expect("relax workflows FK for tests");
+            })
+            .await;
+        Some(pool)
     }
 
     /// Module-level lock that serialises tests hitting the shared
@@ -308,6 +383,15 @@ mod tests {
     /// executions` chain so the `execution_id` FK on
     /// `execution_control_queue` is satisfied. Returns the `execution.id`
     /// to reference from subsequent enqueue calls.
+    ///
+    /// The insert order is `orgs → workspaces → workflows →
+    /// workflow_versions → executions`, which crosses the
+    /// `workflows.current_version_id ↔ workflow_versions.id` FK cycle.
+    /// This is only resolvable when the FK is DEFERRABLE — the `pool()`
+    /// helper promotes the constraint to `DEFERRABLE INITIALLY DEFERRED`
+    /// exactly once per test binary, so here we wrap the inserts in a
+    /// transaction with `SET CONSTRAINTS ALL DEFERRED` and the cycle is
+    /// checked at COMMIT rather than at each INSERT.
     async fn seed_execution_parent_chain(pool: &Pool<Postgres>) -> Vec<u8> {
         let now = Utc::now();
         let org_id = random_id();
@@ -317,7 +401,12 @@ mod tests {
         let exec_id = random_id();
         let creator = random_id();
 
-        // org
+        let mut tx = pool.begin().await.expect("begin seed tx");
+        sqlx::query("SET CONSTRAINTS ALL DEFERRED")
+            .execute(&mut *tx)
+            .await
+            .expect("defer constraints");
+
         sqlx::query(
             "INSERT INTO orgs \
              (id, slug, display_name, created_at, created_by, plan) \
@@ -329,11 +418,10 @@ mod tests {
         .bind(now)
         .bind(&creator)
         .bind("self_host")
-        .execute(pool)
+        .execute(&mut *tx)
         .await
         .expect("insert org");
 
-        // workspace
         sqlx::query(
             "INSERT INTO workspaces \
              (id, org_id, slug, display_name, created_at, created_by) \
@@ -345,11 +433,12 @@ mod tests {
         .bind("Test Workspace")
         .bind(now)
         .bind(&creator)
-        .execute(pool)
+        .execute(&mut *tx)
         .await
         .expect("insert workspace");
 
-        // workflow (current_version_id FK is deferred until workflow_versions row exists)
+        // workflow references workflow_versions.id which does not exist yet —
+        // FK deferred to COMMIT.
         sqlx::query(
             "INSERT INTO workflows \
              (id, workspace_id, slug, display_name, current_version_id, state, \
@@ -365,11 +454,10 @@ mod tests {
         .bind(now)
         .bind(&creator)
         .bind(now)
-        .execute(pool)
+        .execute(&mut *tx)
         .await
         .expect("insert workflow");
 
-        // workflow_version
         sqlx::query(
             "INSERT INTO workflow_versions \
              (id, workflow_id, version_number, definition, schema_version, \
@@ -384,11 +472,10 @@ mod tests {
         .bind("Published")
         .bind(now)
         .bind(&creator)
-        .execute(pool)
+        .execute(&mut *tx)
         .await
         .expect("insert workflow_version");
 
-        // execution
         sqlx::query(
             "INSERT INTO executions \
              (id, workspace_id, org_id, workflow_version_id, status, source, created_at) \
@@ -401,9 +488,11 @@ mod tests {
         .bind("Pending")
         .bind(sqlx::types::Json(serde_json::json!({"kind": "Manual"})))
         .bind(now)
-        .execute(pool)
+        .execute(&mut *tx)
         .await
         .expect("insert execution");
+
+        tx.commit().await.expect("commit seed tx");
 
         exec_id
     }
@@ -554,6 +643,65 @@ mod tests {
         .unwrap();
         assert_eq!(row.0, "Failed");
         assert_eq!(row.1.as_deref(), Some("dispatch boom"));
+    }
+
+    #[tokio::test]
+    async fn mark_completed_is_noop_when_row_not_processing() {
+        // Stale-worker safety: an ack arriving after the row has been
+        // reclaimed (→ Pending) or already terminalised must not
+        // overwrite the newer status. The guarded UPDATE returns zero
+        // rows; the repo method still returns Ok under at-least-once
+        // semantics (ADR-0008 §5).
+        let Some(pool) = pool().await else { return };
+        let _guard = TEST_LOCK.lock().await;
+        clean_control_queue(&pool).await;
+        let repo = PgControlQueueRepo::new(pool.clone());
+        let exec_id = seed_execution_parent_chain(&pool).await;
+
+        // Case 1: row is Pending (never claimed). mark_completed is a no-op.
+        let pending = pending_entry(&exec_id);
+        let pending_id = pending.id.clone();
+        repo.enqueue(&pending).await.unwrap();
+        repo.mark_completed(&pending_id).await.unwrap();
+        let status: String =
+            sqlx::query_scalar("SELECT status FROM execution_control_queue WHERE id = $1")
+                .bind(&pending_id)
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert_eq!(
+            status, "Pending",
+            "mark_completed must not flip a Pending row"
+        );
+
+        // Case 2: row was Failed by a prior reclaim exhaustion.
+        // mark_failed must not overwrite the exhaust error_message.
+        let mut exhausted = pending_entry(&exec_id);
+        exhausted.status = "Failed".to_string();
+        exhausted.error_message = Some(
+            "reclaim exhausted: processor deadbeef presumed dead after 3 reclaims".to_string(),
+        );
+        let exhausted_id = exhausted.id.clone();
+        repo.enqueue(&exhausted).await.unwrap();
+        repo.mark_failed(&exhausted_id, "late worker error")
+            .await
+            .unwrap();
+        type Row = (String, Option<String>);
+        let row: Row = sqlx::query_as(
+            "SELECT status, error_message FROM execution_control_queue WHERE id = $1",
+        )
+        .bind(&exhausted_id)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(row.0, "Failed");
+        assert!(
+            row.1
+                .as_deref()
+                .is_some_and(|m| m.starts_with("reclaim exhausted:")),
+            "mark_failed must not overwrite an exhaust message, got: {:?}",
+            row.1
+        );
     }
 
     #[tokio::test]
