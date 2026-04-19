@@ -309,6 +309,68 @@ where
     Ok(BoundedReadOutcome::Eof)
 }
 
+/// Classification of a [`ProcessSandbox::try_dispatch`] failure.
+///
+/// `dispatch_envelope` uses this to decide whether a failed attempt is
+/// eligible for a single respawn-and-retry. Only failures that demonstrably
+/// occurred **before** any envelope bytes landed on a running plugin
+/// process are retried — any other failure (cancellation, timeout,
+/// mid-round-trip transport error, protocol violation) is terminal because
+/// a retry would risk re-invoking a non-idempotent action on the plugin
+/// side. See `dispatch_envelope` docs and the #257 review for the full
+/// rationale.
+#[derive(Debug)]
+enum TryDispatchError {
+    /// The first attempt observed a stale handle (plugin crashed or
+    /// exited between calls). No envelope bytes reached a running plugin
+    /// process, so the outer [`ProcessSandbox::dispatch_envelope`] is
+    /// safe to respawn and retry exactly once.
+    Respawnable(ActionError),
+    /// Terminal for this dispatch — either cancellation, timeout, a
+    /// mid-round-trip transport error, a protocol violation, or a spawn
+    /// failure. Must NOT be retried silently; the engine's higher-level
+    /// retry policy (if any) remains free to retry externally, but the
+    /// sandbox itself has to surface the error as-is so cancellation and
+    /// fatal classifications round-trip correctly.
+    Terminal(ActionError),
+}
+
+impl TryDispatchError {
+    /// Classify a transport-layer [`SandboxError`] observed mid-round-trip.
+    ///
+    /// Only [`SandboxError::PluginClosed`] is respawn-eligible — every
+    /// other variant means we already put bytes on the wire to a plugin
+    /// process that either crashed mid-processing or violated the
+    /// protocol, and a blind retry would risk double-execution of a
+    /// non-idempotent action (see #257 review). The outer
+    /// [`ProcessSandbox::dispatch_envelope`] reads this classification
+    /// to decide whether to respawn and retry once.
+    fn from_sandbox_error(err: SandboxError) -> Self {
+        let respawnable = matches!(err, SandboxError::PluginClosed);
+        let action_err = sandbox_error_to_action_error(err);
+        if respawnable {
+            Self::Respawnable(action_err)
+        } else {
+            Self::Terminal(action_err)
+        }
+    }
+
+    /// `true` if [`ProcessSandbox::dispatch_envelope`] is allowed to
+    /// respawn the plugin and retry this envelope once.
+    #[cfg(test)]
+    fn is_respawnable(&self) -> bool {
+        matches!(self, Self::Respawnable(_))
+    }
+
+    /// Unwrap the carried [`ActionError`] once the dispatch-level retry
+    /// decision has been made.
+    fn into_action_error(self) -> ActionError {
+        match self {
+            Self::Respawnable(err) | Self::Terminal(err) => err,
+        }
+    }
+}
+
 /// Outcome of a [`race_cancel_timeout`] call.
 #[derive(Debug, PartialEq, Eq)]
 enum RaceOutcome<T> {
@@ -456,32 +518,67 @@ impl ProcessSandbox {
     }
 
     /// Core long-lived dispatch. Reuses the cached [`PluginHandle`] if any,
-    /// spawns fresh otherwise. On transport error, clears the handle and
-    /// retries once.
+    /// spawns fresh otherwise.
+    ///
+    /// Retry policy (review feedback on #257): we retry **only** when the
+    /// first attempt failed with [`TryDispatchError::Respawnable`] —
+    /// concretely, [`SandboxError::PluginClosed`] (stale handle, plugin
+    /// crashed between calls). Every other failure is terminal on the
+    /// first attempt:
+    ///
+    /// - `Cancelled` is returned as-is to honour the engine's cancellation contract (re-sending
+    ///   could duplicate a non-idempotent action after the caller gave up — see #257 review).
+    /// - Timeout, protocol violations (`ResponseIdMismatch`, `PluginLineTooLarge`,
+    ///   `HandshakeLineTooLarge`, `TransportPoisoned`, `MalformedEnvelope`), and I/O failures
+    ///   mid-round-trip are treated as terminal because the stream position is undefined after a
+    ///   partial write; a blind retry would risk duplicate side-effects on the plugin process.
     async fn dispatch_envelope(
         &self,
         envelope: HostToPlugin,
         cancel: Option<&CancellationToken>,
     ) -> Result<PluginToHost, ActionError> {
-        let first_attempt = self.try_dispatch(envelope.clone(), cancel).await;
-        if first_attempt.is_ok() {
-            return first_attempt;
+        match self.try_dispatch(envelope.clone(), cancel).await {
+            Ok(response) => Ok(response),
+            Err(TryDispatchError::Respawnable(_)) => {
+                // Stale handle — the plugin crashed or exited before we
+                // sent this envelope. Respawning and resending is safe
+                // because no bytes reached a running plugin process.
+                *self.handle.lock().await = None;
+                match self.try_dispatch(envelope, cancel).await {
+                    Ok(response) => Ok(response),
+                    Err(err) => Err(err.into_action_error()),
+                }
+            },
+            Err(err) => Err(err.into_action_error()),
         }
-        // Clear the stale handle and retry once with a fresh spawn.
-        *self.handle.lock().await = None;
-        self.try_dispatch(envelope, cancel).await
     }
 
     async fn try_dispatch(
         &self,
         envelope: HostToPlugin,
         cancel: Option<&CancellationToken>,
-    ) -> Result<PluginToHost, ActionError> {
+    ) -> Result<PluginToHost, TryDispatchError> {
         let mut guard = self.handle.lock().await;
         if guard.is_none() {
-            *guard = Some(self.spawn_and_dial().await?);
+            // Spawn failure before any bytes are on the wire — no
+            // side-effect risk, but respawn-retrying a binary that just
+            // failed to start almost never helps. Classify as terminal.
+            let handle = self
+                .spawn_and_dial()
+                .await
+                .map_err(TryDispatchError::Terminal)?;
+            *guard = Some(handle);
         }
-        let handle = guard.as_mut().expect("handle set above");
+        let Some(handle) = guard.as_mut() else {
+            // Unreachable in practice: we just set `*guard = Some(..)`
+            // above. Prefer a typed fatal error over `expect(..)` so a
+            // hypothetical logic bug surfaces through the engine's
+            // standard error path instead of panicking inside the
+            // sandbox lock.
+            return Err(TryDispatchError::Terminal(ActionError::fatal(
+                "process sandbox handle missing after successful spawn",
+            )));
+        };
 
         // Round-trip the envelope with a per-call timeout AND a race
         // against the engine's cancellation token. Without the cancel
@@ -517,9 +614,14 @@ impl ProcessSandbox {
                         "plugin response id mismatch — poisoning handle",
                     );
                     *guard = None;
-                    return Err(sandbox_error_to_action_error(
+                    // Protocol violation — must not retry. A stale
+                    // response on a fresh connection is indistinguishable
+                    // from an attacker replaying a prior reply, and a
+                    // retry on a fresh handle would still send a fresh
+                    // request the plugin may already have processed.
+                    return Err(TryDispatchError::Terminal(sandbox_error_to_action_error(
                         SandboxError::ResponseIdMismatch { expected, got },
-                    ));
+                    )));
                 }
                 Ok(response)
             },
@@ -541,31 +643,36 @@ impl ProcessSandbox {
                     );
                 }
                 *guard = None;
-                Err(sandbox_error_to_action_error(sandbox_err))
+                Err(TryDispatchError::from_sandbox_error(sandbox_err))
             },
             RaceOutcome::Timeout => {
                 // Timeout — also invalidate; we don't know if the plugin is
                 // still processing and we can't safely reuse the connection.
+                // Classified as terminal: silently retrying after the
+                // engine already gave up on this call would risk the
+                // plugin running the action twice (#257 review).
                 *guard = None;
-                Err(ActionError::retryable(format!(
+                Err(TryDispatchError::Terminal(ActionError::retryable(format!(
                     "plugin {} timed out on {envelope_tag} after {:?}",
                     self.binary.display(),
                     self.timeout
-                )))
+                ))))
             },
             RaceOutcome::Cancelled => {
                 // Cancellation observed mid-round-trip. We may have
                 // written part of an envelope to the plugin; the stream
                 // position is undefined, so drop the handle and force a
                 // respawn on the next call. Surface as `ActionError::Cancelled`
-                // so the engine honours the standard cancellation path.
+                // so the engine honours the standard cancellation path —
+                // and crucially do NOT retry (would duplicate work the
+                // engine already asked us to abort; see #257 review).
                 *guard = None;
                 tracing::debug!(
                     plugin = %self.binary.display(),
                     envelope = %envelope_tag,
                     "plugin dispatch cancelled via CancellationToken; clearing handle",
                 );
-                Err(ActionError::Cancelled)
+                Err(TryDispatchError::Terminal(ActionError::Cancelled))
             },
         }
     }
@@ -1758,5 +1865,126 @@ mod tests {
             matches!(ae, ActionError::Fatal { .. }),
             "ResponseIdMismatch must classify as Fatal, got {ae:?}",
         );
+    }
+
+    // ---- #257 review: narrowed dispatch retry policy -----------------
+    //
+    // The `dispatch_envelope` retry must only fire for
+    // [`SandboxError::PluginClosed`]. Retrying on `Cancelled`, `Timeout`,
+    // protocol violations, or mid-round-trip transport errors could
+    // double-invoke a non-idempotent action on the plugin side after the
+    // engine already gave up on the call.
+
+    #[test]
+    fn plugin_closed_classifies_as_respawnable() {
+        // The ONE respawn-eligible transport failure: plugin exited
+        // before we could read a response. Retrying respawns a fresh
+        // process and resends; no replay-on-the-wire risk because the
+        // original bytes were consumed by a now-dead process that
+        // produced no ActionResult.
+        let tde = TryDispatchError::from_sandbox_error(SandboxError::PluginClosed);
+        assert!(
+            tde.is_respawnable(),
+            "PluginClosed must classify as Respawnable, got {tde:?}",
+        );
+    }
+
+    #[test]
+    fn plugin_line_too_large_classifies_as_terminal() {
+        // DoS / protocol-abuse signal — MUST NOT be retried. A retry
+        // would simply respawn and forward another opportunity to abuse
+        // the cap; the security dashboard would also see one warn per
+        // attempt instead of a single clean failure.
+        let tde = TryDispatchError::from_sandbox_error(SandboxError::PluginLineTooLarge {
+            limit: 1024,
+            observed: 2048,
+        });
+        assert!(
+            !tde.is_respawnable(),
+            "PluginLineTooLarge must be Terminal (no retry), got {tde:?}",
+        );
+    }
+
+    #[test]
+    fn response_id_mismatch_classifies_as_terminal() {
+        // Protocol violation: a stale response must poison the call
+        // rather than silently retrying onto a fresh connection.
+        let tde = TryDispatchError::from_sandbox_error(SandboxError::ResponseIdMismatch {
+            expected: 42,
+            got: 41,
+        });
+        assert!(
+            !tde.is_respawnable(),
+            "ResponseIdMismatch must be Terminal, got {tde:?}",
+        );
+    }
+
+    #[test]
+    fn transport_poisoned_classifies_as_terminal() {
+        let tde = TryDispatchError::from_sandbox_error(SandboxError::TransportPoisoned);
+        assert!(
+            !tde.is_respawnable(),
+            "TransportPoisoned must be Terminal, got {tde:?}",
+        );
+    }
+
+    #[test]
+    fn handshake_line_too_large_classifies_as_terminal() {
+        let tde = TryDispatchError::from_sandbox_error(SandboxError::HandshakeLineTooLarge {
+            limit: 4096,
+            observed: 8192,
+        });
+        assert!(
+            !tde.is_respawnable(),
+            "HandshakeLineTooLarge must be Terminal, got {tde:?}",
+        );
+    }
+
+    #[test]
+    fn malformed_envelope_classifies_as_terminal() {
+        // The plugin spoke but produced a non-envelope. The outer
+        // handle is already dropped by try_dispatch; retrying would
+        // spawn fresh and blindly resend — but the reviewer's concern
+        // is that any envelope that reached the plugin may have had a
+        // side effect. Classify terminal to match the general rule.
+        let parse_err = serde_json::from_str::<serde_json::Value>("{")
+            .expect_err("fixture must produce serde_json::Error");
+        let tde = TryDispatchError::from_sandbox_error(SandboxError::MalformedEnvelope(parse_err));
+        assert!(
+            !tde.is_respawnable(),
+            "MalformedEnvelope must be Terminal, got {tde:?}",
+        );
+    }
+
+    #[test]
+    fn host_malformed_envelope_classifies_as_terminal() {
+        // Host-side serialize failure — no bytes on the wire, but no
+        // point retrying a deterministic host bug.
+        let parse_err = serde_json::from_str::<serde_json::Value>("{")
+            .expect_err("fixture must produce serde_json::Error");
+        let tde =
+            TryDispatchError::from_sandbox_error(SandboxError::HostMalformedEnvelope(parse_err));
+        assert!(
+            !tde.is_respawnable(),
+            "HostMalformedEnvelope must be Terminal, got {tde:?}",
+        );
+    }
+
+    #[test]
+    fn terminal_and_respawnable_into_action_error_round_trip() {
+        // Both classifications must carry the underlying ActionError
+        // through unmodified — the classification only governs the
+        // dispatch-level retry decision, never the error surfaced to
+        // the engine.
+        let respawn = TryDispatchError::Respawnable(ActionError::fatal("r"));
+        assert!(matches!(
+            respawn.into_action_error(),
+            ActionError::Fatal { .. }
+        ));
+        let terminal = TryDispatchError::Terminal(ActionError::Cancelled);
+        assert!(matches!(
+            terminal.into_action_error(),
+            ActionError::Cancelled
+        ));
     }
 }
