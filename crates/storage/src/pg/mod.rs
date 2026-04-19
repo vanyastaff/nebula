@@ -16,9 +16,11 @@ use sqlx::Error as SqlxError;
 
 use crate::error::StorageError;
 
+mod control_queue;
 mod org;
 mod workspace;
 
+pub use control_queue::PgControlQueueRepo;
 pub use org::PgOrgRepo;
 pub use workspace::PgWorkspaceRepo;
 
