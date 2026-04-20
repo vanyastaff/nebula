@@ -47,9 +47,11 @@ impl QueueError {
 ///
 /// At-least-once semantics: enqueue → dequeue → ack (or nack to requeue).
 ///
-/// Methods are desugared from `async fn` to `fn -> impl Future + Send` so
-/// callers can `tokio::spawn` trait method futures without needing a
-/// `Pin<Box<dyn Future>>` wrapper (ADR-0014 direction; Phase 2 AFIT).
+/// Methods are desugared from `async fn` to `fn -> impl Future + Send` to
+/// avoid a `Pin<Box<dyn Future>>` wrapper and preserve `Send` on the returned
+/// futures (ADR-0014 direction; Phase 2 AFIT). Callers that use
+/// `tokio::spawn` may still need an owning `async move { ... }` wrapper and
+/// owned/cloned inputs to satisfy the spawned future's `'static` requirement.
 pub trait TaskQueue: Send + Sync {
     /// Enqueue a task. Returns a task ID.
     fn enqueue(
