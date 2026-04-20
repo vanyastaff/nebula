@@ -60,7 +60,7 @@ pub use nebula_credential::{
 pub use nebula_credential::{CredentialContext, CredentialId};
 // Plugin types
 pub use nebula_plugin::{
-    Plugin, PluginMetadata,
+    Plugin, PluginManifest,
     descriptor::{ActionDescriptor, CredentialDescriptor, ResourceDescriptor},
 };
 pub use nebula_resource::Resource;

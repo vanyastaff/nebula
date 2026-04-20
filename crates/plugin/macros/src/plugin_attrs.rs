@@ -3,6 +3,7 @@
 use nebula_macro_support::attrs;
 use proc_macro2::TokenStream as TokenStream2;
 use quote::quote;
+use semver::Version;
 use syn::{Ident, Result};
 
 /// Parsed plugin container attributes.
@@ -14,8 +15,8 @@ pub(crate) struct PluginAttrs {
     pub name: String,
     /// Short description.
     pub description: String,
-    /// Version number.
-    pub version: u32,
+    /// Bundle semver version.
+    pub version: Version,
     /// Group hierarchy for UI (e.g. `["network", "api"]`).
     pub group: Vec<String>,
 }
@@ -36,7 +37,16 @@ impl PluginAttrs {
             .filter(|s| !s.is_empty())
             .unwrap_or_else(|| name.clone());
 
-        let version = attr_args.get_int("version").unwrap_or(1) as u32;
+        let version = match attr_args.get_string("version") {
+            Some(raw) => raw.parse::<Version>().map_err(|e| {
+                syn::Error::new(
+                    struct_name.span(),
+                    format!("invalid semver in #[plugin(version = \"{raw}\")]: {e}"),
+                )
+            })?,
+            None => Version::new(1, 0, 0),
+        };
+
         let group = attr_args.get_list("group").unwrap_or_default();
 
         Ok(Self {
@@ -48,22 +58,27 @@ impl PluginAttrs {
         })
     }
 
-    /// Generate `PluginMetadata` builder expression.
-    pub(crate) fn metadata_builder_expr(&self) -> TokenStream2 {
+    /// Generate `PluginManifest` builder expression.
+    pub(crate) fn manifest_builder_expr(&self) -> TokenStream2 {
         let key = &self.key;
         let name = &self.name;
         let description = &self.description;
-        let version = self.version;
+        // Emit `Version::new(major, minor, patch)`. Pre-release/build metadata is
+        // not surfaced through the attribute macro — authors needing those can
+        // construct the manifest manually. Validated at parse time above.
+        let major = self.version.major;
+        let minor = self.version.minor;
+        let patch = self.version.patch;
         let group_items: Vec<TokenStream2> =
             self.group.iter().map(|g| quote!(#g.to_string())).collect();
 
         quote! {
-            ::nebula_plugin::PluginMetadata::builder(#key, #name)
+            ::nebula_plugin::PluginManifest::builder(#key, #name)
                 .description(#description)
-                .version(#version)
+                .version(::semver::Version::new(#major, #minor, #patch))
                 .group(vec![#(#group_items),*])
                 .build()
-                .expect("invalid plugin metadata")
+                .expect("invalid plugin manifest")
         }
     }
 }

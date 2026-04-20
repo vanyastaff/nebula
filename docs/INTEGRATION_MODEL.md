@@ -128,10 +128,10 @@ Avoid **double declaration** — listing every action in TOML **and** in `fn act
 | ------------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | **`Cargo.toml`**                     | Rust **package** identity: `[package].name`, `version`, `authors`, `license`, `homepage`, `description`, and **`[dependencies]`** on other crates — **including other plugin crates**. This is the **dependency graph** the host already knows how to resolve.                   |
 | **`plugin.toml`**                    | **Trust + compatibility boundary** — read **without compiling**: **SDK constraint**, optional stable **plugin id**, and (when used) **signing** over a **stable** manifest (see **Signing** below). **Do not** duplicate registry contents (actions/resources/credentials) here. |
-| **`impl Plugin` + `PluginMetadata`** | **Runtime source of truth** for **what** gets registered (`actions()`, `resources()`, `credentials()`, locales) and for **display metadata** (`PluginMetadata`: human name, icon, categories, long description, etc.) **after** load.                                            |
+| **`impl Plugin` + `PluginManifest`** | **Runtime source of truth** for **what** gets registered (`actions()`, `resources()`, `credentials()`, locales) and for **bundle metadata** (`PluginManifest`: human name, icon, categories, long description, maturity, deprecation, etc.) **after** load.                                            |
 
 
-**Pre-compile discovery** (registry, CLI list) uses **`Cargo.toml` + minimal `plugin.toml`** only. Full **`PluginMetadata`** is authoritative **once the plugin is loaded**; do not require a second copy of every field in TOML.
+**Pre-compile discovery** (registry, CLI list) uses **`Cargo.toml` + minimal `plugin.toml`** only. Full **`PluginManifest`** is authoritative **once the plugin is loaded**; do not require a second copy of every field in TOML.
 
 **Versioning:** `Cargo.toml` `[package].version` is the **crate** version — do **not** duplicate it in `plugin.toml`.
 
@@ -161,7 +161,7 @@ id = "nebula-plugin-slack"   # if [package].name is e.g. "slack-plugin"
 
 **`plugin.toml` is intentionally stable:** it holds **identity-for-trust**, **SDK compatibility**, and (when enabled) **cryptographic attestation** — not the full registry. That is what you **sign**: the author attests "this **plugin identity** and **policy** are mine." Same idea as **Android** signing **`AndroidManifest.xml`** (policy/identity), not every `.java` file; or treating a **lockfile** / manifest as the attested surface while sources ship beside it.
 
-- **Canonical signed payload:** the **bytes of `plugin.toml`** (or a defined canonical serialization of it — tooling decides). **`impl Plugin` / `PluginMetadata` are not the signed blob** — they describe **content** and can change without invalidating publisher identity, as long as the **attested manifest** is unchanged or re-signed.
+- **Canonical signed payload:** the **bytes of `plugin.toml`** (or a defined canonical serialization of it — tooling decides). **`impl Plugin` / `PluginManifest` are not the signed blob** — they describe **content** and can change without invalidating publisher identity, as long as the **attested manifest** is unchanged or re-signed.
 
 Illustrative **`[signing]`** shape (field names and algorithms are **tooling-defined** until frozen):
 
@@ -233,7 +233,7 @@ nebula-resource-slack/        # micro-plugin
 1. Pre-compile discovery reads `Cargo.toml` + minimal `plugin.toml` (no compile required for SDK constraint and stable id).
 2. Host resolves the dependency closure via the Cargo graph (Rust-native plugins) and orders providers before dependents.
 3. Plugin loads and `impl Plugin` registers actions / resources / credentials / locales — runtime is the source of truth.
-4. `PluginMetadata` returned from `impl Plugin` becomes authoritative for catalog display once the plugin is loaded.
+4. `PluginManifest` returned from `impl Plugin` becomes authoritative for catalog display once the plugin is loaded.
 
 ### Rust-native vs FFI ABI
 

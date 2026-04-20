@@ -95,11 +95,11 @@ assert_eq!(md.name(), "My Entity");
   `BaseCompatError<ResourceKey>` in a single-variant
   `MetadataCompatibilityError` for shape parity with the other
   consumers.
-- `nebula-plugin::PluginMetadata` — **does not** compose `BaseMetadata`
-  today. Reshape to `PluginManifest` (bundle descriptor) tracked in
-  [ADR-0018](../../docs/adr/0018-plugin-metadata-to-manifest.md);
-  manifest will reuse `Icon` / `MaturityLevel` / `DeprecationNotice` but
-  not `BaseMetadata<K>` (plugin is a container, not a schematized leaf).
+- `nebula-plugin::PluginManifest` — **does not** compose `BaseMetadata`
+  by design (plugin is a container, not a schematized leaf). Reuses
+  `Icon` / `MaturityLevel` / `DeprecationNotice` from this crate; see
+  [ADR-0018](../../docs/adr/0018-plugin-metadata-to-manifest.md) for the
+  bundle-descriptor rationale.
 
 ## Canon
 

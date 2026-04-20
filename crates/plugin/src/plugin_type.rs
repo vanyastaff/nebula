@@ -3,6 +3,7 @@
 use std::sync::Arc;
 
 use nebula_core::PluginKey;
+use semver::Version;
 
 use crate::{PluginError, plugin::Plugin, versions::PluginVersions};
 
@@ -34,7 +35,7 @@ impl PluginType {
     }
 
     /// Retrieve a plugin by version, or the only / latest plugin if `version` is `None`.
-    pub fn get_plugin(&self, version: Option<u32>) -> Result<Arc<dyn Plugin>, PluginError> {
+    pub fn get_plugin(&self, version: Option<&Version>) -> Result<Arc<dyn Plugin>, PluginError> {
         match self {
             Self::Single(plugin) => {
                 if let Some(v) = version {
@@ -42,7 +43,7 @@ impl PluginType {
                         Ok(Arc::clone(plugin))
                     } else {
                         Err(PluginError::VersionNotFound {
-                            version: v,
+                            version: v.clone(),
                             key: plugin.key().clone(),
                         })
                     }
@@ -85,10 +86,10 @@ impl PluginType {
         matches!(self, Self::Versions(_))
     }
 
-    /// All available version numbers.
-    pub fn version_numbers(&self) -> Vec<u32> {
+    /// All available versions (ascending).
+    pub fn version_numbers(&self) -> Vec<Version> {
         match self {
-            Self::Single(p) => vec![p.version()],
+            Self::Single(p) => vec![p.version().clone()],
             Self::Versions(v) => v.version_numbers(),
         }
     }
@@ -108,27 +109,31 @@ impl std::fmt::Debug for PluginType {
 struct ArcPlugin(Arc<dyn Plugin>);
 
 impl Plugin for ArcPlugin {
-    fn metadata(&self) -> &crate::PluginMetadata {
-        self.0.metadata()
+    fn manifest(&self) -> &crate::PluginManifest {
+        self.0.manifest()
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::PluginMetadata;
+    use crate::PluginManifest;
 
     #[derive(Debug)]
-    struct StubPlugin(PluginMetadata);
+    struct StubPlugin(PluginManifest);
     impl Plugin for StubPlugin {
-        fn metadata(&self) -> &PluginMetadata {
+        fn manifest(&self) -> &PluginManifest {
             &self.0
         }
     }
 
-    fn stub(key: &str, version: u32) -> StubPlugin {
+    fn v(major: u64, minor: u64, patch: u64) -> Version {
+        Version::new(major, minor, patch)
+    }
+
+    fn stub(key: &str, version: Version) -> StubPlugin {
         StubPlugin(
-            PluginMetadata::builder(key, key)
+            PluginManifest::builder(key, key)
                 .version(version)
                 .build()
                 .unwrap(),
@@ -137,45 +142,50 @@ mod tests {
 
     #[test]
     fn single_get_plugin() {
-        let pt = PluginType::single(stub("a", 1));
+        let pt = PluginType::single(stub("a", v(1, 0, 0)));
         assert!(!pt.is_versioned());
-        assert_eq!(pt.get_plugin(None).unwrap().version(), 1);
-        assert_eq!(pt.get_plugin(Some(1)).unwrap().version(), 1);
-        assert!(pt.get_plugin(Some(2)).is_err());
+        assert_eq!(pt.get_plugin(None).unwrap().version(), &v(1, 0, 0));
+        assert_eq!(
+            pt.get_plugin(Some(&v(1, 0, 0))).unwrap().version(),
+            &v(1, 0, 0)
+        );
+        assert!(pt.get_plugin(Some(&v(2, 0, 0))).is_err());
     }
 
     #[test]
     fn versioned_get_plugin() {
-        let pt = PluginType::versioned(stub("a", 1));
+        let pt = PluginType::versioned(stub("a", v(1, 0, 0)));
         assert!(pt.is_versioned());
-        assert_eq!(pt.get_plugin(Some(1)).unwrap().version(), 1);
+        assert_eq!(
+            pt.get_plugin(Some(&v(1, 0, 0))).unwrap().version(),
+            &v(1, 0, 0)
+        );
     }
 
     #[test]
     fn add_version_promotes_single() {
-        let mut pt = PluginType::single(stub("a", 1));
+        let mut pt = PluginType::single(stub("a", v(1, 0, 0)));
         assert!(!pt.is_versioned());
 
-        pt.add_version(stub("a", 2)).unwrap();
+        pt.add_version(stub("a", v(2, 0, 0))).unwrap();
         assert!(pt.is_versioned());
         assert_eq!(pt.version_numbers().len(), 2);
-        assert_eq!(pt.latest().unwrap().version(), 2);
+        assert_eq!(pt.latest().unwrap().version(), &v(2, 0, 0));
     }
 
     #[test]
     fn version_numbers() {
-        let mut pt = PluginType::versioned(stub("a", 3));
-        pt.add_version(stub("a", 1)).unwrap();
-        pt.add_version(stub("a", 5)).unwrap();
+        let mut pt = PluginType::versioned(stub("a", v(3, 0, 0)));
+        pt.add_version(stub("a", v(1, 2, 0))).unwrap();
+        pt.add_version(stub("a", v(5, 0, 1))).unwrap();
 
-        let mut nums = pt.version_numbers();
-        nums.sort_unstable();
-        assert_eq!(nums, vec![1, 3, 5]);
+        let nums = pt.version_numbers();
+        assert_eq!(nums, vec![v(1, 2, 0), v(3, 0, 0), v(5, 0, 1)]);
     }
 
     #[test]
     fn key() {
-        let pt = PluginType::single(stub("slack", 1));
+        let pt = PluginType::single(stub("slack", v(1, 0, 0)));
         assert_eq!(pt.key().as_str(), "slack");
     }
 }

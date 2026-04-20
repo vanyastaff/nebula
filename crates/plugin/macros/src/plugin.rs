@@ -31,15 +31,15 @@ fn expand(input: DeriveInput) -> syn::Result<proc_macro2::TokenStream> {
     };
 
     let attrs = PluginAttrs::parse(&attr_args, struct_name, description_fallback)?;
-    let metadata_expr = attrs.metadata_builder_expr();
+    let manifest_expr = attrs.manifest_builder_expr();
 
     let expanded = quote! {
         impl #impl_generics ::nebula_plugin::Plugin for #struct_name #ty_generics #where_clause {
-            fn metadata(&self) -> &::nebula_plugin::PluginMetadata {
+            fn manifest(&self) -> &::nebula_plugin::PluginManifest {
                 use ::std::sync::OnceLock;
 
-                static METADATA: OnceLock<::nebula_plugin::PluginMetadata> = OnceLock::new();
-                METADATA.get_or_init(|| #metadata_expr)
+                static MANIFEST: OnceLock<::nebula_plugin::PluginManifest> = OnceLock::new();
+                MANIFEST.get_or_init(|| #manifest_expr)
             }
         }
     };

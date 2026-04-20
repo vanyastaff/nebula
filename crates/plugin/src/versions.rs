@@ -3,31 +3,33 @@
 use std::{collections::HashMap, fmt, sync::Arc};
 
 use nebula_core::PluginKey;
+use semver::Version;
 
 use crate::{PluginError, plugin::Plugin};
 
-/// Container that stores multiple versions of the same plugin, keyed by `u32`.
+/// Container that stores multiple versions of the same plugin, keyed by [`semver::Version`].
 ///
 /// Always contains at least one version — the plugin passed to `PluginVersions::new`
 /// fixes the container's key, and subsequent `add` calls must match that key.
 ///
 /// ```
-/// use nebula_plugin::{Plugin, PluginMetadata, PluginVersions};
+/// use nebula_plugin::{Plugin, PluginManifest, PluginVersions};
+/// use semver::Version;
 ///
 /// #[derive(Debug)]
-/// struct MyPlugin(PluginMetadata);
+/// struct MyPlugin(PluginManifest);
 /// impl Plugin for MyPlugin {
-///     fn metadata(&self) -> &PluginMetadata {
+///     fn manifest(&self) -> &PluginManifest {
 ///         &self.0
 ///     }
 /// }
 ///
-/// let m1 = PluginMetadata::builder("slack", "Slack")
-///     .version(1)
+/// let m1 = PluginManifest::builder("slack", "Slack")
+///     .version(Version::new(1, 0, 0))
 ///     .build()
 ///     .unwrap();
-/// let m2 = PluginMetadata::builder("slack", "Slack")
-///     .version(2)
+/// let m2 = PluginManifest::builder("slack", "Slack")
+///     .version(Version::new(2, 0, 0))
 ///     .build()
 ///     .unwrap();
 ///
@@ -35,19 +37,19 @@ use crate::{PluginError, plugin::Plugin};
 /// versions.add(MyPlugin(m2)).unwrap();
 ///
 /// assert_eq!(versions.len(), 2);
-/// assert_eq!(versions.latest().unwrap().version(), 2);
+/// assert_eq!(versions.latest().unwrap().version(), &Version::new(2, 0, 0));
 /// ```
 #[derive(Clone)]
 pub struct PluginVersions {
     key: PluginKey,
-    versions: HashMap<u32, Arc<dyn Plugin>>,
+    versions: HashMap<Version, Arc<dyn Plugin>>,
 }
 
 impl PluginVersions {
     /// Create a container seeded with `first`. Its key becomes the container's key.
     pub fn new<P: Plugin + 'static>(first: P) -> Self {
         let key = first.key().clone();
-        let version = first.version();
+        let version = first.version().clone();
         let mut versions = HashMap::new();
         versions.insert(version, Arc::new(first) as Arc<dyn Plugin>);
         Self { key, versions }
@@ -58,9 +60,9 @@ impl PluginVersions {
     /// # Errors
     ///
     /// - [`PluginError::KeyMismatch`] if the plugin's key differs from the container's.
-    /// - [`PluginError::VersionAlreadyExists`] if the version number is already present.
+    /// - [`PluginError::VersionAlreadyExists`] if the version is already present.
     pub fn add<P: Plugin + 'static>(&mut self, plugin: P) -> Result<&mut Self, PluginError> {
-        let version = plugin.version();
+        let version = plugin.version().clone();
         let key = plugin.key().clone();
 
         if self.key != key {
@@ -79,21 +81,21 @@ impl PluginVersions {
     }
 
     /// Get a specific version.
-    pub fn get(&self, version: u32) -> Result<Arc<dyn Plugin>, PluginError> {
+    pub fn get(&self, version: &Version) -> Result<Arc<dyn Plugin>, PluginError> {
         self.versions
-            .get(&version)
+            .get(version)
             .cloned()
             .ok_or_else(|| PluginError::VersionNotFound {
-                version,
+                version: version.clone(),
                 key: self.key.clone(),
             })
     }
 
-    /// Get the latest (highest version number) plugin.
+    /// Get the latest (highest version) plugin.
     pub fn latest(&self) -> Result<Arc<dyn Plugin>, PluginError> {
         self.versions
             .values()
-            .max_by_key(|p| p.version())
+            .max_by(|a, b| a.version().cmp(b.version()))
             .cloned()
             .ok_or_else(|| PluginError::NoVersionsAvailable(self.key.clone()))
     }
@@ -103,10 +105,10 @@ impl PluginVersions {
         &self.key
     }
 
-    /// All version numbers present.
-    pub fn version_numbers(&self) -> Vec<u32> {
-        let mut v: Vec<u32> = self.versions.keys().copied().collect();
-        v.sort_unstable();
+    /// All versions present, sorted ascending.
+    pub fn version_numbers(&self) -> Vec<Version> {
+        let mut v: Vec<Version> = self.versions.keys().cloned().collect();
+        v.sort();
         v
     }
 
@@ -132,60 +134,64 @@ impl fmt::Debug for PluginVersions {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::PluginMetadata;
+    use crate::PluginManifest;
 
     #[derive(Debug)]
-    struct StubPlugin(PluginMetadata);
+    struct StubPlugin(PluginManifest);
     impl Plugin for StubPlugin {
-        fn metadata(&self) -> &PluginMetadata {
+        fn manifest(&self) -> &PluginManifest {
             &self.0
         }
     }
 
-    fn stub(key: &str, version: u32) -> StubPlugin {
+    fn stub(key: &str, version: Version) -> StubPlugin {
         StubPlugin(
-            PluginMetadata::builder(key, key)
+            PluginManifest::builder(key, key)
                 .version(version)
                 .build()
                 .unwrap(),
         )
     }
 
+    fn v(major: u64, minor: u64, patch: u64) -> Version {
+        Version::new(major, minor, patch)
+    }
+
     #[test]
     fn new_seeds_with_first_plugin() {
-        let v = PluginVersions::new(stub("slack", 1));
-        assert_eq!(v.len(), 1);
-        assert_eq!(v.key().as_str(), "slack");
-        assert_eq!(v.latest().unwrap().version(), 1);
+        let pv = PluginVersions::new(stub("slack", v(1, 0, 0)));
+        assert_eq!(pv.len(), 1);
+        assert_eq!(pv.key().as_str(), "slack");
+        assert_eq!(pv.latest().unwrap().version(), &v(1, 0, 0));
     }
 
     #[test]
     fn add_and_get() {
-        let mut v = PluginVersions::new(stub("slack", 1));
-        v.add(stub("slack", 2)).unwrap();
+        let mut pv = PluginVersions::new(stub("slack", v(1, 0, 0)));
+        pv.add(stub("slack", v(2, 0, 0))).unwrap();
 
-        assert_eq!(v.len(), 2);
-        assert_eq!(v.get(1).unwrap().version(), 1);
-        assert_eq!(v.get(2).unwrap().version(), 2);
+        assert_eq!(pv.len(), 2);
+        assert_eq!(pv.get(&v(1, 0, 0)).unwrap().version(), &v(1, 0, 0));
+        assert_eq!(pv.get(&v(2, 0, 0)).unwrap().version(), &v(2, 0, 0));
     }
 
     #[test]
     fn latest_returns_highest() {
-        let mut v = PluginVersions::new(stub("a", 3));
-        v.add(stub("a", 1)).unwrap();
-        v.add(stub("a", 5)).unwrap();
+        let mut pv = PluginVersions::new(stub("a", v(3, 0, 0)));
+        pv.add(stub("a", v(1, 0, 0))).unwrap();
+        pv.add(stub("a", v(5, 0, 0))).unwrap();
 
-        assert_eq!(v.latest().unwrap().version(), 5);
+        assert_eq!(pv.latest().unwrap().version(), &v(5, 0, 0));
     }
 
     #[test]
     fn rejects_duplicate_version() {
-        let mut v = PluginVersions::new(stub("a", 1));
-        let err = v.add(stub("a", 1)).unwrap_err();
+        let mut pv = PluginVersions::new(stub("a", v(1, 0, 0)));
+        let err = pv.add(stub("a", v(1, 0, 0))).unwrap_err();
         assert_eq!(
             err,
             PluginError::VersionAlreadyExists {
-                version: 1,
+                version: v(1, 0, 0),
                 key: "a".parse().unwrap(),
             }
         );
@@ -193,8 +199,8 @@ mod tests {
 
     #[test]
     fn rejects_key_mismatch() {
-        let mut v = PluginVersions::new(stub("a", 1));
-        let err = v.add(stub("b", 2)).unwrap_err();
+        let mut pv = PluginVersions::new(stub("a", v(1, 0, 0)));
+        let err = pv.add(stub("b", v(2, 0, 0))).unwrap_err();
         assert_eq!(
             err,
             PluginError::KeyMismatch {
@@ -206,9 +212,12 @@ mod tests {
 
     #[test]
     fn version_numbers_sorted() {
-        let mut v = PluginVersions::new(stub("x", 3));
-        v.add(stub("x", 1)).unwrap();
-        v.add(stub("x", 2)).unwrap();
-        assert_eq!(v.version_numbers(), vec![1, 2, 3]);
+        let mut pv = PluginVersions::new(stub("x", v(3, 0, 0)));
+        pv.add(stub("x", v(1, 2, 0))).unwrap();
+        pv.add(stub("x", v(2, 0, 1))).unwrap();
+        assert_eq!(
+            pv.version_numbers(),
+            vec![v(1, 2, 0), v(2, 0, 1), v(3, 0, 0)]
+        );
     }
 }

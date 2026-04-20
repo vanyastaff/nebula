@@ -114,7 +114,7 @@ Canon §7.1 sets the three-layer rule: `Cargo.toml` (build graph) + `plugin.toml
 | Name | Kind | Status | Role | Canon |
 | --- | --- | --- | --- | --- |
 | `impl Plugin` | trait impl | `implemented` | The only runtime source of truth for what a plugin registers (`actions()`, `resources()`, `credentials()`, locales). | §7.1 |
-| `PluginMetadata` | type | `implemented` | Display metadata authoritative **after** load: human name, icon, categories, long description. Not the signed blob. | §7.1 |
+| `PluginManifest` | type | `implemented` | Bundle descriptor authoritative **after** load: human name, icon, categories, long description, maturity, deprecation. Does not compose `BaseMetadata<K>` (plugin is a container, not a schematized leaf — ADR-0018). Not the signed blob. | §7.1 |
 
 ---
 

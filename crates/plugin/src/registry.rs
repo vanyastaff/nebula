@@ -4,7 +4,7 @@ use std::{collections::HashMap, sync::Arc};
 
 use nebula_core::PluginKey;
 
-use crate::{PluginError, metadata::normalize_key, plugin_type::PluginType};
+use crate::{PluginError, manifest::normalize_key, plugin_type::PluginType};
 
 /// In-memory registry mapping [`PluginKey`] to [`PluginType`].
 ///
@@ -12,19 +12,19 @@ use crate::{PluginError, metadata::normalize_key, plugin_type::PluginType};
 /// shared across threads.
 ///
 /// ```
-/// use nebula_plugin::{Plugin, PluginMetadata, PluginRegistry, PluginType};
+/// use nebula_plugin::{Plugin, PluginManifest, PluginRegistry, PluginType};
 ///
 /// #[derive(Debug)]
-/// struct EchoPlugin(PluginMetadata);
+/// struct EchoPlugin(PluginManifest);
 /// impl Plugin for EchoPlugin {
-///     fn metadata(&self) -> &PluginMetadata {
+///     fn manifest(&self) -> &PluginManifest {
 ///         &self.0
 ///     }
 /// }
 ///
 /// let mut registry = PluginRegistry::new();
-/// let meta = PluginMetadata::builder("echo", "Echo").build().unwrap();
-/// let plugin_type = PluginType::single(EchoPlugin(meta));
+/// let manifest = PluginManifest::builder("echo", "Echo").build().unwrap();
+/// let plugin_type = PluginType::single(EchoPlugin(manifest));
 /// registry.register(plugin_type).unwrap();
 ///
 /// assert!(registry.contains(&"echo".parse().unwrap()));
@@ -132,19 +132,19 @@ impl std::fmt::Debug for PluginRegistry {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{PluginMetadata, plugin::Plugin};
+    use crate::{PluginManifest, plugin::Plugin};
 
     #[derive(Debug)]
-    struct StubPlugin(PluginMetadata);
+    struct StubPlugin(PluginManifest);
     impl Plugin for StubPlugin {
-        fn metadata(&self) -> &PluginMetadata {
+        fn manifest(&self) -> &PluginManifest {
             &self.0
         }
     }
 
     fn make_type(key: &str) -> PluginType {
-        let meta = PluginMetadata::builder(key, key).build().unwrap();
-        PluginType::single(StubPlugin(meta))
+        let manifest = PluginManifest::builder(key, key).build().unwrap();
+        PluginType::single(StubPlugin(manifest))
     }
 
     #[test]

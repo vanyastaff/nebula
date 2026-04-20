@@ -67,7 +67,7 @@ pub use engine::{DEFAULT_EVENT_CHANNEL_CAPACITY, WorkflowEngine};
 pub use error::EngineError;
 pub use event::ExecutionEvent;
 // Re-export plugin types for convenience.
-pub use nebula_plugin::{Plugin, PluginKey, PluginMetadata, PluginRegistry, PluginType};
+pub use nebula_plugin::{Plugin, PluginKey, PluginManifest, PluginRegistry, PluginType};
 pub use node_output::NodeOutput;
 pub use resource_accessor::EngineResourceAccessor;
 pub use result::ExecutionResult;
