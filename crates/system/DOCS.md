@@ -234,7 +234,7 @@ Use `nebula-system` when you need:
 - All types are `Send + Sync`
 - Internal caching uses `parking_lot::RwLock`
 - Safe to call from multiple threads
-- Initialization is thread-safe (uses `parking_lot::RwLock`)
+- Initialization is thread-safe (`std::sync::LazyLock`); runtime state is guarded by `parking_lot::RwLock`
 
 ## Best Practices
 
