@@ -170,6 +170,25 @@ pub enum ApiConfigError {
     },
 }
 
+/// Default maximum accepted request-body size for REST handlers
+/// (1 MiB). Used as the startup default for
+/// [`ApiConfig::max_body_size`], which operators can override via
+/// the `API_MAX_BODY_SIZE` env var.
+///
+/// The 1 MiB figure is a guard rail from the 2026-04-19 audit
+/// (`docs/audit/2026-04-19-codebase-quality-audit.md` §"Guard rails"
+/// #2) and a pre-condition of ADR-0020
+/// (`docs/adr/0020-library-first-gtm.md` §3 #3) for any
+/// composition-root binary.
+///
+/// The webhook transport applies its own cap on its sub-router
+/// (`crates/api/src/webhook/transport.rs`); this constant covers only
+/// the REST surface (`/workflows`, `/credentials`, …). Operators can
+/// grep this symbol to find the default and raise it per deployment
+/// via the env var if a specific workload genuinely needs larger
+/// payloads.
+pub const REST_BODY_LIMIT_BYTES: usize = 1024 * 1024;
+
 /// API Server Configuration
 #[derive(Clone, Serialize, Deserialize)]
 pub struct ApiConfig {
@@ -179,7 +198,13 @@ pub struct ApiConfig {
     /// Request timeout
     pub request_timeout: Duration,
 
-    /// Maximum request body size (bytes)
+    /// Maximum request body size (bytes) for REST endpoints.
+    ///
+    /// Wired into the REST router as `axum::extract::DefaultBodyLimit`
+    /// by [`crate::app::build_app`]; does **not** apply to webhook
+    /// ingress, which has its own cap. Defaults to
+    /// [`REST_BODY_LIMIT_BYTES`] (1 MiB) and is overridable via
+    /// `API_MAX_BODY_SIZE`.
     pub max_body_size: usize,
 
     /// CORS allowed origins
@@ -283,12 +308,15 @@ impl ApiConfig {
             })?;
 
         let max_body_size = std::env::var("API_MAX_BODY_SIZE")
-            .unwrap_or_else(|_| "2097152".to_string())
-            .parse()
-            .map_err(|source| ApiConfigError::ParseInt {
-                var: "MAX_BODY_SIZE",
-                source,
-            })?;
+            .ok()
+            .map(|raw| {
+                raw.parse().map_err(|source| ApiConfigError::ParseInt {
+                    var: "MAX_BODY_SIZE",
+                    source,
+                })
+            })
+            .transpose()?
+            .unwrap_or(REST_BODY_LIMIT_BYTES);
 
         let cors_allowed_origins = std::env::var("API_CORS_ORIGINS")
             .unwrap_or_else(|_| "*".to_string())
@@ -354,7 +382,7 @@ impl ApiConfig {
         Self {
             bind_address: SocketAddr::from(([127, 0, 0, 1], 0)),
             request_timeout: Duration::from_secs(30),
-            max_body_size: 2 * 1024 * 1024,
+            max_body_size: REST_BODY_LIMIT_BYTES,
             cors_allowed_origins: vec!["*".to_string()],
             enable_compression: false,
             enable_tracing: false,

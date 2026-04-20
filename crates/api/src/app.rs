@@ -4,7 +4,7 @@
 
 use std::time::Duration;
 
-use axum::{Router, middleware, response::Response};
+use axum::{Router, extract::DefaultBodyLimit, middleware, response::Response};
 use tower::ServiceBuilder;
 use tower_http::{compression::CompressionLayer, cors::CorsLayer, trace::TraceLayer};
 
@@ -17,7 +17,15 @@ use crate::{
 
 /// Build the main application router with middleware
 pub fn build_app(state: AppState, config: &ApiConfig) -> Router {
-    let routes = routes::create_routes(state.clone(), config);
+    // Apply the REST body-limit layer BEFORE merging the webhook
+    // router. The webhook transport already attaches its own
+    // `DefaultBodyLimit` inside `transport.router()`; layering after
+    // the merge would override it for webhook routes too, and the
+    // REST default is not the right default for every webhook
+    // provider. Operators tune the REST cap via `API_MAX_BODY_SIZE`
+    // (defaulting to `config::REST_BODY_LIMIT_BYTES`).
+    let routes = routes::create_routes(state.clone(), config)
+        .layer(DefaultBodyLimit::max(config.max_body_size));
 
     // Merge the webhook transport router (if attached). Webhook
     // routes live alongside REST API routes on the same axum app,
