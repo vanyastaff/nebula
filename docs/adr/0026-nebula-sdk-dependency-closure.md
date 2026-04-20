@@ -270,8 +270,8 @@ input set.
   commit to SemVer on APIs we also document as moving. `0.x` containment
   helps but does not eliminate the coordination cost of minor bumps.
 - docs.rs must stay green for 15 crates, not 5. Every crate needs a
-  doc-clean public surface (no broken intra-doc links — see memory
-  `feedback_intra_doc_links.md`) and a `package.metadata.docs.rs` block.
+  doc-clean public surface with no broken intra-doc links and a
+  `package.metadata.docs.rs` block.
 - External consumers of any `frontier` crate published here will see
   minor-version breakage. This is SemVer-legal in `0.x`, but the social
   cost is nonzero — every `0.x` bump is a user-visible event.
@@ -388,8 +388,8 @@ avoid.
   they are internal-only). Independent of this ADR; revisit after the
   first publish cycle.
 
-- **Docs-sync pass** — after the implementation PR, run
-  `skills/docs-sync` checklist: MATURITY.md unchanged (publication is
-  orthogonal, §3 of Decision), `INTEGRATION_MODEL.md` unchanged (surface
-  is the same five primitives), crate READMEs list registry versions where
-  they are now available.
+- **Docs-sync pass** — after the implementation PR, run the checklist in
+  [`.claude/skills/docs-sync/SKILL.md`](../../.claude/skills/docs-sync/SKILL.md):
+  MATURITY.md unchanged (publication is orthogonal, §3 of Decision),
+  `INTEGRATION_MODEL.md` unchanged (surface is the same five primitives),
+  crate READMEs list registry versions where they are now available.
