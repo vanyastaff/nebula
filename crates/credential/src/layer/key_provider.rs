@@ -329,21 +329,14 @@ impl FileKeyProvider {
             source,
         })?;
 
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::MetadataExt;
-            // World-readable bit set => refuse.
-            if metadata.mode() & 0o004 != 0 {
-                return Err(ProviderError::InsecurePermissions {
-                    path: path.to_path_buf(),
-                });
-            }
-        }
-
-        // Reject anything that is not a regular file: FIFOs would block on
-        // read_exact, character devices (`/dev/urandom` etc.) would yield
-        // unbounded / meaningless data, and directories simply don't hold
-        // a 32-byte key.
+        // Reject anything that is not a regular file FIRST: FIFOs would
+        // block on read_exact, character devices (`/dev/urandom` etc.)
+        // would yield unbounded / meaningless data, and directories
+        // simply don't hold a 32-byte key. Has to precede the Unix
+        // permissions gate below — POSIX default mode on a directory
+        // (0o755) would otherwise trip the world-readable check and
+        // mask the real "not a file" problem with a misleading
+        // `InsecurePermissions` error.
         if !metadata.is_file() {
             return Err(ProviderError::KeyMaterialRejected {
                 reason: format!(
@@ -352,6 +345,18 @@ impl FileKeyProvider {
                 ),
             });
         }
+
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::MetadataExt;
+            // World-readable bit set on a regular key file => refuse.
+            if metadata.mode() & 0o004 != 0 {
+                return Err(ProviderError::InsecurePermissions {
+                    path: path.to_path_buf(),
+                });
+            }
+        }
+
         if metadata.len() != Self::MIN_BYTES as u64 {
             return Err(ProviderError::KeyMaterialRejected {
                 reason: format!(
@@ -725,9 +730,20 @@ mod tests {
     /// directory) must refuse before any `read` call — otherwise the
     /// behaviour would range from "reads 0 bytes" to "blocks forever on a
     /// FIFO" to "reads unbounded data from `/dev/urandom`". Regular-file
-    /// gate closes the class. Accepting both error shapes keeps the test
-    /// portable: Unix `File::open` on a dir succeeds and the
-    /// `is_file()` check fires; Windows may refuse at `open` time.
+    /// gate closes the class.
+    ///
+    /// Accepts either:
+    /// - `KeyMaterialRejected` — the common path: `File::open` on a directory succeeds on Unix; the
+    ///   `is_file()` check fires after.
+    /// - `FileIo` — Windows rejects `File::open` on a directory at the syscall level, so the error
+    ///   never gets past the open step.
+    ///
+    /// `InsecurePermissions` must NOT be a permitted outcome here: the
+    /// regular-file gate precedes the permissions gate precisely so a
+    /// 0o755 directory does not trip the world-readable check and
+    /// emit a misleading "insecure permissions" reason for what is
+    /// really a "not a file" problem. Guarding against that reordering
+    /// bug is part of this test's job.
     #[test]
     fn file_provider_refuses_non_regular_file() {
         let dir = tempfile::tempdir().unwrap();
@@ -738,7 +754,8 @@ mod tests {
                 err,
                 ProviderError::KeyMaterialRejected { .. } | ProviderError::FileIo { .. }
             ),
-            "unexpected variant: {err:?}"
+            "unexpected variant (note: InsecurePermissions would indicate \
+             is_file() / permissions ordering regressed): {err:?}"
         );
     }
 
