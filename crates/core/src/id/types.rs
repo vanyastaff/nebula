@@ -108,7 +108,10 @@ mod tests {
     }
 
     #[test]
-    #[allow(deprecated)]
+    #[expect(
+        deprecated,
+        reason = "test exercises OrganizationId which is deprecated but still supported"
+    )]
     fn all_id_types_create_successfully() {
         let _ = OrgId::new();
         let _ = WorkspaceId::new();
