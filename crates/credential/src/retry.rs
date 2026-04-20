@@ -75,6 +75,21 @@ impl Default for RetryPolicy {
 }
 
 impl RetryPolicy {
+    /// Defaults tuned for rotation: 5 attempts, 100ms initial, 2x backoff, 32s max.
+    ///
+    /// Compared to [`RetryPolicy::default`], this caps `max_delay_ms` at 32s
+    /// (instead of 30s) to keep backoff in power-of-two steps — mainly a
+    /// historical artifact from the rotation module's prior bespoke config.
+    pub fn rotation_defaults() -> Self {
+        Self {
+            max_retries: 5,
+            base_delay_ms: 100,
+            max_delay_ms: 32_000,
+            multiplier: 2.0,
+            jitter: true,
+        }
+    }
+
     /// Validate retry policy parameters
     ///
     /// # Returns
@@ -213,6 +228,19 @@ mod tests {
         assert_eq!(policy.max_retries, 5);
         assert_eq!(policy.base_delay_ms, 100);
         assert_eq!(policy.max_delay_ms, 30_000);
+        assert_eq!(policy.multiplier, 2.0);
+        assert!(policy.jitter);
+
+        assert!(policy.validate().is_ok());
+    }
+
+    #[test]
+    fn test_rotation_defaults() {
+        let policy = RetryPolicy::rotation_defaults();
+
+        assert_eq!(policy.max_retries, 5);
+        assert_eq!(policy.base_delay_ms, 100);
+        assert_eq!(policy.max_delay_ms, 32_000);
         assert_eq!(policy.multiplier, 2.0);
         assert!(policy.jitter);
 
