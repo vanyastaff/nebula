@@ -17,8 +17,8 @@ use crate::{
 /// and version, and optionally declares the actions, credentials, and resources
 /// it contributes to the engine.
 ///
-/// All methods except [`Plugin::manifest`] have default implementations so that
-/// existing plugin implementations continue to compile without changes.
+/// Implementers must provide [`Plugin::manifest`]. All other methods have
+/// default implementations and can be overridden as needed.
 ///
 /// This trait is **object-safe** so plugins can be stored as `Arc<dyn Plugin>`.
 pub trait Plugin: Send + Sync + Debug + 'static {
