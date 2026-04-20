@@ -169,8 +169,8 @@
 //! ```rust,ignore
 //! use nebula_credential::rotation::{
 //!     RotationPolicy, PeriodicConfig, TestResult, RotationResult,
+//!     RotatableCredential, TestableCredential,
 //! };
-//! use nebula_credential::traits::{RotatableCredential, TestableCredential};
 //! use std::time::Duration;
 //!
 //! // Your credential type
