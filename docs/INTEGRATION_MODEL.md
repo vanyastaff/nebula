@@ -227,3 +227,18 @@ nebula-resource-slack/        # micro-plugin
   resource.rs
   credential.rs
 ```
+
+### Discovery and load lifecycle
+
+1. Pre-compile discovery reads `Cargo.toml` + minimal `plugin.toml` (no compile required for SDK constraint and stable id).
+2. Host resolves the dependency closure via the Cargo graph (Rust-native plugins) and orders providers before dependents.
+3. Plugin loads and `impl Plugin` registers actions / resources / credentials / locales — runtime is the source of truth.
+4. `PluginMetadata` returned from `impl Plugin` becomes authoritative for catalog display once the plugin is loaded.
+
+### Rust-native vs FFI ABI
+
+Rust-native plugins follow Cargo-first dependency and build semantics. The compiled artefact is **not** implicitly ABI-stable across SDK or engine upgrades — recompile against the matching SDK version and rely on the `nebula.sdk` semver constraint in `plugin.toml` to fail-fast on incompatibility. A binary-stable cross-version ABI is an explicit FFI concern and tracked separately on the isolation roadmap (canon §12.6); options under consideration include `stabby`-style stable Rust ABI surfaces. There is no implicit promise of `.so` / `.dll` compatibility today.
+
+### Tooling notes
+
+`cargo-nebula` and CLI flows validate `plugin.toml` markers early — before invoking `cargo build` — so missing SDK constraints, malformed identifiers, or unresolved cross-plugin types fail fast with diagnostics that name the plugin id, the package name, and the missing provider dependency. Activation should reject a plugin whose declared cross-plugin type references a Cargo dependency that is not in the lockfile, rather than silently falling back to global lookup.

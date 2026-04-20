@@ -152,6 +152,6 @@ Named patterns Nebula uses. Shared vocabulary with the industry corpus (EIP, DDI
 
 - `docs/PRODUCT_CANON.md` — normative product truth
 - `docs/ENGINE_GUARANTEES.md` — durability matrix
-- `docs/PLUGIN_MODEL.md` — three-layer plugin contract
+- `docs/INTEGRATION_MODEL.md §7` — plugin packaging (`Cargo.toml` + `plugin.toml` + `impl Plugin`), discovery / load lifecycle, ABI policy
 - `docs/UPGRADE_COMPAT.md` — compatibility surfaces and pre-1.0 policy
 - `crates/*/README.md` — mechanical API truth per crate
