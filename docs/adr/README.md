@@ -27,13 +27,14 @@ changes land as a new ADR that `supersedes` it.
 | [0017](./0017-control-queue-reclaim-policy.md) | Control-queue reclaim policy | accepted | 2026-04-19 |
 | [0018](./0018-plugin-metadata-to-manifest.md) | `PluginMetadata` → `PluginManifest` (bundle descriptor, reuse small types from `nebula-metadata`) | proposed | 2026-04-19 |
 | [0019](./0019-msrv-1.95.md) | MSRV 1.95 (supersedes 0010) | proposed | 2026-04-19 |
+| [0020](./0020-library-first-gtm.md) | Library-first GTM + `apps/server` as thin composition root | proposed | 2026-04-19 |
 
 ## Writing a new ADR
 
 1. Copy the frontmatter block from any existing ADR (keep the keys: `id`,
    `title`, `status`, `date`, `supersedes`, `superseded_by`, `tags`,
    `related`, optional `linear`).
-2. Pick the next free number (currently **0020**). Do not reuse.
+2. Pick the next free number (currently **0021**). Do not reuse.
 3. File name: `NNNN-kebab-case-title.md` matching the `title:` field.
 4. Start `status: proposed`. Move to `accepted` only after review and merge.
 5. **Do not substantively edit an accepted ADR.** Open a new one with
