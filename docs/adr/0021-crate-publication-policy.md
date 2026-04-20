@@ -1,7 +1,7 @@
 ---
 id: 0021
 title: crate-publication-policy
-status: proposed
+status: accepted
 date: 2026-04-19
 supersedes: []
 superseded_by: []

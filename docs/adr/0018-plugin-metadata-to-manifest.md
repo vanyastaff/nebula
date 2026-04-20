@@ -1,7 +1,7 @@
 ---
 id: 0018
 title: plugin-metadata-to-manifest
-status: proposed
+status: accepted
 date: 2026-04-19
 supersedes: []
 superseded_by: []

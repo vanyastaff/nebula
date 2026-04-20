@@ -1,7 +1,7 @@
 ---
 id: 0006
 title: sandbox-phase1-broker
-status: proposed
+status: accepted
 date: 2026-04-17
 supersedes: []
 superseded_by: []

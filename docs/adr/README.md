@@ -13,7 +13,7 @@ changes land as a new ADR that `supersedes` it.
 | [0003](./0003-consolidated-field-enum.md) | Consolidated `Field` enum (13 variants; drop `Date`/`DateTime`/`Time`/`Color`/`Hidden`) | accepted | 2026-04-17 |
 | [0004](./0004-credential-metadata-rename.md) | Credential `Metadata` → `Record`, `Description` → `Metadata` rename | accepted | 2026-04-17 |
 | [0005](./0005-trigger-health-trait.md) | `TriggerHealth` — atomic lock-free health state on `TriggerContext` | accepted | 2026-04-12 |
-| [0006](./0006-sandbox-phase1-broker.md) | Sandbox Phase 1 broker — duplex JSON-RPC over UDS / Named Pipe | proposed | 2026-04-17 |
+| [0006](./0006-sandbox-phase1-broker.md) | Sandbox Phase 1 broker — duplex JSON-RPC over UDS / Named Pipe | accepted | 2026-04-17 |
 | [0007](./0007-prefixed-ulid-identifiers.md) | Prefixed ULID identifiers (Stripe-style) | accepted | 2026-04-17 |
 | [0008](./0008-execution-control-queue-consumer.md) | Execution control-queue consumer | accepted | 2026-04-18 |
 | [0009](./0009-resume-persistence-schema.md) | Resume persistence schema (persist full `ActionResult` per node) | accepted | 2026-04-18 |
@@ -25,20 +25,21 @@ changes land as a new ADR that `supersedes` it.
 | [0015](./0015-execution-lease-lifecycle.md) | Execution lease lifecycle (renumbered from 0008; promoted on #325 implementation) | accepted | 2026-04-19 |
 | [0016](./0016-engine-cancel-registry.md) | Engine cancel registry — cooperative-cancel contract for ADR-0008 A3 | accepted | 2026-04-19 |
 | [0017](./0017-control-queue-reclaim-policy.md) | Control-queue reclaim policy | accepted | 2026-04-19 |
-| [0018](./0018-plugin-metadata-to-manifest.md) | `PluginMetadata` → `PluginManifest` (bundle descriptor, reuse small types from `nebula-metadata`) | proposed | 2026-04-19 |
-| [0019](./0019-msrv-1.95.md) | MSRV 1.95 (supersedes 0010) | proposed | 2026-04-19 |
-| [0020](./0020-library-first-gtm.md) | Library-first GTM + `apps/server` as thin composition root | proposed | 2026-04-19 |
-| [0021](./0021-crate-publication-policy.md) | Crate publication policy (`publish = true` requires ≥ 3 external consumers OR dedicated ADR) | proposed | 2026-04-19 |
+| [0018](./0018-plugin-metadata-to-manifest.md) | `PluginMetadata` → `PluginManifest` (bundle descriptor, reuse small types from `nebula-metadata`) | accepted | 2026-04-19 |
+| [0019](./0019-msrv-1.95.md) | MSRV 1.95 (supersedes 0010) | accepted | 2026-04-19 |
+| [0020](./0020-library-first-gtm.md) | Library-first GTM + `apps/server` as thin composition root | accepted | 2026-04-19 |
+| [0021](./0021-crate-publication-policy.md) | Crate publication policy (`publish = true` requires ≥ 3 external consumers OR dedicated ADR) | accepted | 2026-04-19 |
 | [0022](./0022-webhook-signature-policy.md) | Webhook signature policy (`SignaturePolicy::Required` default at `WebhookAction` trait level) | accepted | 2026-04-19 |
 | [0023](./0023-keyprovider-trait.md) | `KeyProvider` trait between `EncryptionLayer` and key material source | accepted | 2026-04-19 |
-| [0024](./0024-defer-dynosaur-migration.md) | Defer `dynosaur` migration — keep `#[async_trait]` for `dyn`-consumed traits (supersedes 0014) | proposed | 2026-04-20 |
+| [0024](./0024-defer-dynosaur-migration.md) | Defer `dynosaur` migration — keep `#[async_trait]` for `dyn`-consumed traits (supersedes 0014) | accepted | 2026-04-20 |
+| [0025](./0025-sandbox-broker-rpc-surface.md) | Sandbox Phase 1 broker — RPC surface and audit posture (sibling to 0006) | accepted | 2026-04-20 |
 
 ## Writing a new ADR
 
 1. Copy the frontmatter block from any existing ADR (keep the keys: `id`,
    `title`, `status`, `date`, `supersedes`, `superseded_by`, `tags`,
    `related`, optional `linear`).
-2. Pick the next free number (currently **0025**). Do not reuse.
+2. Pick the next free number (currently **0026**). Do not reuse.
 3. File name: `NNNN-kebab-case-title.md` matching the `title:` field.
 4. Start `status: proposed`. Move to `accepted` only after review and merge.
 5. **Do not substantively edit an accepted ADR.** Open a new one with
