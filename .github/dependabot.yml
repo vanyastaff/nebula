@@ -38,10 +38,11 @@ updates:
     commit-message:
       prefix: "chore(ci)"
     ignore:
-      # MSRV pin in ci.yml uses @1.95 intentionally. Dependabot can't tell
-      # that's a deliberate version pin (not a stale dep) and tries to bump
-      # to whatever Rust version is current (1.96, 1.97, ..., 1.100, ...).
-      # @stable / @nightly references in other jobs don't need version bumps.
+      # `dtolnay/rust-toolchain` is SHA-pinned with a `# v1` comment in
+      # ci.yml; the MSRV (currently 1.95) is passed via the `toolchain:`
+      # input, not the action ref. Dependabot would otherwise open weekly
+      # PRs bumping the action's SHA — we prefer to review and roll that
+      # action by hand since it installs the compiler for every CI job.
       - dependency-name: "dtolnay/rust-toolchain"
     groups:
       # Group all action updates into one PR
