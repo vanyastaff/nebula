@@ -13,6 +13,7 @@
 
 use std::{path::PathBuf, time::Duration};
 
+use nebula_plugin::PluginRegistry;
 use nebula_runtime::ActionRegistry;
 use nebula_sandbox::{capabilities::PluginCapabilities, discovery};
 
@@ -22,36 +23,41 @@ const DEFAULT_PLUGIN_TIMEOUT: Duration = Duration::from_secs(30);
 /// Discover and register community plugins from standard directories.
 ///
 /// Returns the number of actions registered.
-pub(crate) async fn discover_and_register(registry: &ActionRegistry) -> usize {
+pub(crate) async fn discover_and_register(action_registry: &ActionRegistry) -> usize {
     let dirs = plugin_directories();
-    let mut total = 0;
+    let mut plugin_registry = PluginRegistry::new();
+    let mut all_handlers = Vec::new();
 
     for dir in &dirs {
         if !dir.exists() {
             continue;
         }
 
-        // TODO: load per-deployment capability policy from CLI config.
-        let plugins =
-            discovery::discover_directory(dir, DEFAULT_PLUGIN_TIMEOUT, PluginCapabilities::none())
-                .await;
+        // TODO (ADR-0025 D4): load per-deployment capability policy from CLI config.
+        let handlers = discovery::discover_directory(
+            dir,
+            &mut plugin_registry,
+            DEFAULT_PLUGIN_TIMEOUT,
+            PluginCapabilities::none(),
+        )
+        .await;
+        all_handlers.extend(handlers);
+    }
 
-        for (plugin_name, handlers) in plugins {
-            for (metadata, handler) in handlers {
-                let key = metadata.base.key.as_str().to_owned();
-                if registry.get(&metadata.base.key).is_some() {
-                    tracing::warn!(
-                        action = %key,
-                        plugin = %plugin_name,
-                        "community action key collision detected, skipping registration",
-                    );
-                    continue;
-                }
-                registry.register(metadata, handler);
-                tracing::info!(action = %key, plugin = %plugin_name, "registered community action");
-                total += 1;
-            }
+    // Feed discovered actions into the runtime ActionRegistry.
+    let mut total = 0;
+    for (metadata, handler) in all_handlers {
+        let key = &metadata.base.key;
+        if action_registry.get(key).is_some() {
+            tracing::warn!(
+                action = %key,
+                "community action key collision detected, skipping registration",
+            );
+            continue;
         }
+        tracing::info!(action = %key, "registered community action");
+        action_registry.register(metadata, handler);
+        total += 1;
     }
 
     total

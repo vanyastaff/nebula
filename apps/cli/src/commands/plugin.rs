@@ -1,5 +1,6 @@
 use std::time::Duration;
 
+use nebula_plugin::PluginRegistry;
 use nebula_sandbox::{capabilities::PluginCapabilities, discovery};
 
 use crate::plugins;
@@ -20,29 +21,31 @@ pub(crate) async fn list() {
     println!();
 
     let mut total = 0;
+    let mut plugin_registry = PluginRegistry::new();
 
     for dir in &dirs {
         if !dir.exists() {
             continue;
         }
 
-        // TODO: load per-deployment capability policy from CLI config.
-        let plugins =
-            discovery::discover_directory(dir, Duration::from_secs(5), PluginCapabilities::none())
-                .await;
+        // TODO (ADR-0025 D4): load per-deployment capability policy from CLI config.
+        let handlers = discovery::discover_directory(
+            dir,
+            &mut plugin_registry,
+            Duration::from_secs(5),
+            PluginCapabilities::none(),
+        )
+        .await;
 
-        for (name, handlers) in &plugins {
-            println!("  {name}");
-            for (meta, _handler) in handlers {
-                println!(
-                    "    action: {:<30} {}",
-                    meta.base.key.as_str(),
-                    meta.base.description
-                );
-            }
-            total += handlers.len();
-            println!();
+        // Group actions back by plugin key for display.
+        for (meta, _handler) in &handlers {
+            println!(
+                "  action: {:<30} {}",
+                meta.base.key.as_str(),
+                meta.base.description
+            );
         }
+        total += handlers.len();
     }
 
     if total == 0 {

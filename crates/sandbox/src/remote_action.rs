@@ -1,4 +1,5 @@
-//! `RemoteAction` — wraps `ProcessSandboxHandler` as `impl nebula_action::Action`.
+//! `RemoteAction` — wraps `ProcessSandboxHandler` as `impl nebula_action::Action`
+//! and `impl nebula_action::StatelessHandler`.
 //!
 //! Discovered out-of-process actions need to register alongside built-in
 //! actions in the engine's `ActionRegistry`. This wrapper carries the
@@ -8,7 +9,11 @@
 
 use std::sync::Arc;
 
-use nebula_action::{Action, ActionDependencies, ActionMetadata};
+use async_trait::async_trait;
+use nebula_action::{
+    Action, ActionContext, ActionDependencies, ActionError, ActionMetadata, ActionResult,
+    StatelessHandler,
+};
 
 use crate::handler::ProcessSandboxHandler;
 
@@ -49,5 +54,20 @@ impl ActionDependencies for RemoteAction {}
 impl Action for RemoteAction {
     fn metadata(&self) -> &ActionMetadata {
         &self.metadata
+    }
+}
+
+#[async_trait]
+impl StatelessHandler for RemoteAction {
+    fn metadata(&self) -> &ActionMetadata {
+        &self.metadata
+    }
+
+    async fn execute(
+        &self,
+        input: serde_json::Value,
+        ctx: &ActionContext,
+    ) -> Result<ActionResult<serde_json::Value>, ActionError> {
+        self.handler.execute(input, ctx).await
     }
 }
