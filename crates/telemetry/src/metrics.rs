@@ -215,7 +215,7 @@ impl Histogram {
     /// Record an observation.
     ///
     /// Non-finite values (`NaN`, `±∞`) are silently dropped. NaN would
-    /// otherwise permanently poison `sum_bits` via the CAS loop
+    /// otherwise permanently poison `sum_bits` via the atomic update
     /// (`x + NaN = NaN`), breaking every subsequent `sum()` / percentile.
     pub fn observe(&self, value: f64) {
         if !value.is_finite() {
@@ -235,20 +235,13 @@ impl Histogram {
         self.counts[idx].fetch_add(1, Ordering::Relaxed);
         self.total_count.fetch_add(1, Ordering::Relaxed);
 
-        // Atomically add to sum using CAS loop on f64 bits.
-        loop {
-            let old_bits = self.sum_bits.load(Ordering::Relaxed);
-            let old_sum = f64::from_bits(old_bits);
-            let new_sum = old_sum + value;
-            let new_bits = new_sum.to_bits();
-            if self
-                .sum_bits
-                .compare_exchange_weak(old_bits, new_bits, Ordering::Relaxed, Ordering::Relaxed)
-                .is_ok()
-            {
-                break;
-            }
-        }
+        // Atomically add to sum using `AtomicU64::update` on f64 bits (Rust 1.95).
+        // Load and store orderings both Relaxed — match the prior CAS loop.
+        let _ = self
+            .sum_bits
+            .update(Ordering::Relaxed, Ordering::Relaxed, |old_bits| {
+                (f64::from_bits(old_bits) + value).to_bits()
+            });
         self.last_updated_ms.store(now_ms(), Ordering::Relaxed);
     }
 
