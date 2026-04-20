@@ -282,7 +282,16 @@ pub(crate) fn extract_lambda(arg: &Expr) -> ExpressionResult<(&str, &Expr)> {
     match arg { ... }
 }
 ```
-The helper is gated by future callers; doc comment makes that explicit. → flip to `#[expect(dead_code)]`. **Caveat:** if clippy no longer flags this after the next few feature landings, the `expect` will fire `unfulfilled_lint_expectations` — that is the signal to delete the helper. Good.
+The helper is gated by future callers; doc comment makes that explicit. → flip to:
+```rust
+#[expect(
+    dead_code,
+    reason = "helper awaiting higher-order lambda callers"
+)]
+```
+**Caveat:** if clippy no longer flags this after the next few feature landings, the `expect` will fire `unfulfilled_lint_expectations` — that is the signal to delete the helper. Good.
+
+**Target-dependency trap.** Before converting, confirm the lint fires on **every** target the code compiles for. A common failure mode is `#[allow(unused_variables)]` on a function whose parameter is consumed inside a `#[cfg(target_os = "…")]` block — on that target the lint doesn't fire and `#[expect]` will trip `unfulfilled_lint_expectations` under `-D warnings` in CI. Same trap applies to `clippy::unnecessary_wraps` where one `#[cfg]` branch returns `Some(…)` and another returns `None`. Leave those sites as `#[allow]` (the attribute form *can* express a conditional suppression that `#[expect]` cannot).
 
 Skip example (hypothetical):
 ```rust
@@ -326,11 +335,14 @@ In `crates/expression/src/builtins.rs:226`, change:
 ```rust
 #[allow(dead_code)]
 ```
-to:
+to the multi-line form with `reason =` (per Task 3 rubric):
 ```rust
-#[expect(dead_code)]
+#[expect(
+    dead_code,
+    reason = "helper awaiting higher-order lambda callers"
+)]
 ```
-(Doc comment above is the rationale — leave it untouched.)
+(Doc comment above is the rationale — leave it untouched. `reason =` echoes it into the attribute so clippy surfaces it when the expectation later fires or drifts.)
 
 - [ ] **Step 4: Verify locally**
 ```bash
