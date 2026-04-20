@@ -6,9 +6,9 @@ and CI mirror.
 ## Quick start
 
 1. Install [rustup](https://rustup.rs/) and pick a toolchain:
-   `rustup default stable`. The workspace MSRV is **1.94** (pinned via
+   `rustup default stable`. The workspace MSRV is **1.95** (pinned via
    `workspace.package.rust-version` in `Cargo.toml`); CI also runs an
-   explicit MSRV-1.94 check.
+   explicit MSRV-1.95 check.
 2. Install workspace dev tools:
    ```bash
    bash scripts/install-tools.sh
@@ -187,9 +187,9 @@ from `Cargo.toml` — bump there and run with `--workspace`.
 **"convco: command not found" in commit-msg hook.** Re-run
 `bash scripts/install-tools.sh`, or manually: `cargo install convco`.
 
-**"cargo +1.94: toolchain not installed" in pre-push.** The MSRV check
-skips gracefully if 1.94 is missing. To enable it locally:
-`rustup install 1.94`.
+**"cargo +1.95: toolchain not installed" in pre-push.** The MSRV check
+skips gracefully if 1.95 is missing. To enable it locally:
+`rustup install 1.95`.
 
 **Pre-push too slow.** Expected ~60-90s on warm cache (sccache + workspace
 cache). On cold cache the first run is several minutes. If consistently

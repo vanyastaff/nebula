@@ -33,6 +33,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- **BREAKING — workspace**: MSRV raised from **1.94 → 1.95** (see
+  [ADR-0019](docs/adr/0019-msrv-1.95.md); supersedes ADR-0010).
+  `workspace.package.rust-version`, `clippy.toml` `msrv`, all
+  `.github/workflows/ci.yml` toolchain pins, CLI templates, and docs moved
+  together. Contributors must `rustup install 1.95`. Unlocks `if let` guards,
+  `cfg_select!`, atomic `update` / `try_update`, and `core::range` for
+  follow-up refactors (tracked in ADR-0019 §Follow-ups).
 - **nebula-validator**: **Breaking** — replaced flat 30-variant `Rule` enum
   with a typed sum-of-sums: `Rule::{Value(ValueRule), Predicate(Predicate),
   Logic(Box<Logic>), Deferred(DeferredRule), Described(Box<Rule>, String)}`.

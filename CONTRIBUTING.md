@@ -35,7 +35,7 @@ tuning, worktree tips), see [docs/dev-setup.md](docs/dev-setup.md).
 
 ## Prerequisites
 
-- **Rust 1.94+** (MSRV, pinned via `workspace.package.rust-version`)
+- **Rust 1.95+** (MSRV, pinned via `workspace.package.rust-version`)
 - **[cargo-nextest](https://nexte.st/)** — test runner
 - **Nightly `rustfmt`** — `rustup toolchain install nightly --component rustfmt`
 - **[task](https://taskfile.dev/)** (recommended) — `task --list` for the catalog
@@ -58,7 +58,7 @@ lefthook install
 - `commit-msg`: conventional-commit validation via `convco`
 - `pre-push` (≤90s): nextest, doctests, `--all-features`,
   `--no-default-features`, docs (`RUSTDOCFLAGS=-D warnings`), cargo-shear.
-  The MSRV-1.94 check runs in CI only (see the note in `lefthook.yml`).
+  The MSRV-1.95 check runs in CI only (see the note in `lefthook.yml`).
 
 See [docs/dev-setup.md](docs/dev-setup.md) for lefthook troubleshooting and
 agent-profile notes.
@@ -123,7 +123,7 @@ messages) and a regex check on the PR title — see
    fill in Summary, Changes, Testing, and the Safety checklist.
 3. PR title must also follow Conventional Commits.
 4. Required CI jobs must be green: `fmt`, `clippy -D warnings`, `nextest`,
-   `doctests`, `MSRV 1.94`, `--all-features`, `--no-default-features`,
+   `doctests`, `MSRV 1.95`, `--all-features`, `--no-default-features`,
    `cargo deny`. A green `lefthook pre-push` catches most of these locally,
    but some jobs (notably the MSRV check) run only in CI.
 5. **Squash-merge only** — keep `main` history linear.

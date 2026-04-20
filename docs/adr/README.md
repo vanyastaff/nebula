@@ -17,7 +17,7 @@ changes land as a new ADR that `supersedes` it.
 | [0007](./0007-prefixed-ulid-identifiers.md) | Prefixed ULID identifiers (Stripe-style) | accepted | 2026-04-17 |
 | [0008](./0008-execution-control-queue-consumer.md) | Execution control-queue consumer | accepted | 2026-04-18 |
 | [0009](./0009-resume-persistence-schema.md) | Resume persistence schema (persist full `ActionResult` per node) | accepted | 2026-04-18 |
-| [0010](./0010-rust-2024-edition.md) | Rust 2024 edition + MSRV 1.94 | accepted | 2026-04-19 |
+| [0010](./0010-rust-2024-edition.md) | Rust 2024 edition + MSRV 1.94 | superseded | 2026-04-19 |
 | [0011](./0011-serde-json-value-interchange.md) | `serde_json::Value` as the workflow data interchange type | accepted | 2026-04-19 |
 | [0012](./0012-checkpoint-recovery.md) | Checkpoint recovery model (policy-driven, best-effort writes, idempotency over exactly-once) | accepted | 2026-04-19 |
 | [0013](./0013-compile-time-modes.md) | Compile-time deployment modes (`mode-desktop` / `mode-self-hosted` / `mode-cloud` + `build.rs` gate) | accepted | 2026-04-19 |
@@ -26,13 +26,14 @@ changes land as a new ADR that `supersedes` it.
 | [0016](./0016-engine-cancel-registry.md) | Engine cancel registry — cooperative-cancel contract for ADR-0008 A3 | accepted | 2026-04-19 |
 | [0017](./0017-control-queue-reclaim-policy.md) | Control-queue reclaim policy | accepted | 2026-04-19 |
 | [0018](./0018-plugin-metadata-to-manifest.md) | `PluginMetadata` → `PluginManifest` (bundle descriptor, reuse small types from `nebula-metadata`) | proposed | 2026-04-19 |
+| [0019](./0019-msrv-1.95.md) | MSRV 1.95 (supersedes 0010) | proposed | 2026-04-19 |
 
 ## Writing a new ADR
 
 1. Copy the frontmatter block from any existing ADR (keep the keys: `id`,
    `title`, `status`, `date`, `supersedes`, `superseded_by`, `tags`,
    `related`, optional `linear`).
-2. Pick the next free number (currently **0019**). Do not reuse.
+2. Pick the next free number (currently **0020**). Do not reuse.
 3. File name: `NNNN-kebab-case-title.md` matching the `title:` field.
 4. Start `status: proposed`. Move to `accepted` only after review and merge.
 5. **Do not substantively edit an accepted ADR.** Open a new one with

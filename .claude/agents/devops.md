@@ -97,7 +97,7 @@ Downloads: {monthly — is it established?}
 Last release: {date — is it maintained?}
 Transitive deps: {count — is the tree reasonable?}
 Unsafe code: {any? justified?}
-MSRV: {compatible with 1.94?}
+MSRV: {compatible with 1.95?}
 Verdict: approve / reject / conditional
 ```
 

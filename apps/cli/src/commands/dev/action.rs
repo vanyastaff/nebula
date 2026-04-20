@@ -73,7 +73,7 @@ fn cargo_toml(crate_name: &str, name: &str) -> String {
 name = "{crate_name}"
 version = "0.1.0"
 edition = "2024"
-rust-version = "1.94"
+rust-version = "1.95"
 description = "Nebula action: {name}"
 license = "MIT OR Apache-2.0"
 

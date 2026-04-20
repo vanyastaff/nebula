@@ -1,7 +1,7 @@
 # Copilot Instructions for Nebula
 
 ## Project Context
-Modular type-safe Rust workflow engine. Edition 2024, MSRV 1.94, alpha stage.
+Modular type-safe Rust workflow engine. Edition 2024, MSRV 1.95, alpha stage.
 Architecture: Core → Business → Exec → API (one-way deps, no upward).
 Universal data type: serde_json::Value.
 Error handling: thiserror in libs, anyhow in binaries.
