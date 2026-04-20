@@ -11,9 +11,8 @@
 //! This allows each credential type (MySQL, PostgreSQL, OAuth2, etc.) to implement
 //! their own validation logic using their specific client libraries.
 
-use std::time::Duration;
+use std::{future::Future, time::Duration};
 
-use async_trait::async_trait;
 use nebula_core::CredentialId;
 use serde::{Deserialize, Serialize};
 use tokio::time::timeout;
@@ -30,12 +29,11 @@ use crate::record::CredentialRecord;
 /// - **OAuth2**: Call userinfo endpoint with token
 /// - **API Key**: Call account/status endpoint
 /// - **Certificate**: Perform TLS handshake
-#[async_trait]
 pub trait TestableCredential: Send + Sync {
     /// Test the credential by performing an actual operation.
     ///
     /// Returns `TestResult` with success/failure details.
-    async fn test(&self) -> RotationResult<TestResult>;
+    fn test(&self) -> impl Future<Output = RotationResult<TestResult>> + Send;
 
     /// Get test timeout (default: 30 seconds).
     fn test_timeout(&self) -> Duration {
@@ -47,7 +45,6 @@ pub trait TestableCredential: Send + Sync {
 ///
 /// Credentials implementing this trait can generate new versions and
 /// cleanup old ones.
-#[async_trait]
 pub trait RotatableCredential: TestableCredential {
     /// Generate a new version of this credential.
     ///
@@ -55,7 +52,7 @@ pub trait RotatableCredential: TestableCredential {
     /// - Different secrets (password, token, key)
     /// - Same permissions and access levels
     /// - Same connection details (host, port, database)
-    async fn rotate(&self) -> RotationResult<Self>
+    fn rotate(&self) -> impl Future<Output = RotationResult<Self>> + Send
     where
         Self: Sized;
 
@@ -63,8 +60,8 @@ pub trait RotatableCredential: TestableCredential {
     ///
     /// Optional: implement if cleanup is needed (e.g., delete old database user).
     /// Called after grace period expires.
-    async fn cleanup_old(&self) -> RotationResult<()> {
-        Ok(())
+    fn cleanup_old(&self) -> impl Future<Output = RotationResult<()>> + Send {
+        async { Ok(()) }
     }
 }
 
@@ -434,7 +431,6 @@ mod tests {
         should_pass: bool,
     }
 
-    #[async_trait]
     impl TestableCredential for MockCredential {
         async fn test(&self) -> RotationResult<TestResult> {
             let start = std::time::Instant::now();
@@ -456,7 +452,6 @@ mod tests {
         }
     }
 
-    #[async_trait]
     impl RotatableCredential for MockCredential {
         async fn rotate(&self) -> RotationResult<Self> {
             Ok(MockCredential {

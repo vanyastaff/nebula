@@ -2,7 +2,8 @@
 //!
 //! Provides event types and notification abstraction for rotation lifecycle events.
 
-use async_trait::async_trait;
+use std::future::Future;
+
 use chrono::{DateTime, Utc};
 use nebula_core::CredentialId;
 use serde::{Deserialize, Serialize};
@@ -284,7 +285,6 @@ impl NotificationEvent {
 ///     webhook_url: String,
 /// }
 ///
-/// #[async_trait]
 /// impl NotificationSender for SlackNotifier {
 ///     async fn send(&self, event: &NotificationEvent) -> RotationResult<()> {
 ///         let payload = json!({
@@ -302,7 +302,6 @@ impl NotificationEvent {
 ///     }
 /// }
 /// ```
-#[async_trait]
 pub trait NotificationSender: Send + Sync {
     /// Send a notification event
     ///
@@ -313,7 +312,7 @@ pub trait NotificationSender: Send + Sync {
     /// # Returns
     ///
     /// * `RotationResult<()>` - Success or error
-    async fn send(&self, event: &NotificationEvent) -> RotationResult<()>;
+    fn send(&self, event: &NotificationEvent) -> impl Future<Output = RotationResult<()>> + Send;
 }
 
 /// Send notification with retry logic
@@ -686,7 +685,6 @@ mod tests {
         should_fail: bool,
     }
 
-    #[async_trait]
     impl NotificationSender for MockSender {
         async fn send(&self, _event: &NotificationEvent) -> RotationResult<()> {
             if self.should_fail {

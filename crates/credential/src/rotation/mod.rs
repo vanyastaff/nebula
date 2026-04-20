@@ -171,7 +171,6 @@
 //!     RotationPolicy, PeriodicConfig, TestResult, RotationResult,
 //! };
 //! use nebula_credential::traits::{RotatableCredential, TestableCredential};
-//! use async_trait::async_trait;
 //! use std::time::Duration;
 //!
 //! // Your credential type
@@ -182,7 +181,6 @@
 //!     database: String,
 //! }
 //!
-//! #[async_trait]
 //! impl TestableCredential for PostgresCredential {
 //!     async fn test(&self) -> RotationResult<TestResult> {
 //!         // Test database connection
@@ -191,7 +189,6 @@
 //!     }
 //! }
 //!
-//! #[async_trait]
 //! impl RotatableCredential for PostgresCredential {
 //!     async fn rotate(&self) -> RotationResult<Self> {
 //!         // Generate new password
