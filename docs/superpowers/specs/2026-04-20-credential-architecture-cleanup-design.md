@@ -184,7 +184,7 @@ test-util = []
 workspace = true
 ```
 
-**Удалены из base deps:** `reqwest`, `url`, `nebula-metrics`, `nebula-telemetry`, `moka`, `lru`, `tokio-util`.
+**Удалены из base deps:** `reqwest`, `url`, `nebula-metrics`, `nebula-telemetry`, `moka`, `tokio-util`. (`lru` retained — see Cargo.toml block above; used by `RefreshCoordinator` circuit-breaker tracking at `refresh.rs:51`.)
 
 ## §3 — File-by-file migration plan
 
@@ -203,7 +203,8 @@ workspace = true
 | `rotation/backup.rs` | → | `nebula-storage/src/credential/backup.rs` | |
 | `rotation/scheduler.rs`, `grace_period.rs`, `blue_green.rs`, `transaction.rs` | → | `nebula-engine/src/credential/rotation/` | orchestration рядом с `control_consumer.rs` |
 | `rotation/retry.rs` | → | **delete** | replaced by `nebula-resilience`. **Gate before P1 delete:** verify `nebula-resilience` covers jittered exponential backoff на transactional flip failures (text из `rotation/retry.rs` semantics). Если gap — fix в resilience первым или keep local. |
-| `rotation/metrics.rs`, `events.rs` | → | **delete** | eventbus emission + subscribers |
+| `rotation/metrics.rs` | → | **delete** | pure observability (Counter/Gauge/Histogram); replaced by eventbus emission + subscribers |
+| `rotation/events.rs` | → | **stays** (split in a later phase if needed) | contains contract data types (`CredentialRotationEvent`, `NotificationEvent`, `RollbackData`, `EmergencyRotationData`, `TransactionLog`, `NotificationSender`). Observability-helper functions (`send_notification`, `log_rollback_event`) remain colocated with the data shapes for now; future split could separate them when rotation orchestration moves to engine in P8. |
 | `executor.rs`, `resolver.rs` | → | `nebula-engine/src/credential/resolver.rs` | merged с existing `credential_accessor.rs` + `engine/resolver.rs` |
 | `registry.rs` | → | `nebula-engine/src/credential/registry.rs` | type-erased dispatch; симметрично с Y-модель |
 | `credentials/oauth2_flow.rs` (split) | → | `nebula-api/src/credential/flow.rs` + `nebula-engine/src/credential/rotation/token_refresh.rs` | auth URI + callback + exchange → api; refresh during resolve → engine |

@@ -17,12 +17,12 @@
 **Files:**
 - Delete: `crates/credential/src/rotation/retry.rs`
 - Delete: `crates/credential/src/rotation/metrics.rs`
-- Delete: `crates/credential/src/rotation/events.rs`
+- Modify: `crates/credential/src/rotation/events.rs` (**preserved** — contains contract data types; P1.2 updated its retry callers; P1.4 originally scoped to delete, but scope refined after investigation — see P1.4 note)
 - Delete: `crates/credential/src/option_serde_secret.rs`
 - Modify: `crates/credential/src/serde_secret.rs` (merge contents)
-- Modify: `crates/credential/src/rotation/mod.rs` (remove module declarations)
+- Modify: `crates/credential/src/rotation/mod.rs` (remove `retry` and `metrics` module declarations while preserving `events`)
 - Modify: `crates/credential/src/lib.rs` (update re-exports)
-- Modify: `crates/credential/Cargo.toml` (remove `tokio-util` if unused)
+- Modify: `crates/credential/Cargo.toml` (remove `tokio-util` if unused — **deferred**: `rotation/scheduler.rs:10` uses `tokio_util::sync::CancellationToken`; cannot remove until scheduler moves to engine in P8)
 
 ### Task P1.1: Verify rotation/retry duplication
 
@@ -189,16 +189,16 @@ git add crates/credential/src/serde_secret.rs crates/credential/src/option_serde
 git commit -m "refactor(credential): merge option_serde_secret into serde_secret::option submodule"
 ```
 
-### Task P1.4: Delete `rotation/metrics.rs` and `rotation/events.rs`
+### Task P1.4: Delete orphan `rotation/metrics.rs` (scope-refined during execution)
 
-**Gate:** Emission of `CredentialEvent` via eventbus must not be blocked by deletion. Current usage analysis:
+**Scope refinement.** Initial plan said "delete `rotation/metrics.rs` and `rotation/events.rs`". Investigation during execution showed:
 
-- `rotation/metrics.rs` — defines rotation-specific metrics types (counters, histograms).
-- `rotation/events.rs` — defines rotation-specific event types (emission helpers).
+- `rotation/metrics.rs` — pure observability (Counter/Gauge/Histogram via `nebula-metrics` + `nebula-telemetry`). **Zero callers** across the workspace (orphan). Safe delete.
+- `rotation/events.rs` — contains credential **contract data types**: `CredentialRotationEvent`, `NotificationEvent`, `RollbackData`, `EmergencyRotationData`, `TransactionLog`, `NotificationSender` trait, plus notification helpers (`send_notification`, `log_rollback_event`) that P1.2 already adapted to the unified `retry::RetryPolicy`. **NOT deleted** — preserved as-is. A future split (contract data ↔ orchestration helpers) may happen when rotation orchestration moves to engine in P8, but that's a follow-up.
 
-Both are tightly coupled to rotation orchestration. Since rotation orchestration moves to engine in P8, and observability flows through eventbus per spec §8, these files are terminal today.
+Refined P1.4 scope = delete `metrics.rs` only. `events.rs` stays.
 
-However, `rotation/scheduler.rs` (which stays in credential until P8) imports from both. Replacing their use is a mini-migration.
+**Gate:** The initial gate (ensure eventbus emission not blocked) is satisfied trivially because `metrics.rs` has no consumers.
 
 - [ ] **Step 1: Audit usage**
 
@@ -212,92 +212,75 @@ Two options per spec §8:
 
 (a) **Stub approach**: keep `rotation/scheduler.rs` but replace metrics emission with `tracing::info!` + event struct inline. Remove dependency on metrics/events modules. Rationale: scheduler will move entirely in P8, so stub is throwaway.
 
-(b) **Full eventbus rewire**: make scheduler emit `CredentialEvent` via `nebula-eventbus`. More work but closer to target shape.
+- [ ] **Step 1: Audit usage**
 
-**Choose (a) — stub.** Scheduler lives ≤ 2 weeks before moving to engine in P8. Over-investing now violates YAGNI.
-
-- [ ] **Step 3: Replace metrics calls in scheduler.rs**
-
-Read `crates/credential/src/rotation/scheduler.rs`. For each metric emission (`RotationMetrics::record_*`, etc.), replace with `tracing::info!(...)` call carrying the same fields.
-
-Example transformation:
-```rust
-// Before
-self.metrics.record_rotation_start(credential_id);
-
-// After
-tracing::info!(credential_id = %credential_id, "rotation start");
+```bash
+grep -rn "RotationMetrics\|rotation::metrics\|rotation/metrics" crates/
 ```
 
-Remove `use crate::rotation::metrics::*;` and `use crate::rotation::events::*;`.
+Expected (post-refinement): `RotationMetrics` appears only in `rotation/mod.rs` (re-export line) and `rotation/metrics.rs` itself. Zero callers. Pure orphan.
 
-- [ ] **Step 4: Delete `rotation/metrics.rs` and `rotation/events.rs`**
+- [ ] **Step 2: Delete the file**
 
-Run:
 ```bash
 rm crates/credential/src/rotation/metrics.rs
-rm crates/credential/src/rotation/events.rs
 ```
 
-Edit `crates/credential/src/rotation/mod.rs`:
+- [ ] **Step 3: Clean `rotation/mod.rs`**
 
-Remove:
+Edit `crates/credential/src/rotation/mod.rs` — remove:
 ```rust
-pub mod events;
 pub mod metrics;
+pub use metrics::RotationMetrics;
 ```
 
-Edit `crates/credential/src/lib.rs` if any re-exports existed:
+- [ ] **Step 4: Confirm `nebula-metrics` / `nebula-telemetry` base-dep removal safety**
 
-Remove:
-```rust
-pub use crate::rotation::{CredentialRotationEvent, ...};
+```bash
+grep -rn "nebula_metrics\|nebula_telemetry" crates/credential/src/
 ```
 
-(Keep `RotationError`, `RotationResult`, `GracePeriodConfig` — they're in error/state/etc., not events/metrics modules.)
+If zero hits — remove both from `crates/credential/Cargo.toml` as a bonus. If any remain — defer dep-removal until those usage sites are cleaned.
 
-- [ ] **Step 5: Verify build + tests with rotation feature**
+- [ ] **Step 5: Verify build + tests**
 
-Run: `cargo check -p nebula-credential --features rotation && cargo nextest run -p nebula-credential --features rotation`
+```bash
+cargo check -p nebula-credential
+cargo check -p nebula-credential --features rotation
+cargo nextest run -p nebula-credential
+cargo nextest run -p nebula-credential --features rotation --no-fail-fast
+```
 
-Expected: PASS. Any test previously verifying metrics emission should now be deleted (grep for them first) or rewritten to check `tracing` output.
+Expected: PASS (4 pre-existing `rotation::events::tests::test_*` failures remain — `CredentialId::parse("550e8400-…")` expecting `cred_` prefix — confirmed pre-existing at HEAD before this task).
 
 - [ ] **Step 6: Commit**
 
+Commit body should disclose the scope refinement (events.rs preserved) and whether the bonus dep-cleanup landed.
+
 ```bash
 git add -A crates/credential/
-git commit -m "refactor(credential): delete rotation/metrics.rs + events.rs, stub with tracing until P8"
+git commit -m "refactor(credential): delete orphan rotation/metrics.rs"
 ```
 
-### Task P1.5: Remove `tokio-util` dependency
+### Task P1.5: Remove `tokio-util` dependency — **DEFERRED to P8**
 
-- [ ] **Step 1: Verify `tokio-util` unused**
+**Pre-dispatch audit** revealed that `tokio-util` **is** used by `rotation/scheduler.rs:10` (`tokio_util::sync::CancellationToken`). The earlier claim "already unused — confirmed by grep" was incorrect (grep scope missed `rotation/`). `tokio-util` cannot be removed from `crates/credential/Cargo.toml` while `scheduler.rs` lives in the credential crate.
 
-Run: `grep -rn "tokio_util\|tokio-util" crates/credential/src/`
+**Deferral target:** P8 — when rotation orchestration (including `scheduler.rs`) physically moves to `nebula-engine/src/credential/rotation/`. At that point, `tokio-util` becomes an engine dep and leaves credential naturally.
 
-Expected: no matches.
+**Action in P1:** no-op. Document deferral in the P1 PR description so reviewers don't re-raise it. Re-check at P8 kickoff.
 
-- [ ] **Step 2: Remove from Cargo.toml**
-
-Edit `crates/credential/Cargo.toml`:
-
-Remove line:
-```toml
-tokio-util = { workspace = true }
-```
-
-- [ ] **Step 3: Verify build**
-
-Run: `cargo check -p nebula-credential && cargo nextest run -p nebula-credential`
-
-Expected: PASS.
-
-- [ ] **Step 4: Commit**
+- [ ] **Step 1: Confirm deferral is honest**
 
 ```bash
-git add crates/credential/Cargo.toml
-git commit -m "chore(credential): remove unused tokio-util dependency"
+grep -rn "tokio_util\|tokio-util" crates/credential/
 ```
+
+Expected: 1-2 hits in `rotation/scheduler.rs` (import + doctest example) + the `Cargo.toml` dep line. Zero hits elsewhere.
+
+- [ ] **Step 2: Note in P1 PR description**
+
+Add a "Known follow-ups" bullet: `tokio-util` dep stays until `rotation/scheduler.rs` moves to engine in P8.
 
 ### Task P1.6: Phase P1 close — PR or intermediate commit
 
