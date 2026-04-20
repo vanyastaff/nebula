@@ -1,6 +1,6 @@
 //! Quota enforcement repository (atomic CAS counters).
 
-use async_trait::async_trait;
+use std::future::Future;
 
 use crate::{
     error::StorageError,
@@ -12,42 +12,54 @@ use crate::{
 /// Spec 16 layer 7 + spec 10. Increment/decrement operations are
 /// atomic against the DB — callers must check limits before attempting
 /// to raise a counter.
-#[async_trait]
 pub trait QuotaRepo: Send + Sync {
     // ── Limits ──────────────────────────────────────────────────────────
 
     /// Fetch org quota limits (plan-based).
-    async fn get_org_limits(&self, org_id: &[u8]) -> Result<Option<OrgQuotaRow>, StorageError>;
+    fn get_org_limits(
+        &self,
+        org_id: &[u8],
+    ) -> impl Future<Output = Result<Option<OrgQuotaRow>, StorageError>> + Send;
 
     /// Upsert org quota limits (typically on plan change).
-    async fn upsert_org_limits(&self, row: &OrgQuotaRow) -> Result<(), StorageError>;
+    fn upsert_org_limits(
+        &self,
+        row: &OrgQuotaRow,
+    ) -> impl Future<Output = Result<(), StorageError>> + Send;
 
     // ── Usage counters ──────────────────────────────────────────────────
 
     /// Fetch current org usage.
-    async fn get_org_usage(&self, org_id: &[u8]) -> Result<Option<OrgQuotaUsageRow>, StorageError>;
+    fn get_org_usage(
+        &self,
+        org_id: &[u8],
+    ) -> impl Future<Output = Result<Option<OrgQuotaUsageRow>, StorageError>> + Send;
 
     /// Fetch current workspace usage.
-    async fn get_workspace_usage(
+    fn get_workspace_usage(
         &self,
         workspace_id: &[u8],
-    ) -> Result<Option<WorkspaceQuotaUsageRow>, StorageError>;
+    ) -> impl Future<Output = Result<Option<WorkspaceQuotaUsageRow>, StorageError>> + Send;
 
     /// Atomically increment a usage counter. Fails with
     /// [`StorageError::Conflict`] if doing so would exceed the limit
     /// when `check_limit = true`.
-    async fn increment(
+    fn increment(
         &self,
         key: QuotaCounter<'_>,
         by: i64,
         check_limit: bool,
-    ) -> Result<(), StorageError>;
+    ) -> impl Future<Output = Result<(), StorageError>> + Send;
 
     /// Atomically decrement a usage counter (never below zero).
-    async fn decrement(&self, key: QuotaCounter<'_>, by: i64) -> Result<(), StorageError>;
+    fn decrement(
+        &self,
+        key: QuotaCounter<'_>,
+        by: i64,
+    ) -> impl Future<Output = Result<(), StorageError>> + Send;
 
     /// Reset monthly counters (called by scheduled job at month rollover).
-    async fn reset_monthly(&self) -> Result<(), StorageError>;
+    fn reset_monthly(&self) -> impl Future<Output = Result<(), StorageError>> + Send;
 }
 
 /// Identifies a specific counter to adjust.

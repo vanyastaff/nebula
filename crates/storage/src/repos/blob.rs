@@ -1,6 +1,6 @@
 //! Large binary object storage.
 
-use async_trait::async_trait;
+use std::future::Future;
 
 use crate::{error::StorageError, rows::BlobRow};
 
@@ -9,22 +9,28 @@ use crate::{error::StorageError, rows::BlobRow};
 /// Blobs are addressed by content-independent IDs (ULID) and referenced
 /// from other tables (e.g. `execution_nodes.state_blob_ref`) when the
 /// inline limit is exceeded.
-#[async_trait]
 pub trait BlobRepo: Send + Sync {
     /// Store a new blob. Returns the generated ID.
-    async fn put(&self, content_type: &str, data: Vec<u8>) -> Result<Vec<u8>, StorageError>;
+    fn put(
+        &self,
+        content_type: &str,
+        data: Vec<u8>,
+    ) -> impl Future<Output = Result<Vec<u8>, StorageError>> + Send;
 
     /// Store a blob with a caller-provided ID (must be unique).
-    async fn put_with_id(&self, blob: &BlobRow) -> Result<(), StorageError>;
+    fn put_with_id(&self, blob: &BlobRow) -> impl Future<Output = Result<(), StorageError>> + Send;
 
     /// Retrieve a blob by ID.
-    async fn get(&self, id: &[u8]) -> Result<Option<BlobRow>, StorageError>;
+    fn get(&self, id: &[u8]) -> impl Future<Output = Result<Option<BlobRow>, StorageError>> + Send;
 
     /// Retrieve only the metadata (size, content_type) without the data.
-    async fn get_metadata(&self, id: &[u8]) -> Result<Option<BlobMetadata>, StorageError>;
+    fn get_metadata(
+        &self,
+        id: &[u8],
+    ) -> impl Future<Output = Result<Option<BlobMetadata>, StorageError>> + Send;
 
     /// Delete a blob.
-    async fn delete(&self, id: &[u8]) -> Result<(), StorageError>;
+    fn delete(&self, id: &[u8]) -> impl Future<Output = Result<(), StorageError>> + Send;
 }
 
 /// Blob metadata without payload (for listing/size checks).

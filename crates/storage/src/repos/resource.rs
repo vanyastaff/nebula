@@ -1,6 +1,6 @@
 //! Resource repository.
 
-use async_trait::async_trait;
+use std::future::Future;
 
 use crate::error::StorageError;
 
@@ -9,33 +9,41 @@ use crate::error::StorageError;
 /// Spec 16 layer 6. Resources are long-lived managed objects
 /// (connection pools, SDK clients). The engine owns lifecycle; this
 /// repo only stores definitions.
-#[async_trait]
 pub trait ResourceRepo: Send + Sync {
     /// Insert a new resource definition.
-    async fn create(&self, resource: &ResourceEntry) -> Result<(), StorageError>;
+    fn create(
+        &self,
+        resource: &ResourceEntry,
+    ) -> impl Future<Output = Result<(), StorageError>> + Send;
 
     /// Fetch a resource by ID.
-    async fn get(&self, id: &[u8]) -> Result<Option<ResourceEntry>, StorageError>;
+    fn get(
+        &self,
+        id: &[u8],
+    ) -> impl Future<Output = Result<Option<ResourceEntry>, StorageError>> + Send;
 
     /// Fetch a resource by (workspace_id, slug).
-    async fn get_by_slug(
+    fn get_by_slug(
         &self,
         workspace_id: &[u8],
         slug: &str,
-    ) -> Result<Option<ResourceEntry>, StorageError>;
+    ) -> impl Future<Output = Result<Option<ResourceEntry>, StorageError>> + Send;
 
     /// Update a resource with CAS on `version`.
-    async fn update(
+    fn update(
         &self,
         resource: &ResourceEntry,
         expected_version: i64,
-    ) -> Result<(), StorageError>;
+    ) -> impl Future<Output = Result<(), StorageError>> + Send;
 
     /// Soft-delete a resource.
-    async fn soft_delete(&self, id: &[u8]) -> Result<(), StorageError>;
+    fn soft_delete(&self, id: &[u8]) -> impl Future<Output = Result<(), StorageError>> + Send;
 
     /// List all resources in a workspace.
-    async fn list(&self, workspace_id: &[u8]) -> Result<Vec<ResourceEntry>, StorageError>;
+    fn list(
+        &self,
+        workspace_id: &[u8],
+    ) -> impl Future<Output = Result<Vec<ResourceEntry>, StorageError>> + Send;
 }
 
 /// Resource row (in-repo type — the `resources` table is simple enough

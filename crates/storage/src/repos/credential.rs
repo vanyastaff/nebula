@@ -3,7 +3,7 @@
 //! Spec 22. Stores encrypted credentials; decryption happens exclusively
 //! in `nebula-credential`. This trait never returns plaintext.
 
-use async_trait::async_trait;
+use std::future::Future;
 
 use crate::{
     error::StorageError,
@@ -11,61 +11,79 @@ use crate::{
 };
 
 /// Encrypted credential storage with audit.
-#[async_trait]
 pub trait CredentialRepo: Send + Sync {
     // ── Credentials ─────────────────────────────────────────────────────
 
     /// Insert a new credential.
-    async fn create(&self, cred: &CredentialRow) -> Result<(), StorageError>;
+    fn create(&self, cred: &CredentialRow)
+    -> impl Future<Output = Result<(), StorageError>> + Send;
 
     /// Fetch a credential by ID (skips soft-deleted).
-    async fn get(&self, id: &[u8]) -> Result<Option<CredentialRow>, StorageError>;
+    fn get(
+        &self,
+        id: &[u8],
+    ) -> impl Future<Output = Result<Option<CredentialRow>, StorageError>> + Send;
 
     /// Fetch a credential by (workspace, slug) or (org, slug).
-    async fn get_by_slug(
+    fn get_by_slug(
         &self,
         scope: CredentialScope<'_>,
         slug: &str,
-    ) -> Result<Option<CredentialRow>, StorageError>;
+    ) -> impl Future<Output = Result<Option<CredentialRow>, StorageError>> + Send;
 
     /// Update a credential with CAS on `version` (rotates ciphertext).
-    async fn update(&self, cred: &CredentialRow, expected_version: i64)
-    -> Result<(), StorageError>;
+    fn update(
+        &self,
+        cred: &CredentialRow,
+        expected_version: i64,
+    ) -> impl Future<Output = Result<(), StorageError>> + Send;
 
     /// Record a use (`last_used_at`).
-    async fn touch_used(&self, id: &[u8]) -> Result<(), StorageError>;
+    fn touch_used(&self, id: &[u8]) -> impl Future<Output = Result<(), StorageError>> + Send;
 
     /// Soft-delete a credential.
-    async fn soft_delete(&self, id: &[u8]) -> Result<(), StorageError>;
+    fn soft_delete(&self, id: &[u8]) -> impl Future<Output = Result<(), StorageError>> + Send;
 
     /// List credentials visible in a scope.
-    async fn list(&self, scope: CredentialScope<'_>) -> Result<Vec<CredentialRow>, StorageError>;
+    fn list(
+        &self,
+        scope: CredentialScope<'_>,
+    ) -> impl Future<Output = Result<Vec<CredentialRow>, StorageError>> + Send;
 
     // ── Pending (OAuth flow) credentials ────────────────────────────────
 
     /// Stage a pending credential (mid-OAuth flow).
-    async fn create_pending(&self, pending: &PendingCredentialRow) -> Result<(), StorageError>;
+    fn create_pending(
+        &self,
+        pending: &PendingCredentialRow,
+    ) -> impl Future<Output = Result<(), StorageError>> + Send;
 
     /// Fetch a pending credential (skips expired).
-    async fn get_pending(&self, id: &[u8]) -> Result<Option<PendingCredentialRow>, StorageError>;
+    fn get_pending(
+        &self,
+        id: &[u8],
+    ) -> impl Future<Output = Result<Option<PendingCredentialRow>, StorageError>> + Send;
 
     /// Delete a pending credential.
-    async fn delete_pending(&self, id: &[u8]) -> Result<(), StorageError>;
+    fn delete_pending(&self, id: &[u8]) -> impl Future<Output = Result<(), StorageError>> + Send;
 
     /// Clean up expired pending credentials. Returns count deleted.
-    async fn cleanup_expired_pending(&self) -> Result<u64, StorageError>;
+    fn cleanup_expired_pending(&self) -> impl Future<Output = Result<u64, StorageError>> + Send;
 
     // ── Audit ───────────────────────────────────────────────────────────
 
     /// Append an audit row for a credential action.
-    async fn append_audit(&self, row: &CredentialAuditRow) -> Result<(), StorageError>;
+    fn append_audit(
+        &self,
+        row: &CredentialAuditRow,
+    ) -> impl Future<Output = Result<(), StorageError>> + Send;
 
     /// List audit rows for a credential (newest first).
-    async fn list_audit(
+    fn list_audit(
         &self,
         credential_id: &[u8],
         limit: u32,
-    ) -> Result<Vec<CredentialAuditRow>, StorageError>;
+    ) -> impl Future<Output = Result<Vec<CredentialAuditRow>, StorageError>> + Send;
 }
 
 /// Scope of a credential query.
