@@ -47,6 +47,19 @@ fn missing_file_errors() {
 }
 
 #[test]
+fn directory_path_returns_io_not_missing() {
+    // Pointing at a directory (which exists) is distinct from NotFound —
+    // operators should be able to tell "no plugin.toml" apart from
+    // "something is wrong with this path".
+    let dir = tempfile::tempdir().unwrap();
+    let err = parse_plugin_toml(dir.path()).unwrap_err();
+    assert!(
+        matches!(err, PluginTomlError::Io { .. }),
+        "expected Io variant for directory path, got {err:?}"
+    );
+}
+
+#[test]
 fn missing_sdk_constraint_errors() {
     let f = write("[nebula]");
     let err = parse_plugin_toml(f.path()).unwrap_err();

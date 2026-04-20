@@ -30,6 +30,12 @@ use serde::{Deserialize, Serialize};
 /// Duplex protocol version. Bumped when wire format changes incompatibly.
 pub const DUPLEX_PROTOCOL_VERSION: u32 = 3;
 
+/// SDK version plugin authors compile against. Host reads this to
+/// validate the plugin's `plugin.toml [nebula].sdk` semver constraint.
+/// The `env!` expansion happens at SDK crate compile, so it reflects the
+/// SDK's own version — not whatever crate consumes this constant.
+pub const SDK_VERSION: &str = env!("CARGO_PKG_VERSION");
+
 /// Message from host to plugin.
 ///
 /// Tagged by `kind`. Correlation IDs (`id`) are host-assigned `u64` values that

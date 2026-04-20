@@ -94,8 +94,11 @@ pub enum DiscoveryError {
     ProtocolVersionMismatch {
         /// The `DUPLEX_PROTOCOL_VERSION` the host expects.
         expected: u32,
-        /// The `protocol_version` the plugin sent.
-        actual: u32,
+        /// The `protocol_version` the plugin sent. Kept as `u64` to avoid a
+        /// lossy truncation lying in the error report: if a buggy plugin
+        /// sends a value ≥ 2^32, narrowing to `u32` could accidentally
+        /// surface as "actual 3" (== expected) in the diagnostic.
+        actual: u64,
     },
 
     /// Protocol version matched but the typed deserialize failed — e.g.
@@ -171,7 +174,7 @@ fn parse_metadata_response(bytes: &[u8]) -> Result<WireMetadata, DiscoveryError>
     if actual_version != u64::from(DUPLEX_PROTOCOL_VERSION) {
         return Err(DiscoveryError::ProtocolVersionMismatch {
             expected: DUPLEX_PROTOCOL_VERSION,
-            actual: actual_version as u32,
+            actual: actual_version,
         });
     }
 
@@ -233,16 +236,23 @@ async fn discover_one(
     default_capabilities: &PluginCapabilities,
 ) -> Result<(ResolvedPlugin, Vec<(ActionMetadata, ActionHandler)>), SkipReason> {
     // Step 1: parse sibling plugin.toml (required).
+    // `binary` came from `read_dir(dir)` — it always has a parent. The
+    // invariant is structural; a silent CWD fallback would risk reading
+    // the wrong plugin.toml and admitting the wrong plugin.
     let toml_path = binary
         .parent()
-        .unwrap_or(Path::new("."))
+        .expect("read_dir entry always has a parent directory")
         .join("plugin.toml");
     let toml_manifest = parse_plugin_toml(&toml_path).map_err(SkipReason::MissingPluginToml)?;
 
     // Step 2: SDK constraint check before spawning the binary.
-    let host_version: semver::Version = env!("CARGO_PKG_VERSION")
+    // Validate against nebula-plugin-sdk's own version (not the sandbox
+    // crate's) — plugin authors pin their `plugin.toml [nebula].sdk` against
+    // nebula-plugin-sdk, and independent SDK bumps via
+    // `cargo release -p nebula-plugin-sdk` are documented-supported.
+    let host_version: semver::Version = nebula_plugin_sdk::protocol::SDK_VERSION
         .parse()
-        .expect("CARGO_PKG_VERSION is always a valid semver");
+        .expect("nebula-plugin-sdk SDK_VERSION is always a valid semver");
     if !toml_manifest.sdk.matches(&host_version) {
         return Err(SkipReason::SdkConstraintViolation {
             required: toml_manifest.sdk,

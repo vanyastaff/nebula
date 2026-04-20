@@ -2,8 +2,8 @@
 //!
 //! The `plugin.toml` file sits next to a plugin binary and declares two things:
 //! 1. `[nebula].sdk` — semver `VersionReq` the plugin was built against.
-//! 2. `[plugin].id` — optional canonical plugin-id override (takes priority over the manifest key
-//!    the plugin binary itself announces).
+//! 2. `[plugin].id` — optional canonical plugin-id **guard**: when present, discovery rejects the
+//!    plugin if the wire manifest's key does not match this id. Both sources must agree.
 //!
 //! The host reads this file **before** spawning the plugin binary so that
 //! SDK-incompatible plugins are skipped cheaply — without spending a process
@@ -19,7 +19,11 @@ use serde::Deserialize;
 pub struct PluginTomlManifest {
     /// The `[nebula].sdk` semver version requirement.
     pub sdk: VersionReq,
-    /// The optional `[plugin].id` canonical plugin-id override.
+    /// Optional canonical plugin id **guard**. When present, discovery rejects
+    /// the plugin if the wire manifest's key does not match this id — both
+    /// sources must agree. This is a pre-compile-time pin for the plugin's
+    /// identity; use it to prevent drift between the crate's Cargo package
+    /// name and the runtime-announced manifest key.
     pub plugin_id: Option<String>,
 }
 
@@ -31,6 +35,19 @@ pub enum PluginTomlError {
     Missing {
         /// The path that was checked.
         path: PathBuf,
+    },
+    /// The file exists (or the path otherwise resolved) but could not be
+    /// read — e.g. permission denied, path is a directory, or any other
+    /// I/O failure. Distinct from [`PluginTomlError::Missing`] so operators
+    /// can tell "plugin has no plugin.toml" apart from "plugin.toml is
+    /// unreadable".
+    #[error("plugin.toml at {path} could not be read: {source}")]
+    Io {
+        /// The path that failed to read.
+        path: PathBuf,
+        /// The underlying I/O error.
+        #[source]
+        source: std::io::Error,
     },
     /// The file was found but is not valid TOML.
     #[error("plugin.toml at {path} is not valid TOML: {source}")]
@@ -88,8 +105,17 @@ struct RawPlugin {
 /// Returns [`PluginTomlError`] for any of the failure modes described on
 /// that type's variants.
 pub fn parse_plugin_toml(path: &Path) -> Result<PluginTomlManifest, PluginTomlError> {
-    let contents = std::fs::read_to_string(path).map_err(|_| PluginTomlError::Missing {
-        path: path.to_path_buf(),
+    let contents = std::fs::read_to_string(path).map_err(|e| {
+        if e.kind() == std::io::ErrorKind::NotFound {
+            PluginTomlError::Missing {
+                path: path.to_path_buf(),
+            }
+        } else {
+            PluginTomlError::Io {
+                path: path.to_path_buf(),
+                source: e,
+            }
+        }
     })?;
 
     let raw: Raw = toml::from_str(&contents).map_err(|source| PluginTomlError::InvalidToml {
