@@ -35,7 +35,7 @@ mod error;
 mod manifest;
 mod plugin;
 mod registry;
-pub mod resolved_plugin;
+mod resolved_plugin;
 
 // ── Public re-exports ─────────────────────────────────────────────────────────
 

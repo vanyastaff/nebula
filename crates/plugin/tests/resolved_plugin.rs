@@ -3,7 +3,7 @@
 use std::sync::Arc;
 
 use nebula_action::{Action, ActionDependencies, ActionMetadata};
-use nebula_core::{ActionKey, AuthPattern, CredentialKey, ResourceKey, credential_key};
+use nebula_core::{ActionKey, AuthPattern, CredentialKey, ResourceKey};
 use nebula_credential::{AnyCredential, CredentialMetadata};
 use nebula_metadata::PluginManifest;
 use nebula_plugin::{ComponentKind, Plugin, PluginError, ResolvedPlugin};
@@ -47,7 +47,15 @@ impl Action for StubAction {
 // ── Stub AnyCredential ───────────────────────────────────────────────────────
 
 struct StubCredential {
-    key: &'static str,
+    key: CredentialKey,
+}
+
+impl StubCredential {
+    fn new(key: &str) -> Self {
+        Self {
+            key: CredentialKey::new(key).expect("valid credential key"),
+        }
+    }
 }
 
 impl std::fmt::Debug for StubCredential {
@@ -60,12 +68,12 @@ impl std::fmt::Debug for StubCredential {
 
 impl AnyCredential for StubCredential {
     fn credential_key(&self) -> &str {
-        self.key
+        self.key.as_str()
     }
 
     fn metadata(&self) -> CredentialMetadata {
         CredentialMetadata::new(
-            credential_key!("stub.cred"),
+            self.key.clone(),
             "Stub",
             "stub credential",
             ValidSchema::empty(),
@@ -138,9 +146,9 @@ impl StubPlugin {
         self
     }
 
-    fn with_credential(mut self, cred_key: &'static str) -> Self {
+    fn with_credential(mut self, cred_key: &str) -> Self {
         self.credentials
-            .push(Arc::new(StubCredential { key: cred_key }));
+            .push(Arc::new(StubCredential::new(cred_key)));
         self
     }
 

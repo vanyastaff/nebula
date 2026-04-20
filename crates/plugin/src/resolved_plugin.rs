@@ -154,23 +154,18 @@ impl ResolvedPlugin {
     ) -> Result<HashMap<CredentialKey, Arc<dyn AnyCredential>>, PluginError> {
         let mut out = HashMap::with_capacity(raw.len());
         for cred in raw {
-            // AnyCredential::credential_key() returns &str (the KEY const)
-            let key_str = cred.credential_key();
-            if !key_str.starts_with(prefix) {
+            // Use the typed `CredentialKey` from `metadata().base.key` directly —
+            // no string parsing, no masked errors. `AnyCredential::credential_key()`
+            // returns a `&str` from the `KEY` const, which is a separate stringly-
+            // typed surface; the canonical key lives on `BaseMetadata<CredentialKey>`.
+            let key = cred.metadata().base.key.clone();
+            if !key.as_str().starts_with(prefix) {
                 return Err(PluginError::NamespaceMismatch {
                     plugin: plugin_key.clone(),
-                    offending_key: key_str.to_owned(),
+                    offending_key: key.as_str().to_owned(),
                     kind: ComponentKind::Credential,
                 });
             }
-            let key: CredentialKey =
-                key_str
-                    .parse()
-                    .map_err(|_| PluginError::NamespaceMismatch {
-                        plugin: plugin_key.clone(),
-                        offending_key: key_str.to_owned(),
-                        kind: ComponentKind::Credential,
-                    })?;
             if out.contains_key(&key) {
                 return Err(PluginError::DuplicateComponent {
                     plugin: plugin_key.clone(),

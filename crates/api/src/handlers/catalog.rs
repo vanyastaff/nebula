@@ -155,8 +155,6 @@ pub async fn get_plugin(
         name: manifest.name().to_string(),
         description: manifest.description().to_string(),
         version: resolved.version().to_string(),
-        // Single resolved plugin; version list contains just this version.
-        versions: vec![resolved.version().to_string()],
         group: manifest.group().to_vec(),
         tags: manifest.tags().to_vec(),
         icon_url: manifest.icon().as_url().map(str::to_string),
