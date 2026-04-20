@@ -24,6 +24,7 @@ changes land as a new ADR that `supersedes` it.
 | [0014](./0014-dynosaur-macro.md) | `dynosaur` for `dyn`-compatible async traits (replaces `#[async_trait]`) | accepted | 2026-04-19 |
 | [0015](./0015-execution-lease-lifecycle.md) | Execution lease lifecycle (renumbered from 0008; promoted on #325 implementation) | accepted | 2026-04-19 |
 | [0016](./0016-engine-cancel-registry.md) | Engine cancel registry — cooperative-cancel contract for ADR-0008 A3 | accepted | 2026-04-19 |
+| [0017](./0017-control-queue-reclaim-policy.md) | Control-queue reclaim policy | accepted | 2026-04-19 |
 
 ## Writing a new ADR
 
