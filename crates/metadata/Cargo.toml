@@ -12,6 +12,8 @@ homepage.workspace = true
 documentation.workspace = true
 
 [dependencies]
+nebula-core = { path = "../core" }
+nebula-error = { workspace = true, features = ["derive"] }
 nebula-schema = { path = "../schema" }
 semver = { workspace = true, features = ["serde"] }
 serde = { workspace = true, features = ["derive"] }

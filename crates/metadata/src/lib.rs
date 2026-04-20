@@ -16,6 +16,9 @@ pub mod compat;
 pub mod deprecation;
 /// [`Icon`] enum — one valid representation for catalog icons.
 pub mod icon;
+/// [`PluginManifest`] — bundle descriptor for a plugin, and [`ManifestError`] for
+/// construction failures (ADR-0018, moved from `nebula-plugin` in slice B).
+pub mod manifest;
 /// [`MaturityLevel`] — `Experimental / Beta / Stable / Deprecated`.
 pub mod maturity;
 
@@ -23,4 +26,5 @@ pub use base::{BaseMetadata, Metadata};
 pub use compat::{BaseCompatError, validate_base_compat};
 pub use deprecation::DeprecationNotice;
 pub use icon::Icon;
+pub use manifest::{ManifestError, PluginManifest, PluginManifestBuilder, normalize_key};
 pub use maturity::MaturityLevel;
