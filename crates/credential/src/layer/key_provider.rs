@@ -17,7 +17,7 @@
 //!   stable-version/rotating-key provider would silently mis-decrypt under the new key.
 //!   `EnvKeyProvider` / `FileKeyProvider` derive `version()` from a SHA-256 fingerprint of the key
 //!   material so an in-place rotation (same env var / same file path, new bytes) produces a fresh
-//!   identifier automatically. See ADR-0022 §3 + §6 Rotation procedure.
+//!   identifier automatically. See ADR-0023 §3 + §6 Rotation procedure.
 //! - `current_key()` returns `Arc<EncryptionKey>` — a stable handle over the zeroize-on-drop key
 //!   newtype. Providers do not expose raw key bytes.
 //! - `Debug` / `Display` on providers and on `ProviderError` must not reveal key material (see
@@ -568,7 +568,7 @@ mod tests {
     /// Two different keys must produce different `version()`s so an in-place
     /// env-var rotation flips the envelope `key_id` instead of silently
     /// mis-decrypting under the new key. Regression guard for the rotation
-    /// safety invariant recorded in ADR-0022 §3.
+    /// safety invariant recorded in ADR-0023 §3.
     #[test]
     fn env_provider_version_changes_with_key() {
         let k1 = base64::engine::general_purpose::STANDARD.encode([0x11u8; 32]);
