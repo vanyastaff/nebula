@@ -9,30 +9,24 @@
 //! ```
 
 // Core traits and types
-// Error handling
-pub use anyhow::{Context, Result as AnyhowResult, anyhow, bail};
-// Async traits
-pub use async_trait::async_trait;
 // DX trait families: stateful, trigger
-pub use nebula_action::poll::{
-    DeduplicatingCursor, PollAction, PollConfig, PollCursor, PollResult,
-};
 // Testing harness — context builder, spy emitter/logger/scheduler.
-pub use nebula_action::testing::{
-    SpyEmitter, SpyLogger, SpyScheduler, StatefulTestHarness, TestContextBuilder,
-    TriggerTestHarness,
-};
 // Action traits and types
 pub use nebula_action::{
-    Action, ActionDependencies, ActionError, ActionResult, Field, Schema, StatelessAction,
-    ValidSchema, context::Context as ActionContext, field_key, metadata::ActionMetadata,
-    port::InputPort, port::OutputPort,
-};
-pub use nebula_action::{
-    PollTriggerAdapter, StatefulActionAdapter, StatelessActionAdapter, TriggerContext,
-    TriggerEvent, TriggerEventOutcome, WebhookRequest, WebhookTriggerAdapter,
+    Action, ActionDependencies, ActionError, ActionResult, Field, PollTriggerAdapter, Schema,
+    StatefulActionAdapter, StatelessAction, StatelessActionAdapter, TriggerContext, TriggerEvent,
+    TriggerEventOutcome, ValidSchema, WebhookRequest, WebhookTriggerAdapter,
+    context::Context as ActionContext,
+    field_key,
+    metadata::ActionMetadata,
+    poll::{DeduplicatingCursor, PollAction, PollConfig, PollCursor, PollResult},
+    port::{InputPort, OutputPort},
     result::BreakReason,
     stateful::{BatchAction, BatchItemResult, PageResult, PaginatedAction, StatefulAction},
+    testing::{
+        SpyEmitter, SpyLogger, SpyScheduler, StatefulTestHarness, TestContextBuilder,
+        TriggerTestHarness,
+    },
     webhook::{WebhookAction, WebhookHttpResponse, WebhookResponse},
 };
 // DX codegen macros — re-exported so authors can write `impl_paginated_action!(...)`

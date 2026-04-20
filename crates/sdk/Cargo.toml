@@ -24,7 +24,6 @@ nebula-validator = { path = "../validator" }
 
 # Async runtime
 tokio = { workspace = true, features = ["rt", "macros", "time"] }
-async-trait = { workspace = true }
 
 # Serialization
 serde = { workspace = true, features = ["derive"] }
@@ -32,7 +31,6 @@ serde_json = { workspace = true }
 
 # Error handling
 thiserror = { workspace = true }
-anyhow = { workspace = true }
 
 # Utilities
 uuid = { workspace = true }
@@ -40,6 +38,9 @@ chrono = { workspace = true }
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["full"] }
+# Integration tests use the `simple_action!` macro, whose `#[derive(Action)]`
+# expands to absolute `::nebula_action::Action` — so the path must be in scope.
+nebula-action = { path = "../action" }
 
 [features]
 default = ["derive", "testing"]
