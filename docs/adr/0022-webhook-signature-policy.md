@@ -63,18 +63,37 @@ is a single insertion between request construction and dispatch.
 
 ## Decision
 
-1. **Add `SignaturePolicy` to `WebhookAction`.** The enum lives in
-   [`crates/action/src/webhook.rs`](../../crates/action/src/webhook.rs)
-   and is returned by a new trait method on `WebhookAction`:
+1. **Add `WebhookConfig` + `SignaturePolicy` to `WebhookAction`.** Both
+   live in
+   [`crates/action/src/webhook.rs`](../../crates/action/src/webhook.rs).
+   The trait gains one new method returning an opaque bag-type so new
+   webhook-transport settings (body-limit override, per-trigger
+   rate-limit override) can land in future ADRs without changing this
+   trait signature again:
 
    ```rust
    pub trait WebhookAction: Action + Send + Sync + 'static {
        // ... existing items ...
-       fn signature_policy(&self) -> SignaturePolicy {
-           SignaturePolicy::default()   // == Required(RequiredPolicy::default())
+       fn config(&self) -> WebhookConfig {
+           WebhookConfig::default()
        }
    }
+
+   #[derive(Clone, Debug, Default)]
+   #[non_exhaustive]
+   pub struct WebhookConfig {
+       signature_policy: SignaturePolicy,
+   }
+
+   impl WebhookConfig {
+       pub fn with_signature_policy(self, policy: SignaturePolicy) -> Self { /* … */ }
+       pub fn signature_policy(&self) -> &SignaturePolicy { /* … */ }
+   }
    ```
+
+   The policy lives inside `WebhookConfig` rather than as a bare trait
+   method so the `#[non_exhaustive]` struct is the evolution seam — see
+   Alternatives for the abandoned `fn signature_policy(&self)` shape.
 
    ```rust
    pub enum SignaturePolicy {
@@ -99,13 +118,14 @@ is a single insertion between request construction and dispatch.
    `sha256=`-prefixed forms (GitHub convention).
 
 2. **`Required` is the default, with an empty secret that fails closed.**
-   An action that does not override `signature_policy()` inherits
-   `SignaturePolicy::Required(RequiredPolicy::default())` — an empty
-   secret. The transport treats an empty secret the same as a missing
-   credential: it returns **500** with a clear problem+json
-   `detail` and does NOT call `handle_event`. This preserves the
-   "Authors who forget the verify call" class of bug as an observable
-   server failure rather than silent acceptance.
+   An action that does not override `config()` inherits
+   `WebhookConfig::default()` — a config whose `signature_policy` is
+   `Required(RequiredPolicy::default())` with an empty secret. The
+   transport treats an empty secret the same as a missing credential:
+   it returns **500** with a clear problem+json `detail` and does NOT
+   call `handle_event`. This preserves the "Authors who forget the
+   verify call" class of bug as an observable server failure rather
+   than silent acceptance.
 
 3. **`OptionalAcceptUnsigned` is the escape valve for legitimate
    unsigned webhooks.** Public-by-design webhooks (Slack's URL
@@ -113,9 +133,10 @@ is a single insertion between request construction and dispatch.
    local testing both exist. The author writes:
 
    ```rust
-   fn signature_policy(&self) -> SignaturePolicy {
+   fn config(&self) -> WebhookConfig {
        // Public webhook — this endpoint accepts anonymous POSTs by design.
-       SignaturePolicy::OptionalAcceptUnsigned
+       WebhookConfig::default()
+           .with_signature_policy(SignaturePolicy::OptionalAcceptUnsigned)
    }
    ```
 
@@ -132,13 +153,31 @@ is a single insertion between request construction and dispatch.
    new crypto.
 
 5. **Transport enforcement lives in
-   [`crates/api/src/webhook/transport.rs`](../../crates/api/src/webhook/transport.rs).**
-   The `TriggerHandler` trait grows a default `fn
-   signature_policy(&self) -> Option<&SignaturePolicy> { None }`.
-   `WebhookTriggerAdapter` stores the policy at construction (reads it
-   once from the wrapped action) and overrides the method to return
-   `Some`. The transport consults it between `WebhookRequest::try_new`
-   (step 5 in the existing handler) and oneshot setup (step 6):
+   [`crates/api/src/webhook/transport.rs`](../../crates/api/src/webhook/transport.rs),
+   and webhook-specific config never flows through the dyn
+   `TriggerHandler` contract.** `WebhookTriggerAdapter::new` calls
+   `action.config()` once at construction and caches the result,
+   exposing it via an inherent `WebhookTriggerAdapter::config(&self)`
+   accessor. The adapter erases to `Arc<dyn TriggerHandler>` for
+   dispatch, but whoever owns the typed adapter at activation time
+   (runtime registry or test harness) reads the cached config and
+   forwards it to the transport:
+
+   ```rust
+   impl WebhookTransport {
+       pub fn activate(
+           &self,
+           handler: Arc<dyn TriggerHandler>,
+           action_config: WebhookConfig,
+           ctx_template: TriggerContext,
+       ) -> Result<ActivationHandle, ActivationError> { /* … */ }
+   }
+   ```
+
+   The transport stores `action_config` inside the `ActivationEntry`
+   alongside the handler. Between `WebhookRequest::try_new` (step 5
+   in the existing handler) and oneshot setup (step 6) the transport
+   consults `entry.config.signature_policy()`:
 
    | Policy / outcome                               | HTTP status                                        |
    |---|---|
@@ -153,6 +192,15 @@ is a single insertion between request construction and dispatch.
    they are **not** `WebhookHttpResponse`. An action that has a
    `Required` policy is never given the chance to observe an unsigned
    request — there is no in-handler code path to forget.
+
+   The `TriggerHandler` trait is **not** extended with a
+   `signature_policy()` method. Webhook-specific configuration on the
+   base trigger contract would be an abstraction leak (poll / cron /
+   queue triggers would carry a `None`-returning boilerplate method),
+   and it would force secret material to flow through the dyn trait's
+   method table. An earlier iteration of this ADR proposed that
+   shape; review feedback in the implementation PR flagged it. See
+   Alternatives.
 
 6. **Canonical default: `X-Nebula-Signature: sha256=<hex>`.** An author
    who sets `SignaturePolicy::Required(RequiredPolicy::default()
@@ -253,6 +301,35 @@ is a single insertion between request construction and dispatch.
   required method on the broader trait would be `None`-returning
   boilerplate in every non-webhook adapter. The method lives where
   its semantics apply.
+- **Bare `fn signature_policy(&self) -> SignaturePolicy` on
+  `WebhookAction`.** Reject after review. A dedicated method locks
+  the surface for one concern; the next webhook-layer knob (body-limit
+  override, per-trigger rate-limit, max-JSON-depth) would force
+  another trait-method addition. The `fn config(&self) -> WebhookConfig`
+  + `#[non_exhaustive]` struct shape gives the same discoverability
+  with room to grow without re-churning the trait.
+- **Extend `TriggerHandler` with `fn signature_policy(&self) ->
+  Option<&SignaturePolicy>` so the transport reads it through the
+  dyn contract.** Reject after review. Webhook-specific configuration
+  on the base trigger trait is an abstraction leak: every non-webhook
+  adapter (poll, cron, future queue) grows a `None`-returning method
+  on its dyn surface, and webhook secret material flows through a
+  vtable entry that exists for poll triggers too. The accepted shape
+  keeps the dyn trait webhook-agnostic and routes `WebhookConfig`
+  through `WebhookTransport::activate` as an explicit argument. An
+  earlier iteration of this ADR used the `TriggerHandler` extension;
+  the PR review flagged it and the design was corrected before merge.
+- **Unified `type Config: Default` associated-type pattern on
+  `TriggerAction`.** Defer. The idea — every DX-specialisation
+  (`WebhookAction`, `PollAction`, future queue triggers) declares a
+  `Config` via a shared `TriggerAction` associated type — is cleaner
+  long-term. Blockers for this PR: `associated_type_defaults` is
+  still nightly-only as of Rust 1.95 (rust-lang/rust#29661), today's
+  `WebhookAction` / `PollAction` are *not* `TriggerAction` supertraits,
+  and `PollAction` already exposes `fn poll_config(&self) ->
+  PollConfig` with a different shape. Unifying these is its own ADR,
+  sized larger than the audit's webhook-signature finding. Land as a
+  follow-up.
 - **Use `SecretString` instead of `Arc<[u8]>` for the stored secret.**
   Defer. `Arc<[u8]>` keeps the policy `Clone` cheap and avoids a
   `nebula-credential` dep from `nebula-action` (layer boundary —

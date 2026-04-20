@@ -19,9 +19,10 @@
 //!   [`SignatureOutcome`] — constant-time HMAC primitives. Use `verify_hmac_sha256` for
 //!   GitHub-style `sha256=…` bare-hex signatures; reach for the lower-level pair for Stripe / Slack
 //!   schemes that sign a derived payload.
-//! - [`SignaturePolicy`], [`RequiredPolicy`], [`SignatureScheme`] — the `Required`-by-default
-//!   signature-enforcement contract at the trait surface. The HTTP transport consults
-//!   `WebhookAction::signature_policy` before dispatch; misconfigured or unsigned requests are
+//! - [`WebhookConfig`], [`SignaturePolicy`], [`RequiredPolicy`], [`SignatureScheme`] — the
+//!   `Required`-by-default signature-enforcement contract at the trait surface. Authors return a
+//!   [`WebhookConfig`] from [`WebhookAction::config`]; the HTTP transport reads its
+//!   [`WebhookConfig::signature_policy`] before dispatch; misconfigured or unsigned requests are
 //!   rejected before the action sees them. See ADR-0022.
 //!
 //! # Security
@@ -32,12 +33,13 @@
 //! this module.
 //!
 //! **Signature verification is `Required` by default.** An action that
-//! does not override `signature_policy()` inherits an empty-secret
+//! does not override [`WebhookAction::config`] inherits an empty-secret
 //! `Required` policy — the transport returns `500 problem+json` with a
 //! "webhook signature secret not configured" diagnostic until a secret
 //! is supplied. Authors who want unsigned webhooks must explicitly
-//! return `SignaturePolicy::OptionalAcceptUnsigned`; the override
-//! itself is the audit trail.
+//! return a [`WebhookConfig`] carrying
+//! [`SignaturePolicy::OptionalAcceptUnsigned`]; the override itself is
+//! the audit trail.
 //!
 //! Stripe/Slack helpers are intentionally NOT provided: their correct
 //! implementation requires a time source and a tolerance window to

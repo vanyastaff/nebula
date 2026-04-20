@@ -26,7 +26,7 @@ use axum::{
     Json, Router,
     body::Bytes,
     extract::{DefaultBodyLimit, Path, State},
-    http::{HeaderMap, Method, StatusCode, Uri},
+    http::{HeaderMap, HeaderValue, Method, StatusCode, Uri},
     response::{IntoResponse, Response},
     routing::post,
 };
@@ -468,14 +468,14 @@ fn enforce_signature(policy: &SignaturePolicy, request: &WebhookRequest) -> Sign
                 return SignatureVerdict::MissingSecret;
             }
             let outcome = match req.scheme() {
-                SignatureScheme::Sha256Hex => {
-                    verify_hmac_sha256(request, req.secret(), req.header().as_str())
-                        .unwrap_or(SignatureOutcome::Invalid)
-                },
-                SignatureScheme::Sha256Base64 => {
-                    verify_hmac_sha256_base64(request, req.secret(), req.header().as_str())
-                        .unwrap_or(SignatureOutcome::Invalid)
-                },
+                SignatureScheme::Sha256Hex => verify_with_primitive(
+                    verify_hmac_sha256(request, req.secret(), req.header().as_str()),
+                    "sha256-hex",
+                ),
+                SignatureScheme::Sha256Base64 => verify_with_primitive(
+                    verify_hmac_sha256_base64(request, req.secret(), req.header().as_str()),
+                    "sha256-base64",
+                ),
                 // `SignatureScheme` is `#[non_exhaustive]`; any future
                 // scheme is treated as a hard failure until the
                 // transport grows an explicit branch for it.
@@ -484,6 +484,31 @@ fn enforce_signature(policy: &SignaturePolicy, request: &WebhookRequest) -> Sign
             outcome_to_verdict(outcome)
         },
         SignaturePolicy::Custom(verifier) => outcome_to_verdict(verifier(request)),
+    }
+}
+
+/// Collapse a `verify_hmac_sha256*` result into a [`SignatureOutcome`].
+///
+/// The `ActionError` branch is unreachable by construction today —
+/// [`RequiredPolicy`] carries a pre-validated [`http::HeaderName`] and
+/// the empty-secret case is handled one level up — but keeping this
+/// helper explicit avoids a silent `unwrap_or` that would hide a
+/// future regression if either invariant changed. A `warn!` also
+/// surfaces the case in logs if it ever did fire.
+fn verify_with_primitive(
+    result: Result<SignatureOutcome, nebula_action::ActionError>,
+    scheme_label: &'static str,
+) -> SignatureOutcome {
+    match result {
+        Ok(outcome) => outcome,
+        Err(error) => {
+            warn!(
+                scheme = scheme_label,
+                %error,
+                "webhook signature primitive returned unexpected error; treating as Invalid"
+            );
+            SignatureOutcome::Invalid
+        },
     }
 }
 
@@ -553,16 +578,20 @@ fn missing_secret_response(instance_path: &str) -> Response {
     problem_response(StatusCode::INTERNAL_SERVER_ERROR, problem)
 }
 
+/// Static `application/problem+json` content-type header value.
+///
+/// Constant-constructed at compile time via [`HeaderValue::from_static`] —
+/// no runtime `.parse().expect(...)` panic path. RFC 9457 normalizes the
+/// exact token, so this is the canonical value for every problem+json
+/// response the transport emits.
+const PROBLEM_JSON_CONTENT_TYPE: HeaderValue = HeaderValue::from_static("application/problem+json");
+
 /// Shared assembly for `application/problem+json` responses returned
 /// from the webhook transport. Matches the convention in
 /// [`crate::errors::ApiError::into_response`].
 fn problem_response(status: StatusCode, problem: ProblemDetails) -> Response {
     let mut resp = (status, Json(problem)).into_response();
-    resp.headers_mut().insert(
-        axum::http::header::CONTENT_TYPE,
-        "application/problem+json"
-            .parse()
-            .expect("static problem+json content-type"),
-    );
+    resp.headers_mut()
+        .insert(axum::http::header::CONTENT_TYPE, PROBLEM_JSON_CONTENT_TYPE);
     resp
 }
