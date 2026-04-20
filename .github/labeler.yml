@@ -17,7 +17,6 @@ ci:
       - 'clippy.toml'
       - 'rustfmt.toml'
       - 'deny.toml'
-      - 'commitlint.config.cjs'
 
 rust:
   - changed-files:
