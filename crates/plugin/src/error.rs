@@ -68,6 +68,11 @@ pub enum PluginError {
     #[classify(category = "validation", code = "PLUGIN:INVALID_KEY")]
     #[error("invalid plugin key: {0}")]
     InvalidKey(<PluginKey as std::str::FromStr>::Err),
+
+    /// Plugin manifest construction failed — wraps `nebula_metadata::ManifestError`.
+    #[classify(category = "validation", code = "PLUGIN:INVALID_MANIFEST")]
+    #[error("invalid plugin manifest: {0}")]
+    InvalidManifest(#[from] nebula_metadata::ManifestError),
 }
 
 impl PartialEq for PluginError {
@@ -112,6 +117,7 @@ impl PartialEq for PluginError {
                 Self::MissingRequiredField { field: f2 },
             ) => f1 == f2,
             (Self::InvalidKey(a), Self::InvalidKey(b)) => a == b,
+            (Self::InvalidManifest(a), Self::InvalidManifest(b)) => a == b,
             _ => false,
         }
     }

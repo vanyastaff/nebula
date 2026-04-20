@@ -44,7 +44,7 @@ mod versions;
 
 pub use descriptor::{ActionDescriptor, CredentialDescriptor, ResourceDescriptor};
 pub use error::PluginError;
-pub use manifest::{PluginManifest, PluginManifestBuilder};
+pub use manifest::{ManifestError, PluginManifest, PluginManifestBuilder};
 // Re-export PluginKey from core for convenience.
 pub use nebula_core::PluginKey;
 pub use nebula_plugin_macros::Plugin;
