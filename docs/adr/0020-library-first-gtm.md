@@ -1,7 +1,7 @@
 ---
 id: 0020
 title: library-first-gtm
-status: proposed
+status: accepted
 date: 2026-04-19
 supersedes: []
 superseded_by: []

@@ -25,13 +25,13 @@ changes land as a new ADR that `supersedes` it.
 | [0015](./0015-execution-lease-lifecycle.md) | Execution lease lifecycle (renumbered from 0008; promoted on #325 implementation) | accepted | 2026-04-19 |
 | [0016](./0016-engine-cancel-registry.md) | Engine cancel registry — cooperative-cancel contract for ADR-0008 A3 | accepted | 2026-04-19 |
 | [0017](./0017-control-queue-reclaim-policy.md) | Control-queue reclaim policy | accepted | 2026-04-19 |
-| [0018](./0018-plugin-metadata-to-manifest.md) | `PluginMetadata` → `PluginManifest` (bundle descriptor, reuse small types from `nebula-metadata`) | proposed | 2026-04-19 |
-| [0019](./0019-msrv-1.95.md) | MSRV 1.95 (supersedes 0010) | proposed | 2026-04-19 |
-| [0020](./0020-library-first-gtm.md) | Library-first GTM + `apps/server` as thin composition root | proposed | 2026-04-19 |
-| [0021](./0021-crate-publication-policy.md) | Crate publication policy (`publish = true` requires ≥ 3 external consumers OR dedicated ADR) | proposed | 2026-04-19 |
+| [0018](./0018-plugin-metadata-to-manifest.md) | `PluginMetadata` → `PluginManifest` (bundle descriptor, reuse small types from `nebula-metadata`) | accepted | 2026-04-19 |
+| [0019](./0019-msrv-1.95.md) | MSRV 1.95 (supersedes 0010) | accepted | 2026-04-19 |
+| [0020](./0020-library-first-gtm.md) | Library-first GTM + `apps/server` as thin composition root | accepted | 2026-04-19 |
+| [0021](./0021-crate-publication-policy.md) | Crate publication policy (`publish = true` requires ≥ 3 external consumers OR dedicated ADR) | accepted | 2026-04-19 |
 | [0022](./0022-webhook-signature-policy.md) | Webhook signature policy (`SignaturePolicy::Required` default at `WebhookAction` trait level) | accepted | 2026-04-19 |
 | [0023](./0023-keyprovider-trait.md) | `KeyProvider` trait between `EncryptionLayer` and key material source | accepted | 2026-04-19 |
-| [0024](./0024-defer-dynosaur-migration.md) | Defer `dynosaur` migration — keep `#[async_trait]` for `dyn`-consumed traits (supersedes 0014) | proposed | 2026-04-20 |
+| [0024](./0024-defer-dynosaur-migration.md) | Defer `dynosaur` migration — keep `#[async_trait]` for `dyn`-consumed traits (supersedes 0014) | accepted | 2026-04-20 |
 
 ## Writing a new ADR
 

@@ -1,7 +1,7 @@
 ---
 id: 0024
 title: defer-dynosaur-migration
-status: proposed
+status: accepted
 date: 2026-04-20
 supersedes: [0014]
 superseded_by: []
