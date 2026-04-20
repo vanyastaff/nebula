@@ -95,7 +95,7 @@ See `docs/MATURITY.md` row for `nebula-sandbox`.
 
 - Canon: `docs/PRODUCT_CANON.md` §4.5, §7.1, §12.6.
 - ADR: `docs/adr/0006-sandbox-phase1-broker.md` — duplex JSON-RPC over UDS / Named Pipe.
-- Plugin model: `docs/PLUGIN_MODEL.md`.
+- Plugin model: `docs/INTEGRATION_MODEL.md` §7.
 - Glossary: `docs/GLOSSARY.md` §4 (sandbox / resource).
 - Siblings: `nebula-plugin-sdk` (plugin-author side / wire protocol), `nebula-plugin`
   (host-side registry), `nebula-runtime` (dispatches through sandbox runners).

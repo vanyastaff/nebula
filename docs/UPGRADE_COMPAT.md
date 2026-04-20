@@ -82,5 +82,5 @@ Before upgrading a deployment:
 
 - `docs/PRODUCT_CANON.md` §7.2 — normative upgrade contract
 - `docs/ENGINE_GUARANTEES.md` — durability matrix (what survives an upgrade)
-- `docs/PLUGIN_MODEL.md` — plugin packaging and SDK boundary
+- `docs/INTEGRATION_MODEL.md` §7 — plugin packaging and SDK boundary
 - `crates/storage/migrations/{sqlite,postgres}/README.md` — schema parity truth

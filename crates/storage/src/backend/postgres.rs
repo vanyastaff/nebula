@@ -65,6 +65,15 @@ pub struct PostgresStorage {
 
 impl PostgresStorage {
     /// Create a new [`PostgresStorage`] from a connection string.
+    ///
+    /// Only opens the connection pool. The caller is responsible for
+    /// ensuring the schema exists — call [`run_migrations`](Self::run_migrations)
+    /// once during process startup, or run the SQL files in
+    /// `crates/storage/migrations/` out-of-band before constructing
+    /// [`PgWorkflowRepo`] / [`PgExecutionRepo`](super::pg_execution::PgExecutionRepo)
+    /// from the pool. Skipping migration leaves the pool valid but every
+    /// repo call returns a `relation … does not exist` error from
+    /// Postgres.
     pub async fn new(connection_string: impl Into<String>) -> Result<Self, StorageError> {
         Self::with_config(PostgresStorageConfig::from_connection_string(
             connection_string,
@@ -90,6 +99,10 @@ impl PostgresStorage {
     }
 
     /// Create a new [`PostgresStorage`] using explicit configuration.
+    ///
+    /// As with [`new`](Self::new), only the pool is opened — call
+    /// [`run_migrations`](Self::run_migrations) before using any repo if
+    /// the database schema is not already in place.
     pub async fn with_config(config: PostgresStorageConfig) -> Result<Self, StorageError> {
         let pool = PgPoolOptions::new()
             .max_connections(config.max_connections)
