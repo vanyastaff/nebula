@@ -867,7 +867,10 @@ mod tests {
 
     // Test 7: compose! and any_of! still work (deprecated, but kept for
     // compatibility until removed)
-    #[allow(deprecated)]
+    #[expect(
+        deprecated,
+        reason = "verifying compose! still works while it lives; macro is deprecated but not yet removed"
+    )]
     #[test]
     fn test_compose_still_works() {
         use crate::foundation::ValidateExt;
@@ -876,7 +879,10 @@ mod tests {
         assert!(v.validate("ab").is_err());
     }
 
-    #[allow(deprecated)]
+    #[expect(
+        deprecated,
+        reason = "verifying any_of! still works while it lives; macro is deprecated but not yet removed"
+    )]
     #[test]
     fn test_any_of_still_works() {
         use crate::foundation::ValidateExt;
