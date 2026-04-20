@@ -78,6 +78,25 @@ Before upgrading a deployment:
 6. Run the canon **knife scenario** (§13) end-to-end against the target version — define → activate → execute → cancel → terminal `Cancelled` — before letting real workflows through.
 7. Confirm **observability paths** (journal, structured errors, metrics) still answer “what happened” for a failed run without reading Rust source (canon §4.6, §9 north star).
 
+## 2026-04-20 — `DUPLEX_PROTOCOL_VERSION` 2 → 3
+
+**Breaking (plugin-SDK).** Plugin binaries compiled against
+`nebula-plugin-sdk` version-2 no longer handshake with the current host.
+Rebuild all plugin binaries against the current SDK; the change is
+**additive to the envelope** — replacing flat `plugin_key` /
+`plugin_version` with the full `PluginManifest`, adding per-action
+`schema: ValidSchema` — so plugin authors re-compile and ship. Source-level
+migration requires:
+
+- replacing `PluginMeta` with a `PluginManifest` (imported from
+  `nebula_metadata`) constructed via the builder;
+- exposing `actions(&self) -> &[ActionDescriptor]` on `PluginHandler`
+  (return type changed from `Vec<ActionDescriptor>` to a slice borrow); and
+- attaching a `schema: ValidSchema` to every `ActionDescriptor`.
+
+See [plugin load-path stabilization design
+spec](superpowers/specs/2026-04-20-plugin-load-path-stable-design.md).
+
 ## See also
 
 - `docs/PRODUCT_CANON.md` §7.2 — normative upgrade contract

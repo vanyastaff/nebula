@@ -2,7 +2,7 @@
 name: nebula-sandbox
 role: Process Sandboxing (Correctness Boundary)
 status: partial
-last-reviewed: 2026-04-17
+last-reviewed: 2026-04-20
 canon-invariants: [L1-4.5, L1-7.1, L1-12.6]
 related: [nebula-plugin-sdk, nebula-plugin, nebula-runtime]
 ---
@@ -39,8 +39,8 @@ against malicious native code. Canon §12.6 is the normative statement.
 - `SandboxRunner`, `ActionExecutor`, `ActionExecutorFuture`, `SandboxedContext` — core sandbox
   runner abstraction used by `nebula-runtime`.
 - `capabilities::PluginCapabilities` — iOS-style per-plugin capability declarations
-  (network / filesystem / env allowlists). Defined but not yet wired from `plugin.toml` through
-  discovery (see Appendix).
+  (network / filesystem / env allowlists). Sourced from workflow-config at spawn time
+  (ADR-0025 D4); per-call enforcement gate is not yet wired (see Appendix).
 - `discovery` module — scans directories for plugin binaries via `plugin.toml` markers.
 - `os_sandbox` module — OS-level hardening primitives (best-effort; per-platform status in
   Appendix).
@@ -61,9 +61,9 @@ against malicious native code. Canon §12.6 is the normative statement.
   `wasm32-wasip2`. Offering WASM as "the future sandbox" is a §4.5 false capability and a §4.4
   DX regression. It must not appear as `planned` in any README or `lib.rs`.
 
-- **[L1-§4.5]** `PluginCapabilities` enforcement from `plugin.toml` through discovery is a
-  `false capability` until the `discovery.rs` TODO is closed — the allowlist is defined but
-  unenforced today.
+- **[L1-§4.5]** `PluginCapabilities` enforcement from **workflow-config** at spawn time
+  (ADR-0025 D4) is a `false capability` until slice 1d broker RPC lands — the allowlist is
+  passed through to `ProcessSandbox` but the per-call enforcement gate is not yet wired.
 
 - **[L1-§7.1]** Plugin is the unit of registration. `ProcessSandbox` hosts the duplex broker;
   `nebula-plugin-sdk` is the plugin-author side. Wire protocol types live in the SDK because
@@ -83,13 +83,14 @@ See `docs/MATURITY.md` row for `nebula-sandbox`.
 
 - API stability: `partial` — `InProcessSandbox` and `ProcessSandbox` are in active use;
   capability enforcement and OS hardening backends are incomplete (see Appendix).
-- `PluginCapabilities` allowlist is defined but unenforced — `false capability` (§4.5) until
-  discovery wiring closes.
+- `PluginCapabilities` is passed from the caller to `ProcessSandbox` but per-call enforcement
+  is not yet wired — `false capability` (§4.5) until ADR-0025 slice 1d broker RPC lands.
 - `os_sandbox` per-platform backends are partial — check `src/os_sandbox.rs` before claiming
   any platform-specific hardening.
 - ADR 0006 slice 1d (broker RPC, `PluginSupervisor`, reattach) is `proposed` / not yet landed.
 - 3 panic sites — candidates for typed `SandboxError`.
-- 0 integration tests; cancel path and protocol envelope covered only by unit tests.
+- 1 integration test (`discovery_schema_roundtrip`, `#[ignore]`-gated — requires pre-built
+  fixture); cancel path and protocol envelope covered only by unit tests.
 
 ## Related
 
@@ -102,25 +103,15 @@ See `docs/MATURITY.md` row for `nebula-sandbox`.
 
 ## Appendix
 
-### Discovery TODO (evicted from PRODUCT_CANON.md §12.6)
-
-The `PluginCapabilities` enforcement path from `plugin.toml` through discovery is currently
-marked TODO in `src/discovery.rs` (`discovery.rs:117` hardcodes
-`PluginCapabilities::none()`). Closing this TODO is part of the isolation roadmap (canon §12.6)
-and requires:
-
-1. Parse capabilities from `plugin.toml` at plugin load.
-2. Enforce capabilities in the broker on each dispatched call.
-3. Test coverage proving a capability-deny is actually rejected end-to-end.
-
-Until this lands, the capability allowlist is advertised but unenforced — a `false capability`
-per canon §4.5. Consider surfacing `PluginCapabilities` as `experimental` in its doc comment
-until the discovery-path TODO is closed.
-
 ### Real isolation roadmap (priority order, replacing any historical WASM language)
 
-1. **Capability wiring** — close `discovery.rs:117` so `PluginCapabilities` is loaded from
-   `plugin.toml` and enforced at `ProcessSandbox` boundaries.
+1. **Capability wiring.** Plugin capabilities are sourced from
+   **workflow-config** at spawn time (per
+   [ADR-0025](../../docs/adr/0025-sandbox-broker-rpc-surface.md) D4) —
+   not from `plugin.toml`. The sandbox receives a `PluginCapabilities`
+   from its caller (engine / runtime); enforcing it at
+   `ProcessSandbox` boundaries remains the slice 1d work. Older revisions
+   of this roadmap mentioned `plugin.toml` capabilities; ADR-0025 superseded that.
 2. **`plugin.toml` signing verification** — canon §7.1; tooling (`cargo-nebula` or equivalent)
    verifies signatures before the host trusts a plugin's `plugin.toml`.
 3. **`os_sandbox` per-platform backends** — seccomp-bpf + landlock (Linux), `sandbox_init`
@@ -130,6 +121,15 @@ until the discovery-path TODO is closed.
    is the §4.1 throughput win for real workloads.
 5. **Integration tests for cancel path and protocol envelope** — canon §13 step 5 must be
    green end-to-end against `ProcessSandbox`, not only against `InProcessSandbox`.
+
+### Discovery TODO (partially closed by slice B)
+
+Slice B of the plugin load-path stabilization closed the `plugin.toml`
+parsing gap: discovery now reads `[nebula].sdk` + `[plugin].id` before
+spawning the binary, enforces the SDK semver constraint, and honors the
+optional id override. Workflow-config-sourced `PluginCapabilities`
+enforcement at the broker is the remaining piece (item 1 of the roadmap
+above), tracked under ADR-0025 slice 1d.
 
 ### ADR 0006 status
 

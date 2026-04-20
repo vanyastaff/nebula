@@ -3808,6 +3808,7 @@ dependencies = [
  "nebula-engine",
  "nebula-execution",
  "nebula-log",
+ "nebula-plugin",
  "nebula-runtime",
  "nebula-sandbox",
  "nebula-telemetry",
@@ -4043,6 +4044,8 @@ dependencies = [
 name = "nebula-metadata"
 version = "0.1.0"
 dependencies = [
+ "nebula-core",
+ "nebula-error",
  "nebula-schema",
  "semver",
  "serde",
@@ -4063,13 +4066,15 @@ dependencies = [
 name = "nebula-plugin"
 version = "0.1.0"
 dependencies = [
+ "nebula-action",
  "nebula-core",
+ "nebula-credential",
  "nebula-error",
  "nebula-metadata",
  "nebula-plugin-macros",
+ "nebula-resource",
+ "nebula-schema",
  "semver",
- "serde",
- "serde_json",
  "thiserror 2.0.18",
 ]
 
@@ -4089,6 +4094,9 @@ name = "nebula-plugin-sdk"
 version = "0.1.0"
 dependencies = [
  "async-trait",
+ "nebula-metadata",
+ "nebula-schema",
+ "semver",
  "serde",
  "serde_json",
  "thiserror 2.0.18",
@@ -4181,7 +4189,12 @@ dependencies = [
  "landlock",
  "nebula-action",
  "nebula-core",
+ "nebula-credential",
+ "nebula-metadata",
+ "nebula-plugin",
  "nebula-plugin-sdk",
+ "nebula-resource",
+ "nebula-schema",
  "nix 0.31.2",
  "semver",
  "serde",
@@ -4190,6 +4203,7 @@ dependencies = [
  "thiserror 2.0.18",
  "tokio",
  "tokio-util",
+ "toml 0.8.23",
  "tracing",
  "uuid",
 ]

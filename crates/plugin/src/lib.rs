@@ -11,16 +11,15 @@
 //! ## Key types
 //!
 //! - `Plugin` — base trait every plugin implements; `actions()`, `credentials()`, `resources()`,
-//!   `on_load()`, `on_unload()` (default no-ops).
+//!   `on_load()`, `on_unload()` (default no-ops). Returns runnable trait objects (canon §3.5).
 //! - `PluginManifest` — bundle descriptor with builder API (key, name, semver version, group,
 //!   `Icon`, maturity, deprecation, author/license/homepage/repository metadata). Does **not**
 //!   compose `BaseMetadata<K>` — a plugin is a container, not a schematized leaf (ADR-0018).
-//! - `ActionDescriptor`, `CredentialDescriptor`, `ResourceDescriptor` — lightweight descriptors
-//!   returned by the `Plugin` trait methods.
-//! - `PluginType` — enum: single plugin or `PluginVersions` set.
-//! - `PluginVersions` — multi-version container keyed by `semver::Version`.
-//! - `PluginRegistry` — in-memory `PluginKey → PluginType` registry.
+//! - `ResolvedPlugin` — per-plugin wrapper with eager component caches; enforces namespace
+//!   invariant at construction (ADR-0027).
+//! - `PluginRegistry` — in-memory `PluginKey → Arc<ResolvedPlugin>` registry.
 //! - `PluginError` — typed error for plugin operations.
+//! - `ComponentKind` — discriminant for namespace and duplicate errors.
 //! - `#[derive(Plugin)]` — proc-macro derivation.
 //!
 //! ## Canon note — §7.1
@@ -32,23 +31,19 @@
 #![forbid(unsafe_code)]
 #![warn(missing_docs)]
 
-pub mod descriptor;
 mod error;
 mod manifest;
 mod plugin;
-mod plugin_type;
 mod registry;
-mod versions;
+mod resolved_plugin;
 
 // ── Public re-exports ─────────────────────────────────────────────────────────
 
-pub use descriptor::{ActionDescriptor, CredentialDescriptor, ResourceDescriptor};
-pub use error::PluginError;
-pub use manifest::{PluginManifest, PluginManifestBuilder};
+pub use error::{ComponentKind, PluginError};
+pub use manifest::{ManifestError, PluginManifest, PluginManifestBuilder};
 // Re-export PluginKey from core for convenience.
 pub use nebula_core::PluginKey;
 pub use nebula_plugin_macros::Plugin;
 pub use plugin::Plugin;
-pub use plugin_type::PluginType;
 pub use registry::PluginRegistry;
-pub use versions::PluginVersions;
+pub use resolved_plugin::ResolvedPlugin;

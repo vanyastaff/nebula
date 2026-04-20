@@ -35,16 +35,21 @@
 //! status.
 
 pub mod capabilities;
+pub mod discovered_plugin;
 pub mod discovery;
 pub mod error;
 mod handler;
 mod in_process;
 pub mod os_sandbox;
+pub mod plugin_toml;
 mod process;
+mod remote_action;
 mod runner;
 
+pub use discovered_plugin::DiscoveredPlugin;
 pub use error::SandboxError;
 pub use handler::ProcessSandboxHandler;
 pub use in_process::InProcessSandbox;
 pub use process::ProcessSandbox;
+pub use remote_action::RemoteAction;
 pub use runner::{ActionExecutor, ActionExecutorFuture, SandboxRunner, SandboxedContext};

@@ -59,10 +59,7 @@ pub use nebula_credential::{
 };
 pub use nebula_credential::{CredentialContext, CredentialId};
 // Plugin types
-pub use nebula_plugin::{
-    Plugin, PluginManifest,
-    descriptor::{ActionDescriptor, CredentialDescriptor, ResourceDescriptor},
-};
+pub use nebula_plugin::{Plugin, PluginManifest};
 pub use nebula_resource::Resource;
 // Derive macros (re-exported from their respective domain crates)
 // Action, Credential, and Plugin derive macros are already in scope from the

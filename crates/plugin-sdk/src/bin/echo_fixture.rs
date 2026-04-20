@@ -9,19 +9,45 @@
 //! `nebula-plugin-sdk` and calling [`nebula_plugin_sdk::run_duplex`]. This
 //! fixture is an example of the pattern.
 
-use nebula_plugin_sdk::{PluginCtx, PluginError, PluginHandler, PluginMeta, run_duplex};
+use async_trait::async_trait;
+use nebula_metadata::PluginManifest;
+use nebula_plugin_sdk::{
+    PluginCtx, PluginError, PluginHandler, protocol::ActionDescriptor, run_duplex,
+};
+use nebula_schema::Schema;
+use semver::Version;
 use serde_json::Value;
 
-struct EchoPlugin;
+struct EchoPlugin {
+    manifest: PluginManifest,
+    actions: Vec<ActionDescriptor>,
+}
 
-#[async_trait::async_trait]
+impl EchoPlugin {
+    fn new() -> Self {
+        let manifest = PluginManifest::builder("com.nebula.echo", "Echo")
+            .version(Version::new(0, 1, 0))
+            .description("Fixture plugin — echoes its input back.")
+            .build()
+            .unwrap();
+        let actions = vec![ActionDescriptor {
+            key: "echo".into(),
+            name: "Echo".into(),
+            description: "Returns the input as the output".into(),
+            schema: Schema::builder().build().unwrap(),
+        }];
+        Self { manifest, actions }
+    }
+}
+
+#[async_trait]
 impl PluginHandler for EchoPlugin {
-    fn metadata(&self) -> PluginMeta {
-        PluginMeta::new("com.nebula.echo", "0.1.0").with_action(
-            "echo",
-            "Echo",
-            "Returns the input as the output",
-        )
+    fn manifest(&self) -> &PluginManifest {
+        &self.manifest
+    }
+
+    fn actions(&self) -> &[ActionDescriptor] {
+        &self.actions
     }
 
     async fn execute(
@@ -42,5 +68,5 @@ impl PluginHandler for EchoPlugin {
 
 #[tokio::main(flavor = "current_thread")]
 async fn main() -> std::io::Result<()> {
-    run_duplex(EchoPlugin).await
+    run_duplex(EchoPlugin::new()).await
 }

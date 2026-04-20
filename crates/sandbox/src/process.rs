@@ -1,4 +1,4 @@
-//! Process-based sandbox for community plugins using the duplex v2 protocol.
+//! Process-based sandbox for community plugins using the duplex v3 protocol.
 //!
 //! Slice 1c (2026-04-13): plugin processes are **long-lived**. On the first
 //! call, `ProcessSandbox` spawns the plugin binary, reads the handshake line
@@ -210,6 +210,45 @@ impl PluginHandle {
                     SandboxError::MalformedEnvelope(e)
                 })
             },
+            Ok(BoundedReadOutcome::Eof) => {
+                self.poisoned = true;
+                Err(SandboxError::PluginClosed)
+            },
+            Ok(BoundedReadOutcome::Overflow { observed }) => {
+                self.poisoned = true;
+                Err(SandboxError::PluginLineTooLarge {
+                    limit: ENVELOPE_LINE_CAP,
+                    observed,
+                })
+            },
+            Err(e) => {
+                self.poisoned = true;
+                Err(SandboxError::Transport(e))
+            },
+        }
+    }
+
+    /// Receive the next envelope as raw JSON bytes (no typed parse).
+    ///
+    /// Used by the metadata-probe path (see `ProcessSandbox::get_metadata_raw`):
+    /// returning the raw bytes lets the caller first parse to
+    /// `serde_json::Value` for a cheap version check, then re-parse the
+    /// same bytes as `PluginToHost` — preserving the zero-copy / borrowed-
+    /// string path that some `Deserialize` implementations (notably
+    /// `domain_key::Key<T>`) require.
+    ///
+    /// Contract mirrors `recv_envelope`: same poisoning rules, same cap
+    /// enforcement, same error taxonomy; only the final parse step is
+    /// deferred to the caller.
+    async fn recv_envelope_bytes(&mut self) -> Result<Vec<u8>, SandboxError> {
+        if self.poisoned {
+            return Err(SandboxError::TransportPoisoned);
+        }
+        self.line_buf.clear();
+        match read_bounded_line(&mut self.reader, ENVELOPE_LINE_CAP, &mut self.line_buf).await {
+            Ok(BoundedReadOutcome::Line {
+                bytes_including_newline,
+            }) => Ok(self.line_buf[..bytes_including_newline - 1].to_vec()),
             Ok(BoundedReadOutcome::Eof) => {
                 self.poisoned = true;
                 Err(SandboxError::PluginClosed)
@@ -479,6 +518,31 @@ impl ProcessSandbox {
         self.dispatch_envelope(request, None).await
     }
 
+    /// Query plugin metadata and return the response as raw JSON bytes,
+    /// **before** attempting the strongly-typed `PluginToHost` deserialize.
+    ///
+    /// Purpose: let the caller check `protocol_version` before the typed
+    /// parse runs. If a v2 plugin sends its old envelope shape (flat
+    /// `plugin_key` / `plugin_version` fields, no `manifest`) against a
+    /// v3 host, this method returns the raw bytes; the caller parses to
+    /// `serde_json::Value` for the version check, and then — if the
+    /// version matches — re-parses the same bytes into `PluginToHost`.
+    ///
+    /// Returning bytes rather than `serde_json::Value` preserves the
+    /// zero-copy / borrowed-`&str` deserialize path that some `Deserialize`
+    /// impls rely on (notably `domain_key::Key<T>` and therefore
+    /// `PluginKey`), which would otherwise fail with
+    /// `"expected a borrowed string"` when going through
+    /// `serde_json::from_value`.
+    ///
+    /// Used by `discover_directory` in the `discovery` module (private path).
+    pub async fn get_metadata_raw(&self) -> Result<Vec<u8>, ActionError> {
+        let request = HostToPlugin::MetadataRequest {
+            id: self.next_envelope_id(),
+        };
+        self.dispatch_envelope_bytes(request, None).await
+    }
+
     /// High-level action invocation for host code outside the engine flow
     /// (diagnostics, examples, integration tests, ad-hoc CLI invocations).
     ///
@@ -545,6 +609,31 @@ impl ProcessSandbox {
                 // because no bytes reached a running plugin process.
                 *self.handle.lock().await = None;
                 match self.try_dispatch(envelope, cancel).await {
+                    Ok(response) => Ok(response),
+                    Err(err) => Err(err.into_action_error()),
+                }
+            },
+            Err(err) => Err(err.into_action_error()),
+        }
+    }
+
+    /// Variant of [`dispatch_envelope`] that returns the response as raw
+    /// JSON bytes (no strongly-typed `PluginToHost` parse).
+    ///
+    /// Used by [`get_metadata_raw`](Self::get_metadata_raw): lets the caller
+    /// inspect `protocol_version` before committing to the typed parse,
+    /// which otherwise fails with a confusing "missing field" message on
+    /// a version-mismatched envelope.
+    async fn dispatch_envelope_bytes(
+        &self,
+        envelope: HostToPlugin,
+        cancel: Option<&CancellationToken>,
+    ) -> Result<Vec<u8>, ActionError> {
+        match self.try_dispatch_bytes(envelope.clone(), cancel).await {
+            Ok(response) => Ok(response),
+            Err(TryDispatchError::Respawnable(_)) => {
+                *self.handle.lock().await = None;
+                match self.try_dispatch_bytes(envelope, cancel).await {
                     Ok(response) => Ok(response),
                     Err(err) => Err(err.into_action_error()),
                 }
@@ -666,6 +755,123 @@ impl ProcessSandbox {
                 // so the engine honours the standard cancellation path —
                 // and crucially do NOT retry (would duplicate work the
                 // engine already asked us to abort; see #257 review).
+                *guard = None;
+                tracing::debug!(
+                    plugin = %self.binary.display(),
+                    envelope = %envelope_tag,
+                    "plugin dispatch cancelled via CancellationToken; clearing handle",
+                );
+                Err(TryDispatchError::Terminal(ActionError::Cancelled))
+            },
+        }
+    }
+
+    /// Variant of [`try_dispatch`](Self::try_dispatch) that reads the
+    /// plugin's response as raw JSON bytes instead of parsing to
+    /// `PluginToHost`.
+    ///
+    /// Identical transport / cancel / timeout semantics; only the inbound
+    /// parse step differs. Correlation-id matching happens by parsing the
+    /// bytes once into `serde_json::Value` solely to pull `.id`; the
+    /// caller re-parses the bytes into the target type (see
+    /// `dispatch_envelope_bytes` callers).
+    async fn try_dispatch_bytes(
+        &self,
+        envelope: HostToPlugin,
+        cancel: Option<&CancellationToken>,
+    ) -> Result<Vec<u8>, TryDispatchError> {
+        let mut guard = self.handle.lock().await;
+        if guard.is_none() {
+            let handle = self
+                .spawn_and_dial()
+                .await
+                .map_err(TryDispatchError::Terminal)?;
+            *guard = Some(handle);
+        }
+        let Some(handle) = guard.as_mut() else {
+            return Err(TryDispatchError::Terminal(ActionError::fatal(
+                "process sandbox handle missing after successful spawn",
+            )));
+        };
+
+        let envelope_tag = match &envelope {
+            HostToPlugin::ActionInvoke { .. } => "action_invoke",
+            HostToPlugin::MetadataRequest { .. } => "metadata_request",
+            _ => "other",
+        };
+        let expected_id = request_id(&envelope);
+
+        let roundtrip = async {
+            handle.send_envelope(&envelope).await?;
+            handle.recv_envelope_bytes().await
+        };
+
+        let outcome = race_cancel_timeout(roundtrip, self.timeout, cancel).await;
+
+        match outcome {
+            RaceOutcome::Ready(Ok(response_bytes)) => {
+                // Cheap reparse to `Value` just for the id check; the
+                // caller will parse the bytes again into the strongly-
+                // typed target. Parsing twice is acceptable because the
+                // metadata-probe path runs once per plugin lifetime.
+                if let Some(expected) = expected_id {
+                    // Use a match rather than `map_err(...)?` so we can
+                    // clear `*guard` on parse failure before returning.
+                    // A `?` return would skip the guard-clear and leave a
+                    // cached-but-poisoned handle for the next call.
+                    let value: serde_json::Value = match serde_json::from_slice(&response_bytes) {
+                        Ok(v) => v,
+                        Err(e) => {
+                            *guard = None;
+                            return Err(TryDispatchError::from_sandbox_error(
+                                SandboxError::MalformedEnvelope(e),
+                            ));
+                        },
+                    };
+                    if let Some(got) = response_id_from_value(&value)
+                        && expected != got
+                    {
+                        tracing::warn!(
+                            plugin = %self.binary.display(),
+                            envelope = %envelope_tag,
+                            expected,
+                            got,
+                            "plugin response id mismatch — poisoning handle",
+                        );
+                        *guard = None;
+                        return Err(TryDispatchError::Terminal(sandbox_error_to_action_error(
+                            SandboxError::ResponseIdMismatch { expected, got },
+                        )));
+                    }
+                }
+                Ok(response_bytes)
+            },
+            RaceOutcome::Ready(Err(sandbox_err)) => {
+                if matches!(
+                    sandbox_err,
+                    SandboxError::PluginLineTooLarge { .. }
+                        | SandboxError::HandshakeLineTooLarge { .. }
+                        | SandboxError::TransportPoisoned
+                ) {
+                    tracing::warn!(
+                        plugin = %self.binary.display(),
+                        envelope = %envelope_tag,
+                        error = %sandbox_err,
+                        "plugin transport poisoned — clearing handle and forcing respawn",
+                    );
+                }
+                *guard = None;
+                Err(TryDispatchError::from_sandbox_error(sandbox_err))
+            },
+            RaceOutcome::Timeout => {
+                *guard = None;
+                Err(TryDispatchError::Terminal(ActionError::retryable(format!(
+                    "plugin {} timed out on {envelope_tag} after {:?}",
+                    self.binary.display(),
+                    self.timeout
+                ))))
+            },
+            RaceOutcome::Cancelled => {
                 *guard = None;
                 tracing::debug!(
                     plugin = %self.binary.display(),
@@ -1034,6 +1240,15 @@ fn response_id(env: &PluginToHost) -> Option<u64> {
         | PluginToHost::MetadataResponse { id, .. } => Some(*id),
         PluginToHost::Log { .. } => None,
     }
+}
+
+/// Variant of [`response_id`] that works on a raw `serde_json::Value`.
+///
+/// Mirrors the typed path used by `try_dispatch` for the raw-value metadata
+/// probe. Returns `None` when the field is absent (`Log` variant) or when
+/// the value isn't a `u64`.
+fn response_id_from_value(value: &serde_json::Value) -> Option<u64> {
+    value.get("id").and_then(serde_json::Value::as_u64)
 }
 
 #[async_trait]
@@ -1835,9 +2050,10 @@ mod tests {
         };
         let meta = PluginToHost::MetadataResponse {
             id: 45,
-            protocol_version: 2,
-            plugin_key: String::from("k"),
-            plugin_version: String::from("1.0.0"),
+            protocol_version: 3,
+            manifest: nebula_metadata::PluginManifest::builder("k", "K")
+                .build()
+                .unwrap(),
             actions: Vec::new(),
         };
         let log = PluginToHost::Log {

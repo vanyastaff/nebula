@@ -15,19 +15,27 @@
 //! ## Quick start
 //!
 //! ```rust,no_run
-//! use nebula_plugin_sdk::{PluginCtx, PluginError, PluginHandler, PluginMeta, run_duplex};
+//! use nebula_metadata::PluginManifest;
+//! use nebula_plugin_sdk::{
+//!     PluginCtx, PluginError, PluginHandler, protocol::ActionDescriptor, run_duplex,
+//! };
+//! use nebula_schema::Schema;
+//! use semver::Version;
 //! use serde_json::Value;
 //!
-//! struct Echo;
+//! struct Echo {
+//!     manifest: PluginManifest,
+//!     actions: Vec<ActionDescriptor>,
+//! }
 //!
 //! #[async_trait::async_trait]
 //! impl PluginHandler for Echo {
-//!     fn metadata(&self) -> PluginMeta {
-//!         PluginMeta::new("com.example.echo", "0.1.0").with_action(
-//!             "echo",
-//!             "Echo",
-//!             "Echoes the input",
-//!         )
+//!     fn manifest(&self) -> &PluginManifest {
+//!         &self.manifest
+//!     }
+//!
+//!     fn actions(&self) -> &[ActionDescriptor] {
+//!         &self.actions
 //!     }
 //!
 //!     async fn execute(
@@ -42,7 +50,17 @@
 //!
 //! #[tokio::main]
 //! async fn main() {
-//!     run_duplex(Echo).await.unwrap();
+//!     let manifest = PluginManifest::builder("com.example.echo", "Echo")
+//!         .version(Version::new(0, 1, 0))
+//!         .build()
+//!         .unwrap();
+//!     let actions = vec![ActionDescriptor {
+//!         key: "echo".into(),
+//!         name: "Echo".into(),
+//!         description: "Echoes the input".into(),
+//!         schema: Schema::builder().build().unwrap(),
+//!     }];
+//!     run_duplex(Echo { manifest, actions }).await.unwrap();
 //! }
 //! ```
 //!
@@ -50,7 +68,6 @@
 //!
 //! - `PluginHandler` — implement this trait + call `run_duplex`.
 //! - `PluginCtx` — execution context (placeholder in slice 1c).
-//! - `PluginMeta` — plugin metadata builder.
 //! - `PluginError` — typed error; `fatal` and `retryable` constructors.
 //! - `run_duplex` — main entry point; owns transport + event loop.
 //! - `protocol` — wire envelope types (`HostToPlugin`, `PluginToHost`).
@@ -60,7 +77,8 @@
 //!
 //! - §12.6: plugin IPC is sequential JSON envelope dispatch to a child process; not attacker-grade
 //!   isolation. WASM is an explicit non-goal.
-//! - §7.1: zero intra-workspace dependencies — plugin authors link only this crate.
+//! - §7.1: Core-layer exception — `nebula-metadata` and `nebula-schema` are imported for
+//!   `PluginManifest` and `ValidSchema` on the wire; no engine-side deps are pulled in.
 //!
 //! See `crates/plugin-sdk/README.md` and ADR 0006 for wire protocol status.
 
@@ -70,7 +88,7 @@ use serde_json::Value;
 use thiserror::Error;
 use tokio::io::{AsyncBufRead, AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 
-use crate::protocol::{ActionDescriptor, DUPLEX_PROTOCOL_VERSION, HostToPlugin, PluginToHost};
+use crate::protocol::{DUPLEX_PROTOCOL_VERSION, HostToPlugin, PluginToHost};
 
 pub mod protocol;
 pub mod transport;
@@ -135,52 +153,23 @@ impl PluginCtx {
     }
 }
 
-/// Plugin metadata builder. Shape is deliberately small in slice 1a; more
-/// fields (credential slots, resource slots, parameter schemas) land in
-/// slice 1e when derive-macros generate them from action types.
-#[derive(Debug, Clone)]
-pub struct PluginMeta {
-    key: String,
-    version: String,
-    actions: Vec<ActionDescriptor>,
-}
-
-impl PluginMeta {
-    /// Create a new metadata builder with required fields.
-    #[must_use]
-    pub fn new(key: impl Into<String>, version: impl Into<String>) -> Self {
-        Self {
-            key: key.into(),
-            version: version.into(),
-            actions: Vec::new(),
-        }
-    }
-
-    /// Add an action descriptor.
-    #[must_use]
-    pub fn with_action(
-        mut self,
-        key: impl Into<String>,
-        name: impl Into<String>,
-        description: impl Into<String>,
-    ) -> Self {
-        self.actions.push(ActionDescriptor {
-            key: key.into(),
-            name: name.into(),
-            description: description.into(),
-        });
-        self
-    }
-}
-
 /// Trait for plugin implementations.
 ///
 /// Plugin authors implement this trait on a struct representing their plugin
 /// and pass it to [`run_duplex`] from `main`.
 #[async_trait::async_trait]
 pub trait PluginHandler: Send + Sync + 'static {
-    /// Return plugin metadata (key, version, actions).
-    fn metadata(&self) -> PluginMeta;
+    /// Return this plugin's canonical manifest.
+    fn manifest(&self) -> &nebula_metadata::PluginManifest;
+
+    /// Return the list of actions this plugin provides.
+    ///
+    /// Returns a slice rather than a `Vec` so handlers can build their
+    /// action table once in `new()` and hand out a cheap borrow on every
+    /// [`HostToPlugin::MetadataRequest`]. The SDK clones (one `Vec` per
+    /// request) to fill the outbound envelope, so repeated probes stay
+    /// cheap — they don't force the handler to rebuild descriptors.
+    fn actions(&self) -> &[protocol::ActionDescriptor];
 
     /// Execute an action.
     ///
@@ -216,7 +205,8 @@ pub trait PluginHandler: Send + Sync + 'static {
 ///
 /// - Line-delimited JSON envelopes, one [`HostToPlugin`] per `\n`.
 /// - Dispatches [`HostToPlugin::ActionInvoke`] to [`PluginHandler::execute`].
-/// - Dispatches [`HostToPlugin::MetadataRequest`] to [`PluginHandler::metadata`].
+/// - Dispatches [`HostToPlugin::MetadataRequest`] to [`PluginHandler::manifest`] and
+///   [`PluginHandler::actions`].
 /// - Ignores [`HostToPlugin::Cancel`] / [`HostToPlugin::RpcResponseOk`] /
 ///   [`HostToPlugin::RpcResponseError`] in slice 1c (concurrent dispatch and broker RPC flow land
 ///   in slice 1d).
@@ -319,13 +309,11 @@ async fn run_event_loop<H: PluginHandler>(
                 write_line(&mut writer, &response).await?;
             },
             HostToPlugin::MetadataRequest { id } => {
-                let meta = handler.metadata();
                 let response = PluginToHost::MetadataResponse {
                     id,
                     protocol_version: DUPLEX_PROTOCOL_VERSION,
-                    plugin_key: meta.key,
-                    plugin_version: meta.version,
-                    actions: meta.actions,
+                    manifest: handler.manifest().clone(),
+                    actions: handler.actions().to_vec(),
                 };
                 write_line(&mut writer, &response).await?;
             },
@@ -409,16 +397,34 @@ mod tests {
 
     use super::*;
 
-    struct TestHandler;
+    struct TestHandler {
+        manifest: nebula_metadata::PluginManifest,
+        actions: Vec<protocol::ActionDescriptor>,
+    }
+
+    impl TestHandler {
+        fn new() -> Self {
+            let manifest = nebula_metadata::PluginManifest::builder("com.test.echo", "Echo")
+                .build()
+                .unwrap();
+            let actions = vec![protocol::ActionDescriptor {
+                key: "echo".into(),
+                name: "Echo".into(),
+                description: "Returns input unchanged".into(),
+                schema: nebula_schema::Schema::builder().build().unwrap(),
+            }];
+            Self { manifest, actions }
+        }
+    }
 
     #[async_trait::async_trait]
     impl PluginHandler for TestHandler {
-        fn metadata(&self) -> PluginMeta {
-            PluginMeta::new("com.test.echo", "0.1.0").with_action(
-                "echo",
-                "Echo",
-                "Returns input unchanged",
-            )
+        fn manifest(&self) -> &nebula_metadata::PluginManifest {
+            &self.manifest
+        }
+
+        fn actions(&self) -> &[protocol::ActionDescriptor] {
+            &self.actions
         }
 
         async fn execute(
@@ -447,20 +453,9 @@ mod tests {
         assert!(r.retryable);
     }
 
-    #[test]
-    fn plugin_meta_builder() {
-        let m = PluginMeta::new("p", "1.0")
-            .with_action("a1", "A1", "first")
-            .with_action("a2", "A2", "second");
-        assert_eq!(m.key, "p");
-        assert_eq!(m.version, "1.0");
-        assert_eq!(m.actions.len(), 2);
-        assert_eq!(m.actions[0].key, "a1");
-    }
-
     #[tokio::test]
     async fn test_handler_execute_ok() {
-        let h = TestHandler;
+        let h = TestHandler::new();
         let ctx = PluginCtx::new();
         let result = h
             .execute(&ctx, "echo", serde_json::json!({"x": 1}))
@@ -471,7 +466,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_handler_execute_unknown_action() {
-        let h = TestHandler;
+        let h = TestHandler::new();
         let ctx = PluginCtx::new();
         let err = h
             .execute(&ctx, "nope", serde_json::json!({}))

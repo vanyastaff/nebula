@@ -106,24 +106,16 @@ pub async fn list_plugins(State(state): State<AppState>) -> ApiResult<Json<ListP
     let registry = registry_lock.read().await;
 
     let plugins: Vec<PluginSummary> = registry
-        .keys()
-        .into_iter()
-        .map(|key| {
-            let pt = registry.get(&key).map_err(|e| {
-                ApiError::Internal(format!("Failed to get plugin '{}': {}", key.as_str(), e))
-            })?;
-            let plugin = pt.latest().ok();
-            let (name, version) = plugin.as_ref().map_or_else(
-                || (key.as_str().to_string(), "1.0.0".to_string()),
-                |p| (p.name().to_string(), p.version().to_string()),
-            );
-            Ok(PluginSummary {
+        .iter()
+        .map(|(key, resolved)| {
+            let manifest = resolved.manifest();
+            PluginSummary {
                 key: key.as_str().to_string(),
-                name,
-                version,
-            })
+                name: manifest.name().to_string(),
+                version: resolved.version().to_string(),
+            }
         })
-        .collect::<Result<Vec<_>, ApiError>>()?;
+        .collect();
 
     Ok(Json(ListPluginsResponse { plugins }))
 }
@@ -152,27 +144,17 @@ pub async fn get_plugin(
 
     let registry = registry_lock.read().await;
 
-    let plugin_type = registry
+    let resolved = registry
         .get(&plugin_key)
-        .map_err(|_| ApiError::NotFound(format!("Plugin '{key}' not found")))?;
+        .ok_or_else(|| ApiError::NotFound(format!("Plugin '{key}' not found")))?;
 
-    let versions: Vec<String> = plugin_type
-        .version_numbers()
-        .into_iter()
-        .map(|v| v.to_string())
-        .collect();
-    let latest = plugin_type
-        .latest()
-        .map_err(|e| ApiError::Internal(format!("Failed to get plugin: {e}")))?;
-
-    let manifest = latest.manifest();
+    let manifest = resolved.manifest();
 
     Ok(Json(PluginDetailResponse {
         key: manifest.key().as_str().to_string(),
         name: manifest.name().to_string(),
         description: manifest.description().to_string(),
-        version: latest.version().to_string(),
-        versions,
+        version: resolved.version().to_string(),
         group: manifest.group().to_vec(),
         tags: manifest.tags().to_vec(),
         icon_url: manifest.icon().as_url().map(str::to_string),

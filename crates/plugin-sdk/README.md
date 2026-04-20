@@ -30,11 +30,13 @@ Windows) per ADR 0006.
 
 ## Public API
 
-- `PluginHandler` — trait plugin authors implement: `metadata() -> PluginMeta` and
-  `execute(ctx, action_key, input) -> Result<Value, PluginError>`.
+- `PluginHandler` — trait plugin authors implement: `manifest() -> &PluginManifest`,
+  `actions() -> &[ActionDescriptor]`, and
+  `execute(ctx, action_key, input) -> Result<Value, PluginError>`. The manifest type
+  is [`nebula_metadata::PluginManifest`] (Core-layer dep, see §7.1 below); the
+  descriptor type lives in the `protocol` submodule.
 - `PluginCtx` — execution context passed into `PluginHandler::execute`. Placeholder in
   slice 1c; future slices add broker RPC accessors.
-- `PluginMeta` — plugin metadata builder: key, version, action descriptors.
 - `PluginError` — typed error crossing the protocol boundary: `fatal` and `retryable`
   constructors.
 - `run_duplex` — `main`-callable async entry point: binds transport, emits handshake,
@@ -50,10 +52,13 @@ Windows) per ADR 0006.
   process**. That is the trust model. The SDK must not describe itself as providing attacker-
   grade isolation. Parallelism within a plugin process is `planned` (ADR 0006 slice 1d).
 
-- **[L1-§7.1]** Plugin is the unit of registration. Zero intra-workspace dependencies — the
-  plugin-side crate does not depend on engine-side infrastructure. Any future cross-imports
-  must be questioned hard. Wire envelope types live here (not in `nebula-plugin`) because
-  plugin authors link against them.
+- **[L1-§7.1]** Plugin is the unit of registration. **One Core-layer
+  exception to intra-workspace deps:** `nebula-metadata` (for
+  `PluginManifest`) and `nebula-schema` (for `ValidSchema` on wire).
+  Both are Core-layer crates, not engine-side infrastructure, so the
+  plugin-side binary stays free of engine coupling. Any other
+  cross-imports must be questioned hard. Wire envelope types live here
+  (not in `nebula-plugin`) because plugin authors link against them.
 
 - **[L1-§7.2]** Protocol versioning (`DUPLEX_PROTOCOL_VERSION`): cross-version compatibility
   of the wire envelope is not yet a tested contract. Breaking the envelope requires migration
@@ -71,7 +76,7 @@ Windows) per ADR 0006.
 
 See `docs/MATURITY.md` row for `nebula-plugin-sdk`.
 
-- API stability: `partial` — `PluginHandler`, `PluginMeta`, `run_duplex`, and the wire
+- API stability: `partial` — `PluginHandler`, `PluginCtx`, `run_duplex`, and the wire
   protocol are in active use (ADR 0006 slices 1a–1c landed); slice 1d adds `PluginCtx` broker
   RPC accessors and `PluginSupervisor`.
 - `PluginCtx` is a placeholder (no methods); broker RPC verbs land in slice 1d.

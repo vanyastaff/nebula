@@ -62,10 +62,10 @@ pub struct PluginDetailResponse {
     pub name: String,
     /// Short description
     pub description: String,
-    /// Latest bundle semver version (e.g. `"1.2.0"`)
+    /// Bundle semver version (e.g. `"1.2.0"`). One plugin, one version —
+    /// multi-version runtime registry was removed in the plugin load-path
+    /// stabilization (ADR-0027).
     pub version: String,
-    /// All registered bundle versions for this plugin (semver strings)
-    pub versions: Vec<String>,
     /// Group hierarchy for UI categorization
     pub group: Vec<String>,
     /// Tags for filtering

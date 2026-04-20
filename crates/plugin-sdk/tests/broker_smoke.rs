@@ -222,14 +222,12 @@ async fn metadata_request_returns_plugin_info() {
         PluginToHost::MetadataResponse {
             id,
             protocol_version,
-            plugin_key,
-            plugin_version,
+            manifest,
             actions,
         } => {
             assert_eq!(id, 99);
             assert_eq!(protocol_version, DUPLEX_PROTOCOL_VERSION);
-            assert_eq!(plugin_key, "com.nebula.echo");
-            assert_eq!(plugin_version, "0.1.0");
+            assert_eq!(manifest.key().as_str(), "com.nebula.echo");
             assert_eq!(actions.len(), 1);
             assert_eq!(actions[0].key, "echo");
         },

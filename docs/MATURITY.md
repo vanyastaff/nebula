@@ -2,7 +2,7 @@
 name: Nebula crate maturity dashboard
 description: Manual per-crate state dashboard. Edited in PRs that change a crate's API stability, test coverage, doc state, engine integration, or SLI-readiness.
 status: accepted
-last-reviewed: 2026-04-17
+last-reviewed: 2026-04-20
 related: [PRODUCT_CANON.md, STYLE.md]
 ---
 
@@ -30,7 +30,7 @@ Legend:
 | nebula-log           | stable   | stable  | stable | n/a | n/a |
 | nebula-metadata      | frontier | stable  | stable | n/a | n/a |
 | nebula-metrics       | stable   | stable  | stable | n/a | n/a |
-| nebula-plugin        | partial  | stable  | stable | partial (registry wired; load path partial) | n/a |
+| nebula-plugin        | stable   | stable  | stable | stable | n/a |
 | nebula-plugin-sdk    | partial  | stable  | stable | n/a | n/a |
 | nebula-resilience    | stable   | stable  | stable | n/a | n/a |
 | nebula-resource      | frontier | stable  | stable | partial (lifecycle visible; CAS guards partial) | n/a |
@@ -51,4 +51,18 @@ Legend:
 This file is a living dashboard. Reviewers check truthfulness on every PR that touches a crate's public surface, test suite, or docs. Canon §17 DoD includes "MATURITY.md row updated if the PR changes crate state."
 
 Last full sweep: 2026-04-17 (Pass 4 of docs architecture redesign).
-Last targeted revision: 2026-04-19 — Phase 1 of Rust 1.75–1.95 adoption complete: `once_cell` workspace dependency dropped (`LazyLock`/`OnceLock` fully adopted); ~60 `#[allow]` attrs flipped to `#[expect]` across 18 crates (Phase 1b free-lunch sweep), reducing total `#[allow]` from 116 to 56. Phases 2–5 (inherent AFIT, dynosaur, precise-capture, late polish) remain. Prior: 2026-04-19 (nebula-metadata row added; `compat.rs` extracted to BaseCompatError + validate_base_compat; action / credential / resource wired to the shared check). Prior: 2026-04-19 (ADR-0008 B1 / ADR-0017 follow-up: `pg::PgControlQueueRepo` landed — Postgres now honors the durable control plane via `FOR UPDATE SKIP LOCKED` and a concurrent-safe `reclaim_stuck` CAS; in-memory + Postgres share one behavioral parity test suite). Prior: 2026-04-19 (ADR-0008 A3 landed: engine cancel registry + dispatch_cancel / dispatch_terminate wired end-to-end; ADR-0016 documents the cooperative-cancel contract and the forced-shutdown gap).
+Last targeted revision: 2026-04-20 — Plugin load-path stabilization
+slice B landed: `Plugin` trait returns runnable `Arc<dyn Action|Credential|Resource>`,
+`PluginManifest` moved to `nebula-metadata` with `ManifestError` companion,
+`PluginMeta` deleted from the SDK, `ResolvedPlugin` per-plugin wrapper
+enforces the namespace invariant at construction, multi-version runtime
+registry (`PluginType` / `PluginVersions`) dropped (YAGNI — zero
+production consumers), `PluginRegistry` simplified + gains
+`all_*` / `resolve_*` aggregate accessors, wire protocol bumped to v3
+with full manifest + per-action `ValidSchema` per action, `plugin.toml`
+parsed at discovery with `[nebula].sdk` semver-constraint check,
+`RemoteAction` wraps `ProcessSandboxHandler` as `impl Action`,
+`DiscoveredPlugin: impl Plugin` is the host-side adapter.
+Workflow-config-sourced `PluginCapabilities` enforcement at the broker
+remains open under ADR-0025 slice 1d. See ADR-0027.
+Prior: 2026-04-19 — Phase 1 of Rust 1.75–1.95 adoption complete: `once_cell` workspace dependency dropped (`LazyLock`/`OnceLock` fully adopted); ~60 `#[allow]` attrs flipped to `#[expect]` across 18 crates (Phase 1b free-lunch sweep), reducing total `#[allow]` from 116 to 56. Phases 2–5 (inherent AFIT, dynosaur, precise-capture, late polish) remain. Prior: 2026-04-19 (nebula-metadata row added; `compat.rs` extracted to BaseCompatError + validate_base_compat; action / credential / resource wired to the shared check). Prior: 2026-04-19 (ADR-0008 B1 / ADR-0017 follow-up: `pg::PgControlQueueRepo` landed — Postgres now honors the durable control plane via `FOR UPDATE SKIP LOCKED` and a concurrent-safe `reclaim_stuck` CAS; in-memory + Postgres share one behavioral parity test suite). Prior: 2026-04-19 (ADR-0008 A3 landed: engine cancel registry + dispatch_cancel / dispatch_terminate wired end-to-end; ADR-0016 documents the cooperative-cancel contract and the forced-shutdown gap).

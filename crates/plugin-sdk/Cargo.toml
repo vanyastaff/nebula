@@ -13,6 +13,9 @@ documentation.workspace = true
 
 [dependencies]
 async-trait = { workspace = true }
+nebula-metadata = { path = "../metadata" }
+nebula-schema = { path = "../schema" }
+semver = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 tokio = { workspace = true, features = ["io-std", "io-util", "sync", "net"] }
@@ -39,6 +42,10 @@ path = "src/bin/echo_fixture.rs"
 [[bin]]
 name = "nebula-counter-fixture"
 path = "src/bin/counter_fixture.rs"
+
+[[bin]]
+name = "nebula-plugin-schema-fixture"
+path = "src/bin/schema_fixture.rs"
 
 [lints]
 workspace = true

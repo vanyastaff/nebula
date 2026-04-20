@@ -61,7 +61,8 @@ bounded concurrency.
 - `DEFAULT_BATCH_SIZE` / `DEFAULT_POLL_INTERVAL` — tunables for `ControlConsumer`.
 
 Re-exports from `nebula-plugin`: `Plugin`, `PluginKey`, `PluginManifest`, `PluginRegistry`,
-`PluginType`.
+`ResolvedPlugin`. The registry holds `Arc<ResolvedPlugin>` — a per-plugin wrapper with eager
+action/credential/resource caches enforcing the namespace invariant at construction (ADR-0027).
 
 ## Contract
 
