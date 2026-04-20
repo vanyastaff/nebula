@@ -175,6 +175,15 @@ available for diagnostics without correlating against log lines —
 `std::fs` errors do not usually include the path themselves. Non-file
 backing sources (future providers) use `ProviderError::Io { source }`.
 
+`from_path` opens the file once and runs every subsequent check
+(permissions, kind, length, read) against that handle, closing the
+`stat(path)`/`read(path)` TOCTOU gap (symlink swap between two path
+lookups). The regular-file check (`metadata.is_file()`) rejects FIFOs
+(would block on read), character devices (would yield unbounded data),
+and directories before any bytes are consumed. The read itself is a
+fixed-size `read_exact` into a zeroize-on-drop buffer — bounded and
+scrubbed regardless of subsequent failure.
+
 Useful for Kubernetes secrets mounted into the container filesystem
 (`/run/secrets/`), systemd credential files (`$CREDENTIALS_DIRECTORY/`),
 and operators who want the key on-disk with a discrete rotation story
@@ -424,7 +433,9 @@ implementation detail.
     `ProviderError::FileIo { path, .. }` with the path preserved;
     `version_changes_with_content` rewrites the same path and asserts
     the version changes, mirroring the Kubernetes / systemd in-place
-    rewrite flow.
+    rewrite flow; `refuses_non_regular_file` points the provider at
+    a directory and confirms it errors before any read — closing the
+    class of FIFO-block / device-unbounded-read failure modes.
   - `StaticKeyProvider`: round-trip + version preservation.
 - **Integration.** The existing `EncryptionLayer` test coverage at
   [`encryption.rs:257+`](../../crates/credential/src/layer/encryption.rs:257)

@@ -298,21 +298,40 @@ impl FileKeyProvider {
 
     /// Load the key from `path`.
     ///
+    /// The file is opened once; all subsequent checks run against that
+    /// handle. This avoids a TOCTOU gap between `stat(path)` and
+    /// `read(path)` where a symlink could be swapped in-between, and
+    /// ensures non-regular files (FIFOs, device nodes) are refused
+    /// before any blocking or unbounded read would occur — `std::fs::read`
+    /// without a regular-file check can block on a named pipe or read
+    /// arbitrary data from a character device.
+    ///
     /// # Errors
     ///
     /// - [`ProviderError::InsecurePermissions`] if the file is world-readable on Unix.
     /// - [`ProviderError::FileIo`] on filesystem errors (missing file, permission denied, …) —
     ///   carries the offending path for diagnostics.
-    /// - [`ProviderError::KeyMaterialRejected`] on wrong file length.
+    /// - [`ProviderError::KeyMaterialRejected`] if the target is not a regular file, or its length
+    ///   differs from [`Self::MIN_BYTES`].
     pub fn from_path(path: impl AsRef<std::path::Path>) -> Result<Self, ProviderError> {
+        use std::io::Read as _;
+
         let path = path.as_ref();
+
+        // Open once — subsequent checks run against this handle rather than
+        // the path, closing the stat/read TOCTOU gap.
+        let mut file = std::fs::File::open(path).map_err(|source| ProviderError::FileIo {
+            path: path.to_path_buf(),
+            source,
+        })?;
+        let metadata = file.metadata().map_err(|source| ProviderError::FileIo {
+            path: path.to_path_buf(),
+            source,
+        })?;
+
         #[cfg(unix)]
         {
             use std::os::unix::fs::MetadataExt;
-            let metadata = std::fs::metadata(path).map_err(|source| ProviderError::FileIo {
-                path: path.to_path_buf(),
-                source,
-            })?;
             // World-readable bit set => refuse.
             if metadata.mode() & 0o004 != 0 {
                 return Err(ProviderError::InsecurePermissions {
@@ -320,26 +339,45 @@ impl FileKeyProvider {
                 });
             }
         }
-        let bytes = std::fs::read(path).map_err(|source| ProviderError::FileIo {
-            path: path.to_path_buf(),
-            source,
-        })?;
-        let bytes = Zeroizing::new(bytes);
-        if bytes.len() != Self::MIN_BYTES {
+
+        // Reject anything that is not a regular file: FIFOs would block on
+        // read_exact, character devices (`/dev/urandom` etc.) would yield
+        // unbounded / meaningless data, and directories simply don't hold
+        // a 32-byte key.
+        if !metadata.is_file() {
+            return Err(ProviderError::KeyMaterialRejected {
+                reason: format!(
+                    "expected a regular file at {}, got a non-regular filesystem entry",
+                    path.display()
+                ),
+            });
+        }
+        if metadata.len() != Self::MIN_BYTES as u64 {
             return Err(ProviderError::KeyMaterialRejected {
                 reason: format!(
                     "expected exactly {} bytes in key file, got {}",
                     Self::MIN_BYTES,
-                    bytes.len()
+                    metadata.len()
                 ),
             });
         }
-        let mut key_bytes = [0u8; 32];
-        key_bytes.copy_from_slice(&bytes);
+
+        // Fixed-size buffer + read_exact: no chance of reading more than 32
+        // bytes, zeroized on scope exit if any subsequent step fails.
+        let mut key_bytes = Zeroizing::new([0u8; 32]);
+        file.read_exact(key_bytes.as_mut_slice())
+            .map_err(|source| ProviderError::FileIo {
+                path: path.to_path_buf(),
+                source,
+            })?;
+
         let filename = path.file_name().and_then(|n| n.to_str()).unwrap_or("key");
         let fingerprint = key_fingerprint(&key_bytes);
         Ok(Self {
-            key: Arc::new(EncryptionKey::from_bytes(key_bytes)),
+            // `EncryptionKey::from_bytes` copies the array into its own
+            // zeroize-on-drop newtype; `key_bytes` (the Zeroizing wrapper)
+            // drops at end of scope and scrubs the source buffer.
+            key: Arc::new(EncryptionKey::from_bytes(*key_bytes)),
             version: Arc::from(format!("file:{filename}:{fingerprint}")),
         })
     }
@@ -681,6 +719,27 @@ mod tests {
             },
             other => panic!("wrong variant: {other:?}"),
         }
+    }
+
+    /// Pointing `FileKeyProvider` at a non-regular-file path (here: a
+    /// directory) must refuse before any `read` call — otherwise the
+    /// behaviour would range from "reads 0 bytes" to "blocks forever on a
+    /// FIFO" to "reads unbounded data from `/dev/urandom`". Regular-file
+    /// gate closes the class. Accepting both error shapes keeps the test
+    /// portable: Unix `File::open` on a dir succeeds and the
+    /// `is_file()` check fires; Windows may refuse at `open` time.
+    #[test]
+    fn file_provider_refuses_non_regular_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let err = FileKeyProvider::from_path(dir.path())
+            .expect_err("directory must be refused before read");
+        assert!(
+            matches!(
+                err,
+                ProviderError::KeyMaterialRejected { .. } | ProviderError::FileIo { .. }
+            ),
+            "unexpected variant: {err:?}"
+        );
     }
 
     // ------------------------------------------------------------------------
