@@ -54,14 +54,14 @@ struct WireMetadata {
     actions: Vec<ActionDescriptor>,
 }
 
-/// Errors from [`probe_metadata`].
+/// Errors from `probe_metadata`.
 ///
 /// The version-mismatch branch must fire before the strongly-typed
 /// `PluginToHost` deserialize — otherwise a v2 envelope (flat
 /// `plugin_key` / `plugin_version`, no `manifest`) would surface as a
 /// confusing "missing field `manifest`" serde error instead of a clear
-/// protocol-version signal. See [`parse_metadata_response`] for the two-phase
-/// parse that enforces this ordering.
+/// protocol-version signal. The private `parse_metadata_response` helper
+/// implements the two-phase parse that enforces this ordering.
 #[derive(Debug, thiserror::Error)]
 pub enum DiscoveryError {
     /// `ProcessSandbox` failed to spawn, dial, or round-trip the
@@ -389,9 +389,9 @@ async fn discover_one(
 ///
 /// `default_capabilities` is applied to every discovered plugin's **runtime**
 /// sandbox (the long-lived one used for action dispatch). The metadata probe
-/// runs separately with [`PluginCapabilities::none`] — see [`probe_metadata`].
-/// Callers are expected to source `default_capabilities` from host
-/// configuration per deployment policy.
+/// runs separately with [`PluginCapabilities::none`] — see the private
+/// `probe_metadata` helper. Callers are expected to source
+/// `default_capabilities` from host configuration per deployment policy.
 ///
 /// Runtime `PluginCapabilities` wiring from workflow-config is tracked under
 /// ADR-0025 D4 / slice 1d.

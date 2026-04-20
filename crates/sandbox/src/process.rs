@@ -535,7 +535,7 @@ impl ProcessSandbox {
     /// `"expected a borrowed string"` when going through
     /// `serde_json::from_value`.
     ///
-    /// Used by [`crate::discovery::discover_plugin`].
+    /// Used by `discover_directory` in the `discovery` module (private path).
     pub async fn get_metadata_raw(&self) -> Result<Vec<u8>, ActionError> {
         let request = HostToPlugin::MetadataRequest {
             id: self.next_envelope_id(),
