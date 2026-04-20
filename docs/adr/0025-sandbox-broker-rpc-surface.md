@@ -1,7 +1,7 @@
 ---
 id: 0025
 title: sandbox-broker-rpc-surface
-status: proposed
+status: accepted
 date: 2026-04-20
 supersedes: []
 superseded_by: []
@@ -12,7 +12,8 @@ related:
   - docs/adr/0023-keyprovider-trait.md
   - docs/plans/2026-04-13-sandbox-roadmap.md
   - docs/PRODUCT_CANON.md#125-secrets-and-auth
-  - docs/PRODUCT_CANON.md#126-sandbox
+  - docs/PRODUCT_CANON.md#126-isolation-honesty
+  - docs/PRODUCT_CANON.md#45-operational-honesty--no-false-capabilities
   - docs/STYLE.md#6-secret-handling
 linear: []
 ---
@@ -59,9 +60,9 @@ The Canon context that binds us:
   secret material must not cross a process boundary as plaintext unless it
   is strictly required for the outbound call, and even then it must not be
   materialised in plugin address space.
-- **[§12.6 sandbox](../PRODUCT_CANON.md#126-sandbox)** — process isolation
-  is the boundary; WASM / WASI is an explicit non-goal.
-- **[§4.5 operational honesty](../PRODUCT_CANON.md#45-operational-honesty)**
+- **[§12.6 isolation honesty](../PRODUCT_CANON.md#126-isolation-honesty)** —
+  process isolation is the boundary; WASM / WASI is an explicit non-goal.
+- **[§4.5 operational honesty](../PRODUCT_CANON.md#45-operational-honesty--no-false-capabilities)**
   — do not advertise a capability (permission manifest, scope declaration)
   the engine does not enforce end-to-end.
 - **[STYLE.md §6 — Secret handling](../STYLE.md#6-secret-handling)** — the
@@ -170,7 +171,7 @@ RPC response to the plugin without blocking on delivery. The EventBus owns
 downstream durability; any proposal to make broker audit synchronous-on-RPC
 must land as a superseding ADR.
 
-```
+```rust
 BrokerAuditEvent {
     verb:          &'static str,          // from the fixed verb table
     plugin_id:     PluginId,              // from process identity, not plugin-supplied

@@ -32,7 +32,7 @@ changes land as a new ADR that `supersedes` it.
 | [0022](./0022-webhook-signature-policy.md) | Webhook signature policy (`SignaturePolicy::Required` default at `WebhookAction` trait level) | accepted | 2026-04-19 |
 | [0023](./0023-keyprovider-trait.md) | `KeyProvider` trait between `EncryptionLayer` and key material source | accepted | 2026-04-19 |
 | [0024](./0024-defer-dynosaur-migration.md) | Defer `dynosaur` migration — keep `#[async_trait]` for `dyn`-consumed traits (supersedes 0014) | accepted | 2026-04-20 |
-| [0025](./0025-sandbox-broker-rpc-surface.md) | Sandbox Phase 1 broker — RPC surface and audit posture (sibling to 0006) | proposed | 2026-04-20 |
+| [0025](./0025-sandbox-broker-rpc-surface.md) | Sandbox Phase 1 broker — RPC surface and audit posture (sibling to 0006) | accepted | 2026-04-20 |
 
 ## Writing a new ADR
 
