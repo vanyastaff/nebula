@@ -552,24 +552,34 @@ per crate.
 ## Migration sequencing
 
 Five phases, ordered by reviewability and blast radius. Each phase
-produces an independent, revertable PR family.
+produces an independent, revertible PR family.
 
-### Phase 1 — Free-lunch sweep (1 PR)
+### Phase 1 — Free-lunch sweep (1 `once_cell` PR + per-crate `#[expect]` chips)
 
-**Scope.** Remove `once_cell` and switch a small batch of `#[allow]`s
-with explanatory comments to `#[expect]`.
+Two slices. Sub-phase 1a is a single workspace PR; sub-phase 1b is
+per-crate and can run in parallel chips because the changes are
+crate-local.
+
+**1a (1 PR) — drop `once_cell`.**
 
 - Flip `crates/expression/src/maybe.rs:7` from `once_cell::sync::OnceCell`
   to `std::sync::OnceLock` (`get_or_try_init` is API-compatible).
 - Delete `once_cell = "1.21"` from `Cargo.toml:79` and
   `crates/expression/Cargo.toml:30`.
-- Open a separate per-crate chip converting `#[allow(dead_code)]` →
-  `#[expect(dead_code)]` for the ones that explain themselves in a
-  trailing comment. Skip bare `#[allow]` with no rationale.
 
-**Risk.** Zero blast radius; one workspace dep disappears.
+**1b (per-crate chip, one PR per crate) — `#[allow]` → `#[expect]`.**
 
-**Verify.**
+- Convert `#[allow(dead_code)]`, `#[allow(unused*)]`, `#[allow(deprecated)]`,
+  `#[allow(clippy::…)]` to `#[expect(…)]` only when the attribute already
+  has an explanatory comment (or the rationale is obvious from context).
+- Skip bare `#[allow]` with no rationale — those are legitimate
+  forward-compatibility declarations and should stay as `allow`.
+- Budget: ~80–90 conversions out of 116 total `#[allow]`s.
+
+**Risk.** Zero blast radius on both slices; 1a deletes one workspace
+dep; 1b changes lint attributes only.
+
+**Verify (same for 1a and 1b).**
 
 ```bash
 cargo +nightly fmt --all
@@ -577,19 +587,33 @@ cargo clippy --workspace -- -D warnings
 cargo nextest run --workspace
 ```
 
-**Acceptance.** `cargo deny check` still green; `rg 'once_cell' crates/`
-and `rg 'lazy_static!' crates/` both return nothing; workspace
-dependency count drops by **1** entry.
+For 1b also run `cargo clippy --workspace` in verbose mode once and
+confirm no `unfulfilled_lint_expectations` warnings fire — a stale
+`#[expect]` means the underlying lint no longer triggers and the
+attribute is wrong.
 
-### Phase 2 — Inherent AFIT for zero-dyn traits (~7 PRs, one per crate)
+**Acceptance — 1a:** `cargo deny check` still green; `rg 'once_cell'
+crates/` and `rg 'lazy_static!' crates/` both return nothing;
+`[workspace.dependencies]` drops `once_cell` (one entry).
 
-**Scope.** 18 traits that have **zero** `dyn Trait` use sites. Drop
-`#[async_trait]`, leave the trait as plain `async fn` (stable 1.75 AFIT),
-delete the `async_trait` macro imports from the crate.
+**Acceptance — 1b (per crate):** `rg '#\[allow\(' crates/<crate>/src/`
+count drops by the number of conversions the PR made; `rg '#\[expect\('
+crates/<crate>/src/` grows by the same amount; no
+`unfulfilled_lint_expectations` warnings in the build.
 
-Trait list by crate:
+### Phase 2 — Inherent AFIT for zero-dyn traits (3 PRs, one per owner crate)
 
-| Crate | Traits with 0 `dyn` sites | File anchors |
+**Scope.** 18 traits that have **zero** `dyn Trait` use sites,
+distributed across 3 owner crates. Drop `#[async_trait]`, leave the
+trait as plain `async fn` (stable 1.75 AFIT), delete the `async_trait`
+macro imports from the crate. Impl blocks that live in other crates
+(e.g. in-memory impls consumed by tests) get their `#[async_trait]`
+removed in the same PR as their owner crate — downstream impl-only
+crates do not get separate PRs.
+
+Trait list by owner crate:
+
+| Owner crate | Traits with 0 `dyn` sites | File anchors |
 |---|---|---|
 | `nebula-storage` (new `repos/*.rs` layer) | `WorkflowVersionRepo`, `AuditRepo`, `WorkspaceRepo`, `JournalRepo`, `CredentialRepo`, `ExecutionNodeRepo`, `BlobRepo`, `UserRepo`, `SessionRepo`, `PatRepo`, `OrgRepo`, `ResourceRepo`, `QuotaRepo`, `TriggerRepo`, newer `WorkflowRepo` (repos/workflow.rs:16), newer `ExecutionRepo` (repos/execution.rs:14) | `crates/storage/src/repos/*.rs` |
 | `nebula-credential` | `NotificationSender`, `TestableCredential`, `RotatableCredential` | `crates/credential/src/rotation/{events.rs,validation.rs}` |
