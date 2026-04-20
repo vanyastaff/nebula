@@ -48,16 +48,20 @@ pub fn assert_failure<T: std::fmt::Debug>(
     assert!(is_failure(result), "Expected failure, got: {result:?}");
 }
 
-/// Lightweight identifier fixtures. Values are random per call, so each test
-/// invocation gets unique IDs that won't collide across parallel test threads.
+/// Lightweight identifier fixtures.
+///
+/// `execution_id()` returns a fresh UUID per call so concurrent tests do not
+/// collide. `workflow_id()` is intentionally stable (`"test-workflow-001"`)
+/// because tests typically share one workflow across many executions; if your
+/// tests need unique workflow IDs, generate them inline.
 pub mod fixtures {
-    /// Stable string for test workflow identifiers.
+    /// Stable workflow identifier shared across test invocations.
     #[must_use]
     pub fn workflow_id() -> String {
         "test-workflow-001".to_string()
     }
 
-    /// Random UUID-shaped execution identifier (one per call).
+    /// Fresh UUID-shaped execution identifier — unique per call.
     #[must_use]
     pub fn execution_id() -> String {
         uuid::Uuid::new_v4().to_string()
