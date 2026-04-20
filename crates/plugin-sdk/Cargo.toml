@@ -43,5 +43,9 @@ path = "src/bin/echo_fixture.rs"
 name = "nebula-counter-fixture"
 path = "src/bin/counter_fixture.rs"
 
+[[bin]]
+name = "nebula-plugin-schema-fixture"
+path = "src/bin/schema_fixture.rs"
+
 [lints]
 workspace = true
