@@ -132,10 +132,13 @@ pub use guard::CredentialGuard;
 pub use handle::CredentialHandle;
 // Credential key newtype
 pub use key::CredentialKey;
+#[cfg(any(test, feature = "test-util"))]
+pub use layer::StaticKeyProvider;
 // Storage layers
 pub use layer::{
     AuditEvent, AuditLayer, AuditOperation, AuditResult, AuditSink, CacheConfig, CacheLayer,
-    CacheStats, EncryptionLayer, ScopeLayer, ScopeResolver,
+    CacheStats, EncryptionLayer, EnvKeyProvider, FileKeyProvider, KeyProvider, ProviderError,
+    ScopeLayer, ScopeResolver,
 };
 pub use nebula_core::{AuthPattern, AuthScheme, CredentialEvent, CredentialId};
 pub use nebula_credential_macros::{AuthScheme, Credential};
