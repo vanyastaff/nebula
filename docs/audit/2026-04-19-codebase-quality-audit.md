@@ -217,7 +217,7 @@ not a parallel stack with its own auth / key / storage paths. ADR-0008's
 
 | ID | Title | Owner | Trigger |
 |---|---|---|---|
-| TBD | KeyProvider trait between EncryptionLayer and key material source | security-lead | Before any composition root |
+| [0022](../adr/0022-keyprovider-trait.md) | KeyProvider trait between EncryptionLayer and key material source | security-lead | Before any composition root |
 | [0021](../adr/0021-crate-publication-policy.md) | Crate publication policy (publish=true ≥3 consumers OR ADR) | rust-senior | Before next 1.0 release-train discussion |
 | [0020](../adr/0020-library-first-gtm.md) | Library-first GTM + apps/server as thin composition root | tech-lead | Now (closes the strategic question) |
 | TBD | Webhook signature policy (Required default) | security-lead | Before webhook-trigger v1 lock |
