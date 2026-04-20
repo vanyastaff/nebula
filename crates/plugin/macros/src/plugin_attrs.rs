@@ -3,6 +3,7 @@
 use nebula_macro_support::attrs;
 use proc_macro2::TokenStream as TokenStream2;
 use quote::quote;
+use semver::Version;
 use syn::{Ident, Result};
 
 /// Parsed plugin container attributes.
@@ -14,8 +15,12 @@ pub(crate) struct PluginAttrs {
     pub name: String,
     /// Short description.
     pub description: String,
-    /// Version number.
-    pub version: u32,
+    /// Raw semver string (validated at macro-expand time).
+    ///
+    /// Stored as a string rather than a parsed [`Version`] so the generated
+    /// code can reconstruct the full value — including pre-release and build
+    /// metadata — via `Version::parse` at runtime without losing fidelity.
+    pub version: String,
     /// Group hierarchy for UI (e.g. `["network", "api"]`).
     pub group: Vec<String>,
 }
@@ -36,7 +41,22 @@ impl PluginAttrs {
             .filter(|s| !s.is_empty())
             .unwrap_or_else(|| name.clone());
 
-        let version = attr_args.get_int("version").unwrap_or(1) as u32;
+        let version = match attr_args.get_string("version") {
+            Some(raw) => {
+                // Validate at macro-expand time; the raw string is preserved
+                // verbatim so pre-release and build metadata survive into
+                // the emitted `PluginManifest`.
+                raw.parse::<Version>().map_err(|e| {
+                    syn::Error::new(
+                        struct_name.span(),
+                        format!("invalid semver in #[plugin(version = \"{raw}\")]: {e}"),
+                    )
+                })?;
+                raw
+            },
+            None => "1.0.0".to_owned(),
+        };
+
         let group = attr_args.get_list("group").unwrap_or_default();
 
         Ok(Self {
@@ -48,22 +68,29 @@ impl PluginAttrs {
         })
     }
 
-    /// Generate `PluginMetadata` builder expression.
-    pub(crate) fn metadata_builder_expr(&self) -> TokenStream2 {
+    /// Generate `PluginManifest` builder expression.
+    pub(crate) fn manifest_builder_expr(&self) -> TokenStream2 {
         let key = &self.key;
         let name = &self.name;
         let description = &self.description;
-        let version = self.version;
+        // Preserve the full semver (including pre-release / build metadata) by
+        // parsing the already-validated raw string at runtime. The `.expect`
+        // is unreachable because `PluginAttrs::parse` verifies the string is
+        // a valid semver before this point.
+        let version = &self.version;
         let group_items: Vec<TokenStream2> =
             self.group.iter().map(|g| quote!(#g.to_string())).collect();
 
         quote! {
-            ::nebula_plugin::PluginMetadata::builder(#key, #name)
+            ::nebula_plugin::PluginManifest::builder(#key, #name)
                 .description(#description)
-                .version(#version)
+                .version(
+                    ::semver::Version::parse(#version)
+                        .expect("plugin version validated at macro-expand time"),
+                )
                 .group(vec![#(#group_items),*])
                 .build()
-                .expect("invalid plugin metadata")
+                .expect("invalid plugin manifest")
         }
     }
 }

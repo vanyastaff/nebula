@@ -1,6 +1,7 @@
 //! Plugin error types.
 
 use nebula_core::PluginKey;
+use semver::Version;
 
 /// Errors from plugin operations.
 #[derive(Debug, thiserror::Error, nebula_error::Classify)]
@@ -15,7 +16,7 @@ pub enum PluginError {
     #[error("version {version} not found for plugin '{key}'")]
     VersionNotFound {
         /// The requested version.
-        version: u32,
+        version: Version,
         /// The plugin key.
         key: PluginKey,
     },
@@ -50,7 +51,7 @@ pub enum PluginError {
     #[error("version {version} already exists for plugin '{key}'")]
     VersionAlreadyExists {
         /// The conflicting version.
-        version: u32,
+        version: Version,
         /// The plugin key.
         key: PluginKey,
     },
@@ -132,10 +133,13 @@ mod tests {
     #[test]
     fn version_not_found_display() {
         let key: PluginKey = "http_request".parse().unwrap();
-        let err = PluginError::VersionNotFound { version: 3, key };
+        let err = PluginError::VersionNotFound {
+            version: Version::new(3, 0, 0),
+            key,
+        };
         assert_eq!(
             err.to_string(),
-            "version 3 not found for plugin 'http_request'"
+            "version 3.0.0 not found for plugin 'http_request'"
         );
     }
 

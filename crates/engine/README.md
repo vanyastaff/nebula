@@ -60,7 +60,7 @@ bounded concurrency.
 - `DEFAULT_EVENT_CHANNEL_CAPACITY` — default backpressure bound for the event channel.
 - `DEFAULT_BATCH_SIZE` / `DEFAULT_POLL_INTERVAL` — tunables for `ControlConsumer`.
 
-Re-exports from `nebula-plugin`: `Plugin`, `PluginKey`, `PluginMetadata`, `PluginRegistry`,
+Re-exports from `nebula-plugin`: `Plugin`, `PluginKey`, `PluginManifest`, `PluginRegistry`,
 `PluginType`.
 
 ## Contract

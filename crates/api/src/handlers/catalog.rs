@@ -114,8 +114,8 @@ pub async fn list_plugins(State(state): State<AppState>) -> ApiResult<Json<ListP
             })?;
             let plugin = pt.latest().ok();
             let (name, version) = plugin.as_ref().map_or_else(
-                || (key.as_str().to_string(), 1),
-                |p| (p.name().to_string(), p.version()),
+                || (key.as_str().to_string(), "1.0.0".to_string()),
+                |p| (p.name().to_string(), p.version().to_string()),
             );
             Ok(PluginSummary {
                 key: key.as_str().to_string(),
@@ -156,24 +156,27 @@ pub async fn get_plugin(
         .get(&plugin_key)
         .map_err(|_| ApiError::NotFound(format!("Plugin '{key}' not found")))?;
 
-    let versions = plugin_type.version_numbers();
+    let versions: Vec<String> = plugin_type
+        .version_numbers()
+        .into_iter()
+        .map(|v| v.to_string())
+        .collect();
     let latest = plugin_type
         .latest()
         .map_err(|e| ApiError::Internal(format!("Failed to get plugin: {e}")))?;
 
-    let meta = latest.metadata();
+    let manifest = latest.manifest();
 
     Ok(Json(PluginDetailResponse {
-        key: meta.key().as_str().to_string(),
-        name: meta.name().to_string(),
-        description: meta.description().to_string(),
-        version: latest.version(),
+        key: manifest.key().as_str().to_string(),
+        name: manifest.name().to_string(),
+        description: manifest.description().to_string(),
+        version: latest.version().to_string(),
         versions,
-        group: meta.group().to_vec(),
-        tags: meta.tags().to_vec(),
-        icon_url: meta.icon_url().map(str::to_string),
-        documentation_url: meta.documentation_url().map(str::to_string),
-        author: meta.author().map(str::to_string),
-        license: meta.license().map(str::to_string),
+        group: manifest.group().to_vec(),
+        tags: manifest.tags().to_vec(),
+        icon_url: manifest.icon().as_url().map(str::to_string),
+        author: manifest.author().map(str::to_string),
+        license: manifest.license().map(str::to_string),
     }))
 }

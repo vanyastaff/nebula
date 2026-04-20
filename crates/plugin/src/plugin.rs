@@ -3,40 +3,41 @@
 use std::fmt::Debug;
 
 use nebula_core::PluginKey;
+use semver::Version;
 
 use crate::{
-    PluginError, PluginMetadata,
+    PluginError, PluginManifest,
     descriptor::{ActionDescriptor, CredentialDescriptor, ResourceDescriptor},
 };
 
 /// Base trait for all plugin types in Nebula.
 ///
 /// A plugin is a user-visible, versionable packaging unit (e.g. "Slack",
-/// "HTTP Request"). It provides metadata describing the plugin's identity
+/// "HTTP Request"). It provides a manifest describing the plugin's identity
 /// and version, and optionally declares the actions, credentials, and resources
 /// it contributes to the engine.
 ///
-/// All methods except [`Plugin::metadata`] have default implementations so that
-/// existing plugin implementations continue to compile without changes.
+/// Implementers must provide [`Plugin::manifest`]. All other methods have
+/// default implementations and can be overridden as needed.
 ///
 /// This trait is **object-safe** so plugins can be stored as `Arc<dyn Plugin>`.
 pub trait Plugin: Send + Sync + Debug + 'static {
-    /// Returns the static metadata for this plugin.
-    fn metadata(&self) -> &PluginMetadata;
+    /// Returns the static manifest for this plugin.
+    fn manifest(&self) -> &PluginManifest;
 
     /// The normalized, unique key identifying this plugin type.
     fn key(&self) -> &PluginKey {
-        self.metadata().key()
+        self.manifest().key()
     }
 
     /// Human-readable display name.
     fn name(&self) -> &str {
-        self.metadata().name()
+        self.manifest().name()
     }
 
-    /// Version number (1-based).
-    fn version(&self) -> u32 {
-        self.metadata().version()
+    /// Bundle semver version.
+    fn version(&self) -> &Version {
+        self.manifest().version()
     }
 
     /// Actions this plugin provides.
@@ -48,17 +49,17 @@ pub trait Plugin: Send + Sync + Debug + 'static {
     ///
     /// ```
     /// use nebula_core::ActionKey;
-    /// use nebula_plugin::{Plugin, PluginMetadata, descriptor::ActionDescriptor};
+    /// use nebula_plugin::{Plugin, PluginManifest, descriptor::ActionDescriptor};
     /// use semver::Version;
     ///
     /// #[derive(Debug)]
     /// struct MyPlugin {
-    ///     meta: PluginMetadata,
+    ///     manifest: PluginManifest,
     /// }
     ///
     /// impl Plugin for MyPlugin {
-    ///     fn metadata(&self) -> &PluginMetadata {
-    ///         &self.meta
+    ///     fn manifest(&self) -> &PluginManifest {
+    ///         &self.manifest
     ///     }
     ///
     ///     fn actions(&self) -> Vec<ActionDescriptor> {
@@ -72,7 +73,7 @@ pub trait Plugin: Send + Sync + Debug + 'static {
     /// }
     ///
     /// let plugin = MyPlugin {
-    ///     meta: PluginMetadata::builder("my", "My").build().unwrap(),
+    ///     manifest: PluginManifest::builder("my", "My").build().unwrap(),
     /// };
     /// assert_eq!(plugin.actions().len(), 1);
     /// ```
@@ -89,16 +90,16 @@ pub trait Plugin: Send + Sync + Debug + 'static {
     ///
     /// ```
     /// use nebula_core::CredentialKey;
-    /// use nebula_plugin::{Plugin, PluginMetadata, descriptor::CredentialDescriptor};
+    /// use nebula_plugin::{Plugin, PluginManifest, descriptor::CredentialDescriptor};
     ///
     /// #[derive(Debug)]
     /// struct MyPlugin {
-    ///     meta: PluginMetadata,
+    ///     manifest: PluginManifest,
     /// }
     ///
     /// impl Plugin for MyPlugin {
-    ///     fn metadata(&self) -> &PluginMetadata {
-    ///         &self.meta
+    ///     fn manifest(&self) -> &PluginManifest {
+    ///         &self.manifest
     ///     }
     ///
     ///     fn credentials(&self) -> Vec<CredentialDescriptor> {
@@ -111,7 +112,7 @@ pub trait Plugin: Send + Sync + Debug + 'static {
     /// }
     ///
     /// let plugin = MyPlugin {
-    ///     meta: PluginMetadata::builder("my", "My").build().unwrap(),
+    ///     manifest: PluginManifest::builder("my", "My").build().unwrap(),
     /// };
     /// assert_eq!(plugin.credentials().len(), 1);
     /// ```
@@ -128,16 +129,16 @@ pub trait Plugin: Send + Sync + Debug + 'static {
     ///
     /// ```
     /// use nebula_core::ResourceKey;
-    /// use nebula_plugin::{Plugin, PluginMetadata, descriptor::ResourceDescriptor};
+    /// use nebula_plugin::{Plugin, PluginManifest, descriptor::ResourceDescriptor};
     ///
     /// #[derive(Debug)]
     /// struct MyPlugin {
-    ///     meta: PluginMetadata,
+    ///     manifest: PluginManifest,
     /// }
     ///
     /// impl Plugin for MyPlugin {
-    ///     fn metadata(&self) -> &PluginMetadata {
-    ///         &self.meta
+    ///     fn manifest(&self) -> &PluginManifest {
+    ///         &self.manifest
     ///     }
     ///
     ///     fn resources(&self) -> Vec<ResourceDescriptor> {
@@ -150,7 +151,7 @@ pub trait Plugin: Send + Sync + Debug + 'static {
     /// }
     ///
     /// let plugin = MyPlugin {
-    ///     meta: PluginMetadata::builder("my", "My").build().unwrap(),
+    ///     manifest: PluginManifest::builder("my", "My").build().unwrap(),
     /// };
     /// assert_eq!(plugin.resources().len(), 1);
     /// ```
@@ -172,16 +173,16 @@ pub trait Plugin: Send + Sync + Debug + 'static {
     /// # Examples
     ///
     /// ```
-    /// use nebula_plugin::{Plugin, PluginError, PluginMetadata};
+    /// use nebula_plugin::{Plugin, PluginError, PluginManifest};
     ///
     /// #[derive(Debug)]
     /// struct MyPlugin {
-    ///     meta: PluginMetadata,
+    ///     manifest: PluginManifest,
     /// }
     ///
     /// impl Plugin for MyPlugin {
-    ///     fn metadata(&self) -> &PluginMetadata {
-    ///         &self.meta
+    ///     fn manifest(&self) -> &PluginManifest {
+    ///         &self.manifest
     ///     }
     ///
     ///     fn on_load(&self) -> Result<(), PluginError> {
@@ -191,7 +192,7 @@ pub trait Plugin: Send + Sync + Debug + 'static {
     /// }
     ///
     /// let plugin = MyPlugin {
-    ///     meta: PluginMetadata::builder("my", "My").build().unwrap(),
+    ///     manifest: PluginManifest::builder("my", "My").build().unwrap(),
     /// };
     /// assert!(plugin.on_load().is_ok());
     /// ```
@@ -212,16 +213,16 @@ pub trait Plugin: Send + Sync + Debug + 'static {
     /// # Examples
     ///
     /// ```
-    /// use nebula_plugin::{Plugin, PluginError, PluginMetadata};
+    /// use nebula_plugin::{Plugin, PluginError, PluginManifest};
     ///
     /// #[derive(Debug)]
     /// struct MyPlugin {
-    ///     meta: PluginMetadata,
+    ///     manifest: PluginManifest,
     /// }
     ///
     /// impl Plugin for MyPlugin {
-    ///     fn metadata(&self) -> &PluginMetadata {
-    ///         &self.meta
+    ///     fn manifest(&self) -> &PluginManifest {
+    ///         &self.manifest
     ///     }
     ///
     ///     fn on_unload(&self) -> Result<(), PluginError> {
@@ -231,7 +232,7 @@ pub trait Plugin: Send + Sync + Debug + 'static {
     /// }
     ///
     /// let plugin = MyPlugin {
-    ///     meta: PluginMetadata::builder("my", "My").build().unwrap(),
+    ///     manifest: PluginManifest::builder("my", "My").build().unwrap(),
     /// };
     /// assert!(plugin.on_unload().is_ok());
     /// ```
@@ -250,27 +251,27 @@ mod tests {
     use super::*;
     use crate::descriptor::{ActionDescriptor, CredentialDescriptor, ResourceDescriptor};
 
-    /// A minimal plugin implementation for testing (only implements `metadata`).
+    /// A minimal plugin implementation for testing (only implements `manifest`).
     #[derive(Debug)]
     struct MinimalPlugin {
-        meta: PluginMetadata,
+        manifest: PluginManifest,
     }
 
     impl Plugin for MinimalPlugin {
-        fn metadata(&self) -> &PluginMetadata {
-            &self.meta
+        fn manifest(&self) -> &PluginManifest {
+            &self.manifest
         }
     }
 
     /// A plugin that overrides all optional methods.
     #[derive(Debug)]
     struct FullPlugin {
-        meta: PluginMetadata,
+        manifest: PluginManifest,
     }
 
     impl Plugin for FullPlugin {
-        fn metadata(&self) -> &PluginMetadata {
-            &self.meta
+        fn manifest(&self) -> &PluginManifest {
+            &self.manifest
         }
 
         fn actions(&self) -> Vec<ActionDescriptor> {
@@ -309,23 +310,23 @@ mod tests {
 
     #[test]
     fn trait_default_methods() {
-        let meta = PluginMetadata::builder("slack", "Slack")
-            .version(2)
+        let manifest = PluginManifest::builder("slack", "Slack")
+            .version(Version::new(2, 0, 0))
             .description("Send messages")
             .build()
             .unwrap();
 
-        let plugin = MinimalPlugin { meta };
+        let plugin = MinimalPlugin { manifest };
 
         assert_eq!(plugin.key().as_str(), "slack");
         assert_eq!(plugin.name(), "Slack");
-        assert_eq!(plugin.version(), 2);
+        assert_eq!(plugin.version(), &Version::new(2, 0, 0));
     }
 
     #[test]
     fn existing_impl_defaults_return_empty() {
-        let meta = PluginMetadata::builder("slack", "Slack").build().unwrap();
-        let plugin = MinimalPlugin { meta };
+        let manifest = PluginManifest::builder("slack", "Slack").build().unwrap();
+        let plugin = MinimalPlugin { manifest };
 
         assert!(plugin.actions().is_empty());
         assert!(plugin.credentials().is_empty());
@@ -336,8 +337,8 @@ mod tests {
 
     #[test]
     fn full_plugin_overrides_work() {
-        let meta = PluginMetadata::builder("slack", "Slack").build().unwrap();
-        let plugin = FullPlugin { meta };
+        let manifest = PluginManifest::builder("slack", "Slack").build().unwrap();
+        let plugin = FullPlugin { manifest };
 
         let actions = plugin.actions();
         assert_eq!(actions.len(), 1);
@@ -357,11 +358,11 @@ mod tests {
 
     #[test]
     fn object_safety() {
-        let meta = PluginMetadata::builder("test", "Test").build().unwrap();
-        let plugin: Arc<dyn Plugin> = Arc::new(MinimalPlugin { meta });
+        let manifest = PluginManifest::builder("test", "Test").build().unwrap();
+        let plugin: Arc<dyn Plugin> = Arc::new(MinimalPlugin { manifest });
 
         assert_eq!(plugin.key().as_str(), "test");
-        assert_eq!(plugin.version(), 1);
+        assert_eq!(plugin.version(), &Version::new(1, 0, 0));
         assert!(plugin.actions().is_empty());
     }
 }

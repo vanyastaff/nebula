@@ -196,7 +196,7 @@ Major choices should map to a pillar; if a feature maps to none, it is probably 
 
 - **`Cargo.toml`** — Rust package identity and dependency graph (including cross-plugin `[dependencies]`).
 - **`plugin.toml`** — trust + compatibility boundary (SDK constraint, optional stable plugin id, signing when enabled). Read without compiling.
-- **`impl Plugin` + `PluginMetadata`** — runtime source of truth for registered actions / resources / credentials / locales.
+- **`impl Plugin` + `PluginManifest`** — runtime source of truth for registered actions / resources / credentials / locales (bundle descriptor, not a schematized leaf — ADR-0018).
 
 **[L2]** Cross-plugin types come in via `Cargo.toml` `[dependencies]` on the provider plugin crate. Engine loads providers before dependents (acyclic graph). Referencing a type outside the declared dependency closure is a misconfiguration caught at activation.
 

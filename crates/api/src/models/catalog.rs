@@ -42,8 +42,8 @@ pub struct PluginSummary {
     pub key: String,
     /// Human-readable name
     pub name: String,
-    /// Latest version number
-    pub version: u32,
+    /// Latest bundle semver version (e.g. `"1.2.0"`)
+    pub version: String,
 }
 
 /// Response for `GET /plugins`.
@@ -62,20 +62,17 @@ pub struct PluginDetailResponse {
     pub name: String,
     /// Short description
     pub description: String,
-    /// Latest version number
-    pub version: u32,
-    /// All registered version numbers for this plugin
-    pub versions: Vec<u32>,
+    /// Latest bundle semver version (e.g. `"1.2.0"`)
+    pub version: String,
+    /// All registered bundle versions for this plugin (semver strings)
+    pub versions: Vec<String>,
     /// Group hierarchy for UI categorization
     pub group: Vec<String>,
     /// Tags for filtering
     pub tags: Vec<String>,
-    /// Optional icon URL
+    /// Optional icon URL (populated only when the manifest uses a URL-backed icon)
     #[serde(skip_serializing_if = "Option::is_none")]
     pub icon_url: Option<String>,
-    /// Optional documentation URL
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub documentation_url: Option<String>,
     /// Optional author name
     #[serde(skip_serializing_if = "Option::is_none")]
     pub author: Option<String>,

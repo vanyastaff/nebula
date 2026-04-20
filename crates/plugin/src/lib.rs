@@ -1,23 +1,24 @@
 //! # nebula-plugin
 //!
-//! **Role:** Plugin Distribution Unit — registry + metadata. Canon §7.1 (plugin
+//! **Role:** Plugin Distribution Unit — registry + manifest. Canon §7.1 (plugin
 //! is the unit of registration, not the unit of size; full plugins and
 //! micro-plugins use the same contract).
 //!
 //! A plugin bundles Actions, Credentials, and Resources under a versioned
-//! identity. This crate provides only the trait, metadata types, and in-memory
+//! identity. This crate provides only the trait, manifest types, and in-memory
 //! registry — no I/O, no FFI. Loading and isolation live in `nebula-sandbox`.
 //!
 //! ## Key types
 //!
 //! - `Plugin` — base trait every plugin implements; `actions()`, `credentials()`, `resources()`,
 //!   `on_load()`, `on_unload()` (default no-ops).
-//! - `PluginMetadata` — static descriptor with builder API (key, name, version, group, icon, docs
-//!   URL).
+//! - `PluginManifest` — bundle descriptor with builder API (key, name, semver version, group,
+//!   `Icon`, maturity, deprecation, author/license/homepage/repository metadata). Does **not**
+//!   compose `BaseMetadata<K>` — a plugin is a container, not a schematized leaf (ADR-0018).
 //! - `ActionDescriptor`, `CredentialDescriptor`, `ResourceDescriptor` — lightweight descriptors
 //!   returned by the `Plugin` trait methods.
 //! - `PluginType` — enum: single plugin or `PluginVersions` set.
-//! - `PluginVersions` — multi-version container keyed by `u32`.
+//! - `PluginVersions` — multi-version container keyed by `semver::Version`.
 //! - `PluginRegistry` — in-memory `PluginKey → PluginType` registry.
 //! - `PluginError` — typed error for plugin operations.
 //! - `#[derive(Plugin)]` — proc-macro derivation.
@@ -33,7 +34,7 @@
 
 pub mod descriptor;
 mod error;
-mod metadata;
+mod manifest;
 mod plugin;
 mod plugin_type;
 mod registry;
@@ -43,7 +44,7 @@ mod versions;
 
 pub use descriptor::{ActionDescriptor, CredentialDescriptor, ResourceDescriptor};
 pub use error::PluginError;
-pub use metadata::PluginMetadata;
+pub use manifest::{PluginManifest, PluginManifestBuilder};
 // Re-export PluginKey from core for convenience.
 pub use nebula_core::PluginKey;
 pub use nebula_plugin_macros::Plugin;

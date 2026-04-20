@@ -36,7 +36,7 @@ Top-level re-exports (full crates):
 - `nebula_resource` — resource model and lifecycle types.
 - `nebula_schema` — `Field`, `Schema`, `FieldValues`, proof-token pipeline.
 - `nebula_workflow` — workflow definition types, `DependencyGraph`.
-- `nebula_plugin` — `Plugin` trait, `PluginMetadata`, `PluginRegistry`.
+- `nebula_plugin` — `Plugin` trait, `PluginManifest`, `PluginRegistry`.
 - `nebula_validator` — validation traits.
 - `nebula_core` — core ID types (`ExecutionId`, `NodeKey`, `WorkflowId`).
 

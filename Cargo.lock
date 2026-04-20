@@ -4065,6 +4065,7 @@ version = "0.1.0"
 dependencies = [
  "nebula-core",
  "nebula-error",
+ "nebula-metadata",
  "nebula-plugin-macros",
  "semver",
  "serde",
@@ -4079,6 +4080,7 @@ dependencies = [
  "nebula-macro-support",
  "proc-macro2",
  "quote",
+ "semver",
  "syn 2.0.117",
 ]
 
