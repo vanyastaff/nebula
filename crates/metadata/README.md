@@ -11,14 +11,17 @@ related: [nebula-action, nebula-credential, nebula-resource, nebula-plugin]
 
 ## Purpose
 
-Every catalog citizen in Nebula — an action, a credential, a resource, a
-future plugin — shares the same surface: a typed key, a human-readable
-name and description, a canonical input schema, optional catalog
-ornaments (icon, documentation URL, tags), a declared maturity level,
-and an optional deprecation notice. `nebula-metadata` owns those shared
+Every catalog leaf in Nebula — such as an action, a credential, or a
+resource — shares the same surface: a typed key, a human-readable name
+and description, a canonical input schema, optional catalog ornaments
+(icon, documentation URL, tags), a declared maturity level, and an
+optional deprecation notice. `nebula-metadata` owns those shared
 concerns as concrete types and a small trait, so each business-layer
 crate composes them instead of redeclaring the same prefix with
-incompatible field names.
+incompatible field names. Plugins are described separately as container
+descriptors: they may reuse the small supporting types from this crate,
+but they do not compose `BaseMetadata<K>` and do not carry a canonical
+input schema (see [ADR-0018](../../docs/adr/0018-plugin-metadata-to-manifest.md)).
 
 ## Role
 
