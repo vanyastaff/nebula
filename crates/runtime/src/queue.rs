@@ -4,6 +4,7 @@
 
 use std::{
     collections::HashMap,
+    future::Future,
     sync::{
         Arc,
         atomic::{AtomicUsize, Ordering},
@@ -12,7 +13,6 @@ use std::{
 };
 
 use async_channel::{Receiver, Sender};
-use async_trait::async_trait;
 use thiserror::Error;
 use tokio::{sync::Mutex, time::Instant};
 
@@ -46,37 +46,46 @@ impl QueueError {
 /// Work queue interface for distributing tasks to workers.
 ///
 /// At-least-once semantics: enqueue → dequeue → ack (or nack to requeue).
-#[async_trait]
+///
+/// Methods are desugared from `async fn` to `fn -> impl Future + Send` so
+/// callers can `tokio::spawn` trait method futures without needing a
+/// `Pin<Box<dyn Future>>` wrapper (ADR-0014 direction; Phase 2 AFIT).
 pub trait TaskQueue: Send + Sync {
     /// Enqueue a task. Returns a task ID.
-    async fn enqueue(&self, payload: serde_json::Value) -> Result<String, QueueError>;
+    fn enqueue(
+        &self,
+        payload: serde_json::Value,
+    ) -> impl Future<Output = Result<String, QueueError>> + Send;
 
     /// Dequeue the next available task.
     ///
     /// Distinguishes timeout from a closed queue so callers can react
     /// differently to "no work yet" vs "producer is gone".
-    async fn dequeue(&self, timeout: Duration) -> Result<DequeueResult, QueueError>;
+    fn dequeue(
+        &self,
+        timeout: Duration,
+    ) -> impl Future<Output = Result<DequeueResult, QueueError>> + Send;
 
     /// Acknowledge successful processing.
-    async fn ack(&self, task_id: &str) -> Result<(), QueueError>;
+    fn ack(&self, task_id: &str) -> impl Future<Output = Result<(), QueueError>> + Send;
 
     /// Negative-acknowledge — requeue for retry.
-    async fn nack(&self, task_id: &str) -> Result<(), QueueError>;
+    fn nack(&self, task_id: &str) -> impl Future<Output = Result<(), QueueError>> + Send;
 
     /// Total number of tasks tracked by the queue: queued + in-flight.
     ///
     /// This is a workload cardinality view, not just channel depth.
-    async fn len(&self) -> Result<usize, QueueError>;
+    fn len(&self) -> impl Future<Output = Result<usize, QueueError>> + Send;
 
     /// Number of tasks currently waiting in the queue channel.
-    async fn queued_len(&self) -> Result<usize, QueueError>;
+    fn queued_len(&self) -> impl Future<Output = Result<usize, QueueError>> + Send;
 
     /// Number of tasks currently leased to workers and awaiting ack/nack.
-    async fn in_flight_len(&self) -> Result<usize, QueueError>;
+    fn in_flight_len(&self) -> impl Future<Output = Result<usize, QueueError>> + Send;
 
     /// Whether the queue is empty.
-    async fn is_empty(&self) -> Result<bool, QueueError> {
-        Ok(self.len().await? == 0)
+    fn is_empty(&self) -> impl Future<Output = Result<bool, QueueError>> + Send {
+        async { Ok(self.len().await? == 0) }
     }
 }
 
@@ -174,7 +183,6 @@ impl MemoryQueue {
     }
 }
 
-#[async_trait]
 impl TaskQueue for MemoryQueue {
     async fn enqueue(&self, payload: serde_json::Value) -> Result<String, QueueError> {
         let id = uuid::Uuid::new_v4().to_string();
