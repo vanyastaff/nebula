@@ -504,7 +504,7 @@ become `no_std`-adjacent later. Not worth a chip until someone files a
 
 | Pattern | Count | Notes |
 |---|---:|---|
-| `Box::pin(async move …)` | 54 | Pool of potential `async ||` workarounds — must inspect each for shape (closures that capture shared state and are called multiple times are the real target; one-shot `Box::pin(async move)` in a `spawn` is not). |
+| `Box::pin(async move …)` | 55 | Pool of potential `async ||` workarounds — must inspect each for shape (closures that capture shared state and are called multiple times are the real target; one-shot `Box::pin(async move)` in a `spawn` is not). |
 | Existing `async fn` / `async \|\|` closures | n/a | Nothing to convert to. |
 
 Not every `Box::pin(async move)` is an async-closure candidate; many are
@@ -512,6 +512,35 @@ inside `spawn` calls where the pinning is incidental. Real targets are
 stored `FnMut`-shaped futures (e.g. retry predicates, observer
 callbacks). A useful chip does a one-hour pass, converts ~5–10 real
 cases, and stops.
+
+**Post-audit status (2026-04-20).** Site-by-site review of the 55
+matches, after [ADR-0024](../../adr/0024-defer-dynosaur-migration.md)
+landed, reclassifies the pool:
+
+- **24 sites in `crates/resilience/src/{fallback,retry,pipeline,hedge}.rs`**
+  are trait method impls returning `Pin<Box<dyn Future>>` directly (the
+  manual equivalent of `#[async_trait]`), not stored closures. Not an
+  async-closure target.
+- **13 sites in `crates/runtime/src/runtime.rs`** wrap the `ActionExecutor`
+  type alias defined at `crates/sandbox/src/runner.rs:65-76` as
+  `Arc<dyn Fn(...) -> Pin<Box<dyn Future>>>`. Converting these requires
+  `Arc<dyn AsyncFn(...)>` to be object-safe, which is **not stable** on
+  Rust 1.95 — tracked upstream at
+  [rust-lang/rust#132633](https://github.com/rust-lang/rust/issues/132633),
+  no stable target. Without redesigning the `ActionExecutor` alias
+  (out of scope for this rollup — would need a separate ADR touching
+  sandbox public API), these sites do not convert.
+- **~10–15 test/bench sites** on callers that are already generic over
+  `F: FnMut() -> Fut` (`retry.rs` tests, `pipeline.rs` tests,
+  `benches/retry.rs`, `api/tests/knife.rs`, scattered middleware) are
+  the only sites that convert cleanly today without signature changes.
+
+**Chip status: deferred (production) + executed (tests/benches).**
+
+Production scope of this slice is **deferred** pending stabilization of
+object-safe `AsyncFn*` (rust#132633). Test/bench conversions ship as
+part of the rollup closeout PR. Re-evaluation trigger lives in
+[ADR-0024 §Follow-ups](../../adr/0024-defer-dynosaur-migration.md).
 
 #### `precise capturing use<…>` (stable 1.82) — AFIT migration blocker
 
@@ -738,7 +767,7 @@ under "precise capturing use<...>" above.
 | Atomic `update` / `try_update` | Replace 5 `fetch_update` / `compare_exchange` loops in `telemetry`/`metrics` where the shape matches. |
 | `inline const { … }` | Opportunistic only; no dedicated chip warranted. |
 | `core::error::Error` | Only if a `no_std`-adjacent goal emerges (not today). |
-| Async closures | One-hour pass over the 54 `Box::pin(async move)` sites; convert the stored `FnMut`-like cases, leave the incidental spawn-wrappers alone. |
+| Async closures | **Deferred (production) / executed (tests+benches).** Site audit after ADR-0024 shows 24/55 sites are trait-method impls (not closures), 13/55 are `ActionExecutor` alias-blocked by rust#132633 (object-safe `AsyncFn*` not stable). Only ~10–15 test/bench sites on already-generic callers convert without signature changes — ship as part of rollup closeout. Revisit production scope when rust#132633 lands OR `ActionExecutor` gets its own ADR. |
 
 ## Hazards / things that need an ADR before code moves
 

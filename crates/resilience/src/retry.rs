@@ -563,12 +563,9 @@ mod tests {
             .unwrap()
             .backoff(BackoffConfig::Fixed(Duration::from_millis(1)));
 
-        let result: Result<(), CallError<TransientErr>> = retry_with(config, || {
-            let c = c.clone();
-            Box::pin(async move {
-                c.fetch_add(1, Ordering::SeqCst);
-                Err(TransientErr("fail"))
-            })
+        let result: Result<(), CallError<TransientErr>> = retry_with(config, async || {
+            c.fetch_add(1, Ordering::SeqCst);
+            Err(TransientErr("fail"))
         })
         .await;
 
@@ -587,11 +584,8 @@ mod tests {
             .unwrap()
             .backoff(BackoffConfig::Fixed(Duration::from_millis(1)));
 
-        let result: Result<u32, CallError<TransientErr>> = retry_with(config, || {
-            let c = c.clone();
-            Box::pin(async move { fail_twice(&c) })
-        })
-        .await;
+        let result: Result<u32, CallError<TransientErr>> =
+            retry_with(config, async || fail_twice(&c)).await;
 
         assert_eq!(result.unwrap(), 99);
         assert_eq!(counter.load(Ordering::SeqCst), 3);
@@ -608,12 +602,9 @@ mod tests {
             .backoff(BackoffConfig::Fixed(Duration::from_millis(1)))
             .retry_if(|_: &TestApiErr| false);
 
-        let result = retry_with(config, || {
-            let c = c.clone();
-            Box::pin(async move {
-                c.fetch_add(1, Ordering::SeqCst);
-                Err::<u32, TestApiErr>(TestApiErr::Timeout)
-            })
+        let result = retry_with(config, async || {
+            c.fetch_add(1, Ordering::SeqCst);
+            Err::<u32, TestApiErr>(TestApiErr::Timeout)
         })
         .await;
 
@@ -821,12 +812,9 @@ mod tests {
         let counter = Arc::new(AtomicU32::new(0));
         let c = counter.clone();
 
-        let result = retry(NonZeroU32::new(3).unwrap(), || {
-            let c = c.clone();
-            Box::pin(async move {
-                c.fetch_add(1, Ordering::SeqCst);
-                Err::<(), _>(TestApiErr::AuthFailed)
-            })
+        let result = retry(NonZeroU32::new(3).unwrap(), async || {
+            c.fetch_add(1, Ordering::SeqCst);
+            Err::<(), _>(TestApiErr::AuthFailed)
         })
         .await;
 
@@ -843,12 +831,9 @@ mod tests {
         let counter = Arc::new(AtomicU32::new(0));
         let c = counter.clone();
 
-        let result = retry(NonZeroU32::new(3).unwrap(), || {
-            let c = c.clone();
-            Box::pin(async move {
-                c.fetch_add(1, Ordering::SeqCst);
-                Err::<(), _>(TestApiErr::Timeout)
-            })
+        let result = retry(NonZeroU32::new(3).unwrap(), async || {
+            c.fetch_add(1, Ordering::SeqCst);
+            Err::<(), _>(TestApiErr::Timeout)
         })
         .await;
 
@@ -892,12 +877,9 @@ mod tests {
             .total_budget(Duration::from_millis(120));
 
         let start = std::time::Instant::now();
-        let _: Result<(), CallError<TransientErr>> = retry_with(config, || {
-            let c = c.clone();
-            Box::pin(async move {
-                c.fetch_add(1, Ordering::SeqCst);
-                Err(TransientErr("fail"))
-            })
+        let _: Result<(), CallError<TransientErr>> = retry_with(config, async || {
+            c.fetch_add(1, Ordering::SeqCst);
+            Err(TransientErr("fail"))
         })
         .await;
         let elapsed = start.elapsed();
@@ -924,14 +906,11 @@ mod tests {
             .backoff(BackoffConfig::Fixed(Duration::ZERO))
             .total_budget(Duration::from_millis(50));
 
-        let _: Result<(), CallError<TransientErr>> = retry_with(config, || {
-            let c = c.clone();
-            Box::pin(async move {
-                c.fetch_add(1, Ordering::SeqCst);
-                // Each op sleeps 5ms → after ~10 ops, 50ms budget is hit
-                tokio::time::sleep(Duration::from_millis(5)).await;
-                Err(TransientErr("fail"))
-            })
+        let _: Result<(), CallError<TransientErr>> = retry_with(config, async || {
+            c.fetch_add(1, Ordering::SeqCst);
+            // Each op sleeps 5ms → after ~10 ops, 50ms budget is hit
+            tokio::time::sleep(Duration::from_millis(5)).await;
+            Err(TransientErr("fail"))
         })
         .await;
 

@@ -38,10 +38,10 @@ async fn pipeline_total_budget_limits_retries() {
     let _ = pipeline
         .call(move || {
             let c = c.clone();
-            Box::pin(async move {
+            async move {
                 c.fetch_add(1, Ordering::SeqCst);
                 Err::<u32, &str>("fail")
-            })
+            }
         })
         .await;
     let elapsed = start.elapsed();
@@ -200,10 +200,10 @@ async fn full_stack_rate_limiter_rejects_before_retry() {
     let result = pipeline
         .call(move || {
             let c = c.clone();
-            Box::pin(async move {
+            async move {
                 c.fetch_add(1, Ordering::SeqCst);
                 Ok::<u32, &str>(42)
-            })
+            }
         })
         .await;
 
