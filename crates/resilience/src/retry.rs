@@ -452,12 +452,18 @@ fn apply_jitter(delay: Duration, jitter: &JitterConfig, attempt: u32) -> Duratio
 
 // Reason: mul_add compiles to `call fma` (~30 cycles) on default target-cpu=x86-64
 // which lacks hardware FMA. Explicit multiply+add uses mulsd+addsd (~8 cycles).
-#[allow(clippy::suboptimal_flops)]
+#[expect(
+    clippy::suboptimal_flops,
+    reason = "mul_add emits slow fma call on default x86-64 target; explicit multiply+add is faster"
+)]
 #[inline(never)]
 // Reason: `!(factor > 0.0)` is intentional — it rejects NaN, -0.0, negatives, +0.0,
 // and -inf in a single `ucomisd + ja` (2 insns) vs 35-instruction bit decomposition
 // that `!is_finite() || <= 0.0` produces. The negated partial-ord is the whole point.
-#[allow(clippy::neg_cmp_op_on_partial_ord)]
+#[expect(
+    clippy::neg_cmp_op_on_partial_ord,
+    reason = "`!(factor > 0.0)` rejects NaN and negatives in 2 instructions; cleaner than the equivalent is_finite chain"
+)]
 fn apply_jitter_full(delay: Duration, factor: f64, seed: Option<u64>, attempt: u32) -> Duration {
     if !(factor > 0.0) {
         return delay;

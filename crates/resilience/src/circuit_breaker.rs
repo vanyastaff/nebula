@@ -321,7 +321,10 @@ impl OutcomeWindow {
         }
     }
 
-    #[allow(unsafe_code)]
+    #[expect(
+        unsafe_code,
+        reason = "head is maintained via bitmask so get_unchecked_mut is in-bounds; see SAFETY comment"
+    )]
     pub fn record(&mut self, is_failure: bool, is_slow: bool) {
         let h = self.head;
         debug_assert!(h <= self.mask, "head exceeds mask");
@@ -341,7 +344,10 @@ impl OutcomeWindow {
 
     // Reason: usize to u32 cast is safe for practical window sizes (< 2^32).
     #[must_use]
-    #[allow(clippy::cast_possible_truncation)]
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "usize to u32 cast is safe for practical window sizes (< 2^32)"
+    )]
     pub const fn total(&self) -> u32 {
         self.len as u32
     }
@@ -356,7 +362,10 @@ impl OutcomeWindow {
         byte_sum(self.active_slice(&self.slow_ring))
     }
 
-    #[allow(unsafe_code)]
+    #[expect(
+        unsafe_code,
+        reason = "len <= ring.len() is maintained as invariant; see SAFETY comment"
+    )]
     fn active_slice<'a>(&self, ring: &'a [u8]) -> &'a [u8] {
         let cap = self.mask + 1;
         if self.len < cap {
@@ -506,7 +515,10 @@ impl CircuitBreaker {
     }
 
     // Reason: u32 cast to i32 for powi is safe within realistic consecutive_opens range.
-    #[allow(clippy::cast_possible_wrap)]
+    #[expect(
+        clippy::cast_possible_wrap,
+        reason = "u32 cast to i32 for powi is safe within realistic consecutive_opens range"
+    )]
     fn effective_reset_timeout(&self, consecutive_opens: u32) -> Duration {
         if consecutive_opens <= 1 || self.config.break_duration_multiplier <= 1.0 {
             return self.config.reset_timeout;
