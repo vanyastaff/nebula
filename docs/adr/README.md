@@ -29,7 +29,8 @@ changes land as a new ADR that `supersedes` it.
 | [0019](./0019-msrv-1.95.md) | MSRV 1.95 (supersedes 0010) | proposed | 2026-04-19 |
 | [0020](./0020-library-first-gtm.md) | Library-first GTM + `apps/server` as thin composition root | proposed | 2026-04-19 |
 | [0021](./0021-crate-publication-policy.md) | Crate publication policy (`publish = true` requires ≥ 3 external consumers OR dedicated ADR) | proposed | 2026-04-19 |
-| [0022](./0022-keyprovider-trait.md) | `KeyProvider` trait between `EncryptionLayer` and key material source | proposed | 2026-04-19 |
+| [0022](./0022-webhook-signature-policy.md) | Webhook signature policy (`SignaturePolicy::Required` default at `WebhookAction` trait level) | accepted | 2026-04-19 |
+| [0023](./0023-keyprovider-trait.md) | `KeyProvider` trait between `EncryptionLayer` and key material source | accepted | 2026-04-19 |
 
 ## Writing a new ADR
 

@@ -15,7 +15,7 @@
 //! [`Arc<dyn KeyProvider>`](super::KeyProvider), **not** an `Arc<EncryptionKey>`
 //! directly. Composition roots choose the provider (env var, file, KMS, …)
 //! at wiring time — see
-//! [ADR-0022](../../../../docs/adr/0022-keyprovider-trait.md) for the seam
+//! [ADR-0023](../../../../docs/adr/0023-keyprovider-trait.md) for the seam
 //! and ADR-0020 §3 for why this gate exists.
 //!
 //! # Key rotation
