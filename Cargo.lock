@@ -3867,6 +3867,7 @@ dependencies = [
  "rand 0.10.1",
  "reqwest 0.13.2",
  "scopeguard",
+ "semver",
  "serde",
  "serde_json",
  "sha2 0.11.0",
@@ -4046,6 +4047,7 @@ dependencies = [
  "semver",
  "serde",
  "serde_json",
+ "thiserror 2.0.18",
 ]
 
 [[package]]
@@ -4127,6 +4129,7 @@ dependencies = [
  "nebula-resource-macros",
  "nebula-schema",
  "nebula-telemetry",
+ "semver",
  "smallvec",
  "thiserror 2.0.18",
  "tokio",
