@@ -50,11 +50,14 @@ Layer 1 — production interfaces (use these today):
 - `InMemoryWorkflowRepo` — in-memory implementation for tests.
 - `StorageError` — top-level storage error type.
 - `StorageFormat` — serialization format abstraction (JSON / MessagePack).
-- `Storage` — generic key-value trait (binary or typed values).
-- `MemoryStorage`, `MemoryStorageTyped` — in-memory KV implementations.
 
-Feature `postgres` adds: `PgExecutionRepo`, `PgWorkflowRepo`, `PostgresStorage`,
-`PostgresStorageConfig`.
+Feature `postgres` adds: `PgExecutionRepo`, `PgWorkflowRepo`, `PostgresStorage`
+(thin pool wrapper + embedded migration runner), `PostgresStorageConfig`.
+
+> **Removed in audit P1 sweep:** the legacy generic `Storage` key-value trait
+> and its `MemoryStorage` / `MemoryStorageTyped` implementations had zero
+> workspace consumers — the canonical surface is now layer-1 repo traits
+> (`ExecutionRepo`, `WorkflowRepo`).
 
 Layer 2 — planned / experimental (`repos` module):
 
