@@ -1,11 +1,21 @@
 ---
 name: nebula-plugin
 role: Plugin Distribution Unit (registry + manifest re-export; canon §7.1 — unit of registration, not size)
-status: stable
+status: partial
 last-reviewed: 2026-04-20
 canon-invariants: [L1-7.1, L2-7.1, L2-13.1]
 related: [nebula-core, nebula-error, nebula-metadata, nebula-action, nebula-resource, nebula-credential, nebula-sandbox, nebula-plugin-sdk]
 ---
+
+> **Forward-looking notice (as of 2026-04-20).** This README documents the plugin
+> registration surface as it lands with **plugin load-path stabilization slice B**
+> — `ResolvedPlugin`, `PluginRegistry::all_*` / `resolve_*` accessors, and
+> `PluginManifest` moved to `nebula-metadata`. On this branch (and on `main` until
+> slice B merges) the source still exports `PluginType` / `PluginVersions` and
+> defines `PluginManifest` locally in `crates/plugin/src/manifest.rs`. If the
+> README and the code disagree, trust `crates/plugin/src/lib.rs` on the current
+> branch; the `status` / MATURITY row will flip from `partial` to `stable` in
+> the same merge that replaces the legacy API.
 
 # nebula-plugin
 
@@ -46,13 +56,13 @@ Actions, Resources, and Credentials need a versioned, discoverable distribution 
 
 See `docs/MATURITY.md` row for `nebula-plugin`.
 
-- API stability: `stable` — `Plugin` trait, `ResolvedPlugin`, and `PluginRegistry` (including `all_*` / `resolve_*` accessors) are the registration surface and frozen after ADR-0027. `PluginManifest` is canonical in `nebula-metadata` and re-exported here. Integration paths (loader activation, cross-plugin dependency resolution) live in `nebula-sandbox` and remain `frontier`.
+- API stability: `partial` today, lifting to `stable` with slice B — `Plugin` trait, `ResolvedPlugin`, and `PluginRegistry` (including `all_*` / `resolve_*` accessors) are the registration surface frozen by ADR-0027 once the refactor merges. `PluginManifest` is canonical in `nebula-metadata` and re-exported here after the slice B move. Integration paths (loader activation, cross-plugin dependency resolution) live in `nebula-sandbox` and remain `frontier`.
 - `#![forbid(unsafe_code)]`, `#![warn(missing_docs)]` enforced.
 - Signing / trust boundary (`[signing]` in `plugin.toml`): `planned` — not enforced at runtime yet. See canon §7.1 and `docs/INTEGRATION_MODEL.md` signing section.
 
 ## Related
 
 - Canon: `docs/PRODUCT_CANON.md` §1 (plugin as integration surface), §3.5 (Plugin = distribution + registration unit, returns runnable trait objects), §7.1 (packaging: `Cargo.toml` + `plugin.toml` + `impl Plugin`; unit of registration not size), §13.1 (plugin load → registry contract).
-- ADRs: `docs/adr/0018-plugin-metadata-to-manifest.md` (rename rationale), `docs/adr/0027-plugin-load-path-stable.md` (`ResolvedPlugin`, namespace invariant, registry accessors).
+- ADRs: `docs/adr/0018-plugin-metadata-to-manifest.md` (rename rationale); ADR-0027 (`ResolvedPlugin`, namespace invariant, registry accessors) lands with slice B — file will live at `docs/adr/0027-plugin-load-path-stable.md`.
 - Integration model: `docs/INTEGRATION_MODEL.md` §7 — full plugin packaging mechanics, three-sources-of-truth rule, cross-plugin dependency rule, signing rationale, discovery / load lifecycle, ABI policy, tooling notes.
 - Siblings: `nebula-metadata` (canonical `PluginManifest`), `nebula-plugin-sdk` (authoring SDK on top of these traits), `nebula-sandbox` (loading and isolation), `nebula-core` (`PluginKey` identity type), `nebula-action` (`Action` trait), `nebula-resource` (`AnyResource` trait), `nebula-credential` (`AnyCredential` trait).
