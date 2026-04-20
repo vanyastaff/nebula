@@ -360,13 +360,11 @@ impl<'a> Lexer<'a> {
                 self.advance();
             } else if ch == '.' && !is_float {
                 // Check if next char is a digit
-                if let Some(next) = self.peek() {
-                    if next.is_ascii_digit() {
-                        is_float = true;
-                        self.advance(); // consume '.'
-                    } else {
-                        break;
-                    }
+                if let Some(next) = self.peek()
+                    && next.is_ascii_digit()
+                {
+                    is_float = true;
+                    self.advance(); // consume '.'
                 } else {
                     break;
                 }
