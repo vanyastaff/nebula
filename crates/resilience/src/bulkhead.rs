@@ -162,16 +162,19 @@ impl Bulkhead {
             return Ok(BulkheadPermit { _permit: permit });
         }
 
-        // Try to enqueue
-        let enqueued =
-            self.waiting_count
-                .fetch_update(Ordering::AcqRel, Ordering::Acquire, |cur| {
-                    if cur < self.config.queue_size {
-                        Some(cur + 1)
-                    } else {
-                        None
-                    }
-                });
+        // Try to enqueue via `try_update` (Rust 1.95).
+        // Signature is `try_update(set_order, fetch_order, f)` — maps from
+        // `fetch_update(success=AcqRel, failure=Acquire, f)` as
+        // `set_order := success = AcqRel`, `fetch_order := failure = Acquire`.
+        let enqueued = self
+            .waiting_count
+            .try_update(Ordering::AcqRel, Ordering::Acquire, |cur| {
+                if cur < self.config.queue_size {
+                    Some(cur + 1)
+                } else {
+                    None
+                }
+            });
 
         if enqueued.is_err() {
             // Queue full — reject
