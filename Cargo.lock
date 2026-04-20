@@ -4075,8 +4075,6 @@ dependencies = [
  "nebula-resource",
  "nebula-schema",
  "semver",
- "serde",
- "serde_json",
  "thiserror 2.0.18",
 ]
 
