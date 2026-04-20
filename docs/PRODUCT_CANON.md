@@ -54,6 +54,8 @@ operational honesty (§4.5) more than explicitly revising it.
 
 **[L1]** Competitive dimension: reliability and clarity of execution as a system, plus DX for integration authors.
 
+**[L1]** **Go-to-market shape:** library-first — `nebula-sdk` is the headline surface; a production composition root (`apps/server`) is downstream of it, constrained to a thin wiring shape over the same library primitives. See [`docs/adr/0020-library-first-gtm.md`](adr/0020-library-first-gtm.md) for the binding decision and its pre-conditions.
+
 For peer analysis, our explicit bets against n8n / Temporal / Windmill / Make / Zapier, and what we borrow from each, see `docs/COMPETITIVE.md`. That document is persuasive; this canon stays normative.
 
 ---
