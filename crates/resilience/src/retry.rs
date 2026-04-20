@@ -501,8 +501,8 @@ mod tests {
     /// Test error type implementing Classify. Always retryable.
     #[derive(Debug, Clone, PartialEq)]
     struct TransientErr(&'static str);
-    impl std::fmt::Display for TransientErr {
-        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+    impl fmt::Display for TransientErr {
+        fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
             f.write_str(self.0)
         }
     }
@@ -522,8 +522,8 @@ mod tests {
         AuthFailed,
         RateLimited(Duration),
     }
-    impl std::fmt::Display for TestApiErr {
-        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+    impl fmt::Display for TestApiErr {
+        fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
             write!(f, "{self:?}")
         }
     }

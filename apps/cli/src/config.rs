@@ -44,12 +44,12 @@ use serde::{Deserialize, Serialize};
 /// certainly a misconfigured path (pointing at a log file, `/dev/urandom`, or
 /// a symlink-swapped victim). Reading it uncapped would OOM the process
 /// before logging is initialized, leaving no usable diagnostic.
-pub const MAX_CONFIG_BYTES: u64 = 10 * 1024 * 1024;
+pub(crate) const MAX_CONFIG_BYTES: u64 = 10 * 1024 * 1024;
 
 /// CLI configuration.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(default)]
-pub struct CliConfig {
+pub(crate) struct CliConfig {
     /// Execution defaults.
     pub run: RunConfig,
     /// Remote server settings (for future API client mode).
@@ -60,7 +60,7 @@ pub struct CliConfig {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
-pub struct RunConfig {
+pub(crate) struct RunConfig {
     /// Default max concurrent nodes.
     pub concurrency: usize,
     /// Default execution timeout in seconds. `None` = unlimited.
@@ -70,7 +70,7 @@ pub struct RunConfig {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct RemoteConfig {
+pub(crate) struct RemoteConfig {
     /// Server URL.
     pub url: String,
     /// API key for authentication.
@@ -79,7 +79,7 @@ pub struct RemoteConfig {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
-pub struct LogConfig {
+pub(crate) struct LogConfig {
     /// Default log level.
     pub level: String,
 }
@@ -167,7 +167,7 @@ impl CliConfig {
     ///
     /// Returns an error if a config file exists but contains invalid TOML.
     /// Missing config files are silently skipped (they are optional).
-    pub async fn load() -> anyhow::Result<Self> {
+    pub(crate) async fn load() -> anyhow::Result<Self> {
         let mut fig = Figment::from(Serialized::defaults(CliConfig::default()));
 
         if let Some(global_path) = global_config_path()
@@ -190,7 +190,7 @@ impl CliConfig {
     }
 
     /// Generate the default config file content as TOML.
-    pub fn default_toml() -> String {
+    pub(crate) fn default_toml() -> String {
         r#"# Nebula CLI configuration
 # Global: ~/.config/nebula/config.toml (Linux), ~/Library/Application Support/nebula/config.toml (macOS)
 # Project: ./nebula.toml
@@ -220,17 +220,17 @@ level = "error"
 /// - Linux:   `~/.config/nebula/config.toml`
 /// - macOS:   `~/Library/Application Support/nebula/config.toml`
 /// - Windows: `C:\Users\<user>\AppData\Roaming\nebula\config.toml`
-pub fn global_config_path() -> Option<PathBuf> {
+pub(crate) fn global_config_path() -> Option<PathBuf> {
     dirs::config_dir().map(|c| c.join("nebula").join("config.toml"))
 }
 
 /// Path to the global config directory.
-pub fn global_config_dir() -> Option<PathBuf> {
+pub(crate) fn global_config_dir() -> Option<PathBuf> {
     dirs::config_dir().map(|c| c.join("nebula"))
 }
 
 /// Check if a config file exists at the standard locations.
-pub fn find_config_file() -> Option<PathBuf> {
+pub(crate) fn find_config_file() -> Option<PathBuf> {
     let local = PathBuf::from("nebula.toml");
     if local.exists() {
         return Some(local);
@@ -245,6 +245,10 @@ pub fn find_config_file() -> Option<PathBuf> {
 // ── Tests ────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
+#[allow(
+    unsafe_code,
+    reason = "env::{set_var, remove_var} are unsafe under edition 2024"
+)]
 mod tests {
     use super::*;
 

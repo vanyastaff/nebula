@@ -430,12 +430,12 @@ pub(crate) async fn refresh_token(
             .refresh_token
             .as_ref()
             .ok_or_else(|| provider_error("no refresh_token available for token refresh".into()))?
-            .expose_secret(|s| s.to_owned()),
+            .expose_secret(ToOwned::to_owned),
     );
     let client_id: Zeroizing<String> =
-        Zeroizing::new(state.client_id.expose_secret(|s| s.to_owned()));
+        Zeroizing::new(state.client_id.expose_secret(ToOwned::to_owned));
     let client_secret: Zeroizing<String> =
-        Zeroizing::new(state.client_secret.expose_secret(|s| s.to_owned()));
+        Zeroizing::new(state.client_secret.expose_secret(ToOwned::to_owned));
 
     let scope_joined: Option<String> = (!config.scopes.is_empty()).then(|| config.scopes.join(" "));
     let mut form: Vec<(&str, &str)> = vec![
@@ -561,11 +561,10 @@ fn state_from_token_response(
         .and_then(Value::as_u64)
         .map(|secs| Utc::now() + chrono::Duration::seconds(secs as i64));
 
-    let scopes = body
-        .get("scope")
-        .and_then(Value::as_str)
-        .map(|s| s.split_whitespace().map(str::to_owned).collect())
-        .unwrap_or_else(|| default_scopes.to_vec());
+    let scopes = body.get("scope").and_then(Value::as_str).map_or_else(
+        || default_scopes.to_vec(),
+        |s| s.split_whitespace().map(str::to_owned).collect(),
+    );
 
     Ok(OAuth2State {
         access_token: SecretString::new(access_token),
@@ -851,7 +850,7 @@ mod tests {
     #[test]
     fn oauth_token_error_summary_omits_raw_body_and_echoed_secrets() {
         let body = r#"{"error":"invalid_client","client_secret":"hunter2"}"#;
-        let summary = super::oauth_token_error_summary(body);
+        let summary = oauth_token_error_summary(body);
         assert!(
             !summary.contains("hunter2"),
             "secret echoed by provider must not appear: {summary}"

@@ -22,14 +22,8 @@ fn greet(name: Validated<String>) -> String {
 fn validated_has_zero_memory_overhead() {
     // The type system guarantee is carried in a zero-sized marker, so the
     // runtime footprint matches the wrapped type exactly.
-    assert_eq!(
-        std::mem::size_of::<Validated<String>>(),
-        std::mem::size_of::<String>()
-    );
-    assert_eq!(
-        std::mem::size_of::<Validated<u64>>(),
-        std::mem::size_of::<u64>()
-    );
+    assert_eq!(size_of::<Validated<String>>(), size_of::<String>());
+    assert_eq!(size_of::<Validated<u64>>(), size_of::<u64>());
 }
 
 #[test]

@@ -74,7 +74,7 @@ pub fn to_integer(value: &Value) -> Result<i64, &'static str> {
     match value {
         Value::Number(n) => number_as_i64(n).ok_or("number is not an integer"),
         Value::String(s) => s.parse().map_err(|_| "string is not a valid integer"),
-        Value::Bool(b) => Ok(if *b { 1 } else { 0 }),
+        Value::Bool(b) => Ok(i64::from(*b)),
         _ => Err("value cannot be converted to integer"),
     }
 }

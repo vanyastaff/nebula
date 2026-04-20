@@ -440,7 +440,7 @@ mod tests {
             ValidationError::new("invalid", "Invalid value"),
         );
 
-        let display = format!("{}", error);
+        let display = format!("{error}");
         assert!(display.contains("age"));
         assert!(display.contains("Invalid value"));
     }
@@ -536,7 +536,7 @@ mod tests {
     fn test_field_debug() {
         let validator: Field<TestUser, u32, MinValue, _> =
             named_field("age", MinValue { min: 18 }, get_age);
-        let debug_str = format!("{:?}", validator);
+        let debug_str = format!("{validator:?}");
         assert!(debug_str.contains("Field"));
         assert!(debug_str.contains("age"));
     }

@@ -152,6 +152,6 @@ fn print_type_size_baseline() {
     ];
     println!();
     for (name, size) in rows {
-        println!("{name:40} size={size:>6}  lines={}", size.div_ceil(64),);
+        println!("{name:40} size={size:>6}  lines={}", size.div_ceil(64));
     }
 }

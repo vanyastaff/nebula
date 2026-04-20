@@ -84,7 +84,7 @@ impl nebula_metadata::Metadata for ResourceMetadata {
 pub enum MetadataCompatibilityError {
     /// A generic catalog-citizen rule fired (key / version / schema).
     #[error(transparent)]
-    Base(#[from] nebula_metadata::BaseCompatError<nebula_core::ResourceKey>),
+    Base(#[from] nebula_metadata::BaseCompatError<ResourceKey>),
 }
 
 impl ResourceMetadata {

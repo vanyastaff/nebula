@@ -123,8 +123,7 @@ fn test_nonce_uniqueness() {
         for j in (i + 1)..nonces.len() {
             assert_ne!(
                 nonces[i], nonces[j],
-                "Nonce collision detected at indices {} and {}",
-                i, j
+                "Nonce collision detected at indices {i} and {j}"
             );
         }
     }
@@ -159,7 +158,7 @@ fn test_decryption_with_wrong_key() {
         Err(CryptoError::DecryptionFailed) => {
             // Expected error
         },
-        other => panic!("Expected DecryptionFailed, got {:?}", other),
+        other => panic!("Expected DecryptionFailed, got {other:?}"),
     }
 }
 
@@ -185,18 +184,15 @@ fn test_key_derivation_timing() {
     // Release builds should complete in ~100-200ms on modern hardware.
     let upper_ms: u128 = if cfg!(debug_assertions) { 2000 } else { 500 };
     let millis = duration.as_millis();
-    println!("Key derivation took {}ms", millis);
+    println!("Key derivation took {millis}ms");
 
     assert!(
         millis >= 50,
-        "Key derivation too fast ({}ms), may be vulnerable to brute force",
-        millis
+        "Key derivation too fast ({millis}ms), may be vulnerable to brute force"
     );
     assert!(
         millis <= upper_ms,
-        "Key derivation too slow ({}ms > {}ms), may impact usability",
-        millis,
-        upper_ms
+        "Key derivation too slow ({millis}ms > {upper_ms}ms), may impact usability"
     );
 }
 

@@ -6,7 +6,7 @@ use quote::quote;
 use syn::{Data, DeriveInput, Fields, parse_macro_input};
 
 /// Entry point for `#[derive(Credential)]`.
-pub fn derive(input: TokenStream) -> TokenStream {
+pub(crate) fn derive(input: TokenStream) -> TokenStream {
     let input = parse_macro_input!(input as DeriveInput);
 
     match expand(input) {
@@ -88,13 +88,15 @@ fn expand(input: DeriveInput) -> syn::Result<proc_macro2::TokenStream> {
     let scheme = &attrs.scheme;
     let protocol = &attrs.protocol;
 
-    let icon_expr = match &attrs.icon {
-        Some(icon) => quote! { ::std::option::Option::Some(#icon.to_owned()) },
-        None => quote! { ::std::option::Option::None },
+    let icon_expr = if let Some(icon) = &attrs.icon {
+        quote! { ::std::option::Option::Some(#icon.to_owned()) }
+    } else {
+        quote! { ::std::option::Option::None }
     };
-    let doc_url_expr = match &attrs.doc_url {
-        Some(url) => quote! { ::std::option::Option::Some(#url.to_owned()) },
-        None => quote! { ::std::option::Option::None },
+    let doc_url_expr = if let Some(url) = &attrs.doc_url {
+        quote! { ::std::option::Option::Some(#url.to_owned()) }
+    } else {
+        quote! { ::std::option::Option::None }
     };
 
     let expanded = quote! {

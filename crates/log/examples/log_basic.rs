@@ -1,8 +1,8 @@
-use nebula_log::prelude::*;
+use nebula_log::prelude::{auto_init, debug, error, info, warn};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Auto-detect best configuration
-    nebula_log::auto_init()?;
+    auto_init()?;
 
     // Note: fields come BEFORE the message
     info!(port = 8080, "Server starting");

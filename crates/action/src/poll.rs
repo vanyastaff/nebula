@@ -103,8 +103,8 @@ pub struct PollConfig {
 impl Default for PollConfig {
     fn default() -> Self {
         Self {
-            base_interval: Duration::from_secs(60),
-            max_interval: Duration::from_secs(3600),
+            base_interval: Duration::from_mins(1),
+            max_interval: Duration::from_hours(1),
             backoff_factor: 1.0,
             jitter: 0.0,
             poll_timeout: Duration::from_secs(30),
@@ -1394,10 +1394,10 @@ where
             // computed AFTER the poll so override_next (e.g.
             // Retry-After from upstream) from the cycle we just
             // ran takes effect.
-            let interval = override_next
-                .take()
-                .map(|d| d.clamp(POLL_INTERVAL_FLOOR, effective_max_interval))
-                .unwrap_or_else(|| compute_interval(&config, consecutive_empty, identity_seed));
+            let interval = override_next.take().map_or_else(
+                || compute_interval(&config, consecutive_empty, identity_seed),
+                |d| d.clamp(POLL_INTERVAL_FLOOR, effective_max_interval),
+            );
 
             tokio::select! {
                 () = ctx.cancellation.cancelled() => return Ok(()),

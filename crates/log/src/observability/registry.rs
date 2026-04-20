@@ -32,7 +32,7 @@ type HookList = Vec<Arc<dyn ObservabilityHook>>;
 /// one panicked hook doesn't poison others.
 #[inline]
 fn emit_to_hooks_inline(hooks: &HookList, event: &dyn ObservabilityEvent) {
-    for hook in hooks.iter() {
+    for hook in hooks {
         let result = panic::catch_unwind(AssertUnwindSafe(|| {
             hook.on_event(event);
         }));
@@ -56,7 +56,7 @@ fn emit_to_hooks_inline(hooks: &HookList, event: &dyn ObservabilityEvent) {
 fn emit_to_hooks_bounded(hooks: &HookList, event: &dyn ObservabilityEvent, timeout_ms: u64) {
     let started = Instant::now();
 
-    for hook in hooks.iter() {
+    for hook in hooks {
         if started.elapsed().as_millis() as u64 > timeout_ms {
             tracing::warn!(
                 event_name = event.name(),
@@ -433,7 +433,7 @@ mod tests {
             .map(|i| {
                 thread::spawn(move || {
                     let event = TestEvent {
-                        name: format!("thread_{}", i),
+                        name: format!("thread_{i}"),
                     };
                     emit_event(&event);
                 })
@@ -460,9 +460,10 @@ mod tests {
 
     impl ObservabilityHook for PanickingHook {
         fn on_event(&self, event: &dyn ObservabilityEvent) {
-            if event.name() == self.panic_on {
-                panic!("Intentional panic for testing");
-            }
+            assert!(
+                event.name() != self.panic_on,
+                "Intentional panic for testing"
+            );
         }
     }
 

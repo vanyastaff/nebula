@@ -14,21 +14,26 @@ use crate::{error::ExecutionError, status::ExecutionStatus};
 pub fn can_transition_execution(from: ExecutionStatus, to: ExecutionStatus) -> bool {
     matches!(
         (from, to),
-        (ExecutionStatus::Created, ExecutionStatus::Running)
-            | (ExecutionStatus::Created, ExecutionStatus::Cancelled)
-            | (ExecutionStatus::Running, ExecutionStatus::Paused)
-            | (ExecutionStatus::Running, ExecutionStatus::Cancelling)
-            | (ExecutionStatus::Running, ExecutionStatus::Completed)
-            | (ExecutionStatus::Running, ExecutionStatus::Failed)
-            | (ExecutionStatus::Running, ExecutionStatus::TimedOut)
-            | (ExecutionStatus::Paused, ExecutionStatus::Running)
-            | (ExecutionStatus::Paused, ExecutionStatus::Cancelling)
-            | (ExecutionStatus::Paused, ExecutionStatus::Failed)
-            | (ExecutionStatus::Paused, ExecutionStatus::TimedOut)
-            | (ExecutionStatus::Cancelling, ExecutionStatus::Cancelled)
-            | (ExecutionStatus::Cancelling, ExecutionStatus::Failed)
-            | (ExecutionStatus::Cancelling, ExecutionStatus::Completed)
-            | (ExecutionStatus::Cancelling, ExecutionStatus::TimedOut)
+        (
+            ExecutionStatus::Created | ExecutionStatus::Paused,
+            ExecutionStatus::Running
+        ) | (
+            ExecutionStatus::Created | ExecutionStatus::Cancelling,
+            ExecutionStatus::Cancelled
+        ) | (
+            ExecutionStatus::Running,
+            ExecutionStatus::Paused
+                | ExecutionStatus::Cancelling
+                | ExecutionStatus::Completed
+                | ExecutionStatus::Failed
+                | ExecutionStatus::TimedOut
+        ) | (
+            ExecutionStatus::Paused,
+            ExecutionStatus::Cancelling | ExecutionStatus::Failed | ExecutionStatus::TimedOut
+        ) | (
+            ExecutionStatus::Cancelling,
+            ExecutionStatus::Failed | ExecutionStatus::Completed | ExecutionStatus::TimedOut
+        )
     )
 }
 
@@ -49,20 +54,23 @@ pub fn validate_execution_transition(
 pub fn can_transition_node(from: NodeState, to: NodeState) -> bool {
     matches!(
         (from, to),
-        (NodeState::Pending, NodeState::Ready)
-            | (NodeState::Pending, NodeState::Skipped)
-            | (NodeState::Pending, NodeState::Cancelled)
-            | (NodeState::Ready, NodeState::Running)
-            | (NodeState::Ready, NodeState::Skipped)
-            | (NodeState::Ready, NodeState::Cancelled)
-            | (NodeState::Running, NodeState::Completed)
-            | (NodeState::Running, NodeState::Failed)
-            | (NodeState::Running, NodeState::Cancelled)
-            | (NodeState::Failed, NodeState::Retrying)
-            | (NodeState::Failed, NodeState::Cancelled)
-            | (NodeState::Retrying, NodeState::Running)
-            | (NodeState::Retrying, NodeState::Failed)
-            | (NodeState::Retrying, NodeState::Cancelled)
+        (
+            NodeState::Pending,
+            NodeState::Ready | NodeState::Skipped | NodeState::Cancelled
+        ) | (NodeState::Ready | NodeState::Retrying, NodeState::Running)
+            | (NodeState::Ready, NodeState::Skipped | NodeState::Cancelled)
+            | (
+                NodeState::Running,
+                NodeState::Completed | NodeState::Failed | NodeState::Cancelled
+            )
+            | (
+                NodeState::Failed,
+                NodeState::Retrying | NodeState::Cancelled
+            )
+            | (
+                NodeState::Retrying,
+                NodeState::Failed | NodeState::Cancelled
+            )
     )
 }
 

@@ -1,9 +1,13 @@
 use anyhow::Result;
-use nebula_log::{async_timed, measure, prelude::*, with_context};
+use nebula_log::{
+    async_timed, measure,
+    prelude::{auto_init, info},
+    with_context,
+};
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    nebula_log::auto_init()?;
+    auto_init()?;
 
     // Build context, then scope it over our async work
     let ctx = with_context!(request_id = "req-123", user_id = "user-456");

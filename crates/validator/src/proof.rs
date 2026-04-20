@@ -220,14 +220,8 @@ mod tests {
 
     #[test]
     fn zero_cost_size() {
-        assert_eq!(
-            std::mem::size_of::<Validated<u64>>(),
-            std::mem::size_of::<u64>()
-        );
-        assert_eq!(
-            std::mem::size_of::<Validated<String>>(),
-            std::mem::size_of::<String>()
-        );
+        assert_eq!(size_of::<Validated<u64>>(), size_of::<u64>());
+        assert_eq!(size_of::<Validated<String>>(), size_of::<String>());
     }
 
     #[test]

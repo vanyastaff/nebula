@@ -169,7 +169,7 @@ mod tests {
         pt.add_version(stub("a", 5)).unwrap();
 
         let mut nums = pt.version_numbers();
-        nums.sort();
+        nums.sort_unstable();
         assert_eq!(nums, vec![1, 3, 5]);
     }
 

@@ -82,3 +82,6 @@ default = []
 # enable this in production builds — it exposes a constructor that
 # bypasses the JwtSecret validation gate.
 test-util = []
+
+[lints]
+workspace = true

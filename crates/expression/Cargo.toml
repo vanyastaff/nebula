@@ -43,3 +43,6 @@ datetime = []
 uuid = ["dep:uuid"]
 # Full feature set
 full = ["cache", "regex", "datetime", "uuid"]
+
+[lints]
+workspace = true

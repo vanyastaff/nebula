@@ -24,7 +24,7 @@ pub fn build_app(state: AppState, config: &ApiConfig) -> Router {
     // so external providers only hit one port. `Router::merge`
     // works because the webhook router carries its own state type
     // (`WebhookTransport`) that does not collide with `AppState`.
-    let routes = match state.webhook_transport.clone() {
+    let routes = match state.webhook_transport {
         Some(transport) => routes.merge(transport.router()),
         None => routes,
     };
@@ -63,7 +63,7 @@ pub fn build_app(state: AppState, config: &ApiConfig) -> Router {
 /// Request ID middleware
 async fn request_id_middleware(
     mut request: axum::extract::Request,
-    next: axum::middleware::Next,
+    next: middleware::Next,
 ) -> Response {
     use uuid::Uuid;
 
@@ -73,8 +73,7 @@ async fn request_id_middleware(
         .headers()
         .get(X_REQUEST_ID)
         .and_then(|h| h.to_str().ok())
-        .map(|s| s.to_string())
-        .unwrap_or_else(|| Uuid::new_v4().to_string());
+        .map_or_else(|| Uuid::new_v4().to_string(), ToString::to_string);
 
     request
         .extensions_mut()
@@ -131,7 +130,7 @@ fn build_cors_layer(config: &ApiConfig) -> CorsLayer {
         crate::middleware::auth::X_API_KEY.clone(),
     ])
     .expose_headers([header::HeaderName::from_static(X_REQUEST_ID)])
-    .max_age(Duration::from_secs(3600))
+    .max_age(Duration::from_hours(1))
 }
 
 /// Build router with graceful shutdown signal
@@ -174,8 +173,8 @@ async fn shutdown_signal() {
     let terminate = std::future::pending::<()>();
 
     tokio::select! {
-        _ = ctrl_c => {},
-        _ = terminate => {},
+        () = ctrl_c => {},
+        () = terminate => {},
     }
 
     tracing::info!("Shutdown signal received, starting graceful shutdown");

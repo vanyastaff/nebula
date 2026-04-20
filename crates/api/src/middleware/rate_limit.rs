@@ -93,15 +93,14 @@ impl RateLimitState {
 
         let ip = extract_client_ip(&request);
 
-        match self.limiter.check_key(&ip) {
-            Ok(_) => next.run(request).await,
-            Err(_) => {
-                let mut response = StatusCode::TOO_MANY_REQUESTS.into_response();
-                response
-                    .headers_mut()
-                    .insert(header::RETRY_AFTER, HeaderValue::from_static("1"));
-                response
-            },
+        if self.limiter.check_key(&ip) == Ok(()) {
+            next.run(request).await
+        } else {
+            let mut response = StatusCode::TOO_MANY_REQUESTS.into_response();
+            response
+                .headers_mut()
+                .insert(header::RETRY_AFTER, HeaderValue::from_static("1"));
+            response
         }
     }
 }

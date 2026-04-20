@@ -352,7 +352,7 @@ mod tests {
 
         // Simulate legacy write: encrypt without AAD and store directly
         let plaintext = b"legacy-secret";
-        let encrypted = crate::crypto::encrypt(&key, plaintext).unwrap();
+        let encrypted = crypto::encrypt(&key, plaintext).unwrap();
         let encrypted_bytes = serde_json::to_vec(&encrypted).unwrap();
 
         let cred = StoredCredential {
@@ -405,7 +405,7 @@ mod tests {
 
         // Inspect the raw bytes stored — should contain "default" as key_id
         let raw = inner.get("key-id-check").await.unwrap();
-        let envelope: crate::crypto::EncryptedData = serde_json::from_slice(&raw.data).unwrap();
+        let envelope: crypto::EncryptedData = serde_json::from_slice(&raw.data).unwrap();
         assert_eq!(envelope.key_id, "default");
     }
 
@@ -531,7 +531,7 @@ mod tests {
 
         // Verify the data was re-encrypted with key-2 in the backing store
         let raw = inner.get("lazy-1").await.unwrap();
-        let envelope: crate::crypto::EncryptedData = serde_json::from_slice(&raw.data).unwrap();
+        let envelope: crypto::EncryptedData = serde_json::from_slice(&raw.data).unwrap();
         assert_eq!(envelope.key_id, "key-2");
     }
 
@@ -553,7 +553,7 @@ mod tests {
         // simulate a legacy pre-guard envelope persisted by an older build.
         let plaintext = b"legacy-record";
         let mut legacy_envelope =
-            crate::crypto::encrypt_with_key_id(&key, "default", plaintext, b"legacy-1").unwrap();
+            crypto::encrypt_with_key_id(&key, "default", plaintext, b"legacy-1").unwrap();
         legacy_envelope.key_id = String::new();
         let envelope_bytes = serde_json::to_vec(&legacy_envelope).unwrap();
 

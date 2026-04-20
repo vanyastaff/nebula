@@ -57,8 +57,7 @@ impl<'a> Parser<'a> {
     fn parse_expression_with_depth(&mut self, depth: usize) -> ExpressionResult<Expr> {
         if depth > MAX_PARSER_DEPTH {
             return Err(ExpressionError::expression_parse_error(format!(
-                "Maximum parser recursion depth ({}) exceeded",
-                MAX_PARSER_DEPTH
+                "Maximum parser recursion depth ({MAX_PARSER_DEPTH}) exceeded"
             )));
         }
         self.parse_conditional_with_depth(depth)
@@ -130,8 +129,7 @@ impl<'a> Parser<'a> {
         // guard is not enough. Enforce the cap here too.
         if depth > MAX_PARSER_DEPTH {
             return Err(ExpressionError::expression_parse_error(format!(
-                "Maximum parser recursion depth ({}) exceeded",
-                MAX_PARSER_DEPTH
+                "Maximum parser recursion depth ({MAX_PARSER_DEPTH}) exceeded"
             )));
         }
         let mut left = self.parse_unary_with_depth(depth + 1)?;
@@ -196,8 +194,7 @@ impl<'a> Parser<'a> {
         // stop a stack overflow on hostile input, so enforce the cap here.
         if depth > MAX_PARSER_DEPTH {
             return Err(ExpressionError::expression_parse_error(format!(
-                "Maximum parser recursion depth ({}) exceeded",
-                MAX_PARSER_DEPTH
+                "Maximum parser recursion depth ({MAX_PARSER_DEPTH}) exceeded"
             )));
         }
         match &self.current_token().kind {
@@ -557,7 +554,7 @@ mod tests {
         // So 40 parentheses = ~240 depth, which is safely under MAX_PARSER_DEPTH of 256
         let mut expr = String::from("1");
         for _ in 0..40 {
-            expr = format!("({})", expr);
+            expr = format!("({expr})");
         }
 
         let result = parse(&expr);
@@ -567,7 +564,7 @@ mod tests {
             result
                 .as_ref()
                 .err()
-                .map(|e| format!("{:?}", e))
+                .map(|e| format!("{e:?}"))
                 .unwrap_or_default()
         );
     }

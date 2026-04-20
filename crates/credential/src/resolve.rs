@@ -197,7 +197,7 @@ pub struct RefreshPolicy {
 impl RefreshPolicy {
     /// Sensible defaults for most credential types.
     pub const DEFAULT: Self = Self {
-        early_refresh: Duration::from_secs(300),
+        early_refresh: Duration::from_mins(5),
         min_retry_backoff: Duration::from_secs(5),
         jitter: Duration::from_secs(30),
     };

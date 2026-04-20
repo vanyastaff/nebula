@@ -97,7 +97,7 @@ async fn poll_adapter_emits_events() {
 async fn poll_adapter_stop_is_noop() {
     let (poller, _) = make_poller();
     let adapter = PollTriggerAdapter::new(poller);
-    let (ctx, _, _) = TestContextBuilder::minimal().build_trigger();
+    let (ctx, ..) = TestContextBuilder::minimal().build_trigger();
 
     assert!(adapter.stop(&ctx).await.is_ok());
 }
@@ -112,7 +112,7 @@ async fn poll_adapter_does_not_accept_events() {
 #[tokio::test]
 async fn poll_action_cursor_advances_through_poll_cursor() {
     let (poller, _) = make_poller();
-    let (ctx, _, _) = TestContextBuilder::minimal().build_trigger();
+    let (ctx, ..) = TestContextBuilder::minimal().build_trigger();
     let mut cursor = PollCursor::new(0u32);
 
     let result = poller.poll(&mut cursor, &ctx).await.unwrap();
@@ -130,7 +130,7 @@ async fn poll_action_cursor_advances_through_poll_cursor() {
 async fn poll_adapter_rejects_concurrent_start() {
     let (poller, _) = make_poller();
     let adapter = Arc::new(PollTriggerAdapter::new(poller));
-    let (ctx, _, _) = TestContextBuilder::minimal().build_trigger();
+    let (ctx, ..) = TestContextBuilder::minimal().build_trigger();
 
     let cancel = ctx.cancellation.clone();
     let adapter1 = Arc::clone(&adapter);
@@ -197,7 +197,7 @@ async fn poll_adapter_clamps_zero_interval_to_floor() {
         poll_count: poll_count.clone(),
     };
     let adapter = Arc::new(PollTriggerAdapter::new(poller));
-    let (ctx, _, _) = TestContextBuilder::minimal().build_trigger();
+    let (ctx, ..) = TestContextBuilder::minimal().build_trigger();
 
     let cancel = ctx.cancellation.clone();
     let adapter1 = Arc::clone(&adapter);
@@ -247,7 +247,7 @@ async fn poll_adapter_start_after_cancellation_succeeds() {
     let (poller2, _) = make_poller();
     let adapter1 = PollTriggerAdapter::new(poller1);
     let adapter2 = PollTriggerAdapter::new(poller2);
-    let (ctx, _, _) = TestContextBuilder::minimal().build_trigger();
+    let (ctx, ..) = TestContextBuilder::minimal().build_trigger();
 
     let cancel = ctx.cancellation.clone();
     let ctx_clone = ctx.clone();
@@ -258,7 +258,7 @@ async fn poll_adapter_start_after_cancellation_succeeds() {
     cancel.cancel();
     handle.await.unwrap().unwrap();
 
-    let (ctx2, _, _) = TestContextBuilder::minimal().build_trigger();
+    let (ctx2, ..) = TestContextBuilder::minimal().build_trigger();
     let cancel2 = ctx2.cancellation.clone();
     let handle2 = tokio::spawn(async move { adapter2.start(&ctx2).await });
     for _ in 0..5 {
@@ -281,9 +281,9 @@ fn poll_config_fixed_sets_equal_intervals() {
 
 #[test]
 fn poll_config_with_backoff_includes_jitter() {
-    let config = PollConfig::with_backoff(Duration::from_secs(10), Duration::from_secs(600), 2.0);
+    let config = PollConfig::with_backoff(Duration::from_secs(10), Duration::from_mins(10), 2.0);
     assert_eq!(config.base_interval, Duration::from_secs(10));
-    assert_eq!(config.max_interval, Duration::from_secs(600));
+    assert_eq!(config.max_interval, Duration::from_mins(10));
     assert_eq!(config.backoff_factor, 2.0);
     assert!(config.jitter > 0.0);
 }
@@ -299,7 +299,7 @@ fn poll_config_jitter_clamped() {
 
 #[test]
 fn poll_config_backoff_factor_clamped_to_one() {
-    let config = PollConfig::with_backoff(Duration::from_secs(1), Duration::from_secs(60), 0.5);
+    let config = PollConfig::with_backoff(Duration::from_secs(1), Duration::from_mins(1), 0.5);
     assert_eq!(config.backoff_factor, 1.0);
 }
 
@@ -322,8 +322,8 @@ fn poll_result_from_non_empty_vec_is_ready() {
 #[test]
 fn poll_result_with_override() {
     let result: PollResult<i32> =
-        PollResult::from(vec![1]).with_override_next(Duration::from_secs(60));
-    assert_eq!(result.override_next, Some(Duration::from_secs(60)));
+        PollResult::from(vec![1]).with_override_next(Duration::from_mins(1));
+    assert_eq!(result.override_next, Some(Duration::from_mins(1)));
 }
 
 #[test]
@@ -455,7 +455,7 @@ impl PollAction for FailingValidator {
     type Event = serde_json::Value;
 
     fn poll_config(&self) -> PollConfig {
-        PollConfig::fixed(Duration::from_secs(60))
+        PollConfig::fixed(Duration::from_mins(1))
     }
 
     async fn validate(&self, _ctx: &TriggerContext) -> Result<(), ActionError> {
@@ -481,7 +481,7 @@ async fn poll_adapter_validate_failure_prevents_start() {
         ),
     };
     let adapter = PollTriggerAdapter::new(validator);
-    let (ctx, _, _) = TestContextBuilder::minimal().build_trigger();
+    let (ctx, ..) = TestContextBuilder::minimal().build_trigger();
 
     let err = adapter.start(&ctx).await.expect_err("start must fail");
     assert!(err.is_fatal());
@@ -606,7 +606,7 @@ impl PollAction for ReadyPoller {
     type Event = serde_json::Value;
 
     fn poll_config(&self) -> PollConfig {
-        PollConfig::with_backoff(Duration::from_millis(100), Duration::from_secs(60), 2.0)
+        PollConfig::with_backoff(Duration::from_millis(100), Duration::from_mins(1), 2.0)
             .with_emit_failure(EmitFailurePolicy::RetryBatch)
     }
 
@@ -635,7 +635,7 @@ async fn retry_batch_dispatch_failure_records_error_and_backs_off() {
     let adapter = PollTriggerAdapter::new(poller);
 
     let failing = Arc::new(FailingEmitter::new());
-    let (ctx, _, _) = TestContextBuilder::minimal().build_trigger();
+    let (ctx, ..) = TestContextBuilder::minimal().build_trigger();
     let ctx = ctx.with_emitter(Arc::clone(&failing) as Arc<dyn ExecutionEmitter>);
 
     let cancel = ctx.cancellation.clone();
@@ -745,7 +745,7 @@ async fn drop_and_continue_total_loss_records_error() {
     let adapter = PollTriggerAdapter::new(poller);
 
     let emitter = Arc::new(DropCountingFailingEmitter::new());
-    let (ctx, _, _) = TestContextBuilder::minimal().build_trigger();
+    let (ctx, ..) = TestContextBuilder::minimal().build_trigger();
     let ctx = ctx.with_emitter(Arc::clone(&emitter) as Arc<dyn ExecutionEmitter>);
 
     let cancel = ctx.cancellation.clone();
@@ -824,7 +824,7 @@ impl PollAction for HugeOverridePoller {
     ) -> Result<PollResult<serde_json::Value>, ActionError> {
         self.poll_count.fetch_add(1, Ordering::Relaxed);
         Ok(PollResult::from(vec![serde_json::json!({})])
-            .with_override_next(Duration::from_secs(3600)))
+            .with_override_next(Duration::from_hours(1)))
     }
 }
 
@@ -840,7 +840,7 @@ async fn override_next_clamped_by_max_interval() {
         poll_count: poll_count.clone(),
     };
     let adapter = PollTriggerAdapter::new(poller);
-    let (ctx, _, _) = TestContextBuilder::minimal().build_trigger();
+    let (ctx, ..) = TestContextBuilder::minimal().build_trigger();
 
     let cancel = ctx.cancellation.clone();
     let ctx_clone = ctx.clone();
@@ -922,7 +922,7 @@ async fn partial_with_empty_events_retryable_records_error() {
         called: called.clone(),
     };
     let adapter = PollTriggerAdapter::new(poller);
-    let (ctx, _, _) = TestContextBuilder::minimal().build_trigger();
+    let (ctx, ..) = TestContextBuilder::minimal().build_trigger();
 
     let cancel = ctx.cancellation.clone();
     let ctx_clone = ctx.clone();
@@ -972,7 +972,7 @@ async fn first_poll_runs_immediately_after_start() {
         type Cursor = u32;
         type Event = serde_json::Value;
         fn poll_config(&self) -> PollConfig {
-            PollConfig::fixed(Duration::from_secs(600))
+            PollConfig::fixed(Duration::from_mins(10))
         }
         async fn poll(
             &self,
@@ -1030,7 +1030,7 @@ async fn stop_cancels_cancellation_token() {
     // no-op and the test had to cancel the token manually.
     let (poller, _) = make_poller();
     let adapter = Arc::new(PollTriggerAdapter::new(poller));
-    let (ctx, _, _) = TestContextBuilder::minimal().build_trigger();
+    let (ctx, ..) = TestContextBuilder::minimal().build_trigger();
 
     let adapter1 = Arc::clone(&adapter);
     let ctx1 = ctx.clone();
@@ -1136,9 +1136,9 @@ async fn poll_config_max_interval_below_base_is_clamped_and_warned() {
     // must raise max to base and log a warn.
     let builder = TestContextBuilder::new();
     let logger = builder.spy_logger();
-    let (ctx, _, _) = builder.build_trigger();
+    let (ctx, ..) = builder.build_trigger();
 
-    let mut config = PollConfig::fixed(Duration::from_secs(60));
+    let mut config = PollConfig::fixed(Duration::from_mins(1));
     config.max_interval = Duration::from_secs(10); // deliberately below base
 
     let poller = WildConfigPoller {
@@ -1174,7 +1174,7 @@ async fn poll_config_backoff_factor_clamped_to_ceiling() {
     // backoff_factor = 1e9 is clamped to 60.0 with a warn.
     let builder = TestContextBuilder::new();
     let logger = builder.spy_logger();
-    let (ctx, _, _) = builder.build_trigger();
+    let (ctx, ..) = builder.build_trigger();
 
     let mut config = PollConfig::fixed(Duration::from_secs(1));
     config.backoff_factor = 1.0e9;
@@ -1211,7 +1211,7 @@ async fn poll_config_backoff_factor_clamped_to_ceiling() {
 async fn poll_config_zero_timeout_is_reset_with_warn() {
     let builder = TestContextBuilder::new();
     let logger = builder.spy_logger();
-    let (ctx, _, _) = builder.build_trigger();
+    let (ctx, ..) = builder.build_trigger();
 
     let mut config = PollConfig::fixed(Duration::from_secs(1));
     config.poll_timeout = Duration::ZERO;

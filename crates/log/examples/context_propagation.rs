@@ -4,15 +4,18 @@
 //! points in multi-thread Tokio runtimes via `tokio::task_local!`.
 
 use anyhow::Result;
-use nebula_log::{Context, prelude::*};
+use nebula_log::{
+    Context,
+    prelude::{auto_init, debug, info},
+};
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    nebula_log::auto_init()?;
+    auto_init()?;
 
     // Simulate handling multiple requests concurrently
     let handles: Vec<_> = (0..3)
-        .map(|i| tokio::spawn(handle_user_request(format!("user-{}", i))))
+        .map(|i| tokio::spawn(handle_user_request(format!("user-{i}"))))
         .collect();
 
     for handle in handles {

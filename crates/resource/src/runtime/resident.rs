@@ -225,7 +225,7 @@ mod tests {
             _config: &bool,
             _auth: &(),
             _ctx: &dyn Ctx,
-        ) -> impl std::future::Future<Output = Result<u32, MockError>> + Send {
+        ) -> impl Future<Output = Result<u32, MockError>> + Send {
             let count = self.create_count.fetch_add(1, Ordering::Relaxed);
             async move {
                 // Yield to increase the chance of concurrent interleaving.
@@ -380,7 +380,7 @@ mod tests {
             _auth: &(),
             _ctx: &dyn Ctx,
         ) -> Result<u32, MockError> {
-            tokio::time::sleep(Duration::from_secs(3600)).await;
+            tokio::time::sleep(Duration::from_hours(1)).await;
             Ok(0)
         }
 

@@ -20,8 +20,8 @@ struct Credentials {
 #[test]
 fn field_pointers_are_rfc6901_normalized() {
     let creds = Credentials {
-        username: "".into(),
-        password: "".into(),
+        username: String::new(),
+        password: String::new(),
     };
     let errors = expect_errors(creds.validate_fields());
     // Field pointers normalise to `/field`, not `field` or `.field`.
@@ -75,8 +75,8 @@ fn flatten_walks_entire_tree_depth_first() {
 #[test]
 fn validate_fields_returns_collection_validate_returns_single() {
     let creds = Credentials {
-        username: "".into(),
-        password: "".into(),
+        username: String::new(),
+        password: String::new(),
     };
 
     // Raw collection keeps each field failure independent.

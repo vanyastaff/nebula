@@ -91,7 +91,7 @@ impl Extensions {
 
     /// Returns the raw `dyn Any` for a given `TypeId`.
     pub fn get_raw(&self, type_id: TypeId) -> Option<&(dyn Any + Send + Sync)> {
-        self.map.get(&type_id).map(|b| b.as_ref())
+        self.map.get(&type_id).map(AsRef::as_ref)
     }
 }
 
@@ -219,8 +219,8 @@ mod tests {
         extensions.insert(99_i64);
 
         let ctx = BasicCtx::new(ExecutionId::new()).with_extensions(extensions);
-        assert_eq!(super::ctx_ext::<i64>(&ctx), Some(&99));
-        assert_eq!(super::ctx_ext::<bool>(&ctx), None);
+        assert_eq!(ctx_ext::<i64>(&ctx), Some(&99));
+        assert_eq!(ctx_ext::<bool>(&ctx), None);
     }
 
     #[test]

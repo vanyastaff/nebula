@@ -155,7 +155,7 @@ mod tests {
             self.cat
         }
         fn code(&self) -> ErrorCode {
-            codes::INTERNAL.clone()
+            codes::INTERNAL
         }
     }
 
@@ -167,7 +167,7 @@ mod tests {
             ErrorCategory::RateLimit
         }
         fn code(&self) -> ErrorCode {
-            codes::RATE_LIMIT.clone()
+            codes::RATE_LIMIT
         }
         fn severity(&self) -> ErrorSeverity {
             ErrorSeverity::Warning

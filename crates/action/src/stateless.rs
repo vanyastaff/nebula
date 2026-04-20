@@ -161,8 +161,8 @@ pub fn stateless_fn<F, Input, Output>(
     FnStatelessAction::new(metadata, func)
 }
 
-impl<F, Input, Output> std::fmt::Debug for FnStatelessAction<F, Input, Output> {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl<F, Input, Output> fmt::Debug for FnStatelessAction<F, Input, Output> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("FnStatelessAction")
             .field("action", &self.metadata.base.key)
             .finish_non_exhaustive()
@@ -433,7 +433,7 @@ mod tests {
 
     #[tokio::test]
     async fn fn_stateless_action_executes_with_low_boilerplate() {
-        let action = stateless_fn::<_, serde_json::Value, serde_json::Value>(
+        let action = stateless_fn::<_, Value, Value>(
             ActionMetadata::new(
                 nebula_core::action_key!("example.fn"),
                 "Fn",
@@ -466,7 +466,7 @@ mod tests {
 
     #[tokio::test]
     async fn fn_stateless_ctx_action_receives_context() {
-        let action = stateless_ctx_fn::<_, serde_json::Value, serde_json::Value>(
+        let action = stateless_ctx_fn::<_, Value, Value>(
             ActionMetadata::new(
                 nebula_core::action_key!("example.ctx_fn"),
                 "CtxFn",

@@ -116,8 +116,8 @@ pub struct Gate {
     inner: Arc<GateInner>,
 }
 
-impl std::fmt::Debug for Gate {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl fmt::Debug for Gate {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let closing = self.inner.closing.load(Ordering::Relaxed);
         f.debug_struct("Gate")
             .field("closing", &closing)
@@ -283,12 +283,12 @@ mod tests {
         // Spawn a task that drops the guard after a short delay.
         let gate2 = gate.clone();
         tokio::spawn(async move {
-            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+            tokio::time::sleep(Duration::from_millis(20)).await;
             drop(guard);
         });
 
         // close() should complete after the guard is dropped.
-        tokio::time::timeout(std::time::Duration::from_secs(2), gate2.close())
+        tokio::time::timeout(Duration::from_secs(2), gate2.close())
             .await
             .expect("close() should complete quickly");
 
@@ -315,12 +315,12 @@ mod tests {
             gate2.close().await;
         });
 
-        tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+        tokio::time::sleep(Duration::from_millis(5)).await;
         drop(g1);
         drop(g2);
         drop(g3);
 
-        tokio::time::timeout(std::time::Duration::from_secs(2), close_task)
+        tokio::time::timeout(Duration::from_secs(2), close_task)
             .await
             .expect("timeout")
             .expect("task panicked");

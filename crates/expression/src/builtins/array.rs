@@ -96,7 +96,7 @@ pub fn sort(
     check_arg_count("sort", args, 1)?;
     let arr = get_array_arg("sort", args, 0, "array")?;
 
-    let mut elements: Vec<Value> = arr.to_vec();
+    let mut elements: Vec<Value> = arr.clone();
 
     // Sort the values
     elements.sort_by(|a, b| match (a, b) {
@@ -123,7 +123,7 @@ pub fn reverse(
     check_arg_count("reverse", args, 1)?;
     let arr = get_array_arg("reverse", args, 0, "array")?;
 
-    let mut elements: Vec<Value> = arr.to_vec();
+    let mut elements: Vec<Value> = arr.clone();
     elements.reverse();
 
     Ok(Value::Array(elements))
@@ -199,7 +199,7 @@ pub fn concat(
     // Calculate total size to pre-allocate
     let total_size: usize = args
         .iter()
-        .filter_map(|arg| arg.as_array().map(|arr| arr.len()))
+        .filter_map(|arg| arg.as_array().map(Vec::len))
         .sum();
 
     let mut result = Vec::with_capacity(total_size);
@@ -251,7 +251,7 @@ pub fn flatten(
         .iter()
         .flat_map(|elem| {
             if let Some(inner_arr) = elem.as_array() {
-                inner_arr.to_vec()
+                inner_arr.clone()
             } else {
                 vec![elem.clone()]
             }

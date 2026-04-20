@@ -22,7 +22,7 @@ const DEFAULT_PLUGIN_TIMEOUT: Duration = Duration::from_secs(30);
 /// Discover and register community plugins from standard directories.
 ///
 /// Returns the number of actions registered.
-pub async fn discover_and_register(registry: &ActionRegistry) -> usize {
+pub(crate) async fn discover_and_register(registry: &ActionRegistry) -> usize {
     let dirs = plugin_directories();
     let mut total = 0;
 
@@ -58,7 +58,7 @@ pub async fn discover_and_register(registry: &ActionRegistry) -> usize {
 }
 
 /// List the directories that would be scanned for plugins.
-pub fn plugin_directories() -> Vec<PathBuf> {
+pub(crate) fn plugin_directories() -> Vec<PathBuf> {
     let mut dirs = Vec::new();
 
     let local = PathBuf::from("plugins");

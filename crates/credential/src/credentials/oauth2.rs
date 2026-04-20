@@ -176,8 +176,8 @@ pub struct OAuth2Pending {
 // the `device_code` (device-flow bearer), the `pkce_verifier` (one-shot
 // auth-code verifier), or the `state` (callback CSRF token). The
 // `redirect_uri` is not secret and is shown verbatim.
-impl std::fmt::Debug for OAuth2Pending {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl fmt::Debug for OAuth2Pending {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
         f.debug_struct("OAuth2Pending")
             .field("config", &self.config)
             .field("client_id", &"[REDACTED]")
@@ -237,7 +237,7 @@ impl PendingState for OAuth2Pending {
     const KIND: &'static str = "oauth2_pending";
 
     fn expires_in(&self) -> Duration {
-        Duration::from_secs(600) // 10 minutes for interactive flows
+        Duration::from_mins(10) // 10 minutes for interactive flows
     }
 }
 
@@ -515,9 +515,9 @@ impl Credential for OAuth2Credential {
                 // Downstream oauth2_flow::exchange_authorization_code builds the
                 // form body from &str borrows (GitHub issue #265).
                 let client_secret: zeroize::Zeroizing<String> =
-                    zeroize::Zeroizing::new(pending.client_secret.expose_secret(|s| s.to_owned()));
+                    zeroize::Zeroizing::new(pending.client_secret.expose_secret(ToOwned::to_owned));
                 let code_verifier: zeroize::Zeroizing<String> =
-                    zeroize::Zeroizing::new(verifier_secret.expose_secret(|s| s.to_owned()));
+                    zeroize::Zeroizing::new(verifier_secret.expose_secret(ToOwned::to_owned));
 
                 let state = oauth2_flow::exchange_authorization_code(
                     &pending.config,
@@ -543,7 +543,7 @@ impl Credential for OAuth2Credential {
                 // Zeroizing<String>: intermediate plaintext scrubs on drop;
                 // poll_device_code builds its form from &str borrows (#265).
                 let client_secret: zeroize::Zeroizing<String> =
-                    zeroize::Zeroizing::new(pending.client_secret.expose_secret(|s| s.to_owned()));
+                    zeroize::Zeroizing::new(pending.client_secret.expose_secret(ToOwned::to_owned));
 
                 match oauth2_flow::poll_device_code(
                     &pending.config,
@@ -978,7 +978,7 @@ mod tests {
             auth_style: AuthStyle::default(),
         };
         // Expires in 30s, margin is 60s => expired
-        assert!(state.is_expired(Duration::from_secs(60)));
+        assert!(state.is_expired(Duration::from_mins(1)));
         // Margin is 0 => not expired
         assert!(!state.is_expired(Duration::from_secs(0)));
     }
@@ -1075,7 +1075,7 @@ mod tests {
             redirect_uri: None,
         };
 
-        assert_eq!(pending.expires_in(), Duration::from_secs(600));
+        assert_eq!(pending.expires_in(), Duration::from_mins(10));
     }
 
     #[test]

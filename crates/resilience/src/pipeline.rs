@@ -665,7 +665,7 @@ mod tests {
     #[tokio::test]
     async fn pipeline_bulkhead_takes_single_permit() {
         let bh = Arc::new(
-            crate::Bulkhead::new(crate::BulkheadConfig {
+            Bulkhead::new(crate::BulkheadConfig {
                 max_concurrency: 2,
                 queue_size: 1,
                 timeout: None,

@@ -70,7 +70,7 @@ fn full_retryable_override() {
 #[test]
 fn full_retry_hint() {
     let hint = FullError::RateLimited.retry_hint().unwrap();
-    assert_eq!(hint.after, Some(Duration::from_secs(60)));
+    assert_eq!(hint.after, Some(Duration::from_mins(1)));
     assert!(FullError::Timeout.retry_hint().is_none());
 }
 

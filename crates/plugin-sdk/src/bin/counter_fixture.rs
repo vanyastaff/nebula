@@ -55,7 +55,7 @@ impl PluginHandler for CounterPlugin {
     ) -> Result<Value, PluginError> {
         match action_key {
             "increment" => {
-                let amount = input.get("amount").and_then(|v| v.as_i64()).unwrap_or(1);
+                let amount = input.get("amount").and_then(Value::as_i64).unwrap_or(1);
                 let previous = self.total.fetch_add(amount, Ordering::Relaxed);
                 let new_total = previous + amount;
                 Ok(json!({
@@ -80,12 +80,12 @@ impl PluginHandler for CounterPlugin {
                 panic!("boom from counter plugin (probe)");
             },
             "slow" => {
-                let millis = input.get("millis").and_then(|v| v.as_u64()).unwrap_or(2000);
+                let millis = input.get("millis").and_then(Value::as_u64).unwrap_or(2000);
                 tokio::time::sleep(Duration::from_millis(millis)).await;
                 Ok(json!({ "slept_ms": millis }))
             },
             "big" => {
-                let kb = input.get("kb").and_then(|v| v.as_u64()).unwrap_or(100);
+                let kb = input.get("kb").and_then(Value::as_u64).unwrap_or(100);
                 let len = (kb as usize) * 1024;
                 let data: String = "x".repeat(len);
                 Ok(json!({

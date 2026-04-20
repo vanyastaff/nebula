@@ -356,7 +356,7 @@ impl ControlConsumer {
                 () = &mut claim_sleep => {
                     let next_delay = self.tick(&mut consecutive_errors).await;
                     claim_deadline = tokio::time::Instant::now()
-                        + next_delay.unwrap_or(std::time::Duration::ZERO);
+                        + next_delay.unwrap_or(Duration::ZERO);
                 }
             }
         }

@@ -34,13 +34,14 @@ pub async fn list_actions(State(state): State<AppState>) -> ApiResult<Json<ListA
         .into_iter()
         .map(|key| {
             let entry = registry.get(&key);
-            let name = entry
-                .as_ref()
-                .map(|(meta, _)| meta.base.name.clone())
-                .unwrap_or_else(|| key.as_str().to_string());
-            let version = entry
-                .map(|(meta, _)| meta.base.version.to_string())
-                .unwrap_or_else(|| "1.0.0".to_string());
+            let name = entry.as_ref().map_or_else(
+                || key.as_str().to_string(),
+                |(meta, _)| meta.base.name.clone(),
+            );
+            let version = entry.map_or_else(
+                || "1.0.0".to_string(),
+                |(meta, _)| meta.base.version.to_string(),
+            );
             ActionSummary {
                 key: key.as_str().to_string(),
                 name,
@@ -71,11 +72,11 @@ pub async fn get_action(
         .ok_or_else(|| ApiError::ServiceUnavailable("Action registry not configured".into()))?;
 
     let action_key = nebula_core::ActionKey::new(&key)
-        .map_err(|e| ApiError::validation_message(format!("Invalid action key: {}", e)))?;
+        .map_err(|e| ApiError::validation_message(format!("Invalid action key: {e}")))?;
 
     let (meta, _handler) = registry
         .get(&action_key)
-        .ok_or_else(|| ApiError::NotFound(format!("Action '{}' not found", key)))?;
+        .ok_or_else(|| ApiError::NotFound(format!("Action '{key}' not found")))?;
 
     Ok(Json(ActionDetailResponse {
         key: meta.base.key.as_str().to_string(),
@@ -112,10 +113,10 @@ pub async fn list_plugins(State(state): State<AppState>) -> ApiResult<Json<ListP
                 ApiError::Internal(format!("Failed to get plugin '{}': {}", key.as_str(), e))
             })?;
             let plugin = pt.latest().ok();
-            let (name, version) = plugin
-                .as_ref()
-                .map(|p| (p.name().to_string(), p.version()))
-                .unwrap_or_else(|| (key.as_str().to_string(), 1));
+            let (name, version) = plugin.as_ref().map_or_else(
+                || (key.as_str().to_string(), 1),
+                |p| (p.name().to_string(), p.version()),
+            );
             Ok(PluginSummary {
                 key: key.as_str().to_string(),
                 name,
@@ -147,18 +148,18 @@ pub async fn get_plugin(
 
     let plugin_key: nebula_core::PluginKey = key
         .parse()
-        .map_err(|e| ApiError::validation_message(format!("Invalid plugin key: {}", e)))?;
+        .map_err(|e| ApiError::validation_message(format!("Invalid plugin key: {e}")))?;
 
     let registry = registry_lock.read().await;
 
     let plugin_type = registry
         .get(&plugin_key)
-        .map_err(|_| ApiError::NotFound(format!("Plugin '{}' not found", key)))?;
+        .map_err(|_| ApiError::NotFound(format!("Plugin '{key}' not found")))?;
 
     let versions = plugin_type.version_numbers();
     let latest = plugin_type
         .latest()
-        .map_err(|e| ApiError::Internal(format!("Failed to get plugin: {}", e)))?;
+        .map_err(|e| ApiError::Internal(format!("Failed to get plugin: {e}")))?;
 
     let meta = latest.metadata();
 

@@ -118,7 +118,7 @@ impl AttrArgs {
     /// Get an ident value as a string (e.g. `auth_style = PostBody` -> `"PostBody"`).
     #[allow(dead_code)] // Reason: reserved for OAuth2/LDAP credential derive macros
     pub fn get_ident_str(&self, key: &str) -> Option<String> {
-        self.get_ident(key).map(|i| i.to_string())
+        self.get_ident(key).map(ToString::to_string)
     }
 
     /// Get a boolean value by key (e.g. `pkce = true`).

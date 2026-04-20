@@ -50,8 +50,8 @@ futures = { workspace = true }
 thiserror = { workspace = true }
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "time"] }
 
-[lints.rust]
-unexpected_cfgs = { level = "warn", check-cfg = ['cfg(loom)'] }
+[lints]
+workspace = true
 
 [[bench]]
 name = "compose"

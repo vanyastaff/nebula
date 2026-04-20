@@ -3,7 +3,7 @@ use serde::Deserialize;
 use serde_json::Value;
 
 #[derive(Debug, Deserialize)]
-pub struct FixtureCase {
+pub(super) struct FixtureCase {
     pub id: String,
     pub scenario: String,
     pub input: Value,
@@ -11,18 +11,18 @@ pub struct FixtureCase {
 }
 
 #[derive(Debug, Deserialize)]
-pub struct FixtureExpectation {
+pub(super) struct FixtureExpectation {
     pub pass: bool,
     pub error_code: Option<String>,
     pub field_path: Option<String>,
 }
 
-pub fn load_contract_fixture() -> Vec<FixtureCase> {
+pub(super) fn load_contract_fixture() -> Vec<FixtureCase> {
     let raw = include_str!("../fixtures/compat/minor_contract_v1.json");
     serde_json::from_str(raw).expect("compat fixture JSON must be valid")
 }
 
-pub fn load_named_fixture(name: &str) -> Vec<FixtureCase> {
+pub(super) fn load_named_fixture(name: &str) -> Vec<FixtureCase> {
     let raw = match name {
         "boolean" => include_str!("../fixtures/compat/boolean_contract_v1.json"),
         "pattern" => include_str!("../fixtures/compat/pattern_contract_v1.json"),
@@ -35,7 +35,7 @@ pub fn load_named_fixture(name: &str) -> Vec<FixtureCase> {
     serde_json::from_str(raw).unwrap_or_else(|e| panic!("{name} fixture JSON invalid: {e}"))
 }
 
-pub fn assert_error_contract(
+pub(super) fn assert_error_contract(
     error: &ValidationError,
     expected_code: Option<&str>,
     expected_field: Option<&str>,
@@ -48,7 +48,7 @@ pub fn assert_error_contract(
     }
 }
 
-pub fn assert_no_secrets(text: &str) {
+pub(super) fn assert_no_secrets(text: &str) {
     let forbidden = [
         "super-secret",
         "p@ssw0rd",

@@ -63,10 +63,7 @@ pub trait SandboxRunner: Send + Sync {
 
 /// Boxed future returned by the action executor.
 pub type ActionExecutorFuture = std::pin::Pin<
-    Box<
-        dyn std::future::Future<Output = Result<ActionResult<serde_json::Value>, ActionError>>
-            + Send,
-    >,
+    Box<dyn Future<Output = Result<ActionResult<serde_json::Value>, ActionError>> + Send>,
 >;
 
 /// Callback type for executing an action (registry lookup + invoke).

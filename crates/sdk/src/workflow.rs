@@ -68,7 +68,7 @@ impl WorkflowBuilder {
     pub fn new(id: impl Into<String>) -> Self {
         let id_str = id.into();
         Self {
-            name: id_str.clone(),
+            name: id_str,
             id: WorkflowId::new(),
             description: None,
             nodes: Vec::new(),
@@ -189,14 +189,12 @@ impl WorkflowBuilder {
         for (from, to) in &self.connections {
             if !node_id_by_name.contains_key(from) {
                 return Err(crate::Error::workflow(format!(
-                    "Connection references unknown source node: {}",
-                    from
+                    "Connection references unknown source node: {from}"
                 )));
             }
             if !node_id_by_name.contains_key(to) {
                 return Err(crate::Error::workflow(format!(
-                    "Connection references unknown target node: {}",
-                    to
+                    "Connection references unknown target node: {to}"
                 )));
             }
         }
@@ -238,10 +236,10 @@ impl WorkflowBuilder {
             .into_iter()
             .map(|(from, to)| -> crate::Result<Connection> {
                 let from_node = node_id_by_name.get(&from).cloned().ok_or_else(|| {
-                    crate::Error::workflow(format!("Unknown source node in connection: {}", from))
+                    crate::Error::workflow(format!("Unknown source node in connection: {from}"))
                 })?;
                 let to_node = node_id_by_name.get(&to).cloned().ok_or_else(|| {
-                    crate::Error::workflow(format!("Unknown target node in connection: {}", to))
+                    crate::Error::workflow(format!("Unknown target node in connection: {to}"))
                 })?;
 
                 Ok(Connection {

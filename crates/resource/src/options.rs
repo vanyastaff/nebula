@@ -141,10 +141,9 @@ mod tests {
 
     #[test]
     fn remaining_returns_some_when_deadline_set() {
-        let opts =
-            AcquireOptions::default().with_deadline(Instant::now() + Duration::from_secs(60));
+        let opts = AcquireOptions::default().with_deadline(Instant::now() + Duration::from_mins(1));
         let remaining = opts.remaining().unwrap();
-        assert!(remaining <= Duration::from_secs(60));
+        assert!(remaining <= Duration::from_mins(1));
         assert!(remaining > Duration::from_secs(50));
     }
 
@@ -157,11 +156,11 @@ mod tests {
     #[test]
     fn streaming_intent_carries_duration() {
         let intent = AcquireIntent::Streaming {
-            expected: Duration::from_secs(300),
+            expected: Duration::from_mins(5),
         };
         match intent {
             AcquireIntent::Streaming { expected } => {
-                assert_eq!(expected, Duration::from_secs(300));
+                assert_eq!(expected, Duration::from_mins(5));
             },
             _ => panic!("wrong variant"),
         }

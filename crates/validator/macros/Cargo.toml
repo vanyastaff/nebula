@@ -24,3 +24,6 @@ proc-macro2 = "1.0"
 # Used to validate `#[validate(regex = "...")]` patterns at macro-time so
 # compile errors surface before runtime.
 regex = { workspace = true }
+
+[lints]
+workspace = true

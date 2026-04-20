@@ -23,7 +23,7 @@ use rules::emit_field_rule;
 
 /// Generate the full `Validate`, `SelfValidating`, and `validate_fields()`
 /// implementations from the parsed IR.
-pub fn emit(input: &ValidatorInput) -> TokenStream2 {
+pub(crate) fn emit(input: &ValidatorInput) -> TokenStream2 {
     let struct_name = &input.ident;
     let (impl_generics, ty_generics, where_clause) = input.generics.split_for_impl();
     let root_message = &input.container.message;

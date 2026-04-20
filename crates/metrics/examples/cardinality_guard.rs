@@ -92,7 +92,7 @@ fn main() {
     reg3.counter_labeled("nebula_actions_total", &labels).inc(); // keep-alive touch
 
     // With a generous window (5 min) fresh series survive.
-    reg3.retain_recent(Duration::from_secs(300));
+    reg3.retain_recent(Duration::from_mins(5));
     println!(
         "\nActive series preserved by retain_recent: {}",
         reg3.metric_count()

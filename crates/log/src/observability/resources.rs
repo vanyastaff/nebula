@@ -310,7 +310,7 @@ mod tests {
     fn debug_output_redacts_sentry_dsn() {
         let resource = LoggerResource::new().with_sentry_dsn("https://secret-key@sentry.io/12345");
 
-        let debug_output = format!("{:?}", resource);
+        let debug_output = format!("{resource:?}");
 
         assert!(!debug_output.contains("secret-key"));
         assert!(!debug_output.contains("sentry.io/12345"));
@@ -322,7 +322,7 @@ mod tests {
         let resource = LoggerResource::new()
             .with_webhook("https://hooks.slack.com/services/T00/B00/SECRET123");
 
-        let debug_output = format!("{:?}", resource);
+        let debug_output = format!("{resource:?}");
 
         assert!(!debug_output.contains("SECRET123"));
         assert!(!debug_output.contains("hooks.slack.com"));
@@ -340,7 +340,7 @@ mod tests {
             ..Default::default()
         };
 
-        let debug_output = format!("{:?}", prefs);
+        let debug_output = format!("{prefs:?}");
 
         assert!(!debug_output.contains("admin@example.com"));
         assert!(!debug_output.contains("security@internal.net"));
@@ -351,7 +351,7 @@ mod tests {
     fn debug_output_shows_none_when_no_secrets() {
         let resource = LoggerResource::new();
 
-        let debug_output = format!("{:?}", resource);
+        let debug_output = format!("{resource:?}");
 
         assert!(debug_output.contains("sentry_dsn: None"));
         assert!(debug_output.contains("webhook_url: None"));

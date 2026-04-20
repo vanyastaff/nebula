@@ -198,6 +198,10 @@ mod tests {
     }
 
     #[test]
+    #[allow(
+        clippy::no_effect_underscore_binding,
+        reason = "API contract test — constructs each variant"
+    )]
     fn edge_condition_variants() {
         let _always = EdgeCondition::Always;
         let _expr = EdgeCondition::Expression {

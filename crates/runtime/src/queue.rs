@@ -92,7 +92,7 @@ pub trait TaskQueue: Send + Sync {
 }
 
 /// Outcome of a dequeue attempt.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum DequeueResult {
     /// A task was successfully leased to a worker.
     Item {

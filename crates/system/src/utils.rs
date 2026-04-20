@@ -56,8 +56,8 @@ mod tests {
         assert_eq!(format_bytes(512), "512 B");
         assert_eq!(format_bytes(1024), "1.00 KB");
         assert_eq!(format_bytes(1536), "1.50 KB");
-        assert_eq!(format_bytes(1048576), "1.00 MB");
-        assert_eq!(format_bytes(1073741824), "1.00 GB");
+        assert_eq!(format_bytes(1_048_576), "1.00 MB");
+        assert_eq!(format_bytes(1_073_741_824), "1.00 GB");
     }
 
     #[test]
@@ -167,7 +167,7 @@ impl PlatformInfo {
         Self {
             page_size: crate::info::SystemInfo::get().memory.page_size,
             cache_line_size: cache_line_size(),
-            pointer_width: std::mem::size_of::<usize>() * 8,
+            pointer_width: usize::BITS as usize,
         }
     }
 }

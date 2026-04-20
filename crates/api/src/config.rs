@@ -368,6 +368,10 @@ impl ApiConfig {
 }
 
 #[cfg(test)]
+#[allow(
+    unsafe_code,
+    reason = "env::{set_var, remove_var} are unsafe under edition 2024"
+)]
 mod tests {
     use super::*;
 

@@ -54,3 +54,6 @@ doctest = false
 # declared so the backend surface is stable even while implementation
 # is landing incrementally.
 ignored = ["aws-config", "aws-sdk-s3", "redis"]
+
+[lints]
+workspace = true

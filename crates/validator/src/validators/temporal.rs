@@ -206,7 +206,7 @@ impl Validate<str> for DateTime {
 
         // Separator T/t/space
         let sep = input.as_bytes().get(10).copied();
-        if !matches!(sep, Some(b'T') | Some(b't') | Some(b' ')) {
+        if !matches!(sep, Some(b'T' | b't' | b' ')) {
             return Err(err());
         }
 
@@ -215,7 +215,7 @@ impl Validate<str> for DateTime {
         let rest = parse_time_parts(time_str).map_err(|_| err())?;
 
         // Timezone: Z, +HH:MM, -HH:MM
-        validate_timezone_suffix(rest).map_err(|_| err())?;
+        validate_timezone_suffix(rest).map_err(|()| err())?;
 
         Ok(())
     }

@@ -56,7 +56,7 @@ impl DependencyGraph {
     /// Returns `true` if the graph contains at least one cycle.
     #[must_use]
     pub fn has_cycle(&self) -> bool {
-        petgraph::algo::is_cyclic_directed(&self.graph)
+        algo::is_cyclic_directed(&self.graph)
     }
 
     /// Topological sort of the graph. Returns an error if a cycle exists.

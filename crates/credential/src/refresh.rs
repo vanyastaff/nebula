@@ -245,7 +245,7 @@ impl RefreshCoordinator {
         }
         let config = CircuitBreakerConfig {
             failure_threshold: 5,
-            reset_timeout: Duration::from_secs(300),
+            reset_timeout: Duration::from_mins(5),
             min_operations: 1,
             ..Default::default()
         };
@@ -642,10 +642,7 @@ mod tests {
     #[tokio::test]
     async fn default_coordinator_has_default_permits() {
         let coord = RefreshCoordinator::new();
-        assert_eq!(
-            coord.available_permits(),
-            super::DEFAULT_MAX_CONCURRENT_REFRESHES
-        );
+        assert_eq!(coord.available_permits(), DEFAULT_MAX_CONCURRENT_REFRESHES);
     }
 
     /// #314: `with_max_concurrent(0)` must not construct a deadlocking

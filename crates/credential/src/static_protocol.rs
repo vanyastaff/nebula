@@ -142,7 +142,7 @@ mod tests {
         let mut values = FieldValues::new();
         values.set_raw("token", serde_json::json!("test-token"));
         let token = TestProtocol::build(&values).unwrap();
-        let value = token.token().expose_secret(|s| s.to_owned());
+        let value = token.token().expose_secret(ToOwned::to_owned);
         assert_eq!(value, "test-token");
     }
 

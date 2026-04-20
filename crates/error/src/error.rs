@@ -375,7 +375,7 @@ mod tests {
             self.cat
         }
         fn code(&self) -> ErrorCode {
-            codes::INTERNAL.clone()
+            codes::INTERNAL
         }
         fn severity(&self) -> ErrorSeverity {
             self.sev
@@ -488,7 +488,7 @@ mod tests {
                 self.0
             }
             fn code(&self) -> ErrorCode {
-                codes::EXTERNAL.clone()
+                codes::EXTERNAL
             }
         }
 

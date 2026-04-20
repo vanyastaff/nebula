@@ -172,8 +172,8 @@ pub mod config {
             Self {
                 min_size: 1,
                 max_size: 10,
-                idle_timeout: Some(Duration::from_secs(300)),
-                max_lifetime: Some(Duration::from_secs(1800)),
+                idle_timeout: Some(Duration::from_mins(5)),
+                max_lifetime: Some(Duration::from_mins(30)),
                 create_timeout: Duration::from_secs(30),
                 strategy: PoolStrategy::default(),
                 warmup: WarmupStrategy::default(),

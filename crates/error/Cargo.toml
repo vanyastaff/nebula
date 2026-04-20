@@ -30,3 +30,6 @@ derive = ["dep:nebula-error-macros"]
 serde_json = { workspace = true }
 thiserror = { workspace = true }
 nebula-error-macros = { path = "macros" }
+
+[lints]
+workspace = true

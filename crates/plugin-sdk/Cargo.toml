@@ -39,3 +39,6 @@ path = "src/bin/echo_fixture.rs"
 [[bin]]
 name = "nebula-counter-fixture"
 path = "src/bin/counter_fixture.rs"
+
+[lints]
+workspace = true

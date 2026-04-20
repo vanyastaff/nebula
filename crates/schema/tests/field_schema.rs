@@ -215,7 +215,7 @@ fn serde_roundtrip_supports_all_field_variants() {
         .add(Field::string("color_field").hint(InputHint::Color))
         .add(Field::file("file"))
         // Hidden → visible(Never) on any field
-        .add(Field::string("hidden_field").visible(nebula_schema::VisibilityMode::Never))
+        .add(Field::string("hidden_field").visible(VisibilityMode::Never))
         .add(Field::computed("computed"))
         .add(Field::dynamic("dynamic"))
         .add(Field::notice("notice"));

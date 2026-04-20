@@ -284,8 +284,7 @@ impl ControlQueueRepo for InMemoryControlQueueRepo {
                 let processor = row
                     .processed_by
                     .as_deref()
-                    .map(hex_encode_bytes)
-                    .unwrap_or_else(|| "<unknown>".to_string());
+                    .map_or_else(|| "<unknown>".to_string(), hex_encode_bytes);
                 row.status = "Failed".to_string();
                 row.error_message = Some(format!(
                     "reclaim exhausted: processor {processor} presumed dead after {} reclaims",

@@ -58,7 +58,7 @@ pub trait StatefulAction: Action {
     /// [`Self::State`]. Return `Some(migrated)` to continue execution with
     /// the migrated state, or `None` to propagate the original
     /// deserialization error as [`ActionError::Validation`].
-    fn migrate_state(&self, _old: serde_json::Value) -> Option<Self::State> {
+    fn migrate_state(&self, _old: Value) -> Option<Self::State> {
         None
     }
 
@@ -495,9 +495,9 @@ impl<A> StatefulActionAdapter<A> {
 impl<A> StatefulHandler for StatefulActionAdapter<A>
 where
     A: StatefulAction + Send + Sync + 'static,
-    A::Input: serde::de::DeserializeOwned + Send + Sync,
-    A::Output: serde::Serialize + Send + Sync,
-    A::State: serde::Serialize + serde::de::DeserializeOwned + Clone + Send + Sync,
+    A::Input: DeserializeOwned + Send + Sync,
+    A::Output: Serialize + Send + Sync,
+    A::State: Serialize + DeserializeOwned + Clone + Send + Sync,
 {
     fn metadata(&self) -> &ActionMetadata {
         self.action.metadata()

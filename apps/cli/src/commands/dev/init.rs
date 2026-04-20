@@ -5,7 +5,7 @@ use anyhow::{Context, bail};
 use crate::cli::DevInitArgs;
 
 /// Execute the `dev init` command.
-pub fn execute(args: DevInitArgs) -> anyhow::Result<()> {
+pub(crate) fn execute(args: DevInitArgs) -> anyhow::Result<()> {
     let dir = &args.path;
 
     let name = args.name.unwrap_or_else(|| {

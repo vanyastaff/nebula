@@ -6,7 +6,7 @@ use nebula_core::{ActionKey, PluginKey};
 use crate::cli::PluginNewArgs;
 
 /// Execute the `plugin new` command.
-pub fn execute(args: PluginNewArgs) -> anyhow::Result<()> {
+pub(crate) fn execute(args: PluginNewArgs) -> anyhow::Result<()> {
     let name = &args.name;
 
     // Validate plugin name as a valid PluginKey.
@@ -220,9 +220,6 @@ echo '{{"action_key":"__metadata__","input":{{}}}}' | cargo run
 echo '{{"action_key":"{plugin_key}.{first_action}","input":{{"key":"value"}}}}' | cargo run
 ```
 "#,
-        first_action = action_names
-            .first()
-            .map(|s| s.as_str())
-            .unwrap_or("execute"),
+        first_action = action_names.first().map_or("execute", String::as_str),
     )
 }

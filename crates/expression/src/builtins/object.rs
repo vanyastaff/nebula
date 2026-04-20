@@ -20,7 +20,7 @@ pub fn keys(
     let obj = get_object_arg("keys", args, 0, "object")?;
 
     // Pre-allocate with known size to avoid reallocations
-    let keys: Vec<_> = obj.keys().map(|k| Value::String(k.to_string())).collect();
+    let keys: Vec<_> = obj.keys().map(|k| Value::String(k.clone())).collect();
 
     Ok(Value::Array(keys))
 }

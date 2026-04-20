@@ -170,15 +170,15 @@ mod tests {
         let meta = ActionMetadata::new(action_key!("test.action"), "Test", "desc")
             .with_inputs(vec![InputPort::Support(SupportPort {
                 key: "tools".into(),
-                name: "".into(),
-                description: "".into(),
+                name: String::new(),
+                description: String::new(),
                 required: false,
                 multi: true,
                 filter: Default::default(),
             })])
             .with_outputs(vec![OutputPort::Dynamic(DynamicPort {
                 key: "rule".into(),
-                source_field: "".into(),
+                source_field: String::new(),
                 label_field: None,
                 include_fallback: false,
             })]);

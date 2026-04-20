@@ -112,8 +112,7 @@ pub fn event_data_json(event: &dyn ObservabilityEvent) -> Option<serde_json::Val
                 ObservabilityFieldValue::I64(v) => serde_json::Value::Number(v.into()),
                 ObservabilityFieldValue::U64(v) => serde_json::Value::Number(v.into()),
                 ObservabilityFieldValue::F64(v) => serde_json::Number::from_f64(v)
-                    .map(serde_json::Value::Number)
-                    .unwrap_or(serde_json::Value::Null),
+                    .map_or(serde_json::Value::Null, serde_json::Value::Number),
             };
             // Only allocate key string if necessary; most keys are short patterns
             self.fields.insert(key.to_string(), value);

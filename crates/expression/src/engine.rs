@@ -27,7 +27,7 @@ pub struct CacheStats {
 }
 
 /// Lightweight cache observability snapshot for `ExpressionEngine`.
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct CacheOverview {
     /// Whether expression parsing cache is enabled.
     pub expr_cache_enabled: bool,
@@ -71,15 +71,12 @@ impl<K: std::hash::Hash + Eq + Send + Sync + 'static, V: Clone + Send + Sync + '
     }
 
     fn get(&self, key: &K) -> Option<V> {
-        match self.inner.get(key) {
-            Some(v) => {
-                self.hits.fetch_add(1, Ordering::Relaxed);
-                Some(v)
-            },
-            None => {
-                self.misses.fetch_add(1, Ordering::Relaxed);
-                None
-            },
+        if let Some(v) = self.inner.get(key) {
+            self.hits.fetch_add(1, Ordering::Relaxed);
+            Some(v)
+        } else {
+            self.misses.fetch_add(1, Ordering::Relaxed);
+            None
         }
     }
 
@@ -360,7 +357,7 @@ impl ExpressionEngine {
     pub fn expr_cache_size(&self) -> Option<usize> {
         #[cfg(feature = "cache")]
         {
-            self.expr_cache.as_ref().map(|cache| cache.len())
+            self.expr_cache.as_ref().map(TrackedCache::len)
         }
         #[cfg(not(feature = "cache"))]
         {
@@ -372,7 +369,7 @@ impl ExpressionEngine {
     pub fn template_cache_size(&self) -> Option<usize> {
         #[cfg(feature = "cache")]
         {
-            self.template_cache.as_ref().map(|cache| cache.len())
+            self.template_cache.as_ref().map(TrackedCache::len)
         }
         #[cfg(not(feature = "cache"))]
         {
@@ -384,14 +381,14 @@ impl ExpressionEngine {
     pub fn cache_overview(&self) -> CacheOverview {
         #[cfg(feature = "cache")]
         {
-            let expr_stats = self.expr_cache.as_ref().map(|c| c.stats());
-            let tmpl_stats = self.template_cache.as_ref().map(|c| c.stats());
+            let expr_stats = self.expr_cache.as_ref().map(TrackedCache::stats);
+            let tmpl_stats = self.template_cache.as_ref().map(TrackedCache::stats);
 
             CacheOverview {
                 expr_cache_enabled: self.expr_cache.is_some(),
                 template_cache_enabled: self.template_cache.is_some(),
-                expr_entries: self.expr_cache.as_ref().map_or(0, |c| c.len()),
-                template_entries: self.template_cache.as_ref().map_or(0, |c| c.len()),
+                expr_entries: self.expr_cache.as_ref().map_or(0, TrackedCache::len),
+                template_entries: self.template_cache.as_ref().map_or(0, TrackedCache::len),
                 expr_hits: expr_stats.as_ref().map_or(0, |s| s.hits),
                 expr_misses: expr_stats.as_ref().map_or(0, |s| s.misses),
                 template_hits: tmpl_stats.as_ref().map_or(0, |s| s.hits),
@@ -419,7 +416,7 @@ impl ExpressionEngine {
     pub fn expr_cache_stats(&self) -> Option<CacheStats> {
         #[cfg(feature = "cache")]
         {
-            self.expr_cache.as_ref().map(|c| c.stats())
+            self.expr_cache.as_ref().map(TrackedCache::stats)
         }
         #[cfg(not(feature = "cache"))]
         {
@@ -433,7 +430,7 @@ impl ExpressionEngine {
     pub fn template_cache_stats(&self) -> Option<CacheStats> {
         #[cfg(feature = "cache")]
         {
-            self.template_cache.as_ref().map(|c| c.stats())
+            self.template_cache.as_ref().map(TrackedCache::stats)
         }
         #[cfg(not(feature = "cache"))]
         {
@@ -455,7 +452,7 @@ mod tests {
 
     fn constant_one(
         _args: &[Value],
-        _evaluator: &crate::eval::Evaluator,
+        _evaluator: &Evaluator,
         _context: &EvaluationContext,
     ) -> ExpressionResult<Value> {
         Ok(Value::from(1))
@@ -549,11 +546,11 @@ mod tests {
         context.set_input(Value::Number(42.into()));
         context.set_execution_var("name", Value::String("Alice".to_string()));
 
-        let html = r#"<html>
+        let html = r"<html>
   <h1>Welcome {{ $execution.name }}</h1>
   <p>Your score: {{ $input * 2 }}</p>
   <span>Total: {{ $input + 8 }}</span>
-</html>"#;
+</html>";
 
         let template = engine.parse_template(html).unwrap();
         let result = engine.render_template(&template, &context).unwrap();

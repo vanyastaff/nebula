@@ -24,7 +24,7 @@ use arc_swap::ArcSwap;
 use tokio::sync::Notify;
 
 /// Maximum backoff cap (5 minutes).
-const MAX_BACKOFF: Duration = Duration::from_secs(300);
+const MAX_BACKOFF: Duration = Duration::from_mins(5);
 
 /// Current state of a [`RecoveryGate`].
 #[non_exhaustive]
@@ -461,7 +461,7 @@ mod tests {
 
     #[test]
     fn backoff_caps_at_five_minutes() {
-        let base = Duration::from_secs(60);
+        let base = Duration::from_mins(1);
         // 60 * 2^4 = 960s > 300s cap
         assert_eq!(compute_backoff(base, 5), MAX_BACKOFF);
     }

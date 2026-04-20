@@ -11,7 +11,7 @@ use nebula_telemetry::metrics::MetricsRegistry;
 use crate::cli::{OutputFormat, RunArgs, resolve_format};
 
 /// Execute the `run` command.
-pub async fn execute(args: RunArgs, quiet: bool) -> anyhow::Result<ExitCode> {
+pub(crate) async fn execute(args: RunArgs, quiet: bool) -> anyhow::Result<ExitCode> {
     // 1. Load and parse workflow.
     let content = std::fs::read_to_string(&args.workflow)
         .with_context(|| format!("failed to read {}", args.workflow.display()))?;
@@ -224,7 +224,7 @@ fn print_text_result(result: &nebula_engine::ExecutionResult) {
 ///
 /// Format: `<node_name>.params.<key>=<value>`
 /// Example: `fetch.params.url=https://staging.api.com`
-pub fn apply_overrides(
+pub(crate) fn apply_overrides(
     workflow: &mut nebula_workflow::WorkflowDefinition,
     overrides: &[String],
 ) -> anyhow::Result<()> {
@@ -249,18 +249,17 @@ pub fn apply_overrides(
             .iter_mut()
             .find(|n| n.name.eq_ignore_ascii_case(node_name));
 
-        let node = match node {
-            Some(n) => n,
-            None => {
-                let suggestion = find_closest(&node_names, node_name);
-                let hint = suggestion
-                    .map(|s| format!(" Did you mean \"{s}\"?"))
-                    .unwrap_or_default();
-                anyhow::bail!(
-                    "unknown node \"{node_name}\" in --set.{hint}\nAvailable: {}",
-                    node_names.join(", ")
-                );
-            },
+        let node = if let Some(n) = node {
+            n
+        } else {
+            let suggestion = find_closest(&node_names, node_name);
+            let hint = suggestion
+                .map(|s| format!(" Did you mean \"{s}\"?"))
+                .unwrap_or_default();
+            anyhow::bail!(
+                "unknown node \"{node_name}\" in --set.{hint}\nAvailable: {}",
+                node_names.join(", ")
+            );
         };
 
         // Parse value as JSON, fall back to string.
@@ -299,7 +298,7 @@ fn find_closest<'a>(options: &'a [String], target: &str) -> Option<&'a str> {
             }
             o_lower.len().abs_diff(target_lower.len()) + 2
         })
-        .map(|s| s.as_str())
+        .map(String::as_str)
 }
 
 /// --dry-run: show execution plan without running.
@@ -357,8 +356,10 @@ fn dry_run(
                         .nodes
                         .iter()
                         .find(|n| n.id == *node_key)
-                        .map(|n| format!("{} ({})", n.name, n.action_key))
-                        .unwrap_or_else(|| node_key.to_string());
+                        .map_or_else(
+                            || node_key.to_string(),
+                            |n| format!("{} ({})", n.name, n.action_key),
+                        );
                     println!("    {node_key}  {name}");
                 }
             }
@@ -383,7 +384,7 @@ fn print_stream_event(event: &nebula_engine::ExecutionEvent) {
         ExecutionEvent::NodeFailed {
             node_key, error, ..
         } => {
-            eprintln!("  ✗ {node_key} failed: {error}")
+            eprintln!("  ✗ {node_key} failed: {error}");
         },
         ExecutionEvent::NodeSkipped { node_key, .. } => {
             eprintln!("  ⊘ {node_key} skipped");

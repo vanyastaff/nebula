@@ -329,8 +329,7 @@ pub fn repeat(
     let result_len = s.len().saturating_mul(count);
     if result_len > MAX_RESULT_LEN {
         return Err(ExpressionError::expression_eval_error(format!(
-            "repeat would produce a string of {} bytes, exceeding limit of {MAX_RESULT_LEN}",
-            result_len
+            "repeat would produce a string of {result_len} bytes, exceeding limit of {MAX_RESULT_LEN}"
         )));
     }
 

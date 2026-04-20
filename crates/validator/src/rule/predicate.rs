@@ -72,10 +72,10 @@ impl Predicate {
         match self {
             Self::Eq(f, v) => ctx.get(f).is_some_and(|x| x == v),
             Self::Ne(f, v) => ctx.get(f).is_none_or(|x| x != v),
-            Self::Gt(f, v) => cmp_number_predicate(ctx.get(f), v, |o| o.is_gt()),
-            Self::Gte(f, v) => cmp_number_predicate(ctx.get(f), v, |o| o.is_ge()),
-            Self::Lt(f, v) => cmp_number_predicate(ctx.get(f), v, |o| o.is_lt()),
-            Self::Lte(f, v) => cmp_number_predicate(ctx.get(f), v, |o| o.is_le()),
+            Self::Gt(f, v) => cmp_number_predicate(ctx.get(f), v, std::cmp::Ordering::is_gt),
+            Self::Gte(f, v) => cmp_number_predicate(ctx.get(f), v, std::cmp::Ordering::is_ge),
+            Self::Lt(f, v) => cmp_number_predicate(ctx.get(f), v, std::cmp::Ordering::is_lt),
+            Self::Lte(f, v) => cmp_number_predicate(ctx.get(f), v, std::cmp::Ordering::is_le),
             Self::IsTrue(f) => ctx.get(f).and_then(serde_json::Value::as_bool) == Some(true),
             Self::IsFalse(f) => ctx.get(f).and_then(serde_json::Value::as_bool) == Some(false),
             Self::Set(f) => ctx.get(f).is_some_and(|v| {

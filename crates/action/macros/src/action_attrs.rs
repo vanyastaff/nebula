@@ -7,7 +7,7 @@ use syn::{Ident, Result, Type};
 
 /// Parsed action container attributes.
 #[derive(Debug, Clone)]
-pub struct ActionAttrs {
+pub(crate) struct ActionAttrs {
     /// Unique key (e.g. `"http.request"`).
     pub key: String,
     /// Human-readable name.
@@ -34,7 +34,7 @@ pub struct ActionAttrs {
 
 impl ActionAttrs {
     /// Parse from `#[action(...)]` attribute args.
-    pub fn parse(
+    pub(crate) fn parse(
         attr_args: &attrs::AttrArgs,
         struct_name: &Ident,
         description_fallback: Option<String>,
@@ -118,7 +118,7 @@ impl ActionAttrs {
     }
 
     /// Generate `ActionMetadata` initialization expression.
-    pub fn metadata_init_expr(&self) -> TokenStream2 {
+    pub(crate) fn metadata_init_expr(&self) -> TokenStream2 {
         let key = &self.key;
         let name = &self.name;
         let description = &self.description;
@@ -145,7 +145,7 @@ impl ActionAttrs {
     }
 
     /// Generate `ActionDependencies` impl expression.
-    pub fn dependencies_impl_expr(
+    pub(crate) fn dependencies_impl_expr(
         &self,
         struct_name: &Ident,
         impl_generics: &syn::ImplGenerics<'_>,

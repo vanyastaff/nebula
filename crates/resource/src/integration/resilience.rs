@@ -72,7 +72,7 @@ impl AcquireResilience {
     /// Tolerant: 60 s timeout, 5 retries.
     pub fn slow() -> Self {
         Self {
-            timeout: Some(Duration::from_secs(60)),
+            timeout: Some(Duration::from_mins(1)),
             retry: Some(AcquireRetryConfig {
                 max_attempts: 5,
                 initial_backoff: Duration::from_millis(500),

@@ -12,23 +12,23 @@ fn main() {
     context.set_input(Value::String("Alice".to_string()));
 
     println!("=== Example 1: Undefined Variable ===\n");
-    let template = r#"<html>
+    let template = r"<html>
   <head>
     <title>{{ $execution.title }}</title>
   </head>
   <body>
     <h1>Hello {{ $undefined_variable }}!</h1>
   </body>
-</html>"#;
+</html>";
 
     match Template::new(template) {
         Ok(tmpl) => match tmpl.render(&engine, &context) {
             Ok(_) => println!("Success!"),
             Err(e) => {
-                println!("{}\n", e);
+                println!("{e}\n");
             },
         },
-        Err(e) => println!("Parse error: {}\n", e),
+        Err(e) => println!("Parse error: {e}\n"),
     }
 
     println!("=== Example 2: Invalid Function ===\n");
@@ -42,45 +42,45 @@ fn main() {
         Ok(tmpl) => match tmpl.render(&engine, &context) {
             Ok(_) => println!("Success!"),
             Err(e) => {
-                println!("{}\n", e);
+                println!("{e}\n");
             },
         },
-        Err(e) => println!("Parse error: {}\n", e),
+        Err(e) => println!("Parse error: {e}\n"),
     }
 
     println!("=== Example 3: Unclosed Expression ===\n");
-    let template3 = r#"Line 1
+    let template3 = r"Line 1
 Line 2
 Line 3 has {{ unclosed expression
 Line 4
-Line 5"#;
+Line 5";
 
     match Template::new(template3) {
         Ok(_) => println!("Parsed successfully"),
         Err(e) => {
-            println!("{}\n", e);
+            println!("{e}\n");
         },
     }
 
     println!("=== Example 4: Type Error ===\n");
     context.set_execution_var("count", Value::String("not a number".to_string()));
 
-    let template4 = r#"<div>
+    let template4 = r"<div>
     <p>Total items: {{ $execution.count * 2 }}</p>
-</div>"#;
+</div>";
 
     match Template::new(template4) {
         Ok(tmpl) => match tmpl.render(&engine, &context) {
             Ok(_) => println!("Success!"),
             Err(e) => {
-                println!("{}\n", e);
+                println!("{e}\n");
             },
         },
-        Err(e) => println!("Parse error: {}\n", e),
+        Err(e) => println!("Parse error: {e}\n"),
     }
 
     println!("=== Example 5: Multiline with Good Error ===\n");
-    let template5 = r#"<!DOCTYPE html>
+    let template5 = r"<!DOCTYPE html>
 <html>
 <head>
     <title>My Page</title>
@@ -93,15 +93,15 @@ Line 5"#;
         <p>Content goes here</p>
     </main>
 </body>
-</html>"#;
+</html>";
 
     match Template::new(template5) {
         Ok(tmpl) => match tmpl.render(&engine, &context) {
             Ok(_) => println!("Success!"),
             Err(e) => {
-                println!("{}\n", e);
+                println!("{e}\n");
             },
         },
-        Err(e) => println!("Parse error: {}\n", e),
+        Err(e) => println!("Parse error: {e}\n"),
     }
 }

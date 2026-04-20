@@ -1213,25 +1213,24 @@ where
         // Clone Arc under read lock; the guard drops at end of statement BEFORE
         // the await on handle_request. Holding a parking_lot guard across .await
         // would be unsound (non-Send) and risk re-entry panic with start/stop.
-        let state = match self.state.read().as_ref().cloned() {
-            Some(s) => s,
-            None => {
-                // State could be None in two situations: (1) genuine
-                // "before start" programmer error, or (2) a race with
-                // stop() that already took the state. Both should not
-                // hang the transport — send a 500 so the caller gets
-                // a real HTTP response instead of `RecvError`.
-                if let Some(tx) = response_tx {
-                    let _ = tx.send(WebhookHttpResponse::new(
-                        StatusCode::INTERNAL_SERVER_ERROR,
-                        Bytes::new(),
-                    ));
-                }
-                ctx.health.record_error();
-                return Err(ActionError::fatal(
-                    "handle_event called before start or after stop — no state available",
+        let state = if let Some(s) = self.state.read().as_ref().cloned() {
+            s
+        } else {
+            // State could be None in two situations: (1) genuine
+            // "before start" programmer error, or (2) a race with
+            // stop() that already took the state. Both should not
+            // hang the transport — send a 500 so the caller gets
+            // a real HTTP response instead of `RecvError`.
+            if let Some(tx) = response_tx {
+                let _ = tx.send(WebhookHttpResponse::new(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Bytes::new(),
                 ));
-            },
+            }
+            ctx.health.record_error();
+            return Err(ActionError::fatal(
+                "handle_event called before start or after stop — no state available",
+            ));
         };
 
         // H6 — cancellation-safe dispatch. If the trigger is being

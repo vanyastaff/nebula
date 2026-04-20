@@ -45,7 +45,7 @@ mod tests {
         let exec_id = ExecutionId::new();
         let node_key = node_key!("test_node");
         let key1 = IdempotencyKey::generate(exec_id, node_key.clone(), 0);
-        let key2 = IdempotencyKey::generate(exec_id, node_key.clone(), 0);
+        let key2 = IdempotencyKey::generate(exec_id, node_key, 0);
         assert_eq!(key1, key2);
     }
 
@@ -54,7 +54,7 @@ mod tests {
         let exec_id = ExecutionId::new();
         let node_key = node_key!("test_node");
         let key0 = IdempotencyKey::generate(exec_id, node_key.clone(), 0);
-        let key1 = IdempotencyKey::generate(exec_id, node_key.clone(), 1);
+        let key1 = IdempotencyKey::generate(exec_id, node_key, 1);
         assert_ne!(key0, key1);
     }
 

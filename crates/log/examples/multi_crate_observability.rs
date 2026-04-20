@@ -73,7 +73,7 @@ fn simulate_memory_crate_events() {
         let event = CrateEvent {
             crate_name: "nebula-memory".to_string(),
             event_type: "cache_operation".to_string(),
-            operation: format!("lookup_{}", i),
+            operation: format!("lookup_{i}"),
             success: i % 2 == 0,
         };
         emit_event(&event);
@@ -87,7 +87,7 @@ fn simulate_validator_crate_events() {
         let event = CrateEvent {
             crate_name: "nebula-validator".to_string(),
             event_type: "validation".to_string(),
-            operation: format!("validate_{}", i),
+            operation: format!("validate_{i}"),
             success: true,
         };
         emit_event(&event);
@@ -131,8 +131,8 @@ impl UnifiedMetricsCollector {
     fn display_metrics(&self) {
         let metrics = self.metrics.lock().unwrap();
 
-        for (crate_name, crate_metrics) in metrics.iter() {
-            println!("\n{}", crate_name);
+        for (crate_name, crate_metrics) in &*metrics {
+            println!("\n{crate_name}");
             println!("  Total events:   {}", crate_metrics.total_events);
             println!("  Successful:     {}", crate_metrics.success_count);
             println!("  Failed:         {}", crate_metrics.failure_count);
@@ -149,7 +149,8 @@ impl ObservabilityHook for UnifiedMetricsCollector {
         if let Some(data) = event_data_json(event)
             && let (Some(crate_name), Some(success)) = (
                 data.get("crate_name").and_then(|v| v.as_str()),
-                data.get("success").and_then(|v| v.as_bool()),
+                data.get("success")
+                    .and_then(serde_json::value::Value::as_bool),
             )
         {
             let mut metrics = self.metrics.lock().unwrap();
@@ -177,7 +178,7 @@ struct CrateEvent {
 }
 
 impl ObservabilityEvent for CrateEvent {
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "crate_event"
     }
 

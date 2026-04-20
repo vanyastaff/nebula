@@ -197,8 +197,8 @@ impl Registry {
     /// shutdown, #387) without needing typed access to each entry.
     pub(crate) fn all_managed(&self) -> Vec<Arc<dyn AnyManagedResource>> {
         let mut out = Vec::new();
-        for row in self.entries.iter() {
-            for entry in row.value().iter() {
+        for row in &self.entries {
+            for entry in row.value() {
                 out.push(Arc::clone(&entry.managed));
             }
         }
@@ -306,7 +306,7 @@ mod tests {
         // Replace only the Global entry with FakeB. Workflow still
         // holds FakeA, so the TypeA row in type_index must survive.
         reg.register(
-            key.clone(),
+            key,
             TypeId::of::<FakeB>(),
             ScopeLevel::Global,
             Arc::new(FakeB),
@@ -334,12 +334,7 @@ mod tests {
         assert!(reg.type_index.contains_key(&TypeId::of::<FakeA>()));
 
         // Replace at the same key+scope with a different concrete type.
-        reg.register(
-            key.clone(),
-            TypeId::of::<FakeB>(),
-            scope.clone(),
-            Arc::new(FakeB),
-        );
+        reg.register(key, TypeId::of::<FakeB>(), scope, Arc::new(FakeB));
 
         // The stale TypeId row for FakeA must be gone (#382).
         assert!(

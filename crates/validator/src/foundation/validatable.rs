@@ -472,7 +472,7 @@ mod tests {
         // 2^53 is exactly representable
         let n: i64 = 1 << 53;
         let result: f64 = AsValidatable::<f64>::as_validatable(&n).unwrap();
-        assert_eq!(result, 9007199254740992.0);
+        assert_eq!(result, 9_007_199_254_740_992.0);
     }
 
     #[test]

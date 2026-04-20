@@ -101,7 +101,7 @@ async fn create_state_with_failing_queue() -> AppState {
         workflow_repo,
         execution_repo,
         control_queue_repo,
-        api_config.jwt_secret.clone(),
+        api_config.jwt_secret,
     )
 }
 
@@ -453,9 +453,8 @@ async fn knife_scenario_end_to_end() {
     // finished_at must be absent (not "0") — canon explicitly forbids synthetic zero.
     let finished_at_value = observed.get("finished_at");
     let finished_at_is_zero = finished_at_value
-        .and_then(|v| v.as_i64())
-        .map(|v| v == 0)
-        .unwrap_or(false);
+        .and_then(serde_json::Value::as_i64)
+        .is_some_and(|v| v == 0);
     assert!(
         !finished_at_is_zero,
         "step 4: finished_at must NOT be synthetic 0 — must be absent or a real timestamp"
@@ -484,8 +483,7 @@ async fn knife_scenario_end_to_end() {
     assert_eq!(
         pre_cancel_entries.len(),
         1,
-        "step 5 pre-condition (#332): queue must hold the Start entry written by step 3, got {:?}",
-        pre_cancel_entries
+        "step 5 pre-condition (#332): queue must hold the Start entry written by step 3, got {pre_cancel_entries:?}"
     );
     assert_eq!(
         pre_cancel_entries[0].command,

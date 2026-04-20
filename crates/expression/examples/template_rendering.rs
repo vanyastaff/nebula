@@ -20,7 +20,7 @@ fn main() {
     )
     .unwrap();
     let result = template.render(&engine, &context).unwrap();
-    println!("{}", result);
+    println!("{result}");
 
     // Example 2: HTML Email Template
     println!("\n=== Example 2: HTML Email Template ===");
@@ -49,7 +49,7 @@ fn main() {
         .unwrap()
         .render(&engine, &context)
         .unwrap();
-    println!("{}", result);
+    println!("{result}");
 
     // Example 3: JSON Template
     println!("\n=== Example 3: JSON Template ===");
@@ -74,14 +74,14 @@ fn main() {
         .unwrap()
         .render(&engine, &context)
         .unwrap();
-    println!("{}", result);
+    println!("{result}");
 
     // Example 4: Markdown Document
     println!("\n=== Example 4: Markdown Document ===");
     context.set_execution_var("product", Value::String("Premium Widget".to_string()));
     context.set_execution_var("price", serde_json::json!(29.99));
 
-    let markdown_template = r#"
+    let markdown_template = r"
 # Order Summary
 
 **Customer:** {{ $input }}
@@ -96,17 +96,17 @@ fn main() {
 ---
 
 *Generated on {{ now_iso() }}*
-"#;
+";
 
     let result = Template::new(markdown_template)
         .unwrap()
         .render(&engine, &context)
         .unwrap();
-    println!("{}", result);
+    println!("{result}");
 
     // Example 5: Complex expressions with functions
     println!("\n=== Example 5: Complex Expressions ===");
-    context.set_input(serde_json::json!(1704067200)); // 2024-01-01 00:00:00 UTC
+    context.set_input(serde_json::json!(1_704_067_200)); // 2024-01-01 00:00:00 UTC
 
     let template = r#"
 Report for {{ $execution.username }}:
@@ -122,14 +122,14 @@ Report for {{ $execution.username }}:
         .unwrap()
         .render(&engine, &context)
         .unwrap();
-    println!("{}", result);
+    println!("{result}");
 
     // Example 6: Conditional content (using pipeline)
     println!("\n=== Example 6: With Calculations ===");
     context.set_execution_var("quantity", serde_json::json!(5));
     context.set_execution_var("unit_price", serde_json::json!(19.99));
 
-    let template = r#"
+    let template = r"
 Invoice:
 --------
 Quantity: {{ $execution.quantity }}
@@ -137,11 +137,11 @@ Unit Price: ${{ $execution.unit_price }}
 Subtotal: ${{ $execution.quantity * $execution.unit_price }}
 Tax (10%): ${{ $execution.quantity * $execution.unit_price * 0.1 | round(2) }}
 Total: ${{ $execution.quantity * $execution.unit_price * 1.1 | round(2) }}
-"#;
+";
 
     let result = Template::new(template)
         .unwrap()
         .render(&engine, &context)
         .unwrap();
-    println!("{}", result);
+    println!("{result}");
 }

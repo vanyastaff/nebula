@@ -71,3 +71,6 @@ tokio = { workspace = true, features = ["rt"] }
 [features]
 default = ["tui"]
 tui = ["dep:ratatui", "dep:crossterm"]
+
+[lints]
+workspace = true

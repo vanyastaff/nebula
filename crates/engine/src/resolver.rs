@@ -46,7 +46,7 @@ impl ParamResolver {
         ctx.set_input(predecessor_input.clone());
 
         // Populate $node with all available outputs
-        for entry in outputs.iter() {
+        for entry in outputs {
             ctx.set_node_data(entry.key(), entry.value().clone());
         }
 
@@ -112,7 +112,7 @@ impl ParamResolver {
                         .ok_or_else(|| EngineError::ParameterResolution {
                             node_key: node_key.clone(),
                             param_key: key.to_owned(),
-                            error: format!("referenced node {} has no output", ref_node),
+                            error: format!("referenced node {ref_node} has no output"),
                         })?;
                 let value = navigate_path(output.value(), output_path);
                 Ok(value)

@@ -19,7 +19,7 @@ use tokio::sync::mpsc;
 use crate::cli::WatchArgs;
 
 /// Execute the `watch` command.
-pub async fn execute(args: WatchArgs) -> anyhow::Result<ExitCode> {
+pub(crate) async fn execute(args: WatchArgs) -> anyhow::Result<ExitCode> {
     let workflow_path = args
         .workflow
         .canonicalize()
@@ -58,7 +58,7 @@ pub async fn execute(args: WatchArgs) -> anyhow::Result<ExitCode> {
             Some(()) = rx.recv() => {
                 last_change = Instant::now();
             }
-            _ = tokio::time::sleep(Duration::from_millis(200)) => {
+            () = tokio::time::sleep(Duration::from_millis(200)) => {
                 if last_change.elapsed() < Duration::from_millis(300)
                     && last_change.elapsed() >= Duration::from_millis(200)
                 {

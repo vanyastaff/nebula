@@ -270,7 +270,7 @@ pub struct ConfigError {
     pub field: &'static str,
     /// Human-readable description of the validation error.
     /// `Cow` avoids heap allocation for static messages (95%+ of call sites).
-    pub message: std::borrow::Cow<'static, str>,
+    pub message: Cow<'static, str>,
 }
 
 impl nebula_error::Classify for ConfigError {
@@ -286,7 +286,7 @@ impl nebula_error::Classify for ConfigError {
 impl ConfigError {
     /// Create a new configuration error.
     #[must_use]
-    pub fn new(field: &'static str, message: impl Into<std::borrow::Cow<'static, str>>) -> Self {
+    pub fn new(field: &'static str, message: impl Into<Cow<'static, str>>) -> Self {
         Self {
             field,
             message: message.into(),
@@ -362,7 +362,7 @@ mod tests {
 
     #[test]
     fn timeout_is_retryable() {
-        let e: CallError<MyErr> = CallError::Timeout(std::time::Duration::from_secs(1));
+        let e: CallError<MyErr> = CallError::Timeout(Duration::from_secs(1));
         assert!(e.is_retryable());
     }
 

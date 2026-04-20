@@ -56,7 +56,7 @@ pub fn validate_workflow(definition: &WorkflowDefinition) -> Vec<WorkflowError> 
     // `Connection` cannot derive `Hash` (because `serde_json::Value` doesn't implement it),
     // so we serialize each connection to a canonical JSON string and use a HashSet<String>
     // for O(n) average-case detection.
-    let mut seen_connections: std::collections::HashSet<String> = std::collections::HashSet::new();
+    let mut seen_connections: HashSet<String> = HashSet::new();
     for conn in &definition.connections {
         let key = serde_json::to_string(conn).unwrap_or_default();
         if !seen_connections.insert(key) {
@@ -282,7 +282,7 @@ mod tests {
     fn trigger_validation_rejects_invalid_webhook_path() {
         let a = node_key!("a");
         let mut def = make_definition("webhook-test", vec![node(a)], vec![]);
-        def.trigger = Some(crate::definition::TriggerDefinition::Webhook {
+        def.trigger = Some(TriggerDefinition::Webhook {
             method: "POST".into(),
             path: "no-leading-slash".into(),
         });
@@ -299,7 +299,7 @@ mod tests {
     fn trigger_validation_rejects_empty_cron_expression() {
         let a = node_key!("a");
         let mut def = make_definition("cron-test", vec![node(a)], vec![]);
-        def.trigger = Some(crate::definition::TriggerDefinition::Cron {
+        def.trigger = Some(TriggerDefinition::Cron {
             expression: String::new(),
         });
         let errors = validate_workflow(&def);
@@ -315,7 +315,7 @@ mod tests {
     fn trigger_validation_accepts_valid_webhook() {
         let a = node_key!("a");
         let mut def = make_definition("webhook-ok", vec![node(a)], vec![]);
-        def.trigger = Some(crate::definition::TriggerDefinition::Webhook {
+        def.trigger = Some(TriggerDefinition::Webhook {
             method: "POST".into(),
             path: "/hooks/incoming".into(),
         });
@@ -332,7 +332,7 @@ mod tests {
     fn trigger_validation_accepts_valid_cron() {
         let a = node_key!("a");
         let mut def = make_definition("cron-ok", vec![node(a)], vec![]);
-        def.trigger = Some(crate::definition::TriggerDefinition::Cron {
+        def.trigger = Some(TriggerDefinition::Cron {
             expression: "0 */5 * * *".into(),
         });
         let errors = validate_workflow(&def);

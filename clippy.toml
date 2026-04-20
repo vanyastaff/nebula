@@ -1,24 +1,98 @@
 # Keep lint interpretation aligned with workspace toolchain.
 msrv = "1.95"
 
-# Complexity limits (balanced for a heavily generic Rust workspace).
+# ── Complexity thresholds (balanced for a heavily generic Rust workspace) ──
 cognitive-complexity-threshold = 25
 excessive-nesting-threshold = 5
 type-complexity-threshold = 250
 too-many-arguments-threshold = 7
 too-many-lines-threshold = 100
+verbose-bit-mask-threshold = 1
 
-# Hygiene and test ergonomics.
-warn-on-all-wildcard-imports = true
+# ── Identifier / naming heuristics ─────────────────────────────────────────
+# `clippy::min_ident_chars` flags single/double-letter bindings. Keep the
+# threshold at 3 but whitelist domain abbreviations and classic iteration
+# names that are idiomatic to Rust.
+min-ident-chars-threshold = 3
+single-char-binding-names-threshold = 4
+allowed-idents-below-min-chars = [
+  "..",
+  "_",
+  "a",
+  "b",
+  "c",
+  "x",
+  "y",
+  "z",
+  "i",
+  "j",
+  "k",
+  "n",
+  "m",
+  "id",
+  "db",
+  "tx",
+  "rx",
+  "fs",
+  "io",
+  "to",
+  "up",
+  "ok",
+  "fn",
+]
+# Prefixes that do not count against `struct_field_names` / `enum_variant_names`.
+allowed-prefixes = ["to", "from", "as", "into", "is", "has", "with"]
+# Do not warn on fields / variants sharing a prefix of fewer than 3 chars.
+struct-field-name-threshold = 3
+enum-variant-name-threshold = 3
+# `HTTP`, `URL`, `OAuth` are everywhere in integration code.
+upper-case-acronyms-aggressive = false
+
+# ── Test ergonomics ────────────────────────────────────────────────────────
+# Tests may panic / unwrap / dbg / print liberally — production code may not.
 allow-expect-in-tests = true
 allow-unwrap-in-tests = true
+allow-panic-in-tests = true
 allow-dbg-in-tests = true
 allow-print-in-tests = true
+allow-indexing-slicing-in-tests = true
+allow-useless-vec-in-tests = true
+# Enforce MSRV checks in test code as well (no `1.96` APIs sneaking in).
+check-incompatible-msrv-in-tests = true
 
-# Domain docs use these identifiers frequently; avoid false positives.
-doc-valid-idents = ["GitHub", "OpenTelemetry", "OAuth2", "PostgreSQL", "WebSocket"]
+# ── Const-context ergonomics ───────────────────────────────────────────────
+allow-expect-in-consts = true
+allow-unwrap-in-consts = true
 
-# Data-shape / memory-footprint heuristics.
+# ── Wildcard / glob imports ────────────────────────────────────────────────
+warn-on-all-wildcard-imports = true
+
+# ── Doc policy in library crates ───────────────────────────────────────────
+# Check public items, skip private ones, and do not require docs on
+# `#[allow(unused)]` stubs.
+missing-docs-in-crate-items = true
+missing-docs-allow-unused = true
+check-private-items = false
+# Domain docs use these identifiers frequently; avoid false positives from
+# `clippy::doc_markdown`.
+doc-valid-idents = [
+  "GitHub",
+  "OpenTelemetry",
+  "OAuth2",
+  "PostgreSQL",
+  "WebSocket",
+  "gRPC",
+  "GraphQL",
+  "JSON",
+  "YAML",
+  "TOML",
+  "UUID",
+  "ULID",
+  "OTLP",
+  "OpenID",
+]
+
+# ── Data-shape / memory-footprint heuristics ───────────────────────────────
 enum-variant-size-threshold = 200
 array-size-threshold = 512000
 vec-box-size-threshold = 4096
@@ -30,6 +104,19 @@ pass-by-value-size-limit = 256
 too-large-for-stack = 200
 future-size-threshold = 16384
 
-# Docs policy in library crates.
-missing-docs-in-crate-items = true
-check-private-items = false
+# ── `undocumented_unsafe_blocks` ergonomics ────────────────────────────────
+# Accept SAFETY comments placed above the statement / above attributes,
+# not only inline on the same line.
+accept-comment-above-statement = true
+accept-comment-above-attributes = true
+
+# ── Misc strictness ────────────────────────────────────────────────────────
+# `clippy::semicolon_if_nothing_returned` friendlier on one-liners / trailing.
+semicolon-inside-block-ignore-singleline = true
+semicolon-outside-block-ignore-multiline = true
+# Warn when private macros capture unsafe in metavars (soundness footgun).
+warn-unsafe-macro-metavars-in-private-macros = true
+# Push toward `let … else` over unwrap-chains where the pattern is well-known.
+matches-for-let-else = "WellKnownTypes"
+# Encourage re-borrow in `for x in &mut iter` style loops.
+enforce-iter-loop-reborrow = true

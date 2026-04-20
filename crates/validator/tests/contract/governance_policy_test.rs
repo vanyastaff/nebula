@@ -197,8 +197,7 @@ fn registry_version_follows_semver() {
     for part in &parts {
         assert!(
             part.parse::<u32>().is_ok(),
-            "registry version segment '{}' is not a valid number",
-            part
+            "registry version segment '{part}' is not a valid number"
         );
     }
 }

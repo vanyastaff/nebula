@@ -225,11 +225,9 @@ mod tests {
     #[test]
     fn join_appends_segment() {
         let a = FieldPath::parse("user").unwrap();
-        let b = a
-            .clone()
-            .join(PathSegment::Key(FieldKey::new("email").unwrap()));
+        let b = a.join(PathSegment::Key(FieldKey::new("email").unwrap()));
         assert_eq!(b.to_string(), "user.email");
-        let c = b.clone().join(PathSegment::Index(0));
+        let c = b.join(PathSegment::Index(0));
         assert_eq!(c.to_string(), "user.email[0]");
     }
 

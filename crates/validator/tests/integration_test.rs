@@ -44,8 +44,8 @@ fn test_error_messages() {
     match validator.validate("hi") {
         Err(e) => {
             assert_eq!(e.code, "min_length");
-            assert!(e.message.contains("5"));
+            assert!(e.message.contains('5'));
         },
-        Ok(_) => panic!("Expected error"),
+        Ok(()) => panic!("Expected error"),
     }
 }

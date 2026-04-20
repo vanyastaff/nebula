@@ -48,7 +48,7 @@ async fn basic_subscribe_loop() {
                 status: "started".to_string(),
             };
             let outcome = bus_clone.emit(event);
-            println!("  Emitted event {}: {:?}", i, outcome);
+            println!("  Emitted event {i}: {outcome:?}");
         }
     });
 
@@ -97,7 +97,7 @@ async fn filtered_subscription() {
         );
         count += 1;
     }
-    println!("  ✓ Received {} filtered events", count);
+    println!("  ✓ Received {count} filtered events");
 }
 
 /// Pattern 3: Lag monitoring
@@ -127,7 +127,7 @@ async fn lag_monitoring() {
             received += 1;
             let lagged = sub.lagged_count();
             if lagged > 0 {
-                println!("  Received event #{}, lagged_count={}", received, lagged);
+                println!("  Received event #{received}, lagged_count={lagged}");
             }
         }
         tokio::time::sleep(tokio::time::Duration::from_millis(1)).await;

@@ -253,8 +253,7 @@ impl ExecutionState {
         let attempt = self
             .node_states
             .get(&node_key)
-            .map(|ns| ns.attempt_count().max(1) as u32)
-            .unwrap_or(1);
+            .map_or(1, |ns| ns.attempt_count().max(1) as u32);
         IdempotencyKey::generate(self.execution_id, node_key, attempt)
     }
 
@@ -714,7 +713,7 @@ mod tests {
 
         let budget = ExecutionBudget::default()
             .with_max_concurrent_nodes(4)
-            .with_max_duration(Duration::from_secs(120))
+            .with_max_duration(Duration::from_mins(2))
             .with_max_output_bytes(4 * 1024 * 1024)
             .with_max_total_retries(7);
         state.set_budget(budget.clone());
@@ -735,8 +734,8 @@ mod tests {
             "status": "created",
             "node_states": {},
             "version": 0,
-            "created_at": chrono::Utc::now(),
-            "updated_at": chrono::Utc::now(),
+            "created_at": Utc::now(),
+            "updated_at": Utc::now(),
             "total_retries": 0,
             "total_output_bytes": 0,
         });
@@ -754,8 +753,8 @@ mod tests {
             "status": "created",
             "node_states": {},
             "version": 0,
-            "created_at": chrono::Utc::now(),
-            "updated_at": chrono::Utc::now(),
+            "created_at": Utc::now(),
+            "updated_at": Utc::now(),
             "total_retries": 0,
             "total_output_bytes": 0,
         });

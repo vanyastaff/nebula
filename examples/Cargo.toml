@@ -51,3 +51,6 @@ path = "validator_derive.rs"
 [[bin]]
 name = "validator_macro"
 path = "validator_macro.rs"
+
+[lints]
+workspace = true

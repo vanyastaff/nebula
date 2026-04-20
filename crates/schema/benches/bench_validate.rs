@@ -36,7 +36,7 @@ fn bench_validate_static(c: &mut Criterion) {
         b.iter(|| {
             let result = schema.validate(black_box(&values));
             let _ = black_box(result);
-        })
+        });
     });
 }
 
@@ -80,7 +80,7 @@ fn bench_validate_nested(c: &mut Criterion) {
         b.iter(|| {
             let result = schema.validate(black_box(&values));
             let _ = black_box(result);
-        })
+        });
     });
 }
 

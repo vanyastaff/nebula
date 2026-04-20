@@ -178,10 +178,10 @@ impl fmt::Display for ScopeLevel {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             ScopeLevel::Global => write!(f, "global"),
-            ScopeLevel::Organization(id) => write!(f, "organization:{}", id),
-            ScopeLevel::Workspace(id) => write!(f, "workspace:{}", id),
-            ScopeLevel::Workflow(id) => write!(f, "workflow:{}", id),
-            ScopeLevel::Execution(id) => write!(f, "execution:{}", id),
+            ScopeLevel::Organization(id) => write!(f, "organization:{id}"),
+            ScopeLevel::Workspace(id) => write!(f, "workspace:{id}"),
+            ScopeLevel::Workflow(id) => write!(f, "workflow:{id}"),
+            ScopeLevel::Execution(id) => write!(f, "execution:{id}"),
         }
     }
 }

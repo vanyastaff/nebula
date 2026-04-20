@@ -42,18 +42,17 @@ fn locate_counter_binary() -> Option<PathBuf> {
 
 #[tokio::main(flavor = "current_thread")]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let binary = match locate_counter_binary() {
-        Some(p) => p,
-        None => {
-            eprintln!("error: nebula-counter-fixture binary not found next to this example");
-            eprintln!();
-            eprintln!("build the fixture first:");
-            eprintln!("  cargo build -p nebula-plugin-sdk --bin nebula-counter-fixture");
-            eprintln!();
-            eprintln!("then run the demo again:");
-            eprintln!("  cargo run -p nebula-sandbox --example sandbox_demo");
-            std::process::exit(1);
-        },
+    let binary = if let Some(p) = locate_counter_binary() {
+        p
+    } else {
+        eprintln!("error: nebula-counter-fixture binary not found next to this example");
+        eprintln!();
+        eprintln!("build the fixture first:");
+        eprintln!("  cargo build -p nebula-plugin-sdk --bin nebula-counter-fixture");
+        eprintln!();
+        eprintln!("then run the demo again:");
+        eprintln!("  cargo run -p nebula-sandbox --example sandbox_demo");
+        std::process::exit(1);
     };
 
     println!("=== nebula-sandbox slice-1c demo ===");
@@ -84,7 +83,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             .invoke("increment", json!({ "amount": amount }))
             .await?;
         running += amount;
-        let reported = result.get("total").and_then(|v| v.as_i64()).unwrap_or(-1);
+        let reported = result
+            .get("total")
+            .and_then(serde_json::Value::as_i64)
+            .unwrap_or(-1);
         println!(
             "call {} — increment({:>3}) → total={:>4} (expected {:>4}) {}",
             i + 1,
@@ -163,7 +165,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         let t0 = Instant::now();
         match sandbox.invoke("big", json!({ "kb": kb })).await {
             Ok(v) => {
-                let size = v.get("size_bytes").and_then(|x| x.as_u64()).unwrap_or(0);
+                let size = v
+                    .get("size_bytes")
+                    .and_then(serde_json::Value::as_u64)
+                    .unwrap_or(0);
                 let elapsed = t0.elapsed();
                 let throughput_kbps = (size as f64) / 1024.0 / elapsed.as_secs_f64();
                 println!(

@@ -336,7 +336,7 @@ mod tests {
             .variable("env", serde_json::json!("production"))
             .tag("test")
             .tag("v1")
-            .timeout(Duration::from_secs(60))
+            .timeout(Duration::from_mins(1))
             .max_parallel(4)
             .build()
             .unwrap();
@@ -348,7 +348,7 @@ mod tests {
             Some(&serde_json::json!("production"))
         );
         assert_eq!(def.tags, vec!["test", "v1"]);
-        assert_eq!(def.config.timeout, Some(Duration::from_secs(60)));
+        assert_eq!(def.config.timeout, Some(Duration::from_mins(1)));
         assert_eq!(def.config.max_parallel_nodes, 4);
     }
 

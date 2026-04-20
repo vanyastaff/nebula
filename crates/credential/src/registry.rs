@@ -164,7 +164,7 @@ mod tests {
 
         let any = registry.project("secret_token", &data).unwrap();
         let projected = any.downcast::<SecretToken>().unwrap();
-        let value = projected.token().expose_secret(|s| s.to_owned());
+        let value = projected.token().expose_secret(ToOwned::to_owned);
         assert_eq!(value, "test-key");
     }
 

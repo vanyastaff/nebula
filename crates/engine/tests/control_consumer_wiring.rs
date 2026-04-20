@@ -472,8 +472,7 @@ async fn reclaim_sweep_recovers_orphaned_processing_row_end_to_end() {
     assert_eq!(
         cancels_for_exec.len(),
         1,
-        "exactly one successful dispatch recorded (first stalled), got {:?}",
-        observed
+        "exactly one successful dispatch recorded (first stalled), got {observed:?}"
     );
 }
 

@@ -497,19 +497,19 @@ fn rule_name(rule: &Rule) -> &'static str {
             _ => "unknown_rule",
         },
         Rule::Predicate(p) => match p {
-            Predicate::Eq(_, _) => "eq",
-            Predicate::Ne(_, _) => "ne",
-            Predicate::Gt(_, _) => "gt",
-            Predicate::Gte(_, _) => "gte",
-            Predicate::Lt(_, _) => "lt",
-            Predicate::Lte(_, _) => "lte",
+            Predicate::Eq(..) => "eq",
+            Predicate::Ne(..) => "ne",
+            Predicate::Gt(..) => "gt",
+            Predicate::Gte(..) => "gte",
+            Predicate::Lt(..) => "lt",
+            Predicate::Lte(..) => "lte",
             Predicate::IsTrue(_) => "is_true",
             Predicate::IsFalse(_) => "is_false",
             Predicate::Set(_) => "set",
             Predicate::Empty(_) => "empty",
-            Predicate::Contains(_, _) => "contains",
-            Predicate::Matches(_, _) => "matches",
-            Predicate::In(_, _) => "in",
+            Predicate::Contains(..) => "contains",
+            Predicate::Matches(..) => "matches",
+            Predicate::In(..) => "in",
             _ => "unknown_rule",
         },
         Rule::Logic(l) => match l.as_ref() {
@@ -573,8 +573,7 @@ fn collect_min_max(
 
 fn emit_visibility_cycle(start: &str, prefix: &FieldPath, report: &mut ValidationReport) {
     let cycle_path = crate::key::FieldKey::new(start)
-        .map(|k| prefix.clone().join(k))
-        .unwrap_or_else(|_| prefix.clone());
+        .map_or_else(|_| prefix.clone(), |k| prefix.clone().join(k));
     report.push(
         ValidationError::builder("visibility_cycle")
             .at(cycle_path)

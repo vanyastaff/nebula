@@ -105,8 +105,8 @@ mod tests {
         let auth = IdentityPassword::new("admin", SecretString::new("s3cret"));
         let projected = BasicAuthCredential::project(&auth);
         assert_eq!(projected.identity(), "admin");
-        let original = auth.password().expose_secret(|s| s.to_owned());
-        let cloned = projected.password().expose_secret(|s| s.to_owned());
+        let original = auth.password().expose_secret(ToOwned::to_owned);
+        let cloned = projected.password().expose_secret(ToOwned::to_owned);
         assert_eq!(original, cloned);
     }
 
@@ -120,7 +120,7 @@ mod tests {
         match result {
             StaticResolveResult::Complete(auth) => {
                 assert_eq!(auth.identity(), "alice");
-                let pw = auth.password().expose_secret(|s| s.to_owned());
+                let pw = auth.password().expose_secret(ToOwned::to_owned);
                 assert_eq!(pw, "p@ssw0rd");
             },
             _ => panic!("expected Complete variant"),

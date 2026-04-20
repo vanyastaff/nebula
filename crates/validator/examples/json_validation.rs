@@ -116,7 +116,7 @@ fn composed_validators() {
 
     // WHEN: validate email only when notify is true
     let v = when(json_field("/email", email()), |v: &Value| {
-        v.get("notify").and_then(|n| n.as_bool()).unwrap_or(false)
+        v.get("notify").and_then(Value::as_bool).unwrap_or(false)
     });
 
     let data = json!({"notify": false, "email": "bad"});
@@ -200,10 +200,10 @@ fn error_reporting() {
         println!("Error code:    {}", e.code);
         println!("Error message: {}", e.message);
         if let Some(field) = &e.field {
-            println!("Error field:   {}", field);
+            println!("Error field:   {field}");
         }
         for (k, v) in e.params() {
-            println!("  param {}: {}", k, v);
+            println!("  param {k}: {v}");
         }
     }
 

@@ -138,7 +138,7 @@ impl Resource for HttpClientResource {
         _config: &HttpClientConfig,
         _auth: &(),
         _ctx: &dyn Ctx,
-    ) -> impl std::future::Future<Output = Result<FakeHttpClient, DxTestError>> + Send {
+    ) -> impl Future<Output = Result<FakeHttpClient, DxTestError>> + Send {
         let id = self.next_id.fetch_add(1, Ordering::Relaxed);
         async move { Ok(FakeHttpClient { connection_id: id }) }
     }
@@ -304,7 +304,7 @@ impl Resource for ConfigStoreResource {
         config: &ConfigStoreConfig,
         _auth: &(),
         _ctx: &dyn Ctx,
-    ) -> impl std::future::Future<Output = Result<ConfigStore, DxTestError>> + Send {
+    ) -> impl Future<Output = Result<ConfigStore, DxTestError>> + Send {
         let path = config.path.clone();
         async move {
             // Simulate loading from file
@@ -447,7 +447,7 @@ impl Resource for DbResource {
         _config: &DbConfig,
         _auth: &(),
         _ctx: &dyn Ctx,
-    ) -> impl std::future::Future<Output = Result<FakeDbConnection, DxTestError>> + Send {
+    ) -> impl Future<Output = Result<FakeDbConnection, DxTestError>> + Send {
         let count = self.create_count.clone();
         let fail = self.fail_create.clone();
         async move {

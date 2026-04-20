@@ -137,6 +137,134 @@ nebula-error = { path = "crates/error" }
 nebula-error-macros = { path = "crates/error/macros" }
 
 
+# ─── Workspace-wide lint policy ──────────────────────────────────────────────
+#
+# Every crate opts in with `[lints] workspace = true` in its own Cargo.toml.
+# Groups use `priority = -1` so specific lint overrides below them win.
+#
+# The allow-list exists for two reasons:
+#   (1) pedantic/nursery lints that are stylistic noise in a heavily generic
+#       codebase (e.g. `module_name_repetitions`, `similar_names`);
+#   (2) lints that conflict with load-bearing patterns we use on purpose
+#       (e.g. `cast_*` around byte-level encoding, `option_if_let_else`
+#       where `match` reads better than `.map_or`).
+#
+# If you find yourself wanting to `#[allow(...)]` the same pedantic lint in
+# three or more files, consider promoting the allow here instead.
+[workspace.lints.rust]
+unsafe_code = "warn"           # sandbox / plugin-sdk opt out via crate-level `#![allow(unsafe_code)]`
+unused_lifetimes = "warn"
+unused_qualifications = "warn"
+trivial_numeric_casts = "warn"
+redundant_lifetimes = "warn"
+# Deliberately NOT enabled workspace-wide (revisit once the core stabilises):
+# - `missing_docs` — too noisy on internal modules; will land crate-by-crate.
+# - `missing_debug_implementations` — same.
+# - `unreachable_pub` — conflicts with re-export chains in the sdk façade.
+# - `let_underscore_drop` — `let _ = tokio::spawn(...)` / `let _ = tx.send(_)`
+#   is the standard idiom for fire-and-forget; forcing `drop(x)` hurts clarity.
+#
+# `cfg(loom)` is set by nebula-resilience's loom harness; keep the check-cfg
+# entry at workspace level so every crate can switch `workspace = true` on
+# without re-declaring it locally.
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(loom)'] }
+
+[workspace.lints.clippy]
+# Opt into the big batteries. `priority = -1` lets individual `allow = ...`
+# entries below this section override the group default.
+pedantic = { level = "warn", priority = -1 }
+nursery = { level = "warn", priority = -1 }
+cargo = { level = "warn", priority = -1 }
+
+# ── pedantic: stylistic noise on a generic workspace ───────────────────────
+module_name_repetitions = "allow"   # `credential::CredentialManager` reads fine
+similar_names = "allow"             # `req` / `res`, `tx` / `rx` etc.
+too_many_lines = "allow"            # threshold lives in clippy.toml
+must_use_candidate = "allow"        # builder / fluent APIs are ubiquitous
+return_self_not_must_use = "allow"
+missing_errors_doc = "allow"        # error docs live on the error enum itself
+missing_panics_doc = "allow"
+needless_pass_by_value = "allow"    # conflicts with ergonomic builder API
+struct_excessive_bools = "allow"    # threshold lives in clippy.toml
+fn_params_excessive_bools = "allow"
+
+# ── casts that are load-bearing at IO / codec / hashing boundaries ─────────
+cast_precision_loss = "allow"
+cast_possible_truncation = "allow"
+cast_possible_wrap = "allow"
+cast_sign_loss = "allow"
+cast_lossless = "allow"
+
+# ── nursery: known-noisy experimental lints ────────────────────────────────
+option_if_let_else = "allow"            # `match` often reads cleaner than .map_or
+missing_const_for_fn = "allow"          # churns with every generic bound change
+use_self = "allow"                      # fires inside macro expansions
+redundant_pub_crate = "allow"           # conflicts with the sdk re-export façade
+significant_drop_tightening = "allow"   # too many false positives
+significant_drop_in_scrutinee = "allow"
+branches_sharing_code = "allow"         # often makes branches less readable
+cognitive_complexity = "allow"          # threshold lives in clippy.toml
+future_not_send = "allow"               # `Send` bound on futures is runtime's call
+ignore_without_reason = "allow"         # gated by clippy-cargo, too strict for tests
+
+# ── pedantic stylistic noise that is not worth churning code over ─────────
+items_after_statements = "allow"             # late-initialised helpers inside fn bodies
+manual_let_else = "allow"                    # not every match → let-else is a win
+match_same_arms = "allow"                    # different comment / semantics per arm
+default_trait_access = "allow"               # `T::default()` ≡ `Default::default()`
+ref_option = "allow"                         # `&Option<T>` is sometimes required by API shape
+too_long_first_doc_paragraph = "allow"
+missing_fields_in_debug = "allow"            # manual Debug impls drop cred / secret fields on purpose
+match_wildcard_for_single_variants = "allow"
+needless_continue = "allow"
+format_push_string = "allow"                 # `push_str(&format!(...))` is idiomatic enough
+unused_async = "allow"                       # bench helpers (criterion.to_async) + public API forward-compat
+unused_self = "allow"                        # pedantic noise on trait impls where `self` is required by signature
+unnecessary_wraps = "allow"                  # API-consistency `Result` on builtin tables, `fn main() -> Result<…>`
+
+# ── long-tail pedantic / nursery noise (<10 hits each, not worth churning) ──
+# These fire a handful of times across the workspace, each one is a matter of
+# taste or a micro-optimisation that would mean an API break. Revisit when a
+# refactor naturally touches the site.
+wildcard_imports = "allow"                    # kept noisy but shelved: prelude / re-export patterns
+or_fun_call = "allow"                         # `unwrap_or(T::default())` is clearer than unwrap_or_else
+trivially_copy_pass_by_ref = "allow"
+needless_pass_by_ref_mut = "allow"
+needless_collect = "allow"
+map_unwrap_or = "allow"
+excessive_nesting = "allow"                   # threshold lives in clippy.toml
+useless_let_if_seq = "allow"
+assigning_clones = "allow"                    # micro-perf on `a = b.clone()`
+unused_peekable = "allow"
+type_repetition_in_bounds = "allow"
+trivial_regex = "allow"
+struct_field_names = "allow"                  # threshold lives in clippy.toml
+literal_string_with_formatting_args = "allow"
+into_iter_without_iter = "allow"
+inline_always = "allow"                       # `#[inline(always)]` on cold happy paths is intentional
+implicit_hasher = "allow"
+doc_link_with_quotes = "allow"
+iter_on_single_items = "allow"
+from_iter_instead_of_collect = "allow"
+enum_glob_use = "allow"
+
+# ── cargo: expected noise in a multi-crate workspace ───────────────────────
+multiple_crate_versions = "allow" # transitive dep version skew is unavoidable
+cargo_common_metadata = "allow"   # re-enable per-crate once public metadata stabilises
+
+# ── doc_markdown: too many domain identifiers to chase via doc-valid-idents ─
+doc_markdown = "allow"
+
+# ── macro-expansion false positives (not our code) ─────────────────────────
+# `assert_eq!`/`proptest!` expand to `==` comparisons on floats — clippy
+# attributes the lint to the macro call site, which is useless noise.
+float_cmp = "allow"
+# Bindings like `_fixture` from rstest / proptest are internal to the macro.
+used_underscore_binding = "allow"
+
+# ── correctness / soundness escalated from default ─────────────────────────
+mem_forget = "deny"
+
 [profile.dev]
 # Standard dev mode
 opt-level = 0

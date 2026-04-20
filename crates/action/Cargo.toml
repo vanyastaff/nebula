@@ -59,3 +59,6 @@ subtle = { workspace = true }
 nebula-core = { path = "../core" }
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "time", "test-util"] }
 hex = { workspace = true }
+
+[lints]
+workspace = true

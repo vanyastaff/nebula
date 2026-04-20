@@ -168,12 +168,12 @@ mod storage {
 
     #[inline]
     pub fn current_execution() -> Option<Arc<ExecutionContext>> {
-        EXECUTION_CTX.try_with(|ctx| ctx.clone()).ok()
+        EXECUTION_CTX.try_with(Clone::clone).ok()
     }
 
     #[inline]
     pub fn current_node() -> Option<Arc<NodeContext>> {
-        NODE_CTX.try_with(|ctx| ctx.clone()).ok()
+        NODE_CTX.try_with(Clone::clone).ok()
     }
 
     pub async fn with_execution<F: Future>(ctx: Arc<ExecutionContext>, f: F) -> F::Output {
@@ -317,7 +317,7 @@ impl ExecutionContext {
     ///
     /// Nesting is supported — inner scopes shadow outer ones and restore on completion.
     #[cfg(feature = "async")]
-    pub async fn scope<F: std::future::Future>(self, f: F) -> F::Output {
+    pub async fn scope<F: Future>(self, f: F) -> F::Output {
         storage::with_execution(Arc::new(self), f).await
     }
 }
@@ -398,7 +398,7 @@ impl NodeContext {
     ///
     /// Nesting is supported — inner scopes shadow outer ones and restore on completion.
     #[cfg(feature = "async")]
-    pub async fn scope<F: std::future::Future>(self, f: F) -> F::Output {
+    pub async fn scope<F: Future>(self, f: F) -> F::Output {
         storage::with_node(Arc::new(self), f).await
     }
 }

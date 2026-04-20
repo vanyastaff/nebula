@@ -83,7 +83,7 @@ impl<'a> MakeWriter<'a> for FanoutMakeWriter {
     type Writer = FanoutWriter<'a>;
 
     fn make_writer(&'a self) -> Self::Writer {
-        let writers: FanoutVec<'a> = self.writers.iter().map(|w| w.make_writer()).collect();
+        let writers: FanoutVec<'a> = self.writers.iter().map(MakeWriter::make_writer).collect();
         FanoutWriter {
             policy: self.policy,
             writers,
@@ -120,7 +120,7 @@ fn write_fail_fast(writers: &mut FanoutVec<'_>, buf: &[u8]) -> io::Result<usize>
             "at least one writer is required",
         ));
     }
-    for writer in writers.iter_mut() {
+    for writer in &mut *writers {
         writer.write_all(buf)?;
     }
     Ok(buf.len())
@@ -129,7 +129,7 @@ fn write_fail_fast(writers: &mut FanoutVec<'_>, buf: &[u8]) -> io::Result<usize>
 fn write_best_effort(writers: &mut FanoutVec<'_>, buf: &[u8]) -> io::Result<usize> {
     let mut first_err = None;
     let mut success = false;
-    for writer in writers.iter_mut() {
+    for writer in &mut *writers {
         match writer.write_all(buf) {
             Ok(()) => success = true,
             Err(err) if first_err.is_none() => first_err = Some(err),
@@ -161,7 +161,7 @@ fn write_primary_with_fallback(writers: &mut FanoutVec<'_>, buf: &[u8]) -> io::R
         return Ok(buf.len());
     }
 
-    for writer in fallback.iter_mut() {
+    for writer in &mut *fallback {
         if writer.write_all(buf).is_ok() {
             return Ok(buf.len());
         }
@@ -179,7 +179,7 @@ fn flush_fail_fast(writers: &mut FanoutVec<'_>) -> io::Result<()> {
             "at least one writer is required",
         ));
     }
-    for writer in writers.iter_mut() {
+    for writer in &mut *writers {
         writer.flush()?;
     }
     Ok(())
@@ -188,7 +188,7 @@ fn flush_fail_fast(writers: &mut FanoutVec<'_>) -> io::Result<()> {
 fn flush_best_effort(writers: &mut FanoutVec<'_>) -> io::Result<()> {
     let mut first_err = None;
     let mut success = false;
-    for writer in writers.iter_mut() {
+    for writer in &mut *writers {
         match writer.flush() {
             Ok(()) => success = true,
             Err(err) if first_err.is_none() => first_err = Some(err),
@@ -219,7 +219,7 @@ fn flush_primary_with_fallback(writers: &mut FanoutVec<'_>) -> io::Result<()> {
         return Ok(());
     }
 
-    for writer in fallback.iter_mut() {
+    for writer in &mut *fallback {
         if writer.flush().is_ok() {
             return Ok(());
         }

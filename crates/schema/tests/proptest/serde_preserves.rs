@@ -31,13 +31,10 @@ proptest! {
     ) {
         let v = json!({ key1: val1 });
         let fvs = FieldValues::from_json(v.clone());
-        match fvs {
-            Ok(fvs2) => {
-                prop_assert_eq!(fvs2.to_json(), v);
-            },
-            Err(_) => {
-                // key1 might be invalid as FieldKey (e.g. starts with digit) — ok.
-            },
+        if let Ok(fvs2) = fvs {
+            prop_assert_eq!(fvs2.to_json(), v);
+        } else {
+            // key1 might be invalid as FieldKey (e.g. starts with digit) — ok.
         }
     }
 }

@@ -36,7 +36,7 @@ impl PendingState for TestPending {
     const KIND: &'static str = "test_interactive_pending";
 
     fn expires_in(&self) -> Duration {
-        Duration::from_secs(300)
+        Duration::from_mins(5)
     }
 }
 

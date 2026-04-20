@@ -51,7 +51,7 @@ fn test_credential_id_rejects_wrong_prefix() {
 #[test]
 fn test_credential_id_display() {
     let id = CredentialId::new();
-    let display = format!("{}", id);
+    let display = format!("{id}");
     assert!(
         display.starts_with("cred_"),
         "expected cred_ prefix, got: {display}"
@@ -62,10 +62,10 @@ fn test_credential_id_display() {
 fn test_secret_string_redacted() {
     let secret = SecretString::new("my-super-secret-password-12345");
 
-    let debug_str = format!("{:?}", secret);
+    let debug_str = format!("{secret:?}");
     assert_eq!(debug_str, "[REDACTED]");
 
-    let display_str = format!("{}", secret);
+    let display_str = format!("{secret}");
     assert_eq!(display_str, "[REDACTED]");
 
     assert!(!debug_str.contains("my-super-secret"));
@@ -76,10 +76,10 @@ fn test_secret_string_redacted() {
 fn test_secret_string_expose_secret() {
     let secret = SecretString::new("test-secret-value");
 
-    let length = secret.expose_secret(|s| s.len());
+    let length = secret.expose_secret(str::len);
     assert_eq!(length, 17);
 
-    let uppercase = secret.expose_secret(|s| s.to_uppercase());
+    let uppercase = secret.expose_secret(str::to_uppercase);
     assert_eq!(uppercase, "TEST-SECRET-VALUE");
 
     let contains_test = secret.expose_secret(|s| s.contains("test"));

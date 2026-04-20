@@ -96,7 +96,7 @@ fn bench_record_outcome_failure_rate(c: &mut Criterion) {
                     failure_rate_threshold: Some(0.8),
                     min_operations: 1,
                     failure_threshold: n * 2,
-                    reset_timeout: Duration::from_secs(3600),
+                    reset_timeout: Duration::from_hours(1),
                     ..Default::default()
                 })
                 .unwrap();
@@ -131,7 +131,7 @@ fn bench_record_outcome_slow_rate(c: &mut Criterion) {
                     failure_rate_threshold: Some(0.95),
                     min_operations: 1,
                     failure_threshold: n * 2,
-                    reset_timeout: Duration::from_secs(3600),
+                    reset_timeout: Duration::from_hours(1),
                     ..Default::default()
                 })
                 .unwrap();

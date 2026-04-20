@@ -52,7 +52,7 @@ pub struct ResourceHealthSnapshot {
     /// Current lifecycle phase.
     pub phase: crate::state::ResourcePhase,
     /// Recovery gate state (if a gate is attached).
-    pub gate_state: Option<crate::recovery::gate::GateState>,
+    pub gate_state: Option<GateState>,
     /// Aggregate operation counters (present when a metrics registry is configured).
     pub metrics: Option<ResourceOpsSnapshot>,
     /// Config generation counter.
@@ -331,7 +331,7 @@ impl Manager {
             config: arc_swap::ArcSwap::from_pointee(config),
             topology,
             release_queue: Arc::clone(&self.release_queue),
-            generation: std::sync::atomic::AtomicU64::new(0),
+            generation: AtomicU64::new(0),
             status: arc_swap::ArcSwap::from_pointee(crate::state::ResourceStatus::new()),
             resilience,
             recovery_gate,
@@ -1582,7 +1582,7 @@ impl Manager {
             key: R::key(),
             phase: managed.status().phase,
             gate_state: managed.recovery_gate.as_ref().map(|g| g.state()),
-            metrics: self.metrics.as_ref().map(|m| m.snapshot()),
+            metrics: self.metrics.as_ref().map(ResourceOpsMetrics::snapshot),
             generation: managed.generation(),
         })
     }
@@ -1712,7 +1712,7 @@ fn settle_gate_admission<T>(admission: GateAdmission, result: &Result<T, Error>)
                 ticket.fail_transient(e.to_string());
             }
         },
-        (GateAdmission::OpenGated(_), _) | (GateAdmission::Open, _) => {},
+        (GateAdmission::OpenGated(_) | GateAdmission::Open, _) => {},
     }
 }
 
@@ -1728,7 +1728,7 @@ async fn execute_with_resilience<F, Fut, T>(
 ) -> Result<T, Error>
 where
     F: FnMut() -> Fut,
-    Fut: std::future::Future<Output = Result<T, Error>> + Send,
+    Fut: Future<Output = Result<T, Error>> + Send,
 {
     let Some(config) = resilience else {
         return operation().await;
@@ -1825,7 +1825,7 @@ mod gate_admission_tests {
                     drop(ticket);
                     (1, 0)
                 },
-                Ok(GateAdmission::Open) | Ok(GateAdmission::OpenGated(_)) => (0, 1),
+                Ok(GateAdmission::Open | GateAdmission::OpenGated(_)) => (0, 1),
                 Err(_) => (0, 1),
             }
         }

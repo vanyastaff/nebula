@@ -31,7 +31,9 @@ impl nebula_schema::HasSchema for NumberList {
     fn schema() -> nebula_schema::ValidSchema {
         use nebula_schema::{FieldCollector, Schema};
         Schema::builder()
-            .list("numbers", |l| l.item_number("n", |n| n.integer()))
+            .list("numbers", |l| {
+                l.item_number("n", nebula_schema::NumberBuilder::integer)
+            })
             .build()
             .expect("NumberList schema is valid")
     }

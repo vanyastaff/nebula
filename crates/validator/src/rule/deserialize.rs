@@ -112,11 +112,11 @@ impl<'de> Visitor<'de> for RuleVisitor {
             // Bare-string form `"email"` / `"url"` is the canonical wire shape;
             // map form is accepted leniently for robustness across formats.
             "email" => {
-                let _: serde::de::IgnoredAny = m.next_value()?;
+                let _: de::IgnoredAny = m.next_value()?;
                 Rule::Value(ValueRule::Email)
             },
             "url" => {
-                let _: serde::de::IgnoredAny = m.next_value()?;
+                let _: de::IgnoredAny = m.next_value()?;
                 Rule::Value(ValueRule::Url)
             },
 

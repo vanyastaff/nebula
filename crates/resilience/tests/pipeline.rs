@@ -143,7 +143,7 @@ async fn full_stack_cb_trips_after_threshold() {
         CircuitBreaker::new(CircuitBreakerConfig {
             failure_threshold: 3,
             min_operations: 1,
-            reset_timeout: Duration::from_secs(60),
+            reset_timeout: Duration::from_mins(1),
             ..Default::default()
         })
         .unwrap(),

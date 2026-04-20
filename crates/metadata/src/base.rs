@@ -135,14 +135,14 @@ impl<K> BaseMetadata<K> {
     /// Set an inline-identifier icon (e.g. `"github"`, `"🔑"`).
     #[must_use]
     pub fn with_inline_icon(mut self, name: impl Into<String>) -> Self {
-        self.icon = crate::icon::Icon::inline(name);
+        self.icon = Icon::inline(name);
         self
     }
 
     /// Set a URL-backed icon.
     #[must_use]
     pub fn with_url_icon(mut self, url: impl Into<String>) -> Self {
-        self.icon = crate::icon::Icon::url(url);
+        self.icon = Icon::url(url);
         self
     }
 
@@ -171,7 +171,7 @@ impl<K> BaseMetadata<K> {
     /// records the version the entity was deprecated in. For a richer
     /// notice use [`Self::with_deprecation`].
     #[must_use]
-    pub fn deprecate(self, since: semver::Version) -> Self {
+    pub fn deprecate(self, since: Version) -> Self {
         self.with_deprecation(DeprecationNotice::new(since))
     }
 
@@ -317,7 +317,7 @@ mod tests {
     #[test]
     fn deprecation_forces_maturity() {
         let base = BaseMetadata::new(DummyKey("k"), "n", "d", empty_schema())
-            .with_deprecation(DeprecationNotice::new(semver::Version::new(1, 0, 0)));
+            .with_deprecation(DeprecationNotice::new(Version::new(1, 0, 0)));
         assert_eq!(base.maturity, MaturityLevel::Deprecated);
     }
 }

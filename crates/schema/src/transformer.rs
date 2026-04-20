@@ -39,7 +39,7 @@ pub enum Transformer {
 
 impl PartialEq for Transformer {
     fn eq(&self, other: &Self) -> bool {
-        use Transformer::*;
+        use Transformer::{Lowercase, Regex, Replace, Trim, Uppercase};
         match (self, other) {
             (Trim, Trim) | (Lowercase, Lowercase) | (Uppercase, Uppercase) => true,
             (Replace { from: a1, to: a2 }, Replace { from: b1, to: b2 }) => a1 == b1 && a2 == b2,
@@ -78,8 +78,7 @@ impl Transformer {
                 });
                 re.captures(t)
                     .and_then(|c| c.get(*group))
-                    .map(|m| m.as_str().to_owned())
-                    .unwrap_or_else(|| t.to_owned())
+                    .map_or_else(|| t.to_owned(), |m| m.as_str().to_owned())
             }),
         }
     }

@@ -3,7 +3,11 @@
 //! Demonstrates how resources automatically merge from parent contexts,
 //! similar to how `tracing` spans inherit attributes.
 
-use nebula_log::observability::*;
+use nebula_log::observability::{
+    ExecutionContext, LogLevel, LoggerResource, NodeContext, ObservabilityEvent,
+    ResourceAwareAdapter, ResourceAwareHook, emit_event, get_current_logger_resource,
+    register_hook, shutdown_hooks,
+};
 use tracing::Level;
 
 fn main() {

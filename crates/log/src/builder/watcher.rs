@@ -70,7 +70,7 @@ async fn watcher_task(
 
     loop {
         tokio::select! {
-            _ = tokio::time::sleep(interval) => {}
+            () = tokio::time::sleep(interval) => {}
             _ = cancel.changed() => {
                 tracing::debug!(path = %path.display(), "config watcher stopped");
                 return;

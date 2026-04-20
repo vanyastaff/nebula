@@ -11,7 +11,7 @@ use nebula_telemetry::metrics::MetricsRegistry;
 use crate::cli::{OutputFormat, ReplayArgs, resolve_format};
 
 /// Execute the `replay` command.
-pub async fn execute(args: ReplayArgs, quiet: bool) -> anyhow::Result<ExitCode> {
+pub(crate) async fn execute(args: ReplayArgs, quiet: bool) -> anyhow::Result<ExitCode> {
     // 1. Parse workflow.
     let content = std::fs::read_to_string(&args.workflow)
         .with_context(|| format!("failed to read {}", args.workflow.display()))?;

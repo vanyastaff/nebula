@@ -50,7 +50,7 @@ pub(super) fn validate_regex_pattern<T: quote::ToTokens>(
 /// Returns a `syn::Error` when attributes are malformed, types are
 /// incompatible with the requested rule, or required sub-attributes are
 /// missing.
-pub fn parse(input: &DeriveInput) -> syn::Result<ValidatorInput> {
+pub(crate) fn parse(input: &DeriveInput) -> syn::Result<ValidatorInput> {
     let fields = match &input.data {
         syn::Data::Struct(data) => match &data.fields {
             syn::Fields::Named(fields) => &fields.named,

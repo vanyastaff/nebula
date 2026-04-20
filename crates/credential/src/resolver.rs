@@ -209,7 +209,7 @@ impl<S: CredentialStore> CredentialResolver<S> {
                 // from Drop.
                 let credential_id_for_guard = credential_id.to_string();
                 let coordinator = &self.refresh_coordinator;
-                let _guard = scopeguard::guard((), |_| {
+                let _guard = scopeguard::guard((), |()| {
                     coordinator.complete(&credential_id_for_guard);
                 });
                 let result = self
@@ -362,12 +362,13 @@ impl<S: CredentialStore> CredentialResolver<S> {
                         .await
                     {
                         Ok(_) => {
-                            match CredentialId::parse(credential_id) {
-                                Ok(id) => self.emit_refreshed(id),
-                                Err(_) => tracing::warn!(
+                            if let Ok(id) = CredentialId::parse(credential_id) {
+                                self.emit_refreshed(id);
+                            } else {
+                                tracing::warn!(
                                     credential_id,
                                     "credential ID is not a valid UUID, refresh event not emitted",
-                                ),
+                                );
                             }
                             let scheme = C::project(&state);
                             return Ok(CredentialHandle::new(scheme, credential_id));
@@ -497,7 +498,7 @@ mod tests {
         const KEY: &'static str = "refreshable_test";
         const REFRESHABLE: bool = true;
         const REFRESH_POLICY: RefreshPolicy = RefreshPolicy {
-            early_refresh: std::time::Duration::from_secs(300), // 5 minutes
+            early_refresh: std::time::Duration::from_mins(5), // 5 minutes
             ..RefreshPolicy::DEFAULT
         };
 
@@ -546,7 +547,7 @@ mod tests {
         const KEY: &'static str = "tiny_jitter_refreshable_test";
         const REFRESHABLE: bool = true;
         const REFRESH_POLICY: RefreshPolicy = RefreshPolicy {
-            early_refresh: std::time::Duration::from_secs(300),
+            early_refresh: std::time::Duration::from_mins(5),
             jitter: std::time::Duration::from_micros(500),
             ..RefreshPolicy::DEFAULT
         };
@@ -611,7 +612,7 @@ mod tests {
             .unwrap();
 
         let snapshot = handle.snapshot();
-        let value = snapshot.token().expose_secret(|s| s.to_owned());
+        let value = snapshot.token().expose_secret(ToOwned::to_owned);
         assert_eq!(value, "test-api-key");
         assert_eq!(handle.credential_id(), "my-api-key");
     }
@@ -782,7 +783,7 @@ mod tests {
             .resolve::<ApiKeyCredential>("non-expiring")
             .await
             .expect("non-expiring credential should resolve under any circuit state");
-        let value = handle.snapshot().token().expose_secret(|s| s.to_owned());
+        let value = handle.snapshot().token().expose_secret(ToOwned::to_owned);
         assert_eq!(value, "forever");
     }
 
@@ -827,7 +828,7 @@ mod tests {
             .resolve_with_refresh::<RefreshableTestCredential>("closed-circuit-expired", &ctx)
             .await
             .expect("closed-circuit + expired = normal refresh path");
-        let value = handle.snapshot().token().expose_secret(|s| s.to_owned());
+        let value = handle.snapshot().token().expose_secret(ToOwned::to_owned);
         assert_eq!(value, "refreshed-token");
     }
 
@@ -880,7 +881,7 @@ mod tests {
             .resolve_with_refresh::<RefreshableTestCredential>("soon-expiring", &ctx)
             .await
             .expect("stale-but-valid token must still resolve while circuit is open");
-        let value = handle.snapshot().token().expose_secret(|s| s.to_owned());
+        let value = handle.snapshot().token().expose_secret(ToOwned::to_owned);
         assert_eq!(value, "still-valid");
     }
 
@@ -919,7 +920,7 @@ mod tests {
             .unwrap();
 
         // The refresh should have fired because 4 min < 5 min early_refresh
-        let value = handle.snapshot().token().expose_secret(|s| s.to_owned());
+        let value = handle.snapshot().token().expose_secret(ToOwned::to_owned);
         assert_eq!(value, "refreshed-token");
     }
 
@@ -957,7 +958,7 @@ mod tests {
             .await
             .unwrap();
 
-        let value = handle.snapshot().token().expose_secret(|s| s.to_owned());
+        let value = handle.snapshot().token().expose_secret(ToOwned::to_owned);
         assert_eq!(value, "tiny-jitter-refreshed-token");
     }
 
@@ -1045,7 +1046,7 @@ mod tests {
         const KEY: &'static str = "cas_retry_test";
         const REFRESHABLE: bool = true;
         const REFRESH_POLICY: RefreshPolicy = RefreshPolicy {
-            early_refresh: std::time::Duration::from_secs(300),
+            early_refresh: std::time::Duration::from_mins(5),
             jitter: std::time::Duration::ZERO,
             ..RefreshPolicy::DEFAULT
         };
@@ -1120,7 +1121,7 @@ mod tests {
             .unwrap();
 
         // Token should be the refreshed value despite CAS conflict
-        let value = handle.snapshot().token().expose_secret(|s| s.to_owned());
+        let value = handle.snapshot().token().expose_secret(ToOwned::to_owned);
         assert_eq!(value, "refreshed-token");
 
         // Critical: refresh() must be called exactly once — the retry
@@ -1216,7 +1217,7 @@ mod tests {
             .unwrap();
 
         // Should NOT have refreshed -- token still valid outside the window
-        let value = handle.snapshot().token().expose_secret(|s| s.to_owned());
+        let value = handle.snapshot().token().expose_secret(ToOwned::to_owned);
         assert_eq!(value, "still-valid-token");
     }
 
@@ -1260,7 +1261,7 @@ mod tests {
             .unwrap();
 
         // Refresh should have fired
-        let value = handle.snapshot().token().expose_secret(|s| s.to_owned());
+        let value = handle.snapshot().token().expose_secret(ToOwned::to_owned);
         assert_eq!(value, "refreshed-token");
 
         // Subscriber should have received a Refreshed event
@@ -1315,7 +1316,7 @@ mod tests {
             .unwrap();
 
         // Should NOT have refreshed
-        let value = handle.snapshot().token().expose_secret(|s| s.to_owned());
+        let value = handle.snapshot().token().expose_secret(ToOwned::to_owned);
         assert_eq!(value, "still-valid");
 
         // No event should be pending -- recv should time out

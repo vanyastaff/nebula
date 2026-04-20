@@ -221,7 +221,7 @@ fn validation_error_size_matches_budget() {
         .as_u64()
         .unwrap() as usize;
 
-    let actual = std::mem::size_of::<nebula_validator::foundation::ValidationError>();
+    let actual = size_of::<nebula_validator::foundation::ValidationError>();
     assert_eq!(
         actual, expected,
         "ValidationError size changed: expected {expected} bytes, got {actual} bytes. \
@@ -237,7 +237,7 @@ fn error_extras_pointer_fits_budget() {
         .unwrap() as usize;
 
     // Option<Box<T>> is pointer-sized
-    let actual = std::mem::size_of::<Option<Box<u8>>>();
+    let actual = size_of::<Option<Box<u8>>>();
     assert_eq!(
         actual, expected,
         "Option<Box<ErrorExtras>> size changed: expected {expected} bytes, got {actual} bytes"

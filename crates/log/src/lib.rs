@@ -225,7 +225,7 @@ pub fn auto_init() -> LogResult<LoggerGuard> {
             info!(source = ?source, "logging initialized");
             Ok(guard)
         },
-        Err(crate::core::LogError::AlreadyInitialized) => Ok(LoggerGuard::noop()),
+        Err(LogError::AlreadyInitialized) => Ok(LoggerGuard::noop()),
         Err(e) => Err(e),
     }
 }

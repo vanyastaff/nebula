@@ -1,3 +1,10 @@
+//! API contract test — exercises every public type by constructing it.
+
+#![allow(
+    clippy::no_effect_underscore_binding,
+    reason = "bindings exist solely to pin down the public API shape"
+)]
+
 use nebula_log::{DestinationFailurePolicy, Rolling, WriterConfig, observability::HookPolicy};
 
 #[test]

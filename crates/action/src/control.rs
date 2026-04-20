@@ -934,7 +934,7 @@ mod tests {
     fn adapter_preserves_original_outputs_after_stamp() {
         // The adapter only rewrites `category`; it must not touch `outputs`
         // or any other metadata field.
-        let original_outputs = TestIf::new().metadata.outputs.clone();
+        let original_outputs = TestIf::new().metadata.outputs;
         let adapter = ControlActionAdapter::new(TestIf::new());
         assert_eq!(adapter.metadata().outputs, original_outputs);
     }
