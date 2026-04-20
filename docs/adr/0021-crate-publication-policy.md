@@ -150,14 +150,16 @@ flips it.
 
 **Negative**
 
-- `nebula-sdk`'s current re-exports of `nebula-action`, `nebula-credential`,
+- `nebula-sdk`'s current dependencies on `nebula-action`, `nebula-credential`,
   `nebula-resource`, `nebula-schema`, `nebula-workflow`, `nebula-plugin`,
-  `nebula-validator` (see `crates/sdk/Cargo.toml`) would force transitive
-  publication of those crates — crates.io rejects publishing a crate
-  with unpublished path deps whose types appear in the publisher's
-  public API. Resolving this is a follow-up: either tighten sdk's
-  re-exports to what it directly owns, or add those crates to the
-  published set via a dedicated ADR before the first crates.io push.
+  `nebula-validator` (see `crates/sdk/Cargo.toml`) would force publication
+  of those crates, or their removal from the published sdk's dependency set:
+  crates.io rejects publishing a crate whose dependencies are non-registry
+  (path-only / unpublished), regardless of whether their types appear in
+  the publisher's public API. Resolving this is a follow-up: either
+  tighten sdk's re-exports and dependency set to what it directly owns,
+  or add those crates to the published set via a dedicated ADR before the
+  first crates.io push.
 - Adds one CI check to maintain; a new crate cannot silently inherit
   `publish = true`.
 
