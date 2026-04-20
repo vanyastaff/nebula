@@ -223,10 +223,7 @@ pub(crate) fn check_min_arg_count(
 }
 
 /// Helper to extract a lambda expression from args
-#[expect(
-    dead_code,
-    reason = "helper awaiting higher-order lambda callers; unfulfilled_lint_expectations will fire once used, which is the intended regression guard"
-)]
+#[allow(dead_code)]
 pub(crate) fn extract_lambda(arg: &Expr) -> ExpressionResult<(&str, &Expr)> {
     match arg {
         Expr::Lambda { param, body } => Ok((param, body)),
