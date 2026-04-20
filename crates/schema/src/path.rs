@@ -49,7 +49,10 @@ impl FieldPath {
     }
 
     /// Parse a dotted/bracketed string (e.g. `a.b[0].c`).
-    #[allow(clippy::result_large_err)]
+    #[expect(
+        clippy::result_large_err,
+        reason = "ValidationError is intentionally large; callers are on the validation path"
+    )]
     pub fn parse(s: &str) -> Result<Self, ValidationError> {
         if s.is_empty() {
             return Err(Self::err(s, "empty path"));

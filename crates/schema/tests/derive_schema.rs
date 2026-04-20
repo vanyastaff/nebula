@@ -8,7 +8,7 @@ use serde_json::json;
 // ── #[derive(Schema)] ──────────────────────────────────────────────────────
 
 #[derive(Schema)]
-#[allow(dead_code, reason = "fields are exercised via HasSchema::schema")]
+#[expect(dead_code, reason = "fields are exercised via HasSchema::schema")]
 struct HttpInput {
     #[param(label = "URL", hint = "url")]
     #[validate(required, url, length(max = 8192))]
@@ -116,13 +116,13 @@ fn derive_schema_is_cached() {
 }
 
 #[derive(Schema)]
-#[allow(dead_code, reason = "fields exercised via derive")]
+#[expect(dead_code, reason = "fields exercised via derive")]
 struct Tag {
     name: String,
 }
 
 #[derive(Schema)]
-#[allow(dead_code, reason = "fields exercised via derive")]
+#[expect(dead_code, reason = "fields exercised via derive")]
 struct TagList {
     tags: Vec<String>,
     owner: Option<Tag>,
@@ -174,7 +174,7 @@ fn derive_respects_skip() {
 // ── #[derive(EnumSelect)] ──────────────────────────────────────────────────
 
 #[derive(EnumSelect, Clone, Copy)]
-#[allow(dead_code, reason = "variants exercised via derive")]
+#[expect(dead_code, reason = "variants exercised via derive")]
 enum HttpMethod {
     Get,
     Post,

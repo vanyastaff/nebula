@@ -62,7 +62,10 @@ impl Expression {
     }
 
     /// Lazy parse — caches the first successful parse.
-    #[allow(clippy::result_large_err)]
+    #[expect(
+        clippy::result_large_err,
+        reason = "ValidationError is intentionally large; callers are on the validation path"
+    )]
     pub fn parse(&self) -> Result<&ExpressionAst, ValidationError> {
         Ok(self.parsed.get_or_init(|| {
             // Phase 1: no real AST — just wrap the source.
