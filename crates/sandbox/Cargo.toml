@@ -15,8 +15,11 @@ publish = false
 [dependencies]
 nebula-action = { path = "../action" }
 nebula-core = { path = "../core" }
+nebula-credential = { path = "../credential" }
 nebula-metadata = { path = "../metadata" }
+nebula-plugin = { path = "../plugin" }
 nebula-plugin-sdk = { path = "../plugin-sdk" }
+nebula-resource = { path = "../resource" }
 nebula-schema = { path = "../schema" }
 
 async-trait = { workspace = true }
@@ -25,6 +28,7 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 tempfile = { workspace = true }
 thiserror = { workspace = true }
+toml = "0.8"
 tracing = { workspace = true }
 tokio = { workspace = true, features = ["process", "io-util", "sync", "net"] }
 tokio-util = { workspace = true }
