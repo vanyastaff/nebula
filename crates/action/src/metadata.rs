@@ -67,29 +67,20 @@ pub enum ActionCategory {
     Terminal,
 }
 
-/// Compatibility validation errors for metadata evolution.
+/// Compatibility validation errors for action metadata evolution.
+///
+/// Wraps [`nebula_metadata::BaseCompatError`] (shared catalog-entity rules)
+/// and layers the action-specific port-change rule on top.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 #[non_exhaustive]
 pub enum MetadataCompatibilityError {
-    /// Action key changed across versions.
-    #[error("action key changed from `{previous}` to `{current}`")]
-    KeyChanged {
-        /// Previous key.
-        previous: ActionKey,
-        /// Current key.
-        current: ActionKey,
-    },
-    /// Interface version regressed.
-    #[error("interface version regressed from {previous} to {current}")]
-    VersionRegressed {
-        /// Previous version.
-        previous: Version,
-        /// Current version.
-        current: Version,
-    },
-    /// Breaking schema change without a major version bump.
-    #[error("breaking metadata change detected without major version bump")]
-    BreakingChangeWithoutMajorBump,
+    /// A generic catalog-citizen rule fired (key / version / schema).
+    #[error(transparent)]
+    Base(#[from] nebula_metadata::BaseCompatError<ActionKey>),
+
+    /// Input or output ports changed without a major version bump.
+    #[error("action ports changed without a major version bump")]
+    PortsChangeWithoutMajorBump,
 }
 
 /// Static metadata describing an action type.
@@ -323,33 +314,23 @@ impl ActionMetadata {
 
     /// Validate that this metadata update is version-compatible with `previous`.
     ///
-    /// Rules:
-    /// - `key` is immutable across versions.
-    /// - Interface version cannot go backwards (full `semver::Version` ordering).
-    /// - If input/output/parameter schema changed, major must increase.
+    /// Delegates `key immutable / version monotonic / schema-break-requires-
+    /// major` to [`nebula_metadata::validate_base_compat`]; layers the action-
+    /// specific port-change rule on top.
+    ///
+    /// The ports rule lives on this type rather than in `nebula-metadata`
+    /// because no other catalog citizen exposes a typed input/output port
+    /// graph — only actions declare ports that the workflow validator wires
+    /// between nodes, so the rule has no meaningful shared form.
     pub fn validate_compatibility(
         &self,
         previous: &Self,
     ) -> Result<(), MetadataCompatibilityError> {
-        if self.base.key != previous.base.key {
-            return Err(MetadataCompatibilityError::KeyChanged {
-                previous: previous.base.key.clone(),
-                current: self.base.key.clone(),
-            });
-        }
+        nebula_metadata::validate_base_compat(&self.base, &previous.base)?;
 
-        if self.base.version < previous.base.version {
-            return Err(MetadataCompatibilityError::VersionRegressed {
-                previous: previous.base.version.clone(),
-                current: self.base.version.clone(),
-            });
-        }
-
-        let schema_changed = self.inputs != previous.inputs
-            || self.outputs != previous.outputs
-            || self.base.schema != previous.base.schema;
-        if schema_changed && self.base.version.major == previous.base.version.major {
-            return Err(MetadataCompatibilityError::BreakingChangeWithoutMajorBump);
+        let ports_changed = self.inputs != previous.inputs || self.outputs != previous.outputs;
+        if ports_changed && self.base.version.major == previous.base.version.major {
+            return Err(MetadataCompatibilityError::PortsChangeWithoutMajorBump);
         }
 
         Ok(())
@@ -359,6 +340,7 @@ impl ActionMetadata {
 #[cfg(test)]
 mod tests {
     use nebula_core::action_key;
+    use nebula_metadata::BaseCompatError;
 
     use super::*;
 
@@ -551,7 +533,7 @@ mod tests {
     }
 
     #[test]
-    fn schema_change_requires_major_bump() {
+    fn ports_change_requires_major_bump() {
         let prev = ActionMetadata::new(action_key!("http.request"), "HTTP Request", "desc")
             .with_version(1, 0)
             .with_outputs(vec![OutputPort::flow("out")]);
@@ -560,9 +542,23 @@ mod tests {
             .with_outputs(vec![OutputPort::flow("out"), OutputPort::error("error")]);
 
         let err = next.validate_compatibility(&prev).unwrap_err();
+        assert_eq!(err, MetadataCompatibilityError::PortsChangeWithoutMajorBump);
+    }
+
+    #[test]
+    fn schema_field_change_requires_major_bump() {
+        use nebula_schema::{FieldCollector, Schema};
+
+        let prev =
+            ActionMetadata::new(action_key!("http.request"), "HTTP", "desc").with_version(1, 0);
+        let next = ActionMetadata::new(action_key!("http.request"), "HTTP", "desc")
+            .with_version(1, 1)
+            .with_schema(Schema::builder().string("added", |s| s).build().unwrap());
+
+        let err = next.validate_compatibility(&prev).unwrap_err();
         assert_eq!(
             err,
-            MetadataCompatibilityError::BreakingChangeWithoutMajorBump
+            MetadataCompatibilityError::Base(BaseCompatError::SchemaChangeWithoutMajorBump)
         );
     }
 
@@ -584,7 +580,10 @@ mod tests {
         let next = ActionMetadata::new(action_key!("a.two"), "A", "desc").with_version(2, 0);
 
         let err = next.validate_compatibility(&prev).unwrap_err();
-        assert!(matches!(err, MetadataCompatibilityError::KeyChanged { .. }));
+        assert!(matches!(
+            err,
+            MetadataCompatibilityError::Base(BaseCompatError::KeyChanged { .. })
+        ));
     }
 
     #[test]
@@ -609,7 +608,7 @@ mod tests {
         let err = next.validate_compatibility(&prev).unwrap_err();
         assert!(matches!(
             err,
-            MetadataCompatibilityError::VersionRegressed { .. }
+            MetadataCompatibilityError::Base(BaseCompatError::VersionRegressed { .. })
         ));
     }
 }

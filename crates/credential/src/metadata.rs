@@ -191,3 +191,111 @@ impl CredentialMetadataBuilder {
         })
     }
 }
+
+/// Compatibility validation errors for credential metadata evolution.
+///
+/// Wraps [`nebula_metadata::BaseCompatError`] (shared catalog-entity rules)
+/// and layers the credential-specific auth-pattern rule on top.
+///
+/// The pattern rule lives on this type rather than in `nebula-metadata`
+/// because no other catalog citizen has an auth-pattern classifier —
+/// `AuthPattern` is credential-specific and changing it is semantically
+/// equivalent to replacing the credential, so it requires a major bump.
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+#[non_exhaustive]
+pub enum MetadataCompatibilityError {
+    /// A generic catalog-citizen rule fired (key / version / schema).
+    #[error(transparent)]
+    Base(#[from] nebula_metadata::BaseCompatError<nebula_core::CredentialKey>),
+
+    /// Auth pattern changed without a major version bump.
+    #[error("credential auth pattern changed without a major version bump")]
+    PatternChangeWithoutMajorBump,
+}
+
+impl CredentialMetadata {
+    /// Validate that this metadata update is version-compatible with `previous`.
+    ///
+    /// Delegates `key immutable / version monotonic / schema-break-requires-
+    /// major` to [`nebula_metadata::validate_base_compat`]; layers the
+    /// credential-specific auth-pattern rule on top.
+    pub fn validate_compatibility(
+        &self,
+        previous: &Self,
+    ) -> Result<(), MetadataCompatibilityError> {
+        nebula_metadata::validate_base_compat(&self.base, &previous.base)?;
+
+        if self.pattern != previous.pattern
+            && self.base.version.major == previous.base.version.major
+        {
+            return Err(MetadataCompatibilityError::PatternChangeWithoutMajorBump);
+        }
+
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use nebula_core::{AuthPattern, credential_key};
+    use nebula_metadata::BaseCompatError;
+    use nebula_schema::Schema;
+    use semver::Version;
+
+    use super::{CredentialMetadata, MetadataCompatibilityError};
+
+    fn empty_schema() -> nebula_schema::ValidSchema {
+        Schema::builder().build().unwrap()
+    }
+
+    fn cred(pattern: AuthPattern, major: u64, minor: u64) -> CredentialMetadata {
+        let mut m =
+            CredentialMetadata::new(credential_key!("cred"), "C", "d", empty_schema(), pattern);
+        m.base.version = Version::new(major, minor, 0);
+        m
+    }
+
+    #[test]
+    fn pattern_change_requires_major_bump() {
+        let prev = cred(AuthPattern::SecretToken, 1, 0);
+        let next = cred(AuthPattern::OAuth2, 1, 1);
+        let err = next.validate_compatibility(&prev).unwrap_err();
+        assert_eq!(
+            err,
+            MetadataCompatibilityError::PatternChangeWithoutMajorBump
+        );
+    }
+
+    #[test]
+    fn pattern_change_with_major_accepted() {
+        let prev = cred(AuthPattern::SecretToken, 1, 0);
+        let next = cred(AuthPattern::OAuth2, 2, 0);
+        assert!(next.validate_compatibility(&prev).is_ok());
+    }
+
+    #[test]
+    fn key_change_via_base_rejected() {
+        let prev = CredentialMetadata::new(
+            credential_key!("a"),
+            "A",
+            "d",
+            empty_schema(),
+            AuthPattern::SecretToken,
+        );
+        let next = CredentialMetadata::new(
+            credential_key!("b"),
+            "A",
+            "d",
+            empty_schema(),
+            AuthPattern::SecretToken,
+        );
+        let err = next.validate_compatibility(&prev).unwrap_err();
+        assert_eq!(
+            err,
+            MetadataCompatibilityError::Base(BaseCompatError::KeyChanged {
+                previous: credential_key!("a"),
+                current: credential_key!("b"),
+            })
+        );
+    }
+}
