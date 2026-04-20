@@ -24,13 +24,14 @@ changes land as a new ADR that `supersedes` it.
 | [0014](./0014-dynosaur-macro.md) | `dynosaur` for `dyn`-compatible async traits (replaces `#[async_trait]`) | accepted | 2026-04-19 |
 | [0015](./0015-execution-lease-lifecycle.md) | Execution lease lifecycle (renumbered from 0008; promoted on #325 implementation) | accepted | 2026-04-19 |
 | [0016](./0016-engine-cancel-registry.md) | Engine cancel registry — cooperative-cancel contract for ADR-0008 A3 | accepted | 2026-04-19 |
+| [0017](./0017-control-queue-reclaim-policy.md) | Control-queue reclaim policy | accepted | 2026-04-19 |
 
 ## Writing a new ADR
 
 1. Copy the frontmatter block from any existing ADR (keep the keys: `id`,
    `title`, `status`, `date`, `supersedes`, `superseded_by`, `tags`,
    `related`, optional `linear`).
-2. Pick the next free number (currently **0017**). Do not reuse.
+2. Pick the next free number (currently **0018**). Do not reuse.
 3. File name: `NNNN-kebab-case-title.md` matching the `title:` field.
 4. Start `status: proposed`. Move to `accepted` only after review and merge.
 5. **Do not substantively edit an accepted ADR.** Open a new one with
