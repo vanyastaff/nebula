@@ -477,7 +477,7 @@ Safe to defer — no dep removal, no compile-time impact.
 | `#[allow(deprecated)]` | 1 | Down from 5; one remaining site needs underlying dep upgrade before it can flip. |
 | `#[allow(clippy::*)]` | 14 | Down from 38; remaining 14 are documented intentional exceptions. |
 | All other `#[allow(...)]` | 10 | Down from 27; bare forward-compat attrs kept as `allow` per plan. |
-| `#[expect(...)]` already | 81 | Up from 21; Phase 1b added 60 conversions across 18 crates. |
+| `#[expect(...)]` already | 80 | Up from 21; Phase 1b added 59 conversions across 18 crates. |
 | **Total `#[allow]` in tree** | **56** | Post-Phase-1b baseline. Down from 116; ~52% converted. |
 
 **Plan:** do *not* flip a blanket `s/allow/expect/`. Flip on a
