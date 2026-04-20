@@ -93,10 +93,9 @@ Source of truth: workspace members in `Cargo.toml`, status in [`docs/MATURITY.md
 ### Apps
 
 - `apps/cli` — `nebula` CLI (in-process one-shot runs, includes optional `--tui` viewer).
-- `apps/desktop` — Tauri + React reference shell (not a release artifact).
-- `apps/web` — placeholder (no implementation yet).
+- `apps/desktop` — Tauri + React reference shell (not a release artefact).
 
-A production composition root (`apps/server`) for the `mode-self-hosted` deployment shape (ADR-0013) is tracked as ADR-0008 follow-up.
+A production composition root (`apps/server`) for the `mode-self-hosted` deployment shape (ADR-0013) is tracked as ADR-0008 follow-up; the SaaS frontend will land alongside it.
 
 ## Credential System
 

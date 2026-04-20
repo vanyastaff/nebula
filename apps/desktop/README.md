@@ -1,5 +1,12 @@
 # Nebula Desktop (Tauri)
 
+> **Status:** reference shell, not a release artefact.
+>
+> This crate is kept as a working example of how to embed Nebula behind a
+> Tauri 2.x frontend; it is not part of any release pipeline and is not
+> covered by the canonical knife scenario. When a production desktop
+> client lands, it will be its own composition root with its own ADR.
+
 Desktop shell for Nebula using Tauri 2.x.
 
 ## Structure
