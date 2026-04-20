@@ -19,7 +19,6 @@
 /Taskfile.yml                   @vanyastaff
 /typos.toml                     @vanyastaff
 /_typos.toml                    @vanyastaff
-/commitlint.config.mjs          @vanyastaff
 
 # ── CI / GitHub config ────────────────────────────────────────────────────────
 /.github/                       @vanyastaff
