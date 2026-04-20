@@ -28,6 +28,10 @@ Pattern: *Typed credential lifecycle* (Release It! ch "Stability Patterns" — s
 - 12 built-in scheme types: `SecretToken`, `IdentityPassword`, `OAuth2Token`, `KeyPair`, `Certificate`, `SigningKey`, `FederatedAssertion`, `ChallengeSecret`, `OtpSeed`, `ConnectionUri`, `InstanceBinding`, `SharedKey`.
 - `CredentialStore`, `StoredCredential`, `PutMode`, `StoreError` — storage trait with layered composition.
 - `EncryptionLayer`, `CacheLayer`, `AuditLayer`, `ScopeLayer` — composable store decorators.
+- `KeyProvider`, `ProviderError` — seam between `EncryptionLayer` and the encryption-key source. `Arc<dyn KeyProvider>` replaces `Arc<EncryptionKey>` in `EncryptionLayer::new`; composition roots pick the provider at wiring time. See [ADR-0022](../../docs/adr/0022-keyprovider-trait.md).
+- `EnvKeyProvider` — reads a 32-byte AES-256 key from `NEBULA_CRED_MASTER_KEY` (base64), fail-closed on missing / short / dev-placeholder values.
+- `FileKeyProvider` — reads 32 raw key bytes from a filesystem path, refuses world-readable files on Unix.
+- `StaticKeyProvider` (feature `test-util`) — in-memory key for tests and internal composition; never enabled in production release builds.
 - `CredentialRegistry`, `RegistryError` — type-erased runtime dispatch.
 - `CredentialResolver`, `ResolveError` — resolution engine: resolve, refresh, test via registry.
 - `RefreshCoordinator`, `RefreshAttempt` — thundering-herd prevention for concurrent refresh.
