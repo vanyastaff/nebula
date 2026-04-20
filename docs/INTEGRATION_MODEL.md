@@ -241,4 +241,19 @@ Rust-native plugins follow Cargo-first dependency and build semantics. The compi
 
 ### Tooling notes
 
-`cargo-nebula` and CLI flows validate `plugin.toml` markers early — before invoking `cargo build` — so missing SDK constraints, malformed identifiers, or unresolved cross-plugin types fail fast with diagnostics that name the plugin id, the package name, and the missing provider dependency. Activation should reject a plugin whose declared cross-plugin type references a Cargo dependency that is not in the lockfile, rather than silently falling back to global lookup.
+> **Status — planned, not enforced today.** Canon §11.6 truth: `cargo-nebula`
+> does not yet exist, and `crates/sandbox/README.md` lines 64-65 mark
+> `PluginCapabilities` enforcement from `plugin.toml` through discovery as a
+> **false capability** — the allowlist is defined but the discovery path
+> hardcodes `PluginCapabilities::none()` until that TODO is closed. The
+> behaviours below are the *target* once the discovery wiring lands.
+
+`cargo-nebula` and the CLI are **expected to** validate `plugin.toml` markers
+early — before invoking `cargo build` — rejecting missing SDK constraints,
+malformed identifiers, and unresolved cross-plugin types with diagnostics that
+name the plugin id, the package name, and the missing provider dependency.
+Activation **must eventually** reject any plugin whose declared cross-plugin
+type references a Cargo dependency outside the resolved closure, rather than
+silently falling back to global lookup. Until the sandbox discovery roadmap
+item is closed, neither check is wired and the validation surface is honest
+about that gap.
