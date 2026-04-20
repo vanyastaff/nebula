@@ -95,7 +95,10 @@ fn emit_to_hooks_bounded(hooks: &HookList, event: &dyn ObservabilityEvent, timeo
 /// but the panicked hook's internal state may be corrupted. Consider wrapping
 /// fallible hook internals in `catch_unwind` or using lock-free data structures.
 #[deprecated(note = "use emit_to_hooks_inline or emit_to_hooks_bounded directly")]
-#[allow(dead_code)]
+#[expect(
+    dead_code,
+    reason = "deprecated function retained for semver compatibility; callers should migrate to emit_to_hooks_inline or emit_to_hooks_bounded"
+)]
 fn emit_to_hooks(hooks: &HookList, event: &dyn ObservabilityEvent, policy: HookPolicy) {
     match policy {
         HookPolicy::Inline => emit_to_hooks_inline(hooks, event),
