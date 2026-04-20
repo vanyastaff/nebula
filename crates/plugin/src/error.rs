@@ -1,7 +1,27 @@
 //! Plugin error types.
 
 use nebula_core::PluginKey;
-use semver::Version;
+
+/// Which component kind flagged a plugin construction error.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ComponentKind {
+    /// An action component.
+    Action,
+    /// A credential component.
+    Credential,
+    /// A resource component.
+    Resource,
+}
+
+impl core::fmt::Display for ComponentKind {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            Self::Action => f.write_str("action"),
+            Self::Credential => f.write_str("credential"),
+            Self::Resource => f.write_str("resource"),
+        }
+    }
+}
 
 /// Errors from plugin operations.
 #[derive(Debug, thiserror::Error, nebula_error::Classify)]
@@ -11,113 +31,74 @@ pub enum PluginError {
     #[error("plugin not found: {0}")]
     NotFound(PluginKey),
 
-    /// A specific version was not found.
-    #[classify(category = "not_found", code = "PLUGIN:VERSION_NOT_FOUND")]
-    #[error("version {version} not found for plugin '{key}'")]
-    VersionNotFound {
-        /// The requested version.
-        version: Version,
-        /// The plugin key.
-        key: PluginKey,
-    },
-
-    /// The plugin is not versioned (it is a single instance).
-    #[classify(category = "validation", code = "PLUGIN:NOT_VERSIONED")]
-    #[error("plugin '{0}' is not versioned")]
-    NotVersioned(PluginKey),
-
     /// A plugin with this key already exists in the registry.
     #[classify(category = "conflict", code = "PLUGIN:ALREADY_EXISTS")]
     #[error("plugin '{0}' already exists")]
     AlreadyExists(PluginKey),
 
-    /// No versions are available in a `PluginVersions` container.
-    #[classify(category = "not_found", code = "PLUGIN:NO_VERSIONS")]
-    #[error("no versions available for plugin '{0}'")]
-    NoVersionsAvailable(PluginKey),
-
-    /// The key of a plugin being added doesn't match the container's key.
-    #[classify(category = "validation", code = "PLUGIN:KEY_MISMATCH")]
-    #[error("key mismatch: plugin has key '{plugin_key}', container has key '{container_key}'")]
-    KeyMismatch {
-        /// The incoming plugin's key.
-        plugin_key: PluginKey,
-        /// The container's existing key.
-        container_key: PluginKey,
-    },
-
-    /// A version already exists in the container.
-    #[classify(category = "conflict", code = "PLUGIN:VERSION_EXISTS")]
-    #[error("version {version} already exists for plugin '{key}'")]
-    VersionAlreadyExists {
-        /// The conflicting version.
-        version: Version,
-        /// The plugin key.
-        key: PluginKey,
-    },
-
-    /// A required field was missing during plugin construction.
-    #[classify(category = "validation", code = "PLUGIN:MISSING_FIELD")]
-    #[error("missing required field '{field}' for plugin")]
-    MissingRequiredField {
-        /// The missing field name.
-        field: &'static str,
-    },
-
-    /// Plugin key validation failed.
-    #[classify(category = "validation", code = "PLUGIN:INVALID_KEY")]
-    #[error("invalid plugin key: {0}")]
-    InvalidKey(<PluginKey as std::str::FromStr>::Err),
-
     /// Plugin manifest construction failed — wraps `nebula_metadata::ManifestError`.
     #[classify(category = "validation", code = "PLUGIN:INVALID_MANIFEST")]
     #[error("invalid plugin manifest: {0}")]
     InvalidManifest(#[from] nebula_metadata::ManifestError),
+
+    /// Plugin declared an action/credential/resource whose full key does not
+    /// start with the plugin's own prefix. Caught at `ResolvedPlugin::from`.
+    #[classify(category = "validation", code = "PLUGIN:NAMESPACE_MISMATCH")]
+    #[error(
+        "plugin '{plugin}' declared {kind} key '{offending_key}' outside its namespace '{plugin}.*'"
+    )]
+    NamespaceMismatch {
+        /// The plugin that declared the out-of-namespace component.
+        plugin: PluginKey,
+        /// The offending component key.
+        offending_key: String,
+        /// Which kind of component triggered the violation.
+        kind: ComponentKind,
+    },
+
+    /// Plugin declared two components of the same kind with identical full keys.
+    #[classify(category = "conflict", code = "PLUGIN:DUPLICATE_COMPONENT")]
+    #[error("plugin '{plugin}' declared duplicate {kind} key '{key}'")]
+    DuplicateComponent {
+        /// The plugin that declared the duplicate component.
+        plugin: PluginKey,
+        /// The duplicate key.
+        key: String,
+        /// Which kind of component is duplicated.
+        kind: ComponentKind,
+    },
 }
 
 impl PartialEq for PluginError {
     fn eq(&self, other: &Self) -> bool {
         match (self, other) {
             (Self::NotFound(a), Self::NotFound(b)) => a == b,
-            (
-                Self::VersionNotFound {
-                    version: v1,
-                    key: k1,
-                },
-                Self::VersionNotFound {
-                    version: v2,
-                    key: k2,
-                },
-            ) => v1 == v2 && k1 == k2,
-            (Self::NotVersioned(a), Self::NotVersioned(b)) => a == b,
             (Self::AlreadyExists(a), Self::AlreadyExists(b)) => a == b,
-            (Self::NoVersionsAvailable(a), Self::NoVersionsAvailable(b)) => a == b,
-            (
-                Self::KeyMismatch {
-                    plugin_key: n1,
-                    container_key: c1,
-                },
-                Self::KeyMismatch {
-                    plugin_key: n2,
-                    container_key: c2,
-                },
-            ) => n1 == n2 && c1 == c2,
-            (
-                Self::VersionAlreadyExists {
-                    version: v1,
-                    key: k1,
-                },
-                Self::VersionAlreadyExists {
-                    version: v2,
-                    key: k2,
-                },
-            ) => v1 == v2 && k1 == k2,
-            (
-                Self::MissingRequiredField { field: f1 },
-                Self::MissingRequiredField { field: f2 },
-            ) => f1 == f2,
-            (Self::InvalidKey(a), Self::InvalidKey(b)) => a == b,
             (Self::InvalidManifest(a), Self::InvalidManifest(b)) => a == b,
+            (
+                Self::NamespaceMismatch {
+                    plugin: p1,
+                    offending_key: k1,
+                    kind: ki1,
+                },
+                Self::NamespaceMismatch {
+                    plugin: p2,
+                    offending_key: k2,
+                    kind: ki2,
+                },
+            ) => p1 == p2 && k1 == k2 && ki1 == ki2,
+            (
+                Self::DuplicateComponent {
+                    plugin: p1,
+                    key: k1,
+                    kind: ki1,
+                },
+                Self::DuplicateComponent {
+                    plugin: p2,
+                    key: k2,
+                    kind: ki2,
+                },
+            ) => p1 == p2 && k1 == k2 && ki1 == ki2,
             _ => false,
         }
     }
@@ -137,35 +118,10 @@ mod tests {
     }
 
     #[test]
-    fn version_not_found_display() {
-        let key: PluginKey = "http_request".parse().unwrap();
-        let err = PluginError::VersionNotFound {
-            version: Version::new(3, 0, 0),
-            key,
-        };
-        assert_eq!(
-            err.to_string(),
-            "version 3.0.0 not found for plugin 'http_request'"
-        );
-    }
-
-    #[test]
     fn already_exists_display() {
         let key: PluginKey = "slack".parse().unwrap();
         let err = PluginError::AlreadyExists(key);
         assert_eq!(err.to_string(), "plugin 'slack' already exists");
-    }
-
-    #[test]
-    fn key_mismatch_display() {
-        let pk: PluginKey = "foo".parse().unwrap();
-        let ck: PluginKey = "bar".parse().unwrap();
-        let err = PluginError::KeyMismatch {
-            plugin_key: pk,
-            container_key: ck,
-        };
-        assert!(err.to_string().contains("foo"));
-        assert!(err.to_string().contains("bar"));
     }
 
     #[test]
@@ -176,5 +132,31 @@ mod tests {
 
         let c = PluginError::NotFound("http".parse().unwrap());
         assert_ne!(a, c);
+    }
+
+    #[test]
+    fn namespace_mismatch_display() {
+        let err = PluginError::NamespaceMismatch {
+            plugin: "slack".parse().unwrap(),
+            offending_key: "api.foo".into(),
+            kind: ComponentKind::Action,
+        };
+        let s = err.to_string();
+        assert!(s.contains("slack"));
+        assert!(s.contains("api.foo"));
+        assert!(s.contains("action"));
+    }
+
+    #[test]
+    fn duplicate_component_display() {
+        let err = PluginError::DuplicateComponent {
+            plugin: "slack".parse().unwrap(),
+            key: "slack.send".into(),
+            kind: ComponentKind::Credential,
+        };
+        let s = err.to_string();
+        assert!(s.contains("duplicate"));
+        assert!(s.contains("slack.send"));
+        assert!(s.contains("credential"));
     }
 }

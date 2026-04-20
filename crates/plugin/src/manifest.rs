@@ -7,6 +7,4 @@
 //!
 //! See [`nebula_metadata::manifest`] for the canonical definition.
 
-// Re-export for registry.rs which calls `normalize_key` during `get_by_name`.
-pub(crate) use nebula_metadata::normalize_key;
 pub use nebula_metadata::{ManifestError, PluginManifest, PluginManifestBuilder};

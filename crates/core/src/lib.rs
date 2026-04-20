@@ -75,6 +75,13 @@ pub use lifecycle::{LayerLifecycle, ShutdownOutcome};
 pub use obs::{SpanId, TraceId};
 pub use scope::*;
 
+/// Named parse-error type for [`PluginKey`] — `<PluginKey as std::str::FromStr>::Err`.
+///
+/// Provides a stable name for use in error variant payloads and public APIs
+/// that report key-validation failures without spelling out the long
+/// `<PluginKey as FromStr>::Err` form.
+pub type PluginKeyParseError = <PluginKey as std::str::FromStr>::Err;
+
 /// Common prelude for Nebula crates.
 pub mod prelude {
     // Core result alias

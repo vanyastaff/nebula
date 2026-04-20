@@ -4065,10 +4065,14 @@ dependencies = [
 name = "nebula-plugin"
 version = "0.1.0"
 dependencies = [
+ "nebula-action",
  "nebula-core",
+ "nebula-credential",
  "nebula-error",
  "nebula-metadata",
  "nebula-plugin-macros",
+ "nebula-resource",
+ "nebula-schema",
  "semver",
  "serde",
  "serde_json",

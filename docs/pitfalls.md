@@ -91,6 +91,25 @@ to exist.
 - Pure helpers (e.g. `resolve_endpoint_from`) stay `#[test]` — only tests that
   reach `build_exporter` need the runtime.
 
+## 5. Plugin: action / credential / resource key outside the plugin's namespace
+
+**Symptom.** `PluginRegistry::register` (or `ResolvedPlugin::from`
+directly) fails with
+`PluginError::NamespaceMismatch { plugin, offending_key, kind }`.
+
+**Cause.** A plugin's `Plugin::actions()` / `credentials()` / `resources()`
+method returned an `Arc<dyn Action>` (or `AnyCredential`, `AnyResource`) whose
+key does not start with `{plugin.key()}.`. Typical example: plugin keyed `slack`
+returns an action keyed `api.foo`.
+
+**Fix.** Either rename the component's key to `slack.api.foo`, or move
+the component to a plugin that legitimately owns the `api.*` namespace.
+The rule comes from canon §7.1 and is enforced at `ResolvedPlugin::from`
+(not at dispatch time) — the bad registration cannot leak into the
+runtime.
+
+See ADR-0027.
+
 ## 4. Manual `serde::de::Visitor::visit_map`: every `next_key` must be paired with `next_value`
 
 **Where:** `crates/validator/src/rule/deserialize.rs:93-119`. Manual

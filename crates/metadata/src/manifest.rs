@@ -33,14 +33,14 @@ pub enum ManifestError {
     /// Plugin key validation failed.
     #[classify(category = "validation", code = "MANIFEST:INVALID_KEY")]
     #[error("invalid plugin key: {0}")]
-    InvalidKey(<PluginKey as std::str::FromStr>::Err),
+    InvalidKey(nebula_core::PluginKeyParseError),
 }
 
 /// Normalize a raw plugin key string: ASCII uppercase → lowercase, spaces → underscores.
 ///
-/// This lets callers use human-readable labels like `"HTTP Request"` and receive
-/// the canonical form `"http_request"`.
-pub fn normalize_key(s: &str) -> String {
+/// Used internally by [`PluginManifestBuilder::build`] to normalize the raw key before
+/// validation. Not part of the public API.
+pub(crate) fn normalize_key(s: &str) -> String {
     s.to_ascii_lowercase().replace(' ', "_")
 }
 

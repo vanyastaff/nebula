@@ -19,11 +19,17 @@ nebula-plugin-macros = { path = "macros" }
 nebula-core = { path = "../core" }
 nebula-error = { workspace = true, features = ["derive"] }
 nebula-metadata = { path = "../metadata" }
+nebula-action = { path = "../action" }
+nebula-credential = { path = "../credential" }
+nebula-resource = { path = "../resource" }
 
 semver = { workspace = true, features = ["serde"] }
 serde = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }
+
+[dev-dependencies]
+nebula-schema = { path = "../schema" }
 
 [lints]
 workspace = true

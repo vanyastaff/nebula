@@ -4,15 +4,17 @@ use std::{collections::HashMap, sync::Arc};
 
 use nebula_core::PluginKey;
 
-use crate::{PluginError, manifest::normalize_key, plugin_type::PluginType};
+use crate::{PluginError, ResolvedPlugin};
 
-/// In-memory registry mapping [`PluginKey`] to [`PluginType`].
+/// In-memory registry mapping [`PluginKey`] to [`Arc<ResolvedPlugin>`].
 ///
 /// Thread-safety is the caller's responsibility — wrap in `RwLock` if
 /// shared across threads.
 ///
 /// ```
-/// use nebula_plugin::{Plugin, PluginManifest, PluginRegistry, PluginType};
+/// use std::sync::Arc;
+///
+/// use nebula_plugin::{Plugin, PluginManifest, PluginRegistry, ResolvedPlugin};
 ///
 /// #[derive(Debug)]
 /// struct EchoPlugin(PluginManifest);
@@ -24,56 +26,35 @@ use crate::{PluginError, manifest::normalize_key, plugin_type::PluginType};
 ///
 /// let mut registry = PluginRegistry::new();
 /// let manifest = PluginManifest::builder("echo", "Echo").build().unwrap();
-/// let plugin_type = PluginType::single(EchoPlugin(manifest));
-/// registry.register(plugin_type).unwrap();
+/// let resolved = Arc::new(ResolvedPlugin::from(EchoPlugin(manifest)).unwrap());
+/// registry.register(resolved).unwrap();
 ///
 /// assert!(registry.contains(&"echo".parse().unwrap()));
 /// ```
+#[derive(Default)]
 pub struct PluginRegistry {
-    plugins: HashMap<PluginKey, Arc<PluginType>>,
+    plugins: HashMap<PluginKey, Arc<ResolvedPlugin>>,
 }
 
 impl PluginRegistry {
     /// Create an empty registry.
     pub fn new() -> Self {
-        Self {
-            plugins: HashMap::new(),
-        }
+        Self::default()
     }
 
-    /// Register a plugin type. Fails if the key already exists.
-    pub fn register(&mut self, plugin_type: PluginType) -> Result<(), PluginError> {
-        let key = plugin_type.key().clone();
+    /// Register a resolved plugin. Fails if the key already exists.
+    pub fn register(&mut self, plugin: Arc<ResolvedPlugin>) -> Result<(), PluginError> {
+        let key = plugin.key().clone();
         if self.plugins.contains_key(&key) {
             return Err(PluginError::AlreadyExists(key));
         }
-        self.plugins.insert(key, Arc::new(plugin_type));
+        self.plugins.insert(key, plugin);
         Ok(())
     }
 
-    /// Register or replace a plugin type under the given key.
-    pub fn register_or_replace(&mut self, plugin_type: PluginType) {
-        let key = plugin_type.key().clone();
-        self.plugins.insert(key, Arc::new(plugin_type));
-    }
-
-    /// Look up a plugin type by key.
-    pub fn get(&self, key: &PluginKey) -> Result<Arc<PluginType>, PluginError> {
-        self.plugins
-            .get(key)
-            .cloned()
-            .ok_or_else(|| PluginError::NotFound(key.clone()))
-    }
-
-    /// Look up a plugin type by raw string.
-    ///
-    /// The name is normalized before lookup (lowercase, spaces → underscores),
-    /// so `"HTTP Request"` resolves to the key `"http_request"`.
-    pub fn get_by_name(&self, name: &str) -> Result<Arc<PluginType>, PluginError> {
-        let key: PluginKey = normalize_key(name)
-            .parse()
-            .map_err(PluginError::InvalidKey)?;
-        self.get(&key)
+    /// Look up a resolved plugin by key.
+    pub fn get(&self, key: &PluginKey) -> Option<Arc<ResolvedPlugin>> {
+        self.plugins.get(key).cloned()
     }
 
     /// Whether a plugin with the given key exists.
@@ -81,11 +62,9 @@ impl PluginRegistry {
         self.plugins.contains_key(key)
     }
 
-    /// Remove a plugin by key.
-    pub fn remove(&mut self, key: &PluginKey) -> Result<Arc<PluginType>, PluginError> {
-        self.plugins
-            .remove(key)
-            .ok_or_else(|| PluginError::NotFound(key.clone()))
+    /// Remove a plugin by key. Returns the removed plugin, or `None` if not found.
+    pub fn remove(&mut self, key: &PluginKey) -> Option<Arc<ResolvedPlugin>> {
+        self.plugins.remove(key)
     }
 
     /// Remove all plugins.
@@ -93,14 +72,9 @@ impl PluginRegistry {
         self.plugins.clear();
     }
 
-    /// All registered keys.
-    pub fn keys(&self) -> Vec<PluginKey> {
-        self.plugins.keys().cloned().collect()
-    }
-
-    /// All registered plugin types.
-    pub fn values(&self) -> Vec<Arc<PluginType>> {
-        self.plugins.values().cloned().collect()
+    /// Iterate all registered plugins.
+    pub fn iter(&self) -> impl Iterator<Item = (&PluginKey, &Arc<ResolvedPlugin>)> {
+        self.plugins.iter()
     }
 
     /// Number of registered plugins.
@@ -114,25 +88,23 @@ impl PluginRegistry {
     }
 }
 
-impl Default for PluginRegistry {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
 impl std::fmt::Debug for PluginRegistry {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("PluginRegistry")
             .field("count", &self.plugins.len())
-            .field("keys", &self.keys())
+            .field("keys", &self.plugins.keys().cloned().collect::<Vec<_>>())
             .finish()
     }
 }
 
 #[cfg(test)]
 mod tests {
+    use std::sync::Arc;
+
+    use nebula_metadata::PluginManifest;
+
     use super::*;
-    use crate::{PluginManifest, plugin::Plugin};
+    use crate::{ResolvedPlugin, plugin::Plugin};
 
     #[derive(Debug)]
     struct StubPlugin(PluginManifest);
@@ -142,82 +114,53 @@ mod tests {
         }
     }
 
-    fn make_type(key: &str) -> PluginType {
+    fn make(key: &str) -> Arc<ResolvedPlugin> {
         let manifest = PluginManifest::builder(key, key).build().unwrap();
-        PluginType::single(StubPlugin(manifest))
+        Arc::new(ResolvedPlugin::from(StubPlugin(manifest)).unwrap())
     }
 
     #[test]
     fn register_and_get() {
         let mut reg = PluginRegistry::new();
-        reg.register(make_type("slack")).unwrap();
-
+        reg.register(make("slack")).unwrap();
         let key: PluginKey = "slack".parse().unwrap();
-        let pt = reg.get(&key).unwrap();
-        assert_eq!(pt.key().as_str(), "slack");
-    }
-
-    #[test]
-    fn get_by_name() {
-        let mut reg = PluginRegistry::new();
-        reg.register(make_type("http_request")).unwrap();
-
-        let pt = reg.get_by_name("HTTP Request").unwrap();
-        assert_eq!(pt.key().as_str(), "http_request");
+        assert_eq!(reg.get(&key).unwrap().key().as_str(), "slack");
     }
 
     #[test]
     fn duplicate_register_fails() {
         let mut reg = PluginRegistry::new();
-        reg.register(make_type("a")).unwrap();
-        let err = reg.register(make_type("a")).unwrap_err();
+        reg.register(make("a")).unwrap();
+        let err = reg.register(make("a")).unwrap_err();
         assert_eq!(err, PluginError::AlreadyExists("a".parse().unwrap()));
     }
 
     #[test]
-    fn register_or_replace() {
+    fn remove_and_contains() {
         let mut reg = PluginRegistry::new();
-        reg.register(make_type("a")).unwrap();
-        reg.register_or_replace(make_type("a")); // no error
-        assert_eq!(reg.len(), 1);
-    }
-
-    #[test]
-    fn remove() {
-        let mut reg = PluginRegistry::new();
-        reg.register(make_type("x")).unwrap();
-
+        reg.register(make("x")).unwrap();
         let key: PluginKey = "x".parse().unwrap();
+        assert!(reg.contains(&key));
         let removed = reg.remove(&key).unwrap();
         assert_eq!(removed.key().as_str(), "x");
-        assert!(reg.is_empty());
+        assert!(!reg.contains(&key));
     }
 
     #[test]
-    fn remove_not_found() {
+    fn clear_empties() {
         let mut reg = PluginRegistry::new();
-        let key: PluginKey = "nope".parse().unwrap();
-        assert!(reg.remove(&key).is_err());
-    }
-
-    #[test]
-    fn clear() {
-        let mut reg = PluginRegistry::new();
-        reg.register(make_type("a")).unwrap();
-        reg.register(make_type("b")).unwrap();
-        assert_eq!(reg.len(), 2);
-
+        reg.register(make("a")).unwrap();
+        reg.register(make("b")).unwrap();
         reg.clear();
         assert!(reg.is_empty());
     }
 
     #[test]
-    fn contains() {
+    fn iter_visits_all() {
         let mut reg = PluginRegistry::new();
-        let key: PluginKey = "foo".parse().unwrap();
-        assert!(!reg.contains(&key));
-
-        reg.register(make_type("foo")).unwrap();
-        assert!(reg.contains(&key));
+        reg.register(make("a")).unwrap();
+        reg.register(make("b")).unwrap();
+        let keys: Vec<_> = reg.iter().map(|(k, _)| k.as_str().to_owned()).collect();
+        assert_eq!(keys.len(), 2);
     }
 }

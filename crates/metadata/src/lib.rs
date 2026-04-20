@@ -26,5 +26,5 @@ pub use base::{BaseMetadata, Metadata};
 pub use compat::{BaseCompatError, validate_base_compat};
 pub use deprecation::DeprecationNotice;
 pub use icon::Icon;
-pub use manifest::{ManifestError, PluginManifest, PluginManifestBuilder, normalize_key};
+pub use manifest::{ManifestError, PluginManifest, PluginManifestBuilder};
 pub use maturity::MaturityLevel;
