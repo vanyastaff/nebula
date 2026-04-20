@@ -712,9 +712,9 @@ impl WebhookConfig {
 
 /// Signature-verification policy for a [`WebhookAction`].
 ///
-/// Returned by [`WebhookAction::signature_policy`]. The HTTP transport
-/// layer consults this before dispatching an incoming request to the
-/// action — a misconfigured or unsigned request never reaches
+/// Carried on [`WebhookConfig`] and read by the HTTP transport
+/// before dispatching an incoming request to the action — a
+/// misconfigured or unsigned request never reaches
 /// [`WebhookAction::handle_request`].
 ///
 /// # Default is fail-closed
