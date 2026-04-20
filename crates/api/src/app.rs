@@ -15,30 +15,17 @@ use crate::{
     state::AppState,
 };
 
-/// Maximum accepted request-body size for REST handlers (1 MiB).
-///
-/// Applied as a router-level `DefaultBodyLimit` below. The cap is a
-/// guard rail from the 2026-04-19 audit (`docs/audit/2026-04-19-codebase-quality-audit.md`
-/// §"Guard rails" #2) and a pre-condition of ADR-0020
-/// (`docs/adr/0020-library-first-gtm.md` §3 #3) for any composition-root
-/// binary.
-///
-/// The webhook transport applies its own cap on the webhook sub-router
-/// (`crates/api/src/webhook/transport.rs`); this constant covers only
-/// the REST surface (`/workflows`, `/credentials`, …). Operators can
-/// grep this symbol to find and raise the default if a specific
-/// deployment genuinely needs larger payloads.
-pub const REST_BODY_LIMIT_BYTES: usize = 1024 * 1024;
-
 /// Build the main application router with middleware
 pub fn build_app(state: AppState, config: &ApiConfig) -> Router {
     // Apply the REST body-limit layer BEFORE merging the webhook
     // router. The webhook transport already attaches its own
     // `DefaultBodyLimit` inside `transport.router()`; layering after
-    // the merge would override it for webhook routes too, and 1 MiB
-    // is not the right default for every webhook provider.
+    // the merge would override it for webhook routes too, and the
+    // REST default is not the right default for every webhook
+    // provider. Operators tune the REST cap via `API_MAX_BODY_SIZE`
+    // (defaulting to `config::REST_BODY_LIMIT_BYTES`).
     let routes = routes::create_routes(state.clone(), config)
-        .layer(DefaultBodyLimit::max(REST_BODY_LIMIT_BYTES));
+        .layer(DefaultBodyLimit::max(config.max_body_size));
 
     // Merge the webhook transport router (if attached). Webhook
     // routes live alongside REST API routes on the same axum app,

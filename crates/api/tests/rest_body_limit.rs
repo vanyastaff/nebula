@@ -5,7 +5,8 @@
 //! (`/workflows`, `/credentials` POST) did not — this test pins the
 //! router-level `DefaultBodyLimit` wired in `crates/api/src/app.rs` at
 //! 413 for a 2 MiB payload, twice the advertised `REST_BODY_LIMIT_BYTES`
-//! (1 MiB). Tracked as issue
+//! (1 MiB) default defined in `crates/api/src/config.rs` and wired
+//! through `ApiConfig::max_body_size`. Tracked as issue
 //! <https://github.com/vanyastaff/nebula/issues/520>.
 
 mod common;
