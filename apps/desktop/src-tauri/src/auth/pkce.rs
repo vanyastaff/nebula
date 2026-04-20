@@ -4,9 +4,9 @@ use sha2::{Digest, Sha256};
 
 /// Generates a cryptographically random PKCE code verifier (43–128 characters, URL-safe base64).
 pub fn generate_verifier() -> String {
-    let mut rng = rand::thread_rng();
-    let len: usize = rng.gen_range(32..=96); // produces 43–128 base64url chars
-    let bytes: Vec<u8> = (0..len).map(|_| rng.gen()).collect();
+    let mut rng = rand::rng();
+    let len: usize = rng.random_range(32..=96); // produces 43–128 base64url chars
+    let bytes: Vec<u8> = (0..len).map(|_| rng.random()).collect();
     URL_SAFE_NO_PAD.encode(&bytes)
 }
 

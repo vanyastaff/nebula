@@ -1,6 +1,6 @@
 //! Append-only execution journal.
 
-use async_trait::async_trait;
+use std::future::Future;
 
 use crate::error::StorageError;
 
@@ -28,26 +28,29 @@ pub struct JournalEntry {
 /// Spec 16 layer 4. This is the replayable history operators inspect
 /// to answer *what happened*. No UPDATE or DELETE in runtime code —
 /// retention is by cascade on `executions`.
-#[async_trait]
 pub trait JournalRepo: Send + Sync {
     /// Append an entry. Auto-assigns `sequence` as the next value for
     /// the execution.
-    async fn append(&self, entry: &JournalEntry) -> Result<(), StorageError>;
+    fn append(&self, entry: &JournalEntry)
+    -> impl Future<Output = Result<(), StorageError>> + Send;
 
     /// Batch-append multiple entries atomically.
-    async fn append_batch(&self, entries: &[JournalEntry]) -> Result<(), StorageError>;
+    fn append_batch(
+        &self,
+        entries: &[JournalEntry],
+    ) -> impl Future<Output = Result<(), StorageError>> + Send;
 
     /// Read the full journal for an execution, ordered by `sequence`.
-    async fn list_for_execution(
+    fn list_for_execution(
         &self,
         execution_id: &[u8],
-    ) -> Result<Vec<JournalEntry>, StorageError>;
+    ) -> impl Future<Output = Result<Vec<JournalEntry>, StorageError>> + Send;
 
     /// Read entries after a given sequence (for streaming/catch-up).
-    async fn list_after(
+    fn list_after(
         &self,
         execution_id: &[u8],
         after_sequence: i64,
         limit: u32,
-    ) -> Result<Vec<JournalEntry>, StorageError>;
+    ) -> impl Future<Output = Result<Vec<JournalEntry>, StorageError>> + Send;
 }

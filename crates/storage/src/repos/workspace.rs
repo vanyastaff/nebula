@@ -1,6 +1,6 @@
 //! Workspace repository.
 
-use async_trait::async_trait;
+use std::future::Future;
 
 use crate::{
     error::StorageError,
@@ -8,57 +8,72 @@ use crate::{
 };
 
 /// Workspace storage — second-level tenant under an org.
-#[async_trait]
 pub trait WorkspaceRepo: Send + Sync {
     /// Insert a new workspace. Fails on duplicate (org_id, slug).
-    async fn create(&self, ws: &WorkspaceRow) -> Result<(), StorageError>;
+    fn create(&self, ws: &WorkspaceRow) -> impl Future<Output = Result<(), StorageError>> + Send;
 
     /// Fetch a workspace by ID.
-    async fn get(&self, id: &[u8]) -> Result<Option<WorkspaceRow>, StorageError>;
+    fn get(
+        &self,
+        id: &[u8],
+    ) -> impl Future<Output = Result<Option<WorkspaceRow>, StorageError>> + Send;
 
     /// Fetch a workspace by (org, slug).
-    async fn get_by_slug(
+    fn get_by_slug(
         &self,
         org_id: &[u8],
         slug: &str,
-    ) -> Result<Option<WorkspaceRow>, StorageError>;
+    ) -> impl Future<Output = Result<Option<WorkspaceRow>, StorageError>> + Send;
 
     /// Get the default workspace for an org.
-    async fn get_default(&self, org_id: &[u8]) -> Result<Option<WorkspaceRow>, StorageError>;
+    fn get_default(
+        &self,
+        org_id: &[u8],
+    ) -> impl Future<Output = Result<Option<WorkspaceRow>, StorageError>> + Send;
 
     /// List all workspaces under an org.
-    async fn list_for_org(&self, org_id: &[u8]) -> Result<Vec<WorkspaceRow>, StorageError>;
+    fn list_for_org(
+        &self,
+        org_id: &[u8],
+    ) -> impl Future<Output = Result<Vec<WorkspaceRow>, StorageError>> + Send;
 
     /// Update a workspace with CAS on `version`.
-    async fn update(&self, ws: &WorkspaceRow, expected_version: i64) -> Result<(), StorageError>;
+    fn update(
+        &self,
+        ws: &WorkspaceRow,
+        expected_version: i64,
+    ) -> impl Future<Output = Result<(), StorageError>> + Send;
 
     /// Soft-delete a workspace.
-    async fn soft_delete(&self, id: &[u8]) -> Result<(), StorageError>;
+    fn soft_delete(&self, id: &[u8]) -> impl Future<Output = Result<(), StorageError>> + Send;
 
     // ── Members ─────────────────────────────────────────────────────────
 
     /// Add a principal as a member of a workspace.
-    async fn add_member(&self, member: &WorkspaceMemberRow) -> Result<(), StorageError>;
+    fn add_member(
+        &self,
+        member: &WorkspaceMemberRow,
+    ) -> impl Future<Output = Result<(), StorageError>> + Send;
 
     /// Remove a member from a workspace.
-    async fn remove_member(
+    fn remove_member(
         &self,
         workspace_id: &[u8],
         principal_kind: &str,
         principal_id: &[u8],
-    ) -> Result<(), StorageError>;
+    ) -> impl Future<Output = Result<(), StorageError>> + Send;
 
     /// Get a principal's role in a workspace.
-    async fn get_member_role(
+    fn get_member_role(
         &self,
         workspace_id: &[u8],
         principal_kind: &str,
         principal_id: &[u8],
-    ) -> Result<Option<String>, StorageError>;
+    ) -> impl Future<Output = Result<Option<String>, StorageError>> + Send;
 
     /// List members of a workspace.
-    async fn list_members(
+    fn list_members(
         &self,
         workspace_id: &[u8],
-    ) -> Result<Vec<WorkspaceMemberRow>, StorageError>;
+    ) -> impl Future<Output = Result<Vec<WorkspaceMemberRow>, StorageError>> + Send;
 }

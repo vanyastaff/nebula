@@ -1,6 +1,5 @@
 //! Postgres implementation of [`WorkspaceRepo`].
 
-use async_trait::async_trait;
 use sqlx::{Pool, Postgres, types::Json};
 
 use crate::{
@@ -56,7 +55,6 @@ fn tuple_to_row(t: WsTuple) -> WorkspaceRow {
 
 const SELECT_COLS: &str = "id, org_id, slug, display_name, description, created_at, created_by, is_default, settings, version, deleted_at";
 
-#[async_trait]
 impl WorkspaceRepo for PgWorkspaceRepo {
     async fn create(&self, ws: &WorkspaceRow) -> Result<(), StorageError> {
         sqlx::query(
