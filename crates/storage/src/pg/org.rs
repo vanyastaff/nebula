@@ -1,6 +1,5 @@
 //! Postgres implementation of [`OrgRepo`].
 
-use async_trait::async_trait;
 use sqlx::{Pool, Postgres, types::Json};
 
 use crate::{
@@ -55,7 +54,6 @@ fn tuple_to_row(t: OrgTuple) -> OrgRow {
 
 const SELECT_COLS: &str = "id, slug, display_name, created_at, created_by, plan, billing_email, settings, version, deleted_at";
 
-#[async_trait]
 impl OrgRepo for PgOrgRepo {
     async fn create(&self, org: &OrgRow) -> Result<(), StorageError> {
         sqlx::query(
