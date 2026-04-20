@@ -17,7 +17,7 @@ fn bench_schema_clone_memory(c: &mut Criterion) {
         b.iter(|| {
             let cloned = black_box(&schema).clone();
             black_box(cloned.len());
-        })
+        });
     });
 }
 

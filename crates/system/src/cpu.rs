@@ -428,7 +428,7 @@ pub mod affinity {
                 CPU_SET(cpu, &mut set);
             }
 
-            if sched_setaffinity(0, mem::size_of::<cpu_set_t>(), &set) != 0 {
+            if sched_setaffinity(0, size_of::<cpu_set_t>(), &raw const set) != 0 {
                 return Err(SystemError::platform_error(format!(
                     "Failed to set CPU affinity: {}",
                     std::io::Error::last_os_error()

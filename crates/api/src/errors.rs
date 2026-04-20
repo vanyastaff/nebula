@@ -259,7 +259,7 @@ fn flatten_validation_error(
 ) {
     let pointer = err
         .field_pointer()
-        .map(|p| p.into_owned())
+        .map(std::borrow::Cow::into_owned)
         .or_else(|| inherited_pointer.map(str::to_owned))
         .unwrap_or_else(|| "/".to_owned());
 
@@ -563,10 +563,7 @@ mod tests {
         let to = node_key!("b");
         let api_error = ApiError::InvalidWorkflowDefinition {
             detail: "1 error(s)".to_string(),
-            errors: vec![WorkflowError::DuplicateConnection {
-                from: from.clone(),
-                to: to.clone(),
-            }],
+            errors: vec![WorkflowError::DuplicateConnection { from, to }],
         };
         let (status, problem) = api_error.to_problem_details();
 

@@ -515,8 +515,7 @@ mod tests {
             let h = load.headroom();
             assert!(
                 (0.0..=1.0).contains(&h),
-                "headroom {} must be in [0.0, 1.0]",
-                h
+                "headroom {h} must be in [0.0, 1.0]"
             );
         }
 

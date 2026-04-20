@@ -5,7 +5,7 @@ use proc_macro::TokenStream;
 use quote::quote;
 use syn::{Data, DeriveInput, parse_macro_input};
 
-pub fn derive(input: TokenStream) -> TokenStream {
+pub(crate) fn derive(input: TokenStream) -> TokenStream {
     let input = parse_macro_input!(input as DeriveInput);
 
     match expand(input) {
@@ -37,7 +37,7 @@ fn expand(input: DeriveInput) -> syn::Result<proc_macro2::TokenStream> {
                 "Resource derive can only be used on structs",
             ));
         },
-    };
+    }
 
     let expanded = quote! {
         impl #impl_generics ::nebula_resource::Resource for #struct_name #ty_generics #where_clause {

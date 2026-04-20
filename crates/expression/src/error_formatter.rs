@@ -80,7 +80,7 @@ impl<'a> ErrorFormatter<'a> {
             // Add highlighting under the error position
             let padding = " ".repeat(line_num_width + 3); // " N | "
             let column_padding = " ".repeat(self.position.column.saturating_sub(1));
-            output.push_str(&format!("{}{}^\n", padding, column_padding));
+            output.push_str(&format!("{padding}{column_padding}^\n"));
         }
 
         // Show context after error
@@ -140,7 +140,7 @@ impl<'a> ErrorFormatter<'a> {
             let padding = " ".repeat(line_num_width + 3);
             let column_padding = " ".repeat(self.position.column.saturating_sub(1));
             let highlight = "^".repeat(length.max(1));
-            output.push_str(&format!("{}{}{}\n", padding, column_padding, highlight));
+            output.push_str(&format!("{padding}{column_padding}{highlight}\n"));
         }
 
         // Context after
@@ -176,7 +176,7 @@ pub fn format_template_error(
     };
 
     if let Some(expr) = expression {
-        format!("{}\nExpression: {}", formatted, expr)
+        format!("{formatted}\nExpression: {expr}")
     } else {
         formatted
     }
@@ -196,7 +196,7 @@ mod tests {
         assert!(output.contains("Error at line 2, column 8"));
         assert!(output.contains("Variable not found"));
         assert!(output.contains("Line 2 with error"));
-        assert!(output.contains("^"));
+        assert!(output.contains('^'));
     }
 
     #[test]

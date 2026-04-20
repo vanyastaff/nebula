@@ -351,7 +351,7 @@ mod tests {
         }
     }
 
-    impl crate::resource::Resource for DummyResource {
+    impl Resource for DummyResource {
         type Config = ();
         type Runtime = ();
         type Lease = u32;
@@ -455,7 +455,7 @@ mod tests {
     #[test]
     fn detach_guarded_returns_lease_and_skips_callback() {
         let released = Arc::new(AtomicBool::new(false));
-        let released_clone = released.clone();
+        let released_clone = released;
 
         let handle = ResourceHandle::<DummyResource>::guarded(
             10,

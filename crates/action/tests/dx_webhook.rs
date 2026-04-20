@@ -98,7 +98,7 @@ fn wrap_event(req: WebhookRequest) -> TriggerEvent {
 async fn webhook_adapter_start_stores_state() {
     let (webhook, activated, _) = make_webhook();
     let adapter = WebhookTriggerAdapter::new(webhook);
-    let (ctx, _, _) = TestContextBuilder::minimal().build_trigger();
+    let (ctx, ..) = TestContextBuilder::minimal().build_trigger();
 
     adapter.start(&ctx).await.unwrap();
     assert!(activated.load(Ordering::Relaxed));
@@ -108,7 +108,7 @@ async fn webhook_adapter_start_stores_state() {
 async fn webhook_adapter_stop_passes_stored_state() {
     let (webhook, _, deactivated) = make_webhook();
     let adapter = WebhookTriggerAdapter::new(webhook);
-    let (ctx, _, _) = TestContextBuilder::minimal().build_trigger();
+    let (ctx, ..) = TestContextBuilder::minimal().build_trigger();
 
     adapter.start(&ctx).await.unwrap();
     adapter.stop(&ctx).await.unwrap();
@@ -117,9 +117,9 @@ async fn webhook_adapter_stop_passes_stored_state() {
 
 #[tokio::test]
 async fn webhook_adapter_handle_event_emits_on_valid_secret() {
-    let (webhook, _, _) = make_webhook();
+    let (webhook, ..) = make_webhook();
     let adapter = WebhookTriggerAdapter::new(webhook);
-    let (ctx, _, _) = TestContextBuilder::minimal().build_trigger();
+    let (ctx, ..) = TestContextBuilder::minimal().build_trigger();
 
     adapter.start(&ctx).await.unwrap();
 
@@ -131,9 +131,9 @@ async fn webhook_adapter_handle_event_emits_on_valid_secret() {
 
 #[tokio::test]
 async fn webhook_adapter_handle_event_skips_on_bad_secret() {
-    let (webhook, _, _) = make_webhook();
+    let (webhook, ..) = make_webhook();
     let adapter = WebhookTriggerAdapter::new(webhook);
-    let (ctx, _, _) = TestContextBuilder::minimal().build_trigger();
+    let (ctx, ..) = TestContextBuilder::minimal().build_trigger();
 
     adapter.start(&ctx).await.unwrap();
 
@@ -144,16 +144,16 @@ async fn webhook_adapter_handle_event_skips_on_bad_secret() {
 
 #[tokio::test]
 async fn webhook_adapter_accepts_events() {
-    let (webhook, _, _) = make_webhook();
+    let (webhook, ..) = make_webhook();
     let adapter = WebhookTriggerAdapter::new(webhook);
     assert!(adapter.accepts_events());
 }
 
 #[tokio::test]
 async fn webhook_adapter_handle_event_before_start_fails() {
-    let (webhook, _, _) = make_webhook();
+    let (webhook, ..) = make_webhook();
     let adapter = WebhookTriggerAdapter::new(webhook);
-    let (ctx, _, _) = TestContextBuilder::minimal().build_trigger();
+    let (ctx, ..) = TestContextBuilder::minimal().build_trigger();
 
     let req =
         webhook_request_for_test(br#"{"action":"push"}"#, &[("X-Secret", "mysecret")]).unwrap();
@@ -228,7 +228,7 @@ fn make_counting() -> (CountingWebhook, Arc<AtomicUsize>, Arc<AtomicUsize>) {
 async fn webhook_adapter_rejects_double_start() {
     let (webhook, activate, deactivate) = make_counting();
     let adapter = WebhookTriggerAdapter::new(webhook);
-    let (ctx, _, _) = TestContextBuilder::minimal().build_trigger();
+    let (ctx, ..) = TestContextBuilder::minimal().build_trigger();
 
     adapter.start(&ctx).await.unwrap();
     assert_eq!(activate.load(Ordering::Relaxed), 1);
@@ -250,7 +250,7 @@ async fn webhook_adapter_rejects_double_start() {
 async fn webhook_adapter_start_stop_start_succeeds() {
     let (webhook, activate, deactivate) = make_counting();
     let adapter = WebhookTriggerAdapter::new(webhook);
-    let (ctx, _, _) = TestContextBuilder::minimal().build_trigger();
+    let (ctx, ..) = TestContextBuilder::minimal().build_trigger();
 
     adapter.start(&ctx).await.unwrap();
     adapter.stop(&ctx).await.unwrap();
@@ -303,7 +303,7 @@ async fn handle_request_error_sends_500_via_oneshot() {
             "handle_request always returns Err",
         ),
     });
-    let (ctx, _, _) = TestContextBuilder::minimal().build_trigger();
+    let (ctx, ..) = TestContextBuilder::minimal().build_trigger();
     adapter.start(&ctx).await.unwrap();
 
     let req = webhook_request_for_test(b"{}", &[]).unwrap();
@@ -372,7 +372,7 @@ async fn handle_request_cancelled_mid_flight_returns_cleanly() {
         ),
         entered: entered.clone(),
     }));
-    let (ctx, _, _) = TestContextBuilder::minimal().build_trigger();
+    let (ctx, ..) = TestContextBuilder::minimal().build_trigger();
     adapter.start(&ctx).await.unwrap();
 
     let req = webhook_request_for_test(b"{}", &[]).unwrap();
@@ -414,9 +414,9 @@ async fn handle_request_cancelled_mid_flight_returns_cleanly() {
 
 #[tokio::test]
 async fn webhook_adapter_records_health_success_on_emit() {
-    let (webhook, _, _) = make_webhook();
+    let (webhook, ..) = make_webhook();
     let adapter = WebhookTriggerAdapter::new(webhook);
-    let (ctx, _, _) = TestContextBuilder::minimal().build_trigger();
+    let (ctx, ..) = TestContextBuilder::minimal().build_trigger();
     adapter.start(&ctx).await.unwrap();
 
     let req = webhook_request_for_test(br#"{"ok":true}"#, &[("X-Secret", "mysecret")]).unwrap();
@@ -441,7 +441,7 @@ async fn webhook_adapter_records_health_error_on_handler_failure() {
             "error path health check",
         ),
     });
-    let (ctx, _, _) = TestContextBuilder::minimal().build_trigger();
+    let (ctx, ..) = TestContextBuilder::minimal().build_trigger();
     adapter.start(&ctx).await.unwrap();
 
     let req = webhook_request_for_test(b"{}", &[]).unwrap();
@@ -502,7 +502,7 @@ async fn in_flight_notify_wakes_stop() {
         ),
         finish: finish.clone(),
     }));
-    let (ctx, _, _) = TestContextBuilder::minimal().build_trigger();
+    let (ctx, ..) = TestContextBuilder::minimal().build_trigger();
     adapter.start(&ctx).await.unwrap();
 
     let req = webhook_request_for_test(b"{}", &[]).unwrap();

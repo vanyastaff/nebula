@@ -253,7 +253,7 @@ impl ReleaseQueue {
         tokio::spawn(async move {
             tokio::select! {
                 biased;
-                _ = cancel.cancelled() => {
+                () = cancel.cancelled() => {
                     // Shutdown signalled while we were waiting for capacity.
                     // The drain loop in worker_loop will not see us — record
                     // the drop and exit.
@@ -333,7 +333,7 @@ impl ReleaseQueue {
                         None => break, // channel closed
                     }
                 }
-                _ = cancel.cancelled() => {
+                () = cancel.cancelled() => {
                     // Drain remaining buffered tasks, then exit.
                     rx.close();
                     while let Some(factory) = rx.recv().await {
@@ -593,7 +593,7 @@ mod tests {
         queue.submit(move || {
             Box::pin(async move {
                 // Sleep longer than TASK_EXECUTION_TIMEOUT (30s).
-                tokio::time::sleep(Duration::from_secs(60)).await;
+                tokio::time::sleep(Duration::from_mins(1)).await;
                 c.store(true, Ordering::Relaxed);
             })
         });

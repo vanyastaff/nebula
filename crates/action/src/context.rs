@@ -310,7 +310,7 @@ pub trait CredentialContextExt {
     fn credential_by_id(
         &self,
         id: &str,
-    ) -> impl std::future::Future<Output = Result<CredentialSnapshot, ActionError>> + Send
+    ) -> impl Future<Output = Result<CredentialSnapshot, ActionError>> + Send
     where
         Self: Sync,
     {
@@ -338,7 +338,7 @@ pub trait CredentialContextExt {
     fn credential_typed<S: AuthScheme>(
         &self,
         id: &str,
-    ) -> impl std::future::Future<Output = Result<S, ActionError>> + Send
+    ) -> impl Future<Output = Result<S, ActionError>> + Send
     where
         Self: Sync,
     {
@@ -364,9 +364,7 @@ pub trait CredentialContextExt {
     ///
     /// - [`ActionError::Fatal`] if no credential of type `S` is configured
     /// - [`ActionError::Fatal`] if the stored scheme does not match `S`
-    fn credential<S>(
-        &self,
-    ) -> impl std::future::Future<Output = Result<CredentialGuard<S>, ActionError>> + Send
+    fn credential<S>(&self) -> impl Future<Output = Result<CredentialGuard<S>, ActionError>> + Send
     where
         S: AuthScheme + zeroize::Zeroize,
         Self: Sync,
@@ -387,7 +385,7 @@ pub trait CredentialContextExt {
     }
 
     /// Check whether a credential exists by id.
-    fn has_credential_id(&self, id: &str) -> impl std::future::Future<Output = bool> + Send
+    fn has_credential_id(&self, id: &str) -> impl Future<Output = bool> + Send
     where
         Self: Sync,
     {
@@ -619,7 +617,7 @@ mod tests {
         value: String,
     }
 
-    impl nebula_core::AuthScheme for ZeroizableToken {
+    impl AuthScheme for ZeroizableToken {
         fn pattern() -> nebula_core::AuthPattern {
             nebula_core::AuthPattern::SecretToken
         }

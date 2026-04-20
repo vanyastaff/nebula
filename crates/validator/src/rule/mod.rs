@@ -241,10 +241,10 @@ fn evaluate_predicate_via_rule_context(p: &Predicate, ctx: &dyn RuleContext) -> 
     match p {
         Predicate::Eq(_, v) => ctx.get(key).is_some_and(|x| x == v),
         Predicate::Ne(_, v) => ctx.get(key).is_none_or(|x| x != v),
-        Predicate::Gt(_, rhs) => number_cmp(ctx.get(key), rhs, |o| o.is_gt()),
-        Predicate::Gte(_, rhs) => number_cmp(ctx.get(key), rhs, |o| o.is_ge()),
-        Predicate::Lt(_, rhs) => number_cmp(ctx.get(key), rhs, |o| o.is_lt()),
-        Predicate::Lte(_, rhs) => number_cmp(ctx.get(key), rhs, |o| o.is_le()),
+        Predicate::Gt(_, rhs) => number_cmp(ctx.get(key), rhs, std::cmp::Ordering::is_gt),
+        Predicate::Gte(_, rhs) => number_cmp(ctx.get(key), rhs, std::cmp::Ordering::is_ge),
+        Predicate::Lt(_, rhs) => number_cmp(ctx.get(key), rhs, std::cmp::Ordering::is_lt),
+        Predicate::Lte(_, rhs) => number_cmp(ctx.get(key), rhs, std::cmp::Ordering::is_le),
         Predicate::IsTrue(_) => ctx.get(key).and_then(serde_json::Value::as_bool) == Some(true),
         Predicate::IsFalse(_) => ctx.get(key).and_then(serde_json::Value::as_bool) == Some(false),
         Predicate::Set(_) => ctx.get(key).is_some_and(|v| {
@@ -292,19 +292,19 @@ pub enum RuleKind {
 
 fn predicate_code(p: &Predicate) -> &'static str {
     match p {
-        Predicate::Eq(_, _) => "eq_failed",
-        Predicate::Ne(_, _) => "ne_failed",
-        Predicate::Gt(_, _) => "gt_failed",
-        Predicate::Gte(_, _) => "gte_failed",
-        Predicate::Lt(_, _) => "lt_failed",
-        Predicate::Lte(_, _) => "lte_failed",
+        Predicate::Eq(..) => "eq_failed",
+        Predicate::Ne(..) => "ne_failed",
+        Predicate::Gt(..) => "gt_failed",
+        Predicate::Gte(..) => "gte_failed",
+        Predicate::Lt(..) => "lt_failed",
+        Predicate::Lte(..) => "lte_failed",
         Predicate::IsTrue(_) => "is_true_failed",
         Predicate::IsFalse(_) => "is_false_failed",
         Predicate::Set(_) => "set_failed",
         Predicate::Empty(_) => "empty_failed",
-        Predicate::Contains(_, _) => "contains_failed",
-        Predicate::Matches(_, _) => "matches_failed",
-        Predicate::In(_, _) => "in_failed",
+        Predicate::Contains(..) => "contains_failed",
+        Predicate::Matches(..) => "matches_failed",
+        Predicate::In(..) => "in_failed",
     }
 }
 
@@ -335,7 +335,7 @@ fn predicate_error(p: &Predicate) -> ValidationError {
         | Predicate::IsFalse(_)
         | Predicate::Set(_)
         | Predicate::Empty(_)
-        | Predicate::Matches(_, _) => err,
+        | Predicate::Matches(..) => err,
     }
 }
 

@@ -383,7 +383,7 @@ mod tests {
         let key = FieldKey::new("user").unwrap();
         let email = FieldKey::new("email").unwrap();
         vs.set(
-            key.clone(),
+            key,
             FieldValue::Object(indexmap::indexmap! { email => FieldValue::Literal(json!("a@b")) }),
         );
         let p = FieldPath::parse("user.email").unwrap();

@@ -234,7 +234,7 @@ fn verify_hmac_sha256_with_timestamp_stripe_scheme() {
         secret,
         "Stripe-Signature",
         "Stripe-Ts",
-        Duration::from_secs(300),
+        Duration::from_mins(5),
         |t, b| format!("{t}.{}", std::str::from_utf8(b).unwrap()).into_bytes(),
     )
     .unwrap();
@@ -245,7 +245,7 @@ fn verify_hmac_sha256_with_timestamp_stripe_scheme() {
 fn verify_hmac_sha256_with_timestamp_slack_scheme() {
     let secret = b"slack_signing_secret";
     let ts = 1_700_000_000u64;
-    let body = br#"payload=%7B%22type%22%3A%22event%22%7D"#;
+    let body = br"payload=%7B%22type%22%3A%22event%22%7D";
     // Slack canonical form: "v0:{ts}:{body}"
     let canonical = format!("v0:{ts}:{}", std::str::from_utf8(body).unwrap());
     let sig = hex::encode(hmac_sha256_compute(secret, canonical.as_bytes()));
@@ -264,7 +264,7 @@ fn verify_hmac_sha256_with_timestamp_slack_scheme() {
         secret,
         "X-Slack-Signature",
         "X-Slack-Request-Timestamp",
-        Duration::from_secs(300),
+        Duration::from_mins(5),
         |t, b| format!("v0:{t}:{}", std::str::from_utf8(b).unwrap()).into_bytes(),
     )
     .unwrap();
@@ -288,7 +288,7 @@ fn verify_hmac_sha256_with_timestamp_rejects_old_timestamp() {
         secret,
         "Sig",
         "Ts",
-        Duration::from_secs(300), // 5 min tolerance
+        Duration::from_mins(5), // 5 min tolerance
         |t, b| format!("{t}.{}", std::str::from_utf8(b).unwrap()).into_bytes(),
     )
     .unwrap();
@@ -314,7 +314,7 @@ fn verify_hmac_sha256_with_timestamp_rejects_future_timestamp() {
         secret,
         "Sig",
         "Ts",
-        Duration::from_secs(3600), // huge tolerance for past; forward is capped
+        Duration::from_hours(1), // huge tolerance for past; forward is capped
         |t, b| format!("{t}.{}", std::str::from_utf8(b).unwrap()).into_bytes(),
     )
     .unwrap();
@@ -337,7 +337,7 @@ fn verify_hmac_sha256_with_timestamp_rejects_non_numeric_ts() {
         b"k",
         "Sig",
         "Ts",
-        Duration::from_secs(300),
+        Duration::from_mins(5),
         |t, b| format!("{t}.{}", std::str::from_utf8(b).unwrap()).into_bytes(),
     )
     .unwrap();
@@ -356,7 +356,7 @@ fn verify_hmac_sha256_with_timestamp_empty_secret_is_error() {
         b"",
         "Sig",
         "Ts",
-        Duration::from_secs(300),
+        Duration::from_mins(5),
         |t, b| format!("{t}.{}", std::str::from_utf8(b).unwrap()).into_bytes(),
     )
     .unwrap_err();
@@ -379,7 +379,7 @@ fn verify_hmac_sha256_with_timestamp_rejects_multi_valued_ts() {
         b"k",
         "Sig",
         "Ts",
-        Duration::from_secs(300),
+        Duration::from_mins(5),
         |t, b| format!("{t}.{}", std::str::from_utf8(b).unwrap()).into_bytes(),
     )
     .unwrap();

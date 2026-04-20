@@ -203,7 +203,7 @@ fn test_high_frequency_events() {
     // Emit 1000 events rapidly
     for i in 0..1000 {
         let event = TestEvent {
-            name: format!("event_{}", i),
+            name: format!("event_{i}"),
         };
         emit_event(&event);
     }
@@ -272,7 +272,7 @@ impl ObservabilityEvent for TestEvent {
 struct EmptyEvent;
 
 impl ObservabilityEvent for EmptyEvent {
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         ""
     }
 }

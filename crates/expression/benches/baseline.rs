@@ -16,17 +16,17 @@ fn benchmark_template_parse(c: &mut Criterion) {
 
     // Simple template
     group.bench_function("simple", |b| {
-        b.iter(|| Template::new(black_box("Hello {{ $input }}!")))
+        b.iter(|| Template::new(black_box("Hello {{ $input }}!")));
     });
 
     // Multiple expressions
     group.bench_function("multiple_expressions", |b| {
-        b.iter(|| Template::new(black_box("{{ $a }} + {{ $b }} = {{ $a + $b }}")))
+        b.iter(|| Template::new(black_box("{{ $a }} + {{ $b }} = {{ $a + $b }}")));
     });
 
     // Complex template
     group.bench_function("complex", |b| {
-        let template = r#"
+        let template = r"
             <html>
                 <title>{{ $workflow.name }}</title>
                 <body>
@@ -35,8 +35,8 @@ fn benchmark_template_parse(c: &mut Criterion) {
                     <span>{{ $node.data.count * 2 }}</span>
                 </body>
             </html>
-        "#;
-        b.iter(|| Template::new(black_box(template)))
+        ";
+        b.iter(|| Template::new(black_box(template)));
     });
 
     group.finish();
@@ -51,21 +51,21 @@ fn benchmark_template_render(c: &mut Criterion) {
 
     let simple = Template::new("Hello {{ $input }}!").unwrap();
     let complex = Template::new(
-        r#"
+        r"
         <html>
             <title>{{ $input | uppercase() }}</title>
             <p>Length: {{ length($input) }}</p>
         </html>
-    "#,
+    ",
     )
     .unwrap();
 
     group.bench_function("simple", |b| {
-        b.iter(|| simple.render(black_box(&engine), black_box(&context)))
+        b.iter(|| simple.render(black_box(&engine), black_box(&context)));
     });
 
     group.bench_function("complex", |b| {
-        b.iter(|| complex.render(black_box(&engine), black_box(&context)))
+        b.iter(|| complex.render(black_box(&engine), black_box(&context)));
     });
 
     group.finish();
@@ -99,7 +99,7 @@ fn benchmark_evaluate_no_cache(c: &mut Criterion) {
 
     for (name, expr) in test_cases {
         group.bench_with_input(BenchmarkId::from_parameter(name), expr, |b, expr| {
-            b.iter(|| engine.evaluate(black_box(expr), black_box(&context)))
+            b.iter(|| engine.evaluate(black_box(expr), black_box(&context)));
         });
     }
 
@@ -118,7 +118,7 @@ fn benchmark_evaluate_with_cache(c: &mut Criterion) {
     let _ = engine.evaluate(expr, &context);
 
     group.bench_function("cache_hit", |b| {
-        b.iter(|| engine.evaluate(black_box(expr), black_box(&context)))
+        b.iter(|| engine.evaluate(black_box(expr), black_box(&context)));
     });
 
     // Cache miss
@@ -128,7 +128,7 @@ fn benchmark_evaluate_with_cache(c: &mut Criterion) {
             counter += 1;
             let expr = format!("{} + {}", counter, counter + 1);
             engine.evaluate(black_box(&expr), black_box(&context))
-        })
+        });
     });
 
     group.finish();
@@ -144,7 +144,7 @@ fn benchmark_context_operations(c: &mut Criterion) {
     // Create context with many variables
     let mut context = EvaluationContext::new();
     for i in 0..100 {
-        context.set_execution_var(format!("var_{}", i), Value::Number((i as i64).into()));
+        context.set_execution_var(format!("var_{i}"), Value::Number((i as i64).into()));
     }
 
     // Clone benchmark
@@ -152,7 +152,7 @@ fn benchmark_context_operations(c: &mut Criterion) {
 
     // Lookup benchmark
     group.bench_function("lookup", |b| {
-        b.iter(|| context.get_execution_var(black_box("var_50")))
+        b.iter(|| context.get_execution_var(black_box("var_50")));
     });
 
     group.finish();
@@ -182,12 +182,12 @@ fn benchmark_concurrent_access(c: &mut Criterion) {
     // Single thread baseline
     group.bench_function("1_thread", |b| {
         let context = EvaluationContext::new();
-        b.iter(|| engine.evaluate(black_box(expr), black_box(&context)))
+        b.iter(|| engine.evaluate(black_box(expr), black_box(&context)));
     });
 
     // Multi-threaded
     for num_threads in [2, 4, 8] {
-        group.bench_function(format!("{}_threads", num_threads), |b| {
+        group.bench_function(format!("{num_threads}_threads"), |b| {
             b.iter(|| {
                 let handles: Vec<_> = (0..num_threads)
                     .map(|_| {
@@ -204,7 +204,7 @@ fn benchmark_concurrent_access(c: &mut Criterion) {
                 for handle in handles {
                     handle.join().unwrap();
                 }
-            })
+            });
         });
     }
 
@@ -219,7 +219,7 @@ fn benchmark_throughput(c: &mut Criterion) {
     let context = EvaluationContext::new();
 
     group.bench_function("ops_per_sec", |b| {
-        b.iter(|| engine.evaluate(black_box("2 + 2"), black_box(&context)))
+        b.iter(|| engine.evaluate(black_box("2 + 2"), black_box(&context)));
     });
 
     group.finish();
@@ -251,7 +251,7 @@ fn benchmark_builtins(c: &mut Criterion) {
 
     for (name, expr) in test_cases {
         group.bench_with_input(BenchmarkId::from_parameter(name), expr, |b, expr| {
-            b.iter(|| engine.evaluate(black_box(expr), black_box(&context)))
+            b.iter(|| engine.evaluate(black_box(expr), black_box(&context)));
         });
     }
 

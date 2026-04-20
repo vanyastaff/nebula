@@ -77,7 +77,7 @@ fn closure_nested_object_holds_children() {
     let schema = Schema::builder()
         .object("user", |o| {
             o.label("User")
-                .string("name", |s| s.required())
+                .string("name", nebula_schema::StringBuilder::required)
                 .number("age", |n| n.integer().min(0_i64))
         })
         .build()
@@ -130,7 +130,7 @@ fn builder_full_example_from_spec() {
         .integer("timeout", |n| {
             n.label("Timeout (s)").min(1_i64).max(300_i64)
         })
-        .boolean("verbose", |b| b.no_expression())
+        .boolean("verbose", nebula_schema::BooleanBuilder::no_expression)
         .build()
         .unwrap();
 
@@ -145,7 +145,7 @@ fn builder_full_example_from_spec() {
 fn group_propagates_visible_when_to_children() {
     let rule = eq_rule("method", "POST");
     let schema = Schema::builder()
-        .string("method", |s| s.required())
+        .string("method", nebula_schema::StringBuilder::required)
         .group("body_section", |g| {
             g.visible_when(rule.clone())
                 .string("body", |s| s.widget(StringWidget::Multiline))
@@ -245,7 +245,7 @@ fn group_required_when_composes_with_always_and_never_children() {
         // `Always` branch).
         .group("details", |g| {
             g.required_when(rule.clone())
-                .string("always_required", |s| s.required())
+                .string("always_required", nebula_schema::StringBuilder::required)
                 .string("optional_by_default", |s| s)
         })
         .build()

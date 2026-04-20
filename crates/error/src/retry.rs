@@ -90,7 +90,7 @@ impl fmt::Display for RetryHint {
         match (self.after, self.max_attempts) {
             (Some(d), Some(n)) => write!(f, "retry after {}ms (max {} attempts)", d.as_millis(), n),
             (Some(d), None) => write!(f, "retry after {}ms", d.as_millis()),
-            (None, Some(n)) => write!(f, "retry (max {} attempts)", n),
+            (None, Some(n)) => write!(f, "retry (max {n} attempts)"),
             (None, None) => write!(f, "retry"),
         }
     }

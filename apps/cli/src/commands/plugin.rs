@@ -5,7 +5,7 @@ use nebula_sandbox::{capabilities::PluginCapabilities, discovery};
 use crate::plugins;
 
 /// Execute the `plugin list` command.
-pub async fn list() {
+pub(crate) async fn list() {
     let dirs = plugins::plugin_directories();
     let dir_str = if dirs.is_empty() {
         "(no plugin directories found)".to_owned()

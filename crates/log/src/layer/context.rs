@@ -29,7 +29,7 @@ mod storage {
 
     #[inline]
     pub fn current() -> Arc<Context> {
-        CTX.try_with(|c| c.clone())
+        CTX.try_with(Clone::clone)
             .unwrap_or_else(|_| Arc::new(Context::default()))
     }
 
@@ -151,7 +151,7 @@ impl Context {
     /// The context survives across `.await` points, even in multi-thread
     /// Tokio runtimes with work-stealing.
     #[cfg(feature = "async")]
-    pub async fn scope<F: std::future::Future>(self, f: F) -> F::Output {
+    pub async fn scope<F: Future>(self, f: F) -> F::Output {
         storage::with_ctx(Arc::new(self), f).await
     }
 }

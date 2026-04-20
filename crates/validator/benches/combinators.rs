@@ -10,7 +10,10 @@ use std::hint::black_box;
 use criterion::{Criterion, criterion_group, criterion_main};
 use nebula_validator::{
     foundation::{Validate, ValidateExt},
-    validators::*,
+    validators::{
+        alphabetic, alphanumeric, contains, email, ends_with, exact_length, max_length, min_length,
+        not_empty, starts_with,
+    },
 };
 
 // ============================================================================
@@ -23,21 +26,21 @@ fn bench_and_combinator(c: &mut Criterion) {
     // Two validators
     let validator = min_length(5).and(max_length(20));
     group.bench_function("two_validators_success", |b| {
-        b.iter(|| validator.validate(black_box("hello")))
+        b.iter(|| validator.validate(black_box("hello")));
     });
 
     group.bench_function("two_validators_fail_first", |b| {
-        b.iter(|| validator.validate(black_box("hi")))
+        b.iter(|| validator.validate(black_box("hi")));
     });
 
     group.bench_function("two_validators_fail_second", |b| {
-        b.iter(|| validator.validate(black_box("verylongstringthatexceedslimit")))
+        b.iter(|| validator.validate(black_box("verylongstringthatexceedslimit")));
     });
 
     // Three validators
     let validator3 = min_length(5).and(max_length(20)).and(alphanumeric());
     group.bench_function("three_validators_success", |b| {
-        b.iter(|| validator3.validate(black_box("hello123")))
+        b.iter(|| validator3.validate(black_box("hello123")));
     });
 
     // Five validators
@@ -47,7 +50,7 @@ fn bench_and_combinator(c: &mut Criterion) {
         .and(starts_with("h"))
         .and(ends_with("o"));
     group.bench_function("five_validators_success", |b| {
-        b.iter(|| validator5.validate(black_box("hello")))
+        b.iter(|| validator5.validate(black_box("hello")));
     });
 
     group.finish();
@@ -59,15 +62,15 @@ fn bench_or_combinator(c: &mut Criterion) {
     let validator = exact_length(5).or(exact_length(10));
 
     group.bench_function("success_first", |b| {
-        b.iter(|| validator.validate(black_box("hello"))) // 5 chars
+        b.iter(|| validator.validate(black_box("hello"))); // 5 chars
     });
 
     group.bench_function("success_second", |b| {
-        b.iter(|| validator.validate(black_box("helloworld"))) // 10 chars
+        b.iter(|| validator.validate(black_box("helloworld"))); // 10 chars
     });
 
     group.bench_function("both_fail", |b| {
-        b.iter(|| validator.validate(black_box("hi"))) // 2 chars
+        b.iter(|| validator.validate(black_box("hi"))); // 2 chars
     });
 
     // Multiple options
@@ -77,15 +80,15 @@ fn bench_or_combinator(c: &mut Criterion) {
         .or(exact_length(20));
 
     group.bench_function("four_options_success_first", |b| {
-        b.iter(|| validator_multi.validate(black_box("hello")))
+        b.iter(|| validator_multi.validate(black_box("hello")));
     });
 
     group.bench_function("four_options_success_last", |b| {
-        b.iter(|| validator_multi.validate(black_box(&*"a".repeat(20))))
+        b.iter(|| validator_multi.validate(black_box(&*"a".repeat(20))));
     });
 
     group.bench_function("four_options_all_fail", |b| {
-        b.iter(|| validator_multi.validate(black_box("hi")))
+        b.iter(|| validator_multi.validate(black_box("hi")));
     });
 
     group.finish();
@@ -97,11 +100,11 @@ fn bench_not_combinator(c: &mut Criterion) {
     let validator = contains("admin").not();
 
     group.bench_function("success_no_match", |b| {
-        b.iter(|| validator.validate(black_box("hello world")))
+        b.iter(|| validator.validate(black_box("hello world")));
     });
 
     group.bench_function("fail_matches", |b| {
-        b.iter(|| validator.validate(black_box("admin user")))
+        b.iter(|| validator.validate(black_box("admin user")));
     });
 
     group.finish();
@@ -117,15 +120,15 @@ fn bench_when_combinator(c: &mut Criterion) {
     let validator = min_length(10).when(|s: &str| s.starts_with("long"));
 
     group.bench_function("condition_true_valid", |b| {
-        b.iter(|| validator.validate(black_box("longstring123")))
+        b.iter(|| validator.validate(black_box("longstring123")));
     });
 
     group.bench_function("condition_true_invalid", |b| {
-        b.iter(|| validator.validate(black_box("longstr")))
+        b.iter(|| validator.validate(black_box("longstr")));
     });
 
     group.bench_function("condition_false_skipped", |b| {
-        b.iter(|| validator.validate(black_box("short")))
+        b.iter(|| validator.validate(black_box("short")));
     });
 
     group.finish();
@@ -141,13 +144,13 @@ fn bench_composition_depth(c: &mut Criterion) {
     // Depth 1
     let depth1 = min_length(5);
     group.bench_function("depth_1", |b| {
-        b.iter(|| depth1.validate(black_box("hello")))
+        b.iter(|| depth1.validate(black_box("hello")));
     });
 
     // Depth 2
     let depth2 = min_length(5).and(max_length(20));
     group.bench_function("depth_2", |b| {
-        b.iter(|| depth2.validate(black_box("hello")))
+        b.iter(|| depth2.validate(black_box("hello")));
     });
 
     // Depth 5
@@ -157,7 +160,7 @@ fn bench_composition_depth(c: &mut Criterion) {
         .and(starts_with("h"))
         .and(ends_with("o"));
     group.bench_function("depth_5", |b| {
-        b.iter(|| depth5.validate(black_box("hello")))
+        b.iter(|| depth5.validate(black_box("hello")));
     });
 
     // Depth 10
@@ -172,7 +175,7 @@ fn bench_composition_depth(c: &mut Criterion) {
         .and(min_length(4))
         .and(max_length(25));
     group.bench_function("depth_10", |b| {
-        b.iter(|| depth10.validate(black_box("hello")))
+        b.iter(|| depth10.validate(black_box("hello")));
     });
 
     group.finish();
@@ -188,11 +191,11 @@ fn bench_mixed_combinators(c: &mut Criterion) {
     // AND + OR
     let and_or = min_length(5).and(max_length(20)).or(exact_length(3));
     group.bench_function("and_or_success_left", |b| {
-        b.iter(|| and_or.validate(black_box("hello")))
+        b.iter(|| and_or.validate(black_box("hello")));
     });
 
     group.bench_function("and_or_success_right", |b| {
-        b.iter(|| and_or.validate(black_box("abc")))
+        b.iter(|| and_or.validate(black_box("abc")));
     });
 
     // Complex: (A AND B) OR (C AND D)
@@ -200,15 +203,15 @@ fn bench_mixed_combinators(c: &mut Criterion) {
         .and(alphanumeric())
         .or(exact_length(3).and(alphabetic()));
     group.bench_function("complex_success_left", |b| {
-        b.iter(|| complex.validate(black_box("hello123")))
+        b.iter(|| complex.validate(black_box("hello123")));
     });
 
     group.bench_function("complex_success_right", |b| {
-        b.iter(|| complex.validate(black_box("abc")))
+        b.iter(|| complex.validate(black_box("abc")));
     });
 
     group.bench_function("complex_fail", |b| {
-        b.iter(|| complex.validate(black_box("ab")))
+        b.iter(|| complex.validate(black_box("ab")));
     });
 
     group.finish();
@@ -225,17 +228,17 @@ fn bench_error_paths(c: &mut Criterion) {
 
     // Success path (no errors)
     group.bench_function("success_no_error", |b| {
-        b.iter(|| validator.validate(black_box("hello123")))
+        b.iter(|| validator.validate(black_box("hello123")));
     });
 
     // Fail fast (first validator fails)
     group.bench_function("fail_fast", |b| {
-        b.iter(|| validator.validate(black_box("hi")))
+        b.iter(|| validator.validate(black_box("hi")));
     });
 
     // Fail late (last validator fails)
     group.bench_function("fail_late", |b| {
-        b.iter(|| validator.validate(black_box("hello!")))
+        b.iter(|| validator.validate(black_box("hello!")));
     });
 
     group.finish();
@@ -258,15 +261,15 @@ fn bench_form_validation(c: &mut Criterion) {
     let password = min_length(8).and(max_length(128));
 
     group.bench_function("username_valid", |b| {
-        b.iter(|| username.validate(black_box("alice123")))
+        b.iter(|| username.validate(black_box("alice123")));
     });
 
     group.bench_function("email_valid", |b| {
-        b.iter(|| email_val.validate(black_box("alice@example.com")))
+        b.iter(|| email_val.validate(black_box("alice@example.com")));
     });
 
     group.bench_function("password_valid", |b| {
-        b.iter(|| password.validate(black_box("SecurePass123!")))
+        b.iter(|| password.validate(black_box("SecurePass123!")));
     });
 
     // Simulate full form validation
@@ -276,7 +279,7 @@ fn bench_form_validation(c: &mut Criterion) {
             let e = email_val.validate(black_box("alice@example.com"));
             let p = password.validate(black_box("SecurePass123!"));
             (u.is_ok(), e.is_ok(), p.is_ok())
-        })
+        });
     });
 
     group.bench_function("full_form_one_invalid", |b| {
@@ -285,7 +288,7 @@ fn bench_form_validation(c: &mut Criterion) {
             let e = email_val.validate(black_box("alice@example.com"));
             let p = password.validate(black_box("SecurePass123!"));
             (u.is_ok(), e.is_ok(), p.is_ok())
-        })
+        });
     });
 
     group.finish();

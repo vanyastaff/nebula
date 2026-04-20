@@ -231,7 +231,7 @@ mod tests {
     #[tokio::test]
     async fn allows_declared_key_and_delegates_to_resolver() {
         let allowed_keys: HashSet<String> =
-            ["my_credential"].iter().map(|s| s.to_string()).collect();
+            ["my_credential"].iter().map(ToString::to_string).collect();
 
         let accessor = EngineCredentialAccessor::new(
             allowed_keys,

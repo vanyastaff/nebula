@@ -54,8 +54,7 @@ where
             .headers()
             .get(X_REQUEST_ID)
             .and_then(|h| h.to_str().ok())
-            .map(|s| s.to_string())
-            .unwrap_or_else(|| Uuid::new_v4().to_string());
+            .map_or_else(|| Uuid::new_v4().to_string(), ToString::to_string);
 
         // Insert into extensions for handlers
         request

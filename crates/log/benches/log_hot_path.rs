@@ -45,7 +45,7 @@ impl BenchEvent {
 }
 
 impl ObservabilityEvent for BenchEvent {
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "bench.operation"
     }
 

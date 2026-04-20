@@ -21,7 +21,7 @@ use crate::{
 const MAX_TEMPLATE_EXPRESSIONS: usize = 1000;
 
 /// A template part - either static text or an expression to evaluate
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TemplatePart {
     /// Static text that doesn't need evaluation
     Static {
@@ -276,8 +276,7 @@ impl Template {
                         .count();
                     if expr_count > MAX_TEMPLATE_EXPRESSIONS {
                         return Err(ExpressionError::expression_parse_error(format!(
-                            "Template contains too many expressions: {} (max {})",
-                            expr_count, MAX_TEMPLATE_EXPRESSIONS
+                            "Template contains too many expressions: {expr_count} (max {MAX_TEMPLATE_EXPRESSIONS})"
                         )));
                     }
 
@@ -495,9 +494,9 @@ mod tests {
         context.set_input(Value::String("Alice".to_string()));
 
         let template = Template::new(
-            r#"Line 1: {{ $input }}
+            r"Line 1: {{ $input }}
 Line 2: {{ $input | uppercase() }}
-Line 3: Done"#,
+Line 3: Done",
         )
         .unwrap();
 

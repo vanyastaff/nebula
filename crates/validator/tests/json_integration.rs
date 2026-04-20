@@ -316,7 +316,7 @@ fn when_combinator_json() {
 
     // Validate email only when notify=true
     let v = when(json_field("/email", email()), |v: &Value| {
-        v.get("notify").and_then(|n| n.as_bool()).unwrap_or(false)
+        v.get("notify").and_then(Value::as_bool).unwrap_or(false)
     });
 
     // notify=true, invalid email → fail
@@ -428,7 +428,7 @@ fn multiple_field_errors() {
     });
 
     // Validate each field independently and collect errors
-    let validators: Vec<Box<dyn Validate<serde_json::Value>>> = vec![
+    let validators: Vec<Box<dyn Validate<Value>>> = vec![
         Box::new(json_field("/name", min_length(1))),
         Box::new(json_field("/email", email())),
     ];

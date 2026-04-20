@@ -66,7 +66,7 @@ pub enum PluginError {
     /// Plugin key validation failed.
     #[classify(category = "validation", code = "PLUGIN:INVALID_KEY")]
     #[error("invalid plugin key: {0}")]
-    InvalidKey(<nebula_core::PluginKey as std::str::FromStr>::Err),
+    InvalidKey(<PluginKey as std::str::FromStr>::Err),
 }
 
 impl PartialEq for PluginError {

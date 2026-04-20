@@ -336,12 +336,11 @@ async fn webhook_handler(
     }
 
     // 4. Route lookup.
-    let entry = match transport.inner.routing.lookup(&trigger_uuid, &nonce) {
-        Some(e) => e,
-        None => {
-            debug!(uuid = %trigger_uuid, "no webhook registered for path");
-            return (StatusCode::NOT_FOUND, "").into_response();
-        },
+    let entry = if let Some(e) = transport.inner.routing.lookup(&trigger_uuid, &nonce) {
+        e
+    } else {
+        debug!(uuid = %trigger_uuid, "no webhook registered for path");
+        return (StatusCode::NOT_FOUND, "").into_response();
     };
 
     // 5. Construct WebhookRequest. Limits are already enforced by
@@ -400,12 +399,11 @@ async fn webhook_handler(
             // been used by the adapter to record health. The HTTP
             // response comes through the oneshot the adapter sent to
             // right before returning Ok.
-            match rx.await {
-                Ok(http) => http_response_to_axum(http),
-                Err(_) => {
-                    warn!("webhook handler returned Ok but oneshot sender was dropped");
-                    (StatusCode::INTERNAL_SERVER_ERROR, "").into_response()
-                },
+            if let Ok(http) = rx.await {
+                http_response_to_axum(http)
+            } else {
+                warn!("webhook handler returned Ok but oneshot sender was dropped");
+                (StatusCode::INTERNAL_SERVER_ERROR, "").into_response()
             }
         },
         Ok(Err(e)) => {

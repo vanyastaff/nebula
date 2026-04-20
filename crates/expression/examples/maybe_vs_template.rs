@@ -87,10 +87,10 @@ fn main() {
     let debug = config.debug.resolve_as_bool(&engine, &context).unwrap();
 
     println!("Resolved values:");
-    println!("  timeout: {}", timeout);
-    println!("  retry_count: {}", retry_count);
-    println!("  base_url: {}", base_url);
-    println!("  debug: {}\n", debug);
+    println!("  timeout: {timeout}");
+    println!("  retry_count: {retry_count}");
+    println!("  base_url: {base_url}");
+    println!("  debug: {debug}\n");
 
     // Dynamic configuration with expressions
     let dynamic_config = r#"{
@@ -123,10 +123,10 @@ fn main() {
     let debug = config.debug.resolve_as_bool(&engine, &context).unwrap();
 
     println!("Resolved values:");
-    println!("  timeout: {} (computed from $input * 1000)", timeout);
-    println!("  retry_count: {} (from $input)", retry_count);
-    println!("  base_url: {} (computed from env)", base_url);
-    println!("  debug: {} (env is production, not development)\n", debug);
+    println!("  timeout: {timeout} (computed from $input * 1000)");
+    println!("  retry_count: {retry_count} (from $input)");
+    println!("  base_url: {base_url} (computed from env)");
+    println!("  debug: {debug} (env is production, not development)\n");
 
     // Example 2: MaybeTemplate for text templates
     println!("=== Example 2: MaybeTemplate for Text Templates ===\n");
@@ -150,9 +150,9 @@ fn main() {
     let from = email.from.resolve_as_string(&engine, &context).unwrap();
 
     println!("Rendered email:");
-    println!("  From: {}", from);
-    println!("  Subject: {}", subject);
-    println!("  Body: {}\n", body);
+    println!("  From: {from}");
+    println!("  Subject: {subject}");
+    println!("  Body: {body}\n");
 
     // Dynamic email template with multiple expressions
     let dynamic_email = r#"{
@@ -173,14 +173,14 @@ fn main() {
     let from = email.from.resolve_as_string(&engine, &context).unwrap();
 
     println!("Rendered email:");
-    println!("  From: {}", from);
-    println!("  Subject: {}", subject);
-    println!("  Body:\n{}\n", body);
+    println!("  From: {from}");
+    println!("  Subject: {subject}");
+    println!("  Body:\n{body}\n");
 
     // Example 3: Using Template directly for advanced features
     println!("=== Example 3: Template for Advanced Features ===\n");
 
-    let template_str = r#"<!DOCTYPE html>
+    let template_str = r"<!DOCTYPE html>
 <html>
 <head>
     <title>Order #{{ $execution.order_id }}</title>
@@ -190,7 +190,7 @@ fn main() {
     <p>Your order total is: ${{ $execution.total }}</p>
     <p>Environment: {{ $execution.env }}</p>
 </body>
-</html>"#;
+</html>";
 
     let template = Template::new(template_str).unwrap();
 
@@ -204,7 +204,7 @@ fn main() {
     println!();
 
     let result = template.render(&engine, &context).unwrap();
-    println!("Rendered HTML:\n{}\n", result);
+    println!("Rendered HTML:\n{result}\n");
 
     // Example 4: Combining both in a real-world scenario
     println!("=== Example 4: Real-World Scenario - HTTP Request ===\n");
@@ -245,10 +245,10 @@ fn main() {
     let body = request.body.resolve(&engine, &context).unwrap();
 
     println!("Resolved HTTP Request:");
-    println!("  URL: {}", url);
-    println!("  Method: {}", method);
-    println!("  Timeout: {} ms", timeout);
-    println!("  Body: {}\n", body);
+    println!("  URL: {url}");
+    println!("  Method: {method}");
+    println!("  Timeout: {timeout} ms");
+    println!("  Body: {body}\n");
 
     // Example 5: When to use which
     println!("=== Example 5: Decision Guide ===\n");

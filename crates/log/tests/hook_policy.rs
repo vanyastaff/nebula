@@ -16,7 +16,7 @@ static TEST_LOCK: LazyLock<Mutex<()>> = LazyLock::new(|| Mutex::new(()));
 struct SlowEvent;
 
 impl ObservabilityEvent for SlowEvent {
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "slow_event"
     }
 }

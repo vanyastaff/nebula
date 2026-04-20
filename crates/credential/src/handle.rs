@@ -90,7 +90,7 @@ mod tests {
         let handle = CredentialHandle::new(token, "cred-1");
 
         let snapshot = handle.snapshot();
-        let value = snapshot.token().expose_secret(|s| s.to_owned());
+        let value = snapshot.token().expose_secret(ToOwned::to_owned);
         assert_eq!(value, "abc");
     }
 
@@ -112,8 +112,8 @@ mod tests {
 
         // Replacing on one does not affect the other (independent ArcSwap)
         handle.replace(SecretToken::new(SecretString::new("updated")));
-        let orig_val = handle.snapshot().token().expose_secret(|s| s.to_owned());
-        let clone_val = cloned.snapshot().token().expose_secret(|s| s.to_owned());
+        let orig_val = handle.snapshot().token().expose_secret(ToOwned::to_owned);
+        let clone_val = cloned.snapshot().token().expose_secret(ToOwned::to_owned);
         assert_eq!(orig_val, "updated");
         assert_eq!(clone_val, "shared");
     }
@@ -124,15 +124,15 @@ mod tests {
         let handle = CredentialHandle::new(token, "cred-1");
 
         let snap1 = handle.snapshot();
-        assert_eq!(snap1.token().expose_secret(|s| s.to_owned()), "original");
+        assert_eq!(snap1.token().expose_secret(ToOwned::to_owned), "original");
 
         handle.replace(SecretToken::new(SecretString::new("refreshed")));
 
         let snap2 = handle.snapshot();
-        assert_eq!(snap2.token().expose_secret(|s| s.to_owned()), "refreshed");
+        assert_eq!(snap2.token().expose_secret(ToOwned::to_owned), "refreshed");
 
         // Old snapshot still valid
-        assert_eq!(snap1.token().expose_secret(|s| s.to_owned()), "original");
+        assert_eq!(snap1.token().expose_secret(ToOwned::to_owned), "original");
     }
 
     #[test]

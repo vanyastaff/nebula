@@ -10,7 +10,11 @@
 //! `BatchItemResult::Failed` without aborting the rest of the batch.
 //! The default `batch_size = 5` chunks the 13 items into 3 iterations.
 
-use nebula_sdk::prelude::*;
+use nebula_sdk::prelude::{
+    Action, ActionContext, ActionDependencies, ActionError, ActionMetadata, BatchAction,
+    BatchItemResult, Deserialize, TestContextBuilder, TestRuntime, Value, action_key,
+    impl_batch_action, json,
+};
 
 // ── Action definition ──────────────────────────────────────────────────────
 
@@ -56,15 +60,14 @@ impl BatchAction for DummyJsonProductsBatchAction {
     }
 
     fn extract_items(&self, input: &Self::Input) -> Vec<u32> {
-        input
-            .get("ids")
-            .and_then(|v| v.as_array())
-            .map(|arr| {
+        input.get("ids").and_then(|v| v.as_array()).map_or_else(
+            || vec![1, 2, 3, 4, 5, 6, 7, 8, 9999, 9, 10, 11, 12],
+            |arr| {
                 arr.iter()
                     .filter_map(|v| v.as_u64().map(|n| n as u32))
                     .collect()
-            })
-            .unwrap_or_else(|| vec![1, 2, 3, 4, 5, 6, 7, 8, 9999, 9, 10, 11, 12])
+            },
+        )
     }
 
     async fn process_item(

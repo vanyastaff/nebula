@@ -27,8 +27,7 @@ fn first_message(result: &Result<(), ValidationErrors>) -> &str {
         .as_ref()
         .err()
         .and_then(|e| e.errors().first())
-        .map(|e| e.message.as_ref())
-        .unwrap_or("")
+        .map_or("", |e| e.message.as_ref())
 }
 
 // ============================================================================
@@ -707,8 +706,8 @@ fn each_rejects_invalid_elements() {
         .iter()
         .filter_map(|e| e.field.as_deref())
         .collect();
-    assert!(fields.iter().any(|f| f.contains("1")));
-    assert!(fields.iter().any(|f| f.contains("2")));
+    assert!(fields.iter().any(|f| f.contains('1')));
+    assert!(fields.iter().any(|f| f.contains('2')));
 }
 
 #[derive(Validator)]

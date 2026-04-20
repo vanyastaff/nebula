@@ -54,7 +54,7 @@ impl Credential for ThunderingHerdCredential {
     const KEY: &'static str = "thundering_herd_test";
     const REFRESHABLE: bool = true;
     const REFRESH_POLICY: RefreshPolicy = RefreshPolicy {
-        early_refresh: std::time::Duration::from_secs(300),
+        early_refresh: std::time::Duration::from_mins(5),
         jitter: std::time::Duration::ZERO, // no jitter for deterministic test
         ..RefreshPolicy::DEFAULT
     };
@@ -148,7 +148,7 @@ async fn only_one_refresh_under_concurrent_access() {
     // Verify all callers got the refreshed token
     for result in &results {
         let handle = result.as_ref().unwrap().as_ref().unwrap();
-        let value = handle.snapshot().token().expose_secret(|s| s.to_owned());
+        let value = handle.snapshot().token().expose_secret(ToOwned::to_owned);
         assert_eq!(value, "refreshed-token");
     }
 

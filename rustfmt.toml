@@ -6,28 +6,50 @@
 #     cargo +nightly fmt --all
 #
 # CI formatting check is pinned to nightly in `.github/workflows/ci.yml`.
-# `cargo build`/`clippy`/`test` stay on stable `rust-version` from the
-# workspace Cargo.toml — only `cargo fmt` is nightly-only.
+# `cargo build`/`clippy`/`test` stay on stable `rust-version` (1.95) from the
+# workspace Cargo.toml (pinned in `rust-toolchain.toml`) — only `cargo fmt`
+# is nightly-only.
 
+# ── Parser / Style Guide editions ──────────────────────────────────────────
 edition = "2024"
+style_edition = "2024"
+
+# ── Width / layout knobs ───────────────────────────────────────────────────
 max_width = 100
 hard_tabs = false
 newline_style = "Unix"
-reorder_imports = true
-use_field_init_shorthand = true
-use_try_shorthand = true
 match_block_trailing_comma = true
 
-# ── Unstable features (require nightly rustfmt) ─────────────────────────
+# ── Misc stable niceties ───────────────────────────────────────────────────
+reorder_imports = true
+reorder_modules = true
+use_field_init_shorthand = true
+use_try_shorthand = true
+merge_derives = true
+
+# ── Unstable features (require nightly rustfmt) ────────────────────────────
 unstable_features = true
 
-# Group imports: std → external crates → crate::
+# Imports: group std → external crates → crate::, then collapse same-crate
+# `use` lines into a single `use { … }` block. Massively reduces churn.
 group_imports = "StdExternalCrate"
-# Collapse multiple `use` lines from the same crate into a single `use {..}`
 imports_granularity = "Crate"
 
-# Comments: wrap long lines and format code fences inside doc comments.
+# Comments: wrap long lines, format code fences inside doc comments, and
+# collapse `#[doc = "…"]` to `///` form.
 wrap_comments = true
 comment_width = 100
 format_code_in_doc_comments = true
 normalize_comments = true
+normalize_doc_attributes = true
+
+# Format the matchers and bodies of `macro_rules!` declarations. `rustfmt`
+# only touches macros it can parse, so this is safe for the token-soup cases.
+format_macro_matchers = true
+format_macro_bodies = true
+
+# Unify hex literal casing to lowercase (`0xFF` → `0xff`).
+hex_literal_case = "Lower"
+
+# Collapse trailing wildcard tuple / struct patterns: `(_, _, _)` → `(..)`.
+condense_wildcard_suffixes = true

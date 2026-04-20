@@ -868,7 +868,7 @@ mod tests {
             })
         }
 
-        fn version(&self) -> &str {
+        fn version(&self) -> &'static str {
             "failing:test"
         }
     }

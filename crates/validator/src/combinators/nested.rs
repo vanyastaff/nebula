@@ -373,7 +373,7 @@ mod tests {
     #[test]
     fn test_nested_validator_invalid_name() {
         let user = TestUser {
-            name: "".to_string(),
+            name: String::new(),
             age: 25,
         };
         let validator = nested_validator::<TestUser>();
@@ -423,7 +423,7 @@ mod tests {
     #[test]
     fn test_optional_nested_some_invalid() {
         let user = Some(TestUser {
-            name: "".to_string(),
+            name: String::new(),
             age: 25,
         });
         let validator = optional_nested::<TestUser>();
@@ -461,7 +461,7 @@ mod tests {
                 age: 25,
             },
             TestUser {
-                name: "".to_string(), // Invalid
+                name: String::new(), // Invalid
                 age: 30,
             },
         ];

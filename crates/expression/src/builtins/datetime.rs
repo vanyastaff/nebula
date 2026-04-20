@@ -97,7 +97,7 @@ pub fn date_add(
         _ => {
             return Err(ExpressionError::expression_invalid_argument(
                 "date_add",
-                format!("Invalid unit: {}", unit),
+                format!("Invalid unit: {unit}"),
             ));
         },
     };
@@ -133,7 +133,7 @@ pub fn date_subtract(
         _ => {
             return Err(ExpressionError::expression_invalid_argument(
                 "date_subtract",
-                format!("Invalid unit: {}", unit),
+                format!("Invalid unit: {unit}"),
             ));
         },
     };
@@ -169,7 +169,7 @@ pub fn date_diff(
         _ => {
             return Err(ExpressionError::expression_invalid_argument(
                 "date_diff",
-                format!("Invalid unit: {}", unit),
+                format!("Invalid unit: {unit}"),
             ));
         },
     };
@@ -299,8 +299,7 @@ fn parse_datetime(value: &Value) -> ExpressionResult<DateTime<Utc>> {
             }
 
             Err(ExpressionError::expression_eval_error(format!(
-                "Cannot parse date: {}",
-                s
+                "Cannot parse date: {s}"
             )))
         },
         _ => Err(ExpressionError::expression_type_error(
@@ -344,7 +343,7 @@ fn format_datetime(dt: &DateTime<Utc>, format: &str) -> ExpressionResult<String>
     // Replace in order from longest to shortest to avoid partial replacements
     if result.contains("YYYY") {
         buf.clear();
-        let _ = write!(buf, "{:04}", year);
+        let _ = write!(buf, "{year:04}");
         result = Cow::Owned(result.replace("YYYY", &buf));
     }
     if result.contains("YY") {
@@ -354,27 +353,27 @@ fn format_datetime(dt: &DateTime<Utc>, format: &str) -> ExpressionResult<String>
     }
     if result.contains("MM") {
         buf.clear();
-        let _ = write!(buf, "{:02}", month);
+        let _ = write!(buf, "{month:02}");
         result = Cow::Owned(result.replace("MM", &buf));
     }
     if result.contains("DD") {
         buf.clear();
-        let _ = write!(buf, "{:02}", day);
+        let _ = write!(buf, "{day:02}");
         result = Cow::Owned(result.replace("DD", &buf));
     }
     if result.contains("HH") {
         buf.clear();
-        let _ = write!(buf, "{:02}", hour);
+        let _ = write!(buf, "{hour:02}");
         result = Cow::Owned(result.replace("HH", &buf));
     }
     if result.contains("mm") {
         buf.clear();
-        let _ = write!(buf, "{:02}", minute);
+        let _ = write!(buf, "{minute:02}");
         result = Cow::Owned(result.replace("mm", &buf));
     }
     if result.contains("ss") {
         buf.clear();
-        let _ = write!(buf, "{:02}", second);
+        let _ = write!(buf, "{second:02}");
         result = Cow::Owned(result.replace("ss", &buf));
     }
 
@@ -382,27 +381,27 @@ fn format_datetime(dt: &DateTime<Utc>, format: &str) -> ExpressionResult<String>
     // These use itoa-style formatting for efficiency
     if result.contains('M') {
         buf.clear();
-        let _ = write!(buf, "{}", month);
+        let _ = write!(buf, "{month}");
         result = Cow::Owned(result.replace('M', &buf));
     }
     if result.contains('D') {
         buf.clear();
-        let _ = write!(buf, "{}", day);
+        let _ = write!(buf, "{day}");
         result = Cow::Owned(result.replace('D', &buf));
     }
     if result.contains('H') {
         buf.clear();
-        let _ = write!(buf, "{}", hour);
+        let _ = write!(buf, "{hour}");
         result = Cow::Owned(result.replace('H', &buf));
     }
     if result.contains('m') {
         buf.clear();
-        let _ = write!(buf, "{}", minute);
+        let _ = write!(buf, "{minute}");
         result = Cow::Owned(result.replace('m', &buf));
     }
     if result.contains('s') {
         buf.clear();
-        let _ = write!(buf, "{}", second);
+        let _ = write!(buf, "{second}");
         result = Cow::Owned(result.replace('s', &buf));
     }
 

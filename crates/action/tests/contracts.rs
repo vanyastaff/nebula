@@ -41,8 +41,7 @@ fn flow_kind_serialization_contract() {
         let json = serde_json::to_string(&value).unwrap();
         assert_eq!(
             json, expected,
-            "FlowKind serialization changed for {:?}",
-            value
+            "FlowKind serialization changed for {value:?}"
         );
     }
 }
@@ -151,7 +150,7 @@ fn action_result_serialization_contract_all_variants_roundtrip() {
         condition: WaitCondition::Duration {
             duration: Duration::from_millis(1500),
         },
-        timeout: Some(Duration::from_millis(30000)),
+        timeout: Some(Duration::from_secs(30)),
         partial_output: Some(ActionOutput::Value(serde_json::json!({"partial": true}))),
     });
 
@@ -168,7 +167,7 @@ fn action_result_duration_millis_wire_format_contract() {
         condition: WaitCondition::Duration {
             duration: Duration::from_millis(250),
         },
-        timeout: Some(Duration::from_millis(5000)),
+        timeout: Some(Duration::from_secs(5)),
         partial_output: None,
     };
     let json = serde_json::to_string(&wait).unwrap();
@@ -199,7 +198,7 @@ fn wait_condition_serialization_contract() {
             datetime: Utc::now(),
         },
         WaitCondition::Duration {
-            duration: Duration::from_millis(2000),
+            duration: Duration::from_secs(2),
         },
         WaitCondition::Approval {
             approver: "ops".to_string(),

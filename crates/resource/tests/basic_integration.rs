@@ -111,7 +111,7 @@ impl Resource for PoolTestResource {
         _config: &TestConfig,
         _auth: &(),
         _ctx: &dyn Ctx,
-    ) -> impl std::future::Future<Output = Result<Arc<AtomicU64>, TestError>> + Send {
+    ) -> impl Future<Output = Result<Arc<AtomicU64>, TestError>> + Send {
         let counter = self.create_counter.clone();
         async move {
             let id = counter.fetch_add(1, Ordering::Relaxed);
@@ -185,7 +185,7 @@ impl Resource for ResidentTestResource {
         _config: &TestConfig,
         _auth: &(),
         _ctx: &dyn Ctx,
-    ) -> impl std::future::Future<Output = Result<Arc<AtomicU64>, TestError>> + Send {
+    ) -> impl Future<Output = Result<Arc<AtomicU64>, TestError>> + Send {
         let counter = self.create_counter.clone();
         async move {
             let id = counter.fetch_add(1, Ordering::Relaxed);
@@ -1221,7 +1221,7 @@ async fn manager_scope_mismatch_not_found() {
 
 #[tokio::test]
 async fn metrics_track_acquire_release_create_destroy() {
-    let registry = std::sync::Arc::new(nebula_telemetry::metrics::MetricsRegistry::new());
+    let registry = Arc::new(nebula_telemetry::metrics::MetricsRegistry::new());
     let manager = Manager::with_config(nebula_resource::ManagerConfig {
         release_queue_workers: 2,
         metrics_registry: Some(registry.clone()),
@@ -1503,7 +1503,7 @@ impl Resource for ServiceTestResource {
         _config: &TestConfig,
         _auth: &(),
         _ctx: &dyn Ctx,
-    ) -> impl std::future::Future<Output = Result<Arc<ServiceInner>, TestError>> + Send {
+    ) -> impl Future<Output = Result<Arc<ServiceInner>, TestError>> + Send {
         let counter = self.create_counter.clone();
         async move {
             counter.fetch_add(1, Ordering::Relaxed);
@@ -1529,7 +1529,7 @@ impl Service for ServiceTestResource {
         &self,
         runtime: &Arc<ServiceInner>,
         _ctx: &dyn Ctx,
-    ) -> impl std::future::Future<Output = Result<ServiceToken, TestError>> + Send {
+    ) -> impl Future<Output = Result<ServiceToken, TestError>> + Send {
         let token_id = self.token_counter.fetch_add(1, Ordering::Relaxed);
         let data = format!("{}-token-{token_id}", runtime.data);
         async move { Ok(ServiceToken { data }) }
@@ -1587,7 +1587,7 @@ impl Resource for TransportTestResource {
         _config: &TestConfig,
         _auth: &(),
         _ctx: &dyn Ctx,
-    ) -> impl std::future::Future<Output = Result<Arc<TransportInner>, TestError>> + Send {
+    ) -> impl Future<Output = Result<Arc<TransportInner>, TestError>> + Send {
         let counter = self.create_counter.clone();
         async move {
             counter.fetch_add(1, Ordering::Relaxed);
@@ -1611,7 +1611,7 @@ impl Transport for TransportTestResource {
         &self,
         _transport: &Arc<TransportInner>,
         _ctx: &dyn Ctx,
-    ) -> impl std::future::Future<Output = Result<SessionHandle, TestError>> + Send {
+    ) -> impl Future<Output = Result<SessionHandle, TestError>> + Send {
         let id = self.session_counter.fetch_add(1, Ordering::Relaxed);
         async move { Ok(SessionHandle { id }) }
     }
@@ -1621,7 +1621,7 @@ impl Transport for TransportTestResource {
         _transport: &Arc<TransportInner>,
         _session: SessionHandle,
         _healthy: bool,
-    ) -> impl std::future::Future<Output = Result<(), TestError>> + Send {
+    ) -> impl Future<Output = Result<(), TestError>> + Send {
         let close_counter = self.close_counter.clone();
         async move {
             close_counter.fetch_add(1, Ordering::Relaxed);
@@ -1665,7 +1665,7 @@ impl Resource for ExclusiveTestResource {
         _config: &TestConfig,
         _auth: &(),
         _ctx: &dyn Ctx,
-    ) -> impl std::future::Future<Output = Result<Arc<AtomicU64>, TestError>> + Send {
+    ) -> impl Future<Output = Result<Arc<AtomicU64>, TestError>> + Send {
         let counter = self.create_counter.clone();
         async move {
             let id = counter.fetch_add(1, Ordering::Relaxed);
@@ -1686,7 +1686,7 @@ impl Exclusive for ExclusiveTestResource {
     fn reset(
         &self,
         _runtime: &Arc<AtomicU64>,
-    ) -> impl std::future::Future<Output = Result<(), TestError>> + Send {
+    ) -> impl Future<Output = Result<(), TestError>> + Send {
         self.reset_counter.fetch_add(1, Ordering::Relaxed);
         async { Ok(()) }
     }
@@ -2096,8 +2096,8 @@ async fn exclusive_acquire_timeout_when_locked() {
 
 #[derive(Clone)]
 struct SlowResetExclusive {
-    in_progress: Arc<std::sync::atomic::AtomicBool>,
-    overlap_observed: Arc<std::sync::atomic::AtomicBool>,
+    in_progress: Arc<AtomicBool>,
+    overlap_observed: Arc<AtomicBool>,
 }
 
 impl Resource for SlowResetExclusive {
@@ -2133,7 +2133,7 @@ impl Exclusive for SlowResetExclusive {
     fn reset(
         &self,
         _runtime: &Arc<AtomicU64>,
-    ) -> impl std::future::Future<Output = Result<(), TestError>> + Send {
+    ) -> impl Future<Output = Result<(), TestError>> + Send {
         let in_progress = self.in_progress.clone();
         async move {
             in_progress.store(true, Ordering::SeqCst);
@@ -2151,8 +2151,8 @@ async fn exclusive_next_acquire_waits_until_reset_completes() {
     // resource's reset() holds `in_progress = true` for ~150ms, so under
     // the fix the next acquire must block for at least that long.
     let resource = SlowResetExclusive {
-        in_progress: Arc::new(std::sync::atomic::AtomicBool::new(false)),
-        overlap_observed: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+        in_progress: Arc::new(AtomicBool::new(false)),
+        overlap_observed: Arc::new(AtomicBool::new(false)),
     };
     let runtime = Arc::new(AtomicU64::new(0));
     let rt =
@@ -2263,7 +2263,7 @@ async fn pool_permit_not_leaked_after_release() {
 
 #[tokio::test]
 async fn registry_backed_metrics_record_operations() {
-    let registry = std::sync::Arc::new(nebula_telemetry::metrics::MetricsRegistry::new());
+    let registry = Arc::new(nebula_telemetry::metrics::MetricsRegistry::new());
     let manager = Manager::with_config(nebula_resource::ManagerConfig {
         release_queue_workers: 1,
         metrics_registry: Some(registry.clone()),
@@ -2429,7 +2429,7 @@ async fn graceful_shutdown_clears_registry() {
 
 #[tokio::test]
 async fn graceful_shutdown_default_config() {
-    let config = nebula_resource::ShutdownConfig::default();
+    let config = ShutdownConfig::default();
     assert_eq!(config.drain_timeout, std::time::Duration::from_secs(30));
 }
 
@@ -2473,7 +2473,7 @@ impl Resource for FailingResidentResource {
         _config: &TestConfig,
         _auth: &(),
         _ctx: &dyn Ctx,
-    ) -> impl std::future::Future<Output = Result<Arc<AtomicU64>, TestError>> + Send {
+    ) -> impl Future<Output = Result<Arc<AtomicU64>, TestError>> + Send {
         let count = self.create_count.fetch_add(1, Ordering::Relaxed);
         let threshold = self.failures_before_success;
         async move {
@@ -2548,7 +2548,7 @@ impl Resource for PermanentFailResource {
         _config: &TestConfig,
         _auth: &(),
         _ctx: &dyn Ctx,
-    ) -> impl std::future::Future<Output = Result<Arc<AtomicU64>, PermanentTestError>> + Send {
+    ) -> impl Future<Output = Result<Arc<AtomicU64>, PermanentTestError>> + Send {
         self.create_count.fetch_add(1, Ordering::Relaxed);
         async { Err(PermanentTestError("permanent failure".into())) }
     }
@@ -2691,7 +2691,7 @@ async fn acquire_timeout_fires() {
     let resource = FailingResidentResource::new(100);
     let resident_rt = ResidentRuntime::<FailingResidentResource>::new(resident::config::Config {
         // Set create_timeout long so the resilience timeout fires first.
-        create_timeout: std::time::Duration::from_secs(60),
+        create_timeout: std::time::Duration::from_mins(1),
         ..Default::default()
     });
 
@@ -2878,7 +2878,7 @@ async fn acquire_failure_passively_triggers_recovery_gate() {
     let resource = FailingResidentResource::new(100);
     let gate = Arc::new(RecoveryGate::new(RecoveryGateConfig {
         max_attempts: 5,
-        base_backoff: std::time::Duration::from_secs(300),
+        base_backoff: std::time::Duration::from_mins(5),
     }));
     let resident_rt =
         ResidentRuntime::<FailingResidentResource>::new(resident::config::Config::default());
@@ -3140,7 +3140,7 @@ impl Resource for DropOnRecycleResource {
         _config: &TestConfig,
         _auth: &(),
         _ctx: &dyn Ctx,
-    ) -> impl std::future::Future<Output = Result<Arc<AtomicU64>, TestError>> + Send {
+    ) -> impl Future<Output = Result<Arc<AtomicU64>, TestError>> + Send {
         let counter = self.create_counter.clone();
         async move {
             let id = counter.fetch_add(1, Ordering::Relaxed);
@@ -3615,7 +3615,7 @@ impl Resource for ReloadPoolResource {
         _config: &ReloadConfig,
         _auth: &(),
         _ctx: &dyn Ctx,
-    ) -> impl std::future::Future<Output = Result<Arc<AtomicU64>, TestError>> + Send {
+    ) -> impl Future<Output = Result<Arc<AtomicU64>, TestError>> + Send {
         let counter = self.create_counter.clone();
         async move {
             let id = counter.fetch_add(1, Ordering::Relaxed);

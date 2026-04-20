@@ -15,13 +15,15 @@ use nebula_storage::{
 
 // ── Shared constant ───────────────────────────────────────────────────────────
 
-pub const TEST_JWT_SECRET: &str = "test-secret-for-integration-tests-0123456789";
+pub(crate) const TEST_JWT_SECRET: &str = "test-secret-for-integration-tests-0123456789";
 
 // ── Workflow definition builders ──────────────────────────────────────────────
 
 /// Build a minimal, structurally valid `WorkflowDefinition` JSON that passes
 /// `nebula_workflow::validate_workflow` (single node, no cycles, schema_version=1).
-pub fn make_valid_workflow_definition(workflow_id: &nebula_core::WorkflowId) -> serde_json::Value {
+pub(crate) fn make_valid_workflow_definition(
+    workflow_id: &nebula_core::WorkflowId,
+) -> serde_json::Value {
     serde_json::json!({
         "id": workflow_id.to_string(),
         "name": "Valid Workflow",
@@ -39,7 +41,9 @@ pub fn make_valid_workflow_definition(workflow_id: &nebula_core::WorkflowId) -> 
 /// Build a `WorkflowDefinition` JSON that parses correctly but fails
 /// `validate_workflow` due to a cycle (A → B, B → A) and therefore also
 /// fails entry-node detection.
-pub fn make_cyclic_workflow_definition(workflow_id: &nebula_core::WorkflowId) -> serde_json::Value {
+pub(crate) fn make_cyclic_workflow_definition(
+    workflow_id: &nebula_core::WorkflowId,
+) -> serde_json::Value {
     serde_json::json!({
         "id": workflow_id.to_string(),
         "name": "Cyclic Workflow",
@@ -61,7 +65,7 @@ pub fn make_cyclic_workflow_definition(workflow_id: &nebula_core::WorkflowId) ->
 // ── JWT helper ────────────────────────────────────────────────────────────────
 
 /// Build a valid JWT token signed with [`TEST_JWT_SECRET`].
-pub fn create_test_jwt() -> String {
+pub(crate) fn create_test_jwt() -> String {
     use jsonwebtoken::{EncodingKey, Header, encode};
     use serde::{Deserialize, Serialize};
 
@@ -93,7 +97,7 @@ pub fn create_test_jwt() -> String {
 
 /// Create an `AppState` with fully functional in-memory repos; return both the
 /// state and a typed reference to the control queue so tests can inspect it.
-pub async fn create_state_with_queue() -> (AppState, Arc<InMemoryControlQueueRepo>) {
+pub(crate) async fn create_state_with_queue() -> (AppState, Arc<InMemoryControlQueueRepo>) {
     let workflow_repo = Arc::new(InMemoryWorkflowRepo::new());
     let execution_repo = Arc::new(InMemoryExecutionRepo::new());
     let control_queue_repo = Arc::new(InMemoryControlQueueRepo::new());
@@ -106,7 +110,7 @@ pub async fn create_state_with_queue() -> (AppState, Arc<InMemoryControlQueueRep
         workflow_repo,
         execution_repo,
         control_queue_dyn,
-        api_config.jwt_secret.clone(),
+        api_config.jwt_secret,
     );
 
     (state, control_queue_repo)
@@ -114,6 +118,6 @@ pub async fn create_state_with_queue() -> (AppState, Arc<InMemoryControlQueueRep
 
 /// Alias for [`create_state_with_queue`], preserving the name used by
 /// `integration_tests.rs` callers so no test body needs to change.
-pub async fn create_test_state_with_queue() -> (AppState, Arc<InMemoryControlQueueRepo>) {
+pub(crate) async fn create_test_state_with_queue() -> (AppState, Arc<InMemoryControlQueueRepo>) {
     create_state_with_queue().await
 }

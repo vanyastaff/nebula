@@ -11,7 +11,11 @@
 //! it through [`TestRuntime::run_stateful`] — one line for context, one for
 //! the run, no adapter wiring.
 
-use nebula_sdk::prelude::*;
+use nebula_sdk::prelude::{
+    Action, ActionContext, ActionDependencies, ActionError, ActionMetadata, Deserialize,
+    PageResult, PaginatedAction, Serialize, TestContextBuilder, TestRuntime, Value, action_key,
+    impl_paginated_action, json,
+};
 
 // ── Action definition ──────────────────────────────────────────────────────
 

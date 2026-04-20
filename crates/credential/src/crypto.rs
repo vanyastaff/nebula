@@ -471,7 +471,7 @@ mod tests {
         let encrypted = EncryptedData::new("", [0u8; 12], vec![], [0u8; 16]);
         assert!(encrypted.is_supported_version());
 
-        let mut unsupported = encrypted.clone();
+        let mut unsupported = encrypted;
         unsupported.version = 99;
         assert!(!unsupported.is_supported_version());
     }

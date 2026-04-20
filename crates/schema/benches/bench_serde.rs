@@ -22,7 +22,7 @@ fn bench_schema_serde(c: &mut Criterion) {
             let encoded = serde_json::to_vec(black_box(&schema)).expect("serialize schema");
             let decoded: Schema = serde_json::from_slice(&encoded).expect("deserialize schema");
             black_box(decoded);
-        })
+        });
     });
 }
 

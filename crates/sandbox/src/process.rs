@@ -399,11 +399,11 @@ enum RaceOutcome<T> {
 /// the helper degrades to a plain `tokio::time::timeout`.
 async fn race_cancel_timeout<F, T>(
     fut: F,
-    timeout: std::time::Duration,
+    timeout: Duration,
     cancel: Option<&CancellationToken>,
 ) -> RaceOutcome<T>
 where
-    F: std::future::Future<Output = T>,
+    F: Future<Output = T>,
 {
     let timed = tokio::time::timeout(timeout, fut);
     match cancel {
@@ -1154,7 +1154,7 @@ async fn drain_plugin_stderr(stderr: tokio::process::ChildStderr, plugin_name: S
 /// `STDERR_LINE_CAP`.
 async fn drop_until_newline<R>(reader: &mut R) -> bool
 where
-    R: tokio::io::AsyncBufRead + Unpin,
+    R: AsyncBufRead + Unpin,
 {
     loop {
         let chunk = match reader.fill_buf().await {

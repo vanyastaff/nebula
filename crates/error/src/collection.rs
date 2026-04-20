@@ -121,7 +121,7 @@ impl<E: Classify> ErrorCollection<E> {
     /// ```
     #[must_use]
     pub fn any_retryable(&self) -> bool {
-        self.errors.iter().any(|e| e.is_retryable())
+        self.errors.iter().any(NebulaError::is_retryable)
     }
 
     /// Returns the highest severity among all errors.
@@ -152,7 +152,7 @@ impl<E: Classify> ErrorCollection<E> {
     pub fn max_severity(&self) -> ErrorSeverity {
         self.errors
             .iter()
-            .map(|e| e.severity())
+            .map(NebulaError::severity)
             .max()
             .unwrap_or(ErrorSeverity::Info)
     }
@@ -266,7 +266,7 @@ impl<E: Classify> FromIterator<NebulaError<E>> for ErrorCollection<E> {
 ///
 /// assert!(validate().is_err());
 /// ```
-pub type BatchResult<T, E> = std::result::Result<T, ErrorCollection<E>>;
+pub type BatchResult<T, E> = Result<T, ErrorCollection<E>>;
 
 #[cfg(test)]
 mod tests {
@@ -292,7 +292,7 @@ mod tests {
             self.cat
         }
         fn code(&self) -> crate::ErrorCode {
-            codes::INTERNAL.clone()
+            codes::INTERNAL
         }
         fn severity(&self) -> ErrorSeverity {
             self.sev
@@ -332,7 +332,7 @@ mod tests {
         assert_eq!(coll.len(), 2);
         assert!(!coll.is_empty());
 
-        let categories: Vec<_> = coll.iter().map(|e| e.category()).collect();
+        let categories: Vec<_> = coll.iter().map(NebulaError::category).collect();
         assert_eq!(
             categories,
             vec![ErrorCategory::Validation, ErrorCategory::Validation]

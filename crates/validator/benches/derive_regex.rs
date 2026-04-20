@@ -52,11 +52,11 @@ fn bench_derive_regex_hot(c: &mut Criterion) {
     };
 
     group.bench_function("derive_precompiled", |b| {
-        b.iter(|| subject.validate(black_box(&subject)))
+        b.iter(|| subject.validate(black_box(&subject)));
     });
 
     group.bench_function("naive_recompile", |b| {
-        b.iter(|| naive.validate(black_box("alice_42")))
+        b.iter(|| naive.validate(black_box("alice_42")));
     });
 
     group.finish();
@@ -72,11 +72,11 @@ fn bench_derive_regex_failure(c: &mut Criterion) {
     };
 
     group.bench_function("derive_precompiled", |b| {
-        b.iter(|| subject.validate(black_box(&subject)))
+        b.iter(|| subject.validate(black_box(&subject)));
     });
 
     group.bench_function("naive_recompile", |b| {
-        b.iter(|| naive.validate(black_box("BAD!name")))
+        b.iter(|| naive.validate(black_box("BAD!name")));
     });
 
     group.finish();

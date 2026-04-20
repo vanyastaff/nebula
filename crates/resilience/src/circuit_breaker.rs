@@ -546,7 +546,7 @@ impl CircuitBreaker {
     /// or `Err(CallError::Operation)` if the operation itself fails.
     pub async fn call<T, E, Fut>(&self, f: impl FnOnce() -> Fut) -> Result<T, CallError<E>>
     where
-        Fut: std::future::Future<Output = Result<T, E>> + Send,
+        Fut: Future<Output = Result<T, E>> + Send,
     {
         self.try_acquire()?;
         let mut guard = ProbeGuard::new(self);
@@ -581,7 +581,7 @@ impl CircuitBreaker {
         f: impl FnOnce() -> Fut,
     ) -> Result<T, CallError<E>>
     where
-        Fut: std::future::Future<Output = Result<T, E>> + Send,
+        Fut: Future<Output = Result<T, E>> + Send,
     {
         self.try_acquire()?;
         let mut guard = ProbeGuard::new(self);
@@ -1140,7 +1140,7 @@ mod tests {
             failure_rate_threshold: None,
         })
         .unwrap()
-        .with_clock(Arc::clone(&clock) as Arc<dyn crate::clock::Clock>);
+        .with_clock(Arc::clone(&clock) as Arc<dyn Clock>);
 
         // First trip
         cb.record_outcome(Outcome::Failure);

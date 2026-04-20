@@ -896,8 +896,7 @@ impl Evaluator {
             Value::Object(o) => {
                 let json_val = o.get(property).ok_or_else(|| {
                     ExpressionError::expression_eval_error(format!(
-                        "Property '{}' not found",
-                        property
+                        "Property '{property}' not found"
                     ))
                 })?;
                 Ok(json_val.clone())
@@ -945,7 +944,7 @@ impl Evaluator {
                     )
                 })?;
                 let json_val = o.get(key).ok_or_else(|| {
-                    ExpressionError::expression_eval_error(format!("Key '{}' not found", key))
+                    ExpressionError::expression_eval_error(format!("Key '{key}' not found"))
                 })?;
                 Ok(json_val.clone())
             },
@@ -1039,8 +1038,7 @@ impl Evaluator {
             let denied = policy.denied_functions();
             if denied.contains(name) || denied.contains(canonical) {
                 return Err(ExpressionError::expression_eval_error(format!(
-                    "Function '{}' is denied by policy",
-                    name
+                    "Function '{name}' is denied by policy"
                 )));
             }
         }
@@ -1050,8 +1048,7 @@ impl Evaluator {
                 continue;
             }
             return Err(ExpressionError::expression_eval_error(format!(
-                "Function '{}' is not allowed by policy",
-                name
+                "Function '{name}' is not allowed by policy"
             )));
         }
 
@@ -1177,7 +1174,7 @@ impl Evaluator {
 
         // Filter the array
         let mut result = Vec::with_capacity(array.len());
-        for item in array.iter() {
+        for item in array {
             let predicate_result = self.eval_lambda(param, body, item, context, frame)?;
             if self.coerce_boolean(&predicate_result, context)? {
                 result.push(item.clone());
@@ -1226,7 +1223,7 @@ impl Evaluator {
 
         // Map the array
         let mut result = Vec::with_capacity(array.len());
-        for item in array.iter() {
+        for item in array {
             let transformed = self.eval_lambda(param, body, item, context, frame)?;
             result.push(transformed);
         }
@@ -1282,7 +1279,7 @@ impl Evaluator {
         // previous `self.eval(body, ...)` pattern reset the counter on
         // every element and was the CO-C1-01 DoS bypass.
         let mut accumulator = initial;
-        for item in array.iter() {
+        for item in array {
             // Create context with both accumulator and current item
             let mut reduce_context = context.clone();
             reduce_context.set_lambda_var("$acc", accumulator.clone());
@@ -1328,7 +1325,7 @@ impl Evaluator {
             },
         };
 
-        for item in array.iter() {
+        for item in array {
             let predicate_result = self.eval_lambda(param, body, item, context, frame)?;
             if self.coerce_boolean(&predicate_result, context)? {
                 return Ok(item.clone());
@@ -1373,7 +1370,7 @@ impl Evaluator {
             },
         };
 
-        for item in array.iter() {
+        for item in array {
             let predicate_result = self.eval_lambda(param, body, item, context, frame)?;
             if !self.coerce_boolean(&predicate_result, context)? {
                 return Ok(Value::Bool(false));
@@ -1418,7 +1415,7 @@ impl Evaluator {
             },
         };
 
-        for item in array.iter() {
+        for item in array {
             let predicate_result = self.eval_lambda(param, body, item, context, frame)?;
             if self.coerce_boolean(&predicate_result, context)? {
                 return Ok(Value::Bool(true));
@@ -1510,7 +1507,7 @@ impl Evaluator {
         };
 
         let mut groups = serde_json::Map::new();
-        for item in array.iter() {
+        for item in array {
             let key_val = self.eval_lambda(param, body, item, context, frame)?;
             let key = match &key_val {
                 Value::String(s) => s.clone(),
@@ -1577,7 +1574,7 @@ impl Evaluator {
         };
 
         let mut result = Vec::new();
-        for item in array.iter() {
+        for item in array {
             let transformed = self.eval_lambda(param, body, item, context, frame)?;
             match transformed {
                 Value::Array(inner) => result.extend(inner),
@@ -1874,7 +1871,7 @@ mod tests {
 
         // Fill the cache with many patterns
         for i in 0..MAX_REGEX_CACHE_SIZE + 10 {
-            let pattern = format!("pattern_{}", i);
+            let pattern = format!("pattern_{i}");
             let expr = Expr::Binary {
                 left: Box::new(Expr::Literal(Value::String("test".to_string()))),
                 op: BinaryOp::RegexMatch,
@@ -1887,9 +1884,7 @@ mod tests {
         let cache_size = evaluator.regex_cache.lock().len();
         assert!(
             cache_size <= MAX_REGEX_CACHE_SIZE,
-            "Cache size {} exceeds limit {}",
-            cache_size,
-            MAX_REGEX_CACHE_SIZE
+            "Cache size {cache_size} exceeds limit {MAX_REGEX_CACHE_SIZE}"
         );
     }
 
@@ -2473,8 +2468,8 @@ mod tests {
         let result = evaluator.eval(&expr, &context).unwrap();
         let arr = result.as_array().expect("map returns an array");
         assert_eq!(arr.len(), 100);
-        assert_eq!(arr.first().and_then(|v| v.as_i64()), Some(1));
-        assert_eq!(arr.last().and_then(|v| v.as_i64()), Some(100));
+        assert_eq!(arr.first().and_then(Value::as_i64), Some(1));
+        assert_eq!(arr.last().and_then(Value::as_i64), Some(100));
     }
 
     #[test]

@@ -9,7 +9,7 @@ use nebula_core::NodeKey;
     dead_code,
     reason = "Variants used when real-time engine events are wired"
 )]
-pub enum TuiEvent {
+pub(crate) enum TuiEvent {
     /// Terminal key press.
     Key(crossterm::event::KeyEvent),
     /// Terminal resize.
@@ -48,7 +48,7 @@ pub enum TuiEvent {
     dead_code,
     reason = "Variants used when real-time engine events are wired"
 )]
-pub enum LogLevel {
+pub(crate) enum LogLevel {
     Info,
     Warn,
     Error,

@@ -106,7 +106,7 @@ fn every_field_reports_its_own_error() {
 fn nested_address_errors_carry_path() {
     let form = RegistrationForm {
         address: Some(Address {
-            line1: "".into(),
+            line1: String::new(),
             city: "X".into(),
             country: "usa".into(), // lower + wrong length
         }),

@@ -120,7 +120,7 @@ mod tests {
         assert_eq!(interner.len(), 0);
 
         for i in 0..10 {
-            interner.intern(&format!("str{}", i));
+            interner.intern(&format!("str{i}"));
         }
 
         assert_eq!(interner.len(), 10);

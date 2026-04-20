@@ -17,3 +17,6 @@ thiserror = { workspace = true }
 tracing = { workspace = true }
 dashmap = { workspace = true }
 lasso = { workspace = true }
+
+[lints]
+workspace = true

@@ -285,7 +285,7 @@ async fn run_event_loop<H: PluginHandler>(
                 return Ok(());
             },
         };
-        if line_buf.iter().all(|b| b.is_ascii_whitespace()) {
+        if line_buf.iter().all(u8::is_ascii_whitespace) {
             continue;
         }
 

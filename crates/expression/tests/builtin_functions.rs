@@ -265,7 +265,7 @@ fn entries_converts_to_pairs() {
 
 #[test]
 fn entries_empty_object() {
-    assert_eq!(eval(r#"entries({})"#), json!([]));
+    assert_eq!(eval(r"entries({})"), json!([]));
 }
 
 // ──────────────────────────────────────────────

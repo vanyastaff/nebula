@@ -294,7 +294,7 @@ impl TestRuntime {
             kind: "trigger:webhook",
             output: serde_json::json!({
                 "outcome": format!("{outcome:?}"),
-                "emitted": emitted.clone(),
+                "emitted": emitted,
             }),
             iterations: 1,
             duration: start.elapsed(),

@@ -14,7 +14,7 @@ use nebula_resilience::circuit_breaker::{CircuitBreaker, CircuitBreakerConfig, O
 fn closed_config() -> CircuitBreakerConfig {
     CircuitBreakerConfig {
         failure_threshold: 1000,
-        reset_timeout: Duration::from_secs(60),
+        reset_timeout: Duration::from_mins(1),
         min_operations: 1000,
         ..Default::default()
     }

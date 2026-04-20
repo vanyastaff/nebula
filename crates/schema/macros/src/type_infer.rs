@@ -40,11 +40,11 @@ pub(crate) enum FieldKind {
 }
 
 impl FieldKind {
-    pub fn is_optional(&self) -> bool {
+    pub(crate) fn is_optional(&self) -> bool {
         matches!(self, FieldKind::Optional(_))
     }
 
-    pub fn inner(&self) -> &FieldKind {
+    pub(crate) fn inner(&self) -> &FieldKind {
         match self {
             FieldKind::Optional(inner) => inner,
             other => other,

@@ -100,13 +100,8 @@ async fn test_concurrent_rate_limiting() {
     // Should have limited some requests
     assert!(
         successes <= 15,
-        "Expected burst limit, got {} successes",
-        successes
+        "Expected burst limit, got {successes} successes"
     );
-    assert!(
-        rejects >= 85,
-        "Expected rejections, got {} rejects",
-        rejects
-    );
+    assert!(rejects >= 85, "Expected rejections, got {rejects} rejects");
     assert_eq!(successes + rejects, 100);
 }

@@ -1,0 +1,19 @@
+# Pin the project's default toolchain.
+#
+# This locks `rustc`, `cargo`, `clippy` and `rustfmt` that `cargo <cmd>` invokes
+# without an explicit override to the workspace's declared `rust-version`.
+#
+# Notes:
+# - `cargo +nightly fmt --all` still works: rustup installs nightly on demand
+#   when the `+toolchain` override is used. Nightly rustfmt is required by
+#   `rustfmt.toml` (`unstable_features = true`).
+# - `rust-src` and `rust-analyzer` are included so IDE / std-expansion features
+#   work out of the box after `rustup show active-toolchain` in a fresh clone.
+# - Legacy `rust-toolchain` (without the `.toml` extension) is still accepted
+#   by rustup for backwards compatibility, but the TOML form is the
+#   recommended format per the rustup book.
+
+[toolchain]
+channel = "1.95.0"
+components = ["rustfmt", "clippy", "rust-src", "rust-analyzer"]
+profile = "minimal"

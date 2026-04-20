@@ -30,8 +30,8 @@ impl ReloadHandle {
     /// dropped.
     pub fn reload(&self, filter: &str) -> LogResult<()> {
         use crate::core::LogError;
-        let new_filter = EnvFilter::try_new(filter)
-            .map_err(|e| LogError::Filter(format!("{}: {}", filter, e)))?;
+        let new_filter =
+            EnvFilter::try_new(filter).map_err(|e| LogError::Filter(format!("{filter}: {e}")))?;
         self.filter
             .reload(new_filter)
             .map_err(|e| LogError::Config(format!("Failed to reload filter: {e}")))?;

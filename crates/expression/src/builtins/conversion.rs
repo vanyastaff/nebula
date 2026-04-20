@@ -36,7 +36,7 @@ pub fn to_string(
         Value::Bool(b) => b.to_string(),
         Value::Null => "null".to_string(),
         Value::Array(_) | Value::Object(_) => serde_json::to_string(&args[0]).map_err(|e| {
-            ExpressionError::expression_eval_error(format!("Failed to convert to string: {}", e))
+            ExpressionError::expression_eval_error(format!("Failed to convert to string: {e}"))
         })?,
     };
     Ok(Value::String(string_val))
@@ -95,7 +95,7 @@ pub fn to_json(
     check_arg_count("to_json", args, 1)?;
 
     let json_string = serde_json::to_string(&args[0]).map_err(|e| {
-        ExpressionError::expression_eval_error(format!("Failed to serialize to JSON: {}", e))
+        ExpressionError::expression_eval_error(format!("Failed to serialize to JSON: {e}"))
     })?;
 
     Ok(Value::String(json_string))
@@ -128,8 +128,8 @@ pub fn parse_json(
         )));
     }
 
-    let json: serde_json::Value = serde_json::from_str(json_str).map_err(|e| {
-        ExpressionError::expression_eval_error(format!("Failed to parse JSON: {}", e))
+    let json: Value = serde_json::from_str(json_str).map_err(|e| {
+        ExpressionError::expression_eval_error(format!("Failed to parse JSON: {e}"))
     })?;
 
     if eval.strict_conversions_enabled(ctx) && !matches!(json, Value::Object(_) | Value::Array(_)) {

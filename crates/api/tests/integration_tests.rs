@@ -19,7 +19,7 @@ async fn create_test_state() -> AppState {
         workflow_repo,
         execution_repo,
         control_queue_repo,
-        api_config.jwt_secret.clone(),
+        api_config.jwt_secret,
     )
 }
 
@@ -58,7 +58,7 @@ async fn test_workflow_list_empty() {
             Request::builder()
                 .method("GET")
                 .uri("/api/v1/workflows")
-                .header("authorization", format!("Bearer {}", token))
+                .header("authorization", format!("Bearer {token}"))
                 .body(Body::empty())
                 .unwrap(),
         )
@@ -94,11 +94,8 @@ async fn test_error_format_rfc9457() {
         .oneshot(
             Request::builder()
                 .method("GET")
-                .uri(format!(
-                    "/api/v1/workflows/{}",
-                    nebula_core::WorkflowId::new()
-                ))
-                .header("authorization", format!("Bearer {}", token))
+                .uri(format!("/api/v1/workflows/{}", WorkflowId::new()))
+                .header("authorization", format!("Bearer {token}"))
                 .body(Body::empty())
                 .unwrap(),
         )
@@ -135,7 +132,7 @@ async fn test_error_format_rfc9457() {
             Request::builder()
                 .method("GET")
                 .uri("/api/v1/workflows/invalid-uuid")
-                .header("authorization", format!("Bearer {}", token))
+                .header("authorization", format!("Bearer {token}"))
                 .body(Body::empty())
                 .unwrap(),
         )
@@ -191,8 +188,8 @@ async fn test_error_format_rfc9457() {
         .oneshot(
             Request::builder()
                 .method("POST")
-                .uri(format!("/api/v1/executions/{}/cancel", execution_id))
-                .header("authorization", format!("Bearer {}", token))
+                .uri(format!("/api/v1/executions/{execution_id}/cancel"))
+                .header("authorization", format!("Bearer {token}"))
                 .body(Body::empty())
                 .unwrap(),
         )
@@ -267,7 +264,7 @@ async fn create_workflow() {
                 .method("POST")
                 .uri("/api/v1/workflows")
                 .header("content-type", "application/json")
-                .header("authorization", format!("Bearer {}", token))
+                .header("authorization", format!("Bearer {token}"))
                 .body(Body::from(serde_json::to_string(&create_request).unwrap()))
                 .unwrap(),
         )
@@ -318,7 +315,7 @@ async fn test_workflow_list_with_data() {
                 .method("POST")
                 .uri("/api/v1/workflows")
                 .header("content-type", "application/json")
-                .header("authorization", format!("Bearer {}", token))
+                .header("authorization", format!("Bearer {token}"))
                 .body(Body::from(serde_json::to_string(&create_request).unwrap()))
                 .unwrap(),
         )
@@ -334,7 +331,7 @@ async fn test_workflow_list_with_data() {
             Request::builder()
                 .method("GET")
                 .uri("/api/v1/workflows")
-                .header("authorization", format!("Bearer {}", token))
+                .header("authorization", format!("Bearer {token}"))
                 .body(Body::empty())
                 .unwrap(),
         )
@@ -378,7 +375,7 @@ async fn test_workflow_list_total_matches_full_dataset_across_pages() {
                     .method("POST")
                     .uri("/api/v1/workflows")
                     .header("content-type", "application/json")
-                    .header("authorization", format!("Bearer {}", token))
+                    .header("authorization", format!("Bearer {token}"))
                     .body(Body::from(serde_json::to_string(&create_request).unwrap()))
                     .unwrap(),
             )
@@ -397,7 +394,7 @@ async fn test_workflow_list_total_matches_full_dataset_across_pages() {
             Request::builder()
                 .method("GET")
                 .uri("/api/v1/workflows?page=1&page_size=2")
-                .header("authorization", format!("Bearer {}", token))
+                .header("authorization", format!("Bearer {token}"))
                 .body(Body::empty())
                 .unwrap(),
         )
@@ -417,7 +414,7 @@ async fn test_workflow_list_total_matches_full_dataset_across_pages() {
             Request::builder()
                 .method("GET")
                 .uri("/api/v1/workflows?page=2&page_size=2")
-                .header("authorization", format!("Bearer {}", token))
+                .header("authorization", format!("Bearer {token}"))
                 .body(Body::empty())
                 .unwrap(),
         )
@@ -461,7 +458,7 @@ async fn test_get_workflow_by_id() {
                 .method("POST")
                 .uri("/api/v1/workflows")
                 .header("content-type", "application/json")
-                .header("authorization", format!("Bearer {}", token))
+                .header("authorization", format!("Bearer {token}"))
                 .body(Body::from(serde_json::to_string(&create_request).unwrap()))
                 .unwrap(),
         )
@@ -482,8 +479,8 @@ async fn test_get_workflow_by_id() {
         .oneshot(
             Request::builder()
                 .method("GET")
-                .uri(format!("/api/v1/workflows/{}", workflow_id))
-                .header("authorization", format!("Bearer {}", token))
+                .uri(format!("/api/v1/workflows/{workflow_id}"))
+                .header("authorization", format!("Bearer {token}"))
                 .body(Body::empty())
                 .unwrap(),
         )
@@ -522,8 +519,8 @@ async fn test_get_workflow_not_found() {
         .oneshot(
             Request::builder()
                 .method("GET")
-                .uri(format!("/api/v1/workflows/{}", nonexistent_id))
-                .header("authorization", format!("Bearer {}", token))
+                .uri(format!("/api/v1/workflows/{nonexistent_id}"))
+                .header("authorization", format!("Bearer {token}"))
                 .body(Body::empty())
                 .unwrap(),
         )
@@ -562,7 +559,7 @@ async fn test_update_workflow() {
                 .method("POST")
                 .uri("/api/v1/workflows")
                 .header("content-type", "application/json")
-                .header("authorization", format!("Bearer {}", token))
+                .header("authorization", format!("Bearer {token}"))
                 .body(Body::from(serde_json::to_string(&create_request).unwrap()))
                 .unwrap(),
         )
@@ -592,9 +589,9 @@ async fn test_update_workflow() {
         .oneshot(
             Request::builder()
                 .method("PUT")
-                .uri(format!("/api/v1/workflows/{}", workflow_id))
+                .uri(format!("/api/v1/workflows/{workflow_id}"))
                 .header("content-type", "application/json")
-                .header("authorization", format!("Bearer {}", token))
+                .header("authorization", format!("Bearer {token}"))
                 .body(Body::from(serde_json::to_string(&update_request).unwrap()))
                 .unwrap(),
         )
@@ -646,7 +643,7 @@ async fn test_delete_workflow() {
                 .method("POST")
                 .uri("/api/v1/workflows")
                 .header("content-type", "application/json")
-                .header("authorization", format!("Bearer {}", token))
+                .header("authorization", format!("Bearer {token}"))
                 .body(Body::from(serde_json::to_string(&create_request).unwrap()))
                 .unwrap(),
         )
@@ -667,8 +664,8 @@ async fn test_delete_workflow() {
         .oneshot(
             Request::builder()
                 .method("DELETE")
-                .uri(format!("/api/v1/workflows/{}", workflow_id))
-                .header("authorization", format!("Bearer {}", token))
+                .uri(format!("/api/v1/workflows/{workflow_id}"))
+                .header("authorization", format!("Bearer {token}"))
                 .body(Body::empty())
                 .unwrap(),
         )
@@ -683,8 +680,8 @@ async fn test_delete_workflow() {
         .oneshot(
             Request::builder()
                 .method("GET")
-                .uri(format!("/api/v1/workflows/{}", workflow_id))
-                .header("authorization", format!("Bearer {}", token))
+                .uri(format!("/api/v1/workflows/{workflow_id}"))
+                .header("authorization", format!("Bearer {token}"))
                 .body(Body::empty())
                 .unwrap(),
         )
@@ -721,8 +718,8 @@ async fn test_activate_workflow() {
         .oneshot(
             Request::builder()
                 .method("POST")
-                .uri(format!("/api/v1/workflows/{}/activate", workflow_id))
-                .header("authorization", format!("Bearer {}", token))
+                .uri(format!("/api/v1/workflows/{workflow_id}/activate"))
+                .header("authorization", format!("Bearer {token}"))
                 .body(Body::empty())
                 .unwrap(),
         )
@@ -762,8 +759,8 @@ async fn test_activate_workflow_not_found() {
         .oneshot(
             Request::builder()
                 .method("POST")
-                .uri(format!("/api/v1/workflows/{}/activate", nonexistent_id))
-                .header("authorization", format!("Bearer {}", token))
+                .uri(format!("/api/v1/workflows/{nonexistent_id}/activate"))
+                .header("authorization", format!("Bearer {token}"))
                 .body(Body::empty())
                 .unwrap(),
         )
@@ -802,7 +799,7 @@ async fn test_execute_workflow() {
                 .method("POST")
                 .uri("/api/v1/workflows")
                 .header("content-type", "application/json")
-                .header("authorization", format!("Bearer {}", token))
+                .header("authorization", format!("Bearer {token}"))
                 .body(Body::from(serde_json::to_string(&create_request).unwrap()))
                 .unwrap(),
         )
@@ -829,9 +826,9 @@ async fn test_execute_workflow() {
         .oneshot(
             Request::builder()
                 .method("POST")
-                .uri(format!("/api/v1/workflows/{}/execute", workflow_id))
+                .uri(format!("/api/v1/workflows/{workflow_id}/execute"))
                 .header("content-type", "application/json")
-                .header("authorization", format!("Bearer {}", token))
+                .header("authorization", format!("Bearer {token}"))
                 .body(Body::from(serde_json::to_string(&execute_request).unwrap()))
                 .unwrap(),
         )
@@ -878,9 +875,9 @@ async fn test_execute_workflow_not_found() {
         .oneshot(
             Request::builder()
                 .method("POST")
-                .uri(format!("/api/v1/workflows/{}/execute", nonexistent_id))
+                .uri(format!("/api/v1/workflows/{nonexistent_id}/execute"))
                 .header("content-type", "application/json")
-                .header("authorization", format!("Bearer {}", token))
+                .header("authorization", format!("Bearer {token}"))
                 .body(Body::from(serde_json::to_string(&execute_request).unwrap()))
                 .unwrap(),
         )
@@ -911,7 +908,7 @@ async fn test_execution_list_all_empty() {
             Request::builder()
                 .method("GET")
                 .uri("/api/v1/executions")
-                .header("authorization", format!("Bearer {}", token))
+                .header("authorization", format!("Bearer {token}"))
                 .body(Body::empty())
                 .unwrap(),
         )
@@ -960,7 +957,7 @@ async fn test_execution_list_for_workflow_empty() {
                 .method("POST")
                 .uri("/api/v1/workflows")
                 .header("content-type", "application/json")
-                .header("authorization", format!("Bearer {}", token))
+                .header("authorization", format!("Bearer {token}"))
                 .body(Body::from(serde_json::to_string(&create_request).unwrap()))
                 .unwrap(),
         )
@@ -981,8 +978,8 @@ async fn test_execution_list_for_workflow_empty() {
         .oneshot(
             Request::builder()
                 .method("GET")
-                .uri(format!("/api/v1/workflows/{}/executions", workflow_id))
-                .header("authorization", format!("Bearer {}", token))
+                .uri(format!("/api/v1/workflows/{workflow_id}/executions"))
+                .header("authorization", format!("Bearer {token}"))
                 .body(Body::empty())
                 .unwrap(),
         )
@@ -1040,8 +1037,8 @@ async fn test_execution_get_by_id() {
         .oneshot(
             Request::builder()
                 .method("GET")
-                .uri(format!("/api/v1/executions/{}", execution_id))
-                .header("authorization", format!("Bearer {}", token))
+                .uri(format!("/api/v1/executions/{execution_id}"))
+                .header("authorization", format!("Bearer {token}"))
                 .body(Body::empty())
                 .unwrap(),
         )
@@ -1082,8 +1079,8 @@ async fn test_execution_get_not_found() {
         .oneshot(
             Request::builder()
                 .method("GET")
-                .uri(format!("/api/v1/executions/{}", nonexistent_id))
-                .header("authorization", format!("Bearer {}", token))
+                .uri(format!("/api/v1/executions/{nonexistent_id}"))
+                .header("authorization", format!("Bearer {token}"))
                 .body(Body::empty())
                 .unwrap(),
         )
@@ -1122,7 +1119,7 @@ async fn test_execution_start() {
                 .method("POST")
                 .uri("/api/v1/workflows")
                 .header("content-type", "application/json")
-                .header("authorization", format!("Bearer {}", token))
+                .header("authorization", format!("Bearer {token}"))
                 .body(Body::from(serde_json::to_string(&create_request).unwrap()))
                 .unwrap(),
         )
@@ -1149,9 +1146,9 @@ async fn test_execution_start() {
         .oneshot(
             Request::builder()
                 .method("POST")
-                .uri(format!("/api/v1/workflows/{}/executions", workflow_id))
+                .uri(format!("/api/v1/workflows/{workflow_id}/executions"))
                 .header("content-type", "application/json")
-                .header("authorization", format!("Bearer {}", token))
+                .header("authorization", format!("Bearer {token}"))
                 .body(Body::from(serde_json::to_string(&start_request).unwrap()))
                 .unwrap(),
         )
@@ -1210,8 +1207,8 @@ async fn test_execution_cancel() {
         .oneshot(
             Request::builder()
                 .method("POST")
-                .uri(format!("/api/v1/executions/{}/cancel", execution_id))
-                .header("authorization", format!("Bearer {}", token))
+                .uri(format!("/api/v1/executions/{execution_id}/cancel"))
+                .header("authorization", format!("Bearer {token}"))
                 .body(Body::empty())
                 .unwrap(),
         )
@@ -1235,8 +1232,8 @@ async fn test_execution_cancel() {
         .oneshot(
             Request::builder()
                 .method("GET")
-                .uri(format!("/api/v1/executions/{}", execution_id))
-                .header("authorization", format!("Bearer {}", token))
+                .uri(format!("/api/v1/executions/{execution_id}"))
+                .header("authorization", format!("Bearer {token}"))
                 .body(Body::empty())
                 .unwrap(),
         )
@@ -1273,8 +1270,8 @@ async fn test_execution_cancel_not_found() {
         .oneshot(
             Request::builder()
                 .method("POST")
-                .uri(format!("/api/v1/executions/{}/cancel", nonexistent_id))
-                .header("authorization", format!("Bearer {}", token))
+                .uri(format!("/api/v1/executions/{nonexistent_id}/cancel"))
+                .header("authorization", format!("Bearer {token}"))
                 .body(Body::empty())
                 .unwrap(),
         )
@@ -1326,8 +1323,8 @@ async fn test_execution_cancel_already_completed() {
         .oneshot(
             Request::builder()
                 .method("POST")
-                .uri(format!("/api/v1/executions/{}/cancel", execution_id))
-                .header("authorization", format!("Bearer {}", token))
+                .uri(format!("/api/v1/executions/{execution_id}/cancel"))
+                .header("authorization", format!("Bearer {token}"))
                 .body(Body::empty())
                 .unwrap(),
         )
@@ -1371,8 +1368,8 @@ async fn test_execution_get_invalid_id() {
         .oneshot(
             Request::builder()
                 .method("GET")
-                .uri(format!("/api/v1/executions/{}", invalid_id))
-                .header("authorization", format!("Bearer {}", token))
+                .uri(format!("/api/v1/executions/{invalid_id}"))
+                .header("authorization", format!("Bearer {token}"))
                 .body(Body::empty())
                 .unwrap(),
         )
@@ -1705,7 +1702,7 @@ async fn update_workflow_rejects_immutable_identity_fields() {
                 .method("POST")
                 .uri("/api/v1/workflows")
                 .header("content-type", "application/json")
-                .header("authorization", format!("Bearer {}", token))
+                .header("authorization", format!("Bearer {token}"))
                 .body(Body::from(serde_json::to_string(&create_request).unwrap()))
                 .unwrap(),
         )
@@ -1737,7 +1734,7 @@ async fn update_workflow_rejects_immutable_identity_fields() {
                     .method("PUT")
                     .uri(format!("/api/v1/workflows/{workflow_id}"))
                     .header("content-type", "application/json")
-                    .header("authorization", format!("Bearer {}", token))
+                    .header("authorization", format!("Bearer {token}"))
                     .body(Body::from(serde_json::to_string(&update_request).unwrap()))
                     .unwrap(),
             )
@@ -1788,8 +1785,8 @@ async fn get_workflow_parses_rfc3339_timestamps() {
         .oneshot(
             Request::builder()
                 .method("GET")
-                .uri(format!("/api/v1/workflows/{}", workflow_id))
-                .header("authorization", format!("Bearer {}", token))
+                .uri(format!("/api/v1/workflows/{workflow_id}"))
+                .header("authorization", format!("Bearer {token}"))
                 .body(Body::empty())
                 .unwrap(),
         )
@@ -1831,8 +1828,8 @@ async fn activate_valid_returns_200() {
         .oneshot(
             Request::builder()
                 .method("POST")
-                .uri(format!("/api/v1/workflows/{}/activate", workflow_id))
-                .header("authorization", format!("Bearer {}", token))
+                .uri(format!("/api/v1/workflows/{workflow_id}/activate"))
+                .header("authorization", format!("Bearer {token}"))
                 .body(Body::empty())
                 .unwrap(),
         )
@@ -1882,8 +1879,8 @@ async fn activate_invalid_returns_422() {
         .oneshot(
             Request::builder()
                 .method("POST")
-                .uri(format!("/api/v1/workflows/{}/activate", workflow_id))
-                .header("authorization", format!("Bearer {}", token))
+                .uri(format!("/api/v1/workflows/{workflow_id}/activate"))
+                .header("authorization", format!("Bearer {token}"))
                 .body(Body::empty())
                 .unwrap(),
         )
@@ -1933,8 +1930,7 @@ async fn activate_invalid_returns_422() {
         assert!(
             err["pointer"]
                 .as_str()
-                .map(|p| p.is_empty() || p.starts_with('/'))
-                .unwrap_or(false),
+                .is_some_and(|p| p.is_empty() || p.starts_with('/')),
             "pointer must be a valid RFC 6901 JSON Pointer (empty string or starts with /)"
         );
     }
@@ -1999,8 +1995,8 @@ async fn cancel_enqueues_durable_control_signal() {
         .oneshot(
             Request::builder()
                 .method("POST")
-                .uri(format!("/api/v1/executions/{}/cancel", execution_id))
-                .header("authorization", format!("Bearer {}", token))
+                .uri(format!("/api/v1/executions/{execution_id}/cancel"))
+                .header("authorization", format!("Bearer {token}"))
                 .body(Body::empty())
                 .unwrap(),
         )
@@ -2101,8 +2097,8 @@ async fn cancel_terminal_execution_does_not_enqueue() {
         .oneshot(
             Request::builder()
                 .method("POST")
-                .uri(format!("/api/v1/executions/{}/cancel", execution_id))
-                .header("authorization", format!("Bearer {}", token))
+                .uri(format!("/api/v1/executions/{execution_id}/cancel"))
+                .header("authorization", format!("Bearer {token}"))
                 .body(Body::empty())
                 .unwrap(),
         )
@@ -2167,8 +2163,8 @@ async fn get_execution_parses_rfc3339_timestamps() {
         .oneshot(
             Request::builder()
                 .method("GET")
-                .uri(format!("/api/v1/executions/{}", execution_id))
-                .header("authorization", format!("Bearer {}", token))
+                .uri(format!("/api/v1/executions/{execution_id}"))
+                .header("authorization", format!("Bearer {token}"))
                 .body(Body::empty())
                 .unwrap(),
         )
@@ -2228,8 +2224,8 @@ async fn cancel_timed_out_execution_rejected() {
         .oneshot(
             Request::builder()
                 .method("POST")
-                .uri(format!("/api/v1/executions/{}/cancel", execution_id))
-                .header("authorization", format!("Bearer {}", token))
+                .uri(format!("/api/v1/executions/{execution_id}/cancel"))
+                .header("authorization", format!("Bearer {token}"))
                 .body(Body::empty())
                 .unwrap(),
         )

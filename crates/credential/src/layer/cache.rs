@@ -41,8 +41,8 @@ impl Default for CacheConfig {
     fn default() -> Self {
         Self {
             max_entries: 10_000,
-            ttl: Duration::from_secs(300),
-            tti: Duration::from_secs(120),
+            ttl: Duration::from_mins(5),
+            tti: Duration::from_mins(2),
         }
     }
 }

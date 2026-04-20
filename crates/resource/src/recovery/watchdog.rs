@@ -94,7 +94,7 @@ impl WatchdogHandle {
     ) -> Self
     where
         F: Fn() -> Fut + Send + Sync + 'static,
-        Fut: std::future::Future<Output = Result<(), crate::Error>> + Send,
+        Fut: Future<Output = Result<(), crate::Error>> + Send,
     {
         let cancel = parent_cancel.child_token();
         let token = cancel.clone();

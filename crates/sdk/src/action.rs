@@ -81,7 +81,7 @@ pub mod helpers {
             if let Some(field) = req.as_str()
                 && input.get(field).is_none()
             {
-                return Err(format!("Missing required field: {}", field));
+                return Err(format!("Missing required field: {field}"));
             }
         }
         Ok(())

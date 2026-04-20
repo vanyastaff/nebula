@@ -10,7 +10,12 @@
 
 use std::sync::Arc;
 
-use nebula_log::observability::*;
+use nebula_log::observability::{
+    EventFilter, ExecutionContext, GlobalContext, LogLevel, LoggerResource, LoggingHook,
+    NodeContext, ObservabilityEvent, ObservabilityFieldValue, ObservabilityFieldVisitor,
+    ObservabilityHook, ResourceAwareAdapter, ResourceAwareHook, emit_event, register_hook,
+    shutdown_hooks,
+};
 use tracing::Level;
 
 /// Custom event for workflow operations
@@ -169,9 +174,7 @@ fn main() {
     struct PanickingHook;
     impl ObservabilityHook for PanickingHook {
         fn on_event(&self, event: &dyn ObservabilityEvent) {
-            if event.name() == "test.panic" {
-                panic!("Intentional panic");
-            }
+            assert!(event.name() != "test.panic", "Intentional panic");
         }
     }
 

@@ -346,7 +346,7 @@ mod tests {
     #[test]
     fn clone_preserves_projected_value() {
         let snap = token_snapshot();
-        let cloned = snap.clone();
+        let cloned = snap;
         let token = cloned.project::<SecretToken>().unwrap();
         token.token().expose_secret(|t| assert_eq!(t, "test-token"));
         assert_eq!(cloned.kind(), "api_key");

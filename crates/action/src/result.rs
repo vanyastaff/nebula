@@ -390,11 +390,11 @@ mod duration_ms {
         u64::try_from(d.as_millis()).unwrap_or(u64::MAX)
     }
 
-    pub fn serialize<S: Serializer>(duration: &Duration, s: S) -> Result<S::Ok, S::Error> {
+    pub(super) fn serialize<S: Serializer>(duration: &Duration, s: S) -> Result<S::Ok, S::Error> {
         millis_saturating(duration).serialize(s)
     }
 
-    pub fn deserialize<'de, D: Deserializer<'de>>(d: D) -> Result<Duration, D::Error> {
+    pub(super) fn deserialize<'de, D: Deserializer<'de>>(d: D) -> Result<Duration, D::Error> {
         let millis = u64::deserialize(d)?;
         Ok(Duration::from_millis(millis))
     }
@@ -405,7 +405,10 @@ mod duration_opt_ms {
 
     use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
-    pub fn serialize<S: Serializer>(duration: &Option<Duration>, s: S) -> Result<S::Ok, S::Error> {
+    pub(super) fn serialize<S: Serializer>(
+        duration: &Option<Duration>,
+        s: S,
+    ) -> Result<S::Ok, S::Error> {
         match duration {
             Some(d) => u64::try_from(d.as_millis())
                 .unwrap_or(u64::MAX)
@@ -414,7 +417,9 @@ mod duration_opt_ms {
         }
     }
 
-    pub fn deserialize<'de, D: Deserializer<'de>>(d: D) -> Result<Option<Duration>, D::Error> {
+    pub(super) fn deserialize<'de, D: Deserializer<'de>>(
+        d: D,
+    ) -> Result<Option<Duration>, D::Error> {
         let opt: Option<u64> = Option::deserialize(d)?;
         Ok(opt.map(Duration::from_millis))
     }
@@ -929,9 +934,9 @@ mod tests {
     fn wait_result() {
         let result: ActionResult<()> = ActionResult::Wait {
             condition: WaitCondition::Duration {
-                duration: Duration::from_secs(60),
+                duration: Duration::from_mins(1),
             },
-            timeout: Some(Duration::from_secs(300)),
+            timeout: Some(Duration::from_mins(5)),
             partial_output: None,
         };
         assert!(result.is_waiting());
@@ -966,7 +971,7 @@ mod tests {
         match mapped {
             ActionResult::Skip { reason, output } => {
                 assert_eq!(reason, "skip");
-                assert_eq!(output.unwrap().as_value().map(|s| s.as_str()), Some("3"));
+                assert_eq!(output.unwrap().as_value().map(String::as_str), Some("3"));
             },
             _ => panic!("expected Skip"),
         }
@@ -1013,7 +1018,7 @@ mod tests {
         let mapped = r.map_output(|n| format!("result:{n}"));
         match mapped {
             ActionResult::Break { output, reason } => {
-                assert_eq!(output.as_value().map(|s| s.as_str()), Some("result:42"));
+                assert_eq!(output.as_value().map(String::as_str), Some("result:42"));
                 assert_eq!(reason, BreakReason::Completed);
             },
             _ => panic!("expected Break"),
@@ -1087,9 +1092,9 @@ mod tests {
     fn map_output_wait() {
         let r: ActionResult<String> = ActionResult::Wait {
             condition: WaitCondition::Duration {
-                duration: Duration::from_secs(60),
+                duration: Duration::from_mins(1),
             },
-            timeout: Some(Duration::from_secs(300)),
+            timeout: Some(Duration::from_mins(5)),
             partial_output: Some(ActionOutput::Value("partial".into())),
         };
         let mapped = r.map_output(|s| s.len());
@@ -1100,7 +1105,7 @@ mod tests {
                 ..
             } => {
                 assert_eq!(partial_output.unwrap().into_value(), Some(7));
-                assert_eq!(timeout, Some(Duration::from_secs(300)));
+                assert_eq!(timeout, Some(Duration::from_mins(5)));
             },
             _ => panic!("expected Wait"),
         }
@@ -1164,7 +1169,7 @@ mod tests {
         match mapped.unwrap() {
             ActionResult::Skip { reason, output } => {
                 assert_eq!(reason, "filtered");
-                assert_eq!(output.unwrap().as_value().map(|s| s.as_str()), Some("3"));
+                assert_eq!(output.unwrap().as_value().map(String::as_str), Some("3"));
             },
             _ => panic!("expected Skip"),
         }
@@ -1280,7 +1285,7 @@ mod tests {
     fn into_primary_output_wait_none() {
         let r: ActionResult<i32> = ActionResult::Wait {
             condition: WaitCondition::Duration {
-                duration: Duration::from_secs(60),
+                duration: Duration::from_mins(1),
             },
             timeout: None,
             partial_output: None,
@@ -1292,7 +1297,7 @@ mod tests {
     fn into_primary_output_wait_some() {
         let r: ActionResult<i32> = ActionResult::Wait {
             condition: WaitCondition::Duration {
-                duration: Duration::from_secs(60),
+                duration: Duration::from_mins(1),
             },
             timeout: None,
             partial_output: Some(ActionOutput::Value(33)),
@@ -1510,7 +1515,7 @@ mod tests {
         assert!(!result.is_continue());
         match result {
             ActionResult::Break { output, reason } => {
-                assert_eq!(output.as_value().map(|s| s.as_str()), Some("done"));
+                assert_eq!(output.as_value().map(String::as_str), Some("done"));
                 assert_eq!(reason, BreakReason::Completed);
             },
             _ => panic!("expected Break"),

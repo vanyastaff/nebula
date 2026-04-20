@@ -279,8 +279,7 @@ impl ValidationError {
     pub fn severity(&self) -> ErrorSeverity {
         self.extras
             .as_ref()
-            .map(|e| e.severity)
-            .unwrap_or(ErrorSeverity::Error)
+            .map_or(ErrorSeverity::Error, |e| e.severity)
     }
 
     /// Returns help text if available.
@@ -338,7 +337,7 @@ impl ValidationError {
             "params": params,
             "severity": format!("{:?}", self.severity()),
             "help": self.help(),
-            "nested": self.nested().iter().map(|e| e.to_json_value()).collect::<Vec<_>>(),
+            "nested": self.nested().iter().map(ValidationError::to_json_value).collect::<Vec<_>>(),
         })
     }
 
@@ -392,13 +391,12 @@ pub(crate) fn render_template<'a>(
                 out.push_str(&name);
                 continue;
             }
-            match params.iter().find(|(k, _)| k.as_ref() == name) {
-                Some((_, v)) => out.push_str(v.as_ref()),
-                None => {
-                    out.push('{');
-                    out.push_str(&name);
-                    out.push('}');
-                },
+            if let Some((_, v)) = params.iter().find(|(k, _)| k.as_ref() == name) {
+                out.push_str(v.as_ref());
+            } else {
+                out.push('{');
+                out.push_str(&name);
+                out.push('}');
             }
         } else if c == '}' {
             if matches!(chars.peek(), Some((_, '}'))) {

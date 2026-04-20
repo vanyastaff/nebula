@@ -130,7 +130,7 @@ pub enum TokenKind<'a> {
     Eof,
 }
 
-impl<'a> TokenKind<'a> {
+impl TokenKind<'_> {
     /// Check if this token is a literal value
     pub fn is_literal(&self) -> bool {
         matches!(
@@ -215,22 +215,22 @@ impl<'a> TokenKind<'a> {
     }
 }
 
-impl<'a> std::fmt::Display for Token<'a> {
+impl std::fmt::Display for Token<'_> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "{}", self.kind)
     }
 }
 
-impl<'a> std::fmt::Display for TokenKind<'a> {
+impl std::fmt::Display for TokenKind<'_> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            TokenKind::Integer(n) => write!(f, "{}", n),
-            TokenKind::Float(n) => write!(f, "{}", n),
-            TokenKind::String(s) => write!(f, "\"{}\"", s),
-            TokenKind::Boolean(b) => write!(f, "{}", b),
+            TokenKind::Integer(n) => write!(f, "{n}"),
+            TokenKind::Float(n) => write!(f, "{n}"),
+            TokenKind::String(s) => write!(f, "\"{s}\""),
+            TokenKind::Boolean(b) => write!(f, "{b}"),
             TokenKind::Null => write!(f, "null"),
-            TokenKind::Identifier(s) => write!(f, "{}", s),
-            TokenKind::Variable(s) => write!(f, "${}", s),
+            TokenKind::Identifier(s) => write!(f, "{s}"),
+            TokenKind::Variable(s) => write!(f, "${s}"),
             TokenKind::Plus => write!(f, "+"),
             TokenKind::Minus => write!(f, "-"),
             TokenKind::Star => write!(f, "*"),

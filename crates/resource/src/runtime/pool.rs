@@ -841,7 +841,7 @@ async fn release_entry<R>(
     entry: PoolEntry<R>,
     tainted: bool,
     current_fp: u64,
-    max_lifetime: Option<std::time::Duration>,
+    max_lifetime: Option<Duration>,
     idle: Arc<Mutex<VecDeque<PoolEntry<R>>>>,
 ) where
     R: Pooled + Send + Sync + 'static,
@@ -1019,7 +1019,7 @@ mod tests {
             _config: &PoolTestConfig,
             _auth: &(),
             _ctx: &dyn Ctx,
-        ) -> impl std::future::Future<Output = Result<u32, MockError>> + Send {
+        ) -> impl Future<Output = Result<u32, MockError>> + Send {
             let fail = self.fail_create.load(Ordering::Relaxed);
             async move {
                 if fail {
@@ -1030,10 +1030,7 @@ mod tests {
             }
         }
 
-        fn check(
-            &self,
-            _runtime: &u32,
-        ) -> impl std::future::Future<Output = Result<(), MockError>> + Send {
+        fn check(&self, _runtime: &u32) -> impl Future<Output = Result<(), MockError>> + Send {
             let fail = self.fail_check.load(Ordering::Relaxed);
             async move {
                 if fail {
@@ -1098,7 +1095,7 @@ mod tests {
 
         drop(handle);
         // Give release queue time to process.
-        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        tokio::time::sleep(Duration::from_millis(50)).await;
 
         // Instance should be recycled back to idle.
         assert_eq!(pool.idle_count().await, 1);
@@ -1134,7 +1131,7 @@ mod tests {
             .await
             .unwrap();
         drop(handle);
-        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        tokio::time::sleep(Duration::from_millis(50)).await;
         assert_eq!(pool.idle_count().await, 1);
 
         // Second acquire should reuse the idle instance.
@@ -1153,7 +1150,7 @@ mod tests {
         assert!(handle2.is_ok());
 
         drop(handle2);
-        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        tokio::time::sleep(Duration::from_millis(50)).await;
 
         drop(rq);
         ReleaseQueue::shutdown(rq_handle).await;
@@ -1188,7 +1185,7 @@ mod tests {
             .await
             .unwrap();
         drop(handle);
-        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        tokio::time::sleep(Duration::from_millis(50)).await;
         assert_eq!(pool.idle_count().await, 1);
 
         // Now mark broken — next acquire should destroy the idle instance
@@ -1210,7 +1207,7 @@ mod tests {
         assert!(handle2.is_ok());
 
         drop(handle2);
-        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        tokio::time::sleep(Duration::from_millis(50)).await;
 
         // The broken instance should have been destroyed, not returned to idle.
         assert_eq!(pool.idle_count().await, 0);
@@ -1246,7 +1243,7 @@ mod tests {
             .unwrap();
         handle.taint();
         drop(handle);
-        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        tokio::time::sleep(Duration::from_millis(50)).await;
 
         // Tainted — should not be in idle.
         assert_eq!(pool.idle_count().await, 0);
@@ -1291,8 +1288,7 @@ mod tests {
     async fn semaphore_timeout_sanity() {
         // Minimal test: semaphore with 0 permits should timeout.
         let sem = Arc::new(Semaphore::new(0));
-        let result =
-            tokio::time::timeout(std::time::Duration::from_millis(100), sem.acquire_owned()).await;
+        let result = tokio::time::timeout(Duration::from_millis(100), sem.acquire_owned()).await;
         assert!(result.is_err(), "should have timed out");
     }
 
@@ -1306,7 +1302,7 @@ mod tests {
         let resource = MockPool::new();
         let config = Config {
             max_size: 1,
-            create_timeout: std::time::Duration::from_millis(200),
+            create_timeout: Duration::from_millis(200),
             ..Config::default()
         };
         let pool = PoolRuntime::<MockPool>::new(config, 1);
@@ -1365,7 +1361,7 @@ mod tests {
         let resource = MockPool::new();
         let config = Config {
             max_size: 5,
-            idle_timeout: Some(std::time::Duration::from_millis(50)),
+            idle_timeout: Some(Duration::from_millis(50)),
             max_lifetime: None,
             ..Config::default()
         };
@@ -1373,7 +1369,9 @@ mod tests {
 
         // Push two entries: one returned long ago (should be evicted),
         // one returned just now (should be kept).
-        let long_ago = Instant::now() - std::time::Duration::from_millis(200);
+        let long_ago = Instant::now()
+            .checked_sub(Duration::from_millis(200))
+            .unwrap();
         push_idle_entry(&pool, Instant::now(), Some(long_ago), 1).await;
         push_idle_entry(&pool, Instant::now(), Some(Instant::now()), 1).await;
 
@@ -1389,13 +1387,15 @@ mod tests {
         let config = Config {
             max_size: 5,
             idle_timeout: None,
-            max_lifetime: Some(std::time::Duration::from_millis(50)),
+            max_lifetime: Some(Duration::from_millis(50)),
             ..Config::default()
         };
         let pool = PoolRuntime::<MockPool>::new(config, 1);
 
         // One old entry (should be evicted), one fresh (should be kept).
-        let old_creation = Instant::now() - std::time::Duration::from_millis(200);
+        let old_creation = Instant::now()
+            .checked_sub(Duration::from_millis(200))
+            .unwrap();
         push_idle_entry(&pool, old_creation, Some(Instant::now()), 1).await;
         push_idle_entry(&pool, Instant::now(), Some(Instant::now()), 1).await;
 
@@ -1433,8 +1433,8 @@ mod tests {
         let resource = MockPool::new();
         let config = Config {
             max_size: 5,
-            idle_timeout: Some(std::time::Duration::from_secs(300)),
-            max_lifetime: Some(std::time::Duration::from_secs(1800)),
+            idle_timeout: Some(Duration::from_mins(5)),
+            max_lifetime: Some(Duration::from_mins(30)),
             ..Config::default()
         };
         let pool = PoolRuntime::<MockPool>::new(config, 1);

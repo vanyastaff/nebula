@@ -593,11 +593,11 @@ mod tests {
             "first label key should use the sanitized base name:\n{out}"
         );
         assert!(
-            out.contains("__") && out.contains(r#"a_b__"#),
+            out.contains("__") && out.contains(r"a_b__"),
             "second colliding key should be suffixed with a stable hash:\n{out}"
         );
         assert!(
-            out.contains(r#"a_b__"#) && out.contains(r#"="space""#),
+            out.contains(r"a_b__") && out.contains(r#"="space""#),
             "both values should be present with distinct keys:\n{out}"
         );
     }

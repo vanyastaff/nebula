@@ -88,12 +88,7 @@ pub const DEFAULT_EXECUTION_LEASE_HEARTBEAT_INTERVAL: Duration = Duration::from_
 /// credentials, passing the credential ID. The callee is responsible for refreshing
 /// the credential (e.g., rotating short-lived tokens) before the action resolves it.
 type CredentialRefreshFn = Arc<
-    dyn Fn(
-            &str,
-        )
-            -> Pin<Box<dyn Future<Output = Result<(), nebula_action::error::ActionError>> + Send>>
-        + Send
-        + Sync,
+    dyn Fn(&str) -> Pin<Box<dyn Future<Output = Result<(), ActionError>> + Send>> + Send + Sync,
 >;
 
 /// Type alias for the boxed async credential-resolution function stored on the engine.
@@ -214,7 +209,7 @@ pub struct WorkflowEngine {
 type RunningRegistrationId = u64;
 
 /// Process-wide monotonic counter for registration nonces.
-static NEXT_REGISTRATION_ID: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+static NEXT_REGISTRATION_ID: AtomicU64 = AtomicU64::new(1);
 
 /// Value stored in [`WorkflowEngine::running`]. Pairs the live
 /// [`CancellationToken`] with the [`RunningRegistrationId`] nonce so the
@@ -436,13 +431,11 @@ impl WorkflowEngine {
     pub fn with_credential_refresh<F, Fut>(mut self, refresh_fn: F) -> Self
     where
         F: Fn(&str) -> Fut + Send + Sync + 'static,
-        Fut: Future<Output = Result<(), nebula_action::error::ActionError>> + Send + 'static,
+        Fut: Future<Output = Result<(), ActionError>> + Send + 'static,
     {
         self.credential_refresh = Some(Arc::new(move |id: &str| {
             Box::pin(refresh_fn(id))
-                as Pin<
-                    Box<dyn Future<Output = Result<(), nebula_action::error::ActionError>> + Send>,
-                >
+                as Pin<Box<dyn Future<Output = Result<(), ActionError>> + Send>>
         }));
         self
     }
@@ -681,8 +674,7 @@ impl WorkflowEngine {
             .filter(|n| {
                 predecessors
                     .get(*n)
-                    .map(|preds| preds.iter().all(|p| pinned.contains(p)))
-                    .unwrap_or(true) // no predecessors = entry node
+                    .is_none_or(|preds| preds.iter().all(|p| pinned.contains(p))) // no predecessors = entry node
             })
             .cloned()
             .collect();
@@ -856,7 +848,7 @@ impl WorkflowEngine {
             ticker.tick().await;
             loop {
                 tokio::select! {
-                    _ = heartbeat_shutdown_cloned.cancelled() => {
+                    () = heartbeat_shutdown_cloned.cancelled() => {
                         // Normal shutdown from the caller after frontier exits.
                         break;
                     }
@@ -1025,8 +1017,7 @@ impl WorkflowEngine {
         // `Leased`, final-persist errors — and is defensive against
         // clobbering a winner's registration if a losing attempt ever
         // slips through.
-        let registration_id =
-            NEXT_REGISTRATION_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let registration_id = NEXT_REGISTRATION_ID.fetch_add(1, Ordering::Relaxed);
         self.running.insert(
             execution_id,
             RunningEntry {
@@ -1400,7 +1391,7 @@ impl WorkflowEngine {
             }
             let incoming = graph.incoming_connections(node_key.clone());
             let required = incoming.len();
-            let resolved = resolved_edges.get(node_key).cloned().unwrap_or(0);
+            let resolved = resolved_edges.get(node_key).copied().unwrap_or(0);
 
             if required == 0 || resolved == required {
                 seed_nodes.push(node_key.clone());
@@ -1415,18 +1406,17 @@ impl WorkflowEngine {
         // `ExecutionBudget::default()` with a warning so the degraded
         // limits are visible in logs instead of silently swapping
         // operator-configured limits for default ones.
-        let budget = match exec_state.budget.clone() {
-            Some(b) => b,
-            None => {
-                tracing::warn!(
-                    %execution_id,
-                    "resume: persisted execution state is missing budget; \
-                     falling back to ExecutionBudget::default() — \
-                     concurrency, retry, and timeout limits from the \
-                     original run are not being honoured (issue #289)"
-                );
-                ExecutionBudget::default()
-            },
+        let budget = if let Some(b) = exec_state.budget.clone() {
+            b
+        } else {
+            tracing::warn!(
+                %execution_id,
+                "resume: persisted execution state is missing budget; \
+                 falling back to ExecutionBudget::default() — \
+                 concurrency, retry, and timeout limits from the \
+                 original run are not being honoured (issue #289)"
+            );
+            ExecutionBudget::default()
         };
         let semaphore = Arc::new(Semaphore::new(budget.max_concurrent_nodes));
         let cancel_token = CancellationToken::new();
@@ -1447,8 +1437,7 @@ impl WorkflowEngine {
         // the lease is ours (ADR-0015 single-runner fence). Symmetric to
         // `execute_workflow` — see its comment for the full rationale
         // and the #482 Copilot review context.
-        let registration_id =
-            NEXT_REGISTRATION_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let registration_id = NEXT_REGISTRATION_ID.fetch_add(1, Ordering::Relaxed);
         self.running.insert(
             execution_id,
             RunningEntry {
@@ -1471,17 +1460,16 @@ impl WorkflowEngine {
         // execution state. Legacy states that predate #311 deserialize
         // the field as `None` — fall back to `Null` with a warning so
         // the regression is visible in logs.
-        let workflow_input = match exec_state.workflow_input.clone() {
-            Some(v) => v,
-            None => {
-                tracing::warn!(
-                    %execution_id,
-                    "resume: persisted execution state is missing workflow_input; \
-                     falling back to Null — entry nodes that did not complete \
-                     on the original run will receive Null input"
-                );
-                serde_json::Value::Null
-            },
+        let workflow_input = if let Some(v) = exec_state.workflow_input.clone() {
+            v
+        } else {
+            tracing::warn!(
+                %execution_id,
+                "resume: persisted execution state is missing workflow_input; \
+                 falling back to Null — entry nodes that did not complete \
+                 on the original run will receive Null input"
+            );
+            serde_json::Value::Null
         };
         let failed_node = self
             .run_frontier(
@@ -1864,9 +1852,9 @@ impl WorkflowEngine {
                 .map(|max_dur| max_dur.saturating_sub(started.elapsed()));
             let sleep_fut = async {
                 if let Some(d) = wall_clock_remaining {
-                    tokio::time::sleep(d).await
+                    tokio::time::sleep(d).await;
                 } else {
-                    std::future::pending::<()>().await
+                    std::future::pending::<()>().await;
                 }
             };
             tokio::pin!(sleep_fut);
@@ -1912,9 +1900,7 @@ impl WorkflowEngine {
                     task_nodes.remove(&task_id);
                     total_retries.fetch_add(1, Ordering::Relaxed);
                     let err = EngineError::Runtime(nebula_runtime::RuntimeError::ActionError(
-                        nebula_action::error::ActionError::retryable(
-                            "Action retry is not supported by the engine",
-                        ),
+                        ActionError::retryable("Action retry is not supported by the engine"),
                     ));
                     mark_node_failed(exec_state, node_key.clone(), &err);
                     let err_str = err.to_string();
@@ -1979,9 +1965,8 @@ impl WorkflowEngine {
 
                     // Track output size for budget enforcement
                     if let Some(output) = outputs.get(&node_key) {
-                        let bytes = serde_json::to_string(output.value())
-                            .map(|s| s.len() as u64)
-                            .unwrap_or(0);
+                        let bytes =
+                            serde_json::to_string(output.value()).map_or(0, |s| s.len() as u64);
                         total_output_bytes.fetch_add(bytes, Ordering::Relaxed);
                     }
 
@@ -2014,8 +1999,7 @@ impl WorkflowEngine {
                     let attempt = exec_state
                         .node_states
                         .get(&node_key)
-                        .map(|ns| ns.attempt_count().max(1) as u32)
-                        .unwrap_or(1);
+                        .map_or(1, |ns| ns.attempt_count().max(1) as u32);
                     self.record_node_result(
                         execution_id,
                         node_key.clone(),
@@ -2604,8 +2588,7 @@ impl WorkflowEngine {
             let attempt = exec_state
                 .node_states
                 .get(&node_key)
-                .map(|ns| ns.attempt_count().max(1) as u32)
-                .unwrap_or(1);
+                .map_or(1, |ns| ns.attempt_count().max(1) as u32);
             if let Err(e) = repo
                 .save_node_output(
                     execution_id,
@@ -2854,7 +2837,7 @@ impl WorkflowEngine {
         &self,
         _execution_id: ExecutionId,
         status: ExecutionStatus,
-        elapsed: std::time::Duration,
+        elapsed: Duration,
         _failed_node: &Option<(NodeKey, String)>,
     ) {
         match status {
@@ -2960,7 +2943,7 @@ impl NodeTask {
                 Ok(()) => {},
                 Err(source) => {
                     let action_err =
-                        ActionError::credential_refresh_failed(self.action_key.to_string(), source);
+                        ActionError::credential_refresh_failed(self.action_key.clone(), source);
                     return (self.node_key, Err(EngineError::Action(action_err)));
                 },
             }
@@ -2986,7 +2969,7 @@ impl NodeTask {
                     error = ?e,
                     "rate limit exceeded; failing node"
                 );
-                let action_err = nebula_action::error::ActionError::retryable_with_hint(
+                let action_err = ActionError::retryable_with_hint(
                     format!("rate limit exceeded: {e:?}"),
                     nebula_action::error::RetryHintCode::RateLimited,
                 );
@@ -3067,9 +3050,9 @@ fn process_outgoing_edges(
         }
 
         // Check if target is now fully resolved
-        let resolved = resolved_edges.get(&target).cloned().unwrap_or(0);
-        let required = required_count.get(&target).cloned().unwrap_or(0);
-        let activated = activated_edges.get(&target).map_or(0, |s| s.len());
+        let resolved = resolved_edges.get(&target).copied().unwrap_or(0);
+        let required = required_count.get(&target).copied().unwrap_or(0);
+        let activated = activated_edges.get(&target).map_or(0, HashSet::len);
 
         if resolved == required {
             if activated > 0 {
@@ -3255,9 +3238,9 @@ fn propagate_skip(
         // the same skipped source to the same target are each counted.
         *resolved_edges.entry(target.clone()).or_insert(0) += 1;
 
-        let resolved = resolved_edges.get(&target).cloned().unwrap_or(0);
-        let required = required_count.get(&target).cloned().unwrap_or(0);
-        let activated = activated_edges.get(&target).map_or(0, |s| s.len());
+        let resolved = resolved_edges.get(&target).copied().unwrap_or(0);
+        let required = required_count.get(&target).copied().unwrap_or(0);
+        let activated = activated_edges.get(&target).map_or(0, HashSet::len);
 
         if resolved == required {
             if activated > 0 {
@@ -3465,12 +3448,12 @@ fn route_failure_edges(
 /// Uses the versioned transition API (issue #255) so CAS readers see
 /// the parent version move.
 fn mark_node_skipped(exec_state: &mut ExecutionState, node_key: NodeKey) {
-    let _ = exec_state.transition_node(node_key.clone(), NodeState::Skipped);
+    let _ = exec_state.transition_node(node_key, NodeState::Skipped);
 }
 
 /// Mark a node as completed in the execution state.
 fn mark_node_completed(exec_state: &mut ExecutionState, node_key: NodeKey) {
-    let _ = exec_state.transition_node(node_key.clone(), NodeState::Completed);
+    let _ = exec_state.transition_node(node_key, NodeState::Completed);
 }
 
 /// Mark a node as failed in the execution state.
@@ -3744,8 +3727,7 @@ fn resolve_node_input_with_support(
     } else if flow_predecessors.len() == 1 {
         outputs
             .get(&flow_predecessors[0])
-            .map(|v| v.value().clone())
-            .unwrap_or(serde_json::Value::Null)
+            .map_or(serde_json::Value::Null, |v| v.value().clone())
     } else {
         let mut merged = serde_json::Map::new();
         for pred_id in &flow_predecessors {
@@ -4195,7 +4177,7 @@ mod tests {
         let ctx = TriggerContext::new(
             WorkflowId::new(),
             node_key!("test"),
-            tokio_util::sync::CancellationToken::new(),
+            CancellationToken::new(),
         );
         assert!(!ctx.has_credential_id("missing").await);
         assert!(
@@ -4260,7 +4242,7 @@ mod tests {
             Ok(ActionResult::Branch {
                 selected: self.selected.clone(),
                 output: nebula_action::output::ActionOutput::Value(input),
-                alternatives: std::collections::HashMap::new(),
+                alternatives: HashMap::new(),
             })
         }
     }
@@ -5219,7 +5201,7 @@ mod tests {
     struct FailAtTransitionN {
         inner: Arc<nebula_storage::InMemoryExecutionRepo>,
         fail_on: u32,
-        calls: std::sync::atomic::AtomicU32,
+        calls: AtomicU32,
     }
 
     impl FailAtTransitionN {
@@ -5227,13 +5209,13 @@ mod tests {
             Self {
                 inner,
                 fail_on,
-                calls: std::sync::atomic::AtomicU32::new(0),
+                calls: AtomicU32::new(0),
             }
         }
     }
 
     #[async_trait::async_trait]
-    impl nebula_storage::ExecutionRepo for FailAtTransitionN {
+    impl ExecutionRepo for FailAtTransitionN {
         async fn get_state(
             &self,
             id: ExecutionId,
@@ -5247,7 +5229,7 @@ mod tests {
             expected_version: u64,
             new_state: serde_json::Value,
         ) -> Result<bool, nebula_storage::ExecutionRepoError> {
-            let n = self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst) + 1;
+            let n = self.calls.fetch_add(1, Ordering::SeqCst) + 1;
             if n == self.fail_on {
                 return Err(nebula_storage::ExecutionRepoError::Connection(format!(
                     "injected transition failure at call #{n}"
@@ -5462,7 +5444,7 @@ mod tests {
         let failing_repo = Arc::new(FailAtTransitionN::new(base, 1));
 
         let (engine, _) = make_engine(registry);
-        let (event_tx, mut event_rx) = tokio::sync::mpsc::channel(64);
+        let (event_tx, mut event_rx) = mpsc::channel(64);
         let engine = engine
             .with_execution_repo(failing_repo)
             .with_workflow_repo(workflow_repo)
@@ -5621,7 +5603,7 @@ mod tests {
         let failing_repo = Arc::new(FailAtTransitionN::new(base, 1));
 
         let (engine, _) = make_engine(registry);
-        let (event_tx, mut event_rx) = tokio::sync::mpsc::channel(64);
+        let (event_tx, mut event_rx) = mpsc::channel(64);
         let engine = engine
             .with_execution_repo(failing_repo)
             .with_workflow_repo(workflow_repo)
@@ -5814,7 +5796,7 @@ mod tests {
             .unwrap()
             .expect("execution state must be persisted after first run");
         let state_str = serde_json::to_string(&state_json).unwrap();
-        let exec_state: nebula_execution::state::ExecutionState =
+        let exec_state: ExecutionState =
             serde_json::from_str(&state_str).expect("deserialize persisted execution state");
         let idem_key = exec_state.idempotency_key_for_node(n.clone());
 
@@ -6374,7 +6356,7 @@ mod tests {
         async fn execute(
             &self,
             input: serde_json::Value,
-            ctx: &nebula_action::ActionContext,
+            ctx: &ActionContext,
         ) -> Result<ActionResult<serde_json::Value>, ActionError> {
             let id = input
                 .get("credential_id")
@@ -6401,7 +6383,7 @@ mod tests {
     /// Build a workflow with a single `CredProbeHandler` node that probes `cred_id`.
     fn probe_workflow(action: &str, cred_id: &str) -> WorkflowDefinition {
         let n1 = node_key!("probe");
-        let node = NodeDefinition::new(n1.clone(), "probe", action)
+        let node = NodeDefinition::new(n1, "probe", action)
             .unwrap()
             .with_parameter(
                 "credential_id",
@@ -7043,8 +7025,7 @@ mod tests {
             .expect("load_node_result should return the persisted ActionResult after #299");
         assert_eq!(
             persisted_record.kind, "Branch",
-            "persisted ActionResult for A should be the Branch variant, got: {:?}",
-            persisted_record
+            "persisted ActionResult for A should be the Branch variant, got: {persisted_record:?}"
         );
         assert_eq!(
             persisted_record
@@ -7070,7 +7051,7 @@ mod tests {
         inner: Arc<nebula_storage::InMemoryExecutionRepo>,
         mutate_before: u32,
         new_status: Option<String>,
-        calls: std::sync::atomic::AtomicU32,
+        calls: AtomicU32,
         injected: std::sync::atomic::AtomicBool,
     }
 
@@ -7084,14 +7065,14 @@ mod tests {
                 inner,
                 mutate_before,
                 new_status: new_status.map(ToOwned::to_owned),
-                calls: std::sync::atomic::AtomicU32::new(0),
+                calls: AtomicU32::new(0),
                 injected: std::sync::atomic::AtomicBool::new(false),
             }
         }
     }
 
     #[async_trait::async_trait]
-    impl nebula_storage::ExecutionRepo for ExternalMutateBeforeN {
+    impl ExecutionRepo for ExternalMutateBeforeN {
         async fn get_state(
             &self,
             id: ExecutionId,
@@ -7105,11 +7086,9 @@ mod tests {
             expected_version: u64,
             new_state: serde_json::Value,
         ) -> Result<bool, nebula_storage::ExecutionRepoError> {
-            let n = self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst) + 1;
+            let n = self.calls.fetch_add(1, Ordering::SeqCst) + 1;
             if n == self.mutate_before
-                && !self
-                    .injected
-                    .swap(true, std::sync::atomic::Ordering::SeqCst)
+                && !self.injected.swap(true, Ordering::SeqCst)
                 && let Ok(Some((current_version, mut current_state))) =
                     self.inner.get_state(id).await
             {
@@ -7500,7 +7479,7 @@ mod tests {
             .transition_status(ExecutionStatus::Completed)
             .unwrap();
 
-        let repo: Arc<dyn nebula_storage::ExecutionRepo> = inner.clone();
+        let repo: Arc<dyn ExecutionRepo> = inner.clone();
         let outcome = engine
             .persist_final_state(
                 &repo,
@@ -7594,7 +7573,7 @@ mod tests {
             .transition_status(ExecutionStatus::Completed)
             .unwrap();
 
-        let repo: Arc<dyn nebula_storage::ExecutionRepo> = inner.clone();
+        let repo: Arc<dyn ExecutionRepo> = inner.clone();
         let outcome = engine
             .persist_final_state(
                 &repo,
@@ -7789,7 +7768,7 @@ mod tests {
 
         // Poll the registry until the winner has published its token.
         // This synchronises on the exact moment the race window opens.
-        let t_wait = std::time::Instant::now();
+        let t_wait = Instant::now();
         loop {
             if engine.running.contains_key(&execution_id) {
                 break;

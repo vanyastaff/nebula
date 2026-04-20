@@ -8,7 +8,7 @@ use crate::{
 };
 
 /// Execute the `validate` command.
-pub fn execute(args: ValidateArgs, quiet: bool) -> anyhow::Result<ExitCode> {
+pub(crate) fn execute(args: ValidateArgs, quiet: bool) -> anyhow::Result<ExitCode> {
     let content = std::fs::read_to_string(&args.workflow)
         .with_context(|| format!("failed to read {}", args.workflow.display()))?;
 
@@ -30,7 +30,7 @@ pub fn execute(args: ValidateArgs, quiet: bool) -> anyhow::Result<ExitCode> {
 }
 
 /// Parse a workflow definition strictly (all fields required).
-pub fn parse_workflow(
+pub(crate) fn parse_workflow(
     content: &str,
     path: &std::path::Path,
 ) -> anyhow::Result<nebula_workflow::WorkflowDefinition> {
@@ -51,7 +51,7 @@ pub fn parse_workflow(
 ///
 /// Fills missing: `id`, `owner_id`, `created_at`, `updated_at`, `version`, `schema_version`.
 /// Uses JSON string roundtrip to satisfy `#[serde(borrow)]` on ActionKey.
-pub fn parse_workflow_lenient(
+pub(crate) fn parse_workflow_lenient(
     content: &str,
     path: &std::path::Path,
 ) -> anyhow::Result<nebula_workflow::WorkflowDefinition> {

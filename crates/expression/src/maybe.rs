@@ -321,7 +321,7 @@ where
         D: Deserializer<'de>,
     {
         // First try to deserialize as a string to check if it's an expression
-        let value = serde_json::Value::deserialize(deserializer)?;
+        let value = Value::deserialize(deserializer)?;
 
         if let Some(s) = value.as_str() {
             // If it's a string, check if it looks like an expression

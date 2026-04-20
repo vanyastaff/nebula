@@ -196,13 +196,13 @@ pub(crate) fn check_arg_count(
     args: &[Value],
     expected: usize,
 ) -> ExpressionResult<()> {
-    if args.len() != expected {
+    if args.len() == expected {
+        Ok(())
+    } else {
         Err(ExpressionError::expression_invalid_argument(
             func_name,
             format!("Expected {} arguments, got {}", expected, args.len()),
         ))
-    } else {
-        Ok(())
     }
 }
 
@@ -245,7 +245,7 @@ pub(crate) fn get_string_arg<'a>(
         .ok_or_else(|| {
             ExpressionError::expression_invalid_argument(
                 func_name,
-                format!("Missing argument '{}' at position {}", arg_name, index),
+                format!("Missing argument '{arg_name}' at position {index}"),
             )
         })?
         .as_str()
@@ -271,7 +271,7 @@ pub(crate) fn get_int_arg(
     let val = args.get(index).ok_or_else(|| {
         ExpressionError::expression_invalid_argument(
             func_name,
-            format!("Missing argument '{}' at position {}", arg_name, index),
+            format!("Missing argument '{arg_name}' at position {index}"),
         )
     })?;
 
@@ -299,7 +299,7 @@ pub(crate) fn get_int_arg_with_policy(
     let val = args.get(index).ok_or_else(|| {
         ExpressionError::expression_invalid_argument(
             func_name,
-            format!("Missing argument '{}' at position {}", arg_name, index),
+            format!("Missing argument '{arg_name}' at position {index}"),
         )
     })?;
 
@@ -339,7 +339,7 @@ pub(crate) fn get_number_arg(
     let val = args.get(index).ok_or_else(|| {
         ExpressionError::expression_invalid_argument(
             func_name,
-            format!("Missing argument '{}' at position {}", arg_name, index),
+            format!("Missing argument '{arg_name}' at position {index}"),
         )
     })?;
 
@@ -367,7 +367,7 @@ pub(crate) fn get_number_arg_with_policy(
     let val = args.get(index).ok_or_else(|| {
         ExpressionError::expression_invalid_argument(
             func_name,
-            format!("Missing argument '{}' at position {}", arg_name, index),
+            format!("Missing argument '{arg_name}' at position {index}"),
         )
     })?;
 
@@ -408,7 +408,7 @@ pub(crate) fn get_array_arg<'a>(
         .ok_or_else(|| {
             ExpressionError::expression_invalid_argument(
                 func_name,
-                format!("Missing argument '{}' at position {}", arg_name, index),
+                format!("Missing argument '{arg_name}' at position {index}"),
             )
         })?
         .as_array()
@@ -435,7 +435,7 @@ pub(crate) fn get_object_arg<'a>(
         .ok_or_else(|| {
             ExpressionError::expression_invalid_argument(
                 func_name,
-                format!("Missing argument '{}' at position {}", arg_name, index),
+                format!("Missing argument '{arg_name}' at position {index}"),
             )
         })?
         .as_object()

@@ -35,7 +35,7 @@ pub const DUPLEX_PROTOCOL_VERSION: u32 = 2;
 /// Tagged by `kind`. Correlation IDs (`id`) are host-assigned `u64` values that
 /// the plugin echoes back in the corresponding response message. IDs are
 /// unique within a single plugin process lifetime.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum HostToPlugin {
     /// Invoke an action.
@@ -82,7 +82,7 @@ pub enum HostToPlugin {
 /// Tagged by `kind`. Plugins send these as responses to host requests
 /// (`ActionResult*`, `MetadataResponse`) or as plugin-initiated events
 /// (`RpcCall`, `Log`).
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum PluginToHost {
     /// Successful action result.

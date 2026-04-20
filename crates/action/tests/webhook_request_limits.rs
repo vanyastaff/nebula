@@ -66,7 +66,7 @@ fn try_new_accepts_max_header_count() {
 
 #[test]
 fn try_new_rejects_too_many_headers() {
-    let headers_owned: Vec<(String, String)> = (0..(MAX_HEADER_COUNT + 1))
+    let headers_owned: Vec<(String, String)> = (0..=MAX_HEADER_COUNT)
         .map(|i| (format!("x-h{i}"), "v".to_string()))
         .collect();
     let headers: Vec<(&str, &str)> = headers_owned
@@ -125,7 +125,7 @@ fn default_limits_match_documented_constants() {
 #[test]
 fn body_json_bounded_accepts_reasonable_nesting() {
     let body = br#"{"a":{"b":{"c":{"d":1}}}}"#;
-    let req = nebula_action::webhook::webhook_request_for_test(body, &[]).unwrap();
+    let req = webhook_request_for_test(body, &[]).unwrap();
     let v: serde_json::Value = req.body_json_bounded(64).expect("depth 4 fits under 64");
     assert_eq!(v["a"]["b"]["c"]["d"], 1);
 }
@@ -141,7 +141,7 @@ fn body_json_bounded_rejects_deep_nesting() {
     for _ in 0..100 {
         body.push('}');
     }
-    let req = nebula_action::webhook::webhook_request_for_test(body.as_bytes(), &[]).unwrap();
+    let req = webhook_request_for_test(body.as_bytes(), &[]).unwrap();
     let err = req
         .body_json_bounded::<serde_json::Value>(64)
         .expect_err("100 levels must exceed max_depth=64");
@@ -155,7 +155,7 @@ fn body_json_bounded_rejects_deep_nesting() {
 fn body_json_bounded_handles_arrays() {
     // Nested arrays should count toward depth the same as objects.
     let body = b"[[[[[[[[1]]]]]]]]";
-    let req = nebula_action::webhook::webhook_request_for_test(body, &[]).unwrap();
+    let req = webhook_request_for_test(body, &[]).unwrap();
     assert!(req.body_json_bounded::<serde_json::Value>(10).is_ok());
     assert!(req.body_json_bounded::<serde_json::Value>(5).is_err());
 }
@@ -164,7 +164,7 @@ fn body_json_bounded_handles_arrays() {
 fn body_json_bounded_ignores_braces_in_strings() {
     // A brace inside a string literal should NOT count toward depth.
     let body = br#"{"comment":"this has {{{ braces }}} inside"}"#;
-    let req = nebula_action::webhook::webhook_request_for_test(body, &[]).unwrap();
+    let req = webhook_request_for_test(body, &[]).unwrap();
     let v: serde_json::Value = req
         .body_json_bounded(2)
         .expect("string-bracketed braces must not inflate depth");
@@ -177,7 +177,7 @@ fn body_json_bounded_handles_escaped_quotes() {
     // prematurely — otherwise a { inside what looks like a string
     // would count as real depth.
     let body = br#"{"quote":"she said \"hello\"","next":1}"#;
-    let req = nebula_action::webhook::webhook_request_for_test(body, &[]).unwrap();
+    let req = webhook_request_for_test(body, &[]).unwrap();
     let v: serde_json::Value = req.body_json_bounded(8).unwrap();
     assert_eq!(v["quote"], "she said \"hello\"");
     assert_eq!(v["next"], 1);

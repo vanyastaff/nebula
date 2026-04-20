@@ -1,3 +1,8 @@
+#![allow(
+    unsafe_code,
+    reason = "env::{set_var, remove_var} are unsafe under edition 2024"
+)]
+
 use std::sync::{LazyLock, Mutex};
 
 use nebula_log::{Config, LogError, LoggerBuilder};

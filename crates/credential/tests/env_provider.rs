@@ -1,3 +1,8 @@
+#![allow(
+    unsafe_code,
+    reason = "env::{set_var, remove_var} are unsafe under edition 2024"
+)]
+
 //! Integration test for [`EnvKeyProvider::from_env`].
 //!
 //! Lives outside the crate proper because the crate applies

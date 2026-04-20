@@ -4,11 +4,11 @@
 //! current node detail, error panel, and execution log.
 
 #[cfg(feature = "tui")]
-pub mod app;
+pub(crate) mod app;
 #[cfg(feature = "tui")]
-pub mod event;
+pub(crate) mod event;
 #[cfg(feature = "tui")]
-pub mod render;
+pub(crate) mod render;
 
 #[cfg(feature = "tui")]
-pub use app::run_tui;
+pub(crate) use app::run_tui;

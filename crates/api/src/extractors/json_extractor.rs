@@ -24,7 +24,7 @@ where
     async fn from_request(req: Request, state: &S) -> Result<Self, Self::Rejection> {
         let Json(value) = Json::<T>::from_request(req, state)
             .await
-            .map_err(|err| ApiError::validation_message(format!("Invalid JSON: {}", err)))?;
+            .map_err(|err| ApiError::validation_message(format!("Invalid JSON: {err}")))?;
 
         NebulaValidate::validate(&value, &value).map_err(ApiError::from)?;
 

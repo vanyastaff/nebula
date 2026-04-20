@@ -100,7 +100,7 @@ fn sample_valid() -> WideRecord {
 fn sample_invalid() -> WideRecord {
     WideRecord {
         id: "!".into(),
-        name: "".into(),
+        name: String::new(),
         email: "not-an-email".into(),
         homepage: "not a url".into(),
         external_id: "not-a-uuid".into(),
@@ -127,11 +127,11 @@ fn bench_wide_struct_valid(c: &mut Criterion) {
     let subject = sample_valid();
 
     group.bench_function("validate_success", |b| {
-        b.iter(|| subject.validate(black_box(&subject)))
+        b.iter(|| subject.validate(black_box(&subject)));
     });
 
     group.bench_function("validate_fields_success", |b| {
-        b.iter(|| black_box(&subject).validate_fields())
+        b.iter(|| black_box(&subject).validate_fields());
     });
 
     group.finish();
@@ -142,7 +142,7 @@ fn bench_wide_struct_invalid(c: &mut Criterion) {
     let subject = sample_invalid();
 
     group.bench_function("validate_collect_all", |b| {
-        b.iter(|| black_box(&subject).validate_fields())
+        b.iter(|| black_box(&subject).validate_fields());
     });
 
     group.finish();

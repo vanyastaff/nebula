@@ -440,7 +440,7 @@ mod tests {
         let _ = executor
             .call(|| {
                 Box::pin(async {
-                    tokio::time::sleep(Duration::from_millis(100)).await;
+                    sleep(Duration::from_millis(100)).await;
                     Ok::<_, &str>("late")
                 })
             })

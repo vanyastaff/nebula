@@ -86,7 +86,10 @@ impl<'de> Deserialize<'de> for ValidSchema {
         let repr = ValidSchemaRepr::deserialize(deserializer)?;
         repr.fields
             .into_iter()
-            .fold(crate::schema::SchemaBuilder::default(), |b, f| b.add(f))
+            .fold(
+                crate::schema::SchemaBuilder::default(),
+                super::schema::SchemaBuilder::add,
+            )
             .build()
             .map_err(|report| serde::de::Error::custom(format!("invalid schema: {report:?}")))
     }
@@ -419,13 +422,13 @@ fn resolve_value<'v>(
                         Ok(v) => FieldValue::Literal(v),
                         Err(mut e) => {
                             // Attach path context and enforce the standard code.
-                            if e.code != "expression.runtime" {
+                            if e.code == "expression.runtime" {
+                                e.path = path.clone();
+                            } else {
                                 e = ValidationError::builder("expression.runtime")
                                     .at(path.clone())
                                     .message(e.message.clone())
                                     .build();
-                            } else {
-                                e.path = path.clone();
                             }
                             report.push(e);
                             FieldValue::Literal(serde_json::Value::Null)
@@ -439,7 +442,7 @@ fn resolve_value<'v>(
                 }
             },
             FieldValue::Object(map) => {
-                let mut out = indexmap::IndexMap::with_capacity(map.len());
+                let mut out = IndexMap::with_capacity(map.len());
                 for (k, v) in map {
                     let child_path = path.clone().join(k.clone());
                     let resolved = resolve_value(v, ctx, &child_path, report).await;

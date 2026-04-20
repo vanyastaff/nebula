@@ -253,7 +253,7 @@ mod tests {
         // Legacy payloads serialized before termination_reason existed
         // must deserialize with termination_reason == None.
         let id = ExecutionId::new();
-        let json = format!(r#"{{"execution_id":"{}","status":"completed"}}"#, id);
+        let json = format!(r#"{{"execution_id":"{id}","status":"completed"}}"#);
         let result: ExecutionResult = serde_json::from_str(&json).unwrap();
         assert!(result.termination_reason.is_none());
     }
@@ -261,7 +261,7 @@ mod tests {
     #[test]
     fn deserialize_minimal_json() {
         let id = ExecutionId::new();
-        let json = format!(r#"{{"execution_id":"{}","status":"completed"}}"#, id);
+        let json = format!(r#"{{"execution_id":"{id}","status":"completed"}}"#);
         let result: ExecutionResult = serde_json::from_str(&json).unwrap();
 
         assert_eq!(result.execution_id, id);

@@ -933,7 +933,7 @@ mod tests {
     fn assert_wait_macro_ok() {
         let result: Result<ActionResult<i32>, ActionError> = Ok(ActionResult::Wait {
             condition: crate::result::WaitCondition::Duration {
-                duration: Duration::from_secs(60),
+                duration: Duration::from_mins(1),
             },
             timeout: None,
             partial_output: None,
@@ -1014,8 +1014,7 @@ mod tests {
             _input: Self::Input,
             state: &mut Self::State,
             _ctx: &impl Context,
-        ) -> impl std::future::Future<Output = Result<ActionResult<Self::Output>, ActionError>> + Send
-        {
+        ) -> impl Future<Output = Result<ActionResult<Self::Output>, ActionError>> + Send {
             state.count += 1;
             let count = state.count;
             let max = self.max;
@@ -1097,12 +1096,12 @@ mod tests {
         fn start(
             &self,
             ctx: &TriggerContext,
-        ) -> impl std::future::Future<Output = Result<(), ActionError>> + Send {
+        ) -> impl Future<Output = Result<(), ActionError>> + Send {
             let emitter = Arc::clone(&ctx.emitter);
             let scheduler = Arc::clone(&ctx.scheduler);
             async move {
                 emitter.emit(serde_json::json!({"tick": 1})).await?;
-                scheduler.schedule_after(Duration::from_secs(60)).await?;
+                scheduler.schedule_after(Duration::from_mins(1)).await?;
                 Ok(())
             }
         }
@@ -1124,7 +1123,7 @@ mod tests {
         assert_eq!(harness.emit_count(), 1);
         assert_eq!(harness.emitted()[0], serde_json::json!({"tick": 1}));
         assert_eq!(harness.schedule_count(), 1);
-        assert_eq!(harness.scheduled()[0], Duration::from_secs(60));
+        assert_eq!(harness.scheduled()[0], Duration::from_mins(1));
 
         harness.stop().await.unwrap();
     }

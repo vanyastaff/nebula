@@ -6,7 +6,7 @@
 use nebula_engine::ExecutionResult;
 
 /// A recovery suggestion for a failed node.
-pub struct Suggestion {
+pub(crate) struct Suggestion {
     /// Node key that failed.
     pub node_key: String,
     /// What went wrong (short).
@@ -18,7 +18,7 @@ pub struct Suggestion {
 }
 
 /// Analyze execution result and generate recovery suggestions.
-pub fn suggest(result: &ExecutionResult) -> Vec<Suggestion> {
+pub(crate) fn suggest(result: &ExecutionResult) -> Vec<Suggestion> {
     let mut suggestions = Vec::new();
 
     for (node_key, error) in &result.node_errors {
@@ -74,8 +74,7 @@ pub fn suggest(result: &ExecutionResult) -> Vec<Suggestion> {
             let key = error
                 .split("action not found:")
                 .nth(1)
-                .map(|s| s.trim())
-                .unwrap_or("unknown");
+                .map_or("unknown", str::trim);
 
             suggestions.push(Suggestion {
                 node_key: nid.clone(),
@@ -159,7 +158,7 @@ pub fn suggest(result: &ExecutionResult) -> Vec<Suggestion> {
 }
 
 /// Print suggestions to stderr.
-pub fn print_suggestions(suggestions: &[Suggestion]) {
+pub(crate) fn print_suggestions(suggestions: &[Suggestion]) {
     if suggestions.is_empty() {
         return;
     }

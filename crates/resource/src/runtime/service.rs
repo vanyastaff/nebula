@@ -182,7 +182,7 @@ mod tests {
             &self,
             runtime: &String,
             _ctx: &dyn Ctx,
-        ) -> impl std::future::Future<Output = Result<String, SvcError>> + Send {
+        ) -> impl Future<Output = Result<String, SvcError>> + Send {
             let token = format!("{runtime}-token");
             async move { Ok(token) }
         }
@@ -227,7 +227,7 @@ mod tests {
             &self,
             runtime: &String,
             _ctx: &dyn Ctx,
-        ) -> impl std::future::Future<Output = Result<String, SvcError>> + Send {
+        ) -> impl Future<Output = Result<String, SvcError>> + Send {
             let token = format!("{runtime}-tracked-token");
             async move { Ok(token) }
         }
@@ -236,7 +236,7 @@ mod tests {
             &self,
             _runtime: &String,
             _token: String,
-        ) -> impl std::future::Future<Output = Result<(), SvcError>> + Send {
+        ) -> impl Future<Output = Result<(), SvcError>> + Send {
             let released = self.released.clone();
             async move {
                 released.store(true, Ordering::Relaxed);

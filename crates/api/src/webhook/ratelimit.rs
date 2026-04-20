@@ -66,7 +66,7 @@ impl WebhookRateLimiter {
     }
 
     fn with_config(requests_per_minute: u64, max_paths: u64) -> Self {
-        let window = Duration::from_secs(60);
+        let window = Duration::from_mins(1);
         let max_requests = requests_per_minute.max(1) as usize;
         let windows = Cache::builder()
             .max_capacity(max_paths.max(1))

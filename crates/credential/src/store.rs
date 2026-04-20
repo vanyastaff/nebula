@@ -146,7 +146,7 @@ pub(crate) mod test_helpers {
     use super::StoredCredential;
 
     /// Build a minimal [`StoredCredential`] for testing.
-    pub fn make_credential(id: &str, data: &[u8]) -> StoredCredential {
+    pub(crate) fn make_credential(id: &str, data: &[u8]) -> StoredCredential {
         StoredCredential {
             id: id.into(),
             credential_key: "test_credential".into(),

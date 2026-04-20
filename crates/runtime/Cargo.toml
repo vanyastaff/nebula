@@ -41,3 +41,6 @@ doctest = false
 [[bench]]
 name = "queue_bench"
 harness = false
+
+[lints]
+workspace = true

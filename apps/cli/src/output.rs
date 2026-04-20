@@ -1,13 +1,13 @@
 use crate::cli::OutputFormat;
 
 /// Print a serializable value in the requested format.
-pub fn print_json<T: serde::Serialize>(value: &T) {
+pub(crate) fn print_json<T: serde::Serialize>(value: &T) {
     let json = serde_json::to_string_pretty(value).expect("failed to serialize output");
     println!("{json}");
 }
 
 /// Print a validation result summary.
-pub fn print_validation(errors: &[String], format: &OutputFormat) {
+pub(crate) fn print_validation(errors: &[String], format: &OutputFormat) {
     match format {
         OutputFormat::Json => {
             let result = serde_json::json!({

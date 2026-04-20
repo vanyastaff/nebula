@@ -695,7 +695,7 @@ impl ExecutionRepo for InMemoryExecutionRepo {
     ) -> Result<HashMap<NodeKey, serde_json::Value>, ExecutionRepoError> {
         let outputs = self.node_outputs.read().await;
         let mut best: HashMap<NodeKey, (u32, serde_json::Value)> = HashMap::new();
-        for ((eid, nid, attempt), val) in outputs.iter() {
+        for ((eid, nid, attempt), val) in &*outputs {
             if *eid != execution_id {
                 continue;
             }
@@ -856,7 +856,7 @@ impl ExecutionRepo for InMemoryExecutionRepo {
         // so that an older (non-latest) attempt with a future version does
         // not block a load whose latest attempt is well-formed.
         let mut best: HashMap<NodeKey, (u32, NodeResultRecord)> = HashMap::new();
-        for ((eid, nid, attempt), record) in results.iter() {
+        for ((eid, nid, attempt), record) in &*results {
             if *eid != execution_id {
                 continue;
             }
@@ -1447,7 +1447,7 @@ mod tests {
                         "type": "Duration",
                         "duration": 60000,
                     },
-                    "timeout": 300000,
+                    "timeout": 300_000,
                     "partial_output": null,
                 }),
             ),

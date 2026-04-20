@@ -14,7 +14,7 @@ use syn::{Generics, Ident, Type};
 /// Contains all parsed information needed to generate the `Validate`,
 /// `SelfValidating`, and `validate_fields()` implementations.
 #[derive(Debug)]
-pub struct ValidatorInput {
+pub(crate) struct ValidatorInput {
     /// The struct identifier.
     pub ident: Ident,
     /// Generic parameters from the struct definition.
@@ -27,7 +27,7 @@ pub struct ValidatorInput {
 
 /// Container-level attributes parsed from `#[validator(...)]`.
 #[derive(Debug)]
-pub struct ContainerAttrs {
+pub(crate) struct ContainerAttrs {
     /// Root error message used when converting `ValidationErrors` to a
     /// single `ValidationError`. Defaults to `"validation failed"`.
     pub message: String,
@@ -43,7 +43,7 @@ impl Default for ContainerAttrs {
 
 /// A single field definition with its validation rules.
 #[derive(Debug)]
-pub struct FieldDef {
+pub(crate) struct FieldDef {
     /// The field identifier.
     pub ident: Ident,
     /// The original type as written in the struct (may be `Option<T>`).
@@ -62,7 +62,7 @@ pub struct FieldDef {
 
 /// A single validation rule extracted from `#[validate(...)]` attributes.
 #[derive(Debug)]
-pub enum Rule {
+pub(crate) enum Rule {
     /// Field is required (must be `Some` for `Option` fields).
     Required,
 
@@ -139,7 +139,7 @@ pub enum Rule {
 
 /// Element-level validation rules for `Vec<T>` fields via `each(...)`.
 #[derive(Debug)]
-pub struct EachRules {
+pub(crate) struct EachRules {
     /// Element type for `Vec<T>` (or inner element for `Vec<Option<T>>`).
     pub element_ty: Type,
     /// Validation rules applied to each element.
@@ -148,7 +148,7 @@ pub struct EachRules {
 
 /// Built-in string format validators (zero-argument factories).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum StringFormat {
+pub(crate) enum StringFormat {
     /// String must not be empty.
     NotEmpty,
     /// String must be alphanumeric.
@@ -185,7 +185,7 @@ pub enum StringFormat {
 
 /// Built-in string factory validators (one-argument factories).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum StringFactoryKind {
+pub(crate) enum StringFactoryKind {
     /// String must contain the given substring.
     Contains,
     /// String must start with the given prefix.

@@ -162,9 +162,7 @@ impl CredentialRecord {
     /// assert!(!record.is_expired());
     /// ```
     pub fn is_expired(&self) -> bool {
-        self.expires_at
-            .map(|exp| exp <= Utc::now())
-            .unwrap_or(false)
+        self.expires_at.is_some_and(|exp| exp <= Utc::now())
     }
 
     /// Update last accessed timestamp

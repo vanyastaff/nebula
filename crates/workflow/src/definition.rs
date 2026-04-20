@@ -143,7 +143,7 @@ impl Default for WorkflowConfig {
 }
 
 /// Settings that control how often execution progress is persisted.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CheckpointingConfig {
     /// Whether checkpointing is enabled at all.
     #[serde(default = "default_true")]
@@ -332,24 +332,21 @@ mod tests {
     #[test]
     fn workflow_config_serde_roundtrip() {
         let cfg = WorkflowConfig {
-            timeout: Some(Duration::from_millis(30_000)),
+            timeout: Some(Duration::from_secs(30)),
             max_parallel_nodes: 5,
             checkpointing: CheckpointingConfig {
                 enabled: false,
-                interval: Some(Duration::from_millis(1_000)),
+                interval: Some(Duration::from_secs(1)),
             },
             retry_policy: Some(RetryConfig::fixed(3, 500)),
             error_strategy: ErrorStrategy::ContinueOnError,
         };
         let json = serde_json::to_string(&cfg).unwrap();
         let back: WorkflowConfig = serde_json::from_str(&json).unwrap();
-        assert_eq!(back.timeout, Some(Duration::from_millis(30_000)));
+        assert_eq!(back.timeout, Some(Duration::from_secs(30)));
         assert_eq!(back.max_parallel_nodes, 5);
         assert!(!back.checkpointing.enabled);
-        assert_eq!(
-            back.checkpointing.interval,
-            Some(Duration::from_millis(1_000))
-        );
+        assert_eq!(back.checkpointing.interval, Some(Duration::from_secs(1)));
         assert!(back.retry_policy.is_some());
     }
 

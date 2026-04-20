@@ -153,7 +153,7 @@ pub fn try_in_range<T: PartialOrd + Display + Copy>(
     min: T,
     max: T,
 ) -> Result<InRange<T>, ValidationError> {
-    if min.partial_cmp(&max).is_none_or(|o| o.is_gt()) {
+    if min.partial_cmp(&max).is_none_or(std::cmp::Ordering::is_gt) {
         return Err(ValidationError::new(
             "invalid_range",
             format!("in_range requires min <= max (got min={min}, max={max})"),
@@ -185,7 +185,7 @@ pub fn try_exclusive_range<T: PartialOrd + Display + Copy>(
     min: T,
     max: T,
 ) -> Result<ExclusiveRange<T>, ValidationError> {
-    if !min.partial_cmp(&max).is_some_and(|o| o.is_lt()) {
+    if !min.partial_cmp(&max).is_some_and(std::cmp::Ordering::is_lt) {
         return Err(ValidationError::new(
             "invalid_range",
             format!("exclusive_range requires min < max (got min={min}, max={max})"),

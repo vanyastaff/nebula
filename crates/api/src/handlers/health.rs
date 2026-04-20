@@ -183,7 +183,7 @@ mod tests {
             // runtime auto-advances to whichever timer fires first — that's
             // the timeout, so this sleep gets cancelled and never elapses
             // in wall-clock time.
-            tokio::time::sleep(Duration::from_secs(60)).await;
+            tokio::time::sleep(Duration::from_mins(1)).await;
             Ok(0)
         }
     }
@@ -193,12 +193,7 @@ mod tests {
         let control_queue_repo: Arc<dyn nebula_storage::repos::ControlQueueRepo> =
             Arc::new(nebula_storage::repos::InMemoryControlQueueRepo::new());
         let config = ApiConfig::for_test();
-        AppState::new(
-            repo,
-            execution_repo,
-            control_queue_repo,
-            config.jwt_secret.clone(),
-        )
+        AppState::new(repo, execution_repo, control_queue_repo, config.jwt_secret)
     }
 
     #[tokio::test]

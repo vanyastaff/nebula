@@ -42,7 +42,7 @@ async fn cb_probe_slot_released_when_pipeline_cancelled() {
             tokio::time::sleep(Duration::from_secs(10)).await;
             Ok::<u32, &str>(42)
         })) => unreachable!("operation should not complete"),
-        _ = tokio::time::sleep(Duration::from_millis(5)) => {
+        () = tokio::time::sleep(Duration::from_millis(5)) => {
             // Future dropped — ProbeGuard should release the probe slot
         }
     }
@@ -81,7 +81,7 @@ async fn bulkhead_permit_released_when_pipeline_cancelled() {
             tokio::time::sleep(Duration::from_secs(10)).await;
             Ok::<u32, &str>(42)
         })) => unreachable!("operation should not complete"),
-        _ = tokio::time::sleep(Duration::from_millis(5)) => {
+        () = tokio::time::sleep(Duration::from_millis(5)) => {
             // Future dropped — permit should be released
         }
     }
@@ -141,7 +141,7 @@ async fn combined_cb_and_bulkhead_released_on_cancel() {
             tokio::time::sleep(Duration::from_secs(10)).await;
             Ok::<u32, &str>(42)
         })) => unreachable!(),
-        _ = tokio::time::sleep(Duration::from_millis(5)) => {}
+        () = tokio::time::sleep(Duration::from_millis(5)) => {}
     }
 
     tokio::task::yield_now().await;

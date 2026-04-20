@@ -7,7 +7,7 @@ use syn::{Data, DeriveInput, parse_macro_input};
 
 use crate::action_attrs::ActionAttrs;
 
-pub fn derive(input: TokenStream) -> TokenStream {
+pub(crate) fn derive(input: TokenStream) -> TokenStream {
     let input = parse_macro_input!(input as DeriveInput);
 
     match expand(input) {

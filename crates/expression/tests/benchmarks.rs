@@ -27,7 +27,7 @@ where
     let duration = start.elapsed();
 
     let avg = duration / ITERATIONS as u32;
-    println!("{:45} {:>12.2?}", name, avg);
+    println!("{name:45} {avg:>12.2?}");
 
     duration
 }
@@ -62,7 +62,7 @@ fn template_benchmarks() {
     });
 
     // Parse complex
-    let complex_template = r#"
+    let complex_template = r"
         <html>
             <title>{{ $workflow.name }}</title>
             <body>
@@ -70,7 +70,7 @@ fn template_benchmarks() {
                 <p>Result: {{ $input | uppercase() }}</p>
             </body>
         </html>
-    "#;
+    ";
     benchmark("template/parse/complex", || {
         let _ = Template::new(complex_template);
     });
@@ -141,7 +141,7 @@ fn context_benchmarks() {
     // Create context with many variables
     let mut context = EvaluationContext::new();
     for i in 0..100 {
-        context.set_execution_var(format!("var_{}", i), serde_json::json!(i as i64));
+        context.set_execution_var(format!("var_{i}"), serde_json::json!(i as i64));
     }
 
     benchmark("context/clone_100_vars", || {

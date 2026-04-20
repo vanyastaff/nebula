@@ -23,7 +23,7 @@ fn build_registry() -> Arc<ActionRegistry> {
 }
 
 /// Execute the `actions list` command.
-pub fn list(args: ActionsListArgs) {
+pub(crate) fn list(args: ActionsListArgs) {
     let registry = build_registry();
     let mut keys = registry.keys();
     keys.sort();
@@ -66,12 +66,12 @@ pub fn list(args: ActionsListArgs) {
 }
 
 /// Execute the `actions info` command.
-pub fn info(args: ActionsInfoArgs) {
+pub(crate) fn info(args: ActionsInfoArgs) {
     let registry = build_registry();
     let format = resolve_format(args.format);
 
-    match registry.get_by_str(&args.key) {
-        Some((meta, _)) => match format {
+    if let Some((meta, _)) = registry.get_by_str(&args.key) {
+        match format {
             OutputFormat::Json => {
                 let json = serde_json::json!({
                     "key": meta.base.key.as_str(),
@@ -97,18 +97,17 @@ pub fn info(args: ActionsInfoArgs) {
                     }
                 );
             },
-        },
-        None => {
-            eprintln!("error: action '{}' not found", args.key);
-            eprintln!();
-            eprintln!("Available actions:");
-            let mut keys = registry.keys();
-            keys.sort();
-            for key in &keys {
-                eprintln!("  {key}");
-            }
-            std::process::exit(1);
-        },
+        }
+    } else {
+        eprintln!("error: action '{}' not found", args.key);
+        eprintln!();
+        eprintln!("Available actions:");
+        let mut keys = registry.keys();
+        keys.sort();
+        for key in &keys {
+            eprintln!("  {key}");
+        }
+        std::process::exit(1);
     }
 }
 
@@ -119,20 +118,19 @@ pub fn info(args: ActionsInfoArgs) {
 /// - `Stateless` → one execute call
 /// - `Stateful` → iterative loop (init_state → execute until `Break` or cap)
 /// - other variants → not yet supported
-pub async fn test(args: ActionsTestArgs) {
+pub(crate) async fn test(args: ActionsTestArgs) {
     let registry = build_registry();
     let format = resolve_format(args.format);
 
-    let (meta, handler) = match registry.get_by_str(&args.key) {
-        Some(entry) => entry,
-        None => {
-            eprintln!("error: action '{}' not found", args.key);
-            let mut keys = registry.keys();
-            keys.sort();
-            let names: Vec<String> = keys.iter().map(|k| k.as_str().to_owned()).collect();
-            eprintln!("Available: {}", names.join(", "));
-            std::process::exit(1);
-        },
+    let (meta, handler) = if let Some(entry) = registry.get_by_str(&args.key) {
+        entry
+    } else {
+        eprintln!("error: action '{}' not found", args.key);
+        let mut keys = registry.keys();
+        keys.sort();
+        let names: Vec<String> = keys.iter().map(|k| k.as_str().to_owned()).collect();
+        eprintln!("Available: {}", names.join(", "));
+        std::process::exit(1);
     };
 
     let input: serde_json::Value = match serde_json::from_str(&args.input) {
@@ -220,9 +218,8 @@ async fn run_stateful(
 
         match &result {
             ActionResult::Continue { progress, .. } => {
-                let pct = progress
-                    .map(|p| format!("{:>5.1}%", p * 100.0))
-                    .unwrap_or_else(|| "  ?  ".to_owned());
+                let pct =
+                    progress.map_or_else(|| "  ?  ".to_owned(), |p| format!("{:>5.1}%", p * 100.0));
                 eprintln!(
                     "  iter {iterations:>3}: Continue ({pct})  partial={}",
                     truncate(&compact_json(&last_output), 160)
@@ -371,7 +368,7 @@ fn truncate(s: &str, max: usize) -> String {
     out
 }
 
-fn print_report(report: &TestReport, elapsed: std::time::Duration, format: OutputFormat) {
+fn print_report(report: &TestReport, elapsed: Duration, format: OutputFormat) {
     match format {
         OutputFormat::Json => {
             let json = serde_json::json!({

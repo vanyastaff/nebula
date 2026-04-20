@@ -61,7 +61,7 @@ pub(crate) struct ValidateAttrs {
 }
 
 impl ParamAttrs {
-    pub fn from_attrs(attrs: &[Attribute]) -> syn::Result<Self> {
+    pub(crate) fn from_attrs(attrs: &[Attribute]) -> syn::Result<Self> {
         let mut out = Self::default();
         for attr in attrs.iter().filter(|a| a.path().is_ident("param")) {
             let entries: Punctuated<ParamEntry, Token![,]> =
@@ -75,7 +75,7 @@ impl ParamAttrs {
 }
 
 impl ValidateAttrs {
-    pub fn from_attrs(attrs: &[Attribute]) -> syn::Result<Self> {
+    pub(crate) fn from_attrs(attrs: &[Attribute]) -> syn::Result<Self> {
         let mut out = Self::default();
         for attr in attrs.iter().filter(|a| a.path().is_ident("validate")) {
             let entries: Punctuated<ValidateEntry, Token![,]> =

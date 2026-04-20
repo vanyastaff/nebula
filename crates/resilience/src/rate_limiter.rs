@@ -485,7 +485,7 @@ impl fmt::Debug for AdaptiveRateLimiter {
             .field("max_rate", &self.max_rate)
             .field(
                 "current_rate",
-                &f64::from_bits(self.atomic_rate.load(std::sync::atomic::Ordering::Relaxed)),
+                &f64::from_bits(self.atomic_rate.load(Ordering::Relaxed)),
             )
             .finish_non_exhaustive()
     }
@@ -846,17 +846,17 @@ mod tests {
 
     #[test]
     fn sliding_window_rejects_zero_requests() {
-        assert!(SlidingWindow::new(std::time::Duration::from_secs(1), 0).is_err());
+        assert!(SlidingWindow::new(Duration::from_secs(1), 0).is_err());
     }
 
     #[test]
     fn sliding_window_rejects_zero_duration() {
-        assert!(SlidingWindow::new(std::time::Duration::ZERO, 10).is_err());
+        assert!(SlidingWindow::new(Duration::ZERO, 10).is_err());
     }
 
     #[test]
     fn sliding_window_accepts_valid_config() {
-        assert!(SlidingWindow::new(std::time::Duration::from_secs(1), 10).is_ok());
+        assert!(SlidingWindow::new(Duration::from_secs(1), 10).is_ok());
     }
 
     // ── B2: AdaptiveRateLimiter rejects initial_rate outside bounds ──────

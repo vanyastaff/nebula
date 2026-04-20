@@ -32,7 +32,7 @@ struct ValidationEvent {
 }
 
 impl ObservabilityEvent for ValidationEvent {
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "validation"
     }
 
@@ -50,7 +50,7 @@ struct AllocationEvent {
 }
 
 impl ObservabilityEvent for AllocationEvent {
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "allocation"
     }
 
@@ -107,7 +107,7 @@ impl ObservabilityHook for FilteringHook {
         if event.name().contains(&self.filter) {
             println!("  [FilteringHook] Matched event: {}", event.name());
             if let Some(data) = event_data_json(event) {
-                println!("    Data: {}", data);
+                println!("    Data: {data}");
             }
         }
     }

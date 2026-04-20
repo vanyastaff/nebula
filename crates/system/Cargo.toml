@@ -91,3 +91,6 @@ required-features = ["disk"]
 # "serde_json"]`) for JSON output of system snapshots; cargo-shear does
 # not always trace feature-composed optional deps.
 ignored = ["serde_json"]
+
+[lints]
+workspace = true

@@ -74,3 +74,6 @@ harness = false
 # `#[cfg_attr(feature = "schemars", derive(JsonSchema))]` attributes on
 # schema types; cargo-shear doesn't follow derive-macro call paths.
 ignored = ["schemars"]
+
+[lints]
+workspace = true

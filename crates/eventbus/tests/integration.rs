@@ -47,7 +47,10 @@ async fn test_registry_get_or_create_returns_same_arc_on_concurrent_access() {
     // All 8 handles should point to the same Arc
     for i in 1..buses.len() {
         assert!(
-            ptr::eq(buses[0].as_ref() as *const _, buses[i].as_ref() as *const _),
+            ptr::eq(
+                ptr::from_ref(buses[0].as_ref()),
+                ptr::from_ref(buses[i].as_ref())
+            ),
             "all threads must get the same Arc<EventBus>"
         );
     }
@@ -171,8 +174,8 @@ async fn test_concurrent_producers_and_subscribers() {
             // Keep receiving for up to 5 seconds or until bus closes
             let timeout = tokio::time::sleep(tokio::time::Duration::from_secs(5));
             tokio::select! {
-                _ = timeout => {},
-                _ = async {
+                () = timeout => {},
+                () = async {
                     while let Some(_event) = sub.recv().await {
                         count += 1;
                     }
@@ -444,8 +447,7 @@ async fn test_drop_oldest_ring_buffer_behavior() {
         // With DropOldest and a subscriber, emit should always succeed (returns Sent)
         assert!(
             outcome.is_sent(),
-            "DropOldest should send when subscriber exists (event {})",
-            i
+            "DropOldest should send when subscriber exists (event {i})"
         );
     }
 

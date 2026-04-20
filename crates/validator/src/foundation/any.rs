@@ -182,7 +182,7 @@ mod tests {
     #[test]
     fn test_any_validator_debug() {
         let validator: AnyValidator<str> = AnyValidator::new(min_length(3));
-        let debug = format!("{:?}", validator);
+        let debug = format!("{validator:?}");
         assert!(debug.contains("AnyValidator"));
     }
 

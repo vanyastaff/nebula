@@ -28,7 +28,7 @@ fn main() {
     context.set_execution_var("count", serde_json::json!(5));
 
     let result = template.render(&engine, &context).unwrap();
-    println!("Result: {}\n", result);
+    println!("Result: {result}\n");
 
     // Example 2: Template part inspection
     println!("=== Example 2: Inspecting Template Parts ===");
@@ -37,7 +37,7 @@ fn main() {
     for (i, part) in template.parts().iter().enumerate() {
         match part {
             TemplatePart::Static { content, position } => {
-                println!("Part {}: Static at {} = {:?}", i, position, content);
+                println!("Part {i}: Static at {position} = {content:?}");
             },
             TemplatePart::Expression {
                 content,
@@ -47,8 +47,7 @@ fn main() {
                 strip_right,
             } => {
                 println!(
-                    "Part {}: Expression at {} (length: {}, strip_left: {}, strip_right: {}) = {:?}",
-                    i, position, length, strip_left, strip_right, content
+                    "Part {i}: Expression at {position} (length: {length}, strip_left: {strip_left}, strip_right: {strip_right}) = {content:?}"
                 );
             },
         }
@@ -58,15 +57,15 @@ fn main() {
     // Example 3: Error handling with position information
     println!("=== Example 3: Error with Position Information ===");
     let template = Template::new(
-        r#"Line 1
+        r"Line 1
 Line 2 with {{ invalid_function() }}
-Line 3"#,
+Line 3",
     )
     .unwrap();
 
     match template.render(&engine, &context) {
-        Ok(result) => println!("Result: {}", result),
-        Err(e) => println!("Error: {}\n", e),
+        Ok(result) => println!("Result: {result}"),
+        Err(e) => println!("Error: {e}\n"),
     }
 
     // Example 4: MaybeTemplate auto-detection
@@ -83,8 +82,8 @@ Line 3"#,
     let result1 = dynamic.resolve(&engine, &context).unwrap();
     let result2 = static_text.resolve(&engine, &context).unwrap();
 
-    println!("Dynamic result: {}", result1);
-    println!("Static result: {}\n", result2);
+    println!("Dynamic result: {result1}");
+    println!("Static result: {result2}\n");
 
     // Example 5: Multiline template with position tracking
     println!("=== Example 5: Multiline Template ===");
@@ -106,10 +105,10 @@ Line 3"#,
     context.set_input(Value::String("charlie".to_string()));
     context.set_execution_var("title", Value::String("Dashboard".to_string()));
     context.set_execution_var("message_count", serde_json::json!(42));
-    context.set_execution_var("last_login", serde_json::json!(1704067200)); // 2024-01-01
+    context.set_execution_var("last_login", serde_json::json!(1_704_067_200)); // 2024-01-01
 
     let result = html.render(&engine, &context).unwrap();
-    println!("{}\n", result);
+    println!("{result}\n");
 
     // Example 6: Template reusability
     println!("=== Example 6: Template Reusability ===");
@@ -124,7 +123,7 @@ Line 3"#,
         context.set_execution_var("score", serde_json::json!(score));
 
         let result = greeting_template.render(&engine, &context).unwrap();
-        println!("{}", result);
+        println!("{result}");
     }
     println!();
 
@@ -132,7 +131,7 @@ Line 3"#,
     println!("=== Example 7: Parse Error with Position ===");
     match Template::new("Hello {{ $input") {
         Ok(_) => println!("Parsed successfully"),
-        Err(e) => println!("Parse error: {}", e),
+        Err(e) => println!("Parse error: {e}"),
     }
     println!();
 
@@ -164,5 +163,5 @@ Line 3"#,
     context.set_execution_var("active", serde_json::json!(true));
 
     let result = json_template.render(&engine, &context).unwrap();
-    println!("{}", result);
+    println!("{result}");
 }

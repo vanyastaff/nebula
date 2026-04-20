@@ -25,7 +25,7 @@ use super::{
     event::LogLevel,
 };
 
-pub fn draw(frame: &mut Frame, app: &App) {
+pub(crate) fn draw(frame: &mut Frame, app: &App) {
     let outer = Layout::vertical([
         Constraint::Length(2), // header
         Constraint::Min(8),    // main area
@@ -113,10 +113,7 @@ fn draw_node_graph(frame: &mut Frame, area: Rect, app: &App) {
         .map(|(i, (_, info))| {
             let is_selected = i == app.selected_node;
             let status_cell = status_cell(&info.status);
-            let duration = info
-                .elapsed
-                .map(format_duration)
-                .unwrap_or_else(|| "—".to_owned());
+            let duration = info.elapsed.map_or_else(|| "—".to_owned(), format_duration);
 
             let name_style = if is_selected {
                 Style::default()
@@ -179,10 +176,7 @@ fn draw_detail_panel(frame: &mut Frame, area: Rect, app: &App) {
         .border_style(Style::default().fg(Color::DarkGray));
 
     let status_str = status_text(&info.status).to_owned();
-    let duration_str = info
-        .elapsed
-        .map(format_duration)
-        .unwrap_or_else(|| "—".to_owned());
+    let duration_str = info.elapsed.map_or_else(|| "—".to_owned(), format_duration);
 
     let info_lines = vec![
         info_line("action", &info.action_key, Color::White),
@@ -330,10 +324,7 @@ fn status_color(status: &NodeStatus) -> Color {
 
 fn info_line<'a>(label: &'a str, value: &'a str, color: Color) -> Line<'a> {
     Line::from(vec![
-        Span::styled(
-            format!("{:<12}", label),
-            Style::default().fg(Color::DarkGray),
-        ),
+        Span::styled(format!("{label:<12}"), Style::default().fg(Color::DarkGray)),
         Span::styled(value, Style::default().fg(color)),
     ])
 }
@@ -348,7 +339,7 @@ fn format_log_line(entry: &LogEntry) -> Line<'static> {
     };
 
     Line::from(vec![
-        Span::styled(format!("{:<8}", ts), Style::default().fg(Color::DarkGray)),
+        Span::styled(format!("{ts:<8}"), Style::default().fg(Color::DarkGray)),
         Span::styled(level_str, Style::default().fg(level_color)),
         Span::raw(" "),
         Span::styled(entry.message.clone(), Style::default().fg(Color::White)),

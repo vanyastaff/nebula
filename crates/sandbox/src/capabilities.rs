@@ -8,7 +8,7 @@
 use serde::{Deserialize, Serialize};
 
 /// A single capability that a plugin can request.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum Capability {
     // ── OS level (CLI + Desktop) ─────────────────────────────────────
@@ -461,7 +461,7 @@ mod tests {
     #[test]
     fn filesystem_empty_path_entry_does_not_grant_all_paths() {
         let caps = PluginCapabilities::new(vec![Capability::FilesystemRead {
-            paths: vec!["".into()],
+            paths: vec![String::new()],
         }]);
         assert!(!caps.check_fs_read("/tmp/file.txt"));
     }

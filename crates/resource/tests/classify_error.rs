@@ -128,13 +128,13 @@ enum DurationError {
 #[test]
 fn duration_minutes() {
     let err: Error = DurationError::FiveMinutes.into();
-    assert_eq!(err.retry_after(), Some(Duration::from_secs(300)));
+    assert_eq!(err.retry_after(), Some(Duration::from_mins(5)));
 }
 
 #[test]
 fn duration_hours() {
     let err: Error = DurationError::OneHour.into();
-    assert_eq!(err.retry_after(), Some(Duration::from_secs(3600)));
+    assert_eq!(err.retry_after(), Some(Duration::from_hours(1)));
 }
 
 #[test]

@@ -33,7 +33,7 @@ pub async fn list_all_executions(
         .execution_repo
         .list_running()
         .await
-        .map_err(|e| ApiError::Internal(format!("Failed to list executions: {}", e)))?;
+        .map_err(|e| ApiError::Internal(format!("Failed to list executions: {e}")))?;
 
     let total = running_ids.len();
 
@@ -66,7 +66,7 @@ pub async fn list_executions(
     Query(params): Query<PaginationParams>,
 ) -> ApiResult<Json<ListExecutionsResponse>> {
     let workflow_id_parsed = WorkflowId::parse(&workflow_id)
-        .map_err(|e| ApiError::validation_message(format!("Invalid workflow ID: {}", e)))?;
+        .map_err(|e| ApiError::validation_message(format!("Invalid workflow ID: {e}")))?;
 
     // Scope the list to the requested workflow (#286, #288, #328). Using the
     // global `list_running()` here would leak execution IDs from every other
@@ -77,7 +77,7 @@ pub async fn list_executions(
         .execution_repo
         .list_running_for_workflow(workflow_id_parsed)
         .await
-        .map_err(|e| ApiError::Internal(format!("Failed to list executions: {}", e)))?;
+        .map_err(|e| ApiError::Internal(format!("Failed to list executions: {e}")))?;
 
     let total = running_ids.len();
     let offset = params.offset();
@@ -112,21 +112,21 @@ pub async fn get_execution_outputs(
     Path(id): Path<String>,
 ) -> ApiResult<Json<ExecutionOutputsResponse>> {
     let execution_id = ExecutionId::parse(&id)
-        .map_err(|e| ApiError::validation_message(format!("Invalid execution ID: {}", e)))?;
+        .map_err(|e| ApiError::validation_message(format!("Invalid execution ID: {e}")))?;
 
     // Verify the execution exists before loading outputs.
     state
         .execution_repo
         .get_state(execution_id)
         .await
-        .map_err(|e| ApiError::Internal(format!("Failed to check execution: {}", e)))?
-        .ok_or_else(|| ApiError::NotFound(format!("Execution {} not found", id)))?;
+        .map_err(|e| ApiError::Internal(format!("Failed to check execution: {e}")))?
+        .ok_or_else(|| ApiError::NotFound(format!("Execution {id} not found")))?;
 
     let outputs = state
         .execution_repo
         .load_all_outputs(execution_id)
         .await
-        .map_err(|e| ApiError::Internal(format!("Failed to load outputs: {}", e)))?;
+        .map_err(|e| ApiError::Internal(format!("Failed to load outputs: {e}")))?;
 
     // Convert NodeKey keys to strings for JSON serialisation.
     let string_outputs: std::collections::HashMap<String, serde_json::Value> = outputs
@@ -150,18 +150,18 @@ pub async fn get_execution(
 
     // Parse execution ID
     let execution_id = ExecutionId::parse(&id)
-        .map_err(|e| ApiError::validation_message(format!("Invalid execution ID: {}", e)))?;
+        .map_err(|e| ApiError::validation_message(format!("Invalid execution ID: {e}")))?;
 
     // Fetch execution state from repository
     let state_result = state
         .execution_repo
         .get_state(execution_id)
         .await
-        .map_err(|e| ApiError::Internal(format!("Failed to get execution: {}", e)))?;
+        .map_err(|e| ApiError::Internal(format!("Failed to get execution: {e}")))?;
 
     // Check if execution exists (get_state returns Option<(version, state)>)
     let (_version, execution_state) =
-        state_result.ok_or_else(|| ApiError::NotFound(format!("Execution {} not found", id)))?;
+        state_result.ok_or_else(|| ApiError::NotFound(format!("Execution {id} not found")))?;
 
     // Extract fields from execution state JSON
     let workflow_id = execution_state
@@ -217,15 +217,15 @@ pub async fn start_execution(
 ) -> ApiResult<(StatusCode, Json<ExecutionResponse>)> {
     // Parse workflow ID
     let workflow_id_parsed = WorkflowId::parse(&workflow_id)
-        .map_err(|e| ApiError::validation_message(format!("Invalid workflow ID: {}", e)))?;
+        .map_err(|e| ApiError::validation_message(format!("Invalid workflow ID: {e}")))?;
 
     // Verify workflow exists
     state
         .workflow_repo
         .get(workflow_id_parsed)
         .await
-        .map_err(|e| ApiError::Internal(format!("Failed to get workflow: {}", e)))?
-        .ok_or_else(|| ApiError::NotFound(format!("Workflow {} not found", workflow_id)))?;
+        .map_err(|e| ApiError::Internal(format!("Failed to get workflow: {e}")))?
+        .ok_or_else(|| ApiError::NotFound(format!("Workflow {workflow_id} not found")))?;
 
     // Generate new execution ID
     let execution_id = ExecutionId::new();
@@ -250,7 +250,7 @@ pub async fn start_execution(
     }
 
     let state_json = serde_json::to_value(&exec_state)
-        .map_err(|e| ApiError::Internal(format!("serialize execution state: {}", e)))?;
+        .map_err(|e| ApiError::Internal(format!("serialize execution state: {e}")))?;
 
     // Create execution record. We must call `create` here — the previous
     // implementation called `transition(id, expected_version = 0, ...)`,
@@ -261,7 +261,7 @@ pub async fn start_execution(
         .execution_repo
         .create(execution_id, workflow_id_parsed, state_json)
         .await
-        .map_err(|e| ApiError::Internal(format!("Failed to create execution: {}", e)))?;
+        .map_err(|e| ApiError::Internal(format!("Failed to create execution: {e}")))?;
 
     // Enqueue the Start signal onto the durable control queue (canon §12.2,
     // §13 step 3, #332). Before this PR the API persisted the row but never
@@ -336,16 +336,14 @@ pub(crate) async fn enqueue_start(state: &AppState, execution_id: ExecutionId) -
         match &e {
             StorageError::Internal(_) | StorageError::Connection(_) => {
                 ApiError::ServiceUnavailable(format!(
-                    "Execution {} persisted but control-queue backend is \
+                    "Execution {execution_id} persisted but control-queue backend is \
                      unavailable — engine will not see Start signal \
-                     (canon §13 step 6, §12.2 orphan): {}",
-                    execution_id, e
+                     (canon §13 step 6, §12.2 orphan): {e}"
                 ))
             },
             _ => ApiError::Internal(format!(
-                "Execution {} persisted but failed to enqueue Start signal \
-                 (canon §12.2 orphan — caller should retry): {}",
-                execution_id, e
+                "Execution {execution_id} persisted but failed to enqueue Start signal \
+                 (canon §12.2 orphan — caller should retry): {e}"
             )),
         }
     })
@@ -361,18 +359,18 @@ pub async fn cancel_execution(
 
     // Parse execution ID
     let execution_id = ExecutionId::parse(&id)
-        .map_err(|e| ApiError::validation_message(format!("Invalid execution ID: {}", e)))?;
+        .map_err(|e| ApiError::validation_message(format!("Invalid execution ID: {e}")))?;
 
     // Fetch current execution state from repository
     let state_result = state
         .execution_repo
         .get_state(execution_id)
         .await
-        .map_err(|e| ApiError::Internal(format!("Failed to get execution: {}", e)))?;
+        .map_err(|e| ApiError::Internal(format!("Failed to get execution: {e}")))?;
 
     // Check if execution exists
     let (version, mut execution_state) =
-        state_result.ok_or_else(|| ApiError::NotFound(format!("Execution {} not found", id)))?;
+        state_result.ok_or_else(|| ApiError::NotFound(format!("Execution {id} not found")))?;
 
     // Check if execution is already in a terminal state
     let current_status = execution_state
@@ -385,8 +383,7 @@ pub async fn cancel_execution(
         "completed" | "failed" | "cancelled" | "timed_out"
     ) {
         return Err(ApiError::validation_message(format!(
-            "Cannot cancel execution in '{}' state",
-            current_status
+            "Cannot cancel execution in '{current_status}' state"
         )));
     }
 
@@ -431,7 +428,7 @@ pub async fn cancel_execution(
         .execution_repo
         .transition(execution_id, version, execution_state.clone())
         .await
-        .map_err(|e| ApiError::Internal(format!("Failed to cancel execution: {}", e)))?;
+        .map_err(|e| ApiError::Internal(format!("Failed to cancel execution: {e}")))?;
 
     if !transition_result {
         return Err(ApiError::Conflict(
@@ -476,16 +473,14 @@ pub async fn cancel_execution(
             match &e {
                 StorageError::Internal(_) | StorageError::Connection(_) => {
                     ApiError::ServiceUnavailable(format!(
-                        "Execution {} cancelled in DB but control-queue backend is \
+                        "Execution {execution_id} cancelled in DB but control-queue backend is \
                          unavailable — orchestration absent (canon §13 step 6, §12.2 \
-                         orphan): {}",
-                        execution_id, e
+                         orphan): {e}"
                     ))
                 },
                 _ => ApiError::Internal(format!(
-                    "Execution {} cancelled in DB but failed to enqueue Cancel signal \
-                     (canon §12.2 orphan — caller should retry): {}",
-                    execution_id, e
+                    "Execution {execution_id} cancelled in DB but failed to enqueue Cancel signal \
+                     (canon §12.2 orphan — caller should retry): {e}"
                 )),
             }
         })?;
@@ -549,21 +544,21 @@ pub async fn get_execution_logs(
     Path(id): Path<String>,
 ) -> ApiResult<Json<ExecutionLogsResponse>> {
     let execution_id = ExecutionId::parse(&id)
-        .map_err(|e| ApiError::validation_message(format!("Invalid execution ID: {}", e)))?;
+        .map_err(|e| ApiError::validation_message(format!("Invalid execution ID: {e}")))?;
 
     // Verify the execution exists before loading the journal.
     state
         .execution_repo
         .get_state(execution_id)
         .await
-        .map_err(|e| ApiError::Internal(format!("Failed to check execution: {}", e)))?
-        .ok_or_else(|| ApiError::NotFound(format!("Execution {} not found", id)))?;
+        .map_err(|e| ApiError::Internal(format!("Failed to check execution: {e}")))?
+        .ok_or_else(|| ApiError::NotFound(format!("Execution {id} not found")))?;
 
     let logs = state
         .execution_repo
         .get_journal(execution_id)
         .await
-        .map_err(|e| ApiError::Internal(format!("Failed to load execution logs: {}", e)))?;
+        .map_err(|e| ApiError::Internal(format!("Failed to load execution logs: {e}")))?;
 
     Ok(Json(ExecutionLogsResponse {
         execution_id: id,

@@ -5,7 +5,7 @@ use anyhow::{Context, bail};
 use crate::config::{self, CliConfig};
 
 /// Execute the `config show` command.
-pub async fn show() -> anyhow::Result<()> {
+pub(crate) async fn show() -> anyhow::Result<()> {
     let config = CliConfig::load().await?;
     let toml = toml::to_string_pretty(&config).expect("config serialization");
     println!("{toml}");
@@ -19,7 +19,7 @@ pub async fn show() -> anyhow::Result<()> {
 }
 
 /// Execute the `config init` command.
-pub fn init(global: bool) -> anyhow::Result<()> {
+pub(crate) fn init(global: bool) -> anyhow::Result<()> {
     let path = if global {
         let dir = config::global_config_dir().context("could not determine home directory")?;
         if !dir.exists() {

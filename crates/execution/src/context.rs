@@ -164,12 +164,12 @@ mod tests {
     fn builder_sets_all_fields() {
         let budget = ExecutionBudget::default()
             .with_max_concurrent_nodes(4)
-            .with_max_duration(Duration::from_secs(300))
+            .with_max_duration(Duration::from_mins(5))
             .with_max_output_bytes(1024 * 1024)
             .with_max_total_retries(50);
 
         assert_eq!(budget.max_concurrent_nodes, 4);
-        assert_eq!(budget.max_duration, Some(Duration::from_secs(300)));
+        assert_eq!(budget.max_duration, Some(Duration::from_mins(5)));
         assert_eq!(budget.max_output_bytes, Some(1024 * 1024));
         assert_eq!(budget.max_total_retries, Some(50));
     }
@@ -177,7 +177,7 @@ mod tests {
     #[test]
     fn serde_roundtrip_full() {
         let budget = ExecutionBudget::default()
-            .with_max_duration(Duration::from_millis(5000))
+            .with_max_duration(Duration::from_secs(5))
             .with_max_output_bytes(999)
             .with_max_total_retries(3);
 

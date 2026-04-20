@@ -116,7 +116,7 @@ impl<T: Send + 'static> std::fmt::Debug for Loader<T> {
 }
 
 /// Paginated result returned from runtime loaders.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct LoaderResult<T> {
     /// Page of resolved items.
     pub items: Vec<T>,
@@ -169,9 +169,10 @@ pub type RecordLoader = Loader<Value>;
 /// Build a single-key `FieldPath` from a `LoaderContext::field_key` string.
 /// Falls back to root if the key is not a valid `FieldKey`.
 fn field_path_from_key(key: &str) -> FieldPath {
-    FieldKey::new(key)
-        .map(|fk| FieldPath::root().join(PathSegment::Key(fk)))
-        .unwrap_or_else(|_| FieldPath::root())
+    FieldKey::new(key).map_or_else(
+        |_| FieldPath::root(),
+        |fk| FieldPath::root().join(PathSegment::Key(fk)),
+    )
 }
 
 /// Use the path from a loader-returned error if it's non-root, otherwise build
@@ -238,14 +239,14 @@ impl LoaderRegistry {
             return Err(ValidationError::builder("loader.not_registered")
                 .at(field_path)
                 .message(format!("option loader `{key}` is not registered"))
-                .param("loader", serde_json::Value::String(key.to_owned()))
+                .param("loader", Value::String(key.to_owned()))
                 .build());
         };
         loader.call(context).await.map_err(|e| {
             ValidationError::builder("loader.failed")
                 .at(field_path_from_err_or(key, &e))
                 .message(format!("option loader `{key}` failed: {e}"))
-                .param("loader", serde_json::Value::String(key.to_owned()))
+                .param("loader", Value::String(key.to_owned()))
                 .source(e)
                 .build()
         })
@@ -268,14 +269,14 @@ impl LoaderRegistry {
             return Err(ValidationError::builder("loader.not_registered")
                 .at(field_path)
                 .message(format!("record loader `{key}` is not registered"))
-                .param("loader", serde_json::Value::String(key.to_owned()))
+                .param("loader", Value::String(key.to_owned()))
                 .build());
         };
         loader.call(context).await.map_err(|e| {
             ValidationError::builder("loader.failed")
                 .at(field_path_from_err_or(key, &e))
                 .message(format!("record loader `{key}` failed: {e}"))
-                .param("loader", serde_json::Value::String(key.to_owned()))
+                .param("loader", Value::String(key.to_owned()))
                 .source(e)
                 .build()
         })

@@ -23,3 +23,6 @@ chrono = { workspace = true, features = ["serde"] }
 
 [lib]
 doctest = false
+
+[lints]
+workspace = true

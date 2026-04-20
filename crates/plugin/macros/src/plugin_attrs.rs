@@ -7,7 +7,7 @@ use syn::{Ident, Result};
 
 /// Parsed plugin container attributes.
 #[derive(Debug, Clone)]
-pub struct PluginAttrs {
+pub(crate) struct PluginAttrs {
     /// Unique key (e.g. `"http"`).
     pub key: String,
     /// Human-readable name.
@@ -22,7 +22,7 @@ pub struct PluginAttrs {
 
 impl PluginAttrs {
     /// Parse from `#[plugin(...)]` attribute args.
-    pub fn parse(
+    pub(crate) fn parse(
         attr_args: &attrs::AttrArgs,
         struct_name: &Ident,
         description_fallback: Option<String>,
@@ -49,7 +49,7 @@ impl PluginAttrs {
     }
 
     /// Generate `PluginMetadata` builder expression.
-    pub fn metadata_builder_expr(&self) -> TokenStream2 {
+    pub(crate) fn metadata_builder_expr(&self) -> TokenStream2 {
         let key = &self.key;
         let name = &self.name;
         let description = &self.description;

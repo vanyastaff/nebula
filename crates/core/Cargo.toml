@@ -27,3 +27,6 @@ criterion = { workspace = true }
 [[bench]]
 name = "id_parse_serialize"
 harness = false
+
+[lints]
+workspace = true

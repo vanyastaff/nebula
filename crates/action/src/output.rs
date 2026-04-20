@@ -258,7 +258,7 @@ pub enum DeltaFormat {
 }
 
 /// Current state of a stream.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum StreamState {
     /// Created but not started.
@@ -280,7 +280,7 @@ pub enum StreamState {
 }
 
 /// Backpressure configuration for streams.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct BufferConfig {
     /// Maximum number of buffered items.
     pub capacity: usize,
@@ -289,7 +289,7 @@ pub struct BufferConfig {
 }
 
 /// Overflow strategy when a stream buffer is full.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Overflow {
     /// Block the producer until space is available.
     Block,
@@ -436,7 +436,7 @@ pub struct TokenUsage {
 }
 
 /// Caching information for an output.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "status", rename_all = "snake_case")]
 pub enum CacheInfo {
     /// Output is not cacheable.
@@ -621,7 +621,7 @@ impl<T> ActionOutput<T> {
     pub fn needs_resolution(&self) -> bool {
         match self {
             Self::Deferred(_) | Self::Streaming(_) => true,
-            Self::Collection(items) => items.iter().any(|o| o.needs_resolution()),
+            Self::Collection(items) => items.iter().any(ActionOutput::needs_resolution),
             _ => false,
         }
     }
@@ -653,7 +653,7 @@ impl<T> ActionOutput<T> {
                 max_interval: Some(Duration::from_secs(30)),
                 non_retryable_errors: vec!["content_policy_violation".into()],
             }),
-            timeout: Some(Duration::from_secs(120)),
+            timeout: Some(Duration::from_mins(2)),
         }))
     }
 
@@ -680,7 +680,7 @@ impl<T> ActionOutput<T> {
                 version: None,
             },
             retry: None,
-            timeout: Some(Duration::from_secs(300)),
+            timeout: Some(Duration::from_mins(5)),
         }))
     }
 
@@ -805,7 +805,7 @@ pub enum BinaryStorage {
 }
 
 /// A reference to data stored externally (not fetched yet).
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DataReference {
     /// Backend identifier (e.g. `"s3"`, `"local"`, `"database"`).
     pub storage_type: String,
@@ -838,7 +838,7 @@ mod tests {
     fn action_output_binary() {
         let out: ActionOutput<i32> = ActionOutput::Binary(BinaryData {
             content_type: "image/png".into(),
-            data: BinaryStorage::Inline(vec![0x89, 0x50, 0x4E, 0x47]),
+            data: BinaryStorage::Inline(vec![0x89, 0x50, 0x4e, 0x47]),
             size: 4,
             metadata: None,
         });
@@ -873,7 +873,7 @@ mod tests {
                 version: None,
             },
             retry: None,
-            timeout: Some(Duration::from_secs(60)),
+            timeout: Some(Duration::from_mins(1)),
         }));
         assert!(out.is_deferred());
         assert!(!out.is_value());
@@ -1098,7 +1098,7 @@ mod tests {
                 assert_eq!(d.handle_id, "doc-456");
                 assert_eq!(d.producer.kind, ProducerKind::LocalCompute);
                 assert!(d.progress.is_some());
-                assert_eq!(d.timeout, Some(Duration::from_secs(300)));
+                assert_eq!(d.timeout, Some(Duration::from_mins(5)));
             },
             _ => panic!("expected Deferred"),
         }
@@ -1111,14 +1111,14 @@ mod tests {
             "https://hooks.example.com/callback",
             "tok-abc",
             ExpectedOutput::Value { schema: None },
-            Some(Duration::from_secs(3600)),
+            Some(Duration::from_hours(1)),
         );
         match &out {
             ActionOutput::Deferred(d) => {
                 assert_eq!(d.handle_id, "cb-789");
                 assert!(matches!(d.resolution, Resolution::Callback { .. }));
                 assert_eq!(d.producer.kind, ProducerKind::ExternalApi);
-                assert_eq!(d.timeout, Some(Duration::from_secs(3600)));
+                assert_eq!(d.timeout, Some(Duration::from_hours(1)));
             },
             _ => panic!("expected Deferred"),
         }
@@ -1197,7 +1197,7 @@ mod tests {
                 },
                 interval: Duration::from_secs(5),
                 backoff: 2.0,
-                max_interval: Some(Duration::from_secs(60)),
+                max_interval: Some(Duration::from_mins(1)),
             },
             expected: ExpectedOutput::Binary {
                 content_type: "image/png".into(),
@@ -1213,7 +1213,7 @@ mod tests {
                 version: Some("v1".into()),
             },
             retry: None,
-            timeout: Some(Duration::from_secs(120)),
+            timeout: Some(Duration::from_mins(2)),
         };
 
         let json = serde_json::to_string(&deferred).unwrap();
@@ -1400,7 +1400,7 @@ mod tests {
         assert_ne!(a, c);
 
         let mut set: HashSet<TokenUsage> = HashSet::new();
-        set.insert(a.clone());
+        set.insert(a);
         assert!(set.contains(&b));
         assert!(!set.contains(&c));
     }
@@ -1430,7 +1430,7 @@ mod tests {
         assert_ne!(a, c);
 
         let mut set: HashSet<Timing> = HashSet::new();
-        set.insert(a.clone());
+        set.insert(a);
         assert!(set.contains(&b));
         assert!(!set.contains(&c));
     }

@@ -38,7 +38,7 @@ mod tests {
     #[test]
     fn test_validation_error_size() {
         // Ensure our optimized struct is <= 80 bytes
-        let size = std::mem::size_of::<ValidationError>();
+        let size = size_of::<ValidationError>();
         assert!(
             size <= 80,
             "ValidationError size is {size} bytes, expected <= 80"

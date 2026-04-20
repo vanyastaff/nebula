@@ -630,7 +630,7 @@ impl ActionRuntime {
         action_key: &str,
         execution_id: ExecutionId,
         action_result: &mut ActionResult<serde_json::Value>,
-        error_counter: &nebula_telemetry::metrics::Counter,
+        error_counter: &Counter,
     ) -> Result<(), RuntimeError> {
         let limit = self.data_policy.max_node_output_bytes;
         let total_limit = self.data_policy.max_total_execution_bytes;
@@ -780,11 +780,11 @@ impl ActionRuntime {
 /// per-node enforcement (including nested collections).
 fn estimated_action_output_payload_bytes(slot: &ActionOutput<serde_json::Value>) -> u64 {
     match slot {
-        ActionOutput::Value(v) => serde_json::to_vec(v).map(|b| b.len() as u64).unwrap_or(0),
+        ActionOutput::Value(v) => serde_json::to_vec(v).map_or(0, |b| b.len() as u64),
         ActionOutput::Binary(b) => b.effective_size(),
         ActionOutput::Reference(r) => r
             .size
-            .unwrap_or_else(|| serde_json::to_vec(r).map(|b| b.len() as u64).unwrap_or(0)),
+            .unwrap_or_else(|| serde_json::to_vec(r).map_or(0, |b| b.len() as u64)),
         ActionOutput::Deferred(_) => 0,
         ActionOutput::Streaming(_) => 0,
         ActionOutput::Collection(items) => items
@@ -814,7 +814,7 @@ fn collect_output_slots_mut<'a>(
     ) {
         match slot {
             ActionOutput::Collection(items) => {
-                for item in items.iter_mut() {
+                for item in &mut *items {
                     collect_slot(item, out);
                 }
             },
@@ -1899,21 +1899,20 @@ mod tests {
             state: &mut JsonValue,
             _ctx: &ActionContext,
         ) -> Result<ActionResult<JsonValue>, ActionError> {
-            let count = state.get("count").and_then(|v| v.as_u64()).unwrap_or(0) as u32;
+            let count = state
+                .get("count")
+                .and_then(serde_json::Value::as_u64)
+                .unwrap_or(0) as u32;
             let next = count + 1;
             *state = serde_json::json!({ "count": next });
             if next >= self.target {
                 Ok(ActionResult::Break {
-                    output: nebula_action::output::ActionOutput::Value(
-                        serde_json::json!({ "final": next }),
-                    ),
+                    output: ActionOutput::Value(serde_json::json!({ "final": next })),
                     reason: nebula_action::result::BreakReason::Completed,
                 })
             } else {
                 Ok(ActionResult::Continue {
-                    output: nebula_action::output::ActionOutput::Value(
-                        serde_json::json!({ "step": next }),
-                    ),
+                    output: ActionOutput::Value(serde_json::json!({ "step": next })),
                     progress: None,
                     delay: None,
                 })
@@ -1941,9 +1940,9 @@ mod tests {
             _state: &mut JsonValue,
             _ctx: &ActionContext,
         ) -> Result<ActionResult<JsonValue>, ActionError> {
-            tokio::time::sleep(std::time::Duration::from_secs(3600)).await;
+            tokio::time::sleep(std::time::Duration::from_hours(1)).await;
             Ok(ActionResult::Break {
-                output: nebula_action::output::ActionOutput::Value(serde_json::json!(null)),
+                output: ActionOutput::Value(serde_json::json!(null)),
                 reason: nebula_action::result::BreakReason::Completed,
             })
         }
@@ -2004,7 +2003,7 @@ mod tests {
         let meta = ActionMetadata::new(action_key!("test.sleepy"), "Sleepy", "hangs in execute");
         registry.register(
             meta.clone(),
-            nebula_action::handler::ActionHandler::Stateful(Arc::new(SleepyHandler { meta })),
+            ActionHandler::Stateful(Arc::new(SleepyHandler { meta })),
         );
         let rt = Arc::new(make_runtime(registry));
 
@@ -2047,10 +2046,7 @@ mod tests {
         let meta = ActionMetadata::new(action_key!("test.count"), "Count", "counts");
         registry.register(
             meta.clone(),
-            nebula_action::handler::ActionHandler::Stateful(Arc::new(CountingHandler {
-                meta,
-                target: 3,
-            })),
+            ActionHandler::Stateful(Arc::new(CountingHandler { meta, target: 3 })),
         );
         let rt = make_runtime(registry);
 
@@ -2097,10 +2093,7 @@ mod tests {
         let meta = ActionMetadata::new(action_key!("test.resume"), "Resume", "resumes");
         registry.register(
             meta.clone(),
-            nebula_action::handler::ActionHandler::Stateful(Arc::new(CountingHandler {
-                meta,
-                target: 5,
-            })),
+            ActionHandler::Stateful(Arc::new(CountingHandler { meta, target: 5 })),
         );
         let rt = make_runtime(registry);
 
@@ -2144,10 +2137,7 @@ mod tests {
         let meta = ActionMetadata::new(action_key!("test.load_fail"), "LoadFail", "load fails");
         registry.register(
             meta.clone(),
-            nebula_action::handler::ActionHandler::Stateful(Arc::new(CountingHandler {
-                meta,
-                target: 2,
-            })),
+            ActionHandler::Stateful(Arc::new(CountingHandler { meta, target: 2 })),
         );
         let rt = make_runtime(registry);
 

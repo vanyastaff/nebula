@@ -58,7 +58,7 @@ pub struct NodeDefinition {
 ///   max_requests: 60
 ///   window_secs: 60
 /// ```
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RateLimit {
     /// Maximum requests allowed within the window.
     pub max_requests: u32,
@@ -278,7 +278,7 @@ mod tests {
         let pv = ParamValue::expression("{{ nodes.a.output.count + 1 }}");
         match pv {
             ParamValue::Expression { expr } => {
-                assert_eq!(expr, "{{ nodes.a.output.count + 1 }}")
+                assert_eq!(expr, "{{ nodes.a.output.count + 1 }}");
             },
             _ => panic!("expected Expression"),
         }

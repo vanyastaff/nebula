@@ -6,7 +6,7 @@ use quote::quote;
 use syn::{DeriveInput, parse_macro_input};
 
 /// Entry point for `#[derive(AuthScheme)]`.
-pub fn derive(input: TokenStream) -> TokenStream {
+pub(crate) fn derive(input: TokenStream) -> TokenStream {
     let input = parse_macro_input!(input as DeriveInput);
 
     match expand(input) {

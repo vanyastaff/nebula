@@ -113,7 +113,7 @@ struct UserActionEvent {
 }
 
 impl ObservabilityEvent for UserActionEvent {
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "user_action"
     }
 
@@ -147,7 +147,7 @@ struct SystemHealthEvent {
 }
 
 impl ObservabilityEvent for SystemHealthEvent {
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "system_health"
     }
 
@@ -178,7 +178,7 @@ struct BusinessMetricEvent {
 }
 
 impl ObservabilityEvent for BusinessMetricEvent {
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "business_metric"
     }
 
@@ -213,7 +213,7 @@ struct ErrorEvent {
 }
 
 impl ObservabilityEvent for ErrorEvent {
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "error_event"
     }
 

@@ -32,9 +32,7 @@ impl DataPassingPolicy {
     ///
     /// Returns `Ok(size)` if within limits, or `Err((limit, actual))` if exceeded.
     pub fn check_output_size(&self, output: &serde_json::Value) -> Result<u64, (u64, u64)> {
-        let size = serde_json::to_vec(output)
-            .map(|v| v.len() as u64)
-            .unwrap_or(0);
+        let size = serde_json::to_vec(output).map_or(0, |v| v.len() as u64);
         if size > self.max_node_output_bytes {
             Err((self.max_node_output_bytes, size))
         } else {

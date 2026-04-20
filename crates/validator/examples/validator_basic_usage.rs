@@ -1,6 +1,10 @@
 //! Basic usage example for nebula-validator
 
-use nebula_validator::prelude::*;
+use nebula_validator::prelude::{
+    AnyValidator, Validatable, Validate, ValidateExt, ValidationError, ValidationMode, all_of,
+    alphanumeric, email, exact_length, hostname, in_range, ip_addr, json_field,
+    json_field_optional, matches_regex, max_length, min_length, size_range, url,
+};
 use serde_json::json;
 
 fn main() {
@@ -25,13 +29,13 @@ fn basic_string_validation() {
     let validator = min_length(5);
 
     match validator.validate("hello") {
-        Ok(_) => println!("✓ 'hello' is valid (length >= 5)"),
-        Err(e) => println!("✗ Error: {}", e),
+        Ok(()) => println!("✓ 'hello' is valid (length >= 5)"),
+        Err(e) => println!("✗ Error: {e}"),
     }
 
     match validator.validate("hi") {
-        Ok(_) => println!("✓ 'hi' is valid"),
-        Err(e) => println!("✗ 'hi' is invalid: {}", e),
+        Ok(()) => println!("✓ 'hi' is valid"),
+        Err(e) => println!("✗ 'hi' is invalid: {e}"),
     }
 }
 
@@ -43,8 +47,8 @@ fn composed_string_validation() {
 
     for sample in ["alice123", "ab", "john_doe"] {
         match username.validate(sample) {
-            Ok(_) => println!("✓ '{sample}' passed username rules"),
-            Err(e) => println!("✗ '{sample}' failed: {}", e),
+            Ok(()) => println!("✓ '{sample}' passed username rules"),
+            Err(e) => println!("✗ '{sample}' failed: {e}"),
         }
     }
 

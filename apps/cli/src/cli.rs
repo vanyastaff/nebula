@@ -20,7 +20,7 @@ fn parse_concurrency_at_least_one(s: &str) -> Result<usize, String> {
 /// Run, validate, and manage workflows from the terminal.
 #[derive(Parser)]
 #[command(name = "nebula", version, about, propagate_version = true)]
-pub struct Cli {
+pub(crate) struct Cli {
     /// Enable verbose logging (debug level).
     #[arg(short, long, global = true)]
     pub verbose: bool,
@@ -34,7 +34,7 @@ pub struct Cli {
 }
 
 #[derive(Subcommand)]
-pub enum Command {
+pub(crate) enum Command {
     /// Execute a workflow from a YAML or JSON file.
     Run(RunArgs),
 
@@ -78,7 +78,7 @@ pub enum Command {
 // ── Config ───────────────────────────────────────────────────────────────
 
 #[derive(Subcommand)]
-pub enum ConfigCommand {
+pub(crate) enum ConfigCommand {
     /// Show the resolved configuration.
     Show,
     /// Generate a default config file.
@@ -86,7 +86,7 @@ pub enum ConfigCommand {
 }
 
 #[derive(Parser)]
-pub struct ConfigInitArgs {
+pub(crate) struct ConfigInitArgs {
     /// Create global config at ~/.nebula/config.toml instead of ./nebula.toml.
     #[arg(long)]
     pub global: bool,
@@ -95,7 +95,7 @@ pub struct ConfigInitArgs {
 // ── Actions ──────────────────────────────────────────────────────────────
 
 #[derive(Subcommand)]
-pub enum ActionsCommand {
+pub(crate) enum ActionsCommand {
     /// List all registered actions.
     List(ActionsListArgs),
     /// Show detailed info about an action.
@@ -105,7 +105,7 @@ pub enum ActionsCommand {
 }
 
 #[derive(Parser)]
-pub struct ActionsTestArgs {
+pub(crate) struct ActionsTestArgs {
     /// Action key to test (e.g. "echo", "http.get").
     pub key: String,
 
@@ -119,14 +119,14 @@ pub struct ActionsTestArgs {
 }
 
 #[derive(Parser)]
-pub struct ActionsListArgs {
+pub(crate) struct ActionsListArgs {
     /// Output format (auto-detects: text for terminal, json for pipes).
     #[arg(long)]
     pub format: Option<OutputFormat>,
 }
 
 #[derive(Parser)]
-pub struct ActionsInfoArgs {
+pub(crate) struct ActionsInfoArgs {
     /// Action key (e.g. "echo", "delay").
     pub key: String,
 
@@ -138,7 +138,7 @@ pub struct ActionsInfoArgs {
 // ── Plugin ────────────────────────────────────────────────────────────────
 
 #[derive(Subcommand)]
-pub enum PluginCommand {
+pub(crate) enum PluginCommand {
     /// List loaded plugins (built-in + external from plugins/ dir).
     List,
     /// Create a new plugin project.
@@ -147,7 +147,7 @@ pub enum PluginCommand {
 
 /// Arguments for the `plugin new` command.
 #[derive(Parser)]
-pub struct PluginNewArgs {
+pub(crate) struct PluginNewArgs {
     /// Plugin name (e.g. "telegram", "slack", "csv-parser").
     pub name: String,
 
@@ -163,7 +163,7 @@ pub struct PluginNewArgs {
 // ── Dev ──────────────────────────────────────────────────────────────────
 
 #[derive(Subcommand)]
-pub enum DevCommand {
+pub(crate) enum DevCommand {
     /// Initialize a new Nebula project in the current directory.
     Init(DevInitArgs),
     /// Scaffold a new action crate.
@@ -174,14 +174,14 @@ pub enum DevCommand {
 }
 
 #[derive(Subcommand)]
-pub enum DevActionCommand {
+pub(crate) enum DevActionCommand {
     /// Create a new action project.
     New(DevActionNewArgs),
 }
 
 /// Arguments for the `dev init` command.
 #[derive(Parser)]
-pub struct DevInitArgs {
+pub(crate) struct DevInitArgs {
     /// Project name (defaults to directory name).
     #[arg(short, long)]
     pub name: Option<String>,
@@ -193,7 +193,7 @@ pub struct DevInitArgs {
 
 /// Arguments for the `dev action new` command.
 #[derive(Parser)]
-pub struct DevActionNewArgs {
+pub(crate) struct DevActionNewArgs {
     /// Action name (e.g. "http-request", "slack-send").
     pub name: String,
 
@@ -205,7 +205,7 @@ pub struct DevActionNewArgs {
 // ── Completion ───────────────────────────────────────────────────────────
 
 #[derive(Parser)]
-pub struct CompletionArgs {
+pub(crate) struct CompletionArgs {
     /// Shell to generate completions for.
     pub shell: clap_complete::Shell,
 }
@@ -214,7 +214,7 @@ pub struct CompletionArgs {
 
 /// Arguments for the `run` command.
 #[derive(Parser)]
-pub struct RunArgs {
+pub(crate) struct RunArgs {
     /// Path to the workflow file (YAML or JSON).
     pub workflow: PathBuf,
 
@@ -259,7 +259,7 @@ pub struct RunArgs {
 
 /// Arguments for the `watch` command.
 #[derive(Parser)]
-pub struct WatchArgs {
+pub(crate) struct WatchArgs {
     /// Path to the workflow file (YAML or JSON).
     pub workflow: PathBuf,
 
@@ -278,7 +278,7 @@ pub struct WatchArgs {
 
 /// Arguments for the `replay` command.
 #[derive(Parser)]
-pub struct ReplayArgs {
+pub(crate) struct ReplayArgs {
     /// Path to the workflow file (YAML or JSON).
     pub workflow: PathBuf,
 
@@ -301,7 +301,7 @@ pub struct ReplayArgs {
 
 /// Arguments for the `validate` command.
 #[derive(Parser)]
-pub struct ValidateArgs {
+pub(crate) struct ValidateArgs {
     /// Path to the workflow file (YAML or JSON).
     pub workflow: PathBuf,
 
@@ -312,7 +312,7 @@ pub struct ValidateArgs {
 
 /// Supported output formats.
 #[derive(Clone, Debug, clap::ValueEnum)]
-pub enum OutputFormat {
+pub(crate) enum OutputFormat {
     /// JSON output (machine-readable).
     Json,
     /// Human-readable table/text output.
@@ -321,7 +321,7 @@ pub enum OutputFormat {
 
 /// Resolve output format: explicit flag > TTY detection.
 /// Terminal → text, pipe → json.
-pub fn resolve_format(explicit: Option<OutputFormat>) -> OutputFormat {
+pub(crate) fn resolve_format(explicit: Option<OutputFormat>) -> OutputFormat {
     explicit.unwrap_or_else(|| {
         if std::io::stdout().is_terminal() {
             OutputFormat::Text

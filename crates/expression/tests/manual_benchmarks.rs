@@ -44,7 +44,7 @@ fn benchmark_baseline() {
     });
     println!("{:40} {:>15.2?}", "template/parse/multiple", time);
 
-    let complex = r#"
+    let complex = r"
         <html>
             <title>{{ $workflow.name }}</title>
             <body>
@@ -52,7 +52,7 @@ fn benchmark_baseline() {
                 <p>Result: {{ $input | uppercase() }}</p>
             </body>
         </html>
-    "#;
+    ";
     let time = avg_time(|| {
         let _ = Template::new(complex);
     });
@@ -122,7 +122,7 @@ fn benchmark_baseline() {
 
     let mut big_ctx = EvaluationContext::new();
     for i in 0..100 {
-        big_ctx.set_execution_var(format!("var_{}", i), serde_json::json!(i as i64));
+        big_ctx.set_execution_var(format!("var_{i}"), serde_json::json!(i as i64));
     }
 
     let time = avg_time(|| {

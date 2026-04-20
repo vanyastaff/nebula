@@ -101,8 +101,8 @@ mod tests {
     #[test]
     fn lazy_parse_is_cached() {
         let e = Expression::new("{{ $x }}");
-        let a1 = e.parse().unwrap() as *const _;
-        let a2 = e.parse().unwrap() as *const _;
+        let a1 = std::ptr::from_ref(e.parse().unwrap());
+        let a2 = std::ptr::from_ref(e.parse().unwrap());
         assert_eq!(a1, a2, "parse should cache the same AST instance");
     }
 

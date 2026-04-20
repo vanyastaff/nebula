@@ -5,7 +5,7 @@ use anyhow::{Context, bail};
 use crate::cli::DevActionNewArgs;
 
 /// Execute the `dev action new` command.
-pub fn execute(args: DevActionNewArgs) -> anyhow::Result<()> {
+pub(crate) fn execute(args: DevActionNewArgs) -> anyhow::Result<()> {
     let name = &args.name;
     let dir = args.path.unwrap_or_else(|| name.into());
 

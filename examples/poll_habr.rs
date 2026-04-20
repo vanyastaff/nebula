@@ -24,7 +24,11 @@
 
 use std::time::Duration;
 
-use nebula_sdk::prelude::*;
+use nebula_sdk::prelude::{
+    Action, ActionDependencies, ActionError, ActionMetadata, DeduplicatingCursor, PollAction,
+    PollConfig, PollCursor, PollResult, Serialize, TestContextBuilder, TestRuntime, TriggerContext,
+    action_key,
+};
 
 // ── Action definition ──────────────────────────────────────────────────────
 

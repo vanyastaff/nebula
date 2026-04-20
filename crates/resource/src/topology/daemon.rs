@@ -43,7 +43,7 @@ pub trait Daemon: Resource {
 
 /// Configuration types for daemon topology.
 pub mod config {
-    use super::*;
+    use super::{Duration, RestartPolicy};
 
     /// Daemon configuration.
     #[derive(Debug, Clone)]

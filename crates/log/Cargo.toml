@@ -101,3 +101,6 @@ harness = false
 #   - tracing-log: activated through tracing-subscriber's `tracing-log`
 #     feature; the `log-compat` feature re-exposes it for downstream.
 ignored = ["flate2", "tracing-log"]
+
+[lints]
+workspace = true

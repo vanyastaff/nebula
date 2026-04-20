@@ -15,7 +15,7 @@ fn bench_schema_build(c: &mut Criterion) {
     let mut group = c.benchmark_group("schema_build");
     for size in [10_usize, 50, 100, 500] {
         group.bench_function(format!("build_{size}"), |b| {
-            b.iter(|| build_sample_schema(black_box(size)))
+            b.iter(|| build_sample_schema(black_box(size)));
         });
     }
     group.finish();

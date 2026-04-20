@@ -17,7 +17,7 @@ use super::{
 
 /// Status of a single node in the TUI.
 #[derive(Clone)]
-pub struct NodeInfo {
+pub(crate) struct NodeInfo {
     pub name: String,
     pub action_key: String,
     pub status: NodeStatus,
@@ -26,8 +26,8 @@ pub struct NodeInfo {
     pub error: Option<String>,
 }
 
-#[derive(Clone, PartialEq)]
-pub enum NodeStatus {
+#[derive(Clone, PartialEq, Eq)]
+pub(crate) enum NodeStatus {
     Pending,
     Running,
     Completed,
@@ -38,14 +38,14 @@ pub enum NodeStatus {
 
 /// A log entry displayed in the bottom panel.
 #[derive(Clone)]
-pub struct LogEntry {
+pub(crate) struct LogEntry {
     pub offset: Duration,
     pub level: LogLevel,
     pub message: String,
 }
 
 /// The TUI application state.
-pub struct App {
+pub(crate) struct App {
     pub workflow_name: String,
     pub execution_id: String,
     pub started_at: Instant,
@@ -61,7 +61,7 @@ pub struct App {
 }
 
 impl App {
-    pub fn new(
+    pub(crate) fn new(
         workflow_name: String,
         execution_id: String,
         node_order: Vec<(NodeKey, String, String)>,
@@ -99,30 +99,30 @@ impl App {
         }
     }
 
-    pub fn total_elapsed(&self) -> Duration {
+    pub(crate) fn total_elapsed(&self) -> Duration {
         self.started_at.elapsed()
     }
 
-    pub fn completed_count(&self) -> usize {
+    pub(crate) fn completed_count(&self) -> usize {
         self.nodes
             .iter()
             .filter(|(_, n)| n.status == NodeStatus::Completed)
             .count()
     }
 
-    pub fn failed_count(&self) -> usize {
+    pub(crate) fn failed_count(&self) -> usize {
         self.nodes
             .iter()
             .filter(|(_, n)| n.status == NodeStatus::Failed)
             .count()
     }
 
-    pub fn selected_info(&self) -> Option<&NodeInfo> {
+    pub(crate) fn selected_info(&self) -> Option<&NodeInfo> {
         self.nodes.get(self.selected_node).map(|(_, info)| info)
     }
 
     /// Apply a TUI event to update app state.
-    pub fn apply_event(&mut self, evt: TuiEvent) {
+    pub(crate) fn apply_event(&mut self, evt: TuiEvent) {
         match evt {
             TuiEvent::Key(key) => {
                 if key.kind == KeyEventKind::Press {
@@ -212,7 +212,10 @@ impl App {
 ///
 /// Takes an `mpsc::UnboundedReceiver<TuiEvent>` that receives engine events
 /// and terminal events are polled via crossterm.
-pub async fn run_tui(mut rx: mpsc::UnboundedReceiver<TuiEvent>, mut app: App) -> io::Result<()> {
+pub(crate) async fn run_tui(
+    mut rx: mpsc::UnboundedReceiver<TuiEvent>,
+    mut app: App,
+) -> io::Result<()> {
     let mut terminal = ratatui::init();
     terminal.clear()?;
 

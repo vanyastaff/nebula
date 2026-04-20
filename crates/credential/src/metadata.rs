@@ -206,7 +206,7 @@ impl CredentialMetadataBuilder {
 pub enum MetadataCompatibilityError {
     /// A generic catalog-citizen rule fired (key / version / schema).
     #[error(transparent)]
-    Base(#[from] nebula_metadata::BaseCompatError<nebula_core::CredentialKey>),
+    Base(#[from] nebula_metadata::BaseCompatError<CredentialKey>),
 
     /// Auth pattern changed without a major version bump.
     #[error("credential auth pattern changed without a major version bump")]

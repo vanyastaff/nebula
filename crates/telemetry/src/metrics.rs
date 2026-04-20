@@ -335,7 +335,7 @@ impl Histogram {
                 // Linear interpolation within the bucket.
                 let prev_cumulative = cumulative - bucket_count;
                 let fraction = (target - prev_cumulative as f64) / bucket_count as f64;
-                return prev_bound + (upper - prev_bound) * fraction;
+                return (upper - prev_bound).mul_add(fraction, prev_bound);
             }
 
             if i < self.boundaries.len() {
@@ -623,15 +623,15 @@ impl MetricsRegistry {
         };
 
         let new_counters: DashMap<MetricKey, Counter> = DashMap::new();
-        for entry in self.counters.iter() {
+        for entry in &*self.counters {
             new_counters.insert(remap_key(entry.key()), entry.value().clone());
         }
         let new_gauges: DashMap<MetricKey, Gauge> = DashMap::new();
-        for entry in self.gauges.iter() {
+        for entry in &*self.gauges {
             new_gauges.insert(remap_key(entry.key()), entry.value().clone());
         }
         let new_histograms: DashMap<MetricKey, Histogram> = DashMap::new();
-        for entry in self.histograms.iter() {
+        for entry in &*self.histograms {
             new_histograms.insert(remap_key(entry.key()), entry.value().clone());
         }
 
@@ -952,7 +952,7 @@ mod tests {
         reg.gauge("also_fresh").set(1);
 
         // Everything was just written — a 1-hour window should keep all.
-        reg.retain_recent(Duration::from_secs(3600));
+        reg.retain_recent(Duration::from_hours(1));
         assert_eq!(reg.metric_count(), 2);
     }
 
@@ -968,7 +968,7 @@ mod tests {
         reg.counter("a").inc();
         reg.gauge("b").set(1);
         reg.histogram("c").observe(0.5);
-        reg.retain_recent(Duration::from_secs(3600));
+        reg.retain_recent(Duration::from_hours(1));
         assert_eq!(
             reg.metric_count(),
             3,

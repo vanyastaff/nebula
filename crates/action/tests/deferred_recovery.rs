@@ -39,7 +39,7 @@ fn sample_deferred(handle_id: &str) -> DeferredOutput {
             max_interval: Some(Duration::from_secs(30)),
             non_retryable_errors: vec!["validation_error".to_string()],
         }),
-        timeout: Some(Duration::from_secs(120)),
+        timeout: Some(Duration::from_mins(2)),
     }
 }
 
@@ -65,7 +65,7 @@ fn deferred_success_roundtrip_survives_persist_and_resume() {
                     Resolution::AwaitOrPoll { .. }
                 ));
                 assert!(deferred.retry.is_some());
-                assert_eq!(deferred.timeout, Some(Duration::from_secs(120)));
+                assert_eq!(deferred.timeout, Some(Duration::from_mins(2)));
             },
             other => panic!("expected Deferred output, got {other:?}"),
         },
@@ -79,7 +79,7 @@ fn wait_with_partial_deferred_roundtrip_survives_resume() {
         condition: WaitCondition::Execution {
             execution_id: nebula_core::id::ExecutionId::new(),
         },
-        timeout: Some(Duration::from_secs(300)),
+        timeout: Some(Duration::from_mins(5)),
         partial_output: Some(ActionOutput::Deferred(Box::new(sample_deferred("job-99")))),
     };
 
@@ -93,7 +93,7 @@ fn wait_with_partial_deferred_roundtrip_survives_resume() {
             timeout,
             ..
         } => {
-            assert_eq!(timeout, Some(Duration::from_secs(300)));
+            assert_eq!(timeout, Some(Duration::from_mins(5)));
             match partial_output {
                 Some(ActionOutput::Deferred(deferred)) => {
                     assert_eq!(deferred.handle_id, "job-99");

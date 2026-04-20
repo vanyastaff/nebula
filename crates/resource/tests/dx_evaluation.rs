@@ -281,7 +281,7 @@ async fn use_case_2_resident_config_store() {
     // The first acquire triggers lazy creation — handle contains ConfigStore
     assert_eq!(handle.env, "production");
     assert_eq!(
-        handle.values.get("log_level").map(|s| s.as_str()),
+        handle.values.get("log_level").map(String::as_str),
         Some("info")
     );
 
