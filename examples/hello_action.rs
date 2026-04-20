@@ -7,8 +7,12 @@
 //! Run with:
 //!
 //! ```bash
-//! cargo run --example hello_action
+//! cargo run -p nebula-examples --bin hello_action
 //! ```
+//!
+//! (`examples/` is a workspace member with `[[bin]]` targets, not a Cargo
+//! `[[example]]` directory, so the standard `--example` shortcut doesn't
+//! apply.)
 //!
 //! Expected output:
 //!

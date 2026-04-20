@@ -1,15 +1,18 @@
 # Apps
 
-Application layer for Nebula clients.
+Application targets for Nebula — composition roots that wire library crates
+into runnable artefacts.
 
 ## Structure
 
-- `apps/web` - browser UI (SaaS/self-hosted frontend)
-- `apps/desktop` - Tauri desktop shell + same web UI runtime
+- `apps/cli` — `nebula` CLI for in-process one-shot runs and the optional
+  `--tui` execution viewer (release artefact).
+- `apps/desktop` — Tauri 2.x reference shell. **Not a release artefact** —
+  see `apps/desktop/README.md`.
 
-## Notes
-
-This repository could not use `npm create tauri-app` in the current environment
-because npm registry access is offline-only (`only-if-cached`).
-The scaffold below follows Tauri 2.x structure and can be completed by running
-`npm install` when network access is available.
+The audit-driven `library-first` direction places the production
+composition root for the `mode-self-hosted` deployment shape (ADR-0013) in
+a future `apps/server` chip; tracked as the remaining ADR-0008 follow-up.
+The earlier `apps/web` placeholder was removed in the audit P1 sweep —
+the canonical SaaS frontend will land alongside `apps/server` when that
+chip ships.

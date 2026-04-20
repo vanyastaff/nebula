@@ -56,6 +56,5 @@ See `docs/MATURITY.md` row for `nebula-plugin`.
 ## Related
 
 - Canon: `docs/PRODUCT_CANON.md` §1 (plugin as integration surface), §3.5 (Plugin = distribution + registration unit), §7.1 (packaging: `Cargo.toml` + `plugin.toml` + `impl Plugin`; unit of registration not size), §13.1 (plugin load → registry contract).
-- Integration model: `docs/INTEGRATION_MODEL.md` — full plugin packaging mechanics, three-sources-of-truth rule, cross-plugin dependency rule, signing rationale.
-- Plugin model: `docs/PLUGIN_MODEL.md`.
+- Integration model: `docs/INTEGRATION_MODEL.md` §7 — full plugin packaging mechanics, three-sources-of-truth rule, cross-plugin dependency rule, signing rationale, discovery / load lifecycle, ABI policy, tooling notes.
 - Siblings: `nebula-plugin-sdk` (authoring SDK on top of these traits), `nebula-sandbox` (loading and isolation), `nebula-core` (`PluginKey` identity type), `nebula-action` (`ActionDescriptor`), `nebula-resource` (`ResourceDescriptor`), `nebula-credential` (`CredentialDescriptor`).

@@ -38,9 +38,6 @@ chrono = { workspace = true }
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["full"] }
-# Integration tests use the `simple_action!` macro, whose `#[derive(Action)]`
-# expands to absolute `::nebula_action::Action` — so the path must be in scope.
-nebula-action = { path = "../action" }
 
 [features]
 default = ["derive", "testing"]

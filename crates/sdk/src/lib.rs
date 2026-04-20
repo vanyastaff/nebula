@@ -245,10 +245,10 @@ macro_rules! simple_action {
 
         impl $crate::nebula_action::Action for $name {
             fn metadata(&self) -> &$crate::nebula_action::ActionMetadata {
-                static METADATA: ::std::sync::OnceLock<$crate::nebula_action::ActionMetadata>
-                    = ::std::sync::OnceLock::new();
+                static METADATA: ::std::sync::OnceLock<$crate::nebula_action::ActionMetadata> =
+                    ::std::sync::OnceLock::new();
                 METADATA.get_or_init(|| {
-                    $crate::nebula_action::ActionMetadata::new(
+                    $crate::nebula_action::ActionMetadata::for_stateless::<$name>(
                         $crate::nebula_core::action_key!($key),
                         stringify!($name),
                         "",

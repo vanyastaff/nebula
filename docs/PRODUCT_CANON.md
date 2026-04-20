@@ -456,7 +456,6 @@ This is the **minimum bar** for “we did not break the product direction.” Ex
 | `docs/dev-setup.md` | Local dev environment setup. |
 | `docs/ENGINE_GUARANTEES.md` | Operator-facing guarantees narrative (satellite of §11). |
 | `docs/UPGRADE_COMPAT.md` | Engine upgrade and workflow compatibility rules (satellite of §7.2). |
-| `docs/PLUGIN_MODEL.md` | Plugin packaging mechanics (overlaps INTEGRATION_MODEL — consider merging in a later pass). |
 | `docs/adr/` | Architecture Decision Records — `NNNN-kebab-title.md`, no central index. |
 | `README.md` | Operator-facing summary. Must not contradict §5 / §11.5 / §12.3. |
 | `crates/*/README.md` + `lib.rs //!` | Per-crate: Role (named pattern), Contract (invariants + seam tests), Public API, Non-goals, Maturity. |

@@ -1,9 +1,13 @@
-//! Postgres-backed implementation of [`Storage`](crate::Storage).
+//! Postgres connection wrapper + [`PgWorkflowRepo`] implementation.
 //!
-//! Uses a simple key-value table (`storage_kv` by default) with
-//! `key TEXT PRIMARY KEY`, `value JSONB`, and `updated_at TIMESTAMPTZ`.
+//! [`PostgresStorage`] is a thin wrapper around `sqlx::Pool<Postgres>` plus
+//! embedded migration runner; concrete repos ([`PgWorkflowRepo`],
+//! [`PgExecutionRepo`](super::pg_execution::PgExecutionRepo)) take the pool
+//! by value and implement their domain traits directly. The legacy generic
+//! key-value `Storage` trait was retired in the audit P1 sweep — there is no
+//! generic K/V surface here any more.
 
-use std::{sync::Arc, time::Duration};
+use std::time::Duration;
 
 use async_trait::async_trait;
 use nebula_core::WorkflowId;
@@ -11,7 +15,6 @@ use sqlx::{Pool, Postgres, postgres::PgPoolOptions, types::Json};
 
 use crate::{
     StorageError,
-    storage::Storage,
     workflow_repo::{WorkflowRepo, WorkflowRepoError},
 };
 
@@ -20,8 +23,6 @@ use crate::{
 pub struct PostgresStorageConfig {
     /// PostgreSQL connection string (`postgres://user:pass@host:port/db`).
     pub connection_string: String,
-    /// Table name for key-value storage (default: `storage_kv`).
-    pub table: String,
     /// Maximum number of connections in the pool.
     pub max_connections: u32,
     /// Minimum number of connections in the pool.
@@ -35,7 +36,6 @@ impl Default for PostgresStorageConfig {
         Self {
             connection_string: std::env::var("DATABASE_URL")
                 .unwrap_or_else(|_| "postgres://nebula:nebula@localhost:5432/nebula".to_string()),
-            table: "storage_kv".to_string(),
             max_connections: 10,
             min_connections: 2,
             connect_timeout: Duration::from_secs(5),
@@ -54,21 +54,26 @@ impl PostgresStorageConfig {
     }
 }
 
-/// Postgres-backed key-value storage.
+/// Postgres pool wrapper with embedded migration runner.
+///
+/// Construct concrete repositories ([`PgWorkflowRepo`], `PgExecutionRepo`,
+/// etc.) from `storage.pool().clone()`.
 #[derive(Clone)]
 pub struct PostgresStorage {
     pool: Pool<Postgres>,
-    select_sql: Arc<str>,
-    insert_sql: Arc<str>,
-    delete_sql: Arc<str>,
-    exists_sql: Arc<str>,
 }
 
 impl PostgresStorage {
     /// Create a new [`PostgresStorage`] from a connection string.
     ///
-    /// The caller is responsible for running SQL migrations that create
-    /// the `storage_kv` table (or the configured table name).
+    /// Only opens the connection pool. The caller is responsible for
+    /// ensuring the schema exists — call [`run_migrations`](Self::run_migrations)
+    /// once during process startup, or run the SQL files in
+    /// `crates/storage/migrations/` out-of-band before constructing
+    /// [`PgWorkflowRepo`] / [`PgExecutionRepo`](super::pg_execution::PgExecutionRepo)
+    /// from the pool. Skipping migration leaves the pool valid but every
+    /// repo call returns a `relation … does not exist` error from
+    /// Postgres.
     pub async fn new(connection_string: impl Into<String>) -> Result<Self, StorageError> {
         Self::with_config(PostgresStorageConfig::from_connection_string(
             connection_string,
@@ -94,9 +99,11 @@ impl PostgresStorage {
     }
 
     /// Create a new [`PostgresStorage`] using explicit configuration.
+    ///
+    /// As with [`new`](Self::new), only the pool is opened — call
+    /// [`run_migrations`](Self::run_migrations) before using any repo if
+    /// the database schema is not already in place.
     pub async fn with_config(config: PostgresStorageConfig) -> Result<Self, StorageError> {
-        validate_table_name(&config.table)?;
-
         let pool = PgPoolOptions::new()
             .max_connections(config.max_connections)
             .min_connections(config.min_connections)
@@ -105,62 +112,8 @@ impl PostgresStorage {
             .await
             .map_err(|err| StorageError::Connection(err.to_string()))?;
 
-        let table = &config.table;
-        let select_sql = format!("SELECT value FROM {} WHERE key = $1", table);
-        let insert_sql = format!(
-            "INSERT INTO {} (key, value) \
-             VALUES ($1, $2) \
-             ON CONFLICT (key) DO UPDATE \
-             SET value = EXCLUDED.value, updated_at = NOW()",
-            table
-        );
-        let delete_sql = format!("DELETE FROM {} WHERE key = $1", table);
-        let exists_sql = format!("SELECT 1 FROM {} WHERE key = $1", table);
-
-        Ok(Self {
-            pool,
-            select_sql: Arc::from(select_sql),
-            insert_sql: Arc::from(insert_sql),
-            delete_sql: Arc::from(delete_sql),
-            exists_sql: Arc::from(exists_sql),
-        })
+        Ok(Self { pool })
     }
-}
-
-/// Validates a PostgreSQL table name before interpolating it into SQL.
-///
-/// Accepts only simple unquoted identifiers matching
-/// `[A-Za-z_][A-Za-z0-9_]{0,62}` — the safe subset of PostgreSQL identifiers
-/// that require no double-quoting and cannot contain SQL-injection payloads.
-/// Schema-qualified names (`schema.table`), quoted identifiers, and non-ASCII
-/// characters are rejected; if those are needed, add a dedicated code path
-/// that applies proper identifier quoting (PostgreSQL double-quoting with
-/// embedded `"` escaped as `""`) rather than loosening this regex. Note that
-/// SQL bind parameters (`$1`, `push_bind`, etc.) are for values only and
-/// cannot be used to substitute identifiers.
-fn validate_table_name(name: &str) -> Result<(), StorageError> {
-    let bad = |reason: &str| {
-        StorageError::Configuration(format!(
-            "invalid table name {name:?}: {reason} (must match [A-Za-z_][A-Za-z0-9_]{{0,62}})"
-        ))
-    };
-    let bytes = name.as_bytes();
-    if bytes.is_empty() {
-        return Err(bad("empty"));
-    }
-    if bytes.len() > 63 {
-        return Err(bad("exceeds PostgreSQL identifier length (63)"));
-    }
-    let first = bytes[0];
-    if !(first.is_ascii_alphabetic() || first == b'_') {
-        return Err(bad("must start with an ASCII letter or underscore"));
-    }
-    for &b in &bytes[1..] {
-        if !(b.is_ascii_alphanumeric() || b == b'_') {
-            return Err(bad("may only contain [A-Za-z0-9_]"));
-        }
-    }
-    Ok(())
 }
 
 /// Postgres-backed workflow repository.
@@ -185,53 +138,6 @@ impl PgWorkflowRepo {
             .map_err(|err| WorkflowRepoError::Connection(err.to_string()))?;
 
         Ok(version as u64)
-    }
-}
-
-#[async_trait]
-impl Storage for PostgresStorage {
-    type Key = String;
-    type Value = serde_json::Value;
-
-    async fn get(&self, key: &Self::Key) -> Result<Option<Self::Value>, StorageError> {
-        let row = sqlx::query_scalar::<_, Json<serde_json::Value>>(&self.select_sql)
-            .bind(key)
-            .fetch_optional(&self.pool)
-            .await
-            .map_err(|err| StorageError::Connection(err.to_string()))?;
-
-        Ok(row.map(|v| v.0))
-    }
-
-    async fn set(&self, key: &Self::Key, value: &Self::Value) -> Result<(), StorageError> {
-        sqlx::query(&self.insert_sql)
-            .bind(key)
-            .bind(Json(value.clone()))
-            .execute(&self.pool)
-            .await
-            .map_err(|err| StorageError::Connection(err.to_string()))?;
-
-        Ok(())
-    }
-
-    async fn delete(&self, key: &Self::Key) -> Result<(), StorageError> {
-        sqlx::query(&self.delete_sql)
-            .bind(key)
-            .execute(&self.pool)
-            .await
-            .map_err(|err| StorageError::Connection(err.to_string()))?;
-
-        Ok(())
-    }
-
-    async fn exists(&self, key: &Self::Key) -> Result<bool, StorageError> {
-        let row = sqlx::query_scalar::<_, i32>(&self.exists_sql)
-            .bind(key)
-            .fetch_optional(&self.pool)
-            .await
-            .map_err(|err| StorageError::Connection(err.to_string()))?;
-
-        Ok(row.is_some())
     }
 }
 
@@ -367,68 +273,6 @@ impl WorkflowRepo for PgWorkflowRepo {
 #[cfg(all(test, feature = "postgres"))]
 mod tests {
     use super::*;
-
-    #[test]
-    fn validate_table_name_accepts_valid_identifiers() {
-        for name in ["storage_kv", "kv", "_kv", "Kv1", "a", "_", "_9"] {
-            validate_table_name(name).unwrap_or_else(|e| panic!("{name:?} should be valid: {e}"));
-        }
-    }
-
-    #[test]
-    fn validate_table_name_accepts_max_length() {
-        let ok = "a".repeat(63);
-        validate_table_name(&ok).expect("63-char identifier should be valid");
-    }
-
-    #[test]
-    fn validate_table_name_rejects_empty() {
-        let err = validate_table_name("").unwrap_err();
-        assert!(matches!(err, StorageError::Configuration(_)));
-    }
-
-    #[test]
-    fn validate_table_name_rejects_sql_injection_shape() {
-        let err = validate_table_name("kv; DROP TABLE workflows; --").unwrap_err();
-        assert!(matches!(err, StorageError::Configuration(_)));
-    }
-
-    #[test]
-    fn validate_table_name_rejects_leading_digit() {
-        let err = validate_table_name("1kv").unwrap_err();
-        assert!(matches!(err, StorageError::Configuration(_)));
-    }
-
-    #[test]
-    fn validate_table_name_rejects_dash() {
-        let err = validate_table_name("kv-1").unwrap_err();
-        assert!(matches!(err, StorageError::Configuration(_)));
-    }
-
-    #[test]
-    fn validate_table_name_rejects_schema_qualified() {
-        let err = validate_table_name("audit.kv").unwrap_err();
-        assert!(matches!(err, StorageError::Configuration(_)));
-    }
-
-    #[test]
-    fn validate_table_name_rejects_double_quotes() {
-        let err = validate_table_name("\"kv\"").unwrap_err();
-        assert!(matches!(err, StorageError::Configuration(_)));
-    }
-
-    #[test]
-    fn validate_table_name_rejects_overlong() {
-        let too_long = "a".repeat(64);
-        let err = validate_table_name(&too_long).unwrap_err();
-        assert!(matches!(err, StorageError::Configuration(_)));
-    }
-
-    #[test]
-    fn validate_table_name_rejects_whitespace() {
-        let err = validate_table_name("kv table").unwrap_err();
-        assert!(matches!(err, StorageError::Configuration(_)));
-    }
 
     #[tokio::test]
     async fn postgres_new_from_connection_string() {
@@ -584,25 +428,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn postgres_get_set_delete_exists_roundtrip() {
-        let Ok(url) = std::env::var("DATABASE_URL") else {
-            return;
-        };
-
-        let storage = PostgresStorage::new(url).await.expect("connect");
-        let key = "storage:test:roundtrip".to_string();
-        let value = serde_json::json!({"a": 1, "b": "ok"});
-
-        storage.set(&key, &value).await.expect("set");
-        assert!(storage.exists(&key).await.expect("exists"));
-        assert_eq!(storage.get(&key).await.expect("get"), Some(value.clone()));
-
-        storage.delete(&key).await.expect("delete");
-        assert!(!storage.exists(&key).await.expect("exists false"));
-        assert_eq!(storage.get(&key).await.expect("get none"), None);
-    }
-
-    #[tokio::test]
     async fn run_migrations_is_idempotent() {
         let Ok(url) = std::env::var("DATABASE_URL") else {
             return;
@@ -614,39 +439,6 @@ mod tests {
             .run_migrations()
             .await
             .expect("second migration run should be idempotent");
-    }
-
-    #[tokio::test]
-    async fn migrations_create_storage_kv_table() {
-        let Ok(url) = std::env::var("DATABASE_URL") else {
-            return;
-        };
-
-        let storage = PostgresStorage::new(url).await.expect("connect");
-        storage.run_migrations().await.expect("migrations");
-
-        let exists: bool = sqlx::query_scalar(
-            "SELECT EXISTS (
-                SELECT 1 FROM information_schema.tables
-                WHERE table_name = 'storage_kv'
-            )",
-        )
-        .fetch_one(storage.pool())
-        .await
-        .expect("query information_schema");
-
-        assert!(exists, "storage_kv table should exist after migrations");
-
-        // Verify expected columns
-        let columns: Vec<String> = sqlx::query_scalar(
-            "SELECT column_name::text FROM information_schema.columns
-             WHERE table_name = 'storage_kv' ORDER BY ordinal_position",
-        )
-        .fetch_all(storage.pool())
-        .await
-        .expect("query columns");
-
-        assert_eq!(columns, vec!["key", "value", "created_at", "updated_at"]);
     }
 
     #[tokio::test]
@@ -682,33 +474,5 @@ mod tests {
             columns,
             vec!["id", "version", "definition", "created_at", "updated_at"]
         );
-    }
-
-    #[tokio::test]
-    async fn crud_roundtrip_after_migrations() {
-        let Ok(url) = std::env::var("DATABASE_URL") else {
-            return;
-        };
-
-        let storage = PostgresStorage::new(url).await.expect("connect");
-        storage.run_migrations().await.expect("migrations");
-
-        let key = "storage:test:post_migration".to_string();
-        let value = serde_json::json!({"migrated": true, "count": 42});
-
-        // Clean up any leftover from previous test runs
-        let _ = storage.delete(&key).await;
-
-        storage.set(&key, &value).await.expect("set");
-        assert!(storage.exists(&key).await.expect("exists"));
-        assert_eq!(storage.get(&key).await.expect("get"), Some(value));
-
-        // Update in place (upsert)
-        let updated = serde_json::json!({"migrated": true, "count": 99});
-        storage.set(&key, &updated).await.expect("upsert");
-        assert_eq!(storage.get(&key).await.expect("get updated"), Some(updated));
-
-        storage.delete(&key).await.expect("delete");
-        assert!(!storage.exists(&key).await.expect("exists after delete"));
     }
 }

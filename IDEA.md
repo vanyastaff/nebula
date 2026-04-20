@@ -79,7 +79,7 @@ Nebula бьёт в обе дыры одним движением: **делает
 
 - **Golden path** — автор описывает Action → регистрирует в registry → движок планирует исполнение → state durable → observability снаружи. Канонично: [`PRODUCT_CANON §10 "Golden path"`](docs/PRODUCT_CANON.md#10-golden-path-product).
 - **Integration surface** — маленькая (5 концепций), ортогональная, расширяется через ADR. Полная модель: [`docs/INTEGRATION_MODEL.md`](docs/INTEGRATION_MODEL.md).
-- **Plugin isolation** — out-of-process через `plugin-sdk`, чтобы чужой код не ронял движок. Детали: [`docs/PLUGIN_MODEL.md`](docs/PLUGIN_MODEL.md).
+- **Plugin isolation** — out-of-process через `plugin-sdk`, чтобы чужой код не ронял движок. Детали: [`docs/INTEGRATION_MODEL.md` §7](docs/INTEGRATION_MODEL.md).
 - **Две параллельные поверхности API** — `nebula-api` для runtime caller'ов и `nebula-sdk` для integration author'ов. Параллельны, не вложены.
 
 Что **намеренно отсутствует** — это явные запреты канона, а не забывчивость:
