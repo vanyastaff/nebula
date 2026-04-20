@@ -39,6 +39,355 @@ related:
   The migration must not merge the two — the `repos/*.rs` layer already
   avoids `dyn`, so only the legacy pair needs dynosaur.
 
+## Per-release adoption matrix (1.75 → 1.95)
+
+Stabilizations confirmed against <https://releases.rs/> per-version
+release notes. One row per item with workspace relevance (language
+syntax, semantic change, or library API a workflow-engine author
+would actually adopt). Transparent compiler relaxations,
+arch-specific intrinsics (AVX, NEON, LoongArch), and internal
+lint/const-fn expansions are omitted.
+
+Columns:
+
+- **Status** — workspace usage at HEAD (commit `62754680`, 2026-04-19).
+  Numbers reproducible via *Methodology notes* commands.
+- **Action** — where this plan routes the feature: one of the five
+  migration phases (*Migration sequencing*), `polish` (safe to defer
+  indefinitely — opportunistic pickup), `done` (already adopted or
+  enforced), or `n/a` (doesn't apply to Nebula today).
+
+### Rust 1.75.0 (2023-12-28)
+
+| Feature | Status | Action |
+|---|---|---|
+| **`async fn` in trait (AFIT) + return-position `impl Trait` in trait (RPITIT)** — combined stabilization | 88 `#[async_trait]` attrs still in tree; 0 native AFIT trait defs; 0 dynosaur usages | **Phase 2 + Phase 3** — the load-bearing migration |
+| Match on `usize` / `isize` with half-open ranges | 0 nested-range match sites | n/a |
+| `Option::as_slice` / `Option::as_mut_slice` | 80 `as_slice` hits (most are `Value::as_slice` / `Vec::as_slice`) | polish — safe to use when `Some(x).as_slice()` surfaces |
+| Pointer `byte_add` / `byte_sub` / `wrapping_byte_*` | 0 raw-ptr math | n/a |
+| `Atomic*::from_ptr` | 0 | n/a |
+| `FileTimes` + `File::set_modified` / `set_times` | 0 | polish |
+| `IpAddr::to_canonical` | 0 | polish |
+
+### Rust 1.76.0 (2024-02-08)
+
+| Feature | Status | Action |
+|---|---|---|
+| `Arc::unwrap_or_clone` / `Rc::unwrap_or_clone` | 1 site | polish — flip each `Arc::try_unwrap(...).unwrap_or_else(|a| (*a).clone())` when spotted |
+| `Result::inspect` / `Result::inspect_err` | 0 | polish — common in error-logging fallthrough paths |
+| `Option::inspect` | 0 | polish |
+| `ptr::from_ref` / `ptr::from_mut` | 0 | polish — replaces `&x as *const _` where it appears |
+| `ptr::addr_eq` | 0 | polish |
+| `type_name_of_val` | 0 | polish — useful in diagnostics / tracing spans |
+| `std::hash::DefaultHasher` / `RandomState` re-export | transparent | n/a |
+| Lint `ambiguous_wide_pointer_comparisons` | transparent | n/a |
+
+### Rust 1.77.0 (2024-03-21)
+
+| Feature | Status | Action |
+|---|---|---|
+| **C-string literals** `c"..."` | 16 valid sites | polish — flip any `CString::new("...").unwrap()` survivors |
+| `mem::offset_of!` | 0 | n/a (no manual layout code) |
+| **Async recursive calls with indirection** — removes `Box::pin` boxes for the direct recursion case | 54 `Box::pin(async move)` sites; not all are recursive | polish — identify the recursive subset during Phase 5 |
+| `array::each_ref` / `array::each_mut` | 0 | polish |
+| Slice methods: `first_chunk` / `last_chunk` / `split_first_chunk` / `split_last_chunk` | 0 | polish |
+| `slice::chunk_by` / `chunk_by_mut` | 0 | polish |
+| `core::net` stable (without `alloc`) | transparent | n/a |
+| `File::create_new` | 0 | polish — replaces `OpenOptions::new().write(true).create_new(true).open(...)` idiom |
+| `Mutex::clear_poison` / `RwLock::clear_poison` | 0 | polish |
+| `Bound::map` | 0 | polish |
+| Lint `static_mut_refs` (warn by default) | transparent; workspace has no `static mut` | n/a |
+
+### Rust 1.78.0 (2024-05-02)
+
+| Feature | Status | Action |
+|---|---|---|
+| **`#[diagnostic::on_unimplemented]`** + `#[diagnostic]` namespace | 0 adoption | **polish (high value)** — add to `Action` / `Credential` / `Resource` / `TriggerHandler` sealed traits so authors get targeted "you forgot to impl X" diagnostics at the integration seam |
+| Upcasting `dyn Trait` → `dyn Trait + Auto` | not measured separately | polish |
+| Async-fn-in-trait implementable with concrete signatures | useful during Phase 2/3 | see Phase 2/3 |
+| `#[cfg(target_abi = ...)]` | 0 | n/a |
+| `impl Read for &Stdin` | 0 | n/a |
+| `impl From<TryReserveError> for io::Error` | transparent | n/a |
+
+### Rust 1.79.0 (2024-06-13)
+
+| Feature | Status | Action |
+|---|---|---|
+| Inline `const { ... }` expressions | 2 sites | polish — opportunistic in `static` array initialisers |
+| **Associated type bounds** `T: Iterator<Item: Debug>` (RFC 2289) | 0 narrow matches (candidates in `nebula-schema`, `nebula-validator` generic bounds) | polish |
+| Temporary lifetime extension in `if` / `match` expressions | transparent compile-time | n/a (pleasant; no refactor) |
+| Unified `num::NonZero<T>` generic | 15 `NonZero` occurrences — already generic form | done (workspace uses the unified form) |
+| `path::absolute` | 0 | polish |
+| Slice pointer helpers (`NonNull::offset`, etc.) | 0 | n/a |
+| `CStr::count_bytes` | 0 | polish |
+| `io::Error::downcast` | 0 | polish |
+| Lints `redundant_lifetimes` / `unnameable_types` | transparent | n/a |
+| Importing `main` from other modules / crates | transparent | n/a |
+
+### Rust 1.80.0 (2024-07-25)
+
+| Feature | Status | Action |
+|---|---|---|
+| **`LazyCell` / `LazyLock`** | 84 hits across 31 files — adopted as workspace default | **Phase 1** — flip final `once_cell::sync::OnceCell` at `crates/expression/src/maybe.rs:7`, drop workspace dep |
+| Exclusive range patterns in `match` (`0..5 =>`) | 0 sites | n/a |
+| `Option::take_if` | 0 | polish |
+| ASCII trim on `str` / `[u8]` — `trim_ascii` / `trim_ascii_start` / `trim_ascii_end` | 0 | polish |
+| `str::split_at_checked` / `split_at_mut_checked` | 0 | polish |
+| `Duration::div_duration_f32` / `_f64` | 0 | n/a |
+| `BinaryHeap::as_slice` | 0 | polish |
+| `Seek::seek_relative` | 0 | polish |
+| `Vec::into_flattened`, `as_flattened`, `as_flattened_mut` | 0 | polish |
+| IPv4/IPv6 `to_bits` / `from_bits` / `BITS` | 0 | polish |
+| `impl IntoIterator for Box<[T]>` | transparent | n/a |
+
+### Rust 1.81.0 (2024-09-05)
+
+| Feature | Status | Action |
+|---|---|---|
+| **`#[expect(lint)]` attribute** | 21 adopted vs 116 `#[allow]` | **Phase 1** — per-crate chip, target ~80 conversions |
+| **`core::error`** module stable (was `std::error` only) | 0 uses of `core::error::Error`; 60 `std::error::Error` refs | polish — switch if a `no_std` story emerges |
+| `fs::exists` | 0 | polish — replaces `Path::new(p).try_exists()` calls |
+| `hint::assert_unchecked` | 0 (unsafe hint; out of style for workspace) | n/a |
+| `AtomicBool::fetch_not` | 0 | polish |
+| `Duration::abs_diff` | 0 | polish |
+| `IoSlice::advance` / `IoSliceMut::advance` + `_slices` | 0 | n/a |
+| `PanicHookInfo` (replaces `std::panic::PanicInfo`) | 0 custom panic hook | polish |
+| Stable driftsort / unstable ipnsort (transparent perf) | transparent | n/a |
+| Abort on uncaught panics in `extern "C"` | transparent | n/a |
+
+### Rust 1.82.0 (2024-10-17)
+
+| Feature | Status | Action |
+|---|---|---|
+| **Precise capturing `+ use<'lt>`** on `impl Trait` (RFC 3617) | 0 adoption; ~22 `tokio::spawn(trait.method())` sites at risk after Phase 2 | **Phase 4** — applied inline during AFIT migration |
+| **`&raw const` / `&raw mut`** pointer operators (RFC 2582) | 0 | n/a (no raw ptr forming today) |
+| **`unsafe extern "..." { ... }`** blocks (RFC 3484) | 0 | n/a |
+| **Unsafe attributes** — `unsafe(no_mangle)` / `unsafe(link)` / `unsafe(export_name)` | 0 uses of either form (FFI-minimal workspace) | n/a |
+| **`Option::is_none_or`** | 8 sites | polish — expand opportunistically |
+| `[T]::is_sorted` / `Iterator::is_sorted` / `_by` / `_by_key` | 0 | polish |
+| `CharIndices::offset` | 0 | n/a |
+| `iter::repeat_n` | 0 | polish |
+| `future::Ready::into_inner` | 0 | n/a |
+| `Thread::Builder::spawn_unchecked` | 0 (unsafe) | n/a |
+| Nested-field access in `offset_of!` | 0 | n/a |
+| `const` operands in inline assembly | 0 inline assembly | n/a |
+| Floating-point arithmetic in `const fn` | transparent | n/a |
+| Empty-type match patterns can be omitted | transparent | n/a |
+
+### Rust 1.83.0 (2024-11-28)
+
+| Feature | Status | Action |
+|---|---|---|
+| **`std::sync::Mutex::new` / `RwLock::new` / `Condvar::new` const fn** | 0 `static` uses of `parking_lot::Mutex` / `RwLock`; no const-init pattern to reclaim | **Do not migrate** — `parking_lot` is kept for non-poisoning + fast-path, not for const-init |
+| `&mut` / `*mut` / `&Cell` / `*const Cell` in `const` | 0 direct use; transparent compile-time | n/a |
+| References to statics in `const` initializers | transparent | n/a |
+| **Raw lifetimes + labels `'r#ident`** | 0 | n/a |
+| Non-exhaustive empty structs | 0 | polish |
+| `const extern` functions with non-C ABI | 0 | n/a |
+| `Option::get_or_insert_default` | 0 | polish |
+| `ControlFlow::{break_value, continue_value, map_break, map_continue}` | 0 | polish |
+| 18 new `ErrorKind` variants (io) | 0 of the new ones matched on | polish |
+| `char::MIN` constant | 0 | n/a |
+| Atomic race semantics documented | transparent | n/a |
+
+### Rust 1.84.0 (2025-01-09)
+
+| Feature | Status | Action |
+|---|---|---|
+| **Cargo MSRV-aware resolver** + resolver v3 | Adopted — `resolver = "3"` in `Cargo.toml:40`; `rust-version = "1.95"` drives per-dep MSRV picks | **done** |
+| Raw pointer references safe without dereferencing (no `&*raw_ptr` dance) | 0 raw-ptr sites | n/a |
+| Allow coercions to drop the principal of trait objects | transparent | n/a |
+| Windows forward-slash in `include!()` | transparent | n/a |
+| `From<&mut [T]>` for `Box<[T]>` / `Rc<[T]>` / `Arc<[T]>` | 0 | polish |
+| Float `copysign`/`abs`/`signum` moved to `core` | transparent | n/a |
+| `FromStr for CString`, `TryFrom<CString> for String` | 0 | n/a |
+| Next-generation trait solver in coherence checking | transparent (compiler internal) | n/a |
+
+### Rust 1.85.0 (2025-02-20)
+
+| Feature | Status | Action |
+|---|---|---|
+| **Edition 2024 stable** | Adopted — `edition = "2024"` in workspace package (ADR-0010) | **done** |
+| **Async closures** `async \|x\| { ... }` (RFC 3668) | 0 adoption, 54 `Box::pin(async move { ... })` sites — subset is closure-shaped | **Phase 5** — convert the ~5–10 stored `FnMut`-shaped cases |
+| `#[diagnostic::do_not_recommend]` | 0 | polish — pair with `on_unimplemented` at sealed-trait sites |
+| `AsyncFn*` in prelude across all editions | transparent | n/a |
+| `Waker::noop` | 0 | polish (test doubles) |
+| `{float}::midpoint` / `{integer}::midpoint` / `NonZero::midpoint` | 0 | polish |
+| `io::ErrorKind::QuotaExceeded` / `::CrossesDevices` | 0 | polish |
+| `ptr::fn_addr_eq` | 0 | polish |
+| `BuildHasherDefault::new` | 0 | polish |
+| Combined `#[no_mangle]` + `#[export_name]` lint | transparent (no uses) | n/a |
+
+### Rust 1.86.0 (2025-04-03)
+
+| Feature | Status | Action |
+|---|---|---|
+| **Trait upcasting coercion** (`&dyn Sub → &dyn Super` without `as`) | 3 `as Arc<dyn ...>` casts: `crates/action/tests/dx_poll.rs:639,749` (`Failing*Emitter` → `Arc<dyn ExecutionEmitter>`), `crates/plugin/src/versions.rs:52` (`Plugin` impl → `Arc<dyn Plugin>`). Most are concrete→trait-object (not upcasts) — upcasting helps only true supertrait casts. | polish — per-site inspection |
+| `#[target_feature]` on safe functions | 0 | n/a |
+| `{float}::next_down` / `next_up` | 0 | polish |
+| `<[_]>::get_disjoint_mut` / `unchecked_mut` + `HashMap::get_disjoint_mut` | 0 | polish — replaces split-borrow dance |
+| `NonZero::count_ones` | 0 | polish |
+| `Vec::pop_if` | 0 | polish |
+| **`sync::OnceLock::wait`** + `Once::wait` / `wait_force` | 0 use of `wait` (all `OnceLock` via `get_or_init`) | polish — for latch-shaped patterns |
+| `missing_abi` warn-by-default, `double_negations` lint | transparent | n/a |
+
+### Rust 1.87.0 (2025-05-15)
+
+| Feature | Status | Action |
+|---|---|---|
+| **`use<...>` in trait RPITIT** — `precise_capturing_in_traits` | 0 use<> adoption (will happen in Phase 4 context) | **Phase 4** — applies when RPITIT-in-trait returns leak unneeded captures |
+| `asm_goto` | 0 inline asm | n/a |
+| `Self: Sized` methods no longer required in unsized-type impls | transparent | n/a |
+| `Vec::extract_if` / `vec::ExtractIf` | 0 | polish |
+| `LinkedList::extract_if` | 0 | n/a |
+| Slice `split_off` / `split_off_first` / `split_off_last` (+ mut) | 0 | polish |
+| `String::extend_from_within` | 0 | polish |
+| `OsString::display` / `OsStr::display` | 0 | polish |
+| Anonymous pipe API: `io::pipe` / `PipeReader` / `PipeWriter` | 0 | polish (IPC tests) |
+| `Box<MaybeUninit<T>>::write` | 0 `MaybeUninit` | n/a |
+| `TryFrom<Vec<u8>> for String` | 0 | polish |
+| Signed/unsigned pointer offset: `offset_from_unsigned`, `byte_offset_from_unsigned` | 0 | n/a |
+| Integer `cast_signed` / `cast_unsigned` / `is_multiple_of` | 0 | polish |
+| Parsing `!-5..` / `-foo..` open-beginning ranges | transparent | n/a |
+
+### Rust 1.88.0 (2025-06-26)
+
+| Feature | Status | Action |
+|---|---|---|
+| **let-chains** — `if let Some(x) = a && x.valid() { ... }` | 0 adoption; 16 `if let Some(...) = _ { if ... }` nested + 23 wider nested | **Phase 5** — per-crate when ≥3 nesting levels share one body |
+| **Naked functions** `#[unsafe(naked)]` | 0 | n/a (no low-level asm) |
+| `cfg_boolean_literals` — `#[cfg(true)]` / `#[cfg(false)]` | 0 | polish — handy for gated test modules |
+| **`Cell::update`** | 0 | polish — low volume |
+| `impl Default for *const T` / `*mut T` | 0 | n/a |
+| **`HashMap::extract_if` / `HashSet::extract_if`** | 0 | polish |
+| `hint::select_unpredictable` | 0 | n/a |
+| `proc_macro::Span` accessors (`file`, `local_file`, `line`, `column`, …) | 1 macro crate family touched — check `validator/macros`, `schema/macros` for diagnostic improvements | polish |
+| **`[T]::as_chunks` / `as_rchunks` / `as_chunks_unchecked`** | 0 | polish |
+| `mod ffi::c_str` stabilization | transparent | n/a |
+
+### Rust 1.89.0 (2025-08-07)
+
+| Feature | Status | Action |
+|---|---|---|
+| Explicitly inferred const arguments (`feature(generic_arg_infer)`) | 0 const-generic sites using `_` inference | polish |
+| `#[repr(u128)]` / `#[repr(i128)]` | 0 | n/a |
+| Temporary lifetime extension through tuple-struct / variant constructors | transparent | n/a |
+| `NonZero<char>` | 0 | n/a |
+| `File::lock` / `lock_shared` / `try_lock` / `try_lock_shared` / `unlock` | 0 | polish — workspace uses separate lock crates today; swap when a path-lock need arises |
+| `NonNull::from_ref` / `from_mut` / `without_provenance` | 0 | n/a |
+| `OsString::leak` / `PathBuf::leak` | 0 | polish |
+| `Result::flatten` | 0 | polish — flattens `Result<Result<T, E>, E>` shapes |
+
+### Rust 1.90.0 (2025-09-18)
+
+| Feature | Status | Action |
+|---|---|---|
+| `u{n}::checked_sub_signed` family (+`overflowing`, `saturating`, `wrapping`) | 0 | polish |
+| `IntErrorKind: Copy + Hash` | transparent | n/a |
+| `CStr` / `CString` / `Cow<CStr>` comparison impls | 0 | polish |
+| `proc_macro::Ident::new` supports `$crate` | relevant for macro crates | polish |
+| `Thread::into_raw` alignment guarantee | 0 | n/a |
+| Split of `unknown_or_malformed_diagnostic_attributes` lint | transparent | n/a |
+| Volatile access to non-Rust memory | 0 | n/a |
+
+### Rust 1.91.0 (2025-10-30)
+
+| Feature | Status | Action |
+|---|---|---|
+| Pattern bindings lowered in written order + drop order on primary bindings | transparent | n/a |
+| `Path::file_prefix` | 0 | polish |
+| **`AtomicPtr::fetch_*`** — `fetch_ptr_add`, `fetch_byte_add`, `fetch_or`, `fetch_and`, `fetch_xor` | 0 AtomicPtr use | polish — useful if a lock-free ptr slot appears in `metrics` / `telemetry` |
+| Integer `strict_*` arithmetic (add/sub/mul/div/pow + signed/unsigned variants) | 0 | polish — swap in wherever an overflow panic is the intended behaviour |
+| `PanicHookInfo::payload_as_str` | 0 panic hook | polish |
+| `core::iter::chain` function form | 0 | polish |
+| `core::array::repeat` | 0 | polish |
+| `PathBuf::add_extension` / `with_added_extension` | 0 | polish |
+| **`Duration::from_mins` / `Duration::from_hours`** | 0 | polish — replaces `Duration::from_secs(60 * n)` |
+| `PartialEq` Path ↔ str / String | 0 | polish — simplifies test assertions |
+| IPv4/IPv6 `from_octets` / `from_segments` | 0 | polish |
+| `Default` for `Pin<Box<T>>` / `Pin<Rc<T>>` / `Pin<Arc<T>>` | 0 | polish |
+| **`BTreeMap::extract_if` / `BTreeSet::extract_if`** | 0 | polish |
+| Carrying / borrowing arithmetic (`carrying_add`, `borrowing_sub`, `carrying_mul`) | 0 | n/a |
+| `Cell::as_array_of_cells` | 0 | n/a |
+| `str::ceil_char_boundary` / `floor_char_boundary` | 0 | polish |
+| Lint `integer_to_ptr_transmutes` (warn) | transparent (no transmutes) | n/a |
+| Lint `dangling_pointers_from_locals` | transparent | n/a |
+
+### Rust 1.92.0 (2025-12-11)
+
+| Feature | Status | Action |
+|---|---|---|
+| `&raw [mut \| const]` for union fields in safe code | 0 | n/a |
+| Auto-trait / `Sized` bound preference for associated types | transparent | n/a |
+| `never_type_fallback_flowing_into_unsafe` deny-by-default | transparent (no affected code) | n/a |
+| **`RwLockWriteGuard::downgrade`** | 0 | polish — replaces explicit drop-then-read-lock patterns in `resource` / `engine` if they exist |
+| `NonZero<u{N}>::div_ceil` | 0 | polish |
+| `Location::file_as_c_str` | 0 | n/a |
+| `Box::new_zeroed` / `new_zeroed_slice` + `Rc` / `Arc` variants | 0 | n/a |
+| `btree_map::Entry::insert_entry` / `VacantEntry::insert_entry` | 0 | polish |
+| `iter::Repeat::last` / `count` panic instead of infinite-looping | transparent (no code hits it) | n/a |
+| `#[track_caller]` + `#[no_mangle]` combo | 0 | n/a |
+
+### Rust 1.93.0 (2026-01-22)
+
+| Feature | Status | Action |
+|---|---|---|
+| `asm_cfg` | 0 inline asm | n/a |
+| `const` items with mutable references to `static` | 0 | n/a |
+| Lint `const_item_interior_mutations` (warn) | transparent | n/a |
+| Lint `function_casts_as_integer` (warn) | transparent | n/a |
+| **`<[MaybeUninit<T>]>::assume_init_*`** + `write_copy_of_slice` / `write_clone_of_slice` | 0 `MaybeUninit` workspace-wide | n/a |
+| **`String::into_raw_parts` / `Vec::into_raw_parts`** | 0 | n/a (would require `unsafe` reassembly — avoid) |
+| **`<[T]>::as_array` / `as_mut_array`** + raw-slice variants | 0 adoption (the `as_array` hits in workspace are `serde_json::Value::as_array`) | polish — safe typed conversion from `&[T]` to `&[T; N]` |
+| `VecDeque::pop_front_if` / `pop_back_if` | 0 VecDeque use | n/a |
+| **`std::fmt::from_fn`** + `FromFn` type | 0 | polish — replaces one-shot `struct FooDisplay(...); impl Display for FooDisplay { ... }` adapter |
+| `Duration::from_nanos_u128` | 0 | polish |
+| `char::MAX_LEN_UTF8` / `MAX_LEN_UTF16` | 0 | polish |
+
+### Rust 1.94.0 (2026-03-05)
+
+| Feature | Status | Action |
+|---|---|---|
+| Prior MSRV (per ADR-0010); superseded by 1.95 (ADR-0019) | | **done** |
+| Impls and impl items inherit `dead_code` lint level of the trait | transparent — may un-silence some `#[allow(dead_code)]` flips targeted by Phase 1 | see Phase 1 |
+| `<[T]>::array_windows` | 0 | polish |
+| `<[T]>::element_offset` | 0 | polish (pointer-math safe alternative) |
+| **`LazyCell::get` / `get_mut` / `force_mut`** + **`LazyLock::get` / `get_mut` / `force_mut`** | 0 (we use `LazyLock::force()` / deref) | polish — useful in tests that need to mutate a `LazyLock`-wrapped fixture |
+| `TryFrom<char> for usize` | 0 | polish |
+| `Peekable::next_if_map` / `next_if_map_mut` | 0 | polish — elegant in `nebula-expression` tokenizer |
+| `EULER_GAMMA`, `GOLDEN_RATIO` constants for `f32` / `f64` | 0 | n/a |
+| Unicode upgraded to 17 | transparent | n/a |
+| Lint warn-by-default for unused visibility on `const _` | transparent | n/a |
+
+### Rust 1.95.0 (2026-04-16) — current MSRV
+
+| Feature | Status | Action |
+|---|---|---|
+| **`if let` guards on match arms** | 0 adoption | **Phase 5** — opportunistic during `engine` / `workflow` match-block touches (ADR-0019 §Context explicitly flags this) |
+| **`cfg_select!`** macro | 0 adoption; 0 `cfg_if!` invocations in workspace → nothing to migrate | n/a |
+| **Atomic `update` / `try_update`** on `AtomicBool` / `AtomicPtr` / `AtomicIsize` / `AtomicUsize` | 0 adoption; 5 `fetch_update` / `compare_exchange` CAS loops in tree | **Phase 5** — replace where shape matches (ADR-0019 §Context explicitly flags this) |
+| **`core::range`** + `RangeInclusive` / `RangeInclusiveIter` | 0 | polish |
+| `core::hint::cold_path` | 0 | polish — useful in error-path branches of hot loops |
+| Path-segment keyword importing with renaming | 0 | n/a |
+| `bool: TryFrom<{integer}>` | 0 | polish |
+| `MaybeUninit` array conversions + Cell array refs | 0 | n/a |
+| Unsafe pointer `as_ref_unchecked` / `as_mut_unchecked` | 0 | n/a |
+| `fmt::from_fn` / `ControlFlow::is_break` / `is_continue` const | 0 | polish |
+| MSRV floor pinned at 1.95 | `Cargo.toml:45`, CI, `clippy.toml` (ADR-0019) | **done** |
+
+### Release-to-phase mapping
+
+| Phase | Releases it picks up |
+|---|---|
+| Phase 1 (free-lunch) | 1.80 `LazyLock` finalisation, 1.81 `#[expect]` |
+| Phase 2 (inherent AFIT) | 1.75 AFIT |
+| Phase 3 (dynosaur) | 1.75 AFIT + ADR-0014 |
+| Phase 4 (precise capture) | 1.82 `use<>`, 1.87 `use<>` in trait RPITIT |
+| Phase 5 (polish) | 1.77 c-strings + recursive async, 1.82 `Option::is_none_or`, 1.85 async closures, 1.86 trait upcasting, 1.88 let-chains + `Cell::update` + `[T]::as_chunks`, 1.95 atomic `update` + `if let` guards |
+| `done` today | 1.84 resolver 3, 1.85 edition 2024, 1.95 MSRV bump |
+| `polish` pool (opportunistic pickup across all crates) | 1.76 `Arc::unwrap_or_clone`, 1.76 `Result::inspect` family, 1.77 `File::create_new` / `Mutex::clear_poison`, 1.78 `#[diagnostic::on_unimplemented]` on sealed traits, 1.80 `Option::take_if` / `trim_ascii` / `split_at_checked` / IPv4-IPv6 `to_bits`, 1.81 `fs::exists` / `Duration::abs_diff`, 1.86 `get_disjoint_mut` / `Vec::pop_if`, 1.87 `Vec::extract_if` / `OsString::display`, 1.88 `HashMap::extract_if`, 1.91 `Duration::from_mins` / `BTreeMap::extract_if`, 1.92 `RwLockWriteGuard::downgrade`, 1.93 `<[T]>::as_array` / `fmt::from_fn`, 1.94 `LazyLock::get_mut` / `Peekable::next_if_map`, 1.95 `core::range` / `cold_path` / `bool: TryFrom<_>` |
+| `n/a` for Nebula | 1.75 byte-ptr math / FileTimes, 1.76 strict provenance, 1.77 `offset_of!`, 1.78 `target_abi`, 1.79 `unchecked_*` integer ops, 1.80 exclusive range patterns, 1.82 `&raw const/mut` / unsafe FFI attrs / inline asm, 1.83 raw lifetimes / const-extern non-C ABI, 1.84 raw-ptr ergonomics, 1.85 `fn_addr_eq`, 1.87 `asm_goto` / anonymous pipes, 1.88 naked functions, 1.89 `repr128` / `NonNull::from_ref` / `NonZero<char>`, 1.90 volatile non-Rust memory, 1.91 carrying arithmetic, 1.92 `Box::new_zeroed` family, 1.93 `MaybeUninit` slice helpers / `into_raw_parts`, 1.94 float constants, 1.95 `MaybeUninit` array conversions / `as_*_unchecked` |
+
 ## Inventory
 
 ### `#[async_trait]` usage (per crate)
