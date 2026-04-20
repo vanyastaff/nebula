@@ -43,7 +43,10 @@ fn metadata_key_matches_attribute() {
     name = "Fields Action",
     description = "action with fields"
 )]
-#[allow(dead_code)]
+#[expect(
+    dead_code,
+    reason = "fields exist only to exercise #[derive(Action)] on a non-unit struct; test asserts on metadata"
+)]
 // Fields exist only to exercise `#[derive(Action)]` expansion on a
 // non-unit struct — the test asserts on metadata, not on field values.
 struct ActionWithFields {

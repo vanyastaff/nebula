@@ -1419,7 +1419,10 @@ fn single_header_value<'a>(headers: &'a HeaderMap, name: &HeaderName) -> HeaderL
 /// HMAC (RFC 2104) accepts any key length, so `new_from_slice` only
 /// fails for block-cipher MACs that don't apply here.
 fn hmac_sha256_over(secret: &[u8], body: &[u8]) -> HmacSha256 {
-    #[allow(clippy::expect_used)]
+    #[expect(
+        clippy::expect_used,
+        reason = "HMAC (RFC 2104) accepts any key length; new_from_slice only fails for block-cipher MACs"
+    )]
     let mut mac =
         HmacSha256::new_from_slice(secret).expect("HMAC accepts any key length (RFC 2104)");
     mac.update(body);
@@ -1725,7 +1728,10 @@ pub fn hmac_sha256_compute(secret: &[u8], payload: &[u8]) -> [u8; 32] {
     // structurally infallible (RFC 2104). Returning `Result` from a
     // pure primitive for an unreachable error case would force every
     // caller to handle an impossibility.
-    #[allow(clippy::expect_used)]
+    #[expect(
+        clippy::expect_used,
+        reason = "HMAC construction is structurally infallible (RFC 2104); Result would force callers to handle an impossibility"
+    )]
     let mut mac =
         HmacSha256::new_from_slice(secret).expect("HMAC accepts any key length (RFC 2104)");
     mac.update(payload);
