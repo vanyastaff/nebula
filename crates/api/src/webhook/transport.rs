@@ -23,17 +23,20 @@
 use std::{sync::Arc, time::Duration};
 
 use axum::{
-    Router,
+    Json, Router,
     body::Bytes,
     extract::{DefaultBodyLimit, Path, State},
-    http::{HeaderMap, Method, StatusCode, Uri},
+    http::{HeaderMap, HeaderValue, Method, StatusCode, Uri},
     response::{IntoResponse, Response},
     routing::post,
 };
 use nebula_action::{
-    TriggerContext, TriggerEvent, TriggerHandler, WebhookEndpointProvider, WebhookHttpResponse,
-    WebhookRequest,
+    SignatureOutcome, SignaturePolicy, SignatureScheme, TriggerContext, TriggerEvent,
+    TriggerHandler, WebhookConfig, WebhookEndpointProvider, WebhookHttpResponse, WebhookRequest,
+    verify_hmac_sha256, verify_hmac_sha256_base64,
 };
+use nebula_metrics::{NEBULA_WEBHOOK_SIGNATURE_FAILURES_TOTAL, webhook_signature_failure_reason};
+use nebula_telemetry::metrics::MetricsRegistry;
 use tokio::sync::oneshot;
 use tracing::{debug, warn};
 use url::Url;
@@ -44,6 +47,7 @@ use super::{
     ratelimit::WebhookRateLimiter,
     routing::{ActivationEntry, RoutingMap},
 };
+use crate::errors::ProblemDetails;
 
 /// Configuration for the webhook HTTP transport.
 #[derive(Debug, Clone)]
@@ -106,6 +110,11 @@ struct TransportInner {
     config: WebhookTransportConfig,
     routing: RoutingMap,
     rate_limiter: Option<WebhookRateLimiter>,
+    /// Optional metrics registry. When `Some`, signature-failure
+    /// outcomes increment [`NEBULA_WEBHOOK_SIGNATURE_FAILURES_TOTAL`]
+    /// per ADR-0022. `None` means the transport runs without emitting
+    /// the counter — the enforcement behaviour is identical.
+    metrics: Option<Arc<MetricsRegistry>>,
 }
 
 impl std::fmt::Debug for WebhookTransport {
@@ -127,6 +136,29 @@ impl WebhookTransport {
                 config,
                 routing: RoutingMap::new(),
                 rate_limiter,
+                metrics: None,
+            }),
+        }
+    }
+
+    /// Build a new transport from config with a metrics registry
+    /// attached. Signature-failure outcomes increment
+    /// [`NEBULA_WEBHOOK_SIGNATURE_FAILURES_TOTAL`] per ADR-0022.
+    ///
+    /// Composition roots that already own a `MetricsRegistry` (the
+    /// API crate's `AppState` does) should prefer this constructor
+    /// over [`Self::new`]. Without a registry the transport still
+    /// enforces the signature policy; it just does not emit the
+    /// per-failure counter.
+    #[must_use]
+    pub fn with_metrics(config: WebhookTransportConfig, metrics: Arc<MetricsRegistry>) -> Self {
+        let rate_limiter = config.rate_limit_per_minute.map(WebhookRateLimiter::new);
+        Self {
+            inner: Arc::new(TransportInner {
+                config,
+                routing: RoutingMap::new(),
+                rate_limiter,
+                metrics: Some(metrics),
             }),
         }
     }
@@ -140,9 +172,17 @@ impl WebhookTransport {
     /// and stores the pair in the routing map. Caller takes the
     /// returned [`ActivationHandle`] and passes `handle.ctx` to
     /// `adapter.start(...)`.
+    ///
+    /// `action_config` is the [`WebhookConfig`] read from the typed
+    /// [`nebula_action::WebhookAction`] that the handler wraps. Per
+    /// ADR-0022 the caller reads it from the action (typically via
+    /// `WebhookTriggerAdapter::config()`) before erasing the handler
+    /// to `Arc<dyn TriggerHandler>` — webhook-specific configuration
+    /// does not flow through the dyn trigger contract.
     pub fn activate(
         &self,
         handler: Arc<dyn TriggerHandler>,
+        action_config: WebhookConfig,
         ctx_template: TriggerContext,
     ) -> Result<ActivationHandle, ActivationError> {
         let trigger_uuid = Uuid::new_v4();
@@ -160,6 +200,7 @@ impl WebhookTransport {
         let entry = ActivationEntry {
             handler,
             ctx: ctx.clone(),
+            config: action_config,
         };
         if !self
             .inner
@@ -320,6 +361,24 @@ async fn webhook_handler(
         },
     };
 
+    // 5.5. Signature enforcement (ADR-0022). The `Required` default
+    // means an action that forgot to configure a secret trips a 500
+    // here; an action that explicitly opted into
+    // `OptionalAcceptUnsigned` passes through; everything else
+    // (hex / base64 / custom) runs through the existing constant-time
+    // primitives before the handler sees the request.
+    match enforce_signature(entry.config.signature_policy(), &request) {
+        SignatureVerdict::Pass => {},
+        SignatureVerdict::MissingSecret => {
+            record_signature_failure(&transport, webhook_signature_failure_reason::MISSING_SECRET);
+            return missing_secret_response(uri.path());
+        },
+        SignatureVerdict::Fail(reason) => {
+            record_signature_failure(&transport, reason);
+            return signature_rejected_response(uri.path(), reason);
+        },
+    }
+
     // 6. Oneshot response channel.
     let (tx, rx) = oneshot::channel::<WebhookHttpResponse>();
     let request = request.with_response_channel(tx);
@@ -373,4 +432,166 @@ async fn webhook_handler(
 /// `Response`. Shared between the Ok and Err dispatch paths.
 fn http_response_to_axum(resp: WebhookHttpResponse) -> Response {
     (resp.status, resp.headers, resp.body).into_response()
+}
+
+// ── Signature enforcement (ADR-0022) ────────────────────────────────────────
+
+/// Result of transport-layer signature enforcement.
+///
+/// Internal type — the handler turns it into a 2xx pass-through or a
+/// problem+json 4xx/5xx response.
+enum SignatureVerdict {
+    /// Either the policy is `OptionalAcceptUnsigned` or the configured
+    /// verifier returned `Valid`. Request dispatch continues.
+    Pass,
+    /// `Required` policy held an empty secret — no signature can be
+    /// verified. Returns 500 (our misconfiguration, not the caller's).
+    MissingSecret,
+    /// Signature header absent (`missing`) or present-but-mismatched
+    /// (`invalid`). Returns 401.
+    Fail(&'static str),
+}
+
+/// Run the configured signature check against the request.
+///
+/// Any non-`Valid` outcome from a `Required` or `Custom` policy is a
+/// 401; only an empty secret under `Required` is a 500. An `ActionError`
+/// surfaced by the primitives (bad header name, empty secret before
+/// the empty-secret check) is treated as `Invalid` — a 401 — rather
+/// than a 500, because the payload came from an external caller and
+/// the specific error is not the operator's to debug.
+fn enforce_signature(policy: &SignaturePolicy, request: &WebhookRequest) -> SignatureVerdict {
+    match policy {
+        SignaturePolicy::OptionalAcceptUnsigned => SignatureVerdict::Pass,
+        SignaturePolicy::Required(req) => {
+            if req.secret().is_empty() {
+                return SignatureVerdict::MissingSecret;
+            }
+            let outcome = match req.scheme() {
+                SignatureScheme::Sha256Hex => verify_with_primitive(
+                    verify_hmac_sha256(request, req.secret(), req.header().as_str()),
+                    "sha256-hex",
+                ),
+                SignatureScheme::Sha256Base64 => verify_with_primitive(
+                    verify_hmac_sha256_base64(request, req.secret(), req.header().as_str()),
+                    "sha256-base64",
+                ),
+                // `SignatureScheme` is `#[non_exhaustive]`; any future
+                // scheme is treated as a hard failure until the
+                // transport grows an explicit branch for it.
+                _ => SignatureOutcome::Invalid,
+            };
+            outcome_to_verdict(outcome)
+        },
+        SignaturePolicy::Custom(verifier) => outcome_to_verdict(verifier(request)),
+    }
+}
+
+/// Collapse a `verify_hmac_sha256*` result into a [`SignatureOutcome`].
+///
+/// The `ActionError` branch is unreachable by construction today —
+/// [`RequiredPolicy`] carries a pre-validated [`http::HeaderName`] and
+/// the empty-secret case is handled one level up — but keeping this
+/// helper explicit avoids a silent `unwrap_or` that would hide a
+/// future regression if either invariant changed. A `warn!` also
+/// surfaces the case in logs if it ever did fire.
+fn verify_with_primitive(
+    result: Result<SignatureOutcome, nebula_action::ActionError>,
+    scheme_label: &'static str,
+) -> SignatureOutcome {
+    match result {
+        Ok(outcome) => outcome,
+        Err(error) => {
+            warn!(
+                scheme = scheme_label,
+                %error,
+                "webhook signature primitive returned unexpected error; treating as Invalid"
+            );
+            SignatureOutcome::Invalid
+        },
+    }
+}
+
+fn outcome_to_verdict(outcome: SignatureOutcome) -> SignatureVerdict {
+    match outcome {
+        SignatureOutcome::Valid => SignatureVerdict::Pass,
+        SignatureOutcome::Missing => {
+            SignatureVerdict::Fail(webhook_signature_failure_reason::MISSING)
+        },
+        SignatureOutcome::Invalid => {
+            SignatureVerdict::Fail(webhook_signature_failure_reason::INVALID)
+        },
+        // `SignatureOutcome` is `#[non_exhaustive]`; any future variant
+        // is fail-closed.
+        _ => SignatureVerdict::Fail(webhook_signature_failure_reason::INVALID),
+    }
+}
+
+fn record_signature_failure(transport: &WebhookTransport, reason: &'static str) {
+    if let Some(reg) = &transport.inner.metrics {
+        let labels = reg.interner().single("reason", reason);
+        reg.counter_labeled(NEBULA_WEBHOOK_SIGNATURE_FAILURES_TOTAL, &labels)
+            .inc();
+    }
+}
+
+/// 401 response for a signature mismatch. RFC 9457 `application/problem+json`
+/// to match the rest of the API surface.
+fn signature_rejected_response(instance_path: &str, reason: &'static str) -> Response {
+    let detail = match reason {
+        r if r == webhook_signature_failure_reason::MISSING => {
+            "webhook signature header missing".to_string()
+        },
+        r if r == webhook_signature_failure_reason::INVALID => {
+            "webhook signature invalid".to_string()
+        },
+        other => format!("webhook signature rejected: {other}"),
+    };
+    let problem = ProblemDetails::new(
+        "https://nebula.dev/problems/webhook-signature",
+        "Webhook Signature Rejected",
+        StatusCode::UNAUTHORIZED,
+    )
+    .with_detail(detail)
+    .with_instance(instance_path.to_string());
+    problem_response(StatusCode::UNAUTHORIZED, problem)
+}
+
+/// 500 response for an action that shipped `Required` without a secret.
+/// This is fail-closed behaviour — the author's misconfiguration
+/// surfaces as a server error so it shows up in dashboards rather than
+/// silently accepting unsigned requests.
+fn missing_secret_response(instance_path: &str) -> Response {
+    let problem = ProblemDetails::new(
+        "https://nebula.dev/problems/webhook-signature-misconfigured",
+        "Webhook Signature Secret Not Configured",
+        StatusCode::INTERNAL_SERVER_ERROR,
+    )
+    .with_detail(
+        "webhook action declared SignaturePolicy::Required but no HMAC secret is configured; \
+         supply one via WebhookConfig::with_signature_policy + \
+         SignaturePolicy::required_hmac_sha256, or explicitly opt out with \
+         SignaturePolicy::OptionalAcceptUnsigned"
+            .to_string(),
+    )
+    .with_instance(instance_path.to_string());
+    problem_response(StatusCode::INTERNAL_SERVER_ERROR, problem)
+}
+
+/// Static `application/problem+json` content-type header value.
+///
+/// Constant-constructed at compile time via [`HeaderValue::from_static`] —
+/// no runtime `.parse().expect(...)` panic path. RFC 9457 normalizes the
+/// exact token, so this is the canonical value for every problem+json
+/// response the transport emits.
+const PROBLEM_JSON_CONTENT_TYPE: HeaderValue = HeaderValue::from_static("application/problem+json");
+
+/// Shared assembly for `application/problem+json` responses returned
+/// from the webhook transport. Matches the convention in
+/// [`crate::errors::ApiError::into_response`].
+fn problem_response(status: StatusCode, problem: ProblemDetails) -> Response {
+    let mut resp = (status, Json(problem)).into_response();
+    resp.headers_mut()
+        .insert(axum::http::header::CONTENT_TYPE, PROBLEM_JSON_CONTENT_TYPE);
+    resp
 }

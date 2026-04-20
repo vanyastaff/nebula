@@ -59,6 +59,9 @@ Canon §3.5 makes actions typed and engine-dispatched by trait, not by a single 
 | `StatelessAction` | trait | `implemented` | Action with no stored state between invocations. | §3.5, §3.8 |
 | `StatefulAction` | trait | `implemented` | Action that owns durable state spanning invocations (checkpointed). | §3.5, §3.8 |
 | `TriggerAction` | trait | `implemented` | Source of executions. Delivery is at-least-once unless explicitly stronger; dedup via stable event identity. | §3.5, §9, §11.3 |
+| `WebhookAction` | trait | `implemented` | DX specialization over `TriggerAction` for HTTP webhooks. Exposes `config() -> WebhookConfig` so the HTTP transport can enforce signature policy before dispatch. | §3.5, §9, ADR-0022 |
+| `WebhookConfig` | type | `implemented` | Opaque bag of webhook-transport settings returned by `WebhookAction::config`. `#[non_exhaustive]` — future slots (body-limit override, rate-limit override) land here without breaking the trait. | ADR-0022 |
+| `SignaturePolicy` | enum | `implemented` | `Required` / `OptionalAcceptUnsigned` / `Custom(fn)` signature-verification policy enforced by the transport. Default is `Required` with empty secret — fail-closed. Supporting types: `RequiredPolicy`, `SignatureScheme`. | ADR-0022, §4.2 |
 | `ResourceAction` | trait | `implemented` | Action bound to a graph-scoped resource node. | §3.5, §3.8 |
 | `ActionResult` | enum | mixed — **see §11.2 debt** | Action return variants. Engine-level retry through a `Retry` variant is `planned` / `false capability` until persisted attempt accounting lands. | §11.2, §14 |
 | `ActionMetadata` | type | `implemented` | Descriptor: key, ports, parameters, isolation, `ActionCategory`, `CheckpointPolicy`. Supplements but does not replace trait-based routing. | §3.5 |

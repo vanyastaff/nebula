@@ -112,6 +112,43 @@ pub mod dispatch_reject_reason {
 }
 
 // ---------------------------------------------------------------------------
+// Webhook (api crate — transport-layer signature enforcement)
+// ---------------------------------------------------------------------------
+
+/// Counter: webhook requests rejected by the transport-layer signature
+/// check (ADR-0022).
+///
+/// Labeled by `reason` (see [`webhook_signature_failure_reason`]). Low
+/// cardinality by design — the label set is exactly three static
+/// strings, no per-trigger dimension. Any non-zero value is an
+/// operational signal worth dashboarding: a `missing_secret` crossing
+/// means an action shipped with a `SignaturePolicy::Required` it did
+/// not populate; a `missing` / `invalid` crossing means either a
+/// provider is mis-signing or a caller is probing the endpoint.
+pub const NEBULA_WEBHOOK_SIGNATURE_FAILURES_TOTAL: &str = "nebula_webhook_signature_failures_total";
+
+/// Reason labels for [`NEBULA_WEBHOOK_SIGNATURE_FAILURES_TOTAL`].
+///
+/// Static strings so call sites and tests compare without stringifying
+/// twice. The set is intentionally closed — extending it requires an
+/// ADR revision because every added label permanently inflates the
+/// cardinality floor for the signature-failure counter.
+pub mod webhook_signature_failure_reason {
+    /// Signature header absent from the request under a policy that
+    /// requires one (`SignaturePolicy::Required` / `Custom` returning
+    /// `SignatureOutcome::Missing`).
+    pub const MISSING: &str = "missing";
+    /// Signature header present but did not match — bad hex / base64,
+    /// wrong length, tampered body, or wrong secret
+    /// (`SignatureOutcome::Invalid`).
+    pub const INVALID: &str = "invalid";
+    /// `SignaturePolicy::Required` with an empty secret — an author
+    /// shipped the default policy without supplying a secret. Returns
+    /// 500 (not 401) because the misconfiguration is on our side.
+    pub const MISSING_SECRET: &str = "missing_secret";
+}
+
+// ---------------------------------------------------------------------------
 // Resource (resource crate)
 // ---------------------------------------------------------------------------
 

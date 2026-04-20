@@ -11,7 +11,7 @@
 use std::sync::Arc;
 
 use dashmap::DashMap;
-use nebula_action::{TriggerContext, TriggerHandler};
+use nebula_action::{TriggerContext, TriggerHandler, WebhookConfig};
 use uuid::Uuid;
 
 /// Composite key used inside the routing map.
@@ -19,15 +19,24 @@ pub(crate) type RouteKey = (Uuid, String);
 
 /// Single registered webhook activation.
 ///
-/// Holds the handler pointer and a template [`TriggerContext`] that
-/// the transport clones on every request. Cloning gives each
-/// dispatch its own independent context without locking — the
+/// Holds the handler pointer, a template [`TriggerContext`] that the
+/// transport clones on every request, and the [`WebhookConfig`]
+/// enforced before dispatch (per ADR-0022). Cloning the context gives
+/// each dispatch its own independent context without locking — the
 /// capability arcs inside (`emitter`, `health`, `webhook`, etc.)
 /// share state as designed.
+///
+/// The config is read once from the typed
+/// [`nebula_action::WebhookAction`] at activation time by whoever owns
+/// the typed handler (runtime registry or test harness) and handed to
+/// the transport alongside the handler. It is *not* read through the
+/// dyn `TriggerHandler` surface — webhook-specific configuration does
+/// not belong on the base trigger contract.
 #[derive(Clone)]
 pub(crate) struct ActivationEntry {
     pub(crate) handler: Arc<dyn TriggerHandler>,
     pub(crate) ctx: TriggerContext,
+    pub(crate) config: WebhookConfig,
 }
 
 impl std::fmt::Debug for ActivationEntry {
@@ -129,7 +138,11 @@ mod tests {
             nebula_core::node_key!("test"),
             CancellationToken::new(),
         );
-        ActivationEntry { handler, ctx }
+        ActivationEntry {
+            handler,
+            ctx,
+            config: WebhookConfig::default(),
+        }
     }
 
     #[test]
