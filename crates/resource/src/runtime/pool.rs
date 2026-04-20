@@ -255,7 +255,10 @@ where
     /// - Transient if creation or preparation fails.
     // Reason: `options` is a separate concern from the existing resource/config/ctx
     // tuple and will be reduced when we bundle resource+config into a single arg.
-    #[allow(clippy::too_many_arguments)]
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "`options` is a separate concern from resource/config/ctx; will reduce when bundled"
+    )]
     pub async fn acquire(
         &self,
         resource: &R,
@@ -531,7 +534,10 @@ where
     // `PoolEntry` because it needs to be stored in the handle, not the
     // callback closure. Bundling into a struct would add complexity for
     // a single call site.
-    #[allow(clippy::too_many_arguments)]
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "`permit` must be separate — cannot live in `PoolEntry`; bundling adds complexity for one call site"
+    )]
     fn build_guarded_handle(
         &self,
         lease: R::Lease,
@@ -600,7 +606,10 @@ where
     /// - Backpressure if all `max_size` slots are occupied.
     /// - Transient if creation or preparation fails.
     // Reason: same as acquire — options is a distinct concern from resource/config/ctx.
-    #[allow(clippy::too_many_arguments)]
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "options is a distinct concern from resource/config/ctx — same rationale as acquire"
+    )]
     pub async fn try_acquire(
         &self,
         resource: &R,

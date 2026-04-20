@@ -82,7 +82,7 @@ impl<R: Resource> ManagedResource<R> {
     }
 
     /// Replace the lifecycle status with `Failed` and record a reason.
-    #[allow(dead_code)] // callers will land with the recovery-error work
+    #[expect(dead_code, reason = "callers will land with the recovery-error work")]
     pub(crate) fn set_failed(&self, error: impl Into<String>) {
         let next = ResourceStatus {
             phase: ResourcePhase::Failed,
