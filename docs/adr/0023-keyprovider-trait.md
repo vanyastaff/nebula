@@ -1,7 +1,7 @@
 ---
-id: 0022
+id: 0023
 title: keyprovider-trait
-status: proposed
+status: accepted
 date: 2026-04-19
 supersedes: []
 superseded_by: []

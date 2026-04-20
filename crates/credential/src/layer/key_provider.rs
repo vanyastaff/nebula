@@ -4,7 +4,7 @@
 //! `EncryptionLayer` no longer takes `Arc<EncryptionKey>` directly; instead it
 //! accepts `Arc<dyn KeyProvider>`. Composition roots choose the provider — env
 //! var, file, or (in future) a KMS / Vault / cloud-secret-manager impl — at
-//! wiring time. See [ADR-0022](../../../../docs/adr/0022-keyprovider-trait.md)
+//! wiring time. See [ADR-0023](../../../../docs/adr/0023-keyprovider-trait.md)
 //! for the decision and ADR-0020 §3 for why the seam is a pre-condition to any
 //! `apps/server` composition work.
 //!
