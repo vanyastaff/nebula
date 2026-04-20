@@ -211,7 +211,6 @@ pub struct CircuitBreaker {
 /// Outlined (`inline(never)`) to prevent LLVM from duplicating the loop
 /// body at every inlined `failure_count`/`slow_count` call site.
 #[inline(never)]
-#[allow(unsafe_code)]
 fn byte_sum(slice: &[u8]) -> u32 {
     #[cfg(target_arch = "x86_64")]
     {
