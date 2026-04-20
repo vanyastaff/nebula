@@ -25,7 +25,7 @@ from `CLAUDE.md` read-order.
 - **`#[must_use]`** — on every `Result`, every builder, every function returning a cleanup or cancellation token.
 - **`Cow<'_, T>`** — prefer over premature cloning for read-mostly borrows with occasional mutation.
 - **Sealed traits** for extension points — define via private supertrait when Nebula owns all implementations; opens later if we decide to allow downstream impls.
-- **`dynosaur` for `dyn`-compatible async traits** — author the trait in AFIT form (`async fn` in trait), apply `#[dynosaur::dynosaur(DynFoo)]`, and let the macro generate the `dyn`-compatible sibling. Static signatures name `impl Foo`; dynamic boundaries name `dyn DynFoo`. Never introduce `#[async_trait]` in new code. See [ADR-0014](adr/0014-dynosaur-macro.md).
+- **Async traits — match the seam.** For traits consumed only through generics (no `dyn`), author native AFIT: `fn foo(&self, …) -> impl Future<Output = …> + Send`. For traits stored or passed as `Arc<dyn Foo>` / `Box<dyn Foo>`, use `#[async_trait]` — native AFIT is not `dyn`-compatible on stable Rust today. Do not mix both forms on the same trait. Re-evaluate when `async_fn_in_dyn_trait` stabilizes (see [rust-lang/rust#133119](https://github.com/rust-lang/rust/issues/133119)). See [ADR-0024](adr/0024-defer-dynosaur-migration.md) (supersedes [ADR-0014](adr/0014-dynosaur-macro.md)).
 
 ## 2. Antipatterns we reject
 

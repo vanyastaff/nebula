@@ -1,14 +1,15 @@
 ---
 id: 0014
 title: dynosaur-macro
-status: accepted
+status: superseded
 date: 2026-04-19
 supersedes: []
-superseded_by: []
+superseded_by: [0024]
 tags: [traits, async, dyn-compatibility, macros, api-design]
 related:
   - docs/STYLE.md#1-idioms-we-use
   - docs/adr/0010-rust-2024-edition.md
+  - docs/adr/0024-defer-dynosaur-migration.md
 linear:
   - NEB-152
 ---
