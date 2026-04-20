@@ -86,9 +86,16 @@ fn from_env_valid_key_round_trips() {
     set_env(&valid);
 
     let provider = EnvKeyProvider::from_env().expect("valid key must succeed");
+    let version = nebula_credential::KeyProvider::version(&provider);
+    // Version is "env:<sha256 prefix fingerprint>" (16 hex chars).
+    assert!(
+        version.starts_with("env:"),
+        "version has env prefix; got {version}"
+    );
     assert_eq!(
-        nebula_credential::KeyProvider::version(&provider),
-        "env:current"
+        version.len(),
+        "env:".len() + 16,
+        "version has 16-char fingerprint tail; got {version}"
     );
 
     clear_env();

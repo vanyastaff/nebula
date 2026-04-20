@@ -12,6 +12,12 @@
 //!
 //! - `version()` must be non-empty. The encryption-layer envelope writer refuses empty `key_id`
 //!   values (see `crypto::encrypt_with_key_id`).
+//! - **`version()` must change whenever the key bytes change.** `EncryptionLayer` routes a record
+//!   whose envelope `key_id` differs from `version()` through the legacy-key path, so a
+//!   stable-version/rotating-key provider would silently mis-decrypt under the new key.
+//!   `EnvKeyProvider` / `FileKeyProvider` derive `version()` from a SHA-256 fingerprint of the key
+//!   material so an in-place rotation (same env var / same file path, new bytes) produces a fresh
+//!   identifier automatically. See ADR-0022 §3 + §6 Rotation procedure.
 //! - `current_key()` returns `Arc<EncryptionKey>` — a stable handle over the zeroize-on-drop key
 //!   newtype. Providers do not expose raw key bytes.
 //! - `Debug` / `Display` on providers and on `ProviderError` must not reveal key material (see
@@ -19,12 +25,35 @@
 //! - Intermediate plaintext (env-var strings, file bytes) is wrapped in `Zeroizing<_>` so scope
 //!   exit scrubs it.
 
-use std::{path::PathBuf, sync::Arc};
+use std::{fmt::Write as _, path::PathBuf, sync::Arc};
 
 use base64::Engine;
+use sha2::{Digest, Sha256};
 use zeroize::Zeroizing;
 
 use crate::crypto::EncryptionKey;
+
+/// Short, non-secret fingerprint of 32-byte key material.
+///
+/// Returns the first 8 bytes of SHA-256 over the key, hex-encoded (16 chars).
+/// Used as the rotating segment of [`KeyProvider::version`] so an in-place
+/// key rotation (same env var, same file path, new bytes) produces a
+/// **different** envelope `key_id`. Stored records then flow through the
+/// legacy-key path instead of silently mis-decrypting under the new key.
+///
+/// 64 bits of output is ample for rotation correlation inside a single
+/// deployment while keeping envelope overhead small. The SHA-256 input is
+/// a cryptographic key (not user input) so second-preimage resistance is
+/// not a concern for this use.
+fn key_fingerprint(bytes: &[u8; 32]) -> String {
+    let digest = Sha256::digest(bytes);
+    let mut out = String::with_capacity(16);
+    for byte in &digest[..8] {
+        // Two lowercase hex chars per byte — `write!` to a String never fails.
+        let _ = write!(out, "{byte:02x}");
+    }
+    out
+}
 
 /// Source of the current encryption key for [`EncryptionLayer`](super::EncryptionLayer).
 ///
@@ -48,7 +77,13 @@ pub trait KeyProvider: Send + Sync + 'static {
     /// Stable identifier for the current key. Stored as
     /// [`EncryptedData::key_id`](crate::crypto::EncryptedData) in new
     /// envelopes; used by the rotation path to detect mismatches. Must be
-    /// non-empty.
+    /// non-empty, and **must change whenever `current_key()` returns
+    /// different key bytes** — otherwise the layer will treat pre-rotation
+    /// records as "current" and silently mis-decrypt them under the new
+    /// key. `EnvKeyProvider` / `FileKeyProvider` derive this from a
+    /// SHA-256 fingerprint of the key material; operator-authored
+    /// providers that hand-manage the version string must preserve the
+    /// same invariant.
     fn version(&self) -> &str;
 }
 
@@ -101,9 +136,23 @@ pub enum ProviderError {
         path: PathBuf,
     },
 
-    /// I/O error reaching the backing source.
+    /// I/O error reading a file-backed source. Carries the offending path so
+    /// operators can diagnose missing mounts, permission denied, etc. without
+    /// having to correlate with their own log lines.
+    #[error("key material file I/O failed for {path}")]
+    FileIo {
+        /// The file path that failed. Not the secret.
+        path: PathBuf,
+        /// The underlying filesystem error.
+        #[source]
+        source: std::io::Error,
+    },
+
+    /// I/O error reaching a non-file backing source. Retained for future
+    /// providers whose source is not path-shaped; file-backed providers use
+    /// [`Self::FileIo`] so the path surfaces.
     #[error("key material source I/O failed")]
-    Io(#[from] std::io::Error),
+    Io(#[source] std::io::Error),
 }
 
 // ============================================================================
@@ -186,9 +235,10 @@ impl EnvKeyProvider {
         }
         let mut key_bytes = [0u8; 32];
         key_bytes.copy_from_slice(&decoded);
+        let fingerprint = key_fingerprint(&key_bytes);
         Ok(Self {
             key: Arc::new(EncryptionKey::from_bytes(key_bytes)),
-            version: Arc::from("env:current"),
+            version: Arc::from(format!("env:{fingerprint}")),
         })
     }
 }
@@ -251,14 +301,18 @@ impl FileKeyProvider {
     /// # Errors
     ///
     /// - [`ProviderError::InsecurePermissions`] if the file is world-readable on Unix.
-    /// - [`ProviderError::Io`] on filesystem errors.
+    /// - [`ProviderError::FileIo`] on filesystem errors (missing file, permission denied, …) —
+    ///   carries the offending path for diagnostics.
     /// - [`ProviderError::KeyMaterialRejected`] on wrong file length.
     pub fn from_path(path: impl AsRef<std::path::Path>) -> Result<Self, ProviderError> {
         let path = path.as_ref();
         #[cfg(unix)]
         {
             use std::os::unix::fs::MetadataExt;
-            let metadata = std::fs::metadata(path)?;
+            let metadata = std::fs::metadata(path).map_err(|source| ProviderError::FileIo {
+                path: path.to_path_buf(),
+                source,
+            })?;
             // World-readable bit set => refuse.
             if metadata.mode() & 0o004 != 0 {
                 return Err(ProviderError::InsecurePermissions {
@@ -266,7 +320,10 @@ impl FileKeyProvider {
                 });
             }
         }
-        let bytes = std::fs::read(path)?;
+        let bytes = std::fs::read(path).map_err(|source| ProviderError::FileIo {
+            path: path.to_path_buf(),
+            source,
+        })?;
         let bytes = Zeroizing::new(bytes);
         if bytes.len() != Self::MIN_BYTES {
             return Err(ProviderError::KeyMaterialRejected {
@@ -280,9 +337,10 @@ impl FileKeyProvider {
         let mut key_bytes = [0u8; 32];
         key_bytes.copy_from_slice(&bytes);
         let filename = path.file_name().and_then(|n| n.to_str()).unwrap_or("key");
+        let fingerprint = key_fingerprint(&key_bytes);
         Ok(Self {
             key: Arc::new(EncryptionKey::from_bytes(key_bytes)),
-            version: Arc::from(format!("file:{filename}")),
+            version: Arc::from(format!("file:{filename}:{fingerprint}")),
         })
     }
 }
@@ -437,7 +495,16 @@ mod tests {
     fn env_provider_valid_key_round_trips_via_base64() {
         let provider =
             EnvKeyProvider::from_base64(&valid_base64_key()).expect("valid key must succeed");
-        assert_eq!(provider.version(), "env:current");
+        let version = provider.version();
+        assert!(
+            version.starts_with("env:"),
+            "version has env prefix; got {version}"
+        );
+        assert_eq!(
+            version.len(),
+            "env:".len() + 16,
+            "version ends in 16-char (8-byte) hex fingerprint; got {version}"
+        );
         provider.current_key().expect("key available");
     }
 
@@ -453,6 +520,45 @@ mod tests {
         let formatted = format!("{provider:?}");
         assert!(formatted.contains("[REDACTED]"));
         assert!(!formatted.contains("0x42"));
+    }
+
+    /// Two different keys must produce different `version()`s so an in-place
+    /// env-var rotation flips the envelope `key_id` instead of silently
+    /// mis-decrypting under the new key. Regression guard for the rotation
+    /// safety invariant recorded in ADR-0022 §3.
+    #[test]
+    fn env_provider_version_changes_with_key() {
+        let k1 = base64::engine::general_purpose::STANDARD.encode([0x11u8; 32]);
+        let k2 = base64::engine::general_purpose::STANDARD.encode([0x22u8; 32]);
+        let v1 = EnvKeyProvider::from_base64(&k1)
+            .unwrap()
+            .version()
+            .to_owned();
+        let v2 = EnvKeyProvider::from_base64(&k2)
+            .unwrap()
+            .version()
+            .to_owned();
+        assert_ne!(
+            v1, v2,
+            "different keys must produce different versions (v1={v1}, v2={v2})"
+        );
+    }
+
+    /// Two providers constructed from the same bytes must report the same
+    /// `version()` — so restarting a stable deployment does not churn
+    /// envelope `key_id`s.
+    #[test]
+    fn env_provider_version_stable_for_same_key() {
+        let k = valid_base64_key();
+        let v1 = EnvKeyProvider::from_base64(&k)
+            .unwrap()
+            .version()
+            .to_owned();
+        let v2 = EnvKeyProvider::from_base64(&k)
+            .unwrap()
+            .version()
+            .to_owned();
+        assert_eq!(v1, v2);
     }
 
     // ------------------------------------------------------------------------
@@ -472,8 +578,49 @@ mod tests {
             std::fs::set_permissions(&path, perms).unwrap();
         }
         let provider = FileKeyProvider::from_path(&path).expect("valid file must succeed");
-        assert_eq!(provider.version(), "file:nebula.key");
+        let version = provider.version();
+        assert!(
+            version.starts_with("file:nebula.key:"),
+            "version has file prefix + filename; got {version}"
+        );
+        assert_eq!(
+            version.len(),
+            "file:nebula.key:".len() + 16,
+            "version ends in 16-char fingerprint; got {version}"
+        );
         provider.current_key().expect("key available");
+    }
+
+    /// In-place file rewrite (same path, new bytes) must produce a different
+    /// `version()`. Mirrors `env_provider_version_changes_with_key` — the
+    /// rotation-observability guarantee must hold for file-mounted secrets
+    /// (Kubernetes secret rewrites, systemd credential refreshes).
+    #[test]
+    fn file_provider_version_changes_with_content() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("rotated.key");
+
+        std::fs::write(&path, [0x11u8; 32]).unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
+        }
+        let v1 = FileKeyProvider::from_path(&path)
+            .unwrap()
+            .version()
+            .to_owned();
+
+        std::fs::write(&path, [0x22u8; 32]).unwrap();
+        let v2 = FileKeyProvider::from_path(&path)
+            .unwrap()
+            .version()
+            .to_owned();
+
+        assert_ne!(
+            v1, v2,
+            "rewriting file with new bytes must rotate version (v1={v1}, v2={v2})"
+        );
     }
 
     #[test]
@@ -522,7 +669,18 @@ mod tests {
     fn file_provider_missing_file_fails_closed() {
         let err = FileKeyProvider::from_path("/nonexistent/path/nebula.key")
             .expect_err("missing file must error");
-        assert!(matches!(err, ProviderError::Io(_)));
+        match err {
+            ProviderError::FileIo { path, source: _ } => {
+                // Path must survive through to the error so operators do not
+                // have to correlate the failure with their own log lines.
+                assert!(
+                    path.ends_with("nebula.key"),
+                    "error carries the offending path; got {}",
+                    path.display()
+                );
+            },
+            other => panic!("wrong variant: {other:?}"),
+        }
     }
 
     // ------------------------------------------------------------------------
