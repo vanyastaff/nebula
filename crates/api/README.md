@@ -87,7 +87,11 @@ It is **not** a separate crate. Responsibility split:
 
 - `transport` — `WebhookTransport`: activate / deactivate / axum router for
   `POST /webhooks/:trigger_uuid/:nonce`. Mounts only when attached to
-  `AppState::with_webhook_transport`.
+  `AppState::with_webhook_transport`. `activate()` takes a
+  `nebula_action::WebhookConfig` alongside the handler so the transport
+  can enforce signature policy before dispatch — the config is read from
+  the typed `WebhookAction` at activation time and is *not* routed through
+  the dyn `TriggerHandler` contract.
 - `provider` — `EndpointProviderImpl`: implements
   `nebula_action::WebhookEndpointProvider` so plugins read the public URL
   without knowing the HTTP layer.
@@ -97,6 +101,21 @@ It is **not** a separate crate. Responsibility split:
 
 Delivery semantics: at-least-once (§11.3 / §13.4). Duplicate delivery is the
 caller's responsibility via stable event identity + idempotency keys.
+
+Signature enforcement (ADR-0022): the transport consults
+`entry.config.signature_policy()` between `WebhookRequest::try_new` and
+oneshot setup. Outcomes:
+
+- `SignaturePolicy::OptionalAcceptUnsigned` → pass through to `handle_event`.
+- `Required` with an empty secret → `500 application/problem+json`
+  (`https://nebula.dev/problems/webhook-signature-misconfigured`). Handler is NOT invoked.
+- `Required` / `Custom` producing `SignatureOutcome::Missing` or `Invalid` → `401 application/problem+json` (`https://nebula.dev/problems/webhook-signature`). Handler is NOT invoked.
+- `Valid` → pass through to `handle_event`.
+
+Every rejection increments `nebula_webhook_signature_failures_total` with
+`reason ∈ { missing, invalid, missing_secret }` when a metrics registry is
+attached via `WebhookTransport::with_metrics`. The counter is low cardinality
+by design (three static reason labels, no per-trigger dimension).
 
 ## Non-goals
 
