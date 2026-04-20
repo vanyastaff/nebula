@@ -258,7 +258,6 @@ pub mod blue_green;
 pub mod error;
 pub mod events;
 pub mod grace_period;
-pub mod metrics;
 pub mod policy;
 pub mod scheduler;
 pub mod state;
@@ -280,7 +279,6 @@ pub use grace_period::{
     GracePeriodConfig, GracePeriodState, GracePeriodTracker, UsageMetrics,
     cleanup_expired_credentials, track_credential_usage,
 };
-pub use metrics::RotationMetrics;
 pub use policy::{
     BeforeExpiryConfig, ManualConfig, PeriodicConfig, RotationPolicy, ScheduledConfig,
 };
