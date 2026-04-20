@@ -118,7 +118,7 @@ cargo build
 cargo nextest run --workspace
 ```
 
-Requires **Rust 1.94+** (edition 2024). Uses [cargo-nextest](https://nexte.st/) for test runs.
+Requires **Rust 1.95+** (edition 2024). Uses [cargo-nextest](https://nexte.st/) for test runs.
 
 ### Local Infrastructure
 

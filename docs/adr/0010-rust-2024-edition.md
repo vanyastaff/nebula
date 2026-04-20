@@ -1,10 +1,10 @@
 ---
 id: 0010
 title: rust-2024-edition
-status: accepted
+status: superseded
 date: 2026-04-19
 supersedes: []
-superseded_by: []
+superseded_by: [0019]
 tags: [toolchain, msrv, edition, workspace]
 related:
   - Cargo.toml

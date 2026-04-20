@@ -4,7 +4,7 @@
 # is available for the host platform.
 #
 # Prerequisites: rustup (any toolchain — Cargo.toml `workspace.package.rust-version`
-# pins MSRV at 1.94, CI mirrors that). Run `rustup default stable` once.
+# pins MSRV at 1.95, CI mirrors that). Run `rustup default stable` once.
 #
 # Usage: bash scripts/install-tools.sh
 #

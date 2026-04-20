@@ -55,7 +55,7 @@ Nebula is a modular, type-safe workflow automation engine in Rust (alpha stage).
 The workspace contains core libraries, execution/runtime layers, API, CLI, and examples.
 
 - Rust edition: `2024`
-- Rust version: `1.94`
+- Rust version: `1.95`
 - Primary test runner: `cargo nextest`
 - Formatting: nightly `rustfmt` (required by `rustfmt.toml`)
 
@@ -85,7 +85,7 @@ Notes:
 
 - `cargo +nightly fmt` is required (unstable rustfmt options are enabled).
 - Doctests are run separately with `cargo test --doc`.
-- `lefthook run pre-push` is the local mirror of CI required jobs (fmt, clippy, tests, doctests, taplo, MSRV 1.94, `--all-features`, `--no-default-features`). When adding or removing a CI required job, update `lefthook.yml` in the same PR.
+- `lefthook run pre-push` is the local mirror of CI required jobs (fmt, clippy, tests, doctests, taplo, MSRV 1.95, `--all-features`, `--no-default-features`). When adding or removing a CI required job, update `lefthook.yml` in the same PR.
 - Commit messages use conventional commits (`feat:`, `fix(scope):`, `chore:` …); `pr-validation.yml` enforces this via commitlint.
 - Releases are manual: `cargo release -p <crate> <patch|minor|major> --execute` (see `docs/dev-setup.md`).
 

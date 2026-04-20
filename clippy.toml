@@ -1,5 +1,5 @@
 # Keep lint interpretation aligned with workspace toolchain.
-msrv = "1.94"
+msrv = "1.95"
 
 # Complexity limits (balanced for a heavily generic Rust workspace).
 cognitive-complexity-threshold = 25
