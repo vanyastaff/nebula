@@ -44,9 +44,6 @@
 #![cfg_attr(docsrs, feature(doc_auto_cfg))]
 
 // Re-export core crates
-// Re-export commonly used external crates
-pub use anyhow;
-pub use async_trait::async_trait;
 pub use nebula_action;
 pub use nebula_core;
 pub use nebula_credential;
@@ -158,6 +155,11 @@ macro_rules! params {
 
 /// Macro for defining a workflow.
 ///
+/// Each `node_key: ActionKey` entry is registered via
+/// [`WorkflowBuilder::add_node`](crate::workflow::WorkflowBuilder::add_node).
+/// Use `=> next_node` to declare a default downstream connection (compiled
+/// to [`WorkflowBuilder::connect`](crate::workflow::WorkflowBuilder::connect)).
+///
 /// # Examples
 ///
 /// ```ignore
@@ -166,9 +168,9 @@ macro_rules! params {
 /// let wf = workflow! {
 ///     name: "my_workflow",
 ///     nodes: [
-///         start: StartNode => process,
-///         process: ProcessAction => end,
-///         end: EndNode
+///         fetch:   "http.get"     => transform,
+///         transform: "json.map"   => store,
+///         store:   "db.insert",
 ///     ]
 /// };
 /// ```
@@ -196,21 +198,37 @@ macro_rules! workflow {
     }};
 }
 
-/// Macro for defining a simple action.
+/// Macro for defining a simple stateless action with a unit struct.
+///
+/// Generates a unit `struct $name`, derives [`Action`](nebula_action::Action)
+/// (which also wires [`ActionDependencies`](nebula_action::ActionDependencies)),
+/// and implements [`StatelessAction`](nebula_action::StatelessAction) over the
+/// supplied `input` / `output` types.
+///
+/// # Requirements
+///
+/// `Input` must implement [`HasSchema`](nebula_schema::HasSchema). Use
+/// [`stateless_fn`](nebula_action::stateless_fn) (with `serde_json::Value` or
+/// `()` input) when you want the lowest-boilerplate path without committing to
+/// a typed schema yet.
 ///
 /// # Examples
 ///
+/// See `examples/hello_action.rs` for a runnable end-to-end demo.
+///
 /// ```ignore
-/// use nebula_sdk::simple_action;
+/// use nebula_sdk::{prelude::*, simple_action};
 ///
 /// simple_action! {
-///     name: LogAction,
-///     key: "debug.log",
-///     input: LogInput,
-///     output: LogOutput,
-///     async fn execute(&self, input, ctx) {
-///         println!("Log: {}", input.message);
-///         Ok(LogOutput { success: true })
+///     name: GreetAction,
+///     key: "demo.greet",
+///     input: serde_json::Value,
+///     output: serde_json::Value,
+///     async fn execute(&self, input, _ctx) {
+///         let name = input.get("name").and_then(|v| v.as_str()).unwrap_or("world");
+///         Ok(ActionResult::success(serde_json::json!({
+///             "message": format!("Hello, {name}!"),
+///         })))
 ///     }
 /// }
 /// ```
@@ -218,31 +236,40 @@ macro_rules! workflow {
 macro_rules! simple_action {
     (
         name: $name:ident,
-        key: $key:expr,
+        key: $key:literal,
         input: $input:ty,
         output: $output:ty,
         async fn execute(&$self:tt, $input_param:ident, $ctx_param:ident) $body:block
     ) => {
-        #[derive($crate::nebula_action::Action)]
-        #[action(
-            key = $key,
-            name = stringify!($name),
-            description = ""
-        )]
         pub struct $name;
 
-        #[::async_trait::async_trait]
-        impl $crate::nebula_action::ProcessAction for $name {
+        impl $crate::nebula_action::Action for $name {
+            fn metadata(&self) -> &$crate::nebula_action::ActionMetadata {
+                static METADATA: ::std::sync::OnceLock<$crate::nebula_action::ActionMetadata>
+                    = ::std::sync::OnceLock::new();
+                METADATA.get_or_init(|| {
+                    $crate::nebula_action::ActionMetadata::new(
+                        $crate::nebula_core::action_key!($key),
+                        stringify!($name),
+                        "",
+                    )
+                })
+            }
+        }
+
+        impl $crate::nebula_action::ActionDependencies for $name {}
+
+        impl $crate::nebula_action::StatelessAction for $name {
             type Input = $input;
             type Output = $output;
 
             async fn execute(
                 &$self,
                 $input_param: Self::Input,
-                $ctx_param: &$crate::nebula_action::ActionContext,
+                $ctx_param: &impl $crate::nebula_action::Context,
             ) -> ::std::result::Result<
                 $crate::nebula_action::ActionResult<Self::Output>,
-                $crate::nebula_action::ActionError
+                $crate::nebula_action::ActionError,
             > {
                 $body
             }

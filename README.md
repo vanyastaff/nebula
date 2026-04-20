@@ -36,14 +36,14 @@ Most automation platforms are runtime-interpreted, dynamically typed, and treat 
 ## Architecture
 
 ```
-API              api (webhook is a module in `nebula-api`)
-Exec             engine, runtime, storage, sdk
-Business         credential, resource, action, plugin
-Core             core, validator, parameter, expression, workflow, execution
-Cross-cutting    log, system, eventbus, telemetry, metrics, config, resilience, error
+API / Public    api (HTTP + webhook module) · sdk (integration author façade)
+Exec            engine · runtime · storage · sandbox · plugin-sdk
+Business        credential · resource · action · plugin
+Core            core · validator · expression · workflow · execution · schema · metadata
+Cross-cutting   log · system · eventbus · telemetry · metrics · resilience · error
 ```
 
-Each layer depends only on layers below it. Cross-cutting crates are importable at any level. Layer boundaries are enforced by `cargo deny` in CI.
+Each layer depends only on layers below it. Cross-cutting crates are importable at any level. Layer boundaries are enforced mechanically by `cargo deny` (see `deny.toml` `wrappers`) — a missing entry fails CI before review.
 
 ### Data Flow
 
@@ -60,35 +60,43 @@ Trigger (webhook / cron / event)
 
 ## Crate Map
 
+Source of truth: workspace members in `Cargo.toml`, status in [`docs/MATURITY.md`](docs/MATURITY.md).
 
-| Layer             | Crate        | Purpose                                                                             |
-| ----------------- | ------------ | ----------------------------------------------------------------------------------- |
-| **Core**          | `core`       | IDs, domain keys, `AuthScheme` trait, `AuthPattern`, `SecretString`                 |
-|                   | `validator`  | Schema validation                                                                   |
-|                   | `parameter`  | Typed parameter definitions, `#[derive(Parameters)]`                                |
-|                   | `expression` | Template expression engine                                                          |
-|                   | `workflow`   | Workflow definition, DAG structure                                                  |
-|                   | `execution`  | Execution state machine                                                             |
-| **Business**      | `credential` | Encrypted storage, key rotation, 12 universal auth schemes, `#[derive(AuthScheme)]` |
-|                   | `resource`   | External service connections, typed credential refs                                 |
-|                   | `action`     | Action trait, context-based DI                                                      |
-|                   | `plugin`     | Plugin loading and registry                                                         |
-| **Exec**          | `engine`     | DAG resolution, orchestration                                                       |
-|                   | `runtime`    | Node scheduling, isolation routing, blob spill                                      |
-|                   | `storage`    | Persistence abstraction (in-memory, Postgres)                                       |
-|                   | `sdk`        | Plugin author SDK and prelude                                                       |
-| **API**           | `api`        | REST server, webhook endpoints, middleware                                          |
-| **Cross-cutting** | `error`      | `NebulaError<E>`, `Classify` trait, derive macro                                    |
-|                   | `resilience` | Retry, circuit breaker, rate limiter, hedge, bulkhead                               |
-|                   | `log`        | Structured logging infrastructure                                                   |
-|                   | `config`     | Configuration loading                                                               |
-|                   | `eventbus`   | In-memory typed pub/sub for cross-crate signals                                     |
-|                   | `telemetry`  | Metrics registry                                                                    |
-|                   | `metrics`    | Prometheus export                                                                   |
-|                   | `system`     | Process monitoring, system load tracking                                            |
+| Layer             | Crate           | Purpose                                                                              |
+| ----------------- | --------------- | ------------------------------------------------------------------------------------ |
+| **Core**          | `core`          | IDs, domain keys, prefixed-ULID, shared vocabulary                                   |
+|                   | `validator`     | Validation rule engine                                                               |
+|                   | `schema`        | Typed field definitions + `#[derive(HasSchema)]` (was `nebula-parameter`)            |
+|                   | `metadata`      | `Metadata` trait + helpers shared by Action / Credential / Resource / Plugin         |
+|                   | `expression`    | Template expression engine                                                           |
+|                   | `workflow`      | `WorkflowDefinition`, DAG structure, activation-time validator                       |
+|                   | `execution`     | Execution state machine + transitions                                                |
+| **Business**      | `credential`    | Encrypted storage (AES-256-GCM + AAD), key rotation, 12 universal auth schemes       |
+|                   | `resource`      | External service lifecycle, typed credential refs                                    |
+|                   | `action`        | Action trait family (Stateless / Stateful / Trigger / Resource / Control)            |
+|                   | `plugin`        | In-process plugin trait + registry                                                   |
+| **Exec**          | `engine`        | Frontier loop, lease lifecycle, control consumer (ADR-0008)                          |
+|                   | `runtime`       | Node scheduling, dispatch, blob spill                                                |
+|                   | `storage`       | Persistence trait family + in-memory + Postgres (SQLite local path planned)          |
+|                   | `sandbox`       | Process-isolated action execution (capability allowlist planned)                     |
+|                   | `plugin-sdk`    | Out-of-process plugin protocol (`run_duplex`)                                        |
+| **API / Public**  | `api`           | REST server, webhook transport, middleware                                           |
+|                   | `sdk`           | **Integration author façade** — re-exports + `WorkflowBuilder` + `TestRuntime`       |
+| **Cross-cutting** | `error`         | `NebulaError<E>`, `Classify` trait, derive macro                                     |
+|                   | `resilience`    | Retry, circuit breaker, rate limiter, hedge, bulkhead                                |
+|                   | `log`           | Structured logging infrastructure                                                    |
+|                   | `eventbus`      | In-memory typed pub/sub for cross-crate signals                                      |
+|                   | `telemetry`     | Lock-free metrics primitives + label interning                                       |
+|                   | `metrics`       | `nebula_*` naming, cardinality allowlist, Prometheus export                          |
+|                   | `system`        | Process monitoring, system load tracking                                             |
 
+### Apps
 
-**Desktop app**: `apps/desktop/` &mdash; Tauri shell with React + TypeScript frontend.
+- `apps/cli` — `nebula` CLI (in-process one-shot runs, includes optional `--tui` viewer).
+- `apps/desktop` — Tauri + React reference shell (not a release artifact).
+- `apps/web` — placeholder (no implementation yet).
+
+A production composition root (`apps/server`) for the `mode-self-hosted` deployment shape (ADR-0013) is tracked as ADR-0008 follow-up.
 
 ## Credential System
 
@@ -138,12 +146,16 @@ This enables local hooks from `lefthook.yml`: fast checks on `pre-commit` and fu
 
 ## Documentation
 
-
-| Doc                                | Description                                                 |
-| ---------------------------------- | ----------------------------------------------------------- |
-| [CLAUDE.md](CLAUDE.md)             | Canonical project conventions, commands, architecture notes |
-| [CONTRIBUTING.md](CONTRIBUTING.md) | Setup and contribution flow                                 |
-| [docs/plans/](docs/plans/)         | Active implementation plans and archived plans              |
+| Doc                                                        | Description                                                                       |
+| ---------------------------------------------------------- | --------------------------------------------------------------------------------- |
+| [docs/PRODUCT_CANON.md](docs/PRODUCT_CANON.md)             | Normative core — pillars, golden path, contracts, non-negotiable invariants       |
+| [docs/MATURITY.md](docs/MATURITY.md)                       | Per-crate stability dashboard (`stable` / `frontier` / `partial` / `planned`)     |
+| [docs/STYLE.md](docs/STYLE.md)                             | Rust idioms, naming, error taxonomy                                               |
+| [docs/INTEGRATION_MODEL.md](docs/INTEGRATION_MODEL.md)     | Integration model: Action / Credential / Resource / Schema / Plugin               |
+| [docs/adr/](docs/adr/)                                     | Architectural decision records (numbered, immutable once accepted)                |
+| [CLAUDE.md](CLAUDE.md)                                     | Coding-agent operational guidance + canonical commands                            |
+| [CONTRIBUTING.md](CONTRIBUTING.md)                         | Setup and contribution flow                                                       |
+| [docs/plans/](docs/plans/)                                 | Active implementation plans and archive                                           |
 
 
 ## Status

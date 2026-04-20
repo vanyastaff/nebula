@@ -29,6 +29,10 @@ rss = "2.0"
 chrono = { workspace = true }
 
 [[bin]]
+name = "hello_action"
+path = "hello_action.rs"
+
+[[bin]]
 name = "paginated_users"
 path = "paginated_users.rs"
 

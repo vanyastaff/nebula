@@ -12,9 +12,9 @@
 //!
 //! ```rust,no_run
 //! # use nebula_sdk::runtime::TestRuntime;
-//! # use nebula_action::testing::TestContextBuilder;
+//! # use nebula_action::{ActionError, testing::TestContextBuilder};
 //! # use serde_json::json;
-//! # async fn demo<A>(action: A) -> anyhow::Result<()>
+//! # async fn demo<A>(action: A) -> Result<(), ActionError>
 //! # where A: nebula_action::stateful::StatefulAction + Send + Sync + 'static,
 //! #       A::Input: serde::de::DeserializeOwned + Send + Sync,
 //! #       A::Output: serde::Serialize + Send + Sync,
