@@ -208,10 +208,7 @@ pub fn is_ssd(mount_point: Option<&str>) -> bool {
 }
 
 /// Get disk I/O statistics (Linux only — reads `/sys/block/<device>/stat`)
-#[expect(
-    unused_variables,
-    reason = "`device` is only consumed inside the `#[cfg(target_os = \"linux\")]` block; unused on other platforms"
-)]
+#[allow(unused_variables)] // target-dependent: consumed only inside #[cfg(target_os = "linux")]; #[expect] would be unfulfilled on Linux
 pub fn io_stats(device: &str) -> Option<DiskStats> {
     #[cfg(target_os = "linux")]
     {
@@ -337,10 +334,7 @@ pub fn has_enough_space(path: &str, required_bytes: u64) -> bool {
 }
 
 /// Get filesystem information for a path (Unix only — uses `statvfs`)
-#[expect(
-    unused_variables,
-    reason = "`path` is only consumed inside the `#[cfg(unix)]` block; unused on non-Unix platforms"
-)]
+#[allow(unused_variables)] // target-dependent: consumed only inside #[cfg(unix)]; #[expect] would be unfulfilled on Unix
 pub fn filesystem_info(path: &str) -> Option<FileSystemInfo> {
     #[cfg(unix)]
     {

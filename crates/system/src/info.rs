@@ -300,10 +300,7 @@ fn detect_numa_nodes() -> usize {
     1
 }
 
-#[expect(
-    clippy::unnecessary_wraps,
-    reason = "`Option` return is required: non-Linux/Windows platforms reach the `return None` branch"
-)]
+#[allow(clippy::unnecessary_wraps)] // target-dependent: each cfg branch sees only one return flavour; #[expect] would be unfulfilled on targets where only Some(_) or only None is visible
 fn detect_huge_page_size() -> Option<usize> {
     #[cfg(target_os = "linux")]
     return Some(2 * 1024 * 1024); // 2MB on Linux
