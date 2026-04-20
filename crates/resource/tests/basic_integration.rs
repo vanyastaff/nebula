@@ -617,17 +617,11 @@ impl Resource for SlowCreatePoolResource {
         _ctx: &dyn Ctx,
     ) -> Result<Arc<AtomicU64>, TestError> {
         let now = self.in_flight.fetch_add(1, Ordering::SeqCst) + 1;
-        // Update peak with a compare-exchange loop.
-        let mut observed = self.peak.load(Ordering::SeqCst);
-        while now > observed {
-            match self
-                .peak
-                .compare_exchange(observed, now, Ordering::SeqCst, Ordering::SeqCst)
-            {
-                Ok(_) => break,
-                Err(cur) => observed = cur,
-            }
-        }
+        // Update peak = max(peak, now) via `AtomicU64::update` (Rust 1.95).
+        // Load and store orderings both SeqCst — match the prior CAS loop.
+        let _ = self
+            .peak
+            .update(Ordering::SeqCst, Ordering::SeqCst, |cur| cur.max(now));
         tokio::time::sleep(std::time::Duration::from_millis(80)).await;
         self.in_flight.fetch_sub(1, Ordering::SeqCst);
         Ok(Arc::new(AtomicU64::new(0)))
