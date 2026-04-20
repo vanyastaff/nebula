@@ -722,7 +722,10 @@ impl ProcessSandbox {
 
             // SAFETY: pre_exec runs between fork() and exec() in the child.
             // We only call async-signal-safe operations (landlock, setrlimit).
-            #[allow(unsafe_code)]
+            #[expect(
+                unsafe_code,
+                reason = "pre_exec runs between fork/exec; only async-signal-safe ops (landlock, setrlimit) called"
+            )]
             unsafe {
                 cmd.pre_exec(move || {
                     let caps: PluginCapabilities = serde_json::from_str(&caps_json)

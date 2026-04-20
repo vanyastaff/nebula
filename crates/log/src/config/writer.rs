@@ -86,7 +86,10 @@ pub enum Rolling {
 /// This struct uses multiple boolean flags for configuration as it represents
 /// independent toggleable features. This is more ergonomic than enums or bitflags
 /// for a configuration struct that maps directly to CLI flags or config files.
-#[allow(clippy::struct_excessive_bools)]
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "independent toggleable features mapping directly to CLI flags or config file fields — bitflags or enums would be less ergonomic here"
+)]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct DisplayConfig {

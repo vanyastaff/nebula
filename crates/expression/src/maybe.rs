@@ -4,7 +4,8 @@
 //! to accept either a concrete value of type T or a string expression that will
 //! be evaluated at runtime.
 
-use once_cell::sync::OnceCell;
+use std::sync::OnceLock;
+
 use serde::{Deserialize, Deserializer, Serialize, Serializer, de::DeserializeOwned};
 use serde_json::Value;
 
@@ -17,14 +18,14 @@ pub struct CachedExpression {
     /// Source expression string
     pub source: String,
     #[doc(hidden)]
-    pub ast: OnceCell<Expr>,
+    pub ast: OnceLock<Expr>,
 }
 
 impl Clone for CachedExpression {
     fn clone(&self) -> Self {
         Self {
             source: self.source.clone(),
-            ast: OnceCell::new(), // Don't clone the cached AST, let it re-parse if needed
+            ast: OnceLock::new(), // Don't clone the cached AST, let it re-parse if needed
         }
     }
 }
@@ -43,7 +44,7 @@ impl PartialEq for CachedExpression {
 /// # Lazy Parsing
 ///
 /// When using the Expression variant, the expression is parsed lazily on first use
-/// and the parsed AST is cached for subsequent evaluations using OnceCell.
+/// and the parsed AST is cached for subsequent evaluations using OnceLock.
 ///
 /// # Serialization
 ///
@@ -89,7 +90,7 @@ impl<T> MaybeExpression<T> {
     pub fn expression(expr: impl Into<String>) -> Self {
         Self::Expression(CachedExpression {
             source: expr.into(),
-            ast: OnceCell::new(),
+            ast: OnceLock::new(),
         })
     }
 
@@ -327,7 +328,7 @@ where
             if is_expression(s) {
                 return Ok(Self::Expression(CachedExpression {
                     source: s.to_string(),
-                    ast: OnceCell::new(),
+                    ast: OnceLock::new(),
                 }));
             }
         }

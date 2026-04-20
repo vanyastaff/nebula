@@ -29,7 +29,10 @@ struct PluginProcess {
     child: Child,
     stream: PluginStream,
     line_buf: String,
-    #[allow(dead_code)]
+    #[expect(
+        dead_code,
+        reason = "stderr pipe held to keep the child's stderr open; not read by tests"
+    )]
     stderr: Option<ChildStderr>,
 }
 

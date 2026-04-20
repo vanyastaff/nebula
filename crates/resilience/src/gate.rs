@@ -154,7 +154,10 @@ impl Gate {
     // Reason: the permit must outlive the closing check — we either forget it
     // (creating a guard) or drop it (returning it to the semaphore). The drop
     // order is intentional and correct.
-    #[allow(clippy::significant_drop_tightening)]
+    #[expect(
+        clippy::significant_drop_tightening,
+        reason = "permit must outlive the closing check; early drop would create a TOCTOU window"
+    )]
     pub fn enter(&self) -> Result<GateGuard, GateClosed> {
         // Acquire first to hold our place in the semaphore, THEN check closing.
         //

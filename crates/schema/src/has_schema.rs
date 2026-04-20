@@ -122,7 +122,7 @@ mod tests {
     }
 
     #[derive(Clone, Copy)]
-    #[allow(
+    #[expect(
         dead_code,
         reason = "variants exercised via HasSelectOptions impl only"
     )]

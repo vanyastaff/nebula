@@ -48,7 +48,10 @@ struct GitHubLikeWebhook {
 }
 
 #[derive(Clone)]
-#[allow(dead_code)] // hook_id is set to simulate a real registration; tests only read the URL
+#[expect(
+    dead_code,
+    reason = "hook_id is set to simulate a real registration; tests only read the URL"
+)]
 struct RegistrationState {
     hook_id: u64,
 }

@@ -5,7 +5,10 @@ use std::time::Duration;
 use nebula_core::NodeKey;
 
 /// All events the TUI handles.
-#[allow(dead_code)] // Variants used when real-time engine events are wired.
+#[expect(
+    dead_code,
+    reason = "Variants used when real-time engine events are wired"
+)]
 pub enum TuiEvent {
     /// Terminal key press.
     Key(crossterm::event::KeyEvent),
@@ -41,7 +44,10 @@ pub enum TuiEvent {
 }
 
 #[derive(Clone, Copy)]
-#[allow(dead_code)]
+#[expect(
+    dead_code,
+    reason = "Variants used when real-time engine events are wired"
+)]
 pub enum LogLevel {
     Info,
     Warn,

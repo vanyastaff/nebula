@@ -168,7 +168,10 @@ impl FieldValues {
     }
 
     /// Parse a JSON object into a `FieldValues` store.
-    #[allow(clippy::result_large_err)]
+    #[expect(
+        clippy::result_large_err,
+        reason = "ValidationError is intentionally large; callers are on the validation path"
+    )]
     pub fn from_json(value: Value) -> Result<Self, crate::error::ValidationError> {
         match FieldValue::from_json(value) {
             FieldValue::Object(map) => Ok(Self(map)),

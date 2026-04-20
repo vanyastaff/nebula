@@ -85,7 +85,7 @@ pub mod prelude {
     pub use crate::dependencies::DependencyError;
     pub use crate::error::{CoreError, CoreResult};
     // Identifiers (ULID-backed)
-    #[allow(deprecated)] // OrganizationId re-exported for migration period
+    #[expect(deprecated, reason = "OrganizationId re-exported for migration period")]
     pub use crate::id::{
         AttemptId, CredentialId, ExecutionId, InstanceId, OrgId, OrganizationId, ResourceId,
         ServiceAccountId, SessionId, TriggerEventId, TriggerId, UserId, WorkflowId,

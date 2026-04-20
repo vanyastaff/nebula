@@ -27,7 +27,6 @@ regex = { workspace = true, optional = true }
 uuid = { workspace = true, features = ["v4"], optional = true }
 chrono = { workspace = true }
 parking_lot = { workspace = true }
-once_cell = { workspace = true }
 
 [dev-dependencies]
 criterion = { workspace = true }

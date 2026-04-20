@@ -130,7 +130,10 @@ impl TokenBucket {
     /// Returns `Err(ConfigError)` if `capacity` is 0 or > 100,000,
     /// or `refill_rate` is outside 0.001..=10,000.0.
     // Reason: usize capacity cast to f64 for token tracking — acceptable for rate limiting.
-    #[allow(clippy::cast_precision_loss)]
+    #[expect(
+        clippy::cast_precision_loss,
+        reason = "usize capacity cast to f64 for token tracking — acceptable for rate limiting"
+    )]
     pub fn new(capacity: usize, refill_rate: f64) -> Result<Self, crate::ConfigError> {
         if capacity == 0 || capacity > 100_000 {
             return Err(crate::ConfigError::new("capacity", "must be 1..=100,000"));
@@ -181,7 +184,10 @@ impl TokenBucket {
 
 impl RateLimiter for TokenBucket {
     // Reason: usize burst_size cast to f64 for token math — acceptable for rate limiting.
-    #[allow(clippy::cast_precision_loss)]
+    #[expect(
+        clippy::cast_precision_loss,
+        reason = "usize burst_size cast to f64 for token math — acceptable for rate limiting"
+    )]
     async fn acquire(&self) -> Result<(), CallError<()>> {
         let mut state = self.state.lock();
 
@@ -204,7 +210,10 @@ impl RateLimiter for TokenBucket {
     }
 
     // Reason: usize burst_size cast to f64 for token math — acceptable for rate limiting.
-    #[allow(clippy::cast_precision_loss)]
+    #[expect(
+        clippy::cast_precision_loss,
+        reason = "usize burst_size cast to f64 for token math — acceptable for rate limiting"
+    )]
     async fn current_rate(&self) -> f64 {
         let state = self.state.lock();
         let now = Instant::now();
@@ -217,7 +226,10 @@ impl RateLimiter for TokenBucket {
     }
 
     // Reason: usize burst_size cast to f64 for token reset — acceptable for rate limiting.
-    #[allow(clippy::cast_precision_loss)]
+    #[expect(
+        clippy::cast_precision_loss,
+        reason = "usize burst_size cast to f64 for token reset — acceptable for rate limiting"
+    )]
     async fn reset(&self) {
         let mut state = self.state.lock();
         state.tokens = self.burst_size.load(Ordering::Acquire) as f64;
@@ -412,7 +424,10 @@ impl RateLimiter for SlidingWindow {
     }
 
     // Reason: usize request count cast to f64 — acceptable for rate reporting.
-    #[allow(clippy::cast_precision_loss)]
+    #[expect(
+        clippy::cast_precision_loss,
+        reason = "usize request count cast to f64 — acceptable for rate reporting"
+    )]
     async fn current_rate(&self) -> f64 {
         let now = Instant::now();
         let mut requests = self.requests.lock();

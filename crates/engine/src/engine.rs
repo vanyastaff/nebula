@@ -131,7 +131,10 @@ pub struct WorkflowEngine {
     /// Resolves node parameters (expressions, templates, references) to JSON.
     resolver: ParamResolver,
     /// Expression engine for evaluating edge conditions.
-    #[allow(dead_code)]
+    #[expect(
+        dead_code,
+        reason = "field reserved for expression-based edge condition evaluation; wired up in construction but not yet called at runtime"
+    )]
     expression_engine: Arc<ExpressionEngine>,
     /// Optional resource manager for providing resources to actions.
     resource_manager: Option<Arc<nebula_resource::Manager>>,
@@ -2891,7 +2894,7 @@ struct NodeTask {
     interface_version: Option<semver::Version>,
     input: serde_json::Value,
     /// Data for support input ports, keyed by port name.
-    #[allow(dead_code)] // reserved for multi-input actions
+    #[expect(dead_code, reason = "reserved for multi-input actions")]
     support_inputs: HashMap<String, Vec<serde_json::Value>>,
     /// Credential accessor injected into the action context.
     credentials: Arc<dyn CredentialAccessor>,

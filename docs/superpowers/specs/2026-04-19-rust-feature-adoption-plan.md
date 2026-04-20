@@ -472,13 +472,13 @@ Safe to defer — no dep removal, no compile-time impact.
 
 | Pattern | Count | Notes |
 |---|---:|---|
-| `#[allow(dead_code)]` | 42 | Largest bucket. Many have a "used only when feature X enabled" story — good `#[expect]` candidates. |
-| `#[allow(unused*)]` | 4 | Usually local; should be `expect`. |
-| `#[allow(deprecated)]` | 5 | Must verify each still fires — `expect` gives us a regression guard. |
-| `#[allow(clippy::*)]` | 38 | Rule-specific; safe to flip. |
-| All other `#[allow(...)]` | 27 | Scan individually — some are legitimate forward-compat. |
-| `#[expect(...)]` already | 21 | Migration started; no blocker. |
-| **Total `#[allow]` in tree** | **116** | Upper bound on the chip. |
+| `#[allow(dead_code)]` | 29 | Down from 42; remaining are legitimate forward-compat or feature-gated survivors. |
+| `#[allow(unused*)]` | 2 | Down from 4; remaining 2 are forward-compat declarations. |
+| `#[allow(deprecated)]` | 1 | Down from 5; one remaining site needs underlying dep upgrade before it can flip. |
+| `#[allow(clippy::*)]` | 14 | Down from 38; remaining 14 are documented intentional exceptions. |
+| All other `#[allow(...)]` | 10 | Down from 27; bare forward-compat attrs kept as `allow` per plan. |
+| `#[expect(...)]` already | 80 | Up from 21; Phase 1b added 59 conversions across 18 crates. |
+| **Total `#[allow]` in tree** | **56** | Post-Phase-1b baseline. Down from 116; ~52% converted. |
 
 **Plan:** do *not* flip a blanket `s/allow/expect/`. Flip on a
 crate-by-crate pass, confirming the lint still fires (build in verbose

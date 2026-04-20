@@ -54,7 +54,10 @@ pub(crate) struct Inner {
     pub(crate) otel_provider: Option<opentelemetry_sdk::trace::SdkTracerProvider>,
     pub(crate) reload_handle: Option<ReloadHandle>,
     /// RAII guard for root span - intentionally prefixed with _ to indicate it's never accessed
-    #[allow(clippy::used_underscore_binding)]
+    #[expect(
+        clippy::used_underscore_binding,
+        reason = "RAII guard for root span — underscore prefix is intentional to signal the field is never accessed directly"
+    )]
     pub(crate) _root_span_guard: Option<tracing::span::EnteredSpan>,
 }
 
