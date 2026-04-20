@@ -28,7 +28,7 @@
 use serde::{Deserialize, Serialize};
 
 /// Duplex protocol version. Bumped when wire format changes incompatibly.
-pub const DUPLEX_PROTOCOL_VERSION: u32 = 2;
+pub const DUPLEX_PROTOCOL_VERSION: u32 = 3;
 
 /// Message from host to plugin.
 ///
@@ -84,6 +84,14 @@ pub enum HostToPlugin {
 /// (`RpcCall`, `Log`).
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(tag = "kind", rename_all = "snake_case")]
+#[allow(
+    clippy::large_enum_variant,
+    reason = "MetadataResponse carries a PluginManifest (~500 bytes) and is \
+              built exactly once per plugin handshake; the other variants \
+              are the hot path and are already small. Boxing the manifest \
+              would add a heap alloc + indirection for a one-shot \
+              construction and no runtime gain."
+)]
 pub enum PluginToHost {
     /// Successful action result.
     ActionResultOk {
@@ -132,10 +140,9 @@ pub enum PluginToHost {
         id: u64,
         /// Protocol version the plugin speaks. Host verifies compatibility.
         protocol_version: u32,
-        /// Unique plugin key (e.g., `"com.author.telegram"`).
-        plugin_key: String,
-        /// Semver plugin version string.
-        plugin_version: String,
+        /// Canonical bundle descriptor (slice B replaced the flat
+        /// `plugin_key` / `plugin_version` fields with the full manifest).
+        manifest: nebula_metadata::PluginManifest,
         /// Actions this plugin provides.
         actions: Vec<ActionDescriptor>,
     },
@@ -157,16 +164,20 @@ pub enum LogLevel {
     Error,
 }
 
-/// Describes one action offered by a plugin.
+/// Describes one action offered by a plugin. Wire DTO — maps onto
+/// `nebula-action::ActionMetadata` once discovery converts it.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ActionDescriptor {
-    /// Full action key (e.g., `"telegram.send_message"`).
+    /// Action key — short local form (`"send_message"`) or already
+    /// namespace-qualified (`"slack.send_message"`). Host validates.
     pub key: String,
     /// Human-readable action name.
     pub name: String,
     /// Optional human-readable description.
     #[serde(default)]
     pub description: String,
+    /// Input schema the host uses to validate user-supplied parameters.
+    pub schema: nebula_schema::ValidSchema,
 }
 
 #[cfg(test)]
@@ -220,15 +231,22 @@ mod tests {
         let line = serde_json::to_string(&req).unwrap();
         assert!(line.contains(r#""kind":"metadata_request""#));
 
+        let manifest = nebula_metadata::PluginManifest::builder("com.author.echo", "Echo")
+            .version(semver::Version::new(1, 0, 0))
+            .build()
+            .unwrap();
+
+        let schema = nebula_schema::Schema::builder().build().unwrap();
+
         let resp = PluginToHost::MetadataResponse {
             id: 1,
             protocol_version: DUPLEX_PROTOCOL_VERSION,
-            plugin_key: "com.author.echo".into(),
-            plugin_version: "1.0.0".into(),
+            manifest,
             actions: vec![ActionDescriptor {
                 key: "echo".into(),
                 name: "Echo".into(),
                 description: "Echoes input".into(),
+                schema,
             }],
         };
         let line = serde_json::to_string(&resp).unwrap();

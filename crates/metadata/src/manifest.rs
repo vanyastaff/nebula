@@ -74,7 +74,7 @@ fn is_default_maturity(m: &MaturityLevel) -> bool {
 /// assert_eq!(manifest.key().as_str(), "http_request");
 /// assert_eq!(manifest.version(), &Version::new(2, 0, 0));
 /// ```
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PluginManifest {
     key: PluginKey,
     name: String,

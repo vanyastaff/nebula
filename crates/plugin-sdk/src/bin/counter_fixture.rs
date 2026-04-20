@@ -16,35 +16,83 @@ use std::{
     time::Duration,
 };
 
-use nebula_plugin_sdk::{PluginCtx, PluginError, PluginHandler, PluginMeta, run_duplex};
+use async_trait::async_trait;
+use nebula_metadata::PluginManifest;
+use nebula_plugin_sdk::{
+    PluginCtx, PluginError, PluginHandler, protocol::ActionDescriptor, run_duplex,
+};
+use nebula_schema::Schema;
+use semver::Version;
 use serde_json::{Value, json};
 
 struct CounterPlugin {
+    manifest: PluginManifest,
+    actions: Vec<ActionDescriptor>,
     total: AtomicI64,
 }
 
-#[async_trait::async_trait]
+impl CounterPlugin {
+    fn new() -> Self {
+        let manifest = PluginManifest::builder("com.nebula.counter", "Counter")
+            .version(Version::new(0, 1, 0))
+            .description("Fixture plugin — returns an incrementing counter.")
+            .build()
+            .unwrap();
+        let empty_schema = || Schema::builder().build().unwrap();
+        let actions = vec![
+            ActionDescriptor {
+                key: "increment".into(),
+                name: "Increment".into(),
+                description: "Add the given amount to the running total".into(),
+                schema: empty_schema(),
+            },
+            ActionDescriptor {
+                key: "current".into(),
+                name: "Current".into(),
+                description: "Return the current running total".into(),
+                schema: empty_schema(),
+            },
+            ActionDescriptor {
+                key: "reset".into(),
+                name: "Reset".into(),
+                description: "Reset the running total to zero".into(),
+                schema: empty_schema(),
+            },
+            ActionDescriptor {
+                key: "panic".into(),
+                name: "Panic".into(),
+                description: "Deliberately panic (probe)".into(),
+                schema: empty_schema(),
+            },
+            ActionDescriptor {
+                key: "slow".into(),
+                name: "Slow".into(),
+                description: "Sleep for `millis` then return (probe timeout handling)".into(),
+                schema: empty_schema(),
+            },
+            ActionDescriptor {
+                key: "big".into(),
+                name: "Big".into(),
+                description: "Return a payload of roughly `kb` kilobytes (probe large IO)".into(),
+                schema: empty_schema(),
+            },
+        ];
+        Self {
+            manifest,
+            actions,
+            total: AtomicI64::new(0),
+        }
+    }
+}
+
+#[async_trait]
 impl PluginHandler for CounterPlugin {
-    fn metadata(&self) -> PluginMeta {
-        PluginMeta::new("com.nebula.counter", "0.1.0")
-            .with_action(
-                "increment",
-                "Increment",
-                "Add the given amount to the running total",
-            )
-            .with_action("current", "Current", "Return the current running total")
-            .with_action("reset", "Reset", "Reset the running total to zero")
-            .with_action("panic", "Panic", "Deliberately panic (probe)")
-            .with_action(
-                "slow",
-                "Slow",
-                "Sleep for `millis` then return (probe timeout handling)",
-            )
-            .with_action(
-                "big",
-                "Big",
-                "Return a payload of roughly `kb` kilobytes (probe large IO)",
-            )
+    fn manifest(&self) -> &PluginManifest {
+        &self.manifest
+    }
+
+    fn actions(&self) -> &[ActionDescriptor] {
+        &self.actions
     }
 
     async fn execute(
@@ -103,8 +151,5 @@ impl PluginHandler for CounterPlugin {
 
 #[tokio::main(flavor = "current_thread")]
 async fn main() -> std::io::Result<()> {
-    let plugin = CounterPlugin {
-        total: AtomicI64::new(0),
-    };
-    run_duplex(plugin).await
+    run_duplex(CounterPlugin::new()).await
 }

@@ -117,7 +117,10 @@ path = "src/main.rs"
 
 [dependencies]
 nebula-plugin-sdk = "0.1"
+nebula-metadata = "0.1"
+nebula-schema = "0.1"
 async-trait = "0.1"
+semver = "1"
 tokio = {{ version = "1", features = ["rt", "macros", "io-std", "io-util", "sync"] }}
 serde_json = "1"
 "#
@@ -125,12 +128,17 @@ serde_json = "1"
 }
 
 fn main_rs(plugin_key: &str, struct_name: &str, name: &str, action_names: &[String]) -> String {
-    let action_builders: String = action_names
+    let action_descriptors: String = action_names
         .iter()
         .map(|a| {
             let display_name = to_pascal_case(a);
             format!(
-                r#"            .with_action("{plugin_key}.{a}", "{display_name}", "TODO: describe {a}")"#,
+                r#"        ActionDescriptor {{
+            key: "{plugin_key}.{a}".into(),
+            name: "{display_name}".into(),
+            description: "TODO: describe {a}".into(),
+            schema: Schema::builder().build().unwrap(),
+        }},"#,
             )
         })
         .collect::<Vec<_>>()
@@ -152,16 +160,42 @@ fn main_rs(plugin_key: &str, struct_name: &str, name: &str, action_names: &[Stri
     format!(
         r#"//! Nebula plugin: {name}
 
-use nebula_plugin_sdk::{{PluginCtx, PluginError, PluginHandler, PluginMeta, run_duplex}};
+use nebula_metadata::PluginManifest;
+use nebula_plugin_sdk::{{
+    PluginCtx, PluginError, PluginHandler,
+    protocol::ActionDescriptor,
+    run_duplex,
+}};
+use nebula_schema::Schema;
+use semver::Version;
 use serde_json::Value;
 
-struct {struct_name};
+struct {struct_name} {{
+    manifest: PluginManifest,
+    actions: Vec<ActionDescriptor>,
+}}
+
+impl {struct_name} {{
+    fn new() -> Self {{
+        let manifest = PluginManifest::builder("{plugin_key}", "{name}")
+            .version(Version::new(0, 1, 0))
+            .build()
+            .unwrap();
+        let actions = vec![
+{action_descriptors}
+        ];
+        Self {{ manifest, actions }}
+    }}
+}}
 
 #[async_trait::async_trait]
 impl PluginHandler for {struct_name} {{
-    fn metadata(&self) -> PluginMeta {{
-        PluginMeta::new("{plugin_key}", "0.1.0")
-{action_builders}
+    fn manifest(&self) -> &PluginManifest {{
+        &self.manifest
+    }}
+
+    fn actions(&self) -> &[ActionDescriptor] {{
+        &self.actions
     }}
 
     async fn execute(
@@ -183,7 +217,7 @@ impl PluginHandler for {struct_name} {{
 
 #[tokio::main(flavor = "current_thread")]
 async fn main() -> std::io::Result<()> {{
-    run_duplex({struct_name}).await
+    run_duplex({struct_name}::new()).await
 }}
 "#
     )

@@ -1,12 +1,11 @@
 //! Plugin discovery — scan directories for plugin binaries and query metadata
-//! using the duplex v2 protocol.
+//! using the duplex v3 protocol.
 
 use std::{path::Path, sync::Arc, time::Duration};
 
 use nebula_action::{ActionHandler, ActionMetadata};
 use nebula_core::ActionKey;
 use nebula_plugin_sdk::protocol::{ActionDescriptor, DUPLEX_PROTOCOL_VERSION, PluginToHost};
-use semver::Version;
 
 use crate::{
     capabilities::PluginCapabilities, handler::ProcessSandboxHandler, process::ProcessSandbox,
@@ -18,12 +17,61 @@ use crate::{
 /// correlation `id` field and keeps the rest.
 #[derive(Debug, Clone)]
 pub struct DiscoveredPlugin {
-    /// Unique plugin key (e.g., `"com.author.telegram"`).
-    pub key: String,
-    /// Plugin version string (semver).
-    pub version: String,
+    /// Canonical plugin manifest.
+    pub manifest: nebula_metadata::PluginManifest,
     /// Actions this plugin provides.
     pub actions: Vec<ActionDescriptor>,
+}
+
+/// Errors from [`discover_plugin`].
+///
+/// The version-mismatch branch must fire before the strongly-typed
+/// `PluginToHost` deserialize — otherwise a v2 envelope (flat
+/// `plugin_key` / `plugin_version`, no `manifest`) would surface as a
+/// confusing "missing field `manifest`" serde error instead of a clear
+/// protocol-version signal. See [`discover_plugin`] for the two-phase
+/// parse that enforces this ordering.
+#[derive(Debug, thiserror::Error)]
+pub enum DiscoveryError {
+    /// `ProcessSandbox` failed to spawn, dial, or round-trip the
+    /// metadata request.
+    #[error("discovery transport failed for plugin: {0}")]
+    Transport(String),
+
+    /// Response was not a `metadata_response` envelope.
+    #[error("plugin returned unexpected envelope kind: {kind}")]
+    UnexpectedEnvelope {
+        /// The `kind` tag the plugin sent instead of `metadata_response`.
+        kind: String,
+    },
+
+    /// Response envelope had no `kind` field or it wasn't a string.
+    #[error("plugin response is missing a `kind` field")]
+    MissingKind,
+
+    /// Response envelope had no `protocol_version` field or it wasn't an integer.
+    #[error("plugin response is missing a `protocol_version` field")]
+    MissingProtocolVersion,
+
+    /// Plugin speaks a different protocol version than the host.
+    ///
+    /// This variant is checked **before** the strongly-typed
+    /// `PluginToHost` parse so that v2 plugins (which send
+    /// `plugin_key` / `plugin_version` instead of `manifest`) get a clean
+    /// version-mismatch error rather than a serde "missing field" message.
+    #[error("protocol version mismatch: expected {expected}, actual {actual}")]
+    ProtocolVersionMismatch {
+        /// The `DUPLEX_PROTOCOL_VERSION` the host expects.
+        expected: u32,
+        /// The `protocol_version` the plugin sent.
+        actual: u32,
+    },
+
+    /// Protocol version matched but the typed deserialize failed — e.g.
+    /// a malformed v3 envelope that passed the kind+version checks but
+    /// has a missing or malformed `manifest` field.
+    #[error("plugin response failed typed deserialize: {0}")]
+    TypedParse(#[source] serde_json::Error),
 }
 
 /// Discover a plugin by spawning its binary and sending a `MetadataRequest`
@@ -33,45 +81,78 @@ pub struct DiscoveredPlugin {
 /// untrusted binary for its metadata must never grant it network or filesystem
 /// reach. Runtime capabilities are applied later, only when the host builds
 /// the long-lived sandbox for action dispatch.
-pub async fn discover_plugin(binary: &Path) -> Result<DiscoveredPlugin, String> {
+///
+/// Uses a **two-phase parse**: the response bytes are first parsed to a
+/// `serde_json::Value`, `kind` + `protocol_version` are checked, and only
+/// then the *same bytes* are re-parsed via `serde_json::from_slice` into
+/// `PluginToHost`. This ordering ensures a version-mismatched envelope
+/// surfaces as [`DiscoveryError::ProtocolVersionMismatch`] rather than as
+/// a confusing serde "missing field `manifest`" error that would fire
+/// before the version branch under a one-shot typed parse. Re-parsing
+/// from bytes (rather than from a `Value`) preserves the zero-copy /
+/// borrowed-`&str` path that `domain_key::Key<T>::Deserialize` (and
+/// therefore `PluginKey`) requires.
+pub async fn discover_plugin(binary: &Path) -> Result<DiscoveredPlugin, DiscoveryError> {
     let sandbox = ProcessSandbox::new(
         binary.to_path_buf(),
         Duration::from_secs(5),
         PluginCapabilities::none(),
     );
 
-    let envelope = sandbox
-        .get_metadata()
+    let bytes = sandbox
+        .get_metadata_raw()
         .await
-        .map_err(|e| format!("discovery failed for {}: {e}", binary.display()))?;
+        .map_err(|e| DiscoveryError::Transport(format!("{}: {e}", binary.display())))?;
+
+    parse_metadata_response(&bytes)
+}
+
+/// Two-phase parse of a raw metadata-response byte buffer.
+///
+/// Extracted so the unit tests can exercise the ordering invariant
+/// (version check must fire before typed parse) without spinning up a
+/// real plugin binary.
+fn parse_metadata_response(bytes: &[u8]) -> Result<DiscoveredPlugin, DiscoveryError> {
+    // Phase 1: untyped Value parse, just to inspect `kind` and
+    // `protocol_version` before committing to the typed shape.
+    let value: serde_json::Value =
+        serde_json::from_slice(bytes).map_err(DiscoveryError::TypedParse)?;
+
+    let kind = value
+        .get("kind")
+        .and_then(serde_json::Value::as_str)
+        .ok_or(DiscoveryError::MissingKind)?;
+    if kind != "metadata_response" {
+        return Err(DiscoveryError::UnexpectedEnvelope {
+            kind: kind.to_owned(),
+        });
+    }
+
+    let actual_version = value
+        .get("protocol_version")
+        .and_then(serde_json::Value::as_u64)
+        .ok_or(DiscoveryError::MissingProtocolVersion)?;
+    if actual_version != u64::from(DUPLEX_PROTOCOL_VERSION) {
+        return Err(DiscoveryError::ProtocolVersionMismatch {
+            expected: DUPLEX_PROTOCOL_VERSION,
+            actual: actual_version as u32,
+        });
+    }
+
+    // Phase 2: strongly-typed parse. We parse from the original byte
+    // slice (not from `value.clone()`) so that types relying on borrowed
+    // `&str` deserialize — notably `PluginKey` via `domain_key::Key` —
+    // keep working.
+    let envelope: PluginToHost =
+        serde_json::from_slice(bytes).map_err(DiscoveryError::TypedParse)?;
 
     match envelope {
         PluginToHost::MetadataResponse {
-            protocol_version,
-            plugin_key,
-            plugin_version,
-            actions,
-            ..
-        } => {
-            if protocol_version != DUPLEX_PROTOCOL_VERSION {
-                return Err(format!(
-                    "{}: protocol version mismatch (plugin={}, host={})",
-                    binary.display(),
-                    protocol_version,
-                    DUPLEX_PROTOCOL_VERSION,
-                ));
-            }
-            Ok(DiscoveredPlugin {
-                key: plugin_key,
-                version: plugin_version,
-                actions,
-            })
-        },
-        other => Err(format!(
-            "{}: unexpected envelope from plugin: {}",
-            binary.display(),
-            response_kind(&other),
-        )),
+            manifest, actions, ..
+        } => Ok(DiscoveredPlugin { manifest, actions }),
+        other => Err(DiscoveryError::UnexpectedEnvelope {
+            kind: response_kind(&other).to_owned(),
+        }),
     }
 }
 
@@ -132,14 +213,14 @@ pub async fn discover_directory(
                 let handlers = create_handlers(&plugin, sandbox);
 
                 tracing::info!(
-                    plugin = %plugin.key,
-                    version = %plugin.version,
+                    plugin = %plugin.manifest.key(),
+                    version = %plugin.manifest.version(),
                     actions = handlers.len(),
                     binary = %path.display(),
                     "discovered community plugin"
                 );
 
-                results.push((plugin.key.clone(), handlers));
+                results.push((plugin.manifest.key().as_str().to_owned(), handlers));
             },
             Err(e) => {
                 tracing::warn!(binary = %path.display(), error = %e, "skipping plugin");
@@ -155,15 +236,9 @@ fn create_handlers(
     plugin: &DiscoveredPlugin,
     sandbox: Arc<ProcessSandbox>,
 ) -> Vec<(ActionMetadata, ActionHandler)> {
-    let namespace_prefix = format!("{}.", plugin.key);
-    let interface_version = parse_interface_version(&plugin.version).unwrap_or_else(|| {
-        tracing::warn!(
-            plugin = %plugin.key,
-            version = %plugin.version,
-            "invalid plugin version; defaulting action interface version to 1.0.0",
-        );
-        Version::new(1, 0, 0)
-    });
+    let plugin_key = plugin.manifest.key().as_str();
+    let namespace_prefix = format!("{plugin_key}.");
+    let interface_version = plugin.manifest.version().clone();
     plugin
         .actions
         .iter()
@@ -171,7 +246,7 @@ fn create_handlers(
             let full_key = if action.key.contains('.') {
                 if !action.key.starts_with(&namespace_prefix) {
                     tracing::warn!(
-                        plugin = %plugin.key,
+                        plugin = %plugin_key,
                         action_key = %action.key,
                         "action key outside plugin namespace, skipping",
                     );
@@ -201,10 +276,6 @@ fn create_handlers(
             Some((metadata, handler))
         })
         .collect()
-}
-
-fn parse_interface_version(version: &str) -> Option<Version> {
-    Version::parse(version).ok()
 }
 
 /// Check if a file looks like an executable plugin binary.
@@ -253,10 +324,93 @@ fn can_non_unix_executable_extension(extension: &str) -> bool {
 mod tests {
     use std::{path::PathBuf, sync::Arc, time::Duration};
 
-    use nebula_plugin_sdk::protocol::ActionDescriptor;
+    use nebula_metadata::PluginManifest;
+    use nebula_plugin_sdk::protocol::{ActionDescriptor, DUPLEX_PROTOCOL_VERSION};
+    use nebula_schema::Schema;
+    use semver::Version;
+    use serde_json::json;
 
-    use super::{DiscoveredPlugin, create_handlers};
+    use super::{DiscoveredPlugin, DiscoveryError, create_handlers, parse_metadata_response};
     use crate::{capabilities::PluginCapabilities, process::ProcessSandbox};
+
+    fn empty_schema() -> nebula_schema::ValidSchema {
+        Schema::builder().build().unwrap()
+    }
+
+    #[test]
+    fn v2_envelope_surfaces_as_protocol_version_mismatch_not_missing_field() {
+        // Simulates a v2 plugin replying with the old flat
+        // `plugin_key` / `plugin_version` shape (no `manifest`, no
+        // per-action `schema`). A one-shot typed parse would fail with
+        // "missing field `manifest`" before the version check; the
+        // two-phase parse must surface the version mismatch instead.
+        let v2_envelope = json!({
+            "kind": "metadata_response",
+            "id": 1,
+            "protocol_version": 2,
+            "plugin_key": "x",
+            "plugin_version": "1.0.0",
+            "actions": [],
+        });
+        let bytes = serde_json::to_vec(&v2_envelope).unwrap();
+
+        let err =
+            parse_metadata_response(&bytes).expect_err("v2 envelope must not deserialize as v3");
+
+        match err {
+            DiscoveryError::ProtocolVersionMismatch { expected, actual } => {
+                assert_eq!(expected, DUPLEX_PROTOCOL_VERSION);
+                assert_eq!(expected, 3);
+                assert_eq!(actual, 2);
+            },
+            other => panic!(
+                "expected DiscoveryError::ProtocolVersionMismatch, got {other:?} \
+                 (likely a serde missing-field error, which means the version \
+                 check is firing too late)"
+            ),
+        }
+    }
+
+    #[test]
+    fn v3_envelope_with_manifest_round_trips_through_two_phase_parse() {
+        // Sanity: a well-formed v3 envelope still deserializes cleanly
+        // through the two-phase path.
+        let manifest = PluginManifest::builder("x", "X").build().unwrap();
+        let schema = Schema::builder().build().unwrap();
+        let envelope = nebula_plugin_sdk::protocol::PluginToHost::MetadataResponse {
+            id: 1,
+            protocol_version: DUPLEX_PROTOCOL_VERSION,
+            manifest,
+            actions: vec![ActionDescriptor {
+                key: "echo".into(),
+                name: "Echo".into(),
+                description: String::new(),
+                schema,
+            }],
+        };
+        let bytes = serde_json::to_vec(&envelope).unwrap();
+        let discovered =
+            parse_metadata_response(&bytes).expect("v3 envelope must parse successfully");
+        assert_eq!(discovered.manifest.key().as_str(), "x");
+        assert_eq!(discovered.actions.len(), 1);
+    }
+
+    #[test]
+    fn unexpected_envelope_kind_surfaces_cleanly() {
+        let value = json!({
+            "kind": "action_result_ok",
+            "id": 1,
+            "output": {},
+        });
+        let bytes = serde_json::to_vec(&value).unwrap();
+        let err = parse_metadata_response(&bytes).expect_err("non-metadata envelope must error");
+        match err {
+            DiscoveryError::UnexpectedEnvelope { kind } => {
+                assert_eq!(kind, "action_result_ok");
+            },
+            other => panic!("expected UnexpectedEnvelope, got {other:?}"),
+        }
+    }
 
     #[test]
     fn non_unix_executable_extension_is_case_insensitive() {
@@ -269,19 +423,23 @@ mod tests {
 
     #[test]
     fn create_handlers_rejects_cross_namespace_fq_keys() {
+        let manifest = PluginManifest::builder("com.good.plugin", "Good Plugin")
+            .build()
+            .unwrap();
         let plugin = DiscoveredPlugin {
-            key: "com.good.plugin".to_owned(),
-            version: "1.0.0".to_owned(),
+            manifest,
             actions: vec![
                 ActionDescriptor {
                     key: "echo".to_owned(),
                     name: "Echo".to_owned(),
                     description: "ok".to_owned(),
+                    schema: empty_schema(),
                 },
                 ActionDescriptor {
                     key: "system.exec".to_owned(),
                     name: "Exec".to_owned(),
                     description: "bad".to_owned(),
+                    schema: empty_schema(),
                 },
             ],
         };
@@ -298,13 +456,17 @@ mod tests {
 
     #[test]
     fn create_handlers_use_plugin_major_minor_version() {
+        let manifest = PluginManifest::builder("com.good.plugin", "Good Plugin")
+            .version(Version::new(2, 7, 3))
+            .build()
+            .unwrap();
         let plugin = DiscoveredPlugin {
-            key: "com.good.plugin".to_owned(),
-            version: "2.7.3".to_owned(),
+            manifest,
             actions: vec![ActionDescriptor {
                 key: "echo".to_owned(),
                 name: "Echo".to_owned(),
                 description: "ok".to_owned(),
+                schema: empty_schema(),
             }],
         };
         let sandbox = Arc::new(ProcessSandbox::new(

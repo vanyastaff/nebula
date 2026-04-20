@@ -15,7 +15,9 @@ publish = false
 [dependencies]
 nebula-action = { path = "../action" }
 nebula-core = { path = "../core" }
+nebula-metadata = { path = "../metadata" }
 nebula-plugin-sdk = { path = "../plugin-sdk" }
+nebula-schema = { path = "../schema" }
 
 async-trait = { workspace = true }
 semver = { workspace = true }
