@@ -74,18 +74,18 @@ pub fn generate_len_check(
     if is_option {
         if is_min {
             quote! {
-                if let Some(value) = input.#field_name.as_ref() {
-                    if value.len() < #bound {
-                        errors.add(#error);
-                    }
+                if let Some(value) = input.#field_name.as_ref()
+                    && value.len() < #bound
+                {
+                    errors.add(#error);
                 }
             }
         } else {
             quote! {
-                if let Some(value) = input.#field_name.as_ref() {
-                    if value.len() > #bound {
-                        errors.add(#error);
-                    }
+                if let Some(value) = input.#field_name.as_ref()
+                    && value.len() > #bound
+                {
+                    errors.add(#error);
                 }
             }
         }
@@ -135,18 +135,18 @@ pub fn generate_cmp_check(
     if is_option {
         if is_min {
             quote! {
-                if let Some(value) = input.#field_name.as_ref() {
-                    if value < &#bound {
-                        errors.add(#error);
-                    }
+                if let Some(value) = input.#field_name.as_ref()
+                    && value < &#bound
+                {
+                    errors.add(#error);
                 }
             }
         } else {
             quote! {
-                if let Some(value) = input.#field_name.as_ref() {
-                    if value > &#bound {
-                        errors.add(#error);
-                    }
+                if let Some(value) = input.#field_name.as_ref()
+                    && value > &#bound
+                {
+                    errors.add(#error);
                 }
             }
         }
@@ -186,10 +186,10 @@ pub fn generate_str_validator_check(
 ) -> TokenStream2 {
     if is_option {
         quote! {
-            if let Some(ref value) = input.#field_name {
-                if let Err(e) = ::nebula_validator::foundation::Validate::validate(&#validator_expr, value.as_str()) {
-                    errors.add(e.with_field(#field_key));
-                }
+            if let Some(ref value) = input.#field_name
+                && let Err(e) = ::nebula_validator::foundation::Validate::validate(&#validator_expr, value.as_str())
+            {
+                errors.add(e.with_field(#field_key));
             }
         }
     } else {
