@@ -34,6 +34,7 @@ changes land as a new ADR that `supersedes` it.
 | [0024](./0024-defer-dynosaur-migration.md) | Defer `dynosaur` migration — keep `#[async_trait]` for `dyn`-consumed traits (supersedes 0014) | accepted | 2026-04-20 |
 | [0025](./0025-sandbox-broker-rpc-surface.md) | Sandbox Phase 1 broker — RPC surface and audit posture (sibling to 0006) | accepted | 2026-04-20 |
 | [0026](./0026-nebula-sdk-dependency-closure.md) | `nebula-sdk` dependency closure for crates.io publication (follow-up to 0021) | proposed | 2026-04-20 |
+| [0027](./0027-plugin-load-path-stable.md) | Plugin load-path stable — `Plugin` trait canonical; `ResolvedPlugin` per plugin; `PluginManifest` in `nebula-metadata`; multi-version runtime dropped | accepted | 2026-04-20 |
 
 ## Writing a new ADR
 

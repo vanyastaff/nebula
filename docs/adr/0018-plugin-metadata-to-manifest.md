@@ -11,6 +11,7 @@ related:
   - crates/metadata/src/lib.rs
   - docs/PRODUCT_CANON.md#35-integration-model-one-pattern-five-concepts
   - docs/superpowers/specs/2026-04-20-plugin-load-path-stable-design.md
+  - docs/adr/0027-plugin-load-path-stable.md
 linear: []
 ---
 
