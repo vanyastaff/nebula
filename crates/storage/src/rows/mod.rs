@@ -6,21 +6,45 @@
 
 // Row structs are plain data containers where field names mirror SQL columns.
 // Documenting every field individually adds noise without value.
-#[allow(missing_docs)]
+#[expect(
+    missing_docs,
+    reason = "row structs mirror SQL columns; per-field docs add noise without value"
+)]
 mod audit;
-#[allow(missing_docs)]
+#[expect(
+    missing_docs,
+    reason = "row structs mirror SQL columns; per-field docs add noise without value"
+)]
 mod credential;
-#[allow(missing_docs)]
+#[expect(
+    missing_docs,
+    reason = "row structs mirror SQL columns; per-field docs add noise without value"
+)]
 mod execution;
-#[allow(missing_docs)]
+#[expect(
+    missing_docs,
+    reason = "row structs mirror SQL columns; per-field docs add noise without value"
+)]
 mod org;
-#[allow(missing_docs)]
+#[expect(
+    missing_docs,
+    reason = "row structs mirror SQL columns; per-field docs add noise without value"
+)]
 mod quota;
-#[allow(missing_docs)]
+#[expect(
+    missing_docs,
+    reason = "row structs mirror SQL columns; per-field docs add noise without value"
+)]
 mod trigger;
-#[allow(missing_docs)]
+#[expect(
+    missing_docs,
+    reason = "row structs mirror SQL columns; per-field docs add noise without value"
+)]
 mod user;
-#[allow(missing_docs)]
+#[expect(
+    missing_docs,
+    reason = "row structs mirror SQL columns; per-field docs add noise without value"
+)]
 mod workflow;
 
 pub use audit::{AuditLogRow, BlobRow, SlugHistoryRow};
