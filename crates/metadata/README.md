@@ -88,8 +88,10 @@ assert_eq!(md.name(), "My Entity");
   `BaseMetadata<CredentialKey>`; adds `pattern`; wraps `BaseCompatError`
   similarly.
 - `nebula-resource::ResourceMetadata` — composes
-  `BaseMetadata<ResourceKey>`; no entity-specific fields today, direct
-  delegation.
+  `BaseMetadata<ResourceKey>`; no entity-specific fields today; wraps
+  `BaseCompatError<ResourceKey>` in a single-variant
+  `MetadataCompatibilityError` for shape parity with the other
+  consumers.
 - `nebula-plugin::PluginMetadata` — **does not** compose `BaseMetadata`
   today. Reshape to `PluginManifest` (bundle descriptor) tracked in
   [ADR-0018](../../docs/adr/0018-plugin-metadata-to-manifest.md);

@@ -71,6 +71,22 @@ impl nebula_metadata::Metadata for ResourceMetadata {
     }
 }
 
+/// Compatibility validation errors for resource metadata evolution.
+///
+/// Wraps [`nebula_metadata::BaseCompatError`] for parity with the
+/// action- and credential-side error shapes. Resource has no
+/// entity-specific compat rules today, so the enum currently has a
+/// single `Base` variant; new variants will be added here (alongside
+/// `Base`) if `ResourceMetadata` later gains entity-specific fields
+/// whose changes should break version compatibility.
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+#[non_exhaustive]
+pub enum MetadataCompatibilityError {
+    /// A generic catalog-citizen rule fired (key / version / schema).
+    #[error(transparent)]
+    Base(#[from] nebula_metadata::BaseCompatError<nebula_core::ResourceKey>),
+}
+
 impl ResourceMetadata {
     /// Build resource metadata with explicit catalog-level fields.
     pub fn new(
@@ -116,16 +132,18 @@ impl ResourceMetadata {
 
     /// Validate that this metadata update is version-compatible with `previous`.
     ///
-    /// Resource metadata has no entity-specific fields beyond the shared
-    /// base, so this is a direct delegation to
-    /// [`nebula_metadata::validate_base_compat`]. If a future
-    /// `ResourceMetadata` gains entity-specific fields, wrap the result in
-    /// a `MetadataCompatibilityError` like `nebula-action` does.
+    /// Delegates `key immutable / version monotonic / schema-break-requires-
+    /// major` to [`nebula_metadata::validate_base_compat`]. Resource has no
+    /// entity-specific rules today, so the wrapper enum has only the `Base`
+    /// variant; the wrapper exists for shape parity with `nebula-action` and
+    /// `nebula-credential`, so callers can match the error across all three
+    /// catalog-leaf consumers uniformly.
     pub fn validate_compatibility(
         &self,
         previous: &Self,
-    ) -> Result<(), nebula_metadata::BaseCompatError<nebula_core::ResourceKey>> {
-        nebula_metadata::validate_base_compat(&self.base, &previous.base)
+    ) -> Result<(), MetadataCompatibilityError> {
+        nebula_metadata::validate_base_compat(&self.base, &previous.base)?;
+        Ok(())
     }
 }
 
@@ -225,7 +243,7 @@ mod tests {
     use nebula_schema::Schema;
     use semver::Version;
 
-    use super::ResourceMetadata;
+    use super::{MetadataCompatibilityError, ResourceMetadata};
 
     fn empty_schema() -> nebula_schema::ValidSchema {
         Schema::builder().build().unwrap()
@@ -249,6 +267,9 @@ mod tests {
         let prev = md(2, 1);
         let next = md(2, 0);
         let err = next.validate_compatibility(&prev).unwrap_err();
-        assert!(matches!(err, BaseCompatError::VersionRegressed { .. }));
+        assert!(matches!(
+            err,
+            MetadataCompatibilityError::Base(BaseCompatError::VersionRegressed { .. })
+        ));
     }
 }
