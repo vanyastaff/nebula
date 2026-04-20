@@ -26,7 +26,7 @@ pub struct KeyPair {
     public_key: String,
     #[serde(with = "crate::serde_secret")]
     private_key: SecretString,
-    #[serde(with = "crate::option_serde_secret")]
+    #[serde(with = "crate::serde_secret::option")]
     passphrase: Option<SecretString>,
     algorithm: Option<String>,
 }

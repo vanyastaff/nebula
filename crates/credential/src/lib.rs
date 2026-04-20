@@ -54,8 +54,6 @@ pub mod handle;
 pub mod key;
 /// Credential type metadata schema (integration catalog).
 pub mod metadata;
-/// Serde helpers for [`Option<SecretString>`] that preserve the actual value.
-pub mod option_serde_secret;
 /// Typed pending state for interactive flows.
 pub mod pending;
 /// Pending state store trait for interactive credential flows.
@@ -77,7 +75,7 @@ pub mod rotation;
 pub mod scheme;
 /// Secret string type with automatic zeroization.
 pub mod secret_string;
-/// Serde helpers for [`SecretString`] that preserve the actual value.
+/// Serde helpers for [`SecretString`] and [`Option<SecretString>`] that preserve the actual value.
 pub mod serde_secret;
 /// Credential snapshot.
 pub mod snapshot;
