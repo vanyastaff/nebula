@@ -19,6 +19,10 @@
 //!   [`SignatureOutcome`] — constant-time HMAC primitives. Use `verify_hmac_sha256` for
 //!   GitHub-style `sha256=…` bare-hex signatures; reach for the lower-level pair for Stripe / Slack
 //!   schemes that sign a derived payload.
+//! - [`SignaturePolicy`], [`RequiredPolicy`], [`SignatureScheme`] — the `Required`-by-default
+//!   signature-enforcement contract at the trait surface. The HTTP transport consults
+//!   `WebhookAction::signature_policy` before dispatch; misconfigured or unsigned requests are
+//!   rejected before the action sees them. See ADR-0022.
 //!
 //! # Security
 //!
@@ -26,6 +30,14 @@
 //! short-circuit in `PartialEq` leaks the secret one prefix byte at a
 //! time and is exploitable over the network. Always use the helpers in
 //! this module.
+//!
+//! **Signature verification is `Required` by default.** An action that
+//! does not override `signature_policy()` inherits an empty-secret
+//! `Required` policy — the transport returns `500 problem+json` with a
+//! "webhook signature secret not configured" diagnostic until a secret
+//! is supplied. Authors who want unsigned webhooks must explicitly
+//! return `SignaturePolicy::OptionalAcceptUnsigned`; the override
+//! itself is the audit trail.
 //!
 //! Stripe/Slack helpers are intentionally NOT provided: their correct
 //! implementation requires a time source and a tolerance window to
@@ -620,6 +632,299 @@ pub trait WebhookAction: Action + Send + Sync + 'static {
     ) -> impl Future<Output = Result<(), ActionError>> + Send {
         async { Ok(()) }
     }
+
+    /// Webhook-specific configuration the transport layer enforces
+    /// around dispatch: signature policy today; future slots for
+    /// body-limit / rate-limit overrides are reserved on
+    /// [`WebhookConfig`] via `#[non_exhaustive]` so they can land
+    /// without a trait-method churn.
+    ///
+    /// Default: [`WebhookConfig::default`] — signature policy is
+    /// `Required` with an empty secret, meaning the transport returns
+    /// `500 problem+json` until an author supplies a secret via
+    /// [`WebhookConfig::with_signature_policy`] /
+    /// [`SignaturePolicy::required_hmac_sha256`]. Fail-closed is the
+    /// whole point; silently accepting unsigned POSTs is the bug this
+    /// method exists to prevent.
+    ///
+    /// Authors opt into unsigned-acceptable webhooks by setting
+    /// [`SignaturePolicy::OptionalAcceptUnsigned`] with a doc-comment
+    /// justification — the override in source *is* the audit trail.
+    /// Providers whose signature scheme is not hex / base64 (Stripe,
+    /// Slack) use [`SignaturePolicy::Custom`] with a verifier that
+    /// composes the primitives in this module.
+    ///
+    /// See ADR-0022 for the full rationale.
+    fn config(&self) -> WebhookConfig {
+        WebhookConfig::default()
+    }
+}
+
+// ── WebhookConfig ────────────────────────────────────────────────────────────
+
+/// Webhook-specific transport configuration returned by
+/// [`WebhookAction::config`].
+///
+/// Opaque bag-type so new webhook-layer settings (body-limit override,
+/// per-trigger rate-limit override, untrusted-depth guard) can land in
+/// future ADRs without changing the trait signature. `#[non_exhaustive]`
+/// commits that discipline at the type level.
+///
+/// # Fields
+///
+/// - [`signature_policy`](Self::signature_policy) — ADR-0022 signature enforcement policy. Default:
+///   `Required` with an empty secret (fail-closed).
+///
+/// # Cloning
+///
+/// `WebhookConfig` is `Clone` — it holds `SignaturePolicy`, which is
+/// itself cheap to clone (`Arc<[u8]>` for the required-policy secret,
+/// `Arc<dyn Fn>` for the custom verifier).
+#[derive(Clone, Debug, Default)]
+#[non_exhaustive]
+pub struct WebhookConfig {
+    signature_policy: SignaturePolicy,
+}
+
+impl WebhookConfig {
+    /// Default config: `Required` signature policy with an empty
+    /// secret (fail-closed). Equivalent to [`Self::default`].
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Replace the signature policy.
+    #[must_use]
+    pub fn with_signature_policy(mut self, policy: SignaturePolicy) -> Self {
+        self.signature_policy = policy;
+        self
+    }
+
+    /// Signature policy enforced by the transport before dispatch.
+    #[must_use]
+    pub fn signature_policy(&self) -> &SignaturePolicy {
+        &self.signature_policy
+    }
+}
+
+// ── SignaturePolicy ──────────────────────────────────────────────────────────
+
+/// Signature-verification policy for a [`WebhookAction`].
+///
+/// Returned by [`WebhookAction::signature_policy`]. The HTTP transport
+/// layer consults this before dispatching an incoming request to the
+/// action — a misconfigured or unsigned request never reaches
+/// [`WebhookAction::handle_request`].
+///
+/// # Default is fail-closed
+///
+/// [`SignaturePolicy::default`] is [`Self::Required`] with an empty
+/// secret. The transport returns `500 problem+json` until an author
+/// supplies a secret. Authors who want to accept unsigned requests
+/// must explicitly return [`Self::OptionalAcceptUnsigned`]; the
+/// override is the audit trail.
+///
+/// # Cloning
+///
+/// `SignaturePolicy` is `Clone` — `Required` holds `Arc<[u8]>` and
+/// `HeaderName` (both cheap clones) and `Custom` holds `Arc<dyn Fn>`.
+/// The adapter reads the policy once at construction and stores it.
+///
+/// See ADR-0022 for the full rationale.
+pub enum SignaturePolicy {
+    /// Require HMAC signature via the configured header and scheme.
+    /// Default: `X-Nebula-Signature`, hex-encoded SHA-256, empty secret.
+    Required(RequiredPolicy),
+    /// Explicit opt-out. Transport accepts any request, signed or not.
+    /// Use only for public-by-design webhooks (Slack URL verification,
+    /// open repo webhooks) or local testing.
+    OptionalAcceptUnsigned,
+    /// Escape hatch for signature schemes the standard verifiers do
+    /// not cover — Stripe's `t=…,v1=…` with a replay window, Shopify
+    /// base64 with a derived payload, bespoke provider conventions.
+    /// Compose via [`verify_hmac_sha256_with_timestamp`],
+    /// [`hmac_sha256_compute`], and [`verify_tag_constant_time`].
+    Custom(Arc<dyn Fn(&WebhookRequest) -> SignatureOutcome + Send + Sync>),
+}
+
+impl Default for SignaturePolicy {
+    fn default() -> Self {
+        Self::Required(RequiredPolicy::default())
+    }
+}
+
+impl Clone for SignaturePolicy {
+    fn clone(&self) -> Self {
+        match self {
+            Self::Required(r) => Self::Required(r.clone()),
+            Self::OptionalAcceptUnsigned => Self::OptionalAcceptUnsigned,
+            Self::Custom(f) => Self::Custom(Arc::clone(f)),
+        }
+    }
+}
+
+impl fmt::Debug for SignaturePolicy {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Required(r) => f.debug_tuple("SignaturePolicy::Required").field(r).finish(),
+            Self::OptionalAcceptUnsigned => f.write_str("SignaturePolicy::OptionalAcceptUnsigned"),
+            Self::Custom(_) => f.write_str("SignaturePolicy::Custom(..)"),
+        }
+    }
+}
+
+impl SignaturePolicy {
+    /// Construct a [`Self::Required`] policy populated with the given
+    /// HMAC secret. Header defaults to `X-Nebula-Signature`, scheme to
+    /// [`SignatureScheme::Sha256Hex`].
+    #[must_use]
+    pub fn required_hmac_sha256(secret: impl Into<Arc<[u8]>>) -> Self {
+        Self::Required(RequiredPolicy::new().with_secret(secret))
+    }
+
+    /// Construct a [`Self::Custom`] policy wrapping the provided
+    /// verifier closure. The closure receives the raw request and
+    /// returns a [`SignatureOutcome`]; the transport treats anything
+    /// other than `Valid` as a 401.
+    #[must_use]
+    pub fn custom<F>(verifier: F) -> Self
+    where
+        F: Fn(&WebhookRequest) -> SignatureOutcome + Send + Sync + 'static,
+    {
+        Self::Custom(Arc::new(verifier))
+    }
+}
+
+/// Configuration for [`SignaturePolicy::Required`].
+///
+/// Builder-style: start from [`RequiredPolicy::new`] or
+/// [`RequiredPolicy::default`], then chain [`with_secret`](Self::with_secret),
+/// [`with_header`](Self::with_header), [`with_scheme`](Self::with_scheme) as needed.
+///
+/// # Empty secret
+///
+/// An empty secret is *not* a misuse of the API — it is the
+/// fail-closed default surface that catches "author forgot to
+/// supply a secret" at the transport layer. See ADR-0022.
+#[derive(Clone)]
+pub struct RequiredPolicy {
+    secret: Arc<[u8]>,
+    header: HeaderName,
+    scheme: SignatureScheme,
+}
+
+impl RequiredPolicy {
+    /// Canonical Nebula default: `X-Nebula-Signature`,
+    /// [`SignatureScheme::Sha256Hex`], empty secret (fail-closed until
+    /// an author supplies one).
+    #[must_use]
+    pub fn new() -> Self {
+        Self {
+            secret: Arc::from(Vec::<u8>::new()),
+            header: HeaderName::from_static("x-nebula-signature"),
+            scheme: SignatureScheme::Sha256Hex,
+        }
+    }
+
+    /// Replace the secret. An empty secret keeps the policy in the
+    /// fail-closed state and the transport returns 500.
+    #[must_use]
+    pub fn with_secret(mut self, secret: impl Into<Arc<[u8]>>) -> Self {
+        self.secret = secret.into();
+        self
+    }
+
+    /// Replace the signature header name. Providers typically need
+    /// their own (`X-Hub-Signature-256` for GitHub,
+    /// `X-Shopify-Hmac-SHA256` for Shopify).
+    ///
+    /// # Errors
+    ///
+    /// Returns `Err` if `header` is not a valid HTTP header name.
+    pub fn with_header_str(self, header: &str) -> Result<Self, ActionError> {
+        let header = HeaderName::from_bytes(header.as_bytes()).map_err(|_| {
+            ActionError::validation(
+                "webhook.signature_policy.header",
+                ValidationReason::WrongType,
+                Some(format!("invalid HTTP header name: {header:?}")),
+            )
+        })?;
+        Ok(self.with_header(header))
+    }
+
+    /// Replace the signature header with a pre-validated [`HeaderName`].
+    #[must_use]
+    pub fn with_header(mut self, header: HeaderName) -> Self {
+        self.header = header;
+        self
+    }
+
+    /// Replace the signature scheme.
+    #[must_use]
+    pub fn with_scheme(mut self, scheme: SignatureScheme) -> Self {
+        self.scheme = scheme;
+        self
+    }
+
+    /// Shared HMAC secret. Empty slice indicates the fail-closed
+    /// default; transports treat that identically to a missing
+    /// credential.
+    #[must_use]
+    pub fn secret(&self) -> &[u8] {
+        &self.secret
+    }
+
+    /// Header carrying the signature value.
+    #[must_use]
+    pub fn header(&self) -> &HeaderName {
+        &self.header
+    }
+
+    /// Signature encoding scheme.
+    #[must_use]
+    pub fn scheme(&self) -> SignatureScheme {
+        self.scheme
+    }
+}
+
+impl Default for RequiredPolicy {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl fmt::Debug for RequiredPolicy {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("RequiredPolicy")
+            .field(
+                "secret",
+                &format_args!("<redacted len={}>", self.secret.len()),
+            )
+            .field("header", &self.header)
+            .field("scheme", &self.scheme)
+            .finish()
+    }
+}
+
+/// Signature encoding scheme for [`RequiredPolicy`].
+///
+/// Provider conventions:
+/// - GitHub `X-Hub-Signature-256: sha256=<hex>` → [`Self::Sha256Hex`] (prefix accepted
+///   automatically)
+/// - Shopify `X-Shopify-Hmac-SHA256: <base64>` → [`Self::Sha256Base64`]
+/// - Nebula canonical `X-Nebula-Signature: sha256=<hex>` → [`Self::Sha256Hex`] (default)
+///
+/// Providers whose signature is not a raw HMAC over the request body
+/// (Stripe, Slack) require [`SignaturePolicy::Custom`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum SignatureScheme {
+    /// Hex-encoded HMAC-SHA256. The value may be bare hex or prefixed
+    /// with `sha256=` (GitHub convention).
+    Sha256Hex,
+    /// Base64-encoded HMAC-SHA256 (standard alphabet). Shopify, Square.
+    Sha256Base64,
 }
 
 // ── WebhookEndpointProvider ──────────────────────────────────────────────
@@ -700,6 +1005,13 @@ pub trait WebhookEndpointProvider: Send + Sync + fmt::Debug {
 /// Created automatically by `nebula_runtime::ActionRegistry::register_webhook`.
 pub struct WebhookTriggerAdapter<A: WebhookAction> {
     action: A,
+    /// Cached webhook-config read once from the wrapped action at
+    /// construction. Owners that hand the adapter to a transport pass
+    /// this to `WebhookTransport::activate` alongside the handler —
+    /// it is NOT exposed through the dyn [`TriggerHandler`] contract
+    /// because webhook configuration does not belong on the base
+    /// trigger trait.
+    config: WebhookConfig,
     state: RwLock<Option<Arc<A::State>>>,
     /// Shared with every [`InFlightGuard`] so the guard can decrement
     /// and notify on drop without needing a lifetime back to `self`.
@@ -711,14 +1023,32 @@ pub struct WebhookTriggerAdapter<A: WebhookAction> {
 
 impl<A: WebhookAction> WebhookTriggerAdapter<A> {
     /// Wrap a typed webhook action.
+    ///
+    /// Reads [`WebhookAction::config`] once and caches the result so
+    /// the dispatch path does not re-enter the action on every
+    /// request, and so the runtime / test harness can forward the
+    /// policy to the transport without re-downcasting the handler.
     #[must_use]
     pub fn new(action: A) -> Self {
+        let config = action.config();
         Self {
             action,
+            config,
             state: RwLock::new(None),
             in_flight: Arc::new(AtomicU32::new(0)),
             idle_notify: Arc::new(Notify::new()),
         }
+    }
+
+    /// Webhook config cached at construction.
+    ///
+    /// Runtime code that wraps an action into a `WebhookTriggerAdapter`
+    /// reads this and forwards it to
+    /// `nebula_api::webhook::WebhookTransport::activate`. Tests can
+    /// also inspect it to assert the resulting policy shape.
+    #[must_use]
+    pub fn config(&self) -> &WebhookConfig {
+        &self.config
     }
 }
 
