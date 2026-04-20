@@ -33,13 +33,14 @@ changes land as a new ADR that `supersedes` it.
 | [0023](./0023-keyprovider-trait.md) | `KeyProvider` trait between `EncryptionLayer` and key material source | accepted | 2026-04-19 |
 | [0024](./0024-defer-dynosaur-migration.md) | Defer `dynosaur` migration — keep `#[async_trait]` for `dyn`-consumed traits (supersedes 0014) | accepted | 2026-04-20 |
 | [0025](./0025-sandbox-broker-rpc-surface.md) | Sandbox Phase 1 broker — RPC surface and audit posture (sibling to 0006) | accepted | 2026-04-20 |
+| [0026](./0026-nebula-sdk-dependency-closure.md) | `nebula-sdk` dependency closure for crates.io publication (follow-up to 0021) | proposed | 2026-04-20 |
 
 ## Writing a new ADR
 
 1. Copy the frontmatter block from any existing ADR (keep the keys: `id`,
    `title`, `status`, `date`, `supersedes`, `superseded_by`, `tags`,
    `related`, optional `linear`).
-2. Pick the next free number (currently **0026**). Do not reuse.
+2. Pick the next free number (currently **0027**). Do not reuse.
 3. File name: `NNNN-kebab-case-title.md` matching the `title:` field.
 4. Start `status: proposed`. Move to `accepted` only after review and merge.
 5. **Do not substantively edit an accepted ADR.** Open a new one with
