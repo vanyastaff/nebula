@@ -111,7 +111,10 @@ impl PluginVersions {
     }
 
     /// Number of versions stored (always ≥ 1 by construction).
-    #[allow(clippy::len_without_is_empty)]
+    #[expect(
+        clippy::len_without_is_empty,
+        reason = "len ≥ 1 by construction — is_empty() would be meaningless"
+    )]
     pub fn len(&self) -> usize {
         self.versions.len()
     }
