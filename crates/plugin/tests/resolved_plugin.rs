@@ -315,3 +315,131 @@ fn resolved_plugin_with_no_components_is_valid() {
     assert_eq!(resolved.resources().count(), 0);
     assert_eq!(resolved.key().as_str(), "empty");
 }
+
+// ============================================================
+// PluginRegistry aggregate accessors (PR 5)
+// ============================================================
+
+use nebula_plugin::PluginRegistry;
+
+#[test]
+fn registry_resolve_action_finds_across_plugins() {
+    let mut reg = PluginRegistry::new();
+
+    reg.register(Arc::new(
+        ResolvedPlugin::from(StubPlugin::new("slack").with_action("slack.send_message")).unwrap(),
+    ))
+    .unwrap();
+    reg.register(Arc::new(
+        ResolvedPlugin::from(
+            StubPlugin::new("http")
+                .with_action("http.get")
+                .with_action("http.post"),
+        )
+        .unwrap(),
+    ))
+    .unwrap();
+
+    // Hits the Slack plugin's cache.
+    let action = reg
+        .resolve_action(&ActionKey::new("slack.send_message").unwrap())
+        .expect("slack action");
+    assert_eq!(action.metadata().base.key.as_str(), "slack.send_message");
+
+    // Hits the HTTP plugin's cache.
+    let http_post = reg
+        .resolve_action(&ActionKey::new("http.post").unwrap())
+        .expect("http post");
+    assert_eq!(http_post.metadata().base.key.as_str(), "http.post");
+
+    // Unknown key: no match.
+    assert!(
+        reg.resolve_action(&ActionKey::new("unknown.key").unwrap())
+            .is_none()
+    );
+}
+
+#[test]
+fn registry_all_actions_yields_every_action() {
+    let mut reg = PluginRegistry::new();
+    reg.register(Arc::new(
+        ResolvedPlugin::from(StubPlugin::new("slack").with_action("slack.send_message")).unwrap(),
+    ))
+    .unwrap();
+    reg.register(Arc::new(
+        ResolvedPlugin::from(StubPlugin::new("http").with_action("http.get")).unwrap(),
+    ))
+    .unwrap();
+
+    assert_eq!(reg.all_actions().count(), 2);
+
+    let keys: Vec<&str> = reg
+        .all_actions()
+        .map(|(_pk, a)| a.metadata().base.key.as_str())
+        .collect();
+    assert!(keys.contains(&"slack.send_message"));
+    assert!(keys.contains(&"http.get"));
+}
+
+#[test]
+fn registry_resolve_credential_finds_across_plugins() {
+    let mut reg = PluginRegistry::new();
+    reg.register(Arc::new(
+        ResolvedPlugin::from(StubPlugin::new("slack").with_credential("slack.oauth2")).unwrap(),
+    ))
+    .unwrap();
+
+    let cred = reg
+        .resolve_credential(&CredentialKey::new("slack.oauth2").unwrap())
+        .expect("oauth2");
+    assert_eq!(cred.metadata().base.key.as_str(), "slack.oauth2");
+
+    assert!(
+        reg.resolve_credential(&CredentialKey::new("nope.x").unwrap())
+            .is_none()
+    );
+}
+
+#[test]
+fn registry_all_credentials_yields_every_credential() {
+    let mut reg = PluginRegistry::new();
+    reg.register(Arc::new(
+        ResolvedPlugin::from(
+            StubPlugin::new("slack")
+                .with_credential("slack.oauth2")
+                .with_credential("slack.bot_token"),
+        )
+        .unwrap(),
+    ))
+    .unwrap();
+    assert_eq!(reg.all_credentials().count(), 2);
+}
+
+#[test]
+fn registry_resolve_resource_finds_across_plugins() {
+    let mut reg = PluginRegistry::new();
+    reg.register(Arc::new(
+        ResolvedPlugin::from(StubPlugin::new("http").with_resource("http.client")).unwrap(),
+    ))
+    .unwrap();
+
+    let res = reg
+        .resolve_resource(&ResourceKey::new("http.client").unwrap())
+        .expect("client");
+    assert_eq!(res.metadata().base.key.as_str(), "http.client");
+}
+
+#[test]
+fn registry_all_resources_yields_every_resource() {
+    let mut reg = PluginRegistry::new();
+    reg.register(Arc::new(
+        ResolvedPlugin::from(
+            StubPlugin::new("http")
+                .with_resource("http.client")
+                .with_resource("http.pool"),
+        )
+        .unwrap(),
+    ))
+    .unwrap();
+    assert_eq!(reg.all_resources().count(), 2);
+}

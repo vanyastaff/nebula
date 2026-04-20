@@ -86,6 +86,71 @@ impl PluginRegistry {
     pub fn is_empty(&self) -> bool {
         self.plugins.is_empty()
     }
+
+    /// Flat iterator over every action across every registered plugin.
+    ///
+    /// Engine uses this at startup to bulk-register handlers into the
+    /// runtime's flat `ActionRegistry`. Order follows plugin iteration
+    /// order (i.e., `HashMap`-unstable) × intra-plugin cache order.
+    pub fn all_actions(
+        &self,
+    ) -> impl Iterator<Item = (&PluginKey, &Arc<dyn nebula_action::Action>)> {
+        self.plugins
+            .iter()
+            .flat_map(|(pk, rp)| rp.actions().map(move |(_k, a)| (pk, a)))
+    }
+
+    /// Flat iterator over every credential across every registered plugin.
+    pub fn all_credentials(
+        &self,
+    ) -> impl Iterator<Item = (&PluginKey, &Arc<dyn nebula_credential::AnyCredential>)> {
+        self.plugins
+            .iter()
+            .flat_map(|(pk, rp)| rp.credentials().map(move |(_k, c)| (pk, c)))
+    }
+
+    /// Flat iterator over every resource across every registered plugin.
+    pub fn all_resources(
+        &self,
+    ) -> impl Iterator<Item = (&PluginKey, &Arc<dyn nebula_resource::AnyResource>)> {
+        self.plugins
+            .iter()
+            .flat_map(|(pk, rp)| rp.resources().map(move |(_k, r)| (pk, r)))
+    }
+
+    /// Resolve an action by its full key.
+    ///
+    /// Walks registered plugins, probes each [`ResolvedPlugin`]'s cache by
+    /// the full key; returns the first match. O(plugins) + O(1) inner.
+    /// Not on engine dispatch hot path; introspection / catalog UI.
+    pub fn resolve_action(
+        &self,
+        full: &nebula_core::ActionKey,
+    ) -> Option<Arc<dyn nebula_action::Action>> {
+        self.plugins
+            .values()
+            .find_map(|rp| rp.action(full).cloned())
+    }
+
+    /// Resolve a credential by its full key.
+    pub fn resolve_credential(
+        &self,
+        full: &nebula_core::CredentialKey,
+    ) -> Option<Arc<dyn nebula_credential::AnyCredential>> {
+        self.plugins
+            .values()
+            .find_map(|rp| rp.credential(full).cloned())
+    }
+
+    /// Resolve a resource by its full key.
+    pub fn resolve_resource(
+        &self,
+        full: &nebula_core::ResourceKey,
+    ) -> Option<Arc<dyn nebula_resource::AnyResource>> {
+        self.plugins
+            .values()
+            .find_map(|rp| rp.resource(full).cloned())
+    }
 }
 
 impl std::fmt::Debug for PluginRegistry {
