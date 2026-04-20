@@ -82,7 +82,9 @@ pub use recovery::{
 };
 pub use registry::{AnyManagedResource, Registry};
 pub use release_queue::ReleaseQueue;
-pub use resource::{AnyResource, Resource, ResourceConfig, ResourceMetadata};
+pub use resource::{
+    AnyResource, MetadataCompatibilityError, Resource, ResourceConfig, ResourceMetadata,
+};
 // Runtime types — needed for `Manager::register()`.
 pub use runtime::TopologyRuntime;
 pub use runtime::{

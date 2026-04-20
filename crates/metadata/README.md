@@ -1,53 +1,63 @@
 ---
 name: nebula-metadata
-role: Shared catalog-metadata vocabulary (key + name + description + schema + icon + maturity)
-status: stable
+role: Shared catalog-citizen metadata (BaseMetadata + Metadata trait + Icon / MaturityLevel / DeprecationNotice + compat rules)
+status: frontier
 last-reviewed: 2026-04-19
-canon-invariants: [L1-§3.5]
-related: [nebula-action, nebula-credential, nebula-resource, nebula-plugin, nebula-schema]
+canon-invariants: [L2-3.5]
+related: [nebula-action, nebula-credential, nebula-resource, nebula-plugin]
 ---
 
 # nebula-metadata
 
 ## Purpose
 
-Every "catalog citizen" in Nebula — an action, a credential, a resource, a trigger, a plugin
-— shares the same outward shape: a typed key, a human-readable name, a description, a
-canonical [`ValidSchema`](https://docs.rs/nebula-schema) of user-configurable inputs, and a
-small set of optional ornaments (icon, documentation URL, tags, maturity, deprecation notice).
-Without a shared vocabulary, every business-layer crate would redeclare the same prefix with
-slightly different field names, blocking a uniform Action/Credential/Resource catalog UI and
-forcing every plugin author to learn the same fields five times.
-
-`nebula-metadata` owns those shared concerns as concrete types and a small trait, so each
-business-layer crate composes them instead of redefining them.
+Every catalog leaf in Nebula — such as an action, a credential, or a
+resource — shares the same surface: a typed key, a human-readable name
+and description, a canonical input schema, optional catalog ornaments
+(icon, documentation URL, tags), a declared maturity level, and an
+optional deprecation notice. `nebula-metadata` owns those shared
+concerns as concrete types and a small trait, so each business-layer
+crate composes them instead of redeclaring the same prefix with
+incompatible field names. Plugins are described separately as container
+descriptors: they may reuse the small supporting types from this crate,
+but they do not compose `BaseMetadata<K>` and do not carry a canonical
+input schema (see [ADR-0018](../../docs/adr/0018-plugin-metadata-to-manifest.md)).
 
 ## Role
 
-**Core-layer shared metadata.** Imported by `nebula-action`, `nebula-credential`,
-`nebula-resource`, and (planned) `nebula-plugin` for their `*Metadata` types. Depends only on
-`nebula-schema` and `semver`; no upward dependencies.
-
-Pattern: **composition, not inheritance** — each business crate exposes its own
-`*Metadata` struct that contains a `BaseMetadata<K>` and adds domain-specific fields.
+**Core-layer support crate.** Cross-cutting, no upward dependencies.
+Only depends on `nebula-schema` (for `ValidSchema`), `semver`, `serde`,
+and `thiserror`. Every other crate in the business layer
+(`nebula-action`, `nebula-credential`, `nebula-resource`) composes
+`BaseMetadata<K>` via `#[serde(flatten)]` on its own concrete metadata
+struct.
 
 ## Public API
 
-| Item                       | Purpose                                                                                         |
-| -------------------------- | ----------------------------------------------------------------------------------------------- |
-| `Metadata` trait           | Single-method trait (`base() -> &BaseMetadata<Self::Key>`) shared across catalog citizens       |
-| `BaseMetadata<K>`          | Concrete struct with `key`, `name`, `description`, `version`, `parameters`, `icon`, `tags`, `maturity`, `deprecation` |
-| `Icon`                     | Enum — one valid representation for catalog icons (URL, SVG, named, none)                       |
-| `MaturityLevel`            | `Experimental` / `Beta` / `Stable` / `Deprecated`                                               |
-| `DeprecationNotice`        | Standard deprecation payload (since version, replacement, removal target, message)              |
-| `compat`                   | Version-compatibility helpers shared across metadata families                                   |
+- `BaseMetadata<K>` — shared catalog prefix (`key`, `name`, `description`,
+  `schema`, `version`, `icon`, `documentation_url`, `tags`, `maturity`,
+  `deprecation`). Composed on each concrete entity metadata.
+- `Metadata` trait — one-line impl on each concrete metadata
+  (`fn base(&self) -> &BaseMetadata<Self::Key>`); all other accessors
+  default-delegate through it.
+- `Icon` — `None` / `Inline(String)` / `Url { url: String }` enum;
+  replaces the earlier `icon: Option<String>` + `icon_url: Option<String>`
+  pair.
+- `MaturityLevel` — `Experimental` / `Beta` / `Stable` / `Deprecated`.
+- `DeprecationNotice` — `since` / `sunset` / `replacement` / `reason`.
+- `BaseCompatError<K>` + `validate_base_compat` — entity-agnostic compat
+  rules shared by every catalog citizen (`key` immutable, `version`
+  monotonic, schema-break-requires-major-bump). Each consumer layers
+  entity-specific rules on top via a thin wrapper enum.
 
-## Shape
+## Composition
 
-```rust,no_run
-use nebula_metadata::{BaseMetadata, Icon, MaturityLevel, Metadata};
+```rust
+use nebula_metadata::{BaseMetadata, Metadata};
+use nebula_schema::{Schema, ValidSchema};
 
-pub struct MyKey;
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MyKey(&'static str);
 
 pub struct MyEntityMetadata {
     pub base: BaseMetadata<MyKey>,
@@ -60,21 +70,39 @@ impl Metadata for MyEntityMetadata {
         &self.base
     }
 }
+
+fn empty_schema() -> ValidSchema {
+    Schema::builder().build().unwrap()
+}
+
+let md = MyEntityMetadata {
+    base: BaseMetadata::new(MyKey("k"), "My Entity", "desc", empty_schema()),
+    extra_field: 7,
+};
+assert_eq!(md.name(), "My Entity");
 ```
 
-## Non-goals
+## Consumers
 
-- **Identifier validation.** Key shapes are owned by `nebula-core` (e.g. `ActionKey`,
-  `CredentialKey`); this crate is generic over `K`.
-- **Schema construction.** `ValidSchema` is built and validated by `nebula-schema`.
-- **Lifecycle / runtime state.** `BaseMetadata` is *static* description, not runtime status —
-  see `nebula-execution` for execution state and `nebula-credential::CredentialRecord` for
-  per-instance operational state.
-- **Persistence format choice.** Catalog storage layers serialize via `serde`; this crate
-  defines the shape, not the storage backend.
+- `nebula-action::ActionMetadata` — composes `BaseMetadata<ActionKey>`;
+  adds `inputs`, `outputs`, `isolation_level`, `category`; wraps
+  `BaseCompatError<ActionKey>` in its own `MetadataCompatibilityError`.
+- `nebula-credential::CredentialMetadata` — composes
+  `BaseMetadata<CredentialKey>`; adds `pattern`; wraps `BaseCompatError`
+  similarly.
+- `nebula-resource::ResourceMetadata` — composes
+  `BaseMetadata<ResourceKey>`; no entity-specific fields today; wraps
+  `BaseCompatError<ResourceKey>` in a single-variant
+  `MetadataCompatibilityError` for shape parity with the other
+  consumers.
+- `nebula-plugin::PluginMetadata` — **does not** compose `BaseMetadata`
+  today. Reshape to `PluginManifest` (bundle descriptor) tracked in
+  [ADR-0018](../../docs/adr/0018-plugin-metadata-to-manifest.md);
+  manifest will reuse `Icon` / `MaturityLevel` / `DeprecationNotice` but
+  not `BaseMetadata<K>` (plugin is a container, not a schematized leaf).
 
-## Maturity
+## Canon
 
-`stable`. Public surface is small and deliberately frozen — extending it requires a canon
-revision (canon §3.5 trait family). Folding into `nebula-core::metadata` is tracked as a
-separate audit follow-up; the public API would not change.
+- `docs/PRODUCT_CANON.md §3.5` — integration model (one pattern, five concepts).
+- `docs/MATURITY.md` — crate-state dashboard row.
+- `docs/STYLE.md` — idioms, naming, error taxonomy.
