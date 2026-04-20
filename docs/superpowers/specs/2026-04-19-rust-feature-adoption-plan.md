@@ -649,6 +649,17 @@ that still need it for Phase 3.
 
 ### Phase 3 — `dynosaur` migration for cross-crate `dyn` traits (5 PRs, ADR-tracked)
 
+> **Cancelled (2026-04-20) — superseded by
+> [ADR-0024](../../adr/0024-defer-dynosaur-migration.md).** The 14
+> `dyn`-consumed traits stay on `#[async_trait]`. Rationale: `dynosaur`
+> adoption is narrow (v0.3.0, 13 reverse-deps, aging), the dual
+> generic+dyn value-prop serves zero current call sites (all 14 are
+> 100 % dyn-consumed), and `async_fn_in_dyn_trait` will eventually make
+> the whole macro class obsolete (tracking
+> [rust-lang/rust#133119](https://github.com/rust-lang/rust/issues/133119)).
+> The section below is retained for historical context and for the
+> re-evaluation trigger defined in ADR-0024 §5.
+
 **Scope.** The 14 traits that *are* consumed as `dyn` somewhere. One
 coordinated PR per family; the ADR gate in Hazards below applies.
 
