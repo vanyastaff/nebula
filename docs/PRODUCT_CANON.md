@@ -183,6 +183,7 @@ Major choices should map to a pillar; if a feature maps to none, it is probably 
 
 - **[L1]** **Public integration / plugin SDK surface:** stability matters; breaking changes deserve an RFC-style decision, not drive-by commits.
 - **[L2]** **Workspace internals:** may break when wrong — but **not** silently: canon + migration note + tests (see §17).
+- **[L2]** **Publication scope:** the `publish = true` perimeter (workspace crates with a crates.io contract) is governed by [`ADR-0021`](adr/0021-crate-publication-policy.md); default is `publish = false`, opt-in requires ≥ 3 documented external consumers **or** a dedicated ADR. Internal crates stay invisible to the ecosystem even while the workspace grows.
 - **[L1]** **Ecosystem quality over node count:** one solid canonical integration per external service beats many half-finished duplicates.
 - **[L1]** **Third-party nodes** are first-class in intent: same capabilities as first-party where the plugin model allows; **document** what is shipped vs planned.
 
