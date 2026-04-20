@@ -36,8 +36,6 @@
 #![forbid(unsafe_code)]
 
 pub mod cell;
-#[allow(deprecated)]
-pub mod compat;
 pub mod ctx;
 pub mod error;
 pub mod events;
@@ -56,9 +54,6 @@ pub mod topology;
 pub mod topology_tag;
 
 pub use cell::Cell;
-// Backward-compatibility re-exports (deprecated, will be removed).
-#[allow(deprecated)]
-pub use compat::{Context, Scope};
 pub use ctx::{BasicCtx, Ctx, Extensions, ScopeLevel, ctx_ext};
 pub use error::{Error, ErrorKind, ErrorScope};
 pub use events::ResourceEvent;
