@@ -143,7 +143,7 @@ Reads a 32-byte AES-256 key from `NEBULA_CRED_MASTER_KEY` (base64-encoded).
 Fail-closed validation mirrors
 [`JwtSecret::new`](../../crates/api/src/config.rs:55) exactly:
 
-- Missing env var → `ProviderError::NotConfigured { var: "NEBULA_CRED_MASTER_KEY" }`.
+- Missing env var → `ProviderError::NotConfigured { name: "NEBULA_CRED_MASTER_KEY" }`.
 - Dev placeholder literal → `ProviderError::DevPlaceholder`.
 - Short or wrong-length decode → `ProviderError::KeyMaterialRejected { reason }`.
 - Base64 decode failure → `ProviderError::Decode { .. }`.
@@ -152,7 +152,15 @@ Intermediate plaintext (the base64 string, the decoded bytes) is held in
 `Zeroizing<T>` so scope exit scrubs it per `STYLE.md §6`. The
 `EncryptionKey` newtype handles its own `ZeroizeOnDrop` once constructed.
 
-`version()` returns a constant `"env:current"`.
+`version()` returns `"env:<fingerprint>"` where `<fingerprint>` is the
+first 8 bytes of SHA-256 over the key material, hex-encoded
+(16 chars). **Rotating the env var to different bytes automatically
+changes the fingerprint**, so the envelope `key_id` differs from the
+pre-rotation state — existing records flow through the `with_legacy_keys`
+path instead of being treated as "current" and silently mis-decrypting
+under the new key. This is the rotation-safety invariant captured on
+the trait `version()` docstring: any provider that hand-manages the
+version string must preserve it.
 
 #### `FileKeyProvider` — self-hosted / mounted-secret default
 
@@ -161,13 +169,23 @@ Reads 32 raw key bytes from a path. Refuses world-readable files on Unix
 the check is skipped under `#[cfg(not(unix))]` because POSIX mode bits
 do not apply to Windows.
 
+Filesystem failures (missing file, permission denied, …) surface as
+`ProviderError::FileIo { path, source }` so the offending path is
+available for diagnostics without correlating against log lines —
+`std::fs` errors do not usually include the path themselves. Non-file
+backing sources (future providers) use `ProviderError::Io { source }`.
+
 Useful for Kubernetes secrets mounted into the container filesystem
 (`/run/secrets/`), systemd credential files (`$CREDENTIALS_DIRECTORY/`),
 and operators who want the key on-disk with a discrete rotation story
 rather than in the process environment.
 
-`version()` returns `"file:<filename>"` so logs show the source without
-leaking the path's full prefix.
+`version()` returns `"file:<filename>:<fingerprint>"` — filename keeps
+logs readable; fingerprint (same SHA-256 prefix scheme as
+`EnvKeyProvider`) makes **in-place rewrites observable**. Kubernetes
+secret rewrites and systemd credential refreshes keep the path stable
+but change the bytes; the fingerprint segment changes accordingly and
+pre-rotation records flow through `with_legacy_keys`.
 
 #### `StaticKeyProvider` — test-only, gated behind `test-util`
 
@@ -200,6 +218,50 @@ three in-tree impls are part of the crate's public SemVer surface:
 - `EnvKeyProvider::ENV_VAR`, `MIN_BYTES`, and `DEV_PLACEHOLDER` are
   public associated consts — changing them is a breaking change for
   operators' runbooks, and is treated as such.
+- The SHA-256-prefix `version()` scheme used by `EnvKeyProvider` and
+  `FileKeyProvider` is **observable SemVer surface**: the
+  `"env:<fp>"` / `"file:<name>:<fp>"` shape appears in stored envelope
+  `key_id`s and in operator logs. Changing the hash length or prefix
+  layout is a breaking change — operators register legacy keys by the
+  string they previously saw in logs. Future providers are free to
+  pick a different scheme; changing either of these two is not.
+
+### 6. Rotation procedure
+
+When an operator rotates a key handled by `EnvKeyProvider` or
+`FileKeyProvider`, the fingerprint-backed `version()` turns the rotation
+into a loud failure (decryption error naming the missing key id) rather
+than a silent mis-decrypt. The happy-path sequence is:
+
+1. **Before retiring the old key**, record its `version()` — typically
+   emitted on startup or visible in metrics. The fingerprint suffix
+   (16 hex chars after the `env:` / `file:<name>:` prefix) is the
+   stable identifier for the rotation.
+2. **Swap the key** — rewrite `NEBULA_CRED_MASTER_KEY` or the
+   file. Do not restart yet.
+3. **Register the old key as legacy** at restart so pre-rotation
+   records remain readable:
+
+   ```rust
+   let old_key = Arc::new(EncryptionKey::from_bytes(old_bytes));
+   let provider = Arc::new(EnvKeyProvider::from_env()?);
+   let layer = EncryptionLayer::with_legacy_keys(
+       store,
+       provider,
+       vec![(old_version_string, old_key)], // e.g. "env:a3f2c891b4e5d267"
+   );
+   ```
+
+4. Lazy rotation re-encrypts records on their next read (per the
+   existing module semantics at
+   [`encryption.rs:232-254`](../../crates/credential/src/layer/encryption.rs:232)).
+   Once records converge — observable via future rotation-completion
+   telemetry — the legacy entry can be dropped on the next restart.
+
+Operators who **forget** step 3 get `StoreError::Backend("encryption
+key '<old-version>' not found")` on the next credential read instead of
+corrupted plaintext. That loud-failure mode is the entire point of the
+fingerprint scheme.
 
 ## Consequences
 
@@ -347,13 +409,22 @@ implementation detail.
     provider verifies `current_key()` is called on `put` and `get`,
     i.e. rotation triggers a re-fetch rather than a cached-at-
     construction snapshot.
-  - `EnvKeyProvider`: missing var / short / dev-placeholder /
-    wrong-length decode all return the correct typed `ProviderError`
-    variant. Mirrors
-    [`config.rs` `jwt_secret_*` tests](../../crates/api/src/config.rs:407).
+  - `EnvKeyProvider`: dev-placeholder / short / wrong-length / decode
+    failures all return the correct typed `ProviderError` variant
+    (in-crate, via `from_base64`). `from_env` missing-var coverage
+    lives in a separate integration test binary because env-var
+    mutation requires `unsafe` which the crate forbids. Rotation-
+    safety is pinned by two tests: `version_changes_with_key` (two
+    different keys → different versions) and
+    `version_stable_for_same_key` (repeat construction → same version).
+    Mirrors [`config.rs` `jwt_secret_*` tests](../../crates/api/src/config.rs:407).
   - `FileKeyProvider`: `#[cfg(unix)]` test refuses a `0o644` key file;
-    valid 32-byte file decodes to an `EncryptionKey` with stable
-    `version()`.
+    valid 32-byte file decodes to an `EncryptionKey` with a
+    fingerprint-tailed `version()`; missing-file errors surface as
+    `ProviderError::FileIo { path, .. }` with the path preserved;
+    `version_changes_with_content` rewrites the same path and asserts
+    the version changes, mirroring the Kubernetes / systemd in-place
+    rewrite flow.
   - `StaticKeyProvider`: round-trip + version preservation.
 - **Integration.** The existing `EncryptionLayer` test coverage at
   [`encryption.rs:257+`](../../crates/credential/src/layer/encryption.rs:257)
