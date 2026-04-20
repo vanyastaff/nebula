@@ -209,6 +209,20 @@ fn response_kind(env: &PluginToHost) -> &'static str {
 
 /// Errors specific to per-plugin key reconciliation.
 enum SkipReason {
+    /// `binary` unexpectedly has no parent directory (impossible when yielded
+    /// by `read_dir(dir)`, but we route through `SkipReason` rather than
+    /// panic so library code never crashes on a malformed path).
+    NoBinaryParent {
+        binary: std::path::PathBuf,
+    },
+    /// `nebula-plugin-sdk`'s `SDK_VERSION` constant is not a valid semver.
+    /// This is a compile-time invariant of the SDK crate and should never
+    /// fire in a shipped binary, but routing through `SkipReason` keeps
+    /// discovery panic-free even in pathological build states.
+    HostSdkVersionInvalid {
+        raw: &'static str,
+        source: semver::Error,
+    },
     MissingPluginToml(PluginTomlError),
     SdkConstraintViolation {
         required: semver::VersionReq,
@@ -236,12 +250,15 @@ async fn discover_one(
     default_capabilities: &PluginCapabilities,
 ) -> Result<(ResolvedPlugin, Vec<(ActionMetadata, ActionHandler)>), SkipReason> {
     // Step 1: parse sibling plugin.toml (required).
-    // `binary` came from `read_dir(dir)` — it always has a parent. The
-    // invariant is structural; a silent CWD fallback would risk reading
-    // the wrong plugin.toml and admitting the wrong plugin.
+    // `binary` came from `read_dir(dir)` — it always has a parent in practice.
+    // Route the theoretically-impossible `None` case through `SkipReason`
+    // rather than panic, and never fall back to CWD (a silent CWD lookup
+    // would read the wrong plugin.toml and admit the wrong plugin).
     let toml_path = binary
         .parent()
-        .expect("read_dir entry always has a parent directory")
+        .ok_or_else(|| SkipReason::NoBinaryParent {
+            binary: binary.to_path_buf(),
+        })?
         .join("plugin.toml");
     let toml_manifest = parse_plugin_toml(&toml_path).map_err(SkipReason::MissingPluginToml)?;
 
@@ -250,9 +267,13 @@ async fn discover_one(
     // crate's) — plugin authors pin their `plugin.toml [nebula].sdk` against
     // nebula-plugin-sdk, and independent SDK bumps via
     // `cargo release -p nebula-plugin-sdk` are documented-supported.
-    let host_version: semver::Version = nebula_plugin_sdk::protocol::SDK_VERSION
-        .parse()
-        .expect("nebula-plugin-sdk SDK_VERSION is always a valid semver");
+    let host_version: semver::Version =
+        nebula_plugin_sdk::protocol::SDK_VERSION
+            .parse()
+            .map_err(|source| SkipReason::HostSdkVersionInvalid {
+                raw: nebula_plugin_sdk::protocol::SDK_VERSION,
+                source,
+            })?;
     if !toml_manifest.sdk.matches(&host_version) {
         return Err(SkipReason::SdkConstraintViolation {
             required: toml_manifest.sdk,
@@ -461,6 +482,14 @@ pub async fn discover_directory(
 
 fn skip_reason_parts(reason: &SkipReason) -> (&'static str, String) {
     match reason {
+        SkipReason::NoBinaryParent { binary } => (
+            "no_binary_parent",
+            format!("binary path has no parent directory: {}", binary.display()),
+        ),
+        SkipReason::HostSdkVersionInvalid { raw, source } => (
+            "host_sdk_version_invalid",
+            format!("nebula-plugin-sdk SDK_VERSION {raw:?} is not valid semver: {source}"),
+        ),
         SkipReason::MissingPluginToml(e) => ("missing_plugin_toml", e.to_string()),
         SkipReason::SdkConstraintViolation { required, host } => (
             "sdk_constraint_violation",
