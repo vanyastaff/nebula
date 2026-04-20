@@ -198,5 +198,28 @@ bug with our shapes is negligible.
 - Watch rust-lang/rust#133119 and RFC discussions. When the feature
   reaches beta on stable, open a follow-up ADR for the
   `async-trait` → native dyn-AFIT migration.
+- **Async closures (RFC 3668, stable 1.85) — Phase 5 production scope
+  deferred.** Site audit of the 55 `Box::pin(async move)` matches in
+  the 1.75-1.95 adoption rollup (2026-04-20) found that 13 of them wrap
+  the `ActionExecutor` type alias
+  (`crates/sandbox/src/runner.rs:65-76`, `Arc<dyn Fn(...) -> Pin<Box<dyn
+  Future>>>`). Converting these requires `Arc<dyn AsyncFn(...)>` to be
+  object-safe, which is **not stable on Rust 1.95** — tracked at
+  [rust-lang/rust#132633][rfc-132633] with no stable target. Only
+  tests/benches on already-generic callers converted as part of the
+  rollup closeout. Revisit the production scope — and the question of
+  whether `ActionExecutor` should grow its own ADR to retire the `Fn
+  -> Pin<Box<Future>>` shape — when **either** of the following
+  happens:
+  - `async_fn_in_dyn_trait` /
+    [rust#132633][rfc-132633] stabilizes and Nebula's MSRV reaches
+    that version — at which point the sandbox alias becomes
+    `Arc<dyn AsyncFn(...)>` with no boilerplate change at consumer
+    sites.
+  - A concrete sandbox-facing requirement (new runner shape,
+    alternate transport, sandbox v2) motivates opening that ADR
+    independently — in which case async closures fold into that
+    migration rather than a standalone chip.
 
 [rfc-133119]: https://github.com/rust-lang/rust/issues/133119
+[rfc-132633]: https://github.com/rust-lang/rust/issues/132633
