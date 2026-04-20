@@ -233,7 +233,61 @@ enum SkipReason {
         toml_id: String,
         manifest_key: String,
     },
+    /// A wire `ActionDescriptor` carries a fully-qualified key that belongs to
+    /// a *different* plugin's namespace. This is a whole-plugin failure (not a
+    /// per-action skip) because a plugin that lies about its action namespace
+    /// cannot be trusted — fail fast and surface the violation at load time.
+    /// Symmetric with [`nebula_plugin::ResolvedPlugin::from`]'s fail-fast
+    /// behaviour for in-process plugins (ADR-0027 §7).
+    CrossNamespaceAction {
+        descriptor_key: String,
+        plugin_key: String,
+    },
     RegistrationError(nebula_plugin::PluginError),
+}
+
+/// Sentinel returned by [`resolve_action_key`] when the descriptor key is
+/// fully-qualified but belongs to a *different* plugin's namespace.
+///
+/// The caller decides how to surface this — currently: fail the whole plugin
+/// via [`SkipReason::CrossNamespaceAction`].
+#[derive(Debug)]
+struct CrossNamespace;
+
+/// Resolve a wire action descriptor key against a plugin's namespace prefix.
+///
+/// Returns `Ok(Some(full_key))` when the descriptor key is either the short
+/// local form (no dot — automatically prefixed) or a fully-qualified key that
+/// falls inside the plugin's own namespace.
+///
+/// Returns `Ok(None)` when the resulting full key is syntactically invalid
+/// (e.g. empty local part that produces a key `ActionKey::new` rejects).
+/// Callers treat this as a per-action warn-and-skip (different from the
+/// cross-namespace case, which fails the whole plugin).
+///
+/// Returns `Err(CrossNamespace)` when the descriptor key is fully-qualified
+/// but belongs to a *different* plugin's namespace. The caller should fail
+/// the whole plugin discovery, not just skip the action.
+///
+/// # Arguments
+///
+/// * `namespace_prefix` — e.g. `"com.author.slack."` (must end with `.`).
+/// * `descriptor_key` — the raw key string from the wire `ActionDescriptor`.
+fn resolve_action_key(
+    namespace_prefix: &str,
+    descriptor_key: &str,
+) -> Result<Option<ActionKey>, CrossNamespace> {
+    let full_key = if descriptor_key.contains('.') {
+        // Fully-qualified: must start with our own namespace prefix.
+        if !descriptor_key.starts_with(namespace_prefix) {
+            return Err(CrossNamespace);
+        }
+        descriptor_key.to_owned()
+    } else {
+        // Short local form: prepend namespace.
+        format!("{namespace_prefix}{descriptor_key}")
+    };
+    Ok(ActionKey::new(&full_key).ok())
 }
 
 /// Try to discover one plugin binary.
@@ -318,30 +372,26 @@ async fn discover_one(
     // to `Arc<dyn StatelessHandler>` (for the returned handler list).
     let mut remote_actions: Vec<Arc<RemoteAction>> = Vec::new();
     for descriptor in &wire.actions {
-        let full_key = if descriptor.key.contains('.') {
-            if !descriptor.key.starts_with(&namespace_prefix) {
+        let action_key = match resolve_action_key(&namespace_prefix, &descriptor.key) {
+            // Cross-namespace: fail the whole plugin (symmetric with
+            // ResolvedPlugin::from's behaviour for in-process plugins).
+            Err(CrossNamespace) => {
+                return Err(SkipReason::CrossNamespaceAction {
+                    descriptor_key: descriptor.key.clone(),
+                    plugin_key: plugin_key_str,
+                });
+            },
+            // Invalid syntax (e.g. empty local part): warn and skip this
+            // individual action only — different from cross-namespace.
+            Ok(None) => {
                 tracing::warn!(
                     plugin = %plugin_key_str,
-                    action_key = %descriptor.key,
-                    "action key outside plugin namespace, skipping action",
-                );
-                continue;
-            }
-            descriptor.key.clone()
-        } else {
-            format!("{namespace_prefix}{}", descriptor.key)
-        };
-
-        let action_key = match ActionKey::new(&full_key) {
-            Ok(k) => k,
-            Err(e) => {
-                tracing::warn!(
-                    key = %full_key,
-                    error = %e,
-                    "invalid action key, skipping",
+                    descriptor_key = %descriptor.key,
+                    "invalid action key syntax, skipping action",
                 );
                 continue;
             },
+            Ok(Some(k)) => k,
         };
 
         let metadata = ActionMetadata::new(action_key, &descriptor.name, &descriptor.description)
@@ -503,6 +553,13 @@ fn skip_reason_parts(reason: &SkipReason) -> (&'static str, String) {
             "key_conflict",
             format!("plugin.toml id={toml_id}, manifest key={manifest_key}"),
         ),
+        SkipReason::CrossNamespaceAction {
+            descriptor_key,
+            plugin_key,
+        } => (
+            "cross_namespace_action",
+            format!("action key {descriptor_key:?} is outside plugin namespace {plugin_key:?}"),
+        ),
         SkipReason::RegistrationError(e) => ("registration_error", e.to_string()),
     }
 }
@@ -650,16 +707,44 @@ mod tests {
         assert!(!super::can_non_unix_executable_extension("dll"));
     }
 
-    // build_action_key tests (inline logic that was in create_handlers):
+    // Unit tests for the extracted resolve_action_key helper.
+    use super::resolve_action_key;
+
     #[test]
-    fn cross_namespace_action_keys_are_rejected() {
-        // Constructing a WireMetadata with a cross-namespace action and
-        // passing it to discover_one is hard in tests (async + no fixture).
-        // Instead, test the key logic directly: a dotted key that doesn't
-        // start with the plugin prefix is not valid.
-        let plugin_prefix = "com.good.plugin.";
-        let key = "system.exec";
-        assert!(!key.starts_with(plugin_prefix));
+    fn resolve_action_key_accepts_short_local() {
+        let full = resolve_action_key("com.good.plugin.", "echo")
+            .unwrap()
+            .unwrap();
+        assert_eq!(full.as_str(), "com.good.plugin.echo");
+    }
+
+    #[test]
+    fn resolve_action_key_accepts_fully_qualified_within_namespace() {
+        let full = resolve_action_key("com.good.plugin.", "com.good.plugin.echo")
+            .unwrap()
+            .unwrap();
+        assert_eq!(full.as_str(), "com.good.plugin.echo");
+    }
+
+    #[test]
+    fn resolve_action_key_rejects_cross_namespace() {
+        // A dotted key that does not start with the plugin's own prefix
+        // must return Err(CrossNamespace), not Ok.
+        let result = resolve_action_key("com.good.plugin.", "system.exec");
+        assert!(
+            result.is_err(),
+            "cross-namespace key must return Err(CrossNamespace)"
+        );
+    }
+
+    #[test]
+    fn resolve_action_key_returns_none_for_invalid_syntax() {
+        // An empty local part produces a key string that ActionKey::new rejects.
+        let result = resolve_action_key("com.good.plugin.", "").unwrap();
+        assert!(
+            result.is_none(),
+            "empty local part must produce Ok(None), not a valid key"
+        );
     }
 
     #[test]

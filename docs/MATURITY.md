@@ -62,6 +62,7 @@ production consumers), `PluginRegistry` simplified + gains
 with full manifest + per-action `ValidSchema` per action, `plugin.toml`
 parsed at discovery with `[nebula].sdk` semver-constraint check,
 `RemoteAction` wraps `ProcessSandboxHandler` as `impl Action`,
-`DiscoveredPlugin: impl Plugin` is the host-side adapter,
-`§4.5` false-capability on `discovery.rs:117` closed. See ADR-0027.
+`DiscoveredPlugin: impl Plugin` is the host-side adapter.
+Workflow-config-sourced `PluginCapabilities` enforcement at the broker
+remains open under ADR-0025 slice 1d. See ADR-0027.
 Prior: 2026-04-19 — Phase 1 of Rust 1.75–1.95 adoption complete: `once_cell` workspace dependency dropped (`LazyLock`/`OnceLock` fully adopted); ~60 `#[allow]` attrs flipped to `#[expect]` across 18 crates (Phase 1b free-lunch sweep), reducing total `#[allow]` from 116 to 56. Phases 2–5 (inherent AFIT, dynosaur, precise-capture, late polish) remain. Prior: 2026-04-19 (nebula-metadata row added; `compat.rs` extracted to BaseCompatError + validate_base_compat; action / credential / resource wired to the shared check). Prior: 2026-04-19 (ADR-0008 B1 / ADR-0017 follow-up: `pg::PgControlQueueRepo` landed — Postgres now honors the durable control plane via `FOR UPDATE SKIP LOCKED` and a concurrent-safe `reclaim_stuck` CAS; in-memory + Postgres share one behavioral parity test suite). Prior: 2026-04-19 (ADR-0008 A3 landed: engine cancel registry + dispatch_cancel / dispatch_terminate wired end-to-end; ADR-0016 documents the cooperative-cancel contract and the forced-shutdown gap).

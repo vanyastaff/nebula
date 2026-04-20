@@ -138,12 +138,3 @@ to give the container its own, honest type.
 - Track migration PR against this ADR (issue created at implementation
   time).
 - Revisit alternative (C) when a second container-shape entity arrives.
-
-- **2026-04-20 (slice B of plugin load-path stabilization).**
-  `PluginManifest` moved from `nebula-plugin` to `nebula-metadata` so the
-  plugin-author SDK can import it without breaking canon §7.1's
-  "zero-engine-side-deps" invariant. `nebula-plugin` keeps a thin
-  `pub use nebula_metadata::PluginManifest;` re-export for source
-  compatibility. See
-  [the slice-B design spec](../superpowers/specs/2026-04-20-plugin-load-path-stable-design.md)
-  and the forthcoming ADR-0027.

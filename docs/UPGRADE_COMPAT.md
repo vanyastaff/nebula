@@ -85,9 +85,14 @@ Before upgrading a deployment:
 Rebuild all plugin binaries against the current SDK; the change is
 **additive to the envelope** — replacing flat `plugin_key` /
 `plugin_version` with the full `PluginManifest`, adding per-action
-`schema: ValidSchema` — so plugin authors re-compile and ship; no
-source-level migration beyond importing `PluginManifest` from
-`nebula_metadata` and constructing it via the builder.
+`schema: ValidSchema` — so plugin authors re-compile and ship. Source-level
+migration requires:
+
+- replacing `PluginMeta` with a `PluginManifest` (imported from
+  `nebula_metadata`) constructed via the builder;
+- exposing `actions(&self) -> &[ActionDescriptor]` on `PluginHandler`
+  (return type changed from `Vec<ActionDescriptor>` to a slice borrow); and
+- attaching a `schema: ValidSchema` to every `ActionDescriptor`.
 
 See [plugin load-path stabilization design
 spec](superpowers/specs/2026-04-20-plugin-load-path-stable-design.md).

@@ -355,10 +355,25 @@ impl PluginManifestBuilder {
     ///
     /// The raw key is normalized before validation: spaces become underscores and
     /// ASCII letters are lowercased, so `"HTTP Request"` → `"http_request"`.
+    ///
+    /// `deprecation` always wins over `maturity`: if a deprecation notice is
+    /// present the built manifest's maturity is forced to
+    /// [`MaturityLevel::Deprecated`] regardless of the order in which
+    /// `.deprecation()` and `.maturity()` were called on the builder.
     pub fn build(self) -> Result<PluginManifest, ManifestError> {
         let key: PluginKey = normalize_key(&self.key)
             .parse()
             .map_err(ManifestError::InvalidKey)?;
+
+        // Invariant: a deprecation notice always implies Deprecated maturity.
+        // Enforcing this here (rather than only in `.deprecation()`) makes the
+        // invariant order-independent — a later `.maturity()` call cannot
+        // silently override it.
+        let maturity = if self.deprecation.is_some() {
+            MaturityLevel::Deprecated
+        } else {
+            self.maturity
+        };
 
         Ok(PluginManifest {
             key,
@@ -374,7 +389,7 @@ impl PluginManifestBuilder {
             homepage: self.homepage,
             repository: self.repository,
             nebula_version: self.nebula_version,
-            maturity: self.maturity,
+            maturity,
             deprecation: self.deprecation,
         })
     }
@@ -525,5 +540,41 @@ mod tests {
             .build()
             .unwrap();
         assert_eq!(manifest.maturity(), MaturityLevel::Experimental);
+    }
+
+    /// `deprecation` beats `maturity` regardless of call order.
+    ///
+    /// Case A: `.maturity(Stable).deprecation(notice)` — deprecation last.
+    /// Case B: `.deprecation(notice).maturity(Stable)` — maturity last.
+    ///
+    /// Both must produce `MaturityLevel::Deprecated`.
+    #[test]
+    fn deprecation_forces_deprecated_maturity_regardless_of_order() {
+        let notice = DeprecationNotice::new(Version::new(3, 0, 0));
+
+        // Case A: maturity set first, deprecation second.
+        let a = PluginManifest::builder("legacy_a", "Legacy A")
+            .maturity(MaturityLevel::Stable)
+            .deprecation(notice.clone())
+            .build()
+            .unwrap();
+        assert_eq!(
+            a.maturity(),
+            MaturityLevel::Deprecated,
+            "Case A: .maturity(Stable).deprecation(notice) must produce Deprecated"
+        );
+
+        // Case B: deprecation set first, maturity second — the tricky order
+        // that the builder's `.deprecation()` setter alone cannot protect against.
+        let b = PluginManifest::builder("legacy_b", "Legacy B")
+            .deprecation(notice)
+            .maturity(MaturityLevel::Stable)
+            .build()
+            .unwrap();
+        assert_eq!(
+            b.maturity(),
+            MaturityLevel::Deprecated,
+            "Case B: .deprecation(notice).maturity(Stable) must produce Deprecated"
+        );
     }
 }

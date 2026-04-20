@@ -815,10 +815,19 @@ impl ProcessSandbox {
                 // typed target. Parsing twice is acceptable because the
                 // metadata-probe path runs once per plugin lifetime.
                 if let Some(expected) = expected_id {
-                    let value: serde_json::Value = serde_json::from_slice(&response_bytes)
-                        .map_err(|e| {
-                            TryDispatchError::from_sandbox_error(SandboxError::MalformedEnvelope(e))
-                        })?;
+                    // Use a match rather than `map_err(...)?` so we can
+                    // clear `*guard` on parse failure before returning.
+                    // A `?` return would skip the guard-clear and leave a
+                    // cached-but-poisoned handle for the next call.
+                    let value: serde_json::Value = match serde_json::from_slice(&response_bytes) {
+                        Ok(v) => v,
+                        Err(e) => {
+                            *guard = None;
+                            return Err(TryDispatchError::from_sandbox_error(
+                                SandboxError::MalformedEnvelope(e),
+                            ));
+                        },
+                    };
                     if let Some(got) = response_id_from_value(&value)
                         && expected != got
                     {

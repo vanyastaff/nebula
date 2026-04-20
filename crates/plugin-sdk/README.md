@@ -31,7 +31,7 @@ Windows) per ADR 0006.
 ## Public API
 
 - `PluginHandler` — trait plugin authors implement: `manifest() -> &PluginManifest`,
-  `actions() -> Vec<ActionDescriptor>`, and
+  `actions() -> &[ActionDescriptor]`, and
   `execute(ctx, action_key, input) -> Result<Value, PluginError>`. The manifest type
   is [`nebula_metadata::PluginManifest`] (Core-layer dep, see §7.1 below); the
   descriptor type lives in the `protocol` submodule.

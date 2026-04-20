@@ -61,10 +61,16 @@ impl PluginHandler for SchemaFixture {
     async fn execute(
         &self,
         _ctx: &PluginCtx,
-        _action_key: &str,
+        action_key: &str,
         input: Value,
     ) -> Result<Value, PluginError> {
-        Ok(json!({ "received": input }))
+        match action_key {
+            "describe" => Ok(json!({ "received": input })),
+            other => Err(PluginError::fatal(
+                "UNKNOWN_ACTION",
+                format!("unknown action: {other}"),
+            )),
+        }
     }
 }
 

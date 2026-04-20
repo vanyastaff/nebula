@@ -109,9 +109,9 @@ See `docs/MATURITY.md` row for `nebula-sandbox`.
    **workflow-config** at spawn time (per
    [ADR-0025](../../docs/adr/0025-sandbox-broker-rpc-surface.md) D4) —
    not from `plugin.toml`. The sandbox receives a `PluginCapabilities`
-   from its caller (engine / runtime) and enforces it at
-   `ProcessSandbox` boundaries. Older revisions of this roadmap mentioned
-   `plugin.toml` capabilities; ADR-0025 superseded that.
+   from its caller (engine / runtime); enforcing it at
+   `ProcessSandbox` boundaries remains the slice 1d work. Older revisions
+   of this roadmap mentioned `plugin.toml` capabilities; ADR-0025 superseded that.
 2. **`plugin.toml` signing verification** — canon §7.1; tooling (`cargo-nebula` or equivalent)
    verifies signatures before the host trusts a plugin's `plugin.toml`.
 3. **`os_sandbox` per-platform backends** — seccomp-bpf + landlock (Linux), `sandbox_init`
