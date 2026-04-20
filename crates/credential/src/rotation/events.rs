@@ -344,6 +344,12 @@ pub async fn send_notification<S: NotificationSender>(
     event: &NotificationEvent,
     policy: &crate::retry::RetryPolicy,
 ) -> RotationResult<()> {
+    policy
+        .validate()
+        .map_err(|reason| super::error::RotationError::InvalidPolicy {
+            reason: format!("retry policy: {reason}"),
+        })?;
+
     crate::retry::retry_with_policy(policy, || async { sender.send(event).await }).await
 }
 
