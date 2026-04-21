@@ -108,7 +108,7 @@ impl TestContextBuilder {
     #[must_use]
     pub fn with_credential<S>(mut self, scheme: S) -> Self
     where
-        S: nebula_core::AuthScheme + Clone + Send + Sync + 'static,
+        S: nebula_credential::AuthScheme + Clone + Send + Sync + 'static,
     {
         let type_id = TypeId::of::<S>();
         let snapshot = CredentialSnapshot::new(
@@ -788,9 +788,9 @@ mod tests {
         key: String,
     }
 
-    impl nebula_core::AuthScheme for TestApiKey {
-        fn pattern() -> nebula_core::AuthPattern {
-            nebula_core::AuthPattern::SecretToken
+    impl nebula_credential::AuthScheme for TestApiKey {
+        fn pattern() -> nebula_credential::AuthPattern {
+            nebula_credential::AuthPattern::SecretToken
         }
     }
 

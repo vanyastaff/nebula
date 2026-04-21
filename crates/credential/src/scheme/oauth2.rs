@@ -1,9 +1,8 @@
 //! OAuth2 token -- consumer-facing (no refresh internals).
 
-use nebula_core::{AuthPattern, AuthScheme};
 use serde::{Deserialize, Serialize};
 
-use crate::SecretString;
+use crate::{AuthPattern, AuthScheme, SecretString};
 
 /// OAuth2 bearer token with metadata.
 ///

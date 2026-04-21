@@ -7,11 +7,12 @@
 use std::{any::Any, fmt, sync::Arc};
 
 use nebula_core::{
-    AuthScheme, NodeKey,
+    NodeKey,
     id::{ExecutionId, WorkflowId},
 };
 use nebula_credential::{
-    CredentialAccessor, CredentialGuard, CredentialSnapshot, default_credential_accessor,
+    AuthScheme, CredentialAccessor, CredentialGuard, CredentialSnapshot,
+    default_credential_accessor,
 };
 use tokio_util::sync::CancellationToken;
 
@@ -618,8 +619,8 @@ mod tests {
     }
 
     impl AuthScheme for ZeroizableToken {
-        fn pattern() -> nebula_core::AuthPattern {
-            nebula_core::AuthPattern::SecretToken
+        fn pattern() -> nebula_credential::AuthPattern {
+            nebula_credential::AuthPattern::SecretToken
         }
     }
 

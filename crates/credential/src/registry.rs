@@ -9,7 +9,7 @@ use std::{collections::HashMap, fmt, sync::Arc};
 use crate::{Credential, CredentialState};
 
 /// A function that projects stored bytes into a type-erased
-/// [`AuthScheme`](nebula_core::AuthScheme).
+/// [`AuthScheme`](crate::AuthScheme).
 ///
 /// Registered per `state_kind`, called by the resolver during
 /// type-erased resolution.
@@ -19,7 +19,7 @@ type ProjectFn =
 /// Registry of credential type handlers.
 ///
 /// Maps `state_kind` strings to projection functions that deserialize
-/// stored bytes and project them to their [`AuthScheme`](nebula_core::AuthScheme).
+/// stored bytes and project them to their [`AuthScheme`](crate::AuthScheme).
 ///
 /// # Examples
 ///
@@ -73,7 +73,7 @@ impl CredentialRegistry {
         );
     }
 
-    /// Projects stored credential data to its type-erased [`AuthScheme`](nebula_core::AuthScheme).
+    /// Projects stored credential data to its type-erased [`AuthScheme`](crate::AuthScheme).
     ///
     /// The returned `Box<dyn Any>` can be downcast to the concrete scheme
     /// type using [`downcast`](Box::downcast).

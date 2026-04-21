@@ -3,8 +3,8 @@
 use std::sync::Arc;
 
 use nebula_action::{Action, ActionDependencies, ActionMetadata};
-use nebula_core::{ActionKey, AuthPattern, CredentialKey, ResourceKey};
-use nebula_credential::{AnyCredential, CredentialMetadata};
+use nebula_core::{ActionKey, CredentialKey, ResourceKey};
+use nebula_credential::{AnyCredential, AuthPattern, CredentialMetadata};
 use nebula_metadata::PluginManifest;
 use nebula_plugin::{ComponentKind, Plugin, PluginError, ResolvedPlugin};
 use nebula_resource::{AnyResource, ResourceMetadata};

@@ -29,7 +29,7 @@ fn main() {
         .icon("github")
         .documentation_url("https://docs.github.com/en/apps/oauth-apps")
         .schema(github_schema)
-        .pattern(nebula_core::AuthPattern::OAuth2)
+        .pattern(nebula_credential::AuthPattern::OAuth2)
         .build()
         .expect("Failed to build GitHub OAuth2 credential metadata");
 
@@ -56,7 +56,7 @@ fn main() {
         .description("PostgreSQL database connection credentials")
         .icon("database")
         .schema(postgres_schema)
-        .pattern(nebula_core::AuthPattern::IdentityPassword)
+        .pattern(nebula_credential::AuthPattern::IdentityPassword)
         .build()
         .expect("Failed to build PostgreSQL credential metadata");
 
@@ -77,7 +77,7 @@ fn main() {
         "API Key",
         "Simple API key authentication",
         api_key_schema,
-        nebula_core::AuthPattern::SecretToken,
+        nebula_credential::AuthPattern::SecretToken,
     );
 
     println!("API Key Credential Type:");

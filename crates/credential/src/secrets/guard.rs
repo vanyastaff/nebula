@@ -1,6 +1,6 @@
 //! Credential guard — secure wrapper for credential access.
 //!
-//! [`CredentialGuard`] wraps an [`AuthScheme`](nebula_core::AuthScheme) value with:
+//! [`CredentialGuard`] wraps an [`AuthScheme`](crate::AuthScheme) value with:
 //! 1. **Transparent access** via `Deref<Target = S>`
 //! 2. **Zeroize on drop** — secret material wiped from memory
 //! 3. **Not Serialize** — prevents accidental inclusion in action output or state

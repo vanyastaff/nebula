@@ -14,11 +14,10 @@
 //! ## Public API
 //!
 //! - **Identifiers** — `ExecutionId` (`exe_…`), `WorkflowId` (`wf_…`), `NodeId`, `UserId`,
-//!   `TenantId`, `ProjectId`, `OrganizationId`, `ResourceId`, `CredentialId`, `RoleId`.
+//!   `TenantId`, `ProjectId`, `OrganizationId`, `ResourceId`, `RoleId`.
 //! - **Keys** — `PluginKey`, `ActionKey`, `CredentialKey`, `ParameterKey`, `ResourceKey`, `NodeKey`
 //!   — normalized string keys with validation.
 //! - **Scope** — `ScopeLevel`, `Scope`, `Principal`, `ScopeResolver` (Global → … → Action).
-//! - **Auth** — `AuthScheme`, `AuthPattern` — explicit auth classification (canon §4.2).
 //! - **Context** — `Context` trait, `BaseContext`, `BaseContextBuilder`, capability traits
 //!   (`HasCredentials`, `HasResources`, `HasMetrics`, `HasEventBus`, `HasLogger`).
 //! - **Accessors** — `ResourceAccessor`, `CredentialAccessor`, `Logger`, `MetricsEmitter`,
@@ -26,19 +25,22 @@
 //! - **Guards** — `Guard`, `TypedGuard` RAII guard traits.
 //! - **Lifecycle** — `LayerLifecycle`, `ShutdownOutcome`.
 //! - **Observability** — `TraceId`, `SpanId`.
-//! - **Events** — `CredentialEvent` for cross-crate credential lifecycle signaling.
 //! - **Errors** — `CoreError` (typed, thiserror; no anyhow).
+//!
+//! ## Credential-specific types moved to `nebula-credential`
+//!
+//! `AuthScheme`, `AuthPattern`, `CredentialEvent`, and `CredentialId` previously
+//! lived here as re-exports. They now live in [`nebula-credential`][nc] directly,
+//! so credential-domain vocabulary no longer pollutes the cross-cutting base.
+//!
+//! [nc]: https://docs.rs/nebula-credential
 
 // ── Modules ─────────────────────────────────────────────────────────────────
 
 /// Accessor trait definitions for capability injection.
 pub mod accessor;
-/// Authentication scheme contract types and pattern classification.
-pub mod auth;
 /// Context system -- base trait + capabilities.
 pub mod context;
-/// Credential lifecycle events for cross-crate signaling.
-pub mod credential_event;
 /// Dependency declaration types.
 pub mod dependencies;
 /// Guard traits for RAII resource/credential wrappers.
@@ -59,12 +61,10 @@ mod keys;
 
 // ── Re-exports ──────────────────────────────────────────────────────────────
 
-pub use auth::{AuthPattern, AuthScheme};
 pub use context::{
     BaseContext, BaseContextBuilder, Context, HasCredentials, HasEventBus, HasLogger, HasMetrics,
     HasResources,
 };
-pub use credential_event::CredentialEvent;
 pub use dependencies::*;
 pub use error::*;
 pub use guard::{Guard, TypedGuard};
@@ -94,9 +94,8 @@ pub mod prelude {
     // Identifiers (ULID-backed)
     #[expect(deprecated, reason = "OrganizationId re-exported for migration period")]
     pub use crate::id::{
-        AttemptId, CredentialId, ExecutionId, InstanceId, OrgId, OrganizationId, ResourceId,
-        ServiceAccountId, SessionId, TriggerEventId, TriggerId, UserId, WorkflowId,
-        WorkflowVersionId, WorkspaceId,
+        AttemptId, ExecutionId, InstanceId, OrgId, OrganizationId, ResourceId, ServiceAccountId,
+        SessionId, TriggerEventId, TriggerId, UserId, WorkflowId, WorkflowVersionId, WorkspaceId,
     };
     // Domain keys (normalized string keys)
     pub use crate::keys::{

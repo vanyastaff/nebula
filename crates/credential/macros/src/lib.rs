@@ -80,8 +80,8 @@ pub fn derive_credential(input: TokenStream) -> TokenStream {
 /// }
 /// ```
 ///
-/// [`AuthScheme`]: https://docs.rs/nebula-core/latest/nebula_core/trait.AuthScheme.html
-/// [`AuthPattern`]: https://docs.rs/nebula-core/latest/nebula_core/enum.AuthPattern.html
+/// [`AuthScheme`]: https://docs.rs/nebula-credential/latest/nebula_credential/trait.AuthScheme.html
+/// [`AuthPattern`]: https://docs.rs/nebula-credential/latest/nebula_credential/enum.AuthPattern.html
 #[proc_macro_derive(AuthScheme, attributes(auth_scheme))]
 pub fn derive_auth_scheme(input: TokenStream) -> TokenStream {
     auth_scheme::derive(input)

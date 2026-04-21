@@ -3,14 +3,13 @@
 //! Creates encrypted backups of credentials before rotation for disaster recovery.
 
 use chrono::{DateTime, Duration as ChronoDuration, Utc};
-use nebula_core::CredentialId;
 use serde::{Deserialize, Serialize};
 
 use super::{
     error::{RotationError, RotationResult},
     transaction::{BackupId, RotationId},
 };
-use crate::secrets::EncryptedData;
+use crate::{CredentialId, secrets::EncryptedData};
 
 /// Rotation backup containing encrypted credential snapshot
 #[derive(Debug, Clone, Serialize, Deserialize)]

@@ -8,10 +8,10 @@
 //! 4. Keeping the old credential as standby for quick rollback
 
 use chrono::{DateTime, Utc};
-use nebula_core::CredentialId;
 use serde::{Deserialize, Serialize};
 
 use super::error::{RotationError, RotationResult};
+use crate::CredentialId;
 
 /// Blue-Green rotation state
 ///

@@ -70,7 +70,7 @@ impl Credential for ApiKeyCredential {
             .name("API Key")
             .description("Static API key or bearer token for HTTP APIs.")
             .schema(Self::parameters())
-            .pattern(nebula_core::AuthPattern::SecretToken)
+            .pattern(crate::AuthPattern::SecretToken)
             .icon("key")
             .build()
             .expect("api_key metadata is valid")

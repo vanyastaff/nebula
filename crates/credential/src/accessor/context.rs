@@ -5,10 +5,10 @@
 use std::{any::Any, fmt, future::Future, pin::Pin, sync::Arc};
 
 use chrono::{DateTime, Utc};
-use nebula_core::{AuthScheme, ScopeLevel};
+use nebula_core::ScopeLevel;
 use uuid::Uuid;
 
-use crate::error::CredentialError;
+use crate::{AuthScheme, error::CredentialError};
 
 /// Boxed future returned by [`CredentialResolverRef::resolve_scheme`].
 type ResolveSchemeResult<'a> =

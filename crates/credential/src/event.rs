@@ -1,8 +1,7 @@
 //! Credential lifecycle events for cross-crate signaling.
 //!
-//! Emitted via `EventBus<CredentialEvent>` by the
-//! credential resolver. Consumed by `nebula-resource` for pool invalidation
-//! and by monitoring tools.
+//! Emitted via `EventBus<CredentialEvent>` by the credential resolver.
+//! Consumed by `nebula-resource` for pool invalidation and by monitoring tools.
 //!
 //! Events carry credential ID only — **never credential data or secrets**.
 
@@ -18,7 +17,7 @@ use crate::CredentialId;
 /// # Usage
 ///
 /// ```
-/// use nebula_core::{CredentialEvent, CredentialId};
+/// use nebula_credential::{CredentialEvent, CredentialId};
 ///
 /// let id = CredentialId::new();
 /// let event = CredentialEvent::Refreshed { credential_id: id };

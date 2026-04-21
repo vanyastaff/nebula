@@ -5,13 +5,15 @@
 use std::time::Duration;
 
 use chrono::{DateTime, Utc};
-use nebula_core::CredentialId;
 use tokio::time::{Instant, sleep_until};
 use tokio_util::sync::CancellationToken;
 
-use crate::rotation::{
-    RotationResult,
-    policy::{BeforeExpiryConfig, PeriodicConfig, ScheduledConfig},
+use crate::{
+    CredentialId,
+    rotation::{
+        RotationResult,
+        policy::{BeforeExpiryConfig, PeriodicConfig, ScheduledConfig},
+    },
 };
 
 /// Periodic rotation scheduler with jitter support

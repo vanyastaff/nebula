@@ -57,9 +57,8 @@ impl std::fmt::Debug for SigningKey {
 
 #[cfg(test)]
 mod tests {
-    use nebula_core::{AuthPattern, AuthScheme as _};
-
     use super::*;
+    use crate::AuthPattern;
 
     #[test]
     fn pattern_is_request_signing() {

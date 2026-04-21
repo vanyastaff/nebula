@@ -1,6 +1,6 @@
 //! Point-in-time credential snapshot with typed projection.
 //!
-//! [`CredentialSnapshot`] carries a type-erased [`AuthScheme`](nebula_core::AuthScheme) projection
+//! [`CredentialSnapshot`] carries a type-erased [`AuthScheme`] projection
 //! that consumers downcast via [`project()`](CredentialSnapshot::project) or
 //! [`into_project()`](CredentialSnapshot::into_project).  This replaces the
 //! previous `serde_json::Value` design, giving actions type-safe credential
@@ -9,8 +9,7 @@
 //! # Examples
 //!
 //! ```
-//! use nebula_core::{AuthPattern, AuthScheme};
-//! use nebula_credential::{CredentialRecord, CredentialSnapshot};
+//! use nebula_credential::{AuthPattern, AuthScheme, CredentialRecord, CredentialSnapshot};
 //! use serde::{Deserialize, Serialize};
 //!
 //! #[derive(Clone, Serialize, Deserialize)]
@@ -56,9 +55,7 @@
 
 use std::{any::Any, fmt};
 
-use nebula_core::AuthScheme;
-
-use crate::CredentialRecord;
+use crate::{AuthScheme, CredentialRecord};
 
 /// Error returned by [`CredentialSnapshot`] projection methods.
 ///
@@ -122,8 +119,7 @@ impl CredentialSnapshot {
     /// # Examples
     ///
     /// ```
-    /// use nebula_core::{AuthPattern, AuthScheme};
-    /// use nebula_credential::{CredentialRecord, CredentialSnapshot};
+    /// use nebula_credential::{AuthPattern, AuthScheme, CredentialRecord, CredentialSnapshot};
     /// use serde::{Deserialize, Serialize};
     ///
     /// #[derive(Clone, Serialize, Deserialize)]

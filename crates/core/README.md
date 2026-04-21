@@ -27,23 +27,22 @@ workspace — extend `nebula-core` deliberately (canon §3.10).
 
 ## Public API
 
-- `ExecutionId`, `WorkflowId`, `NodeId`, `UserId`, `TenantId`, `ProjectId`, `OrganizationId`, `ResourceId`, `CredentialId`, `RoleId` — prefixed ULID typed identifiers.
+- `ExecutionId`, `WorkflowId`, `NodeId`, `UserId`, `TenantId`, `ProjectId`, `OrganizationId`, `ResourceId`, `RoleId` — prefixed ULID typed identifiers. (`CredentialId` lives in `nebula-credential`.)
 - `PluginKey`, `ActionKey`, `CredentialKey`, `ParameterKey`, `ResourceKey`, `NodeKey` — normalized string keys with validation.
 - `ScopeLevel`, `Scope`, `Principal`, `ScopeResolver` — hierarchical scope system (Global → Organization → Project → Workflow → Execution → Action).
-- `AuthScheme`, `AuthPattern` — auth scheme enum (OAuth2, API key, mTLS, …) and structural rotation classifier.
 - `Context` trait, `BaseContext`, `BaseContextBuilder` — base context with capability traits (`HasCredentials`, `HasResources`, `HasMetrics`, `HasEventBus`, `HasLogger`).
 - `ResourceAccessor`, `CredentialAccessor`, `Logger`, `MetricsEmitter`, `EventEmitter`, `Clock` — capability accessor traits injected through context.
 - `Guard`, `TypedGuard` — RAII guard traits for scoped resource/credential wrappers.
 - `LayerLifecycle`, `ShutdownOutcome` — lifecycle signal types.
 - `TraceId`, `SpanId` — observability identity types.
-- `CredentialEvent` — credential lifecycle events for cross-crate signaling.
 - `CoreError` — typed error for this crate (thiserror, no anyhow).
+
+Credential-specific vocabulary (`AuthPattern`, `AuthScheme`, `CredentialEvent`, `CredentialId`) now lives in `nebula-credential`. The cross-cutting base no longer advertises credential-domain names.
 
 ## Contract
 
 - **[L1-§3.10]** Identifiers and keys in this crate are the stable, opaque handles shared by every other crate. Changing their representation cascades across the workspace.
 - **[L2-§12.5]** `SecretString` (credential material wrapper) must keep its `Debug` implementation redacted. No secret material may appear in log output or error strings. Seam: credential-related key types in `crates/core/src/keys.rs`. Test coverage: see `docs/MATURITY.md`.
-- **[L1-§4.2]** `AuthScheme` and `AuthPattern` are the explicit decision surface for auth classification — they prevent ad-hoc stringly-typed auth folklore downstream.
 
 ## Non-goals
 
@@ -57,7 +56,7 @@ workspace — extend `nebula-core` deliberately (canon §3.10).
 See `docs/MATURITY.md` row for `nebula-core`.
 
 - API stability: `frontier` — identifiers and keys are stable and in active use; context and accessor traits are still evolving as the integration model solidifies.
-- `AuthScheme`, `AuthPattern`, and identifier types are load-bearing and unlikely to change; context capability traits may gain new associated methods.
+- Identifier types are load-bearing and unlikely to change; context capability traits may gain new associated methods.
 
 ## Related
 

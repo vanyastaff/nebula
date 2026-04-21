@@ -17,7 +17,6 @@ define_ulid!(pub TriggerIdDomain => TriggerId, prefix = "trg");
 define_ulid!(pub TriggerEventIdDomain => TriggerEventId, prefix = "evt");
 define_ulid!(pub UserIdDomain => UserId, prefix = "usr");
 define_ulid!(pub ServiceAccountIdDomain => ServiceAccountId, prefix = "svc");
-define_ulid!(pub CredentialIdDomain => CredentialId, prefix = "cred");
 define_ulid!(pub ResourceIdDomain => ResourceId, prefix = "res");
 define_ulid!(pub SessionIdDomain => SessionId, prefix = "sess");
 // OrganizationId duplicates OrgId with the same "org" prefix.
@@ -66,7 +65,7 @@ mod tests {
 
     #[test]
     fn id_copy_semantics_both_copies_usable() {
-        let id1 = CredentialId::new();
+        let id1 = ResourceId::new();
         let id2 = id1; // Copy
         assert_eq!(id1, id2);
     }
@@ -124,7 +123,6 @@ mod tests {
         let _ = TriggerEventId::new();
         let _ = UserId::new();
         let _ = ServiceAccountId::new();
-        let _ = CredentialId::new();
         let _ = ResourceId::new();
         let _ = SessionId::new();
         let _ = OrganizationId::new();

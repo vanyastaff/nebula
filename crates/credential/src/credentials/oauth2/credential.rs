@@ -338,7 +338,7 @@ impl Credential for OAuth2Credential {
             .name("OAuth2")
             .description("OAuth2 authentication supporting Authorization Code, Client Credentials, and Device Code grant types.")
             .schema(Self::parameters())
-            .pattern(nebula_core::AuthPattern::OAuth2)
+            .pattern(crate::AuthPattern::OAuth2)
             .icon("oauth2")
             .build()
             .expect("oauth2 metadata is valid")

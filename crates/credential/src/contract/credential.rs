@@ -15,12 +15,11 @@
 
 use std::future::Future;
 
-use nebula_core::AuthScheme;
 use nebula_schema::{FieldValues, ValidSchema};
 
 use super::{CredentialState, PendingState};
 use crate::{
-    CredentialContext, CredentialMetadata,
+    AuthScheme, CredentialContext, CredentialMetadata,
     error::CredentialError,
     resolve::{RefreshOutcome, RefreshPolicy, ResolveResult, TestResult, UserInput},
 };

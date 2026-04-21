@@ -6,7 +6,8 @@
 use std::sync::Arc;
 
 use arc_swap::ArcSwap;
-use nebula_core::AuthScheme;
+
+use crate::AuthScheme;
 
 /// Handle to a resolved credential with a specific AuthScheme.
 ///
