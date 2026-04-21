@@ -21,7 +21,7 @@ Legend:
 | nebula-action        | frontier | stable  | stable | partial (webhook sig `Required` by default at trait surface — ADR-0022; CheckpointPolicy planned; `ActionResult::Retry` gated behind `unstable-retry-scheduler`, #290) | n/a |
 | nebula-api           | frontier | stable  | stable | partial (knife steps 3+5: Start/Cancel producers stable, #332/#330; engine-side Start/Resume/Restart dispatch wired via EngineControlDispatch — ADR-0008 A2; Cancel/Terminate dispatch wired via engine cancel registry — ADR-0008 A3 / ADR-0016) | partial |
 | nebula-core          | frontier | stable  | stable | stable | n/a |
-| nebula-credential    | frontier | stable  | stable | partial (runtime resolver/registry/executor moved to `nebula-engine::credential`; token refresh + API OAuth flow remain in flight under P9/P10) | n/a |
+| nebula-credential    | frontier | stable  | stable | stable (runtime resolver/registry/executor and rotation scheduler live in `nebula-engine::credential`; OAuth token refresh in engine + API callback persistence landed under `credential-oauth`) | n/a |
 | nebula-engine        | partial  | stable  | stable | partial (ControlConsumer skeleton lands §12.2; all five control commands dispatched via EngineControlDispatch — ADR-0008 A2 (Start/Resume/Restart) + A3 (Cancel/Terminate) + ADR-0016 cancel registry; ADR-0008 B1 reclaim sweep implemented via ControlQueueRepo::reclaim_stuck + ADR-0017; engine-owned `credential` runtime surface landed in P8 slice) | n/a |
 | nebula-error         | stable   | stable  | stable | n/a | n/a |
 | nebula-eventbus      | stable   | stable  | stable | n/a | n/a |
@@ -51,7 +51,15 @@ Legend:
 This file is a living dashboard. Reviewers check truthfulness on every PR that touches a crate's public surface, test suite, or docs. Canon §17 DoD includes "MATURITY.md row updated if the PR changes crate state."
 
 Last full sweep: 2026-04-17 (Pass 4 of docs architecture redesign).
-Last targeted revision: 2026-04-21 — P8 slice of credential cleanup: engine-owned
+Last targeted revision: 2026-04-21 — P10 slice of credential cleanup completed:
+feature-gated API OAuth controller landed (`/credentials/:id/oauth2/auth`,
+GET/POST callback), callback path now persists exchanged OAuth2 state into
+`oauth_credential_store`, and callback tests cover both create and overwrite
+paths (`callback_persists_oauth_state_in_credential_store`,
+`callback_overwrites_existing_oauth_state`). With P8/P9/P10 landed, the
+`nebula-credential` row now marks Engine integration as `stable`; `nebula-api`
+remains `partial` while OAuth remains optional behind `credential-oauth`.
+Prior: 2026-04-21 — P8 slice of credential cleanup: engine-owned
 `credential` runtime surface landed (`CredentialResolver`, `CredentialRegistry`,
 `execute_resolve`/`execute_continue` and pending-lifecycle coverage under
 `crates/engine/tests/credential_pending_lifecycle_tests.rs`). Legacy runtime

@@ -3,6 +3,8 @@
 //! Modular routing by domain.
 
 pub mod catalog;
+#[cfg(feature = "credential-oauth")]
+pub mod credential;
 pub mod execution;
 pub mod health;
 pub mod metrics;
@@ -26,9 +28,13 @@ pub fn create_routes(state: AppState, _config: &ApiConfig) -> Router {
 
 /// API v1 routes — all protected by JWT auth middleware
 fn api_v1_routes(state: AppState) -> Router<AppState> {
-    Router::new()
+    let router = Router::new()
         .merge(workflow::router())
         .merge(execution::router())
-        .merge(catalog::router())
-        .layer(middleware::from_fn_with_state(state, auth_middleware))
+        .merge(catalog::router());
+
+    #[cfg(feature = "credential-oauth")]
+    let router = router.merge(credential::router());
+
+    router.layer(middleware::from_fn_with_state(state, auth_middleware))
 }

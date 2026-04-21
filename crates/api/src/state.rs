@@ -3,10 +3,16 @@
 //! Shared state for all handlers via Arc.
 //! Contains only ports (traits) — independent of concrete implementations.
 
+#[cfg(feature = "credential-oauth")]
+use std::collections::HashMap;
 use std::sync::Arc;
 
+#[cfg(feature = "credential-oauth")]
+use nebula_credential::PendingToken;
 use nebula_plugin::PluginRegistry;
 use nebula_runtime::ActionRegistry;
+#[cfg(feature = "credential-oauth")]
+use nebula_storage::credential::{InMemoryPendingStore, InMemoryStore};
 use nebula_storage::{ExecutionRepo, WorkflowRepo, repos::ControlQueueRepo};
 use nebula_telemetry::metrics::MetricsRegistry;
 use tokio::sync::RwLock;
@@ -60,6 +66,18 @@ pub struct AppState {
     /// triggers registered via `ActionRegistry::register_webhook`
     /// will never fire until the transport is attached.
     pub webhook_transport: Option<WebhookTransport>,
+
+    /// Feature-gated OAuth pending store (ADR-0031 rollout slice).
+    #[cfg(feature = "credential-oauth")]
+    pub oauth_pending_store: Arc<InMemoryPendingStore>,
+
+    /// Maps signed state -> pending token so callback can consume pending data.
+    #[cfg(feature = "credential-oauth")]
+    pub oauth_state_tokens: Arc<RwLock<HashMap<String, PendingToken>>>,
+
+    /// Credential state store used by OAuth callback completion in rollout mode.
+    #[cfg(feature = "credential-oauth")]
+    pub oauth_credential_store: Arc<InMemoryStore>,
 }
 
 impl AppState {
@@ -84,6 +102,12 @@ impl AppState {
             action_registry: None,
             plugin_registry: None,
             webhook_transport: None,
+            #[cfg(feature = "credential-oauth")]
+            oauth_pending_store: Arc::new(InMemoryPendingStore::new()),
+            #[cfg(feature = "credential-oauth")]
+            oauth_state_tokens: Arc::new(RwLock::new(HashMap::new())),
+            #[cfg(feature = "credential-oauth")]
+            oauth_credential_store: Arc::new(InMemoryStore::new()),
         }
     }
 

@@ -3755,6 +3755,7 @@ version = "0.1.0"
 dependencies = [
  "async-trait",
  "axum",
+ "base64",
  "chrono",
  "dashmap",
  "futures",
@@ -3766,6 +3767,7 @@ dependencies = [
  "nebula-action",
  "nebula-api",
  "nebula-core",
+ "nebula-credential",
  "nebula-engine",
  "nebula-error",
  "nebula-execution",
@@ -3778,6 +3780,7 @@ dependencies = [
  "nebula-validator",
  "nebula-workflow",
  "rand 0.10.1",
+ "reqwest 0.13.2",
  "serde",
  "serde_json",
  "sha2 0.11.0",
@@ -3790,6 +3793,7 @@ dependencies = [
  "tracing-subscriber",
  "url",
  "uuid",
+ "zeroize",
 ]
 
 [[package]]
@@ -3873,7 +3877,6 @@ dependencies = [
  "subtle",
  "thiserror 2.0.18",
  "tokio",
- "tokio-util",
  "tracing",
  "tracing-subscriber",
  "url",
@@ -3916,6 +3919,7 @@ dependencies = [
  "nebula-telemetry",
  "nebula-workflow",
  "rand 0.10.1",
+ "reqwest 0.13.2",
  "scopeguard",
  "semver",
  "serde",
