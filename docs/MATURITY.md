@@ -51,7 +51,11 @@ Legend:
 This file is a living dashboard. Reviewers check truthfulness on every PR that touches a crate's public surface, test suite, or docs. Canon §17 DoD includes "MATURITY.md row updated if the PR changes crate state."
 
 Last full sweep: 2026-04-17 (Pass 4 of docs architecture redesign).
-Last targeted revision: 2026-04-21 — [ADR-0033](adr/0033-integration-credentials-plane-b.md)
+Last targeted revision: 2026-04-21 — `docs/INTEGRATION_MODEL.md` adds an **industry reference**
+subsection (n8n credential taxonomy vs Nebula Plane B axes: acquisition /
+`AuthScheme` / persistence). Illustrative bucket counts from a public codebase;
+not a Nebula API surface.
+Prior: 2026-04-21 — [ADR-0033](adr/0033-integration-credentials-plane-b.md)
 names **Plane B (integration credentials)** vs future Plane A / `nebula-auth`, and
 documents acquisition vs `AuthScheme` vs persistence. Cross-links in
 `docs/INTEGRATION_MODEL.md` and `crates/credential/README.md`.
