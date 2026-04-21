@@ -4269,6 +4269,7 @@ dependencies = [
  "moka",
  "nebula-core",
  "nebula-credential",
+ "nebula-schema",
  "redis",
  "rmp-serde",
  "serde",
@@ -4278,6 +4279,7 @@ dependencies = [
  "tempfile",
  "thiserror 2.0.18",
  "tokio",
+ "tracing",
  "zeroize",
 ]
 

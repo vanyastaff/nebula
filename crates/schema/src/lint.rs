@@ -338,20 +338,6 @@ fn lint_rule_refs_new(
             );
             continue;
         }
-
-        let rk = field_ref
-            .trim_start_matches('/')
-            .split('/')
-            .next()
-            .unwrap_or_default();
-        if !root_keys.contains(rk) {
-            report.push(
-                ValidationError::builder("dangling_reference")
-                    .at(path.clone())
-                    .message(format!("rule references unknown root key `{rk}`"))
-                    .build(),
-            );
-        }
     }
 }
 

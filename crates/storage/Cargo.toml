@@ -21,6 +21,10 @@ serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }
 tokio = { workspace = true, features = ["sync", "time"] }
 chrono = { workspace = true }
+# Used for structured logging in layers (audit, cache) and rotation/backup
+# restore path. Credential-side rotation also carries `tracing`, so when the
+# `rotation` feature is enabled we inherit the same observability surface.
+tracing = { workspace = true }
 
 # Storage-local encoding / hashing / zeroizing — used directly by
 # KeyProvider fingerprints (base64 + sha2) and FileKeyProvider key
@@ -51,6 +55,10 @@ credential-in-memory = []
 # tests can reach `nebula_credential::store::test_helpers::make_credential`.
 # Must never be enabled in a production release build — see ADR-0023.
 test-util = ["nebula-credential/test-util"]
+# `rotation` gates `RotationBackup` on storage's side and forwards to
+# `nebula-credential/rotation` so the backup type can reference credential's
+# rotation error / id types (ADR-0029 §4, ADR-0032).
+rotation = ["nebula-credential/rotation"]
 postgres = ["dep:sqlx", "dep:hex"]
 redis = ["dep:redis"]
 s3 = ["dep:aws-config", "dep:aws-sdk-s3"]
@@ -60,6 +68,10 @@ msgpack-storage = ["dep:rmp-serde"]
 tokio = { workspace = true, features = ["full", "test-util"] }
 # Used by FileKeyProvider tests (key_provider.rs).
 tempfile = { workspace = true }
+# Used by `credential_pending_lifecycle` integration test — the test credential
+# takes `FieldValues` as its `Input` associated type to match the shape of
+# built-in credential impls.
+nebula-schema = { path = "../schema" }
 
 [lib]
 doctest = false
