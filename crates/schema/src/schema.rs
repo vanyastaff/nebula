@@ -145,19 +145,32 @@ impl Schema {
 
 // ── Loader resolution helpers ─────────────────────────────────────────────────
 
+/// Build a field path for the top-level `key`. Falls back to root when the
+/// string doesn't parse as a valid `FieldKey` (which is itself what the
+/// caller's error will flag).
+fn field_path_for(key: &str) -> FieldPath {
+    match crate::key::FieldKey::new(key) {
+        Ok(fk) => FieldPath::root().join(fk),
+        Err(_) => FieldPath::root(),
+    }
+}
+
 #[allow(
     clippy::result_large_err,
     reason = "ValidationError is intentionally large; callers are on the validation path"
 )]
 fn resolve_select_loader_key(schema: &Schema, key: &str) -> Result<String, ValidationError> {
+    let path = field_path_for(key);
     let field = schema.find(key).ok_or_else(|| {
         ValidationError::builder("field.not_found")
+            .at(path.clone())
             .param("key", Value::String(key.to_owned()))
             .message(format!("field `{key}` not found in schema"))
             .build()
     })?;
     let Field::Select(select) = field else {
         return Err(ValidationError::builder("field.type_mismatch")
+            .at(path.clone())
             .param("key", Value::String(key.to_owned()))
             .param("expected", Value::String("select".to_owned()))
             .param("actual", Value::String(field.type_name().to_owned()))
@@ -169,6 +182,7 @@ fn resolve_select_loader_key(schema: &Schema, key: &str) -> Result<String, Valid
     };
     select.loader.clone().ok_or_else(|| {
         ValidationError::builder("loader.missing_config")
+            .at(path)
             .param("key", Value::String(key.to_owned()))
             .message(format!("field `{key}` has no loader configured"))
             .build()
@@ -180,14 +194,17 @@ fn resolve_select_loader_key(schema: &Schema, key: &str) -> Result<String, Valid
     reason = "ValidationError is intentionally large; callers are on the validation path"
 )]
 fn resolve_dynamic_loader_key(schema: &Schema, key: &str) -> Result<String, ValidationError> {
+    let path = field_path_for(key);
     let field = schema.find(key).ok_or_else(|| {
         ValidationError::builder("field.not_found")
+            .at(path.clone())
             .param("key", Value::String(key.to_owned()))
             .message(format!("field `{key}` not found in schema"))
             .build()
     })?;
     let Field::Dynamic(dynamic) = field else {
         return Err(ValidationError::builder("field.type_mismatch")
+            .at(path.clone())
             .param("key", Value::String(key.to_owned()))
             .param("expected", Value::String("dynamic".to_owned()))
             .param("actual", Value::String(field.type_name().to_owned()))
@@ -199,6 +216,7 @@ fn resolve_dynamic_loader_key(schema: &Schema, key: &str) -> Result<String, Vali
     };
     dynamic.loader.clone().ok_or_else(|| {
         ValidationError::builder("loader.missing_config")
+            .at(path)
             .param("key", Value::String(key.to_owned()))
             .message(format!("field `{key}` has no loader configured"))
             .build()

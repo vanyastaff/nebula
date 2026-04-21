@@ -711,9 +711,28 @@ fn validate_literal_value(
             // `List` arises when `FieldValue::from_json` parsed the wire form
             // into the typed list variant — flatten to a JSON array for the
             // shape check below.
+            //
+            // Guard: an `Expression` element inside the list would otherwise
+            // slip past `ExpressionMode::Forbidden` because `to_json` on
+            // `FieldValue::Expression` emits a `{"$expr":"..."}` literal that
+            // `resolve_value` later evaluates. Reject before flattening when
+            // the field forbids expressions.
             let raw_json = match value {
                 FieldValue::Literal(lit) => lit.clone(),
                 FieldValue::List(items) => {
+                    if matches!(field.expression(), ExpressionMode::Forbidden)
+                        && items.iter().any(|v| matches!(v, FieldValue::Expression(_)))
+                    {
+                        report.push(
+                            ValidationError::builder("expression.forbidden")
+                                .at(path.clone())
+                                .message(format!(
+                                    "field `{path}` does not allow expression values in list items"
+                                ))
+                                .build(),
+                        );
+                        return;
+                    }
                     serde_json::Value::Array(items.iter().map(FieldValue::to_json).collect())
                 },
                 _ => return,

@@ -321,6 +321,70 @@ fn required_multi_file_empty_array_emits_required() {
 }
 
 #[test]
+fn required_code_empty_emits_required() {
+    let schema = Schema::builder()
+        .add(Field::code(fk("script")).required())
+        .build()
+        .unwrap();
+    let values = FieldValues::from_json(json!({"script": ""})).unwrap();
+    let report = schema.validate(&values).unwrap_err();
+    assert!(report.errors().any(|e| e.code == "required"));
+}
+
+#[test]
+fn required_single_file_empty_string_emits_required() {
+    let schema = Schema::builder()
+        .add(Field::file(fk("upload")).required())
+        .build()
+        .unwrap();
+    let values = FieldValues::from_json(json!({"upload": ""})).unwrap();
+    let report = schema.validate(&values).unwrap_err();
+    assert!(report.errors().any(|e| e.code == "required"));
+}
+
+#[test]
+fn required_multi_select_empty_array_emits_required() {
+    let schema = Schema::builder()
+        .add(
+            Field::select(fk("tags"))
+                .multiple()
+                .option("a", "A")
+                .required(),
+        )
+        .build()
+        .unwrap();
+    let values = FieldValues::from_json(json!({"tags": []})).unwrap();
+    let report = schema.validate(&values).unwrap_err();
+    assert!(report.errors().any(|e| e.code == "required"));
+}
+
+#[test]
+fn multi_select_with_expression_item_forbidden_emits_expression_forbidden() {
+    // Select defaults to ExpressionMode::Forbidden. A multi-select value
+    // whose list contains an expression placeholder must be rejected at
+    // validate-time — otherwise `resolve` would silently evaluate it.
+    let schema = Schema::builder()
+        .add(
+            Field::select(fk("tags"))
+                .multiple()
+                .option("a", "A")
+                .option("b", "B"),
+        )
+        .build()
+        .unwrap();
+    let values = FieldValues::from_json(json!({
+        "tags": ["a", {"$expr": "{{ $dynamic }}"}]
+    }))
+    .unwrap();
+    let report = schema.validate(&values).unwrap_err();
+    assert!(
+        report.errors().any(|e| e.code == "expression.forbidden"),
+        "expected expression.forbidden, got: {:?}",
+        report.errors().map(|e| &e.code).collect::<Vec<_>>()
+    );
+}
+
+#[test]
 fn required_string_single_char_ok() {
     let schema = Schema::builder()
         .add(Field::string(fk("name")).required())
