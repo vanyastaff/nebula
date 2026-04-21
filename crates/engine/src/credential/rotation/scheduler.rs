@@ -191,3 +191,102 @@ fn apply_jitter(base: Duration) -> Duration {
     let jittered_secs = rand::rng().random_range(min_secs..=max_secs);
     Duration::from_secs_f64(jittered_secs)
 }
+
+#[cfg(test)]
+mod tests {
+    use chrono::Duration as ChronoDuration;
+
+    use super::*;
+
+    #[test]
+    fn jitter_stays_within_ten_percent_window() {
+        let base = Duration::from_secs(90 * 24 * 3600);
+        let min_allowed = (base.as_secs_f64() * 0.9) as u64;
+        let max_allowed = (base.as_secs_f64() * 1.1) as u64;
+
+        for _ in 0..100 {
+            let jittered = apply_jitter(base);
+            let secs = jittered.as_secs();
+            assert!(secs >= min_allowed && secs <= max_allowed);
+        }
+    }
+
+    #[test]
+    fn periodic_scheduler_respects_interval_without_jitter() {
+        let interval = Duration::from_secs(3600);
+        let config = PeriodicConfig::new(interval, Duration::from_secs(60), false)
+            .expect("valid periodic config");
+        let scheduler = PeriodicScheduler::new(config);
+
+        let now = Instant::now();
+        let next = scheduler.schedule_rotation();
+        assert!(next > now);
+    }
+
+    #[test]
+    fn expiry_monitor_picks_conservative_trigger_time() {
+        let config = BeforeExpiryConfig::new(
+            0.9,
+            Duration::from_secs(10 * 24 * 3600),
+            Duration::from_secs(600),
+        )
+        .expect("valid before-expiry config");
+        let monitor = ExpiryMonitor::new(config);
+
+        let created = Utc::now();
+        let expires = created + ChronoDuration::days(30);
+        let trigger = monitor.calculate_rotation_trigger_time(created, expires);
+
+        // 90% trigger would be day 27; minimum-time trigger is day 20.
+        let expected = expires - ChronoDuration::days(10);
+        let diff = if trigger > expected {
+            trigger - expected
+        } else {
+            expected - trigger
+        };
+        assert!(diff < ChronoDuration::seconds(1));
+    }
+
+    #[test]
+    fn expiry_monitor_filters_credentials_ready_for_rotation() {
+        let config =
+            BeforeExpiryConfig::new(0.8, Duration::from_secs(3600), Duration::from_secs(600))
+                .expect("valid before-expiry config");
+        let monitor = ExpiryMonitor::new(config);
+        let now = Utc::now();
+
+        let id_due = CredentialId::new();
+        let id_not_due = CredentialId::new();
+        let credentials = vec![
+            (
+                id_due,
+                now - ChronoDuration::days(25),
+                now + ChronoDuration::days(5),
+            ),
+            (
+                id_not_due,
+                now - ChronoDuration::days(5),
+                now + ChronoDuration::days(25),
+            ),
+        ];
+        let due = monitor.check_credentials(&credentials);
+
+        assert!(due.contains(&id_due));
+        assert!(!due.contains(&id_not_due));
+    }
+
+    #[test]
+    fn scheduled_rotation_notification_and_rotation_checks() {
+        let scheduled_at = Utc::now() + ChronoDuration::hours(24);
+        let notify_before = Duration::from_secs(3600);
+        let config =
+            ScheduledConfig::new(scheduled_at, Duration::from_secs(600), Some(notify_before))
+                .expect("valid scheduled config");
+        let rotation = ScheduledRotation::new(config);
+
+        assert_eq!(rotation.schedule_at(), scheduled_at);
+        assert!(rotation.notification_time().is_some());
+        assert!(!rotation.should_rotate_now());
+        assert!(rotation.time_until_rotation() > ChronoDuration::hours(23));
+    }
+}
