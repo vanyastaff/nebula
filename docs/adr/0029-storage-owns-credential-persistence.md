@@ -279,10 +279,12 @@ wholesale to `crates/storage/tests/` and pin invariants 1-6 above.
 - AAD binding at the former `encryption.rs:146-211` — credential-id is
   AAD, AAD-less records rejected, record-swapping rejected — ports
   without modification.
-- `nebula-credential::secrets::crypto` (primitives) is called by
-  `nebula-storage::credential::layer::encryption` via sibling
-  dependency. Crypto primitives stay in credential; impl stays in
-  storage. Clean layer direction.
+- Crypto primitives at `crates/credential/src/secrets/crypto.rs`
+  (public re-exports on `nebula_credential::secrets` and the crate
+  root — `encrypt`/`decrypt`/`EncryptedData`/`EncryptionKey`) are
+  called by `nebula-storage::credential::layer::encryption` via sibling
+  dependency. Primitives stay in credential; `EncryptionLayer` impl
+  stays in storage. Clean layer direction.
 
 ## Alternatives considered
 

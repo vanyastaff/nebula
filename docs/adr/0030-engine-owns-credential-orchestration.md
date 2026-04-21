@@ -49,8 +49,9 @@ elsewhere:
    `credential_accessor.rs` and `resolver.rs`; the credential-side
    files are redundant wrappers.
 3. **Token refresh HTTP.** The refresh fragment inside
-   `credentials/oauth2_flow.rs` performs an HTTP round-trip to an
-   OAuth2 token endpoint when a projected access token nears expiry.
+   `credentials/oauth2/flow.rs` (nested under `oauth2/` since P2)
+   performs an HTTP round-trip to an OAuth2 token endpoint when a
+   projected access token nears expiry.
    The call happens during resolve, on the engine's hot path — it is
    engine work, not contract work.
 
@@ -85,7 +86,7 @@ The following types move from `nebula-credential/src/` to
 | `rotation/transaction.rs` | `rotation/transaction.rs` |
 | `resolver.rs` + `executor.rs` | `resolver.rs` (merged with existing `credential_accessor.rs` and `engine/resolver.rs`) |
 | `registry.rs` | `registry.rs` |
-| `credentials/oauth2_flow.rs` refresh fragment | `rotation/token_refresh.rs` (new file, reqwest client — see §4) |
+| `credentials/oauth2/flow.rs` refresh fragment | `rotation/token_refresh.rs` (new file, reqwest client — see §4) |
 
 The target shape under `crates/engine/src/credential/` (spec §3):
 
@@ -406,7 +407,7 @@ CI signals:
   `rotation/*`, `resolver.rs`, `executor.rs`, `registry.rs` into
   `engine/src/credential/`.
 - **Phase P9 implementation PR** — physical move of token-refresh
-  fragment from `credentials/oauth2_flow.rs` into
+  fragment from `credentials/oauth2/flow.rs` into
   `engine/src/credential/rotation/token_refresh.rs`. `reqwest`
   becomes engine base dep in this PR.
 - **[ADR-0031](./0031-api-owns-oauth-flow.md)** — downstream sibling;

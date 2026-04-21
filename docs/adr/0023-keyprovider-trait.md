@@ -14,7 +14,7 @@ related:
   - docs/adr/0029-storage-owns-credential-persistence.md
   - docs/audit/2026-04-19-codebase-quality-audit.md
   - crates/credential/src/layer/encryption.rs
-  - crates/credential/src/crypto.rs
+  - crates/credential/src/secrets/crypto.rs
 linear: []
 ---
 

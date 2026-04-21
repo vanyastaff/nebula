@@ -28,11 +28,12 @@ umbrella of cross-crate credential invariants. [ADR-0029](./0029-storage-owns-cr
 hands persistence to `nebula-storage`. [ADR-0030](./0030-engine-owns-credential-orchestration.md)
 hands runtime orchestration (including token refresh) to `nebula-engine`.
 This ADR codifies the third migration: **user-facing OAuth2 HTTP
-ceremony moves from `nebula-credential::credentials::oauth2_flow`
-into `nebula-api/src/credential/`**.
+ceremony moves from `crates/credential/src/credentials/oauth2/flow.rs`
+into `crates/api/src/credential/`**.
 
-Today, `nebula-credential::credentials::oauth2_flow.rs` mixes four
-distinct concerns:
+Today, `crates/credential/src/credentials/oauth2/flow.rs` (nested
+under the `credentials::oauth2` module since P2) mixes four distinct
+concerns:
 
 1. Authorization URI construction with PKCE challenge + CSRF token.
 2. Callback handling — receive authorization code, validate state,
@@ -45,8 +46,9 @@ distinct concerns:
 Only (1) + (2) are user-facing HTTP ceremony. They belong in the HTTP
 API surface, adjacent to `nebula-api`'s existing auth and webhook
 handlers. (3) moved to engine per ADR-0030. (4) stays in
-`nebula-credential::secrets::crypto` — pure arithmetic, reachable by
-api and engine via sibling dep.
+`crates/credential/src/secrets/crypto.rs` (public re-exports on
+`nebula_credential::secrets` and the crate root) — pure arithmetic,
+reachable by api and engine via sibling dep.
 
 The canon context that binds this migration:
 
@@ -346,8 +348,9 @@ the body. Never headers except `Content-Type` / `Content-Length`.
 - n8n's `@n8n/client-oauth2` is a reqwest-analog with a small
   feature set; we do not adopt the crate itself (adds a
   dependency hop) but adopt its shape.
-- PKCE primitives stay in `nebula-credential::secrets::crypto` —
-  pure arithmetic, reachable by api via sibling dep. Not moved.
+- PKCE primitives stay at `crates/credential/src/secrets/crypto.rs`
+  (public re-exports on `nebula_credential::secrets` and the crate
+  root) — pure arithmetic, reachable by api via sibling dep. Not moved.
 - `CredentialStore` is consumed from `nebula-storage` per ADR-0029.
   The api crate's composition root already depends on
   `nebula-storage` for session storage and similar; no new dep
@@ -355,7 +358,7 @@ the body. Never headers except `Content-Type` / `Content-Length`.
 
 ## Alternatives considered
 
-### A. Leave OAuth ceremony in `nebula-credential::credentials::oauth2_flow`
+### A. Leave OAuth ceremony in `crates/credential/src/credentials/oauth2/flow.rs`
 
 **Rejected.** Preserves today's layering violation: credential crate
 contains HTTP ceremony. Reqwest stays as a credential base dep.
