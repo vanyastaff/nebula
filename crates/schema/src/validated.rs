@@ -748,6 +748,7 @@ fn validate_literal_value(
             min_items,
             max_items,
             item,
+            unique,
             rules,
             ..
         }) => {
@@ -794,6 +795,26 @@ fn validate_literal_value(
                         ))
                         .build(),
                 );
+            }
+            if *unique {
+                let duplicate_index = if let Some(items_fv) = items_typed {
+                    first_duplicate_index(items_fv.iter().map(FieldValue::to_json))
+                } else if let FieldValue::Literal(serde_json::Value::Array(arr)) = value {
+                    first_duplicate_index(arr.iter().cloned())
+                } else {
+                    None
+                };
+                if let Some(idx) = duplicate_index {
+                    report.push(
+                        ValidationError::builder("items.unique")
+                            .at(path.clone().join(idx))
+                            .param("index", serde_json::json!(idx))
+                            .message(format!(
+                                "field `{path}` requires unique items; duplicate found at index {idx}"
+                            ))
+                            .build(),
+                    );
+                }
             }
             // Recurse into typed items when schema is present.
             if let (Some(item_field), Some(items_fv)) = (item.as_deref(), items_typed) {
@@ -919,6 +940,17 @@ fn validate_literal_value(
         },
         Field::Computed(_) | Field::Dynamic(_) | Field::Notice(_) => {},
     }
+}
+
+fn first_duplicate_index(values: impl IntoIterator<Item = serde_json::Value>) -> Option<usize> {
+    let mut seen: Vec<serde_json::Value> = Vec::new();
+    for (idx, value) in values.into_iter().enumerate() {
+        if seen.iter().any(|prior| prior == &value) {
+            return Some(idx);
+        }
+        seen.push(value);
+    }
+    None
 }
 
 /// Validate a transformed value against a static option set.

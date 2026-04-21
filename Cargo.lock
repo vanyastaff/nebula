@@ -4213,6 +4213,7 @@ dependencies = [
  "async-trait",
  "codspeed-criterion-compat",
  "indexmap",
+ "nebula-expression",
  "nebula-schema-macros",
  "nebula-validator",
  "proptest",

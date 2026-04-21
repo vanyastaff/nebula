@@ -15,9 +15,6 @@
 //! The following STANDARD_CODES entries cannot be emitted without additional
 //! infrastructure that is out of scope for Phase 1:
 //!
-//! - `"expression.parse"` — Phase 1's `Expression::parse()` is a no-op stub that always succeeds; a
-//!   real parse failure requires nebula-expression AST (Phase 4).
-//!
 //! - `"expression.runtime"` — requires a real `ExpressionContext` returning an eval error; Phase 4
 //!   scope.
 //!
@@ -27,10 +24,6 @@
 //! - `"mode.required"` — unreachable via the public API: `FieldValue::Mode` always carries a
 //!   non-empty `FieldKey` (validated at construction time), so the `mode_key.is_empty()` branch in
 //!   `validated.rs` can never fire.
-//!
-//! - `"items.unique"` — `Rule::UniqueBy` is classified as a deferred rule in nebula-validator and
-//!   is silently skipped at `ExecutionMode::StaticOnly` (Phase 1). A full runtime evaluation path
-//!   is needed (Phase 4).
 //!
 //! # Loader-family codes
 //!
@@ -265,6 +258,25 @@ fn emits_items_max() {
 }
 
 #[test]
+fn emits_items_unique() {
+    let schema = Schema::builder()
+        .add(
+            Field::list(field_key!("xs"))
+                .item(Field::string(fk("_item")))
+                .unique(),
+        )
+        .build()
+        .unwrap();
+    let vs = FieldValues::from_json(json!({"xs": ["a", "b", "a"]})).unwrap();
+    let err = schema.validate(&vs).unwrap_err();
+    assert!(
+        has_code(&err, "items.unique"),
+        "codes: {:?}",
+        err.errors().map(|e| &e.code).collect::<Vec<_>>()
+    );
+}
+
+#[test]
 fn emits_option_invalid() {
     let schema = Schema::builder()
         .add(
@@ -324,7 +336,22 @@ fn emits_expression_forbidden() {
     assert!(has_code(&err, "expression.forbidden"));
 }
 
-// expression.parse / expression.runtime / expression.type_mismatch require Phase 4.
+#[test]
+fn emits_expression_parse() {
+    let schema = Schema::builder()
+        .add(Field::number(field_key!("n")))
+        .build()
+        .unwrap();
+    let values = FieldValues::from_json(json!({"n": {"$expr": "{{ 1 + }}"}})).unwrap();
+    let report = schema.validate(&values).unwrap_err();
+    assert!(
+        has_code(&report, "expression.parse"),
+        "expected expression.parse, got: {:?}",
+        report.errors().map(|e| &e.code).collect::<Vec<_>>()
+    );
+}
+
+// expression.runtime / expression.type_mismatch require Phase 4.
 
 // ── Build-time (lint) codes ──────────────────────────────────────────────
 
