@@ -30,18 +30,22 @@ changes land as a new ADR that `supersedes` it.
 | [0020](./0020-library-first-gtm.md) | Library-first GTM + `apps/server` as thin composition root | accepted | 2026-04-19 |
 | [0021](./0021-crate-publication-policy.md) | Crate publication policy (`publish = true` requires ≥ 3 external consumers OR dedicated ADR) | accepted | 2026-04-19 |
 | [0022](./0022-webhook-signature-policy.md) | Webhook signature policy (`SignaturePolicy::Required` default at `WebhookAction` trait level) | accepted | 2026-04-19 |
-| [0023](./0023-keyprovider-trait.md) | `KeyProvider` trait between `EncryptionLayer` and key material source | accepted | 2026-04-19 |
+| [0023](./0023-keyprovider-trait.md) | `KeyProvider` trait between `EncryptionLayer` and key material source (superseded by 0029 in location) | accepted | 2026-04-19 |
 | [0024](./0024-defer-dynosaur-migration.md) | Defer `dynosaur` migration — keep `#[async_trait]` for `dyn`-consumed traits (supersedes 0014) | accepted | 2026-04-20 |
 | [0025](./0025-sandbox-broker-rpc-surface.md) | Sandbox Phase 1 broker — RPC surface and audit posture (sibling to 0006) | accepted | 2026-04-20 |
 | [0026](./0026-nebula-sdk-dependency-closure.md) | `nebula-sdk` dependency closure for crates.io publication (follow-up to 0021) | proposed | 2026-04-20 |
 | [0027](./0027-plugin-load-path-stable.md) | Plugin load-path stable — `Plugin` trait canonical; `ResolvedPlugin` per plugin; `PluginManifest` in `nebula-metadata`; multi-version runtime dropped | accepted | 2026-04-20 |
+| [0028](./0028-cross-crate-credential-invariants.md) | Cross-crate credential invariants (umbrella for 0029/0030/0031; §12.5 / §13.2 / §3.5 / §14 / §4.5 anchors) | accepted | 2026-04-20 |
+| [0029](./0029-storage-owns-credential-persistence.md) | `nebula-storage` owns credential persistence (supersedes 0023 in location of `KeyProvider` / `EncryptionLayer`) | accepted | 2026-04-20 |
+| [0030](./0030-engine-owns-credential-orchestration.md) | `nebula-engine` owns credential orchestration + token refresh; `RefreshCoordinator` stays concrete-not-trait | accepted | 2026-04-20 |
+| [0031](./0031-api-owns-oauth-flow.md) | `nebula-api` owns OAuth flow HTTP ceremony (PKCE S256, HMAC state, URL allowlist, fail-closed limits) | accepted | 2026-04-20 |
 
 ## Writing a new ADR
 
 1. Copy the frontmatter block from any existing ADR (keep the keys: `id`,
    `title`, `status`, `date`, `supersedes`, `superseded_by`, `tags`,
    `related`, optional `linear`).
-2. Pick the next free number (currently **0027**). Do not reuse.
+2. Pick the next free number (currently **0031**). Do not reuse.
 3. File name: `NNNN-kebab-case-title.md` matching the `title:` field.
 4. Start `status: proposed`. Move to `accepted` only after review and merge.
 5. **Do not substantively edit an accepted ADR.** Open a new one with
