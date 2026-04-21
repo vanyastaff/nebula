@@ -294,7 +294,6 @@ impl SchemaBuilder {
     pub fn build(self) -> Result<ValidSchema, ValidationReport> {
         let mut report = ValidationReport::new();
 
-        // Lint passes (Task 19 fills these out fully).
         crate::lint::lint_tree(&self.fields, &FieldPath::root(), &mut report);
 
         if report.has_errors() {
