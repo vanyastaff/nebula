@@ -25,6 +25,38 @@
 //!
 //! assert_eq!(valid.warnings().len(), 0);
 //! ```
+//!
+//! # Conditional fields
+//!
+//! Use `active_when` to express "field X only appears and is only required
+//! when predicate P holds" — the shorthand avoids repeating the same
+//! predicate in `visible_when` and `required_when`.
+//!
+//! ```rust
+//! use nebula_schema::prelude::*;
+//! use serde_json::json;
+//!
+//! let schema = Schema::builder()
+//!     .add(
+//!         Field::select(field_key!("auth_type"))
+//!             .option("api_key", "API key")
+//!             .option("oauth2", "OAuth2")
+//!             .required(),
+//!     )
+//!     .add(
+//!         Field::secret(field_key!("api_key")).active_when(Rule::predicate(
+//!             Predicate::eq("auth_type", json!("api_key")).unwrap(),
+//!         )),
+//!     )
+//!     .add(
+//!         Field::string(field_key!("client_id")).active_when(Rule::predicate(
+//!             Predicate::eq("auth_type", json!("oauth2")).unwrap(),
+//!         )),
+//!     )
+//!     .build()
+//!     .expect("schema is valid");
+//! assert_eq!(schema.fields().len(), 3);
+//! ```
 
 #![forbid(unsafe_code)]
 #![warn(missing_docs)]
