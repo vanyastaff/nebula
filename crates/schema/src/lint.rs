@@ -21,6 +21,7 @@ pub(crate) fn lint_tree(fields: &[Field], prefix: &FieldPath, report: &mut Valid
     let root_keys: HashSet<&str> = fields.iter().map(|f| f.key().as_str()).collect();
     lint_fields_new(fields, prefix, &root_keys, report);
     lint_visibility_cycles_new(fields, prefix, report);
+    lint_required_cycles_new(fields, prefix, report);
 }
 
 fn lint_fields_new(
@@ -588,6 +589,17 @@ fn emit_visibility_cycle_on_edge(from: &FieldPath, to: &FieldPath, report: &mut 
     );
 }
 
+fn emit_required_cycle_on_edge(from: &FieldPath, to: &FieldPath, report: &mut ValidationReport) {
+    report.push(
+        ValidationError::builder("required_cycle")
+            .at(from.clone())
+            .message(format!(
+                "required rule graph contains a cycle (dependency `{from}` -> `{to}`)"
+            ))
+            .build(),
+    );
+}
+
 /// Convert a validator JSON-pointer field path into a schema [`FieldPath`]
 /// (dot/bracket wire form used throughout this crate).
 fn validator_path_to_schema_path(vp: &ValidatorFieldPath) -> Option<FieldPath> {
@@ -739,6 +751,67 @@ fn append_visibility_edges(
     }
 }
 
+fn append_required_edges(
+    fields: &[Field],
+    prefix: &FieldPath,
+    defined: &HashSet<FieldPath>,
+    edges: &mut Vec<(FieldPath, FieldPath)>,
+) {
+    for field in fields {
+        let path = prefix.clone().join(field.key().clone());
+
+        if let Some(rule) = field_required_rule(field) {
+            let mut refs = Vec::new();
+            rule.field_references(&mut refs);
+            for field_ref in refs {
+                if let Some(target) = resolve_visibility_dependency(field_ref, prefix) {
+                    let normalized_target = normalize_visibility_target_path(&target);
+                    if defined.contains(&normalized_target) {
+                        edges.push((path.clone(), normalized_target));
+                    }
+                }
+            }
+        }
+
+        match field {
+            Field::List(list) => {
+                if let Some(Field::Object(obj)) = list.item.as_deref() {
+                    append_required_edges(&obj.fields, &path, defined, edges);
+                }
+            },
+            Field::Object(obj) => {
+                append_required_edges(&obj.fields, &path, defined, edges);
+            },
+            Field::Mode(mode) => {
+                for variant in &mode.variants {
+                    if let Ok(vk) = crate::key::FieldKey::new(variant.key.as_str()) {
+                        let vpath = path.clone().join(vk.clone());
+                        if let Some(rule) = field_required_rule(variant.field.as_ref()) {
+                            let mut refs = Vec::new();
+                            rule.field_references(&mut refs);
+                            for field_ref in refs {
+                                if let Some(target) =
+                                    resolve_visibility_dependency(field_ref, &vpath)
+                                {
+                                    let normalized_target =
+                                        normalize_visibility_target_path(&target);
+                                    if defined.contains(&normalized_target) {
+                                        edges.push((vpath.clone(), normalized_target));
+                                    }
+                                }
+                            }
+                        }
+                        if let Field::Object(obj) = variant.field.as_ref() {
+                            append_required_edges(&obj.fields, &vpath, defined, edges);
+                        }
+                    }
+                }
+            },
+            _ => {},
+        }
+    }
+}
+
 fn visibility_adjacency(edges: &[(FieldPath, FieldPath)]) -> HashMap<FieldPath, Vec<FieldPath>> {
     let mut adj: HashMap<FieldPath, Vec<FieldPath>> = HashMap::new();
     for (from, to) in edges {
@@ -800,6 +873,19 @@ fn lint_visibility_cycles_new(
     let adj = visibility_adjacency(&edges);
     if let Some((from, to)) = find_visibility_cycle_edge(&adj) {
         emit_visibility_cycle_on_edge(&from, &to, report);
+    }
+}
+
+fn lint_required_cycles_new(fields: &[Field], _prefix: &FieldPath, report: &mut ValidationReport) {
+    let mut defined: HashSet<FieldPath> = HashSet::new();
+    collect_defined_field_paths(fields, &FieldPath::root(), &mut defined);
+
+    let mut edges: Vec<(FieldPath, FieldPath)> = Vec::new();
+    append_required_edges(fields, &FieldPath::root(), &defined, &mut edges);
+
+    let adj = visibility_adjacency(&edges);
+    if let Some((from, to)) = find_visibility_cycle_edge(&adj) {
+        emit_required_cycle_on_edge(&from, &to, report);
     }
 }
 
@@ -1005,6 +1091,108 @@ mod tests {
         assert!(
             report.errors().any(|e| e.code == "visibility_cycle"),
             "expected visibility_cycle, got {:?}",
+            report.errors().map(|e| &e.code).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn detects_required_cycle_between_top_level_fields() {
+        let fields = vec![
+            Field::string("a")
+                .required_when(Rule::predicate(Predicate::eq("/b", json!(true)).unwrap()))
+                .into_field(),
+            Field::string("b")
+                .required_when(Rule::predicate(Predicate::eq("/a", json!(true)).unwrap()))
+                .into_field(),
+        ];
+
+        let report = run(fields);
+        assert!(
+            report.errors().any(|e| e.code == "required_cycle"),
+            "expected required_cycle, got {:?}",
+            report.errors().map(|e| &e.code).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn detects_required_cycle_inside_nested_object() {
+        let outer = Field::object("outer")
+            .add(
+                Field::string("x")
+                    .required_when(Rule::predicate(
+                        Predicate::eq("/outer/y", json!(true)).unwrap(),
+                    ))
+                    .into_field(),
+            )
+            .add(
+                Field::string("y")
+                    .required_when(Rule::predicate(
+                        Predicate::eq("/outer/x", json!(true)).unwrap(),
+                    ))
+                    .into_field(),
+            );
+
+        let report = run(vec![outer.into()]);
+        assert!(
+            report.errors().any(|e| e.code == "required_cycle"),
+            "expected required_cycle, got {:?}",
+            report.errors().map(|e| &e.code).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn detects_required_cycle_with_list_index_reference() {
+        let fields = vec![
+            Field::list("items")
+                .item(
+                    Field::object("row")
+                        .add(
+                            Field::string("x")
+                                .required_when(Rule::predicate(
+                                    Predicate::eq("/items/0/y", json!(true)).unwrap(),
+                                ))
+                                .into_field(),
+                        )
+                        .add(
+                            Field::string("y")
+                                .required_when(Rule::predicate(
+                                    Predicate::eq("/items/0/x", json!(true)).unwrap(),
+                                ))
+                                .into_field(),
+                        ),
+                )
+                .into_field(),
+        ];
+
+        let report = run(fields);
+        assert!(
+            report.errors().any(|e| e.code == "required_cycle"),
+            "expected required_cycle, got {:?}",
+            report.errors().map(|e| &e.code).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn detects_required_cycle_through_mode_variant_payload() {
+        let fields = vec![
+            Field::string("a")
+                .required_when(Rule::predicate(Predicate::eq("/m/v", json!(true)).unwrap()))
+                .into_field(),
+            Field::mode("m")
+                .variant(
+                    "v",
+                    "Variant",
+                    Field::string("payload")
+                        .required_when(Rule::predicate(Predicate::eq("/a", json!(true)).unwrap()))
+                        .into_field(),
+                )
+                .into_field(),
+        ];
+
+        let report = run(fields);
+        assert!(
+            report.errors().any(|e| e.code == "required_cycle"),
+            "expected required_cycle, got {:?}",
             report.errors().map(|e| &e.code).collect::<Vec<_>>()
         );
     }
