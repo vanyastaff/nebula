@@ -13,12 +13,11 @@ use nebula_core::{CredentialEvent, CredentialId};
 use nebula_eventbus::EventBus;
 
 use crate::{
+    Credential, CredentialState,
     context::CredentialContext,
-    credential::Credential,
     handle::CredentialHandle,
     refresh::{RefreshAttempt, RefreshCoordinator},
     resolve::RefreshOutcome,
-    state::CredentialState,
     store::{CredentialStore, PutMode, StoreError, StoredCredential},
 };
 
@@ -76,7 +75,7 @@ impl<S: CredentialStore> CredentialResolver<S> {
     ///
     /// Loads the stored credential, deserializes the state, and
     /// projects it to the [`AuthScheme`](nebula_core::AuthScheme) via
-    /// [`Credential::project()`](crate::credential::Credential::project).
+    /// [`Credential::project()`](crate::Credential::project).
     ///
     /// # Errors
     ///
@@ -456,14 +455,12 @@ mod tests {
 
     use super::*;
     // ── Test credential for early refresh ──────────────────────────────
-    use crate::SecretString;
     use crate::{
+        Credential, NoPendingState, SecretString,
         context::CredentialContext,
-        credential::Credential,
         credentials::ApiKeyCredential,
         error::CredentialError,
         metadata::CredentialMetadata,
-        pending::NoPendingState,
         resolve::{RefreshOutcome, RefreshPolicy, StaticResolveResult},
         scheme::SecretToken,
         store::{PutMode, StoredCredential},

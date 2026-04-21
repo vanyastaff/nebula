@@ -13,7 +13,7 @@ use crate::SecretString;
 /// Produced by: OAuth2 credential via `project()`.
 /// Consumed by: HTTP APIs requiring OAuth2 bearer auth.
 ///
-/// [`CredentialState`]: crate::state::CredentialState
+/// [`CredentialState`]: crate::CredentialState
 #[derive(Clone, Serialize, Deserialize)]
 pub struct OAuth2Token {
     #[serde(with = "crate::serde_secret")]

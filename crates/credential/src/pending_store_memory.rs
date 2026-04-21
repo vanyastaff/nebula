@@ -9,7 +9,7 @@ use chrono::Utc;
 use tokio::sync::RwLock;
 
 use crate::{
-    pending::{PendingState, PendingToken},
+    PendingState, PendingToken,
     pending_store::{PendingStateStore, PendingStoreError},
 };
 

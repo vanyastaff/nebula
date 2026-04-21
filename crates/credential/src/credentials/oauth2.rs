@@ -21,15 +21,12 @@ use super::{
     oauth2_flow,
 };
 use crate::{
-    SecretString,
+    Credential, CredentialState, PendingState, SecretString,
     context::CredentialContext,
-    credential::Credential,
     error::CredentialError,
     metadata::CredentialMetadata,
-    pending::PendingState,
     resolve::{DisplayData, InteractionRequest, RefreshOutcome, ResolveResult, UserInput},
     scheme::OAuth2Token,
-    state::CredentialState,
 };
 
 // ── OAuth2State ────────────────────────────────────────────────────────

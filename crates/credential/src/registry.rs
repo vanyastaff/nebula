@@ -2,11 +2,11 @@
 //!
 //! Maps `state_kind` strings to projection functions so the resolver can
 //! deserialize and project stored credentials without knowing the concrete
-//! [`Credential`](crate::credential::Credential) type at compile time.
+//! [`Credential`](crate::Credential) type at compile time.
 
 use std::{collections::HashMap, fmt, sync::Arc};
 
-use crate::{credential::Credential, state::CredentialState};
+use crate::{Credential, CredentialState};
 
 /// A function that projects stored bytes into a type-erased
 /// [`AuthScheme`](nebula_core::AuthScheme).

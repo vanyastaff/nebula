@@ -18,13 +18,12 @@ use std::future::Future;
 use nebula_core::AuthScheme;
 use nebula_schema::{FieldValues, ValidSchema};
 
+use super::{CredentialState, PendingState};
 use crate::{
     context::CredentialContext,
     error::CredentialError,
     metadata::CredentialMetadata,
-    pending::PendingState,
     resolve::{RefreshOutcome, RefreshPolicy, ResolveResult, TestResult, UserInput},
-    state::CredentialState,
 };
 
 /// Unified trait for all credential types.
@@ -39,7 +38,7 @@ use crate::{
 /// - **`State`** -- what gets encrypted and stored ([`CredentialState`]). May include refresh
 ///   internals not exposed to consumers.
 /// - **`Pending`** -- typed ephemeral state for interactive flows ([`PendingState`]).
-///   Non-interactive credentials use [`NoPendingState`](crate::pending::NoPendingState).
+///   Non-interactive credentials use [`NoPendingState`](crate::NoPendingState).
 ///
 /// # Capability consts
 ///
@@ -112,7 +111,7 @@ pub trait Credential: Send + Sync + 'static {
     /// Typed pending state for interactive flows.
     ///
     /// Non-interactive credentials: use
-    /// [`NoPendingState`](crate::pending::NoPendingState).
+    /// [`NoPendingState`](crate::NoPendingState).
     /// No default -- associated type defaults are unstable on stable Rust.
     /// The `#[derive(Credential)]` macro fills `NoPendingState` automatically.
     type Pending: PendingState;

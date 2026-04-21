@@ -34,12 +34,10 @@
 pub mod access_error;
 /// Credential accessor trait and implementations (Noop, Scoped).
 pub mod accessor;
-/// Object-safe supertrait for credential dependency declaration.
-pub mod any;
 /// Credential operation context.
 pub mod context;
-/// Unified Credential trait.
-pub mod credential;
+/// Credential contract surface — Credential trait + associated types.
+pub mod contract;
 /// Built-in credential type implementations.
 pub mod credentials;
 /// Cryptographic utilities: AES-256-GCM, key derivation, PKCE, serde_base64.
@@ -54,8 +52,6 @@ pub mod handle;
 pub mod key;
 /// Credential type metadata schema (integration catalog).
 pub mod metadata;
-/// Typed pending state for interactive flows.
-pub mod pending;
 /// Pending state store trait for interactive credential flows.
 pub mod pending_store;
 /// In-memory pending state store for testing and development.
@@ -79,10 +75,6 @@ pub mod secret_string;
 pub mod serde_secret;
 /// Credential snapshot.
 pub mod snapshot;
-/// Credential state trait for stored credential data.
-pub mod state;
-/// Reusable protocol pattern for static credentials.
-pub mod static_protocol;
 
 // ── Storage ─────────────────────────────────────────────────────────────────
 
@@ -116,8 +108,11 @@ pub use accessor::{
     CredentialAccessor, NoopCredentialAccessor, ScopedCredentialAccessor,
     default_credential_accessor,
 };
-// Unified Credential trait
-pub use credential::Credential;
+// Credential contract — Credential trait + associated types
+pub use contract::{
+    AnyCredential, Credential, CredentialState, NoPendingState, PendingState, PendingToken,
+    StaticProtocol,
+};
 // Built-in credential implementations
 pub use credentials::{
     ApiKeyCredential, BasicAuthCredential, OAuth2Credential, OAuth2Pending, OAuth2State,
@@ -140,8 +135,6 @@ pub use layer::{
 };
 pub use nebula_core::{AuthPattern, AuthScheme, CredentialEvent, CredentialId};
 pub use nebula_credential_macros::{AuthScheme, Credential};
-// Pending state
-pub use pending::{NoPendingState, PendingState, PendingToken};
 // Pending state store
 pub use pending_store::{PendingStateStore, PendingStoreError};
 pub use pending_store_memory::InMemoryPendingStore;
@@ -162,15 +155,9 @@ pub use scheme::{
     InstanceBinding, KeyPair, OAuth2Token, OtpSeed, SecretToken, SharedKey, SigningKey,
 };
 pub use secret_string::SecretString;
-// Credential state
-pub use state::CredentialState;
-// Static protocol pattern
-pub use static_protocol::StaticProtocol;
 pub use store::{CredentialStore, PutMode, StoreError, StoredCredential};
 pub use store_memory::InMemoryStore;
 
-// Any-credential object-safe supertrait
-pub use crate::any::AnyCredential;
 // Core types & errors
 pub use crate::context::{CredentialContext, CredentialResolverRef};
 // Crypto utilities

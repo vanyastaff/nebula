@@ -52,7 +52,7 @@ impl Metadata for CredentialMetadata {
 
 impl CredentialMetadata {
     /// Create credential metadata whose schema is pulled from a
-    /// [`Credential`](crate::credential::Credential) implementation's
+    /// [`Credential`](crate::Credential) implementation's
     /// `Input` type.
     #[must_use]
     pub fn for_credential<C>(
@@ -62,7 +62,7 @@ impl CredentialMetadata {
         pattern: AuthPattern,
     ) -> Self
     where
-        C: crate::credential::Credential,
+        C: crate::Credential,
     {
         Self {
             base: BaseMetadata::new(
@@ -99,7 +99,7 @@ impl CredentialMetadata {
 
 /// Imperative builder for [`CredentialMetadata`] — useful when the fields
 /// come from a config file or generated catalog entry rather than a
-/// compile-time [`Credential`](crate::credential::Credential) impl.
+/// compile-time [`Credential`](crate::Credential) impl.
 #[derive(Debug, Default)]
 pub struct CredentialMetadataBuilder {
     key: Option<CredentialKey>,

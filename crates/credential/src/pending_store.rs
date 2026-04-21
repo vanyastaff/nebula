@@ -2,7 +2,7 @@
 
 use std::future::Future;
 
-use crate::pending::{PendingState, PendingToken};
+use crate::{PendingState, PendingToken};
 
 /// Manages ephemeral pending state for interactive credential flows.
 ///

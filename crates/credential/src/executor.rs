@@ -9,10 +9,9 @@ use std::time::Duration;
 use nebula_schema::FieldValues;
 
 use crate::{
+    Credential, PendingToken,
     context::CredentialContext,
-    credential::Credential,
     error::CredentialError,
-    pending::PendingToken,
     pending_store::{PendingStateStore, PendingStoreError},
     resolve::{InteractionRequest, ResolveResult, UserInput},
 };
