@@ -22,24 +22,13 @@ serde_json = { workspace = true }
 tokio = { workspace = true, features = ["sync", "time"] }
 chrono = { workspace = true }
 
-# §12.5 primitives used by EncryptionLayer
-aes-gcm = "0.10"
-argon2 = "0.5"
+# Storage-local encoding / hashing / zeroizing — used directly by
+# KeyProvider fingerprints (base64 + sha2) and FileKeyProvider key
+# loading (zeroize). Cache layer uses moka::future.
 base64 = { workspace = true }
 sha2 = { workspace = true }
-rand = { workspace = true }
 zeroize = { version = "1.8.2", features = ["zeroize_derive"] }
-subtle = { workspace = true }
-
-# Cache + sync primitives
 moka = { workspace = true, features = ["future"] }
-arc-swap = { workspace = true }
-parking_lot = { workspace = true }
-scopeguard = "1"
-
-# Utilities
-tracing = { workspace = true }
-uuid = { workspace = true, features = ["v4", "serde"] }
 
 # Optional backends (см. docs/nebula-architecture-final.md)
 sqlx = { version = "0.8", optional = true, features = [
@@ -80,31 +69,7 @@ doctest = false
 # whose backend implementations live behind the feature guard. Kept
 # declared so the backend surface is stable even while implementation
 # is landing incrementally.
-#
-# tracing / uuid are workspace-level utilities kept declared so future
-# storage code (repos/outbox) can pick them up without a Cargo.toml diff.
-#
-# §12.5 primitive crates (aes-gcm, argon2, rand, subtle) — currently
-# consumed transitively via `nebula-credential` sibling dep per
-# ADR-0032 §Decision §2 (primitives stay in credential). Kept declared
-# so `EncryptionLayer` can flip to direct consumption without a
-# Cargo.toml diff if the primitives ever relocate. arc-swap /
-# parking_lot / scopeguard similarly pre-declared for future
-# cache/scope layer work.
-ignored = [
-  "aws-config",
-  "aws-sdk-s3",
-  "redis",
-  "tracing",
-  "uuid",
-  "aes-gcm",
-  "argon2",
-  "arc-swap",
-  "parking_lot",
-  "rand",
-  "scopeguard",
-  "subtle",
-]
+ignored = ["aws-config", "aws-sdk-s3", "redis"]
 
 [lints]
 workspace = true

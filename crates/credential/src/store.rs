@@ -75,14 +75,24 @@ pub enum StoreError {
         /// The credential ID.
         id: String,
     },
-    /// Audit sink rejected the operation; the write did not commit.
+    /// Audit sink refused to record the operation. Fail-closed alarm.
     ///
-    /// Fail-closed semantics per ADR-0028 invariant 4 and the
-    /// non-negotiable §14 "no discard-and-log" rule: if the audit
-    /// sink cannot durably record the event, the credential
-    /// operation as a whole fails. Consumers may retry with the same
-    /// arguments; rollback (where possible) has already been attempted
-    /// by the `AuditLayer`.
+    /// Per ADR-0028 invariant 4 + §14 "no discard-and-log": a failed
+    /// audit sink surfaces as a hard error rather than a log-and-continue.
+    /// The underlying store state depends on the operation and rollback
+    /// feasibility:
+    ///
+    /// - `put(PutMode::CreateOnly)` — `AuditLayer` attempts a best-effort `delete` of the
+    ///   freshly-inserted record before returning. On a clean rollback path, the write did not
+    ///   become externally visible.
+    /// - `put(PutMode::Overwrite | PutMode::CompareAndSwap)` / `delete` — no rollback. The mutation
+    ///   may already be visible to concurrent readers; this error is a **fail-closed alarm**
+    ///   signalling that the audit trail is compromised, not a guarantee that the mutation did not
+    ///   commit.
+    /// - `get` / `list` / `exists` — read path; no mutation to roll back.
+    ///
+    /// Consumers should treat this error as actionable (investigate the
+    /// audit sink; retry only after the sink is healthy).
     #[error("audit sink refused: {0}")]
     AuditFailure(String),
     /// Backend error.

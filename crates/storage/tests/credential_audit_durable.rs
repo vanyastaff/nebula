@@ -10,11 +10,13 @@
 //! Ref: `docs/adr/0032-credential-store-canonical-home.md` §2
 //! Ref: `docs/superpowers/plans/2026-04-20-credential-cleanup-p6-p11.md` §P6.7
 
-// The layers + `InMemoryStore` are feature-gated in storage. `--all-features`
-// enables both `credential-in-memory` and `test-util`, which is what CI
-// runs. Without those features the types below are not in scope, so this
-// whole integration test binary is gated on `test-util`.
-#![cfg(feature = "test-util")]
+// The layers + `InMemoryStore` are feature-gated in storage. This test
+// uses `InMemoryStore` (gated on `credential-in-memory`) wrapped by
+// `AuditLayer` (always available) with `make_credential` from
+// `nebula-credential` (gated on `test-util`). Gate on both features so
+// `cargo test -p nebula-storage --features test-util` (without
+// `credential-in-memory`) does not fail to compile.
+#![cfg(all(feature = "test-util", feature = "credential-in-memory"))]
 
 use std::sync::Arc;
 
