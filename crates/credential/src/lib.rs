@@ -24,7 +24,7 @@
 //!   named `Metadata` (ADR 0004).
 //! - `CredentialStore` — persistence trait. Concrete impls + composable layers (`EncryptionLayer`,
 //!   `CacheLayer`, `AuditLayer`, `ScopeLayer`) live in `nebula_storage::credential` per ADR-0032.
-//! - `CredentialRegistry`, `CredentialResolver` — type-erased dispatch and resolution.
+//! - Engine-owned runtime resolution lives in `nebula-engine::credential`.
 //! - `SecretString`, `CredentialGuard` — zeroizing secret wrappers.
 //! - `EncryptedData`, `EncryptionKey`, `encrypt`, `decrypt` — AES-256-GCM primitives.
 //! - `#[derive(Credential)]`, `#[derive(AuthScheme)]` — proc-macro derivations.
@@ -71,20 +71,14 @@ pub mod secrets;
 pub mod error;
 /// Credential lifecycle events for cross-crate signaling (EventBus payload).
 pub mod event;
-/// Framework executor for credential resolution with timeouts.
-pub mod executor;
 /// Pending state store trait for interactive credential flows.
 pub mod pending_store;
 /// In-memory pending state store for testing and development.
 pub mod pending_store_memory;
 /// Refresh coordination — thundering herd prevention.
 pub mod refresh;
-/// Type-erased credential registry for runtime dispatch.
-pub mod registry;
 /// Resolve result types: interaction, refresh, test.
 pub mod resolve;
-/// Runtime credential resolution.
-pub mod resolver;
 /// Retry logic with exponential backoff.
 pub mod retry;
 /// Credential snapshot.
@@ -126,8 +120,6 @@ pub use contract::{
 pub use credentials::{
     ApiKeyCredential, BasicAuthCredential, OAuth2Credential, OAuth2Pending, OAuth2State,
 };
-// Framework executor
-pub use executor::{ExecutorError, ResolveResponse, execute_continue, execute_resolve};
 // Derive macros
 pub use nebula_credential_macros::{AuthScheme, Credential};
 // Pending state store
@@ -135,15 +127,11 @@ pub use pending_store::{PendingStateStore, PendingStoreError};
 pub use pending_store_memory::InMemoryPendingStore;
 // Refresh coordination
 pub use refresh::{RefreshAttempt, RefreshCoordinator};
-// Registry
-pub use registry::{CredentialRegistry, RegistryError};
 // Resolve types
 pub use resolve::{
     DisplayData, InteractionRequest, RefreshOutcome, RefreshPolicy, ResolveResult,
     StaticResolveResult, TestResult, UserInput,
 };
-// Resolver
-pub use resolver::{CredentialResolver, ResolveError};
 // Auth schemes — open trait + 13-variant classification + 12 built-in scheme types
 pub use scheme::{
     AuthPattern, AuthScheme, Certificate, ChallengeSecret, ConnectionUri, FederatedAssertion,

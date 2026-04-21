@@ -6,7 +6,7 @@
 //! - Error handling and error types
 
 mod error_tests;
-// `pending_lifecycle_tests` moved to `crates/storage/tests/credential_pending_lifecycle.rs`
-// (ADR-0029 §4 / ADR-0032 — InMemoryPendingStore lives in nebula-storage).
+// `pending_lifecycle_tests` moved to `crates/engine/tests/credential_pending_lifecycle_tests.rs`
+// (P8 migration: runtime executor ownership moved to nebula-engine).
 mod scheme_roundtrip_tests;
 mod validation_tests;

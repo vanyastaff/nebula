@@ -3924,6 +3924,7 @@ dependencies = [
  "tokio",
  "tokio-util",
  "tracing",
+ "zeroize",
 ]
 
 [[package]]
@@ -4275,7 +4276,6 @@ dependencies = [
  "moka",
  "nebula-core",
  "nebula-credential",
- "nebula-schema",
  "redis",
  "rmp-serde",
  "serde",

@@ -219,7 +219,8 @@ mod tests {
 
     // The full invariant / behaviour test matrix lives next to the
     // canonical impl in `nebula_storage::credential::pending::tests` and
-    // in the integration test `credential_pending_lifecycle.rs`. Credential
+    // in the integration test `crates/engine/tests/credential_pending_lifecycle_tests.rs`.
+    // Credential
     // only retains a smoke test here — enough to catch shim drift without
     // duplicating the matrix.
     #[tokio::test]
