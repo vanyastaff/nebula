@@ -185,11 +185,18 @@ impl ScheduledRotation {
 fn apply_jitter(base: Duration) -> Duration {
     use rand::RngExt;
 
-    let base_secs = base.as_secs_f64();
-    let min_secs = base_secs * 0.9;
-    let max_secs = base_secs * 1.1;
-    let jittered_secs = rand::rng().random_range(min_secs..=max_secs);
-    Duration::from_secs_f64(jittered_secs)
+    /// `Duration::from_nanos` upper bound — avoids `from_secs_f64` panics on huge intervals.
+    const MAX_NS: u128 = u64::MAX as u128;
+
+    let base_ns = base.as_nanos().min(MAX_NS);
+    if base_ns == 0 {
+        return Duration::ZERO;
+    }
+    let min_ns = (base_ns.saturating_mul(9) / 10).max(1);
+    let max_ns = (base_ns.saturating_mul(11) / 10).max(min_ns).min(MAX_NS);
+    let jittered_ns = rand::rng().random_range(min_ns..=max_ns);
+    let jittered_u64 = u64::try_from(jittered_ns).unwrap_or(u64::MAX);
+    Duration::from_nanos(jittered_u64)
 }
 
 #[cfg(test)]

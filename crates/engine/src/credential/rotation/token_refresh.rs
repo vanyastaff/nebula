@@ -61,7 +61,7 @@ pub async fn refresh_oauth2_state(state: &mut OAuth2State) -> Result<(), TokenRe
         form.push(("scope", scope.as_str()));
     }
 
-    let client = reqwest::Client::new();
+    let client = oauth_refresh_http_client()?;
     let mut req = client.post(&state.token_url);
     match state.auth_style {
         AuthStyle::Header => {
@@ -84,13 +84,26 @@ pub async fn refresh_oauth2_state(state: &mut OAuth2State) -> Result<(), TokenRe
     Ok(())
 }
 
+fn oauth_refresh_http_client() -> Result<reqwest::Client, TokenRefreshError> {
+    reqwest::Client::builder()
+        .redirect(reqwest::redirect::Policy::limited(5))
+        .timeout(std::time::Duration::from_secs(30))
+        .build()
+        .map_err(|e| {
+            TokenRefreshError::Request(format!("oauth refresh http client build failed: {e}"))
+        })
+}
+
 async fn parse_token_response(resp: Response) -> Result<Value, TokenRefreshError> {
     let status = resp.status();
     if !status.is_success() {
-        let body_text = resp.text().await.unwrap_or_default();
+        let summary = match resp.text().await {
+            Ok(body_text) => oauth_token_error_summary(&body_text),
+            Err(e) => format!("failed to read token endpoint error body: {e}"),
+        };
         return Err(TokenRefreshError::TokenEndpoint {
             status: status.to_string(),
-            summary: oauth_token_error_summary(&body_text),
+            summary,
         });
     }
     resp.json::<Value>()
@@ -114,7 +127,12 @@ fn update_state_from_token_response(
         state.refresh_token = Some(SecretString::new(refresh_token));
     }
     if let Some(expires_in) = body.get("expires_in").and_then(Value::as_u64) {
-        state.expires_at = Some(Utc::now() + chrono::Duration::seconds(expires_in as i64));
+        let secs = i64::try_from(expires_in).map_err(|_| {
+            TokenRefreshError::Parse(
+                "invalid token response: 'expires_in' exceeds supported range".to_owned(),
+            )
+        })?;
+        state.expires_at = Some(Utc::now() + chrono::Duration::seconds(secs));
     }
     if let Some(scope) = body.get("scope").and_then(Value::as_str) {
         state.scopes = scope.split_whitespace().map(str::to_owned).collect();

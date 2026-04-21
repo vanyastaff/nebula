@@ -4,12 +4,12 @@ use std::future::Future;
 
 use axum::{
     Json, Router,
-    extract::{Extension, Path, Query, State},
+    extract::{Extension, Form, Path, Query, State},
     routing::get,
 };
 use nebula_credential::{
     Credential, CredentialState, CredentialStore, OAuth2Credential, OAuth2State, PendingState,
-    PendingStateStore, PendingStoreError, PutMode, SecretString, StoredCredential,
+    PendingStateStore, PendingStoreError, PutMode, SecretString, StoreError, StoredCredential,
     generate_code_challenge, generate_pkce_verifier, generate_random_state,
 };
 use serde::{Deserialize, Serialize};
@@ -142,11 +142,13 @@ pub async fn get_oauth2_callback(
 }
 
 /// POST `/credentials/{id}/oauth2/callback`
+///
+/// Accepts `application/x-www-form-urlencoded` bodies (`form_post` response mode).
 pub async fn post_oauth2_callback(
     Path(credential_id): Path<String>,
     State(state): State<AppState>,
     Extension(user): Extension<AuthenticatedUser>,
-    Json(body): Json<OAuthCallbackBody>,
+    Form(body): Form<OAuthCallbackBody>,
 ) -> ApiResult<Json<OAuthCallbackResponse>> {
     handle_callback(&credential_id, &state, &user, body.code, body.state).await
 }
@@ -348,6 +350,15 @@ async fn persist_oauth_state(
         ))
     })?;
     let now = chrono::Utc::now();
+    let (created_at, metadata) = match state.oauth_credential_store.get(credential_id).await {
+        Ok(existing) => (existing.created_at, existing.metadata),
+        Err(StoreError::NotFound { .. }) => (now, serde_json::Map::new()),
+        Err(e) => {
+            return Err(ApiError::Internal(format!(
+                "failed to read existing oauth credential: {e}"
+            )));
+        },
+    };
     let stored = StoredCredential {
         id: credential_id.to_owned(),
         credential_key: OAuth2Credential::KEY.to_owned(),
@@ -355,10 +366,10 @@ async fn persist_oauth_state(
         state_kind: OAuth2State::KIND.to_owned(),
         state_version: OAuth2State::VERSION,
         version: 0,
-        created_at: now,
+        created_at,
         updated_at: now,
         expires_at: oauth_state.expires_at(),
-        metadata: serde_json::Map::new(),
+        metadata,
     };
 
     state
@@ -503,6 +514,12 @@ mod tests {
         persist_oauth_state(&state, credential_id, old_oauth_state)
             .await
             .expect("seed existing oauth state");
+        let first_created_at = state
+            .oauth_credential_store
+            .get(credential_id)
+            .await
+            .expect("seeded credential")
+            .created_at;
 
         let csrf = generate_random_state();
         let signer = OAuthStateSigner::new(state.jwt_secret.as_bytes());
@@ -550,6 +567,10 @@ mod tests {
         assert_eq!(stored.state_kind, OAuth2State::KIND);
         assert_eq!(stored.credential_key, OAuth2Credential::KEY);
         assert_eq!(stored.version, 2);
+        assert_eq!(
+            stored.created_at, first_created_at,
+            "overwrite must preserve created_at"
+        );
 
         let persisted_state: OAuth2State =
             serde_json::from_slice(&stored.data).expect("oauth state json");

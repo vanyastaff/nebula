@@ -213,3 +213,82 @@ async fn e2e_oauth2_flow_persists_exchanged_credential_state() {
 
     token_server_handle.abort();
 }
+
+/// `form_post` response mode posts `code` and `state` as URL-encoded form fields.
+#[tokio::test]
+async fn e2e_oauth2_callback_accepts_form_post_body() {
+    let (state, _queue) = create_state_with_queue().await;
+    let config = ApiConfig::for_test();
+    let app = app::build_app(state.clone(), &config);
+    let token = create_test_jwt();
+    let credential_id = "oauth-e2e-credential-formpost";
+    let client_id = "e2e-client-id-fp";
+    let client_secret = "e2e-client-secret-fp";
+    let redirect_uri = "https://app.example.com/oauth/callback";
+    let auth_url = "https://provider.example.com/oauth/authorize";
+    let (token_url, token_server_handle) = spawn_mock_token_endpoint().await;
+
+    let auth_query = form_urlencoded::Serializer::new(String::new())
+        .append_pair("auth_url", auth_url)
+        .append_pair("token_url", &token_url)
+        .append_pair("client_id", client_id)
+        .append_pair("client_secret", client_secret)
+        .append_pair("redirect_uri", redirect_uri)
+        .append_pair("scopes", "repo workflow")
+        .finish();
+    let auth_uri = format!("/api/v1/credentials/{credential_id}/oauth2/auth?{auth_query}");
+
+    let auth_response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("GET")
+                .uri(auth_uri)
+                .header("authorization", format!("Bearer {token}"))
+                .body(Body::empty())
+                .expect("oauth auth request"),
+        )
+        .await
+        .expect("oauth auth response");
+    assert_eq!(auth_response.status(), StatusCode::OK);
+
+    let auth_body = axum::body::to_bytes(auth_response.into_body(), usize::MAX)
+        .await
+        .expect("oauth auth body");
+    let auth_json: serde_json::Value =
+        serde_json::from_slice(&auth_body).expect("oauth auth response json");
+    let signed_state = auth_json["state"]
+        .as_str()
+        .expect("signed state")
+        .to_owned();
+
+    let callback_body = form_urlencoded::Serializer::new(String::new())
+        .append_pair("code", "e2e-auth-code-formpost")
+        .append_pair("state", &signed_state)
+        .finish();
+    let callback_uri = format!("/api/v1/credentials/{credential_id}/oauth2/callback");
+
+    let callback_response = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(callback_uri)
+                .header("authorization", format!("Bearer {token}"))
+                .header("content-type", "application/x-www-form-urlencoded")
+                .body(Body::from(callback_body))
+                .expect("oauth callback POST"),
+        )
+        .await
+        .expect("oauth callback response");
+    assert_eq!(callback_response.status(), StatusCode::OK);
+
+    let callback_body_out = axum::body::to_bytes(callback_response.into_body(), usize::MAX)
+        .await
+        .expect("oauth callback body");
+    let callback_json: serde_json::Value =
+        serde_json::from_slice(&callback_body_out).expect("oauth callback response json");
+    assert_eq!(callback_json["credential_id"], credential_id);
+    assert_eq!(callback_json["exchanged"], true);
+
+    token_server_handle.abort();
+}

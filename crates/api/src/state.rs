@@ -8,11 +8,11 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 #[cfg(feature = "credential-oauth")]
-use nebula_credential::{InMemoryStore, PendingToken};
+use nebula_credential::PendingToken;
 use nebula_plugin::PluginRegistry;
 use nebula_runtime::ActionRegistry;
 #[cfg(feature = "credential-oauth")]
-use nebula_storage::credential::InMemoryPendingStore;
+use nebula_storage::credential::{InMemoryPendingStore, InMemoryStore};
 use nebula_storage::{ExecutionRepo, WorkflowRepo, repos::ControlQueueRepo};
 use nebula_telemetry::metrics::MetricsRegistry;
 use tokio::sync::RwLock;
