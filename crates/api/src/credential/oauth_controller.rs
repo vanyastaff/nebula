@@ -1,5 +1,7 @@
 //! OAuth controller endpoints (ADR-0031 rollout slice).
 
+use std::future::Future;
+
 use axum::{
     Json, Router,
     extract::{Extension, Path, Query, State},
@@ -156,6 +158,29 @@ async fn handle_callback(
     code: String,
     signed_state: String,
 ) -> ApiResult<Json<OAuthCallbackResponse>> {
+    handle_callback_with_exchange(
+        credential_id,
+        state,
+        user,
+        code,
+        signed_state,
+        |req| async move { exchange_code(&req).await },
+    )
+    .await
+}
+
+async fn handle_callback_with_exchange<F, Fut>(
+    credential_id: &str,
+    state: &AppState,
+    user: &AuthenticatedUser,
+    code: String,
+    signed_state: String,
+    exchange_fn: F,
+) -> ApiResult<Json<OAuthCallbackResponse>>
+where
+    F: Fn(TokenExchangeRequest) -> Fut,
+    Fut: Future<Output = Result<serde_json::Value, String>>,
+{
     let signer = OAuthStateSigner::new(state.jwt_secret.as_bytes());
     let payload = signer
         .verify_for_credential(&signed_state, credential_id)
@@ -184,7 +209,7 @@ async fn handle_callback(
         code_verifier: pending.code_verifier.expose_secret(ToOwned::to_owned),
         auth_style: pending.auth_style,
     };
-    let token_body = exchange_code(&token_exchange)
+    let token_body = exchange_fn(token_exchange)
         .await
         .map_err(ApiError::Internal)?;
     let oauth_state = build_oauth2_state(&token_body, &pending)?;
@@ -305,4 +330,115 @@ async fn persist_oauth_state(
             ApiError::Internal(format!("failed to persist oauth credential state: {e}"))
         })?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+
+    use nebula_credential::{CredentialStore, PendingStateStore};
+    use nebula_storage::{
+        InMemoryExecutionRepo, InMemoryWorkflowRepo,
+        repos::{ControlQueueRepo, InMemoryControlQueueRepo},
+    };
+
+    use super::*;
+    use crate::config::JwtSecret;
+
+    fn test_app_state() -> AppState {
+        let workflow_repo = Arc::new(InMemoryWorkflowRepo::new());
+        let execution_repo = Arc::new(InMemoryExecutionRepo::new());
+        let control_queue_repo: Arc<dyn ControlQueueRepo> =
+            Arc::new(InMemoryControlQueueRepo::new());
+        let jwt_secret =
+            JwtSecret::new("test-jwt-secret-1234567890-abcdef").expect("valid test secret");
+        AppState::new(
+            workflow_repo,
+            execution_repo,
+            control_queue_repo,
+            jwt_secret,
+        )
+    }
+
+    fn test_pending_exchange() -> OAuthPendingExchange {
+        OAuthPendingExchange {
+            token_url: "https://provider.example.com/token".to_owned(),
+            client_id: "client-id".to_owned(),
+            client_secret: SecretString::new("client-secret"),
+            redirect_uri: "https://app.example.com/callback".to_owned(),
+            code_verifier: SecretString::new("pkce-verifier"),
+            scopes: vec!["read".to_owned(), "write".to_owned()],
+            auth_style: nebula_credential::credentials::oauth2::AuthStyle::Header,
+        }
+    }
+
+    #[tokio::test]
+    async fn callback_persists_oauth_state_in_credential_store() {
+        let state = test_app_state();
+        let credential_id = "cred-123";
+        let user = AuthenticatedUser {
+            user_id: "user-123".to_owned(),
+        };
+
+        let csrf = generate_random_state();
+        let signer = OAuthStateSigner::new(state.jwt_secret.as_bytes());
+        let (signed_state, payload) =
+            build_signed_state(&signer, credential_id, csrf).expect("signed state");
+        let pending = test_pending_exchange();
+        let pending_token = state
+            .oauth_pending_store
+            .put("oauth2", &user.user_id, &payload.csrf_token, pending)
+            .await
+            .expect("pending store put");
+        state
+            .oauth_state_tokens
+            .write()
+            .await
+            .insert(signed_state.clone(), pending_token);
+
+        let token_body = serde_json::json!({
+            "access_token": "access-token-value",
+            "refresh_token": "refresh-token-value",
+            "token_type": "Bearer",
+            "expires_in": 3600,
+            "scope": "scope-a scope-b"
+        });
+        let callback = handle_callback_with_exchange(
+            credential_id,
+            &state,
+            &user,
+            "auth-code".to_owned(),
+            signed_state,
+            move |_req| {
+                let token_body = token_body.clone();
+                async move { Ok(token_body) }
+            },
+        )
+        .await
+        .expect("callback handled");
+        assert!(callback.0.exchanged);
+
+        let stored = state
+            .oauth_credential_store
+            .get(credential_id)
+            .await
+            .expect("stored oauth credential");
+        assert_eq!(stored.state_kind, OAuth2State::KIND);
+        assert_eq!(stored.credential_key, OAuth2Credential::KEY);
+
+        let persisted_state: OAuth2State =
+            serde_json::from_slice(&stored.data).expect("oauth state json");
+        assert_eq!(
+            persisted_state.access_token.expose_secret(|s| s.to_owned()),
+            "access-token-value"
+        );
+        assert_eq!(
+            persisted_state
+                .refresh_token
+                .expect("refresh token")
+                .expose_secret(|s| s.to_owned()),
+            "refresh-token-value"
+        );
+        assert_eq!(persisted_state.scopes, vec!["scope-a", "scope-b"]);
+    }
 }
