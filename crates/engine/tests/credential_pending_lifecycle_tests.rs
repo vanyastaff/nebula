@@ -347,17 +347,19 @@ async fn retry_does_not_consume_pending_token() {
     )
     .await
     .expect("poll should return Retry");
-    assert!(
-        matches!(
-            retry,
-            nebula_engine::credential::ResolveResponse::Retry { after }
-                if after == Duration::from_secs(1)
-        ),
-        "expected Retry(after=1s), got: {retry:?}"
-    );
+    let retry_token = match retry {
+        nebula_engine::credential::ResolveResponse::Retry {
+            after,
+            token: Some(token),
+        } => {
+            assert_eq!(after, Duration::from_secs(1));
+            token
+        },
+        other => panic!("expected Retry(after=1s, token), got: {other:?}"),
+    };
 
     let completed = nebula_engine::credential::execute_continue::<RetryAwareCredential, _>(
-        &token,
+        &retry_token,
         &UserInput::Code {
             code: "secret-code-123".into(),
         },
@@ -373,6 +375,44 @@ async fn retry_does_not_consume_pending_token() {
                 if token == "final-token"
         ),
         "expected Complete after retry flow, got: {completed:?}"
+    );
+}
+
+#[tokio::test]
+async fn retry_path_rejects_mismatched_session() {
+    let pending_store = InMemoryPendingStore::new();
+    let owner_ctx = CredentialContext::new("test-user").with_session_id("sess-owner");
+    let attacker_ctx = CredentialContext::new("test-user").with_session_id("sess-attacker");
+    let values = FieldValues::new();
+
+    let response = nebula_engine::credential::execute_resolve::<RetryAwareCredential, _>(
+        &values,
+        &owner_ctx,
+        &pending_store,
+    )
+    .await
+    .expect("execute_resolve should succeed");
+    let token = match response {
+        nebula_engine::credential::ResolveResponse::Pending { token, .. } => token,
+        other => panic!("expected Pending, got: {other:?}"),
+    };
+
+    let result = nebula_engine::credential::execute_continue::<RetryAwareCredential, _>(
+        &token,
+        &UserInput::Poll,
+        &attacker_ctx,
+        &pending_store,
+    )
+    .await;
+
+    assert!(
+        matches!(
+            result,
+            Err(nebula_engine::credential::ExecutorError::PendingStore(
+                PendingStoreError::ValidationFailed { .. }
+            ))
+        ),
+        "expected session-binding validation error, got: {result:?}"
     );
 }
 
