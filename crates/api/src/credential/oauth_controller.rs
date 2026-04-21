@@ -6,8 +6,9 @@ use axum::{
     routing::get,
 };
 use nebula_credential::{
-    PendingState, PendingStateStore, SecretString, generate_code_challenge, generate_pkce_verifier,
-    generate_random_state,
+    Credential, CredentialState, CredentialStore, OAuth2Credential, OAuth2State, PendingState,
+    PendingStateStore, PutMode, SecretString, StoredCredential, generate_code_challenge,
+    generate_pkce_verifier, generate_random_state,
 };
 use serde::{Deserialize, Serialize};
 use zeroize::Zeroize;
@@ -67,6 +68,11 @@ pub async fn get_oauth2_authorize_url(
         client_secret: SecretString::new(query.client_secret.clone()),
         redirect_uri: query.redirect_uri.clone(),
         code_verifier: SecretString::new(code_verifier),
+        scopes: query
+            .scopes
+            .as_deref()
+            .map(|raw| raw.split_whitespace().map(str::to_owned).collect())
+            .unwrap_or_default(),
         auth_style: query
             .auth_style
             .unwrap_or(nebula_credential::credentials::oauth2::AuthStyle::Header),
@@ -170,17 +176,19 @@ async fn handle_callback(
         .map_err(|e| ApiError::Unauthorized(format!("oauth pending consume failed: {e}")))?;
 
     let token_exchange = TokenExchangeRequest {
-        token_url: pending.token_url,
-        client_id: pending.client_id,
+        token_url: pending.token_url.clone(),
+        client_id: pending.client_id.clone(),
         client_secret: pending.client_secret.expose_secret(ToOwned::to_owned),
         code,
-        redirect_uri: pending.redirect_uri,
+        redirect_uri: pending.redirect_uri.clone(),
         code_verifier: pending.code_verifier.expose_secret(ToOwned::to_owned),
         auth_style: pending.auth_style,
     };
-    exchange_code(&token_exchange)
+    let token_body = exchange_code(&token_exchange)
         .await
         .map_err(ApiError::Internal)?;
+    let oauth_state = build_oauth2_state(&token_body, &pending)?;
+    persist_oauth_state(state, credential_id, oauth_state).await?;
 
     Ok(Json(OAuthCallbackResponse {
         credential_id: credential_id.to_owned(),
@@ -198,6 +206,7 @@ struct OAuthPendingExchange {
     redirect_uri: String,
     #[serde(with = "nebula_credential::serde_secret")]
     code_verifier: SecretString,
+    scopes: Vec<String>,
     auth_style: nebula_credential::credentials::oauth2::AuthStyle,
 }
 
@@ -208,6 +217,7 @@ impl Zeroize for OAuthPendingExchange {
         self.client_secret.zeroize();
         self.redirect_uri.zeroize();
         self.code_verifier.zeroize();
+        self.scopes.zeroize();
     }
 }
 
@@ -217,4 +227,82 @@ impl PendingState for OAuthPendingExchange {
     fn expires_in(&self) -> std::time::Duration {
         std::time::Duration::from_secs(600)
     }
+}
+
+fn build_oauth2_state(
+    token_body: &serde_json::Value,
+    pending: &OAuthPendingExchange,
+) -> Result<OAuth2State, ApiError> {
+    let access_token = token_body
+        .get("access_token")
+        .and_then(serde_json::Value::as_str)
+        .ok_or_else(|| ApiError::Validation {
+            detail: "token response missing required access_token".to_owned(),
+            errors: Vec::new(),
+        })?;
+
+    let refresh_token = token_body
+        .get("refresh_token")
+        .and_then(serde_json::Value::as_str)
+        .map(SecretString::new);
+    let token_type = token_body
+        .get("token_type")
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or("Bearer")
+        .to_owned();
+    let expires_at = token_body
+        .get("expires_in")
+        .and_then(serde_json::Value::as_u64)
+        .map(|secs| chrono::Utc::now() + chrono::Duration::seconds(secs as i64));
+    let scopes = token_body
+        .get("scope")
+        .and_then(serde_json::Value::as_str)
+        .map(|raw| raw.split_whitespace().map(str::to_owned).collect())
+        .unwrap_or_else(|| pending.scopes.clone());
+
+    Ok(OAuth2State {
+        access_token: SecretString::new(access_token),
+        token_type,
+        refresh_token,
+        expires_at,
+        scopes,
+        client_id: SecretString::new(pending.client_id.clone()),
+        client_secret: pending.client_secret.clone(),
+        token_url: pending.token_url.clone(),
+        auth_style: pending.auth_style,
+    })
+}
+
+async fn persist_oauth_state(
+    state: &AppState,
+    credential_id: &str,
+    oauth_state: OAuth2State,
+) -> ApiResult<()> {
+    let data = serde_json::to_vec(&oauth_state).map_err(|e| {
+        ApiError::Internal(format!(
+            "failed to serialize oauth state for persistence: {e}"
+        ))
+    })?;
+    let now = chrono::Utc::now();
+    let stored = StoredCredential {
+        id: credential_id.to_owned(),
+        credential_key: OAuth2Credential::KEY.to_owned(),
+        data,
+        state_kind: OAuth2State::KIND.to_owned(),
+        state_version: OAuth2State::VERSION,
+        version: 0,
+        created_at: now,
+        updated_at: now,
+        expires_at: oauth_state.expires_at(),
+        metadata: serde_json::Map::new(),
+    };
+
+    state
+        .oauth_credential_store
+        .put(stored, PutMode::Overwrite)
+        .await
+        .map_err(|e| {
+            ApiError::Internal(format!("failed to persist oauth credential state: {e}"))
+        })?;
+    Ok(())
 }

@@ -8,7 +8,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 #[cfg(feature = "credential-oauth")]
-use nebula_credential::PendingToken;
+use nebula_credential::{InMemoryStore, PendingToken};
 use nebula_plugin::PluginRegistry;
 use nebula_runtime::ActionRegistry;
 #[cfg(feature = "credential-oauth")]
@@ -74,6 +74,10 @@ pub struct AppState {
     /// Maps signed state -> pending token so callback can consume pending data.
     #[cfg(feature = "credential-oauth")]
     pub oauth_state_tokens: Arc<RwLock<HashMap<String, PendingToken>>>,
+
+    /// Credential state store used by OAuth callback completion in rollout mode.
+    #[cfg(feature = "credential-oauth")]
+    pub oauth_credential_store: Arc<InMemoryStore>,
 }
 
 impl AppState {
@@ -102,6 +106,8 @@ impl AppState {
             oauth_pending_store: Arc::new(InMemoryPendingStore::new()),
             #[cfg(feature = "credential-oauth")]
             oauth_state_tokens: Arc::new(RwLock::new(HashMap::new())),
+            #[cfg(feature = "credential-oauth")]
+            oauth_credential_store: Arc::new(InMemoryStore::new()),
         }
     }
 
