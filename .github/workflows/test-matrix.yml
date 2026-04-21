@@ -66,13 +66,29 @@ jobs:
           FULL='["nebula-action","nebula-api","nebula-core","nebula-credential","nebula-engine","nebula-error","nebula-eventbus","nebula-execution","nebula-expression","nebula-log","nebula-metrics","nebula-plugin","nebula-resilience","nebula-resource","nebula-runtime","nebula-schema","nebula-sdk","nebula-storage","nebula-system","nebula-telemetry","nebula-validator","nebula-workflow"]'
           SMOKE='["nebula-core","nebula-engine","nebula-runtime"]'
 
-          if [[ "${{ github.event_name }}" == "push" ]]; then
+          EVENT="${{ github.event_name }}"
+          if [[ "$EVENT" == "push" || "$EVENT" == "workflow_dispatch" ]]; then
             echo "packages=$FULL" >> "$GITHUB_OUTPUT"
             exit 0
           fi
 
-          BASE_SHA="${{ github.event.pull_request.base.sha }}"
-          HEAD_SHA="${{ github.event.pull_request.head.sha }}"
+          BASE_SHA=""
+          HEAD_SHA=""
+          if [[ "$EVENT" == "pull_request" ]]; then
+            BASE_SHA="${{ github.event.pull_request.base.sha }}"
+            HEAD_SHA="${{ github.event.pull_request.head.sha }}"
+          elif [[ "$EVENT" == "merge_group" ]]; then
+            BASE_SHA="${{ github.event.merge_group.base_sha }}"
+            HEAD_SHA="${{ github.event.merge_group.head_sha }}"
+          fi
+
+          # Fail-safe: if event payload does not provide diff SHAs, run full set
+          # rather than silently downgrading to smoke coverage.
+          if [[ -z "$BASE_SHA" || -z "$HEAD_SHA" ]]; then
+            echo "packages=$FULL" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
           CHANGED_FILES=$(git diff --name-only "$BASE_SHA" "$HEAD_SHA" || true)
 
           if [[ -z "$CHANGED_FILES" ]]; then

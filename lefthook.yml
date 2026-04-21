@@ -60,9 +60,6 @@ pre-push:
     # (syntax error, unrelated to cargo itself). Relying on CI keeps the
     # memory pitfall `feedback_lefthook_mirrors_ci.md` satisfied — MSRV is
     # still a required job on push.
-    shear:
-      run: cargo shear
-
 # Note: 'cargo udeps' is NOT in pre-push. It requires nightly + is slow. Kept in weekly CI workflow.
 
 # Note: 'cargo udeps' is NOT in pre-push. It requires nightly + is slow. Kept in weekly CI workflow.

@@ -28,7 +28,6 @@ That is the entire setup.
 | `typos` | Spell-check; checked in pre-commit |
 | `cargo-nextest` | Test runner; used in pre-push and CI |
 | `cargo-deny` | License + advisory check; pre-commit |
-| `cargo-shear` | Unused dependency detection; pre-push |
 | `cargo-semver-checks` | SemVer compliance check; advisory CI |
 | `cargo-audit` | Vulnerability scan; weekly CI cron |
 | `cargo-release` | Workspace version management |
@@ -141,7 +140,7 @@ After `lefthook install`, three hooks run on git events:
 
 - **pre-commit** (≤10s): fmt-check, clippy, typos, taplo, cargo-deny on changed files.
 - **commit-msg** (instant): convco validates the commit message follows conventional commits.
-- **pre-push** (≤90s parallel): nextest, doctests, --all-features check, --no-default-features check, docs, MSRV check, cargo-shear. This is a complete mirror of CI's required jobs.
+- **pre-push** (≤90s parallel): nextest, doctests, --all-features check, --no-default-features check, docs. MSRV runs in CI only (see note in `lefthook.yml`).
 
 If pre-push fails, fix locally before pushing. CI cannot fail without
 pre-push also failing on the same code.

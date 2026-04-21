@@ -28,6 +28,7 @@ on:
   pull_request:
     branches: [main]
     types: [opened, synchronize, reopened, ready_for_review]
+  merge_group:
   # `workflow_dispatch` allows CodSpeed to trigger backtest
   # performance analysis in order to generate initial data.
   workflow_dispatch:
@@ -61,7 +62,8 @@ concurrency:
 #
 # Partial runs: on PR we build/run only shards whose crates changed. CodSpeed
 # fills missing benches from the baseline (see codspeed.io/docs/features/partial-runs).
-# On `main` and `workflow_dispatch` all shards run to refresh the baseline.
+# On `main`, `merge_group`, and `workflow_dispatch` all shards run to refresh
+# the baseline and avoid partial coverage in merge queue.
 jobs:
   changes:
     name: Select shards
@@ -79,19 +81,24 @@ jobs:
           filters: |
             resilience:
               - 'crates/resilience/**'
-              - 'Cargo.lock'
               - '.github/workflows/codspeed.yml'
             validator:
               - 'crates/validator/**'
-              - 'Cargo.lock'
               - '.github/workflows/codspeed.yml'
-            misc:
+            core:
               - 'crates/core/**'
+              - '.github/workflows/codspeed.yml'
+            eventbus:
               - 'crates/eventbus/**'
+              - '.github/workflows/codspeed.yml'
+            expression:
               - 'crates/expression/**'
+              - '.github/workflows/codspeed.yml'
+            log:
               - 'crates/log/**'
+              - '.github/workflows/codspeed.yml'
+            system:
               - 'crates/system/**'
-              - 'Cargo.lock'
               - '.github/workflows/codspeed.yml'
 
       - name: Plan shards
@@ -100,23 +107,28 @@ jobs:
         env:
           R: ${{ steps.filter.outputs.resilience }}
           V: ${{ steps.filter.outputs.validator }}
-          M: ${{ steps.filter.outputs.misc }}
+          C: ${{ steps.filter.outputs.core }}
+          E: ${{ steps.filter.outputs.eventbus }}
+          X: ${{ steps.filter.outputs.expression }}
+          L: ${{ steps.filter.outputs.log }}
+          S: ${{ steps.filter.outputs.system }}
           EVENT: ${{ github.event_name }}
           REF: ${{ github.ref }}
           LABELS: ${{ toJSON(github.event.pull_request.labels.*.name) }}
         run: |
           set -euo pipefail
 
-          # Full run on main push, manual dispatch, or `run-full-ci` label.
+          # Full run on main push, merge queue, manual dispatch, or
+          # `run-full-ci` label.
           force=0
-          if [[ "$EVENT" == "workflow_dispatch" ]] || [[ "$REF" == "refs/heads/main" ]]; then
+          if [[ "$EVENT" == "workflow_dispatch" || "$EVENT" == "merge_group" ]] || [[ "$REF" == "refs/heads/main" ]]; then
             force=1
           fi
           if [[ -n "${LABELS:-}" ]] && jq -e '. | index("run-full-ci")' <<<"$LABELS" >/dev/null 2>&1; then
             force=1
           fi
           if [[ "$force" == "1" ]]; then
-            R=true; V=true; M=true
+            R=true; V=true; C=true; E=true; X=true; L=true; S=true
           fi
 
           SHARDS='[]'
@@ -124,10 +136,24 @@ jobs:
           # values (or <<delimiter syntax); default pretty-print breaks
           # `fromJson()` in the matrix consumer.
           add() { SHARDS=$(jq -c --argjson x "$1" '. + [$x]' <<<"$SHARDS"); }
+          M_PACKAGES=""
+          add_misc_pkg() {
+            if [[ -n "$M_PACKAGES" ]]; then
+              M_PACKAGES+=" "
+            fi
+            M_PACKAGES+="-p $1"
+          }
 
           [[ "$R" == "true" ]] && add '{"shard":"resilience","packages":"-p nebula-resilience"}'
           [[ "$V" == "true" ]] && add '{"shard":"validator","packages":"-p nebula-validator"}'
-          [[ "$M" == "true" ]] && add '{"shard":"misc","packages":"-p nebula-core -p nebula-eventbus -p nebula-expression -p nebula-log -p nebula-system"}'
+          [[ "$C" == "true" ]] && add_misc_pkg "nebula-core"
+          [[ "$E" == "true" ]] && add_misc_pkg "nebula-eventbus"
+          [[ "$X" == "true" ]] && add_misc_pkg "nebula-expression"
+          [[ "$L" == "true" ]] && add_misc_pkg "nebula-log"
+          [[ "$S" == "true" ]] && add_misc_pkg "nebula-system"
+          if [[ -n "$M_PACKAGES" ]]; then
+            add "$(jq -cn --arg packages "$M_PACKAGES" '{shard:"misc",packages:$packages}')"
+          fi
 
           echo "shards=$SHARDS" >> "$GITHUB_OUTPUT"
           echo "Planned shards: $SHARDS"

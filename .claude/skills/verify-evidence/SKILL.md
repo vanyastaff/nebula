@@ -34,7 +34,7 @@ Do not hardcode the command list here — it would drift from the canon. `CLAUDE
 
 Use the current "Full validation" commands from root `CLAUDE.md` §"Canonical Commands".
 
-`lefthook` pre-push additionally runs `cargo check --workspace --all-features --all-targets`, `cargo check --no-default-features` for selected crates, `cargo doc`, and `cargo shear`. You do not need to run those by hand — the push-time mirror handles them. If CI fails on one, diagnose root cause (do not `--no-verify`).
+`lefthook` pre-push additionally runs `cargo check --workspace --all-features --all-targets`, `cargo check --no-default-features` for selected crates, and `cargo doc`. You do not need to run those by hand — the push-time mirror handles them. If CI fails on one, diagnose root cause (do not `--no-verify`).
 
 ### 3. Single-crate iteration mode
 
