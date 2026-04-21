@@ -72,7 +72,9 @@ Long-lived managed object: connection pool, SDK client, file handle. Engine owns
 
 **What / why:** unified **Credential** contract — stored state vs projected auth material, refresh/resolve/test paths — so secrets and rotation stay **out of Action code** and logs.
 
-**Where to read:** `crates/credential/README.md`, `crates/credential/src/lib.rs`.
+**Plane B (integration credentials):** workflow-facing secrets for **external** systems (API keys, OAuth to third parties, certificates, …) live in this model. They are **not** the same as authenticating **to Nebula** (browser/API session, future SSO/LDAP to the control plane — see [ADR-0033](adr/0033-integration-credentials-plane-b.md) and a future Plane A / `nebula-auth` crate).
+
+**Where to read:** `crates/credential/README.md`, `crates/credential/src/lib.rs`, [ADR-0033 — Integration credentials (Plane B)](adr/0033-integration-credentials-plane-b.md).
 
 ## `nebula-action`
 

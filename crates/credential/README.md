@@ -17,6 +17,8 @@ In most workflow engines, credentials are blobs of JSON passed directly into nod
 
 **Credential Contract.** Stored-state vs consumer-facing auth-material split, pending-state contract, secret-handling primitives, and credential metadata/types. Each `Credential` type declares three associated types: `Scheme` (the auth protocol), `State` (what is persisted), and `Pending` (interactive flow state, e.g. OAuth2 PKCE). The engine resolves them; action code receives only the projected material.
 
+**Integration credentials (Plane B):** this crate models **workflow integration** secrets (calls to Slack, cloud APIs, databases, …), not operator login to Nebula. The canonical boundary and rules for adding new auth mechanisms are documented in [`docs/adr/0033-integration-credentials-plane-b.md`](../../docs/adr/0033-integration-credentials-plane-b.md).
+
 Pattern: *Typed credential lifecycle* (Release It! ch "Stability Patterns" — secrets must not leak; rotations must not strand in-flight executions). Implementation follows the canonical separation between domain representation (`CredentialRecord`) and persisted row (`nebula_storage::rows::CredentialRow`).
 
 ## Public API
