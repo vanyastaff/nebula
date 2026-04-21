@@ -19,7 +19,7 @@
 | **P3** | Done | Tokio feature audit documented in `crates/credential/Cargo.toml` (dependency comments). |
 | **P4** | Done | Credential-domain types live in `nebula-credential`; consumers updated. |
 | **P5** | Done | `docs/adr/0028`–`0031` present; `docs/adr/README.md` index; ADR-0023 `superseded_by: [0029]`. |
-| **P6+** | Out of scope here | Physical crate moves and remaining dep diet per plan intro checkpoint. |
+| **P6+** | See dedicated doc | [P6–P11 rolled-up status](./2026-04-20-credential-cleanup-p6-p11.md) — storage/engine/API phases and ADR-0032; most scope **landed** in-tree (see table there). |
 
 **Verification credential crate (2026-04-21):** `cargo clippy -p nebula-credential --features rotation -- -D warnings`; `cargo nextest run -p nebula-credential --features rotation` — pass.
 
