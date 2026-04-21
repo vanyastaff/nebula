@@ -115,6 +115,23 @@ fn expression_in_explicit_forbidden_string_emits_error() {
     assert!(report.errors().any(|e| e.code == "expression.forbidden"));
 }
 
+#[test]
+fn computed_field_literal_emits_expression_required() {
+    let schema = Schema::builder()
+        .add(Field::computed(fk("derived")))
+        .build()
+        .unwrap();
+    let values = FieldValues::from_json(json!({"derived": "plain"})).unwrap();
+    let report = schema.validate(&values).unwrap_err();
+    assert!(
+        report
+            .errors()
+            .any(|e| e.code == "expression.required" || e.code == "expression.type_mismatch"),
+        "expected expression.required/type_mismatch, got: {:?}",
+        report.errors().map(|e| &e.code).collect::<Vec<_>>()
+    );
+}
+
 // ── Type mismatch ────────────────────────────────────────────────────────────
 
 #[test]

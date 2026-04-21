@@ -332,6 +332,21 @@ fn emits_expression_forbidden() {
 }
 
 #[test]
+fn emits_expression_required() {
+    let schema = Schema::builder()
+        .add(Field::computed(field_key!("derived")))
+        .build()
+        .unwrap();
+    let vs = FieldValues::from_json(json!({"derived": "literal"})).unwrap();
+    let err = schema.validate(&vs).unwrap_err();
+    assert!(
+        has_code(&err, "expression.required"),
+        "expected expression.required, got: {:?}",
+        err.errors().map(|e| &e.code).collect::<Vec<_>>()
+    );
+}
+
+#[test]
 fn emits_expression_parse() {
     let schema = Schema::builder()
         .add(Field::number(field_key!("n")))

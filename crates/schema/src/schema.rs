@@ -374,16 +374,12 @@ fn build_index(
                 build_index(&obj.fields, &path, cursor, depth + 1, index, flags);
             },
             Field::List(list) => {
-                if let Some(item) = list.item.as_deref() {
-                    // Index the item schema itself under the list path.
-                    let mut child_cursor = cursor.clone();
-                    child_cursor.push(0);
-                    let item_path = path.clone().join(f.key().clone());
-                    // If item is an object, recurse into its fields.
-                    if let Field::Object(o) = item {
-                        build_index(&o.fields, &path, cursor, depth + 1, index, flags);
-                    }
-                    let _ = item_path; // suppress unused warning
+                if let Some(Field::Object(o)) = list.item.as_deref() {
+                    // List items are anonymous (indexed at runtime), so we do
+                    // not create a dedicated `FieldPath` entry for the item
+                    // itself. We only recurse when the item is an object to
+                    // index its named children under the list field path.
+                    build_index(&o.fields, &path, cursor, depth + 1, index, flags);
                 }
             },
             Field::Mode(mode) => {

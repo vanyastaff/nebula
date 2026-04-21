@@ -31,6 +31,7 @@ Pattern inspiration: DMMF proof-tokens (ch "Modeling with Types") and Rust types
 - `ValidSchema::validate(&FieldValues) -> Result<ValidValues, ValidationReport>` — schema-time validation; returns the first proof-token.
 - `ValidValues::resolve(self, ctx: &dyn ExpressionContext) -> Result<ResolvedValues, ValidationReport>` — async runtime resolution; consumes the first proof-token and returns the second (use `.await`).
 - `FieldValues`, `ResolvedValues` — value containers.
+- `FieldValues::try_set_raw` — fallible raw setter for runtime code paths; `set_raw` is the panic-on-invalid-key helper for tests/migrations.
 
 See `src/lib.rs` rustdoc for the quick-start example.
 
@@ -39,6 +40,8 @@ See `src/lib.rs` rustdoc for the quick-start example.
 - **[L1-3.5]** Schema is the typed-configuration surface for all integration concepts. See `docs/INTEGRATION_MODEL.md`.
 - **[L1-4.5]** `ValidValues` and `ResolvedValues` are compile-time-evident proof-tokens: a caller cannot invoke `resolve` without first holding `ValidValues`, cannot access resolved fields without `ResolvedValues`. No runtime flags.
 - **Structural lint** — `Schema::lint` enforces constraints that cannot be expressed in the builder type alone (duplicate keys, invariant violations across fields). Seam: `crates/schema/src/lint.rs`. Tests: `crates/schema/tests/`.
+- **Expression-required fields** — fields with `ExpressionMode::Required` (for example `ComputedField`) reject literal inputs with `expression.required` during validate-time.
+- **Strict key ingestion** — `FieldValues::from_json` rejects invalid object keys with `invalid_key` instead of silently dropping them.
 
 ## Non-goals
 

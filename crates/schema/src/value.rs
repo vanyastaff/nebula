@@ -173,6 +173,7 @@ impl FieldValues {
         reason = "ValidationError is intentionally large; callers are on the validation path"
     )]
     pub fn from_json(value: Value) -> Result<Self, crate::error::ValidationError> {
+        validate_json_keys(&value, &FieldPath::root())?;
         match FieldValue::from_json(value) {
             FieldValue::Object(map) => Ok(Self(map)),
             _ => Err(crate::error::ValidationError::builder("type_mismatch")
@@ -188,12 +189,33 @@ impl FieldValues {
 
     /// Convenience: set a raw JSON value by string key.
     ///
-    /// Parses `key` as a [`FieldKey`] and wraps `value` as `FieldValue::from_json`.
-    /// Panics if `key` is not a valid [`FieldKey`] — use only in tests and
-    /// migration code where the key is a known literal.
+    /// Parses `key` as a [`FieldKey`] and wraps `value` via
+    /// [`FieldValue::from_json`]. Panics if `key` is invalid — use only in
+    /// tests/migrations with known-good keys. For runtime input, prefer
+    /// [`Self::try_set_raw`].
     pub fn set_raw(&mut self, key: &str, value: Value) {
-        let fk = FieldKey::new(key).unwrap_or_else(|e| panic!("set_raw: invalid key {key:?}: {e}"));
-        self.0.insert(fk, FieldValue::Literal(value));
+        self.try_set_raw(key, value)
+            .unwrap_or_else(|e| panic!("set_raw failed for key {key:?}: {e}"));
+    }
+
+    /// Fallible variant of [`Self::set_raw`] for runtime code paths.
+    #[expect(
+        clippy::result_large_err,
+        reason = "ValidationError is intentionally large; callers are on the validation path"
+    )]
+    pub fn try_set_raw(
+        &mut self,
+        key: &str,
+        value: Value,
+    ) -> Result<(), crate::error::ValidationError> {
+        let fk = FieldKey::new(key).map_err(|e| {
+            crate::error::ValidationError::builder("invalid_key")
+                .message(format!("set_raw: invalid key {key:?}: {e}"))
+                .param("key", Value::String(key.to_owned()))
+                .build()
+        })?;
+        self.0.insert(fk, FieldValue::from_json(value));
+        Ok(())
     }
 
     /// Remove a value by key, returning it if present.
@@ -233,6 +255,12 @@ impl FieldValues {
             cur = match (cur, seg) {
                 (FieldValue::Object(map), PathSegment::Key(k)) => map.get(k)?,
                 (FieldValue::List(items), PathSegment::Index(i)) => items.get(*i)?,
+                (
+                    FieldValue::Mode {
+                        value: Some(inner), ..
+                    },
+                    PathSegment::Key(k),
+                ) if k.as_str() == "value" => inner,
                 _ => return None,
             };
         }
@@ -328,6 +356,54 @@ impl FieldValues {
     }
 }
 
+#[expect(
+    clippy::result_large_err,
+    reason = "ValidationError is intentionally large; callers are on the validation path"
+)]
+fn validate_json_keys(
+    value: &Value,
+    path: &FieldPath,
+) -> Result<(), crate::error::ValidationError> {
+    match value {
+        Value::Object(map) => {
+            if map.len() == 1 && map.get(EXPRESSION_KEY).is_some_and(Value::is_string) {
+                return Ok(());
+            }
+
+            let only_mode_keys = map.keys().all(|k| k == "mode" || k == "value");
+            if only_mode_keys && map.contains_key("mode") {
+                if let Some(inner) = map.get("value") {
+                    let payload_key = FieldKey::new("value").expect("value is a valid field key");
+                    let payload_path = path.clone().join(payload_key);
+                    validate_json_keys(inner, &payload_path)?;
+                }
+                return Ok(());
+            }
+
+            for (raw_key, child) in map {
+                let key = FieldKey::new(raw_key).map_err(|e| {
+                    crate::error::ValidationError::builder("invalid_key")
+                        .at(path.clone())
+                        .message(format!("invalid key `{raw_key}`: {e}"))
+                        .param("key", Value::String(raw_key.clone()))
+                        .build()
+                })?;
+                let child_path = path.clone().join(key);
+                validate_json_keys(child, &child_path)?;
+            }
+            Ok(())
+        },
+        Value::Array(items) => {
+            for (idx, item) in items.iter().enumerate() {
+                let item_path = path.clone().join(idx);
+                validate_json_keys(item, &item_path)?;
+            }
+            Ok(())
+        },
+        _ => Ok(()),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use serde_json::json;
@@ -388,6 +464,47 @@ mod tests {
         );
         let p = FieldPath::parse("user.email").unwrap();
         assert!(matches!(vs.get_path(&p), Some(FieldValue::Literal(_))));
+    }
+
+    #[test]
+    fn values_get_path_through_mode_value() {
+        let mut vs = FieldValues::new();
+        let auth = FieldKey::new("auth").unwrap();
+        let mode = FieldKey::new("oauth").unwrap();
+        let token = FieldKey::new("token").unwrap();
+        vs.set(
+            auth,
+            FieldValue::Mode {
+                mode,
+                value: Some(Box::new(FieldValue::Object(indexmap::indexmap! {
+                    token => FieldValue::Literal(json!("secret"))
+                }))),
+            },
+        );
+
+        let p = FieldPath::parse("auth.value.token").unwrap();
+        assert_eq!(vs.get_path(&p), Some(&FieldValue::Literal(json!("secret"))));
+    }
+
+    #[test]
+    fn field_values_from_json_rejects_invalid_nested_key() {
+        let err = FieldValues::from_json(json!({
+            "user": {
+                "bad-key": "x"
+            }
+        }))
+        .unwrap_err();
+        assert_eq!(err.code, "invalid_key");
+    }
+
+    #[test]
+    fn set_raw_parses_expression_wrapper() {
+        let mut vs = FieldValues::new();
+        vs.set_raw("expr", json!({"$expr":"{{ $x }}"}));
+        assert!(matches!(
+            vs.get(&FieldKey::new("expr").unwrap()),
+            Some(FieldValue::Expression(_))
+        ));
     }
 
     #[test]

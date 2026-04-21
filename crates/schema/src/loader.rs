@@ -175,11 +175,11 @@ fn field_path_from_key(key: &str) -> FieldPath {
     )
 }
 
-/// Use the path from a loader-returned error if it's non-root, otherwise build
-/// one from the registry lookup key.
-fn field_path_from_err_or(key: &str, err: &ValidationError) -> FieldPath {
+/// Use the path from a loader-returned error if it's non-root, otherwise fall
+/// back to the request field path.
+fn field_path_from_err_or(fallback: &FieldPath, err: &ValidationError) -> FieldPath {
     if err.path.is_root() {
-        field_path_from_key(key)
+        fallback.clone()
     } else {
         err.path.clone()
     }
@@ -244,7 +244,7 @@ impl LoaderRegistry {
         };
         loader.call(context).await.map_err(|e| {
             ValidationError::builder("loader.failed")
-                .at(field_path_from_err_or(key, &e))
+                .at(field_path_from_err_or(&field_path, &e))
                 .message(format!("option loader `{key}` failed: {e}"))
                 .param("loader", Value::String(key.to_owned()))
                 .source(e)
@@ -274,7 +274,7 @@ impl LoaderRegistry {
         };
         loader.call(context).await.map_err(|e| {
             ValidationError::builder("loader.failed")
-                .at(field_path_from_err_or(key, &e))
+                .at(field_path_from_err_or(&field_path, &e))
                 .message(format!("record loader `{key}` failed: {e}"))
                 .param("loader", Value::String(key.to_owned()))
                 .source(e)
@@ -337,6 +337,23 @@ mod tests {
         let ctx = LoaderContext::new("field", FieldValues::new());
         let err = registry.load_options("fail", ctx).await.unwrap_err();
         assert_eq!(err.code, "loader.failed");
+    }
+
+    #[tokio::test]
+    async fn loader_failure_root_path_maps_back_to_request_field() {
+        let registry = LoaderRegistry::new().register_option("regions_loader", |_ctx| async {
+            Err(ValidationError::builder("loader.failed")
+                .at(FieldPath::root())
+                .message("downstream error")
+                .build())
+        });
+        let ctx = LoaderContext::new("region", FieldValues::new());
+        let err = registry
+            .load_options("regions_loader", ctx)
+            .await
+            .unwrap_err();
+        assert_eq!(err.code, "loader.failed");
+        assert_eq!(err.path.to_string(), "region");
     }
 
     #[test]
