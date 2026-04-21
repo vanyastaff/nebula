@@ -68,10 +68,6 @@ msgpack-storage = ["dep:rmp-serde"]
 tokio = { workspace = true, features = ["full", "test-util"] }
 # Used by FileKeyProvider tests (key_provider.rs).
 tempfile = { workspace = true }
-# Used by `credential_pending_lifecycle` integration test — the test credential
-# takes `FieldValues` as its `Input` associated type to match the shape of
-# built-in credential impls.
-nebula-schema = { path = "../schema" }
 
 [lib]
 doctest = false

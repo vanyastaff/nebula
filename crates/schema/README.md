@@ -1,11 +1,12 @@
 ---
-name: nebula-schema
+
+## name: nebula-schema
+
 role: Typed Configuration Schema with Proof-Token Pipeline (bespoke; informed by Domain Modeling Made Functional "make illegal states unrepresentable")
 status: frontier
 last-reviewed: 2026-04-17
 canon-invariants: [L1-3.5, L1-4.5]
 related: [nebula-validator, nebula-expression, nebula-action, nebula-resource, nebula-credential]
----
 
 # nebula-schema
 

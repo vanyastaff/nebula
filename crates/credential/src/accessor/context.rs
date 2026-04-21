@@ -22,8 +22,9 @@ type ResolveSchemeResult<'a> =
 ///
 /// # Implementors
 ///
-/// The framework provides the concrete implementation backed by
-/// [`CredentialResolver`](crate::CredentialResolver). Credential authors
+/// The framework provides the concrete implementation backed by the
+/// engine-owned resolver (`nebula_engine::credential::CredentialResolver`).
+/// Credential authors
 /// interact with this trait indirectly through
 /// [`CredentialContext::resolve_credential`].
 pub trait CredentialResolverRef: Send + Sync {

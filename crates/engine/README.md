@@ -55,6 +55,11 @@ bounded concurrency.
 - `EngineError` — typed engine-layer error.
 - `ExecutionEvent` — broadcast event type emitted via `nebula-eventbus`.
 - `EngineCredentialAccessor` — scoped credential accessor injected into action contexts.
+- `credential` module — engine-owned credential runtime surface:
+  - `CredentialResolver`, `ResolveError`
+  - `CredentialRegistry`, `RegistryError`
+  - `execute_resolve`, `execute_continue`, `ResolveResponse`, `ExecutorError`
+  - `rotation` (feature-gated) orchestration facade
 - `EngineResourceAccessor` — scoped resource accessor injected into action contexts.
 - `NodeOutput` — per-node output threaded between execution levels.
 - `DEFAULT_EVENT_CHANNEL_CAPACITY` — default backpressure bound for the event channel.

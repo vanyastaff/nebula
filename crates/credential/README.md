@@ -1,8 +1,8 @@
 ---
 name: nebula-credential
-role: Credential Contract (stored state vs projected auth material; rotation, refresh)
+role: Credential Contract (stored state vs projected auth material; runtime orchestration lives in nebula-engine)
 status: frontier
-last-reviewed: 2026-04-17
+last-reviewed: 2026-04-21
 canon-invariants: [L2-12.5, L2-13.2]
 related: [nebula-core, nebula-schema, nebula-resource, nebula-action, nebula-plugin]
 ---
@@ -11,11 +11,11 @@ related: [nebula-core, nebula-schema, nebula-resource, nebula-action, nebula-plu
 
 ## Purpose
 
-In most workflow engines, credentials are blobs of JSON passed directly into node code — the author handles rotation, secret exposure, and multi-step flows ad hoc. `nebula-credential` replaces that pattern with a typed **Credential Contract**: the engine owns the split between **stored state** (what is persisted, possibly encrypted) and **projected auth material** (what action code receives), plus the rotation and refresh lifecycles. Action authors bind to a `Credential` type; they never hand-roll token refresh, never hold plaintext secrets longer than necessary, and never see secrets in logs.
+In most workflow engines, credentials are blobs of JSON passed directly into node code — the author handles rotation, secret exposure, and multi-step flows ad hoc. `nebula-credential` replaces that pattern with a typed **Credential Contract**: the engine owns the split between **stored state** (what is persisted, possibly encrypted) and **projected auth material** (what action code receives). Runtime orchestration (resolver/executor/refresh coordination) now lives in `nebula-engine::credential`. Action authors bind to a `Credential` type; they never hand-roll token refresh, never hold plaintext secrets longer than necessary, and never see secrets in logs.
 
 ## Role
 
-**Credential Contract.** Stored-state vs consumer-facing auth-material split, engine-owned rotation and refresh, composable layered storage. Each `Credential` type declares three associated types: `Scheme` (the auth protocol), `State` (what is persisted), and `Pending` (interactive flow state, e.g. OAuth2 PKCE). The engine resolves them; action code receives only the projected material.
+**Credential Contract.** Stored-state vs consumer-facing auth-material split, pending-state contract, secret-handling primitives, and credential metadata/types. Each `Credential` type declares three associated types: `Scheme` (the auth protocol), `State` (what is persisted), and `Pending` (interactive flow state, e.g. OAuth2 PKCE). The engine resolves them; action code receives only the projected material.
 
 Pattern: *Typed credential lifecycle* (Release It! ch "Stability Patterns" — secrets must not leak; rotations must not strand in-flight executions). Implementation follows the canonical separation between domain representation (`CredentialRecord`) and persisted row (`nebula_storage::rows::CredentialRow`).
 
@@ -24,20 +24,14 @@ Pattern: *Typed credential lifecycle* (Release It! ch "Stability Patterns" — s
 - `Credential` — unified trait: `resolve()`, `refresh()`, `test()`, `project()`.
 - `CredentialMetadata`, `CredentialMetadataBuilder` — static type descriptor: key, name, schema (`ValidSchema`), `AuthPattern`.
 - `CredentialRecord` — runtime operational state (created_at, version, expiry, tags); non-sensitive domain representation. Previously named `Metadata` (ADR 0004).
-- `AuthScheme`, `AuthPattern` — from `nebula-core`; the open scheme trait and classification enum.
+- `AuthScheme`, `AuthPattern` — open scheme trait and classification enum owned by this crate.
 - 12 built-in scheme types: `SecretToken`, `IdentityPassword`, `OAuth2Token`, `KeyPair`, `Certificate`, `SigningKey`, `FederatedAssertion`, `ChallengeSecret`, `OtpSeed`, `ConnectionUri`, `InstanceBinding`, `SharedKey`.
 - `CredentialStore`, `StoredCredential`, `PutMode`, `StoreError` — storage trait with layered composition.
-- `EncryptionLayer`, `CacheLayer`, `AuditLayer`, `ScopeLayer` — composable store decorators.
-- `KeyProvider`, `ProviderError` — seam between `EncryptionLayer` and the encryption-key source. `Arc<dyn KeyProvider>` replaces `Arc<EncryptionKey>` in `EncryptionLayer::new`; composition roots pick the provider at wiring time. See [ADR-0023](../../docs/adr/0023-keyprovider-trait.md).
-- `EnvKeyProvider` — reads a 32-byte AES-256 key from `NEBULA_CRED_MASTER_KEY` (base64), fail-closed on missing / short / dev-placeholder values.
-- `FileKeyProvider` — reads 32 raw key bytes from a filesystem path, refuses world-readable files on Unix.
-- `StaticKeyProvider` (feature `test-util`) — in-memory key for tests and internal composition; never enabled in production release builds.
-- `CredentialRegistry`, `RegistryError` — type-erased runtime dispatch.
-- `CredentialResolver`, `ResolveError` — resolution engine: resolve, refresh, test via registry.
-- `RefreshCoordinator`, `RefreshAttempt` — thundering-herd prevention for concurrent refresh.
+- `InMemoryStore` — in-crate test/development store shim (canonical impl is `nebula_storage::credential::InMemoryStore`).
 - `SecretString` — string type with automatic zeroization on drop.
 - `CredentialGuard` — secure RAII wrapper with `Deref` + zeroize on drop.
 - `NoPendingState`, `PendingState`, `PendingToken` — pending state for interactive flows.
+- `PendingStateStore`, `InMemoryPendingStore`, `PendingStoreError` — pending-state contract and in-memory shim.
 - `EncryptedData`, `EncryptionKey`, `encrypt`, `decrypt` — AES-256-GCM crypto primitives.
 - `#[derive(Credential)]`, `#[derive(AuthScheme)]` — proc-macro derivations (low boilerplate).
 - `CredentialRotationEvent`, `RotationError` (feature `rotation`) — rotation event and error types.
@@ -47,7 +41,7 @@ Pattern: *Typed credential lifecycle* (Release It! ch "Stability Patterns" — s
 ## Contract
 
 - **[L2-§12.5]** Encryption at rest uses authenticated encryption (AES-256-GCM). No bypass for debugging. `SecretString` and `Zeroizing<Vec<u8>>` on all intermediate plaintext buffers. `Debug` impls on credential wrappers redact secret fields. Seam: `crates/credential/src/crypto.rs`. Test: `crates/credential/src/crypto.rs` unit tests.
-- **[L2-§13.2]** Credential refresh and rotation must not silently strand or corrupt in-flight executions that hold valid material. Failure is explicit in status or errors if the system cannot reconcile. Seam: `crates/credential/src/resolver.rs` — `CredentialResolver::refresh`.
+- **[L2-§13.2]** Credential refresh and rotation must not silently strand or corrupt in-flight executions that hold valid material. Failure is explicit in status or errors if the system cannot reconcile. Seam: `crates/engine/src/credential/resolver.rs` — `CredentialResolver::resolve_with_refresh`.
 - **[L1-§3.5]** Engine owns the stored-state vs consumer-facing auth-material split. Action authors never hand-roll refresh or pending OAuth steps. Seam: `Credential::project()`.
 - **Rename note** — `CredentialRecord` was `Metadata` and `CredentialMetadata` was `Description` before ADR 0004 (commit `51baa36f`). All references to the old names are stale.
 
@@ -62,7 +56,7 @@ Pattern: *Typed credential lifecycle* (Release It! ch "Stability Patterns" — s
 
 See `docs/MATURITY.md` row for `nebula-credential`.
 
-- API stability: `frontier` — core trait, 12 scheme types, layered store, and resolver are implemented. Rotation feature (`rotation`) is feature-gated and still evolving.
+- API stability: `frontier` — core trait, 12 scheme types, store contract, and secret primitives are implemented. Runtime resolver/registry/executor moved to `nebula-engine::credential`. Rotation feature (`rotation`) is feature-gated and still evolving.
 - `#![forbid(unsafe_code)]` enforced.
 - Known gap: `CredentialRecord` placement is tracked for potential movement (see comment in `src/record.rs`); no canon revision required.
 
@@ -71,7 +65,7 @@ See `docs/MATURITY.md` row for `nebula-credential`.
 - Canon: `docs/PRODUCT_CANON.md` §3.5 (integration model — stored-state vs projected auth-material split), §12.5 (secrets + auth invariants), §13.2 (rotation/refresh seam).
 - Integration model: `docs/INTEGRATION_MODEL.md` §`nebula-credential`.
 - ADR: `docs/adr/0004-rename-credential-metadata-description.md` (Metadata→Record, Description→Metadata).
-- Siblings: `nebula-core` (`AuthScheme`, `AuthPattern`, `SecretString`, `CredentialId`), `nebula-schema` (`ValidSchema` for `CredentialMetadata.properties`), `nebula-action` (binds to credential types in `ActionDependencies`).
+- Siblings: `nebula-core` (cross-cutting IDs/scopes), `nebula-schema` (`ValidSchema` for `CredentialMetadata.properties`), `nebula-action` (binds to credential types in `ActionDependencies`), `nebula-engine` (`credential` module owns runtime resolution/orchestration), `nebula-storage` (`credential` module owns store impls/layers).
 
 ## Appendix
 

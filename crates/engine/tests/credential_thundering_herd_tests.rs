@@ -1,7 +1,4 @@
 //! Integration test: thundering herd prevention on credential refresh.
-//!
-//! Validates that spawning 10 concurrent `resolve_with_refresh` calls
-//! on an expiring credential results in exactly 1 actual refresh call.
 
 use std::sync::{
     Arc,
@@ -9,8 +6,7 @@ use std::sync::{
 };
 
 use nebula_credential::{
-    Credential, CredentialContext, CredentialResolver, CredentialStore, InMemoryStore,
-    NoPendingState, SecretString,
+    Credential, CredentialContext, CredentialStore, NoPendingState, SecretString,
     error::CredentialError,
     metadata::CredentialMetadata,
     resolve::{RefreshOutcome, RefreshPolicy, StaticResolveResult},
@@ -18,11 +14,9 @@ use nebula_credential::{
     store::{PutMode, StoredCredential},
 };
 use nebula_schema::FieldValues;
+use nebula_storage::credential::InMemoryStore;
 
-/// Global counter tracking how many times `refresh()` is actually called.
 static REFRESH_COUNT: AtomicU32 = AtomicU32::new(0);
-
-// ── Test credential state ────────────────────────────────────────────
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 struct ThunderingHerdState {
@@ -39,8 +33,6 @@ impl nebula_credential::CredentialState for ThunderingHerdState {
     }
 }
 
-// ── Test credential type ─────────────────────────────────────────────
-
 struct ThunderingHerdCredential;
 
 impl Credential for ThunderingHerdCredential {
@@ -53,7 +45,7 @@ impl Credential for ThunderingHerdCredential {
     const REFRESHABLE: bool = true;
     const REFRESH_POLICY: RefreshPolicy = RefreshPolicy {
         early_refresh: std::time::Duration::from_mins(5),
-        jitter: std::time::Duration::ZERO, // no jitter for deterministic test
+        jitter: std::time::Duration::ZERO,
         ..RefreshPolicy::DEFAULT
     };
 
@@ -83,7 +75,6 @@ impl Credential for ThunderingHerdCredential {
         _ctx: &CredentialContext,
     ) -> Result<RefreshOutcome, CredentialError> {
         REFRESH_COUNT.fetch_add(1, Ordering::SeqCst);
-        // Small delay to simulate a network call so waiters actually queue up
         tokio::time::sleep(std::time::Duration::from_millis(50)).await;
         state.token = "refreshed-token".to_owned();
         state.expires_at = chrono::Utc::now() + chrono::Duration::hours(1);
@@ -91,15 +82,11 @@ impl Credential for ThunderingHerdCredential {
     }
 }
 
-// ── Test ─────────────────────────────────────────────────────────────
-
 #[tokio::test]
 async fn only_one_refresh_under_concurrent_access() {
     REFRESH_COUNT.store(0, Ordering::SeqCst);
 
     let store = Arc::new(InMemoryStore::new());
-
-    // Token expires in 2 minutes — inside the 5-minute early_refresh window.
     let expires_at = chrono::Utc::now() + chrono::Duration::minutes(2);
     let state = ThunderingHerdState {
         token: "old-token".into(),
@@ -121,10 +108,9 @@ async fn only_one_refresh_under_concurrent_access() {
     };
     store.put(cred, PutMode::CreateOnly).await.unwrap();
 
-    let resolver = Arc::new(CredentialResolver::new(store));
+    let resolver = Arc::new(nebula_engine::credential::CredentialResolver::new(store));
     let ctx = CredentialContext::new("test-user");
 
-    // Spawn 10 concurrent resolve_with_refresh calls
     let mut handles = Vec::with_capacity(10);
     for _ in 0..10 {
         let r = Arc::clone(&resolver);
@@ -137,24 +123,16 @@ async fn only_one_refresh_under_concurrent_access() {
 
     let results: Vec<_> = futures::future::join_all(handles).await;
 
-    // All 10 tasks should succeed
     for (i, result) in results.iter().enumerate() {
         let inner = result.as_ref().expect("task should not panic");
         assert!(inner.is_ok(), "task {i} failed: {inner:?}");
     }
 
-    // Verify all callers got the refreshed token
     for result in &results {
         let handle = result.as_ref().unwrap().as_ref().unwrap();
         let value = handle.snapshot().token().expose_secret(ToOwned::to_owned);
         assert_eq!(value, "refreshed-token");
     }
 
-    // The critical invariant: only 1 refresh should have happened
-    assert_eq!(
-        REFRESH_COUNT.load(Ordering::SeqCst),
-        1,
-        "expected exactly 1 refresh, but {} occurred",
-        REFRESH_COUNT.load(Ordering::SeqCst)
-    );
+    assert_eq!(REFRESH_COUNT.load(Ordering::SeqCst), 1);
 }
