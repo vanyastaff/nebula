@@ -1053,7 +1053,7 @@ sequenceDiagram
 
 ---
 
-## 7. Пиитфоллы (не повторять)
+## 7. Питфоллы (не повторять)
 
 1. **LDAP без group→role mapping** — заложить с day 1.
 2. **Scan + explicit `package.json` registration** одновременно — дублирование.
