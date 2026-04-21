@@ -628,7 +628,7 @@ fn validator_path_to_schema_path(vp: &ValidatorFieldPath) -> Option<FieldPath> {
 /// key (`items.name`), not indexed instances (`items[0].name`). To make
 /// JSON-pointer refs such as `/items/0/name` comparable against that set, we
 /// drop index segments here.
-fn normalize_visibility_target_path(path: &FieldPath) -> FieldPath {
+fn normalize_rule_target_path(path: &FieldPath) -> FieldPath {
     let mut normalized = FieldPath::root();
     for segment in path.segments() {
         if matches!(segment, PathSegment::Index(_)) {
@@ -644,7 +644,7 @@ fn normalize_visibility_target_path(path: &FieldPath) -> FieldPath {
 /// - `$root.` — anchor at schema root (same convention as [`lint_rule_refs_new`]).
 /// - Leading `/` — JSON Pointer from schema root (validator [`ValidatorFieldPath`]).
 /// - Any other form is ignored (schema lint accepts JSON-pointer forms only).
-fn resolve_visibility_dependency(field_ref: &str, _scope_prefix: &FieldPath) -> Option<FieldPath> {
+fn resolve_rule_dependency(field_ref: &str, _scope_prefix: &FieldPath) -> Option<FieldPath> {
     if let Some(rest) = field_ref.strip_prefix("$root.") {
         let vp = ValidatorFieldPath::parse(rest)?;
         return validator_path_to_schema_path(&vp);
@@ -690,21 +690,22 @@ fn collect_defined_field_paths(
     }
 }
 
-fn append_visibility_edges(
+fn append_rule_edges(
     fields: &[Field],
     prefix: &FieldPath,
     defined: &HashSet<FieldPath>,
     edges: &mut Vec<(FieldPath, FieldPath)>,
+    rule_for: fn(&Field) -> Option<&Rule>,
 ) {
     for field in fields {
         let path = prefix.clone().join(field.key().clone());
 
-        if let Some(rule) = field_visible_rule(field) {
+        if let Some(rule) = rule_for(field) {
             let mut refs = Vec::new();
             rule.field_references(&mut refs);
             for field_ref in refs {
-                if let Some(target) = resolve_visibility_dependency(field_ref, prefix) {
-                    let normalized_target = normalize_visibility_target_path(&target);
+                if let Some(target) = resolve_rule_dependency(field_ref, prefix) {
+                    let normalized_target = normalize_rule_target_path(&target);
                     if defined.contains(&normalized_target) {
                         edges.push((path.clone(), normalized_target));
                     }
@@ -715,25 +716,22 @@ fn append_visibility_edges(
         match field {
             Field::List(list) => {
                 if let Some(Field::Object(obj)) = list.item.as_deref() {
-                    append_visibility_edges(&obj.fields, &path, defined, edges);
+                    append_rule_edges(&obj.fields, &path, defined, edges, rule_for);
                 }
             },
             Field::Object(obj) => {
-                append_visibility_edges(&obj.fields, &path, defined, edges);
+                append_rule_edges(&obj.fields, &path, defined, edges, rule_for);
             },
             Field::Mode(mode) => {
                 for variant in &mode.variants {
                     if let Ok(vk) = crate::key::FieldKey::new(variant.key.as_str()) {
                         let vpath = path.clone().join(vk.clone());
-                        if let Some(rule) = field_visible_rule(variant.field.as_ref()) {
+                        if let Some(rule) = rule_for(variant.field.as_ref()) {
                             let mut refs = Vec::new();
                             rule.field_references(&mut refs);
                             for field_ref in refs {
-                                if let Some(target) =
-                                    resolve_visibility_dependency(field_ref, &vpath)
-                                {
-                                    let normalized_target =
-                                        normalize_visibility_target_path(&target);
+                                if let Some(target) = resolve_rule_dependency(field_ref, &vpath) {
+                                    let normalized_target = normalize_rule_target_path(&target);
                                     if defined.contains(&normalized_target) {
                                         edges.push((vpath.clone(), normalized_target));
                                     }
@@ -741,7 +739,7 @@ fn append_visibility_edges(
                             }
                         }
                         if let Field::Object(obj) = variant.field.as_ref() {
-                            append_visibility_edges(&obj.fields, &vpath, defined, edges);
+                            append_rule_edges(&obj.fields, &vpath, defined, edges, rule_for);
                         }
                     }
                 }
@@ -751,68 +749,7 @@ fn append_visibility_edges(
     }
 }
 
-fn append_required_edges(
-    fields: &[Field],
-    prefix: &FieldPath,
-    defined: &HashSet<FieldPath>,
-    edges: &mut Vec<(FieldPath, FieldPath)>,
-) {
-    for field in fields {
-        let path = prefix.clone().join(field.key().clone());
-
-        if let Some(rule) = field_required_rule(field) {
-            let mut refs = Vec::new();
-            rule.field_references(&mut refs);
-            for field_ref in refs {
-                if let Some(target) = resolve_visibility_dependency(field_ref, prefix) {
-                    let normalized_target = normalize_visibility_target_path(&target);
-                    if defined.contains(&normalized_target) {
-                        edges.push((path.clone(), normalized_target));
-                    }
-                }
-            }
-        }
-
-        match field {
-            Field::List(list) => {
-                if let Some(Field::Object(obj)) = list.item.as_deref() {
-                    append_required_edges(&obj.fields, &path, defined, edges);
-                }
-            },
-            Field::Object(obj) => {
-                append_required_edges(&obj.fields, &path, defined, edges);
-            },
-            Field::Mode(mode) => {
-                for variant in &mode.variants {
-                    if let Ok(vk) = crate::key::FieldKey::new(variant.key.as_str()) {
-                        let vpath = path.clone().join(vk.clone());
-                        if let Some(rule) = field_required_rule(variant.field.as_ref()) {
-                            let mut refs = Vec::new();
-                            rule.field_references(&mut refs);
-                            for field_ref in refs {
-                                if let Some(target) =
-                                    resolve_visibility_dependency(field_ref, &vpath)
-                                {
-                                    let normalized_target =
-                                        normalize_visibility_target_path(&target);
-                                    if defined.contains(&normalized_target) {
-                                        edges.push((vpath.clone(), normalized_target));
-                                    }
-                                }
-                            }
-                        }
-                        if let Field::Object(obj) = variant.field.as_ref() {
-                            append_required_edges(&obj.fields, &vpath, defined, edges);
-                        }
-                    }
-                }
-            },
-            _ => {},
-        }
-    }
-}
-
-fn visibility_adjacency(edges: &[(FieldPath, FieldPath)]) -> HashMap<FieldPath, Vec<FieldPath>> {
+fn rule_adjacency(edges: &[(FieldPath, FieldPath)]) -> HashMap<FieldPath, Vec<FieldPath>> {
     let mut adj: HashMap<FieldPath, Vec<FieldPath>> = HashMap::new();
     for (from, to) in edges {
         adj.entry(from.clone()).or_default().push(to.clone());
@@ -820,9 +757,7 @@ fn visibility_adjacency(edges: &[(FieldPath, FieldPath)]) -> HashMap<FieldPath, 
     adj
 }
 
-fn find_visibility_cycle_edge(
-    adj: &HashMap<FieldPath, Vec<FieldPath>>,
-) -> Option<(FieldPath, FieldPath)> {
+fn find_cycle_edge(adj: &HashMap<FieldPath, Vec<FieldPath>>) -> Option<(FieldPath, FieldPath)> {
     // 0 = white, 1 = gray, 2 = black
     let mut color: HashMap<FieldPath, u8> = HashMap::new();
 
@@ -868,10 +803,16 @@ fn lint_visibility_cycles_new(
     collect_defined_field_paths(fields, &FieldPath::root(), &mut defined);
 
     let mut edges: Vec<(FieldPath, FieldPath)> = Vec::new();
-    append_visibility_edges(fields, &FieldPath::root(), &defined, &mut edges);
+    append_rule_edges(
+        fields,
+        &FieldPath::root(),
+        &defined,
+        &mut edges,
+        field_visible_rule,
+    );
 
-    let adj = visibility_adjacency(&edges);
-    if let Some((from, to)) = find_visibility_cycle_edge(&adj) {
+    let adj = rule_adjacency(&edges);
+    if let Some((from, to)) = find_cycle_edge(&adj) {
         emit_visibility_cycle_on_edge(&from, &to, report);
     }
 }
@@ -881,10 +822,16 @@ fn lint_required_cycles_new(fields: &[Field], _prefix: &FieldPath, report: &mut 
     collect_defined_field_paths(fields, &FieldPath::root(), &mut defined);
 
     let mut edges: Vec<(FieldPath, FieldPath)> = Vec::new();
-    append_required_edges(fields, &FieldPath::root(), &defined, &mut edges);
+    append_rule_edges(
+        fields,
+        &FieldPath::root(),
+        &defined,
+        &mut edges,
+        field_required_rule,
+    );
 
-    let adj = visibility_adjacency(&edges);
-    if let Some((from, to)) = find_visibility_cycle_edge(&adj) {
+    let adj = rule_adjacency(&edges);
+    if let Some((from, to)) = find_cycle_edge(&adj) {
         emit_required_cycle_on_edge(&from, &to, report);
     }
 }
@@ -1190,6 +1137,32 @@ mod tests {
         ];
 
         let report = run(fields);
+        assert!(
+            report.errors().any(|e| e.code == "required_cycle"),
+            "expected required_cycle, got {:?}",
+            report.errors().map(|e| &e.code).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn detects_visibility_and_required_cycles_independently() {
+        let fields = vec![
+            Field::string("a")
+                .visible_when(Rule::predicate(Predicate::eq("/b", json!(true)).unwrap()))
+                .required_when(Rule::predicate(Predicate::eq("/b", json!(true)).unwrap()))
+                .into_field(),
+            Field::string("b")
+                .visible_when(Rule::predicate(Predicate::eq("/a", json!(true)).unwrap()))
+                .required_when(Rule::predicate(Predicate::eq("/a", json!(true)).unwrap()))
+                .into_field(),
+        ];
+
+        let report = run(fields);
+        assert!(
+            report.errors().any(|e| e.code == "visibility_cycle"),
+            "expected visibility_cycle, got {:?}",
+            report.errors().map(|e| &e.code).collect::<Vec<_>>()
+        );
         assert!(
             report.errors().any(|e| e.code == "required_cycle"),
             "expected required_cycle, got {:?}",
