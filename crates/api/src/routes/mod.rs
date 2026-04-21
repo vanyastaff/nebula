@@ -26,7 +26,9 @@ pub fn create_routes(state: AppState, _config: &ApiConfig) -> Router {
         .with_state(state)
 }
 
-/// API v1 routes — all protected by JWT auth middleware
+/// API v1 routes — all protected by [`crate::middleware::auth::auth_middleware`]
+/// (**Plane A**). When feature `credential-oauth` is enabled, OAuth integration routes are **Plane
+/// B** acquisition adapters (`routes::credential`).
 fn api_v1_routes(state: AppState) -> Router<AppState> {
     let router = Router::new()
         .merge(workflow::router())

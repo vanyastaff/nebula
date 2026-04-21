@@ -51,7 +51,10 @@ Legend:
 This file is a living dashboard. Reviewers check truthfulness on every PR that touches a crate's public surface, test suite, or docs. Canon §17 DoD includes "MATURITY.md row updated if the PR changes crate state."
 
 Last full sweep: 2026-04-17 (Pass 4 of docs architecture redesign).
-Last targeted revision: 2026-04-21 — `docs/INTEGRATION_MODEL.md` **correctness**: attribute
+Last targeted revision: 2026-04-21 — ADR-0033 **implementation start**: `crate`-level `//!` docs
+for Plane A vs Plane B (`nebula-api` `middleware::auth` vs `credential` / `routes::credential`;
+`nebula-credential` `Credential` trait; `nebula-engine::credential`).
+Prior: 2026-04-21 — `docs/INTEGRATION_MODEL.md` **correctness**: attribute
 `AuthScheme` / `AuthPattern` / `SecretString` / `CredentialEvent` to **`nebula-credential`**
 (not `nebula-core`); trait path `crates/credential/src/scheme/auth.rs`. `MATURITY.md` Plane B
 wording includes **`AuthPattern`** alongside **`AuthScheme`**.

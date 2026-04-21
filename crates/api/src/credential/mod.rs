@@ -1,4 +1,9 @@
-//! OAuth credential HTTP ceremony (ADR-0031).
+//! Integration credential HTTP adapters — **Plane B** (ADR-0033) / OAuth ceremony (ADR-0031).
+//!
+//! HTTP endpoints that implement *acquisition* for [`nebula_credential::Credential`] types
+//! (e.g. OAuth2 authorize URL + callback). They delegate to the engine/credential pipeline; they do
+//! **not** define `Credential` semantics and are **not** Nebula operator login (**Plane A** —
+//! see [`crate::middleware::auth`]).
 //!
 //! Feature-gated behind `credential-oauth` during rollout.
 
