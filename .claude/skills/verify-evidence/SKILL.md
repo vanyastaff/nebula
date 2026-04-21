@@ -34,7 +34,7 @@ Do not hardcode the command list here — it would drift from the canon. `CLAUDE
 
 Use the current "Full validation" commands from root `CLAUDE.md` §"Canonical Commands".
 
-`lefthook` pre-push additionally runs a fast local gate: smoke `nextest` (`nebula-core`, `nebula-engine`, `nebula-runtime`), `cargo check --workspace --all-features --all-targets`, and `cargo check --no-default-features` for selected crates. Full doctests/docs/MSRV are CI-owned checks. If CI fails on one, diagnose root cause (do not `--no-verify`).
+`lefthook` pre-push additionally runs a crate-diff local gate: `nextest` and `cargo check --all-features --all-targets` on crates changed in the pending push range, plus selected `--no-default-features` checks when those crates changed. Full doctests/docs/MSRV are CI-owned checks. If CI fails on one, diagnose root cause (do not `--no-verify`).
 
 ### 3. Single-crate iteration mode
 

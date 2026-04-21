@@ -56,9 +56,10 @@ lefthook install
 
 - `pre-commit` (≤10s): fmt, clippy, typos, taplo, cargo-deny
 - `commit-msg`: conventional-commit validation via `convco`
-- `pre-push` (fast gate): smoke `nextest` on `nebula-core`/`nebula-engine`/`nebula-runtime`,
-  plus `--all-features` and selected `--no-default-features` checks.
-  Full doctests/docs/MSRV stay in CI required jobs.
+- `pre-push` (crate-diff gate): runs `nextest` + `cargo check --all-features --all-targets`
+  only for crates changed in the pending push range, with selected
+  `--no-default-features` checks where applicable. Full doctests/docs/MSRV stay
+  in CI required jobs.
 
 See [docs/dev-setup.md](docs/dev-setup.md) for lefthook troubleshooting and
 agent-profile notes.

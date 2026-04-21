@@ -140,7 +140,7 @@ After `lefthook install`, three hooks run on git events:
 
 - **pre-commit** (≤10s): fmt-check, clippy, typos, taplo, cargo-deny on changed files.
 - **commit-msg** (instant): convco validates the commit message follows conventional commits.
-- **pre-push** (fast parallel gate): smoke nextest (`nebula-core`, `nebula-engine`, `nebula-runtime`), `--all-features` check, and selected `--no-default-features` checks. Full doctests/docs/MSRV run in CI.
+- **pre-push** (crate-diff gate): runs `nextest` and `cargo check --all-features --all-targets` only for crates changed in the pending push range, plus selected `--no-default-features` checks where applicable. Full doctests/docs/MSRV run in CI.
 
 If pre-push fails, fix locally before pushing. CI cannot fail without
 pre-push also failing on the same code.

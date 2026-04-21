@@ -1,7 +1,7 @@
 # lefthook.yml
 # Local git hooks. Pre-commit = fast on changed files.
-# Pre-push = fast gate that keeps push-time feedback under a few minutes.
-# Full validation remains in CI required jobs.
+# Pre-push = crate-diff gate: runs checks only for changed crates in the
+# pending push range. Full validation remains in CI required jobs.
 
 skip_output:
   - meta
@@ -37,19 +37,54 @@ commit-msg:
       run: cat {1} | convco check --from-stdin
 
 pre-push:
-  parallel: true
+  parallel: false
   commands:
-    nextest-smoke:
-      run: cargo nextest run -p nebula-core -p nebula-engine -p nebula-runtime --profile agent
-    check-all-features:
-      run: cargo check --workspace --all-features --all-targets --quiet
-    check-no-default:
+    crate-diff-gate:
       run: |
-        cargo check -p nebula-resilience --no-default-features --quiet
-        cargo check -p nebula-log --no-default-features --quiet
-        cargo check -p nebula-expression --no-default-features --quiet
-    # Doctests/docs/MSRV are CI-owned checks. Keeping them out of pre-push
-    # materially shortens local push feedback loop on Windows.
+        set -euo pipefail
+
+        # Determine comparison range for this push.
+        UPSTREAM_REF="$(git rev-parse --abbrev-ref --symbolic-full-name '@{u}' 2>/dev/null || true)"
+        if [[ -n "$UPSTREAM_REF" ]]; then
+          RANGE="$UPSTREAM_REF...HEAD"
+        elif git rev-parse --verify origin/main >/dev/null 2>&1; then
+          RANGE="origin/main...HEAD"
+        else
+          echo "lefthook: no upstream ref found; running fallback smoke gate"
+          cargo nextest run -p nebula-core -p nebula-engine -p nebula-runtime --profile agent
+          cargo check --workspace --all-features --all-targets --quiet
+          exit 0
+        fi
+
+        CHANGED_FILES="$(git diff --name-only "$RANGE" || true)"
+        mapfile -t CHANGED_CRATES < <(
+          printf '%s\n' "$CHANGED_FILES" \
+            | sed -n 's#^crates/\([^/]*\)/.*#\1#p' \
+            | sort -u
+        )
+
+        if [[ ${#CHANGED_CRATES[@]} -eq 0 ]]; then
+          echo "lefthook: no crate changes in $RANGE; skipping pre-push crate checks"
+          exit 0
+        fi
+
+        PKG_ARGS=()
+        for crate in "${CHANGED_CRATES[@]}"; do
+          PKG_ARGS+=("-p" "nebula-$crate")
+        done
+
+        echo "lefthook: checking changed crates: ${CHANGED_CRATES[*]}"
+        cargo nextest run "${PKG_ARGS[@]}" --profile agent
+        cargo check "${PKG_ARGS[@]}" --all-features --all-targets --quiet
+
+        # Keep no-default-features checks for crates that support this gate.
+        for crate in resilience log expression; do
+          if printf '%s\n' "${CHANGED_CRATES[@]}" | rg -x "$crate" >/dev/null; then
+            cargo check -p "nebula-$crate" --no-default-features --quiet
+          fi
+        done
+
+    # Doctests/docs/MSRV remain CI-owned checks.
 # Note: 'cargo udeps' is NOT in pre-push. It requires nightly + is slow. Kept in weekly CI workflow.
 
 # Note: 'cargo udeps' is NOT in pre-push. It requires nightly + is slow. Kept in weekly CI workflow.
