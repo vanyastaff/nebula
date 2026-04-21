@@ -53,7 +53,7 @@ This file is a living dashboard. Reviewers check truthfulness on every PR that t
 Last full sweep: 2026-04-17 (Pass 4 of docs architecture redesign).
 Last targeted revision: 2026-04-21 — `docs/INTEGRATION_MODEL.md` **correctness**: attribute
 `AuthScheme` / `AuthPattern` / `SecretString` / `CredentialEvent` to **`nebula-credential`**
-(not `nebula-core`); trait path `crates/credential/src/scheme/auth.rs`. `MATURITY` Plane B
+(not `nebula-core`); trait path `crates/credential/src/scheme/auth.rs`. `MATURITY.md` Plane B
 wording includes **`AuthPattern`** alongside **`AuthScheme`**.
 Prior: 2026-04-21 — `docs/INTEGRATION_MODEL.md` adds an **industry reference**
 subsection (n8n credential taxonomy vs Nebula Plane B axes: acquisition /
