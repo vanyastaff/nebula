@@ -1,23 +1,26 @@
-//! Credential persistence — `CredentialStore` trait, `InMemoryStore`,
-//! `KeyProvider`, and composable layers (`EncryptionLayer`, `CacheLayer`,
-//! `AuditLayer`, `ScopeLayer`).
+//! Credential persistence — `InMemoryStore`, `KeyProvider`, and composable
+//! layers (`EncryptionLayer`, `CacheLayer`, `AuditLayer`, `ScopeLayer`).
 //!
-//! See [ADR-0028](../../../../docs/adr/0028-cross-crate-credential-invariants.md)
-//! (umbrella invariants) and
-//! [ADR-0029](../../../../docs/adr/0029-storage-owns-credential-persistence.md).
+//! The `CredentialStore` trait + DTOs live in `nebula_credential` per
+//! [ADR-0032](../../../../docs/adr/0032-credential-store-canonical-home.md);
+//! only the concrete implementations are owned by storage
+//! ([ADR-0029](../../../../docs/adr/0029-storage-owns-credential-persistence.md)).
+//!
+//! See also [ADR-0028](../../../../docs/adr/0028-cross-crate-credential-invariants.md)
+//! for the umbrella cross-crate invariants.
 
 pub mod key_provider;
 pub mod layer;
-pub mod store;
 
 #[cfg(any(test, feature = "credential-in-memory"))]
 pub mod memory;
 
+#[cfg(any(test, feature = "test-util"))]
+pub use key_provider::StaticKeyProvider;
+pub use key_provider::{EnvKeyProvider, FileKeyProvider, KeyProvider, ProviderError};
+pub use layer::{
+    AuditEvent, AuditLayer, AuditOperation, AuditResult, AuditSink, CacheConfig, CacheLayer,
+    CacheStats, EncryptionLayer, ScopeLayer, ScopeResolver,
+};
 #[cfg(any(test, feature = "credential-in-memory"))]
 pub use memory::InMemoryStore;
-
-// TODO(P6.3-P6.5): re-export once files are populated.
-// pub use key_provider::{EnvKeyProvider, FileKeyProvider, KeyProvider, ProviderError};
-// #[cfg(any(test, feature = "test-util"))]
-// pub use key_provider::StaticKeyProvider;
-// pub use layer::{ ... };

@@ -2,8 +2,8 @@
 //!
 //! Provides a CRUD abstraction for credential persistence with optimistic
 //! concurrency control via [`PutMode::CompareAndSwap`]. Encryption is handled
-//! by the [`EncryptionLayer`](crate::layer::EncryptionLayer) wrapper, not by
-//! store implementations themselves.
+//! by the `EncryptionLayer` wrapper (in `nebula-storage`), not by store
+//! implementations themselves.
 
 use std::future::Future;
 
@@ -83,8 +83,8 @@ pub enum StoreError {
 /// Core CRUD trait for credential persistence.
 ///
 /// Implementations handle raw bytes — encryption/decryption is done
-/// by the [`EncryptionLayer`](crate::layer::EncryptionLayer) wrapper,
-/// not by the store itself.
+/// by the `EncryptionLayer` wrapper (in `nebula-storage`), not by the
+/// store itself.
 pub trait CredentialStore: Send + Sync {
     /// Retrieve a stored credential by ID.
     ///

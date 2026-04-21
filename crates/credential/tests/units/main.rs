@@ -5,7 +5,6 @@
 //! - Validation logic for credentials
 //! - Error handling and error types
 
-mod encryption_tests;
 mod error_tests;
 mod pending_lifecycle_tests;
 mod resolve_snapshot_tests;

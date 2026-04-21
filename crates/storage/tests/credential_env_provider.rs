@@ -13,7 +13,7 @@
 //! `NEBULA_CRED_MASTER_KEY`.
 
 use base64::Engine;
-use nebula_credential::{EnvKeyProvider, ProviderError};
+use nebula_storage::credential::{EnvKeyProvider, ProviderError};
 
 /// Serialize env-var manipulation across tests in this binary so parallel
 /// nextest execution does not clobber shared state.
@@ -91,7 +91,7 @@ fn from_env_valid_key_round_trips() {
     set_env(&valid);
 
     let provider = EnvKeyProvider::from_env().expect("valid key must succeed");
-    let version = nebula_credential::KeyProvider::version(&provider);
+    let version = nebula_storage::credential::KeyProvider::version(&provider);
     // Version is "env:<sha256 prefix fingerprint>" (16 hex chars).
     assert!(
         version.starts_with("env:"),

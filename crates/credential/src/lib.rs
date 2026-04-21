@@ -22,8 +22,8 @@
 //! - `CredentialMetadata` — static type descriptor: key, name, schema, `AuthPattern`.
 //! - `CredentialRecord` — runtime operational state (created_at, version, expiry, tags). Previously
 //!   named `Metadata` (ADR 0004).
-//! - `CredentialStore`, `EncryptionLayer`, `CacheLayer`, `AuditLayer`, `ScopeLayer` — composable
-//!   storage with layered decoration.
+//! - `CredentialStore` — persistence trait. Concrete impls + composable layers (`EncryptionLayer`,
+//!   `CacheLayer`, `AuditLayer`, `ScopeLayer`) live in `nebula_storage::credential` per ADR-0032.
 //! - `CredentialRegistry`, `CredentialResolver` — type-erased dispatch and resolution.
 //! - `SecretString`, `CredentialGuard` — zeroizing secret wrappers.
 //! - `EncryptedData`, `EncryptionKey`, `encrypt`, `decrypt` — AES-256-GCM primitives.
@@ -73,8 +73,6 @@ pub mod error;
 pub mod event;
 /// Framework executor for credential resolution with timeouts.
 pub mod executor;
-/// Composable storage layers (encryption, audit, cache, scope) for stores.
-pub mod layer;
 /// Pending state store trait for interactive credential flows.
 pub mod pending_store;
 /// In-memory pending state store for testing and development.
@@ -96,7 +94,7 @@ pub mod store;
 /// In-memory `CredentialStore` impl for testing and internal use.
 ///
 /// **Not** the canonical production impl — that lives in
-/// [`nebula_storage::credential::InMemoryStore`] per
+/// `nebula_storage::credential::InMemoryStore` per
 /// [ADR-0032](https://github.com/vanyastaff/nebula/blob/main/docs/adr/0032-credential-store-canonical-home.md).
 /// Kept here because credential's own internal modules (`resolver.rs`,
 /// layer tests, integration tests under `crates/credential/tests/`)
@@ -130,14 +128,6 @@ pub use credentials::{
 };
 // Framework executor
 pub use executor::{ExecutorError, ResolveResponse, execute_continue, execute_resolve};
-// Storage layers
-#[cfg(any(test, feature = "test-util"))]
-pub use layer::StaticKeyProvider;
-pub use layer::{
-    AuditEvent, AuditLayer, AuditOperation, AuditResult, AuditSink, CacheConfig, CacheLayer,
-    CacheStats, EncryptionLayer, EnvKeyProvider, FileKeyProvider, KeyProvider, ProviderError,
-    ScopeLayer, ScopeResolver,
-};
 // Derive macros
 pub use nebula_credential_macros::{AuthScheme, Credential};
 // Pending state store

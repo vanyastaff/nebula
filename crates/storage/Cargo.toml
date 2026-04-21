@@ -69,6 +69,8 @@ msgpack-storage = ["dep:rmp-serde"]
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["full", "test-util"] }
+# Used by FileKeyProvider tests (key_provider.rs).
+tempfile = { workspace = true }
 
 [lib]
 doctest = false
@@ -79,26 +81,9 @@ doctest = false
 # declared so the backend surface is stable even while implementation
 # is landing incrementally.
 #
-# P6 placeholder deps — used by store/memory/layer/key_provider files
-# populated in P6.2-P6.5 (currently empty skeleton modules).
-ignored = [
-  "aws-config",
-  "aws-sdk-s3",
-  "redis",
-  "aes-gcm",
-  "argon2",
-  "base64",
-  "sha2",
-  "rand",
-  "zeroize",
-  "subtle",
-  "moka",
-  "arc-swap",
-  "parking_lot",
-  "scopeguard",
-  "tracing",
-  "uuid",
-]
+# tracing / uuid are workspace-level utilities kept declared so future
+# storage code (repos/outbox) can pick them up without a Cargo.toml diff.
+ignored = ["aws-config", "aws-sdk-s3", "redis", "tracing", "uuid"]
 
 [lints]
 workspace = true
