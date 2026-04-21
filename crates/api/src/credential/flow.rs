@@ -9,12 +9,18 @@ use url::Url;
 pub struct AuthorizationUriRequest {
     /// OAuth authorization endpoint URL.
     pub auth_url: String,
+    /// OAuth token endpoint URL (persisted for callback exchange).
+    pub token_url: String,
     /// OAuth client identifier.
     pub client_id: String,
+    /// OAuth client secret (persisted for callback exchange).
+    pub client_secret: String,
     /// Redirect URI registered with provider.
     pub redirect_uri: String,
     /// Space-separated scopes.
     pub scopes: Option<String>,
+    /// Client auth style for token endpoint.
+    pub auth_style: Option<AuthStyle>,
 }
 
 /// Build OAuth2 Authorization Code URI with mandatory PKCE S256 parameters.
@@ -111,9 +117,12 @@ mod tests {
     fn authorization_uri_contains_pkce_fields() {
         let req = AuthorizationUriRequest {
             auth_url: "https://provider.example.com/oauth/authorize".to_owned(),
+            token_url: "https://provider.example.com/oauth/token".to_owned(),
             client_id: "client_123".to_owned(),
+            client_secret: "secret_123".to_owned(),
             redirect_uri: "https://app.example.com/callback".to_owned(),
             scopes: Some("read write".to_owned()),
+            auth_style: None,
         };
 
         let url = build_authorization_uri(&req, "signed_state", "code_challenge_123")
