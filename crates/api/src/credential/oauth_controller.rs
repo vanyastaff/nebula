@@ -441,4 +441,90 @@ mod tests {
         );
         assert_eq!(persisted_state.scopes, vec!["scope-a", "scope-b"]);
     }
+
+    #[tokio::test]
+    async fn callback_overwrites_existing_oauth_state() {
+        let state = test_app_state();
+        let credential_id = "cred-456";
+        let user = AuthenticatedUser {
+            user_id: "user-456".to_owned(),
+        };
+
+        let old_oauth_state = OAuth2State {
+            access_token: SecretString::new("old-access-token"),
+            token_type: "Bearer".to_owned(),
+            refresh_token: Some(SecretString::new("old-refresh-token")),
+            expires_at: None,
+            scopes: vec!["old-scope".to_owned()],
+            client_id: SecretString::new("old-client-id"),
+            client_secret: SecretString::new("old-client-secret"),
+            token_url: "https://provider.example.com/token".to_owned(),
+            auth_style: nebula_credential::credentials::oauth2::AuthStyle::Header,
+        };
+        persist_oauth_state(&state, credential_id, old_oauth_state)
+            .await
+            .expect("seed existing oauth state");
+
+        let csrf = generate_random_state();
+        let signer = OAuthStateSigner::new(state.jwt_secret.as_bytes());
+        let (signed_state, payload) =
+            build_signed_state(&signer, credential_id, csrf).expect("signed state");
+        let pending = test_pending_exchange();
+        let pending_token = state
+            .oauth_pending_store
+            .put("oauth2", &user.user_id, &payload.csrf_token, pending)
+            .await
+            .expect("pending store put");
+        state
+            .oauth_state_tokens
+            .write()
+            .await
+            .insert(signed_state.clone(), pending_token);
+
+        let token_body = serde_json::json!({
+            "access_token": "new-access-token",
+            "refresh_token": "new-refresh-token",
+            "token_type": "Bearer",
+            "expires_in": 900,
+            "scope": "new-scope-a new-scope-b"
+        });
+        let callback = handle_callback_with_exchange(
+            credential_id,
+            &state,
+            &user,
+            "auth-code".to_owned(),
+            signed_state,
+            move |_req| {
+                let token_body = token_body.clone();
+                async move { Ok(token_body) }
+            },
+        )
+        .await
+        .expect("callback handled");
+        assert!(callback.0.exchanged);
+
+        let stored = state
+            .oauth_credential_store
+            .get(credential_id)
+            .await
+            .expect("stored oauth credential");
+        assert_eq!(stored.state_kind, OAuth2State::KIND);
+        assert_eq!(stored.credential_key, OAuth2Credential::KEY);
+        assert_eq!(stored.version, 2);
+
+        let persisted_state: OAuth2State =
+            serde_json::from_slice(&stored.data).expect("oauth state json");
+        assert_eq!(
+            persisted_state.access_token.expose_secret(|s| s.to_owned()),
+            "new-access-token"
+        );
+        assert_eq!(
+            persisted_state
+                .refresh_token
+                .expect("refresh token")
+                .expose_secret(|s| s.to_owned()),
+            "new-refresh-token"
+        );
+        assert_eq!(persisted_state.scopes, vec!["new-scope-a", "new-scope-b"]);
+    }
 }
