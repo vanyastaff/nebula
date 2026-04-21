@@ -105,60 +105,122 @@ impl Schema {
     }
 
     /// Resolve dynamic options for a select field through loader registry.
+    ///
+    /// # Errors
+    ///
+    /// - `field.not_found` — schema has no field with this key.
+    /// - `field.type_mismatch` — field exists but isn't a `Select`. Carries `expected` and `actual`
+    ///   params.
+    /// - `loader.missing_config` — field is a select but has no loader configured (static options
+    ///   only).
+    /// - `loader.not_registered` / `loader.failed` — propagated from
+    ///   [`LoaderRegistry::load_options`].
     pub async fn load_select_options(
         &self,
         key: &str,
         registry: &LoaderRegistry,
         context: LoaderContext,
     ) -> Result<LoaderResult<SelectOption>, ValidationError> {
-        let field = self.find(key).ok_or_else(|| {
-            ValidationError::builder("loader.not_registered")
-                .message(format!("field `{key}` not found in schema"))
-                .build()
-        })?;
-        let Field::Select(select) = field else {
-            return Err(ValidationError::builder("loader.not_registered")
-                .message(format!(
-                    "field `{key}` is not a select field (got {})",
-                    field.type_name()
-                ))
-                .build());
-        };
-        let Some(loader_key) = select.loader.as_deref() else {
-            return Err(ValidationError::builder("loader.not_registered")
-                .message(format!("field `{key}` has no loader configured"))
-                .build());
-        };
-        registry.load_options(loader_key, context).await
+        let loader_key = resolve_select_loader_key(self, key)?;
+        registry.load_options(&loader_key, context).await
     }
 
     /// Resolve dynamic record payloads for a dynamic field through registry.
+    ///
+    /// # Errors
+    ///
+    /// Same taxonomy as [`Schema::load_select_options`] — `field.not_found`,
+    /// `field.type_mismatch`, `loader.missing_config`, or the registry's
+    /// `loader.not_registered` / `loader.failed`.
     pub async fn load_dynamic_records(
         &self,
         key: &str,
         registry: &LoaderRegistry,
         context: LoaderContext,
     ) -> Result<LoaderResult<Value>, ValidationError> {
-        let field = self.find(key).ok_or_else(|| {
-            ValidationError::builder("loader.not_registered")
-                .message(format!("field `{key}` not found in schema"))
-                .build()
-        })?;
-        let Field::Dynamic(dynamic) = field else {
-            return Err(ValidationError::builder("loader.not_registered")
-                .message(format!(
-                    "field `{key}` is not a dynamic field (got {})",
-                    field.type_name()
-                ))
-                .build());
-        };
-        let Some(loader_key) = dynamic.loader.as_deref() else {
-            return Err(ValidationError::builder("loader.not_registered")
-                .message(format!("field `{key}` has no loader configured"))
-                .build());
-        };
-        registry.load_records(loader_key, context).await
+        let loader_key = resolve_dynamic_loader_key(self, key)?;
+        registry.load_records(&loader_key, context).await
     }
+}
+
+// ── Loader resolution helpers ─────────────────────────────────────────────────
+
+/// Build a field path for the top-level `key`. Falls back to root when the
+/// string doesn't parse as a valid `FieldKey` (which is itself what the
+/// caller's error will flag).
+fn field_path_for(key: &str) -> FieldPath {
+    match crate::key::FieldKey::new(key) {
+        Ok(fk) => FieldPath::root().join(fk),
+        Err(_) => FieldPath::root(),
+    }
+}
+
+#[allow(
+    clippy::result_large_err,
+    reason = "ValidationError is intentionally large; callers are on the validation path"
+)]
+fn resolve_select_loader_key(schema: &Schema, key: &str) -> Result<String, ValidationError> {
+    let path = field_path_for(key);
+    let field = schema.find(key).ok_or_else(|| {
+        ValidationError::builder("field.not_found")
+            .at(path.clone())
+            .param("key", Value::String(key.to_owned()))
+            .message(format!("field `{key}` not found in schema"))
+            .build()
+    })?;
+    let Field::Select(select) = field else {
+        return Err(ValidationError::builder("field.type_mismatch")
+            .at(path.clone())
+            .param("key", Value::String(key.to_owned()))
+            .param("expected", Value::String("select".to_owned()))
+            .param("actual", Value::String(field.type_name().to_owned()))
+            .message(format!(
+                "field `{key}` is not a select field (got {})",
+                field.type_name()
+            ))
+            .build());
+    };
+    select.loader.clone().ok_or_else(|| {
+        ValidationError::builder("loader.missing_config")
+            .at(path)
+            .param("key", Value::String(key.to_owned()))
+            .message(format!("field `{key}` has no loader configured"))
+            .build()
+    })
+}
+
+#[allow(
+    clippy::result_large_err,
+    reason = "ValidationError is intentionally large; callers are on the validation path"
+)]
+fn resolve_dynamic_loader_key(schema: &Schema, key: &str) -> Result<String, ValidationError> {
+    let path = field_path_for(key);
+    let field = schema.find(key).ok_or_else(|| {
+        ValidationError::builder("field.not_found")
+            .at(path.clone())
+            .param("key", Value::String(key.to_owned()))
+            .message(format!("field `{key}` not found in schema"))
+            .build()
+    })?;
+    let Field::Dynamic(dynamic) = field else {
+        return Err(ValidationError::builder("field.type_mismatch")
+            .at(path.clone())
+            .param("key", Value::String(key.to_owned()))
+            .param("expected", Value::String("dynamic".to_owned()))
+            .param("actual", Value::String(field.type_name().to_owned()))
+            .message(format!(
+                "field `{key}` is not a dynamic field (got {})",
+                field.type_name()
+            ))
+            .build());
+    };
+    dynamic.loader.clone().ok_or_else(|| {
+        ValidationError::builder("loader.missing_config")
+            .at(path)
+            .param("key", Value::String(key.to_owned()))
+            .message(format!("field `{key}` has no loader configured"))
+            .build()
+    })
 }
 
 // ── SchemaBuilder ─────────────────────────────────────────────────────────────

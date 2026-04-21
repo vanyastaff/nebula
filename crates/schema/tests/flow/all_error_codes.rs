@@ -32,9 +32,19 @@
 //!   is silently skipped at `ExecutionMode::StaticOnly` (Phase 1). A full runtime evaluation path
 //!   is needed (Phase 4).
 //!
-//! - `"loader.not_registered"` — requires real `LoaderRegistry` wiring; Phase 2/4 scope.
+//! # Loader-family codes
 //!
-//! - `"loader.failed"` — same as above.
+//! The following STANDARD_CODES entries are loader-registry-scoped. They
+//! require an async runtime (`#[tokio::test]`) and a `LoaderRegistry`, so
+//! they live in `crates/schema/tests/lint_and_loader.rs` rather than here:
+//!
+//! - `"loader.not_registered"` — `loader_registry_reports_missing_loader_registration`.
+//! - `"loader.failed"` — covered via `loader.rs` unit tests
+//!   (`loader_failure_wraps_as_loader_failed`).
+//! - `"field.not_found"` — `load_select_options_unknown_key_emits_field_not_found`.
+//! - `"field.type_mismatch"` — `load_select_options_wrong_field_type_emits_type_mismatch`,
+//!   `load_dynamic_records_wrong_field_type_emits_type_mismatch`.
+//! - `"loader.missing_config"` — `load_select_options_without_loader_emits_missing_config`.
 
 use nebula_schema::{
     Field, FieldKey, FieldValue, FieldValues, Schema, ValidationReport, field_key,

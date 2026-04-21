@@ -133,6 +133,81 @@ async fn loader_registry_reports_missing_loader_registration() {
     assert!(error.to_string().contains("missing_loader"));
 }
 
+#[tokio::test]
+async fn load_select_options_unknown_key_emits_field_not_found() {
+    let schema = Schema::new().add(Field::select("region").dynamic().loader("x"));
+    let registry = LoaderRegistry::new();
+    let context = LoaderContext::new("ghost", FieldValues::new());
+    let error = schema
+        .load_select_options("ghost", &registry, context)
+        .await
+        .expect_err("unknown key must fail");
+    assert_eq!(error.code, "field.not_found");
+    assert_eq!(error.path.to_string(), "ghost");
+}
+
+#[tokio::test]
+async fn load_select_options_wrong_field_type_emits_type_mismatch() {
+    let schema = Schema::new().add(Field::string("email"));
+    let registry = LoaderRegistry::new();
+    let context = LoaderContext::new("email", FieldValues::new());
+    let error = schema
+        .load_select_options("email", &registry, context)
+        .await
+        .expect_err("wrong field type must fail");
+    assert_eq!(error.code, "field.type_mismatch");
+    assert_eq!(error.path.to_string(), "email");
+    assert!(
+        error
+            .params
+            .iter()
+            .any(|(k, v)| k == "expected" && v == "select"),
+        "expected param missing: {:?}",
+        error.params
+    );
+    assert!(
+        error
+            .params
+            .iter()
+            .any(|(k, v)| k == "actual" && v == "string"),
+        "actual param missing: {:?}",
+        error.params
+    );
+}
+
+#[tokio::test]
+async fn load_select_options_without_loader_emits_missing_config() {
+    let schema = Schema::new().add(Field::select("region").option("us", "US"));
+    let registry = LoaderRegistry::new();
+    let context = LoaderContext::new("region", FieldValues::new());
+    let error = schema
+        .load_select_options("region", &registry, context)
+        .await
+        .expect_err("missing loader config must fail");
+    assert_eq!(error.code, "loader.missing_config");
+    assert_eq!(error.path.to_string(), "region");
+}
+
+#[tokio::test]
+async fn load_dynamic_records_wrong_field_type_emits_type_mismatch() {
+    let schema = Schema::new().add(Field::number("count"));
+    let registry = LoaderRegistry::new();
+    let context = LoaderContext::new("count", FieldValues::new());
+    let error = schema
+        .load_dynamic_records("count", &registry, context)
+        .await
+        .expect_err("wrong field type must fail");
+    assert_eq!(error.code, "field.type_mismatch");
+    assert!(
+        error
+            .params
+            .iter()
+            .any(|(k, v)| k == "expected" && v == "dynamic"),
+        "expected param missing: {:?}",
+        error.params
+    );
+}
+
 #[test]
 fn lint_schema_detects_visibility_cycles() {
     let schema = Schema::new()
