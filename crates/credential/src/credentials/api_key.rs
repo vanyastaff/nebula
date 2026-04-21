@@ -7,9 +7,8 @@
 use nebula_schema::{Field, FieldValues, HasSchema, Schema, ValidSchema};
 
 use crate::{
-    SecretString, context::CredentialContext, credential::Credential, error::CredentialError,
-    metadata::CredentialMetadata, pending::NoPendingState, resolve::StaticResolveResult,
-    scheme::SecretToken,
+    Credential, CredentialContext, NoPendingState, SecretString, error::CredentialError,
+    metadata::CredentialMetadata, resolve::StaticResolveResult, scheme::SecretToken,
 };
 
 /// Typed shape of the `api_key` credential setup form.

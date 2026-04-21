@@ -6,13 +6,10 @@
 use std::time::Duration;
 
 use nebula_credential::{
-    SecretString,
-    context::CredentialContext,
-    credential::Credential,
+    Credential, CredentialContext, PendingState, SecretString,
     error::CredentialError,
     executor::{ResolveResponse, execute_continue, execute_resolve},
     metadata::CredentialMetadata,
-    pending::PendingState,
     pending_store_memory::InMemoryPendingStore,
     resolve::{DisplayData, InteractionRequest, RefreshOutcome, ResolveResult, UserInput},
     scheme::SecretToken,
@@ -47,7 +44,7 @@ struct TestInteractiveState {
     token: String,
 }
 
-impl nebula_credential::state::CredentialState for TestInteractiveState {
+impl nebula_credential::CredentialState for TestInteractiveState {
     const KIND: &'static str = "interactive_test";
     const VERSION: u32 = 1;
 }

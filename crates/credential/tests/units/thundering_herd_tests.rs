@@ -9,12 +9,10 @@ use std::sync::{
 };
 
 use nebula_credential::{
-    CredentialResolver, CredentialStore, InMemoryStore, SecretString,
-    context::CredentialContext,
-    credential::Credential,
+    Credential, CredentialContext, CredentialResolver, CredentialStore, InMemoryStore,
+    NoPendingState, SecretString,
     error::CredentialError,
     metadata::CredentialMetadata,
-    pending::NoPendingState,
     resolve::{RefreshOutcome, RefreshPolicy, StaticResolveResult},
     scheme::SecretToken,
     store::{PutMode, StoredCredential},
@@ -32,7 +30,7 @@ struct ThunderingHerdState {
     expires_at: chrono::DateTime<chrono::Utc>,
 }
 
-impl nebula_credential::state::CredentialState for ThunderingHerdState {
+impl nebula_credential::CredentialState for ThunderingHerdState {
     const KIND: &'static str = "thundering_herd_test";
     const VERSION: u32 = 1;
 

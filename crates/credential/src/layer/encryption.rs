@@ -31,7 +31,7 @@
 use std::{collections::HashMap, sync::Arc};
 
 use crate::{
-    crypto::{self, EncryptionKey},
+    EncryptedData, EncryptionKey, decrypt_with_aad, encrypt_with_key_id,
     layer::key_provider::KeyProvider,
     store::{CredentialStore, PutMode, StoreError, StoredCredential},
 };
@@ -207,9 +207,8 @@ impl<S> EncryptionLayer<S> {
     fn encrypt_data(&self, plaintext: &[u8], id: &str) -> Result<Vec<u8>, StoreError> {
         let key = self.current_key()?;
         let current_version = self.current_key_id();
-        let encrypted =
-            crypto::encrypt_with_key_id(&key, current_version, plaintext, id.as_bytes())
-                .map_err(|e| StoreError::Backend(Box::new(e)))?;
+        let encrypted = encrypt_with_key_id(&key, current_version, plaintext, id.as_bytes())
+            .map_err(|e| StoreError::Backend(Box::new(e)))?;
         serde_json::to_vec(&encrypted).map_err(|e| StoreError::Backend(Box::new(e)))
     }
 
@@ -230,7 +229,7 @@ impl<S> EncryptionLayer<S> {
         ciphertext: &[u8],
         id: &str,
     ) -> Result<(zeroize::Zeroizing<Vec<u8>>, Option<Vec<u8>>), StoreError> {
-        let encrypted: crypto::EncryptedData =
+        let encrypted: EncryptedData =
             serde_json::from_slice(ciphertext).map_err(|e| StoreError::Backend(Box::new(e)))?;
 
         let current_version = self.current_key_id();
@@ -238,14 +237,14 @@ impl<S> EncryptionLayer<S> {
         // Data encrypted with the current key — normal path.
         if encrypted.key_id == current_version {
             let key = self.current_key()?;
-            let plaintext = crypto::decrypt_with_aad(&key, &encrypted, id.as_bytes())
+            let plaintext = decrypt_with_aad(&key, &encrypted, id.as_bytes())
                 .map_err(|e| StoreError::Backend(Box::new(e)))?;
             return Ok((plaintext, None));
         }
 
         // Data encrypted with an older key — decrypt with legacy key, re-encrypt.
         let old_key = self.legacy_key(&encrypted.key_id)?;
-        let plaintext = crypto::decrypt_with_aad(&old_key, &encrypted, id.as_bytes())
+        let plaintext = decrypt_with_aad(&old_key, &encrypted, id.as_bytes())
             .map_err(|e| StoreError::Backend(Box::new(e)))?;
         let re_encrypted = self.encrypt_data(&plaintext, id)?;
         Ok((plaintext, Some(re_encrypted)))
@@ -256,6 +255,7 @@ impl<S> EncryptionLayer<S> {
 mod tests {
     use super::*;
     use crate::{
+        encrypt,
         layer::key_provider::StaticKeyProvider,
         store::{PutMode, test_helpers::make_credential},
         store_memory::InMemoryStore,
@@ -352,7 +352,7 @@ mod tests {
 
         // Simulate legacy write: encrypt without AAD and store directly
         let plaintext = b"legacy-secret";
-        let encrypted = crypto::encrypt(&key, plaintext).unwrap();
+        let encrypted = encrypt(&key, plaintext).unwrap();
         let encrypted_bytes = serde_json::to_vec(&encrypted).unwrap();
 
         let cred = StoredCredential {
@@ -405,7 +405,7 @@ mod tests {
 
         // Inspect the raw bytes stored — should contain "default" as key_id
         let raw = inner.get("key-id-check").await.unwrap();
-        let envelope: crypto::EncryptedData = serde_json::from_slice(&raw.data).unwrap();
+        let envelope: EncryptedData = serde_json::from_slice(&raw.data).unwrap();
         assert_eq!(envelope.key_id, "default");
     }
 
@@ -531,7 +531,7 @@ mod tests {
 
         // Verify the data was re-encrypted with key-2 in the backing store
         let raw = inner.get("lazy-1").await.unwrap();
-        let envelope: crypto::EncryptedData = serde_json::from_slice(&raw.data).unwrap();
+        let envelope: EncryptedData = serde_json::from_slice(&raw.data).unwrap();
         assert_eq!(envelope.key_id, "key-2");
     }
 
@@ -553,7 +553,7 @@ mod tests {
         // simulate a legacy pre-guard envelope persisted by an older build.
         let plaintext = b"legacy-record";
         let mut legacy_envelope =
-            crypto::encrypt_with_key_id(&key, "default", plaintext, b"legacy-1").unwrap();
+            encrypt_with_key_id(&key, "default", plaintext, b"legacy-1").unwrap();
         legacy_envelope.key_id = String::new();
         let envelope_bytes = serde_json::to_vec(&legacy_envelope).unwrap();
 

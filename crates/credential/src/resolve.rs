@@ -8,12 +8,12 @@ use std::{collections::HashMap, time::Duration};
 
 use serde::{Deserialize, Serialize};
 
-use crate::pending::{NoPendingState, PendingState};
+use crate::{NoPendingState, PendingState};
 
 // ── ResolveResult ──────────────────────────────────────────────────────
 
-/// Outcome of [`Credential::resolve`](crate::credential::Credential::resolve)
-/// or [`Credential::continue_resolve`](crate::credential::Credential::continue_resolve).
+/// Outcome of [`Credential::resolve`](crate::Credential::resolve)
+/// or [`Credential::continue_resolve`](crate::Credential::continue_resolve).
 ///
 /// # Variants
 ///
@@ -136,7 +136,7 @@ pub enum UserInput {
 // ── RefreshOutcome ─────────────────────────────────────────────────────
 
 /// Represents **successful or expected** outcomes from
-/// [`Credential::refresh`](crate::credential::Credential::refresh).
+/// [`Credential::refresh`](crate::Credential::refresh).
 ///
 /// All **failures** go through
 /// `Err(CredentialError::...)`.
@@ -156,7 +156,7 @@ pub enum RefreshOutcome {
 // ── TestResult ─────────────────────────────────────────────────────────
 
 /// Outcome of
-/// [`Credential::test`](crate::credential::Credential::test).
+/// [`Credential::test`](crate::Credential::test).
 ///
 /// `None` from `test()` means the credential type does not support testing.
 /// When `test()` returns `Some`, the result is one of these variants.
@@ -177,7 +177,7 @@ pub enum TestResult {
 /// Controls when and how the framework refreshes this credential.
 ///
 /// Used as an associated const on the
-/// [`Credential`](crate::credential::Credential) trait:
+/// [`Credential`](crate::Credential) trait:
 /// `const REFRESH_POLICY: RefreshPolicy`.
 ///
 /// All fields are const-compatible (`Duration::from_secs` is `const fn`

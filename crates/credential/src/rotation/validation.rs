@@ -18,7 +18,7 @@ use serde::{Deserialize, Serialize};
 use tokio::time::timeout;
 
 use super::error::{RotationError, RotationResult};
-use crate::record::CredentialRecord;
+use crate::CredentialRecord;
 
 // ── Rotation-specific traits ──────────────────────────────────────────────
 

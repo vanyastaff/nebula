@@ -6,9 +6,8 @@
 use nebula_schema::{Field, FieldValues, HasSchema, Schema, ValidSchema};
 
 use crate::{
-    SecretString, context::CredentialContext, credential::Credential, error::CredentialError,
-    metadata::CredentialMetadata, pending::NoPendingState, resolve::StaticResolveResult,
-    scheme::IdentityPassword,
+    Credential, CredentialContext, NoPendingState, SecretString, error::CredentialError,
+    metadata::CredentialMetadata, resolve::StaticResolveResult, scheme::IdentityPassword,
 };
 
 /// Typed shape of the `basic_auth` credential setup form.

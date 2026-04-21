@@ -17,19 +17,15 @@ use subtle::ConstantTimeEq;
 use zeroize::Zeroize;
 
 use super::{
-    oauth2_config::{AuthStyle, GrantType, OAuth2Config},
-    oauth2_flow,
+    config::{AuthStyle, GrantType, OAuth2Config},
+    flow,
 };
 use crate::{
-    SecretString,
-    context::CredentialContext,
-    credential::Credential,
+    Credential, CredentialContext, CredentialState, PendingState, SecretString,
     error::CredentialError,
     metadata::CredentialMetadata,
-    pending::PendingState,
     resolve::{DisplayData, InteractionRequest, RefreshOutcome, ResolveResult, UserInput},
     scheme::OAuth2Token,
-    state::CredentialState,
 };
 
 // ── OAuth2State ────────────────────────────────────────────────────────
@@ -383,12 +379,11 @@ impl Credential for OAuth2Credential {
         match grant_type {
             GrantType::AuthorizationCode => {
                 // Generate per-flow PKCE verifier + anti-CSRF state.
-                let verifier = crate::crypto::generate_pkce_verifier();
-                let challenge = crate::crypto::generate_code_challenge(&verifier);
-                let state_token = crate::crypto::generate_random_state();
+                let verifier = crate::generate_pkce_verifier();
+                let challenge = crate::generate_code_challenge(&verifier);
+                let state_token = crate::generate_random_state();
 
-                let url =
-                    oauth2_flow::build_auth_url(&config, client_id, &challenge, &state_token)?;
+                let url = flow::build_auth_url(&config, client_id, &challenge, &state_token)?;
 
                 // `build_config` rejects missing `redirect_uri` for this
                 // grant type, so this `clone()` unwraps a value that was
@@ -417,12 +412,11 @@ impl Credential for OAuth2Credential {
             },
             GrantType::ClientCredentials => {
                 let state =
-                    oauth2_flow::exchange_client_credentials(&config, client_id, client_secret)
-                        .await?;
+                    flow::exchange_client_credentials(&config, client_id, client_secret).await?;
                 Ok(ResolveResult::Complete(state))
             },
             GrantType::DeviceCode => {
-                let device_resp = oauth2_flow::request_device_code(&config, client_id).await?;
+                let device_resp = flow::request_device_code(&config, client_id).await?;
                 let pending = OAuth2Pending {
                     client_id: client_id.to_owned(),
                     client_secret: SecretString::new(client_secret),
@@ -512,14 +506,14 @@ impl Credential for OAuth2Credential {
                     .ok_or_else(|| CredentialError::InvalidInput(FAILED.into()))?;
 
                 // Zeroizing<String> scrubs the intermediate plaintext on drop.
-                // Downstream oauth2_flow::exchange_authorization_code builds the
+                // Downstream flow::exchange_authorization_code builds the
                 // form body from &str borrows (GitHub issue #265).
                 let client_secret: zeroize::Zeroizing<String> =
                     zeroize::Zeroizing::new(pending.client_secret.expose_secret(ToOwned::to_owned));
                 let code_verifier: zeroize::Zeroizing<String> =
                     zeroize::Zeroizing::new(verifier_secret.expose_secret(ToOwned::to_owned));
 
-                let state = oauth2_flow::exchange_authorization_code(
+                let state = flow::exchange_authorization_code(
                     &pending.config,
                     &pending.client_id,
                     client_secret.as_str(),
@@ -545,7 +539,7 @@ impl Credential for OAuth2Credential {
                 let client_secret: zeroize::Zeroizing<String> =
                     zeroize::Zeroizing::new(pending.client_secret.expose_secret(ToOwned::to_owned));
 
-                match oauth2_flow::poll_device_code(
+                match flow::poll_device_code(
                     &pending.config,
                     &pending.client_id,
                     client_secret.as_str(),
@@ -554,14 +548,13 @@ impl Credential for OAuth2Credential {
                 )
                 .await?
                 {
-                    oauth2_flow::DevicePollStatus::Ready(state) => {
-                        Ok(ResolveResult::Complete(state))
+                    flow::DevicePollStatus::Ready(state) => Ok(ResolveResult::Complete(state)),
+                    flow::DevicePollStatus::Pending | flow::DevicePollStatus::SlowDown => {
+                        Ok(ResolveResult::Retry {
+                            after: Duration::from_secs(interval),
+                        })
                     },
-                    oauth2_flow::DevicePollStatus::Pending
-                    | oauth2_flow::DevicePollStatus::SlowDown => Ok(ResolveResult::Retry {
-                        after: Duration::from_secs(interval),
-                    }),
-                    oauth2_flow::DevicePollStatus::Expired => {
+                    flow::DevicePollStatus::Expired => {
                         Err(CredentialError::Provider("device code expired".into()))
                     },
                 }
@@ -587,7 +580,7 @@ impl Credential for OAuth2Credential {
             .scopes(state.scopes.clone())
             .build();
 
-        oauth2_flow::refresh_token(state, &config).await?;
+        flow::refresh_token(state, &config).await?;
         Ok(RefreshOutcome::Refreshed)
     }
 }

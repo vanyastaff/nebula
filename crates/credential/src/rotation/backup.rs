@@ -10,7 +10,7 @@ use super::{
     error::{RotationError, RotationResult},
     transaction::{BackupId, RotationId},
 };
-use crate::crypto::EncryptedData;
+use crate::secrets::EncryptedData;
 
 /// Rotation backup containing encrypted credential snapshot
 #[derive(Debug, Clone, Serialize, Deserialize)]

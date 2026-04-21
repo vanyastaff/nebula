@@ -3,6 +3,10 @@
 //! Extracted from the v1 `FlowProtocol` implementation. All functions use
 //! v2 error types and operate on the v2 OAuth2State.
 
+// TODO(P10/ADR-0031): relocate reqwest HTTP flow to nebula-api (auth URI
+// construct + /oauth/callback endpoint + token exchange) and nebula-engine
+// (token refresh during resolve). PKCE primitives stay here.
+
 use std::time::Duration;
 
 use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64};
@@ -11,8 +15,8 @@ use serde_json::Value;
 use zeroize::Zeroizing;
 
 use super::{
-    oauth2::OAuth2State,
-    oauth2_config::{AuthStyle, OAuth2Config},
+    config::{AuthStyle, OAuth2Config},
+    credential::OAuth2State,
 };
 use crate::{SecretString, error::CredentialError};
 
@@ -36,7 +40,7 @@ fn http_client() -> &'static reqwest::Client {
 ///
 /// Appends every query parameter required by RFC 6749 §4.1.1 plus the
 /// RFC 7636 PKCE extension and the anti-CSRF `state` parameter. The
-/// config MUST come from the `AuthCodeBuilder` in `oauth2_config`, which
+/// config MUST come from the `AuthCodeBuilder` in `config`, which
 /// guarantees that `config.pkce` and `config.redirect_uri` are both
 /// `Some(_)` — callers cannot hand us a misconfigured [`OAuth2Config`]
 /// without a compile error. The runtime `ok_or_else` branches are there
@@ -658,7 +662,7 @@ mod tests {
     #[test]
     fn build_auth_url_verifier_hashes_to_challenge() {
         // Guard against a future refactor breaking the PKCE helper chain.
-        let challenge = crate::crypto::generate_code_challenge(RFC7636_VERIFIER);
+        let challenge = crate::generate_code_challenge(RFC7636_VERIFIER);
         assert_eq!(challenge, RFC7636_CHALLENGE);
     }
 

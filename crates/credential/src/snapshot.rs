@@ -58,7 +58,7 @@ use std::{any::Any, fmt};
 
 use nebula_core::AuthScheme;
 
-use crate::record::CredentialRecord;
+use crate::CredentialRecord;
 
 /// Error returned by [`CredentialSnapshot`] projection methods.
 ///
@@ -263,8 +263,7 @@ impl fmt::Debug for CredentialSnapshot {
 mod tests {
     use super::*;
     use crate::{
-        SecretString,
-        record::CredentialRecord,
+        CredentialRecord, SecretString,
         scheme::{ConnectionUri, SecretToken},
     };
 

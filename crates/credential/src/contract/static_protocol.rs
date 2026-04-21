@@ -75,7 +75,7 @@ use crate::error::CredentialError;
 /// ```
 pub trait StaticProtocol: Send + Sync + 'static {
     /// Typed shape of the setup-form fields — same role as
-    /// [`Credential::Input`](crate::credential::Credential::Input).
+    /// [`Credential::Input`](crate::Credential::Input).
     ///
     /// The default [`parameters()`](StaticProtocol::parameters) impl derives
     /// the schema from this type. Use [`FieldValues`] for legacy protocols
