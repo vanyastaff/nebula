@@ -15,12 +15,6 @@
 //! The following STANDARD_CODES entries cannot be emitted without additional
 //! infrastructure that is out of scope for Phase 1:
 //!
-//! - `"expression.runtime"` — requires a real `ExpressionContext` returning an eval error; Phase 4
-//!   scope.
-//!
-//! - `"expression.type_mismatch"` — requires `ExpressionContext` resolving to a wrong type; Phase 4
-//!   scope.
-//!
 //! - `"mode.required"` — unreachable via the public API: `FieldValue::Mode` always carries a
 //!   non-empty `FieldKey` (validated at construction time), so the `mode_key.is_empty()` branch in
 //!   `validated.rs` can never fire.
@@ -40,7 +34,8 @@
 //! - `"loader.missing_config"` — `load_select_options_without_loader_emits_missing_config`.
 
 use nebula_schema::{
-    Field, FieldKey, FieldValue, FieldValues, Schema, ValidationReport, field_key,
+    ExpressionAst, ExpressionContext, Field, FieldKey, FieldValue, FieldValues, Schema,
+    ValidationError, ValidationReport, field_key,
 };
 use serde_json::json;
 
@@ -351,7 +346,57 @@ fn emits_expression_parse() {
     );
 }
 
-// expression.runtime / expression.type_mismatch require Phase 4.
+struct RuntimeFailCtx;
+
+#[async_trait::async_trait]
+impl ExpressionContext for RuntimeFailCtx {
+    async fn evaluate(&self, _ast: &ExpressionAst) -> Result<serde_json::Value, ValidationError> {
+        Err(ValidationError::builder("expression.runtime")
+            .message("forced runtime failure")
+            .build())
+    }
+}
+
+struct ConstCtx(serde_json::Value);
+
+#[async_trait::async_trait]
+impl ExpressionContext for ConstCtx {
+    async fn evaluate(&self, _ast: &ExpressionAst) -> Result<serde_json::Value, ValidationError> {
+        Ok(self.0.clone())
+    }
+}
+
+#[tokio::test]
+async fn emits_expression_runtime() {
+    let schema = Schema::builder()
+        .add(Field::string(field_key!("x")))
+        .build()
+        .unwrap();
+    let values = FieldValues::from_json(json!({"x": {"$expr": "{{ $bad }}"}})).unwrap();
+    let validated = schema.validate(&values).unwrap();
+    let report = validated.resolve(&RuntimeFailCtx).await.unwrap_err();
+    assert!(
+        has_code(&report, "expression.runtime"),
+        "expected expression.runtime, got: {:?}",
+        report.errors().map(|e| &e.code).collect::<Vec<_>>()
+    );
+}
+
+#[tokio::test]
+async fn emits_expression_type_mismatch() {
+    let schema = Schema::builder()
+        .add(Field::string(field_key!("x")))
+        .build()
+        .unwrap();
+    let values = FieldValues::from_json(json!({"x": {"$expr": "{{ $n }}"}})).unwrap();
+    let validated = schema.validate(&values).unwrap();
+    let report = validated.resolve(&ConstCtx(json!(123))).await.unwrap_err();
+    assert!(
+        has_code(&report, "expression.type_mismatch"),
+        "expected expression.type_mismatch, got: {:?}",
+        report.errors().map(|e| &e.code).collect::<Vec<_>>()
+    );
+}
 
 // ── Build-time (lint) codes ──────────────────────────────────────────────
 

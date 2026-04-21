@@ -1,6 +1,11 @@
 //! Validated schema handles — proof-tokens.
 
-use std::{collections::HashMap, future::Future, pin::Pin, sync::Arc};
+use std::{
+    collections::{HashMap, HashSet},
+    future::Future,
+    pin::Pin,
+    sync::Arc,
+};
 
 use indexmap::IndexMap;
 use serde::{Deserialize, Serialize};
@@ -305,6 +310,7 @@ impl ValidValues {
 
         let mut report = ValidationReport::new();
         let mut values = self.values;
+        let mut resolved_expression_paths: HashSet<FieldPath> = HashSet::new();
 
         // Walk and resolve every entry in the flat top-level map.
         let keys: Vec<FieldKey> = values.iter().map(|(k, _)| k.clone()).collect();
@@ -313,12 +319,29 @@ impl ValidValues {
                 continue;
             };
             let path = FieldPath::root().join(key.clone());
-            let resolved = resolve_value(value, ctx, &path, &mut report).await;
+            let resolved = resolve_value(
+                value,
+                ctx,
+                &path,
+                &mut report,
+                &mut resolved_expression_paths,
+            )
+            .await;
             values.set(key, resolved);
         }
 
         if report.has_errors() {
             return Err(report);
+        }
+
+        // Re-run schema validation on resolved literals. Any type mismatches at
+        // paths produced by expression evaluation are surfaced as
+        // `expression.type_mismatch`.
+        if let Err(post_resolve_report) = self.schema.validate(&values) {
+            return Err(remap_expression_type_mismatch(
+                post_resolve_report,
+                &resolved_expression_paths,
+            ));
         }
 
         let extra_warnings: Vec<ValidationError> = report
@@ -418,13 +441,17 @@ fn resolve_value<'v>(
     ctx: &'v dyn ExpressionContext,
     path: &'v FieldPath,
     report: &'v mut ValidationReport,
+    resolved_expression_paths: &'v mut HashSet<FieldPath>,
 ) -> Pin<Box<dyn Future<Output = FieldValue> + 'v>> {
     Box::pin(async move {
         match value {
             FieldValue::Expression(ref expr) => {
                 match expr.parse_at(path) {
                     Ok(ast) => match ctx.evaluate(ast).await {
-                        Ok(v) => FieldValue::Literal(v),
+                        Ok(v) => {
+                            resolved_expression_paths.insert(path.clone());
+                            FieldValue::Literal(v)
+                        },
                         Err(mut e) => {
                             // Attach path context and enforce the standard code.
                             if e.code == "expression.runtime" {
@@ -449,7 +476,8 @@ fn resolve_value<'v>(
                 let mut out = IndexMap::with_capacity(map.len());
                 for (k, v) in map {
                     let child_path = path.clone().join(k.clone());
-                    let resolved = resolve_value(v, ctx, &child_path, report).await;
+                    let resolved =
+                        resolve_value(v, ctx, &child_path, report, resolved_expression_paths).await;
                     out.insert(k, resolved);
                 }
                 FieldValue::Object(out)
@@ -458,7 +486,8 @@ fn resolve_value<'v>(
                 let mut out = Vec::with_capacity(items.len());
                 for (i, v) in items.into_iter().enumerate() {
                     let item_path = path.clone().join(i);
-                    let resolved = resolve_value(v, ctx, &item_path, report).await;
+                    let resolved =
+                        resolve_value(v, ctx, &item_path, report, resolved_expression_paths).await;
                     out.push(resolved);
                 }
                 FieldValue::List(out)
@@ -468,7 +497,9 @@ fn resolve_value<'v>(
                     let inner_path = path
                         .clone()
                         .join(FieldKey::new("value").expect("static key"));
-                    let resolved = resolve_value(*inner, ctx, &inner_path, report).await;
+                    let resolved =
+                        resolve_value(*inner, ctx, &inner_path, report, resolved_expression_paths)
+                            .await;
                     Some(Box::new(resolved))
                 } else {
                     None
@@ -482,6 +513,25 @@ fn resolve_value<'v>(
             other => other,
         }
     })
+}
+
+fn remap_expression_type_mismatch(
+    report: ValidationReport,
+    expression_paths: &HashSet<FieldPath>,
+) -> ValidationReport {
+    let remapped = report.into_iter().map(|mut issue| {
+        let from_expression = expression_paths
+            .iter()
+            .any(|expression_path| issue.path.starts_with(expression_path));
+        if issue.code == "type_mismatch" && from_expression {
+            issue.code = "expression.type_mismatch".into();
+        }
+        issue
+    });
+
+    let mut out = ValidationReport::new();
+    out.extend(remapped);
+    out
 }
 
 // ── Schema-time validation helpers ───────────────────────────────────────────

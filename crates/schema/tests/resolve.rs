@@ -112,6 +112,26 @@ async fn expression_evaluation_failure_returns_report() {
     );
 }
 
+#[tokio::test]
+async fn expression_type_mismatch_returns_expression_type_mismatch() {
+    let schema = Schema::builder()
+        .add(Field::string(field_key!("x")))
+        .build()
+        .unwrap();
+
+    let values = FieldValues::from_json(json!({"x": {"$expr": "{{ $n }}"}})).unwrap();
+    let validated = schema.validate(&values).unwrap();
+
+    let report = validated.resolve(&ConstCtx(json!(123))).await.unwrap_err();
+    assert!(
+        report
+            .errors()
+            .any(|e| e.code == "expression.type_mismatch"),
+        "expected expression.type_mismatch, got: {:?}",
+        report.errors().map(|e| &e.code).collect::<Vec<_>>()
+    );
+}
+
 // ── Nested object with expressions ────────────────────────────────────────────
 
 #[tokio::test]
