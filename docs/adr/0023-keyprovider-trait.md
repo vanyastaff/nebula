@@ -4,16 +4,17 @@ title: keyprovider-trait
 status: accepted
 date: 2026-04-19
 supersedes: []
-superseded_by: []
+superseded_by: [0029]
 tags: [credential, security, encryption, key-custody, composition-root, canon-12.5]
 related:
   - docs/PRODUCT_CANON.md#125-secrets-and-auth
   - docs/STYLE.md#6-secret-handling
   - docs/adr/0020-library-first-gtm.md
   - docs/adr/0021-crate-publication-policy.md
+  - docs/adr/0029-storage-owns-credential-persistence.md
   - docs/audit/2026-04-19-codebase-quality-audit.md
   - crates/credential/src/layer/encryption.rs
-  - crates/credential/src/crypto.rs
+  - crates/credential/src/secrets/crypto.rs
 linear: []
 ---
 
