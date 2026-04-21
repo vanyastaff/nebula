@@ -3,13 +3,13 @@
 //! The [`Credential`](crate::Credential) trait implementation and the
 //! `State` / `Pending` shapes live in `credential`; provider URL and
 //! scope configuration in `config`; **authorization URL construction**
-//! (no HTTP client) in [`authorize_url`]; and reqwest-based token
+//! (no HTTP client) in the internal `authorize_url` submodule; and reqwest-based token
 //! exchange, device code polling, and refresh in `flow` when the
 //! **`oauth2-http`** feature is enabled (default).
 //!
 //! Disabling `oauth2-http` removes the `reqwest` dependency so the crate
 //! can type-check in slim dependency graphs; interactive flows that need
-//! token exchange return [`CredentialError::Provider`] with a message
+//! token exchange return [`crate::error::CredentialError::Provider`] with a message
 //! pointing at the feature flag (ADR-0031 incremental split).
 //!
 //! # Canonical import paths
