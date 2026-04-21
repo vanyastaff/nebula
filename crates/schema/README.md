@@ -24,6 +24,7 @@ Pattern inspiration: DMMF proof-tokens (ch "Modeling with Types") and Rust types
 - `Field` — unified enum over all field kinds (string, number, bool, enum, nested, …).
 - `Schema` — value type for a field list; use `Schema::builder()` or `Schema::add` for construction.
 - `Schema::builder() -> SchemaBuilder` — primary entry point.
+- `Schema::add` replaces an existing top-level field with the same key; `SchemaBuilder::add` accumulates and lets lint catch duplicates.
 - `Schema::lint() -> ValidationReport` — structural diagnostics (errors block `build`; warnings are advisory).
 - `SchemaBuilder::build() -> Result<ValidSchema, ValidationReport>` — runs lint passes and returns the `ValidSchema` proof-token.
 - `ValidSchema::validate(&FieldValues) -> Result<ValidValues, ValidationReport>` — schema-time validation; returns the first proof-token.

@@ -100,6 +100,31 @@ pub use template::{Position, TemplatePart};
 #[doc(hidden)]
 pub use token::{Token, TokenKind};
 
+/// Parse and syntax-check a single expression source string.
+///
+/// This validates expression grammar without evaluating against a runtime
+/// context. It is the stable parsing entrypoint for downstream crates that
+/// need parse-only checks.
+pub fn parse_expression(source: &str) -> ExpressionResult<()> {
+    if source.contains("{{") || source.contains("}}") {
+        let template = Template::new(source.to_owned())?;
+        for expression in template.expressions() {
+            parse_raw_expression(expression.trim())?;
+        }
+        return Ok(());
+    }
+
+    parse_raw_expression(source)
+}
+
+fn parse_raw_expression(source: &str) -> ExpressionResult<()> {
+    let mut lexer = lexer::Lexer::new(source);
+    let tokens = lexer.tokenize()?;
+    let mut parser = parser::Parser::new(tokens);
+    parser.parse()?;
+    Ok(())
+}
+
 /// Prelude module for convenient imports
 pub mod prelude {
     pub use crate::{
@@ -107,4 +132,33 @@ pub mod prelude {
         ExpressionEngine, ExpressionError, ExpressionErrorExt, ExpressionResult, MaybeExpression,
         MaybeTemplate, Template, Value,
     };
+}
+
+#[cfg(test)]
+mod tests {
+    use super::parse_expression;
+
+    #[test]
+    fn parse_expression_accepts_valid_syntax() {
+        let result = parse_expression("$input.count + 1");
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn parse_expression_rejects_invalid_syntax() {
+        let result = parse_expression("1 +");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn parse_expression_accepts_wrapped_template_expression() {
+        let result = parse_expression("{{ $input.count + 1 }}");
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn parse_expression_accepts_multiple_template_expressions() {
+        let result = parse_expression("{{ $a }} + {{ $b }}");
+        assert!(result.is_ok());
+    }
 }

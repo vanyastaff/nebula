@@ -35,10 +35,11 @@ pub trait ExpressionContext: Send + Sync {
     async fn evaluate(&self, ast: &ExpressionAst) -> Result<serde_json::Value, ValidationError>;
 }
 
-/// Opaque parsed AST. In Phase 1 this is a thin wrapper over the source
-/// string; Phase 4 can swap the representation for a real
-/// `nebula_expression::Ast` without a breaking change because the payload is
-/// crate-private and the struct is `#[non_exhaustive]`.
+/// Opaque parsed AST wrapper.
+///
+/// The parse/grammar source of truth is `nebula-expression`; this struct
+/// intentionally exposes only the original source so schema consumers are not
+/// coupled to expression crate internals.
 #[derive(Debug, Clone)]
 #[non_exhaustive]
 pub struct ExpressionAst {
@@ -57,7 +58,7 @@ impl ExpressionAst {
 #[derive(Debug, Clone)]
 pub struct Expression {
     source: Arc<str>,
-    parsed: Arc<OnceLock<ExpressionAst>>,
+    parsed: Arc<OnceLock<Result<ExpressionAst, Arc<str>>>>,
 }
 
 impl Expression {
@@ -74,19 +75,38 @@ impl Expression {
         &self.source
     }
 
-    /// Lazy parse — caches the first successful parse.
+    /// Lazy parse — caches the first parse result (success or error).
     #[expect(
         clippy::result_large_err,
         reason = "ValidationError is intentionally large; callers are on the validation path"
     )]
     pub fn parse(&self) -> Result<&ExpressionAst, ValidationError> {
-        Ok(self.parsed.get_or_init(|| {
-            // Phase 1: no real AST — just wrap the source.
-            // Phase 4 replaces this with nebula_expression::parse(&self.source).
-            ExpressionAst {
-                source: self.source.clone(),
-            }
-        }))
+        self.parse_at(&FieldPath::root())
+    }
+
+    /// Lazy parse with caller-provided path context for errors.
+    ///
+    /// The parse result is cached (success or syntax failure), while the
+    /// returned [`ValidationError`] path is attached per call site.
+    #[expect(
+        clippy::result_large_err,
+        reason = "ValidationError is intentionally large; callers are on the validation path"
+    )]
+    pub fn parse_at(&self, path: &FieldPath) -> Result<&ExpressionAst, ValidationError> {
+        match self.parsed.get_or_init(|| {
+            parse_expression_source(self.source())
+                .map(|()| ExpressionAst {
+                    source: self.source.clone(),
+                })
+                .map_err(Arc::<str>::from)
+        }) {
+            Ok(ast) => Ok(ast),
+            Err(message) => Err(ValidationError::builder("expression.parse")
+                .at(path.clone())
+                .message(message.to_string())
+                .param("source", self.source.to_string())
+                .build()),
+        }
     }
 
     /// Build a parse error tagged for this expression.
@@ -101,6 +121,10 @@ impl Expression {
             .param("source", self.source.to_string())
             .build()
     }
+}
+
+fn parse_expression_source(source: &str) -> Result<(), String> {
+    nebula_expression::parse_expression(source).map_err(|e| e.to_string())
 }
 
 impl PartialEq for Expression {
@@ -139,5 +163,21 @@ mod tests {
             .iter()
             .any(|(k, v)| k.as_ref() == "source" && v.as_str() == Some("bad"));
         assert!(found, "source param not found");
+    }
+
+    #[test]
+    fn parse_invalid_expression_returns_expression_parse() {
+        let e = Expression::new("{{ 1 + }}");
+        let err = e.parse().unwrap_err();
+        assert_eq!(err.code, "expression.parse");
+    }
+
+    #[test]
+    fn parse_at_uses_requested_path() {
+        let e = Expression::new("{{ 1 + }}");
+        let err = e
+            .parse_at(&FieldPath::parse("foo.bar").expect("valid path"))
+            .unwrap_err();
+        assert_eq!(err.path.to_string(), "foo.bar");
     }
 }

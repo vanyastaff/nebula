@@ -290,7 +290,7 @@ fn lint_depends_on_new(
 fn lint_rule_refs_new(
     maybe_rule: Option<&Rule>,
     path: &FieldPath,
-    local_keys: &HashSet<&str>,
+    _local_keys: &HashSet<&str>,
     root_keys: &HashSet<&str>,
     report: &mut ValidationReport,
 ) {
@@ -325,20 +325,16 @@ fn lint_rule_refs_new(
             }
             continue;
         }
-        // Transitional: JSON-pointer form (`/path`) splits only on `/`; legacy
-        // dotted form (`a.b.c`) splits on `.`. Dual-splitting would chop a
-        // valid JSON-pointer segment like `/user.name` at the dot (RFC 6901
-        // allows `.` inside segments). Remove the dotted arm once schema refs
-        // fully migrate to JSON Pointer.
-        let lk = field_ref.split('.').next().unwrap_or_default();
-        if !local_keys.contains(lk) {
-            report.push(
-                ValidationError::builder("dangling_reference")
-                    .at(path.clone())
-                    .message(format!("rule references unknown local key `{lk}`"))
-                    .build(),
-            );
-        }
+        // Breaking cleanup: only JSON Pointer references are supported.
+        report.push(
+            ValidationError::builder("dangling_reference")
+                .at(path.clone())
+                .message(format!(
+                    "rule reference `{field_ref}` must be a JSON Pointer path (for example `/foo/bar`)"
+                ))
+                .build(),
+        );
+        continue;
     }
 }
 
@@ -614,18 +610,6 @@ fn validator_path_to_schema_path(vp: &ValidatorFieldPath) -> Option<FieldPath> {
     if any { Some(out) } else { None }
 }
 
-fn path_concat_schema(prefix: &FieldPath, suffix: &FieldPath) -> FieldPath {
-    if prefix.is_root() {
-        suffix.clone()
-    } else {
-        let mut out = prefix.clone();
-        for seg in suffix.segments() {
-            out = out.join(seg.clone());
-        }
-        out
-    }
-}
-
 /// Normalize dependency paths to the same shape as `collect_defined_field_paths`.
 ///
 /// `collect_defined_field_paths` tracks list-item object descendants under the list
@@ -647,8 +631,8 @@ fn normalize_visibility_target_path(path: &FieldPath) -> FieldPath {
 ///
 /// - `$root.` — anchor at schema root (same convention as [`lint_rule_refs_new`]).
 /// - Leading `/` — JSON Pointer from schema root (validator [`ValidatorFieldPath`]).
-/// - Otherwise — legacy path relative to `scope_prefix` (sibling object scope).
-fn resolve_visibility_dependency(field_ref: &str, scope_prefix: &FieldPath) -> Option<FieldPath> {
+/// - Any other form is ignored (schema lint accepts JSON-pointer forms only).
+fn resolve_visibility_dependency(field_ref: &str, _scope_prefix: &FieldPath) -> Option<FieldPath> {
     if let Some(rest) = field_ref.strip_prefix("$root.") {
         let vp = ValidatorFieldPath::parse(rest)?;
         return validator_path_to_schema_path(&vp);
@@ -657,8 +641,7 @@ fn resolve_visibility_dependency(field_ref: &str, scope_prefix: &FieldPath) -> O
         let vp = ValidatorFieldPath::parse(field_ref)?;
         return validator_path_to_schema_path(&vp);
     }
-    let suffix = FieldPath::parse(field_ref).ok()?;
-    Some(path_concat_schema(scope_prefix, &suffix))
+    None
 }
 
 fn collect_defined_field_paths(

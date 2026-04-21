@@ -310,6 +310,39 @@ fn required_list_empty_emits_required() {
 }
 
 #[test]
+fn list_unique_duplicate_emits_items_unique() {
+    let schema = Schema::builder()
+        .add(
+            Field::list(fk("items"))
+                .item(Field::string(fk("it")))
+                .unique(),
+        )
+        .build()
+        .unwrap();
+    let values = FieldValues::from_json(json!({"items": ["a", "b", "a"]})).unwrap();
+    let report = schema.validate(&values).unwrap_err();
+    assert!(
+        report.errors().any(|e| e.code == "items.unique"),
+        "expected items.unique, got: {:?}",
+        report.errors().map(|e| &e.code).collect::<Vec<_>>()
+    );
+}
+
+#[test]
+fn list_unique_distinct_values_ok() {
+    let schema = Schema::builder()
+        .add(
+            Field::list(fk("items"))
+                .item(Field::string(fk("it")))
+                .unique(),
+        )
+        .build()
+        .unwrap();
+    let values = FieldValues::from_json(json!({"items": ["a", "b", "c"]})).unwrap();
+    assert!(schema.validate(&values).is_ok());
+}
+
+#[test]
 fn required_multi_file_empty_array_emits_required() {
     let schema = Schema::builder()
         .add(Field::file(fk("uploads")).multiple().required())

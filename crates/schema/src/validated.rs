@@ -1,6 +1,6 @@
 //! Validated schema handles — proof-tokens.
 
-use std::{future::Future, pin::Pin, sync::Arc};
+use std::{collections::HashMap, future::Future, pin::Pin, sync::Arc};
 
 use indexmap::IndexMap;
 use serde::{Deserialize, Serialize};
@@ -422,7 +422,7 @@ fn resolve_value<'v>(
     Box::pin(async move {
         match value {
             FieldValue::Expression(ref expr) => {
-                match expr.parse() {
+                match expr.parse_at(path) {
                     Ok(ast) => match ctx.evaluate(ast).await {
                         Ok(v) => FieldValue::Literal(v),
                         Err(mut e) => {
@@ -439,8 +439,7 @@ fn resolve_value<'v>(
                             FieldValue::Literal(serde_json::Value::Null)
                         },
                     },
-                    Err(mut e) => {
-                        e.path = path.clone();
+                    Err(e) => {
                         report.push(e);
                         FieldValue::Literal(serde_json::Value::Null)
                     },
@@ -573,7 +572,7 @@ fn validate_field(
         (_, FieldValue::Expression(expr)) => {
             // Expression is allowed or required here — attempt a parse so
             // obvious syntax errors are caught at validate-time.
-            if let Err(e) = expr.parse() {
+            if let Err(e) = expr.parse_at(path) {
                 report.push(e);
             }
             // Skip all value/type rules — expression not yet resolved.
@@ -748,6 +747,7 @@ fn validate_literal_value(
             min_items,
             max_items,
             item,
+            unique,
             rules,
             ..
         }) => {
@@ -794,6 +794,26 @@ fn validate_literal_value(
                         ))
                         .build(),
                 );
+            }
+            if *unique {
+                let duplicate_index = if let Some(items_fv) = items_typed {
+                    first_duplicate_index(items_fv.iter().map(FieldValue::to_json))
+                } else if let FieldValue::Literal(serde_json::Value::Array(arr)) = value {
+                    first_duplicate_index(arr.iter().cloned())
+                } else {
+                    None
+                };
+                if let Some(idx) = duplicate_index {
+                    report.push(
+                        ValidationError::builder("items.unique")
+                            .at(path.clone().join(idx))
+                            .param("index", serde_json::json!(idx))
+                            .message(format!(
+                                "field `{path}` requires unique items; duplicate found at index {idx}"
+                            ))
+                            .build(),
+                    );
+                }
             }
             // Recurse into typed items when schema is present.
             if let (Some(item_field), Some(items_fv)) = (item.as_deref(), items_typed) {
@@ -919,6 +939,25 @@ fn validate_literal_value(
         },
         Field::Computed(_) | Field::Dynamic(_) | Field::Notice(_) => {},
     }
+}
+
+fn first_duplicate_index(values: impl IntoIterator<Item = serde_json::Value>) -> Option<usize> {
+    let mut seen: HashMap<String, Vec<serde_json::Value>> = HashMap::new();
+    for (idx, value) in values.into_iter().enumerate() {
+        // serde_json::Value does not implement Hash. Bucket by serialized form,
+        // then confirm equality within the bucket to preserve exact semantics.
+        let key = serde_json::to_string(&value)
+            .unwrap_or_else(|_| format!("__fallback_non_serializable__:{value:?}"));
+        if let Some(bucket) = seen.get_mut(&key) {
+            if bucket.iter().any(|prior| prior == &value) {
+                return Some(idx);
+            }
+            bucket.push(value);
+        } else {
+            seen.insert(key, vec![value]);
+        }
+    }
+    None
 }
 
 /// Validate a transformed value against a static option set.
