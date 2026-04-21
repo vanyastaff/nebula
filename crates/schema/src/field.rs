@@ -137,6 +137,12 @@ macro_rules! define_field {
             }
 
             /// Mark field as always required.
+            ///
+            /// `required` enforces more than presence: an empty string
+            /// (String / Secret / Code / single File), an empty array
+            /// (List, multi-Select, multi-File) and a JSON `null` all count
+            /// as missing. This matches HTML-form `required` semantics —
+            /// callers should not rely on `""` satisfying the constraint.
             #[must_use]
             pub fn required(mut self) -> Self {
                 self.required = RequiredMode::Always;
@@ -144,13 +150,32 @@ macro_rules! define_field {
             }
 
             /// Mark field required when predicate holds.
+            ///
+            /// Emptiness rules mirror [`required`](Self::required): an
+            /// empty collection / empty string / null value is treated as
+            /// absent once the predicate fires.
             #[must_use]
             pub fn required_when(mut self, rule: Rule) -> Self {
                 self.required = RequiredMode::When(rule);
                 self
             }
 
-            /// Mark field visible and required when predicate holds.
+            /// Mark field both visible and required when predicate holds.
+            ///
+            /// Shorthand for calling `visible_when(rule.clone())` +
+            /// `required_when(rule)`. Prefer this over duplicating the rule
+            /// in two setters.
+            ///
+            /// # Example
+            ///
+            /// ```ignore
+            /// // `api_key` only appears and is only required when
+            /// // `auth_type == "api_key"`.
+            /// Field::secret(field_key!("api_key"))
+            ///     .active_when(Rule::predicate(
+            ///         Predicate::eq("auth_type", json!("api_key")).unwrap(),
+            ///     ))
+            /// ```
             #[must_use]
             pub fn active_when(mut self, rule: Rule) -> Self {
                 self.visible = VisibilityMode::When(rule.clone());
