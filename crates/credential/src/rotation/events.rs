@@ -332,24 +332,25 @@ pub trait NotificationSender: Send + Sync {
 /// # Example
 ///
 /// ```rust,ignore
+/// use nebula_credential::retry::RetryPolicy;
 /// use nebula_credential::rotation::events::{send_notification, NotificationEvent};
-/// use nebula_credential::rotation::RotationRetryPolicy;
 ///
-/// let policy = RotationRetryPolicy::default();
+/// let policy = RetryPolicy::rotation_defaults();
 /// let event = NotificationEvent::RotationComplete { /* ... */ };
 /// send_notification(&slack_notifier, &event, &policy).await?;
 /// ```
 pub async fn send_notification<S: NotificationSender>(
     sender: &S,
     event: &NotificationEvent,
-    policy: &super::retry::RotationRetryPolicy,
+    policy: &crate::retry::RetryPolicy,
 ) -> RotationResult<()> {
-    use super::retry::retry_with_backoff;
+    policy
+        .validate()
+        .map_err(|reason| super::error::RotationError::InvalidPolicy {
+            reason: format!("retry policy: {reason}"),
+        })?;
 
-    retry_with_backoff(policy, "send_notification", || async {
-        sender.send(event).await
-    })
-    .await
+    crate::retry::retry_with_policy(policy, || async { sender.send(event).await }).await
 }
 
 /// Log a rollback event with structured logging
@@ -383,7 +384,7 @@ pub async fn send_notification<S: NotificationSender>(
 pub async fn log_rollback_event<S: NotificationSender>(
     error_log: &super::error::RotationErrorLog,
     sender: Option<&S>,
-    policy: &super::retry::RotationRetryPolicy,
+    policy: &crate::retry::RetryPolicy,
 ) -> RotationResult<()> {
     use tracing::warn;
 
@@ -700,7 +701,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_send_notification_success() {
-        use super::super::retry::RotationRetryPolicy;
+        use crate::retry::RetryPolicy;
 
         let sender = MockSender { should_fail: false };
         let event = NotificationEvent::RotationStarting {
@@ -709,14 +710,14 @@ mod tests {
             transaction_id: "tx-123".to_string(),
         };
 
-        let policy = RotationRetryPolicy::default();
+        let policy = RetryPolicy::rotation_defaults();
         let result = send_notification(&sender, &event, &policy).await;
         assert!(result.is_ok());
     }
 
     #[tokio::test]
     async fn test_send_notification_failure() {
-        use super::super::retry::RotationRetryPolicy;
+        use crate::retry::RetryPolicy;
 
         let sender = MockSender { should_fail: true };
         let event = NotificationEvent::RotationStarting {
@@ -725,7 +726,14 @@ mod tests {
             transaction_id: "tx-123".to_string(),
         };
 
-        let policy = RotationRetryPolicy::default();
+        // Use short delays so test doesn't actually wait 30s.
+        let policy = RetryPolicy {
+            max_retries: 2,
+            base_delay_ms: 10,
+            max_delay_ms: 100,
+            multiplier: 2.0,
+            jitter: false,
+        };
         let result = send_notification(&sender, &event, &policy).await;
         assert!(result.is_err());
     }

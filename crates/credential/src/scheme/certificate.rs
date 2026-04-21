@@ -26,7 +26,7 @@ pub struct Certificate {
     cert_chain: String,
     #[serde(with = "crate::serde_secret")]
     private_key: SecretString,
-    #[serde(with = "crate::option_serde_secret")]
+    #[serde(default, with = "crate::serde_secret::option")]
     passphrase: Option<SecretString>,
 }
 

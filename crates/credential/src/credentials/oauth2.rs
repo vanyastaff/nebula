@@ -50,7 +50,7 @@ pub struct OAuth2State {
     /// Token type (typically `"Bearer"`).
     pub token_type: String,
     /// Refresh token, if granted by the provider.
-    #[serde(default, with = "crate::option_serde_secret")]
+    #[serde(default, with = "crate::serde_secret::option")]
     pub refresh_token: Option<SecretString>,
     /// When the access token expires, if known.
     pub expires_at: Option<DateTime<Utc>>,
@@ -156,7 +156,7 @@ pub struct OAuth2Pending {
     /// Generated fresh on every `resolve()`. Sent as `code_verifier` on
     /// the token exchange so the provider can recompute and match the
     /// `code_challenge` carried on the auth URL.
-    #[serde(default, with = "crate::option_serde_secret")]
+    #[serde(default, with = "crate::serde_secret::option")]
     pub pkce_verifier: Option<SecretString>,
     /// Anti-CSRF `state` parameter for AuthorizationCode flows.
     ///

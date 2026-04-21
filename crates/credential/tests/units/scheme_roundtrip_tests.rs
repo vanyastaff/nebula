@@ -91,6 +91,39 @@ fn key_pair_serde_roundtrip() {
 }
 
 #[test]
+fn certificate_deserializes_without_passphrase_field() {
+    // Regression: Option<SecretString> passphrase must default to None when
+    // the JSON omits the field. Without #[serde(default)] the custom
+    // deserializer would reject missing fields. See PR #526 / CodeRabbit review.
+    let json = r#"{"cert_chain":"TEST_CERT_CHAIN","private_key":"TEST_PRIVATE_KEY"}"#;
+    let cert: Certificate = serde_json::from_str(json).unwrap();
+    assert_eq!(cert.cert_chain(), "TEST_CERT_CHAIN");
+    cert.private_key()
+        .expose_secret(|s| assert_eq!(s, "TEST_PRIVATE_KEY"));
+    assert!(
+        cert.passphrase().is_none(),
+        "missing passphrase must default to None"
+    );
+}
+
+#[test]
+fn key_pair_deserializes_without_passphrase_field() {
+    // Regression: same as above but for KeyPair. `algorithm` is already
+    // `Option<String>` plain, which serde handles — the previous gap was
+    // passphrase's custom Option deserializer.
+    let json =
+        r#"{"public_key":"ssh-rsa AAAA...","private_key":"-----BEGIN RSA-----","algorithm":null}"#;
+    let kp: KeyPair = serde_json::from_str(json).unwrap();
+    assert_eq!(kp.public_key(), "ssh-rsa AAAA...");
+    kp.private_key()
+        .expose_secret(|s| assert_eq!(s, "-----BEGIN RSA-----"));
+    assert!(
+        kp.passphrase().is_none(),
+        "missing passphrase must default to None"
+    );
+}
+
+#[test]
 fn signing_key_serde_roundtrip() {
     let sk = SigningKey::new(SecretString::new("signing-key"), "hmac-sha256");
     let json = serde_json::to_string(&sk).unwrap();

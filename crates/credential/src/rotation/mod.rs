@@ -145,7 +145,8 @@
 //! ## Layer 1: Policy & Configuration
 //! - `RotationPolicy`: Defines when to rotate
 //! - `GracePeriodConfig`: Controls dual-credential validity
-//! - `RotationRetryPolicy`: Configures retry behavior
+//! - [`RetryPolicy::rotation_defaults`](crate::retry::RetryPolicy::rotation_defaults): Configures
+//!   retry behavior
 //!
 //! ## Layer 2: Transaction & State
 //! - `RotationTransaction`: Tracks rotation lifecycle
@@ -257,9 +258,7 @@ pub mod blue_green;
 pub mod error;
 pub mod events;
 pub mod grace_period;
-pub mod metrics;
 pub mod policy;
-pub mod retry;
 pub mod scheduler;
 pub mod state;
 pub mod transaction;
@@ -280,11 +279,9 @@ pub use grace_period::{
     GracePeriodConfig, GracePeriodState, GracePeriodTracker, UsageMetrics,
     cleanup_expired_credentials, track_credential_usage,
 };
-pub use metrics::RotationMetrics;
 pub use policy::{
     BeforeExpiryConfig, ManualConfig, PeriodicConfig, RotationPolicy, ScheduledConfig,
 };
-pub use retry::{RotationRetryPolicy, retry_with_backoff};
 pub use state::RotationState;
 pub use transaction::{
     BackupId, ManualRotation, OptimisticLock, RollbackStrategy, RotationId, RotationTransaction,
