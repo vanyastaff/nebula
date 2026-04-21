@@ -263,7 +263,6 @@ pub mod error;
 pub mod events;
 pub mod grace_period;
 pub mod policy;
-pub mod scheduler;
 pub mod state;
 pub mod transaction;
 pub mod validation;
