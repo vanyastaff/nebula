@@ -7,9 +7,6 @@
 pub mod api_key;
 pub mod basic_auth;
 pub mod oauth2;
-/// OAuth2 provider configuration (grant type, auth style, endpoints).
-pub mod oauth2_config;
-pub mod oauth2_flow;
 
 pub use api_key::ApiKeyCredential;
 pub use basic_auth::BasicAuthCredential;

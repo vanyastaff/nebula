@@ -11,8 +11,8 @@ use serde_json::Value;
 use zeroize::Zeroizing;
 
 use super::{
-    oauth2::OAuth2State,
-    oauth2_config::{AuthStyle, OAuth2Config},
+    config::{AuthStyle, OAuth2Config},
+    credential::OAuth2State,
 };
 use crate::{SecretString, error::CredentialError};
 
@@ -36,7 +36,7 @@ fn http_client() -> &'static reqwest::Client {
 ///
 /// Appends every query parameter required by RFC 6749 §4.1.1 plus the
 /// RFC 7636 PKCE extension and the anti-CSRF `state` parameter. The
-/// config MUST come from the `AuthCodeBuilder` in `oauth2_config`, which
+/// config MUST come from the `AuthCodeBuilder` in `config`, which
 /// guarantees that `config.pkce` and `config.redirect_uri` are both
 /// `Some(_)` — callers cannot hand us a misconfigured [`OAuth2Config`]
 /// without a compile error. The runtime `ok_or_else` branches are there
