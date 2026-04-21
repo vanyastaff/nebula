@@ -29,6 +29,8 @@
 
 pub mod app;
 pub mod config;
+#[cfg(feature = "credential-oauth")]
+pub mod credential;
 pub mod errors;
 pub mod extractors;
 pub mod handlers;
