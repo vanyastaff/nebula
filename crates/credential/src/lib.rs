@@ -65,7 +65,7 @@ pub mod scheme;
 pub mod secrets;
 
 // ── Utility modules ─────────────────────────────────────────────────────────
-// Free-standing concerns: errors, resolve pipeline, storage, registry, etc.
+// Free-standing concerns: errors, resolve pipeline, storage, refresh coordinator, etc.
 
 /// Error types for credential operations.
 pub mod error;
@@ -90,9 +90,9 @@ pub mod store;
 /// **Not** the canonical production impl — that lives in
 /// `nebula_storage::credential::InMemoryStore` per
 /// [ADR-0032](https://github.com/vanyastaff/nebula/blob/main/docs/adr/0032-credential-store-canonical-home.md).
-/// Kept here because credential's own internal modules (`resolver.rs`,
-/// layer tests, integration tests under `crates/credential/tests/`)
-/// reference it directly and cannot depend on `nebula-storage` —
+/// Kept here because crate-internal code (OAuth2 credential impl, refresh
+/// tests, unit tests under `crates/credential/tests/`) references it directly
+/// and cannot depend on `nebula-storage` —
 /// ADR-0032 §3 forbids `nebula-credential → nebula-storage` in either
 /// `[dependencies]` or `[dev-dependencies]` (the latter triggers a
 /// two-copies cargo resolution that breaks trait bounds).

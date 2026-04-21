@@ -26,7 +26,7 @@ use crate::CredentialId;
 ///     notify_on_expiry: true,
 /// };
 /// ```
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct GracePeriodConfig {
     /// Duration of the grace period
     #[serde(with = "humantime_serde")]
@@ -243,7 +243,7 @@ impl GracePeriodState {
 /// metrics.record_usage(); // Increment request count
 /// println!("Total requests: {}", metrics.request_count);
 /// ```
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
 pub struct UsageMetrics {
     /// Total number of requests using this credential
     pub request_count: u64,

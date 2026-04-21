@@ -189,10 +189,7 @@ impl NotificationEvent {
                 scheduled_at,
                 ..
             } => {
-                format!(
-                    "Rotation scheduled for credential {} at {}",
-                    credential_id, scheduled_at
-                )
+                format!("Rotation scheduled for credential {credential_id} at {scheduled_at}")
             },
             NotificationEvent::RotationStarting {
                 credential_id,
@@ -200,8 +197,7 @@ impl NotificationEvent {
                 ..
             } => {
                 format!(
-                    "Rotation starting for credential {} (transaction: {})",
-                    credential_id, transaction_id
+                    "Rotation starting for credential {credential_id} (transaction: {transaction_id})"
                 )
             },
             NotificationEvent::RotationComplete {
@@ -211,8 +207,7 @@ impl NotificationEvent {
                 ..
             } => {
                 format!(
-                    "Rotation complete for credential {} (v{} → v{})",
-                    credential_id, old_version, new_version
+                    "Rotation complete for credential {credential_id} (v{old_version} → v{new_version})"
                 )
             },
             NotificationEvent::RotationFailed {
@@ -222,10 +217,8 @@ impl NotificationEvent {
                 ..
             } => {
                 format!(
-                    "Rotation failed for credential {} (attempt {}): {}",
-                    credential_id,
+                    "Rotation failed for credential {credential_id} (attempt {}): {error}",
                     retry_attempt + 1,
-                    error
                 )
             },
             NotificationEvent::EmergencyRotation(data) => {
@@ -237,7 +230,7 @@ impl NotificationEvent {
                 let incident_info = data
                     .incident_id
                     .as_ref()
-                    .map(|id| format!(" [Incident: {}]", id))
+                    .map(|id| format!(" [Incident: {id}]"))
                     .unwrap_or_default();
                 format!(
                     "🚨 EMERGENCY: {} rotation for credential {} by {} - Reason: {}{}",
@@ -252,7 +245,7 @@ impl NotificationEvent {
                 let classification = data
                     .error_classification
                     .as_ref()
-                    .map(|c| format!(" [{}]", c))
+                    .map(|c| format!(" [{c}]"))
                     .unwrap_or_default();
                 format!(
                     "🔄 ROLLBACK: Rotation rolled back for credential {} after {} retries in state '{}'{} - Reason: {}",
@@ -647,7 +640,7 @@ mod tests {
     use super::*;
 
     fn test_cred_id() -> CredentialId {
-        CredentialId::parse("550e8400-e29b-41d4-a716-446655440000").unwrap()
+        CredentialId::new()
     }
 
     #[test]
@@ -677,7 +670,7 @@ mod tests {
         };
 
         let desc = event.description();
-        assert!(desc.contains("550e8400-e29b-41d4-a716-446655440000"));
+        assert!(desc.contains(&cred_id.to_string()));
         assert!(desc.contains("v1"));
         assert!(desc.contains("v2"));
     }
@@ -687,10 +680,10 @@ mod tests {
     }
 
     impl NotificationSender for MockSender {
-        async fn send(&self, _event: &NotificationEvent) -> RotationResult<()> {
+        async fn send(&self, event: &NotificationEvent) -> RotationResult<()> {
             if self.should_fail {
                 Err(super::super::error::RotationError::NotificationFailed {
-                    credential_id: "550e8400-e29b-41d4-a716-446655440000".to_string(),
+                    credential_id: event.credential_id().to_string(),
                     reason: "Mock failure".to_string(),
                 })
             } else {

@@ -134,19 +134,18 @@ impl TestContext {
             "Starting credential validation with timeout"
         );
 
-        match timeout(timeout_duration, credential.test()).await {
-            Ok(result) => result,
-            Err(_) => {
-                tracing::error!(
-                    credential_id = %self.credential_id,
-                    timeout_secs = timeout_duration.as_secs(),
-                    "Credential validation timed out"
-                );
-                Err(RotationError::Timeout {
-                    operation: "credential_validation".to_string(),
-                    timeout_secs: timeout_duration.as_secs(),
-                })
-            },
+        if let Ok(result) = timeout(timeout_duration, credential.test()).await {
+            result
+        } else {
+            tracing::error!(
+                credential_id = %self.credential_id,
+                timeout_secs = timeout_duration.as_secs(),
+                "Credential validation timed out"
+            );
+            Err(RotationError::Timeout {
+                operation: "credential_validation".to_string(),
+                timeout_secs: timeout_duration.as_secs(),
+            })
         }
     }
 }
