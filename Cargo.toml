@@ -1,5 +1,6 @@
 [workspace]
 members = [
+  "xtask",
   "crates/action",
   "crates/storage",
   "crates/core",
@@ -264,6 +265,18 @@ used_underscore_binding = "allow"
 
 # ── correctness / soundness escalated from default ─────────────────────────
 mem_forget = "deny"
+
+# ── docs/QUALITY_GATES.md — mechanized junior markers (citations in that file) ──
+# C-SEND-SYNC: https://rust-lang.github.io/api-guidelines/interoperability.html#c-send-sync
+rc_mutex = "warn"
+arc_with_non_send_sync = "warn"
+# `dbg!` must not ship in non-test code (tests exempt via clippy.toml).
+dbg_macro = "warn"
+# docs/IDIOM_REVIEW_CHECKLIST.md — pattern-matching recall (Rust Reference + Clippy)
+match_like_matches_macro = "warn"
+redundant_pattern_matching = "warn"
+single_match_else = "warn"
+wildcard_in_or_patterns = "warn"
 
 [profile.dev]
 # Standard dev mode

@@ -81,6 +81,11 @@ tasks:
     cmds:
       - cargo clippy {{.CARGO_FLAGS}} --fix --allow-staged
 
+  quality:
+    desc: Full mechanical gate (fmt + clippy + xtask) — see docs/QUALITY_GATES.md
+    cmds:
+      - cargo quality
+
   deny:
     desc: Run cargo-deny supply-chain and license audit
     cmds:

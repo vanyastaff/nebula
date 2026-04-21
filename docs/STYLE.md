@@ -15,6 +15,38 @@ from `CLAUDE.md` read-order.
 > triggers apply to style as well. A style rule that blocks a measurable
 > architectural improvement is a candidate for revision, not a blocker.
 
+## 0. Universal mindset (project rules + Rust 1.95+)
+
+This section is the **short, universal** framing for humans and agents. It does
+not list every case; **`PRODUCT_CANON.md`** is normative for product rules, and
+**`docs/AGENT_PROTOCOL.md`** states how agents combine evidence, boundaries,
+and workflow. **Concrete thresholds** (when to stop and rethink shape, Clippy
+IDs, CI gates) live in **`docs/IDIOM_REVIEW_CHECKLIST.md`** and
+**`docs/QUALITY_GATES.md`** — they **operationalize** these principles, not
+replace them.
+
+- **Project first.** Layers and integrations follow **`PRODUCT_CANON.md`** and
+  **`deny.toml`**. Public names and type ownership follow **`GLOSSARY.md`** and
+  §3 below. Do not “solve locally” in a way that duplicates ownership or crosses
+  boundaries without an **ADR**.
+
+- **Design.** Prefer **one clear responsibility** per module and **explicit**
+  domain modeling (enums, newtypes, builders) over flags and ad hoc parameters
+  when the domain is not an open-ended string space — aligned with §§1–2 and
+  *Rust Design Patterns* ([design principles](https://rust-unofficial.github.io/patterns/additional_resources/design-principles.html)).
+
+- **Rust 1.95+ toolchain.** Behavior is pinned in **`rust-toolchain.toml`**. For
+  **semantic** questions (patterns, lifetimes, unsafe), use the **Rust
+  Reference** and `std` docs on [`doc.rust-lang.org`](https://doc.rust-lang.org/).
+  House idioms and antipatterns are **§§1–2** of this file; they override generic
+  blog-style Rust when they conflict.
+
+- **Evolving shape.** When requirements add cases or cross-cutting concerns,
+  **revisit** whether the existing API or data structure still fits — not only
+  whether the smallest patch compiles. Agents apply the same idea via
+  **`AGENT_PROTOCOL.md`** (universal principles + inspect/implement) and the
+  checklist pass for pattern-heavy edits.
+
 ## 1. Idioms we use
 
 - **`mem::take` / `mem::replace`** — extract owned values from `&mut self` without cloning. Pairs with `Default`.
