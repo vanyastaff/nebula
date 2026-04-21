@@ -85,7 +85,7 @@ Notes:
 
 - `cargo +nightly fmt` is required (unstable rustfmt options are enabled).
 - Doctests are run separately with `cargo test --doc`.
-- `lefthook run pre-push` is the local mirror of CI required jobs (fmt, clippy, tests, doctests, taplo, MSRV 1.95, `--all-features`, `--no-default-features`). When adding or removing a CI required job, update `lefthook.yml` in the same PR.
+- `lefthook run pre-push` is a fast local gate (smoke nextest + `--all-features` + selected `--no-default-features`). Full doctests/docs/MSRV remain CI-owned checks. When adding or removing push-time checks, update `lefthook.yml` in the same PR.
 - Commit messages use conventional commits (`feat:`, `fix(scope):`, `chore:` …); `pr-validation.yml` enforces this via `convco`.
 - Releases are manual: `cargo release -p <crate> <patch|minor|major> --execute` (see `docs/dev-setup.md`).
 

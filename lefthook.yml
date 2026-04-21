@@ -1,7 +1,7 @@
 # lefthook.yml
-# Local git hooks. Pre-commit = fast on changed files. Pre-push = full mirror of CI required jobs.
-# All "missing" checks (taplo, doctests, --all-features, --no-default-features, MSRV) are now run
-# locally before push, so CI required jobs cannot fail without lefthook also failing.
+# Local git hooks. Pre-commit = fast on changed files.
+# Pre-push = fast gate that keeps push-time feedback under a few minutes.
+# Full validation remains in CI required jobs.
 
 skip_output:
   - meta
@@ -39,10 +39,8 @@ commit-msg:
 pre-push:
   parallel: true
   commands:
-    nextest:
-      run: cargo nextest run --workspace --profile agent
-    doctests:
-      run: cargo test --workspace --doc --quiet
+    nextest-smoke:
+      run: cargo nextest run -p nebula-core -p nebula-engine -p nebula-runtime --profile agent
     check-all-features:
       run: cargo check --workspace --all-features --all-targets --quiet
     check-no-default:
@@ -50,16 +48,8 @@ pre-push:
         cargo check -p nebula-resilience --no-default-features --quiet
         cargo check -p nebula-log --no-default-features --quiet
         cargo check -p nebula-expression --no-default-features --quiet
-    docs:
-      env:
-        RUSTDOCFLAGS: "-D warnings"
-      run: cargo doc --workspace --no-deps --all-features --quiet
-    # MSRV check is owned by CI (.github/workflows/ci.yml job `msrv`) — running
-    # it locally duplicates that guard and, on Git Bash for Windows, the
-    # `env:` + multi-line `run:` combination hits a lefthook shell-parsing bug
-    # (syntax error, unrelated to cargo itself). Relying on CI keeps the
-    # memory pitfall `feedback_lefthook_mirrors_ci.md` satisfied — MSRV is
-    # still a required job on push.
+    # Doctests/docs/MSRV are CI-owned checks. Keeping them out of pre-push
+    # materially shortens local push feedback loop on Windows.
 # Note: 'cargo udeps' is NOT in pre-push. It requires nightly + is slow. Kept in weekly CI workflow.
 
 # Note: 'cargo udeps' is NOT in pre-push. It requires nightly + is slow. Kept in weekly CI workflow.
