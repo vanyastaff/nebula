@@ -27,7 +27,7 @@ Pattern inspiration: DMMF proof-tokens (ch "Modeling with Types") and Rust types
 - `Schema::lint() -> ValidationReport` — structural diagnostics (errors block `build`; warnings are advisory).
 - `SchemaBuilder::build() -> Result<ValidSchema, ValidationReport>` — runs lint passes and returns the `ValidSchema` proof-token.
 - `ValidSchema::validate(&FieldValues) -> Result<ValidValues, ValidationReport>` — schema-time validation; returns the first proof-token.
-- `ValidValues::resolve(&impl ExpressionContext) -> Result<ResolvedValues, ValidationReport>` — runtime resolution; returns the second proof-token.
+- `ValidValues::resolve(self, ctx: &dyn ExpressionContext) -> Result<ResolvedValues, ValidationReport>` — async runtime resolution; consumes the first proof-token and returns the second (use `.await`).
 - `FieldValues`, `ResolvedValues` — value containers.
 
 See `src/lib.rs` rustdoc for the quick-start example.

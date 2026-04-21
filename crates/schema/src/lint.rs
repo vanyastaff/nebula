@@ -313,16 +313,24 @@ fn lint_rule_refs_new(
             }
             continue;
         }
+        if let Some(rest) = field_ref.strip_prefix('/') {
+            let rk = rest.split('/').next().unwrap_or_default();
+            if !root_keys.contains(rk) {
+                report.push(
+                    ValidationError::builder("dangling_reference")
+                        .at(path.clone())
+                        .message(format!("rule references unknown root key `{rk}`"))
+                        .build(),
+                );
+            }
+            continue;
+        }
         // Transitional: JSON-pointer form (`/path`) splits only on `/`; legacy
         // dotted form (`a.b.c`) splits on `.`. Dual-splitting would chop a
         // valid JSON-pointer segment like `/user.name` at the dot (RFC 6901
         // allows `.` inside segments). Remove the dotted arm once schema refs
         // fully migrate to JSON Pointer.
-        let lk = if let Some(rest) = field_ref.strip_prefix('/') {
-            rest.split('/').next().unwrap_or_default()
-        } else {
-            field_ref.split('.').next().unwrap_or_default()
-        };
+        let lk = field_ref.split('.').next().unwrap_or_default();
         if !local_keys.contains(lk) {
             report.push(
                 ValidationError::builder("dangling_reference")
@@ -722,6 +730,21 @@ fn append_visibility_edges(
                 for variant in &mode.variants {
                     if let Ok(vk) = crate::key::FieldKey::new(variant.key.as_str()) {
                         let vpath = path.clone().join(vk.clone());
+                        if let Some(rule) = field_visible_rule(variant.field.as_ref()) {
+                            let mut refs = Vec::new();
+                            rule.field_references(&mut refs);
+                            for field_ref in refs {
+                                if let Some(target) =
+                                    resolve_visibility_dependency(field_ref, &vpath)
+                                {
+                                    let normalized_target =
+                                        normalize_visibility_target_path(&target);
+                                    if defined.contains(&normalized_target) {
+                                        edges.push((vpath.clone(), normalized_target));
+                                    }
+                                }
+                            }
+                        }
                         if let Field::Object(obj) = variant.field.as_ref() {
                             append_visibility_edges(&obj.fields, &vpath, defined, edges);
                         }
@@ -940,6 +963,57 @@ mod tests {
                                 ))
                                 .into_field(),
                         ),
+                )
+                .into_field(),
+        ];
+
+        let report = run(fields);
+        assert!(
+            report.errors().any(|e| e.code == "visibility_cycle"),
+            "expected visibility_cycle, got {:?}",
+            report.errors().map(|e| &e.code).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn pointer_refs_in_nested_scope_are_checked_against_root_keys() {
+        let fields = vec![
+            Field::object("outer")
+                .add(
+                    Field::string("x")
+                        .visible_when(Rule::predicate(
+                            Predicate::eq("/outer/y", json!(true)).unwrap(),
+                        ))
+                        .into_field(),
+                )
+                .into_field(),
+            Field::string("top").into_field(),
+        ];
+
+        let report = run(fields);
+        assert!(
+            !report.errors().any(|e| e.code == "dangling_reference"),
+            "did not expect dangling_reference, got {:?}",
+            report
+                .errors()
+                .map(|e| (&e.code, e.path.to_string()))
+                .collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn detects_visibility_cycle_through_mode_variant_payload() {
+        let fields = vec![
+            Field::string("a")
+                .visible_when(Rule::predicate(Predicate::eq("/m/v", json!(true)).unwrap()))
+                .into_field(),
+            Field::mode("m")
+                .variant(
+                    "v",
+                    "Variant",
+                    Field::string("payload")
+                        .visible_when(Rule::predicate(Predicate::eq("/a", json!(true)).unwrap()))
+                        .into_field(),
                 )
                 .into_field(),
         ];
