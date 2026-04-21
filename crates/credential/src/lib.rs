@@ -8,6 +8,14 @@
 //! `Credential` type; they never hand-roll token refresh, never hold plaintext
 //! secrets longer than necessary, and never see secrets in logs.
 //!
+//! ## Canonical import paths
+//!
+//! This crate follows the tokio/tracing idiom: submodules (`contract`,
+//! `metadata`, `secrets`, `accessor`, `credentials`) are `pub` for escape
+//! hatches, but the canonical public surface is **flat re-exports at the
+//! root**. Prefer `use nebula_credential::SecretString;` over
+//! `use nebula_credential::secrets::SecretString;`.
+//!
 //! ## Key types
 //!
 //! - `Credential` — unified trait: `resolve()`, `refresh()`, `test()`, `project()`.
@@ -30,66 +38,59 @@
 //! See `crates/credential/README.md` for the full contract and canon invariants.
 #![forbid(unsafe_code)]
 
+// ── Submodules ──────────────────────────────────────────────────────────────
+// Thematic groupings; each is `pub` for escape hatches but the canonical
+// public surface is the flat root re-exports below.
+
 /// Consumer-facing accessor surface — trait, handle, context, errors.
 pub mod accessor;
 /// Credential contract surface — Credential trait + associated types.
 pub mod contract;
 /// Built-in credential type implementations.
 pub mod credentials;
-/// Error types for credential operations.
-pub mod error;
 /// Credential metadata — static descriptors + runtime record + key newtype.
 pub mod metadata;
-/// Pending state store trait for interactive credential flows.
-pub mod pending_store;
-/// In-memory pending state store for testing and development.
-pub mod pending_store_memory;
-/// Type-erased credential registry for runtime dispatch.
-pub mod registry;
-/// Resolve result types: interaction, refresh, test.
-pub mod resolve;
-/// Retry logic with exponential backoff.
-pub mod retry;
-/// Credential rotation
+/// Credential rotation (blue-green, transaction, state machine).
 #[cfg(feature = "rotation")]
 pub mod rotation;
 /// Authentication scheme types.
 pub mod scheme;
 /// §12.5 secret-handling primitives — AES-256-GCM, guards, zeroizing wrappers, serde helpers.
 pub mod secrets;
+
+// ── Utility modules ─────────────────────────────────────────────────────────
+// Free-standing concerns: errors, resolve pipeline, storage, registry, etc.
+
+/// Error types for credential operations.
+pub mod error;
+/// Framework executor for credential resolution with timeouts.
+pub mod executor;
+/// Composable storage layers (encryption, audit, cache, scope) for stores.
+pub mod layer;
+/// Pending state store trait for interactive credential flows.
+pub mod pending_store;
+/// In-memory pending state store for testing and development.
+pub mod pending_store_memory;
+/// Refresh coordination — thundering herd prevention.
+pub mod refresh;
+/// Type-erased credential registry for runtime dispatch.
+pub mod registry;
+/// Resolve result types: interaction, refresh, test.
+pub mod resolve;
+/// Runtime credential resolution.
+pub mod resolver;
+/// Retry logic with exponential backoff.
+pub mod retry;
 /// Credential snapshot.
 pub mod snapshot;
-
-/// Back-compat alias: serde attribute paths
-/// `nebula_credential::serde_secret` and `nebula_credential::serde_secret::option`
-/// continue to resolve here after the `secrets/` submodule move.
-pub use crate::secrets::serde_secret;
-
-// ── Storage ─────────────────────────────────────────────────────────────────
-
-/// Composable storage layers (encryption, etc.) for stores.
-pub mod layer;
 /// Credential store trait with layered composition.
 pub mod store;
 /// In-memory credential store for testing.
 pub mod store_memory;
 
-// ── Executor ────────────────────────────────────────────────────────────────
-
-/// Framework executor for credential resolution with timeouts.
-pub mod executor;
-
-// ── Resolution ──────────────────────────────────────────────────────────────
-
-/// Refresh coordination — thundering herd prevention.
-pub mod refresh;
-/// Runtime credential resolution.
-pub mod resolver;
-
 // ── Root re-exports ─────────────────────────────────────────────────────────
 // Commonly-used types available directly as `nebula_credential::TypeName`.
 
-// Derive macros
 // Consumer-facing accessor surface — trait, impls, handle, context, access error
 pub use accessor::{
     CredentialAccessError, CredentialAccessor, CredentialContext, CredentialHandle,
@@ -107,15 +108,17 @@ pub use credentials::{
 };
 // Framework executor
 pub use executor::{ExecutorError, ResolveResponse, execute_continue, execute_resolve};
+// Storage layers
 #[cfg(any(test, feature = "test-util"))]
 pub use layer::StaticKeyProvider;
-// Storage layers
 pub use layer::{
     AuditEvent, AuditLayer, AuditOperation, AuditResult, AuditSink, CacheConfig, CacheLayer,
     CacheStats, EncryptionLayer, EnvKeyProvider, FileKeyProvider, KeyProvider, ProviderError,
     ScopeLayer, ScopeResolver,
 };
+// Core re-exports (cross-crate ecosystem types)
 pub use nebula_core::{AuthPattern, AuthScheme, CredentialEvent, CredentialId};
+// Derive macros
 pub use nebula_credential_macros::{AuthScheme, Credential};
 // Pending state store
 pub use pending_store::{PendingStateStore, PendingStoreError};
@@ -142,6 +145,7 @@ pub use secrets::{
     encrypt, encrypt_with_aad, encrypt_with_key_id, generate_code_challenge,
     generate_pkce_verifier, generate_random_state,
 };
+// Store + in-memory impl
 pub use store::{CredentialStore, PutMode, StoreError, StoredCredential};
 pub use store_memory::InMemoryStore;
 
@@ -150,6 +154,11 @@ pub use store_memory::InMemoryStore;
 pub use crate::rotation::{
     CredentialRotationEvent, GracePeriodConfig, RotationError, RotationResult,
 };
+/// Back-compat alias: serde attribute paths
+/// `nebula_credential::serde_secret` and `nebula_credential::serde_secret::option`
+/// continue to resolve here after the `secrets/` submodule move.
+pub use crate::secrets::serde_secret;
+// Error / metadata / snapshot
 pub use crate::{
     error::{
         CredentialError, CryptoError, RefreshErrorKind, ResolutionStage, RetryAdvice,

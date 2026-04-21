@@ -13,6 +13,12 @@
 //! (`#[serde(with = "nebula_credential::serde_secret")]` and
 //! `#[serde(with = "nebula_credential::serde_secret::option")]`) continue to
 //! resolve.
+//!
+//! A companion `serde_base64` module (re-exported from `crypto`) provides
+//! `#[serde(with = "…")]` helpers for binary ciphertext fields that should
+//! round-trip as base64 strings rather than byte arrays. Import via
+//! `use nebula_credential::secrets::serde_base64;` (no root re-export —
+//! the module is reached through `secrets`).
 
 mod crypto;
 mod guard;

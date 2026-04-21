@@ -1,9 +1,21 @@
 //! Consumer-facing accessor surface.
 //!
 //! Action / resource code imports from here to obtain credentials via
-//! [`CredentialAccessor`]. [`CredentialHandle`] is the typed handle returned
-//! by resolution. [`CredentialContext`] carries execution context during
-//! resolve.
+//! [`CredentialAccessor`]. The surface is deliberately split between two
+//! concerns:
+//!
+//! - [`CredentialHandle`] is the typed RAII lease returned by resolution — it owns the projected
+//!   scheme for the duration of a use and drops cleanly (zeroize-on-drop applies to any secret
+//!   material it borrows).
+//! - [`CredentialContext`] carries execution-scope state during `resolve` — cancellation, logger
+//!   references, and the resolver handle itself — so that the accessor can honor cooperative
+//!   cancellation and emit structured events tied to the caller's span.
+//!
+//! [`CredentialAccessError`] lives alongside the trait rather than in
+//! [`crate::error`] because it is the consumer-facing failure type for a
+//! consumer-facing capability — keeping the trait and its error adjacent
+//! means action/resource authors read one module instead of jumping to
+//! `crate::error` for every `?` on a resolve call.
 //!
 //! # Canonical import paths
 //!

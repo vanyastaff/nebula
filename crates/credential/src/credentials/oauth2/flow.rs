@@ -3,6 +3,10 @@
 //! Extracted from the v1 `FlowProtocol` implementation. All functions use
 //! v2 error types and operate on the v2 OAuth2State.
 
+// TODO(P10/ADR-0031): relocate reqwest HTTP flow to nebula-api (auth URI
+// construct + /oauth/callback endpoint + token exchange) and nebula-engine
+// (token refresh during resolve). PKCE primitives stay here.
+
 use std::time::Duration;
 
 use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64};

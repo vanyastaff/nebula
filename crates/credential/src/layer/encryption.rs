@@ -31,8 +31,8 @@
 use std::{collections::HashMap, sync::Arc};
 
 use crate::{
+    EncryptedData, EncryptionKey, decrypt_with_aad, encrypt_with_key_id,
     layer::key_provider::KeyProvider,
-    secrets::{EncryptedData, EncryptionKey, decrypt_with_aad, encrypt_with_key_id},
     store::{CredentialStore, PutMode, StoreError, StoredCredential},
 };
 
@@ -255,8 +255,8 @@ impl<S> EncryptionLayer<S> {
 mod tests {
     use super::*;
     use crate::{
+        encrypt,
         layer::key_provider::StaticKeyProvider,
-        secrets::encrypt,
         store::{PutMode, test_helpers::make_credential},
         store_memory::InMemoryStore,
     };
