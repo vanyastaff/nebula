@@ -2,8 +2,6 @@
 
 use std::sync::{Arc, OnceLock};
 
-use nebula_expression::{lexer::Lexer, parser::Parser};
-
 use crate::{error::ValidationError, path::FieldPath};
 
 /// Minimal contract required to evaluate an expression at runtime.
@@ -60,7 +58,7 @@ impl ExpressionAst {
 #[derive(Debug, Clone)]
 pub struct Expression {
     source: Arc<str>,
-    parsed: Arc<OnceLock<Result<ExpressionAst, ValidationError>>>,
+    parsed: Arc<OnceLock<Result<ExpressionAst, Arc<str>>>>,
 }
 
 impl Expression {
@@ -83,13 +81,31 @@ impl Expression {
         reason = "ValidationError is intentionally large; callers are on the validation path"
     )]
     pub fn parse(&self) -> Result<&ExpressionAst, ValidationError> {
+        self.parse_at(&FieldPath::root())
+    }
+
+    /// Lazy parse with caller-provided path context for errors.
+    ///
+    /// The parse result is cached (success or syntax failure), while the
+    /// returned [`ValidationError`] path is attached per call site.
+    #[expect(
+        clippy::result_large_err,
+        reason = "ValidationError is intentionally large; callers are on the validation path"
+    )]
+    pub fn parse_at(&self, path: &FieldPath) -> Result<&ExpressionAst, ValidationError> {
         match self.parsed.get_or_init(|| {
-            parse_expression_source(self.source()).map(|()| ExpressionAst {
-                source: self.source.clone(),
-            })
+            parse_expression_source(self.source())
+                .map(|()| ExpressionAst {
+                    source: self.source.clone(),
+                })
+                .map_err(Arc::<str>::from)
         }) {
             Ok(ast) => Ok(ast),
-            Err(err) => Err(err.clone()),
+            Err(message) => Err(ValidationError::builder("expression.parse")
+                .at(path.clone())
+                .message(message.to_string())
+                .param("source", self.source.to_string())
+                .build()),
         }
     }
 
@@ -107,37 +123,8 @@ impl Expression {
     }
 }
 
-#[expect(
-    clippy::result_large_err,
-    reason = "ValidationError is intentionally large; callers are on the validation path"
-)]
-fn parse_expression_source(source: &str) -> Result<(), ValidationError> {
-    let expression = if source.trim().starts_with("{{") && source.trim().ends_with("}}") {
-        let trimmed = source.trim();
-        trimmed[2..trimmed.len() - 2].trim()
-    } else {
-        source
-    };
-
-    let mut lexer = Lexer::new(expression);
-    let tokens = lexer.tokenize().map_err(|e| {
-        ValidationError::builder("expression.parse")
-            .at(FieldPath::root())
-            .message(e.to_string())
-            .param("source", source.to_owned())
-            .build()
-    })?;
-
-    let mut parser = Parser::new(tokens);
-    parser.parse().map_err(|e| {
-        ValidationError::builder("expression.parse")
-            .at(FieldPath::root())
-            .message(e.to_string())
-            .param("source", source.to_owned())
-            .build()
-    })?;
-
-    Ok(())
+fn parse_expression_source(source: &str) -> Result<(), String> {
+    nebula_expression::parse_expression(source).map_err(|e| e.to_string())
 }
 
 impl PartialEq for Expression {
@@ -183,5 +170,14 @@ mod tests {
         let e = Expression::new("{{ 1 + }}");
         let err = e.parse().unwrap_err();
         assert_eq!(err.code, "expression.parse");
+    }
+
+    #[test]
+    fn parse_at_uses_requested_path() {
+        let e = Expression::new("{{ 1 + }}");
+        let err = e
+            .parse_at(&FieldPath::parse("foo.bar").expect("valid path"))
+            .unwrap_err();
+        assert_eq!(err.path.to_string(), "foo.bar");
     }
 }

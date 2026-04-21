@@ -326,18 +326,15 @@ fn lint_rule_refs_new(
             continue;
         }
         // Breaking cleanup: only JSON Pointer references are supported.
-        // Any non-`/...` form is treated as invalid/missing.
-        if !field_ref.starts_with('/') {
-            report.push(
-                ValidationError::builder("dangling_reference")
-                    .at(path.clone())
-                    .message(format!(
-                        "rule reference `{field_ref}` must be a JSON Pointer path (for example `/foo/bar`)"
-                    ))
-                    .build(),
-            );
-            continue;
-        }
+        report.push(
+            ValidationError::builder("dangling_reference")
+                .at(path.clone())
+                .message(format!(
+                    "rule reference `{field_ref}` must be a JSON Pointer path (for example `/foo/bar`)"
+                ))
+                .build(),
+        );
+        continue;
     }
 }
 
@@ -634,7 +631,7 @@ fn normalize_visibility_target_path(path: &FieldPath) -> FieldPath {
 ///
 /// - `$root.` — anchor at schema root (same convention as [`lint_rule_refs_new`]).
 /// - Leading `/` — JSON Pointer from schema root (validator [`ValidatorFieldPath`]).
-/// - Otherwise — legacy path relative to `scope_prefix` (sibling object scope).
+/// - Any other form is ignored (schema lint accepts JSON-pointer forms only).
 fn resolve_visibility_dependency(field_ref: &str, _scope_prefix: &FieldPath) -> Option<FieldPath> {
     if let Some(rest) = field_ref.strip_prefix("$root.") {
         let vp = ValidatorFieldPath::parse(rest)?;
