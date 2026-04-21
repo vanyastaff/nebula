@@ -181,9 +181,13 @@ impl PendingStateStore for InMemoryPendingStore {
         }
 
         // Only now remove the entry and deserialize from the owned bytes.
+        // The `get` above succeeded under the same write lock, so `remove`
+        // is expected to return `Some`. Defensively surface a `NotFound`
+        // rather than `.expect(...)` panicking in library code if a future
+        // refactor ever breaks the locking discipline.
         let entry = entries
             .remove(token.as_str())
-            .expect("entry was just validated via get() under the same lock");
+            .ok_or(PendingStoreError::NotFound)?;
         drop(entries);
 
         serde_json::from_slice(&entry.data).map_err(|e| PendingStoreError::Backend(Box::new(e)))
