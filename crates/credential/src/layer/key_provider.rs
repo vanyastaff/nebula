@@ -11,7 +11,7 @@
 //! ## Invariants
 //!
 //! - `version()` must be non-empty. The encryption-layer envelope writer refuses empty `key_id`
-//!   values (see `crypto::encrypt_with_key_id`).
+//!   values (see `secrets::encrypt_with_key_id`).
 //! - **`version()` must change whenever the key bytes change.** `EncryptionLayer` routes a record
 //!   whose envelope `key_id` differs from `version()` through the legacy-key path, so a
 //!   stable-version/rotating-key provider would silently mis-decrypt under the new key.
@@ -31,7 +31,7 @@ use base64::Engine;
 use sha2::{Digest, Sha256};
 use zeroize::Zeroizing;
 
-use crate::crypto::EncryptionKey;
+use crate::secrets::EncryptionKey;
 
 /// Short, non-secret fingerprint of 32-byte key material.
 ///
@@ -75,7 +75,7 @@ pub trait KeyProvider: Send + Sync + 'static {
     fn current_key(&self) -> Result<Arc<EncryptionKey>, ProviderError>;
 
     /// Stable identifier for the current key. Stored as
-    /// [`EncryptedData::key_id`](crate::crypto::EncryptedData) in new
+    /// [`EncryptedData::key_id`](crate::secrets::EncryptedData) in new
     /// envelopes; used by the rotation path to detect mismatches. Must be
     /// non-empty, and **must change whenever `current_key()` returns
     /// different key bytes** — otherwise the layer will treat pre-rotation

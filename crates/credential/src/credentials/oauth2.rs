@@ -380,9 +380,9 @@ impl Credential for OAuth2Credential {
         match grant_type {
             GrantType::AuthorizationCode => {
                 // Generate per-flow PKCE verifier + anti-CSRF state.
-                let verifier = crate::crypto::generate_pkce_verifier();
-                let challenge = crate::crypto::generate_code_challenge(&verifier);
-                let state_token = crate::crypto::generate_random_state();
+                let verifier = crate::generate_pkce_verifier();
+                let challenge = crate::generate_code_challenge(&verifier);
+                let state_token = crate::generate_random_state();
 
                 let url =
                     oauth2_flow::build_auth_url(&config, client_id, &challenge, &state_token)?;

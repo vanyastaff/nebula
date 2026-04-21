@@ -40,12 +40,8 @@ pub mod context;
 pub mod contract;
 /// Built-in credential type implementations.
 pub mod credentials;
-/// Cryptographic utilities: AES-256-GCM, key derivation, PKCE, serde_base64.
-pub mod crypto;
 /// Error types for credential operations.
 pub mod error;
-/// Credential guard — secure wrapper with Deref + Zeroize on drop.
-pub mod guard;
 /// Typed credential handle returned by the resolver.
 pub mod handle;
 /// Credential metadata — static descriptors + runtime record + key newtype.
@@ -65,12 +61,15 @@ pub mod retry;
 pub mod rotation;
 /// Authentication scheme types.
 pub mod scheme;
-/// Secret string type with automatic zeroization.
-pub mod secret_string;
-/// Serde helpers for [`SecretString`] and [`Option<SecretString>`] that preserve the actual value.
-pub mod serde_secret;
+/// §12.5 secret-handling primitives — AES-256-GCM, guards, zeroizing wrappers, serde helpers.
+pub mod secrets;
 /// Credential snapshot.
 pub mod snapshot;
+
+/// Back-compat alias: serde attribute paths
+/// `nebula_credential::serde_secret` and `nebula_credential::serde_secret::option`
+/// continue to resolve here after the `secrets/` submodule move.
+pub use crate::secrets::serde_secret;
 
 // ── Storage ─────────────────────────────────────────────────────────────────
 
@@ -115,8 +114,6 @@ pub use credentials::{
 };
 // Framework executor
 pub use executor::{ExecutorError, ResolveResponse, execute_continue, execute_resolve};
-// Credential guard
-pub use guard::CredentialGuard;
 // Typed handle
 pub use handle::CredentialHandle;
 #[cfg(any(test, feature = "test-util"))]
@@ -148,14 +145,17 @@ pub use scheme::{
     Certificate, ChallengeSecret, ConnectionUri, FederatedAssertion, IdentityPassword,
     InstanceBinding, KeyPair, OAuth2Token, OtpSeed, SecretToken, SharedKey, SigningKey,
 };
-pub use secret_string::SecretString;
+// §12.5 secret-handling primitives — crypto, guard, zeroizing wrappers
+pub use secrets::{
+    CredentialGuard, EncryptedData, EncryptionKey, SecretString, decrypt, decrypt_with_aad,
+    encrypt, encrypt_with_aad, encrypt_with_key_id, generate_code_challenge,
+    generate_pkce_verifier, generate_random_state,
+};
 pub use store::{CredentialStore, PutMode, StoreError, StoredCredential};
 pub use store_memory::InMemoryStore;
 
 // Core types & errors
 pub use crate::context::{CredentialContext, CredentialResolverRef};
-// Crypto utilities
-pub use crate::crypto::{EncryptedData, EncryptionKey, decrypt, encrypt};
 // Rotation (feature-gated)
 #[cfg(feature = "rotation")]
 pub use crate::rotation::{

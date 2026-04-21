@@ -6,8 +6,7 @@
 use std::time::Instant;
 
 use nebula_credential::{
-    CryptoError, SecretString,
-    crypto::{EncryptedData, EncryptionKey, decrypt, encrypt},
+    CryptoError, EncryptedData, EncryptionKey, SecretString, decrypt, encrypt,
 };
 
 /// Test: Encrypt secret → decrypt → verify match (roundtrip)

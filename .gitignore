@@ -119,6 +119,7 @@ secrets/
 credentials/
 !apps/desktop/src/features/credentials/
 !crates/credential/src/credentials/
+!crates/credential/src/secrets/
 
 **/config/local.*
 **/config/secrets.*

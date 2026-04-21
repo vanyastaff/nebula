@@ -658,7 +658,7 @@ mod tests {
     #[test]
     fn build_auth_url_verifier_hashes_to_challenge() {
         // Guard against a future refactor breaking the PKCE helper chain.
-        let challenge = crate::crypto::generate_code_challenge(RFC7636_VERIFIER);
+        let challenge = crate::generate_code_challenge(RFC7636_VERIFIER);
         assert_eq!(challenge, RFC7636_CHALLENGE);
     }
 

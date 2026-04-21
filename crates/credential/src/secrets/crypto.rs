@@ -409,7 +409,7 @@ fn base64_url_encode(input: &[u8]) -> String {
 
 /// Serde helpers for base64 encoding of byte vectors.
 ///
-/// Use with `#[serde(with = "crate::crypto::serde_base64")]` on `Vec<u8>` fields
+/// Use with `#[serde(with = "crate::secrets::serde_base64")]` on `Vec<u8>` fields
 /// to serialize as base64 strings in JSON, ensuring binary data survives
 /// round-trips.
 pub mod serde_base64 {
