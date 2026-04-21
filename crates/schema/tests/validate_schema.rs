@@ -228,3 +228,119 @@ fn nested_required_field_present_ok() {
     let values = FieldValues::from_json(json!({"user": {"email": "a@b.com"}})).unwrap();
     assert!(schema.validate(&values).is_ok());
 }
+
+// ── Select multiple/scalar mismatch (exhaustive check) ──────────────────────
+
+#[test]
+fn multi_select_with_scalar_value_emits_type_mismatch() {
+    let schema = Schema::builder()
+        .add(
+            Field::select(fk("tags"))
+                .multiple()
+                .option("a", "A")
+                .option("b", "B"),
+        )
+        .build()
+        .unwrap();
+    let values = FieldValues::from_json(json!({"tags": "a"})).unwrap();
+    let report = schema.validate(&values).unwrap_err();
+    assert!(
+        report.errors().any(|e| e.code == "type_mismatch"),
+        "expected type_mismatch for scalar on multi select, got: {:?}",
+        report.errors().collect::<Vec<_>>()
+    );
+}
+
+#[test]
+fn single_select_with_array_value_emits_type_mismatch() {
+    let schema = Schema::builder()
+        .add(
+            Field::select(fk("choice"))
+                .option("a", "A")
+                .option("b", "B"),
+        )
+        .build()
+        .unwrap();
+    let values = FieldValues::from_json(json!({"choice": ["a", "b"]})).unwrap();
+    let report = schema.validate(&values).unwrap_err();
+    assert!(
+        report.errors().any(|e| e.code == "type_mismatch"),
+        "expected type_mismatch for array on single select, got: {:?}",
+        report.errors().collect::<Vec<_>>()
+    );
+}
+
+// ── Required + empty values ─────────────────────────────────────────────────
+
+#[test]
+fn required_string_empty_emits_required() {
+    let schema = Schema::builder()
+        .add(Field::string(fk("name")).required())
+        .build()
+        .unwrap();
+    let values = FieldValues::from_json(json!({"name": ""})).unwrap();
+    let report = schema.validate(&values).unwrap_err();
+    assert!(report.errors().any(|e| e.code == "required"));
+}
+
+#[test]
+fn required_secret_empty_emits_required() {
+    let schema = Schema::builder()
+        .add(Field::secret(fk("token")).required())
+        .build()
+        .unwrap();
+    let values = FieldValues::from_json(json!({"token": ""})).unwrap();
+    let report = schema.validate(&values).unwrap_err();
+    assert!(report.errors().any(|e| e.code == "required"));
+}
+
+#[test]
+fn required_list_empty_emits_required() {
+    let schema = Schema::builder()
+        .add(
+            Field::list(fk("items"))
+                .item(Field::string(fk("it")))
+                .required(),
+        )
+        .build()
+        .unwrap();
+    let values = FieldValues::from_json(json!({"items": []})).unwrap();
+    let report = schema.validate(&values).unwrap_err();
+    assert!(report.errors().any(|e| e.code == "required"));
+}
+
+#[test]
+fn required_multi_file_empty_array_emits_required() {
+    let schema = Schema::builder()
+        .add(Field::file(fk("uploads")).multiple().required())
+        .build()
+        .unwrap();
+    let values = FieldValues::from_json(json!({"uploads": []})).unwrap();
+    let report = schema.validate(&values).unwrap_err();
+    assert!(report.errors().any(|e| e.code == "required"));
+}
+
+#[test]
+fn required_string_single_char_ok() {
+    let schema = Schema::builder()
+        .add(Field::string(fk("name")).required())
+        .build()
+        .unwrap();
+    let values = FieldValues::from_json(json!({"name": "a"})).unwrap();
+    assert!(schema.validate(&values).is_ok());
+}
+
+#[test]
+fn multi_select_with_array_of_valid_options_ok() {
+    let schema = Schema::builder()
+        .add(
+            Field::select(fk("tags"))
+                .multiple()
+                .option("a", "A")
+                .option("b", "B"),
+        )
+        .build()
+        .unwrap();
+    let values = FieldValues::from_json(json!({"tags": ["a", "b"]})).unwrap();
+    assert!(schema.validate(&values).is_ok());
+}

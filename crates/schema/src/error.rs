@@ -289,7 +289,11 @@ pub const STANDARD_CODES: &[&str] = &[
     "expression.runtime",
     // loader
     "loader.not_registered",
+    "loader.missing_config",
     "loader.failed",
+    // field resolution
+    "field.not_found",
+    "field.type_mismatch",
     // build-time
     "invalid_key",
     "duplicate_key",

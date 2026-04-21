@@ -197,10 +197,7 @@ impl ValidSchema {
     /// assert!(schema.validate(&full).is_ok());
     /// ```
     #[allow(clippy::result_large_err)]
-    pub fn validate<'s>(
-        &'s self,
-        values: &FieldValues,
-    ) -> Result<ValidValues<'s>, ValidationReport> {
+    pub fn validate(&self, values: &FieldValues) -> Result<ValidValues, ValidationReport> {
         use crate::context::RootContext;
 
         let mut report = ValidationReport::new();
@@ -221,7 +218,7 @@ impl ValidSchema {
             .cloned()
             .collect();
         Ok(ValidValues {
-            schema: self,
+            schema: self.clone(),
             values: values.clone(),
             warnings,
         })
@@ -232,17 +229,21 @@ impl ValidSchema {
 ///
 /// Produced by `ValidSchema::validate()` (Task 21). Proof-token that values
 /// have been checked against the schema at least once.
+///
+/// Owns an `Arc`-backed clone of the schema so the token can cross `.await`
+/// boundaries and be handed off to the engine without self-referential
+/// lifetimes.
 #[derive(Debug, Clone)]
-pub struct ValidValues<'s> {
-    pub(crate) schema: &'s ValidSchema,
+pub struct ValidValues {
+    pub(crate) schema: ValidSchema,
     pub(crate) values: FieldValues,
     pub(crate) warnings: Arc<[ValidationError]>,
 }
 
-impl<'s> ValidValues<'s> {
+impl ValidValues {
     /// Borrow the schema these values were validated against.
-    pub fn schema(&self) -> &'s ValidSchema {
-        self.schema
+    pub fn schema(&self) -> &ValidSchema {
+        &self.schema
     }
 
     /// Borrow the raw value tree.
@@ -291,7 +292,7 @@ impl<'s> ValidValues<'s> {
     pub async fn resolve(
         self,
         ctx: &dyn ExpressionContext,
-    ) -> Result<ResolvedValues<'s>, ValidationReport> {
+    ) -> Result<ResolvedValues, ValidationReport> {
         // Fast path — no expressions in this schema.
         if !self.schema.flags().uses_expressions {
             return Ok(ResolvedValues {
@@ -343,17 +344,20 @@ impl<'s> ValidValues<'s> {
 ///
 /// Produced by `ValidValues::resolve()` (Task 23). Proof-token that no
 /// expression placeholders remain in the value tree.
+///
+/// Owns an `Arc`-backed clone of the schema so it is freely `Send + 'static`
+/// and safe to persist or hand off to runtime.
 #[derive(Debug, Clone)]
-pub struct ResolvedValues<'s> {
-    pub(crate) schema: &'s ValidSchema,
+pub struct ResolvedValues {
+    pub(crate) schema: ValidSchema,
     pub(crate) values: FieldValues,
     pub(crate) warnings: Arc<[ValidationError]>,
 }
 
-impl<'s> ResolvedValues<'s> {
+impl ResolvedValues {
     /// Borrow the schema these values were resolved against.
-    pub fn schema(&self) -> &'s ValidSchema {
-        self.schema
+    pub fn schema(&self) -> &ValidSchema {
+        &self.schema
     }
 
     /// Borrow the resolved value tree.
@@ -482,6 +486,38 @@ fn resolve_value<'v>(
 
 // ── Schema-time validation helpers ───────────────────────────────────────────
 
+/// Classifier for `required` enforcement.
+///
+/// A `required` field isn't satisfied by presence alone: for stringy fields an
+/// empty string is still user-missing input, and for collection fields an
+/// empty collection is the same as not providing it. This mirrors HTML form
+/// `required` semantics and closes the class of bugs reported in n8n #21905
+/// (required file field accepts empty submission).
+fn is_absent_for_required(field: &Field, raw: Option<&FieldValue>) -> bool {
+    let Some(value) = raw else { return true };
+    match (field, value) {
+        (_, FieldValue::Literal(serde_json::Value::Null)) => true,
+        (
+            Field::String(_) | Field::Secret(_) | Field::Code(_),
+            FieldValue::Literal(serde_json::Value::String(s)),
+        ) => s.is_empty(),
+        (Field::File(f), FieldValue::Literal(serde_json::Value::String(s))) if !f.multiple => {
+            s.is_empty()
+        },
+        (Field::File(f), FieldValue::Literal(serde_json::Value::Array(a))) if f.multiple => {
+            a.is_empty()
+        },
+        (Field::File(f), FieldValue::List(items)) if f.multiple => items.is_empty(),
+        (Field::List(_), FieldValue::List(items)) => items.is_empty(),
+        (Field::List(_), FieldValue::Literal(serde_json::Value::Array(a))) => a.is_empty(),
+        (Field::Select(s), FieldValue::List(items)) if s.multiple => items.is_empty(),
+        (Field::Select(s), FieldValue::Literal(serde_json::Value::Array(a))) if s.multiple => {
+            a.is_empty()
+        },
+        _ => false,
+    }
+}
+
 /// Validate a single field against an optional raw value and a context.
 ///
 /// Recurses for `Object`, `List`, and `Mode` containers.
@@ -508,9 +544,7 @@ fn validate_field(
         RequiredMode::Always => true,
         RequiredMode::When(rule) => rule.evaluate(ctx),
     };
-    let value_is_null_or_absent =
-        raw.is_none() || matches!(raw, Some(FieldValue::Literal(serde_json::Value::Null)));
-    if required && value_is_null_or_absent {
+    if required && is_absent_for_required(field, raw) {
         report.push(
             ValidationError::builder("required")
                 .at(path.clone())
@@ -673,10 +707,18 @@ fn validate_literal_value(
             transformers,
             ..
         }) => {
-            let FieldValue::Literal(lit) = value else {
-                return;
+            // Accept both `Literal` (scalar or raw array) and `List` (typed).
+            // `List` arises when `FieldValue::from_json` parsed the wire form
+            // into the typed list variant — flatten to a JSON array for the
+            // shape check below.
+            let raw_json = match value {
+                FieldValue::Literal(lit) => lit.clone(),
+                FieldValue::List(items) => {
+                    serde_json::Value::Array(items.iter().map(FieldValue::to_json).collect())
+                },
+                _ => return,
             };
-            let transformed = apply_transformers(transformers, lit.clone());
+            let transformed = apply_transformers(transformers, raw_json);
             run_rules(rules, &transformed, path, report);
             if !allow_custom && !options.is_empty() {
                 check_select_options(options, *multiple, &transformed, path, report);
@@ -860,6 +902,10 @@ fn validate_literal_value(
 }
 
 /// Validate a transformed value against a static option set.
+///
+/// Exhaustive over `(multiple, transformed.as_array())` so a scalar value
+/// for a multi-select field or an array for a single-select field is
+/// caught as `type_mismatch` instead of silently passing.
 fn check_select_options(
     options: &[crate::SelectOption],
     multiple: bool,
@@ -867,8 +913,8 @@ fn check_select_options(
     path: &FieldPath,
     report: &mut ValidationReport,
 ) {
-    if multiple {
-        if let Some(arr) = transformed.as_array() {
+    match (multiple, transformed.as_array()) {
+        (true, Some(arr)) => {
             for (i, v) in arr.iter().enumerate() {
                 if !options.iter().any(|o| o.value == *v) {
                     report.push(
@@ -880,14 +926,37 @@ fn check_select_options(
                     );
                 }
             }
-        }
-    } else if !options.iter().any(|o| o.value == *transformed) {
-        report.push(
-            ValidationError::builder("option.invalid")
-                .at(path.clone())
-                .message(format!("field `{path}` value is not in allowed option set"))
-                .build(),
-        );
+        },
+        (true, None) => {
+            report.push(
+                ValidationError::builder("type_mismatch")
+                    .at(path.clone())
+                    .message(format!(
+                        "field `{path}` expects an array of option values (multiple select)"
+                    ))
+                    .build(),
+            );
+        },
+        (false, Some(_)) => {
+            report.push(
+                ValidationError::builder("type_mismatch")
+                    .at(path.clone())
+                    .message(format!(
+                        "field `{path}` expects a single option value, got an array"
+                    ))
+                    .build(),
+            );
+        },
+        (false, None) => {
+            if !options.iter().any(|o| o.value == *transformed) {
+                report.push(
+                    ValidationError::builder("option.invalid")
+                        .at(path.clone())
+                        .message(format!("field `{path}` value is not in allowed option set"))
+                        .build(),
+                );
+            }
+        },
     }
 }
 

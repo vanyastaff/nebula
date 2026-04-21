@@ -35,10 +35,23 @@ pub trait ExpressionContext: Send + Sync {
     async fn evaluate(&self, ast: &ExpressionAst) -> Result<serde_json::Value, ValidationError>;
 }
 
-/// Opaque parsed AST. In Phase 1 this is a thin newtype; Phase 4 can replace
-/// the inner type with a real `nebula_expression::Ast`.
+/// Opaque parsed AST. In Phase 1 this is a thin wrapper over the source
+/// string; Phase 4 can swap the representation for a real
+/// `nebula_expression::Ast` without a breaking change because the payload is
+/// crate-private and the struct is `#[non_exhaustive]`.
 #[derive(Debug, Clone)]
-pub struct ExpressionAst(pub Arc<str>);
+#[non_exhaustive]
+pub struct ExpressionAst {
+    /// Raw expression source — the only payload exposed in Phase 1.
+    pub(crate) source: Arc<str>,
+}
+
+impl ExpressionAst {
+    /// Borrow the raw expression source.
+    pub fn source(&self) -> &str {
+        &self.source
+    }
+}
 
 /// An unresolved expression (e.g. `{{ $input.name }}`).
 #[derive(Debug, Clone)]
@@ -70,7 +83,9 @@ impl Expression {
         Ok(self.parsed.get_or_init(|| {
             // Phase 1: no real AST — just wrap the source.
             // Phase 4 replaces this with nebula_expression::parse(&self.source).
-            ExpressionAst(self.source.clone())
+            ExpressionAst {
+                source: self.source.clone(),
+            }
         }))
     }
 
