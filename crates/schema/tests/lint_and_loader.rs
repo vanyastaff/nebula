@@ -208,6 +208,32 @@ async fn load_dynamic_records_wrong_field_type_emits_type_mismatch() {
     );
 }
 
+#[tokio::test]
+async fn load_dynamic_records_unknown_key_emits_field_not_found() {
+    let schema = Schema::new().add(Field::dynamic("resource").loader("loader_x"));
+    let registry = LoaderRegistry::new();
+    let context = LoaderContext::new("ghost", FieldValues::new());
+    let error = schema
+        .load_dynamic_records("ghost", &registry, context)
+        .await
+        .expect_err("unknown key must fail");
+    assert_eq!(error.code, "field.not_found");
+    assert_eq!(error.path.to_string(), "ghost");
+}
+
+#[tokio::test]
+async fn load_dynamic_records_without_loader_emits_missing_config() {
+    let schema = Schema::new().add(Field::dynamic("resource"));
+    let registry = LoaderRegistry::new();
+    let context = LoaderContext::new("resource", FieldValues::new());
+    let error = schema
+        .load_dynamic_records("resource", &registry, context)
+        .await
+        .expect_err("missing loader config must fail");
+    assert_eq!(error.code, "loader.missing_config");
+    assert_eq!(error.path.to_string(), "resource");
+}
+
 #[test]
 fn lint_schema_detects_visibility_cycles() {
     let schema = Schema::new()

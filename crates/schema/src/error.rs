@@ -284,6 +284,7 @@ pub const STANDARD_CODES: &[&str] = &[
     "mode.invalid",
     // expression
     "expression.forbidden",
+    "expression.required",
     "expression.parse",
     "expression.type_mismatch",
     "expression.runtime",

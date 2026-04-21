@@ -47,6 +47,7 @@
 
 pub mod control_consumer;
 pub mod control_dispatch;
+pub mod credential;
 pub mod credential_accessor;
 pub mod engine;
 pub mod error;
@@ -62,6 +63,10 @@ pub use control_consumer::{
     DEFAULT_POLL_INTERVAL, MAX_CLAIM_ERROR_BACKOFF,
 };
 pub use control_dispatch::EngineControlDispatch;
+pub use credential::{
+    CredentialRegistry, CredentialResolver, ExecutorError, RegistryError, ResolveError,
+    ResolveResponse, execute_continue, execute_resolve,
+};
 pub use credential_accessor::EngineCredentialAccessor;
 pub use engine::{DEFAULT_EVENT_CHANNEL_CAPACITY, WorkflowEngine};
 pub use error::EngineError;

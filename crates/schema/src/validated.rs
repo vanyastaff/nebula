@@ -619,26 +619,36 @@ fn validate_field(
     };
 
     // Expression-mode enforcement.
-    match (field.expression(), value) {
-        (ExpressionMode::Forbidden, FieldValue::Expression(_)) => {
-            report.push(
-                ValidationError::builder("expression.forbidden")
-                    .at(path.clone())
-                    .message(format!("field `{path}` does not allow expression values"))
-                    .build(),
-            );
-            return;
-        },
-        (_, FieldValue::Expression(expr)) => {
-            // Expression is allowed or required here — attempt a parse so
-            // obvious syntax errors are caught at validate-time.
-            if let Err(e) = expr.parse_at(path) {
-                report.push(e);
-            }
-            // Skip all value/type rules — expression not yet resolved.
-            return;
-        },
-        _ => {},
+    if let FieldValue::Expression(expr) = value {
+        match field.expression() {
+            ExpressionMode::Forbidden => {
+                report.push(
+                    ValidationError::builder("expression.forbidden")
+                        .at(path.clone())
+                        .message(format!("field `{path}` does not allow expression values"))
+                        .build(),
+                );
+            },
+            ExpressionMode::Allowed | ExpressionMode::Required => {
+                // Expression is allowed/required here — parse eagerly so syntax
+                // errors surface at validate-time.
+                if let Err(e) = expr.parse_at(path) {
+                    report.push(e);
+                }
+            },
+        }
+        // Skip all value/type rules — expression not yet resolved.
+        return;
+    }
+
+    if matches!(field.expression(), ExpressionMode::Required) {
+        report.push(
+            ValidationError::builder("expression.required")
+                .at(path.clone())
+                .message(format!("field `{path}` requires an expression value"))
+                .build(),
+        );
+        return;
     }
 
     // Value rules apply to literals only from this point on.
@@ -965,19 +975,32 @@ fn validate_literal_value(
         },
         // File, Computed, Dynamic, Notice — no type-check rule at schema time.
         Field::File(f) => {
-            let FieldValue::Literal(lit) = value else {
-                return;
-            };
             if f.multiple {
-                match lit.as_array() {
-                    None => report.push(
-                        ValidationError::builder("type_mismatch")
-                            .at(path.clone())
-                            .message(format!("field `{path}` expects an array of file paths"))
-                            .build(),
-                    ),
-                    Some(items) => {
-                        if items.iter().any(|v| !v.is_string()) {
+                match value {
+                    FieldValue::Literal(lit) => match lit.as_array() {
+                        None => report.push(
+                            ValidationError::builder("type_mismatch")
+                                .at(path.clone())
+                                .message(format!("field `{path}` expects an array of file paths"))
+                                .build(),
+                        ),
+                        Some(items) => {
+                            if items.iter().any(|v| !v.is_string()) {
+                                report.push(
+                                    ValidationError::builder("type_mismatch")
+                                        .at(path.clone())
+                                        .message(format!(
+                                            "field `{path}` expects an array of string file paths"
+                                        ))
+                                        .build(),
+                                );
+                            }
+                        },
+                    },
+                    FieldValue::List(items) => {
+                        if items.iter().any(|v| {
+                            !matches!(v, FieldValue::Literal(serde_json::Value::String(_)))
+                        }) {
                             report.push(
                                 ValidationError::builder("type_mismatch")
                                     .at(path.clone())
@@ -988,8 +1011,14 @@ fn validate_literal_value(
                             );
                         }
                     },
+                    _ => report.push(
+                        ValidationError::builder("type_mismatch")
+                            .at(path.clone())
+                            .message(format!("field `{path}` expects an array of file paths"))
+                            .build(),
+                    ),
                 }
-            } else if !lit.is_string() {
+            } else if !matches!(value, FieldValue::Literal(serde_json::Value::String(_))) {
                 report.push(
                     ValidationError::builder("type_mismatch")
                         .at(path.clone())
@@ -1167,5 +1196,34 @@ mod tests {
             .unwrap();
         assert!(s.find(&FieldKey::new("x").unwrap()).is_some());
         assert!(s.find(&FieldKey::new("y").unwrap()).is_none());
+    }
+
+    #[test]
+    fn find_by_path_handles_nested_object_and_mode_variant() {
+        let schema = Schema::builder()
+            .add(Field::object(FieldKey::new("user").unwrap()).add(Field::string("email")))
+            .add(Field::mode(FieldKey::new("auth").unwrap()).variant(
+                "token",
+                "Token",
+                Field::string("value"),
+            ))
+            .build()
+            .unwrap();
+
+        assert!(
+            schema
+                .find_by_path(&FieldPath::parse("user.email").unwrap())
+                .is_some()
+        );
+        assert!(
+            schema
+                .find_by_path(&FieldPath::parse("auth.token").unwrap())
+                .is_some()
+        );
+        assert!(
+            schema
+                .find_by_path(&FieldPath::parse("user.missing").unwrap())
+                .is_none()
+        );
     }
 }

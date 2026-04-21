@@ -6,6 +6,11 @@
 use nebula_schema::*;
 use serde_json::json;
 
+#[derive(Debug, serde::Deserialize, PartialEq)]
+struct Person {
+    name: String,
+}
+
 // ── Stub ExpressionContext ────────────────────────────────────────────────────
 
 /// Returns a constant value for every expression.
@@ -280,11 +285,17 @@ async fn nested_object_expressions_resolve() {
     let validated = schema.validate(&values).unwrap();
     let resolved = validated.resolve(&ConstCtx(json!("Alice"))).await.unwrap();
 
-    // name was an expression — resolved to "Alice"
-    let user = resolved
+    let name = resolved
         .values()
-        .get_path(&FieldPath::parse("user").unwrap());
-    assert!(user.is_some(), "user field should be present");
+        .get_path(&FieldPath::parse("user.name").unwrap());
+    let email = resolved
+        .values()
+        .get_path(&FieldPath::parse("user.email").unwrap());
+    assert_eq!(name, Some(&FieldValue::Literal(json!("Alice"))));
+    assert_eq!(
+        email,
+        Some(&FieldValue::Literal(json!("static@example.com")))
+    );
 }
 
 // ── List with expressions ─────────────────────────────────────────────────────
@@ -308,12 +319,14 @@ async fn list_items_with_expressions_resolve() {
     let ctx = ConstCtx(json!("evaluated-tag"));
     let resolved = validated.resolve(&ctx).await.unwrap();
 
-    // The resolved values should have the list field.
-    let tags = resolved.values().get(&field_key!("tags"));
-    assert!(
-        tags.is_some(),
-        "tags field should be present after resolution"
-    );
+    let first = resolved
+        .values()
+        .get_path(&FieldPath::parse("tags[0]").unwrap());
+    let second = resolved
+        .values()
+        .get_path(&FieldPath::parse("tags[1]").unwrap());
+    assert_eq!(first, Some(&FieldValue::Literal(json!("literal-tag"))));
+    assert_eq!(second, Some(&FieldValue::Literal(json!("evaluated-tag"))));
 }
 
 // ── Multiple expressions — all resolved in one pass ───────────────────────────
@@ -357,4 +370,39 @@ async fn into_json_works_after_resolution() {
 
     let out = resolved.into_json();
     assert_eq!(out, json!({"name": "Bob"}));
+}
+
+#[tokio::test]
+async fn into_typed_deserializes_successfully() {
+    let schema = Schema::builder()
+        .add(Field::string(field_key!("name")))
+        .build()
+        .unwrap();
+
+    let values = FieldValues::from_json(json!({"name": {"$expr": "{{ $n }}"}})).unwrap();
+    let validated = schema.validate(&values).unwrap();
+    let resolved = validated.resolve(&ConstCtx(json!("Bob"))).await.unwrap();
+
+    let typed: Person = resolved.into_typed().unwrap();
+    assert_eq!(
+        typed,
+        Person {
+            name: "Bob".to_owned()
+        }
+    );
+}
+
+#[tokio::test]
+async fn into_typed_returns_type_mismatch_on_deserialize_failure() {
+    let schema = Schema::builder()
+        .add(Field::string(field_key!("name")))
+        .build()
+        .unwrap();
+
+    let values = FieldValues::from_json(json!({"name": {"$expr": "{{ $n }}"}})).unwrap();
+    let validated = schema.validate(&values).unwrap();
+    let resolved = validated.resolve(&ConstCtx(json!("Bob"))).await.unwrap();
+
+    let err = resolved.into_typed::<u64>().unwrap_err();
+    assert_eq!(err.code, "type_mismatch");
 }
