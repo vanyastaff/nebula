@@ -26,6 +26,13 @@ use crate::{
 
 /// Unified trait for all credential types.
 ///
+/// # Integration credentials (Plane B)
+///
+/// Implementations of this trait are **integration credentials** — secrets and auth material
+/// for **external** systems (SaaS APIs, webhooks, databases), not for logging into Nebula’s
+/// own API or control plane. That host-facing authentication (**Plane A**) stays out of this
+/// trait; see ADR-0033 (`docs/adr/0033-integration-credentials-plane-b.md`).
+///
 /// One trait replaces six v1 traits. Three associated types pin the
 /// generic parameters at the impl site; five associated consts declare
 /// capabilities at compile time.

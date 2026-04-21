@@ -1,8 +1,11 @@
-//! Authentication Middleware
+//! Authentication middleware — **Plane A** (host / Nebula API).
 //!
 //! Accepts either a JWT Bearer token (`Authorization: Bearer <token>`) or a
 //! static API key (`X-API-Key: nbl_sk_…`). Both paths inject [`AuthenticatedUser`]
 //! into request extensions so downstream handlers are auth-mechanism agnostic.
+//!
+//! This is **not** integration credential OAuth (**Plane B**). Integration OAuth client routes
+//! live in the `credential` module (feature `credential-oauth`); see ADR-0033.
 
 use axum::{
     extract::{Request, State},

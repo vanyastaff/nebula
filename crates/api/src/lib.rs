@@ -15,6 +15,19 @@
 //! - `config` — `ApiConfig` / `JwtSecret`; startup fails hard on a missing or short secret — no
 //!   `Default` impl (§4.5 operational honesty).
 //!
+//! ## Authentication planes (ADR-0033)
+//!
+//! Keep **Plane A** (who may call this API) separate from **Plane B** (integration credentials
+//! for workflows talking to *external* systems):
+//!
+//! - **`middleware::auth`** — **Plane A**: JWT bearer and `X-API-Key` for the Nebula API itself.
+//! - **`credential`** (feature `credential-oauth`) — **Plane B acquisition**: HTTP adapters that
+//!   run OAuth2 *client* ceremony for integration credentials (authorize redirect + token
+//!   callback). These routes are nested under `/api/v1` and are **protected by Plane A** middleware
+//!   so only authenticated operators can start or complete integration OAuth flows.
+//!
+//! Do not merge these into one conceptual “auth” module — naming stays explicit per ADR-0033.
+//!
 //! ## Canon invariants
 //!
 //! - **§12.4** — All errors are RFC 9457 `application/problem+json`; no new ad-hoc 500s for
