@@ -667,7 +667,7 @@ impl RotationTransaction {
         let reason_str = reason.into();
 
         // Record error message
-        self.set_error(reason_str.clone());
+        self.set_error(reason_str);
 
         // Transition to RolledBack state
         self.transition_to(RotationState::RolledBack)?;
@@ -713,7 +713,7 @@ impl RotationTransaction {
                 Ok(())
             },
             Some(phase) => Err(super::error::RotationError::InvalidStateTransition {
-                from: format!("{:?}", phase),
+                from: format!("{phase:?}"),
                 to: "Prepared".to_string(),
             }),
             None => Err(super::error::RotationError::TransactionFailed {
@@ -734,7 +734,7 @@ impl RotationTransaction {
                 Ok(())
             },
             Some(phase) => Err(super::error::RotationError::InvalidStateTransition {
-                from: format!("{:?}", phase),
+                from: format!("{phase:?}"),
                 to: "Committing".to_string(),
             }),
             None => Err(super::error::RotationError::TransactionFailed {
@@ -752,7 +752,7 @@ impl RotationTransaction {
                 Ok(())
             },
             Some(phase) => Err(super::error::RotationError::InvalidStateTransition {
-                from: format!("{:?}", phase),
+                from: format!("{phase:?}"),
                 to: "Committed".to_string(),
             }),
             None => Err(super::error::RotationError::TransactionFailed {
@@ -804,7 +804,7 @@ impl RotationTransaction {
                 Ok(())
             },
             Some(phase) => Err(super::error::RotationError::InvalidStateTransition {
-                from: format!("{:?}", phase),
+                from: format!("{phase:?}"),
                 to: "Aborted".to_string(),
             }),
             None => Err(super::error::RotationError::TransactionFailed {

@@ -51,7 +51,15 @@ Legend:
 This file is a living dashboard. Reviewers check truthfulness on every PR that touches a crate's public surface, test suite, or docs. Canon §17 DoD includes "MATURITY.md row updated if the PR changes crate state."
 
 Last full sweep: 2026-04-17 (Pass 4 of docs architecture redesign).
-Last targeted revision: 2026-04-21 — ADR-0033 **implementation start**: `crate`-level `//!` docs
+Last targeted revision: 2026-04-21 — **P6–P11 credential cleanup:** add
+`docs/superpowers/plans/2026-04-20-credential-cleanup-p6-p11.md` (ADR-0032 pointer, spec §12
+rolled-up status: storage/engine/API phases landed); P1–P5 plan links to it; `credential/Cargo.toml`
+tokio comment corrected (resolver/executor in engine).
+Prior: 2026-04-21 — `nebula-credential`: trim `rotation/mod.rs` rustdoc noise;
+fix `store_memory` / utility-module comments in `lib.rs`; README **Architecture cleanup status**
+(ADR-0032 trait home, remaining `oauth2/flow.rs` follow-up). No API removal — cleanup was
+already landed in P1–P8; deleting contract/runtime files would break the crate.
+Prior: 2026-04-21 — ADR-0033 **implementation start**: `crate`-level `//!` docs
 for Plane A vs Plane B (`nebula-api` `middleware::auth` vs `credential` / `routes::credential`;
 `nebula-credential` `Credential` trait; `nebula-engine::credential`).
 Prior: 2026-04-21 — `docs/INTEGRATION_MODEL.md` **correctness**: attribute

@@ -21,6 +21,14 @@ In most workflow engines, credentials are blobs of JSON passed directly into nod
 
 Pattern: *Typed credential lifecycle* (Release It! ch "Stability Patterns" — secrets must not leak; rotations must not strand in-flight executions). Implementation follows the canonical separation between domain representation (`CredentialRecord`) and persisted row (`nebula_storage::rows::CredentialRow`).
 
+### Architecture cleanup status
+
+The [credential architecture cleanup design](../../docs/superpowers/specs/2026-04-20-credential-architecture-cleanup-design.md) phased resolver/registry/executor and rotation **orchestration** into `nebula-engine`, persistence layers into `nebula-storage`, and OAuth **HTTP ceremony** into `nebula-api` — see ADR-0028–0031 and [`ADR-0033`](../../docs/adr/0033-integration-credentials-plane-b.md) (Plane B).
+
+**ADR-0032** keeps the `CredentialStore` **trait** in this crate (avoiding a `credential → storage` dependency cycle). Production in-memory stores should use `nebula_storage::credential::InMemoryStore`; `store_memory` remains as a cycle-safe shim.
+
+**Incremental follow-up:** `credentials/oauth2/flow.rs` (feature `oauth2-http`) still hosts reqwest-based token exchange used by `OAuth2Credential::resolve`; a future pass may narrow transport duplication vs engine/API per ADR-0031 — the `TODO` in that module is authoritative.
+
 ## Public API
 
 - `Credential` — unified trait: `resolve()`, `refresh()`, `test()`, `project()`.

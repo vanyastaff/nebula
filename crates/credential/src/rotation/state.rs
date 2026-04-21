@@ -71,8 +71,8 @@ impl RotationState {
             Ok(target)
         } else {
             Err(RotationError::InvalidStateTransition {
-                from: format!("{:?}", self),
-                to: format!("{:?}", target),
+                from: format!("{self:?}"),
+                to: format!("{target:?}"),
             })
         }
     }

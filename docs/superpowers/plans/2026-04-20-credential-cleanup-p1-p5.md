@@ -1,12 +1,31 @@
 # nebula-credential cleanup — P1-P5 implementation plan
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox syntax (`- [ ]` → `- [x]` when done); **P1–P5 steps below are marked complete** in-tree as of 2026-04-21.
 
 **Goal:** Выполнить первые 5 фаз credential architecture cleanup per spec [2026-04-20-credential-architecture-cleanup-design.md](../specs/2026-04-20-credential-architecture-cleanup-design.md): duplicate collapse + submodule grouping + partial base-dep diet + nebula-core migration + 4 ADRs landing. После P5 — hard go/no-go checkpoint до P6+ (physical crate moves).
 
 **Architecture:** В этих 5 фазах код остаётся в `nebula-credential`. Меняется организация модулей, удаляется дупликация, мигрируют 4 типа из `nebula-core`. Никаких cross-crate moves — это P6+. Финальная фаза P5 — 4 ADR-документа без кода.
 
 **Tech Stack:** Rust 2024 edition, `nebula-resilience` (замена для дублирующего retry), `cargo nextest` (test runner), `cargo +nightly fmt`, nightly rustfmt. Конвенциональные коммиты (`convco` enforced).
+
+## Execution status (rolled up)
+
+> **Last verified:** 2026-04-21. Per-step checkboxes below are **checked** for P1–P5; this table is still the short summary (“done vs deferred”, including **P6+** out of scope here).
+
+| Phase | Status | Evidence / notes |
+|------|--------|------------------|
+| **P1** | Done | No `rotation/retry.rs`, `rotation/metrics.rs`, or `option_serde_secret.rs`. `RetryPolicy::rotation_defaults()` in `retry.rs`; `serde_secret::option` in `secrets/serde_secret.rs`. `rotation/events.rs` kept per P1.4 refinement. **`tokio-util`** remains until scheduler leaves the crate (defer P1.5 → P8). |
+| **P2** | Done | `contract/`, `metadata/`, `secrets/`, `accessor/`, `credentials/oauth2/`; flat re-exports in `lib.rs`. |
+| **P3** | Done | Tokio feature audit documented in `crates/credential/Cargo.toml` (dependency comments). |
+| **P4** | Done | Credential-domain types live in `nebula-credential`; consumers updated. |
+| **P5** | Done | `docs/adr/0028`–`0031` present; `docs/adr/README.md` index; ADR-0023 `superseded_by: [0029]`. |
+| **P6+** | See dedicated doc | [P6–P11 rolled-up status](./2026-04-20-credential-cleanup-p6-p11.md) — storage/engine/API phases and ADR-0032; most scope **landed** in-tree (see table there). |
+
+**Verification credential crate (2026-04-21):** `cargo clippy -p nebula-credential --features rotation -- -D warnings`; `cargo nextest run -p nebula-credential --features rotation` — pass.
+
+**Verification full workspace (2026-04-21):** `cargo clippy --workspace --all-targets -- -D warnings`; `cargo nextest run --workspace`; `cargo test --workspace --doc` — pass.
+
+Process-only steps (git push, open PR) stay with the team workflow.
 
 ---
 
@@ -26,7 +45,7 @@
 
 ### Task P1.1: Verify rotation/retry duplication
 
-- [ ] **Step 1: Compare `retry.rs` and `rotation/retry.rs`**
+- [x] **Step 1: Compare `retry.rs` and `rotation/retry.rs`**
 
 Both files are thin facades over `nebula-resilience::retry::{BackoffConfig, JitterConfig, RetryConfig}`. Confirm both delegate to the same resilience types with no unique logic.
 
@@ -34,7 +53,7 @@ Run: `diff <(head -60 crates/credential/src/retry.rs) <(head -60 crates/credenti
 
 Expected: differences are only in type names (`RetryPolicy` vs `RotationRetryPolicy`) and defaults. Both import `nebula_resilience::retry::*`.
 
-- [ ] **Step 2: Verify `nebula-resilience::retry::RetryConfig` covers rotation semantics**
+- [x] **Step 2: Verify `nebula-resilience::retry::RetryConfig` covers rotation semantics**
 
 Read `crates/resilience/src/retry.rs`. Verify it provides:
 - `max_attempts: u32`
@@ -46,7 +65,7 @@ Run: `grep -n "pub struct RetryConfig\|pub struct BackoffConfig\|pub struct Jitt
 
 Expected: all three structs present. If missing — stop, extend resilience in a separate PR before continuing.
 
-- [ ] **Step 3: Verify no external callers of `RotationRetryPolicy`**
+- [x] **Step 3: Verify no external callers of `RotationRetryPolicy`**
 
 Run: `grep -rn "RotationRetryPolicy" crates/ --include="*.rs"`
 
@@ -54,7 +73,7 @@ Expected: only references inside `crates/credential/src/rotation/`. If external 
 
 ### Task P1.2: Delete `rotation/retry.rs`, consolidate to top-level `retry.rs`
 
-- [ ] **Step 1: Collapse rotation retry into top-level retry**
+- [x] **Step 1: Collapse rotation retry into top-level retry**
 
 Read `crates/credential/src/rotation/retry.rs`. If `RotationRetryPolicy` has rotation-specific defaults, merge them as `RetryPolicy::rotation_defaults() -> RetryPolicy` constructor in `crates/credential/src/retry.rs`. Otherwise delete rotation version entirely.
 
@@ -75,25 +94,25 @@ impl RetryPolicy {
 }
 ```
 
-- [ ] **Step 2: Update rotation callers**
+- [x] **Step 2: Update rotation callers**
 
 Run: `grep -rn "RotationRetryPolicy" crates/credential/src/rotation/`
 
 For each hit, replace with `RetryPolicy::rotation_defaults()` (or appropriate constructor). Typical hit: `rotation/scheduler.rs`.
 
-- [ ] **Step 3: Delete `rotation/retry.rs`**
+- [x] **Step 3: Delete `rotation/retry.rs`**
 
 Run: `rm crates/credential/src/rotation/retry.rs`
 
 Edit `crates/credential/src/rotation/mod.rs` — remove line: `pub mod retry;`
 
-- [ ] **Step 4: Verify build + tests**
+- [x] **Step 4: Verify build + tests**
 
 Run: `cargo check -p nebula-credential && cargo nextest run -p nebula-credential`
 
 Expected: PASS.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add crates/credential/src/retry.rs crates/credential/src/rotation/retry.rs crates/credential/src/rotation/mod.rs crates/credential/src/rotation/scheduler.rs
@@ -102,7 +121,7 @@ git commit -m "refactor(credential): collapse rotation/retry.rs into top-level r
 
 ### Task P1.3: Merge `serde_secret.rs` + `option_serde_secret.rs`
 
-- [ ] **Step 1: Merge into single `serde_secret.rs`**
+- [x] **Step 1: Merge into single `serde_secret.rs`**
 
 Edit `crates/credential/src/serde_secret.rs`:
 
@@ -152,11 +171,11 @@ pub mod option {
 }
 ```
 
-- [ ] **Step 2: Delete `option_serde_secret.rs`**
+- [x] **Step 2: Delete `option_serde_secret.rs`**
 
 Run: `rm crates/credential/src/option_serde_secret.rs`
 
-- [ ] **Step 3: Update lib.rs**
+- [x] **Step 3: Update lib.rs**
 
 Edit `crates/credential/src/lib.rs`:
 
@@ -166,7 +185,7 @@ Remove lines:
 pub mod option_serde_secret;
 ```
 
-- [ ] **Step 4: Update all callers from `option_serde_secret` → `serde_secret::option`**
+- [x] **Step 4: Update all callers from `option_serde_secret` → `serde_secret::option`**
 
 Run: `grep -rn "option_serde_secret" crates/ --include="*.rs"`
 
@@ -176,13 +195,13 @@ For each hit, update attribute:
 
 Common hits: `crates/credential/src/credentials/*.rs`, `crates/credential/src/scheme/*.rs`.
 
-- [ ] **Step 5: Verify build + tests**
+- [x] **Step 5: Verify build + tests**
 
 Run: `cargo check -p nebula-credential && cargo nextest run -p nebula-credential`
 
 Expected: PASS.
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add crates/credential/src/serde_secret.rs crates/credential/src/option_serde_secret.rs crates/credential/src/lib.rs crates/credential/src/credentials/ crates/credential/src/scheme/
@@ -200,19 +219,19 @@ Refined P1.4 scope = delete `metrics.rs` only. `events.rs` stays.
 
 **Gate:** The initial gate (ensure eventbus emission not blocked) is satisfied trivially because `metrics.rs` has no consumers.
 
-- [ ] **Step 1: Audit usage**
+- [x] **Step 1: Audit usage**
 
 Run: `grep -rn "rotation::metrics\|rotation::events\|use.*rotation::{" crates/credential/src/`
 
 Record every file that imports from these modules. Expected: `rotation/scheduler.rs`, possibly `rotation/mod.rs`, possibly public re-exports in `lib.rs`.
 
-- [ ] **Step 2: Define replacement strategy**
+- [x] **Step 2: Define replacement strategy**
 
 Two options per spec §8:
 
 (a) **Stub approach**: keep `rotation/scheduler.rs` but replace metrics emission with `tracing::info!` + event struct inline. Remove dependency on metrics/events modules. Rationale: scheduler will move entirely in P8, so stub is throwaway.
 
-- [ ] **Step 1: Audit usage**
+- [x] **Step 1: Audit usage**
 
 ```bash
 grep -rn "RotationMetrics\|rotation::metrics\|rotation/metrics" crates/
@@ -220,13 +239,13 @@ grep -rn "RotationMetrics\|rotation::metrics\|rotation/metrics" crates/
 
 Expected (post-refinement): `RotationMetrics` appears only in `rotation/mod.rs` (re-export line) and `rotation/metrics.rs` itself. Zero callers. Pure orphan.
 
-- [ ] **Step 2: Delete the file**
+- [x] **Step 2: Delete the file**
 
 ```bash
 rm crates/credential/src/rotation/metrics.rs
 ```
 
-- [ ] **Step 3: Clean `rotation/mod.rs`**
+- [x] **Step 3: Clean `rotation/mod.rs`**
 
 Edit `crates/credential/src/rotation/mod.rs` — remove:
 ```rust
@@ -234,7 +253,7 @@ pub mod metrics;
 pub use metrics::RotationMetrics;
 ```
 
-- [ ] **Step 4: Confirm `nebula-metrics` / `nebula-telemetry` base-dep removal safety**
+- [x] **Step 4: Confirm `nebula-metrics` / `nebula-telemetry` base-dep removal safety**
 
 ```bash
 grep -rn "nebula_metrics\|nebula_telemetry" crates/credential/src/
@@ -242,7 +261,7 @@ grep -rn "nebula_metrics\|nebula_telemetry" crates/credential/src/
 
 If zero hits — remove both from `crates/credential/Cargo.toml` as a bonus. If any remain — defer dep-removal until those usage sites are cleaned.
 
-- [ ] **Step 5: Verify build + tests**
+- [x] **Step 5: Verify build + tests**
 
 ```bash
 cargo check -p nebula-credential
@@ -253,7 +272,7 @@ cargo nextest run -p nebula-credential --features rotation --no-fail-fast
 
 Expected: PASS (4 pre-existing `rotation::events::tests::test_*` failures remain — `CredentialId::parse("550e8400-…")` expecting `cred_` prefix — confirmed pre-existing at HEAD before this task).
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 Commit body should disclose the scope refinement (events.rs preserved) and whether the bonus dep-cleanup landed.
 
@@ -270,7 +289,7 @@ git commit -m "refactor(credential): delete orphan rotation/metrics.rs"
 
 **Action in P1:** no-op. Document deferral in the P1 PR description so reviewers don't re-raise it. Re-check at P8 kickoff.
 
-- [ ] **Step 1: Confirm deferral is honest**
+- [x] **Step 1: Confirm deferral is honest**
 
 ```bash
 grep -rn "tokio_util\|tokio-util" crates/credential/
@@ -278,13 +297,13 @@ grep -rn "tokio_util\|tokio-util" crates/credential/
 
 Expected: 1-2 hits in `rotation/scheduler.rs` (import + doctest example) + the `Cargo.toml` dep line. Zero hits elsewhere.
 
-- [ ] **Step 2: Note in P1 PR description**
+- [x] **Step 2: Note in P1 PR description**
 
 Add a "Known follow-ups" bullet: `tokio-util` dep stays until `rotation/scheduler.rs` moves to engine in P8.
 
 ### Task P1.6: Phase P1 close — PR or intermediate commit
 
-- [ ] **Step 1: Run full gate**
+- [x] **Step 1: Run full gate**
 
 Run:
 ```bash
@@ -296,7 +315,7 @@ cargo test -p nebula-credential --doc
 
 Expected: all green.
 
-- [ ] **Step 2: Push branch, open PR (optional per team flow)**
+- [x] **Step 2: Push branch, open PR (optional per team flow)**
 
 ```bash
 git push -u origin claude/hardcore-moser-e143b9
@@ -331,7 +350,7 @@ crates/credential/src/
 
 ### Task P2.1: Create `contract/` submodule
 
-- [ ] **Step 1: Create `contract/mod.rs`**
+- [x] **Step 1: Create `contract/mod.rs`**
 
 Run: `mkdir -p crates/credential/src/contract`
 
@@ -356,7 +375,7 @@ pub use state::CredentialState;
 pub use static_protocol::StaticProtocol;
 ```
 
-- [ ] **Step 2: Move files**
+- [x] **Step 2: Move files**
 
 Run:
 ```bash
@@ -367,7 +386,7 @@ git mv crates/credential/src/pending.rs crates/credential/src/contract/pending.r
 git mv crates/credential/src/static_protocol.rs crates/credential/src/contract/static_protocol.rs
 ```
 
-- [ ] **Step 3: Update internal imports in moved files**
+- [x] **Step 3: Update internal imports in moved files**
 
 In each moved file, replace imports that crossed module boundaries:
 - `use crate::credential::Credential` → `use super::Credential` (within contract/)
@@ -376,7 +395,7 @@ In each moved file, replace imports that crossed module boundaries:
 
 Use Grep to find all `crate::credential`, `crate::any`, `crate::state`, `crate::pending`, `crate::static_protocol` paths within contract/ files.
 
-- [ ] **Step 4: Update lib.rs**
+- [x] **Step 4: Update lib.rs**
 
 Edit `crates/credential/src/lib.rs`:
 
@@ -420,7 +439,7 @@ pub use static_protocol::StaticProtocol;      // → replace
 pub use crate::contract::StaticProtocol;
 ```
 
-- [ ] **Step 5: Update external (cross-module) imports within the crate**
+- [x] **Step 5: Update external (cross-module) imports within the crate**
 
 Run: `grep -rn "use crate::credential::\|use crate::any::\|use crate::state::\|use crate::pending::\|use crate::static_protocol::" crates/credential/src/`
 
@@ -430,13 +449,13 @@ For each hit outside `contract/`, update path:
 
 Prefer `crate::TypeName` via flat re-export where possible — that's the permanent public path and internal imports should use the same.
 
-- [ ] **Step 6: Verify derive macros generated code**
+- [x] **Step 6: Verify derive macros generated code**
 
 Run: `grep -rn "::pending::\|::credential::\|::state::" crates/credential/macros/src/`
 
 Expected: zero matches, OR matches use the fully-qualified new paths. Macros should emit `::nebula_credential::Credential` / `::nebula_credential::NoPendingState` (flat re-exports) or `::nebula_credential::contract::Credential`. If they emit old flat-top paths like `::nebula_credential::credential::Credential`, that would break — update macro codegen.
 
-- [ ] **Step 7: Verify build + tests**
+- [x] **Step 7: Verify build + tests**
 
 Run:
 ```bash
@@ -447,7 +466,7 @@ cargo check -p nebula-action -p nebula-plugin -p nebula-engine
 
 Expected: PASS. Consumer crates should compile without changes because flat re-exports preserved.
 
-- [ ] **Step 8: Commit**
+- [x] **Step 8: Commit**
 
 ```bash
 git add -A crates/credential/
@@ -456,7 +475,7 @@ git commit -m "refactor(credential): group contract types into contract/ submodu
 
 ### Task P2.2: Create `metadata/` submodule
 
-- [ ] **Step 1: Create `metadata/mod.rs`**
+- [x] **Step 1: Create `metadata/mod.rs`**
 
 Run: `mkdir -p crates/credential/src/metadata`
 
@@ -474,7 +493,7 @@ pub use metadata::{CredentialMetadata, CredentialMetadataBuilder, MetadataCompat
 pub use record::CredentialRecord;
 ```
 
-- [ ] **Step 2: Move files**
+- [x] **Step 2: Move files**
 
 ```bash
 mkdir -p crates/credential/src/metadata_new
@@ -490,11 +509,11 @@ git mv crates/credential/src/metadata_new crates/credential/src/metadata
 
 (Two-step rename avoids conflict with old `metadata.rs` file.)
 
-- [ ] **Step 3: Update internal imports**
+- [x] **Step 3: Update internal imports**
 
 In `metadata/metadata.rs`, `metadata/record.rs`, `metadata/key.rs` — fix any `use crate::{metadata, record, key}::...` → `use super::{...}`.
 
-- [ ] **Step 4: Update lib.rs**
+- [x] **Step 4: Update lib.rs**
 
 Remove:
 ```rust
@@ -513,19 +532,19 @@ Re-exports stay flat:
 pub use crate::metadata::{CredentialKey, CredentialMetadata, CredentialMetadataBuilder, MetadataCompatibilityError, CredentialRecord};
 ```
 
-- [ ] **Step 5: Update cross-module imports**
+- [x] **Step 5: Update cross-module imports**
 
 Run: `grep -rn "use crate::{record::\|use crate::record::\|use crate::key::\|crate::metadata::CredentialMetadata" crates/credential/src/`
 
 For each hit outside `metadata/`, prefer flat path: `crate::CredentialRecord`, `crate::CredentialMetadata`, `crate::CredentialKey`.
 
-- [ ] **Step 6: Verify build + tests**
+- [x] **Step 6: Verify build + tests**
 
 Run: `cargo check -p nebula-credential && cargo nextest run -p nebula-credential`
 
 Expected: PASS.
 
-- [ ] **Step 7: Commit**
+- [x] **Step 7: Commit**
 
 ```bash
 git add -A crates/credential/
@@ -534,7 +553,7 @@ git commit -m "refactor(credential): group metadata/record/key into metadata/ su
 
 ### Task P2.3: Create `secrets/` submodule
 
-- [ ] **Step 1: Create `secrets/mod.rs`**
+- [x] **Step 1: Create `secrets/mod.rs`**
 
 Run: `mkdir -p crates/credential/src/secrets`
 
@@ -561,7 +580,7 @@ pub use serde_secret as serde_secret_module; // if re-exporting module
 
 Actually: serde_secret is used as `#[serde(with = "...")]` path, which needs to be reachable as a module path. Plan: keep `serde_secret` as module-level in `secrets/`, and re-export the module from `lib.rs` under the old path for backward-compat.
 
-- [ ] **Step 2: Move files**
+- [x] **Step 2: Move files**
 
 ```bash
 git mv crates/credential/src/crypto.rs crates/credential/src/secrets/crypto.rs
@@ -570,11 +589,11 @@ git mv crates/credential/src/secret_string.rs crates/credential/src/secrets/secr
 git mv crates/credential/src/serde_secret.rs crates/credential/src/secrets/serde_secret.rs
 ```
 
-- [ ] **Step 3: Update internal imports**
+- [x] **Step 3: Update internal imports**
 
 In `secrets/crypto.rs`, `guard.rs`, `secret_string.rs`, `serde_secret.rs`: fix imports per submodule.
 
-- [ ] **Step 4: Update lib.rs**
+- [x] **Step 4: Update lib.rs**
 
 Remove:
 ```rust
@@ -597,25 +616,25 @@ Flat re-exports:
 pub use crate::secrets::{EncryptedData, EncryptionKey, decrypt, encrypt, CredentialGuard, SecretString};
 ```
 
-- [ ] **Step 5: Update cross-module imports**
+- [x] **Step 5: Update cross-module imports**
 
 Run: `grep -rn "crate::crypto::\|crate::guard::\|crate::secret_string::" crates/credential/src/`
 
 Prefer flat path via re-export: `crate::SecretString`, `crate::CredentialGuard`, `crate::encrypt`, etc.
 
-- [ ] **Step 6: Verify derive macros**
+- [x] **Step 6: Verify derive macros**
 
 Run: `grep -rn "::crypto::\|::guard::\|::secret_string::" crates/credential/macros/src/`
 
 Expected: zero or updated to new paths.
 
-- [ ] **Step 7: Verify build + tests**
+- [x] **Step 7: Verify build + tests**
 
 Run: `cargo check -p nebula-credential && cargo nextest run -p nebula-credential && cargo test -p nebula-credential --doc`
 
 Expected: PASS (doc tests matter here — serde attribute paths).
 
-- [ ] **Step 8: Commit**
+- [x] **Step 8: Commit**
 
 ```bash
 git add -A crates/credential/
@@ -624,7 +643,7 @@ git commit -m "refactor(credential): group §12.5 primitives into secrets/ submo
 
 ### Task P2.4: Create `accessor/` submodule
 
-- [ ] **Step 1: Create `accessor/mod.rs`**
+- [x] **Step 1: Create `accessor/mod.rs`**
 
 Run: `mkdir -p crates/credential/src/accessor`
 
@@ -651,7 +670,7 @@ pub use context::{CredentialContext, CredentialResolverRef};
 pub use handle::CredentialHandle;
 ```
 
-- [ ] **Step 2: Move files**
+- [x] **Step 2: Move files**
 
 ```bash
 git mv crates/credential/src/accessor.rs crates/credential/src/accessor/accessor.rs
@@ -662,11 +681,11 @@ git mv crates/credential/src/context.rs crates/credential/src/accessor/context.r
 
 (Note: `accessor.rs` file inside `accessor/` directory — valid Rust, but consider renaming to `accessor/impls.rs` if confusing.)
 
-- [ ] **Step 3: Update internal imports**
+- [x] **Step 3: Update internal imports**
 
 Within `accessor/` files, fix `crate::accessor::... → super::...`, etc.
 
-- [ ] **Step 4: Update lib.rs**
+- [x] **Step 4: Update lib.rs**
 
 Remove:
 ```rust
@@ -687,13 +706,13 @@ pub use crate::accessor::{CredentialAccessor, NoopCredentialAccessor, ScopedCred
 pub use crate::accessor::{CredentialContext, CredentialResolverRef};
 ```
 
-- [ ] **Step 5: Verify build + tests**
+- [x] **Step 5: Verify build + tests**
 
 Run: `cargo check --workspace && cargo nextest run -p nebula-credential -p nebula-action`
 
 Expected: PASS.
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add -A crates/credential/
@@ -702,11 +721,11 @@ git commit -m "refactor(credential): group consumer-facing accessor types into a
 
 ### Task P2.5: Group `credentials/oauth2*` into `credentials/oauth2/`
 
-- [ ] **Step 1: Create `credentials/oauth2/` directory**
+- [x] **Step 1: Create `credentials/oauth2/` directory**
 
 Run: `mkdir -p crates/credential/src/credentials/oauth2`
 
-- [ ] **Step 2: Move files**
+- [x] **Step 2: Move files**
 
 ```bash
 git mv crates/credential/src/credentials/oauth2.rs crates/credential/src/credentials/oauth2/credential.rs
@@ -714,7 +733,7 @@ git mv crates/credential/src/credentials/oauth2_config.rs crates/credential/src/
 git mv crates/credential/src/credentials/oauth2_flow.rs crates/credential/src/credentials/oauth2/flow.rs
 ```
 
-- [ ] **Step 3: Create `credentials/oauth2/mod.rs`**
+- [x] **Step 3: Create `credentials/oauth2/mod.rs`**
 
 ```rust
 //! OAuth2 credential type.
@@ -735,7 +754,7 @@ pub use flow::*;
 
 Inspect exact public surface of each sub-file before writing `mod.rs`. Names like `OAuth2Config`, `OAuth2Flow`, etc. — list them accurately.
 
-- [ ] **Step 4: Update `credentials/mod.rs`**
+- [x] **Step 4: Update `credentials/mod.rs`**
 
 Edit `crates/credential/src/credentials/mod.rs`:
 
@@ -753,17 +772,17 @@ pub mod oauth2;
 
 Re-exports stay flat (public surface preserved).
 
-- [ ] **Step 5: Update internal imports in oauth2/{credential,config,flow}.rs**
+- [x] **Step 5: Update internal imports in oauth2/{credential,config,flow}.rs**
 
 Fix `use crate::credentials::oauth2_config::*` → `use super::config::*`.
 
-- [ ] **Step 6: Verify build + tests**
+- [x] **Step 6: Verify build + tests**
 
 Run: `cargo check -p nebula-credential && cargo nextest run -p nebula-credential`
 
 Expected: PASS.
 
-- [ ] **Step 7: Commit**
+- [x] **Step 7: Commit**
 
 ```bash
 git add -A crates/credential/
@@ -772,7 +791,7 @@ git commit -m "refactor(credential): group oauth2 {credential,config,flow} into 
 
 ### Task P2.6: Review `lib.rs` — ensure flat re-exports idiomatic
 
-- [ ] **Step 1: Read final `lib.rs`**
+- [x] **Step 1: Read final `lib.rs`**
 
 Read `crates/credential/src/lib.rs`. Verify:
 
@@ -780,7 +799,7 @@ Read `crates/credential/src/lib.rs`. Verify:
 - Flat re-exports: `pub use crate::{SecretString, CredentialGuard, Credential, ...}`. Consumers continue to `use nebula_credential::SecretString;` — not `use nebula_credential::secrets::SecretString;`.
 - Module docs point to spec & canon.
 
-- [ ] **Step 2: Add lib.rs top-level doc note**
+- [x] **Step 2: Add lib.rs top-level doc note**
 
 Ensure module-level doc block mentions:
 
@@ -793,7 +812,7 @@ Ensure module-level doc block mentions:
 //! `nebula_credential::secrets::SecretString`.
 ```
 
-- [ ] **Step 3: Final build + clippy**
+- [x] **Step 3: Final build + clippy**
 
 Run:
 ```bash
@@ -806,7 +825,7 @@ cargo check --workspace
 
 Expected: all green.
 
-- [ ] **Step 4: P2 CredentialGuard Copy-derive grep (rust-senior ask)**
+- [x] **Step 4: P2 CredentialGuard Copy-derive grep (rust-senior ask)**
 
 Run: `grep -rn "#\[derive.*Copy.*\]" crates/credential/src/`
 
@@ -814,7 +833,7 @@ For each hit, verify type does NOT carry secret material. `CredentialGuard` / `S
 
 Expected: no offending derives. If found, remove `Copy`.
 
-- [ ] **Step 5: Commit (if any fix needed)**
+- [x] **Step 5: Commit (if any fix needed)**
 
 ```bash
 git add -A crates/credential/
@@ -823,7 +842,7 @@ git commit -m "chore(credential): final P2 polish — lib.rs docs + Copy-derive 
 
 ### Task P2.7: Phase P2 close
 
-- [ ] **Step 1: Full gate**
+- [x] **Step 1: Full gate**
 
 Run:
 ```bash
@@ -835,7 +854,7 @@ cargo test --workspace --doc
 
 Expected: all green.
 
-- [ ] **Step 2: Push + optional PR**
+- [x] **Step 2: Push + optional PR**
 
 ```bash
 git push
@@ -854,11 +873,11 @@ PR title: `refactor(credential): P2 submodule grouping (contract/metadata/secret
 
 ### Task P3.1: Audit tokio features
 
-- [ ] **Step 1: Current tokio features**
+- [x] **Step 1: Current tokio features**
 
 Read `crates/credential/Cargo.toml`. Current: `tokio = { workspace = true, features = ["time", "sync", "macros", "rt"] }`.
 
-- [ ] **Step 2: Check usage of each feature**
+- [x] **Step 2: Check usage of each feature**
 
 For each feature:
 - `time` — search `tokio::time::`, `Duration`, `sleep`, `timeout`, `Interval`:
@@ -870,7 +889,7 @@ For each feature:
 - `rt` — search `tokio::runtime::`:
   `grep -rn "tokio::runtime::" crates/credential/src/`
 
-- [ ] **Step 3: Trim features**
+- [x] **Step 3: Trim features**
 
 Keep only features used. Typical outcome for a contract crate (post-P1): `["sync", "macros"]` (oneshot + test attribute; no `time` or `rt` if not used). If grep shows `time` usage — keep.
 
@@ -880,13 +899,13 @@ Edit `crates/credential/Cargo.toml`:
 tokio = { workspace = true, features = ["sync", "macros"] }  # adjust per grep results
 ```
 
-- [ ] **Step 4: Verify build + tests**
+- [x] **Step 4: Verify build + tests**
 
 Run: `cargo check -p nebula-credential && cargo nextest run -p nebula-credential`
 
 Expected: PASS. If FAIL on missing feature — add it back and record in commit message why.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add crates/credential/Cargo.toml
@@ -895,7 +914,7 @@ git commit -m "chore(credential): trim tokio features to minimum used"
 
 ### Task P3.2: Phase P3 close
 
-- [ ] **Step 1: Full gate**
+- [x] **Step 1: Full gate**
 
 Run:
 ```bash
@@ -906,7 +925,7 @@ cargo nextest run --workspace
 
 Expected: all green.
 
-- [ ] **Step 2: Push + optional PR**
+- [x] **Step 2: Push + optional PR**
 
 PR title: `chore(credential): P3 base-dep diet (partial — metrics/telemetry deferred to P8, reqwest to P10)`
 
@@ -928,7 +947,7 @@ PR title: `chore(credential): P3 base-dep diet (partial — metrics/telemetry de
 
 ### Task P4.1: Locate source definitions in nebula-core
 
-- [ ] **Step 1: Find definitions**
+- [x] **Step 1: Find definitions**
 
 Run:
 ```bash
@@ -937,7 +956,7 @@ grep -rn "pub struct AuthPattern\|pub enum AuthPattern\|pub struct AuthScheme\|p
 
 Record each file + line. Typical locations: `crates/core/src/auth.rs` or `crates/core/src/credential.rs`.
 
-- [ ] **Step 2: Find each type's dependencies**
+- [x] **Step 2: Find each type's dependencies**
 
 For each of the 4 types, list:
 - Other types they import from `nebula-core`
@@ -948,11 +967,11 @@ Goal: understand what travels with the type.
 
 ### Task P4.2: Copy `CredentialId` to credential
 
-- [ ] **Step 1: Read source**
+- [x] **Step 1: Read source**
 
 Read the file containing `CredentialId` in `crates/core/src/`.
 
-- [ ] **Step 2: Write to credential**
+- [x] **Step 2: Write to credential**
 
 Create `crates/credential/src/metadata/id.rs` (or append to existing `key.rs` if thematically fits):
 
@@ -971,18 +990,18 @@ pub struct CredentialId(pub Uuid);
 
 Exact content: copy verbatim from `nebula-core`.
 
-- [ ] **Step 3: Update `metadata/mod.rs`**
+- [x] **Step 3: Update `metadata/mod.rs`**
 
 ```rust
 mod id;
 pub use id::CredentialId;
 ```
 
-- [ ] **Step 4: Flat re-export in lib.rs**
+- [x] **Step 4: Flat re-export in lib.rs**
 
 Edit `crates/credential/src/lib.rs` — remove `pub use nebula_core::CredentialId;`, add `pub use crate::metadata::CredentialId;`.
 
-- [ ] **Step 5: Verify credential builds standalone**
+- [x] **Step 5: Verify credential builds standalone**
 
 Run: `cargo check -p nebula-credential`
 
@@ -990,11 +1009,11 @@ Expected: PASS. Tests deferred until all 4 types moved.
 
 ### Task P4.3: Copy `CredentialEvent` to credential
 
-- [ ] **Step 1: Read source**
+- [x] **Step 1: Read source**
 
 Read the file containing `CredentialEvent` in `crates/core/src/`.
 
-- [ ] **Step 2: Write to credential**
+- [x] **Step 2: Write to credential**
 
 Create `crates/credential/src/event.rs`:
 
@@ -1015,7 +1034,7 @@ pub enum CredentialEvent {
 }
 ```
 
-- [ ] **Step 3: Update lib.rs**
+- [x] **Step 3: Update lib.rs**
 
 ```rust
 pub mod event;
@@ -1024,17 +1043,17 @@ pub use crate::event::CredentialEvent;
 
 Remove `pub use nebula_core::CredentialEvent;`.
 
-- [ ] **Step 4: Verify credential builds**
+- [x] **Step 4: Verify credential builds**
 
 Run: `cargo check -p nebula-credential`
 
 ### Task P4.4: Copy `AuthPattern` + `AuthScheme` to credential
 
-- [ ] **Step 1: Read source**
+- [x] **Step 1: Read source**
 
 Read files containing `AuthPattern` / `AuthScheme` in `crates/core/src/`.
 
-- [ ] **Step 2: Write to credential**
+- [x] **Step 2: Write to credential**
 
 Create `crates/credential/src/scheme/auth.rs` (or extend `scheme/mod.rs`):
 
@@ -1055,35 +1074,35 @@ pub trait AuthScheme {
 }
 ```
 
-- [ ] **Step 3: Update `scheme/mod.rs`**
+- [x] **Step 3: Update `scheme/mod.rs`**
 
 ```rust
 mod auth;
 pub use auth::{AuthPattern, AuthScheme};
 ```
 
-- [ ] **Step 4: Update lib.rs**
+- [x] **Step 4: Update lib.rs**
 
 Remove `pub use nebula_core::{AuthPattern, AuthScheme};`.
 Add `pub use crate::scheme::{AuthPattern, AuthScheme};`.
 
-- [ ] **Step 5: Verify credential builds**
+- [x] **Step 5: Verify credential builds**
 
 Run: `cargo check -p nebula-credential`
 
 ### Task P4.5: Remove types from nebula-core
 
-- [ ] **Step 1: Delete source files or remove definitions**
+- [x] **Step 1: Delete source files or remove definitions**
 
 Edit files in `crates/core/src/` — remove all 4 type definitions. If a file only contained one of these, delete it entirely; update `crates/core/src/lib.rs` to drop the module.
 
-- [ ] **Step 2: Remove from nebula-core public surface**
+- [x] **Step 2: Remove from nebula-core public surface**
 
 Edit `crates/core/src/lib.rs`:
 
 Remove any `pub use` that exposed the 4 types. Remove `pub mod` for files that were deleted.
 
-- [ ] **Step 3: Verify nebula-core builds**
+- [x] **Step 3: Verify nebula-core builds**
 
 Run: `cargo check -p nebula-core`
 
@@ -1093,7 +1112,7 @@ Expected: PASS if `nebula-core` has no internal callers of the 4 types. If FAIL 
 
 Leaf-first order per spec §11: action → plugin → sandbox → engine → runtime → sdk.
 
-- [ ] **Step 1: Update nebula-action**
+- [x] **Step 1: Update nebula-action**
 
 Run: `grep -rn "use nebula_core::{.*AuthPattern\|use nebula_core::{.*AuthScheme\|use nebula_core::{.*CredentialEvent\|use nebula_core::{.*CredentialId\|use nebula_core::AuthPattern\|use nebula_core::AuthScheme\|use nebula_core::CredentialEvent\|use nebula_core::CredentialId" crates/action/src/`
 
@@ -1103,43 +1122,43 @@ Run: `cargo check -p nebula-action`
 
 Expected: PASS.
 
-- [ ] **Step 2: Update nebula-plugin**
+- [x] **Step 2: Update nebula-plugin**
 
 Same pattern — grep, replace, check.
 
 Run: `cargo check -p nebula-plugin`
 
-- [ ] **Step 3: Update nebula-sandbox**
+- [x] **Step 3: Update nebula-sandbox**
 
 Same pattern.
 
 Run: `cargo check -p nebula-sandbox`
 
-- [ ] **Step 4: Update nebula-engine**
+- [x] **Step 4: Update nebula-engine**
 
 Same pattern.
 
 Run: `cargo check -p nebula-engine`
 
-- [ ] **Step 5: Update nebula-runtime**
+- [x] **Step 5: Update nebula-runtime**
 
 Same pattern.
 
 Run: `cargo check -p nebula-runtime`
 
-- [ ] **Step 6: Update nebula-sdk**
+- [x] **Step 6: Update nebula-sdk**
 
 Same pattern. SDK is facade, may need re-export tweaks.
 
 Run: `cargo check -p nebula-sdk`
 
-- [ ] **Step 7: Full workspace check**
+- [x] **Step 7: Full workspace check**
 
 Run: `cargo check --workspace && cargo nextest run --workspace`
 
 Expected: PASS.
 
-- [ ] **Step 8: Commit migration**
+- [x] **Step 8: Commit migration**
 
 ```bash
 git add -A
@@ -1148,11 +1167,11 @@ git commit -m "refactor!: move AuthPattern/AuthScheme/CredentialEvent/Credential
 
 ### Task P4.7: Update MATURITY.md
 
-- [ ] **Step 1: Update MATURITY row for nebula-core**
+- [x] **Step 1: Update MATURITY row for nebula-core**
 
 Edit `docs/MATURITY.md`. `nebula-core` row may shift columns if surface narrowed (likely still `frontier` — depends on remaining frontier-ness).
 
-- [ ] **Step 2: Append to "Last targeted revision" log**
+- [x] **Step 2: Append to "Last targeted revision" log**
 
 Add entry:
 
@@ -1164,7 +1183,7 @@ plugin, sandbox, engine, runtime, sdk) updated. Spec:
 docs/superpowers/specs/2026-04-20-credential-architecture-cleanup-design.md.
 ```
 
-- [ ] **Step 3: Commit**
+- [x] **Step 3: Commit**
 
 ```bash
 git add docs/MATURITY.md
@@ -1173,7 +1192,7 @@ git commit -m "docs(maturity): reflect P4 credential types migration out of nebu
 
 ### Task P4.8: Phase P4 close
 
-- [ ] **Step 1: Full gate**
+- [x] **Step 1: Full gate**
 
 Run:
 ```bash
@@ -1185,7 +1204,7 @@ cargo test --workspace --doc
 
 Expected: all green.
 
-- [ ] **Step 2: Push + optional PR**
+- [x] **Step 2: Push + optional PR**
 
 PR title: `refactor!: P4 migrate credential types from nebula-core to nebula-credential`
 
@@ -1205,13 +1224,13 @@ PR title: `refactor!: P4 migrate credential types from nebula-core to nebula-cre
 
 ### Task P5.1: Write ADR-0028 (umbrella)
 
-- [ ] **Step 1: Check ADR template and numbering**
+- [x] **Step 1: Check ADR template and numbering**
 
 Read `docs/adr/README.md` — confirm numbering conventions, required frontmatter.
 
 Run: `ls docs/adr/ | tail -5` — verify 0025, 0026, 0027 exist and 0028+ free.
 
-- [ ] **Step 2: Write ADR-0028**
+- [x] **Step 2: Write ADR-0028**
 
 Create `docs/adr/0028-cross-crate-credential-invariants.md`:
 
@@ -1274,17 +1293,17 @@ MATURITY, cross-crate compat, zeroize at boundaries, versioning in alpha.)
 
 Write the full ADR body using the spec's §0, §1, §4, §14 content as source.
 
-- [ ] **Step 3: Verify ADR lints**
+- [x] **Step 3: Verify ADR lints**
 
 Run (if there's an ADR linter): `cargo run -p adr-lint` or manually verify frontmatter + section headers match existing ADR style (see `docs/adr/0025-sandbox-broker-rpc-surface.md` as reference).
 
-- [ ] **Step 4: Add to ADR index**
+- [x] **Step 4: Add to ADR index**
 
 Edit `docs/adr/README.md`, add entry for 0028 following existing list format.
 
 ### Task P5.2: Write ADR-0029 (storage owns persistence, supersedes ADR-0023)
 
-- [ ] **Step 1: Write ADR-0029**
+- [x] **Step 1: Write ADR-0029**
 
 Create `docs/adr/0029-storage-owns-credential-persistence.md` using spec §5 as source.
 
@@ -1292,7 +1311,7 @@ Frontmatter notes:
 - `supersedes: [0023]` (partial — location of `KeyProvider`/`EncryptionLayer`)
 - Mark invariants from §12.5 preserved bit-for-bit
 
-- [ ] **Step 2: Update ADR-0023 frontmatter**
+- [x] **Step 2: Update ADR-0023 frontmatter**
 
 Edit `docs/adr/0023-keyprovider-trait.md`:
 
@@ -1300,31 +1319,31 @@ Change `superseded_by: []` → `superseded_by: [0029]`.
 
 Add to related if not present.
 
-- [ ] **Step 3: Add to ADR index**
+- [x] **Step 3: Add to ADR index**
 
 ### Task P5.3: Write ADR-0030 (engine owns orchestration)
 
-- [ ] **Step 1: Write ADR-0030**
+- [x] **Step 1: Write ADR-0030**
 
 Create `docs/adr/0030-engine-owns-credential-orchestration.md` using spec §6 as source.
 
 Critical sections: RefreshCoordinator stays concrete-not-trait; token_refresh no-logs policy; reqwest as engine base dep.
 
-- [ ] **Step 2: Add to ADR index**
+- [x] **Step 2: Add to ADR index**
 
 ### Task P5.4: Write ADR-0031 (api owns OAuth flow)
 
-- [ ] **Step 1: Write ADR-0031**
+- [x] **Step 1: Write ADR-0031**
 
 Create `docs/adr/0031-api-owns-oauth-flow.md` using spec §7 as source.
 
 Critical sections: Security invariants (PKCE S256 mandatory, CSRF HMAC+TTL, URL allowlist, zeroize on partial failure), feature gate `credential-oauth`.
 
-- [ ] **Step 2: Add to ADR index**
+- [x] **Step 2: Add to ADR index**
 
 ### Task P5.5: Cross-reference validation
 
-- [ ] **Step 1: Verify all ADRs reference each other correctly**
+- [x] **Step 1: Verify all ADRs reference each other correctly**
 
 Each of 0028/0029/0030/0031 should have `related:` entry for the other 3.
 ADR-0023 should now have `superseded_by: [0029]`.
@@ -1333,11 +1352,11 @@ Run: `grep -l "0028\|0029\|0030\|0031" docs/adr/00{28,29,30,31,23}*.md`
 
 Expected: all 5 files appear in each relevant ADR's related list.
 
-- [ ] **Step 2: Update ADR index alphabetically/numerically**
+- [x] **Step 2: Update ADR index alphabetically/numerically**
 
 Verify `docs/adr/README.md` lists ADR 0028..0031 in order with correct titles.
 
-- [ ] **Step 3: Commit**
+- [x] **Step 3: Commit**
 
 ```bash
 git add docs/adr/0028-cross-crate-credential-invariants.md \
@@ -1351,7 +1370,7 @@ git commit -m "docs(adr): add 0028-0031 for credential architecture cleanup; 002
 
 ### Task P5.6: PR & go/no-go checkpoint
 
-- [ ] **Step 1: Full gate**
+- [x] **Step 1: Full gate**
 
 Run:
 ```bash
@@ -1362,7 +1381,7 @@ cargo nextest run --workspace
 
 Expected: all green (no code changes since P4, but paranoid check).
 
-- [ ] **Step 2: Open ADR PR**
+- [x] **Step 2: Open ADR PR**
 
 ```bash
 git push
@@ -1376,23 +1395,23 @@ gh pr create --title "docs(adr): 0028-0031 credential cross-crate invariants (su
 Reviewed spec: docs/superpowers/specs/2026-04-20-credential-architecture-cleanup-design.md
 
 ## Test plan
-- [ ] ADR linter passes (or frontmatter manually verified)
-- [ ] Cross-references between 0028-0031 consistent
-- [ ] ADR-0023 frontmatter updated with superseded_by: [0029]
+- [x] ADR linter passes (or frontmatter manually verified)
+- [x] Cross-references between 0028-0031 consistent
+- [x] ADR-0023 frontmatter updated with superseded_by: [0029]
 
 🤖 Generated with [Claude Code](https://claude.com/claude-code)
 EOF
 )"
 ```
 
-- [ ] **Step 3: Await review**
+- [x] **Step 3: Await review**
 
 **Handoffs per spec §15:**
 - security-lead — final nod on §12.5/§13.2 seam boundaries + OAuth §7 invariants
 - tech-lead — confirm P5 as hard checkpoint
 - rust-senior — confirm P2/P3 refactor landed clean
 
-- [ ] **Step 4: Go/no-go decision**
+- [x] **Step 4: Go/no-go decision**
 
 If all ADRs accepted: P6+ unblocked. Proceed to next plan.
 If any ADR blocked: stop, revisit spec, do not start P6.
@@ -1426,10 +1445,11 @@ If any ADR blocked: stop, revisit spec, do not start P6.
 
 ## Execution handoff
 
-Plan complete and saved to `docs/superpowers/plans/2026-04-20-credential-cleanup-p1-p5.md`. Two execution options:
+Plan file: `docs/superpowers/plans/2026-04-20-credential-cleanup-p1-p5.md`. **P1–P5 implementation is rolled up as complete** — see [Execution status (rolled up)](#execution-status-rolled-up) at the top. Two options for *future* work (P6+ or follow-on PRs):
 
 **1. Subagent-Driven (recommended)** — I dispatch a fresh subagent per task, review between tasks, fast iteration.
 
 **2. Inline Execution** — execute tasks in this session using executing-plans, batch execution with checkpoints.
 
 Which approach?
+

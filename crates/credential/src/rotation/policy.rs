@@ -108,7 +108,7 @@ pub enum RotationPolicy {
 }
 
 /// Configuration for periodic rotation
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct PeriodicConfig {
     /// Rotation interval (minimum 1 hour)
     #[serde(with = "humantime_serde")]
@@ -138,7 +138,7 @@ pub struct BeforeExpiryConfig {
 }
 
 /// Configuration for scheduled rotation
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ScheduledConfig {
     /// Exact time to perform rotation
     scheduled_at: DateTime<Utc>,
@@ -152,7 +152,7 @@ pub struct ScheduledConfig {
 }
 
 /// Configuration for manual rotation (emergency incident response)
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ManualConfig {
     /// Immediately revoke old credential (skip grace period)
     ///
@@ -288,7 +288,7 @@ impl PeriodicConfig {
     /// Validate periodic rotation configuration
     pub fn validate(&self) -> RotationResult<()> {
         // Interval must be at least 1 hour
-        if self.interval < Duration::from_secs(3600) {
+        if self.interval < Duration::from_hours(1) {
             return Err(RotationError::InvalidPolicy {
                 reason: format!(
                     "Rotation interval must be at least 1 hour, got {:?}",

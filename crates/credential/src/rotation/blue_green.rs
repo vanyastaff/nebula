@@ -425,7 +425,7 @@ where
                 "Missing required privileges: {}",
                 missing
                     .iter()
-                    .map(|p| p.to_string())
+                    .map(ToString::to_string)
                     .collect::<Vec<_>>()
                     .join(", ")
             ),
