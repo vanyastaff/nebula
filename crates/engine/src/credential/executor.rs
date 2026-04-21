@@ -82,7 +82,7 @@ where
 {
     let session_id = ctx.session_id().unwrap_or("default");
     let pending: C::Pending = pending_store
-        .consume(C::KEY, token, &ctx.owner_id, session_id)
+        .get(token)
         .await
         .map_err(ExecutorError::PendingStore)?;
 
@@ -96,7 +96,32 @@ where
     })?
     .map_err(ExecutorError::Credential)?;
 
-    handle_resolve_result::<C, S>(result, ctx, pending_store).await
+    match result {
+        ResolveResult::Complete(state) => {
+            let _consumed: C::Pending = pending_store
+                .consume(C::KEY, token, &ctx.owner_id, session_id)
+                .await
+                .map_err(ExecutorError::PendingStore)?;
+            Ok(ResolveResponse::Complete(state))
+        },
+        ResolveResult::Pending { state, interaction } => {
+            let _consumed: C::Pending = pending_store
+                .consume(C::KEY, token, &ctx.owner_id, session_id)
+                .await
+                .map_err(ExecutorError::PendingStore)?;
+
+            let next_token = pending_store
+                .put(C::KEY, &ctx.owner_id, session_id, state)
+                .await
+                .map_err(ExecutorError::PendingStore)?;
+
+            Ok(ResolveResponse::Pending {
+                token: next_token,
+                interaction,
+            })
+        },
+        ResolveResult::Retry { after } => Ok(ResolveResponse::Retry { after }),
+    }
 }
 
 async fn handle_resolve_result<C, S>(

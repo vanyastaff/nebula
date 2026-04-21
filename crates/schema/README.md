@@ -1,6 +1,6 @@
 ---
 
-## name: nebula-schema
+name: nebula-schema
 
 role: Typed Configuration Schema with Proof-Token Pipeline (bespoke; informed by Domain Modeling Made Functional "make illegal states unrepresentable")
 status: frontier

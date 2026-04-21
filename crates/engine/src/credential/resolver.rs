@@ -245,7 +245,7 @@ impl<S: CredentialStore> CredentialResolver<S> {
                             } else {
                                 tracing::warn!(
                                     credential_id,
-                                    "credential ID is not a valid UUID, refresh event not emitted",
+                                    "credential ID is not a valid `CredentialId` (expected `cred_<ULID>`), refresh event not emitted",
                                 );
                             }
                             let scheme = C::project(&state);

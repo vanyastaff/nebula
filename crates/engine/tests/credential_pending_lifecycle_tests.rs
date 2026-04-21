@@ -132,6 +132,76 @@ impl Credential for InteractiveTestCredential {
     }
 }
 
+struct RetryAwareCredential;
+
+impl Credential for RetryAwareCredential {
+    type Input = FieldValues;
+    type Scheme = SecretToken;
+    type State = TestInteractiveState;
+    type Pending = TestPending;
+
+    const KEY: &'static str = "retry_aware";
+    const INTERACTIVE: bool = true;
+
+    fn metadata() -> CredentialMetadata {
+        CredentialMetadata::new(
+            nebula_core::credential_key!("retry_aware"),
+            "Retry Aware",
+            "Test credential for retry-poll pending lifecycle",
+            Self::parameters(),
+            nebula_credential::AuthPattern::SecretToken,
+        )
+    }
+
+    fn project(state: &TestInteractiveState) -> SecretToken {
+        SecretToken::new(SecretString::new(state.token.clone()))
+    }
+
+    async fn resolve(
+        _values: &FieldValues,
+        _ctx: &CredentialContext,
+    ) -> Result<ResolveResult<TestInteractiveState, TestPending>, CredentialError> {
+        Ok(ResolveResult::Pending {
+            state: TestPending {
+                verification_code: "secret-code-123".into(),
+            },
+            interaction: InteractionRequest::DisplayInfo {
+                title: "Still waiting".into(),
+                message: "Poll once, then provide code".into(),
+                data: DisplayData::Text("waiting for user consent".into()),
+                expires_in: Some(300),
+            },
+        })
+    }
+
+    async fn continue_resolve(
+        pending: &TestPending,
+        input: &UserInput,
+        _ctx: &CredentialContext,
+    ) -> Result<ResolveResult<TestInteractiveState, TestPending>, CredentialError> {
+        match input {
+            UserInput::Poll => Ok(ResolveResult::Retry {
+                after: Duration::from_secs(1),
+            }),
+            UserInput::Code { code } if code == &pending.verification_code => {
+                Ok(ResolveResult::Complete(TestInteractiveState {
+                    token: "final-token".into(),
+                }))
+            },
+            _ => Err(CredentialError::InvalidInput(
+                "incorrect verification code".into(),
+            )),
+        }
+    }
+
+    async fn refresh(
+        _state: &mut TestInteractiveState,
+        _ctx: &CredentialContext,
+    ) -> Result<RefreshOutcome, CredentialError> {
+        Ok(RefreshOutcome::NotSupported)
+    }
+}
+
 #[tokio::test]
 async fn pending_lifecycle_resolve_then_continue() {
     let pending_store = InMemoryPendingStore::new();
@@ -248,6 +318,61 @@ async fn continue_with_wrong_code_returns_error() {
     assert!(
         result.is_err(),
         "continue with wrong code should fail: {result:?}"
+    );
+}
+
+#[tokio::test]
+async fn retry_does_not_consume_pending_token() {
+    let pending_store = InMemoryPendingStore::new();
+    let ctx = CredentialContext::new("test-user").with_session_id("sess-1");
+    let values = FieldValues::new();
+
+    let response = nebula_engine::credential::execute_resolve::<RetryAwareCredential, _>(
+        &values,
+        &ctx,
+        &pending_store,
+    )
+    .await
+    .expect("execute_resolve should succeed");
+    let token = match response {
+        nebula_engine::credential::ResolveResponse::Pending { token, .. } => token,
+        other => panic!("expected Pending, got: {other:?}"),
+    };
+
+    let retry = nebula_engine::credential::execute_continue::<RetryAwareCredential, _>(
+        &token,
+        &UserInput::Poll,
+        &ctx,
+        &pending_store,
+    )
+    .await
+    .expect("poll should return Retry");
+    assert!(
+        matches!(
+            retry,
+            nebula_engine::credential::ResolveResponse::Retry { after }
+                if after == Duration::from_secs(1)
+        ),
+        "expected Retry(after=1s), got: {retry:?}"
+    );
+
+    let completed = nebula_engine::credential::execute_continue::<RetryAwareCredential, _>(
+        &token,
+        &UserInput::Code {
+            code: "secret-code-123".into(),
+        },
+        &ctx,
+        &pending_store,
+    )
+    .await
+    .expect("pending token should still be valid after Retry");
+    assert!(
+        matches!(
+            completed,
+            nebula_engine::credential::ResolveResponse::Complete(TestInteractiveState { ref token })
+                if token == "final-token"
+        ),
+        "expected Complete after retry flow, got: {completed:?}"
     );
 }
 
