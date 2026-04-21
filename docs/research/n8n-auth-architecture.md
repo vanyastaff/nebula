@@ -15,6 +15,14 @@
 - **Провенанс:** данные собраны через DeepWiki `ask_question` + `read_wiki_contents`;
   где DeepWiki не даёт однозначного ответа — отмечено как `⚠️ не подтверждено`.
 
+> **⚠️ Scope reminder — важно.** Всё содержимое ниже (endpoints, DB schemas,
+> entity-имена типа `credentials_entity`, `shared_credentials`, `user_api_keys`,
+> migration timestamps, статусы типа «нет session-таблицы») — это описание
+> **n8n** как peer-research subject. Никакого utверждения про Nebula-схему
+> здесь НЕТ. Для реальной Nebula-схемы смотри `crates/storage/migrations/`
+> и `crates/storage/src/rows/`. Сравнение «n8n vs Nebula» и Nebula-mitigation
+> вынесены в [`n8n-credential-pain-points.md`](./n8n-credential-pain-points.md) §10.
+
 ---
 
 ## TL;DR — что взять в Nebula
