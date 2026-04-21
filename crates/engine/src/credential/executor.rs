@@ -28,6 +28,8 @@ pub enum ResolveResponse<S> {
     Retry {
         /// Delay before the next poll.
         after: Duration,
+        /// Opaque token for the re-stored pending state when retry follows `execute_continue`.
+        token: Option<PendingToken>,
     },
 }
 
@@ -82,7 +84,7 @@ where
 {
     let session_id = ctx.session_id().unwrap_or("default");
     let pending: C::Pending = pending_store
-        .get(token)
+        .get_bound(C::KEY, token, &ctx.owner_id, session_id)
         .await
         .map_err(ExecutorError::PendingStore)?;
 
@@ -105,22 +107,32 @@ where
             Ok(ResolveResponse::Complete(state))
         },
         ResolveResult::Pending { state, interaction } => {
-            let _consumed: C::Pending = pending_store
-                .consume(C::KEY, token, &ctx.owner_id, session_id)
-                .await
-                .map_err(ExecutorError::PendingStore)?;
-
             let next_token = pending_store
                 .put(C::KEY, &ctx.owner_id, session_id, state)
                 .await
                 .map_err(ExecutorError::PendingStore)?;
+
+            if let Err(err) = pending_store
+                .consume::<C::Pending>(C::KEY, token, &ctx.owner_id, session_id)
+                .await
+            {
+                // Best-effort cleanup: the new state was stored but the caller
+                // will never receive `next_token` because we are returning an
+                // error. Delete it to avoid a permanent store leak.
+                // The delete error (if any) is subordinate to the primary error.
+                let _ = pending_store.delete(&next_token).await;
+                return Err(ExecutorError::PendingStore(err));
+            }
 
             Ok(ResolveResponse::Pending {
                 token: next_token,
                 interaction,
             })
         },
-        ResolveResult::Retry { after } => Ok(ResolveResponse::Retry { after }),
+        ResolveResult::Retry { after } => Ok(ResolveResponse::Retry {
+            after,
+            token: Some(token.clone()),
+        }),
     }
 }
 
@@ -143,6 +155,6 @@ where
                 .map_err(ExecutorError::PendingStore)?;
             Ok(ResolveResponse::Pending { token, interaction })
         },
-        ResolveResult::Retry { after } => Ok(ResolveResponse::Retry { after }),
+        ResolveResult::Retry { after } => Ok(ResolveResponse::Retry { after, token: None }),
     }
 }

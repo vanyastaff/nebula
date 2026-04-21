@@ -38,6 +38,18 @@ pub trait PendingStateStore: Send + Sync {
         token: &PendingToken,
     ) -> impl Future<Output = Result<P, PendingStoreError>> + Send;
 
+    /// Reads pending state without consuming while enforcing token bindings.
+    ///
+    /// Validates `credential_kind`, `owner_id`, and `session_id` against the
+    /// values stored at `put()` time.
+    fn get_bound<P: PendingState>(
+        &self,
+        credential_kind: &str,
+        token: &PendingToken,
+        owner_id: &str,
+        session_id: &str,
+    ) -> impl Future<Output = Result<P, PendingStoreError>> + Send;
+
     /// Reads and deletes atomically (single-use consume).
     ///
     /// Validates all 4 dimensions: credential_kind, owner_id, session_id must

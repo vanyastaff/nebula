@@ -141,6 +141,38 @@ impl PendingStateStore for InMemoryPendingStore {
         serde_json::from_slice(&data).map_err(|e| PendingStoreError::Backend(Box::new(e)))
     }
 
+    async fn get_bound<P: PendingState>(
+        &self,
+        credential_kind: &str,
+        token: &PendingToken,
+        owner_id: &str,
+        session_id: &str,
+    ) -> Result<P, PendingStoreError> {
+        let mut entries = self.entries.write().await;
+        let entry = entries
+            .get(token.as_str())
+            .ok_or(PendingStoreError::NotFound)?;
+
+        if Utc::now() > entry.expires_at {
+            entries.remove(token.as_str());
+            return Err(PendingStoreError::Expired);
+        }
+
+        let mismatch = entry.credential_kind != credential_kind
+            || entry.owner_id != owner_id
+            || entry.session_id != session_id;
+        if mismatch {
+            return Err(PendingStoreError::ValidationFailed {
+                reason: "token bindings do not match".to_owned(),
+            });
+        }
+
+        let data = entry.data.clone();
+        drop(entries);
+
+        serde_json::from_slice(&data).map_err(|e| PendingStoreError::Backend(Box::new(e)))
+    }
+
     async fn consume<P: PendingState>(
         &self,
         credential_kind: &str,
