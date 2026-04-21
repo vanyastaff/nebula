@@ -618,6 +618,23 @@ fn path_concat_schema(prefix: &FieldPath, suffix: &FieldPath) -> FieldPath {
     }
 }
 
+/// Normalize dependency paths to the same shape as `collect_defined_field_paths`.
+///
+/// `collect_defined_field_paths` tracks list-item object descendants under the list
+/// key (`items.name`), not indexed instances (`items[0].name`). To make
+/// JSON-pointer refs such as `/items/0/name` comparable against that set, we
+/// drop index segments here.
+fn normalize_visibility_target_path(path: &FieldPath) -> FieldPath {
+    let mut normalized = FieldPath::root();
+    for segment in path.segments() {
+        if matches!(segment, PathSegment::Index(_)) {
+            continue;
+        }
+        normalized = normalized.join(segment.clone());
+    }
+    normalized
+}
+
 /// Resolve a [`Rule::field_references`] string to an absolute schema [`FieldPath`].
 ///
 /// - `$root.` — anchor at schema root (same convention as [`lint_rule_refs_new`]).
@@ -683,10 +700,11 @@ fn append_visibility_edges(
             let mut refs = Vec::new();
             rule.field_references(&mut refs);
             for field_ref in refs {
-                if let Some(target) = resolve_visibility_dependency(field_ref, prefix)
-                    && defined.contains(&target)
-                {
-                    edges.push((path.clone(), target));
+                if let Some(target) = resolve_visibility_dependency(field_ref, prefix) {
+                    let normalized_target = normalize_visibility_target_path(&target);
+                    if defined.contains(&normalized_target) {
+                        edges.push((path.clone(), normalized_target));
+                    }
                 }
             }
         }
@@ -900,5 +918,37 @@ mod tests {
         ];
         let report = run(fields);
         assert!(!report.errors().any(|e| e.code == "visibility_cycle"));
+    }
+
+    #[test]
+    fn detects_visibility_cycle_with_list_index_reference() {
+        let fields = vec![
+            Field::list("items")
+                .item(
+                    Field::object("row")
+                        .add(
+                            Field::string("x")
+                                .visible_when(Rule::predicate(
+                                    Predicate::eq("/items/0/y", json!(true)).unwrap(),
+                                ))
+                                .into_field(),
+                        )
+                        .add(
+                            Field::string("y")
+                                .visible_when(Rule::predicate(
+                                    Predicate::eq("/items/0/x", json!(true)).unwrap(),
+                                ))
+                                .into_field(),
+                        ),
+                )
+                .into_field(),
+        ];
+
+        let report = run(fields);
+        assert!(
+            report.errors().any(|e| e.code == "visibility_cycle"),
+            "expected visibility_cycle, got {:?}",
+            report.errors().map(|e| &e.code).collect::<Vec<_>>()
+        );
     }
 }
