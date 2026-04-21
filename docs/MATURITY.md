@@ -51,7 +51,11 @@ Legend:
 This file is a living dashboard. Reviewers check truthfulness on every PR that touches a crate's public surface, test suite, or docs. Canon §17 DoD includes "MATURITY.md row updated if the PR changes crate state."
 
 Last full sweep: 2026-04-17 (Pass 4 of docs architecture redesign).
-Last targeted revision: 2026-04-21 — OAuth2 HTTP transport split: `nebula-credential`
+Last targeted revision: 2026-04-21 — [ADR-0033](docs/adr/0033-integration-credentials-plane-b.md)
+names **Plane B (integration credentials)** vs future Plane A / `nebula-auth`, and
+documents acquisition vs `AuthScheme` vs persistence. Cross-links in
+`docs/INTEGRATION_MODEL.md` and `crates/credential/README.md`.
+Prior: 2026-04-21 — OAuth2 HTTP transport split: `nebula-credential`
 gains Cargo feature `oauth2-http` (default on) with optional `reqwest`;
 authorization URL construction lives in `oauth2/authorize_url.rs` without HTTP.
 CI checks `cargo check -p nebula-credential --no-default-features`. Aligns with
