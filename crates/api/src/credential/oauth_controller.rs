@@ -9,8 +9,8 @@ use axum::{
 };
 use nebula_credential::{
     Credential, CredentialState, CredentialStore, OAuth2Credential, OAuth2State, PendingState,
-    PendingStateStore, PutMode, SecretString, StoredCredential, generate_code_challenge,
-    generate_pkce_verifier, generate_random_state,
+    PendingStateStore, PendingStoreError, PutMode, SecretString, StoredCredential,
+    generate_code_challenge, generate_pkce_verifier, generate_random_state,
 };
 use serde::{Deserialize, Serialize};
 use zeroize::Zeroize;
@@ -169,6 +169,22 @@ async fn handle_callback(
     .await
 }
 
+/// When [`PendingStateStore::consume`] fails, decide whether to drop the in-memory
+/// `signed_state` → pending-token entry.
+///
+/// If the pending row is already gone (`NotFound` / race loser), expired, or violated
+/// single-use semantics, keeping the map entry only blocks retries with a misleading
+/// "already consumed" on the **map** side. If validation failed (wrong user/session),
+/// the row remains for the legitimate caller — do not remove.
+fn should_drop_oauth_state_map_entry(err: &PendingStoreError) -> bool {
+    matches!(
+        err,
+        PendingStoreError::NotFound
+            | PendingStoreError::Expired
+            | PendingStoreError::AlreadyConsumed
+    )
+}
+
 async fn handle_callback_with_exchange<F, Fut>(
     credential_id: &str,
     state: &AppState,
@@ -186,19 +202,42 @@ where
         .verify_for_credential(&signed_state, credential_id)
         .map_err(|e| ApiError::Unauthorized(format!("oauth state validation failed: {e}")))?;
 
-    let token = state
+    // Look up the opaque pending token without removing it yet: `consume` must succeed
+    // before we drop the one-time map entry, otherwise a failed consume (wrong user,
+    // transient store error) would strand the user with "already consumed" on retry.
+    let pending_token = state
         .oauth_state_tokens
-        .write()
+        .read()
         .await
-        .remove(&signed_state)
+        .get(&signed_state)
+        .cloned()
         .ok_or_else(|| {
             ApiError::Unauthorized("oauth state not found or already consumed".to_owned())
         })?;
-    let pending = state
+
+    let consume_result = state
         .oauth_pending_store
-        .consume::<OAuthPendingExchange>("oauth2", &token, &user.user_id, &payload.csrf_token)
-        .await
-        .map_err(|e| ApiError::Unauthorized(format!("oauth pending consume failed: {e}")))?;
+        .consume::<OAuthPendingExchange>(
+            "oauth2",
+            &pending_token,
+            &user.user_id,
+            &payload.csrf_token,
+        )
+        .await;
+
+    let pending = match consume_result {
+        Ok(p) => p,
+        Err(e) => {
+            if should_drop_oauth_state_map_entry(&e) {
+                state.oauth_state_tokens.write().await.remove(&signed_state);
+            }
+            return Err(ApiError::Unauthorized(format!(
+                "oauth pending consume failed: {e}"
+            )));
+        },
+    };
+
+    state.oauth_state_tokens.write().await.remove(&signed_state);
 
     let token_exchange = TokenExchangeRequest {
         token_url: pending.token_url.clone(),
@@ -250,7 +289,7 @@ impl PendingState for OAuthPendingExchange {
     const KIND: &'static str = "api_oauth_pending";
 
     fn expires_in(&self) -> std::time::Duration {
-        std::time::Duration::from_secs(600)
+        std::time::Duration::from_mins(10)
     }
 }
 

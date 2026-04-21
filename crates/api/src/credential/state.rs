@@ -109,7 +109,7 @@ pub fn build_signed_state(
         csrf_token,
         credential_id: credential_id.to_owned(),
         expires_at: Utc::now()
-            + chrono::Duration::from_std(Duration::from_secs(600)).unwrap_or_default(),
+            + chrono::Duration::from_std(Duration::from_mins(10)).unwrap_or_default(),
     };
     let encoded = signer.sign(&payload)?;
     Ok((encoded, payload))
