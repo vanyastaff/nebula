@@ -276,3 +276,44 @@ per the original ADR-0029 in phase P7.
   (unchanged) and will need to add re-exports of `InMemoryStore` /
   `EncryptionLayer` / `KeyProvider` from storage for DX. Documented in
   P11.
+
+## §7. Implementation note — `InMemoryStore` dual-home pattern
+
+During P6.2 implementation, adding `nebula-storage` to
+`nebula-credential`'s `[dev-dependencies]` produced cargo's
+"two copies of crate `nebula_credential`" trait-coherence errors
+(166 compile failures across resolver / layer / integration tests).
+The root cause: credential compiled twice — once for its own test
+binary (with `test-util`), once transitively via storage (without
+`test-util`) — yielding two incompatible types named
+`CredentialStore` under Cargo's trait-bound checker.
+
+Rather than debug feature-unification in cargo resolver v2 mid-PR,
+P6.2 landed with `InMemoryStore` present in **both** locations:
+
+- `crates/storage/src/credential/memory.rs` — the **canonical**
+  copy; production consumers (engine, api, sdk) import this.
+- `crates/credential/src/store_memory.rs` — a **test-only shim**
+  copy, body-identical, for credential's own internal tests
+  (resolver, executor, registry, rotation).
+
+The shim file's module doc points to the canonical home and explains
+the cargo-level reason. It is not a deprecation target — the two
+copies coexist until one of:
+
+1. Cargo's trait-coherence rules change (upstream work).
+2. A feature-unification discipline is adopted (e.g., storage's
+   `test-util` feature forwards `nebula-credential/test-util`
+   strictly).
+3. Credential's internal tests that use `InMemoryStore` move to
+   their final homes (resolver → engine in P8, etc.), removing the
+   need for the shim.
+
+Option (3) is the expected resolution after P8/P9 land. At that
+point the shim can be deleted.
+
+This dual-home pattern is **not** a general license for shims; it
+is a narrowly-scoped exception to the canonical-home rule (§4)
+justified by a concrete cargo toolchain constraint. No other type
+should adopt the same pattern without another toolchain-level
+justification.

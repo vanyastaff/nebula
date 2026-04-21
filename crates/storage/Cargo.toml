@@ -83,7 +83,28 @@ doctest = false
 #
 # tracing / uuid are workspace-level utilities kept declared so future
 # storage code (repos/outbox) can pick them up without a Cargo.toml diff.
-ignored = ["aws-config", "aws-sdk-s3", "redis", "tracing", "uuid"]
+#
+# §12.5 primitive crates (aes-gcm, argon2, rand, subtle) — currently
+# consumed transitively via `nebula-credential` sibling dep per
+# ADR-0032 §Decision §2 (primitives stay in credential). Kept declared
+# so `EncryptionLayer` can flip to direct consumption without a
+# Cargo.toml diff if the primitives ever relocate. arc-swap /
+# parking_lot / scopeguard similarly pre-declared for future
+# cache/scope layer work.
+ignored = [
+  "aws-config",
+  "aws-sdk-s3",
+  "redis",
+  "tracing",
+  "uuid",
+  "aes-gcm",
+  "argon2",
+  "arc-swap",
+  "parking_lot",
+  "rand",
+  "scopeguard",
+  "subtle",
+]
 
 [lints]
 workspace = true

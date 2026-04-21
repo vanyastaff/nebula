@@ -75,6 +75,16 @@ pub enum StoreError {
         /// The credential ID.
         id: String,
     },
+    /// Audit sink rejected the operation; the write did not commit.
+    ///
+    /// Fail-closed semantics per ADR-0028 invariant 4 and the
+    /// non-negotiable §14 "no discard-and-log" rule: if the audit
+    /// sink cannot durably record the event, the credential
+    /// operation as a whole fails. Consumers may retry with the same
+    /// arguments; rollback (where possible) has already been attempted
+    /// by the `AuditLayer`.
+    #[error("audit sink refused: {0}")]
+    AuditFailure(String),
     /// Backend error.
     #[error("store backend error: {0}")]
     Backend(Box<dyn std::error::Error + Send + Sync>),
