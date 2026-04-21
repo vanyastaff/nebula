@@ -114,6 +114,7 @@ jobs:
           cargo check -p nebula-expression --no-default-features
           cargo check -p nebula-api --no-default-features
           cargo check -p nebula-api --no-default-features --features credential-oauth
+          cargo check -p nebula-credential --no-default-features
 
   # ── Doctests (workspace-wide, off the critical path) ──────────────────────
   # Tier 2: skipped on draft PRs — re-runs on `ready_for_review`.
