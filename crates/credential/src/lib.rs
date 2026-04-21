@@ -48,16 +48,12 @@ pub mod error;
 pub mod guard;
 /// Typed credential handle returned by the resolver.
 pub mod handle;
-/// Newtype for credential type keys.
-pub mod key;
-/// Credential type metadata schema (integration catalog).
+/// Credential metadata — static descriptors + runtime record + key newtype.
 pub mod metadata;
 /// Pending state store trait for interactive credential flows.
 pub mod pending_store;
 /// In-memory pending state store for testing and development.
 pub mod pending_store_memory;
-/// Credential record — runtime operational state.
-pub mod record;
 /// Type-erased credential registry for runtime dispatch.
 pub mod registry;
 /// Resolve result types: interaction, refresh, test.
@@ -123,8 +119,6 @@ pub use executor::{ExecutorError, ResolveResponse, execute_continue, execute_res
 pub use guard::CredentialGuard;
 // Typed handle
 pub use handle::CredentialHandle;
-// Credential key newtype
-pub use key::CredentialKey;
 #[cfg(any(test, feature = "test-util"))]
 pub use layer::StaticKeyProvider;
 // Storage layers
@@ -172,7 +166,9 @@ pub use crate::{
         CredentialError, CryptoError, RefreshErrorKind, ResolutionStage, RetryAdvice,
         ValidationError,
     },
-    metadata::{CredentialMetadata, CredentialMetadataBuilder, MetadataCompatibilityError},
-    record::CredentialRecord,
+    metadata::{
+        CredentialKey, CredentialMetadata, CredentialMetadataBuilder, CredentialRecord,
+        MetadataCompatibilityError,
+    },
     snapshot::{CredentialSnapshot, SnapshotError},
 };

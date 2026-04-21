@@ -20,9 +20,9 @@ use nebula_schema::{FieldValues, ValidSchema};
 
 use super::{CredentialState, PendingState};
 use crate::{
+    CredentialMetadata,
     context::CredentialContext,
     error::CredentialError,
-    metadata::CredentialMetadata,
     resolve::{RefreshOutcome, RefreshPolicy, ResolveResult, TestResult, UserInput},
 };
 

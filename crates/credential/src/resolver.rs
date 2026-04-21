@@ -456,11 +456,10 @@ mod tests {
     use super::*;
     // ── Test credential for early refresh ──────────────────────────────
     use crate::{
-        Credential, NoPendingState, SecretString,
+        Credential, CredentialMetadata, NoPendingState, SecretString,
         context::CredentialContext,
         credentials::ApiKeyCredential,
         error::CredentialError,
-        metadata::CredentialMetadata,
         resolve::{RefreshOutcome, RefreshPolicy, StaticResolveResult},
         scheme::SecretToken,
         store::{PutMode, StoredCredential},
