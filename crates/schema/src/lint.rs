@@ -1,8 +1,10 @@
 //! Build-time structural lints.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
-use nebula_validator::{DeferredRule, Logic, Predicate, Rule, ValueRule};
+use nebula_validator::{
+    DeferredRule, Logic, Predicate, Rule, ValueRule, foundation::FieldPath as ValidatorFieldPath,
+};
 
 use crate::{
     Field, FieldPath, ListField, ModeField, RequiredMode, VisibilityMode,
@@ -571,65 +573,209 @@ fn collect_min_max(
     }
 }
 
-fn emit_visibility_cycle(start: &str, prefix: &FieldPath, report: &mut ValidationReport) {
-    let cycle_path = crate::key::FieldKey::new(start)
-        .map_or_else(|_| prefix.clone(), |k| prefix.clone().join(k));
+fn emit_visibility_cycle_on_edge(from: &FieldPath, to: &FieldPath, report: &mut ValidationReport) {
     report.push(
         ValidationError::builder("visibility_cycle")
-            .at(cycle_path)
+            .at(from.clone())
             .message(format!(
-                "visibility rule graph contains cycle involving `{start}`"
+                "visibility rule graph contains a cycle (dependency `{from}` -> `{to}`)"
             ))
             .build(),
     );
 }
 
-fn lint_visibility_cycles_new(fields: &[Field], prefix: &FieldPath, report: &mut ValidationReport) {
-    // TODO(task-26): add full visibility_cycle detection using FieldPath-aware graph
-    // For now, delegate to key-based cycle detection.
-    let mut edges: Vec<(&str, &str)> = Vec::new();
+/// Convert a validator JSON-pointer field path into a schema [`FieldPath`]
+/// (dot/bracket wire form used throughout this crate).
+fn validator_path_to_schema_path(vp: &ValidatorFieldPath) -> Option<FieldPath> {
+    let mut out = FieldPath::root();
+    let mut any = false;
+    for seg in vp.segments() {
+        let s = seg.as_ref();
+        if s.is_empty() {
+            continue;
+        }
+        any = true;
+        let segment = if s.chars().all(|c| c.is_ascii_digit()) {
+            let idx: usize = s.parse().ok()?;
+            PathSegment::Index(idx)
+        } else {
+            PathSegment::Key(crate::key::FieldKey::new(s).ok()?)
+        };
+        out = out.join(segment);
+    }
+    if any { Some(out) } else { None }
+}
+
+fn path_concat_schema(prefix: &FieldPath, suffix: &FieldPath) -> FieldPath {
+    if prefix.is_root() {
+        suffix.clone()
+    } else {
+        let mut out = prefix.clone();
+        for seg in suffix.segments() {
+            out = out.join(seg.clone());
+        }
+        out
+    }
+}
+
+/// Resolve a [`Rule::field_references`] string to an absolute schema [`FieldPath`].
+///
+/// - `$root.` — anchor at schema root (same convention as [`lint_rule_refs_new`]).
+/// - Leading `/` — JSON Pointer from schema root (validator [`ValidatorFieldPath`]).
+/// - Otherwise — legacy path relative to `scope_prefix` (sibling object scope).
+fn resolve_visibility_dependency(field_ref: &str, scope_prefix: &FieldPath) -> Option<FieldPath> {
+    if let Some(rest) = field_ref.strip_prefix("$root.") {
+        let vp = ValidatorFieldPath::parse(rest)?;
+        return validator_path_to_schema_path(&vp);
+    }
+    if field_ref.starts_with('/') {
+        let vp = ValidatorFieldPath::parse(field_ref)?;
+        return validator_path_to_schema_path(&vp);
+    }
+    let suffix = FieldPath::parse(field_ref).ok()?;
+    Some(path_concat_schema(scope_prefix, &suffix))
+}
+
+fn collect_defined_field_paths(
+    fields: &[Field],
+    prefix: &FieldPath,
+    defined: &mut HashSet<FieldPath>,
+) {
     for field in fields {
-        let source = field.key().as_str();
-        if let Some(rule) = field_visible_rule(field) {
-            let mut refs: Vec<&str> = Vec::new();
-            rule.field_references(&mut refs);
-            for target in refs {
-                if target.starts_with("$root.") {
-                    continue;
+        let path = prefix.clone().join(field.key().clone());
+        defined.insert(path.clone());
+
+        match field {
+            Field::List(list) => {
+                if let Some(Field::Object(obj)) = list.item.as_deref() {
+                    collect_defined_field_paths(&obj.fields, &path, defined);
                 }
-                // Transitional: JSON-pointer form (`/path`) splits only on
-                // `/`; legacy dotted form (`a.b.c`) splits on `.`. Dual-split
-                // would mangle a valid pointer segment containing `.` (RFC
-                // 6901 allows it). Remove the dotted arm once schema refs
-                // fully migrate to JSON Pointer.
-                let target = if let Some(rest) = target.strip_prefix('/') {
-                    rest.split('/').next().unwrap_or_default()
-                } else {
-                    target.split('.').next().unwrap_or_default()
-                };
-                edges.push((source, target));
-            }
+            },
+            Field::Object(obj) => {
+                collect_defined_field_paths(&obj.fields, &path, defined);
+            },
+            Field::Mode(mode) => {
+                for variant in &mode.variants {
+                    if let Ok(vk) = crate::key::FieldKey::new(variant.key.as_str()) {
+                        let vpath = path.clone().join(vk.clone());
+                        defined.insert(vpath.clone());
+                        if let Field::Object(obj) = variant.field.as_ref() {
+                            collect_defined_field_paths(&obj.fields, &vpath, defined);
+                        }
+                    }
+                }
+            },
+            _ => {},
         }
     }
+}
 
-    for (start, _) in &edges {
-        let mut stack = vec![*start];
-        let mut visited = HashSet::new();
-        while let Some(current) = stack.pop() {
-            if !visited.insert(current) {
-                continue;
-            }
-            for (edge_from, edge_to) in &edges {
-                if *edge_from != current {
-                    continue;
+fn append_visibility_edges(
+    fields: &[Field],
+    prefix: &FieldPath,
+    defined: &HashSet<FieldPath>,
+    edges: &mut Vec<(FieldPath, FieldPath)>,
+) {
+    for field in fields {
+        let path = prefix.clone().join(field.key().clone());
+
+        if let Some(rule) = field_visible_rule(field) {
+            let mut refs = Vec::new();
+            rule.field_references(&mut refs);
+            for field_ref in refs {
+                if let Some(target) = resolve_visibility_dependency(field_ref, prefix)
+                    && defined.contains(&target)
+                {
+                    edges.push((path.clone(), target));
                 }
-                if *edge_to == *start {
-                    emit_visibility_cycle(start, prefix, report);
-                    return;
-                }
-                stack.push(edge_to);
             }
         }
+
+        match field {
+            Field::List(list) => {
+                if let Some(Field::Object(obj)) = list.item.as_deref() {
+                    append_visibility_edges(&obj.fields, &path, defined, edges);
+                }
+            },
+            Field::Object(obj) => {
+                append_visibility_edges(&obj.fields, &path, defined, edges);
+            },
+            Field::Mode(mode) => {
+                for variant in &mode.variants {
+                    if let Ok(vk) = crate::key::FieldKey::new(variant.key.as_str()) {
+                        let vpath = path.clone().join(vk.clone());
+                        if let Field::Object(obj) = variant.field.as_ref() {
+                            append_visibility_edges(&obj.fields, &vpath, defined, edges);
+                        }
+                    }
+                }
+            },
+            _ => {},
+        }
+    }
+}
+
+fn visibility_adjacency(edges: &[(FieldPath, FieldPath)]) -> HashMap<FieldPath, Vec<FieldPath>> {
+    let mut adj: HashMap<FieldPath, Vec<FieldPath>> = HashMap::new();
+    for (from, to) in edges {
+        adj.entry(from.clone()).or_default().push(to.clone());
+    }
+    adj
+}
+
+fn find_visibility_cycle_edge(
+    adj: &HashMap<FieldPath, Vec<FieldPath>>,
+) -> Option<(FieldPath, FieldPath)> {
+    // 0 = white, 1 = gray, 2 = black
+    let mut color: HashMap<FieldPath, u8> = HashMap::new();
+
+    fn dfs(
+        u: &FieldPath,
+        adj: &HashMap<FieldPath, Vec<FieldPath>>,
+        color: &mut HashMap<FieldPath, u8>,
+    ) -> Option<(FieldPath, FieldPath)> {
+        color.insert(u.clone(), 1);
+        for v in adj.get(u).into_iter().flatten() {
+            match color.get(v).copied().unwrap_or(0) {
+                1 => {
+                    return Some((u.clone(), v.clone()));
+                },
+                0 => {
+                    if let Some(cycle) = dfs(v, adj, color) {
+                        return Some(cycle);
+                    }
+                },
+                _ => {},
+            }
+        }
+        color.insert(u.clone(), 2);
+        None
+    }
+
+    for start in adj.keys() {
+        if color.get(start).copied().unwrap_or(0) == 0
+            && let Some(cycle) = dfs(start, adj, &mut color)
+        {
+            return Some(cycle);
+        }
+    }
+    None
+}
+
+fn lint_visibility_cycles_new(
+    fields: &[Field],
+    _prefix: &FieldPath,
+    report: &mut ValidationReport,
+) {
+    let mut defined: HashSet<FieldPath> = HashSet::new();
+    collect_defined_field_paths(fields, &FieldPath::root(), &mut defined);
+
+    let mut edges: Vec<(FieldPath, FieldPath)> = Vec::new();
+    append_visibility_edges(fields, &FieldPath::root(), &defined, &mut edges);
+
+    let adj = visibility_adjacency(&edges);
+    if let Some((from, to)) = find_visibility_cycle_edge(&adj) {
+        emit_visibility_cycle_on_edge(&from, &to, report);
     }
 }
 
@@ -637,6 +783,9 @@ fn lint_visibility_cycles_new(fields: &[Field], prefix: &FieldPath, report: &mut
 
 #[cfg(test)]
 mod tests {
+    use nebula_validator::{Predicate, Rule};
+    use serde_json::json;
+
     use super::*;
     use crate::{FieldKey, error::ValidationReport, field::Field, path::FieldPath};
 
@@ -694,5 +843,62 @@ mod tests {
         ];
         let report = run(fields);
         assert!(report.errors().any(|e| e.code == "duplicate_variant"));
+    }
+
+    #[test]
+    fn detects_visibility_cycle_between_top_level_fields() {
+        let fields = vec![
+            Field::string(FieldKey::new("a").unwrap())
+                .visible_when(Rule::predicate(Predicate::eq("/b", json!("on")).unwrap()))
+                .into_field(),
+            Field::string(FieldKey::new("b").unwrap())
+                .visible_when(Rule::predicate(Predicate::eq("/a", json!("on")).unwrap()))
+                .into_field(),
+        ];
+        let report = run(fields);
+        assert!(
+            report.errors().any(|e| e.code == "visibility_cycle"),
+            "expected visibility_cycle, got {:?}",
+            report.errors().map(|e| &e.code).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn detects_visibility_cycle_inside_nested_object() {
+        let outer = Field::object("outer")
+            .add(
+                Field::string("x")
+                    .visible_when(Rule::predicate(
+                        Predicate::eq("/outer/y", json!(true)).unwrap(),
+                    ))
+                    .into_field(),
+            )
+            .add(
+                Field::string("y")
+                    .visible_when(Rule::predicate(
+                        Predicate::eq("/outer/x", json!(true)).unwrap(),
+                    ))
+                    .into_field(),
+            );
+        let report = run(vec![outer.into()]);
+        assert!(
+            report.errors().any(|e| e.code == "visibility_cycle"),
+            "expected visibility_cycle, got {:?}",
+            report.errors().map(|e| &e.code).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn acyclic_visibility_rules_do_not_error() {
+        let fields = vec![
+            Field::string("toggle").into_field(),
+            Field::string("detail")
+                .visible_when(Rule::predicate(
+                    Predicate::eq("/toggle", json!(true)).unwrap(),
+                ))
+                .into_field(),
+        ];
+        let report = run(fields);
+        assert!(!report.errors().any(|e| e.code == "visibility_cycle"));
     }
 }

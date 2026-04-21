@@ -52,8 +52,9 @@ pub struct ValidSchemaInner {
 /// Cheap to clone — backed by `Arc`.
 ///
 /// Serde: serializes as the ordered field list (same wire format as `Schema`).
-/// Deserialization rebuilds through `Schema::builder` and panics if lint
-/// fails (only valid schemas may be persisted).
+/// Deserialization rebuilds through `Schema::builder()` /
+/// [`SchemaBuilder`](crate::schema::SchemaBuilder); invalid wire data returns a
+/// [`serde::de::Error`] (lint failures are not panics).
 #[derive(Debug, Clone)]
 pub struct ValidSchema(pub(crate) Arc<ValidSchemaInner>);
 

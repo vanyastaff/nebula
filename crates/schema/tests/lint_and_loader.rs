@@ -223,13 +223,14 @@ fn lint_schema_detects_visibility_cycles() {
         );
 
     let report = schema.lint();
+    let cycle_paths: Vec<String> = report
+        .errors()
+        .filter(|e| e.code == "visibility_cycle")
+        .map(|e| e.path.to_string())
+        .collect();
     assert!(
-        has_error(&report, "visibility_cycle", "a"),
-        "expected visibility_cycle at a, got: {:?}",
-        report
-            .errors()
-            .map(|e| (&e.code, e.path.to_string()))
-            .collect::<Vec<_>>()
+        cycle_paths.iter().any(|p| p == "a" || p == "b"),
+        "expected visibility_cycle anchored at field `a` or `b`, got {cycle_paths:?}"
     );
 }
 

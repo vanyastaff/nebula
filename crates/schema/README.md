@@ -22,11 +22,12 @@ Pattern inspiration: DMMF proof-tokens (ch "Modeling with Types") and Rust types
 ## Public API
 
 - `Field` — unified enum over all field kinds (string, number, bool, enum, nested, …).
-- `Schema` — builder-constructed, lint-checked schema definition.
-- `Schema::builder() -> SchemaBuilder` — entry point.
-- `Schema::lint() -> Result<ValidSchema, LintError>` — structural check.
-- `ValidSchema::validate(&FieldValues) -> Result<ValidValues, ValidationError>` — schema-time validation; returns the first proof-token.
-- `ValidValues::resolve(&impl ExpressionContext) -> Result<ResolvedValues, ResolveError>` — runtime resolution; returns the second proof-token.
+- `Schema` — value type for a field list; use `Schema::builder()` or `Schema::add` for construction.
+- `Schema::builder() -> SchemaBuilder` — primary entry point.
+- `Schema::lint() -> ValidationReport` — structural diagnostics (errors block `build`; warnings are advisory).
+- `SchemaBuilder::build() -> Result<ValidSchema, ValidationReport>` — runs lint passes and returns the `ValidSchema` proof-token.
+- `ValidSchema::validate(&FieldValues) -> Result<ValidValues, ValidationReport>` — schema-time validation; returns the first proof-token.
+- `ValidValues::resolve(&impl ExpressionContext) -> Result<ResolvedValues, ValidationReport>` — runtime resolution; returns the second proof-token.
 - `FieldValues`, `ResolvedValues` — value containers.
 
 See `src/lib.rs` rustdoc for the quick-start example.
