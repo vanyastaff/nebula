@@ -3915,6 +3915,7 @@ dependencies = [
  "nebula-telemetry",
  "nebula-workflow",
  "rand 0.10.1",
+ "reqwest 0.13.2",
  "scopeguard",
  "semver",
  "serde",

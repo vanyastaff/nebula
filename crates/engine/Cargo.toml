@@ -50,13 +50,14 @@ serde_json = { workspace = true, features = ["raw_value"] }
 chrono = { workspace = true }
 rand = { workspace = true }
 scopeguard = "1"
+reqwest = { workspace = true, default-features = false, features = ["json", "rustls", "form"] }
+zeroize = { version = "1.8.2", features = ["zeroize_derive"] }
 
 [dev-dependencies]
 nebula-metrics = { path = "../metrics" }
 chrono = { workspace = true }
 futures = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
-zeroize = { version = "1.8.2", features = ["zeroize_derive"] }
 
 [lib]
 doctest = false

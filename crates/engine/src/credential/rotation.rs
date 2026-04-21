@@ -5,6 +5,7 @@
 //! `nebula_credential::rotation`.
 
 pub mod scheduler;
+pub mod token_refresh;
 
 pub use nebula_credential::rotation::{
     RotationError, RotationResult,
@@ -20,3 +21,4 @@ pub use nebula_credential::rotation::{
     },
 };
 pub use scheduler::{ExpiryMonitor, PeriodicScheduler, ScheduledRotation};
+pub use token_refresh::{TokenRefreshError, refresh_oauth2_state};

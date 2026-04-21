@@ -8,7 +8,15 @@ use nebula_credential::{
     resolve::RefreshOutcome,
     store::{CredentialStore, PutMode, StoreError, StoredCredential},
 };
+#[cfg(feature = "rotation")]
+use nebula_credential::{
+    credentials::{OAuth2Credential, OAuth2State},
+    error::CredentialError,
+};
 use nebula_eventbus::EventBus;
+
+#[cfg(feature = "rotation")]
+use crate::credential::rotation::refresh_oauth2_state;
 
 /// Runtime credential resolver with optional coordinated refresh.
 pub struct CredentialResolver<S: CredentialStore> {
@@ -200,10 +208,45 @@ impl<S: CredentialStore> CredentialResolver<S> {
     where
         C: Credential,
     {
-        let outcome = tokio::time::timeout(
-            std::time::Duration::from_secs(30),
-            C::refresh(&mut state, ctx),
-        )
+        #[cfg(feature = "rotation")]
+        async fn try_engine_oauth2_refresh<C: Credential>(
+            state: &mut C::State,
+        ) -> Result<Option<RefreshOutcome>, CredentialError> {
+            if C::KEY != OAuth2Credential::KEY {
+                return Ok(None);
+            }
+
+            let mut oauth_state: OAuth2State =
+                serde_json::from_value(serde_json::to_value(&*state).map_err(|e| {
+                    CredentialError::Provider(format!(
+                        "oauth2 refresh state serialization failed: {e}"
+                    ))
+                })?)
+                .map_err(|e| {
+                    CredentialError::Provider(format!("oauth2 refresh state decode failed: {e}"))
+                })?;
+
+            refresh_oauth2_state(&mut oauth_state)
+                .await
+                .map_err(|e| CredentialError::Provider(e.to_string()))?;
+
+            *state = serde_json::from_value(serde_json::to_value(oauth_state).map_err(|e| {
+                CredentialError::Provider(format!("oauth2 refresh state serialization failed: {e}"))
+            })?)
+            .map_err(|e| {
+                CredentialError::Provider(format!("oauth2 refresh state encode failed: {e}"))
+            })?;
+
+            Ok(Some(RefreshOutcome::Refreshed))
+        }
+
+        let outcome = tokio::time::timeout(std::time::Duration::from_secs(30), async {
+            #[cfg(feature = "rotation")]
+            if let Some(outcome) = try_engine_oauth2_refresh::<C>(&mut state).await? {
+                return Ok(outcome);
+            }
+            C::refresh(&mut state, ctx).await
+        })
         .await
         .map_err(|_| ResolveError::Refresh {
             credential_id: credential_id.to_string(),
