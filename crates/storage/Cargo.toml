@@ -13,6 +13,7 @@ documentation.workspace = true
 
 [dependencies]
 nebula-core = { path = "../core" }
+nebula-credential = { path = "../credential" }
 
 async-trait = { workspace = true }
 thiserror = { workspace = true }
@@ -20,6 +21,25 @@ serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }
 tokio = { workspace = true, features = ["sync", "time"] }
 chrono = { workspace = true }
+
+# §12.5 primitives used by EncryptionLayer
+aes-gcm = "0.10"
+argon2 = "0.5"
+base64 = { workspace = true }
+sha2 = { workspace = true }
+rand = { workspace = true }
+zeroize = { version = "1.8.2", features = ["zeroize_derive"] }
+subtle = { workspace = true }
+
+# Cache + sync primitives
+moka = { workspace = true, features = ["future"] }
+arc-swap = { workspace = true }
+parking_lot = { workspace = true }
+scopeguard = "1"
+
+# Utilities
+tracing = { workspace = true }
+uuid = { workspace = true, features = ["v4", "serde"] }
 
 # Optional backends (см. docs/nebula-architecture-final.md)
 sqlx = { version = "0.8", optional = true, features = [
@@ -37,6 +57,8 @@ rmp-serde = { version = "1", optional = true }
 
 [features]
 default = []
+credential-in-memory = []
+test-util = []
 postgres = ["dep:sqlx", "dep:hex"]
 redis = ["dep:redis"]
 s3 = ["dep:aws-config", "dep:aws-sdk-s3"]
@@ -53,7 +75,28 @@ doctest = false
 # whose backend implementations live behind the feature guard. Kept
 # declared so the backend surface is stable even while implementation
 # is landing incrementally.
-ignored = ["aws-config", "aws-sdk-s3", "redis"]
+#
+# P6 placeholder deps — used by store/memory/layer/key_provider files
+# populated in P6.2-P6.5 (currently empty skeleton modules).
+ignored = [
+  "aws-config",
+  "aws-sdk-s3",
+  "redis",
+  "nebula-credential",
+  "aes-gcm",
+  "argon2",
+  "base64",
+  "sha2",
+  "rand",
+  "zeroize",
+  "subtle",
+  "moka",
+  "arc-swap",
+  "parking_lot",
+  "scopeguard",
+  "tracing",
+  "uuid",
+]
 
 [lints]
 workspace = true
