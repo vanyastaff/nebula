@@ -5,17 +5,7 @@ status: accepted
 date: 2026-04-21
 supersedes: []
 superseded_by: []
-tags:
-  [
-    credential,
-    integration-model,
-    auth-scheme,
-    oauth2,
-    canon-3.5,
-    canon-12.5,
-    canon-13.2,
-    plane-b,
-  ]
+tags: [credential, integration-model, auth-scheme, oauth2, canon-3.5, canon-12.5, canon-13.2, plane-b]
 related:
   - docs/adr/0028-cross-crate-credential-invariants.md
   - docs/adr/0029-storage-owns-credential-persistence.md
