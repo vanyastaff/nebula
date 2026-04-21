@@ -15,6 +15,14 @@ pub mod layer;
 #[cfg(any(test, feature = "credential-in-memory"))]
 pub mod memory;
 
+#[cfg(any(test, feature = "credential-in-memory"))]
+pub mod pending;
+
+#[cfg(feature = "rotation")]
+pub mod backup;
+
+#[cfg(feature = "rotation")]
+pub use backup::RotationBackup;
 #[cfg(any(test, feature = "test-util"))]
 pub use key_provider::StaticKeyProvider;
 pub use key_provider::{EnvKeyProvider, FileKeyProvider, KeyProvider, ProviderError};
@@ -24,3 +32,5 @@ pub use layer::{
 };
 #[cfg(any(test, feature = "credential-in-memory"))]
 pub use memory::InMemoryStore;
+#[cfg(any(test, feature = "credential-in-memory"))]
+pub use pending::InMemoryPendingStore;

@@ -253,7 +253,11 @@
 //! - `RotatableCredential` - Trait for rotatable credentials
 
 // Module exports
-pub mod backup;
+//
+// Note: `RotationBackup` lives in `nebula_storage::credential::backup` per
+// ADR-0029 §4 / ADR-0032 — it is a storage-side data struct. Credential only
+// exposes the contract types (errors, IDs, policies, transactions) that
+// `RotationBackup` references.
 pub mod blue_green;
 pub mod error;
 pub mod events;
@@ -265,7 +269,6 @@ pub mod transaction;
 pub mod validation;
 
 // Re-exports
-pub use backup::RotationBackup;
 pub use blue_green::{
     BlueGreenRotation, BlueGreenState, DatabasePrivilege, enumerate_required_privileges,
     validate_privileges,
