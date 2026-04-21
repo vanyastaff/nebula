@@ -2,8 +2,8 @@
 name: Nebula integration model
 description: Authoritative integration-model mechanics — Resource / Credential / Action / Schema / Plugin contract, plugin packaging, cross-plugin dependency rules. Canon §3.5 states invariants; this document carries the mechanics.
 status: accepted
-last-reviewed: 2026-04-17
-related: [PRODUCT_CANON.md, GLOSSARY.md, STYLE.md]
+last-reviewed: 2026-04-21
+related: [PRODUCT_CANON.md, GLOSSARY.md, STYLE.md, adr/0033-integration-credentials-plane-b.md]
 ---
 
 # Nebula integration model
@@ -75,6 +75,26 @@ Long-lived managed object: connection pool, SDK client, file handle. Engine owns
 **Plane B (integration credentials):** workflow-facing secrets for **external** systems (API keys, OAuth to third parties, certificates, …) live in this model. They are **not** the same as authenticating **to Nebula** (browser/API session, future SSO/LDAP to the control plane — see [ADR-0033](adr/0033-integration-credentials-plane-b.md) and a future Plane A / `nebula-auth` crate).
 
 **Where to read:** `crates/credential/README.md`, `crates/credential/src/lib.rs`, [ADR-0033 — Integration credentials (Plane B)](adr/0033-integration-credentials-plane-b.md).
+
+### Industry reference — n8n credential taxonomy vs Nebula axes
+
+Popular integration tools ship **many** credential types: one public codebase ([n8n](https://github.com/n8n-io/n8n)) exposes on the order of **hundreds** of distinct credential definitions (roughly **428** files in a recent classification). Those definitions are **product-facing labels** — what the UI stores and how nodes authenticate — not Nebula’s internal split.
+
+The table below is an **external, illustrative** bucketing (by auth *shape* / transport), **not** a Nebula API. It shows how real-world volume concentrates before any Nebula-specific design.
+
+| Bucket (illustrative) | Typical meaning | Count (example) |
+| --- | --- | ---: |
+| API key / Bearer | Static secret, header or query | 252 |
+| OAuth 2.0 | Authorization-code / client flows to third-party IdPs | 108 |
+| Basic | Username + password (often HTTP Basic) | 25 |
+| Custom | Multi-step, signed requests, LDAP, vendor-specific | 12 |
+| Database | Host, port, user, password, SSL / SSH tunnel | 10 |
+| Message queue | AMQP, MQTT, Kafka | 4 |
+| AWS keys / AssumeRole | Access keys vs STS role chain | 2 + 1 |
+| FTP / SFTP; SMTP / IMAP; OAuth 1.0a; SSH | Protocol-specific connection + auth | 2 each |
+| Other | mTLS, digest, JWT, service-account JWT, … | 1 each |
+
+**How this maps to Nebula (Plane B):** n8n’s buckets mix **transport** (DB, queue, mail), **protocol family** (OAuth2 vs API key), and **acquisition UX** (custom wizards) in one flat namespace. Nebula keeps those concerns **orthogonal** — see [ADR-0033](adr/0033-integration-credentials-plane-b.md): **acquisition** (how the secret first entered the system), **`AuthScheme` / `AuthPattern`** (what material actions receive), and **persistence** (encrypted stored state vs projected auth). High counts for **API key** and **OAuth2** align with treating them as major **auth families**, not as 360 unrelated one-off schemes. **Database**, **queue**, and **SSH**-shaped credentials often pair **connection topology** (Resource or schema fields) with **auth material** (Credential); collapsing both into a single “credential type” is exactly the ad hoc pattern Nebula avoids.
 
 ## `nebula-action`
 
