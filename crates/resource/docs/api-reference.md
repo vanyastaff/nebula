@@ -80,7 +80,7 @@ Two configs with the same non-zero fingerprint are treated as identical during `
 
 ### `AuthScheme`
 
-Authentication scheme resolved by the credential system before `Resource::create`. Use `()` for unauthenticated resources. Defined in `nebula-core`.
+Authentication scheme resolved by the credential system before `Resource::create`. Use `()` for unauthenticated resources. Defined in `nebula-credential` (`crates/credential/src/scheme/auth.rs`).
 
 ```rust
 pub trait AuthScheme: Send + Sync + Clone + 'static {}

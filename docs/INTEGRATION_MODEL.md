@@ -38,7 +38,7 @@ Long-lived managed object: connection pool, SDK client, file handle. Engine owns
 
 **Credential** — `[ CredentialMetadata + Schema ]` — **optionally composes a Resource** in metadata/schema (e.g. HTTP client **Resource** for token refresh).
 
-**Who** you are and **how** authentication is maintained. Engine owns rotation, refresh, and the **stored state vs consumer-facing auth material** split — the author binds to a Credential type, never hand-rolls refresh or pending OAuth steps, and never relies on secrets appearing in logs. A set of universal auth schemes (OAuth2, API key, mTLS, and others — full list in `crates/credential/README.md`) plus extensibility via the `AuthScheme` trait defined in `crates/core/src/auth.rs`; the author picks a type and fills the schema. **Concrete shape:** see §3.7 (`nebula-credential`).
+**Who** you are and **how** authentication is maintained. Engine owns rotation, refresh, and the **stored state vs consumer-facing auth material** split — the author binds to a Credential type, never hand-rolls refresh or pending OAuth steps, and never relies on secrets appearing in logs. A set of universal auth schemes (OAuth2, API key, mTLS, and others — full list in `crates/credential/README.md`) plus extensibility via the `AuthScheme` trait in `crates/credential/src/scheme/auth.rs`; the author picks a type and fills the schema. **Concrete shape:** see §3.7 (`nebula-credential`).
 
 **Action** — `[ ActionMetadata + Schema ]` — **declares zero or more Resource and/or Credential kinds it needs** (by stable id / type reference in the **integration schema**, not ad hoc runtime lookup).
 
@@ -122,7 +122,7 @@ The table below is an **external, illustrative** bucketing (by auth *shape* / tr
 
 Besides the **integration** reference crates (§3.6–§3.9), the workspace ships **shared infrastructure** — depended on from many layers; they **support** the model above without replacing it.
 
-- **`nebula-core`** — shared identifiers and keys (`ExecutionId`, `ActionKey`, `CredentialKey`, …), **`AuthScheme`** / **`AuthPattern`**, scope levels, **`SecretString`**, credential lifecycle **events**, dependency-graph helpers — the **vocabulary** other crates agree on.
+- **`nebula-core`** — shared identifiers and keys (`ExecutionId`, `ActionKey`, `CredentialKey`, …), scope levels, context and accessor traits, guards, dependency declaration types, observability identity types — the **cross-cutting vocabulary** every crate shares. Credential-domain types (**`AuthScheme`**, **`AuthPattern`**, **`SecretString`**, **`CredentialEvent`**, …) live in **`nebula-credential`** (see §3.7), not here — see `crates/core/README.md`.
 - **`nebula-error`** — **`Classify`**, **`NebulaError`**, categories/codes, structured details — **one** error taxonomy at boundaries instead of ad hoc strings.
 - **`nebula-resilience`** — composable **pipelines** (retry, timeout, circuit breaker, bulkhead, …); pairs with **`ActionError`** / retry hints in **`nebula-action`** (§3.8).
 - **`nebula-validator`** — programmatic validators + declarative **`Rule`**; **`nebula-schema`** embeds rules in **`Field`** definitions.
@@ -135,7 +135,7 @@ Besides the **integration** reference crates (§3.6–§3.9), the workspace ship
 - **`nebula-system`** — cross-platform **host** probes (CPU/memory/network/disk pressure) for ops and telemetry inputs.
 - **`nebula-workflow`** + **`nebula-execution`** — the execution semantics core: workflow validation/shape and durable execution lifecycle/state transitions. Read these when the question is "what does the engine guarantee at runtime," not just "how integrations are authored."
 
-**Layering:** cross-cutting crates sit **below** API/engine-specific surfaces (see CLAUDE.md boundaries); they must not **depend upward** on integration-only crates. **Canon use:** reuse these crates for their domains instead of duplicating helpers; if something truly belongs in **`nebula-core`** (a new stable key or auth primitive), extend it deliberately rather than inventing a parallel type in a leaf crate.
+**Layering:** cross-cutting crates sit **below** API/engine-specific surfaces (see CLAUDE.md boundaries); they must not **depend upward** on integration-only crates. **Canon use:** reuse these crates for their domains instead of duplicating helpers; if something truly belongs in **`nebula-core`** (a new stable identifier or key type), extend it deliberately rather than inventing a parallel type in a leaf crate. New **auth material** types belong in **`nebula-credential`** unless an ADR moves shared vocabulary.
 
 ---
 
