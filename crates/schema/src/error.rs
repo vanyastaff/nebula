@@ -300,6 +300,7 @@ pub const STANDARD_CODES: &[&str] = &[
     "dangling_reference",
     "self_dependency",
     "visibility_cycle",
+    "required_cycle",
     "rule.contradictory",
     "missing_item_schema",
     "invalid_default_variant",

@@ -470,6 +470,26 @@ fn emits_visibility_cycle() {
 }
 
 #[test]
+fn emits_required_cycle() {
+    // A's required predicate references B, B's required predicate references A.
+    use nebula_validator::{Predicate, Rule, foundation::FieldPath};
+
+    let rule_a_references_b = Rule::predicate(Predicate::IsTrue(FieldPath::parse("b").unwrap()));
+    let rule_b_references_a = Rule::predicate(Predicate::IsTrue(FieldPath::parse("a").unwrap()));
+
+    let schema = Schema::new()
+        .add(Field::string(fk("a")).required_when(rule_a_references_b))
+        .add(Field::string(fk("b")).required_when(rule_b_references_a));
+
+    let lint = schema.lint();
+    assert!(
+        lint.errors().any(|d| d.code == "required_cycle"),
+        "expected required_cycle, got: {:?}",
+        lint.errors().map(|d| &d.code).collect::<Vec<_>>()
+    );
+}
+
+#[test]
 fn emits_dangling_reference() {
     // A rule referencing an unknown field key → dangling_reference.
     use nebula_validator::{Predicate, Rule, foundation::FieldPath};
