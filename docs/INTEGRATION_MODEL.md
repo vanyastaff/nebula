@@ -78,9 +78,9 @@ Long-lived managed object: connection pool, SDK client, file handle. Engine owns
 
 ### Industry reference — n8n credential taxonomy vs Nebula axes
 
-Popular integration tools ship **many** credential types: one public codebase ([n8n](https://github.com/n8n-io/n8n)) exposes on the order of **hundreds** of distinct credential definitions (roughly **428** files in a recent classification). Those definitions are **product-facing labels** — what the UI stores and how nodes authenticate — not Nebula’s internal split.
+Popular integration tools ship **many** credential types: in [n8n](https://github.com/n8n-io/n8n), credential definitions are TypeScript modules under [`packages/nodes-base/credentials/`](https://github.com/n8n-io/n8n/tree/master/packages/nodes-base/credentials) (glob `*.credentials.ts`). Raw file counts are **on the order of 400** on recent upstream snapshots and **drift by release** — re-check that directory when refreshing this example. Those modules are **product-facing labels** — what the UI stores and how nodes authenticate — not Nebula’s internal split.
 
-The table below is an **external, illustrative** bucketing (by auth *shape* / transport), **not** a Nebula API. It shows how real-world volume concentrates before any Nebula-specific design.
+The table below is an **external, illustrative** bucketing (by auth *shape* / transport), **not** a Nebula API. Counts come from **one manual classification** of the catalog into these buckets (totalling **428** definitions in that exercise); they are **not** guaranteed to sum to a fresh clone’s file count, which varies by n8n revision.
 
 | Bucket (illustrative) | Typical meaning | Count (example) |
 | --- | --- | ---: |
@@ -90,11 +90,19 @@ The table below is an **external, illustrative** bucketing (by auth *shape* / tr
 | Custom | Multi-step, signed requests, LDAP, vendor-specific | 12 |
 | Database | Host, port, user, password, SSL / SSH tunnel | 10 |
 | Message queue | AMQP, MQTT, Kafka | 4 |
-| AWS keys / AssumeRole | Access keys vs STS role chain | 2 + 1 |
-| FTP / SFTP; SMTP / IMAP; OAuth 1.0a; SSH | Protocol-specific connection + auth | 2 each |
-| Other | mTLS, digest, JWT, service-account JWT, … | 1 each |
+| AWS access keys | Static AWS key style | 2 |
+| AWS AssumeRole | STS role chain | 1 |
+| FTP / SFTP | Protocol-specific connection + auth | 2 |
+| SMTP / IMAP | Mail server | 2 |
+| OAuth 1.0a | OAuth 1 | 2 |
+| SSH | Password or private key | 2 |
+| Unclassified | Vendor bucket not mapped elsewhere | 2 |
+| mTLS | Client certificate | 1 |
+| Digest | HTTP Digest | 1 |
+| JWT | JWT auth | 1 |
+| Service-account JWT | e.g. RS256 bearer to Google APIs | 1 |
 
-**How this maps to Nebula (Plane B):** n8n’s buckets mix **transport** (DB, queue, mail), **protocol family** (OAuth2 vs API key), and **acquisition UX** (custom wizards) in one flat namespace. Nebula keeps those concerns **orthogonal** — see [ADR-0033](adr/0033-integration-credentials-plane-b.md): **acquisition** (how the secret first entered the system), **`AuthScheme` / `AuthPattern`** (what material actions receive), and **persistence** (encrypted stored state vs projected auth). High counts for **API key** and **OAuth2** align with treating them as major **auth families**, not as 360 unrelated one-off schemes. **Database**, **queue**, and **SSH**-shaped credentials often pair **connection topology** (Resource or schema fields) with **auth material** (Credential); collapsing both into a single “credential type” is exactly the ad hoc pattern Nebula avoids.
+**How this maps to Nebula (Plane B):** n8n’s buckets mix **transport** (DB, queue, mail), **protocol family** (OAuth2 vs API key), and **acquisition UX** (custom wizards) in one flat namespace. Nebula keeps those concerns **orthogonal** — see [ADR-0033](adr/0033-integration-credentials-plane-b.md): **acquisition** (how the secret first entered the system), **`AuthScheme` / `AuthPattern`** (what material actions receive), and **persistence** (encrypted stored state vs projected auth). High counts for **API key** and **OAuth2** align with treating them as major **auth families**, not as hundreds of unrelated one-off schemes. **Database**, **queue**, and **SSH**-shaped credentials often pair **connection topology** (Resource or schema fields) with **auth material** (Credential); collapsing both into a single “credential type” is the same ad hoc pattern Nebula avoids.
 
 ## `nebula-action`
 
