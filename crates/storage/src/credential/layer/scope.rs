@@ -19,9 +19,8 @@
 
 use std::sync::Arc;
 
+use nebula_credential::{CredentialStore, PutMode, StoreError, StoredCredential};
 use serde_json::Value;
-
-use crate::store::{CredentialStore, PutMode, StoreError, StoredCredential};
 
 /// The metadata key used to store the owner identifier.
 const OWNER_KEY: &str = "owner_id";
@@ -33,8 +32,8 @@ const OWNER_KEY: &str = "owner_id";
 ///
 /// # Examples
 ///
-/// ```
-/// use nebula_credential::layer::scope::ScopeResolver;
+/// ```rust,ignore
+/// use nebula_storage::credential::ScopeResolver;
 ///
 /// struct StaticScope(Option<String>);
 ///
@@ -65,7 +64,7 @@ pub trait ScopeResolver: Send + Sync {
 /// # Examples
 ///
 /// ```rust,ignore
-/// use nebula_credential::{InMemoryStore, layer::scope::{ScopeLayer, ScopeResolver}};
+/// use nebula_storage::credential::{InMemoryStore, ScopeLayer, ScopeResolver};
 /// use std::sync::Arc;
 ///
 /// struct TenantScope(String);
@@ -236,10 +235,13 @@ fn verify_owner(
     }
 }
 
-#[cfg(test)]
+// Tests gated on `test-util` so storage compiles without features
+// (credential's `test_helpers` is itself behind `test-util`).
+#[cfg(all(test, feature = "test-util"))]
 mod tests {
-    use super::*;
-    use crate::{store::PutMode, store_memory::InMemoryStore};
+    use nebula_credential::PutMode;
+
+    use super::{super::super::memory::InMemoryStore, *};
 
     struct FixedScope(Option<String>);
 

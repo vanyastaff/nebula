@@ -6,14 +6,28 @@
 //!
 //! # Design
 //!
-//! `AuditLayer` wraps any CredentialStore and delegates every operation
-//! unchanged, emitting an [`AuditEvent`] to the pluggable [`AuditSink`]
-//! after each call completes. Only metadata is logged — credential data
-//! never passes through the sink.
+//! `AuditLayer` wraps any [`CredentialStore`] and delegates every operation
+//! to the inner store, emitting an [`AuditEvent`] to the pluggable
+//! [`AuditSink`] for each call. Only metadata flows through the sink —
+//! credential data never does.
+//!
+//! # Fail-closed invariant (ADR-0028 §Decision §4)
+//!
+//! Audit is **in-line durable**: if [`AuditSink::record`] returns an
+//! error, the credential operation as a whole returns
+//! [`StoreError::AuditFailure`]. There is no "log-and-continue" path.
+//! For mutating operations (`put`, `delete`), the layer additionally
+//! attempts a best-effort rollback of the inner write when possible
+//! (for `PutMode::CreateOnly` puts, it `delete`s the freshly-inserted
+//! record) so the store ends in the pre-call state.
+//!
+//! This is the non-negotiable §14 "no discard-and-log" rule. The
+//! [`credential_audit_durable`](../../../../tests/credential_audit_durable.rs)
+//! integration test is the CI gate for this invariant.
 
 use std::sync::Arc;
 
-use crate::store::{CredentialStore, PutMode, StoreError, StoredCredential};
+use nebula_credential::{CredentialStore, PutMode, StoreError, StoredCredential};
 
 /// Receives audit events for logging or persistence.
 ///
@@ -22,11 +36,19 @@ use crate::store::{CredentialStore, PutMode, StoreError, StoredCredential};
 ///
 /// # Contract
 ///
-/// - `log` must not block the calling task for extended periods.
+/// - `record` must not block the calling task for extended periods.
 /// - Implementations must never inspect or log credential data.
+/// - Returning `Err(StoreError)` causes the wrapping [`AuditLayer`] to fail the whole credential
+///   operation with [`StoreError::AuditFailure`] (fail-closed per ADR-0028 inv 4).
 pub trait AuditSink: Send + Sync {
-    /// Called after each credential store operation completes.
-    fn log(&self, event: AuditEvent);
+    /// Record an audit event.
+    ///
+    /// # Errors
+    ///
+    /// Return an error when the event cannot be durably persisted.
+    /// The wrapping [`AuditLayer`] will surface this as
+    /// [`StoreError::AuditFailure`] — no silent discard.
+    fn record(&self, event: &AuditEvent) -> Result<(), StoreError>;
 }
 
 /// A credential store operation recorded for audit purposes.
@@ -76,13 +98,16 @@ pub enum AuditResult {
 
 /// Audit logging layer wrapping a [`CredentialStore`].
 ///
-/// Delegates every operation to the inner store unchanged and logs
-/// an [`AuditEvent`] to the configured [`AuditSink`] after each call.
+/// Delegates every operation to the inner store and records an
+/// [`AuditEvent`] via the configured [`AuditSink`]. When the sink
+/// errors the operation fails with [`StoreError::AuditFailure`]; for
+/// `put` / `delete` the layer also attempts a best-effort rollback of
+/// the inner write (see module docs).
 ///
 /// # Examples
 ///
 /// ```rust,ignore
-/// use nebula_credential::{AuditLayer, InMemoryStore};
+/// use nebula_storage::credential::{AuditLayer, InMemoryStore};
 /// use std::sync::Arc;
 ///
 /// let sink = Arc::new(my_audit_sink);
@@ -103,12 +128,12 @@ impl<S> AuditLayer<S> {
 impl<S: CredentialStore> CredentialStore for AuditLayer<S> {
     async fn get(&self, id: &str) -> Result<StoredCredential, StoreError> {
         let result = self.inner.get(id).await;
-        self.sink.log(AuditEvent {
+        self.sink.record(&AuditEvent {
             timestamp: chrono::Utc::now(),
             credential_id: id.to_string(),
             operation: AuditOperation::Get,
             result: audit_result(&result),
-        });
+        })?;
         result
     }
 
@@ -119,45 +144,63 @@ impl<S: CredentialStore> CredentialStore for AuditLayer<S> {
     ) -> Result<StoredCredential, StoreError> {
         let id = credential.id.clone();
         let result = self.inner.put(credential, mode).await;
-        self.sink.log(AuditEvent {
+
+        let event = AuditEvent {
             timestamp: chrono::Utc::now(),
-            credential_id: id,
+            credential_id: id.clone(),
             operation: AuditOperation::Put,
             result: audit_result(&result),
-        });
+        };
+
+        if let Err(sink_err) = self.sink.record(&event) {
+            // ADR-0028 §4: fail-closed. Best-effort rollback of the
+            // inner write so the store ends in the pre-call state.
+            // Only attempted on CreateOnly (Overwrite/CAS have no
+            // recoverable prior state at this layer).
+            if matches!(mode, PutMode::CreateOnly) && result.is_ok() {
+                let _ = self.inner.delete(&id).await;
+            }
+            return Err(sink_err);
+        }
+
         result
     }
 
     async fn delete(&self, id: &str) -> Result<(), StoreError> {
         let result = self.inner.delete(id).await;
-        self.sink.log(AuditEvent {
+        self.sink.record(&AuditEvent {
             timestamp: chrono::Utc::now(),
             credential_id: id.to_string(),
             operation: AuditOperation::Delete,
             result: audit_result(&result),
-        });
+        })?;
+        // Delete is already destructive at the inner layer — there is
+        // no recoverable prior state at this layer to restore if the
+        // sink were to fail after a successful delete. Fail-closed
+        // still applies; the caller is expected to retry and the
+        // store surface remains consistent with `NotFound` semantics.
         result
     }
 
     async fn list(&self, state_kind: Option<&str>) -> Result<Vec<String>, StoreError> {
         let result = self.inner.list(state_kind).await;
-        self.sink.log(AuditEvent {
+        self.sink.record(&AuditEvent {
             timestamp: chrono::Utc::now(),
             credential_id: "*".to_string(),
             operation: AuditOperation::List,
             result: audit_result(&result),
-        });
+        })?;
         result
     }
 
     async fn exists(&self, id: &str) -> Result<bool, StoreError> {
         let result = self.inner.exists(id).await;
-        self.sink.log(AuditEvent {
+        self.sink.record(&AuditEvent {
             timestamp: chrono::Utc::now(),
             credential_id: id.to_string(),
             operation: AuditOperation::Exists,
             result: audit_result(&result),
-        });
+        })?;
         result
     }
 }
@@ -176,12 +219,15 @@ fn audit_result<T>(result: &Result<T, StoreError>) -> AuditResult {
     }
 }
 
-#[cfg(test)]
+// Tests gated on `test-util` so storage compiles without features
+// (credential's `test_helpers` is itself behind `test-util`).
+#[cfg(all(test, feature = "test-util"))]
 mod tests {
     use std::sync::Mutex;
 
-    use super::*;
-    use crate::{store::PutMode, store_memory::InMemoryStore};
+    use nebula_credential::PutMode;
+
+    use super::{super::super::memory::InMemoryStore, *};
 
     struct CollectingSink {
         events: Mutex<Vec<AuditEvent>>,
@@ -200,8 +246,9 @@ mod tests {
     }
 
     impl AuditSink for CollectingSink {
-        fn log(&self, event: AuditEvent) {
-            self.events.lock().unwrap().push(event);
+        fn record(&self, event: &AuditEvent) -> Result<(), StoreError> {
+            self.events.lock().unwrap().push(event.clone());
+            Ok(())
         }
     }
 

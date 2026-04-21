@@ -1,4 +1,4 @@
-//! `KeyProvider` — the seam between [`EncryptionLayer`](super::EncryptionLayer)
+//! `KeyProvider` — the seam between [`EncryptionLayer`](super::layer::EncryptionLayer)
 //! and the source of the AES-256 key material.
 //!
 //! `EncryptionLayer` no longer takes `Arc<EncryptionKey>` directly; instead it
@@ -28,10 +28,9 @@
 use std::{fmt::Write as _, path::PathBuf, sync::Arc};
 
 use base64::Engine;
+use nebula_credential::EncryptionKey;
 use sha2::{Digest, Sha256};
 use zeroize::Zeroizing;
-
-use crate::secrets::EncryptionKey;
 
 /// Short, non-secret fingerprint of 32-byte key material.
 ///
@@ -55,7 +54,7 @@ fn key_fingerprint(bytes: &[u8; 32]) -> String {
     out
 }
 
-/// Source of the current encryption key for [`EncryptionLayer`](super::EncryptionLayer).
+/// Source of the current encryption key for [`EncryptionLayer`](super::layer::EncryptionLayer).
 ///
 /// Implementations must preserve every rule from
 /// [`docs/STYLE.md §6 — Secret handling`](../../../../docs/STYLE.md#6-secret-handling):
@@ -70,12 +69,12 @@ pub trait KeyProvider: Send + Sync + 'static {
     ///
     /// Returns [`ProviderError`] when the backing source is unreachable or the
     /// material fails validation. The layer wraps this as
-    /// [`StoreError::Backend`](crate::StoreError::Backend) so callers see a
+    /// `StoreError::Backend` (from `nebula_credential`) so callers see a
     /// uniform failure taxonomy.
     fn current_key(&self) -> Result<Arc<EncryptionKey>, ProviderError>;
 
     /// Stable identifier for the current key. Stored as
-    /// [`EncryptedData::key_id`](crate::secrets::EncryptedData) in new
+    /// `EncryptedData::key_id` (from `nebula_credential::secrets`) in new
     /// envelopes; used by the rotation path to detect mismatches. Must be
     /// non-empty, and **must change whenever `current_key()` returns
     /// different key bytes** — otherwise the layer will treat pre-rotation
@@ -467,6 +466,7 @@ impl std::fmt::Debug for StaticKeyProvider {
 
 #[cfg(test)]
 mod tests {
+    #[cfg(feature = "test-util")]
     use std::sync::atomic::{AtomicUsize, Ordering};
 
     use base64::Engine;
@@ -785,12 +785,16 @@ mod tests {
     /// Counts `current_key()` invocations. Used to assert that the layer
     /// re-queries the provider on each read/write rather than caching the
     /// key at construction time.
+    ///
+    /// Only used by the cross-layer tests below (feature = "test-util").
+    #[cfg(feature = "test-util")]
     struct CountingKeyProvider {
         inner: StaticKeyProvider,
         current_key_calls: AtomicUsize,
         version_calls: AtomicUsize,
     }
 
+    #[cfg(feature = "test-util")]
     impl CountingKeyProvider {
         fn new(key: Arc<EncryptionKey>) -> Self {
             Self {
@@ -809,6 +813,7 @@ mod tests {
         }
     }
 
+    #[cfg(feature = "test-util")]
     impl KeyProvider for CountingKeyProvider {
         fn current_key(&self) -> Result<Arc<EncryptionKey>, ProviderError> {
             self.current_key_calls.fetch_add(1, Ordering::SeqCst);
@@ -821,13 +826,14 @@ mod tests {
         }
     }
 
+    // Cross-layer test — requires credential's `test_helpers` (test-util feature)
+    // plus storage's in-memory store (credential-in-memory feature).
+    #[cfg(feature = "test-util")]
     #[tokio::test]
     async fn layer_refetches_provider_on_put_and_get() {
-        use crate::{
-            layer::EncryptionLayer,
-            store::{CredentialStore, PutMode, test_helpers::make_credential},
-            store_memory::InMemoryStore,
-        };
+        use nebula_credential::{CredentialStore, PutMode, store::test_helpers::make_credential};
+
+        use super::super::{layer::EncryptionLayer, memory::InMemoryStore};
 
         let key = Arc::new(EncryptionKey::from_bytes([0x33; 32]));
         let provider = Arc::new(CountingKeyProvider::new(Arc::clone(&key)));
@@ -859,8 +865,12 @@ mod tests {
     /// Failure from `current_key()` surfaces through the layer as a
     /// `StoreError::Backend` — the typed taxonomy the rest of the credential
     /// surface expects.
+    ///
+    /// Only used by the cross-layer tests below (feature = "test-util").
+    #[cfg(feature = "test-util")]
     struct FailingKeyProvider;
 
+    #[cfg(feature = "test-util")]
     impl KeyProvider for FailingKeyProvider {
         fn current_key(&self) -> Result<Arc<EncryptionKey>, ProviderError> {
             Err(ProviderError::NotConfigured {
@@ -873,14 +883,15 @@ mod tests {
         }
     }
 
+    // Cross-layer test — see `layer_refetches_provider_on_put_and_get`.
+    #[cfg(feature = "test-util")]
     #[tokio::test]
     async fn provider_failure_surfaces_as_backend_error() {
-        use crate::{
-            StoreError,
-            layer::EncryptionLayer,
-            store::{CredentialStore, PutMode, test_helpers::make_credential},
-            store_memory::InMemoryStore,
+        use nebula_credential::{
+            CredentialStore, PutMode, StoreError, store::test_helpers::make_credential,
         };
+
+        use super::super::{layer::EncryptionLayer, memory::InMemoryStore};
 
         let store = EncryptionLayer::new(
             InMemoryStore::new(),

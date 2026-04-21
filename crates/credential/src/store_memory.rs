@@ -1,7 +1,19 @@
-//! In-memory credential store for testing.
+//! Test-only in-memory credential store.
 //!
-//! Data is lost when the store is dropped. Use this in tests rather than
-//! mocking [`CredentialStore`] directly.
+//! This is a **test shim**. The canonical production `InMemoryStore` lives
+//! in `nebula_storage::credential::InMemoryStore` per ADR-0032. A copy
+//! is kept here (and only here) under `#[cfg(any(test, feature = "test-util"))]`
+//! because credential's own internal tests (`resolver.rs`, layer tests, etc.)
+//! must not depend on `nebula-storage` — that would introduce a dep cycle
+//! that ADR-0032 §3 explicitly forbids ("`nebula-credential → nebula-storage`
+//! is forbidden. Credential's `Cargo.toml` MUST NOT list `nebula-storage`").
+//!
+//! Production consumers (composition roots, examples, docs) should import
+//! `nebula_storage::credential::InMemoryStore`. This module exists purely
+//! to keep credential's internal tests self-contained during the P6 → P8
+//! window and beyond.
+//!
+//! Data is lost when the store is dropped.
 
 use std::{collections::HashMap, sync::Arc};
 
@@ -9,7 +21,8 @@ use tokio::sync::RwLock;
 
 use crate::store::{CredentialStore, PutMode, StoreError, StoredCredential};
 
-/// In-memory store backed by a `HashMap`. Test-only — data lost on drop.
+/// Test-only in-memory store backed by a `HashMap`. See module docs for why
+/// this lives here in addition to `nebula_storage::credential::InMemoryStore`.
 ///
 /// Cloning produces a handle to the **same** underlying data (cheap `Arc` clone).
 #[derive(Clone)]
@@ -116,170 +129,5 @@ impl CredentialStore for InMemoryStore {
 
     async fn exists(&self, id: &str) -> Result<bool, StoreError> {
         Ok(self.data.read().await.contains_key(id))
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::store::test_helpers::make_credential;
-
-    #[tokio::test]
-    async fn crud_operations() {
-        let store = InMemoryStore::new();
-
-        let cred = make_credential("test-1", b"secret-data");
-
-        // Create
-        let stored = store.put(cred, PutMode::CreateOnly).await.unwrap();
-        assert_eq!(stored.version, 1);
-
-        // Read
-        let fetched = store.get("test-1").await.unwrap();
-        assert_eq!(fetched.data, b"secret-data");
-
-        // Exists
-        assert!(store.exists("test-1").await.unwrap());
-        assert!(!store.exists("nonexistent").await.unwrap());
-
-        // List
-        let ids = store.list(None).await.unwrap();
-        assert_eq!(ids, vec!["test-1"]);
-
-        // Delete
-        store.delete("test-1").await.unwrap();
-        assert!(!store.exists("test-1").await.unwrap());
-    }
-
-    #[tokio::test]
-    async fn get_returns_not_found() {
-        let store = InMemoryStore::new();
-        let err = store.get("missing").await.unwrap_err();
-        assert!(matches!(err, StoreError::NotFound { .. }));
-    }
-
-    #[tokio::test]
-    async fn delete_returns_not_found() {
-        let store = InMemoryStore::new();
-        let err = store.delete("missing").await.unwrap_err();
-        assert!(matches!(err, StoreError::NotFound { .. }));
-    }
-
-    #[tokio::test]
-    async fn create_only_rejects_duplicate() {
-        let store = InMemoryStore::new();
-        let cred = make_credential("dup", b"");
-        store.put(cred.clone(), PutMode::CreateOnly).await.unwrap();
-        let err = store.put(cred, PutMode::CreateOnly).await.unwrap_err();
-        assert!(matches!(err, StoreError::AlreadyExists { .. }));
-    }
-
-    #[tokio::test]
-    async fn overwrite_increments_version() {
-        let store = InMemoryStore::new();
-        let cred = make_credential("ow", b"v1");
-        let stored = store.put(cred, PutMode::Overwrite).await.unwrap();
-        assert_eq!(stored.version, 1);
-
-        let update = make_credential("ow", b"v2");
-        let updated = store.put(update, PutMode::Overwrite).await.unwrap();
-        assert_eq!(updated.version, 2);
-        assert_eq!(updated.data, b"v2");
-    }
-
-    #[tokio::test]
-    async fn compare_and_swap_succeeds_with_correct_version() {
-        let store = InMemoryStore::new();
-        let cred = make_credential("cas", b"v1");
-        let stored = store.put(cred, PutMode::CreateOnly).await.unwrap();
-        assert_eq!(stored.version, 1);
-
-        let mut update = stored.clone();
-        update.data = b"v2".to_vec();
-        let updated = store
-            .put(
-                update,
-                PutMode::CompareAndSwap {
-                    expected_version: 1,
-                },
-            )
-            .await
-            .unwrap();
-        assert_eq!(updated.version, 2);
-    }
-
-    #[tokio::test]
-    async fn compare_and_swap_rejects_stale_version() {
-        let store = InMemoryStore::new();
-        let cred = make_credential("cas", b"v1");
-        let stored = store.put(cred, PutMode::CreateOnly).await.unwrap();
-
-        // Update to version 2
-        let mut update = stored.clone();
-        update.data = b"v2".to_vec();
-        store
-            .put(
-                update,
-                PutMode::CompareAndSwap {
-                    expected_version: 1,
-                },
-            )
-            .await
-            .unwrap();
-
-        // Stale CAS with version 1 should fail
-        let mut stale = stored;
-        stale.data = b"v3".to_vec();
-        let err = store
-            .put(
-                stale,
-                PutMode::CompareAndSwap {
-                    expected_version: 1,
-                },
-            )
-            .await
-            .unwrap_err();
-        assert!(matches!(err, StoreError::VersionConflict { .. }));
-    }
-
-    #[tokio::test]
-    async fn cas_on_missing_credential_returns_not_found() {
-        let store = InMemoryStore::new();
-        let cred = make_credential("nonexistent", b"data");
-        let err = store
-            .put(
-                cred,
-                PutMode::CompareAndSwap {
-                    expected_version: 0,
-                },
-            )
-            .await
-            .unwrap_err();
-        assert!(matches!(err, StoreError::NotFound { .. }));
-    }
-
-    #[tokio::test]
-    async fn list_filters_by_state_kind() {
-        let store = InMemoryStore::new();
-
-        let mut bearer = make_credential("c1", b"");
-        bearer.state_kind = "bearer".into();
-        store.put(bearer, PutMode::CreateOnly).await.unwrap();
-
-        let mut api_key = make_credential("c2", b"");
-        api_key.state_kind = "api_key".into();
-        store.put(api_key, PutMode::CreateOnly).await.unwrap();
-
-        let all = store.list(None).await.unwrap();
-        assert_eq!(all.len(), 2);
-
-        let bearers = store.list(Some("bearer")).await.unwrap();
-        assert_eq!(bearers, vec!["c1"]);
-
-        let api_keys = store.list(Some("api_key")).await.unwrap();
-        assert_eq!(api_keys, vec!["c2"]);
-
-        let empty = store.list(Some("nonexistent")).await.unwrap();
-        assert!(empty.is_empty());
     }
 }

@@ -2,8 +2,8 @@
 //!
 //! Provides a CRUD abstraction for credential persistence with optimistic
 //! concurrency control via [`PutMode::CompareAndSwap`]. Encryption is handled
-//! by the [`EncryptionLayer`](crate::layer::EncryptionLayer) wrapper, not by
-//! store implementations themselves.
+//! by the `EncryptionLayer` wrapper (in `nebula-storage`), not by store
+//! implementations themselves.
 
 use std::future::Future;
 
@@ -75,6 +75,26 @@ pub enum StoreError {
         /// The credential ID.
         id: String,
     },
+    /// Audit sink refused to record the operation. Fail-closed alarm.
+    ///
+    /// Per ADR-0028 invariant 4 + §14 "no discard-and-log": a failed
+    /// audit sink surfaces as a hard error rather than a log-and-continue.
+    /// The underlying store state depends on the operation and rollback
+    /// feasibility:
+    ///
+    /// - `put(PutMode::CreateOnly)` — `AuditLayer` attempts a best-effort `delete` of the
+    ///   freshly-inserted record before returning. On a clean rollback path, the write did not
+    ///   become externally visible.
+    /// - `put(PutMode::Overwrite | PutMode::CompareAndSwap)` / `delete` — no rollback. The mutation
+    ///   may already be visible to concurrent readers; this error is a **fail-closed alarm**
+    ///   signalling that the audit trail is compromised, not a guarantee that the mutation did not
+    ///   commit.
+    /// - `get` / `list` / `exists` — read path; no mutation to roll back.
+    ///
+    /// Consumers should treat this error as actionable (investigate the
+    /// audit sink; retry only after the sink is healthy).
+    #[error("audit sink refused: {0}")]
+    AuditFailure(String),
     /// Backend error.
     #[error("store backend error: {0}")]
     Backend(Box<dyn std::error::Error + Send + Sync>),
@@ -83,8 +103,8 @@ pub enum StoreError {
 /// Core CRUD trait for credential persistence.
 ///
 /// Implementations handle raw bytes — encryption/decryption is done
-/// by the [`EncryptionLayer`](crate::layer::EncryptionLayer) wrapper,
-/// not by the store itself.
+/// by the `EncryptionLayer` wrapper (in `nebula-storage`), not by the
+/// store itself.
 pub trait CredentialStore: Send + Sync {
     /// Retrieve a stored credential by ID.
     ///
@@ -141,12 +161,16 @@ pub trait CredentialStore: Send + Sync {
 }
 
 /// Shared test helper for constructing [`StoredCredential`] instances.
-#[cfg(test)]
-pub(crate) mod test_helpers {
+///
+/// Exposed publicly under `#[cfg(any(test, feature = "test-util"))]` so
+/// sibling crates (e.g. `nebula-storage::credential::memory` tests) can
+/// construct minimal instances without duplicating the builder.
+#[cfg(any(test, feature = "test-util"))]
+pub mod test_helpers {
     use super::StoredCredential;
 
     /// Build a minimal [`StoredCredential`] for testing.
-    pub(crate) fn make_credential(id: &str, data: &[u8]) -> StoredCredential {
+    pub fn make_credential(id: &str, data: &[u8]) -> StoredCredential {
         StoredCredential {
             id: id.into(),
             credential_key: "test_credential".into(),

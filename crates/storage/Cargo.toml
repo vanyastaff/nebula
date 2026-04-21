@@ -13,6 +13,7 @@ documentation.workspace = true
 
 [dependencies]
 nebula-core = { path = "../core" }
+nebula-credential = { path = "../credential" }
 
 async-trait = { workspace = true }
 thiserror = { workspace = true }
@@ -20,6 +21,14 @@ serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }
 tokio = { workspace = true, features = ["sync", "time"] }
 chrono = { workspace = true }
+
+# Storage-local encoding / hashing / zeroizing — used directly by
+# KeyProvider fingerprints (base64 + sha2) and FileKeyProvider key
+# loading (zeroize). Cache layer uses moka::future.
+base64 = { workspace = true }
+sha2 = { workspace = true }
+zeroize = { version = "1.8.2", features = ["zeroize_derive"] }
+moka = { workspace = true, features = ["future"] }
 
 # Optional backends (см. docs/nebula-architecture-final.md)
 sqlx = { version = "0.8", optional = true, features = [
@@ -37,6 +46,11 @@ rmp-serde = { version = "1", optional = true }
 
 [features]
 default = []
+credential-in-memory = []
+# `test-util` forwards nebula-credential/test-util so storage's credential
+# tests can reach `nebula_credential::store::test_helpers::make_credential`.
+# Must never be enabled in a production release build — see ADR-0023.
+test-util = ["nebula-credential/test-util"]
 postgres = ["dep:sqlx", "dep:hex"]
 redis = ["dep:redis"]
 s3 = ["dep:aws-config", "dep:aws-sdk-s3"]
@@ -44,6 +58,8 @@ msgpack-storage = ["dep:rmp-serde"]
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["full", "test-util"] }
+# Used by FileKeyProvider tests (key_provider.rs).
+tempfile = { workspace = true }
 
 [lib]
 doctest = false

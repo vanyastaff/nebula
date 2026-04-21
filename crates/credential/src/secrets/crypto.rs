@@ -317,8 +317,8 @@ pub fn decrypt_with_aad(
 /// Encrypt plaintext using AES-256-GCM with AAD, recording the key identity.
 ///
 /// Like [`encrypt_with_aad`] but stores `key_id` in the resulting [`EncryptedData`]
-/// so the [`crate::layer::EncryptionLayer`] can select the correct decryption key
-/// during rotation.
+/// so the `EncryptionLayer` (in `nebula-storage`) can select the correct
+/// decryption key during rotation.
 ///
 /// # Arguments
 ///

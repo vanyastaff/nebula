@@ -5,6 +5,7 @@ status: accepted
 date: 2026-04-20
 supersedes: [0023]
 superseded_by: []
+amended_by: [0032]
 tags: [credential, storage, security, canon-12.5, persistence, key-custody]
 related:
   - docs/adr/0023-keyprovider-trait.md
@@ -84,15 +85,20 @@ them changes.**
   remains observable SemVer surface of the storage crate, inheriting
   from ADR-0023 §5.
 
-### 2. Canonical file paths in `nebula-storage`
+### 2. Canonical file paths in `nebula-storage` — AMENDED by ADR-0032
 
-The target shape under `crates/storage/src/credential/` (see spec §3):
+> **AMENDED by [ADR-0032](./0032-credential-store-canonical-home.md) on
+> 2026-04-20.** The `CredentialStore` trait + DTOs row is struck — the
+> trait stays in `nebula-credential::store`. All other rows are
+> unchanged. The target shape in storage is updated accordingly: no
+> `store.rs` there (only `memory.rs` for the in-memory impl).
+
+The target shape under `crates/storage/src/credential/` (amended):
 
 ```
 crates/storage/src/credential/
 ├── mod.rs
-├── store.rs              # CredentialStore trait + StoredCredential + PutMode + StoreError
-├── memory.rs             # InMemoryStore (feature: credential-in-memory)
+├── memory.rs             # InMemoryStore impl (feature: credential-in-memory)
 ├── key_provider.rs       # KeyProvider + EnvKeyProvider + FileKeyProvider + StaticKeyProvider
 ├── pending.rs            # pending state repo (encrypted at rest; see §4)
 ├── backup.rs             # rotation backup repo
@@ -104,12 +110,14 @@ crates/storage/src/credential/
     └── scope.rs          # ScopeLayer
 ```
 
+(No `store.rs` in storage — trait + DTOs stay in `nebula-credential`.)
+
 The following types move from `nebula-credential` to `nebula-storage`
-at the listed destinations:
+at the listed destinations (amended):
 
 | From `nebula-credential/src/` | To `nebula-storage/src/credential/` |
 |---|---|
-| `store.rs` (`CredentialStore`, `StoredCredential`, `PutMode`, `StoreError`) | `store.rs` |
+| ~~`store.rs` (`CredentialStore`, `StoredCredential`, `PutMode`, `StoreError`)~~ | ~~`store.rs`~~ — **NOT MOVED** (stays in credential per ADR-0032) |
 | `store_memory.rs` (`InMemoryStore`) | `memory.rs` |
 | `layer/encryption.rs` (`EncryptionLayer`) | `layer/encryption.rs` |
 | `layer/key_provider.rs` (`KeyProvider` + impls) | `key_provider.rs` |
@@ -119,19 +127,29 @@ at the listed destinations:
 | `pending_store.rs`, `pending_store_memory.rs` | `pending.rs` |
 | `rotation/backup.rs` | `backup.rs` |
 
-### 3. `nebula-credential` reexports
+### 3. `nebula-credential` reexports — AMENDED by ADR-0032
 
-`nebula-credential::lib.rs` keeps a stable re-export for `CredentialStore`:
+> **AMENDED by [ADR-0032](./0032-credential-store-canonical-home.md) on
+> 2026-04-20.** The original §3 required `nebula-credential::lib.rs` to
+> re-export `CredentialStore` from storage as a permanent DX alias. P6
+> implementation discovered this requires a cyclic dep-graph. ADR-0032
+> resolves by keeping the trait in credential (not moving it at all),
+> so the re-export becomes unnecessary.
 
-```rust
-pub use nebula_storage::credential::CredentialStore;
-```
+The `CredentialStore` trait + DTOs (`StoredCredential`, `PutMode`,
+`StoreError`) remain in `nebula-credential::store` per ADR-0032 §1.
+`nebula-credential::lib.rs` continues to re-export them flat at the
+crate root (unchanged from today). No cross-crate re-export is needed
+because the trait itself never moved.
 
-This re-export is **permanent**, not transitional. Consumers importing
-`nebula_credential::CredentialStore` do not need to chase the path
-change. ADR-0028 invariant 6 applies: re-exports may expose trait +
-error + DTO shapes, but not storage impl details (no `InMemoryStore`,
-no `CacheLayer`, no backend-specific hints).
+Consumers import the trait from `nebula_credential::*` and the impls
+(`InMemoryStore`, layers, `KeyProvider`) from
+`nebula_storage::credential::*` — split on the trait/impl axis.
+
+The dep-graph is strictly `nebula-storage → nebula-credential` (one
+direction); the reverse edge is forbidden.
+
+ADR-0028 invariant 6 (amended) applies.
 
 ### 4. Pending store invariants
 

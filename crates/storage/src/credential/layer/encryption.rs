@@ -12,7 +12,7 @@
 //! # Key source: [`KeyProvider`]
 //!
 //! The current encryption key is supplied by an
-//! [`Arc<dyn KeyProvider>`](super::KeyProvider), **not** an `Arc<EncryptionKey>`
+//! [`Arc<dyn KeyProvider>`](super::super::KeyProvider), **not** an `Arc<EncryptionKey>`
 //! directly. Composition roots choose the provider (env var, file, KMS, …)
 //! at wiring time — see
 //! [ADR-0023](../../../../docs/adr/0023-keyprovider-trait.md) for the seam
@@ -30,11 +30,12 @@
 
 use std::{collections::HashMap, sync::Arc};
 
-use crate::{
-    EncryptedData, EncryptionKey, decrypt_with_aad, encrypt_with_key_id,
-    layer::key_provider::KeyProvider,
-    store::{CredentialStore, PutMode, StoreError, StoredCredential},
+use nebula_credential::{
+    CredentialStore, EncryptedData, EncryptionKey, PutMode, StoreError, StoredCredential,
+    decrypt_with_aad, encrypt_with_key_id,
 };
+
+use super::super::key_provider::KeyProvider;
 
 /// Wraps a store with AES-256-GCM encryption on the `data` field.
 ///
@@ -251,14 +252,15 @@ impl<S> EncryptionLayer<S> {
     }
 }
 
-#[cfg(test)]
+// Tests require `nebula-credential/test-util` to reach `test_helpers` and
+// `StaticKeyProvider`. Storage's own `test-util` feature forwards that.
+#[cfg(all(test, feature = "test-util"))]
 mod tests {
-    use super::*;
-    use crate::{
-        encrypt,
-        layer::key_provider::StaticKeyProvider,
-        store::{PutMode, test_helpers::make_credential},
-        store_memory::InMemoryStore,
+    use nebula_credential::{PutMode, encrypt, store::test_helpers::make_credential};
+
+    use super::{
+        super::super::{key_provider::StaticKeyProvider, memory::InMemoryStore},
+        *,
     };
 
     fn static_provider_with_version(

@@ -11,17 +11,16 @@ use std::{
 };
 
 use moka::future::Cache;
-
-use crate::store::{CredentialStore, PutMode, StoreError, StoredCredential};
+use nebula_credential::{CredentialStore, PutMode, StoreError, StoredCredential};
 
 /// Configuration for the credential cache.
 ///
 /// # Examples
 ///
-/// ```
-/// use nebula_credential::CacheConfig as StoreCacheConfig;
+/// ```rust,ignore
+/// use nebula_storage::credential::CacheConfig;
 ///
-/// let config = StoreCacheConfig {
+/// let config = CacheConfig {
 ///     max_entries: 5_000,
 ///     ttl: std::time::Duration::from_secs(600),
 ///     tti: std::time::Duration::from_secs(300),
@@ -63,8 +62,8 @@ impl CacheStats {
     ///
     /// # Examples
     ///
-    /// ```
-    /// use nebula_credential::layer::cache::CacheStats;
+    /// ```rust,ignore
+    /// use nebula_storage::credential::CacheStats;
     ///
     /// let stats = CacheStats {
     ///     hits: 80,
@@ -85,13 +84,13 @@ impl CacheStats {
 
 /// Caching layer wrapping a [`CredentialStore`].
 ///
-/// Sits below [`EncryptionLayer`](crate::layer::EncryptionLayer) in the
+/// Sits below [`EncryptionLayer`](super::EncryptionLayer) in the
 /// layer stack — cached values are **ciphertext**, never plaintext secrets.
 ///
 /// # Examples
 ///
 /// ```rust,ignore
-/// use nebula_credential::{InMemoryStore, layer::cache::{CacheLayer, CacheConfig}};
+/// use nebula_storage::credential::{CacheConfig, CacheLayer, InMemoryStore};
 ///
 /// let store = CacheLayer::new(InMemoryStore::new(), CacheConfig::default());
 /// ```
@@ -186,13 +185,14 @@ impl<S: CredentialStore> CredentialStore for CacheLayer<S> {
     }
 }
 
-#[cfg(test)]
+// Tests require `nebula-credential/test-util` to reach `test_helpers`.
+// Storage's own `test-util` feature forwards that; clippy/check with
+// `--all-targets` (no features) skip this block.
+#[cfg(all(test, feature = "test-util"))]
 mod tests {
-    use super::*;
-    use crate::{
-        store::{PutMode, test_helpers::make_credential},
-        store_memory::InMemoryStore,
-    };
+    use nebula_credential::{PutMode, store::test_helpers::make_credential};
+
+    use super::{super::super::memory::InMemoryStore, *};
 
     #[tokio::test]
     async fn cache_hit_returns_cached() {

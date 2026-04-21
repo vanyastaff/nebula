@@ -48,6 +48,9 @@
 #![warn(clippy::all)]
 
 mod backend;
+/// Credential persistence — see
+/// [ADR-0029](../../../docs/adr/0029-storage-owns-credential-persistence.md).
+pub mod credential;
 mod error;
 mod execution_repo;
 /// Serialization format abstraction (JSON / MessagePack).
