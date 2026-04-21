@@ -13,9 +13,7 @@ use nebula_core::{CredentialEvent, CredentialId};
 use nebula_eventbus::EventBus;
 
 use crate::{
-    Credential, CredentialState,
-    context::CredentialContext,
-    handle::CredentialHandle,
+    Credential, CredentialContext, CredentialHandle, CredentialState,
     refresh::{RefreshAttempt, RefreshCoordinator},
     resolve::RefreshOutcome,
     store::{CredentialStore, PutMode, StoreError, StoredCredential},
@@ -456,8 +454,7 @@ mod tests {
     use super::*;
     // ── Test credential for early refresh ──────────────────────────────
     use crate::{
-        Credential, CredentialMetadata, NoPendingState, SecretString,
-        context::CredentialContext,
+        Credential, CredentialContext, CredentialMetadata, NoPendingState, SecretString,
         credentials::ApiKeyCredential,
         error::CredentialError,
         resolve::{RefreshOutcome, RefreshPolicy, StaticResolveResult},

@@ -7,7 +7,7 @@
 use nebula_schema::{Field, FieldValues, HasSchema, Schema, ValidSchema};
 
 use crate::{
-    Credential, NoPendingState, SecretString, context::CredentialContext, error::CredentialError,
+    Credential, CredentialContext, NoPendingState, SecretString, error::CredentialError,
     metadata::CredentialMetadata, resolve::StaticResolveResult, scheme::SecretToken,
 };
 

@@ -9,8 +9,8 @@ use std::sync::{
 };
 
 use nebula_credential::{
-    Credential, CredentialResolver, CredentialStore, InMemoryStore, NoPendingState, SecretString,
-    context::CredentialContext,
+    Credential, CredentialContext, CredentialResolver, CredentialStore, InMemoryStore,
+    NoPendingState, SecretString,
     error::CredentialError,
     metadata::CredentialMetadata,
     resolve::{RefreshOutcome, RefreshPolicy, StaticResolveResult},

@@ -9,7 +9,8 @@ use std::{any::TypeId, collections::HashSet, fmt, sync::Arc};
 
 use async_trait::async_trait;
 
-use crate::{CredentialSnapshot, access_error::CredentialAccessError};
+use super::access_error::CredentialAccessError;
+use crate::CredentialSnapshot;
 
 /// Object-safe credential accessor injected into action/trigger contexts.
 ///

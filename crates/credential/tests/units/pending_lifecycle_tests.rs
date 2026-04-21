@@ -6,8 +6,7 @@
 use std::time::Duration;
 
 use nebula_credential::{
-    Credential, PendingState, SecretString,
-    context::CredentialContext,
+    Credential, CredentialContext, PendingState, SecretString,
     error::CredentialError,
     executor::{ResolveResponse, execute_continue, execute_resolve},
     metadata::CredentialMetadata,

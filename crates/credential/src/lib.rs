@@ -30,20 +30,14 @@
 //! See `crates/credential/README.md` for the full contract and canon invariants.
 #![forbid(unsafe_code)]
 
-/// Error type for credential access operations.
-pub mod access_error;
-/// Credential accessor trait and implementations (Noop, Scoped).
+/// Consumer-facing accessor surface — trait, handle, context, errors.
 pub mod accessor;
-/// Credential operation context.
-pub mod context;
 /// Credential contract surface — Credential trait + associated types.
 pub mod contract;
 /// Built-in credential type implementations.
 pub mod credentials;
 /// Error types for credential operations.
 pub mod error;
-/// Typed credential handle returned by the resolver.
-pub mod handle;
 /// Credential metadata — static descriptors + runtime record + key newtype.
 pub mod metadata;
 /// Pending state store trait for interactive credential flows.
@@ -96,11 +90,10 @@ pub mod resolver;
 // Commonly-used types available directly as `nebula_credential::TypeName`.
 
 // Derive macros
-// Credential access error
-pub use access_error::CredentialAccessError;
-// Credential accessor trait + implementations
+// Consumer-facing accessor surface — trait, impls, handle, context, access error
 pub use accessor::{
-    CredentialAccessor, NoopCredentialAccessor, ScopedCredentialAccessor,
+    CredentialAccessError, CredentialAccessor, CredentialContext, CredentialHandle,
+    CredentialResolverRef, NoopCredentialAccessor, ScopedCredentialAccessor,
     default_credential_accessor,
 };
 // Credential contract — Credential trait + associated types
@@ -114,8 +107,6 @@ pub use credentials::{
 };
 // Framework executor
 pub use executor::{ExecutorError, ResolveResponse, execute_continue, execute_resolve};
-// Typed handle
-pub use handle::CredentialHandle;
 #[cfg(any(test, feature = "test-util"))]
 pub use layer::StaticKeyProvider;
 // Storage layers
@@ -154,8 +145,6 @@ pub use secrets::{
 pub use store::{CredentialStore, PutMode, StoreError, StoredCredential};
 pub use store_memory::InMemoryStore;
 
-// Core types & errors
-pub use crate::context::{CredentialContext, CredentialResolverRef};
 // Rotation (feature-gated)
 #[cfg(feature = "rotation")]
 pub use crate::rotation::{
