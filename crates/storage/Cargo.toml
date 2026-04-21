@@ -58,7 +58,10 @@ rmp-serde = { version = "1", optional = true }
 [features]
 default = []
 credential-in-memory = []
-test-util = []
+# `test-util` forwards nebula-credential/test-util so storage's credential
+# tests can reach `nebula_credential::store::test_helpers::make_credential`.
+# Must never be enabled in a production release build — see ADR-0023.
+test-util = ["nebula-credential/test-util"]
 postgres = ["dep:sqlx", "dep:hex"]
 redis = ["dep:redis"]
 s3 = ["dep:aws-config", "dep:aws-sdk-s3"]
@@ -82,7 +85,6 @@ ignored = [
   "aws-config",
   "aws-sdk-s3",
   "redis",
-  "nebula-credential",
   "aes-gcm",
   "argon2",
   "base64",

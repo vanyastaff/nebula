@@ -93,7 +93,21 @@ pub mod retry;
 pub mod snapshot;
 /// Credential store trait with layered composition.
 pub mod store;
-/// In-memory credential store for testing.
+/// In-memory `CredentialStore` impl for testing and internal use.
+///
+/// **Not** the canonical production impl — that lives in
+/// [`nebula_storage::credential::InMemoryStore`] per
+/// [ADR-0032](https://github.com/vanyastaff/nebula/blob/main/docs/adr/0032-credential-store-canonical-home.md).
+/// Kept here because credential's own internal modules (`resolver.rs`,
+/// layer tests, integration tests under `crates/credential/tests/`)
+/// reference it directly and cannot depend on `nebula-storage` —
+/// ADR-0032 §3 forbids `nebula-credential → nebula-storage` in either
+/// `[dependencies]` or `[dev-dependencies]` (the latter triggers a
+/// two-copies cargo resolution that breaks trait bounds).
+///
+/// Production consumers and composition roots should prefer
+/// `nebula_storage::credential::InMemoryStore`; both implementations are
+/// behaviour-identical.
 pub mod store_memory;
 
 // ── Root re-exports ─────────────────────────────────────────────────────────
@@ -152,8 +166,10 @@ pub use secrets::{
     encrypt, encrypt_with_aad, encrypt_with_key_id, generate_code_challenge,
     generate_pkce_verifier, generate_random_state,
 };
-// Store + in-memory impl
+// Store trait + DTOs (canonical impls live in `nebula_storage::credential` per ADR-0032)
 pub use store::{CredentialStore, PutMode, StoreError, StoredCredential};
+// In-memory impl — behaviour-identical to `nebula_storage::credential::InMemoryStore`.
+// Kept here to avoid a dep cycle; production consumers should prefer the storage copy.
 pub use store_memory::InMemoryStore;
 
 // Rotation (feature-gated)

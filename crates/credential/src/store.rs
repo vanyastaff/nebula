@@ -141,12 +141,16 @@ pub trait CredentialStore: Send + Sync {
 }
 
 /// Shared test helper for constructing [`StoredCredential`] instances.
-#[cfg(test)]
-pub(crate) mod test_helpers {
+///
+/// Exposed publicly under `#[cfg(any(test, feature = "test-util"))]` so
+/// sibling crates (e.g. `nebula-storage::credential::memory` tests) can
+/// construct minimal instances without duplicating the builder.
+#[cfg(any(test, feature = "test-util"))]
+pub mod test_helpers {
     use super::StoredCredential;
 
     /// Build a minimal [`StoredCredential`] for testing.
-    pub(crate) fn make_credential(id: &str, data: &[u8]) -> StoredCredential {
+    pub fn make_credential(id: &str, data: &[u8]) -> StoredCredential {
         StoredCredential {
             id: id.into(),
             credential_key: "test_credential".into(),
