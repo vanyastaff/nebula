@@ -396,6 +396,11 @@ async fn emits_expression_type_mismatch() {
         "expected expression.type_mismatch, got: {:?}",
         report.errors().map(|e| &e.code).collect::<Vec<_>>()
     );
+    assert!(
+        !report.errors().any(|e| e.code == "type_mismatch"),
+        "raw type_mismatch should have been remapped, got: {:?}",
+        report.errors().map(|e| &e.code).collect::<Vec<_>>()
+    );
 }
 
 // ── Build-time (lint) codes ──────────────────────────────────────────────

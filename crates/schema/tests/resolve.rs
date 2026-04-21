@@ -18,6 +18,28 @@ impl ExpressionContext for ConstCtx {
     }
 }
 
+/// Returns values based on expression source fragments.
+struct RoutingCtx;
+
+#[async_trait::async_trait]
+impl ExpressionContext for RoutingCtx {
+    async fn evaluate(&self, ast: &ExpressionAst) -> Result<serde_json::Value, ValidationError> {
+        if ast.source().contains("$bad_str") {
+            return Ok(json!(123));
+        }
+        if ast.source().contains("$ok_str") {
+            return Ok(json!("ok"));
+        }
+        if ast.source().contains("$bad_item") {
+            return Ok(json!(999));
+        }
+        if ast.source().contains("$ok_num") {
+            return Ok(json!(42));
+        }
+        Ok(json!(null))
+    }
+}
+
 /// Always fails with `expression.runtime`.
 struct FailCtx;
 
@@ -128,6 +150,108 @@ async fn expression_type_mismatch_returns_expression_type_mismatch() {
             .errors()
             .any(|e| e.code == "expression.type_mismatch"),
         "expected expression.type_mismatch, got: {:?}",
+        report.errors().map(|e| &e.code).collect::<Vec<_>>()
+    );
+    assert!(
+        !report.errors().any(|e| e.code == "type_mismatch"),
+        "raw type_mismatch should have been remapped, got: {:?}",
+        report.errors().map(|e| &e.code).collect::<Vec<_>>()
+    );
+}
+
+#[tokio::test]
+async fn expression_type_mismatch_in_nested_object_is_remapped() {
+    let schema = Schema::builder()
+        .add(Field::object(field_key!("user")).add(Field::string(field_key!("name"))))
+        .build()
+        .unwrap();
+
+    let values =
+        FieldValues::from_json(json!({"user": {"name": {"$expr": "{{ $bad_str }}"}}})).unwrap();
+    let validated = schema.validate(&values).unwrap();
+
+    let report = validated.resolve(&RoutingCtx).await.unwrap_err();
+    assert!(
+        report.errors().any(|e| {
+            e.code == "expression.type_mismatch" && e.path == FieldPath::parse("user.name").unwrap()
+        }),
+        "expected expression.type_mismatch at user.name, got: {:?}",
+        report
+            .errors()
+            .map(|e| (e.code.clone(), e.path.to_string()))
+            .collect::<Vec<_>>()
+    );
+    assert!(
+        !report.errors().any(|e| e.code == "type_mismatch"),
+        "raw type_mismatch should have been remapped, got: {:?}",
+        report.errors().map(|e| &e.code).collect::<Vec<_>>()
+    );
+}
+
+#[tokio::test]
+async fn expression_type_mismatch_in_list_item_is_remapped() {
+    let schema = Schema::builder()
+        .add(Field::list(field_key!("tags")).item(Field::string(field_key!("_item"))))
+        .build()
+        .unwrap();
+
+    let values = FieldValues::from_json(json!({
+        "tags": [{"$expr": "{{ $bad_item }}"}]
+    }))
+    .unwrap();
+    let validated = schema.validate(&values).unwrap();
+
+    let report = validated.resolve(&RoutingCtx).await.unwrap_err();
+    assert!(
+        report.errors().any(|e| {
+            e.code == "expression.type_mismatch" && e.path == FieldPath::parse("tags[0]").unwrap()
+        }),
+        "expected expression.type_mismatch at tags[0], got: {:?}",
+        report
+            .errors()
+            .map(|e| (e.code.clone(), e.path.to_string()))
+            .collect::<Vec<_>>()
+    );
+    assert!(
+        !report.errors().any(|e| e.code == "type_mismatch"),
+        "raw type_mismatch should have been remapped, got: {:?}",
+        report.errors().map(|e| &e.code).collect::<Vec<_>>()
+    );
+}
+
+#[tokio::test]
+async fn expression_type_mismatch_remap_is_scoped_to_failing_sibling() {
+    let schema = Schema::builder()
+        .add(Field::string(field_key!("a")))
+        .add(Field::number(field_key!("b")))
+        .build()
+        .unwrap();
+
+    let values = FieldValues::from_json(json!({
+        "a": {"$expr": "{{ $bad_str }}"},
+        "b": {"$expr": "{{ $ok_num }}"}
+    }))
+    .unwrap();
+    let validated = schema.validate(&values).unwrap();
+
+    let report = validated.resolve(&RoutingCtx).await.unwrap_err();
+    let mismatch_paths: Vec<String> = report
+        .errors()
+        .filter(|e| e.code == "expression.type_mismatch")
+        .map(|e| e.path.to_string())
+        .collect();
+    assert_eq!(
+        mismatch_paths,
+        vec!["a".to_string()],
+        "expected remap only for failing sibling, got: {:?}",
+        report
+            .errors()
+            .map(|e| (e.code.clone(), e.path.to_string()))
+            .collect::<Vec<_>>()
+    );
+    assert!(
+        !report.errors().any(|e| e.code == "type_mismatch"),
+        "raw type_mismatch should have been remapped, got: {:?}",
         report.errors().map(|e| &e.code).collect::<Vec<_>>()
     );
 }

@@ -337,22 +337,28 @@ impl ValidValues {
         // Re-run schema validation on resolved literals. Any type mismatches at
         // paths produced by expression evaluation are surfaced as
         // `expression.type_mismatch`.
-        if let Err(post_resolve_report) = self.schema.validate(&values) {
-            return Err(remap_expression_type_mismatch(
-                post_resolve_report,
-                &resolved_expression_paths,
-            ));
-        }
-
-        let extra_warnings: Vec<ValidationError> = report
+        let resolve_warnings: Vec<ValidationError> = report
             .iter()
             .filter(|e| e.severity == Severity::Warning)
             .cloned()
             .collect();
+        let post_resolve_warnings: Vec<ValidationError> = match self.schema.validate(&values) {
+            Ok(post_resolve_valid) => post_resolve_valid.warnings().to_vec(),
+            Err(mut post_resolve_report) => {
+                post_resolve_report.extend(self.warnings.iter().cloned());
+                post_resolve_report.extend(resolve_warnings.iter().cloned());
+                return Err(remap_expression_type_mismatch(
+                    post_resolve_report,
+                    &resolved_expression_paths,
+                ));
+            },
+        };
+
         let all_warnings: Arc<[ValidationError]> = self
             .warnings
             .iter()
-            .chain(extra_warnings.iter())
+            .chain(resolve_warnings.iter())
+            .chain(post_resolve_warnings.iter())
             .cloned()
             .collect();
 
@@ -494,9 +500,13 @@ fn resolve_value<'v>(
             },
             FieldValue::Mode { mode, value } => {
                 let resolved_value = if let Some(inner) = value {
-                    let inner_path = path
-                        .clone()
-                        .join(FieldKey::new("value").expect("static key"));
+                    let Ok(payload_key) = FieldKey::new("value") else {
+                        return FieldValue::Mode {
+                            mode,
+                            value: Some(inner),
+                        };
+                    };
+                    let inner_path = path.clone().join(payload_key);
                     let resolved =
                         resolve_value(*inner, ctx, &inner_path, report, resolved_expression_paths)
                             .await;
@@ -940,9 +950,10 @@ fn validate_literal_value(
                 return;
             };
             {
-                let payload_path = path
-                    .clone()
-                    .join(FieldKey::new("value").expect("static key"));
+                let Ok(payload_key) = FieldKey::new("value") else {
+                    return;
+                };
+                let payload_path = path.clone().join(payload_key);
                 validate_field(
                     &variant.field,
                     mode_value.as_deref(),
