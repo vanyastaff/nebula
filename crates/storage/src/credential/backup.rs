@@ -1,15 +1,18 @@
-//! Rotation Backup System
+//! Rotation Backup System — canonical home per ADR-0029 / ADR-0032.
 //!
-//! Creates encrypted backups of credentials before rotation for disaster recovery.
+//! Creates encrypted backups of credentials before rotation for disaster
+//! recovery. Feature-gated behind storage's `rotation` feature, which forwards
+//! to `nebula-credential/rotation`.
+//!
+//! Ref: `docs/adr/0029-storage-owns-credential-persistence.md` §4
+//! Ref: `docs/adr/0032-credential-store-canonical-home.md`
 
 use chrono::{DateTime, Duration as ChronoDuration, Utc};
-use serde::{Deserialize, Serialize};
-
-use super::{
-    error::{RotationError, RotationResult},
-    transaction::{BackupId, RotationId},
+use nebula_credential::{
+    CredentialId, EncryptedData,
+    rotation::{BackupId, RotationError, RotationId, RotationResult},
 };
-use crate::{CredentialId, secrets::EncryptedData};
+use serde::{Deserialize, Serialize};
 
 /// Rotation backup containing encrypted credential snapshot
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -114,7 +117,7 @@ mod tests {
             tag: [5u8; 16],
         };
 
-        let backup = RotationBackup::create(cred_id, 1, encrypted.clone(), tx_id);
+        let backup = RotationBackup::create(cred_id, 1, encrypted, tx_id);
 
         assert_eq!(backup.credential_id, cred_id);
         assert_eq!(backup.credential_version, 1);
