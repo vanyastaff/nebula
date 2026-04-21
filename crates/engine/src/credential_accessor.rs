@@ -8,7 +8,7 @@
 //!
 //! # Design
 //!
-//! [`CredentialResolver<S>`](nebula_credential::CredentialResolver) is generic
+//! [`CredentialResolver<S>`](crate::credential::CredentialResolver) is generic
 //! over a store type, which would infect the engine with an unbounded type
 //! parameter. Instead, the resolution function is captured once as a
 //! type-erased `Arc<dyn Fn + Send + Sync>` returning a pinned future. This
@@ -59,8 +59,9 @@ type ResolveFn = Arc<
 /// ```rust,ignore
 /// use std::collections::HashSet;
 /// use std::sync::Arc;
+/// use nebula_engine::credential::CredentialResolver;
 /// use nebula_engine::credential_accessor::EngineCredentialAccessor;
-/// use nebula_credential::{CredentialResolver, InMemoryStore};
+/// use nebula_storage::credential::InMemoryStore;
 ///
 /// let store = Arc::new(InMemoryStore::new());
 /// let resolver = Arc::new(CredentialResolver::new(store));

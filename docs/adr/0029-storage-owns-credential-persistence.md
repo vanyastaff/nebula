@@ -384,7 +384,7 @@ Test coverage:
 - `crates/storage/tests/credential_audit_durable.rs` — mock
   `AuditSink` failure → `put()` returns `StoreError` (not silent
   success). ADR-0028 invariant 4.
-- `crates/storage/tests/credential_pending_lifecycle.rs` — TTL expiry,
+- `crates/engine/tests/credential_pending_lifecycle_tests.rs` — TTL expiry,
   single-use delete, session-binding mismatch, zeroize-on-read.
   Invariants §4.1-§4.6.
 - `crates/credential/tests/redaction.rs` (remains — shared helper) —

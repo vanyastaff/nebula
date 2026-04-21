@@ -364,7 +364,9 @@ impl WorkflowEngine {
     /// ```rust,ignore
     /// use std::sync::Arc;
     /// use nebula_engine::WorkflowEngine;
-    /// use nebula_credential::{CredentialResolver, CredentialAccessError, InMemoryStore};
+    /// use nebula_credential::CredentialAccessError;
+    /// use nebula_engine::credential::CredentialResolver;
+    /// use nebula_storage::credential::InMemoryStore;
     ///
     /// let store = Arc::new(InMemoryStore::new());
     /// let resolver = Arc::new(CredentialResolver::new(store));

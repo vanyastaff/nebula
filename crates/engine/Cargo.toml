@@ -19,6 +19,7 @@ default = []
 # enabled — the alias exists purely so downstream crates can turn on the
 # variant via a single feature on the engine dependency.
 unstable-retry-scheduler = ["nebula-action/unstable-retry-scheduler"]
+rotation = ["nebula-credential/rotation", "nebula-storage/rotation"]
 
 [dependencies]
 nebula-core = { path = "../core" }
@@ -28,11 +29,13 @@ nebula-expression = { path = "../expression" }
 nebula-plugin = { path = "../plugin" }
 nebula-workflow = { path = "../workflow" }
 nebula-execution = { path = "../execution" }
+nebula-schema = { path = "../schema" }
 nebula-credential = { path = "../credential" }
+nebula-eventbus = { path = "../eventbus" }
 nebula-resource = { path = "../resource" }
 nebula-runtime = { path = "../runtime" }
 nebula-resilience = { path = "../resilience" }
-nebula-storage = { path = "../storage" }
+nebula-storage = { path = "../storage", features = ["credential-in-memory"] }
 nebula-metrics = { path = "../metrics" }
 nebula-telemetry = { path = "../telemetry" }
 
@@ -44,10 +47,16 @@ dashmap = { workspace = true }
 thiserror = { workspace = true }
 tracing = { workspace = true }
 serde_json = { workspace = true, features = ["raw_value"] }
+chrono = { workspace = true }
+rand = { workspace = true }
+scopeguard = "1"
 
 [dev-dependencies]
 nebula-metrics = { path = "../metrics" }
 chrono = { workspace = true }
+futures = { workspace = true }
+serde = { workspace = true, features = ["derive"] }
+zeroize = { version = "1.8.2", features = ["zeroize_derive"] }
 
 [lib]
 doctest = false
