@@ -1,10 +1,9 @@
 //! Federated identity assertion (SAML, JWT, Kerberos ticket).
 
 use chrono::{DateTime, Utc};
-use nebula_core::{AuthPattern, AuthScheme};
 use serde::{Deserialize, Serialize};
 
-use crate::SecretString;
+use crate::{AuthPattern, AuthScheme, SecretString};
 
 /// A third-party identity assertion such as a SAML assertion, JWT, or
 /// Kerberos ticket.

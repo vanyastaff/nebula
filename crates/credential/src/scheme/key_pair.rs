@@ -97,9 +97,8 @@ impl std::fmt::Debug for KeyPair {
 
 #[cfg(test)]
 mod tests {
-    use nebula_core::{AuthPattern, AuthScheme as _};
-
     use super::*;
+    use crate::AuthPattern;
 
     #[test]
     fn pattern_is_key_pair() {

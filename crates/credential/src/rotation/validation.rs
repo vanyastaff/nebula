@@ -13,12 +13,11 @@
 
 use std::{future::Future, time::Duration};
 
-use nebula_core::CredentialId;
 use serde::{Deserialize, Serialize};
 use tokio::time::timeout;
 
 use super::error::{RotationError, RotationResult};
-use crate::CredentialRecord;
+use crate::{CredentialId, CredentialRecord};
 
 // ── Rotation-specific traits ──────────────────────────────────────────────
 

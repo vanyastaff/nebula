@@ -3,11 +3,11 @@
 //! Tracks the state and metadata of a credential rotation operation.
 
 use chrono::{DateTime, Utc};
-use nebula_core::CredentialId;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use super::{error::RotationResult, state::RotationState};
+use crate::CredentialId;
 
 /// Unique identifier for a rotation transaction
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]

@@ -5,7 +5,7 @@
 //! (`refresh_token`, `client_secret`) that are NOT exposed to resource
 //! consumers -- those see only the [`AuthScheme`].
 //!
-//! [`AuthScheme`]: nebula_core::AuthScheme
+//! [`AuthScheme`]: crate::AuthScheme
 
 use serde::{Serialize, de::DeserializeOwned};
 
@@ -14,7 +14,7 @@ use serde::{Serialize, de::DeserializeOwned};
 /// The `project()` method on `Credential` extracts an [`AuthScheme`]
 /// from this state for consumer use.
 ///
-/// [`AuthScheme`]: nebula_core::AuthScheme
+/// [`AuthScheme`]: crate::AuthScheme
 pub trait CredentialState: Serialize + DeserializeOwned + Send + Sync + 'static {
     /// Unique identifier for this state type (e.g., `"oauth2_state"`).
     const KIND: &'static str;

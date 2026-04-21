@@ -68,7 +68,7 @@ impl Credential for InteractiveTestCredential {
             "Interactive Test",
             "Test credential for pending lifecycle",
             Self::parameters(),
-            nebula_core::AuthPattern::SecretToken,
+            nebula_credential::AuthPattern::SecretToken,
         )
     }
 

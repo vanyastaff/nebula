@@ -121,7 +121,7 @@ fn expand(input: DeriveInput) -> syn::Result<proc_macro2::TokenStream> {
                     icon_url: ::std::option::Option::None,
                     documentation_url: #doc_url_expr,
                     properties: <#protocol as ::nebula_credential::StaticProtocol>::parameters(),
-                    pattern: <#scheme as ::nebula_core::AuthScheme>::pattern(),
+                    pattern: <#scheme as ::nebula_credential::AuthScheme>::pattern(),
                 }
             }
 

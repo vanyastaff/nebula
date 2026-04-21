@@ -6,7 +6,8 @@
 
 use std::future::Future;
 
-use nebula_core::{AuthScheme, ResourceKey};
+use nebula_core::ResourceKey;
+use nebula_credential::AuthScheme;
 
 use crate::ctx::Ctx;
 

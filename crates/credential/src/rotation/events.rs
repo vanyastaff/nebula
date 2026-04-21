@@ -5,10 +5,10 @@
 use std::future::Future;
 
 use chrono::{DateTime, Utc};
-use nebula_core::CredentialId;
 use serde::{Deserialize, Serialize};
 
 use super::error::RotationResult;
+use crate::CredentialId;
 
 /// Rollback data (boxed to reduce enum size)
 #[derive(Debug, Clone, Serialize, Deserialize)]

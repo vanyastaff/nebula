@@ -63,9 +63,8 @@ impl std::fmt::Debug for SharedKey {
 
 #[cfg(test)]
 mod tests {
-    use nebula_core::{AuthPattern, AuthScheme as _};
-
     use super::*;
+    use crate::AuthPattern;
 
     #[test]
     fn pattern_is_shared_secret() {

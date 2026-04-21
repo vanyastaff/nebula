@@ -5,8 +5,9 @@
 use std::{collections::HashMap, time::Duration};
 
 use chrono::{DateTime, Utc};
-use nebula_core::CredentialId;
 use serde::{Deserialize, Serialize};
+
+use crate::CredentialId;
 
 /// Grace period configuration
 ///

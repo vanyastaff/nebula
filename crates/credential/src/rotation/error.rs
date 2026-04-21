@@ -2,8 +2,9 @@
 //!
 //! This module defines all errors that can occur during credential rotation.
 
-use nebula_core::CredentialId;
 use thiserror::Error;
+
+use crate::CredentialId;
 
 /// Errors that can occur during credential rotation
 #[derive(Debug, Error)]

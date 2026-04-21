@@ -1,8 +1,15 @@
 //! Universal authentication scheme types.
 //!
 //! 12 built-in types cover common auth patterns. Plugins add protocol-specific
-//! types via the open [`AuthScheme`](nebula_core::AuthScheme) trait.
+//! types via the open [`AuthScheme`] trait.
+//!
+//! The [`AuthScheme`] trait and its companion classification [`AuthPattern`]
+//! live in this submodule — they are the bridge between the credential system
+//! and the resource system. Historically these two types lived in
+//! `nebula-core`; they were moved here in phase P4 of the credential cleanup
+//! so `nebula-core` holds only cross-cutting vocabulary.
 
+mod auth;
 mod certificate;
 mod challenge_secret;
 mod coercion;
@@ -17,6 +24,7 @@ mod secret_token;
 mod shared_key;
 mod signing_key;
 
+pub use auth::{AuthPattern, AuthScheme};
 pub use certificate::Certificate;
 pub use challenge_secret::ChallengeSecret;
 pub use connection_uri::ConnectionUri;

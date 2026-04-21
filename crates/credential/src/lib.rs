@@ -38,6 +38,12 @@
 //! See `crates/credential/README.md` for the full contract and canon invariants.
 #![forbid(unsafe_code)]
 
+// Self-import so proc-macros that expand to `::nebula_credential::...` paths
+// resolve correctly when the derive is used inside this crate itself (e.g.
+// `#[derive(AuthScheme)]` in `scheme/secret_token.rs`). See canonical
+// tokio/serde pattern: <https://doc.rust-lang.org/reference/items/extern-crates.html#the-self-keyword>.
+extern crate self as nebula_credential;
+
 // ── Submodules ──────────────────────────────────────────────────────────────
 // Thematic groupings; each is `pub` for escape hatches but the canonical
 // public surface is the flat root re-exports below.
@@ -48,12 +54,12 @@ pub mod accessor;
 pub mod contract;
 /// Built-in credential type implementations.
 pub mod credentials;
-/// Credential metadata — static descriptors + runtime record + key newtype.
+/// Credential metadata — static descriptors + runtime record + key newtype + id.
 pub mod metadata;
 /// Credential rotation (blue-green, transaction, state machine).
 #[cfg(feature = "rotation")]
 pub mod rotation;
-/// Authentication scheme types.
+/// Authentication scheme types — AuthScheme trait, AuthPattern, 12 built-in schemes.
 pub mod scheme;
 /// §12.5 secret-handling primitives — AES-256-GCM, guards, zeroizing wrappers, serde helpers.
 pub mod secrets;
@@ -63,6 +69,8 @@ pub mod secrets;
 
 /// Error types for credential operations.
 pub mod error;
+/// Credential lifecycle events for cross-crate signaling (EventBus payload).
+pub mod event;
 /// Framework executor for credential resolution with timeouts.
 pub mod executor;
 /// Composable storage layers (encryption, audit, cache, scope) for stores.
@@ -116,8 +124,6 @@ pub use layer::{
     CacheStats, EncryptionLayer, EnvKeyProvider, FileKeyProvider, KeyProvider, ProviderError,
     ScopeLayer, ScopeResolver,
 };
-// Core re-exports (cross-crate ecosystem types)
-pub use nebula_core::{AuthPattern, AuthScheme, CredentialEvent, CredentialId};
 // Derive macros
 pub use nebula_credential_macros::{AuthScheme, Credential};
 // Pending state store
@@ -134,10 +140,11 @@ pub use resolve::{
 };
 // Resolver
 pub use resolver::{CredentialResolver, ResolveError};
-// Auth schemes (12 universal types)
+// Auth schemes — open trait + 13-variant classification + 12 built-in scheme types
 pub use scheme::{
-    Certificate, ChallengeSecret, ConnectionUri, FederatedAssertion, IdentityPassword,
-    InstanceBinding, KeyPair, OAuth2Token, OtpSeed, SecretToken, SharedKey, SigningKey,
+    AuthPattern, AuthScheme, Certificate, ChallengeSecret, ConnectionUri, FederatedAssertion,
+    IdentityPassword, InstanceBinding, KeyPair, OAuth2Token, OtpSeed, SecretToken, SharedKey,
+    SigningKey,
 };
 // §12.5 secret-handling primitives — crypto, guard, zeroizing wrappers
 pub use secrets::{
@@ -158,15 +165,16 @@ pub use crate::rotation::{
 /// `nebula_credential::serde_secret` and `nebula_credential::serde_secret::option`
 /// continue to resolve here after the `secrets/` submodule move.
 pub use crate::secrets::serde_secret;
-// Error / metadata / snapshot
+// Error / event / metadata / snapshot
 pub use crate::{
     error::{
         CredentialError, CryptoError, RefreshErrorKind, ResolutionStage, RetryAdvice,
         ValidationError,
     },
+    event::CredentialEvent,
     metadata::{
-        CredentialKey, CredentialMetadata, CredentialMetadataBuilder, CredentialRecord,
-        MetadataCompatibilityError,
+        CredentialId, CredentialKey, CredentialMetadata, CredentialMetadataBuilder,
+        CredentialRecord, MetadataCompatibilityError,
     },
     snapshot::{CredentialSnapshot, SnapshotError},
 };

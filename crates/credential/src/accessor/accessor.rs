@@ -31,7 +31,7 @@ pub trait CredentialAccessor: Send + Sync {
     async fn has(&self, id: &str) -> bool;
 
     /// Retrieve a credential snapshot by [`TypeId`] of the
-    /// [`AuthScheme`](nebula_core::AuthScheme).
+    /// [`AuthScheme`](crate::AuthScheme).
     ///
     /// Used by type-based credential access: `ctx.credential::<S>().await`.
     /// Default: returns error (implementations that support type-based access

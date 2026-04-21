@@ -32,10 +32,9 @@
 //! }
 //! ```
 
-use nebula_core::AuthScheme;
 use nebula_schema::{FieldValues, ValidSchema};
 
-use crate::error::CredentialError;
+use crate::{AuthScheme, error::CredentialError};
 
 /// Reusable protocol for static (non-interactive) credentials.
 ///

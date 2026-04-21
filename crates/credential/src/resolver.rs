@@ -9,11 +9,11 @@
 
 use std::sync::Arc;
 
-use nebula_core::{CredentialEvent, CredentialId};
 use nebula_eventbus::EventBus;
 
 use crate::{
-    Credential, CredentialContext, CredentialHandle, CredentialState,
+    Credential, CredentialContext, CredentialEvent, CredentialHandle, CredentialId,
+    CredentialState,
     refresh::{RefreshAttempt, RefreshCoordinator},
     resolve::RefreshOutcome,
     store::{CredentialStore, PutMode, StoreError, StoredCredential},
@@ -72,7 +72,7 @@ impl<S: CredentialStore> CredentialResolver<S> {
     /// Resolves a credential by ID into a typed handle.
     ///
     /// Loads the stored credential, deserializes the state, and
-    /// projects it to the [`AuthScheme`](nebula_core::AuthScheme) via
+    /// projects it to the [`AuthScheme`](crate::AuthScheme) via
     /// [`Credential::project()`](crate::Credential::project).
     ///
     /// # Errors
@@ -501,7 +501,7 @@ mod tests {
                 "Refreshable Test",
                 "Test credential for early refresh",
                 Self::parameters(),
-                nebula_core::AuthPattern::SecretToken,
+                crate::AuthPattern::SecretToken,
             )
         }
 
@@ -551,7 +551,7 @@ mod tests {
                 "Tiny Jitter Refreshable Test",
                 "Test credential with sub-ms jitter",
                 Self::parameters(),
-                nebula_core::AuthPattern::SecretToken,
+                crate::AuthPattern::SecretToken,
             )
         }
 
@@ -1050,7 +1050,7 @@ mod tests {
                 "CAS Retry Test",
                 "Test credential for CAS retry",
                 Self::parameters(),
-                nebula_core::AuthPattern::SecretToken,
+                crate::AuthPattern::SecretToken,
             )
         }
 

@@ -51,7 +51,20 @@ Legend:
 This file is a living dashboard. Reviewers check truthfulness on every PR that touches a crate's public surface, test suite, or docs. Canon §17 DoD includes "MATURITY.md row updated if the PR changes crate state."
 
 Last full sweep: 2026-04-17 (Pass 4 of docs architecture redesign).
-Last targeted revision: 2026-04-20 — Plugin load-path stabilization
+Last targeted revision: 2026-04-20 — P4 of credential cleanup: `AuthPattern`,
+`AuthScheme`, `CredentialEvent`, and `CredentialId` migrated from
+`nebula-core` into `nebula-credential` (credential-specific types no longer
+pollute the cross-cutting base). Consumers updated: `nebula-action`,
+`nebula-plugin` (tests), `nebula-resource` (now depends on `nebula-credential`
+for `AuthScheme`); `nebula-sandbox`, `nebula-engine`, `nebula-runtime`,
+`nebula-sdk` carried no direct references. The `#[derive(AuthScheme)]` and
+`#[derive(Credential)]` proc-macros emit `::nebula_credential::...` paths,
+resolved inside the credential crate itself via `extern crate self as
+nebula_credential`. Spec:
+`docs/superpowers/specs/2026-04-20-credential-architecture-cleanup-design.md`.
+Both crate rows (`nebula-core`, `nebula-credential`) remain `frontier` per
+canon decision to hold off API-stability bumps.
+Prior: 2026-04-20 — Plugin load-path stabilization
 slice B landed: `Plugin` trait returns runnable `Arc<dyn Action|Credential|Resource>`,
 `PluginManifest` moved to `nebula-metadata` with `ManifestError` companion,
 `PluginMeta` deleted from the SDK, `ResolvedPlugin` per-plugin wrapper

@@ -1,8 +1,10 @@
-use nebula_core::{AuthPattern, CredentialKey};
+use nebula_core::CredentialKey;
 use nebula_metadata::{BaseMetadata, Metadata};
 use nebula_schema::ValidSchema;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
+
+use crate::AuthPattern;
 
 /// Error returned by [`CredentialMetadataBuilder::build`] when a required
 /// field is missing.
@@ -237,12 +239,13 @@ impl CredentialMetadata {
 
 #[cfg(test)]
 mod tests {
-    use nebula_core::{AuthPattern, credential_key};
+    use nebula_core::credential_key;
     use nebula_metadata::BaseCompatError;
     use nebula_schema::Schema;
     use semver::Version;
 
     use super::{CredentialMetadata, MetadataCompatibilityError};
+    use crate::AuthPattern;
 
     fn empty_schema() -> nebula_schema::ValidSchema {
         Schema::builder().build().unwrap()
