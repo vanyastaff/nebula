@@ -5,12 +5,14 @@ status: accepted
 date: 2026-04-20
 supersedes: []
 superseded_by: []
+amended_by: [0032]
 tags: [credential, storage, engine, api, security, canon-12.5, canon-13.2, canon-3.5, canon-14, canon-4.5]
 related:
   - docs/adr/0023-keyprovider-trait.md
   - docs/adr/0029-storage-owns-credential-persistence.md
   - docs/adr/0030-engine-owns-credential-orchestration.md
   - docs/adr/0031-api-owns-oauth-flow.md
+  - docs/adr/0032-credential-store-canonical-home.md
   - docs/adr/0021-crate-publication-policy.md
   - docs/adr/0025-sandbox-broker-rpc-surface.md
   - docs/PRODUCT_CANON.md#35-integration-model
@@ -137,16 +139,38 @@ false capability and violates §4.5.
 
 ### 6. Cross-crate compat invariants
 
-- **`CredentialStore` re-export is permanent, not transitional.** The
-  trait moves to `nebula-storage/src/credential/store.rs`, but
-  `nebula-credential::lib.rs` keeps `pub use nebula_storage::CredentialStore;`
-  (or equivalent) as a stable DX alias. Consumers depending on
-  `nebula_credential::CredentialStore` do not need to rewrite imports
-  every three months.
-- **Re-exports do not leak storage-internal types.** Cache impl details,
+> **AMENDED by [ADR-0032](./0032-credential-store-canonical-home.md) on
+> 2026-04-20.** The original invariant 6 required a permanent
+> `pub use nebula_storage::CredentialStore;` re-export from
+> `nebula-credential::lib.rs`. During P6 implementation, this was found
+> to require a cyclic dep-graph. The cleanest resolution keeps the
+> `CredentialStore` trait in `nebula-credential` and moves only impls
+> + layers + `KeyProvider` to storage (trait/impl split, standard Rust
+> pattern). Other invariants (1-5, 7, 8) are unaffected. The amended
+> text follows.
+
+- **Canonical home per type, split on trait/impl axis.** The
+  `CredentialStore` trait + DTOs (`StoredCredential`, `PutMode`,
+  `StoreError`) live in `nebula_credential::*` (contract layer).
+  Impls (`InMemoryStore`, `EncryptionLayer`, `CacheLayer`, `AuditLayer`,
+  `ScopeLayer`, `KeyProvider` + Env/File/Static impls,
+  `PendingStateStore` durable backings, `BackupStore`) live in
+  `nebula_storage::credential::*` (persistence layer). Contract types
+  (`Credential` trait, `CredentialId`, `CredentialKey`,
+  `CredentialRecord`, `CredentialMetadata`, `CredentialEvent`,
+  `AnyCredential`, `CredentialState`, `PendingState`, `PendingToken`,
+  `AuthScheme`, `AuthPattern`) stay in `nebula_credential::*`. §12.5
+  primitives (`encrypt`, `decrypt`, `EncryptedData`, `EncryptionKey`,
+  `SecretString`, `CredentialGuard`, PKCE helpers) stay in
+  `nebula_credential::secrets::*` + flat re-exports.
+- **Dep graph is one-directional.** `nebula-storage → nebula-credential`
+  only. `nebula-credential → nebula-storage` is forbidden — would
+  re-introduce the cycle. `nebula-credential`'s `Cargo.toml` MUST NOT
+  list `nebula-storage` in `[dependencies]`.
+- **Storage internals do not leak upward.** Cache impl details,
   backend-specific hints, and repo internals stay behind the storage
-  crate. The credential re-export surface is **only trait + error + DTO
-  shapes** — impl detail is hidden.
+  crate. Nebula-credential does not know about them. This invariant is
+  unchanged by the amendment.
 - **ADR-0023 `KeyProvider` public API moves to storage.** ADR-0029
   supersedes ADR-0023 in the **location** of the trait. Trait shape,
   invariants, and impl contracts from ADR-0023 are preserved bit-for-bit
