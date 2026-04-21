@@ -2,7 +2,7 @@
 //!
 //! Provides scheduling functionality for automatic credential rotation.
 
-use std::time::Duration;
+use std::{future::Future, time::Duration};
 
 use chrono::{DateTime, Utc};
 use tokio::time::{Instant, sleep_until};
@@ -151,7 +151,7 @@ impl PeriodicScheduler {
     ) -> RotationResult<()>
     where
         F: FnMut(CredentialId) -> Fut,
-        Fut: std::future::Future<Output = RotationResult<()>>,
+        Fut: Future<Output = RotationResult<()>>,
     {
         loop {
             // Calculate next rotation time with jitter

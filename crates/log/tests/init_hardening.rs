@@ -37,15 +37,17 @@ fn fast_path_survives_duplicate_init_with_telemetry_config() {
     // Force a prior init so the next one hits `AlreadyInitialized`.
     let _ = init_with(Config::default());
 
-    let mut cfg = Config::default();
-    cfg.telemetry = Some(TelemetryConfig {
-        // Use a syntactically-valid but unreachable endpoint: build_layer must
-        // succeed in constructing the exporter/provider, and the error must
-        // come from try_init (duplicate dispatcher), not from OTLP construction.
-        otlp_endpoint: Some("http://127.0.0.1:1".to_string()),
-        service_name: "partial-init-test".to_string(),
-        sampling_rate: 0.0,
-    });
+    let cfg = Config {
+        telemetry: Some(TelemetryConfig {
+            // Use a syntactically-valid but unreachable endpoint: build_layer must
+            // succeed in constructing the exporter/provider, and the error must
+            // come from try_init (duplicate dispatcher), not from OTLP construction.
+            otlp_endpoint: Some("http://127.0.0.1:1".to_string()),
+            service_name: "partial-init-test".to_string(),
+            sampling_rate: 0.0,
+        }),
+        ..Config::default()
+    };
 
     let err = init_with(cfg).expect_err("duplicate init must fail");
     assert!(

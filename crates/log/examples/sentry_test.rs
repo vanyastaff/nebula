@@ -7,6 +7,7 @@ use nebula_log::prelude::*;
 use tokio::time::{Duration, sleep};
 
 #[tokio::main]
+#[allow(unsafe_code)]
 async fn main() -> Result<()> {
     // Set Sentry DSN for testing
     unsafe {
@@ -16,7 +17,7 @@ async fn main() -> Result<()> {
     }
 
     // Initialize logger with Sentry
-    let _guard = nebula_log::auto_init()?;
+    let _guard = auto_init()?;
 
     info!("Sentry test started - this should appear in both console and Sentry");
 

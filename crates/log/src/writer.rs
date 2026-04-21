@@ -354,11 +354,11 @@ pub fn make_writer(config: &WriterConfig) -> LogResult<(BoxMakeWriter, WriterGua
         } => {
             let appender: Box<dyn Write + Send> = match rolling {
                 Some(Rolling::Hourly) => {
-                    let dir = path.parent().unwrap_or_else(|| std::path::Path::new("."));
+                    let dir = path.parent().unwrap_or_else(|| Path::new("."));
                     Box::new(tracing_appender::rolling::hourly(dir, file_prefix(path)?))
                 },
                 Some(Rolling::Daily) => {
-                    let dir = path.parent().unwrap_or_else(|| std::path::Path::new("."));
+                    let dir = path.parent().unwrap_or_else(|| Path::new("."));
                     Box::new(tracing_appender::rolling::daily(dir, file_prefix(path)?))
                 },
                 Some(Rolling::Size(megabytes)) => Box::new(

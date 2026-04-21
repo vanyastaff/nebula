@@ -748,7 +748,7 @@ impl RotationTransaction {
         match self.transaction_phase {
             Some(TransactionPhase::Committing) => {
                 self.transaction_phase = Some(TransactionPhase::Committed);
-                self.completed_at = Some(chrono::Utc::now());
+                self.completed_at = Some(Utc::now());
                 Ok(())
             },
             Some(phase) => Err(super::error::RotationError::InvalidStateTransition {
@@ -800,7 +800,7 @@ impl RotationTransaction {
         match self.transaction_phase {
             Some(TransactionPhase::Aborting) => {
                 self.transaction_phase = Some(TransactionPhase::Aborted);
-                self.completed_at = Some(chrono::Utc::now());
+                self.completed_at = Some(Utc::now());
                 Ok(())
             },
             Some(phase) => Err(super::error::RotationError::InvalidStateTransition {

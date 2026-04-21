@@ -7,6 +7,8 @@
 //! 3. Atomically swapping active/standby credentials
 //! 4. Keeping the old credential as standby for quick rollback
 
+use std::future::Future;
+
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
@@ -221,7 +223,7 @@ impl BlueGreenRotation {
     ) -> RotationResult<()>
     where
         F: FnOnce(CredentialId) -> Fut,
-        Fut: std::future::Future<Output = RotationResult<()>>,
+        Fut: Future<Output = RotationResult<()>>,
     {
         if self.standby_validated {
             return Err(RotationError::ValidationFailed {
@@ -248,7 +250,7 @@ impl BlueGreenRotation {
     ) -> RotationResult<()>
     where
         F: FnOnce(CredentialId) -> Fut,
-        Fut: std::future::Future<Output = RotationResult<()>>,
+        Fut: Future<Output = RotationResult<()>>,
     {
         if self.standby_validated {
             return Ok(()); // Already validated
@@ -271,7 +273,7 @@ impl BlueGreenRotation {
     pub async fn swap_credentials<F, Fut>(&mut self, swap_operation: F) -> RotationResult<()>
     where
         F: FnOnce(CredentialId, CredentialId) -> Fut,
-        Fut: std::future::Future<Output = RotationResult<()>>,
+        Fut: Future<Output = RotationResult<()>>,
     {
         // Start transition
         self.start_transition()?;
@@ -386,7 +388,7 @@ pub async fn enumerate_required_privileges<F, Fut>(
 ) -> RotationResult<Vec<DatabasePrivilege>>
 where
     F: FnOnce(CredentialId) -> Fut,
-    Fut: std::future::Future<Output = RotationResult<Vec<DatabasePrivilege>>>,
+    Fut: Future<Output = RotationResult<Vec<DatabasePrivilege>>>,
 {
     privilege_enumerator(*credential_id).await
 }
@@ -404,7 +406,7 @@ pub async fn validate_privileges<F, Fut>(
 ) -> RotationResult<()>
 where
     F: FnOnce(CredentialId, Vec<DatabasePrivilege>) -> Fut,
-    Fut: std::future::Future<Output = RotationResult<Vec<DatabasePrivilege>>>,
+    Fut: Future<Output = RotationResult<Vec<DatabasePrivilege>>>,
 {
     // Get actual privileges
     let actual_privileges =

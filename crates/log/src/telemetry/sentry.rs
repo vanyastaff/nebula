@@ -63,7 +63,7 @@ fn init_from_dsn(
     let guard = sentry::init(sentry::ClientOptions {
         dsn: Some(parsed_dsn),
         environment: Some(environment.into()),
-        release: release.map(|s| s.into()),
+        release: release.map(Into::into),
         traces_sample_rate: sample_rate,
         attach_stacktrace: true,
         send_default_pii: false,
