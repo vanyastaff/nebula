@@ -112,10 +112,17 @@ where
                 .await
                 .map_err(ExecutorError::PendingStore)?;
 
-            let _consumed: C::Pending = pending_store
-                .consume(C::KEY, token, &ctx.owner_id, session_id)
+            if let Err(err) = pending_store
+                .consume::<C::Pending>(C::KEY, token, &ctx.owner_id, session_id)
                 .await
-                .map_err(ExecutorError::PendingStore)?;
+            {
+                // Best-effort cleanup: the new state was stored but the caller
+                // will never receive `next_token` because we are returning an
+                // error. Delete it to avoid a permanent store leak.
+                // The delete error (if any) is subordinate to the primary error.
+                let _ = pending_store.delete(&next_token).await;
+                return Err(ExecutorError::PendingStore(err));
+            }
 
             Ok(ResolveResponse::Pending {
                 token: next_token,
