@@ -102,3 +102,25 @@ pub async fn exchange_code(req: &TokenExchangeRequest) -> Result<serde_json::Val
         .await
         .map_err(|e| format!("token response parse failed: {e}"))
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn authorization_uri_contains_pkce_fields() {
+        let req = AuthorizationUriRequest {
+            auth_url: "https://provider.example.com/oauth/authorize".to_owned(),
+            client_id: "client_123".to_owned(),
+            redirect_uri: "https://app.example.com/callback".to_owned(),
+            scopes: Some("read write".to_owned()),
+        };
+
+        let url = build_authorization_uri(&req, "signed_state", "code_challenge_123")
+            .expect("auth url should build");
+        let text = url.to_string();
+        assert!(text.contains("code_challenge_method=S256"));
+        assert!(text.contains("code_challenge=code_challenge_123"));
+        assert!(text.contains("state=signed_state"));
+    }
+}

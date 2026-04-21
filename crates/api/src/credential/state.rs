@@ -114,3 +114,37 @@ pub fn build_signed_state(
     let encoded = signer.sign(&payload)?;
     Ok((encoded, payload))
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn signer() -> OAuthStateSigner {
+        OAuthStateSigner::new(b"test-oauth-state-secret-32-bytes-min")
+    }
+
+    #[test]
+    fn sign_and_verify_roundtrip() {
+        let signer = signer();
+        let (encoded, payload) = build_signed_state(&signer, "cred_01", "csrf_01".to_owned())
+            .expect("state should be signed");
+
+        let verified = signer
+            .verify_for_credential(&encoded, "cred_01")
+            .expect("state should verify");
+        assert_eq!(verified.csrf_token, payload.csrf_token);
+        assert_eq!(verified.credential_id, payload.credential_id);
+    }
+
+    #[test]
+    fn verify_rejects_wrong_credential() {
+        let signer = signer();
+        let (encoded, _) = build_signed_state(&signer, "cred_01", "csrf_01".to_owned())
+            .expect("state should be signed");
+
+        let err = signer
+            .verify_for_credential(&encoded, "cred_02")
+            .expect_err("credential mismatch must fail");
+        assert!(matches!(err, StateError::CredentialMismatch));
+    }
+}
