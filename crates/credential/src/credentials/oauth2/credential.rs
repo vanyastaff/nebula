@@ -16,15 +16,19 @@ use serde::{Deserialize, Serialize};
 use subtle::ConstantTimeEq;
 use zeroize::Zeroize;
 
+#[cfg(feature = "oauth2-http")]
+use super::flow;
 use super::{
+    authorize_url,
     config::{AuthStyle, GrantType, OAuth2Config},
-    flow,
 };
+#[cfg(feature = "oauth2-http")]
+use crate::resolve::DisplayData;
 use crate::{
     Credential, CredentialContext, CredentialState, PendingState, SecretString,
     error::CredentialError,
     metadata::CredentialMetadata,
-    resolve::{DisplayData, InteractionRequest, RefreshOutcome, ResolveResult, UserInput},
+    resolve::{InteractionRequest, RefreshOutcome, ResolveResult, UserInput},
     scheme::OAuth2Token,
 };
 
@@ -383,7 +387,8 @@ impl Credential for OAuth2Credential {
                 let challenge = crate::generate_code_challenge(&verifier);
                 let state_token = crate::generate_random_state();
 
-                let url = flow::build_auth_url(&config, client_id, &challenge, &state_token)?;
+                let url =
+                    authorize_url::build_auth_url(&config, client_id, &challenge, &state_token)?;
 
                 // `build_config` rejects missing `redirect_uri` for this
                 // grant type, so this `clone()` unwraps a value that was
@@ -411,40 +416,55 @@ impl Credential for OAuth2Credential {
                 })
             },
             GrantType::ClientCredentials => {
-                let state =
-                    flow::exchange_client_credentials(&config, client_id, client_secret).await?;
-                Ok(ResolveResult::Complete(state))
+                #[cfg(feature = "oauth2-http")]
+                {
+                    let state =
+                        flow::exchange_client_credentials(&config, client_id, client_secret)
+                            .await?;
+                    Ok(ResolveResult::Complete(state))
+                }
+                #[cfg(not(feature = "oauth2-http"))]
+                {
+                    Err(oauth2_http_transport_disabled())
+                }
             },
             GrantType::DeviceCode => {
-                let device_resp = flow::request_device_code(&config, client_id).await?;
-                let pending = OAuth2Pending {
-                    client_id: client_id.to_owned(),
-                    client_secret: SecretString::new(client_secret),
-                    grant_type: GrantType::DeviceCode,
-                    auth_style: config.auth_style,
-                    device_code: Some(device_resp.device_code),
-                    interval: Some(device_resp.interval),
-                    pkce_verifier: None,
-                    state: None,
-                    redirect_uri: None,
-                    config,
-                };
-                Ok(ResolveResult::Pending {
-                    state: pending,
-                    interaction: InteractionRequest::DisplayInfo {
-                        title: "Device Authorization".to_owned(),
-                        message: format!(
-                            "Enter code {} at the verification URL to authorize this device.",
-                            device_resp.user_code,
-                        ),
-                        data: DisplayData::UserCode {
-                            code: device_resp.user_code,
-                            verification_uri: device_resp.verification_url,
-                            verification_uri_complete: None,
+                #[cfg(feature = "oauth2-http")]
+                {
+                    let device_resp = flow::request_device_code(&config, client_id).await?;
+                    let pending = OAuth2Pending {
+                        client_id: client_id.to_owned(),
+                        client_secret: SecretString::new(client_secret),
+                        grant_type: GrantType::DeviceCode,
+                        auth_style: config.auth_style,
+                        device_code: Some(device_resp.device_code),
+                        interval: Some(device_resp.interval),
+                        pkce_verifier: None,
+                        state: None,
+                        redirect_uri: None,
+                        config,
+                    };
+                    Ok(ResolveResult::Pending {
+                        state: pending,
+                        interaction: InteractionRequest::DisplayInfo {
+                            title: "Device Authorization".to_owned(),
+                            message: format!(
+                                "Enter code {} at the verification URL to authorize this device.",
+                                device_resp.user_code,
+                            ),
+                            data: DisplayData::UserCode {
+                                code: device_resp.user_code,
+                                verification_uri: device_resp.verification_url,
+                                verification_uri_complete: None,
+                            },
+                            expires_in: device_resp.expires_in,
                         },
-                        expires_in: device_resp.expires_in,
-                    },
-                })
+                    })
+                }
+                #[cfg(not(feature = "oauth2-http"))]
+                {
+                    Err(oauth2_http_transport_disabled())
+                }
             },
         }
     }
@@ -505,24 +525,33 @@ impl Credential for OAuth2Credential {
                     .as_deref()
                     .ok_or_else(|| CredentialError::InvalidInput(FAILED.into()))?;
 
-                // Zeroizing<String> scrubs the intermediate plaintext on drop.
-                // Downstream flow::exchange_authorization_code builds the
-                // form body from &str borrows (GitHub issue #265).
-                let client_secret: zeroize::Zeroizing<String> =
-                    zeroize::Zeroizing::new(pending.client_secret.expose_secret(ToOwned::to_owned));
-                let code_verifier: zeroize::Zeroizing<String> =
-                    zeroize::Zeroizing::new(verifier_secret.expose_secret(ToOwned::to_owned));
+                #[cfg(feature = "oauth2-http")]
+                {
+                    // Zeroizing<String> scrubs the intermediate plaintext on drop.
+                    // Downstream flow::exchange_authorization_code builds the
+                    // form body from &str borrows (GitHub issue #265).
+                    let client_secret: zeroize::Zeroizing<String> = zeroize::Zeroizing::new(
+                        pending.client_secret.expose_secret(ToOwned::to_owned),
+                    );
+                    let code_verifier: zeroize::Zeroizing<String> =
+                        zeroize::Zeroizing::new(verifier_secret.expose_secret(ToOwned::to_owned));
 
-                let state = flow::exchange_authorization_code(
-                    &pending.config,
-                    &pending.client_id,
-                    client_secret.as_str(),
-                    code,
-                    code_verifier.as_str(),
-                    redirect_uri,
-                )
-                .await?;
-                Ok(ResolveResult::Complete(state))
+                    let state = flow::exchange_authorization_code(
+                        &pending.config,
+                        &pending.client_id,
+                        client_secret.as_str(),
+                        code,
+                        code_verifier.as_str(),
+                        redirect_uri,
+                    )
+                    .await?;
+                    Ok(ResolveResult::Complete(state))
+                }
+                #[cfg(not(feature = "oauth2-http"))]
+                {
+                    let _ = (verifier_secret, redirect_uri, code);
+                    Err(oauth2_http_transport_disabled())
+                }
             },
             GrantType::DeviceCode => {
                 if !matches!(input, UserInput::Poll) {
@@ -530,33 +559,41 @@ impl Credential for OAuth2Credential {
                         "device_code flow expects UserInput::Poll".into(),
                     ));
                 }
-                let device_code = pending.device_code.as_deref().ok_or_else(|| {
-                    CredentialError::InvalidInput("pending state missing device_code".into())
-                })?;
-                let interval = pending.interval.unwrap_or(5);
-                // Zeroizing<String>: intermediate plaintext scrubs on drop;
-                // poll_device_code builds its form from &str borrows (#265).
-                let client_secret: zeroize::Zeroizing<String> =
-                    zeroize::Zeroizing::new(pending.client_secret.expose_secret(ToOwned::to_owned));
-
-                match flow::poll_device_code(
-                    &pending.config,
-                    &pending.client_id,
-                    client_secret.as_str(),
-                    device_code,
-                    interval,
-                )
-                .await?
+                #[cfg(feature = "oauth2-http")]
                 {
-                    flow::DevicePollStatus::Ready(state) => Ok(ResolveResult::Complete(state)),
-                    flow::DevicePollStatus::Pending | flow::DevicePollStatus::SlowDown => {
-                        Ok(ResolveResult::Retry {
-                            after: Duration::from_secs(interval),
-                        })
-                    },
-                    flow::DevicePollStatus::Expired => {
-                        Err(CredentialError::Provider("device code expired".into()))
-                    },
+                    let device_code = pending.device_code.as_deref().ok_or_else(|| {
+                        CredentialError::InvalidInput("pending state missing device_code".into())
+                    })?;
+                    let interval = pending.interval.unwrap_or(5);
+                    // Zeroizing<String>: intermediate plaintext scrubs on drop;
+                    // poll_device_code builds its form from &str borrows (#265).
+                    let client_secret: zeroize::Zeroizing<String> = zeroize::Zeroizing::new(
+                        pending.client_secret.expose_secret(ToOwned::to_owned),
+                    );
+
+                    match flow::poll_device_code(
+                        &pending.config,
+                        &pending.client_id,
+                        client_secret.as_str(),
+                        device_code,
+                        interval,
+                    )
+                    .await?
+                    {
+                        flow::DevicePollStatus::Ready(state) => Ok(ResolveResult::Complete(state)),
+                        flow::DevicePollStatus::Pending | flow::DevicePollStatus::SlowDown => {
+                            Ok(ResolveResult::Retry {
+                                after: Duration::from_secs(interval),
+                            })
+                        },
+                        flow::DevicePollStatus::Expired => {
+                            Err(CredentialError::Provider("device code expired".into()))
+                        },
+                    }
+                }
+                #[cfg(not(feature = "oauth2-http"))]
+                {
+                    Err(oauth2_http_transport_disabled())
                 }
             },
             GrantType::ClientCredentials => Err(CredentialError::InvalidInput(
@@ -573,19 +610,34 @@ impl Credential for OAuth2Credential {
             return Ok(RefreshOutcome::ReauthRequired);
         }
 
-        // Reconstruct minimal config for the refresh call, preserving auth style.
-        let config = OAuth2Config::client_credentials()
-            .token_url(&state.token_url)
-            .auth_style(state.auth_style)
-            .scopes(state.scopes.clone())
-            .build();
+        #[cfg(feature = "oauth2-http")]
+        {
+            // Reconstruct minimal config for the refresh call, preserving auth style.
+            let config = OAuth2Config::client_credentials()
+                .token_url(&state.token_url)
+                .auth_style(state.auth_style)
+                .scopes(state.scopes.clone())
+                .build();
 
-        flow::refresh_token(state, &config).await?;
-        Ok(RefreshOutcome::Refreshed)
+            flow::refresh_token(state, &config).await?;
+            Ok(RefreshOutcome::Refreshed)
+        }
+        #[cfg(not(feature = "oauth2-http"))]
+        {
+            Err(oauth2_http_transport_disabled())
+        }
     }
 }
 
 // ── Private helpers ────────────────────────────────────────────────────
+
+#[cfg(not(feature = "oauth2-http"))]
+fn oauth2_http_transport_disabled() -> CredentialError {
+    CredentialError::Provider(
+        "OAuth2 HTTP transport is disabled: enable the `oauth2-http` feature on the `nebula-credential` crate"
+            .into(),
+    )
+}
 
 /// Extract a required string parameter, returning an error if missing.
 fn extract_required<'a>(values: &'a FieldValues, key: &str) -> Result<&'a str, CredentialError> {

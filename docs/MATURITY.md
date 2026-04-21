@@ -51,7 +51,12 @@ Legend:
 This file is a living dashboard. Reviewers check truthfulness on every PR that touches a crate's public surface, test suite, or docs. Canon §17 DoD includes "MATURITY.md row updated if the PR changes crate state."
 
 Last full sweep: 2026-04-17 (Pass 4 of docs architecture redesign).
-Last targeted revision: 2026-04-21 — P10 slice of credential cleanup completed:
+Last targeted revision: 2026-04-21 — OAuth2 HTTP transport split: `nebula-credential`
+gains Cargo feature `oauth2-http` (default on) with optional `reqwest`;
+authorization URL construction lives in `oauth2/authorize_url.rs` without HTTP.
+CI checks `cargo check -p nebula-credential --no-default-features`. Aligns with
+ADR-0031 incremental relocation of token exchange out of the contract crate.
+Prior: 2026-04-21 — P10 slice of credential cleanup completed:
 feature-gated API OAuth controller landed (`/credentials/:id/oauth2/auth`,
 GET/POST callback), callback path now persists exchanged OAuth2 state into
 `oauth_credential_store`, and callback tests cover both create and overwrite

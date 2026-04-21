@@ -2,14 +2,15 @@
 //!
 //! The [`Credential`](crate::Credential) trait implementation and the
 //! `State` / `Pending` shapes live in `credential`; provider URL and
-//! scope configuration in `config`; and reqwest-based HTTP flow helpers
-//! (auth URL construction, token exchange, device code polling, refresh)
-//! in `flow`.
+//! scope configuration in `config`; **authorization URL construction**
+//! (no HTTP client) in [`authorize_url`]; and reqwest-based token
+//! exchange, device code polling, and refresh in `flow` when the
+//! **`oauth2-http`** feature is enabled (default).
 //!
-//! The `flow` submodule will relocate to `nebula-api` / `nebula-engine`
-//! in phase P10 (see the credential architecture cleanup spec §7 and
-//! ADR-0031). Until then, reqwest stays as a direct credential
-//! dependency.
+//! Disabling `oauth2-http` removes the `reqwest` dependency so the crate
+//! can type-check in slim dependency graphs; interactive flows that need
+//! token exchange return [`CredentialError::Provider`] with a message
+//! pointing at the feature flag (ADR-0031 incremental split).
 //!
 //! # Canonical import paths
 //!
@@ -20,8 +21,10 @@
 //! GrantType, …}`) — they are part of the OAuth2 surface but not hot
 //! enough to deserve a crate-root alias.
 
+mod authorize_url;
 mod config;
 mod credential;
+#[cfg(feature = "oauth2-http")]
 mod flow;
 
 pub use config::{
