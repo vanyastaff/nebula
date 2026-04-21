@@ -84,7 +84,7 @@ where
 {
     let session_id = ctx.session_id().unwrap_or("default");
     let pending: C::Pending = pending_store
-        .consume(C::KEY, token, &ctx.owner_id, session_id)
+        .get_bound(C::KEY, token, &ctx.owner_id, session_id)
         .await
         .map_err(ExecutorError::PendingStore)?;
 
@@ -99,36 +99,33 @@ where
     .map_err(ExecutorError::Credential)?;
 
     match result {
-        ResolveResult::Complete(state) => Ok(ResolveResponse::Complete(state)),
+        ResolveResult::Complete(state) => {
+            let _consumed: C::Pending = pending_store
+                .consume(C::KEY, token, &ctx.owner_id, session_id)
+                .await
+                .map_err(ExecutorError::PendingStore)?;
+            Ok(ResolveResponse::Complete(state))
+        },
         ResolveResult::Pending { state, interaction } => {
-            let next_token = match pending_store
+            let next_token = pending_store
                 .put(C::KEY, &ctx.owner_id, session_id, state)
                 .await
-            {
-                Ok(token) => token,
-                Err(err) => {
-                    let _ = pending_store
-                        .put(C::KEY, &ctx.owner_id, session_id, pending)
-                        .await;
-                    return Err(ExecutorError::PendingStore(err));
-                },
-            };
+                .map_err(ExecutorError::PendingStore)?;
+
+            let _consumed: C::Pending = pending_store
+                .consume(C::KEY, token, &ctx.owner_id, session_id)
+                .await
+                .map_err(ExecutorError::PendingStore)?;
 
             Ok(ResolveResponse::Pending {
                 token: next_token,
                 interaction,
             })
         },
-        ResolveResult::Retry { after } => {
-            let retry_token = pending_store
-                .put(C::KEY, &ctx.owner_id, session_id, pending)
-                .await
-                .map_err(ExecutorError::PendingStore)?;
-            Ok(ResolveResponse::Retry {
-                after,
-                token: Some(retry_token),
-            })
-        },
+        ResolveResult::Retry { after } => Ok(ResolveResponse::Retry {
+            after,
+            token: Some(token.clone()),
+        }),
     }
 }
 
