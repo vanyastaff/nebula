@@ -3,7 +3,7 @@ name: Nebula style guide
 description: Consolidated house style — idioms, antipatterns, naming table, error taxonomy, type design bets. Read by every session before proposing changes.
 status: accepted
 last-reviewed: 2026-04-17
-related: [PRODUCT_CANON.md, GLOSSARY.md, CLAUDE.md]
+related: [PRODUCT_CANON.md, GLOSSARY.md, CLAUDE.md, RUST_EXPERT_STYLE_GUIDE.md]
 ---
 
 # Nebula style guide
@@ -14,6 +14,50 @@ from `CLAUDE.md` read-order.
 > **When to fight this guide:** see `docs/PRODUCT_CANON.md §0.2` — canon revision
 > triggers apply to style as well. A style rule that blocks a measurable
 > architectural improvement is a candidate for revision, not a blocker.
+
+## 0. Universal mindset (project rules + Rust 1.95+)
+
+This section is the **short, universal** framing for humans and agents. It does
+not list every case; **`PRODUCT_CANON.md`** is normative for product rules, and
+**`docs/AGENT_PROTOCOL.md`** states how agents combine evidence, boundaries,
+and workflow. **Concrete thresholds** (when to stop and rethink shape, Clippy
+IDs, CI gates) live in **`docs/IDIOM_REVIEW_CHECKLIST.md`** and
+**`docs/QUALITY_GATES.md`** — they **operationalize** these principles, not
+replace them.
+
+- **Project first.** Layers and integrations follow **`PRODUCT_CANON.md`** and
+  **`deny.toml`**. Public names and type ownership follow **`GLOSSARY.md`** and
+  §3 below. Do not “solve locally” in a way that duplicates ownership or crosses
+  boundaries without an **ADR**.
+
+- **Design.** Prefer **one clear responsibility** per module and **explicit**
+  domain modeling (enums, newtypes, builders) over flags and ad hoc parameters
+  when the domain is not an open-ended string space — aligned with §§1–2 and
+  *Rust Design Patterns* ([design principles](https://rust-unofficial.github.io/patterns/additional_resources/design-principles.html)).
+
+- **Rust 1.95+ toolchain.** Behavior is pinned in **`rust-toolchain.toml`**. For
+  **semantic** questions (patterns, lifetimes, unsafe), use the **Rust
+  Reference** and `std` docs on [`doc.rust-lang.org`](https://doc.rust-lang.org/).
+  House idioms and antipatterns are **§§1–2** of this file; they override generic
+  blog-style Rust when they conflict.
+
+- **Evolving shape.** When requirements add cases or cross-cutting concerns,
+  **revisit** whether the existing API or data structure still fits — not only
+  whether the smallest patch compiles. Agents apply the same idea via
+  **`AGENT_PROTOCOL.md`** (universal principles + inspect/implement) and the
+  checklist pass for pattern-heavy edits.
+
+- **CI vs house bar.** Many workspace **`allow`**s in Clippy exist to avoid
+  churn on old code, not to bless every legacy pattern forever. On **new** and
+  **heavily touched** code, follow the **spirit** of those lints plus this guide
+  — see **`docs/QUALITY_GATES.md`** (*Intentionally allowed Clippy*).
+
+- **Deep Rust / LLM contract (optional).** **`docs/RUST_EXPERT_STYLE_GUIDE.md`**
+  points to **`docs/guidelines/`** — a **rule-ID catalog** (Reference-grounded
+  language rules, idioms, patterns, modern 1.95+ features). **`docs/guidelines/research/`**
+  holds **tag-aligned research digests** (Book/std, Nomicon, async/Tokio, ecosystem)
+  for extra citations — still subordinate to the Reference and Nebula docs. Neither
+  overrides this **`STYLE.md`**.
 
 ## 1. Idioms we use
 

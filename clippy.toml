@@ -110,6 +110,10 @@ future-size-threshold = 16384
 accept-comment-above-statement = true
 accept-comment-above-attributes = true
 
+# ── Workspace lint policy cross-reference ────────────────────────────────────
+# Additional `[workspace.lints.clippy]` entries (e.g. `dbg_macro`, `rc_mutex`)
+# live in the root `Cargo.toml` with citations in `docs/QUALITY_GATES.md`.
+
 # ── Misc strictness ────────────────────────────────────────────────────────
 # `clippy::semicolon_if_nothing_returned` friendlier on one-liners / trailing.
 semicolon-inside-block-ignore-singleline = true
