@@ -64,7 +64,7 @@ pub fn field_key(input: TokenStream) -> TokenStream {
 ///
 /// Supported attributes:
 /// - `#[param(...)]` — label/description/placeholder/default/hint/secret/
-///   multiline/no_expression/expression_required/skip/group.
+///   multiline/no_expression/expression_required/enum_select/skip/group.
 /// - `#[validate(...)]` — required/length(min,max)/range(min..=max)/ pattern/url/email.
 ///
 /// Struct-level `#[schema(...)]` is reserved for a future pass (no options

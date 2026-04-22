@@ -402,6 +402,13 @@ impl SelectField {
         self
     }
 
+    /// Append many static options at once, typically from `HasSelectOptions::select_options`.
+    #[must_use]
+    pub fn extend_options(mut self, opts: impl IntoIterator<Item = SelectOption>) -> Self {
+        self.options.extend(opts);
+        self
+    }
+
     /// Resolve options dynamically from a named loader.
     #[must_use]
     pub fn loader(mut self, loader_key: impl Into<String>) -> Self {

@@ -3744,5 +3744,5 @@ git commit -m "docs: CHANGELOG entry for schema Phase 1"
 
 ---
 
-**Plan complete and saved to `docs/superpowers/plans/2026-04-16-nebula-schema-phase1-foundation.md`.**
+**This checklist was completed for Phase 1 and archived to `docs/plans/archive/2026-04-16-nebula-schema-implementation-plans/2026-04-16-nebula-schema-phase1-foundation.md` in 2026-04-21. Current work: `docs/plans/nebula-schema-roadmap.md`.**
 

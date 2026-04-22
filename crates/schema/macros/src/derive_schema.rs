@@ -94,6 +94,34 @@ fn build_field_expr(
     let optional = kind.is_optional();
     let inner = kind.inner();
 
+    if param.enum_select && param.secret {
+        return Err(syn::Error::new_spanned(
+            field_name,
+            "`#[param(enum_select)]` cannot be combined with `#[param(secret)]`",
+        ));
+    }
+    if param.enum_select && matches!(kind, FieldKind::List(_)) {
+        return Err(syn::Error::new_spanned(
+            field_name,
+            "`#[param(enum_select)]` on `Vec<...>` is not supported yet — build the list field manually or omit `enum_select`",
+        ));
+    }
+    if param.enum_select && !matches!(inner, FieldKind::UserDefined(_)) {
+        return Err(syn::Error::new_spanned(
+            field_name,
+            "`#[param(enum_select)]` only applies to enums (or `Option<Enum>`) that implement `HasSelectOptions` via `#[derive(EnumSelect)]`",
+        ));
+    }
+    if param.enum_select {
+        ensure_enum_select_validate_attrs(field_name, validate)?;
+    }
+    if param.enum_select && param.multiline {
+        return Err(syn::Error::new_spanned(
+            field_name,
+            "`#[param(multiline)]` applies only to string fields, not to `#[param(enum_select)]`",
+        ));
+    }
+
     // Pick the constructor by inner kind. `param.secret` forces String → Secret.
     let mut expr = match inner {
         FieldKind::String if param.secret => quote! {
@@ -118,6 +146,11 @@ fn build_field_expr(
                 field_name,
                 "nested `Option<Option<..>>` is not supported",
             ));
+        },
+        FieldKind::UserDefined(ty) if param.enum_select => quote! {
+            #crate_path::Field::select(#key).extend_options(
+                <#ty as #crate_path::HasSelectOptions>::select_options(),
+            )
         },
         FieldKind::UserDefined(ty) => quote! {
             #crate_path::Field::object(#key).add_many(
@@ -150,10 +183,30 @@ fn build_field_expr(
         expr = quote! { #expr.placeholder(#placeholder) };
     }
     if let Some(default) = &param.default {
-        let default_tokens = default_lit_tokens(default, inner, field_name)?;
-        expr = quote! { #expr.default(#default_tokens) };
+        if param.enum_select {
+            match default {
+                DefaultLit::Str(s) => {
+                    expr = quote! { #expr.default(::serde_json::Value::String(#s.to_owned())) };
+                },
+                _ => {
+                    return Err(syn::Error::new_spanned(
+                        field_name,
+                        "#[param(default = ..)] on `#[param(enum_select)]` fields expects a string literal matching the wire JSON for one variant (for example `\"get\"` for `HttpMethod::Get`).",
+                    ));
+                },
+            }
+        } else {
+            let default_tokens = default_lit_tokens(default, inner, field_name)?;
+            expr = quote! { #expr.default(#default_tokens) };
+        }
     }
     if let Some(hint) = &param.hint {
+        if param.enum_select {
+            return Err(syn::Error::new_spanned(
+                field_name,
+                "`#[param(hint = ...)]` is not applicable to `#[param(enum_select)]` fields",
+            ));
+        }
         let hint_ident = input_hint_ident(hint, field_name)?;
         expr = quote! { #expr.hint(#crate_path::InputHint::#hint_ident) };
     }
@@ -210,6 +263,29 @@ fn build_field_expr(
     }
 
     Ok(quote! { #expr.into_field() })
+}
+
+/// `#[param(enum_select)]` maps to a `SelectField`; only `#[validate(required)]` is meaningful
+/// there.
+fn ensure_enum_select_validate_attrs(
+    field_name: &Ident,
+    validate: &ValidateAttrs,
+) -> syn::Result<()> {
+    if validate.min_length.is_some()
+        || validate.max_length.is_some()
+        || validate.pattern.is_some()
+        || validate.url
+        || validate.email
+        || validate.min.is_some()
+        || validate.max.is_some()
+    {
+        return Err(syn::Error::new_spanned(
+            field_name,
+            "on `#[param(enum_select)]` fields, `#[validate(...)]` supports only `required`; \
+             URL, email, pattern, length, and range rules apply to string or number fields",
+        ));
+    }
+    Ok(())
 }
 
 fn list_field_expr(

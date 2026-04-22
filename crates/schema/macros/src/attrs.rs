@@ -2,7 +2,8 @@
 //!
 //! Two namespaces are recognised today:
 //!
-//! - `#[param(...)]`     — UI / metadata options (label, hint, default, secret, multiline…)
+//! - `#[param(...)]` — UI / metadata options (label, hint, default, secret, multiline,
+//!   `enum_select`, …)
 //! - `#[validate(...)]`  — value rules (required, length, range, pattern, url, email)
 //!
 //! Struct-level `#[schema(...)]` is reserved for a future pass (no options
@@ -34,6 +35,9 @@ pub(crate) struct ParamAttrs {
     pub multiline: bool,
     pub no_expression: bool,
     pub expression_required: bool,
+    /// When true, a user-defined field type is emitted as a static `Select` field whose options
+    /// come from `HasSelectOptions` (typically `#[derive(EnumSelect)]` on an enum).
+    pub enum_select: bool,
     pub group: Option<String>,
     pub skip: bool,
 }
@@ -146,6 +150,7 @@ impl ParamEntry {
                     "multiline" => out.multiline = true,
                     "no_expression" => out.no_expression = true,
                     "expression_required" => out.expression_required = true,
+                    "enum_select" => out.enum_select = true,
                     "skip" => out.skip = true,
                     other => {
                         return Err(syn::Error::new(
