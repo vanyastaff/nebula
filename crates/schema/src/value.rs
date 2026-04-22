@@ -426,7 +426,11 @@ fn validate_json_keys(
             }
 
             let only_mode_keys = map.keys().all(|k| k == "mode" || k == "value");
-            if only_mode_keys && map.contains_key("mode") {
+            let valid_mode_key = map
+                .get("mode")
+                .and_then(Value::as_str)
+                .is_some_and(|mode| FieldKey::new(mode).is_ok());
+            if only_mode_keys && valid_mode_key {
                 if let Some(inner) = map.get("value") {
                     let payload_key = FieldKey::new("value").expect("value is a valid field key");
                     let payload_path = path.clone().join(payload_key);

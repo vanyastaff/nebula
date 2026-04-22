@@ -312,6 +312,8 @@ pub const STANDARD_CODES: &[&str] = &[
     "missing_item_schema",
     "invalid_default_variant",
     "duplicate_variant",
+    "schema.index_overflow",
+    "schema.depth_limit",
     // warnings
     "rule.incompatible",
     "notice.misuse",

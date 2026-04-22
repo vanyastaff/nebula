@@ -11,7 +11,7 @@ These are correctness rules derived from the Reference. Violating them yields UB
 - [2.1 Undefined Behavior](#21-undefined-behavior-catalog)
 - [2.2 Drop Order and Temporaries](#22-drop-order-and-temporaries)
 - [2.3 Subtyping and Variance](#23-subtyping-and-variance)
-- [2.4 Type Layout and `#[repr]](#24-type-layout-and-repr)`
+- [2.4 Type Layout and `#[repr]`](#24-type-layout-and-repr)
 - [2.5 Trait Objects and Dyn Compatibility](#25-trait-objects-and-dyn-compatibility)
 - [2.6 Coherence and Orphan Rules](#26-coherence-and-orphan-rules)
 - [2.7 Pattern Matching Rules](#27-pattern-matching-rules)
@@ -45,8 +45,8 @@ Any of the following, anywhere in any Rust program, is UB:
 
 ### [L-UB-002] `&T` and `&mut T` semantics
 
-- `**&T` is read-only aliased:** the memory it points to must not be mutated during its live range, except through `UnsafeCell`.
-- `**&mut T` is unique:** no other reference (shared or mutable) to the same memory may exist during its live range.
+- `&T` is read-only aliased: the memory it points to must not be mutated during its live range, except through `UnsafeCell`.
+- `&mut T` is unique: no other reference (shared or mutable) to the same memory may exist during its live range.
 - **Each reborrow resets liveness.** When a reference is passed to a function, it is live at least for the duration of the call.
 - **Liveness is upper-bounded by the borrow checker's syntactic lifetime.**
 

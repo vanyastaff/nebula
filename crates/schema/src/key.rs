@@ -74,8 +74,12 @@ impl FieldKey {
     }
 
     fn err(value: &str, msg: &'static str) -> ValidationError {
+        Self::err_at(FieldPath::root(), value, msg)
+    }
+
+    pub(crate) fn err_at(path: FieldPath, value: &str, msg: &'static str) -> ValidationError {
         ValidationError::builder("invalid_key")
-            .at(FieldPath::root())
+            .at(path)
             .message(msg)
             .param("key", value.to_owned())
             .build()

@@ -68,10 +68,10 @@ macro_rules! define_field {
         }
 
         impl $name {
-            /// Create a typed field with defaults.
-            pub fn new(key: impl AsRef<str>) -> Self {
+            #[doc(hidden)]
+            fn with_key(key: FieldKey) -> Self {
                 Self {
-                    key: FieldKey::new(key).expect("field key must be valid"),
+                    key,
                     label: None,
                     description: None,
                     placeholder: None,
@@ -84,6 +84,11 @@ macro_rules! define_field {
                     transformers: Vec::new(),
                     $($extra: $dflt,)*
                 }
+            }
+
+            /// Create a typed field with defaults.
+            pub fn new(key: impl AsRef<str>) -> Self {
+                Self::with_key(FieldKey::new(key).expect("field key must be valid"))
             }
 
             /// Borrow the field key.
@@ -757,6 +762,9 @@ pub enum Field {
     Notice(NoticeField),
 }
 
+const REQUIRED_EXPRESSION_MODE: ExpressionMode = ExpressionMode::Required;
+const FORBIDDEN_EXPRESSION_MODE: ExpressionMode = ExpressionMode::Forbidden;
+
 // ── Factory methods ───────────────────────────────────────────────────────────
 
 impl Field {
@@ -800,7 +808,7 @@ impl Field {
     #[allow(clippy::result_large_err)]
     pub fn try_string(key: impl AsRef<str>) -> Result<StringField, ValidationError> {
         let key = Self::parse_key_or_error(key.as_ref())?;
-        Ok(StringField::new(key.as_str()))
+        Ok(StringField::with_key(key))
     }
 
     /// Create `SecretField`.
@@ -817,7 +825,7 @@ impl Field {
     #[allow(clippy::result_large_err)]
     pub fn try_secret(key: impl AsRef<str>) -> Result<SecretField, ValidationError> {
         let key = Self::parse_key_or_error(key.as_ref())?;
-        Ok(SecretField::new(key.as_str()))
+        Ok(SecretField::with_key(key))
     }
 
     /// Create `NumberField`.
@@ -834,7 +842,7 @@ impl Field {
     #[allow(clippy::result_large_err)]
     pub fn try_number(key: impl AsRef<str>) -> Result<NumberField, ValidationError> {
         let key = Self::parse_key_or_error(key.as_ref())?;
-        Ok(NumberField::new(key.as_str()))
+        Ok(NumberField::with_key(key))
     }
 
     /// Create integer `NumberField`.
@@ -851,7 +859,7 @@ impl Field {
     #[allow(clippy::result_large_err)]
     pub fn try_integer(key: impl AsRef<str>) -> Result<NumberField, ValidationError> {
         let key = Self::parse_key_or_error(key.as_ref())?;
-        Ok(NumberField::new(key.as_str()).integer())
+        Ok(NumberField::with_key(key).integer())
     }
 
     /// Create a [`BooleanField`] with the given key.
@@ -885,7 +893,7 @@ impl Field {
     #[allow(clippy::result_large_err)]
     pub fn try_boolean(key: impl AsRef<str>) -> Result<BooleanField, ValidationError> {
         let key = Self::parse_key_or_error(key.as_ref())?;
-        Ok(BooleanField::new(key.as_str()))
+        Ok(BooleanField::with_key(key))
     }
 
     /// Create `SelectField`.
@@ -902,7 +910,7 @@ impl Field {
     #[allow(clippy::result_large_err)]
     pub fn try_select(key: impl AsRef<str>) -> Result<SelectField, ValidationError> {
         let key = Self::parse_key_or_error(key.as_ref())?;
-        Ok(SelectField::new(key.as_str()))
+        Ok(SelectField::with_key(key))
     }
 
     /// Create `ObjectField`.
@@ -919,7 +927,7 @@ impl Field {
     #[allow(clippy::result_large_err)]
     pub fn try_object(key: impl AsRef<str>) -> Result<ObjectField, ValidationError> {
         let key = Self::parse_key_or_error(key.as_ref())?;
-        Ok(ObjectField::new(key.as_str()))
+        Ok(ObjectField::with_key(key))
     }
 
     /// Create `ListField`.
@@ -936,7 +944,7 @@ impl Field {
     #[allow(clippy::result_large_err)]
     pub fn try_list(key: impl AsRef<str>) -> Result<ListField, ValidationError> {
         let key = Self::parse_key_or_error(key.as_ref())?;
-        Ok(ListField::new(key.as_str()))
+        Ok(ListField::with_key(key))
     }
 
     /// Create `ModeField`.
@@ -953,7 +961,7 @@ impl Field {
     #[allow(clippy::result_large_err)]
     pub fn try_mode(key: impl AsRef<str>) -> Result<ModeField, ValidationError> {
         let key = Self::parse_key_or_error(key.as_ref())?;
-        Ok(ModeField::new(key.as_str()))
+        Ok(ModeField::with_key(key))
     }
 
     /// Create `CodeField`.
@@ -970,7 +978,7 @@ impl Field {
     #[allow(clippy::result_large_err)]
     pub fn try_code(key: impl AsRef<str>) -> Result<CodeField, ValidationError> {
         let key = Self::parse_key_or_error(key.as_ref())?;
-        Ok(CodeField::new(key.as_str()))
+        Ok(CodeField::with_key(key))
     }
 
     /// Create `FileField`.
@@ -987,7 +995,7 @@ impl Field {
     #[allow(clippy::result_large_err)]
     pub fn try_file(key: impl AsRef<str>) -> Result<FileField, ValidationError> {
         let key = Self::parse_key_or_error(key.as_ref())?;
-        Ok(FileField::new(key.as_str()))
+        Ok(FileField::with_key(key))
     }
 
     /// Create `ComputedField`.
@@ -1004,7 +1012,7 @@ impl Field {
     #[allow(clippy::result_large_err)]
     pub fn try_computed(key: impl AsRef<str>) -> Result<ComputedField, ValidationError> {
         let key = Self::parse_key_or_error(key.as_ref())?;
-        Ok(ComputedField::new(key.as_str()))
+        Ok(ComputedField::with_key(key))
     }
 
     /// Create `DynamicField`.
@@ -1021,7 +1029,7 @@ impl Field {
     #[allow(clippy::result_large_err)]
     pub fn try_dynamic(key: impl AsRef<str>) -> Result<DynamicField, ValidationError> {
         let key = Self::parse_key_or_error(key.as_ref())?;
-        Ok(DynamicField::new(key.as_str()))
+        Ok(DynamicField::with_key(key))
     }
 
     /// Create `NoticeField`.
@@ -1038,7 +1046,7 @@ impl Field {
     #[allow(clippy::result_large_err)]
     pub fn try_notice(key: impl AsRef<str>) -> Result<NoticeField, ValidationError> {
         let key = Self::parse_key_or_error(key.as_ref())?;
-        Ok(NoticeField::new(key.as_str()))
+        Ok(NoticeField::with_key(key))
     }
 }
 
@@ -1123,9 +1131,9 @@ impl Field {
             Self::Mode(f) => &f.expression,
             Self::Code(f) => &f.expression,
             Self::File(f) => &f.expression,
-            Self::Computed(f) => &f.expression,
+            Self::Computed(_) => &REQUIRED_EXPRESSION_MODE,
             Self::Dynamic(f) => &f.expression,
-            Self::Notice(f) => &f.expression,
+            Self::Notice(_) => &FORBIDDEN_EXPRESSION_MODE,
         }
     }
 

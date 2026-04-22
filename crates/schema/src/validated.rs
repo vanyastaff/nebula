@@ -1129,6 +1129,7 @@ fn validate_literal_value(
             max_items,
             item,
             unique,
+            transformers,
             rules,
             ..
         }) => {
@@ -1156,7 +1157,8 @@ fn validate_literal_value(
                 },
                 _ => return,
             };
-            run_rules(rules, &list_json, path, report);
+            let transformed_list_json = apply_transformers(transformers, list_json);
+            run_rules(rules, &transformed_list_json, path, report);
             if let Some(min) = min_items
                 && item_count < *min as usize
             {

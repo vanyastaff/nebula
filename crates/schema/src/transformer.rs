@@ -5,6 +5,7 @@ use std::sync::{Arc, OnceLock};
 use regex::Regex;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use tracing::warn;
 
 /// Value transformer applied before validation/runtime use.
 #[non_exhaustive]
@@ -73,7 +74,17 @@ impl Transformer {
                 group,
                 cache,
             } => string(value, |t| {
-                let re = cache.get_or_init(|| Regex::new(pattern).ok());
+                let re = cache.get_or_init(|| match Regex::new(pattern) {
+                    Ok(compiled) => Some(compiled),
+                    Err(error) => {
+                        warn!(
+                            regex_pattern = %pattern,
+                            %error,
+                            "invalid regex pattern in transformer; falling back to original value"
+                        );
+                        None
+                    },
+                });
                 re.as_ref()
                     .and_then(|compiled| compiled.captures(t))
                     .and_then(|captures| captures.get(*group))

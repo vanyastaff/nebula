@@ -176,6 +176,31 @@ fn notice_field_cannot_enable_expression_mode() {
     );
 }
 
+#[test]
+fn computed_and_notice_expression_modes_are_normalized_after_deserialize() {
+    let schema: Schema = serde_json::from_value(json!({
+        "fields": [
+            {
+                "type": "computed",
+                "key": "calc",
+                "expression_source": "1 + 1",
+                "returns": "number",
+                "expression": "forbidden"
+            },
+            {
+                "type": "notice",
+                "key": "banner",
+                "severity": "info",
+                "expression": "required"
+            }
+        ]
+    }))
+    .expect("schema JSON should deserialize");
+
+    assert_eq!(schema.fields()[0].expression(), &ExpressionMode::Required);
+    assert_eq!(schema.fields()[1].expression(), &ExpressionMode::Forbidden);
+}
+
 // ── Type mismatch ────────────────────────────────────────────────────────────
 
 #[test]

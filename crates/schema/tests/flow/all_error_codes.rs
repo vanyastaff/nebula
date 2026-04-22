@@ -486,6 +486,27 @@ fn emits_duplicate_variant() {
 }
 
 #[test]
+fn emits_schema_index_overflow() {
+    let mut builder = Schema::builder();
+    for i in 0..(usize::from(u16::MAX) + 2) {
+        builder = builder.add(Field::string(format!("f{i}")));
+    }
+    let report = builder.build().unwrap_err();
+    assert!(has_code(&report, "schema.index_overflow"));
+}
+
+#[test]
+fn emits_schema_depth_limit() {
+    let mut leaf = Field::string("leaf").into_field();
+    for i in 0..usize::from(u8::MAX) {
+        leaf = Field::object(format!("n{i}")).add(leaf).into_field();
+    }
+
+    let report = Schema::builder().add(leaf).build().unwrap_err();
+    assert!(has_code(&report, "schema.depth_limit"));
+}
+
+#[test]
 fn emits_rule_contradictory() {
     // min_length > max_length → rule.contradictory error.
     let report = Schema::builder()

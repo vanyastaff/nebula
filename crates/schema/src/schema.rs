@@ -505,12 +505,14 @@ fn build_index(
 
     for (i, f) in fields.iter().enumerate() {
         let mut cursor = parent_cursor.clone();
-        let step = u16::try_from(i).expect("index limits validated before build_index");
+        let Ok(step) = u16::try_from(i) else {
+            continue;
+        };
         cursor.push(step);
         let path = prefix.clone().join(f.key().clone());
-        let level = depth
-            .checked_add(1)
-            .expect("depth limits validated before build_index");
+        let Some(level) = depth.checked_add(1) else {
+            continue;
+        };
         flags.max_depth = flags.max_depth.max(level);
 
         // Track expression usage.
@@ -520,8 +522,14 @@ fn build_index(
 
         // Track async loader usage.
         let has_loader = match f {
-            Field::Select(s) => s.loader.is_some(),
-            Field::Dynamic(d) => d.loader.is_some(),
+            Field::Select(s) => s
+                .loader
+                .as_ref()
+                .is_some_and(|loader| !loader.trim().is_empty()),
+            Field::Dynamic(d) => d
+                .loader
+                .as_ref()
+                .is_some_and(|loader| !loader.trim().is_empty()),
             _ => false,
         };
         if has_loader {
@@ -532,14 +540,14 @@ fn build_index(
             path.clone(),
             FieldHandle {
                 cursor: cursor.clone(),
-                depth: depth + 1,
+                depth: level,
             },
         );
 
         // Recurse for container types.
         match f {
             Field::Object(obj) => {
-                build_index(&obj.fields, &path, &cursor, depth + 1, index, flags);
+                build_index(&obj.fields, &path, &cursor, level, index, flags);
             },
             Field::List(list) => {
                 if let Some(Field::Object(o)) = list.item.as_deref() {
@@ -547,7 +555,7 @@ fn build_index(
                     // not create a dedicated `FieldPath` entry for the item
                     // itself. We only recurse when the item is an object to
                     // index its named children under the list field path.
-                    build_index(&o.fields, &path, &cursor, depth + 1, index, flags);
+                    build_index(&o.fields, &path, &cursor, level, index, flags);
                 }
             },
             Field::Mode(mode) => {
@@ -571,12 +579,14 @@ fn index_mode_variants(
             continue;
         };
         let mut v_cursor = parent_cursor.clone();
-        let step = u16::try_from(vi).expect("index limits validated before index_mode_variants");
+        let Ok(step) = u16::try_from(vi) else {
+            continue;
+        };
         v_cursor.push(step);
         let variant_path = path.clone().join(vk);
-        let variant_depth = depth
-            .checked_add(2)
-            .expect("depth limits validated before index_mode_variants");
+        let Some(variant_depth) = depth.checked_add(2) else {
+            continue;
+        };
         index.insert(
             variant_path.clone(),
             FieldHandle {
@@ -603,16 +613,17 @@ fn validate_index_limits(
     depth: u8,
     report: &mut ValidationReport,
 ) {
-    if fields.len() > usize::from(u16::MAX) {
+    let max_indexable_siblings = usize::from(u16::MAX) + 1;
+    if fields.len() > max_indexable_siblings {
         report.push(
             ValidationError::builder("schema.index_overflow")
                 .at(path.clone())
-                .param("limit", Value::from(u16::MAX))
+                .param("limit", Value::from(max_indexable_siblings))
                 .param("actual", Value::from(fields.len()))
                 .message(format!(
                     "too many sibling fields at `{path}`: {} > {}",
                     fields.len(),
-                    u16::MAX
+                    max_indexable_siblings
                 ))
                 .build(),
         );
@@ -641,16 +652,16 @@ fn validate_index_limits(
                 }
             },
             Field::Mode(mode) => {
-                if mode.variants.len() > usize::from(u16::MAX) {
+                if mode.variants.len() > max_indexable_siblings {
                     report.push(
                         ValidationError::builder("schema.index_overflow")
                             .at(child_path.clone())
-                            .param("limit", Value::from(u16::MAX))
+                            .param("limit", Value::from(max_indexable_siblings))
                             .param("actual", Value::from(mode.variants.len()))
                             .message(format!(
                                 "too many mode variants at `{child_path}`: {} > {}",
                                 mode.variants.len(),
-                                u16::MAX
+                                max_indexable_siblings
                             ))
                             .build(),
                     );
