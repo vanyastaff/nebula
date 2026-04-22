@@ -60,6 +60,7 @@ reqwest = { workspace = true, default-features = false, features = [
   "json",
   "rustls",
   "form",
+  "stream",
 ], optional = true }
 hmac = { workspace = true, optional = true }
 sha2 = { workspace = true, optional = true }
