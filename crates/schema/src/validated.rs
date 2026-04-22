@@ -10,6 +10,7 @@ use std::{
 use indexmap::IndexMap;
 use serde::{Deserialize, Serialize};
 use smallvec::SmallVec;
+use zeroize::Zeroize;
 
 use crate::{
     error::{Severity, ValidationError, ValidationReport},
@@ -474,6 +475,27 @@ impl ResolvedValues {
     }
 }
 
+/// Shape label for validation errors (no `Debug` of full values — avoids leaking
+/// secret-adjacent subtrees into messages).
+fn field_value_shape_for_errors(v: &FieldValue) -> &'static str {
+    use serde_json::Value;
+    match v {
+        FieldValue::Literal(val) => match val {
+            Value::Null => "literal(null)",
+            Value::Bool(_) => "literal(bool)",
+            Value::Number(_) => "literal(number)",
+            Value::String(_) => "literal(string)",
+            Value::Array(_) => "literal(array)",
+            Value::Object(_) => "literal(object)",
+        },
+        FieldValue::Expression(_) => "expression",
+        FieldValue::Object(_) => "object",
+        FieldValue::List(_) => "list",
+        FieldValue::Mode { .. } => "mode",
+        FieldValue::SecretLiteral(_) => "secret_literal",
+    }
+}
+
 /// Promote string literals to [`FieldValue::SecretLiteral`] for secret fields, invoking KDFs when
 /// configured. Recurses through object/list/mode containers.
 fn promote_secrets_in_value(
@@ -483,13 +505,17 @@ fn promote_secrets_in_value(
     report: &mut ValidationReport,
 ) {
     use serde_json::Value;
-
     match (field, &mut *value) {
         (Field::Secret(secret), FieldValue::Literal(Value::String(s))) => {
+            let mut password = std::mem::take(s);
             *value = if let Some(kdf) = &secret.kdf {
-                match kdf.hash_password(s.as_bytes()) {
-                    Ok(sv) => FieldValue::SecretLiteral(sv),
+                match kdf.hash_password(password.as_bytes()) {
+                    Ok(sv) => {
+                        password.zeroize();
+                        FieldValue::SecretLiteral(sv)
+                    },
                     Err(e) => {
+                        *s = password;
                         report.push(
                             ValidationError::builder("secret.kdf")
                                 .at(path.clone())
@@ -500,7 +526,7 @@ fn promote_secrets_in_value(
                     },
                 }
             } else {
-                FieldValue::SecretLiteral(SecretValue::string(s.clone()))
+                FieldValue::SecretLiteral(SecretValue::string(password))
             };
         },
         (Field::Secret(_), FieldValue::Literal(_)) => {
@@ -523,10 +549,13 @@ fn promote_secrets_in_value(
             );
         },
         (Field::Secret(_), v) => {
+            let shape = field_value_shape_for_errors(v);
             report.push(
                 ValidationError::builder("type_mismatch")
                     .at(path.clone())
-                    .message(format!("secret field has incompatible value shape: {v:?}"))
+                    .message(format!(
+                        "secret field has incompatible value shape: {shape}"
+                    ))
                     .build(),
             );
         },
@@ -556,7 +585,21 @@ fn promote_secrets_in_value(
             let Some(var) = mode.variants.iter().find(|v| v.key == mode_key.as_str()) else {
                 return;
             };
-            let k = FieldKey::new("value").expect("static `value` payload key");
+            let k = match FieldKey::new("value") {
+                Ok(k) => k,
+                Err(e) => {
+                    report.push(
+                        ValidationError::builder("invalid_key")
+                            .at(path.clone())
+                            .message(format!(
+                                "invalid static mode payload key `value`: {}",
+                                e.message
+                            ))
+                            .build(),
+                    );
+                    return;
+                },
+            };
             let p = path.clone().join(k);
             promote_secrets_in_value(&var.field, mv.as_mut(), &p, report);
         },

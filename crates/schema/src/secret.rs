@@ -89,13 +89,16 @@ fn default_p_cost() -> u8 {
 // ── SecretString / SecretBytes / SecretValue --------------------------------
 
 /// UTF-8 secret (common for passwords and API keys).
+///
+/// Stored as [`Zeroizing<String>`] so [`SecretString::expose`] is infallible
+/// without `unsafe` (this crate uses `#![forbid(unsafe_code)]`).
 #[derive(Clone)]
-pub struct SecretString(Zeroizing<Vec<u8>>);
+pub struct SecretString(Zeroizing<String>);
 
 impl SecretString {
     /// Build from a `String` (moves; original allocation is not preserved as `String`).
     pub fn new(value: String) -> Self {
-        Self(Zeroizing::new(value.into_bytes()))
+        Self(Zeroizing::new(value))
     }
 
     /// Redacted by default: [`SECRET_REDACTED`].
@@ -110,8 +113,7 @@ impl SecretString {
     #[inline]
     #[track_caller]
     pub fn expose(&self) -> &str {
-        let s = std::str::from_utf8(self.0.as_ref())
-            .expect("SecretString is always valid UTF-8 from new/existing construction");
+        let s = self.0.as_str();
         tracing::debug!(target: "nebula_schema::secret", location = %std::panic::Location::caller(), "SecretString::expose");
         s
     }
@@ -154,7 +156,7 @@ impl<'de> Deserialize<'de> for SecretString {
 impl PartialEq for SecretString {
     fn eq(&self, other: &Self) -> bool {
         use subtle::ConstantTimeEq;
-        self.0.as_slice().ct_eq(other.0.as_slice()).into()
+        self.0.as_bytes().ct_eq(other.0.as_bytes()).into()
     }
 }
 
@@ -316,12 +318,6 @@ impl KdfParams {
                 Ok(SecretValue::Bytes(SecretBytes::from_vec_unchecked(out)))
             },
         }
-    }
-}
-
-impl Drop for SecretString {
-    fn drop(&mut self) {
-        self.0.deref_mut().as_mut_slice().zeroize();
     }
 }
 

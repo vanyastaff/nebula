@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Fixed
+
+- **nebula-schema** (PR review): `SecretString` now uses `Zeroizing<String>` so `expose()` stays infallible under `#![forbid(unsafe_code)]`; secret promotion uses `mem::take` + `password.zeroize()` on the KDF path (restore password on KDF error); incompatible secret shapes report a static label (no `Debug` of values); mode payload key construction reports `ValidationError` instead of `expect`. **docs:** correct relative ADR link from `GLOSSARY.md`.
+
 ### Added
 
 - **nebula-schema** (Phase 3 security, [ADR-0034](docs/adr/0034-schema-secret-value-credential-seam.md)):
