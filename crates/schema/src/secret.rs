@@ -25,8 +25,8 @@ pub const SECRET_REDACTED: &str = "<redacted>";
 /// Failure while hashing a secret at resolve time.
 #[derive(Debug, Error)]
 pub enum KdfError {
-    /// User-facing misconfiguration in `KdfParams` (including salt length/parity
-    /// rules that are not a [`hex::FromHexError`].
+    /// User-facing misconfiguration in `KdfParams` (including invalid salt
+    /// length/parity) when the failure is not a [`hex::FromHexError`].
     #[error("invalid KDF parameters: {0}")]
     InvalidParams(String),
     /// Invalid hex in `salt_hex` (chained from [`hex::FromHexError`]).
@@ -36,7 +36,7 @@ pub enum KdfError {
     /// underlying CSPRNG parameters).
     #[error("invalid KDF parameters: {0}")]
     Argon2Params(#[source] argon2::Error),
-    /// Argon2 hashing failed (password can be `hash_password_into`).
+    /// Argon2 hashing failed (e.g. from `Argon2::hash_password_into`).
     #[error("KDF operation failed: {0}")]
     KdfHash(#[source] argon2::Error),
 }
