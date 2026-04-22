@@ -37,6 +37,32 @@ Pattern inspiration: DMMF proof-tokens (ch "Modeling with Types") and Rust types
 
 See `src/lib.rs` rustdoc for the quick-start example.
 
+## JSON Schema export (`schemars` feature)
+
+Enable the optional `schemars` feature to export a validated Nebula schema as
+JSON Schema Draft 2020-12:
+
+```bash
+cargo test -p nebula-schema --features schemars
+```
+
+```rust
+use nebula_schema::{Field, FieldKey, Schema};
+
+let schema = Schema::builder()
+    .add(Field::string(FieldKey::new("name").unwrap()).required())
+    .build()
+    .unwrap();
+
+let exported = schema.json_schema().unwrap();
+let json = exported.to_value();
+assert_eq!(json["$schema"], "https://json-schema.org/draft/2020-12/schema");
+```
+
+The export includes `x-nebula-*` extension keys for semantics that plain JSON
+Schema cannot fully represent (expression mode, required/visibility modes,
+root-rule metadata, and UI/runtime hints).
+
 ## Contract
 
 - **[L1-3.5]** Schema is the typed-configuration surface for all integration concepts. See `docs/INTEGRATION_MODEL.md`.
