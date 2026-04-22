@@ -14,6 +14,7 @@ use std::{fmt, ops::DerefMut};
 
 use argon2::{Argon2, Params};
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
+use thiserror::Error;
 use zeroize::{Zeroize, Zeroizing};
 
 /// String returned by JSON helpers when a secret must not be leaked on the wire.
@@ -22,24 +23,23 @@ pub const SECRET_REDACTED: &str = "<redacted>";
 // ── KDF error + salt ---------------------------------------------------------
 
 /// Failure while hashing a secret at resolve time.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Error)]
 pub enum KdfError {
-    /// User-facing misconfiguration in `KdfParams` or salt encoding.
+    /// User-facing misconfiguration in `KdfParams` (including salt length/parity
+    /// rules that are not a [`hex::FromHexError`].
+    #[error("invalid KDF parameters: {0}")]
     InvalidParams(String),
-    /// Underlying Argon2 failure.
-    KdfFailed(String),
+    /// Invalid hex in `salt_hex` (chained from [`hex::FromHexError`]).
+    #[error("invalid KDF parameters: {0}")]
+    InvalidSaltHex(#[from] hex::FromHexError),
+    /// Argon2 `Params` construction failed (e.g. cost tuple out of range for the
+    /// underlying CSPRNG parameters).
+    #[error("invalid KDF parameters: {0}")]
+    Argon2Params(#[source] argon2::Error),
+    /// Argon2 hashing failed (password can be `hash_password_into`).
+    #[error("KDF operation failed: {0}")]
+    KdfHash(#[source] argon2::Error),
 }
-
-impl fmt::Display for KdfError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::InvalidParams(m) => write!(f, "invalid KDF parameters: {m}"),
-            Self::KdfFailed(m) => write!(f, "KDF operation failed: {m}"),
-        }
-    }
-}
-
-impl std::error::Error for KdfError {}
 
 fn decode_salt(salt_hex: &str) -> Result<Vec<u8>, KdfError> {
     let s = salt_hex.trim().trim_start_matches("0x");
@@ -48,7 +48,7 @@ fn decode_salt(salt_hex: &str) -> Result<Vec<u8>, KdfError> {
             "KDF salt_hex must be even-length".into(),
         ));
     }
-    let bytes = hex::decode(s).map_err(|e| KdfError::InvalidParams(e.to_string()))?;
+    let bytes = hex::decode(s).map_err(KdfError::InvalidSaltHex)?;
     if !(8..=64).contains(&bytes.len()) {
         return Err(KdfError::InvalidParams(
             "KDF salt must decode to 8–64 bytes after hex decode".into(),
@@ -341,13 +341,13 @@ impl KdfParams {
                     u32::from(*parallelism),
                     Some(out_len),
                 )
-                .map_err(|e| KdfError::InvalidParams(e.to_string()))?;
+                .map_err(KdfError::Argon2Params)?;
                 let argon2 =
                     Argon2::new(argon2::Algorithm::Argon2id, argon2::Version::V0x13, params);
                 let mut out = vec![0u8; out_len];
                 argon2
                     .hash_password_into(password, &salt, &mut out)
-                    .map_err(|e| KdfError::KdfFailed(e.to_string()))?;
+                    .map_err(KdfError::KdfHash)?;
                 Ok(SecretValue::Bytes(SecretBytes::from_vec_unchecked(out)))
             },
         }
@@ -388,6 +388,24 @@ mod tests {
         let v = SecretValue::Bytes(b);
         let ser = serde_json::to_value(SecretWire(&v)).expect("json");
         assert_eq!(ser, serde_json::Value::String("616263".into()));
+    }
+
+    #[test]
+    fn kdf_invalid_salt_hex_chains_from_hex_error() {
+        let kdf = KdfParams::Argon2id {
+            // Even length but non-hex characters → `hex::FromHexError`.
+            salt_hex: "gggggggggggggggg".to_owned(),
+            memory_kib: 4096,
+            time_cost: 1,
+            parallelism: 1,
+        };
+        let err = kdf.hash_password(b"pw").expect_err("invalid hex");
+        let KdfError::InvalidSaltHex(_) = &err else {
+            panic!("expected InvalidSaltHex, got {err:?}");
+        };
+        assert!(std::error::Error::source(&err).is_some());
+        let msg = err.to_string();
+        assert!(msg.contains("invalid KDF parameters"), "msg was: {msg}");
     }
 
     #[test]
