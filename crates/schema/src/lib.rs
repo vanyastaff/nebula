@@ -124,6 +124,9 @@ pub mod field;
 pub mod has_schema;
 /// UI hints for string input rendering.
 pub mod input_hint;
+/// JSON Schema export (`schemars` feature).
+#[cfg(feature = "schemars")]
+pub mod json_schema;
 /// Strongly typed field identifiers.
 pub mod key;
 /// Static schema lint diagnostics.
@@ -166,6 +169,8 @@ pub use field::{
 };
 pub use has_schema::{HasSchema, HasSelectOptions};
 pub use input_hint::InputHint;
+#[cfg(feature = "schemars")]
+pub use json_schema::JsonSchemaExportError;
 pub use key::FieldKey;
 pub use loader::{
     Loader, LoaderContext, LoaderFuture, LoaderRegistry, LoaderResult, OptionLoader, RecordLoader,
