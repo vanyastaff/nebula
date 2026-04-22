@@ -60,7 +60,7 @@
 //!
 //! # Struct-level rules (`#[schema(...)]` on `#[derive(Schema)]`)
 //!
-//! Attach deferred wire hooks or cross-field [`Rule`](crate::Rule)s on the
+//! Attach deferred wire hooks or cross-field [`Rule`]s on the
 //! whole value object — not new field types for the UI. See
 //! [`SchemaBuilder::root_rule`](crate::SchemaBuilder::root_rule) and
 //! [`ValidSchema::validate`](crate::ValidSchema::validate).
@@ -95,6 +95,8 @@
 //! use serde_json::json;
 //!
 //! #[derive(Schema, Deserialize)]
+//! // `Rule::custom` is deferred; `ValidSchema::validate` does not execute the
+//! // expression string (engine hook). This still type-checks the value tree.
 //! #[schema(custom = "engine_deferred")]
 //! struct Example {
 //!     name: String,
@@ -169,7 +171,7 @@ pub use loader::{
 pub use mode::{ExpressionMode, RequiredMode, VisibilityMode};
 pub use nebula_schema_macros::{EnumSelect, Schema, field_key};
 /// Re-exported for `#[derive(Schema)]` expansion and schema authors who build
-/// [`Rule`](Rule) / [`Predicate`](Predicate) without importing `nebula-validator` directly.
+/// [`Rule`] / [`Predicate`] without importing `nebula-validator` directly.
 pub use nebula_validator::{Predicate, Rule};
 pub use option::SelectOption;
 pub use path::{FieldPath, PathSegment};
