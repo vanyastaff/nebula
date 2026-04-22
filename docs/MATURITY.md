@@ -41,6 +41,7 @@ Legend:
 | nebula-storage       | partial  | stable  | stable | stable | partial |
 | nebula-system        | partial  | partial | stable | n/a | n/a |
 | nebula-telemetry     | stable   | stable  | stable | n/a | n/a |
+| nebula-testing       | planned  | n/a     | n/a    | n/a    | n/a |
 | nebula-validator     | frontier | stable  | stable | stable | n/a |
 | nebula-workflow      | stable   | stable  | stable | stable | n/a |
 

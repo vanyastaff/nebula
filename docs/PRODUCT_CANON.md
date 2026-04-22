@@ -361,6 +361,7 @@ Seams: `crates/storage/src/execution_repo.rs` — `ExecutionRepo::save_stateful_
 ### 12.3 Local path
 
 - **[L3]** The **default developer experience** must allow: build, run tests, run core flows **without** Docker, Redis, or external brokers. **SQLite** is the default local storage; `sqlite::memory:` via `nebula_storage::test_support` is the reference in-process path.
+- **[L3]** **SQLite is for dev and edge.** While SQLite is the default local storage, it has write-lock contention limits under high concurrency. For true high-throughput production (Pillar 4.1), **Postgres** (with `FOR UPDATE SKIP LOCKED`) is the required path.
 - **[L3]** Optional production paths (**Postgres**, later Redis, etc.) are **additive**, not prerequisites for “hello world” or CI sanity. `examples/simple_server.rs` (and similar) must continue to start **without** external services unless explicitly documented as integration-only.
 
 ### 12.4 Errors and contracts

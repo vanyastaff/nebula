@@ -31,3 +31,4 @@ Dense notes mined from official docs, Nomicon, RFC clusters, Tokio/async books, 
 - Prefer the **numbered guide** (`../README.md`) for **actionable rule IDs** and PR checklist; use **research/** when you need **extra citations**, error-code patterns (E0xxx), or ecosystem specifics.
 - Do not treat blog excerpts as normative — verify against official docs when behavior matters.
 - For local environment/bootstrap commands, treat `docs/dev-setup.md` as the source of truth; research cluster snippets are supplementary.
+

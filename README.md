@@ -29,7 +29,7 @@ Most automation platforms are runtime-interpreted, dynamically typed, and treat 
 
 - **Types over tests.** Make invalid states unrepresentable. Use newtypes for IDs, enums for states, builders for validated config. Tests verify behavior, not type safety &mdash; the compiler handles that.
 - **Explicit over magic.** No global state, no hidden service locators, no ambient configuration. Actions receive everything they need via `Context`. If a dependency isn't in the function signature, it doesn't exist.
-- **Delete over deprecate.** When an API is wrong, replace it. No adapters, bridges, shims, or backward-compatibility tax. Migration cost is acceptable if the design is right.
+- **Delete over deprecate (internals).** For internal engine architecture, when an API is wrong, replace it. No adapters, bridges, shims, or backward-compatibility tax. However, for the public `nebula-sdk` and plugin contracts, we respect the integration author's time and provide a clear deprecation path.
 - **Security by default.** Secrets are encrypted, zeroized, and redacted in Debug output. AAD binding is mandatory. There is no `legacy_compat` flag. The safe path is the only path.
 - **Composition over inheritance.** Storage layers (encryption, cache, audit, scope) stack via trait delegation. Auth schemes are open traits, not closed enums. Resilience patterns compose into pipelines.
 
@@ -56,7 +56,7 @@ Trigger (webhook / cron / event)
           -> Cross-crate signals via EventBus (e.g., credential rotation events)
 ```
 
-`serde_json::Value` is the universal data type. No custom value crate, no conversion layers. Dates are ISO-8601 strings, decimals use a base64 convention.
+While strict Rust typing is enforced at the boundaries (inside Actions and Credentials), `serde_json::Value` is the universal interchange data type between nodes in the DAG. No custom value crate, no conversion layers. Dates are ISO-8601 strings, decimals use a base64 convention. The `nebula-schema` runtime validation bridges the gap between the dynamic graph and strictly typed nodes.
 
 ## Crate Map
 
