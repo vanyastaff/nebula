@@ -3,11 +3,11 @@
 **Audience:** Agents and humans after a generation / edit pass.  
 **Purpose:** Bridge **recall vs production** for LLMs: the model often “knows” a feature but does not apply it under generation load. This list turns recall into a **mechanical pass** over the diff.
 
-**Layering:** **`docs/AGENT_PROTOCOL.md`** (“Universal principles”) and **`docs/STYLE.md`** §0 state **why** in general language. **This file** spells out **checkable** items — counts, patterns, and lint names — so agents do not need a separate rule per future bug class.
+**Layering:** **`docs/AGENT_PROTOCOL.md`** (“Universal principles”) and **`docs/STYLE.md`** §0 state **why** in general language. **This file** spells out **checkable** items — counts, patterns, and lint names — so agents do not need a separate rule per future bug class. That is **overlapping intent, not duplicate prose**: same ideas, different granularity. **Reviewers:** if you edit this file or the protocol, **align terminology** between them (see **`docs/QUALITY_GATES.md` — “Protocol vs checklist”**).
 
 **When to run:** After **`implement`**, before claiming the task done. Required when the change touches **`match` / `if let` / `if`–`else if` chains**, **public API**, or **more than ~10 lines** in one function. Optional for trivial edits if you state **N/A** and one line why.
 
-**Related:** `docs/AGENT_PROTOCOL.md` (inspect / implement, structural erosion); `docs/QUALITY_GATES.md` (Clippy layers).
+**Related:** `docs/AGENT_PROTOCOL.md` (inspect / implement, structural erosion); `docs/QUALITY_GATES.md` (Clippy layers). Optional deep rule catalog: `docs/RUST_EXPERT_STYLE_GUIDE.md` / `docs/guidelines/` (LLM-oriented; Nebula docs override).
 
 ---
 
@@ -41,7 +41,7 @@ Skim the relevant section when your diff touches patterns or control flow:
 
 3. **Redundant `if let` / `match` only to test `Option`/`Result`** — Clippy: `redundant_pattern_matching`.
 
-4. **`if let Some(x) = y { … } else { return …; }` (or `Err` / early exit)** — Consider **`let … else`** (workspace may allow `manual_let_else` where readability wins; still **ask** on new code).
+4. **Early exit and shallow control flow** — Long `if let … else { return … }` chains or deep nesting: consider **`let … else`**, **`?`**, or restructuring so the main path reads top-to-bottom. (Related lint: `manual_let_else`, currently workspace-**allow** — see **`docs/QUALITY_GATES.md`** *Intentionally allowed Clippy*: apply the **intent** on new/touched code even when CI does not warn.)
 
 5. **`match` that could be a single `if let` or `if`** — Clippy: `single_match_else` / `single_match` (when applicable).
 
@@ -62,7 +62,7 @@ These are **warn** (CI uses `-D warnings` → failure). Fix or document a local 
 | `single_match_else` | `match` with one non-trivial arm + wildcard |
 | `wildcard_in_or_patterns` | `A | _` style that can be simplified |
 
-Further pattern-matching ideas (enable per crate when ready): `needless_match`, `manual_let_else` (currently allowed workspace-wide where `match` reads better).
+Other lints worth knowing (may stay **`allow`** workspace-wide — same universal policy as **`docs/QUALITY_GATES.md`** *Intentionally allowed Clippy*): e.g. `needless_match`.
 
 ---
 

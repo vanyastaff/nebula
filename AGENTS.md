@@ -2,7 +2,7 @@
 
 **Derived from:** `docs/AGENT_PROTOCOL.md`; `docs/PRODUCT_CANON.md` §15; `rust-toolchain.toml`; `.github/workflows/ci.yml`; `.github/workflows/test-matrix.yml`; `.cursor/rules/*.mdc`.
 
-This repository uses **Cursor MDC rules** under **`.cursor/rules/`** for scoped guidance. **`docs/AGENT_PROTOCOL.md`** is the single agent contract: **Universal principles** first (project rules, design stance, Rust 1.95+ defaults), then verbatim operational rules. **`docs/STYLE.md`** §0–2 house style and mindset; **`docs/IDIOM_REVIEW_CHECKLIST.md`** is the checkable review pass for pattern/control-flow edits (mechanics that support the principles).
+This repository uses **Cursor MDC rules** under **`.cursor/rules/`** for scoped guidance. **`docs/AGENT_PROTOCOL.md`** is the single agent contract: **Universal principles** first (project rules, design stance, Rust 1.95+ defaults), then verbatim operational rules. **`docs/STYLE.md`** §0–2 house style and mindset; **`docs/IDIOM_REVIEW_CHECKLIST.md`** is the checkable review pass for pattern/control-flow edits (mechanics that support the principles). Optional: **`docs/RUST_EXPERT_STYLE_GUIDE.md`** (split under `docs/guidelines/`) for **rule-ID–style** deep Rust reference — subordinate to Nebula canon.
 
 ## Required reading order
 

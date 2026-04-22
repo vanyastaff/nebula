@@ -3,7 +3,7 @@ name: Nebula style guide
 description: Consolidated house style — idioms, antipatterns, naming table, error taxonomy, type design bets. Read by every session before proposing changes.
 status: accepted
 last-reviewed: 2026-04-17
-related: [PRODUCT_CANON.md, GLOSSARY.md, CLAUDE.md]
+related: [PRODUCT_CANON.md, GLOSSARY.md, CLAUDE.md, RUST_EXPERT_STYLE_GUIDE.md]
 ---
 
 # Nebula style guide
@@ -46,6 +46,17 @@ replace them.
   whether the smallest patch compiles. Agents apply the same idea via
   **`AGENT_PROTOCOL.md`** (universal principles + inspect/implement) and the
   checklist pass for pattern-heavy edits.
+
+- **CI vs house bar.** Many workspace **`allow`**s in Clippy exist to avoid
+  churn on old code, not to bless every legacy pattern forever. On **new** and
+  **heavily touched** code, follow the **spirit** of those lints plus this guide
+  — see **`docs/QUALITY_GATES.md`** (*Intentionally allowed Clippy*).
+
+- **Deep Rust / LLM contract (optional).** **`docs/RUST_EXPERT_STYLE_GUIDE.md`**
+  points to **`docs/guidelines/`** — a **rule-ID catalog** (Reference-grounded
+  language rules, idioms, patterns, modern 1.95+ features). Use it when generating
+  or reviewing non-trivial Rust — it does **not** override Nebula canon or this
+  **`STYLE.md`**.
 
 ## 1. Idioms we use
 

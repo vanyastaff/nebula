@@ -2,7 +2,7 @@
 
 **Derived from:** `docs/AGENT_PROTOCOL.md` (meta-protocol); `docs/PRODUCT_CANON.md` §15 (document map); `rust-toolchain.toml` (toolchain pin); `.github/workflows/ci.yml` and `.github/workflows/test-matrix.yml` (CI commands); `.cursor/rules/*.mdc` (modular agent rules).
 
-This file is the **entry point** for Claude Code. Domain rules live under **`.cursor/rules/`** (MDC). The canonical agent text is **`docs/AGENT_PROTOCOL.md`** — read **Universal principles** first, then the verbatim rules. House style and Rust mindset are **`docs/STYLE.md`** (§0 universal, §§1–2 idioms/antipatterns).
+This file is the **entry point** for Claude Code. Domain rules live under **`.cursor/rules/`** (MDC). The canonical agent text is **`docs/AGENT_PROTOCOL.md`** — read **Universal principles** first, then the verbatim rules. House style and Rust mindset are **`docs/STYLE.md`** (§0 universal, §§1–2 idioms/antipatterns). For **language-level** rule IDs and a Rust 1.95+ LLM contract (UB, `unsafe`, patterns), load **`docs/RUST_EXPERT_STYLE_GUIDE.md`** / **`docs/guidelines/README.md`** — Nebula docs still win on conflicts.
 
 ## Non-negotiable
 

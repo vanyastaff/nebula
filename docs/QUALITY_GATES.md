@@ -19,6 +19,7 @@ Before adding or tightening a rule, tie it to **at least one** of:
 | Rust API Guidelines — C-SEND-SYNC | https://rust-lang.github.io/api-guidelines/interoperability.html#c-send-sync | Types should be `Send`/`Sync` where possible; thread-safety matches reality. |
 | Rust Reference — Patterns | https://doc.rust-lang.org/reference/patterns.html | Syntax and semantics of patterns (`match`, `if let`, `..` rest pattern, exhaustiveness). |
 | Rust Reference — Rest pattern (`..`) | https://doc.rust-lang.org/reference/patterns.html#r-patterns.rest | Rest pattern matches remaining fields/elements; relevant to collapsing duplicate match arms. |
+| *Rust Expert Style Guide* (repo, LLM) | `docs/RUST_EXPERT_STYLE_GUIDE.md` → `docs/guidelines/` | Optional behavioral contract: rule IDs `L-`/`M-`/`I-`/…, Reference-leaning language rules; **subordinate** to `PRODUCT_CANON` / `STYLE`. |
 
 **Clippy lint pages** (mechanization — layer 2) are linked from compiler output, e.g.  
 https://rust-lang.github.io/rust-clippy/stable/index.html — use the `#lint-name` anchor for the exact version pinned in `rust-toolchain.toml`.
@@ -79,6 +80,7 @@ Do **not** duplicate those knobs elsewhere — extend them in place and update t
 - **Semantics** (“parse, don’t validate” at boundaries) are not fully lintable; need review + ADRs.
 - **Architecture fit** (SOLID, SRP) — partially reflected in layers (`deny.toml`) and glossary ownership; full judgment is human.
 - **Locally-optimal diffs / “sixth `else if`”** — not fully lintable; use **`docs/AGENT_PROTOCOL.md`** (inspect/implement, count triggers, git history) and **`docs/IDIOM_REVIEW_CHECKLIST.md`** after edits.
+- **Many Clippy lints intentionally `allow`** — CI green does not mean “ignore the lint’s intent” on **new** code; see **§ Intentionally allowed Clippy** below and **`docs/STYLE.md`** §0.
 - **Heuristic** tools (`check-surface` limits to `*Key`/`*Id` names; `check-junior` only `Box<dyn Error>`) — tune in `xtask/src/main.rs` with citations.
 
 ---
@@ -104,6 +106,18 @@ Do **not** duplicate those knobs elsewhere — extend them in place and update t
 - **Full duplicate `pub` names** (not only `*Key`/`*Id`) — **Mechanization path:** extend `xtask check-surface` with configurable allowlist / richer rustdoc/AST (rust-analyzer or `syn` in xtask).
 - **`.clone()` density / trait method count (ISP)** — not implemented (heuristic cost vs value). **Mechanization path:** custom Clippy lint or `dylint` rule with citations.
 - **Unsafe without `SAFETY:`** — rely on **`undocumented_unsafe_blocks`** in Clippy + `clippy.toml` (not duplicated in `xtask` to avoid false positives on one-line `unsafe { ... }` patterns).
+
+### Intentionally allowed Clippy (workspace `allow`) — universal policy
+
+Several lints in **`Cargo.toml`** `[workspace.lints.clippy]` are set to **`allow`** **not** because Nebula rejects what they encourage, but because **`warn` would force large or noisy churn** across existing code (style taste, macro sites, API shape, or legacy patterns). That applies broadly — not to one feature such as `let-else`.
+
+**Universal rule for agents and reviewers:** on **new** and **heavily touched** code, still follow the **spirit** of those lints where it improves clarity, safety, or alignment with **`docs/STYLE.md`** and the **Rust Reference** — even when CI does not fail. Use **`docs/IDIOM_REVIEW_CHECKLIST.md`** as the concrete pass; individual checklist items are **examples** of that spirit, not an exhaustive list of lints.
+
+**Mechanization path (any such lint):** workspace **`warn`** after an explicit **burn-down**; **`warn`** only in crates that opt in; or a targeted lint crate / `dylint` on changed paths. **`Cargo.toml`** comments note tradeoffs for specific allows where useful.
+
+### Protocol vs checklist (reviewers)
+
+**`docs/AGENT_PROTOCOL.md`** (universal principles + verbatim rules) and **`docs/IDIOM_REVIEW_CHECKLIST.md`** (checkable items) **overlap in intent by design**: principles say *what kind of judgment*; the checklist says *what to verify on a diff*. They must **not** contradict each other. When you change wording in one file, **skim the other** and align terminology (layers, erosion, inspect/implement, glossary ownership, API shape, pattern style, error handling) so future PRs do not inherit drift.
 
 ### Suggested next mechanization targets
 

@@ -210,7 +210,8 @@ ignore_without_reason = "allow"         # gated by clippy-cargo, too strict for 
 
 # ── pedantic stylistic noise that is not worth churning code over ─────────
 items_after_statements = "allow"             # late-initialised helpers inside fn bodies
-manual_let_else = "allow"                    # not every match → let-else is a win
+# Intentional allow — universal policy: docs/QUALITY_GATES.md § "Intentionally allowed Clippy".
+manual_let_else = "allow"
 match_same_arms = "allow"                    # different comment / semantics per arm
 default_trait_access = "allow"               # `T::default()` ≡ `Default::default()`
 ref_option = "allow"                         # `&Option<T>` is sometimes required by API shape

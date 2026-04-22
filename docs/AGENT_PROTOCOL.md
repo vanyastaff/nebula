@@ -2,7 +2,7 @@
 
 **Authority:** This file is the single source of truth for the repository meta-protocol.  
 **Audience:** Any automated or human agent working in this workspace (Claude Code, Cursor, Codex, etc.).  
-**Related:** `.cursor/rules/00-meta-protocol.mdc` enforces this file; `CLAUDE.md` and `AGENTS.md` point here. Post-edit pattern pass: **`docs/IDIOM_REVIEW_CHECKLIST.md`**; layered gates: **`docs/QUALITY_GATES.md`**.
+**Related:** `.cursor/rules/00-meta-protocol.mdc` enforces this file; `CLAUDE.md` and `AGENTS.md` point here. Post-edit pattern pass: **`docs/IDIOM_REVIEW_CHECKLIST.md`**; layered gates: **`docs/QUALITY_GATES.md`**. Optional deep Rust rule IDs (LLM behavioral contract): **`docs/RUST_EXPERT_STYLE_GUIDE.md`** (see `docs/guidelines/README.md`).
 
 ---
 
@@ -21,6 +21,8 @@ These apply to **every** task. They are intentionally **general**: they state *w
 5. **Evidence and calibration.** Claims about the codebase require **tool output** (see below). Mark **`verified:`** / **`documented:`** / **`hypothesis:`** honestly.
 
 6. **Mechanics support principles — they do not replace them.** Inspect/implement, git history on hot spots, post-edit checklist, and Clippy exist to make **good habits reliable**, not to encode every future design choice. **Thresholds and pattern checks** are spelled out in **`docs/IDIOM_REVIEW_CHECKLIST.md`** and **`docs/QUALITY_GATES.md`**.
+
+7. **Same story, two layers.** Universal principles here are **not** repeated verbatim in the idiom checklist; the checklist **operationalizes** them (counts, lints, concrete pattern questions). Maintainers should keep **wording aligned** when editing either file — see **`docs/QUALITY_GATES.md`** (“Protocol vs checklist”). The same applies to **`STYLE.md`** §0 when touching mindset-level language.
 
 ---
 
