@@ -12,6 +12,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- **nebula-schema** (PR-3 C1, Phase 4): `ValidSchema::json_schema()` export behind
+  `schemars` feature (Draft 2020-12). Maps core field/value rules
+  (`minLength`/`maxLength`, `pattern`, `format`, `minimum`/`maximum`,
+  `exclusiveMinimum`/`exclusiveMaximum`, `enum`, `minItems`/`maxItems`) and
+  expression wrappers; includes `x-nebula-*` contract extensions for
+  `ExpressionMode`, required/visibility modes, root rules, and select/mode/file
+  metadata that is not representable in plain JSON Schema.
 - **nebula-schema** (Phase 3 security, [ADR-0034](docs/adr/0034-schema-secret-value-credential-seam.md)):
   `SecretValue` / `SecretWire`, optional `KdfParams` + Argon2id on `Field::Secret`,
   `FieldValue::SecretLiteral`, `ResolvedValues::get_secret`, and

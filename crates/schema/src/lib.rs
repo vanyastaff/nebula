@@ -124,6 +124,9 @@ pub mod field;
 pub mod has_schema;
 /// UI hints for string input rendering.
 pub mod input_hint;
+/// JSON Schema export (`schemars` feature).
+#[cfg(feature = "schemars")]
+pub mod json_schema;
 /// Strongly typed field identifiers.
 pub mod key;
 /// Static schema lint diagnostics.

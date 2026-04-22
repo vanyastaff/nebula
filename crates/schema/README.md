@@ -4,7 +4,7 @@ name: nebula-schema
 
 role: Typed Configuration Schema with Proof-Token Pipeline (bespoke; informed by Domain Modeling Made Functional "make illegal states unrepresentable")
 status: frontier
-last-reviewed: 2026-04-17
+last-reviewed: 2026-04-22
 canon-invariants: [L1-3.5, L1-4.5]
 related: [nebula-validator, nebula-expression, nebula-action, nebula-resource, nebula-credential]
 ---
@@ -33,6 +33,7 @@ Pattern inspiration: DMMF proof-tokens (ch "Modeling with Types") and Rust types
 - `ValidValues::resolve(self, ctx: &dyn ExpressionContext) -> Result<ResolvedValues, ValidationReport>` — async runtime resolution; consumes the first proof-token and returns the second (use `.await`).
 - `FieldValues`, `ResolvedValues` — value containers.
 - `FieldValues::try_set_raw` — fallible raw setter for runtime code paths; `set_raw` is the panic-on-invalid-key helper for tests/migrations.
+- `ValidSchema::json_schema() -> schemars::Schema` (`schemars` feature) — exports JSON Schema Draft 2020-12 plus `x-nebula-*` contract extensions for schema semantics that JSON Schema alone cannot encode.
 
 See `src/lib.rs` rustdoc for the quick-start example.
 
@@ -43,6 +44,7 @@ See `src/lib.rs` rustdoc for the quick-start example.
 - **Structural lint** — `Schema::lint` enforces constraints that cannot be expressed in the builder type alone (duplicate keys, invariant violations across fields). Seam: `crates/schema/src/lint.rs`. Tests: `crates/schema/tests/`.
 - **Expression-required fields** — fields with `ExpressionMode::Required` (for example `ComputedField`) reject literal inputs with `expression.required` during validate-time.
 - **Strict key ingestion** — `FieldValues::from_json` rejects invalid object keys with `invalid_key` instead of silently dropping them.
+- **JSON Schema contract export** (`schemars` feature) — `ValidSchema::json_schema` emits Draft 2020-12 shape/rules (`minLength`, `pattern`, `minimum`, `exclusiveMinimum`, `enum`, `minItems`, etc.) and augments it with `x-nebula-*` extensions for expression/required/visibility modes and root rules.
 
 ## Non-goals
 
