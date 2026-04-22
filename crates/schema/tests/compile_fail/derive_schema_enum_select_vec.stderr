@@ -1,0 +1,5 @@
+error: `#[param(enum_select)]` on `Vec<...>` is not supported yet — build the list field manually or omit `enum_select`
+  --> tests/compile_fail/derive_schema_enum_select_vec.rs:12:5
+   |
+12 |     items: Vec<Method>,
+   |     ^^^^^

@@ -229,6 +229,7 @@ fn resolve_dynamic_loader_key(schema: &Schema, key: &str) -> Result<String, Vali
 #[derive(Debug, Default)]
 pub struct SchemaBuilder {
     fields: Vec<Field>,
+    root_rules: Vec<nebula_validator::Rule>,
 }
 
 impl SchemaBuilder {
@@ -239,6 +240,21 @@ impl SchemaBuilder {
     )]
     pub fn add(mut self, field: impl Into<Field>) -> Self {
         self.fields.push(field.into());
+        self
+    }
+
+    /// Attach a schema-level rule evaluated against the full submitted value
+    /// object after per-field validation succeeds.
+    ///
+    /// Rules are executed via [`nebula_validator::validate_rules_with_ctx`] with a
+    /// [`nebula_validator::PredicateContext`] built from
+    /// [`FieldValues::to_json`](crate::FieldValues::to_json).
+    /// [`ExecutionMode::StaticOnly`](nebula_validator::ExecutionMode::StaticOnly) is used, so
+    /// **deferred** rules (including [`Rule::custom`](nebula_validator::Rule::custom))
+    /// are skipped here and remain wire hooks for the workflow engine.
+    #[must_use]
+    pub fn root_rule(mut self, rule: nebula_validator::Rule) -> Self {
+        self.root_rules.push(rule);
         self
     }
 
@@ -316,6 +332,7 @@ impl SchemaBuilder {
             fields: self.fields,
             index,
             flags,
+            root_rules: self.root_rules,
         }))
     }
 }

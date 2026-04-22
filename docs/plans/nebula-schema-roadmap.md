@@ -43,11 +43,11 @@ This file is the **single place** for *what to do next* for `nebula-schema` (`cr
 
 Use the phase 2 **design** spec for semantics; this list is the execution queue.
 
-- [ ] **Struct-level `#[schema(...)]`** — parse `#[schema(custom(my_fn))]` (or agreed surface) and emit a top-level custom rule. *Blocked on API design; align with `nebula_validator::Rule`.*  
-- [ ] **Serde default alignment** — when `#[param(default = ...)]` is set on a derived field, ensure serde deserialization defaults match (emit `#[serde(default = ...)]` or shared helper). Integration test: empty JSON uses schema defaults.  
-- [ ] **Integration roundtrip** — optional `crates/schema/tests/flow/derive_roundtrip.rs`: derive → `validate` → `resolve` → typed decode (as far as the public API allows).  
-- [ ] **`Vec<Enum>` + select** — today `#[param(enum_select)]` is rejected on `Vec<...>`; either document “manual list + item field” or extend the derive.  
-- [ ] **Doctest / lib.rs** — short example showing both builder path and `#[derive(Schema)]` (if not already satisfied).  
+- [x] **Struct-level `#[schema(...)]`** — `#[schema(custom = "...")]` → `Rule::custom`; builder `root_rule` for predicate/value rules at validate time.  
+- [x] **Serde default alignment** — documented + integration pattern: callers add `#[serde(default)]` / `#[serde(default = ...)]` on the struct; `#[derive(Schema)]` does not inject serde attributes.  
+- [x] **Integration roundtrip** — `crates/schema/tests/flow/derive_roundtrip.rs`: derive + `validate` (+ serde-default example).  
+- [x] **`Vec<Enum>` + select** — derive still rejects `Vec<...>` with `enum_select`; `docs/GLOSSARY.md` + trybuild `derive_schema_enum_select_vec` document the manual list path.  
+- [x] **Doctest / lib.rs** — crate-level doctest for `Schema::builder` + `root_rule` (predicate).  
 - [ ] **CHANGELOG** — one entry when the above close enough for a release note.
 
 **Verification (when touching schema):** `cargo test -p nebula-schema`, `cargo clippy -p nebula-schema -p nebula-schema-macros -- -D warnings`, and if compile-fail changes: `cargo test -p nebula-schema --test compile_fail` with `TRYBUILD=overwrite` only when updating `.stderr` intentionally.

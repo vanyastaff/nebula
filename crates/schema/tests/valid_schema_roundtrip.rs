@@ -17,7 +17,7 @@ fn valid_schema_json_roundtrip_preserves_fields() {
     let json = serde_json::to_string(&original).expect("serialize");
     let decoded: ValidSchema = serde_json::from_str(&json).expect("deserialize");
 
-    // `ValidSchema: PartialEq` compares only `fields` (Arcs differ after deserialize).
+    // `ValidSchema: PartialEq` compares `fields` and `root_rules` (not `Arc` identity).
     // `index`/`flags` are recomputed by the builder and are not part of the wire contract.
     assert_eq!(original, decoded);
 }

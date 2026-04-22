@@ -76,7 +76,7 @@ pub mod validators;
 mod macros;
 
 // ── Re-exports ───────────────────────────────────────────────────────────────
-pub use engine::{ExecutionMode, validate_rules};
+pub use engine::{ExecutionMode, validate_rules, validate_rules_with_ctx};
 pub use error::ValidatorError;
 #[cfg(feature = "derive")]
 pub use nebula_validator_macros::Validator;

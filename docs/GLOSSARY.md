@@ -93,6 +93,8 @@ Canon §3.5 requires **one** schema system shared by actions, credentials, and r
 | `ValidValues` | type | `implemented` | Proof-token returned by `ValidSchema::validate` — indicates schema-time validation has succeeded. Required to call `resolve`. | §3.5, §4.5 |
 | `ResolvedValues` | type | `implemented` | Proof-token returned by `ValidValues::resolve` — indicates runtime expression resolution has succeeded. Required to access resolved field values. | §3.5, §4.5 |
 | `Rule` | type | `implemented` | Declarative validator composed into schema fields. | §3.10 |
+| `enum_select` | `#[param(...)]` flag | `implemented` | On `#[derive(Schema)]`, maps a single enum field (with `#[derive(EnumSelect)]` and `HasSelectOptions`) to a static `SelectField`. **Not** supported on `Vec<...>`; for multi-value lists of enum options, build a `Field::list` manually and wire item `SelectField` via `SelectField::extend_options` (or static options) instead. | §3.5 |
+| `validate_rules_with_ctx` | function | `implemented` | Runs `Rule` slice with an optional `PredicateContext` (required for `Rule::Predicate` to fail closed). Re-exported at the `nebula-validator` crate root next to `validate_rules`. | §3.10 |
 
 ---
 

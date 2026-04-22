@@ -8,7 +8,7 @@ use quote::quote;
 use syn::{Data, DataStruct, DeriveInput, Fields, Ident};
 
 use crate::{
-    attrs::{DefaultLit, ParamAttrs, ValidateAttrs},
+    attrs::{DefaultLit, ParamAttrs, SchemaStructAttrs, ValidateAttrs},
     type_infer::{FieldKind, classify},
 };
 
@@ -37,6 +37,17 @@ pub(crate) fn expand(input: DeriveInput) -> syn::Result<TokenStream2> {
         },
     };
 
+    let schema_attrs = SchemaStructAttrs::from_attrs(&input.attrs)?;
+    let root_rule_tokens: Vec<TokenStream2> = schema_attrs
+        .custom
+        .iter()
+        .map(|lit| {
+            quote! {
+                .root_rule(#crate_path::Rule::custom(#lit))
+            }
+        })
+        .collect();
+
     let mut field_exprs = Vec::with_capacity(fields.len());
     for f in fields {
         let field_name = f
@@ -63,6 +74,7 @@ pub(crate) fn expand(input: DeriveInput) -> syn::Result<TokenStream2> {
                     .get_or_init(|| {
                         match #crate_path::Schema::builder()
                             #( .add(#field_exprs) )*
+                            #( #root_rule_tokens )*
                             .build()
                         {
                             ::core::result::Result::Ok(s) => s,
