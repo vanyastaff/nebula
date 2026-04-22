@@ -194,10 +194,39 @@ fn derive_enum_select_generates_options() {
     assert_eq!(options[3].label, "HTTP DELETE");
 }
 
-// Mixed: a derived struct can use a derived enum for its schema, albeit via
-// HasSelectOptions lookup on the builder side (the derive itself maps the
-// enum as a UserDefined object — refining to proper select-field inference
-// is Phase 2b T10's follow-up).
+#[derive(Schema)]
+#[expect(dead_code, reason = "fields exercised via HasSchema::schema")]
+struct RequestLine {
+    #[param(label = "HTTP method", enum_select, default = "get")]
+    method: HttpMethod,
+    #[param(label = "Optional override", enum_select)]
+    alt: Option<HttpMethod>,
+}
+
+#[test]
+fn derive_enum_select_field_becomes_select() {
+    let schema = RequestLine::schema();
+    assert_eq!(schema.fields().len(), 2);
+
+    match &schema.fields()[0] {
+        Field::Select(s) => {
+            assert_eq!(s.key.as_str(), "method");
+            assert_eq!(s.options.len(), 4);
+            assert_eq!(s.default.as_ref(), Some(&json!("get")));
+            assert!(matches!(s.required, RequiredMode::Always));
+        },
+        other => panic!("expected SelectField for enum_select, got {other:?}"),
+    }
+
+    match &schema.fields()[1] {
+        Field::Select(s) => {
+            assert_eq!(s.key.as_str(), "alt");
+            assert_eq!(s.options.len(), 4);
+            assert!(matches!(s.required, RequiredMode::Never));
+        },
+        other => panic!("expected SelectField for optional enum, got {other:?}"),
+    }
+}
 
 #[derive(Schema)]
 #[allow(dead_code)]

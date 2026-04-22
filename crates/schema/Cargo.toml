@@ -39,6 +39,10 @@ name = "flow_all_error_codes"
 path = "tests/flow/all_error_codes.rs"
 
 [[test]]
+name = "flow_derive_roundtrip"
+path = "tests/flow/derive_roundtrip.rs"
+
+[[test]]
 name = "proptest_path_roundtrip"
 path = "tests/proptest/path_roundtrip.rs"
 

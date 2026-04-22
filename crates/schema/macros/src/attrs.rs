@@ -2,19 +2,21 @@
 //!
 //! Two namespaces are recognised today:
 //!
-//! - `#[param(...)]`     — UI / metadata options (label, hint, default, secret, multiline…)
+//! - `#[param(...)]` — UI / metadata options (label, hint, default, secret, multiline,
+//!   `enum_select`, …)
 //! - `#[validate(...)]`  — value rules (required, length, range, pattern, url, email)
 //!
-//! Struct-level `#[schema(...)]` is reserved for a future pass (no options
-//! functional today) — removed from the derive's attribute list so the
-//! name stays free until the implementation lands.
+//! Struct-level `#[schema(...)]` on `#[derive(Schema)]` supports:
+//!
+//! - `custom = "..."` — emits a deferred `Rule::custom` on the built schema (wire-level expression
+//!   string; engine evaluation is Phase 3+).
 //!
 //! The parsers are intentionally forgiving on ordering and strict on
 //! semantics: unknown keys inside a namespace produce a compile error at
 //! the offending token, not a silent skip.
 
 use syn::{
-    Attribute, Expr, ExprLit, Lit, LitInt, Token,
+    Attribute, Expr, ExprLit, Lit, LitInt, LitStr, Token,
     parse::{Parse, ParseStream},
     punctuated::Punctuated,
 };
@@ -34,6 +36,9 @@ pub(crate) struct ParamAttrs {
     pub multiline: bool,
     pub no_expression: bool,
     pub expression_required: bool,
+    /// When true, a user-defined field type is emitted as a static `Select` field whose options
+    /// come from `HasSelectOptions` (typically `#[derive(EnumSelect)]` on an enum).
+    pub enum_select: bool,
     pub group: Option<String>,
     pub skip: bool,
 }
@@ -146,6 +151,7 @@ impl ParamEntry {
                     "multiline" => out.multiline = true,
                     "no_expression" => out.no_expression = true,
                     "expression_required" => out.expression_required = true,
+                    "enum_select" => out.enum_select = true,
                     "skip" => out.skip = true,
                     other => {
                         return Err(syn::Error::new(
@@ -366,5 +372,64 @@ fn lit_to_i64(expr: &Expr) -> syn::Result<i64> {
             expr,
             "#[validate(range(..))]: bounds must be integer literals",
         ))
+    }
+}
+
+// ── Struct-level #[schema(...)] on #[derive(Schema)] ─────────────────────────
+
+/// Options gathered from `#[schema(...)]` on the derive target struct.
+#[derive(Default, Debug)]
+pub(crate) struct SchemaStructAttrs {
+    /// Wire-level `Rule::Deferred(DeferredRule::Custom(..))` expression strings.
+    pub custom: Vec<LitStr>,
+}
+
+impl SchemaStructAttrs {
+    pub(crate) fn from_attrs(attrs: &[Attribute]) -> syn::Result<Self> {
+        let mut out = Self::default();
+        for attr in attrs.iter().filter(|a| a.path().is_ident("schema")) {
+            let entries: Punctuated<SchemaEntry, Token![,]> =
+                attr.parse_args_with(Punctuated::parse_terminated)?;
+            for entry in entries {
+                entry.apply(&mut out)?;
+            }
+        }
+        Ok(out)
+    }
+}
+
+enum SchemaEntry {
+    Custom { value: LitStr },
+}
+
+impl SchemaEntry {
+    fn apply(self, out: &mut SchemaStructAttrs) -> syn::Result<()> {
+        match self {
+            Self::Custom { value } => {
+                out.custom.push(value);
+                Ok(())
+            },
+        }
+    }
+}
+
+impl Parse for SchemaEntry {
+    fn parse(input: ParseStream) -> syn::Result<Self> {
+        let name: syn::Ident = input.parse()?;
+        if !input.peek(Token![=]) {
+            return Err(syn::Error::new(
+                name.span(),
+                "expected `#[schema(custom = \"...\")]` — flag-style schema options are not supported",
+            ));
+        }
+        input.parse::<Token![=]>()?;
+        let value: LitStr = input.parse()?;
+        match name.to_string().as_str() {
+            "custom" => Ok(Self::Custom { value }),
+            other => Err(syn::Error::new(
+                name.span(),
+                format!("unknown #[schema(..)] option `{other}`"),
+            )),
+        }
     }
 }

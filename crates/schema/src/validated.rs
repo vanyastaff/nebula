@@ -50,22 +50,27 @@ pub struct ValidSchemaInner {
     pub index: IndexMap<FieldPath, FieldHandle>,
     /// Flags computed during build.
     pub flags: SchemaFlags,
+    /// Rules evaluated once per validate call against the full value object
+    /// (after per-field checks). Deferred rules are skipped in
+    /// [`ExecutionMode::StaticOnly`](nebula_validator::ExecutionMode::StaticOnly).
+    pub root_rules: Vec<nebula_validator::Rule>,
 }
 
 /// Proof-token: schema has been built and linted successfully.
 ///
 /// Cheap to clone — backed by `Arc`.
 ///
-/// Serde: serializes as the ordered field list (same wire format as `Schema`).
-/// Deserialization rebuilds through `Schema::builder()` /
-/// [`SchemaBuilder`](crate::schema::SchemaBuilder); invalid wire data returns a
-/// [`serde::de::Error`] (lint failures are not panics).
+/// Serde: serializes as `{"fields": [...]}` when there are no root rules, or
+/// `{"fields": [...], "root_rules": [...]}` when [`ValidSchemaInner::root_rules`]
+/// is non-empty. Deserialization rebuilds through [`SchemaBuilder`](crate::schema::SchemaBuilder);
+/// invalid wire data returns a [`serde::de::Error`] (lint failures are not panics).
 #[derive(Debug, Clone)]
 pub struct ValidSchema(pub(crate) Arc<ValidSchemaInner>);
 
 impl PartialEq for ValidSchema {
     fn eq(&self, other: &Self) -> bool {
-        Arc::ptr_eq(&self.0, &other.0) || self.0.fields == other.0.fields
+        Arc::ptr_eq(&self.0, &other.0)
+            || (self.0.fields == other.0.fields && self.0.root_rules == other.0.root_rules)
     }
 }
 
@@ -73,11 +78,17 @@ impl Eq for ValidSchema {}
 
 impl Serialize for ValidSchema {
     fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-        // Serialize as `{"fields": [...]}` — same wire format as `Schema`.
         use serde::ser::SerializeStruct;
-        let mut s = serializer.serialize_struct("ValidSchema", 1)?;
-        s.serialize_field("fields", &self.0.fields)?;
-        s.end()
+        if self.0.root_rules.is_empty() {
+            let mut s = serializer.serialize_struct("ValidSchema", 1)?;
+            s.serialize_field("fields", &self.0.fields)?;
+            s.end()
+        } else {
+            let mut s = serializer.serialize_struct("ValidSchema", 2)?;
+            s.serialize_field("fields", &self.0.fields)?;
+            s.serialize_field("root_rules", &self.0.root_rules)?;
+            s.end()
+        }
     }
 }
 
@@ -88,15 +99,18 @@ impl<'de> Deserialize<'de> for ValidSchema {
         struct ValidSchemaRepr {
             #[serde(default)]
             fields: Vec<Field>,
+            #[serde(default)]
+            root_rules: Vec<nebula_validator::Rule>,
         }
         let repr = ValidSchemaRepr::deserialize(deserializer)?;
-        repr.fields
-            .into_iter()
-            .fold(
-                crate::schema::SchemaBuilder::default(),
-                super::schema::SchemaBuilder::add,
-            )
-            .build()
+        let mut b = repr.fields.into_iter().fold(
+            crate::schema::SchemaBuilder::default(),
+            super::schema::SchemaBuilder::add,
+        );
+        for rule in repr.root_rules {
+            b = b.root_rule(rule);
+        }
+        b.build()
             .map_err(|report| serde::de::Error::custom(format!("invalid schema: {report:?}")))
     }
 }
@@ -124,6 +138,7 @@ impl ValidSchema {
                     fields: Vec::new(),
                     index: IndexMap::new(),
                     flags: SchemaFlags::default(),
+                    root_rules: Vec::new(),
                 })
             })
             .clone()
@@ -146,6 +161,12 @@ impl ValidSchema {
     /// Borrow the build-time flags.
     pub fn flags(&self) -> &SchemaFlags {
         &self.0.flags
+    }
+
+    /// Schema-level rules run after per-field validation (see [`ValidSchema::validate`]).
+    #[must_use]
+    pub fn root_rules(&self) -> &[nebula_validator::Rule] {
+        &self.0.root_rules
     }
 
     /// Find a top-level field by key.
@@ -213,6 +234,8 @@ impl ValidSchema {
             let path = FieldPath::root().join(field.key().clone());
             validate_field(field, values.get(field.key()), &ctx, &path, &mut report);
         }
+
+        run_root_rules(&self.0.root_rules, values, &mut report);
 
         if report.has_errors() {
             return Err(report);
@@ -1157,17 +1180,49 @@ fn run_rules(
 ) {
     use nebula_validator::ExecutionMode;
     if let Err(errs) = nebula_validator::validate_rules(value, rules, ExecutionMode::StaticOnly) {
-        for e in errs.errors() {
-            let raw_code: &str = e.code.as_ref();
-            let msg: String = e.message.as_ref().to_owned();
-            let code = translate_validator_code(raw_code, e.params());
-            report.push(
-                ValidationError::builder(code)
-                    .at(path.clone())
-                    .message(msg)
-                    .build(),
-            );
-        }
+        push_validator_rule_errors(errs, path, report);
+    }
+}
+
+/// Run schema-level rules against the full submitted JSON object.
+fn run_root_rules(
+    rules: &[nebula_validator::Rule],
+    values: &FieldValues,
+    report: &mut ValidationReport,
+) {
+    use nebula_validator::{ExecutionMode, PredicateContext};
+
+    if rules.is_empty() {
+        return;
+    }
+
+    let json = values.to_json();
+    let pred_ctx = PredicateContext::from_json(&json);
+    if let Err(errs) = nebula_validator::validate_rules_with_ctx(
+        &json,
+        rules,
+        Some(&pred_ctx),
+        ExecutionMode::StaticOnly,
+    ) {
+        push_validator_rule_errors(errs, &FieldPath::root(), report);
+    }
+}
+
+fn push_validator_rule_errors(
+    errs: nebula_validator::foundation::ValidationErrors,
+    path: &FieldPath,
+    report: &mut ValidationReport,
+) {
+    for e in errs.errors() {
+        let raw_code: &str = e.code.as_ref();
+        let msg: String = e.message.as_ref().to_owned();
+        let code = translate_validator_code(raw_code, e.params());
+        report.push(
+            ValidationError::builder(code)
+                .at(path.clone())
+                .message(msg)
+                .build(),
+        );
     }
 }
 
@@ -1225,5 +1280,42 @@ mod tests {
                 .find_by_path(&FieldPath::parse("user.missing").unwrap())
                 .is_none()
         );
+    }
+
+    #[test]
+    fn root_rule_runs_after_fields() {
+        use nebula_validator::{Predicate, Rule};
+        use serde_json::json;
+
+        let schema = Schema::builder()
+            .add(Field::string(FieldKey::new("tier").unwrap()))
+            .root_rule(Rule::predicate(
+                Predicate::eq("tier", json!("pro")).unwrap(),
+            ))
+            .build()
+            .unwrap();
+
+        let bad = FieldValues::from_json(json!({"tier": "free"})).unwrap();
+        assert!(schema.validate(&bad).is_err());
+
+        let ok = FieldValues::from_json(json!({"tier": "pro"})).unwrap();
+        assert!(schema.validate(&ok).is_ok());
+    }
+
+    #[test]
+    fn valid_schema_serde_roundtrips_root_rules() {
+        use nebula_validator::{Predicate, Rule};
+        use serde_json::json;
+
+        let schema = Schema::builder()
+            .add(Field::string(FieldKey::new("x").unwrap()))
+            .root_rule(Rule::predicate(Predicate::eq("x", json!("a")).unwrap()))
+            .build()
+            .unwrap();
+
+        let wire = serde_json::to_value(&schema).unwrap();
+        let back: ValidSchema = serde_json::from_value(wire).unwrap();
+        assert_eq!(schema.root_rules(), back.root_rules());
+        assert_eq!(schema.fields().len(), back.fields().len());
     }
 }

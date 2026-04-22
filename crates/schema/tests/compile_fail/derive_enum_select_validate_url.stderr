@@ -1,0 +1,18 @@
+error: on `#[param(enum_select)]` fields, `#[validate(...)]` supports only `required`; URL, email, pattern, length, and range rules apply to string or number fields
+  --> tests/compile_fail/derive_enum_select_validate_url.rs:13:5
+   |
+13 |     c: Color,
+   |     ^
+
+error[E0599]: no function or associated item named `schema` found for struct `Bad` in the current scope
+  --> tests/compile_fail/derive_enum_select_validate_url.rs:17:18
+   |
+10 | struct Bad {
+   | ---------- function or associated item `schema` not found for this struct
+...
+17 |     let _ = Bad::schema();
+   |                  ^^^^^^ function or associated item not found in `Bad`
+   |
+   = help: items from traits can only be used if the trait is implemented and in scope
+   = note: the following trait defines an item `schema`, perhaps you need to implement it:
+           candidate #1: `HasSchema`

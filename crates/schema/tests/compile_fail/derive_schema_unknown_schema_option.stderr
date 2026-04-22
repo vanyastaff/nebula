@@ -1,0 +1,5 @@
+error: unknown #[schema(..)] option `unknown_option`
+ --> tests/compile_fail/derive_schema_unknown_schema_option.rs:4:10
+  |
+4 | #[schema(unknown_option = "nope")]
+  |          ^^^^^^^^^^^^^^

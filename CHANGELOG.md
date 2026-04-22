@@ -8,6 +8,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- **nebula-validator**: Re-export `validate_rules_with_ctx` at the crate root (with `validate_rules`) so callers do not need `nebula_validator::engine::` paths.
+- **nebula-schema**: `SchemaBuilder::root_rule` and `ValidSchemaInner::root_rules`
+  — schema-level rules evaluated after per-field validation (predicate-aware via
+  `PredicateContext` from submitted JSON). `#[derive(Schema)]` supports
+  `#[schema(custom = "...")]` mapping to `Rule::custom` (deferred wire hook).
+  Re-export `Rule` / `Predicate` from `nebula-schema` for macro expansion.
+- **nebula-schema**: trybuild `derive_schema_enum_select_vec`; **docs**: `GLOSSARY.md` entries for `enum_select` and `validate_rules_with_ctx`.
 - **nebula-schema**: New crate replacing `nebula-parameter`. Implements a
   proof-token validation pipeline (`Schema::builder() → ValidSchema →
   ValidValues → ResolvedValues`) with a unified structured `ValidationError`,

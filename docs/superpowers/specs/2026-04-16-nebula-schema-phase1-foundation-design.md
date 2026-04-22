@@ -180,4 +180,4 @@ Vocabulary defined as `pub const STANDARD_CODES: &[&str]` in `error.rs`. Categor
 - [x] All compile-fail fixtures fail to compile and match their `.stderr` — 8/8 fixtures pass
 - [⚠] Bench: `bench_validate` improved ≥2× on nested-object schemas vs phase0 baseline — **PARTIAL**: legacy-API hot-path rewrite achieves 1.54× (79 ns vs 121.87 ns Phase 0). New proof-token API (`ValidSchema::validate`) is 314 ns — unfair comparison since Phase 0 measured the deleted legacy API, not the new proof-token pipeline. The `schema_validate_nested` bench (new; no Phase 0 equivalent) runs at ~872 ns. Getting to ≤61 ns on the flat bench requires workload-specific micro-optimisations that do not generalise; root cause documented in `crates/schema/benches/RESULTS.md`. Tracked for Phase 2+ zero-alloc `ValidationReport` optimisation.
 
-**Plan:** `docs/superpowers/plans/2026-04-16-nebula-schema-phase1-foundation.md`
+**Execution roadmap:** `docs/plans/nebula-schema-roadmap.md` — **Historical implementation checklist (archived):** `docs/plans/archive/2026-04-16-nebula-schema-implementation-plans/2026-04-16-nebula-schema-phase1-foundation.md`

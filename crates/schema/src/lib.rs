@@ -57,6 +57,55 @@
 //!     .expect("schema is valid");
 //! assert_eq!(schema.fields().len(), 3);
 //! ```
+//!
+//! # Struct-level rules (`#[schema(...)]` on `#[derive(Schema)]`)
+//!
+//! Attach deferred wire hooks or cross-field [`Rule`]s on the
+//! whole value object — not new field types for the UI. See
+//! [`SchemaBuilder::root_rule`](crate::SchemaBuilder::root_rule) and
+//! [`ValidSchema::validate`](crate::ValidSchema::validate).
+//!
+//! ```rust
+//! use nebula_schema::{Field, FieldValues, Schema, Predicate, Rule, field_key};
+//! use serde_json::json;
+//!
+//! let schema = Schema::builder()
+//!     .add(Field::string(field_key!("tier")))
+//!     .root_rule(Rule::predicate(Predicate::eq("tier", json!("pro")).unwrap()))
+//!     .build()
+//!     .unwrap();
+//!
+//! assert!(
+//!     schema
+//!         .validate(&FieldValues::from_json(json!({"tier": "free"})).unwrap())
+//!         .is_err()
+//! );
+//! assert!(
+//!     schema
+//!         .validate(&FieldValues::from_json(json!({"tier": "pro"})).unwrap())
+//!         .is_ok()
+//! );
+//! ```
+//!
+//! # `#[derive(Schema)]` and `HasSchema`
+//!
+//! ```rust
+//! use nebula_schema::{FieldValues, HasSchema, Schema};
+//! use serde::Deserialize;
+//! use serde_json::json;
+//!
+//! #[derive(Schema, Deserialize)]
+//! // `Rule::custom` is deferred; `ValidSchema::validate` does not execute the
+//! // expression string (engine hook). This still type-checks the value tree.
+//! #[schema(custom = "engine_deferred")]
+//! struct Example {
+//!     name: String,
+//! }
+//!
+//! let schema = Example::schema();
+//! let values = FieldValues::from_json(json!({"name": "n"})).unwrap();
+//! assert!(schema.validate(&values).is_ok());
+//! ```
 
 #![forbid(unsafe_code)]
 #![warn(missing_docs)]
@@ -121,6 +170,9 @@ pub use loader::{
 };
 pub use mode::{ExpressionMode, RequiredMode, VisibilityMode};
 pub use nebula_schema_macros::{EnumSelect, Schema, field_key};
+/// Re-exported for `#[derive(Schema)]` expansion and schema authors who build
+/// [`Rule`] / [`Predicate`] without importing `nebula-validator` directly.
+pub use nebula_validator::{Predicate, Rule};
 pub use option::SelectOption;
 pub use path::{FieldPath, PathSegment};
 pub use schema::{Schema, SchemaBuilder};
