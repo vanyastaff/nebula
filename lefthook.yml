@@ -15,10 +15,10 @@ pre-commit:
   parallel: true
   commands:
     fmt-check:
-      glob: "*.rs"
+      glob: "**/*.rs"
       run: cargo +nightly fmt --all -- --check
     clippy:
-      glob: "*.rs"
+      glob: "**/*.rs"
       run: cargo clippy --workspace --all-targets -q -- -D warnings
     typos:
       run: typos --quiet
@@ -31,10 +31,10 @@ pre-commit:
       glob: "{Cargo.toml,Cargo.lock,deny.toml}"
       run: cargo deny --log-level error check 2>&1
     xtask-junior:
-      glob: "*.rs"
+      glob: "**/*.rs"
       run: cargo run -p xtask -- check-junior
     xtask-surface:
-      glob: "*.rs"
+      glob: "**/*.rs"
       run: cargo run -p xtask -- check-surface
 
 commit-msg:

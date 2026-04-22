@@ -610,8 +610,10 @@ target-dir   = "target"
 incremental  = true
 rustflags    = ["-C", "target-cpu=x86-64-v3"]
 rustdocflags = ["-D", "warnings"]
-rustc-wrapper = "sccache"                            # wraps every rustc invocation
-rustc-workspace-wrapper = "cargo-nextest"            # wraps only workspace members
+rustc-wrapper = "sccache"                            # wraps every rustc invocation (build cache)
+# `rustc-workspace-wrapper` applies only to workspace members; it must be a rustc-compatible
+# wrapper (same class as `rustc-wrapper`), not a test runner — invoke `cargo nextest run` separately.
+# rustc-workspace-wrapper = "sccache"
 
 # cargo new defaults
 [cargo-new]
@@ -1001,14 +1003,16 @@ rustc --emit=mir --edition=2021 src/main.rs
 cargo rustc --release -- --emit=asm=-         # stdout
 ```
 
-`--print`: dump compiler info, no compilation:
+`--print`: dump compiler info. Most `--print=*` modes **do not compile user code** (they query the compiler); a few modes compile enough to answer (e.g. `native-static-libs` when linking). Prefer `rustc --print=X -Vv` / `cargo rustc -- --print=X` and read `rustc --print=help` on your pinned toolchain — the exact set shifts between releases.
+
+Common stable queries include:
 
 - `cfg` — active cfg for this target
 - `target-list` — all supported targets
 - `target-cpus` — CPUs valid for `-C target-cpu`
 - `target-features` — features valid for `-C target-feature`
 - `sysroot`, `host-tuple`, `rustc-version`, `link-args`
-- `native-static-libs` (with cdylib/staticlib crate-type)
+- `native-static-libs` (when building a cdylib/staticlib crate-type)
 
 ```bash
 rustc --print=cfg --target=wasm32-unknown-unknown

@@ -64,7 +64,7 @@ Do **not** duplicate those knobs elsewhere — extend them in place and update t
 | `cargo xtask check-surface` | Cross-crate `pub` name collisions (heuristic). |
 | `cargo xtask check-adr-sync` | ADR front matter sanity. |
 | `cargo quality` | `fmt --check` + `clippy -D warnings` + all `xtask` checks. |
-| `cargo precommit` | `cargo quality` + `cargo test --workspace` (full — use CI or narrow locally when iterating). |
+| `cargo precommit` | `cargo quality` + `cargo nextest run --workspace --profile ci --no-tests=pass` (full — use CI or narrow locally when iterating). |
 
 **Pre-commit / push:** `lefthook.yml` runs fast gates; full `cargo quality` is mirrored in **`.github/workflows/quality.yml`** on PRs.
 
@@ -89,7 +89,7 @@ Do **not** duplicate those knobs elsewhere — extend them in place and update t
 
 ### Junior markers now caught mechanically
 
-- **Pedantic + nursery + cargo** Clippy groups at **warn**, CI **` -D warnings`** (existing `/.github/workflows/ci.yml`).
+- **Pedantic + nursery + cargo** Clippy groups at **warn**, CI **`-D warnings`** (existing `/.github/workflows/ci.yml`).
 - **`mem_forget` = deny** (`clippy.toml`).
 - **`dbg_macro`, `rc_mutex`, `arc_with_non_send_sync`** at **warn** (root `Cargo.toml` — cites **C-SEND-SYNC** and Clippy lint IDs in comments above the block).
 - **Pattern-matching recall** — `match_like_matches_macro`, `redundant_pattern_matching`, `single_match_else`, `wildcard_in_or_patterns` at **warn** (root `Cargo.toml`; human checklist `docs/IDIOM_REVIEW_CHECKLIST.md`).

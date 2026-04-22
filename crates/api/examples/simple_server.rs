@@ -13,7 +13,7 @@ use nebula_storage::{
 };
 
 #[tokio::main]
-async fn main() -> Result<(), Box<dyn std::error::Error>> {
+async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     tracing_subscriber::fmt::init();
 
     let workflow_repo = Arc::new(InMemoryWorkflowRepo::new());
@@ -48,5 +48,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     .with_api_keys(api_config.api_keys.clone());
     let app = app::build_app(state, &api_config);
 
-    app::serve(app, api_config.bind_address).await
+    app::serve(app, api_config.bind_address).await?;
+    Ok(())
 }

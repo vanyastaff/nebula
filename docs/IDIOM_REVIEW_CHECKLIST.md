@@ -60,7 +60,7 @@ These are **warn** (CI uses `-D warnings` → failure). Fix or document a local 
 | `match_like_matches_macro` | Boolean `match` → `matches!` |
 | `redundant_pattern_matching` | `if let` / `match` only for presence test |
 | `single_match_else` | `match` with one non-trivial arm + wildcard |
-| `wildcard_in_or_patterns` | `A | _` style that can be simplified |
+| `wildcard_in_or_patterns` | `A \| _` style that can be simplified |
 
 Other lints worth knowing (may stay **`allow`** workspace-wide — same universal policy as **`docs/QUALITY_GATES.md`** *Intentionally allowed Clippy*): e.g. `needless_match`.
 

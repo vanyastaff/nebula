@@ -209,7 +209,7 @@ future_not_send = "allow"               # `Send` bound on futures is runtime's c
 ignore_without_reason = "allow"         # gated by clippy-cargo, too strict for tests
 
 # ── pedantic stylistic noise that is not worth churning code over ─────────
-items_after_statements = "allow"             # late-initialised helpers inside fn bodies
+items_after_statements = "allow" # late-initialised helpers inside fn bodies
 # Intentional allow — universal policy: docs/QUALITY_GATES.md § "Intentionally allowed Clippy".
 manual_let_else = "allow"
 match_same_arms = "allow"                    # different comment / semantics per arm

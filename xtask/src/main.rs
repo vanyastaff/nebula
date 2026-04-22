@@ -99,25 +99,42 @@ fn scan_junior_file(path: &Path, rel: &str, violations: &mut Vec<String>) {
         return;
     };
 
-    // Public `Box<dyn Error>` in signatures — C-GOOD-ERR.
-    for (i, line) in src.lines().enumerate() {
-        let t = line.trim();
-        if !t.starts_with("pub ") {
+    // Public `Box<dyn Error>` in signatures — C-GOOD-ERR (may span lines before `{` / `;`).
+    let lines: Vec<&str> = src.lines().collect();
+    let mut i = 0;
+    while i < lines.len() {
+        let t = lines[i].trim();
+        let is_pub_fn = t.starts_with("pub ") && (t.contains(" fn ") || t.contains("async fn"));
+        if !is_pub_fn {
+            i += 1;
             continue;
         }
-        // C-GOOD-ERR: trait object `dyn Error`, not a type name ending in `Error` (e.g.
-        // `ActionError`).
-        let dyn_error = t.contains("dyn Error")
-            || t.contains("dyn std::error::Error")
-            || t.contains("dyn core::error::Error");
-        if t.contains("fn ") && t.contains("Box<") && dyn_error {
+        let start_line = i + 1;
+        let mut sig = String::new();
+        let mut j = i;
+        let max_sig_lines = 40;
+        loop {
+            sig.push_str(lines[j].trim());
+            sig.push(' ');
+            if lines[j].contains('{') {
+                break;
+            }
+            j += 1;
+            if j >= lines.len() || j - i >= max_sig_lines {
+                break;
+            }
+        }
+
+        let dyn_error = sig.contains("dyn Error")
+            || sig.contains("dyn std::error::Error")
+            || sig.contains("dyn core::error::Error");
+        if sig.contains("Box<") && dyn_error {
             violations.push(format!(
-                "{}:{}: public function uses `Box<dyn Error>` — prefer concrete error type per \
+                "{rel}:{start_line}: public function uses `Box<dyn Error>` — prefer concrete error type per \
                  https://rust-lang.github.io/api-guidelines/interoperability.html#c-good-err",
-                rel,
-                i + 1
             ));
         }
+        i = j + 1;
     }
 }
 
@@ -174,20 +191,30 @@ fn walk_surface(dir: &Path, root: &Path, by_name: &mut HashMap<String, Vec<Strin
             };
             for line in src.lines() {
                 let t = line.trim_start();
-                if let Some(rest) = t.strip_prefix("pub struct ") {
-                    let name = rest.split_whitespace().next().unwrap_or("");
-                    if name.ends_with("Key") || name.ends_with("Id") {
-                        record(by_name, name, &pkg);
-                    }
-                } else if let Some(rest) = t.strip_prefix("pub enum ") {
-                    let name = rest.split_whitespace().next().unwrap_or("");
-                    if name.ends_with("Key") || name.ends_with("Id") {
-                        record(by_name, name, &pkg);
-                    }
+                if let Some(rest) = t.strip_prefix("pub struct ")
+                    && let Some(name) = surface_item_name(rest)
+                    && (name.ends_with("Key") || name.ends_with("Id"))
+                {
+                    record(by_name, name, &pkg);
+                } else if let Some(rest) = t.strip_prefix("pub enum ")
+                    && let Some(name) = surface_item_name(rest)
+                    && (name.ends_with("Key") || name.ends_with("Id"))
+                {
+                    record(by_name, name, &pkg);
                 }
             }
         }
     }
+}
+
+/// First identifier after `pub struct` / `pub enum` — stops at ` `, `<`, `(`, `{`, `;`.
+fn surface_item_name(rest: &str) -> Option<&str> {
+    let rest = rest.trim_start();
+    let end = rest
+        .find(|c: char| c.is_whitespace() || matches!(c, '<' | '(' | '{' | ';'))
+        .unwrap_or(rest.len());
+    let name = rest.get(..end).filter(|s| !s.is_empty())?;
+    Some(name)
 }
 
 fn record(by_name: &mut HashMap<String, Vec<String>>, sym: &str, pkg: &str) {
@@ -323,10 +350,17 @@ fn precommit() -> ExitCode {
     let root = workspace_root();
     let status = Command::new("cargo")
         .current_dir(&root)
-        .args(["test", "--workspace"])
+        .args([
+            "nextest",
+            "run",
+            "--workspace",
+            "--profile",
+            "ci",
+            "--no-tests=pass",
+        ])
         .status();
     if status.map(|s| !s.success()).unwrap_or(true) {
-        eprintln!("precommit: cargo test failed");
+        eprintln!("precommit: cargo nextest run failed");
         return ExitCode::from(1);
     }
     ExitCode::SUCCESS

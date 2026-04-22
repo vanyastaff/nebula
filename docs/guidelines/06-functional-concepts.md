@@ -9,20 +9,59 @@
 `Vec<u8>` and `Vec<char>` are *different types*. Partial `impl` blocks specialize API per state:
 
 ```rust
+use std::path::{Path, PathBuf};
+
 mod proto {
-    pub trait ProtoKind { type Auth; fn auth(&self) -> Self::Auth; }
-    pub struct Nfs { auth: NfsAuth, mount: PathBuf }
+    use std::path::PathBuf;
+
+    #[derive(Clone)]
+    pub struct NfsAuth;
+    pub struct BootpAuth;
+
+    pub trait ProtoKind {
+        type Auth;
+        fn auth(&self) -> Self::Auth;
+    }
+    pub struct Nfs {
+        auth: NfsAuth,
+        mount: PathBuf, // private — outside code cannot construct `Nfs` with arbitrary state
+    }
     pub struct Bootp;
-    impl ProtoKind for Nfs { type Auth = NfsAuth; fn auth(&self) -> NfsAuth { self.auth.clone() } }
-    impl ProtoKind for Bootp { type Auth = BootpAuth; fn auth(&self) -> BootpAuth { BootpAuth } }
+    impl Nfs {
+        pub fn new(auth: NfsAuth, mount: PathBuf) -> Self {
+            Self { auth, mount }
+        }
+    }
+    impl ProtoKind for Nfs {
+        type Auth = NfsAuth;
+        fn auth(&self) -> NfsAuth {
+            self.auth.clone()
+        }
+    }
+    impl ProtoKind for Bootp {
+        type Auth = BootpAuth;
+        fn auth(&self) -> BootpAuth {
+            BootpAuth
+        }
+    }
 }
 
-struct Request<P: proto::ProtoKind> { file: PathBuf, proto: P }
+pub struct Request<P: proto::ProtoKind> {
+    file: PathBuf,
+    proto: P,
+}
 impl<P: proto::ProtoKind> Request<P> {
-    fn auth(&self) -> P::Auth { self.proto.auth() }
+    pub fn new(file: PathBuf, proto: P) -> Self {
+        Self { file, proto }
+    }
+    pub fn auth(&self) -> P::Auth {
+        self.proto.auth()
+    }
 }
 impl Request<proto::Nfs> {
-    fn mount_point(&self) -> &Path { &self.proto.mount }  // only on Nfs
+    pub fn mount_point(&self) -> &Path {
+        &self.proto.mount
+    } // only on `Nfs`
 }
 ```
 

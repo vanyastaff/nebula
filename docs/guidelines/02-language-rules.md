@@ -153,13 +153,15 @@ This matters when later fields reference earlier fields via `Arc`/`Rc` cycles or
 
 Absent lifetime extension, a temporary (rvalue) is dropped at the end of the **smallest enclosing** scope that is one of: whole function; a statement; the body of `if`/`while`/`loop`; the `else` block of `if`; the condition of `if`/`while` or a match guard; the body of a match arm; operand of `&&`/`||`.
 
-```rust
-// Bad — lock dropped before match arms execute
-match data.lock().unwrap().value { /* match arms run without holding the lock */ }
+For a `match <scrutinee> { … }`, do **not** rely on subtle rules about how long temporaries inside `<scrutinee>` live relative to the arms. If `<scrutinee>` creates an RAII guard (mutex, file, transaction), **bind it in a `let` before the `match`** so the guard’s lifetime is obvious in reviews and stable across compiler versions.
 
-// Good — bind the guard
+```rust
+// Bad — `MutexGuard` temporary from `lock()` is not held across the match arms
+match data.lock().unwrap().value { /* … */ }
+
+// Good — bind the guard, then match on the protected data
 let g = data.lock().unwrap();
-match g.value { /* guard still live */ }
+match g.value { /* … */ }
 drop(g);
 ```
 

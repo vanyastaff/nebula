@@ -1,3 +1,38 @@
+# .cargo/config.toml
+# Repo-wide linker configuration.
+#
+# Windows: rust-lld ships with rustup since Rust 1.81 — bundled, used unconditionally
+# (faster than the default link.exe and always present).
+#
+# Linux/Mac: NO repo-wide linker override. mold/lld are 3-5x faster than the
+# default GNU ld, but installing them is out of scope for the repo config.
+# Contributors who want the speedup add to ~/.cargo/config.toml:
+#
+#   [target.x86_64-unknown-linux-gnu]
+#   linker = "clang"
+#   rustflags = ["-C", "link-arg=-fuse-ld=mold"]
+#
+#   [target.aarch64-apple-darwin]
+#   rustflags = ["-C", "link-arg=-fuse-ld=lld"]
+#
+# (See docs/dev-setup.md for install instructions.)
+#
+# We can't put these here because GitHub Linux runners don't have mold
+# pre-installed and the build fails with `invalid linker name`.
+
+[target.x86_64-pc-windows-msvc]
+linker = "rust-lld.exe"
+
+[build]
+# REQUIRED when using sccache: incremental builds bypass the cache, produce
+# stale fingerprints across processes (multiple worktrees / agent + IDE), and
+# are the #1 cause of "lock hang" and ghost rebuilds. Universal off.
+incremental = false
+
+[net]
+# Retry transient network failures (crates.io, git deps). Mirrors CARGO_NET_RETRY in agent hook.
+retry = 3
+
 # Workspace-local Cargo aliases — see `docs/QUALITY_GATES.md`.
 [alias]
 lint = "clippy --workspace --all-targets -- -D warnings"

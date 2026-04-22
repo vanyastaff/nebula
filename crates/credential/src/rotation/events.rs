@@ -640,7 +640,10 @@ mod tests {
     use super::*;
 
     fn test_cred_id() -> CredentialId {
-        CredentialId::new()
+        // Deterministic fixture — avoids random IDs in assertions / snapshot-style output.
+        "cred_01ARZ3NDEKTSV4RRFFQ69G5FAV"
+            .parse()
+            .expect("static test CredentialId must parse")
     }
 
     #[test]

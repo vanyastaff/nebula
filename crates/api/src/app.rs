@@ -142,10 +142,7 @@ fn build_cors_layer(config: &ApiConfig) -> CorsLayer {
 }
 
 /// Build router with graceful shutdown signal
-pub async fn serve(
-    app: Router,
-    addr: std::net::SocketAddr,
-) -> Result<(), Box<dyn std::error::Error>> {
+pub async fn serve(app: Router, addr: std::net::SocketAddr) -> Result<(), std::io::Error> {
     let listener = tokio::net::TcpListener::bind(addr).await?;
     tracing::info!("Server listening on {}", addr);
 
