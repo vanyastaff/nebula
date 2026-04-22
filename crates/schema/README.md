@@ -42,6 +42,19 @@ See `src/lib.rs` rustdoc for the quick-start example.
 Enable the optional `schemars` feature to export a validated Nebula schema as
 JSON Schema Draft 2020-12:
 
+```toml
+[dependencies]
+nebula-schema = { version = "*", features = ["schemars"] }
+```
+
+or:
+
+```bash
+cargo add nebula-schema --features schemars
+```
+
+then:
+
 ```bash
 cargo test -p nebula-schema --features schemars
 ```

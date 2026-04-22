@@ -37,7 +37,8 @@ roadmap: nebula-schema-roadmap.md
 
 ## Execution status (2026-04-22)
 
-- **Done on branch:** C1 (`schemars` JSON Schema export + mapper + tests), P3-D1 (`CHANGELOG.md`), P3-D3 (roadmap refresh in progress), P3-D4 (`crates/schema/README.md` feature usage section).
+- **Done on branch:** C1 (`schemars` JSON Schema export + mapper + tests), P3-D1 (`CHANGELOG.md`), P3-D4 (`crates/schema/README.md` feature usage section).
+- **In progress on branch:** P3-D3 (roadmap refresh).
 - **No maturity level change:** P3-D2 is satisfied with `nebula-schema` remaining `frontier` in `docs/MATURITY.md`.
 - **Remaining:** issue handoff for deferred C2–C6 follow-ups.
 

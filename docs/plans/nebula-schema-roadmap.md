@@ -37,7 +37,7 @@ This file is the **single place** for *what to do next* for `nebula-schema` (`cr
 | **Phase 1 — Foundation** | **Shipped** in tree | Proof tokens, `nebula-parameter` removed, callers migrated. See design spec acceptance; bench partiality documented in `crates/schema/benches/RESULTS.md` if present. |
 | **Phase 2 — DX** | **Mostly shipped** | `HasSchema` / `HasSelectOptions`, typed `Schema::builder()` DSL, `#[derive(Schema)]`, `#[derive(EnumSelect)]`, `field_key!`, trybuild suite, `#[param(enum_select)]` for enum-backed `SelectField`, `SelectField::extend_options`. |
 | **Phase 3 — Security** | **Complete on branch** (PR-2; merge + security review) | `SecretValue`, `KdfParams` (Argon2id), `FieldValue::SecretLiteral`, `get_secret`, `LoaderContext::with_secrets_redacted`, ADR-0034 + configuration pipeline diagram (ADR + `INTEGRATION_MODEL.md`). Credential wiring for `SecretWire` at call sites remains follow-up per ADR-0034. |
-| **Phase 4 — Advanced** | **In progress** (PR-3 C1 implemented on branch) | JSON Schema export (`schemars`) shipped in-tree with tests; C2–C6 remain intentionally deferred follow-ups per PR-3 scope cut. |
+| **Phase 4 — Advanced** | **In progress** (PR-3 C1 implemented on branch) | JSON Schema export (`schemars`) is implemented on this branch with tests; C2–C6 remain intentionally deferred follow-ups per PR-3 scope cut. |
 
 ## Remaining work — Phase 2 (close the gap)
 
