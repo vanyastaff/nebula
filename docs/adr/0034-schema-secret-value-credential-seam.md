@@ -52,3 +52,59 @@ Phase 3 of the nebula-schema design
 
 - **Key management, KMS, envelope encryption** — out of scope; see ADR-0028 series for credential home crates.
 - **Global `clippy::disallowed_methods` on `SecretWire::new`** — may follow in a follow-up that touches workspace lint config; not required to accept this ADR.
+
+## Configuration pipeline (diagram)
+
+**Also duplicated** in [`docs/INTEGRATION_MODEL.md`](../INTEGRATION_MODEL.md) (same Mermaid + notes). When the pipeline changes, update **both** files so the integration model and this ADR stay aligned.
+
+End-to-end view: all value sources funnel through **one** schema validation step into the **`ValidValues` proof token**; **`resolve`** (also in `nebula-schema`) consumes an `ExpressionContext` from runtime and yields **`ResolvedValues`**; workflow execution persists snapshots and hands secret material to credential/storage via an explicit boundary (the workflow is **not** “the encryption implementation”).
+
+```mermaid
+flowchart TB
+  subgraph author["Integration author"]
+    S["Schema: Field / ValidSchema"]
+  end
+
+  subgraph callers["Value sources"]
+    UI["UI / API / CLI / tests"]
+    LOAD["Reload saved config\n(decrypt / rehydrate)"]
+  end
+
+  subgraph schema["nebula-schema (configuration contract)"]
+    VAL["validate"]
+    VV["ValidValues"]
+    RES["resolve(ctx: ExpressionContext)\nexpressions → secret promotion\n→ post-resolve validation"]
+    RV["ResolvedValues"]
+  end
+
+  subgraph runtime["Runtime / engine"]
+    EX["ExpressionContext\n(engine, tests, CLI)"]
+    WF["Workflow: nodes, retries, cancel"]
+  end
+
+  subgraph persist["Persistence / credential"]
+    ENC["At-rest: encryption, rotation, store"]
+    SNAP["Snapshots / CAS / journal"]
+  end
+
+  S --> VAL
+  UI -->|"FieldValues"| VAL
+  LOAD -->|"FieldValues (secrets still String until resolve)"| VAL
+  ENC -.->|"decrypt / rehydrate"| LOAD
+
+  VAL --> VV
+  VV --> RES
+  EX -->|"context for resolve"| RES
+  RES --> RV
+  RV --> WF
+  WF -->|"default serde: secrets redacted"| SNAP
+  WF -.->|"handoff: SecretWire → credential/storage"| ENC
+```
+
+**Dashed edges:** `ENC -.-> LOAD` is **data flow** (decrypt / materialize into loader input). `WF -.-> ENC` is a **trust boundary handoff** (runtime initiates persistence; encryption-at-rest stays in credential/storage — see [ADR-0028](0028-cross-crate-credential-invariants.md) / [ADR-0029](0029-storage-owns-credential-persistence.md)).
+
+**Security note — plaintext lifetime:** Before `resolve`, secret-shaped fields live as ordinary `String` inside `FieldValues`. **`ValidValues::resolve`** promotes them to `FieldValue::SecretLiteral(SecretValue)` and re-validates. After promotion, `SecretValue` redacts in `Debug` / `Display` / default `Serialize`; intentional plaintext exit points are **audited** (`expose()` with `#[track_caller]`, `SecretWire` for stores). Snapshots written through default serialization paths should treat secrets as **redacted on the wire**; **`LOAD` trust** depends on storage integrity and the decrypt path (credential/storage plane — see [ADR-0029](0029-storage-owns-credential-persistence.md)).
+
+**Where `S` lives:** today the **shape** of `ValidSchema` comes from **author-time Rust** in integration/plugin crates (and registry wiring), not from the snapshot store. Persisted artifacts are **config values and history** (`SNAP`), not the Rust type graph. If product ever versions **schema definitions as data**, the diagram can gain an optional `SNAP -.-> S` edge; until then, keeping `S` only under **author** avoids visual clutter.
+
+**Non-decision (diagram scope):** `resolve` is treated as **synchronous** here; async resolve, cancellation mid-flight, and “partial promotion” safety are not modeled in this picture.

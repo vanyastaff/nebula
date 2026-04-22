@@ -1,6 +1,6 @@
 ---
 title: nebula-schema — PR-2 (Phase 3 security)
-status: draft
+status: implemented
 created: 2026-04-22
 depends_on: [nebula-schema-pr1-phase2-gap.md]
 blocks: [nebula-schema-pr3-phase4-json-schema-plus-docs.md]
@@ -22,6 +22,8 @@ roadmap: nebula-schema-roadmap.md
 | P2-B2 | `SecretValue` types, redacted `Debug`/`Serialize`, explicit expose API | `crates/schema/src/secret.rs` (new), wire into `value.rs` / `validated.rs` | unit tests |
 | P2-B3 | Resolve-time secret handling (+ optional KDF per spec) | `validated.rs`, `field.rs`, builders | integration |
 | P2-B4 | Credential migrations / adapters where spec demands | `crates/credential/**` | `cargo test -p nebula-credential` |
+
+**Implementation note (2026-04-22):** P2-B1–B3 and the merge-blocking ADR are implemented on `feat/schema-pr2-phase3-security`. P2-B4 is **deferred**: ADR-0034 keeps the explicit schema seam; `nebula-credential` integration for `SecretWire` / consumers of `get_secret` lands in follow-up PRs (see ADR §Decision item 2).
 
 ## ADR (merge-blocking)
 
