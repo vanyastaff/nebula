@@ -30,6 +30,8 @@
 | [08-review-checklist.md](./08-review-checklist.md) | — | Auditable checklist citing rule IDs |
 | [09-appendices.md](./09-appendices.md) | — | SOLID mapping, required reading, operational guidance |
 
+**Supplementary research (optional, large):** **[`research/README.md`](research/README.md)** — clustered digests (Book/std, Nomicon & RFCs, Cargo/rustc, perf/macros, atomics, async/Tokio, embedded/WASM, ecosystem, blogs, async notes). Tagged with the same `[TAG: …]` scheme as this guide; use for **extra citations** and ecosystem context, not as a substitute for **The Reference** or Nebula canon.
+
 ---
 
 ## Rule-ID system

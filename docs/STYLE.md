@@ -54,9 +54,10 @@ replace them.
 
 - **Deep Rust / LLM contract (optional).** **`docs/RUST_EXPERT_STYLE_GUIDE.md`**
   points to **`docs/guidelines/`** — a **rule-ID catalog** (Reference-grounded
-  language rules, idioms, patterns, modern 1.95+ features). Use it when generating
-  or reviewing non-trivial Rust — it does **not** override Nebula canon or this
-  **`STYLE.md`**.
+  language rules, idioms, patterns, modern 1.95+ features). **`docs/guidelines/research/`**
+  holds **tag-aligned research digests** (Book/std, Nomicon, async/Tokio, ecosystem)
+  for extra citations — still subordinate to the Reference and Nebula docs. Neither
+  overrides this **`STYLE.md`**.
 
 ## 1. Idioms we use
 

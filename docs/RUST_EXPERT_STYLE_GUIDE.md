@@ -15,3 +15,5 @@ related: [STYLE.md, AGENT_PROTOCOL.md, QUALITY_GATES.md]
 **Where the full guide lives:** **`docs/guidelines/`** — numbered files **`01`–`09`** + **`README.md`** (rule IDs, operational semantics, navigation).
 
 → Start at **[`guidelines/README.md`](guidelines/README.md)**, then **[`01-meta-principles.md`](guidelines/01-meta-principles.md)**. The largest reference block is **`02-language-rules.md`** (`L-` rules).
+
+**Optional digests:** **[`guidelines/research/README.md`](guidelines/research/README.md)** — supplementary clustered notes (async/Tokio, Nomicon, ecosystem, …), tag-aligned with the main files.

@@ -12,4 +12,6 @@ extend-exclude = [
   "migrations/",
   "deny.toml",
   "skills-lock.json",
+  # Imported LLM research digests: dense crate names / RFC tokens (flate2, ratatui, COSE, …).
+  "docs/guidelines/research/",
 ]
