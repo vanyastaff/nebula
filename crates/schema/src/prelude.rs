@@ -23,11 +23,11 @@ pub use nebula_validator::{Predicate, Rule};
 pub use crate::{
     BooleanField, CodeField, ComputedField, ComputedReturn, DynamicField, Expression,
     ExpressionContext, ExpressionMode, Field, FieldKey, FieldPath, FieldValue, FieldValues,
-    FileField, HasSchema, HasSelectOptions, InputHint, ListField, LoaderContext, LoaderRegistry,
-    ModeField, ModeVariant, NoticeField, NoticeSeverity, NumberField, ObjectField, RequiredMode,
-    ResolvedValues, Schema, SchemaBuilder, SecretField, SelectField, SelectOption, Severity,
-    StringField, Transformer, ValidSchema, ValidValues, ValidationError, ValidationReport,
-    VisibilityMode, builder::FieldCollector, field_key,
+    FileField, HasSchema, HasSelectOptions, InputHint, KdfParams, ListField, LoaderContext,
+    LoaderRegistry, ModeField, ModeVariant, NoticeField, NoticeSeverity, NumberField, ObjectField,
+    RequiredMode, ResolvedValues, Schema, SchemaBuilder, SecretField, SecretValue, SecretWire,
+    SelectField, SelectOption, Severity, StringField, Transformer, ValidSchema, ValidValues,
+    ValidationError, ValidationReport, VisibilityMode, builder::FieldCollector, field_key,
 };
 
 #[cfg(test)]
@@ -55,6 +55,14 @@ mod coverage_smoke {
         // Rule-building.
         let _: Option<Rule> = None;
         let _: Option<Predicate> = None;
+        // Secret / KDF.
+        let _: Option<KdfParams> = None;
+        let _: Option<SecretValue> = None;
+        {
+            use crate::SecretString;
+            let s = SecretValue::String(SecretString::new("prelude-coverage".to_owned()));
+            let _w = SecretWire(&s);
+        }
         // DSL trait.
         fn _l<T: FieldCollector>(_: T) {}
     }

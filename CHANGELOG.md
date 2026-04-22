@@ -8,6 +8,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- **nebula-schema** (Phase 3 security, [ADR-0034](docs/adr/0034-schema-secret-value-credential-seam.md)):
+  `SecretValue` / `SecretWire`, optional `KdfParams` + Argon2id on `Field::Secret`,
+  `FieldValue::SecretLiteral`, `ResolvedValues::get_secret`, and
+  `LoaderContext::with_secrets_redacted`. `ValidValues::resolve` promotes string
+  secrets and runs KDF before the final validate pass. Documented in
+  `GLOSSARY.md`.
 - **nebula-validator**: Re-export `validate_rules_with_ctx` at the crate root (with `validate_rules`) so callers do not need `nebula_validator::engine::` paths.
 - **nebula-schema**: `SchemaBuilder::root_rule` and `ValidSchemaInner::root_rules`
   — schema-level rules evaluated after per-field validation (predicate-aware via
@@ -40,6 +46,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- **BREAKING — nebula-schema**: `ResolvedValues::get` no longer returns JSON for
+  `Field::Secret` (always `None`); use `ResolvedValues::get_secret` for secret
+  material after `resolve`. Default JSON for `FieldValue` encodes
+  `SecretLiteral` as `"<redacted>"` (never plaintext in `to_json`).
 - **BREAKING — workspace**: MSRV raised from **1.94 → 1.95** (see
   [ADR-0019](docs/adr/0019-msrv-1.95.md); supersedes ADR-0010).
   `workspace.package.rust-version`, `clippy.toml` `msrv`, all

@@ -105,6 +105,8 @@ sha2 = "0.11"
 hmac = "0.13"
 hex = "0.4"
 subtle = "2.6"
+zeroize = { version = "1.8.2", features = ["std"] }
+argon2 = { version = "0.5.3", default-features = false, features = ["std"] }
 
 # HTTP
 http = "1.4"

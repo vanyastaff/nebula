@@ -19,8 +19,11 @@ use serde_json::Value;
 use crate::{
     FieldValues, SelectOption,
     error::ValidationError,
+    field::Field,
     key::FieldKey,
     path::{FieldPath, PathSegment},
+    secret::SECRET_REDACTED,
+    value::FieldValue,
 };
 
 /// Boxed future used by async loader functions.
@@ -54,6 +57,21 @@ impl LoaderContext {
         }
     }
 
+    /// Redact all [`Field::Secret`]-backed values (including any nested
+    /// secrets) before exposing `values` to a loader. Does **not** evaluate
+    /// expressions — [`crate::value::FieldValue::Expression`] leaves under
+    /// secret fields are also collapsed to a redacted string literal to avoid
+    /// surfacing the expression source.
+    #[must_use]
+    pub fn with_secrets_redacted(mut self, schema: &crate::validated::ValidSchema) -> Self {
+        for field in schema.fields() {
+            if let Some(v) = self.values.get_mut(field.key()) {
+                redact_secrets_in_value_for_loader(field, v);
+            }
+        }
+        self
+    }
+
     /// Attach text filter.
     #[must_use]
     pub fn with_filter(mut self, filter: impl Into<String>) -> Self {
@@ -73,6 +91,42 @@ impl LoaderContext {
     pub fn with_metadata(mut self, metadata: Value) -> Self {
         self.metadata = Some(metadata);
         self
+    }
+}
+
+fn redact_secrets_in_value_for_loader(field: &Field, value: &mut FieldValue) {
+    use serde_json::Value as Json;
+    match (field, &mut *value) {
+        (Field::Secret(_), _) => {
+            *value = FieldValue::Literal(Json::String(SECRET_REDACTED.to_owned()));
+        },
+        (Field::Object(obj), FieldValue::Object(map)) => {
+            for ch in &obj.fields {
+                if let Some(v) = map.get_mut(ch.key()) {
+                    redact_secrets_in_value_for_loader(ch, v);
+                }
+            }
+        },
+        (Field::List(list), FieldValue::List(items)) => {
+            if let Some(item_field) = list.item.as_deref() {
+                for v in &mut *items {
+                    redact_secrets_in_value_for_loader(item_field, v);
+                }
+            }
+        },
+        (
+            Field::Mode(mode),
+            FieldValue::Mode {
+                mode: mode_key,
+                value: Some(mv),
+            },
+        ) => {
+            let Some(var) = mode.variants.iter().find(|v| v.key == mode_key.as_str()) else {
+                return;
+            };
+            redact_secrets_in_value_for_loader(&var.field, mv.as_mut());
+        },
+        _ => {},
     }
 }
 

@@ -140,6 +140,8 @@ pub mod path;
 pub mod prelude;
 /// Top-level schema aggregate.
 pub mod schema;
+/// Secret value types, optional KDF, and `SecretWire`.
+pub mod secret;
 /// Value transformer definitions.
 pub mod transformer;
 /// Validated schema proof-tokens.
@@ -176,6 +178,9 @@ pub use nebula_validator::{Predicate, Rule};
 pub use option::SelectOption;
 pub use path::{FieldPath, PathSegment};
 pub use schema::{Schema, SchemaBuilder};
+pub use secret::{
+    KdfError, KdfParams, SECRET_REDACTED, SecretBytes, SecretString, SecretValue, SecretWire,
+};
 pub use transformer::Transformer;
 pub use validated::{FieldHandle, ResolvedValues, SchemaFlags, ValidSchema, ValidValues};
 pub use value::{EXPRESSION_KEY, FieldValue, FieldValues};

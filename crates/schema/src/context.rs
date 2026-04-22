@@ -3,6 +3,8 @@
 //! These adapters let predicate rules (visibility/required `When(rule)`) run
 //! directly against the current value tree without allocating a `HashMap`.
 
+use std::sync::OnceLock;
+
 use indexmap::IndexMap;
 use nebula_validator::RuleContext;
 use serde_json::Value;
@@ -11,6 +13,11 @@ use crate::{
     key::FieldKey,
     value::{FieldValue, FieldValues},
 };
+
+fn secret_rule_placeholder() -> &'static Value {
+    static P: OnceLock<Value> = OnceLock::new();
+    P.get_or_init(|| Value::String(crate::secret::SECRET_REDACTED.to_owned()))
+}
 
 /// Root context — borrowed view over top-level [`FieldValues`].
 pub(crate) struct RootContext<'a>(pub &'a FieldValues);
@@ -21,6 +28,7 @@ impl RuleContext for RootContext<'_> {
         // constructing a FieldKey (no Arc allocation for the lookup).
         match self.0.get_by_str(key)? {
             FieldValue::Literal(v) => Some(v),
+            FieldValue::SecretLiteral(_) => Some(secret_rule_placeholder()),
             _ => None,
         }
     }
@@ -35,6 +43,7 @@ impl RuleContext for ObjectContext<'_> {
         // Passing &str directly avoids constructing a FieldKey.
         match self.0.get(key)? {
             FieldValue::Literal(v) => Some(v),
+            FieldValue::SecretLiteral(_) => Some(secret_rule_placeholder()),
             _ => None,
         }
     }

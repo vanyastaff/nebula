@@ -1,0 +1,363 @@
+//! Secret material and optional KDF parameters for `Field::Secret`.
+//!
+//! `SecretValue` is **not** encryption-at-rest (that is `nebula-credential` /
+//! storage). It **does** provide zeroizing buffers, redacted `Debug` /
+//! `Display` / `Serialize` defaults, an audited [`SecretString::expose`] /
+//! [`SecretBytes::expose`], and an explicit [`SecretWire`] for callers that
+//! must persist plaintext to an already-encrypted channel.
+//!
+//! Architecture: [`ADR-0034`](../../../docs/adr/0034-schema-secret-value-credential-seam.md)
+//! in-repo; design details in
+//! `docs/superpowers/specs/2026-04-16-nebula-schema-phase3-security-design.md`.
+
+use std::{fmt, ops::DerefMut};
+
+use argon2::{Argon2, Params};
+use serde::{Deserialize, Deserializer, Serialize, Serializer};
+use zeroize::{Zeroize, Zeroizing};
+
+/// String returned by JSON helpers when a secret must not be leaked on the wire.
+pub const SECRET_REDACTED: &str = "<redacted>";
+
+// ── KDF error + salt ---------------------------------------------------------
+
+/// Failure while hashing a secret at resolve time.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum KdfError {
+    /// User-facing misconfiguration in `KdfParams` or salt encoding.
+    InvalidParams(String),
+    /// Underlying Argon2 failure.
+    KdfFailed(String),
+}
+
+impl fmt::Display for KdfError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            KdfError::InvalidParams(m) => write!(f, "invalid KDF parameters: {m}"),
+            KdfError::KdfFailed(m) => write!(f, "KDF operation failed: {m}"),
+        }
+    }
+}
+
+impl std::error::Error for KdfError {}
+
+fn decode_salt(salt_hex: &str) -> Result<Vec<u8>, KdfError> {
+    let s = salt_hex.trim().trim_start_matches("0x");
+    if !s.len().is_multiple_of(2) {
+        return Err(KdfError::InvalidParams(
+            "KDF salt_hex must be even-length".into(),
+        ));
+    }
+    let bytes = hex::decode(s).map_err(|e| KdfError::InvalidParams(e.to_string()))?;
+    if !(8..=64).contains(&bytes.len()) {
+        return Err(KdfError::InvalidParams(
+            "KDF salt must decode to 8–64 bytes after hex decode".into(),
+        ));
+    }
+    Ok(bytes)
+}
+
+// ── KDF parameters (schema wire / builder) ---------------------------------
+
+/// Key-derivation parameters for an optional post-input hashing step.
+///
+/// When set on a [`super::field::SecretField`], the resolve pipeline replaces a
+/// user `string` secret with [`SecretValue::Bytes`] (never the KDF *password*
+/// in resolved storage).
+#[non_exhaustive]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "algorithm", rename_all = "snake_case", deny_unknown_fields)]
+pub enum KdfParams {
+    /// Argon2id (RFC 9106) using the `argon2` crate.
+    Argon2id {
+        /// Salt as even-length hex (no `0x`); decoded length 8–32 bytes recommended.
+        salt_hex: String,
+        /// `m` cost (memory, KiB). Must match the Argon2 `Params` range.
+        memory_kib: u32,
+        /// `t` cost (iterations).
+        time_cost: u32,
+        /// `p` cost (parallelism / lanes). Must be at least 1.
+        #[serde(default = "default_p_cost")]
+        parallelism: u8,
+    },
+}
+
+fn default_p_cost() -> u8 {
+    1
+}
+
+// ── SecretString / SecretBytes / SecretValue --------------------------------
+
+/// UTF-8 secret (common for passwords and API keys).
+#[derive(Clone)]
+pub struct SecretString(Zeroizing<Vec<u8>>);
+
+impl SecretString {
+    /// Build from a `String` (moves; original allocation is not preserved as `String`).
+    pub fn new(value: String) -> Self {
+        Self(Zeroizing::new(value.into_bytes()))
+    }
+
+    /// Redacted by default: [`SECRET_REDACTED`].
+    #[inline]
+    pub fn redacted_json() -> serde_json::Value {
+        serde_json::Value::String(SECRET_REDACTED.to_owned())
+    }
+
+    /// Return the raw UTF-8 secret for trusted consumers.
+    ///
+    /// Emits a [`tracing::debug!`] line with a caller location to support audits.
+    #[inline]
+    #[track_caller]
+    pub fn expose(&self) -> &str {
+        let s = std::str::from_utf8(self.0.as_ref())
+            .expect("SecretString is always valid UTF-8 from new/existing construction");
+        tracing::debug!(target: "nebula_schema::secret", location = %std::panic::Location::caller(), "SecretString::expose");
+        s
+    }
+
+    /// Returns `true` when the underlying buffer is empty.
+    #[inline]
+    pub fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
+}
+
+impl fmt::Debug for SecretString {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("SecretString(")?;
+        f.write_str(SECRET_REDACTED)?;
+        f.write_str(")")
+    }
+}
+
+impl fmt::Display for SecretString {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(SECRET_REDACTED)
+    }
+}
+
+impl Serialize for SecretString {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.serialize_str(SECRET_REDACTED)
+    }
+}
+
+impl<'de> Deserialize<'de> for SecretString {
+    fn deserialize<D: Deserializer<'de>>(_deserializer: D) -> Result<Self, D::Error> {
+        Err(serde::de::Error::custom(
+            "SecretString cannot be constructed from deserializer",
+        ))
+    }
+}
+
+impl PartialEq for SecretString {
+    fn eq(&self, other: &Self) -> bool {
+        use subtle::ConstantTimeEq;
+        self.0.as_slice().ct_eq(other.0.as_slice()).into()
+    }
+}
+
+impl Eq for SecretString {}
+
+/// Opaque byte secret (hashed outputs, binary tokens).
+#[derive(Clone)]
+pub struct SecretBytes(Zeroizing<Vec<u8>>);
+
+impl SecretBytes {
+    pub(crate) fn from_vec_unchecked(v: Vec<u8>) -> Self {
+        Self(Zeroizing::new(v))
+    }
+
+    /// Return raw bytes.
+    #[inline]
+    #[track_caller]
+    pub fn expose(&self) -> &[u8] {
+        tracing::debug!(target: "nebula_schema::secret", location = %std::panic::Location::caller(), "SecretBytes::expose");
+        &self.0
+    }
+
+    /// Returns `true` when the buffer is empty.
+    #[inline]
+    pub fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
+}
+
+impl fmt::Debug for SecretBytes {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("SecretBytes(")?;
+        f.write_str(SECRET_REDACTED)?;
+        f.write_str(")")
+    }
+}
+
+impl fmt::Display for SecretBytes {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(SECRET_REDACTED)
+    }
+}
+
+impl Serialize for SecretBytes {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.serialize_str(SECRET_REDACTED)
+    }
+}
+
+impl<'de> Deserialize<'de> for SecretBytes {
+    fn deserialize<D: Deserializer<'de>>(_deserializer: D) -> Result<Self, D::Error> {
+        Err(serde::de::Error::custom(
+            "SecretBytes cannot be constructed from deserializer",
+        ))
+    }
+}
+
+impl PartialEq for SecretBytes {
+    fn eq(&self, other: &Self) -> bool {
+        use subtle::ConstantTimeEq;
+        self.0.as_slice().ct_eq(other.0.as_slice()).into()
+    }
+}
+
+impl Eq for SecretBytes {}
+
+/// Runtime secret value attached to a schema `Secret` field.
+#[non_exhaustive]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SecretValue {
+    /// Secret UTF-8 string.
+    String(SecretString),
+    /// Opaque byte secret.
+    Bytes(SecretBytes),
+}
+
+impl SecretValue {
+    /// Wrap a `String` secret.
+    pub fn string(value: String) -> Self {
+        Self::String(SecretString::new(value))
+    }
+
+    /// Wrap raw bytes.
+    pub fn bytes(value: impl Into<Zeroizing<Vec<u8>>>) -> Self {
+        Self::Bytes(SecretBytes(value.into()))
+    }
+
+    /// `true` when the secret is an empty string or empty buffer.
+    pub fn is_empty(&self) -> bool {
+        match self {
+            SecretValue::String(s) => s.is_empty(),
+            SecretValue::Bytes(b) => b.is_empty(),
+        }
+    }
+
+    /// JSON form used by wire helpers; always the redacted string token.
+    pub fn to_json(&self) -> serde_json::Value {
+        match self {
+            Self::String(_) | Self::Bytes(_) => SecretString::redacted_json(),
+        }
+    }
+}
+
+impl Serialize for SecretValue {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        self.to_json().serialize(serializer)
+    }
+}
+
+/// Explicit wrapper: serializes a [`SecretValue`] to plaintext (audited; use
+/// for encrypted at-rest paths only).
+pub struct SecretWire<'a>(pub &'a SecretValue);
+
+impl fmt::Debug for SecretWire<'_> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("SecretWire(<plaintext>)")
+    }
+}
+
+impl Serialize for SecretWire<'_> {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        match self.0 {
+            SecretValue::String(s) => s.expose().serialize(serializer),
+            SecretValue::Bytes(b) => serializer.serialize_str(&hex::encode(b.expose())),
+        }
+    }
+}
+
+impl KdfParams {
+    /// Run the configured KDF over `password` and return hashed secret bytes.
+    pub fn hash_password(&self, password: &[u8]) -> Result<SecretValue, KdfError> {
+        match self {
+            KdfParams::Argon2id {
+                salt_hex,
+                memory_kib,
+                time_cost,
+                parallelism,
+            } => {
+                if *parallelism == 0 {
+                    return Err(KdfError::InvalidParams(
+                        "Argon2 parallelism must be >= 1".into(),
+                    ));
+                }
+                let salt = decode_salt(salt_hex)?;
+                let out_len: usize = 32;
+                let params = Params::new(
+                    *memory_kib,
+                    *time_cost,
+                    u32::from(*parallelism),
+                    Some(out_len),
+                )
+                .map_err(|e| KdfError::InvalidParams(e.to_string()))?;
+                let argon2 =
+                    Argon2::new(argon2::Algorithm::Argon2id, argon2::Version::V0x13, params);
+                let mut out = vec![0u8; out_len];
+                argon2
+                    .hash_password_into(password, &salt, &mut out)
+                    .map_err(|e| KdfError::KdfFailed(e.to_string()))?;
+                Ok(SecretValue::Bytes(SecretBytes::from_vec_unchecked(out)))
+            },
+        }
+    }
+}
+
+impl Drop for SecretString {
+    fn drop(&mut self) {
+        self.0.deref_mut().as_mut_slice().zeroize();
+    }
+}
+
+impl Drop for SecretBytes {
+    fn drop(&mut self) {
+        self.0.deref_mut().as_mut_slice().zeroize();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn string_debug_does_not_echo_plaintext() {
+        let s = SecretString::new("hunter2".to_owned());
+        let dbg = format!("{s:?}");
+        assert!(!dbg.contains("hunter2"));
+    }
+
+    #[test]
+    fn string_serialize_redacts() {
+        let s = SecretString::new("hunter2".to_owned());
+        let j = serde_json::to_value(&s).expect("json");
+        assert_eq!(j, json_redacted());
+    }
+
+    fn json_redacted() -> serde_json::Value {
+        serde_json::Value::String(SECRET_REDACTED.to_owned())
+    }
+
+    #[test]
+    fn wire_serializes_bytes_as_hex() {
+        let b = SecretBytes::from_vec_unchecked(vec![0x61, 0x62, 0x63]);
+        let v = SecretValue::Bytes(b);
+        let ser = serde_json::to_value(SecretWire(&v)).expect("json");
+        assert_eq!(ser, serde_json::Value::String("616263".into()));
+    }
+}

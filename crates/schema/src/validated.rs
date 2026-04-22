@@ -18,6 +18,7 @@ use crate::{
     key::FieldKey,
     mode::{ExpressionMode, RequiredMode, VisibilityMode},
     path::FieldPath,
+    secret::SecretValue,
     value::{FieldValue, FieldValues},
 };
 
@@ -301,17 +302,17 @@ impl ValidValues {
     }
 
     /// Resolve all `FieldValue::Expression` entries by evaluating them through
-    /// `ctx`.
+    /// `ctx`, then **promote** `Field::Secret` string literals to
+    /// `FieldValue::SecretLiteral` (and optional KDF) before the final
+    /// schema-validate pass.
     ///
-    /// **Fast path**: when `schema.flags().uses_expressions == false` the
-    /// existing value tree is promoted directly to `ResolvedValues` without
-    /// any walking.
+    /// **Expression fast path:** when `schema.flags().uses_expressions == false`,
+    /// expression resolution is skipped; **secret promotion still runs** so
+    /// `ResolvedValues` is consistent for secret fields.
     ///
-    /// After evaluating each expression the resolved literal is validated
-    /// against the same type/rule constraints that were skipped at
-    /// schema-validate time. If any expression evaluation or post-resolve
-    /// rule fails, all errors are collected and returned as a
-    /// `ValidationReport`.
+    /// After evaluating each expression the tree is re-validated on resolved
+    /// literals. If any expression evaluation, KDF, or post-resolve type/rule
+    /// check fails, errors are returned as a [`ValidationReport`].
     ///
     /// # Errors
     ///
@@ -322,44 +323,48 @@ impl ValidValues {
         self,
         ctx: &dyn ExpressionContext,
     ) -> Result<ResolvedValues, ValidationReport> {
-        // Fast path — no expressions in this schema.
-        if !self.schema.flags().uses_expressions {
-            return Ok(ResolvedValues {
-                schema: self.schema,
-                values: self.values,
-                warnings: self.warnings,
-            });
-        }
-
         let mut report = ValidationReport::new();
         let mut values = self.values;
         let mut resolved_expression_paths: HashSet<FieldPath> = HashSet::new();
 
-        // Walk and resolve every entry in the flat top-level map.
-        let keys: Vec<FieldKey> = values.iter().map(|(k, _)| k.clone()).collect();
-        for key in keys {
-            let Some(value) = values.get(&key).cloned() else {
-                continue;
-            };
-            let path = FieldPath::root().join(key.clone());
-            let resolved = resolve_value(
-                value,
-                ctx,
-                &path,
-                &mut report,
-                &mut resolved_expression_paths,
-            )
-            .await;
-            values.set(key, resolved);
+        if self.schema.flags().uses_expressions {
+            // Walk and resolve every entry in the flat top-level map.
+            let keys: Vec<FieldKey> = values.iter().map(|(k, _)| k.clone()).collect();
+            for key in keys {
+                let Some(value) = values.get(&key).cloned() else {
+                    continue;
+                };
+                let path = FieldPath::root().join(key.clone());
+                let resolved = resolve_value(
+                    value,
+                    ctx,
+                    &path,
+                    &mut report,
+                    &mut resolved_expression_paths,
+                )
+                .await;
+                values.set(key, resolved);
+            }
+
+            if report.has_errors() {
+                return Err(report);
+            }
+        }
+
+        for field in self.schema.fields() {
+            let path = FieldPath::root().join(field.key().clone());
+            if let Some(v) = values.get_mut(field.key()) {
+                promote_secrets_in_value(field, v, &path, &mut report);
+            }
         }
 
         if report.has_errors() {
             return Err(report);
         }
 
-        // Re-run schema validation on resolved literals. Any type mismatches at
-        // paths produced by expression evaluation are surfaced as
-        // `expression.type_mismatch`.
+        // Re-run schema validation on resolved + promoted literals. Any type
+        // mismatches at paths produced by expression evaluation are surfaced
+        // as `expression.type_mismatch`.
         let resolve_warnings: Vec<ValidationError> = report
             .iter()
             .filter(|e| e.severity == Severity::Warning)
@@ -426,13 +431,28 @@ impl ResolvedValues {
         &self.warnings
     }
 
-    /// Look up a resolved literal value by key.
+    /// Look up a resolved **non-secret** literal by key.
     ///
-    /// Returns `None` if the field is absent or still an expression
-    /// (should not happen in a properly resolved set).
+    /// Returns `None` if the key is missing, the value is not a JSON literal, or
+    /// the field is a [`Field::Secret`] (use [`Self::get_secret`](Self::get_secret) instead).
     pub fn get(&self, key: &FieldKey) -> Option<&serde_json::Value> {
+        if matches!(self.schema.find(key), Some(Field::Secret(_))) {
+            return None;
+        }
         match self.values.get(key)? {
             FieldValue::Literal(v) => Some(v),
+            FieldValue::SecretLiteral(_) => None,
+            _ => None,
+        }
+    }
+
+    /// Borrow the secret material for a `Field::Secret` key, if present.
+    pub fn get_secret(&self, key: &FieldKey) -> Option<&SecretValue> {
+        if !matches!(self.schema.find(key), Some(Field::Secret(_))) {
+            return None;
+        }
+        match self.values.get(key)? {
+            FieldValue::SecretLiteral(s) => Some(s),
             _ => None,
         }
     }
@@ -451,6 +471,96 @@ impl ResolvedValues {
                     .build(),
             )
         })
+    }
+}
+
+/// Promote string literals to [`FieldValue::SecretLiteral`] for secret fields, invoking KDFs when
+/// configured. Recurses through object/list/mode containers.
+fn promote_secrets_in_value(
+    field: &Field,
+    value: &mut FieldValue,
+    path: &FieldPath,
+    report: &mut ValidationReport,
+) {
+    use serde_json::Value;
+
+    match (field, &mut *value) {
+        (Field::Secret(secret), FieldValue::Literal(Value::String(s))) => {
+            *value = if let Some(kdf) = &secret.kdf {
+                match kdf.hash_password(s.as_bytes()) {
+                    Ok(sv) => FieldValue::SecretLiteral(sv),
+                    Err(e) => {
+                        report.push(
+                            ValidationError::builder("secret.kdf")
+                                .at(path.clone())
+                                .message(e.to_string())
+                                .build(),
+                        );
+                        return;
+                    },
+                }
+            } else {
+                FieldValue::SecretLiteral(SecretValue::string(s.clone()))
+            };
+        },
+        (Field::Secret(_), FieldValue::Literal(_)) => {
+            report.push(
+                ValidationError::builder("type_mismatch")
+                    .at(path.clone())
+                    .message("secret field value must be a string")
+                    .build(),
+            );
+        },
+        (Field::Secret(_), FieldValue::SecretLiteral(_)) => {},
+        (Field::Secret(_), FieldValue::Expression(_)) => {
+            report.push(
+                ValidationError::builder("expression.unresolved")
+                    .at(path.clone())
+                    .message(
+                        "secret field still has an expression value at resolve time".to_owned(),
+                    )
+                    .build(),
+            );
+        },
+        (Field::Secret(_), v) => {
+            report.push(
+                ValidationError::builder("type_mismatch")
+                    .at(path.clone())
+                    .message(format!("secret field has incompatible value shape: {v:?}"))
+                    .build(),
+            );
+        },
+        (Field::Object(obj), FieldValue::Object(map)) => {
+            for ch in &obj.fields {
+                if let Some(v) = map.get_mut(ch.key()) {
+                    let p = path.clone().join(ch.key().clone());
+                    promote_secrets_in_value(ch, v, &p, report);
+                }
+            }
+        },
+        (Field::List(list), FieldValue::List(items)) => {
+            if let Some(item_field) = list.item.as_deref() {
+                for (i, v) in items.iter_mut().enumerate() {
+                    let p = path.clone().join(i);
+                    promote_secrets_in_value(item_field, v, &p, report);
+                }
+            }
+        },
+        (
+            Field::Mode(mode),
+            FieldValue::Mode {
+                mode: mode_key,
+                value: Some(mv),
+            },
+        ) => {
+            let Some(var) = mode.variants.iter().find(|v| v.key == mode_key.as_str()) else {
+                return;
+            };
+            let k = FieldKey::new("value").expect("static `value` payload key");
+            let p = path.clone().join(k);
+            promote_secrets_in_value(&var.field, mv.as_mut(), &p, report);
+        },
+        _ => {},
     }
 }
 
@@ -580,6 +690,7 @@ fn is_absent_for_required(field: &Field, raw: Option<&FieldValue>) -> bool {
     let Some(value) = raw else { return true };
     match (field, value) {
         (_, FieldValue::Literal(serde_json::Value::Null)) => true,
+        (Field::Secret(_), FieldValue::SecretLiteral(sv)) => sv.is_empty(),
         (
             Field::String(_) | Field::Secret(_) | Field::Code(_),
             FieldValue::Literal(serde_json::Value::String(s)),
@@ -718,6 +829,44 @@ fn validate_literal_value(
             run_rules(field.rules(), &transformed, path, report);
         },
         Field::Secret(f) => {
+            if let FieldValue::SecretLiteral(sv) = value {
+                let v_for_rules = match sv {
+                    SecretValue::String(st) => {
+                        let transformed = apply_transformers(
+                            &f.transformers,
+                            serde_json::Value::String(st.expose().to_owned()),
+                        );
+                        if !transformed.is_string() {
+                            report.push(
+                                ValidationError::builder("type_mismatch")
+                                    .at(path.clone())
+                                    .message(format!("field `{path}` expects a string value"))
+                                    .build(),
+                            );
+                            return;
+                        }
+                        transformed
+                    },
+                    SecretValue::Bytes(b) => {
+                        let transformed = apply_transformers(
+                            &f.transformers,
+                            serde_json::Value::String(hex::encode(b.expose())),
+                        );
+                        if !transformed.is_string() {
+                            report.push(
+                                ValidationError::builder("type_mismatch")
+                                    .at(path.clone())
+                                    .message(format!("field `{path}` expects a string value"))
+                                    .build(),
+                            );
+                            return;
+                        }
+                        transformed
+                    },
+                };
+                run_rules(field.rules(), &v_for_rules, path, report);
+                return;
+            }
             let FieldValue::Literal(lit) = value else {
                 return;
             };
