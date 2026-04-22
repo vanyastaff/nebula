@@ -33,7 +33,7 @@ Pattern inspiration: DMMF proof-tokens (ch "Modeling with Types") and Rust types
 - `ValidValues::resolve(self, ctx: &dyn ExpressionContext) -> Result<ResolvedValues, ValidationReport>` — async runtime resolution; consumes the first proof-token and returns the second (use `.await`).
 - `FieldValues`, `ResolvedValues` — value containers.
 - `FieldValues::try_set_raw` — fallible raw setter for runtime code paths; `set_raw` is the panic-on-invalid-key helper for tests/migrations.
-- `ValidSchema::json_schema() -> schemars::Schema` (`schemars` feature) — exports JSON Schema Draft 2020-12 plus `x-nebula-*` contract extensions for schema semantics that JSON Schema alone cannot encode.
+- `ValidSchema::json_schema() -> Result<schemars::Schema, JsonSchemaExportError>` (`schemars` feature) — exports JSON Schema Draft 2020-12 plus `x-nebula-*` contract extensions for schema semantics that JSON Schema alone cannot encode.
 
 See `src/lib.rs` rustdoc for the quick-start example.
 

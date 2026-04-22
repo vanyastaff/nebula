@@ -169,6 +169,8 @@ pub use field::{
 };
 pub use has_schema::{HasSchema, HasSelectOptions};
 pub use input_hint::InputHint;
+#[cfg(feature = "schemars")]
+pub use json_schema::JsonSchemaExportError;
 pub use key::FieldKey;
 pub use loader::{
     Loader, LoaderContext, LoaderFuture, LoaderRegistry, LoaderResult, OptionLoader, RecordLoader,

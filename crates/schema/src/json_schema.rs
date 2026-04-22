@@ -5,6 +5,8 @@
 
 #![cfg(feature = "schemars")]
 
+use std::{error::Error as StdError, fmt};
+
 use serde_json::{Map, Value};
 
 use crate::{
@@ -15,6 +17,45 @@ use crate::{
 /// Canonical draft URI emitted by [`ValidSchema::json_schema`].
 const DRAFT_2020_12: &str = "https://json-schema.org/draft/2020-12/schema";
 
+/// Error produced while exporting [`crate::validated::ValidSchema`] to JSON Schema.
+#[derive(Debug)]
+pub enum JsonSchemaExportError {
+    /// Failed to serialize a root-level rule into JSON.
+    RootRuleSerialization {
+        /// Index of the root rule in `ValidSchema::root_rules()`.
+        index: usize,
+        /// Serialization error emitted by `serde_json`.
+        source: serde_json::Error,
+    },
+    /// Constructed JSON payload is rejected by `schemars::Schema`.
+    InvalidSchema(serde_json::Error),
+}
+
+impl fmt::Display for JsonSchemaExportError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::RootRuleSerialization { index, source } => {
+                write!(
+                    f,
+                    "failed to serialize root rule at index {index}: {source}"
+                )
+            },
+            Self::InvalidSchema(source) => {
+                write!(f, "failed to construct JSON Schema document: {source}")
+            },
+        }
+    }
+}
+
+impl StdError for JsonSchemaExportError {
+    fn source(&self) -> Option<&(dyn StdError + 'static)> {
+        match self {
+            Self::RootRuleSerialization { source, .. } => Some(source),
+            Self::InvalidSchema(source) => Some(source),
+        }
+    }
+}
+
 impl crate::validated::ValidSchema {
     /// Export this validated schema as JSON Schema (Draft 2020-12).
     ///
@@ -22,12 +63,15 @@ impl crate::validated::ValidSchema {
     /// - field shape and basic constraints are mapped
     /// - dynamic runtime semantics (loaders, deferred rules, expression runtime) are not fully
     ///   representable and are omitted from strict constraints
-    pub fn json_schema(&self) -> schemars::Schema {
+    pub fn json_schema(&self) -> Result<schemars::Schema, JsonSchemaExportError> {
         schema_for_fields(self.fields(), self.root_rules())
     }
 }
 
-fn schema_for_fields(fields: &[Field], root_rules: &[nebula_validator::Rule]) -> schemars::Schema {
+fn schema_for_fields(
+    fields: &[Field],
+    root_rules: &[nebula_validator::Rule],
+) -> Result<schemars::Schema, JsonSchemaExportError> {
     let mut root = Map::new();
     root.insert(
         "$schema".to_owned(),
@@ -47,19 +91,17 @@ fn schema_for_fields(fields: &[Field], root_rules: &[nebula_validator::Rule]) ->
         );
     }
     if !root_rules.is_empty() {
-        root.insert(
-            "x-nebula-root-rules".to_owned(),
-            Value::Array(
-                root_rules
-                    .iter()
-                    .map(|r| serde_json::to_value(r).expect("rule is serializable"))
-                    .collect(),
-            ),
-        );
+        let mut serialized = Vec::with_capacity(root_rules.len());
+        for (index, rule) in root_rules.iter().enumerate() {
+            let value = serde_json::to_value(rule)
+                .map_err(|source| JsonSchemaExportError::RootRuleSerialization { index, source })?;
+            serialized.push(value);
+        }
+        root.insert("x-nebula-root-rules".to_owned(), Value::Array(serialized));
     }
     root.insert("additionalProperties".to_owned(), Value::Bool(false));
 
-    schemars::Schema::try_from(Value::Object(root)).expect("valid schema JSON object")
+    schemars::Schema::try_from(Value::Object(root)).map_err(JsonSchemaExportError::InvalidSchema)
 }
 
 fn properties_for_fields(fields: &[Field]) -> Map<String, Value> {
@@ -256,17 +298,18 @@ fn mode_schema(field: &ModeField) -> Map<String, Value> {
     for variant in &field.variants {
         let mut branch = primitive_schema("object");
         let mut props = Map::new();
+        let mut required = vec![Value::String("mode".to_owned())];
 
         let mut mode_const = Map::new();
         mode_const.insert("const".to_owned(), Value::String(variant.key.clone()));
         props.insert("mode".to_owned(), Value::Object(mode_const));
         props.insert("value".to_owned(), field_schema_value(&variant.field));
+        if matches!(variant.field.required(), RequiredMode::Always) {
+            required.push(Value::String("value".to_owned()));
+        }
 
         branch.insert("properties".to_owned(), Value::Object(props));
-        branch.insert(
-            "required".to_owned(),
-            Value::Array(vec![Value::String("mode".to_owned())]),
-        );
+        branch.insert("required".to_owned(), Value::Array(required));
         branch.insert("additionalProperties".to_owned(), Value::Bool(false));
         branches.push(Value::Object(branch));
     }
@@ -348,7 +391,7 @@ fn apply_expression_mode(
         ExpressionMode::Forbidden => core,
         ExpressionMode::Allowed => {
             out.insert(
-                "oneOf".to_owned(),
+                "anyOf".to_owned(),
                 Value::Array(vec![
                     Value::Object(core.clone()),
                     Value::Object(expression_wrapper_schema()),
@@ -480,7 +523,7 @@ mod tests {
             .build()
             .expect("valid schema");
 
-        let json = schema.json_schema().to_value();
+        let json = schema.json_schema().expect("json schema export").to_value();
         assert_eq!(
             json["$schema"],
             json!("https://json-schema.org/draft/2020-12/schema")
@@ -532,7 +575,7 @@ mod tests {
             .build()
             .expect("valid schema");
 
-        let json = schema.json_schema().to_value();
+        let json = schema.json_schema().expect("json schema export").to_value();
         let one_of = json["properties"]["auth"]["x-nebula-resolved-value-schema"]["oneOf"]
             .as_array()
             .expect("oneOf array");
@@ -547,6 +590,25 @@ mod tests {
                 .iter()
                 .any(|v| v["properties"]["mode"]["const"] == Value::String("token".to_owned()))
         );
+        let token = one_of
+            .iter()
+            .find(|v| v["properties"]["mode"]["const"] == Value::String("token".to_owned()))
+            .expect("token branch exists");
+        assert_eq!(token["required"], json!(["mode", "value"]));
+    }
+
+    #[test]
+    fn exports_allowed_expression_mode_with_any_of() {
+        let schema = Schema::builder()
+            .add(Field::dynamic(
+                FieldKey::new("runtime").expect("static key"),
+            ))
+            .build()
+            .expect("valid schema");
+
+        let json = schema.json_schema().expect("json schema export").to_value();
+        assert!(json["properties"]["runtime"]["anyOf"].is_array());
+        assert!(json["properties"]["runtime"]["oneOf"].is_null());
     }
 
     #[test]
@@ -565,7 +627,7 @@ mod tests {
             .build()
             .expect("valid schema");
 
-        let json = schema.json_schema().to_value();
+        let json = schema.json_schema().expect("json schema export").to_value();
         assert_eq!(
             json["properties"]["count"]["x-nebula-resolved-value-schema"]["type"],
             json!("number")
