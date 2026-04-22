@@ -86,6 +86,12 @@ fn default_p_cost() -> u8 {
     1
 }
 
+// Product-level guardrails for resolve-time KDF cost to prevent runaway
+// resource usage from unbounded user-supplied schema parameters.
+const MAX_KDF_MEMORY_KIB: u32 = 256 * 1024;
+const MAX_KDF_TIME_COST: u32 = 10;
+const MAX_KDF_PARALLELISM: u8 = 16;
+
 // ── SecretString / SecretBytes / SecretValue --------------------------------
 
 /// UTF-8 secret (common for passwords and API keys).
@@ -300,6 +306,21 @@ impl KdfParams {
                         "Argon2 parallelism must be >= 1".into(),
                     ));
                 }
+                if *memory_kib > MAX_KDF_MEMORY_KIB {
+                    return Err(KdfError::InvalidParams(format!(
+                        "Argon2 memory_kib must be <= {MAX_KDF_MEMORY_KIB}"
+                    )));
+                }
+                if *time_cost > MAX_KDF_TIME_COST {
+                    return Err(KdfError::InvalidParams(format!(
+                        "Argon2 time_cost must be <= {MAX_KDF_TIME_COST}"
+                    )));
+                }
+                if *parallelism > MAX_KDF_PARALLELISM {
+                    return Err(KdfError::InvalidParams(format!(
+                        "Argon2 parallelism must be <= {MAX_KDF_PARALLELISM}"
+                    )));
+                }
                 let salt = decode_salt(salt_hex)?;
                 let out_len: usize = 32;
                 let params = Params::new(
@@ -355,5 +376,41 @@ mod tests {
         let v = SecretValue::Bytes(b);
         let ser = serde_json::to_value(SecretWire(&v)).expect("json");
         assert_eq!(ser, serde_json::Value::String("616263".into()));
+    }
+
+    #[test]
+    fn kdf_rejects_excessive_resource_costs() {
+        let kdf = KdfParams::Argon2id {
+            salt_hex: "0011223344556677".to_owned(),
+            memory_kib: MAX_KDF_MEMORY_KIB + 1,
+            time_cost: 1,
+            parallelism: 1,
+        };
+        let err = kdf
+            .hash_password(b"pw")
+            .expect_err("must reject high memory");
+        assert!(matches!(err, KdfError::InvalidParams(_)));
+
+        let kdf = KdfParams::Argon2id {
+            salt_hex: "0011223344556677".to_owned(),
+            memory_kib: 4096,
+            time_cost: MAX_KDF_TIME_COST + 1,
+            parallelism: 1,
+        };
+        let err = kdf
+            .hash_password(b"pw")
+            .expect_err("must reject high time_cost");
+        assert!(matches!(err, KdfError::InvalidParams(_)));
+
+        let kdf = KdfParams::Argon2id {
+            salt_hex: "0011223344556677".to_owned(),
+            memory_kib: 4096,
+            time_cost: 1,
+            parallelism: MAX_KDF_PARALLELISM + 1,
+        };
+        let err = kdf
+            .hash_password(b"pw")
+            .expect_err("must reject high parallelism");
+        assert!(matches!(err, KdfError::InvalidParams(_)));
     }
 }

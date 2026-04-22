@@ -30,7 +30,7 @@ The **schema subsystem** (`nebula-schema` crate) is the **fifth concept** — cr
 
 ### Configuration pipeline (diagram)
 
-End-to-end view: all value sources funnel through **one** schema validation step into the **`ValidValues` proof token**; **`resolve`** (in `nebula-schema`) consumes an `ExpressionContext` from runtime and yields **`ResolvedValues`**; workflow execution persists snapshots and hands secret material to credential/storage via an explicit boundary (the workflow is **not** “the encryption implementation”). The same figure and notes appear in [ADR-0034](adr/0034-schema-secret-value-credential-seam.md), which remains the **decision record** for `SecretValue`, `SecretWire`, and loader redaction — edit both places when the pipeline changes.
+End-to-end view: all value sources funnel through **one** schema validation step into the **`ValidValues` proof token**; **`resolve`** (in `nebula-schema`) consumes an `ExpressionContext` from runtime and yields **`ResolvedValues`**; workflow execution persists snapshots and hands secret material to credential/storage via an explicit boundary (the workflow is **not** “the encryption implementation”). The same figure and notes appear in [ADR-0034](adr/0034-schema-secret-value-credential-seam.md), which remains the **decision record** for `SecretValue`, `SecretWire`, and loader redaction. When the pipeline changes, update this document and capture the change in a new/superseding ADR rather than substantively editing accepted ADR-0034.
 
 ```mermaid
 flowchart TB

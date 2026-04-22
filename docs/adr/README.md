@@ -48,7 +48,7 @@ changes land as a new ADR that `supersedes` it.
 1. Copy the frontmatter block from any existing ADR (keep the keys: `id`,
    `title`, `status`, `date`, `supersedes`, `superseded_by`, `tags`,
    `related`, optional `linear`).
-2. Pick the next free number (currently **0034**). Do not reuse.
+2. Pick the next free number (currently **0035**). Do not reuse.
 3. File name: `NNNN-kebab-case-title.md` matching the `title:` field.
 4. Start `status: proposed`. Move to `accepted` only after review and merge.
 5. **Do not substantively edit an accepted ADR.** Open a new one with

@@ -360,7 +360,10 @@ impl ValidValues {
         }
 
         if report.has_errors() {
-            return Err(report);
+            return Err(remap_expression_type_mismatch(
+                report,
+                &resolved_expression_paths,
+            ));
         }
 
         // Re-run schema validation on resolved + promoted literals. Any type
