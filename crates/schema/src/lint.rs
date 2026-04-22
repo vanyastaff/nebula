@@ -12,6 +12,10 @@ use crate::{
     path::PathSegment,
 };
 
+fn has_nonempty_loader_key(loader: Option<&str>) -> bool {
+    loader.is_some_and(|key| !key.trim().is_empty())
+}
+
 /// Build-time lint entry point used by `SchemaBuilder::build()`.
 ///
 /// Walks the field tree rooted at `prefix` and appends `ValidationError`
@@ -30,102 +34,29 @@ fn lint_fields_new(
     root_keys: &HashSet<&str>,
     report: &mut ValidationReport,
 ) {
-    // Pass 1: duplicate keys in this scope.
-    let mut seen: HashSet<&str> = HashSet::new();
-    for field in fields {
-        let key = field.key().as_str();
-        if !seen.insert(key) {
-            let path = prefix.clone().join(field.key().clone());
-            report.push(
-                ValidationError::builder("duplicate_key")
-                    .at(path)
-                    .message(format!("duplicate field key `{key}`"))
-                    .build(),
-            );
-        }
-    }
-
-    // Pass 2: per-field checks.
+    lint_duplicate_keys_in_scope(fields, prefix, report);
     let local_keys: HashSet<&str> = fields.iter().map(|f| f.key().as_str()).collect();
     for field in fields {
         let path = prefix.clone().join(field.key().clone());
-
-        // Rule type compatibility.
-        lint_rule_compat_new(field, field.rules(), &path, report);
-
-        // Visibility rule references.
-        lint_rule_refs_new(
-            field_visible_rule(field),
-            &path,
-            &local_keys,
-            root_keys,
-            report,
-        );
-        // Required rule references.
-        lint_rule_refs_new(
-            field_required_rule(field),
-            &path,
-            &local_keys,
-            root_keys,
-            report,
-        );
-        // Rules list references.
-        for rule in field.rules() {
-            lint_rule_refs_new(Some(rule), &path, &local_keys, root_keys, report);
-        }
-
-        // Contradictory rules (best-effort warning).
+        lint_field_rules(field, &path, &local_keys, root_keys, report);
         lint_contradictory_rules_new(field.rules(), &path, report);
-
-        // Field-type-specific checks.
         match field {
-            Field::Select(select) => {
-                lint_depends_on_new(
-                    &select.depends_on,
-                    field.key().as_str(),
-                    &path,
-                    &local_keys,
-                    root_keys,
-                    report,
-                );
-                if select.dynamic && select.loader.is_none() {
-                    report.push(
-                        ValidationError::builder("missing_loader")
-                            .at(path.clone())
-                            .message("dynamic select has no loader key configured")
-                            .warn()
-                            .build(),
-                    );
-                }
-                if !select.dynamic && select.loader.is_some() {
-                    report.push(
-                        ValidationError::builder("loader_without_dynamic")
-                            .at(path.clone())
-                            .message("select has loader key but dynamic flag is disabled")
-                            .warn()
-                            .build(),
-                    );
-                }
-            },
-            Field::Dynamic(dynamic) => {
-                lint_depends_on_new(
-                    &dynamic.depends_on,
-                    field.key().as_str(),
-                    &path,
-                    &local_keys,
-                    root_keys,
-                    report,
-                );
-                if dynamic.loader.is_none() {
-                    report.push(
-                        ValidationError::builder("missing_loader")
-                            .at(path.clone())
-                            .message("dynamic field has no loader key configured")
-                            .warn()
-                            .build(),
-                    );
-                }
-            },
+            Field::Select(select) => lint_select_field(
+                select,
+                field.key().as_str(),
+                &path,
+                &local_keys,
+                root_keys,
+                report,
+            ),
+            Field::Dynamic(dynamic) => lint_dynamic_field(
+                dynamic,
+                field.key().as_str(),
+                &path,
+                &local_keys,
+                root_keys,
+                report,
+            ),
             Field::List(list) => {
                 lint_list_new(list, &path, root_keys, report);
             },
@@ -135,35 +66,151 @@ fn lint_fields_new(
             Field::Mode(mode) => {
                 lint_mode_new(mode, &path, root_keys, report);
             },
-            Field::Notice(notice) => {
-                if !matches!(notice.required, RequiredMode::Never)
-                    || notice.default.is_some()
-                    || !notice.rules.is_empty()
-                    || !notice.transformers.is_empty()
-                {
-                    report.push(
-                        ValidationError::builder("notice.misuse")
-                            .at(path.clone())
-                            .message(
-                                "notice field should stay display-only \
-                                 (no required/default/rules/transformers)",
-                            )
-                            .warn()
-                            .build(),
-                    );
-                }
-                if notice.description.is_none() {
-                    report.push(
-                        ValidationError::builder("notice_missing_description")
-                            .at(path.clone())
-                            .message("notice field should include description text")
-                            .warn()
-                            .build(),
-                    );
-                }
-            },
+            Field::Notice(notice) => lint_notice_field(notice, &path, report),
             _ => {},
         }
+    }
+}
+
+fn lint_duplicate_keys_in_scope(
+    fields: &[Field],
+    prefix: &FieldPath,
+    report: &mut ValidationReport,
+) {
+    let mut seen: HashSet<&str> = HashSet::new();
+    for field in fields {
+        let key = field.key().as_str();
+        if seen.insert(key) {
+            continue;
+        }
+        report.push(
+            ValidationError::builder("duplicate_key")
+                .at(prefix.clone().join(field.key().clone()))
+                .message(format!("duplicate field key `{key}`"))
+                .build(),
+        );
+    }
+}
+
+fn lint_field_rules(
+    field: &Field,
+    path: &FieldPath,
+    local_keys: &HashSet<&str>,
+    root_keys: &HashSet<&str>,
+    report: &mut ValidationReport,
+) {
+    lint_rule_compat_new(field, field.rules(), path, report);
+    lint_rule_refs_new(
+        field_visible_rule(field),
+        path,
+        local_keys,
+        root_keys,
+        report,
+    );
+    lint_rule_refs_new(
+        field_required_rule(field),
+        path,
+        local_keys,
+        root_keys,
+        report,
+    );
+    for rule in field.rules() {
+        lint_rule_refs_new(Some(rule), path, local_keys, root_keys, report);
+    }
+}
+
+fn lint_select_field(
+    select: &crate::field::SelectField,
+    field_key: &str,
+    path: &FieldPath,
+    local_keys: &HashSet<&str>,
+    root_keys: &HashSet<&str>,
+    report: &mut ValidationReport,
+) {
+    lint_depends_on_new(
+        &select.depends_on,
+        field_key,
+        path,
+        local_keys,
+        root_keys,
+        report,
+    );
+    if select.dynamic && !has_nonempty_loader_key(select.loader.as_deref()) {
+        report.push(
+            ValidationError::builder("missing_loader")
+                .at(path.clone())
+                .message("dynamic select has no loader key configured")
+                .warn()
+                .build(),
+        );
+    }
+    if !select.dynamic && has_nonempty_loader_key(select.loader.as_deref()) {
+        report.push(
+            ValidationError::builder("loader_without_dynamic")
+                .at(path.clone())
+                .message("select has loader key but dynamic flag is disabled")
+                .warn()
+                .build(),
+        );
+    }
+}
+
+fn lint_dynamic_field(
+    dynamic: &crate::field::DynamicField,
+    field_key: &str,
+    path: &FieldPath,
+    local_keys: &HashSet<&str>,
+    root_keys: &HashSet<&str>,
+    report: &mut ValidationReport,
+) {
+    lint_depends_on_new(
+        &dynamic.depends_on,
+        field_key,
+        path,
+        local_keys,
+        root_keys,
+        report,
+    );
+    if !has_nonempty_loader_key(dynamic.loader.as_deref()) {
+        report.push(
+            ValidationError::builder("missing_loader")
+                .at(path.clone())
+                .message("dynamic field has no loader key configured")
+                .warn()
+                .build(),
+        );
+    }
+}
+
+fn lint_notice_field(
+    notice: &crate::field::NoticeField,
+    path: &FieldPath,
+    report: &mut ValidationReport,
+) {
+    if !matches!(notice.required, RequiredMode::Never)
+        || notice.default.is_some()
+        || !notice.rules.is_empty()
+        || !notice.transformers.is_empty()
+    {
+        report.push(
+            ValidationError::builder("notice.misuse")
+                .at(path.clone())
+                .message(
+                    "notice field should stay display-only \
+                     (no required/default/rules/transformers)",
+                )
+                .warn()
+                .build(),
+        );
+    }
+    if notice.description.is_none() {
+        report.push(
+            ValidationError::builder("notice_missing_description")
+                .at(path.clone())
+                .message("notice field should include description text")
+                .warn()
+                .build(),
+        );
     }
 }
 
@@ -247,7 +294,21 @@ fn lint_depends_on_new(
     root_keys: &HashSet<&str>,
     report: &mut ValidationReport,
 ) {
+    let mut seen_dependencies: HashSet<String> = HashSet::new();
     for dependency in depends_on {
+        let dependency_text = dependency.to_string();
+        if !seen_dependencies.insert(dependency_text.clone()) {
+            report.push(
+                ValidationError::builder("duplicate_dependency")
+                    .at(path.clone())
+                    .message(format!(
+                        "depends_on contains duplicate reference `{dependency_text}`"
+                    ))
+                    .warn()
+                    .build(),
+            );
+        }
+
         let first_key = dependency.segments().iter().find_map(|s| {
             if let PathSegment::Key(k) = s {
                 Some(k.as_str())
@@ -335,7 +396,6 @@ fn lint_rule_refs_new(
                 ))
                 .build(),
         );
-        continue;
     }
 }
 
@@ -443,32 +503,32 @@ fn lint_contradictory_rules_new(rules: &[Rule], path: &FieldPath, report: &mut V
     }
 }
 
-fn field_visible_rule(field: &Field) -> Option<&Rule> {
+const fn field_visible_rule(field: &Field) -> Option<&Rule> {
     match field.visible() {
         VisibilityMode::Always | VisibilityMode::Never => None,
         VisibilityMode::When(rule) => Some(rule),
     }
 }
 
-fn field_required_rule(field: &Field) -> Option<&Rule> {
+const fn field_required_rule(field: &Field) -> Option<&Rule> {
     match field.required() {
         RequiredMode::Never | RequiredMode::Always => None,
         RequiredMode::When(rule) => Some(rule),
     }
 }
 
-fn supports_string_rules(field: &Field) -> bool {
+const fn supports_string_rules(field: &Field) -> bool {
     matches!(
         field,
         Field::String(_) | Field::Secret(_) | Field::Code(_) | Field::File(_)
     )
 }
 
-fn supports_number_rules(field: &Field) -> bool {
+const fn supports_number_rules(field: &Field) -> bool {
     matches!(field, Field::Number(_))
 }
 
-fn supports_collection_rules(field: &Field) -> bool {
+const fn supports_collection_rules(field: &Field) -> bool {
     match field {
         Field::List(_) => true,
         Field::Select(select) => select.multiple,
@@ -477,7 +537,7 @@ fn supports_collection_rules(field: &Field) -> bool {
     }
 }
 
-fn field_type_name(field: &Field) -> &'static str {
+const fn field_type_name(field: &Field) -> &'static str {
     field.type_name()
 }
 
@@ -644,7 +704,7 @@ fn normalize_rule_target_path(path: &FieldPath) -> FieldPath {
 /// - `$root.` — anchor at schema root (same convention as [`lint_rule_refs_new`]).
 /// - Leading `/` — JSON Pointer from schema root (validator [`ValidatorFieldPath`]).
 /// - Any other form is ignored (schema lint accepts JSON-pointer forms only).
-fn resolve_rule_dependency(field_ref: &str, _scope_prefix: &FieldPath) -> Option<FieldPath> {
+fn resolve_rule_dependency(field_ref: &str) -> Option<FieldPath> {
     if let Some(rest) = field_ref.strip_prefix("$root.") {
         let vp = ValidatorFieldPath::parse(rest)?;
         return validator_path_to_schema_path(&vp);
@@ -654,6 +714,30 @@ fn resolve_rule_dependency(field_ref: &str, _scope_prefix: &FieldPath) -> Option
         return validator_path_to_schema_path(&vp);
     }
     None
+}
+
+fn mode_variant_path(field_path: &FieldPath, variant_key: &str) -> Option<FieldPath> {
+    let key = crate::key::FieldKey::new(variant_key).ok()?;
+    Some(field_path.clone().join(key))
+}
+
+fn push_rule_edges_for_rule(
+    source: &FieldPath,
+    rule: &Rule,
+    defined: &HashSet<FieldPath>,
+    edges: &mut Vec<(FieldPath, FieldPath)>,
+) {
+    let mut refs = Vec::new();
+    rule.field_references(&mut refs);
+    for field_ref in refs {
+        let Some(target) = resolve_rule_dependency(field_ref) else {
+            continue;
+        };
+        let normalized_target = normalize_rule_target_path(&target);
+        if defined.contains(&normalized_target) {
+            edges.push((source.clone(), normalized_target));
+        }
+    }
 }
 
 fn collect_defined_field_paths(
@@ -676,12 +760,12 @@ fn collect_defined_field_paths(
             },
             Field::Mode(mode) => {
                 for variant in &mode.variants {
-                    if let Ok(vk) = crate::key::FieldKey::new(variant.key.as_str()) {
-                        let vpath = path.clone().join(vk.clone());
-                        defined.insert(vpath.clone());
-                        if let Field::Object(obj) = variant.field.as_ref() {
-                            collect_defined_field_paths(&obj.fields, &vpath, defined);
-                        }
+                    let Some(vpath) = mode_variant_path(&path, variant.key.as_str()) else {
+                        continue;
+                    };
+                    defined.insert(vpath.clone());
+                    if let Field::Object(obj) = variant.field.as_ref() {
+                        collect_defined_field_paths(&obj.fields, &vpath, defined);
                     }
                 }
             },
@@ -701,16 +785,7 @@ fn append_rule_edges(
         let path = prefix.clone().join(field.key().clone());
 
         if let Some(rule) = rule_for(field) {
-            let mut refs = Vec::new();
-            rule.field_references(&mut refs);
-            for field_ref in refs {
-                if let Some(target) = resolve_rule_dependency(field_ref, prefix) {
-                    let normalized_target = normalize_rule_target_path(&target);
-                    if defined.contains(&normalized_target) {
-                        edges.push((path.clone(), normalized_target));
-                    }
-                }
-            }
+            push_rule_edges_for_rule(&path, rule, defined, edges);
         }
 
         match field {
@@ -724,23 +799,14 @@ fn append_rule_edges(
             },
             Field::Mode(mode) => {
                 for variant in &mode.variants {
-                    if let Ok(vk) = crate::key::FieldKey::new(variant.key.as_str()) {
-                        let vpath = path.clone().join(vk.clone());
-                        if let Some(rule) = rule_for(variant.field.as_ref()) {
-                            let mut refs = Vec::new();
-                            rule.field_references(&mut refs);
-                            for field_ref in refs {
-                                if let Some(target) = resolve_rule_dependency(field_ref, &vpath) {
-                                    let normalized_target = normalize_rule_target_path(&target);
-                                    if defined.contains(&normalized_target) {
-                                        edges.push((vpath.clone(), normalized_target));
-                                    }
-                                }
-                            }
-                        }
-                        if let Field::Object(obj) = variant.field.as_ref() {
-                            append_rule_edges(&obj.fields, &vpath, defined, edges, rule_for);
-                        }
+                    let Some(vpath) = mode_variant_path(&path, variant.key.as_str()) else {
+                        continue;
+                    };
+                    if let Some(rule) = rule_for(variant.field.as_ref()) {
+                        push_rule_edges_for_rule(&vpath, rule, defined, edges);
+                    }
+                    if let Field::Object(obj) = variant.field.as_ref() {
+                        append_rule_edges(&obj.fields, &vpath, defined, edges, rule_for);
                     }
                 }
             },
@@ -757,36 +823,34 @@ fn rule_adjacency(edges: &[(FieldPath, FieldPath)]) -> HashMap<FieldPath, Vec<Fi
     adj
 }
 
+fn dfs_cycle_edge(
+    node: &FieldPath,
+    adj: &HashMap<FieldPath, Vec<FieldPath>>,
+    color: &mut HashMap<FieldPath, u8>,
+) -> Option<(FieldPath, FieldPath)> {
+    color.insert(node.clone(), 1);
+    for next in adj.get(node).into_iter().flatten() {
+        match color.get(next).copied().unwrap_or(0) {
+            1 => return Some((node.clone(), next.clone())),
+            0 => {
+                if let Some(cycle) = dfs_cycle_edge(next, adj, color) {
+                    return Some(cycle);
+                }
+            },
+            _ => {},
+        }
+    }
+    color.insert(node.clone(), 2);
+    None
+}
+
 fn find_cycle_edge(adj: &HashMap<FieldPath, Vec<FieldPath>>) -> Option<(FieldPath, FieldPath)> {
     // 0 = white, 1 = gray, 2 = black
     let mut color: HashMap<FieldPath, u8> = HashMap::new();
 
-    fn dfs(
-        u: &FieldPath,
-        adj: &HashMap<FieldPath, Vec<FieldPath>>,
-        color: &mut HashMap<FieldPath, u8>,
-    ) -> Option<(FieldPath, FieldPath)> {
-        color.insert(u.clone(), 1);
-        for v in adj.get(u).into_iter().flatten() {
-            match color.get(v).copied().unwrap_or(0) {
-                1 => {
-                    return Some((u.clone(), v.clone()));
-                },
-                0 => {
-                    if let Some(cycle) = dfs(v, adj, color) {
-                        return Some(cycle);
-                    }
-                },
-                _ => {},
-            }
-        }
-        color.insert(u.clone(), 2);
-        None
-    }
-
     for start in adj.keys() {
         if color.get(start).copied().unwrap_or(0) == 0
-            && let Some(cycle) = dfs(start, adj, &mut color)
+            && let Some(cycle) = dfs_cycle_edge(start, adj, &mut color)
         {
             return Some(cycle);
         }
@@ -846,9 +910,9 @@ mod tests {
     use super::*;
     use crate::{FieldKey, error::ValidationReport, field::Field, path::FieldPath};
 
-    fn run(fields: Vec<Field>) -> ValidationReport {
+    fn run(fields: &[Field]) -> ValidationReport {
         let mut report = ValidationReport::new();
-        lint_tree(&fields, &FieldPath::root(), &mut report);
+        lint_tree(fields, &FieldPath::root(), &mut report);
         report
     }
 
@@ -858,7 +922,7 @@ mod tests {
             Field::string(FieldKey::new("x").unwrap()).into_field(),
             Field::number(FieldKey::new("x").unwrap()).into_field(),
         ];
-        let report = run(fields);
+        let report = run(&fields);
         assert!(report.errors().any(|e| e.code == "duplicate_key"));
     }
 
@@ -868,14 +932,14 @@ mod tests {
             Field::string(FieldKey::new("a").unwrap()).into_field(),
             Field::number(FieldKey::new("b").unwrap()).into_field(),
         ];
-        let report = run(fields);
+        let report = run(&fields);
         assert!(!report.has_errors());
     }
 
     #[test]
     fn detects_missing_item_schema() {
         let fields = vec![Field::list(FieldKey::new("items").unwrap()).into_field()];
-        let report = run(fields);
+        let report = run(&fields);
         assert!(report.errors().any(|e| e.code == "missing_item_schema"));
     }
 
@@ -886,7 +950,7 @@ mod tests {
                 .default_variant("nonexistent")
                 .into_field(),
         ];
-        let report = run(fields);
+        let report = run(&fields);
         assert!(report.errors().any(|e| e.code == "invalid_default_variant"));
     }
 
@@ -898,7 +962,7 @@ mod tests {
                 .variant("v1", "V1 again", Field::string(FieldKey::new("y").unwrap()))
                 .into_field(),
         ];
-        let report = run(fields);
+        let report = run(&fields);
         assert!(report.errors().any(|e| e.code == "duplicate_variant"));
     }
 
@@ -912,7 +976,7 @@ mod tests {
                 .visible_when(Rule::predicate(Predicate::eq("/a", json!("on")).unwrap()))
                 .into_field(),
         ];
-        let report = run(fields);
+        let report = run(&fields);
         assert!(
             report.errors().any(|e| e.code == "visibility_cycle"),
             "expected visibility_cycle, got {:?}",
@@ -937,7 +1001,7 @@ mod tests {
                     ))
                     .into_field(),
             );
-        let report = run(vec![outer.into()]);
+        let report = run(&vec![outer.into()]);
         assert!(
             report.errors().any(|e| e.code == "visibility_cycle"),
             "expected visibility_cycle, got {:?}",
@@ -955,7 +1019,7 @@ mod tests {
                 ))
                 .into_field(),
         ];
-        let report = run(fields);
+        let report = run(&fields);
         assert!(!report.errors().any(|e| e.code == "visibility_cycle"));
     }
 
@@ -983,7 +1047,7 @@ mod tests {
                 .into_field(),
         ];
 
-        let report = run(fields);
+        let report = run(&fields);
         assert!(
             report.errors().any(|e| e.code == "visibility_cycle"),
             "expected visibility_cycle, got {:?}",
@@ -1006,7 +1070,7 @@ mod tests {
             Field::string("top").into_field(),
         ];
 
-        let report = run(fields);
+        let report = run(&fields);
         assert!(
             !report.errors().any(|e| e.code == "dangling_reference"),
             "did not expect dangling_reference, got {:?}",
@@ -1034,7 +1098,7 @@ mod tests {
                 .into_field(),
         ];
 
-        let report = run(fields);
+        let report = run(&fields);
         assert!(
             report.errors().any(|e| e.code == "visibility_cycle"),
             "expected visibility_cycle, got {:?}",
@@ -1053,7 +1117,7 @@ mod tests {
                 .into_field(),
         ];
 
-        let report = run(fields);
+        let report = run(&fields);
         assert!(
             report.errors().any(|e| e.code == "required_cycle"),
             "expected required_cycle, got {:?}",
@@ -1079,7 +1143,7 @@ mod tests {
                     .into_field(),
             );
 
-        let report = run(vec![outer.into()]);
+        let report = run(&vec![outer.into()]);
         assert!(
             report.errors().any(|e| e.code == "required_cycle"),
             "expected required_cycle, got {:?}",
@@ -1111,7 +1175,7 @@ mod tests {
                 .into_field(),
         ];
 
-        let report = run(fields);
+        let report = run(&fields);
         assert!(
             report.errors().any(|e| e.code == "required_cycle"),
             "expected required_cycle, got {:?}",
@@ -1136,7 +1200,7 @@ mod tests {
                 .into_field(),
         ];
 
-        let report = run(fields);
+        let report = run(&fields);
         assert!(
             report.errors().any(|e| e.code == "required_cycle"),
             "expected required_cycle, got {:?}",
@@ -1157,7 +1221,7 @@ mod tests {
                 .into_field(),
         ];
 
-        let report = run(fields);
+        let report = run(&fields);
         assert!(
             report.errors().any(|e| e.code == "visibility_cycle"),
             "expected visibility_cycle, got {:?}",

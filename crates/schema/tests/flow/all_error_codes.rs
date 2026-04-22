@@ -1,8 +1,8 @@
-//! Integration tests that emit every testable entry from STANDARD_CODES.
+//! Integration tests that emit every testable entry from `STANDARD_CODES`.
 //!
 //! # Coverage notes
 //!
-//! The codes in STANDARD_CODES map to codes produced by two layers:
+//! The codes in `STANDARD_CODES` map to codes produced by two layers:
 //! - `ValidSchema::validate` (proof-token pipeline)
 //! - `SchemaBuilder::build` (lint/build time via `lint_tree`)
 //!
@@ -12,7 +12,7 @@
 //!
 //! # Deferred codes (Phase 4)
 //!
-//! The following STANDARD_CODES entries cannot be emitted without additional
+//! The following `STANDARD_CODES` entries cannot be emitted without additional
 //! infrastructure that is out of scope for Phase 1:
 //!
 //! - `"mode.required"` — unreachable via the public API: `FieldValue::Mode` always carries a
@@ -21,7 +21,7 @@
 //!
 //! # Loader-family codes
 //!
-//! The following STANDARD_CODES entries are loader-registry-scoped. They
+//! The following `STANDARD_CODES` entries are loader-registry-scoped. They
 //! require an async runtime (`#[tokio::test]`) and a `LoaderRegistry`, so
 //! they live in `crates/schema/tests/lint_and_loader.rs` rather than here:
 //!
@@ -45,6 +45,11 @@ fn fk(s: &str) -> FieldKey {
 
 fn has_code(r: &ValidationReport, code: &str) -> bool {
     r.errors().any(|e| e.code == code)
+}
+
+fn raw_schema(fields: impl IntoIterator<Item = Field>) -> Schema {
+    let fields: Vec<Field> = fields.into_iter().collect();
+    serde_json::from_value(json!({ "fields": fields })).expect("raw schema from field list")
 }
 
 // ── Value-validation codes ──────────────────────────────────────────────────
@@ -522,9 +527,14 @@ fn emits_visibility_cycle() {
     let rule_a_references_b = Rule::predicate(Predicate::IsTrue(FieldPath::parse("b").unwrap()));
     let rule_b_references_a = Rule::predicate(Predicate::IsTrue(FieldPath::parse("a").unwrap()));
 
-    let schema = Schema::new()
-        .add(Field::string(fk("a")).visible_when(rule_a_references_b))
-        .add(Field::string(fk("b")).visible_when(rule_b_references_a));
+    let schema = raw_schema(vec![
+        Field::string(fk("a"))
+            .visible_when(rule_a_references_b)
+            .into(),
+        Field::string(fk("b"))
+            .visible_when(rule_b_references_a)
+            .into(),
+    ]);
 
     let lint = schema.lint();
     assert!(
@@ -542,9 +552,14 @@ fn emits_required_cycle() {
     let rule_a_references_b = Rule::predicate(Predicate::IsTrue(FieldPath::parse("b").unwrap()));
     let rule_b_references_a = Rule::predicate(Predicate::IsTrue(FieldPath::parse("a").unwrap()));
 
-    let schema = Schema::new()
-        .add(Field::string(fk("a")).required_when(rule_a_references_b))
-        .add(Field::string(fk("b")).required_when(rule_b_references_a));
+    let schema = raw_schema(vec![
+        Field::string(fk("a"))
+            .required_when(rule_a_references_b)
+            .into(),
+        Field::string(fk("b"))
+            .required_when(rule_b_references_a)
+            .into(),
+    ]);
 
     let lint = schema.lint();
     assert!(
@@ -577,7 +592,7 @@ fn emits_dangling_reference() {
 
 #[test]
 fn emits_missing_loader_warning() {
-    let schema = Schema::new().add(Field::select(fk("s")).dynamic());
+    let schema = raw_schema(vec![Field::select(fk("s")).dynamic().into()]);
     let lint = schema.lint();
     assert!(
         lint.has_warnings(),
@@ -597,11 +612,30 @@ fn emits_loader_without_dynamic_warning() {
     let mut sf = SelectField::new("s2");
     sf.dynamic = false;
     sf.loader = Some("my_loader".into());
-    let schema = Schema::new().add(Field::Select(sf));
+    let schema = raw_schema(vec![Field::Select(sf)]);
     let lint = schema.lint();
     assert!(
         lint.warnings().any(|d| d.code == "loader_without_dynamic"),
         "expected loader_without_dynamic, got: {:?}",
+        lint.warnings().map(|d| &d.code).collect::<Vec<_>>()
+    );
+}
+
+#[test]
+fn emits_duplicate_dependency_warning() {
+    let dep = nebula_schema::FieldPath::parse("team_id").unwrap();
+    let schema = raw_schema(vec![
+        Field::select(fk("workspace"))
+            .dynamic()
+            .loader("workspace_loader")
+            .depends_on(dep.clone())
+            .depends_on(dep)
+            .into(),
+    ]);
+    let lint = schema.lint();
+    assert!(
+        lint.warnings().any(|d| d.code == "duplicate_dependency"),
+        "expected duplicate_dependency, got: {:?}",
         lint.warnings().map(|d| &d.code).collect::<Vec<_>>()
     );
 }
@@ -615,9 +649,12 @@ fn emits_missing_variant_label_warning() {
     match result {
         Ok(schema) => {
             // Warning is advisory — build succeeded. Verify via lint().
-            let lint = Schema::new()
-                .add(Field::mode(fk("m")).variant("v", "", Field::string(fk("x"))))
-                .lint();
+            let lint = raw_schema(vec![
+                Field::mode(fk("m"))
+                    .variant("v", "", Field::string(fk("x")))
+                    .into(),
+            ])
+            .lint();
             assert!(
                 lint.warnings().any(|d| d.code == "missing_variant_label"),
                 "expected missing_variant_label in lint output, got: {:?}",
@@ -642,7 +679,7 @@ fn emits_notice_misuse() {
 
     let mut nf = NoticeField::new("n");
     nf.required = RequiredMode::Always;
-    let schema = Schema::new().add(Field::Notice(nf));
+    let schema = raw_schema(vec![Field::Notice(nf)]);
     let lint = schema.lint();
     assert!(
         lint.warnings().any(|d| d.code == "notice.misuse"),
@@ -657,7 +694,7 @@ fn emits_notice_missing_description() {
     use nebula_schema::{Field, NoticeField};
 
     let nf = NoticeField::new("info");
-    let schema = Schema::new().add(Field::Notice(nf));
+    let schema = raw_schema(vec![Field::Notice(nf)]);
     let lint = schema.lint();
     assert!(
         lint.warnings()
@@ -671,7 +708,11 @@ fn emits_notice_missing_description() {
 fn emits_rule_incompatible_warning() {
     use nebula_validator::Rule;
 
-    let schema = Schema::new().add(Field::number(fk("n")).with_rule(Rule::pattern("^[0-9]+$")));
+    let schema = raw_schema(vec![
+        Field::number(fk("n"))
+            .with_rule(Rule::pattern("^[0-9]+$"))
+            .into(),
+    ]);
     let lint = schema.lint();
     assert!(
         lint.warnings().any(|d| d.code == "rule.incompatible"),

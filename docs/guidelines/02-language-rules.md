@@ -7,10 +7,11 @@
 These are correctness rules derived from the Reference. Violating them yields UB, miscompilation, or broken invariants the compiler relies on for optimization. `L-` rules are **hard constraints** — they take precedence over every other category.
 
 **Jump to:**
+
 - [2.1 Undefined Behavior](#21-undefined-behavior-catalog)
 - [2.2 Drop Order and Temporaries](#22-drop-order-and-temporaries)
 - [2.3 Subtyping and Variance](#23-subtyping-and-variance)
-- [2.4 Type Layout and `#[repr]`](#24-type-layout-and-repr)
+- [2.4 Type Layout and `#[repr]](#24-type-layout-and-repr)`
 - [2.5 Trait Objects and Dyn Compatibility](#25-trait-objects-and-dyn-compatibility)
 - [2.6 Coherence and Orphan Rules](#26-coherence-and-orphan-rules)
 - [2.7 Pattern Matching Rules](#27-pattern-matching-rules)
@@ -44,8 +45,8 @@ Any of the following, anywhere in any Rust program, is UB:
 
 ### [L-UB-002] `&T` and `&mut T` semantics
 
-- **`&T` is read-only aliased:** the memory it points to must not be mutated during its live range, except through `UnsafeCell`.
-- **`&mut T` is unique:** no other reference (shared or mutable) to the same memory may exist during its live range.
+- `**&T` is read-only aliased:** the memory it points to must not be mutated during its live range, except through `UnsafeCell`.
+- `**&mut T` is unique:** no other reference (shared or mutable) to the same memory may exist during its live range.
 - **Each reborrow resets liveness.** When a reference is passed to a function, it is live at least for the duration of the call.
 - **Liveness is upper-bounded by the borrow checker's syntactic lifetime.**
 
@@ -224,17 +225,19 @@ Rust subtyping is entirely about lifetimes. `'long <: 'short` means `'long` outl
 
 ### [L-VAR-001] Variance table (memorize)
 
-| Type | Variance in `T` | Variance in `'a` |
-|------|-----------------|-------------------|
-| `&'a T` | covariant | covariant |
-| `&'a mut T` | **invariant** | covariant |
-| `*const T` | covariant | — |
-| `*mut T` | **invariant** | — |
-| `Box<T>`, `Vec<T>`, `Rc<T>`, `Arc<T>` | covariant | — |
-| `Cell<T>`, `RefCell<T>`, `UnsafeCell<T>`, `Mutex<T>` | **invariant** | — |
-| `fn(T) -> U` | **contravariant** in `T`, covariant in `U` | — |
-| `NonNull<T>` | covariant | — |
-| `PhantomData<T>` | covariant | — |
+
+| Type                                                 | Variance in `T`                            | Variance in `'a` |
+| ---------------------------------------------------- | ------------------------------------------ | ---------------- |
+| `&'a T`                                              | covariant                                  | covariant        |
+| `&'a mut T`                                          | **invariant**                              | covariant        |
+| `*const T`                                           | covariant                                  | —                |
+| `*mut T`                                             | **invariant**                              | —                |
+| `Box<T>`, `Vec<T>`, `Rc<T>`, `Arc<T>`                | covariant                                  | —                |
+| `Cell<T>`, `RefCell<T>`, `UnsafeCell<T>`, `Mutex<T>` | **invariant**                              | —                |
+| `fn(T) -> U`                                         | **contravariant** in `T`, covariant in `U` | —                |
+| `NonNull<T>`                                         | covariant                                  | —                |
+| `PhantomData<T>`                                     | covariant                                  | —                |
+
 
 If a type parameter `T` appears in multiple positions with differing variance, the result is **invariant**.
 
@@ -294,6 +297,7 @@ The compiler may reorder fields, add padding, niche-pack enum discriminants, etc
 ### [L-REPR-002] `#[repr(C)]` for FFI and layout control
 
 `#[repr(C)]` guarantees:
+
 - Field order = declaration order.
 - Alignment = max of field alignments.
 - Size = current offset rounded up to alignment after all fields.
@@ -312,6 +316,7 @@ struct Header {
 ### [L-REPR-003] `#[repr(transparent)]` for newtypes that must match ABI
 
 `#[repr(transparent)]` on a struct/single-variant enum with exactly **one non-zero-sized field** (plus any number of zero-sized fields with alignment 1) guarantees identical layout + ABI to that field. Required when:
+
 - Passing a newtype across FFI where the inner type is expected.
 - Transmuting between newtype and inner type.
 - Using a newtype at the Rust/C boundary without redundant conversion.
@@ -355,6 +360,7 @@ impl CStatus {
 ### [L-REPR-007] `Option<T>` niche optimization
 
 `Option<T>` has the same layout and ABI as `T` when `T` has a "niche" (unused bit-pattern):
+
 - `&T`, `&mut T`, `Box<T>` (use null).
 - `NonNull<T>`, `NonZero<_>`.
 - `fn` pointers (use null).
@@ -368,6 +374,7 @@ This is guaranteed for FFI. You MAY rely on `Option<&T>` == `*const T` at the bo
 ### [L-DYN-001] Dyn compatibility rules
 
 A trait `Trait` can be used as `dyn Trait` iff all of:
+
 - All supertraits are dyn-compatible.
 - `Self: Sized` is NOT a supertrait bound.
 - No associated constants.
@@ -375,6 +382,7 @@ A trait `Trait` can be used as `dyn Trait` iff all of:
 - Every method is either dispatchable or has `where Self: Sized`.
 
 A method is dispatchable iff:
+
 - No generic type parameters (lifetime params OK).
 - Self appears only as the receiver (`&self`, `&mut self`, `Box<Self>`, `Arc<Self>`, `Rc<Self>`, `Pin<&mut Self>`).
 - Not an `async fn` (returns a hidden `impl Future`).
@@ -400,6 +408,7 @@ fn use_repo(r: &dyn Repository) { r.find(some_id()); }
 ### [L-DYN-003] `async fn` in traits + `dyn`
 
 Stable `async fn in trait` (1.75+) is **not** dyn-compatible by default. Options:
+
 - Use static dispatch (`impl Repository`) — usually correct.
 - Use the `trait-variant` or `dynosaur` crate to derive a dyn-compatible shim.
 - Manually define a parallel trait returning `Pin<Box<dyn Future<Output=_> + Send + 'a>>`.
@@ -419,6 +428,7 @@ pub trait RepoDyn {
 ### [L-DYN-004] Trait object lifetime defaults
 
 A `dyn Trait` has an implicit lifetime bound. Defaults:
+
 - `&'a dyn Trait` → `&'a (dyn Trait + 'a)`
 - `Box<dyn Trait>` → `Box<dyn Trait + 'static>`
 - `Arc<dyn Trait>` → `Arc<dyn Trait + 'static>`
@@ -437,6 +447,7 @@ Specify explicitly when the default is wrong: `Box<dyn Trait + 'a>`.
 ### [L-COH-001] Orphan rule
 
 An `impl Trait for Type` is allowed iff at least one of:
+
 - `Trait` is defined in the current crate, OR
 - `Type` (or one of its generic parameters satisfying the "covered" condition) is defined in the current crate.
 
@@ -462,6 +473,7 @@ Two impls must not overlap. `impl<T: Debug> Foo for T` overlaps with `impl<T: Di
 ### [L-COH-004] Constrained parameters
 
 Every generic parameter in an `impl` must be either:
+
 - A parameter of the Self type, or
 - Constrained via an associated type of a bound on another parameter.
 
@@ -530,6 +542,7 @@ In an or-pattern like `A(x) | B(x)`, the **first** subpattern determines drop or
 ### [L-UNSAFE-001] Every `unsafe` block MUST have a safety comment
 
 Format:
+
 ```rust
 // SAFETY: <explicit invariant being relied upon, why it holds here>
 unsafe { … }

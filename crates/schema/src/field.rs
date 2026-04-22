@@ -11,7 +11,7 @@ use serde_json::{Number, Value};
 use crate::{
     BooleanWidget, CodeWidget, FieldKey, FieldPath, InputHint, ListWidget, NumberWidget,
     ObjectWidget, RequiredMode, SecretWidget, SelectOption, SelectWidget, StringWidget,
-    Transformer, VisibilityMode, mode::ExpressionMode,
+    Transformer, VisibilityMode, error::ValidationError, mode::ExpressionMode,
 };
 
 // ── Macro ────────────────────────────────────────────────────────────────────
@@ -87,7 +87,7 @@ macro_rules! define_field {
             }
 
             /// Borrow the field key.
-            pub fn key(&self) -> &FieldKey {
+            pub const fn key(&self) -> &FieldKey {
                 &self.key
             }
 
@@ -185,14 +185,14 @@ macro_rules! define_field {
 
             /// Set expression mode directly.
             #[must_use]
-            pub fn expression_mode(mut self, mode: ExpressionMode) -> Self {
+            pub const fn expression_mode(mut self, mode: ExpressionMode) -> Self {
                 self.expression = mode;
                 self
             }
 
             /// Forbid expression values on this field.
             #[must_use]
-            pub fn no_expression(mut self) -> Self {
+            pub const fn no_expression(mut self) -> Self {
                 self.expression = ExpressionMode::Forbidden;
                 self
             }
@@ -237,14 +237,14 @@ define_field!(StringField {
 impl StringField {
     /// Set the input hint (replaces removed DateField/TimeField/ColorField).
     #[must_use]
-    pub fn hint(mut self, h: InputHint) -> Self {
+    pub const fn hint(mut self, h: InputHint) -> Self {
         self.hint = h;
         self
     }
 
     /// Select widget variant.
     #[must_use]
-    pub fn widget(mut self, widget: StringWidget) -> Self {
+    pub const fn widget(mut self, widget: StringWidget) -> Self {
         self.widget = widget;
         self
     }
@@ -294,7 +294,7 @@ define_field!(SecretField {
 impl SecretField {
     /// Select widget variant.
     #[must_use]
-    pub fn widget(mut self, widget: SecretWidget) -> Self {
+    pub const fn widget(mut self, widget: SecretWidget) -> Self {
         self.widget = widget;
         self
     }
@@ -309,7 +309,7 @@ impl SecretField {
 
     /// Switch secret widget to multiline mode.
     #[must_use]
-    pub fn multiline(mut self) -> Self {
+    pub const fn multiline(mut self) -> Self {
         self.widget = SecretWidget::Multiline;
         self
     }
@@ -323,7 +323,7 @@ impl SecretField {
 
     /// Reveal the last N characters in masked displays.
     #[must_use]
-    pub fn reveal_last(mut self, chars: u8) -> Self {
+    pub const fn reveal_last(mut self, chars: u8) -> Self {
         self.reveal_last = Some(chars);
         self
     }
@@ -338,14 +338,14 @@ define_field!(NumberField {
 impl NumberField {
     /// Select widget variant.
     #[must_use]
-    pub fn widget(mut self, widget: NumberWidget) -> Self {
+    pub const fn widget(mut self, widget: NumberWidget) -> Self {
         self.widget = widget;
         self
     }
 
     /// Switch number to integer mode.
     #[must_use]
-    pub fn integer(mut self) -> Self {
+    pub const fn integer(mut self) -> Self {
         self.integer = true;
         self
     }
@@ -379,7 +379,7 @@ define_field!(BooleanField {
 impl BooleanField {
     /// Select widget variant.
     #[must_use]
-    pub fn widget(mut self, widget: BooleanWidget) -> Self {
+    pub const fn widget(mut self, widget: BooleanWidget) -> Self {
         self.widget = widget;
         self
     }
@@ -399,7 +399,7 @@ define_field!(SelectField {
 impl SelectField {
     /// Select widget variant.
     #[must_use]
-    pub fn widget(mut self, widget: SelectWidget) -> Self {
+    pub const fn widget(mut self, widget: SelectWidget) -> Self {
         self.widget = widget;
         self
     }
@@ -428,7 +428,7 @@ impl SelectField {
 
     /// Mark this field as dynamic without selecting a loader yet.
     #[must_use]
-    pub fn dynamic(mut self) -> Self {
+    pub const fn dynamic(mut self) -> Self {
         self.dynamic = true;
         self
     }
@@ -442,21 +442,21 @@ impl SelectField {
 
     /// Enable multi-select mode.
     #[must_use]
-    pub fn multiple(mut self) -> Self {
+    pub const fn multiple(mut self) -> Self {
         self.multiple = true;
         self
     }
 
     /// Enable searchable UX.
     #[must_use]
-    pub fn searchable(mut self) -> Self {
+    pub const fn searchable(mut self) -> Self {
         self.searchable = true;
         self
     }
 
     /// Allow values that are missing from static options.
     #[must_use]
-    pub fn allow_custom(mut self) -> Self {
+    pub const fn allow_custom(mut self) -> Self {
         self.allow_custom = true;
         self
     }
@@ -470,7 +470,7 @@ define_field!(ObjectField {
 impl ObjectField {
     /// Select widget variant.
     #[must_use]
-    pub fn widget(mut self, widget: ObjectWidget) -> Self {
+    pub const fn widget(mut self, widget: ObjectWidget) -> Self {
         self.widget = widget;
         self
     }
@@ -509,7 +509,7 @@ define_field!(ListField {
 impl ListField {
     /// Select widget variant.
     #[must_use]
-    pub fn widget(mut self, widget: ListWidget) -> Self {
+    pub const fn widget(mut self, widget: ListWidget) -> Self {
         self.widget = widget;
         self
     }
@@ -523,21 +523,21 @@ impl ListField {
 
     /// Set minimum item count.
     #[must_use]
-    pub fn min_items(mut self, count: u32) -> Self {
+    pub const fn min_items(mut self, count: u32) -> Self {
         self.min_items = Some(count);
         self
     }
 
     /// Set maximum item count.
     #[must_use]
-    pub fn max_items(mut self, count: u32) -> Self {
+    pub const fn max_items(mut self, count: u32) -> Self {
         self.max_items = Some(count);
         self
     }
 
     /// Require unique items.
     #[must_use]
-    pub fn unique(mut self) -> Self {
+    pub const fn unique(mut self) -> Self {
         self.unique = true;
         self
     }
@@ -587,7 +587,7 @@ impl ModeField {
 
     /// Allow the mode to be selected dynamically at runtime.
     #[must_use]
-    pub fn allow_dynamic_mode(mut self) -> Self {
+    pub const fn allow_dynamic_mode(mut self) -> Self {
         self.allow_dynamic_mode = true;
         self
     }
@@ -608,7 +608,7 @@ impl CodeField {
 
     /// Select widget variant.
     #[must_use]
-    pub fn widget(mut self, widget: CodeWidget) -> Self {
+    pub const fn widget(mut self, widget: CodeWidget) -> Self {
         self.widget = widget;
         self
     }
@@ -630,14 +630,14 @@ impl FileField {
 
     /// Set maximum file size in bytes.
     #[must_use]
-    pub fn max_size(mut self, bytes: u64) -> Self {
+    pub const fn max_size(mut self, bytes: u64) -> Self {
         self.max_size = Some(bytes);
         self
     }
 
     /// Enable multi-file selection mode.
     #[must_use]
-    pub fn multiple(mut self) -> Self {
+    pub const fn multiple(mut self) -> Self {
         self.multiple = true;
         self
     }
@@ -671,7 +671,7 @@ impl ComputedField {
 
     /// Set the return type hint.
     #[must_use]
-    pub fn returns(mut self, r: ComputedReturn) -> Self {
+    pub const fn returns(mut self, r: ComputedReturn) -> Self {
         self.returns = r;
         self
     }
@@ -760,6 +760,20 @@ pub enum Field {
 // ── Factory methods ───────────────────────────────────────────────────────────
 
 impl Field {
+    #[expect(
+        clippy::result_large_err,
+        reason = "ValidationError is intentionally large; field creation is on the authoring path"
+    )]
+    fn parse_key_or_error(key: &str) -> Result<FieldKey, ValidationError> {
+        FieldKey::new(key).map_err(|err| {
+            ValidationError::builder("invalid_key")
+                .at(FieldPath::root())
+                .param("key", Value::String(key.to_owned()))
+                .message(format!("invalid key `{key}`: {err}"))
+                .build()
+        })
+    }
+
     /// Create a [`StringField`] with the given key.
     ///
     /// # Example
@@ -773,23 +787,71 @@ impl Field {
     ///     .unwrap();
     /// assert!(schema.find(&field_key!("greeting")).is_some());
     /// ```
+    #[must_use]
     pub fn string(key: impl AsRef<str>) -> StringField {
         StringField::new(key)
     }
 
+    /// Fallible variant of [`Field::string`] for runtime-provided keys.
+    ///
+    /// # Errors
+    ///
+    /// Returns `invalid_key` when `key` cannot be parsed into a [`FieldKey`].
+    #[allow(clippy::result_large_err)]
+    pub fn try_string(key: impl AsRef<str>) -> Result<StringField, ValidationError> {
+        let key = Self::parse_key_or_error(key.as_ref())?;
+        Ok(StringField::new(key.as_str()))
+    }
+
     /// Create `SecretField`.
+    #[must_use]
     pub fn secret(key: impl AsRef<str>) -> SecretField {
         SecretField::new(key)
     }
 
+    /// Fallible variant of [`Field::secret`] for runtime-provided keys.
+    ///
+    /// # Errors
+    ///
+    /// Returns `invalid_key` when `key` cannot be parsed into a [`FieldKey`].
+    #[allow(clippy::result_large_err)]
+    pub fn try_secret(key: impl AsRef<str>) -> Result<SecretField, ValidationError> {
+        let key = Self::parse_key_or_error(key.as_ref())?;
+        Ok(SecretField::new(key.as_str()))
+    }
+
     /// Create `NumberField`.
+    #[must_use]
     pub fn number(key: impl AsRef<str>) -> NumberField {
         NumberField::new(key)
     }
 
+    /// Fallible variant of [`Field::number`] for runtime-provided keys.
+    ///
+    /// # Errors
+    ///
+    /// Returns `invalid_key` when `key` cannot be parsed into a [`FieldKey`].
+    #[allow(clippy::result_large_err)]
+    pub fn try_number(key: impl AsRef<str>) -> Result<NumberField, ValidationError> {
+        let key = Self::parse_key_or_error(key.as_ref())?;
+        Ok(NumberField::new(key.as_str()))
+    }
+
     /// Create integer `NumberField`.
+    #[must_use]
     pub fn integer(key: impl AsRef<str>) -> NumberField {
         NumberField::new(key).integer()
+    }
+
+    /// Fallible variant of [`Field::integer`] for runtime-provided keys.
+    ///
+    /// # Errors
+    ///
+    /// Returns `invalid_key` when `key` cannot be parsed into a [`FieldKey`].
+    #[allow(clippy::result_large_err)]
+    pub fn try_integer(key: impl AsRef<str>) -> Result<NumberField, ValidationError> {
+        let key = Self::parse_key_or_error(key.as_ref())?;
+        Ok(NumberField::new(key.as_str()).integer())
     }
 
     /// Create a [`BooleanField`] with the given key.
@@ -810,53 +872,173 @@ impl Field {
     /// let values = FieldValues::from_json(json!({"enabled": false})).unwrap();
     /// assert!(schema.validate(&values).is_ok());
     /// ```
+    #[must_use]
     pub fn boolean(key: impl AsRef<str>) -> BooleanField {
         BooleanField::new(key)
     }
 
+    /// Fallible variant of [`Field::boolean`] for runtime-provided keys.
+    ///
+    /// # Errors
+    ///
+    /// Returns `invalid_key` when `key` cannot be parsed into a [`FieldKey`].
+    #[allow(clippy::result_large_err)]
+    pub fn try_boolean(key: impl AsRef<str>) -> Result<BooleanField, ValidationError> {
+        let key = Self::parse_key_or_error(key.as_ref())?;
+        Ok(BooleanField::new(key.as_str()))
+    }
+
     /// Create `SelectField`.
+    #[must_use]
     pub fn select(key: impl AsRef<str>) -> SelectField {
         SelectField::new(key)
     }
 
+    /// Fallible variant of [`Field::select`] for runtime-provided keys.
+    ///
+    /// # Errors
+    ///
+    /// Returns `invalid_key` when `key` cannot be parsed into a [`FieldKey`].
+    #[allow(clippy::result_large_err)]
+    pub fn try_select(key: impl AsRef<str>) -> Result<SelectField, ValidationError> {
+        let key = Self::parse_key_or_error(key.as_ref())?;
+        Ok(SelectField::new(key.as_str()))
+    }
+
     /// Create `ObjectField`.
+    #[must_use]
     pub fn object(key: impl AsRef<str>) -> ObjectField {
         ObjectField::new(key)
     }
 
+    /// Fallible variant of [`Field::object`] for runtime-provided keys.
+    ///
+    /// # Errors
+    ///
+    /// Returns `invalid_key` when `key` cannot be parsed into a [`FieldKey`].
+    #[allow(clippy::result_large_err)]
+    pub fn try_object(key: impl AsRef<str>) -> Result<ObjectField, ValidationError> {
+        let key = Self::parse_key_or_error(key.as_ref())?;
+        Ok(ObjectField::new(key.as_str()))
+    }
+
     /// Create `ListField`.
+    #[must_use]
     pub fn list(key: impl AsRef<str>) -> ListField {
         ListField::new(key)
     }
 
+    /// Fallible variant of [`Field::list`] for runtime-provided keys.
+    ///
+    /// # Errors
+    ///
+    /// Returns `invalid_key` when `key` cannot be parsed into a [`FieldKey`].
+    #[allow(clippy::result_large_err)]
+    pub fn try_list(key: impl AsRef<str>) -> Result<ListField, ValidationError> {
+        let key = Self::parse_key_or_error(key.as_ref())?;
+        Ok(ListField::new(key.as_str()))
+    }
+
     /// Create `ModeField`.
+    #[must_use]
     pub fn mode(key: impl AsRef<str>) -> ModeField {
         ModeField::new(key)
     }
 
+    /// Fallible variant of [`Field::mode`] for runtime-provided keys.
+    ///
+    /// # Errors
+    ///
+    /// Returns `invalid_key` when `key` cannot be parsed into a [`FieldKey`].
+    #[allow(clippy::result_large_err)]
+    pub fn try_mode(key: impl AsRef<str>) -> Result<ModeField, ValidationError> {
+        let key = Self::parse_key_or_error(key.as_ref())?;
+        Ok(ModeField::new(key.as_str()))
+    }
+
     /// Create `CodeField`.
+    #[must_use]
     pub fn code(key: impl AsRef<str>) -> CodeField {
         CodeField::new(key)
     }
 
+    /// Fallible variant of [`Field::code`] for runtime-provided keys.
+    ///
+    /// # Errors
+    ///
+    /// Returns `invalid_key` when `key` cannot be parsed into a [`FieldKey`].
+    #[allow(clippy::result_large_err)]
+    pub fn try_code(key: impl AsRef<str>) -> Result<CodeField, ValidationError> {
+        let key = Self::parse_key_or_error(key.as_ref())?;
+        Ok(CodeField::new(key.as_str()))
+    }
+
     /// Create `FileField`.
+    #[must_use]
     pub fn file(key: impl AsRef<str>) -> FileField {
         FileField::new(key)
     }
 
+    /// Fallible variant of [`Field::file`] for runtime-provided keys.
+    ///
+    /// # Errors
+    ///
+    /// Returns `invalid_key` when `key` cannot be parsed into a [`FieldKey`].
+    #[allow(clippy::result_large_err)]
+    pub fn try_file(key: impl AsRef<str>) -> Result<FileField, ValidationError> {
+        let key = Self::parse_key_or_error(key.as_ref())?;
+        Ok(FileField::new(key.as_str()))
+    }
+
     /// Create `ComputedField`.
+    #[must_use]
     pub fn computed(key: impl AsRef<str>) -> ComputedField {
         ComputedField::new(key)
     }
 
+    /// Fallible variant of [`Field::computed`] for runtime-provided keys.
+    ///
+    /// # Errors
+    ///
+    /// Returns `invalid_key` when `key` cannot be parsed into a [`FieldKey`].
+    #[allow(clippy::result_large_err)]
+    pub fn try_computed(key: impl AsRef<str>) -> Result<ComputedField, ValidationError> {
+        let key = Self::parse_key_or_error(key.as_ref())?;
+        Ok(ComputedField::new(key.as_str()))
+    }
+
     /// Create `DynamicField`.
+    #[must_use]
     pub fn dynamic(key: impl AsRef<str>) -> DynamicField {
         DynamicField::new(key)
     }
 
+    /// Fallible variant of [`Field::dynamic`] for runtime-provided keys.
+    ///
+    /// # Errors
+    ///
+    /// Returns `invalid_key` when `key` cannot be parsed into a [`FieldKey`].
+    #[allow(clippy::result_large_err)]
+    pub fn try_dynamic(key: impl AsRef<str>) -> Result<DynamicField, ValidationError> {
+        let key = Self::parse_key_or_error(key.as_ref())?;
+        Ok(DynamicField::new(key.as_str()))
+    }
+
     /// Create `NoticeField`.
+    #[must_use]
     pub fn notice(key: impl AsRef<str>) -> NoticeField {
         NoticeField::new(key)
+    }
+
+    /// Fallible variant of [`Field::notice`] for runtime-provided keys.
+    ///
+    /// # Errors
+    ///
+    /// Returns `invalid_key` when `key` cannot be parsed into a [`FieldKey`].
+    #[allow(clippy::result_large_err)]
+    pub fn try_notice(key: impl AsRef<str>) -> Result<NoticeField, ValidationError> {
+        let key = Self::parse_key_or_error(key.as_ref())?;
+        Ok(NoticeField::new(key.as_str()))
     }
 }
 
@@ -865,7 +1047,8 @@ impl Field {
 impl Field {
     /// Shared key accessor.
     #[inline]
-    pub fn key(&self) -> &FieldKey {
+    #[must_use]
+    pub const fn key(&self) -> &FieldKey {
         match self {
             Self::String(f) => &f.key,
             Self::Secret(f) => &f.key,
@@ -885,7 +1068,8 @@ impl Field {
 
     /// Shared visibility accessor.
     #[inline]
-    pub fn visible(&self) -> &VisibilityMode {
+    #[must_use]
+    pub const fn visible(&self) -> &VisibilityMode {
         match self {
             Self::String(f) => &f.visible,
             Self::Secret(f) => &f.visible,
@@ -905,7 +1089,8 @@ impl Field {
 
     /// Shared required accessor.
     #[inline]
-    pub fn required(&self) -> &RequiredMode {
+    #[must_use]
+    pub const fn required(&self) -> &RequiredMode {
         match self {
             Self::String(f) => &f.required,
             Self::Secret(f) => &f.required,
@@ -925,7 +1110,8 @@ impl Field {
 
     /// Shared expression mode accessor.
     #[inline]
-    pub fn expression(&self) -> &ExpressionMode {
+    #[must_use]
+    pub const fn expression(&self) -> &ExpressionMode {
         match self {
             Self::String(f) => &f.expression,
             Self::Secret(f) => &f.expression,
@@ -945,7 +1131,8 @@ impl Field {
 
     /// Shared rules accessor.
     #[inline]
-    pub fn rules(&self) -> &[Rule] {
+    #[must_use]
+    pub const fn rules(&self) -> &[Rule] {
         match self {
             Self::String(f) => f.rules.as_slice(),
             Self::Secret(f) => f.rules.as_slice(),
@@ -965,7 +1152,8 @@ impl Field {
 
     /// Shared transformer accessor.
     #[inline]
-    pub fn transformers(&self) -> &[Transformer] {
+    #[must_use]
+    pub const fn transformers(&self) -> &[Transformer] {
         match self {
             Self::String(f) => f.transformers.as_slice(),
             Self::Secret(f) => f.transformers.as_slice(),
@@ -985,7 +1173,8 @@ impl Field {
 
     /// Shared default-value accessor.
     #[inline]
-    pub fn default(&self) -> Option<&Value> {
+    #[must_use]
+    pub const fn default(&self) -> Option<&Value> {
         match self {
             Self::String(f) => f.default.as_ref(),
             Self::Secret(f) => f.default.as_ref(),
@@ -1005,7 +1194,8 @@ impl Field {
 
     /// Return the static type name for error messages and diagnostics.
     #[inline]
-    pub fn type_name(&self) -> &'static str {
+    #[must_use]
+    pub const fn type_name(&self) -> &'static str {
         match self {
             Self::String(_) => "string",
             Self::Secret(_) => "secret",
@@ -1087,7 +1277,10 @@ impl From<FileField> for Field {
 }
 
 impl From<ComputedField> for Field {
-    fn from(value: ComputedField) -> Self {
+    fn from(mut value: ComputedField) -> Self {
+        // `ComputedField` is expression-backed by design; keep this invariant
+        // even if generic builder helpers changed the mode.
+        value.expression = ExpressionMode::Required;
         Self::Computed(value)
     }
 }
@@ -1099,7 +1292,9 @@ impl From<DynamicField> for Field {
 }
 
 impl From<NoticeField> for Field {
-    fn from(value: NoticeField) -> Self {
+    fn from(mut value: NoticeField) -> Self {
+        // `NoticeField` is display-only and must never accept expressions.
+        value.expression = ExpressionMode::Forbidden;
         Self::Notice(value)
     }
 }

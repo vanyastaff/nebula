@@ -4,6 +4,11 @@ use nebula_schema::{
 };
 use serde_json::json;
 
+fn raw_schema(fields: impl IntoIterator<Item = Field>) -> Schema {
+    let fields: Vec<Field> = fields.into_iter().collect();
+    serde_json::from_value(json!({ "fields": fields })).expect("raw schema from field list")
+}
+
 fn has_error(report: &ValidationReport, code: &str, path_prefix: &str) -> bool {
     report
         .errors()
@@ -18,27 +23,25 @@ fn has_warning(report: &ValidationReport, code: &str, path_prefix: &str) -> bool
 
 #[test]
 fn lint_schema_reports_dangling_refs_and_structural_issues() {
-    let schema = Schema::new()
-        .add(Field::string("toggle"))
-        .add(
-            Field::string("name")
-                .visible_when(nebula_validator::Rule::predicate(
-                    nebula_validator::Predicate::eq("missing", json!(true)).unwrap(),
-                ))
-                .with_rule(nebula_validator::Rule::min_length(5))
-                .with_rule(nebula_validator::Rule::max_length(2)),
-        )
-        .add(
-            Field::select("region")
-                .dynamic()
-                .loader("regions_loader")
-                .depends_on(FieldPath::parse("unknown_ref").unwrap()),
-        )
-        .add(
-            Field::mode("auth")
-                .variant("token", "", Field::secret("token"))
-                .default_variant("missing_variant"),
-        );
+    let schema = raw_schema(vec![
+        Field::string("toggle").into(),
+        Field::string("name")
+            .visible_when(nebula_validator::Rule::predicate(
+                nebula_validator::Predicate::eq("missing", json!(true)).unwrap(),
+            ))
+            .with_rule(nebula_validator::Rule::min_length(5))
+            .with_rule(nebula_validator::Rule::max_length(2))
+            .into(),
+        Field::select("region")
+            .dynamic()
+            .loader("regions_loader")
+            .depends_on(FieldPath::parse("unknown_ref").unwrap())
+            .into(),
+        Field::mode("auth")
+            .variant("token", "", Field::secret("token"))
+            .default_variant("missing_variant")
+            .into(),
+    ]);
 
     let report = schema.lint();
     assert!(report.has_errors());
@@ -70,18 +73,17 @@ fn lint_schema_reports_dangling_refs_and_structural_issues() {
 
 #[tokio::test]
 async fn loader_registry_resolves_select_and_dynamic_loaders() {
-    let schema = Schema::new()
-        .add(
-            Field::select("workspace")
-                .dynamic()
-                .loader("workspace_loader")
-                .depends_on(FieldPath::parse("team_id").unwrap()),
-        )
-        .add(
-            Field::dynamic("resource")
-                .loader("resource_loader")
-                .depends_on(FieldPath::parse("workspace").unwrap()),
-        );
+    let schema = raw_schema(vec![
+        Field::select("workspace")
+            .dynamic()
+            .loader("workspace_loader")
+            .depends_on(FieldPath::parse("team_id").unwrap())
+            .into(),
+        Field::dynamic("resource")
+            .loader("resource_loader")
+            .depends_on(FieldPath::parse("workspace").unwrap())
+            .into(),
+    ]);
 
     let registry = LoaderRegistry::new()
         .register_option("workspace_loader", |_ctx| async {
@@ -122,8 +124,56 @@ async fn loader_registry_resolves_select_and_dynamic_loaders() {
 }
 
 #[tokio::test]
+async fn valid_schema_loader_apis_resolve_loaders() {
+    let schema = Schema::builder()
+        .add(Field::string("team_id"))
+        .add(
+            Field::select("workspace")
+                .dynamic()
+                .loader("workspace_loader")
+                .depends_on(FieldPath::parse("team_id").unwrap()),
+        )
+        .add(
+            Field::dynamic("resource")
+                .loader("resource_loader")
+                .depends_on(FieldPath::parse("workspace").unwrap()),
+        )
+        .build()
+        .expect("schema should build");
+
+    let registry = LoaderRegistry::new()
+        .register_option("workspace_loader", |_ctx| async {
+            Ok(LoaderResult::done(vec![nebula_schema::SelectOption::new(
+                json!("ws_1"),
+                "Workspace 1",
+            )]))
+        })
+        .register_record("resource_loader", |_ctx| async {
+            Ok(LoaderResult::done(vec![json!({"id": "res_1"})]))
+        });
+
+    let context = LoaderContext::new("workspace", FieldValues::new());
+    let options = schema
+        .load_select_options("workspace", &registry, context.clone())
+        .await
+        .expect("workspace options should load");
+    assert_eq!(options.items.len(), 1);
+
+    let records = schema
+        .load_dynamic_records("resource", &registry, context)
+        .await
+        .expect("resource records should load");
+    assert_eq!(records.items.len(), 1);
+}
+
+#[tokio::test]
 async fn loader_registry_reports_missing_loader_registration() {
-    let schema = Schema::new().add(Field::select("region").dynamic().loader("missing_loader"));
+    let schema = raw_schema(vec![
+        Field::select("region")
+            .dynamic()
+            .loader("missing_loader")
+            .into(),
+    ]);
     let registry = LoaderRegistry::new();
     let context = LoaderContext::new("region", FieldValues::new());
     let error = schema
@@ -135,7 +185,7 @@ async fn loader_registry_reports_missing_loader_registration() {
 
 #[tokio::test]
 async fn load_select_options_unknown_key_emits_field_not_found() {
-    let schema = Schema::new().add(Field::select("region").dynamic().loader("x"));
+    let schema = raw_schema(vec![Field::select("region").dynamic().loader("x").into()]);
     let registry = LoaderRegistry::new();
     let context = LoaderContext::new("ghost", FieldValues::new());
     let error = schema
@@ -148,7 +198,7 @@ async fn load_select_options_unknown_key_emits_field_not_found() {
 
 #[tokio::test]
 async fn load_select_options_wrong_field_type_emits_type_mismatch() {
-    let schema = Schema::new().add(Field::string("email"));
+    let schema = raw_schema(vec![Field::string("email").into()]);
     let registry = LoaderRegistry::new();
     let context = LoaderContext::new("email", FieldValues::new());
     let error = schema
@@ -177,7 +227,7 @@ async fn load_select_options_wrong_field_type_emits_type_mismatch() {
 
 #[tokio::test]
 async fn load_select_options_without_loader_emits_missing_config() {
-    let schema = Schema::new().add(Field::select("region").option("us", "US"));
+    let schema = raw_schema(vec![Field::select("region").option("us", "US").into()]);
     let registry = LoaderRegistry::new();
     let context = LoaderContext::new("region", FieldValues::new());
     let error = schema
@@ -190,7 +240,7 @@ async fn load_select_options_without_loader_emits_missing_config() {
 
 #[tokio::test]
 async fn load_dynamic_records_wrong_field_type_emits_type_mismatch() {
-    let schema = Schema::new().add(Field::number("count"));
+    let schema = raw_schema(vec![Field::number("count").into()]);
     let registry = LoaderRegistry::new();
     let context = LoaderContext::new("count", FieldValues::new());
     let error = schema
@@ -210,7 +260,7 @@ async fn load_dynamic_records_wrong_field_type_emits_type_mismatch() {
 
 #[tokio::test]
 async fn load_dynamic_records_unknown_key_emits_field_not_found() {
-    let schema = Schema::new().add(Field::dynamic("resource").loader("loader_x"));
+    let schema = raw_schema(vec![Field::dynamic("resource").loader("loader_x").into()]);
     let registry = LoaderRegistry::new();
     let context = LoaderContext::new("ghost", FieldValues::new());
     let error = schema
@@ -223,7 +273,7 @@ async fn load_dynamic_records_unknown_key_emits_field_not_found() {
 
 #[tokio::test]
 async fn load_dynamic_records_without_loader_emits_missing_config() {
-    let schema = Schema::new().add(Field::dynamic("resource"));
+    let schema = raw_schema(vec![Field::dynamic("resource").into()]);
     let registry = LoaderRegistry::new();
     let context = LoaderContext::new("resource", FieldValues::new());
     let error = schema
@@ -236,17 +286,18 @@ async fn load_dynamic_records_without_loader_emits_missing_config() {
 
 #[test]
 fn lint_schema_detects_visibility_cycles() {
-    let schema = Schema::new()
-        .add(
-            Field::string("a").visible_when(nebula_validator::Rule::predicate(
+    let schema = raw_schema(vec![
+        Field::string("a")
+            .visible_when(nebula_validator::Rule::predicate(
                 nebula_validator::Predicate::eq("b", json!(true)).unwrap(),
-            )),
-        )
-        .add(
-            Field::string("b").visible_when(nebula_validator::Rule::predicate(
+            ))
+            .into(),
+        Field::string("b")
+            .visible_when(nebula_validator::Rule::predicate(
                 nebula_validator::Predicate::eq("a", json!(true)).unwrap(),
-            )),
-        );
+            ))
+            .into(),
+    ]);
 
     let report = schema.lint();
     let cycle_paths: Vec<String> = report
@@ -284,23 +335,23 @@ fn runtime_validation_still_works_with_linted_schema() {
 
 #[test]
 fn lint_schema_reports_rule_incompatible_warnings() {
-    let schema = Schema::new()
-        .add(
-            Field::number("retries")
-                .with_rule(nebula_validator::Rule::pattern("^\\d+$"))
-                .with_rule(nebula_validator::Rule::email()),
-        )
-        .add(
-            Field::string("name").with_rule(nebula_validator::Rule::Value(
+    let schema = raw_schema(vec![
+        Field::number("retries")
+            .with_rule(nebula_validator::Rule::pattern("^\\d+$"))
+            .with_rule(nebula_validator::Rule::email())
+            .into(),
+        Field::string("name")
+            .with_rule(nebula_validator::Rule::Value(
                 nebula_validator::ValueRule::Min(serde_json::Number::from(1)),
-            )),
-        )
-        .add(
-            Field::boolean("flag").with_rule(nebula_validator::Rule::all([
+            ))
+            .into(),
+        Field::boolean("flag")
+            .with_rule(nebula_validator::Rule::all([
                 nebula_validator::Rule::max_length(10),
                 nebula_validator::Rule::not(nebula_validator::Rule::min_items(1)),
-            ])),
-        );
+            ]))
+            .into(),
+    ]);
 
     let report = schema.lint();
     assert!(
@@ -319,27 +370,25 @@ fn lint_schema_reports_rule_incompatible_warnings() {
 
 #[test]
 fn lint_schema_accepts_compatible_rule_types() {
-    let schema = Schema::new()
-        .add(
-            Field::string("title")
-                .min_length(3)
-                .with_rule(nebula_validator::Rule::url()),
-        )
-        .add(
-            Field::number("timeout").with_rule(nebula_validator::Rule::Value(
+    let schema = raw_schema(vec![
+        Field::string("title")
+            .min_length(3)
+            .with_rule(nebula_validator::Rule::url())
+            .into(),
+        Field::number("timeout")
+            .with_rule(nebula_validator::Rule::Value(
                 nebula_validator::ValueRule::Min(serde_json::Number::from(1)),
-            )),
-        )
-        .add(
-            Field::list("tags")
-                .item(Field::string("tag"))
-                .with_rule(nebula_validator::Rule::min_items(1)),
-        )
-        .add(
-            Field::select("regions")
-                .multiple()
-                .with_rule(nebula_validator::Rule::max_items(3)),
-        );
+            ))
+            .into(),
+        Field::list("tags")
+            .item(Field::string("tag"))
+            .with_rule(nebula_validator::Rule::min_items(1))
+            .into(),
+        Field::select("regions")
+            .multiple()
+            .with_rule(nebula_validator::Rule::max_items(3))
+            .into(),
+    ]);
 
     let report = schema.lint();
     assert!(
@@ -358,4 +407,69 @@ fn lint_schema_accepts_compatible_rule_types() {
         !has_warning(&report, "rule.incompatible", "tags"),
         "compatible list rules should not be flagged"
     );
+}
+
+#[test]
+fn lint_treats_blank_loader_key_as_missing_loader() {
+    let schema = raw_schema(vec![
+        Field::select("region").dynamic().loader("   ").into(),
+        Field::dynamic("resource").loader("").into(),
+    ]);
+
+    let report = schema.lint();
+    assert!(
+        has_warning(&report, "missing_loader", "region"),
+        "blank select loader should be treated as missing"
+    );
+    assert!(
+        has_warning(&report, "missing_loader", "resource"),
+        "blank dynamic loader should be treated as missing"
+    );
+}
+
+#[test]
+fn lint_reports_duplicate_depends_on_entries() {
+    let dependency = FieldPath::parse("team_id").unwrap();
+    let schema = raw_schema(vec![
+        Field::select("workspace")
+            .dynamic()
+            .loader("workspace_loader")
+            .depends_on(dependency.clone())
+            .depends_on(dependency)
+            .into(),
+    ]);
+
+    let report = schema.lint();
+    assert!(
+        has_warning(&report, "duplicate_dependency", "workspace"),
+        "expected duplicate_dependency warning, got: {:?}",
+        report
+            .warnings()
+            .map(|e| (&e.code, e.path.to_string()))
+            .collect::<Vec<_>>()
+    );
+}
+
+#[tokio::test]
+async fn load_select_options_blank_loader_emits_missing_config() {
+    let schema = raw_schema(vec![Field::select("region").dynamic().loader(" ").into()]);
+    let registry = LoaderRegistry::new();
+    let context = LoaderContext::new("region", FieldValues::new());
+    let error = schema
+        .load_select_options("region", &registry, context)
+        .await
+        .expect_err("blank loader config must fail");
+    assert_eq!(error.code, "loader.missing_config");
+}
+
+#[tokio::test]
+async fn load_dynamic_records_blank_loader_emits_missing_config() {
+    let schema = raw_schema(vec![Field::dynamic("resource").loader(" ").into()]);
+    let registry = LoaderRegistry::new();
+    let context = LoaderContext::new("resource", FieldValues::new());
+    let error = schema
+        .load_dynamic_records("resource", &registry, context)
+        .await
+        .expect_err("blank loader config must fail");
+    assert_eq!(error.code, "loader.missing_config");
 }

@@ -33,8 +33,8 @@ pub enum KdfError {
 impl fmt::Display for KdfError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            KdfError::InvalidParams(m) => write!(f, "invalid KDF parameters: {m}"),
-            KdfError::KdfFailed(m) => write!(f, "KDF operation failed: {m}"),
+            Self::InvalidParams(m) => write!(f, "invalid KDF parameters: {m}"),
+            Self::KdfFailed(m) => write!(f, "KDF operation failed: {m}"),
         }
     }
 }
@@ -72,7 +72,7 @@ pub enum KdfParams {
     Argon2id {
         /// Salt as even-length hex (no `0x`); decoded length 8–32 bytes recommended.
         salt_hex: String,
-        /// `m` cost (memory, KiB). Must match the Argon2 `Params` range.
+        /// `m` cost (memory, `KiB`). Must match the Argon2 `Params` range.
         memory_kib: u32,
         /// `t` cost (iterations).
         time_cost: u32,
@@ -82,7 +82,7 @@ pub enum KdfParams {
     },
 }
 
-fn default_p_cost() -> u8 {
+const fn default_p_cost() -> u8 {
     1
 }
 
@@ -103,12 +103,14 @@ pub struct SecretString(Zeroizing<String>);
 
 impl SecretString {
     /// Build from a `String` (moves; original allocation is not preserved as `String`).
+    #[must_use]
     pub fn new(value: String) -> Self {
         Self(Zeroizing::new(value))
     }
 
     /// Redacted by default: [`SECRET_REDACTED`].
     #[inline]
+    #[must_use]
     pub fn redacted_json() -> serde_json::Value {
         serde_json::Value::String(SECRET_REDACTED.to_owned())
     }
@@ -126,6 +128,7 @@ impl SecretString {
 
     /// Returns `true` when the underlying buffer is empty.
     #[inline]
+    #[must_use]
     pub fn is_empty(&self) -> bool {
         self.0.is_empty()
     }
@@ -187,6 +190,7 @@ impl SecretBytes {
 
     /// Returns `true` when the buffer is empty.
     #[inline]
+    #[must_use]
     pub fn is_empty(&self) -> bool {
         self.0.is_empty()
     }
@@ -241,6 +245,7 @@ pub enum SecretValue {
 
 impl SecretValue {
     /// Wrap a `String` secret.
+    #[must_use]
     pub fn string(value: String) -> Self {
         Self::String(SecretString::new(value))
     }
@@ -251,14 +256,16 @@ impl SecretValue {
     }
 
     /// `true` when the secret is an empty string or empty buffer.
+    #[must_use]
     pub fn is_empty(&self) -> bool {
         match self {
-            SecretValue::String(s) => s.is_empty(),
-            SecretValue::Bytes(b) => b.is_empty(),
+            Self::String(s) => s.is_empty(),
+            Self::Bytes(b) => b.is_empty(),
         }
     }
 
     /// JSON form used by wire helpers; always the redacted string token.
+    #[must_use]
     pub fn to_json(&self) -> serde_json::Value {
         match self {
             Self::String(_) | Self::Bytes(_) => SecretString::redacted_json(),
@@ -293,9 +300,14 @@ impl Serialize for SecretWire<'_> {
 
 impl KdfParams {
     /// Run the configured KDF over `password` and return hashed secret bytes.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`KdfError`] when parameters are invalid, salt decoding fails, or
+    /// hashing fails.
     pub fn hash_password(&self, password: &[u8]) -> Result<SecretValue, KdfError> {
         match self {
-            KdfParams::Argon2id {
+            Self::Argon2id {
                 salt_hex,
                 memory_kib,
                 time_cost,

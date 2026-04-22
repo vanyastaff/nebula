@@ -187,7 +187,9 @@ pub use secret::{
     KdfError, KdfParams, SECRET_REDACTED, SecretBytes, SecretString, SecretValue, SecretWire,
 };
 pub use transformer::Transformer;
-pub use validated::{FieldHandle, ResolvedValues, SchemaFlags, ValidSchema, ValidValues};
+pub use validated::{
+    FieldHandle, ResolvedLookup, ResolvedValues, SchemaFlags, ValidSchema, ValidValues,
+};
 pub use value::{EXPRESSION_KEY, FieldValue, FieldValues};
 pub use widget::{
     BooleanWidget, CodeWidget, ListWidget, NumberWidget, ObjectWidget, SecretWidget, SelectWidget,

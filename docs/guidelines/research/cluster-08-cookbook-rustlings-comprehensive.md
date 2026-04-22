@@ -1525,39 +1525,36 @@ Exact file names vary by Rustlings release; the **numbered `00_`…`23_` directo
 
 ---
 
-# 15. Appendix D — "Canonical first-day setup" the three sources imply
+# 15. Appendix D — Environment baseline (strict, Nebula-aligned)
+
+This appendix is a strict operational baseline. If it conflicts with repo policy, `docs/dev-setup.md` and CI workflow files win.
 
 ```bash
-# Install
+# 1) Keep stable as default; never flip workspace default to nightly
 rustup default stable
-rustup component add rustfmt clippy rust-src rust-analyzer
+rustup toolchain install 1.95.0
+rustup +nightly component add rustfmt
+rustup component add clippy rust-src rust-analyzer
 
-# New crate
-cargo new my_project && cd my_project
+# 2) Install Nebula dev tooling and git hooks
+bash scripts/install-tools.sh
+lefthook install
 
-# Good-defaults Cargo.toml
-[dependencies]
-anyhow = "1"
-thiserror = "1"
-serde = { version = "1", features = ["derive"] }
-serde_json = "1"
-tokio = { version = "1", features = ["full"] }
-tracing = "0.1"
-tracing-subscriber = { version = "0.3", features = ["env-filter"] }
-clap = { version = "4", features = ["derive"] }
-reqwest = { version = "0.12", features = ["json", "rustls-tls"], default-features = false }
-
-[dev-dependencies]
-criterion = "0.5"
-proptest = "1"
-tempfile = "3"
-
-# Pre-commit loop
-cargo fmt --all
-cargo clippy --all-targets -- -D warnings
-cargo test
-cargo doc --no-deps --open
+# 3) CI-parity verification (run from repository root)
+cargo +nightly fmt --all -- --check
+cargo clippy --workspace --all-targets -- -D warnings
+cargo nextest run --workspace --profile ci --no-tests=pass
+cargo test --workspace --doc
 ```
+
+**Strict rules**
+
+- **MUST** keep default channel on stable (`rustup default stable`).
+- **MUST** run formatting via nightly rustfmt (`cargo +nightly fmt ...`) because CI does the same.
+- **MUST** install and keep hooks active (`lefthook install`) before regular commits.
+- **MUST** prefer `cargo nextest` for test execution; run `cargo test --doc` separately for doctests.
+- **NEVER** set one shared `CARGO_TARGET_DIR` across multiple worktrees/sessions.
+- **NEVER** treat this appendix as normative over Nebula canon docs.
 
 ---
 

@@ -1,7 +1,7 @@
 //! Schema-time validation tests for `ValidSchema::validate`.
 //!
 //! Covers: empty schema, required-field checks, type-mismatch,
-//! expression-forbidden, expression-deferred, predicate rules via RuleContext.
+//! expression-forbidden, expression-deferred, predicate rules via `RuleContext`.
 
 use nebula_schema::*;
 use serde_json::json;
@@ -132,6 +132,50 @@ fn computed_field_literal_emits_expression_required() {
     );
 }
 
+#[test]
+fn computed_field_cannot_disable_expression_requirement() {
+    let schema = Schema::builder()
+        .add(Field::computed(fk("derived")).no_expression())
+        .build()
+        .unwrap();
+
+    assert_eq!(
+        schema.fields()[0].expression(),
+        &ExpressionMode::Required,
+        "computed field must remain expression-required"
+    );
+
+    let values = FieldValues::from_json(json!({"derived": "plain"})).unwrap();
+    let report = schema.validate(&values).unwrap_err();
+    assert!(
+        report.errors().any(|e| e.code == "expression.required"),
+        "expected expression.required, got: {:?}",
+        report.errors().map(|e| &e.code).collect::<Vec<_>>()
+    );
+}
+
+#[test]
+fn notice_field_cannot_enable_expression_mode() {
+    let schema = Schema::builder()
+        .add(Field::notice(fk("banner")).expression_mode(ExpressionMode::Allowed))
+        .build()
+        .unwrap();
+
+    assert_eq!(
+        schema.fields()[0].expression(),
+        &ExpressionMode::Forbidden,
+        "notice field must keep expression-forbidden invariant"
+    );
+
+    let values = FieldValues::from_json(json!({"banner": "{{ $x }}"})).unwrap();
+    let report = schema.validate(&values).unwrap_err();
+    assert!(
+        report.errors().any(|e| e.code == "expression.forbidden"),
+        "expected expression.forbidden, got: {:?}",
+        report.errors().map(|e| &e.code).collect::<Vec<_>>()
+    );
+}
+
 // ── Type mismatch ────────────────────────────────────────────────────────────
 
 #[test]
@@ -217,7 +261,7 @@ fn valid_values_raw_values_matches_input() {
     let valid = schema.validate(&values).unwrap();
     let fk_x = FieldKey::new("x").unwrap();
     assert_eq!(
-        valid.raw_values().get(&fk_x),
+        valid.raw().get(&fk_x),
         Some(&FieldValue::Literal(json!("hi")))
     );
 }

@@ -31,13 +31,15 @@ impl SelectOption {
     }
 
     /// Attach a description to this option.
+    #[must_use]
     pub fn with_description(mut self, desc: impl Into<String>) -> Self {
         self.description = Some(desc.into());
         self
     }
 
     /// Mark this option as disabled (not selectable).
-    pub fn disabled(mut self) -> Self {
+    #[must_use]
+    pub const fn disabled(mut self) -> Self {
         self.disabled = true;
         self
     }

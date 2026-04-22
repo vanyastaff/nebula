@@ -106,7 +106,7 @@ impl ValidationErrorBuilder {
     }
     /// Downgrade severity to [`Severity::Warning`].
     #[must_use = "builder methods must be chained or built"]
-    pub fn warn(mut self) -> Self {
+    pub const fn warn(mut self) -> Self {
         self.severity = Severity::Warning;
         self
     }
@@ -132,6 +132,7 @@ impl ValidationErrorBuilder {
         self
     }
     /// Finalise and return the [`ValidationError`].
+    #[must_use]
     pub fn build(self) -> ValidationError {
         ValidationError {
             code: self.code,
@@ -152,6 +153,7 @@ pub struct ValidationReport {
 
 impl ValidationReport {
     /// Create an empty report.
+    #[must_use]
     pub fn new() -> Self {
         Self::default()
     }
@@ -181,19 +183,23 @@ impl ValidationReport {
             .filter(move |i| i.path.starts_with(&prefix))
     }
     /// Returns `true` if the report contains at least one hard error.
+    #[must_use]
     pub fn has_errors(&self) -> bool {
         self.errors().next().is_some()
     }
     /// Returns `true` if the report contains at least one warning.
+    #[must_use]
     pub fn has_warnings(&self) -> bool {
         self.warnings().next().is_some()
     }
     /// Total number of issues (errors + warnings).
-    pub fn len(&self) -> usize {
+    #[must_use]
+    pub const fn len(&self) -> usize {
         self.issues.len()
     }
     /// Returns `true` when the report has no issues.
-    pub fn is_empty(&self) -> bool {
+    #[must_use]
+    pub const fn is_empty(&self) -> bool {
         self.issues.is_empty()
     }
 }
@@ -311,6 +317,7 @@ pub const STANDARD_CODES: &[&str] = &[
     "notice.misuse",
     "missing_loader",
     "loader_without_dynamic",
+    "duplicate_dependency",
     "missing_variant_label",
     "notice_missing_description",
 ];

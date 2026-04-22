@@ -25,15 +25,15 @@ pub enum FieldValue {
     /// Expression template to be evaluated at runtime.
     Expression(Expression),
     /// Nested key-value map.
-    Object(IndexMap<FieldKey, FieldValue>),
+    Object(IndexMap<FieldKey, Self>),
     /// Ordered sequence of values.
-    List(Vec<FieldValue>),
+    List(Vec<Self>),
     /// Discriminated mode payload.
     Mode {
         /// Chosen mode key.
         mode: FieldKey,
         /// Optional mode payload.
-        value: Option<Box<FieldValue>>,
+        value: Option<Box<Self>>,
     },
     /// Redacted secret material (introduced at resolve time for `Field::Secret`).
     SecretLiteral(SecretValue),
@@ -41,8 +41,11 @@ pub enum FieldValue {
 
 impl FieldValue {
     /// Parse a raw JSON value into a typed tree.
+    ///
+    /// This function preserves object literals when keys are not valid
+    /// [`FieldKey`] identifiers.
     pub fn from_json(value: Value) -> Self {
-        match &value {
+        match value {
             Value::Object(map) => {
                 if map.len() == 1
                     && let Some(expr) = map.get(EXPRESSION_KEY).and_then(Value::as_str)
@@ -58,25 +61,31 @@ impl FieldValue {
                     let v = map
                         .get("value")
                         .cloned()
-                        .map(|v| Box::new(Self::from_json(v)));
+                        .map(|inner| Box::new(Self::from_json(inner)));
                     return Self::Mode {
                         mode: mode_key,
                         value: v,
                     };
                 }
-                let mut out: IndexMap<FieldKey, FieldValue> = IndexMap::with_capacity(map.len());
-                for (k, v) in map {
-                    if let Ok(key) = FieldKey::new(k) {
-                        out.insert(key, Self::from_json(v.clone()));
-                    }
+
+                // Parse keys first so conversion remains panic-free.
+                let Some(parsed_keys): Option<Vec<FieldKey>> = map
+                    .keys()
+                    .map(|key| FieldKey::new(key.as_str()).ok())
+                    .collect()
+                else {
+                    return Self::Literal(Value::Object(map));
+                };
+
+                let mut out: IndexMap<FieldKey, Self> = IndexMap::with_capacity(map.len());
+                for ((_, v), key) in map.into_iter().zip(parsed_keys) {
+                    out.insert(key, Self::from_json(v));
                 }
                 Self::Object(out)
             },
-            Value::Array(arr) => {
-                Self::List(arr.iter().map(|v| Self::from_json(v.clone())).collect())
-            },
-            Value::String(s) if contains_expression_marker(s) => {
-                Self::Expression(Expression::new(s.as_str()))
+            Value::Array(arr) => Self::List(arr.into_iter().map(Self::from_json).collect()),
+            Value::String(text) if contains_expression_marker(&text) => {
+                Self::Expression(Expression::new(text))
             },
             _ => Self::Literal(value),
         }
@@ -108,7 +117,8 @@ impl FieldValue {
     }
 
     /// Navigate to a nested value using a typed path.
-    pub fn path(&self, path: &FieldPath) -> Option<&FieldValue> {
+    #[must_use]
+    pub fn path(&self, path: &FieldPath) -> Option<&Self> {
         let mut cur = self;
         for seg in path.segments() {
             cur = match (cur, seg) {
@@ -127,7 +137,8 @@ impl FieldValue {
     }
 
     /// Returns true when this value is an expression variant.
-    pub fn is_expression(&self) -> bool {
+    #[must_use]
+    pub const fn is_expression(&self) -> bool {
         matches!(self, Self::Expression(_))
     }
 }
@@ -167,11 +178,17 @@ pub struct FieldValues(IndexMap<FieldKey, FieldValue>);
 
 impl FieldValues {
     /// Create an empty store.
+    #[must_use]
     pub fn new() -> Self {
         Self::default()
     }
 
     /// Parse a JSON object into a `FieldValues` store.
+    ///
+    /// # Errors
+    ///
+    /// Returns `invalid_key` for invalid object keys, or `type_mismatch` when
+    /// `value` is not a top-level object.
     #[expect(
         clippy::result_large_err,
         reason = "ValidationError is intentionally large; callers are on the validation path"
@@ -197,12 +214,24 @@ impl FieldValues {
     /// [`FieldValue::from_json`]. Panics if `key` is invalid — use only in
     /// tests/migrations with known-good keys. For runtime input, prefer
     /// [`Self::try_set_raw`].
+    ///
+    /// # Panics
+    ///
+    /// Panics when `key` is invalid or nested object keys fail validation.
     pub fn set_raw(&mut self, key: &str, value: Value) {
         self.try_set_raw(key, value)
             .unwrap_or_else(|e| panic!("set_raw failed for key {key:?}: {e}"));
     }
 
     /// Fallible variant of [`Self::set_raw`] for runtime code paths.
+    ///
+    /// Validates nested object keys before insertion and returns `invalid_key`
+    /// when any path segment violates [`FieldKey`] constraints.
+    ///
+    /// # Errors
+    ///
+    /// Returns a [`crate::error::ValidationError`] when `key` or nested keys
+    /// are invalid.
     #[expect(
         clippy::result_large_err,
         reason = "ValidationError is intentionally large; callers are on the validation path"
@@ -218,6 +247,8 @@ impl FieldValues {
                 .param("key", Value::String(key.to_owned()))
                 .build()
         })?;
+        let field_path = FieldPath::root().join(fk.clone());
+        validate_json_keys(&value, &field_path)?;
         self.0.insert(fk, FieldValue::from_json(value));
         Ok(())
     }
@@ -229,6 +260,7 @@ impl FieldValues {
 
     /// Borrow a value by key.
     #[inline]
+    #[must_use]
     pub fn get(&self, key: &FieldKey) -> Option<&FieldValue> {
         self.0.get(key)
     }
@@ -250,11 +282,13 @@ impl FieldValues {
     /// Get a `FieldValue` by string key (convenience for migration code).
     ///
     /// Uses `Borrow<str>` on `FieldKey` — no allocation for the lookup.
+    #[must_use]
     pub fn get_by_str(&self, key: &str) -> Option<&FieldValue> {
         self.0.get(key)
     }
 
     /// Navigate to a nested value using a typed path.
+    #[must_use]
     pub fn get_path(&self, path: &FieldPath) -> Option<&FieldValue> {
         let mut segs = path.segments().iter();
         let PathSegment::Key(first) = segs.next()? else {
@@ -278,13 +312,15 @@ impl FieldValues {
     }
 
     /// Returns true when key exists.
+    #[must_use]
     pub fn contains(&self, key: &FieldKey) -> bool {
         self.0.contains_key(key)
     }
 
     /// Check by string key (for migration code in schema.rs).
+    #[must_use]
     pub fn contains_str(&self, key: &str) -> bool {
-        FieldKey::new(key).is_ok_and(|fk| self.0.contains_key(&fk))
+        self.0.contains_key(key)
     }
 
     /// Iterate over all key-value pairs.
@@ -293,21 +329,25 @@ impl FieldValues {
     }
 
     /// Number of values currently set.
+    #[must_use]
     pub fn len(&self) -> usize {
         self.0.len()
     }
 
     /// Returns true when no values are set.
+    #[must_use]
     pub fn is_empty(&self) -> bool {
         self.0.is_empty()
     }
 
     /// Consume into the underlying map.
+    #[must_use]
     pub fn into_inner(self) -> IndexMap<FieldKey, FieldValue> {
         self.0
     }
 
     /// Encode all values to a JSON object.
+    #[must_use]
     pub fn to_json(&self) -> Value {
         let mut out = Map::with_capacity(self.0.len());
         for (k, v) in &self.0 {
@@ -319,6 +359,7 @@ impl FieldValues {
     /// Produce a `HashMap<String, Value>` for rule-evaluation context.
     ///
     /// Used by `schema.rs` validate logic which expects `HashMap<String, Value>`.
+    #[must_use]
     pub fn to_context_map(&self) -> HashMap<String, Value> {
         self.0
             .iter()
@@ -327,6 +368,7 @@ impl FieldValues {
     }
 
     /// Get a string literal value by key.
+    #[must_use]
     pub fn get_string(&self, key: &FieldKey) -> Option<&str> {
         match self.0.get(key)? {
             FieldValue::Literal(Value::String(s)) => Some(s),
@@ -335,15 +377,16 @@ impl FieldValues {
     }
 
     /// Get string by string key (for loader context and migration code).
+    #[must_use]
     pub fn get_string_by_str(&self, key: &str) -> Option<&str> {
-        let fk = FieldKey::new(key).ok()?;
-        match self.0.get(&fk)? {
+        match self.0.get(key)? {
             FieldValue::Literal(Value::String(s)) => Some(s),
             _ => None,
         }
     }
 
     /// Get a bool literal value by key.
+    #[must_use]
     pub fn get_bool(&self, key: &FieldKey) -> Option<bool> {
         match self.0.get(key)? {
             FieldValue::Literal(v) => v.as_bool(),
@@ -351,6 +394,7 @@ impl FieldValues {
         }
     }
     /// Get an i64 literal value by key.
+    #[must_use]
     pub fn get_i64(&self, key: &FieldKey) -> Option<i64> {
         match self.0.get(key)? {
             FieldValue::Literal(v) => v.as_i64(),
@@ -358,6 +402,7 @@ impl FieldValues {
         }
     }
     /// Get an f64 literal value by key.
+    #[must_use]
     pub fn get_f64(&self, key: &FieldKey) -> Option<f64> {
         match self.0.get(key)? {
             FieldValue::Literal(v) => v.as_f64(),
@@ -504,6 +549,22 @@ mod tests {
             }
         }))
         .unwrap_err();
+        assert_eq!(err.code, "invalid_key");
+    }
+
+    #[test]
+    fn field_value_from_json_does_not_drop_invalid_object_keys() {
+        let raw = json!({"bad-key": 1, "ok_key": 2});
+        let parsed = FieldValue::from_json(raw.clone());
+        assert_eq!(parsed, FieldValue::Literal(raw));
+    }
+
+    #[test]
+    fn try_set_raw_rejects_invalid_nested_key() {
+        let mut values = FieldValues::new();
+        let err = values
+            .try_set_raw("config", json!({"bad-key": "x"}))
+            .unwrap_err();
         assert_eq!(err.code, "invalid_key");
     }
 

@@ -1,4 +1,4 @@
-use criterion::{Criterion, black_box, criterion_group, criterion_main};
+use criterion::{Criterion, black_box};
 use nebula_schema::{Field, FieldValues, Schema, field_key};
 use serde_json::json;
 
@@ -48,9 +48,9 @@ fn bench_validate_static_phase1(c: &mut Criterion) {
     });
 }
 
-criterion_group!(
-    benches,
-    bench_resolve_literal_only,
-    bench_validate_static_phase1
-);
-criterion_main!(benches);
+fn main() {
+    let mut criterion = Criterion::default().configure_from_args();
+    bench_resolve_literal_only(&mut criterion);
+    bench_validate_static_phase1(&mut criterion);
+    criterion.final_summary();
+}
