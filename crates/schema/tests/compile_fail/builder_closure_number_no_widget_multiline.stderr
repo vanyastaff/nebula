@@ -9,5 +9,5 @@ error[E0308]: mismatched types
 note: method defined here
  --> src/field.rs
   |
-  |     pub fn widget(mut self, widget: NumberWidget) -> Self {
-  |            ^^^^^^
+  |     pub const fn widget(mut self, widget: NumberWidget) -> Self {
+  |                  ^^^^^^

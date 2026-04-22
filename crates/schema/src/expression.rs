@@ -49,6 +49,7 @@ pub struct ExpressionAst {
 
 impl ExpressionAst {
     /// Borrow the raw expression source.
+    #[must_use]
     pub fn source(&self) -> &str {
         &self.source
     }
@@ -71,11 +72,16 @@ impl Expression {
     }
 
     /// Return the raw expression source.
+    #[must_use]
     pub fn source(&self) -> &str {
         &self.source
     }
 
     /// Lazy parse — caches the first parse result (success or error).
+    ///
+    /// # Errors
+    ///
+    /// Returns `ValidationError` with code `expression.parse` if parsing fails.
     #[expect(
         clippy::result_large_err,
         reason = "ValidationError is intentionally large; callers are on the validation path"
@@ -88,6 +94,10 @@ impl Expression {
     ///
     /// The parse result is cached (success or syntax failure), while the
     /// returned [`ValidationError`] path is attached per call site.
+    ///
+    /// # Errors
+    ///
+    /// Returns `ValidationError` with code `expression.parse` if parsing fails.
     #[expect(
         clippy::result_large_err,
         reason = "ValidationError is intentionally large; callers are on the validation path"

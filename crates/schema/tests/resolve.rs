@@ -419,6 +419,14 @@ async fn secret_field_promotes_and_resolved_get_sanitizes_json() {
     let resolved = valid.resolve(&ConstCtx(json!(null))).await.unwrap();
 
     assert!(resolved.get(&field_key!("api_key")).is_none());
+    assert!(matches!(
+        resolved.lookup(&field_key!("api_key")),
+        ResolvedLookup::Secret(_)
+    ));
+    assert!(matches!(
+        resolved.lookup(&field_key!("missing")),
+        ResolvedLookup::Missing
+    ));
     let sec = resolved.get_secret(&field_key!("api_key")).expect("secret");
     let SecretValue::String(s) = sec else {
         panic!("expected string secret");

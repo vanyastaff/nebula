@@ -1,18 +1,22 @@
-use criterion::{Criterion, black_box, criterion_group, criterion_main};
+use criterion::{Criterion, black_box};
 use nebula_schema::{Field, Schema};
+use serde_json::json;
 
 fn sample_schema() -> Schema {
-    Schema::new()
-        .add(Field::string("username").required().min_length(3))
-        .add(Field::secret("api_key").required().reveal_last(4))
-        .add(Field::list("tags").item(Field::string("tag")))
-        .add(Field::object("config").add(Field::boolean("enabled")))
-        .add(Field::mode("auth").variant(
-            "none",
-            "None",
-            // "hidden" role: VisibilityMode::Never (HiddenField removed)
-            Field::string("none").visible(nebula_schema::VisibilityMode::Never),
-        ))
+    serde_json::from_value(json!({
+        "fields": [
+            Field::string("username").required().min_length(3).into_field(),
+            Field::secret("api_key").required().reveal_last(4).into_field(),
+            Field::list("tags").item(Field::string("tag")).into_field(),
+            Field::object("config").add(Field::boolean("enabled")).into_field(),
+            Field::mode("auth").variant(
+                "none",
+                "None",
+                Field::string("none").visible(nebula_schema::VisibilityMode::Never),
+            ).into_field()
+        ]
+    }))
+    .expect("benchmark schema should deserialize")
 }
 
 fn bench_schema_serde(c: &mut Criterion) {
@@ -26,5 +30,8 @@ fn bench_schema_serde(c: &mut Criterion) {
     });
 }
 
-criterion_group!(benches, bench_schema_serde);
-criterion_main!(benches);
+fn main() {
+    let mut criterion = Criterion::default().configure_from_args();
+    bench_schema_serde(&mut criterion);
+    criterion.final_summary();
+}

@@ -28,6 +28,7 @@ impl Cmd {
 ```
 
 Rules:
+
 - Open set + extern plugins → trait object (A).
 - Closed set + exhaustiveness → enum (C).
 - Commands = single functions → fn pointer (B).
@@ -138,6 +139,7 @@ pub trait Folder {
 ```
 
 Ownership choice:
+
 - `Box<Node>`: cheap reuse of unchanged subtrees, consumes original.
 - `&Node` + `Clone`: preserves original, clones everywhere (expensive).
 - `Rc<Node>`/`Arc<Node>`: structural sharing, immutable.
@@ -192,11 +194,13 @@ If decomposition doesn't map to domain concepts, the root cause is design debt �
 ## [P-010] Small crates
 
 Split a project into focused crates when:
+
 - Public API boundaries are clear.
 - Compile parallelism matters (workspace > 10 crates).
 - Features need to be selectable.
 
 Costs:
+
 - Version skew (duplicate incompatible `url`).
 - No cross-crate LTO by default — set `lto = "thin"` in release profile.
 - Longer clean builds.
@@ -217,6 +221,7 @@ mod ring {
 ```
 
 Rules:
+
 - Every `unsafe` block: SAFETY comment.
 - Edition 2024: `unsafe_op_in_unsafe_fn = deny` (default).
 - Module size: 1–3 types, 10–20 methods.

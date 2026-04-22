@@ -1,4 +1,4 @@
-use criterion::{Criterion, black_box, criterion_group, criterion_main};
+use criterion::{Criterion, black_box};
 use nebula_schema::{Field, FieldValues, Schema, field_key};
 use serde_json::json;
 
@@ -40,7 +40,7 @@ fn bench_validate_static(c: &mut Criterion) {
     });
 }
 
-/// Nested-field bench — exercises the RuleContext win from Task 16 more
+/// Nested-field bench — exercises the `RuleContext` win from Task 16 more
 /// directly. Phase 0 allocated a fresh `HashMap<String, Value>` on every
 /// nested-object descent for predicate rule evaluation; the new walker
 /// borrows from the live value tree via `RuleContext`.
@@ -84,5 +84,9 @@ fn bench_validate_nested(c: &mut Criterion) {
     });
 }
 
-criterion_group!(benches, bench_validate_static, bench_validate_nested);
-criterion_main!(benches);
+fn main() {
+    let mut criterion = Criterion::default().configure_from_args();
+    bench_validate_static(&mut criterion);
+    bench_validate_nested(&mut criterion);
+    criterion.final_summary();
+}

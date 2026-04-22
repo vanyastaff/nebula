@@ -1,4 +1,4 @@
-use criterion::{Criterion, black_box, criterion_group, criterion_main};
+use criterion::{Criterion, black_box};
 use nebula_schema::{Field, FieldKey, FieldPath, Schema};
 
 fn bench_find_by_path_100_fields(c: &mut Criterion) {
@@ -33,9 +33,9 @@ fn bench_find_by_key_100_fields(c: &mut Criterion) {
     });
 }
 
-criterion_group!(
-    benches,
-    bench_find_by_path_100_fields,
-    bench_find_by_key_100_fields
-);
-criterion_main!(benches);
+fn main() {
+    let mut criterion = Criterion::default().configure_from_args();
+    bench_find_by_path_100_fields(&mut criterion);
+    bench_find_by_key_100_fields(&mut criterion);
+    criterion.final_summary();
+}

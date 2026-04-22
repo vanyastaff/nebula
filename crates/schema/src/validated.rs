@@ -17,8 +17,11 @@ use crate::{
     expression::ExpressionContext,
     field::{Field, ListField, NumberField, ObjectField},
     key::FieldKey,
+    loader::{LoaderContext, LoaderRegistry, LoaderResult},
     mode::{ExpressionMode, RequiredMode, VisibilityMode},
+    option::SelectOption,
     path::FieldPath,
+    schema::{resolve_dynamic_loader_key, resolve_select_loader_key},
     secret::SecretValue,
     value::{FieldValue, FieldValues},
 };
@@ -156,11 +159,13 @@ impl ValidSchema {
     }
 
     /// Borrow all top-level fields in insertion order.
+    #[must_use]
     pub fn fields(&self) -> &[Field] {
         &self.0.fields
     }
 
     /// Borrow the build-time flags.
+    #[must_use]
     pub fn flags(&self) -> &SchemaFlags {
         &self.0.flags
     }
@@ -172,11 +177,13 @@ impl ValidSchema {
     }
 
     /// Find a top-level field by key.
+    #[must_use]
     pub fn find(&self, key: &FieldKey) -> Option<&Field> {
         self.0.fields.iter().find(|f| f.key() == key)
     }
 
     /// Find a field by dotted path using the O(1) index.
+    #[must_use]
     pub fn find_by_path(&self, path: &FieldPath) -> Option<&Field> {
         let handle = self.0.index.get(path)?;
         let mut cur = self.0.fields.get(*handle.cursor.first()? as usize)?;
@@ -189,6 +196,42 @@ impl ValidSchema {
             };
         }
         Some(cur)
+    }
+
+    /// Resolve dynamic options for a select field through loader registry.
+    ///
+    /// Same error taxonomy as [`crate::Schema::load_select_options`], but this
+    /// entrypoint guarantees validated schema invariants.
+    ///
+    /// # Errors
+    ///
+    /// Returns `invalid_key`, `loader.not_registered`, or `loader.failed`.
+    pub async fn load_select_options(
+        &self,
+        key: &str,
+        registry: &LoaderRegistry,
+        context: LoaderContext,
+    ) -> Result<LoaderResult<SelectOption>, ValidationError> {
+        let loader_key = resolve_select_loader_key(self.fields(), key)?;
+        registry.load_options(&loader_key, context).await
+    }
+
+    /// Resolve dynamic record payloads for a dynamic field through registry.
+    ///
+    /// Same error taxonomy as [`crate::Schema::load_dynamic_records`], but this
+    /// entrypoint guarantees validated schema invariants.
+    ///
+    /// # Errors
+    ///
+    /// Returns `invalid_key`, `loader.not_registered`, or `loader.failed`.
+    pub async fn load_dynamic_records(
+        &self,
+        key: &str,
+        registry: &LoaderRegistry,
+        context: LoaderContext,
+    ) -> Result<LoaderResult<serde_json::Value>, ValidationError> {
+        let loader_key = resolve_dynamic_loader_key(self.fields(), key)?;
+        registry.load_records(&loader_key, context).await
     }
 
     /// Validate runtime `values` against this schema (schema-time phase).
@@ -273,31 +316,38 @@ pub struct ValidValues {
 
 impl ValidValues {
     /// Borrow the schema these values were validated against.
-    pub fn schema(&self) -> &ValidSchema {
+    #[must_use]
+    pub const fn schema(&self) -> &ValidSchema {
         &self.schema
     }
 
     /// Borrow the raw value tree.
-    pub fn raw(&self) -> &FieldValues {
+    #[must_use]
+    pub const fn raw(&self) -> &FieldValues {
         &self.values
     }
 
     /// Borrow the raw value tree (alias for [`raw`](Self::raw)).
-    pub fn raw_values(&self) -> &FieldValues {
+    #[deprecated(note = "use raw() instead")]
+    #[must_use]
+    pub const fn raw_values(&self) -> &FieldValues {
         &self.values
     }
 
     /// Iterate validation warnings that were non-fatal.
+    #[must_use]
     pub fn warnings(&self) -> &[ValidationError] {
         &self.warnings
     }
 
     /// Look up a top-level value by key.
+    #[must_use]
     pub fn get(&self, key: &FieldKey) -> Option<&FieldValue> {
         self.values.get(key)
     }
 
     /// Look up a value by dotted path.
+    #[must_use]
     pub fn get_path(&self, path: &FieldPath) -> Option<&FieldValue> {
         self.values.get_path(path)
     }
@@ -416,9 +466,23 @@ pub struct ResolvedValues {
     pub(crate) warnings: Arc<[ValidationError]>,
 }
 
+/// Typed lookup result for [`ResolvedValues`] accessors.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum ResolvedLookup<'a> {
+    /// Field is not present in the value map.
+    Missing,
+    /// Field is present as a non-secret JSON literal.
+    Literal(&'a serde_json::Value),
+    /// Field is present as secret material.
+    Secret(&'a SecretValue),
+    /// Field is present but not a plain JSON literal (object/list/mode).
+    Complex(&'a FieldValue),
+}
+
 impl ResolvedValues {
     /// Borrow the schema these values were resolved against.
-    pub fn schema(&self) -> &ValidSchema {
+    #[must_use]
+    pub const fn schema(&self) -> &ValidSchema {
         &self.schema
     }
 
@@ -426,11 +490,13 @@ impl ResolvedValues {
     ///
     /// Guaranteed to contain no `FieldValue::Expression` variants after
     /// successful resolution.
-    pub fn values(&self) -> &FieldValues {
+    #[must_use]
+    pub const fn values(&self) -> &FieldValues {
         &self.values
     }
 
     /// Iterate resolution warnings.
+    #[must_use]
     pub fn warnings(&self) -> &[ValidationError] {
         &self.warnings
     }
@@ -439,34 +505,56 @@ impl ResolvedValues {
     ///
     /// Returns `None` if the key is missing, the value is not a JSON literal, or
     /// the field is a [`Field::Secret`] (use [`Self::get_secret`](Self::get_secret) instead).
+    #[must_use]
     pub fn get(&self, key: &FieldKey) -> Option<&serde_json::Value> {
-        if matches!(self.schema.find(key), Some(Field::Secret(_))) {
-            return None;
-        }
-        match self.values.get(key)? {
-            FieldValue::Literal(v) => Some(v),
-            FieldValue::SecretLiteral(_) => None,
+        match self.lookup(key) {
+            ResolvedLookup::Literal(value) => Some(value),
             _ => None,
         }
     }
 
     /// Borrow the secret material for a `Field::Secret` key, if present.
+    #[must_use]
     pub fn get_secret(&self, key: &FieldKey) -> Option<&SecretValue> {
-        if !matches!(self.schema.find(key), Some(Field::Secret(_))) {
-            return None;
-        }
-        match self.values.get(key)? {
-            FieldValue::SecretLiteral(s) => Some(s),
+        match self.lookup(key) {
+            ResolvedLookup::Secret(secret) => Some(secret),
             _ => None,
         }
     }
 
+    /// Typed lookup that differentiates missing keys, secret values, and
+    /// non-literal container values.
+    #[must_use]
+    pub fn lookup(&self, key: &FieldKey) -> ResolvedLookup<'_> {
+        let Some(value) = self.values.get(key) else {
+            return ResolvedLookup::Missing;
+        };
+
+        if matches!(self.schema.find(key), Some(Field::Secret(_))) {
+            return match value {
+                FieldValue::SecretLiteral(secret) => ResolvedLookup::Secret(secret),
+                _ => ResolvedLookup::Complex(value),
+            };
+        }
+
+        match value {
+            FieldValue::Literal(literal) => ResolvedLookup::Literal(literal),
+            FieldValue::SecretLiteral(secret) => ResolvedLookup::Secret(secret),
+            _ => ResolvedLookup::Complex(value),
+        }
+    }
+
     /// Consume into a flat JSON object.
+    #[must_use]
     pub fn into_json(self) -> serde_json::Value {
         self.values.to_json()
     }
 
     /// Consume and deserialize into a typed value.
+    ///
+    /// # Errors
+    ///
+    /// Returns `type_mismatch` when deserialization fails.
     pub fn into_typed<T: serde::de::DeserializeOwned>(self) -> Result<T, Box<ValidationError>> {
         serde_json::from_value(self.into_json()).map_err(|e| {
             Box::new(
@@ -480,7 +568,7 @@ impl ResolvedValues {
 
 /// Shape label for validation errors (no `Debug` of full values — avoids leaking
 /// secret-adjacent subtrees into messages).
-fn field_value_shape_for_errors(v: &FieldValue) -> &'static str {
+const fn field_value_shape_for_errors(v: &FieldValue) -> &'static str {
     use serde_json::Value;
     match v {
         FieldValue::Literal(val) => match val {
@@ -507,61 +595,8 @@ fn promote_secrets_in_value(
     path: &FieldPath,
     report: &mut ValidationReport,
 ) {
-    use serde_json::Value;
     match (field, &mut *value) {
-        (Field::Secret(secret), FieldValue::Literal(Value::String(s))) => {
-            let mut password = std::mem::take(s);
-            *value = if let Some(kdf) = &secret.kdf {
-                match kdf.hash_password(password.as_bytes()) {
-                    Ok(sv) => {
-                        password.zeroize();
-                        FieldValue::SecretLiteral(sv)
-                    },
-                    Err(e) => {
-                        *s = password;
-                        report.push(
-                            ValidationError::builder("secret.kdf")
-                                .at(path.clone())
-                                .message(e.to_string())
-                                .build(),
-                        );
-                        return;
-                    },
-                }
-            } else {
-                FieldValue::SecretLiteral(SecretValue::string(password))
-            };
-        },
-        (Field::Secret(_), FieldValue::Literal(_)) => {
-            report.push(
-                ValidationError::builder("type_mismatch")
-                    .at(path.clone())
-                    .message("secret field value must be a string")
-                    .build(),
-            );
-        },
-        (Field::Secret(_), FieldValue::SecretLiteral(_)) => {},
-        (Field::Secret(_), FieldValue::Expression(_)) => {
-            report.push(
-                ValidationError::builder("expression.unresolved")
-                    .at(path.clone())
-                    .message(
-                        "secret field still has an expression value at resolve time".to_owned(),
-                    )
-                    .build(),
-            );
-        },
-        (Field::Secret(_), v) => {
-            let shape = field_value_shape_for_errors(v);
-            report.push(
-                ValidationError::builder("type_mismatch")
-                    .at(path.clone())
-                    .message(format!(
-                        "secret field has incompatible value shape: {shape}"
-                    ))
-                    .build(),
-            );
-        },
+        (Field::Secret(secret), v) => promote_secret_value(secret, v, path, report),
         (Field::Object(obj), FieldValue::Object(map)) => {
             for ch in &obj.fields {
                 if let Some(v) = map.get_mut(ch.key()) {
@@ -610,6 +645,64 @@ fn promote_secrets_in_value(
     }
 }
 
+fn promote_secret_value(
+    secret: &crate::field::SecretField,
+    value: &mut FieldValue,
+    path: &FieldPath,
+    report: &mut ValidationReport,
+) {
+    use serde_json::Value;
+    match value {
+        FieldValue::Literal(Value::String(s)) => {
+            let mut password = std::mem::take(s);
+            *value = if let Some(kdf) = &secret.kdf {
+                match kdf.hash_password(password.as_bytes()) {
+                    Ok(sv) => {
+                        password.zeroize();
+                        FieldValue::SecretLiteral(sv)
+                    },
+                    Err(e) => {
+                        *s = password;
+                        report.push(
+                            ValidationError::builder("secret.kdf")
+                                .at(path.clone())
+                                .message(e.to_string())
+                                .build(),
+                        );
+                        return;
+                    },
+                }
+            } else {
+                FieldValue::SecretLiteral(SecretValue::string(password))
+            };
+        },
+        FieldValue::Literal(_) => report.push(
+            ValidationError::builder("type_mismatch")
+                .at(path.clone())
+                .message("secret field value must be a string")
+                .build(),
+        ),
+        FieldValue::SecretLiteral(_) => {},
+        FieldValue::Expression(_) => report.push(
+            ValidationError::builder("expression.unresolved")
+                .at(path.clone())
+                .message("secret field still has an expression value at resolve time".to_owned())
+                .build(),
+        ),
+        other => {
+            let shape = field_value_shape_for_errors(other);
+            report.push(
+                ValidationError::builder("type_mismatch")
+                    .at(path.clone())
+                    .message(format!(
+                        "secret field has incompatible value shape: {shape}"
+                    ))
+                    .build(),
+            );
+        },
+    }
+}
+
 // ── Expression resolution helpers ────────────────────────────────────────────
 
 /// Recursively walk a [`FieldValue`], replacing every `Expression` variant
@@ -627,7 +720,7 @@ fn resolve_value<'v>(
     path: &'v FieldPath,
     report: &'v mut ValidationReport,
     resolved_expression_paths: &'v mut HashSet<FieldPath>,
-) -> Pin<Box<dyn Future<Output = FieldValue> + 'v>> {
+) -> Pin<Box<dyn Future<Output = FieldValue> + Send + 'v>> {
     Box::pin(async move {
         match value {
             FieldValue::Expression(ref expr) => {
@@ -1036,6 +1129,7 @@ fn validate_literal_value(
             max_items,
             item,
             unique,
+            transformers,
             rules,
             ..
         }) => {
@@ -1054,7 +1148,17 @@ fn validate_literal_value(
                     return;
                 },
             };
-            let _ = rules; // rules on the list itself run via run_rules below if needed
+            let list_json = match value {
+                FieldValue::List(items) => {
+                    serde_json::Value::Array(items.iter().map(FieldValue::to_json).collect())
+                },
+                FieldValue::Literal(serde_json::Value::Array(arr)) => {
+                    serde_json::Value::Array(arr.clone())
+                },
+                _ => return,
+            };
+            let transformed_list_json = apply_transformers(transformers, list_json);
+            run_rules(rules, &transformed_list_json, path, report);
             if let Some(min) = min_items
                 && item_count < *min as usize
             {
@@ -1084,13 +1188,16 @@ fn validate_literal_value(
                 );
             }
             if *unique {
-                let duplicate_index = if let Some(items_fv) = items_typed {
-                    first_duplicate_index(items_fv.iter().map(FieldValue::to_json))
-                } else if let FieldValue::Literal(serde_json::Value::Array(arr)) = value {
-                    first_duplicate_index(arr.iter().cloned())
-                } else {
-                    None
-                };
+                let duplicate_index = items_typed.map_or_else(
+                    || {
+                        if let FieldValue::Literal(serde_json::Value::Array(arr)) = value {
+                            first_duplicate_index(arr.iter().cloned())
+                        } else {
+                            None
+                        }
+                    },
+                    |items_fv| first_duplicate_index(items_fv.iter().map(FieldValue::to_json)),
+                );
                 if let Some(idx) = duplicate_index {
                     report.push(
                         ValidationError::builder("items.unique")
@@ -1126,12 +1233,13 @@ fn validate_literal_value(
                 );
                 return;
             };
+            let transformed = apply_transformers(transformers, value.to_json());
+            run_rules(rules, &transformed, path, report);
             let sub_ctx = crate::context::ObjectContext(map);
             for child in child_fields {
                 let child_path = path.clone().join(child.key().clone());
                 validate_field(child, map.get(child.key()), &sub_ctx, &child_path, report);
             }
-            let _ = (transformers, rules);
         },
         Field::Mode(ModeField {
             variants,
@@ -1193,59 +1301,66 @@ fn validate_literal_value(
         },
         // File, Computed, Dynamic, Notice — no type-check rule at schema time.
         Field::File(f) => {
+            let raw_json = match value {
+                FieldValue::Literal(lit) => lit.clone(),
+                FieldValue::List(items) => {
+                    serde_json::Value::Array(items.iter().map(FieldValue::to_json).collect())
+                },
+                _ => {
+                    report.push(
+                        ValidationError::builder("type_mismatch")
+                            .at(path.clone())
+                            .message(format!(
+                                "field `{path}` expects {}",
+                                if f.multiple {
+                                    "an array of file paths"
+                                } else {
+                                    "a string file path"
+                                }
+                            ))
+                            .build(),
+                    );
+                    return;
+                },
+            };
+            let transformed = apply_transformers(&f.transformers, raw_json);
             if f.multiple {
-                match value {
-                    FieldValue::Literal(lit) => match lit.as_array() {
-                        None => report.push(
+                if let serde_json::Value::Array(items) = &transformed {
+                    if items.iter().any(|v| !v.is_string()) {
+                        report.push(
                             ValidationError::builder("type_mismatch")
                                 .at(path.clone())
-                                .message(format!("field `{path}` expects an array of file paths"))
+                                .message(format!(
+                                    "field `{path}` expects an array of string file paths"
+                                ))
                                 .build(),
-                        ),
-                        Some(items) => {
-                            if items.iter().any(|v| !v.is_string()) {
-                                report.push(
-                                    ValidationError::builder("type_mismatch")
-                                        .at(path.clone())
-                                        .message(format!(
-                                            "field `{path}` expects an array of string file paths"
-                                        ))
-                                        .build(),
-                                );
-                            }
-                        },
-                    },
-                    FieldValue::List(items) => {
-                        if items.iter().any(|v| {
-                            !matches!(v, FieldValue::Literal(serde_json::Value::String(_)))
-                        }) {
-                            report.push(
-                                ValidationError::builder("type_mismatch")
-                                    .at(path.clone())
-                                    .message(format!(
-                                        "field `{path}` expects an array of string file paths"
-                                    ))
-                                    .build(),
-                            );
-                        }
-                    },
-                    _ => report.push(
+                        );
+                        return;
+                    }
+                } else {
+                    report.push(
                         ValidationError::builder("type_mismatch")
                             .at(path.clone())
                             .message(format!("field `{path}` expects an array of file paths"))
                             .build(),
-                    ),
+                    );
+                    return;
                 }
-            } else if !matches!(value, FieldValue::Literal(serde_json::Value::String(_))) {
+            } else if !transformed.is_string() {
                 report.push(
                     ValidationError::builder("type_mismatch")
                         .at(path.clone())
                         .message(format!("field `{path}` expects a string file path"))
                         .build(),
                 );
+                return;
             }
+
+            run_rules(field.rules(), &transformed, path, report);
         },
-        Field::Computed(_) | Field::Dynamic(_) | Field::Notice(_) => {},
+        Field::Computed(_) | Field::Dynamic(_) | Field::Notice(_) => {
+            run_rules(field.rules(), &value.to_json(), path, report);
+        },
     }
 }
 
@@ -1274,7 +1389,7 @@ fn first_duplicate_index(values: impl IntoIterator<Item = serde_json::Value>) ->
 /// for a multi-select field or an array for a single-select field is
 /// caught as `type_mismatch` instead of silently passing.
 fn check_select_options(
-    options: &[crate::SelectOption],
+    options: &[SelectOption],
     multiple: bool,
     transformed: &serde_json::Value,
     path: &FieldPath,
@@ -1327,12 +1442,12 @@ fn check_select_options(
     }
 }
 
-/// Translate a raw validator error code to the STANDARD_CODES vocabulary.
+/// Translate a raw validator error code to the `STANDARD_CODES` vocabulary.
 ///
 /// The nebula-validator crate uses its own code names (e.g. `"min_length"`,
-/// `"invalid_format"`). The schema crate STANDARD_CODES use a different
+/// `"invalid_format"`). The schema crate `STANDARD_CODES` use a different
 /// namespace (`"length.min"`, `"pattern"`, etc.). This function performs the
-/// one-way mapping so that callers observe only STANDARD_CODES values.
+/// one-way mapping so that callers observe only `STANDARD_CODES` values.
 fn translate_validator_code(
     raw_code: &str,
     params: &[(
@@ -1375,7 +1490,7 @@ fn run_rules(
 ) {
     use nebula_validator::ExecutionMode;
     if let Err(errs) = nebula_validator::validate_rules(value, rules, ExecutionMode::StaticOnly) {
-        push_validator_rule_errors(errs, path, report);
+        push_validator_rule_errors(&errs, path, report);
     }
 }
 
@@ -1399,12 +1514,12 @@ fn run_root_rules(
         Some(&pred_ctx),
         ExecutionMode::StaticOnly,
     ) {
-        push_validator_rule_errors(errs, &FieldPath::root(), report);
+        push_validator_rule_errors(&errs, &FieldPath::root(), report);
     }
 }
 
 fn push_validator_rule_errors(
-    errs: nebula_validator::foundation::ValidationErrors,
+    errs: &nebula_validator::foundation::ValidationErrors,
     path: &FieldPath,
     report: &mut ValidationReport,
 ) {
@@ -1512,5 +1627,46 @@ mod tests {
         let back: ValidSchema = serde_json::from_value(wire).unwrap();
         assert_eq!(schema.root_rules(), back.root_rules());
         assert_eq!(schema.fields().len(), back.fields().len());
+    }
+
+    #[test]
+    fn list_field_custom_rules_are_enforced() {
+        use nebula_validator::Rule;
+        use serde_json::json;
+
+        let schema = Schema::builder()
+            .add(
+                Field::list(FieldKey::new("tags").unwrap())
+                    .item(Field::string(FieldKey::new("tag").unwrap()))
+                    .with_rule(Rule::max_items(1)),
+            )
+            .build()
+            .unwrap();
+
+        let values = FieldValues::from_json(json!({"tags": ["a", "b"]})).unwrap();
+        let report = schema.validate(&values).expect_err("list rule must fail");
+        assert!(
+            report.has_errors(),
+            "expected list-level custom rule to produce an error"
+        );
+    }
+
+    #[test]
+    fn object_field_custom_rules_are_enforced() {
+        use nebula_validator::Rule;
+        use serde_json::json;
+
+        let schema = Schema::builder()
+            .add(
+                Field::object(FieldKey::new("config").unwrap())
+                    .add(Field::boolean(FieldKey::new("enabled").unwrap()))
+                    .with_rule(Rule::one_of([json!({"enabled": true})])),
+            )
+            .build()
+            .unwrap();
+
+        let values = FieldValues::from_json(json!({"config": {"enabled": false}})).unwrap();
+        let report = schema.validate(&values).expect_err("object rule must fail");
+        assert!(report.errors().any(|e| e.code == "one_of"));
     }
 }

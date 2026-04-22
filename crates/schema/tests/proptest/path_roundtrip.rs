@@ -1,4 +1,4 @@
-//! Proptest: FieldPath parse/display roundtrip.
+//! Proptest: `FieldPath` parse/display roundtrip.
 
 use nebula_schema::FieldPath;
 use proptest::prelude::*;

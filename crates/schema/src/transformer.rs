@@ -5,6 +5,7 @@ use std::sync::{Arc, OnceLock};
 use regex::Regex;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use tracing::warn;
 
 /// Value transformer applied before validation/runtime use.
 #[non_exhaustive]
@@ -33,7 +34,7 @@ pub enum Transformer {
         group: usize,
         /// Lazily compiled regex — skipped by serde.
         #[serde(skip)]
-        cache: Arc<OnceLock<Regex>>,
+        cache: Arc<OnceLock<Option<Regex>>>,
     },
 }
 
@@ -73,22 +74,30 @@ impl Transformer {
                 group,
                 cache,
             } => string(value, |t| {
-                let re = cache.get_or_init(|| {
-                    Regex::new(pattern).unwrap_or_else(|_| Regex::new("^$").unwrap())
+                let re = cache.get_or_init(|| match Regex::new(pattern) {
+                    Ok(compiled) => Some(compiled),
+                    Err(error) => {
+                        warn!(
+                            regex_pattern = %pattern,
+                            %error,
+                            "invalid regex pattern in transformer; falling back to original value"
+                        );
+                        None
+                    },
                 });
-                re.captures(t)
-                    .and_then(|c| c.get(*group))
-                    .map_or_else(|| t.to_owned(), |m| m.as_str().to_owned())
+                re.as_ref()
+                    .and_then(|compiled| compiled.captures(t))
+                    .and_then(|captures| captures.get(*group))
+                    .map_or_else(|| t.to_owned(), |matched| matched.as_str().to_owned())
             }),
         }
     }
 }
 
 fn string(value: &Value, f: impl FnOnce(&str) -> String) -> Value {
-    match value.as_str() {
-        Some(s) => Value::String(f(s)),
-        None => value.clone(),
-    }
+    value
+        .as_str()
+        .map_or_else(|| value.clone(), |s| Value::String(f(s)))
 }
 
 #[cfg(test)]
@@ -108,7 +117,7 @@ mod tests {
         let t = Transformer::Regex {
             pattern: r"^(\d+)-".into(),
             group: 1,
-            cache: Default::default(),
+            cache: Arc::default(),
         };
         assert_eq!(t.apply(&json!("42-abc")), json!("42"));
         assert_eq!(t.apply(&json!("no-match")), json!("no-match"));
@@ -119,10 +128,21 @@ mod tests {
         let t = Transformer::Regex {
             pattern: r"(\w+)".into(),
             group: 0,
-            cache: Default::default(),
+            cache: Arc::default(),
         };
         let _ = t.apply(&json!("abc"));
         let _ = t.apply(&json!("def"));
+    }
+
+    #[test]
+    fn invalid_regex_pattern_falls_back_to_original_value() {
+        let t = Transformer::Regex {
+            pattern: "(".into(),
+            group: 0,
+            cache: Arc::default(),
+        };
+
+        assert_eq!(t.apply(&json!("kept")), json!("kept"));
     }
 
     #[test]

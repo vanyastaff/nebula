@@ -50,8 +50,9 @@ impl fmt::Display for JsonSchemaExportError {
 impl StdError for JsonSchemaExportError {
     fn source(&self) -> Option<&(dyn StdError + 'static)> {
         match self {
-            Self::RootRuleSerialization { source, .. } => Some(source),
-            Self::InvalidSchema(source) => Some(source),
+            Self::RootRuleSerialization { source, .. } | Self::InvalidSchema(source) => {
+                Some(source)
+            },
         }
     }
 }
@@ -63,6 +64,11 @@ impl crate::validated::ValidSchema {
     /// - field shape and basic constraints are mapped
     /// - dynamic runtime semantics (loaders, deferred rules, expression runtime) are not fully
     ///   representable and are omitted from strict constraints
+    ///
+    /// # Errors
+    ///
+    /// Returns [`JsonSchemaExportError`] when root rules cannot be serialized or
+    /// when the generated JSON value cannot be converted to `schemars::Schema`.
     pub fn json_schema(&self) -> Result<schemars::Schema, JsonSchemaExportError> {
         schema_for_fields(self.fields(), self.root_rules())
     }
@@ -164,7 +170,7 @@ fn field_schema_value(field: &Field) -> Value {
         },
     };
 
-    let mut schema = apply_expression_mode(core_schema, field.expression());
+    let mut schema = apply_expression_mode(core_schema, *field.expression());
     apply_common_keywords(field, &mut schema);
     apply_contract_keywords(field, &mut schema);
     Value::Object(schema)
@@ -217,11 +223,10 @@ fn select_schema(field: &SelectField) -> Map<String, Value> {
     if field.multiple {
         out.insert("type".to_owned(), Value::String("array".to_owned()));
         out.insert("items".to_owned(), select_item_schema(field));
-        apply_value_rules(&mut out, &field.rules);
     } else {
         out.extend(select_item_schema_map(field));
-        apply_value_rules(&mut out, &field.rules);
     }
+    apply_value_rules(&mut out, &field.rules);
     out
 }
 
@@ -382,10 +387,7 @@ fn apply_value_rules(schema: &mut Map<String, Value>, rules: &[nebula_validator:
     }
 }
 
-fn apply_expression_mode(
-    mut core: Map<String, Value>,
-    mode: &ExpressionMode,
-) -> Map<String, Value> {
+fn apply_expression_mode(mut core: Map<String, Value>, mode: ExpressionMode) -> Map<String, Value> {
     let mut out = Map::new();
     match mode {
         ExpressionMode::Forbidden => core,

@@ -3,6 +3,8 @@
 //! `SchemaBuilder::build()` runs structural lint passes and produces a
 //! `ValidSchema` proof-token.
 
+use std::collections::HashSet;
+
 use indexmap::IndexMap;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -43,11 +45,21 @@ pub struct Schema {
 
 impl Schema {
     /// Create a new `SchemaBuilder`.
+    #[must_use]
     pub fn builder() -> SchemaBuilder {
         SchemaBuilder::default()
     }
 
     /// Create an empty schema.
+    ///
+    /// Prefer [`Schema::builder`] + [`SchemaBuilder::build`] for runtime use.
+    /// `Schema` is an authoring container; `ValidSchema` is the validated
+    /// runtime contract.
+    #[deprecated(
+        since = "0.1.0",
+        note = "use Schema::builder() for schema construction and SchemaBuilder::build() for runtime validation"
+    )]
+    #[must_use]
     pub fn new() -> Self {
         Self::default()
     }
@@ -55,10 +67,18 @@ impl Schema {
     /// Add field and return updated schema.
     ///
     /// If a field with the same key already exists it is replaced.
+    ///
+    /// Prefer [`SchemaBuilder::add`] for strict duplicate-key diagnostics
+    /// (`duplicate_key`) at build time.
+    #[deprecated(
+        since = "0.1.0",
+        note = "use SchemaBuilder::add() and build() to enforce structural diagnostics"
+    )]
     #[expect(
         clippy::should_implement_trait,
         reason = "builder API mirrors existing add-style schema DSL"
     )]
+    #[must_use]
     pub fn add(mut self, field: impl Into<Field>) -> Self {
         let field = field.into();
         let key = field.key().as_str();
@@ -75,22 +95,26 @@ impl Schema {
     }
 
     /// Number of top-level fields.
-    pub fn len(&self) -> usize {
+    #[must_use]
+    pub const fn len(&self) -> usize {
         self.fields.len()
     }
 
     /// Returns true when schema has no fields.
-    pub fn is_empty(&self) -> bool {
+    #[must_use]
+    pub const fn is_empty(&self) -> bool {
         self.fields.is_empty()
     }
 
     /// Find field by key (string slice).
+    #[must_use]
     pub fn find(&self, key: &str) -> Option<&Field> {
         self.fields.iter().find(|field| field.key().as_str() == key)
     }
 
     /// Borrow all top-level fields in insertion order.
-    pub fn fields(&self) -> &[Field] {
+    #[must_use]
+    pub const fn fields(&self) -> &[Field] {
         self.fields.as_slice()
     }
 
@@ -98,6 +122,7 @@ impl Schema {
     ///
     /// Returns a [`ValidationReport`] — warnings are advisory, errors indicate
     /// structural problems.
+    #[must_use]
     pub fn lint(&self) -> ValidationReport {
         let mut report = ValidationReport::new();
         crate::lint::lint_tree(&self.fields, &FieldPath::root(), &mut report);
@@ -121,7 +146,7 @@ impl Schema {
         registry: &LoaderRegistry,
         context: LoaderContext,
     ) -> Result<LoaderResult<SelectOption>, ValidationError> {
-        let loader_key = resolve_select_loader_key(self, key)?;
+        let loader_key = resolve_select_loader_key(self.fields(), key)?;
         registry.load_options(&loader_key, context).await
     }
 
@@ -138,36 +163,52 @@ impl Schema {
         registry: &LoaderRegistry,
         context: LoaderContext,
     ) -> Result<LoaderResult<Value>, ValidationError> {
-        let loader_key = resolve_dynamic_loader_key(self, key)?;
+        let loader_key = resolve_dynamic_loader_key(self.fields(), key)?;
         registry.load_records(&loader_key, context).await
     }
 }
 
 // ── Loader resolution helpers ─────────────────────────────────────────────────
 
-/// Build a field path for the top-level `key`. Falls back to root when the
-/// string doesn't parse as a valid `FieldKey` (which is itself what the
-/// caller's error will flag).
-fn field_path_for(key: &str) -> FieldPath {
-    match crate::key::FieldKey::new(key) {
-        Ok(fk) => FieldPath::root().join(fk),
-        Err(_) => FieldPath::root(),
-    }
+/// Parse a top-level key for loader APIs.
+///
+/// # Errors
+///
+/// Returns `invalid_key` when `key` does not satisfy [`FieldKey`] constraints.
+#[expect(
+    clippy::result_large_err,
+    reason = "ValidationError is intentionally large; callers are on the validation path"
+)]
+fn parse_top_level_key(key: &str) -> Result<crate::key::FieldKey, ValidationError> {
+    crate::key::FieldKey::new(key).map_err(|e| {
+        ValidationError::builder("invalid_key")
+            .at(FieldPath::root())
+            .param("key", Value::String(key.to_owned()))
+            .message(format!("invalid key `{key}`: {e}"))
+            .build()
+    })
 }
 
 #[allow(
     clippy::result_large_err,
     reason = "ValidationError is intentionally large; callers are on the validation path"
 )]
-fn resolve_select_loader_key(schema: &Schema, key: &str) -> Result<String, ValidationError> {
-    let path = field_path_for(key);
-    let field = schema.find(key).ok_or_else(|| {
-        ValidationError::builder("field.not_found")
-            .at(path.clone())
-            .param("key", Value::String(key.to_owned()))
-            .message(format!("field `{key}` not found in schema"))
-            .build()
-    })?;
+pub(crate) fn resolve_select_loader_key(
+    fields: &[Field],
+    key: &str,
+) -> Result<String, ValidationError> {
+    let parsed_key = parse_top_level_key(key)?;
+    let path = FieldPath::root().join(parsed_key);
+    let field = fields
+        .iter()
+        .find(|field| field.key().as_str() == key)
+        .ok_or_else(|| {
+            ValidationError::builder("field.not_found")
+                .at(path.clone())
+                .param("key", Value::String(key.to_owned()))
+                .message(format!("field `{key}` not found in schema"))
+                .build()
+        })?;
     let Field::Select(select) = field else {
         return Err(ValidationError::builder("field.type_mismatch")
             .at(path.clone())
@@ -180,28 +221,40 @@ fn resolve_select_loader_key(schema: &Schema, key: &str) -> Result<String, Valid
             ))
             .build());
     };
-    select.loader.clone().ok_or_else(|| {
-        ValidationError::builder("loader.missing_config")
-            .at(path)
-            .param("key", Value::String(key.to_owned()))
-            .message(format!("field `{key}` has no loader configured"))
-            .build()
-    })
+    select
+        .loader
+        .as_deref()
+        .filter(|loader| !loader.trim().is_empty())
+        .map(str::to_owned)
+        .ok_or_else(|| {
+            ValidationError::builder("loader.missing_config")
+                .at(path)
+                .param("key", Value::String(key.to_owned()))
+                .message(format!("field `{key}` has no loader configured"))
+                .build()
+        })
 }
 
 #[allow(
     clippy::result_large_err,
     reason = "ValidationError is intentionally large; callers are on the validation path"
 )]
-fn resolve_dynamic_loader_key(schema: &Schema, key: &str) -> Result<String, ValidationError> {
-    let path = field_path_for(key);
-    let field = schema.find(key).ok_or_else(|| {
-        ValidationError::builder("field.not_found")
-            .at(path.clone())
-            .param("key", Value::String(key.to_owned()))
-            .message(format!("field `{key}` not found in schema"))
-            .build()
-    })?;
+pub(crate) fn resolve_dynamic_loader_key(
+    fields: &[Field],
+    key: &str,
+) -> Result<String, ValidationError> {
+    let parsed_key = parse_top_level_key(key)?;
+    let path = FieldPath::root().join(parsed_key);
+    let field = fields
+        .iter()
+        .find(|field| field.key().as_str() == key)
+        .ok_or_else(|| {
+            ValidationError::builder("field.not_found")
+                .at(path.clone())
+                .param("key", Value::String(key.to_owned()))
+                .message(format!("field `{key}` not found in schema"))
+                .build()
+        })?;
     let Field::Dynamic(dynamic) = field else {
         return Err(ValidationError::builder("field.type_mismatch")
             .at(path.clone())
@@ -214,13 +267,18 @@ fn resolve_dynamic_loader_key(schema: &Schema, key: &str) -> Result<String, Vali
             ))
             .build());
     };
-    dynamic.loader.clone().ok_or_else(|| {
-        ValidationError::builder("loader.missing_config")
-            .at(path)
-            .param("key", Value::String(key.to_owned()))
-            .message(format!("field `{key}` has no loader configured"))
-            .build()
-    })
+    dynamic
+        .loader
+        .as_deref()
+        .filter(|loader| !loader.trim().is_empty())
+        .map(str::to_owned)
+        .ok_or_else(|| {
+            ValidationError::builder("loader.missing_config")
+                .at(path)
+                .param("key", Value::String(key.to_owned()))
+                .message(format!("field `{key}` has no loader configured"))
+                .build()
+        })
 }
 
 // ── SchemaBuilder ─────────────────────────────────────────────────────────────
@@ -238,6 +296,7 @@ impl SchemaBuilder {
         clippy::should_implement_trait,
         reason = "builder API mirrors add-style schema DSL"
     )]
+    #[must_use]
     pub fn add(mut self, field: impl Into<Field>) -> Self {
         self.fields.push(field.into());
         self
@@ -307,29 +366,39 @@ impl SchemaBuilder {
     }
 
     /// Run lint passes and produce a validated schema, or a report of errors.
+    /// Build a validated runtime schema.
+    ///
+    /// # Errors
+    ///
+    /// Returns a [`ValidationReport`] when structural linting or index-limit
+    /// checks fail.
     pub fn build(self) -> Result<ValidSchema, ValidationReport> {
+        let mut fields = self.fields;
         let mut report = ValidationReport::new();
 
-        crate::lint::lint_tree(&self.fields, &FieldPath::root(), &mut report);
+        crate::lint::lint_tree(&fields, &FieldPath::root(), &mut report);
+        validate_index_limits(&fields, &FieldPath::root(), 0, &mut report);
 
         if report.has_errors() {
             return Err(report);
         }
 
+        normalize_depends_on_lists(&mut fields);
+
         // Build the flat path index for O(1) path lookup.
         let mut index: IndexMap<FieldPath, FieldHandle> = IndexMap::new();
         let mut flags = SchemaFlags::default();
         build_index(
-            &self.fields,
+            &fields,
             &FieldPath::root(),
-            SmallVec::new(),
+            &SmallVec::new(),
             0,
             &mut index,
             &mut flags,
         );
 
         Ok(ValidSchema::from_inner(ValidSchemaInner {
-            fields: self.fields,
+            fields,
             index,
             flags,
             root_rules: self.root_rules,
@@ -344,12 +413,90 @@ impl crate::builder::FieldCollector for SchemaBuilder {
     }
 }
 
+fn normalize_depends_on_lists(fields: &mut [Field]) {
+    for field in fields {
+        normalize_field_for_runtime(field);
+    }
+}
+
+fn normalize_field_for_runtime(field: &mut Field) {
+    match field {
+        Field::String(string) => {
+            dedupe_rules_and_transformers(&mut string.rules, &mut string.transformers);
+        },
+        Field::Secret(secret) => {
+            dedupe_rules_and_transformers(&mut secret.rules, &mut secret.transformers);
+        },
+        Field::Number(number) => {
+            dedupe_rules_and_transformers(&mut number.rules, &mut number.transformers);
+        },
+        Field::Boolean(boolean) => {
+            dedupe_rules_and_transformers(&mut boolean.rules, &mut boolean.transformers);
+        },
+        Field::Select(select) => {
+            dedupe_rules_and_transformers(&mut select.rules, &mut select.transformers);
+            dedupe_depends_on_paths(&mut select.depends_on);
+        },
+        Field::Object(object) => {
+            dedupe_rules_and_transformers(&mut object.rules, &mut object.transformers);
+            normalize_depends_on_lists(&mut object.fields);
+        },
+        Field::List(list) => {
+            dedupe_rules_and_transformers(&mut list.rules, &mut list.transformers);
+            if let Some(item) = list.item.as_deref_mut() {
+                normalize_field_for_runtime(item);
+            }
+        },
+        Field::Mode(mode) => {
+            dedupe_rules_and_transformers(&mut mode.rules, &mut mode.transformers);
+            for variant in &mut mode.variants {
+                normalize_field_for_runtime(variant.field.as_mut());
+            }
+        },
+        Field::Code(code) => dedupe_rules_and_transformers(&mut code.rules, &mut code.transformers),
+        Field::File(file) => dedupe_rules_and_transformers(&mut file.rules, &mut file.transformers),
+        Field::Computed(computed) => {
+            dedupe_rules_and_transformers(&mut computed.rules, &mut computed.transformers);
+        },
+        Field::Dynamic(dynamic) => {
+            dedupe_rules_and_transformers(&mut dynamic.rules, &mut dynamic.transformers);
+            dedupe_depends_on_paths(&mut dynamic.depends_on);
+        },
+        Field::Notice(notice) => {
+            dedupe_rules_and_transformers(&mut notice.rules, &mut notice.transformers);
+        },
+    }
+}
+
+fn dedupe_depends_on_paths(depends_on: &mut Vec<FieldPath>) {
+    let mut seen = HashSet::new();
+    depends_on.retain(|path| seen.insert(path.to_string()));
+}
+
+fn dedupe_rules_and_transformers(
+    rules: &mut Vec<nebula_validator::Rule>,
+    transformers: &mut Vec<crate::Transformer>,
+) {
+    dedupe_stable_eq(rules);
+    dedupe_stable_eq(transformers);
+}
+
+fn dedupe_stable_eq<T: PartialEq>(items: &mut Vec<T>) {
+    let mut unique = Vec::with_capacity(items.len());
+    for item in items.drain(..) {
+        if !unique.contains(&item) {
+            unique.push(item);
+        }
+    }
+    *items = unique;
+}
+
 // ── Index builder ─────────────────────────────────────────────────────────────
 
 fn build_index(
     fields: &[Field],
     prefix: &FieldPath,
-    parent_cursor: SmallVec<[u16; 4]>,
+    parent_cursor: &SmallVec<[u16; 4]>,
     depth: u8,
     index: &mut IndexMap<FieldPath, FieldHandle>,
     flags: &mut SchemaFlags,
@@ -358,9 +505,15 @@ fn build_index(
 
     for (i, f) in fields.iter().enumerate() {
         let mut cursor = parent_cursor.clone();
-        cursor.push(i as u16);
+        let Ok(step) = u16::try_from(i) else {
+            continue;
+        };
+        cursor.push(step);
         let path = prefix.clone().join(f.key().clone());
-        flags.max_depth = flags.max_depth.max(depth + 1);
+        let Some(level) = depth.checked_add(1) else {
+            continue;
+        };
+        flags.max_depth = flags.max_depth.max(level);
 
         // Track expression usage.
         if !matches!(f.expression(), ExpressionMode::Forbidden) {
@@ -369,8 +522,14 @@ fn build_index(
 
         // Track async loader usage.
         let has_loader = match f {
-            Field::Select(s) => s.loader.is_some(),
-            Field::Dynamic(d) => d.loader.is_some(),
+            Field::Select(s) => s
+                .loader
+                .as_ref()
+                .is_some_and(|loader| !loader.trim().is_empty()),
+            Field::Dynamic(d) => d
+                .loader
+                .as_ref()
+                .is_some_and(|loader| !loader.trim().is_empty()),
             _ => false,
         };
         if has_loader {
@@ -381,14 +540,14 @@ fn build_index(
             path.clone(),
             FieldHandle {
                 cursor: cursor.clone(),
-                depth: depth + 1,
+                depth: level,
             },
         );
 
         // Recurse for container types.
         match f {
             Field::Object(obj) => {
-                build_index(&obj.fields, &path, cursor, depth + 1, index, flags);
+                build_index(&obj.fields, &path, &cursor, level, index, flags);
             },
             Field::List(list) => {
                 if let Some(Field::Object(o)) = list.item.as_deref() {
@@ -396,7 +555,7 @@ fn build_index(
                     // not create a dedicated `FieldPath` entry for the item
                     // itself. We only recurse when the item is an object to
                     // index its named children under the list field path.
-                    build_index(&o.fields, &path, cursor, depth + 1, index, flags);
+                    build_index(&o.fields, &path, &cursor, level, index, flags);
                 }
             },
             Field::Mode(mode) => {
@@ -420,17 +579,114 @@ fn index_mode_variants(
             continue;
         };
         let mut v_cursor = parent_cursor.clone();
-        v_cursor.push(vi as u16);
+        let Ok(step) = u16::try_from(vi) else {
+            continue;
+        };
+        v_cursor.push(step);
         let variant_path = path.clone().join(vk);
+        let Some(variant_depth) = depth.checked_add(2) else {
+            continue;
+        };
         index.insert(
             variant_path.clone(),
             FieldHandle {
                 cursor: v_cursor.clone(),
-                depth: depth + 2,
+                depth: variant_depth,
             },
         );
         if let Field::Object(o) = variant.field.as_ref() {
-            build_index(&o.fields, &variant_path, v_cursor, depth + 2, index, flags);
+            build_index(
+                &o.fields,
+                &variant_path,
+                &v_cursor,
+                variant_depth,
+                index,
+                flags,
+            );
+        }
+    }
+}
+
+fn validate_index_limits(
+    fields: &[Field],
+    path: &FieldPath,
+    depth: u8,
+    report: &mut ValidationReport,
+) {
+    let max_indexable_siblings = usize::from(u16::MAX) + 1;
+    if fields.len() > max_indexable_siblings {
+        report.push(
+            ValidationError::builder("schema.index_overflow")
+                .at(path.clone())
+                .param("limit", Value::from(max_indexable_siblings))
+                .param("actual", Value::from(fields.len()))
+                .message(format!(
+                    "too many sibling fields at `{path}`: {} > {}",
+                    fields.len(),
+                    max_indexable_siblings
+                ))
+                .build(),
+        );
+    }
+
+    for field in fields {
+        let child_path = path.clone().join(field.key().clone());
+        let Some(next_depth) = depth.checked_add(1) else {
+            report.push(
+                ValidationError::builder("schema.depth_limit")
+                    .at(child_path)
+                    .param("limit", Value::from(u8::MAX))
+                    .message("schema nesting depth exceeds supported index range")
+                    .build(),
+            );
+            continue;
+        };
+
+        match field {
+            Field::Object(object) => {
+                validate_index_limits(&object.fields, &child_path, next_depth, report);
+            },
+            Field::List(list) => {
+                if let Some(Field::Object(object)) = list.item.as_deref() {
+                    validate_index_limits(&object.fields, &child_path, next_depth, report);
+                }
+            },
+            Field::Mode(mode) => {
+                if mode.variants.len() > max_indexable_siblings {
+                    report.push(
+                        ValidationError::builder("schema.index_overflow")
+                            .at(child_path.clone())
+                            .param("limit", Value::from(max_indexable_siblings))
+                            .param("actual", Value::from(mode.variants.len()))
+                            .message(format!(
+                                "too many mode variants at `{child_path}`: {} > {}",
+                                mode.variants.len(),
+                                max_indexable_siblings
+                            ))
+                            .build(),
+                    );
+                }
+                let Some(variant_depth) = depth.checked_add(2) else {
+                    report.push(
+                        ValidationError::builder("schema.depth_limit")
+                            .at(child_path)
+                            .param("limit", Value::from(u8::MAX))
+                            .message("schema mode variant depth exceeds supported index range")
+                            .build(),
+                    );
+                    continue;
+                };
+                for variant in &mode.variants {
+                    let variant_path = crate::key::FieldKey::new(variant.key.as_str()).map_or_else(
+                        |_| child_path.clone(),
+                        |variant_key| child_path.clone().join(variant_key),
+                    );
+                    if let Field::Object(object) = variant.field.as_ref() {
+                        validate_index_limits(&object.fields, &variant_path, variant_depth, report);
+                    }
+                }
+            },
+            _ => {},
         }
     }
 }
@@ -438,9 +694,10 @@ fn index_mode_variants(
 // ── Tests ─────────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
+#[allow(deprecated)]
 mod tests {
     use super::*;
-    use crate::{Field, FieldKey};
+    use crate::{Field, FieldKey, FieldPath};
 
     fn fk(s: &str) -> FieldKey {
         FieldKey::new(s).unwrap()
@@ -486,5 +743,130 @@ mod tests {
     fn legacy_new_add_still_compiles() {
         let schema = Schema::new().add(Field::string(fk("x")));
         assert_eq!(schema.len(), 1);
+    }
+
+    #[test]
+    fn loader_key_rejects_invalid_field_key_for_select() {
+        let schema = Schema::new().add(Field::select(fk("select_field")));
+        let err = resolve_select_loader_key(schema.fields(), "bad-key").unwrap_err();
+        assert_eq!(err.code, "invalid_key");
+    }
+
+    #[test]
+    fn loader_key_rejects_invalid_field_key_for_dynamic() {
+        let schema = Schema::new().add(Field::dynamic(fk("dynamic_field")));
+        let err = resolve_dynamic_loader_key(schema.fields(), "bad-key").unwrap_err();
+        assert_eq!(err.code, "invalid_key");
+    }
+
+    #[test]
+    fn build_rejects_schema_depth_beyond_index_limits() {
+        fn nested_object(depth: usize) -> Field {
+            let mut current: Field = Field::string(fk("leaf")).into();
+            for i in (0..depth).rev() {
+                let key = FieldKey::new(format!("n{i}")).expect("generated key");
+                current = Field::object(key).add(current).into();
+            }
+            current
+        }
+
+        let result = Schema::builder().add(nested_object(260)).build();
+        let report = result.expect_err("deep schema should be rejected");
+        assert!(report.errors().any(|e| e.code == "schema.depth_limit"));
+    }
+
+    #[test]
+    fn build_deduplicates_select_depends_on_for_runtime_schema() {
+        let dep = FieldPath::parse("team_id").unwrap();
+        let schema = Schema::builder()
+            .add(Field::string(fk("team_id")))
+            .add(
+                Field::select(fk("workspace"))
+                    .dynamic()
+                    .loader("workspace_loader")
+                    .depends_on(dep.clone())
+                    .depends_on(dep),
+            )
+            .build()
+            .expect("schema should build");
+
+        let field = schema.find(&fk("workspace")).expect("field must exist");
+        let Field::Select(select) = field else {
+            panic!("expected select field");
+        };
+        assert_eq!(select.depends_on.len(), 1);
+    }
+
+    #[test]
+    fn build_deduplicates_nested_dynamic_depends_on_for_runtime_schema() {
+        let dep = FieldPath::parse("team_id").unwrap();
+        let schema = Schema::builder()
+            .add(Field::string(fk("team_id")))
+            .add(
+                Field::object(fk("container")).add(
+                    Field::dynamic(fk("resource"))
+                        .loader("resource_loader")
+                        .depends_on(dep.clone())
+                        .depends_on(dep),
+                ),
+            )
+            .build()
+            .expect("schema should build");
+
+        let path = FieldPath::parse("container.resource").unwrap();
+        let field = schema
+            .find_by_path(&path)
+            .expect("nested field should be indexed");
+        let Field::Dynamic(dynamic) = field else {
+            panic!("expected dynamic field");
+        };
+        assert_eq!(dynamic.depends_on.len(), 1);
+    }
+
+    #[test]
+    fn build_deduplicates_rules_and_transformers_for_runtime_schema() {
+        let schema = Schema::builder()
+            .add(
+                Field::string(fk("name"))
+                    .min_length(3)
+                    .min_length(3)
+                    .with_transformer(crate::Transformer::Trim)
+                    .with_transformer(crate::Transformer::Trim),
+            )
+            .build()
+            .expect("schema should build");
+
+        let field = schema.find(&fk("name")).expect("field must exist");
+        let Field::String(string) = field else {
+            panic!("expected string field");
+        };
+        assert_eq!(string.rules.len(), 1);
+        assert_eq!(string.transformers.len(), 1);
+    }
+
+    #[test]
+    fn build_deduplicates_nested_rules_and_transformers_for_runtime_schema() {
+        let schema = Schema::builder()
+            .add(
+                Field::object(fk("container")).add(
+                    Field::number(fk("count"))
+                        .min(1)
+                        .min(1)
+                        .with_transformer(crate::Transformer::Trim)
+                        .with_transformer(crate::Transformer::Trim),
+                ),
+            )
+            .build()
+            .expect("schema should build");
+
+        let path = FieldPath::parse("container.count").unwrap();
+        let field = schema
+            .find_by_path(&path)
+            .expect("nested field should be indexed");
+        let Field::Number(number) = field else {
+            panic!("expected number field");
+        };
+        assert_eq!(number.rules.len(), 1);
+        assert_eq!(number.transformers.len(), 1);
     }
 }

@@ -44,11 +44,17 @@ pub struct FieldPath(SmallVec<[PathSegment; 4]>);
 
 impl FieldPath {
     /// Empty (root) path.
+    #[must_use]
     pub fn root() -> Self {
         Self(SmallVec::new())
     }
 
     /// Parse a dotted/bracketed string (e.g. `a.b[0].c`).
+    ///
+    /// # Errors
+    ///
+    /// Returns `invalid_path` when the input has invalid separators, keys, or
+    /// index syntax.
     #[expect(
         clippy::result_large_err,
         reason = "ValidationError is intentionally large; callers are on the validation path"
@@ -93,6 +99,9 @@ impl FieldPath {
                     .map_err(|_| Self::err(s, "non-numeric index"))?;
                 segments.push(PathSegment::Index(idx));
                 rest = &after_open[close + 1..];
+                if !rest.is_empty() && !rest.starts_with('.') && !rest.starts_with('[') {
+                    return Err(Self::err(s, "missing separator after index"));
+                }
             }
         }
 
@@ -100,22 +109,26 @@ impl FieldPath {
     }
 
     /// Returns all path segments.
+    #[must_use]
     pub fn segments(&self) -> &[PathSegment] {
         &self.0
     }
 
     /// Returns true when this path is root (empty).
+    #[must_use]
     pub fn is_root(&self) -> bool {
         self.0.is_empty()
     }
 
     /// Append a segment, returning the new path.
+    #[must_use]
     pub fn join(mut self, seg: impl Into<PathSegment>) -> Self {
         self.0.push(seg.into());
         self
     }
 
     /// Returns the parent path, or `None` for root.
+    #[must_use]
     pub fn parent(&self) -> Option<Self> {
         if self.0.is_empty() {
             None
@@ -127,13 +140,14 @@ impl FieldPath {
     }
 
     /// Returns true when this path starts with the given prefix.
-    pub fn starts_with(&self, prefix: &FieldPath) -> bool {
+    #[must_use]
+    pub fn starts_with(&self, prefix: &Self) -> bool {
         self.0.len() >= prefix.0.len() && self.0[..prefix.0.len()] == prefix.0[..]
     }
 
     fn err(value: &str, msg: &'static str) -> ValidationError {
         ValidationError::builder("invalid_path")
-            .at(FieldPath::root())
+            .at(Self::root())
             .message(msg)
             .param("path", value.to_owned())
             .build()
@@ -208,7 +222,9 @@ mod tests {
 
     #[test]
     fn rejects_invalid_syntax() {
-        for bad in ["", ".", "a.", ".a", "a[", "a[]", "a[x]", "a..b"] {
+        for bad in [
+            "", ".", "a.", ".a", "a[", "a[]", "a[x]", "a..b", "a[0]b", "a[0]b[1]",
+        ] {
             assert!(FieldPath::parse(bad).is_err(), "should reject {bad:?}");
         }
     }

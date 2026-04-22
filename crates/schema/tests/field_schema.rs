@@ -4,6 +4,11 @@ use nebula_schema::{
 };
 use serde_json::json;
 
+fn raw_schema(fields: impl IntoIterator<Item = Field>) -> Schema {
+    let fields: Vec<Field> = fields.into_iter().collect();
+    serde_json::from_value(json!({ "fields": fields })).expect("raw schema from field list")
+}
+
 #[test]
 fn builds_typed_fields_with_rules() {
     let field = Field::string("name")
@@ -39,11 +44,29 @@ fn supports_select_and_number_builders() {
 }
 
 #[test]
+fn try_field_constructors_reject_invalid_keys() {
+    let err = Field::try_string("bad-key").expect_err("invalid key should fail");
+    assert_eq!(err.code, "invalid_key");
+    assert!(Field::try_dynamic(" also bad ").is_err());
+}
+
+#[test]
+fn try_field_constructors_accept_valid_keys() {
+    let string = Field::try_string("name").expect("valid key");
+    let select = Field::try_select("mode").expect("valid key");
+    assert_eq!(string.key().as_str(), "name");
+    assert_eq!(select.key().as_str(), "mode");
+}
+
+#[test]
 fn schema_add_and_find_work() {
-    let schema = Schema::new()
-        .add(Field::string("name").widget(StringWidget::Plain))
-        .add(Field::secret("api_key").widget(SecretWidget::Plain))
-        .add(Field::boolean("enabled").widget(BooleanWidget::Toggle));
+    let schema = raw_schema(vec![
+        Field::string("name").widget(StringWidget::Plain).into(),
+        Field::secret("api_key").widget(SecretWidget::Plain).into(),
+        Field::boolean("enabled")
+            .widget(BooleanWidget::Toggle)
+            .into(),
+    ]);
 
     assert_eq!(schema.len(), 3);
     assert!(!schema.is_empty());
@@ -52,6 +75,7 @@ fn schema_add_and_find_work() {
 }
 
 #[test]
+#[allow(deprecated)]
 fn schema_add_replaces_duplicate_key() {
     let schema = Schema::new()
         .add(Field::string("name").min_length(2))
@@ -64,13 +88,14 @@ fn schema_add_replaces_duplicate_key() {
 
 #[test]
 fn serde_roundtrip_field_and_schema() {
-    let schema = Schema::new().add(
+    let schema = raw_schema(vec![
         Field::string("username")
             .visible_when(nebula_validator::Rule::predicate(
                 nebula_validator::Predicate::eq("enabled", json!(true)).unwrap(),
             ))
-            .required(),
-    );
+            .required()
+            .into(),
+    ]);
 
     let encoded = serde_json::to_value(&schema).expect("schema serializes");
     let decoded: Schema = serde_json::from_value(encoded).expect("schema deserializes");
@@ -198,27 +223,32 @@ fn validate_enforces_file_value_shape() {
 fn serde_roundtrip_supports_all_field_variants() {
     use nebula_schema::InputHint;
 
-    let schema = Schema::new()
-        .add(Field::string("s"))
-        .add(Field::secret("sec"))
-        .add(Field::number("n"))
-        .add(Field::boolean("b"))
-        .add(Field::select("sel").option("a", "A"))
-        .add(Field::object("obj").add(Field::string("child")))
-        .add(Field::list("list").item(Field::string("item")))
-        .add(Field::mode("mode").variant("simple", "Simple", Field::string("payload")))
-        .add(Field::code("code"))
+    let schema = raw_schema(vec![
+        Field::string("s").into(),
+        Field::secret("sec").into(),
+        Field::number("n").into(),
+        Field::boolean("b").into(),
+        Field::select("sel").option("a", "A").into(),
+        Field::object("obj").add(Field::string("child")).into(),
+        Field::list("list").item(Field::string("item")).into(),
+        Field::mode("mode")
+            .variant("simple", "Simple", Field::string("payload"))
+            .into(),
+        Field::code("code").into(),
         // Date/DateTime/Time/Color → StringField with hint (replaces removed variants)
-        .add(Field::string("date").hint(InputHint::Date))
-        .add(Field::string("datetime").hint(InputHint::DateTime))
-        .add(Field::string("time").hint(InputHint::Time))
-        .add(Field::string("color_field").hint(InputHint::Color))
-        .add(Field::file("file"))
+        Field::string("date").hint(InputHint::Date).into(),
+        Field::string("datetime").hint(InputHint::DateTime).into(),
+        Field::string("time").hint(InputHint::Time).into(),
+        Field::string("color_field").hint(InputHint::Color).into(),
+        Field::file("file").into(),
         // Hidden → visible(Never) on any field
-        .add(Field::string("hidden_field").visible(VisibilityMode::Never))
-        .add(Field::computed("computed"))
-        .add(Field::dynamic("dynamic"))
-        .add(Field::notice("notice"));
+        Field::string("hidden_field")
+            .visible(VisibilityMode::Never)
+            .into(),
+        Field::computed("computed").into(),
+        Field::dynamic("dynamic").into(),
+        Field::notice("notice").into(),
+    ]);
 
     let encoded = serde_json::to_value(&schema).expect("serialize full variant schema");
     let decoded: Schema = serde_json::from_value(encoded).expect("deserialize full variant schema");

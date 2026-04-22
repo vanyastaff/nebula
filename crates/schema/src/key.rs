@@ -27,6 +27,10 @@ impl FieldKey {
     /// - max 64 chars
     /// - starts with ASCII letter or underscore
     /// - only ASCII alphanumeric or underscore afterwards
+    ///
+    /// # Errors
+    ///
+    /// Returns `invalid_key` when the candidate string violates key format constraints.
     #[expect(
         clippy::result_large_err,
         reason = "ValidationError is intentionally large; callers are on the validation path"
@@ -57,19 +61,25 @@ impl FieldKey {
 
     /// Borrow the key as `&str`.
     #[inline]
+    #[must_use]
     pub fn as_str(&self) -> &str {
         &self.0
     }
 
     /// Access the underlying `Arc<str>` handle.
     #[inline]
-    pub fn as_arc(&self) -> &Arc<str> {
+    #[must_use]
+    pub const fn as_arc(&self) -> &Arc<str> {
         &self.0
     }
 
     fn err(value: &str, msg: &'static str) -> ValidationError {
+        Self::err_at(FieldPath::root(), value, msg)
+    }
+
+    pub(crate) fn err_at(path: FieldPath, value: &str, msg: &'static str) -> ValidationError {
         ValidationError::builder("invalid_key")
-            .at(FieldPath::root())
+            .at(path)
             .message(msg)
             .param("key", value.to_owned())
             .build()

@@ -36,6 +36,7 @@ pub use crate::field::{
 pub trait FieldCollector: Sized {
     /// Append a single built field to the underlying collection.
     #[doc(hidden)]
+    #[must_use = "builder methods must be chained"]
     fn push_field(self, field: Field) -> Self;
 
     /// Append many built fields at once — works on any collector
@@ -69,7 +70,7 @@ pub trait FieldCollector: Sized {
         self.push_field(f(NumberField::new(key)).into())
     }
 
-    /// Append an integer child (NumberField with `integer=true`) via a typed closure.
+    /// Append an integer child (`NumberField` with `integer=true`) via a typed closure.
     #[must_use]
     fn integer(self, key: impl AsRef<str>, f: impl FnOnce(NumberBuilder) -> NumberBuilder) -> Self {
         self.push_field(f(NumberField::new(key).integer()).into())

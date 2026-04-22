@@ -40,6 +40,10 @@ mod coverage_smoke {
 
     #[allow(dead_code)]
     fn touch_all_reexports() {
+        fn _j<T: HasSchema>(_: &T) {}
+        fn _k<T: HasSelectOptions>(_: &T) {}
+        fn _l<T: FieldCollector>(_: T) {}
+
         // Field variants.
         fn _f(_: &StringField, _: &SecretField, _: &NumberField, _: &BooleanField) {}
         fn _g(_: &SelectField, _: &ObjectField, _: &ListField, _: &ModeField) {}
@@ -50,8 +54,6 @@ mod coverage_smoke {
         let _: Option<ComputedReturn> = None;
         let _: Option<ModeVariant> = None;
         // Derive family (traits + `EnumSelect` macro is only touched at use sites).
-        fn _j<T: HasSchema>(_: &T) {}
-        fn _k<T: HasSelectOptions>(_: &T) {}
         // Rule-building.
         let _: Option<Rule> = None;
         let _: Option<Predicate> = None;
@@ -64,6 +66,5 @@ mod coverage_smoke {
             let _w = SecretWire(&s);
         }
         // DSL trait.
-        fn _l<T: FieldCollector>(_: T) {}
     }
 }

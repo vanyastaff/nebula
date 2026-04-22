@@ -19,7 +19,8 @@ pub enum VisibilityMode {
 
 impl VisibilityMode {
     /// Returns true when mode is the default variant.
-    pub fn is_default(&self) -> bool {
+    #[must_use]
+    pub const fn is_default(&self) -> bool {
         matches!(self, Self::Always)
     }
 }
@@ -40,7 +41,8 @@ pub enum RequiredMode {
 
 impl RequiredMode {
     /// Returns true when mode is the default variant.
-    pub fn is_default(&self) -> bool {
+    #[must_use]
+    pub const fn is_default(&self) -> bool {
         matches!(self, Self::Never)
     }
 }
@@ -61,7 +63,8 @@ pub enum ExpressionMode {
 
 impl ExpressionMode {
     /// Returns true when mode is the default variant (`Allowed`).
-    pub fn is_default(&self) -> bool {
+    #[must_use]
+    pub const fn is_default(&self) -> bool {
         matches!(self, Self::Allowed)
     }
 }

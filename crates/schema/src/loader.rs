@@ -146,6 +146,10 @@ impl<T: Send + 'static> Loader<T> {
     }
 
     /// Execute loader for the provided context.
+    ///
+    /// # Errors
+    ///
+    /// Returns any [`ValidationError`] produced by the wrapped loader.
     pub async fn call(&self, context: LoaderContext) -> Result<LoaderResult<T>, ValidationError> {
         (self.0)(context).await
     }
@@ -184,7 +188,8 @@ pub struct LoaderResult<T> {
 
 impl<T> LoaderResult<T> {
     /// Build a non-paginated result.
-    pub fn done(items: Vec<T>) -> Self {
+    #[must_use]
+    pub const fn done(items: Vec<T>) -> Self {
         Self {
             items,
             next_cursor: None,
@@ -203,7 +208,7 @@ impl<T> LoaderResult<T> {
 
     /// Attach total count.
     #[must_use]
-    pub fn with_total(mut self, total: u64) -> Self {
+    pub const fn with_total(mut self, total: u64) -> Self {
         self.total = Some(total);
         self
     }
@@ -248,6 +253,7 @@ pub struct LoaderRegistry {
 
 impl LoaderRegistry {
     /// Create an empty loader registry.
+    #[must_use]
     pub fn new() -> Self {
         Self::default()
     }

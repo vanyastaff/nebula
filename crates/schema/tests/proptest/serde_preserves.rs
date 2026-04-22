@@ -1,4 +1,4 @@
-//! Proptest: serde roundtrip for FieldValue and FieldValues.
+//! Proptest: serde roundtrip for `FieldValue` and `FieldValues`.
 
 use nebula_schema::{FieldValue, FieldValues};
 use proptest::prelude::*;

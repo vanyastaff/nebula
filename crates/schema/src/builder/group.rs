@@ -55,7 +55,7 @@ impl GroupBuilder {
     /// Consume the group and return its children with shared conditions applied.
     #[must_use]
     pub fn into_fields(self) -> Vec<Field> {
-        let GroupBuilder {
+        let Self {
             name,
             visible_when,
             required_when,
@@ -85,10 +85,10 @@ fn apply_group(
     let mut field = field;
     set_group(&mut field, group);
     if let Some(rule) = visible_when {
-        set_visible(&mut field, rule.clone());
+        set_visible(&mut field, rule);
     }
     if let Some(rule) = required_when {
-        set_required(&mut field, rule.clone());
+        set_required(&mut field, rule);
     }
     field
 }
@@ -151,7 +151,7 @@ fn set_group(field: &mut Field, group: &str) {
     });
 }
 
-fn set_visible(field: &mut Field, rule: Rule) {
+fn set_visible(field: &mut Field, rule: &Rule) {
     for_each_field!(field, |_g: &mut Option<String>,
                             v: &mut VisibilityMode,
                             _r: &mut RequiredMode| {
@@ -159,7 +159,7 @@ fn set_visible(field: &mut Field, rule: Rule) {
     });
 }
 
-fn set_required(field: &mut Field, rule: Rule) {
+fn set_required(field: &mut Field, rule: &Rule) {
     for_each_field!(field, |_g: &mut Option<String>,
                             _v: &mut VisibilityMode,
                             r: &mut RequiredMode| {
