@@ -406,3 +406,26 @@ async fn into_typed_returns_type_mismatch_on_deserialize_failure() {
     let err = resolved.into_typed::<u64>().unwrap_err();
     assert_eq!(err.code, "type_mismatch");
 }
+
+#[tokio::test]
+async fn secret_field_promotes_and_resolved_get_sanitizes_json() {
+    let schema = Schema::builder()
+        .add(Field::secret(field_key!("api_key")).required())
+        .build()
+        .unwrap();
+
+    let values = FieldValues::from_json(json!({"api_key": "sekrit"})).unwrap();
+    let valid = schema.validate(&values).unwrap();
+    let resolved = valid.resolve(&ConstCtx(json!(null))).await.unwrap();
+
+    assert!(resolved.get(&field_key!("api_key")).is_none());
+    let sec = resolved.get_secret(&field_key!("api_key")).expect("secret");
+    let SecretValue::String(s) = sec else {
+        panic!("expected string secret");
+    };
+    assert_eq!(s.expose(), "sekrit");
+
+    let wire = resolved.values().to_json();
+    let obj = wire.as_object().expect("object");
+    assert_eq!(obj.get("api_key"), Some(&json!("<redacted>")));
+}

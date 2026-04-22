@@ -10,6 +10,7 @@ use crate::{
     expression::Expression,
     key::FieldKey,
     path::{FieldPath, PathSegment},
+    secret::SecretValue,
 };
 
 /// Reserved key for an explicit expression wrapper.
@@ -34,6 +35,8 @@ pub enum FieldValue {
         /// Optional mode payload.
         value: Option<Box<FieldValue>>,
     },
+    /// Redacted secret material (introduced at resolve time for `Field::Secret`).
+    SecretLiteral(SecretValue),
 }
 
 impl FieldValue {
@@ -83,6 +86,7 @@ impl FieldValue {
     pub fn to_json(&self) -> Value {
         match self {
             Self::Literal(v) => v.clone(),
+            Self::SecretLiteral(s) => s.to_json(),
             Self::Expression(e) => serde_json::json!({ EXPRESSION_KEY: e.source() }),
             Self::Object(map) => {
                 let mut out = Map::with_capacity(map.len());
@@ -227,6 +231,12 @@ impl FieldValues {
     #[inline]
     pub fn get(&self, key: &FieldKey) -> Option<&FieldValue> {
         self.0.get(key)
+    }
+
+    /// Mutably borrow a value by key.
+    #[inline]
+    pub fn get_mut(&mut self, key: &FieldKey) -> Option<&mut FieldValue> {
+        self.0.get_mut(key)
     }
 
     /// Get the raw JSON representation of a value by string key.

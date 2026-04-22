@@ -26,6 +26,11 @@ smallvec = { workspace = true }
 regex = { workspace = true }
 async-trait = { workspace = true }
 schemars = { version = "1.0", optional = true }
+zeroize = { workspace = true }
+hex = { workspace = true }
+argon2 = { workspace = true }
+tracing = { workspace = true }
+subtle = { workspace = true }
 
 [dev-dependencies]
 criterion = { workspace = true }

@@ -41,13 +41,14 @@ changes land as a new ADR that `supersedes` it.
 | [0031](./0031-api-owns-oauth-flow.md) | `nebula-api` owns OAuth flow HTTP ceremony (PKCE S256, HMAC state, URL allowlist, fail-closed limits) | accepted | 2026-04-20 |
 | [0032](./0032-credential-store-canonical-home.md) | `CredentialStore` trait stays in `nebula-credential`; only impls + layers move to storage (amends 0028 inv 6 and 0029 §1-§2 after dep-graph cycle discovered in P6) | accepted | 2026-04-20 |
 | [0033](./0033-integration-credentials-plane-b.md) | Integration credentials (Plane B) — canonical model; acquisition vs `AuthScheme` vs persistence; explicit non-scope for Plane A / future `nebula-auth` | accepted | 2026-04-21 |
+| [0034](./0034-schema-secret-value-credential-seam.md) | `SecretValue` in `nebula-schema` + `SecretWire` / KDF on resolve + explicit `nebula-credential` seam (Phase 3 security) | accepted | 2026-04-22 |
 
 ## Writing a new ADR
 
 1. Copy the frontmatter block from any existing ADR (keep the keys: `id`,
    `title`, `status`, `date`, `supersedes`, `superseded_by`, `tags`,
    `related`, optional `linear`).
-2. Pick the next free number (currently **0033**). Do not reuse.
+2. Pick the next free number (currently **0035**). Do not reuse.
 3. File name: `NNNN-kebab-case-title.md` matching the `title:` field.
 4. Start `status: proposed`. Move to `accepted` only after review and merge.
 5. **Do not substantively edit an accepted ADR.** Open a new one with

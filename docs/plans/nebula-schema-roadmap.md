@@ -1,7 +1,7 @@
 ---
 title: nebula-schema — execution roadmap
 status: active
-last-reviewed: 2026-04-21
+last-reviewed: 2026-04-22
 supersedes: archive/2026-04-16-nebula-schema-implementation-plans/
 related:
   - superpowers/specs/2026-04-16-nebula-schema-phase1-foundation-design.md
@@ -30,13 +30,13 @@ This file is the **single place** for *what to do next* for `nebula-schema` (`cr
 | 3 Security | `docs/superpowers/specs/2026-04-16-nebula-schema-phase3-security-design.md` |
 | 4 Advanced | `docs/superpowers/specs/2026-04-16-nebula-schema-phase4-advanced-design.md` |
 
-## Status snapshot (2026-04-21)
+## Status snapshot (2026-04-22)
 
 | Track | State | Notes |
 |-------|--------|--------|
 | **Phase 1 — Foundation** | **Shipped** in tree | Proof tokens, `nebula-parameter` removed, callers migrated. See design spec acceptance; bench partiality documented in `crates/schema/benches/RESULTS.md` if present. |
 | **Phase 2 — DX** | **Mostly shipped** | `HasSchema` / `HasSelectOptions`, typed `Schema::builder()` DSL, `#[derive(Schema)]`, `#[derive(EnumSelect)]`, `field_key!`, trybuild suite, `#[param(enum_select)]` for enum-backed `SelectField`, `SelectField::extend_options`. |
-| **Phase 3 — Security** | **Not started** (skeleton) | `SecretValue`, zeroize, KDF, redaction — follow phase 3 design spec. |
+| **Phase 3 — Security** | **Complete on branch** (PR-2; merge + security review) | `SecretValue`, `KdfParams` (Argon2id), `FieldValue::SecretLiteral`, `get_secret`, `LoaderContext::with_secrets_redacted`, ADR-0034 + configuration pipeline diagram (ADR + `INTEGRATION_MODEL.md`). Credential wiring for `SecretWire` at call sites remains follow-up per ADR-0034. |
 | **Phase 4 — Advanced** | **Not started** (skeleton) | JSON Schema export, expression inference, diff, i18n — follow phase 4 design spec. |
 
 ## Remaining work — Phase 2 (close the gap)

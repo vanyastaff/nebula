@@ -21,6 +21,9 @@ impl RuleContext for RootContext<'_> {
         // constructing a FieldKey (no Arc allocation for the lookup).
         match self.0.get_by_str(key)? {
             FieldValue::Literal(v) => Some(v),
+            // Do not leak a sentinel value into predicate evaluation.
+            // Secret fields are treated as non-addressable by `RuleContext`.
+            FieldValue::SecretLiteral(_) => None,
             _ => None,
         }
     }
@@ -35,6 +38,9 @@ impl RuleContext for ObjectContext<'_> {
         // Passing &str directly avoids constructing a FieldKey.
         match self.0.get(key)? {
             FieldValue::Literal(v) => Some(v),
+            // Do not leak a sentinel value into predicate evaluation.
+            // Secret fields are treated as non-addressable by `RuleContext`.
+            FieldValue::SecretLiteral(_) => None,
             _ => None,
         }
     }
@@ -73,5 +79,28 @@ mod tests {
         let values = FieldValues::new();
         let ctx = RootContext(&values);
         assert_eq!(ctx.get("missing"), None);
+    }
+
+    #[test]
+    fn root_context_hides_secret_literals_from_rules() {
+        let mut values = FieldValues::new();
+        let fk = FieldKey::new("api_key").unwrap();
+        values.set(
+            fk,
+            FieldValue::SecretLiteral(crate::secret::SecretValue::string("s3cr3t".to_owned())),
+        );
+        let ctx = RootContext(&values);
+        assert_eq!(ctx.get("api_key"), None);
+    }
+
+    #[test]
+    fn object_context_hides_secret_literals_from_rules() {
+        let mut map = IndexMap::new();
+        map.insert(
+            FieldKey::new("token").unwrap(),
+            FieldValue::SecretLiteral(crate::secret::SecretValue::string("abc".to_owned())),
+        );
+        let ctx = ObjectContext(&map);
+        assert_eq!(ctx.get("token"), None);
     }
 }

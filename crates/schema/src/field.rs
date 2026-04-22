@@ -288,6 +288,7 @@ impl StringField {
 define_field!(SecretField {
     widget: SecretWidget = SecretWidget::Plain,
     reveal_last: Option<u8> = None,
+    kdf: Option<crate::secret::KdfParams> = None,
 } expr: ExpressionMode::Allowed);
 
 impl SecretField {
@@ -295,6 +296,14 @@ impl SecretField {
     #[must_use]
     pub fn widget(mut self, widget: SecretWidget) -> Self {
         self.widget = widget;
+        self
+    }
+
+    /// Optional KDF: after resolution, replace the user string with a hashed
+    /// [`crate::secret::SecretValue::Bytes`] (see [`crate::secret::KdfParams`]).
+    #[must_use]
+    pub fn kdf(mut self, params: crate::secret::KdfParams) -> Self {
+        self.kdf = Some(params);
         self
     }
 
