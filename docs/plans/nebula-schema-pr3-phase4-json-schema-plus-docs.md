@@ -1,6 +1,6 @@
 ---
 title: nebula-schema — PR-3 (scoped Phase 4 + docs)
-status: draft
+status: active
 created: 2026-04-22
 depends_on: [nebula-schema-pr2-phase3-security.md]
 blocks: []
@@ -34,6 +34,13 @@ roadmap: nebula-schema-roadmap.md
 | P3-D2 | `docs/MATURITY.md` row for `nebula-schema` if stability/integration moved | `docs/MATURITY.md` |
 | P3-D3 | Refresh `docs/plans/nebula-schema-roadmap.md` (`last-reviewed`, checkboxes) | `docs/plans/` |
 | P3-D4 | `crates/schema/README.md` if public surface / features changed | `crates/schema/README.md` |
+
+## Execution status (2026-04-22)
+
+- **Done on branch:** C1 (`schemars` JSON Schema export + mapper + tests), P3-D1 (`CHANGELOG.md`), P3-D4 (`crates/schema/README.md` feature usage section).
+- **In progress on branch:** P3-D3 (roadmap refresh).
+- **No maturity level change:** P3-D2 is satisfied with `nebula-schema` remaining `frontier` in `docs/MATURITY.md`.
+- **Remaining:** issue handoff for deferred C2–C6 follow-ups.
 
 ## Merge gate (PR-3)
 
