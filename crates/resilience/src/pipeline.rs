@@ -90,7 +90,7 @@ impl<E: Send + 'static> PipelineBuilder<E> {
     /// When set, the circuit breaker step uses
     /// [`call_with_classifier`](CircuitBreaker::call_with_classifier) instead of
     /// [`call`](CircuitBreaker::call). The retry step combines this with any classifier on
-    /// [`RetryConfig`](crate::retry::RetryConfig) (per-retry classifier wins for retry
+    /// [`RetryConfig`] (per-retry classifier wins for retry
     /// decisions; the pipeline classifier still applies to the circuit breaker).
     ///
     /// Without a **pipeline** classifier, operation errors that reach the circuit breaker are
@@ -199,7 +199,7 @@ impl<E: Send + 'static> PipelineBuilder<E> {
 impl<E: nebula_error::Classify + Send + Sync + 'static> PipelineBuilder<E> {
     /// Use [`NebulaClassifier`](crate::classifier::NebulaClassifier) to automatically
     /// map [`ErrorCategory`](nebula_error::ErrorCategory) to
-    /// [`ErrorClass`](crate::classifier::ErrorClass).
+    /// [`ErrorClass`].
     ///
     /// This is the recommended default for pipelines where `E: Classify`.
     #[must_use]
