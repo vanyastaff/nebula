@@ -34,7 +34,9 @@ pub(crate) fn crate_path() -> TokenStream2 {
     }
 }
 
-/// Build a `FieldKey` from a string literal, validated at compile time.
+/// Build a `FieldKey` (from `nebula-schema`) from a string literal, using the same rules as
+/// `FieldKey::new` at **compile time** (non-empty, max 64 chars, ASCII identifier: leading letter
+/// or `_`, then letters, digits, or `_`).
 ///
 /// ```ignore
 /// let k = field_key!("alpha");   // OK

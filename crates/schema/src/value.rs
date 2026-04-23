@@ -28,7 +28,8 @@ pub enum FieldValue {
     Object(IndexMap<FieldKey, Self>),
     /// Ordered sequence of values.
     List(Vec<Self>),
-    /// Discriminated mode payload.
+    /// Discriminated mode payload. JSON object `{"mode": "...", "value": ...}` — see [`ModeField`]
+    /// for how `value` is shaped (object, array, or scalar).
     Mode {
         /// Chosen mode key.
         mode: FieldKey,

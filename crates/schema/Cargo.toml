@@ -56,6 +56,16 @@ path = "tests/proptest/path_roundtrip.rs"
 name = "proptest_serde_preserves"
 path = "tests/proptest/serde_preserves.rs"
 
+[[test]]
+name = "json_schema_smoke"
+path = "tests/json_schema_smoke.rs"
+required-features = ["schemars"]
+
+[[example]]
+name = "json_schema_export"
+path = "examples/json_schema_export.rs"
+required-features = ["schemars"]
+
 [[bench]]
 name = "bench_build"
 harness = false

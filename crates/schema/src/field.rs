@@ -362,6 +362,13 @@ impl NumberField {
         self
     }
 
+    /// Shorthand for [`min`](Self::min) on integer fields: lower bound as `i64` (becomes
+    /// `serde_json::Number` in rules).
+    #[must_use]
+    pub fn min_int(self, min: i64) -> Self {
+        self.min(Number::from(min))
+    }
+
     /// Add maximum numeric rule.
     #[must_use]
     pub fn max(mut self, max: impl Into<Number>) -> Self {
@@ -369,11 +376,29 @@ impl NumberField {
         self
     }
 
+    /// Shorthand for [`max`](Self::max) with an `i64` upper bound.
+    #[must_use]
+    pub fn max_int(self, max: i64) -> Self {
+        self.max(Number::from(max))
+    }
+
+    /// Set default to a whole number without spelling `serde_json::Value` for the common case.
+    #[must_use]
+    pub fn default_int(self, n: i64) -> Self {
+        self.default(Value::Number(Number::from(n)))
+    }
+
     /// Set increment step.
     #[must_use]
     pub fn step(mut self, s: impl Into<Number>) -> Self {
         self.step = Some(s.into());
         self
+    }
+
+    /// Shorthand for [`step`](Self::step) with an `i64` step.
+    #[must_use]
+    pub fn step_int(self, s: i64) -> Self {
+        self.step(Number::from(s))
     }
 }
 
@@ -567,7 +592,13 @@ pub struct ModeVariant {
 }
 
 impl ModeField {
-    /// Append variant.
+    /// Key used in the child payload of [`ModeField::variant_empty`] (hidden, never shown).
+    pub const EMPTY_PLACEHOLDER_KEY: &'static str = "_nebula_mode_empty";
+
+    /// Append a variant: `key` discriminates, `field` is the `value` payload for that key.
+    ///
+    /// The JSON under `value` is described in the [`ModeField`] doc (object vs list vs scalar,
+    /// and the `mode`/`value` envelope).
     #[must_use]
     pub fn variant(
         mut self,
@@ -579,6 +610,29 @@ impl ModeField {
             key: key.into(),
             label: label.into(),
             field: Box::new(field.into()),
+        });
+        self
+    }
+
+    /// A variant with no user-facing payload, for example `"none"` authentication.
+    ///
+    /// The schema still needs a child field; this uses a hidden `String` field with key
+    /// [`EMPTY_PLACEHOLDER_KEY`](Self::EMPTY_PLACEHOLDER_KEY) so authors do not hand-copy the
+    /// `field_key!("_skip")` + `VisibilityMode::Never` pattern. Omitted `value` in wire data is
+    /// still accepted for such variants when validators skip hidden absent fields.
+    #[must_use]
+    pub fn variant_empty(mut self, key: impl Into<String>, label: impl Into<String>) -> Self {
+        self.variants.push(ModeVariant {
+            key: key.into(),
+            label: label.into(),
+            field: Box::new(
+                Field::string(
+                    FieldKey::new(Self::EMPTY_PLACEHOLDER_KEY)
+                        .expect("EMPTY_PLACEHOLDER_KEY must be a valid FieldKey"),
+                )
+                .visible(VisibilityMode::Never)
+                .into(),
+            ),
         });
         self
     }
@@ -947,13 +1001,14 @@ impl Field {
         Ok(ListField::with_key(key))
     }
 
-    /// Create `ModeField`.
+    /// Create a mode field. See [`ModeField`] for the `{ "mode", "value" }` wire contract and
+    /// list payload rules, and [`ModeField::variant_empty`] for no-payload branches.
     #[must_use]
     pub fn mode(key: impl AsRef<str>) -> ModeField {
         ModeField::new(key)
     }
 
-    /// Fallible variant of [`Field::mode`] for runtime-provided keys.
+    /// Fallible variant of [`Field::mode`].
     ///
     /// # Errors
     ///
