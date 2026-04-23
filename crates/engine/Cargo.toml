@@ -70,8 +70,11 @@ nebula-metrics = { path = "../metrics" }
 chrono = { workspace = true }
 futures = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
-# `token_refresh` tests use a loopback `TcpListener` to mock the token endpoint.
-tokio = { workspace = true, features = ["io-util", "net", "rt", "macros"] }
+# `token_refresh` tests use a loopback `TcpListener` to mock the token endpoint;
+# `execute_stateful_aborts_handler_on_cancel` needs `test-util` for `start_paused`.
+tokio = { workspace = true, features = ["io-util", "net", "rt", "macros", "time", "test-util"] }
+tokio-util = { workspace = true }
+criterion = { workspace = true }
 insta = { workspace = true }
 pretty_assertions = { workspace = true }
 rstest = { workspace = true }

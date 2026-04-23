@@ -29,7 +29,7 @@ use nebula_credential::default_credential_accessor;
 // use nebula_core::scope::ScopeLevel;
 use nebula_execution::ExecutionStatus;
 use nebula_execution::{context::ExecutionBudget, plan::ExecutionPlan, state::ExecutionState};
-use nebula_expression::{EvaluationContext, ExpressionEngine};
+use nebula_expression::ExpressionEngine;
 use nebula_metrics::naming::{
     NEBULA_ENGINE_LEASE_CONTENTION_TOTAL, NEBULA_WORKFLOW_EXECUTION_DURATION_SECONDS,
     NEBULA_WORKFLOW_EXECUTIONS_COMPLETED_TOTAL, NEBULA_WORKFLOW_EXECUTIONS_FAILED_TOTAL,
@@ -37,10 +37,7 @@ use nebula_metrics::naming::{
 };
 use nebula_plugin::PluginRegistry;
 use nebula_telemetry::metrics::MetricsRegistry;
-use nebula_workflow::{
-    Connection, DependencyGraph, EdgeCondition, ErrorMatcher, NodeState, ResultMatcher,
-    WorkflowDefinition,
-};
+use nebula_workflow::{Connection, DependencyGraph, NodeState, WorkflowDefinition};
 use tokio::{
     sync::{Semaphore, mpsc},
     task::JoinSet,
@@ -3086,138 +3083,55 @@ fn process_outgoing_edges(
 
 /// Evaluate whether an edge should activate given the source node's outcome.
 ///
+/// Port-driven routing (spec 28 §2.2): the engine matches the edge's
+/// effective source port (`from_port`, defaulting to `"main"`) against the
+/// port the upstream `ActionResult` produced on. There is no "edge
+/// condition" — conditionals are carried by explicit control-flow nodes
+/// (`If`, `Switch`, `Router`, `ErrorRouter`) whose own `ActionResult`
+/// decides which port fires.
+///
 /// Rules:
-/// - `Skip` results don't activate any edges (whole downstream subgraph)
-/// - `Drop` results don't activate any edges (item dropped, no output on main port)
-/// - `Terminate` results don't activate any edges (execution is ending)
-/// - Failed nodes only activate `OnError` edges
-/// - `Branch` results only activate edges whose `branch_key` matches `selected`
-/// - `Route` results only activate edges whose `from_port` matches `port`
-/// - `MultiOutput` results only activate edges whose `from_port` is in `outputs`
-/// - `Always` activates on success (not on error, not on skip)
-/// - `OnResult` activates when the matcher matches
-/// - `Expression` activates when the expression evaluates to truthy
-/// - `OnError` activates only when the node failed
+/// - `Skip` / `Drop` / `Terminate` → no edges activate on any port.
+/// - Failed node → only edges with `from_port == "error"` activate; action authors wire their
+///   failure path to an `ErrorRouter` or recovery node.
+/// - `Success` → activates edges on `"main"` (or `None`).
+/// - `Branch { selected }` → activates edges whose effective source port equals `selected` (legacy
+///   alias for `Route`).
+/// - `Route { port }` → activates edges whose effective source port equals `port`.
+/// - `MultiOutput { outputs }` → activates edges whose effective source port is present in
+///   `outputs`.
+/// - `Continue` / `Break` / `Retry` / `Wait` → engine treats these like `Success` for edge
+///   activation (they hit the main port); persistent state handling lives outside this routing
+///   decision.
 fn evaluate_edge(
     conn: &Connection,
     result: Option<&ActionResult<serde_json::Value>>,
     node_failed: bool,
 ) -> bool {
-    // Skip results don't activate any edges — skips the whole downstream subgraph.
-    if let Some(ActionResult::Skip { .. }) = result {
+    use ActionResult::*;
+
+    // Skip / Drop / Terminate never activate any edge.
+    if matches!(result, Some(Skip { .. } | Drop { .. } | Terminate { .. })) {
         return false;
     }
 
-    // Drop results don't activate any edges — this item produced no output
-    // on the main port, but downstream parallel branches processing other
-    // items are unaffected (they have their own per-item evaluate_edge call).
-    if let Some(ActionResult::Drop { .. }) = result {
-        return false;
-    }
+    let effective_port = conn.effective_from_port();
 
-    // Terminate results don't activate any edges — the execution is ending.
-    // TODO(engine): this gate only blocks local downstream edges. Full
-    // parallel-branch cancellation, ExecutionTerminationReason propagation,
-    // and determine_final_status handling for Terminate is scheduler work
-    // tracked in the ControlAction plan as Phase 3. Until then, a Terminate
-    // return from a node in one branch does NOT cancel sibling branches
-    // and does NOT populate ExecutionResult::termination_reason — it only
-    // prevents this node's own subgraph from firing.
-    if let Some(ActionResult::Terminate { .. }) = result {
-        return false;
-    }
-
-    // For failed nodes, only OnError edges can activate
+    // Failures route exclusively through the `"error"` port. Downstream must
+    // wire an explicit `ErrorRouter` / recovery node to fan out by error class.
     if node_failed {
-        return match &conn.condition {
-            EdgeCondition::OnError { matcher } => match_error_condition(matcher),
-            _ => false,
-        };
+        return effective_port == "error";
     }
 
-    // Check branch_key for Branch results
-    if let Some(ActionResult::Branch { selected, .. }) = result
-        && let Some(ref key) = conn.branch_key
-        && key != selected
-    {
-        return false;
-    }
-
-    // Check from_port for Route results
-    if let Some(ActionResult::Route { port, .. }) = result
-        && let Some(ref key) = conn.from_port
-        && key != port
-    {
-        return false;
-    }
-
-    // Check from_port for MultiOutput results
-    if let Some(ActionResult::MultiOutput {
-        outputs: port_outputs,
-        ..
-    }) = result
-        && let Some(ref key) = conn.from_port
-        && !port_outputs.contains_key(key)
-    {
-        return false;
-    }
-
-    // Evaluate the edge condition
-    match &conn.condition {
-        EdgeCondition::Always => true,
-        EdgeCondition::OnError { .. } => false, // Not failed, so OnError doesn't activate
-        EdgeCondition::OnResult { matcher } => match_result_condition(matcher, result),
-        EdgeCondition::Expression { expr } => evaluate_expression_condition(expr, result),
-        _ => false,
-    }
-}
-
-/// Check if an OnError condition matches (for failed nodes).
-fn match_error_condition(matcher: &ErrorMatcher) -> bool {
-    match matcher {
-        ErrorMatcher::Any => true,
-        // For Code and Expression matchers, default to matching for now.
-        // Full implementation would check error codes or evaluate expressions.
-        ErrorMatcher::Code { .. } | ErrorMatcher::Expression { .. } => true,
-        _ => false,
-    }
-}
-
-/// Check if an OnResult condition matches the node's output.
-fn match_result_condition(
-    matcher: &ResultMatcher,
-    result: Option<&ActionResult<serde_json::Value>>,
-) -> bool {
-    match matcher {
-        ResultMatcher::Success => true,
-        ResultMatcher::FieldEquals { field, value } => {
-            let output = result.and_then(extract_primary_output);
-            output
-                .as_ref()
-                .and_then(|v| v.get(field))
-                .is_some_and(|v| v == value)
-        },
-        // Expression-based result matching; default to true for now.
-        ResultMatcher::Expression { .. } => true,
-        _ => false,
-    }
-}
-
-/// Evaluate an Expression edge condition against the node's output.
-fn evaluate_expression_condition(
-    expr: &str,
-    result: Option<&ActionResult<serde_json::Value>>,
-) -> bool {
-    // Build a minimal expression engine for evaluation.
-    // In production, this should be shared; here we use a lightweight approach.
-    let engine = ExpressionEngine::new();
-    let mut ctx = EvaluationContext::new();
-    if let Some(output) = result.and_then(extract_primary_output) {
-        ctx.set_input(output);
-    }
-    match engine.evaluate(expr, &ctx) {
-        Ok(value) => value.as_bool().unwrap_or(false),
-        Err(_) => false,
+    match result {
+        Some(Branch { selected, .. }) => effective_port == selected.as_str(),
+        Some(Route { port, .. }) => effective_port == port.as_str(),
+        Some(MultiOutput {
+            outputs: port_outputs,
+            ..
+        }) => port_outputs.contains_key(effective_port),
+        // Success and every other main-port variant fire the main port.
+        _ => effective_port == "main",
     }
 }
 
@@ -4283,8 +4197,8 @@ mod tests {
                 NodeDefinition::new(d.clone(), "D", "echo").unwrap(),
             ],
             vec![
-                Connection::new(a.clone(), b.clone()).with_branch_key("true"),
-                Connection::new(a.clone(), c.clone()).with_branch_key("false"),
+                Connection::new(a.clone(), b.clone()).with_from_port("true"),
+                Connection::new(a.clone(), c.clone()).with_from_port("false"),
                 Connection::new(b.clone(), d.clone()),
                 Connection::new(c.clone(), d.clone()),
             ],
@@ -4373,9 +4287,7 @@ mod tests {
             ],
             vec![
                 Connection::new(a.clone(), b.clone()),
-                Connection::new(b.clone(), c.clone()).with_condition(EdgeCondition::OnError {
-                    matcher: ErrorMatcher::Any,
-                }),
+                Connection::new(b.clone(), c.clone()).with_from_port("error"),
             ],
         );
 
@@ -4451,11 +4363,7 @@ mod tests {
                 NodeDefinition::new(a.clone(), "A", "echo").unwrap(),
                 NodeDefinition::new(b.clone(), "B", "echo").unwrap(),
             ],
-            vec![
-                Connection::new(a.clone(), b.clone()).with_condition(EdgeCondition::OnResult {
-                    matcher: ResultMatcher::Success,
-                }),
-            ],
+            vec![Connection::new(a.clone(), b.clone())],
         );
 
         let result = engine
@@ -4493,9 +4401,7 @@ mod tests {
             ],
             vec![
                 Connection::new(a.clone(), b.clone()), // Always
-                Connection::new(a.clone(), c.clone()).with_condition(EdgeCondition::OnResult {
-                    matcher: ResultMatcher::Success,
-                }),
+                Connection::new(a.clone(), c.clone()),
                 Connection::new(b.clone(), d.clone()),
                 Connection::new(c.clone(), d.clone()),
             ],
@@ -5413,8 +5319,6 @@ mod tests {
     /// invariant was violated.
     #[tokio::test]
     async fn runtime_failure_checkpoint_error_aborts_before_edge_routing() {
-        use nebula_workflow::{EdgeCondition, ErrorMatcher};
-
         let registry = Arc::new(ActionRegistry::new());
         registry.register_stateless(FailHandler {
             meta: ActionMetadata::new(action_key!("fail"), "Fail", "fails"),
@@ -5433,11 +5337,7 @@ mod tests {
                 NodeDefinition::new(a.clone(), "A", "fail").unwrap(),
                 NodeDefinition::new(b.clone(), "B", "echo").unwrap(),
             ],
-            vec![
-                Connection::new(a.clone(), b.clone()).with_condition(EdgeCondition::OnError {
-                    matcher: ErrorMatcher::Any,
-                }),
-            ],
+            vec![Connection::new(a.clone(), b.clone()).with_from_port("error")],
             WorkflowConfig {
                 error_strategy: ErrorStrategy::ContinueOnError,
                 ..WorkflowConfig::default()
@@ -5578,8 +5478,7 @@ mod tests {
     /// OnError successor.
     #[tokio::test]
     async fn setup_failure_checkpoint_error_aborts_before_edge_routing() {
-        use nebula_workflow::{EdgeCondition, ErrorMatcher, ParamValue};
-
+        use nebula_workflow::ParamValue;
         let registry = Arc::new(ActionRegistry::new());
         registry.register_stateless(EchoHandler {
             meta: ActionMetadata::new(action_key!("echo"), "Echo", "echoes"),
@@ -5594,11 +5493,7 @@ mod tests {
                     .with_parameter("bad", ParamValue::template("Hello {{ unclosed")),
                 NodeDefinition::new(b.clone(), "B", "echo").unwrap(),
             ],
-            vec![
-                Connection::new(a.clone(), b.clone()).with_condition(EdgeCondition::OnError {
-                    matcher: ErrorMatcher::Any,
-                }),
-            ],
+            vec![Connection::new(a.clone(), b.clone()).with_from_port("error")],
             WorkflowConfig {
                 error_strategy: ErrorStrategy::ContinueOnError,
                 ..WorkflowConfig::default()
@@ -5647,8 +5542,6 @@ mod tests {
     /// than finding the OnError successor's input missing.
     #[tokio::test]
     async fn on_error_payload_is_persisted_before_checkpoint_commits() {
-        use nebula_workflow::{EdgeCondition, ErrorMatcher};
-
         let registry = Arc::new(ActionRegistry::new());
         registry.register_stateless(FailHandler {
             meta: ActionMetadata::new(action_key!("fail"), "Fail", "fails"),
@@ -5664,11 +5557,7 @@ mod tests {
                 NodeDefinition::new(a.clone(), "A", "fail").unwrap(),
                 NodeDefinition::new(b.clone(), "B", "echo").unwrap(),
             ],
-            vec![
-                Connection::new(a.clone(), b.clone()).with_condition(EdgeCondition::OnError {
-                    matcher: ErrorMatcher::Any,
-                }),
-            ],
+            vec![Connection::new(a.clone(), b.clone()).with_from_port("error")],
             WorkflowConfig {
                 error_strategy: ErrorStrategy::ContinueOnError,
                 ..WorkflowConfig::default()
@@ -5998,8 +5887,6 @@ mod tests {
     /// cardinality), so both increments are counted and B correctly becomes ready.
     #[tokio::test]
     async fn multi_edge_from_same_source_executes_target() {
-        use nebula_workflow::EdgeCondition;
-
         let registry = Arc::new(ActionRegistry::new());
         registry.register_stateless(EchoHandler {
             meta: ActionMetadata::new(action_key!("echo"), "Echo", "echoes input"),
@@ -6017,10 +5904,8 @@ mod tests {
                 NodeDefinition::new(b.clone(), "B", "echo").unwrap(),
             ],
             vec![
-                Connection::new(a.clone(), b.clone()).with_condition(EdgeCondition::Always),
-                Connection::new(a, b.clone())
-                    .with_condition(EdgeCondition::Always)
-                    .with_from_port("alt"),
+                Connection::new(a.clone(), b.clone()),
+                Connection::new(a, b.clone()).with_from_port("alt"),
             ],
         );
 
@@ -6997,8 +6882,8 @@ mod tests {
                 NodeDefinition::new(c.clone(), "C", "echo").unwrap(),
             ],
             vec![
-                Connection::new(a.clone(), b.clone()).with_branch_key("true"),
-                Connection::new(a.clone(), c.clone()).with_branch_key("false"),
+                Connection::new(a.clone(), b.clone()).with_from_port("true"),
+                Connection::new(a.clone(), c.clone()).with_from_port("false"),
             ],
         );
 

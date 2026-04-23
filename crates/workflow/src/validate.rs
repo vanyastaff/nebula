@@ -50,12 +50,13 @@ pub fn validate_workflow(definition: &WorkflowDefinition) -> Vec<WorkflowError> 
         }
     }
 
-    // 4b. Detect duplicate connections (identical source, target, ports, and condition).
+    // 4b. Detect duplicate connections (identical source, target, and ports).
     // Duplicate connections are always redundant and confuse edge-resolution bookkeeping.
+    // Two edges that wire the same node pair but on different `from_port` values are
+    // distinct — e.g. main vs error routing from the same upstream node.
     //
-    // `Connection` cannot derive `Hash` (because `serde_json::Value` doesn't implement it),
-    // so we serialize each connection to a canonical JSON string and use a HashSet<String>
-    // for O(n) average-case detection.
+    // Serialising to JSON gives us a canonical `Hash`-free comparison key without hand-rolling
+    // a discriminator over every `Connection` field.
     let mut seen_connections: HashSet<String> = HashSet::new();
     for conn in &definition.connections {
         let key = serde_json::to_string(conn).unwrap_or_default();
@@ -376,16 +377,15 @@ mod tests {
 
     #[test]
     fn distinct_multi_edges_are_not_duplicate() {
-        use crate::connection::EdgeCondition;
         let a = node_key!("a");
         let b = node_key!("b");
-        // Two edges from A to B but with different conditions — these are
+        // Two edges from A to B but on different source ports — these are
         // distinct (not duplicates) and must not trigger a validation error.
         let def = make_definition(
             "multi-edge",
             vec![node(a.clone()), node(b.clone())],
             vec![
-                Connection::new(a.clone(), b.clone()).with_condition(EdgeCondition::Always),
+                Connection::new(a.clone(), b.clone()),
                 Connection::new(a, b).with_from_port("alt"),
             ],
         );

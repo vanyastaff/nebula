@@ -20,8 +20,7 @@ use std::collections::{HashMap, HashSet};
 use nebula_core::{ActionKey, NodeKey, WorkflowId};
 use nebula_workflow::{
     CURRENT_SCHEMA_VERSION, ParamValue, Version, WorkflowConfig, WorkflowDefinition,
-    connection::{Connection, EdgeCondition},
-    node::NodeDefinition,
+    connection::Connection, node::NodeDefinition,
 };
 
 /// Builder for constructing workflows.
@@ -245,8 +244,6 @@ impl WorkflowBuilder {
                 Ok(Connection {
                     from_node,
                     to_node,
-                    condition: EdgeCondition::Always,
-                    branch_key: None,
                     from_port: None,
                     to_port: None,
                 })

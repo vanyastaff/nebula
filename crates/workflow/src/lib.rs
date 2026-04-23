@@ -16,7 +16,7 @@
 //!
 //! - [`WorkflowDefinition`] — top-level workflow; carries nodes, connections, config, UI metadata.
 //! - [`NodeDefinition`] and [`ParamValue`] — individual steps and typed parameter values.
-//! - [`Connection`] and [`EdgeCondition`] — directed edges with conditional routing.
+//! - [`Connection`] — directed edges wired port-to-port (spec 28 port-driven routing).
 //! - [`DependencyGraph`] — `petgraph` wrapper; topological sort + per-level batching.
 //! - [`WorkflowBuilder`] — fluent, validated construction API.
 //! - [`validate_workflow`] — multi-error validator; **canon §10 requires this at activation**.
@@ -38,7 +38,7 @@ pub mod validate;
 pub mod version;
 
 pub use builder::WorkflowBuilder;
-pub use connection::{Connection, EdgeCondition, ErrorMatcher, ResultMatcher};
+pub use connection::Connection;
 pub use definition::{
     Annotation, CURRENT_SCHEMA_VERSION, CheckpointingConfig, ErrorStrategy, NodePosition,
     RetryConfig, TriggerDefinition, UiMetadata, Viewport, WorkflowConfig, WorkflowDefinition,

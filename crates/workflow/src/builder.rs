@@ -7,7 +7,7 @@ use nebula_core::{NodeKey, WorkflowId};
 
 use crate::{
     Version,
-    connection::{Connection, EdgeCondition},
+    connection::Connection,
     definition::{CURRENT_SCHEMA_VERSION, UiMetadata, WorkflowConfig, WorkflowDefinition},
     error::WorkflowError,
     graph::DependencyGraph,
@@ -77,23 +77,23 @@ impl WorkflowBuilder {
         self
     }
 
-    /// Add an unconditional connection between two nodes.
+    /// Add a default-port connection between two nodes.
     #[must_use]
     pub fn connect(mut self, from: NodeKey, to: NodeKey) -> Self {
         self.connections.push(Connection::new(from, to));
         self
     }
 
-    /// Add a conditional connection between two nodes.
+    /// Add a connection on a specific source output port (e.g. `"error"`, a
+    /// branch key such as `"true"`, or a Router port key).
+    ///
+    /// Replaces the old `connect_with_condition` — per spec 28 port-driven
+    /// routing, conditional edges are expressed by the port the upstream
+    /// action produced on, not by an `EdgeCondition` sidecar.
     #[must_use]
-    pub fn connect_with_condition(
-        mut self,
-        from: NodeKey,
-        to: NodeKey,
-        condition: EdgeCondition,
-    ) -> Self {
+    pub fn connect_via(mut self, from: NodeKey, from_port: impl Into<String>, to: NodeKey) -> Self {
         self.connections
-            .push(Connection::new(from, to).with_condition(condition));
+            .push(Connection::new(from, to).with_from_port(from_port));
         self
     }
 
