@@ -340,9 +340,10 @@ mod tests {
 
         let raw = inner.get("enc-oauth2-state").await.unwrap();
         let lossy = String::from_utf8_lossy(&raw.data);
+        let stored_len = raw.data.len();
         assert!(
             !lossy.contains(PLAINTEXT_ACCESS) && !lossy.contains(PLAINTEXT_REFRESH),
-            "inner row must not contain discoverable credential secrets, got: {lossy}"
+            "inner row must not contain discoverable credential secrets (stored bytes: {stored_len})"
         );
     }
 
