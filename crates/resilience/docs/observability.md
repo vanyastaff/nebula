@@ -80,10 +80,10 @@ pub enum CircuitState {
 For test assertions — records all events in memory:
 
 ```rust
-let sink = Arc::new(RecordingSink::new());
+let sink = RecordingSink::new();
 
 // Inject into CircuitBreaker
-let cb = CircuitBreaker::with_sink(config, sink.clone())?;
+let cb = CircuitBreaker::new(config)?.with_sink(sink.clone());
 
 // ... run operations ...
 
@@ -115,13 +115,14 @@ Use `event.kind()` to get the `ResilienceEventKind` from a `ResilienceEvent`.
 
 ## Injecting a Sink
 
-Currently `CircuitBreaker` accepts a sink via `with_sink()`. Other patterns use the
-sink at construction time where applicable.
+Sink injection is available on the pattern types that own their own observability
+(`CircuitBreaker`, `Bulkhead`, `RetryConfig`, `HedgeExecutor`, `AdaptiveHedgeExecutor`,
+`TimeoutExecutor`) and on `ResiliencePipeline::with_sink()` for pipeline-level timeout /
+rate-limit / load-shed events.
 
 ```rust
 use nebula_resilience::circuit_breaker::{CircuitBreaker, CircuitBreakerConfig};
 use nebula_resilience::sink::{MetricsSink, ResilienceEvent};
-use std::sync::Arc;
 
 struct PrometheusSink { /* ... */ }
 
@@ -139,8 +140,8 @@ impl MetricsSink for PrometheusSink {
     }
 }
 
-let sink = Arc::new(PrometheusSink { /* ... */ });
-let cb = CircuitBreaker::with_sink(CircuitBreakerConfig::default(), sink)?;
+let cb = CircuitBreaker::new(CircuitBreakerConfig::default())?
+    .with_sink(PrometheusSink { /* ... */ });
 ```
 
 ---
@@ -152,20 +153,17 @@ Complete observability setup for a production service:
 ```rust
 use nebula_resilience::circuit_breaker::{CircuitBreaker, CircuitBreakerConfig};
 use nebula_resilience::sink::{MetricsSink, RecordingSink, ResilienceEventKind};
-use std::sync::Arc;
 use std::time::Duration;
 
 // MetricsSink for structured events
-let sink = Arc::new(RecordingSink::new()); // or your custom impl
+let sink = RecordingSink::new(); // or your custom impl
 
-let cb = CircuitBreaker::with_sink(
-    CircuitBreakerConfig {
+let cb = CircuitBreaker::new(CircuitBreakerConfig {
         failure_threshold: 5,
         reset_timeout: Duration::from_secs(30),
         ..Default::default()
-    },
-    sink.clone(),
-)?;
+    })?
+    .with_sink(sink.clone());
 
 // After running operations, inspect
 let events = sink.events();

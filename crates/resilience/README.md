@@ -29,16 +29,16 @@ yet implemented.
 
 ## Public API
 
-- `ResiliencePipeline<E>` — composable pipeline builder: `.timeout()`, `.retry()`, `.circuit_breaker()`, `.bulkhead()`, `.rate_limit()`, `.fallback()`, `.hedge()`, `.build()`.
+- `ResiliencePipeline<E>` — composable pipeline: `.classifier()`, `.classify_errors()`, `.with_sink()`, `.timeout()`, `.retry()`, `.circuit_breaker()`, `.bulkhead()`, `.rate_limiter()` / `.rate_limiter_from()`, `.load_shed()`, then `.build()`. Hedging stays in the `hedge` module (no `.hedge()` builder step on the pipeline). For graceful degradation after the pipeline returns, use `ResiliencePipeline::call_with_fallback` (separate from the builder).
 - `CallError<E>` — wrapper error returned by all pipeline calls; no type erasure, no forced mapping.
 - `retry::RetryConfig`, `retry::BackoffConfig`, `retry::retry_with` — standalone retry with `Classify`-aware error filtering.
 - `circuit_breaker::CircuitBreaker`, `circuit_breaker::CircuitBreakerConfig` — half-open/open/closed state machine.
 - `bulkhead::Bulkhead`, `bulkhead::BulkheadConfig` — concurrency-limiting bulkhead.
 - `rate_limiter::RateLimiter` (+ optional `governor` feature for GCRA algorithm).
-- `timeout::timeout` — standalone timeout combinator.
-- `fallback::Fallback` — default-value fallback on failure.
-- `hedge::Hedge` — speculative execution (hedged requests).
-- `observe::ObservabilityHooks` — observability hooks for pipeline events.
+- `timeout::{timeout, TimeoutExecutor}` and `load_shed::{load_shed, load_shed_with_sink}` — standalone timeout / load-shed combinators.
+- `fallback::{FallbackStrategy, ValueFallback, FunctionFallback, CacheFallback, ChainFallback, PriorityFallback, FallbackOperation}` — graceful degradation strategies.
+- `hedge::{HedgeConfig, HedgeExecutor, AdaptiveHedgeExecutor}` — speculative execution (hedged requests).
+- `sink::{MetricsSink, ResilienceEvent, ResilienceEventKind, RecordingSink}` — observability hooks for pipeline and pattern events.
 
 ## Contract
 
@@ -57,7 +57,7 @@ yet implemented.
 See `docs/MATURITY.md` row for `nebula-resilience`.
 
 - API stability: `stable` — `ResiliencePipeline`, `RetryConfig`, `CircuitBreaker`, and `CallError` are in active use; benchmarks cover all seven patterns.
-- Observability hooks and `hedge` pattern are newer and may have minor API refinements.
+- `MetricsSink`-based observability hooks and hedge-related APIs are newer and may still get minor refinements.
 
 ## Related
 
@@ -70,10 +70,11 @@ See `docs/MATURITY.md` row for `nebula-resilience`.
 Extended documentation lives in `crates/resilience/docs/`:
 
 - `README.md` — overview and pattern guide
-- `PATTERNS.md` — per-pattern usage
+- `docs/README.md` — overview and feature matrix
 - `api-reference.md` — full API surface reference
 - `composition.md` — pipeline composition guide
 - `observability.md` — observability hooks
+- `gate.md` — cooperative shutdown barrier
 - `architecture.md` — internal architecture notes
 
 ```bash
