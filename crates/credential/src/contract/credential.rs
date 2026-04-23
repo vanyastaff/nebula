@@ -81,7 +81,7 @@ use crate::{
 ///     const KEY: &'static str = "slack_bot_token";
 ///
 ///     fn metadata() -> CredentialMetadata { /* ... */ }
-///     fn parameters() -> ValidSchema { /* ... */ }
+///     fn schema() -> ValidSchema { /* ... */ }
 ///     fn project(state: &SecretToken) -> SecretToken { state.clone() }
 ///
 ///     fn resolve(
@@ -98,7 +98,7 @@ use crate::{
 pub trait Credential: Send + Sync + 'static {
     /// Typed shape of the setup-form fields.
     ///
-    /// The canonical [`parameters()`](Credential::parameters) schema is
+    /// The canonical [`schema()`](Credential::schema) is
     /// auto-derived via `<Self::Input as HasSchema>::schema()`. Use
     /// [`FieldValues`] for legacy credentials that do not yet declare a
     /// typed input (the blanket [`HasSchema`](nebula_schema::HasSchema)
@@ -145,16 +145,29 @@ pub trait Credential: Send + Sync + 'static {
     where
         Self: Sized;
 
-    /// Parameter schema for the setup form.
+    /// Returns the schema for credential input parameters.
     ///
     /// The default implementation derives the schema from [`Self::Input`],
     /// which must implement [`HasSchema`](nebula_schema::HasSchema). Override
     /// only if the form layout must differ from the `Input` struct (rare).
-    fn parameters() -> ValidSchema
+    fn schema() -> ValidSchema
     where
         Self: Sized,
     {
         <Self::Input as nebula_schema::HasSchema>::schema()
+    }
+
+    /// Alias for backward compatibility.
+    ///
+    /// # Deprecated
+    ///
+    /// Use [`schema()`](Credential::schema) instead.
+    #[deprecated(since = "0.1.0", note = "use `schema()` instead")]
+    fn parameters() -> ValidSchema
+    where
+        Self: Sized,
+    {
+        Self::schema()
     }
 
     /// Extract consumer-facing auth material from stored state.

@@ -69,7 +69,7 @@ impl Credential for ApiKeyCredential {
             .key(nebula_core::credential_key!("api_key"))
             .name("API Key")
             .description("Static API key or bearer token for HTTP APIs.")
-            .schema(Self::parameters())
+            .schema(Self::schema())
             .pattern(crate::AuthPattern::SecretToken)
             .icon("key")
             .build()
@@ -143,7 +143,7 @@ mod tests {
 
     #[test]
     fn parameters_contains_server_and_api_key() {
-        let params = ApiKeyCredential::parameters();
+        let params = ApiKeyCredential::schema();
         assert!(params.fields().iter().any(|f| f.key().as_str() == "server"));
         assert!(
             params
@@ -156,7 +156,7 @@ mod tests {
 
     #[test]
     fn server_is_optional() {
-        let params = ApiKeyCredential::parameters();
+        let params = ApiKeyCredential::schema();
         let server = params
             .fields()
             .iter()

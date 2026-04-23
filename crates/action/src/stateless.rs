@@ -76,6 +76,15 @@ pub trait StatelessAction: Action {
     /// Output type produced on success (wrapped in [`ActionResult`]).
     type Output: Send + Sync;
 
+    /// Returns the schema for this action's input parameters.
+    /// Default: derives from `Input` via `HasSchema`.
+    fn schema() -> nebula_schema::ValidSchema
+    where
+        Self: Sized,
+    {
+        <Self::Input as nebula_schema::HasSchema>::schema()
+    }
+
     /// Execute the action with the given input and context.
     ///
     /// Returns [`ActionResult`] for flow control (Success, Skip, Branch, Wait, etc.)

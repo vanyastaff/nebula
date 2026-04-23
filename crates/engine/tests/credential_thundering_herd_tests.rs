@@ -54,7 +54,7 @@ impl Credential for ThunderingHerdCredential {
             nebula_core::credential_key!("thundering_herd_test"),
             "Thundering Herd Test",
             "Test credential for thundering herd prevention",
-            Self::parameters(),
+            Self::schema(),
             nebula_credential::AuthPattern::SecretToken,
         )
     }

@@ -312,6 +312,12 @@ impl ActionMetadata {
         self
     }
 
+    /// Terminal builder for API consistency with other metadata types.
+    #[must_use]
+    pub fn build(self) -> Self {
+        self
+    }
+
     /// Validate that this metadata update is version-compatible with `previous`.
     ///
     /// Delegates `key immutable / version monotonic / schema-break-requires-
