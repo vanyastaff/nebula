@@ -245,9 +245,8 @@ impl ActionRuntime {
     ///
     /// Returns [`RuntimeError::ActionNotFound`] if the key does not resolve to a
     /// registered action, [`RuntimeError::TriggerNotExecutable`] /
-    /// [`RuntimeError::ResourceNotExecutable`] /
-    /// [`RuntimeError::AgentNotSupportedYet`] if the key resolves to a handler
-    /// kind that is not executable through this runtime, or
+    /// [`RuntimeError::ResourceNotExecutable`] if the key resolves to a
+    /// handler kind that is not executable through this runtime, or
     /// [`RuntimeError::ActionError`] / [`RuntimeError::DataLimitExceeded`]
     /// if execution fails.
     pub async fn execute_action(
@@ -1832,17 +1831,6 @@ mod tests {
             1
         );
     }
-
-    // `AgentHandler` / `ActionHandler::Agent` arrive with the action-redesign
-    // work tracked in spec 27 (Wave 3). This test covers the rejection branch
-    // that fires when an agent handler is registered under the current
-    // engine, which does not dispatch `Agent` variants yet. Keep the body
-    // commented out until the variant exists in `nebula-action` so
-    // `cargo clippy -D warnings` stays green across the rest of the
-    // workspace.
-    //
-    // #[tokio::test]
-    // async fn agent_rejection_does_not_increment_execution_metrics() { ... }
 
     /// Counterpart to the rejection test: a successful stateless dispatch
     /// must observe the histogram and bump the executions counter. Pin

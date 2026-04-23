@@ -105,8 +105,6 @@ pub mod dispatch_reject_reason {
     pub const TRIGGER_NOT_EXECUTABLE: &str = "trigger_not_executable";
     /// `ActionHandler::Resource` cannot be executed through `ActionRuntime`.
     pub const RESOURCE_NOT_EXECUTABLE: &str = "resource_not_executable";
-    /// `ActionHandler::Agent` is not yet supported (Phase 9 work).
-    pub const AGENT_NOT_SUPPORTED: &str = "agent_not_supported";
     /// Unknown `ActionHandler` variant (`#[non_exhaustive]` guard).
     pub const UNKNOWN_VARIANT: &str = "unknown_variant";
 }

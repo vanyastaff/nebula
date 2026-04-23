@@ -482,10 +482,7 @@ mod tests {
     use nebula_core::DeclaresDependencies;
 
     use super::*;
-    use crate::{
-        action::Action,
-        testing::{TestContextBuilder, TestTriggerContext},
-    };
+    use crate::{TriggerRuntimeContext, action::Action, testing::TestContextBuilder};
 
     // ── TriggerActionAdapter tests ────────────────────────────────────────────
 
@@ -527,7 +524,7 @@ mod tests {
         }
     }
 
-    fn make_trigger_ctx() -> TestTriggerContext {
+    fn make_trigger_ctx() -> TriggerRuntimeContext {
         TestContextBuilder::new().build_trigger().0
     }
 

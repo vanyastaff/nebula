@@ -40,8 +40,8 @@ pub use crate::{
     },
     stateless::{FnStatelessAction, StatelessAction, StatelessActionAdapter, stateless_fn},
     testing::{
-        SpyEmitter, SpyLogger, SpyScheduler, StatefulTestHarness, TestActionContext,
-        TestContextBuilder, TestTriggerContext, TriggerTestHarness,
+        SpyEmitter, SpyLogger, SpyScheduler, StatefulTestHarness, TestContextBuilder,
+        TriggerTestHarness,
     },
     trigger::{TriggerAction, TriggerActionAdapter, TriggerEvent, TriggerEventOutcome},
     validation::{

@@ -32,17 +32,6 @@ use crate::{
     trigger::TriggerAction,
 };
 
-/// Concrete context returned by [`TestContextBuilder::build`].
-///
-/// Spec 23 keeps action contexts as umbrella traits — tests still need a
-/// concrete type, and it is the canonical [`ActionRuntimeContext`]. This
-/// alias preserves the historic `TestActionContext` name used by many
-/// test suites.
-pub type TestActionContext = ActionRuntimeContext;
-
-/// Concrete context returned by [`TestContextBuilder::build_trigger`].
-pub type TestTriggerContext = TriggerRuntimeContext;
-
 /// Factory that produces a fresh boxed resource on each call.
 ///
 /// Stored instead of a raw `Box<dyn Any>` so `acquire()` can hand out

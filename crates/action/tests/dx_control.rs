@@ -18,10 +18,10 @@
 use std::sync::Arc;
 
 use nebula_action::{
-    Action, ActionCategory, ActionError, ActionMetadata, ActionOutput, ActionResult, ControlAction,
-    ControlActionAdapter, ControlInput, ControlOutcome, OutputPort, StatelessHandler,
-    TerminationReason, ValidationReason,
-    testing::{TestActionContext as ActionContext, TestContextBuilder},
+    Action, ActionCategory, ActionError, ActionMetadata, ActionOutput, ActionResult,
+    ActionRuntimeContext as ActionContext, ControlAction, ControlActionAdapter, ControlInput,
+    ControlOutcome, OutputPort, StatelessHandler, TerminationReason, ValidationReason,
+    testing::TestContextBuilder,
 };
 use nebula_core::{DeclaresDependencies, action_key};
 

@@ -15,9 +15,9 @@
 use std::{collections::HashMap, mem::size_of, time::Duration};
 
 use nebula_action::{
-    ActionError, ActionHandler, ActionMetadata, ActionOutput, ActionResult, BinaryData, Cost,
-    DeferredOutput, OutputEnvelope, OutputMeta, Progress, StreamOutput, Timing, TokenUsage,
-    TriggerEventOutcome, WebhookRequest, testing::TestActionContext,
+    ActionError, ActionHandler, ActionMetadata, ActionOutput, ActionResult, ActionRuntimeContext,
+    BinaryData, Cost, DeferredOutput, OutputEnvelope, OutputMeta, Progress, StreamOutput, Timing,
+    TokenUsage, TriggerEventOutcome, WebhookRequest,
 };
 
 #[test]
@@ -122,7 +122,7 @@ fn print_type_size_baseline() {
             "ActionOutput<Value>",
             size_of::<ActionOutput<serde_json::Value>>(),
         ),
-        ("TestActionContext", size_of::<TestActionContext>()),
+        ("ActionRuntimeContext", size_of::<ActionRuntimeContext>()),
         ("ActionMetadata", size_of::<ActionMetadata>()),
         ("ActionError", size_of::<ActionError>()),
         ("ActionHandler", size_of::<ActionHandler>()),

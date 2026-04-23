@@ -72,19 +72,6 @@ pub enum RuntimeError {
         key: String,
     },
 
-    /// The action key resolves to an agent action (Phase 9), which is not
-    /// yet supported by the runtime.
-    #[classify(
-        category = "unsupported",
-        code = "RUNTIME:AGENT_NOT_SUPPORTED",
-        retryable = false
-    )]
-    #[error("agent action '{key}' is not yet supported (Phase 9 work)")]
-    AgentNotSupportedYet {
-        /// The action key that was looked up.
-        key: String,
-    },
-
     /// Internal runtime error.
     #[classify(category = "internal", code = "RUNTIME:INTERNAL")]
     #[error("runtime error: {0}")]

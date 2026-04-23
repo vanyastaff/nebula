@@ -210,7 +210,7 @@ mod tests {
     use nebula_core::DeclaresDependencies;
 
     use super::*;
-    use crate::testing::{TestActionContext, TestContextBuilder};
+    use crate::{ActionRuntimeContext, testing::TestContextBuilder};
 
     struct MockResourceAction {
         meta: ActionMetadata,
@@ -255,7 +255,7 @@ mod tests {
         }
     }
 
-    fn make_ctx() -> TestActionContext {
+    fn make_ctx() -> ActionRuntimeContext {
         TestContextBuilder::new().build()
     }
 

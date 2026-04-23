@@ -15,8 +15,8 @@ use std::sync::{
 };
 
 use nebula_action::{
-    Action, ActionError, ActionMetadata, ResourceAction, ResourceActionAdapter, ResourceHandler,
-    TestContextBuilder, testing::TestActionContext as ActionContext,
+    Action, ActionError, ActionMetadata, ActionRuntimeContext, ResourceAction,
+    ResourceActionAdapter, ResourceHandler, TestContextBuilder,
 };
 use nebula_core::DeclaresDependencies;
 
@@ -91,7 +91,7 @@ async fn resource_action_configure_cleanup_roundtrip() {
     };
     let adapter = ResourceActionAdapter::new(action);
     let handler: Arc<dyn ResourceHandler> = Arc::new(adapter);
-    let ctx: ActionContext = TestContextBuilder::minimal().build();
+    let ctx: ActionRuntimeContext = TestContextBuilder::minimal().build();
 
     // configure: boxes the typed PoolHandle as dyn Any
     let boxed = handler

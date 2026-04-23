@@ -397,9 +397,9 @@ mod tests {
     use serde::{Deserialize, Serialize};
 
     use super::*;
-    use crate::testing::{TestActionContext, TestContextBuilder};
+    use crate::{ActionRuntimeContext, testing::TestContextBuilder};
 
-    fn make_ctx() -> TestActionContext {
+    fn make_ctx() -> ActionRuntimeContext {
         TestContextBuilder::new().build()
     }
 

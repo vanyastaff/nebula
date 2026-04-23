@@ -52,14 +52,6 @@ impl IdempotencyKey {
         Self(format!("{execution_id}:{node_key}:{iteration}:{attempt}"))
     }
 
-    /// Deprecated alias for [`for_attempt`](Self::for_attempt); kept while
-    /// callers migrate.
-    #[must_use]
-    #[deprecated(note = "use IdempotencyKey::for_attempt")]
-    pub fn generate(execution_id: ExecutionId, node_key: NodeKey, attempt: u32) -> Self {
-        Self::for_attempt(execution_id, node_key, attempt)
-    }
-
     /// Append an author-supplied business dedup suffix — the value returned by
     /// `StatefulAction::idempotency_key(&state)`. Format: `{base}:{business}`.
     ///

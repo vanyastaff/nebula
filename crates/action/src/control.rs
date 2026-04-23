@@ -542,11 +542,12 @@ mod tests {
 
     use super::*;
     use crate::{
+        ActionRuntimeContext,
         port::{OutputPort, default_input_ports, default_output_ports},
-        testing::{TestActionContext, TestContextBuilder},
+        testing::TestContextBuilder,
     };
 
-    fn make_ctx() -> TestActionContext {
+    fn make_ctx() -> ActionRuntimeContext {
         TestContextBuilder::new().build()
     }
 

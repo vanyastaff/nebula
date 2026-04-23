@@ -664,12 +664,11 @@ mod tests {
 
     use super::*;
     use crate::{
-        output::ActionOutput,
-        result::BreakReason,
-        testing::{TestActionContext, TestContextBuilder},
+        ActionRuntimeContext, output::ActionOutput, result::BreakReason,
+        testing::TestContextBuilder,
     };
 
-    fn make_ctx() -> TestActionContext {
+    fn make_ctx() -> ActionRuntimeContext {
         TestContextBuilder::new().build()
     }
 

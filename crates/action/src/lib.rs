@@ -135,8 +135,8 @@ pub use stateless::{
     StatelessHandler, stateless_ctx_fn, stateless_fn,
 };
 pub use testing::{
-    SpyEmitter, SpyLogger, SpyScheduler, StatefulTestHarness, TestActionContext,
-    TestContextBuilder, TestTriggerContext, TriggerTestHarness,
+    SpyEmitter, SpyLogger, SpyScheduler, StatefulTestHarness, TestContextBuilder,
+    TriggerTestHarness,
 };
 pub use trigger::{
     TriggerAction, TriggerActionAdapter, TriggerEvent, TriggerEventOutcome, TriggerHandler,
