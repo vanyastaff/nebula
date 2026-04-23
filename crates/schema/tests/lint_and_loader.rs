@@ -473,3 +473,201 @@ async fn load_dynamic_records_blank_loader_emits_missing_config() {
         .expect_err("blank loader config must fail");
     assert_eq!(error.code, "loader.missing_config");
 }
+
+#[test]
+fn loader_dependency_cycle_detected() {
+    // region depends_on cloud_provider, cloud_provider depends_on region -> cycle
+    let schema = Schema::builder()
+        .add(
+            Field::select("region")
+                .dynamic()
+                .loader("region_loader")
+                .depends_on(FieldPath::parse("cloud_provider").unwrap()),
+        )
+        .add(
+            Field::select("cloud_provider")
+                .dynamic()
+                .loader("cloud_loader")
+                .depends_on(FieldPath::parse("region").unwrap()),
+        )
+        .build()
+        .expect_err("circular dependency must fail build");
+
+    assert!(
+        schema.errors().any(|e| e.code == "loader_dependency_cycle"),
+        "expected loader_dependency_cycle error, got: {:?}",
+        schema
+            .errors()
+            .map(|e| (&e.code, e.path.to_string()))
+            .collect::<Vec<_>>()
+    );
+}
+
+#[test]
+fn loader_dependency_no_cycle() {
+    // cloud_provider has no depends_on, region depends_on cloud_provider -> no cycle
+    // The build itself succeeds without a loader_dependency_cycle error.
+    let result = Schema::builder()
+        .add(
+            Field::select("cloud_provider")
+                .dynamic()
+                .loader("cloud_loader"),
+        )
+        .add(
+            Field::select("region")
+                .dynamic()
+                .loader("region_loader")
+                .depends_on(FieldPath::parse("cloud_provider").unwrap()),
+        )
+        .build();
+
+    assert!(
+        result.is_ok(),
+        "acyclic loader graph should build successfully, got: {:?}",
+        result.as_ref().err().map(|r| r
+            .errors()
+            .map(|e| (&e.code, e.path.to_string()))
+            .collect::<Vec<_>>())
+    );
+}
+
+#[test]
+fn loader_dependency_transitive_cycle() {
+    // A depends_on B, B depends_on C, C depends_on A -> transitive cycle
+    let schema = Schema::builder()
+        .add(
+            Field::select("a")
+                .dynamic()
+                .loader("loader_a")
+                .depends_on(FieldPath::parse("b").unwrap()),
+        )
+        .add(
+            Field::select("b")
+                .dynamic()
+                .loader("loader_b")
+                .depends_on(FieldPath::parse("c").unwrap()),
+        )
+        .add(
+            Field::select("c")
+                .dynamic()
+                .loader("loader_c")
+                .depends_on(FieldPath::parse("a").unwrap()),
+        )
+        .build()
+        .expect_err("transitive circular dependency must fail build");
+
+    assert!(
+        schema.errors().any(|e| e.code == "loader_dependency_cycle"),
+        "expected loader_dependency_cycle error for transitive cycle, got: {:?}",
+        schema
+            .errors()
+            .map(|e| (&e.code, e.path.to_string()))
+            .collect::<Vec<_>>()
+    );
+}
+
+#[test]
+fn select_options_consistent_types_ok() {
+    // All string options — no warning expected.
+    let schema = raw_schema(vec![
+        Field::select("color")
+            .option(json!("red"), "Red")
+            .option(json!("green"), "Green")
+            .option(json!("blue"), "Blue")
+            .into(),
+    ]);
+
+    let report = schema.lint();
+    assert!(
+        !has_warning(&report, "option.type_inconsistent", "color"),
+        "consistent string options should not produce a warning, got: {:?}",
+        report
+            .warnings()
+            .map(|e| (&e.code, e.path.to_string()))
+            .collect::<Vec<_>>()
+    );
+}
+
+#[test]
+fn select_options_mixed_types_warns() {
+    // Mix of string and number option values — should warn.
+    let schema = raw_schema(vec![
+        Field::select("mixed")
+            .option(json!("alpha"), "Alpha")
+            .option(json!(1), "One")
+            .into(),
+    ]);
+
+    let report = schema.lint();
+    assert!(
+        has_warning(&report, "option.type_inconsistent", "mixed"),
+        "mixed-type options should produce option.type_inconsistent warning, got: {:?}",
+        report
+            .warnings()
+            .map(|e| (&e.code, e.path.to_string()))
+            .collect::<Vec<_>>()
+    );
+}
+
+#[test]
+fn select_options_complex_value_without_multiple_warns() {
+    // Non-multiple select with an array option value — should warn.
+    let schema = raw_schema(vec![
+        Field::select("tags")
+            .option(json!(["a", "b"]), "Tags A+B")
+            .option(json!(["c"]), "Tag C")
+            .into(),
+    ]);
+
+    let report = schema.lint();
+    assert!(
+        has_warning(&report, "option.type_inconsistent", "tags"),
+        "non-multiple select with array option value should warn, got: {:?}",
+        report
+            .warnings()
+            .map(|e| (&e.code, e.path.to_string()))
+            .collect::<Vec<_>>()
+    );
+}
+
+#[test]
+fn select_options_multiple_with_array_values_ok() {
+    // Multiple select with array option values — consistent type, no warning expected.
+    let schema = raw_schema(vec![
+        Field::select("tags")
+            .option(json!(["a", "b"]), "Tags A+B")
+            .option(json!(["c", "d"]), "Tags C+D")
+            .multiple()
+            .into(),
+    ]);
+
+    let report = schema.lint();
+    assert!(
+        !has_warning(&report, "option.type_inconsistent", "tags"),
+        "multiple select with array option values should not produce option.type_inconsistent warning, got: {:?}",
+        report
+            .warnings()
+            .map(|e| (&e.code, e.path.to_string()))
+            .collect::<Vec<_>>()
+    );
+}
+
+#[test]
+fn select_single_option_complex_type_warns() {
+    // Non-multiple select with a single option whose value is an array — should warn.
+    let schema = raw_schema(vec![
+        Field::select("data")
+            .option(json!(["x", "y"]), "X and Y")
+            .into(),
+    ]);
+
+    let report = schema.lint();
+    assert!(
+        has_warning(&report, "option.type_inconsistent", "data"),
+        "non-multiple select with single complex option value should warn, got: {:?}",
+        report
+            .warnings()
+            .map(|e| (&e.code, e.path.to_string()))
+            .collect::<Vec<_>>()
+    );
+}

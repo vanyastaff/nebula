@@ -301,6 +301,8 @@ pub const STANDARD_CODES: &[&str] = &[
     // field resolution
     "field.not_found",
     "field.type_mismatch",
+    // default value type mismatch
+    "default.type_mismatch",
     // build-time
     "invalid_key",
     "duplicate_key",
@@ -308,12 +310,15 @@ pub const STANDARD_CODES: &[&str] = &[
     "self_dependency",
     "visibility_cycle",
     "required_cycle",
+    "loader_dependency_cycle",
     "rule.contradictory",
     "missing_item_schema",
     "invalid_default_variant",
     "duplicate_variant",
     "schema.index_overflow",
     "schema.depth_limit",
+    // option lint
+    "option.type_inconsistent",
     // warnings
     "rule.incompatible",
     "notice.misuse",
