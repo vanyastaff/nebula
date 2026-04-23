@@ -24,7 +24,7 @@ Pattern inspiration: *Ports & Adapters / Hexagonal Architecture* — action auth
 **Trait family (core)**
 
 - `Action` — base trait: `metadata() -> &ActionMetadata`.
-- `StatelessAction` — pure, stateless single-execution. Associated types: `Input`, `Output`.
+- `StatelessAction` — pure, stateless single-execution. Associated types: `Input`, `Output`. Methods: `execute()`, `schema()`.
 - `StatefulAction` — iterative with persistent state; `Continue`/`Break` flow control.
 - `TriggerAction` — workflow starter (start/stop); lives outside the execution graph.
 - `ResourceAction` — graph-level DI; configures/tears down a scoped resource for downstream nodes.

@@ -18,7 +18,7 @@
 //!
 //! ## Key types
 //!
-//! - `Credential` — unified trait: `resolve()`, `refresh()`, `test()`, `project()`.
+//! - `Credential` — unified trait: `resolve()`, `refresh()`, `test()`, `project()`, `schema()`.
 //! - `CredentialMetadata` — static type descriptor: key, name, schema, `AuthPattern`.
 //! - `CredentialRecord` — runtime operational state (created_at, version, expiry, tags). Previously
 //!   named `Metadata` (ADR 0004).

@@ -31,8 +31,10 @@ The [credential architecture cleanup design](../../docs/superpowers/specs/2026-0
 
 ## Public API
 
-- `Credential` — unified trait: `resolve()`, `refresh()`, `test()`, `project()`.
+- `Credential` — unified trait: `resolve()`, `refresh()`, `test()`, `project()`, `schema()`.
 - `CredentialMetadata`, `CredentialMetadataBuilder` — static type descriptor: key, name, schema (`ValidSchema`), `AuthPattern`.
+
+> **Deprecation:** `Credential::parameters()` is deprecated in favor of `schema()` for naming consistency with `Resource::schema()` and `StatelessAction::schema()`.
 - `CredentialRecord` — runtime operational state (created_at, version, expiry, tags); non-sensitive domain representation. Previously named `Metadata` (ADR 0004).
 - `AuthScheme`, `AuthPattern` — open scheme trait and classification enum owned by this crate.
 - 12 built-in scheme types: `SecretToken`, `IdentityPassword`, `OAuth2Token`, `KeyPair`, `Certificate`, `SigningKey`, `FederatedAssertion`, `ChallengeSecret`, `OtpSeed`, `ConnectionUri`, `InstanceBinding`, `SharedKey`.

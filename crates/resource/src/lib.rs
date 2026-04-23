@@ -12,7 +12,7 @@
 //!
 //! | Type | Purpose |
 //! |------|---------|
-//! | `Resource` | Core trait — 5 associated types, 4 lifecycle methods |
+//! | `Resource` | Core trait — 5 associated types, 5 core methods |
 //! | `ResourceHandle` | RAII lease handle with Owned/Guarded/Shared modes |
 //! | `Manager` | Central registry with acquire dispatch and shutdown |
 //! | `ReleaseQueue` | Background worker pool for async cleanup (best-effort on crash) |

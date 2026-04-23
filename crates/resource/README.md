@@ -15,15 +15,16 @@ External connections — database pools, HTTP clients, message brokers — are a
 
 ## Role
 
-**Bulkhead Pool** (Release It! ch "Stability Patterns — Bulkhead"). Isolates resource exhaustion per topology so one depleted pool cannot cascade to unrelated paths. Seven named topologies cover the full integration space: `Pooled`, `Resident`, `Service`, `Transport`, `Exclusive`, `EventSource`, `Daemon`. The `Resource` trait declares five associated types and four lifecycle methods; topology traits add pool-specific recycle and broken-instance decisions.
+**Bulkhead Pool** (Release It! ch "Stability Patterns — Bulkhead"). Isolates resource exhaustion per topology so one depleted pool cannot cascade to unrelated paths. Seven named topologies cover the full integration space: `Pooled`, `Resident`, `Service`, `Transport`, `Exclusive`, `EventSource`, `Daemon`. The `Resource` trait declares five associated types and five core methods; topology traits add pool-specific recycle and broken-instance decisions.
 
 ## Public API
 
-- `Resource` — core trait: 5 associated types (`Config`, `Runtime`, `Lease`, `Error`, `Credential`), 4 lifecycle methods (`create`, `check`, `shutdown`, `destroy`).
+- `Resource` — core trait: 5 associated types (`Config`, `Runtime`, `Lease`, `Error`, `Credential`), 5 core methods (`create`, `check`, `shutdown`, `destroy`, `schema()`).
 - `ResourceHandle` — RAII lease handle with `Owned`/`Guarded`/`Shared` modes; deref to lease type, release on drop.
 - `Manager`, `ManagerConfig`, `RegisterOptions` — central registry with acquire dispatch and shutdown coordination.
 - `Registry`, `AnyManagedResource` — type-erased storage for registered resource instances.
 - `ResourceMetadata` — static descriptor: key, name, description, tags.
+- `ResourceMetadataBuilder` — fluent builder for `ResourceMetadata` via `.with_schema()`, `.with_version()`, `.build()`.
 - `Cell` — lock-free `ArcSwap`-based cell for resident topologies.
 - `ReleaseQueue` — background worker pool for async cleanup. Drain on crash is best-effort; see §11.4 canon note.
 - `DrainTimeoutPolicy` — policy controlling drain operation timeout.
