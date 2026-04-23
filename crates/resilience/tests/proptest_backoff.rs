@@ -340,13 +340,13 @@ proptest! {
 /// Replicate the deterministic seeded-jitter computation from `apply_jitter_full`
 /// to verify invariants without depending on the private function.
 fn seeded_jitter_delay(delay: Duration, factor: f64, seed: u64, attempt: u32) -> Duration {
-    if !(factor > 0.0) {
+    if factor.partial_cmp(&0.0).is_none_or(|o| !o.is_gt()) {
         return delay;
     }
     let base = delay.as_secs_f64();
     let clamped_factor = factor.min(1.0);
     let rand_val = fastrand::Rng::with_seed(seed.wrapping_add(u64::from(attempt))).f64();
-    let total = base + clamped_factor * base * rand_val;
+    let total = (clamped_factor * base).mul_add(rand_val, base);
     if !total.is_finite() {
         return delay;
     }

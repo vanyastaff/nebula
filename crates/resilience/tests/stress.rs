@@ -153,8 +153,6 @@ async fn stress_circuit_breaker_concurrent_transitions() {
                 Err(CallError::Operation(_)) => {
                     failures.fetch_add(1, Ordering::Relaxed);
                 },
-                // HalfOpen slot exhaustion — acceptable.
-                Err(CallError::BulkheadFull) => {},
                 Err(other) => panic!("unexpected error: {other:?}"),
             }
         }));
