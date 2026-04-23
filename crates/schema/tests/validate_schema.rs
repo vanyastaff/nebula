@@ -116,6 +116,28 @@ fn expression_in_explicit_forbidden_string_emits_error() {
 }
 
 #[test]
+fn mode_variant_empty_rejects_expression_in_placeholder() {
+    let schema = Schema::builder()
+        .add(
+            Field::mode(fk("m"))
+                .variant_empty("none", "None")
+                .default_variant("none"),
+        )
+        .build()
+        .unwrap();
+    let values = FieldValues::from_json(json!({
+        "m": { "mode": "none", "value": "{{ $x }}" }
+    }))
+    .unwrap();
+    let report = schema.validate(&values).unwrap_err();
+    assert!(
+        report.errors().any(|e| e.code == "expression.forbidden"),
+        "expected expression.forbidden, got: {:?}",
+        report.errors().map(|e| &e.code).collect::<Vec<_>>()
+    );
+}
+
+#[test]
 fn computed_field_literal_emits_expression_required() {
     let schema = Schema::builder()
         .add(Field::computed(fk("derived")))

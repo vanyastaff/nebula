@@ -11,8 +11,8 @@ Dense notes mined from official docs, Nomicon, RFC clusters, Tokio/async books, 
 ## Files (reading hints)
 
 
-| File                                                                                               | Focus                                                                       |
-| -------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------- |
+| File                                                                                             | Focus                                                                       |
+| ------------------------------------------------------------------------------------------------ | --------------------------------------------------------------------------- |
 | [cluster-01-book-examples-std.md](cluster-01-book-examples-std.md)                               | Book, RBE, std, style, edition, error codes — dense bullets + `[source: …]` |
 | [cluster-02-nomicon-unsafe-rfcs.md](cluster-02-nomicon-unsafe-rfcs.md)                           | Nomicon, unsafe guidelines, RFC/dev-guide excerpts, modern RFCs             |
 | [cluster-03-cargo-rustc.md](cluster-03-cargo-rustc.md)                                           | Cargo, rustc, profiles, features                                            |
@@ -31,4 +31,3 @@ Dense notes mined from official docs, Nomicon, RFC clusters, Tokio/async books, 
 - Prefer the **numbered guide** (`../README.md`) for **actionable rule IDs** and PR checklist; use **research/** when you need **extra citations**, error-code patterns (E0xxx), or ecosystem specifics.
 - Do not treat blog excerpts as normative — verify against official docs when behavior matters.
 - For local environment/bootstrap commands, treat `docs/dev-setup.md` as the source of truth; research cluster snippets are supplementary.
-

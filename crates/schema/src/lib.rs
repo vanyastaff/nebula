@@ -162,10 +162,44 @@ pub use error::{
     STANDARD_CODES, Severity, ValidationError, ValidationErrorBuilder, ValidationReport,
 };
 pub use expression::{Expression, ExpressionAst, ExpressionContext};
+/// Discriminated field: one of several payload shapes (auth scheme, body kind, etc.).
+///
+/// # JSON wire format
+///
+/// A mode value is a JSON object with:
+///
+/// - **`mode`**: the variant’s string key.
+/// - **`value`** (optional): the payload for that variant.
+///
+/// When `value` is present, it matches the `field` you pass to [`ModeField::variant`]. The
+/// shape depends on that child field:
+///
+/// - If the child is an [`ObjectField`], `value` is a JSON object whose keys are the nested
+///   fields (each key must be a valid [`FieldKey`] string).
+/// - If the child is a [`ListField`], `value` is a **JSON array** of list items. There is no
+///   outer wrapper key around the list: each array element is validated with the `item`
+///   schema, and that schema’s outer `Field` key (if the item is an `ObjectField`) is not
+///   re-emitted as an extra wrapper in the wire.
+/// - For scalar leaf families, `value` is the JSON the field type expects, for example
+///   [`StringField`], [`SecretField`], [`CodeField`], [`NumberField`], [`BooleanField`],
+///   [`SelectField`], and [`FileField`] (per-field options, such as `multiple`, apply as
+///   usual).
+///
+/// Integrators and UI authors should treat a JSON object with `"mode"` and optional `"value"`
+/// keys as the standard envelope, with the `value` kind determined by the selected variant’s
+/// payload field type.
+///
+/// # Empty / no-payload variants
+///
+/// Variants with no user-facing data can use [`ModeField::variant_empty`], which stores a
+/// hidden string placeholder under a stable key ([`ModeField::EMPTY_PLACEHOLDER_KEY`]). When
+/// `value` is omitted, validators still accept the input if the only payload fields are hidden
+/// and non-required.
+pub use field::ModeField;
 pub use field::{
     BooleanField, CodeField, ComputedField, ComputedReturn, DynamicField, Field, FileField,
-    ListField, ModeField, ModeVariant, NoticeField, NoticeSeverity, NumberField, ObjectField,
-    SecretField, SelectField, StringField,
+    ListField, ModeVariant, NoticeField, NoticeSeverity, NumberField, ObjectField, SecretField,
+    SelectField, StringField,
 };
 pub use has_schema::{HasSchema, HasSelectOptions};
 pub use input_hint::InputHint;
