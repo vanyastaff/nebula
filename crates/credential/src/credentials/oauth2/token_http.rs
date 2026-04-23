@@ -49,7 +49,8 @@ pub enum TokenHttpError {
 
 /// Returns a shared [`reqwest::Client`] with ADR-0031 policy for OAuth2 **token** calls
 /// (one process-wide instance for connection pooling and TLS session reuse).
-/// The builder configuration is static; a failing [`reqwest::Client::build`] is treated as a
+/// The builder configuration is static; a failing [`build`](reqwest::ClientBuilder::build) on
+/// the [`ClientBuilder`](reqwest::ClientBuilder) chain is treated as a
 /// programmer error and panics (same category as a broken `reqwest` install).
 /// Callers should not apply more permissive redirect/timeout/body policy on this client.
 pub fn oauth_token_http_client() -> &'static reqwest::Client {
