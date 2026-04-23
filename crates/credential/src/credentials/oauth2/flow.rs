@@ -17,24 +17,11 @@ use zeroize::Zeroizing;
 use super::{
     config::{AuthStyle, OAuth2Config},
     credential::OAuth2State,
+    token_http::{
+        OAUTH_TOKEN_HTTP_MAX_RESPONSE_BYTES, oauth_token_http_client, read_token_response_limited,
+    },
 };
 use crate::{SecretString, error::CredentialError};
-
-/// HTTP request timeout for OAuth2 token exchanges.
-const HTTP_TIMEOUT: Duration = Duration::from_secs(10);
-
-/// Returns a shared `reqwest::Client` with the standard timeout.
-///
-/// Lazy-initialized via `OnceLock` so the TLS stack is set up once.
-fn http_client() -> &'static reqwest::Client {
-    static CLIENT: std::sync::OnceLock<reqwest::Client> = std::sync::OnceLock::new();
-    CLIENT.get_or_init(|| {
-        reqwest::Client::builder()
-            .timeout(HTTP_TIMEOUT)
-            .build()
-            .expect("failed to build HTTP client")
-    })
-}
 
 /// Exchange client credentials for an access token (Client Credentials grant).
 ///
@@ -51,7 +38,7 @@ pub(crate) async fn exchange_client_credentials(
     client_id: &str,
     client_secret: &str,
 ) -> Result<OAuth2State, CredentialError> {
-    let client = http_client();
+    let client = oauth_token_http_client();
 
     let scope_joined: Option<String> = (!config.scopes.is_empty()).then(|| config.scopes.join(" "));
     let mut form: Vec<(&str, &str)> = vec![("grant_type", "client_credentials")];
@@ -118,7 +105,7 @@ pub(crate) async fn exchange_authorization_code(
     code_verifier: &str,
     redirect_uri: &str,
 ) -> Result<OAuth2State, CredentialError> {
-    let client = http_client();
+    let client = oauth_token_http_client();
 
     let form = compose_auth_code_form(
         code,
@@ -219,7 +206,7 @@ pub(crate) async fn request_device_code(
     config: &OAuth2Config,
     client_id: &str,
 ) -> Result<DeviceCodeResponse, CredentialError> {
-    let client = http_client();
+    let client = oauth_token_http_client();
 
     let scope_joined: Option<String> = (!config.scopes.is_empty()).then(|| config.scopes.join(" "));
     let mut form: Vec<(&str, &str)> = vec![("client_id", client_id)];
@@ -295,7 +282,7 @@ pub(crate) async fn poll_device_code(
 ) -> Result<DevicePollStatus, CredentialError> {
     tokio::time::sleep(Duration::from_secs(interval_secs)).await;
 
-    let client = http_client();
+    let client = oauth_token_http_client();
 
     let mut form: Vec<(&str, &str)> = vec![
         ("grant_type", "urn:ietf:params:oauth:grant-type:device_code"),
@@ -401,7 +388,7 @@ pub(crate) async fn refresh_token(
         form.push(("scope", s));
     }
 
-    let client = http_client();
+    let client = oauth_token_http_client();
     let mut req = client.post(&config.token_url);
 
     match config.auth_style {
@@ -477,9 +464,9 @@ async fn parse_token_response(resp: reqwest::Response) -> Result<Value, Credenti
             "token endpoint returned {status}: {summary}"
         )));
     }
-    resp.json::<Value>()
+    read_token_response_limited(resp, OAUTH_TOKEN_HTTP_MAX_RESPONSE_BYTES)
         .await
-        .map_err(|e| provider_error(format!("failed to parse token response: {e}")))
+        .map_err(|e| provider_error(e.to_string()))
 }
 
 /// Build an [`OAuth2State`] from a token endpoint JSON response.
