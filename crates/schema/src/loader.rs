@@ -33,7 +33,7 @@ pub type LoaderFuture<T> =
 /// Context passed to runtime loaders.
 #[derive(Debug, Clone)]
 pub struct LoaderContext {
-    /// Key of the field currently requesting dynamic data.
+    /// Key or schema path of the field currently requesting dynamic data.
     pub field_key: String,
     /// Current runtime values at call time.
     pub values: FieldValues,
@@ -125,6 +125,25 @@ fn redact_secrets_in_value_for_loader(field: &Field, value: &mut FieldValue) {
                 return;
             };
             redact_secrets_in_value_for_loader(&var.field, mv.as_mut());
+        },
+        (Field::Mode(mode), FieldValue::Object(map)) => {
+            let Ok(mode_selector_key) = FieldKey::new("mode") else {
+                return;
+            };
+            let Ok(payload_key) = FieldKey::new("value") else {
+                return;
+            };
+            let Some(FieldValue::Literal(Json::String(mode_key))) = map.get(&mode_selector_key)
+            else {
+                return;
+            };
+            let Some(var) = mode.variants.iter().find(|v| v.key == mode_key.as_str()) else {
+                return;
+            };
+            let Some(mv) = map.get_mut(&payload_key) else {
+                return;
+            };
+            redact_secrets_in_value_for_loader(&var.field, mv);
         },
         _ => {},
     }
@@ -225,13 +244,16 @@ pub type OptionLoader = Loader<SelectOption>;
 /// Loader returning dynamic record payloads.
 pub type RecordLoader = Loader<Value>;
 
-/// Build a single-key `FieldPath` from a `LoaderContext::field_key` string.
-/// Falls back to root if the key is not a valid `FieldKey`.
+/// Build a `FieldPath` from a `LoaderContext::field_key` string.
+///
+/// Falls back to root if the string is not a valid schema path.
 fn field_path_from_key(key: &str) -> FieldPath {
-    FieldKey::new(key).map_or_else(
-        |_| FieldPath::root(),
-        |fk| FieldPath::root().join(PathSegment::Key(fk)),
-    )
+    FieldPath::parse(key).unwrap_or_else(|_| {
+        FieldKey::new(key).map_or_else(
+            |_| FieldPath::root(),
+            |fk| FieldPath::root().join(PathSegment::Key(fk)),
+        )
+    })
 }
 
 /// Use the path from a loader-returned error if it's non-root, otherwise fall
@@ -531,15 +553,17 @@ mod tests {
         .expect("values");
         let ctx = LoaderContext::new("k", values).with_secrets_redacted(&schema);
         let auth = ctx.values.get_by_str("auth").expect("auth");
-        let FieldValue::Mode { mode, value } = auth else {
-            panic!("expected mode, got {auth:?}");
+        let FieldValue::Object(map) = auth else {
+            panic!("expected object envelope, got {auth:?}");
         };
-        assert_eq!(mode.as_str(), "oauth");
-        let Some(inner) = value else {
-            panic!("expected mode payload, got {auth:?}");
+        let mode = map.get(&k("mode")).expect("mode");
+        let FieldValue::Literal(Json::String(mode_key)) = mode else {
+            panic!("expected mode literal, got {mode:?}");
         };
-        let FieldValue::Object(m) = inner.as_ref() else {
-            panic!("expected object in mode value, got {inner:?}");
+        assert_eq!(mode_key, "oauth");
+        let payload = map.get(&k("value")).expect("payload");
+        let FieldValue::Object(m) = payload else {
+            panic!("expected object payload, got {payload:?}");
         };
         assert_eq!(m.get(&k("client_secret")), Some(&redacted_literal()));
         let id = m.get(&k("client_id")).expect("id");

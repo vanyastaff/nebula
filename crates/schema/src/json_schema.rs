@@ -492,10 +492,6 @@ fn apply_contract_keywords(field: &Field, schema: &mut Map<String, Value>) {
         );
     }
     if let Field::Mode(f) = field {
-        schema.insert(
-            "x-nebula-mode-allow-dynamic".to_owned(),
-            Value::Bool(f.allow_dynamic_mode),
-        );
         if let Some(default_variant) = &f.default_variant {
             schema.insert(
                 "x-nebula-mode-default-variant".to_owned(),
@@ -597,6 +593,32 @@ mod tests {
             .find(|v| v["properties"]["mode"]["const"] == Value::String("token".to_owned()))
             .expect("token branch exists");
         assert_eq!(token["required"], json!(["mode", "value"]));
+    }
+
+    #[test]
+    fn mode_json_schema_does_not_export_removed_dynamic_flag() {
+        let schema = Schema::builder()
+            .add(
+                Field::mode(FieldKey::new("auth").expect("static key"))
+                    .variant(
+                        "token",
+                        "Token",
+                        Field::secret(FieldKey::new("token").expect("static key")),
+                    )
+                    .default_variant("token"),
+            )
+            .build()
+            .expect("valid schema");
+
+        let json = schema.json_schema().expect("json schema export").to_value();
+        assert_eq!(
+            json["properties"]["auth"]["x-nebula-mode-default-variant"],
+            json!("token")
+        );
+        assert!(
+            json["properties"]["auth"]["x-nebula-mode-allow-dynamic"].is_null(),
+            "removed compatibility flag should not be exported"
+        );
     }
 
     #[test]

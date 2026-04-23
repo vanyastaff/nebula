@@ -138,6 +138,59 @@ fn mode_variant_empty_rejects_expression_in_placeholder() {
 }
 
 #[test]
+fn mode_field_accepts_object_wire_envelope() {
+    let schema = Schema::builder()
+        .add(Field::mode(fk("auth")).variant("token", "Token", Field::secret(fk("token"))))
+        .build()
+        .unwrap();
+
+    let values = FieldValues::from_json(json!({
+        "auth": { "mode": "token", "value": "shh" }
+    }))
+    .unwrap();
+
+    assert!(schema.validate(&values).is_ok());
+}
+
+#[test]
+fn mode_field_uses_default_variant_for_object_wire_envelope_without_mode() {
+    let schema = Schema::builder()
+        .add(
+            Field::mode(fk("auth"))
+                .variant("token", "Token", Field::secret(fk("token")))
+                .default_variant("token"),
+        )
+        .build()
+        .unwrap();
+
+    let values = FieldValues::from_json(json!({
+        "auth": { "value": "shh" }
+    }))
+    .unwrap();
+
+    assert!(schema.validate(&values).is_ok());
+}
+
+#[test]
+fn object_field_can_use_mode_and_value_keys_without_mode_coercion() {
+    let schema = Schema::builder()
+        .add(
+            Field::object(fk("config"))
+                .add(Field::string(fk("mode")).required())
+                .add(Field::string(fk("value")).required()),
+        )
+        .build()
+        .unwrap();
+
+    let values = FieldValues::from_json(json!({
+        "config": { "mode": "manual", "value": "literal" }
+    }))
+    .unwrap();
+
+    assert!(schema.validate(&values).is_ok());
+}
+
+#[test]
 fn computed_field_literal_emits_expression_required() {
     let schema = Schema::builder()
         .add(Field::computed(fk("derived")))

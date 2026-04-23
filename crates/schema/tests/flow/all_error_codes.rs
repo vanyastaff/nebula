@@ -10,15 +10,6 @@
 //! `translate_validator_code` before being stored in `ValidationReport`.
 //! So `"min_length"` → `"length.min"`, `"max_length"` → `"length.max"`, etc.
 //!
-//! # Deferred codes (Phase 4)
-//!
-//! The following `STANDARD_CODES` entries cannot be emitted without additional
-//! infrastructure that is out of scope for Phase 1:
-//!
-//! - `"mode.required"` — unreachable via the public API: `FieldValue::Mode` always carries a
-//!   non-empty `FieldKey` (validated at construction time), so the `mode_key.is_empty()` branch in
-//!   `validated.rs` can never fire.
-//!
 //! # Loader-family codes
 //!
 //! The following `STANDARD_CODES` entries are loader-registry-scoped. They
@@ -320,7 +311,25 @@ fn emits_mode_invalid() {
     );
 }
 
-// mode.required is unreachable via the public API — see deferred note at top of file.
+#[test]
+fn emits_mode_required() {
+    let schema = Schema::builder()
+        .add(Field::mode(field_key!("m")).variant("a", "A", Field::string(fk("val"))))
+        .build()
+        .unwrap();
+    let vs = FieldValues::from_json(json!({
+        "m": {
+            "value": "missing mode selector"
+        }
+    }))
+    .unwrap();
+    let err = schema.validate(&vs).unwrap_err();
+    assert!(
+        has_code(&err, "mode.required"),
+        "codes: {:?}",
+        err.errors().map(|e| &e.code).collect::<Vec<_>>()
+    );
+}
 
 // ── Expression codes ──────────────────────────────────────────────────────
 
