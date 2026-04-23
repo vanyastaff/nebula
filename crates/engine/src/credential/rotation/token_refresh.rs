@@ -7,7 +7,16 @@
 use chrono::Utc;
 use nebula_credential::{
     SecretString,
-    credentials::{OAuth2State, oauth2::AuthStyle},
+    credentials::{
+        OAuth2State,
+        oauth2::{
+            AuthStyle,
+            token_http::{
+                OAUTH_TOKEN_HTTP_MAX_RESPONSE_BYTES, oauth_token_http_client,
+                read_token_response_limited,
+            },
+        },
+    },
 };
 use reqwest::Response;
 use serde_json::Value;
@@ -61,7 +70,7 @@ pub async fn refresh_oauth2_state(state: &mut OAuth2State) -> Result<(), TokenRe
         form.push(("scope", scope.as_str()));
     }
 
-    let client = oauth_refresh_http_client()?;
+    let client = oauth_token_http_client().map_err(TokenRefreshError::Request)?;
     let mut req = client.post(&state.token_url);
     match state.auth_style {
         AuthStyle::Header => {
@@ -84,16 +93,6 @@ pub async fn refresh_oauth2_state(state: &mut OAuth2State) -> Result<(), TokenRe
     Ok(())
 }
 
-fn oauth_refresh_http_client() -> Result<reqwest::Client, TokenRefreshError> {
-    reqwest::Client::builder()
-        .redirect(reqwest::redirect::Policy::limited(5))
-        .timeout(std::time::Duration::from_secs(30))
-        .build()
-        .map_err(|e| {
-            TokenRefreshError::Request(format!("oauth refresh http client build failed: {e}"))
-        })
-}
-
 async fn parse_token_response(resp: Response) -> Result<Value, TokenRefreshError> {
     let status = resp.status();
     if !status.is_success() {
@@ -106,9 +105,9 @@ async fn parse_token_response(resp: Response) -> Result<Value, TokenRefreshError
             summary,
         });
     }
-    resp.json::<Value>()
+    read_token_response_limited(resp, OAUTH_TOKEN_HTTP_MAX_RESPONSE_BYTES)
         .await
-        .map_err(|e| TokenRefreshError::Parse(e.to_string()))
+        .map_err(TokenRefreshError::Parse)
 }
 
 fn update_state_from_token_response(

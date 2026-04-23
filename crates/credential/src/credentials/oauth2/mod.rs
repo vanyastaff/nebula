@@ -26,6 +26,9 @@ mod config;
 mod credential;
 #[cfg(feature = "oauth2-http")]
 mod flow;
+/// ADR-0031 shared `reqwest` policy and bounded token JSON reads.
+#[cfg(feature = "oauth2-http")]
+pub mod token_http;
 
 pub use config::{
     AuthCodeBuilder, AuthStyle, ClientCredentialsBuilder, DeviceCodeBuilder, GrantType,

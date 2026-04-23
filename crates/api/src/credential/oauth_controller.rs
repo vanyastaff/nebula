@@ -383,6 +383,8 @@ async fn persist_oauth_state(
 }
 
 #[cfg(test)]
+// `SecretString::expose_secret` is HRTB; `|s| s.to_owned()` is the correct pattern.
+#[allow(clippy::redundant_closure_for_method_calls)]
 mod tests {
     use std::sync::Arc;
 

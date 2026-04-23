@@ -1,4 +1,7 @@
 #![cfg(feature = "credential-oauth")]
+// `expose_secret` needs a higher-ranked closure; `|s| s.to_owned()` is required (clippy false
+// positive).
+#![allow(clippy::redundant_closure_for_method_calls)]
 
 mod common;
 
