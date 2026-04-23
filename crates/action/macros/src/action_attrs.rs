@@ -144,7 +144,7 @@ impl ActionAttrs {
         }
     }
 
-    /// Generate `ActionDependencies` impl expression.
+    /// Generate `DeclaresDependencies` impl expression.
     pub(crate) fn dependencies_impl_expr(
         &self,
         struct_name: &Ident,
@@ -155,65 +155,43 @@ impl ActionAttrs {
         let all_creds = self.all_credentials();
         let all_res = self.all_resources();
 
-        let credential_method = if all_creds.is_empty() {
-            quote! {}
-        } else {
-            let ty = all_creds[0];
-            quote! {
-                fn credential() -> ::std::option::Option<::std::boxed::Box<dyn ::nebula_credential::AnyCredential>>
-                where
-                    Self: Sized,
-                {
-                    Some(::std::boxed::Box::new(<#ty as ::std::default::Default>::default()))
+        let credential_calls: Vec<TokenStream2> = all_creds
+            .iter()
+            .map(|ty| {
+                quote! {
+                    .credential(
+                        ::nebula_core::CredentialRequirement::new(
+                            <#ty as ::nebula_core::CredentialLike>::KEY_STR,
+                            ::std::any::TypeId::of::<#ty>(),
+                            ::std::any::type_name::<#ty>(),
+                        )
+                    )
                 }
-            }
-        };
+            })
+            .collect();
 
-        let resources_method = if all_res.is_empty() {
-            quote! {}
-        } else {
-            let res_exprs: Vec<TokenStream2> = all_res
-                .iter()
-                .map(|ty| {
-                    quote! {
-                        ::std::boxed::Box::new(<#ty as ::std::default::Default>::default()) as ::std::boxed::Box<dyn ::nebula_resource::AnyResource>
-                    }
-                })
-                .collect();
-            quote! {
-                fn resources() -> ::std::vec::Vec<::std::boxed::Box<dyn ::nebula_resource::AnyResource>>
-                where
-                    Self: Sized,
-                {
-                    vec![ #(#res_exprs),* ]
+        let resource_calls: Vec<TokenStream2> = all_res
+            .iter()
+            .map(|ty| {
+                quote! {
+                    .resource(
+                        ::nebula_core::ResourceRequirement::new(
+                            <#ty as ::nebula_core::ResourceLike>::KEY_STR,
+                            ::std::any::TypeId::of::<#ty>(),
+                            ::std::any::type_name::<#ty>(),
+                        )
+                    )
                 }
-            }
-        };
-
-        let credential_types_method = if all_creds.is_empty() {
-            quote! {}
-        } else {
-            let type_ids: Vec<TokenStream2> = all_creds
-                .iter()
-                .map(|ty| {
-                    quote! { ::std::any::TypeId::of::<#ty>() }
-                })
-                .collect();
-            quote! {
-                fn credential_types() -> ::std::vec::Vec<::std::any::TypeId>
-                where
-                    Self: Sized,
-                {
-                    vec![ #(#type_ids),* ]
-                }
-            }
-        };
+            })
+            .collect();
 
         quote! {
-            impl #impl_generics ::nebula_action::ActionDependencies for #struct_name #ty_generics #where_clause {
-                #credential_method
-                #resources_method
-                #credential_types_method
+            impl #impl_generics ::nebula_core::DeclaresDependencies for #struct_name #ty_generics #where_clause {
+                fn dependencies() -> ::nebula_core::Dependencies {
+                    ::nebula_core::Dependencies::new()
+                        #(#credential_calls)*
+                        #(#resource_calls)*
+                }
             }
         }
     }

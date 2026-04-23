@@ -1,9 +1,10 @@
 //! Integration tests for `#[derive(Action)]` macro.
 //!
-//! Tests verify that the macro correctly generates `ActionDependencies`
+//! Tests verify that the macro correctly generates `DeclaresDependencies`
 //! and `Action` trait implementations.
 
-use nebula_action::{Action, ActionDependencies};
+use nebula_action::Action;
+use nebula_core::DeclaresDependencies;
 
 // -- No credentials ---------------------------------------------------------
 
@@ -13,17 +14,17 @@ struct NoCredAction;
 
 #[test]
 fn no_credentials_returns_empty_type_ids() {
-    assert!(NoCredAction::credential_types().is_empty());
+    assert!(NoCredAction::dependencies().credentials().is_empty());
 }
 
 #[test]
 fn no_credentials_returns_none() {
-    assert!(NoCredAction::credential().is_none());
+    assert!(NoCredAction::dependencies().credentials().is_empty());
 }
 
 #[test]
 fn no_credentials_returns_empty_resources() {
-    assert!(NoCredAction::resources().is_empty());
+    assert!(NoCredAction::dependencies().resources().is_empty());
 }
 
 #[test]

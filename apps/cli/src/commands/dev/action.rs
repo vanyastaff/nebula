@@ -94,11 +94,11 @@ fn lib_rs(action_key: &str, struct_name: &str) -> String {
     format!(
         r#"//! Nebula action: {action_key}
 
-use nebula_action::context::Context;
+use nebula_action::Context;
 use nebula_action::error::ActionError;
 use nebula_action::metadata::ActionMetadata;
 use nebula_action::result::ActionResult;
-use nebula_action::{{Action, ActionDependencies, StatelessAction}};
+use nebula_action::{{Action, DeclaresDependencies, StatelessAction}};
 use nebula_core::action_key;
 
 /// {struct_name} action.
@@ -126,7 +126,7 @@ impl Default for {struct_name} {{
     }}
 }}
 
-impl ActionDependencies for {struct_name} {{}}
+impl DeclaresDependencies for {struct_name} {{}}
 
 impl Action for {struct_name} {{
     fn metadata(&self) -> &ActionMetadata {{
@@ -141,7 +141,7 @@ impl StatelessAction for {struct_name} {{
     async fn execute(
         &self,
         input: Self::Input,
-        _ctx: &impl Context,
+        _ctx: &nebula_action::ActionContext,
     ) -> Result<ActionResult<Self::Output>, ActionError> {{
         // TODO: implement your action logic here.
         Ok(ActionResult::success(input))

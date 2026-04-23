@@ -5,15 +5,14 @@
 
 use nebula_action::{
     action::Action,
-    context::Context,
-    dependency::ActionDependencies,
+    context::ActionContext,
     error::ActionError,
     metadata::ActionMetadata,
     result::ActionResult,
     stateful::{PageResult, PaginatedAction},
     testing::{StatefulTestHarness, TestContextBuilder},
 };
-use nebula_core::action_key;
+use nebula_core::{DeclaresDependencies, action_key};
 
 // ── NumberPaginator ────────────────────────────────────────────────────────
 
@@ -22,7 +21,7 @@ struct NumberPaginator {
     total_pages: u32,
 }
 
-impl ActionDependencies for NumberPaginator {}
+impl DeclaresDependencies for NumberPaginator {}
 
 impl Action for NumberPaginator {
     fn metadata(&self) -> &ActionMetadata {
@@ -43,7 +42,7 @@ impl PaginatedAction for NumberPaginator {
         &self,
         _input: &serde_json::Value,
         cursor: Option<&u32>,
-        _ctx: &impl Context,
+        _ctx: &ActionContext,
     ) -> Result<PageResult<Vec<i32>, u32>, ActionError> {
         let page = cursor.copied().unwrap_or(0);
         let data: Vec<i32> = ((page * 10)..((page + 1) * 10)).map(|i| i as i32).collect();
@@ -68,7 +67,7 @@ struct LimitedPaginator {
     inner: NumberPaginator,
 }
 
-impl ActionDependencies for LimitedPaginator {}
+impl DeclaresDependencies for LimitedPaginator {}
 
 impl Action for LimitedPaginator {
     fn metadata(&self) -> &ActionMetadata {
@@ -89,7 +88,7 @@ impl PaginatedAction for LimitedPaginator {
         &self,
         input: &serde_json::Value,
         cursor: Option<&u32>,
-        ctx: &impl Context,
+        ctx: &ActionContext,
     ) -> Result<PageResult<Vec<i32>, u32>, ActionError> {
         self.inner.fetch_page(input, cursor, ctx).await
     }

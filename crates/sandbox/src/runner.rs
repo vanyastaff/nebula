@@ -10,18 +10,20 @@ use tokio_util::sync::CancellationToken;
 ///
 /// Provides capability checks (e.g., cancellation) before action execution.
 pub struct SandboxedContext {
-    context: ActionContext,
+    cancellation: CancellationToken,
 }
 
 impl SandboxedContext {
-    /// Wrap an [`ActionContext`] in a sandboxed context.
-    pub fn new(context: ActionContext) -> Self {
-        Self { context }
+    /// Build sandbox metadata from an action context.
+    pub fn new(context: &ActionContext) -> Self {
+        Self {
+            cancellation: context.cancellation().clone(),
+        }
     }
 
     /// Check whether execution has been cancelled.
     pub fn check_cancelled(&self) -> Result<(), ActionError> {
-        if self.context.cancellation.is_cancelled() {
+        if self.cancellation.is_cancelled() {
             Err(ActionError::Cancelled)
         } else {
             Ok(())
@@ -32,12 +34,7 @@ impl SandboxedContext {
     /// need to `select!` against it (e.g. the process-sandbox plugin
     /// round-trip).
     pub fn cancellation(&self) -> &CancellationToken {
-        &self.context.cancellation
-    }
-
-    /// Access the inner [`ActionContext`].
-    pub fn inner(&self) -> &ActionContext {
-        &self.context
+        &self.cancellation
     }
 }
 

@@ -7,6 +7,8 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
+use async_trait::async_trait;
+use nebula_core::{OrgId, OrgRole, WorkspaceId, WorkspaceRole, scope::Principal};
 #[cfg(feature = "credential-oauth")]
 use nebula_credential::PendingToken;
 use nebula_plugin::PluginRegistry;
@@ -17,7 +19,51 @@ use nebula_storage::{ExecutionRepo, WorkflowRepo, repos::ControlQueueRepo};
 use nebula_telemetry::metrics::MetricsRegistry;
 use tokio::sync::RwLock;
 
-use crate::{config::JwtSecret, webhook::WebhookTransport};
+use crate::{config::JwtSecret, errors::ApiError, services::webhook::WebhookTransport};
+
+// ── Port traits ──────────────────────────────────────────────────────────────
+
+/// Resolves org identifiers (slug or ULID) to [`OrgId`].
+#[async_trait]
+pub trait OrgResolver: Send + Sync {
+    /// Look up an org by its human-readable slug.
+    async fn resolve_by_slug(&self, slug: &str) -> Result<OrgId, ApiError>;
+}
+
+/// Resolves workspace identifiers (slug or ULID) within an org to [`WorkspaceId`].
+#[async_trait]
+pub trait WorkspaceResolver: Send + Sync {
+    /// Look up a workspace by its slug within the given org.
+    async fn resolve_by_slug(&self, org_id: OrgId, slug: &str) -> Result<WorkspaceId, ApiError>;
+}
+
+/// Session storage for cookie-based authentication.
+#[async_trait]
+pub trait SessionStore: Send + Sync {
+    /// Retrieve the [`Principal`] associated with a session ID, if any.
+    async fn get_principal_by_session(
+        &self,
+        session_id: &str,
+    ) -> Result<Option<Principal>, ApiError>;
+}
+
+/// Loads membership roles for RBAC middleware.
+#[async_trait]
+pub trait MembershipStore: Send + Sync {
+    /// Return the caller's org-level role, if they are an org member.
+    async fn get_org_role(
+        &self,
+        org_id: OrgId,
+        principal: &Principal,
+    ) -> Result<Option<OrgRole>, ApiError>;
+
+    /// Return the caller's workspace-level role, if they are a workspace member.
+    async fn get_workspace_role(
+        &self,
+        workspace_id: WorkspaceId,
+        principal: &Principal,
+    ) -> Result<Option<WorkspaceRole>, ApiError>;
+}
 
 /// Application state passed through `Router::with_state`.
 #[derive(Clone)]
@@ -78,6 +124,18 @@ pub struct AppState {
     /// Credential state store used by OAuth callback completion in rollout mode.
     #[cfg(feature = "credential-oauth")]
     pub oauth_credential_store: Arc<InMemoryStore>,
+
+    /// Optional org-slug → [`OrgId`] resolver.
+    pub org_resolver: Option<Arc<dyn OrgResolver>>,
+
+    /// Optional workspace-slug → [`WorkspaceId`] resolver.
+    pub workspace_resolver: Option<Arc<dyn WorkspaceResolver>>,
+
+    /// Optional session store for cookie-based auth.
+    pub session_store: Option<Arc<dyn SessionStore>>,
+
+    /// Optional membership store for RBAC role lookups.
+    pub membership_store: Option<Arc<dyn MembershipStore>>,
 }
 
 impl AppState {
@@ -108,6 +166,10 @@ impl AppState {
             oauth_state_tokens: Arc::new(RwLock::new(HashMap::new())),
             #[cfg(feature = "credential-oauth")]
             oauth_credential_store: Arc::new(InMemoryStore::new()),
+            org_resolver: None,
+            workspace_resolver: None,
+            session_store: None,
+            membership_store: None,
         }
     }
 
@@ -147,6 +209,34 @@ impl AppState {
     #[must_use = "builder methods must be chained or built"]
     pub fn with_webhook_transport(mut self, transport: WebhookTransport) -> Self {
         self.webhook_transport = Some(transport);
+        self
+    }
+
+    /// Attach an org resolver for slug-to-ID lookups.
+    #[must_use = "builder methods must be chained or built"]
+    pub fn with_org_resolver(mut self, resolver: Arc<dyn OrgResolver>) -> Self {
+        self.org_resolver = Some(resolver);
+        self
+    }
+
+    /// Attach a workspace resolver for slug-to-ID lookups.
+    #[must_use = "builder methods must be chained or built"]
+    pub fn with_workspace_resolver(mut self, resolver: Arc<dyn WorkspaceResolver>) -> Self {
+        self.workspace_resolver = Some(resolver);
+        self
+    }
+
+    /// Attach a session store for cookie-based authentication.
+    #[must_use = "builder methods must be chained or built"]
+    pub fn with_session_store(mut self, store: Arc<dyn SessionStore>) -> Self {
+        self.session_store = Some(store);
+        self
+    }
+
+    /// Attach a membership store for RBAC role lookups.
+    #[must_use = "builder methods must be chained or built"]
+    pub fn with_membership_store(mut self, store: Arc<dyn MembershipStore>) -> Self {
+        self.membership_store = Some(store);
         self
     }
 }

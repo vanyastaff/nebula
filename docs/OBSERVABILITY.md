@@ -70,3 +70,22 @@ Operator procedure for any failed or stuck run:
 4. **What to try?** For transient classifications (per `nebula-error::Classify`): wait and retry. For permanent: open an issue with the journal excerpt. For "unknown": ask in #observability with the trace_id; do not retry blindly.
 
 This loop is the operational half of PRODUCT_CANON §2 success sentence: *you can explain what happened in a run without reading Rust source.*
+
+## 6. Credential-level observability
+
+`CredentialMetrics` (`nebula-credential::metrics`) defines well-known counter names for credential lifecycle operations. All counters use the `nebula.credential.` prefix and are emitted through a `MetricsEmitter` injected via context (not a global/static registry).
+
+| Metric name | Meaning |
+|---|---|
+| `nebula.credential.resolve_total` | Total credential resolutions attempted |
+| `nebula.credential.refresh_total` | Total credential refreshes attempted |
+| `nebula.credential.refresh_failed_total` | Total credential refresh failures |
+| `nebula.credential.test_total` | Total credential connectivity tests |
+| `nebula.credential.rotations_total` | Total credential rotations completed |
+| `nebula.credential.dynamic_lease_issued_total` | Total dynamic credential leases issued |
+| `nebula.credential.dynamic_lease_released_total` | Total dynamic credential leases expired or released |
+| `nebula.credential.tamper_detection_total` | Total tamper detection events |
+
+Standard labels: `credential_key` (e.g. `"github_token"`), `outcome` (`"success"` / `"failure"`), `dynamic` (`"true"` / `"false"`), `reason` (refresh failure reason).
+
+**Analysis loop integration:** when investigating credential-related failures, include credential metrics alongside `execution_journal` events. A spike in `refresh_failed_total` or `tamper_detection_total` is an early signal before execution failures surface.

@@ -11,8 +11,8 @@
 //! The default `batch_size = 5` chunks the 13 items into 3 iterations.
 
 use nebula_sdk::prelude::{
-    Action, ActionContext, ActionDependencies, ActionError, ActionMetadata, BatchAction,
-    BatchItemResult, Deserialize, TestContextBuilder, TestRuntime, Value, action_key,
+    Action, ActionContext, ActionError, ActionMetadata, BatchAction, BatchItemResult,
+    DeclaresDependencies, Deserialize, TestContextBuilder, TestRuntime, Value, action_key,
     impl_batch_action, json,
 };
 
@@ -34,7 +34,7 @@ impl DummyJsonProductsBatchAction {
     }
 }
 
-impl ActionDependencies for DummyJsonProductsBatchAction {}
+impl DeclaresDependencies for DummyJsonProductsBatchAction {}
 impl Action for DummyJsonProductsBatchAction {
     fn metadata(&self) -> &ActionMetadata {
         &self.meta
@@ -70,11 +70,7 @@ impl BatchAction for DummyJsonProductsBatchAction {
         )
     }
 
-    async fn process_item(
-        &self,
-        item: u32,
-        _ctx: &impl ActionContext,
-    ) -> Result<Value, ActionError> {
+    async fn process_item(&self, item: u32, _ctx: &ActionContext) -> Result<Value, ActionError> {
         let url = format!("https://dummyjson.com/products/{item}");
         let response = reqwest::get(&url)
             .await

@@ -23,12 +23,12 @@ use std::{
     time::{Duration, Instant},
 };
 
-use nebula_core::ResourceKey;
+use nebula_core::{CredentialId, LayerLifecycle, ResourceKey, ScopeLevel};
 use tokio::sync::{Notify, broadcast};
 use tokio_util::sync::CancellationToken;
 
 use crate::{
-    ctx::{Ctx, ScopeLevel},
+    context::ResourceContext,
     error::Error,
     events::ResourceEvent,
     integration::AcquireResilience,
@@ -40,6 +40,7 @@ use crate::{
     },
     registry::Registry,
     release_queue::{ReleaseQueue, ReleaseQueueHandle},
+    reload::ReloadOutcome,
     resource::Resource,
     runtime::{TopologyRuntime, managed::ManagedResource},
 };
@@ -135,7 +136,7 @@ impl ShutdownConfig {
 #[derive(Debug, Clone)]
 #[non_exhaustive]
 pub struct ShutdownReport {
-    /// How many `ResourceHandle`s were still outstanding when the drain
+    /// How many `ResourceGuard`s were still outstanding when the drain
     /// phase finished. Zero on the happy path. Nonzero only when the
     /// caller explicitly opted into [`DrainTimeoutPolicy::Force`].
     pub outstanding_handles_after_drain: u64,
@@ -215,7 +216,7 @@ impl Default for ManagerConfig {
 ///
 /// Used with the `register_*_with` convenience methods to configure
 /// resilience and recovery beyond the simple `register_*` defaults.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone)]
 pub struct RegisterOptions {
     /// Scope level for the resource (default: `Global`).
     pub scope: ScopeLevel,
@@ -223,6 +224,16 @@ pub struct RegisterOptions {
     pub resilience: Option<AcquireResilience>,
     /// Optional recovery gate for thundering-herd prevention.
     pub recovery_gate: Option<Arc<RecoveryGate>>,
+}
+
+impl Default for RegisterOptions {
+    fn default() -> Self {
+        Self {
+            scope: ScopeLevel::Global,
+            resilience: None,
+            recovery_gate: None,
+        }
+    }
 }
 
 /// Central registry and lifecycle manager for all resources.
@@ -241,12 +252,16 @@ pub struct Manager {
     event_tx: broadcast::Sender<ResourceEvent>,
     release_queue: Arc<ReleaseQueue>,
     release_queue_handle: tokio::sync::Mutex<Option<ReleaseQueueHandle>>,
-    /// Tracks active `ResourceHandle`s for drain-aware shutdown.
+    /// Tracks active `ResourceGuard`s for drain-aware shutdown.
     drain_tracker: Arc<(AtomicU64, Notify)>,
     /// CAS-guarded idempotency flag for `graceful_shutdown`. Flipped
     /// false → true by the winning caller; losers return
     /// [`ShutdownError::AlreadyShuttingDown`].
     shutting_down: AtomicBool,
+    /// Reverse index: credential_id → resource keys that use this credential.
+    credential_resources: dashmap::DashMap<CredentialId, Vec<ResourceKey>>,
+    /// Optional lifecycle handle for coordinated cancellation (spec 08).
+    lifecycle: Option<LayerLifecycle>,
 }
 
 impl Manager {
@@ -275,7 +290,24 @@ impl Manager {
             release_queue_handle: tokio::sync::Mutex::new(Some(release_queue_handle)),
             drain_tracker: Arc::new((AtomicU64::new(0), Notify::new())),
             shutting_down: AtomicBool::new(false),
+            credential_resources: dashmap::DashMap::new(),
+            lifecycle: None,
         }
+    }
+
+    /// Attaches a [`LayerLifecycle`] for coordinated cancellation (spec 08).
+    ///
+    /// When set, the manager can participate in hierarchical shutdown
+    /// orchestrated by a parent layer.
+    #[must_use]
+    pub fn with_lifecycle(mut self, lifecycle: LayerLifecycle) -> Self {
+        self.lifecycle = Some(lifecycle);
+        self
+    }
+
+    /// Returns a reference to the attached lifecycle, if any.
+    pub fn lifecycle(&self) -> Option<&LayerLifecycle> {
+        self.lifecycle.as_ref()
     }
 
     /// Subscribes to resource lifecycle events.
@@ -335,6 +367,7 @@ impl Manager {
             status: arc_swap::ArcSwap::from_pointee(crate::state::ResourceStatus::new()),
             resilience,
             recovery_gate,
+            credential_id: None,
         });
 
         let type_id = TypeId::of::<ManagedResource<R>>();
@@ -719,16 +752,16 @@ impl Manager {
     pub async fn acquire_pooled<R>(
         &self,
         auth: &R::Auth,
-        ctx: &dyn Ctx,
+        ctx: &ResourceContext,
         options: &AcquireOptions,
-    ) -> Result<crate::handle::ResourceHandle<R>, Error>
+    ) -> Result<crate::guard::ResourceGuard<R>, Error>
     where
         R: crate::topology::pooled::Pooled + Clone + Send + Sync + 'static,
         R::Runtime: Clone + Into<R::Lease> + Send + Sync + 'static,
         R::Lease: Into<R::Runtime> + Send + 'static,
     {
         let started = Instant::now();
-        let managed = self.lookup::<R>(ctx.scope())?;
+        let managed = self.lookup::<R>(&ctx.scope_level())?;
         let gate_admission = admit_through_gate(&managed.recovery_gate)?;
         let resilience = managed.resilience.clone();
 
@@ -777,9 +810,9 @@ impl Manager {
     /// Only available when `R::Auth = ()`.
     pub async fn acquire_pooled_default<R>(
         &self,
-        ctx: &dyn Ctx,
+        ctx: &ResourceContext,
         options: &AcquireOptions,
-    ) -> Result<crate::handle::ResourceHandle<R>, Error>
+    ) -> Result<crate::guard::ResourceGuard<R>, Error>
     where
         R: crate::topology::pooled::Pooled<Auth = ()> + Clone + Send + Sync + 'static,
         R::Runtime: Clone + Into<R::Lease> + Send + Sync + 'static,
@@ -800,16 +833,16 @@ impl Manager {
     pub async fn acquire_resident<R>(
         &self,
         auth: &R::Auth,
-        ctx: &dyn Ctx,
+        ctx: &ResourceContext,
         options: &AcquireOptions,
-    ) -> Result<crate::handle::ResourceHandle<R>, Error>
+    ) -> Result<crate::guard::ResourceGuard<R>, Error>
     where
         R: crate::topology::resident::Resident + Send + Sync + 'static,
         R::Runtime: Clone + Into<R::Lease> + Send + Sync + 'static,
         R::Lease: Clone + Send + 'static,
     {
         let started = Instant::now();
-        let managed = self.lookup::<R>(ctx.scope())?;
+        let managed = self.lookup::<R>(&ctx.scope_level())?;
         let gate_admission = admit_through_gate(&managed.recovery_gate)?;
         let resilience = managed.resilience.clone();
 
@@ -848,9 +881,9 @@ impl Manager {
     /// Only available when `R::Auth = ()`.
     pub async fn acquire_resident_default<R>(
         &self,
-        ctx: &dyn Ctx,
+        ctx: &ResourceContext,
         options: &AcquireOptions,
-    ) -> Result<crate::handle::ResourceHandle<R>, Error>
+    ) -> Result<crate::guard::ResourceGuard<R>, Error>
     where
         R: crate::topology::resident::Resident<Auth = ()> + Send + Sync + 'static,
         R::Runtime: Clone + Into<R::Lease> + Send + Sync + 'static,
@@ -870,16 +903,16 @@ impl Manager {
     /// - Propagates service-specific acquire errors.
     pub async fn acquire_service<R>(
         &self,
-        ctx: &dyn Ctx,
+        ctx: &ResourceContext,
         options: &AcquireOptions,
-    ) -> Result<crate::handle::ResourceHandle<R>, Error>
+    ) -> Result<crate::guard::ResourceGuard<R>, Error>
     where
         R: crate::topology::service::Service + Clone + Send + Sync + 'static,
         R::Runtime: Send + Sync + 'static,
         R::Lease: Send + 'static,
     {
         let started = Instant::now();
-        let managed = self.lookup::<R>(ctx.scope())?;
+        let managed = self.lookup::<R>(&ctx.scope_level())?;
         let gate_admission = admit_through_gate(&managed.recovery_gate)?;
         let resilience = managed.resilience.clone();
 
@@ -924,9 +957,9 @@ impl Manager {
     /// Shorthand for [`acquire_service`](Self::acquire_service) with `auth = &()`.
     pub async fn acquire_service_default<R>(
         &self,
-        ctx: &dyn Ctx,
+        ctx: &ResourceContext,
         options: &AcquireOptions,
-    ) -> Result<crate::handle::ResourceHandle<R>, Error>
+    ) -> Result<crate::guard::ResourceGuard<R>, Error>
     where
         R: crate::topology::service::Service<Auth = ()> + Clone + Send + Sync + 'static,
         R::Runtime: Send + Sync + 'static,
@@ -946,16 +979,16 @@ impl Manager {
     /// - Propagates transport-specific acquire errors.
     pub async fn acquire_transport<R>(
         &self,
-        ctx: &dyn Ctx,
+        ctx: &ResourceContext,
         options: &AcquireOptions,
-    ) -> Result<crate::handle::ResourceHandle<R>, Error>
+    ) -> Result<crate::guard::ResourceGuard<R>, Error>
     where
         R: crate::topology::transport::Transport + Clone + Send + Sync + 'static,
         R::Runtime: Send + Sync + 'static,
         R::Lease: Send + 'static,
     {
         let started = Instant::now();
-        let managed = self.lookup::<R>(ctx.scope())?;
+        let managed = self.lookup::<R>(&ctx.scope_level())?;
         let gate_admission = admit_through_gate(&managed.recovery_gate)?;
         let resilience = managed.resilience.clone();
 
@@ -1000,9 +1033,9 @@ impl Manager {
     /// Shorthand for [`acquire_transport`](Self::acquire_transport) with `auth = &()`.
     pub async fn acquire_transport_default<R>(
         &self,
-        ctx: &dyn Ctx,
+        ctx: &ResourceContext,
         options: &AcquireOptions,
-    ) -> Result<crate::handle::ResourceHandle<R>, Error>
+    ) -> Result<crate::guard::ResourceGuard<R>, Error>
     where
         R: crate::topology::transport::Transport<Auth = ()> + Clone + Send + Sync + 'static,
         R::Runtime: Send + Sync + 'static,
@@ -1022,16 +1055,16 @@ impl Manager {
     /// - Propagates exclusive-specific acquire errors.
     pub async fn acquire_exclusive<R>(
         &self,
-        ctx: &dyn Ctx,
+        ctx: &ResourceContext,
         options: &AcquireOptions,
-    ) -> Result<crate::handle::ResourceHandle<R>, Error>
+    ) -> Result<crate::guard::ResourceGuard<R>, Error>
     where
         R: crate::topology::exclusive::Exclusive + Clone + Send + Sync + 'static,
         R::Runtime: Clone + Into<R::Lease> + Send + Sync + 'static,
         R::Lease: Send + 'static,
     {
         let started = Instant::now();
-        let managed = self.lookup::<R>(ctx.scope())?;
+        let managed = self.lookup::<R>(&ctx.scope_level())?;
         let gate_admission = admit_through_gate(&managed.recovery_gate)?;
         let resilience = managed.resilience.clone();
 
@@ -1075,9 +1108,9 @@ impl Manager {
     /// Shorthand for [`acquire_exclusive`](Self::acquire_exclusive) with `auth = &()`.
     pub async fn acquire_exclusive_default<R>(
         &self,
-        ctx: &dyn Ctx,
+        ctx: &ResourceContext,
         options: &AcquireOptions,
-    ) -> Result<crate::handle::ResourceHandle<R>, Error>
+    ) -> Result<crate::guard::ResourceGuard<R>, Error>
     where
         R: crate::topology::exclusive::Exclusive<Auth = ()> + Clone + Send + Sync + 'static,
         R::Runtime: Clone + Into<R::Lease> + Send + Sync + 'static,
@@ -1105,16 +1138,16 @@ impl Manager {
     pub async fn try_acquire_pooled<R>(
         &self,
         auth: &R::Auth,
-        ctx: &dyn Ctx,
+        ctx: &ResourceContext,
         options: &AcquireOptions,
-    ) -> Result<crate::handle::ResourceHandle<R>, Error>
+    ) -> Result<crate::guard::ResourceGuard<R>, Error>
     where
         R: crate::topology::pooled::Pooled + Clone + Send + Sync + 'static,
         R::Runtime: Clone + Into<R::Lease> + Send + Sync + 'static,
         R::Lease: Into<R::Runtime> + Send + 'static,
     {
         let started = Instant::now();
-        let managed = self.lookup::<R>(ctx.scope())?;
+        let managed = self.lookup::<R>(&ctx.scope_level())?;
         let gate_admission = admit_through_gate(&managed.recovery_gate)?;
 
         let result = match &managed.topology {
@@ -1156,9 +1189,9 @@ impl Manager {
     /// Only available when `R::Auth = ()`.
     pub async fn try_acquire_pooled_default<R>(
         &self,
-        ctx: &dyn Ctx,
+        ctx: &ResourceContext,
         options: &AcquireOptions,
-    ) -> Result<crate::handle::ResourceHandle<R>, Error>
+    ) -> Result<crate::guard::ResourceGuard<R>, Error>
     where
         R: crate::topology::pooled::Pooled<Auth = ()> + Clone + Send + Sync + 'static,
         R::Runtime: Clone + Into<R::Lease> + Send + Sync + 'static,
@@ -1216,18 +1249,21 @@ impl Manager {
     /// ```no_run
     /// # use nebula_resource::{Manager, ScopeLevel};
     /// # async fn example(manager: &Manager) {
-    /// # let ctx = nebula_resource::BasicCtx::new(nebula_core::ExecutionId::new());
+    /// # let ctx = nebula_resource::context::ResourceContext::minimal(
+    /// #     Default::default(),
+    /// #     tokio_util::sync::CancellationToken::new(),
+    /// # );
     /// // manager.warmup_pool::<MyDb>(&ctx).await.unwrap();
     /// # }
     /// ```
-    pub async fn warmup_pool<R>(&self, ctx: &dyn Ctx) -> Result<usize, Error>
+    pub async fn warmup_pool<R>(&self, ctx: &ResourceContext) -> Result<usize, Error>
     where
         R: crate::topology::pooled::Pooled + Clone + Send + Sync + 'static,
         R::Runtime: Clone + Into<R::Lease> + Send + Sync + 'static,
         R::Lease: Into<R::Runtime> + Send + 'static,
         R::Auth: Default,
     {
-        let managed = self.lookup::<R>(ctx.scope())?;
+        let managed = self.lookup::<R>(&ctx.scope_level())?;
         let config = managed.config();
         let auth = R::Auth::default();
         match &managed.topology {
@@ -1260,19 +1296,23 @@ impl Manager {
         &self,
         new_config: R::Config,
         scope: &ScopeLevel,
-    ) -> Result<(), Error> {
+    ) -> Result<ReloadOutcome, Error> {
         use crate::resource::ResourceConfig as _;
 
         new_config.validate()?;
 
         let managed = self.lookup::<R>(scope)?;
 
+        // Fingerprint comparison — bail early if nothing changed.
+        let new_fp = new_config.fingerprint();
+        let old_fp = managed.config.load().fingerprint();
+        if new_fp == old_fp {
+            return Ok(ReloadOutcome::NoChange);
+        }
+
         // #387: visible `Reloading` phase for operators polling health
         // mid-swap.
         managed.set_phase(crate::state::ResourcePhase::Reloading);
-
-        // Compute fingerprint before swap so we don't clone config.
-        let new_fp = new_config.fingerprint();
 
         // Atomically swap the config.
         managed.config.store(Arc::new(new_config));
@@ -1283,7 +1323,7 @@ impl Manager {
         }
 
         // Bump generation — readers snapshot this to detect changes.
-        managed
+        let prev_gen = managed
             .generation
             .fetch_add(1, std::sync::atomic::Ordering::Release);
 
@@ -1298,8 +1338,66 @@ impl Manager {
             .event_tx
             .send(ResourceEvent::ConfigReloaded { key: R::key() });
 
-        tracing::info!(key = %R::key(), "resource config reloaded");
-        Ok(())
+        // Determine outcome based on topology.
+        let outcome = match managed.topology {
+            TopologyRuntime::Service(_) => ReloadOutcome::PendingDrain {
+                old_generation: prev_gen,
+            },
+            TopologyRuntime::Daemon(_) => ReloadOutcome::Restarting,
+            _ => ReloadOutcome::SwappedImmediately,
+        };
+
+        tracing::info!(key = %R::key(), ?outcome, "resource config reloaded");
+        Ok(outcome)
+    }
+
+    /// Handle a credential refresh event. Reloads all resources that use
+    /// this credential.
+    ///
+    /// Returns a list of `(ResourceKey, ReloadOutcome)` pairs for each
+    /// affected resource. If no resources use this credential the result
+    /// is an empty `Vec`.
+    pub async fn on_credential_refreshed(
+        &self,
+        credential_id: &CredentialId,
+    ) -> Result<Vec<(ResourceKey, ReloadOutcome)>, Error> {
+        let keys = self
+            .credential_resources
+            .get(credential_id)
+            .map(|entry| entry.value().clone())
+            .unwrap_or_default();
+
+        if keys.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        // TODO: For each affected resource key, trigger a per-topology
+        // reload once the runtime integration layer is available.
+        // Currently returns empty outcomes.
+        let _ = &keys;
+        todo!("Implementation deferred to runtime integration")
+    }
+
+    /// Handle a credential revocation event. Stops accepting new acquires
+    /// and taints all outstanding guards for affected resources.
+    ///
+    /// For each affected resource the phase is set to `Failed` and a
+    /// `HealthChanged { healthy: false }` event is emitted.
+    pub async fn on_credential_revoked(&self, credential_id: &CredentialId) -> Result<(), Error> {
+        let keys = self
+            .credential_resources
+            .get(credential_id)
+            .map(|entry| entry.value().clone())
+            .unwrap_or_default();
+
+        if keys.is_empty() {
+            return Ok(());
+        }
+
+        // TODO: For each affected resource: mark as unhealthy, taint
+        // outstanding guards, emit HealthChanged { healthy: false }.
+        let _ = &keys;
+        todo!("Implementation deferred to runtime integration")
     }
 
     /// Removes a resource from the registry by key.
@@ -1472,7 +1570,7 @@ impl Manager {
         }
     }
 
-    /// Waits until all active `ResourceHandle`s are dropped or timeout expires.
+    /// Waits until all active `ResourceGuard`s are dropped or timeout expires.
     ///
     /// The loop uses a `register-then-check` ordering to avoid the classic
     /// `Notify::notify_waiters` lost-wakeup:
@@ -1603,7 +1701,7 @@ impl Manager {
     /// the corresponding [`ResourceEvent`].
     fn record_acquire_result<R: Resource>(
         &self,
-        result: &Result<crate::handle::ResourceHandle<R>, Error>,
+        result: &Result<crate::guard::ResourceGuard<R>, Error>,
         started: Instant,
     ) {
         match result {

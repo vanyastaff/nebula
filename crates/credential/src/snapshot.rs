@@ -276,10 +276,7 @@ mod tests {
         let snap = token_snapshot();
         let token = snap.project::<SecretToken>();
         assert!(token.is_ok());
-        token
-            .unwrap()
-            .token()
-            .expose_secret(|t| assert_eq!(t, "test-token"));
+        assert_eq!(token.unwrap().token().expose_secret(), "test-token");
     }
 
     #[test]
@@ -304,10 +301,7 @@ mod tests {
         let snap = token_snapshot();
         let token = snap.into_project::<SecretToken>();
         assert!(token.is_ok());
-        token
-            .unwrap()
-            .token()
-            .expose_secret(|t| assert_eq!(t, "test-token"));
+        assert_eq!(token.unwrap().token().expose_secret(), "test-token");
     }
 
     #[test]
@@ -343,7 +337,7 @@ mod tests {
         let snap = token_snapshot();
         let cloned = snap;
         let token = cloned.project::<SecretToken>().unwrap();
-        token.token().expose_secret(|t| assert_eq!(t, "test-token"));
+        assert_eq!(token.token().expose_secret(), "test-token");
         assert_eq!(cloned.kind(), "api_key");
         assert_eq!(cloned.scheme_pattern(), "SecretToken");
     }

@@ -84,7 +84,7 @@ where
 {
     let session_id = ctx.session_id().unwrap_or("default");
     let pending: C::Pending = pending_store
-        .get_bound(C::KEY, token, &ctx.owner_id, session_id)
+        .get_bound(C::KEY, token, ctx.owner_id(), session_id)
         .await
         .map_err(ExecutorError::PendingStore)?;
 
@@ -101,19 +101,19 @@ where
     match result {
         ResolveResult::Complete(state) => {
             let _consumed: C::Pending = pending_store
-                .consume(C::KEY, token, &ctx.owner_id, session_id)
+                .consume(C::KEY, token, ctx.owner_id(), session_id)
                 .await
                 .map_err(ExecutorError::PendingStore)?;
             Ok(ResolveResponse::Complete(state))
         },
         ResolveResult::Pending { state, interaction } => {
             let next_token = pending_store
-                .put(C::KEY, &ctx.owner_id, session_id, state)
+                .put(C::KEY, ctx.owner_id(), session_id, state)
                 .await
                 .map_err(ExecutorError::PendingStore)?;
 
             if let Err(err) = pending_store
-                .consume::<C::Pending>(C::KEY, token, &ctx.owner_id, session_id)
+                .consume::<C::Pending>(C::KEY, token, ctx.owner_id(), session_id)
                 .await
             {
                 // Best-effort cleanup: the new state was stored but the caller
@@ -150,7 +150,7 @@ where
         ResolveResult::Pending { state, interaction } => {
             let session_id = ctx.session_id().unwrap_or("default");
             let token = pending_store
-                .put(C::KEY, &ctx.owner_id, session_id, state)
+                .put(C::KEY, ctx.owner_id(), session_id, state)
                 .await
                 .map_err(ExecutorError::PendingStore)?;
             Ok(ResolveResponse::Pending { token, interaction })

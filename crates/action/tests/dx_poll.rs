@@ -1,6 +1,8 @@
 //! Integration tests for PollAction DX trait + PollTriggerAdapter.
 
 use std::{
+    future::Future,
+    pin::Pin,
     sync::{
         Arc,
         atomic::{AtomicU32, Ordering},
@@ -8,20 +10,19 @@ use std::{
     time::Duration,
 };
 
-use async_trait::async_trait;
 use nebula_action::{
-    Action, ActionDependencies, ActionError, ActionMetadata, DeduplicatingCursor,
-    EmitFailurePolicy, ExecutionEmitter, PollAction, PollConfig, PollCursor, PollOutcome,
-    PollResult, PollTriggerAdapter, TestContextBuilder, TriggerContext, TriggerHandler,
+    Action, ActionError, ActionMetadata, DeduplicatingCursor, EmitFailurePolicy, ExecutionEmitter,
+    PollAction, PollConfig, PollCursor, PollOutcome, PollResult, PollTriggerAdapter,
+    TestContextBuilder, TriggerHandler,
 };
-use nebula_core::{ExecutionId, node_key};
+use nebula_core::{DeclaresDependencies, ExecutionId, node_key};
 
 struct TickPoller {
     meta: ActionMetadata,
     poll_count: Arc<AtomicU32>,
 }
 
-impl ActionDependencies for TickPoller {}
+impl DeclaresDependencies for TickPoller {}
 impl Action for TickPoller {
     fn metadata(&self) -> &ActionMetadata {
         &self.meta
@@ -39,7 +40,7 @@ impl PollAction for TickPoller {
     async fn poll(
         &self,
         cursor: &mut PollCursor<u32>,
-        _ctx: &TriggerContext,
+        _ctx: &nebula_action::TriggerContext,
     ) -> Result<PollResult<serde_json::Value>, ActionError> {
         **cursor += 1;
         self.poll_count.fetch_add(1, Ordering::Relaxed);
@@ -160,7 +161,7 @@ struct ZeroIntervalPoller {
     poll_count: Arc<AtomicU32>,
 }
 
-impl ActionDependencies for ZeroIntervalPoller {}
+impl DeclaresDependencies for ZeroIntervalPoller {}
 impl Action for ZeroIntervalPoller {
     fn metadata(&self) -> &ActionMetadata {
         &self.meta
@@ -178,7 +179,7 @@ impl PollAction for ZeroIntervalPoller {
     async fn poll(
         &self,
         _cursor: &mut PollCursor<u32>,
-        _ctx: &TriggerContext,
+        _ctx: &nebula_action::TriggerContext,
     ) -> Result<PollResult<serde_json::Value>, ActionError> {
         self.poll_count.fetch_add(1, Ordering::Relaxed);
         Ok(vec![].into())
@@ -443,7 +444,7 @@ struct FailingValidator {
     meta: ActionMetadata,
 }
 
-impl ActionDependencies for FailingValidator {}
+impl DeclaresDependencies for FailingValidator {}
 impl Action for FailingValidator {
     fn metadata(&self) -> &ActionMetadata {
         &self.meta
@@ -458,14 +459,14 @@ impl PollAction for FailingValidator {
         PollConfig::fixed(Duration::from_mins(1))
     }
 
-    async fn validate(&self, _ctx: &TriggerContext) -> Result<(), ActionError> {
+    async fn validate(&self, _ctx: &nebula_action::TriggerContext) -> Result<(), ActionError> {
         Err(ActionError::fatal("bad credentials"))
     }
 
     async fn poll(
         &self,
         _cursor: &mut PollCursor<u32>,
-        _ctx: &TriggerContext,
+        _ctx: &nebula_action::TriggerContext,
     ) -> Result<PollResult<serde_json::Value>, ActionError> {
         unreachable!("poll should never be called if validate fails")
     }
@@ -495,7 +496,7 @@ struct StartFromNowPoller {
     poll_count: Arc<AtomicU32>,
 }
 
-impl ActionDependencies for StartFromNowPoller {}
+impl DeclaresDependencies for StartFromNowPoller {}
 impl Action for StartFromNowPoller {
     fn metadata(&self) -> &ActionMetadata {
         &self.meta
@@ -510,14 +511,17 @@ impl PollAction for StartFromNowPoller {
         PollConfig::fixed(Duration::from_millis(100))
     }
 
-    async fn initial_cursor(&self, _ctx: &TriggerContext) -> Result<u64, ActionError> {
+    async fn initial_cursor(
+        &self,
+        _ctx: &nebula_action::TriggerContext,
+    ) -> Result<u64, ActionError> {
         Ok(1000) // "start from now" — skip historical data
     }
 
     async fn poll(
         &self,
         cursor: &mut PollCursor<u64>,
-        _ctx: &TriggerContext,
+        _ctx: &nebula_action::TriggerContext,
     ) -> Result<PollResult<serde_json::Value>, ActionError> {
         self.poll_count.fetch_add(1, Ordering::Relaxed);
         **cursor += 1;
@@ -579,11 +583,17 @@ impl FailingEmitter {
     }
 }
 
-#[async_trait]
 impl ExecutionEmitter for FailingEmitter {
-    async fn emit(&self, _input: serde_json::Value) -> Result<ExecutionId, ActionError> {
+    fn emit<'life0, 'a>(
+        &'life0 self,
+        _input: serde_json::Value,
+    ) -> Pin<Box<dyn Future<Output = Result<ExecutionId, ActionError>> + Send + 'a>>
+    where
+        Self: 'a,
+        'life0: 'a,
+    {
         self.attempts.fetch_add(1, Ordering::Relaxed);
-        Err(ActionError::retryable("emitter down"))
+        Box::pin(async { Err(ActionError::retryable("emitter down")) })
     }
 }
 
@@ -594,7 +604,7 @@ struct ReadyPoller {
     poll_count: Arc<AtomicU32>,
 }
 
-impl ActionDependencies for ReadyPoller {}
+impl DeclaresDependencies for ReadyPoller {}
 impl Action for ReadyPoller {
     fn metadata(&self) -> &ActionMetadata {
         &self.meta
@@ -613,7 +623,7 @@ impl PollAction for ReadyPoller {
     async fn poll(
         &self,
         cursor: &mut PollCursor<u32>,
-        _ctx: &TriggerContext,
+        _ctx: &nebula_action::TriggerContext,
     ) -> Result<PollResult<serde_json::Value>, ActionError> {
         **cursor += 1;
         self.poll_count.fetch_add(1, Ordering::Relaxed);
@@ -695,11 +705,17 @@ impl DropCountingFailingEmitter {
     }
 }
 
-#[async_trait]
 impl ExecutionEmitter for DropCountingFailingEmitter {
-    async fn emit(&self, _input: serde_json::Value) -> Result<ExecutionId, ActionError> {
+    fn emit<'life0, 'a>(
+        &'life0 self,
+        _input: serde_json::Value,
+    ) -> Pin<Box<dyn Future<Output = Result<ExecutionId, ActionError>> + Send + 'a>>
+    where
+        Self: 'a,
+        'life0: 'a,
+    {
         self.drops.fetch_add(1, Ordering::Relaxed);
-        Err(ActionError::retryable("drop me"))
+        Box::pin(async { Err(ActionError::retryable("drop me")) })
     }
 }
 
@@ -707,7 +723,7 @@ struct DropPoller {
     meta: ActionMetadata,
 }
 
-impl ActionDependencies for DropPoller {}
+impl DeclaresDependencies for DropPoller {}
 impl Action for DropPoller {
     fn metadata(&self) -> &ActionMetadata {
         &self.meta
@@ -726,7 +742,7 @@ impl PollAction for DropPoller {
     async fn poll(
         &self,
         cursor: &mut PollCursor<u32>,
-        _ctx: &TriggerContext,
+        _ctx: &nebula_action::TriggerContext,
     ) -> Result<PollResult<serde_json::Value>, ActionError> {
         **cursor += 1;
         Ok(vec![serde_json::json!({"n": **cursor})].into())
@@ -800,7 +816,7 @@ struct HugeOverridePoller {
     poll_count: Arc<AtomicU32>,
 }
 
-impl ActionDependencies for HugeOverridePoller {}
+impl DeclaresDependencies for HugeOverridePoller {}
 impl Action for HugeOverridePoller {
     fn metadata(&self) -> &ActionMetadata {
         &self.meta
@@ -820,7 +836,7 @@ impl PollAction for HugeOverridePoller {
     async fn poll(
         &self,
         _cursor: &mut PollCursor<u32>,
-        _ctx: &TriggerContext,
+        _ctx: &nebula_action::TriggerContext,
     ) -> Result<PollResult<serde_json::Value>, ActionError> {
         self.poll_count.fetch_add(1, Ordering::Relaxed);
         Ok(PollResult::from(vec![serde_json::json!({})])
@@ -878,7 +894,7 @@ struct EmptyPartialPoller {
     called: Arc<AtomicU32>,
 }
 
-impl ActionDependencies for EmptyPartialPoller {}
+impl DeclaresDependencies for EmptyPartialPoller {}
 impl Action for EmptyPartialPoller {
     fn metadata(&self) -> &ActionMetadata {
         &self.meta
@@ -896,7 +912,7 @@ impl PollAction for EmptyPartialPoller {
     async fn poll(
         &self,
         _cursor: &mut PollCursor<u32>,
-        _ctx: &TriggerContext,
+        _ctx: &nebula_action::TriggerContext,
     ) -> Result<PollResult<serde_json::Value>, ActionError> {
         self.called.fetch_add(1, Ordering::Relaxed);
         // Construct Partial directly with empty events — bypass the
@@ -962,7 +978,7 @@ async fn first_poll_runs_immediately_after_start() {
         meta: ActionMetadata,
         count: Arc<AtomicU32>,
     }
-    impl ActionDependencies for SlowPoller {}
+    impl DeclaresDependencies for SlowPoller {}
     impl Action for SlowPoller {
         fn metadata(&self) -> &ActionMetadata {
             &self.meta
@@ -977,7 +993,7 @@ async fn first_poll_runs_immediately_after_start() {
         async fn poll(
             &self,
             _cursor: &mut PollCursor<u32>,
-            _ctx: &TriggerContext,
+            _ctx: &nebula_action::TriggerContext,
         ) -> Result<PollResult<serde_json::Value>, ActionError> {
             self.count.fetch_add(1, Ordering::Relaxed);
             Ok(vec![serde_json::json!({"tick": 1})].into())
@@ -1105,7 +1121,7 @@ struct WildConfigPoller {
     config: PollConfig,
 }
 
-impl ActionDependencies for WildConfigPoller {}
+impl DeclaresDependencies for WildConfigPoller {}
 impl Action for WildConfigPoller {
     fn metadata(&self) -> &ActionMetadata {
         &self.meta
@@ -1123,7 +1139,7 @@ impl PollAction for WildConfigPoller {
     async fn poll(
         &self,
         _cursor: &mut PollCursor<u32>,
-        _ctx: &TriggerContext,
+        _ctx: &nebula_action::TriggerContext,
     ) -> Result<PollResult<serde_json::Value>, ActionError> {
         self.count.fetch_add(1, Ordering::Relaxed);
         Ok(vec![].into())

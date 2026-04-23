@@ -107,8 +107,7 @@ mod tests {
     fn accessors_return_values() {
         let cert = Certificate::new("-----BEGIN CERTIFICATE-----", SecretString::new("key-data"));
         assert_eq!(cert.cert_chain(), "-----BEGIN CERTIFICATE-----");
-        cert.private_key()
-            .expose_secret(|v| assert_eq!(v, "key-data"));
+        assert_eq!(cert.private_key().expose_secret(), "key-data");
         assert!(cert.passphrase().is_none());
     }
 
@@ -128,12 +127,16 @@ mod tests {
             serde_json::from_str(&json).expect("Certificate must deserialize");
 
         assert_eq!(decoded.cert_chain(), original.cert_chain());
-        decoded
-            .private_key()
-            .expose_secret(|v| assert_eq!(v, "-----BEGIN PRIVATE KEY-----\nMIIE..."));
-        decoded
-            .passphrase()
-            .expect("passphrase must survive roundtrip")
-            .expose_secret(|v| assert_eq!(v, "hunter2"));
+        assert_eq!(
+            decoded.private_key().expose_secret(),
+            "-----BEGIN PRIVATE KEY-----\nMIIE..."
+        );
+        assert_eq!(
+            decoded
+                .passphrase()
+                .expect("passphrase must survive roundtrip")
+                .expose_secret(),
+            "hunter2"
+        );
     }
 }

@@ -2,7 +2,7 @@
 
 use std::sync::Arc;
 
-use nebula_action::{Action, ActionDependencies, ActionMetadata};
+use nebula_action::{Action, ActionMetadata, DeclaresDependencies};
 use nebula_core::{ActionKey, CredentialKey, ResourceKey};
 use nebula_credential::{AnyCredential, AuthPattern, CredentialMetadata};
 use nebula_metadata::PluginManifest;
@@ -36,7 +36,7 @@ impl std::fmt::Debug for StubAction {
     }
 }
 
-impl ActionDependencies for StubAction {}
+impl DeclaresDependencies for StubAction {}
 
 impl Action for StubAction {
     fn metadata(&self) -> &ActionMetadata {
@@ -79,6 +79,14 @@ impl AnyCredential for StubCredential {
             ValidSchema::empty(),
             AuthPattern::SecretToken,
         )
+    }
+
+    fn is_dynamic(&self) -> bool {
+        false
+    }
+
+    fn lease_ttl(&self) -> Option<std::time::Duration> {
+        None
     }
 }
 

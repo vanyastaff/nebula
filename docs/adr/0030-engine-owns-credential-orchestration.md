@@ -55,10 +55,9 @@ elsewhere:
    The call happens during resolve, on the engine's hot path — it is
    engine work, not contract work.
 
-The seam that must **not** move is `RefreshCoordinator`
-(`crates/credential/src/refresh.rs`). It is a thundering-herd
-prevention primitive (like `tokio::sync::Semaphore`), not a pluggable
-policy — see §3 below.
+The seam that must **not** move is the `Credential::refresh()` trait method
+(`crates/credential/src/refresh.rs` has been relocated to engine — see §3
+amendment).
 
 The canon context that binds this migration:
 
@@ -131,8 +130,16 @@ shape maps 1:1 to a call against the new shape.
 
 ### 3. `RefreshCoordinator` design note — concrete, not trait
 
-**`RefreshCoordinator` stays in `nebula-credential/src/refresh.rs` as
-a concrete primitive (not a trait).** Engine uses it via its concrete
+> **Amendment 2026-04-23:** `RefreshCoordinator`, `RefreshAttempt`,
+> `RefreshConfigError`, and the private `InFlightEntry` have been **moved
+> from `nebula-credential/src/refresh.rs` to
+> `nebula-engine/src/credential/refresh.rs`**. This aligns with engine
+> owning all runtime coordination while credential retains only domain
+> contracts. The "concrete primitive, not a trait" design principle
+> remains unchanged.
+
+**`RefreshCoordinator` now lives in `nebula-engine/src/credential/refresh.rs`
+as a concrete primitive (not a trait).** Engine uses it via its concrete
 API surface. This ADR explicitly declares **no extension seam desired**
 for `RefreshCoordinator`.
 
@@ -268,10 +275,10 @@ patterns converge; out of scope here.
 - Deleting `credential::executor.rs` + `credential::resolver.rs` +
   `engine::credential_accessor.rs` + `engine::resolver.rs` and merging
   to two files is a net-simpler engine surface.
-- `RefreshCoordinator` stays concrete and close to the data
-  structures — the seam per §13.2 is `Credential::refresh()` (the
-  trait method), not a trait over the coordinator. This matches the
-  canon seam shape.
+- `RefreshCoordinator` is now in engine alongside other orchestration
+  types (§3 amendment 2026-04-23). The seam per §13.2 is
+  `Credential::refresh()` (the trait method), not a trait over the
+  coordinator. This matches the canon seam shape.
 
 **Negative / accepted costs.**
 
@@ -297,8 +304,8 @@ patterns converge; out of scope here.
   `validation.rs`, `error.rs`, `events.rs`) stay in credential and
   are consumed by engine via sibling dep. No behavioral change to
   those files in this phase.
-- `RefreshCoordinator` stays in credential (§3). Engine uses its
-  concrete API; no trait.
+- `RefreshCoordinator` lives in engine (§3 amendment). Engine uses
+  its concrete API; no trait.
 - The scheduler's existing `tokio_util::sync::CancellationToken`
   dependency moves with the file — `tokio-util` becomes an engine dep
   and leaves credential's base deps (spec §9).
@@ -375,8 +382,9 @@ Files that carry the invariants after the migration (spec §3):
   transactional flip.
 - `crates/engine/src/credential/rotation/token_refresh.rs` — reqwest
   client; §4 redaction rules apply.
-- `crates/credential/src/refresh.rs` — `RefreshCoordinator` stays
-  here (§3). Consumed by engine via concrete API.
+- `crates/engine/src/credential/refresh.rs` — `RefreshCoordinator`
+  lives here (§3, amended 2026-04-23). Engine-owned runtime
+  coordination primitive.
 
 Test coverage:
 

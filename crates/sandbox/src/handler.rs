@@ -39,7 +39,7 @@ impl StatelessHandler for ProcessSandboxHandler {
         input: serde_json::Value,
         context: &ActionContext,
     ) -> Result<ActionResult<serde_json::Value>, ActionError> {
-        let sandboxed = SandboxedContext::new(context.clone());
+        let sandboxed = SandboxedContext::new(context);
         self.sandbox.execute(sandboxed, &self.metadata, input).await
     }
 }

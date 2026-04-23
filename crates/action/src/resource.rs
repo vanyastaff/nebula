@@ -5,17 +5,11 @@
 //! to the downstream branch, unlike `ctx.resource()` from the global
 //! registry.
 
-use std::{any::Any, fmt, future::Future};
+use std::{any::Any, fmt, future::Future, pin::Pin};
 
-use async_trait::async_trait;
 use serde_json::Value;
 
-use crate::{
-    action::Action,
-    context::{ActionContext, Context},
-    error::ActionError,
-    metadata::ActionMetadata,
-};
+use crate::{action::Action, context::ActionContext, error::ActionError, metadata::ActionMetadata};
 
 // ── Core trait ──────────────────────────────────────────────────────────────
 
@@ -41,14 +35,14 @@ pub trait ResourceAction: Action {
     /// Build the resource for this scope; engine runs this before downstream nodes.
     fn configure(
         &self,
-        ctx: &impl Context,
+        ctx: &ActionContext,
     ) -> impl Future<Output = Result<Self::Resource, ActionError>> + Send;
 
     /// Clean up the resource when the scope ends (e.g. drop pool, close connections).
     fn cleanup(
         &self,
         resource: Self::Resource,
-        ctx: &impl Context,
+        ctx: &ActionContext,
     ) -> impl Future<Output = Result<(), ActionError>> + Send;
 }
 
@@ -62,7 +56,6 @@ pub trait ResourceAction: Action {
 /// # Errors
 ///
 /// Returns [`ActionError`] on configuration or cleanup failure.
-#[async_trait]
 pub trait ResourceHandler: Send + Sync {
     /// Action metadata (key, version, capabilities).
     fn metadata(&self) -> &ActionMetadata;
@@ -72,22 +65,35 @@ pub trait ResourceHandler: Send + Sync {
     /// # Errors
     ///
     /// Returns [`ActionError`] if the resource cannot be configured.
-    async fn configure(
-        &self,
+    #[allow(
+        clippy::type_complexity,
+        reason = "manual lifetime expansion of `async fn` — required for dyn-safety until \
+                  trait async-fn-in-dyn is widely available"
+    )]
+    fn configure<'life0, 'life1, 'a>(
+        &'life0 self,
         config: Value,
-        ctx: &ActionContext,
-    ) -> Result<Box<dyn Any + Send + Sync>, ActionError>;
+        ctx: &'life1 ActionContext,
+    ) -> Pin<Box<dyn Future<Output = Result<Box<dyn Any + Send + Sync>, ActionError>> + Send + 'a>>
+    where
+        Self: 'a,
+        'life0: 'a,
+        'life1: 'a;
 
     /// Clean up the resource instance when the scope ends.
     ///
     /// # Errors
     ///
     /// Returns [`ActionError`] if cleanup fails.
-    async fn cleanup(
-        &self,
+    fn cleanup<'life0, 'life1, 'a>(
+        &'life0 self,
         instance: Box<dyn Any + Send + Sync>,
-        ctx: &ActionContext,
-    ) -> Result<(), ActionError>;
+        ctx: &'life1 ActionContext,
+    ) -> Pin<Box<dyn Future<Output = Result<(), ActionError>> + Send + 'a>>
+    where
+        Self: 'a,
+        'life0: 'a,
+        'life1: 'a;
 }
 
 // ── Adapter ─────────────────────────────────────────────────────────────────
@@ -121,7 +127,6 @@ impl<A> ResourceActionAdapter<A> {
     }
 }
 
-#[async_trait]
 impl<A> ResourceHandler for ResourceActionAdapter<A>
 where
     A: ResourceAction + Send + Sync + 'static,
@@ -138,13 +143,21 @@ where
     /// # Errors
     ///
     /// Returns [`ActionError`] if the resource cannot be configured.
-    async fn configure(
-        &self,
+    fn configure<'life0, 'life1, 'a>(
+        &'life0 self,
         _config: Value,
-        ctx: &ActionContext,
-    ) -> Result<Box<dyn Any + Send + Sync>, ActionError> {
-        let resource = self.action.configure(ctx).await?;
-        Ok(Box::new(resource))
+        ctx: &'life1 ActionContext,
+    ) -> Pin<Box<dyn Future<Output = Result<Box<dyn Any + Send + Sync>, ActionError>> + Send + 'a>>
+    where
+        Self: 'a,
+        'life0: 'a,
+        'life1: 'a,
+    {
+        Box::pin(async move {
+            let resource = self.action.configure(ctx).await?;
+            let boxed: Box<dyn Any + Send + Sync> = Box::new(resource);
+            Ok(boxed)
+        })
     }
 
     /// Clean up the resource by downcasting and delegating.
@@ -154,22 +167,29 @@ where
     /// Returns [`ActionError::Fatal`] if the downcast invariant is violated
     /// (engine bug — the box we returned from `configure` was routed to a
     /// different adapter), or propagates errors from the underlying action.
-    async fn cleanup(
-        &self,
+    fn cleanup<'life0, 'life1, 'a>(
+        &'life0 self,
         resource: Box<dyn Any + Send + Sync>,
-        ctx: &ActionContext,
-    ) -> Result<(), ActionError> {
-        // The downcast is an engine-level invariant check: we box
-        // `A::Resource` in `configure` above and the engine routes the
-        // same box back here. A mismatch is an engine bug, not a user
-        // footgun — there is no `Config`/`Instance` split to bridge.
-        let typed = resource.downcast::<A::Resource>().map_err(|_| {
-            ActionError::fatal(format!(
-                "ResourceActionAdapter: downcast invariant violated for {}",
-                std::any::type_name::<A::Resource>()
-            ))
-        })?;
-        self.action.cleanup(*typed, ctx).await
+        ctx: &'life1 ActionContext,
+    ) -> Pin<Box<dyn Future<Output = Result<(), ActionError>> + Send + 'a>>
+    where
+        Self: 'a,
+        'life0: 'a,
+        'life1: 'a,
+    {
+        Box::pin(async move {
+            // The downcast is an engine-level invariant check: we box
+            // `A::Resource` in `configure` above and the engine routes the
+            // same box back here. A mismatch is an engine bug, not a user
+            // footgun — there is no `Config`/`Instance` split to bridge.
+            let typed = resource.downcast::<A::Resource>().map_err(|_| {
+                ActionError::fatal(format!(
+                    "ResourceActionAdapter: downcast invariant violated for {}",
+                    std::any::type_name::<A::Resource>()
+                ))
+            })?;
+            self.action.cleanup(*typed, ctx).await
+        })
     }
 }
 
@@ -187,14 +207,10 @@ impl<A: Action> fmt::Debug for ResourceActionAdapter<A> {
 mod tests {
     use std::sync::Arc;
 
-    use nebula_core::{
-        id::{ExecutionId, WorkflowId},
-        node_key,
-    };
-    use tokio_util::sync::CancellationToken;
+    use nebula_core::DeclaresDependencies;
 
     use super::*;
-    use crate::dependency::ActionDependencies;
+    use crate::testing::{TestActionContext, TestContextBuilder};
 
     struct MockResourceAction {
         meta: ActionMetadata,
@@ -212,7 +228,7 @@ mod tests {
         }
     }
 
-    impl ActionDependencies for MockResourceAction {}
+    impl DeclaresDependencies for MockResourceAction {}
 
     impl Action for MockResourceAction {
         fn metadata(&self) -> &ActionMetadata {
@@ -223,22 +239,21 @@ mod tests {
     impl ResourceAction for MockResourceAction {
         type Resource = String;
 
-        async fn configure(&self, _ctx: &impl Context) -> Result<String, ActionError> {
+        async fn configure(&self, _ctx: &ActionContext) -> Result<String, ActionError> {
             Ok("pool-default".to_owned())
         }
 
-        async fn cleanup(&self, _resource: String, _ctx: &impl Context) -> Result<(), ActionError> {
+        async fn cleanup(
+            &self,
+            _resource: String,
+            _ctx: &ActionContext,
+        ) -> Result<(), ActionError> {
             Ok(())
         }
     }
 
-    fn make_ctx() -> ActionContext {
-        ActionContext::new(
-            ExecutionId::nil(),
-            node_key!("test"),
-            WorkflowId::nil(),
-            CancellationToken::new(),
-        )
+    fn make_ctx() -> TestActionContext {
+        TestContextBuilder::new().build()
     }
 
     #[test]

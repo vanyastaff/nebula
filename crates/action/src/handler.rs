@@ -18,7 +18,6 @@
 //!   [`TriggerEventOutcome`](crate::trigger::TriggerEventOutcome); webhook and poll specializations
 //!   live in [`crate::webhook`] and [`crate::poll`]
 //! - [`ResourceHandler`](crate::resource::ResourceHandler) — configure/cleanup lifecycle
-//! - [`AgentHandler`] — autonomous agent (stub for Phase 9, defined here)
 //!
 //! [`ActionHandler`] itself is the sum type the engine switches on. All handler
 //! types are also re-exported at the crate root, so the canonical import is
@@ -26,42 +25,10 @@
 
 use std::{fmt, sync::Arc};
 
-use async_trait::async_trait;
-use serde_json::Value;
-
 use crate::{
-    context::ActionContext, error::ActionError, metadata::ActionMetadata,
-    resource::ResourceHandler, result::ActionResult, stateful::StatefulHandler,
+    metadata::ActionMetadata, resource::ResourceHandler, stateful::StatefulHandler,
     stateless::StatelessHandler, trigger::TriggerHandler,
 };
-
-// ── AgentHandler (stub for Phase 9) ────────────────────────────────────────
-
-/// Agent handler — autonomous agent execution (stub for Phase 9).
-///
-/// Agents combine tool use, planning, and iterative execution. This trait
-/// is a placeholder with the same signature as [`StatelessHandler`]; the
-/// full agent protocol will be defined in Phase 9.
-///
-/// # Errors
-///
-/// Returns [`ActionError`] on execution failure.
-#[async_trait]
-pub trait AgentHandler: Send + Sync {
-    /// Action metadata (key, version, capabilities).
-    fn metadata(&self) -> &ActionMetadata;
-
-    /// Execute the agent with JSON input and context.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`ActionError`] if agent execution fails.
-    async fn execute(
-        &self,
-        input: Value,
-        ctx: &ActionContext,
-    ) -> Result<ActionResult<Value>, ActionError>;
-}
 
 // ── ActionHandler enum ─────────────────────────────────────────────────────
 
@@ -80,8 +47,6 @@ pub enum ActionHandler {
     Trigger(Arc<dyn TriggerHandler>),
     /// Graph-scoped resource (configure/cleanup).
     Resource(Arc<dyn ResourceHandler>),
-    /// Autonomous agent (stub for Phase 9).
-    Agent(Arc<dyn AgentHandler>),
 }
 
 impl ActionHandler {
@@ -93,7 +58,6 @@ impl ActionHandler {
             Self::Stateful(h) => h.metadata(),
             Self::Trigger(h) => h.metadata(),
             Self::Resource(h) => h.metadata(),
-            Self::Agent(h) => h.metadata(),
         }
     }
 
@@ -120,12 +84,6 @@ impl ActionHandler {
     pub fn is_resource(&self) -> bool {
         matches!(self, Self::Resource(_))
     }
-
-    /// Check if this is an agent handler.
-    #[must_use]
-    pub fn is_agent(&self) -> bool {
-        matches!(self, Self::Agent(_))
-    }
 }
 
 impl fmt::Debug for ActionHandler {
@@ -147,10 +105,6 @@ impl fmt::Debug for ActionHandler {
                 .debug_tuple("Resource")
                 .field(&h.metadata().base.key)
                 .finish(),
-            Self::Agent(h) => f
-                .debug_tuple("Agent")
-                .field(&h.metadata().base.key)
-                .finish(),
         }
     }
 }
@@ -159,10 +113,15 @@ impl fmt::Debug for ActionHandler {
 
 #[cfg(test)]
 mod tests {
-    use std::sync::Arc;
+    use std::{future::Future, pin::Pin, sync::Arc};
+
+    use serde_json::Value;
 
     use super::*;
-    use crate::context::TriggerContext;
+    use crate::{
+        ActionError, ActionResult,
+        context::{ActionContext, TriggerContext},
+    };
 
     // Shared test stubs — these exist solely to construct `ActionHandler`
     // variants in cross-variant tests (metadata delegation, is_* predicates,
@@ -181,18 +140,22 @@ mod tests {
         meta: ActionMetadata,
     }
 
-    #[async_trait]
     impl StatelessHandler for TestStatelessHandler {
         fn metadata(&self) -> &ActionMetadata {
             &self.meta
         }
 
-        async fn execute(
-            &self,
+        fn execute<'life0, 'life1, 'a>(
+            &'life0 self,
             input: Value,
-            _ctx: &ActionContext,
-        ) -> Result<ActionResult<Value>, ActionError> {
-            Ok(ActionResult::success(input))
+            _ctx: &'life1 ActionContext,
+        ) -> Pin<Box<dyn Future<Output = Result<ActionResult<Value>, ActionError>> + Send + 'a>>
+        where
+            Self: 'a,
+            'life0: 'a,
+            'life1: 'a,
+        {
+            Box::pin(async move { Ok(ActionResult::success(input)) })
         }
     }
 
@@ -200,7 +163,6 @@ mod tests {
         meta: ActionMetadata,
     }
 
-    #[async_trait]
     impl StatefulHandler for TestStatefulHandler {
         fn metadata(&self) -> &ActionMetadata {
             &self.meta
@@ -210,15 +172,23 @@ mod tests {
             Ok(serde_json::json!(0))
         }
 
-        async fn execute(
-            &self,
-            input: &Value,
-            state: &mut Value,
-            _ctx: &ActionContext,
-        ) -> Result<ActionResult<Value>, ActionError> {
+        fn execute<'life0, 'life1, 'life2, 'life3, 'a>(
+            &'life0 self,
+            input: &'life1 Value,
+            state: &'life2 mut Value,
+            _ctx: &'life3 ActionContext,
+        ) -> Pin<Box<dyn Future<Output = Result<ActionResult<Value>, ActionError>> + Send + 'a>>
+        where
+            Self: 'a,
+            'life0: 'a,
+            'life1: 'a,
+            'life2: 'a,
+            'life3: 'a,
+        {
             let count = state.as_u64().unwrap_or(0);
             *state = serde_json::json!(count + 1);
-            Ok(ActionResult::success(input.clone()))
+            let result = ActionResult::success(input.clone());
+            Box::pin(async move { Ok(result) })
         }
     }
 
@@ -226,18 +196,33 @@ mod tests {
         meta: ActionMetadata,
     }
 
-    #[async_trait]
     impl TriggerHandler for TestTriggerHandler {
         fn metadata(&self) -> &ActionMetadata {
             &self.meta
         }
 
-        async fn start(&self, _ctx: &TriggerContext) -> Result<(), ActionError> {
-            Ok(())
+        fn start<'life0, 'life1, 'a>(
+            &'life0 self,
+            _ctx: &'life1 TriggerContext,
+        ) -> Pin<Box<dyn Future<Output = Result<(), ActionError>> + Send + 'a>>
+        where
+            Self: 'a,
+            'life0: 'a,
+            'life1: 'a,
+        {
+            Box::pin(async { Ok(()) })
         }
 
-        async fn stop(&self, _ctx: &TriggerContext) -> Result<(), ActionError> {
-            Ok(())
+        fn stop<'life0, 'life1, 'a>(
+            &'life0 self,
+            _ctx: &'life1 TriggerContext,
+        ) -> Pin<Box<dyn Future<Output = Result<(), ActionError>> + Send + 'a>>
+        where
+            Self: 'a,
+            'life0: 'a,
+            'life1: 'a,
+        {
+            Box::pin(async { Ok(()) })
         }
     }
 
@@ -245,45 +230,41 @@ mod tests {
         meta: ActionMetadata,
     }
 
-    #[async_trait]
     impl ResourceHandler for TestResourceHandler {
         fn metadata(&self) -> &ActionMetadata {
             &self.meta
         }
 
-        async fn configure(
-            &self,
+        fn configure<'life0, 'life1, 'a>(
+            &'life0 self,
             _config: Value,
-            _ctx: &ActionContext,
-        ) -> Result<Box<dyn std::any::Any + Send + Sync>, ActionError> {
-            Ok(Box::new(42u32))
+            _ctx: &'life1 ActionContext,
+        ) -> Pin<
+            Box<
+                dyn Future<Output = Result<Box<dyn std::any::Any + Send + Sync>, ActionError>>
+                    + Send
+                    + 'a,
+            >,
+        >
+        where
+            Self: 'a,
+            'life0: 'a,
+            'life1: 'a,
+        {
+            Box::pin(async { Ok(Box::new(42u32) as Box<dyn std::any::Any + Send + Sync>) })
         }
 
-        async fn cleanup(
-            &self,
+        fn cleanup<'life0, 'life1, 'a>(
+            &'life0 self,
             _instance: Box<dyn std::any::Any + Send + Sync>,
-            _ctx: &ActionContext,
-        ) -> Result<(), ActionError> {
-            Ok(())
-        }
-    }
-
-    struct TestAgentHandler {
-        meta: ActionMetadata,
-    }
-
-    #[async_trait]
-    impl AgentHandler for TestAgentHandler {
-        fn metadata(&self) -> &ActionMetadata {
-            &self.meta
-        }
-
-        async fn execute(
-            &self,
-            input: Value,
-            _ctx: &ActionContext,
-        ) -> Result<ActionResult<Value>, ActionError> {
-            Ok(ActionResult::success(input))
+            _ctx: &'life1 ActionContext,
+        ) -> Pin<Box<dyn Future<Output = Result<(), ActionError>> + Send + 'a>>
+        where
+            Self: 'a,
+            'life0: 'a,
+            'life1: 'a,
+        {
+            Box::pin(async { Ok(()) })
         }
     }
 
@@ -321,14 +302,6 @@ mod tests {
         let _: Arc<dyn ResourceHandler> = Arc::new(h);
     }
 
-    #[test]
-    fn agent_handler_is_dyn_compatible() {
-        let h = TestAgentHandler {
-            meta: test_meta("test.agent"),
-        };
-        let _: Arc<dyn AgentHandler> = Arc::new(h);
-    }
-
     // ── ActionHandler metadata delegation ──────────────────────────────────
 
     #[test]
@@ -358,12 +331,6 @@ mod tests {
                     meta: test_meta("test.resource"),
                 })),
             ),
-            (
-                "test.agent",
-                ActionHandler::Agent(Arc::new(TestAgentHandler {
-                    meta: test_meta("test.agent"),
-                })),
-            ),
         ];
 
         for (expected_key, handler) in &cases {
@@ -385,7 +352,6 @@ mod tests {
         assert!(!stateless.is_stateful());
         assert!(!stateless.is_trigger());
         assert!(!stateless.is_resource());
-        assert!(!stateless.is_agent());
 
         let stateful = ActionHandler::Stateful(Arc::new(TestStatefulHandler {
             meta: test_meta("test.stateful"),
@@ -404,12 +370,6 @@ mod tests {
         }));
         assert!(!resource.is_stateless());
         assert!(resource.is_resource());
-
-        let agent = ActionHandler::Agent(Arc::new(TestAgentHandler {
-            meta: test_meta("test.agent"),
-        }));
-        assert!(!agent.is_stateless());
-        assert!(agent.is_agent());
     }
 
     // ── ActionHandler Debug ────────────────────────────────────────────────

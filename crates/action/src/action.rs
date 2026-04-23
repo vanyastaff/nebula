@@ -1,4 +1,6 @@
-use crate::{dependency::ActionDependencies, metadata::ActionMetadata};
+use nebula_core::DeclaresDependencies;
+
+use crate::metadata::ActionMetadata;
 
 /// Base trait for all action types.
 ///
@@ -11,10 +13,15 @@ use crate::{dependency::ActionDependencies, metadata::ActionMetadata};
 /// This trait is object-safe and can be used as `dyn Action`.
 /// The engine stores actions as `Arc<dyn Action>` in the registry.
 ///
-/// Note: [`ActionDependencies`] methods (`credential()`, `resources()`) use
+/// Note: [`DeclaresDependencies`] methods (`credential()`, `resources()`) use
 /// `where Self: Sized` and are therefore not part of the vtable. They are
 /// called at registration time on concrete types only.
-pub trait Action: ActionDependencies + Send + Sync + 'static {
+#[diagnostic::on_unimplemented(
+    message = "`{Self}` cannot be used as an Action",
+    label = "this type does not implement the Action trait",
+    note = "derive it: #[derive(Action)]"
+)]
+pub trait Action: DeclaresDependencies + Send + Sync + 'static {
     /// Static metadata describing this action type.
     fn metadata(&self) -> &ActionMetadata;
 }

@@ -21,9 +21,7 @@ fn secret_token_serde_roundtrip() {
     );
     assert!(json.contains("my-secret-key"));
     let recovered: SecretToken = serde_json::from_str(&json).unwrap();
-    recovered
-        .token()
-        .expose_secret(|s| assert_eq!(s, "my-secret-key"));
+    assert_eq!(recovered.token().expose_secret(), "my-secret-key");
 }
 
 #[test]
@@ -37,9 +35,7 @@ fn identity_password_serde_roundtrip() {
     assert!(json.contains("p@ssw0rd"));
     let recovered: IdentityPassword = serde_json::from_str(&json).unwrap();
     assert_eq!(recovered.identity(), "admin");
-    recovered
-        .password()
-        .expose_secret(|s| assert_eq!(s, "p@ssw0rd"));
+    assert_eq!(recovered.password().expose_secret(), "p@ssw0rd");
 }
 
 #[test]
@@ -52,9 +48,7 @@ fn oauth2_token_serde_roundtrip() {
     );
     assert!(json.contains("access-tok-xyz"));
     let recovered: OAuth2Token = serde_json::from_str(&json).unwrap();
-    recovered
-        .access_token()
-        .expose_secret(|s| assert_eq!(s, "access-tok-xyz"));
+    assert_eq!(recovered.access_token().expose_secret(), "access-tok-xyz");
 }
 
 #[test]
@@ -69,9 +63,7 @@ fn certificate_serde_roundtrip() {
     assert!(json.contains("TEST_PRIVATE_KEY"));
     let recovered: Certificate = serde_json::from_str(&json).unwrap();
     assert_eq!(recovered.cert_chain(), "TEST_CERT_CHAIN");
-    recovered
-        .private_key()
-        .expose_secret(|s| assert_eq!(s, "TEST_PRIVATE_KEY"));
+    assert_eq!(recovered.private_key().expose_secret(), "TEST_PRIVATE_KEY");
 }
 
 #[test]
@@ -85,9 +77,10 @@ fn key_pair_serde_roundtrip() {
     assert!(json.contains("-----BEGIN RSA-----"));
     let recovered: KeyPair = serde_json::from_str(&json).unwrap();
     assert_eq!(recovered.public_key(), "ssh-rsa AAAA...");
-    recovered
-        .private_key()
-        .expose_secret(|s| assert_eq!(s, "-----BEGIN RSA-----"));
+    assert_eq!(
+        recovered.private_key().expose_secret(),
+        "-----BEGIN RSA-----"
+    );
 }
 
 #[test]
@@ -98,8 +91,7 @@ fn certificate_deserializes_without_passphrase_field() {
     let json = r#"{"cert_chain":"TEST_CERT_CHAIN","private_key":"TEST_PRIVATE_KEY"}"#;
     let cert: Certificate = serde_json::from_str(json).unwrap();
     assert_eq!(cert.cert_chain(), "TEST_CERT_CHAIN");
-    cert.private_key()
-        .expose_secret(|s| assert_eq!(s, "TEST_PRIVATE_KEY"));
+    assert_eq!(cert.private_key().expose_secret(), "TEST_PRIVATE_KEY");
     assert!(
         cert.passphrase().is_none(),
         "missing passphrase must default to None"
@@ -115,8 +107,7 @@ fn key_pair_deserializes_without_passphrase_field() {
         r#"{"public_key":"ssh-rsa AAAA...","private_key":"-----BEGIN RSA-----","algorithm":null}"#;
     let kp: KeyPair = serde_json::from_str(json).unwrap();
     assert_eq!(kp.public_key(), "ssh-rsa AAAA...");
-    kp.private_key()
-        .expose_secret(|s| assert_eq!(s, "-----BEGIN RSA-----"));
+    assert_eq!(kp.private_key().expose_secret(), "-----BEGIN RSA-----");
     assert!(
         kp.passphrase().is_none(),
         "missing passphrase must default to None"
@@ -133,9 +124,7 @@ fn signing_key_serde_roundtrip() {
     );
     assert!(json.contains("signing-key"));
     let recovered: SigningKey = serde_json::from_str(&json).unwrap();
-    recovered
-        .key()
-        .expose_secret(|s| assert_eq!(s, "signing-key"));
+    assert_eq!(recovered.key().expose_secret(), "signing-key");
     assert_eq!(recovered.algorithm(), "hmac-sha256");
 }
 
@@ -149,9 +138,7 @@ fn shared_key_serde_roundtrip() {
     );
     assert!(json.contains("preshared-secret"));
     let recovered: SharedKey = serde_json::from_str(&json).unwrap();
-    recovered
-        .key()
-        .expose_secret(|s| assert_eq!(s, "preshared-secret"));
+    assert_eq!(recovered.key().expose_secret(), "preshared-secret");
 }
 
 #[test]
@@ -164,9 +151,10 @@ fn connection_uri_serde_roundtrip() {
     );
     assert!(json.contains("postgres://user:pass@localhost/db"));
     let recovered: ConnectionUri = serde_json::from_str(&json).unwrap();
-    recovered
-        .uri()
-        .expose_secret(|s| assert_eq!(s, "postgres://user:pass@localhost/db"));
+    assert_eq!(
+        recovered.uri().expose_secret(),
+        "postgres://user:pass@localhost/db"
+    );
 }
 
 #[test]
@@ -182,9 +170,7 @@ fn federated_assertion_serde_roundtrip() {
     );
     assert!(json.contains("PHNhbWw+base64"));
     let recovered: FederatedAssertion = serde_json::from_str(&json).unwrap();
-    recovered
-        .assertion()
-        .expose_secret(|s| assert_eq!(s, "PHNhbWw+base64"));
+    assert_eq!(recovered.assertion().expose_secret(), "PHNhbWw+base64");
     assert_eq!(recovered.issuer(), "https://idp.example.com");
 }
 
@@ -199,9 +185,7 @@ fn challenge_secret_serde_roundtrip() {
     assert!(json.contains("challenge-pw"));
     let recovered: ChallengeSecret = serde_json::from_str(&json).unwrap();
     assert_eq!(recovered.identity(), "admin");
-    recovered
-        .secret()
-        .expose_secret(|s| assert_eq!(s, "challenge-pw"));
+    assert_eq!(recovered.secret().expose_secret(), "challenge-pw");
     assert_eq!(recovered.protocol(), "scram-sha256");
 }
 
@@ -215,9 +199,7 @@ fn otp_seed_serde_roundtrip() {
     );
     assert!(json.contains("JBSWY3DPEHPK3PXP"));
     let recovered: OtpSeed = serde_json::from_str(&json).unwrap();
-    recovered
-        .seed()
-        .expose_secret(|s| assert_eq!(s, "JBSWY3DPEHPK3PXP"));
+    assert_eq!(recovered.seed().expose_secret(), "JBSWY3DPEHPK3PXP");
     assert_eq!(recovered.algorithm(), "totp");
     assert_eq!(recovered.digits(), 6);
 }

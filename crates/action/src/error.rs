@@ -288,6 +288,21 @@ impl From<nebula_credential::CredentialAccessError> for ActionError {
     }
 }
 
+impl From<nebula_core::CoreError> for ActionError {
+    fn from(err: nebula_core::CoreError) -> Self {
+        match err {
+            nebula_core::CoreError::CredentialAccessDenied {
+                capability,
+                action_id,
+            } => ActionError::SandboxViolation {
+                capability,
+                action_id,
+            },
+            other => ActionError::fatal_from(other),
+        }
+    }
+}
+
 impl ActionError {
     /// Create a retryable error with no backoff hint.
     ///

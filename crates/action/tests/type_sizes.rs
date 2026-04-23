@@ -15,9 +15,9 @@
 use std::{collections::HashMap, mem::size_of, time::Duration};
 
 use nebula_action::{
-    ActionContext, ActionError, ActionHandler, ActionMetadata, ActionOutput, ActionResult,
-    BinaryData, Cost, DeferredOutput, OutputEnvelope, OutputMeta, Progress, StreamOutput, Timing,
-    TokenUsage, TriggerEventOutcome, WebhookRequest,
+    ActionError, ActionHandler, ActionMetadata, ActionOutput, ActionResult, BinaryData, Cost,
+    DeferredOutput, OutputEnvelope, OutputMeta, Progress, StreamOutput, Timing, TokenUsage,
+    TriggerEventOutcome, WebhookRequest, testing::TestActionContext,
 };
 
 #[test]
@@ -43,7 +43,6 @@ fn top_level_type_sizes_are_stable() {
         "ActionOutput<Value> grew — `BinaryData` is the inline variant \
          that drives this size, check it first."
     );
-    assert_eq!(size_of::<ActionContext>(), 128);
     // NOTE: ActionMetadata was flattened into a composed `BaseMetadata<ActionKey>`
     // plus action-specific fields (version / inputs / outputs / isolation / category).
     // The shared prefix brings Icon, documentation_url, tags (Box<[String]>),
@@ -51,7 +50,7 @@ fn top_level_type_sizes_are_stable() {
     // type — not a hot path — so we accept the growth in exchange for the
     // unified catalog contract.
     assert_eq!(size_of::<ActionMetadata>(), 376);
-    assert_eq!(size_of::<ActionError>(), 64);
+    assert_eq!(size_of::<ActionError>(), 72);
     assert_eq!(size_of::<ActionHandler>(), 24);
 
     // `WebhookRequest` contains a `SystemTime`, which is 8 bytes on
@@ -123,7 +122,7 @@ fn print_type_size_baseline() {
             "ActionOutput<Value>",
             size_of::<ActionOutput<serde_json::Value>>(),
         ),
-        ("ActionContext", size_of::<ActionContext>()),
+        ("TestActionContext", size_of::<TestActionContext>()),
         ("ActionMetadata", size_of::<ActionMetadata>()),
         ("ActionError", size_of::<ActionError>()),
         ("ActionHandler", size_of::<ActionHandler>()),

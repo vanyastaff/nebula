@@ -38,6 +38,16 @@ pub async fn health_check() -> Json<HealthResponse> {
     })
 }
 
+/// Version info endpoint.
+///
+/// Returns the application name and version. Unauthenticated.
+pub async fn version_info() -> Json<serde_json::Value> {
+    Json(serde_json::json!({
+        "version": env!("CARGO_PKG_VERSION"),
+        "name": "nebula",
+    }))
+}
+
 /// Readiness endpoint — reports whether every declared dependency is reachable.
 ///
 /// Probes storage via a cheap `count()` query bounded by `PROBE_TIMEOUT`.

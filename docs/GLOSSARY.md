@@ -23,9 +23,16 @@ Stable, opaque handles shared by every other crate. Changing any of these cascad
 | `ActionKey` | type | `implemented` | Stable identity of a registered action across plugin loads. | §3.5, §3.10 |
 | `CredentialKey` | type | `implemented` | Stable identity of a registered credential type. | §3.5, §3.10 |
 | `PluginKey` | type | `implemented` | Typed plugin identity derived from `[plugin].id` or `[package].name`. | §7.1 |
-| `AuthScheme` | type | `implemented` | Enum over the twelve universal auth schemes (OAuth2, API key, mTLS, …) plus extensibility. | §3.5, §3.10 |
-| `AuthPattern` | type | `implemented` | Structural classifier for how a credential refreshes/rotates. | §3.10 |
+| `AuthScheme` | type | `implemented` | Open auth scheme trait (OAuth2, API key, mTLS, …) plus extensibility. Canonical in `nebula-core::auth`, re-exported by `nebula-credential`. | §3.5, §3.10 |
+| `AuthPattern` | type | `implemented` | Structural classifier for how a credential refreshes/rotates. Canonical in `nebula-core::auth`, re-exported by `nebula-credential`. | §3.10 |
 | `SecretString` | type | `implemented` | Redacted wrapper used for credential material in logs and `Debug`. | §3.10, §12.5 |
+| `OrgRole` | type | `implemented` | Organization-level role enum (Owner, Admin, Member, Guest). | §3.10 |
+| `WorkspaceRole` | type | `implemented` | Workspace-level role enum (Admin, Editor, Viewer). | §3.10 |
+| `Permission` | type | `implemented` | Granular permission definition for RBAC checks. | §3.10 |
+| `TenantContext` | type | `implemented` | Multi-tenant context carrying resolved org/workspace IDs extracted from request path. | §3.10 |
+| `ResolvedIds` | type | `implemented` | Resolved organization and workspace identifiers from slug or ULID path segments. | §3.10 |
+| `Slug` | type | `implemented` | Validated slug string — accepts human-readable slugs or prefixed ULIDs interchangeably. | §3.10 |
+| `SlugKind` | enum | `implemented` | Discriminates `Slug` as either a human-readable string or a ULID identifier. | §3.10 |
 
 ---
 
@@ -78,7 +85,17 @@ Canon §3.5 makes actions typed and engine-dispatched by trait, not by a single 
 | `DrainTimeoutPolicy` | type | `best-effort` (crash path) | Bounds how long the next process waits to drain orphaned resources left by a crash. | §11.4 |
 | `ReleaseQueue` | concept | `best-effort` (crash path) | Surface through which orphaned resources are reclaimed on next-process start. Not a security boundary. | §11.4 |
 | `SecretToken` | type | `implemented` | Redacted credential wrapper (one of several). `Debug` must stay redacted. | §12.5 |
-| `Zeroize` / `ZeroizeOnDrop` | trait | `implemented` | Required on credential key material. Do not bypass “for debugging.” | §12.5 |
+| `Zeroize` / `ZeroizeOnDrop` | trait | `implemented` | Required on credential key material. Do not bypass "for debugging." | §12.5 |
+| `Guard` | type | `implemented` | RAII trait for scoped resource/credential lifecycle management. Lives in `nebula-core::guard`. | §3.10 |
+| `TypedGuard` | type | `implemented` | Typed variant of `Guard` exposing inner type. Lives in `nebula-core::guard`. | §3.10 |
+| `BaseContext` | type | `implemented` | Embeddable context core providing identity, tenancy, observability, and lifecycle signals. Lives in `nebula-core::context`. | §3.10 |
+| `ExternalProvider` | trait | `implemented` | Trait for delegating credential resolution to external secret managers (Vault, AWS SM, GCP SM, Azure KV). Lives in `nebula-credential::provider`. | §3.5 |
+| `ProviderKind` | enum | `implemented` | Classification enum for external credential providers. Lives in `nebula-credential::provider`. | §3.5 |
+| `CredentialMetrics` | type | `implemented` | Standardized metric counter names and label helpers for credential operations. Lives in `nebula-credential::metrics`. | §3.5, §12.5 |
+| `ResourceGuard<R>` | type | `implemented` | RAII wrapper providing scoped resource lifecycle management; renamed from `ResourceHandle<R>`, implements `Guard` + `TypedGuard`. Lives in `nebula-resource::guard`. | §11.4 |
+| `ResourceContext` | type | `implemented` | Concrete context type for resource operations, replacing the former `Ctx` trait and `BasicCtx` struct. Embeds `BaseContext` + `HasResources` + `HasCredentials` capability traits. Lives in `nebula-resource::context`. | §3.5, §11.4 |
+| `HasResourcesExt` | trait | `implemented` | Extension trait providing ergonomic typed `ctx.resource::<R>().await?` accessor. Blanket-impl'd on all `HasResources` types. Lives in `nebula-resource::ext`. | §3.5 |
+| `ReloadOutcome` | enum | `implemented` | Classification of resource reload results: `SwappedImmediately`, `PendingDrain`, `Restarting`, `NoChange`. Used by credential rotation and config hot-reload. Lives in `nebula-resource::reload`. | §11.4 |
 
 ---
 
@@ -107,6 +124,22 @@ Canon §3.5 requires **one** schema system shared by actions, credentials, and r
 | `Classify` | trait | `implemented` | Classifies an error into categories/codes — the decision point for transient vs permanent. | §3.10 |
 | `ErrorClassifier` | concept | `implemented` | The pattern of using `Classify` (or equivalent) to move retry decisions out of folklore. | §4.2 |
 | `ApiError` | type | `implemented` | API boundary error mapped to RFC 9457 `problem+json`. No new ad-hoc `500`s for business logic. | §12.4 |
+
+---
+
+## 6a. API routing and tenancy (`nebula-api`, `nebula-core`)
+
+Canon §12.1 layering + spec 05-api-routing. All routes are tenant-scoped under `/api/v1/orgs/{org}/workspaces/{ws}/…`.
+
+| Name | Kind | Status | Role | Canon |
+| --- | --- | --- | --- | --- |
+| `AuthContext` | type | `implemented` | Authenticated request context extracted from JWT/API-key by `middleware::auth`. | §12.5 |
+| `OrgResolver` | trait | `implemented` | Port trait for resolving organization by slug or ID. | §12.1 |
+| `WorkspaceResolver` | trait | `implemented` | Port trait for resolving workspace by slug or ID within an org. | §12.1 |
+| `SessionStore` | trait | `implemented` | Port trait for session persistence (login/logout/refresh). | §12.1 |
+| `MembershipStore` | trait | `implemented` | Port trait for membership and role lookups. | §12.1 |
+| `CursorParams` | type | `implemented` | Query parameters for opaque cursor-based pagination. | §12.4 |
+| `PaginatedResponse<T>` | type | `implemented` | Paginated response envelope with `items`, `next_cursor`, `has_more`. | §12.4 |
 
 ---
 

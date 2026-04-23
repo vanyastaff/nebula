@@ -29,11 +29,11 @@ fn expand(input: DeriveInput) -> syn::Result<proc_macro2::TokenStream> {
     })?;
 
     let expanded = quote! {
-        impl #impl_generics ::nebula_credential::AuthScheme
+        impl #impl_generics ::nebula_core::auth::AuthScheme
             for #struct_name #ty_generics #where_clause
         {
-            fn pattern() -> ::nebula_credential::AuthPattern {
-                ::nebula_credential::AuthPattern::#pattern_ident
+            fn pattern() -> ::nebula_core::auth::AuthPattern {
+                ::nebula_core::auth::AuthPattern::#pattern_ident
             }
         }
     };

@@ -2,7 +2,7 @@
 name: Nebula crate maturity dashboard
 description: Manual per-crate state dashboard. Edited in PRs that change a crate's API stability, test coverage, doc state, engine integration, or SLI-readiness.
 status: accepted
-last-reviewed: 2026-04-22
+last-reviewed: 2026-04-23
 related: [PRODUCT_CANON.md, STYLE.md]
 ---
 
@@ -19,9 +19,9 @@ Legend:
 | Crate | API stability | Test coverage | Doc completeness | Engine integration | SLI ready |
 |---|---|---|---|---|---|
 | nebula-action        | frontier | stable  | stable | partial (webhook sig `Required` by default at trait surface — ADR-0022; CheckpointPolicy planned; `ActionResult::Retry` gated behind `unstable-retry-scheduler`, #290) | n/a |
-| nebula-api           | frontier | stable  | stable | partial (knife steps 3+5: Start/Cancel producers stable, #332/#330; engine-side Start/Resume/Restart dispatch wired via EngineControlDispatch — ADR-0008 A2; Cancel/Terminate dispatch wired via engine cancel registry — ADR-0008 A3 / ADR-0016) | partial |
-| nebula-core          | frontier | stable  | stable | stable | n/a |
-| nebula-credential    | frontier | stable  | stable | stable (runtime resolver/registry/executor and rotation scheduler live in `nebula-engine::credential`; OAuth token refresh in engine + API callback persistence landed under `credential-oauth`) | n/a |
+| nebula-api           | frontier | stable  | stable | partial (knife steps 3+5: Start/Cancel producers stable, #332/#330; engine-side Start/Resume/Restart dispatch wired via EngineControlDispatch — ADR-0008 A2; Cancel/Terminate dispatch wired via engine cancel registry — ADR-0008 A3 / ADR-0016; API routing infrastructure per spec 05: tenant-scoped routes, RBAC/tenancy/CSRF middleware, cursor pagination, port traits `OrgResolver`/`WorkspaceResolver`/`SessionStore`/`MembershipStore`, extended `ApiConfig` with TLS/Cookie/CORS/Versioning/Pagination sub-configs, 10 new `ApiError` variants) | partial |
+| nebula-core          | frontier | stable  | stable | stable (6 public modules: `role`, `permission`, `tenancy`, `slug`, `auth`, `guard` — `TenantContext`, `ResolvedIds`, `OrgRole`, `WorkspaceRole`, `Permission`, `PermissionDenied`, `Slug`, `SlugKind`, `SlugError`, `is_prefixed_ulid()`, `AuthScheme`, `AuthPattern`, `Guard`, `TypedGuard`, `BaseContext`, `Context`) | n/a |
+| nebula-credential    | frontier (architecture cleanup: flattened `accessor/`+`metadata/` to root modules, moved `AuthScheme`/`AuthPattern` to `nebula-core`, removed `nebula-eventbus` integration, added `ExternalProvider`/`CredentialMetrics`/prelude, `Guard`/`TypedGuard` on `CredentialGuard`, DYNAMIC credential support, dep set trimmed to core/metadata/schema/resilience/error) | stable  | stable | stable (runtime resolver/registry/executor and rotation scheduler live in `nebula-engine::credential`; OAuth token refresh in engine + API callback persistence landed under `credential-oauth`) | n/a |
 | nebula-engine        | partial  | stable  | stable | partial (ControlConsumer skeleton lands §12.2; all five control commands dispatched via EngineControlDispatch — ADR-0008 A2 (Start/Resume/Restart) + A3 (Cancel/Terminate) + ADR-0016 cancel registry; ADR-0008 B1 reclaim sweep implemented via ControlQueueRepo::reclaim_stuck + ADR-0017; engine-owned `credential` runtime surface landed in P8 slice) | n/a |
 | nebula-error         | stable   | stable  | stable | n/a | n/a |
 | nebula-eventbus      | stable   | stable  | stable | n/a | n/a |
@@ -52,7 +52,19 @@ Legend:
 This file is a living dashboard. Reviewers check truthfulness on every PR that touches a crate's public surface, test suite, or docs. Canon §17 DoD includes "MATURITY.md row updated if the PR changes crate state."
 
 Last full sweep: 2026-04-17 (Pass 4 of docs architecture redesign).
-Last targeted revision: 2026-04-22 — **Test stack:** workspace `dev-dependencies` for
+Last targeted revision: 2026-04-23 — **API routing infrastructure (spec 05):**
+`nebula-core` gains 4 public modules (`role`, `permission`, `tenancy`, `slug`);
+`nebula-api` gains tenant-scoped routes, RBAC/tenancy/CSRF middleware, cursor
+pagination, new port traits, extended `ApiConfig`, 10 new `ApiError` variants,
+6 new route files, 7 new handler files with TODO stubs.
+Prior: 2026-04-23 — **nebula-credential architecture cleanup:**
+retry dedup (→ `nebula-resilience`), `oauth2/` flattening, `accessor/`+`metadata/`
+flattened to root modules, `AuthScheme`/`AuthPattern` moved to `nebula-core`,
+eventbus removed, `ExternalProvider`/`CredentialMetrics`/prelude added,
+`Guard`/`TypedGuard` on `CredentialGuard`, DYNAMIC credential support,
+store impl gating (`test-util`), rotation orchestration → engine, OAuth HTTP →
+api/engine, `Cargo.toml` dep diet.
+Prior: 2026-04-22 — **Test stack:** workspace `dev-dependencies` for
 `insta`, `pretty_assertions`, `rstest`, `wiremock`, `mockall`, `assert_cmd`, `predicates`,
 `assert_fs`; `docs/TESTING.md` + cross-links from `QUALITY_GATES` / `PRODUCT_CANON` §15;
 example tests in `nebula-api`, `nebula-credential`, `nebula-storage`, `nebula-cli`.
@@ -67,9 +79,9 @@ already landed in P1–P8; deleting contract/runtime files would break the crate
 Prior: 2026-04-21 — ADR-0033 **implementation start**: `crate`-level `//!` docs
 for Plane A vs Plane B (`nebula-api` `middleware::auth` vs `credential` / `routes::credential`;
 `nebula-credential` `Credential` trait; `nebula-engine::credential`).
-Prior: 2026-04-21 — `docs/INTEGRATION_MODEL.md` **correctness**: attribute
-`AuthScheme` / `AuthPattern` / `SecretString` / `CredentialEvent` to **`nebula-credential`**
-(not `nebula-core`); trait path `crates/credential/src/scheme/auth.rs`. `MATURITY.md` Plane B
+Prior: 2026-04-21 — `docs/INTEGRATION_MODEL.md` **correctness**: `AuthScheme` / `AuthPattern`
+now canonical in **`nebula-core::auth`**, re-exported by `nebula-credential`;
+`SecretString` / `CredentialEvent` remain in **`nebula-credential`**. `MATURITY.md` Plane B
 wording includes **`AuthPattern`** alongside **`AuthScheme`**.
 Prior: 2026-04-21 — `docs/INTEGRATION_MODEL.md` adds an **industry reference**
 subsection (n8n credential taxonomy vs Nebula Plane B axes: acquisition /

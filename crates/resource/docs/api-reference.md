@@ -44,7 +44,7 @@ pub trait Resource: Send + Sync + 'static {
     fn metadata() -> ResourceMetadata { ... }  // default: derived from key
 
     fn create(&self, config: &Self::Config, auth: &Self::Auth,
-              ctx: &dyn Ctx) -> impl Future<Output = Result<Self::Runtime, Self::Error>> + Send;
+              ctx: &ResourceContext) -> impl Future<Output = Result<Self::Runtime, Self::Error>> + Send;
 
     fn check(&self, runtime: &Self::Runtime)
         -> impl Future<Output = Result<(), Self::Error>> + Send { ... }  // default: Ok
@@ -112,7 +112,7 @@ pub trait Pooled: Resource {
     fn is_broken(&self, runtime: &Self::Runtime) -> BrokenCheck { Healthy }
     fn recycle(&self, runtime: &Self::Runtime, metrics: &InstanceMetrics)
         -> impl Future<Output = Result<RecycleDecision, Self::Error>> + Send { Keep }
-    fn prepare(&self, runtime: &Self::Runtime, ctx: &dyn Ctx)
+    fn prepare(&self, runtime: &Self::Runtime, ctx: &ResourceContext)
         -> impl Future<Output = Result<(), Self::Error>> + Send { Ok(()) }
 }
 ```
@@ -150,7 +150,7 @@ Acquire bounds: `R::Runtime: Clone + Into<R::Lease>`, `R::Lease: Clone`.
 pub trait Service: Resource {
     const TOKEN_MODE: TokenMode = TokenMode::Cloned;
 
-    fn acquire_token(&self, runtime: &Self::Runtime, ctx: &dyn Ctx)
+    fn acquire_token(&self, runtime: &Self::Runtime, ctx: &ResourceContext)
         -> impl Future<Output = Result<Self::Lease, Self::Error>> + Send;
 
     fn release_token(&self, runtime: &Self::Runtime, token: Self::Lease)
@@ -166,7 +166,7 @@ pub trait Service: Resource {
 
 ```rust
 pub trait Transport: Resource {
-    fn open_session(&self, transport: &Self::Runtime, ctx: &dyn Ctx)
+    fn open_session(&self, transport: &Self::Runtime, ctx: &ResourceContext)
         -> impl Future<Output = Result<Self::Lease, Self::Error>> + Send;
 
     fn close_session(&self, transport: &Self::Runtime, session: Self::Lease, healthy: bool)
@@ -201,7 +201,7 @@ pub trait EventSource: Resource {
     type Event: Send + Clone + 'static;
     type Subscription: Send + 'static;
 
-    fn subscribe(&self, runtime: &Self::Runtime, ctx: &dyn Ctx)
+    fn subscribe(&self, runtime: &Self::Runtime, ctx: &ResourceContext)
         -> impl Future<Output = Result<Self::Subscription, Self::Error>> + Send;
 
     fn recv(&self, subscription: &mut Self::Subscription)
@@ -217,7 +217,7 @@ Secondary topology — layered on top of a primary runtime. `recv` blocks until 
 
 ```rust
 pub trait Daemon: Resource {
-    fn run(&self, runtime: &Self::Runtime, ctx: &dyn Ctx, cancel: CancellationToken)
+    fn run(&self, runtime: &Self::Runtime, ctx: &ResourceContext, cancel: CancellationToken)
         -> impl Future<Output = Result<(), Self::Error>> + Send;
 }
 ```
@@ -247,7 +247,7 @@ Each config is the `Config` type alias exported from `nebula_resource` (e.g., `P
 
 ## Handle
 
-### `ResourceHandle<R>`
+### `ResourceGuard<R>`
 
 The value callers hold while using a resource. Annotated `#[must_use]` — dropping immediately releases the resource back to the topology.
 
@@ -260,7 +260,7 @@ The value callers hold while using a resource. Annotated `#[must_use]` — dropp
 | `Shared` | `Arc`-wrapped lease for resident topology |
 
 ```rust
-impl<R: Resource> ResourceHandle<R> {
+impl<R: Resource> ResourceGuard<R> {
     // Constructors (used by topology runtimes, rarely called directly):
     pub fn owned(lease: R::Lease, key: ResourceKey, tag: TopologyTag) -> Self;
     pub fn guarded(lease: R::Lease, key: ResourceKey, tag: TopologyTag,
@@ -282,7 +282,7 @@ impl<R: Resource> ResourceHandle<R> {
 
 **Panic safety:** The `Drop` impl wraps release callbacks in `catch_unwind`. If the callback panics, the semaphore permit is still returned — no permit leaks.
 
-`detach` on a `Shared` handle returns `None` because the `Arc` may have other holders.
+`detach` on a `Shared` guard returns `None` because the `Arc` may have other holders.
 
 ---
 
@@ -326,12 +326,12 @@ impl Manager {
 
     // Acquire (topology-specific):
     pub async fn acquire_pooled<R: Pooled + Clone + ...>(
-        &self, auth: &R::Auth, ctx: &dyn Ctx, options: &AcquireOptions,
-    ) -> Result<ResourceHandle<R>, Error>;
-    pub async fn acquire_resident<R: Resident + ...>(...) -> Result<ResourceHandle<R>, Error>;
-    pub async fn acquire_service<R: Service + Clone + ...>(...) -> Result<ResourceHandle<R>, Error>;
-    pub async fn acquire_transport<R: Transport + Clone + ...>(...) -> Result<ResourceHandle<R>, Error>;
-    pub async fn acquire_exclusive<R: Exclusive + Clone + ...>(...) -> Result<ResourceHandle<R>, Error>;
+        &self, auth: &R::Auth, ctx: &ResourceContext, options: &AcquireOptions,
+    ) -> Result<ResourceGuard<R>, Error>;
+    pub async fn acquire_resident<R: Resident + ...>(...) -> Result<ResourceGuard<R>, Error>;
+    pub async fn acquire_service<R: Service + Clone + ...>(...) -> Result<ResourceGuard<R>, Error>;
+    pub async fn acquire_transport<R: Transport + Clone + ...>(...) -> Result<ResourceGuard<R>, Error>;
+    pub async fn acquire_exclusive<R: Exclusive + Clone + ...>(...) -> Result<ResourceGuard<R>, Error>;
 
     // Config hot-reload:
     pub fn reload_config<R: Resource>(&self, new_config: R::Config,
@@ -445,39 +445,26 @@ Generates `From<YourError> for nebula_resource::Error`. See `nebula_resource_mac
 
 ## Context
 
-### `Ctx` trait
+### `ResourceContext`
 
-Every resource lifecycle method receives `&dyn Ctx`.
-
-```rust
-pub trait Ctx: Send + Sync {
-    fn scope(&self) -> &ScopeLevel;
-    fn execution_id(&self) -> &ExecutionId;
-    fn cancel_token(&self) -> &CancellationToken;
-    fn ext_raw(&self, type_id: TypeId) -> Option<&(dyn Any + Send + Sync)>;
-}
-
-pub fn ctx_ext<T: Send + Sync + 'static>(ctx: &dyn Ctx) -> Option<&T>;
-```
-
----
-
-### `BasicCtx`
-
-Default concrete implementation of `Ctx`.
+Concrete execution context passed to all resource lifecycle methods.
 
 ```rust
-impl BasicCtx {
+impl ResourceContext {
     pub fn new(execution_id: ExecutionId) -> Self;  // scope = Global
     pub fn with_scope(self, scope: ScopeLevel) -> Self;
     pub fn with_cancel_token(self, token: CancellationToken) -> Self;
-    pub fn with_extensions(self, extensions: Extensions) -> Self;
 }
 ```
+
+`ResourceContext` implements capability traits (`HasResources`, `HasCredentials`) rather than
+carrying an `Extensions` type-map. Access typed capabilities via the trait methods.
 
 ---
 
 ### `ScopeLevel`
+
+Re-exported from `nebula_core::ScopeLevel`.
 
 Lifecycle boundary for resource instances. Finer scopes are cleaned up more aggressively.
 
@@ -492,20 +479,6 @@ pub enum ScopeLevel {
 ```
 
 Registry lookup prefers an exact scope match; falls back to `Global`.
-
----
-
-### `Extensions`
-
-Type-map for arbitrary typed data threaded through the context.
-
-```rust
-impl Extensions {
-    pub fn new() -> Self;
-    pub fn insert<T: Send + Sync + 'static>(&mut self, value: T);
-    pub fn get<T: Send + Sync + 'static>(&self) -> Option<&T>;
-}
-```
 
 ---
 
@@ -876,7 +849,7 @@ impl ResourceMetadata {
 
 ### `TopologyTag`
 
-Identifies which topology a `ResourceHandle` was acquired from. Used for observability and diagnostics.
+Identifies which topology a `ResourceGuard` was acquired from. Used for observability and diagnostics.
 
 ```rust
 #[non_exhaustive]

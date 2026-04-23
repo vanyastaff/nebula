@@ -25,7 +25,7 @@
 use std::time::Duration;
 
 use nebula_sdk::prelude::{
-    Action, ActionDependencies, ActionError, ActionMetadata, DeduplicatingCursor, PollAction,
+    Action, ActionError, ActionMetadata, DeclaresDependencies, DeduplicatingCursor, PollAction,
     PollConfig, PollCursor, PollResult, Serialize, TestContextBuilder, TestRuntime, TriggerContext,
     action_key,
 };
@@ -52,7 +52,7 @@ impl HabrRssPollAction {
     }
 }
 
-impl ActionDependencies for HabrRssPollAction {}
+impl DeclaresDependencies for HabrRssPollAction {}
 impl Action for HabrRssPollAction {
     fn metadata(&self) -> &ActionMetadata {
         &self.meta

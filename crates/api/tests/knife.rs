@@ -103,6 +103,8 @@ async fn create_state_with_failing_queue() -> AppState {
         control_queue_repo,
         api_config.jwt_secret,
     )
+    .with_org_resolver(Arc::new(TestOrgResolver))
+    .with_workspace_resolver(Arc::new(TestWorkspaceResolver))
 }
 
 // ── tests ─────────────────────────────────────────────────────────────────────
@@ -140,9 +142,11 @@ async fn knife_scenario_end_to_end() {
         .oneshot(
             Request::builder()
                 .method("POST")
-                .uri("/api/v1/workflows")
+                .uri(ws_path("/workflows"))
                 .header("content-type", "application/json")
                 .header("authorization", format!("Bearer {token}"))
+                .header("x-csrf-token", TEST_CSRF_TOKEN)
+                .header("cookie", TEST_CSRF_COOKIE)
                 .body(Body::from(serde_json::to_string(&create_request).unwrap()))
                 .unwrap(),
         )
@@ -175,8 +179,10 @@ async fn knife_scenario_end_to_end() {
         .oneshot(
             Request::builder()
                 .method("GET")
-                .uri(format!("/api/v1/workflows/{workflow_id}"))
+                .uri(ws_path(&format!("/workflows/{workflow_id}")))
                 .header("authorization", format!("Bearer {token}"))
+                .header("x-csrf-token", TEST_CSRF_TOKEN)
+                .header("cookie", TEST_CSRF_COOKIE)
                 .body(Body::empty())
                 .unwrap(),
         )
@@ -227,8 +233,10 @@ async fn knife_scenario_end_to_end() {
         .oneshot(
             Request::builder()
                 .method("POST")
-                .uri(format!("/api/v1/workflows/{valid_wf_id}/activate"))
+                .uri(ws_path(&format!("/workflows/{valid_wf_id}/activate")))
                 .header("authorization", format!("Bearer {token}"))
+                .header("x-csrf-token", TEST_CSRF_TOKEN)
+                .header("cookie", TEST_CSRF_COOKIE)
                 .body(Body::empty())
                 .unwrap(),
         )
@@ -275,8 +283,10 @@ async fn knife_scenario_end_to_end() {
         .oneshot(
             Request::builder()
                 .method("POST")
-                .uri(format!("/api/v1/workflows/{cyclic_wf_id}/activate"))
+                .uri(ws_path(&format!("/workflows/{cyclic_wf_id}/activate")))
                 .header("authorization", format!("Bearer {token}"))
+                .header("x-csrf-token", TEST_CSRF_TOKEN)
+                .header("cookie", TEST_CSRF_COOKIE)
                 .body(Body::empty())
                 .unwrap(),
         )
@@ -363,9 +373,11 @@ async fn knife_scenario_end_to_end() {
         .oneshot(
             Request::builder()
                 .method("POST")
-                .uri(format!("/api/v1/workflows/{workflow_id}/executions"))
+                .uri(ws_path(&format!("/workflows/{workflow_id}/executions")))
                 .header("content-type", "application/json")
                 .header("authorization", format!("Bearer {token}"))
+                .header("x-csrf-token", TEST_CSRF_TOKEN)
+                .header("cookie", TEST_CSRF_COOKIE)
                 .body(Body::from(serde_json::to_string(&start_request).unwrap()))
                 .unwrap(),
         )
@@ -420,8 +432,10 @@ async fn knife_scenario_end_to_end() {
         .oneshot(
             Request::builder()
                 .method("GET")
-                .uri(format!("/api/v1/executions/{execution_id}"))
+                .uri(ws_path(&format!("/executions/{execution_id}")))
                 .header("authorization", format!("Bearer {token}"))
+                .header("x-csrf-token", TEST_CSRF_TOKEN)
+                .header("cookie", TEST_CSRF_COOKIE)
                 .body(Body::empty())
                 .unwrap(),
         )
@@ -495,9 +509,11 @@ async fn knife_scenario_end_to_end() {
     let response = app
         .oneshot(
             Request::builder()
-                .method("POST")
-                .uri(format!("/api/v1/executions/{execution_id}/cancel"))
+                .method("DELETE")
+                .uri(ws_path(&format!("/executions/{execution_id}")))
                 .header("authorization", format!("Bearer {token}"))
+                .header("x-csrf-token", TEST_CSRF_TOKEN)
+                .header("cookie", TEST_CSRF_COOKIE)
                 .body(Body::empty())
                 .unwrap(),
         )
@@ -561,8 +577,10 @@ async fn knife_scenario_end_to_end() {
         .oneshot(
             Request::builder()
                 .method("GET")
-                .uri(format!("/api/v1/executions/{execution_id}"))
+                .uri(ws_path(&format!("/executions/{execution_id}")))
                 .header("authorization", format!("Bearer {token}"))
+                .header("x-csrf-token", TEST_CSRF_TOKEN)
+                .header("cookie", TEST_CSRF_COOKIE)
                 .body(Body::empty())
                 .unwrap(),
         )
@@ -629,9 +647,11 @@ async fn knife_step6_queue_failure_returns_error() {
     let response = app
         .oneshot(
             Request::builder()
-                .method("POST")
-                .uri(format!("/api/v1/executions/{execution_id}/cancel"))
+                .method("DELETE")
+                .uri(ws_path(&format!("/executions/{execution_id}")))
                 .header("authorization", format!("Bearer {token}"))
+                .header("x-csrf-token", TEST_CSRF_TOKEN)
+                .header("cookie", TEST_CSRF_COOKIE)
                 .body(Body::empty())
                 .unwrap(),
         )
@@ -667,7 +687,7 @@ struct KnifeEcho {
     meta: nebula_action::metadata::ActionMetadata,
 }
 
-impl nebula_action::dependency::ActionDependencies for KnifeEcho {}
+impl nebula_core::DeclaresDependencies for KnifeEcho {}
 impl nebula_action::action::Action for KnifeEcho {
     fn metadata(&self) -> &nebula_action::metadata::ActionMetadata {
         &self.meta
@@ -680,7 +700,7 @@ impl nebula_action::stateless::StatelessAction for KnifeEcho {
     async fn execute(
         &self,
         input: Self::Input,
-        _ctx: &impl nebula_action::context::Context,
+        _ctx: &nebula_action::ActionContext,
     ) -> Result<nebula_action::result::ActionResult<Self::Output>, nebula_action::ActionError> {
         Ok(nebula_action::result::ActionResult::success(input))
     }
@@ -804,9 +824,11 @@ async fn knife_step3_engine_dispatches_start_end_to_end() {
         .oneshot(
             Request::builder()
                 .method("POST")
-                .uri(format!("/api/v1/workflows/{workflow_id}/executions"))
+                .uri(ws_path(&format!("/workflows/{workflow_id}/executions")))
                 .header("content-type", "application/json")
                 .header("authorization", format!("Bearer {token}"))
+                .header("x-csrf-token", TEST_CSRF_TOKEN)
+                .header("cookie", TEST_CSRF_COOKIE)
                 .body(Body::from(serde_json::to_string(&start_request).unwrap()))
                 .unwrap(),
         )
@@ -891,7 +913,7 @@ struct KnifeSlow {
     started: Arc<tokio::sync::Notify>,
 }
 
-impl nebula_action::dependency::ActionDependencies for KnifeSlow {}
+impl nebula_core::DeclaresDependencies for KnifeSlow {}
 impl nebula_action::action::Action for KnifeSlow {
     fn metadata(&self) -> &nebula_action::metadata::ActionMetadata {
         &self.meta
@@ -904,7 +926,7 @@ impl nebula_action::stateless::StatelessAction for KnifeSlow {
     async fn execute(
         &self,
         input: Self::Input,
-        ctx: &impl nebula_action::context::Context,
+        ctx: &nebula_action::ActionContext,
     ) -> Result<nebula_action::result::ActionResult<Self::Output>, nebula_action::ActionError> {
         self.started.notify_one();
         tokio::select! {
@@ -1019,9 +1041,11 @@ async fn knife_step5_engine_cancels_running_execution_end_to_end() {
         .oneshot(
             Request::builder()
                 .method("POST")
-                .uri(format!("/api/v1/workflows/{workflow_id}/executions"))
+                .uri(ws_path(&format!("/workflows/{workflow_id}/executions")))
                 .header("content-type", "application/json")
                 .header("authorization", format!("Bearer {token}"))
+                .header("x-csrf-token", TEST_CSRF_TOKEN)
+                .header("cookie", TEST_CSRF_COOKIE)
                 .body(Body::from(serde_json::to_string(&start_request).unwrap()))
                 .unwrap(),
         )
@@ -1054,9 +1078,11 @@ async fn knife_step5_engine_cancels_running_execution_end_to_end() {
     let cancel_response = cancel_app
         .oneshot(
             Request::builder()
-                .method("POST")
-                .uri(format!("/api/v1/executions/{execution_id_str}/cancel"))
+                .method("DELETE")
+                .uri(ws_path(&format!("/executions/{execution_id_str}")))
                 .header("authorization", format!("Bearer {token}"))
+                .header("x-csrf-token", TEST_CSRF_TOKEN)
+                .header("cookie", TEST_CSRF_COOKIE)
                 .body(Body::empty())
                 .unwrap(),
         )

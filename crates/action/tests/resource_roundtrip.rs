@@ -15,9 +15,10 @@ use std::sync::{
 };
 
 use nebula_action::{
-    Action, ActionContext, ActionDependencies, ActionError, ActionMetadata, Context,
-    ResourceAction, ResourceActionAdapter, ResourceHandler, TestContextBuilder,
+    Action, ActionError, ActionMetadata, ResourceAction, ResourceActionAdapter, ResourceHandler,
+    TestContextBuilder, testing::TestActionContext as ActionContext,
 };
+use nebula_core::DeclaresDependencies;
 
 /// Handle to a fictitious pool. Non-trivial enough to expose any
 /// downcast mismatch as a test failure rather than a spurious pass.
@@ -39,7 +40,7 @@ struct PoolAction {
     cleanup_ran: Arc<AtomicBool>,
 }
 
-impl ActionDependencies for PoolAction {}
+impl DeclaresDependencies for PoolAction {}
 impl Action for PoolAction {
     fn metadata(&self) -> &ActionMetadata {
         &self.meta
@@ -49,14 +50,21 @@ impl Action for PoolAction {
 impl ResourceAction for PoolAction {
     type Resource = PoolHandle;
 
-    async fn configure(&self, _ctx: &impl Context) -> Result<PoolHandle, ActionError> {
+    async fn configure(
+        &self,
+        _ctx: &nebula_action::ActionContext,
+    ) -> Result<PoolHandle, ActionError> {
         Ok(PoolHandle {
             id: 42,
             cleanup_observed: self.cleanup_observed.clone(),
         })
     }
 
-    async fn cleanup(&self, resource: PoolHandle, _ctx: &impl Context) -> Result<(), ActionError> {
+    async fn cleanup(
+        &self,
+        resource: PoolHandle,
+        _ctx: &nebula_action::ActionContext,
+    ) -> Result<(), ActionError> {
         // Assert we got the same handle back that configure produced.
         // If the adapter ever confused `Config` and `Instance` types
         // again, this test fails with a downcast Fatal BEFORE reaching

@@ -21,8 +21,8 @@ event streaming.
 | [`Transport`] | Topology trait for a shared connection with multiplexed sessions |
 | [`Exclusive`] | Topology trait for serialized single-caller access via semaphore |
 | [`Manager`] | Central registry — registration, typed acquire dispatch, graceful shutdown |
-| [`ResourceHandle`] | RAII lease handle; releases or recycles on drop, tainting supported |
-| [`Ctx`] / [`BasicCtx`] | Execution context: scope level, cancellation token, extensions |
+| [`ResourceGuard`] | RAII lease guard; releases or recycles on drop, tainting supported |
+| [`ResourceContext`] | Execution context: scope level, cancellation token, capability traits |
 | [`Error`] / [`ErrorKind`] | Unified error with retryability, scope, and optional retry-after hint |
 
 ---
@@ -49,7 +49,7 @@ Choose the topology that matches the resource's concurrency model.
 
 ```rust,no_run
 use nebula_resource::{
-    resource_key, BasicCtx, Ctx, Error, Manager, PoolConfig, Resource,
+    resource_key, ResourceContext, Error, Manager, PoolConfig, Resource,
     ResourceConfig, ResourceMetadata,
 };
 use nebula_core::ResourceKey;
@@ -97,7 +97,7 @@ impl Resource for HttpResource {
         &self,
         config: &HttpConfig,
         _auth: &(),
-        _ctx: &dyn Ctx,
+        _ctx: &ResourceContext,
     ) -> Result<HttpRuntime, Error> {
         Ok(HttpRuntime { base_url: config.base_url.clone() })
     }
@@ -128,7 +128,7 @@ impl Pooled for HttpResource {
 ### 3. Register and acquire
 
 ```rust,ignore
-use nebula_resource::{Manager, PoolConfig, BasicCtx, AcquireOptions, ExecutionId};
+use nebula_resource::{Manager, PoolConfig, ResourceContext, AcquireOptions, ExecutionId};
 
 #[tokio::main]
 async fn main() -> Result<(), nebula_resource::Error> {
@@ -141,7 +141,7 @@ async fn main() -> Result<(), nebula_resource::Error> {
         PoolConfig::default(),
     )?;
 
-    let ctx = BasicCtx::new(ExecutionId::new());
+    let ctx = ResourceContext::new(ExecutionId::new());
 
     // acquire_pooled_default: no auth noise for Auth = ()
     let handle = manager
@@ -253,8 +253,8 @@ crates/resource/
 │   ├── resource.rs        Resource trait, ResourceConfig, ResourceMetadata
 │   ├── manager.rs         Manager, ManagerConfig, ShutdownConfig
 │   ├── registry.rs        Registry, AnyManagedResource — type-erased storage
-│   ├── handle.rs          ResourceHandle — RAII acquire lease
-│   ├── ctx.rs             Ctx trait, BasicCtx, ScopeLevel, Extensions
+│   ├── guard.rs           ResourceGuard — RAII acquire lease
+│   ├── context.rs         ResourceContext — execution context with capabilities
 │   ├── error.rs           Error, ErrorKind, ErrorScope
 │   ├── events.rs          ResourceEvent — lifecycle observability
 │   ├── options.rs         AcquireOptions, AcquireIntent
@@ -267,7 +267,6 @@ crates/resource/
 │   ├── recovery/          RecoveryGate, RecoveryGroupRegistry, WatchdogHandle
 │   ├── runtime/           Per-topology runtime wrappers (pool, resident, service, …)
 │   ├── topology/          Per-topology trait definitions (Pooled, Resident, Service, …)
-│   └── compat.rs          Deprecated v1 aliases (Context, Scope) — will be removed
 └── docs/
     ├── README.md                ← this file
     ├── architecture.md          Module map, data flow, design invariants

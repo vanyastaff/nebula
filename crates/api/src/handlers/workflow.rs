@@ -1,12 +1,12 @@
 //! Workflow handlers
 
 use axum::{
-    Json,
+    Extension, Json,
     extract::{Path, Query, State},
     http::StatusCode,
 };
 use chrono::Utc;
-use nebula_core::{ExecutionId, WorkflowId};
+use nebula_core::{ExecutionId, TenantContext, WorkflowId};
 use nebula_execution::ExecutionState;
 use serde::Deserialize;
 use serde_json::Value;
@@ -96,9 +96,10 @@ impl PaginationParams {
 }
 
 /// List workflows
-/// GET /api/v1/workflows
+/// GET /api/v1/orgs/{org}/workspaces/{ws}/workflows
 pub async fn list_workflows(
     State(state): State<AppState>,
+    Extension(_tenant): Extension<TenantContext>,
     Query(params): Query<PaginationParams>,
 ) -> ApiResult<Json<ListWorkflowsResponse>> {
     let offset = params.offset();
@@ -155,10 +156,11 @@ pub async fn list_workflows(
 }
 
 /// Get workflow by ID
-/// GET /api/v1/workflows/:id
+/// GET /api/v1/orgs/{org}/workspaces/{ws}/workflows/{wf}
 pub async fn get_workflow(
     State(state): State<AppState>,
-    Path(id): Path<String>,
+    Extension(_tenant): Extension<TenantContext>,
+    Path((_org, _ws, id)): Path<(String, String, String)>,
 ) -> ApiResult<Json<WorkflowResponse>> {
     // Parse workflow ID
     let workflow_id = WorkflowId::parse(&id)
@@ -200,9 +202,10 @@ pub async fn get_workflow(
 }
 
 /// Create workflow
-/// POST /api/v1/workflows
+/// POST /api/v1/orgs/{org}/workspaces/{ws}/workflows
 pub async fn create_workflow(
     State(state): State<AppState>,
+    Extension(_tenant): Extension<TenantContext>,
     Json(payload): Json<CreateWorkflowRequest>,
 ) -> ApiResult<(StatusCode, Json<WorkflowResponse>)> {
     // Validate workflow name
@@ -260,10 +263,11 @@ pub async fn create_workflow(
 }
 
 /// Update workflow
-/// PUT /api/v1/workflows/:id
+/// PUT /api/v1/orgs/{org}/workspaces/{ws}/workflows/{wf}
 pub async fn update_workflow(
     State(state): State<AppState>,
-    Path(id): Path<String>,
+    Extension(_tenant): Extension<TenantContext>,
+    Path((_org, _ws, id)): Path<(String, String, String)>,
     Json(payload): Json<UpdateWorkflowRequest>,
 ) -> ApiResult<Json<WorkflowResponse>> {
     // Parse workflow ID
@@ -370,10 +374,11 @@ pub async fn update_workflow(
 }
 
 /// Delete workflow
-/// DELETE /api/v1/workflows/:id
+/// DELETE /api/v1/orgs/{org}/workspaces/{ws}/workflows/{wf}
 pub async fn delete_workflow(
     State(state): State<AppState>,
-    Path(id): Path<String>,
+    Extension(_tenant): Extension<TenantContext>,
+    Path((_org, _ws, id)): Path<(String, String, String)>,
 ) -> ApiResult<StatusCode> {
     // Parse workflow ID
     let workflow_id = WorkflowId::parse(&id)
@@ -395,10 +400,11 @@ pub async fn delete_workflow(
 }
 
 /// Activate workflow
-/// POST /api/v1/workflows/:id/activate
+/// POST /api/v1/orgs/{org}/workspaces/{ws}/workflows/{wf}/activate
 pub async fn activate_workflow(
     State(state): State<AppState>,
-    Path(id): Path<String>,
+    Extension(_tenant): Extension<TenantContext>,
+    Path((_org, _ws, id)): Path<(String, String, String)>,
 ) -> ApiResult<Json<WorkflowResponse>> {
     // Parse workflow ID
     let workflow_id = WorkflowId::parse(&id)
@@ -499,10 +505,11 @@ pub async fn activate_workflow(
 }
 
 /// Execute workflow (enqueue and return 202 Accepted)
-/// POST /api/v1/workflows/:id/execute
+/// POST /api/v1/orgs/{org}/workspaces/{ws}/workflows/{wf}/execute
 pub async fn execute_workflow(
     State(state): State<AppState>,
-    Path(id): Path<String>,
+    Extension(_tenant): Extension<TenantContext>,
+    Path((_org, _ws, id)): Path<(String, String, String)>,
     Json(payload): Json<StartExecutionRequest>,
 ) -> ApiResult<(StatusCode, Json<ExecutionResponse>)> {
     // Parse workflow ID

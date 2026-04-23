@@ -23,7 +23,7 @@ fn test_encrypt_decrypt_roundtrip() {
         .expect("key derivation should succeed");
 
     let secret = SecretString::new("my-api-key-12345");
-    let plaintext = secret.expose_secret(|s| s.as_bytes().to_vec());
+    let plaintext = secret.expose_secret().as_bytes().to_vec();
 
     // Encrypt
     let encrypted = encrypt(&key, &plaintext).expect("encryption should succeed");

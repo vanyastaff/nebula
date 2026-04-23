@@ -11,9 +11,9 @@
 //! ## Canonical import paths
 //!
 //! This crate follows the tokio/tracing idiom: submodules (`contract`,
-//! `metadata`, `secrets`, `accessor`, `credentials`) are `pub` for escape
-//! hatches, but the canonical public surface is **flat re-exports at the
-//! root**. Prefer `use nebula_credential::SecretString;` over
+//! `secrets`, `credentials`) are `pub` for escape hatches, but the canonical
+//! public surface is **flat re-exports at the root**. Prefer
+//! `use nebula_credential::SecretString;` over
 //! `use nebula_credential::secrets::SecretString;`.
 //!
 //! ## Key types
@@ -48,14 +48,16 @@ extern crate self as nebula_credential;
 // Thematic groupings; each is `pub` for escape hatches but the canonical
 // public surface is the flat root re-exports below.
 
-/// Consumer-facing accessor surface — trait, handle, context, errors.
-pub mod accessor;
-/// Credential contract surface — Credential trait + associated types.
+/// Credential contract surface — Credential trait + associated types + resolve types.
 pub mod contract;
 /// Built-in credential type implementations.
 pub mod credentials;
-/// Credential metadata — static descriptors + runtime record + key newtype + id.
-pub mod metadata;
+/// Typed credential extension trait for capability contexts.
+pub mod ext;
+/// Credential operation metrics — counter names and label helpers.
+pub mod metrics;
+/// External credential provider abstraction — delegation to external secret managers.
+pub mod provider;
 /// Credential rotation (blue-green, transaction, state machine).
 #[cfg(feature = "rotation")]
 pub mod rotation;
@@ -64,74 +66,91 @@ pub mod scheme;
 /// §12.5 secret-handling primitives — AES-256-GCM, guards, zeroizing wrappers, serde helpers.
 pub mod secrets;
 
+// ── Flattened modules (previously nested under accessor/ and metadata/) ───
+
+/// Credential accessor implementations — NoopCredentialAccessor, ScopedCredentialAccessor.
+mod accessor;
+/// Credential operation context — CredentialContext, CredentialContextBuilder.
+mod context;
+/// Typed credential handle — CredentialHandle (ArcSwap-backed).
+mod handle;
+/// Credential metadata — static type descriptor (CredentialMetadata, builder, compat).
+mod metadata;
+/// Credential record — runtime operational state (timestamps, version, tags).
+mod record;
+
 // ── Utility modules ─────────────────────────────────────────────────────────
-// Free-standing concerns: errors, resolve pipeline, storage, refresh coordinator, etc.
+// Free-standing concerns: errors, storage, refresh coordinator, etc.
 
 /// Error types for credential operations.
 pub mod error;
-/// Credential lifecycle events for cross-crate signaling (EventBus payload).
+/// Credential lifecycle events for cross-crate signaling.
 pub mod event;
 /// Pending state store trait for interactive credential flows.
 pub mod pending_store;
-/// In-memory pending state store for testing and development.
+/// In-memory pending state store — **test shim only**.
+///
+/// The canonical production impl lives in
+/// `nebula_storage::credential::InMemoryPendingStore` per ADR-0032.
+/// This copy exists solely for credential's own `#[cfg(test)]` code
+/// which cannot depend on `nebula-storage` (dep-cycle, ADR-0032 §3).
+#[cfg(any(test, feature = "test-util"))]
 pub mod pending_store_memory;
-/// Refresh coordination — thundering herd prevention.
-pub mod refresh;
-/// Resolve result types: interaction, refresh, test.
-pub mod resolve;
-/// Retry logic with exponential backoff.
-pub mod retry;
 /// Credential snapshot.
 pub mod snapshot;
 /// Credential store trait with layered composition.
 pub mod store;
-/// In-memory `CredentialStore` impl for testing and internal use.
+/// In-memory `CredentialStore` impl — **test shim only**.
 ///
-/// **Not** the canonical production impl — that lives in
-/// `nebula_storage::credential::InMemoryStore` per
-/// [ADR-0032](https://github.com/vanyastaff/nebula/blob/main/docs/adr/0032-credential-store-canonical-home.md).
-/// Kept here because crate-internal code (OAuth2 credential impl, refresh
-/// tests, unit tests under `crates/credential/tests/`) references it directly
-/// and cannot depend on `nebula-storage` —
-/// ADR-0032 §3 forbids `nebula-credential → nebula-storage` in either
-/// `[dependencies]` or `[dev-dependencies]` (the latter triggers a
-/// two-copies cargo resolution that breaks trait bounds).
-///
-/// Production consumers and composition roots should prefer
-/// `nebula_storage::credential::InMemoryStore`; both implementations are
-/// behaviour-identical.
+/// The canonical production impl lives in
+/// `nebula_storage::credential::InMemoryStore` per ADR-0032.
+/// This copy exists solely for credential's own `#[cfg(test)]` code
+/// which cannot depend on `nebula-storage` (dep-cycle, ADR-0032 §3).
+#[cfg(any(test, feature = "test-util"))]
 pub mod store_memory;
 
+// ── Backward-compat re-export: `nebula_credential::resolve::*` ──────────
+// The proc-macro and downstream crates reference `nebula_credential::resolve::`.
+// The module now lives inside `contract/resolve`; this re-export keeps the
+// path intact.
 // ── Root re-exports ─────────────────────────────────────────────────────────
 // Commonly-used types available directly as `nebula_credential::TypeName`.
 
-// Consumer-facing accessor surface — trait, impls, handle, context, access error
-pub use accessor::{
-    CredentialAccessError, CredentialAccessor, CredentialContext, CredentialHandle,
-    CredentialResolverRef, NoopCredentialAccessor, ScopedCredentialAccessor,
-    default_credential_accessor,
-};
+// Consumer-facing accessor surface — trait (re-exported from core), impls, handle, context,
+// access error
+pub use accessor::{NoopCredentialAccessor, ScopedCredentialAccessor, default_credential_accessor};
+pub use context::{CredentialContext, CredentialContextBuilder};
+pub use contract::resolve;
 // Credential contract — Credential trait + associated types
 pub use contract::{
     AnyCredential, Credential, CredentialState, NoPendingState, PendingState, PendingToken,
     StaticProtocol,
 };
+// Resolve types
+pub use contract::{
+    DisplayData, InteractionRequest, RefreshOutcome, RefreshPolicy, ResolveResult,
+    StaticResolveResult, TestResult, UserInput,
+};
 // Built-in credential implementations
 pub use credentials::{
     ApiKeyCredential, BasicAuthCredential, OAuth2Credential, OAuth2Pending, OAuth2State,
 };
+pub use handle::CredentialHandle;
+pub use metrics::CredentialMetrics;
+/// Re-export core's [`CredentialAccessor`] trait as the canonical accessor trait.
+pub use nebula_core::accessor::CredentialAccessor;
+// Domain identifiers — re-exported from nebula_core for discoverability.
+pub use nebula_core::{CredentialId, CredentialKey, credential_key};
 // Derive macros
 pub use nebula_credential_macros::{AuthScheme, Credential};
 // Pending state store
 pub use pending_store::{PendingStateStore, PendingStoreError};
+#[cfg(any(test, feature = "test-util"))]
 pub use pending_store_memory::InMemoryPendingStore;
-// Refresh coordination
-pub use refresh::{RefreshAttempt, RefreshCoordinator};
-// Resolve types
-pub use resolve::{
-    DisplayData, InteractionRequest, RefreshOutcome, RefreshPolicy, ResolveResult,
-    StaticResolveResult, TestResult, UserInput,
-};
+// External provider abstraction
+pub use provider::{ExternalProvider, ExternalReference, ProviderError, ProviderKind};
+// Refresh coordination — moved to nebula-engine::credential::refresh (ADR-0030 §3 amendment)
+// Re-exports removed: RefreshAttempt, RefreshCoordinator now live in nebula-engine.
 // Auth schemes — open trait + 13-variant classification + 12 built-in scheme types
 pub use scheme::{
     AuthPattern, AuthScheme, Certificate, ChallengeSecret, ConnectionUri, FederatedAssertion,
@@ -140,35 +159,70 @@ pub use scheme::{
 };
 // §12.5 secret-handling primitives — crypto, guard, zeroizing wrappers
 pub use secrets::{
-    CredentialGuard, EncryptedData, EncryptionKey, SecretString, decrypt, decrypt_with_aad,
-    encrypt, encrypt_with_aad, encrypt_with_key_id, generate_code_challenge,
+    CredentialGuard, EncryptedData, EncryptionKey, RedactedSecret, SecretString, decrypt,
+    decrypt_with_aad, encrypt, encrypt_with_aad, encrypt_with_key_id, generate_code_challenge,
     generate_pkce_verifier, generate_random_state,
 };
 // Store trait + DTOs (canonical impls live in `nebula_storage::credential` per ADR-0032)
 pub use store::{CredentialStore, PutMode, StoreError, StoredCredential};
-// In-memory impl — behaviour-identical to `nebula_storage::credential::InMemoryStore`.
-// Kept here to avoid a dep cycle; production consumers should prefer the storage copy.
+// In-memory impl — test shim only; production consumers use
+// `nebula_storage::credential::InMemoryStore` (ADR-0032).
+#[cfg(any(test, feature = "test-util"))]
 pub use store_memory::InMemoryStore;
 
 // Rotation (feature-gated)
 #[cfg(feature = "rotation")]
-pub use crate::rotation::{
-    CredentialRotationEvent, GracePeriodConfig, RotationError, RotationResult,
-};
+pub use crate::rotation::{CredentialRotationEvent, RotationError, RotationResult};
 /// Back-compat alias: serde attribute paths
 /// `nebula_credential::serde_secret` and `nebula_credential::serde_secret::option`
 /// continue to resolve here after the `secrets/` submodule move.
 pub use crate::secrets::serde_secret;
-// Error / event / metadata / snapshot
+// Error / event / metadata / snapshot / identifiers
 pub use crate::{
     error::{
-        CredentialError, CryptoError, RefreshErrorKind, ResolutionStage, RetryAdvice,
-        ValidationError,
+        CredentialAccessError, CredentialError, CryptoError, RefreshErrorKind, ResolutionStage,
+        RetryAdvice, ValidationError,
     },
     event::CredentialEvent,
+    ext::HasCredentialsExt,
     metadata::{
-        CredentialId, CredentialKey, CredentialMetadata, CredentialMetadataBuilder,
-        CredentialRecord, MetadataCompatibilityError, credential_key,
+        CredentialMetadata, CredentialMetadataBuildError, CredentialMetadataBuilder,
+        MetadataCompatibilityError,
     },
+    record::CredentialRecord,
     snapshot::{CredentialSnapshot, SnapshotError},
 };
+
+// ── Prelude ───────────────────────────────────────────────────────────────────
+
+/// Prelude — import this for the most common credential types.
+///
+/// ```rust
+/// use nebula_credential::prelude::*;
+/// ```
+pub mod prelude {
+    pub use crate::{
+        AuthPattern,
+        AuthScheme,
+        // Core contract
+        Credential,
+        // Context
+        CredentialContext,
+        CredentialContextBuilder,
+        // Errors
+        CredentialError,
+        // Guards and handles
+        CredentialGuard,
+        CredentialHandle,
+        // IDs
+        CredentialId,
+        CredentialKey,
+        // Metadata
+        CredentialMetadata,
+        CredentialState,
+        HasCredentialsExt,
+        // Secrets
+        SecretString,
+        credential_key,
+    };
+}

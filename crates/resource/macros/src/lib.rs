@@ -35,6 +35,7 @@ use proc_macro2::TokenStream as TokenStream2;
 use quote::quote;
 use syn::{Data, DeriveInput, Fields, Ident, parse_macro_input};
 
+mod dependencies;
 mod resource;
 
 /// Derive macro for the `Resource` trait.
@@ -58,7 +59,16 @@ mod resource;
 /// )]
 /// pub struct PostgresResource;
 /// ```
-#[proc_macro_derive(Resource, attributes(resource))]
+#[proc_macro_derive(
+    Resource,
+    attributes(
+        resource,
+        uses_credential,
+        uses_resource,
+        uses_credentials,
+        uses_resources
+    )
+)]
 pub fn derive_resource(input: TokenStream) -> TokenStream {
     resource::derive(input)
 }

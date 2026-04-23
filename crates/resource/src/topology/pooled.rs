@@ -2,7 +2,7 @@
 
 use std::future::Future;
 
-use crate::{ctx::Ctx, resource::Resource};
+use crate::{context::ResourceContext, resource::Resource};
 
 /// Synchronous broken-check result.
 ///
@@ -105,7 +105,7 @@ pub trait Pooled: Resource {
     fn prepare(
         &self,
         _runtime: &Self::Runtime,
-        _ctx: &dyn Ctx,
+        _ctx: &ResourceContext,
     ) -> impl Future<Output = Result<(), Self::Error>> + Send {
         async { Ok(()) }
     }

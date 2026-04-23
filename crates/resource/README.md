@@ -11,7 +11,7 @@ related: [nebula-core, nebula-schema, nebula-error, nebula-resilience, nebula-cr
 
 ## Purpose
 
-External connections — database pools, HTTP clients, message brokers — are a primary failure surface in workflow engines. When an action creates its own client on demand and never releases it, pool exhaustion and orphaned handles accumulate silently. `nebula-resource` solves this by making the engine the owner of the resource lifecycle: acquire, health-check, hot-reload, and scope-bounded release are engine concerns, not per-action boilerplate. Actions receive a `ResourceHandle` that derefs to the lease type and releases on drop; the engine ensures the backing runtime is healthy before granting the handle.
+External connections — database pools, HTTP clients, message brokers — are a primary failure surface in workflow engines. When an action creates its own client on demand and never releases it, pool exhaustion and orphaned handles accumulate silently. `nebula-resource` solves this by making the engine the owner of the resource lifecycle: acquire, health-check, hot-reload, and scope-bounded release are engine concerns, not per-action boilerplate. Actions receive a `ResourceGuard` that derefs to the lease type and releases on drop; the engine ensures the backing runtime is healthy before granting the guard.
 
 ## Role
 
@@ -20,7 +20,7 @@ External connections — database pools, HTTP clients, message brokers — are a
 ## Public API
 
 - `Resource` — core trait: 5 associated types (`Config`, `Runtime`, `Lease`, `Error`, `Credential`), 5 core methods (`create`, `check`, `shutdown`, `destroy`, `schema()`).
-- `ResourceHandle` — RAII lease handle with `Owned`/`Guarded`/`Shared` modes; deref to lease type, release on drop.
+- `ResourceGuard` — RAII lease guard with `Owned`/`Guarded`/`Shared` modes; deref to lease type, release on drop.
 - `Manager`, `ManagerConfig`, `RegisterOptions` — central registry with acquire dispatch and shutdown coordination.
 - `Registry`, `AnyManagedResource` — type-erased storage for registered resource instances.
 - `ResourceMetadata` — static descriptor: key, name, description, tags.
@@ -29,7 +29,8 @@ External connections — database pools, HTTP clients, message brokers — are a
 - `ReleaseQueue` — background worker pool for async cleanup. Drain on crash is best-effort; see §11.4 canon note.
 - `DrainTimeoutPolicy` — policy controlling drain operation timeout.
 - `Error`, `ErrorKind`, `ErrorScope` — typed error with retry classification.
-- `Ctx`, `BasicCtx`, `ScopeLevel`, `Extensions` — execution context with cancellation and extensions.
+- `ResourceContext` — execution context with cancellation and capability traits (`HasResources`, `HasCredentials`).
+- `ScopeLevel` — re-exported from `nebula_core::ScopeLevel`.
 - `ResourcePhase`, `ResourceStatus` — lifecycle phase tracking for observability.
 - `ResourceEvent` — lifecycle events (`Acquired`, `Released`, `HealthCheck`, `Recycled`, etc.).
 - `ResourceOpsMetrics`, `ResourceOpsSnapshot` — registry-backed operation counters.
@@ -59,9 +60,8 @@ External connections — database pools, HTTP clients, message brokers — are a
 
 See `docs/MATURITY.md` row for `nebula-resource`.
 
-- API stability: `frontier` — 7 topologies, `Manager`, `ReleaseQueue`, and `ResourceHandle` are the authoritative lifecycle surface; topology runtime variants are actively evolving.
+- API stability: `frontier` — 7 topologies, `Manager`, `ReleaseQueue`, and `ResourceGuard` are the authoritative lifecycle surface; topology runtime variants are actively evolving.
 - `#![forbid(unsafe_code)]` enforced, `#![warn(missing_docs)]` active.
-- Deprecated compat shims in `src/compat.rs` (`Context`, `Scope`) are marked `#[deprecated]` and will be removed; avoid new callers.
 - Integration tests: 0 in `tests/`; lifecycle covered by unit tests per topology.
 
 ## Related

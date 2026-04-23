@@ -18,15 +18,15 @@ use std::{
 
 use dashmap::DashMap;
 use nebula_action::{
-    ActionContext, ActionError, ActionResult,
-    capability::{ResourceAccessor, default_resource_accessor},
+    ActionContext, ActionError, ActionResult, capability::default_resource_accessor,
 };
 use nebula_core::{
     ActionKey, NodeKey,
+    accessor::{CredentialAccessor, ResourceAccessor},
     id::{ExecutionId, InstanceId, WorkflowId},
     node_key,
 };
-use nebula_credential::{CredentialAccessor, default_credential_accessor};
+use nebula_credential::default_credential_accessor;
 // ScopeLevel removed from ActionContext
 // use nebula_core::scope::ScopeLevel;
 use nebula_execution::ExecutionStatus;
@@ -2253,7 +2253,12 @@ impl WorkflowEngine {
                     move |id: &str| {
                         let resolver_fn = Arc::clone(&resolver_fn);
                         let id = id.to_owned();
-                        async move { (resolver_fn)(&id).await }
+                        async move {
+                            let snapshot = (resolver_fn)(&id).await.map_err(|e| {
+                                nebula_core::CoreError::CredentialNotFound { key: e.to_string() }
+                            })?;
+                            Ok(Box::new(snapshot) as Box<dyn std::any::Any + Send + Sync>)
+                        }
                     },
                     node_def.action_key.as_str().to_owned(),
                 ))
@@ -2992,7 +2997,7 @@ impl NodeTask {
                 &self.action_key,
                 self.interface_version.as_ref(),
                 self.input,
-                action_ctx,
+                &action_ctx,
             )
             .await;
 
@@ -3769,15 +3774,10 @@ mod tests {
     use std::time::Duration;
 
     use nebula_action::{
-        ActionError, TriggerContext,
-        action::Action,
-        context::{Context, CredentialContextExt},
-        dependency::ActionDependencies,
-        metadata::ActionMetadata,
-        result::ActionResult,
-        stateless::StatelessAction,
+        ActionError, TriggerContext, action::Action, context::CredentialContextExt,
+        metadata::ActionMetadata, result::ActionResult, stateless::StatelessAction,
     };
-    use nebula_core::action_key;
+    use nebula_core::{DeclaresDependencies, action_key};
     use nebula_runtime::{
         ActionExecutor, DataPassingPolicy, InProcessSandbox, registry::ActionRegistry,
     };
@@ -3794,7 +3794,7 @@ mod tests {
         meta: ActionMetadata,
     }
 
-    impl ActionDependencies for EchoHandler {}
+    impl DeclaresDependencies for EchoHandler {}
     impl Action for EchoHandler {
         fn metadata(&self) -> &ActionMetadata {
             &self.meta
@@ -3808,7 +3808,7 @@ mod tests {
         async fn execute(
             &self,
             input: Self::Input,
-            _ctx: &impl Context,
+            _ctx: &ActionContext,
         ) -> Result<ActionResult<Self::Output>, ActionError> {
             Ok(ActionResult::success(input))
         }
@@ -3818,7 +3818,7 @@ mod tests {
         meta: ActionMetadata,
     }
 
-    impl ActionDependencies for FailHandler {}
+    impl DeclaresDependencies for FailHandler {}
     impl Action for FailHandler {
         fn metadata(&self) -> &ActionMetadata {
             &self.meta
@@ -3832,7 +3832,7 @@ mod tests {
         async fn execute(
             &self,
             _input: Self::Input,
-            _ctx: &impl Context,
+            _ctx: &ActionContext,
         ) -> Result<ActionResult<Self::Output>, ActionError> {
             Err(ActionError::fatal("intentional failure"))
         }
@@ -3843,7 +3843,7 @@ mod tests {
         delay: Duration,
     }
 
-    impl ActionDependencies for SlowHandler {}
+    impl DeclaresDependencies for SlowHandler {}
     impl Action for SlowHandler {
         fn metadata(&self) -> &ActionMetadata {
             &self.meta
@@ -3857,7 +3857,7 @@ mod tests {
         async fn execute(
             &self,
             input: Self::Input,
-            ctx: &impl Context,
+            ctx: &ActionContext,
         ) -> Result<ActionResult<Self::Output>, ActionError> {
             tokio::select! {
                 () = tokio::time::sleep(self.delay) => Ok(ActionResult::success(input)),
@@ -4200,7 +4200,7 @@ mod tests {
         meta: ActionMetadata,
     }
 
-    impl ActionDependencies for SkipHandler {}
+    impl DeclaresDependencies for SkipHandler {}
     impl Action for SkipHandler {
         fn metadata(&self) -> &ActionMetadata {
             &self.meta
@@ -4214,7 +4214,7 @@ mod tests {
         async fn execute(
             &self,
             _input: Self::Input,
-            _ctx: &impl Context,
+            _ctx: &ActionContext,
         ) -> Result<ActionResult<Self::Output>, ActionError> {
             Ok(ActionResult::skip("skipped by test"))
         }
@@ -4225,7 +4225,7 @@ mod tests {
         selected: String,
     }
 
-    impl ActionDependencies for BranchHandler {}
+    impl DeclaresDependencies for BranchHandler {}
     impl Action for BranchHandler {
         fn metadata(&self) -> &ActionMetadata {
             &self.meta
@@ -4239,7 +4239,7 @@ mod tests {
         async fn execute(
             &self,
             input: Self::Input,
-            _ctx: &impl Context,
+            _ctx: &ActionContext,
         ) -> Result<ActionResult<Self::Output>, ActionError> {
             Ok(ActionResult::Branch {
                 selected: self.selected.clone(),
@@ -5729,7 +5729,7 @@ mod tests {
             count: Arc<AtomicU32>,
         }
 
-        impl ActionDependencies for CountingHandler {}
+        impl DeclaresDependencies for CountingHandler {}
         impl Action for CountingHandler {
             fn metadata(&self) -> &ActionMetadata {
                 &self.meta
@@ -5743,7 +5743,7 @@ mod tests {
             async fn execute(
                 &self,
                 input: Self::Input,
-                _ctx: &impl Context,
+                _ctx: &ActionContext,
             ) -> Result<ActionResult<Self::Output>, ActionError> {
                 self.count.fetch_add(1, AOrdering::Relaxed);
                 Ok(ActionResult::success(input))
@@ -5833,7 +5833,7 @@ mod tests {
             meta: ActionMetadata,
         }
 
-        impl ActionDependencies for V1Handler {}
+        impl DeclaresDependencies for V1Handler {}
         impl Action for V1Handler {
             fn metadata(&self) -> &ActionMetadata {
                 &self.meta
@@ -5847,7 +5847,7 @@ mod tests {
             async fn execute(
                 &self,
                 _input: Self::Input,
-                _ctx: &impl Context,
+                _ctx: &ActionContext,
             ) -> Result<ActionResult<Self::Output>, ActionError> {
                 Ok(ActionResult::success(serde_json::json!("v1")))
             }
@@ -5858,7 +5858,7 @@ mod tests {
             meta: ActionMetadata,
         }
 
-        impl ActionDependencies for V2Handler {}
+        impl DeclaresDependencies for V2Handler {}
         impl Action for V2Handler {
             fn metadata(&self) -> &ActionMetadata {
                 &self.meta
@@ -5872,7 +5872,7 @@ mod tests {
             async fn execute(
                 &self,
                 _input: Self::Input,
-                _ctx: &impl Context,
+                _ctx: &ActionContext,
             ) -> Result<ActionResult<Self::Output>, ActionError> {
                 Ok(ActionResult::success(serde_json::json!("v2")))
             }
@@ -6235,7 +6235,7 @@ mod tests {
             meta: ActionMetadata,
             invoked: Arc<AtomicU32>,
         }
-        impl ActionDependencies for NeverRunHandler {}
+        impl DeclaresDependencies for NeverRunHandler {}
         impl Action for NeverRunHandler {
             fn metadata(&self) -> &ActionMetadata {
                 &self.meta
@@ -6248,7 +6248,7 @@ mod tests {
             async fn execute(
                 &self,
                 input: Self::Input,
-                _ctx: &impl Context,
+                _ctx: &ActionContext,
             ) -> Result<ActionResult<Self::Output>, ActionError> {
                 self.invoked.fetch_add(1, AOrdering::Relaxed);
                 Ok(ActionResult::success(input))
@@ -6887,7 +6887,7 @@ mod tests {
             meta: ActionMetadata,
         }
 
-        impl ActionDependencies for PanicHandler {}
+        impl DeclaresDependencies for PanicHandler {}
         impl Action for PanicHandler {
             fn metadata(&self) -> &ActionMetadata {
                 &self.meta
@@ -6901,7 +6901,7 @@ mod tests {
             async fn execute(
                 &self,
                 _input: Self::Input,
-                _ctx: &impl Context,
+                _ctx: &ActionContext,
             ) -> Result<ActionResult<Self::Output>, ActionError> {
                 panic!("intentional panic for test");
             }

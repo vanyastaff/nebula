@@ -7,7 +7,7 @@
 use std::marker::PhantomData;
 
 use crate::{
-    ctx::Ctx,
+    context::ResourceContext,
     error::Error,
     resource::Resource,
     topology::event_source::{EventSource, config::Config},
@@ -52,7 +52,7 @@ where
         &self,
         resource: &R,
         runtime: &R::Runtime,
-        ctx: &dyn Ctx,
+        ctx: &ResourceContext,
     ) -> Result<R::Subscription, Error> {
         resource.subscribe(runtime, ctx).await.map_err(Into::into)
     }

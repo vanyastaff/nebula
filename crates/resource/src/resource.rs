@@ -9,7 +9,7 @@ use std::future::Future;
 use nebula_core::ResourceKey;
 use nebula_credential::AuthScheme;
 
-use crate::ctx::Ctx;
+use crate::context::ResourceContext;
 
 /// Trait-object-safe marker for resource type registration and discovery.
 ///
@@ -240,7 +240,7 @@ pub trait Resource: Send + Sync + 'static {
         &self,
         config: &Self::Config,
         auth: &Self::Auth,
-        ctx: &dyn Ctx,
+        ctx: &ResourceContext,
     ) -> impl Future<Output = Result<Self::Runtime, Self::Error>> + Send;
 
     /// Health-checks an existing runtime.

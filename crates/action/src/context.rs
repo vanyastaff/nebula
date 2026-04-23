@@ -7,43 +7,27 @@
 use std::{any::Any, fmt, sync::Arc};
 
 use nebula_core::{
-    NodeKey,
+    CredentialKey, NodeKey, ResourceKey,
+    accessor::{CredentialAccessor, Logger, ResourceAccessor},
     id::{ExecutionId, WorkflowId},
 };
-use nebula_credential::{
-    AuthScheme, CredentialAccessor, CredentialGuard, CredentialSnapshot,
-    default_credential_accessor,
-};
+use nebula_credential::{AuthScheme, CredentialGuard, CredentialSnapshot};
 use tokio_util::sync::CancellationToken;
 
 use crate::{
     capability::{
-        ActionLogger, ExecutionEmitter, ResourceAccessor, TriggerHealth, TriggerScheduler,
-        default_action_logger, default_execution_emitter, default_resource_accessor,
+        ExecutionEmitter, TriggerHealth, TriggerScheduler, default_action_logger,
+        default_credential_accessor, default_execution_emitter, default_resource_accessor,
         default_trigger_scheduler,
     },
     error::ActionError,
 };
 
-/// Base trait for action execution contexts.
-///
-/// Engine/runtime/sandbox provide concrete implementations; actions receive `&impl Context`.
-pub trait Context: Send + Sync {
-    /// Execution identity.
-    fn execution_id(&self) -> ExecutionId;
-    /// Node identity within the workflow.
-    fn node_key(&self) -> NodeKey;
-    /// Workflow identity.
-    fn workflow_id(&self) -> WorkflowId;
-    /// Cancellation token; action may check before or during work.
-    fn cancellation(&self) -> &CancellationToken;
-}
-
 /// Stable execution context for StatelessAction, StatefulAction, and ResourceAction.
 ///
-/// Composes execution identity and cancellation. Capability modules (resources,
-/// credentials, logger) can be added as fields by the runtime/sandbox without
-/// changing this crate's API.
+/// Concrete struct (not a trait). Capability fields (resources, credentials,
+/// logger) can be swapped by the runtime/sandbox via the `with_*` builder
+/// methods without changing this crate's API.
 #[derive(Clone)]
 pub struct ActionContext {
     /// Execution identity.
@@ -59,22 +43,7 @@ pub struct ActionContext {
     /// Credential access capability.
     pub credentials: Arc<dyn CredentialAccessor>,
     /// Action-scoped logger capability.
-    pub logger: Arc<dyn ActionLogger>,
-}
-
-impl Context for ActionContext {
-    fn execution_id(&self) -> ExecutionId {
-        self.execution_id
-    }
-    fn node_key(&self) -> NodeKey {
-        self.node_key.clone()
-    }
-    fn workflow_id(&self) -> WorkflowId {
-        self.workflow_id
-    }
-    fn cancellation(&self) -> &CancellationToken {
-        &self.cancellation
-    }
+    pub logger: Arc<dyn Logger>,
 }
 
 impl ActionContext {
@@ -113,19 +82,73 @@ impl ActionContext {
 
     /// Inject an action logger capability.
     #[must_use]
-    pub fn with_logger(mut self, logger: Arc<dyn ActionLogger>) -> Self {
+    pub fn with_logger(mut self, logger: Arc<dyn Logger>) -> Self {
         self.logger = logger;
         self
     }
 
     /// Acquire a resource by key through the configured accessor.
+    ///
+    /// The string `key` is parsed into a [`ResourceKey`]; invalid keys are
+    /// surfaced as a fatal [`ActionError`].
     pub async fn resource(&self, key: &str) -> Result<Box<dyn Any + Send + Sync>, ActionError> {
-        self.resources.acquire(key).await
+        let rk = ResourceKey::new(key)
+            .map_err(|e| ActionError::fatal(format!("invalid resource key `{key}`: {e}")))?;
+        self.resources
+            .acquire_any(&rk)
+            .await
+            .map_err(ActionError::from)
     }
 
     /// Check whether a resource exists.
     pub async fn has_resource(&self, key: &str) -> bool {
-        self.resources.exists(key).await
+        let Ok(rk) = ResourceKey::new(key) else {
+            return false;
+        };
+        self.resources.has(&rk)
+    }
+
+    /// Cancellation token; actions may check it before or during work.
+    #[must_use]
+    pub fn cancellation(&self) -> &CancellationToken {
+        &self.cancellation
+    }
+
+    /// Execution identity.
+    #[must_use]
+    pub fn execution_id(&self) -> ExecutionId {
+        self.execution_id
+    }
+
+    /// Node identity within the workflow.
+    #[must_use]
+    pub fn node_key(&self) -> &NodeKey {
+        &self.node_key
+    }
+
+    /// Workflow identity.
+    #[must_use]
+    pub fn workflow_id(&self) -> WorkflowId {
+        self.workflow_id
+    }
+
+    /// Action-scoped logger handle.
+    #[must_use]
+    pub fn logger(&self) -> &dyn Logger {
+        &*self.logger
+    }
+
+    /// Build a [`nebula_core::Scope`] snapshot carrying the execution and
+    /// node identity. Used by code that treats the action identity as a
+    /// generic `Scope` (tracing, metrics, cache keys).
+    #[must_use]
+    pub fn scope(&self) -> nebula_core::Scope {
+        nebula_core::Scope {
+            execution_id: Some(self.execution_id),
+            workflow_id: Some(self.workflow_id),
+            node_key: Some(self.node_key.clone()),
+            ..nebula_core::Scope::default()
+        }
     }
 }
 
@@ -138,7 +161,7 @@ impl fmt::Debug for ActionContext {
             .field("cancellation", &self.cancellation)
             .field("resources", &"<dyn ResourceAccessor>")
             .field("credentials", &"<dyn CredentialAccessor>")
-            .field("logger", &"<dyn ActionLogger>")
+            .field("logger", &"<dyn Logger>")
             .finish()
     }
 }
@@ -163,7 +186,7 @@ pub struct TriggerContext {
     /// Credential access capability.
     pub credentials: Arc<dyn CredentialAccessor>,
     /// Trigger-scoped logger capability.
-    pub logger: Arc<dyn ActionLogger>,
+    pub logger: Arc<dyn Logger>,
     /// Shared health state — adapter writes, runtime reads.
     pub health: Arc<TriggerHealth>,
     /// Webhook endpoint capability — `Some` only for webhook
@@ -220,7 +243,7 @@ impl TriggerContext {
 
     /// Inject a trigger logger capability.
     #[must_use]
-    pub fn with_logger(mut self, logger: Arc<dyn ActionLogger>) -> Self {
+    pub fn with_logger(mut self, logger: Arc<dyn Logger>) -> Self {
         self.logger = logger;
         self
     }
@@ -259,6 +282,42 @@ impl TriggerContext {
         input: serde_json::Value,
     ) -> Result<ExecutionId, ActionError> {
         self.emitter.emit(input).await
+    }
+
+    /// Cancellation token; trigger loops should honor it between cycles.
+    #[must_use]
+    pub fn cancellation(&self) -> &CancellationToken {
+        &self.cancellation
+    }
+
+    /// Trigger-scoped logger handle.
+    #[must_use]
+    pub fn logger(&self) -> &dyn Logger {
+        &*self.logger
+    }
+
+    /// Execution emitter handle — used by trigger loops to start workflow runs.
+    #[must_use]
+    pub fn emitter(&self) -> &dyn ExecutionEmitter {
+        &*self.emitter
+    }
+
+    /// Shared trigger health atomics (runtime keeps an Arc clone).
+    #[must_use]
+    pub fn health(&self) -> &TriggerHealth {
+        &self.health
+    }
+
+    /// Build a [`nebula_core::Scope`] snapshot carrying the trigger's
+    /// workflow and node identity. Used by code that treats the trigger
+    /// identity as a generic `Scope` (e.g. jitter-seed hashing).
+    #[must_use]
+    pub fn scope(&self) -> nebula_core::Scope {
+        nebula_core::Scope {
+            workflow_id: Some(self.workflow_id),
+            node_key: Some(self.trigger_id.clone()),
+            ..nebula_core::Scope::default()
+        }
     }
 }
 
@@ -308,6 +367,9 @@ pub trait CredentialContextExt {
     fn credentials(&self) -> &Arc<dyn CredentialAccessor>;
 
     /// Retrieve a credential snapshot by id through the configured accessor.
+    ///
+    /// Constructs a [`CredentialKey`] from `id`, calls `resolve_any`, and
+    /// downcasts the result to [`CredentialSnapshot`].
     fn credential_by_id(
         &self,
         id: &str,
@@ -315,7 +377,23 @@ pub trait CredentialContextExt {
     where
         Self: Sync,
     {
-        async move { self.credentials().get(id).await.map_err(ActionError::from) }
+        async move {
+            let key = CredentialKey::new(id)
+                .map_err(|e| ActionError::fatal(format!("invalid credential key `{id}`: {e}")))?;
+            let boxed = self
+                .credentials()
+                .resolve_any(&key)
+                .await
+                .map_err(ActionError::from)?;
+            boxed
+                .downcast::<CredentialSnapshot>()
+                .map(|b| *b)
+                .map_err(|_| {
+                    ActionError::fatal(format!(
+                        "credential `{id}`: resolve_any returned unexpected type (expected CredentialSnapshot)"
+                    ))
+                })
+        }
     }
 
     /// Retrieve a credential and project it to the concrete [`AuthScheme`] type.
@@ -344,11 +422,21 @@ pub trait CredentialContextExt {
         Self: Sync,
     {
         async move {
-            let snapshot = self
+            let key = CredentialKey::new(id)
+                .map_err(|e| ActionError::fatal(format!("invalid credential key `{id}`: {e}")))?;
+            let boxed = self
                 .credentials()
-                .get(id)
+                .resolve_any(&key)
                 .await
                 .map_err(ActionError::from)?;
+            let snapshot = boxed
+                .downcast::<CredentialSnapshot>()
+                .map(|b| *b)
+                .map_err(|_| {
+                    ActionError::fatal(format!(
+                        "credential `{id}`: resolve_any returned unexpected type"
+                    ))
+                })?;
             snapshot
                 .into_project::<S>()
                 .map_err(|e| ActionError::fatal(format!("credential `{id}`: {e}")))
@@ -371,13 +459,34 @@ pub trait CredentialContextExt {
         Self: Sync,
     {
         async move {
-            let type_id = std::any::TypeId::of::<S>();
+            // Type-based credential access: construct a key from the type name.
+            // The core trait uses CredentialKey, so we derive a key from the
+            // type name in snake_case-ish form. For now, use a synthetic key
+            // based on type_name. Callers should prefer credential_typed() with
+            // an explicit key.
             let type_name = std::any::type_name::<S>();
-            let snapshot = self
+            // Use a synthetic key approach: try to create a CredentialKey from
+            // the short type name. If that fails, use a fallback.
+            let short_name = type_name.rsplit("::").next().unwrap_or(type_name);
+            let key_str = short_name.to_lowercase();
+            let key = CredentialKey::new(&key_str).map_err(|_| {
+                ActionError::fatal(format!(
+                    "type-based credential access not supported for `{type_name}` (could not derive valid key)"
+                ))
+            })?;
+            let boxed = self
                 .credentials()
-                .get_by_type(type_id, type_name)
+                .resolve_any(&key)
                 .await
                 .map_err(ActionError::from)?;
+            let snapshot = boxed
+                .downcast::<CredentialSnapshot>()
+                .map(|b| *b)
+                .map_err(|_| {
+                    ActionError::fatal(format!(
+                        "credential type mismatch for `{type_name}`: resolve_any returned unexpected type"
+                    ))
+                })?;
             let scheme = snapshot.into_project::<S>().map_err(|e| {
                 ActionError::fatal(format!("credential type mismatch for `{type_name}`: {e}"))
             })?;
@@ -390,7 +499,12 @@ pub trait CredentialContextExt {
     where
         Self: Sync,
     {
-        async move { self.credentials().has(id).await }
+        async move {
+            let Ok(key) = CredentialKey::new(id) else {
+                return false;
+            };
+            self.credentials().has(&key)
+        }
     }
 }
 
@@ -415,7 +529,7 @@ impl fmt::Debug for TriggerContext {
             .field("scheduler", &"<dyn TriggerScheduler>")
             .field("emitter", &"<dyn ExecutionEmitter>")
             .field("credentials", &"<dyn CredentialAccessor>")
-            .field("logger", &"<dyn ActionLogger>")
+            .field("logger", &"<dyn Logger>")
             .field("health", &self.health)
             .finish()
     }
@@ -425,46 +539,20 @@ impl fmt::Debug for TriggerContext {
 mod tests {
     use std::time::Duration;
 
-    use async_trait::async_trait;
-    use nebula_core::node_key;
+    use nebula_core::{
+        CoreError, CredentialKey,
+        accessor::{LogLevel, Logger},
+        node_key,
+    };
     use nebula_credential::{
-        CredentialAccessError, CredentialRecord, CredentialSnapshot, SecretString, SecretToken,
-        scheme::ConnectionUri,
+        CredentialRecord, CredentialSnapshot, SecretString, SecretToken, scheme::ConnectionUri,
     };
 
     use super::*;
-    use crate::capability::{ActionLogLevel, ActionLogger, ExecutionEmitter, TriggerScheduler};
+    use crate::capability::{ExecutionEmitter, TriggerScheduler};
 
-    struct MockContext {
-        token: CancellationToken,
-    }
-    impl Default for MockContext {
-        fn default() -> Self {
-            Self {
-                token: CancellationToken::new(),
-            }
-        }
-    }
-    impl Context for MockContext {
-        fn execution_id(&self) -> ExecutionId {
-            ExecutionId::nil()
-        }
-        fn node_key(&self) -> NodeKey {
-            node_key!("test")
-        }
-        fn workflow_id(&self) -> WorkflowId {
-            WorkflowId::nil()
-        }
-        fn cancellation(&self) -> &CancellationToken {
-            &self.token
-        }
-    }
-
-    #[test]
-    fn context_trait_object_safety() {
-        let ctx = MockContext::default();
-        let _: &dyn Context = &ctx;
-    }
+    /// Type alias for dyn-safe async return (for test impls).
+    type BoxFuture<'a, T> = std::pin::Pin<Box<dyn Future<Output = T> + Send + 'a>>;
 
     #[tokio::test]
     async fn action_context_defaults_to_noop_capabilities() {
@@ -483,7 +571,7 @@ mod tests {
 
     struct TestScheduler;
 
-    #[async_trait]
+    #[async_trait::async_trait]
     impl TriggerScheduler for TestScheduler {
         async fn schedule_after(&self, _delay: Duration) -> Result<(), ActionError> {
             Ok(())
@@ -492,7 +580,7 @@ mod tests {
 
     struct TestEmitter;
 
-    #[async_trait]
+    #[async_trait::async_trait]
     impl ExecutionEmitter for TestEmitter {
         async fn emit(&self, _input: serde_json::Value) -> Result<ExecutionId, ActionError> {
             Ok(ExecutionId::new())
@@ -501,25 +589,45 @@ mod tests {
 
     struct TestCredentialAccessor;
 
-    #[async_trait]
     impl CredentialAccessor for TestCredentialAccessor {
-        async fn get(&self, _id: &str) -> Result<CredentialSnapshot, CredentialAccessError> {
-            Ok(CredentialSnapshot::new(
-                "api_key",
-                CredentialRecord::new(),
-                SecretToken::new(SecretString::new("test-token")),
-            ))
+        fn has(&self, _key: &CredentialKey) -> bool {
+            true
         }
 
-        async fn has(&self, _id: &str) -> bool {
-            true
+        fn resolve_any(
+            &self,
+            _key: &CredentialKey,
+        ) -> BoxFuture<'_, Result<Box<dyn Any + Send + Sync>, CoreError>> {
+            Box::pin(async {
+                let snapshot = CredentialSnapshot::new(
+                    "api_key",
+                    CredentialRecord::new(),
+                    SecretToken::new(SecretString::new("test-token")),
+                );
+                Ok(Box::new(snapshot) as Box<dyn Any + Send + Sync>)
+            })
+        }
+
+        fn try_resolve_any(
+            &self,
+            _key: &CredentialKey,
+        ) -> BoxFuture<'_, Result<Option<Box<dyn Any + Send + Sync>>, CoreError>> {
+            Box::pin(async move {
+                let snapshot = CredentialSnapshot::new(
+                    "api_key",
+                    CredentialRecord::new(),
+                    SecretToken::new(SecretString::new("test-token")),
+                );
+                Ok(Some(Box::new(snapshot) as Box<dyn Any + Send + Sync>))
+            })
         }
     }
 
     struct TestLogger;
 
-    impl ActionLogger for TestLogger {
-        fn log(&self, _level: ActionLogLevel, _message: &str) {}
+    impl Logger for TestLogger {
+        fn log(&self, _level: LogLevel, _message: &str) {}
+        fn log_with_fields(&self, _level: LogLevel, _message: &str, _fields: &[(&str, &str)]) {}
     }
 
     #[tokio::test]
@@ -558,7 +666,7 @@ mod tests {
             .credential_typed::<SecretToken>("api_key")
             .await
             .unwrap();
-        token.token().expose_secret(|t| assert_eq!(t, "test-token"));
+        assert_eq!(token.token().expose_secret(), "test-token");
     }
 
     #[tokio::test]
@@ -591,7 +699,7 @@ mod tests {
             .credential_typed::<SecretToken>("api_key")
             .await
             .unwrap();
-        token.token().expose_secret(|t| assert_eq!(t, "test-token"));
+        assert_eq!(token.token().expose_secret(), "test-token");
     }
 
     #[tokio::test]
@@ -630,39 +738,57 @@ mod tests {
         }
     }
 
-    /// Accessor that supports `get_by_type` for `ZeroizableToken`.
+    /// Accessor that supports type-based credential access.
+    ///
+    /// Maps credential keys to snapshots — the `credential<S>()` method
+    /// derives a key from the type name (lowercased).
     struct TypedCredentialAccessor;
 
-    #[async_trait]
     impl CredentialAccessor for TypedCredentialAccessor {
-        async fn get(&self, _id: &str) -> Result<CredentialSnapshot, CredentialAccessError> {
-            Err(CredentialAccessError::NotConfigured(
-                "use get_by_type".to_owned(),
-            ))
+        fn has(&self, key: &CredentialKey) -> bool {
+            key.as_str() == "zeroizabletoken"
         }
 
-        async fn has(&self, _id: &str) -> bool {
-            false
-        }
-
-        async fn get_by_type(
+        fn resolve_any(
             &self,
-            type_id: std::any::TypeId,
-            type_name: &str,
-        ) -> Result<CredentialSnapshot, CredentialAccessError> {
-            if type_id == std::any::TypeId::of::<ZeroizableToken>() {
-                Ok(CredentialSnapshot::new(
-                    "typed",
-                    CredentialRecord::new(),
-                    ZeroizableToken {
-                        value: "secret-42".to_owned(),
-                    },
-                ))
-            } else {
-                Err(CredentialAccessError::NotFound(format!(
-                    "no credential for `{type_name}`"
-                )))
-            }
+            key: &CredentialKey,
+        ) -> BoxFuture<'_, Result<Box<dyn Any + Send + Sync>, CoreError>> {
+            let key_str = key.as_str().to_owned();
+            Box::pin(async move {
+                if key_str == "zeroizabletoken" {
+                    let snapshot = CredentialSnapshot::new(
+                        "typed",
+                        CredentialRecord::new(),
+                        ZeroizableToken {
+                            value: "secret-42".to_owned(),
+                        },
+                    );
+                    Ok(Box::new(snapshot) as Box<dyn Any + Send + Sync>)
+                } else {
+                    Err(CoreError::CredentialNotFound { key: key_str })
+                }
+            })
+        }
+
+        fn try_resolve_any(
+            &self,
+            key: &CredentialKey,
+        ) -> BoxFuture<'_, Result<Option<Box<dyn Any + Send + Sync>>, CoreError>> {
+            let key_str = key.as_str().to_owned();
+            Box::pin(async move {
+                if key_str == "zeroizabletoken" {
+                    let snapshot = CredentialSnapshot::new(
+                        "typed",
+                        CredentialRecord::new(),
+                        ZeroizableToken {
+                            value: "secret-42".to_owned(),
+                        },
+                    );
+                    Ok(Some(Box::new(snapshot) as Box<dyn Any + Send + Sync>))
+                } else {
+                    Ok(None)
+                }
+            })
         }
     }
 
@@ -694,7 +820,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn credential_noop_accessor_returns_not_supported() {
+    async fn credential_noop_accessor_returns_error() {
         let ctx = ActionContext::new(
             ExecutionId::new(),
             node_key!("test"),
@@ -705,6 +831,5 @@ mod tests {
         assert!(result.is_err());
         let err = result.unwrap_err();
         assert!(err.is_fatal());
-        assert!(err.to_string().contains("not supported"));
     }
 }

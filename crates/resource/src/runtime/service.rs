@@ -8,9 +8,9 @@
 use std::sync::Arc;
 
 use crate::{
-    ctx::Ctx,
+    context::ResourceContext,
     error::Error,
-    handle::ResourceHandle,
+    guard::ResourceGuard,
     metrics::ResourceOpsMetrics,
     options::AcquireOptions,
     release_queue::ReleaseQueue,
@@ -66,26 +66,26 @@ where
     pub async fn acquire(
         &self,
         resource: &R,
-        ctx: &dyn Ctx,
+        ctx: &ResourceContext,
         release_queue: &Arc<ReleaseQueue>,
         generation: u64,
         _options: &AcquireOptions,
         metrics: Option<ResourceOpsMetrics>,
-    ) -> Result<ResourceHandle<R>, Error> {
+    ) -> Result<ResourceGuard<R>, Error> {
         let token = resource
             .acquire_token(&self.runtime, ctx)
             .await
             .map_err(Into::into)?;
 
         if R::TOKEN_MODE == TokenMode::Cloned {
-            return Ok(ResourceHandle::owned(token, R::key(), TopologyTag::Service));
+            return Ok(ResourceGuard::owned(token, R::key(), TopologyTag::Service));
         }
 
         let runtime = self.runtime.clone();
         let resource_clone = resource.clone();
         let rq = release_queue.clone();
 
-        Ok(ResourceHandle::guarded(
+        Ok(ResourceGuard::guarded(
             token,
             R::key(),
             TopologyTag::Service,
@@ -117,7 +117,7 @@ mod tests {
 
     use super::*;
     use crate::{
-        ctx::BasicCtx,
+        context::ResourceContext,
         options::AcquireOptions,
         resource::{ResourceConfig, ResourceMetadata},
     };
@@ -165,7 +165,7 @@ mod tests {
             &self,
             _config: &String,
             _auth: &(),
-            _ctx: &dyn Ctx,
+            _ctx: &ResourceContext,
         ) -> Result<String, SvcError> {
             Ok("runtime".into())
         }
@@ -181,7 +181,7 @@ mod tests {
         fn acquire_token(
             &self,
             runtime: &String,
-            _ctx: &dyn Ctx,
+            _ctx: &ResourceContext,
         ) -> impl Future<Output = Result<String, SvcError>> + Send {
             let token = format!("{runtime}-token");
             async move { Ok(token) }
@@ -210,7 +210,7 @@ mod tests {
             &self,
             _config: &String,
             _auth: &(),
-            _ctx: &dyn Ctx,
+            _ctx: &ResourceContext,
         ) -> Result<String, SvcError> {
             Ok("tracked-runtime".into())
         }
@@ -226,7 +226,7 @@ mod tests {
         fn acquire_token(
             &self,
             runtime: &String,
-            _ctx: &dyn Ctx,
+            _ctx: &ResourceContext,
         ) -> impl Future<Output = Result<String, SvcError>> + Send {
             let token = format!("{runtime}-tracked-token");
             async move { Ok(token) }
@@ -245,8 +245,14 @@ mod tests {
         }
     }
 
-    fn test_ctx() -> BasicCtx {
-        BasicCtx::new(ExecutionId::new())
+    fn test_ctx() -> ResourceContext {
+        use nebula_core::scope::Scope;
+        use tokio_util::sync::CancellationToken;
+        let scope = Scope {
+            execution_id: Some(ExecutionId::new()),
+            ..Default::default()
+        };
+        ResourceContext::minimal(scope, CancellationToken::new())
     }
 
     #[tokio::test]

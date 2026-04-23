@@ -76,16 +76,16 @@ fn test_secret_string_redacted() {
 fn test_secret_string_expose_secret() {
     let secret = SecretString::new("test-secret-value");
 
-    let length = secret.expose_secret(str::len);
+    let length = secret.expose_secret().len();
     assert_eq!(length, 17);
 
-    let uppercase = secret.expose_secret(str::to_uppercase);
+    let uppercase = secret.expose_secret().to_uppercase();
     assert_eq!(uppercase, "TEST-SECRET-VALUE");
 
-    let contains_test = secret.expose_secret(|s| s.contains("test"));
+    let contains_test = secret.expose_secret().contains("test");
     assert!(contains_test);
 
-    let first_four = secret.expose_secret(|s| s.chars().take(4).collect::<String>());
+    let first_four: String = secret.expose_secret().chars().take(4).collect();
     assert_eq!(first_four, "test");
 }
 

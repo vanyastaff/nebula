@@ -325,25 +325,38 @@ pub trait NotificationSender: Send + Sync {
 /// # Example
 ///
 /// ```rust,ignore
-/// use nebula_credential::retry::RetryPolicy;
+/// use nebula_resilience::retry::{BackoffConfig, JitterConfig, RetryConfig};
 /// use nebula_credential::rotation::events::{send_notification, NotificationEvent};
 ///
-/// let policy = RetryPolicy::rotation_defaults();
+/// let config = RetryConfig::new(6).unwrap()
+///     .backoff(BackoffConfig::exponential_default())
+///     .jitter(JitterConfig::Full { factor: 0.25, seed: None });
 /// let event = NotificationEvent::RotationComplete { /* ... */ };
-/// send_notification(&slack_notifier, &event, &policy).await?;
+/// send_notification(&slack_notifier, &event, config).await?;
 /// ```
 pub async fn send_notification<S: NotificationSender>(
     sender: &S,
     event: &NotificationEvent,
-    policy: &crate::retry::RetryPolicy,
+    config: nebula_resilience::retry::RetryConfig<super::error::RotationError>,
 ) -> RotationResult<()> {
-    policy
-        .validate()
-        .map_err(|reason| super::error::RotationError::InvalidPolicy {
-            reason: format!("retry policy: {reason}"),
-        })?;
+    let config = config.on_retry(
+        |err: &super::error::RotationError, delay: std::time::Duration, attempt: u32| {
+            tracing::warn!(
+                attempt,
+                delay_ms = delay.as_millis(),
+                error = %err,
+                "Notification send failed, retrying after delay"
+            );
+        },
+    );
 
-    crate::retry::retry_with_policy(policy, || async { sender.send(event).await }).await
+    nebula_resilience::retry_with(config, || async { sender.send(event).await })
+        .await
+        .map_err(|call_err| match call_err {
+            nebula_resilience::CallError::Operation(e)
+            | nebula_resilience::CallError::RetriesExhausted { last: e, .. } => e,
+            _ => unreachable!("retry_with only returns Operation or RetriesExhausted"),
+        })
 }
 
 /// Log a rollback event with structured logging
@@ -372,12 +385,12 @@ pub async fn send_notification<S: NotificationSender>(
 /// .with_rollback_triggered()
 /// .with_retry_count(3);
 ///
-/// log_rollback_event(&error_log, Some(&notifier), &retry_policy).await?;
+/// log_rollback_event(&error_log, Some(&notifier), config).await?;
 /// ```
 pub async fn log_rollback_event<S: NotificationSender>(
     error_log: &super::error::RotationErrorLog,
     sender: Option<&S>,
-    policy: &crate::retry::RetryPolicy,
+    config: nebula_resilience::retry::RetryConfig<super::error::RotationError>,
 ) -> RotationResult<()> {
     use tracing::warn;
 
@@ -407,7 +420,7 @@ pub async fn log_rollback_event<S: NotificationSender>(
                 .unwrap_or_else(|| "unknown".to_string()),
         }));
 
-        send_notification(sender, &event, policy).await?;
+        send_notification(sender, &event, config).await?;
     }
 
     Ok(())
@@ -697,7 +710,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_send_notification_success() {
-        use crate::retry::RetryPolicy;
+        use nebula_resilience::retry::{BackoffConfig, JitterConfig, RetryConfig};
 
         let sender = MockSender { should_fail: false };
         let event = NotificationEvent::RotationStarting {
@@ -706,14 +719,24 @@ mod tests {
             transaction_id: "tx-123".to_string(),
         };
 
-        let policy = RetryPolicy::rotation_defaults();
-        let result = send_notification(&sender, &event, &policy).await;
+        let config = RetryConfig::new(6)
+            .unwrap()
+            .backoff(BackoffConfig::Exponential {
+                base: std::time::Duration::from_millis(100),
+                multiplier: 2.0,
+                max: std::time::Duration::from_secs(32),
+            })
+            .jitter(JitterConfig::Full {
+                factor: 0.25,
+                seed: None,
+            });
+        let result = send_notification(&sender, &event, config).await;
         assert!(result.is_ok());
     }
 
     #[tokio::test]
     async fn test_send_notification_failure() {
-        use crate::retry::RetryPolicy;
+        use nebula_resilience::retry::{BackoffConfig, RetryConfig};
 
         let sender = MockSender { should_fail: true };
         let event = NotificationEvent::RotationStarting {
@@ -723,14 +746,14 @@ mod tests {
         };
 
         // Use short delays so test doesn't actually wait 30s.
-        let policy = RetryPolicy {
-            max_retries: 2,
-            base_delay_ms: 10,
-            max_delay_ms: 100,
-            multiplier: 2.0,
-            jitter: false,
-        };
-        let result = send_notification(&sender, &event, &policy).await;
+        let config = RetryConfig::new(3)
+            .unwrap()
+            .backoff(BackoffConfig::Exponential {
+                base: std::time::Duration::from_millis(10),
+                multiplier: 2.0,
+                max: std::time::Duration::from_millis(100),
+            });
+        let result = send_notification(&sender, &event, config).await;
         assert!(result.is_err());
     }
 }

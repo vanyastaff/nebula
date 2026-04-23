@@ -10,9 +10,9 @@ use std::sync::Arc;
 use tokio::{sync::Semaphore, time};
 
 use crate::{
-    ctx::Ctx,
+    context::ResourceContext,
     error::Error,
-    handle::ResourceHandle,
+    guard::ResourceGuard,
     metrics::ResourceOpsMetrics,
     options::AcquireOptions,
     release_queue::ReleaseQueue,
@@ -76,12 +76,12 @@ where
     pub async fn acquire(
         &self,
         resource: &R,
-        ctx: &dyn Ctx,
+        ctx: &ResourceContext,
         release_queue: &Arc<ReleaseQueue>,
         generation: u64,
         options: &AcquireOptions,
         metrics: Option<ResourceOpsMetrics>,
-    ) -> Result<ResourceHandle<R>, Error> {
+    ) -> Result<ResourceGuard<R>, Error> {
         let timeout = options.remaining().unwrap_or(self.config.acquire_timeout);
         let permit =
             match time::timeout(timeout, self.session_semaphore.clone().acquire_owned()).await {
@@ -100,7 +100,7 @@ where
             .map_err(Into::into)?;
 
         // Cancel-safety: if the future is dropped between here and the
-        // return of `ResourceHandle`, the guard logs and drops the session.
+        // return of `ResourceGuard`, the guard logs and drops the session.
         let mut guard = SessionGuard::<R>::new(session);
 
         let runtime = self.runtime.clone();
@@ -108,7 +108,7 @@ where
         let rq = release_queue.clone();
 
         let session = guard.defuse();
-        Ok(ResourceHandle::guarded_with_permit(
+        Ok(ResourceGuard::guarded_with_permit(
             session,
             R::key(),
             TopologyTag::Transport,
@@ -157,7 +157,7 @@ impl<R: Resource> SessionGuard<R> {
     /// After this call, `Drop` is a no-op.
     fn defuse(&mut self) -> R::Lease {
         // Invariant: defuse() is called exactly once, right before
-        // constructing the ResourceHandle.
+        // constructing the ResourceGuard.
         self.session
             .take()
             .unwrap_or_else(|| unreachable!("SessionGuard defused twice"))
@@ -181,7 +181,7 @@ impl<R: Resource> Drop for SessionGuard<R> {
 ///
 /// Calls `close_session`. The semaphore permit is **not** held here — it
 /// was already returned when the handle dropped (it lives in
-/// `HandleInner::Guarded`, not in the callback closure).
+/// `GuardInner::Guarded`, not in the callback closure).
 async fn release_transport_session<R>(
     resource: R,
     runtime: Arc<R::Runtime>,

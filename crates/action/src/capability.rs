@@ -1,18 +1,17 @@
-//! Capability module interfaces for action and trigger contexts.
+//! Trigger-specific capability interfaces and default (no-op) accessor factories.
 //!
-//! These traits are object-safe boundaries injected by runtime/engine so
-//! action code can access resources and logging without coupling to concrete
-//! manager implementations.
-//!
-//! Credential accessor types (`CredentialAccessor`, `CredentialAccessError`,
-//! `ScopedCredentialAccessor`, etc.) live in [`nebula_credential`] and are
-//! imported directly by consumers — `nebula-action` does not re-export them.
-//! Action authors interact with credentials through
-//! [`CredentialGuard`](nebula_credential::CredentialGuard) returned by
-//! [`ActionContext::credential`](crate::ActionContext::credential).
+//! Action execution contexts ([`ActionContext`](crate::ActionContext),
+//! [`TriggerContext`](crate::TriggerContext)) compose capabilities from
+//! `nebula-core` (`Logger`, `ResourceAccessor`, `CredentialAccessor`). This
+//! module adds the two trigger-only interfaces that core does not model
+//! ([`TriggerScheduler`], [`ExecutionEmitter`]), the shared [`TriggerHealth`]
+//! atomics block, and `default_*` constructors that hand out no-op `Arc`s
+//! so contexts can be built before the runtime has wired real capabilities.
 
 use std::{
     any::Any,
+    future::Future,
+    pin::Pin,
     sync::{
         Arc,
         atomic::{AtomicU32, AtomicU64, Ordering::Relaxed},
@@ -21,66 +20,40 @@ use std::{
 };
 
 use async_trait::async_trait;
-use nebula_core::id::ExecutionId;
+use nebula_core::{
+    CoreError, CredentialKey, ResourceKey,
+    accessor::{CredentialAccessor, LogLevel, Logger, ResourceAccessor},
+    id::ExecutionId,
+};
 
 use crate::ActionError;
 
-/// Object-safe resource accessor injected into [`crate::ActionContext`].
-#[async_trait]
-pub trait ResourceAccessor: Send + Sync {
-    /// Acquire a resource by key.
-    ///
-    /// Returns a type-erased instance that action code can downcast.
-    async fn acquire(&self, key: &str) -> Result<Box<dyn Any + Send + Sync>, ActionError>;
+/// Dyn-safe async return (mirrors `nebula-core::accessor::BoxFuture`).
+type BoxFut<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
 
-    /// Check whether a resource exists for the given key.
-    async fn exists(&self, key: &str) -> bool;
-}
+// ── Trigger-only capabilities ──────────────────────────────────────────────
 
-/// Log severity for action-scoped logs.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ActionLogLevel {
-    /// Trace-level diagnostic event.
-    Trace,
-    /// Debug-level diagnostic event.
-    Debug,
-    /// Informational event.
-    Info,
-    /// Warning event.
-    Warn,
-    /// Error event.
-    Error,
-}
-
-/// Object-safe logging capability injected into action contexts.
-pub trait ActionLogger: Send + Sync {
-    /// Emit a message at the given level.
-    fn log(&self, level: ActionLogLevel, message: &str);
-}
-
-/// Object-safe scheduling capability injected into trigger contexts.
+/// Schedule the next invocation of a trigger.
 #[async_trait]
 pub trait TriggerScheduler: Send + Sync {
     /// Schedule the next trigger run after the given delay.
     async fn schedule_after(&self, delay: Duration) -> Result<(), ActionError>;
 }
 
-/// Object-safe execution emission capability injected into trigger contexts.
+/// Start a new workflow execution with a typed input payload.
 #[async_trait]
 pub trait ExecutionEmitter: Send + Sync {
     /// Start a new execution for this trigger's workflow with the given input.
     async fn emit(&self, input: serde_json::Value) -> Result<ExecutionId, ActionError>;
 }
 
-/// Shared health state for a running trigger. Adapter writes,
-/// runtime reads. Lock-free via atomics — no allocations per cycle.
+// ── Trigger health atomics ─────────────────────────────────────────────────
+
+/// Shared health state for a running trigger. Adapter writes, runtime reads.
+/// Lock-free via atomics — no allocations per cycle.
 ///
-/// Lives on `TriggerContext` as `Arc<TriggerHealth>`. Not behind a
-/// trait — health shape is universal, trait dispatch adds nothing.
-///
-/// All fields use `Relaxed` ordering (eventual consistency is
-/// sufficient for monitoring — exact cross-field consistency is
-/// not needed).
+/// All fields use `Relaxed` ordering (eventual consistency is sufficient for
+/// monitoring — exact cross-field consistency is not needed).
 pub struct TriggerHealth {
     /// Epoch millis of last main operation. 0 = never.
     last_active_at: AtomicU64,
@@ -138,8 +111,8 @@ impl TriggerHealth {
 
     /// Read a point-in-time snapshot for dashboards / API.
     ///
-    /// Not atomic-consistent across fields (each field is read
-    /// independently), but sufficient for monitoring.
+    /// Not atomic-consistent across fields (each field is read independently),
+    /// but sufficient for monitoring.
     #[must_use]
     pub fn snapshot(&self) -> TriggerHealthSnapshot {
         TriggerHealthSnapshot {
@@ -196,13 +169,7 @@ pub fn now_millis() -> u64 {
         .as_millis() as u64
 }
 
-/// No-op logger used when runtime does not inject a logger capability.
-#[derive(Debug, Default)]
-pub struct NoopActionLogger;
-
-impl ActionLogger for NoopActionLogger {
-    fn log(&self, _level: ActionLogLevel, _message: &str) {}
-}
+// ── No-op default capabilities ─────────────────────────────────────────────
 
 /// No-op scheduler used when runtime does not inject trigger scheduling.
 #[derive(Debug, Default)]
@@ -230,43 +197,95 @@ impl ExecutionEmitter for NoopExecutionEmitter {
     }
 }
 
-/// No-op resource accessor used when runtime does not inject resources.
+/// No-op resource accessor — hands out errors for every key.
 #[derive(Debug, Default)]
 pub struct NoopResourceAccessor;
 
-#[async_trait]
 impl ResourceAccessor for NoopResourceAccessor {
-    async fn acquire(&self, _key: &str) -> Result<Box<dyn Any + Send + Sync>, ActionError> {
-        Err(ActionError::fatal(
-            "resource capability is not configured in ActionContext",
-        ))
-    }
-
-    async fn exists(&self, _key: &str) -> bool {
+    fn has(&self, _key: &ResourceKey) -> bool {
         false
     }
+
+    fn acquire_any(
+        &self,
+        key: &ResourceKey,
+    ) -> BoxFut<'_, Result<Box<dyn Any + Send + Sync>, CoreError>> {
+        let key_str = key.as_str().to_owned();
+        Box::pin(async move {
+            Err(CoreError::CredentialNotConfigured(format!(
+                "resource accessor is not configured (requested `{key_str}`)"
+            )))
+        })
+    }
+
+    fn try_acquire_any(
+        &self,
+        _key: &ResourceKey,
+    ) -> BoxFut<'_, Result<Option<Box<dyn Any + Send + Sync>>, CoreError>> {
+        Box::pin(async { Ok(None) })
+    }
 }
 
-/// Default resource accessor capability.
-#[must_use]
-pub fn default_resource_accessor() -> Arc<dyn ResourceAccessor> {
-    Arc::new(NoopResourceAccessor)
+/// No-op credential accessor — hands out errors for every key.
+#[derive(Debug, Default)]
+pub struct NoopCredentialAccessor;
+
+impl CredentialAccessor for NoopCredentialAccessor {
+    fn has(&self, _key: &CredentialKey) -> bool {
+        false
+    }
+
+    fn resolve_any(
+        &self,
+        key: &CredentialKey,
+    ) -> BoxFut<'_, Result<Box<dyn Any + Send + Sync>, CoreError>> {
+        let key_str = key.as_str().to_owned();
+        Box::pin(async move { Err(CoreError::CredentialNotFound { key: key_str }) })
+    }
+
+    fn try_resolve_any(
+        &self,
+        _key: &CredentialKey,
+    ) -> BoxFut<'_, Result<Option<Box<dyn Any + Send + Sync>>, CoreError>> {
+        Box::pin(async { Ok(None) })
+    }
 }
 
-/// Default action logger capability.
-#[must_use]
-pub fn default_action_logger() -> Arc<dyn ActionLogger> {
-    Arc::new(NoopActionLogger)
+/// No-op logger — discards every record.
+#[derive(Debug, Default)]
+pub struct NoopLogger;
+
+impl Logger for NoopLogger {
+    fn log(&self, _level: LogLevel, _message: &str) {}
+    fn log_with_fields(&self, _level: LogLevel, _message: &str, _fields: &[(&str, &str)]) {}
 }
 
-/// Default trigger scheduler capability.
+/// Default trigger scheduler (no-op).
 #[must_use]
 pub fn default_trigger_scheduler() -> Arc<dyn TriggerScheduler> {
     Arc::new(NoopTriggerScheduler)
 }
 
-/// Default execution emitter capability.
+/// Default execution emitter (no-op).
 #[must_use]
 pub fn default_execution_emitter() -> Arc<dyn ExecutionEmitter> {
     Arc::new(NoopExecutionEmitter)
+}
+
+/// Default resource accessor (no-op).
+#[must_use]
+pub fn default_resource_accessor() -> Arc<dyn ResourceAccessor> {
+    Arc::new(NoopResourceAccessor)
+}
+
+/// Default credential accessor (no-op).
+#[must_use]
+pub fn default_credential_accessor() -> Arc<dyn CredentialAccessor> {
+    Arc::new(NoopCredentialAccessor)
+}
+
+/// Default action logger (no-op).
+#[must_use]
+pub fn default_action_logger() -> Arc<dyn Logger> {
+    Arc::new(NoopLogger)
 }

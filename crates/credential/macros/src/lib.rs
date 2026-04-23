@@ -30,6 +30,15 @@ mod credential;
 /// - `protocol = Type` - `StaticProtocol` impl for `parameters()` and `build()` (required)
 /// - `icon = "..."` - Icon identifier for UI (optional)
 /// - `doc_url = "..."` - Documentation URL (optional)
+/// - `dynamic = true` - Whether this credential produces ephemeral per-execution secrets (optional,
+///   default `false`)
+/// - `lease_ttl_secs = 300` - Lease duration in seconds for dynamic credentials (optional, default
+///   `None`)
+///
+/// ## Dependency attributes (outer attributes on the struct)
+///
+/// - `#[uses_resource(TypeName, purpose = "...")]` - Declare a resource dependency (repeatable)
+/// - `#[uses_credential(...)]` - **Forbidden** — emits a compile error (spec 23)
 ///
 /// # Example
 ///
@@ -46,7 +55,10 @@ mod credential;
 /// )]
 /// pub struct PostgresCredential;
 /// ```
-#[proc_macro_derive(Credential, attributes(credential, oauth2, ldap))]
+#[proc_macro_derive(
+    Credential,
+    attributes(credential, oauth2, ldap, uses_resource, uses_credential)
+)]
 pub fn derive_credential(input: TokenStream) -> TokenStream {
     credential::derive(input)
 }

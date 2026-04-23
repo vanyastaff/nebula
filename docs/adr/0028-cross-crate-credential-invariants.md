@@ -91,13 +91,12 @@ canon-level wrong.
 
 ### 2. §13.2 seam integrity (non-stranding refresh)
 
-`RefreshCoordinator` (the thundering-herd prevention primitive) stays in
-`nebula-credential/src/refresh.rs`. Orchestration concerns — when to
-refresh, grace-period windows, transactional state flip — live in
-`nebula-engine/src/credential/rotation/`. The seam is **defined** in
-credential; the invariant **enforcer** is engine. A PR that moves
-`RefreshCoordinator` to engine without a superseding ADR breaks the seam
-contract.
+`RefreshCoordinator` (the thundering-herd prevention primitive) now lives in
+`nebula-engine::credential::refresh` (moved from `nebula-credential` per
+[ADR-0030 §3 amendment 2026-04-23](./0030-engine-owns-credential-orchestration.md)).
+Orchestration concerns — when to refresh, grace-period windows, transactional
+state flip — live in `nebula-engine/src/credential/rotation/`. The invariant
+**enforcer** is engine.
 
 See [ADR-0030 §RefreshCoordinator design note](./0030-engine-owns-credential-orchestration.md)
 for why the coordinator is kept concrete (not a trait).

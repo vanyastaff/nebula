@@ -21,6 +21,8 @@ async fn create_test_state() -> AppState {
         control_queue_repo,
         api_config.jwt_secret,
     )
+    .with_org_resolver(Arc::new(TestOrgResolver))
+    .with_workspace_resolver(Arc::new(TestWorkspaceResolver))
 }
 
 #[tokio::test]
@@ -57,8 +59,12 @@ async fn test_workflow_list_empty() {
         .oneshot(
             Request::builder()
                 .method("GET")
-                .uri("/api/v1/workflows")
+                .uri(ws_path("/workflows"))
                 .header("authorization", format!("Bearer {token}"))
+                .header("x-csrf-token", TEST_CSRF_TOKEN)
+                .header("cookie", TEST_CSRF_COOKIE)
+                .header("x-csrf-token", TEST_CSRF_TOKEN)
+                .header("cookie", TEST_CSRF_COOKIE)
                 .body(Body::empty())
                 .unwrap(),
         )
@@ -94,8 +100,12 @@ async fn test_error_format_rfc9457() {
         .oneshot(
             Request::builder()
                 .method("GET")
-                .uri(format!("/api/v1/workflows/{}", WorkflowId::new()))
+                .uri(ws_path(&format!("/workflows/{}", WorkflowId::new())))
                 .header("authorization", format!("Bearer {token}"))
+                .header("x-csrf-token", TEST_CSRF_TOKEN)
+                .header("cookie", TEST_CSRF_COOKIE)
+                .header("x-csrf-token", TEST_CSRF_TOKEN)
+                .header("cookie", TEST_CSRF_COOKIE)
                 .body(Body::empty())
                 .unwrap(),
         )
@@ -125,21 +135,25 @@ async fn test_error_format_rfc9457() {
     assert_eq!(problem["status"], 404);
     assert!(problem["detail"].is_string());
 
-    // Test 2: Bad Request (400) - invalid UUID format
+    // Test 2: Not Found (404) - invalid UUID format (caught by tenancy middleware)
     let app = app::build_app(state.clone(), &api_config);
     let response = app
         .oneshot(
             Request::builder()
                 .method("GET")
-                .uri("/api/v1/workflows/invalid-uuid")
+                .uri(ws_path("/workflows/invalid-uuid"))
                 .header("authorization", format!("Bearer {token}"))
+                .header("x-csrf-token", TEST_CSRF_TOKEN)
+                .header("cookie", TEST_CSRF_COOKIE)
+                .header("x-csrf-token", TEST_CSRF_TOKEN)
+                .header("cookie", TEST_CSRF_COOKIE)
                 .body(Body::empty())
                 .unwrap(),
         )
         .await
         .unwrap();
 
-    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    assert_eq!(response.status(), StatusCode::NOT_FOUND);
 
     let content_type = response
         .headers()
@@ -156,7 +170,7 @@ async fn test_error_format_rfc9457() {
     assert!(problem["type"].is_string());
     assert!(problem["title"].is_string());
     assert!(problem["status"].is_number());
-    assert_eq!(problem["status"], 400);
+    assert_eq!(problem["status"], 404);
 
     // Test 3: Validation Error (400) - cancel already completed execution
     use nebula_core::{ExecutionId, WorkflowId};
@@ -187,9 +201,13 @@ async fn test_error_format_rfc9457() {
     let response = app
         .oneshot(
             Request::builder()
-                .method("POST")
-                .uri(format!("/api/v1/executions/{execution_id}/cancel"))
+                .method("DELETE")
+                .uri(ws_path(&format!("/executions/{execution_id}")))
                 .header("authorization", format!("Bearer {token}"))
+                .header("x-csrf-token", TEST_CSRF_TOKEN)
+                .header("cookie", TEST_CSRF_COOKIE)
+                .header("x-csrf-token", TEST_CSRF_TOKEN)
+                .header("cookie", TEST_CSRF_COOKIE)
                 .body(Body::empty())
                 .unwrap(),
         )
@@ -262,9 +280,13 @@ async fn create_workflow() {
         .oneshot(
             Request::builder()
                 .method("POST")
-                .uri("/api/v1/workflows")
+                .uri(ws_path("/workflows"))
                 .header("content-type", "application/json")
                 .header("authorization", format!("Bearer {token}"))
+                .header("x-csrf-token", TEST_CSRF_TOKEN)
+                .header("cookie", TEST_CSRF_COOKIE)
+                .header("x-csrf-token", TEST_CSRF_TOKEN)
+                .header("cookie", TEST_CSRF_COOKIE)
                 .body(Body::from(serde_json::to_string(&create_request).unwrap()))
                 .unwrap(),
         )
@@ -313,9 +335,13 @@ async fn test_workflow_list_with_data() {
         .oneshot(
             Request::builder()
                 .method("POST")
-                .uri("/api/v1/workflows")
+                .uri(ws_path("/workflows"))
                 .header("content-type", "application/json")
                 .header("authorization", format!("Bearer {token}"))
+                .header("x-csrf-token", TEST_CSRF_TOKEN)
+                .header("cookie", TEST_CSRF_COOKIE)
+                .header("x-csrf-token", TEST_CSRF_TOKEN)
+                .header("cookie", TEST_CSRF_COOKIE)
                 .body(Body::from(serde_json::to_string(&create_request).unwrap()))
                 .unwrap(),
         )
@@ -330,8 +356,12 @@ async fn test_workflow_list_with_data() {
         .oneshot(
             Request::builder()
                 .method("GET")
-                .uri("/api/v1/workflows")
+                .uri(ws_path("/workflows"))
                 .header("authorization", format!("Bearer {token}"))
+                .header("x-csrf-token", TEST_CSRF_TOKEN)
+                .header("cookie", TEST_CSRF_COOKIE)
+                .header("x-csrf-token", TEST_CSRF_TOKEN)
+                .header("cookie", TEST_CSRF_COOKIE)
                 .body(Body::empty())
                 .unwrap(),
         )
@@ -373,9 +403,15 @@ async fn test_workflow_list_total_matches_full_dataset_across_pages() {
             .oneshot(
                 Request::builder()
                     .method("POST")
-                    .uri("/api/v1/workflows")
+                    .uri(ws_path("/workflows"))
                     .header("content-type", "application/json")
                     .header("authorization", format!("Bearer {token}"))
+                    .header("x-csrf-token", TEST_CSRF_TOKEN)
+                    .header("cookie", TEST_CSRF_COOKIE)
+                    .header("x-csrf-token", TEST_CSRF_TOKEN)
+                    .header("cookie", TEST_CSRF_COOKIE)
+                    .header("x-csrf-token", TEST_CSRF_TOKEN)
+                    .header("cookie", TEST_CSRF_COOKIE)
                     .body(Body::from(serde_json::to_string(&create_request).unwrap()))
                     .unwrap(),
             )
@@ -393,8 +429,12 @@ async fn test_workflow_list_total_matches_full_dataset_across_pages() {
         .oneshot(
             Request::builder()
                 .method("GET")
-                .uri("/api/v1/workflows?page=1&page_size=2")
+                .uri(ws_path("/workflows?page=1&page_size=2"))
                 .header("authorization", format!("Bearer {token}"))
+                .header("x-csrf-token", TEST_CSRF_TOKEN)
+                .header("cookie", TEST_CSRF_COOKIE)
+                .header("x-csrf-token", TEST_CSRF_TOKEN)
+                .header("cookie", TEST_CSRF_COOKIE)
                 .body(Body::empty())
                 .unwrap(),
         )
@@ -413,8 +453,12 @@ async fn test_workflow_list_total_matches_full_dataset_across_pages() {
         .oneshot(
             Request::builder()
                 .method("GET")
-                .uri("/api/v1/workflows?page=2&page_size=2")
+                .uri(ws_path("/workflows?page=2&page_size=2"))
                 .header("authorization", format!("Bearer {token}"))
+                .header("x-csrf-token", TEST_CSRF_TOKEN)
+                .header("cookie", TEST_CSRF_COOKIE)
+                .header("x-csrf-token", TEST_CSRF_TOKEN)
+                .header("cookie", TEST_CSRF_COOKIE)
                 .body(Body::empty())
                 .unwrap(),
         )
@@ -456,9 +500,13 @@ async fn test_get_workflow_by_id() {
         .oneshot(
             Request::builder()
                 .method("POST")
-                .uri("/api/v1/workflows")
+                .uri(ws_path("/workflows"))
                 .header("content-type", "application/json")
                 .header("authorization", format!("Bearer {token}"))
+                .header("x-csrf-token", TEST_CSRF_TOKEN)
+                .header("cookie", TEST_CSRF_COOKIE)
+                .header("x-csrf-token", TEST_CSRF_TOKEN)
+                .header("cookie", TEST_CSRF_COOKIE)
                 .body(Body::from(serde_json::to_string(&create_request).unwrap()))
                 .unwrap(),
         )
@@ -479,8 +527,12 @@ async fn test_get_workflow_by_id() {
         .oneshot(
             Request::builder()
                 .method("GET")
-                .uri(format!("/api/v1/workflows/{workflow_id}"))
+                .uri(ws_path(&format!("/workflows/{workflow_id}")))
                 .header("authorization", format!("Bearer {token}"))
+                .header("x-csrf-token", TEST_CSRF_TOKEN)
+                .header("cookie", TEST_CSRF_COOKIE)
+                .header("x-csrf-token", TEST_CSRF_TOKEN)
+                .header("cookie", TEST_CSRF_COOKIE)
                 .body(Body::empty())
                 .unwrap(),
         )
@@ -519,8 +571,12 @@ async fn test_get_workflow_not_found() {
         .oneshot(
             Request::builder()
                 .method("GET")
-                .uri(format!("/api/v1/workflows/{nonexistent_id}"))
+                .uri(ws_path(&format!("/workflows/{nonexistent_id}")))
                 .header("authorization", format!("Bearer {token}"))
+                .header("x-csrf-token", TEST_CSRF_TOKEN)
+                .header("cookie", TEST_CSRF_COOKIE)
+                .header("x-csrf-token", TEST_CSRF_TOKEN)
+                .header("cookie", TEST_CSRF_COOKIE)
                 .body(Body::empty())
                 .unwrap(),
         )
@@ -557,9 +613,13 @@ async fn test_update_workflow() {
         .oneshot(
             Request::builder()
                 .method("POST")
-                .uri("/api/v1/workflows")
+                .uri(ws_path("/workflows"))
                 .header("content-type", "application/json")
                 .header("authorization", format!("Bearer {token}"))
+                .header("x-csrf-token", TEST_CSRF_TOKEN)
+                .header("cookie", TEST_CSRF_COOKIE)
+                .header("x-csrf-token", TEST_CSRF_TOKEN)
+                .header("cookie", TEST_CSRF_COOKIE)
                 .body(Body::from(serde_json::to_string(&create_request).unwrap()))
                 .unwrap(),
         )
@@ -589,9 +649,13 @@ async fn test_update_workflow() {
         .oneshot(
             Request::builder()
                 .method("PUT")
-                .uri(format!("/api/v1/workflows/{workflow_id}"))
+                .uri(ws_path(&format!("/workflows/{workflow_id}")))
                 .header("content-type", "application/json")
                 .header("authorization", format!("Bearer {token}"))
+                .header("x-csrf-token", TEST_CSRF_TOKEN)
+                .header("cookie", TEST_CSRF_COOKIE)
+                .header("x-csrf-token", TEST_CSRF_TOKEN)
+                .header("cookie", TEST_CSRF_COOKIE)
                 .body(Body::from(serde_json::to_string(&update_request).unwrap()))
                 .unwrap(),
         )
@@ -641,9 +705,13 @@ async fn test_delete_workflow() {
         .oneshot(
             Request::builder()
                 .method("POST")
-                .uri("/api/v1/workflows")
+                .uri(ws_path("/workflows"))
                 .header("content-type", "application/json")
                 .header("authorization", format!("Bearer {token}"))
+                .header("x-csrf-token", TEST_CSRF_TOKEN)
+                .header("cookie", TEST_CSRF_COOKIE)
+                .header("x-csrf-token", TEST_CSRF_TOKEN)
+                .header("cookie", TEST_CSRF_COOKIE)
                 .body(Body::from(serde_json::to_string(&create_request).unwrap()))
                 .unwrap(),
         )
@@ -664,8 +732,12 @@ async fn test_delete_workflow() {
         .oneshot(
             Request::builder()
                 .method("DELETE")
-                .uri(format!("/api/v1/workflows/{workflow_id}"))
+                .uri(ws_path(&format!("/workflows/{workflow_id}")))
                 .header("authorization", format!("Bearer {token}"))
+                .header("x-csrf-token", TEST_CSRF_TOKEN)
+                .header("cookie", TEST_CSRF_COOKIE)
+                .header("x-csrf-token", TEST_CSRF_TOKEN)
+                .header("cookie", TEST_CSRF_COOKIE)
                 .body(Body::empty())
                 .unwrap(),
         )
@@ -680,8 +752,12 @@ async fn test_delete_workflow() {
         .oneshot(
             Request::builder()
                 .method("GET")
-                .uri(format!("/api/v1/workflows/{workflow_id}"))
+                .uri(ws_path(&format!("/workflows/{workflow_id}")))
                 .header("authorization", format!("Bearer {token}"))
+                .header("x-csrf-token", TEST_CSRF_TOKEN)
+                .header("cookie", TEST_CSRF_COOKIE)
+                .header("x-csrf-token", TEST_CSRF_TOKEN)
+                .header("cookie", TEST_CSRF_COOKIE)
                 .body(Body::empty())
                 .unwrap(),
         )
@@ -718,8 +794,12 @@ async fn test_activate_workflow() {
         .oneshot(
             Request::builder()
                 .method("POST")
-                .uri(format!("/api/v1/workflows/{workflow_id}/activate"))
+                .uri(ws_path(&format!("/workflows/{workflow_id}/activate")))
                 .header("authorization", format!("Bearer {token}"))
+                .header("x-csrf-token", TEST_CSRF_TOKEN)
+                .header("cookie", TEST_CSRF_COOKIE)
+                .header("x-csrf-token", TEST_CSRF_TOKEN)
+                .header("cookie", TEST_CSRF_COOKIE)
                 .body(Body::empty())
                 .unwrap(),
         )
@@ -759,8 +839,12 @@ async fn test_activate_workflow_not_found() {
         .oneshot(
             Request::builder()
                 .method("POST")
-                .uri(format!("/api/v1/workflows/{nonexistent_id}/activate"))
+                .uri(ws_path(&format!("/workflows/{nonexistent_id}/activate")))
                 .header("authorization", format!("Bearer {token}"))
+                .header("x-csrf-token", TEST_CSRF_TOKEN)
+                .header("cookie", TEST_CSRF_COOKIE)
+                .header("x-csrf-token", TEST_CSRF_TOKEN)
+                .header("cookie", TEST_CSRF_COOKIE)
                 .body(Body::empty())
                 .unwrap(),
         )
@@ -797,9 +881,13 @@ async fn test_execute_workflow() {
         .oneshot(
             Request::builder()
                 .method("POST")
-                .uri("/api/v1/workflows")
+                .uri(ws_path("/workflows"))
                 .header("content-type", "application/json")
                 .header("authorization", format!("Bearer {token}"))
+                .header("x-csrf-token", TEST_CSRF_TOKEN)
+                .header("cookie", TEST_CSRF_COOKIE)
+                .header("x-csrf-token", TEST_CSRF_TOKEN)
+                .header("cookie", TEST_CSRF_COOKIE)
                 .body(Body::from(serde_json::to_string(&create_request).unwrap()))
                 .unwrap(),
         )
@@ -826,9 +914,13 @@ async fn test_execute_workflow() {
         .oneshot(
             Request::builder()
                 .method("POST")
-                .uri(format!("/api/v1/workflows/{workflow_id}/execute"))
+                .uri(ws_path(&format!("/workflows/{workflow_id}/execute")))
                 .header("content-type", "application/json")
                 .header("authorization", format!("Bearer {token}"))
+                .header("x-csrf-token", TEST_CSRF_TOKEN)
+                .header("cookie", TEST_CSRF_COOKIE)
+                .header("x-csrf-token", TEST_CSRF_TOKEN)
+                .header("cookie", TEST_CSRF_COOKIE)
                 .body(Body::from(serde_json::to_string(&execute_request).unwrap()))
                 .unwrap(),
         )
@@ -875,9 +967,13 @@ async fn test_execute_workflow_not_found() {
         .oneshot(
             Request::builder()
                 .method("POST")
-                .uri(format!("/api/v1/workflows/{nonexistent_id}/execute"))
+                .uri(ws_path(&format!("/workflows/{nonexistent_id}/execute")))
                 .header("content-type", "application/json")
                 .header("authorization", format!("Bearer {token}"))
+                .header("x-csrf-token", TEST_CSRF_TOKEN)
+                .header("cookie", TEST_CSRF_COOKIE)
+                .header("x-csrf-token", TEST_CSRF_TOKEN)
+                .header("cookie", TEST_CSRF_COOKIE)
                 .body(Body::from(serde_json::to_string(&execute_request).unwrap()))
                 .unwrap(),
         )
@@ -907,8 +1003,12 @@ async fn test_execution_list_all_empty() {
         .oneshot(
             Request::builder()
                 .method("GET")
-                .uri("/api/v1/executions")
+                .uri(ws_path("/executions"))
                 .header("authorization", format!("Bearer {token}"))
+                .header("x-csrf-token", TEST_CSRF_TOKEN)
+                .header("cookie", TEST_CSRF_COOKIE)
+                .header("x-csrf-token", TEST_CSRF_TOKEN)
+                .header("cookie", TEST_CSRF_COOKIE)
                 .body(Body::empty())
                 .unwrap(),
         )
@@ -955,9 +1055,13 @@ async fn test_execution_list_for_workflow_empty() {
         .oneshot(
             Request::builder()
                 .method("POST")
-                .uri("/api/v1/workflows")
+                .uri(ws_path("/workflows"))
                 .header("content-type", "application/json")
                 .header("authorization", format!("Bearer {token}"))
+                .header("x-csrf-token", TEST_CSRF_TOKEN)
+                .header("cookie", TEST_CSRF_COOKIE)
+                .header("x-csrf-token", TEST_CSRF_TOKEN)
+                .header("cookie", TEST_CSRF_COOKIE)
                 .body(Body::from(serde_json::to_string(&create_request).unwrap()))
                 .unwrap(),
         )
@@ -978,8 +1082,12 @@ async fn test_execution_list_for_workflow_empty() {
         .oneshot(
             Request::builder()
                 .method("GET")
-                .uri(format!("/api/v1/workflows/{workflow_id}/executions"))
+                .uri(ws_path(&format!("/workflows/{workflow_id}/executions")))
                 .header("authorization", format!("Bearer {token}"))
+                .header("x-csrf-token", TEST_CSRF_TOKEN)
+                .header("cookie", TEST_CSRF_COOKIE)
+                .header("x-csrf-token", TEST_CSRF_TOKEN)
+                .header("cookie", TEST_CSRF_COOKIE)
                 .body(Body::empty())
                 .unwrap(),
         )
@@ -1037,8 +1145,12 @@ async fn test_execution_get_by_id() {
         .oneshot(
             Request::builder()
                 .method("GET")
-                .uri(format!("/api/v1/executions/{execution_id}"))
+                .uri(ws_path(&format!("/executions/{execution_id}")))
                 .header("authorization", format!("Bearer {token}"))
+                .header("x-csrf-token", TEST_CSRF_TOKEN)
+                .header("cookie", TEST_CSRF_COOKIE)
+                .header("x-csrf-token", TEST_CSRF_TOKEN)
+                .header("cookie", TEST_CSRF_COOKIE)
                 .body(Body::empty())
                 .unwrap(),
         )
@@ -1079,8 +1191,12 @@ async fn test_execution_get_not_found() {
         .oneshot(
             Request::builder()
                 .method("GET")
-                .uri(format!("/api/v1/executions/{nonexistent_id}"))
+                .uri(ws_path(&format!("/executions/{nonexistent_id}")))
                 .header("authorization", format!("Bearer {token}"))
+                .header("x-csrf-token", TEST_CSRF_TOKEN)
+                .header("cookie", TEST_CSRF_COOKIE)
+                .header("x-csrf-token", TEST_CSRF_TOKEN)
+                .header("cookie", TEST_CSRF_COOKIE)
                 .body(Body::empty())
                 .unwrap(),
         )
@@ -1117,9 +1233,13 @@ async fn test_execution_start() {
         .oneshot(
             Request::builder()
                 .method("POST")
-                .uri("/api/v1/workflows")
+                .uri(ws_path("/workflows"))
                 .header("content-type", "application/json")
                 .header("authorization", format!("Bearer {token}"))
+                .header("x-csrf-token", TEST_CSRF_TOKEN)
+                .header("cookie", TEST_CSRF_COOKIE)
+                .header("x-csrf-token", TEST_CSRF_TOKEN)
+                .header("cookie", TEST_CSRF_COOKIE)
                 .body(Body::from(serde_json::to_string(&create_request).unwrap()))
                 .unwrap(),
         )
@@ -1146,9 +1266,13 @@ async fn test_execution_start() {
         .oneshot(
             Request::builder()
                 .method("POST")
-                .uri(format!("/api/v1/workflows/{workflow_id}/executions"))
+                .uri(ws_path(&format!("/workflows/{workflow_id}/executions")))
                 .header("content-type", "application/json")
                 .header("authorization", format!("Bearer {token}"))
+                .header("x-csrf-token", TEST_CSRF_TOKEN)
+                .header("cookie", TEST_CSRF_COOKIE)
+                .header("x-csrf-token", TEST_CSRF_TOKEN)
+                .header("cookie", TEST_CSRF_COOKIE)
                 .body(Body::from(serde_json::to_string(&start_request).unwrap()))
                 .unwrap(),
         )
@@ -1206,9 +1330,13 @@ async fn test_execution_cancel() {
     let response = app
         .oneshot(
             Request::builder()
-                .method("POST")
-                .uri(format!("/api/v1/executions/{execution_id}/cancel"))
+                .method("DELETE")
+                .uri(ws_path(&format!("/executions/{execution_id}")))
                 .header("authorization", format!("Bearer {token}"))
+                .header("x-csrf-token", TEST_CSRF_TOKEN)
+                .header("cookie", TEST_CSRF_COOKIE)
+                .header("x-csrf-token", TEST_CSRF_TOKEN)
+                .header("cookie", TEST_CSRF_COOKIE)
                 .body(Body::empty())
                 .unwrap(),
         )
@@ -1232,8 +1360,12 @@ async fn test_execution_cancel() {
         .oneshot(
             Request::builder()
                 .method("GET")
-                .uri(format!("/api/v1/executions/{execution_id}"))
+                .uri(ws_path(&format!("/executions/{execution_id}")))
                 .header("authorization", format!("Bearer {token}"))
+                .header("x-csrf-token", TEST_CSRF_TOKEN)
+                .header("cookie", TEST_CSRF_COOKIE)
+                .header("x-csrf-token", TEST_CSRF_TOKEN)
+                .header("cookie", TEST_CSRF_COOKIE)
                 .body(Body::empty())
                 .unwrap(),
         )
@@ -1269,9 +1401,13 @@ async fn test_execution_cancel_not_found() {
     let response = app
         .oneshot(
             Request::builder()
-                .method("POST")
-                .uri(format!("/api/v1/executions/{nonexistent_id}/cancel"))
+                .method("DELETE")
+                .uri(ws_path(&format!("/executions/{nonexistent_id}")))
                 .header("authorization", format!("Bearer {token}"))
+                .header("x-csrf-token", TEST_CSRF_TOKEN)
+                .header("cookie", TEST_CSRF_COOKIE)
+                .header("x-csrf-token", TEST_CSRF_TOKEN)
+                .header("cookie", TEST_CSRF_COOKIE)
                 .body(Body::empty())
                 .unwrap(),
         )
@@ -1322,9 +1458,13 @@ async fn test_execution_cancel_already_completed() {
     let response = app
         .oneshot(
             Request::builder()
-                .method("POST")
-                .uri(format!("/api/v1/executions/{execution_id}/cancel"))
+                .method("DELETE")
+                .uri(ws_path(&format!("/executions/{execution_id}")))
                 .header("authorization", format!("Bearer {token}"))
+                .header("x-csrf-token", TEST_CSRF_TOKEN)
+                .header("cookie", TEST_CSRF_COOKIE)
+                .header("x-csrf-token", TEST_CSRF_TOKEN)
+                .header("cookie", TEST_CSRF_COOKIE)
                 .body(Body::empty())
                 .unwrap(),
         )
@@ -1368,15 +1508,19 @@ async fn test_execution_get_invalid_id() {
         .oneshot(
             Request::builder()
                 .method("GET")
-                .uri(format!("/api/v1/executions/{invalid_id}"))
+                .uri(ws_path(&format!("/executions/{invalid_id}")))
                 .header("authorization", format!("Bearer {token}"))
+                .header("x-csrf-token", TEST_CSRF_TOKEN)
+                .header("cookie", TEST_CSRF_COOKIE)
+                .header("x-csrf-token", TEST_CSRF_TOKEN)
+                .header("cookie", TEST_CSRF_COOKIE)
                 .body(Body::empty())
                 .unwrap(),
         )
         .await
         .unwrap();
 
-    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    assert_eq!(response.status(), StatusCode::NOT_FOUND);
 }
 
 // ── Rate limiting tests ──────────────────────────────────────────────────────
@@ -1509,9 +1653,11 @@ async fn rate_limit_returns_429_when_quota_exceeded() {
     let first_response = tower::ServiceExt::oneshot(
         svc.clone(),
         Request::builder()
-            .uri("/api/v1/workflows")
+            .uri(ws_path("/workflows"))
             .header("x-real-ip", "10.0.0.99")
             .header("authorization", format!("Bearer {token}"))
+            .header("x-csrf-token", TEST_CSRF_TOKEN)
+            .header("cookie", TEST_CSRF_COOKIE)
             .body(Body::empty())
             .unwrap(),
     )
@@ -1522,9 +1668,11 @@ async fn rate_limit_returns_429_when_quota_exceeded() {
     let second_response = tower::ServiceExt::oneshot(
         svc,
         Request::builder()
-            .uri("/api/v1/workflows")
+            .uri(ws_path("/workflows"))
             .header("x-real-ip", "10.0.0.99")
             .header("authorization", format!("Bearer {token}"))
+            .header("x-csrf-token", TEST_CSRF_TOKEN)
+            .header("cookie", TEST_CSRF_COOKIE)
             .body(Body::empty())
             .unwrap(),
     )
@@ -1562,9 +1710,11 @@ async fn rate_limit_is_per_ip() {
     let r1 = tower::ServiceExt::oneshot(
         svc.clone(),
         Request::builder()
-            .uri("/api/v1/workflows")
+            .uri(ws_path("/workflows"))
             .header("x-real-ip", "10.0.0.1")
             .header("authorization", format!("Bearer {token}"))
+            .header("x-csrf-token", TEST_CSRF_TOKEN)
+            .header("cookie", TEST_CSRF_COOKIE)
             .body(Body::empty())
             .unwrap(),
     )
@@ -1575,9 +1725,11 @@ async fn rate_limit_is_per_ip() {
     let r2 = tower::ServiceExt::oneshot(
         svc,
         Request::builder()
-            .uri("/api/v1/workflows")
+            .uri(ws_path("/workflows"))
             .header("x-real-ip", "10.0.0.2")
             .header("authorization", format!("Bearer {token}"))
+            .header("x-csrf-token", TEST_CSRF_TOKEN)
+            .header("cookie", TEST_CSRF_COOKIE)
             .body(Body::empty())
             .unwrap(),
     )
@@ -1607,7 +1759,7 @@ async fn cors_preflight_allows_x_api_key() {
         .oneshot(
             Request::builder()
                 .method("OPTIONS")
-                .uri("/api/v1/workflows")
+                .uri(ws_path("/workflows"))
                 .header("origin", "https://app.example")
                 .header("access-control-request-method", "GET")
                 .header("access-control-request-headers", "x-api-key")
@@ -1650,7 +1802,7 @@ async fn cors_preflight_allows_authorization() {
         .oneshot(
             Request::builder()
                 .method("OPTIONS")
-                .uri("/api/v1/workflows")
+                .uri(ws_path("/workflows"))
                 .header("origin", "https://app.example")
                 .header("access-control-request-method", "GET")
                 .header("access-control-request-headers", "authorization")
@@ -1700,9 +1852,13 @@ async fn update_workflow_rejects_immutable_identity_fields() {
         .oneshot(
             Request::builder()
                 .method("POST")
-                .uri("/api/v1/workflows")
+                .uri(ws_path("/workflows"))
                 .header("content-type", "application/json")
                 .header("authorization", format!("Bearer {token}"))
+                .header("x-csrf-token", TEST_CSRF_TOKEN)
+                .header("cookie", TEST_CSRF_COOKIE)
+                .header("x-csrf-token", TEST_CSRF_TOKEN)
+                .header("cookie", TEST_CSRF_COOKIE)
                 .body(Body::from(serde_json::to_string(&create_request).unwrap()))
                 .unwrap(),
         )
@@ -1732,9 +1888,15 @@ async fn update_workflow_rejects_immutable_identity_fields() {
             .oneshot(
                 Request::builder()
                     .method("PUT")
-                    .uri(format!("/api/v1/workflows/{workflow_id}"))
+                    .uri(ws_path(&format!("/workflows/{workflow_id}")))
                     .header("content-type", "application/json")
                     .header("authorization", format!("Bearer {token}"))
+                    .header("x-csrf-token", TEST_CSRF_TOKEN)
+                    .header("cookie", TEST_CSRF_COOKIE)
+                    .header("x-csrf-token", TEST_CSRF_TOKEN)
+                    .header("cookie", TEST_CSRF_COOKIE)
+                    .header("x-csrf-token", TEST_CSRF_TOKEN)
+                    .header("cookie", TEST_CSRF_COOKIE)
                     .body(Body::from(serde_json::to_string(&update_request).unwrap()))
                     .unwrap(),
             )
@@ -1785,8 +1947,12 @@ async fn get_workflow_parses_rfc3339_timestamps() {
         .oneshot(
             Request::builder()
                 .method("GET")
-                .uri(format!("/api/v1/workflows/{workflow_id}"))
+                .uri(ws_path(&format!("/workflows/{workflow_id}")))
                 .header("authorization", format!("Bearer {token}"))
+                .header("x-csrf-token", TEST_CSRF_TOKEN)
+                .header("cookie", TEST_CSRF_COOKIE)
+                .header("x-csrf-token", TEST_CSRF_TOKEN)
+                .header("cookie", TEST_CSRF_COOKIE)
                 .body(Body::empty())
                 .unwrap(),
         )
@@ -1828,8 +1994,12 @@ async fn activate_valid_returns_200() {
         .oneshot(
             Request::builder()
                 .method("POST")
-                .uri(format!("/api/v1/workflows/{workflow_id}/activate"))
+                .uri(ws_path(&format!("/workflows/{workflow_id}/activate")))
                 .header("authorization", format!("Bearer {token}"))
+                .header("x-csrf-token", TEST_CSRF_TOKEN)
+                .header("cookie", TEST_CSRF_COOKIE)
+                .header("x-csrf-token", TEST_CSRF_TOKEN)
+                .header("cookie", TEST_CSRF_COOKIE)
                 .body(Body::empty())
                 .unwrap(),
         )
@@ -1879,8 +2049,12 @@ async fn activate_invalid_returns_422() {
         .oneshot(
             Request::builder()
                 .method("POST")
-                .uri(format!("/api/v1/workflows/{workflow_id}/activate"))
+                .uri(ws_path(&format!("/workflows/{workflow_id}/activate")))
                 .header("authorization", format!("Bearer {token}"))
+                .header("x-csrf-token", TEST_CSRF_TOKEN)
+                .header("cookie", TEST_CSRF_COOKIE)
+                .header("x-csrf-token", TEST_CSRF_TOKEN)
+                .header("cookie", TEST_CSRF_COOKIE)
                 .body(Body::empty())
                 .unwrap(),
         )
@@ -1994,9 +2168,13 @@ async fn cancel_enqueues_durable_control_signal() {
     let response = app
         .oneshot(
             Request::builder()
-                .method("POST")
-                .uri(format!("/api/v1/executions/{execution_id}/cancel"))
+                .method("DELETE")
+                .uri(ws_path(&format!("/executions/{execution_id}")))
                 .header("authorization", format!("Bearer {token}"))
+                .header("x-csrf-token", TEST_CSRF_TOKEN)
+                .header("cookie", TEST_CSRF_COOKIE)
+                .header("x-csrf-token", TEST_CSRF_TOKEN)
+                .header("cookie", TEST_CSRF_COOKIE)
                 .body(Body::empty())
                 .unwrap(),
         )
@@ -2096,9 +2274,13 @@ async fn cancel_terminal_execution_does_not_enqueue() {
     let response = app
         .oneshot(
             Request::builder()
-                .method("POST")
-                .uri(format!("/api/v1/executions/{execution_id}/cancel"))
+                .method("DELETE")
+                .uri(ws_path(&format!("/executions/{execution_id}")))
                 .header("authorization", format!("Bearer {token}"))
+                .header("x-csrf-token", TEST_CSRF_TOKEN)
+                .header("cookie", TEST_CSRF_COOKIE)
+                .header("x-csrf-token", TEST_CSRF_TOKEN)
+                .header("cookie", TEST_CSRF_COOKIE)
                 .body(Body::empty())
                 .unwrap(),
         )
@@ -2163,8 +2345,12 @@ async fn get_execution_parses_rfc3339_timestamps() {
         .oneshot(
             Request::builder()
                 .method("GET")
-                .uri(format!("/api/v1/executions/{execution_id}"))
+                .uri(ws_path(&format!("/executions/{execution_id}")))
                 .header("authorization", format!("Bearer {token}"))
+                .header("x-csrf-token", TEST_CSRF_TOKEN)
+                .header("cookie", TEST_CSRF_COOKIE)
+                .header("x-csrf-token", TEST_CSRF_TOKEN)
+                .header("cookie", TEST_CSRF_COOKIE)
                 .body(Body::empty())
                 .unwrap(),
         )
@@ -2223,9 +2409,13 @@ async fn cancel_timed_out_execution_rejected() {
     let response = app
         .oneshot(
             Request::builder()
-                .method("POST")
-                .uri(format!("/api/v1/executions/{execution_id}/cancel"))
+                .method("DELETE")
+                .uri(ws_path(&format!("/executions/{execution_id}")))
                 .header("authorization", format!("Bearer {token}"))
+                .header("x-csrf-token", TEST_CSRF_TOKEN)
+                .header("cookie", TEST_CSRF_COOKIE)
+                .header("x-csrf-token", TEST_CSRF_TOKEN)
+                .header("cookie", TEST_CSRF_COOKIE)
                 .body(Body::empty())
                 .unwrap(),
         )
@@ -2290,9 +2480,13 @@ async fn test_issue_327_start_execution_persists_canonical_execution_state() {
         .oneshot(
             Request::builder()
                 .method("POST")
-                .uri("/api/v1/workflows")
+                .uri(ws_path("/workflows"))
                 .header("content-type", "application/json")
                 .header("authorization", format!("Bearer {token}"))
+                .header("x-csrf-token", TEST_CSRF_TOKEN)
+                .header("cookie", TEST_CSRF_COOKIE)
+                .header("x-csrf-token", TEST_CSRF_TOKEN)
+                .header("cookie", TEST_CSRF_COOKIE)
                 .body(Body::from(serde_json::to_string(&create_request).unwrap()))
                 .unwrap(),
         )
@@ -2317,9 +2511,13 @@ async fn test_issue_327_start_execution_persists_canonical_execution_state() {
         .oneshot(
             Request::builder()
                 .method("POST")
-                .uri(format!("/api/v1/workflows/{workflow_id_str}/executions"))
+                .uri(ws_path(&format!("/workflows/{workflow_id_str}/executions")))
                 .header("content-type", "application/json")
                 .header("authorization", format!("Bearer {token}"))
+                .header("x-csrf-token", TEST_CSRF_TOKEN)
+                .header("cookie", TEST_CSRF_COOKIE)
+                .header("x-csrf-token", TEST_CSRF_TOKEN)
+                .header("cookie", TEST_CSRF_COOKIE)
                 .body(Body::from(
                     serde_json::to_string(&serde_json::json!({ "input": input })).unwrap(),
                 ))
@@ -2466,9 +2664,13 @@ async fn test_issue_332_start_execution_enqueues_control_start() {
         .oneshot(
             Request::builder()
                 .method("POST")
-                .uri("/api/v1/workflows")
+                .uri(ws_path("/workflows"))
                 .header("content-type", "application/json")
                 .header("authorization", format!("Bearer {token}"))
+                .header("x-csrf-token", TEST_CSRF_TOKEN)
+                .header("cookie", TEST_CSRF_COOKIE)
+                .header("x-csrf-token", TEST_CSRF_TOKEN)
+                .header("cookie", TEST_CSRF_COOKIE)
                 .body(Body::from(serde_json::to_string(&create_request).unwrap()))
                 .unwrap(),
         )
@@ -2494,9 +2696,13 @@ async fn test_issue_332_start_execution_enqueues_control_start() {
         .oneshot(
             Request::builder()
                 .method("POST")
-                .uri(format!("/api/v1/workflows/{workflow_id_str}/executions"))
+                .uri(ws_path(&format!("/workflows/{workflow_id_str}/executions")))
                 .header("content-type", "application/json")
                 .header("authorization", format!("Bearer {token}"))
+                .header("x-csrf-token", TEST_CSRF_TOKEN)
+                .header("cookie", TEST_CSRF_COOKIE)
+                .header("x-csrf-token", TEST_CSRF_TOKEN)
+                .header("cookie", TEST_CSRF_COOKIE)
                 .body(Body::from(serde_json::to_string(&start_request).unwrap()))
                 .unwrap(),
         )
@@ -2566,9 +2772,13 @@ async fn test_issue_332_execute_workflow_enqueues_control_start() {
         .oneshot(
             Request::builder()
                 .method("POST")
-                .uri("/api/v1/workflows")
+                .uri(ws_path("/workflows"))
                 .header("content-type", "application/json")
                 .header("authorization", format!("Bearer {token}"))
+                .header("x-csrf-token", TEST_CSRF_TOKEN)
+                .header("cookie", TEST_CSRF_COOKIE)
+                .header("x-csrf-token", TEST_CSRF_TOKEN)
+                .header("cookie", TEST_CSRF_COOKIE)
                 .body(Body::from(serde_json::to_string(&create_request).unwrap()))
                 .unwrap(),
         )
@@ -2593,9 +2803,13 @@ async fn test_issue_332_execute_workflow_enqueues_control_start() {
         .oneshot(
             Request::builder()
                 .method("POST")
-                .uri(format!("/api/v1/workflows/{workflow_id_str}/execute"))
+                .uri(ws_path(&format!("/workflows/{workflow_id_str}/execute")))
                 .header("content-type", "application/json")
                 .header("authorization", format!("Bearer {token}"))
+                .header("x-csrf-token", TEST_CSRF_TOKEN)
+                .header("cookie", TEST_CSRF_COOKIE)
+                .header("x-csrf-token", TEST_CSRF_TOKEN)
+                .header("cookie", TEST_CSRF_COOKIE)
                 .body(Body::from(serde_json::to_string(&execute_request).unwrap()))
                 .unwrap(),
         )

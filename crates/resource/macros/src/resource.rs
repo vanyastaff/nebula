@@ -5,6 +5,8 @@ use proc_macro::TokenStream;
 use quote::quote;
 use syn::{Data, DeriveInput, parse_macro_input};
 
+use crate::dependencies;
+
 pub(crate) fn derive(input: TokenStream) -> TokenStream {
     let input = parse_macro_input!(input as DeriveInput);
 
@@ -38,6 +40,8 @@ fn expand(input: DeriveInput) -> syn::Result<proc_macro2::TokenStream> {
             ));
         },
     }
+
+    let deps_impl = dependencies::expand(struct_name, &input.generics, &input.attrs)?;
 
     let expanded = quote! {
         impl #impl_generics ::nebula_resource::Resource for #struct_name #ty_generics #where_clause {
@@ -84,6 +88,8 @@ fn expand(input: DeriveInput) -> syn::Result<proc_macro2::TokenStream> {
                 async move { Ok(()) }
             }
         }
+
+        #deps_impl
     };
 
     Ok(expanded)

@@ -172,6 +172,61 @@ pub enum ApiError {
         /// real RFC 6901 JSON Pointers rather than synthetic positional ones.
         errors: Vec<nebula_workflow::WorkflowError>,
     },
+
+    /// Session has expired — caller must re-authenticate (401).
+    #[classify(category = "authentication", code = "API:SESSION_EXPIRED")]
+    #[error("Session expired")]
+    SessionExpired,
+
+    /// Multi-factor authentication step required before proceeding (401).
+    #[classify(category = "authentication", code = "API:MFA_REQUIRED")]
+    #[error("MFA verification required")]
+    MfaRequired,
+
+    /// Caller's role is insufficient for the requested operation (403).
+    #[classify(category = "authorization", code = "API:INSUFFICIENT_ROLE")]
+    #[error("Insufficient role: {required_role} required, current role {current_role}")]
+    InsufficientRole {
+        /// Role that the operation demands.
+        required_role: String,
+        /// Role that the caller actually holds.
+        current_role: String,
+    },
+
+    /// Tenant quota exceeded (403).
+    #[classify(category = "authorization", code = "API:QUOTA_EXCEEDED")]
+    #[error("Quota exceeded: {0}")]
+    QuotaExceeded(String),
+
+    /// Optimistic-concurrency version mismatch (409).
+    #[classify(category = "conflict", code = "API:VERSION_MISMATCH")]
+    #[error("Version mismatch: {0}")]
+    VersionMismatch(String),
+
+    /// Resource existed but has been permanently removed (410).
+    #[classify(category = "not_found", code = "API:GONE")]
+    #[error("Resource gone: {0}")]
+    Gone(String),
+
+    /// Semantically invalid entity that cannot be processed (422).
+    #[classify(category = "validation", code = "API:UNPROCESSABLE")]
+    #[error("Unprocessable entity: {0}")]
+    Unprocessable(String),
+
+    /// Account is locked (423).
+    #[classify(category = "authorization", code = "API:LOCKED")]
+    #[error("Account locked: {0}")]
+    AccountLocked(String),
+
+    /// Upstream/external service returned an error (502).
+    #[classify(category = "external", code = "API:UPSTREAM_ERROR")]
+    #[error("Upstream error: {0}")]
+    UpstreamError(String),
+
+    /// Storage subsystem is full (507).
+    #[classify(category = "internal", code = "API:STORAGE_FULL")]
+    #[error("Storage full")]
+    StorageFull,
 }
 
 /// Map a [`nebula_workflow::WorkflowError`] to a JSON Pointer (RFC 6901)
@@ -295,6 +350,15 @@ impl From<ValidationError> for ApiError {
         };
 
         Self::Validation { detail, errors }
+    }
+}
+
+impl From<nebula_core::PermissionDenied> for ApiError {
+    fn from(pd: nebula_core::PermissionDenied) -> Self {
+        Self::InsufficientRole {
+            required_role: pd.required_role,
+            current_role: pd.current_role,
+        }
     }
 }
 
@@ -441,6 +505,94 @@ impl ApiError {
                             pointer: workflow_error_pointer(err),
                         })
                         .collect(),
+                ),
+            ),
+            ApiError::SessionExpired => (
+                StatusCode::UNAUTHORIZED,
+                ProblemDetails::new(
+                    "https://nebula.dev/problems/session-expired",
+                    "Session Expired",
+                    StatusCode::UNAUTHORIZED,
+                ),
+            ),
+            ApiError::MfaRequired => (
+                StatusCode::UNAUTHORIZED,
+                ProblemDetails::new(
+                    "https://nebula.dev/problems/mfa-required",
+                    "MFA Required",
+                    StatusCode::UNAUTHORIZED,
+                ),
+            ),
+            ApiError::InsufficientRole {
+                required_role,
+                current_role,
+            } => (
+                StatusCode::FORBIDDEN,
+                ProblemDetails::new(
+                    "https://nebula.dev/problems/insufficient-role",
+                    "Insufficient Role",
+                    StatusCode::FORBIDDEN,
+                )
+                .with_detail(format!(
+                    "{required_role} required, current role {current_role}"
+                )),
+            ),
+            ApiError::QuotaExceeded(msg) => (
+                StatusCode::FORBIDDEN,
+                ProblemDetails::new(
+                    "https://nebula.dev/problems/quota-exceeded",
+                    "Quota Exceeded",
+                    StatusCode::FORBIDDEN,
+                )
+                .with_detail(msg),
+            ),
+            ApiError::VersionMismatch(msg) => (
+                StatusCode::CONFLICT,
+                ProblemDetails::new(
+                    "https://nebula.dev/problems/version-mismatch",
+                    "Version Mismatch",
+                    StatusCode::CONFLICT,
+                )
+                .with_detail(msg),
+            ),
+            ApiError::Gone(msg) => (
+                StatusCode::GONE,
+                ProblemDetails::new("https://nebula.dev/problems/gone", "Gone", StatusCode::GONE)
+                    .with_detail(msg),
+            ),
+            ApiError::Unprocessable(msg) => (
+                StatusCode::UNPROCESSABLE_ENTITY,
+                ProblemDetails::new(
+                    "https://nebula.dev/problems/unprocessable",
+                    "Unprocessable Entity",
+                    StatusCode::UNPROCESSABLE_ENTITY,
+                )
+                .with_detail(msg),
+            ),
+            ApiError::AccountLocked(msg) => (
+                StatusCode::from_u16(423).unwrap_or(StatusCode::FORBIDDEN),
+                ProblemDetails::new(
+                    "https://nebula.dev/problems/account-locked",
+                    "Account Locked",
+                    StatusCode::from_u16(423).unwrap_or(StatusCode::FORBIDDEN),
+                )
+                .with_detail(msg),
+            ),
+            ApiError::UpstreamError(msg) => (
+                StatusCode::BAD_GATEWAY,
+                ProblemDetails::new(
+                    "https://nebula.dev/problems/upstream-error",
+                    "Upstream Error",
+                    StatusCode::BAD_GATEWAY,
+                )
+                .with_detail(msg),
+            ),
+            ApiError::StorageFull => (
+                StatusCode::INSUFFICIENT_STORAGE,
+                ProblemDetails::new(
+                    "https://nebula.dev/problems/storage-full",
+                    "Storage Full",
+                    StatusCode::INSUFFICIENT_STORAGE,
                 ),
             ),
         }

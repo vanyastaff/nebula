@@ -209,6 +209,21 @@ pub struct Scope {
     pub instance_id: Option<InstanceId>,
 }
 
+impl Scope {
+    /// Check whether this scope can access a resource registered at the given level.
+    ///
+    /// Strict containment: resource scope must be broader-or-equal to caller scope.
+    pub fn can_access(&self, registered: &ScopeLevel) -> bool {
+        match registered {
+            ScopeLevel::Global => true,
+            ScopeLevel::Organization(o) => self.org_id == Some(*o),
+            ScopeLevel::Workspace(w) => self.workspace_id == Some(*w),
+            ScopeLevel::Workflow(w) => self.workflow_id == Some(*w),
+            ScopeLevel::Execution(e) => self.execution_id == Some(*e),
+        }
+    }
+}
+
 /// Actor identity within the system.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Principal {

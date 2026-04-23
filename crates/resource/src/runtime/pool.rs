@@ -19,9 +19,9 @@ use std::{
 use tokio::sync::{Mutex, OwnedSemaphorePermit, Semaphore};
 
 use crate::{
-    ctx::Ctx,
+    context::ResourceContext,
     error::Error,
-    handle::ResourceHandle,
+    guard::ResourceGuard,
     metrics::ResourceOpsMetrics,
     options::AcquireOptions,
     release_queue::ReleaseQueue,
@@ -33,7 +33,7 @@ use crate::{
 /// A single pooled instance with its metrics and config fingerprint.
 ///
 /// The semaphore permit no longer lives here — it is held in
-/// `HandleInner::Guarded` so that it is returned even if the release
+/// `GuardInner::Guarded` so that it is returned even if the release
 /// callback panics.
 struct PoolEntry<R: Resource> {
     runtime: R::Runtime,
@@ -47,7 +47,7 @@ struct PoolEntry<R: Resource> {
 /// Result of attempting to pop an idle instance from the pool.
 enum IdleResult<R: Resource> {
     /// A valid idle instance was found — wrapped in a handle.
-    Found(ResourceHandle<R>),
+    Found(ResourceGuard<R>),
     /// No usable idle instance — the permit is returned so the caller
     /// can create a new instance.
     Empty(OwnedSemaphorePermit),
@@ -264,12 +264,12 @@ where
         resource: &R,
         resource_config: &R::Config,
         auth: &R::Auth,
-        ctx: &dyn Ctx,
+        ctx: &ResourceContext,
         release_queue: &Arc<ReleaseQueue>,
         generation: u64,
         options: &AcquireOptions,
         metrics: Option<ResourceOpsMetrics>,
-    ) -> Result<ResourceHandle<R>, Error> {
+    ) -> Result<ResourceGuard<R>, Error> {
         // Acquire a semaphore permit first — this is the concurrency gate.
         // If idle instances exist their permits were already returned on
         // handle drop, so a permit is immediately available.
@@ -335,7 +335,7 @@ where
     async fn try_acquire_idle(
         &self,
         resource: &R,
-        ctx: &dyn Ctx,
+        ctx: &ResourceContext,
         release_queue: &Arc<ReleaseQueue>,
         generation: u64,
         permit: OwnedSemaphorePermit,
@@ -457,7 +457,7 @@ where
         resource: &R,
         config: &R::Config,
         auth: &R::Auth,
-        ctx: &dyn Ctx,
+        ctx: &ResourceContext,
         non_blocking: bool,
     ) -> Result<PoolEntry<R>, Error> {
         let deadline = Instant::now() + self.config.create_timeout;
@@ -547,12 +547,12 @@ where
         release_queue: Arc<ReleaseQueue>,
         generation: u64,
         metrics: Option<ResourceOpsMetrics>,
-    ) -> ResourceHandle<R> {
+    ) -> ResourceGuard<R> {
         let idle = self.idle.clone();
         let current_fp_ref = self.current_fingerprint.clone();
         let max_lifetime = self.config.max_lifetime;
 
-        ResourceHandle::guarded_with_permit(
+        ResourceGuard::guarded_with_permit(
             lease,
             R::key(),
             TopologyTag::Pool,
@@ -596,7 +596,7 @@ where
     }
 
     /// Attempts a non-blocking acquire: returns immediately with
-    /// Backpressure if the pool is at capacity (all `max_size` slots hold active ResourceHandles).
+    /// Backpressure if the pool is at capacity (all `max_size` slots hold active ResourceGuards).
     ///
     /// Unlike acquire, this method never queues — use it
     /// when you want to shed load rather than queue callers.
@@ -615,12 +615,12 @@ where
         resource: &R,
         resource_config: &R::Config,
         auth: &R::Auth,
-        ctx: &dyn Ctx,
+        ctx: &ResourceContext,
         release_queue: &Arc<ReleaseQueue>,
         generation: u64,
         _options: &AcquireOptions,
         metrics: Option<ResourceOpsMetrics>,
-    ) -> Result<ResourceHandle<R>, Error> {
+    ) -> Result<ResourceGuard<R>, Error> {
         // Non-blocking semaphore attempt — fail immediately if pool is full.
         let permit = match self.semaphore.clone().try_acquire_owned() {
             Ok(p) => p,
@@ -699,7 +699,7 @@ where
     /// | `Staggered { interval }` | Creates one instance, sleeps `interval`, repeats. |
     ///
     /// Instances are pushed directly into the idle queue without consuming
-    /// semaphore permits — permits are only held by active ResourceHandles.
+    /// semaphore permits — permits are only held by active ResourceGuards.
     ///
     /// If a creation fails, warmup stops early and returns the count created
     /// so far (partial warmup is acceptable; on-demand creation handles the rest).
@@ -708,7 +708,7 @@ where
         resource: &R,
         resource_config: &R::Config,
         auth: &R::Auth,
-        ctx: &dyn Ctx,
+        ctx: &ResourceContext,
     ) -> usize {
         use crate::topology::pooled::config::WarmupStrategy;
 
@@ -739,7 +739,7 @@ where
         resource: &R,
         resource_config: &R::Config,
         auth: &R::Auth,
-        ctx: &dyn Ctx,
+        ctx: &ResourceContext,
         target: usize,
     ) -> usize {
         let mut created = 0usize;
@@ -783,7 +783,7 @@ where
         resource: &R,
         resource_config: &R::Config,
         auth: &R::Auth,
-        ctx: &dyn Ctx,
+        ctx: &ResourceContext,
         target: usize,
         interval: Duration,
     ) -> usize {
@@ -835,7 +835,7 @@ where
 ///
 /// Decides whether to recycle or destroy a returned pool entry. The semaphore
 /// permit is **not** held here — it was already returned when the handle
-/// dropped (it lives in `HandleInner::Guarded`, not in the callback closure).
+/// dropped (it lives in `GuardInner::Guarded`, not in the callback closure).
 async fn release_entry<R>(
     resource: R,
     entry: PoolEntry<R>,
@@ -922,7 +922,7 @@ impl<R: Resource> CreateGuard<R> {
     /// After this call, `Drop` is a no-op.
     fn defuse(&mut self) -> PoolEntry<R> {
         // Invariant: defuse() is called exactly once, right before
-        // constructing the ResourceHandle.
+        // constructing the ResourceGuard.
         self.entry
             .take()
             .unwrap_or_else(|| unreachable!("CreateGuard defused twice"))
@@ -950,7 +950,7 @@ mod tests {
 
     use super::*;
     use crate::{
-        ctx::BasicCtx,
+        context::ResourceContext,
         options::AcquireOptions,
         resource::{ResourceConfig, ResourceMetadata},
         topology::pooled::BrokenCheck,
@@ -1018,7 +1018,7 @@ mod tests {
             &self,
             _config: &PoolTestConfig,
             _auth: &(),
-            _ctx: &dyn Ctx,
+            _ctx: &ResourceContext,
         ) -> impl Future<Output = Result<u32, MockError>> + Send {
             let fail = self.fail_create.load(Ordering::Relaxed);
             async move {
@@ -1060,8 +1060,14 @@ mod tests {
         }
     }
 
-    fn test_ctx() -> BasicCtx {
-        BasicCtx::new(ExecutionId::new())
+    fn test_ctx() -> ResourceContext {
+        use nebula_core::scope::Scope;
+        use tokio_util::sync::CancellationToken;
+        let scope = Scope {
+            execution_id: Some(ExecutionId::new()),
+            ..Default::default()
+        };
+        ResourceContext::minimal(scope, CancellationToken::new())
     }
 
     #[tokio::test]

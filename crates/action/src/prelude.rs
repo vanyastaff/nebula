@@ -4,17 +4,19 @@
 //! use nebula_action::prelude::*;
 //! ```
 
+pub use nebula_core::{
+    Context, DeclaresDependencies,
+    accessor::{EventEmitter, LogLevel, Logger, MetricsEmitter, ResourceAccessor},
+    context::{HasCredentials, HasEventBus, HasLogger, HasMetrics, HasResources},
+};
 pub use nebula_credential::CredentialGuard;
 pub use nebula_schema::{Field, Schema, ValidSchema, field_key};
 
 pub use crate::{
     action::Action,
-    capability::{
-        ActionLogLevel, ActionLogger, ExecutionEmitter, ResourceAccessor, TriggerScheduler,
-    },
-    context::{ActionContext, Context, CredentialContextExt, TriggerContext},
+    capability::{ExecutionEmitter, TriggerScheduler},
+    context::{ActionContext, CredentialContextExt, TriggerContext},
     control::{ControlAction, ControlActionAdapter, ControlInput, ControlOutcome},
-    dependency::ActionDependencies,
     error::{ActionError, ActionErrorExt, RetryHintCode, ValidationReason},
     handler::ActionHandler,
     metadata::{ActionMetadata, MetadataCompatibilityError},
@@ -35,8 +37,8 @@ pub use crate::{
     },
     stateless::{FnStatelessAction, StatelessAction, StatelessActionAdapter, stateless_fn},
     testing::{
-        SpyEmitter, SpyLogger, SpyScheduler, StatefulTestHarness, TestContextBuilder,
-        TriggerTestHarness,
+        SpyEmitter, SpyLogger, SpyScheduler, StatefulTestHarness, TestActionContext,
+        TestContextBuilder, TestTriggerContext, TriggerTestHarness,
     },
     trigger::{TriggerAction, TriggerActionAdapter, TriggerEvent, TriggerEventOutcome},
     validation::{

@@ -26,9 +26,8 @@ use std::{
 
 use nebula_core::{ExecutionId, ResourceKey, resource_key};
 use nebula_resource::{
-    AcquireOptions, AcquireResilience, Manager, PoolConfig, ResidentConfig, ResourceHandle,
-    ShutdownConfig,
-    ctx::{BasicCtx, Ctx, ScopeLevel},
+    AcquireOptions, AcquireResilience, Manager, PoolConfig, ResidentConfig, ResourceContext,
+    ResourceGuard, ScopeLevel, ShutdownConfig,
     error::{Error, ErrorKind},
     resource::{Resource, ResourceConfig, ResourceMetadata},
     runtime::{TopologyRuntime, pool::PoolRuntime, resident::ResidentRuntime},
@@ -68,8 +67,14 @@ impl From<DxTestError> for Error {
     }
 }
 
-fn test_ctx() -> BasicCtx {
-    BasicCtx::new(ExecutionId::new())
+fn test_ctx() -> ResourceContext {
+    use nebula_core::scope::Scope;
+    use tokio_util::sync::CancellationToken;
+    let scope = Scope {
+        execution_id: Some(ExecutionId::new()),
+        ..Default::default()
+    };
+    ResourceContext::minimal(scope, CancellationToken::new())
 }
 
 // ============================================================================
@@ -137,7 +142,7 @@ impl Resource for HttpClientResource {
         &self,
         _config: &HttpClientConfig,
         _auth: &(),
-        _ctx: &dyn Ctx,
+        _ctx: &ResourceContext,
     ) -> impl Future<Output = Result<FakeHttpClient, DxTestError>> + Send {
         let id = self.next_id.fetch_add(1, Ordering::Relaxed);
         async move { Ok(FakeHttpClient { connection_id: id }) }
@@ -241,7 +246,7 @@ async fn use_case_1_http_client_pool() {
     // it adds noise to every call site.
     // SEVERITY: Minor
 
-    let handle: ResourceHandle<HttpClientResource> = manager
+    let handle: ResourceGuard<HttpClientResource> = manager
         .acquire_pooled(&(), &ctx, &AcquireOptions::default())
         .await
         .expect("acquire should succeed");
@@ -303,7 +308,7 @@ impl Resource for ConfigStoreResource {
         &self,
         config: &ConfigStoreConfig,
         _auth: &(),
-        _ctx: &dyn Ctx,
+        _ctx: &ResourceContext,
     ) -> impl Future<Output = Result<ConfigStore, DxTestError>> + Send {
         let path = config.path.clone();
         async move {
@@ -362,7 +367,7 @@ async fn use_case_2_resident_config_store() {
         .expect("resident registration should succeed");
 
     let ctx = test_ctx();
-    let handle: ResourceHandle<ConfigStoreResource> = manager
+    let handle: ResourceGuard<ConfigStoreResource> = manager
         .acquire_resident(&(), &ctx, &AcquireOptions::default())
         .await
         .expect("resident acquire should succeed");
@@ -372,7 +377,7 @@ async fn use_case_2_resident_config_store() {
     assert_eq!(db_host, "localhost");
 
     // A second acquire gets the same shared instance (clone under the hood)
-    let handle2: ResourceHandle<ConfigStoreResource> = manager
+    let handle2: ResourceGuard<ConfigStoreResource> = manager
         .acquire_resident(&(), &ctx, &AcquireOptions::default())
         .await
         .expect("second acquire should succeed");
@@ -446,7 +451,7 @@ impl Resource for DbResource {
         &self,
         _config: &DbConfig,
         _auth: &(),
-        _ctx: &dyn Ctx,
+        _ctx: &ResourceContext,
     ) -> impl Future<Output = Result<FakeDbConnection, DxTestError>> + Send {
         let count = self.create_count.clone();
         let fail = self.fail_create.clone();
@@ -509,7 +514,7 @@ async fn use_case_3_db_pool_with_resilience_and_shutdown() {
         let mgr = Arc::clone(&manager);
         join_handles.push(tokio::spawn(async move {
             let ctx = test_ctx();
-            let handle: ResourceHandle<DbResource> = mgr
+            let handle: ResourceGuard<DbResource> = mgr
                 .acquire_pooled(&(), &ctx, &AcquireOptions::default())
                 .await
                 .expect("task acquire should succeed");
@@ -540,16 +545,16 @@ async fn use_case_3_db_pool_with_resilience_and_shutdown() {
         .expect("graceful_shutdown must succeed");
 
     // Manager is shut down — new acquires should fail
-    // FRICTION NOTE [ResourceHandle NOT DEBUG]: ResourceHandle<R> does not
+    // FRICTION NOTE [ResourceGuard NOT DEBUG]: ResourceGuard<R> does not
     // implement Debug. This means you cannot call .expect_err() or .unwrap_err()
-    // on a Result<ResourceHandle<R>, E> because those methods require T: Debug.
+    // on a Result<ResourceGuard<R>, E> because those methods require T: Debug.
     // You must use .is_err() + .err().unwrap() instead.
     // This is a significant ergonomics miss — Debug should be derivable or
-    // manually implemented on ResourceHandle since it only needs to show the
+    // manually implemented on ResourceGuard since it only needs to show the
     // key and topology_tag, not the full lease (which may not be Debug).
     // SEVERITY: Major
     let ctx = test_ctx();
-    let result: Result<ResourceHandle<DbResource>, Error> = manager
+    let result: Result<ResourceGuard<DbResource>, Error> = manager
         .acquire_pooled(&(), &ctx, &AcquireOptions::default())
         .await;
     assert!(result.is_err());
@@ -572,11 +577,11 @@ async fn error_handling_not_found_on_unregistered_resource() {
     // enough (Transient/Permanent/Exhausted/Backpressure/NotFound/Cancelled).
     // SEVERITY: Nit (correct design, just notable)
 
-    let result: Result<ResourceHandle<HttpClientResource>, Error> = manager
+    let result: Result<ResourceGuard<HttpClientResource>, Error> = manager
         .acquire_pooled(&(), &ctx, &AcquireOptions::default())
         .await;
 
-    // same ResourceHandle<R>: !Debug issue — must use .err().unwrap()
+    // same ResourceGuard<R>: !Debug issue — must use .err().unwrap()
     assert!(result.is_err());
     let err = result.err().unwrap();
 

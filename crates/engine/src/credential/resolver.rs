@@ -4,7 +4,7 @@ use std::sync::Arc;
 
 use nebula_credential::{
     Credential, CredentialContext, CredentialEvent, CredentialHandle, CredentialId,
-    CredentialState, RefreshAttempt, RefreshCoordinator,
+    CredentialState,
     resolve::RefreshOutcome,
     store::{CredentialStore, PutMode, StoreError, StoredCredential},
 };
@@ -15,6 +15,7 @@ use nebula_credential::{
 };
 use nebula_eventbus::EventBus;
 
+use crate::credential::refresh::{RefreshAttempt, RefreshCoordinator};
 #[cfg(feature = "rotation")]
 use crate::credential::rotation::refresh_oauth2_state;
 

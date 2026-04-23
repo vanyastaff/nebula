@@ -6,11 +6,10 @@
 use std::time::Duration;
 
 use nebula_credential::{
-    Credential, CredentialContext, PendingState, PendingStateStore, PendingStoreError,
-    PendingToken, SecretString,
+    Credential, CredentialContext, CredentialMetadata, PendingState, PendingStateStore,
+    PendingStoreError, PendingToken, SecretString,
     credentials::OAuth2Pending,
     error::CredentialError,
-    metadata::CredentialMetadata,
     resolve::{DisplayData, InteractionRequest, RefreshOutcome, ResolveResult, UserInput},
     scheme::SecretToken,
 };
@@ -205,7 +204,7 @@ impl Credential for RetryAwareCredential {
 #[tokio::test]
 async fn pending_lifecycle_resolve_then_continue() {
     let pending_store = InMemoryPendingStore::new();
-    let ctx = CredentialContext::new("test-user").with_session_id("sess-1");
+    let ctx = CredentialContext::for_test("test-user").with_session_id("sess-1");
     let values = FieldValues::new();
 
     let response = nebula_engine::credential::execute_resolve::<InteractiveTestCredential, _>(
@@ -250,7 +249,7 @@ async fn pending_lifecycle_resolve_then_continue() {
 #[tokio::test]
 async fn pending_token_is_single_use() {
     let pending_store = InMemoryPendingStore::new();
-    let ctx = CredentialContext::new("test-user").with_session_id("sess-1");
+    let ctx = CredentialContext::for_test("test-user").with_session_id("sess-1");
     let values = FieldValues::new();
 
     let response = nebula_engine::credential::execute_resolve::<InteractiveTestCredential, _>(
@@ -290,7 +289,7 @@ async fn pending_token_is_single_use() {
 #[tokio::test]
 async fn continue_with_wrong_code_returns_error() {
     let pending_store = InMemoryPendingStore::new();
-    let ctx = CredentialContext::new("test-user").with_session_id("sess-1");
+    let ctx = CredentialContext::for_test("test-user").with_session_id("sess-1");
     let values = FieldValues::new();
 
     let response = nebula_engine::credential::execute_resolve::<InteractiveTestCredential, _>(
@@ -324,7 +323,7 @@ async fn continue_with_wrong_code_returns_error() {
 #[tokio::test]
 async fn retry_does_not_consume_pending_token() {
     let pending_store = InMemoryPendingStore::new();
-    let ctx = CredentialContext::new("test-user").with_session_id("sess-1");
+    let ctx = CredentialContext::for_test("test-user").with_session_id("sess-1");
     let values = FieldValues::new();
 
     let response = nebula_engine::credential::execute_resolve::<RetryAwareCredential, _>(
@@ -381,8 +380,8 @@ async fn retry_does_not_consume_pending_token() {
 #[tokio::test]
 async fn retry_path_rejects_mismatched_session() {
     let pending_store = InMemoryPendingStore::new();
-    let owner_ctx = CredentialContext::new("test-user").with_session_id("sess-owner");
-    let attacker_ctx = CredentialContext::new("test-user").with_session_id("sess-attacker");
+    let owner_ctx = CredentialContext::for_test("test-user").with_session_id("sess-owner");
+    let attacker_ctx = CredentialContext::for_test("test-user").with_session_id("sess-attacker");
     let values = FieldValues::new();
 
     let response = nebula_engine::credential::execute_resolve::<RetryAwareCredential, _>(

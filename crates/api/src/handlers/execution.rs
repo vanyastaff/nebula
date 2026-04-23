@@ -1,11 +1,11 @@
 //! Execution handlers
 
 use axum::{
-    Json,
+    Extension, Json,
     extract::{Path, Query, State},
     http::StatusCode,
 };
-use nebula_core::{ExecutionId, WorkflowId};
+use nebula_core::{ExecutionId, TenantContext, WorkflowId};
 use nebula_execution::{ExecutionState, ExecutionStatus};
 use nebula_storage::repos::{ControlCommand, ControlQueueEntry};
 use uuid::Uuid;
@@ -20,13 +20,14 @@ use crate::{
     state::AppState,
 };
 
-/// List all executions (global) — returns running execution IDs with count.
+/// List all executions (workspace-scoped) — returns running execution IDs with count.
 ///
 /// # Errors
 ///
 /// Returns [`ApiError::Internal`] if the execution repository is unavailable.
-pub async fn list_all_executions(
+pub async fn list_executions(
     State(state): State<AppState>,
+    Extension(_tenant): Extension<TenantContext>,
     Query(params): Query<PaginationParams>,
 ) -> ApiResult<Json<ListExecutionsResponse>> {
     let running_ids = state
@@ -60,9 +61,10 @@ pub async fn list_all_executions(
 /// # Errors
 ///
 /// Returns [`ApiError::Internal`] if the execution repository is unavailable.
-pub async fn list_executions(
+pub async fn list_executions_for_workflow(
     State(state): State<AppState>,
-    Path(workflow_id): Path<String>,
+    Extension(_tenant): Extension<TenantContext>,
+    Path((_org, _ws, workflow_id)): Path<(String, String, String)>,
     Query(params): Query<PaginationParams>,
 ) -> ApiResult<Json<ListExecutionsResponse>> {
     let workflow_id_parsed = WorkflowId::parse(&workflow_id)
@@ -109,7 +111,8 @@ pub async fn list_executions(
 /// - [`ApiError::Internal`] if the execution repository is unavailable.
 pub async fn get_execution_outputs(
     State(state): State<AppState>,
-    Path(id): Path<String>,
+    Extension(_tenant): Extension<TenantContext>,
+    Path((_org, _ws, id)): Path<(String, String, String)>,
 ) -> ApiResult<Json<ExecutionOutputsResponse>> {
     let execution_id = ExecutionId::parse(&id)
         .map_err(|e| ApiError::validation_message(format!("Invalid execution ID: {e}")))?;
@@ -141,10 +144,11 @@ pub async fn get_execution_outputs(
 }
 
 /// Get execution by ID
-/// GET /api/v1/executions/:id
+/// GET /api/v1/orgs/{org}/workspaces/{ws}/executions/{exec}
 pub async fn get_execution(
     State(state): State<AppState>,
-    Path(id): Path<String>,
+    Extension(_tenant): Extension<TenantContext>,
+    Path((_org, _ws, id)): Path<(String, String, String)>,
 ) -> ApiResult<Json<ExecutionResponse>> {
     use nebula_core::ExecutionId;
 
@@ -209,10 +213,11 @@ pub async fn get_execution(
 }
 
 /// Start workflow execution (enqueue and return 202 Accepted)
-/// POST /api/v1/workflows/:workflow_id/executions
+/// POST /api/v1/orgs/{org}/workspaces/{ws}/workflows/{wf}/executions
 pub async fn start_execution(
     State(state): State<AppState>,
-    Path(workflow_id): Path<String>,
+    Extension(_tenant): Extension<TenantContext>,
+    Path((_org, _ws, workflow_id)): Path<(String, String, String)>,
     Json(payload): Json<StartExecutionRequest>,
 ) -> ApiResult<(StatusCode, Json<ExecutionResponse>)> {
     // Parse workflow ID
@@ -350,10 +355,11 @@ pub(crate) async fn enqueue_start(state: &AppState, execution_id: ExecutionId) -
 }
 
 /// Cancel execution
-/// POST /api/v1/executions/:id/cancel
+/// DELETE /api/v1/orgs/{org}/workspaces/{ws}/executions/{exec}
 pub async fn cancel_execution(
     State(state): State<AppState>,
-    Path(id): Path<String>,
+    Extension(_tenant): Extension<TenantContext>,
+    Path((_org, _ws, id)): Path<(String, String, String)>,
 ) -> ApiResult<Json<ExecutionResponse>> {
     use nebula_core::ExecutionId;
 
@@ -541,7 +547,8 @@ pub async fn cancel_execution(
 /// - [`ApiError::Internal`] if the execution repository is unavailable.
 pub async fn get_execution_logs(
     State(state): State<AppState>,
-    Path(id): Path<String>,
+    Extension(_tenant): Extension<TenantContext>,
+    Path((_org, _ws, id)): Path<(String, String, String)>,
 ) -> ApiResult<Json<ExecutionLogsResponse>> {
     let execution_id = ExecutionId::parse(&id)
         .map_err(|e| ApiError::validation_message(format!("Invalid execution ID: {e}")))?;
@@ -564,4 +571,26 @@ pub async fn get_execution_logs(
         execution_id: id,
         logs,
     }))
+}
+
+/// Terminate execution — forceful stop.
+/// POST /api/v1/orgs/{org}/workspaces/{ws}/executions/{exec}/terminate
+pub async fn terminate_execution(
+    State(_state): State<AppState>,
+    Extension(_tenant): Extension<TenantContext>,
+    Path((_org, _ws, _exec)): Path<(String, String, String)>,
+) -> ApiResult<Json<serde_json::Value>> {
+    // TODO: Forcefully terminate execution (kill running nodes)
+    Err(ApiError::Internal("not implemented".to_string()))
+}
+
+/// Restart execution from the beginning.
+/// POST /api/v1/orgs/{org}/workspaces/{ws}/executions/{exec}/restart
+pub async fn restart_execution(
+    State(_state): State<AppState>,
+    Extension(_tenant): Extension<TenantContext>,
+    Path((_org, _ws, _exec)): Path<(String, String, String)>,
+) -> ApiResult<Json<serde_json::Value>> {
+    // TODO: Restart a failed/cancelled execution
+    Err(ApiError::Internal("not implemented".to_string()))
 }

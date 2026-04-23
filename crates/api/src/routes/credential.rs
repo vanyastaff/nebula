@@ -1,13 +1,33 @@
-//! Integration credential routes (**Plane B** — ADR-0033).
+//! System-level credential routes — not workspace-scoped.
 //!
-//! Mounted under `/api/v1` behind [`crate::middleware::auth`] (**Plane A**) so only authenticated
-//! API clients start or complete OAuth flows for external integrations.
+//! Type discovery endpoints expose the catalog of available credential
+//! types and their schemas. OAuth2 callback routes handle external
+//! provider redirects.
 
-use axum::Router;
+use axum::{Router, routing::get};
 
-use crate::state::AppState;
+use crate::{handlers, state::AppState};
 
-/// OAuth integration-credential endpoints under `/api/v1`.
+/// System-level credential endpoints under `/api/v1`.
 pub fn router() -> Router<AppState> {
-    crate::credential::router()
+    Router::new()
+        // Credential type discovery (system-wide catalog)
+        .route(
+            "/credentials/types",
+            get(handlers::credential::list_credential_types),
+        )
+        .route(
+            "/credentials/types/{key}",
+            get(handlers::credential::get_credential_type),
+        )
+        // OAuth2 callback routes (external provider redirects, not workspace-scoped)
+        .route(
+            "/credentials/{id}/oauth2/auth",
+            get(handlers::credential::get_oauth2_authorize_url),
+        )
+        .route(
+            "/credentials/{id}/oauth2/callback",
+            get(handlers::credential::get_oauth2_callback)
+                .post(handlers::credential::post_oauth2_callback),
+        )
 }

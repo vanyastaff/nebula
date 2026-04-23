@@ -18,10 +18,10 @@ use std::{
 };
 
 use nebula_action::{
-    ActionError, action::Action, context::Context, dependency::ActionDependencies,
-    metadata::ActionMetadata, result::ActionResult, stateless::StatelessAction,
+    ActionError, action::Action, metadata::ActionMetadata, result::ActionResult,
+    stateless::StatelessAction,
 };
-use nebula_core::{ActionKey, action_key, id::ExecutionId, node_key};
+use nebula_core::{ActionKey, DeclaresDependencies, action_key, id::ExecutionId, node_key};
 use nebula_engine::{ControlDispatch, ControlDispatchError, EngineControlDispatch, WorkflowEngine};
 use nebula_execution::{ExecutionState, ExecutionStatus};
 use nebula_runtime::{
@@ -42,7 +42,7 @@ struct CountingEchoHandler {
     count: Arc<AtomicU32>,
 }
 
-impl ActionDependencies for CountingEchoHandler {}
+impl DeclaresDependencies for CountingEchoHandler {}
 impl Action for CountingEchoHandler {
     fn metadata(&self) -> &ActionMetadata {
         &self.meta
@@ -56,7 +56,7 @@ impl StatelessAction for CountingEchoHandler {
     async fn execute(
         &self,
         input: Self::Input,
-        _ctx: &impl Context,
+        _ctx: &nebula_action::ActionContext,
     ) -> Result<ActionResult<Self::Output>, ActionError> {
         self.count.fetch_add(1, Ordering::SeqCst);
         Ok(ActionResult::success(input))
@@ -71,7 +71,7 @@ struct SlowCancellableHandler {
     count: Arc<AtomicU32>,
 }
 
-impl ActionDependencies for SlowCancellableHandler {}
+impl DeclaresDependencies for SlowCancellableHandler {}
 impl Action for SlowCancellableHandler {
     fn metadata(&self) -> &ActionMetadata {
         &self.meta
@@ -85,7 +85,7 @@ impl StatelessAction for SlowCancellableHandler {
     async fn execute(
         &self,
         input: Self::Input,
-        ctx: &impl Context,
+        ctx: &nebula_action::ActionContext,
     ) -> Result<ActionResult<Self::Output>, ActionError> {
         self.count.fetch_add(1, Ordering::SeqCst);
         self.started.notify_one();

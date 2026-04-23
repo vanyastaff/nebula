@@ -21,11 +21,12 @@
 
 use std::{marker::PhantomData, sync::Arc};
 
+use nebula_core::context::Context;
 use tokio::sync::Mutex;
 use tokio_util::sync::CancellationToken;
 
 use crate::{
-    ctx::Ctx,
+    context::ResourceContext,
     error::Error,
     resource::Resource,
     topology::daemon::{Daemon, RestartPolicy, config::Config},
@@ -132,7 +133,7 @@ where
         &self,
         resource: R,
         runtime: Arc<R::Runtime>,
-        ctx: &dyn Ctx,
+        ctx: &ResourceContext,
     ) -> Result<(), Error> {
         let mut guard = self.inner.lock().await;
 
@@ -154,10 +155,10 @@ where
         let loop_cancel = cancel.clone();
 
         let config = self.config.clone();
-        let execution_id = *ctx.execution_id();
+        let scope = ctx.scope().clone();
 
         let handle = tokio::spawn(async move {
-            daemon_loop(resource, runtime, config, loop_cancel, execution_id).await;
+            daemon_loop(resource, runtime, config, loop_cancel, scope).await;
         });
 
         *guard = Some(DaemonRun { cancel, handle });
@@ -199,13 +200,13 @@ async fn daemon_loop<R>(
     runtime: Arc<R::Runtime>,
     config: Config,
     cancel: CancellationToken,
-    execution_id: nebula_core::ExecutionId,
+    scope: nebula_core::scope::Scope,
 ) where
     R: Daemon + Clone + Send + Sync + 'static,
     R::Runtime: Send + Sync + 'static,
 {
     let mut restarts = 0u32;
-    let ctx = crate::ctx::BasicCtx::new(execution_id).with_cancel_token(cancel.clone());
+    let ctx = ResourceContext::minimal(scope, cancel.clone());
 
     loop {
         if cancel.is_cancelled() {
@@ -269,7 +270,7 @@ mod tests {
 
     use super::*;
     use crate::{
-        ctx::BasicCtx,
+        context::ResourceContext,
         error::Error as ResourceError,
         resource::{Resource, ResourceConfig, ResourceMetadata},
         topology::daemon::{Daemon, RestartPolicy, config::Config as DaemonCfg},
@@ -316,7 +317,7 @@ mod tests {
             &self,
             _config: &Self::Config,
             _auth: &(),
-            _ctx: &dyn Ctx,
+            _ctx: &ResourceContext,
         ) -> Result<(), TestError> {
             Ok(())
         }
@@ -330,7 +331,7 @@ mod tests {
         async fn run(
             &self,
             _runtime: &Self::Runtime,
-            _ctx: &dyn Ctx,
+            _ctx: &ResourceContext,
             _cancel: CancellationToken,
         ) -> Result<(), TestError> {
             self.attempts.fetch_add(1, Ordering::SeqCst);
@@ -356,7 +357,7 @@ mod tests {
             &self,
             _config: &Self::Config,
             _auth: &(),
-            _ctx: &dyn Ctx,
+            _ctx: &ResourceContext,
         ) -> Result<(), TestError> {
             Ok(())
         }
@@ -370,7 +371,7 @@ mod tests {
         async fn run(
             &self,
             _runtime: &Self::Runtime,
-            _ctx: &dyn Ctx,
+            _ctx: &ResourceContext,
             _cancel: CancellationToken,
         ) -> Result<(), TestError> {
             Ok(())
@@ -392,7 +393,13 @@ mod tests {
         let resource = FlakyDaemon {
             attempts: Arc::new(AtomicU32::new(0)),
         };
-        let ctx = BasicCtx::new(ExecutionId::new());
+        let ctx = ResourceContext::minimal(
+            nebula_core::scope::Scope {
+                execution_id: Some(ExecutionId::new()),
+                ..Default::default()
+            },
+            CancellationToken::new(),
+        );
 
         rt.start(resource, Arc::new(()), &ctx).await.unwrap();
 
@@ -425,7 +432,13 @@ mod tests {
         let resource = FlakyDaemon {
             attempts: Arc::new(AtomicU32::new(0)),
         };
-        let ctx = BasicCtx::new(ExecutionId::new());
+        let ctx = ResourceContext::minimal(
+            nebula_core::scope::Scope {
+                execution_id: Some(ExecutionId::new()),
+                ..Default::default()
+            },
+            CancellationToken::new(),
+        );
 
         rt.start(resource.clone(), Arc::new(()), &ctx)
             .await
@@ -453,7 +466,13 @@ mod tests {
             max_restarts: 0,
         };
         let rt = DaemonRuntime::<OneShotDaemon>::new(cfg, parent);
-        let ctx = BasicCtx::new(ExecutionId::new());
+        let ctx = ResourceContext::minimal(
+            nebula_core::scope::Scope {
+                execution_id: Some(ExecutionId::new()),
+                ..Default::default()
+            },
+            CancellationToken::new(),
+        );
 
         rt.start(OneShotDaemon, Arc::new(()), &ctx).await.unwrap();
 

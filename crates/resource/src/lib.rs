@@ -5,7 +5,7 @@
 //!
 //! The engine is the owner of the resource lifecycle: acquire, health-check,
 //! hot-reload via `ReloadOutcome`, and scope-bounded release. Action code
-//! receives a `ResourceHandle` that derefs to the lease type and releases on
+//! receives a `ResourceGuard` that derefs to the lease type and releases on
 //! drop. Seven topology traits cover the full integration space.
 //!
 //! ## Key types
@@ -13,13 +13,13 @@
 //! | Type | Purpose |
 //! |------|---------|
 //! | `Resource` | Core trait — 5 associated types, 5 core methods |
-//! | `ResourceHandle` | RAII lease handle with Owned/Guarded/Shared modes |
+//! | `ResourceGuard` | RAII lease guard with Owned/Guarded/Shared modes |
 //! | `Manager` | Central registry with acquire dispatch and shutdown |
 //! | `ReleaseQueue` | Background worker pool for async cleanup (best-effort on crash) |
 //! | `DrainTimeoutPolicy` | Drain operation timeout policy |
 //! | `Cell` | Lock-free `ArcSwap`-based cell for resident topologies |
 //! | `Error`, `ErrorKind` | Unified typed error with retry classification |
-//! | `Ctx` | Execution context with cancellation and extensions |
+//! | `ResourceContext` | Execution context with cancellation and capabilities |
 //! | `ResourceEvent` | Lifecycle events for observability |
 //! | `ResourceOpsMetrics` | Registry-backed operation counters |
 //!
@@ -36,10 +36,11 @@
 #![forbid(unsafe_code)]
 
 pub mod cell;
-pub mod ctx;
+pub mod context;
 pub mod error;
 pub mod events;
-pub mod handle;
+pub mod ext;
+pub mod guard;
 pub mod integration;
 pub mod manager;
 pub mod metrics;
@@ -47,6 +48,7 @@ pub mod options;
 pub mod recovery;
 pub mod registry;
 pub mod release_queue;
+pub mod reload;
 pub mod resource;
 pub mod runtime;
 pub mod state;
@@ -54,17 +56,18 @@ pub mod topology;
 pub mod topology_tag;
 
 pub use cell::Cell;
-pub use ctx::{BasicCtx, Ctx, Extensions, ScopeLevel, ctx_ext};
+pub use context::ResourceContext;
 pub use error::{Error, ErrorKind, ErrorScope};
 pub use events::ResourceEvent;
-pub use handle::ResourceHandle;
+pub use ext::HasResourcesExt;
+pub use guard::ResourceGuard;
 pub use integration::{AcquireResilience, AcquireRetryConfig};
 pub use manager::{
     DrainTimeoutPolicy, Manager, ManagerConfig, RegisterOptions, ResourceHealthSnapshot,
     ShutdownConfig, ShutdownError, ShutdownReport,
 };
 pub use metrics::{ResourceOpsMetrics, ResourceOpsSnapshot};
-pub use nebula_core::{ExecutionId, ResourceKey, WorkflowId, resource_key};
+pub use nebula_core::{ExecutionId, ResourceKey, ScopeLevel, WorkflowId, resource_key};
 /// Derive macro that generates `From<T> for nebula_resource::Error`.
 ///
 /// See [`nebula_resource_macros::ClassifyError`] for full documentation.
@@ -77,6 +80,7 @@ pub use recovery::{
 };
 pub use registry::{AnyManagedResource, Registry};
 pub use release_queue::ReleaseQueue;
+pub use reload::ReloadOutcome;
 pub use resource::{
     AnyResource, MetadataCompatibilityError, Resource, ResourceConfig, ResourceMetadata,
 };

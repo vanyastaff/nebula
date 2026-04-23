@@ -12,10 +12,10 @@ use std::{
 };
 
 use nebula_action::{
-    ActionError, action::Action, context::Context, dependency::ActionDependencies,
-    metadata::ActionMetadata, result::ActionResult, stateless::StatelessAction,
+    ActionError, action::Action, metadata::ActionMetadata, result::ActionResult,
+    stateless::StatelessAction,
 };
-use nebula_core::{ActionKey, NodeKey, action_key, id::WorkflowId, node_key};
+use nebula_core::{ActionKey, DeclaresDependencies, NodeKey, action_key, id::WorkflowId, node_key};
 use nebula_engine::WorkflowEngine;
 use nebula_execution::{ExecutionStatus, context::ExecutionBudget};
 use nebula_metrics::naming::{
@@ -37,7 +37,7 @@ struct EchoHandler {
     meta: ActionMetadata,
 }
 
-impl ActionDependencies for EchoHandler {}
+impl DeclaresDependencies for EchoHandler {}
 impl Action for EchoHandler {
     fn metadata(&self) -> &ActionMetadata {
         &self.meta
@@ -51,7 +51,7 @@ impl StatelessAction for EchoHandler {
     async fn execute(
         &self,
         input: Self::Input,
-        _ctx: &impl Context,
+        _ctx: &nebula_action::ActionContext,
     ) -> Result<ActionResult<Self::Output>, ActionError> {
         Ok(ActionResult::success(input))
     }
@@ -62,7 +62,7 @@ struct DoubleHandler {
     meta: ActionMetadata,
 }
 
-impl ActionDependencies for DoubleHandler {}
+impl DeclaresDependencies for DoubleHandler {}
 impl Action for DoubleHandler {
     fn metadata(&self) -> &ActionMetadata {
         &self.meta
@@ -76,7 +76,7 @@ impl StatelessAction for DoubleHandler {
     async fn execute(
         &self,
         input: Self::Input,
-        _ctx: &impl Context,
+        _ctx: &nebula_action::ActionContext,
     ) -> Result<ActionResult<Self::Output>, ActionError> {
         let n = input
             .as_i64()
@@ -90,7 +90,7 @@ struct Add10Handler {
     meta: ActionMetadata,
 }
 
-impl ActionDependencies for Add10Handler {}
+impl DeclaresDependencies for Add10Handler {}
 impl Action for Add10Handler {
     fn metadata(&self) -> &ActionMetadata {
         &self.meta
@@ -104,7 +104,7 @@ impl StatelessAction for Add10Handler {
     async fn execute(
         &self,
         input: Self::Input,
-        _ctx: &impl Context,
+        _ctx: &nebula_action::ActionContext,
     ) -> Result<ActionResult<Self::Output>, ActionError> {
         let n = input
             .as_i64()
@@ -119,7 +119,7 @@ struct SlowHandler {
     delay: Duration,
 }
 
-impl ActionDependencies for SlowHandler {}
+impl DeclaresDependencies for SlowHandler {}
 impl Action for SlowHandler {
     fn metadata(&self) -> &ActionMetadata {
         &self.meta
@@ -133,7 +133,7 @@ impl StatelessAction for SlowHandler {
     async fn execute(
         &self,
         input: Self::Input,
-        ctx: &impl Context,
+        ctx: &nebula_action::ActionContext,
     ) -> Result<ActionResult<Self::Output>, ActionError> {
         tokio::select! {
             () = tokio::time::sleep(self.delay) => Ok(ActionResult::success(input)),
@@ -147,7 +147,7 @@ struct FailHandler {
     meta: ActionMetadata,
 }
 
-impl ActionDependencies for FailHandler {}
+impl DeclaresDependencies for FailHandler {}
 impl Action for FailHandler {
     fn metadata(&self) -> &ActionMetadata {
         &self.meta
@@ -161,7 +161,7 @@ impl StatelessAction for FailHandler {
     async fn execute(
         &self,
         _input: Self::Input,
-        _ctx: &impl Context,
+        _ctx: &nebula_action::ActionContext,
     ) -> Result<ActionResult<Self::Output>, ActionError> {
         Err(ActionError::fatal("intentional failure"))
     }
@@ -173,7 +173,7 @@ struct CounterHandler {
     count: Arc<AtomicUsize>,
 }
 
-impl ActionDependencies for CounterHandler {}
+impl DeclaresDependencies for CounterHandler {}
 impl Action for CounterHandler {
     fn metadata(&self) -> &ActionMetadata {
         &self.meta
@@ -187,7 +187,7 @@ impl StatelessAction for CounterHandler {
     async fn execute(
         &self,
         input: Self::Input,
-        _ctx: &impl Context,
+        _ctx: &nebula_action::ActionContext,
     ) -> Result<ActionResult<Self::Output>, ActionError> {
         self.count.fetch_add(1, Ordering::SeqCst);
         // Small yield to allow concurrency observation

@@ -52,6 +52,26 @@ pub enum CoreError {
         /// The component requiring it.
         required_by: &'static str,
     },
+
+    /// Credential capability is not configured in context.
+    #[error("credential not configured: {0}")]
+    CredentialNotConfigured(String),
+
+    /// Credential not found by key.
+    #[error("credential not found: {key}")]
+    CredentialNotFound {
+        /// The key that was not found.
+        key: String,
+    },
+
+    /// Credential access denied (action not authorized for this key).
+    #[error("credential access denied: `{capability}` for action `{action_id}`")]
+    CredentialAccessDenied {
+        /// Description of the denied capability.
+        capability: String,
+        /// The action that attempted access.
+        action_id: String,
+    },
 }
 
 impl CoreError {
@@ -103,6 +123,10 @@ impl nebula_error::Classify for CoreError {
             Self::DependencyCycle { .. } | Self::DependencyMissing { .. } => {
                 nebula_error::ErrorCategory::Validation
             },
+            Self::CredentialNotConfigured(_) | Self::CredentialNotFound { .. } => {
+                nebula_error::ErrorCategory::NotFound
+            },
+            Self::CredentialAccessDenied { .. } => nebula_error::ErrorCategory::Authorization,
         }
     }
 
@@ -113,6 +137,9 @@ impl nebula_error::Classify for CoreError {
             Self::ScopeViolation { .. } => "CORE:SCOPE_VIOLATION",
             Self::DependencyCycle { .. } => "CORE:DEPENDENCY_CYCLE",
             Self::DependencyMissing { .. } => "CORE:DEPENDENCY_MISSING",
+            Self::CredentialNotConfigured(_) => "CORE:CREDENTIAL_NOT_CONFIGURED",
+            Self::CredentialNotFound { .. } => "CORE:CREDENTIAL_NOT_FOUND",
+            Self::CredentialAccessDenied { .. } => "CORE:CREDENTIAL_ACCESS_DENIED",
         })
     }
 

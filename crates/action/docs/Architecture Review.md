@@ -421,14 +421,14 @@ The blanket impl means the derive macro only needs to generate the `Action` base
 **Solution:** Per-type handler traits + `HandlerDispatch` enum:
 
 ```rust
-#[async_trait]
+
 pub trait ProcessHandler: Send + Sync + 'static {
     async fn execute(&self, input: Value, ctx: ActionContext)
         -> Result<ActionResult<Value>, ActionError>;
     fn metadata(&self) -> &ActionMetadata;
 }
 
-#[async_trait]
+
 pub trait StatefulHandler: Send + Sync + 'static {
     async fn execute_with_state(&self, input: Value, state: &mut Value, ctx: ActionContext)
         -> Result<ActionResult<Value>, ActionError>;
@@ -437,7 +437,7 @@ pub trait StatefulHandler: Send + Sync + 'static {
     fn metadata(&self) -> &ActionMetadata;
 }
 
-#[async_trait]
+
 pub trait TriggerHandler: Send + Sync + 'static {
     async fn poll(&self, config: &Value, last_state: Option<Value>, ctx: &ActionContext)
         -> Result<Vec<TriggerEvent<Value>>, ActionError>;
@@ -639,7 +639,7 @@ ResourceManager (central coordinator)
 #### Key Traits
 
 ```rust
-#[async_trait]
+
 pub trait Resource: Send + Sync + 'static {
     type Config: ResourceConfig;
     type Instance: ResourceInstance;
@@ -652,7 +652,7 @@ pub trait Resource: Send + Sync + 'static {
     fn supports_pooling(&self) -> bool;
 }
 
-#[async_trait]
+
 pub trait ResourceInstance: Send + Sync + 'static {
     fn id(&self) -> &ResourceInstanceId;
     async fn health_check(&self) -> Result<HealthStatus, ResourceError>;
@@ -704,7 +704,7 @@ Configuration auto-adjusts per tier (e.g., Personal: max 5 connections, Enterpri
 Actions access resources via the context's `ResourceManager`:
 
 ```rust
-#[async_trait]
+
 impl ProcessAction for HttpRequestNode {
     async fn execute(&self, input: Self::Input, ctx: &ActionContext) -> Result<ActionResult<Self::Output>> {
         let http_client = ctx.resource_manager()
@@ -740,7 +740,7 @@ pub enum IdempotencyLevel {
 #### IdempotentAction Trait
 
 ```rust
-#[async_trait]
+
 pub trait IdempotentAction: Send + Sync {
     type Input: Send + Sync;
     type Output: Send + Sync + Clone;
@@ -947,7 +947,7 @@ pub struct HttpRequestNode {
     timeout_seconds: u64,
 }
 
-#[async_trait]
+
 impl ProcessAction for HttpRequestNode {
     type Input = HttpRequestInput;
     type Output = HttpResponse;
@@ -1164,7 +1164,7 @@ From the phase 4-5 roadmaps and production docs.
 ### Phase 7: Ergonomics + SDK
 
 33. Create `nebula-action-derive` crate with `#[derive(Action)]`, `#[derive(Node)]`
-34. Migrate action type traits to native async traits (Rust 2024 — remove `#[async_trait]`)
+34. Migrate action type traits to native async traits (Rust 2024 — remove ``)
 35. Ship test doubles: `MockCredentialProvider`, `RecordingLogger`, `NoopMetrics`, `TestContext`
 36. Implement `test_node!` macro and `MockExecution` builder
 37. Marker-based resource context with `#[derive(Resources)]`

@@ -22,6 +22,7 @@
 
 mod crypto;
 mod guard;
+pub mod redacted;
 mod secret_string;
 pub mod serde_secret;
 
@@ -31,4 +32,5 @@ pub use crypto::{
     serde_base64,
 };
 pub use guard::CredentialGuard;
+pub use redacted::RedactedSecret;
 pub use secret_string::SecretString;

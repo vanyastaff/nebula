@@ -1,4 +1,4 @@
-//! Integration tests for `nebula-api::webhook::WebhookTransport`.
+//! Integration tests for `nebula-api::services::webhook::WebhookTransport`.
 //!
 //! Exercise the full HTTP round-trip: build a real axum router from
 //! the transport, drive requests through it with
@@ -27,11 +27,12 @@ use axum::{
 };
 use hmac::{Hmac, KeyInit, Mac};
 use nebula_action::{
-    Action, ActionDependencies, ActionError, ActionMetadata, SignaturePolicy, TriggerContext,
-    TriggerEventOutcome, TriggerHandler, WebhookAction, WebhookConfig, WebhookRequest,
-    WebhookResponse, WebhookTriggerAdapter,
+    Action, ActionError, ActionMetadata, SignaturePolicy, TriggerContext, TriggerEventOutcome,
+    TriggerHandler, WebhookAction, WebhookConfig, WebhookRequest, WebhookResponse,
+    WebhookTriggerAdapter,
 };
-use nebula_api::webhook::{WebhookTransport, WebhookTransportConfig};
+use nebula_api::services::webhook::{WebhookTransport, WebhookTransportConfig};
+use nebula_core::DeclaresDependencies;
 use sha2::Sha256;
 use tokio_util::sync::CancellationToken;
 use tower::ServiceExt;
@@ -56,7 +57,7 @@ struct RegistrationState {
     hook_id: u64,
 }
 
-impl ActionDependencies for GitHubLikeWebhook {}
+impl DeclaresDependencies for GitHubLikeWebhook {}
 impl Action for GitHubLikeWebhook {
     fn metadata(&self) -> &ActionMetadata {
         &self.meta
@@ -156,7 +157,7 @@ async fn register_webhook(
     transport: &WebhookTransport,
     secret: Vec<u8>,
 ) -> (
-    nebula_api::webhook::ActivationHandle,
+    nebula_api::services::webhook::ActivationHandle,
     Arc<Mutex<Option<Url>>>,
 ) {
     let captured = Arc::new(Mutex::new(None));
@@ -393,7 +394,7 @@ struct HangingWebhook {
     meta: ActionMetadata,
 }
 
-impl ActionDependencies for HangingWebhook {}
+impl DeclaresDependencies for HangingWebhook {}
 impl Action for HangingWebhook {
     fn metadata(&self) -> &ActionMetadata {
         &self.meta
@@ -595,7 +596,7 @@ struct UnsignedWebhook {
     meta: ActionMetadata,
 }
 
-impl ActionDependencies for UnsignedWebhook {}
+impl DeclaresDependencies for UnsignedWebhook {}
 impl Action for UnsignedWebhook {
     fn metadata(&self) -> &ActionMetadata {
         &self.meta
@@ -633,7 +634,7 @@ struct DefaultConfigWebhook {
     reached_handler: Arc<std::sync::atomic::AtomicBool>,
 }
 
-impl ActionDependencies for DefaultConfigWebhook {}
+impl DeclaresDependencies for DefaultConfigWebhook {}
 impl Action for DefaultConfigWebhook {
     fn metadata(&self) -> &ActionMetadata {
         &self.meta
@@ -665,7 +666,7 @@ impl WebhookAction for DefaultConfigWebhook {
 async fn register_typed<A: WebhookAction>(
     transport: &WebhookTransport,
     action: A,
-) -> nebula_api::webhook::ActivationHandle {
+) -> nebula_api::services::webhook::ActivationHandle {
     let adapter = WebhookTriggerAdapter::new(action);
     let config = adapter.config().clone();
     let adapter: Arc<dyn TriggerHandler> = Arc::new(adapter);

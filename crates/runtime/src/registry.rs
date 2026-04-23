@@ -252,9 +252,10 @@ impl std::fmt::Debug for ActionRegistry {
 #[cfg(test)]
 mod tests {
     use nebula_action::{
-        action::Action, context::Context, dependency::ActionDependencies, error::ActionError,
-        metadata::ActionMetadata, result::ActionResult, stateless::StatelessAction,
+        ActionContext, action::Action, error::ActionError, metadata::ActionMetadata,
+        result::ActionResult, stateless::StatelessAction,
     };
+    use nebula_core::DeclaresDependencies;
 
     use super::*;
 
@@ -271,7 +272,7 @@ mod tests {
         }
     }
 
-    impl ActionDependencies for NoopAction {}
+    impl DeclaresDependencies for NoopAction {}
     impl Action for NoopAction {
         fn metadata(&self) -> &ActionMetadata {
             &self.meta
@@ -283,7 +284,7 @@ mod tests {
         async fn execute(
             &self,
             input: Self::Input,
-            _ctx: &impl Context,
+            _ctx: &ActionContext,
         ) -> Result<ActionResult<Self::Output>, ActionError> {
             Ok(ActionResult::success(input))
         }

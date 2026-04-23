@@ -2,7 +2,7 @@
 name: nebula-core
 role: Shared Vocabulary (identifiers, keys, auth primitives, scope system, context contracts)
 status: frontier
-last-reviewed: 2026-04-17
+last-reviewed: 2026-04-23
 canon-invariants: []
 related: [nebula-error, nebula-schema, nebula-action, nebula-resource, nebula-credential]
 ---
@@ -32,12 +32,17 @@ workspace — extend `nebula-core` deliberately (canon §3.10).
 - `ScopeLevel`, `Scope`, `Principal`, `ScopeResolver` — hierarchical scope system (Global → Organization → Project → Workflow → Execution → Action).
 - `Context` trait, `BaseContext`, `BaseContextBuilder` — base context with capability traits (`HasCredentials`, `HasResources`, `HasMetrics`, `HasEventBus`, `HasLogger`).
 - `ResourceAccessor`, `CredentialAccessor`, `Logger`, `MetricsEmitter`, `EventEmitter`, `Clock` — capability accessor traits injected through context.
-- `Guard`, `TypedGuard` — RAII guard traits for scoped resource/credential wrappers.
+- `Guard`, `TypedGuard` — RAII guard traits for scoped resource/credential wrappers (module `guard`). Debug helpers: `debug_redacted`, `debug_typed`.
+- `AuthScheme`, `AuthPattern` — open auth scheme trait and credential classification enum (module `auth`). Canonical home; re-exported by `nebula-credential` for discoverability.
 - `LayerLifecycle`, `ShutdownOutcome` — lifecycle signal types.
 - `TraceId`, `SpanId` — observability identity types.
 - `CoreError` — typed error for this crate (thiserror, no anyhow).
+- `OrgRole`, `WorkspaceRole`, `effective_workspace_role` — organization and workspace role enums for RBAC (module `role`).
+- `Permission`, `PermissionDenied` — granular permission definitions (module `permission`).
+- `TenantContext`, `ResolvedIds` — multi-tenant context and resolved organization/workspace IDs (module `tenancy`).
+- `Slug`, `SlugKind`, `SlugError`, `is_prefixed_ulid()` — validated slug strings for human-readable identifiers (module `slug`).
 
-Credential-specific vocabulary (`AuthPattern`, `AuthScheme`, `CredentialEvent`, `CredentialId`) now lives in `nebula-credential`. The cross-cutting base no longer advertises credential-domain names.
+Credential-specific vocabulary (`CredentialEvent`, `CredentialId`) lives in `nebula-credential`. The `AuthScheme` trait and `AuthPattern` enum are canonical in this crate (module `auth`); `nebula-credential` re-exports them for discoverability.
 
 ## Contract
 
@@ -55,8 +60,9 @@ Credential-specific vocabulary (`AuthPattern`, `AuthScheme`, `CredentialEvent`, 
 
 See `docs/MATURITY.md` row for `nebula-core`.
 
-- API stability: `frontier` — identifiers and keys are stable and in active use; context and accessor traits are still evolving as the integration model solidifies.
+- API stability: `frontier` — identifiers and keys are stable and in active use; context and accessor traits are still evolving as the integration model solidifies. Role, permission, tenancy, and slug modules are new and may see breaking changes.
 - Identifier types are load-bearing and unlikely to change; context capability traits may gain new associated methods.
+- New modules (`role`, `permission`, `tenancy`, `slug`) are actively used by `nebula-api` routing infrastructure.
 
 ## Related
 

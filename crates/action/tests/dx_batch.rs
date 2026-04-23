@@ -5,15 +5,14 @@
 
 use nebula_action::{
     action::Action,
-    context::Context,
-    dependency::ActionDependencies,
+    context::ActionContext,
     error::ActionError,
     metadata::ActionMetadata,
     result::ActionResult,
     stateful::{BatchAction, BatchItemResult},
     testing::{StatefulTestHarness, TestContextBuilder},
 };
-use nebula_core::action_key;
+use nebula_core::{DeclaresDependencies, action_key};
 use serde::{Deserialize, Serialize};
 
 // ── DoublerBatch ──────────────────────────────────────────────────────────
@@ -45,7 +44,7 @@ struct BatchOutput {
     errors: usize,
 }
 
-impl ActionDependencies for DoublerBatch {}
+impl DeclaresDependencies for DoublerBatch {}
 
 impl Action for DoublerBatch {
     fn metadata(&self) -> &ActionMetadata {
@@ -69,7 +68,7 @@ impl BatchAction for DoublerBatch {
     async fn process_item(
         &self,
         item: i32,
-        _ctx: &impl Context,
+        _ctx: &ActionContext,
     ) -> Result<BatchOutput, ActionError> {
         if item < 0 {
             return Err(ActionError::retryable(format!("negative: {item}")));

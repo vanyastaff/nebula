@@ -5,16 +5,11 @@
 //! responsibility via tokio::select!).
 
 use nebula_action::{
-    Action, ActionContext, ActionMetadata, ActionOutput, ActionResult, BreakReason, StatefulAction,
-    StatefulActionAdapter, StatefulHandler, StatelessAction, TriggerAction, TriggerContext,
-    dependency::ActionDependencies,
+    Action, ActionMetadata, ActionOutput, ActionResult, BreakReason, StatefulAction,
+    StatefulActionAdapter, StatefulHandler, StatelessAction, TriggerAction,
+    testing::TestContextBuilder,
 };
-use nebula_core::{
-    action_key,
-    id::{ExecutionId, WorkflowId},
-    node_key,
-};
-use tokio_util::sync::CancellationToken;
+use nebula_core::{DeclaresDependencies, action_key};
 
 // ── StatelessAction ─────────────────────────────────────────────────────────
 
@@ -22,7 +17,7 @@ struct EchoAction {
     meta: ActionMetadata,
 }
 
-impl ActionDependencies for EchoAction {}
+impl DeclaresDependencies for EchoAction {}
 
 impl Action for EchoAction {
     fn metadata(&self) -> &ActionMetadata {
@@ -37,7 +32,7 @@ impl StatelessAction for EchoAction {
     async fn execute(
         &self,
         input: Self::Input,
-        _ctx: &impl nebula_action::Context,
+        _ctx: &nebula_action::ActionContext,
     ) -> Result<ActionResult<Self::Output>, nebula_action::ActionError> {
         Ok(ActionResult::success(input))
     }
@@ -48,12 +43,7 @@ async fn stateless_action_execute_returns_success() {
     let action = EchoAction {
         meta: ActionMetadata::new(action_key!("test.echo"), "Echo", "Echo input to output"),
     };
-    let ctx = ActionContext::new(
-        ExecutionId::new(),
-        node_key!("test"),
-        WorkflowId::new(),
-        CancellationToken::new(),
-    );
+    let ctx = TestContextBuilder::new().build();
     let input = serde_json::json!({ "x": 1 });
     let result = action.execute(input.clone(), &ctx).await.unwrap();
     match &result {
@@ -71,7 +61,7 @@ struct CounterAction {
     meta: ActionMetadata,
 }
 
-impl ActionDependencies for CounterAction {}
+impl DeclaresDependencies for CounterAction {}
 
 impl Action for CounterAction {
     fn metadata(&self) -> &ActionMetadata {
@@ -92,7 +82,7 @@ impl StatefulAction for CounterAction {
         &self,
         _input: Self::Input,
         state: &mut Self::State,
-        _ctx: &impl nebula_action::Context,
+        _ctx: &nebula_action::ActionContext,
     ) -> Result<ActionResult<Self::Output>, nebula_action::ActionError> {
         let count = *state;
         *state += 1;
@@ -116,12 +106,7 @@ async fn stateful_action_continue_then_break() {
     let action = CounterAction {
         meta: ActionMetadata::new(action_key!("test.counter"), "Counter", "Count then break"),
     };
-    let ctx = ActionContext::new(
-        ExecutionId::new(),
-        node_key!("test"),
-        WorkflowId::new(),
-        CancellationToken::new(),
-    );
+    let ctx = TestContextBuilder::new().build();
     let mut state = 0u32;
 
     let r0 = action.execute((), &mut state, &ctx).await.unwrap();
@@ -159,7 +144,7 @@ struct NoOpTrigger {
     meta: ActionMetadata,
 }
 
-impl ActionDependencies for NoOpTrigger {}
+impl DeclaresDependencies for NoOpTrigger {}
 
 impl Action for NoOpTrigger {
     fn metadata(&self) -> &ActionMetadata {
@@ -168,11 +153,17 @@ impl Action for NoOpTrigger {
 }
 
 impl TriggerAction for NoOpTrigger {
-    async fn start(&self, _ctx: &TriggerContext) -> Result<(), nebula_action::ActionError> {
+    async fn start(
+        &self,
+        _ctx: &nebula_action::TriggerContext,
+    ) -> Result<(), nebula_action::ActionError> {
         Ok(())
     }
 
-    async fn stop(&self, _ctx: &TriggerContext) -> Result<(), nebula_action::ActionError> {
+    async fn stop(
+        &self,
+        _ctx: &nebula_action::TriggerContext,
+    ) -> Result<(), nebula_action::ActionError> {
         Ok(())
     }
 }
@@ -186,11 +177,7 @@ async fn trigger_action_start_stop_succeed() {
             "Start/stop no-op",
         ),
     };
-    let ctx = TriggerContext::new(
-        WorkflowId::new(),
-        node_key!("test"),
-        CancellationToken::new(),
-    );
+    let ctx = TestContextBuilder::new().build_trigger().0;
     action.start(&ctx).await.unwrap();
     action.stop(&ctx).await.unwrap();
 }
@@ -207,7 +194,7 @@ struct MigratableAction {
     meta: ActionMetadata,
 }
 
-impl ActionDependencies for MigratableAction {}
+impl DeclaresDependencies for MigratableAction {}
 
 impl Action for MigratableAction {
     fn metadata(&self) -> &ActionMetadata {
@@ -240,7 +227,7 @@ impl StatefulAction for MigratableAction {
         &self,
         _input: Self::Input,
         state: &mut Self::State,
-        _ctx: &impl nebula_action::Context,
+        _ctx: &nebula_action::ActionContext,
     ) -> Result<ActionResult<Self::Output>, nebula_action::ActionError> {
         state.count += 1;
         Ok(ActionResult::Break {
@@ -262,12 +249,7 @@ async fn migrate_state_succeeds_from_v1() {
         ),
     };
     let adapter = StatefulActionAdapter::new(action);
-    let ctx = ActionContext::new(
-        ExecutionId::new(),
-        node_key!("test"),
-        WorkflowId::new(),
-        CancellationToken::new(),
-    );
+    let ctx = TestContextBuilder::new().build();
 
     // v1 state — missing the `label` field, so direct deser into MigratableState fails.
     // migrate_state should kick in and supply default label.
@@ -285,12 +267,7 @@ async fn migrate_state_propagates_error_when_none() {
         meta: ActionMetadata::new(action_key!("test.counter"), "Counter", "Count then break"),
     };
     let adapter = StatefulActionAdapter::new(action);
-    let ctx = ActionContext::new(
-        ExecutionId::new(),
-        node_key!("test"),
-        WorkflowId::new(),
-        CancellationToken::new(),
-    );
+    let ctx = TestContextBuilder::new().build();
 
     // Completely invalid state — CounterAction does not override migrate_state (returns None).
     let mut state = serde_json::json!("not_an_object");

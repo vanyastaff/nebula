@@ -9,9 +9,9 @@ use std::{
 };
 
 use dashmap::DashMap;
-use nebula_core::ResourceKey;
+use nebula_core::{ResourceKey, ScopeLevel};
 
-use crate::{ctx::ScopeLevel, resource::Resource, runtime::managed::ManagedResource};
+use crate::{resource::Resource, runtime::managed::ManagedResource};
 
 /// Type-erased trait for managed resources stored in the [`Registry`].
 ///
@@ -250,6 +250,8 @@ impl Default for Registry {
 
 #[cfg(test)]
 mod tests {
+    use nebula_core::WorkspaceId;
+
     use super::*;
 
     struct FakeA;
@@ -299,7 +301,7 @@ mod tests {
         reg.register(
             key.clone(),
             TypeId::of::<FakeA>(),
-            ScopeLevel::Workspace("p".into()),
+            ScopeLevel::Workspace(WorkspaceId::new()),
             Arc::new(FakeA),
         );
 

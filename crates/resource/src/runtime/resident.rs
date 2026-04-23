@@ -11,9 +11,9 @@ use tracing::warn;
 
 use crate::{
     cell::Cell,
-    ctx::Ctx,
+    context::ResourceContext,
     error::Error,
-    handle::ResourceHandle,
+    guard::ResourceGuard,
     options::AcquireOptions,
     resource::Resource,
     topology::resident::{Resident, config::Config},
@@ -23,7 +23,7 @@ use crate::{
 /// Runtime state for a resident topology.
 ///
 /// Holds a single shared runtime instance in a lock-free [`Cell`].
-/// On acquire, the runtime is cloned into an owned [`ResourceHandle`].
+/// On acquire, the runtime is cloned into an owned [`ResourceGuard`].
 ///
 /// A `create_lock` mutex serialises the slow path (create / recreate) while
 /// keeping the fast path (load + liveness check) entirely lock-free.
@@ -78,9 +78,9 @@ where
         resource: &R,
         resource_config: &R::Config,
         auth: &R::Auth,
-        ctx: &dyn Ctx,
+        ctx: &ResourceContext,
         _options: &AcquireOptions,
-    ) -> Result<ResourceHandle<R>, Error>
+    ) -> Result<ResourceGuard<R>, Error>
     where
         R::Runtime: Into<R::Lease>,
     {
@@ -89,11 +89,7 @@ where
             && resource.is_alive_sync(&existing)
         {
             let lease: R::Lease = (*existing).clone().into();
-            return Ok(ResourceHandle::owned(
-                lease,
-                R::key(),
-                TopologyTag::Resident,
-            ));
+            return Ok(ResourceGuard::owned(lease, R::key(), TopologyTag::Resident));
         }
 
         // Slow path — serialise create / recreate.
@@ -103,11 +99,7 @@ where
         if let Some(existing) = self.cell.load() {
             if resource.is_alive_sync(&existing) {
                 let lease: R::Lease = (*existing).clone().into();
-                return Ok(ResourceHandle::owned(
-                    lease,
-                    R::key(),
-                    TopologyTag::Resident,
-                ));
+                return Ok(ResourceGuard::owned(lease, R::key(), TopologyTag::Resident));
             }
 
             // Still not alive — destroy and recreate if configured.
@@ -150,11 +142,7 @@ where
         let lease: R::Lease = runtime.clone().into();
         self.cell.store(Arc::new(runtime));
 
-        Ok(ResourceHandle::owned(
-            lease,
-            R::key(),
-            TopologyTag::Resident,
-        ))
+        Ok(ResourceGuard::owned(lease, R::key(), TopologyTag::Resident))
     }
 }
 
@@ -166,7 +154,7 @@ mod tests {
 
     use super::*;
     use crate::{
-        ctx::BasicCtx,
+        context::ResourceContext,
         options::AcquireOptions,
         resource::{ResourceConfig, ResourceMetadata},
     };
@@ -224,7 +212,7 @@ mod tests {
             &self,
             _config: &bool,
             _auth: &(),
-            _ctx: &dyn Ctx,
+            _ctx: &ResourceContext,
         ) -> impl Future<Output = Result<u32, MockError>> + Send {
             let count = self.create_count.fetch_add(1, Ordering::Relaxed);
             async move {
@@ -249,8 +237,14 @@ mod tests {
         }
     }
 
-    fn test_ctx() -> BasicCtx {
-        BasicCtx::new(ExecutionId::new())
+    fn test_ctx() -> ResourceContext {
+        use nebula_core::scope::Scope;
+        use tokio_util::sync::CancellationToken;
+        let scope = Scope {
+            execution_id: Some(ExecutionId::new()),
+            ..Default::default()
+        };
+        ResourceContext::minimal(scope, CancellationToken::new())
     }
 
     #[tokio::test]
@@ -378,7 +372,7 @@ mod tests {
             &self,
             _config: &bool,
             _auth: &(),
-            _ctx: &dyn Ctx,
+            _ctx: &ResourceContext,
         ) -> Result<u32, MockError> {
             tokio::time::sleep(Duration::from_hours(1)).await;
             Ok(0)

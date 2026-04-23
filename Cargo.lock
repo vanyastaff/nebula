@@ -4013,10 +4013,8 @@ dependencies = [
  "async-trait",
  "base64",
  "chrono",
- "futures",
  "humantime-serde",
  "insta",
- "lru",
  "mockall",
  "nebula-core",
  "nebula-credential-macros",
@@ -4024,11 +4022,10 @@ dependencies = [
  "nebula-metadata",
  "nebula-resilience",
  "nebula-schema",
- "parking_lot",
  "pretty_assertions",
  "rand 0.10.1",
- "reqwest 0.13.2",
  "rstest",
+ "secrecy",
  "semver",
  "serde",
  "serde_json",
@@ -4036,11 +4033,11 @@ dependencies = [
  "subtle",
  "thiserror 2.0.18",
  "tokio",
+ "tokio-util",
  "tracing",
  "tracing-subscriber",
  "url",
  "uuid",
- "wiremock",
  "zeroize",
 ]
 
@@ -4062,7 +4059,9 @@ dependencies = [
  "chrono",
  "dashmap",
  "futures",
+ "humantime-serde",
  "insta",
+ "lru",
  "nebula-action",
  "nebula-core",
  "nebula-credential",
@@ -4079,6 +4078,7 @@ dependencies = [
  "nebula-storage",
  "nebula-telemetry",
  "nebula-workflow",
+ "parking_lot",
  "pretty_assertions",
  "rand 0.10.1",
  "reqwest 0.13.2",
@@ -4091,6 +4091,7 @@ dependencies = [
  "tokio",
  "tokio-util",
  "tracing",
+ "uuid",
  "wiremock",
  "zeroize",
 ]
@@ -6499,6 +6500,16 @@ dependencies = [
  "generic-array",
  "pkcs8 0.10.2",
  "subtle",
+ "zeroize",
+]
+
+[[package]]
+name = "secrecy"
+version = "0.10.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e891af845473308773346dc847b2c23ee78fe442e0472ac50e22a18a93d3ae5a"
+dependencies = [
+ "serde",
  "zeroize",
 ]
 

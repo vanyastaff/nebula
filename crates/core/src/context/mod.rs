@@ -7,7 +7,7 @@ use tokio_util::sync::CancellationToken;
 
 use crate::{
     accessor::Clock,
-    obs::TraceId,
+    obs::{SpanId, TraceId},
     scope::{Principal, Scope},
 };
 
@@ -25,6 +25,10 @@ pub trait Context: Send + Sync {
     fn trace_id(&self) -> Option<TraceId> {
         None
     }
+    /// Get the span ID, if available.
+    fn span_id(&self) -> Option<SpanId> {
+        None
+    }
 }
 
 /// Shared identity fields. Domain contexts embed and delegate.
@@ -38,6 +42,7 @@ pub struct BaseContext {
     cancellation: CancellationToken,
     clock: Box<dyn Clock>,
     trace_id: Option<TraceId>,
+    span_id: Option<SpanId>,
 }
 
 impl BaseContext {
@@ -63,6 +68,9 @@ impl Context for BaseContext {
     fn trace_id(&self) -> Option<TraceId> {
         self.trace_id
     }
+    fn span_id(&self) -> Option<SpanId> {
+        self.span_id
+    }
 }
 
 /// Builder for BaseContext.
@@ -73,6 +81,7 @@ pub struct BaseContextBuilder {
     cancellation: Option<CancellationToken>,
     clock: Option<Box<dyn Clock>>,
     trace_id: Option<TraceId>,
+    span_id: Option<SpanId>,
 }
 
 impl BaseContextBuilder {
@@ -101,6 +110,11 @@ impl BaseContextBuilder {
         self.trace_id = Some(t);
         self
     }
+    /// Set the span ID.
+    pub fn span_id(mut self, s: SpanId) -> Self {
+        self.span_id = Some(s);
+        self
+    }
 
     /// Build the BaseContext.
     pub fn build(self) -> BaseContext {
@@ -112,6 +126,7 @@ impl BaseContextBuilder {
                 .clock
                 .unwrap_or_else(|| Box::new(crate::accessor::SystemClock)),
             trace_id: self.trace_id,
+            span_id: self.span_id,
         }
     }
 }

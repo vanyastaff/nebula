@@ -21,10 +21,10 @@
 //! an action may only acquire a credential it has **explicitly declared**.
 //!
 //! - An **empty** allowlist means **no credentials are permitted**. Every request is rejected with
-//!   [`CredentialAccessError::AccessDenied`]. This is the deny-by-default baseline when the engine
+//!   [`CoreError::CredentialAccessDenied`]. This is the deny-by-default baseline when the engine
 //!   receives no declaration for the action being dispatched.
 //! - A **non-empty** allowlist only permits the keys in the set. Requests for any key not in the
-//!   set are rejected with [`CredentialAccessError::AccessDenied`].
+//!   set are rejected with [`CoreError::CredentialAccessDenied`].
 //!
 //! The engine populates the allowlist from per-action credential declarations
 //! supplied through [`WorkflowEngine::with_action_credentials`]
@@ -36,20 +36,27 @@
 
 use std::{collections::HashSet, fmt, future::Future, pin::Pin, sync::Arc};
 
-use async_trait::async_trait;
-use nebula_credential::{CredentialAccessError, CredentialAccessor, CredentialSnapshot};
+use nebula_core::{CoreError, CredentialKey};
+
+/// Type alias for dyn-safe async return.
+type BoxFuture<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
 
 /// Type alias for the boxed async credential-resolution function.
+///
+/// The function takes a credential key string and returns a boxed
+/// `CredentialSnapshot` (as `Box<dyn Any>`) or a `CoreError`.
 type ResolveFn = Arc<
     dyn Fn(
             &str,
         ) -> Pin<
-            Box<dyn Future<Output = Result<CredentialSnapshot, CredentialAccessError>> + Send>,
+            Box<
+                dyn Future<Output = Result<Box<dyn std::any::Any + Send + Sync>, CoreError>> + Send,
+            >,
         > + Send
         + Sync,
 >;
 
-/// Engine-side implementation of [`CredentialAccessor`].
+/// Engine-side implementation of [`CredentialAccessor`](nebula_core::accessor::CredentialAccessor).
 ///
 /// Validates that the requested credential key is in the declared allowlist
 /// before delegating resolution to the underlying resolver function.
@@ -74,7 +81,7 @@ type ResolveFn = Arc<
 ///         let id = id.to_owned();
 ///         Box::pin(async move {
 ///             resolver.resolve_snapshot(&id).await
-///                 .map_err(|e| ActionError::fatal(e.to_string()))
+///                 .map_err(|e| CoreError::CredentialNotFound { key: e.to_string() })
 ///         })
 ///     }
 /// });
@@ -100,14 +107,16 @@ impl EngineCredentialAccessor {
     /// - `allowed_keys` — the set of credential IDs this accessor may resolve. An **empty** set
     ///   denies every request (deny-by-default, per `PRODUCT_CANON` §4.5 / §12.5). A non-empty set
     ///   permits only the listed keys.
-    /// - `resolve_fn` — async closure that resolves a credential ID to a [`CredentialSnapshot`] or
-    ///   a [`CredentialAccessError`].
+    /// - `resolve_fn` — async closure that resolves a credential ID to a boxed `Any` (typically a
+    ///   [`CredentialSnapshot`]) or a [`CoreError`].
     /// - `action_id` — the action key or node identifier for security attribution in
-    ///   [`CredentialAccessError::AccessDenied`] events.
+    ///   [`CoreError::CredentialAccessDenied`] events.
     pub fn new<F, Fut>(allowed_keys: HashSet<String>, resolve_fn: F, action_id: String) -> Self
     where
         F: Fn(&str) -> Fut + Send + Sync + 'static,
-        Fut: Future<Output = Result<CredentialSnapshot, CredentialAccessError>> + Send + 'static,
+        Fut: Future<Output = Result<Box<dyn std::any::Any + Send + Sync>, CoreError>>
+            + Send
+            + 'static,
     {
         Self {
             allowed_keys,
@@ -115,8 +124,12 @@ impl EngineCredentialAccessor {
                 Box::pin(resolve_fn(id))
                     as Pin<
                         Box<
-                            dyn Future<Output = Result<CredentialSnapshot, CredentialAccessError>>
-                                + Send,
+                            dyn Future<
+                                    Output = Result<
+                                        Box<dyn std::any::Any + Send + Sync>,
+                                        CoreError,
+                                    >,
+                                > + Send,
                         >,
                     >
             }),
@@ -143,13 +156,23 @@ impl fmt::Debug for EngineCredentialAccessor {
     }
 }
 
-#[async_trait]
-impl CredentialAccessor for EngineCredentialAccessor {
-    /// Retrieve a credential snapshot by id.
+impl nebula_core::accessor::CredentialAccessor for EngineCredentialAccessor {
+    /// Check whether a credential key is accessible.
+    ///
+    /// Returns `true` only if `key` is permitted by the allowlist.
+    /// Deny-by-default: an empty allowlist always yields `false`.
+    ///
+    /// Note: this is a synchronous check against the allowlist only.
+    /// It does not verify the credential exists in the store.
+    fn has(&self, key: &CredentialKey) -> bool {
+        self.is_allowed(key.as_str())
+    }
+
+    /// Resolve a credential by key.
     ///
     /// # Errors
     ///
-    /// - [`CredentialAccessError::AccessDenied`] — if `id` is not in the allowlist (including the
+    /// - [`CoreError::CredentialAccessDenied`] — if `key` is not in the allowlist (including the
     ///   deny-by-default case of an empty allowlist).
     /// - Any error returned by the underlying resolver function.
     ///
@@ -157,33 +180,48 @@ impl CredentialAccessor for EngineCredentialAccessor {
     ///
     /// This method is cancel-safe. If the future is dropped before completion,
     /// no state is modified.
-    async fn get(&self, id: &str) -> Result<CredentialSnapshot, CredentialAccessError> {
-        if !self.is_allowed(id) {
-            return Err(CredentialAccessError::AccessDenied {
-                capability: format!("credential:{id}"),
-                action_id: self.action_id.clone(),
+    fn resolve_any(
+        &self,
+        key: &CredentialKey,
+    ) -> BoxFuture<'_, Result<Box<dyn std::any::Any + Send + Sync>, CoreError>> {
+        let key_str = key.as_str();
+        if !self.is_allowed(key_str) {
+            let capability = format!("credential:{key_str}");
+            let action_id = self.action_id.clone();
+            return Box::pin(async move {
+                Err(CoreError::CredentialAccessDenied {
+                    capability,
+                    action_id,
+                })
             });
         }
-        (self.resolve_fn)(id).await
+        let key_owned = key_str.to_owned();
+        let resolve_fn = Arc::clone(&self.resolve_fn);
+        Box::pin(async move { (resolve_fn)(&key_owned).await })
     }
 
-    /// Check whether a credential key is accessible and exists in the store.
+    /// Try to resolve a credential by key, returning `None` if not in allowlist.
     ///
-    /// Returns `true` only if `id` is permitted by the allowlist **and** the
-    /// underlying resolver can successfully resolve it. Deny-by-default: an
-    /// empty allowlist always yields `false`.
-    ///
-    /// # Cancel safety
-    ///
-    /// This method is cancel-safe. If the future is dropped before completion,
-    /// no state is modified.
-    async fn has(&self, id: &str) -> bool {
-        self.is_allowed(id) && (self.resolve_fn)(id).await.is_ok()
+    /// Unlike [`resolve_any`], this does not error on disallowed keys — it
+    /// returns `Ok(None)` instead, matching the "optional dependency" pattern.
+    fn try_resolve_any(
+        &self,
+        key: &CredentialKey,
+    ) -> BoxFuture<'_, Result<Option<Box<dyn std::any::Any + Send + Sync>>, CoreError>> {
+        let key_str = key.as_str();
+        if !self.is_allowed(key_str) {
+            return Box::pin(async { Ok(None) });
+        }
+        let key_owned = key_str.to_owned();
+        let resolve_fn = Arc::clone(&self.resolve_fn);
+        Box::pin(async move { (resolve_fn)(&key_owned).await.map(Some) })
     }
 }
 
 #[cfg(test)]
 mod tests {
+    use nebula_core::{accessor::CredentialAccessor, credential_key};
+
     use super::*;
 
     /// Builds an accessor with the given allowed keys and a stub resolver.
@@ -195,7 +233,7 @@ mod tests {
         EngineCredentialAccessor::new(
             allowed_keys,
             |_id: &str| async {
-                Err(CredentialAccessError::NotConfigured(
+                Err(CoreError::CredentialNotConfigured(
                     "not implemented in stub".to_owned(),
                 ))
             },
@@ -206,7 +244,7 @@ mod tests {
     /// Builds an accessor whose resolver always returns the given error.
     fn make_failing_accessor(
         allowed: impl IntoIterator<Item = &'static str>,
-        err: CredentialAccessError,
+        err: CoreError,
     ) -> EngineCredentialAccessor {
         let allowed_keys: HashSet<String> = allowed.into_iter().map(str::to_owned).collect();
         EngineCredentialAccessor::new(
@@ -219,13 +257,33 @@ mod tests {
         )
     }
 
+    #[test]
+    fn has_returns_true_for_allowed_key() {
+        let accessor = make_accessor(["declared_key"]);
+        assert!(accessor.has(&credential_key!("declared_key")));
+    }
+
+    #[test]
+    fn has_returns_false_for_undeclared_key() {
+        let accessor = make_accessor(["declared_key"]);
+        assert!(!accessor.has(&credential_key!("undeclared_key")));
+    }
+
+    #[test]
+    fn has_returns_false_for_empty_allowlist() {
+        let accessor = make_accessor([]);
+        assert!(!accessor.has(&credential_key!("anything")));
+    }
+
     #[tokio::test]
     async fn rejects_undeclared_key() {
         let accessor = make_accessor(["declared_key"]);
-        let result = accessor.get("undeclared_key").await;
+        let result = accessor
+            .resolve_any(&credential_key!("undeclared_key"))
+            .await;
         assert!(
-            matches!(result, Err(CredentialAccessError::AccessDenied { .. })),
-            "expected AccessDenied, got {result:?}"
+            matches!(result, Err(CoreError::CredentialAccessDenied { .. })),
+            "expected CredentialAccessDenied, got {result:?}"
         );
     }
 
@@ -237,50 +295,29 @@ mod tests {
         let accessor = EngineCredentialAccessor::new(
             allowed_keys,
             |_id: &str| async {
-                Err(CredentialAccessError::NotFound(
-                    "resolver reached".to_owned(),
-                ))
+                Err(CoreError::CredentialNotFound {
+                    key: "resolver reached".to_owned(),
+                })
             },
             "test_action".to_owned(),
         );
 
-        let result = accessor.get("my_credential").await;
-        // The resolver was called — we get NotFound, not AccessDenied.
+        let result = accessor
+            .resolve_any(&credential_key!("my_credential"))
+            .await;
+        // The resolver was called — we get CredentialNotFound, not AccessDenied.
         assert!(
-            matches!(result, Err(CredentialAccessError::NotFound(_))),
-            "expected NotFound from resolver, got {result:?}"
+            matches!(result, Err(CoreError::CredentialNotFound { .. })),
+            "expected CredentialNotFound from resolver, got {result:?}"
         );
     }
 
     #[tokio::test]
-    async fn has_returns_false_for_allowed_key_not_in_store() {
-        // Resolver fails -> key is in allowlist but not resolvable -> has() = false.
-        let accessor = make_accessor(["allowed"]);
-        assert!(!accessor.has("allowed").await);
-    }
-
-    #[tokio::test]
-    async fn has_returns_false_for_undeclared_key() {
-        // Key is not in (non-empty) allowlist -> rejected before resolver call.
-        let accessor = make_accessor(["allowed"]);
-        assert!(!accessor.has("not_allowed").await);
-    }
-
-    #[tokio::test]
-    async fn has_returns_false_for_empty_allowlist() {
-        // Deny-by-default: empty allowlist denies every key — resolver is never reached.
+    async fn resolve_any_denies_every_key_when_allowlist_is_empty() {
         let accessor = make_accessor([]);
-        assert!(!accessor.has("anything").await);
-    }
-
-    #[tokio::test]
-    async fn get_denies_every_key_when_allowlist_is_empty() {
-        // Deny-by-default: empty allowlist rejects every request with AccessDenied.
-        // The resolver is NOT invoked — enforcement happens before delegation.
-        let accessor = make_accessor([]);
-        let result = accessor.get("any_key").await;
+        let result = accessor.resolve_any(&credential_key!("any_key")).await;
         assert!(
-            matches!(result, Err(CredentialAccessError::AccessDenied { .. })),
+            matches!(result, Err(CoreError::CredentialAccessDenied { .. })),
             "empty allowlist must deny; got {result:?}"
         );
     }
@@ -288,16 +325,19 @@ mod tests {
     #[tokio::test]
     async fn access_denied_contains_credential_capability_name_and_action_id() {
         let accessor = make_accessor(["allowed"]);
-        let err = accessor.get("secret_key").await.unwrap_err();
+        let err = accessor
+            .resolve_any(&credential_key!("secret_key"))
+            .await
+            .unwrap_err();
         match err {
-            CredentialAccessError::AccessDenied {
+            CoreError::CredentialAccessDenied {
                 capability,
                 action_id,
             } => {
                 assert_eq!(capability, "credential:secret_key");
                 assert_eq!(action_id, "test_action");
             },
-            other => panic!("expected AccessDenied, got {other:?}"),
+            other => panic!("expected CredentialAccessDenied, got {other:?}"),
         }
     }
 
@@ -305,12 +345,14 @@ mod tests {
     async fn resolver_error_propagates_for_allowed_key() {
         let accessor = make_failing_accessor(
             ["my_key"],
-            CredentialAccessError::NotFound("transient failure".to_owned()),
+            CoreError::CredentialNotFound {
+                key: "transient failure".to_owned(),
+            },
         );
-        let result = accessor.get("my_key").await;
+        let result = accessor.resolve_any(&credential_key!("my_key")).await;
         assert!(
-            matches!(result, Err(CredentialAccessError::NotFound(_))),
-            "expected NotFound, got {result:?}"
+            matches!(result, Err(CoreError::CredentialNotFound { .. })),
+            "expected CredentialNotFound, got {result:?}"
         );
     }
 
@@ -324,9 +366,6 @@ mod tests {
 
     #[tokio::test]
     async fn denied_request_never_invokes_resolver() {
-        // Defense-in-depth: the resolver closure must not run when access is denied.
-        // A leaky implementation that called the resolver first would expose the
-        // underlying store to probing for undeclared keys.
         use std::sync::atomic::{AtomicU32, Ordering as AOrdering};
         let calls = Arc::new(AtomicU32::new(0));
         let calls_inner = calls.clone();
@@ -336,26 +375,19 @@ mod tests {
                 let calls = calls_inner.clone();
                 async move {
                     calls.fetch_add(1, AOrdering::Relaxed);
-                    Err(CredentialAccessError::NotFound(
-                        "resolver should not be called".to_owned(),
-                    ))
+                    Err(CoreError::CredentialNotFound {
+                        key: "resolver should not be called".to_owned(),
+                    })
                 }
             },
             "test_action".to_owned(),
         );
 
-        let _ = accessor.get("anything").await;
+        let _ = accessor.resolve_any(&credential_key!("anything")).await;
         assert_eq!(
             calls.load(AOrdering::Relaxed),
             0,
             "resolver must not run when denied"
-        );
-
-        let _ = accessor.has("anything").await;
-        assert_eq!(
-            calls.load(AOrdering::Relaxed),
-            0,
-            "has() must not invoke resolver when denied"
         );
     }
 }

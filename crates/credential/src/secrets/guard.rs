@@ -5,8 +5,9 @@
 //! 2. **Zeroize on drop** — secret material wiped from memory
 //! 3. **Not Serialize** — prevents accidental inclusion in action output or state
 
-use std::{fmt, ops::Deref};
+use std::{fmt, ops::Deref, time::Instant};
 
+use nebula_core::{Guard, TypedGuard};
 use zeroize::Zeroize;
 
 /// Secure wrapper for credential values returned by action contexts.
@@ -30,14 +31,19 @@ use zeroize::Zeroize;
 /// client.bearer_auth(cred.token.expose_secret());
 /// // Dropped here — zeroized automatically
 /// ```
+#[must_use = "credential guards must be held for the duration of use"]
 pub struct CredentialGuard<S: Zeroize> {
     inner: S,
+    acquired_at: Instant,
 }
 
 impl<S: Zeroize> CredentialGuard<S> {
     /// Wrap a credential value in a guard.
     pub fn new(inner: S) -> Self {
-        Self { inner }
+        Self {
+            inner,
+            acquired_at: Instant::now(),
+        }
     }
 }
 
@@ -59,15 +65,32 @@ impl<S: Zeroize + Clone> Clone for CredentialGuard<S> {
     fn clone(&self) -> Self {
         Self {
             inner: self.inner.clone(),
+            acquired_at: Instant::now(),
         }
     }
 }
 
-impl<S: Zeroize> fmt::Debug for CredentialGuard<S> {
+impl<S: Zeroize + Send + Sync + 'static> Guard for CredentialGuard<S> {
+    fn guard_kind(&self) -> &'static str {
+        "credential"
+    }
+
+    fn acquired_at(&self) -> Instant {
+        self.acquired_at
+    }
+}
+
+impl<S: Zeroize + Send + Sync + 'static> TypedGuard for CredentialGuard<S> {
+    type Inner = S;
+
+    fn as_inner(&self) -> &Self::Inner {
+        &self.inner
+    }
+}
+
+impl<S: Zeroize + Send + Sync + 'static> fmt::Debug for CredentialGuard<S> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("CredentialGuard")
-            .field("type", &std::any::type_name::<S>())
-            .finish_non_exhaustive()
+        nebula_core::guard::debug_redacted(self, f)
     }
 }
 
@@ -111,8 +134,8 @@ mod tests {
             value: "secret-123".to_owned(),
         });
         let debug = format!("{guard:?}");
-        assert!(debug.contains("CredentialGuard"));
-        assert!(debug.contains("TestSecret"));
+        assert!(debug.contains("Guard<credential>"));
+        assert!(debug.contains("REDACTED"));
         assert!(!debug.contains("secret-123"));
     }
 

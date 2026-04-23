@@ -47,7 +47,7 @@ use super::super::key_provider::KeyProvider;
 /// # Examples
 ///
 /// ```rust,ignore
-/// use nebula_credential::{EncryptionLayer, EnvKeyProvider, InMemoryStore};
+/// use nebula_storage::credential::{EncryptionLayer, EnvKeyProvider, InMemoryStore};
 /// use std::sync::Arc;
 ///
 /// // Production: read the key from NEBULA_CRED_MASTER_KEY.

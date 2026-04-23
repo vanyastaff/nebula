@@ -78,7 +78,7 @@ For peer analysis, our explicit bets against n8n / Temporal / Windmill / Make / 
 **[L1]** Nebula’s integration surface is a small set of orthogonal concepts, each with a single clear responsibility, all sharing the same structural contract:
 
 - **Resource** — long-lived managed object (connection pool, SDK client). Engine owns lifecycle.
-- **Credential** — who you are and how authentication is maintained. Engine owns rotation and the stored-state vs consumer-facing auth-material split.
+- **Credential** — who you are and how authentication is maintained. Engine owns resolver/rotation orchestration (not the credential crate). The `Credential` trait seals implementation via crate-level supertrait. Actions receive only projected auth material via `Credential::project()`. `ExternalProvider` abstraction supports Vault / AWS Secrets Manager / GCP Secret Manager / Azure Key Vault delegation. `DYNAMIC` credential kind supports ephemeral per-execution secrets.
 - **Action** — what a step does. Dispatch via action trait family (`StatelessAction`, `StatefulAction`, `TriggerAction`, `ResourceAction`). Adding a trait requires canon revision (§0.2).
 - **Plugin** — distribution and registration unit. Plugin is the unit of registration, not the unit of size — full plugins and micro-plugins use the same contract.
 - **Schema** — the cross-cutting typed configuration system (`nebula-schema`: `Field`, `Schema`, `ValidValues`, `ResolvedValues` with proof-token pipeline). Shared across Actions, Credentials, Resources.
@@ -87,7 +87,20 @@ For peer analysis, our explicit bets against n8n / Temporal / Windmill / Make / 
 
 For the full model — structural-contract types, wiring rules, plugin packaging (`Cargo.toml` / `plugin.toml` / `impl Plugin`), plugin signing (status: planned), cross-plugin dependency rules — see `docs/INTEGRATION_MODEL.md`. That document is the authoritative source for integration mechanics; this canon states the invariants.
 
-Sections 3.6 through 3.10 (per-crate pointers) are consolidated in `docs/INTEGRATION_MODEL.md`.
+Sections 3.6 through 3.9 (per-crate pointers) are consolidated in `docs/INTEGRATION_MODEL.md`.
+
+### 3.10 Shared vocabulary
+
+Types stabilized in `nebula-core` that cross crate boundaries:
+
+- `AuthScheme`, `AuthPattern` — authentication classification (moved from credential to core).
+- `Guard`, `TypedGuard` — RAII lifecycle traits for credential and resource guards.
+- `BaseContext`, `Context` trait family — shared capability accessors and lifecycle signals.
+
+Credential-domain vocabulary added in the restructuring:
+
+- `ExternalProvider`, `ProviderKind` — external secret-manager delegation abstraction.
+- `CredentialMetrics` — metric name / label constants for credential operations.
 
 ---
 
@@ -101,7 +114,7 @@ Directional goals; binding engineering rules live in §12–§14. The **integrat
 
 ### 4.2 Safety
 
-**[L1]** **Fail fast and loudly on misuse:** typed errors, validated node contracts where declared, no silent shape mismatches in production. **Credentials** stay behind existing abstractions (no leakage across boundaries; rotation is not the node author’s ad-hoc problem). **Unsafe** stays in engine/runtime layers — integration-facing APIs remain safe Rust. Resilience classifiers (`nebula-resilience` / `ErrorClassifier` pattern) make transient vs permanent failure an explicit decision, not folklore.
+**[L1]** **Fail fast and loudly on misuse:** typed errors, validated node contracts where declared, no silent shape mismatches in production. **Credentials** stay behind existing abstractions (no leakage across boundaries; rotation is not the node author's ad-hoc problem). Credential material is guarded by `CredentialGuard` (RAII pattern implementing `nebula-core::Guard`; zeroize-on-drop). Projected material is validated at the credential→action boundary. **Unsafe** stays in engine/runtime layers — integration-facing APIs remain safe Rust. Resilience classifiers (`nebula-resilience` / `ErrorClassifier` pattern) make transient vs permanent failure an explicit decision, not folklore.
 
 ### 4.3 Keep-alive
 
@@ -372,8 +385,10 @@ Seams: `crates/storage/src/execution_repo.rs` — `ExecutionRepo::save_stateful_
 
 ### 12.5 Secrets and auth
 
-- **[L2]** No secrets in logs, error strings, or metrics labels. **`Zeroize` / `ZeroizeOnDrop`** on key material; redacted `Debug` on credential wrappers (`SecretToken`, etc.). Encryption at rest uses authenticated encryption. Specific algorithm / key-derivation / parameter choices: see `crates/credential/README.md`. Do not bypass encryption “for debugging.”
+- **[L2]** No secrets in logs, error strings, or metrics labels. **`Zeroize` / `ZeroizeOnDrop`** on key material; redacted `Debug` on credential wrappers (`SecretToken`, etc.). Encryption at rest uses authenticated encryption. Specific algorithm / key-derivation / parameter choices: see `crates/credential/README.md`. Do not bypass encryption "for debugging."
 - **[L2]** Every new `tracing::*!` that takes a credential or token argument must use **redacted** forms.
+- **[L2]** Credential operations emit metrics through `CredentialMetrics` for dashboarding: resolve, refresh, rotation, dynamic lease, tamper detection.
+- **[L2]** `ExternalProvider` boundary: secrets resolved from external managers (Vault / AWS SM / GCP SM / Azure KV) are never persisted locally unless explicitly configured.
 
 ### 12.6 Isolation honesty
 

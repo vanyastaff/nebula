@@ -12,7 +12,7 @@
 //! the run, no adapter wiring.
 
 use nebula_sdk::prelude::{
-    Action, ActionContext, ActionDependencies, ActionError, ActionMetadata, Deserialize,
+    Action, ActionContext, ActionError, ActionMetadata, DeclaresDependencies, Deserialize,
     PageResult, PaginatedAction, Serialize, TestContextBuilder, TestRuntime, Value, action_key,
     impl_paginated_action, json,
 };
@@ -35,7 +35,7 @@ impl DummyJsonUsersAction {
     }
 }
 
-impl ActionDependencies for DummyJsonUsersAction {}
+impl DeclaresDependencies for DummyJsonUsersAction {}
 impl Action for DummyJsonUsersAction {
     fn metadata(&self) -> &ActionMetadata {
         &self.meta
@@ -93,7 +93,7 @@ impl PaginatedAction for DummyJsonUsersAction {
         &self,
         input: &Self::Input,
         cursor: Option<&u32>,
-        _ctx: &impl ActionContext,
+        _ctx: &ActionContext,
     ) -> Result<PageResult<Vec<DummyJsonUserBrief>, u32>, ActionError> {
         let limit = input
             .get("limit")

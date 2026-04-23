@@ -104,16 +104,20 @@ fn build_cors_layer(config: &ApiConfig) -> CorsLayer {
 
     let mut cors = CorsLayer::new();
 
-    if config.cors_allowed_origins.contains(&"*".to_string()) {
+    let cors_cfg = &config.cors_config;
+
+    if cors_cfg.allowed_origins.contains(&"*".to_string()) {
         cors = cors.allow_origin(tower_http::cors::Any);
     } else {
         // Parse specific origins
-        for origin in &config.cors_allowed_origins {
+        for origin in &cors_cfg.allowed_origins {
             if let Ok(parsed) = origin.parse::<HeaderValue>() {
                 cors = cors.allow_origin(parsed);
             }
         }
-        cors = cors.allow_credentials(true);
+        if cors_cfg.allow_credentials {
+            cors = cors.allow_credentials(true);
+        }
     }
 
     cors.allow_methods([
@@ -138,7 +142,7 @@ fn build_cors_layer(config: &ApiConfig) -> CorsLayer {
         crate::middleware::auth::X_API_KEY.clone(),
     ])
     .expose_headers([header::HeaderName::from_static(X_REQUEST_ID)])
-    .max_age(Duration::from_hours(1))
+    .max_age(Duration::from_secs(cors_cfg.max_age_secs))
 }
 
 /// Build router with graceful shutdown signal

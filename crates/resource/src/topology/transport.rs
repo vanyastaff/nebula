@@ -2,7 +2,7 @@
 
 use std::future::Future;
 
-use crate::{ctx::Ctx, resource::Resource};
+use crate::{context::ResourceContext, resource::Resource};
 
 /// Transport topology — shared connection, multiplexed sessions.
 ///
@@ -24,7 +24,7 @@ pub trait Transport: Resource {
     fn open_session(
         &self,
         transport: &Self::Runtime,
-        ctx: &dyn Ctx,
+        ctx: &ResourceContext,
     ) -> impl Future<Output = Result<Self::Lease, Self::Error>> + Send;
 
     /// Closes a session, optionally reporting whether it ended healthily.

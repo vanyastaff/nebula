@@ -3,6 +3,8 @@
 //! Request and response models for API endpoints.
 
 pub mod catalog;
+#[cfg(feature = "credential-oauth")]
+pub mod credential;
 pub mod execution;
 pub mod health;
 pub mod workflow;

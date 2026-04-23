@@ -6,9 +6,9 @@ use std::sync::{
 };
 
 use nebula_credential::{
-    Credential, CredentialContext, CredentialStore, NoPendingState, SecretString,
+    Credential, CredentialContext, CredentialMetadata, CredentialStore, NoPendingState,
+    SecretString,
     error::CredentialError,
-    metadata::CredentialMetadata,
     resolve::{RefreshOutcome, RefreshPolicy, StaticResolveResult},
     scheme::SecretToken,
     store::{PutMode, StoredCredential},
@@ -109,7 +109,7 @@ async fn only_one_refresh_under_concurrent_access() {
     store.put(cred, PutMode::CreateOnly).await.unwrap();
 
     let resolver = Arc::new(nebula_engine::credential::CredentialResolver::new(store));
-    let ctx = CredentialContext::new("test-user");
+    let ctx = CredentialContext::for_test("test-user");
 
     let mut handles = Vec::with_capacity(10);
     for _ in 0..10 {
@@ -130,7 +130,7 @@ async fn only_one_refresh_under_concurrent_access() {
 
     for result in &results {
         let handle = result.as_ref().unwrap().as_ref().unwrap();
-        let value = handle.snapshot().token().expose_secret(ToOwned::to_owned);
+        let value = handle.snapshot().token().expose_secret().to_owned();
         assert_eq!(value, "refreshed-token");
     }
 

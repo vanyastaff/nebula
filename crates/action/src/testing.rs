@@ -9,28 +9,38 @@
 use std::{
     any::{Any, TypeId},
     collections::HashMap,
+    future::Future,
+    pin::Pin,
     sync::Arc,
     time::Duration,
 };
 
 use async_trait::async_trait;
 use nebula_core::{
+    CoreError, CredentialKey, ResourceKey,
+    accessor::{CredentialAccessor, LogLevel, Logger, ResourceAccessor},
     id::{ExecutionId, WorkflowId},
     node_key,
 };
-use nebula_credential::{CredentialAccessError, CredentialAccessor, CredentialSnapshot};
+use nebula_credential::CredentialSnapshot;
 use tokio_util::sync::CancellationToken;
 
 use crate::{
-    capability::{
-        ActionLogLevel, ActionLogger, ExecutionEmitter, ResourceAccessor, TriggerScheduler,
-    },
+    capability::{ExecutionEmitter, TriggerScheduler},
     context::{ActionContext, TriggerContext},
     error::ActionError,
     result::ActionResult,
     stateful::StatefulAction,
     trigger::TriggerAction,
 };
+
+/// Alias for [`ActionContext`] used historically by test helpers. Kept as a
+/// type alias so existing test suites compile unchanged while production code
+/// gets the renamed concrete type.
+pub type TestActionContext = ActionContext;
+
+/// Alias for [`TriggerContext`] used historically by test helpers.
+pub type TestTriggerContext = TriggerContext;
 
 /// Factory that produces a fresh boxed resource on each call.
 ///
@@ -216,7 +226,7 @@ impl Default for TestContextBuilder {
 
 /// Logger that captures log entries for test assertions.
 pub struct SpyLogger {
-    entries: parking_lot::Mutex<Vec<(ActionLogLevel, String)>>,
+    entries: parking_lot::Mutex<Vec<(LogLevel, String)>>,
 }
 
 impl SpyLogger {
@@ -230,7 +240,7 @@ impl SpyLogger {
 
     /// Get all logged messages (level and text).
     #[must_use]
-    pub fn entries(&self) -> Vec<(ActionLogLevel, String)> {
+    pub fn entries(&self) -> Vec<(LogLevel, String)> {
         self.entries.lock().clone()
     }
 
@@ -270,42 +280,87 @@ impl std::fmt::Debug for SpyLogger {
     }
 }
 
-impl ActionLogger for SpyLogger {
-    fn log(&self, level: ActionLogLevel, message: &str) {
+impl Logger for SpyLogger {
+    fn log(&self, level: LogLevel, message: &str) {
+        self.entries.lock().push((level, message.to_owned()));
+    }
+
+    fn log_with_fields(&self, level: LogLevel, message: &str, _fields: &[(&str, &str)]) {
+        // SpyLogger does not preserve structured fields; the captured message
+        // keeps the human-readable form the action author passed in.
         self.entries.lock().push((level, message.to_owned()));
     }
 }
+
+/// Type alias for dyn-safe async return.
+type BoxFut<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
 
 struct TestCredentialAccessor {
     credentials: HashMap<String, CredentialSnapshot>,
     typed_credentials: HashMap<TypeId, CredentialSnapshot>,
 }
 
-#[async_trait]
 impl CredentialAccessor for TestCredentialAccessor {
-    async fn get(&self, id: &str) -> Result<CredentialSnapshot, CredentialAccessError> {
-        self.credentials.get(id).cloned().ok_or_else(|| {
-            CredentialAccessError::NotFound(format!("credential `{id}` not found in test context"))
-        })
-    }
-
-    async fn has(&self, id: &str) -> bool {
-        self.credentials.contains_key(id)
-    }
-
-    async fn get_by_type(
-        &self,
-        type_id: TypeId,
-        type_name: &str,
-    ) -> Result<CredentialSnapshot, CredentialAccessError> {
-        self.typed_credentials
-            .get(&type_id)
-            .cloned()
-            .ok_or_else(|| {
-                CredentialAccessError::NotFound(format!(
-                    "no typed credential for `{type_name}` in test context"
-                ))
+    fn has(&self, key: &CredentialKey) -> bool {
+        self.credentials.contains_key(key.as_str())
+            || self.typed_credentials.values().any(|snap| {
+                let scheme_lower = snap.scheme_pattern().to_lowercase();
+                key.as_str() == scheme_lower
             })
+    }
+
+    fn resolve_any(
+        &self,
+        key: &CredentialKey,
+    ) -> BoxFut<'_, Result<Box<dyn Any + Send + Sync>, CoreError>> {
+        let key_str = key.as_str();
+        // First check string-keyed credentials
+        if let Some(snapshot) = self.credentials.get(key_str) {
+            let snapshot = snapshot.clone();
+            return Box::pin(async move { Ok(Box::new(snapshot) as Box<dyn Any + Send + Sync>) });
+        }
+        // Then check type-keyed credentials by matching the key against
+        // lowercased scheme pattern names (credential<S>() derives keys
+        // from lowercased type names).
+        for snapshot in self.typed_credentials.values() {
+            let scheme_lower = snapshot.scheme_pattern().to_lowercase();
+            if key_str == scheme_lower || key_str.ends_with(&scheme_lower) {
+                let snapshot = snapshot.clone();
+                return Box::pin(
+                    async move { Ok(Box::new(snapshot) as Box<dyn Any + Send + Sync>) },
+                );
+            }
+        }
+        // Fallback: try first typed credential if any
+        if let Some(snapshot) = self.typed_credentials.values().next() {
+            let snapshot = snapshot.clone();
+            return Box::pin(async move { Ok(Box::new(snapshot) as Box<dyn Any + Send + Sync>) });
+        }
+        let key_owned = key_str.to_owned();
+        Box::pin(async move { Err(CoreError::CredentialNotFound { key: key_owned }) })
+    }
+
+    fn try_resolve_any(
+        &self,
+        key: &CredentialKey,
+    ) -> BoxFut<'_, Result<Option<Box<dyn Any + Send + Sync>>, CoreError>> {
+        let key_str = key.as_str();
+        if let Some(snapshot) = self.credentials.get(key_str) {
+            let snapshot = snapshot.clone();
+            return Box::pin(
+                async move { Ok(Some(Box::new(snapshot) as Box<dyn Any + Send + Sync>)) },
+            );
+        }
+        for snapshot in self.typed_credentials.values() {
+            let scheme_lower = snapshot.scheme_pattern().to_lowercase();
+            if key_str == scheme_lower || key_str.ends_with(&scheme_lower) {
+                let snapshot = snapshot.clone();
+                return Box::pin(async move {
+                    Ok(Some(Box::new(snapshot) as Box<dyn Any + Send + Sync>))
+                });
+            }
+        }
+        Box::pin(async { Ok(None) })
     }
 }
 
@@ -313,21 +368,35 @@ struct TestResourceAccessor {
     resources: Arc<parking_lot::Mutex<HashMap<String, ResourceFactory>>>,
 }
 
-#[async_trait]
 impl ResourceAccessor for TestResourceAccessor {
-    async fn acquire(&self, key: &str) -> Result<Box<dyn Any + Send + Sync>, ActionError> {
-        // Factory is cloned out under the lock (cheap Arc clone) and
-        // invoked outside to keep the lock critical section tiny and
-        // side-effect-free. Multiple acquires for the same key each
-        // get a fresh Box — matches production accessor semantics.
-        let factory = self.resources.lock().get(key).cloned().ok_or_else(|| {
-            ActionError::fatal(format!("resource `{key}` not found in test context"))
-        })?;
-        Ok(factory())
+    fn has(&self, key: &ResourceKey) -> bool {
+        self.resources.lock().contains_key(key.as_str())
     }
 
-    async fn exists(&self, key: &str) -> bool {
-        self.resources.lock().contains_key(key)
+    fn acquire_any(
+        &self,
+        key: &ResourceKey,
+    ) -> BoxFut<'_, Result<Box<dyn Any + Send + Sync>, CoreError>> {
+        // Factory is cloned out under the lock (cheap Arc clone) and
+        // invoked outside to keep the lock critical section tiny and
+        // side-effect-free. Multiple acquires for the same key each get
+        // a fresh Box — matches production accessor semantics.
+        let key_str = key.as_str().to_owned();
+        let factory = self.resources.lock().get(&key_str).cloned();
+        Box::pin(async move {
+            match factory {
+                Some(f) => Ok(f()),
+                None => Err(CoreError::CredentialNotFound { key: key_str }),
+            }
+        })
+    }
+
+    fn try_acquire_any(
+        &self,
+        key: &ResourceKey,
+    ) -> BoxFut<'_, Result<Option<Box<dyn Any + Send + Sync>>, CoreError>> {
+        let factory = self.resources.lock().get(key.as_str()).cloned();
+        Box::pin(async move { Ok(factory.map(|f| f())) })
     }
 }
 
@@ -639,20 +708,16 @@ where
 mod tests {
     use std::collections::HashMap;
 
-    use nebula_core::action_key;
+    use nebula_core::{DeclaresDependencies, action_key};
     use nebula_credential::{CredentialRecord, SecretString, SecretToken};
 
     use super::*;
     #[cfg(feature = "unstable-retry-scheduler")]
     use crate::assert_retry;
     use crate::{
-        action::Action,
-        assert_branch, assert_break, assert_cancelled, assert_continue, assert_fatal,
-        assert_retryable, assert_skip, assert_success, assert_validation_error, assert_wait,
-        context::{Context, CredentialContextExt},
-        dependency::ActionDependencies,
-        metadata::ActionMetadata,
-        output::ActionOutput,
+        action::Action, assert_branch, assert_break, assert_cancelled, assert_continue,
+        assert_fatal, assert_retryable, assert_skip, assert_success, assert_validation_error,
+        assert_wait, context::CredentialContextExt, metadata::ActionMetadata, output::ActionOutput,
     };
 
     #[test]
@@ -758,8 +823,8 @@ mod tests {
     #[test]
     fn spy_logger_captures_messages() {
         let logger = SpyLogger::new();
-        logger.log(ActionLogLevel::Info, "hello world");
-        logger.log(ActionLogLevel::Error, "something failed");
+        logger.log(LogLevel::Info, "hello world");
+        logger.log(LogLevel::Error, "something failed");
 
         assert_eq!(logger.count(), 2);
         assert!(logger.contains("hello"));
@@ -775,7 +840,7 @@ mod tests {
         let spy = builder.spy_logger();
         let ctx = builder.build();
 
-        ctx.logger.log(ActionLogLevel::Info, "from action");
+        ctx.logger.log(LogLevel::Info, "from action");
 
         assert_eq!(spy.count(), 1);
         assert!(spy.contains("from action"));
@@ -992,7 +1057,7 @@ mod tests {
         max: u32,
     }
 
-    impl ActionDependencies for CounterAction {}
+    impl DeclaresDependencies for CounterAction {}
 
     impl Action for CounterAction {
         fn metadata(&self) -> &ActionMetadata {
@@ -1013,7 +1078,7 @@ mod tests {
             &self,
             _input: Self::Input,
             state: &mut Self::State,
-            _ctx: &impl Context,
+            _ctx: &ActionContext,
         ) -> impl Future<Output = Result<ActionResult<Self::Output>, ActionError>> + Send {
             state.count += 1;
             let count = state.count;
@@ -1084,7 +1149,7 @@ mod tests {
         meta: ActionMetadata,
     }
 
-    impl ActionDependencies for TickTrigger {}
+    impl DeclaresDependencies for TickTrigger {}
 
     impl Action for TickTrigger {
         fn metadata(&self) -> &ActionMetadata {

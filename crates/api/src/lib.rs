@@ -6,14 +6,26 @@
 //!
 //! ## Key modules
 //!
-//! - `handlers` — thin HTTP handlers: extract, validate, delegate, return.
-//! - `middleware` — auth (JWT + API-key), tracing, security headers, request ID.
-//! - `errors` — RFC 9457 `ProblemDetails` / `ApiError`; seam for canon §12.4.
+//! - `handlers` — thin HTTP handlers: extract, validate, delegate, return. Includes `auth`, `me`,
+//!   `org`, `workflow`, `execution`, `credential`, `catalog`, `openapi`, `webhook`.
+//! - `middleware` — auth (JWT + API-key → `AuthContext`), tenancy (path-based org/workspace
+//!   resolution via `nebula-core::Slug`), RBAC, CSRF, tracing, security headers, request ID.
+//! - `errors` — RFC 9457 `ProblemDetails` / `ApiError`; seam for canon §12.4. Includes
+//!   `SessionExpired`, `MfaRequired`, `InsufficientRole`, `OrgNotFound`, `WorkspaceNotFound`,
+//!   `SlugConflict`, `CsrfRejected`, `PaginationInvalid`, `RateLimited`, `TenantMismatch` among
+//!   others.
+//! - `pagination` — cursor-based pagination: `CursorParams`, `PaginatedResponse<T>`.
 //! - `webhook` — inbound trigger transport: `WebhookTransport` activate/deactivate/router,
-//!   `EndpointProviderImpl`, `WebhookRateLimiter` (§11.3 / §13.4).
-//! - `state` — `AppState` holds port trait references only; no concrete impls.
-//! - `config` — `ApiConfig` / `JwtSecret`; startup fails hard on a missing or short secret — no
-//!   `Default` impl (§4.5 operational honesty).
+//!   `EndpointProviderImpl`, `WebhookRateLimiter` (§11.3 / §13.4). Located under
+//!   [`services::webhook`] with rate limiting in [`middleware::webhook_ratelimit`].
+//! - `state` — `AppState` holds port trait references: `WorkflowRepo`, `ExecutionRepo`,
+//!   `ControlQueueRepo`, `OrgResolver`, `WorkspaceResolver`, `SessionStore`, `MembershipStore`.
+//! - `config` — `ApiConfig` with sub-configs (`TlsConfig`, `CookieConfig`, `CorsConfig`,
+//!   `VersioningConfig`, `PaginationConfig`) / `JwtSecret`; startup fails hard on a missing or
+//!   short secret — no `Default` impl (§4.5 operational honesty).
+//! - `routes` — domain-scoped route builders: `auth`, `me`, `org`, `workspace`, `workflow`,
+//!   `execution`, `credential`, `catalog`, `webhook`, `openapi`. All tenant-scoped routes nest
+//!   under `/api/v1/orgs/{org}/workspaces/{ws}/…`.
 //!
 //! ## Authentication planes (ADR-0033)
 //!
@@ -21,10 +33,11 @@
 //! for workflows talking to *external* systems):
 //!
 //! - **`middleware::auth`** — **Plane A**: JWT bearer and `X-API-Key` for the Nebula API itself.
-//! - **`credential`** (feature `credential-oauth`) — **Plane B acquisition**: HTTP adapters that
-//!   run OAuth2 *client* ceremony for integration credentials (authorize redirect + token
-//!   callback). These routes are nested under `/api/v1` and are **protected by Plane A** middleware
-//!   so only authenticated operators can start or complete integration OAuth flows.
+//! - **`credential`** (feature `credential-oauth`) — **Plane B infrastructure**: OAuth2 flow
+//!   helpers (PKCE, signed state, token exchange) and input validators for integration credentials.
+//!   Located under [`services::oauth`] with validators in [`extractors::credential`]. HTTP handlers
+//!   live in [`handlers::credential`]; route wiring in [`routes::workspace`] and
+//!   [`routes::credential`]. All credential routes are **protected by Plane A** middleware.
 //!
 //! Do not merge these into one conceptual “auth” module — naming stays explicit per ADR-0033.
 //!
@@ -42,18 +55,19 @@
 
 pub mod app;
 pub mod config;
-#[cfg(feature = "credential-oauth")]
-pub mod credential;
 pub mod errors;
 pub mod extractors;
 pub mod handlers;
 pub mod middleware;
 pub mod models;
+pub mod pagination;
 pub mod routes;
+pub mod server;
 pub mod services;
 pub mod state;
-pub mod webhook;
 
 pub use app::build_app;
 pub use config::{ApiConfig, ApiConfigError, JwtSecret};
+pub use errors::{ApiError, ApiResult};
+pub use pagination::{CursorParams, PaginatedResponse};
 pub use state::AppState;

@@ -1,6 +1,6 @@
 # 26 — `nebula-credential` redesign
 
-> **Status:** DRAFT
+> **Status:** IMPLEMENTED (2026-04-23 — all spec items completed)
 > **Authority:** subordinate to `docs/PRODUCT_CANON.md`. Canon wins on conflict.
 > **Parent:** [`./README.md`](./README.md)
 > **Scope:** Align `nebula-credential` with specs 22 (credential v3), 23

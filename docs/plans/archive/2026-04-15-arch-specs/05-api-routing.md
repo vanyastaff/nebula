@@ -1,6 +1,6 @@
 # Spec 05 — API routing and versioning
 
-> **Status:** draft
+> **Status:** implemented (2026-04-23)
 > **Canon target:** §12.10 (new)
 > **Depends on:** 02 (tenancy), 03 (auth), 04 (RBAC), 06 (IDs), 07 (slugs)
 > **Depended on by:** 11 (triggers — webhook paths)

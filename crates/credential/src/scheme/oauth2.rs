@@ -55,8 +55,7 @@ impl OAuth2Token {
 
     /// Formats as `<token_type> <token>` for the Authorization header.
     pub fn bearer_header(&self) -> String {
-        self.access_token
-            .expose_secret(|t| format!("{} {t}", self.token_type))
+        format!("{} {}", self.token_type, self.access_token.expose_secret())
     }
 
     /// Returns `true` if the token has expired.

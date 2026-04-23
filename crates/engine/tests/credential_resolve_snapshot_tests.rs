@@ -43,7 +43,7 @@ async fn resolve_to_typed_snapshot() {
 
     assert!(snapshot.is::<SecretToken>());
     let token = snapshot.project::<SecretToken>().unwrap();
-    token.token().expose_secret(|s| assert_eq!(s, "test-key"));
+    assert_eq!(token.token().expose_secret(), "test-key");
 
     assert!(!snapshot.is::<ConnectionUri>());
     let err = snapshot.project::<ConnectionUri>().unwrap_err();

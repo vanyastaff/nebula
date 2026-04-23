@@ -8,14 +8,61 @@
 
 use std::sync::Arc;
 
-use nebula_api::{ApiConfig, AppState};
+use nebula_api::{
+    ApiConfig, AppState,
+    errors::ApiError,
+    state::{OrgResolver, WorkspaceResolver},
+};
+use nebula_core::{OrgId, WorkspaceId};
 use nebula_storage::{
     InMemoryExecutionRepo, InMemoryWorkflowRepo, repos::InMemoryControlQueueRepo,
 };
 
-// ── Shared constant ───────────────────────────────────────────────────────────
+// ── Shared constants ─────────────────────────────────────────────────────────
 
 pub(crate) const TEST_JWT_SECRET: &str = "test-secret-for-integration-tests-0123456789";
+
+/// Fixed test org ID — use this in all test URLs.
+pub const TEST_ORG: &str = "org_00000000000000000000000001";
+/// Fixed test workspace ID — use this in all test URLs.
+pub const TEST_WS: &str = "ws_00000000000000000000000001";
+
+/// CSRF token value used by tests for state-changing requests.
+pub const TEST_CSRF_TOKEN: &str = "test-csrf-token";
+/// Pre-formatted cookie header value for CSRF.
+pub const TEST_CSRF_COOKIE: &str = "nebula_csrf=test-csrf-token";
+
+/// Helper to build a tenant-scoped workspace API path.
+/// Example: `ws_path("/workflows")` → `/api/v1/orgs/org_.../workspaces/ws_.../workflows`
+pub fn ws_path(suffix: &str) -> String {
+    format!("/api/v1/orgs/{TEST_ORG}/workspaces/{TEST_WS}{suffix}")
+}
+
+/// Helper to build an org-scoped API path.
+#[allow(dead_code)]
+pub fn org_path(suffix: &str) -> String {
+    format!("/api/v1/orgs/{TEST_ORG}{suffix}")
+}
+
+/// Stub OrgResolver that accepts any slug and returns a fixed OrgId.
+pub struct TestOrgResolver;
+
+#[async_trait::async_trait]
+impl OrgResolver for TestOrgResolver {
+    async fn resolve_by_slug(&self, _slug: &str) -> Result<OrgId, ApiError> {
+        Ok(TEST_ORG.parse().expect("valid test org ID"))
+    }
+}
+
+/// Stub WorkspaceResolver that accepts any slug and returns a fixed WorkspaceId.
+pub struct TestWorkspaceResolver;
+
+#[async_trait::async_trait]
+impl WorkspaceResolver for TestWorkspaceResolver {
+    async fn resolve_by_slug(&self, _org_id: OrgId, _slug: &str) -> Result<WorkspaceId, ApiError> {
+        Ok(TEST_WS.parse().expect("valid test ws ID"))
+    }
+}
 
 // ── Workflow definition builders ──────────────────────────────────────────────
 
@@ -111,7 +158,9 @@ pub(crate) async fn create_state_with_queue() -> (AppState, Arc<InMemoryControlQ
         execution_repo,
         control_queue_dyn,
         api_config.jwt_secret,
-    );
+    )
+    .with_org_resolver(Arc::new(TestOrgResolver))
+    .with_workspace_resolver(Arc::new(TestWorkspaceResolver));
 
     (state, control_queue_repo)
 }

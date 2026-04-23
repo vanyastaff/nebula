@@ -19,15 +19,14 @@
 //! - [`FnStatelessCtxAction`] / [`stateless_ctx_fn`] — context-aware variant for closures that need
 //!   credentials, resources, or the logger.
 
-use std::{fmt, future::Future, marker::PhantomData, sync::Arc};
+use std::{fmt, future::Future, marker::PhantomData, pin::Pin};
 
-use async_trait::async_trait;
+use nebula_core::DeclaresDependencies;
 use serde_json::Value;
 
 use crate::{
     action::Action,
-    context::{ActionContext, Context},
-    dependency::ActionDependencies,
+    context::ActionContext,
     error::{ActionError, ValidationReason},
     metadata::ActionMetadata,
     result::ActionResult,
@@ -49,7 +48,7 @@ use crate::{
 /// # Example
 ///
 /// ```rust,ignore
-/// use nebula_action::{Action, StatelessAction, ActionContext, ActionResult, ActionError};
+/// use nebula_action::{Action, StatelessAction, ActionResult, ActionError};
 ///
 /// struct MyAction { meta: ActionMetadata }
 /// impl Action for MyAction { /* ... */ }
@@ -58,13 +57,17 @@ use crate::{
 ///     type Input = serde_json::Value;
 ///     type Output = serde_json::Value;
 ///
-///     async fn execute(&self, input: Self::Input, _ctx: &impl Context)
+///     async fn execute(&self, input: Self::Input, _ctx: &ActionContext)
 ///         -> Result<ActionResult<Self::Output>, ActionError>
 ///     {
 ///         Ok(ActionResult::success(input))
 ///     }
 /// }
 /// ```
+#[diagnostic::on_unimplemented(
+    message = "`{Self}` does not implement StatelessAction",
+    note = "implement the `execute` method with matching Input/Output types"
+)]
 pub trait StatelessAction: Action {
     /// Input type for this action.
     ///
@@ -95,7 +98,7 @@ pub trait StatelessAction: Action {
     fn execute(
         &self,
         input: Self::Input,
-        ctx: &impl Context,
+        ctx: &ActionContext,
     ) -> impl Future<Output = Result<ActionResult<Self::Output>, ActionError>> + Send;
 }
 
@@ -122,7 +125,7 @@ impl<F, Input, Output> FnStatelessAction<F, Input, Output> {
     }
 }
 
-impl<F, Input, Output> ActionDependencies for FnStatelessAction<F, Input, Output>
+impl<F, Input, Output> DeclaresDependencies for FnStatelessAction<F, Input, Output>
 where
     F: Send + Sync + 'static,
     Input: Send + Sync + 'static,
@@ -154,7 +157,7 @@ where
     fn execute(
         &self,
         input: Self::Input,
-        _ctx: &impl Context,
+        _ctx: &ActionContext,
     ) -> impl Future<Output = Result<ActionResult<Self::Output>, ActionError>> + Send {
         let fut = (self.func)(input);
         async move { fut.await.map(ActionResult::success) }
@@ -197,9 +200,6 @@ impl<F, Input, Output> fmt::Debug for FnStatelessAction<F, Input, Output> {
 pub struct FnStatelessCtxAction<F, Input, Output> {
     metadata: ActionMetadata,
     func: F,
-    /// Base context to clone from. When `None`, a minimal context is
-    /// constructed from the `Context` trait methods (noop capabilities).
-    base_ctx: Option<ActionContext>,
     _marker: PhantomData<fn(Input) -> Output>,
 }
 
@@ -210,24 +210,12 @@ impl<F, Input, Output> FnStatelessCtxAction<F, Input, Output> {
         Self {
             metadata,
             func,
-            base_ctx: None,
             _marker: PhantomData,
         }
     }
-
-    /// Provide a base [`ActionContext`] whose capabilities (credentials,
-    /// resources, logger) will be cloned into each invocation's context.
-    ///
-    /// The execution identity and cancellation token are still taken from
-    /// the runtime-provided context.
-    #[must_use]
-    pub fn with_context(mut self, ctx: ActionContext) -> Self {
-        self.base_ctx = Some(ctx);
-        self
-    }
 }
 
-impl<F, Input, Output> ActionDependencies for FnStatelessCtxAction<F, Input, Output>
+impl<F, Input, Output> DeclaresDependencies for FnStatelessCtxAction<F, Input, Output>
 where
     F: Send + Sync + 'static,
     Input: Send + Sync + 'static,
@@ -248,7 +236,7 @@ where
 
 impl<F, Fut, Input, Output> StatelessAction for FnStatelessCtxAction<F, Input, Output>
 where
-    F: Fn(Input, ActionContext) -> Fut + Send + Sync + 'static,
+    F: Fn(Input) -> Fut + Send + Sync + 'static,
     Fut: Future<Output = Result<Output, ActionError>> + Send + 'static,
     Input: nebula_schema::HasSchema + Send + Sync + 'static,
     Output: Send + Sync + 'static,
@@ -259,45 +247,25 @@ where
     fn execute(
         &self,
         input: Self::Input,
-        ctx: &impl Context,
+        _ctx: &ActionContext,
     ) -> impl Future<Output = Result<ActionResult<Self::Output>, ActionError>> + Send {
-        let action_ctx = match &self.base_ctx {
-            Some(base) => ActionContext::new(
-                ctx.execution_id(),
-                ctx.node_key(),
-                ctx.workflow_id(),
-                ctx.cancellation().clone(),
-            )
-            .with_resources(Arc::clone(&base.resources))
-            .with_credentials(Arc::clone(&base.credentials))
-            .with_logger(Arc::clone(&base.logger)),
-            None => ActionContext::new(
-                ctx.execution_id(),
-                ctx.node_key(),
-                ctx.workflow_id(),
-                ctx.cancellation().clone(),
-            ),
-        };
-        let fut = (self.func)(input, action_ctx);
+        let fut = (self.func)(input);
         async move { fut.await.map(ActionResult::success) }
     }
 }
 
-/// Build a context-aware stateless action from a function that receives
-/// input AND an owned [`ActionContext`].
+/// Build a context-aware stateless action from a function.
 ///
-/// The closure receives a fresh [`ActionContext`] on each call (cheap
-/// clone — capabilities are behind `Arc`). Use this when the closure
-/// needs access to credentials, resources, or the logger. For closures
-/// that only transform data, prefer [`stateless_fn`].
+/// This adapter keeps the API shape for context-aware action constructors;
+/// the runtime context is supplied through the standard [`StatelessAction`]
+/// execution path.
 ///
 /// # Examples
 ///
 /// ```rust,ignore
 /// let action = stateless_ctx_fn(
 ///     ActionMetadata::new(action_key!("example.ctx"), "Ctx", "Context-aware"),
-///     |input: serde_json::Value, ctx: ActionContext| async move {
-///         let _id = ctx.execution_id();
+///     |input: serde_json::Value| async move {
 ///         Ok(input)
 ///     },
 /// );
@@ -314,14 +282,7 @@ impl<F, Input, Output> fmt::Debug for FnStatelessCtxAction<F, Input, Output> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("FnStatelessCtxAction")
             .field("action", &self.metadata.base.key)
-            .field(
-                "base_ctx",
-                if self.base_ctx.is_some() {
-                    &"<injected>"
-                } else {
-                    &"<noop>"
-                },
-            )
+            .field("ctx_mode", &"<borrowed>")
             .finish_non_exhaustive()
     }
 }
@@ -337,7 +298,6 @@ impl<F, Input, Output> fmt::Debug for FnStatelessCtxAction<F, Input, Output> {
 /// # Errors
 ///
 /// Returns [`ActionError`] on validation, retryable, or fatal failures.
-#[async_trait]
 pub trait StatelessHandler: Send + Sync {
     /// Action metadata (key, version, capabilities).
     fn metadata(&self) -> &ActionMetadata;
@@ -347,11 +307,15 @@ pub trait StatelessHandler: Send + Sync {
     /// # Errors
     ///
     /// Returns [`ActionError`] if execution fails (validation, retryable, or fatal).
-    async fn execute(
-        &self,
+    fn execute<'life0, 'life1, 'a>(
+        &'life0 self,
         input: Value,
-        ctx: &ActionContext,
-    ) -> Result<ActionResult<Value>, ActionError>;
+        ctx: &'life1 ActionContext,
+    ) -> Pin<Box<dyn Future<Output = Result<ActionResult<Value>, ActionError>> + Send + 'a>>
+    where
+        Self: 'a,
+        'life0: 'a,
+        'life1: 'a;
 }
 
 // ── StatelessActionAdapter ──────────────────────────────────────────────────
@@ -379,7 +343,6 @@ impl<A> StatelessActionAdapter<A> {
     }
 }
 
-#[async_trait]
 impl<A> StatelessHandler for StatelessActionAdapter<A>
 where
     A: StatelessAction + Send + Sync + 'static,
@@ -390,24 +353,31 @@ where
         self.action.metadata()
     }
 
-    async fn execute(
-        &self,
+    fn execute<'life0, 'life1, 'a>(
+        &'life0 self,
         input: Value,
-        ctx: &ActionContext,
-    ) -> Result<ActionResult<Value>, ActionError> {
-        let typed_input: A::Input = serde_json::from_value(input).map_err(|e| {
-            ActionError::validation(
-                "input",
-                ValidationReason::MalformedJson,
-                Some(e.to_string()),
-            )
-        })?;
+        ctx: &'life1 ActionContext,
+    ) -> Pin<Box<dyn Future<Output = Result<ActionResult<Value>, ActionError>> + Send + 'a>>
+    where
+        Self: 'a,
+        'life0: 'a,
+        'life1: 'a,
+    {
+        Box::pin(async move {
+            let typed_input: A::Input = serde_json::from_value(input).map_err(|e| {
+                ActionError::validation(
+                    "input",
+                    ValidationReason::MalformedJson,
+                    Some(e.to_string()),
+                )
+            })?;
 
-        let result = self.action.execute(typed_input, ctx).await?;
+            let result = self.action.execute(typed_input, ctx).await?;
 
-        result.try_map_output(|output| {
-            serde_json::to_value(output)
-                .map_err(|e| ActionError::fatal(format!("output serialization failed: {e}")))
+            result.try_map_output(|output| {
+                serde_json::to_value(output)
+                    .map_err(|e| ActionError::fatal(format!("output serialization failed: {e}")))
+            })
         })
     }
 }
@@ -422,22 +392,15 @@ impl<A: Action> fmt::Debug for StatelessActionAdapter<A> {
 
 #[cfg(test)]
 mod tests {
-    use nebula_core::{
-        id::{ExecutionId, WorkflowId},
-        node_key,
-    };
+    use std::sync::Arc;
+
     use serde::{Deserialize, Serialize};
-    use tokio_util::sync::CancellationToken;
 
     use super::*;
+    use crate::testing::{TestActionContext, TestContextBuilder};
 
-    fn make_ctx() -> ActionContext {
-        ActionContext::new(
-            ExecutionId::nil(),
-            node_key!("test"),
-            WorkflowId::nil(),
-            CancellationToken::new(),
-        )
+    fn make_ctx() -> TestActionContext {
+        TestContextBuilder::new().build()
     }
 
     #[tokio::test]
@@ -451,12 +414,7 @@ mod tests {
             |input| async move { Ok(input) },
         );
 
-        let ctx = ActionContext::new(
-            ExecutionId::new(),
-            node_key!("test"),
-            WorkflowId::new(),
-            CancellationToken::new(),
-        );
+        let ctx = make_ctx();
 
         let result = action
             .execute(serde_json::json!({"hello":"world"}), &ctx)
@@ -481,18 +439,10 @@ mod tests {
                 "CtxFn",
                 "Context-aware function action",
             ),
-            |input, ctx: ActionContext| async move {
-                let _eid = ctx.execution_id;
-                Ok(input)
-            },
+            |input| async move { Ok(input) },
         );
 
-        let ctx = ActionContext::new(
-            ExecutionId::new(),
-            node_key!("test"),
-            WorkflowId::new(),
-            CancellationToken::new(),
-        );
+        let ctx = make_ctx();
 
         let result = action
             .execute(serde_json::json!({"ctx":"aware"}), &ctx)
@@ -546,7 +496,7 @@ mod tests {
         }
     }
 
-    impl ActionDependencies for AddAction {}
+    impl DeclaresDependencies for AddAction {}
 
     impl Action for AddAction {
         fn metadata(&self) -> &ActionMetadata {
@@ -561,7 +511,7 @@ mod tests {
         async fn execute(
             &self,
             input: Self::Input,
-            _ctx: &impl Context,
+            _ctx: &ActionContext,
         ) -> Result<ActionResult<Self::Output>, ActionError> {
             Ok(ActionResult::success(AddOutput {
                 sum: input.a + input.b,

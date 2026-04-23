@@ -11,7 +11,7 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use nebula_action::{
-    Action, ActionContext, ActionDependencies, ActionError, ActionMetadata, ActionResult,
+    Action, ActionContext, ActionError, ActionMetadata, ActionResult, DeclaresDependencies,
     StatelessHandler,
 };
 
@@ -49,7 +49,7 @@ impl RemoteAction {
     }
 }
 
-impl ActionDependencies for RemoteAction {}
+impl DeclaresDependencies for RemoteAction {}
 
 impl Action for RemoteAction {
     fn metadata(&self) -> &ActionMetadata {

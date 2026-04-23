@@ -35,10 +35,10 @@ use std::{
     any::{Any, TypeId},
     fmt,
     future::Future,
+    pin::Pin,
     time::SystemTime,
 };
 
-use async_trait::async_trait;
 use serde_json::Value;
 
 use crate::{
@@ -53,8 +53,11 @@ use crate::{
 /// to tear down. Triggers emit new workflow executions; they do not run
 /// inside one.
 ///
-/// Uses [`TriggerContext`] (workflow_id, trigger_id, cancellation), not
-/// [`Context`](crate::context::Context).
+/// Uses [`TriggerContext`] capability composition.
+#[diagnostic::on_unimplemented(
+    message = "`{Self}` does not implement TriggerAction",
+    note = "implement `start` and `stop` methods"
+)]
 pub trait TriggerAction: Action {
     /// Start the trigger (register listener, schedule poll, etc.).
     fn start(&self, ctx: &TriggerContext) -> impl Future<Output = Result<(), ActionError>> + Send;
@@ -258,14 +261,12 @@ impl TriggerEventOutcome {
 
 /// Trigger handler — start/stop lifecycle for workflow triggers.
 ///
-/// Uses [`TriggerContext`] (workflow_id, trigger_id, cancellation) instead
-/// of [`ActionContext`](crate::context::ActionContext). Triggers live
-/// outside the execution graph and emit new workflow executions.
+/// Uses [`TriggerContext`] capability composition. Triggers live outside the
+/// execution graph and emit new workflow executions.
 ///
 /// # Errors
 ///
 /// Returns [`ActionError`] if start or stop fails.
-#[async_trait]
 pub trait TriggerHandler: Send + Sync {
     /// Action metadata (key, version, capabilities).
     fn metadata(&self) -> &ActionMetadata;
@@ -318,7 +319,14 @@ pub trait TriggerHandler: Send + Sync {
     /// Returns [`ActionError`] if the trigger cannot be started, if `start`
     /// is called twice without an intervening `stop`, or (for shape 2) if
     /// the trigger loop encounters a fatal error while running.
-    async fn start(&self, ctx: &TriggerContext) -> Result<(), ActionError>;
+    fn start<'life0, 'life1, 'a>(
+        &'life0 self,
+        ctx: &'life1 TriggerContext,
+    ) -> Pin<Box<dyn Future<Output = Result<(), ActionError>> + Send + 'a>>
+    where
+        Self: 'a,
+        'life0: 'a,
+        'life1: 'a;
 
     /// Stop the trigger (unregister, cancel schedule).
     ///
@@ -329,7 +337,14 @@ pub trait TriggerHandler: Send + Sync {
     /// # Errors
     ///
     /// Returns [`ActionError`] if the trigger cannot be stopped cleanly.
-    async fn stop(&self, ctx: &TriggerContext) -> Result<(), ActionError>;
+    fn stop<'life0, 'life1, 'a>(
+        &'life0 self,
+        ctx: &'life1 TriggerContext,
+    ) -> Pin<Box<dyn Future<Output = Result<(), ActionError>> + Send + 'a>>
+    where
+        Self: 'a,
+        'life0: 'a,
+        'life1: 'a;
 
     /// Whether this trigger accepts externally pushed events.
     ///
@@ -349,15 +364,22 @@ pub trait TriggerHandler: Send + Sync {
     ///
     /// Returns [`ActionError::Fatal`] by default — triggers that don't accept
     /// external events should never have this called.
-    async fn handle_event(
-        &self,
+    fn handle_event<'life0, 'life1, 'a>(
+        &'life0 self,
         event: TriggerEvent,
-        ctx: &TriggerContext,
-    ) -> Result<TriggerEventOutcome, ActionError> {
+        ctx: &'life1 TriggerContext,
+    ) -> Pin<Box<dyn Future<Output = Result<TriggerEventOutcome, ActionError>> + Send + 'a>>
+    where
+        Self: 'a,
+        'life0: 'a,
+        'life1: 'a,
+    {
         let _ = (event, ctx);
-        Err(ActionError::fatal(
-            "trigger does not accept external events",
-        ))
+        Box::pin(async {
+            Err(ActionError::fatal(
+                "trigger does not accept external events",
+            ))
+        })
     }
 }
 
@@ -391,7 +413,6 @@ impl<A> TriggerActionAdapter<A> {
     }
 }
 
-#[async_trait]
 impl<A> TriggerHandler for TriggerActionAdapter<A>
 where
     A: TriggerAction + Send + Sync + 'static,
@@ -405,8 +426,16 @@ where
     /// # Errors
     ///
     /// Returns [`ActionError`] if the trigger cannot be started.
-    async fn start(&self, ctx: &TriggerContext) -> Result<(), ActionError> {
-        self.action.start(ctx).await
+    fn start<'life0, 'life1, 'a>(
+        &'life0 self,
+        ctx: &'life1 TriggerContext,
+    ) -> Pin<Box<dyn Future<Output = Result<(), ActionError>> + Send + 'a>>
+    where
+        Self: 'a,
+        'life0: 'a,
+        'life1: 'a,
+    {
+        Box::pin(async move { self.action.start(ctx).await })
     }
 
     /// Stop the trigger by delegating to the typed action.
@@ -414,8 +443,16 @@ where
     /// # Errors
     ///
     /// Returns [`ActionError`] if the trigger cannot be stopped cleanly.
-    async fn stop(&self, ctx: &TriggerContext) -> Result<(), ActionError> {
-        self.action.stop(ctx).await
+    fn stop<'life0, 'life1, 'a>(
+        &'life0 self,
+        ctx: &'life1 TriggerContext,
+    ) -> Pin<Box<dyn Future<Output = Result<(), ActionError>> + Send + 'a>>
+    where
+        Self: 'a,
+        'life0: 'a,
+        'life1: 'a,
+    {
+        Box::pin(async move { self.action.stop(ctx).await })
     }
 }
 
@@ -436,11 +473,13 @@ mod tests {
         atomic::{AtomicBool, Ordering},
     };
 
-    use nebula_core::{id::WorkflowId, node_key};
-    use tokio_util::sync::CancellationToken;
+    use nebula_core::DeclaresDependencies;
 
     use super::*;
-    use crate::{action::Action, dependency::ActionDependencies};
+    use crate::{
+        action::Action,
+        testing::{TestContextBuilder, TestTriggerContext},
+    };
 
     // ── TriggerActionAdapter tests ────────────────────────────────────────────
 
@@ -462,7 +501,7 @@ mod tests {
         }
     }
 
-    impl ActionDependencies for MockTriggerAction {}
+    impl DeclaresDependencies for MockTriggerAction {}
 
     impl Action for MockTriggerAction {
         fn metadata(&self) -> &ActionMetadata {
@@ -482,12 +521,8 @@ mod tests {
         }
     }
 
-    fn make_trigger_ctx() -> TriggerContext {
-        TriggerContext::new(
-            WorkflowId::nil(),
-            node_key!("test"),
-            CancellationToken::new(),
-        )
+    fn make_trigger_ctx() -> TestTriggerContext {
+        TestContextBuilder::new().build_trigger().0
     }
 
     #[test]

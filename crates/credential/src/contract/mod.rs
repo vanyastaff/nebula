@@ -11,11 +11,17 @@
 mod any;
 mod credential;
 mod pending;
+/// Resolve result types: interaction, refresh, test.
+pub mod resolve;
 mod state;
 mod static_protocol;
 
 pub use any::AnyCredential;
 pub use credential::Credential;
 pub use pending::{NoPendingState, PendingState, PendingToken};
+pub use resolve::{
+    DisplayData, InteractionRequest, RefreshOutcome, RefreshPolicy, ResolveResult,
+    StaticResolveResult, TestResult, UserInput,
+};
 pub use state::CredentialState;
 pub use static_protocol::StaticProtocol;

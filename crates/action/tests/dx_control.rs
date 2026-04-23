@@ -18,26 +18,17 @@
 use std::sync::Arc;
 
 use nebula_action::{
-    Action, ActionCategory, ActionContext, ActionDependencies, ActionError, ActionMetadata,
-    ActionOutput, ActionResult, ControlAction, ControlActionAdapter, ControlInput, ControlOutcome,
-    OutputPort, StatelessHandler, TerminationReason, ValidationReason,
+    Action, ActionCategory, ActionError, ActionMetadata, ActionOutput, ActionResult, ControlAction,
+    ControlActionAdapter, ControlInput, ControlOutcome, OutputPort, StatelessHandler,
+    TerminationReason, ValidationReason,
+    testing::{TestActionContext as ActionContext, TestContextBuilder},
 };
-use nebula_core::{
-    action_key,
-    id::{ExecutionId, WorkflowId},
-    node_key,
-};
-use tokio_util::sync::CancellationToken;
+use nebula_core::{DeclaresDependencies, action_key};
 
 // ── Test helpers ───────────────────────────────────────────────────────────
 
 fn make_ctx() -> ActionContext {
-    ActionContext::new(
-        ExecutionId::nil(),
-        node_key!("test"),
-        WorkflowId::nil(),
-        CancellationToken::new(),
-    )
+    TestContextBuilder::new().build()
 }
 
 async fn run(
@@ -72,7 +63,7 @@ impl DemoIf {
     }
 }
 
-impl ActionDependencies for DemoIf {}
+impl DeclaresDependencies for DemoIf {}
 impl Action for DemoIf {
     fn metadata(&self) -> &ActionMetadata {
         &self.metadata
@@ -83,7 +74,7 @@ impl ControlAction for DemoIf {
     async fn evaluate(
         &self,
         input: ControlInput,
-        _ctx: &ActionContext,
+        _ctx: &nebula_action::ActionContext,
     ) -> Result<ControlOutcome, ActionError> {
         let condition = input.get_bool("/condition")?;
         let selected = if condition { "true" } else { "false" };
@@ -180,7 +171,7 @@ impl DemoSwitch {
     }
 }
 
-impl ActionDependencies for DemoSwitch {}
+impl DeclaresDependencies for DemoSwitch {}
 impl Action for DemoSwitch {
     fn metadata(&self) -> &ActionMetadata {
         &self.metadata
@@ -191,7 +182,7 @@ impl ControlAction for DemoSwitch {
     async fn evaluate(
         &self,
         input: ControlInput,
-        _ctx: &ActionContext,
+        _ctx: &nebula_action::ActionContext,
     ) -> Result<ControlOutcome, ActionError> {
         let status = input.get_str("/status")?;
         let selected = match status {
@@ -270,7 +261,7 @@ impl DemoRouter {
     }
 }
 
-impl ActionDependencies for DemoRouter {}
+impl DeclaresDependencies for DemoRouter {}
 impl Action for DemoRouter {
     fn metadata(&self) -> &ActionMetadata {
         &self.metadata
@@ -281,7 +272,7 @@ impl ControlAction for DemoRouter {
     async fn evaluate(
         &self,
         input: ControlInput,
-        _ctx: &ActionContext,
+        _ctx: &nebula_action::ActionContext,
     ) -> Result<ControlOutcome, ActionError> {
         let priority = input.get_i64("/priority")?;
         let matches = Self::classify(priority);
@@ -357,7 +348,7 @@ impl NeverMatchRouter {
     }
 }
 
-impl ActionDependencies for NeverMatchRouter {}
+impl DeclaresDependencies for NeverMatchRouter {}
 impl Action for NeverMatchRouter {
     fn metadata(&self) -> &ActionMetadata {
         &self.metadata
@@ -368,7 +359,7 @@ impl ControlAction for NeverMatchRouter {
     async fn evaluate(
         &self,
         _input: ControlInput,
-        _ctx: &ActionContext,
+        _ctx: &nebula_action::ActionContext,
     ) -> Result<ControlOutcome, ActionError> {
         Ok(ControlOutcome::Drop {
             reason: Some("sentinel".into()),
@@ -405,7 +396,7 @@ impl DemoFilter {
     }
 }
 
-impl ActionDependencies for DemoFilter {}
+impl DeclaresDependencies for DemoFilter {}
 impl Action for DemoFilter {
     fn metadata(&self) -> &ActionMetadata {
         &self.metadata
@@ -416,7 +407,7 @@ impl ControlAction for DemoFilter {
     async fn evaluate(
         &self,
         input: ControlInput,
-        _ctx: &ActionContext,
+        _ctx: &nebula_action::ActionContext,
     ) -> Result<ControlOutcome, ActionError> {
         let score = input.get_i64("/score")?;
         if score >= 50 {
@@ -484,7 +475,7 @@ impl DemoNoOp {
     }
 }
 
-impl ActionDependencies for DemoNoOp {}
+impl DeclaresDependencies for DemoNoOp {}
 impl Action for DemoNoOp {
     fn metadata(&self) -> &ActionMetadata {
         &self.metadata
@@ -495,7 +486,7 @@ impl ControlAction for DemoNoOp {
     async fn evaluate(
         &self,
         input: ControlInput,
-        _ctx: &ActionContext,
+        _ctx: &nebula_action::ActionContext,
     ) -> Result<ControlOutcome, ActionError> {
         Ok(ControlOutcome::Pass {
             output: input.into_value(),
@@ -544,7 +535,7 @@ impl DemoStop {
     }
 }
 
-impl ActionDependencies for DemoStop {}
+impl DeclaresDependencies for DemoStop {}
 impl Action for DemoStop {
     fn metadata(&self) -> &ActionMetadata {
         &self.metadata
@@ -555,7 +546,7 @@ impl ControlAction for DemoStop {
     async fn evaluate(
         &self,
         _input: ControlInput,
-        _ctx: &ActionContext,
+        _ctx: &nebula_action::ActionContext,
     ) -> Result<ControlOutcome, ActionError> {
         Ok(ControlOutcome::Terminate {
             reason: TerminationReason::Success {
@@ -611,7 +602,7 @@ impl DemoFail {
     }
 }
 
-impl ActionDependencies for DemoFail {}
+impl DeclaresDependencies for DemoFail {}
 impl Action for DemoFail {
     fn metadata(&self) -> &ActionMetadata {
         &self.metadata
@@ -622,7 +613,7 @@ impl ControlAction for DemoFail {
     async fn evaluate(
         &self,
         _input: ControlInput,
-        _ctx: &ActionContext,
+        _ctx: &nebula_action::ActionContext,
     ) -> Result<ControlOutcome, ActionError> {
         Ok(ControlOutcome::Terminate {
             reason: TerminationReason::Failure {

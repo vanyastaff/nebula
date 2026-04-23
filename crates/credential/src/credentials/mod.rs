@@ -7,7 +7,12 @@
 pub mod api_key;
 pub mod basic_auth;
 pub mod oauth2;
+pub mod oauth2_config;
 
 pub use api_key::ApiKeyCredential;
 pub use basic_auth::BasicAuthCredential;
 pub use oauth2::{OAuth2Credential, OAuth2Pending, OAuth2State};
+pub use oauth2_config::{
+    AuthCodeBuilder, AuthStyle, ClientCredentialsBuilder, DeviceCodeBuilder, GrantType,
+    OAuth2Config, PkceMethod,
+};

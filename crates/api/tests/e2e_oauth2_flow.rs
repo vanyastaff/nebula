@@ -160,7 +160,7 @@ async fn e2e_oauth2_flow_persists_exchanged_credential_state() {
     let mut persisted_state: OAuth2State =
         serde_json::from_slice(&stored.data).expect("persisted oauth state");
     assert_eq!(
-        persisted_state.access_token.expose_secret(|s| s.to_owned()),
+        persisted_state.access_token.expose_secret().to_owned(),
         "e2e-access-token"
     );
     assert_eq!(
@@ -168,12 +168,13 @@ async fn e2e_oauth2_flow_persists_exchanged_credential_state() {
             .refresh_token
             .as_ref()
             .expect("refresh token")
-            .expose_secret(|s| s.to_owned()),
+            .expose_secret()
+            .to_owned(),
         "e2e-refresh-token"
     );
     assert_eq!(persisted_state.scopes, vec!["repo", "workflow"]);
     assert_eq!(
-        persisted_state.client_id.expose_secret(|s| s.to_owned()),
+        persisted_state.client_id.expose_secret().to_owned(),
         client_id
     );
     assert_eq!(persisted_state.token_url, token_url);
@@ -194,7 +195,7 @@ async fn e2e_oauth2_flow_persists_exchanged_credential_state() {
     );
 
     let resolver = CredentialResolver::new(state.oauth_credential_store.clone());
-    let ctx = CredentialContext::new("test-user");
+    let ctx = CredentialContext::for_test("test-user");
     let handle = resolver
         .resolve_with_refresh::<OAuth2Credential>(credential_id, &ctx)
         .await
@@ -204,7 +205,7 @@ async fn e2e_oauth2_flow_persists_exchanged_credential_state() {
     assert_eq!(token.token_type, "Bearer");
     assert_eq!(token.scopes, vec!["repo".to_owned(), "workflow".to_owned()]);
     assert_eq!(
-        token.access_token().expose_secret(|s| s.to_owned()),
+        token.access_token().expose_secret().to_owned(),
         "e2e-access-token-refreshed"
     );
 
@@ -220,14 +221,15 @@ async fn e2e_oauth2_flow_persists_exchanged_credential_state() {
     let refreshed_state: OAuth2State =
         serde_json::from_slice(&refreshed.data).expect("deserialize refreshed oauth state");
     assert_eq!(
-        refreshed_state.access_token.expose_secret(|s| s.to_owned()),
+        refreshed_state.access_token.expose_secret().to_owned(),
         "e2e-access-token-refreshed"
     );
     assert_eq!(
         refreshed_state
             .refresh_token
             .expect("refreshed refresh token")
-            .expose_secret(|s| s.to_owned()),
+            .expose_secret()
+            .to_owned(),
         "e2e-refresh-token-refreshed"
     );
 

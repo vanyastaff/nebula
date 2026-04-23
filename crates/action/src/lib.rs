@@ -45,8 +45,6 @@ pub mod context;
 /// public contract for flow-control nodes (If, Switch, Router, Filter,
 /// NoOp, Stop, Fail).
 pub mod control;
-/// Declarative dependency declaration for actions.
-pub mod dependency;
 /// Error types distinguishing retryable from fatal failures.
 pub mod error;
 /// Top-level [`ActionHandler`] enum dispatcher. Domain handler traits and
@@ -93,19 +91,20 @@ pub mod webhook;
 // ── Public re-exports ───────────────────────────────────────────────────────
 
 pub use action::Action;
-pub use capability::{
-    ActionLogLevel, ActionLogger, ExecutionEmitter, ResourceAccessor, TriggerHealth,
-    TriggerHealthSnapshot, TriggerScheduler,
-};
-pub use context::{ActionContext, Context, CredentialContextExt, TriggerContext};
+pub use capability::{ExecutionEmitter, TriggerHealth, TriggerHealthSnapshot, TriggerScheduler};
+pub use context::{ActionContext, CredentialContextExt, TriggerContext};
 pub use control::{ControlAction, ControlActionAdapter, ControlInput, ControlOutcome};
-pub use dependency::ActionDependencies;
 pub use error::{
     ActionError, ActionErrorExt, MAX_VALIDATION_DETAIL, RetryHintCode, ValidationReason,
 };
-pub use handler::{ActionHandler, AgentHandler};
+pub use handler::ActionHandler;
 pub use metadata::{ActionCategory, ActionMetadata, IsolationLevel, MetadataCompatibilityError};
 pub use nebula_action_macros::Action;
+pub use nebula_core::{
+    Context, DeclaresDependencies,
+    accessor::{EventEmitter, LogLevel, Logger, MetricsEmitter, ResourceAccessor},
+    context::{HasCredentials, HasEventBus, HasLogger, HasMetrics, HasResources},
+};
 pub use nebula_credential::CredentialGuard;
 pub use nebula_schema::{Field, Schema, ValidSchema, field_key};
 pub use output::{
@@ -133,8 +132,8 @@ pub use stateless::{
     StatelessHandler, stateless_ctx_fn, stateless_fn,
 };
 pub use testing::{
-    SpyEmitter, SpyLogger, SpyScheduler, StatefulTestHarness, TestContextBuilder,
-    TriggerTestHarness,
+    SpyEmitter, SpyLogger, SpyScheduler, StatefulTestHarness, TestActionContext,
+    TestContextBuilder, TestTriggerContext, TriggerTestHarness,
 };
 pub use trigger::{
     TriggerAction, TriggerActionAdapter, TriggerEvent, TriggerEventOutcome, TriggerHandler,

@@ -1,43 +1,47 @@
-//! Secret string type with automatic zeroization.
+//! Secret string type backed by the `secrecy` crate with automatic zeroization.
 
 use std::fmt;
 
+use secrecy::ExposeSecret;
 use serde::{Deserialize, Serialize};
-use zeroize::{Zeroize, ZeroizeOnDrop};
+use zeroize::Zeroize;
 
 /// Secret string with automatic memory zeroization.
 ///
-/// Secrets are never exposed directly -- they must be accessed within
-/// a closure scope using [`expose_secret`](SecretString::expose_secret).
+/// Thin wrapper around [`secrecy::SecretString`] that adds sentinel-aware
+/// serde (the default `Serialize` writes `"[REDACTED]"` and `Deserialize`
+/// rejects the sentinel) plus convenience helpers (`len`, `is_empty`).
+///
+/// Access the plaintext via [`expose_secret()`](SecretString::expose_secret),
+/// which returns `&str` directly.
 /// Memory is automatically zeroed when the value is dropped.
-#[derive(Clone, Zeroize, ZeroizeOnDrop)]
+#[derive(Clone)]
 pub struct SecretString {
-    inner: String,
+    inner: secrecy::SecretString,
 }
 
 impl SecretString {
     /// Creates a new secret from any string-like value.
     pub fn new<S: Into<String>>(s: S) -> Self {
-        Self { inner: s.into() }
+        Self {
+            inner: secrecy::SecretString::from(s.into()),
+        }
     }
 
-    /// Accesses secret value within a closure scope.
-    pub fn expose_secret<F, R>(&self, f: F) -> R
-    where
-        F: FnOnce(&str) -> R,
-    {
-        f(&self.inner)
+    /// Exposes the secret value. The caller is responsible for not leaking it.
+    pub fn expose_secret(&self) -> &str {
+        self.inner.expose_secret()
     }
 
-    /// Returns the length without exposing content.
+    /// Returns the length without exposing content beyond this call.
     pub fn len(&self) -> usize {
-        self.inner.len()
+        self.inner.expose_secret().len()
     }
 
-    /// Checks if empty without exposing content.
+    /// Checks if empty without exposing content beyond this call.
     #[must_use]
     pub fn is_empty(&self) -> bool {
-        self.inner.is_empty()
+        self.inner.expose_secret().is_empty()
     }
 }
 
@@ -50,6 +54,12 @@ impl fmt::Debug for SecretString {
 impl fmt::Display for SecretString {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str("[REDACTED]")
+    }
+}
+
+impl Zeroize for SecretString {
+    fn zeroize(&mut self) {
+        self.inner.zeroize();
     }
 }
 

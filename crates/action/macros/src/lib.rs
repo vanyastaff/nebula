@@ -1,6 +1,6 @@
 //! Proc-macro crate for the `Action` derive macro.
 //!
-//! Generates `ActionDependencies` and `Action` trait impls with `metadata()`.
+//! Generates `DeclaresDependencies` and `Action` trait impls with `metadata()`.
 
 #![forbid(unsafe_code)]
 #![warn(missing_docs)]
@@ -22,9 +22,9 @@ mod action_attrs;
 /// - `name = "..."` - Human-readable name (required)
 /// - `description = "..."` - Short description (required)
 /// - `version = "..."` - Interface version, e.g., "1.0" (default: "1.0")
-/// - `credential = Type` - Single credential type for `ActionDependencies` (optional)
+/// - `credential = Type` - Single credential type for `DeclaresDependencies` (optional)
 /// - `credentials = [Type1, Type2]` - Multiple credential types (optional)
-/// - `resource = Type` - Single resource type for `ActionDependencies` (optional)
+/// - `resource = Type` - Single resource type for `DeclaresDependencies` (optional)
 /// - `resources = [Type1, Type2]` - Multiple resource types (optional)
 /// - `parameters = Type` - Type with `parameters()` for `ActionMetadata` (optional)
 ///

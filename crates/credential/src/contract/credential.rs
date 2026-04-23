@@ -53,7 +53,9 @@ use crate::{
 /// | `REFRESHABLE` | `false` | Supports token refresh |
 /// | `REVOCABLE` | `false` | Supports explicit revocation |
 /// | `TESTABLE` | `false` | Supports live testing |
+/// | `DYNAMIC` | `false` | Produces ephemeral per-execution secrets |
 /// | `REFRESH_POLICY` | 5 min early / 5 s backoff / 30 s jitter | Refresh timing |
+/// | `LEASE_TTL` | `None` | Lease duration for dynamic credentials |
 ///
 /// # Methods
 ///
@@ -140,6 +142,23 @@ pub trait Credential: Send + Sync + 'static {
     /// and jitter.
     const REFRESH_POLICY: RefreshPolicy = RefreshPolicy::DEFAULT;
 
+    /// Whether this credential produces ephemeral, per-execution secrets.
+    ///
+    /// Dynamic credentials are never cached — a fresh secret is generated
+    /// on every resolve. The framework calls [`release()`](Credential::release)
+    /// when the execution ends or the lease expires.
+    ///
+    /// Example: Vault database dynamic credentials that issue unique
+    /// username/password per execution with a TTL.
+    const DYNAMIC: bool = false;
+
+    /// Lease duration for dynamic credentials.
+    ///
+    /// Only meaningful when `DYNAMIC = true`. The framework tracks the lease
+    /// and calls `release()` when it expires. `None` means the credential
+    /// has no automatic expiry — release happens only at execution end.
+    const LEASE_TTL: Option<std::time::Duration> = None;
+
     /// Integration-catalog metadata: key, name, icon, documentation URL, parameters.
     fn metadata() -> CredentialMetadata
     where
@@ -157,20 +176,6 @@ pub trait Credential: Send + Sync + 'static {
         <Self::Input as nebula_schema::HasSchema>::schema()
     }
 
-    /// Alias for backward compatibility.
-    ///
-    /// # Deprecated
-    ///
-    /// Use [`schema()`](Credential::schema) instead.
-    #[deprecated(since = "0.1.0", note = "use `schema()` instead")]
-    fn parameters() -> ValidSchema
-    where
-        Self: Sized,
-    {
-        Self::schema()
-    }
-
-    /// Extract consumer-facing auth material from stored state.
     fn project(state: &Self::State) -> Self::Scheme
     where
         Self: Sized;
@@ -248,6 +253,27 @@ pub trait Credential: Send + Sync + 'static {
     /// Default: no-op (succeeds silently).
     fn revoke(
         _state: &mut Self::State,
+        _ctx: &CredentialContext,
+    ) -> impl Future<Output = Result<(), CredentialError>> + Send
+    where
+        Self: Sized,
+    {
+        async { Ok(()) }
+    }
+
+    /// Release a dynamic credential lease.
+    ///
+    /// Called by the framework when:
+    /// - The execution completes (success or failure)
+    /// - The lease TTL expires
+    ///
+    /// Implementations should revoke the ephemeral credential from the
+    /// backing system (e.g., revoke a Vault lease).
+    ///
+    /// Default: no-op (non-dynamic credentials don't need release).
+    fn release(
+        &self,
+        _state: &Self::State,
         _ctx: &CredentialContext,
     ) -> impl Future<Output = Result<(), CredentialError>> + Send
     where

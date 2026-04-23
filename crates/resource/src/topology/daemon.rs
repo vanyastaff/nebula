@@ -4,7 +4,7 @@ use std::{future::Future, time::Duration};
 
 use tokio_util::sync::CancellationToken;
 
-use crate::{ctx::Ctx, resource::Resource};
+use crate::{context::ResourceContext, resource::Resource};
 
 /// Policy for restarting a daemon after it exits.
 #[non_exhaustive]
@@ -36,7 +36,7 @@ pub trait Daemon: Resource {
     fn run(
         &self,
         runtime: &Self::Runtime,
-        ctx: &dyn Ctx,
+        ctx: &ResourceContext,
         cancel: CancellationToken,
     ) -> impl Future<Output = Result<(), Self::Error>> + Send;
 }

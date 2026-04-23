@@ -7,11 +7,13 @@
 //! not implement platform/operator authentication (**Plane A**).
 
 pub mod executor;
+pub mod refresh;
 pub mod registry;
 pub mod resolver;
 #[cfg(feature = "rotation")]
 pub mod rotation;
 
 pub use executor::{ExecutorError, ResolveResponse, execute_continue, execute_resolve};
+pub use refresh::{RefreshAttempt, RefreshCoordinator};
 pub use registry::{CredentialRegistry, RegistryError};
 pub use resolver::{CredentialResolver, ResolveError};

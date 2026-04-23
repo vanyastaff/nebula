@@ -64,11 +64,13 @@ replace them.
 - **`mem::take` / `mem::replace`** — extract owned values from `&mut self` without cloning. Pairs with `Default`.
 - **Newtype wrappers** — `pub struct CredentialKey(String)`, `pub struct ActionKey(String)` — strong types for identifiers, not `String` aliases.
 - **Builder pattern** — for any type with more than three fields, especially when some are optional. Consumes `self` (not `&mut self`) to enable method chaining and prevent re-use after `build()`.
-- **RAII guards** — release-on-drop for resource lifecycle. Companion to explicit `.release()` when an async release path exists; the guard handles the crash path.
+- **RAII guards** — release-on-drop for resource lifecycle. Companion to explicit `.release()` when an async release path exists; the guard handles the crash path. `CredentialGuard` implements both `Guard` and `TypedGuard` from `nebula-core::guard` — see that module for canonical trait definitions.
 - **Typestate** — phantom types on state transitions where the engine can enforce them at compile time. Example: `Execution<Running>` → `Execution<Terminal>` via a transition method.
 - **`#[must_use]`** — on every `Result`, every builder, every function returning a cleanup or cancellation token.
 - **`Cow<'_, T>`** — prefer over premature cloning for read-mostly borrows with occasional mutation.
 - **Sealed traits** for extension points — define via private supertrait when Nebula owns all implementations; opens later if we decide to allow downstream impls.
+- **BaseContext embedding** — domain contexts (e.g. `CredentialContext`) embed `Arc<BaseContext>` from `nebula-core` to reuse capability accessors and lifecycle signals. Prefer embedding over re-implementing trait bounds.
+- **Prelude module convention** — follow the tokio/serde pattern: export commonly-used types under a `prelude` module. Consumers import via `use nebula_crate::prelude::*`.
 - **Async traits — match the seam.** For traits consumed only through generics (no `dyn`), author native AFIT: `fn foo(&self, …) -> impl Future<Output = …> + Send`. For traits stored or passed as `Arc<dyn Foo>` / `Box<dyn Foo>`, use `#[async_trait]` — native AFIT is not `dyn`-compatible on stable Rust today. Do not mix both forms on the same trait. Re-evaluate when `async_fn_in_dyn_trait` stabilizes (see [rust-lang/rust#133119](https://github.com/rust-lang/rust/issues/133119)). See [ADR-0024](adr/0024-defer-dynosaur-migration.md) (supersedes [ADR-0014](adr/0014-dynosaur-macro.md)).
 
 ## 2. Antipatterns we reject
@@ -92,10 +94,14 @@ replace them.
 | `*Id` | Runtime identifier, not stable across restarts | `ExecutionId` (durable), `SessionId` |
 | `*Error` / `*ErrorKind` | Typed errors from `thiserror` | `ExecutionError`, `CredentialErrorKind` |
 | `*Repo` | Storage port — trait abstracting persistence | `ExecutionRepo`, `CredentialRepo` |
-| `*Handle` | Borrowed reference to a managed resource | `ResourceHandle<T>` |
-| `*Guard` | RAII type enforcing cleanup on drop | `LeaseGuard`, `ScopeGuard` |
+| `*Handle` | Borrowed reference to a managed resource | `ResourceGuard<R>` |
+| `*Guard` | RAII type enforcing cleanup on drop | `LeaseGuard`, `ScopeGuard`, `CredentialGuard` |
 | `*Token` | Capability / continuation / dedup token | `CancellationToken`, `IdempotencyToken` |
 | `*Policy` | Configuration type for a behavioral decision | `CheckpointPolicy`, `DrainTimeoutPolicy` |
+| `*Provider` | External system delegation abstraction | `ExternalProvider` |
+| `*Metrics` | Metric name / label constants | `CredentialMetrics` |
+
+> **Note:** `CredentialGuard` implements both `Guard` and `TypedGuard` from `nebula-core::guard`.
 
 ## 4. Error taxonomy
 

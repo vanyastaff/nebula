@@ -113,8 +113,8 @@ mod tests {
     fn project_returns_clone_of_state() {
         let token = SecretToken::new(SecretString::new("test-token"));
         let projected = ApiKeyCredential::project(&token);
-        let original = token.token().expose_secret(ToOwned::to_owned);
-        let cloned = projected.token().expose_secret(ToOwned::to_owned);
+        let original = token.token().expose_secret().to_owned();
+        let cloned = projected.token().expose_secret().to_owned();
         assert_eq!(original, cloned);
     }
 
@@ -122,11 +122,11 @@ mod tests {
     async fn resolve_extracts_api_key_field() {
         let mut values = FieldValues::new();
         values.set_raw("api_key", serde_json::Value::String("sk-secret-123".into()));
-        let ctx = CredentialContext::new("test-user");
+        let ctx = CredentialContext::for_test("test-user");
         let result = ApiKeyCredential::resolve(&values, &ctx).await.unwrap();
         match result {
             StaticResolveResult::Complete(token) => {
-                let exposed = token.token().expose_secret(ToOwned::to_owned);
+                let exposed = token.token().expose_secret().to_owned();
                 assert_eq!(exposed, "sk-secret-123");
             },
             _ => panic!("expected Complete variant"),
@@ -136,7 +136,7 @@ mod tests {
     #[tokio::test]
     async fn resolve_returns_error_on_missing_field() {
         let values = FieldValues::new();
-        let ctx = CredentialContext::new("test-user");
+        let ctx = CredentialContext::for_test("test-user");
         let result = ApiKeyCredential::resolve(&values, &ctx).await;
         assert!(result.is_err());
     }

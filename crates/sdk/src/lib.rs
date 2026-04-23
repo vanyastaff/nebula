@@ -201,7 +201,7 @@ macro_rules! workflow {
 /// Macro for defining a simple stateless action with a unit struct.
 ///
 /// Generates a unit `struct $name`, derives [`Action`](nebula_action::Action)
-/// (which also wires [`ActionDependencies`](nebula_action::ActionDependencies)),
+/// (which also wires [`DeclaresDependencies`](nebula_action::DeclaresDependencies)),
 /// and implements [`StatelessAction`](nebula_action::StatelessAction) over the
 /// supplied `input` / `output` types.
 ///
@@ -257,7 +257,7 @@ macro_rules! simple_action {
             }
         }
 
-        impl $crate::nebula_action::ActionDependencies for $name {}
+        impl $crate::nebula_action::DeclaresDependencies for $name {}
 
         impl $crate::nebula_action::StatelessAction for $name {
             type Input = $input;
@@ -266,7 +266,7 @@ macro_rules! simple_action {
             async fn execute(
                 &$self,
                 $input_param: Self::Input,
-                $ctx_param: &impl $crate::nebula_action::Context,
+                $ctx_param: &$crate::nebula_action::ActionContext,
             ) -> ::std::result::Result<
                 $crate::nebula_action::ActionResult<Self::Output>,
                 $crate::nebula_action::ActionError,

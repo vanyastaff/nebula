@@ -16,6 +16,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- **nebula-credential**: `HasCredentialsExt` extension trait with typed `credential::<C>()` and `try_credential::<C>()` methods for ergonomic credential access.
+- **nebula-credential**: `RedactedSecret<S>` wrapper for serde-safe redaction of secret values.
+- **nebula-core**: `CredentialNotConfigured`, `CredentialNotFound`, `CredentialAccessDenied` error variants on `CoreError`.
 - **nebula-schema** (PR-3 C1, Phase 4): `ValidSchema::json_schema()` export behind
   `schemars` feature (Draft 2020-12). Maps core field/value rules
   (`minLength`/`maxLength`, `pattern`, `format`, `minimum`/`maximum`,
@@ -61,6 +64,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- **BREAKING — nebula-engine**: `RefreshCoordinator`, `RefreshAttempt`, and `RefreshConfigError` moved from `nebula-credential` to `nebula-engine::credential::refresh` (breaking import change).
+- **BREAKING — nebula-credential**: `CredentialAccessor` trait unified with `nebula-core::CredentialAccessor`; local trait removed.
+- **BREAKING — nebula-credential**: `CredentialContext` redesigned to embed `Arc<BaseContext>` from `nebula-core`; `CredentialResolverRef` removed.
+- **BREAKING — nebula-credential**: `SecretString` replaced with `secrecy` crate wrapper; `expose_secret()` now returns `&str` directly.
+- **nebula-credential**: `#[derive(Credential)]` now generates `DeclaresDependencies` impl; `#[uses_resource(...)]` attribute supported, `#[uses_credential(...)]` emits compile error.
+- **nebula-credential** (architecture cleanup): Redistributed credential responsibilities across canonical home crates per [ADR-0028](docs/adr/0028-cross-crate-credential-invariants.md). Rotation orchestration (blue-green, grace period, transaction state machine) moved to `nebula-engine::credential::rotation`; OAuth HTTP flow and token exchange moved to `nebula-api::credential` and `nebula-engine::credential::rotation`; store implementations gated behind `test-util` feature (canonical impls in `nebula-storage`). Flattened `credentials/oauth2/` subdirectory into flat module layout. Added `nebula-eventbus` dependency with `CredentialEventBus` type alias. Target dependency set: `nebula-core`, `nebula-metadata`, `nebula-schema`, `nebula-resilience`, `nebula-eventbus`, `nebula-error`.
 - **BREAKING — nebula-schema**: `ResolvedValues::get` no longer returns JSON for
   `Field::Secret` (always `None`); use `ResolvedValues::get_secret` for secret
   material after `resolve`. Default JSON for `FieldValue` encodes
@@ -114,6 +123,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Removed
 
+- **nebula-credential**: Local `CredentialAccessor` trait (use `nebula_core::CredentialAccessor`).
+- **nebula-credential**: `CredentialResolverRef` (use `CredentialContext` with `HasCredentials`).
+- **nebula-credential**: `refresh` module removed — types (`RefreshCoordinator`, `RefreshAttempt`, `RefreshConfigError`) now live in `nebula-engine::credential::refresh`.
+- **nebula-credential**: Removed duplicate `retry.rs` (use `nebula_resilience` directly). Removed `reqwest`, `futures`, `wiremock` dependencies and the `oauth2-http` feature gate — HTTP transport now lives in `nebula-api` and `nebula-engine`.
 - **BREAKING — nebula-parameter** and **nebula-parameter-macros** crates
   deleted from the workspace. Migration complete as of Tasks 28–31.
 

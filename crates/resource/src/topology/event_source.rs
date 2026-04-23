@@ -2,7 +2,7 @@
 
 use std::future::Future;
 
-use crate::{ctx::Ctx, resource::Resource};
+use crate::{context::ResourceContext, resource::Resource};
 
 /// EventSource topology (secondary) — pull-based event subscription.
 ///
@@ -22,7 +22,7 @@ pub trait EventSource: Resource {
     fn subscribe(
         &self,
         runtime: &Self::Runtime,
-        ctx: &dyn Ctx,
+        ctx: &ResourceContext,
     ) -> impl Future<Output = Result<Self::Subscription, Self::Error>> + Send;
 
     /// Receives the next event from a subscription.

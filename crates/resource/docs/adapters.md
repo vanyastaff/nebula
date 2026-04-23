@@ -176,7 +176,7 @@ no-op defaults.
 // src/resource.rs
 use nebula_core::ResourceKey;
 use nebula_resource::{resource_key, Resource, ResourceConfig, ResourceMetadata};
-use nebula_resource::ctx::Ctx;
+use nebula_resource::context::ResourceContext;
 
 use crate::config::PostgresConfig;
 use crate::error::PostgresError;
@@ -215,7 +215,7 @@ impl Resource for PostgresResource {
         &self,
         config: &PostgresConfig,
         _auth: &(),
-        _ctx: &dyn Ctx,
+        _ctx: &ResourceContext,
     ) -> Result<PgConnection, PostgresError> {
         // Replace with: tokio_postgres::connect(&dsn, NoTls).await
         let _ = config;
@@ -339,11 +339,10 @@ manager.register_pooled(
 To acquire a connection in an action or test:
 
 ```rust,ignore
-use nebula_resource::{AcquireOptions, Manager};
-use nebula_resource::ctx::BasicCtx;
+use nebula_resource::{AcquireOptions, Manager, ResourceContext};
 use nebula_core::ExecutionId;
 
-let ctx = BasicCtx::new(ExecutionId::new());
+let ctx = ResourceContext::new(ExecutionId::new());
 let handle = manager
     .acquire_pooled::<PostgresResource>(&(), &ctx, &AcquireOptions::default())
     .await?;
@@ -366,8 +365,7 @@ exercise the lifecycle without network I/O.
 // tests/integration.rs
 use std::sync::Arc;
 use nebula_core::ExecutionId;
-use nebula_resource::{AcquireOptions, Manager, PoolConfig};
-use nebula_resource::ctx::BasicCtx;
+use nebula_resource::{AcquireOptions, Manager, PoolConfig, ResourceContext};
 use nebula_resource_postgres::{PostgresConfig, PostgresResource};
 
 #[tokio::test]
@@ -381,7 +379,7 @@ async fn register_and_acquire() {
         )
         .expect("valid config must register without error");
 
-    let ctx = BasicCtx::new(ExecutionId::new());
+    let ctx = ResourceContext::new(ExecutionId::new());
     let handle = manager
         .acquire_pooled::<PostgresResource>(&(), &ctx, &AcquireOptions::default())
         .await

@@ -42,7 +42,6 @@ Pattern inspiration: *Ports & Adapters / Hexagonal Architecture* — action auth
 
 - `ActionHandler` — top-level enum dispatcher over all handler variants.
 - `StatelessHandler`, `StatefulHandler`, `TriggerHandler`, `ResourceHandler` — dyn-safe handler contracts.
-- `AgentHandler` — autonomous agent with internal reasoning loop.
 
 **Metadata and policy**
 
@@ -62,7 +61,7 @@ Pattern inspiration: *Ports & Adapters / Hexagonal Architecture* — action auth
 - `Context`, `ActionContext`, `TriggerContext` — execution context traits.
 - `ResourceAccessor`, `ActionLogger`, `ExecutionEmitter`, `TriggerHealth`, `TriggerScheduler` — injected capabilities.
 - `CredentialContextExt` — credential resolution from context.
-- `ActionDependencies` — declarative dependency declaration per action type.
+- `DeclaresDependencies` — declarative dependency declaration per action type.
 
 **Ports**
 

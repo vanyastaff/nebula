@@ -44,7 +44,7 @@ use nebula_resource::{
     TopologyRuntime, resource_key,
     topology::pooled::{BrokenCheck, InstanceMetrics, Pooled, RecycleDecision},
     runtime::pool::PoolRuntime,
-    ctx::{BasicCtx, Ctx},
+    context::ResourceContext,
 };
 use nebula_core::{ExecutionId, ResourceKey};
 
@@ -157,7 +157,7 @@ impl Resource for PostgresResource {
         &self,
         config: &PgConfig,
         credential: &PgCredential,
-        _ctx: &dyn Ctx,
+        _ctx: &ResourceContext,
     ) -> Result<PgConn, PgError> {
         // Real impl: PgConnectOptions::new().host(&config.host)...
         // FRICTION: credential.password is a plain String here, meaning
@@ -212,7 +212,7 @@ impl Pooled for PostgresResource {
         Ok(RecycleDecision::Keep)
     }
 
-    async fn prepare(&self, _runtime: &PgConn, ctx: &dyn Ctx) -> Result<(), PgError> {
+    async fn prepare(&self, _runtime: &PgConn, ctx: &ResourceContext) -> Result<(), PgError> {
         // Real impl: SET search_path = public, SET timezone = 'UTC'
         let _ = ctx;
         Ok(())
@@ -251,7 +251,7 @@ fn register_postgres(manager: &Manager, config: PgConfig, cred: PgCredential) ->
     // We store the credential IN THE RESOURCE struct as a workaround:
     let _ = cred; // credential would be embedded in a real Arc<Mutex<PgCredential>>
 
-    use nebula_resource::ctx::ScopeLevel;
+    use nebula_resource::ScopeLevel;
 
     let fingerprint = config.fingerprint();
     let pool_config = PoolConfig {
@@ -421,7 +421,7 @@ impl Resource for OpenAiResource {
         &self,
         config: &OpenAiConfig,
         credential: &OpenAiCredential,
-        _ctx: &dyn Ctx,
+        _ctx: &ResourceContext,
     ) -> Result<OpenAiRuntime, OpenAiError> {
         // FRICTION: once created, the runtime holds the api_key string.
         // If the credential rotates (API key revoked, new key issued),
@@ -451,7 +451,7 @@ impl Service for OpenAiResource {
     async fn acquire_token(
         &self,
         runtime: &OpenAiRuntime,
-        ctx: &dyn Ctx,
+        ctx: &ResourceContext,
     ) -> Result<OpenAiToken, OpenAiError> {
         // Rate limiting: try to acquire a semaphore permit.
         // FRICTION: tokio::sync::Semaphore::try_acquire() returns a permit
@@ -605,7 +605,7 @@ impl Resource for RedisResource {
         &self,
         config: &RedisConfig,
         credential: &RedisCredential,
-        _ctx: &dyn Ctx,
+        _ctx: &ResourceContext,
     ) -> Result<RedisRuntime, RedisError> {
         let _ = (config, credential);
         // Real: ClusterClientBuilder::new(config.nodes.clone())
@@ -782,7 +782,7 @@ impl Resource for S3Resource {
         &self,
         config: &S3Config,
         credential: &AwsCredential,
-        _ctx: &dyn Ctx,
+        _ctx: &ResourceContext,
     ) -> Result<S3Runtime, S3Error> {
         // Real: build aws_config with explicit credentials, create S3Client
         let _ = credential;
@@ -805,7 +805,7 @@ impl Transport for S3Resource {
     async fn open_session(
         &self,
         transport: &S3Runtime,
-        _ctx: &dyn Ctx,
+        _ctx: &ResourceContext,
     ) -> Result<S3Session, S3Error> {
         Ok(S3Session {
             request_id: uuid::Uuid::new_v4().to_string(),
@@ -964,7 +964,7 @@ impl Resource for SmtpResource {
         &self,
         config: &SmtpConfig,
         credential: &SmtpCredential,
-        _ctx: &dyn Ctx,
+        _ctx: &ResourceContext,
     ) -> Result<SmtpConn, SmtpError> {
         // Real: SmtpTransport::starttls_relay(&config.host)?
         //         .credentials(lettre::transport::smtp::authentication::Credentials::new(...))

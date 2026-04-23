@@ -10,10 +10,10 @@
 use std::{collections::HashMap, sync::Arc};
 
 use nebula_action::{
-    ActionError, action::Action, context::Context, dependency::ActionDependencies,
-    metadata::ActionMetadata, result::ActionResult, stateless::StatelessAction,
+    ActionError, action::Action, metadata::ActionMetadata, result::ActionResult,
+    stateless::StatelessAction,
 };
-use nebula_core::{ActionKey, action_key, id::WorkflowId, node_key};
+use nebula_core::{ActionKey, DeclaresDependencies, action_key, id::WorkflowId, node_key};
 use nebula_engine::WorkflowEngine;
 use nebula_execution::context::ExecutionBudget;
 use nebula_resource::Manager;
@@ -33,7 +33,7 @@ struct ResourceConsumerHandler {
     meta: ActionMetadata,
 }
 
-impl ActionDependencies for ResourceConsumerHandler {}
+impl DeclaresDependencies for ResourceConsumerHandler {}
 impl Action for ResourceConsumerHandler {
     fn metadata(&self) -> &ActionMetadata {
         &self.meta
@@ -47,7 +47,7 @@ impl StatelessAction for ResourceConsumerHandler {
     async fn execute(
         &self,
         _input: Self::Input,
-        _ctx: &impl Context,
+        _ctx: &nebula_action::ActionContext,
     ) -> Result<ActionResult<Self::Output>, ActionError> {
         // TODO: Resource acquisition via context is not yet wired up.
         // For now, return a placeholder to keep the test compiling.

@@ -7,7 +7,7 @@ use nebula_storage::credential::InMemoryPendingStore;
 #[tokio::test]
 async fn execute_resolve_static_credential_returns_complete() {
     let store = InMemoryPendingStore::new();
-    let ctx = CredentialContext::new("user-1");
+    let ctx = CredentialContext::for_test("user-1");
 
     let mut values = FieldValues::new();
     values.set_raw("api_key", serde_json::Value::String("sk-test-key".into()));
@@ -28,7 +28,7 @@ async fn execute_resolve_static_credential_returns_complete() {
 #[tokio::test]
 async fn execute_continue_returns_pending_store_error_for_missing_token() {
     let store = InMemoryPendingStore::new();
-    let ctx = CredentialContext::new("user-1").with_session_id("sess-1");
+    let ctx = CredentialContext::for_test("user-1").with_session_id("sess-1");
     let bogus_token = nebula_credential::PendingToken::generate();
     let input = nebula_credential::resolve::UserInput::Poll;
 

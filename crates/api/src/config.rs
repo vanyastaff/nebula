@@ -170,6 +170,106 @@ pub enum ApiConfigError {
     },
 }
 
+// ── Config sub-structs ─────────────────────────────────────────────────────
+
+/// TLS configuration for the API server.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct TlsConfig {
+    /// Whether TLS termination is enabled.
+    pub enabled: bool,
+    /// Path to the TLS certificate file.
+    pub cert_path: Option<String>,
+    /// Path to the TLS private key file.
+    pub key_path: Option<String>,
+    /// Whether ACME (Let's Encrypt) certificate provisioning is enabled.
+    pub acme_enabled: bool,
+    /// ACME directory URL (e.g. Let's Encrypt production/staging).
+    pub acme_directory: Option<String>,
+    /// Contact email for ACME certificate notifications.
+    pub acme_email: Option<String>,
+}
+
+/// Cookie configuration for session handling.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CookieConfig {
+    /// Domain scope for session cookies.
+    pub domain: String,
+    /// Whether to set the `Secure` flag (HTTPS-only).
+    pub secure: bool,
+    /// `SameSite` attribute: `"lax"`, `"strict"`, or `"none"`.
+    pub same_site: String,
+    /// Maximum session age in seconds (default: 604 800 = 7 days).
+    pub session_max_age_secs: u64,
+}
+
+impl Default for CookieConfig {
+    fn default() -> Self {
+        Self {
+            domain: ".localhost".to_string(),
+            secure: false,
+            same_site: "lax".to_string(),
+            session_max_age_secs: 604_800,
+        }
+    }
+}
+
+/// CORS configuration.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CorsConfig {
+    /// Allowed origins (e.g. `["https://app.nebula.dev"]`; `["*"]` for dev).
+    pub allowed_origins: Vec<String>,
+    /// Whether to allow credentials (cookies, auth headers).
+    pub allow_credentials: bool,
+    /// `Access-Control-Max-Age` in seconds.
+    pub max_age_secs: u64,
+}
+
+impl Default for CorsConfig {
+    fn default() -> Self {
+        Self {
+            allowed_origins: vec!["*".to_string()],
+            allow_credentials: false,
+            max_age_secs: 3600,
+        }
+    }
+}
+
+/// API versioning configuration.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct VersioningConfig {
+    /// Currently supported API versions (e.g. `["v1"]`).
+    pub supported_versions: Vec<String>,
+    /// Deprecated but still served versions.
+    pub deprecated_versions: Vec<String>,
+}
+
+impl Default for VersioningConfig {
+    fn default() -> Self {
+        Self {
+            supported_versions: vec!["v1".to_string()],
+            deprecated_versions: Vec::new(),
+        }
+    }
+}
+
+/// Pagination configuration.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PaginationConfig {
+    /// Default page size when the caller omits `limit`.
+    pub default_limit: u32,
+    /// Hard upper bound on `limit`.
+    pub max_limit: u32,
+}
+
+impl Default for PaginationConfig {
+    fn default() -> Self {
+        Self {
+            default_limit: 50,
+            max_limit: 500,
+        }
+    }
+}
+
 /// Default maximum accepted request-body size for REST handlers
 /// (1 MiB). Used as the startup default for
 /// [`ApiConfig::max_body_size`], which operators can override via
@@ -231,6 +331,33 @@ pub struct ApiConfig {
     /// time to prevent timing attacks. An empty list disables API key auth.
     #[serde(default)]
     pub api_keys: Vec<String>,
+
+    /// Externally-reachable base URL of this API server.
+    pub public_url: String,
+
+    /// Per-request timeout in seconds (used by middleware layers).
+    pub request_timeout_secs: u64,
+
+    /// Header name used for request-id propagation.
+    pub request_id_header: String,
+
+    /// TLS termination settings.
+    pub tls: TlsConfig,
+
+    /// Session-cookie settings.
+    pub cookies: CookieConfig,
+
+    /// Structured CORS configuration.
+    ///
+    /// Supersedes the flat `cors_allowed_origins` list; both remain so
+    /// existing `from_env` callers keep working.
+    pub cors_config: CorsConfig,
+
+    /// API versioning metadata.
+    pub versioning: VersioningConfig,
+
+    /// Pagination defaults and caps.
+    pub pagination: PaginationConfig,
 }
 
 impl std::fmt::Debug for ApiConfig {
@@ -245,6 +372,14 @@ impl std::fmt::Debug for ApiConfig {
             .field("jwt_secret", &self.jwt_secret)
             .field("rate_limit_per_second", &self.rate_limit_per_second)
             .field("api_keys", &"[REDACTED]")
+            .field("public_url", &self.public_url)
+            .field("request_timeout_secs", &self.request_timeout_secs)
+            .field("request_id_header", &self.request_id_header)
+            .field("tls", &self.tls)
+            .field("cookies", &self.cookies)
+            .field("cors_config", &self.cors_config)
+            .field("versioning", &self.versioning)
+            .field("pagination", &self.pagination)
             .finish()
     }
 }
@@ -318,7 +453,7 @@ impl ApiConfig {
             .transpose()?
             .unwrap_or(REST_BODY_LIMIT_BYTES);
 
-        let cors_allowed_origins = std::env::var("API_CORS_ORIGINS")
+        let cors_allowed_origins: Vec<String> = std::env::var("API_CORS_ORIGINS")
             .unwrap_or_else(|_| "*".to_string())
             .split(',')
             .map(|s| s.trim().to_string())
@@ -357,16 +492,35 @@ impl ApiConfig {
             .map(str::to_string)
             .collect();
 
+        let public_url =
+            std::env::var("API_PUBLIC_URL").unwrap_or_else(|_| format!("http://{bind_address}"));
+
+        let request_timeout_secs = request_timeout.as_secs();
+
+        let request_id_header =
+            std::env::var("API_REQUEST_ID_HEADER").unwrap_or_else(|_| "x-request-id".to_string());
+
         Ok(Self {
             bind_address,
             request_timeout,
             max_body_size,
-            cors_allowed_origins,
+            cors_allowed_origins: cors_allowed_origins.clone(),
             enable_compression,
             enable_tracing,
             jwt_secret,
             rate_limit_per_second,
             api_keys,
+            public_url,
+            request_timeout_secs,
+            request_id_header,
+            tls: TlsConfig::default(),
+            cookies: CookieConfig::default(),
+            cors_config: CorsConfig {
+                allowed_origins: cors_allowed_origins,
+                ..CorsConfig::default()
+            },
+            versioning: VersioningConfig::default(),
+            pagination: PaginationConfig::default(),
         })
     }
 
@@ -391,6 +545,14 @@ impl ApiConfig {
             ),
             rate_limit_per_second: 100,
             api_keys: Vec::new(),
+            public_url: "http://127.0.0.1:0".to_string(),
+            request_timeout_secs: 30,
+            request_id_header: "x-request-id".to_string(),
+            tls: TlsConfig::default(),
+            cookies: CookieConfig::default(),
+            cors_config: CorsConfig::default(),
+            versioning: VersioningConfig::default(),
+            pagination: PaginationConfig::default(),
         }
     }
 }

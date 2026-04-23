@@ -20,11 +20,11 @@
 //! No allowlist is enforced — unlike credentials, resources are identified
 //! by their registered key and any registered key may be acquired.
 
-use std::{any::Any, fmt, sync::Arc};
+use std::{any::Any, fmt, future::Future, pin::Pin, sync::Arc};
 
-use async_trait::async_trait;
-use nebula_action::{capability::ResourceAccessor, error::ActionError};
-use nebula_core::ResourceKey;
+use nebula_core::{CoreError, ResourceKey, accessor::ResourceAccessor};
+
+type BoxFut<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
 
 /// Engine-side implementation of [`ResourceAccessor`].
 ///
@@ -61,46 +61,39 @@ impl fmt::Debug for EngineResourceAccessor {
     }
 }
 
-#[async_trait]
 impl ResourceAccessor for EngineResourceAccessor {
-    /// Acquire the managed resource registered under `key`.
-    ///
-    /// Returns the type-erased `Arc<dyn AnyManagedResource>` boxed as
-    /// `Box<dyn Any + Send + Sync>`. Action code can downcast to
-    /// `Arc<nebula_resource::ManagedResource<R>>` for typed access.
-    ///
-    /// # Errors
-    ///
-    /// - [`ActionError::Fatal`] if `key` is not a valid [`ResourceKey`] format.
-    /// - [`ActionError::Fatal`] if no resource with the given key is registered in the global
-    ///   scope.
-    ///
-    /// # Cancel safety
-    ///
-    /// This method is cancel-safe — it performs no async I/O.
-    async fn acquire(&self, key: &str) -> Result<Box<dyn Any + Send + Sync>, ActionError> {
-        let resource_key = ResourceKey::new(key)
-            .map_err(|e| ActionError::fatal(format!("invalid resource key {key:?}: {e}")))?;
-
-        let any_managed = self
-            .manager
-            .get_any(&resource_key, &nebula_resource::ScopeLevel::Global)
-            .ok_or_else(|| ActionError::fatal(format!("resource not found: {key}")))?;
-
-        Ok(Box::new(any_managed.as_any_arc()))
+    fn has(&self, key: &ResourceKey) -> bool {
+        self.manager
+            .get_any(key, &nebula_resource::ScopeLevel::Global)
+            .is_some()
     }
 
-    /// Check whether a resource with the given key is registered in the global scope.
-    ///
-    /// Delegates to [`acquire`](Self::acquire) for consistency — a resource exists if
-    /// and only if it can be acquired from the global scope. Returns `false` for invalid
-    /// key formats or unregistered resources.
-    ///
-    /// # Cancel safety
-    ///
-    /// This method is cancel-safe — it performs no async I/O.
-    async fn exists(&self, key: &str) -> bool {
-        self.acquire(key).await.is_ok()
+    fn acquire_any(
+        &self,
+        key: &ResourceKey,
+    ) -> BoxFut<'_, Result<Box<dyn Any + Send + Sync>, CoreError>> {
+        let any_managed = self
+            .manager
+            .get_any(key, &nebula_resource::ScopeLevel::Global);
+        let key_str = key.as_str().to_owned();
+        Box::pin(async move {
+            match any_managed {
+                Some(m) => Ok(Box::new(m.as_any_arc()) as Box<dyn Any + Send + Sync>),
+                None => Err(CoreError::CredentialNotFound { key: key_str }),
+            }
+        })
+    }
+
+    fn try_acquire_any(
+        &self,
+        key: &ResourceKey,
+    ) -> BoxFut<'_, Result<Option<Box<dyn Any + Send + Sync>>, CoreError>> {
+        let any_managed = self
+            .manager
+            .get_any(key, &nebula_resource::ScopeLevel::Global);
+        Box::pin(async move {
+            Ok(any_managed.map(|m| Box::new(m.as_any_arc()) as Box<dyn Any + Send + Sync>))
+        })
     }
 }
 
@@ -116,41 +109,35 @@ mod tests {
         EngineResourceAccessor::new(Arc::new(Manager::new()))
     }
 
-    #[tokio::test]
-    async fn exists_returns_false_for_unregistered_key() {
-        let accessor = make_accessor();
-        assert!(!accessor.exists("postgres").await);
+    fn rk(key: &str) -> ResourceKey {
+        ResourceKey::new(key).expect("valid resource key in test")
     }
 
     #[tokio::test]
-    async fn exists_returns_false_for_invalid_key_format() {
+    async fn has_returns_false_for_unregistered_key() {
         let accessor = make_accessor();
-        // Keys with spaces or invalid characters are rejected.
-        assert!(!accessor.exists("invalid key!").await);
+        assert!(!accessor.has(&rk("postgres")));
     }
 
     #[tokio::test]
-    async fn acquire_returns_fatal_for_unregistered_key() {
+    async fn acquire_any_returns_err_for_unregistered_key() {
         let accessor = make_accessor();
-        let result = accessor.acquire("postgres").await;
+        let result = accessor.acquire_any(&rk("postgres")).await;
         assert!(
-            matches!(result, Err(ActionError::Fatal { .. })),
-            "expected Fatal for unregistered key, got {result:?}"
+            matches!(result, Err(CoreError::CredentialNotFound { .. })),
+            "expected CredentialNotFound, got {result:?}"
         );
     }
 
     #[tokio::test]
-    async fn acquire_returns_fatal_for_invalid_key_format() {
+    async fn try_acquire_any_returns_none_for_unregistered_key() {
         let accessor = make_accessor();
-        let result = accessor.acquire("invalid key!").await;
-        assert!(
-            matches!(result, Err(ActionError::Fatal { .. })),
-            "expected Fatal for invalid key format, got {result:?}"
-        );
+        let result = accessor.try_acquire_any(&rk("postgres")).await;
+        assert!(matches!(result, Ok(None)));
     }
 
-    #[tokio::test]
-    async fn debug_redacts_manager() {
+    #[test]
+    fn debug_redacts_manager() {
         let accessor = make_accessor();
         let debug = format!("{accessor:?}");
         assert!(debug.contains("<Manager>"));

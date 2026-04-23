@@ -10,7 +10,7 @@ use super::SecretString;
 
 /// Serialize the actual secret value (for encrypted-at-rest storage only).
 pub fn serialize<S: Serializer>(secret: &SecretString, s: S) -> Result<S::Ok, S::Error> {
-    secret.expose_secret(|v| s.serialize_str(v))
+    s.serialize_str(secret.expose_secret())
 }
 
 /// Deserialize a string into a `SecretString`.
@@ -29,7 +29,7 @@ pub mod option {
         s: S,
     ) -> Result<S::Ok, S::Error> {
         match secret {
-            Some(secret) => secret.expose_secret(|v| s.serialize_str(v)),
+            Some(secret) => s.serialize_str(secret.expose_secret()),
             None => s.serialize_none(),
         }
     }

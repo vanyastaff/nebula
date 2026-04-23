@@ -166,7 +166,7 @@ impl ActionRuntime {
         action_key: &str,
         version: Option<&semver::Version>,
         input: serde_json::Value,
-        context: ActionContext,
+        context: &ActionContext,
     ) -> Result<ActionResult<serde_json::Value>, RuntimeError> {
         self.execute_action_with_checkpoint(action_key, version, input, context, None)
             .await
@@ -200,7 +200,7 @@ impl ActionRuntime {
         action_key: &str,
         version: Option<&semver::Version>,
         input: serde_json::Value,
-        context: ActionContext,
+        context: &ActionContext,
         checkpoint: Option<Arc<dyn StatefulCheckpointSink>>,
     ) -> Result<ActionResult<serde_json::Value>, RuntimeError> {
         let key = nebula_core::ActionKey::new(action_key).map_err(|e| {
@@ -237,7 +237,7 @@ impl ActionRuntime {
         &self,
         action_key: &str,
         input: serde_json::Value,
-        context: ActionContext,
+        context: &ActionContext,
     ) -> Result<ActionResult<serde_json::Value>, RuntimeError> {
         // Parse the key explicitly so we can distinguish "invalid format" from
         // "valid format but not registered". `get_by_str` collapses both into None.
@@ -277,11 +277,22 @@ impl ActionRuntime {
         metadata: ActionMetadata,
         handler: ActionHandler,
         input: serde_json::Value,
-        context: ActionContext,
+        context: &ActionContext,
         checkpoint: Option<Arc<dyn StatefulCheckpointSink>>,
     ) -> Result<ActionResult<serde_json::Value>, RuntimeError> {
         let error_counter = self.metrics.counter(NEBULA_ACTION_FAILURES_TOTAL);
-        let execution_id = context.execution_id;
+        // `ExecutionId::new()` generates a fresh ULID; we deliberately do
+        // *not* fall through to `ExecutionId::default()` (which returns nil)
+        // when the scope omits the field — missing execution IDs are synthetic
+        // and metrics/logs must still distinguish runs.
+        #[allow(
+            clippy::unwrap_or_default,
+            reason = "ExecutionId::new() != Default::default()"
+        )]
+        let execution_id = context
+            .scope()
+            .execution_id
+            .unwrap_or_else(ExecutionId::new);
 
         // Commit to a dispatched path or a rejection path, then branch.
         // The rejection arms never sample the histogram — they only touch
@@ -310,12 +321,6 @@ impl ActionRuntime {
             ActionHandler::Resource(_) => {
                 self.observe_rejected(dispatch_reject_reason::RESOURCE_NOT_EXECUTABLE);
                 return Err(RuntimeError::ResourceNotExecutable {
-                    key: action_key.to_owned(),
-                });
-            },
-            ActionHandler::Agent(_) => {
-                self.observe_rejected(dispatch_reject_reason::AGENT_NOT_SUPPORTED);
-                return Err(RuntimeError::AgentNotSupportedYet {
                     key: action_key.to_owned(),
                 });
             },
@@ -407,10 +412,10 @@ impl ActionRuntime {
         metadata: &ActionMetadata,
         handler: Arc<dyn StatelessHandler>,
         input: serde_json::Value,
-        context: ActionContext,
+        context: &ActionContext,
     ) -> Result<ActionResult<serde_json::Value>, ActionError> {
         match metadata.isolation_level {
-            IsolationLevel::None => handler.execute(input, &context).await,
+            IsolationLevel::None => handler.execute(input, context).await,
             IsolationLevel::CapabilityGated | IsolationLevel::Isolated => {
                 let sandboxed = SandboxedContext::new(context);
                 self.sandbox.execute(sandboxed, metadata, input).await
@@ -457,7 +462,7 @@ impl ActionRuntime {
         metadata: &ActionMetadata,
         handler: Arc<dyn StatefulHandler>,
         input: serde_json::Value,
-        context: ActionContext,
+        context: &ActionContext,
         checkpoint: Option<Arc<dyn StatefulCheckpointSink>>,
     ) -> Result<ActionResult<serde_json::Value>, ActionError> {
         if !matches!(metadata.isolation_level, IsolationLevel::None) {
@@ -474,7 +479,7 @@ impl ActionRuntime {
 
         // Cancellation check BEFORE init_state / load — avoid the JSON
         // round-trip if the caller already cancelled.
-        if context.cancellation.is_cancelled() {
+        if context.cancellation().is_cancelled() {
             return Err(ActionError::Cancelled);
         }
 
@@ -502,8 +507,8 @@ impl ActionRuntime {
                 Err(load_err) => {
                     tracing::warn!(
                         action_key = %metadata.base.key.as_str(),
-                        execution_id = %context.execution_id,
-                        node_key = %context.node_key,
+                        execution_id = ?context.scope().execution_id,
+                        node_key = %context.node_key(),
                         error = %load_err,
                         "stateful checkpoint load failed — falling back to init_state, \
                          iteration progress (if any) is lost"
@@ -528,7 +533,7 @@ impl ActionRuntime {
             }
 
             // Cooperative cancellation check BEFORE the next iteration.
-            if context.cancellation.is_cancelled() {
+            if context.cancellation().is_cancelled() {
                 return Err(ActionError::Cancelled);
             }
 
@@ -541,12 +546,12 @@ impl ActionRuntime {
             // tightly so the borrow ends before the post-iteration
             // checkpoint save, which also needs to read `state`.
             let iteration_result = {
-                let exec_fut = handler.execute(&input, &mut state, &context);
+                let exec_fut = handler.execute(&input, &mut state, context);
                 tokio::pin!(exec_fut);
 
                 tokio::select! {
                     biased;
-                    () = context.cancellation.cancelled() => {
+                    () = context.cancellation().cancelled() => {
                         return Err(ActionError::Cancelled);
                     }
                     res = &mut exec_fut => res,
@@ -571,7 +576,7 @@ impl ActionRuntime {
                         // Cancel-aware sleep — abort the delay if cancelled mid-wait.
                         tokio::select! {
                             () = tokio::time::sleep(d) => {}
-                            () = context.cancellation.cancelled() => {
+                            () = context.cancellation().cancelled() => {
                                 return Err(ActionError::Cancelled);
                             }
                         }
@@ -590,8 +595,8 @@ impl ActionRuntime {
                     {
                         tracing::warn!(
                             action_key = %metadata.base.key.as_str(),
-                            execution_id = %context.execution_id,
-                            node_key = %context.node_key,
+                            execution_id = ?context.scope().execution_id,
+                            node_key = %context.node_key(),
                             error = %clear_err,
                             "stateful checkpoint clear failed on terminal iteration; \
                              orphaned row left for engine GC"
@@ -869,16 +874,11 @@ fn collect_output_slots_mut<'a>(
 #[cfg(test)]
 mod tests {
     use nebula_action::{
-        ActionContext, TriggerContext,
-        action::Action,
-        context::{Context, CredentialContextExt},
-        dependency::ActionDependencies,
-        error::ActionError,
-        metadata::ActionMetadata,
-        stateless::StatelessAction,
+        ActionContext, TriggerContext, action::Action, context::CredentialContextExt,
+        error::ActionError, metadata::ActionMetadata, stateless::StatelessAction,
     };
     use nebula_core::{
-        action_key,
+        DeclaresDependencies, action_key,
         id::{ExecutionId, WorkflowId},
         node_key,
     };
@@ -890,7 +890,7 @@ mod tests {
         meta: ActionMetadata,
     }
 
-    impl ActionDependencies for EchoAction {}
+    impl DeclaresDependencies for EchoAction {}
     impl Action for EchoAction {
         fn metadata(&self) -> &ActionMetadata {
             &self.meta
@@ -904,7 +904,7 @@ mod tests {
         async fn execute(
             &self,
             input: Self::Input,
-            _ctx: &impl Context,
+            _ctx: &ActionContext,
         ) -> Result<ActionResult<Self::Output>, ActionError> {
             Ok(ActionResult::success(input))
         }
@@ -914,7 +914,7 @@ mod tests {
         meta: ActionMetadata,
     }
 
-    impl ActionDependencies for FailAction {}
+    impl DeclaresDependencies for FailAction {}
     impl Action for FailAction {
         fn metadata(&self) -> &ActionMetadata {
             &self.meta
@@ -928,7 +928,7 @@ mod tests {
         async fn execute(
             &self,
             _input: Self::Input,
-            _ctx: &impl Context,
+            _ctx: &ActionContext,
         ) -> Result<ActionResult<Self::Output>, ActionError> {
             Err(ActionError::retryable("transient failure"))
         }
@@ -1012,12 +1012,12 @@ mod tests {
             tokio_util::sync::CancellationToken::new(),
         );
 
-        rt.execute_action("test.echo", serde_json::json!(null), ctx.clone())
+        rt.execute_action("test.echo", serde_json::json!(null), &ctx)
             .await
             .expect("first dispatch under total cap");
 
         let err = rt
-            .execute_action("test.echo", serde_json::json!("1234567890"), ctx)
+            .execute_action("test.echo", serde_json::json!("1234567890"), &ctx)
             .await
             .expect_err("second dispatch exceeds max_total_execution_bytes");
 
@@ -1045,7 +1045,7 @@ mod tests {
         let rt = make_runtime(registry);
         let input = serde_json::json!({"hello": "world"});
         let result = rt
-            .execute_action("test.echo", input.clone(), test_context())
+            .execute_action("test.echo", input.clone(), &test_context())
             .await;
         let action_result = result.unwrap();
         match action_result {
@@ -1061,7 +1061,7 @@ mod tests {
         let registry = Arc::new(ActionRegistry::new());
         let rt = make_runtime(registry);
         let result = rt
-            .execute_action("nonexistent", serde_json::json!(null), test_context())
+            .execute_action("nonexistent", serde_json::json!(null), &test_context())
             .await;
         assert!(matches!(result, Err(RuntimeError::ActionNotFound { .. })));
     }
@@ -1075,7 +1075,7 @@ mod tests {
 
         let rt = make_runtime(registry);
         let result = rt
-            .execute_action("test.fail", serde_json::json!(null), test_context())
+            .execute_action("test.fail", serde_json::json!(null), &test_context())
             .await;
         assert!(result.is_err());
         assert!(result.unwrap_err().is_retryable());
@@ -1105,7 +1105,7 @@ mod tests {
         );
 
         let input = serde_json::json!({"big_payload": "this is way too large for 5 bytes"});
-        let result = rt.execute_action("test.big", input, test_context()).await;
+        let result = rt.execute_action("test.big", input, &test_context()).await;
         assert!(matches!(
             result,
             Err(RuntimeError::DataLimitExceeded { .. })
@@ -1132,7 +1132,7 @@ mod tests {
             metrics.clone(),
         );
 
-        rt.execute_action("test.tele", serde_json::json!("ok"), test_context())
+        rt.execute_action("test.tele", serde_json::json!("ok"), &test_context())
             .await
             .unwrap();
 
@@ -1181,7 +1181,11 @@ mod tests {
         let rt = ActionRuntime::new(registry, sandbox, DataPassingPolicy::default(), metrics);
 
         let result = rt
-            .execute_action("test.gated", serde_json::json!({"data": 1}), test_context())
+            .execute_action(
+                "test.gated",
+                serde_json::json!({"data": 1}),
+                &test_context(),
+            )
             .await;
         assert!(result.is_ok());
         assert!(
@@ -1216,7 +1220,9 @@ mod tests {
 
         // No blob storage configured -- should reject.
         let input = serde_json::json!({"big": "this exceeds 5 bytes easily"});
-        let result = rt.execute_action("test.spill", input, test_context()).await;
+        let result = rt
+            .execute_action("test.spill", input, &test_context())
+            .await;
         assert!(
             matches!(result, Err(RuntimeError::DataLimitExceeded { .. })),
             "expected DataLimitExceeded when no blob storage configured"
@@ -1276,7 +1282,7 @@ mod tests {
 
         let input = serde_json::json!({"big": "this exceeds 5 bytes easily"});
         let result = rt
-            .execute_action("test.spill_ok", input, test_context())
+            .execute_action("test.spill_ok", input, &test_context())
             .await;
         let action_result = result.expect("should succeed when blob storage is configured");
 
@@ -1309,7 +1315,7 @@ mod tests {
         struct MultiOutAction {
             meta: ActionMetadata,
         }
-        impl ActionDependencies for MultiOutAction {}
+        impl DeclaresDependencies for MultiOutAction {}
         impl Action for MultiOutAction {
             fn metadata(&self) -> &ActionMetadata {
                 &self.meta
@@ -1321,7 +1327,7 @@ mod tests {
             async fn execute(
                 &self,
                 _input: Self::Input,
-                _ctx: &impl Context,
+                _ctx: &ActionContext,
             ) -> Result<AR<Self::Output>, ActionError> {
                 // `main_output` is tiny; a fan-out port is huge. Before the
                 // fix, only `main_output` was checked and this result passed
@@ -1366,7 +1372,7 @@ mod tests {
         );
 
         let result = rt
-            .execute_action("test.multi_out", serde_json::json!(null), test_context())
+            .execute_action("test.multi_out", serde_json::json!(null), &test_context())
             .await;
         assert!(
             matches!(result, Err(RuntimeError::DataLimitExceeded { .. })),
@@ -1387,7 +1393,7 @@ mod tests {
         struct BranchAction {
             meta: ActionMetadata,
         }
-        impl ActionDependencies for BranchAction {}
+        impl DeclaresDependencies for BranchAction {}
         impl Action for BranchAction {
             fn metadata(&self) -> &ActionMetadata {
                 &self.meta
@@ -1399,7 +1405,7 @@ mod tests {
             async fn execute(
                 &self,
                 _input: Self::Input,
-                _ctx: &impl Context,
+                _ctx: &ActionContext,
             ) -> Result<AR<Self::Output>, ActionError> {
                 let mut alternatives = HashMap::new();
                 alternatives.insert(
@@ -1438,7 +1444,7 @@ mod tests {
         );
 
         let result = rt
-            .execute_action("test.branch", serde_json::json!(null), test_context())
+            .execute_action("test.branch", serde_json::json!(null), &test_context())
             .await;
         assert!(
             matches!(result, Err(RuntimeError::DataLimitExceeded { .. })),
@@ -1453,7 +1459,7 @@ mod tests {
         struct CollectionAction {
             meta: ActionMetadata,
         }
-        impl ActionDependencies for CollectionAction {}
+        impl DeclaresDependencies for CollectionAction {}
         impl Action for CollectionAction {
             fn metadata(&self) -> &ActionMetadata {
                 &self.meta
@@ -1465,7 +1471,7 @@ mod tests {
             async fn execute(
                 &self,
                 _input: Self::Input,
-                _ctx: &impl Context,
+                _ctx: &ActionContext,
             ) -> Result<AR<Self::Output>, ActionError> {
                 Ok(AR::Success {
                     output: ActionOutput::Collection(vec![
@@ -1503,7 +1509,7 @@ mod tests {
         );
 
         let result = rt
-            .execute_action("test.collection", serde_json::json!(null), test_context())
+            .execute_action("test.collection", serde_json::json!(null), &test_context())
             .await;
         assert!(
             matches!(result, Err(RuntimeError::DataLimitExceeded { .. })),
@@ -1521,7 +1527,7 @@ mod tests {
         struct BinaryAction {
             meta: ActionMetadata,
         }
-        impl ActionDependencies for BinaryAction {}
+        impl DeclaresDependencies for BinaryAction {}
         impl Action for BinaryAction {
             fn metadata(&self) -> &ActionMetadata {
                 &self.meta
@@ -1533,7 +1539,7 @@ mod tests {
             async fn execute(
                 &self,
                 _input: Self::Input,
-                _ctx: &impl Context,
+                _ctx: &ActionContext,
             ) -> Result<AR<Self::Output>, ActionError> {
                 Ok(AR::Success {
                     output: ActionOutput::Binary(BinaryData {
@@ -1567,7 +1573,7 @@ mod tests {
         );
 
         let result = rt
-            .execute_action("test.binary", serde_json::json!(null), test_context())
+            .execute_action("test.binary", serde_json::json!(null), &test_context())
             .await;
         assert!(
             matches!(result, Err(RuntimeError::DataLimitExceeded { .. })),
@@ -1582,7 +1588,7 @@ mod tests {
         struct RefAction {
             meta: ActionMetadata,
         }
-        impl ActionDependencies for RefAction {}
+        impl DeclaresDependencies for RefAction {}
         impl Action for RefAction {
             fn metadata(&self) -> &ActionMetadata {
                 &self.meta
@@ -1594,7 +1600,7 @@ mod tests {
             async fn execute(
                 &self,
                 _input: Self::Input,
-                _ctx: &impl Context,
+                _ctx: &ActionContext,
             ) -> Result<AR<Self::Output>, ActionError> {
                 Ok(AR::Success {
                     output: ActionOutput::Reference(DataReference {
@@ -1628,7 +1634,7 @@ mod tests {
         );
 
         let result = rt
-            .execute_action("test.ref", serde_json::json!(null), test_context())
+            .execute_action("test.ref", serde_json::json!(null), &test_context())
             .await;
         assert!(
             matches!(result, Err(RuntimeError::DataLimitExceeded { .. })),
@@ -1680,7 +1686,7 @@ mod tests {
             .execute_action(
                 "test.trigger_reject",
                 serde_json::json!(null),
-                test_context(),
+                &test_context(),
             )
             .await;
         assert!(
@@ -1761,7 +1767,7 @@ mod tests {
             .execute_action(
                 "test.resource_reject",
                 serde_json::json!(null),
-                test_context(),
+                &test_context(),
             )
             .await;
         assert!(
@@ -1784,58 +1790,16 @@ mod tests {
         );
     }
 
-    #[tokio::test]
-    async fn agent_rejection_does_not_increment_execution_metrics() {
-        use nebula_action::handler::{ActionHandler, AgentHandler};
-
-        struct FakeAgentHandler {
-            meta: ActionMetadata,
-        }
-
-        #[async_trait::async_trait]
-        impl AgentHandler for FakeAgentHandler {
-            fn metadata(&self) -> &ActionMetadata {
-                &self.meta
-            }
-            async fn execute(
-                &self,
-                _input: serde_json::Value,
-                _ctx: &ActionContext,
-            ) -> Result<ActionResult<serde_json::Value>, ActionError> {
-                Ok(ActionResult::success(serde_json::json!(null)))
-            }
-        }
-
-        let registry = Arc::new(ActionRegistry::new());
-        let meta = ActionMetadata::new(action_key!("test.agent_reject"), "Agent", "reject case");
-        registry.register(
-            meta.clone(),
-            ActionHandler::Agent(Arc::new(FakeAgentHandler { meta })),
-        );
-        let (rt, metrics) = make_runtime_with_metrics(registry);
-
-        let result = rt
-            .execute_action("test.agent_reject", serde_json::json!(null), test_context())
-            .await;
-        assert!(
-            matches!(result, Err(RuntimeError::AgentNotSupportedYet { .. })),
-            "expected AgentNotSupportedYet, got {result:?}"
-        );
-
-        assert_eq!(metrics.histogram(NEBULA_ACTION_DURATION_SECONDS).count(), 0);
-        assert_eq!(metrics.counter(NEBULA_ACTION_EXECUTIONS_TOTAL).get(), 0);
-        assert_eq!(metrics.counter(NEBULA_ACTION_FAILURES_TOTAL).get(), 0);
-
-        let labels = metrics
-            .interner()
-            .label_set(&[("reason", dispatch_reject_reason::AGENT_NOT_SUPPORTED)]);
-        assert_eq!(
-            metrics
-                .counter_labeled(NEBULA_ACTION_DISPATCH_REJECTED_TOTAL, &labels)
-                .get(),
-            1
-        );
-    }
+    // `AgentHandler` / `ActionHandler::Agent` arrive with the action-redesign
+    // work tracked in spec 27 (Wave 3). This test covers the rejection branch
+    // that fires when an agent handler is registered under the current
+    // engine, which does not dispatch `Agent` variants yet. Keep the body
+    // commented out until the variant exists in `nebula-action` so
+    // `cargo clippy -D warnings` stays green across the rest of the
+    // workspace.
+    //
+    // #[tokio::test]
+    // async fn agent_rejection_does_not_increment_execution_metrics() { ... }
 
     /// Counterpart to the rejection test: a successful stateless dispatch
     /// must observe the histogram and bump the executions counter. Pin
@@ -1848,7 +1812,7 @@ mod tests {
         });
         let (rt, metrics) = make_runtime_with_metrics(registry);
 
-        rt.execute_action("test.dispatched", serde_json::json!("ok"), test_context())
+        rt.execute_action("test.dispatched", serde_json::json!("ok"), &test_context())
             .await
             .expect("dispatched execution must succeed");
         assert_eq!(metrics.histogram(NEBULA_ACTION_DURATION_SECONDS).count(), 1);
@@ -2014,7 +1978,7 @@ mod tests {
         let rt_clone = Arc::clone(&rt);
         let handle = tokio::spawn(async move {
             rt_clone
-                .execute_action("test.sleepy", serde_json::json!(null), ctx)
+                .execute_action("test.sleepy", serde_json::json!(null), &ctx)
                 .await
         });
 
@@ -2056,7 +2020,7 @@ mod tests {
                 "test.count",
                 None,
                 serde_json::json!(null),
-                test_context(),
+                &test_context(),
                 Some(Arc::clone(&sink) as Arc<dyn StatefulCheckpointSink>),
             )
             .await;
@@ -2105,7 +2069,7 @@ mod tests {
                 "test.resume",
                 None,
                 serde_json::json!(null),
-                test_context(),
+                &test_context(),
                 Some(Arc::clone(&sink) as Arc<dyn StatefulCheckpointSink>),
             )
             .await
@@ -2147,7 +2111,7 @@ mod tests {
                 "test.load_fail",
                 None,
                 serde_json::json!(null),
-                test_context(),
+                &test_context(),
                 Some(Arc::clone(&sink) as Arc<dyn StatefulCheckpointSink>),
             )
             .await

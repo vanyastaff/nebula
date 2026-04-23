@@ -18,6 +18,11 @@ pub trait ResourceAccessor: Send + Sync {
         &self,
         key: &crate::ResourceKey,
     ) -> BoxFuture<'_, Result<Box<dyn std::any::Any + Send + Sync>, crate::CoreError>>;
+    /// Try to acquire a resource by key, returning `None` if not found.
+    fn try_acquire_any(
+        &self,
+        key: &crate::ResourceKey,
+    ) -> BoxFuture<'_, Result<Option<Box<dyn std::any::Any + Send + Sync>>, crate::CoreError>>;
 }
 
 /// Dyn-safe credential accessor. Impl in nebula-engine.
@@ -29,6 +34,11 @@ pub trait CredentialAccessor: Send + Sync {
         &self,
         key: &crate::CredentialKey,
     ) -> BoxFuture<'_, Result<Box<dyn std::any::Any + Send + Sync>, crate::CoreError>>;
+    /// Try to resolve a credential by key, returning `None` if not found.
+    fn try_resolve_any(
+        &self,
+        key: &crate::CredentialKey,
+    ) -> BoxFuture<'_, Result<Option<Box<dyn std::any::Any + Send + Sync>>, crate::CoreError>>;
 }
 
 /// Structured logger interface.

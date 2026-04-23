@@ -96,7 +96,7 @@ credential cleanup spec.
 | Crate | Owns for Plane B |
 | --- | --- |
 | **`nebula-credential`** | `Credential` trait, `State` / `Pending`, `AuthScheme`, `CredentialStore` **trait**, errors, encryption primitives, **pure** helpers (e.g. auth URL construction without HTTP where feasible). **No** dependency on `nebula-engine` or `nebula-api`. |
-| **`nebula-engine`** | Runtime orchestration: resolve/continue/refresh/test dispatch, `CredentialResolver`, `RefreshCoordinator`, execution-time policy. **No** HTTP server. |
+| **`nebula-engine`** | Runtime orchestration: resolve/continue/refresh/test dispatch, `CredentialResolver`, `RefreshCoordinator` (per [ADR-0030 §3 amendment 2026-04-23](./0030-engine-owns-credential-orchestration.md)), execution-time policy. **No** HTTP server. |
 | **`nebula-storage`** | Concrete `CredentialStore` / `PendingStateStore` impls, rows, layers, migrations. **No** business rules for token exchange. |
 | **`nebula-api`** | HTTP **adapters** for integration setup flows that need transport (redirect/callback, future upload endpoints). Delegates to engine/credential; does **not** redefine `Credential` semantics. |
 

@@ -11,9 +11,8 @@ use std::sync::Arc;
 
 use nebula_core::{ExecutionId, ResourceKey};
 use nebula_resource::{
-    AcquireOptions, BasicCtx, Manager, PoolConfig, ResidentConfig, Resource, ResourceConfig,
-    ShutdownConfig,
-    ctx::ScopeLevel,
+    AcquireOptions, Manager, PoolConfig, ResidentConfig, Resource, ResourceConfig, ResourceContext,
+    ScopeLevel, ShutdownConfig,
     error::{Error, ErrorKind},
     resource_key,
     topology::{
@@ -21,6 +20,7 @@ use nebula_resource::{
         resident::Resident,
     },
 };
+use tokio_util::sync::CancellationToken;
 
 // [FRICTION #1] ResourceConfig has no blanket impl for "accept everything".
 // Every type that implements Resource needs a Config, and Config must impl
@@ -105,7 +105,7 @@ impl Resource for HttpResource {
         &self,
         config: &HttpConfig,
         _auth: &(),
-        _ctx: &dyn nebula_resource::Ctx,
+        _ctx: &ResourceContext,
     ) -> Result<HttpClient, MyError> {
         Ok(HttpClient {
             base_url: config.base_url.clone(),
@@ -151,20 +151,25 @@ async fn use_case_1_pooled_http_client() {
     //
     // The example in README is just wrong — this is a BLOCKER for newcomers.
     // ScopeLevel isn't even passed to new(), it's set via with_scope().
-    let ctx = BasicCtx::new(ExecutionId::new());
+    let ctx = ResourceContext::minimal(
+        nebula_core::scope::Scope {
+            execution_id: Some(ExecutionId::new()),
+            ..Default::default()
+        },
+        CancellationToken::new(),
+    );
+
     let opts = AcquireOptions::default();
 
     let handle = manager
         .acquire_pooled::<HttpResource>(&(), &ctx, &opts)
         .await
         .expect("acquire should succeed");
-
-    // [FRICTION #6] Deref to what? The doc says "handle is Deref to the Lease"
     // but doesn't say what Lease looks like in the pooled case.
     // I guessed HttpClient — worked because Lease = Runtime = HttpClient.
-    assert_eq!(handle.base_url, "https://api.example.com");
+    // [FRICTION #6] Deref to what? The doc says "handle is Deref to the Lease"
 
-    // Drop releases back to pool — no taint needed for a healthy client.
+    assert_eq!(handle.base_url, "https://api.example.com");
     drop(handle);
 }
 
@@ -232,7 +237,7 @@ impl Resource for ConfigStoreResource {
         &self,
         config: &ConfigStoreConfig,
         _auth: &(),
-        _ctx: &dyn nebula_resource::Ctx,
+        _ctx: &ResourceContext,
     ) -> Result<ConfigStore, MyError> {
         let mut map = std::collections::HashMap::new();
         map.insert("environment".to_string(), config.env.clone());
@@ -270,7 +275,13 @@ async fn use_case_2_resident_config_store() {
         )
         .expect("registration should succeed");
 
-    let ctx = BasicCtx::new(ExecutionId::new());
+    let ctx = ResourceContext::minimal(
+        nebula_core::scope::Scope {
+            execution_id: Some(ExecutionId::new()),
+            ..Default::default()
+        },
+        CancellationToken::new(),
+    );
     let opts = AcquireOptions::default();
 
     let handle = manager
@@ -353,7 +364,7 @@ impl Resource for DbResource {
         &self,
         _config: &DbConfig,
         _auth: &(),
-        _ctx: &dyn nebula_resource::Ctx,
+        _ctx: &ResourceContext,
     ) -> Result<DbConnection, MyError> {
         let id = self.counter.fetch_add(1, Ordering::Relaxed);
         Ok(DbConnection { id })
@@ -408,7 +419,13 @@ async fn use_case_3_db_with_resilience_and_shutdown() {
     let m2 = Arc::clone(&manager);
 
     let t1 = tokio::spawn(async move {
-        let ctx = BasicCtx::new(ExecutionId::new());
+        let ctx = ResourceContext::minimal(
+            nebula_core::scope::Scope {
+                execution_id: Some(ExecutionId::new()),
+                ..Default::default()
+            },
+            CancellationToken::new(),
+        );
         let opts = AcquireOptions::default();
         let h = m1
             .acquire_pooled::<DbResource>(&(), &ctx, &opts)
@@ -418,7 +435,13 @@ async fn use_case_3_db_with_resilience_and_shutdown() {
     });
 
     let t2 = tokio::spawn(async move {
-        let ctx = BasicCtx::new(ExecutionId::new());
+        let ctx = ResourceContext::minimal(
+            nebula_core::scope::Scope {
+                execution_id: Some(ExecutionId::new()),
+                ..Default::default()
+            },
+            CancellationToken::new(),
+        );
         let opts = AcquireOptions::default();
         let h = m2
             .acquire_pooled::<DbResource>(&(), &ctx, &opts)
@@ -441,6 +464,16 @@ async fn use_case_3_db_with_resilience_and_shutdown() {
     assert!(manager.is_shutdown());
 }
 
+fn make_test_ctx() -> ResourceContext {
+    ResourceContext::minimal(
+        nebula_core::scope::Scope {
+            execution_id: Some(ExecutionId::new()),
+            ..Default::default()
+        },
+        CancellationToken::new(),
+    )
+}
+
 // ---------------------------------------------------------------------------
 // Error handling exploration
 // ---------------------------------------------------------------------------
@@ -448,7 +481,7 @@ async fn use_case_3_db_with_resilience_and_shutdown() {
 #[tokio::test]
 async fn error_not_found_on_missing_resource() {
     let manager = Manager::new();
-    let ctx = BasicCtx::new(ExecutionId::new());
+    let ctx = make_test_ctx();
     let opts = AcquireOptions::default();
 
     let err = manager
@@ -480,15 +513,14 @@ async fn error_cancelled_after_shutdown() {
 
     manager.shutdown();
 
-    let ctx = BasicCtx::new(ExecutionId::new());
+    let ctx = make_test_ctx();
+
     let opts = AcquireOptions::default();
 
     let err = manager
         .acquire_pooled::<HttpResource>(&(), &ctx, &opts)
         .await
         .unwrap_err();
-
-    // [FRICTION #12] ErrorKind::Cancelled — good, specific. But is_retryable()
     // returns false for Cancelled, which is correct. The API is clean here.
     assert!(matches!(err.kind(), ErrorKind::Cancelled));
     assert!(!err.is_retryable());

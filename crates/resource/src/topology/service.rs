@@ -2,7 +2,7 @@
 
 use std::future::Future;
 
-use crate::{ctx::Ctx, resource::Resource};
+use crate::{context::ResourceContext, resource::Resource};
 
 /// How the service manages token lifecycle.
 #[non_exhaustive]
@@ -39,7 +39,7 @@ pub trait Service: Resource {
     fn acquire_token(
         &self,
         runtime: &Self::Runtime,
-        ctx: &dyn Ctx,
+        ctx: &ResourceContext,
     ) -> impl Future<Output = Result<Self::Lease, Self::Error>> + Send;
 
     /// Releases a previously acquired token back to the service.

@@ -62,7 +62,7 @@ ProcessAction is the most common and straightforward action type. It represents 
 #### Trait Definition
 
 ```rust
-#[async_trait]
+
 pub trait ProcessAction: Action {
     type Input: Send + Sync + 'static;
     type Output: Send + Sync + 'static;
@@ -90,7 +90,7 @@ pub trait ProcessAction: Action {
 
 ```rust
 use nebula_action::{ProcessAction, Action, ActionError, ActionResult, ExecutionContext};
-use async_trait::async_trait;
+use native async traits::native async traits;
 use image::{DynamicImage, ImageFormat, GenericImageView};
 use serde::{Deserialize, Serialize};
 use tracing::{info, warn, instrument};
@@ -128,7 +128,7 @@ pub struct ImageTransformAction {
     max_file_size: usize,
 }
 
-#[async_trait]
+
 impl Action for ImageTransformAction {
     fn name(&self) -> &str {
         "image_transform"
@@ -139,7 +139,7 @@ impl Action for ImageTransformAction {
     }
 }
 
-#[async_trait]
+
 impl ProcessAction for ImageTransformAction {
     type Input = ImageTransformInput;
     type Output = ImageTransformOutput;
@@ -292,7 +292,7 @@ pub struct CachedProcessAction<A: ProcessAction> {
     cache: Arc<dyn Cache<A::Input, A::Output>>,
 }
 
-#[async_trait]
+
 impl<A: ProcessAction> ProcessAction for CachedProcessAction<A>
 where
     A::Input: Hash + Eq,
@@ -333,7 +333,7 @@ pub struct RetryableProcessAction<A: ProcessAction> {
     initial_delay: Duration,
 }
 
-#[async_trait]
+
 impl<A: ProcessAction> ProcessAction for RetryableProcessAction<A> {
     type Input = A::Input;
     type Output = A::Output;
@@ -509,7 +509,7 @@ StatefulAction enables iterative and progressive processing by maintaining state
 #### Trait Definition
 
 ```rust
-#[async_trait]
+
 pub trait StatefulAction: Action {
     type State: Serialize + DeserializeOwned + Send + Sync + 'static;
     type Input: Send + Sync + 'static;
@@ -559,7 +559,7 @@ pub trait StatefulAction: Action {
 
 ```rust
 use nebula_action::{StatefulAction, Action, ActionError, ActionResult, ExecutionContext};
-use async_trait::async_trait;
+use native async traits::native async traits;
 use serde::{Deserialize, Serialize};
 use tracing::{info, warn};
 
@@ -611,7 +611,7 @@ pub struct PaginatedScraperAction {
     max_consecutive_empty_pages: usize,
 }
 
-#[async_trait]
+
 impl Action for PaginatedScraperAction {
     fn name(&self) -> &str {
         "paginated_scraper"
@@ -622,7 +622,7 @@ impl Action for PaginatedScraperAction {
     }
 }
 
-#[async_trait]
+
 impl StatefulAction for PaginatedScraperAction {
     type State = ScraperState;
     type Input = ScraperInput;
@@ -827,7 +827,7 @@ pub struct CheckpointedAction<A: StatefulAction> {
     executions_since_checkpoint: AtomicUsize,
 }
 
-#[async_trait]
+
 impl<A: StatefulAction> StatefulAction for CheckpointedAction<A> {
     type State = A::State;
     type Input = A::Input;
@@ -1036,7 +1036,7 @@ TriggerAction represents long-running event sources that produce a stream of eve
 #### Trait Definition
 
 ```rust
-#[async_trait]
+
 pub trait TriggerAction: Action {
     type Config: Send + Sync + 'static;
     type Event: Send + Sync + 'static;
@@ -1096,7 +1096,7 @@ SupplyAction manages the lifecycle of expensive or long-lived resources that nee
 #### Trait Definition
 
 ```rust
-#[async_trait]
+
 pub trait SupplyAction: Action {
     type Config: Send + Sync + 'static;
     type Resource: Send + Sync + 'static;
@@ -1158,7 +1158,7 @@ StreamingAction handles continuous streams of data, applying transformations, ag
 #### Trait Definition
 
 ```rust
-#[async_trait]
+
 pub trait StreamingAction: Action {
     type Input: Send + 'static;
     type Item: Send + 'static;
@@ -1210,7 +1210,7 @@ InteractiveAction enables human-in-the-loop workflows by pausing execution to wa
 #### Trait Definition
 
 ```rust
-#[async_trait]
+
 pub trait InteractiveAction: Action {
     type InteractionData: Serialize + DeserializeOwned + Send + Sync + 'static;
 
@@ -1270,7 +1270,7 @@ TransactionalAction provides distributed transaction support using the Saga patt
 #### Trait Definition
 
 ```rust
-#[async_trait]
+
 pub trait TransactionalAction: Action {
     type CompensationData: Serialize + DeserializeOwned + Send + Sync + 'static;
 
@@ -1380,7 +1380,7 @@ graph TD
 
 ```rust
 // Before: ProcessAction
-#[async_trait]
+
 impl ProcessAction for BatchProcessor {
     type Input = BatchInput;
     type Output = BatchOutput;
@@ -1393,7 +1393,7 @@ impl ProcessAction for BatchProcessor {
 }
 
 // After: StatefulAction with progress tracking
-#[async_trait]
+
 impl StatefulAction for BatchProcessor {
     type State = BatchState;
     type Input = BatchInput;

@@ -36,6 +36,48 @@
 
 use thiserror::Error;
 
+// ── Access errors ──────────────────────────────────────────────────────────
+
+/// Error type for credential access operations.
+///
+/// Returned by [`CredentialAccessor`](crate::CredentialAccessor) trait methods.
+/// Each variant represents a distinct failure mode during credential access.
+///
+/// # Examples
+///
+/// ```
+/// use nebula_credential::CredentialAccessError;
+///
+/// let err = CredentialAccessError::NotFound("api_key".to_owned());
+/// assert!(err.to_string().contains("api_key"));
+/// ```
+#[derive(Debug, Clone, thiserror::Error)]
+#[non_exhaustive]
+pub enum CredentialAccessError {
+    /// Credential not found.
+    #[error("credential not found: {0}")]
+    NotFound(String),
+
+    /// Credential type mismatch (scheme projection failed).
+    #[error("credential type mismatch: {0}")]
+    TypeMismatch(String),
+
+    /// Access to undeclared credential type (sandbox violation).
+    #[error("credential access denied: {capability} for action `{action_id}`")]
+    AccessDenied {
+        /// The capability that was denied.
+        capability: String,
+        /// The action that requested the capability.
+        action_id: String,
+    },
+
+    /// Accessor not configured.
+    #[error("credential accessor not configured: {0}")]
+    NotConfigured(String),
+}
+
+// ── Credential errors ─────────────────────────────────────────────────────
+
 /// Top-level credential error
 ///
 /// Wraps specific error categories (storage, cryptographic, validation)
@@ -110,6 +152,15 @@ pub enum CredentialError {
         expected: String,
         /// Actual scheme pattern found.
         actual: String,
+    },
+
+    /// Resolution failed — wraps a [`CoreError`](nebula_core::CoreError) from
+    /// the [`CredentialAccessor`](nebula_core::accessor::CredentialAccessor).
+    #[error("credential resolution failed: {source}")]
+    Resolution {
+        /// Underlying core error.
+        #[source]
+        source: nebula_core::CoreError,
     },
 }
 
@@ -257,6 +308,7 @@ impl nebula_error::Classify for CredentialError {
             Self::CompositionNotAvailable => nebula_error::ErrorCategory::Internal,
             Self::CompositionFailed { .. } => nebula_error::ErrorCategory::External,
             Self::SchemeMismatch { .. } => nebula_error::ErrorCategory::Validation,
+            Self::Resolution { source } => nebula_error::Classify::category(source),
         }
     }
 
@@ -278,6 +330,7 @@ impl nebula_error::Classify for CredentialError {
             Self::SchemeMismatch { .. } => {
                 nebula_error::ErrorCode::new("CREDENTIAL:SCHEME_MISMATCH")
             },
+            Self::Resolution { .. } => nebula_error::ErrorCode::new("CREDENTIAL:RESOLUTION_FAILED"),
         }
     }
 
@@ -293,7 +346,8 @@ impl nebula_error::Classify for CredentialError {
             | Self::RevokeFailed { .. }
             | Self::CompositionNotAvailable
             | Self::CompositionFailed { .. }
-            | Self::SchemeMismatch { .. } => false,
+            | Self::SchemeMismatch { .. }
+            | Self::Resolution { .. } => false,
         }
     }
 }
@@ -313,6 +367,12 @@ impl From<CryptoError> for CredentialError {
 impl From<ValidationError> for CredentialError {
     fn from(source: ValidationError) -> Self {
         Self::Validation { source }
+    }
+}
+
+impl From<nebula_core::CoreError> for CredentialError {
+    fn from(source: nebula_core::CoreError) -> Self {
+        Self::Resolution { source }
     }
 }
 
@@ -412,5 +472,44 @@ mod tests {
             "expired",
         );
         assert!(!err.is_retryable());
+    }
+
+    // ── Access error tests ──────────────────────────────────────────────
+
+    #[test]
+    fn access_not_found_display() {
+        let err = CredentialAccessError::NotFound("api_key".to_owned());
+        assert_eq!(err.to_string(), "credential not found: api_key");
+    }
+
+    #[test]
+    fn access_type_mismatch_display() {
+        let err = CredentialAccessError::TypeMismatch("expected SecretToken".to_owned());
+        assert!(err.to_string().contains("SecretToken"));
+    }
+
+    #[test]
+    fn access_denied_display() {
+        let err = CredentialAccessError::AccessDenied {
+            capability: "credential type `OAuth2Token`".to_owned(),
+            action_id: "my_action".to_owned(),
+        };
+        assert!(err.to_string().contains("OAuth2Token"));
+        assert!(err.to_string().contains("my_action"));
+    }
+
+    #[test]
+    fn access_not_configured_display() {
+        let err = CredentialAccessError::NotConfigured(
+            "credential capability is not configured".to_owned(),
+        );
+        assert!(err.to_string().contains("not configured"));
+    }
+
+    #[test]
+    fn access_error_is_clone() {
+        let err = CredentialAccessError::NotFound("x".to_owned());
+        let cloned = err.clone();
+        assert_eq!(err.to_string(), cloned.to_string());
     }
 }

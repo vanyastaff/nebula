@@ -46,11 +46,22 @@ tokio-util = { workspace = true }
 dashmap = { workspace = true }
 thiserror = { workspace = true }
 tracing = { workspace = true }
+serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true, features = ["raw_value"] }
 chrono = { workspace = true }
 rand = { workspace = true }
+uuid = { workspace = true, features = ["v4", "serde"] }
+humantime-serde = "1.1"
+lru = { workspace = true }
+parking_lot = { workspace = true }
 scopeguard = "1"
-reqwest = { workspace = true, default-features = false, features = ["json", "rustls", "form"] }
+reqwest = { workspace = true, default-features = false, features = [
+  "json",
+  "rustls",
+  "form",
+  "stream",
+] }
+futures = { workspace = true }
 zeroize = { version = "1.8.2", features = ["zeroize_derive"] }
 
 [dev-dependencies]

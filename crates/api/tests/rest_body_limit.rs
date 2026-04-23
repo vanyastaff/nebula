@@ -17,7 +17,9 @@ use axum::{
     body::Body,
     http::{Request, StatusCode},
 };
-use common::create_test_jwt;
+use common::{
+    TEST_CSRF_COOKIE, TEST_CSRF_TOKEN, TestOrgResolver, TestWorkspaceResolver, create_test_jwt,
+};
 use nebula_api::{ApiConfig, AppState, app};
 use nebula_storage::{
     InMemoryExecutionRepo, InMemoryWorkflowRepo, repos::InMemoryControlQueueRepo,
@@ -36,6 +38,8 @@ async fn create_test_state() -> AppState {
         control_queue_repo,
         api_config.jwt_secret,
     )
+    .with_org_resolver(Arc::new(TestOrgResolver))
+    .with_workspace_resolver(Arc::new(TestWorkspaceResolver))
 }
 
 /// A 2 MiB POST on `/api/v1/workflows` must return `413 Payload Too Large`
@@ -56,9 +60,11 @@ async fn rest_post_exceeding_limit_returns_413() {
         .oneshot(
             Request::builder()
                 .method("POST")
-                .uri("/api/v1/workflows")
+                .uri(common::ws_path("/workflows"))
                 .header("content-type", "application/json")
                 .header("authorization", format!("Bearer {token}"))
+                .header("x-csrf-token", TEST_CSRF_TOKEN)
+                .header("cookie", TEST_CSRF_COOKIE)
                 .body(Body::from(payload))
                 .unwrap(),
         )

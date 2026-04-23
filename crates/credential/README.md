@@ -2,7 +2,7 @@
 name: nebula-credential
 role: Credential Contract (stored state vs projected auth material; runtime orchestration lives in nebula-engine)
 status: frontier
-last-reviewed: 2026-04-21
+last-reviewed: 2026-04-23
 canon-invariants: [L2-12.5, L2-13.2]
 related: [nebula-core, nebula-schema, nebula-resource, nebula-action, nebula-plugin]
 ---
@@ -36,12 +36,12 @@ The [credential architecture cleanup design](../../docs/superpowers/specs/2026-0
 
 > **Deprecation:** `Credential::parameters()` is deprecated in favor of `schema()` for naming consistency with `Resource::schema()` and `StatelessAction::schema()`.
 - `CredentialRecord` — runtime operational state (created_at, version, expiry, tags); non-sensitive domain representation. Previously named `Metadata` (ADR 0004).
-- `AuthScheme`, `AuthPattern` — open scheme trait and classification enum owned by this crate.
+- `AuthScheme`, `AuthPattern` — open scheme trait and classification enum canonical in `nebula-core`, re-exported here for backward compatibility.
 - 12 built-in scheme types: `SecretToken`, `IdentityPassword`, `OAuth2Token`, `KeyPair`, `Certificate`, `SigningKey`, `FederatedAssertion`, `ChallengeSecret`, `OtpSeed`, `ConnectionUri`, `InstanceBinding`, `SharedKey`.
 - `CredentialStore`, `StoredCredential`, `PutMode`, `StoreError` — storage trait with layered composition.
 - `InMemoryStore` — in-crate test/development store shim (canonical impl is `nebula_storage::credential::InMemoryStore`).
 - `SecretString` — string type with automatic zeroization on drop.
-- `CredentialGuard` — secure RAII wrapper with `Deref` + zeroize on drop.
+- `CredentialGuard` — secure RAII wrapper with `Deref` + zeroize on drop; implements `Guard` and `TypedGuard` from `nebula-core`.
 - `NoPendingState`, `PendingState`, `PendingToken` — pending state for interactive flows.
 - `PendingStateStore`, `InMemoryPendingStore`, `PendingStoreError` — pending-state contract and in-memory shim.
 - `EncryptedData`, `EncryptionKey`, `encrypt`, `decrypt` — AES-256-GCM crypto primitives.
@@ -49,6 +49,9 @@ The [credential architecture cleanup design](../../docs/superpowers/specs/2026-0
 - `CredentialRotationEvent`, `RotationError` (feature `rotation`) — rotation event and error types.
 - `OAuth2Credential`, `ApiKeyCredential`, `BasicAuthCredential` — built-in credential implementations.
 - `StaticProtocol` — reusable pattern for static credentials (State = Scheme).
+- `ExternalProvider`, `ExternalReference`, `ProviderKind`, `ProviderError` — external provider abstraction for Vault, AWS Secrets Manager, GCP Secret Manager, Azure Key Vault, and other secret managers.
+- `CredentialMetrics` — standardized credential operation metric names and label helpers (`resolve_total`, `refresh_total`, `rotations_total`, etc.).
+- `prelude` module — convenient re-exports of common credential types.
 
 ## Contract
 
@@ -68,7 +71,7 @@ The [credential architecture cleanup design](../../docs/superpowers/specs/2026-0
 
 See `docs/MATURITY.md` row for `nebula-credential`.
 
-- API stability: `frontier` — core trait, 12 scheme types, store contract, and secret primitives are implemented. Runtime resolver/registry/executor moved to `nebula-engine::credential`. Rotation feature (`rotation`) is feature-gated and still evolving.
+- API stability: `frontier` — core trait (including DYNAMIC credential support with `DYNAMIC`, `LEASE_TTL`, `release()`), 12 scheme types, store contract, and secret primitives are implemented. Runtime resolver/registry/executor moved to `nebula-engine::credential`. `CredentialContext` embeds `BaseContext` and implements `Context` trait from `nebula-core`. Former `accessor/` and `metadata/` directories flattened to root-level modules. Rotation feature (`rotation`) is feature-gated and still evolving.
 - `#![forbid(unsafe_code)]` enforced.
 - Known gap: `CredentialRecord` placement is tracked for potential movement (see comment in `src/record.rs`); no canon revision required.
 

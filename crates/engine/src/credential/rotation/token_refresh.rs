@@ -7,20 +7,15 @@
 use chrono::Utc;
 use nebula_credential::{
     SecretString,
-    credentials::{
-        OAuth2State,
-        oauth2::{
-            AuthStyle,
-            token_http::{
-                OAUTH_TOKEN_HTTP_MAX_RESPONSE_BYTES, oauth_token_http_client,
-                read_token_response_limited,
-            },
-        },
-    },
+    credentials::{OAuth2State, oauth2::AuthStyle},
 };
 use reqwest::Response;
 use serde_json::Value;
 use zeroize::Zeroizing;
+
+use super::token_http::{
+    OAUTH_TOKEN_HTTP_MAX_RESPONSE_BYTES, oauth_token_http_client, read_token_response_limited,
+};
 
 /// Refresh-related failures produced by [`refresh_oauth2_state`].
 #[derive(Debug, thiserror::Error)]
@@ -54,12 +49,12 @@ pub async fn refresh_oauth2_state(state: &mut OAuth2State) -> Result<(), TokenRe
             .refresh_token
             .as_ref()
             .ok_or(TokenRefreshError::MissingRefreshToken)?
-            .expose_secret(ToOwned::to_owned),
+            .expose_secret()
+            .to_owned(),
     );
-    let client_id: Zeroizing<String> =
-        Zeroizing::new(state.client_id.expose_secret(ToOwned::to_owned));
+    let client_id: Zeroizing<String> = Zeroizing::new(state.client_id.expose_secret().to_owned());
     let client_secret: Zeroizing<String> =
-        Zeroizing::new(state.client_secret.expose_secret(ToOwned::to_owned));
+        Zeroizing::new(state.client_secret.expose_secret().to_owned());
 
     let scope_joined: Option<String> = (!state.scopes.is_empty()).then(|| state.scopes.join(" "));
     let mut form: Vec<(&str, &str)> = vec![
@@ -203,16 +198,17 @@ mod tests {
         });
         update_state_from_token_response(&mut state, &body).expect("response should apply");
 
-        state
-            .access_token
-            .expose_secret(|v| assert_eq!(v, "new-token"));
+        assert_eq!(state.access_token.expose_secret(), "new-token");
         assert_eq!(state.token_type, "Bearer");
         assert_eq!(state.scopes, vec!["read".to_owned(), "write".to_owned()]);
-        state
-            .refresh_token
-            .as_ref()
-            .expect("refresh token")
-            .expose_secret(|v| assert_eq!(v, "refresh-2"));
+        assert_eq!(
+            state
+                .refresh_token
+                .as_ref()
+                .expect("refresh token")
+                .expose_secret(),
+            "refresh-2"
+        );
         assert!(state.expires_at.is_some());
     }
 

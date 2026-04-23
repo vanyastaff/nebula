@@ -16,6 +16,10 @@ pub trait AnyCredential: Any + Send + Sync + 'static {
     fn credential_key(&self) -> &str;
     /// Integration-catalog metadata describing this credential type.
     fn metadata(&self) -> CredentialMetadata;
+    /// Whether this credential produces ephemeral, per-execution secrets.
+    fn is_dynamic(&self) -> bool;
+    /// Lease duration for dynamic credentials (`None` = no automatic expiry).
+    fn lease_ttl(&self) -> Option<std::time::Duration>;
 }
 
 /// Blanket impl: every `Credential` is automatically an `AnyCredential`.
@@ -27,5 +31,13 @@ impl<C: crate::Credential + 'static> AnyCredential for C {
 
     fn metadata(&self) -> CredentialMetadata {
         C::metadata()
+    }
+
+    fn is_dynamic(&self) -> bool {
+        C::DYNAMIC
+    }
+
+    fn lease_ttl(&self) -> Option<std::time::Duration> {
+        C::LEASE_TTL
     }
 }

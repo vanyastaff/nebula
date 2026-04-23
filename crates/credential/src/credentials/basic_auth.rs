@@ -104,8 +104,8 @@ mod tests {
         let auth = IdentityPassword::new("admin", SecretString::new("s3cret"));
         let projected = BasicAuthCredential::project(&auth);
         assert_eq!(projected.identity(), "admin");
-        let original = auth.password().expose_secret(ToOwned::to_owned);
-        let cloned = projected.password().expose_secret(ToOwned::to_owned);
+        let original = auth.password().expose_secret().to_owned();
+        let cloned = projected.password().expose_secret().to_owned();
         assert_eq!(original, cloned);
     }
 
@@ -114,12 +114,12 @@ mod tests {
         let mut values = FieldValues::new();
         values.set_raw("username", serde_json::Value::String("alice".into()));
         values.set_raw("password", serde_json::Value::String("p@ssw0rd".into()));
-        let ctx = CredentialContext::new("test-user");
+        let ctx = CredentialContext::for_test("test-user");
         let result = BasicAuthCredential::resolve(&values, &ctx).await.unwrap();
         match result {
             StaticResolveResult::Complete(auth) => {
                 assert_eq!(auth.identity(), "alice");
-                let pw = auth.password().expose_secret(ToOwned::to_owned);
+                let pw = auth.password().expose_secret().to_owned();
                 assert_eq!(pw, "p@ssw0rd");
             },
             _ => panic!("expected Complete variant"),
@@ -130,7 +130,7 @@ mod tests {
     async fn resolve_returns_error_on_missing_username() {
         let mut values = FieldValues::new();
         values.set_raw("password", serde_json::Value::String("secret".into()));
-        let ctx = CredentialContext::new("test-user");
+        let ctx = CredentialContext::for_test("test-user");
         let result = BasicAuthCredential::resolve(&values, &ctx).await;
         assert!(result.is_err());
     }
@@ -139,7 +139,7 @@ mod tests {
     async fn resolve_returns_error_on_missing_password() {
         let mut values = FieldValues::new();
         values.set_raw("username", serde_json::Value::String("alice".into()));
-        let ctx = CredentialContext::new("test-user");
+        let ctx = CredentialContext::for_test("test-user");
         let result = BasicAuthCredential::resolve(&values, &ctx).await;
         assert!(result.is_err());
     }

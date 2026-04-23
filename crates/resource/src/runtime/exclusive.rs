@@ -10,7 +10,7 @@ use tokio::sync::Semaphore;
 
 use crate::{
     error::Error,
-    handle::ResourceHandle,
+    guard::ResourceGuard,
     metrics::ResourceOpsMetrics,
     options::AcquireOptions,
     release_queue::ReleaseQueue,
@@ -74,7 +74,7 @@ where
         generation: u64,
         options: &AcquireOptions,
         metrics: Option<ResourceOpsMetrics>,
-    ) -> Result<ResourceHandle<R>, Error>
+    ) -> Result<ResourceGuard<R>, Error>
     where
         R::Runtime: Into<R::Lease>,
     {
@@ -96,7 +96,7 @@ where
         // still running. We move the permit into the release closure and
         // then into the submitted future, so it is dropped AFTER reset
         // resolves (see `release_exclusive`).
-        Ok(ResourceHandle::guarded(
+        Ok(ResourceGuard::guarded(
             lease,
             R::key(),
             TopologyTag::Exclusive,

@@ -22,23 +22,23 @@
 //!   (`HasCredentials`, `HasResources`, `HasMetrics`, `HasEventBus`, `HasLogger`).
 //! - **Accessors** — `ResourceAccessor`, `CredentialAccessor`, `Logger`, `MetricsEmitter`,
 //!   `EventEmitter`, `Clock`.
-//! - **Guards** — `Guard`, `TypedGuard` RAII guard traits.
+//! - **Guards** — `Guard`, `TypedGuard` RAII guard traits for scoped resource and credential
+//!   lifecycle.
+//! - **Auth** — `AuthScheme` trait, `AuthPattern` enum (module `auth`).
 //! - **Lifecycle** — `LayerLifecycle`, `ShutdownOutcome`.
 //! - **Observability** — `TraceId`, `SpanId`.
 //! - **Errors** — `CoreError` (typed, thiserror; no anyhow).
-//!
-//! ## Credential-specific types moved to `nebula-credential`
-//!
-//! `AuthScheme`, `AuthPattern`, `CredentialEvent`, and `CredentialId` previously
-//! lived here as re-exports. They now live in [`nebula-credential`][nc] directly,
-//! so credential-domain vocabulary no longer pollutes the cross-cutting base.
-//!
-//! [nc]: https://docs.rs/nebula-credential
+//! - **Roles** — `OrgRole`, `WorkspaceRole`, `effective_workspace_role` (module `role`).
+//! - **Permissions** — `Permission`, `PermissionDenied` (module `permission`).
+//! - **Tenancy** — `TenantContext`, `ResolvedIds` (module `tenancy`).
+//! - **Slugs** — `Slug`, `SlugKind`, `SlugError`, `is_prefixed_ulid()` (module `slug`).
 
 // ── Modules ─────────────────────────────────────────────────────────────────
 
 /// Accessor trait definitions for capability injection.
 pub mod accessor;
+/// Authentication scheme contract types and pattern classification.
+pub mod auth;
 /// Context system -- base trait + capabilities.
 pub mod context;
 /// Dependency declaration types.
@@ -51,29 +51,42 @@ pub mod id;
 pub mod lifecycle;
 /// Observability identity types.
 pub mod obs;
+/// Granular permission definitions.
+pub mod permission;
+/// Organization and workspace role enums.
+pub mod role;
 /// Scope system for resource lifecycle management.
 pub mod scope;
 /// Shared serde helpers (duration serialization, etc.).
 pub mod serde_helpers;
+/// Validated slug strings for human-readable identifiers.
+pub mod slug;
+/// Multi-tenant context and resolved IDs.
+pub mod tenancy;
 
 mod error;
 mod keys;
 
 // ── Re-exports ──────────────────────────────────────────────────────────────
 
+pub use auth::{AuthPattern, AuthScheme};
 pub use context::{
     BaseContext, BaseContextBuilder, Context, HasCredentials, HasEventBus, HasLogger, HasMetrics,
     HasResources,
 };
 pub use dependencies::*;
 pub use error::*;
-pub use guard::{Guard, TypedGuard};
+pub use guard::{Guard, TypedGuard, debug_redacted, debug_typed};
 #[allow(deprecated)] // OrganizationId re-exported for migration period
 pub use id::*;
 pub use keys::*;
 pub use lifecycle::{LayerLifecycle, ShutdownOutcome};
 pub use obs::{SpanId, TraceId};
+pub use permission::Permission;
+pub use role::{OrgRole, WorkspaceRole, effective_workspace_role};
 pub use scope::*;
+pub use slug::{Slug, SlugError, SlugKind, is_prefixed_ulid};
+pub use tenancy::{PermissionDenied, ResolvedIds, TenantContext};
 
 /// Named parse-error type for [`PluginKey`] — `<PluginKey as std::str::FromStr>::Err`.
 ///

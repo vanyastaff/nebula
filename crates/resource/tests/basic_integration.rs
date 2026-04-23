@@ -11,10 +11,9 @@ use std::sync::{
 
 use nebula_core::{ExecutionId, ResourceKey, resource_key};
 use nebula_resource::{
-    AcquireOptions, Manager, ShutdownConfig,
-    ctx::{BasicCtx, Ctx, ScopeLevel},
+    AcquireOptions, Manager, ResourceContext, ScopeLevel, ShutdownConfig,
     error::{Error, ErrorKind},
-    handle::ResourceHandle,
+    guard::ResourceGuard,
     recovery::{GateState, RecoveryGate, RecoveryGateConfig},
     release_queue::ReleaseQueue,
     resource::{Resource, ResourceConfig, ResourceMetadata},
@@ -74,6 +73,13 @@ impl ResourceConfig for TestConfig {
         }
         Ok(())
     }
+
+    fn fingerprint(&self) -> u64 {
+        use std::hash::{Hash, Hasher};
+        let mut h = std::collections::hash_map::DefaultHasher::new();
+        self.name.hash(&mut h);
+        h.finish()
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -110,7 +116,7 @@ impl Resource for PoolTestResource {
         &self,
         _config: &TestConfig,
         _auth: &(),
-        _ctx: &dyn Ctx,
+        _ctx: &ResourceContext,
     ) -> impl Future<Output = Result<Arc<AtomicU64>, TestError>> + Send {
         let counter = self.create_counter.clone();
         async move {
@@ -184,7 +190,7 @@ impl Resource for ResidentTestResource {
         &self,
         _config: &TestConfig,
         _auth: &(),
-        _ctx: &dyn Ctx,
+        _ctx: &ResourceContext,
     ) -> impl Future<Output = Result<Arc<AtomicU64>, TestError>> + Send {
         let counter = self.create_counter.clone();
         async move {
@@ -212,8 +218,14 @@ impl Resident for ResidentTestResource {
 // Helpers
 // ---------------------------------------------------------------------------
 
-fn test_ctx() -> BasicCtx {
-    BasicCtx::new(ExecutionId::new())
+fn test_ctx() -> ResourceContext {
+    use nebula_core::scope::Scope;
+    use tokio_util::sync::CancellationToken;
+    let scope = Scope {
+        execution_id: Some(ExecutionId::new()),
+        ..Default::default()
+    };
+    ResourceContext::minimal(scope, CancellationToken::new())
 }
 
 fn test_config() -> TestConfig {
@@ -473,7 +485,7 @@ async fn manager_register_and_acquire_pooled() {
     assert!(manager.contains(&resource_key!("test-pool")));
 
     let ctx = test_ctx();
-    let handle: ResourceHandle<PoolTestResource> = manager
+    let handle: ResourceGuard<PoolTestResource> = manager
         .acquire_pooled(&(), &ctx, &AcquireOptions::default())
         .await
         .expect("acquire should succeed");
@@ -510,7 +522,7 @@ async fn manager_register_and_acquire_resident() {
         .expect("registration should succeed");
 
     let ctx = test_ctx();
-    let handle: ResourceHandle<ResidentTestResource> = manager
+    let handle: ResourceGuard<ResidentTestResource> = manager
         .acquire_resident(&(), &ctx, &AcquireOptions::default())
         .await
         .expect("acquire should succeed");
@@ -614,7 +626,7 @@ impl Resource for SlowCreatePoolResource {
         &self,
         _config: &TestConfig,
         _auth: &(),
-        _ctx: &dyn Ctx,
+        _ctx: &ResourceContext,
     ) -> Result<Arc<AtomicU64>, TestError> {
         let now = self.in_flight.fetch_add(1, Ordering::SeqCst) + 1;
         // Update peak = max(peak, now) via `AtomicU64::update` (Rust 1.95).
@@ -747,8 +759,11 @@ async fn reload_config_bumps_status_generation() {
         )
         .expect("register");
 
+    let updated_config = TestConfig {
+        name: "test-v2".into(),
+    };
     manager
-        .reload_config::<ResidentTestResource>(test_config(), &ScopeLevel::Global)
+        .reload_config::<ResidentTestResource>(updated_config, &ScopeLevel::Global)
         .expect("reload");
 
     let snap = manager
@@ -997,7 +1012,7 @@ async fn acquire_emits_success_event() {
     let _ = rx.try_recv();
 
     let ctx = test_ctx();
-    let _handle: ResourceHandle<ResidentTestResource> = manager
+    let _handle: ResourceGuard<ResidentTestResource> = manager
         .acquire_resident(&(), &ctx, &AcquireOptions::default())
         .await
         .expect("acquire should succeed");
@@ -1128,7 +1143,8 @@ async fn manager_scope_exact_match() {
     let resident_rt =
         ResidentRuntime::<ResidentTestResource>::new(resident::config::Config::default());
 
-    let scope = ScopeLevel::Organization("acme".into());
+    let org_id = nebula_core::OrgId::new();
+    let scope = ScopeLevel::Organization(org_id);
     manager
         .register(
             resource.clone(),
@@ -1141,8 +1157,16 @@ async fn manager_scope_exact_match() {
         .expect("registration should succeed");
 
     // Acquire with the same org scope.
-    let ctx = BasicCtx::new(ExecutionId::new()).with_scope(scope);
-    let handle: ResourceHandle<ResidentTestResource> = manager
+    use nebula_core::scope::Scope;
+    use tokio_util::sync::CancellationToken;
+    let ctx = ResourceContext::minimal(
+        Scope {
+            org_id: Some(org_id),
+            ..Default::default()
+        },
+        CancellationToken::new(),
+    );
+    let handle: ResourceGuard<ResidentTestResource> = manager
         .acquire_resident(&(), &ctx, &AcquireOptions::default())
         .await
         .expect("acquire with matching scope should succeed");
@@ -1171,9 +1195,17 @@ async fn manager_scope_fallback_to_global() {
         .expect("registration should succeed");
 
     // Acquire with Organization scope — should fall back to Global.
-    let ctx =
-        BasicCtx::new(ExecutionId::new()).with_scope(ScopeLevel::Organization("other-org".into()));
-    let handle: ResourceHandle<ResidentTestResource> = manager
+    use nebula_core::scope::Scope;
+    use tokio_util::sync::CancellationToken;
+    let ctx = ResourceContext::minimal(
+        Scope {
+            org_id: Some(nebula_core::OrgId::new()),
+            execution_id: Some(ExecutionId::new()),
+            ..Default::default()
+        },
+        CancellationToken::new(),
+    );
+    let handle: ResourceGuard<ResidentTestResource> = manager
         .acquire_resident(&(), &ctx, &AcquireOptions::default())
         .await
         .expect("acquire should fall back to Global");
@@ -1189,12 +1221,13 @@ async fn manager_scope_mismatch_not_found() {
     let resident_rt =
         ResidentRuntime::<ResidentTestResource>::new(resident::config::Config::default());
 
-    // Register at Organization("acme") — no Global fallback.
+    // Register at Organization(org_id) — no Global fallback.
+    let org_id = nebula_core::OrgId::new();
     manager
         .register(
             resource,
             test_config(),
-            ScopeLevel::Organization("acme".into()),
+            ScopeLevel::Organization(org_id),
             TopologyRuntime::Resident(resident_rt),
             None,
             None,
@@ -1202,8 +1235,16 @@ async fn manager_scope_mismatch_not_found() {
         .expect("registration should succeed");
 
     // Acquire with a different org scope — no match, no Global fallback.
-    let ctx =
-        BasicCtx::new(ExecutionId::new()).with_scope(ScopeLevel::Organization("other".into()));
+    use nebula_core::scope::Scope;
+    use tokio_util::sync::CancellationToken;
+    let ctx = ResourceContext::minimal(
+        Scope {
+            org_id: Some(nebula_core::OrgId::new()),
+            execution_id: Some(ExecutionId::new()),
+            ..Default::default()
+        },
+        CancellationToken::new(),
+    );
     let result = manager
         .acquire_resident::<ResidentTestResource>(&(), &ctx, &AcquireOptions::default())
         .await;
@@ -1247,7 +1288,7 @@ async fn metrics_track_acquire_release_create_destroy() {
 
     // Acquire.
     let ctx = test_ctx();
-    let handle: ResourceHandle<ResidentTestResource> = manager
+    let handle: ResourceGuard<ResidentTestResource> = manager
         .acquire_resident(&(), &ctx, &AcquireOptions::default())
         .await
         .expect("acquire should succeed");
@@ -1315,12 +1356,12 @@ async fn manager_multiple_resources_coexist() {
 
     // Acquire each independently.
     let ctx = test_ctx();
-    let pool_handle: ResourceHandle<PoolTestResource> = manager
+    let pool_handle: ResourceGuard<PoolTestResource> = manager
         .acquire_pooled(&(), &ctx, &AcquireOptions::default())
         .await
         .expect("pool acquire should succeed");
 
-    let resident_handle: ResourceHandle<ResidentTestResource> = manager
+    let resident_handle: ResourceGuard<ResidentTestResource> = manager
         .acquire_resident(&(), &ctx, &AcquireOptions::default())
         .await
         .expect("resident acquire should succeed");
@@ -1502,7 +1543,7 @@ impl Resource for ServiceTestResource {
         &self,
         _config: &TestConfig,
         _auth: &(),
-        _ctx: &dyn Ctx,
+        _ctx: &ResourceContext,
     ) -> impl Future<Output = Result<Arc<ServiceInner>, TestError>> + Send {
         let counter = self.create_counter.clone();
         async move {
@@ -1528,7 +1569,7 @@ impl Service for ServiceTestResource {
     fn acquire_token(
         &self,
         runtime: &Arc<ServiceInner>,
-        _ctx: &dyn Ctx,
+        _ctx: &ResourceContext,
     ) -> impl Future<Output = Result<ServiceToken, TestError>> + Send {
         let token_id = self.token_counter.fetch_add(1, Ordering::Relaxed);
         let data = format!("{}-token-{token_id}", runtime.data);
@@ -1586,7 +1627,7 @@ impl Resource for TransportTestResource {
         &self,
         _config: &TestConfig,
         _auth: &(),
-        _ctx: &dyn Ctx,
+        _ctx: &ResourceContext,
     ) -> impl Future<Output = Result<Arc<TransportInner>, TestError>> + Send {
         let counter = self.create_counter.clone();
         async move {
@@ -1610,7 +1651,7 @@ impl Transport for TransportTestResource {
     fn open_session(
         &self,
         _transport: &Arc<TransportInner>,
-        _ctx: &dyn Ctx,
+        _ctx: &ResourceContext,
     ) -> impl Future<Output = Result<SessionHandle, TestError>> + Send {
         let id = self.session_counter.fetch_add(1, Ordering::Relaxed);
         async move { Ok(SessionHandle { id }) }
@@ -1664,7 +1705,7 @@ impl Resource for ExclusiveTestResource {
         &self,
         _config: &TestConfig,
         _auth: &(),
-        _ctx: &dyn Ctx,
+        _ctx: &ResourceContext,
     ) -> impl Future<Output = Result<Arc<AtomicU64>, TestError>> + Send {
         let counter = self.create_counter.clone();
         async move {
@@ -1758,7 +1799,7 @@ async fn service_acquire_via_manager() {
     assert!(manager.contains(&resource_key!("test-service")));
 
     let ctx = test_ctx();
-    let handle: ResourceHandle<ServiceTestResource> = manager
+    let handle: ResourceGuard<ServiceTestResource> = manager
         .acquire_service(&ctx, &AcquireOptions::default())
         .await
         .expect("acquire should succeed");
@@ -2115,7 +2156,7 @@ impl Resource for SlowResetExclusive {
         &self,
         _config: &TestConfig,
         _auth: &(),
-        _ctx: &dyn Ctx,
+        _ctx: &ResourceContext,
     ) -> Result<Arc<AtomicU64>, TestError> {
         Ok(Arc::new(AtomicU64::new(0)))
     }
@@ -2168,7 +2209,7 @@ async fn exclusive_next_acquire_waits_until_reset_completes() {
 
     // Give the release queue worker time to pick up the reset task and
     // start its sleep. Without the fix the permit was already dropped by
-    // HandleInner::Guarded's Drop; with the fix the permit moved into the
+    // GuardInner::Guarded's Drop; with the fix the permit moved into the
     // reset future and is still held.
     tokio::time::sleep(std::time::Duration::from_millis(20)).await;
 
@@ -2305,7 +2346,7 @@ async fn registry_backed_metrics_record_operations() {
 
     // Acquire the pooled resource once.
     let ctx = test_ctx();
-    let handle: ResourceHandle<PoolTestResource> = manager
+    let handle: ResourceGuard<PoolTestResource> = manager
         .acquire_pooled(&(), &ctx, &AcquireOptions::default())
         .await
         .expect("pool acquire should succeed");
@@ -2472,7 +2513,7 @@ impl Resource for FailingResidentResource {
         &self,
         _config: &TestConfig,
         _auth: &(),
-        _ctx: &dyn Ctx,
+        _ctx: &ResourceContext,
     ) -> impl Future<Output = Result<Arc<AtomicU64>, TestError>> + Send {
         let count = self.create_count.fetch_add(1, Ordering::Relaxed);
         let threshold = self.failures_before_success;
@@ -2547,7 +2588,7 @@ impl Resource for PermanentFailResource {
         &self,
         _config: &TestConfig,
         _auth: &(),
-        _ctx: &dyn Ctx,
+        _ctx: &ResourceContext,
     ) -> impl Future<Output = Result<Arc<AtomicU64>, PermanentTestError>> + Send {
         self.create_count.fetch_add(1, Ordering::Relaxed);
         async { Err(PermanentTestError("permanent failure".into())) }
@@ -2599,7 +2640,7 @@ async fn acquire_retries_on_transient_failure() {
         .expect("registration should succeed");
 
     let ctx = test_ctx();
-    let handle: ResourceHandle<FailingResidentResource> = manager
+    let handle: ResourceGuard<FailingResidentResource> = manager
         .acquire_resident(&(), &ctx, &AcquireOptions::default())
         .await
         .expect("acquire should succeed after retry");
@@ -2672,7 +2713,7 @@ async fn acquire_succeeds_without_resilience() {
         .expect("registration should succeed");
 
     let ctx = test_ctx();
-    let handle: ResourceHandle<ResidentTestResource> = manager
+    let handle: ResourceGuard<ResidentTestResource> = manager
         .acquire_resident(&(), &ctx, &AcquireOptions::default())
         .await
         .expect("acquire without resilience should succeed");
@@ -2932,7 +2973,7 @@ impl Resource for HandleDummyResource {
         &self,
         _config: &TestConfig,
         _auth: &(),
-        _ctx: &dyn Ctx,
+        _ctx: &ResourceContext,
     ) -> Result<u32, TestError> {
         Ok(1)
     }
@@ -2953,7 +2994,7 @@ fn panic_in_release_callback_does_not_abort() {
     let entered = callback_entered.clone();
 
     {
-        let _handle = ResourceHandle::<HandleDummyResource>::guarded(
+        let _handle = ResourceGuard::<HandleDummyResource>::guarded(
             42,
             resource_key!("handle-dummy"),
             nebula_resource::TopologyTag::Pool,
@@ -3139,7 +3180,7 @@ impl Resource for DropOnRecycleResource {
         &self,
         _config: &TestConfig,
         _auth: &(),
-        _ctx: &dyn Ctx,
+        _ctx: &ResourceContext,
     ) -> impl Future<Output = Result<Arc<AtomicU64>, TestError>> + Send {
         let counter = self.create_counter.clone();
         async move {
@@ -3231,7 +3272,7 @@ impl Resource for FailingSessionTransport {
         &self,
         _config: &TestConfig,
         _auth: &(),
-        _ctx: &dyn Ctx,
+        _ctx: &ResourceContext,
     ) -> Result<u32, TestError> {
         Ok(1)
     }
@@ -3242,7 +3283,11 @@ impl Resource for FailingSessionTransport {
 }
 
 impl Transport for FailingSessionTransport {
-    async fn open_session(&self, _transport: &u32, _ctx: &dyn Ctx) -> Result<u32, TestError> {
+    async fn open_session(
+        &self,
+        _transport: &u32,
+        _ctx: &ResourceContext,
+    ) -> Result<u32, TestError> {
         Err(TestError("session open failed".into()))
     }
 }
@@ -3317,7 +3362,7 @@ impl Resource for FailingResetExclusive {
         &self,
         _config: &TestConfig,
         _auth: &(),
-        _ctx: &dyn Ctx,
+        _ctx: &ResourceContext,
     ) -> Result<u32, TestError> {
         Ok(1)
     }
@@ -3406,7 +3451,7 @@ async fn recovery_gate_blocks_acquire_when_permanently_failed() {
         .expect("registration should succeed");
 
     let ctx = test_ctx();
-    let result: Result<ResourceHandle<ResidentTestResource>, _> = manager
+    let result: Result<ResourceGuard<ResidentTestResource>, _> = manager
         .acquire_resident(&(), &ctx, &AcquireOptions::default())
         .await;
 
@@ -3441,7 +3486,7 @@ async fn recovery_gate_blocks_acquire_when_in_progress() {
         .expect("registration should succeed");
 
     let ctx = test_ctx();
-    let result: Result<ResourceHandle<ResidentTestResource>, _> = manager
+    let result: Result<ResourceGuard<ResidentTestResource>, _> = manager
         .acquire_resident(&(), &ctx, &AcquireOptions::default())
         .await;
 
@@ -3474,7 +3519,7 @@ async fn recovery_gate_allows_acquire_when_idle() {
         .expect("registration should succeed");
 
     let ctx = test_ctx();
-    let handle: ResourceHandle<ResidentTestResource> = manager
+    let handle: ResourceGuard<ResidentTestResource> = manager
         .acquire_resident(&(), &ctx, &AcquireOptions::default())
         .await
         .expect("acquire should succeed when gate is idle");
@@ -3509,7 +3554,7 @@ async fn recovery_gate_allows_acquire_after_backoff_expires() {
 
     let ctx = test_ctx();
     // Backoff expired, so acquire should proceed (caller acts as probe).
-    let handle: ResourceHandle<ResidentTestResource> = manager
+    let handle: ResourceGuard<ResidentTestResource> = manager
         .acquire_resident(&(), &ctx, &AcquireOptions::default())
         .await
         .expect("acquire should succeed after backoff expires");
@@ -3535,7 +3580,7 @@ async fn recovery_gate_none_does_not_affect_acquire() {
         .expect("registration should succeed");
 
     let ctx = test_ctx();
-    let handle: ResourceHandle<ResidentTestResource> = manager
+    let handle: ResourceGuard<ResidentTestResource> = manager
         .acquire_resident(&(), &ctx, &AcquireOptions::default())
         .await
         .expect("acquire should succeed without recovery gate");
@@ -3614,7 +3659,7 @@ impl Resource for ReloadPoolResource {
         &self,
         _config: &ReloadConfig,
         _auth: &(),
-        _ctx: &dyn Ctx,
+        _ctx: &ResourceContext,
     ) -> impl Future<Output = Result<Arc<AtomicU64>, TestError>> + Send {
         let counter = self.create_counter.clone();
         async move {
@@ -3774,7 +3819,7 @@ async fn reload_config_evicts_stale_pool_instances() {
     let ctx = test_ctx();
 
     // Acquire and release to populate idle queue with fingerprint=1.
-    let handle: ResourceHandle<ReloadPoolResource> = manager
+    let handle: ResourceGuard<ReloadPoolResource> = manager
         .acquire_pooled(&(), &ctx, &AcquireOptions::default())
         .await
         .expect("first acquire should succeed");
@@ -3788,7 +3833,7 @@ async fn reload_config_evicts_stale_pool_instances() {
         .expect("reload should succeed");
 
     // Next acquire should create a fresh instance (stale one evicted).
-    let handle2: ResourceHandle<ReloadPoolResource> = manager
+    let handle2: ResourceGuard<ReloadPoolResource> = manager
         .acquire_pooled(&(), &ctx, &AcquireOptions::default())
         .await
         .expect("second acquire should succeed");

@@ -35,7 +35,7 @@
 //!
 //! ```rust,ignore
 //! use nebula_action::{
-//!     Action, ActionCategory, ActionContext, ActionDependencies, ActionError,
+//!     Action, ActionCategory, DeclaresDependencies, ActionError,
 //!     ActionMetadata, ControlAction, ControlInput, ControlOutcome,
 //! };
 //! use nebula_core::action_key;
@@ -53,7 +53,7 @@
 //!     }
 //! }
 //!
-//! impl ActionDependencies for MyIf {}
+//! impl DeclaresDependencies for MyIf {}
 //! impl Action for MyIf {
 //!     fn metadata(&self) -> &ActionMetadata { &self.metadata }
 //! }
@@ -62,7 +62,7 @@
 //!     async fn evaluate(
 //!         &self,
 //!         input: ControlInput,
-//!         _ctx: &ActionContext,
+//!         _ctx: &(impl nebula_action::ActionContext + ?Sized),
 //!     ) -> Result<ControlOutcome, ActionError> {
 //!         let condition = input.get_bool("/condition")?;
 //!         let selected = if condition { "true" } else { "false" };
@@ -74,9 +74,8 @@
 //! }
 //! ```
 
-use std::{fmt, future::Future, sync::Arc};
+use std::{fmt, future::Future, pin::Pin, sync::Arc};
 
-use async_trait::async_trait;
 use serde_json::Value;
 
 use crate::{
@@ -482,7 +481,6 @@ impl<A: ControlAction> ControlActionAdapter<A> {
     }
 }
 
-#[async_trait]
 impl<A> StatelessHandler for ControlActionAdapter<A>
 where
     A: ControlAction + Send + Sync + 'static,
@@ -491,16 +489,23 @@ where
         &self.cached_metadata
     }
 
-    async fn execute(
-        &self,
+    fn execute<'life0, 'life1, 'a>(
+        &'life0 self,
         input: Value,
-        ctx: &ActionContext,
-    ) -> Result<ActionResult<Value>, ActionError> {
-        let outcome = self
-            .action
-            .evaluate(ControlInput::from_value(input), ctx)
-            .await?;
-        Ok(outcome.into())
+        ctx: &'life1 ActionContext,
+    ) -> Pin<Box<dyn Future<Output = Result<ActionResult<Value>, ActionError>> + Send + 'a>>
+    where
+        Self: 'a,
+        'life0: 'a,
+        'life1: 'a,
+    {
+        Box::pin(async move {
+            let outcome = self
+                .action
+                .evaluate(ControlInput::from_value(input), ctx)
+                .await?;
+            Ok(outcome.into())
+        })
     }
 }
 
@@ -533,26 +538,16 @@ fn derive_category(meta: &ActionMetadata) -> ActionCategory {
 
 #[cfg(test)]
 mod tests {
-    use nebula_core::{
-        action_key,
-        id::{ExecutionId, WorkflowId},
-        node_key,
-    };
-    use tokio_util::sync::CancellationToken;
+    use nebula_core::{DeclaresDependencies, action_key};
 
     use super::*;
     use crate::{
-        dependency::ActionDependencies,
         port::{OutputPort, default_input_ports, default_output_ports},
+        testing::{TestActionContext, TestContextBuilder},
     };
 
-    fn make_ctx() -> ActionContext {
-        ActionContext::new(
-            ExecutionId::nil(),
-            node_key!("test"),
-            WorkflowId::nil(),
-            CancellationToken::new(),
-        )
+    fn make_ctx() -> TestActionContext {
+        TestContextBuilder::new().build()
     }
 
     // ── ControlInput ────────────────────────────────────────────────
@@ -765,7 +760,7 @@ mod tests {
         }
     }
 
-    impl ActionDependencies for TestIf {}
+    impl DeclaresDependencies for TestIf {}
 
     impl Action for TestIf {
         fn metadata(&self) -> &ActionMetadata {
@@ -802,7 +797,7 @@ mod tests {
         }
     }
 
-    impl ActionDependencies for TestStop {}
+    impl DeclaresDependencies for TestStop {}
 
     impl Action for TestStop {
         fn metadata(&self) -> &ActionMetadata {

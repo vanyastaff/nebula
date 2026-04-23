@@ -511,7 +511,7 @@ impl CircuitBreaker {
 ### Adding Context
 
 ```rust
-use anyhow::Context;
+use std::error::Error;
 
 // Add context to errors
 let data = load_data()
