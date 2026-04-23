@@ -31,9 +31,9 @@ use axum::{
     routing::post,
 };
 use nebula_action::{
-    SignatureOutcome, SignaturePolicy, SignatureScheme, TriggerContext, TriggerEvent,
-    TriggerHandler, WebhookConfig, WebhookEndpointProvider, WebhookHttpResponse, WebhookRequest,
-    verify_hmac_sha256, verify_hmac_sha256_base64,
+    SignatureOutcome, SignaturePolicy, SignatureScheme, TriggerEvent, TriggerHandler,
+    TriggerRuntimeContext, WebhookConfig, WebhookEndpointProvider, WebhookHttpResponse,
+    WebhookRequest, verify_hmac_sha256, verify_hmac_sha256_base64,
 };
 use nebula_metrics::{NEBULA_WEBHOOK_SIGNATURE_FAILURES_TOTAL, webhook_signature_failure_reason};
 use nebula_telemetry::metrics::MetricsRegistry;
@@ -93,7 +93,7 @@ pub struct ActivationHandle {
     /// Per-activation context template populated with the webhook
     /// endpoint capability. Runtime clones this into the trigger's
     /// `start()` call.
-    pub ctx: TriggerContext,
+    pub ctx: TriggerRuntimeContext,
     /// Fully-resolved URL the action hands to the external provider
     /// in `on_activate`. Same value is exposed inside `ctx.webhook`.
     pub endpoint_url: Url,
@@ -182,7 +182,7 @@ impl WebhookTransport {
         &self,
         handler: Arc<dyn TriggerHandler>,
         action_config: WebhookConfig,
-        ctx_template: TriggerContext,
+        ctx_template: TriggerRuntimeContext,
     ) -> Result<ActivationHandle, ActivationError> {
         let trigger_uuid = Uuid::new_v4();
         let nonce = generate_nonce();

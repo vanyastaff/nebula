@@ -15,7 +15,7 @@ pub struct SandboxedContext {
 
 impl SandboxedContext {
     /// Build sandbox metadata from an action context.
-    pub fn new(context: &ActionContext) -> Self {
+    pub fn new(context: &dyn ActionContext) -> Self {
         Self {
             cancellation: context.cancellation().clone(),
         }

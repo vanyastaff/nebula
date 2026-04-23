@@ -700,7 +700,7 @@ impl nebula_action::stateless::StatelessAction for KnifeEcho {
     async fn execute(
         &self,
         input: Self::Input,
-        _ctx: &nebula_action::ActionContext,
+        _ctx: &(impl nebula_action::ActionContext + ?Sized),
     ) -> Result<nebula_action::result::ActionResult<Self::Output>, nebula_action::ActionError> {
         Ok(nebula_action::result::ActionResult::success(input))
     }
@@ -926,7 +926,7 @@ impl nebula_action::stateless::StatelessAction for KnifeSlow {
     async fn execute(
         &self,
         input: Self::Input,
-        ctx: &nebula_action::ActionContext,
+        ctx: &(impl nebula_action::ActionContext + ?Sized),
     ) -> Result<nebula_action::result::ActionResult<Self::Output>, nebula_action::ActionError> {
         self.started.notify_one();
         tokio::select! {

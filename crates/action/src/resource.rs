@@ -35,14 +35,14 @@ pub trait ResourceAction: Action {
     /// Build the resource for this scope; engine runs this before downstream nodes.
     fn configure(
         &self,
-        ctx: &ActionContext,
+        ctx: &(impl ActionContext + ?Sized),
     ) -> impl Future<Output = Result<Self::Resource, ActionError>> + Send;
 
     /// Clean up the resource when the scope ends (e.g. drop pool, close connections).
     fn cleanup(
         &self,
         resource: Self::Resource,
-        ctx: &ActionContext,
+        ctx: &(impl ActionContext + ?Sized),
     ) -> impl Future<Output = Result<(), ActionError>> + Send;
 }
 
@@ -73,7 +73,7 @@ pub trait ResourceHandler: Send + Sync {
     fn configure<'life0, 'life1, 'a>(
         &'life0 self,
         config: Value,
-        ctx: &'life1 ActionContext,
+        ctx: &'life1 dyn ActionContext,
     ) -> Pin<Box<dyn Future<Output = Result<Box<dyn Any + Send + Sync>, ActionError>> + Send + 'a>>
     where
         Self: 'a,
@@ -88,7 +88,7 @@ pub trait ResourceHandler: Send + Sync {
     fn cleanup<'life0, 'life1, 'a>(
         &'life0 self,
         instance: Box<dyn Any + Send + Sync>,
-        ctx: &'life1 ActionContext,
+        ctx: &'life1 dyn ActionContext,
     ) -> Pin<Box<dyn Future<Output = Result<(), ActionError>> + Send + 'a>>
     where
         Self: 'a,
@@ -146,7 +146,7 @@ where
     fn configure<'life0, 'life1, 'a>(
         &'life0 self,
         _config: Value,
-        ctx: &'life1 ActionContext,
+        ctx: &'life1 dyn ActionContext,
     ) -> Pin<Box<dyn Future<Output = Result<Box<dyn Any + Send + Sync>, ActionError>> + Send + 'a>>
     where
         Self: 'a,
@@ -170,7 +170,7 @@ where
     fn cleanup<'life0, 'life1, 'a>(
         &'life0 self,
         resource: Box<dyn Any + Send + Sync>,
-        ctx: &'life1 ActionContext,
+        ctx: &'life1 dyn ActionContext,
     ) -> Pin<Box<dyn Future<Output = Result<(), ActionError>> + Send + 'a>>
     where
         Self: 'a,
@@ -239,14 +239,17 @@ mod tests {
     impl ResourceAction for MockResourceAction {
         type Resource = String;
 
-        async fn configure(&self, _ctx: &ActionContext) -> Result<String, ActionError> {
+        async fn configure(
+            &self,
+            _ctx: &(impl ActionContext + ?Sized),
+        ) -> Result<String, ActionError> {
             Ok("pool-default".to_owned())
         }
 
         async fn cleanup(
             &self,
             _resource: String,
-            _ctx: &ActionContext,
+            _ctx: &(impl ActionContext + ?Sized),
         ) -> Result<(), ActionError> {
             Ok(())
         }

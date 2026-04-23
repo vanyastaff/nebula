@@ -56,7 +56,7 @@ impl StatelessAction for CountingEchoHandler {
     async fn execute(
         &self,
         input: Self::Input,
-        _ctx: &nebula_action::ActionContext,
+        _ctx: &(impl nebula_action::ActionContext + ?Sized),
     ) -> Result<ActionResult<Self::Output>, ActionError> {
         self.count.fetch_add(1, Ordering::SeqCst);
         Ok(ActionResult::success(input))
@@ -85,7 +85,7 @@ impl StatelessAction for SlowCancellableHandler {
     async fn execute(
         &self,
         input: Self::Input,
-        ctx: &nebula_action::ActionContext,
+        ctx: &(impl nebula_action::ActionContext + ?Sized),
     ) -> Result<ActionResult<Self::Output>, ActionError> {
         self.count.fetch_add(1, Ordering::SeqCst);
         self.started.notify_one();

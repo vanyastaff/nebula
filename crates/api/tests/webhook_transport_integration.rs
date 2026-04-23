@@ -28,8 +28,8 @@ use axum::{
 use hmac::{Hmac, KeyInit, Mac};
 use nebula_action::{
     Action, ActionError, ActionMetadata, SignaturePolicy, TriggerContext, TriggerEventOutcome,
-    TriggerHandler, WebhookAction, WebhookConfig, WebhookRequest, WebhookResponse,
-    WebhookTriggerAdapter,
+    TriggerHandler, TriggerRuntimeContext, WebhookAction, WebhookConfig, WebhookRequest,
+    WebhookResponse, WebhookTriggerAdapter,
 };
 use nebula_api::services::webhook::{WebhookTransport, WebhookTransportConfig};
 use nebula_core::DeclaresDependencies;
@@ -78,14 +78,16 @@ impl WebhookAction for GitHubLikeWebhook {
         )
     }
 
-    async fn on_activate(&self, ctx: &TriggerContext) -> Result<Self::State, ActionError> {
+    async fn on_activate(
+        &self,
+        ctx: &(impl TriggerContext + ?Sized),
+    ) -> Result<Self::State, ActionError> {
         // Capture the URL that the transport injected via the
         // WebhookEndpointProvider capability. A real action would
         // call the provider API to register a hook pointing at this
         // URL; we just stash it for assertion.
         let endpoint = ctx
-            .webhook
-            .as_ref()
+            .webhook_endpoint()
             .ok_or_else(|| ActionError::fatal("webhook endpoint provider missing from ctx"))?;
         *self.captured_url.lock().unwrap() = Some(endpoint.endpoint_url().clone());
         Ok(RegistrationState { hook_id: 12345 })
@@ -95,7 +97,7 @@ impl WebhookAction for GitHubLikeWebhook {
         &self,
         request: &WebhookRequest,
         _state: &RegistrationState,
-        _ctx: &TriggerContext,
+        _ctx: &(impl TriggerContext + ?Sized),
     ) -> Result<WebhookResponse, ActionError> {
         // Defence-in-depth: the transport has already verified the
         // signature under our `config()` policy, but re-verifying
@@ -110,7 +112,7 @@ impl WebhookAction for GitHubLikeWebhook {
     async fn on_deactivate(
         &self,
         _state: RegistrationState,
-        _ctx: &TriggerContext,
+        _ctx: &(impl TriggerContext + ?Sized),
     ) -> Result<(), ActionError> {
         Ok(())
     }
@@ -177,10 +179,14 @@ async fn register_webhook(
     let config = adapter.config().clone();
     let adapter: Arc<dyn TriggerHandler> = Arc::new(adapter);
 
-    let ctx_template = TriggerContext::new(
+    let ctx_template = TriggerRuntimeContext::new(
+        Arc::new(
+            nebula_core::BaseContext::builder()
+                .cancellation(CancellationToken::new())
+                .build(),
+        ),
         nebula_core::WorkflowId::new(),
         nebula_core::node_key!("test"),
-        CancellationToken::new(),
     );
 
     let handle = transport
@@ -411,7 +417,7 @@ impl WebhookAction for HangingWebhook {
         WebhookConfig::default().with_signature_policy(SignaturePolicy::OptionalAcceptUnsigned)
     }
 
-    async fn on_activate(&self, _ctx: &TriggerContext) -> Result<(), ActionError> {
+    async fn on_activate(&self, _ctx: &(impl TriggerContext + ?Sized)) -> Result<(), ActionError> {
         Ok(())
     }
 
@@ -419,7 +425,7 @@ impl WebhookAction for HangingWebhook {
         &self,
         _request: &WebhookRequest,
         _state: &(),
-        _ctx: &TriggerContext,
+        _ctx: &(impl TriggerContext + ?Sized),
     ) -> Result<WebhookResponse, ActionError> {
         std::future::pending::<()>().await;
         unreachable!()
@@ -445,10 +451,14 @@ async fn handler_timeout_returns_504() {
     });
     let config = hanging_adapter.config().clone();
     let adapter: Arc<dyn TriggerHandler> = Arc::new(hanging_adapter);
-    let ctx_template = TriggerContext::new(
+    let ctx_template = TriggerRuntimeContext::new(
+        Arc::new(
+            nebula_core::BaseContext::builder()
+                .cancellation(CancellationToken::new())
+                .build(),
+        ),
         nebula_core::WorkflowId::new(),
         nebula_core::node_key!("test"),
-        CancellationToken::new(),
     );
     let handle = transport
         .activate(adapter.clone(), config, ctx_template)
@@ -612,7 +622,7 @@ impl WebhookAction for UnsignedWebhook {
         WebhookConfig::default().with_signature_policy(SignaturePolicy::OptionalAcceptUnsigned)
     }
 
-    async fn on_activate(&self, _ctx: &TriggerContext) -> Result<(), ActionError> {
+    async fn on_activate(&self, _ctx: &(impl TriggerContext + ?Sized)) -> Result<(), ActionError> {
         Ok(())
     }
 
@@ -620,7 +630,7 @@ impl WebhookAction for UnsignedWebhook {
         &self,
         _request: &WebhookRequest,
         _state: &(),
-        _ctx: &TriggerContext,
+        _ctx: &(impl TriggerContext + ?Sized),
     ) -> Result<WebhookResponse, ActionError> {
         Ok(WebhookResponse::accept(TriggerEventOutcome::skip()))
     }
@@ -647,7 +657,7 @@ impl WebhookAction for DefaultConfigWebhook {
     // Intentionally NOT overriding config() — inherits the fail-closed
     // Required-with-empty-secret default.
 
-    async fn on_activate(&self, _ctx: &TriggerContext) -> Result<(), ActionError> {
+    async fn on_activate(&self, _ctx: &(impl TriggerContext + ?Sized)) -> Result<(), ActionError> {
         Ok(())
     }
 
@@ -655,7 +665,7 @@ impl WebhookAction for DefaultConfigWebhook {
         &self,
         _request: &WebhookRequest,
         _state: &(),
-        _ctx: &TriggerContext,
+        _ctx: &(impl TriggerContext + ?Sized),
     ) -> Result<WebhookResponse, ActionError> {
         self.reached_handler
             .store(true, std::sync::atomic::Ordering::Release);
@@ -670,10 +680,14 @@ async fn register_typed<A: WebhookAction>(
     let adapter = WebhookTriggerAdapter::new(action);
     let config = adapter.config().clone();
     let adapter: Arc<dyn TriggerHandler> = Arc::new(adapter);
-    let ctx_template = TriggerContext::new(
+    let ctx_template = TriggerRuntimeContext::new(
+        Arc::new(
+            nebula_core::BaseContext::builder()
+                .cancellation(CancellationToken::new())
+                .build(),
+        ),
         nebula_core::WorkflowId::new(),
         nebula_core::node_key!("test"),
-        CancellationToken::new(),
     );
     let handle = transport
         .activate(adapter.clone(), config, ctx_template)

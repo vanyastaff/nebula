@@ -70,7 +70,11 @@ impl BatchAction for DummyJsonProductsBatchAction {
         )
     }
 
-    async fn process_item(&self, item: u32, _ctx: &ActionContext) -> Result<Value, ActionError> {
+    async fn process_item(
+        &self,
+        item: u32,
+        _ctx: &(impl ActionContext + ?Sized),
+    ) -> Result<Value, ActionError> {
         let url = format!("https://dummyjson.com/products/{item}");
         let response = reqwest::get(&url)
             .await

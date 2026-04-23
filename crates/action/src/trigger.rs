@@ -60,10 +60,16 @@ use crate::{
 )]
 pub trait TriggerAction: Action {
     /// Start the trigger (register listener, schedule poll, etc.).
-    fn start(&self, ctx: &TriggerContext) -> impl Future<Output = Result<(), ActionError>> + Send;
+    fn start(
+        &self,
+        ctx: &(impl TriggerContext + ?Sized),
+    ) -> impl Future<Output = Result<(), ActionError>> + Send;
 
     /// Stop the trigger (unregister, cancel schedule).
-    fn stop(&self, ctx: &TriggerContext) -> impl Future<Output = Result<(), ActionError>> + Send;
+    fn stop(
+        &self,
+        ctx: &(impl TriggerContext + ?Sized),
+    ) -> impl Future<Output = Result<(), ActionError>> + Send;
 }
 
 // ── Transport-agnostic event envelope ───────────────────────────────────────
@@ -321,7 +327,7 @@ pub trait TriggerHandler: Send + Sync {
     /// the trigger loop encounters a fatal error while running.
     fn start<'life0, 'life1, 'a>(
         &'life0 self,
-        ctx: &'life1 TriggerContext,
+        ctx: &'life1 dyn TriggerContext,
     ) -> Pin<Box<dyn Future<Output = Result<(), ActionError>> + Send + 'a>>
     where
         Self: 'a,
@@ -339,7 +345,7 @@ pub trait TriggerHandler: Send + Sync {
     /// Returns [`ActionError`] if the trigger cannot be stopped cleanly.
     fn stop<'life0, 'life1, 'a>(
         &'life0 self,
-        ctx: &'life1 TriggerContext,
+        ctx: &'life1 dyn TriggerContext,
     ) -> Pin<Box<dyn Future<Output = Result<(), ActionError>> + Send + 'a>>
     where
         Self: 'a,
@@ -367,7 +373,7 @@ pub trait TriggerHandler: Send + Sync {
     fn handle_event<'life0, 'life1, 'a>(
         &'life0 self,
         event: TriggerEvent,
-        ctx: &'life1 TriggerContext,
+        ctx: &'life1 dyn TriggerContext,
     ) -> Pin<Box<dyn Future<Output = Result<TriggerEventOutcome, ActionError>> + Send + 'a>>
     where
         Self: 'a,
@@ -428,7 +434,7 @@ where
     /// Returns [`ActionError`] if the trigger cannot be started.
     fn start<'life0, 'life1, 'a>(
         &'life0 self,
-        ctx: &'life1 TriggerContext,
+        ctx: &'life1 dyn TriggerContext,
     ) -> Pin<Box<dyn Future<Output = Result<(), ActionError>> + Send + 'a>>
     where
         Self: 'a,
@@ -445,7 +451,7 @@ where
     /// Returns [`ActionError`] if the trigger cannot be stopped cleanly.
     fn stop<'life0, 'life1, 'a>(
         &'life0 self,
-        ctx: &'life1 TriggerContext,
+        ctx: &'life1 dyn TriggerContext,
     ) -> Pin<Box<dyn Future<Output = Result<(), ActionError>> + Send + 'a>>
     where
         Self: 'a,
@@ -510,12 +516,12 @@ mod tests {
     }
 
     impl TriggerAction for MockTriggerAction {
-        async fn start(&self, _ctx: &TriggerContext) -> Result<(), ActionError> {
+        async fn start(&self, _ctx: &(impl TriggerContext + ?Sized)) -> Result<(), ActionError> {
             self.started.store(true, Ordering::Release);
             Ok(())
         }
 
-        async fn stop(&self, _ctx: &TriggerContext) -> Result<(), ActionError> {
+        async fn stop(&self, _ctx: &(impl TriggerContext + ?Sized)) -> Result<(), ActionError> {
             self.started.store(false, Ordering::Release);
             Ok(())
         }

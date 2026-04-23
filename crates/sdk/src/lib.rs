@@ -266,7 +266,7 @@ macro_rules! simple_action {
             async fn execute(
                 &$self,
                 $input_param: Self::Input,
-                $ctx_param: &$crate::nebula_action::ActionContext,
+                $ctx_param: &(impl $crate::nebula_action::ActionContext + ?Sized),
             ) -> ::std::result::Result<
                 $crate::nebula_action::ActionResult<Self::Output>,
                 $crate::nebula_action::ActionError,

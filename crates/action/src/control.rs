@@ -406,7 +406,7 @@ pub trait ControlAction: Action {
     /// async fn evaluate(
     ///     &self,
     ///     input: ControlInput,
-    ///     ctx: &ActionContext,
+    ///     ctx: &(impl ActionContext + ?Sized),
     /// ) -> Result<ControlOutcome, ActionError> { /* ... */ }
     /// ```
     ///
@@ -416,7 +416,7 @@ pub trait ControlAction: Action {
     /// fn evaluate(
     ///     &self,
     ///     input: ControlInput,
-    ///     ctx: &ActionContext,
+    ///     ctx: &(impl ActionContext + ?Sized),
     /// ) -> impl Future<Output = Result<ControlOutcome, ActionError>> + Send { /* ... */ }
     /// ```
     ///
@@ -426,7 +426,7 @@ pub trait ControlAction: Action {
     fn evaluate(
         &self,
         input: ControlInput,
-        ctx: &ActionContext,
+        ctx: &(impl ActionContext + ?Sized),
     ) -> impl Future<Output = Result<ControlOutcome, ActionError>> + Send;
 }
 
@@ -492,7 +492,7 @@ where
     fn execute<'life0, 'life1, 'a>(
         &'life0 self,
         input: Value,
-        ctx: &'life1 ActionContext,
+        ctx: &'life1 dyn ActionContext,
     ) -> Pin<Box<dyn Future<Output = Result<ActionResult<Value>, ActionError>> + Send + 'a>>
     where
         Self: 'a,
@@ -772,7 +772,7 @@ mod tests {
         async fn evaluate(
             &self,
             input: ControlInput,
-            _ctx: &ActionContext,
+            _ctx: &(impl ActionContext + ?Sized),
         ) -> Result<ControlOutcome, ActionError> {
             let condition = input.get_bool("/condition")?;
             let selected = if condition { "true" } else { "false" };
@@ -809,7 +809,7 @@ mod tests {
         async fn evaluate(
             &self,
             _input: ControlInput,
-            _ctx: &ActionContext,
+            _ctx: &(impl ActionContext + ?Sized),
         ) -> Result<ControlOutcome, ActionError> {
             Ok(ControlOutcome::Terminate {
                 reason: TerminationReason::Success {

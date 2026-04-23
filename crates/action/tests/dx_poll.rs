@@ -12,10 +12,10 @@ use std::{
 
 use nebula_action::{
     Action, ActionError, ActionMetadata, DeduplicatingCursor, EmitFailurePolicy, ExecutionEmitter,
-    PollAction, PollConfig, PollCursor, PollOutcome, PollResult, PollTriggerAdapter,
-    TestContextBuilder, TriggerHandler,
+    HasTriggerScheduling, PollAction, PollConfig, PollCursor, PollOutcome, PollResult,
+    PollTriggerAdapter, TestContextBuilder, TriggerHandler,
 };
-use nebula_core::{DeclaresDependencies, ExecutionId, node_key};
+use nebula_core::{DeclaresDependencies, ExecutionId, context::Context, node_key};
 
 struct TickPoller {
     meta: ActionMetadata,
@@ -40,7 +40,7 @@ impl PollAction for TickPoller {
     async fn poll(
         &self,
         cursor: &mut PollCursor<u32>,
-        _ctx: &nebula_action::TriggerContext,
+        _ctx: &(impl nebula_action::TriggerContext + ?Sized),
     ) -> Result<PollResult<serde_json::Value>, ActionError> {
         **cursor += 1;
         self.poll_count.fetch_add(1, Ordering::Relaxed);
@@ -69,7 +69,7 @@ async fn poll_adapter_emits_events() {
     let adapter = PollTriggerAdapter::new(poller);
     let (ctx, emitter, _) = TestContextBuilder::minimal().build_trigger();
 
-    let cancel = ctx.cancellation.clone();
+    let cancel = ctx.cancellation().clone();
     let ctx_clone = ctx.clone();
     let handle = tokio::spawn(async move { adapter.start(&ctx_clone).await });
 
@@ -133,7 +133,7 @@ async fn poll_adapter_rejects_concurrent_start() {
     let adapter = Arc::new(PollTriggerAdapter::new(poller));
     let (ctx, ..) = TestContextBuilder::minimal().build_trigger();
 
-    let cancel = ctx.cancellation.clone();
+    let cancel = ctx.cancellation().clone();
     let adapter1 = Arc::clone(&adapter);
     let ctx1 = ctx.clone();
     let handle = tokio::spawn(async move { adapter1.start(&ctx1).await });
@@ -179,7 +179,7 @@ impl PollAction for ZeroIntervalPoller {
     async fn poll(
         &self,
         _cursor: &mut PollCursor<u32>,
-        _ctx: &nebula_action::TriggerContext,
+        _ctx: &(impl nebula_action::TriggerContext + ?Sized),
     ) -> Result<PollResult<serde_json::Value>, ActionError> {
         self.poll_count.fetch_add(1, Ordering::Relaxed);
         Ok(vec![].into())
@@ -200,7 +200,7 @@ async fn poll_adapter_clamps_zero_interval_to_floor() {
     let adapter = Arc::new(PollTriggerAdapter::new(poller));
     let (ctx, ..) = TestContextBuilder::minimal().build_trigger();
 
-    let cancel = ctx.cancellation.clone();
+    let cancel = ctx.cancellation().clone();
     let adapter1 = Arc::clone(&adapter);
     let ctx1 = ctx.clone();
     let handle = tokio::spawn(async move { adapter1.start(&ctx1).await });
@@ -250,7 +250,7 @@ async fn poll_adapter_start_after_cancellation_succeeds() {
     let adapter2 = PollTriggerAdapter::new(poller2);
     let (ctx, ..) = TestContextBuilder::minimal().build_trigger();
 
-    let cancel = ctx.cancellation.clone();
+    let cancel = ctx.cancellation().clone();
     let ctx_clone = ctx.clone();
     let handle = tokio::spawn(async move { adapter1.start(&ctx_clone).await });
     for _ in 0..5 {
@@ -260,7 +260,7 @@ async fn poll_adapter_start_after_cancellation_succeeds() {
     handle.await.unwrap().unwrap();
 
     let (ctx2, ..) = TestContextBuilder::minimal().build_trigger();
-    let cancel2 = ctx2.cancellation.clone();
+    let cancel2 = ctx2.cancellation().clone();
     let handle2 = tokio::spawn(async move { adapter2.start(&ctx2).await });
     for _ in 0..5 {
         tokio::task::yield_now().await;
@@ -459,14 +459,17 @@ impl PollAction for FailingValidator {
         PollConfig::fixed(Duration::from_mins(1))
     }
 
-    async fn validate(&self, _ctx: &nebula_action::TriggerContext) -> Result<(), ActionError> {
+    async fn validate(
+        &self,
+        _ctx: &(impl nebula_action::TriggerContext + ?Sized),
+    ) -> Result<(), ActionError> {
         Err(ActionError::fatal("bad credentials"))
     }
 
     async fn poll(
         &self,
         _cursor: &mut PollCursor<u32>,
-        _ctx: &nebula_action::TriggerContext,
+        _ctx: &(impl nebula_action::TriggerContext + ?Sized),
     ) -> Result<PollResult<serde_json::Value>, ActionError> {
         unreachable!("poll should never be called if validate fails")
     }
@@ -513,7 +516,7 @@ impl PollAction for StartFromNowPoller {
 
     async fn initial_cursor(
         &self,
-        _ctx: &nebula_action::TriggerContext,
+        _ctx: &(impl nebula_action::TriggerContext + ?Sized),
     ) -> Result<u64, ActionError> {
         Ok(1000) // "start from now" — skip historical data
     }
@@ -521,7 +524,7 @@ impl PollAction for StartFromNowPoller {
     async fn poll(
         &self,
         cursor: &mut PollCursor<u64>,
-        _ctx: &nebula_action::TriggerContext,
+        _ctx: &(impl nebula_action::TriggerContext + ?Sized),
     ) -> Result<PollResult<serde_json::Value>, ActionError> {
         self.poll_count.fetch_add(1, Ordering::Relaxed);
         **cursor += 1;
@@ -543,7 +546,7 @@ async fn poll_adapter_uses_initial_cursor() {
     let adapter = PollTriggerAdapter::new(poller);
     let (ctx, emitter, _) = TestContextBuilder::minimal().build_trigger();
 
-    let cancel = ctx.cancellation.clone();
+    let cancel = ctx.cancellation().clone();
     let ctx_clone = ctx.clone();
     let handle = tokio::spawn(async move { adapter.start(&ctx_clone).await });
 
@@ -619,7 +622,7 @@ impl PollAction for ReadyPoller {
     async fn poll(
         &self,
         cursor: &mut PollCursor<u32>,
-        _ctx: &nebula_action::TriggerContext,
+        _ctx: &(impl nebula_action::TriggerContext + ?Sized),
     ) -> Result<PollResult<serde_json::Value>, ActionError> {
         **cursor += 1;
         self.poll_count.fetch_add(1, Ordering::Relaxed);
@@ -644,7 +647,7 @@ async fn retry_batch_dispatch_failure_records_error_and_backs_off() {
     let (ctx, ..) = TestContextBuilder::minimal().build_trigger();
     let ctx = ctx.with_emitter(Arc::clone(&failing) as Arc<dyn ExecutionEmitter>);
 
-    let cancel = ctx.cancellation.clone();
+    let cancel = ctx.cancellation().clone();
     let ctx_clone = ctx.clone();
     let handle = tokio::spawn(async move { adapter.start(&ctx_clone).await });
 
@@ -662,7 +665,7 @@ async fn retry_batch_dispatch_failure_records_error_and_backs_off() {
     cancel.cancel();
     handle.await.unwrap().unwrap();
 
-    let snap = ctx.health.snapshot();
+    let snap = ctx.health().snapshot();
     assert!(
         snap.error_streak >= 1,
         "error_streak must grow on dispatch failure, got {}",
@@ -734,7 +737,7 @@ impl PollAction for DropPoller {
     async fn poll(
         &self,
         cursor: &mut PollCursor<u32>,
-        _ctx: &nebula_action::TriggerContext,
+        _ctx: &(impl nebula_action::TriggerContext + ?Sized),
     ) -> Result<PollResult<serde_json::Value>, ActionError> {
         **cursor += 1;
         Ok(vec![serde_json::json!({"n": **cursor})].into())
@@ -756,7 +759,7 @@ async fn drop_and_continue_total_loss_records_error() {
     let (ctx, ..) = TestContextBuilder::minimal().build_trigger();
     let ctx = ctx.with_emitter(Arc::clone(&emitter) as Arc<dyn ExecutionEmitter>);
 
-    let cancel = ctx.cancellation.clone();
+    let cancel = ctx.cancellation().clone();
     let ctx_clone = ctx.clone();
     let handle = tokio::spawn(async move { adapter.start(&ctx_clone).await });
 
@@ -771,7 +774,7 @@ async fn drop_and_continue_total_loss_records_error() {
     cancel.cancel();
     handle.await.unwrap().unwrap();
 
-    let snap = ctx.health.snapshot();
+    let snap = ctx.health().snapshot();
     assert!(emitter.drops() >= 1, "emitter must have been called");
     assert!(
         snap.error_streak >= 1,
@@ -828,7 +831,7 @@ impl PollAction for HugeOverridePoller {
     async fn poll(
         &self,
         _cursor: &mut PollCursor<u32>,
-        _ctx: &nebula_action::TriggerContext,
+        _ctx: &(impl nebula_action::TriggerContext + ?Sized),
     ) -> Result<PollResult<serde_json::Value>, ActionError> {
         self.poll_count.fetch_add(1, Ordering::Relaxed);
         Ok(PollResult::from(vec![serde_json::json!({})])
@@ -850,7 +853,7 @@ async fn override_next_clamped_by_max_interval() {
     let adapter = PollTriggerAdapter::new(poller);
     let (ctx, ..) = TestContextBuilder::minimal().build_trigger();
 
-    let cancel = ctx.cancellation.clone();
+    let cancel = ctx.cancellation().clone();
     let ctx_clone = ctx.clone();
     let handle = tokio::spawn(async move { adapter.start(&ctx_clone).await });
 
@@ -904,7 +907,7 @@ impl PollAction for EmptyPartialPoller {
     async fn poll(
         &self,
         _cursor: &mut PollCursor<u32>,
-        _ctx: &nebula_action::TriggerContext,
+        _ctx: &(impl nebula_action::TriggerContext + ?Sized),
     ) -> Result<PollResult<serde_json::Value>, ActionError> {
         self.called.fetch_add(1, Ordering::Relaxed);
         // Construct Partial directly with empty events — bypass the
@@ -932,7 +935,7 @@ async fn partial_with_empty_events_retryable_records_error() {
     let adapter = PollTriggerAdapter::new(poller);
     let (ctx, ..) = TestContextBuilder::minimal().build_trigger();
 
-    let cancel = ctx.cancellation.clone();
+    let cancel = ctx.cancellation().clone();
     let ctx_clone = ctx.clone();
     let handle = tokio::spawn(async move { adapter.start(&ctx_clone).await });
 
@@ -948,7 +951,7 @@ async fn partial_with_empty_events_retryable_records_error() {
     handle.await.unwrap().unwrap();
 
     assert!(called.load(Ordering::Relaxed) >= 1);
-    let snap = ctx.health.snapshot();
+    let snap = ctx.health().snapshot();
     assert!(
         snap.error_streak >= 1,
         "empty-events Partial with retryable error must be reported \
@@ -985,7 +988,7 @@ async fn first_poll_runs_immediately_after_start() {
         async fn poll(
             &self,
             _cursor: &mut PollCursor<u32>,
-            _ctx: &nebula_action::TriggerContext,
+            _ctx: &(impl nebula_action::TriggerContext + ?Sized),
         ) -> Result<PollResult<serde_json::Value>, ActionError> {
             self.count.fetch_add(1, Ordering::Relaxed);
             Ok(vec![serde_json::json!({"tick": 1})].into())
@@ -1004,7 +1007,7 @@ async fn first_poll_runs_immediately_after_start() {
     let adapter = PollTriggerAdapter::new(poller);
     let (ctx, emitter, _) = TestContextBuilder::minimal().build_trigger();
 
-    let cancel = ctx.cancellation.clone();
+    let cancel = ctx.cancellation().clone();
     let ctx_clone = ctx.clone();
     let handle = tokio::spawn(async move { adapter.start(&ctx_clone).await });
 
@@ -1131,7 +1134,7 @@ impl PollAction for WildConfigPoller {
     async fn poll(
         &self,
         _cursor: &mut PollCursor<u32>,
-        _ctx: &nebula_action::TriggerContext,
+        _ctx: &(impl nebula_action::TriggerContext + ?Sized),
     ) -> Result<PollResult<serde_json::Value>, ActionError> {
         self.count.fetch_add(1, Ordering::Relaxed);
         Ok(vec![].into())
@@ -1160,7 +1163,7 @@ async fn poll_config_max_interval_below_base_is_clamped_and_warned() {
     };
     let adapter = PollTriggerAdapter::new(poller);
 
-    let cancel = ctx.cancellation.clone();
+    let cancel = ctx.cancellation().clone();
     let ctx_clone = ctx.clone();
     let handle = tokio::spawn(async move { adapter.start(&ctx_clone).await });
 
@@ -1198,7 +1201,7 @@ async fn poll_config_backoff_factor_clamped_to_ceiling() {
     };
     let adapter = PollTriggerAdapter::new(poller);
 
-    let cancel = ctx.cancellation.clone();
+    let cancel = ctx.cancellation().clone();
     let ctx_clone = ctx.clone();
     let handle = tokio::spawn(async move { adapter.start(&ctx_clone).await });
 
@@ -1235,7 +1238,7 @@ async fn poll_config_zero_timeout_is_reset_with_warn() {
     };
     let adapter = PollTriggerAdapter::new(poller);
 
-    let cancel = ctx.cancellation.clone();
+    let cancel = ctx.cancellation().clone();
     let ctx_clone = ctx.clone();
     let handle = tokio::spawn(async move { adapter.start(&ctx_clone).await });
 

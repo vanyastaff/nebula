@@ -52,7 +52,7 @@ impl ResourceAction for PoolAction {
 
     async fn configure(
         &self,
-        _ctx: &nebula_action::ActionContext,
+        _ctx: &(impl nebula_action::ActionContext + ?Sized),
     ) -> Result<PoolHandle, ActionError> {
         Ok(PoolHandle {
             id: 42,
@@ -63,7 +63,7 @@ impl ResourceAction for PoolAction {
     async fn cleanup(
         &self,
         resource: PoolHandle,
-        _ctx: &nebula_action::ActionContext,
+        _ctx: &(impl nebula_action::ActionContext + ?Sized),
     ) -> Result<(), ActionError> {
         // Assert we got the same handle back that configure produced.
         // If the adapter ever confused `Config` and `Instance` types

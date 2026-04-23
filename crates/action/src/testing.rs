@@ -16,30 +16,32 @@ use std::{
 };
 
 use nebula_core::{
-    CoreError, CredentialKey, ResourceKey,
+    BaseContext, CoreError, CredentialKey, ResourceKey,
     accessor::{CredentialAccessor, LogLevel, Logger, ResourceAccessor},
     id::{ExecutionId, WorkflowId},
     node_key,
 };
 use nebula_credential::CredentialSnapshot;
-use tokio_util::sync::CancellationToken;
 
 use crate::{
     capability::{ExecutionEmitter, TriggerScheduler},
-    context::{ActionContext, TriggerContext},
+    context::{ActionRuntimeContext, TriggerRuntimeContext},
     error::ActionError,
     result::ActionResult,
     stateful::StatefulAction,
     trigger::TriggerAction,
 };
 
-/// Alias for [`ActionContext`] used historically by test helpers. Kept as a
-/// type alias so existing test suites compile unchanged while production code
-/// gets the renamed concrete type.
-pub type TestActionContext = ActionContext;
+/// Concrete context returned by [`TestContextBuilder::build`].
+///
+/// Spec 23 keeps action contexts as umbrella traits — tests still need a
+/// concrete type, and it is the canonical [`ActionRuntimeContext`]. This
+/// alias preserves the historic `TestActionContext` name used by many
+/// test suites.
+pub type TestActionContext = ActionRuntimeContext;
 
-/// Alias for [`TriggerContext`] used historically by test helpers.
-pub type TestTriggerContext = TriggerContext;
+/// Concrete context returned by [`TestContextBuilder::build_trigger`].
+pub type TestTriggerContext = TriggerRuntimeContext;
 
 /// Factory that produces a fresh boxed resource on each call.
 ///
@@ -176,12 +178,13 @@ impl TestContextBuilder {
 
     /// Build the test context.
     #[must_use]
-    pub fn build(self) -> ActionContext {
-        ActionContext::new(
+    pub fn build(self) -> ActionRuntimeContext {
+        let base = Arc::new(BaseContext::builder().build());
+        ActionRuntimeContext::new(
+            base,
             ExecutionId::new(),
             node_key!("test"),
             WorkflowId::new(),
-            CancellationToken::new(),
         )
         .with_credentials(Arc::new(TestCredentialAccessor {
             credentials: self.credentials,
@@ -193,26 +196,23 @@ impl TestContextBuilder {
         .with_logger(self.logs)
     }
 
-    /// Build a [`TriggerContext`] for testing trigger actions.
+    /// Build a [`TriggerRuntimeContext`] for testing trigger actions.
     ///
     /// Returns the context plus [`SpyEmitter`] and [`SpyScheduler`] for
     /// inspecting emitted executions and scheduled delays.
     #[must_use]
-    pub fn build_trigger(self) -> (TriggerContext, Arc<SpyEmitter>, Arc<SpyScheduler>) {
+    pub fn build_trigger(self) -> (TriggerRuntimeContext, Arc<SpyEmitter>, Arc<SpyScheduler>) {
+        let base = Arc::new(BaseContext::builder().build());
         let emitter = Arc::new(SpyEmitter::new());
         let scheduler = Arc::new(SpyScheduler::new());
-        let ctx = TriggerContext::new(
-            WorkflowId::new(),
-            node_key!("test"),
-            CancellationToken::new(),
-        )
-        .with_credentials(Arc::new(TestCredentialAccessor {
-            credentials: self.credentials,
-            typed_credentials: self.typed_credentials,
-        }))
-        .with_emitter(Arc::clone(&emitter) as Arc<dyn ExecutionEmitter>)
-        .with_scheduler(Arc::clone(&scheduler) as Arc<dyn TriggerScheduler>)
-        .with_logger(self.logs);
+        let ctx = TriggerRuntimeContext::new(base, WorkflowId::new(), node_key!("test"))
+            .with_credentials(Arc::new(TestCredentialAccessor {
+                credentials: self.credentials,
+                typed_credentials: self.typed_credentials,
+            }))
+            .with_emitter(Arc::clone(&emitter) as Arc<dyn ExecutionEmitter>)
+            .with_scheduler(Arc::clone(&scheduler) as Arc<dyn TriggerScheduler>)
+            .with_logger(self.logs);
         (ctx, emitter, scheduler)
     }
 }
@@ -520,7 +520,7 @@ impl TriggerScheduler for SpyScheduler {
 pub struct StatefulTestHarness<A: StatefulAction> {
     action: A,
     state: serde_json::Value,
-    ctx: ActionContext,
+    ctx: ActionRuntimeContext,
     iterations: u32,
 }
 
@@ -537,7 +537,7 @@ where
     ///
     /// Returns [`ActionError::Fatal`] if `init_state()` produces a value
     /// that cannot be serialized to JSON.
-    pub fn new(action: A, ctx: ActionContext) -> Result<Self, ActionError> {
+    pub fn new(action: A, ctx: ActionRuntimeContext) -> Result<Self, ActionError> {
         let state = serde_json::to_value(action.init_state())
             .map_err(|e| ActionError::fatal(format!("init_state serialize: {e}")))?;
         Ok(Self {
@@ -621,7 +621,7 @@ where
 /// ```
 pub struct TriggerTestHarness<A: TriggerAction> {
     action: A,
-    ctx: TriggerContext,
+    ctx: TriggerRuntimeContext,
     emitter: Arc<SpyEmitter>,
     scheduler: Arc<SpyScheduler>,
 }
@@ -689,7 +689,7 @@ where
 
     /// Get a reference to the underlying trigger context.
     #[must_use]
-    pub fn context(&self) -> &TriggerContext {
+    pub fn context(&self) -> &TriggerRuntimeContext {
         &self.ctx
     }
 }
@@ -711,30 +711,33 @@ where
 mod tests {
     use std::collections::HashMap;
 
-    use nebula_core::{DeclaresDependencies, action_key};
+    use nebula_core::{DeclaresDependencies, action_key, context::HasLogger};
     use nebula_credential::{CredentialRecord, SecretString, SecretToken};
 
     use super::*;
     #[cfg(feature = "unstable-retry-scheduler")]
     use crate::assert_retry;
     use crate::{
-        action::Action, assert_branch, assert_break, assert_cancelled, assert_continue,
-        assert_fatal, assert_retryable, assert_skip, assert_success, assert_validation_error,
-        assert_wait, context::CredentialContextExt, metadata::ActionMetadata, output::ActionOutput,
+        action::Action,
+        assert_branch, assert_break, assert_cancelled, assert_continue, assert_fatal,
+        assert_retryable, assert_skip, assert_success, assert_validation_error, assert_wait,
+        context::{ActionContext, CredentialContextExt, HasNodeIdentity, TriggerContext},
+        metadata::ActionMetadata,
+        output::ActionOutput,
     };
 
     #[test]
     fn test_context_builder_defaults() {
         let builder = TestContextBuilder::new();
         let ctx = builder.build();
-        let _ = ctx.execution_id;
-        let _ = ctx.node_key;
+        let _ = ctx.execution_id();
+        let _ = ctx.node_key().clone();
     }
 
     #[test]
     fn minimal_is_equivalent_to_new() {
         let ctx = TestContextBuilder::minimal().build();
-        let _ = ctx.execution_id;
+        let _ = ctx.execution_id();
     }
 
     #[tokio::test]
@@ -843,7 +846,7 @@ mod tests {
         let spy = builder.spy_logger();
         let ctx = builder.build();
 
-        ctx.logger.log(LogLevel::Info, "from action");
+        ctx.logger().log(LogLevel::Info, "from action");
 
         assert_eq!(spy.count(), 1);
         assert!(spy.contains("from action"));
@@ -1081,7 +1084,7 @@ mod tests {
             &self,
             _input: Self::Input,
             state: &mut Self::State,
-            _ctx: &ActionContext,
+            _ctx: &(impl ActionContext + ?Sized),
         ) -> impl Future<Output = Result<ActionResult<Self::Output>, ActionError>> + Send {
             state.count += 1;
             let count = state.count;
@@ -1161,20 +1164,18 @@ mod tests {
     }
 
     impl TriggerAction for TickTrigger {
-        fn start(
-            &self,
-            ctx: &TriggerContext,
-        ) -> impl Future<Output = Result<(), ActionError>> + Send {
-            let emitter = Arc::clone(&ctx.emitter);
-            let scheduler = Arc::clone(&ctx.scheduler);
-            async move {
-                emitter.emit(serde_json::json!({"tick": 1})).await?;
-                scheduler.schedule_after(Duration::from_mins(1)).await?;
-                Ok(())
-            }
+        async fn start(&self, ctx: &(impl TriggerContext + ?Sized)) -> Result<(), ActionError> {
+            // HasTriggerScheduling exposes &dyn borrows — use the trait-level
+            // emit / schedule_after helpers so the test works for any impl
+            // of `TriggerContext`.
+            ctx.emitter().emit(serde_json::json!({"tick": 1})).await?;
+            ctx.scheduler()
+                .schedule_after(Duration::from_mins(1))
+                .await?;
+            Ok(())
         }
 
-        async fn stop(&self, _ctx: &TriggerContext) -> Result<(), ActionError> {
+        async fn stop(&self, _ctx: &(impl TriggerContext + ?Sized)) -> Result<(), ActionError> {
             Ok(())
         }
     }
@@ -1202,6 +1203,6 @@ mod tests {
             meta: ActionMetadata::new(action_key!("test.tick"), "Tick", "Test tick trigger"),
         };
         let harness = TriggerTestHarness::new(trigger, TestContextBuilder::minimal());
-        let _ = harness.context().workflow_id;
+        let _ = harness.context().workflow_id();
     }
 }

@@ -821,7 +821,7 @@ pub trait PollAction: Action + Send + Sync + 'static {
     /// Default: no-op (always succeeds).
     fn validate(
         &self,
-        _ctx: &TriggerContext,
+        _ctx: &(impl TriggerContext + ?Sized),
     ) -> impl Future<Output = Result<(), ActionError>> + Send {
         async { Ok(()) }
     }
@@ -836,7 +836,7 @@ pub trait PollAction: Action + Send + Sync + 'static {
     /// Default: returns `Self::Cursor::default()`.
     fn initial_cursor(
         &self,
-        _ctx: &TriggerContext,
+        _ctx: &(impl TriggerContext + ?Sized),
     ) -> impl Future<Output = Result<Self::Cursor, ActionError>> + Send {
         async { Ok(Self::Cursor::default()) }
     }
@@ -863,7 +863,7 @@ pub trait PollAction: Action + Send + Sync + 'static {
     fn poll(
         &self,
         cursor: &mut PollCursor<Self::Cursor>,
-        ctx: &TriggerContext,
+        ctx: &(impl TriggerContext + ?Sized),
     ) -> impl Future<Output = Result<PollResult<Self::Event>, ActionError>> + Send;
 }
 
@@ -1078,7 +1078,7 @@ impl<A: PollAction> PollTriggerAdapter<A> {
         mut poll_cursor: PollCursor<A::Cursor>,
         pre_poll: A::Cursor,
         config: &PollConfig,
-        ctx: &TriggerContext,
+        ctx: &(impl TriggerContext + ?Sized),
     ) -> Result<CycleOutcome<A::Cursor>, ActionError>
     where
         A::Event: Send + Sync,
@@ -1243,7 +1243,7 @@ impl<A: PollAction> PollTriggerAdapter<A> {
         &self,
         events: &[A::Event],
         policy: EmitFailurePolicy,
-        ctx: &TriggerContext,
+        ctx: &(impl TriggerContext + ?Sized),
     ) -> DispatchResult
     where
         A::Event: Send + Sync,
@@ -1299,7 +1299,7 @@ where
 
     fn start<'life0, 'life1, 'a>(
         &'life0 self,
-        ctx: &'life1 TriggerContext,
+        ctx: &'life1 dyn TriggerContext,
     ) -> Pin<Box<dyn Future<Output = Result<(), ActionError>> + Send + 'a>>
     where
         Self: 'a,
@@ -1324,7 +1324,12 @@ where
             let mut config = self.action.poll_config();
             config.validate_and_clamp(ctx.logger(), &action_key);
 
-            let identity_seed = trigger_seed(&action_key, &ctx.scope());
+            let scope = ctx.scope();
+            #[allow(
+                clippy::needless_borrow,
+                reason = "trigger_seed needs &Scope, scope is owned"
+            )]
+            let identity_seed = trigger_seed(&action_key, &scope);
             let mut cursor = self.action.initial_cursor(ctx).await?;
             let mut consecutive_empty: u32 = 0;
             let mut override_next: Option<Duration> = None;
@@ -1445,7 +1450,7 @@ where
     /// will hide this footgun.
     fn stop<'life0, 'life1, 'a>(
         &'life0 self,
-        ctx: &'life1 TriggerContext,
+        ctx: &'life1 dyn TriggerContext,
     ) -> Pin<Box<dyn Future<Output = Result<(), ActionError>> + Send + 'a>>
     where
         Self: 'a,

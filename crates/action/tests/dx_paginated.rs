@@ -5,7 +5,6 @@
 
 use nebula_action::{
     action::Action,
-    context::ActionContext,
     error::ActionError,
     metadata::ActionMetadata,
     result::ActionResult,
@@ -42,7 +41,7 @@ impl PaginatedAction for NumberPaginator {
         &self,
         _input: &serde_json::Value,
         cursor: Option<&u32>,
-        _ctx: &ActionContext,
+        _ctx: &(impl nebula_action::ActionContext + ?Sized),
     ) -> Result<PageResult<Vec<i32>, u32>, ActionError> {
         let page = cursor.copied().unwrap_or(0);
         let data: Vec<i32> = ((page * 10)..((page + 1) * 10)).map(|i| i as i32).collect();
@@ -88,7 +87,7 @@ impl PaginatedAction for LimitedPaginator {
         &self,
         input: &serde_json::Value,
         cursor: Option<&u32>,
-        ctx: &ActionContext,
+        ctx: &(impl nebula_action::ActionContext + ?Sized),
     ) -> Result<PageResult<Vec<i32>, u32>, ActionError> {
         self.inner.fetch_page(input, cursor, ctx).await
     }

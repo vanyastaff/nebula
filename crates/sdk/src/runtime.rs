@@ -32,11 +32,12 @@ use std::{
 };
 
 use nebula_action::{
-    ActionError, ActionResult, BreakReason, PollAction, PollTriggerAdapter, StatefulAction,
-    StatefulActionAdapter, StatefulHandler, StatelessAction, StatelessActionAdapter,
-    StatelessHandler, TestContextBuilder, TriggerEvent, TriggerHandler, TriggerHealthSnapshot,
-    WebhookAction, WebhookRequest, WebhookTriggerAdapter,
+    ActionError, ActionResult, BreakReason, HasTriggerScheduling, PollAction, PollTriggerAdapter,
+    StatefulAction, StatefulActionAdapter, StatefulHandler, StatelessAction,
+    StatelessActionAdapter, StatelessHandler, TestContextBuilder, TriggerEvent, TriggerHandler,
+    TriggerHealthSnapshot, WebhookAction, WebhookRequest, WebhookTriggerAdapter,
 };
+use nebula_core::context::Context;
 use serde::{Serialize, de::DeserializeOwned};
 use serde_json::Value;
 
@@ -222,7 +223,7 @@ impl TestRuntime {
         let window = self.trigger_window;
         let (ctx, spy, _scheduler) = self.ctx.build_trigger();
         let handler: Arc<dyn TriggerHandler> = Arc::new(PollTriggerAdapter::new(action));
-        let cancel = ctx.cancellation.clone();
+        let cancel = ctx.cancellation().clone();
         let start = Instant::now();
 
         let start_handle = {
@@ -247,7 +248,7 @@ impl TestRuntime {
             Err(_) => Some("trigger did not exit within grace period".to_owned()),
         };
 
-        let health = ctx.health.snapshot();
+        let health = ctx.health().snapshot();
 
         Ok(RunReport {
             kind: "trigger:poll",

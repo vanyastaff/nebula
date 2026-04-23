@@ -166,7 +166,7 @@ impl ActionRuntime {
         action_key: &str,
         version: Option<&semver::Version>,
         input: serde_json::Value,
-        context: &ActionContext,
+        context: &dyn ActionContext,
     ) -> Result<ActionResult<serde_json::Value>, RuntimeError> {
         self.execute_action_with_checkpoint(action_key, version, input, context, None)
             .await
@@ -200,7 +200,7 @@ impl ActionRuntime {
         action_key: &str,
         version: Option<&semver::Version>,
         input: serde_json::Value,
-        context: &ActionContext,
+        context: &dyn ActionContext,
         checkpoint: Option<Arc<dyn StatefulCheckpointSink>>,
     ) -> Result<ActionResult<serde_json::Value>, RuntimeError> {
         let key = nebula_core::ActionKey::new(action_key).map_err(|e| {
@@ -237,7 +237,7 @@ impl ActionRuntime {
         &self,
         action_key: &str,
         input: serde_json::Value,
-        context: &ActionContext,
+        context: &dyn ActionContext,
     ) -> Result<ActionResult<serde_json::Value>, RuntimeError> {
         // Parse the key explicitly so we can distinguish "invalid format" from
         // "valid format but not registered". `get_by_str` collapses both into None.
@@ -277,7 +277,7 @@ impl ActionRuntime {
         metadata: ActionMetadata,
         handler: ActionHandler,
         input: serde_json::Value,
-        context: &ActionContext,
+        context: &dyn ActionContext,
         checkpoint: Option<Arc<dyn StatefulCheckpointSink>>,
     ) -> Result<ActionResult<serde_json::Value>, RuntimeError> {
         let error_counter = self.metrics.counter(NEBULA_ACTION_FAILURES_TOTAL);
@@ -412,7 +412,7 @@ impl ActionRuntime {
         metadata: &ActionMetadata,
         handler: Arc<dyn StatelessHandler>,
         input: serde_json::Value,
-        context: &ActionContext,
+        context: &dyn ActionContext,
     ) -> Result<ActionResult<serde_json::Value>, ActionError> {
         match metadata.isolation_level {
             IsolationLevel::None => handler.execute(input, context).await,
@@ -462,7 +462,7 @@ impl ActionRuntime {
         metadata: &ActionMetadata,
         handler: Arc<dyn StatefulHandler>,
         input: serde_json::Value,
-        context: &ActionContext,
+        context: &dyn ActionContext,
         checkpoint: Option<Arc<dyn StatefulCheckpointSink>>,
     ) -> Result<ActionResult<serde_json::Value>, ActionError> {
         if !matches!(metadata.isolation_level, IsolationLevel::None) {
@@ -874,11 +874,12 @@ fn collect_output_slots_mut<'a>(
 #[cfg(test)]
 mod tests {
     use nebula_action::{
-        ActionContext, TriggerContext, action::Action, context::CredentialContextExt,
+        ActionRuntimeContext, TriggerRuntimeContext, action::Action, context::CredentialContextExt,
         error::ActionError, metadata::ActionMetadata, stateless::StatelessAction,
     };
     use nebula_core::{
-        DeclaresDependencies, action_key,
+        BaseContext, DeclaresDependencies, action_key,
+        context::Context,
         id::{ExecutionId, WorkflowId},
         node_key,
     };
@@ -904,7 +905,7 @@ mod tests {
         async fn execute(
             &self,
             input: Self::Input,
-            _ctx: &ActionContext,
+            _ctx: &(impl ActionContext + ?Sized),
         ) -> Result<ActionResult<Self::Output>, ActionError> {
             Ok(ActionResult::success(input))
         }
@@ -928,26 +929,26 @@ mod tests {
         async fn execute(
             &self,
             _input: Self::Input,
-            _ctx: &ActionContext,
+            _ctx: &(impl ActionContext + ?Sized),
         ) -> Result<ActionResult<Self::Output>, ActionError> {
             Err(ActionError::retryable("transient failure"))
         }
     }
 
-    fn test_context() -> ActionContext {
-        ActionContext::new(
+    fn test_context() -> ActionRuntimeContext {
+        ActionRuntimeContext::new(
+            Arc::new(BaseContext::builder().build()),
             ExecutionId::new(),
             node_key!("test"),
             WorkflowId::new(),
-            tokio_util::sync::CancellationToken::new(),
         )
     }
 
-    fn test_trigger_context() -> TriggerContext {
-        TriggerContext::new(
+    fn test_trigger_context() -> TriggerRuntimeContext {
+        TriggerRuntimeContext::new(
+            Arc::new(BaseContext::builder().build()),
             WorkflowId::new(),
             node_key!("test"),
-            tokio_util::sync::CancellationToken::new(),
         )
     }
 
@@ -1005,11 +1006,11 @@ mod tests {
         );
 
         let eid = ExecutionId::new();
-        let ctx = ActionContext::new(
+        let ctx = ActionRuntimeContext::new(
+            Arc::new(BaseContext::builder().build()),
             eid,
             node_key!("test"),
             WorkflowId::new(),
-            tokio_util::sync::CancellationToken::new(),
         );
 
         rt.execute_action("test.echo", serde_json::json!(null), &ctx)
@@ -1327,7 +1328,7 @@ mod tests {
             async fn execute(
                 &self,
                 _input: Self::Input,
-                _ctx: &ActionContext,
+                _ctx: &(impl ActionContext + ?Sized),
             ) -> Result<AR<Self::Output>, ActionError> {
                 // `main_output` is tiny; a fan-out port is huge. Before the
                 // fix, only `main_output` was checked and this result passed
@@ -1405,7 +1406,7 @@ mod tests {
             async fn execute(
                 &self,
                 _input: Self::Input,
-                _ctx: &ActionContext,
+                _ctx: &(impl ActionContext + ?Sized),
             ) -> Result<AR<Self::Output>, ActionError> {
                 let mut alternatives = HashMap::new();
                 alternatives.insert(
@@ -1471,7 +1472,7 @@ mod tests {
             async fn execute(
                 &self,
                 _input: Self::Input,
-                _ctx: &ActionContext,
+                _ctx: &(impl ActionContext + ?Sized),
             ) -> Result<AR<Self::Output>, ActionError> {
                 Ok(AR::Success {
                     output: ActionOutput::Collection(vec![
@@ -1539,7 +1540,7 @@ mod tests {
             async fn execute(
                 &self,
                 _input: Self::Input,
-                _ctx: &ActionContext,
+                _ctx: &(impl ActionContext + ?Sized),
             ) -> Result<AR<Self::Output>, ActionError> {
                 Ok(AR::Success {
                     output: ActionOutput::Binary(BinaryData {
@@ -1600,7 +1601,7 @@ mod tests {
             async fn execute(
                 &self,
                 _input: Self::Input,
-                _ctx: &ActionContext,
+                _ctx: &(impl ActionContext + ?Sized),
             ) -> Result<AR<Self::Output>, ActionError> {
                 Ok(AR::Success {
                     output: ActionOutput::Reference(DataReference {
@@ -1651,9 +1652,7 @@ mod tests {
     /// counter increments once, labeled with the correct reason.
     #[tokio::test]
     async fn trigger_rejection_does_not_observe_histogram() {
-        use nebula_action::{
-            TriggerContext, handler::ActionHandler as AH, trigger::TriggerHandler as TH,
-        };
+        use nebula_action::{handler::ActionHandler as AH, trigger::TriggerHandler as TH};
 
         // Fake trigger handler — never actually invoked, only its variant
         // matters. We implement the minimal surface the registry expects.
@@ -1666,10 +1665,16 @@ mod tests {
             fn metadata(&self) -> &ActionMetadata {
                 &self.meta
             }
-            async fn start(&self, _ctx: &TriggerContext) -> Result<(), ActionError> {
+            async fn start(
+                &self,
+                _ctx: &dyn nebula_action::TriggerContext,
+            ) -> Result<(), ActionError> {
                 Ok(())
             }
-            async fn stop(&self, _ctx: &TriggerContext) -> Result<(), ActionError> {
+            async fn stop(
+                &self,
+                _ctx: &dyn nebula_action::TriggerContext,
+            ) -> Result<(), ActionError> {
                 Ok(())
             }
         }
@@ -1742,14 +1747,14 @@ mod tests {
             async fn configure(
                 &self,
                 _config: serde_json::Value,
-                _ctx: &ActionContext,
+                _ctx: &dyn ActionContext,
             ) -> Result<Box<dyn Any + Send + Sync>, ActionError> {
                 Ok(Box::new(()))
             }
             async fn cleanup(
                 &self,
                 _instance: Box<dyn Any + Send + Sync>,
-                _ctx: &ActionContext,
+                _ctx: &dyn ActionContext,
             ) -> Result<(), ActionError> {
                 Ok(())
             }
@@ -1861,7 +1866,7 @@ mod tests {
             &self,
             _input: &JsonValue,
             state: &mut JsonValue,
-            _ctx: &ActionContext,
+            _ctx: &dyn ActionContext,
         ) -> Result<ActionResult<JsonValue>, ActionError> {
             let count = state
                 .get("count")
@@ -1902,7 +1907,7 @@ mod tests {
             &self,
             _input: &JsonValue,
             _state: &mut JsonValue,
-            _ctx: &ActionContext,
+            _ctx: &dyn ActionContext,
         ) -> Result<ActionResult<JsonValue>, ActionError> {
             tokio::time::sleep(std::time::Duration::from_hours(1)).await;
             Ok(ActionResult::Break {
@@ -1972,7 +1977,7 @@ mod tests {
         let rt = Arc::new(make_runtime(registry));
 
         let ctx = test_context();
-        let cancel = ctx.cancellation.clone();
+        let cancel = ctx.cancellation().clone();
 
         // Dispatch on a task so we can cancel after 10ms of virtual time.
         let rt_clone = Arc::clone(&rt);

@@ -148,7 +148,7 @@ mod tests {
         fn execute<'life0, 'life1, 'a>(
             &'life0 self,
             input: Value,
-            _ctx: &'life1 ActionContext,
+            _ctx: &'life1 dyn ActionContext,
         ) -> Pin<Box<dyn Future<Output = Result<ActionResult<Value>, ActionError>> + Send + 'a>>
         where
             Self: 'a,
@@ -176,7 +176,7 @@ mod tests {
             &'life0 self,
             input: &'life1 Value,
             state: &'life2 mut Value,
-            _ctx: &'life3 ActionContext,
+            _ctx: &'life3 dyn ActionContext,
         ) -> Pin<Box<dyn Future<Output = Result<ActionResult<Value>, ActionError>> + Send + 'a>>
         where
             Self: 'a,
@@ -203,7 +203,7 @@ mod tests {
 
         fn start<'life0, 'life1, 'a>(
             &'life0 self,
-            _ctx: &'life1 TriggerContext,
+            _ctx: &'life1 dyn TriggerContext,
         ) -> Pin<Box<dyn Future<Output = Result<(), ActionError>> + Send + 'a>>
         where
             Self: 'a,
@@ -215,7 +215,7 @@ mod tests {
 
         fn stop<'life0, 'life1, 'a>(
             &'life0 self,
-            _ctx: &'life1 TriggerContext,
+            _ctx: &'life1 dyn TriggerContext,
         ) -> Pin<Box<dyn Future<Output = Result<(), ActionError>> + Send + 'a>>
         where
             Self: 'a,
@@ -238,7 +238,7 @@ mod tests {
         fn configure<'life0, 'life1, 'a>(
             &'life0 self,
             _config: Value,
-            _ctx: &'life1 ActionContext,
+            _ctx: &'life1 dyn ActionContext,
         ) -> Pin<
             Box<
                 dyn Future<Output = Result<Box<dyn std::any::Any + Send + Sync>, ActionError>>
@@ -257,7 +257,7 @@ mod tests {
         fn cleanup<'life0, 'life1, 'a>(
             &'life0 self,
             _instance: Box<dyn std::any::Any + Send + Sync>,
-            _ctx: &'life1 ActionContext,
+            _ctx: &'life1 dyn ActionContext,
         ) -> Pin<Box<dyn Future<Output = Result<(), ActionError>> + Send + 'a>>
         where
             Self: 'a,

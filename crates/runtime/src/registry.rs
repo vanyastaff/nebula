@@ -252,8 +252,8 @@ impl std::fmt::Debug for ActionRegistry {
 #[cfg(test)]
 mod tests {
     use nebula_action::{
-        ActionContext, action::Action, error::ActionError, metadata::ActionMetadata,
-        result::ActionResult, stateless::StatelessAction,
+        action::Action, error::ActionError, metadata::ActionMetadata, result::ActionResult,
+        stateless::StatelessAction,
     };
     use nebula_core::DeclaresDependencies;
 
@@ -284,7 +284,7 @@ mod tests {
         async fn execute(
             &self,
             input: Self::Input,
-            _ctx: &ActionContext,
+            _ctx: &(impl nebula_action::ActionContext + ?Sized),
         ) -> Result<ActionResult<Self::Output>, ActionError> {
             Ok(ActionResult::success(input))
         }

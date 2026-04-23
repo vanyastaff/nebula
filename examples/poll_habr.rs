@@ -102,7 +102,7 @@ impl PollAction for HabrRssPollAction {
         .with_timeout(Duration::from_secs(10))
     }
 
-    async fn validate(&self, _ctx: &TriggerContext) -> Result<(), ActionError> {
+    async fn validate(&self, _ctx: &(impl TriggerContext + ?Sized)) -> Result<(), ActionError> {
         let resp = reqwest::get(HABR_RSS_URL)
             .await
             .map_err(|e| ActionError::fatal(format!("habr RSS unreachable: {e}")))?;
@@ -118,7 +118,7 @@ impl PollAction for HabrRssPollAction {
     async fn poll(
         &self,
         cursor: &mut PollCursor<Self::Cursor>,
-        _ctx: &TriggerContext,
+        _ctx: &(impl TriggerContext + ?Sized),
     ) -> Result<PollResult<Self::Event>, ActionError> {
         let response = reqwest::get(HABR_RSS_URL).await.map_err(|e| {
             if e.is_timeout() || e.is_connect() {

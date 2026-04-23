@@ -92,7 +92,10 @@ pub mod webhook;
 
 pub use action::Action;
 pub use capability::{ExecutionEmitter, TriggerHealth, TriggerHealthSnapshot, TriggerScheduler};
-pub use context::{ActionContext, CredentialContextExt, TriggerContext};
+pub use context::{
+    ActionContext, ActionRuntimeContext, CredentialContextExt, HasNodeIdentity,
+    HasTriggerScheduling, TriggerContext, TriggerRuntimeContext,
+};
 pub use control::{ControlAction, ControlActionAdapter, ControlInput, ControlOutcome};
 pub use error::{
     ActionError, ActionErrorExt, MAX_VALIDATION_DETAIL, RetryHintCode, ValidationReason,

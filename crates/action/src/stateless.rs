@@ -98,7 +98,7 @@ pub trait StatelessAction: Action {
     fn execute(
         &self,
         input: Self::Input,
-        ctx: &ActionContext,
+        ctx: &(impl ActionContext + ?Sized),
     ) -> impl Future<Output = Result<ActionResult<Self::Output>, ActionError>> + Send;
 }
 
@@ -157,7 +157,7 @@ where
     fn execute(
         &self,
         input: Self::Input,
-        _ctx: &ActionContext,
+        _ctx: &(impl ActionContext + ?Sized),
     ) -> impl Future<Output = Result<ActionResult<Self::Output>, ActionError>> + Send {
         let fut = (self.func)(input);
         async move { fut.await.map(ActionResult::success) }
@@ -247,7 +247,7 @@ where
     fn execute(
         &self,
         input: Self::Input,
-        _ctx: &ActionContext,
+        _ctx: &(impl ActionContext + ?Sized),
     ) -> impl Future<Output = Result<ActionResult<Self::Output>, ActionError>> + Send {
         let fut = (self.func)(input);
         async move { fut.await.map(ActionResult::success) }
@@ -310,7 +310,7 @@ pub trait StatelessHandler: Send + Sync {
     fn execute<'life0, 'life1, 'a>(
         &'life0 self,
         input: Value,
-        ctx: &'life1 ActionContext,
+        ctx: &'life1 dyn ActionContext,
     ) -> Pin<Box<dyn Future<Output = Result<ActionResult<Value>, ActionError>> + Send + 'a>>
     where
         Self: 'a,
@@ -356,7 +356,7 @@ where
     fn execute<'life0, 'life1, 'a>(
         &'life0 self,
         input: Value,
-        ctx: &'life1 ActionContext,
+        ctx: &'life1 dyn ActionContext,
     ) -> Pin<Box<dyn Future<Output = Result<ActionResult<Value>, ActionError>> + Send + 'a>>
     where
         Self: 'a,
@@ -511,7 +511,7 @@ mod tests {
         async fn execute(
             &self,
             input: Self::Input,
-            _ctx: &ActionContext,
+            _ctx: &(impl ActionContext + ?Sized),
         ) -> Result<ActionResult<Self::Output>, ActionError> {
             Ok(ActionResult::success(AddOutput {
                 sum: input.a + input.b,

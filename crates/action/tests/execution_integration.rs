@@ -32,7 +32,7 @@ impl StatelessAction for EchoAction {
     async fn execute(
         &self,
         input: Self::Input,
-        _ctx: &nebula_action::ActionContext,
+        _ctx: &(impl nebula_action::ActionContext + ?Sized),
     ) -> Result<ActionResult<Self::Output>, nebula_action::ActionError> {
         Ok(ActionResult::success(input))
     }
@@ -82,7 +82,7 @@ impl StatefulAction for CounterAction {
         &self,
         _input: Self::Input,
         state: &mut Self::State,
-        _ctx: &nebula_action::ActionContext,
+        _ctx: &(impl nebula_action::ActionContext + ?Sized),
     ) -> Result<ActionResult<Self::Output>, nebula_action::ActionError> {
         let count = *state;
         *state += 1;
@@ -155,14 +155,14 @@ impl Action for NoOpTrigger {
 impl TriggerAction for NoOpTrigger {
     async fn start(
         &self,
-        _ctx: &nebula_action::TriggerContext,
+        _ctx: &(impl nebula_action::TriggerContext + ?Sized),
     ) -> Result<(), nebula_action::ActionError> {
         Ok(())
     }
 
     async fn stop(
         &self,
-        _ctx: &nebula_action::TriggerContext,
+        _ctx: &(impl nebula_action::TriggerContext + ?Sized),
     ) -> Result<(), nebula_action::ActionError> {
         Ok(())
     }
@@ -227,7 +227,7 @@ impl StatefulAction for MigratableAction {
         &self,
         _input: Self::Input,
         state: &mut Self::State,
-        _ctx: &nebula_action::ActionContext,
+        _ctx: &(impl nebula_action::ActionContext + ?Sized),
     ) -> Result<ActionResult<Self::Output>, nebula_action::ActionError> {
         state.count += 1;
         Ok(ActionResult::Break {

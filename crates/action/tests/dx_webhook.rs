@@ -6,11 +6,11 @@ use std::sync::{
 };
 
 use nebula_action::{
-    Action, ActionError, ActionMetadata, TestContextBuilder, TriggerEvent, TriggerEventOutcome,
-    TriggerHandler, WebhookAction, WebhookRequest, WebhookResponse, WebhookTriggerAdapter,
-    webhook::webhook_request_for_test,
+    Action, ActionError, ActionMetadata, HasTriggerScheduling, TestContextBuilder, TriggerEvent,
+    TriggerEventOutcome, TriggerHandler, WebhookAction, WebhookRequest, WebhookResponse,
+    WebhookTriggerAdapter, webhook::webhook_request_for_test,
 };
-use nebula_core::DeclaresDependencies;
+use nebula_core::{DeclaresDependencies, context::Context};
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -37,7 +37,7 @@ impl WebhookAction for TestWebhook {
 
     async fn on_activate(
         &self,
-        _ctx: &nebula_action::TriggerContext,
+        _ctx: &(impl nebula_action::TriggerContext + ?Sized),
     ) -> Result<WebhookReg, ActionError> {
         self.activated.store(true, Ordering::Relaxed);
         Ok(WebhookReg {
@@ -49,7 +49,7 @@ impl WebhookAction for TestWebhook {
         &self,
         request: &WebhookRequest,
         _state: &WebhookReg,
-        _ctx: &nebula_action::TriggerContext,
+        _ctx: &(impl nebula_action::TriggerContext + ?Sized),
     ) -> Result<WebhookResponse, ActionError> {
         let sig = request.header_str("X-Secret").unwrap_or_default();
         if sig != self.secret {
@@ -68,7 +68,7 @@ impl WebhookAction for TestWebhook {
     async fn on_deactivate(
         &self,
         _state: WebhookReg,
-        _ctx: &nebula_action::TriggerContext,
+        _ctx: &(impl nebula_action::TriggerContext + ?Sized),
     ) -> Result<(), ActionError> {
         self.deactivated.store(true, Ordering::Relaxed);
         Ok(())
@@ -186,7 +186,7 @@ impl WebhookAction for CountingWebhook {
 
     async fn on_activate(
         &self,
-        _ctx: &nebula_action::TriggerContext,
+        _ctx: &(impl nebula_action::TriggerContext + ?Sized),
     ) -> Result<WebhookReg, ActionError> {
         self.activate_count.fetch_add(1, Ordering::Relaxed);
         Ok(WebhookReg {
@@ -198,7 +198,7 @@ impl WebhookAction for CountingWebhook {
         &self,
         _request: &WebhookRequest,
         _state: &WebhookReg,
-        _ctx: &nebula_action::TriggerContext,
+        _ctx: &(impl nebula_action::TriggerContext + ?Sized),
     ) -> Result<WebhookResponse, ActionError> {
         Ok(WebhookResponse::accept(TriggerEventOutcome::skip()))
     }
@@ -206,7 +206,7 @@ impl WebhookAction for CountingWebhook {
     async fn on_deactivate(
         &self,
         _state: WebhookReg,
-        _ctx: &nebula_action::TriggerContext,
+        _ctx: &(impl nebula_action::TriggerContext + ?Sized),
     ) -> Result<(), ActionError> {
         self.deactivate_count.fetch_add(1, Ordering::Relaxed);
         Ok(())
@@ -286,7 +286,10 @@ impl Action for ErroringWebhook {
 impl WebhookAction for ErroringWebhook {
     type State = ();
 
-    async fn on_activate(&self, _ctx: &nebula_action::TriggerContext) -> Result<(), ActionError> {
+    async fn on_activate(
+        &self,
+        _ctx: &(impl nebula_action::TriggerContext + ?Sized),
+    ) -> Result<(), ActionError> {
         Ok(())
     }
 
@@ -294,7 +297,7 @@ impl WebhookAction for ErroringWebhook {
         &self,
         _request: &WebhookRequest,
         _state: &(),
-        _ctx: &nebula_action::TriggerContext,
+        _ctx: &(impl nebula_action::TriggerContext + ?Sized),
     ) -> Result<WebhookResponse, ActionError> {
         Err(ActionError::retryable("handler blew up"))
     }
@@ -350,7 +353,10 @@ impl Action for HangingWebhook {
 impl WebhookAction for HangingWebhook {
     type State = ();
 
-    async fn on_activate(&self, _ctx: &nebula_action::TriggerContext) -> Result<(), ActionError> {
+    async fn on_activate(
+        &self,
+        _ctx: &(impl nebula_action::TriggerContext + ?Sized),
+    ) -> Result<(), ActionError> {
         Ok(())
     }
 
@@ -358,7 +364,7 @@ impl WebhookAction for HangingWebhook {
         &self,
         _request: &WebhookRequest,
         _state: &(),
-        _ctx: &nebula_action::TriggerContext,
+        _ctx: &(impl nebula_action::TriggerContext + ?Sized),
     ) -> Result<WebhookResponse, ActionError> {
         self.entered.store(true, Ordering::Relaxed);
         // Hang forever — only cancellation can save us.
@@ -387,7 +393,7 @@ async fn handle_request_cancelled_mid_flight_returns_cleanly() {
     let req = req.with_response_channel(tx);
     let event = wrap_event(req);
 
-    let cancel = ctx.cancellation.clone();
+    let cancel = ctx.cancellation().clone();
     let adapter1 = Arc::clone(&adapter);
     let ctx1 = ctx.clone();
     let handle = tokio::spawn(async move { adapter1.handle_event(event, &ctx1).await });
@@ -431,7 +437,7 @@ async fn webhook_adapter_records_health_success_on_emit() {
     let outcome = adapter.handle_event(event, &ctx).await.unwrap();
     assert!(matches!(outcome, TriggerEventOutcome::Emit(_)));
 
-    let snap = ctx.health.snapshot();
+    let snap = ctx.health().snapshot();
     assert_eq!(
         snap.total_emitted, 1,
         "health must record 1 emission from handle_event"
@@ -455,7 +461,7 @@ async fn webhook_adapter_records_health_error_on_handler_failure() {
     let event = wrap_event(req);
     let _ = adapter.handle_event(event, &ctx).await;
 
-    let snap = ctx.health.snapshot();
+    let snap = ctx.health().snapshot();
     assert!(
         snap.error_streak >= 1,
         "health error_streak must grow on handler Err, got {}",
@@ -480,7 +486,10 @@ impl Action for SlowWebhook {
 impl WebhookAction for SlowWebhook {
     type State = ();
 
-    async fn on_activate(&self, _ctx: &nebula_action::TriggerContext) -> Result<(), ActionError> {
+    async fn on_activate(
+        &self,
+        _ctx: &(impl nebula_action::TriggerContext + ?Sized),
+    ) -> Result<(), ActionError> {
         Ok(())
     }
 
@@ -488,7 +497,7 @@ impl WebhookAction for SlowWebhook {
         &self,
         _request: &WebhookRequest,
         _state: &(),
-        _ctx: &nebula_action::TriggerContext,
+        _ctx: &(impl nebula_action::TriggerContext + ?Sized),
     ) -> Result<WebhookResponse, ActionError> {
         // Await until a signal flag flips — simulates a slow handler.
         while !self.finish.load(Ordering::Acquire) {

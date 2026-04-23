@@ -1,8 +1,6 @@
 use std::{sync::Arc, time::Duration};
 
-use nebula_action::{
-    ActionContext, ActionHandler, ActionResult, BreakReason, TriggerContext, testing::SpyEmitter,
-};
+use nebula_action::{ActionHandler, ActionResult, BreakReason, testing::SpyEmitter};
 use nebula_core::{
     id::{ExecutionId, WorkflowId},
     node_key,
@@ -142,11 +140,15 @@ pub(crate) async fn test(args: ActionsTestArgs) {
     };
 
     // Build a minimal ActionContext.
-    let ctx = ActionContext::new(
+    let ctx = nebula_action::ActionRuntimeContext::new(
+        Arc::new(
+            nebula_core::BaseContext::builder()
+                .cancellation(CancellationToken::new())
+                .build(),
+        ),
         ExecutionId::new(),
         node_key!("test"),
         WorkflowId::new(),
-        CancellationToken::new(),
     );
 
     eprintln!("Testing: {} ({})", meta.base.name, meta.base.key);
@@ -191,7 +193,7 @@ struct TestReport {
 async fn run_stateless(
     handler: &dyn nebula_action::StatelessHandler,
     input: serde_json::Value,
-    ctx: &ActionContext,
+    ctx: &dyn nebula_action::ActionContext,
 ) -> Result<TestReport, nebula_action::ActionError> {
     let result = handler.execute(input, ctx).await?;
     let output = extract_output(&result);
@@ -206,7 +208,7 @@ async fn run_stateless(
 async fn run_stateful(
     handler: &dyn nebula_action::StatefulHandler,
     input: serde_json::Value,
-    ctx: &ActionContext,
+    ctx: &dyn nebula_action::ActionContext,
 ) -> Result<TestReport, nebula_action::ActionError> {
     let mut state = handler.init_state()?;
     let mut iterations = 0u32;
@@ -278,7 +280,12 @@ async fn run_trigger(
 
     let cancel = CancellationToken::new();
     let spy = Arc::new(SpyEmitter::new());
-    let ctx = TriggerContext::new(WorkflowId::new(), node_key!("test"), cancel.clone())
+    let base = Arc::new(
+        nebula_core::BaseContext::builder()
+            .cancellation(cancel.clone())
+            .build(),
+    );
+    let ctx = nebula_action::TriggerRuntimeContext::new(base, WorkflowId::new(), node_key!("test"))
         .with_emitter(spy.clone());
 
     eprintln!("  trigger window: {timeout_ms}ms");

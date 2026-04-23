@@ -5,7 +5,6 @@
 
 use nebula_action::{
     action::Action,
-    context::ActionContext,
     error::ActionError,
     metadata::ActionMetadata,
     result::ActionResult,
@@ -68,7 +67,7 @@ impl BatchAction for DoublerBatch {
     async fn process_item(
         &self,
         item: i32,
-        _ctx: &ActionContext,
+        _ctx: &(impl nebula_action::ActionContext + ?Sized),
     ) -> Result<BatchOutput, ActionError> {
         if item < 0 {
             return Err(ActionError::retryable(format!("negative: {item}")));

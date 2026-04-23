@@ -589,12 +589,16 @@ pub trait WebhookAction: Action + Send + Sync + 'static {
     ///
     /// **Required** — no default implementation.
     ///
+    /// The supplied context carries a [`HasWebhookEndpoint`] capability in
+    /// addition to the base [`TriggerContext`] — read the public URL via
+    /// `ctx.webhook_endpoint()` when registering with the upstream provider.
+    ///
     /// # Errors
     ///
     /// Return [`ActionError`] if registration fails.
     fn on_activate(
         &self,
-        ctx: &TriggerContext,
+        ctx: &(impl TriggerContext + ?Sized),
     ) -> impl Future<Output = Result<Self::State, ActionError>> + Send;
 
     /// Handle an incoming webhook request.
@@ -616,7 +620,7 @@ pub trait WebhookAction: Action + Send + Sync + 'static {
         &self,
         request: &WebhookRequest,
         state: &Self::State,
-        ctx: &TriggerContext,
+        ctx: &(impl TriggerContext + ?Sized),
     ) -> impl Future<Output = Result<WebhookResponse, ActionError>> + Send;
 
     /// Unregister webhook on deactivation.
@@ -630,7 +634,7 @@ pub trait WebhookAction: Action + Send + Sync + 'static {
     fn on_deactivate(
         &self,
         _state: Self::State,
-        _ctx: &TriggerContext,
+        _ctx: &(impl TriggerContext + ?Sized),
     ) -> impl Future<Output = Result<(), ActionError>> + Send {
         async { Ok(()) }
     }
@@ -1081,7 +1085,7 @@ where
         self.action.metadata()
     }
 
-    async fn start(&self, ctx: &TriggerContext) -> Result<(), ActionError> {
+    async fn start(&self, ctx: &dyn TriggerContext) -> Result<(), ActionError> {
         // Reject double-start: previous state must be stopped first.
         // Silently overwriting would leak external webhook registrations
         // (GitHub/Slack/Stripe) — the old hook stays live and stop() only
@@ -1126,7 +1130,7 @@ where
         Ok(())
     }
 
-    async fn stop(&self, ctx: &TriggerContext) -> Result<(), ActionError> {
+    async fn stop(&self, ctx: &dyn TriggerContext) -> Result<(), ActionError> {
         let stored = self.state.write().take();
         match stored {
             Some(arc_state) => {
@@ -1189,7 +1193,7 @@ where
     async fn handle_event(
         &self,
         event: TriggerEvent,
-        ctx: &TriggerContext,
+        ctx: &dyn TriggerContext,
     ) -> Result<TriggerEventOutcome, ActionError> {
         let request = match event.downcast::<WebhookRequest>() {
             Ok((_id, _received_at, req)) => req,
@@ -1227,7 +1231,7 @@ where
                     Bytes::new(),
                 ));
             }
-            ctx.health.record_error();
+            ctx.health().record_error();
             return Err(ActionError::fatal(
                 "handle_event called before start or after stop — no state available",
             ));
@@ -1240,14 +1244,14 @@ where
         // race the handler normally.
         let response = tokio::select! {
             biased;
-            () = ctx.cancellation.cancelled() => {
+            () = ctx.cancellation().cancelled() => {
                 if let Some(tx) = response_tx {
                     let _ = tx.send(WebhookHttpResponse::new(
                         StatusCode::SERVICE_UNAVAILABLE,
                         Bytes::from_static(b"shutting down"),
                     ));
                 }
-                ctx.health.record_error();
+                ctx.health().record_error();
                 return Err(ActionError::retryable(
                     "webhook trigger cancelled mid-request",
                 ));
@@ -1265,7 +1269,7 @@ where
                                 Bytes::new(),
                             ));
                         }
-                        ctx.health.record_error();
+                        ctx.health().record_error();
                         return Err(e);
                     }
                 }
@@ -1281,11 +1285,11 @@ where
         // H7 — health: emit = success, skip = idle-equivalent.
         // Matches poll's record_success/record_idle split.
         match &outcome {
-            TriggerEventOutcome::Emit(_) => ctx.health.record_success(1),
+            TriggerEventOutcome::Emit(_) => ctx.health().record_success(1),
             TriggerEventOutcome::EmitMany(batch) => {
-                ctx.health.record_success(batch.len() as u64);
+                ctx.health().record_success(batch.len() as u64);
             },
-            TriggerEventOutcome::Skip => ctx.health.record_idle(),
+            TriggerEventOutcome::Skip => ctx.health().record_idle(),
         }
 
         Ok(outcome)

@@ -17,9 +17,7 @@ use std::{
 };
 
 use dashmap::DashMap;
-use nebula_action::{
-    ActionContext, ActionError, ActionResult, capability::default_resource_accessor,
-};
+use nebula_action::{ActionError, ActionResult, capability::default_resource_accessor};
 use nebula_core::{
     ActionKey, NodeKey,
     accessor::{CredentialAccessor, ResourceAccessor},
@@ -2956,11 +2954,16 @@ impl NodeTask {
             }
         }
 
-        let action_ctx = ActionContext::new(
+        let base = Arc::new(
+            nebula_core::BaseContext::builder()
+                .cancellation(self.cancel.child_token())
+                .build(),
+        );
+        let action_ctx = nebula_action::ActionRuntimeContext::new(
+            base,
             self.execution_id,
             self.node_key.clone(),
             self.workflow_id,
-            self.cancel.child_token(),
         )
         .with_credentials(self.credentials.clone())
         .with_resources(self.resources.clone());
@@ -3774,8 +3777,8 @@ mod tests {
     use std::time::Duration;
 
     use nebula_action::{
-        ActionError, TriggerContext, action::Action, context::CredentialContextExt,
-        metadata::ActionMetadata, result::ActionResult, stateless::StatelessAction,
+        ActionError, action::Action, context::CredentialContextExt, metadata::ActionMetadata,
+        result::ActionResult, stateless::StatelessAction,
     };
     use nebula_core::{DeclaresDependencies, action_key};
     use nebula_runtime::{
@@ -3808,7 +3811,7 @@ mod tests {
         async fn execute(
             &self,
             input: Self::Input,
-            _ctx: &ActionContext,
+            _ctx: &(impl nebula_action::ActionContext + ?Sized),
         ) -> Result<ActionResult<Self::Output>, ActionError> {
             Ok(ActionResult::success(input))
         }
@@ -3832,7 +3835,7 @@ mod tests {
         async fn execute(
             &self,
             _input: Self::Input,
-            _ctx: &ActionContext,
+            _ctx: &(impl nebula_action::ActionContext + ?Sized),
         ) -> Result<ActionResult<Self::Output>, ActionError> {
             Err(ActionError::fatal("intentional failure"))
         }
@@ -3857,7 +3860,7 @@ mod tests {
         async fn execute(
             &self,
             input: Self::Input,
-            ctx: &ActionContext,
+            ctx: &(impl nebula_action::ActionContext + ?Sized),
         ) -> Result<ActionResult<Self::Output>, ActionError> {
             tokio::select! {
                 () = tokio::time::sleep(self.delay) => Ok(ActionResult::success(input)),
@@ -4176,11 +4179,13 @@ mod tests {
 
     #[tokio::test]
     async fn trigger_context_construction_is_usable_in_engine() {
-        let ctx = TriggerContext::new(
-            WorkflowId::new(),
-            node_key!("test"),
-            CancellationToken::new(),
+        let base = Arc::new(
+            nebula_core::BaseContext::builder()
+                .cancellation(CancellationToken::new())
+                .build(),
         );
+        let ctx =
+            nebula_action::TriggerRuntimeContext::new(base, WorkflowId::new(), node_key!("test"));
         assert!(!ctx.has_credential_id("missing").await);
         assert!(
             ctx.schedule_after(std::time::Duration::from_millis(1))
@@ -4214,7 +4219,7 @@ mod tests {
         async fn execute(
             &self,
             _input: Self::Input,
-            _ctx: &ActionContext,
+            _ctx: &(impl nebula_action::ActionContext + ?Sized),
         ) -> Result<ActionResult<Self::Output>, ActionError> {
             Ok(ActionResult::skip("skipped by test"))
         }
@@ -4239,7 +4244,7 @@ mod tests {
         async fn execute(
             &self,
             input: Self::Input,
-            _ctx: &ActionContext,
+            _ctx: &(impl nebula_action::ActionContext + ?Sized),
         ) -> Result<ActionResult<Self::Output>, ActionError> {
             Ok(ActionResult::Branch {
                 selected: self.selected.clone(),
@@ -5743,7 +5748,7 @@ mod tests {
             async fn execute(
                 &self,
                 input: Self::Input,
-                _ctx: &ActionContext,
+                _ctx: &(impl nebula_action::ActionContext + ?Sized),
             ) -> Result<ActionResult<Self::Output>, ActionError> {
                 self.count.fetch_add(1, AOrdering::Relaxed);
                 Ok(ActionResult::success(input))
@@ -5847,7 +5852,7 @@ mod tests {
             async fn execute(
                 &self,
                 _input: Self::Input,
-                _ctx: &ActionContext,
+                _ctx: &(impl nebula_action::ActionContext + ?Sized),
             ) -> Result<ActionResult<Self::Output>, ActionError> {
                 Ok(ActionResult::success(serde_json::json!("v1")))
             }
@@ -5872,7 +5877,7 @@ mod tests {
             async fn execute(
                 &self,
                 _input: Self::Input,
-                _ctx: &ActionContext,
+                _ctx: &(impl nebula_action::ActionContext + ?Sized),
             ) -> Result<ActionResult<Self::Output>, ActionError> {
                 Ok(ActionResult::success(serde_json::json!("v2")))
             }
@@ -6248,7 +6253,7 @@ mod tests {
             async fn execute(
                 &self,
                 input: Self::Input,
-                _ctx: &ActionContext,
+                _ctx: &(impl nebula_action::ActionContext + ?Sized),
             ) -> Result<ActionResult<Self::Output>, ActionError> {
                 self.invoked.fetch_add(1, AOrdering::Relaxed);
                 Ok(ActionResult::success(input))
@@ -6358,7 +6363,7 @@ mod tests {
         async fn execute(
             &self,
             input: serde_json::Value,
-            ctx: &ActionContext,
+            ctx: &dyn nebula_action::ActionContext,
         ) -> Result<ActionResult<serde_json::Value>, ActionError> {
             let id = input
                 .get("credential_id")
@@ -6901,7 +6906,7 @@ mod tests {
             async fn execute(
                 &self,
                 _input: Self::Input,
-                _ctx: &ActionContext,
+                _ctx: &(impl nebula_action::ActionContext + ?Sized),
             ) -> Result<ActionResult<Self::Output>, ActionError> {
                 panic!("intentional panic for test");
             }

@@ -47,7 +47,7 @@ impl StatelessAction for ResourceConsumerHandler {
     async fn execute(
         &self,
         _input: Self::Input,
-        _ctx: &nebula_action::ActionContext,
+        _ctx: &(impl nebula_action::ActionContext + ?Sized),
     ) -> Result<ActionResult<Self::Output>, ActionError> {
         // TODO: Resource acquisition via context is not yet wired up.
         // For now, return a placeholder to keep the test compiling.

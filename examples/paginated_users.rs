@@ -93,7 +93,7 @@ impl PaginatedAction for DummyJsonUsersAction {
         &self,
         input: &Self::Input,
         cursor: Option<&u32>,
-        _ctx: &ActionContext,
+        _ctx: &(impl ActionContext + ?Sized),
     ) -> Result<PageResult<Vec<DummyJsonUserBrief>, u32>, ActionError> {
         let limit = input
             .get("limit")

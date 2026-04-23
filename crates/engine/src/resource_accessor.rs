@@ -136,8 +136,10 @@ mod tests {
         assert!(matches!(result, Ok(None)));
     }
 
-    #[test]
-    fn debug_redacts_manager() {
+    #[tokio::test]
+    async fn debug_redacts_manager() {
+        // `Manager::new()` spawns a release queue worker that needs a Tokio
+        // runtime — keep the assertion but run under #[tokio::test].
         let accessor = make_accessor();
         let debug = format!("{accessor:?}");
         assert!(debug.contains("<Manager>"));

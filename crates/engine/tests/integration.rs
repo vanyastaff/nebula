@@ -51,7 +51,7 @@ impl StatelessAction for EchoHandler {
     async fn execute(
         &self,
         input: Self::Input,
-        _ctx: &nebula_action::ActionContext,
+        _ctx: &(impl nebula_action::ActionContext + ?Sized),
     ) -> Result<ActionResult<Self::Output>, ActionError> {
         Ok(ActionResult::success(input))
     }
@@ -76,7 +76,7 @@ impl StatelessAction for DoubleHandler {
     async fn execute(
         &self,
         input: Self::Input,
-        _ctx: &nebula_action::ActionContext,
+        _ctx: &(impl nebula_action::ActionContext + ?Sized),
     ) -> Result<ActionResult<Self::Output>, ActionError> {
         let n = input
             .as_i64()
@@ -104,7 +104,7 @@ impl StatelessAction for Add10Handler {
     async fn execute(
         &self,
         input: Self::Input,
-        _ctx: &nebula_action::ActionContext,
+        _ctx: &(impl nebula_action::ActionContext + ?Sized),
     ) -> Result<ActionResult<Self::Output>, ActionError> {
         let n = input
             .as_i64()
@@ -133,7 +133,7 @@ impl StatelessAction for SlowHandler {
     async fn execute(
         &self,
         input: Self::Input,
-        ctx: &nebula_action::ActionContext,
+        ctx: &(impl nebula_action::ActionContext + ?Sized),
     ) -> Result<ActionResult<Self::Output>, ActionError> {
         tokio::select! {
             () = tokio::time::sleep(self.delay) => Ok(ActionResult::success(input)),
@@ -161,7 +161,7 @@ impl StatelessAction for FailHandler {
     async fn execute(
         &self,
         _input: Self::Input,
-        _ctx: &nebula_action::ActionContext,
+        _ctx: &(impl nebula_action::ActionContext + ?Sized),
     ) -> Result<ActionResult<Self::Output>, ActionError> {
         Err(ActionError::fatal("intentional failure"))
     }
@@ -187,7 +187,7 @@ impl StatelessAction for CounterHandler {
     async fn execute(
         &self,
         input: Self::Input,
-        _ctx: &nebula_action::ActionContext,
+        _ctx: &(impl nebula_action::ActionContext + ?Sized),
     ) -> Result<ActionResult<Self::Output>, ActionError> {
         self.count.fetch_add(1, Ordering::SeqCst);
         // Small yield to allow concurrency observation

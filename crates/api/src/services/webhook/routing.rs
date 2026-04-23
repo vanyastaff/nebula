@@ -11,7 +11,7 @@
 use std::sync::Arc;
 
 use dashmap::DashMap;
-use nebula_action::{TriggerContext, TriggerHandler, WebhookConfig};
+use nebula_action::{TriggerHandler, TriggerRuntimeContext, WebhookConfig};
 use uuid::Uuid;
 
 /// Composite key used inside the routing map.
@@ -35,7 +35,7 @@ pub(crate) type RouteKey = (Uuid, String);
 #[derive(Clone)]
 pub(crate) struct ActivationEntry {
     pub(crate) handler: Arc<dyn TriggerHandler>,
-    pub(crate) ctx: TriggerContext,
+    pub(crate) ctx: TriggerRuntimeContext,
     pub(crate) config: WebhookConfig,
 }
 
@@ -43,8 +43,8 @@ impl std::fmt::Debug for ActivationEntry {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("ActivationEntry")
             .field("handler_key", &self.handler.metadata().base.key)
-            .field("trigger_id", &self.ctx.trigger_id)
-            .field("workflow_id", &self.ctx.workflow_id)
+            .field("trigger_id", &self.ctx.trigger_id())
+            .field("workflow_id", &self.ctx.workflow_id())
             .finish_non_exhaustive()
     }
 }
@@ -102,6 +102,7 @@ impl RoutingMap {
 
 #[cfg(test)]
 mod tests {
+    use nebula_action::TriggerContext;
 
     use super::*;
 
@@ -116,10 +117,10 @@ mod tests {
         fn metadata(&self) -> &nebula_action::ActionMetadata {
             &self.meta
         }
-        async fn start(&self, _ctx: &TriggerContext) -> Result<(), nebula_action::ActionError> {
+        async fn start(&self, _ctx: &dyn TriggerContext) -> Result<(), nebula_action::ActionError> {
             Ok(())
         }
-        async fn stop(&self, _ctx: &TriggerContext) -> Result<(), nebula_action::ActionError> {
+        async fn stop(&self, _ctx: &dyn TriggerContext) -> Result<(), nebula_action::ActionError> {
             Ok(())
         }
     }
@@ -133,10 +134,14 @@ mod tests {
                 "routing map unit test",
             ),
         });
-        let ctx = TriggerContext::new(
+        let ctx = TriggerRuntimeContext::new(
+            Arc::new(
+                nebula_core::BaseContext::builder()
+                    .cancellation(CancellationToken::new())
+                    .build(),
+            ),
             nebula_core::WorkflowId::new(),
             nebula_core::node_key!("test"),
-            CancellationToken::new(),
         );
         ActivationEntry {
             handler,

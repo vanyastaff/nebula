@@ -15,7 +15,10 @@ pub use nebula_schema::{Field, Schema, ValidSchema, field_key};
 pub use crate::{
     action::Action,
     capability::{ExecutionEmitter, TriggerScheduler},
-    context::{ActionContext, CredentialContextExt, TriggerContext},
+    context::{
+        ActionContext, ActionRuntimeContext, CredentialContextExt, HasNodeIdentity,
+        HasTriggerScheduling, TriggerContext, TriggerRuntimeContext,
+    },
     control::{ControlAction, ControlActionAdapter, ControlInput, ControlOutcome},
     error::{ActionError, ActionErrorExt, RetryHintCode, ValidationReason},
     handler::ActionHandler,

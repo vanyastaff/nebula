@@ -66,7 +66,7 @@ impl StatelessHandler for RemoteAction {
     async fn execute(
         &self,
         input: serde_json::Value,
-        ctx: &ActionContext,
+        ctx: &dyn ActionContext,
     ) -> Result<ActionResult<serde_json::Value>, ActionError> {
         self.handler.execute(input, ctx).await
     }

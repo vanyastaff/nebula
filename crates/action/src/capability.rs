@@ -21,7 +21,9 @@ use std::{
 
 use nebula_core::{
     CoreError, CredentialKey, ResourceKey,
-    accessor::{CredentialAccessor, LogLevel, Logger, ResourceAccessor},
+    accessor::{
+        CredentialAccessor, EventEmitter, LogLevel, Logger, MetricsEmitter, ResourceAccessor,
+    },
     id::ExecutionId,
 };
 
@@ -267,6 +269,24 @@ impl Logger for NoopLogger {
     fn log_with_fields(&self, _level: LogLevel, _message: &str, _fields: &[(&str, &str)]) {}
 }
 
+/// No-op metrics emitter — discards every sample.
+#[derive(Debug, Default)]
+pub struct NoopMetricsEmitter;
+
+impl MetricsEmitter for NoopMetricsEmitter {
+    fn counter(&self, _name: &str, _value: u64, _labels: &[(&str, &str)]) {}
+    fn gauge(&self, _name: &str, _value: f64, _labels: &[(&str, &str)]) {}
+    fn histogram(&self, _name: &str, _value: f64, _labels: &[(&str, &str)]) {}
+}
+
+/// No-op event emitter — discards every event.
+#[derive(Debug, Default)]
+pub struct NoopEventEmitter;
+
+impl EventEmitter for NoopEventEmitter {
+    fn emit(&self, _topic: &str, _payload: serde_json::Value) {}
+}
+
 /// Default trigger scheduler (no-op).
 #[must_use]
 pub fn default_trigger_scheduler() -> Arc<dyn TriggerScheduler> {
@@ -295,4 +315,16 @@ pub fn default_credential_accessor() -> Arc<dyn CredentialAccessor> {
 #[must_use]
 pub fn default_action_logger() -> Arc<dyn Logger> {
     Arc::new(NoopLogger)
+}
+
+/// Default metrics emitter (no-op).
+#[must_use]
+pub fn default_metrics_emitter() -> Arc<dyn MetricsEmitter> {
+    Arc::new(NoopMetricsEmitter)
+}
+
+/// Default event emitter (no-op).
+#[must_use]
+pub fn default_event_emitter() -> Arc<dyn EventEmitter> {
+    Arc::new(NoopEventEmitter)
 }

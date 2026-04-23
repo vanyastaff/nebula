@@ -73,7 +73,7 @@ pub trait StatefulAction: Action {
         &self,
         input: Self::Input,
         state: &mut Self::State,
-        ctx: &ActionContext,
+        ctx: &(impl ActionContext + ?Sized),
     ) -> impl Future<Output = Result<ActionResult<Self::Output>, ActionError>> + Send;
 }
 
@@ -150,7 +150,7 @@ pub trait PaginatedAction: Action {
         &self,
         input: &Self::Input,
         cursor: Option<&Self::Cursor>,
-        ctx: &ActionContext,
+        ctx: &(impl ActionContext + ?Sized),
     ) -> impl Future<Output = Result<PageResult<Self::Output, Self::Cursor>, ActionError>> + Send;
 }
 
@@ -187,7 +187,7 @@ macro_rules! impl_paginated_action {
                 &self,
                 input: Self::Input,
                 state: &mut Self::State,
-                ctx: &$crate::context::ActionContext,
+                ctx: &(impl $crate::context::ActionContext + ?Sized),
             ) -> ::core::result::Result<
                 $crate::result::ActionResult<Self::Output>,
                 $crate::error::ActionError,
@@ -293,7 +293,7 @@ pub trait BatchAction: Action {
     fn process_item(
         &self,
         item: Self::Item,
-        ctx: &ActionContext,
+        ctx: &(impl ActionContext + ?Sized),
     ) -> impl Future<Output = Result<Self::Output, ActionError>> + Send;
 
     /// Merge per-item results into the final output.
@@ -324,7 +324,7 @@ macro_rules! impl_batch_action {
                 &self,
                 input: Self::Input,
                 state: &mut Self::State,
-                ctx: &$crate::context::ActionContext,
+                ctx: &(impl $crate::context::ActionContext + ?Sized),
             ) -> ::core::result::Result<
                 $crate::result::ActionResult<Self::Output>,
                 $crate::error::ActionError,
@@ -462,7 +462,7 @@ pub trait StatefulHandler: Send + Sync {
         &'life0 self,
         input: &'life1 Value,
         state: &'life2 mut Value,
-        ctx: &'life3 ActionContext,
+        ctx: &'life3 dyn ActionContext,
     ) -> Pin<Box<dyn Future<Output = Result<ActionResult<Value>, ActionError>> + Send + 'a>>
     where
         Self: 'a,
@@ -547,7 +547,7 @@ where
         &'life0 self,
         input: &'life1 Value,
         state: &'life2 mut Value,
-        ctx: &'life3 ActionContext,
+        ctx: &'life3 dyn ActionContext,
     ) -> Pin<Box<dyn Future<Output = Result<ActionResult<Value>, ActionError>> + Send + 'a>>
     where
         Self: 'a,
@@ -698,7 +698,7 @@ mod tests {
             &self,
             _input: Self::Input,
             state: &mut Self::State,
-            _ctx: &ActionContext,
+            _ctx: &(impl ActionContext + ?Sized),
         ) -> Result<ActionResult<Self::Output>, ActionError> {
             state.count += 1;
             if state.count >= 3 {
@@ -810,7 +810,7 @@ mod tests {
             &self,
             _input: Self::Input,
             state: &mut Self::State,
-            _ctx: &ActionContext,
+            _ctx: &(impl ActionContext + ?Sized),
         ) -> Result<ActionResult<Self::Output>, ActionError> {
             state.count = self.mark;
             Err(self.fail_with.clone())
