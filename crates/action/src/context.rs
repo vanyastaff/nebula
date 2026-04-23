@@ -571,19 +571,20 @@ mod tests {
 
     struct TestScheduler;
 
-    #[async_trait::async_trait]
     impl TriggerScheduler for TestScheduler {
-        async fn schedule_after(&self, _delay: Duration) -> Result<(), ActionError> {
-            Ok(())
+        fn schedule_after(&self, _delay: Duration) -> BoxFuture<'_, Result<(), ActionError>> {
+            Box::pin(async { Ok(()) })
         }
     }
 
     struct TestEmitter;
 
-    #[async_trait::async_trait]
     impl ExecutionEmitter for TestEmitter {
-        async fn emit(&self, _input: serde_json::Value) -> Result<ExecutionId, ActionError> {
-            Ok(ExecutionId::new())
+        fn emit(
+            &self,
+            _input: serde_json::Value,
+        ) -> BoxFuture<'_, Result<ExecutionId, ActionError>> {
+            Box::pin(async { Ok(ExecutionId::new()) })
         }
     }
 

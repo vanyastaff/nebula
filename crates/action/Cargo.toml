@@ -27,7 +27,6 @@ nebula-error = { workspace = true }
 nebula-metadata = { path = "../metadata" }
 nebula-schema = { path = "../schema" }
 nebula-resource = { path = "../resource" }
-anyhow = { workspace = true }
 async-trait = { workspace = true }
 semver = { workspace = true }
 serde = { workspace = true }

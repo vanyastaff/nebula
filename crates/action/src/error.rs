@@ -1,6 +1,40 @@
-use std::{sync::Arc, time::Duration};
+use std::{error::Error as StdError, fmt, sync::Arc, time::Duration};
 
 use serde::{Deserialize, Serialize};
+
+/// Internal wrapper that lifts a `Display + Debug` message into
+/// `std::error::Error`.
+///
+/// `ActionError::{Retryable, Fatal}` now carry `Arc<dyn StdError + Send + Sync>`
+/// instead of `Arc<anyhow::Error>` (spec 27 §2.6). The `retryable` /
+/// `fatal` constructors still accept an `impl Display + Debug` for DX —
+/// this private wrapper bridges that API to the stdlib error trait
+/// without pulling `anyhow` into the public dep graph.
+struct DisplayError {
+    message: String,
+}
+
+impl fmt::Display for DisplayError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(&self.message)
+    }
+}
+
+impl fmt::Debug for DisplayError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_tuple("DisplayError").field(&self.message).finish()
+    }
+}
+
+impl StdError for DisplayError {}
+
+fn wrap_display(
+    error: impl fmt::Display + fmt::Debug + Send + Sync + 'static,
+) -> Arc<dyn StdError + Send + Sync> {
+    Arc::new(DisplayError {
+        message: error.to_string(),
+    })
+}
 
 /// Retry-strategy hint attached by the action body to a failing
 /// `Retryable` or `Fatal` error.
@@ -130,7 +164,7 @@ pub enum ActionError {
     #[error("retryable: {error}")]
     Retryable {
         /// Full error chain wrapped in `Arc` for `Clone` support.
-        error: Arc<anyhow::Error>,
+        error: Arc<dyn StdError + Send + Sync>,
         /// Machine-readable error code for engine decisions.
         code: Option<RetryHintCode>,
         /// Suggested delay before retry (engine may override).
@@ -145,7 +179,7 @@ pub enum ActionError {
     #[error("fatal: {error}")]
     Fatal {
         /// Full error chain wrapped in `Arc` for `Clone` support.
-        error: Arc<anyhow::Error>,
+        error: Arc<dyn StdError + Send + Sync>,
         /// Machine-readable error code for engine decisions.
         code: Option<RetryHintCode>,
         /// Optional structured details about the failure.
@@ -230,7 +264,7 @@ pub enum ActionError {
         action_key: String,
         /// Underlying error from the refresh hook. Wrapped in `Arc` so
         /// `ActionError` stays `Clone` (consistent with the other variants
-        /// that wrap `anyhow::Error` in `Arc`).
+        /// that wrap `Arc<dyn StdError + Send + Sync>`).
         #[source]
         source: Arc<dyn std::error::Error + Send + Sync>,
     },
@@ -309,11 +343,9 @@ impl ActionError {
     /// Accepts any type that implements `Display + Debug + Send + Sync`.
     /// For typed errors, use [`Self::retryable_from`] to preserve the error chain.
     #[must_use]
-    pub fn retryable(
-        error: impl std::fmt::Display + std::fmt::Debug + Send + Sync + 'static,
-    ) -> Self {
+    pub fn retryable(error: impl fmt::Display + fmt::Debug + Send + Sync + 'static) -> Self {
         Self::Retryable {
-            error: Arc::new(anyhow::anyhow!("{error}")),
+            error: wrap_display(error),
             code: None,
             backoff_hint: None,
             partial_output: None,
@@ -324,7 +356,7 @@ impl ActionError {
     #[must_use]
     pub fn retryable_from(error: impl std::error::Error + Send + Sync + 'static) -> Self {
         Self::Retryable {
-            error: Arc::new(error.into()),
+            error: Arc::new(error),
             code: None,
             backoff_hint: None,
             partial_output: None,
@@ -334,11 +366,11 @@ impl ActionError {
     /// Create a retryable error with a suggested backoff duration.
     #[must_use]
     pub fn retryable_with_backoff(
-        error: impl std::fmt::Display + std::fmt::Debug + Send + Sync + 'static,
+        error: impl fmt::Display + fmt::Debug + Send + Sync + 'static,
         backoff: Duration,
     ) -> Self {
         Self::Retryable {
-            error: Arc::new(anyhow::anyhow!("{error}")),
+            error: wrap_display(error),
             code: None,
             backoff_hint: Some(backoff),
             partial_output: None,
@@ -348,11 +380,11 @@ impl ActionError {
     /// Create a retryable error with a retry-strategy hint.
     #[must_use]
     pub fn retryable_with_hint(
-        error: impl std::fmt::Display + std::fmt::Debug + Send + Sync + 'static,
+        error: impl fmt::Display + fmt::Debug + Send + Sync + 'static,
         hint: RetryHintCode,
     ) -> Self {
         Self::Retryable {
-            error: Arc::new(anyhow::anyhow!("{error}")),
+            error: wrap_display(error),
             code: Some(hint),
             backoff_hint: None,
             partial_output: None,
@@ -362,11 +394,11 @@ impl ActionError {
     /// Create a retryable error carrying a partial result.
     #[must_use]
     pub fn retryable_with_partial(
-        error: impl std::fmt::Display + std::fmt::Debug + Send + Sync + 'static,
+        error: impl fmt::Display + fmt::Debug + Send + Sync + 'static,
         partial: serde_json::Value,
     ) -> Self {
         Self::Retryable {
-            error: Arc::new(anyhow::anyhow!("{error}")),
+            error: wrap_display(error),
             code: None,
             backoff_hint: None,
             partial_output: Some(partial),
@@ -378,9 +410,9 @@ impl ActionError {
     /// Accepts any type that implements `Display + Debug + Send + Sync`.
     /// For typed errors, use [`Self::fatal_from`] to preserve the error chain.
     #[must_use]
-    pub fn fatal(error: impl std::fmt::Display + std::fmt::Debug + Send + Sync + 'static) -> Self {
+    pub fn fatal(error: impl fmt::Display + fmt::Debug + Send + Sync + 'static) -> Self {
         Self::Fatal {
-            error: Arc::new(anyhow::anyhow!("{error}")),
+            error: wrap_display(error),
             code: None,
             details: None,
         }
@@ -390,7 +422,7 @@ impl ActionError {
     #[must_use]
     pub fn fatal_from(error: impl std::error::Error + Send + Sync + 'static) -> Self {
         Self::Fatal {
-            error: Arc::new(error.into()),
+            error: Arc::new(error),
             code: None,
             details: None,
         }
@@ -399,11 +431,11 @@ impl ActionError {
     /// Create a fatal error with structured details.
     #[must_use]
     pub fn fatal_with_details(
-        error: impl std::fmt::Display + std::fmt::Debug + Send + Sync + 'static,
+        error: impl fmt::Display + fmt::Debug + Send + Sync + 'static,
         details: serde_json::Value,
     ) -> Self {
         Self::Fatal {
-            error: Arc::new(anyhow::anyhow!("{error}")),
+            error: wrap_display(error),
             code: None,
             details: Some(details),
         }
@@ -416,11 +448,11 @@ impl ActionError {
     /// `InvalidInput` in an error dashboard).
     #[must_use]
     pub fn fatal_with_hint(
-        error: impl std::fmt::Display + std::fmt::Debug + Send + Sync + 'static,
+        error: impl fmt::Display + fmt::Debug + Send + Sync + 'static,
         hint: RetryHintCode,
     ) -> Self {
         Self::Fatal {
-            error: Arc::new(anyhow::anyhow!("{error}")),
+            error: wrap_display(error),
             code: Some(hint),
             details: None,
         }

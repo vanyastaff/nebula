@@ -584,14 +584,10 @@ impl FailingEmitter {
 }
 
 impl ExecutionEmitter for FailingEmitter {
-    fn emit<'life0, 'a>(
-        &'life0 self,
+    fn emit(
+        &self,
         _input: serde_json::Value,
-    ) -> Pin<Box<dyn Future<Output = Result<ExecutionId, ActionError>> + Send + 'a>>
-    where
-        Self: 'a,
-        'life0: 'a,
-    {
+    ) -> Pin<Box<dyn Future<Output = Result<ExecutionId, ActionError>> + Send + '_>> {
         self.attempts.fetch_add(1, Ordering::Relaxed);
         Box::pin(async { Err(ActionError::retryable("emitter down")) })
     }
@@ -706,14 +702,10 @@ impl DropCountingFailingEmitter {
 }
 
 impl ExecutionEmitter for DropCountingFailingEmitter {
-    fn emit<'life0, 'a>(
-        &'life0 self,
+    fn emit(
+        &self,
         _input: serde_json::Value,
-    ) -> Pin<Box<dyn Future<Output = Result<ExecutionId, ActionError>> + Send + 'a>>
-    where
-        Self: 'a,
-        'life0: 'a,
-    {
+    ) -> Pin<Box<dyn Future<Output = Result<ExecutionId, ActionError>> + Send + '_>> {
         self.drops.fetch_add(1, Ordering::Relaxed);
         Box::pin(async { Err(ActionError::retryable("drop me")) })
     }

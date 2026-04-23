@@ -15,7 +15,6 @@ use std::{
     time::Duration,
 };
 
-use async_trait::async_trait;
 use nebula_core::{
     CoreError, CredentialKey, ResourceKey,
     accessor::{CredentialAccessor, LogLevel, Logger, ResourceAccessor},
@@ -443,11 +442,13 @@ impl std::fmt::Debug for SpyEmitter {
     }
 }
 
-#[async_trait]
 impl ExecutionEmitter for SpyEmitter {
-    async fn emit(&self, input: serde_json::Value) -> Result<ExecutionId, ActionError> {
+    fn emit(
+        &self,
+        input: serde_json::Value,
+    ) -> Pin<Box<dyn Future<Output = Result<ExecutionId, ActionError>> + Send + '_>> {
         self.emitted.lock().push(input);
-        Ok(ExecutionId::new())
+        Box::pin(async { Ok(ExecutionId::new()) })
     }
 }
 
@@ -492,11 +493,13 @@ impl std::fmt::Debug for SpyScheduler {
     }
 }
 
-#[async_trait]
 impl TriggerScheduler for SpyScheduler {
-    async fn schedule_after(&self, delay: Duration) -> Result<(), ActionError> {
+    fn schedule_after(
+        &self,
+        delay: Duration,
+    ) -> Pin<Box<dyn Future<Output = Result<(), ActionError>> + Send + '_>> {
         self.scheduled.lock().push(delay);
-        Ok(())
+        Box::pin(async { Ok(()) })
     }
 }
 

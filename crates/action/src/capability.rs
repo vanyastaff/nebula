@@ -19,7 +19,6 @@ use std::{
     time::Duration,
 };
 
-use async_trait::async_trait;
 use nebula_core::{
     CoreError, CredentialKey, ResourceKey,
     accessor::{CredentialAccessor, LogLevel, Logger, ResourceAccessor},
@@ -34,17 +33,23 @@ type BoxFut<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
 // ── Trigger-only capabilities ──────────────────────────────────────────────
 
 /// Schedule the next invocation of a trigger.
-#[async_trait]
+///
+/// Dyn-safe: `Arc<dyn TriggerScheduler>` is how the runtime wires this into
+/// [`TriggerContext`]. The explicit `Pin<Box<dyn Future>>` return (instead of
+/// `async fn`) preserves that dyn-compatibility without the `async_trait`
+/// proc-macro — Rust 1.94 native async-in-traits requires the caller to
+/// know the concrete `Self`, which breaks dyn dispatch.
 pub trait TriggerScheduler: Send + Sync {
     /// Schedule the next trigger run after the given delay.
-    async fn schedule_after(&self, delay: Duration) -> Result<(), ActionError>;
+    fn schedule_after(&self, delay: Duration) -> BoxFut<'_, Result<(), ActionError>>;
 }
 
 /// Start a new workflow execution with a typed input payload.
-#[async_trait]
+///
+/// Dyn-safe (see [`TriggerScheduler`] for the Rust 1.94 rationale).
 pub trait ExecutionEmitter: Send + Sync {
     /// Start a new execution for this trigger's workflow with the given input.
-    async fn emit(&self, input: serde_json::Value) -> Result<ExecutionId, ActionError>;
+    fn emit(&self, input: serde_json::Value) -> BoxFut<'_, Result<ExecutionId, ActionError>>;
 }
 
 // ── Trigger health atomics ─────────────────────────────────────────────────
@@ -175,12 +180,13 @@ pub fn now_millis() -> u64 {
 #[derive(Debug, Default)]
 pub struct NoopTriggerScheduler;
 
-#[async_trait]
 impl TriggerScheduler for NoopTriggerScheduler {
-    async fn schedule_after(&self, _delay: Duration) -> Result<(), ActionError> {
-        Err(ActionError::fatal(
-            "trigger scheduler capability is not configured in TriggerContext",
-        ))
+    fn schedule_after(&self, _delay: Duration) -> BoxFut<'_, Result<(), ActionError>> {
+        Box::pin(async {
+            Err(ActionError::fatal(
+                "trigger scheduler capability is not configured in TriggerContext",
+            ))
+        })
     }
 }
 
@@ -188,12 +194,13 @@ impl TriggerScheduler for NoopTriggerScheduler {
 #[derive(Debug, Default)]
 pub struct NoopExecutionEmitter;
 
-#[async_trait]
 impl ExecutionEmitter for NoopExecutionEmitter {
-    async fn emit(&self, _input: serde_json::Value) -> Result<ExecutionId, ActionError> {
-        Err(ActionError::fatal(
-            "execution emitter capability is not configured in TriggerContext",
-        ))
+    fn emit(&self, _input: serde_json::Value) -> BoxFut<'_, Result<ExecutionId, ActionError>> {
+        Box::pin(async {
+            Err(ActionError::fatal(
+                "execution emitter capability is not configured in TriggerContext",
+            ))
+        })
     }
 }
 
