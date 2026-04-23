@@ -58,6 +58,8 @@ nebula-metrics = { path = "../metrics" }
 chrono = { workspace = true }
 futures = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
+# `token_refresh` tests use a loopback `TcpListener` to mock the token endpoint.
+tokio = { workspace = true, features = ["io-util", "net", "rt", "macros"] }
 
 [lib]
 doctest = false

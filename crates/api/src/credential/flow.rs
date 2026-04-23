@@ -272,4 +272,63 @@ Transfer-Encoding: chunked\r\nConnection: close\r\n\r\n";
             "expected streaming cap (exceeded) error, got: {err}"
         );
     }
+
+    #[tokio::test]
+    async fn token_exchange_fails_on_non_success_status() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");
+        let addr = listener.local_addr().expect("local addr");
+        tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.expect("accept");
+            drain_incoming_request(&mut stream).await;
+            const BODY: &[u8] = b"{\"error\":\"invalid_client\",\"error_description\":\"bad\"}";
+            let n = BODY.len();
+            let head = format!(
+                "HTTP/1.1 401 Unauthorized\r\nContent-Type: application/json\r\nContent-Length: {n}\r\nConnection: close\r\n\r\n"
+            );
+            if stream.write_all(head.as_bytes()).await.is_err() {
+                return;
+            }
+            let _ = stream.write_all(BODY).await;
+        });
+
+        let mut req = sample_exchange();
+        req.token_url = format!("http://127.0.0.1:{}/token", addr.port());
+        let err = exchange_code(&req)
+            .await
+            .expect_err("401 from token endpoint should map to error");
+        assert!(
+            err.contains("401") || err.to_lowercase().contains("unauthorized"),
+            "expected non-success status in error, got: {err}"
+        );
+    }
+
+    #[tokio::test]
+    async fn token_exchange_fails_on_invalid_json_body_for_200() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");
+        let addr = listener.local_addr().expect("local addr");
+        let body: &[u8] = b"this is not json {";
+        tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.expect("accept");
+            drain_incoming_request(&mut stream).await;
+            let n = body.len();
+            let head = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {n}\r\nConnection: close\r\n\r\n"
+            );
+            if stream.write_all(head.as_bytes()).await.is_err() {
+                return;
+            }
+            let _ = stream.write_all(body).await;
+        });
+
+        let mut req = sample_exchange();
+        req.token_url = format!("http://127.0.0.1:{}/token", addr.port());
+        let err = exchange_code(&req)
+            .await
+            .expect_err("invalid json on 2xx should fail");
+        let lower = err.to_lowercase();
+        assert!(
+            lower.contains("parse") || lower.contains("json") || lower.contains("token response"),
+            "expected JSON parse / token response error, got: {err}"
+        );
+    }
 }

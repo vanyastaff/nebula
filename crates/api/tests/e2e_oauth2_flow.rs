@@ -153,6 +153,7 @@ async fn e2e_oauth2_flow_persists_exchanged_credential_state() {
         .get(credential_id)
         .await
         .expect("stored oauth credential");
+    assert_eq!(stored.version, 1, "first persisted row should be version 1");
     assert_eq!(stored.credential_key, OAuth2Credential::KEY);
     assert_eq!(stored.state_kind, OAuth2State::KIND);
 
@@ -182,24 +183,40 @@ async fn e2e_oauth2_flow_persists_exchanged_credential_state() {
     let mut stale_record = stored.clone();
     stale_record.data = serde_json::to_vec(&persisted_state).expect("serialize stale oauth state");
     stale_record.expires_at = persisted_state.expires_at();
-    state
+    let stale_put = state
         .oauth_credential_store
         .put(stale_record, PutMode::Overwrite)
         .await
         .expect("persist stale oauth state");
+    assert_eq!(
+        stale_put.version, 2,
+        "manual overwrite of stale state should bump StoredCredential::version (CAS basis)"
+    );
 
     let resolver = CredentialResolver::new(state.oauth_credential_store.clone());
     let ctx = CredentialContext::new("test-user");
-    resolver
+    let handle = resolver
         .resolve_with_refresh::<OAuth2Credential>(credential_id, &ctx)
         .await
         .expect("resolve with refresh should succeed");
+    assert_eq!(handle.credential_id(), credential_id);
+    let token = handle.snapshot();
+    assert_eq!(token.token_type, "Bearer");
+    assert_eq!(token.scopes, vec!["repo".to_owned(), "workflow".to_owned()]);
+    assert_eq!(
+        token.access_token().expose_secret(|s| s.to_owned()),
+        "e2e-access-token-refreshed"
+    );
 
     let refreshed = state
         .oauth_credential_store
         .get(credential_id)
         .await
         .expect("refreshed oauth credential in store");
+    assert_eq!(
+        refreshed.version, 3,
+        "engine refresh should persist via CAS and increment version"
+    );
     let refreshed_state: OAuth2State =
         serde_json::from_slice(&refreshed.data).expect("deserialize refreshed oauth state");
     assert_eq!(

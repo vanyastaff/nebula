@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Documentation
+
+- **nebula-sdk** (P11): Credential/OAuth re-export audit — described how the façade exposes `nebula_credential` (full crate + prelude picks), what is intentionally not part of the SDK, and how integrators should migrate when credential types change. See `crates/sdk/README.md` §*Credential, OAuth, and the SDK*.
+
 ### Fixed
 
 - **nebula-schema** (PR review): `SecretString` now uses `Zeroizing<String>` so `expose()` stays infallible under `#![forbid(unsafe_code)]`; secret promotion uses `mem::take` + `password.zeroize()` on the KDF path (restore password on KDF error); incompatible secret shapes report a static label (no `Debug` of values); mode payload key construction reports `ValidationError` instead of `expect`. **docs:** correct relative ADR link from `GLOSSARY.md`.
