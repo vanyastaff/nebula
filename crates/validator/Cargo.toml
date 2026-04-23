@@ -44,6 +44,9 @@ serde_json = { workspace = true }
 [dev-dependencies]
 proptest = "1"
 trybuild = "1"
+insta = { workspace = true }
+pretty_assertions = { workspace = true }
+rstest = { workspace = true }
 
 # Benchmarking
 criterion = { workspace = true }

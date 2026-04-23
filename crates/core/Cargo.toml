@@ -23,6 +23,9 @@ tokio-util = { workspace = true, features = ["rt"] }
 
 [dev-dependencies]
 criterion = { workspace = true }
+insta = { workspace = true }
+pretty_assertions = { workspace = true }
+rstest = { workspace = true }
 
 [[bench]]
 name = "id_parse_serialize"

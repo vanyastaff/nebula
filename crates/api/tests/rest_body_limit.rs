@@ -22,6 +22,7 @@ use nebula_api::{ApiConfig, AppState, app};
 use nebula_storage::{
     InMemoryExecutionRepo, InMemoryWorkflowRepo, repos::InMemoryControlQueueRepo,
 };
+use pretty_assertions::assert_eq;
 use tower::ServiceExt;
 
 async fn create_test_state() -> AppState {

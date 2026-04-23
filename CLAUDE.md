@@ -19,7 +19,7 @@ Normative core and satellites are listed in the **§15** table — load `PRODUCT
 - **Pinned toolchain:** `channel = "1.95.0"` — `rust-toolchain.toml` lines 16–18.
 - **Formatting (CI):** `cargo +nightly fmt --all -- --check` — `.github/workflows/ci.yml` lines 60–66 (`fmt` job uses nightly rustfmt per comment lines 56–59).
 - **Clippy (CI):** `cargo clippy --workspace -- -D warnings` — `.github/workflows/ci.yml` lines 87–88.
-- **Tests (matrix):** `cargo nextest run -p … --profile ci --no-tests=pass` — `.github/workflows/test-matrix.yml` lines 160–164.
+- **Tests (matrix):** `cargo nextest run -p … --profile ci --no-tests=pass` — `.github/workflows/test-matrix.yml` lines 160–164. Test *libraries* (insta, wiremock, mockall, …) — `docs/TESTING.md`.
 
 For a local gate similar to historical dev practice, run fmt (nightly) + clippy + nextest; align changed crates with `lefthook.yml` / CI when touching those paths.
 

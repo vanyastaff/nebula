@@ -78,6 +78,10 @@ msgpack-storage = ["dep:rmp-serde"]
 tokio = { workspace = true, features = ["full", "test-util"] }
 # Used by FileKeyProvider tests (key_provider.rs).
 tempfile = { workspace = true }
+assert_fs = { workspace = true }
+insta = { workspace = true }
+pretty_assertions = { workspace = true }
+rstest = { workspace = true }
 
 [lib]
 doctest = false

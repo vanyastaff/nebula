@@ -22,6 +22,9 @@ tokio = { workspace = true, features = ["rt-multi-thread", "macros", "time"] }
 criterion = { workspace = true, features = ["async_tokio", "html_reports"] }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true, features = ["fmt", "ansi"] }
+insta = { workspace = true }
+pretty_assertions = { workspace = true }
+rstest = { workspace = true }
 
 [[bench]]
 name = "emit"

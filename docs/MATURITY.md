@@ -2,7 +2,7 @@
 name: Nebula crate maturity dashboard
 description: Manual per-crate state dashboard. Edited in PRs that change a crate's API stability, test coverage, doc state, engine integration, or SLI-readiness.
 status: accepted
-last-reviewed: 2026-04-20
+last-reviewed: 2026-04-22
 related: [PRODUCT_CANON.md, STYLE.md]
 ---
 
@@ -52,7 +52,11 @@ Legend:
 This file is a living dashboard. Reviewers check truthfulness on every PR that touches a crate's public surface, test suite, or docs. Canon §17 DoD includes "MATURITY.md row updated if the PR changes crate state."
 
 Last full sweep: 2026-04-17 (Pass 4 of docs architecture redesign).
-Last targeted revision: 2026-04-21 — **P6–P11 credential cleanup:** add
+Last targeted revision: 2026-04-22 — **Test stack:** workspace `dev-dependencies` for
+`insta`, `pretty_assertions`, `rstest`, `wiremock`, `mockall`, `assert_cmd`, `predicates`,
+`assert_fs`; `docs/TESTING.md` + cross-links from `QUALITY_GATES` / `PRODUCT_CANON` §15;
+example tests in `nebula-api`, `nebula-credential`, `nebula-storage`, `nebula-cli`.
+Prior: 2026-04-21 — **P6–P11 credential cleanup:** add
 `docs/superpowers/plans/2026-04-20-credential-cleanup-p6-p11.md` (ADR-0032 pointer, spec §12
 rolled-up status: storage/engine/API phases landed); P1–P5 plan links to it; `credential/Cargo.toml`
 tokio comment corrected (resolver/executor in engine).

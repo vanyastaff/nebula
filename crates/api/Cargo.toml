@@ -86,6 +86,14 @@ sha2 = { workspace = true }
 tokio = { workspace = true, features = ["test-util"] }
 tokio-util = { workspace = true }
 async-trait = { workspace = true }
+insta = { workspace = true }
+mockall = { workspace = true }
+pretty_assertions = { workspace = true }
+rstest = { workspace = true }
+wiremock = { workspace = true }
+# Dev-only: `tests/wiremock_smoke.rs` — HTTP client + mock server (no full `App` required).
+reqwest = { workspace = true, default-features = false, features = ["json", "rustls"] }
+serde_json = { workspace = true }
 
 [features]
 default = []
