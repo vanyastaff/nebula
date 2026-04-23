@@ -170,7 +170,6 @@ pub fn build_outbound_http_connector_schema() -> ValidSchema {
         .add(
             Field::number(field_key!("timeout_ms"))
                 .label("Request timeout (ms)")
-                .integer()
                 .min_int(100)
                 .default_int(30_000),
         )
@@ -180,7 +179,6 @@ pub fn build_outbound_http_connector_schema() -> ValidSchema {
                 .add(
                     Field::number(field_key!("max_attempts"))
                         .label("Max attempts")
-                        .integer()
                         .min_int(1)
                         .max_int(8)
                         .default_int(3),
@@ -188,7 +186,6 @@ pub fn build_outbound_http_connector_schema() -> ValidSchema {
                 .add(
                     Field::number(field_key!("initial_backoff_ms"))
                         .label("First backoff (ms)")
-                        .integer()
                         .min_int(100)
                         .default_int(500),
                 ),

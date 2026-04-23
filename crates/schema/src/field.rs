@@ -362,11 +362,11 @@ impl NumberField {
         self
     }
 
-    /// Shorthand for [`min`](Self::min) on integer fields: lower bound as `i64` (becomes
-    /// `serde_json::Number` in rules).
+    /// Shorthand for integer ranges: sets [`integer`](Self::integer), then [`min`](Self::min) with
+    /// an `i64` bound (stored as `serde_json::Number` in rules).
     #[must_use]
     pub fn min_int(self, min: i64) -> Self {
-        self.min(Number::from(min))
+        self.integer().min(Number::from(min))
     }
 
     /// Add maximum numeric rule.
@@ -376,16 +376,16 @@ impl NumberField {
         self
     }
 
-    /// Shorthand for [`max`](Self::max) with an `i64` upper bound.
+    /// Like [`min_int`](Self::min_int): sets [`integer`](Self::integer), then [`max`](Self::max).
     #[must_use]
     pub fn max_int(self, max: i64) -> Self {
-        self.max(Number::from(max))
+        self.integer().max(Number::from(max))
     }
 
-    /// Set default to a whole number without spelling `serde_json::Value` for the common case.
+    /// Default whole number: sets [`integer`](Self::integer), then [`default`](Self::default).
     #[must_use]
     pub fn default_int(self, n: i64) -> Self {
-        self.default(Value::Number(Number::from(n)))
+        self.integer().default(Value::Number(Number::from(n)))
     }
 
     /// Set increment step.
@@ -395,10 +395,10 @@ impl NumberField {
         self
     }
 
-    /// Shorthand for [`step`](Self::step) with an `i64` step.
+    /// Integer step: sets [`integer`](Self::integer), then [`step`](Self::step).
     #[must_use]
     pub fn step_int(self, s: i64) -> Self {
-        self.step(Number::from(s))
+        self.integer().step(Number::from(s))
     }
 }
 
@@ -626,12 +626,10 @@ impl ModeField {
             key: key.into(),
             label: label.into(),
             field: Box::new(
-                Field::string(
-                    FieldKey::new(Self::EMPTY_PLACEHOLDER_KEY)
-                        .expect("EMPTY_PLACEHOLDER_KEY must be a valid FieldKey"),
-                )
-                .visible(VisibilityMode::Never)
-                .into(),
+                Field::string(Self::EMPTY_PLACEHOLDER_KEY)
+                    .visible(VisibilityMode::Never)
+                    .no_expression()
+                    .into(),
             ),
         });
         self

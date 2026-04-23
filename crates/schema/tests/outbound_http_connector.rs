@@ -36,8 +36,8 @@ fn post_with_bearer_and_json_body_validates() {
         "base_url": "https://partner.example",
         "http_method": "POST",
         "path": "/in",
-        "auth": { "mode": "bearer", "value": { "token": "bearersecrettokenthing" } },
-        "body": { "mode": "json", "value": { "json_body": "{}" } },
+        "auth": { "mode": "bearer", "value": "bearersecrettokenthing" },
+        "body": { "mode": "json", "value": "{}" },
         "query": { "params": [] },
         "request_signing": { "mode": "none" },
     });

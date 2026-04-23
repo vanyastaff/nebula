@@ -180,8 +180,10 @@ pub use expression::{Expression, ExpressionAst, ExpressionContext};
 ///   outer wrapper key around the list: each array element is validated with the `item`
 ///   schema, and that schema’s outer `Field` key (if the item is an `ObjectField`) is not
 ///   re-emitted as an extra wrapper in the wire.
-/// - For other leaf families ([`StringField`], [`SecretField`], [`CodeField`]), `value` is the
-///   scalar the field type expects.
+/// - For scalar leaf families, `value` is the JSON the field type expects, for example
+///   [`StringField`], [`SecretField`], [`CodeField`], [`NumberField`], [`BooleanField`],
+///   [`SelectField`], and [`FileField`] (per-field options, such as `multiple`, apply as
+///   usual).
 ///
 /// Integrators and UI authors should treat a JSON object with `"mode"` and optional `"value"`
 /// keys as the standard envelope, with the `value` kind determined by the selected variant’s

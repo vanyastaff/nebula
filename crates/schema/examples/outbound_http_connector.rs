@@ -27,7 +27,7 @@ fn main() {
         "headers": [
             { "name": "X-Correlation-Id", "value": "ulid-here" }
         ],
-        "body": { "mode": "json", "value": { "json_body": "{\n  \"hello\": \"world\"\n}" } },
+        "body": { "mode": "json", "value": "{\n  \"hello\": \"world\"\n}" },
         "query": { "params": [ { "name": "debug", "value": "0" } ] },
         "timeout_ms": 15000,
         "retry": { "max_attempts": 5, "initial_backoff_ms": 200 },
