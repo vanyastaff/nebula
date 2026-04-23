@@ -38,10 +38,7 @@ use nebula_metrics::naming::{
 use nebula_plugin::PluginRegistry;
 use nebula_telemetry::metrics::MetricsRegistry;
 use nebula_workflow::{Connection, DependencyGraph, NodeState, WorkflowDefinition};
-use tokio::{
-    sync::{Semaphore, mpsc},
-    task::JoinSet,
-};
+use tokio::{sync::Semaphore, task::JoinSet};
 use tokio_util::sync::CancellationToken;
 
 use crate::{
@@ -55,12 +52,15 @@ use crate::{
 /// Bounded (rather than unbounded) so a slow consumer cannot drive engine
 /// memory to unbounded growth. A workflow with ~10k nodes emits ~50k events;
 /// the capacity below keeps roughly one in-flight workflow's worth of events
-/// buffered before the engine starts dropping.
-type EventSender = mpsc::Sender<ExecutionEvent>;
+/// buffered per subscriber before the bus starts dropping.
+type EventBus = nebula_eventbus::EventBus<ExecutionEvent>;
 
-/// Default capacity for the engine's event channel. Tuned so a typical
+/// Default capacity for the engine's event bus. Tuned so a typical
 /// interactive workflow (hundreds of nodes) never blocks, while a runaway
-/// producer with a dead consumer cannot inflate memory without bound.
+/// producer with a dead consumer cannot inflate memory without bound. Spec
+/// 28 §2.4 calls for broadcast to multiple subscribers (storage writer,
+/// metrics collector, websocket broadcaster, audit writer) — `EventBus` is
+/// the workspace-standard fan-out primitive.
 pub const DEFAULT_EVENT_CHANNEL_CAPACITY: usize = 1024;
 
 /// Default execution-lease TTL.
@@ -149,7 +149,7 @@ pub struct WorkflowEngine {
     /// (secrets and auth). Populated via [`WorkflowEngine::with_action_credentials`].
     action_credentials: HashMap<ActionKey, HashSet<String>>,
     /// Optional event sender for real-time execution monitoring (TUI, logging).
-    event_sender: Option<EventSender>,
+    event_bus: Option<EventBus>,
     /// Stable per-instance identifier used as the execution-lease holder.
     ///
     /// Generated once at [`WorkflowEngine::new`] via [`InstanceId::new`]
@@ -260,7 +260,7 @@ impl WorkflowEngine {
             credential_resolver: None,
             credential_refresh: None,
             action_credentials: HashMap::new(),
-            event_sender: None,
+            event_bus: None,
             instance_id,
             lease_ttl: DEFAULT_EXECUTION_LEASE_TTL,
             lease_heartbeat_interval: DEFAULT_EXECUTION_LEASE_HEARTBEAT_INTERVAL,
@@ -492,40 +492,33 @@ impl WorkflowEngine {
         self
     }
 
-    /// Attach an event sender for real-time execution monitoring.
+    /// Attach an event bus for real-time execution monitoring.
     ///
-    /// When set, the engine emits [`ExecutionEvent`]s for node lifecycle
-    /// transitions (started, completed, failed, skipped) and execution
-    /// completion. Used by the CLI TUI for live monitoring.
+    /// When set, the engine publishes [`ExecutionEvent`]s for node
+    /// lifecycle transitions (started, completed, failed, skipped) and
+    /// execution completion. Used by the CLI TUI for live monitoring and
+    /// by the spec 28 §2.4 subscribers (storage writer, metrics
+    /// collector, websocket broadcaster, audit writer).
     ///
-    /// Pair with a receiver from [`mpsc::channel`] sized at
-    /// [`DEFAULT_EVENT_CHANNEL_CAPACITY`] or larger — events are *dropped*
-    /// (not blocked) when the buffer is full, so a stuck consumer cannot
-    /// stall the engine or grow memory without bound.
+    /// The bus fans out to every subscriber independently — each gets a
+    /// bounded queue sized per bus construction. Slow subscribers drop
+    /// events (they can observe the drop via their own `Subscriber`), the
+    /// engine never blocks.
     #[must_use = "builder methods must be chained or built"]
-    pub fn with_event_sender(mut self, sender: mpsc::Sender<ExecutionEvent>) -> Self {
-        self.event_sender = Some(sender);
+    pub fn with_event_bus(mut self, bus: EventBus) -> Self {
+        self.event_bus = Some(bus);
         self
     }
 
-    /// Emit an execution event if a sender is configured.
+    /// Emit an execution event if a bus is configured.
     ///
-    /// Uses `try_send` so a backed-up consumer cannot block the engine.
-    /// The channel is deliberately bounded; drops are observability-only.
+    /// Hot path is one `broadcast::send` plus the bus's own accounting —
+    /// a dead or backed-up subscriber surfaces as a drop in its
+    /// `EventBusStats::dropped_count`, never as back-pressure on the
+    /// engine itself.
     fn emit_event(&self, event: ExecutionEvent) {
-        if let Some(sender) = &self.event_sender
-            && let Err(e) = sender.try_send(event)
-        {
-            // Full or closed — drop. The alternative (block the engine on
-            // a slow TUI) would be far worse. Log once at the boundary.
-            match e {
-                mpsc::error::TrySendError::Full(_) => {
-                    tracing::warn!("engine event channel full; dropping event (slow consumer)");
-                },
-                mpsc::error::TrySendError::Closed(_) => {
-                    // Consumer disconnected — silent, expected on shutdown.
-                },
-            }
+        if let Some(bus) = &self.event_bus {
+            let _ = bus.emit(event);
         }
     }
 
@@ -551,14 +544,14 @@ impl WorkflowEngine {
             execution_id,
             non_terminal_nodes,
         };
-        let Some(sender) = &self.event_sender else {
+        let Some(bus) = &self.event_bus else {
             return;
         };
-        if sender.try_send(event).is_err() {
+        if !matches!(bus.emit(event), nebula_eventbus::PublishOutcome::Sent) {
             tracing::error!(
                 %execution_id,
                 non_terminal_count,
-                "frontier integrity violation event dropped (channel full or closed)"
+                "frontier integrity violation event dropped by event bus (slow subscriber)"
             );
         }
     }
@@ -5351,11 +5344,12 @@ mod tests {
         let failing_repo = Arc::new(FailAtTransitionN::new(base, 1));
 
         let (engine, _) = make_engine(registry);
-        let (event_tx, mut event_rx) = mpsc::channel(64);
+        let event_bus = nebula_eventbus::EventBus::<ExecutionEvent>::new(64);
+        let mut event_rx = event_bus.subscribe();
         let engine = engine
             .with_execution_repo(failing_repo)
             .with_workflow_repo(workflow_repo)
-            .with_event_sender(event_tx);
+            .with_event_bus(event_bus);
 
         let _ = engine
             .execute_workflow(&wf, serde_json::json!(null), ExecutionBudget::default())
@@ -5505,11 +5499,12 @@ mod tests {
         let failing_repo = Arc::new(FailAtTransitionN::new(base, 1));
 
         let (engine, _) = make_engine(registry);
-        let (event_tx, mut event_rx) = mpsc::channel(64);
+        let event_bus = nebula_eventbus::EventBus::<ExecutionEvent>::new(64);
+        let mut event_rx = event_bus.subscribe();
         let engine = engine
             .with_execution_repo(failing_repo)
             .with_workflow_repo(workflow_repo)
-            .with_event_sender(event_tx);
+            .with_event_bus(event_bus);
 
         let _ = engine
             .execute_workflow(&wf, serde_json::json!(null), ExecutionBudget::default())
@@ -6064,8 +6059,9 @@ mod tests {
     async fn emit_frontier_integrity_helper_delivers_one_event_on_violation() {
         let registry = Arc::new(ActionRegistry::new());
         let (engine, _) = make_engine(registry);
-        let (tx, mut rx) = mpsc::channel::<ExecutionEvent>(8);
-        let engine = engine.with_event_sender(tx);
+        let event_bus = nebula_eventbus::EventBus::<ExecutionEvent>::new(8);
+        let mut rx = event_bus.subscribe();
+        let engine = engine.with_event_bus(event_bus);
 
         let exec_id = ExecutionId::new();
         let n2 = node_key!("n2");
@@ -6084,7 +6080,10 @@ mod tests {
         }
         // No further events from this helper — the finish event is the
         // caller's responsibility and is intentionally out of scope here.
-        assert!(rx.try_recv().is_err(), "helper must emit exactly one event");
+        assert!(
+            rx.try_recv().is_none(),
+            "helper must emit exactly one event"
+        );
     }
 
     /// When the guard does not fire, `emit_frontier_integrity_if_violated`
@@ -6094,11 +6093,12 @@ mod tests {
     async fn emit_frontier_integrity_helper_silent_when_no_violation() {
         let registry = Arc::new(ActionRegistry::new());
         let (engine, _) = make_engine(registry);
-        let (tx, mut rx) = mpsc::channel::<ExecutionEvent>(8);
-        let engine = engine.with_event_sender(tx);
+        let event_bus = nebula_eventbus::EventBus::<ExecutionEvent>::new(8);
+        let mut rx = event_bus.subscribe();
+        let engine = engine.with_event_bus(event_bus);
 
         engine.emit_frontier_integrity_if_violated(ExecutionId::new(), None);
-        assert!(rx.try_recv().is_err());
+        assert!(rx.try_recv().is_none());
     }
 
     /// Regression for #306: when the proactive credential-refresh hook

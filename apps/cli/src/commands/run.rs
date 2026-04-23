@@ -99,16 +99,19 @@ pub(crate) async fn execute(args: RunArgs, quiet: bool) -> anyhow::Result<ExitCo
             }
         };
 
-    let (event_tx, mut event_rx) = if want_events {
-        let (tx, rx) = tokio::sync::mpsc::channel(nebula_engine::DEFAULT_EVENT_CHANNEL_CAPACITY);
-        (Some(tx), Some(rx))
+    let (event_bus, mut event_rx) = if want_events {
+        let bus = nebula_eventbus::EventBus::<nebula_engine::ExecutionEvent>::new(
+            nebula_engine::DEFAULT_EVENT_CHANNEL_CAPACITY,
+        );
+        let rx = bus.subscribe();
+        (Some(bus), Some(rx))
     } else {
         (None, None)
     };
 
     let mut engine = WorkflowEngine::new(runtime, metrics);
-    if let Some(tx) = event_tx {
-        engine = engine.with_event_sender(tx);
+    if let Some(bus) = event_bus {
+        engine = engine.with_event_bus(bus);
     }
 
     // TUI mode: run engine in background, TUI consumes live events.
@@ -124,7 +127,7 @@ pub(crate) async fn execute(args: RunArgs, quiet: bool) -> anyhow::Result<ExitCo
         && !quiet
         && let Some(ref mut rx) = event_rx
     {
-        while let Ok(event) = rx.try_recv() {
+        while let Some(event) = rx.try_recv() {
             print_stream_event(&event);
         }
     }
@@ -418,7 +421,7 @@ async fn run_tui_live(
     engine: WorkflowEngine,
     input: serde_json::Value,
     budget: ExecutionBudget,
-    mut engine_rx: tokio::sync::mpsc::Receiver<nebula_engine::ExecutionEvent>,
+    mut engine_rx: nebula_eventbus::Subscriber<nebula_engine::ExecutionEvent>,
 ) -> anyhow::Result<ExitCode> {
     use crate::tui::{
         app::App,
@@ -443,7 +446,7 @@ async fn run_tui_live(
     );
 
     // Replay collected engine events into the TUI app state.
-    while let Ok(event) = engine_rx.try_recv() {
+    while let Some(event) = engine_rx.try_recv() {
         let tui_event = match event {
             nebula_engine::ExecutionEvent::NodeStarted {
                 node_key,

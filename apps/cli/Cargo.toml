@@ -56,6 +56,7 @@ crossterm = { version = "0.29", optional = true }
 # Nebula crates
 nebula-core = { path = "../../crates/core" }
 nebula-engine = { path = "../../crates/engine" }
+nebula-eventbus = { path = "../../crates/eventbus" }
 nebula-plugin = { path = "../../crates/plugin" }
 nebula-sandbox = { path = "../../crates/sandbox" }
 nebula-execution = { path = "../../crates/execution" }
