@@ -215,4 +215,89 @@ mod tests {
             .expose_secret(|v| assert_eq!(v, "refresh-2"));
         assert!(state.expires_at.is_some());
     }
+
+    use tokio::{
+        io::{AsyncReadExt, AsyncWriteExt},
+        net::TcpListener,
+    };
+
+    /// Drain a single HTTP/1.1 request until the header block ends.
+    async fn drain_incoming_request(stream: &mut tokio::net::TcpStream) {
+        let mut acc = Vec::new();
+        let mut buf = [0u8; 1024];
+        loop {
+            let n = stream
+                .read(&mut buf)
+                .await
+                .expect("read request from client");
+            if n == 0 {
+                break;
+            }
+            acc.extend_from_slice(&buf[..n]);
+            if acc.windows(4).any(|w| w == b"\r\n\r\n") {
+                break;
+            }
+            if acc.len() > 64 * 1024 {
+                return;
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn refresh_oauth2_state_maps_401_to_token_endpoint_error() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");
+        let addr = listener.local_addr().expect("local addr");
+        const BODY: &[u8] = b"{\"error\":\"invalid_client\"}";
+        tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.expect("accept");
+            drain_incoming_request(&mut stream).await;
+            let n = BODY.len();
+            let head = format!(
+                "HTTP/1.1 401 Unauthorized\r\nContent-Type: application/json\r\nContent-Length: {n}\r\nConnection: close\r\n\r\n"
+            );
+            if stream.write_all(head.as_bytes()).await.is_err() {
+                return;
+            }
+            let _ = stream.write_all(BODY).await;
+        });
+
+        let mut state = sample_state();
+        state.token_url = format!("http://127.0.0.1:{}/token", addr.port());
+        let err = refresh_oauth2_state(&mut state)
+            .await
+            .expect_err("401 from token");
+        assert!(
+            matches!(err, TokenRefreshError::TokenEndpoint { .. }),
+            "expected TokenEndpoint, got: {err:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn refresh_oauth2_state_maps_invalid_json_to_parse_error() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");
+        let addr = listener.local_addr().expect("local addr");
+        let body: &[u8] = b"not json {";
+        tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.expect("accept");
+            drain_incoming_request(&mut stream).await;
+            let n = body.len();
+            let head = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {n}\r\nConnection: close\r\n\r\n"
+            );
+            if stream.write_all(head.as_bytes()).await.is_err() {
+                return;
+            }
+            let _ = stream.write_all(body).await;
+        });
+
+        let mut state = sample_state();
+        state.token_url = format!("http://127.0.0.1:{}/token", addr.port());
+        let err = refresh_oauth2_state(&mut state)
+            .await
+            .expect_err("invalid json body");
+        assert!(
+            matches!(err, TokenRefreshError::Parse(_)),
+            "expected Parse, got: {err:?}"
+        );
+    }
 }

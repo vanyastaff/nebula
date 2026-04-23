@@ -256,7 +256,12 @@ impl<S> EncryptionLayer<S> {
 // `StaticKeyProvider`. Storage's own `test-util` feature forwards that.
 #[cfg(all(test, feature = "test-util"))]
 mod tests {
-    use nebula_credential::{PutMode, encrypt, store::test_helpers::make_credential};
+    use nebula_credential::{
+        PutMode, SecretString,
+        credentials::oauth2::{AuthStyle, OAuth2State},
+        encrypt,
+        store::test_helpers::make_credential,
+    };
 
     use super::{
         super::super::{key_provider::StaticKeyProvider, memory::InMemoryStore},
@@ -306,6 +311,39 @@ mod tests {
         // Read directly from inner store — data should NOT be plaintext
         let raw = inner.get("enc-2").await.unwrap();
         assert_ne!(raw.data, b"plaintext-secret");
+    }
+
+    /// Integration-style check: an OAuth2 credential blob must not be stored as raw JSON
+    /// strings in the backend row (regression for ADR-0029 / at-rest expectations).
+    #[tokio::test]
+    async fn oauth2_state_secrets_not_plaintext_in_inner_store() {
+        const PLAINTEXT_ACCESS: &str = "nebula-integration-plaintext-access-token-zz";
+        const PLAINTEXT_REFRESH: &str = "nebula-integration-plaintext-refresh-zz";
+
+        let inner = InMemoryStore::new();
+        let store = EncryptionLayer::new(inner.clone(), default_provider());
+
+        let state = OAuth2State {
+            access_token: SecretString::new(PLAINTEXT_ACCESS),
+            token_type: "Bearer".to_owned(),
+            refresh_token: Some(SecretString::new(PLAINTEXT_REFRESH)),
+            expires_at: None,
+            scopes: vec!["s1".to_owned()],
+            client_id: SecretString::new("c"),
+            client_secret: SecretString::new("s"),
+            token_url: "https://example.invalid/token".to_owned(),
+            auth_style: AuthStyle::Header,
+        };
+        let data = serde_json::to_vec(&state).expect("serialize OAuth2 state");
+        let cred = make_credential("enc-oauth2-state", &data);
+        store.put(cred, PutMode::CreateOnly).await.unwrap();
+
+        let raw = inner.get("enc-oauth2-state").await.unwrap();
+        let lossy = String::from_utf8_lossy(&raw.data);
+        assert!(
+            !lossy.contains(PLAINTEXT_ACCESS) && !lossy.contains(PLAINTEXT_REFRESH),
+            "inner row must not contain discoverable credential secrets, got: {lossy}"
+        );
     }
 
     #[tokio::test]

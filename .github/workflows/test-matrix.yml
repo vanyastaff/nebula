@@ -160,8 +160,21 @@ jobs:
       - name: Install cargo-nextest
         uses: taiki-e/install-action@cargo-nextest
 
+      # - `nebula-engine`: OAuth2 `refresh_oauth2_state` + tests live behind `rotation`.
+      # - `nebula-api`: `credential::flow` + OAuth e2e are behind `credential-oauth`.
+      # - `nebula-storage`: `EncryptionLayer` + `KeyProvider` unit tests (incl. OAuth at-rest) need `test-util`.
       - name: Run tests for ${{ matrix.package }}
-        run: cargo nextest run -p ${{ matrix.package }} --profile ci --no-tests=pass
+        run: |
+          set -euo pipefail
+          if [[ "${{ matrix.package }}" == "nebula-engine" ]]; then
+            cargo nextest run -p nebula-engine --all-features --profile ci --no-tests=pass
+          elif [[ "${{ matrix.package }}" == "nebula-api" ]]; then
+            cargo nextest run -p nebula-api --features credential-oauth --profile ci --no-tests=pass
+          elif [[ "${{ matrix.package }}" == "nebula-storage" ]]; then
+            cargo nextest run -p nebula-storage --features "test-util,credential-in-memory" --profile ci --no-tests=pass
+          else
+            cargo nextest run -p "${{ matrix.package }}" --profile ci --no-tests=pass
+          fi
 
       - name: Test summary
         if: always()

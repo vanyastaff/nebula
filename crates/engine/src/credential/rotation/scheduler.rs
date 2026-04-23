@@ -61,7 +61,7 @@ impl PeriodicScheduler {
         loop {
             let next = self.calculate_next_rotation_time();
             tokio::select! {
-                _ = sleep_until(next) => {
+                () = sleep_until(next) => {
                     if let Err(error) = rotation_fn(credential_id).await {
                         tracing::error!(
                             credential_id = %credential_id,
@@ -70,7 +70,7 @@ impl PeriodicScheduler {
                         );
                     }
                 }
-                _ = shutdown.cancelled() => {
+                () = shutdown.cancelled() => {
                     tracing::info!(
                         credential_id = %credential_id,
                         "Rotation loop shut down"
