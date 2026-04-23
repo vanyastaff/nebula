@@ -2,7 +2,7 @@
 name: nebula-sdk
 role: Integration Author SDK (Re-export Façade)
 status: partial
-last-reviewed: 2026-04-17
+last-reviewed: 2026-04-22
 canon-invariants: [L1-3.5, L1-4.4, L1-7]
 related: [nebula-action, nebula-credential, nebula-resource, nebula-schema, nebula-workflow, nebula-plugin, nebula-validator, nebula-core]
 ---
@@ -39,6 +39,19 @@ Top-level re-exports (full crates):
 - `nebula_plugin` — `Plugin` trait, `PluginManifest`, `PluginRegistry`.
 - `nebula_validator` — validation traits.
 - `nebula_core` — core ID types (`ExecutionId`, `NodeKey`, `WorkflowId`).
+
+### Credential, OAuth, and the SDK (P11 re-export audit)
+
+The SDK does not introduce a second OAuth façade on top of `nebula-credential`. Integration authors get credentials in two ways:
+
+| Surface | What you use |
+|--------|----------------|
+| **Full crate** | `nebula_sdk::nebula_credential` (same as depending on `nebula-credential` directly). All OAuth2 resolver/engine types, errors, and helpers live here. |
+| **Prelude** | `nebula_sdk::prelude::*` re-exports the common credential and OAuth2 types used in actions (`Credential`, `OAuth2Credential`, `OAuth2Token`, `CredentialContext`, `CredentialSnapshot`, …) — see `prelude.rs`. |
+
+**Not in the SDK:** HTTP token exchange/refresh against a provider, storage encryption, and engine `CredentialResolver` — those are product/runtime crates (`nebula-api`, `nebula-engine`, `nebula-storage`). If you outgrow the prelude list, import from `nebula_sdk::nebula_credential` without adding another workspace dependency.
+
+**Migration:** When credential/OAuth types move or rename, follow `nebula-credential` release notes and this README; the SDK version tracks workspace `nebula-credential` and does not add its own parallel OAuth type aliases.
 
 Modules provided by this crate:
 
