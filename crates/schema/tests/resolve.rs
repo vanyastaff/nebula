@@ -11,6 +11,20 @@ struct Person {
     name: String,
 }
 
+#[derive(Debug, PartialEq)]
+struct SecretWrapper(String);
+
+impl<'de> serde::Deserialize<'de> for SecretWrapper {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        String::deserialize(deserializer).map(Self)
+    }
+}
+
+#[derive(Debug, serde::Deserialize, PartialEq)]
+struct ApiCredential {
+    api_key: SecretWrapper,
+}
+
 // ── Stub ExpressionContext ────────────────────────────────────────────────────
 
 /// Returns a constant value for every expression.
@@ -436,4 +450,69 @@ async fn secret_field_promotes_and_resolved_get_sanitizes_json() {
     let wire = resolved.values().to_json();
     let obj = wire.as_object().expect("object");
     assert_eq!(obj.get("api_key"), Some(&json!("<redacted>")));
+}
+
+#[tokio::test]
+async fn into_typed_rejects_secret_material_by_default() {
+    let schema = Schema::builder()
+        .add(Field::secret(field_key!("api_key")).required())
+        .build()
+        .unwrap();
+
+    let values = FieldValues::from_json(json!({"api_key": "sekrit"})).unwrap();
+    let valid = schema.validate(&values).unwrap();
+    let resolved = valid.resolve(&ConstCtx(json!(null))).await.unwrap();
+
+    let err = resolved.into_typed::<ApiCredential>().unwrap_err();
+    assert_eq!(err.code, "type_mismatch");
+    assert_eq!(err.path.to_string(), "api_key");
+    assert!(
+        err.message.contains("get_secret() / SecretWire"),
+        "expected explicit opt-in guidance, got: {}",
+        err.message
+    );
+}
+
+#[tokio::test]
+async fn resolve_promotes_mode_object_envelope_secrets_via_default_variant() {
+    let schema = Schema::builder()
+        .add(
+            Field::mode(field_key!("auth"))
+                .variant(
+                    "token",
+                    "Token",
+                    Field::object(field_key!("payload")).add(Field::secret(field_key!("api_key"))),
+                )
+                .default_variant("token")
+                .required(),
+        )
+        .build()
+        .unwrap();
+
+    let values = FieldValues::from_json(json!({
+        "auth": {
+            "value": {
+                "api_key": "sekrit"
+            }
+        }
+    }))
+    .unwrap();
+    let valid = schema.validate(&values).unwrap();
+    let resolved = valid.resolve(&ConstCtx(json!(null))).await.unwrap();
+
+    let secret_path = FieldPath::parse("auth.value.api_key").unwrap();
+    let secret = resolved
+        .values()
+        .get_path(&secret_path)
+        .expect("secret path");
+    assert!(
+        matches!(secret, FieldValue::SecretLiteral(_)),
+        "expected promoted secret literal, got {secret:?}"
+    );
+
+    let wire = resolved.values().to_json();
+    assert_eq!(
+        wire.pointer("/auth/value/api_key"),
+        Some(&json!("<redacted>"))
+    );
 }

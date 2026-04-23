@@ -167,6 +167,186 @@ async fn valid_schema_loader_apis_resolve_loaders() {
 }
 
 #[tokio::test]
+async fn nested_schema_loader_apis_resolve_object_paths() {
+    let schema = raw_schema(vec![
+        Field::object("config")
+            .add(
+                Field::select("workspace")
+                    .dynamic()
+                    .loader("workspace_loader"),
+            )
+            .add(Field::dynamic("resource").loader("resource_loader"))
+            .into(),
+    ]);
+
+    let registry = LoaderRegistry::new()
+        .register_option("workspace_loader", |ctx| async move {
+            assert_eq!(ctx.field_key, "config.workspace");
+            Ok(LoaderResult::done(vec![nebula_schema::SelectOption::new(
+                json!("ws_nested"),
+                "Nested Workspace",
+            )]))
+        })
+        .register_record("resource_loader", |ctx| async move {
+            assert_eq!(ctx.field_key, "config.resource");
+            Ok(LoaderResult::done(vec![json!({"id": "res_nested"})]))
+        });
+
+    let workspace_path = FieldPath::parse("config.workspace").unwrap();
+    let resource_path = FieldPath::parse("config.resource").unwrap();
+
+    let options = schema
+        .load_select_options_at(
+            &workspace_path,
+            &registry,
+            LoaderContext::new("config.workspace", FieldValues::new()),
+        )
+        .await
+        .expect("nested workspace options should load");
+    assert_eq!(options.items.len(), 1);
+    assert_eq!(options.items[0].label, "Nested Workspace");
+
+    let records = schema
+        .load_dynamic_records_at(
+            &resource_path,
+            &registry,
+            LoaderContext::new("config.resource", FieldValues::new()),
+        )
+        .await
+        .expect("nested resource records should load");
+    assert_eq!(records.items.len(), 1);
+    assert_eq!(records.items[0]["id"], json!("res_nested"));
+}
+
+#[tokio::test]
+async fn nested_schema_loader_apis_resolve_list_item_paths() {
+    let schema = raw_schema(vec![
+        Field::list("rows")
+            .item(
+                Field::object("row").add(
+                    Field::select("workspace")
+                        .dynamic()
+                        .loader("workspace_loader"),
+                ),
+            )
+            .into(),
+    ]);
+
+    let registry = LoaderRegistry::new().register_option("workspace_loader", |ctx| async move {
+        Ok(LoaderResult::done(vec![nebula_schema::SelectOption::new(
+            json!(ctx.field_key),
+            "Workspace from list",
+        )]))
+    });
+
+    let indexed_path = FieldPath::parse("rows[0].workspace").unwrap();
+    let indexed = schema
+        .load_select_options_at(
+            &indexed_path,
+            &registry,
+            LoaderContext::new("rows[0].workspace", FieldValues::new()),
+        )
+        .await
+        .expect("indexed list path should resolve");
+    assert_eq!(indexed.items.len(), 1);
+    assert_eq!(indexed.items[0].value, json!("rows[0].workspace"));
+
+    let schema_path = FieldPath::parse("rows.workspace").unwrap();
+    let schema_level = schema
+        .load_select_options_at(
+            &schema_path,
+            &registry,
+            LoaderContext::new("rows.workspace", FieldValues::new()),
+        )
+        .await
+        .expect("schema-level list path should resolve");
+    assert_eq!(schema_level.items.len(), 1);
+    assert_eq!(schema_level.items[0].value, json!("rows.workspace"));
+}
+
+#[tokio::test]
+async fn nested_valid_schema_loader_api_resolves_mode_variant_paths() {
+    let schema = Schema::builder()
+        .add(Field::mode("auth").variant(
+            "oauth",
+            "OAuth",
+            Field::object("creds").add(Field::dynamic("resource").loader("resource_loader")),
+        ))
+        .build()
+        .expect("schema should build");
+
+    let registry = LoaderRegistry::new().register_record("resource_loader", |ctx| async move {
+        assert_eq!(ctx.field_key, "auth.oauth.resource");
+        Ok(LoaderResult::done(vec![json!({"id": "oauth_resource"})]))
+    });
+
+    let path = FieldPath::parse("auth.oauth.resource").unwrap();
+    let records = schema
+        .load_dynamic_records_at(
+            &path,
+            &registry,
+            LoaderContext::new("auth.oauth.resource", FieldValues::new()),
+        )
+        .await
+        .expect("mode-variant resource records should load");
+
+    assert_eq!(records.items.len(), 1);
+    assert_eq!(records.items[0]["id"], json!("oauth_resource"));
+}
+
+#[tokio::test]
+async fn nested_loader_errors_anchor_to_nested_path() {
+    let schema = raw_schema(vec![
+        Field::object("config")
+            .add(
+                Field::select("workspace")
+                    .dynamic()
+                    .loader("missing_workspace_loader"),
+            )
+            .into(),
+    ]);
+    let registry = LoaderRegistry::new();
+    let path = FieldPath::parse("config.workspace").unwrap();
+
+    let error = schema
+        .load_select_options_at(
+            &path,
+            &registry,
+            LoaderContext::new("config.workspace", FieldValues::new()),
+        )
+        .await
+        .expect_err("missing nested loader must fail");
+
+    assert_eq!(error.code, "loader.not_registered");
+    assert_eq!(error.path.to_string(), "config.workspace");
+}
+
+#[tokio::test]
+async fn top_level_loader_string_api_rejects_nested_paths() {
+    let schema = raw_schema(vec![
+        Field::object("config")
+            .add(
+                Field::select("workspace")
+                    .dynamic()
+                    .loader("workspace_loader"),
+            )
+            .into(),
+    ]);
+    let registry = LoaderRegistry::new();
+    let error = schema
+        .load_select_options(
+            "config.workspace",
+            &registry,
+            LoaderContext::new("config.workspace", FieldValues::new()),
+        )
+        .await
+        .expect_err("top-level string API should reject nested paths");
+
+    assert_eq!(error.code, "invalid_key");
+    assert_eq!(error.path.to_string(), "");
+}
+
+#[tokio::test]
 async fn loader_registry_reports_missing_loader_registration() {
     let schema = raw_schema(vec![
         Field::select("region")

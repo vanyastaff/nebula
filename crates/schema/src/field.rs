@@ -576,7 +576,6 @@ impl ListField {
 define_field!(ModeField {
     variants: Vec<ModeVariant> = Vec::new(),
     default_variant: Option<String> = None,
-    allow_dynamic_mode: bool = false,
 } expr: ExpressionMode::Allowed);
 
 /// Variant definition for mode fields.
@@ -639,13 +638,6 @@ impl ModeField {
     #[must_use]
     pub fn default_variant(mut self, key: impl Into<String>) -> Self {
         self.default_variant = Some(key.into());
-        self
-    }
-
-    /// Allow the mode to be selected dynamically at runtime.
-    #[must_use]
-    pub const fn allow_dynamic_mode(mut self) -> Self {
-        self.allow_dynamic_mode = true;
         self
     }
 }

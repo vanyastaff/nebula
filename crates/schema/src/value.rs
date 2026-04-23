@@ -53,21 +53,6 @@ impl FieldValue {
                 {
                     return Self::Expression(Expression::new(expr));
                 }
-                let only_mode_keys = map.keys().all(|k| k == "mode" || k == "value");
-                if only_mode_keys
-                    && map.contains_key("mode")
-                    && let Some(mode_str) = map.get("mode").and_then(Value::as_str)
-                    && let Ok(mode_key) = FieldKey::new(mode_str)
-                {
-                    let v = map
-                        .get("value")
-                        .cloned()
-                        .map(|inner| Box::new(Self::from_json(inner)));
-                    return Self::Mode {
-                        mode: mode_key,
-                        value: v,
-                    };
-                }
 
                 // Parse keys first so conversion remains panic-free.
                 let Some(parsed_keys): Option<Vec<FieldKey>> = map
@@ -464,20 +449,6 @@ fn validate_json_keys(
                 return Ok(());
             }
 
-            let only_mode_keys = map.keys().all(|k| k == "mode" || k == "value");
-            let valid_mode_key = map
-                .get("mode")
-                .and_then(Value::as_str)
-                .is_some_and(|mode| FieldKey::new(mode).is_ok());
-            if only_mode_keys && valid_mode_key {
-                if let Some(inner) = map.get("value") {
-                    let payload_key = FieldKey::new("value").expect("value is a valid field key");
-                    let payload_path = path.clone().join(payload_key);
-                    validate_json_keys(inner, &payload_path)?;
-                }
-                return Ok(());
-            }
-
             for (raw_key, child) in map {
                 let key = FieldKey::new(raw_key).map_err(|e| {
                     crate::error::ValidationError::builder("invalid_key")
@@ -583,9 +554,9 @@ mod tests {
     }
 
     #[test]
-    fn detects_mode_wrapper() {
+    fn mode_like_object_stays_object() {
         let v = FieldValue::from_json(json!({"mode": "oauth2", "value": {"scope":"r"}}));
-        assert!(matches!(v, FieldValue::Mode { .. }));
+        assert!(matches!(v, FieldValue::Object(_)));
     }
 
     #[test]

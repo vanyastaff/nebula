@@ -13,7 +13,7 @@ use smallvec::SmallVec;
 use crate::{
     Field, LoaderContext, LoaderRegistry, LoaderResult, SelectOption,
     error::{ValidationError, ValidationReport},
-    path::FieldPath,
+    path::{FieldPath, PathSegment},
     validated::{FieldHandle, SchemaFlags, ValidSchema, ValidSchemaInner},
 };
 
@@ -102,7 +102,35 @@ impl Schema {
         registry: &LoaderRegistry,
         context: LoaderContext,
     ) -> Result<LoaderResult<SelectOption>, ValidationError> {
-        let loader_key = resolve_select_loader_key(self.fields(), key)?;
+        let path = FieldPath::root().join(parse_top_level_key(key)?);
+        self.load_select_options_at(&path, registry, context).await
+    }
+
+    /// Resolve dynamic options for a select field at a nested schema path.
+    ///
+    /// This path addresses the schema tree, not a concrete runtime instance.
+    /// For example:
+    ///
+    /// - nested object child: `config.workspace`
+    /// - list item child: `rows[0].workspace` or `rows.workspace`
+    /// - mode variant child: `auth.oauth.workspace`
+    ///
+    /// # Errors
+    ///
+    /// - `field.not_found` — schema has no field at this path.
+    /// - `field.type_mismatch` — field exists but isn't a `Select`. Carries `expected` and `actual`
+    ///   params.
+    /// - `loader.missing_config` — field is a select but has no loader configured (static options
+    ///   only).
+    /// - `loader.not_registered` / `loader.failed` — propagated from
+    ///   [`LoaderRegistry::load_options`].
+    pub async fn load_select_options_at(
+        &self,
+        path: &FieldPath,
+        registry: &LoaderRegistry,
+        context: LoaderContext,
+    ) -> Result<LoaderResult<SelectOption>, ValidationError> {
+        let loader_key = resolve_select_loader_path(self.fields(), path)?;
         registry.load_options(&loader_key, context).await
     }
 
@@ -119,7 +147,26 @@ impl Schema {
         registry: &LoaderRegistry,
         context: LoaderContext,
     ) -> Result<LoaderResult<Value>, ValidationError> {
-        let loader_key = resolve_dynamic_loader_key(self.fields(), key)?;
+        let path = FieldPath::root().join(parse_top_level_key(key)?);
+        self.load_dynamic_records_at(&path, registry, context).await
+    }
+
+    /// Resolve dynamic record payloads for a field at a nested schema path.
+    ///
+    /// Uses the same schema-path addressing rules as [`Schema::load_select_options_at`].
+    ///
+    /// # Errors
+    ///
+    /// Same taxonomy as [`Schema::load_select_options_at`] — `field.not_found`,
+    /// `field.type_mismatch`, `loader.missing_config`, or the registry's
+    /// `loader.not_registered` / `loader.failed`.
+    pub async fn load_dynamic_records_at(
+        &self,
+        path: &FieldPath,
+        registry: &LoaderRegistry,
+        context: LoaderContext,
+    ) -> Result<LoaderResult<Value>, ValidationError> {
+        let loader_key = resolve_dynamic_loader_path(self.fields(), path)?;
         registry.load_records(&loader_key, context).await
     }
 }
@@ -153,42 +200,23 @@ pub(crate) fn resolve_select_loader_key(
     fields: &[Field],
     key: &str,
 ) -> Result<String, ValidationError> {
-    let parsed_key = parse_top_level_key(key)?;
-    let path = FieldPath::root().join(parsed_key);
-    let field = fields
-        .iter()
-        .find(|field| field.key().as_str() == key)
-        .ok_or_else(|| {
-            ValidationError::builder("field.not_found")
-                .at(path.clone())
-                .param("key", Value::String(key.to_owned()))
-                .message(format!("field `{key}` not found in schema"))
-                .build()
-        })?;
+    let path = FieldPath::root().join(parse_top_level_key(key)?);
+    resolve_select_loader_path(fields, &path)
+}
+
+#[allow(
+    clippy::result_large_err,
+    reason = "ValidationError is intentionally large; callers are on the validation path"
+)]
+pub(crate) fn resolve_select_loader_path(
+    fields: &[Field],
+    path: &FieldPath,
+) -> Result<String, ValidationError> {
+    let field = find_field_by_schema_path(fields, path)?;
     let Field::Select(select) = field else {
-        return Err(ValidationError::builder("field.type_mismatch")
-            .at(path.clone())
-            .param("key", Value::String(key.to_owned()))
-            .param("expected", Value::String("select".to_owned()))
-            .param("actual", Value::String(field.type_name().to_owned()))
-            .message(format!(
-                "field `{key}` is not a select field (got {})",
-                field.type_name()
-            ))
-            .build());
+        return Err(loader_type_mismatch(path, "select", field.type_name()));
     };
-    select
-        .loader
-        .as_deref()
-        .filter(|loader| !loader.trim().is_empty())
-        .map(str::to_owned)
-        .ok_or_else(|| {
-            ValidationError::builder("loader.missing_config")
-                .at(path)
-                .param("key", Value::String(key.to_owned()))
-                .message(format!("field `{key}` has no loader configured"))
-                .build()
-        })
+    loader_key_or_error(select.loader.as_deref(), path)
 }
 
 #[allow(
@@ -199,42 +227,180 @@ pub(crate) fn resolve_dynamic_loader_key(
     fields: &[Field],
     key: &str,
 ) -> Result<String, ValidationError> {
-    let parsed_key = parse_top_level_key(key)?;
-    let path = FieldPath::root().join(parsed_key);
-    let field = fields
-        .iter()
-        .find(|field| field.key().as_str() == key)
-        .ok_or_else(|| {
-            ValidationError::builder("field.not_found")
-                .at(path.clone())
-                .param("key", Value::String(key.to_owned()))
-                .message(format!("field `{key}` not found in schema"))
-                .build()
-        })?;
+    let path = FieldPath::root().join(parse_top_level_key(key)?);
+    resolve_dynamic_loader_path(fields, &path)
+}
+
+#[allow(
+    clippy::result_large_err,
+    reason = "ValidationError is intentionally large; callers are on the validation path"
+)]
+pub(crate) fn resolve_dynamic_loader_path(
+    fields: &[Field],
+    path: &FieldPath,
+) -> Result<String, ValidationError> {
+    let field = find_field_by_schema_path(fields, path)?;
     let Field::Dynamic(dynamic) = field else {
-        return Err(ValidationError::builder("field.type_mismatch")
-            .at(path.clone())
-            .param("key", Value::String(key.to_owned()))
-            .param("expected", Value::String("dynamic".to_owned()))
-            .param("actual", Value::String(field.type_name().to_owned()))
-            .message(format!(
-                "field `{key}` is not a dynamic field (got {})",
-                field.type_name()
-            ))
-            .build());
+        return Err(loader_type_mismatch(path, "dynamic", field.type_name()));
     };
-    dynamic
-        .loader
-        .as_deref()
+    loader_key_or_error(dynamic.loader.as_deref(), path)
+}
+
+#[allow(
+    clippy::result_large_err,
+    reason = "ValidationError is intentionally large; callers are on the validation path"
+)]
+fn loader_key_or_error(loader: Option<&str>, path: &FieldPath) -> Result<String, ValidationError> {
+    loader
         .filter(|loader| !loader.trim().is_empty())
         .map(str::to_owned)
         .ok_or_else(|| {
             ValidationError::builder("loader.missing_config")
-                .at(path)
-                .param("key", Value::String(key.to_owned()))
-                .message(format!("field `{key}` has no loader configured"))
+                .at(path.clone())
+                .param("key", Value::String(path.to_string()))
+                .message(format!("field `{path}` has no loader configured"))
                 .build()
         })
+}
+
+fn loader_type_mismatch(path: &FieldPath, expected: &str, actual: &str) -> ValidationError {
+    ValidationError::builder("field.type_mismatch")
+        .at(path.clone())
+        .param("key", Value::String(path.to_string()))
+        .param("expected", Value::String(expected.to_owned()))
+        .param("actual", Value::String(actual.to_owned()))
+        .message(format!(
+            "field `{path}` is not a {expected} field (got {actual})"
+        ))
+        .build()
+}
+
+#[allow(
+    clippy::result_large_err,
+    reason = "ValidationError is intentionally large; callers are on the validation path"
+)]
+fn find_field_by_schema_path<'a>(
+    fields: &'a [Field],
+    path: &FieldPath,
+) -> Result<&'a Field, ValidationError> {
+    let mut segments = path.segments().iter();
+    let Some(PathSegment::Key(first_key)) = segments.next() else {
+        return Err(ValidationError::builder("field.not_found")
+            .at(path.clone())
+            .param("key", Value::String(path.to_string()))
+            .message(format!("field `{path}` not found in schema"))
+            .build());
+    };
+
+    let mut current_path = FieldPath::root().join(first_key.clone());
+    let mut current = fields
+        .iter()
+        .find(|field| field.key() == first_key)
+        .ok_or_else(|| {
+            ValidationError::builder("field.not_found")
+                .at(current_path.clone())
+                .param("key", Value::String(current_path.to_string()))
+                .message(format!("field `{current_path}` not found in schema"))
+                .build()
+        })?;
+
+    for segment in segments {
+        match segment {
+            PathSegment::Key(key) => match current {
+                Field::Object(object) => {
+                    current_path = current_path.join(key.clone());
+                    current = object
+                        .fields
+                        .iter()
+                        .find(|field| field.key() == key)
+                        .ok_or_else(|| {
+                            ValidationError::builder("field.not_found")
+                                .at(current_path.clone())
+                                .param("key", Value::String(current_path.to_string()))
+                                .message(format!("field `{current_path}` not found in schema"))
+                                .build()
+                        })?;
+                },
+                Field::List(list) => {
+                    let Some(item) = list.item.as_deref() else {
+                        current_path = current_path.join(key.clone());
+                        return Err(ValidationError::builder("field.not_found")
+                            .at(current_path.clone())
+                            .param("key", Value::String(current_path.to_string()))
+                            .message(format!("field `{current_path}` not found in schema"))
+                            .build());
+                    };
+                    if let Field::Object(object) = item {
+                        current_path = current_path.join(key.clone());
+                        current = object
+                            .fields
+                            .iter()
+                            .find(|field| field.key() == key)
+                            .ok_or_else(|| {
+                                ValidationError::builder("field.not_found")
+                                    .at(current_path.clone())
+                                    .param("key", Value::String(current_path.to_string()))
+                                    .message(format!("field `{current_path}` not found in schema"))
+                                    .build()
+                            })?;
+                    } else {
+                        current_path = current_path.join(key.clone());
+                        return Err(ValidationError::builder("field.not_found")
+                            .at(current_path.clone())
+                            .param("key", Value::String(current_path.to_string()))
+                            .message(format!("field `{current_path}` not found in schema"))
+                            .build());
+                    }
+                },
+                Field::Mode(mode) => {
+                    current_path = current_path.join(key.clone());
+                    current = mode
+                        .variants
+                        .iter()
+                        .find(|variant| variant.key == key.as_str())
+                        .map(|variant| variant.field.as_ref())
+                        .ok_or_else(|| {
+                            ValidationError::builder("field.not_found")
+                                .at(current_path.clone())
+                                .param("key", Value::String(current_path.to_string()))
+                                .message(format!("field `{current_path}` not found in schema"))
+                                .build()
+                        })?;
+                },
+                _ => {
+                    current_path = current_path.join(key.clone());
+                    return Err(ValidationError::builder("field.not_found")
+                        .at(current_path.clone())
+                        .param("key", Value::String(current_path.to_string()))
+                        .message(format!("field `{current_path}` not found in schema"))
+                        .build());
+                },
+            },
+            PathSegment::Index(index) => {
+                current_path = current_path.join(*index);
+                match current {
+                    Field::List(list) => {
+                        current = list.item.as_deref().ok_or_else(|| {
+                            ValidationError::builder("field.not_found")
+                                .at(current_path.clone())
+                                .param("key", Value::String(current_path.to_string()))
+                                .message(format!("field `{current_path}` not found in schema"))
+                                .build()
+                        })?;
+                    },
+                    _ => {
+                        return Err(ValidationError::builder("field.not_found")
+                            .at(current_path.clone())
+                            .param("key", Value::String(current_path.to_string()))
+                            .message(format!("field `{current_path}` not found in schema"))
+                            .build());
+                    },
+                }
+            },
+        }
+    }
+
+    Ok(current)
 }
 
 // ── SchemaBuilder ─────────────────────────────────────────────────────────────

@@ -21,7 +21,10 @@ use crate::{
     mode::{ExpressionMode, RequiredMode, VisibilityMode},
     option::SelectOption,
     path::FieldPath,
-    schema::{resolve_dynamic_loader_key, resolve_select_loader_key},
+    schema::{
+        resolve_dynamic_loader_key, resolve_dynamic_loader_path, resolve_select_loader_key,
+        resolve_select_loader_path,
+    },
     secret::SecretValue,
     value::{FieldValue, FieldValues},
 };
@@ -216,6 +219,25 @@ impl ValidSchema {
         registry.load_options(&loader_key, context).await
     }
 
+    /// Resolve dynamic options for a select field at a nested schema path.
+    ///
+    /// Uses the same schema-path addressing rules as
+    /// [`crate::Schema::load_select_options_at`].
+    ///
+    /// # Errors
+    ///
+    /// Returns `field.not_found`, `field.type_mismatch`, `loader.missing_config`,
+    /// `loader.not_registered`, or `loader.failed`.
+    pub async fn load_select_options_at(
+        &self,
+        path: &FieldPath,
+        registry: &LoaderRegistry,
+        context: LoaderContext,
+    ) -> Result<LoaderResult<SelectOption>, ValidationError> {
+        let loader_key = resolve_select_loader_path(self.fields(), path)?;
+        registry.load_options(&loader_key, context).await
+    }
+
     /// Resolve dynamic record payloads for a dynamic field through registry.
     ///
     /// Same error taxonomy as [`crate::Schema::load_dynamic_records`], but this
@@ -231,6 +253,25 @@ impl ValidSchema {
         context: LoaderContext,
     ) -> Result<LoaderResult<serde_json::Value>, ValidationError> {
         let loader_key = resolve_dynamic_loader_key(self.fields(), key)?;
+        registry.load_records(&loader_key, context).await
+    }
+
+    /// Resolve dynamic record payloads for a field at a nested schema path.
+    ///
+    /// Uses the same schema-path addressing rules as
+    /// [`crate::Schema::load_dynamic_records_at`].
+    ///
+    /// # Errors
+    ///
+    /// Returns `field.not_found`, `field.type_mismatch`, `loader.missing_config`,
+    /// `loader.not_registered`, or `loader.failed`.
+    pub async fn load_dynamic_records_at(
+        &self,
+        path: &FieldPath,
+        registry: &LoaderRegistry,
+        context: LoaderContext,
+    ) -> Result<LoaderResult<serde_json::Value>, ValidationError> {
+        let loader_key = resolve_dynamic_loader_path(self.fields(), path)?;
         registry.load_records(&loader_key, context).await
     }
 
@@ -554,8 +595,23 @@ impl ResolvedValues {
     ///
     /// # Errors
     ///
-    /// Returns `type_mismatch` when deserialization fails.
+    /// Returns `type_mismatch` when deserialization fails or when the resolved
+    /// value tree still contains secret material. Secret-bearing schemas must
+    /// cross an explicit boundary via [`Self::get_secret`] / `SecretWire`,
+    /// rather than generic typed extraction.
     pub fn into_typed<T: serde::de::DeserializeOwned>(self) -> Result<T, Box<ValidationError>> {
+        if let Some(path) = first_secret_path_in_values(&self.values) {
+            return Err(Box::new(
+                ValidationError::builder("type_mismatch")
+                    .at(path)
+                    .message(
+                        "typed extraction refused because resolved values contain secret material; use get_secret() / SecretWire across an explicit boundary instead"
+                            .to_owned(),
+                    )
+                    .build(),
+            ));
+        }
+
         serde_json::from_value(self.into_json()).map_err(|e| {
             Box::new(
                 ValidationError::builder("type_mismatch")
@@ -563,6 +619,52 @@ impl ResolvedValues {
                     .build(),
             )
         })
+    }
+}
+
+fn first_secret_path_in_values(values: &FieldValues) -> Option<FieldPath> {
+    for (key, value) in values.iter() {
+        let path = FieldPath::root().join(key.clone());
+        if let Some(secret_path) = first_secret_path_in_field_value(value, &path) {
+            return Some(secret_path);
+        }
+    }
+    None
+}
+
+fn first_secret_path_in_field_value(value: &FieldValue, path: &FieldPath) -> Option<FieldPath> {
+    match value {
+        FieldValue::SecretLiteral(_) => Some(path.clone()),
+        FieldValue::Object(map) => {
+            for (key, child) in map {
+                let child_path = path.clone().join(key.clone());
+                if let Some(secret_path) = first_secret_path_in_field_value(child, &child_path) {
+                    return Some(secret_path);
+                }
+            }
+            None
+        },
+        FieldValue::List(items) => {
+            for (index, child) in items.iter().enumerate() {
+                let child_path = path.clone().join(index);
+                if let Some(secret_path) = first_secret_path_in_field_value(child, &child_path) {
+                    return Some(secret_path);
+                }
+            }
+            None
+        },
+        FieldValue::Mode {
+            value: Some(payload),
+            ..
+        } => {
+            let payload_key =
+                FieldKey::new("value").expect("static mode payload key must be valid");
+            let payload_path = path.clone().join(payload_key);
+            first_secret_path_in_field_value(payload, &payload_path)
+        },
+        FieldValue::Literal(_)
+        | FieldValue::Expression(_)
+        | FieldValue::Mode { value: None, .. } => None,
     }
 }
 
@@ -640,6 +742,32 @@ fn promote_secrets_in_value(
             };
             let p = path.clone().join(k);
             promote_secrets_in_value(&var.field, mv.as_mut(), &p, report);
+        },
+        (Field::Mode(mode), FieldValue::Object(map)) => {
+            let Ok(mode_selector_key) = FieldKey::new("mode") else {
+                return;
+            };
+            let Ok(payload_key) = FieldKey::new("value") else {
+                return;
+            };
+            let resolved_key = match map.get(&mode_selector_key) {
+                Some(FieldValue::Literal(serde_json::Value::String(mode_key))) => {
+                    Some(mode_key.clone())
+                },
+                Some(_) => None,
+                None => mode.default_variant.clone(),
+            };
+            let Some(var) = resolved_key
+                .as_deref()
+                .and_then(|mode_key| mode.variants.iter().find(|v| v.key == mode_key))
+            else {
+                return;
+            };
+            let Some(mv) = map.get_mut(&payload_key) else {
+                return;
+            };
+            let p = path.clone().join(payload_key);
+            promote_secrets_in_value(&var.field, mv, &p, report);
         },
         _ => {},
     }
@@ -1247,23 +1375,65 @@ fn validate_literal_value(
             rules,
             ..
         }) => {
-            let FieldValue::Mode {
-                mode: mode_key,
-                value: mode_value,
-            } = value
-            else {
-                report.push(
-                    ValidationError::builder("type_mismatch")
-                        .at(path.clone())
-                        .message(format!(
-                            "field `{path}` expects a mode value ({{\"mode\": \"...\", ...}})"
-                        ))
-                        .build(),
-                );
-                return;
+            let mode_selector_key =
+                FieldKey::new("mode").expect("static mode selector key must remain valid");
+            let payload_key =
+                FieldKey::new("value").expect("static mode payload key must remain valid");
+
+            let (resolved_key, mode_value) = match value {
+                FieldValue::Mode {
+                    mode: mode_key,
+                    value: mode_value,
+                } => (Some(mode_key.as_str()), mode_value.as_deref()),
+                FieldValue::Object(map) => {
+                    if map
+                        .keys()
+                        .any(|key| key.as_str() != "mode" && key.as_str() != "value")
+                    {
+                        report.push(
+                            ValidationError::builder("type_mismatch")
+                                .at(path.clone())
+                                .message(format!(
+                                    "field `{path}` expects a mode value ({{\"mode\": \"...\", ...}})"
+                                ))
+                                .build(),
+                        );
+                        return;
+                    }
+
+                    match map.get(&mode_selector_key) {
+                        Some(FieldValue::Literal(serde_json::Value::String(mode))) => {
+                            (Some(mode.as_str()), map.get(&payload_key))
+                        },
+                        Some(other) => {
+                            report.push(
+                                ValidationError::builder("type_mismatch")
+                                    .at(path.clone().join(mode_selector_key.clone()))
+                                    .message(format!(
+                                        "field `{path}.mode` expects a string value, got {}",
+                                        field_value_shape_for_errors(other)
+                                    ))
+                                    .build(),
+                            );
+                            return;
+                        },
+                        None => (None, map.get(&payload_key)),
+                    }
+                },
+                _ => {
+                    report.push(
+                        ValidationError::builder("type_mismatch")
+                            .at(path.clone())
+                            .message(format!(
+                                "field `{path}` expects a mode value ({{\"mode\": \"...\", ...}})"
+                            ))
+                            .build(),
+                    );
+                    return;
+                },
             };
             run_rules(rules, &value.to_json(), path, report);
-            let resolved_key = Some(mode_key.as_str()).or(default_variant.as_deref());
+            let resolved_key = resolved_key.or(default_variant.as_deref());
             let Some(resolved_key) = resolved_key else {
                 report.push(
                     ValidationError::builder("mode.required")
@@ -1286,17 +1456,8 @@ fn validate_literal_value(
                 return;
             };
             {
-                let Ok(payload_key) = FieldKey::new("value") else {
-                    return;
-                };
                 let payload_path = path.clone().join(payload_key);
-                validate_field(
-                    &variant.field,
-                    mode_value.as_deref(),
-                    ctx,
-                    &payload_path,
-                    report,
-                );
+                validate_field(&variant.field, mode_value, ctx, &payload_path, report);
             }
         },
         // File, Computed, Dynamic, Notice — no type-check rule at schema time.

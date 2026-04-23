@@ -415,6 +415,22 @@ fn lint_mode_new(
 
     let mut seen: HashSet<&str> = HashSet::new();
     for variant in &mode.variants {
+        let variant_key = match crate::key::FieldKey::new(variant.key.as_str()) {
+            Ok(vk) => Some(vk),
+            Err(e) => {
+                report.push(
+                    ValidationError::builder("invalid_key")
+                        .at(path.clone())
+                        .message(format!(
+                            "mode variant key `{}` cannot participate in schema paths: {}",
+                            variant.key, e.message
+                        ))
+                        .param("key", variant.key.clone())
+                        .build(),
+                );
+                None
+            },
+        };
         if !seen.insert(variant.key.as_str()) {
             report.push(
                 ValidationError::builder("duplicate_variant")
@@ -425,7 +441,7 @@ fn lint_mode_new(
         }
         if variant.label.trim().is_empty() {
             // Build variant path for precise location.
-            if let Ok(vk) = crate::key::FieldKey::new(variant.key.as_str()) {
+            if let Some(vk) = variant_key.clone() {
                 let vpath = path.clone().join(vk);
                 report.push(
                     ValidationError::builder("missing_variant_label")
@@ -438,7 +454,7 @@ fn lint_mode_new(
         }
         // Recurse into variant payload.
         if let Field::Object(obj) = variant.field.as_ref()
-            && let Ok(vk) = crate::key::FieldKey::new(variant.key.as_str())
+            && let Some(vk) = variant_key
         {
             let vpath = path.clone().join(vk);
             lint_fields_new(&obj.fields, &vpath, root_keys, report);
@@ -1224,6 +1240,21 @@ mod tests {
         ];
         let report = run(&fields);
         assert!(report.errors().any(|e| e.code == "duplicate_variant"));
+    }
+
+    #[test]
+    fn detects_invalid_mode_variant_key() {
+        let fields = vec![
+            Field::mode(FieldKey::new("m").unwrap())
+                .variant(
+                    "oauth-token",
+                    "OAuth",
+                    Field::string(FieldKey::new("x").unwrap()),
+                )
+                .into_field(),
+        ];
+        let report = run(&fields);
+        assert!(report.errors().any(|e| e.code == "invalid_key"));
     }
 
     #[test]
