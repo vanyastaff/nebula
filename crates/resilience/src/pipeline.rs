@@ -147,15 +147,29 @@ impl<E: Send + 'static> PipelineBuilder<E> {
         self
     }
 
-    /// Add a rate limiter step using a concrete `RateLimiter` implementation.
+    /// Add a rate limiter step using a concrete [`RateLimiter`](crate::RateLimiter) implementation.
+    ///
+    /// The `Arc<RL>` is required because the rate limiter must be shared across
+    /// potentially multiple retry attempts and concurrent pipeline invocations.
+    /// The pipeline internally clones the `Arc` into an async closure that must
+    /// be `Send + Sync + 'static`, so shared ownership via `Arc` is the only
+    /// way to satisfy those bounds without copying or locking the entire limiter.
     ///
     /// This is the ergonomic way to add rate limiting — it handles the closure
     /// bridging automatically:
     ///
-    /// ```rust,ignore
+    /// ```rust,no_run
+    /// use std::sync::Arc;
+    /// use nebula_resilience::{ResiliencePipeline, rate_limiter::TokenBucket};
+    ///
     /// let rl = Arc::new(TokenBucket::new(100, 10.0).unwrap());
-    /// builder.rate_limiter_from(rl)
+    /// let pipeline = ResiliencePipeline::<String>::builder()
+    ///     .rate_limiter_from(rl)
+    ///     .build();
     /// ```
+    ///
+    /// If you need a custom bridging closure (e.g., wrapping a non-`RateLimiter`
+    /// type), use [`rate_limiter`](Self::rate_limiter) directly.
     #[must_use]
     pub fn rate_limiter_from<RL: crate::RateLimiter + 'static>(self, rl: Arc<RL>) -> Self {
         let check: RateLimitCheck = Arc::new(move || {

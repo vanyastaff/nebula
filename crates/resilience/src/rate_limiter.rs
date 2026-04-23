@@ -1,19 +1,78 @@
 //! Rate limiting implementations.
 //!
-//! This module provides multiple rate limiting algorithms:
+//! This module provides the [`RateLimiter`] trait and multiple built-in algorithms:
 //!
-//! - **`TokenBucket`**: Classic token bucket with refill rate
-//! - **`LeakyBucket`**: Leaky bucket with constant leak rate
-//! - **`SlidingWindow`**: Sliding time window counter
-//! - **`AdaptiveRateLimiter`**: Self-adjusting based on error rates
-//! - **`GovernorRateLimiter`**: Production-grade GCRA algorithm
+//! | Implementation | Algorithm | Best for |
+//! |---|---|---|
+//! | [`TokenBucket`] | Token bucket with configurable refill rate | Bursty traffic with a steady average |
+//! | [`LeakyBucket`] | Leaky bucket with constant drain rate | Smoothing request bursts into a constant outflow |
+//! | [`SlidingWindow`] | Sliding time-window counter | Hard per-window request caps |
+//! | [`AdaptiveRateLimiter`] | Token bucket auto-tuned by error rate | Self-protecting services with variable load |
+//! | `GovernorRateLimiter` | GCRA (Generic Cell Rate Algorithm) | Production, sub-millisecond precision (requires `governor` feature) |
 //!
-//! # Examples
+//! # Trait contract
 //!
-//! ```
+//! Every implementation must satisfy the [`RateLimiter`] contract:
+//!
+//! - [`acquire()`](RateLimiter::acquire) — attempt to consume one permit.
+//!   Returns `Ok(())` when the request is allowed, `Err(CallError::RateLimited)`
+//!   when the limit is exceeded.
+//! - [`call()`](RateLimiter::call) — convenience wrapper that calls `acquire()` then
+//!   executes the supplied async closure. On success the closure's return value is
+//!   forwarded; on rate-limit the closure is never invoked.
+//! - Implementors must be `Send + Sync` so they can be shared across tasks and
+//!   stored inside `Arc<T>`.
+//!
+//! # Standalone usage
+//!
+//! All rate limiters work independently — no pipeline required:
+//!
+//! ```rust
 //! use nebula_resilience::rate_limiter::TokenBucket;
+//! use nebula_resilience::RateLimiter;
 //!
+//! # #[tokio::main]
+//! # async fn main() {
+//! // Allow up to 100 tokens; refill at 10 tokens/second.
 //! let limiter = TokenBucket::new(100, 10.0).unwrap();
+//!
+//! // Returns Ok(()) when a permit is available.
+//! limiter.acquire().await.expect("rate limit not yet reached");
+//!
+//! // Or use call() to gate an operation:
+//! let result = limiter
+//!     .call(|| async { Ok::<&str, &str>("response") })
+//!     .await;
+//! assert!(result.is_ok());
+//! # }
+//! ```
+//!
+//! # Pipeline integration
+//!
+//! When using a rate limiter inside a [`ResiliencePipeline`](crate::ResiliencePipeline) the
+//! limiter must be wrapped in [`Arc`] before being passed to
+//! [`rate_limiter_from()`](crate::PipelineBuilder::rate_limiter_from):
+//!
+//! ```rust,no_run
+//! use std::sync::Arc;
+//! use nebula_resilience::{ResiliencePipeline, rate_limiter::TokenBucket};
+//!
+//! # #[tokio::main]
+//! # async fn main() -> Result<(), Box<dyn std::error::Error>> {
+//! // Arc is required so the limiter can be cloned into the async closure
+//! // that the pipeline builds internally — the closure must be
+//! // `Send + Sync + 'static`, which demands shared ownership.
+//! let rl = Arc::new(TokenBucket::new(100, 10.0)?);
+//!
+//! let pipeline = ResiliencePipeline::<String>::builder()
+//!     .rate_limiter_from(rl)
+//!     .build();
+//!
+//! let _result: Result<String, _> = pipeline
+//!     .call(|| Box::pin(async { Ok::<_, String>("ok".into()) }))
+//!     .await;
+//! # Ok(())
+//! # }
 //! ```
 
 use std::{
@@ -35,23 +94,46 @@ use crate::CallError;
 // TRAIT
 // ═══════════════════════════════════════════════════════════════════════════════
 
-/// Rate limiter trait.
+/// Core abstraction for all rate-limiting implementations.
 ///
-/// Returns `Err(CallError::RateLimited)` when the rate limit is exceeded.
+/// # Contract
 ///
-/// All async methods return `Send` futures, matching the `Send + Sync` bound on the trait.
+/// - [`acquire()`](RateLimiter::acquire) **must** return `Ok(())` when a permit is
+///   granted and <code>Err([`CallError::RateLimited`])</code> when the rate limit is
+///   exceeded. It must never block indefinitely — implementations that queue
+///   callers should enforce a timeout or queue bound.
+/// - [`call()`](RateLimiter::call) is a convenience wrapper over `acquire()` +
+///   operation invocation. The default implementation is correct for the vast
+///   majority of cases. Override it only when you need to observe the operation
+///   result (e.g., [`AdaptiveRateLimiter`] tracks errors to tune its rate).
+/// - **Thread safety**: all implementors must be `Send + Sync` so they can be
+///   shared across async tasks via `Arc<T>`.
 ///
-/// This trait is designed to be implemented by downstream crates.
-/// New methods will always have default implementations to avoid breaking changes.
+/// # Implementing for third-party types
+///
+/// This trait is `sealed`-free and designed for downstream implementation.
+/// New methods will always provide default implementations to avoid breaking
+/// changes across minor versions.
 pub trait RateLimiter: Send + Sync {
-    /// Try to acquire permission. Returns `Err(CallError::RateLimited)` if limit hit.
+    /// Attempt to consume one permit from the rate limiter.
+    ///
+    /// Returns `Ok(())` when the request is allowed to proceed, or
+    /// <code>Err([`CallError::RateLimited`])</code> when the current rate would be
+    /// exceeded. The error may include a `retry_after` hint for callers
+    /// that want to back off before retrying.
     fn acquire(&self) -> impl Future<Output = Result<(), CallError<()>>> + Send;
 
-    /// Acquire permission then call `operation`. Returns `Err(CallError::RateLimited)` or
-    /// the operation's own error wrapped in `CallError::Operation`.
+    /// Acquire a permit and, if successful, execute `operation`.
     ///
-    /// Default implementation calls [`acquire`](Self::acquire) then the operation.
-    /// Override only if you need custom behavior (e.g., recording success/error).
+    /// Returns <code>Err([`CallError::RateLimited`])</code> without calling `operation`
+    /// when the rate limit is exceeded, or the operation's own error wrapped in
+    /// [`CallError::Operation`] when `operation`
+    /// itself fails.
+    ///
+    /// The default implementation calls [`acquire()`](Self::acquire) then
+    /// invokes `operation`. Override this only when you need to observe the
+    /// operation result — for example, to adjust internal counters as
+    /// [`AdaptiveRateLimiter`] does.
     fn call<T, E, F, Fut>(
         &self,
         operation: F,
@@ -86,17 +168,31 @@ struct TokenBucketState {
     last_refill: Instant,
 }
 
-/// Token bucket rate limiter.
+/// Rate limiter based on the **token bucket** algorithm.
 ///
-/// Classic token bucket algorithm with configurable capacity and refill rate.
-/// Tokens are added at a constant rate and consumed by operations.
+/// A bucket starts full and holds up to `capacity` tokens. Each `acquire()`
+/// call consumes one token. Tokens are replenished continuously at
+/// `refill_rate` tokens per second. When the bucket is empty `acquire()`
+/// returns [`CallError::RateLimited`] immediately
+/// — it does **not** queue or sleep.
+///
+/// An optional burst cap (set via [`with_burst`](Self::with_burst)) limits how
+/// many tokens can accumulate during idle periods, preventing a long idle
+/// period from creating a large, sudden burst.
+///
+/// # When to choose this
+///
+/// Use [`TokenBucket`] when you want to allow short bursts up to `capacity`
+/// while enforcing a steady long-term average of `refill_rate` req/s. It is
+/// the right default for most outbound-call rate limiting.
 ///
 /// # Examples
 ///
-/// ```
+/// ```rust
 /// use nebula_resilience::rate_limiter::TokenBucket;
 ///
-/// let limiter = TokenBucket::new(100, 10.0).unwrap();
+/// // Up to 100 tokens; refill at 10 per second; burst capped at 20.
+/// let limiter = TokenBucket::new(100, 10.0).unwrap().with_burst(20);
 /// ```
 pub struct TokenBucket {
     /// Maximum tokens in bucket (initial value, used by `reset`).
@@ -247,10 +343,28 @@ struct LeakyBucketState {
     last_leak: Instant,
 }
 
-/// Leaky bucket rate limiter
+/// Rate limiter based on the **leaky bucket** algorithm.
 ///
-/// Implements the leaky bucket algorithm where requests fill a bucket
-/// that leaks at a constant rate.
+/// A virtual bucket fills up by one slot on each `acquire()` call and drains
+/// ("leaks") at a constant `leak_rate` per second. When the bucket is full
+/// `acquire()` returns [`CallError::RateLimited`]
+/// immediately.
+///
+/// Unlike [`TokenBucket`], the leaky bucket enforces a strict outflow rate:
+/// no matter how fast requests arrive, outgoing permit grants are smoothed
+/// to the configured `leak_rate`.
+///
+/// # Configuration
+///
+/// - `capacity` — maximum bucket depth; controls the burst tolerance
+///   (how many requests can queue up before being rejected).
+/// - `leak_rate` — permits drained per second (0.001..=10,000).
+///
+/// # When to choose this
+///
+/// Use [`LeakyBucket`] when the downstream service requires a smooth,
+/// constant request rate and cannot tolerate sudden bursts — for example,
+/// a third-party API that enforces strict per-second billing quotas.
 pub struct LeakyBucket {
     /// Bucket capacity
     capacity: usize,
@@ -348,9 +462,24 @@ impl RateLimiter for LeakyBucket {
 // SLIDING WINDOW
 // ═══════════════════════════════════════════════════════════════════════════════
 
-/// Sliding window rate limiter
+/// Rate limiter based on a **sliding time window** counter.
 ///
-/// Tracks requests in a sliding time window and limits based on count.
+/// Maintains a timestamped log of recent requests. On each `acquire()` call
+/// stale entries (older than `window_duration`) are evicted; the call succeeds
+/// only when the number of remaining entries is below `max_requests`.
+///
+/// # Configuration
+///
+/// - `window_duration` — rolling window length (must be `> 0`).
+/// - `max_requests` — maximum allowed requests within any window (must be `≥ 1`).
+///
+/// # When to choose this
+///
+/// Use [`SlidingWindow`] when you need a strict per-window request cap that
+/// avoids the boundary burst problem of fixed windows — for example,
+/// enforcing "at most 100 calls per minute" with no double-counting at the
+/// minute boundary. The trade-off is O(N) memory proportional to
+/// `max_requests`.
 pub struct SlidingWindow {
     /// Window duration
     window_duration: Duration,
@@ -457,13 +586,39 @@ struct AdaptiveState {
     initial_rate: f64,
 }
 
-/// Adaptive rate limiter that adjusts based on error rates.
+/// Rate limiter that **self-tunes** based on observed operation error rates.
 ///
-/// Automatically adjusts rate limiting based on success/error ratios.
-/// - High error rate (>10%) → decrease rate
-/// - Low error rate (<1%) → increase rate
+/// Wraps a [`TokenBucket`] and periodically adjusts its refill rate based on
+/// the ratio of successful to failed operations recorded via
+/// [`record_success()`](Self::record_success) and
+/// [`record_error()`](Self::record_error):
 ///
-/// Counters are lock-free atomics; the write lock is only taken for rate adjustment.
+/// | Condition | Action |
+/// |---|---|
+/// | Error rate > 10 % | Decrease rate by 10 % (floor: `min_rate`) |
+/// | Error rate < 1 % | Increase rate by 10 % (ceiling: `max_rate`) |
+/// | 1 % ≤ error rate ≤ 10 % | No change |
+///
+/// Adjustments happen at most once per stats window (default: 1 minute).
+/// Lock-free atomics are used for the counters so recording outcomes is
+/// contention-free; the write lock is only taken when the window elapses.
+///
+/// The [`call()`](RateLimiter::call) override automatically records success/
+/// error outcomes, so manual calls to `record_*` are only needed when you
+/// invoke `acquire()` directly.
+///
+/// # Configuration
+///
+/// - `initial_rate` — starting refill rate (tokens/second).
+/// - `min_rate` — lower bound for automatic rate reduction.
+/// - `max_rate` — upper bound for automatic rate increase.
+///
+/// # When to choose this
+///
+/// Use [`AdaptiveRateLimiter`] when the appropriate request rate is unknown
+/// upfront or changes over time — for example, calling a service that
+/// returns `429 Too Many Requests` under load and you want automatic back-off
+/// without manual tuning.
 pub struct AdaptiveRateLimiter {
     state: Arc<RwLock<AdaptiveState>>,
     /// Lock-free copy of `current_rate` for cheap reads without taking the lock.

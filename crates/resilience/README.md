@@ -56,7 +56,8 @@ yet implemented.
 
 See `docs/MATURITY.md` row for `nebula-resilience`.
 
-- API stability: `stable` — `ResiliencePipeline`, `RetryConfig`, `CircuitBreaker`, and `CallError` are in active use; benchmarks cover all seven patterns.
+- API stability: `stable` — `ResiliencePipeline`, `RetryConfig`, `CircuitBreaker`, and `CallError` are in active use; benchmarks cover all seven patterns and stress tests verify high-concurrency safety (5K–10K concurrent tasks, permit leak detection, cooperative shutdown under load).
+- Test coverage: `stable` — comprehensive benchmarks, stress tests (bulkhead, circuit breaker, pipeline, gate shutdown), and property-based tests validating backoff calculation invariants across the full input space.
 - `MetricsSink`-based observability hooks and hedge-related APIs are newer and may still get minor refinements.
 
 ## Related

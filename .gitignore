@@ -175,6 +175,7 @@ lefthook-local.yml
 .codex/
 .junie/
 .qoder/
+!.qoder/repowiki/
 .specify/
 .cursorrules
 .aider*

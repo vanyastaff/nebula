@@ -4321,6 +4321,7 @@ dependencies = [
  "nebula-error",
  "parking_lot",
  "pretty_assertions",
+ "proptest",
  "rstest",
  "serde",
  "smallvec",
