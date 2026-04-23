@@ -278,4 +278,46 @@ mod tests {
             "expected size gate error, got: {err}"
         );
     }
+
+    /// `Content-Length` missing: `bytes_stream()` must still cap the body (e.g. chunked).
+    #[tokio::test]
+    async fn token_exchange_rejects_oversized_streaming_body_without_content_length() {
+        let max = OAUTH_TOKEN_HTTP_MAX_RESPONSE_BYTES;
+        let one_chunk = max + 1;
+        // Single chunk, HTTP/1.1 chunked, no `Content-Length`.
+        // Body bytes are never parsed as successful JSON: size gate fails first.
+        let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");
+        let addr = listener.local_addr().expect("local addr");
+
+        tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.expect("accept");
+            drain_incoming_request(&mut stream).await;
+            const HEAD: &[u8] = b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n\
+Transfer-Encoding: chunked\r\nConnection: close\r\n\r\n";
+            if stream.write_all(HEAD).await.is_err() {
+                return;
+            }
+            let size_line = format!("{one_chunk:x}\r\n");
+            if stream.write_all(size_line.as_bytes()).await.is_err() {
+                return;
+            }
+            if stream.write_all(&vec![b'x'; one_chunk]).await.is_err() {
+                return;
+            }
+            if stream.write_all(b"\r\n0\r\n\r\n").await.is_err() {
+                return;
+            }
+        });
+
+        let mut req = sample_exchange();
+        req.token_url = format!("http://127.0.0.1:{}/token", addr.port());
+        let err = exchange_code(&req)
+            .await
+            .expect_err("streaming body over max should fail");
+        let lower = err.to_lowercase();
+        assert!(
+            lower.contains("exceeded"),
+            "expected streaming cap (exceeded) error, got: {err}"
+        );
+    }
 }
