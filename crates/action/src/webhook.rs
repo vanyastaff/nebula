@@ -1008,7 +1008,7 @@ pub trait WebhookEndpointProvider: Send + Sync + fmt::Debug {
 /// (via RAII guard) on completion. `stop()` spins briefly if the
 /// counter is non-zero.
 ///
-/// Created automatically by `nebula_runtime::ActionRegistry::register_webhook`.
+/// Created automatically by `nebula_engine::ActionRegistry::register_webhook`.
 pub struct WebhookTriggerAdapter<A: WebhookAction> {
     action: A,
     /// Cached webhook-config read once from the wrapped action at

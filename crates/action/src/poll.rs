@@ -1023,7 +1023,7 @@ struct CycleOutcome<C> {
 /// Cancellation via `TriggerContext::cancellation`.
 /// `stop()` is a no-op (cancellation token handles shutdown).
 ///
-/// Created automatically by `nebula_runtime::ActionRegistry::register_poll`.
+/// Created automatically by `nebula_engine::ActionRegistry::register_poll`.
 ///
 /// # Double-start rejection
 ///

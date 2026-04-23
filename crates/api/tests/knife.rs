@@ -728,12 +728,11 @@ async fn knife_step3_engine_dispatches_start_end_to_end() {
     use std::time::Duration;
 
     use nebula_core::action_key;
-    use nebula_engine::{ControlConsumer, EngineControlDispatch, WorkflowEngine};
-    use nebula_execution::ExecutionStatus;
-    use nebula_runtime::{
-        ActionExecutor, ActionRuntime, DataPassingPolicy, InProcessSandbox,
-        registry::ActionRegistry,
+    use nebula_engine::{
+        ActionExecutor, ActionRegistry, ActionRuntime, ControlConsumer, DataPassingPolicy,
+        EngineControlDispatch, InProcessSandbox, WorkflowEngine,
     };
+    use nebula_execution::ExecutionStatus;
     use nebula_workflow::{
         Connection, NodeDefinition, Version, WorkflowConfig, WorkflowDefinition,
     };
@@ -949,12 +948,11 @@ async fn knife_step5_engine_cancels_running_execution_end_to_end() {
     use std::time::Duration;
 
     use nebula_core::action_key;
-    use nebula_engine::{ControlConsumer, EngineControlDispatch, WorkflowEngine};
-    use nebula_execution::ExecutionStatus;
-    use nebula_runtime::{
-        ActionExecutor, ActionRuntime, DataPassingPolicy, InProcessSandbox,
-        registry::ActionRegistry,
+    use nebula_engine::{
+        ActionExecutor, ActionRegistry, ActionRuntime, ControlConsumer, DataPassingPolicy,
+        EngineControlDispatch, InProcessSandbox, WorkflowEngine,
     };
+    use nebula_execution::ExecutionStatus;
     use nebula_workflow::{
         Connection, NodeDefinition, Version, WorkflowConfig, WorkflowDefinition,
     };

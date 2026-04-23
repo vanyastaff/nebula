@@ -1,6 +1,6 @@
 //! In-process test runtime for driving a single action end-to-end.
 //!
-//! [`TestRuntime`] mirrors the shape of `nebula_runtime::ActionRegistry`'s
+//! [`TestRuntime`] mirrors the shape of `nebula_engine::ActionRegistry`'s
 //! `register_*` API: one method per action kind. Instead of building a full
 //! registry/executor stack, it wraps the action in the matching adapter,
 //! constructs the context through [`TestContextBuilder`], and drives the full

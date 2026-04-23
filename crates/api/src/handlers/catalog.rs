@@ -17,7 +17,7 @@ use crate::{
 /// List all registered actions.
 ///
 /// Returns key, name, and version for every action in the action registry.
-/// Requires an [`ActionRegistry`](nebula_runtime::ActionRegistry) to be
+/// Requires an [`ActionRegistry`](nebula_engine::ActionRegistry) to be
 /// attached to [`AppState`] via [`AppState::with_action_registry`].
 ///
 /// # Errors

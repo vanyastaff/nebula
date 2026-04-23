@@ -3923,7 +3923,6 @@ dependencies = [
  "nebula-metrics",
  "nebula-plugin",
  "nebula-resilience",
- "nebula-runtime",
  "nebula-storage",
  "nebula-telemetry",
  "nebula-validator",
@@ -3966,7 +3965,6 @@ dependencies = [
  "nebula-execution",
  "nebula-log",
  "nebula-plugin",
- "nebula-runtime",
  "nebula-sandbox",
  "nebula-telemetry",
  "nebula-workflow",
@@ -4054,6 +4052,7 @@ dependencies = [
 name = "nebula-engine"
 version = "0.1.0"
 dependencies = [
+ "async-channel",
  "async-trait",
  "chrono",
  "dashmap",
@@ -4072,7 +4071,7 @@ dependencies = [
  "nebula-plugin",
  "nebula-resilience",
  "nebula-resource",
- "nebula-runtime",
+ "nebula-sandbox",
  "nebula-schema",
  "nebula-storage",
  "nebula-telemetry",
@@ -4362,33 +4361,6 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn 2.0.117",
-]
-
-[[package]]
-name = "nebula-runtime"
-version = "0.1.0"
-dependencies = [
- "async-channel",
- "async-trait",
- "codspeed-criterion-compat",
- "dashmap",
- "insta",
- "nebula-action",
- "nebula-core",
- "nebula-error",
- "nebula-metrics",
- "nebula-sandbox",
- "nebula-telemetry",
- "pretty_assertions",
- "rstest",
- "semver",
- "serde",
- "serde_json",
- "thiserror 2.0.18",
- "tokio",
- "tokio-util",
- "tracing",
- "uuid",
 ]
 
 [[package]]

@@ -16,7 +16,6 @@ members = [
   "crates/schema/macros",
   "crates/resilience",
   "crates/resource",
-  "crates/runtime",
   "crates/system",
   "crates/telemetry",
   "crates/validator",

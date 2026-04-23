@@ -3,7 +3,7 @@
 //! The engine dispatches actions via [`ActionHandler`], a top-level enum whose
 //! variants wrap `Arc<dyn XxxHandler>` trait objects. Typed action authors write
 //! `impl StatelessAction<Input=T, Output=U>` and register via the registry's
-//! helper methods (e.g., `nebula_runtime::ActionRegistry::register_stateless`),
+//! helper methods (e.g., `nebula_engine::ActionRegistry::register_stateless`),
 //! which wraps the typed action in the corresponding adapter automatically.
 //!
 //! ## Handler traits

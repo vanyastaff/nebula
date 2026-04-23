@@ -68,7 +68,7 @@ pub enum EngineError {
 
     /// Error from the runtime layer.
     #[error("runtime error: {0}")]
-    Runtime(#[from] nebula_runtime::RuntimeError),
+    Runtime(#[from] crate::runtime::RuntimeError),
 
     /// Error from the execution state layer.
     #[error("execution error: {0}")]

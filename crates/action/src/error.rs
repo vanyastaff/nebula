@@ -255,7 +255,7 @@ pub enum ActionError {
     /// than relying on a per-action `ErrorStrategy` override (which does
     /// not exist).
     ///
-    /// [`execute_action_versioned`]: https://docs.rs/nebula-runtime
+    /// [`execute_action_versioned`]: https://docs.rs/nebula-engine
     #[error("credential refresh failed for action '{action_key}': {source}")]
     CredentialRefreshFailed {
         /// Action key identifying the dispatch target that was waiting on

@@ -1,7 +1,7 @@
 #![forbid(unsafe_code)]
 #![warn(missing_docs)]
 
-//! # nebula-runtime — Action Dispatcher
+//! # nebula-engine — Action Dispatcher
 //!
 //! Sits between `nebula-engine` (scheduler) and `nebula-sandbox` (isolation).
 //! Resolves action handlers from the registry, enforces data-passing policies,

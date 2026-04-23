@@ -13,8 +13,8 @@
 
 use std::{path::PathBuf, time::Duration};
 
+use nebula_engine::ActionRegistry;
 use nebula_plugin::PluginRegistry;
-use nebula_runtime::ActionRegistry;
 use nebula_sandbox::{capabilities::PluginCapabilities, discovery};
 
 /// Default timeout for plugin actions.

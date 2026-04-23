@@ -14,12 +14,12 @@ use nebula_action::{
     stateless::StatelessAction,
 };
 use nebula_core::{ActionKey, DeclaresDependencies, action_key, id::WorkflowId, node_key};
-use nebula_engine::WorkflowEngine;
+use nebula_engine::{
+    ActionExecutor, ActionRegistry, ActionRuntime, DataPassingPolicy, InProcessSandbox,
+    WorkflowEngine,
+};
 use nebula_execution::context::ExecutionBudget;
 use nebula_resource::Manager;
-use nebula_runtime::{
-    ActionExecutor, ActionRuntime, DataPassingPolicy, InProcessSandbox, registry::ActionRegistry,
-};
 use nebula_telemetry::metrics::MetricsRegistry;
 use nebula_workflow::{NodeDefinition, Version, WorkflowConfig, WorkflowDefinition};
 

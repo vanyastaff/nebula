@@ -5,7 +5,7 @@ use nebula_core::{
     id::{ExecutionId, WorkflowId},
     node_key,
 };
-use nebula_runtime::ActionRegistry;
+use nebula_engine::ActionRegistry;
 use tokio_util::sync::CancellationToken;
 
 use crate::cli::{ActionsInfoArgs, ActionsListArgs, ActionsTestArgs, OutputFormat, resolve_format};

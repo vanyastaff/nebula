@@ -59,7 +59,6 @@ nebula-engine = { path = "../../crates/engine" }
 nebula-plugin = { path = "../../crates/plugin" }
 nebula-sandbox = { path = "../../crates/sandbox" }
 nebula-execution = { path = "../../crates/execution" }
-nebula-runtime = { path = "../../crates/runtime" }
 nebula-workflow = { path = "../../crates/workflow" }
 nebula-log = { path = "../../crates/log" }
 nebula-telemetry = { path = "../../crates/telemetry" }

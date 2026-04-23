@@ -36,7 +36,6 @@ use nebula_metrics::naming::{
     NEBULA_WORKFLOW_EXECUTIONS_STARTED_TOTAL, engine_lease_contention_reason,
 };
 use nebula_plugin::PluginRegistry;
-use nebula_runtime::ActionRuntime;
 use nebula_telemetry::metrics::MetricsRegistry;
 use nebula_workflow::{
     Connection, DependencyGraph, EdgeCondition, ErrorMatcher, NodeState, ResultMatcher,
@@ -51,6 +50,7 @@ use tokio_util::sync::CancellationToken;
 use crate::{
     credential_accessor::EngineCredentialAccessor, error::EngineError, event::ExecutionEvent,
     resolver::ParamResolver, resource_accessor::EngineResourceAccessor, result::ExecutionResult,
+    runtime::ActionRuntime,
 };
 
 /// Type alias for the optional event sender.
@@ -1899,7 +1899,7 @@ impl WorkflowEngine {
                 Ok((task_id, (node_key, Ok(ref action_result)))) if action_result.is_retry() => {
                     task_nodes.remove(&task_id);
                     total_retries.fetch_add(1, Ordering::Relaxed);
-                    let err = EngineError::Runtime(nebula_runtime::RuntimeError::ActionError(
+                    let err = EngineError::Runtime(crate::runtime::RuntimeError::ActionError(
                         ActionError::retryable("Action retry is not supported by the engine"),
                     ));
                     mark_node_failed(exec_state, node_key.clone(), &err);
@@ -2986,7 +2986,7 @@ impl NodeTask {
                 return (
                     self.node_key.clone(),
                     Err(EngineError::Runtime(
-                        nebula_runtime::RuntimeError::ActionError(action_err),
+                        crate::runtime::RuntimeError::ActionError(action_err),
                     )),
                 );
             }
@@ -3781,15 +3781,15 @@ mod tests {
         result::ActionResult, stateless::StatelessAction,
     };
     use nebula_core::{DeclaresDependencies, action_key};
-    use nebula_runtime::{
-        ActionExecutor, DataPassingPolicy, InProcessSandbox, registry::ActionRegistry,
-    };
     use nebula_storage::{ExecutionRepo, WorkflowRepo};
     use nebula_workflow::{
         Connection, ErrorStrategy, NodeDefinition, Version, WorkflowConfig, WorkflowDefinition,
     };
 
     use super::*;
+    use crate::runtime::{
+        ActionExecutor, DataPassingPolicy, InProcessSandbox, registry::ActionRegistry,
+    };
 
     // -- Test handlers --
 

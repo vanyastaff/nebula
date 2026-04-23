@@ -1,7 +1,7 @@
 use std::{sync::Arc, time::Duration};
 
 use nebula_action::Overflow;
-use nebula_runtime::{BoundedStreamBuffer, PushOutcome};
+use nebula_engine::{BoundedStreamBuffer, PushOutcome};
 use tokio::sync::Mutex;
 
 #[tokio::test]

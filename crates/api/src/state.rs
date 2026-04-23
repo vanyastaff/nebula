@@ -11,8 +11,8 @@ use async_trait::async_trait;
 use nebula_core::{OrgId, OrgRole, WorkspaceId, WorkspaceRole, scope::Principal};
 #[cfg(feature = "credential-oauth")]
 use nebula_credential::PendingToken;
+use nebula_engine::ActionRegistry;
 use nebula_plugin::PluginRegistry;
-use nebula_runtime::ActionRegistry;
 #[cfg(feature = "credential-oauth")]
 use nebula_storage::credential::{InMemoryPendingStore, InMemoryStore};
 use nebula_storage::{ExecutionRepo, WorkflowRepo, repos::ControlQueueRepo};

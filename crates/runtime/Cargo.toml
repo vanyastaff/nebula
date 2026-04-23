@@ -1,5 +1,5 @@
 [package]
-name = "nebula-runtime"
+name = "nebula-engine"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true

@@ -23,7 +23,7 @@ rotation = ["nebula-credential/rotation", "nebula-storage/rotation"]
 
 [dependencies]
 nebula-core = { path = "../core" }
-nebula-error = { workspace = true }
+nebula-error = { workspace = true, features = ["derive"] }
 nebula-action = { path = "../action" }
 nebula-expression = { path = "../expression" }
 nebula-plugin = { path = "../plugin" }
@@ -33,12 +33,13 @@ nebula-schema = { path = "../schema" }
 nebula-credential = { path = "../credential" }
 nebula-eventbus = { path = "../eventbus" }
 nebula-resource = { path = "../resource" }
-nebula-runtime = { path = "../runtime" }
+nebula-sandbox = { path = "../sandbox" }
 nebula-resilience = { path = "../resilience" }
 nebula-storage = { path = "../storage", features = ["credential-in-memory"] }
 nebula-metrics = { path = "../metrics" }
 nebula-telemetry = { path = "../telemetry" }
 
+async-channel = { workspace = true }
 async-trait = { workspace = true }
 semver = { workspace = true }
 tokio = { workspace = true }

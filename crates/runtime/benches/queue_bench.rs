@@ -12,7 +12,7 @@
 use std::{sync::Arc, time::Duration};
 
 use criterion::{BenchmarkId, Criterion, Throughput, criterion_group, criterion_main};
-use nebula_runtime::{MemoryQueue, TaskQueue, queue::DequeueResult};
+use nebula_engine::{MemoryQueue, TaskQueue, queue::DequeueResult};
 use tokio::runtime::Builder;
 
 const ITEMS: usize = 1024;

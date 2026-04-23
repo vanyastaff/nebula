@@ -6,7 +6,7 @@
 //! Workflow execution orchestrator. Builds an `ExecutionPlan` from a workflow
 //! DAG, resolves node inputs from predecessor outputs, transitions execution
 //! state through `ExecutionRepo` (CAS on `version` — canon §11.1), and
-//! delegates action dispatch to `nebula-runtime`.
+//! delegates action dispatch to `nebula-engine`.
 //!
 //! Canon §12.2 names this crate as the location of the `execution_control_queue`
 //! consumer (`ControlConsumer`, see [`control_consumer`]). Status per §11.6:
@@ -57,7 +57,11 @@ pub(crate) mod resolver;
 // pub(crate) mod resource;
 pub mod resource_accessor;
 pub mod result;
+pub mod runtime;
 
+// Re-export the absorbed `nebula-engine` public surface at the crate root so
+// every downstream caller can migrate `use crate::runtime::X` → `use
+// nebula_engine::X` without path adjustments deeper than the crate name.
 pub use control_consumer::{
     ControlConsumer, ControlDispatch, ControlDispatchError, DEFAULT_BATCH_SIZE,
     DEFAULT_POLL_INTERVAL, MAX_CLAIM_ERROR_BACKOFF,
@@ -76,3 +80,9 @@ pub use nebula_plugin::{Plugin, PluginKey, PluginManifest, PluginRegistry, Resol
 pub use node_output::NodeOutput;
 pub use resource_accessor::EngineResourceAccessor;
 pub use result::ExecutionResult;
+pub use runtime::{
+    ActionExecutor, ActionRegistry, ActionRuntime, BlobRef, BlobStorage, BoundedStreamBuffer,
+    DataPassingPolicy, InProcessSandbox, LargeDataStrategy, MemoryQueue, PushOutcome, QueueError,
+    RuntimeError, SandboxRunner, SandboxedContext, StatefulCheckpoint, StatefulCheckpointSink,
+    TaskQueue,
+};
