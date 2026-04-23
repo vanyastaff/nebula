@@ -169,7 +169,7 @@ pub use gate::{Gate, GateClosed, GateGuard};
 #[doc(hidden)]
 pub use hedge::LatencyTracker;
 pub use hedge::{HedgeConfig, HedgeExecutor};
-pub use load_shed::load_shed;
+pub use load_shed::{load_shed, load_shed_with_sink};
 pub use pipeline::{LoadShedPredicate, PipelineBuilder, RateLimitCheck, ResiliencePipeline};
 pub use policy::{ConstantLoad, LoadSignal, PolicySource};
 pub use rate_limiter::{AdaptiveRateLimiter, LeakyBucket, RateLimiter, SlidingWindow, TokenBucket};

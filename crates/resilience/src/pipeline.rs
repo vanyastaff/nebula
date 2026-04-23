@@ -13,8 +13,9 @@ use crate::{
     CallError,
     bulkhead::Bulkhead,
     circuit_breaker::{CircuitBreaker, Outcome, ProbeGuard},
-    classifier::ErrorClassifier,
+    classifier::{ErrorClass, ErrorClassifier, FnClassifier},
     retry::{RetryConfig, retry_with_inner},
+    sink::{MetricsSink, NoopSink, ResilienceEvent},
 };
 
 // ── Execution ────────────────────────────────────────────────────────────────
@@ -56,6 +57,7 @@ enum Step<E: 'static> {
 pub struct PipelineBuilder<E: 'static> {
     steps: Vec<Step<E>>,
     classifier: Option<Arc<dyn ErrorClassifier<E>>>,
+    sink: Option<Arc<dyn MetricsSink>>,
 }
 
 impl<E: 'static> fmt::Debug for PipelineBuilder<E> {
@@ -79,6 +81,7 @@ impl<E: Send + 'static> PipelineBuilder<E> {
         Self {
             steps: Vec::new(),
             classifier: None,
+            sink: None,
         }
     }
 
@@ -86,13 +89,28 @@ impl<E: Send + 'static> PipelineBuilder<E> {
     ///
     /// When set, the circuit breaker step uses
     /// [`call_with_classifier`](CircuitBreaker::call_with_classifier) instead of
-    /// [`call`](CircuitBreaker::call), and the retry step inherits the classifier.
+    /// [`call`](CircuitBreaker::call). The retry step combines this with any classifier on
+    /// [`RetryConfig`] (per-retry classifier wins for retry
+    /// decisions; the pipeline classifier still applies to the circuit breaker).
     ///
-    /// Without a classifier, the pipeline behaves as before: all operation errors
-    /// count as CB failures and retry uses `Classify::is_retryable()`.
+    /// Without a **pipeline** classifier, operation errors that reach the circuit breaker are
+    /// all counted as [`Failure`](crate::circuit_breaker::Outcome::Failure) for CB state. The
+    /// retry step, when neither a pipeline nor a per-retry classifier is set, treats every
+    /// operation error as retryable (the historical pipeline default). For
+    /// [`Classify`](nebula_error::Classify) semantics like standalone
+    /// [`retry_with`](crate::retry::retry_with), set [`classify_errors()`](Self::classify_errors)
+    /// and/or per-retry [`retry_if`](crate::retry::RetryConfig::retry_if) /
+    /// [`with_classifier`](crate::retry::RetryConfig::with_classifier).
     #[must_use]
     pub fn classifier(mut self, classifier: Arc<dyn ErrorClassifier<E>>) -> Self {
         self.classifier = Some(classifier);
+        self
+    }
+
+    /// Inject a metrics sink for pipeline-level timeout / rate-limit / load-shed events.
+    #[must_use]
+    pub fn with_sink(mut self, sink: impl MetricsSink + 'static) -> Self {
+        self.sink = Some(Arc::new(sink));
         self
     }
 
@@ -171,6 +189,7 @@ impl<E: Send + 'static> PipelineBuilder<E> {
         ResiliencePipeline {
             steps: Arc::new(self.steps),
             classifier: self.classifier,
+            sink: self.sink.unwrap_or_else(|| Arc::new(NoopSink)),
         }
     }
 }
@@ -180,7 +199,7 @@ impl<E: Send + 'static> PipelineBuilder<E> {
 impl<E: nebula_error::Classify + Send + Sync + 'static> PipelineBuilder<E> {
     /// Use [`NebulaClassifier`](crate::classifier::NebulaClassifier) to automatically
     /// map [`ErrorCategory`](nebula_error::ErrorCategory) to
-    /// [`ErrorClass`](crate::classifier::ErrorClass).
+    /// [`ErrorClass`].
     ///
     /// This is the recommended default for pipelines where `E: Classify`.
     #[must_use]
@@ -233,6 +252,7 @@ fn validate_order<E>(steps: &[Step<E>]) {
 pub struct ResiliencePipeline<E: 'static> {
     steps: Arc<Vec<Step<E>>>,
     classifier: Option<Arc<dyn ErrorClassifier<E>>>,
+    sink: Arc<dyn MetricsSink>,
 }
 
 impl<E: 'static> fmt::Debug for ResiliencePipeline<E> {
@@ -270,6 +290,7 @@ impl<E: Send + 'static> ResiliencePipeline<E> {
         execute_pipeline(
             Arc::clone(&self.steps),
             self.classifier.clone(),
+            Arc::clone(&self.sink),
             Arc::new(boxed),
         )
         .await
@@ -310,6 +331,7 @@ impl<E: Send + 'static> ResiliencePipeline<E> {
 async fn execute_pipeline<T, E, F>(
     steps: Arc<Vec<Step<E>>>,
     classifier: Option<Arc<dyn ErrorClassifier<E>>>,
+    sink: Arc<dyn MetricsSink>,
     f: Arc<F>,
 ) -> Result<T, CallError<E>>
 where
@@ -317,7 +339,7 @@ where
     E: Send + 'static,
     F: Fn() -> Pin<Box<dyn Future<Output = Result<T, E>> + Send>> + Send + Sync + 'static,
 {
-    run_operation_with_shells(&steps, classifier, 0, f).await
+    run_operation_with_shells(&steps, classifier, sink, 0, f).await
 }
 
 /// Recursively apply pipeline steps (one `Box::pin` per Timeout/Retry shell),
@@ -325,6 +347,7 @@ where
 fn run_operation_with_shells<T, E, F>(
     steps: &Arc<Vec<Step<E>>>,
     classifier: Option<Arc<dyn ErrorClassifier<E>>>,
+    sink: Arc<dyn MetricsSink>,
     idx: usize,
     f: Arc<F>,
 ) -> Pin<Box<dyn Future<Output = Result<T, CallError<E>>> + Send>>
@@ -344,20 +367,42 @@ where
                 let d = *d;
                 tokio::time::timeout(
                     d,
-                    run_operation_with_shells(&steps, classifier.clone(), idx + 1, f),
+                    run_operation_with_shells(
+                        &steps,
+                        classifier.clone(),
+                        Arc::clone(&sink),
+                        idx + 1,
+                        f,
+                    ),
                 )
                 .await
-                .unwrap_or_else(|_| Err(CallError::Timeout(d)))
+                .unwrap_or_else(|_| {
+                    sink.record(ResilienceEvent::TimeoutElapsed { duration: d });
+                    Err(CallError::Timeout(d))
+                })
             },
             Step::Retry(config) => {
-                run_retry_step(config, Arc::clone(&steps), classifier, idx, f).await
+                run_retry_step(
+                    config,
+                    Arc::clone(&steps),
+                    classifier,
+                    Arc::clone(&sink),
+                    idx,
+                    f,
+                )
+                .await
             },
             Step::CircuitBreaker(cb) => {
                 cb.try_acquire()?;
                 let mut guard = ProbeGuard::new(cb);
-                let result =
-                    run_operation_with_shells(&steps, classifier.clone(), idx + 1, Arc::clone(&f))
-                        .await;
+                let result = run_operation_with_shells(
+                    &steps,
+                    classifier.clone(),
+                    Arc::clone(&sink),
+                    idx + 1,
+                    Arc::clone(&f),
+                )
+                .await;
                 guard.defuse();
 
                 let outcome = classify_cb_outcome(&result, classifier.as_ref());
@@ -366,19 +411,23 @@ where
             },
             Step::Bulkhead(bh) => {
                 let _permit = bh.acquire().await?;
-                run_operation_with_shells(&steps, classifier, idx + 1, f).await
+                run_operation_with_shells(&steps, classifier, sink, idx + 1, f).await
             },
             Step::RateLimiter(check) => {
-                check().await.map_err(|e| CallError::RateLimited {
-                    retry_after: e.retry_after(),
-                })?;
-                run_operation_with_shells(&steps, classifier, idx + 1, f).await
+                if let Err(e) = check().await {
+                    sink.record(ResilienceEvent::RateLimitExceeded);
+                    return Err(CallError::RateLimited {
+                        retry_after: e.retry_after(),
+                    });
+                }
+                run_operation_with_shells(&steps, classifier, sink, idx + 1, f).await
             },
             Step::LoadShed(predicate) => {
                 if predicate() {
+                    sink.record(ResilienceEvent::LoadShed);
                     Err(CallError::LoadShed)
                 } else {
-                    run_operation_with_shells(&steps, classifier, idx + 1, f).await
+                    run_operation_with_shells(&steps, classifier, sink, idx + 1, f).await
                 }
             },
         }
@@ -413,6 +462,7 @@ async fn run_retry_step<T, E, F>(
     config: &RetryConfig<E>,
     steps: Arc<Vec<Step<E>>>,
     classifier: Option<Arc<dyn ErrorClassifier<E>>>,
+    sink: Arc<dyn MetricsSink>,
     idx: usize,
     f: Arc<F>,
 ) -> Result<T, CallError<E>>
@@ -427,42 +477,52 @@ where
     // errors (CircuitOpen, BulkheadFull, etc.) indicate the inner pipeline is
     // unreachable — retrying would hit the same structural error.
     let bail: Arc<Mutex<Option<CallError<E>>>> = Arc::new(Mutex::new(None));
-    let bail_check = Arc::clone(&bail);
-
-    // Combine the bail-check (stops on structural errors like CircuitOpen)
-    // with the pipeline's classifier (if set) for retry decisions.
-    // The inner retry wraps E in Option<E>: Some(e) = real error, None = bail.
+    let config_classifier = config.classifier.clone();
     let pipeline_classifier = classifier.clone();
     let mut inner_config = RetryConfig::<Option<E>>::new_unchecked(config.max_attempts)
         .backoff(config.backoff.clone())
-        .jitter(config.jitter.clone())
-        .retry_if(move |e: &Option<E>| {
-            // None = bail signal (structural error) → stop retrying
-            let Some(inner) = e else { return false };
-            // Structural error already captured → stop retrying
-            if bail_check.lock().is_some() {
-                return false;
-            }
-            // Use pipeline classifier if available, otherwise retry all
-            pipeline_classifier
-                .as_ref()
-                .is_none_or(|c| c.classify(inner).is_retryable())
-        });
+        .jitter(config.jitter.clone());
     inner_config.total_budget = config.total_budget;
+    inner_config.sink = Arc::clone(&config.sink);
+    inner_config.classifier = Some(Arc::new(FnClassifier::new(move |e: &Option<E>| {
+        let Some(inner) = e else {
+            return ErrorClass::Permanent;
+        };
+        config_classifier.as_ref().map_or_else(
+            || {
+                pipeline_classifier
+                    .as_ref()
+                    .map_or(ErrorClass::Transient, |classifier| {
+                        classifier.classify(inner)
+                    })
+            },
+            |classifier| classifier.classify(inner),
+        )
+    })));
+    inner_config.on_retry = config.on_retry.as_ref().map(|notify| {
+        let notify = Arc::clone(notify);
+        Arc::new(move |e: &Option<E>, delay: Duration, attempt: u32| {
+            if let Some(inner) = e {
+                notify(inner, delay, attempt);
+            }
+        }) as Arc<dyn Fn(&Option<E>, Duration, u32) + Send + Sync>
+    });
 
     let result = retry_with_inner(inner_config, {
         let steps = Arc::clone(&steps);
         let f = Arc::clone(&f);
         let bail = Arc::clone(&bail);
         let classifier = classifier.clone();
+        let sink = Arc::clone(&sink);
         move || {
             let steps = Arc::clone(&steps);
             let f = Arc::clone(&f);
             let bail = Arc::clone(&bail);
             let classifier = classifier.clone();
+            let sink = Arc::clone(&sink);
             Box::pin(async move {
                 classify_inner(
-                    run_operation_with_shells(&steps, classifier, idx + 1, f).await,
+                    run_operation_with_shells(&steps, classifier, sink, idx + 1, f).await,
                     &bail,
                 )
             })
@@ -515,12 +575,17 @@ fn map_retry_result<T, E: Send>(
 #[cfg(test)]
 mod tests {
     use std::{
-        sync::atomic::{AtomicU32, Ordering},
+        sync::{
+            Mutex as StdMutex,
+            atomic::{AtomicU32, Ordering},
+        },
         time::Duration,
     };
 
     use super::*;
-    use crate::{CallError, CircuitBreaker, retry::BackoffConfig};
+    use crate::{
+        CallError, CircuitBreaker, RecordingSink, ResilienceEventKind, retry::BackoffConfig,
+    };
 
     #[tokio::test]
     async fn pipeline_timeout_wraps_retry() {
@@ -583,6 +648,72 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn pipeline_retry_preserves_retry_if_predicate() {
+        let attempts = Arc::new(AtomicU32::new(0));
+        let seen = Arc::clone(&attempts);
+
+        let pipeline = ResiliencePipeline::<&str>::builder()
+            .retry(RetryConfig::new(3).unwrap().retry_if(|_: &&str| false))
+            .build();
+
+        let result = pipeline
+            .call(move || {
+                let seen = Arc::clone(&seen);
+                Box::pin(async move {
+                    seen.fetch_add(1, Ordering::SeqCst);
+                    Err::<u32, &str>("permanent")
+                })
+            })
+            .await;
+
+        assert!(matches!(result, Err(CallError::Operation("permanent"))));
+        assert_eq!(attempts.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn pipeline_retry_preserves_retry_hooks() {
+        let sink = RecordingSink::new();
+        let notifications: Arc<StdMutex<Vec<(u32, Duration)>>> =
+            Arc::new(StdMutex::new(Vec::new()));
+        let seen_notifications = Arc::clone(&notifications);
+        let attempts = Arc::new(AtomicU32::new(0));
+        let seen_attempts = Arc::clone(&attempts);
+
+        let pipeline = ResiliencePipeline::<&str>::builder()
+            .retry(
+                RetryConfig::new(3)
+                    .unwrap()
+                    .backoff(BackoffConfig::Fixed(Duration::from_millis(1)))
+                    .with_sink(sink.clone())
+                    .on_retry(move |_err: &&str, delay: Duration, attempt: u32| {
+                        seen_notifications.lock().unwrap().push((attempt, delay));
+                    }),
+            )
+            .build();
+
+        let result = pipeline
+            .call(move || {
+                let seen_attempts = Arc::clone(&seen_attempts);
+                Box::pin(async move {
+                    seen_attempts.fetch_add(1, Ordering::SeqCst);
+                    Err::<u32, &str>("transient")
+                })
+            })
+            .await;
+
+        assert!(matches!(
+            result,
+            Err(CallError::RetriesExhausted {
+                attempts: 3,
+                last: "transient",
+            })
+        ));
+        assert_eq!(attempts.load(Ordering::SeqCst), 3);
+        assert_eq!(sink.count(ResilienceEventKind::RetryAttempt), 3);
+        assert_eq!(notifications.lock().unwrap().len(), 2);
+    }
+
+    #[tokio::test]
     async fn pipeline_timeout_fires() {
         let pipeline = ResiliencePipeline::<&str>::builder()
             .timeout(Duration::from_millis(10))
@@ -620,6 +751,67 @@ mod tests {
 
         // Should return RateLimited, not panic
         assert!(matches!(result, Err(CallError::RateLimited { .. })));
+    }
+
+    #[tokio::test]
+    async fn pipeline_with_sink_emits_timeout_event() {
+        let sink = RecordingSink::new();
+        let pipeline = ResiliencePipeline::<&str>::builder()
+            .with_sink(sink.clone())
+            .timeout(Duration::from_millis(10))
+            .build();
+
+        let result = pipeline
+            .call(|| {
+                Box::pin(async {
+                    tokio::time::sleep(Duration::from_millis(50)).await;
+                    Ok::<u32, &str>(42)
+                })
+            })
+            .await;
+
+        assert!(matches!(result, Err(CallError::Timeout(_))));
+        assert_eq!(sink.count(ResilienceEventKind::TimeoutElapsed), 1);
+    }
+
+    #[tokio::test]
+    async fn pipeline_with_sink_emits_rate_limit_event() {
+        let sink = RecordingSink::new();
+        let rate_limiter: RateLimitCheck = Arc::new(|| {
+            Box::pin(async { Err(CallError::rate_limited_after(Duration::from_secs(2))) })
+        });
+        let pipeline = ResiliencePipeline::<&str>::builder()
+            .with_sink(sink.clone())
+            .rate_limiter(rate_limiter)
+            .build();
+
+        let result = pipeline
+            .call(|| Box::pin(async { Ok::<u32, &str>(42) }))
+            .await;
+
+        assert!(matches!(
+            result,
+            Err(CallError::RateLimited {
+                retry_after: Some(duration),
+            }) if duration == Duration::from_secs(2)
+        ));
+        assert_eq!(sink.count(ResilienceEventKind::RateLimitExceeded), 1);
+    }
+
+    #[tokio::test]
+    async fn pipeline_with_sink_emits_load_shed_event() {
+        let sink = RecordingSink::new();
+        let pipeline = ResiliencePipeline::<&str>::builder()
+            .with_sink(sink.clone())
+            .load_shed(Arc::new(|| true))
+            .build();
+
+        let result = pipeline
+            .call(|| Box::pin(async { Ok::<u32, &str>(42) }))
+            .await;
+
+        assert!(matches!(result, Err(CallError::LoadShed)));
+        assert_eq!(sink.count(ResilienceEventKind::LoadShed), 1);
     }
 
     #[tokio::test]

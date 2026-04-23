@@ -22,7 +22,10 @@ use crate::{
 pub struct BulkheadConfig {
     /// Maximum number of concurrent operations. Min: 1.
     pub max_concurrency: usize,
-    /// Maximum number of operations allowed to queue waiting for a permit.
+    /// Maximum number of operations allowed to queue while waiting for a permit.
+    ///
+    /// `0` means **no queue**: if no permit is free, [`Bulkhead::acquire`] returns
+    /// [`CallError::BulkheadFull`] immediately (fail-fast) instead of waiting in line.
     pub queue_size: usize,
     /// Optional timeout while waiting for a permit.
     pub timeout: Option<std::time::Duration>,
@@ -43,13 +46,11 @@ impl BulkheadConfig {
     ///
     /// # Errors
     ///
-    /// Returns `Err(ConfigError)` if `max_concurrency` or `queue_size` is 0.
+    /// Returns `Err(ConfigError)` if `max_concurrency` is 0. `queue_size` may be `0` for a
+    /// no-queue, fail-fast bulkhead (see [`BulkheadConfig::queue_size`](Self::queue_size)).
     pub fn validate(&self) -> Result<(), ConfigError> {
         if self.max_concurrency == 0 {
             return Err(ConfigError::new("max_concurrency", "must be >= 1"));
-        }
-        if self.queue_size == 0 {
-            return Err(ConfigError::new("queue_size", "must be >= 1"));
         }
         Ok(())
     }
@@ -160,6 +161,11 @@ impl Bulkhead {
         // Fast path — permit immediately available
         if let Ok(permit) = Arc::clone(&self.semaphore).try_acquire_owned() {
             return Ok(BulkheadPermit { _permit: permit });
+        }
+
+        if self.config.queue_size == 0 {
+            self.sink.record(ResilienceEvent::BulkheadRejected);
+            return Err(CallError::BulkheadFull);
         }
 
         // Try to enqueue via `try_update` (Rust 1.95).
@@ -303,8 +309,23 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn rejects_immediately_when_queue_size_zero() {
+        let bh = Bulkhead::new(BulkheadConfig {
+            max_concurrency: 1,
+            queue_size: 0,
+            timeout: None,
+        })
+        .unwrap();
+
+        let permit = bh.acquire::<&str>().await.unwrap();
+        let err = bh.acquire::<&str>().await.unwrap_err();
+        assert!(matches!(err, CallError::BulkheadFull));
+        drop(permit);
+    }
+
+    #[tokio::test]
     async fn rejects_when_queue_full() {
-        // queue_size=0 is invalid, use 1 with saturation
+        // queue_size=1: at most one waiter; third acquire while saturated fails.
         let bh = Bulkhead::new(BulkheadConfig {
             max_concurrency: 1,
             queue_size: 1,

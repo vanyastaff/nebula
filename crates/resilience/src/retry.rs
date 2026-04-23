@@ -132,7 +132,7 @@ pub enum JitterConfig {
 // ── RetryConfig ───────────────────────────────────────────────────────────────
 
 /// Type alias for the on-retry notification callback.
-type RetryNotify<E> = Box<dyn Fn(&E, Duration, u32) + Send + Sync>;
+type RetryNotify<E> = Arc<dyn Fn(&E, Duration, u32) + Send + Sync>;
 
 /// Configuration for the retry pattern.
 ///
@@ -154,9 +154,9 @@ pub struct RetryConfig<E = ()> {
     /// delay would exceed this duration. This bounds the total time spent retrying,
     /// including both operation execution and sleep time.
     pub total_budget: Option<Duration>,
-    classifier: Option<Arc<dyn ErrorClassifier<E>>>,
-    on_retry: Option<RetryNotify<E>>,
-    sink: Arc<dyn MetricsSink>,
+    pub(crate) classifier: Option<Arc<dyn ErrorClassifier<E>>>,
+    pub(crate) on_retry: Option<RetryNotify<E>>,
+    pub(crate) sink: Arc<dyn MetricsSink>,
 }
 
 impl<E> fmt::Debug for RetryConfig<E> {
@@ -256,7 +256,7 @@ impl<E: 'static> RetryConfig<E> {
     where
         F: Fn(&E, Duration, u32) + Send + Sync + 'static,
     {
-        self.on_retry = Some(Box::new(f));
+        self.on_retry = Some(Arc::new(f));
         self
     }
 

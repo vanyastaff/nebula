@@ -51,7 +51,10 @@ let cb = Arc::new(CircuitBreaker::new(CircuitBreakerConfig {
     ..Default::default()
 })?);
 
-let bh = Arc::new(Bulkhead::new(20));
+let bh = Arc::new(Bulkhead::new(BulkheadConfig {
+    max_concurrency: 20,
+    ..Default::default()
+})?);
 
 let pipeline = ResiliencePipeline::<MyError>::builder()
     .timeout(Duration::from_secs(10))
@@ -78,6 +81,10 @@ impl<E: Send + 'static> PipelineBuilder<E> {
     /// Add a retry step with explicit config.
     #[must_use]
     pub fn retry(self, config: RetryConfig<E>) -> Self
+
+    /// Inject a sink for pipeline-level timeout / rate-limit / load-shed events.
+    #[must_use]
+    pub fn with_sink(self, sink: impl MetricsSink + 'static) -> Self
 
     /// Add a circuit breaker step. Takes Arc so it can be shared / inspected externally.
     #[must_use]
@@ -138,10 +145,9 @@ retry step receives:
 
 ### `CircuitBreaker` and `Bulkhead` unwrapping
 
-These steps call the remaining pipeline through an `unwrap_inner` shim that maps
-`Ok(v)` and `Err(Operation(e))` to the `Result<T, E>` their `.call()` methods expect.
-Any other `CallError` variant inside a `CircuitBreaker` or `Bulkhead` step is
-**unreachable** in a correctly ordered pipeline (timeout and retry must be outside).
+These steps operate on the shared `CallError<E>` model from the inner pipeline.
+Structural errors such as `CircuitOpen`, `BulkheadFull`, `Timeout`, `RateLimited`,
+and `LoadShed` propagate unchanged rather than being retried as operation failures.
 
 ---
 
@@ -193,7 +199,10 @@ let cb = Arc::new(CircuitBreaker::new(CircuitBreakerConfig {
     ..Default::default()
 })?);
 
-let bh = Arc::new(Bulkhead::new(20));
+let bh = Arc::new(Bulkhead::new(BulkheadConfig {
+    max_concurrency: 20,
+    ..Default::default()
+})?);
 
 let pipeline = ResiliencePipeline::<reqwest::Error>::builder()
     .timeout(Duration::from_secs(10))
@@ -213,7 +222,7 @@ let response = pipeline.call(|| Box::pin(async {
 
 ### Sharing a pipeline across concurrent tasks
 
-`ResiliencePipeline` is `Clone` (internal state is `Arc`):
+Wrap the pipeline in `Arc` when you want to share it across concurrent tasks:
 
 ```rust
 let pipeline = Arc::new(
@@ -237,9 +246,10 @@ use nebula_resilience::sink::{RecordingSink, ResilienceEventKind};
 use nebula_resilience::circuit_breaker::CircuitBreaker;
 use std::sync::Arc;
 
-let sink = Arc::new(RecordingSink::new());
+let sink = RecordingSink::new();
 let cb = Arc::new(
-    CircuitBreaker::with_sink(CircuitBreakerConfig::default(), sink.clone())?
+    CircuitBreaker::new(CircuitBreakerConfig::default())?
+        .with_sink(sink.clone())
 );
 
 // ... run pipeline ...
