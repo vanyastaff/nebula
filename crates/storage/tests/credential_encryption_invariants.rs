@@ -8,6 +8,9 @@ use std::time::Instant;
 use nebula_credential::{
     CryptoError, EncryptedData, EncryptionKey, SecretString, decrypt, encrypt,
 };
+use pretty_assertions::assert_eq;
+use rstest::rstest;
+use serde_json::json;
 
 /// Test: Encrypt secret → decrypt → verify match (roundtrip)
 ///
@@ -40,6 +43,38 @@ fn test_encrypt_decrypt_roundtrip() {
         String::from_utf8(decrypted.to_vec()).unwrap(),
         "my-api-key-12345"
     );
+}
+
+/// Structural snapshot for `EncryptedData`: field sizes and version — no key material.
+#[test]
+fn encrypted_data_shape_snapshot() {
+    let salt = [7u8; 16];
+    let key = EncryptionKey::derive_from_password("snapshot-test", &salt)
+        .expect("key derivation should succeed");
+    let plaintext = b"snap";
+    let encrypted = encrypt(&key, plaintext).expect("encryption should succeed");
+
+    insta::assert_json_snapshot!(json!({
+        "version": encrypted.version,
+        "nonce_len": encrypted.nonce.len(),
+        "tag_len": encrypted.tag.len(),
+        "ciphertext_len": encrypted.ciphertext.len(),
+        "key_id_empty": encrypted.key_id.is_empty(),
+    }));
+}
+
+/// Table-driven KDF + encrypt roundtrip (rstest parametric style).
+#[rstest]
+#[case("a")]
+#[case("long-password-with-unicode-кириллица")]
+fn kdf_roundtrip_parametrized(#[case] password: &str) {
+    let salt = [9u8; 16];
+    let key = EncryptionKey::derive_from_password(password, &salt)
+        .expect("key derivation should succeed");
+    let plaintext = b"payload-bytes";
+    let encrypted = encrypt(&key, plaintext).expect("encryption should succeed");
+    let decrypted = decrypt(&key, &encrypted).expect("decryption should succeed");
+    assert_eq!(decrypted.as_slice(), plaintext);
 }
 
 /// Test: Same password + salt → same key twice (deterministic)

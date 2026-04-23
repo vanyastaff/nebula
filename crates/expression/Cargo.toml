@@ -30,6 +30,9 @@ parking_lot = { workspace = true }
 
 [dev-dependencies]
 criterion = { workspace = true }
+insta = { workspace = true }
+pretty_assertions = { workspace = true }
+rstest = { workspace = true }
 
 [[bench]]
 name = "baseline"

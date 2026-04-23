@@ -38,6 +38,9 @@ chrono = { workspace = true }
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["full"] }
+insta = { workspace = true }
+pretty_assertions = { workspace = true }
+rstest = { workspace = true }
 
 [features]
 default = ["derive", "testing"]

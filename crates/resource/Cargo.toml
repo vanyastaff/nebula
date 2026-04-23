@@ -40,6 +40,9 @@ tracing = { workspace = true }
 [dev-dependencies]
 tokio = { workspace = true, features = ["rt-multi-thread", "test-util"] }
 semver = { workspace = true }
+insta = { workspace = true }
+pretty_assertions = { workspace = true }
+rstest = { workspace = true }
 
 [lints]
 workspace = true

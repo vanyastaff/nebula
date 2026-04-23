@@ -39,5 +39,10 @@ uuid = { workspace = true }
 landlock = "0.4"
 nix = { version = "0.31", features = ["resource"] }
 
+[dev-dependencies]
+insta = { workspace = true }
+pretty_assertions = { workspace = true }
+rstest = { workspace = true }
+
 [lints]
 workspace = true

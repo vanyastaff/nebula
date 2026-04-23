@@ -18,5 +18,10 @@ tracing = { workspace = true }
 dashmap = { workspace = true }
 lasso = { workspace = true }
 
+[dev-dependencies]
+insta = { workspace = true }
+pretty_assertions = { workspace = true }
+rstest = { workspace = true }
+
 [lints]
 workspace = true

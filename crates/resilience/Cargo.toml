@@ -49,6 +49,9 @@ criterion = { workspace = true, features = ["async_tokio", "html_reports"] }
 futures = { workspace = true }
 thiserror = { workspace = true }
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "time"] }
+insta = { workspace = true }
+pretty_assertions = { workspace = true }
+rstest = { workspace = true }
 
 [lints]
 workspace = true

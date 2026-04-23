@@ -60,6 +60,10 @@ futures = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
 # `token_refresh` tests use a loopback `TcpListener` to mock the token endpoint.
 tokio = { workspace = true, features = ["io-util", "net", "rt", "macros"] }
+insta = { workspace = true }
+pretty_assertions = { workspace = true }
+rstest = { workspace = true }
+wiremock = { workspace = true }
 
 [lib]
 doctest = false

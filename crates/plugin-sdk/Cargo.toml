@@ -34,6 +34,9 @@ tokio = { workspace = true, features = [
   "io-util",
   "sync",
 ] }
+insta = { workspace = true }
+pretty_assertions = { workspace = true }
+rstest = { workspace = true }
 
 [[bin]]
 name = "nebula-echo-fixture"

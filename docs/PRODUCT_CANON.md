@@ -457,6 +457,7 @@ This is the **minimum bar** for “we did not break the product direction.” Ex
 | `docs/STYLE.md` | Idioms / antipatterns / naming / error taxonomy / type-design bets. |
 | `docs/GLOSSARY.md` | Terms and architectural patterns (Outbox, WAL, Idempotent Receiver, Bulkhead, Circuit Breaker, OCC). |
 | `docs/MATURITY.md` | Per-crate state dashboard (API stability, test coverage, doc completeness, engine integration, SLI-ready). |
+| `docs/TESTING.md` | Test *tooling* — nextest profiles, insta / wiremock / mockall / assert_cmd / rstest, security notes for snapshots near credentials. |
 | `docs/dev-setup.md` | Local dev environment setup. |
 | `docs/ENGINE_GUARANTEES.md` | Operator-facing guarantees narrative (satellite of §11). |
 | `docs/UPGRADE_COMPAT.md` | Engine upgrade and workflow compatibility rules (satellite of §7.2). |

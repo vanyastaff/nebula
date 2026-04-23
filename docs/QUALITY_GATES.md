@@ -66,6 +66,8 @@ Do **not** duplicate those knobs elsewhere — extend them in place and update t
 | `cargo quality` | `fmt --check` + `clippy -D warnings` + all `xtask` checks. |
 | `cargo precommit` | `cargo quality` + `cargo nextest run --workspace --profile ci --no-tests=pass` (full — use CI or narrow locally when iterating). |
 
+**Test libraries and nextest profiles** (not a mechanical gate) are described in `docs/TESTING.md`.
+
 **Pre-commit / push:** `lefthook.yml` runs fast gates; full `cargo quality` is mirrored in **`.github/workflows/quality.yml`** on PRs.
 
 ## How to add a new gate

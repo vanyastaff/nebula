@@ -293,7 +293,7 @@ version = "1.1.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "40c48f72fd53cd289104fc64099abca73db4166ad86ea0b4341abe65af83dadc"
 dependencies = [
- "windows-sys 0.60.2",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -304,7 +304,7 @@ checksum = "291e6a250ff86cd4a820112fb8898808a366d8f9f58ce16d1f538353ad55747d"
 dependencies = [
  "anstyle",
  "once_cell_polyfill",
- "windows-sys 0.60.2",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -347,6 +347,46 @@ dependencies = [
  "blake2",
  "cpufeatures 0.2.17",
  "password-hash",
+]
+
+[[package]]
+name = "assert-json-diff"
+version = "2.0.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "47e4f2b81832e72834d7518d8487a0396a28cc408186a2e8854c0f98011faf12"
+dependencies = [
+ "serde",
+ "serde_json",
+]
+
+[[package]]
+name = "assert_cmd"
+version = "2.2.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "39bae1d3fa576f7c6519514180a72559268dd7d1fe104070956cb687bc6673bd"
+dependencies = [
+ "anstyle",
+ "bstr",
+ "libc",
+ "predicates",
+ "predicates-core",
+ "predicates-tree",
+ "wait-timeout",
+]
+
+[[package]]
+name = "assert_fs"
+version = "1.1.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a652f6cb1f516886fcfee5e7a5c078b9ade62cfcb889524efe5a64d682dd27a9"
+dependencies = [
+ "anstyle",
+ "doc-comment",
+ "globwalk",
+ "predicates",
+ "predicates-core",
+ "predicates-tree",
+ "tempfile",
 ]
 
 [[package]]
@@ -1090,6 +1130,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "bstr"
+version = "1.12.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "63044e1ae8e69f3b5a92c736ca6269b8d12fa7efe39bf34ddb06d102cf0e2cab"
+dependencies = [
+ "memchr",
+ "regex-automata",
+ "serde",
+]
+
+[[package]]
 name = "bumpalo"
 version = "3.20.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1377,7 +1428,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "117725a109d387c937a1533ce01b450cbde6b88abceea8473c4d7a85853cda3c"
 dependencies = [
  "lazy_static",
- "windows-sys 0.48.0",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -1435,6 +1486,17 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "4ca0197aee26d1ae37445ee532fefce43251d24cc7c166799f4d46817f1d3973"
 dependencies = [
  "crossbeam-utils",
+]
+
+[[package]]
+name = "console"
+version = "0.16.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d64e8af5551369d19cf50138de61f1c42074ab970f74e99be916646777f8fc87"
+dependencies = [
+ "encode_unicode",
+ "libc",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -1797,6 +1859,24 @@ dependencies = [
 ]
 
 [[package]]
+name = "deadpool"
+version = "0.12.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "0be2b1d1d6ec8d846f05e137292d0b89133caf95ef33695424c09568bdd39b1b"
+dependencies = [
+ "deadpool-runtime",
+ "lazy_static",
+ "num_cpus",
+ "tokio",
+]
+
+[[package]]
+name = "deadpool-runtime"
+version = "0.1.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "092966b41edc516079bdf31ec78a2e0588d1d0c08f78b91d8307215928642b2b"
+
+[[package]]
 name = "debugid"
 version = "0.8.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1907,6 +1987,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "diff"
+version = "0.1.13"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "56254986775e3233ffa9c4d7d3faaf6d36a2c09d30b20687e9f88bc8bafc16c8"
+
+[[package]]
+name = "difflib"
+version = "0.4.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "6184e33543162437515c2e2b48714794e37845ec9851711914eec9d308f6ebe8"
+
+[[package]]
 name = "digest"
 version = "0.10.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1957,7 +2049,7 @@ dependencies = [
  "libc",
  "option-ext",
  "redox_users",
- "windows-sys 0.60.2",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -1980,6 +2072,12 @@ dependencies = [
  "quote",
  "syn 2.0.117",
 ]
+
+[[package]]
+name = "doc-comment"
+version = "0.3.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "780955b8b195a21ab8e4ac6b60dd1dbdcec1dc6c51c0617964b08c81785e12c9"
 
 [[package]]
 name = "document-features"
@@ -2010,6 +2108,12 @@ name = "dotenvy"
 version = "0.15.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1aaf95b3e5c8f23aa320147307562d361db0ae0d51242340f558153b4eb2439b"
+
+[[package]]
+name = "downcast"
+version = "0.11.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1435fa1053d8b2fbbe9be7e97eca7f33d37b28409959813daefc1446a14247f1"
 
 [[package]]
 name = "dunce"
@@ -2124,6 +2228,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "encode_unicode"
+version = "1.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "34aa73646ffb006b8f5147f3dc182bd4bcb190227ce861fc4a4844bf8e3cb2c0"
+
+[[package]]
 name = "encoding_rs"
 version = "0.8.35"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2165,7 +2275,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "39cab71617ae0d63f51a36d69f866391735b51691dbda63cf6f96d042b63efeb"
 dependencies = [
  "libc",
- "windows-sys 0.60.2",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -2323,6 +2433,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "float-cmp"
+version = "0.10.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b09cf3155332e944990140d967ff5eceb70df778b34f77d8075db46e4704e6d8"
+dependencies = [
+ "num-traits",
+]
+
+[[package]]
 name = "flume"
 version = "0.11.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2373,6 +2492,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "cb4cb245038516f5f85277875cdaa4f7d2c9a0fa0468de06ed190163b1581fcf"
 dependencies = [
  "percent-encoding",
+]
+
+[[package]]
+name = "fragile"
+version = "2.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "8878864ba14bb86e818a412bfd6f18f9eabd4ec0f008a28e8f7eb61db532fcf9"
+dependencies = [
+ "futures-core",
 ]
 
 [[package]]
@@ -2583,6 +2711,30 @@ name = "glob"
 version = "0.3.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0cc23270f6e1808e30a928bdc84dea0b9b4136a8bc82338574f23baf47bbd280"
+
+[[package]]
+name = "globset"
+version = "0.4.18"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "52dfc19153a48bde0cbd630453615c8151bce3a5adfac7a0aebfbf0a1e1f57e3"
+dependencies = [
+ "aho-corasick",
+ "bstr",
+ "log",
+ "regex-automata",
+ "regex-syntax",
+]
+
+[[package]]
+name = "globwalk"
+version = "0.9.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "0bf760ebf69878d9fd8f110c89703d90ce35095324d1f1edcb595c63945ee757"
+dependencies = [
+ "bitflags 2.11.1",
+ "ignore",
+ "walkdir",
+]
 
 [[package]]
 name = "governor"
@@ -3093,6 +3245,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "ignore"
+version = "0.4.25"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d3d782a365a015e0f5c04902246139249abf769125006fbe7649e2ee88169b4a"
+dependencies = [
+ "crossbeam-deque",
+ "globset",
+ "log",
+ "memchr",
+ "regex-automata",
+ "same-file",
+ "walkdir",
+ "winapi-util",
+]
+
+[[package]]
 name = "impl-more"
 version = "0.1.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3155,6 +3323,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "insta"
+version = "1.47.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7b4a6248eb93a4401ed2f37dfe8ea592d3cf05b7cf4f8efa867b6895af7e094e"
+dependencies = [
+ "console",
+ "once_cell",
+ "pest",
+ "pest_derive",
+ "serde",
+ "similar",
+ "tempfile",
+]
+
+[[package]]
 name = "instability"
 version = "0.3.12"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3191,7 +3374,7 @@ checksum = "3640c1c38b8e4e43584d8df18be5fc6b0aa314ce6ebf51b53313d4306cca8e46"
 dependencies = [
  "hermit-abi",
  "libc",
- "windows-sys 0.60.2",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -3605,6 +3788,32 @@ dependencies = [
 ]
 
 [[package]]
+name = "mockall"
+version = "0.13.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "39a6bfcc6c8c7eed5ee98b9c3e33adc726054389233e201c95dab2d41a3839d2"
+dependencies = [
+ "cfg-if",
+ "downcast",
+ "fragile",
+ "mockall_derive",
+ "predicates",
+ "predicates-tree",
+]
+
+[[package]]
+name = "mockall_derive"
+version = "0.13.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "25ca3004c2efe9011bd4e461bd8256445052b9615405b4f7ea43fc8ca5c20898"
+dependencies = [
+ "cfg-if",
+ "proc-macro2",
+ "quote",
+ "syn 2.0.117",
+]
+
+[[package]]
 name = "moka"
 version = "0.12.15"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3653,6 +3862,7 @@ dependencies = [
  "hex",
  "hmac 0.13.0",
  "http 1.4.0",
+ "insta",
  "nebula-action-macros",
  "nebula-core",
  "nebula-credential",
@@ -3661,6 +3871,8 @@ dependencies = [
  "nebula-resource",
  "nebula-schema",
  "parking_lot",
+ "pretty_assertions",
+ "rstest",
  "semver",
  "serde",
  "serde_json",
@@ -3698,7 +3910,9 @@ dependencies = [
  "governor",
  "hex",
  "hmac 0.13.0",
+ "insta",
  "jsonwebtoken",
+ "mockall",
  "moka",
  "nebula-action",
  "nebula-api",
@@ -3715,8 +3929,10 @@ dependencies = [
  "nebula-telemetry",
  "nebula-validator",
  "nebula-workflow",
+ "pretty_assertions",
  "rand 0.10.1",
  "reqwest 0.13.2",
+ "rstest",
  "serde",
  "serde_json",
  "sha2 0.11.0",
@@ -3729,6 +3945,7 @@ dependencies = [
  "tracing-subscriber",
  "url",
  "uuid",
+ "wiremock",
  "zeroize",
 ]
 
@@ -3737,6 +3954,7 @@ name = "nebula-cli"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "assert_cmd",
  "chrono",
  "clap",
  "clap_complete",
@@ -3754,6 +3972,7 @@ dependencies = [
  "nebula-telemetry",
  "nebula-workflow",
  "notify",
+ "predicates",
  "ratatui",
  "serde",
  "serde_json",
@@ -3773,7 +3992,10 @@ dependencies = [
  "chrono",
  "codspeed-criterion-compat",
  "domain-key",
+ "insta",
  "nebula-error",
+ "pretty_assertions",
+ "rstest",
  "serde",
  "serde_json",
  "thiserror 2.0.18",
@@ -3794,7 +4016,9 @@ dependencies = [
  "domain-key",
  "futures",
  "humantime-serde",
+ "insta",
  "lru",
+ "mockall",
  "nebula-core",
  "nebula-credential-macros",
  "nebula-error",
@@ -3803,8 +4027,10 @@ dependencies = [
  "nebula-resilience",
  "nebula-schema",
  "parking_lot",
+ "pretty_assertions",
  "rand 0.10.1",
  "reqwest 0.13.2",
+ "rstest",
  "scopeguard",
  "semver",
  "serde",
@@ -3817,6 +4043,7 @@ dependencies = [
  "tracing-subscriber",
  "url",
  "uuid",
+ "wiremock",
  "zeroize",
 ]
 
@@ -3838,6 +4065,7 @@ dependencies = [
  "chrono",
  "dashmap",
  "futures",
+ "insta",
  "nebula-action",
  "nebula-core",
  "nebula-credential",
@@ -3854,8 +4082,10 @@ dependencies = [
  "nebula-storage",
  "nebula-telemetry",
  "nebula-workflow",
+ "pretty_assertions",
  "rand 0.10.1",
  "reqwest 0.13.2",
+ "rstest",
  "scopeguard",
  "semver",
  "serde",
@@ -3864,6 +4094,7 @@ dependencies = [
  "tokio",
  "tokio-util",
  "tracing",
+ "wiremock",
  "zeroize",
 ]
 
@@ -3871,7 +4102,10 @@ dependencies = [
 name = "nebula-error"
 version = "0.1.0"
 dependencies = [
+ "insta",
  "nebula-error-macros",
+ "pretty_assertions",
+ "rstest",
  "serde",
  "serde_json",
  "thiserror 2.0.18",
@@ -3892,7 +4126,10 @@ version = "0.1.0"
 dependencies = [
  "codspeed-criterion-compat",
  "futures-core",
+ "insta",
  "parking_lot",
+ "pretty_assertions",
+ "rstest",
  "tokio",
  "tokio-stream",
  "tracing",
@@ -3919,9 +4156,12 @@ name = "nebula-execution"
 version = "0.1.0"
 dependencies = [
  "chrono",
+ "insta",
  "nebula-core",
  "nebula-error",
  "nebula-workflow",
+ "pretty_assertions",
+ "rstest",
  "serde",
  "serde_json",
  "thiserror 2.0.18",
@@ -3933,11 +4173,14 @@ version = "0.1.0"
 dependencies = [
  "chrono",
  "codspeed-criterion-compat",
+ "insta",
  "moka",
  "nebula-error",
  "nebula-log",
  "parking_lot",
+ "pretty_assertions",
  "regex",
+ "rstest",
  "serde",
  "serde_json",
  "thiserror 2.0.18",
@@ -3952,12 +4195,15 @@ dependencies = [
  "arc-swap",
  "codspeed-criterion-compat",
  "flate2",
+ "insta",
  "nebula-error",
  "opentelemetry",
  "opentelemetry-otlp",
  "opentelemetry_sdk",
  "parking_lot",
  "pin-project",
+ "pretty_assertions",
+ "rstest",
  "sentry",
  "sentry-tracing",
  "serde",
@@ -3988,9 +4234,12 @@ dependencies = [
 name = "nebula-metadata"
 version = "0.1.0"
 dependencies = [
+ "insta",
  "nebula-core",
  "nebula-error",
  "nebula-schema",
+ "pretty_assertions",
+ "rstest",
  "semver",
  "serde",
  "serde_json",
@@ -4001,8 +4250,11 @@ dependencies = [
 name = "nebula-metrics"
 version = "0.1.0"
 dependencies = [
+ "insta",
  "nebula-eventbus",
  "nebula-telemetry",
+ "pretty_assertions",
+ "rstest",
  "tracing",
 ]
 
@@ -4010,6 +4262,7 @@ dependencies = [
 name = "nebula-plugin"
 version = "0.1.0"
 dependencies = [
+ "insta",
  "nebula-action",
  "nebula-core",
  "nebula-credential",
@@ -4018,6 +4271,8 @@ dependencies = [
  "nebula-plugin-macros",
  "nebula-resource",
  "nebula-schema",
+ "pretty_assertions",
+ "rstest",
  "semver",
  "thiserror 2.0.18",
 ]
@@ -4038,8 +4293,11 @@ name = "nebula-plugin-sdk"
 version = "0.1.0"
 dependencies = [
  "async-trait",
+ "insta",
  "nebula-metadata",
  "nebula-schema",
+ "pretty_assertions",
+ "rstest",
  "semver",
  "serde",
  "serde_json",
@@ -4058,9 +4316,12 @@ dependencies = [
  "futures",
  "governor",
  "humantime-serde",
+ "insta",
  "loom",
  "nebula-error",
  "parking_lot",
+ "pretty_assertions",
+ "rstest",
  "serde",
  "smallvec",
  "thiserror 2.0.18",
@@ -4075,6 +4336,7 @@ version = "0.1.0"
 dependencies = [
  "arc-swap",
  "dashmap",
+ "insta",
  "nebula-core",
  "nebula-credential",
  "nebula-error",
@@ -4084,6 +4346,8 @@ dependencies = [
  "nebula-resource-macros",
  "nebula-schema",
  "nebula-telemetry",
+ "pretty_assertions",
+ "rstest",
  "semver",
  "smallvec",
  "thiserror 2.0.18",
@@ -4110,12 +4374,15 @@ dependencies = [
  "async-trait",
  "codspeed-criterion-compat",
  "dashmap",
+ "insta",
  "nebula-action",
  "nebula-core",
  "nebula-error",
  "nebula-metrics",
  "nebula-sandbox",
  "nebula-telemetry",
+ "pretty_assertions",
+ "rstest",
  "semver",
  "serde",
  "serde_json",
@@ -4131,6 +4398,7 @@ name = "nebula-sandbox"
 version = "0.1.0"
 dependencies = [
  "async-trait",
+ "insta",
  "landlock",
  "nebula-action",
  "nebula-core",
@@ -4141,6 +4409,8 @@ dependencies = [
  "nebula-resource",
  "nebula-schema",
  "nix 0.31.2",
+ "pretty_assertions",
+ "rstest",
  "semver",
  "serde",
  "serde_json",
@@ -4162,11 +4432,14 @@ dependencies = [
  "codspeed-criterion-compat",
  "hex",
  "indexmap",
+ "insta",
  "nebula-expression",
  "nebula-schema-macros",
  "nebula-validator",
+ "pretty_assertions",
  "proptest",
  "regex",
+ "rstest",
  "schemars",
  "serde",
  "serde_json",
@@ -4194,6 +4467,7 @@ name = "nebula-sdk"
 version = "0.1.0"
 dependencies = [
  "chrono",
+ "insta",
  "nebula-action",
  "nebula-core",
  "nebula-credential",
@@ -4202,6 +4476,8 @@ dependencies = [
  "nebula-schema",
  "nebula-validator",
  "nebula-workflow",
+ "pretty_assertions",
+ "rstest",
  "serde",
  "serde_json",
  "thiserror 2.0.18",
@@ -4213,17 +4489,21 @@ dependencies = [
 name = "nebula-storage"
 version = "0.1.0"
 dependencies = [
+ "assert_fs",
  "async-trait",
  "aws-config",
  "aws-sdk-s3",
  "base64",
  "chrono",
  "hex",
+ "insta",
  "moka",
  "nebula-core",
  "nebula-credential",
+ "pretty_assertions",
  "redis",
  "rmp-serde",
+ "rstest",
  "serde",
  "serde_json",
  "sha2 0.11.0",
@@ -4240,9 +4520,12 @@ name = "nebula-system"
 version = "0.1.0"
 dependencies = [
  "codspeed-criterion-compat",
+ "insta",
  "libc",
  "nebula-error",
  "parking_lot",
+ "pretty_assertions",
+ "rstest",
  "serde",
  "serde_json",
  "sysinfo",
@@ -4254,8 +4537,11 @@ name = "nebula-telemetry"
 version = "0.1.0"
 dependencies = [
  "dashmap",
+ "insta",
  "lasso",
  "nebula-error",
+ "pretty_assertions",
+ "rstest",
  "thiserror 2.0.18",
  "tracing",
 ]
@@ -4265,10 +4551,13 @@ name = "nebula-validator"
 version = "0.1.0"
 dependencies = [
  "codspeed-criterion-compat",
+ "insta",
  "nebula-error",
  "nebula-validator-macros",
+ "pretty_assertions",
  "proptest",
  "regex",
+ "rstest",
  "serde",
  "serde_json",
  "smallvec",
@@ -4292,9 +4581,12 @@ name = "nebula-workflow"
 version = "0.1.0"
 dependencies = [
  "chrono",
+ "insta",
  "nebula-core",
  "nebula-error",
  "petgraph",
+ "pretty_assertions",
+ "rstest",
  "semver",
  "serde",
  "serde_json",
@@ -4361,6 +4653,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "38bf9645c8b145698bb0b18a4637dcacbc421ea49bef2317e4fd8065a387cf21"
 
 [[package]]
+name = "normalize-line-endings"
+version = "0.3.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "61807f77802ff30975e01f4f071c8ba10c022052f98b3294119f3e615d13e5be"
+
+[[package]]
 name = "notify"
 version = "8.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4402,7 +4700,7 @@ version = "0.50.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7957b9740744892f114936ab4a57b3f487491bbeafaf8083688b16841a4240e5"
 dependencies = [
- "windows-sys 0.60.2",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -4476,6 +4774,16 @@ checksum = "071dfc062690e90b734c0b2273ce72ad0ffa95f0c74596bc250dcfd960262841"
 dependencies = [
  "autocfg",
  "libm",
+]
+
+[[package]]
+name = "num_cpus"
+version = "1.17.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "91df4bbde75afed763b708b7eee1e8e7651e02d97f6d5dd763e89367e957b23b"
+dependencies = [
+ "hermit-abi",
+ "libc",
 ]
 
 [[package]]
@@ -5231,6 +5539,46 @@ dependencies = [
 ]
 
 [[package]]
+name = "predicates"
+version = "3.1.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ada8f2932f28a27ee7b70dd6c1c39ea0675c55a36879ab92f3a715eaa1e63cfe"
+dependencies = [
+ "anstyle",
+ "difflib",
+ "float-cmp",
+ "normalize-line-endings",
+ "predicates-core",
+ "regex",
+]
+
+[[package]]
+name = "predicates-core"
+version = "1.0.10"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "cad38746f3166b4031b1a0d39ad9f954dd291e7854fcc0eed52ee41a0b50d144"
+
+[[package]]
+name = "predicates-tree"
+version = "1.0.13"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d0de1b847b39c8131db0467e9df1ff60e6d0562ab8e9a16e568ad0fdb372e2f2"
+dependencies = [
+ "predicates-core",
+ "termtree",
+]
+
+[[package]]
+name = "pretty_assertions"
+version = "1.4.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "3ae130e2f271fbc2ac3a40fb1d07180839cdbbe443c7a27e1e3c13c5cac0116d"
+dependencies = [
+ "diff",
+ "yansi",
+]
+
+[[package]]
 name = "prettyplease"
 version = "0.2.37"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5739,6 +6087,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "dc897dd8d9e8bd1ed8cdad82b5966c3e0ecae09fb1907d58efaa013543185d0a"
 
 [[package]]
+name = "relative-path"
+version = "1.9.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ba39f3699c378cd8970968dcbff9c43159ea4cfbd88d43c00b22f2ef10a435d2"
+
+[[package]]
 name = "reqwest"
 version = "0.12.28"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5905,6 +6259,36 @@ dependencies = [
 ]
 
 [[package]]
+name = "rstest"
+version = "0.24.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "03e905296805ab93e13c1ec3a03f4b6c4f35e9498a3d5fa96dc626d22c03cd89"
+dependencies = [
+ "futures-timer",
+ "futures-util",
+ "rstest_macros",
+ "rustc_version",
+]
+
+[[package]]
+name = "rstest_macros"
+version = "0.24.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ef0053bbffce09062bee4bcc499b0fbe7a57b879f1efe088d6d8d4c7adcdef9b"
+dependencies = [
+ "cfg-if",
+ "glob",
+ "proc-macro-crate",
+ "proc-macro2",
+ "quote",
+ "regex",
+ "relative-path",
+ "rustc_version",
+ "syn 2.0.117",
+ "unicode-ident",
+]
+
+[[package]]
 name = "rustc-demangle"
 version = "0.1.27"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5935,7 +6319,7 @@ dependencies = [
  "errno",
  "libc",
  "linux-raw-sys",
- "windows-sys 0.60.2",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -5992,7 +6376,7 @@ dependencies = [
  "security-framework",
  "security-framework-sys",
  "webpki-root-certs",
- "windows-sys 0.60.2",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -6506,6 +6890,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "703d5c7ef118737c72f1af64ad2f6f8c5e1921f818cdcb97b8fe6fc69bf66214"
 
 [[package]]
+name = "similar"
+version = "2.7.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "bbbb5d9659141646ae647b42fe094daf6c6192d1620870b449d9557f748b2daa"
+
+[[package]]
 name = "simple_asn1"
 version = "0.6.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -6567,7 +6957,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "3a766e1110788c36f4fa1c2b71b387a7815aa65f88ce0229841826633d93723e"
 dependencies = [
  "libc",
- "windows-sys 0.60.2",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -6955,7 +7345,7 @@ dependencies = [
  "getrandom 0.4.2",
  "once_cell",
  "rustix",
- "windows-sys 0.60.2",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -6974,7 +7364,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "230a1b821ccbd75b185820a1f1ff7b14d21da1e442e22c0863ea5f08771a8874"
 dependencies = [
  "rustix",
- "windows-sys 0.60.2",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -6997,6 +7387,12 @@ checksum = "411c5bf740737c7918b8b1fe232dca4dc9f8e754b8ad5e20966814001ed0ac6b"
 dependencies = [
  "libc",
 ]
+
+[[package]]
+name = "termtree"
+version = "0.5.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "8f50febec83f5ee1df3015341d8bd429f2d1cc62bcba7ea2076759d315084683"
 
 [[package]]
 name = "termwiz"
@@ -8069,7 +8465,7 @@ version = "0.1.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c2a7b1c03c876122aa43f3020e6c3c3ee5c05081c9a00739faf7503aeba10d22"
 dependencies = [
- "windows-sys 0.48.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -8492,6 +8888,29 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "09dac053f1cd375980747450bfc7250c264eaae0583872e845c0c7cd578872b5"
 dependencies = [
  "memchr",
+]
+
+[[package]]
+name = "wiremock"
+version = "0.6.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "08db1edfb05d9b3c1542e521aea074442088292f00b5f28e435c714a98f85031"
+dependencies = [
+ "assert-json-diff",
+ "base64",
+ "deadpool",
+ "futures",
+ "http 1.4.0",
+ "http-body-util",
+ "hyper",
+ "hyper-util",
+ "log",
+ "once_cell",
+ "regex",
+ "serde",
+ "serde_json",
+ "tokio",
+ "url",
 ]
 
 [[package]]
