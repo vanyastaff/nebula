@@ -91,7 +91,7 @@ mod tests {
     use super::*;
 
     fn test_key() -> IdempotencyKey {
-        IdempotencyKey::generate(ExecutionId::new(), node_key!("test"), 0)
+        IdempotencyKey::for_attempt(ExecutionId::new(), node_key!("test"), 0)
     }
 
     #[test]

@@ -29,6 +29,23 @@ use super::{
     registry::ActionRegistry,
 };
 
+/// Compute a digest of the erased stateful state for stuck-state detection.
+///
+/// The runtime sees `state` as `serde_json::Value` — not `Hash`, but always
+/// serialisable. We route through `serde_json::to_vec` and hash the bytes.
+/// Errors collapse to `0` so the guard reduces to "assume the iteration
+/// progressed" on unserialisable state — an author who manages to hold an
+/// unserialisable `Value` has bigger problems than stuck detection.
+fn stateful_state_digest(state: &serde_json::Value) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    match serde_json::to_vec(state) {
+        Ok(bytes) => bytes.hash(&mut hasher),
+        Err(_) => 0u8.hash(&mut hasher),
+    }
+    hasher.finish()
+}
+
 /// Persisted iteration state for a stateful action.
 ///
 /// Emitted by the runtime after every `Continue` before looping, consumed
@@ -537,6 +554,12 @@ impl ActionRuntime {
                 return Err(ActionError::Cancelled);
             }
 
+            // Spec 28 §9.0 stuck-state guard. Serialize state before the
+            // iteration so we can detect infinite loops: if `Continue`
+            // returns with byte-identical state, the handler did not move
+            // the cursor — converting silent hangs into an explicit Fatal.
+            let state_digest_before = stateful_state_digest(&state);
+
             // Race handler.execute against cancellation (#304). A stuck
             // handler future dropped here aborts its work at the next
             // .await point — this is the whole point of the fix.
@@ -563,6 +586,21 @@ impl ActionRuntime {
 
             match result {
                 ActionResult::Continue { delay, .. } => {
+                    // Stuck-state detection (spec 28 §9.0): a `Continue` that
+                    // did not mutate the checkpoint is an infinite loop.
+                    // Happens in practice when an author forgets to advance
+                    // a cursor / page number. Converting it to a Fatal here
+                    // short-circuits the hang so retry/error routing can
+                    // handle it like any other terminal failure.
+                    let state_digest_after = stateful_state_digest(&state);
+                    if state_digest_before == state_digest_after {
+                        return Err(ActionError::fatal(format!(
+                            "stateful action '{}' returned Continue without mutating state at \
+                             iteration {iteration} — refusing to loop indefinitely",
+                            metadata.base.key.as_str()
+                        )));
+                    }
+
                     // Persist the new state BEFORE sleeping. If the
                     // process dies during the delay, the next dispatch
                     // resumes from this iteration boundary — not from

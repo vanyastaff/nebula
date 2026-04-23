@@ -254,7 +254,7 @@ impl ExecutionState {
             .node_states
             .get(&node_key)
             .map_or(1, |ns| ns.attempt_count().max(1) as u32);
-        IdempotencyKey::generate(self.execution_id, node_key, attempt)
+        IdempotencyKey::for_attempt(self.execution_id, node_key, attempt)
     }
 
     /// Set a node's execution state directly.
@@ -787,22 +787,22 @@ mod tests {
         let fresh = state.idempotency_key_for_node(n1.clone());
         assert_eq!(
             fresh,
-            IdempotencyKey::generate(eid, n1.clone(), 1),
+            IdempotencyKey::for_attempt(eid, n1.clone(), 1),
             "a node with no attempts should key on attempt=1 (first dispatch)"
         );
 
         let ns = state.node_states.get_mut(&n1).unwrap();
-        let seed_key = IdempotencyKey::generate(eid, n1.clone(), 1);
+        let seed_key = IdempotencyKey::for_attempt(eid, n1.clone(), 1);
         ns.attempts.push(NodeAttempt::new(0, seed_key));
         ns.attempts.push(NodeAttempt::new(
             1,
-            IdempotencyKey::generate(eid, n1.clone(), 2),
+            IdempotencyKey::for_attempt(eid, n1.clone(), 2),
         ));
 
         let after_two = state.idempotency_key_for_node(n1.clone());
         assert_eq!(
             after_two,
-            IdempotencyKey::generate(eid, n1, 2),
+            IdempotencyKey::for_attempt(eid, n1, 2),
             "a node with two prior attempts should key on attempt=2"
         );
     }
@@ -816,6 +816,6 @@ mod tests {
         let eid = state.execution_id;
 
         let key = state.idempotency_key_for_node(phantom.clone());
-        assert_eq!(key, IdempotencyKey::generate(eid, phantom, 1));
+        assert_eq!(key, IdempotencyKey::for_attempt(eid, phantom, 1));
     }
 }

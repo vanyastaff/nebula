@@ -75,6 +75,25 @@ pub trait StatefulAction: Action {
         state: &mut Self::State,
         ctx: &(impl ActionContext + ?Sized),
     ) -> impl Future<Output = Result<ActionResult<Self::Output>, ActionError>> + Send;
+
+    /// Optional business idempotency key derived from the current state.
+    ///
+    /// When set, the engine appends this to the per-iteration idempotency
+    /// key — external systems (payment gateways, ticketing APIs, ...) can
+    /// dedup on the author's own notion of identity (invoice ID, job ID,
+    /// ...) instead of relying on the synthetic `{exe}:{node}:{iter}:{att}`
+    /// envelope.
+    ///
+    /// Default: `None` — engine uses the iteration counter alone, which is
+    /// sufficient for workflows with no external side effects.
+    ///
+    /// Called by the engine **before** `execute` for every iteration, so it
+    /// sees the state the action is about to read. If the business key
+    /// should reflect post-iteration identity, derive it inside `execute`
+    /// and stash it in the state before returning `Continue`.
+    fn idempotency_key(&self, _state: &Self::State) -> Option<String> {
+        None
+    }
 }
 
 // ── PaginatedAction ─────────────────────────────────────────────────────────
