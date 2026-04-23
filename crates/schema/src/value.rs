@@ -156,17 +156,55 @@ impl<'de> Deserialize<'de> for FieldValue {
     }
 }
 
+/// Returns `true` only when `text` contains at least one `{{ … }}` pair that
+/// has a `$` sigil somewhere between the opening `{{` and the closing `}}`.
+///
+/// Rules:
+/// - Four consecutive braces (`{{{{`) are the escape sequence for a literal `{{`; they are skipped
+///   without triggering detection.
+/// - A `{{` with no matching `}}` never counts as an expression marker.
+/// - A `{{ … }}` pair without a `$` between the delimiters is NOT an expression (e.g. `"use {{ and
+///   }} in templates"`).
 fn contains_expression_marker(text: &str) -> bool {
     let bytes = text.as_bytes();
+    let len = bytes.len();
     let mut i = 0;
-    while i + 1 < bytes.len() {
-        if bytes[i] == b'{' && bytes[i + 1] == b'{' {
-            if i + 3 < bytes.len() && bytes[i + 2] == b'{' && bytes[i + 3] == b'{' {
-                i += 4;
-                continue;
-            }
-            return true;
+    while i + 1 < len {
+        // Skip `{{{{` escape — represents a literal `{{`.
+        if bytes[i] == b'{'
+            && bytes[i + 1] == b'{'
+            && i + 3 < len
+            && bytes[i + 2] == b'{'
+            && bytes[i + 3] == b'{'
+        {
+            i += 4;
+            continue;
         }
+
+        if bytes[i] == b'{' && bytes[i + 1] == b'{' {
+            // Found `{{` — look for the matching `}}`.
+            let start_inner = i + 2;
+            let mut j = start_inner;
+            while j + 1 < len {
+                if bytes[j] == b'}' && bytes[j + 1] == b'}' {
+                    // Found `}}` — check for `$` in the interior.
+                    let interior = &bytes[start_inner..j];
+                    if interior.contains(&b'$') {
+                        return true;
+                    }
+                    // No `$` — this pair is not an expression; resume after `}}`.
+                    i = j + 2;
+                    break;
+                }
+                j += 1;
+            }
+            if j + 1 >= len {
+                // No closing `}}` found — not an expression.
+                break;
+            }
+            continue;
+        }
+
         i += 1;
     }
     false
@@ -492,6 +530,49 @@ mod tests {
     #[test]
     fn detects_inline_expression_marker() {
         let v = FieldValue::from_json(json!("hello {{ $y }}"));
+        assert!(matches!(v, FieldValue::Expression(_)));
+    }
+
+    // ── contains_expression_marker edge cases ────────────────────────────────
+
+    #[test]
+    fn no_dollar_in_braces_stays_literal() {
+        // `{{ world }}` has no `$` → should be treated as a literal string.
+        let v = FieldValue::from_json(json!("hello {{ world }}"));
+        assert!(matches!(v, FieldValue::Literal(_)));
+    }
+
+    #[test]
+    fn multi_dollar_expr_is_expression() {
+        // Both `$a` and `$b` are present → expression.
+        let v = FieldValue::from_json(json!("{{ $a }} and {{ $b }}"));
+        assert!(matches!(v, FieldValue::Expression(_)));
+    }
+
+    #[test]
+    fn unclosed_braces_stays_literal() {
+        // Opening `{{` but no closing `}}` → literal.
+        let v = FieldValue::from_json(json!("text with {{ but no close"));
+        assert!(matches!(v, FieldValue::Literal(_)));
+    }
+
+    #[test]
+    fn plain_text_stays_literal() {
+        let v = FieldValue::from_json(json!("plain text"));
+        assert!(matches!(v, FieldValue::Literal(_)));
+    }
+
+    #[test]
+    fn braces_with_no_dollar_stays_literal_new_heuristic() {
+        // `{{ no_dollar }}` — balanced braces but no `$` → literal.
+        let v = FieldValue::from_json(json!("{{ no_dollar }}"));
+        assert!(matches!(v, FieldValue::Literal(_)));
+    }
+
+    #[test]
+    fn expr_wrapper_still_works() {
+        // `$expr` wrapper is unconditional and must not be changed.
+        let v = FieldValue::from_json(json!({"$expr": "anything"}));
         assert!(matches!(v, FieldValue::Expression(_)));
     }
 

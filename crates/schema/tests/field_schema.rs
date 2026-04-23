@@ -75,15 +75,14 @@ fn schema_add_and_find_work() {
 }
 
 #[test]
-#[allow(deprecated)]
-fn schema_add_replaces_duplicate_key() {
-    let schema = Schema::new()
+fn schema_builder_rejects_duplicate_key() {
+    let result = Schema::builder()
         .add(Field::string("name").min_length(2))
-        .add(Field::string("name").min_length(10));
+        .add(Field::string("name").min_length(10))
+        .build();
 
-    assert_eq!(schema.len(), 1);
-    let name = schema.find("name").expect("name field exists");
-    assert_eq!(name.rules().len(), 1);
+    let err = result.expect_err("duplicate key should cause build to fail");
+    assert!(err.errors().any(|e| e.code == "duplicate_key"));
 }
 
 #[test]

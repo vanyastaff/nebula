@@ -50,50 +50,6 @@ impl Schema {
         SchemaBuilder::default()
     }
 
-    /// Create an empty schema.
-    ///
-    /// Prefer [`Schema::builder`] + [`SchemaBuilder::build`] for runtime use.
-    /// `Schema` is an authoring container; `ValidSchema` is the validated
-    /// runtime contract.
-    #[deprecated(
-        since = "0.1.0",
-        note = "use Schema::builder() for schema construction and SchemaBuilder::build() for runtime validation"
-    )]
-    #[must_use]
-    pub fn new() -> Self {
-        Self::default()
-    }
-
-    /// Add field and return updated schema.
-    ///
-    /// If a field with the same key already exists it is replaced.
-    ///
-    /// Prefer [`SchemaBuilder::add`] for strict duplicate-key diagnostics
-    /// (`duplicate_key`) at build time.
-    #[deprecated(
-        since = "0.1.0",
-        note = "use SchemaBuilder::add() and build() to enforce structural diagnostics"
-    )]
-    #[expect(
-        clippy::should_implement_trait,
-        reason = "builder API mirrors existing add-style schema DSL"
-    )]
-    #[must_use]
-    pub fn add(mut self, field: impl Into<Field>) -> Self {
-        let field = field.into();
-        let key = field.key().as_str();
-        if let Some(existing) = self
-            .fields
-            .iter_mut()
-            .find(|existing| existing.key().as_str() == key)
-        {
-            *existing = field;
-        } else {
-            self.fields.push(field);
-        }
-        self
-    }
-
     /// Number of top-level fields.
     #[must_use]
     pub const fn len(&self) -> usize {
@@ -694,7 +650,6 @@ fn validate_index_limits(
 // ── Tests ─────────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
-#[allow(deprecated)]
 mod tests {
     use super::*;
     use crate::{Field, FieldKey, FieldPath};
@@ -740,21 +695,21 @@ mod tests {
     }
 
     #[test]
-    fn legacy_new_add_still_compiles() {
-        let schema = Schema::new().add(Field::string(fk("x")));
-        assert_eq!(schema.len(), 1);
-    }
-
-    #[test]
     fn loader_key_rejects_invalid_field_key_for_select() {
-        let schema = Schema::new().add(Field::select(fk("select_field")));
+        let schema = Schema::builder()
+            .add(Field::select(fk("select_field")))
+            .build()
+            .expect("valid schema");
         let err = resolve_select_loader_key(schema.fields(), "bad-key").unwrap_err();
         assert_eq!(err.code, "invalid_key");
     }
 
     #[test]
     fn loader_key_rejects_invalid_field_key_for_dynamic() {
-        let schema = Schema::new().add(Field::dynamic(fk("dynamic_field")));
+        let schema = Schema::builder()
+            .add(Field::dynamic(fk("dynamic_field")))
+            .build()
+            .expect("valid schema");
         let err = resolve_dynamic_loader_key(schema.fields(), "bad-key").unwrap_err();
         assert_eq!(err.code, "invalid_key");
     }

@@ -26,6 +26,7 @@ pub(crate) fn lint_tree(fields: &[Field], prefix: &FieldPath, report: &mut Valid
     lint_fields_new(fields, prefix, &root_keys, report);
     lint_visibility_cycles_new(fields, prefix, report);
     lint_required_cycles_new(fields, prefix, report);
+    lint_loader_dependency_cycles(fields, prefix, report);
 }
 
 fn lint_fields_new(
@@ -40,6 +41,7 @@ fn lint_fields_new(
         let path = prefix.clone().join(field.key().clone());
         lint_field_rules(field, &path, &local_keys, root_keys, report);
         lint_contradictory_rules_new(field.rules(), &path, report);
+        lint_default_type(field, &path, report);
         match field {
             Field::Select(select) => lint_select_field(
                 select,
@@ -69,6 +71,101 @@ fn lint_fields_new(
             Field::Notice(notice) => lint_notice_field(notice, &path, report),
             _ => {},
         }
+    }
+}
+
+fn lint_default_type(field: &Field, path: &FieldPath, report: &mut ValidationReport) {
+    use serde_json::Value;
+
+    let default = match field.default() {
+        Some(v) => v,
+        None => return,
+    };
+
+    // Null is always valid as a default (means "no default value set").
+    if matches!(default, Value::Null) {
+        return;
+    }
+
+    let ok = match field {
+        Field::String(_) | Field::Secret(_) | Field::Code(_) => {
+            matches!(default, Value::String(_))
+        },
+        Field::Number(num) => {
+            if let Value::Number(n) = default {
+                if num.integer {
+                    // integer fields must have a default with no fractional part
+                    n.as_f64().is_some_and(|f| f.fract() == 0.0)
+                } else {
+                    true
+                }
+            } else {
+                false
+            }
+        },
+        Field::Boolean(_) => matches!(default, Value::Bool(_)),
+        Field::Select(select) => {
+            // dynamic selects or selects with no static options: allow any scalar
+            // (or array for multiple selects).
+            if select.dynamic || select.options.is_empty() {
+                if select.multiple {
+                    !matches!(default, Value::Object(_))
+                } else {
+                    !matches!(default, Value::Array(_) | Value::Object(_))
+                }
+            } else if select.allow_custom {
+                // allow_custom: skip option-membership check, just validate shape
+                if select.multiple {
+                    // array of scalars is fine; reject bare objects
+                    match default {
+                        Value::Array(arr) => arr
+                            .iter()
+                            .all(|el| !matches!(el, Value::Object(_) | Value::Array(_))),
+                        Value::Object(_) => false,
+                        _ => true,
+                    }
+                } else {
+                    !matches!(default, Value::Array(_) | Value::Object(_))
+                }
+            } else if select.multiple {
+                // multiple static select: default may be a single matching value
+                // or an array where every element matches a static option value.
+                match default {
+                    Value::Array(arr) => arr
+                        .iter()
+                        .all(|el| select.options.iter().any(|opt| &opt.value == el)),
+                    _ => select.options.iter().any(|opt| &opt.value == default),
+                }
+            } else {
+                // static single select: default must match one of the option values
+                select.options.iter().any(|opt| &opt.value == default)
+            }
+        },
+        Field::List(_) => matches!(default, Value::Array(_)),
+        Field::Object(_) => matches!(default, Value::Object(_)),
+        Field::Mode(_) => {
+            // mode default must be an object with a "mode" key and
+            // only "mode" and optionally "value" keys (no extras)
+            if let Value::Object(map) = default {
+                map.contains_key("mode") && map.keys().all(|k| k == "mode" || k == "value")
+            } else {
+                false
+            }
+        },
+        // File, Computed, Dynamic, Notice: skip default type validation
+        Field::File(_) | Field::Computed(_) | Field::Dynamic(_) | Field::Notice(_) => return,
+    };
+
+    if !ok {
+        report.push(
+            ValidationError::builder("default.type_mismatch")
+                .at(path.clone())
+                .message(format!(
+                    "default value type does not match `{}` field type",
+                    field.type_name()
+                ))
+                .build(),
+        );
     }
 }
 
@@ -149,6 +246,69 @@ fn lint_select_field(
             ValidationError::builder("loader_without_dynamic")
                 .at(path.clone())
                 .message("select has loader key but dynamic flag is disabled")
+                .warn()
+                .build(),
+        );
+    }
+    lint_select_option_types(select, path, report);
+}
+
+fn json_type_name(v: &serde_json::Value) -> &'static str {
+    match v {
+        serde_json::Value::Null => "null",
+        serde_json::Value::Bool(_) => "boolean",
+        serde_json::Value::Number(_) => "number",
+        serde_json::Value::String(_) => "string",
+        serde_json::Value::Array(_) => "array",
+        serde_json::Value::Object(_) => "object",
+    }
+}
+
+fn lint_select_option_types(
+    select: &crate::field::SelectField,
+    path: &FieldPath,
+    report: &mut ValidationReport,
+) {
+    // Check 1: warn if any single non-multiple option has a complex (array/object) value.
+    // This needs only >= 1 option and runs before the early-return below.
+    if !select.dynamic && !select.multiple && !select.options.is_empty() {
+        let has_complex = select.options.iter().any(|o| {
+            matches!(
+                &o.value,
+                serde_json::Value::Array(_) | serde_json::Value::Object(_)
+            )
+        });
+        if has_complex {
+            report.push(
+                ValidationError::builder("option.type_inconsistent")
+                    .at(path.clone())
+                    .message(
+                        "non-multiple select has option values of complex type (array or object)",
+                    )
+                    .warn()
+                    .build(),
+            );
+        }
+    }
+
+    // Check 2: type-consistency across options — needs >= 2 static options to compare.
+    if select.dynamic || select.options.len() < 2 {
+        return;
+    }
+
+    let first_type = json_type_name(&select.options[0].value);
+    let all_same = select
+        .options
+        .iter()
+        .all(|o| json_type_name(&o.value) == first_type);
+
+    if !all_same {
+        report.push(
+            ValidationError::builder("option.type_inconsistent")
+                .at(path.clone())
+                .message(
+                    "select options have mixed JSON types; all option values should share the same type",
+                )
                 .warn()
                 .build(),
         );
@@ -897,6 +1057,106 @@ fn lint_required_cycles_new(fields: &[Field], _prefix: &FieldPath, report: &mut 
     let adj = rule_adjacency(&edges);
     if let Some((from, to)) = find_cycle_edge(&adj) {
         emit_required_cycle_on_edge(&from, &to, report);
+    }
+}
+
+fn emit_loader_dependency_cycle_on_edge(
+    from: &FieldPath,
+    to: &FieldPath,
+    report: &mut ValidationReport,
+) {
+    report.push(
+        ValidationError::builder("loader_dependency_cycle")
+            .at(from.clone())
+            .message(format!("circular loader dependency: `{from}` -> `{to}`"))
+            .build(),
+    );
+}
+
+/// Collect directed edges for loader dependency cycle detection.
+///
+/// For each Select or Dynamic field with `depends_on`, emit one directed edge
+/// per dependency: `field_path -> dependency_path`.
+/// This models "this field's loader depends on the value of that field".
+/// A cycle in this graph means two (or more) loaders mutually depend on each other.
+fn collect_loader_dependency_edges(
+    fields: &[Field],
+    prefix: &FieldPath,
+    edges: &mut Vec<(FieldPath, FieldPath)>,
+) {
+    for field in fields {
+        let path = prefix.clone().join(field.key().clone());
+
+        let depends_on: Option<&[FieldPath]> = match field {
+            Field::Select(select) if !select.depends_on.is_empty() => Some(&select.depends_on),
+            Field::Dynamic(dynamic) if !dynamic.depends_on.is_empty() => Some(&dynamic.depends_on),
+            _ => None,
+        };
+
+        if let Some(deps) = depends_on {
+            for dep in deps {
+                // Normalise: drop index segments so "items[0].name" -> "items.name"
+                let mut norm = FieldPath::root();
+                for seg in dep.segments() {
+                    if matches!(seg, PathSegment::Index(_)) {
+                        continue;
+                    }
+                    norm = norm.join(seg.clone());
+                }
+                if !norm.is_root() {
+                    edges.push((path.clone(), norm));
+                }
+            }
+        }
+
+        // Recurse into nested containers.
+        match field {
+            Field::Object(obj) => {
+                collect_loader_dependency_edges(&obj.fields, &path, edges);
+            },
+            Field::List(list) => {
+                if let Some(Field::Object(obj)) = list.item.as_deref() {
+                    collect_loader_dependency_edges(&obj.fields, &path, edges);
+                }
+            },
+            Field::Mode(mode) => {
+                for variant in &mode.variants {
+                    let Some(vpath) = mode_variant_path(&path, variant.key.as_str()) else {
+                        continue;
+                    };
+                    if let Field::Object(obj) = variant.field.as_ref() {
+                        collect_loader_dependency_edges(&obj.fields, &vpath, edges);
+                    }
+                }
+            },
+            _ => {},
+        }
+    }
+}
+
+fn lint_loader_dependency_cycles(
+    fields: &[Field],
+    _prefix: &FieldPath,
+    report: &mut ValidationReport,
+) {
+    let mut defined: HashSet<FieldPath> = HashSet::new();
+    collect_defined_field_paths(fields, &FieldPath::root(), &mut defined);
+
+    let mut edges: Vec<(FieldPath, FieldPath)> = Vec::new();
+    collect_loader_dependency_edges(fields, &FieldPath::root(), &mut edges);
+
+    // Filter out edges whose target does not correspond to a defined field.
+    // A dependency on a nonexistent path is already reported as a
+    // `dangling_reference`; including it here would create a phantom graph
+    // node and may cause a spurious `loader_dependency_cycle`.
+    let edges: Vec<(FieldPath, FieldPath)> = edges
+        .into_iter()
+        .filter(|(_, to)| defined.contains(to))
+        .collect();
+
+    let adj = rule_adjacency(&edges);
+    if let Some((from, to)) = find_cycle_edge(&adj) {
+        emit_loader_dependency_cycle_on_edge(&from, &to, report);
     }
 }
 
