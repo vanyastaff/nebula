@@ -14,22 +14,20 @@
 //!
 //! Every implementation must satisfy the [`RateLimiter`] contract:
 //!
-//! - [`acquire()`](RateLimiter::acquire) — attempt to consume one permit.
-//!   Returns `Ok(())` when the request is allowed, `Err(CallError::RateLimited)`
-//!   when the limit is exceeded.
-//! - [`call()`](RateLimiter::call) — convenience wrapper that calls `acquire()` then
-//!   executes the supplied async closure. On success the closure's return value is
-//!   forwarded; on rate-limit the closure is never invoked.
-//! - Implementors must be `Send + Sync` so they can be shared across tasks and
-//!   stored inside `Arc<T>`.
+//! - [`acquire()`](RateLimiter::acquire) — attempt to consume one permit. Returns `Ok(())` when the
+//!   request is allowed, `Err(CallError::RateLimited)` when the limit is exceeded.
+//! - [`call()`](RateLimiter::call) — convenience wrapper that calls `acquire()` then executes the
+//!   supplied async closure. On success the closure's return value is forwarded; on rate-limit the
+//!   closure is never invoked.
+//! - Implementors must be `Send + Sync` so they can be shared across tasks and stored inside
+//!   `Arc<T>`.
 //!
 //! # Standalone usage
 //!
 //! All rate limiters work independently — no pipeline required:
 //!
 //! ```rust
-//! use nebula_resilience::rate_limiter::TokenBucket;
-//! use nebula_resilience::RateLimiter;
+//! use nebula_resilience::{RateLimiter, rate_limiter::TokenBucket};
 //!
 //! # #[tokio::main]
 //! # async fn main() {
@@ -55,6 +53,7 @@
 //!
 //! ```rust,no_run
 //! use std::sync::Arc;
+//!
 //! use nebula_resilience::{ResiliencePipeline, rate_limiter::TokenBucket};
 //!
 //! # #[tokio::main]
@@ -98,16 +97,16 @@ use crate::CallError;
 ///
 /// # Contract
 ///
-/// - [`acquire()`](RateLimiter::acquire) **must** return `Ok(())` when a permit is
-///   granted and <code>Err([`CallError::RateLimited`])</code> when the rate limit is
-///   exceeded. It must never block indefinitely — implementations that queue
-///   callers should enforce a timeout or queue bound.
-/// - [`call()`](RateLimiter::call) is a convenience wrapper over `acquire()` +
-///   operation invocation. The default implementation is correct for the vast
-///   majority of cases. Override it only when you need to observe the operation
-///   result (e.g., [`AdaptiveRateLimiter`] tracks errors to tune its rate).
-/// - **Thread safety**: all implementors must be `Send + Sync` so they can be
-///   shared across async tasks via `Arc<T>`.
+/// - [`acquire()`](RateLimiter::acquire) **must** return `Ok(())` when a permit is granted and
+///   <code>Err([`CallError::RateLimited`])</code> when the rate limit is exceeded. It must never
+///   block indefinitely — implementations that queue callers should enforce a timeout or queue
+///   bound.
+/// - [`call()`](RateLimiter::call) is a convenience wrapper over `acquire()` + operation
+///   invocation. The default implementation is correct for the vast majority of cases. Override it
+///   only when you need to observe the operation result (e.g., [`AdaptiveRateLimiter`] tracks
+///   errors to tune its rate).
+/// - **Thread safety**: all implementors must be `Send + Sync` so they can be shared across async
+///   tasks via `Arc<T>`.
 ///
 /// # Implementing for third-party types
 ///
@@ -356,8 +355,8 @@ struct LeakyBucketState {
 ///
 /// # Configuration
 ///
-/// - `capacity` — maximum bucket depth; controls the burst tolerance
-///   (how many requests can queue up before being rejected).
+/// - `capacity` — maximum bucket depth; controls the burst tolerance (how many requests can queue
+///   up before being rejected).
 /// - `leak_rate` — permits drained per second (0.001..=10,000).
 ///
 /// # When to choose this

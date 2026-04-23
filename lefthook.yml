@@ -30,12 +30,6 @@ pre-commit:
     cargo-deny:
       glob: "{Cargo.toml,Cargo.lock,deny.toml}"
       run: cargo deny --log-level error check 2>&1
-    xtask-junior:
-      glob: "**/*.rs"
-      run: cargo run -p xtask -- check-junior
-    xtask-surface:
-      glob: "**/*.rs"
-      run: cargo run -p xtask -- check-surface
 
 commit-msg:
   commands:

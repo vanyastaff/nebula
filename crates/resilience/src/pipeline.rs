@@ -160,6 +160,7 @@ impl<E: Send + 'static> PipelineBuilder<E> {
     ///
     /// ```rust,no_run
     /// use std::sync::Arc;
+    ///
     /// use nebula_resilience::{ResiliencePipeline, rate_limiter::TokenBucket};
     ///
     /// let rl = Arc::new(TokenBucket::new(100, 10.0).unwrap());

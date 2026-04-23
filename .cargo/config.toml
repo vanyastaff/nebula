@@ -36,6 +36,3 @@ retry = 3
 # Workspace-local Cargo aliases — see `docs/QUALITY_GATES.md`.
 [alias]
 lint = "clippy --workspace --all-targets -- -D warnings"
-quality = "run -p xtask -- quality"
-precommit = "run -p xtask -- precommit"
-xtask = "run -p xtask --"

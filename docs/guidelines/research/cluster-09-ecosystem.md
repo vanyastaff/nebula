@@ -283,7 +283,7 @@ fetch. Until live content is available, use this **consensus-aligned** matrix
 
 
 **Rule:** prefer `**candle` or `burn`** for “Rust-native” stacks; reach for
-`**tch**` only when you must run a specific `torch` checkpoint without ONNX
+`**tch`** only when you must run a specific `torch` checkpoint without ONNX
 export; use `**ort**` for cross-framework ONNX deployment.
 
 ---
@@ -562,7 +562,7 @@ Tag: `11-ecosystem-crate-picks`.
 - Web JSON → `**serde_json`**.
 - Rust-to-Rust wire → `**bincode` 2.x** (or `postcard` if no_std).
 - Embedded/UART → `**postcard`**.
-- mmap / ultra-fast read → `**rkyv**`.
+- mmap / ultra-fast read → `**rkyv`**.
 - Cross-language schema'd wire → `**prost**` (protobuf).
 
 ### Typical imports
@@ -909,7 +909,7 @@ Tag: `10-testing-and-tooling`.
 | `quickcheck`            | Older property testing                                         | [maintenance] | Legacy; prefer proptest.                                |
 | `**insta`**             | Snapshot testing (`assert_snapshot!`, `assert_yaml_snapshot!`) | [stable]      | Golden-file tests. Pair with `cargo-insta`.             |
 | `expect-test`           | Inline snapshots (in-source)                                   | [mature]      | When you want the expectation visible at the call site. |
-| `**rstest**`            | Parametrized tests, fixtures                                   | [stable]      | Table-driven tests.                                     |
+| `**rstest`**            | Parametrized tests, fixtures                                   | [stable]      | Table-driven tests.                                     |
 | `test-case`             | `#[test_case(...)]` attribute                                  | [mature]      | Alternative to rstest parametric.                       |
 | `**mockall**`           | Mock object generator, derive + trait                          | [stable]      | **Canonical mock.**                                     |
 | `faux`                  | Alt mock lib, less boilerplate                                 | [mature]      | Lighter mocks for small traits.                         |
@@ -1079,7 +1079,7 @@ Tag: `11-ecosystem-crate-picks`.
 ### Canonical picks
 
 - One-off text matching → `**regex`**.
-- Large dictionary substring match → `**aho-corasick**`.
+- Large dictionary substring match → `**aho-corasick`**.
 - Lexer → `**logos**` (+ combinator downstream).
 - Full-featured parser → `**winnow**` (for new code) or `chumsky` (for great errors).
 - Grammar-in-file → `**pest**`.
@@ -1205,7 +1205,7 @@ where "canonical and use nothing else" matters most.
 | `**sha2`** (RustCrypto) | SHA-256/384/512                                 | [stable] | Canonical SHA-2.                                 |
 | `sha1` (RustCrypto)     | SHA-1                                           | [stable] | Git, old protocols. Do not use for new security. |
 | `sha3` (RustCrypto)     | SHA-3/Keccak                                    | [stable] | NIST/crypto interop.                             |
-| `**blake3**`            | BLAKE3 (fast, parallel)                         | [stable] | **Canonical non-crypto fast hash.**              |
+| `**blake3`**            | BLAKE3 (fast, parallel)                         | [stable] | **Canonical non-crypto fast hash.**              |
 | `blake2`                | BLAKE2                                          | [stable] |                                                  |
 | `md-5`                  | MD5                                             | [stable] | Legacy integrity only.                           |
 | `digest`                | Trait (`Digest`, `Output`) shared by RustCrypto | [stable] |                                                  |
@@ -1217,7 +1217,7 @@ where "canonical and use nothing else" matters most.
 | Crate                  | Role                    | Status   |
 | ---------------------- | ----------------------- | -------- |
 | `**aes-gcm`**          | AES-GCM AEAD            | [stable] |
-| `**chacha20poly1305**` | ChaCha20-Poly1305       | [stable] |
+| `**chacha20poly1305`** | ChaCha20-Poly1305       | [stable] |
 | `aes-gcm-siv`          | Misuse-resistant AEAD   | [stable] |
 | `aes`                  | Block cipher primitive  | [stable] |
 | `chacha20`             | Stream cipher primitive | [stable] |
@@ -1387,7 +1387,7 @@ Tag: `11-ecosystem-crate-picks`.
 | --------------------- | ------------------------------------- | ---------------------------- | ------------------------------------------------------------- |
 | `**egui**` + `eframe` | Immediate-mode                        | **[stable, rapid releases]** | **Canonical** debug UI / simple apps / embedded debug panels. |
 | `**iced`**            | Elm-ish retained                      | [mature, approaching 0.14]   | Desktop apps, cross-platform.                                 |
-| `**tauri**` 2         | HTML+CSS+JS front with Rust back      | **[stable]**                 | **Canonical for "Electron killer"**; mobile 2.0+.             |
+| `**tauri`** 2         | HTML+CSS+JS front with Rust back      | **[stable]**                 | **Canonical for "Electron killer"**; mobile 2.0+.             |
 | `slint`               | DSL-based, embedded-friendly          | [stable]                     | Embedded Linux, commercial apps.                              |
 | `dioxus`              | React-like (VDOM); desktop/web/mobile | [stable]                     | React-shaped mental model.                                    |
 | `gtk4-rs`             | GTK4 bindings                         | [stable]                     | Gnome integration.                                            |
@@ -1467,7 +1467,7 @@ Tag: `11-ecosystem-crate-picks`.
 
 | Crate                           | Role                                  | Status                     |
 | ------------------------------- | ------------------------------------- | -------------------------- |
-| `**rapier2d**` / `**rapier3d**` | 2D/3D rigid-body physics              | [stable]                   |
+| `**rapier2d`** / `**rapier3d**` | 2D/3D rigid-body physics              | [stable]                   |
 | `avian` (formerly bevy_xpbd)    | Bevy-integrated physics               | [active]                   |
 | `parry`                         | Collision primitives (used by rapier) | [stable]                   |
 | `nphysics`                      | —                                     | [discontinued] use rapier. |
@@ -1711,7 +1711,7 @@ Tag: `11-ecosystem-crate-picks`.
 | Crate         | Role                                                             | Status   |
 | ------------- | ---------------------------------------------------------------- | -------- |
 | `**candle`**  | HuggingFace's minimalist DL framework                            | [stable] |
-| `**burn**`    | Pure-Rust DL framework (pluggable backends: WGPU, CUDA, NdArray) | [stable] |
+| `**burn`**    | Pure-Rust DL framework (pluggable backends: WGPU, CUDA, NdArray) | [stable] |
 | `tch`         | libtorch (C++) bindings                                          | [stable] |
 | `ort`         | ONNX Runtime bindings                                            | [stable] |
 | `dfdx`        | Type-safe tensors                                                | [mature] |
@@ -1785,35 +1785,35 @@ let config: AppConfig = Figment::new()
 Tag: `10-testing-and-tooling`.
 
 
-| Tool                           | Role                                                           | Status                                                                |
-| ------------------------------ | -------------------------------------------------------------- | --------------------------------------------------------------------- |
-| `**just**`                     | Simple task runner, `justfile`                                 | **[stable]** — **canonical replacement for `make` in Rust projects.** |
-| `cargo-make`                   | Task runner as cargo extension                                 | [stable]                                                              |
-| `cargo-xtask`                  | Pattern — no crate; run `cargo run -p xtask` for project tasks | —                                                                     |
-| `cargo-script` / `rust-script` | Run single-file Rust as scripts                                | [stable]                                                              |
-| `cargo-binstall`               | Install prebuilt binaries from crates.io                       | [stable]                                                              |
-| `cargo-watch`                  | Rerun on file change                                           | [stable]                                                              |
-| `bacon`                        | Background watcher (alt to cargo-watch)                        | [stable]                                                              |
-| `cargo-edit`                   | `cargo add/rm/upgrade`                                         | [stable, now upstream]                                                |
-| `cargo-outdated`               | Report outdated deps                                           | [stable]                                                              |
-| `cargo-udeps`                  | Find unused deps (nightly)                                     | [mature]                                                              |
-| `cargo-machete`                | Stable `cargo-udeps` alternative                               | [stable]                                                              |
-| `cargo-deny`                   | License/advisory/duplicate policy                              | [stable]                                                              |
-| `cargo-audit`                  | RUSTSEC advisory check                                         | [stable]                                                              |
-| `cargo-vet`                    | Supply-chain review ledger                                     | [stable]                                                              |
-| `cargo-expand`                 | Dump macro expansion                                           | [stable]                                                              |
-| `cargo-asm`                    | View emitted asm                                               | [mature]                                                              |
-| `cargo-bloat`                  | Binary size by crate                                           | [stable]                                                              |
-| `cargo-llvm-lines`             | Biggest generic instantiations                                 | [stable]                                                              |
-| `cargo-chef`                   | Docker-layer-cache friendly dep compile                        | [stable]                                                              |
-| `sccache`                      | Compile cache                                                  | [stable]                                                              |
-| `cargo-semver-checks`          | Catch accidental semver breaks                                 | [stable]                                                              |
-| `cargo-public-api`             | Print public API diff                                          | [stable]                                                              |
-| `cargo-release`                | Tagged release orchestration                                   | [stable]                                                              |
-| `cross`                        | Cross-compile via Docker                                       | [stable]                                                              |
-| `clippy` (`cargo clippy`)      | Lints                                                          | [stable]                                                              |
-| `rustfmt`                      | Formatter                                                      | [stable]                                                              |
-| `mold` / `lld`                 | Faster linker                                                  | [stable]                                                              |
+| Tool                           | Role                                                                       | Status                                                                |
+| ------------------------------ | -------------------------------------------------------------------------- | --------------------------------------------------------------------- |
+| `**just**`                     | Simple task runner, `justfile`                                             | **[stable]** — **canonical replacement for `make` in Rust projects.** |
+| `cargo-make`                   | Task runner as cargo extension                                             | [stable]                                                              |
+| `cargo-xtask`                  | Pattern — workspace package for repo-local tasks (no extra binary install) | —                                                                     |
+| `cargo-script` / `rust-script` | Run single-file Rust as scripts                                            | [stable]                                                              |
+| `cargo-binstall`               | Install prebuilt binaries from crates.io                                   | [stable]                                                              |
+| `cargo-watch`                  | Rerun on file change                                                       | [stable]                                                              |
+| `bacon`                        | Background watcher (alt to cargo-watch)                                    | [stable]                                                              |
+| `cargo-edit`                   | `cargo add/rm/upgrade`                                                     | [stable, now upstream]                                                |
+| `cargo-outdated`               | Report outdated deps                                                       | [stable]                                                              |
+| `cargo-udeps`                  | Find unused deps (nightly)                                                 | [mature]                                                              |
+| `cargo-machete`                | Stable `cargo-udeps` alternative                                           | [stable]                                                              |
+| `cargo-deny`                   | License/advisory/duplicate policy                                          | [stable]                                                              |
+| `cargo-audit`                  | RUSTSEC advisory check                                                     | [stable]                                                              |
+| `cargo-vet`                    | Supply-chain review ledger                                                 | [stable]                                                              |
+| `cargo-expand`                 | Dump macro expansion                                                       | [stable]                                                              |
+| `cargo-asm`                    | View emitted asm                                                           | [mature]                                                              |
+| `cargo-bloat`                  | Binary size by crate                                                       | [stable]                                                              |
+| `cargo-llvm-lines`             | Biggest generic instantiations                                             | [stable]                                                              |
+| `cargo-chef`                   | Docker-layer-cache friendly dep compile                                    | [stable]                                                              |
+| `sccache`                      | Compile cache                                                              | [stable]                                                              |
+| `cargo-semver-checks`          | Catch accidental semver breaks                                             | [stable]                                                              |
+| `cargo-public-api`             | Print public API diff                                                      | [stable]                                                              |
+| `cargo-release`                | Tagged release orchestration                                               | [stable]                                                              |
+| `cross`                        | Cross-compile via Docker                                                   | [stable]                                                              |
+| `clippy` (`cargo clippy`)      | Lints                                                                      | [stable]                                                              |
+| `rustfmt`                      | Formatter                                                                  | [stable]                                                              |
+| `mold` / `lld`                 | Faster linker                                                              | [stable]                                                              |
 
 
 ### Canonical `.cargo/config.toml` snippet
@@ -1823,7 +1823,7 @@ Tag: `10-testing-and-tooling`.
 rustflags = ["-C", "link-arg=-fuse-ld=lld"]     # or "mold" on linux
 
 [alias]
-xtask = "run --package xtask --"
+lint  = "clippy --workspace --all-targets -- -D warnings"
 b     = "build"
 c     = "check"
 t     = "nextest run"
@@ -1996,7 +1996,7 @@ moka = { version = "0.12", features = ["future"] }
 
 | Crate        | Paradigm                                 | Status        | Pick when                                          |
 | ------------ | ---------------------------------------- | ------------- | -------------------------------------------------- |
-| `**askama**` | Jinja-like, type-checked at compile time | [stable]      | **Canonical.**                                     |
+| `**askama`** | Jinja-like, type-checked at compile time | [stable]      | **Canonical.**                                     |
 | `minijinja`  | Runtime Jinja, rendering-time context    | [stable]      | Dynamic templates / user-editable.                 |
 | `tera`       | Jinja-like, runtime                      | [stable]      |                                                    |
 | `handlebars` | Handlebars, runtime                      | [stable]      |                                                    |
@@ -2040,7 +2040,7 @@ lettre = { version = "0.11", features = ["tokio1-rustls-tls", "smtp-transport", 
 | `magnus`              | Ruby bindings                                   | [mature]                              |
 | `rutie`               | Ruby bindings                                   | [mature]                              |
 | `jni`                 | JVM bindings                                    | [stable]                              |
-| `**cxx**`             | Safe C++ interop (Google Chromium)              | [stable] — **canonical Rust↔C++.**    |
+| `**cxx`**             | Safe C++ interop (Google Chromium)              | [stable] — **canonical Rust↔C++.**    |
 | `bindgen`             | Generate Rust from C headers                    | [stable]                              |
 | `cbindgen`            | Generate C headers from Rust                    | [stable]                              |
 | `uniffi`              | Multi-language bindings (Kotlin, Swift, Python) | [stable]                              |
@@ -2084,7 +2084,7 @@ Tag: `12-modern-rust`. Snapshot of what's actually usable on stable Rust
 | `async fn` in traits (AFIT)                              | 1.75                                       | yes (static dispatch)           | Use `trait-variant` for Send bounds.                                    |
 | RPITIT (`-> impl Future` in traits)                      | 1.75                                       | yes                             |                                                                         |
 | `async fn` in `dyn Trait`                                | not yet                                    | workaround: `async-trait` crate |                                                                         |
-| async closures (`async || {}`)                           | 1.85                                       | yes                             |                                                                         |
+| async closures (`async                                   |                                            | {}`)                            | 1.85                                                                    |
 | `AsyncFn`/`AsyncFnOnce`/`AsyncFnMut`                     | 1.85                                       | yes                             |                                                                         |
 | GATs                                                     | 1.65                                       | yes                             | foundational for many traits (e.g., `LendingIterator`).                 |
 | const generics MVP                                       | 1.51                                       | yes                             | integer-only.                                                           |
@@ -2120,7 +2120,7 @@ Tag: `12-modern-rust`. Snapshot of what's actually usable on stable Rust
 - `**format!` with inline args** (`format!("x={x}")`) is the universal
 style; fmt-args with `, x` are code-smell.
 - `**let..else`** replaces 90% of early-return `match`.
-- `**impl Into<Cow<'static, str>>**` is preferred over
+- `**impl Into<Cow<'static, str>>`** is preferred over
 `impl Into<String>` + `&'static str` overloads.
 - `**#[non_exhaustive]**` on all public enums and structs in libs.
 - `**#[must_use]**` on builders and `Result`-returning constructors.

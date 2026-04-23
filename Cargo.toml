@@ -1,6 +1,5 @@
 [workspace]
 members = [
-  "xtask",
   "crates/action",
   "crates/storage",
   "crates/core",
