@@ -341,7 +341,7 @@ impl Credential for OAuth2Credential {
             .key(nebula_core::credential_key!("oauth2"))
             .name("OAuth2")
             .description("OAuth2 authentication supporting Authorization Code, Client Credentials, and Device Code grant types.")
-            .schema(Self::parameters())
+            .schema(Self::schema())
             .pattern(crate::AuthPattern::OAuth2)
             .icon("oauth2")
             .build()
@@ -775,7 +775,7 @@ mod tests {
 
     #[test]
     fn parameters_has_all_fields() {
-        let params = OAuth2Credential::parameters();
+        let params = OAuth2Credential::schema();
         let has = |k: &str| params.fields().iter().any(|f| f.key().as_str() == k);
         assert!(has("client_id"));
         assert!(has("client_secret"));

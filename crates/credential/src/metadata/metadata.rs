@@ -1,6 +1,7 @@
 use nebula_core::CredentialKey;
 use nebula_metadata::{BaseMetadata, Metadata};
 use nebula_schema::ValidSchema;
+use semver::Version;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
@@ -67,14 +68,18 @@ impl CredentialMetadata {
         C: crate::Credential,
     {
         Self {
-            base: BaseMetadata::new(
-                key,
-                name,
-                description,
-                <C::Input as nebula_schema::HasSchema>::schema(),
-            ),
+            base: BaseMetadata::new(key, name, description, C::schema()),
             pattern,
         }
+    }
+
+    /// Set the interface version from `(major, minor)` components.
+    ///
+    /// Equivalent to setting `base.version = Version::new(major, minor, 0)`.
+    #[must_use = "builder methods must be chained or built"]
+    pub fn with_version(mut self, major: u64, minor: u64) -> Self {
+        self.base.version = Version::new(major, minor, 0);
+        self
     }
 
     /// Start building credential metadata with the given required fields.

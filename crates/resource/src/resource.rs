@@ -90,6 +90,18 @@ pub enum MetadataCompatibilityError {
 
 impl ResourceMetadata {
     /// Build resource metadata with explicit catalog-level fields.
+    #[must_use]
+    pub fn builder(
+        key: ResourceKey,
+        name: impl Into<String>,
+        description: impl Into<String>,
+    ) -> ResourceMetadataBuilder {
+        ResourceMetadataBuilder {
+            inner: Self::new(key, name, description, nebula_schema::ValidSchema::empty()),
+        }
+    }
+
+    /// Build resource metadata with explicit catalog-level fields.
     pub fn new(
         key: ResourceKey,
         name: impl Into<String>,
@@ -145,6 +157,37 @@ impl ResourceMetadata {
     ) -> Result<(), MetadataCompatibilityError> {
         nebula_metadata::validate_base_compat(&self.base, &previous.base)?;
         Ok(())
+    }
+}
+
+/// Fluent builder for [`ResourceMetadata`].
+///
+/// Obtain one via [`ResourceMetadata::builder`] and call
+/// [`build`](ResourceMetadataBuilder::build) when done.
+#[derive(Debug, Clone)]
+pub struct ResourceMetadataBuilder {
+    inner: ResourceMetadata,
+}
+
+impl ResourceMetadataBuilder {
+    /// Set the configuration schema for this resource.
+    #[must_use = "builder methods must be chained or built"]
+    pub fn with_schema(mut self, schema: nebula_schema::ValidSchema) -> Self {
+        self.inner.base.schema = schema;
+        self
+    }
+
+    /// Set the interface version from `(major, minor)` components.
+    #[must_use = "builder methods must be chained or built"]
+    pub fn with_version(mut self, major: u64, minor: u64) -> Self {
+        self.inner.base.version = semver::Version::new(major, minor, 0);
+        self
+    }
+
+    /// Finalise the builder and return the [`ResourceMetadata`].
+    #[must_use]
+    pub fn build(self) -> ResourceMetadata {
+        self.inner
     }
 }
 
@@ -231,9 +274,27 @@ pub trait Resource: Send + Sync + 'static {
         async { Ok(()) }
     }
 
+    /// Returns the schema for this resource's configuration.
+    ///
+    /// Default: derives from `Config` via [`HasSchema`](nebula_schema::HasSchema).
+    fn schema() -> nebula_schema::ValidSchema
+    where
+        Self: Sized,
+    {
+        <Self::Config as nebula_schema::HasSchema>::schema()
+    }
+
     /// Returns metadata for UI and diagnostics.
-    fn metadata() -> ResourceMetadata {
-        ResourceMetadata::from_key(&Self::key())
+    fn metadata() -> ResourceMetadata
+    where
+        Self: Sized,
+    {
+        ResourceMetadata::new(
+            Self::key(),
+            Self::key().to_string(),
+            String::new(),
+            Self::schema(),
+        )
     }
 }
 

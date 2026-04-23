@@ -54,7 +54,7 @@ impl Credential for BasicAuthCredential {
             .key(nebula_core::credential_key!("basic_auth"))
             .name("Basic Auth")
             .description("HTTP Basic authentication (username + password).")
-            .schema(Self::parameters())
+            .schema(Self::schema())
             .pattern(crate::AuthPattern::IdentityPassword)
             .icon("lock")
             .build()
