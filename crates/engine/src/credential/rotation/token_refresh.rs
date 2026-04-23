@@ -70,7 +70,7 @@ pub async fn refresh_oauth2_state(state: &mut OAuth2State) -> Result<(), TokenRe
         form.push(("scope", scope.as_str()));
     }
 
-    let client = oauth_token_http_client().map_err(TokenRefreshError::Request)?;
+    let client = oauth_token_http_client();
     let mut req = client.post(&state.token_url);
     match state.auth_style {
         AuthStyle::Header => {
@@ -107,7 +107,7 @@ async fn parse_token_response(resp: Response) -> Result<Value, TokenRefreshError
     }
     read_token_response_limited(resp, OAUTH_TOKEN_HTTP_MAX_RESPONSE_BYTES)
         .await
-        .map_err(TokenRefreshError::Parse)
+        .map_err(|e| TokenRefreshError::Parse(e.to_string()))
 }
 
 fn update_state_from_token_response(

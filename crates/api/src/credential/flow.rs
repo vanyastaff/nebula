@@ -7,7 +7,8 @@
 use nebula_credential::credentials::oauth2::AuthStyle;
 /// Re-exports: shared with engine refresh and in-crate OAuth2 flows (ADR-0031).
 pub use nebula_credential::credentials::oauth2::token_http::{
-    OAUTH_TOKEN_HTTP_MAX_RESPONSE_BYTES, oauth_token_http_client, read_token_response_limited,
+    OAUTH_TOKEN_HTTP_MAX_RESPONSE_BYTES, TokenHttpError, oauth_token_http_client,
+    read_token_response_limited,
 };
 use serde::Deserialize;
 use url::Url;
@@ -77,7 +78,7 @@ pub struct TokenExchangeRequest {
 
 /// Exchange authorization code for tokens.
 pub async fn exchange_code(req: &TokenExchangeRequest) -> Result<serde_json::Value, String> {
-    let client = oauth_token_http_client()?;
+    let client = oauth_token_http_client();
 
     let mut form: Vec<(&str, &str)> = vec![
         ("grant_type", "authorization_code"),
@@ -107,7 +108,9 @@ pub async fn exchange_code(req: &TokenExchangeRequest) -> Result<serde_json::Val
     if !status.is_success() {
         return Err(format!("token endpoint returned {status}"));
     }
-    read_token_response_limited(response, OAUTH_TOKEN_HTTP_MAX_RESPONSE_BYTES).await
+    read_token_response_limited(response, OAUTH_TOKEN_HTTP_MAX_RESPONSE_BYTES)
+        .await
+        .map_err(|e| e.to_string())
 }
 
 #[cfg(test)]
