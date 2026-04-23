@@ -750,12 +750,17 @@ fn promote_secrets_in_value(
             let Ok(payload_key) = FieldKey::new("value") else {
                 return;
             };
-            let Some(FieldValue::Literal(serde_json::Value::String(mode_key))) =
-                map.get(&mode_selector_key)
-            else {
-                return;
+            let resolved_key = match map.get(&mode_selector_key) {
+                Some(FieldValue::Literal(serde_json::Value::String(mode_key))) => {
+                    Some(mode_key.clone())
+                },
+                Some(_) => None,
+                None => mode.default_variant.clone(),
             };
-            let Some(var) = mode.variants.iter().find(|v| v.key == mode_key.as_str()) else {
+            let Some(var) = resolved_key
+                .as_deref()
+                .and_then(|mode_key| mode.variants.iter().find(|v| v.key == mode_key))
+            else {
                 return;
             };
             let Some(mv) = map.get_mut(&payload_key) else {

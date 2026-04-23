@@ -445,6 +445,19 @@ fn emits_invalid_key() {
 }
 
 #[test]
+fn emits_invalid_key_for_mode_variant_path_segment() {
+    let report = Schema::builder()
+        .add(Field::mode(field_key!("auth")).variant(
+            "oauth-token",
+            "OAuth",
+            Field::string(fk("token")),
+        ))
+        .build()
+        .unwrap_err();
+    assert!(has_code(&report, "invalid_key"));
+}
+
+#[test]
 fn emits_duplicate_key() {
     let report = Schema::builder()
         .add(Field::string(fk("x")))

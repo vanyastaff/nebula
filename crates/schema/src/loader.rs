@@ -133,14 +133,21 @@ fn redact_secrets_in_value_for_loader(field: &Field, value: &mut FieldValue) {
             let Ok(payload_key) = FieldKey::new("value") else {
                 return;
             };
-            let Some(FieldValue::Literal(Json::String(mode_key))) = map.get(&mode_selector_key)
-            else {
-                return;
-            };
-            let Some(var) = mode.variants.iter().find(|v| v.key == mode_key.as_str()) else {
-                return;
+            let resolved_key = match map.get(&mode_selector_key) {
+                Some(FieldValue::Literal(Json::String(mode_key))) => Some(mode_key.clone()),
+                Some(_) => None,
+                None => mode.default_variant.clone(),
             };
             let Some(mv) = map.get_mut(&payload_key) else {
+                return;
+            };
+            let Some(var) = resolved_key
+                .as_deref()
+                .and_then(|mode_key| mode.variants.iter().find(|v| v.key == mode_key))
+            else {
+                // If the active variant cannot be determined, over-redact the payload rather
+                // than risk exposing nested secret material to loader implementations.
+                *mv = FieldValue::Literal(Json::String(SECRET_REDACTED.to_owned()));
                 return;
             };
             redact_secrets_in_value_for_loader(&var.field, mv);
@@ -561,6 +568,49 @@ mod tests {
             panic!("expected mode literal, got {mode:?}");
         };
         assert_eq!(mode_key, "oauth");
+        let payload = map.get(&k("value")).expect("payload");
+        let FieldValue::Object(m) = payload else {
+            panic!("expected object payload, got {payload:?}");
+        };
+        assert_eq!(m.get(&k("client_secret")), Some(&redacted_literal()));
+        let id = m.get(&k("client_id")).expect("id");
+        let FieldValue::Literal(Json::String(s)) = id else {
+            panic!("expected client_id literal, got {id:?}");
+        };
+        assert_eq!(s, "visible");
+    }
+
+    #[test]
+    fn with_secrets_redacted_mode_object_without_mode_uses_default_variant() {
+        let schema = Schema::builder()
+            .add(
+                Field::mode("auth")
+                    .variant(
+                        "oauth",
+                        "OAuth",
+                        Field::object("creds")
+                            .add(Field::secret("client_secret"))
+                            .add(Field::string("client_id")),
+                    )
+                    .default_variant("oauth"),
+            )
+            .build()
+            .expect("valid schema");
+        let values = FieldValues::from_json(json!({
+            "auth": {
+                "value": {
+                    "client_secret": "top",
+                    "client_id": "visible"
+                }
+            }
+        }))
+        .expect("values");
+
+        let ctx = LoaderContext::new("k", values).with_secrets_redacted(&schema);
+        let auth = ctx.values.get_by_str("auth").expect("auth");
+        let FieldValue::Object(map) = auth else {
+            panic!("expected object envelope, got {auth:?}");
+        };
         let payload = map.get(&k("value")).expect("payload");
         let FieldValue::Object(m) = payload else {
             panic!("expected object payload, got {payload:?}");
