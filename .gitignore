@@ -170,9 +170,11 @@ docker-compose.override.yml
 lefthook-local.yml
 
 .agent/
+.agents/
 .cursor/
 .codex/
 .junie/
+.qoder/
 .specify/
 .cursorrules
 .aider*
