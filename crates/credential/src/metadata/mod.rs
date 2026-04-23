@@ -20,7 +20,7 @@ mod metadata;
 mod record;
 
 pub use id::CredentialId;
-pub use key::CredentialKey;
+pub use key::{CredentialKey, credential_key};
 pub use metadata::{
     CredentialMetadata, CredentialMetadataBuildError, CredentialMetadataBuilder,
     MetadataCompatibilityError,

@@ -18,6 +18,7 @@ define_ulid!(pub TriggerEventIdDomain => TriggerEventId, prefix = "evt");
 define_ulid!(pub UserIdDomain => UserId, prefix = "usr");
 define_ulid!(pub ServiceAccountIdDomain => ServiceAccountId, prefix = "svc");
 define_ulid!(pub ResourceIdDomain => ResourceId, prefix = "res");
+define_ulid!(pub CredentialIdDomain => CredentialId, prefix = "cred");
 define_ulid!(pub SessionIdDomain => SessionId, prefix = "sess");
 // OrganizationId duplicates OrgId with the same "org" prefix.
 #[deprecated(note = "Use OrgId instead")]
@@ -124,6 +125,7 @@ mod tests {
         let _ = UserId::new();
         let _ = ServiceAccountId::new();
         let _ = ResourceId::new();
+        let _ = CredentialId::new();
         let _ = SessionId::new();
         let _ = OrganizationId::new();
     }

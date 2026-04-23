@@ -168,7 +168,7 @@ pub use crate::{
     event::CredentialEvent,
     metadata::{
         CredentialId, CredentialKey, CredentialMetadata, CredentialMetadataBuilder,
-        CredentialRecord, MetadataCompatibilityError,
+        CredentialRecord, MetadataCompatibilityError, credential_key,
     },
     snapshot::{CredentialSnapshot, SnapshotError},
 };

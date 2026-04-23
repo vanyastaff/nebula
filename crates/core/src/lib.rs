@@ -14,7 +14,7 @@
 //! ## Public API
 //!
 //! - **Identifiers** — `ExecutionId` (`exe_…`), `WorkflowId` (`wf_…`), `NodeId`, `UserId`,
-//!   `TenantId`, `ProjectId`, `OrganizationId`, `ResourceId`, `RoleId`.
+//!   `TenantId`, `ProjectId`, `OrganizationId`, `ResourceId`, `CredentialId` (`cred_…`), `RoleId`.
 //! - **Keys** — `PluginKey`, `ActionKey`, `CredentialKey`, `ParameterKey`, `ResourceKey`, `NodeKey`
 //!   — normalized string keys with validation.
 //! - **Scope** — `ScopeLevel`, `Scope`, `Principal`, `ScopeResolver` (Global → … → Action).
@@ -94,8 +94,9 @@ pub mod prelude {
     // Identifiers (ULID-backed)
     #[expect(deprecated, reason = "OrganizationId re-exported for migration period")]
     pub use crate::id::{
-        AttemptId, ExecutionId, InstanceId, OrgId, OrganizationId, ResourceId, ServiceAccountId,
-        SessionId, TriggerEventId, TriggerId, UserId, WorkflowId, WorkflowVersionId, WorkspaceId,
+        AttemptId, CredentialId, ExecutionId, InstanceId, OrgId, OrganizationId, ResourceId,
+        ServiceAccountId, SessionId, TriggerEventId, TriggerId, UserId, WorkflowId,
+        WorkflowVersionId, WorkspaceId,
     };
     // Domain keys (normalized string keys)
     pub use crate::keys::{
