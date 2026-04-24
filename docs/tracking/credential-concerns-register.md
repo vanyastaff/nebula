@@ -59,6 +59,7 @@ All strategy-blocking findings resolved in Checkpoint 1 or deferred to spike val
 | critique-c10 | Triggers / multi-step / refresh-race compat not sketched in spike | strategy-blocking | locked-post-spike | Spike requires 5 compat sketches in NOTES.md (Strategy §Spike plan) |
 | critique-c11 | `Credential` trait heaviness un-flagged | tech-spec-material | decided | Strategy §3.6 — addition discipline policy (ADR/alt/dyn-impact required per new assoc type / method / flag) |
 | arch-phantom-shim-convention | Two-trait phantom-shim pattern with **per-capability** sealed placement for capability traits in `dyn` positions (amended post iter-2 — coherence-correct canonical form) | tech-spec-material | decided | [ADR-0035](../adr/0035-phantom-shim-capability-pattern.md) (amendments 2026-04-24-B applied: §3 per-capability Sealed canonical-form correction, §5 `'static` dropped, `Send + Sync` kept). Spike iter-1 validated blanket sub-trait (commit `acfec719`); iter-2 validated amended sealed form (commit `1c107144`). |
+| arch-capability-subtrait-split | Replace 4 capability bools (`INTERACTIVE`/`REFRESHABLE`/`REVOCABLE`/`TESTABLE`) + production `DYNAMIC` with sub-traits `Interactive`/`Refreshable`/`Revocable`/`Testable`/`Dynamic`. `Pending` assoc type moves under `Interactive`. Engine dispatchers bind `where C: Refreshable`. Closes silent-downgrade vector when const says `true` but method defaults to `NotSupported`. (Closes security-lead N1+N3+N5.) | tech-spec-material | decided | Tech Spec [§15.4](../superpowers/specs/2026-04-24-credential-tech-spec.md). Surfaced in 3-stakeholder consensus session 2026-04-24 (`docs/superpowers/specs/2026-04-24-credential-3agent-consensus-session.md`). П1 landing-gate compile-fail probe `tests/compile_fail_capability_subtrait.rs`. |
 
 ## Sealed / plugin / registration
 
@@ -67,7 +68,8 @@ All strategy-blocking findings resolved in Checkpoint 1 or deferred to spike val
 | draft-f8 | Sealed trait prevents plugin impls vs 400+ plugin goal | product-policy | policy-frozen | Strategy §2.1 — sealed for API surface cleanliness (not security); `#[plugin_credential]` escape hatch |
 | draft-f9 | Capability markers tie resource writers to credential crate | tech-spec-material | decided | Strategy §2.4 — accepted trade-off; markers live in credential crate |
 | critique-c16 | Plugin registration mechanism for 3rd-party | tech-spec-material | decided | Explicit `register::<C>()` in plugin init (Strategy §2.1); `inventory`-style rejected (cross-crate unreliable) |
-| arch-signing-infra | Signed manifest infrastructure (desktop / self-hosted / cloud trust anchors) | sub-spec | pending-sub-spec | Separate sub-spec per Strategy §2.1; macro works without signing until infra lands |
+| arch-signing-infra | Signed manifest infrastructure (desktop / self-hosted / cloud trust anchors) | sub-spec | pending-sub-spec | Separate sub-spec per Strategy §2.1; macro works without signing until infra lands. Cross-ref: Tech Spec §15.6 fatal duplicate-KEY is interim mitigation pending signing-infra long-term defense. |
+| arch-registry-duplicate-fail-closed | `CredentialRegistry::register<C>` returns `Result<(), DuplicateKey>` fatal in BOTH debug + release. Replaces current "panic in debug, warn + overwrite in release" pattern (§3.1 line 663). Silent credential takeover via supply-chain plugin / namespace collision blocked at startup. (Closes security-lead N7 — interim, until signing-infra lands.) | tech-spec-material | decided | Tech Spec [§15.6](../superpowers/specs/2026-04-24-credential-tech-spec.md). 3-stakeholder consensus session 2026-04-24. П1 landing-gate `tests/runtime_duplicate_key_fatal.rs`. |
 
 ## Patterns and service grouping
 
@@ -109,6 +111,7 @@ All strategy-blocking findings resolved in Checkpoint 1 or deferred to spike val
 |---|---|---|---|---|
 | draft-f22 | Accumulator state between multi-step flows not in `PendingStore` | sub-spec | pending-sub-spec | Atomic-only for Strategy; extended `PendingStore` with typed accumulator — separate spec when use case lands |
 | draft-f23 | `continue_resolve()` signature for step N | tech-spec-material | decided | Current signature handles OAuth2 single-continuation (atomic); extends when f22 sub-spec lands |
+| runtime-pending-consume-atomicity | `PendingStore::consume(id)` must be atomic `DELETE ... RETURNING` (Postgres) or transactional pop (SQLite). GC sweep adds 60s grace window: `DELETE FROM pending_credentials WHERE expires_at < now() - INTERVAL '60 seconds'`. Closes consume-vs-GC race (callback at t = expires_at - ε vs concurrent GC sweep). RUNTIME-gated, NOT compile-time-gated. (Closes security-lead N9.) | tech-spec-material | proposed | Tech Spec [§15.10](../superpowers/specs/2026-04-24-credential-tech-spec.md). 3-stakeholder consensus session 2026-04-24. П-later phase landing (NOT П1); concurrency test `tests/concurrency_pending_consume_vs_gc.rs`. |
 
 ## Execution-scoped credentials
 
@@ -144,7 +147,9 @@ All strategy-blocking findings resolved in Checkpoint 1 or deferred to spike val
 | draft-f31 | `DeserializeFromProvider` format-coupled | tech-spec-material | decided | Two-stage: `RawProviderOutput { bytes, metadata }` + `TryFrom<&RawProviderOutput>` for Scheme |
 | draft-f33 | `CredentialMetadata` static hardcoded — operator customization limits | tech-spec-material | decided | Two-layer: `::defaults()` + `::with_override(MetadataOverrides)` via registry or per-tenant config |
 | draft-f37 | `FieldSensitivity::Identifier` vs `Public` distinction not meaningful | implementation-phase | in-implementation | Collapse to `Public` / `Secret`; identifier hint → `FieldUi` metadata |
-| arch-authscheme-clone-zeroize | `AuthScheme: Clone` bound creates zeroization concerns for sensitive material (mTLS certs, signing keys — each clone duplicates plaintext in heap) | tech-spec-material | open | Two candidates: (a) relax `Clone` on `AuthScheme` trait (schemes opt in individually); (b) `CredentialGuard<S>` exposes accessors instead of clones. Strategy §3 mentions `CredentialGuard` RAII but spike iter-1 defers modeling (intentional). Tech Spec decides. Surfaced in iter-1 code review. |
+| arch-authscheme-clone-zeroize | `AuthScheme: Clone` bound creates zeroization concerns for sensitive material (mTLS certs, signing keys — each clone duplicates plaintext in heap) | tech-spec-material | decided | Tech Spec [§15.2](../superpowers/specs/2026-04-24-credential-tech-spec.md) — decision (a) relax `Clone` on `AuthScheme`; per-scheme opt-in. |
+| arch-scheme-sensitivity-dichotomy | Split `AuthScheme` → `SensitiveScheme: AuthScheme + ZeroizeOnDrop` + `PublicScheme: AuthScheme`. Removes "non-sensitive scheme carve-out" (§2.2 line 312) which was the rationale loophole for `WebhookUrlScheme` and similar URL-shaped secret bearers. Derive macros `#[auth_scheme(sensitive)]` / `#[auth_scheme(public)]` audit fields at expansion (forbid plain `String` for sensitive, forbid `SecretString` for public, name-based lint on `token`/`secret`/`key`/`password`). `OAuth2Token::bearer_header` returns `SecretString`; `ConnectionUri` exposes structured accessors. (Closes security-lead N2+N4+N10.) | tech-spec-material | decided | Tech Spec [§15.5](../superpowers/specs/2026-04-24-credential-tech-spec.md). 3-stakeholder consensus session 2026-04-24. П1 landing-gate `tests/compile_fail_scheme_sensitivity.rs`. |
+| arch-scheme-guard-factory | `Resource::on_credential_refresh` takes owned `SchemeGuard<'_, C>` (`!Clone + ZeroizeOnDrop`, lifetime-bound to call) instead of `&Scheme`. `SchemeFactory<C>` companion provides re-acquisition pattern for long-lived resources (HTTP connection pools, etc.) — resource never retains the Scheme. (Closes security-lead N8 + tech-lead technical gap (i).) | tech-spec-material | decided | Tech Spec [§15.7](../superpowers/specs/2026-04-24-credential-tech-spec.md). 3-stakeholder consensus session 2026-04-24. П1 landing-gate `tests/compile_fail_scheme_guard_retention.rs` + `tests/compile_fail_scheme_guard_clone.rs`. Worked example HTTP connection-pool resource embedded inline in §15.7. |
 
 ## Open / ambiguous
 
@@ -170,6 +175,7 @@ All strategy-blocking findings resolved in Checkpoint 1 or deferred to spike val
 | critique-c14 | Binary success/failed — no partial criteria | process | decided | Strategy §Spike plan — partial criteria explicit (≥4 resolved + blocker statement on rest) |
 | critique-c15 | `S1` path undefined | process | decided | Label removed everywhere; inline "accept current architecture, finish rollout cleanup only" |
 | critique-c17 | `ExecutionCredentialRef` typed distinction vs prefix convention | tech-spec-material | decided | Typed newtype (enforced on type level), not prefix-only (not type-enforceable) |
+| tech-spec-adoption-status | Tech Spec CP5 closure 2026-04-24 — adoption-deferred per Tech Spec §1.4.1 triggers: (a) consumer wall, (b) security-lead escalation, (c) 2026-10-24 half-life triggers re-decision (NOT auto-adoption). П1 (trait-shape scaffolding implementation) does not start until ANY trigger fires. Production code stays at current shape. Tech Spec stays canonical design reference. | process | decided | Tech Spec [§1.4.1](../superpowers/specs/2026-04-24-credential-tech-spec.md). 3-stakeholder consensus session 2026-04-24 (user + tech-lead + security-lead all signed off per §15.11 sign-off matrix). |
 
 ## Lifecycle (user-list)
 
@@ -244,6 +250,7 @@ All strategy-blocking findings resolved in Checkpoint 1 or deferred to spike val
 | user-disc-validation | Schema (shape) / semantic (test connection) / UX (form hints) | tech-spec-material | locked-post-spike | Tech Spec §9 — three-layer validation |
 | user-disc-discovery | Action finds "credentials I can accept" — matching logic | tech-spec-material | locked-post-spike | Tech Spec §9 — capability requirement declaration + service-marker match |
 | user-disc-binding | Action declares scope X needed → matches credential instance | tech-spec-material | decided | Strategy §2.3 + §3.3 — compile-time through capability sub-trait |
+| arch-metadata-capability-authority | `iter_compatible` Pattern 3 (`SlotType::CapabilityOnly`) trusts plugin-declared `metadata.capabilities_enabled` — plugin can self-attest false capabilities to appear in slot pickers it shouldn't satisfy. Resolution: compute `capabilities_enabled` at registration time from `C`'s sub-trait membership (post §15.4 split), not from plugin metadata. `CredentialMetadata::capabilities_enabled` field removed. Plugin cannot lie. (Closes security-lead N6.) | tech-spec-material | decided | Tech Spec [§15.8](../superpowers/specs/2026-04-24-credential-tech-spec.md). 3-stakeholder consensus session 2026-04-24. П1 landing-gate `tests/compile_fail_metadata_capability_field.rs`. |
 
 ## Redirect / flow (user-list)
 
@@ -304,16 +311,16 @@ All strategy-blocking findings resolved in Checkpoint 1 or deferred to spike val
 - **Product-policy rows** updated only when the product decision itself changes (via product ADR); independent of engineering cadence.
 - **Label / status counts audited** at every register revision — totals table rebuilt when rows are added, removed, or relabeled. Mismatched counts are a register bug.
 
-## Current totals (audited 2026-04-24 — after iter-1 review surfaced `arch-authscheme-clone-zeroize`)
+## Current totals (audited 2026-04-24 — after 3-stakeholder consensus session CP5 added 7 new rows)
 
 | Label | Count | Notes |
 |---|---|---|
 | strategy-blocking | 12 | All resolved in Strategy §2/§3 or locked-post-spike |
-| tech-spec-material | 83 | Most `locked-post-spike`; unlock with Tech Spec |
+| tech-spec-material | 89 | Most `locked-post-spike`; unlock with Tech Spec. CP5 added 6: arch-capability-subtrait-split, arch-registry-duplicate-fail-closed, arch-scheme-sensitivity-dichotomy, arch-scheme-guard-factory, arch-metadata-capability-authority, runtime-pending-consume-atomicity |
 | sub-spec | 16 | Each row has a landing-order entry in Strategy §4.3 |
 | implementation-phase | 4 | Routine execution tasks |
 | product-policy | 7 | Frozen or awaiting product-level decision |
-| process | 8 | Findings about the redesign workstream itself |
-| **Total** | **130** | Counts audited at each register revision |
+| process | 9 | Findings about the redesign workstream itself; CP5 added 1: tech-spec-adoption-status |
+| **Total** | **137** | Counts audited at each register revision |
 
 Totals rebuilt on every register revision — see maintenance rules below.

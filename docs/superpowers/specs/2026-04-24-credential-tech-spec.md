@@ -1,6 +1,6 @@
 ---
 name: credential tech spec (implementation-ready design)
-status: Checkpoint 1 — §0–§3 written. §4–§16 follow in Checkpoints 2a/2b/3/4.
+status: complete CP5 (consensus closure 2026-04-24, adoption-deferred per §1.4 triggers). Built incrementally Checkpoint 1-4 (§0-§16); CP5 amendments §15.3-§15.11 added 2026-04-24 post 3-stakeholder consensus session.
 date: 2026-04-24
 authors: [vanyastaff, Claude]
 scope: cross-cutting — nebula-credential, nebula-credential-builtin (NEW), nebula-storage, nebula-engine, nebula-api, nebula-resource, nebula-action
@@ -22,6 +22,10 @@ related:
 ## §0 Meta
 
 **Scope of this document.** Implementation-ready design for the credential subsystem. Built on top of the frozen [Strategy Document](2026-04-24-credential-redesign-strategy.md) (Checkpoint 3, commit `4316a292`) and [ADR-0035](../../adr/0035-phantom-shim-capability-pattern.md) (amended 2026-04-24-B post spike iter-2).
+
+**Builds on completed P6-P11 cleanup.** ADRs [0028](../../adr/0028-cross-crate-credential-invariants.md) (cross-crate invariants), [0029](../../adr/0029-storage-owns-credential-persistence.md) (storage owns persistence), [0030](../../adr/0030-engine-owns-credential-orchestration.md) (engine owns orchestration), [0031](../../adr/0031-api-owns-oauth-flow.md) (API owns OAuth HTTP), [0032](../../adr/0032-credential-store-canonical-home.md) (CredentialStore home), [0033](../../adr/0033-integration-credentials-plane-b.md) (Plane B integration credentials), and [0034](../../adr/0034-schema-secret-value-credential-seam.md) (SecretValue schema seam) are all accepted. All 6 phases (P6-P11) marked **Landed** per [`docs/superpowers/plans/2026-04-20-credential-cleanup-p6-p11.md`](../plans/2026-04-20-credential-cleanup-p6-p11.md) lines 26-33. Tech Spec assumes the post-cleanup architecture: `nebula-credential` = pure contract trait + scheme DTOs + §12.5 primitives; `nebula-storage` owns persistence layers (`EncryptionLayer` / `CacheLayer` / `AuditLayer` / `ScopeLayer` + `KeyProvider`); `nebula-engine` owns orchestration (`CredentialResolver` / `RefreshCoordinator` / rotation scheduler / `token_refresh.rs` HTTP); `nebula-api` owns OAuth flow HTTP ceremony (`oauth_controller.rs` / `flow.rs` / `state.rs`).
+
+**Tech Spec re-shapes the contract trait, not the layer boundaries.** Amendments §15.3-§15.10 (added 2026-04-24 CP5 per 3-stakeholder consensus session) introduce capability sub-trait split, `AuthScheme` sensitivity dichotomy, fatal duplicate-KEY registration, `SchemeGuard` + `SchemeFactory` for refresh hook, capability-from-type authority, and `PendingStore::consume` atomicity contract. **The sub-trait split (§15.4) preserves ADR-0035 phantom-shim dyn-safety** — Pattern 2 / Pattern 3 `dyn XPhantom` continues to work; if `dyn Refreshable` etc. are needed for runtime dispatch, parallel phantom shims are introduced via the same ADR-0035 mechanism (or ADR-0035 superseded if a structural gap surfaces during П1 scaffolding).
 
 **Reading order.** §0 → §1 (scope & audience) → §2 (trait contract) → §3 (runtime model) → §4 (lifecycle) → §5 (storage schema) → §6 (security) → §7 (operational) → §8 (testing) → §9–§13 (interface) → §14–§16 (meta + open items + handoff).
 
@@ -120,6 +124,16 @@ Tech Spec is one level below Strategy in the authority chain:
 | Implementation plans | Phased execution | Plan revision |
 
 **Register** (`docs/tracking/credential-concerns-register.md`) is a living tracking surface. Tech Spec sections land → register rows update from `locked-post-spike` to `decided` with Tech Spec pointer. Zero silent drops per register maintenance rule.
+
+### §1.4.1 Adoption rationale (honest framing — added CP5)
+
+No plugin author or built-in credential type has articulated an adoption-blocking wall as of 2026-04-24. Tech Spec adoption is **structural-quality improvement** layered on completed P6-P11 cleanup, not consumer-pressure-driven. Reference-quality status holds until ANY of:
+
+1. **(a) Consumer wall** — a plugin author or builtin credential type hits a documented wall under the current trait shape. Documentation in a Tech Spec adoption-trigger row in [`docs/tracking/credential-concerns-register.md`](../../tracking/credential-concerns-register.md) is the trigger condition.
+2. **(b) Security-lead escalation** — security-lead recommends adoption (e.g., compromise findings reframe priority, new findings beyond N1-N10).
+3. **(c) Half-life review** — 2026-10-24 (6 months from CP5 closure) **triggers a re-decision**, not auto-adoption. The half-life is a scheduled re-evaluation point: re-engage the 3-stakeholder consensus session, evaluate adoption signal vs cost, decide whether П1 is justified. A trigger fires the question, not the answer.
+
+Until ANY trigger fires, П1 (trait-shape scaffolding implementation per §16.1) does not start. **Production code in `crates/credential/src/contract/credential.rs` stays at current shape.** Tech Spec stays canonical design reference. This is recorded in [`docs/MATURITY.md`](../../MATURITY.md) (`nebula-credential` row notes "trait redesign at design-closure status; П1 implementation gated on §1.4.1 triggers"); also tracked register-side in row `tech-spec-adoption-status` (proposed CP5).
 
 ### §1.5 Success criteria
 
@@ -3067,6 +3081,468 @@ The trade-off — some patterns require `Arc<S>` or borrowed access for non-clon
 
 Register row `arch-authscheme-clone-zeroize` flips from `open` → `decided` with pointer to this Tech Spec §15.2.
 
+### §15.3 Compile-time vs runtime gating model (introduced by 3-agent consensus session 2026-04-24)
+
+The 3-agent consensus session (`docs/superpowers/specs/2026-04-24-credential-3agent-consensus-session.md`) closed adoption review with security-lead enumeration of N1-N10 structural findings (1 CRITICAL + 6 HIGH + 3 MEDIUM). Resolution model: **two-gate landing** — П1 closes 8 compile-time amendments; later phases close 4 runtime-only checks. **§15 amendments below capture the design closure**, not the implementation. Production code stays at current shape until П1 trigger fires per §1.4.
+
+**Compile-time-gated amendments** (close at П1 landing):
+- §15.4 — Capability sub-trait split (closes N1 / N3 / N5)
+- §15.5 — `AuthScheme` sensitivity dichotomy (closes N2 / N10)
+- §15.6 — Fatal duplicate-KEY registration (closes N7)
+- §15.7 — `SchemeGuard` + `SchemeFactory` for refresh hook (closes N8 + tech-lead gap (i))
+- §15.8 — Capability-from-type, not metadata (closes N6)
+- §15.9 — `SecretString` accessors on composite-URL schemes (closes N4)
+
+Each compile-time amendment has a corresponding **`tests/compile_fail_*.rs`** probe, mandatory per tech-lead condition 3. cargo-public-api snapshot alone catches surface drift but not semantic regression — compile-fail probes are required.
+
+**Runtime-gated checks** (close at later phases — П2/П-later):
+- §15.10 — `PendingStore::consume` atomicity contract (closes N9 — runtime, not trait shape)
+- Tracing-filter for SecretString-bearing fields (defense-in-depth on §15.5; lives in `nebula-log` subscriber config, not credential crate)
+- Signed-manifest for plugin registry (`arch-signing-infra` sub-spec queue #7, post-MVP — N7's structural defense beyond fatal duplicate-KEY)
+- Metadata-vs-type cross-check at registration (defense-in-depth on §15.8; runtime panic if metadata.service_key disagrees with `<C::Scheme>::pattern()`)
+
+**Disambiguation:** N1-N10 in §15.3-§15.10 refers to the **fresh enumeration from the 2026-04-24 consensus session**, derived from landed Tech Spec CP4 + production code. A separate "round-2" enumeration in `agent-memory-local/security-lead/project_credential_redesign_round2_2026-04-24.md` references the (deleted) exploratory drafts and uses different N-numbering. Cross-mapping in the consensus session document, §"Round 5 — N1-N10 enumeration disambiguation".
+
+### §15.4 Capability sub-trait split — `Interactive` / `Refreshable` / `Revocable` / `Testable` / `Dynamic`
+
+**Open question** (surfaced by security-lead N3+N5, formalized by 3-agent consensus session). The current trait shape (§2.1 + production `crates/credential/src/contract/credential.rs:130-160`) declares capabilities as `const X: bool = false` flags with **defaulted method bodies** for the corresponding methods (`continue_resolve` defaults to `Err(NotInteractive)`; `refresh` defaults to `Ok(NotSupported)`; `revoke` defaults to `Ok(())`; `test` defaults to `Ok(None)`; `release` defaults to `Ok(())`). A plugin author setting `const REFRESHABLE: bool = true` while forgetting to override `refresh()` produces a credential that **declares** refresh capability but **silently** returns `NotSupported` at runtime — engine treats as `Ok` outcome, no error classification, credential never refreshes, eventually expires in production with no alert. Same pattern for the other four capabilities.
+
+**Three candidates considered:**
+
+**(a) Replace bools with capability sub-traits.** `Interactive`, `Refreshable`, `Revocable`, `Testable`, `Dynamic` each extend `Credential` and require the corresponding method without default. Engine dispatchers bound by `where C: Refreshable`. `Pending` associated type moves under `Interactive`. Production `DYNAMIC`/`LEASE_TTL`/`release()` map to `Dynamic` sub-trait with no capability lost.
+
+```rust
+pub trait Credential: sealed::Sealed + Send + Sync + 'static {
+    type Input: HasInputSchema + Send + Sync + 'static;
+    type Scheme: AuthScheme;
+    type State: CredentialState + Send + Sync + ZeroizeOnDrop + 'static;
+    const KEY: &'static str;
+
+    fn metadata() -> CredentialMetadata where Self: Sized;
+    fn project(state: &Self::State) -> Self::Scheme where Self: Sized;
+    async fn resolve(ctx: &CredentialContext<'_>, input: &Self::Input)
+        -> Result<ResolveResult<Self::State, ()>, ResolveError>
+    where Self: Sized;
+}
+
+pub trait Interactive: Credential {
+    type Pending: PendingState + Send + Sync + ZeroizeOnDrop + 'static;
+    async fn continue_resolve(
+        pending: &Self::Pending,
+        input: &UserInput,
+        ctx: &CredentialContext<'_>,
+    ) -> Result<ResolveResult<Self::State, Self::Pending>, ResolveError>;
+}
+
+pub trait Refreshable: Credential {
+    const REFRESH_POLICY: RefreshPolicy = RefreshPolicy::DEFAULT;
+    async fn refresh(state: &mut Self::State, ctx: &CredentialContext<'_>)
+        -> Result<RefreshOutcome, RefreshError>;
+}
+
+pub trait Revocable: Credential {
+    async fn revoke(state: &mut Self::State, ctx: &CredentialContext<'_>)
+        -> Result<(), RevokeError>;
+}
+
+pub trait Testable: Credential {
+    async fn test(scheme: &Self::Scheme, ctx: &CredentialContext<'_>)
+        -> Result<TestResult, TestError>;
+}
+
+pub trait Dynamic: Credential {
+    const LEASE_TTL: Option<Duration> = None;
+    async fn release(&self, state: &Self::State, ctx: &CredentialContext<'_>)
+        -> Result<(), ReleaseError>;
+}
+```
+
+Engine refresh dispatcher becomes:
+
+```rust
+impl RefreshDispatcher {
+    pub(crate) fn for_credential<C: Refreshable>() -> Self { /* ... */ }
+}
+```
+
+A non-`Refreshable` credential cannot be passed — `E0277` at compile site.
+
+Pros: silent-downgrade vector eliminated at type level (the failure class N3+N5 names is structurally impossible). Per-capability impl declaration is easier to read than "set bool + override method". Engine dispatchers become statically-typed, eliminating runtime branch checks. `Pending` moves to `Interactive`, removing the `NoPendingState` companion type for non-interactive credentials.
+
+Cons: 5 extra trait names to maintain. Derive macros (`#[plugin_credential]`) need to detect which capabilities to emit per scheme. Plugin authors writing capability declarations explicitly is a one-time learning cost.
+
+**(b) Keep bools, remove default bodies.** Plugin must override every method even if returning `Ok(NotSupported)`. Engine dispatchers stay runtime-gated on the bool.
+
+Pros: minimal trait surface change. Cons: doesn't eliminate the silent-downgrade class — `REFRESHABLE = true` + `refresh() { Ok(NotSupported) }` is still legal. Just makes the silence explicit instead of defaulted. Doesn't fix engine static-dispatch.
+
+**(c) Const-generic dispatch via associated type marker.** `<C as Credential>::Refreshable: TypeMarker` where TypeMarker is a sealed marker trait. Compile-time match.
+
+Pros: keeps single-trait shape. Cons: requires unstable specialization or feature-gated nightly; not viable on stable Rust 1.95.
+
+**Decision: (a).** Capability sub-trait split.
+
+**Rationale summary.** Security-lead N3 + N5 identify the silent-downgrade class as 🟠 HIGH. Tech-lead's "2am test" (3am pager when token expires + no refresh) confirms the priority. Sub-trait split moves the failure mode from "documented contract that plugins must follow" to "compile error if violated" — the strongest possible mitigation. Cost (5 extra trait names) is below the threshold for over-engineering per consensus session decision: power-AND-safety user goal is satisfied because explicit per-capability declaration is **more** expressive (each capability is a typed concept), not less.
+
+**Composition with ADR-0035 phantom-shim.** Sub-trait split is **orthogonal** to phantom-shim. Pattern 2 / Pattern 3 dyn-safety preserves: `dyn BitbucketBearerPhantom` continues to work because phantom-shim shields the unspecified-assoc-types problem. `dyn Refreshable` would inherit the same problem (4 assoc types still unspecified); if needed for runtime dispatch (e.g., engine dynamic refresh registry), a parallel phantom `dyn RefreshablePhantom` is introduced — ADR-0035 pattern repeated. Detected at П1 scaffolding; if phantom-shim itself surfaces an unsupported case, supersede ADR-0035 per tech-lead's standing rule (ADRs are revisable).
+
+**Implementation impact (П1 scope):**
+
+1. `crates/credential/src/contract/credential.rs` — `Credential` trait reduced; new sub-traits added in `crates/credential/src/contract/{interactive,refreshable,revocable,testable,dynamic}.rs`.
+2. `crates/credential/src/credentials/{api_key,basic_auth,oauth2}.rs` — built-in credentials updated to declare `impl Refreshable for OAuth2Credential` etc. as appropriate.
+3. `crates/engine/src/credential/rotation/` — `RefreshDispatcher::for_credential<C: Refreshable>` bound. Compile-fail probe: `Engine::refresh::<NonRefreshableCred>()` rejected.
+4. `nebula-credential-builtin` — `#[plugin_credential]` macro detects scheme + emits appropriate sub-trait impls. `#[capability(refreshable)]` opt-in syntax.
+5. **Compile-fail probe** `tests/compile_fail_capability_subtrait.rs` — credential declaring `impl Refreshable` without `refresh()` body fails to compile (4 cases, one per refreshable/revocable/testable/dynamic; interactive subsumed by `Pending` assoc type).
+
+Register row `arch-capability-subtrait-split` opens with `decided` status pointing to this section.
+
+### §15.5 `AuthScheme` sensitivity dichotomy — `SensitiveScheme` vs `PublicScheme`
+
+**Open question** (surfaced by security-lead N2 + N10). `AuthScheme` (§2.2) has no compile-time way to express that an implementation contains secret material — every plugin-authored scheme is reviewer-gated for "field shapes use SecretString correctly." A plugin can write `pub struct MyScheme { pub token: String }` with plain `String` for a token; `impl AuthScheme for MyScheme {}` accepts it; `Debug` printing leaks the token; `Serialize` for telemetry leaks; every clone-site without redaction leaks. The §2.2 line 312 carve-out for "non-sensitive schemes" is the rationale loophole exploited by the (currently absent) `WebhookUrlScheme` — knowing a webhook URL IS knowing the bearer secret, but the §2.2 carve-out treats URL-shaped schemes as exempt.
+
+**Two candidates considered:**
+
+**(a) Split `AuthScheme` into sensitive vs public sub-traits.**
+
+```rust
+pub trait AuthScheme: Send + Sync + 'static {}
+pub trait SensitiveScheme: AuthScheme + ZeroizeOnDrop {}
+pub trait PublicScheme: AuthScheme {}
+// Mutually exclusive: a scheme is one or the other (or technically both if
+// declared, but the macro forbids).
+```
+
+Derive macros `#[auth_scheme(sensitive)]` and `#[auth_scheme(public)]` audit fields at expansion: `sensitive` requires every field to be `SecretString` / `SecretBytes` / nested `SensitiveScheme`; `public` requires no field to be `SecretString`. Field-name lint catches `token` / `secret` / `key` / `password` / `bearer` — those names default to sensitive even if typed `String` (forces explicit author choice).
+
+Pros: every scheme has a typed sensitivity declaration. Reviewer can read `impl SensitiveScheme for X` and immediately know the contract. `WebhookUrlScheme` (when added) declares `SensitiveScheme` because its URL IS the secret. `InstanceBinding` (genuinely no secrets — provider/role/region identifiers) declares `PublicScheme` and gets no `ZeroizeOnDrop` overhead. Field audit at derive time catches plain `String` for sensitive fields with `E0277`.
+
+Cons: derive-macro complexity increases. `nebula-credential-macros` needs field-type and field-name introspection.
+
+**(b) Single `AuthScheme` + associated `const SENSITIVITY: SchemeSensitivity` + derive-time field audit.**
+
+Pros: one less trait. Cons: const enum value vs impl-of-trait is weaker compile-time signal — readers must inspect const value rather than trait impl. `dyn SchemeWithSensitivity { c: SchemeSensitivity::Sensitive, ... }` still requires runtime branching for "is this sensitive?" use cases.
+
+**Decision: (a).** Split into `SensitiveScheme` + `PublicScheme`.
+
+**Rationale summary.** The non-sensitive carve-out has a precedent for misuse (security-lead N10 specifically about `WebhookUrlScheme`). Mandatory typed sensitivity declaration removes the rationalization path. `ZeroizeOnDrop` overhead on `PublicScheme` is zero (trait has no methods); `SensitiveScheme: ZeroizeOnDrop` ensures plaintext drops from heap deterministically.
+
+**Implementation impact (П1 scope):**
+
+1. `crates/credential/src/contract/scheme.rs` — `AuthScheme` reduced to base; `SensitiveScheme` + `PublicScheme` added.
+2. `crates/credential/src/scheme/*.rs` — each scheme file updated:
+   - `BearerScheme`, `BasicScheme`, `SigV4Scheme`, `TlsIdentityScheme`, `OAuth2Token`, `KeyPair`, `Certificate`, `SigningKey`, `FederatedAssertion`, `ChallengeSecret`, `OtpSeed`, `ConnectionUri`, `SharedKey` → `SensitiveScheme`
+   - `InstanceBinding` (provider + role + region; no secret) → `PublicScheme`
+   - `Coercion` (transformer; no own secret) → `PublicScheme` if no embedded sensitive material; else `SensitiveScheme`
+3. `WebhookUrlScheme` (if added per N10 / `draft-f35` Trigger sub-spec) — declared `SensitiveScheme` with URL wrapped in `SecretString`. URL accessor returns `&SecretString`.
+4. **`OAuth2Token::bearer_header(&self)` returns `SecretString`**, not `String` — closes N4 inline. (No separate §15 amendment for §15.9 SecretString accessors needed; consolidated here.)
+5. **`ConnectionUri`** — closes N4. Restructured to:
+   ```rust
+   pub struct ConnectionUri {
+       scheme: String,                        // "postgres"
+       host: String,                          // safe to log
+       port: Option<u16>,
+       database: String,
+       username: String,
+       password: SecretString,
+   }
+   impl ConnectionUri {
+       pub fn host(&self) -> &str { &self.host }
+       pub fn port(&self) -> Option<u16> { self.port }
+       pub fn database(&self) -> &str { &self.database }
+       pub fn username(&self) -> &str { &self.username }
+       pub fn password(&self) -> &SecretString { &self.password }
+       pub fn as_url(&self) -> SecretString { /* reconstruct full URL inside SecretString */ }
+   }
+   impl SensitiveScheme for ConnectionUri {}
+   ```
+   Driver injection sites use `.expose_secret()` on `as_url()` exactly once, at FFI boundary.
+6. §6.7 zeroize-invariants table: every "convention" row converted to "compile-time" row citing the trait bound responsible (per security-lead sign-off condition 5).
+7. **Compile-fail probe** `tests/compile_fail_scheme_sensitivity.rs` — covers: (a) `impl SensitiveScheme for X` where `X` has plain `String` field for token-named field, (b) `impl PublicScheme for X` where `X` has `SecretString` field, (c) `impl SensitiveScheme for X` without `ZeroizeOnDrop` derive.
+8. §2.2 line 312 carve-out paragraph removed and replaced with reference to this §15.5.
+
+Register row `arch-scheme-sensitivity-dichotomy` opens with `decided` status.
+
+### §15.6 Fatal duplicate-KEY registration — `Result<(), DuplicateKey>`
+
+**Open question** (surfaced by security-lead N7). `CredentialRegistry::register<C>` (§3.1 line 664) currently signatures as `pub fn register<C: Credential>(&mut self, instance: C)`. Per §3.1 lines 662-663: "Duplicate keys are a programming error — panic in debug, warn + overwrite in release (instrumented)." In production, two plugins shipping with the same `KEY` (e.g., `"slack.oauth2"`) result in the second overwriting the first with only a `tracing::warn!` log. If the overwriting plugin is malicious (supply-chain), stale (wrong version), or simply a name collision between first-party and third-party crate, every `CredentialRef<SlackOAuth2>` resolves against the rogue credential — including its `resolve()`, `refresh()`, and stored state. The warn-log is the only signal, easily lost in the noise of startup logging.
+
+**Two candidates considered:**
+
+**(a) Fatal duplicate-KEY in BOTH debug and release; `register` returns `Result<(), RegisterError>`.**
+
+```rust
+#[derive(Debug, Clone, thiserror::Error)]
+pub enum RegisterError {
+    #[error("duplicate credential key '{key}': existing crate {existing_crate}, new crate {new_crate}")]
+    DuplicateKey {
+        key: &'static str,
+        existing_crate: &'static str,
+        new_crate: &'static str,
+    },
+}
+
+impl CredentialRegistry {
+    pub fn register<C: Credential + CredentialMetadataSource>(
+        &mut self,
+        instance: C,
+    ) -> Result<(), RegisterError> {
+        let key: &'static str = C::KEY;
+        if let Some(existing) = self.entries.get(key) {
+            return Err(RegisterError::DuplicateKey {
+                key,
+                existing_crate: existing.crate_name(),
+                new_crate: env!("CARGO_CRATE_NAME"),
+            });
+        }
+        self.entries.insert(key, Box::new(instance));
+        Ok(())
+    }
+}
+```
+
+Plugin init uses `registry.register(MyCred::new())?` — duplicate is fatal at startup. Operator must resolve via plugin uninstall, version pin, or namespace fix.
+
+Pros: silent overwrite eliminated. Operator gets a clear, actionable error. Plugin name collision becomes a hard startup failure, not a runtime stealth issue.
+
+Cons: existing init code in built-in plugins must add `?` propagation. Operator-facing error must be readable.
+
+**(b) Retain warn+overwrite, gate behind config flag `allow_credential_overrides: false` default.**
+
+Pros: backward-compat — existing init code doesn't break. Cons: still allows the hazard if operator misconfigures; relies on operator awareness; weaker default-safe posture.
+
+**Decision: (a).** Fatal duplicate-KEY, `Result<(), RegisterError>`.
+
+**Rationale summary.** Silent credential takeover (security-lead N7) is a 🟠 HIGH severity issue. Default behavior must be fail-closed. Operator can resolve via explicit action; default-permissive overwrite path is a worse default than default-strict-with-explicit-error. Fail-closed at startup beats fail-stealthily at runtime.
+
+**Implementation impact (П1 scope):**
+
+1. `crates/credential/src/contract/registry.rs` (or wherever `CredentialRegistry` lives in the post-cleanup structure) — `register` returns `Result<(), RegisterError>`. `RegisterError` added to error taxonomy.
+2. Built-in plugin init code (`crates/credential/src/credentials/{api_key,basic_auth,oauth2}.rs` registration sites) — `?` propagation added.
+3. **Compile-fail probe is not applicable** here — duplicate-KEY collision is data-dependent (same string in two crates), not statically detectable across crates. Instead: **runtime test** `tests/runtime_duplicate_key_fatal.rs` verifies `register` returns `RegisterError::DuplicateKey` on second registration of same KEY; engine startup harness verifies fatal.
+4. **Long-term defense beyond fatal duplicate-KEY:** `arch-signing-infra` sub-spec (queue #7, post-MVP) — signed plugin manifests prove provenance, eliminating supply-chain risk entirely. §15.6 is the interim mitigation pending signing infra.
+
+Register row `arch-registry-duplicate-fail-closed` opens with `decided` status. Sub-spec `arch-signing-infra` row updated with §15.6 cross-reference.
+
+### §15.7 `SchemeGuard` + `SchemeFactory` for refresh hook
+
+**Open question** (surfaced by security-lead N8 + tech-lead technical gap (i)). `Resource::on_credential_refresh(&self, new_scheme: &Scheme)` (§3.6) takes a borrowed `&Scheme`. A `Resource` impl can:
+- Clone the scheme into a side-channel field (`Arc<Scheme>` retention) if `Scheme: Clone`.
+- Keep the borrow's lifetime if the resource holds the reference past the call (compile-time barrier exists, but smuggling via `unsafe` or `transmute` is reviewer-only-detectable).
+- Under async cancellation: a dropped future holding `&Scheme` mid-call leaves the resource with stale Scheme reference if the resource captured it pre-await.
+
+Tech-lead's framing: resources retaining a Scheme across requests need a **factory, not `&new_scheme`**.
+
+**Decision** (single candidate; no alternatives evaluated because the requirements are tightly constrained).
+
+**`SchemeGuard<'a, C: Credential>` — owned, `!Clone`, `ZeroizeOnDrop`, `Deref<Target = C::Scheme>`.**
+
+```rust
+pub struct SchemeGuard<'a, C: Credential> {
+    scheme: <C as Credential>::Scheme,
+    _lifetime: PhantomData<&'a ()>,
+}
+
+impl<'a, C: Credential> SchemeGuard<'a, C> {
+    // Constructed by engine; not constructible by Resource impls.
+    pub(crate) fn new(scheme: <C as Credential>::Scheme) -> Self { ... }
+}
+
+impl<'a, C: Credential> Deref for SchemeGuard<'a, C> {
+    type Target = <C as Credential>::Scheme;
+    fn deref(&self) -> &Self::Target { &self.scheme }
+}
+
+impl<'a, C: Credential> Drop for SchemeGuard<'a, C> { /* zeroize */ }
+
+// Crucially: NO `Clone`, NO `Send` if Scheme contains !Send material;
+// lifetime parameter prevents storage in struct fields outliving the call.
+
+// New §3.6 hook signature:
+pub trait Resource: Send + Sync {
+    type Credential: Credential;
+    type Error: std::error::Error;
+
+    async fn on_credential_refresh<'a>(
+        &self,
+        new_scheme: SchemeGuard<'a, Self::Credential>,
+    ) -> Result<(), Self::Error> {
+        let _ = new_scheme;
+        Ok(())  // Default no-op
+    }
+}
+```
+
+**`SchemeFactory<C>` companion — for long-lived resources needing re-acquisition, not retention.**
+
+```rust
+/// Engine provides this to long-lived resources at construction.
+/// Resource invokes factory on each request (or pool refresh) to get a
+/// fresh SchemeGuard. Resource never retains the Scheme itself.
+pub struct SchemeFactory<C: Credential> {
+    inner: Arc<dyn Fn() -> BoxFuture<'static, Result<SchemeGuard<'static, C>, AcquireError>>
+        + Send + Sync>,
+}
+
+impl<C: Credential> SchemeFactory<C> {
+    pub async fn acquire(&self) -> Result<SchemeGuard<'_, C>, AcquireError> {
+        (self.inner)().await
+    }
+}
+```
+
+**Worked example — HTTP connection-pool resource with refreshable OAuth2 bearer** (per tech-lead condition 5):
+
+```rust
+// Hypothetical resource: long-lived HTTPS pool that authenticates with an
+// OAuth2 bearer token. Bearer rotates every ~30 minutes via Refreshable.
+// Pool must not retain the SchemeGuard, but needs a fresh bearer per request.
+
+pub struct OAuth2HttpPool {
+    pool: reqwest::Client,
+    bearer_factory: SchemeFactory<MyOAuth2Credential>,
+}
+
+impl Resource for OAuth2HttpPool {
+    type Credential = MyOAuth2Credential;
+    type Error = OAuth2HttpPoolError;
+
+    async fn on_credential_refresh<'a>(
+        &self,
+        new_scheme: SchemeGuard<'a, MyOAuth2Credential>,
+    ) -> Result<(), Self::Error> {
+        // Optional: bust per-pool cached bearer. Most pools just rely on
+        // factory.acquire() per request — `on_credential_refresh` becomes
+        // a notification hook rather than a state-update path.
+        // SchemeGuard drops at end of this fn; no retention possible.
+        let _ = new_scheme;
+        Ok(())
+    }
+}
+
+impl OAuth2HttpPool {
+    pub async fn fetch(&self, url: &str) -> Result<reqwest::Response, OAuth2HttpPoolError> {
+        // Fresh bearer per request — factory zeroizes at scope exit.
+        let bearer_guard = self.bearer_factory.acquire().await?;
+        let bearer = bearer_guard.bearer_header();  // returns SecretString per §15.5
+        self.pool.get(url)
+            .header("Authorization", bearer.expose_secret())
+            .send()
+            .await
+            .map_err(Into::into)
+    }
+}
+```
+
+Pool engineer reads this and sees: `SchemeGuard` lives only inside `fetch()`, drops at function return, zeroizes deterministically. Refresh hook is a notification, not a retention path. Factory is the re-acquisition mechanism. The compile-fail probe verifies the structural property.
+
+**Implementation impact (П1 scope):**
+
+1. `crates/credential/src/contract/scheme.rs` — `SchemeGuard<'a, C>` and `SchemeFactory<C>` types added.
+2. `crates/resource/src/contract.rs` (or equivalent) — `Resource` trait `on_credential_refresh` signature updated.
+3. **Compile-fail probe** `tests/compile_fail_scheme_guard_retention.rs` — `Resource` impl that stores `SchemeGuard` in a struct field outlasting the call fails to compile (`E0597` lifetime error).
+4. **Compile-fail probe** `tests/compile_fail_scheme_guard_clone.rs` — `let g2 = guard.clone()` fails (`E0599` no `clone` method).
+5. Cancellation-safety contract documented inline in §3.6: `on_credential_refresh` must be cancel-safe; future drops zeroize `SchemeGuard` deterministically.
+
+Register row `arch-scheme-guard-factory` opens with `decided` status.
+
+### §15.8 Capability-from-type, not from metadata — `iter_compatible` authority shift
+
+**Open question** (surfaced by security-lead N6). §9.4 `iter_compatible` (line 2418-2427) filters credentials by `cred.metadata().capabilities_enabled.contains(*capability)`. The `capabilities_enabled: Capabilities` field (§9.2 line 2348) lives in plugin-authored `CredentialMetadata`. A misbehaving or compromised plugin sets `capabilities_enabled = Capabilities::ALL` to appear in slot pickers it shouldn't satisfy — Pattern 3 (`SlotType::CapabilityOnly`) accepts it without service-key cross-check, and the §15.6 fatal-duplicate-KEY mitigation does not catch this hazard (different KEY, same false capability claim).
+
+**Two candidates considered:**
+
+**(a) Compute `capabilities_enabled` at registration from sub-trait membership; remove the field from plugin-authored `CredentialMetadata`.**
+
+After §15.4 sub-trait split, capability membership is a typed property: `C: Refreshable` is or is not satisfied at compile time. `CredentialRegistry::register<C>` introspects (via blanket-trait detection or generated capability table) and **constructs** `capabilities_enabled` itself, overriding any plugin-supplied value. Plugin's `CredentialMetadata` no longer has the field.
+
+```rust
+// At registration time:
+fn compute_capabilities<C: Credential>() -> Capabilities {
+    let mut caps = Capabilities::empty();
+    // Detection mechanism — emitted by #[plugin_credential] macro at impl site:
+    if <C as plugin_capability_report::Refreshable>::IS_REFRESHABLE { caps.insert(Capability::Refreshable); }
+    if <C as plugin_capability_report::Revocable>::IS_REVOCABLE { caps.insert(Capability::Revocable); }
+    if <C as plugin_capability_report::Testable>::IS_TESTABLE { caps.insert(Capability::Testable); }
+    if <C as plugin_capability_report::Interactive>::IS_INTERACTIVE { caps.insert(Capability::Interactive); }
+    if <C as plugin_capability_report::Dynamic>::IS_DYNAMIC { caps.insert(Capability::Dynamic); }
+    caps
+}
+```
+
+`plugin_capability_report::*` is a per-capability blanket trait emitted by `#[plugin_credential]` macro: `IS_REFRESHABLE = true` if `C: Refreshable`, `false` otherwise. Standard "trick traits" for stable Rust without specialization.
+
+Pros: capabilities derived from type system. Plugin cannot lie. Pattern 3 `CapabilityOnly` slot binding becomes safe — the registry-computed capability set is authoritative. Self-attestation hazard structurally removed.
+
+Cons: `#[plugin_credential]` macro carries the blanket-trait emission. Per-credential capability detection is one extra pass at expansion.
+
+**(b) Cross-check at registration; panic if plugin-declared `capabilities_enabled` disagrees with computed type-derived set.**
+
+Pros: backward-compat for plugins that already declare. Cons: still requires the plugin field to exist (clutter); can be fooled by a plugin that lies and never gets cross-checked at registration time.
+
+**Decision: (a).** Capabilities-from-type, plugin metadata field removed.
+
+**Rationale summary.** Type system is the only authority that cannot be subverted at runtime. Removing the field eliminates the field-existence hazard. Pattern 3 `CapabilityOnly` slot binding is preserved as a feature (per Strategy §2.2 `GenericOAuth2Credential` use case) but the matching is now safe.
+
+**Implementation impact (П1 scope):**
+
+1. `crates/credential/src/metadata.rs` — `CredentialMetadata::capabilities_enabled` field removed. Plugin-authored metadata no longer carries it.
+2. `crates/credential/src/contract/registry.rs` — `register<C>` computes capabilities at registration and stores in `RegistryEntry` alongside the boxed credential.
+3. `crates/engine/src/credential/discovery.rs` — `iter_compatible` filter consults `RegistryEntry::capabilities` (registry-computed), not `cred.metadata().capabilities_enabled`.
+4. `nebula-credential-macros` — `#[plugin_credential]` macro emits `plugin_capability_report::*` blanket impl per capability sub-trait the credential implements.
+5. **Runtime test** `tests/runtime_metadata_no_capability_field.rs` — verifies that no plugin-authored `CredentialMetadata` carries a `capabilities_enabled` field after the field removal.
+6. **Compile-fail probe** `tests/compile_fail_metadata_capability_field.rs` — attempting to add `capabilities_enabled` to a plugin's `CredentialMetadata` instance fails to compile (field does not exist).
+
+Register row `arch-metadata-capability-authority` opens with `decided` status.
+
+### §15.9 (reserved — consolidated into §15.5)
+
+The proposed amendment 7 (`OAuth2Token::bearer_header → SecretString` + `ConnectionUri` structured accessors) is consolidated into §15.5 implementation-impact section since the changes are mechanical extensions of the sensitivity dichotomy. No separate decision section needed; tracking in §15.5 register row.
+
+### §15.10 `PendingStore::consume` atomicity contract — runtime-gated (security-lead N9)
+
+**Tech-lead condition 2** — runtime-gated, NOT compile-time-gated. Closure marker for П-later phase, not П1 landing-gate.
+
+**Open question** (surfaced by security-lead N9). `PendingStore::consume(id)` (§5.5 consumer surface) must be transactionally single-use across concurrent engine instances. Current §6.9 description states "`get_then_delete` transactional pop: rows are deleted as part of `continue_resolve`", but the GC sweep at §6.9 line 1723 runs `DELETE FROM pending_credentials WHERE expires_at < now()` independently. Race window: callback arrives at t = expires_at - ε; engine A's `continue_resolve` reads the pending row and begins exchange (500ms-2s for IdP); concurrent GC sweep on engine B sees `expires_at < now()` and deletes the row mid-flight; A's transaction-commit sees 0 rows affected; depending on `PendingStore` impl, A either silently succeeds (returning `Ready(state)` and writing `credentials` row even though pending row vanished) or returns confusing `PendingError::NotFound`.
+
+**Decision** (single candidate; runtime-gated):
+
+**(a) `PendingStore::consume(id)` atomic `DELETE ... RETURNING` (Postgres) or equivalent SQLite transactional pop. GC sweep adds 60s grace window.**
+
+```sql
+-- Postgres: atomic pop
+DELETE FROM pending_credentials
+WHERE id = $1
+RETURNING state_encrypted, expires_at;
+
+-- GC sweep with grace
+DELETE FROM pending_credentials
+WHERE expires_at < now() - INTERVAL '60 seconds';
+```
+
+SQLite uses equivalent transactional `BEGIN; SELECT...; DELETE...; COMMIT` with `SERIALIZABLE` isolation.
+
+Pros: atomic single-use semantics. GC sweep grace window prevents in-flight callback collision with cleanup. `consume` and `gc_sweep` cannot both succeed on the same row because `DELETE ... RETURNING` and `DELETE WHERE expires_at < now()` serialize via row lock.
+
+Cons: implementations must explicitly support atomic pop. NoOp `PendingStore` for desktop-mode (§11.1) trivially satisfies via in-memory single-thread.
+
+**Implementation impact (P-later phase, NOT П1):**
+
+1. `crates/storage/src/credential/pending.rs` — `PendingStore::consume(id)` contract specified as atomic. Postgres impl uses `DELETE ... RETURNING`. SQLite impl uses transactional `BEGIN; ...; COMMIT`.
+2. `crates/storage/src/credential/gc.rs` (new) — GC sweep with 60s grace window.
+3. **Concurrency test** `tests/concurrency_pending_consume_vs_gc.rs` — spawns concurrent `consume` + `gc_sweep`; verifies invariant "row consumed XOR row gc'd, never both, never neither".
+4. §6.9 text updated: `PendingStore::consume` is atomic; GC sweep grace window 60s default; SQLite parity confirmed.
+
+Register row `runtime-pending-consume-atomicity` opens with `proposed` status (П-later closure, not П1).
+
+### §15.11 Sign-off matrix (consensus session output)
+
+| Stakeholder | Sign-off | Conditions | Quotable summary |
+|-------------|----------|------------|------------------|
+| User (vanyastaff) | implicit (per spawn task goal "power AND safety") | Sub-trait split + 8 compile-time amendments satisfy goal | n/a — original session task |
+| Tech-lead | endorse-with-conditions | 5 conditions: §0 cite ADR-0035; §15.3 runtime/compile gate disambig; 8 compile-fail probes mandatory; §1.4 trigger language re-decision; §3.6 worked example | "Path A-Hybrid endorsed with five conditions. The proposal correctly separates trait re-shape (Tech Spec) from layer relocation (P6-P11 landed)... The sub-trait capability split is appropriate, not over-engineered..." |
+| Security-lead | confirmed | All 5 tech-lead conditions either reinforce or are neutral; none break or weaken | "Re-validation complete. All 5 tech-lead conditions either reinforce or are neutral to my sign-off conditions; none break or weaken. Sign-off confirmed." |
+
+All three stakeholders have explicitly endorsed the design closure. **Tech Spec status flips: `complete CP4 → complete CP5 (consensus closure 2026-04-24, adoption-deferred per §1.4 triggers)`**.
+
 ## §16 Implementation handoff
 
 Implementation plan outline. Detailed phase plans land in `docs/superpowers/plans/<NNNN>-<phase>.md` per phase as implementation begins. Phase boundaries based on dependency ordering + landing-gate clarity.
@@ -3075,16 +3551,33 @@ Implementation plan outline. Detailed phase plans land in `docs/superpowers/plan
 
 | Phase | Scope | Dependencies |
 |---|---|---|
-| **П1** | Trait shape scaffolding — `nebula-credential` trait + `mod sealed_caps` + phantom-shim canonical form per ADR-0035 + `nebula-credential-builtin` crate scaffold | None (foundational) |
+| **П1** | Trait shape scaffolding — `nebula-credential` trait + `mod sealed_caps` + phantom-shim canonical form per ADR-0035 + `nebula-credential-builtin` crate scaffold + **§15.3-§15.9 compile-time amendments** (capability sub-trait split, AuthScheme dichotomy, fatal duplicate-KEY, SchemeGuard+SchemeFactory, capability-from-type, SecretString accessors) + **8 mandatory compile-fail probes** (see §16.1.1) | None (foundational) |
 | **П2** | Refresh coordination L2 — `RefreshClaimRepo` impl + [`draft-f17`](2026-04-24-credential-refresh-coordination.md) sub-spec landing + L1+L2 two-tier integration | П1 |
 | **П3** | Builtin credential types — Slack, Anthropic, Bitbucket triad (OAuth2 + PAT + AppPassword), AwsSigV4 + STS, Postgres connection, mTLS, Salesforce JWT | П1 |
 | **П4** | ProviderRegistry — sub-spec `draft-f18/f19/f20` landing + admin API + URL template binding | П3 + Tech Spec §11 frozen |
 | **П5** | Multi-mode polish — desktop / self-hosted / cloud feature gating + cargo features per §11.5 | П1 + П3 |
 | **П6** | Audit + degraded mode — fail-closed write sequence + degraded read-only + fallback file sink + drain on recovery | П1 (storage layer wraps) |
 | **П7** | OAuth flow consolidation — engine HTTP ceremony + ADR-0031 supersede if needed | П3 + Tech Spec §10 frozen |
-| **П8** | §15 decisions implementation — `provider_id` move to `CredentialMetadata` + `AuthScheme: Clone` relax + per-scheme `Clone` derive cleanup + consumer site migration | П1 + П3 |
+| **П8** | §15.1-§15.2 decisions implementation — `provider_id` move to `CredentialMetadata` + `AuthScheme: Clone` relax + per-scheme `Clone` derive cleanup + consumer site migration. **(§15.3-§15.9 are П1 scope per CP5 closure; §15.10 PendingStore atomicity is П-later runtime gate.)** | П1 + П3 |
 | **П9** | Migration v1→v2 — `draft-f36` sub-spec landing + lazy migration on resolve + bulk CLI | П1 + П3 |
 | **П10** | Trigger ↔ credential — `draft-f35` sub-spec landing + Trigger trait integration | П1 + Trigger track (separate workstream) |
+
+### §16.1.1 П1 sub-gates — 8 mandatory compile-fail probes (added CP5 per tech-lead condition 3)
+
+П1 landing-gate is **not satisfied** until all 8 compile-fail probes exist and fail with the expected diagnostics. These probes encode the CP5 amendments at the type-system level; cargo-public-api snapshot alone catches surface drift but not semantic regressions, so compile-fail probes are mandatory not optional.
+
+| # | Probe file | Verifies | Expected diagnostic |
+|---|------------|----------|---------------------|
+| 1 | `tests/compile_fail_state_zeroize.rs` | `CredentialState` impl without `ZeroizeOnDrop` | `E0277` — `ZeroizeOnDrop` not satisfied |
+| 2 | `tests/compile_fail_scheme_sensitivity.rs` | `SensitiveScheme` impl with plain `String` field for `token`-named field; `PublicScheme` impl with `SecretString` field; `SensitiveScheme` impl without `ZeroizeOnDrop` | `E0277` — `ZeroizeOnDrop` not satisfied; macro audit error |
+| 3 | `tests/compile_fail_capability_subtrait.rs` | `impl Refreshable for X` without `refresh()` body; same for `Revocable`, `Testable`, `Dynamic` | `E0046` — required method missing |
+| 4 | `tests/compile_fail_engine_dispatch_capability.rs` | `RefreshDispatcher::for_credential::<NonRefreshableCred>()` rejected; same for other dispatchers | `E0277` — bound `Refreshable` not satisfied |
+| 5 | `tests/runtime_duplicate_key_fatal.rs` (runtime — duplicate KEYs are not statically detectable across crates, so panicking startup harness is the equivalent compile-fail probe) | `register::<DupCred1>()` then `register::<DupCred2>()` returns `RegisterError::DuplicateKey` | `RegisterError::DuplicateKey` returned + engine startup harness panics |
+| 6 | `tests/compile_fail_scheme_guard_retention.rs` | `Resource::on_credential_refresh` impl that stores `SchemeGuard` in struct field outlasting the call | `E0597` — borrowed value does not live long enough |
+| 7 | `tests/compile_fail_scheme_guard_clone.rs` | `let g2 = guard.clone()` on `SchemeGuard` | `E0599` — no method `clone` |
+| 8 | `tests/compile_fail_metadata_capability_field.rs` | Plugin `CredentialMetadata` instance with `capabilities_enabled` field | `E0560` — no field `capabilities_enabled` (field removed) |
+
+Each probe lives at `crates/credential/tests/compile_fail_*.rs` and is run via `trybuild` (or equivalent compile-fail harness) per `cargo nextest run -p nebula-credential --profile ci`. CI required-job; П1 cannot land if any probe is missing or passes-when-it-should-fail.
 
 ### §16.2 Dependency graph
 
@@ -3134,8 +3627,10 @@ Per register's own maintenance rules + Tech Spec §13.4 evolution:
 
 ---
 
-**Tech Spec complete — Checkpoint 4 ends here.**
+**Tech Spec complete — Checkpoint 5 ends here.**
 
-All 16 sections drafted. §15 open items resolved (`critique-c9` → `(c)` move to `CredentialMetadata.provider_id`; `arch-authscheme-clone-zeroize` → `(a)` relax `Clone` on `AuthScheme` trait). §16 implementation handoff defined with phase list, dependency graph, landing gates, anticipated ADRs.
+CP4 (2026-04-24) drafted all 16 sections. CP5 (2026-04-24, post 3-stakeholder consensus session — see [`2026-04-24-credential-3agent-consensus-session.md`](2026-04-24-credential-3agent-consensus-session.md)) added §15.3-§15.11 closing 1 CRITICAL + 6 HIGH + 3 MEDIUM security-lead findings (N1-N10) at the trait/type level, with 4 new register rows (`arch-capability-subtrait-split`, `arch-scheme-sensitivity-dichotomy`, `arch-registry-duplicate-fail-closed`, `arch-scheme-guard-factory`, `arch-metadata-capability-authority`, `runtime-pending-consume-atomicity`). §15 decision count: 11 sections (§15.1-§15.11). §16.1 phase list updated to bind П1 sub-gates to 8 mandatory compile-fail probes (§16.1.1). All three stakeholders (user, tech-lead, security-lead) explicitly endorsed per §15.11 sign-off matrix.
 
-Tech Spec ready for `writing-plans` skill invocation to produce phased implementation plans (П1–П10).
+**Adoption status: deferred per §1.4.1 triggers.** П1 starts when ANY of: (a) consumer wall, (b) security-lead escalation, (c) 2026-10-24 half-life re-decision (NOT auto-adoption — re-decision means re-engaging the 3-stakeholder consensus). Until trigger fires, Tech Spec stays canonical design reference; production code stays at current shape.
+
+Tech Spec ready for `writing-plans` skill invocation to produce phased implementation plans (П1–П10) when ANY §1.4.1 trigger fires.
