@@ -992,6 +992,473 @@ impl Resource for PostgresPool {
 
 **Per `draft-f27`:** most resources accept the trait method as a default no-op. Cost is one unused `async fn` per `Resource` impl — minor overhead. Concrete use case: AWS IAM Database Authentication (15-minute token TTL) requires the pool to rebuild when the auth token refreshes.
 
+## §4 Lifecycle
+
+Lifecycle covers a credential instance's existence from creation to deletion. Per Strategy §4 and register `user-lifecycle-*` cluster (7 rows). State transitions map to the production `state_kind` enum (`active` / `refreshing` / `expired` / `revoked` / `suspended`) per migration `0017_credentials_v3.sql`.
+
+### §4.1 Creation strategies
+
+Four creation strategies per register row `user-lifecycle-creation`. Each maps to a distinct entry point + invariant set.
+
+**(a) Interactive (OAuth2 / device code).** User clicks "Connect" in UI; engine initiates a multi-step `Credential::resolve` returning `ResolveResult::Pending(p)`; pending state encrypted and persisted to `pending_credentials` table; user redirected to IdP; IdP callback hits `nebula-api`; api dispatches to `Credential::continue_resolve(pending, continuation)` which returns `ResolveResult::Ready(state)` on success; state encrypted and persisted to `credentials` table with `state_kind = 'active'`.
+
+State machine:
+
+```
+[idle] --user clicks Connect--> [resolving]
+[resolving] --returns Pending--> [pending]
+[pending] --IdP callback--> [continuing]
+[continuing] --returns Ready--> [active] (write credentials row)
+[continuing] --returns Pending--> [pending]  (multi-step chain)
+[pending] --timeout (10 min)--> [discarded]  (GC sweep deletes row)
+[continuing] --error--> [failed]  (audit + delete pending)
+```
+
+**(b) Programmatic (API call with plaintext input).** Caller posts to `POST /credentials` with `Input` body (typed schema per §2.1 `Credential::Input`); engine calls `Credential::resolve` synchronously; non-interactive credentials return `ResolveResult::Ready` directly; state persisted. Used for static credentials (API key, Basic auth, signing keys imported from KMS).
+
+**(c) Imported (from file or external secret store).** Operator imports via CLI or admin API with file path or external provider URI; engine reads via `ExternalProvider` trait (Vault, AWS SM, GCP SM, Azure KV — impls in `nebula-storage/src/external_providers/`); resolves to `State`; persisted as Pattern (b).
+
+**(d) Bootstrapped (from environment at startup).** Service-level credentials configured via env vars (e.g., `NEBULA_DEFAULT_OAUTH_GOOGLE_CLIENT_ID` + secret material); read at engine startup; registered in `CredentialRegistry` per §3.1; persisted to `credentials` table on first use. Distinct from (c) by who owns the source: env = service-operator at boot; file/vault = explicit operator action.
+
+**Validation hooks** (per `user-disc-validation` register row, full detail Checkpoint 3 §9.3):
+
+- **Schema validation** — `<Self::Input as HasSchema>::schema()` validates input shape before any IdP call.
+- **Semantic validation** — optional `Credential::test()` post-resolution to verify the resulting state actually works against the provider.
+- **UX validation** — form hints from `CredentialMetadata::field_hints()` rendered in UI; validates client-side before submission.
+
+### §4.2 Update & rotation
+
+Four update sub-strategies per register row `user-lifecycle-update`. All eventually mutate the `credentials` row's `encrypted_secret` + bump `version` (CAS) + write `credential_audit` entry with `operation = 'rotated'` (or `refreshed` for non-rotation refreshes).
+
+**(a) User-initiated update.** Operator uploads new credential material via UI/API; engine calls `Credential::resolve` with new input; old state replaced atomically (CAS on `version`).
+
+**(b) Provider-initiated refresh.** Engine detects state nearing expiry (`expires_at - now < refresh_lead_time`) and calls `Credential::refresh(state)`. Coordinated by `nebula-engine::credential::refresh::RefreshCoordinator` (in-proc L1: `parking_lot::Mutex` keyed by `credential_id`); cross-replica coordination via `RefreshClaimRepo` per **OUT** sub-spec [`draft-f17`](2026-04-24-credential-refresh-coordination.md). The refresh path:
+
+```
+[active] --expires_at - now < lead_time--> [refresh_pending]
+[refresh_pending] --L1 claim--> [refreshing]   (state_kind transition)
+[refreshing] --refresh() ok--> [active]        (new state, version++)
+[refreshing] --refresh() Permanent err--> [reauth_required]
+[refreshing] --refresh() Transient err--> [active] (retry per backoff)
+[reauth_required] --user re-auths via §4.1(a)--> [active]
+```
+
+**(c) Scheduled rotation.** Per `CredentialMetadata::rotation_policy`, engine's rotation scheduler (per ADR-0030) periodically composes `revoke` (best-effort) + new `resolve` cycle. **Multi-replica leader election** for the scheduler is **OUT** — `RotationLeaderClaimRepo` sub-spec (Strategy §6.5 queue #2).
+
+**(d) Emergency rotation.** Triggered by compromise-response runbook (**OUT** queue #8). Synchronous force-rotate that bypasses normal backoff; revokes all in-flight tokens; requires re-auth.
+
+### §4.3 Revocation
+
+Three revocation modes per register row `user-lifecycle-revocation`. All update `state_kind` and write `credential_audit`.
+
+**Soft revocation (default).** `state_kind = 'revoked'` + `revoked_at = now()`; in-flight resolves continue for the configured grace window (default 30 s, per `CredentialMetadata::revocation_grace`). After grace, all resolves return `ResolveError::Revoked`. The credential row is preserved for audit; restoration is possible within the retention window (§4.4).
+
+**Hard revocation.** Immediately invalidate; in-flight resolves fail with `ResolveError::Revoked` even if they started before revocation. No grace window. Used for compromise response.
+
+**Cascade revocation.** Revoking a "parent" credential (e.g., a long-lived OAuth2 refresh token) cascades to dependent tokens (the access tokens it minted). Detection: `credential_audit` foreign-key relationships + per-type `Credential::dependent_credentials()` hook (default empty). Rare — only credentials with explicit dependency relationships.
+
+State transitions:
+
+```
+[active] --soft revoke--> [revoked-grace] --grace expires--> [revoked]
+[active] --hard revoke--> [revoked]
+[any] --cascade revoke--> apply same to dependents
+```
+
+The provider-side revocation is **best-effort** — `Credential::revoke(state)` is called but failures are logged, not propagated. Storage tombstone is the source of truth.
+
+### §4.4 Deletion
+
+Two deletion modes per register row `user-lifecycle-deletion`.
+
+**Soft delete (default).** `deleted_at = now()` set on the `credentials` row; row remains in storage. Workflow references that resolve to a deleted credential get `ResolveError::Deleted`. Retention window (default 90 days, per service config) before purge eligibility.
+
+**Hard purge.** Run by retention sweep (engine background task) or operator-initiated `DELETE /credentials/:id?purge=true`. Wipes the row; audit log retains the deletion record + final state hash for forensics.
+
+**Cascading on workflow refs.** Workflow definitions hold `CredentialKey` strings, not foreign keys. Workflows referencing a soft-deleted credential are flagged by the workflow validation pass; operator notified to update or unbind. Hard purge does NOT cascade to workflow rewrites — workflows referencing purged credentials simply fail at execution with `ResolveError::NotFound`.
+
+DDL touch:
+
+```sql
+-- credentials.deleted_at TIMESTAMPTZ (already in production migration 0008)
+-- index on deleted_at for retention sweep
+CREATE INDEX idx_credentials_purge_eligible
+    ON credentials (deleted_at)
+    WHERE deleted_at IS NOT NULL;
+```
+
+Retention sweep query (executed daily):
+
+```sql
+DELETE FROM credentials
+ WHERE deleted_at IS NOT NULL
+   AND deleted_at < now() - INTERVAL '90 days';
+```
+
+### §4.5 Expiration
+
+Per register row `user-lifecycle-expiration`. Three behaviors at expiry, configured per credential type via `CredentialMetadata::expiry_behavior`:
+
+**Auto-refresh** (default for `REFRESHABLE` credentials). When `expires_at - now() < refresh_lead_time` (default 5 min), engine triggers refresh per §4.2(b). State transitions through `refresh_pending → refreshing → active` (or `reauth_required` on failure).
+
+**Mark expired.** `state_kind = 'expired'`; no auto-refresh attempted. Used for credentials with finite manual lifetimes (API keys with provider-mandated rotation). Resolves return `ResolveError::Expired`. UI surfaces a "Renew" prompt to the operator.
+
+**Notify only.** State stays `active`; engine emits `CredentialEvent::ExpiringSoon` to the eventbus at `expires_at - notify_lead_time` (default 24 h). UI / Slack / email integrations consume the event.
+
+Grace period: if `expires_at` is reached but the credential has not been refreshed (transient failure path), state stays `active` for `expiry_grace` (default 60 s) to allow the next refresh attempt to complete. After grace, `state_kind = 'expired'`.
+
+### §4.6 Migration v1→v2
+
+**OUT — sub-spec `draft-f36`.** Schema migration on encrypted rows is non-trivial (must decrypt → migrate → re-encrypt without downtime). Pattern proposed in register row resolution: lazy migration on resolve (decrypt v1 → migrate to v2 → re-encrypt) + bulk migration CLI for batch processing.
+
+Tech Spec consumers expect: a stable `Credential::State` shape per credential type, with version tagging (`#[credential_state(version = 2, migrate_from = v1)]` or equivalent). The migration mechanism itself lives in the sub-spec.
+
+### §4.7 Import / export
+
+**OUT — Strategy §6.5 queue #12 (low priority, post-Tech-Spec).** Encrypted backup format + n8n-compat import. Tech Spec consumers expect: a self-describing encrypted tarball format with envelope keys + state material; an importer that maps n8n's credential JSON shape to nebula's typed `Credential::Input`. Sub-spec defines the format.
+
+## §5 Storage schema & layer boundaries
+
+Production already has substantial credential storage infrastructure (see migrations `0008_credentials.sql` + `0017_credentials_v3.sql` + `0015_audit.sql`). Tech Spec §5 documents the existing reality + adds three NEW tables required by the redesign (RefreshClaimRepo, RotationLeaderClaimRepo, ProviderRegistryRepo per Strategy §6.5).
+
+### §5.1 Layer stack (canonical order)
+
+The credential storage layers wrap each other in a fixed order. From outermost to innermost:
+
+```
+            ↓ caller (engine, api)
+┌───────────────────────────────────────┐
+│  ScopeLayer    — tenant × workspace  │
+│                  × workflow filter   │
+├───────────────────────────────────────┤
+│  AuditLayer    — fail-closed write   │
+│                  + degraded mode     │
+├───────────────────────────────────────┤
+│  CacheLayer    — L1 in-proc + TTL    │
+│                  + invalidation      │
+├───────────────────────────────────────┤
+│  EncryptionLayer — AES-256-GCM + AAD │
+│                  + KeyProvider envelope│
+├───────────────────────────────────────┤
+│  CredentialStore — raw persistence   │
+│                  (Postgres/SQLite/mem)│
+└───────────────────────────────────────┘
+            ↓ database
+```
+
+**Why this order — outer-to-inner rationale:**
+
+1. **Scope is outermost** — every operation is filtered by tenant/workspace before any other layer sees it. A scope-mismatch never reaches encryption (no wasted decrypt) or audit (no audit pollution from forbidden access attempts; those go to a separate access-violation log).
+2. **Audit is above cache** — audit writes happen on every operation regardless of cache hit. Cache hits still produce audit entries (with `operation = 'accessed'`). Audit fail-closed semantics protect: if audit is unavailable, no operation proceeds (fall through to degraded mode per §6.5 in CP2b).
+3. **Cache is above encryption** — cache stores the **decrypted** `State` for hot-path resolves. Cache TTL bounded; cache invalidation channel via `nebula-eventbus::CacheInvalidation` per §6.2 (CP2b). Decryption is amortized across cache lifetime.
+4. **Encryption is innermost** — AES-256-GCM + AAD + KeyProvider envelope per `0017_credentials_v3.sql` `envelope JSONB` shape. Bit-preserved per Strategy §1.2 non-goal. Storage layer below sees only opaque bytes.
+5. **CredentialStore is the bottom** — raw key-value persistence. Three impls: Postgres (production), SQLite (desktop / dev), in-memory (tests).
+
+This ordering matches existing production layer modules (`crates/storage/src/credential/layer/{scope,audit,cache,encryption}.rs`).
+
+### §5.2 Existing schema (production)
+
+Three production tables. DDL summarised; full DDL in migrations.
+
+**`credentials`** (primary credential storage, migrations 0008 + 0017_v3):
+
+```sql
+CREATE TABLE credentials (
+    id                  BYTEA PRIMARY KEY,           -- cred_ ULID
+    org_id              BYTEA NOT NULL REFERENCES orgs(id) ON DELETE CASCADE,
+    workspace_id        BYTEA REFERENCES workspaces(id) ON DELETE CASCADE,
+    slug                TEXT NOT NULL,
+    display_name        TEXT NOT NULL,
+    kind                TEXT NOT NULL,               -- credential type key
+    scope               TEXT NOT NULL,               -- 'workspace' or 'org'
+    encrypted_secret    BYTEA NOT NULL,              -- envelope-encrypted
+    encryption_version  INT NOT NULL,                -- key rotation
+    envelope            JSONB,                       -- {kek_id, encrypted_dek, algorithm, nonce, aad_digest}
+    state_kind          TEXT NOT NULL DEFAULT 'active',  -- active|refreshing|expired|revoked|suspended
+    lease_id            TEXT,                        -- dynamic secret lease ID
+    expires_at          TIMESTAMPTZ,                 -- lease expiry / cred TTL
+    allowed_workspaces  BYTEA[],                     -- for org-level
+    metadata            JSONB,                       -- non-secret data
+    created_at          TIMESTAMPTZ NOT NULL,
+    created_by          BYTEA NOT NULL,
+    last_rotated_at     TIMESTAMPTZ,
+    last_used_at        TIMESTAMPTZ,
+    version             BIGINT NOT NULL DEFAULT 0,   -- CAS
+    deleted_at          TIMESTAMPTZ                  -- soft delete
+);
+
+-- Unique slug constraints + retention sweep index per §4.4 + expiry index.
+CREATE UNIQUE INDEX idx_credentials_workspace_slug
+    ON credentials (workspace_id, LOWER(slug))
+    WHERE scope = 'workspace' AND deleted_at IS NULL;
+CREATE UNIQUE INDEX idx_credentials_org_slug
+    ON credentials (org_id, LOWER(slug))
+    WHERE scope = 'org' AND deleted_at IS NULL;
+CREATE INDEX idx_credentials_expiring
+    ON credentials (expires_at)
+    WHERE expires_at IS NOT NULL AND deleted_at IS NULL;
+```
+
+**`pending_credentials`** (in-progress interactive flows, migration 0017_v3):
+
+```sql
+CREATE TABLE pending_credentials (
+    id              BYTEA PRIMARY KEY,               -- ULID
+    org_id          BYTEA NOT NULL REFERENCES orgs(id) ON DELETE CASCADE,
+    workspace_id    BYTEA REFERENCES workspaces(id) ON DELETE CASCADE,
+    kind            TEXT NOT NULL,                   -- credential type
+    state_encrypted BYTEA NOT NULL,                  -- encrypted Pending state
+    initiated_by    BYTEA NOT NULL,                  -- user who started
+    created_at      TIMESTAMPTZ NOT NULL,
+    expires_at      TIMESTAMPTZ NOT NULL             -- auto-cleanup timeout
+);
+
+CREATE INDEX idx_pending_credentials_cleanup
+    ON pending_credentials (expires_at);
+```
+
+**`credential_audit`** (HMAC hash-chain tamper-evident, migration 0017_v3):
+
+```sql
+CREATE TABLE credential_audit (
+    id              BYTEA PRIMARY KEY,
+    org_id          BYTEA NOT NULL,
+    credential_id   BYTEA NOT NULL,                  -- may reference deleted
+    seq             BIGINT NOT NULL,                 -- per-credential monotonic
+    principal_kind  TEXT NOT NULL,
+    principal_id    BYTEA,
+    operation       TEXT NOT NULL,                   -- created|rotated|refreshed|revoked|accessed|deleted
+    result          TEXT NOT NULL,                   -- success|failure
+    detail          JSONB,
+    prev_hmac       BYTEA,                           -- HMAC of previous entry (NULL = first)
+    self_hmac       BYTEA NOT NULL,                  -- hash chain anchor
+    emitted_at      TIMESTAMPTZ NOT NULL
+);
+
+CREATE INDEX idx_credential_audit_by_cred
+    ON credential_audit (credential_id, seq);
+CREATE INDEX idx_credential_audit_by_org
+    ON credential_audit (org_id, emitted_at DESC);
+```
+
+The hash chain (each row carries `prev_hmac` + `self_hmac` derived from prev) makes tampering detectable: verifier walks the chain, recomputing `self_hmac` from `(prev_hmac || row content || HMAC-key)`. Any mid-chain mutation breaks all subsequent `self_hmac`s.
+
+### §5.3 New tables (Tech Spec adds)
+
+Three NEW tables required by the redesign per Strategy §6.5 sub-spec queue. Tech Spec describes the **consumer-side** schema; full producer-side design (admin API, seeding, versioning) lives in respective sub-specs.
+
+**`refresh_claims`** (RefreshClaimRepo backing — `draft-f17` consumer surface):
+
+```sql
+CREATE TABLE refresh_claims (
+    credential_id   BYTEA PRIMARY KEY REFERENCES credentials(id) ON DELETE CASCADE,
+    claim_token     BYTEA NOT NULL,                  -- ULID; unique per claim attempt
+    claimed_by      TEXT NOT NULL,                   -- replica identifier (hostname:pid:nonce)
+    claimed_at      TIMESTAMPTZ NOT NULL,
+    heartbeat_at    TIMESTAMPTZ NOT NULL,
+    expires_at      TIMESTAMPTZ NOT NULL             -- TTL after which claim auto-released
+);
+
+CREATE INDEX idx_refresh_claims_expiry ON refresh_claims (expires_at);
+```
+
+Single row per credential at a time; PRIMARY KEY on `credential_id` enforces single-claimant invariant. Claim acquisition via `INSERT … ON CONFLICT (credential_id) DO UPDATE WHERE expires_at < now() RETURNING claim_token` — atomic claim-or-existing-token. Heartbeat updates `heartbeat_at` + extends `expires_at` while refresh in progress. Release deletes the row.
+
+**`rotation_leader_claims`** (RotationLeaderClaimRepo — Strategy §6.5 queue #2 consumer surface):
+
+```sql
+CREATE TABLE rotation_leader_claims (
+    scope           TEXT PRIMARY KEY,                -- e.g., 'global', 'tenant:{org_id}'
+    leader_id       TEXT NOT NULL,                   -- replica identifier
+    claimed_at      TIMESTAMPTZ NOT NULL,
+    heartbeat_at    TIMESTAMPTZ NOT NULL,
+    expires_at      TIMESTAMPTZ NOT NULL
+);
+```
+
+Leader-elected scheduler: only one replica's rotation scheduler runs at a time per scope. Same claim/heartbeat/expire pattern as `refresh_claims`. Producer-side election protocol detail in queue #2 sub-spec.
+
+**`provider_registry`** (ProviderRegistryRepo — `draft-f18/f19/f20` consumer surface):
+
+```sql
+CREATE TABLE provider_registry (
+    provider_id         TEXT PRIMARY KEY,            -- e.g., 'slack', 'github', 'azure-ad'
+    spec_version        INT NOT NULL,                -- bump on schema change
+    spec                JSONB NOT NULL,              -- ProviderSpec (endpoints, scopes, template_vars)
+    spec_hash           BYTEA NOT NULL,              -- digest for audit
+    updated_at          TIMESTAMPTZ NOT NULL,
+    updated_by          BYTEA NOT NULL               -- admin user ID
+);
+```
+
+Consumer-side reads: `SELECT spec FROM provider_registry WHERE provider_id = $1`. Producer-side admin operations (insert / update / version migration / URL template substitution) live in `draft-f18/f19/f20` sub-spec.
+
+### §5.4 Postgres ↔ SQLite parity
+
+Production maintains parity between Postgres and SQLite migration scripts (see `crates/storage/migrations/{postgres,sqlite}/`). Tech Spec preserves this discipline.
+
+**Dialect translation table:**
+
+| Postgres | SQLite |
+|---|---|
+| `BYTEA` | `BLOB` |
+| `JSONB` | `TEXT` (JSON serialized) |
+| `TIMESTAMPTZ` | `INTEGER` (Unix epoch microseconds) or `TEXT` (ISO 8601) |
+| `BIGINT` | `INTEGER` |
+| `BYTEA[]` | `TEXT` (JSON array) — array types not native in SQLite |
+| `INSERT ... ON CONFLICT ... DO UPDATE` | `INSERT ... ON CONFLICT ... DO UPDATE` (since SQLite 3.24, available since 2018) |
+
+**CI parity gate:** every credential migration `0NNN_xxx.sql` must exist in both `migrations/postgres/` and `migrations/sqlite/`. CI script walks the two directories and fails if migration numbers differ. Per `draft-f28`.
+
+**NoOpClaimRepo for desktop.** Single-replica desktop deployments do not need cross-replica claim coordination. `NoOpRefreshClaimRepo` returns `Ok(claim_token)` immediately without touching storage; `NoOpRotationLeaderClaimRepo` returns `Ok(LeaderHeld)` always. Engine dispatches to NoOp impls when `deployment_mode = Desktop` per §11.
+
+### §5.5 Storage repos — consumer interfaces
+
+Three NEW repos beyond existing `CredentialStore`. Trait surfaces below; full producer-side implementations in sub-specs.
+
+**`CredentialStore` (existing, stable per ADR-0032):**
+
+```rust
+pub trait CredentialStore: Send + Sync {
+    fn get(&self, id: &str)
+        -> impl Future<Output = Result<StoredCredential, StoreError>> + Send;
+
+    fn put(&self, credential: StoredCredential, mode: PutMode)
+        -> impl Future<Output = Result<StoredCredential, StoreError>> + Send;
+
+    fn delete(&self, id: &str, mode: DeleteMode)
+        -> impl Future<Output = Result<(), StoreError>> + Send;
+
+    fn list(&self, filter: ListFilter)
+        -> impl Future<Output = Result<Vec<StoredCredential>, StoreError>> + Send;
+}
+```
+
+Existing surface — not changed by Tech Spec. Wrapped by the §5.1 layer stack. `StoredCredential` is the encrypted-on-the-wire DTO; engine receives it after Encryption layer decrypt + Cache layer hit/miss tracking + Audit layer write.
+
+**`CredentialContext::load_state<C>` — closes §3.4 forward-dep:**
+
+```rust
+impl CredentialContext<'_> {
+    /// Load + decrypt credential state for a known concrete type C.
+    /// Engine-internal — wraps the layer stack: Scope filter →
+    /// Audit write (operation = 'accessed') → Cache hit-or-miss →
+    /// Encryption decrypt → CredentialStore::get → State::deserialize.
+    pub(crate) async fn load_state<C: Credential>(
+        &self,
+        key: &str,
+    ) -> Result<&C::State, ResolveError> {
+        // ... layer-stack invocation; cached references owned by ctx.
+    }
+}
+```
+
+Used by `resolve_as_X` capability-helper functions per §3.4 step 3. Cache-borrowed lifetime tied to `&self` of `CredentialContext`. Concrete impl in `nebula-engine`.
+
+**`RefreshClaimRepo`** (consumer surface — producer in `draft-f17` sub-spec):
+
+```rust
+pub trait RefreshClaimRepo: Send + Sync {
+    /// Try to claim the refresh slot for a credential. Returns the
+    /// active claim token (which may be ours or held by another
+    /// replica). Caller compares returned `claimed_by` to determine
+    /// ownership.
+    async fn try_claim(
+        &self,
+        credential_id: &CredentialId,
+        ttl: Duration,
+    ) -> Result<RefreshClaim, RepoError>;
+
+    /// Heartbeat an existing claim — extends expires_at.
+    async fn heartbeat(
+        &self,
+        credential_id: &CredentialId,
+        claim_token: &ClaimToken,
+    ) -> Result<(), RepoError>;
+
+    /// Release the claim on success or abort.
+    async fn release(
+        &self,
+        credential_id: &CredentialId,
+        claim_token: &ClaimToken,
+    ) -> Result<(), RepoError>;
+}
+
+pub struct RefreshClaim {
+    pub credential_id: CredentialId,
+    pub claim_token: ClaimToken,
+    pub claimed_by: String,
+    pub expires_at: SystemTime,
+}
+```
+
+Producer-side: claim acquisition SQL, heartbeat cadence, mid-refresh crash reclaim — all in [`docs/superpowers/specs/2026-04-24-credential-refresh-coordination.md`](2026-04-24-credential-refresh-coordination.md).
+
+**`RotationLeaderClaimRepo`** (consumer surface — producer in queue #2 sub-spec):
+
+```rust
+pub trait RotationLeaderClaimRepo: Send + Sync {
+    async fn try_become_leader(
+        &self,
+        scope: LeaderScope,
+        ttl: Duration,
+    ) -> Result<LeaderStatus, RepoError>;
+
+    async fn heartbeat(
+        &self,
+        scope: &LeaderScope,
+        leader_id: &str,
+    ) -> Result<(), RepoError>;
+
+    async fn release(
+        &self,
+        scope: &LeaderScope,
+        leader_id: &str,
+    ) -> Result<(), RepoError>;
+}
+
+pub enum LeaderStatus {
+    Acquired { leader_id: String, expires_at: SystemTime },
+    HeldByOther { leader_id: String, expires_at: SystemTime },
+}
+```
+
+**`ProviderRegistryRepo`** (consumer surface — producer in `draft-f18/f19/f20`):
+
+```rust
+pub trait ProviderRegistryRepo: Send + Sync {
+    /// Read-only consumer access to provider specs. Producer-side
+    /// admin API (insert/update/version) lives in sub-spec
+    /// draft-f18/f19/f20.
+    async fn get_provider(
+        &self,
+        provider_id: &str,
+    ) -> Result<Option<ProviderSpec>, RepoError>;
+
+    async fn list_providers(&self)
+        -> Result<Vec<ProviderSpecSummary>, RepoError>;
+}
+
+pub struct ProviderSpec {
+    pub provider_id: String,
+    pub spec_version: u32,
+    pub spec: ProviderSpecBody,            // endpoints, scopes, template_vars
+    pub spec_hash: [u8; 32],
+}
+```
+
+Tech Spec requires consumer code (engine OAuth flow, credential resolve, multi-mode feature matrix) to use this read-only surface only. Any producer-side mutation goes through sub-spec admin API; consumer code never inserts or updates `provider_registry` rows directly.
+
+### §5.6 Migration discipline
+
+**Schema versioning convention.** Migration files numbered `0NNN_descriptive_name.sql` per existing convention. Forward-only; no rollback past N (hand-rolled patches if needed). Per-table version metadata in `metadata` JSONB column where applicable.
+
+**Dialect parity CI.** Per §5.4. Build fails if Postgres and SQLite migrations diverge in count or numbering.
+
+**Encryption-version migration.** When `encryption_version` bumps (key rotation, algorithm change), the walker CLI per `user-sec-key-rotation` (CP2b §6.2) iterates rows: decrypt with old key → re-encrypt with new key → bump `encryption_version` + `version` (CAS). Per-table `WHERE encryption_version = $old` query drives the iteration.
+
+**State schema migration v1→v2.** **OUT** — `draft-f36` sub-spec. Tech Spec consumers expect: lazy migration on resolve (decrypt v1 → migrate to v2 → re-encrypt) + bulk CLI for batch processing. Migration mechanism mechanism itself in sub-spec.
+
 ---
 
-**Checkpoint 1 ends here.** §4–§16 land in Checkpoints 2a/2b/3/4 per §0 checkpoint path.
+**Checkpoint 2a ends here.** §6 Security + §7 Operational + §8 Testing follow in Checkpoint 2b. §9–§16 in Checkpoints 3 + 4.
