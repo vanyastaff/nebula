@@ -3221,7 +3221,27 @@ Pros: keeps single-trait shape. Cons: requires unstable specialization or featur
 
 **Rationale summary.** Security-lead N3 + N5 identify the silent-downgrade class as 🟠 HIGH. Tech-lead's "2am test" (3am pager when token expires + no refresh) confirms the priority. Sub-trait split moves the failure mode from "documented contract that plugins must follow" to "compile error if violated" — the strongest possible mitigation. Cost (5 extra trait names) is below the threshold for over-engineering per consensus session decision: power-AND-safety user goal is satisfied because explicit per-capability declaration is **more** expressive (each capability is a typed concept), not less.
 
-**Composition with ADR-0035 phantom-shim.** Sub-trait split is **orthogonal** to phantom-shim. Pattern 2 / Pattern 3 dyn-safety preserves: `dyn BitbucketBearerPhantom` continues to work because phantom-shim shields the unspecified-assoc-types problem. `dyn Refreshable` would inherit the same problem (4 assoc types still unspecified); if needed for runtime dispatch (e.g., engine dynamic refresh registry), a parallel phantom `dyn RefreshablePhantom` is introduced — ADR-0035 pattern repeated. Detected at П1 scaffolding; if phantom-shim itself surfaces an unsupported case, supersede ADR-0035 per tech-lead's standing rule (ADRs are revisable).
+**Composition with ADR-0035 phantom-shim.** Sub-trait split is **orthogonal** to phantom-shim. Pattern 2 / Pattern 3 dyn-safety preserves: `dyn BitbucketBearerPhantom` continues to work because phantom-shim shields the unspecified-assoc-types problem. `dyn Refreshable` would inherit the same problem; if needed for runtime dispatch (e.g., engine dynamic refresh registry), a parallel phantom `dyn RefreshablePhantom` is introduced — ADR-0035 pattern repeated.
+
+**Spike iter-3 outcome (2026-04-24, worktree `worktree-agent-afe8a4c6`, commit `f36f3739`).** Gate 3 validation confirmed sub-trait split composes cleanly with phantom-shim on 3 credential types (`ApiKeyCredential` static, `OAuth2Credential` Interactive+Refreshable+Revocable, `SalesforceJwtCredential` Interactive+Refreshable). Five findings:
+
+1. **`dyn Credential` was never object-safe** (`const KEY` blocks `E0038`) — sub-trait split did not regress this. CP4 had the same block. Runtime dispatch against `Credential` already required `AnyCredential` type-erasure (Strategy §3.2) or phantom-shim; CP5/CP6 preserves this reality.
+2. **Phantom-shim erases `C::Scheme` cleanly** with 3-assoc-type base, identical to CP4 4-assoc-type behavior. `CredentialRef<dyn BitbucketBearerPhantom>` + `CredentialRef<dyn AnyBearerPhantom>` (Pattern 3) both compile.
+3. **Lifecycle sub-traits need parallel phantom-shims for dyn-dispatch.** `Refreshable: Credential` inherits `const KEY` + 3 assoc types → doubly-blocked (`E0038` + `E0191`). `RefreshablePhantom` chain (analogous to ADR-0035 Pattern 2) works cleanly. Same for all 5 lifecycle sub-traits (`InteractivePhantom` / `RevocablePhantom` / `TestablePhantom` / `DynamicPhantom`). **ADR-0035 amendment 2026-04-24-C** proposed: extend §2 Scope with Pattern 4 (lifecycle sub-trait erasure).
+4. **Const-bool downgrade path is structurally absent** (spec-correct hard breaking change per `feedback_hard_breaking_changes.md`). `C::REFRESHABLE` access fails `E0599`; replacement is static bounds + phantom-shim.
+5. **All 6 compile-fail probes fire with expected diagnostics** (4 mandatory per §16.1.1 + 2 bonus):
+   - `compile_fail_state_zeroize.rs` → `E0277 BadState: ZeroizeOnDrop not satisfied`
+   - `compile_fail_capability_subtrait_missing_method.rs` → `E0046 missing 'refresh'`
+   - `compile_fail_engine_dispatch_capability.rs` → `E0277 ApiKeyCredential: Refreshable not satisfied`
+   - `compile_fail_scheme_guard_retention.rs` → `E0597 ctx_stack does not live long enough`
+   - `compile_fail_dyn_credential_const_key.rs` (bonus) → `E0038 Credential not dyn compatible (const KEY)`
+   - `compile_fail_pattern2_service_reject.rs` (bonus) → `E0277 ApiKeyCredential: BitbucketBearerPhantom not satisfied`
+
+**Secondary finding (§15.7 refinement needed at П1):** current `SchemeGuard<'a, C>` with only `PhantomData<&'a ()>` does NOT structurally prevent retention — `'a` is inferred `'static` in absence of an actual borrow to pin it. The barrier works only when engine passes `SchemeGuard<'a, C>` alongside `&'a ctx: &'a CredentialContext` with shared lifetime `'a`. Spike probe 4 tests the correct form. **§15.7 amendment** at П1: add explicit lifetime pinning requirement to `SchemeGuard` + `SchemeFactory::acquire` signatures; revised `on_credential_refresh` signature threads `'a` through ctx + guard. Non-blocking for П1; doc clarification + П1 scaffolding sub-task.
+
+**Spike reproducibility:** `cd .claude/worktrees/agent-afe8a4c6/spike && cargo test --workspace` (15 tests green: 9 integration + 6 compile-fail). Spike crate is `workspace.exclude`'d from main build; `typos.toml` root excludes `spike/` for worktree hash IDs. Rust 1.95.0 pinned.
+
+**Verdict:** Gate 3 §15.12.3 closure criteria satisfied. Ready for П1 trait-scaffolding. Sub-trait × phantom composition works. Lifecycle phantom-shims are additive, not a redesign requirement.
 
 **Implementation impact (П1 scope):**
 
@@ -3479,6 +3499,21 @@ Pool engineer reads this and sees: `SchemeGuard` lives only inside `fetch()`, dr
 3. **Compile-fail probe** `tests/compile_fail_scheme_guard_retention.rs` — `Resource` impl that stores `SchemeGuard` in a struct field outlasting the call fails to compile (`E0597` lifetime error).
 4. **Compile-fail probe** `tests/compile_fail_scheme_guard_clone.rs` — `let g2 = guard.clone()` fails (`E0599` no `clone` method).
 5. Cancellation-safety contract documented inline in §3.6: `on_credential_refresh` must be cancel-safe; future drops zeroize `SchemeGuard` deterministically.
+
+**Lifetime-gap refinement (spike iter-3 secondary finding, 2026-04-24 commit `f36f3739`):** the `SchemeGuard<'a, C>` structure above with only `PhantomData<&'a ()>` does NOT structurally prevent retention — the `'a` parameter is inferred `'static` when no actual borrow pins it. A `Resource` impl could accept `SchemeGuard<'static, C>` and store it in a field. To prevent this:
+
+1. Engine passes `SchemeGuard<'a, C>` **alongside** `&'a CredentialContext<'a>` (or similar borrow source) sharing the same `'a` lifetime parameter. Retention attempt forces the engine-borrowed reference to also outlive the struct, triggering `E0597`.
+2. Refined `on_credential_refresh` signature:
+   ```rust
+   async fn on_credential_refresh<'a>(
+       &self,
+       new_scheme: SchemeGuard<'a, Self::Credential>,
+       ctx: &'a CredentialContext<'a>,  // shared 'a pins guard lifetime
+   ) -> Result<(), Self::Error>;
+   ```
+3. `SchemeFactory::acquire` signature similarly threads a context-tied lifetime so factory callers cannot hoist the guard out of scope.
+
+Spike probe 4 (`compile_fail_scheme_guard_retention.rs`) tests the CORRECT form. П1 scaffolding PR must include this refinement + extended compile-fail probe variants covering the retention-via-static-inference case.
 
 Register row `arch-scheme-guard-factory` opens with `decided` status.
 

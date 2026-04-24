@@ -2,13 +2,18 @@
 
 ## Status
 
-**Proposed**, with amendments applied 2026-04-24-B post spike iter-2 validation (worktree branch `worktree-agent-a23a1d2c`, commit `1c107144`). 2026-04-24.
+**Proposed**, with amendments applied 2026-04-24-B post spike iter-2 validation (worktree branch `worktree-agent-a23a1d2c`, commit `1c107144`) and 2026-04-24-C post spike iter-3 (worktree branch `worktree-agent-afe8a4c6`, commit `f36f3739`). 2026-04-24.
 
 **Post iter-2 amendments applied** (canonical-form corrections, not stylistic):
 
 - **§3 Sealed module placement** — canonical form corrected from single shared `Sealed` to per-capability inner `Sealed` traits. Rust coherence collision on shared `Sealed` when two capabilities share a service supertrait blocks the original form for any realistic multi-capability crate. Details in §3 amendment note.
 - **§5 Minimum bounds verification** — outcome DECIDED: `'static` dropped as redundant under Rust 2021+ default-object-lifetime rules; `Send + Sync` kept as forward-compat stability promise.
 - **§1 canonical form** updated to reflect both amendments (pseudo-Rust with `sealed_caps::BearerSealed`, `Phantom: XSealed + Send + Sync`).
+
+**Post iter-3 amendment applied 2026-04-24-C** (additive, not a correction):
+
+- **§2 Scope** extended with **Pattern 4 — lifecycle sub-trait erasure** for `dyn RefreshablePhantom` / `dyn InteractivePhantom` / `dyn RevocablePhantom` / `dyn TestablePhantom` / `dyn DynamicPhantom`. Engine-side runtime registries that need to iterate over all credentials satisfying a lifecycle capability (e.g., proactive refresh scheduler over all `Refreshable` credentials) use the same phantom-shim pattern as Pattern 2/3. Structurally identical; additive. Details in §2 Pattern 4 amendment note.
+- **§3 Sealed module placement** extended convention — `mod sealed_lifecycle { pub trait RefreshableSealed {} pub trait InteractiveSealed {} ... }` per-capability seal analogous to `mod sealed_caps` for service capabilities. Same per-capability inner trait form per §3 amendment 2026-04-24-B rationale; same coherence correctness.
 
 Amends portions of [Strategy §3.2 / §3.3](../superpowers/specs/2026-04-24-credential-redesign-strategy.md) (Checkpoint 1, frozen at commit `d5045774`):
 
@@ -118,12 +123,45 @@ error[E0277]: the trait bound `BasicScheme: AcceptsBearer` is not satisfied
 
 ### §2. Scope
 
-The phantom-shim pattern applies **only** to:
+The phantom-shim pattern applies to:
 
 - **Pattern 2** (service-bound capability): `CredentialRef<dyn ServiceXBearerPhantom>` positions.
 - **Pattern 3** (capability-only utility): `CredentialRef<dyn AcceptsBearerPhantom>` positions.
+- **Pattern 4** (lifecycle sub-trait erasure, added 2026-04-24-C post spike iter-3): `Box<dyn RefreshablePhantom>` / `Box<dyn InteractivePhantom>` / `Box<dyn RevocablePhantom>` / `Box<dyn TestablePhantom>` / `Box<dyn DynamicPhantom>` positions — engine runtime registries iterating over all credentials satisfying a lifecycle capability.
 
 **Pattern 1** (concrete per-credential-type, e.g. `CredentialRef<SlackOAuth2Credential>`) does NOT use phantom — the type parameter is a concrete `Credential`, no `dyn` projection, no well-formedness gap. Pattern 1 ergonomics are unchanged by this ADR.
+
+#### §2 Pattern 4 amendment note (2026-04-24-C, post spike iter-3 validation at commit `f36f3739`)
+
+Spike iter-3 (Tech Spec CP6 Gate 3 §15.12.3) validated that Tech Spec CP5/CP6 sub-trait capability split (`Interactive` / `Refreshable` / `Revocable` / `Testable` / `Dynamic` per Tech Spec §15.4) introduces a new dyn-dispatch axis distinct from the service-capability axis that Patterns 2/3 cover. Empirically:
+
+- `Refreshable: Credential` inherits `Credential`'s `const KEY` + 3 assoc types (`Input`/`Scheme`/`State` under CP5/CP6 shape; `Pending` moved to `Interactive`). Both blockers fire: `E0038` (const KEY not object-safe) + `E0191` (unspecified assoc types). `dyn Refreshable` rejected.
+- Parallel phantom chain resolves the block identically to Pattern 2:
+  ```rust
+  mod sealed_lifecycle {
+      pub trait RefreshableSealed {}
+      pub trait InteractiveSealed {}
+      pub trait RevocableSealed {}
+      pub trait TestableSealed {}
+      pub trait DynamicSealed {}
+  }
+
+  impl<T: Refreshable> sealed_lifecycle::RefreshableSealed for T {}
+
+  pub trait RefreshablePhantom: sealed_lifecycle::RefreshableSealed + Send + Sync {
+      // Optional object-safe methods that project from Refreshable, e.g.:
+      // fn kind(&self) -> &'static str;
+      // fn refresh_policy(&self) -> RefreshPolicy;
+  }
+
+  impl<T: Refreshable> RefreshablePhantom for T {}
+  ```
+- `Box<dyn RefreshablePhantom>` is well-formed. Engine can store heterogeneous Refreshable credentials in `Vec<Box<dyn RefreshablePhantom>>` for proactive refresh iteration.
+- Same pattern applies to the other 4 lifecycle sub-traits.
+
+Spike iter-3 reproducer: `spike/credential-proto-builtin/src/lib.rs` §6-§8 (phantom portfolio for both service-capability + lifecycle axes). Integration test `question_c_dyn_refreshable_needs_phantom` demonstrates `Box<dyn RefreshablePhantom>` construction and the compile-fail case (`Box<dyn Refreshable>` rejected).
+
+**Implication for macro emission contract (§4):** `#[plugin_credential]` macro must emit lifecycle phantom blankets per opt-in (`#[credential(refreshable, revocable)]` → emit `RefreshablePhantom` + `RevocablePhantom` blanket impls). Non-opt-in lifecycle phantom shims do not compile (no blanket → `impl RefreshablePhantom for X` not derivable), which is the desired compile-gate for capability-const downgrade (§15.4 decision — no legacy bool fallback).
 
 ### §3. Sealed module placement convention
 

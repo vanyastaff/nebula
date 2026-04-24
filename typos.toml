@@ -17,6 +17,11 @@ check-filename = true
 AIMD = "AIMD"
 RTO = "RTO"
 nd = "nd"
+# Git commit hashes / worktree hashes referenced in docs (spike iter-1/2/3)
+a23a1d2c = "a23a1d2c"
+afe8a4c6 = "afe8a4c6"
+acfec719 = "acfec719"
+f36f3739 = "f36f3739"
 
 [default.extend-words]
 Hashi = "Hashi"
