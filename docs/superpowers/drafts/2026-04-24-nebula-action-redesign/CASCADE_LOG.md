@@ -31,8 +31,8 @@ All 8 stakeholder agents present; roster matches prompt expectations.
 | Pre-setup | ✅ complete | this file | CASCADE_LOG initialized |
 | Phase 0 | ✅ complete | [`01-current-state.md`](./01-current-state.md) + [`01a-code-audit.md`](./01a-code-audit.md) + [`01b-workspace-audit.md`](./01b-workspace-audit.md) | Gate passed: convergent audits, 4 🔴 + 9 🟠 findings; escalation flag raised (C1) but not hard-stop |
 | Phase 1 | ✅ complete | [`02-pain-enumeration.md`](./02-pain-enumeration.md) + 02a/b/c/d sub-reports | Gate passed: 11 🔴 + 30+ 🟠 findings; critical reframe from tech-lead (credential CP6 unimplemented in credential crate too) |
-| Phase 2 | in-progress | `03-scope-decision.md` | Dispatching co-decision (architect + tech-lead + security-lead) |
-| Phase 3 | blocked | Strategy CP3 | Blocked by Phase 2 |
+| Phase 2 | ✅ complete | [`03-scope-decision.md`](./03-scope-decision.md) + 03a/b/c sub-reports | Gate locked: **Option A'** (co-landed action + credential CP6 design). Round 2 required because architect proposed B'+ hybrid that tech-lead hadn't evaluated. Design-scope-only reframe resolved budget concern. No VETO, no escalation. |
+| Phase 3 | in-progress | Strategy Document CP3 | Dispatching architect CP1 (§1-§3) |
 | Phase 4 | blocked | Spike NOTES.md | Conditional on Phase 3 scope |
 | Phase 5 | blocked | ADR(s) | Blocked by Phase 3 |
 | Phase 6 | blocked | Tech Spec CP4 | Blocked by Phases 4+5 |
@@ -70,6 +70,34 @@ Rust-senior: 01a-code-audit.md (~450 lines). 4 🔴 + 9 🟠 findings.
 Devops: 01b-workspace-audit.md (~380 lines). 0 🔴 + 8 🟠 + 15 🟡 findings.
 
 Devops wrote to wrong repo path (main repo instead of worktree) — orchestrator corrected via `mv`. Soft process issue; no retry needed.
+
+### 2026-04-24 T17:22 — Phase 2 complete + scope locked (commit 786f2429 for Phase 1, next for Phase 2)
+
+**Co-decision protocol: 2 rounds required.**
+
+**Round 1 (parallel):**
+- architect (03a): 4 options — A'/B'/B'+/C'. Leans B'+ as draft position.
+- tech-lead (03b): picks A' (lean A, fallback C, not B). Did NOT see B'+ (file not on disk when dispatched in parallel).
+- security-lead (03c): ACCEPT all three (A'/B'/C') with must-have floor; no VETO.
+
+**Round 2 (tech-lead re-rank):**
+Orchestrator dispatched tech-lead to evaluate B'+ explicitly + reframed cascade as **design-scope-only** (per prompt non-goals: Tech Spec closes at design; implementation post-cascade).
+
+Tech-lead round 2: **A' 1st / B'+ 2nd / C' 3rd / B' 4th**. B'+ acceptable fallback with condition (CredentialRef / SlotBinding / SchemeGuard MUST land in nebula-credential, not nebula-action). Design-scope reframe collapsed budget axis: all options fit cascade design budget; only C' triggers escalation rule 10 (spec revision).
+
+**Orchestrator picked A' per tech-lead priority call.** Cascade proceeds to Phase 3 without escalation.
+
+**Cross-crate coordination flags raised for future tracking:**
+- Credential crate: CP6 phantom+HRTB+RAII core (`CredentialRef<C>`, `SlotBinding`, `SchemeGuard`, `SchemeFactory`, `RefreshDispatcher`) still spec-only. A' Tech Spec describes design for both crates.
+- Post-cascade implementation path: USER DECISION (a) single PR / (b) sibling cascades / (c) phased rollout. Flagged in Phase 8 summary.
+
+**Security must-have floor (non-negotiable):**
+1. JSON depth cap at adapter boundaries
+2. Explicit keyed credential dispatch (method signature, hard removal of heuristic)
+3. ActionError Display sanitization
+4. Cancellation-zeroize test
+
+**Tech-lead solo-decided calls ratified** (Phase 1 + Phase 2): seal ControlAction + canonize DX tier; feature-gate + wire ActionResult::Terminate; HRTB *Handler modernization recommended.
 
 ### 2026-04-24 T16:48 — Phase 1 complete + gate passed (commit fc18c736 for Phase 0, next for Phase 1)
 
