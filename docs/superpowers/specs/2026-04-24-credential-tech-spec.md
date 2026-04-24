@@ -825,6 +825,8 @@ impl ActionSlots for BitbucketRepoFetchAction {
 
 Engine uses the slot metadata to drive resolution — it knows each slot's capability requirement.
 
+The `resolve_fn` field uses the **same HRTB function-pointer pattern** as `RefreshDispatcher::refresh_fn` described in §7.1: `for<'ctx> fn(&'ctx CredentialContext<'ctx>, &'ctx SlotKey) -> BoxFuture<'ctx, Result<ResolvedSlot, ResolveError>>`. Erasure over concrete `C` is achieved via a blanket builder called at slot registration time (same mechanism as `RefreshDispatcher::for_credential<C>()`). Concrete `resolve_bearer_slot` function points at a monomorphization of `resolve_as_bearer<C>` for each registered `C: Credential<Scheme = BearerScheme>`.
+
 **Step 3 — Typed resolve via capability-specific helper (resolve-site where-clause).**
 
 ```rust
@@ -1744,6 +1746,16 @@ When revoking credential P with cascade flag:
 
 No trait method required. Revocation API accepts `cascade: bool` flag; handler queries audit DB and iterates. Expensive but rare — acceptable cost per frequency.
 
+**Performance note.** The JSONB path query `detail->>'parent_credential_id'` is unindexed by default. For deployments where cascade revocation frequency rises (or audit table grows large), add a partial index:
+
+```sql
+CREATE INDEX idx_audit_cascade_parents
+    ON credential_audit ((detail->>'parent_credential_id'))
+    WHERE operation = 'created';
+```
+
+Current design assumes cascade is rare enough (manual operator action, not automated at rate) to not require the index. Operator adds it if cascade frequency or audit table size warrants.
+
 ## §7 Operational
 
 Runtime behavior under load + failure. Maps register `user-op-*` cluster (7 rows) + `draft-f15/f16` (refresh two-tier coordinator) + failure modes matrix.
@@ -1757,7 +1769,7 @@ Per Nit 1 from CP2a review, this section consolidates the two vocabularies.
 | In-memory flow state | Persisted `state_kind` | Notes |
 |---|---|---|
 | `idle` | `active` | Credential at rest, no operation in flight. |
-| `resolving` / `continuing` | `active` (creation time — no row yet) | Transient during `Credential::resolve` / `continue_resolve`. |
+| `resolving` / `continuing` | N/A — row not yet created | Transient during `Credential::resolve` / `continue_resolve`. Persisted `credentials` row with `state_kind = 'active'` is written only after `ResolveResult::Ready` returns. |
 | `pending` | N/A — lives in `pending_credentials` | OAuth2 callback awaited. Not in `credentials` row yet. |
 | `discarded` | N/A — row deleted | Pending TTL expired or user abandoned. |
 | `failed` (transient refresh error, non-terminal) | `active` | Engine retries per backoff; no `state_kind` change. |
@@ -1953,7 +1965,7 @@ Behavior per component-down scenario. Bounded degradation per Strategy §1.2 non
 | Audit DB down | Fall-through to read-only mode (§6.5) | Fail-closed (audit-fail-closed) | Blocked | Fallback file sink drains on recovery |
 | Cache down (L1 corrupted) | Fall-through to storage | OK | OK | Slower hot path but functional |
 | KMS unreachable (cloud) | New decrypts fail; cached decrypts OK until TTL | Fail-closed (can't encrypt new) | Fail-closed | Restart after KMS recovery |
-| RefreshClaimRepo down | OK (resolve reads cached/stale state) | OK | Falls back to L1-only coordination; cross-replica racing possible | Degraded refresh quality |
+| RefreshClaimRepo down | OK (resolve reads cached/stale state) | OK | Falls back to L1-only coordination; cross-replica refresh can race. For providers that rotate refresh_tokens (Google, GitHub app installation tokens, Microsoft identity platform, etc.), racing can invalidate in-flight tokens — elevated 401 rate during refresh windows for losing-side requests. | Restore `RefreshClaimRepo` before critical workflows; expect intermittent 401s during refresh windows otherwise. See [`draft-f17`](2026-04-24-credential-refresh-coordination.md) for mid-refresh race mitigation. |
 | Eventbus down | OK (cache invalidation delayed, stale for TTL) | OK | OK | Eventual consistency delay up to cache TTL |
 
 ### §7.8 Health check
@@ -2272,6 +2284,572 @@ Fixture material has a fixed deterministic pattern (e.g., `"test-" + kind + "-" 
 - CI gate: secondary `detect-secrets` scan on every push.
 - Contract test credentials (§8.3) injected via GitHub Actions secrets — never committed.
 
+## §9 Discovery / UX
+
+Maps 5 `user-disc-*` register rows. Interface surface layer — how credentials are registered, described, validated, discovered, and bound to actions.
+
+### §9.1 Registration
+
+Explicit `register::<C>()` at plugin / service init per Strategy §2.1. No `inventory`-style auto-registration (rejected per Strategy §2.1 — cross-crate unreliable).
+
+**Pattern:**
+
+```rust
+// In plugin crate's init module:
+pub fn register_credentials(registry: &mut CredentialRegistry) {
+    registry.register(MyServiceOAuth2Credential::new());
+    registry.register(MyServiceApiKeyCredential::new());
+    // ... one line per credential type the plugin exposes
+}
+
+// In service startup (binary crate):
+fn main() {
+    let mut registry = CredentialRegistry::new();
+
+    // Built-in credentials from nebula-credential-builtin.
+    nebula_credential_builtin::register_builtin(&mut registry);
+
+    // Plugin credentials.
+    my_plugin::register_credentials(&mut registry);
+
+    // ... engine startup with frozen registry ...
+    let engine = Engine::start(registry);
+}
+```
+
+**Invariants** (from §2.11 + §3.1):
+
+- Registration happens during init only. No mutation after `Engine::start(registry)`.
+- Duplicate `KEY` panics in debug (`debug_assert!`); warn + overwrite in release with `tracing::warn!`.
+- Each crate registers its own credentials. Cross-crate registration (plugin registers something from another plugin) not supported.
+- Hot-reload of credential types is explicitly OUT (§2.11). Restart the service to pick up new plugins.
+
+Cross-ref: §2.11 describes the `#[plugin_credential]` macro emission protocol; §3.1 describes the append-only registry and its lock-free read path.
+
+**Plugin authors must provide both** `Credential` + `CredentialMetadataSource` (§2.8). The `#[plugin_credential]` macro emits both from one annotated declaration.
+
+### §9.2 Metadata — two-layer override
+
+Per register row `draft-f33`. `CredentialMetadata` supports static defaults + per-tenant override applied at resolution time.
+
+```rust
+pub struct CredentialMetadata {
+    pub display_name: String,
+    pub icon: Option<IconRef>,                 // URL or data URI
+    pub help_text: Option<String>,
+    pub documentation_links: Vec<DocLink>,
+    pub test_cadence: Duration,                // default 1h
+    pub cache_ttl: Duration,                   // default 5min
+    pub pending_ttl: Duration,                 // default 10min
+    pub revocation_grace: Duration,            // default 30s
+    pub rotation_policy: RotationPolicy,
+    pub field_hints: Vec<FieldHint>,           // per-input-field UX hints
+    pub capabilities_enabled: Capabilities,    // which of INTERACTIVE/REFRESHABLE/... are live
+}
+
+impl CredentialMetadata {
+    /// Static defaults from the credential type's impl.
+    pub fn defaults<C: CredentialMetadataSource>() -> &'static Self {
+        <C as CredentialMetadataSource>::metadata()
+    }
+
+    /// Apply override from registry or per-tenant config.
+    pub fn with_override(
+        defaults: &Self,
+        overrides: &MetadataOverrides,
+    ) -> Cow<'_, Self> {
+        if overrides.is_empty() {
+            Cow::Borrowed(defaults)
+        } else {
+            Cow::Owned(defaults.merge(overrides))
+        }
+    }
+}
+
+pub struct MetadataOverrides {
+    pub display_name: Option<String>,
+    pub icon: Option<IconRef>,
+    pub help_text: Option<String>,
+    // ... per-field optional override ...
+}
+```
+
+**Override sources:**
+
+- `provider_registry.spec` JSONB (§5.3) — operator customizes `display_name`, `icon`, `help_text` per provider. Scope: global registry.
+- Per-tenant config — future extension (`tenant_metadata_overrides` sub-spec). Scope: per `org_id`.
+
+### §9.3 Validation — three tiers
+
+**Schema validation.** `<Self::Input as HasSchema>::schema()` validates input shape before any IdP call. Field types, required/optional, regex patterns, enum constraints. Runs at UI client (form validator) + server-side (API `/credentials` handler re-validates — don't trust client).
+
+**Semantic validation.** Optional `Credential::test(&state)` post-resolution. Verifies the resulting state actually works against the provider (e.g., `access_token` returns 200 from a whoami endpoint). Gated by `TESTABLE` bool (§2.1); credentials without testable probe default to skip.
+
+**UX validation.** Form hints from `CredentialMetadata::field_hints`:
+
+- `FieldHint::Format("ghp_*")` — GitHub personal token prefix.
+- `FieldHint::MinLength(32)` — minimum API key length.
+- `FieldHint::RegexMatch("^sk-ant-.+$")` — Anthropic API key prefix.
+- `FieldHint::ExampleValue("ghp_1234...")` — sample for "paste your token here" UX.
+
+Rendered client-side during form entry; pre-submission validation. Server re-validates via schema (schema + UX hints are consistent by construction — schema is stricter).
+
+### §9.4 Discovery — action → credential matching
+
+Action declares capability requirements via field types (`CredentialRef<dyn XPhantom>`). Engine matches available credentials at runtime for user-facing picker.
+
+**Matching pipeline:**
+
+1. **Compile-time slot metadata.** `#[action]` macro emits `SlotBinding` per credential field (§3.4 step 2), capturing `capability: Capability` + optional `service: ServiceKey`.
+2. **Runtime filter.** When user opens the action's credential picker, `CredentialRegistry::iter_compatible(slot_binding)` returns the subset of registered credentials satisfying the slot's bound:
+
+```rust
+impl CredentialRegistry {
+    pub fn iter_compatible<'a>(
+        &'a self,
+        binding: &SlotBinding,
+    ) -> impl Iterator<Item = &'a dyn AnyCredential> + 'a {
+        self.entries
+            .values()
+            .map(|boxed| &**boxed)
+            .filter(move |cred| cred.metadata().capabilities_enabled
+                                     .contains(binding.capability)
+                  && binding.service.map_or(true, |s|
+                         cred.metadata().service_key == Some(s)))
+    }
+}
+```
+
+3. **UI picker** renders filtered list; user selects.
+4. **Binding persistence.** Selected credential's `CredentialKey` stored in workflow definition (action instance config). Workflow re-binding on credential soft-delete surfaces in validation pass.
+
+### §9.5 Binding — compile-time enforcement
+
+Compile-time binding per Strategy §2.3 Resource-per-capability + §2.5 blanket sub-trait pattern + Tech Spec §3.4 Pattern 2 dispatch.
+
+**Three compile-time gates** (cumulative):
+
+1. **Declaration-site phantom check** (§3.4 step 1). `CredentialRef<dyn BitbucketBearerPhantom>` rejects wrong-capability credential types at action struct construction.
+2. **Resolve-site where-clause** (§3.4 step 3). `fn resolve_as_bearer<C>(...) where C: Credential<Scheme = BearerScheme>` rejects wrong-scheme concrete types at engine dispatch instantiation.
+3. **Macro cross-check** (§3.5). `#[action]` macro verifies that Resource's `AcceptedAuth` bound matches Action's `CredentialRef<...>` bound via trait-resolution where-clause.
+
+**Runtime guard.** UI picker only shows compatible credentials per §9.4. User cannot wire a non-matching credential even via direct API call — the API handler re-checks §9.5 binding at request deserialization; mismatch returns `400 Bad Request` with capability-mismatch reason.
+
+## §10 OAuth & redirect flows
+
+Maps 6 `user-flow-*` register rows. Covers OAuth2 interactive flow mechanics specific to the credential subsystem.
+
+### §10.1 Redirect URI policy
+
+Three policies selectable per deployment mode:
+
+**Fixed per-instance** (cloud default). Anthropic-managed redirect URI registered with each supported provider (e.g., `https://app.nebula.dev/oauth2/callback`). All tenants share. Tenant-specific routing happens post-callback via the encrypted pending state's `org_id` field.
+
+**Wildcarded** (self-hosted operator choice). Operator registers multiple URIs with the provider (staging, prod, dev); Nebula uses the URI matching its `NEBULA_BASE_URL` at startup.
+
+**Per-tenant** (enterprise, self-hosted optional). Each tenant registers its own redirect URI with the provider; Nebula reads tenant's URI from `provider_registry.spec.tenant_overrides` or tenant config.
+
+Security: redirect URI is bound to the `ProviderSpec` (§5.3), not user `Credential::Input`. User cannot inject arbitrary redirect URI — §6.8 SSRF mitigation.
+
+### §10.2 State management
+
+`PendingStore` backed by `pending_credentials` table (§5.2). State TTL + single-use + GC sweep per §6.9.
+
+**Flow (happy path):**
+
+1. `Credential::resolve(input)` returns `ResolveResult::Pending(p)` containing PKCE verifier + CSRF state + any multi-step accumulator.
+2. Engine encrypts `p` via EncryptionLayer (§5.1) and INSERTs `pending_credentials` row with `state = pending_id + encrypted_p`.
+3. User redirected to IdP with `state = pending_id` query parameter.
+4. IdP callback hits `nebula-api /oauth2/callback?state=...&code=...`.
+5. API looks up `pending_credentials` WHERE `id = pending_id`; decrypts; reads `p`; deletes row (single-use).
+6. API calls `Credential::continue_resolve(p, Continuation { code })`.
+7. Returns `ResolveResult::Ready(state)`; engine encrypts `state`; INSERTs `credentials` row.
+
+**Replay prevention:** step 5's DELETE is part of the same transaction as step 6's subsequent operations. A replay hits "no row found" → `PendingError::NotFound`.
+
+**TTL enforcement:** GC sweep (cadence 60 s) deletes expired rows per §6.9. Expired state replayed gives the same NotFound response.
+
+### §10.3 Multi-step flow — atomic only
+
+Per Strategy §5 decision: atomic flows only. Compat sketch #2 from iter-2 validated that `Pending` enum shape covers bounded-N multi-step without extending trait.
+
+**Atomic bounded-N pattern** (e.g., Salesforce JWT flow — sign JWT → exchange for token, 2 steps):
+
+```rust
+pub enum SalesforceJwtPending {
+    AwaitingTokenExchange { jwt: SecretString },
+    // ... future variants for additional steps ...
+}
+
+impl Credential for SalesforceJwtCredential {
+    type Pending = SalesforceJwtPending;
+
+    async fn resolve(ctx: &CredentialContext<'_>, input: &Self::Input)
+        -> Result<ResolveResult<Self::State, Self::Pending>, ResolveError>
+    where Self: Sized
+    {
+        let jwt = sign_jwt(input).await?;
+        Ok(ResolveResult::Pending(SalesforceJwtPending::AwaitingTokenExchange { jwt }))
+    }
+
+    async fn continue_resolve(
+        ctx: &CredentialContext<'_>,
+        pending: Self::Pending,
+        continuation: &Continuation,
+    ) -> Result<ResolveResult<Self::State, Self::Pending>, ResolveError>
+    where Self: Sized
+    {
+        match pending {
+            SalesforceJwtPending::AwaitingTokenExchange { jwt } => {
+                let token = exchange_jwt_for_token(&jwt).await?;
+                Ok(ResolveResult::Ready(SalesforceJwtState { token }))
+            }
+        }
+    }
+}
+```
+
+**OUT — unbounded dynamic-N flows.** Sub-spec `draft-f22` (Strategy §6.5 queue #3, deprioritized). Requires `continue_resolve` signature extension to pass step-index; flagged as future trait-shape change if dynamic-N use case materializes.
+
+### §10.4 Interactive vs non-interactive
+
+**Browser-required (standard OAuth2 authorization code flow):**
+
+- **Web app:** standard redirect flow with session cookie (§6.9).
+- **Desktop app (Tauri):** custom URI scheme (§10.6) or local callback server (`http://127.0.0.1:PORT/callback`).
+- **Headless (CI/CD, SSH sessions):** device code flow (RFC 8628) where provider supports; operator pre-provisioning otherwise.
+
+**Device code flow** for headless:
+
+1. Service requests `device_code` + `user_code` from provider's device-auth endpoint.
+2. UI displays `user_code` + `verification_uri` to user (on another device with browser).
+3. User enters `user_code` at the provider's URL.
+4. Service polls token endpoint with `device_code` until authorized or expired.
+5. Authorized → state persisted; expired → `PendingError::DeviceCodeExpired`.
+
+Supported providers: Google, Microsoft, GitHub (for OAuth apps). Not all providers support device code — `CredentialMetadata::supports_device_code: bool` flag per type.
+
+**Operator pre-provisioning** (fallback when no interactive path available):
+
+- Operator uses browser-equipped device to obtain initial tokens via standard flow.
+- Exports via `nebula credential export --id=cred_xxx --format=encrypted > cred.bin`.
+- Imports on headless target: `nebula credential import --file=cred.bin`.
+- Subsequent automatic refresh via `refresh_token` (no further interactivity needed).
+
+### §10.5 Callback handling
+
+API endpoint: `POST /oauth2/callback` (or provider-specific routes for non-standard flows).
+
+**Paths:**
+
+| Incoming | Handler action | Outcome |
+|---|---|---|
+| `?code=X&state=Y` (valid state, code exchange OK) | Complete resolve, persist credential, audit 'created' | Redirect UI `/credentials/:id?status=success` |
+| `?error=access_denied` | Audit 'cancelled', delete pending row | Redirect UI `/credentials/new?error=user_denied` |
+| `?error=*` (IdP error other than denial) | Log provider error, audit 'failure' with detail, delete pending | Redirect UI with error toast |
+| No callback within pending TTL | GC sweep deletes stale pending | Silent (user abandoned) |
+| `?code=X&state=Y` (valid state, code exchange FAILS — e.g., network error to token endpoint) | Retry per §7.3 Transient; if exhausted → audit failure, delete pending | Redirect UI error toast |
+| Replay with same `state` | DB lookup fails (row deleted) | `400 PendingError::NotFound` to user |
+| `state` invalid or missing | `400 Bad Request` without side effects | Reject; audit security event |
+
+**Security verification steps** (per §6.9):
+
+1. Verify `state` parameter matches DB row's `id` (CSRF binding).
+2. Verify PKCE `code_challenge` derives from stored `code_verifier` — if provider returned back-channel, `verify: code_challenge == SHA-256(code_verifier)`.
+3. Validate `code` exchange response signature if provider supports.
+
+### §10.6 Deep link — native app (Tauri)
+
+Desktop mode uses custom URI scheme `nebula://` for OAuth callbacks.
+
+**Registration** (OS-level, at Nebula app installation):
+
+- **macOS:** `Info.plist` `CFBundleURLTypes` entry.
+- **Windows:** registry entry under `HKEY_CURRENT_USER\Software\Classes\nebula`.
+- **Linux:** `.desktop` file with `MimeType=x-scheme-handler/nebula`.
+
+**Flow:**
+
+1. OAuth2 redirect_uri set to `nebula://oauth2/callback`.
+2. IdP redirects user's browser to `nebula://oauth2/callback?code=X&state=Y`.
+3. OS launches Nebula app (already running or cold start) with the URI.
+4. App parses URI, extracts state + code, forwards to local engine via IPC.
+5. Engine processes per §10.5 callback path.
+
+**Security:**
+
+- Custom scheme registration requires OS-level permission at install time; prevents other apps from intercepting after Nebula is installed.
+- Pending state + CSRF + PKCE protection per §6.9 remain unchanged.
+- Fallback: if custom scheme registration fails (permission denied, OS quirk), desktop mode falls back to local loopback callback (`http://127.0.0.1:PORT/callback`) with firewall prompt to user.
+
+## §11 Multi-mode deployment
+
+Maps 4 `user-mode-*` register rows. Three deployment modes with a feature matrix.
+
+### §11.1 Desktop mode
+
+**Target:** single-user local installation (developer machine, small team offline).
+
+- **Storage:** SQLite (file-backed at `$NEBULA_DATA_DIR/db.sqlite`), single-replica.
+- **Master key:** OS keychain (macOS Keychain, Windows Credential Manager, Linux Secret Service via `secret-service` crate). KeyProvider reads on demand, never caches raw key.
+- **Network:** no external service exposure required. IdP calls are the only outbound network.
+- **Provider registry:** bundled static registry (compiled into `nebula-credential-builtin`); non-editable at runtime. Operator must release new Nebula version to add/update providers.
+- **Claim repos:** `NoOpRefreshClaimRepo` + `NoOpRotationLeaderClaimRepo` (§5.4). Single replica, no coordination needed. L1 in-proc `RefreshCoordinator` handles concurrency.
+- **OS keychain fallback:** headless Linux without keychain — env-based master key with `[WARN] Master key from NEBULA_MASTER_KEY env var, consider installing secret-service` startup log.
+
+**Cross-refs:** §3.1 append-only registry (plugins pre-registered at desktop startup; no hot-reload) + §5.4 NoOpClaimRepo + §6.1 envelope encryption with OS keychain KEK.
+
+### §11.2 Self-hosted mode
+
+**Target:** organization's own infrastructure (on-prem, private cloud).
+
+- **Storage:** Postgres (production-grade, supports replication across AZs/regions).
+- **Master key:** env-based at startup (`NEBULA_MASTER_KEY`) OR Vault integration (`VAULT_ADDR` + token). Operator choice.
+- **Network:** exposed to workflow runtime + plugin hosts + admin UI. TLS enforced on all endpoints.
+- **Provider registry:** bundled defaults + admin CLI / admin web UI override (`nebula registry admin add-provider ...`).
+- **Claim repos:** production `RefreshClaimRepo` + `RotationLeaderClaimRepo` (per sub-specs).
+- **Operator responsibilities:**
+  - Periodic master key rotation via walker CLI (§6.2).
+  - Audit DB backup (retention per §6.5).
+  - Certificate renewal for TLS.
+  - Retention sweep query schedule (§4.4).
+
+### §11.3 Cloud / SaaS mode
+
+**Target:** Anthropic-operated multi-tenant SaaS.
+
+- **Storage:** Managed Postgres (AWS RDS / GCP Cloud SQL / equivalent) with multi-AZ replication + read replicas for scale.
+- **Master key:** KMS (AWS KMS / GCP Cloud KMS / Azure Key Vault). Master key never leaves KMS; envelope unwrap via API call per decrypt per §6.1.
+- **Multi-tenant:** `org_id` on every credential row; `ScopeLayer` (§6.4) enforces isolation.
+- **Provider registry:** Anthropic-curated; operator cannot customize. Updates via Nebula release cycle only. Tenant-scoped metadata overrides allowed per §9.2.
+- **Claim repos:** production with multi-replica coordination.
+- **Billing/metering:** per-tenant credential count + refresh count + audit volume tracked via `nebula-eventbus` consumer. Metered per plan tier.
+- **Compliance:** SOC 2 Type 2 + ISO 27001 Annex A controls (product-policy rows).
+- **Data residency:** per-region offerings (US, EU, APAC). Customer selects at signup; all data + audit stays in region.
+
+### §11.4 Feature matrix
+
+| Feature | Desktop | Self-hosted | Cloud |
+|---|---|---|---|
+| Encryption-at-rest | ✓ OS keychain KEK | ✓ env / Vault KEK | ✓ KMS KEK (never exported) |
+| Key rotation walker | ✓ single-process | ✓ online CAS | ✓ online CAS + KMS |
+| Multi-replica refresh coord | N/A (NoOpClaimRepo) | ✓ `RefreshClaimRepo` | ✓ `RefreshClaimRepo` |
+| Rotation leader election | N/A | ✓ `RotationLeaderClaimRepo` | ✓ `RotationLeaderClaimRepo` |
+| Multi-tenant isolation | N/A (single user) | Optional (via scopes) | ✓ mandatory per `org_id` |
+| Billing/metering | — | — | ✓ per-tenant |
+| OAuth2 browser redirect | Custom URI (Tauri) | Standard HTTPS | Standard HTTPS |
+| Device code flow | ✓ where provider supports | ✓ | ✓ |
+| Admin UI for registry | — (bundled only) | ✓ CLI + web | Anthropic-managed only |
+| Compliance certification | — | Self-certify | ✓ Anthropic-certified (SOC 2 / ISO 27001) |
+| GDPR data residency | User-local | Operator region choice | Per-region offering |
+| Vault integration | — | ✓ optional | — (KMS used) |
+| Audit log retention | 30 days default | Configurable | 1 year default |
+| Hot plugin reload | No (§2.11) | No | No |
+
+### §11.5 Mode-conditional compilation
+
+Nebula ships a single binary per channel; mode selected at startup via config:
+
+```bash
+NEBULA_DEPLOYMENT_MODE=desktop    # or self-hosted or cloud
+```
+
+Feature flags gate mode-specific code paths at compile time:
+
+```toml
+# Cargo.toml
+[features]
+desktop = ["dep:keyring", "dep:rusqlite"]
+self-hosted = ["dep:vault-sdk"]
+cloud = ["dep:aws-kms-sdk", "dep:gcp-kms-sdk", "dep:azure-sdk"]
+```
+
+Release channels per mode:
+
+- `nebula-desktop` release bundle → `--features = "desktop"`.
+- `nebula-selfhosted` release → `--features = "self-hosted"`.
+- `nebula-cloud` release → `--features = "cloud"`.
+
+No runtime dispatch per mode. Mode-specific code not compiled into other channels (smaller binary size, tighter audit surface).
+
+## §12 Integration
+
+Maps 4 `user-int-*` register rows (2 in-scope + 2 OUT).
+
+### §12.1 External secret store — `ExternalProvider`
+
+Trait for pulling credential state from Vault / AWS Secrets Manager / GCP Secret Manager / Azure Key Vault:
+
+```rust
+pub trait ExternalProvider: Send + Sync + 'static {
+    /// Resolve state from the external source. Returns typed Scheme
+    /// after opt-in TryFrom<RawProviderOutput> per draft-f31.
+    async fn resolve<S>(
+        &self,
+        reference: &ExternalReference,
+        tenant_ctx: &TenantContext,
+    ) -> Result<S, ProviderError>
+    where
+        S: AuthScheme + for<'a> TryFrom<&'a RawProviderOutput>;
+
+    /// Endpoint allowlist per SSRF §6.8.
+    fn endpoint_allowlist(&self) -> &EndpointAllowlist;
+}
+
+pub struct ExternalReference {
+    pub provider_id: String,       // "vault.corp", "aws.secretsmanager", etc.
+    pub secret_path: String,       // provider-specific (e.g., "secret/data/myapp/api_keys")
+    pub version: Option<u32>,
+}
+
+pub struct RawProviderOutput {
+    pub bytes: Vec<u8>,                        // raw provider response body
+    pub metadata: HashMap<String, String>,     // response headers, provider-specific
+}
+```
+
+Impls in `nebula-storage/src/external_providers/`:
+
+- `VaultProvider` — HashiCorp Vault via HTTP API (kv v2 engine default).
+- `AwsSecretsManagerProvider` — AWS SDK (`aws-sdk-secretsmanager`).
+- `GcpSecretManagerProvider` — GCP SDK (`google-cloud-secretmanager`).
+- `AzureKeyVaultProvider` — Azure SDK (`azure_security_keyvault`).
+
+**Tenant scoping:** each provider prepends tenant namespace to `secret_path`. E.g., `VaultProvider` constructs actual path as `{tenant_namespace}/{secret_path}`. SSRF allowlist per provider prevents user-driven URL injection.
+
+### §12.2 HSM / KMS envelope encryption
+
+Cloud mode (§11.3) uses KMS-backed envelope per §6.1:
+
+- Master key (KEK) lives in KMS; never exported.
+- DEK per credential unwrapped via `kms_client.decrypt(encrypted_dek, kek_id)` per resolve.
+- Signing operations (for HSM-signing credentials — Salesforce JWT, Azure AD federated app) via `kms_client.sign(key_id, plaintext, algorithm)`; raw key never returned.
+
+```rust
+pub struct KmsKeyProvider {
+    kms_client: Box<dyn KmsClient>,  // AWS / GCP / Azure adapter
+}
+
+impl KeyProvider for KmsKeyProvider {
+    async fn unwrap_dek(&self, envelope: &Envelope) -> Result<Dek, KeyError> {
+        let resp = self.kms_client
+            .decrypt(&envelope.encrypted_dek, &envelope.kek_id)
+            .await?;
+        Ok(Dek::from_bytes(resp.plaintext))
+    }
+
+    async fn sign(
+        &self,
+        key_id: &str,
+        data: &[u8],
+        algorithm: SigningAlgorithm,
+    ) -> Result<Vec<u8>, KeyError> {
+        let resp = self.kms_client.sign(key_id, data, algorithm).await?;
+        Ok(resp.signature)
+    }
+}
+```
+
+Self-hosted mode can opt-in via Vault's `transit` engine — Vault provides sign/verify/decrypt without key export, equivalent to KMS.
+
+### §12.3 OIDC / SSO federation — OUT
+
+**OUT — Plane A per ADR-0033.** Credential subsystem (Plane B) does not federate identity. Users authenticate to Nebula via Plane A (OIDC / SSO / SAML); post-auth the user identity is available in credential operations as `principal_id` (for audit) and `user_id` (for scope).
+
+Nebula does NOT act as an OIDC relying party for credential purposes. An OAuth2 credential to Google (used for calling Google Drive API from a Nebula workflow) is distinct from a user authenticating TO Nebula using Google SSO.
+
+### §12.4 Plugin execution sandbox — OUT
+
+**OUT — execution-model ADR** (separate product decision, per product-policy register row `user-int-plugin-sandbox`).
+
+Plugin execution security (in-process / process-isolated / WASM) is orthogonal to credential subsystem. Credential subsystem assumes the execution model is decided elsewhere.
+
+When the execution-model ADR lands, Tech Spec §2.11 may gain a reference describing plugin credential isolation guarantees per execution model. For now: credential subsystem treats plugin code as trusted at the execution boundary; sandboxing is not a credential-layer concern.
+
+## §13 Evolution
+
+Maps 5 `user-evo-*` register rows. Evolution policy for Tech Spec consumers.
+
+### §13.1 Versioning — three axes
+
+**Schema version.** Storage schema version stamped per row (`credentials.version` for CAS, `encryption_version` for key rotation). Migration scripts versioned `0NNN_*.sql` per §5.6. Breaking schema change → new migration + code-side compatibility shim for one release.
+
+**Trait version.** `Credential` trait has no explicit version const. API compat tracked via crate semver (§13.3). Plugin authors read `nebula-credential` version in `Cargo.toml`; pin to a major version.
+
+**Wire protocol version.** `nebula-api` REST surface versioned via URL prefix (`/api/v1/credentials`, `/api/v2/...`). Evolution policy in `nebula-api` spec (separate document). Credential Tech Spec references the wire protocol shape but does not govern its evolution.
+
+### §13.2 Deprecation
+
+**Credential type deprecation** (plugin removal, deprecated provider):
+
+1. **Release N:** Mark type with `#[deprecated(note = "Use NewType; removed in N+2")]`. Type still usable; emits compile warning in consumer code.
+2. **Release N+1:** `#[deprecated]` intensified to `#[deprecated(since = "N+1", note = "...")]` with `deny(deprecated)` in CI; allow only in test/fixture code. CHANGELOG highlight. UI shows deprecation badge on existing instances.
+3. **Release N+2:** Type removed. Existing stored credentials must be migrated to replacement via operator CLI (`nebula credential migrate --from=old_type --to=new_type --id=cred_xxx`).
+
+**Trait method deprecation** on `Credential` requires an ADR (material change — affects all implementors).
+
+### §13.3 Breaking-change semver policy
+
+Any of the following requires **major** version bump of `nebula-credential`:
+
+- Add / remove / change a `Credential` trait method signature.
+- Add / remove / change a `Credential` associated type.
+- Change capability marker trait signatures (`AcceptsBearer`, etc.) or sealed convention.
+- Change `AnyCredential` object-safe vtable (§13.4 stable ABI).
+- Change `CredentialRef<C>` runtime representation.
+- Change storage table schema incompatibly (drop column in use; rename column without compat shim).
+- Change phantom-shim canonical form (ADR-0035 amendment may require major).
+
+**Minor** version bump:
+
+- Add new credential type to `nebula-credential-builtin`.
+- Add new capability marker (opt-in by new schemes only).
+- Add methods to `CredentialMetadataSource` (companion trait — not `Credential`).
+- Add new migration script (forward-compatible).
+
+**Patch** version bump:
+
+- Bug fix in credential type impl.
+- Performance improvement (no behavior change).
+- Documentation fix.
+- Non-public internal refactor.
+
+### §13.4 Plugin API stability
+
+**Explicit stable surface** — ABI-stable across minor versions of `nebula-credential`:
+
+- `AnyCredential` trait (vtable shape).
+- Capability marker traits (`AcceptsBearer`, `AcceptsBasic`, `AcceptsSigning`, `AcceptsTlsIdentity`) — empty, no methods, stable.
+- Concrete scheme types (`BearerScheme`, `BasicScheme`, `SigV4Scheme`, `TlsIdentityScheme`) — structural layout stable; new fields require feature-flagged gradual rollout (§13.5).
+- `CredentialRef<C>` runtime representation.
+- `CredentialKey` (`Arc<str>` newtype) structure.
+- `CredentialMetadataSource` trait signature.
+- `SchemeInjector` trait signatures (when defined — TBD in §15 open item or future).
+
+**Explicitly NOT stable** (internal, subject to change without major version bump):
+
+- `Credential` trait itself — plugins use `#[plugin_credential]` macro which adapts to trait changes via generated glue code. Trait changes are major for the crate but transparent to plugins via macro regeneration.
+- Layer stack composition (§5.1) — internal to `nebula-storage`.
+- Refresh coordinator internals (`RefreshDispatcher` shape) — engine-internal.
+- Sealed module names + internal helper traits.
+- Metrics cardinality shape (new metrics can be added; names not removed without deprecation).
+
+**ABI testing.** CI runs `cargo-public-api` (or equivalent) against the stable surface list; any change to a stable-surface signature fails CI unless accompanied by a major version bump commit message marker + CHANGELOG entry.
+
+### §13.5 Feature flag rollout
+
+New credential types and new capability markers roll out gradually via cargo features in `nebula-credential-builtin`:
+
+**Three-phase cycle:**
+
+- **Phase 1 — Preview (release N):** Type available behind `--features = "credential-xxx-preview"`. Not in default feature set. Users opt in explicitly. CHANGELOG flags as preview. API schema includes but marks `experimental: true`.
+- **Phase 2 — Stabilization (release N+1):** Promoted if preview users confirm stability. Still behind feature flag but flag becomes default-off-but-documented. Bug fixes welcomed.
+- **Phase 3 — Stable (release N+2):** Merged to default `nebula-credential-builtin` surface. Feature flag removed (or retained as no-op for consumer compat). Part of the stable API surface.
+
+**Example:** Adding a new `TokenBindingScheme` for a new auth capability goes through 3 releases before being part of default builtin surface.
+
+**Fast-track for critical fixes:** security-related additions (new capability flag to encode a security invariant) can skip phases with security-lead approval. Documented in CHANGELOG with security-advisory marker.
+
 ---
 
-**Checkpoint 2b ends here.** §9–§13 follow in Checkpoint 3, §14–§16 in Checkpoint 4.
+**Checkpoint 3 ends here.** §14 (meta), §15 (open item decisions: `critique-c9` + `arch-authscheme-clone-zeroize`), §16 (implementation plan handoff) follow in Checkpoint 4.
