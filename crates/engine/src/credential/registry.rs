@@ -22,14 +22,36 @@ impl CredentialRegistry {
     }
 
     /// Register a credential type into the registry.
-    pub fn register<C>(&mut self)
+    ///
+    /// Returns [`RegistryError::DuplicateKind`] if a handler for the
+    /// same `<C::State as CredentialState>::KIND` is already registered.
+    /// Fail-closed — silent `HashMap::insert` overwrite would hide
+    /// namespace collisions including supply-chain plugin replacement
+    /// (Tech Spec §15.6, N7 mitigation; active-dev policy:
+    /// reject-second-registration).
+    ///
+    /// # Errors
+    ///
+    /// Returns [`RegistryError::DuplicateKind`] if the `state_kind` is
+    /// already registered. Operators resolve the collision by renaming,
+    /// namespacing via `#[plugin_credential]`, or removing the duplicate.
+    pub fn register<C>(&mut self) -> Result<(), RegistryError>
     where
         C: Credential,
         C::Scheme: 'static,
     {
-        let kind = <C::State as CredentialState>::KIND.to_string();
+        let kind = <C::State as CredentialState>::KIND;
+        if self.handlers.contains_key(kind) {
+            return Err(RegistryError::DuplicateKind {
+                kind: kind.to_string(),
+            });
+        }
+        tracing::info!(
+            credential.kind = %kind,
+            "credential kind registered"
+        );
         self.handlers.insert(
-            kind,
+            kind.to_string(),
             Arc::new(|bytes: &[u8]| {
                 let state: C::State = serde_json::from_slice(bytes)
                     .map_err(|e| RegistryError::Deserialize(e.to_string()))?;
@@ -37,6 +59,7 @@ impl CredentialRegistry {
                 Ok(Box::new(scheme) as Box<dyn std::any::Any + Send + Sync>)
             }),
         );
+        Ok(())
     }
 
     /// Project serialized state bytes for `state_kind` into a type-erased scheme.
@@ -98,4 +121,21 @@ pub enum RegistryError {
     /// Stored bytes failed to deserialize into the expected state type.
     #[error("deserialize failed: {0}")]
     Deserialize(String),
+    /// Attempted to register a credential kind that was already registered.
+    ///
+    /// Active-dev policy: reject-second-registration. Silent
+    /// `HashMap::insert` overwrite (prior behavior) hid namespace
+    /// collisions including supply-chain plugin replacement.
+    /// Operators resolve via renaming, `#[plugin_credential]`
+    /// namespacing, or removing the duplicate registration.
+    #[error(
+        "duplicate credential kind: {kind} (active-dev policy: reject-second-registration; \
+         resolve via rename, #[plugin_credential] namespace, or remove duplicate)"
+    )]
+    DuplicateKind {
+        /// The `<C::State as CredentialState>::KIND` string whose second
+        /// registration was rejected. Operator surfaces this value in logs
+        /// to identify which credential type collision occurred.
+        kind: String,
+    },
 }

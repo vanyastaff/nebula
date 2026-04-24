@@ -3648,41 +3648,43 @@ Tech-lead Round 7 flip-to-B specifies exactly three gates that must close before
 
 **Remaining follow-up (not blocking Gate 2 or П1):** MATURITY row `nebula-api` integration column still reflects «credential-oauth feature-gated» honest status until E2E test stability allows feature-default flip. Tracked as post-П11 activity per ADR-0031 Follow-ups §.
 
-#### §15.12.2 Gate 2 — N7 registry standalone fix
+#### §15.12.2 Gate 2 — N7 registry standalone fix (CLOSED 2026-04-24)
 
-**Scope:** `crates/engine/src/credential/registry.rs` — `register<C>` gains observability + duplicate-policy.
+**Scope (as implemented):** `crates/engine/src/credential/registry.rs` — `register<C>` gains observability + duplicate-policy. Zero external call sites discovered during verification; migration cost was minimal.
 
-**Current state (verified 2026-04-24 Round 6-7):** `registry.rs:31` `self.handlers.insert(kind, ...)` does `HashMap::insert` — silent overwrite, zero tracing, zero policy. Grep for `tracing|warn|log` in file returns no matches.
-
-**Target state:**
+**Implementation landed:**
 ```rust
 pub fn register<C>(&mut self) -> Result<(), RegistryError>
 where
     C: Credential,
     C::Scheme: 'static,
 {
-    let kind = <C::State as CredentialState>::KIND.to_string();
-    if self.handlers.contains_key(&kind) {
-        return Err(RegistryError::DuplicateKind {
-            kind,
-            hint: "active-dev policy: reject second registration; use #[plugin_credential] namespace or resolve KEY collision",
-        });
+    let kind = <C::State as CredentialState>::KIND;
+    if self.handlers.contains_key(kind) {
+        return Err(RegistryError::DuplicateKind { kind: kind.to_string() });
     }
-    tracing::info!(kind = %kind, "credential kind registered");
-    self.handlers.insert(kind, Arc::new(/* project fn */));
+    tracing::info!(credential.kind = %kind, "credential kind registered");
+    self.handlers.insert(kind.to_string(), Arc::new(/* project fn */));
     Ok(())
 }
 ```
 
-**Policy:** **reject-second-registration** (active-dev + breaking changes OK). Warn-and-overwrite is fallback only if a concrete legitimate-double-registration use case surfaces post-landing.
+Plus new `RegistryError::DuplicateKind { kind: String }` variant with `thiserror` message embedding the active-dev policy hint («reject-second-registration; resolve via rename, `#[plugin_credential]` namespace, or remove duplicate»).
 
-**Consumer updates:** existing `register::<C>()` call sites (built-in credential init, engine startup) get `?` propagation.
+**Policy landed:** **reject-second-registration** (active-dev + hard breaking changes OK per `feedback_hard_breaking_changes.md`). No warn-and-overwrite fallback — would reintroduce the N7 silent-takeover hazard.
 
-**Runtime test:** `crates/engine/tests/registry_duplicate_kind_fatal.rs` — verifies `register` returns `RegistryError::DuplicateKind` on second registration; no overwrite occurs.
+**Tracing on success:** `tracing::info!(credential.kind = %kind, "credential kind registered")` — zero-leak (kind is static type identifier like `"secret_token"`, not user/secret material). Prior state was zero tracing (grep `tracing|warn|log` in file returned no matches; §15.12.2 original scope documented this).
 
-**Estimated effort:** 1 PR (registry API change + call-site migration + test). Decoupled from Tech Spec adoption — this is live-hazard remediation.
+**Test landed:** `crates/engine/tests/registry_duplicate_kind_fatal.rs` — 3 tests, all green:
+- `first_registration_succeeds` — sanity baseline.
+- `duplicate_registration_returns_error_no_overwrite` — verifies `RegistryError::DuplicateKind` with correct `kind` string, `len()` unchanged, `contains(kind)` still true.
+- `duplicate_error_message_includes_policy_hint` — verifies error message carries «duplicate credential kind», «reject-second-registration», and the colliding `kind`.
 
-**Gate closes when:** PR landed, test green, production registry no longer silently overwrites.
+**Call-site migration:** zero external callers existed (verified via grep for `CredentialRegistry::register` / `.register::<`); `?` propagation not needed downstream. Signature change is non-breaking in practice.
+
+**Verification:** `cargo check -p nebula-engine --all-targets` + `cargo clippy -p nebula-engine --all-targets -- -D warnings` both green. Tests: `cargo test -p nebula-engine --test registry_duplicate_kind_fatal` — 3/3 pass.
+
+**Gate 2 closure criterion satisfied:** `registry.rs:31` no longer silently overwrites; `tracing::info!` on success; `RegistryError::DuplicateKind` on collision; runtime test confirms invariant.
 
 #### §15.12.3 Gate 3 — Spike iter-3 narrow-scope dyn-safety validation
 
