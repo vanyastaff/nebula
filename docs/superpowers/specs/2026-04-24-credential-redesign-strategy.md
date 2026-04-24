@@ -1,6 +1,6 @@
 ---
 name: credential redesign — strategy (checkpoint 1)
-status: Checkpoint 2 — §0–§5 written + register seeded. §6 follows in Checkpoint 3 (post-spike).
+status: Checkpoint 3 — §0–§6 written; Strategy frozen. Tech Spec kickoff signal emitted.
 date: 2026-04-24
 authors: [vanyastaff, Claude]
 scope: cross-cutting — nebula-credential, nebula-storage, nebula-engine, nebula-api, nebula-resource, nebula-action, nebula-core, nebula-schema
@@ -39,13 +39,13 @@ related:
 | ADR-0028 through 0033 | Canon invariants for credential architecture | §2 preserves all; §6 (Checkpoint 3) may supersede ADR-0031 pending prototype outcome |
 | `research/n8n-credential-pain-points.md` | Pain data motivating redesign | Primary evidence basis for §1 |
 
-**Reading order.** §0 → §1 (why) → §2 (foundational, frozen) → §3 (type system contract, frozen) → §4 (concerns classification + sub-spec queue) → §5 (prototype spike plan formal). §6 lands in Checkpoint 3 (post-spike).
+**Reading order.** §0 → §1 (why) → §2 (foundational, frozen) → §3 (type system contract, frozen + ADR-0035 amendments) → §4 (concerns classification + sub-spec queue, frozen) → §5 (prototype spike plan, completed) → §6 (post-prototype roadmap + Tech Spec kickoff, frozen). Strategy Document complete after Checkpoint 3.
 
 **Checkpoint path.**
 
 1. **Checkpoint 1** (committed `d5045774`): §0–§3 — blocked prototype spike dispatch.
-2. **Checkpoint 2** (this document update + register seed, parallel to spike execution): §4 Concerns classification (5-label summary in §4.2; full 112-row matrix in [`docs/tracking/credential-concerns-register.md`](../../tracking/credential-concerns-register.md)) + §5 Prototype spike plan formal (the dispatch prompt to `credential-spike-v1` agent is derived from §5).
-3. **Checkpoint 3** (after spike iteration outcomes reviewed): §6 Post-prototype roadmap — freezes Strategy; Tech Spec kickoff signal.
+2. **Checkpoint 2** (committed `5d35b06e`): §4 Concerns classification + §5 Prototype spike plan formal + register seeded.
+3. **Checkpoint 3** (this document update): §6 Post-prototype roadmap — **Strategy frozen**; Tech Spec kickoff signal. Spike iter-1 (`acfec719`) + iter-2 (`1c107144`) landed; ADR-0035 amended post iter-2.
 
 **Freeze policy.** §2 Foundational decisions and §3 Type system contract are frozen as of Checkpoint 1 review (commit `d5045774`). Supersede requires ADR. §4 Concerns classification and §5 Prototype spike plan freeze after Checkpoint 2 review; §5 may receive minor narrative updates as spike iteration outcomes land (record updates as `Checkpoint 2.N` revisions, not supersede). §6 lands in Checkpoint 3.
 
@@ -199,11 +199,14 @@ Spike must confirm both layers on the Bitbucket triad: (a) the phantom form comp
 
 Capability requirements live on a separate layer — a sub-trait with blanket impl over service-trait types whose `Credential::Scheme` satisfies the capability.
 
-Intent (pseudo-Rust, illustrative — canonical two-trait form per [ADR-0035](../../adr/0035-phantom-shim-capability-pattern.md)):
+Intent (pseudo-Rust, illustrative — canonical two-trait form per [ADR-0035](../../adr/0035-phantom-shim-capability-pattern.md), amended 2026-04-24-B post iter-2 with per-capability inner Sealed + `'static` dropped):
 
 ```rust
-// Module-private sealing — see ADR-0035 §3 for per-crate placement rationale.
-mod sealed { pub trait Sealed {} }
+// Module-private per-capability sealing — see ADR-0035 §3 (amended
+// post iter-2). One inner Sealed trait per capability avoids Rust
+// coherence collision when multiple capability sub-traits share a
+// common service supertrait.
+mod sealed_caps { pub trait BearerSealed {} }
 
 // "Real" capability trait — supertrait-chained for compile-time constraint.
 // Used only for blanket-impl eligibility; NOT usable in dyn positions.
@@ -214,14 +217,17 @@ where
     T::Scheme: AcceptsBearer,
 {}
 
-// Sealed blanket — only types satisfying BitbucketBearer gain sealed
-// membership. sealed::Sealed is crate-private — external crates cannot
-// impl it, so they cannot forge phantom membership.
-impl<T: BitbucketBearer> sealed::Sealed for T {}
+// Sealed blanket — only types satisfying BitbucketBearer gain
+// BearerSealed membership. sealed_caps is crate-private, external
+// crates cannot impl BearerSealed for their types → cannot forge
+// phantom membership.
+impl<T: BitbucketBearer> sealed_caps::BearerSealed for T {}
 
 // Phantom capability trait — dyn-safe marker for dyn positions.
 // NO Credential supertrait → well-formed as a type.
-pub trait BitbucketBearerPhantom: sealed::Sealed + Send + Sync + 'static {}
+// `'static` dropped — redundant under Rust 2021+ default-object-lifetime
+// rules (verified spike iter-2 commit 1c107144).
+pub trait BitbucketBearerPhantom: sealed_caps::BearerSealed + Send + Sync {}
 impl<T: BitbucketBearer> BitbucketBearerPhantom for T {}
 
 // Consumer (action) — uses the phantom in the dyn position:
@@ -504,6 +510,116 @@ Q3 (three hypotheses × iterations × Criterion bench setup) is the single most 
 
 Isolation: dedicated worktree branch, auto-created by isolation mechanism. Main branch receives NO spike commits. Iteration-1 pause artifact commits to spike branch only. No in-tree `scratch/` directory — that would leak spike work into main's gitignore convention.
 
+## §6 Post-prototype roadmap (Checkpoint 3 — frozen)
+
+Checkpoint 3 finalizes the Strategy Document. Spike iteration-2 landed with 5-of-5 scope questions resolved (see §6.1); ADR-0035 received two amendments post iter-2 validation (§6.2); Strategy freezes (§6.3); Tech Spec kickoff (§6.4); sub-spec queue becomes actionable (§6.5).
+
+### §6.1 Spike outcomes (iter-1 + iter-2 consolidated)
+
+- **Q1** (§3.3 blanket sub-trait on Bitbucket triad) — PASS; re-verified under amended per-capability sealed form.
+- **Q2** (`#[action]` 0/2+-slot ambiguity compile-error) — PASS.
+- **Q3** (`CredentialRef<C>` hypothesis selection) — all three compiled. **H1 picked** (H3 inline form adopted as macro-generated accessor sugar). H2 rejected on ergonomics grounds (fn-pointer indirection solves a non-problem at macro-expansion time).
+- **Q3a** (§3.5 macro cap↔resource cross-check) — mechanism (i) trait-resolution where-clause passes with direct `E0271` diagnostics; (ii) compile-time registry not needed. Tech Spec records (i) as canonical.
+- **Q4** (DualAuth multi-credential resource, mTLS + Bearer) — PASS (e2e test + compile-fail probe on wrong-scheme projection).
+- **Q7** (two-crate split: contract + builtin) — PASS.
+
+**Fallback: NONE.** Both §3.7.A and §3.7.B off the table.
+
+**Performance** (Criterion p50/p95/p99 over 100K iter, `ahash = "0.8"`):
+
+| Bench | mean | vs 1µs budget |
+|---|---|---|
+| baseline | 5.54 ns | 0.6% |
+| h1 | 6.44 ns | 0.6% |
+| h2 | 8.34 ns | 0.8% |
+| h3 | 6.25 ns | 0.6% |
+
+All three hypotheses ~150× under the 1µs absolute ceiling. Perf is **not** decision-driving; ergonomics decided.
+
+**Pattern 2 dispatch narrative (resolved).** Phantom trait = **declaration-site** binding signal (action author cannot write a struct accepting wrong capability). `fn resolve_as_bearer<C>(...) where C: Credential<Scheme = BearerScheme>` = **resolve-site** enforcement (engine cannot instantiate a wrong resolve path). Action body receives `&Scheme` (projected by engine at full type knowledge via `Credential::project(&state)`, which is `where Self: Sized`) — it does NOT receive `&dyn Phantom` with enumerated downcasts. Two compile-time checks are complementary.
+
+Spike artefacts retained for Tech Spec reference: `worktree-agent-a23a1d2c` branch, iter-1 commit `acfec719`, iter-2 commit `1c107144`. 11 integration tests pass, 7 compile-fail probes fail with expected diagnostics (`E0277` × 3 / `E0271` × 2 / `E0599` × 2), clippy clean.
+
+### §6.2 ADR-0035 amendments (post iter-2 validation)
+
+Two amendments applied inline to ADR-0035 as canonical-form corrections (not stylistic refinements):
+
+- **§3 Per-capability inner Sealed traits.** Original §3 prescribed a single `pub trait Sealed` per crate. That form compiles only if the crate has exactly one capability phantom, or if capability traits are mutually disjoint by supertrait chain. For any crate declaring two or more capability phantoms sharing a service supertrait (e.g., `BitbucketBearer` + `BitbucketBasic` both supertraiting `BitbucketCredential`), Rust's coherence check rejects the blanket `impl<T: CapX> Sealed for T` + `impl<T: CapY> Sealed for T` pair as overlapping — even when no concrete type satisfies both bounds. Per-capability inner Sealed traits (`BearerSealed`, `BasicSealed`, …) inside a crate-private `mod sealed_caps` sidestep the collision.
+- **§1 and §5 — `'static` dropped from phantom supertrait.** Empirically verified (iter-2): all 11 tests pass + all 7 compile-fail probes still fail without `'static`. Rust 2021+ default-object-lifetime rules make `dyn Phantom` in struct-field positions implicitly `+ 'static`. `Send + Sync` kept as forward-compat stability promise for consumers using `&dyn Phantom` / `Box<dyn Phantom>` outside `CredentialRef`. Final canonical bound: `pub trait XPhantom: sealed_caps::XSealed + Send + Sync {}`.
+
+ADR-0035 status updated to reflect amendments; §3/§5 amendment blocks recorded inline; §1 canonical pseudo-Rust rewritten to current form.
+
+### §6.3 Strategy freeze
+
+After Checkpoint 3 review, the following freezes apply:
+
+- **§0 Meta** — frozen. Changes only via new Checkpoint or ADR.
+- **§2 Foundational decisions** — frozen since Checkpoint 1.
+- **§3 Type system contract** — frozen since Checkpoint 1, with ADR-0035 amendments (§3.2 and §3.3) recorded inline per §0 freeze policy.
+- **§4 Concerns classification** — frozen. Register ([`docs/tracking/credential-concerns-register.md`](../../tracking/credential-concerns-register.md)) continues as a living document on its own maintenance cadence, independent of Strategy freeze.
+- **§5 Prototype spike plan** — frozen post-spike completion. `§5.1` scope questions all resolved per §6.1.
+- **§6 (this section)** — frozen post-Checkpoint 3 review.
+
+Future Strategy-level design changes go via **new ADRs** with inline forward-pointer at the amended section, per §0 ADR-amendment policy. Strategy remains the primary reader entry point; ADRs provide decision-record depth.
+
+### §6.4 Tech Spec kickoff
+
+**Tech Spec** is the next authoritative document. It finalizes the implementation-ready design on top of validated trait shapes + Strategy decisions + ADR-0035 canonical form.
+
+**Scope** (maps register `tech-spec-material` rows to Tech Spec sections):
+
+| Area | Register anchors |
+|---|---|
+| Trait contract + phantom-shim canonical form | `arch-phantom-shim-convention`, `draft-f1–f5`, `critique-c2/c6/c10` |
+| Runtime model (resolver, registry, dispatch path, key representation) | `draft-f4` (H1 picked), Q3/Q3a outcomes |
+| Lifecycle (create / update / rotation / revocation / deletion / expiration / migration / import-export) | `user-lifecycle-*` cluster, `draft-f36` pointer |
+| Security (encryption §12.5 bit-preserved, key rotation + walker CLI, RBAC, scope isolation, audit, redaction, zeroization, egress + SSRF, session binding, compromise response pointer) | `user-sec-*` cluster |
+| Operational (refresh, caching, retry, circuit breaker, concurrency, distributed coord pointer, failure modes matrix, health check, observability) | `user-op-*` cluster, `draft-f15/f16` |
+| Testing (unit / integration / contract / security / concurrency / failure injection / upgrade / perf / determinism / fixtures) | `user-test-*` cluster |
+| Interface + evolution (versioning, deprecation, compatibility, plugin stability, feature flag) | `user-evo-*` cluster |
+| Discovery / UX (registration, metadata, validation, discovery, binding) | `user-disc-*` cluster |
+| OAuth & redirect flows (URI, state, multi-step, headless, callback, deep link) | `user-flow-*` cluster |
+| Multi-mode deployment (desktop / self-hosted / cloud / feature matrix) | `user-mode-*` cluster |
+| Integration (external secret store, HSM/KMS, plugin sandbox pointer) | `user-int-*` cluster |
+| Data & state (storage schema, backup, DR, retention) | `user-data-*` cluster |
+| Meta (threat model pointer, compliance pointer, doc plan, incident response pointers, change management) | `user-meta-*` cluster |
+
+**Two open register items resolved in Tech Spec:**
+
+- **`critique-c9`** — `const PROVIDER_ID` for non-OAuth schemes. Decision: `Option<&'static str>` vs scheme-conditional trait.
+- **`arch-authscheme-clone-zeroize`** — `AuthScheme: Clone` bound. Decision: (a) relax `Clone` on trait, schemes opt in; vs (b) `CredentialGuard<S>` accessors instead of clones.
+
+**Non-scope.** Items in §6.5 sub-spec queue stay out of Tech Spec — they land as separate documents.
+
+**Process.** Tech Spec follows the same checkpoint-review flow as Strategy: outline → foundational sections → implementation sections → review at each checkpoint → freeze. Landing gate: Tech Spec frozen before implementation plan writes begin.
+
+### §6.5 Sub-spec landing order — now actionable
+
+§4.3 queue was stated pre-spike; post-iter-2 it becomes **actionable**. Priority (dependency-ordered):
+
+1. **Mid-refresh race + `RefreshClaimRepo`** (`draft-f17`) — already in flight at [`docs/superpowers/specs/2026-04-24-credential-refresh-coordination.md`](2026-04-24-credential-refresh-coordination.md) (status `proposal`, 651 lines). Independent of Tech Spec. **Land first** — operational correctness blocker.
+2. **ProviderRegistry seeding + versioning + URL templates** (`draft-f18/f19/f20`) — depends on Tech Spec §11 (multi-mode deployment). Land after §11 frozen.
+3. **Multi-step persistent flow accumulator** (`draft-f22`) — low priority; compat sketch #2 validated; separate spec only when N-dynamic use case materializes.
+4. **Schema migration on encrypted rows v1→v2** (`draft-f36`) — depends on production State struct shape from Tech Spec.
+5. **Trigger ↔ credential integration** (`draft-f35`) — depends on Tech Spec §2 (trait contract).
+6. **WebSocket `/credentials/events`** (`draft-f34`) — UX/realtime, lower priority.
+7. **Signed manifest infrastructure** (`arch-signing-infra`) — independent track, post-MVP per §2.1.
+8. **Compromise response runbook** (`user-sec-compromise-response`) — security-lead owned.
+9. **Threat model document** (`user-meta-threat-model`) — quarterly review cadence.
+10. **Incident response runbooks** ×3 (`user-meta-incident-response`).
+11. **GDPR compliance spec** (`user-data-gdpr`).
+12. **Credential import/export** (`user-lifecycle-import-export`) — low priority, post-Tech-Spec.
+
+### §6.6 Hand-off signal
+
+Checkpoint 3 freeze signals:
+
+- Strategy Document complete. Subsequent Strategy-level evolution via ADRs only (per §0 freeze policy).
+- Spike artefacts (`worktree-agent-a23a1d2c`, iter-1 `acfec719`, iter-2 `1c107144`) retained as validation anchors; safe to reference from Tech Spec and sub-specs.
+- Tech Spec drafting may begin. Author assignments + review cadence established at Tech Spec kickoff.
+- Register continues as living document; new concerns surface → triage to 6 labels within 2 working days per register maintenance rules.
+- Sub-spec queue (§6.5) actionable in stated dependency order; `draft-f17` already in flight.
+
 ---
 
-**Checkpoint 2 ends here.** §6 Post-prototype roadmap lands in Checkpoint 3 (after spike iteration outcomes are reviewed and either Done / Partial / Failure outcome is determined per §5.8).
+**Strategy Document complete.** Supersede requires ADR per §0 freeze policy.

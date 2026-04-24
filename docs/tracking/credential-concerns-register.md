@@ -58,7 +58,7 @@ All strategy-blocking findings resolved in Checkpoint 1 or deferred to spike val
 | critique-c6 | Bitbucket AppPassword vs Bearer service trait conflict | strategy-blocking | decided | Strategy §3.2–§3.3 — pure marker trait + blanket sub-trait with capability bound |
 | critique-c10 | Triggers / multi-step / refresh-race compat not sketched in spike | strategy-blocking | locked-post-spike | Spike requires 5 compat sketches in NOTES.md (Strategy §Spike plan) |
 | critique-c11 | `Credential` trait heaviness un-flagged | tech-spec-material | decided | Strategy §3.6 — addition discipline policy (ADR/alt/dyn-impact required per new assoc type / method / flag) |
-| arch-phantom-shim-convention | Two-trait phantom-shim pattern with per-crate sealed placement for capability traits in `dyn` positions | tech-spec-material | decided | [ADR-0035](../adr/0035-phantom-shim-capability-pattern.md) — supersedes Strategy §3.2/§3.3 portions; spike iter-1 validated first instance (commit `acfec719`) |
+| arch-phantom-shim-convention | Two-trait phantom-shim pattern with **per-capability** sealed placement for capability traits in `dyn` positions (amended post iter-2 — coherence-correct canonical form) | tech-spec-material | decided | [ADR-0035](../adr/0035-phantom-shim-capability-pattern.md) (amendments 2026-04-24-B applied: §3 per-capability Sealed canonical-form correction, §5 `'static` dropped, `Send + Sync` kept). Spike iter-1 validated blanket sub-trait (commit `acfec719`); iter-2 validated amended sealed form (commit `1c107144`). |
 
 ## Sealed / plugin / registration
 
