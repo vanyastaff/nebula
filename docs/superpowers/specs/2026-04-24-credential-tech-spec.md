@@ -161,7 +161,18 @@ Tech Spec is DONE when:
 
 ## §2 Trait contract
 
+> **⚠️ CP5/CP6 amendment overlay (read first).** Sections §2.1, §2.2, §2.6 below retain CP1-CP4 baseline text for review-history diff readability. **The canonical CP5/CP6 shape is in §15.3-§15.12**, which supersedes the sections as marked. Specifically:
+>
+> - §2.1 `Credential` trait — const capability bools + defaulted method bodies → **superseded by §15.4** (capability sub-trait split: `Interactive`/`Refreshable`/`Revocable`/`Testable`/`Dynamic` — no defaults, no silent downgrade). `Pending` assoc type moves under `Interactive`.
+> - §2.1 `State: CredentialState` — no `ZeroizeOnDrop` bound → **superseded by §15.4** amendment: `CredentialState: Serialize + DeserializeOwned + Send + Sync + ZeroizeOnDrop + 'static`.
+> - §2.2 `AuthScheme: Send + Sync + Clone + 'static` — → **superseded by §15.2 + §15.5**: Clone relaxed (per-scheme opt-in); `AuthScheme` split into `SensitiveScheme + ZeroizeOnDrop` vs `PublicScheme`; derive-time field audit; non-sensitive carve-out removed.
+> - §2.6 `#[capability]` macro contract — currently covers `AcceptsBearer`/`AcceptsBasic`/`AcceptsSigning` markers only → **extended by §15.4** to emit `Interactive`/`Refreshable`/`Revocable`/`Testable`/`Dynamic` sub-trait impl blankets when `#[plugin_credential]` is applied. §2.6 text not yet updated (deferred to Gate 3 spike iter-3 + П1 scaffolding PR).
+>
+> Implementers scaffolding П1 code read §15.3-§15.12 as authoritative, then §2 for context on what was. Reviewers reading Tech Spec linearly should expect the §15 amendments to resolve apparent §2 contradictions.
+
 ### §2.1 `Credential` trait
+
+> **Superseded by §15.4 + §15.5 (CP5 2026-04-24).** Text below reflects CP1-CP4 baseline. Canonical CP5/CP6 form: capability sub-trait split eliminates `const INTERACTIVE/REFRESHABLE/REVOCABLE/TESTABLE/DYNAMIC` bools + defaulted method bodies; `CredentialState` gains `ZeroizeOnDrop` supertrait bound.
 
 Canonical shape held since Strategy Checkpoint 1 §3.1. Implementation-level signatures:
 
@@ -276,6 +287,8 @@ pub trait Credential: sealed::Sealed + Send + Sync + 'static {
 **Error types** — all errors impl `Classify` per `nebula-error` taxonomy (`Transient` / `Permanent` / `Capability` / `Context`). Detailed in §2.12 (TBD — Checkpoint 1 placeholder to be filled in §15 once open items decided).
 
 ### §2.2 `AuthScheme` + capability markers
+
+> **Superseded by §15.2 (Clone relax) + §15.5 (sensitive/public dichotomy) (CP4 + CP5 2026-04-24).** Text below reflects CP1 baseline. Canonical form: `AuthScheme: Send + Sync + 'static` (no `Clone`); split into `SensitiveScheme: AuthScheme + ZeroizeOnDrop` + `PublicScheme: AuthScheme`; derive-time field audit forbids plain `String` for sensitive-tagged schemes. «Non-sensitive carve-out» rationalization loophole removed.
 
 ```rust
 /// Base trait for runtime scheme output. Implementations are concrete
@@ -424,6 +437,8 @@ pub trait BitbucketBasic: BitbucketCredential {}
 - `BitbucketAppPassword` → `Scheme = BasicScheme` → not `AcceptsBearer` ✗ → not `BitbucketBearer` → not `BearerSealed` → not `BitbucketBearerPhantom` → **compile error** at action declaration `CredentialRef<dyn BitbucketBearerPhantom>` when wired with AppPassword.
 
 ### §2.6 `#[capability]` macro
+
+> **Extended by §15.4 (CP5 2026-04-24).** Text below covers `AcceptsBearer`/`AcceptsBasic`/`AcceptsSigning`/`AcceptsTlsIdentity` capability markers (service/scheme intersection). CP5 adds `#[plugin_credential]` macro emission of `Interactive`/`Refreshable`/`Revocable`/`Testable`/`Dynamic` sub-trait impl blankets derived from credential author's opt-in declaration (`#[credential(refreshable)]` etc.). Macro emission contract for sub-traits will be finalized in Gate 3 spike iter-3 + formalized alongside П1 scaffolding PR.
 
 Per ADR-0035 §4 (amended). Emits real + sealed-blanket + phantom from a single user-written declaration.
 
@@ -951,6 +966,8 @@ pub struct ExecutionCredentialRef<C: ?Sized> {
 Detailed cleanup semantics in Checkpoint 2a §4 lifecycle.
 
 ### §3.6 `on_credential_refresh` — connection-bound resources
+
+> **Superseded by §15.7 (CP5 2026-04-24).** Signature below takes `&<Self::Credential as Credential>::Scheme` (borrowed reference). Canonical CP5 form: `SchemeGuard<'_, Self::Credential>` — owned, `!Clone`, `ZeroizeOnDrop`, `Deref<Target = Scheme>`, lifetime-bound to call. Plus `SchemeFactory<C>` companion for long-lived resources needing re-acquisition (worked `OAuth2HttpPool` example in §15.7). Compile-fail probes in §16.1.1 (#6, #7) enforce no-retention + no-clone properties.
 
 Per register rows `draft-f26` / `draft-f27`: connection-bound resources (Postgres pool, Kafka producer) may outlive individual credential resolves. When the credential refreshes, the resource needs to rebuild its connection.
 
@@ -2356,6 +2373,8 @@ Cross-ref: §2.11 describes the `#[plugin_credential]` macro emission protocol; 
 
 ### §9.2 Metadata — two-layer override
 
+> **Superseded by §15.8 (CP5 2026-04-24).** `CredentialMetadata.capabilities_enabled: Capabilities` field below is REMOVED in CP5. Plugin-authored metadata does not carry capability claims — capabilities are computed at `CredentialRegistry::register<C>` time from `C`'s sub-trait membership (post §15.4 split), stored in `RegistryEntry::capabilities`. Plugin cannot self-attest false capabilities. §15.8 is the canonical shape.
+
 Per register row `draft-f33`. `CredentialMetadata` supports static defaults + per-tenant override applied at resolution time.
 
 ```rust
@@ -2423,6 +2442,8 @@ pub struct MetadataOverrides {
 Rendered client-side during form entry; pre-submission validation. Server re-validates via schema (schema + UX hints are consistent by construction — schema is stricter).
 
 ### §9.4 Discovery — action → credential matching
+
+> **Superseded by §15.8 (CP5 2026-04-24).** `iter_compatible` filter body below consults `cred.metadata().capabilities_enabled.contains(...)` — plugin-declared field. CP5 canonical form: filter consults `RegistryEntry::capabilities` (registry-computed at `register<C>` time from sub-trait membership). Same `SlotType::Concrete / ServiceCapability / CapabilityOnly` matching axes, but capability authority shifts from plugin metadata to type system.
 
 Action declares capability requirements via field types (`CredentialRef<dyn XPhantom>`). Engine matches available credentials at runtime for user-facing picker.
 
@@ -3163,7 +3184,13 @@ pub trait Testable: Credential {
 
 pub trait Dynamic: Credential {
     const LEASE_TTL: Option<Duration> = None;
-    async fn release(&self, state: &Self::State, ctx: &CredentialContext<'_>)
+    // Signature fixed CP6: `&self` receiver dropped (production trait
+    // had vestigial `&self` at `credential.rs:274-283` — trait is
+    // type-level, `Self` is ZST impl marker, `&self` gave no access).
+    // Consistent with sister sub-trait method signatures
+    // (Refreshable/Revocable/Testable all take `state: &[mut] Self::State, ctx`
+    // without `&self`).
+    async fn release(state: &Self::State, ctx: &CredentialContext<'_>)
         -> Result<(), ReleaseError>;
 }
 ```
@@ -3678,9 +3705,9 @@ Implementation plan outline. Detailed phase plans land in `docs/superpowers/plan
 | **П9** | Migration v1→v2 — `draft-f36` sub-spec landing + lazy migration on resolve + bulk CLI | П1 + П3 |
 | **П10** | Trigger ↔ credential — `draft-f35` sub-spec landing + Trigger trait integration | П1 + Trigger track (separate workstream) |
 
-### §16.1.1 П1 sub-gates — 8 mandatory compile-fail probes (added CP5 per tech-lead condition 3)
+### §16.1.1 П1 sub-gates — 8 mandatory probes (7 compile-fail + 1 runtime) (added CP5 per tech-lead condition 3; clarified CP6 per Gap 8)
 
-П1 landing-gate is **not satisfied** until all 8 compile-fail probes exist and fail with the expected diagnostics. These probes encode the CP5 amendments at the type-system level; cargo-public-api snapshot alone catches surface drift but not semantic regressions, so compile-fail probes are mandatory not optional.
+П1 landing-gate is **not satisfied** until all 8 probes exist and fail with the expected diagnostics or error returns. 7 probes are compile-fail (trybuild / equivalent harness); 1 probe is runtime (`RegisterError::DuplicateKind` on duplicate-KEY registration — duplicate keys across crates are not statically detectable by rustc alone). Cargo-public-api snapshot alone catches surface drift but not semantic regressions, so these probes are mandatory not optional.
 
 | # | Probe file | Verifies | Expected diagnostic |
 |---|------------|----------|---------------------|
@@ -3688,7 +3715,7 @@ Implementation plan outline. Detailed phase plans land in `docs/superpowers/plan
 | 2 | `tests/compile_fail_scheme_sensitivity.rs` | `SensitiveScheme` impl with plain `String` field for `token`-named field; `PublicScheme` impl with `SecretString` field; `SensitiveScheme` impl without `ZeroizeOnDrop` | `E0277` — `ZeroizeOnDrop` not satisfied; macro audit error |
 | 3 | `tests/compile_fail_capability_subtrait.rs` | `impl Refreshable for X` without `refresh()` body; same for `Revocable`, `Testable`, `Dynamic` | `E0046` — required method missing |
 | 4 | `tests/compile_fail_engine_dispatch_capability.rs` | `RefreshDispatcher::for_credential::<NonRefreshableCred>()` rejected; same for other dispatchers | `E0277` — bound `Refreshable` not satisfied |
-| 5 | `tests/runtime_duplicate_key_fatal.rs` (runtime — duplicate KEYs are not statically detectable across crates, so panicking startup harness is the equivalent compile-fail probe) | `register::<DupCred1>()` then `register::<DupCred2>()` returns `RegisterError::DuplicateKey` | `RegisterError::DuplicateKey` returned + engine startup harness panics |
+| 5 | `tests/runtime_duplicate_key_fatal.rs` **(runtime probe, not compile-fail — duplicate KEYs across crates not statically detectable by rustc)** | `register::<DupCred1>()` then `register::<DupCred2>()` returns `RegisterError::DuplicateKey` | `RegisterError::DuplicateKey` returned + engine startup harness panics if operator ignores the error |
 | 6 | `tests/compile_fail_scheme_guard_retention.rs` | `Resource::on_credential_refresh` impl that stores `SchemeGuard` in struct field outlasting the call | `E0597` — borrowed value does not live long enough |
 | 7 | `tests/compile_fail_scheme_guard_clone.rs` | `let g2 = guard.clone()` on `SchemeGuard` | `E0599` — no method `clone` |
 | 8 | `tests/compile_fail_metadata_capability_field.rs` | Plugin `CredentialMetadata` instance with `capabilities_enabled` field | `E0560` — no field `capabilities_enabled` (field removed) |
