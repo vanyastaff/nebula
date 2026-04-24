@@ -124,6 +124,45 @@
 
 **Next:** Phase 2 — scope narrowing co-decision. architect proposes 2-3 scope options, tech-lead priority-call, security-lead security-gate block. Max 3 rounds.
 
+### 2026-04-24 T+~60min — Phase 2 gate PASSED (round 1, unanimous convergence)
+
+- architect drafted `03-scope-options.md` (33 KB, 3 options A/B/C + comparison + 6 open questions)
+- Parallel review:
+  - tech-lead ~153 s, 9 tools, priority-call: **Option B + 2 amendments**
+  - security-lead ~179 s, 5 tools, gate: **BLOCK A, ENDORSE B with 3 amendments, ENDORSE C with same 3**
+- Consolidation `03-scope-decision.md` written — scope **LOCKED**
+
+**Verdict:** Phase 2 locks in round 1. Co-decision body unanimously aligned on Option B.
+
+**Locked design decisions:**
+1. **Credential reshape:** Tech Spec §3.6 verbatim — `type Credential: Credential` on `Resource` directly; `type Credential = NoCredential;` opt-out; **NO sub-trait**.
+2. **Rotation dispatch:** parallel `join_all` with per-resource failure isolation (unbounded now, `FuturesUnordered` cap as future optimization).
+3. **`on_credential_revoke`:** extends §3.6 — Strategy §3 to propose revoke semantics (destroy pool + reject new acquires).
+4. **Observability:** DoD — trace span + counter + `ResourceEvent::CredentialRefreshed` variant. Explicit Phase 6 CP-review gate.
+5. **Daemon + EventSource:** extract from crate (target: engine/scheduler fold OR sibling crate — Strategy §4 picks).
+6. **Manager:** split file, keep type.
+7. **Migration:** 5 in-tree consumers in same PR wave; no shims, no deprecation windows (MATURITY=frontier).
+8. **`warmup_pool`:** must not call `Scheme::default()` under new shape.
+
+**In scope:** 6/6 🔴 + 5/9 🟠 + 1/9 🟡 (total 12/28 findings). Remaining deferred with explicit pointers (no silent drops).
+
+**Out of scope:** `Runtime`/`Lease` collapse, `AcquireOptions::intent/.tags` wiring, Service/Transport merge, feature flags, bench harness — all pointer-referenced in §2.
+
+**Standalone-fix PRs:**
+- **SF-1:** `deny.toml` wrappers rule → dispatch to **devops** separately, land before/parallel to cascade completion.
+- **SF-2:** drain-abort phase corruption → **absorbed into Option B** atomically (tech-lead's call).
+
+**Spike scope (Phase 4 if triggered):**
+- Iter-1: §3.6 shape + NoCredential opt-out ergonomics
+- Iter-2: 3-of-5 consumer compat sketches + parallel refresh dispatch
+- Exit: §3.6 compiles, no footgun at call site, no perf regression on happy path
+- **Sub-trait fallback REMOVED from spike exit criteria** (tech-lead amendment 1)
+- If spike fails, escalate to Phase 2 round 2 — NOT a mid-flight shape change
+
+**Budget remaining:** ~20 hours agent-effort in 5-day envelope. Comfortable.
+
+**Next:** Phase 3 — Strategy Document draft. architect-led, CP1 §1-§3 → CP2 §4-§5 → CP3 §6 cadence per credential pattern. Each CP: draft → spec-auditor audit → tech-lead ratify → iterate once. Freeze on three signatures.
+
 ---
 
 *This log is append-only during cascade. Each phase gate adds an entry. Soft escalations logged prominently; hard escalations also write `ESCALATION.md` at repo root.*
