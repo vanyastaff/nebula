@@ -175,7 +175,10 @@ All strategy-blocking findings resolved in Checkpoint 1 or deferred to spike val
 | critique-c14 | Binary success/failed — no partial criteria | process | decided | Strategy §Spike plan — partial criteria explicit (≥4 resolved + blocker statement on rest) |
 | critique-c15 | `S1` path undefined | process | decided | Label removed everywhere; inline "accept current architecture, finish rollout cleanup only" |
 | critique-c17 | `ExecutionCredentialRef` typed distinction vs prefix convention | tech-spec-material | decided | Typed newtype (enforced on type level), not prefix-only (not type-enforceable) |
-| tech-spec-adoption-status | Tech Spec CP5 closure 2026-04-24 — adoption-deferred per Tech Spec §1.4.1 triggers: (a) consumer wall, (b) security-lead escalation, (c) 2026-10-24 half-life triggers re-decision (NOT auto-adoption). П1 (trait-shape scaffolding implementation) does not start until ANY trigger fires. Production code stays at current shape. Tech Spec stays canonical design reference. | process | decided | Tech Spec [§1.4.1](../superpowers/specs/2026-04-24-credential-tech-spec.md). 3-stakeholder consensus session 2026-04-24 (user + tech-lead + security-lead all signed off per §15.11 sign-off matrix). |
+| tech-spec-adoption-status | Tech Spec CP6 closure 2026-04-24 Rounds 6-7 — **active-dev endorse-phased, 3 gates before П1** (supersedes CP5 adoption-deferred-per-triggers framing). Gate 1: P10 OAuth HTTP migration + plan/§0 doc correction. Gate 2: N7 registry standalone fix (`registry.rs:31` observability + reject-second-registration). Gate 3: spike iter-3 narrow-scope sub-trait × ADR-0035 phantom-shim dyn-safety validation. П1 starts after all 3 gates close. Engineering-derived sequencing (not consumer-derived deferral) — per user `feedback_active_dev_mode.md` + `feedback_hard_breaking_changes.md`. | process | decided | Tech Spec [§1.4.1](../superpowers/specs/2026-04-24-credential-tech-spec.md) + [§15.12](../superpowers/specs/2026-04-24-credential-tech-spec.md). 3-stakeholder consensus session 2026-04-24 Rounds 0-7 (tech-lead endorse-phased Round 7 flip-to-B; sec-lead Round 6 tier-A + tier-B satisfied by Gate 2 + post-gate П1 respectively; user active-dev framing honored). |
+| gate-p10-landing | CP6 Gate 1 — P10 OAuth HTTP ceremony actually moves from `nebula-credential` to `crates/api/src/credential/` per ADR-0031. Currently verified NOT landed (directory empty, `p6-p11.md:26-33` «Landed» claim wrong). Same PR corrects plan doc + Tech Spec §0. Must close before Gate 3 spike iter-3 starts. | process | proposed | Tech Spec [§15.12.1](../superpowers/specs/2026-04-24-credential-tech-spec.md). 2 PRs — code move + security invariant test harness + `e2e_oauth2_flow.rs`. |
+| gate-n7-registry-observability | CP6 Gate 2 — `crates/engine/src/credential/registry.rs:31` fix: `HashMap::insert` → `Result<(), DuplicateKind>` with `tracing::warn!`. Reject-second-registration policy (active-dev, hard breaking change OK). Live-hazard today — zero tracing on silent overwrite. Decoupled from Tech Spec adoption — standalone PR. Satisfies sec-lead Round 6 tier-A escalation. | process | proposed | Tech Spec [§15.12.2](../superpowers/specs/2026-04-24-credential-tech-spec.md). 1 PR — registry API change + call-site migration + `tests/registry_duplicate_kind_fatal.rs`. |
+| gate-spike-iter3-dyn-safety | CP6 Gate 3 — spike iter-3 narrow-scope validates CP5 sub-trait (Interactive/Refreshable/Revocable/Testable/Dynamic) × ADR-0035 phantom-shim composition for dyn-safety on 2-3 credential types (api_key static, oauth2 refreshable, 1 interactive). Addresses tech-lead Round 4 condition 1 («don't discover it in П1»). If parallel `Phantom` shims needed: ADR-0035 amendment 2026-04-XX-C. Starts after Gate 1 baselines honest state. | process | proposed | Tech Spec [§15.12.3](../superpowers/specs/2026-04-24-credential-tech-spec.md). 1 spike PR + NOTES.md writeup. 3-5 days agent-work. |
 
 ## Lifecycle (user-list)
 
@@ -311,7 +314,7 @@ All strategy-blocking findings resolved in Checkpoint 1 or deferred to spike val
 - **Product-policy rows** updated only when the product decision itself changes (via product ADR); independent of engineering cadence.
 - **Label / status counts audited** at every register revision — totals table rebuilt when rows are added, removed, or relabeled. Mismatched counts are a register bug.
 
-## Current totals (audited 2026-04-24 — after 3-stakeholder consensus session CP5 added 7 new rows)
+## Current totals (audited 2026-04-24 — CP6 Rounds 6-7 added 3 gate rows)
 
 | Label | Count | Notes |
 |---|---|---|
@@ -320,7 +323,7 @@ All strategy-blocking findings resolved in Checkpoint 1 or deferred to spike val
 | sub-spec | 16 | Each row has a landing-order entry in Strategy §4.3 |
 | implementation-phase | 4 | Routine execution tasks |
 | product-policy | 7 | Frozen or awaiting product-level decision |
-| process | 9 | Findings about the redesign workstream itself; CP5 added 1: tech-spec-adoption-status |
-| **Total** | **137** | Counts audited at each register revision |
+| process | 12 | Findings about the redesign workstream itself; CP5 added 1 (tech-spec-adoption-status, flipped CP6); CP6 added 3: gate-p10-landing, gate-n7-registry-observability, gate-spike-iter3-dyn-safety |
+| **Total** | **140** | Counts audited at each register revision |
 
 Totals rebuilt on every register revision — see maintenance rules below.

@@ -1,6 +1,6 @@
 ---
 name: credential tech spec (implementation-ready design)
-status: complete CP5 (consensus closure 2026-04-24, adoption-deferred per §1.4 triggers). Built incrementally Checkpoint 1-4 (§0-§16); CP5 amendments §15.3-§15.11 added 2026-04-24 post 3-stakeholder consensus session.
+status: complete CP6 (active-dev endorse-phased 2026-04-24 Round 7 re-engagement — 3 gates before П1). CP5 amendments §15.3-§15.11 added post 3-stakeholder consensus session Rounds 0-5 (Path A-Hybrid, initially adoption-deferred). CP6 Rounds 6-7 corrected: tech-lead flipped to endorse-phased under active-dev framing; P10 verified NOT landed; 3 concrete gates added (§15.12).
 date: 2026-04-24
 authors: [vanyastaff, Claude]
 scope: cross-cutting — nebula-credential, nebula-credential-builtin (NEW), nebula-storage, nebula-engine, nebula-api, nebula-resource, nebula-action
@@ -23,7 +23,12 @@ related:
 
 **Scope of this document.** Implementation-ready design for the credential subsystem. Built on top of the frozen [Strategy Document](2026-04-24-credential-redesign-strategy.md) (Checkpoint 3, commit `4316a292`) and [ADR-0035](../../adr/0035-phantom-shim-capability-pattern.md) (amended 2026-04-24-B post spike iter-2).
 
-**Builds on completed P6-P11 cleanup.** ADRs [0028](../../adr/0028-cross-crate-credential-invariants.md) (cross-crate invariants), [0029](../../adr/0029-storage-owns-credential-persistence.md) (storage owns persistence), [0030](../../adr/0030-engine-owns-credential-orchestration.md) (engine owns orchestration), [0031](../../adr/0031-api-owns-oauth-flow.md) (API owns OAuth HTTP), [0032](../../adr/0032-credential-store-canonical-home.md) (CredentialStore home), [0033](../../adr/0033-integration-credentials-plane-b.md) (Plane B integration credentials), and [0034](../../adr/0034-schema-secret-value-credential-seam.md) (SecretValue schema seam) are all accepted. All 6 phases (P6-P11) marked **Landed** per [`docs/superpowers/plans/2026-04-20-credential-cleanup-p6-p11.md`](../plans/2026-04-20-credential-cleanup-p6-p11.md) lines 26-33. Tech Spec assumes the post-cleanup architecture: `nebula-credential` = pure contract trait + scheme DTOs + §12.5 primitives; `nebula-storage` owns persistence layers (`EncryptionLayer` / `CacheLayer` / `AuditLayer` / `ScopeLayer` + `KeyProvider`); `nebula-engine` owns orchestration (`CredentialResolver` / `RefreshCoordinator` / rotation scheduler / `token_refresh.rs` HTTP); `nebula-api` owns OAuth flow HTTP ceremony (`oauth_controller.rs` / `flow.rs` / `state.rs`).
+**Builds on partially-completed P6-P11 cleanup** (CP6 correction 2026-04-24 Round 7 — prior CP5 claim «all landed» was wrong). ADRs [0028](../../adr/0028-cross-crate-credential-invariants.md) (cross-crate invariants), [0029](../../adr/0029-storage-owns-credential-persistence.md) (storage owns persistence), [0030](../../adr/0030-engine-owns-credential-orchestration.md) (engine owns orchestration), [0031](../../adr/0031-api-owns-oauth-flow.md) (API owns OAuth HTTP), [0032](../../adr/0032-credential-store-canonical-home.md) (CredentialStore home), [0033](../../adr/0033-integration-credentials-plane-b.md) (Plane B integration credentials), and [0034](../../adr/0034-schema-secret-value-credential-seam.md) (SecretValue schema seam) all accepted.
+
+**Actual landing status** (verified via `ls crates/*/src/credential/` 2026-04-24 Round 7):
+- **P6-P9 landed** ✓ — `crates/storage/src/credential/{backup.rs,key_provider.rs,layer/,memory.rs,pending.rs}` + `crates/engine/src/credential/{executor.rs,refresh.rs,registry.rs,resolver.rs,rotation/}`.
+- **P10 NOT landed** ✗ — `crates/api/src/credential/` directory is empty despite plan file [`2026-04-20-credential-cleanup-p6-p11.md:26-33`](../plans/2026-04-20-credential-cleanup-p6-p11.md) claiming «Landed» with `{oauth_controller.rs,flow.rs,state.rs,mod.rs}`. OAuth HTTP ceremony from ADR-0031 has NOT migrated to `nebula-api`. This is a plan-doc ↔ code-state drift that **Gate 1 (§15.12)** closes.
+- **P11 partial** — import migration done (`nebula_credential::…` + `nebula_storage::credential::…` paths used by consumers), but MATURITY row truth + OAuth-specific consumer migration tied to P10 completion. Tech Spec assumes the post-cleanup architecture: `nebula-credential` = pure contract trait + scheme DTOs + §12.5 primitives; `nebula-storage` owns persistence layers (`EncryptionLayer` / `CacheLayer` / `AuditLayer` / `ScopeLayer` + `KeyProvider`); `nebula-engine` owns orchestration (`CredentialResolver` / `RefreshCoordinator` / rotation scheduler / `token_refresh.rs` HTTP); `nebula-api` owns OAuth flow HTTP ceremony (`oauth_controller.rs` / `flow.rs` / `state.rs`).
 
 **Tech Spec re-shapes the contract trait, not the layer boundaries.** Amendments §15.3-§15.10 (added 2026-04-24 CP5 per 3-stakeholder consensus session) introduce capability sub-trait split, `AuthScheme` sensitivity dichotomy, fatal duplicate-KEY registration, `SchemeGuard` + `SchemeFactory` for refresh hook, capability-from-type authority, and `PendingStore::consume` atomicity contract. **The sub-trait split (§15.4) preserves ADR-0035 phantom-shim dyn-safety** — Pattern 2 / Pattern 3 `dyn XPhantom` continues to work; if `dyn Refreshable` etc. are needed for runtime dispatch, parallel phantom shims are introduced via the same ADR-0035 mechanism (or ADR-0035 superseded if a structural gap surfaces during П1 scaffolding).
 
@@ -125,15 +130,21 @@ Tech Spec is one level below Strategy in the authority chain:
 
 **Register** (`docs/tracking/credential-concerns-register.md`) is a living tracking surface. Tech Spec sections land → register rows update from `locked-post-spike` to `decided` with Tech Spec pointer. Zero silent drops per register maintenance rule.
 
-### §1.4.1 Adoption rationale (honest framing — added CP5)
+### §1.4.1 Adoption rationale — active-dev endorse-phased (CP6 re-framed 2026-04-24 Round 7)
 
-No plugin author or built-in credential type has articulated an adoption-blocking wall as of 2026-04-24. Tech Spec adoption is **structural-quality improvement** layered on completed P6-P11 cleanup, not consumer-pressure-driven. Reference-quality status holds until ANY of:
+**CP5 adoption-deferred-per-triggers framing SUPERSEDED.** CP5 framed adoption as «no consumer wall → wait». Under active-dev stage + hard breaking changes OK + verified live hazards in current production code, «wait for consumer» is the wrong question per `feedback_active_dev_mode.md` («Active dev ≠ prod release. Never settle for 'deferred'...»). Round 7 re-engaged tech-lead with active-dev framing; tech-lead flipped from «adoption-deferred» to **endorse-phased** with 3 gates before П1 (see §15.12).
 
-1. **(a) Consumer wall** — a plugin author or builtin credential type hits a documented wall under the current trait shape. Documentation in a Tech Spec adoption-trigger row in [`docs/tracking/credential-concerns-register.md`](../../tracking/credential-concerns-register.md) is the trigger condition.
-2. **(b) Security-lead escalation** — security-lead recommends adoption (e.g., compromise findings reframe priority, new findings beyond N1-N10).
-3. **(c) Half-life review** — 2026-10-24 (6 months from CP5 closure) **triggers a re-decision**, not auto-adoption. The half-life is a scheduled re-evaluation point: re-engage the 3-stakeholder consensus session, evaluate adoption signal vs cost, decide whether П1 is justified. A trigger fires the question, not the answer.
+The three §15.12 gates are **engineering-derived sequencing**, not consumer-derived deferral:
 
-Until ANY trigger fires, П1 (trait-shape scaffolding implementation per §16.1) does not start. **Production code in `crates/credential/src/contract/credential.rs` stays at current shape.** Tech Spec stays canonical design reference. This is recorded in [`docs/MATURITY.md`](../../MATURITY.md) (`nebula-credential` row notes "trait redesign at design-closure status; П1 implementation gated on §1.4.1 triggers"); also tracked register-side in row `tech-spec-adoption-status` (proposed CP5).
+1. **Gate 1 — P10 cleanup completion** (honest baseline): OAuth HTTP ceremony actually moves to `crates/api/src/credential/` per ADR-0031 + `p6-p11.md:26-33` «Landed» claim corrected. Unblocks truthful §0 citation and clears doc↔code gap before П1 scaffolds onto it.
+2. **Gate 2 — N7 standalone fix** (live hazard): `crates/engine/src/credential/registry.rs:31` gets `tracing::warn!` + reject-second-registration policy (silent overwrite with zero tracing is live today, not hypothetical).
+3. **Gate 3 — spike iter-3 narrow-scope** (CP5 shape validation): sub-trait × ADR-0035 phantom-shim composition validated on 2-3 credential types (api_key static, oauth2 refreshable, 1 interactive). Closes «paper design relative to dyn-safety» risk that tech-lead Round 4 condition 1 flagged.
+
+**П1 starts after all 3 gates close.** No consumer-wall dependency. No half-life timer. Tech-correct sequencing for active-dev stage.
+
+**What «deferred» is NOT the same as:** deferred-to-consumer-wall (CP5, wrong for active-dev) ≠ deferred-to-3-engineering-gates (CP6, tech-correct for active-dev). The difference is authority: consumer = product signal; gates = engineering judgment.
+
+Recorded in [`docs/MATURITY.md`](../../MATURITY.md) (`nebula-credential` row: «trait redesign endorsed-phased; П1 gated on §15.12 3 gates»); register row `tech-spec-adoption-status` flipped to `active-dev-3-gate-path` status.
 
 ### §1.5 Success criteria
 
@@ -3533,15 +3544,120 @@ Cons: implementations must explicitly support atomic pop. NoOp `PendingStore` fo
 
 Register row `runtime-pending-consume-atomicity` opens with `proposed` status (П-later closure, not П1).
 
-### §15.11 Sign-off matrix (consensus session output)
+### §15.11 Sign-off matrix — CP6 final (2026-04-24 Rounds 0-7)
 
-| Stakeholder | Sign-off | Conditions | Quotable summary |
-|-------------|----------|------------|------------------|
-| User (vanyastaff) | implicit (per spawn task goal "power AND safety") | Sub-trait split + 8 compile-time amendments satisfy goal | n/a — original session task |
-| Tech-lead | endorse-with-conditions | 5 conditions: §0 cite ADR-0035; §15.3 runtime/compile gate disambig; 8 compile-fail probes mandatory; §1.4 trigger language re-decision; §3.6 worked example | "Path A-Hybrid endorsed with five conditions. The proposal correctly separates trait re-shape (Tech Spec) from layer relocation (P6-P11 landed)... The sub-trait capability split is appropriate, not over-engineered..." |
-| Security-lead | confirmed | All 5 tech-lead conditions either reinforce or are neutral; none break or weaken | "Re-validation complete. All 5 tech-lead conditions either reinforce or are neutral to my sign-off conditions; none break or weaken. Sign-off confirmed." |
+CP5 matrix superseded by CP6 after Rounds 6-7 re-engagement under active-dev framing.
 
-All three stakeholders have explicitly endorsed the design closure. **Tech Spec status flips: `complete CP4 → complete CP5 (consensus closure 2026-04-24, adoption-deferred per §1.4 triggers)`**.
+| Stakeholder | Sign-off | Position | Quotable summary |
+|-------------|----------|----------|------------------|
+| User (vanyastaff) | endorse | Active-dev framing + sub-trait split satisfy «power AND safety»; 3 gates before П1 are engineering-correct sequencing, not consumer-deferral | «Tech-lead должен как то помочь... на этапе планирования» — Round 5 user pushback that reframed the question from adoption-deferred to active-dev gates |
+| Tech-lead | endorse-phased (Round 7 flip from Round 4 endorse-with-conditions) | 3 gates before П1: (1) P10 cleanup completion, (2) N7 standalone registry fix, (3) spike iter-3 sub-trait × phantom-shim dyn-safety validation | «Position flips from adoption-deferred to endorse-phased (B). My Round 4 rested on a false premise — I wrote 'P6-P11 landed' into memory from a plan doc's self-claim without ls-ing crates/api/src/credential/, which is empty. Under active-dev framing with feedback_hard_breaking_changes.md, 'no consumer pressure' isn't a technical objection. N1 and N7 are live today (state.rs:18 lacks ZeroizeOnDrop; registry.rs:31 has zero tracing). Three gates before П1: (1) actually land P10 + correct the doc record, (2) standalone N7 registry observability + policy fix, (3) narrow spike iter-3 validating sub-trait × ADR-0035 phantom-shim dyn-safety. Then П1 starts.» |
+| Security-lead | confirmed (Round 5) + partial-escalate (Round 6 — N7 tier-A immediate fix, N1/N3/N5 tier-B hard-gate-before-plugin-surface) | Gate 2 directly satisfies sec-lead Round 6 tier-A escalate; Gate 3 + post-gate П1 satisfy tier-B «before plugin surface opens» | Round 5: «All 5 tech-lead conditions either reinforce or are neutral to my sign-off conditions; none break or weaken. Sign-off confirmed.» Round 6: «I AM escalating N7 to standalone hard-block because `crates/engine/src/credential/registry.rs:31` HashMap::insert silently overwriting on duplicate KIND is a real, today-exploitable misconfiguration vector — independent of the Tech Spec.» |
+
+**All three stakeholders endorse CP6 endorse-phased path.** No papered-over disagreements. Active-dev framing replaces prod-release framing. Tech Spec status flips `complete CP5 → complete CP6 (active-dev endorse-phased, 3 gates before П1)`.
+
+### §15.12 Three engineering gates before П1 (CP6 — added Round 7)
+
+Tech-lead Round 7 flip-to-B specifies exactly three gates that must close before П1 trait-scaffolding implementation starts. Each gate is a concrete PR scope, not a vague trigger.
+
+#### §15.12.1 Gate 1 — P10 cleanup completion + doc correction
+
+**Scope:** OAuth HTTP ceremony moves from `nebula-credential` (current home of `credentials/oauth2_flow.rs` fragment, or wherever the implementation currently lives post P6-P9 migration) to `crates/api/src/credential/` per ADR-0031.
+
+**Target crate state:**
+- `crates/api/src/credential/mod.rs` — module root.
+- `crates/api/src/credential/oauth_controller.rs` — `GET /credentials/:id/oauth2/auth` + `GET/POST /credentials/:id/oauth2/callback` endpoints.
+- `crates/api/src/credential/flow.rs` — HTTP client (reqwest) for token endpoint exchange + URI construction.
+- `crates/api/src/credential/state.rs` — CSRF token generation + pending-state correlation.
+
+**Doc corrections in the same PR:**
+- `docs/superpowers/plans/2026-04-20-credential-cleanup-p6-p11.md:26-33` — P10 status from «Landed» to accurate state (pre-Gate-1 truth: «not landed, OAuth HTTP remains in nebula-credential pending migration»; post-Gate-1 truth: «Landed» with current-crate evidence).
+- Tech Spec §0 — keep the corrected «Actual landing status» paragraph (added CP6); no further §0 change needed after Gate 1 lands.
+- `docs/MATURITY.md` `nebula-api` row — integration column updated if P10 changes it.
+
+**Security invariants preserved** (per ADR-0031 §7 + credential cleanup design §7):
+- PKCE mandatory S256, no `plain` fallback.
+- CSRF token 128-bit, single-use, `subtle::ConstantTimeEq` comparison.
+- State parameter crypto-bound (HMAC over `{csrf_token || credential_id || expires_at}`).
+- reqwest: TLS-only (rustls), redirects capped at 5, per-call timeout ≤ 30s, response body cap 1 MiB.
+- Token endpoint URL allowlist from `allowed_token_endpoints` workflow-config binding.
+- Zeroize on partial failure (timeout, connection reset, truncated response).
+
+**Estimated effort:** 2 PRs (code move + security-invariant test harness). `feature-gated` under `credential-oauth` default-off until E2E `crates/api/tests/e2e_oauth2_flow.rs` goes green.
+
+**Gate closes when:** `crates/api/src/credential/` contains the 4 files listed, p6-p11.md and Tech Spec §0 reflect accurate state, E2E integration test green.
+
+#### §15.12.2 Gate 2 — N7 registry standalone fix
+
+**Scope:** `crates/engine/src/credential/registry.rs` — `register<C>` gains observability + duplicate-policy.
+
+**Current state (verified 2026-04-24 Round 6-7):** `registry.rs:31` `self.handlers.insert(kind, ...)` does `HashMap::insert` — silent overwrite, zero tracing, zero policy. Grep for `tracing|warn|log` in file returns no matches.
+
+**Target state:**
+```rust
+pub fn register<C>(&mut self) -> Result<(), RegistryError>
+where
+    C: Credential,
+    C::Scheme: 'static,
+{
+    let kind = <C::State as CredentialState>::KIND.to_string();
+    if self.handlers.contains_key(&kind) {
+        return Err(RegistryError::DuplicateKind {
+            kind,
+            hint: "active-dev policy: reject second registration; use #[plugin_credential] namespace or resolve KEY collision",
+        });
+    }
+    tracing::info!(kind = %kind, "credential kind registered");
+    self.handlers.insert(kind, Arc::new(/* project fn */));
+    Ok(())
+}
+```
+
+**Policy:** **reject-second-registration** (active-dev + breaking changes OK). Warn-and-overwrite is fallback only if a concrete legitimate-double-registration use case surfaces post-landing.
+
+**Consumer updates:** existing `register::<C>()` call sites (built-in credential init, engine startup) get `?` propagation.
+
+**Runtime test:** `crates/engine/tests/registry_duplicate_kind_fatal.rs` — verifies `register` returns `RegistryError::DuplicateKind` on second registration; no overwrite occurs.
+
+**Estimated effort:** 1 PR (registry API change + call-site migration + test). Decoupled from Tech Spec adoption — this is live-hazard remediation.
+
+**Gate closes when:** PR landed, test green, production registry no longer silently overwrites.
+
+#### §15.12.3 Gate 3 — Spike iter-3 narrow-scope dyn-safety validation
+
+**Scope:** Spike validates CP5 sub-trait × ADR-0035 phantom-shim composition on 2-3 credential types. Addresses tech-lead Round 4 condition 1 («confirm the sub-traits compose cleanly with ADR-0035 phantom-shim for `dyn Credential` erasure»).
+
+**Target types to validate:**
+1. `ApiKeyCredential` — static, no sub-trait (baseline phantom-shim for service capability).
+2. `OAuth2Credential` — `Refreshable` + `Revocable` (lifecycle sub-traits).
+3. One interactive credential (e.g., hypothetical `SalesforceJwtCredential`) — `Interactive` + `Refreshable`.
+
+**Spike must demonstrate:**
+- **(a) `dyn Credential` object-safety** preserved when `Interactive` / `Refreshable` / `Revocable` / `Testable` / `Dynamic` are split into sub-traits (with `Pending` moved to `Interactive`).
+- **(b) Phantom-shim erases `C::Scheme` cleanly** for Pattern 2 / Pattern 3 action consumers (e.g., `CredentialRef<dyn BitbucketBearerPhantom>` still compiles).
+- **(c) Parallel phantom-shim needed for lifecycle sub-traits?** Open question: if `dyn Refreshable` is needed for runtime dispatch (e.g., engine's refresh registry), does it require `RefreshablePhantom` analogous to `BitbucketBearerPhantom`? Spike answers empirically.
+- **(d) Capability-const downgrade path** (for backward-compat with legacy consumers reading `REFRESHABLE: bool`) still compiles if opt-in legacy adapter lands.
+- **(e) Compile-fail probes from §16.1.1 actually fire** with expected diagnostics (one per amendment).
+
+**Artifacts:**
+- Spike worktree branch (new — independent of prior `worktree-agent-a23a1d2c`) with crate scaffold.
+- `NOTES.md` documenting approach, findings, dyn-safety verdict per (a)-(e).
+- If parallel `Phantom` shims are needed: ADR-0035 amendment 2026-04-XX-C with the composition pattern.
+
+**Estimated effort:** 1 spike PR + writeup. 3-5 days agent-work per user Round 5 recommendation.
+
+**Gate closes when:** spike branch lands to archive; NOTES.md answers (a)-(e); if (c) requires amendment: ADR-0035 amendment written + accepted; §15.4 updated with spike outcome.
+
+#### §15.12.4 Gate sequencing
+
+Per tech-lead Round 7:
+- **Gates 1 and 2 run in parallel** (independent crates: `api/`, `engine/`).
+- **Gate 3 starts once Gate 1 baselines honest state** (so spike knows the cleanup is complete).
+- **П1 trait-scaffolding starts after all three gates close.**
+
+Rough estimate: Gate 1 ≈ 2 PRs, Gate 2 ≈ 1 PR, Gate 3 ≈ 1 spike PR + writeup, then П1.
+
+Register rows `gate-p10-landing`, `gate-n7-registry-observability`, `gate-spike-iter3-dyn-safety` opened with `proposed` status pointing to §15.12.1/§15.12.2/§15.12.3 respectively.
 
 ## §16 Implementation handoff
 
@@ -3627,10 +3743,17 @@ Per register's own maintenance rules + Tech Spec §13.4 evolution:
 
 ---
 
-**Tech Spec complete — Checkpoint 5 ends here.**
+**Tech Spec complete — Checkpoint 6 ends here.**
 
-CP4 (2026-04-24) drafted all 16 sections. CP5 (2026-04-24, post 3-stakeholder consensus session — see [`2026-04-24-credential-3agent-consensus-session.md`](2026-04-24-credential-3agent-consensus-session.md)) added §15.3-§15.11 closing 1 CRITICAL + 6 HIGH + 3 MEDIUM security-lead findings (N1-N10) at the trait/type level, with 4 new register rows (`arch-capability-subtrait-split`, `arch-scheme-sensitivity-dichotomy`, `arch-registry-duplicate-fail-closed`, `arch-scheme-guard-factory`, `arch-metadata-capability-authority`, `runtime-pending-consume-atomicity`). §15 decision count: 11 sections (§15.1-§15.11). §16.1 phase list updated to bind П1 sub-gates to 8 mandatory compile-fail probes (§16.1.1). All three stakeholders (user, tech-lead, security-lead) explicitly endorsed per §15.11 sign-off matrix.
+CP4 (2026-04-24) drafted all 16 sections. CP5 (2026-04-24 Rounds 0-5) added §15.3-§15.11 closing 1 CRITICAL + 6 HIGH + 3 MEDIUM security-lead findings (N1-N10) at the trait/type level. CP6 (2026-04-24 Rounds 6-7) corrected two material errors in CP5: (i) P10 «Landed» claim wrong (`crates/api/src/credential/` directory empty); (ii) adoption-deferred-per-triggers framing wrong for active-dev stage. CP6 adds §15.12 (3 engineering gates before П1) and flips sign-off matrix §15.11 to **all-three-endorse-phased** outcome under active-dev framing.
 
-**Adoption status: deferred per §1.4.1 triggers.** П1 starts when ANY of: (a) consumer wall, (b) security-lead escalation, (c) 2026-10-24 half-life re-decision (NOT auto-adoption — re-decision means re-engaging the 3-stakeholder consensus). Until trigger fires, Tech Spec stays canonical design reference; production code stays at current shape.
+**Adoption status: endorse-phased — 3 gates before П1.**
+- **Gate 1 (§15.12.1):** P10 OAuth HTTP migration to `crates/api/src/credential/` per ADR-0031 + plan doc + §0 corrections. 2 PRs.
+- **Gate 2 (§15.12.2):** N7 registry standalone fix — `registry.rs:31` gets `tracing::warn!` + reject-second-registration policy. 1 PR.
+- **Gate 3 (§15.12.3):** Spike iter-3 narrow-scope — sub-trait × ADR-0035 phantom-shim dyn-safety validation on 2-3 credential types. 1 spike PR + writeup.
 
-Tech Spec ready for `writing-plans` skill invocation to produce phased implementation plans (П1–П10) when ANY §1.4.1 trigger fires.
+**П1 starts after all 3 gates close** — engineering-derived sequencing, not consumer-derived deferral.
+
+Tech Spec ready for `writing-plans` skill invocation to produce Gate 1 / Gate 2 / Gate 3 plans (separate PRs), then П1–П10 phased implementation plans.
+
+Consensus session document: [`2026-04-24-credential-3agent-consensus-session.md`](2026-04-24-credential-3agent-consensus-session.md) (Rounds 0-7 verbatim).

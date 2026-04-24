@@ -1,6 +1,6 @@
 ---
 name: credential redesign 3-stakeholder consensus session
-status: complete (CP5 closure 2026-04-24 — all 3 stakeholders signed off)
+status: complete (CP6 closure 2026-04-24 — Rounds 0-7, all 3 stakeholders endorse-phased under active-dev framing)
 date: 2026-04-24
 authors: [vanyastaff, Claude (coordinator)]
 stakeholders: [user (vanyastaff), tech-lead, security-lead]
@@ -332,7 +332,89 @@ Committed on branch `claude/funny-jepsen-b23d20` (current worktree):
 
 ---
 
-**End of consensus session document. CP5 closure 2026-04-24.**
+---
+
+## Rounds 6-7 — active-dev re-framing (added CP6, 2026-04-24)
+
+CP5 closure was **honest but incomplete**. User Round 5 pushback («а я просил довести до того что они будут все довольны») surfaced that:
+
+1. **Framing error (Round 3-4):** I asked tech-lead «does Path A-Hybrid satisfy your blockers, should adoption be deferred?» — a prod-release framing. Correct question for active-dev: «is this structurally correct, does it ship better code?». User's `feedback_active_dev_mode.md` memory explicitly forbids settling for «deferred / cosmetic / quick win».
+2. **Verification error (Round 0 + CP5 §0):** I trusted `p6-p11.md:26-33` «Landed» claim without `ls crates/api/src/credential/`. Verification showed directory **empty** — P10 (OAuth HTTP ceremony) NOT landed. CP5 §0 «all P6-P11 landed» claim was wrong.
+3. **Live-hazard miss (Round 1 enumeration):** N7 at `registry.rs:31` is worse than CP4 documented — `HashMap::insert` with **zero tracing**, not «warn + overwrite» as the Tech Spec claimed. Grep confirms no `tracing|warn|log` in file.
+
+### Round 6 — Security-lead partial-escalation decision
+
+Re-engaged sec-lead with active-dev framing + live-hazard vs structural-finding distinction. Sec-lead response (verbatim, not escalating for politics):
+
+> I am NOT escalating N1/N3/N5 to «all» because the user wants «всем довольны». Doing so would be politics, not security. Tier-B is a structural improvement, not an active leak — current production credentials are audited safe.
+>
+> I AM escalating N7 to standalone hard-block because `crates/engine/src/credential/registry.rs:31` `HashMap::insert` silently overwriting on duplicate `KIND` is a real, today-exploitable misconfiguration vector — independent of the Tech Spec.
+>
+> The phased Tier-B is a hard gate, not a defer-forever — it must land before the plugin/partner-credential surface opens (re-escalation triggers are explicit in memory).
+
+**Tier-A (immediate):** N7 registry standalone fix — separate PR, no Tech Spec coupling.
+**Tier-B (hard gate):** N1/N3/N5/N8 + remaining compile-time amendments land **before plugin/partner-credential surface opens**.
+
+This reframes «defer» as «defer to plugin-surface-opening», an engineering deadline controlled by user — not to consumer-wall, a product signal user cannot force.
+
+### Round 7 — Tech-lead re-engagement under active-dev framing
+
+Re-dispatched tech-lead with corrected framing + sec-lead tier-A/tier-B escalation + P10 verification finding. Tech-lead flipped position.
+
+**Tech-lead Round 7 verbatim quotable:**
+
+> Position flips from adoption-deferred to endorse-phased (B). My Round 4 rested on a false premise — I wrote «P6-P11 landed» into memory from a plan doc's self-claim without ls-ing `crates/api/src/credential/`, which is empty. Under active-dev framing with `feedback_hard_breaking_changes.md`, «no consumer pressure» isn't a technical objection. N1 and N7 are live today (`state.rs:18` lacks `ZeroizeOnDrop`; `registry.rs:31` has zero tracing). Three gates before П1: (1) actually land P10 + correct the doc record, (2) standalone N7 registry observability + policy fix, (3) narrow spike iter-3 validating sub-trait × ADR-0035 phantom-shim dyn-safety. Then П1 starts.
+
+**Admissions embedded in tech-lead's flip:**
+- Round 4 rested on unverified plan-doc claim (same failure mode as spawn-task's archive reference).
+- Round 4 memory stated «warn + overwrite exists» for N7 — factually wrong, registry has zero observability.
+- Active-dev framing + hard-breaking-changes-OK = «no consumer pressure» is not a technical objection.
+- Sub-trait × phantom-shim composition (tech-lead Round 4 condition 1) is unvalidated — paper design relative to dyn-safety. Gate 3 closes that.
+
+### CP6 final outcome — three engineering gates before П1
+
+Gate 1, Gate 2, Gate 3 detailed in Tech Spec §15.12. Sequencing:
+- **Gate 1 + Gate 2 parallel** (independent crates `api/` vs `engine/`).
+- **Gate 3 after Gate 1** (spike needs honest cleanup baseline).
+- **П1 after all 3 gates close.**
+
+Sec-lead satisfied automatically: Gate 2 = sec-lead tier-A; Gate 3 + post-gate П1 = sec-lead tier-B «before plugin surface».
+
+**User satisfaction (the core question «все довольны?»):** YES under CP6 framing. User's `feedback_active_dev_mode.md` memory honored (no «deferred» settling). User's `feedback_hard_breaking_changes.md` memory honored (breaking changes OK, spec-correct preferred). Active-dev stage respected (gates = engineering, not product).
+
+**Disclaimer on prior CP5 closure:** CP5 was not papered over — it was an honest «adoption-deferred» framing that became wrong only when user surfaced the active-dev context and P10 verification cut through the plan-doc self-claim. CP5 → CP6 is a genuine re-decision, not a correction-for-politics.
+
+---
+
+## Deliverables (CP6 — updates to CP5 commit)
+
+| File | CP6 change |
+|------|-----------|
+| [docs/superpowers/specs/2026-04-24-credential-tech-spec.md](2026-04-24-credential-tech-spec.md) | Status header `complete CP5 → complete CP6`. §0 P10 truth correction (directory empty, Gate 1 closes). §1.4.1 rewrite (adoption-deferred → active-dev endorse-phased). §15.11 sign-off matrix flip (tech-lead endorse-with-conditions → endorse-phased, added sec-lead Round 6 partial-escalation row). §15.12 new section — 3 gates detail (§15.12.1 P10 + §15.12.2 N7 + §15.12.3 spike iter-3 + §15.12.4 sequencing). Footer CP5 → CP6. |
+| This consensus session document | Rounds 6-7 added — sec-lead Round 6 partial-escalation verbatim, tech-lead Round 7 flip-to-B verbatim, CP5 → CP6 delta, active-dev framing disclosure. |
+| [docs/tracking/credential-concerns-register.md](../../tracking/credential-concerns-register.md) | `tech-spec-adoption-status` flipped `decided (adoption-deferred)` → `decided (active-dev-3-gate-path)`. 3 new gate rows opened. Totals: 137 → 140. |
+
+**No production code changes yet** — Gate 1 + Gate 2 + Gate 3 are the next concrete PRs; П1 follows.
+
+## Next concrete actions (CP6 exit)
+
+**Immediate (Gate 2 — decoupled from Tech Spec):**
+- PR: `registry.rs:31` — add `tracing::warn!` + reject-second-registration policy. Can land this week independent of Gates 1/3.
+
+**This week (Gate 1 — P10 cleanup + doc repair):**
+- PR 1: move OAuth HTTP ceremony to `crates/api/src/credential/` per ADR-0031 (skeleton + `feature = "credential-oauth"` default-off).
+- PR 2: security-invariant test harness + `e2e_oauth2_flow.rs` + `p6-p11.md` + CP5 §0 corrections.
+
+**Next 1-2 weeks (Gate 3 — spike iter-3):**
+- Spike worktree branch with sub-trait × phantom-shim × dyn-safety validation.
+- NOTES.md writeup + §15.4 update with findings.
+- If parallel `Phantom` shims needed: ADR-0035 amendment 2026-04-XX-C.
+
+**Then П1 starts** per §16.1 with 8 compile-fail probes per §16.1.1.
+
+---
+
+**End of consensus session document. CP6 closure 2026-04-24.**
 
 ---
 
