@@ -342,7 +342,7 @@ Labels are mutually exclusive by intent. A single concern lives in one bucket; c
 | Execution-scoped | 2 | — | 2 | — | — | — | — |
 | Connection-bound | 2 | — | 2 | — | — | — | — |
 | Storage layer | 3 | — | 3 | — | — | — | — |
-| Scheme / injection details | 8 | — | 6 | — | 2 | — | — |
+| Scheme / injection details | 9 | — | 7 | — | 2 | — | — |
 | Open / ambiguous | 4 | — | 1 | 3 | — | — | — |
 | Critique meta | 11 | — | 2 | — | 1 | — | 8 |
 | User-list lifecycle | 7 | — | 5 | 2 | — | — | — |
@@ -356,7 +356,7 @@ Labels are mutually exclusive by intent. A single concern lives in one bucket; c
 | User-list integration | 4 | — | 2 | — | — | 2 | — |
 | User-list data | 4 | — | 3 | — | — | 1 | — |
 | User-list meta | 5 | — | 1 | 2 | 1 | 1 | — |
-| **Total** | **129** | **12** | **82** | **16** | **4** | **7** | **8** |
+| **Total** | **130** | **12** | **83** | **16** | **4** | **7** | **8** |
 
 Labels clarified in §4.1 (added `process` as 6th label for workstream-meta findings). Counts rebuilt on every register revision per register's own maintenance rules.
 
@@ -382,6 +382,7 @@ Sub-spec items requiring separate design docs, in dependency-aware landing order
 The register has rows in `open` status awaiting Tech-Spec or product decision:
 
 - **`critique-c9`** — `const PROVIDER_ID: &'static str` for non-OAuth schemes (AppPassword self-issued). Two candidates: `Option<&'static str>` (lossy) or scheme-conditional trait (heavy). Decision needed in Tech Spec.
+- **`arch-authscheme-clone-zeroize`** — `AuthScheme: Clone` bound creates zeroization concerns for sensitive material (mTLS certs, signing keys — each clone duplicates plaintext in heap). Two candidates: (a) relax `Clone` on `AuthScheme`, (b) `CredentialGuard<S>` accessors instead of clones. Decision needed in Tech Spec. Surfaced in spike iter-1 code review.
 
 Other rows tagged `pending-sub-spec` are not "open" — they have explicit owners and are queued in §4.3.
 
