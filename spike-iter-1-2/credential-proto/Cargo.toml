@@ -1,0 +1,23 @@
+[package]
+name = "credential-proto"
+version = "0.0.0-spike"
+edition = "2024"
+publish = false
+
+# Standalone workspace: this crate is intentionally NOT part of the Nebula
+# workspace. It is a throwaway spike validating the trait shape proposed in
+# `docs/superpowers/specs/2026-04-24-credential-redesign-strategy.md`.
+[workspace]
+
+[dependencies]
+# Perf-grade hasher. Strategy §3.4 "200–500ns typical" baseline requires
+# ahash / FxHashMap; default SipHash would make bench noise-dominated.
+# Spike picks ahash 0.8: ecosystem-dominant, DoS-resistant with per-process
+# random seed (credential keys can be tenant-influenced in multi-tenant
+# cloud deployment — FxHash's lower quality would be a concern).
+ahash = { version = "0.8", default-features = false, features = ["std"] }
+
+[lints.clippy]
+# Spike-only relaxations — production crates use workspace-level
+# `-D warnings` per CLAUDE.md.
+needless_lifetimes = "allow"

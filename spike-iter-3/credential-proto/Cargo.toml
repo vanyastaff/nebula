@@ -1,0 +1,17 @@
+[package]
+name = "credential-proto"
+version = "0.0.0"
+edition.workspace = true
+rust-version.workspace = true
+publish = false
+license.workspace = true
+description = "Spike — CP5/CP6 credential trait shape prototype (iter-3). Not production code."
+
+[dependencies]
+zeroize.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+
+[lints.rust]
+unsafe_code = "forbid"

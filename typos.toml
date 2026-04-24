@@ -8,6 +8,9 @@ extend-exclude = [
   "crates/action/docs",
   "docs/plans/archive",
   "docs/guidelines/research",
+  # Spike iterations — reference-only artefacts, not production code.
+  "spike-iter-1-2",
+  "spike-iter-3",
 ]
 
 [default]

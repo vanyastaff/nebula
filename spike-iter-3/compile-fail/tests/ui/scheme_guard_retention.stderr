@@ -1,0 +1,26 @@
+warning: unused import: `Credential`
+  --> tests/ui/scheme_guard_retention.rs:17:24
+   |
+17 | use credential_proto::{Credential, SchemeGuard};
+   |                        ^^^^^^^^^^
+   |
+   = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+error[E0597]: `ctx_stack` does not live long enough
+  --> tests/ui/scheme_guard_retention.rs:43:19
+   |
+41 |     let mut r: RogueResource<'static> = RogueResource { retained: None };
+   |                ---------------------- type annotation requires that `ctx_stack` is borrowed for `'static`
+42 |     let ctx_stack = CallContext;
+   |         --------- binding `ctx_stack` declared here
+43 |     let ctx_ref = &ctx_stack; // borrow constrained to stack lifetime
+   |                   ^^^^^^^^^^ borrowed value does not live long enough
+...
+49 | }
+   | - `ctx_stack` dropped here while still borrowed
+   |
+note: requirement that the value outlives `'static` introduced here
+  --> tests/ui/scheme_guard_retention.rs:34:13
+   |
+34 |         'a: 'long, // attempt: widen 'a to 'long. Succeeds iff 'a actually outlives 'long.
+   |             ^^^^^

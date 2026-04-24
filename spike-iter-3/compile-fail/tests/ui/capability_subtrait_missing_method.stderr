@@ -1,0 +1,15 @@
+warning: unused imports: `CredentialState` and `HasInputSchema`
+ --> tests/ui/capability_subtrait_missing_method.rs:6:56
+  |
+6 |     Credential, CredentialContext, CredentialMetadata, CredentialState, HasInputSchema,
+  |                                                        ^^^^^^^^^^^^^^^  ^^^^^^^^^^^^^^
+  |
+  = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+error[E0046]: not all trait items implemented, missing: `refresh`
+  --> tests/ui/capability_subtrait_missing_method.rs:36:1
+   |
+36 | impl Refreshable for NaughtyCred {}
+   | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ missing `refresh` in implementation
+   |
+   = help: implement the missing item: `fn refresh(_: &mut <Self as Credential>::State, _: &CredentialContext<'_>) -> Result<RefreshOutcome, RefreshError> { todo!() }`
