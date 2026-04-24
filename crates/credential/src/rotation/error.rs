@@ -13,6 +13,7 @@ use crate::{CredentialId, CredentialRecord};
 
 /// Errors that can occur during credential rotation
 #[derive(Debug, Error)]
+#[non_exhaustive]
 pub enum RotationError {
     /// Policy validation failed
     #[error("Invalid rotation policy: {reason}")]

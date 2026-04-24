@@ -94,20 +94,21 @@ pub use action::Action;
 pub use capability::{ExecutionEmitter, TriggerHealth, TriggerHealthSnapshot, TriggerScheduler};
 pub use context::{
     ActionContext, ActionRuntimeContext, CredentialContextExt, HasNodeIdentity,
-    HasTriggerScheduling, TriggerContext, TriggerRuntimeContext,
+    HasTriggerScheduling, HasWebhookEndpoint, TriggerContext, TriggerRuntimeContext,
 };
 pub use control::{ControlAction, ControlActionAdapter, ControlInput, ControlOutcome};
+pub use nebula_core::DeclaresDependencies;
+pub use nebula_core::{
+    Context,
+    accessor::{EventEmitter, LogLevel, Logger, MetricsEmitter, ResourceAccessor},
+    context::{HasCredentials, HasEventBus, HasLogger, HasMetrics, HasResources},
+};
 pub use error::{
     ActionError, ActionErrorExt, MAX_VALIDATION_DETAIL, RetryHintCode, ValidationReason,
 };
 pub use handler::ActionHandler;
 pub use metadata::{ActionCategory, ActionMetadata, IsolationLevel, MetadataCompatibilityError};
 pub use nebula_action_macros::Action;
-pub use nebula_core::{
-    Context, DeclaresDependencies,
-    accessor::{EventEmitter, LogLevel, Logger, MetricsEmitter, ResourceAccessor},
-    context::{HasCredentials, HasEventBus, HasLogger, HasMetrics, HasResources},
-};
 pub use nebula_credential::CredentialGuard;
 pub use nebula_schema::{Field, Schema, ValidSchema, field_key};
 pub use output::{
@@ -135,8 +136,8 @@ pub use stateless::{
     StatelessHandler, stateless_ctx_fn, stateless_fn,
 };
 pub use testing::{
-    SpyEmitter, SpyLogger, SpyScheduler, StatefulTestHarness, TestContextBuilder,
-    TriggerTestHarness,
+    SpyEmitter, SpyLogger, SpyScheduler, StatefulTestHarness, TestActionContext,
+    TestContextBuilder, TestTriggerContext, TriggerTestHarness,
 };
 pub use trigger::{
     TriggerAction, TriggerActionAdapter, TriggerEvent, TriggerEventOutcome, TriggerHandler,

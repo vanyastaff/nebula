@@ -6,6 +6,7 @@ use nebula_workflow::NodeState;
 
 /// Errors from the engine layer.
 #[derive(Debug, thiserror::Error)]
+#[non_exhaustive]
 pub enum EngineError {
     /// A referenced node was not found in the workflow.
     #[error("node not found: {node_key}")]

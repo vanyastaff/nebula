@@ -136,6 +136,16 @@ impl<S: CredentialStore> CredentialStore for ScopeLayer<S> {
                         .metadata
                         .insert(OWNER_KEY.to_owned(), Value::String(owner.to_owned()));
                 },
+                // `PutMode` is `#[non_exhaustive]`. Future modes default to the
+                // strictest path (owner verification + stamp) until explicitly
+                // routed here.
+                _ => {
+                    let existing = self.inner.get(&credential.id).await?;
+                    verify_owner(&self.resolver, &credential.id, &existing)?;
+                    credential
+                        .metadata
+                        .insert(OWNER_KEY.to_owned(), Value::String(owner.to_owned()));
+                },
             }
         }
         self.inner.put(credential, mode).await

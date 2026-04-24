@@ -62,12 +62,11 @@ pub fn router() -> Router<AppState> {
             get(handlers::resource::list_resources),
         );
 
-    // Credentials (feature-gated behind credential-oauth)
+    // Credentials (Plane B — ADR-0031).
     //
     // Route order: literal segments first (`resolve`, `resolve/continue`),
     // then collection, then parameterized `{cred}`, then sub-resources.
-    #[cfg(feature = "credential-oauth")]
-    let router = router
+    router
         // ── Credential acquisition (literal paths before {cred}) ────
         .route(
             "/orgs/{org}/workspaces/{ws}/credentials/resolve",
@@ -101,7 +100,5 @@ pub fn router() -> Router<AppState> {
         .route(
             "/orgs/{org}/workspaces/{ws}/credentials/{cred}/revoke",
             post(handlers::credential::revoke_credential),
-        );
-
-    router
+        )
 }

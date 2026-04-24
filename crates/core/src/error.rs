@@ -4,6 +4,7 @@ use thiserror::Error;
 
 /// Core error -- only errors that core vocabulary operations produce.
 #[derive(Error, Debug, Clone)]
+#[non_exhaustive]
 pub enum CoreError {
     /// Prefixed ULID failed to parse (wrong prefix, malformed).
     #[error("invalid ID: expected prefix `{expected_prefix}_`, got `{raw}`")]

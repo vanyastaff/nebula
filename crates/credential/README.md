@@ -27,7 +27,7 @@ The [credential architecture cleanup design](../../docs/superpowers/specs/2026-0
 
 **ADR-0032** keeps the `CredentialStore` **trait** in this crate (avoiding a `credential → storage` dependency cycle). Production in-memory stores should use `nebula_storage::credential::InMemoryStore`; `store_memory` remains as a cycle-safe shim.
 
-**Incremental follow-up:** `credentials/oauth2/flow.rs` (feature `oauth2-http`) still hosts reqwest-based token exchange used by `OAuth2Credential::resolve`; a future pass may narrow transport duplication vs engine/API per ADR-0031 — the `TODO` in that module is authoritative.
+**HTTP transport status:** `OAuth2Credential::resolve` (authorization URL construction) is pure — no HTTP. `OAuth2Credential::refresh` returns `CredentialError::Provider("OAuth2 HTTP transport has moved: ...")` per ADR-0031 — refresh HTTP lives in `nebula-engine`, token exchange в `nebula-api`. The crate has **no reqwest dependency**.
 
 ## Public API
 
@@ -37,7 +37,7 @@ The [credential architecture cleanup design](../../docs/superpowers/specs/2026-0
 > **Deprecation:** `Credential::parameters()` is deprecated in favor of `schema()` for naming consistency with `Resource::schema()` and `StatelessAction::schema()`.
 - `CredentialRecord` — runtime operational state (created_at, version, expiry, tags); non-sensitive domain representation. Previously named `Metadata` (ADR 0004).
 - `AuthScheme`, `AuthPattern` — open scheme trait and classification enum canonical in `nebula-core`, re-exported here for backward compatibility.
-- 12 built-in scheme types: `SecretToken`, `IdentityPassword`, `OAuth2Token`, `KeyPair`, `Certificate`, `SigningKey`, `FederatedAssertion`, `ChallengeSecret`, `OtpSeed`, `ConnectionUri`, `InstanceBinding`, `SharedKey`.
+- 9 built-in scheme types: `SecretToken`, `IdentityPassword`, `OAuth2Token`, `KeyPair`, `Certificate`, `SigningKey`, `ConnectionUri`, `InstanceBinding`, `SharedKey`. (Pruned 2026-04-24: `FederatedAssertion` → Plane A per ADR-0033; `ChallengeSecret` + `OtpSeed` → integration-internal, not projected.)
 - `CredentialStore`, `StoredCredential`, `PutMode`, `StoreError` — storage trait with layered composition.
 - `InMemoryStore` — in-crate test/development store shim (canonical impl is `nebula_storage::credential::InMemoryStore`).
 - `SecretString` — string type with automatic zeroization on drop.

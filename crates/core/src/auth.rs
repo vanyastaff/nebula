@@ -13,8 +13,13 @@ use serde::{Deserialize, Serialize, de::DeserializeOwned};
 
 /// Classification of authentication patterns.
 ///
-/// 13 built-in patterns cover the vast majority of auth mechanisms.
+/// 10 built-in patterns cover common integration auth mechanisms.
 /// [`Custom`](AuthPattern::Custom) handles everything else.
+///
+/// **Pruned 2026-04-24** (zero consumers, Plane-A territory):
+/// `FederatedIdentity` (SAML/JWT → `nebula-auth`, not integration credentials),
+/// `ChallengeResponse` (Digest/NTLM/SCRAM — HTTP client negotiation),
+/// `OneTimePasscode` (TOTP/HOTP — integration-internal, not projected auth).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[non_exhaustive]
 pub enum AuthPattern {
@@ -32,12 +37,6 @@ pub enum AuthPattern {
     Certificate,
     /// Request signing credentials (HMAC, SigV4, webhook signatures).
     RequestSigning,
-    /// Third-party identity assertion (SAML, JWT, Kerberos ticket).
-    FederatedIdentity,
-    /// Challenge-response protocol credentials (Digest, NTLM, SCRAM).
-    ChallengeResponse,
-    /// TOTP/HOTP seed or OTP delivery config.
-    OneTimePasscode,
     /// Compound connection URI (postgres://..., redis://...).
     ConnectionUri,
     /// Cloud/infrastructure instance identity (IMDS, managed identity).
@@ -92,16 +91,13 @@ mod tests {
             AuthPattern::KeyPair,
             AuthPattern::Certificate,
             AuthPattern::RequestSigning,
-            AuthPattern::FederatedIdentity,
-            AuthPattern::ChallengeResponse,
-            AuthPattern::OneTimePasscode,
             AuthPattern::ConnectionUri,
             AuthPattern::InstanceIdentity,
             AuthPattern::SharedSecret,
             AuthPattern::Custom,
         ];
         let set: std::collections::HashSet<_> = variants.iter().collect();
-        assert_eq!(set.len(), 14);
+        assert_eq!(set.len(), 11);
     }
 
     #[test]

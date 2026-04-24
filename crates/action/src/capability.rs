@@ -1,12 +1,4 @@
-//! Trigger-specific capability interfaces and default (no-op) accessor factories.
-//!
-//! Action execution contexts ([`ActionContext`](crate::ActionContext),
-//! [`TriggerContext`](crate::TriggerContext)) compose capabilities from
-//! `nebula-core` (`Logger`, `ResourceAccessor`, `CredentialAccessor`). This
-//! module adds the two trigger-only interfaces that core does not model
-//! ([`TriggerScheduler`], [`ExecutionEmitter`]), the shared [`TriggerHealth`]
-//! atomics block, and `default_*` constructors that hand out no-op `Arc`s
-//! so contexts can be built before the runtime has wired real capabilities.
+//! Trigger-specific capability interfaces for action contexts.
 
 use std::{
     any::Any,
@@ -21,46 +13,39 @@ use std::{
 
 use nebula_core::{
     CoreError, CredentialKey, ResourceKey,
-    accessor::{
-        CredentialAccessor, EventEmitter, LogLevel, Logger, MetricsEmitter, ResourceAccessor,
-    },
+    accessor::{CredentialAccessor, EventEmitter, LogLevel, Logger, MetricsEmitter, ResourceAccessor},
     id::ExecutionId,
 };
 
 use crate::ActionError;
 
-/// Dyn-safe async return (mirrors `nebula-core::accessor::BoxFuture`).
-type BoxFut<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
-
-// ── Trigger-only capabilities ──────────────────────────────────────────────
-
-/// Schedule the next invocation of a trigger.
-///
-/// Dyn-safe: `Arc<dyn TriggerScheduler>` is how the runtime wires this into
-/// [`TriggerContext`]. The explicit `Pin<Box<dyn Future>>` return (instead of
-/// `async fn`) preserves that dyn-compatibility without the `async_trait`
-/// proc-macro — Rust 1.94 native async-in-traits requires the caller to
-/// know the concrete `Self`, which breaks dyn dispatch.
+/// Object-safe scheduling capability injected into trigger contexts.
 pub trait TriggerScheduler: Send + Sync {
     /// Schedule the next trigger run after the given delay.
-    fn schedule_after(&self, delay: Duration) -> BoxFut<'_, Result<(), ActionError>>;
+    fn schedule_after(
+        &self,
+        delay: Duration,
+    ) -> Pin<Box<dyn Future<Output = Result<(), ActionError>> + Send + '_>>;
 }
 
-/// Start a new workflow execution with a typed input payload.
-///
-/// Dyn-safe (see [`TriggerScheduler`] for the Rust 1.94 rationale).
+/// Object-safe execution emission capability injected into trigger contexts.
 pub trait ExecutionEmitter: Send + Sync {
     /// Start a new execution for this trigger's workflow with the given input.
-    fn emit(&self, input: serde_json::Value) -> BoxFut<'_, Result<ExecutionId, ActionError>>;
+    fn emit(
+        &self,
+        input: serde_json::Value,
+    ) -> Pin<Box<dyn Future<Output = Result<ExecutionId, ActionError>> + Send + '_>>;
 }
 
-// ── Trigger health atomics ─────────────────────────────────────────────────
-
-/// Shared health state for a running trigger. Adapter writes, runtime reads.
-/// Lock-free via atomics — no allocations per cycle.
+/// Shared health state for a running trigger. Adapter writes,
+/// runtime reads. Lock-free via atomics — no allocations per cycle.
 ///
-/// All fields use `Relaxed` ordering (eventual consistency is sufficient for
-/// monitoring — exact cross-field consistency is not needed).
+/// Lives on `TriggerContext` as `Arc<TriggerHealth>`. Not behind a
+/// trait — health shape is universal, trait dispatch adds nothing.
+///
+/// All fields use `Relaxed` ordering (eventual consistency is
+/// sufficient for monitoring — exact cross-field consistency is
+/// not needed).
 pub struct TriggerHealth {
     /// Epoch millis of last main operation. 0 = never.
     last_active_at: AtomicU64,
@@ -118,8 +103,8 @@ impl TriggerHealth {
 
     /// Read a point-in-time snapshot for dashboards / API.
     ///
-    /// Not atomic-consistent across fields (each field is read independently),
-    /// but sufficient for monitoring.
+    /// Not atomic-consistent across fields (each field is read
+    /// independently), but sufficient for monitoring.
     #[must_use]
     pub fn snapshot(&self) -> TriggerHealthSnapshot {
         TriggerHealthSnapshot {
@@ -176,14 +161,15 @@ pub fn now_millis() -> u64 {
         .as_millis() as u64
 }
 
-// ── No-op default capabilities ─────────────────────────────────────────────
-
 /// No-op scheduler used when runtime does not inject trigger scheduling.
 #[derive(Debug, Default)]
 pub struct NoopTriggerScheduler;
 
 impl TriggerScheduler for NoopTriggerScheduler {
-    fn schedule_after(&self, _delay: Duration) -> BoxFut<'_, Result<(), ActionError>> {
+    fn schedule_after(
+        &self,
+        _delay: Duration,
+    ) -> Pin<Box<dyn Future<Output = Result<(), ActionError>> + Send + '_>> {
         Box::pin(async {
             Err(ActionError::fatal(
                 "trigger scheduler capability is not configured in TriggerContext",
@@ -197,7 +183,10 @@ impl TriggerScheduler for NoopTriggerScheduler {
 pub struct NoopExecutionEmitter;
 
 impl ExecutionEmitter for NoopExecutionEmitter {
-    fn emit(&self, _input: serde_json::Value) -> BoxFut<'_, Result<ExecutionId, ActionError>> {
+    fn emit(
+        &self,
+        _input: serde_json::Value,
+    ) -> Pin<Box<dyn Future<Output = Result<ExecutionId, ActionError>> + Send + '_>> {
         Box::pin(async {
             Err(ActionError::fatal(
                 "execution emitter capability is not configured in TriggerContext",
@@ -206,7 +195,17 @@ impl ExecutionEmitter for NoopExecutionEmitter {
     }
 }
 
-/// No-op resource accessor — hands out errors for every key.
+// ── Default capability accessors ───────────────────────────────────────────
+//
+// Wired into `ActionRuntimeContext::new` / `TriggerRuntimeContext::new` so
+// every freshly-constructed context starts with fail-closed capabilities that
+// the runtime then replaces via `.with_*` builders. Exposed publicly so
+// non-action crates (engine pipelines, test harnesses) can share the same
+// fail-closed defaults instead of cloning local stubs.
+
+type BoxFut<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
+
+/// No-op resource accessor — fails closed on every `acquire_any`.
 #[derive(Debug, Default)]
 pub struct NoopResourceAccessor;
 
@@ -214,7 +213,6 @@ impl ResourceAccessor for NoopResourceAccessor {
     fn has(&self, _key: &ResourceKey) -> bool {
         false
     }
-
     fn acquire_any(
         &self,
         key: &ResourceKey,
@@ -226,7 +224,6 @@ impl ResourceAccessor for NoopResourceAccessor {
             )))
         })
     }
-
     fn try_acquire_any(
         &self,
         _key: &ResourceKey,
@@ -235,7 +232,7 @@ impl ResourceAccessor for NoopResourceAccessor {
     }
 }
 
-/// No-op credential accessor — hands out errors for every key.
+/// No-op credential accessor — fails closed on every `resolve_any`.
 #[derive(Debug, Default)]
 pub struct NoopCredentialAccessor;
 
@@ -243,15 +240,17 @@ impl CredentialAccessor for NoopCredentialAccessor {
     fn has(&self, _key: &CredentialKey) -> bool {
         false
     }
-
     fn resolve_any(
         &self,
         key: &CredentialKey,
     ) -> BoxFut<'_, Result<Box<dyn Any + Send + Sync>, CoreError>> {
         let key_str = key.as_str().to_owned();
-        Box::pin(async move { Err(CoreError::CredentialNotFound { key: key_str }) })
+        Box::pin(async move {
+            Err(CoreError::CredentialNotConfigured(format!(
+                "credential accessor is not configured (requested `{key_str}`)"
+            )))
+        })
     }
-
     fn try_resolve_any(
         &self,
         _key: &CredentialKey,
@@ -260,7 +259,7 @@ impl CredentialAccessor for NoopCredentialAccessor {
     }
 }
 
-/// No-op logger — discards every record.
+/// No-op logger — silently drops every log line.
 #[derive(Debug, Default)]
 pub struct NoopLogger;
 
@@ -269,7 +268,7 @@ impl Logger for NoopLogger {
     fn log_with_fields(&self, _level: LogLevel, _message: &str, _fields: &[(&str, &str)]) {}
 }
 
-/// No-op metrics emitter — discards every sample.
+/// No-op metrics emitter — silently drops every sample.
 #[derive(Debug, Default)]
 pub struct NoopMetricsEmitter;
 
@@ -279,7 +278,7 @@ impl MetricsEmitter for NoopMetricsEmitter {
     fn histogram(&self, _name: &str, _value: f64, _labels: &[(&str, &str)]) {}
 }
 
-/// No-op event emitter — discards every event.
+/// No-op event emitter — silently drops every event.
 #[derive(Debug, Default)]
 pub struct NoopEventEmitter;
 
@@ -287,44 +286,45 @@ impl EventEmitter for NoopEventEmitter {
     fn emit(&self, _topic: &str, _payload: serde_json::Value) {}
 }
 
-/// Default trigger scheduler (no-op).
-#[must_use]
-pub fn default_trigger_scheduler() -> Arc<dyn TriggerScheduler> {
-    Arc::new(NoopTriggerScheduler)
-}
-
-/// Default execution emitter (no-op).
-#[must_use]
-pub fn default_execution_emitter() -> Arc<dyn ExecutionEmitter> {
-    Arc::new(NoopExecutionEmitter)
-}
-
-/// Default resource accessor (no-op).
+/// Default resource accessor — [`NoopResourceAccessor`].
 #[must_use]
 pub fn default_resource_accessor() -> Arc<dyn ResourceAccessor> {
     Arc::new(NoopResourceAccessor)
 }
 
-/// Default credential accessor (no-op).
+/// Default credential accessor — [`NoopCredentialAccessor`].
 #[must_use]
 pub fn default_credential_accessor() -> Arc<dyn CredentialAccessor> {
     Arc::new(NoopCredentialAccessor)
 }
 
-/// Default action logger (no-op).
+/// Default logger — [`NoopLogger`].
 #[must_use]
 pub fn default_action_logger() -> Arc<dyn Logger> {
     Arc::new(NoopLogger)
 }
 
-/// Default metrics emitter (no-op).
+/// Default metrics emitter — [`NoopMetricsEmitter`].
 #[must_use]
 pub fn default_metrics_emitter() -> Arc<dyn MetricsEmitter> {
     Arc::new(NoopMetricsEmitter)
 }
 
-/// Default event emitter (no-op).
+/// Default event emitter — [`NoopEventEmitter`].
 #[must_use]
 pub fn default_event_emitter() -> Arc<dyn EventEmitter> {
     Arc::new(NoopEventEmitter)
 }
+
+/// Default trigger scheduler — [`NoopTriggerScheduler`].
+#[must_use]
+pub fn default_trigger_scheduler() -> Arc<dyn TriggerScheduler> {
+    Arc::new(NoopTriggerScheduler)
+}
+
+/// Default execution emitter — [`NoopExecutionEmitter`].
+#[must_use]
+pub fn default_execution_emitter() -> Arc<dyn ExecutionEmitter> {
+    Arc::new(NoopExecutionEmitter)
+}
+

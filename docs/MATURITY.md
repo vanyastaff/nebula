@@ -21,7 +21,7 @@ Legend:
 | nebula-action        | frontier | stable  | stable | partial (webhook sig `Required` by default at trait surface — ADR-0022; CheckpointPolicy planned; `ActionResult::Retry` gated behind `unstable-retry-scheduler`, #290) | n/a |
 | nebula-api           | frontier | stable  | stable | partial (knife steps 3+5: Start/Cancel producers stable, #332/#330; engine-side Start/Resume/Restart dispatch wired via EngineControlDispatch — ADR-0008 A2; Cancel/Terminate dispatch wired via engine cancel registry — ADR-0008 A3 / ADR-0016; API routing infrastructure per spec 05: tenant-scoped routes, RBAC/tenancy/CSRF middleware, cursor pagination, port traits `OrgResolver`/`WorkspaceResolver`/`SessionStore`/`MembershipStore`, extended `ApiConfig` with TLS/Cookie/CORS/Versioning/Pagination sub-configs, 10 new `ApiError` variants) | partial |
 | nebula-core          | frontier | stable  | stable | stable (6 public modules: `role`, `permission`, `tenancy`, `slug`, `auth`, `guard` — `TenantContext`, `ResolvedIds`, `OrgRole`, `WorkspaceRole`, `Permission`, `PermissionDenied`, `Slug`, `SlugKind`, `SlugError`, `is_prefixed_ulid()`, `AuthScheme`, `AuthPattern`, `Guard`, `TypedGuard`, `BaseContext`, `Context`) | n/a |
-| nebula-credential    | frontier (architecture cleanup: flattened `accessor/`+`metadata/` to root modules, moved `AuthScheme`/`AuthPattern` to `nebula-core`, removed `nebula-eventbus` integration, added `ExternalProvider`/`CredentialMetrics`/prelude, `Guard`/`TypedGuard` on `CredentialGuard`, DYNAMIC credential support, dep set trimmed to core/metadata/schema/resilience/error) | stable  | stable | stable (runtime resolver/registry/executor and rotation scheduler live in `nebula-engine::credential`; OAuth token refresh in engine + API callback persistence landed under `credential-oauth`) | n/a |
+| nebula-credential    | frontier (P6-P11 architecture cleanup landed: accessor/metadata flattened, `AuthScheme`/`AuthPattern` canonical in `nebula-core`, dep diet к core/metadata/schema/resilience/error, DYNAMIC credential support, `ExternalProvider` abstraction; **pruned 2026-04-24**: `FederatedAssertion`/`OtpSeed`/`ChallengeSecret` schemes + corresponding `AuthPattern` variants — Plane-A / integration-internal territory) | stable  | stable | partial (runtime resolver/registry + rotation scheduler live in `nebula-engine::credential`; OAuth token refresh in engine + API OAuth callback persistence landed; **single-process refresh coordination only** — multi-replica mid-refresh race handling tracked in Spec H0 credential-refresh-coordination, 2026-04-24) | n/a |
 | nebula-engine        | partial  | stable  | stable | partial (ControlConsumer skeleton lands §12.2; all five control commands dispatched via EngineControlDispatch — ADR-0008 A2 (Start/Resume/Restart) + A3 (Cancel/Terminate) + ADR-0016 cancel registry; ADR-0008 B1 reclaim sweep implemented via ControlQueueRepo::reclaim_stuck + ADR-0017; engine-owned `credential` runtime surface landed in P8 slice) | n/a |
 | nebula-error         | stable   | stable  | stable | n/a | n/a |
 | nebula-eventbus      | stable   | stable  | stable | n/a | n/a |
@@ -52,7 +52,15 @@ Legend:
 This file is a living dashboard. Reviewers check truthfulness on every PR that touches a crate's public surface, test suite, or docs. Canon §17 DoD includes "MATURITY.md row updated if the PR changes crate state."
 
 Last full sweep: 2026-04-17 (Pass 4 of docs architecture redesign).
-Last targeted revision: 2026-04-23 — **API routing infrastructure (spec 05):**
+Last targeted revision: 2026-04-24 — **credential scheme pruning + honest multi-replica status:**
+removed `FederatedAssertion`/`OtpSeed`/`ChallengeSecret` schemes (Plane A / integration-internal);
+removed corresponding `AuthPattern` variants (`FederatedIdentity`/`OneTimePasscode`/`ChallengeResponse`);
+`nebula-credential` Engine integration downgraded `stable → partial` honestly — single-process
+refresh coordination only, multi-replica race handling tracked in Spec H0. Archived 8-file
+`docs/superpowers/drafts/2026-04-24-credential-redesign/` exploratory set to
+`docs/superpowers/archive/2026-04-24-credential-redesign-exploratory/` with STATUS.md
+(not adopted: Q1 compile test + 4-agent review converged).
+Prior: 2026-04-23 — **API routing infrastructure (spec 05):**
 `nebula-core` gains 4 public modules (`role`, `permission`, `tenancy`, `slug`);
 `nebula-api` gains tenant-scoped routes, RBAC/tenancy/CSRF middleware, cursor
 pagination, new port traits, extended `ApiConfig`, 10 new `ApiError` variants,

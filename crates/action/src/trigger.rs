@@ -474,15 +474,17 @@ impl<A: Action> fmt::Debug for TriggerActionAdapter<A> {
 
 #[cfg(test)]
 mod tests {
+    use nebula_core::DeclaresDependencies;
     use std::sync::{
         Arc,
         atomic::{AtomicBool, Ordering},
     };
 
-    use nebula_core::DeclaresDependencies;
-
     use super::*;
-    use crate::{TriggerRuntimeContext, action::Action, testing::TestContextBuilder};
+    use crate::{
+        action::Action,
+        testing::{TestContextBuilder, TestTriggerContext},
+    };
 
     // ── TriggerActionAdapter tests ────────────────────────────────────────────
 
@@ -524,7 +526,7 @@ mod tests {
         }
     }
 
-    fn make_trigger_ctx() -> TriggerRuntimeContext {
+    fn make_trigger_ctx() -> TestTriggerContext {
         TestContextBuilder::new().build_trigger().0
     }
 

@@ -538,16 +538,16 @@ fn derive_category(meta: &ActionMetadata) -> ActionCategory {
 
 #[cfg(test)]
 mod tests {
-    use nebula_core::{DeclaresDependencies, action_key};
+    use nebula_core::DeclaresDependencies;
+    use nebula_core::action_key;
 
     use super::*;
     use crate::{
-        ActionRuntimeContext,
         port::{OutputPort, default_input_ports, default_output_ports},
-        testing::TestContextBuilder,
+        testing::{TestActionContext, TestContextBuilder},
     };
 
-    fn make_ctx() -> ActionRuntimeContext {
+    fn make_ctx() -> TestActionContext {
         TestContextBuilder::new().build()
     }
 

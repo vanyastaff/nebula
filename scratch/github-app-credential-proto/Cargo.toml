@@ -1,0 +1,53 @@
+[workspace]
+# Empty workspace table — isolates this crate from the parent Nebula workspace.
+# Scratch-only; do not reference from production crates.
+
+[package]
+name = "github-app-credential-proto"
+version = "0.0.0"
+edition = "2021"
+publish = false
+
+# Scratch crate — validates Spec H0 (credential refresh coordination) with a
+# realistic GitHub App JWT+installation-token flow. NOT production code.
+# See NOTES.md for what we're testing.
+
+[dependencies]
+# Real nebula crates — exercise actual trait surface
+nebula-credential = { path = "../../crates/credential" }
+nebula-schema = { path = "../../crates/schema" }
+nebula-core = { path = "../../crates/core" }
+nebula-error = { path = "../../crates/error" }
+
+# Async + HTTP
+tokio = { version = "1", features = ["full"] }
+async-trait = "0.1"
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+
+# JWT signing
+jsonwebtoken = { version = "9", default-features = false, features = ["use_pem"] }
+
+# Serde + time
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+chrono = { version = "0.4", features = ["serde"] }
+
+# Secret handling + crypto
+zeroize = { version = "1", features = ["zeroize_derive"] }
+
+# Error + logging
+thiserror = "2"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["fmt", "env-filter"] }
+
+[dev-dependencies]
+wiremock = "0.6"
+pretty_assertions = "1"
+
+[[test]]
+name = "happy_path"
+path = "tests/happy_path.rs"
+
+[[test]]
+name = "concurrent_race"
+path = "tests/concurrent_race.rs"

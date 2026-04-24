@@ -71,10 +71,10 @@ Canon §3.5 makes actions typed and engine-dispatched by trait, not by a single 
 | `SignaturePolicy` | enum | `implemented` | `Required` / `OptionalAcceptUnsigned` / `Custom(fn)` signature-verification policy enforced by the transport. Default is `Required` with empty secret — fail-closed. Supporting types: `RequiredPolicy`, `SignatureScheme`. | ADR-0022, §4.2 |
 | `ResourceAction` | trait | `implemented` | Action bound to a graph-scoped resource node. | §3.5, §3.8 |
 | `ActionResult` | enum | mixed — **see §11.2 debt** | Action return variants. Engine-level retry through a `Retry` variant is `planned` / `false capability` until persisted attempt accounting lands. | §11.2, §14 |
-| `ActionMetadata` | type | `implemented` | Descriptor: key, ports, parameters, isolation, `ActionCategory`, `CheckpointPolicy`. Supplements but does not replace trait-based routing. | §3.5 |
+| `ActionMetadata` | type | `implemented` | Descriptor: key, ports, parameters, isolation, `ActionCategory`. Supplements but does not replace trait-based routing. `CheckpointPolicy` is planned — not yet a field; see `crates/action/README.md`. | §3.5 |
 | `ActionCategory` | enum | `implemented` | Data / Control / Trigger / … classifier for UI and validation. | §3.5 |
 | `ActionError` | type | `implemented` | Typed error returned by actions; pairs with `nebula-resilience` retry hints. | §3.10 |
-| `CheckpointPolicy` | type | `implemented` | Metadata-declared checkpoint behavior the runtime enforces. | §3.5, §11.5 |
+| `CheckpointPolicy` | type | `planned` | Metadata-declared checkpoint behavior the runtime would enforce. Not yet a field on `ActionMetadata`; engine does not consume it end-to-end. | §3.5, §11.5 |
 
 ---
 

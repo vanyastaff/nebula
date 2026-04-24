@@ -12,10 +12,10 @@
 //! type the runtime chooses to supply (engine runtime, test harness,
 //! sandbox wrapper, ...).
 
-use std::{any::Any, fmt, future::Future, sync::Arc};
+use std::{any::Any, fmt, future::Future, pin::Pin, sync::Arc};
 
 use nebula_core::{
-    BaseContext, CredentialKey, NodeKey, ResourceKey,
+    AttemptId, BaseContext, CredentialKey, NodeKey, ResourceKey,
     accessor::{Clock, CredentialAccessor, EventEmitter, Logger, MetricsEmitter, ResourceAccessor},
     context::{
         Context as CoreContext, HasCredentials, HasEventBus, HasLogger, HasMetrics, HasResources,
@@ -41,120 +41,99 @@ use crate::{
 /// Capability: node identity within a workflow graph.
 ///
 /// Action-specific — triggers live outside an execution and use
-/// [`HasTriggerScheduling`] instead. Returns already-typed IDs (not `Option`)
-/// because an action that is executing always has all three.
+/// [`HasTriggerScheduling`] instead. The concrete identity surface is the
+/// pair `(node_key, attempt_id)`; execution id and workflow id live on the
+/// context [`Scope`] and are reached via `Context::scope()`.
 #[diagnostic::on_unimplemented(
     message = "`{Self}` does not expose action node identity",
-    note = "provide execution_id / node_key / workflow_id via HasNodeIdentity — the runtime \
+    note = "provide node_key / attempt_id via HasNodeIdentity — the runtime \
             populates these per dispatch; tests use TestContextBuilder"
 )]
 pub trait HasNodeIdentity: CoreContext {
-    /// The execution this action is running in.
-    fn execution_id(&self) -> ExecutionId;
-
-    /// The node this action corresponds to in the workflow graph.
+    /// Node key currently executing.
     fn node_key(&self) -> &NodeKey;
-
-    /// The workflow definition that owns the node.
-    fn workflow_id(&self) -> WorkflowId;
+    /// Current execution attempt identifier.
+    fn attempt_id(&self) -> &AttemptId;
 }
 
-/// Capability: trigger-lifecycle wiring (scheduling + execution emission +
-/// health atomics). Present only on trigger contexts.
-#[diagnostic::on_unimplemented(
-    message = "`{Self}` does not expose trigger-scheduling capabilities",
-    note = "provide scheduler / emitter / health via HasTriggerScheduling — the runtime wires \
-            these at trigger activation time; tests use TestContextBuilder::build_trigger"
-)]
+/// Capability: trigger scheduling + execution emission.
 pub trait HasTriggerScheduling: CoreContext {
-    /// Scheduler handle — ask the runtime to invoke the trigger after a delay.
+    /// Scheduler used by triggers for delayed re-runs.
     fn scheduler(&self) -> &dyn TriggerScheduler;
-
-    /// Emitter handle — start a new workflow execution from the trigger.
+    /// Emitter used to start workflow executions from trigger events.
     fn emitter(&self) -> &dyn ExecutionEmitter;
-
-    /// Shared health atomics (adapter writes, runtime reads for dashboards).
+    /// Shared trigger health state.
     fn health(&self) -> &TriggerHealth;
-
-    /// Webhook endpoint provider wired by the HTTP transport at trigger
-    /// activation time.
-    ///
-    /// Returns `None` for non-webhook triggers (poll, cron, ...) and for
-    /// webhook triggers that have not yet had their endpoint resolved —
-    /// webhook action authors can treat `None` as a hard fatal, since the
-    /// transport is responsible for populating it before `on_activate`
-    /// runs. Built into the scheduling trait so a single `impl
-    /// HasTriggerScheduling` covers every trigger shape without a
-    /// secondary capability trait.
-    fn webhook_endpoint(&self) -> Option<&Arc<dyn crate::webhook::WebhookEndpointProvider>> {
-        None
-    }
 }
 
-// ── Umbrella marker traits ─────────────────────────────────────────────────
+/// Optional webhook endpoint capability for trigger contexts.
+pub trait HasWebhookEndpoint: CoreContext {
+    /// Endpoint provider when present (webhook triggers), otherwise `None`.
+    fn webhook_endpoint(&self) -> Option<&Arc<dyn crate::webhook::WebhookEndpointProvider>>;
+}
 
-/// Umbrella context trait for [`StatelessAction`](crate::stateless::StatelessAction),
-/// [`StatefulAction`](crate::stateful::StatefulAction),
-/// [`ResourceAction`](crate::resource::ResourceAction), and
-/// [`ControlAction`](crate::control::ControlAction).
-///
-/// Any type implementing the core [`Context`](nebula_core::Context) trait
-/// plus every listed capability IS an `ActionContext` — the blanket impl
-/// means nothing in nebula-action needs to name concrete runtime types.
+/// Umbrella trait for execution-time action contexts.
 #[diagnostic::on_unimplemented(
-    message = "`{Self}` is missing capabilities required by ActionContext",
-    note = "ActionContext requires: Context + HasResources + HasCredentials + HasLogger + \
-            HasMetrics + HasEventBus + HasNodeIdentity (see spec 23)"
+    message = "`{Self}` does not implement ActionContext",
+    note = "ActionContext requires core::Context + resources + credentials + logger + metrics + event bus + node identity"
 )]
 pub trait ActionContext:
-    CoreContext + HasResources + HasCredentials + HasLogger + HasMetrics + HasEventBus + HasNodeIdentity
-{
-}
-
-impl<T> ActionContext for T where
-    T: ?Sized
-        + CoreContext
-        + HasResources
-        + HasCredentials
-        + HasLogger
-        + HasMetrics
-        + HasEventBus
-        + HasNodeIdentity
-{
-}
-
-/// Umbrella context trait for [`TriggerAction`](crate::trigger::TriggerAction)
-/// and its specializations ([`WebhookAction`](crate::webhook::WebhookAction),
-/// [`PollAction`](crate::poll::PollAction)).
-#[diagnostic::on_unimplemented(
-    message = "`{Self}` is missing capabilities required by TriggerContext",
-    note = "TriggerContext requires: Context + HasResources + HasCredentials + HasLogger + \
-            HasMetrics + HasEventBus + HasTriggerScheduling (see spec 23)"
-)]
-pub trait TriggerContext:
     CoreContext
     + HasResources
     + HasCredentials
     + HasLogger
     + HasMetrics
     + HasEventBus
-    + HasTriggerScheduling
+    + HasNodeIdentity
 {
 }
 
-impl<T> TriggerContext for T where
-    T: ?Sized
-        + CoreContext
+impl<T> ActionContext for T where
+    T: CoreContext
         + HasResources
         + HasCredentials
         + HasLogger
         + HasMetrics
         + HasEventBus
-        + HasTriggerScheduling
+        + HasNodeIdentity
+        + ?Sized
 {
 }
 
-// ── Concrete runtime types ─────────────────────────────────────────────────
+/// Umbrella trait for trigger-dispatch contexts.
+///
+/// `HasWebhookEndpoint` is a supertrait so webhook-specific trigger actions
+/// can pull the endpoint URL off any `TriggerContext` without having to
+/// thread an extra bound through every `on_activate` impl. Non-webhook
+/// trigger shapes return `None` from `webhook_endpoint()`.
+#[diagnostic::on_unimplemented(
+    message = "`{Self}` does not implement TriggerContext",
+    note = "TriggerContext requires core::Context + credentials + logger + metrics + event bus + trigger scheduling + webhook endpoint (may be None)"
+)]
+pub trait TriggerContext:
+    CoreContext
+    + HasCredentials
+    + HasLogger
+    + HasMetrics
+    + HasEventBus
+    + HasTriggerScheduling
+    + HasWebhookEndpoint
+{
+}
+
+impl<T> TriggerContext for T where
+    T: CoreContext
+        + HasCredentials
+        + HasLogger
+        + HasMetrics
+        + HasEventBus
+        + HasTriggerScheduling
+        + HasWebhookEndpoint
+        + ?Sized
+{
+}
+
+// ── Concrete runtime contexts ──────────────────────────────────────────────
 
 /// Concrete context supplied to actions at dispatch time.
 ///
@@ -162,15 +141,16 @@ impl<T> TriggerContext for T where
 /// one per dispatch, wiring real resource/credential/logger/metrics/eventbus
 /// accessors; tests go through [`TestContextBuilder`](crate::testing::TestContextBuilder).
 ///
-/// This type lives in nebula-action today; spec 28 relocates it to
-/// `nebula-engine::context::ActionRuntimeContext`. Call sites that use the
-/// [`ActionContext`] trait will migrate without change.
+/// Lives in `nebula-action` as the canonical runtime context. Spec 28
+/// schedules a physical relocation to `nebula-engine::context` once the
+/// engine surface is stable — the umbrella [`ActionContext`] trait makes
+/// that move non-breaking for action authors.
 #[derive(Clone)]
 pub struct ActionRuntimeContext {
     base: Arc<BaseContext>,
-    execution_id: ExecutionId,
+    scope: Scope,
     node_key: NodeKey,
-    workflow_id: WorkflowId,
+    attempt_id: AttemptId,
     resources: Arc<dyn ResourceAccessor>,
     credentials: Arc<dyn CredentialAccessor>,
     logger: Arc<dyn Logger>,
@@ -180,6 +160,11 @@ pub struct ActionRuntimeContext {
 
 impl ActionRuntimeContext {
     /// Build a runtime context from a shared [`BaseContext`] plus action identity.
+    ///
+    /// The incoming `base` provides cancellation/clock/observability; the
+    /// identity fields (`execution_id`, `node_key`, `workflow_id`,
+    /// `attempt_id`) are written into the returned context's [`Scope`] so
+    /// `Context::scope()` exposes the complete identity tuple.
     #[must_use]
     pub fn new(
         base: Arc<BaseContext>,
@@ -187,11 +172,19 @@ impl ActionRuntimeContext {
         node_key: NodeKey,
         workflow_id: WorkflowId,
     ) -> Self {
+        let attempt_id = AttemptId::new();
+        let scope = Scope {
+            execution_id: Some(execution_id),
+            node_key: Some(node_key.clone()),
+            workflow_id: Some(workflow_id),
+            attempt_id: Some(attempt_id),
+            ..base.scope().clone()
+        };
         Self {
             base,
-            execution_id,
+            scope,
             node_key,
-            workflow_id,
+            attempt_id,
             resources: default_resource_accessor(),
             credentials: default_credential_accessor(),
             logger: default_action_logger(),
@@ -258,7 +251,7 @@ impl ActionRuntimeContext {
 
 impl CoreContext for ActionRuntimeContext {
     fn scope(&self) -> &Scope {
-        self.base.scope()
+        &self.scope
     }
 
     fn principal(&self) -> &Principal {
@@ -313,25 +306,20 @@ impl HasEventBus for ActionRuntimeContext {
 }
 
 impl HasNodeIdentity for ActionRuntimeContext {
-    fn execution_id(&self) -> ExecutionId {
-        self.execution_id
-    }
-
     fn node_key(&self) -> &NodeKey {
         &self.node_key
     }
 
-    fn workflow_id(&self) -> WorkflowId {
-        self.workflow_id
+    fn attempt_id(&self) -> &AttemptId {
+        &self.attempt_id
     }
 }
 
 impl fmt::Debug for ActionRuntimeContext {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("ActionRuntimeContext")
-            .field("execution_id", &self.execution_id)
             .field("node_key", &self.node_key)
-            .field("workflow_id", &self.workflow_id)
+            .field("attempt_id", &self.attempt_id)
             .field("resources", &"<dyn ResourceAccessor>")
             .field("credentials", &"<dyn CredentialAccessor>")
             .field("logger", &"<dyn Logger>")
@@ -348,7 +336,7 @@ impl fmt::Debug for ActionRuntimeContext {
 #[derive(Clone)]
 pub struct TriggerRuntimeContext {
     base: Arc<BaseContext>,
-    workflow_id: WorkflowId,
+    scope: Scope,
     trigger_id: NodeKey,
     resources: Arc<dyn ResourceAccessor>,
     credentials: Arc<dyn CredentialAccessor>,
@@ -370,9 +358,14 @@ impl TriggerRuntimeContext {
     /// trigger identity.
     #[must_use]
     pub fn new(base: Arc<BaseContext>, workflow_id: WorkflowId, trigger_id: NodeKey) -> Self {
+        let scope = Scope {
+            workflow_id: Some(workflow_id),
+            node_key: Some(trigger_id.clone()),
+            ..base.scope().clone()
+        };
         Self {
             base,
-            workflow_id,
+            scope,
             trigger_id,
             resources: default_resource_accessor(),
             credentials: default_credential_accessor(),
@@ -474,17 +467,11 @@ impl TriggerRuntimeContext {
     pub fn trigger_id(&self) -> &NodeKey {
         &self.trigger_id
     }
-
-    /// Workflow identity (triggers have no execution yet).
-    #[must_use]
-    pub fn workflow_id(&self) -> WorkflowId {
-        self.workflow_id
-    }
 }
 
 impl CoreContext for TriggerRuntimeContext {
     fn scope(&self) -> &Scope {
-        self.base.scope()
+        &self.scope
     }
 
     fn principal(&self) -> &Principal {
@@ -550,7 +537,9 @@ impl HasTriggerScheduling for TriggerRuntimeContext {
     fn health(&self) -> &TriggerHealth {
         &self.health
     }
+}
 
+impl HasWebhookEndpoint for TriggerRuntimeContext {
     fn webhook_endpoint(&self) -> Option<&Arc<dyn crate::webhook::WebhookEndpointProvider>> {
         self.webhook.as_ref()
     }
@@ -559,7 +548,6 @@ impl HasTriggerScheduling for TriggerRuntimeContext {
 impl fmt::Debug for TriggerRuntimeContext {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("TriggerRuntimeContext")
-            .field("workflow_id", &self.workflow_id)
             .field("trigger_id", &self.trigger_id)
             .field("scheduler", &"<dyn TriggerScheduler>")
             .field("emitter", &"<dyn ExecutionEmitter>")
@@ -587,12 +575,13 @@ pub trait CredentialContextExt: HasCredentials {
     fn credential_by_id(
         &self,
         id: &str,
-    ) -> impl Future<Output = Result<CredentialSnapshot, ActionError>> + Send
+    ) -> Pin<Box<dyn Future<Output = Result<CredentialSnapshot, ActionError>> + Send + '_>>
     where
         Self: Sync,
     {
-        async move {
-            let key = CredentialKey::new(id)
+        let id = id.to_owned();
+        Box::pin(async move {
+            let key = CredentialKey::new(&id)
                 .map_err(|e| ActionError::fatal(format!("invalid credential key `{id}`: {e}")))?;
             let boxed = self
                 .credentials()
@@ -607,19 +596,20 @@ pub trait CredentialContextExt: HasCredentials {
                         "credential `{id}`: resolve_any returned unexpected type (expected CredentialSnapshot)"
                     ))
                 })
-        }
+        })
     }
 
     /// Retrieve a credential and project it to the concrete [`AuthScheme`] type.
-    fn credential_typed<S: AuthScheme>(
-        &self,
+    fn credential_typed<'a, S: AuthScheme + 'a>(
+        &'a self,
         id: &str,
-    ) -> impl Future<Output = Result<S, ActionError>> + Send
+    ) -> Pin<Box<dyn Future<Output = Result<S, ActionError>> + Send + 'a>>
     where
         Self: Sync,
     {
-        async move {
-            let key = CredentialKey::new(id)
+        let id = id.to_owned();
+        Box::pin(async move {
+            let key = CredentialKey::new(&id)
                 .map_err(|e| ActionError::fatal(format!("invalid credential key `{id}`: {e}")))?;
             let boxed = self
                 .credentials()
@@ -637,17 +627,19 @@ pub trait CredentialContextExt: HasCredentials {
             snapshot
                 .into_project::<S>()
                 .map_err(|e| ActionError::fatal(format!("credential `{id}`: {e}")))
-        }
+        })
     }
 
     /// Retrieve a typed credential by [`AuthScheme`] type. Returns a
     /// zeroizing [`CredentialGuard<S>`].
-    fn credential<S>(&self) -> impl Future<Output = Result<CredentialGuard<S>, ActionError>> + Send
+    fn credential<'a, S>(
+        &'a self,
+    ) -> Pin<Box<dyn Future<Output = Result<CredentialGuard<S>, ActionError>> + Send + 'a>>
     where
-        S: AuthScheme + zeroize::Zeroize,
+        S: AuthScheme + zeroize::Zeroize + 'a,
         Self: Sync,
     {
-        async move {
+        Box::pin(async move {
             let type_name = std::any::type_name::<S>();
             let short_name = type_name.rsplit("::").next().unwrap_or(type_name);
             let key_str = short_name.to_lowercase();
@@ -673,301 +665,26 @@ pub trait CredentialContextExt: HasCredentials {
                 ActionError::fatal(format!("credential type mismatch for `{type_name}`: {e}"))
             })?;
             Ok(CredentialGuard::new(scheme))
-        }
+        })
     }
 
     /// Check whether a credential exists by id.
-    fn has_credential_id(&self, id: &str) -> impl Future<Output = bool> + Send
+    fn has_credential_id<'a>(
+        &'a self,
+        id: &'a str,
+    ) -> Pin<Box<dyn Future<Output = bool> + Send + 'a>>
     where
         Self: Sync,
     {
-        async move {
+        Box::pin(async move {
             let Ok(key) = CredentialKey::new(id) else {
                 return false;
             };
             self.credentials().has(&key)
-        }
+        })
     }
 }
 
 /// Blanket impl — any type carrying `HasCredentials` gets the helpers.
 impl<T: ?Sized + HasCredentials> CredentialContextExt for T {}
 
-#[cfg(test)]
-mod tests {
-    use std::{any::Any, time::Duration};
-
-    use nebula_core::{
-        BaseContext, CoreError, CredentialKey,
-        accessor::{CredentialAccessor, LogLevel, Logger},
-        id::{ExecutionId, WorkflowId},
-        node_key,
-    };
-    use nebula_credential::{
-        CredentialRecord, CredentialSnapshot, SecretString, SecretToken, scheme::ConnectionUri,
-    };
-
-    use super::*;
-
-    /// Type alias for dyn-safe async return (for test impls).
-    type BoxFuture<'a, T> = std::pin::Pin<Box<dyn Future<Output = T> + Send + 'a>>;
-
-    fn make_base() -> Arc<BaseContext> {
-        Arc::new(BaseContext::builder().build())
-    }
-
-    #[tokio::test]
-    async fn action_context_defaults_to_noop_capabilities() {
-        let ctx = ActionRuntimeContext::new(
-            make_base(),
-            ExecutionId::new(),
-            node_key!("test"),
-            WorkflowId::new(),
-        );
-
-        assert!(!ctx.has_resource("missing").await);
-        assert!(!ctx.has_credential_id("missing").await);
-        assert!(ctx.resource("missing").await.is_err());
-        assert!(ctx.credential_by_id("missing").await.is_err());
-    }
-
-    struct TestScheduler;
-
-    impl TriggerScheduler for TestScheduler {
-        fn schedule_after(&self, _delay: Duration) -> BoxFuture<'_, Result<(), ActionError>> {
-            Box::pin(async { Ok(()) })
-        }
-    }
-
-    struct TestEmitter;
-
-    impl ExecutionEmitter for TestEmitter {
-        fn emit(
-            &self,
-            _input: serde_json::Value,
-        ) -> BoxFuture<'_, Result<ExecutionId, ActionError>> {
-            Box::pin(async { Ok(ExecutionId::new()) })
-        }
-    }
-
-    struct TestCredentialAccessor;
-
-    impl CredentialAccessor for TestCredentialAccessor {
-        fn has(&self, _key: &CredentialKey) -> bool {
-            true
-        }
-
-        fn resolve_any(
-            &self,
-            _key: &CredentialKey,
-        ) -> BoxFuture<'_, Result<Box<dyn Any + Send + Sync>, CoreError>> {
-            Box::pin(async {
-                let snapshot = CredentialSnapshot::new(
-                    "api_key",
-                    CredentialRecord::new(),
-                    SecretToken::new(SecretString::new("test-token")),
-                );
-                Ok(Box::new(snapshot) as Box<dyn Any + Send + Sync>)
-            })
-        }
-
-        fn try_resolve_any(
-            &self,
-            _key: &CredentialKey,
-        ) -> BoxFuture<'_, Result<Option<Box<dyn Any + Send + Sync>>, CoreError>> {
-            Box::pin(async move {
-                let snapshot = CredentialSnapshot::new(
-                    "api_key",
-                    CredentialRecord::new(),
-                    SecretToken::new(SecretString::new("test-token")),
-                );
-                Ok(Some(Box::new(snapshot) as Box<dyn Any + Send + Sync>))
-            })
-        }
-    }
-
-    struct TestLogger;
-
-    impl Logger for TestLogger {
-        fn log(&self, _level: LogLevel, _message: &str) {}
-        fn log_with_fields(&self, _level: LogLevel, _message: &str, _fields: &[(&str, &str)]) {}
-    }
-
-    #[tokio::test]
-    async fn trigger_context_with_capabilities_can_schedule_and_emit() {
-        let ctx = TriggerRuntimeContext::new(make_base(), WorkflowId::new(), node_key!("test"))
-            .with_scheduler(Arc::new(TestScheduler))
-            .with_emitter(Arc::new(TestEmitter))
-            .with_credentials(Arc::new(TestCredentialAccessor))
-            .with_logger(Arc::new(TestLogger));
-
-        assert!(ctx.schedule_after(Duration::from_millis(5)).await.is_ok());
-        assert!(
-            ctx.emit_execution(serde_json::json!({"event":"tick"}))
-                .await
-                .is_ok()
-        );
-        assert!(ctx.has_credential_id("cred").await);
-        assert!(ctx.credential_by_id("cred").await.is_ok());
-    }
-
-    #[tokio::test]
-    async fn action_context_credential_typed_returns_projected_scheme() {
-        let ctx = ActionRuntimeContext::new(
-            make_base(),
-            ExecutionId::new(),
-            node_key!("test"),
-            WorkflowId::new(),
-        )
-        .with_credentials(Arc::new(TestCredentialAccessor));
-
-        let token: SecretToken = ctx
-            .credential_typed::<SecretToken>("api_key")
-            .await
-            .unwrap();
-        assert_eq!(token.token().expose_secret(), "test-token");
-    }
-
-    #[tokio::test]
-    async fn action_context_credential_typed_mismatch_returns_fatal() {
-        let ctx = ActionRuntimeContext::new(
-            make_base(),
-            ExecutionId::new(),
-            node_key!("test"),
-            WorkflowId::new(),
-        )
-        .with_credentials(Arc::new(TestCredentialAccessor));
-
-        let result = ctx.credential_typed::<ConnectionUri>("api_key").await;
-        assert!(result.is_err());
-        let err = result.unwrap_err();
-        assert!(err.is_fatal());
-        assert!(err.to_string().contains("scheme mismatch"));
-    }
-
-    // ── Type-based credential access tests ──────────────────────────────
-
-    #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
-    struct ZeroizableToken {
-        value: String,
-    }
-
-    impl AuthScheme for ZeroizableToken {
-        fn pattern() -> nebula_credential::AuthPattern {
-            nebula_credential::AuthPattern::SecretToken
-        }
-    }
-
-    impl zeroize::Zeroize for ZeroizableToken {
-        fn zeroize(&mut self) {
-            self.value.zeroize();
-        }
-    }
-
-    struct TypedCredentialAccessor;
-
-    impl CredentialAccessor for TypedCredentialAccessor {
-        fn has(&self, key: &CredentialKey) -> bool {
-            key.as_str() == "zeroizabletoken"
-        }
-
-        fn resolve_any(
-            &self,
-            key: &CredentialKey,
-        ) -> BoxFuture<'_, Result<Box<dyn Any + Send + Sync>, CoreError>> {
-            let key_str = key.as_str().to_owned();
-            Box::pin(async move {
-                if key_str == "zeroizabletoken" {
-                    let snapshot = CredentialSnapshot::new(
-                        "typed",
-                        CredentialRecord::new(),
-                        ZeroizableToken {
-                            value: "secret-42".to_owned(),
-                        },
-                    );
-                    Ok(Box::new(snapshot) as Box<dyn Any + Send + Sync>)
-                } else {
-                    Err(CoreError::CredentialNotFound { key: key_str })
-                }
-            })
-        }
-
-        fn try_resolve_any(
-            &self,
-            key: &CredentialKey,
-        ) -> BoxFuture<'_, Result<Option<Box<dyn Any + Send + Sync>>, CoreError>> {
-            let key_str = key.as_str().to_owned();
-            Box::pin(async move {
-                if key_str == "zeroizabletoken" {
-                    let snapshot = CredentialSnapshot::new(
-                        "typed",
-                        CredentialRecord::new(),
-                        ZeroizableToken {
-                            value: "secret-42".to_owned(),
-                        },
-                    );
-                    Ok(Some(Box::new(snapshot) as Box<dyn Any + Send + Sync>))
-                } else {
-                    Ok(None)
-                }
-            })
-        }
-    }
-
-    #[tokio::test]
-    async fn action_context_credential_returns_guard() {
-        let ctx = ActionRuntimeContext::new(
-            make_base(),
-            ExecutionId::new(),
-            node_key!("test"),
-            WorkflowId::new(),
-        )
-        .with_credentials(Arc::new(TypedCredentialAccessor));
-
-        let guard = ctx.credential::<ZeroizableToken>().await.unwrap();
-        assert_eq!(guard.value, "secret-42");
-    }
-
-    #[tokio::test]
-    async fn trigger_context_credential_returns_guard() {
-        let ctx = TriggerRuntimeContext::new(make_base(), WorkflowId::new(), node_key!("test"))
-            .with_credentials(Arc::new(TypedCredentialAccessor));
-
-        let guard = ctx.credential::<ZeroizableToken>().await.unwrap();
-        assert_eq!(guard.value, "secret-42");
-    }
-
-    #[tokio::test]
-    async fn credential_noop_accessor_returns_error() {
-        let ctx = ActionRuntimeContext::new(
-            make_base(),
-            ExecutionId::new(),
-            node_key!("test"),
-            WorkflowId::new(),
-        );
-        let result = ctx.credential::<ZeroizableToken>().await;
-        assert!(result.is_err());
-        let err = result.unwrap_err();
-        assert!(err.is_fatal());
-    }
-
-    #[test]
-    fn blanket_impl_compiles_for_runtime_contexts() {
-        // Compile-time check that the blanket impls work — any type
-        // implementing all the capabilities satisfies the umbrella trait.
-        fn assert_action<T: ActionContext>(_: &T) {}
-        fn assert_trigger<T: TriggerContext>(_: &T) {}
-
-        let action_ctx = ActionRuntimeContext::new(
-            make_base(),
-            ExecutionId::new(),
-            node_key!("test"),
-            WorkflowId::new(),
-        );
-        assert_action(&action_ctx);
-
-        let trigger_ctx =
-            TriggerRuntimeContext::new(make_base(), WorkflowId::new(), node_key!("test"));
-        assert_trigger(&trigger_ctx);
-    }
-}

@@ -5,9 +5,7 @@
 
 pub mod auth;
 pub mod catalog;
-#[cfg(feature = "credential-oauth")]
 pub mod credential;
-#[cfg(feature = "credential-oauth")]
 pub mod credential_oauth;
 pub mod execution;
 pub mod health;

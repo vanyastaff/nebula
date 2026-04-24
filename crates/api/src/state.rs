@@ -3,17 +3,14 @@
 //! Shared state for all handlers via Arc.
 //! Contains only ports (traits) — independent of concrete implementations.
 
-#[cfg(feature = "credential-oauth")]
 use std::collections::HashMap;
 use std::sync::Arc;
 
 use async_trait::async_trait;
 use nebula_core::{OrgId, OrgRole, WorkspaceId, WorkspaceRole, scope::Principal};
-#[cfg(feature = "credential-oauth")]
 use nebula_credential::PendingToken;
 use nebula_engine::ActionRegistry;
 use nebula_plugin::PluginRegistry;
-#[cfg(feature = "credential-oauth")]
 use nebula_storage::credential::{InMemoryPendingStore, InMemoryStore};
 use nebula_storage::{ExecutionRepo, WorkflowRepo, repos::ControlQueueRepo};
 use nebula_telemetry::metrics::MetricsRegistry;
@@ -113,16 +110,13 @@ pub struct AppState {
     /// will never fire until the transport is attached.
     pub webhook_transport: Option<WebhookTransport>,
 
-    /// Feature-gated OAuth pending store (ADR-0031 rollout slice).
-    #[cfg(feature = "credential-oauth")]
+    /// OAuth pending state store (ADR-0031 §4.2 — TTL ≤ 10 min, single-use).
     pub oauth_pending_store: Arc<InMemoryPendingStore>,
 
     /// Maps signed state -> pending token so callback can consume pending data.
-    #[cfg(feature = "credential-oauth")]
     pub oauth_state_tokens: Arc<RwLock<HashMap<String, PendingToken>>>,
 
-    /// Credential state store used by OAuth callback completion in rollout mode.
-    #[cfg(feature = "credential-oauth")]
+    /// Credential state store used by OAuth callback completion.
     pub oauth_credential_store: Arc<InMemoryStore>,
 
     /// Optional org-slug → [`OrgId`] resolver.
@@ -160,11 +154,8 @@ impl AppState {
             action_registry: None,
             plugin_registry: None,
             webhook_transport: None,
-            #[cfg(feature = "credential-oauth")]
             oauth_pending_store: Arc::new(InMemoryPendingStore::new()),
-            #[cfg(feature = "credential-oauth")]
             oauth_state_tokens: Arc::new(RwLock::new(HashMap::new())),
-            #[cfg(feature = "credential-oauth")]
             oauth_credential_store: Arc::new(InMemoryStore::new()),
             org_resolver: None,
             workspace_resolver: None,

@@ -1,7 +1,10 @@
 //! Runtime error types.
 
+use nebula_core::{ActionKey, NodeKey};
+
 /// Errors from the runtime layer.
 #[derive(Debug, thiserror::Error, nebula_error::Classify)]
+#[non_exhaustive]
 pub enum RuntimeError {
     /// Action not found in the registry.
     #[classify(category = "not_found", code = "RUNTIME:ACTION_NOT_FOUND")]
@@ -42,6 +45,53 @@ pub enum RuntimeError {
         limit_bytes: u64,
         /// Actual output size.
         actual_bytes: u64,
+    },
+
+    /// A `StatefulAction` returned `Continue` without mutating its state —
+    /// the author's iteration is stuck (forgot to advance a cursor, reset
+    /// an accumulator to the same value, etc.). The runtime converts this
+    /// infinite loop into an explicit fatal so retry / error routing can
+    /// handle it like any other terminal failure.
+    ///
+    /// Spec 28 §9.0: engine-managed stuck-state detection is part of the
+    /// stateful contract, not a generic `ActionError::Fatal`.
+    #[classify(
+        category = "internal",
+        code = "RUNTIME:STATEFUL_STUCK",
+        retryable = false
+    )]
+    #[error(
+        "stateful action '{action_key}' returned Continue without mutating state at iteration \
+         {iteration} (node {node_key:?}) — refusing to loop indefinitely"
+    )]
+    StatefulStuck {
+        /// The action key whose iteration is stuck.
+        action_key: ActionKey,
+        /// The node the iteration is running under.
+        node_key: NodeKey,
+        /// The iteration count at which the stall was detected (1-based —
+        /// the handler had just returned `Continue` for this iteration).
+        iteration: u32,
+    },
+
+    /// The stateful action exceeded the runtime's hard iteration cap
+    /// (`MAX_ITERATIONS`). Separate from [`StatefulStuck`](Self::StatefulStuck)
+    /// because the state IS changing — the handler just never terminates.
+    #[classify(
+        category = "exhausted",
+        code = "RUNTIME:ITERATION_CAP",
+        retryable = false
+    )]
+    #[error(
+        "stateful action '{action_key}' exceeded max iterations ({cap}) at node {node_key:?}"
+    )]
+    IterationCapExceeded {
+        /// The action key that hit the cap.
+        action_key: ActionKey,
+        /// The node the iteration is running under.
+        node_key: NodeKey,
+        /// The cap that was tripped.
+        cap: u32,
     },
 
     /// The action key resolves to a trigger, which has its own start/stop

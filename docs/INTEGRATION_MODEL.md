@@ -160,9 +160,9 @@ The table below is an **external, illustrative** bucketing (by auth *shape* / tr
 
 ## `nebula-action`
 
-**What / why:** **Action** traits, declared dependencies, **`ActionResult`** flow, and metadata-declared execution policy (including **`CheckpointPolicy`** in `ActionMetadata`) so the engine can enforce checkpoints, branching, and retries **honestly** — not untyped "JSON in / out."
+**What / why:** **Action** traits, declared dependencies, **`ActionResult`** flow, and metadata-declared execution policy so the engine can enforce branching and retries **honestly** — not untyped "JSON in / out." A `CheckpointPolicy` on `ActionMetadata` is **planned** but not yet wired through `ActionMetadata` or the runtime.
 
-> **Status of `CheckpointPolicy`:** see `crates/action/README.md` for implementation state; current engine honoring of this policy is tracked in `docs/MATURITY.md` row for `nebula-action`.
+> **Status of `CheckpointPolicy`:** `planned` — not yet a field on `ActionMetadata`, not consumed by the engine end-to-end. See `crates/action/README.md` and `docs/MATURITY.md` row for `nebula-action`.
 
 **Where to read:** `crates/action/src/lib.rs` (module map; crate `README.md` may lag).
 

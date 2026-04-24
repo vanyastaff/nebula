@@ -43,6 +43,7 @@ impl DataPassingPolicy {
 
 /// Strategy for handling oversized data.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[non_exhaustive]
 pub enum LargeDataStrategy {
     /// Reject the output with `ActionError::DataLimitExceeded`.
     Reject,

@@ -1,40 +1,6 @@
-use std::{error::Error as StdError, fmt, sync::Arc, time::Duration};
+use std::{sync::Arc, time::Duration};
 
 use serde::{Deserialize, Serialize};
-
-/// Internal wrapper that lifts a `Display + Debug` message into
-/// `std::error::Error`.
-///
-/// `ActionError::{Retryable, Fatal}` now carry `Arc<dyn StdError + Send + Sync>`
-/// instead of `Arc<anyhow::Error>` (spec 27 §2.6). The `retryable` /
-/// `fatal` constructors still accept an `impl Display + Debug` for DX —
-/// this private wrapper bridges that API to the stdlib error trait
-/// without pulling `anyhow` into the public dep graph.
-struct DisplayError {
-    message: String,
-}
-
-impl fmt::Display for DisplayError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(&self.message)
-    }
-}
-
-impl fmt::Debug for DisplayError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_tuple("DisplayError").field(&self.message).finish()
-    }
-}
-
-impl StdError for DisplayError {}
-
-fn wrap_display(
-    error: impl fmt::Display + fmt::Debug + Send + Sync + 'static,
-) -> Arc<dyn StdError + Send + Sync> {
-    Arc::new(DisplayError {
-        message: error.to_string(),
-    })
-}
 
 /// Retry-strategy hint attached by the action body to a failing
 /// `Retryable` or `Fatal` error.
@@ -149,6 +115,35 @@ fn sanitize_detail(raw: &str) -> String {
     out
 }
 
+/// Thin wrapper that turns any `Display + Debug + Send + Sync` value
+/// into a `dyn Error`. Used by the `retryable()` / `fatal()` convenience
+/// constructors that accept displayable values rather than typed errors.
+struct DisplayError {
+    message: String,
+}
+
+impl DisplayError {
+    fn new(source: impl std::fmt::Display + std::fmt::Debug + Send + Sync + 'static) -> Self {
+        Self {
+            message: format!("{source}"),
+        }
+    }
+}
+
+impl std::fmt::Display for DisplayError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.message)
+    }
+}
+
+impl std::fmt::Debug for DisplayError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.message)
+    }
+}
+
+impl std::error::Error for DisplayError {}
+
 /// Error type for all action operations.
 ///
 /// Distinguishes retryable from fatal errors so the engine can decide
@@ -164,7 +159,7 @@ pub enum ActionError {
     #[error("retryable: {error}")]
     Retryable {
         /// Full error chain wrapped in `Arc` for `Clone` support.
-        error: Arc<dyn StdError + Send + Sync>,
+        error: Arc<dyn std::error::Error + Send + Sync>,
         /// Machine-readable error code for engine decisions.
         code: Option<RetryHintCode>,
         /// Suggested delay before retry (engine may override).
@@ -179,7 +174,7 @@ pub enum ActionError {
     #[error("fatal: {error}")]
     Fatal {
         /// Full error chain wrapped in `Arc` for `Clone` support.
-        error: Arc<dyn StdError + Send + Sync>,
+        error: Arc<dyn std::error::Error + Send + Sync>,
         /// Machine-readable error code for engine decisions.
         code: Option<RetryHintCode>,
         /// Optional structured details about the failure.
@@ -255,7 +250,7 @@ pub enum ActionError {
     /// than relying on a per-action `ErrorStrategy` override (which does
     /// not exist).
     ///
-    /// [`execute_action_versioned`]: https://docs.rs/nebula-engine
+    /// [`execute_action_versioned`]: https://docs.rs/nebula-runtime
     #[error("credential refresh failed for action '{action_key}': {source}")]
     CredentialRefreshFailed {
         /// Action key identifying the dispatch target that was waiting on
@@ -264,7 +259,7 @@ pub enum ActionError {
         action_key: String,
         /// Underlying error from the refresh hook. Wrapped in `Arc` so
         /// `ActionError` stays `Clone` (consistent with the other variants
-        /// that wrap `Arc<dyn StdError + Send + Sync>`).
+        /// that wrap `dyn Error` in `Arc`).
         #[source]
         source: Arc<dyn std::error::Error + Send + Sync>,
     },
@@ -343,9 +338,11 @@ impl ActionError {
     /// Accepts any type that implements `Display + Debug + Send + Sync`.
     /// For typed errors, use [`Self::retryable_from`] to preserve the error chain.
     #[must_use]
-    pub fn retryable(error: impl fmt::Display + fmt::Debug + Send + Sync + 'static) -> Self {
+    pub fn retryable(
+        error: impl std::fmt::Display + std::fmt::Debug + Send + Sync + 'static,
+    ) -> Self {
         Self::Retryable {
-            error: wrap_display(error),
+            error: Arc::new(DisplayError::new(error)),
             code: None,
             backoff_hint: None,
             partial_output: None,
@@ -366,11 +363,11 @@ impl ActionError {
     /// Create a retryable error with a suggested backoff duration.
     #[must_use]
     pub fn retryable_with_backoff(
-        error: impl fmt::Display + fmt::Debug + Send + Sync + 'static,
+        error: impl std::fmt::Display + std::fmt::Debug + Send + Sync + 'static,
         backoff: Duration,
     ) -> Self {
         Self::Retryable {
-            error: wrap_display(error),
+            error: Arc::new(DisplayError::new(error)),
             code: None,
             backoff_hint: Some(backoff),
             partial_output: None,
@@ -380,11 +377,11 @@ impl ActionError {
     /// Create a retryable error with a retry-strategy hint.
     #[must_use]
     pub fn retryable_with_hint(
-        error: impl fmt::Display + fmt::Debug + Send + Sync + 'static,
+        error: impl std::fmt::Display + std::fmt::Debug + Send + Sync + 'static,
         hint: RetryHintCode,
     ) -> Self {
         Self::Retryable {
-            error: wrap_display(error),
+            error: Arc::new(DisplayError::new(error)),
             code: Some(hint),
             backoff_hint: None,
             partial_output: None,
@@ -394,11 +391,11 @@ impl ActionError {
     /// Create a retryable error carrying a partial result.
     #[must_use]
     pub fn retryable_with_partial(
-        error: impl fmt::Display + fmt::Debug + Send + Sync + 'static,
+        error: impl std::fmt::Display + std::fmt::Debug + Send + Sync + 'static,
         partial: serde_json::Value,
     ) -> Self {
         Self::Retryable {
-            error: wrap_display(error),
+            error: Arc::new(DisplayError::new(error)),
             code: None,
             backoff_hint: None,
             partial_output: Some(partial),
@@ -410,9 +407,9 @@ impl ActionError {
     /// Accepts any type that implements `Display + Debug + Send + Sync`.
     /// For typed errors, use [`Self::fatal_from`] to preserve the error chain.
     #[must_use]
-    pub fn fatal(error: impl fmt::Display + fmt::Debug + Send + Sync + 'static) -> Self {
+    pub fn fatal(error: impl std::fmt::Display + std::fmt::Debug + Send + Sync + 'static) -> Self {
         Self::Fatal {
-            error: wrap_display(error),
+            error: Arc::new(DisplayError::new(error)),
             code: None,
             details: None,
         }
@@ -431,11 +428,11 @@ impl ActionError {
     /// Create a fatal error with structured details.
     #[must_use]
     pub fn fatal_with_details(
-        error: impl fmt::Display + fmt::Debug + Send + Sync + 'static,
+        error: impl std::fmt::Display + std::fmt::Debug + Send + Sync + 'static,
         details: serde_json::Value,
     ) -> Self {
         Self::Fatal {
-            error: wrap_display(error),
+            error: Arc::new(DisplayError::new(error)),
             code: None,
             details: Some(details),
         }
@@ -448,11 +445,11 @@ impl ActionError {
     /// `InvalidInput` in an error dashboard).
     #[must_use]
     pub fn fatal_with_hint(
-        error: impl fmt::Display + fmt::Debug + Send + Sync + 'static,
+        error: impl std::fmt::Display + std::fmt::Debug + Send + Sync + 'static,
         hint: RetryHintCode,
     ) -> Self {
         Self::Fatal {
-            error: wrap_display(error),
+            error: Arc::new(DisplayError::new(error)),
             code: Some(hint),
             details: None,
         }

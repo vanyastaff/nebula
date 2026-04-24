@@ -6,8 +6,8 @@
 use nebula_credential::{
     SecretString,
     scheme::{
-        Certificate, ChallengeSecret, ConnectionUri, FederatedAssertion, IdentityPassword,
-        InstanceBinding, KeyPair, OAuth2Token, OtpSeed, SecretToken, SharedKey, SigningKey,
+        Certificate, ConnectionUri, IdentityPassword, InstanceBinding, KeyPair, OAuth2Token,
+        SecretToken, SharedKey, SigningKey,
     },
 };
 
@@ -157,52 +157,8 @@ fn connection_uri_serde_roundtrip() {
     );
 }
 
-#[test]
-fn federated_assertion_serde_roundtrip() {
-    let fa = FederatedAssertion::new(
-        SecretString::new("PHNhbWw+base64"),
-        "https://idp.example.com",
-    );
-    let json = serde_json::to_string(&fa).unwrap();
-    assert!(
-        !json.contains("REDACTED"),
-        "json must not contain REDACTED: {json}"
-    );
-    assert!(json.contains("PHNhbWw+base64"));
-    let recovered: FederatedAssertion = serde_json::from_str(&json).unwrap();
-    assert_eq!(recovered.assertion().expose_secret(), "PHNhbWw+base64");
-    assert_eq!(recovered.issuer(), "https://idp.example.com");
-}
-
-#[test]
-fn challenge_secret_serde_roundtrip() {
-    let cs = ChallengeSecret::new("admin", SecretString::new("challenge-pw"), "scram-sha256");
-    let json = serde_json::to_string(&cs).unwrap();
-    assert!(
-        !json.contains("REDACTED"),
-        "json must not contain REDACTED: {json}"
-    );
-    assert!(json.contains("challenge-pw"));
-    let recovered: ChallengeSecret = serde_json::from_str(&json).unwrap();
-    assert_eq!(recovered.identity(), "admin");
-    assert_eq!(recovered.secret().expose_secret(), "challenge-pw");
-    assert_eq!(recovered.protocol(), "scram-sha256");
-}
-
-#[test]
-fn otp_seed_serde_roundtrip() {
-    let otp = OtpSeed::new(SecretString::new("JBSWY3DPEHPK3PXP"), "totp", 6);
-    let json = serde_json::to_string(&otp).unwrap();
-    assert!(
-        !json.contains("REDACTED"),
-        "json must not contain REDACTED: {json}"
-    );
-    assert!(json.contains("JBSWY3DPEHPK3PXP"));
-    let recovered: OtpSeed = serde_json::from_str(&json).unwrap();
-    assert_eq!(recovered.seed().expose_secret(), "JBSWY3DPEHPK3PXP");
-    assert_eq!(recovered.algorithm(), "totp");
-    assert_eq!(recovered.digits(), 6);
-}
+// Tests for FederatedAssertion, ChallengeSecret, OtpSeed removed 2026-04-24
+// along with their scheme types — Plane A / integration-internal domain.
 
 #[test]
 fn instance_binding_serde_roundtrip() {

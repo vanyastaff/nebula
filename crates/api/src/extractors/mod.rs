@@ -2,7 +2,6 @@
 //!
 //! Кастомные extractors для извлечения данных из запросов.
 
-#[cfg(feature = "credential-oauth")]
 pub mod credential;
 pub mod json_extractor;
 

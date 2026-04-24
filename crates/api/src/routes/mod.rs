@@ -20,8 +20,6 @@ pub mod org;
 pub mod webhook;
 pub mod workspace;
 
-// Keep existing route modules that are feature-gated
-#[cfg(feature = "credential-oauth")]
 pub mod credential;
 
 use axum::{Router, middleware};
@@ -86,26 +84,21 @@ fn api_v1_routes(state: AppState) -> Router<AppState> {
         ))
         .layer(middleware::from_fn(csrf_middleware));
 
-    // Feature-gated credential-oauth routes (Plane B)
-    #[allow(unused_mut)]
-    let mut router = Router::new()
-        .merge(auth_routes)
-        .merge(docs_routes)
-        .merge(webhook_routes)
-        .merge(me_routes)
-        .merge(catalog_routes);
-
-    #[cfg(feature = "credential-oauth")]
-    {
-        let credential_routes = credential::router().layer(middleware::from_fn_with_state(
-            state.clone(),
-            auth_middleware,
-        ));
-        router = router.merge(credential_routes);
-    }
+    // Credential OAuth callback routes (Plane B — ADR-0031).
+    let credential_routes = credential::router().layer(middleware::from_fn_with_state(
+        state.clone(),
+        auth_middleware,
+    ));
 
     // Apply auth middleware to tenant routes — state is moved here (last usage).
     let tenant_routes = tenant_routes.layer(middleware::from_fn_with_state(state, auth_middleware));
 
-    router.merge(tenant_routes)
+    Router::new()
+        .merge(auth_routes)
+        .merge(docs_routes)
+        .merge(webhook_routes)
+        .merge(me_routes)
+        .merge(catalog_routes)
+        .merge(credential_routes)
+        .merge(tenant_routes)
 }

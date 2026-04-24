@@ -5,6 +5,7 @@ use thiserror::Error;
 
 /// Errors that can occur during workflow definition, validation, or graph construction.
 #[derive(Debug, Error, nebula_error::Classify)]
+#[non_exhaustive]
 pub enum WorkflowError {
     /// Workflow name must not be empty.
     #[classify(category = "validation", code = "WORKFLOW:EMPTY_NAME")]

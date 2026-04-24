@@ -362,7 +362,7 @@ impl ActionRuntime {
                 .await?;
                 Ok(action_result)
             },
-            Err(action_err) => Err(RuntimeError::ActionError(action_err)),
+            Err(runtime_err) => Err(runtime_err),
         }
     }
 
@@ -375,7 +375,7 @@ impl ActionRuntime {
     fn observe_dispatched(
         &self,
         started: Instant,
-        result: &Result<ActionResult<serde_json::Value>, ActionError>,
+        result: &Result<ActionResult<serde_json::Value>, RuntimeError>,
     ) {
         let elapsed = started.elapsed();
         self.duration_histogram().observe(elapsed.as_secs_f64());
@@ -429,16 +429,16 @@ impl ActionRuntime {
         handler: Arc<dyn StatelessHandler>,
         input: serde_json::Value,
         context: &dyn ActionContext,
-    ) -> Result<ActionResult<serde_json::Value>, ActionError> {
+    ) -> Result<ActionResult<serde_json::Value>, RuntimeError> {
         match metadata.isolation_level {
-            IsolationLevel::None => handler.execute(input, context).await,
+            IsolationLevel::None => Ok(handler.execute(input, context).await?),
             IsolationLevel::CapabilityGated | IsolationLevel::Isolated => {
                 let sandboxed = SandboxedContext::new(context);
-                self.sandbox.execute(sandboxed, metadata, input).await
+                Ok(self.sandbox.execute(sandboxed, metadata, input).await?)
             },
             // IsolationLevel is `#[non_exhaustive]`. Any future variant must
             // fail-closed until we explicitly wire dispatch for it.
-            _ => Err(ActionError::fatal(format!(
+            _ => Err(RuntimeError::Internal(format!(
                 "unknown isolation level for action '{}' — refusing to dispatch",
                 metadata.base.key.as_str()
             ))),
@@ -480,7 +480,7 @@ impl ActionRuntime {
         input: serde_json::Value,
         context: &dyn ActionContext,
         checkpoint: Option<Arc<dyn StatefulCheckpointSink>>,
-    ) -> Result<ActionResult<serde_json::Value>, ActionError> {
+    ) -> Result<ActionResult<serde_json::Value>, RuntimeError> {
         if !matches!(metadata.isolation_level, IsolationLevel::None) {
             // Stateful sandbox dispatch requires a long-lived broker loop to
             // persist state across iterations. The current `SandboxRunner`
@@ -490,13 +490,14 @@ impl ActionRuntime {
             return Err(ActionError::fatal(
                 "sandboxed stateful execution is not yet supported — \
                  broker iteration protocol lands in sandbox slice 1d",
-            ));
+            )
+            .into());
         }
 
         // Cancellation check BEFORE init_state / load — avoid the JSON
         // round-trip if the caller already cancelled.
         if context.cancellation().is_cancelled() {
-            return Err(ActionError::Cancelled);
+            return Err(ActionError::Cancelled.into());
         }
 
         // Attempt to resume from the checkpoint if a sink is configured.
@@ -542,15 +543,16 @@ impl ActionRuntime {
 
         loop {
             if iteration >= MAX_ITERATIONS {
-                return Err(ActionError::fatal(format!(
-                    "stateful action '{}' exceeded max iterations ({MAX_ITERATIONS})",
-                    metadata.base.key.as_str()
-                )));
+                return Err(RuntimeError::IterationCapExceeded {
+                    action_key: metadata.base.key.clone(),
+                    node_key: context.node_key().clone(),
+                    cap: MAX_ITERATIONS,
+                });
             }
 
             // Cooperative cancellation check BEFORE the next iteration.
             if context.cancellation().is_cancelled() {
-                return Err(ActionError::Cancelled);
+                return Err(ActionError::Cancelled.into());
             }
 
             // Spec 28 §9.0 stuck-state guard. Serialize state before the
@@ -574,7 +576,7 @@ impl ActionRuntime {
                 tokio::select! {
                     biased;
                     () = context.cancellation().cancelled() => {
-                        return Err(ActionError::Cancelled);
+                        return Err(ActionError::Cancelled.into());
                     }
                     res = &mut exec_fut => res,
                 }
@@ -588,16 +590,17 @@ impl ActionRuntime {
                     // Stuck-state detection (spec 28 §9.0): a `Continue` that
                     // did not mutate the checkpoint is an infinite loop.
                     // Happens in practice when an author forgets to advance
-                    // a cursor / page number. Converting it to a Fatal here
-                    // short-circuits the hang so retry/error routing can
-                    // handle it like any other terminal failure.
+                    // a cursor / page number. Surfacing a typed
+                    // `RuntimeError::StatefulStuck` lets retry/error routing
+                    // classify it explicitly instead of treating it as an
+                    // opaque action fatal.
                     let state_digest_after = stateful_state_digest(&state);
                     if state_digest_before == state_digest_after {
-                        return Err(ActionError::fatal(format!(
-                            "stateful action '{}' returned Continue without mutating state at \
-                             iteration {iteration} — refusing to loop indefinitely",
-                            metadata.base.key.as_str()
-                        )));
+                        return Err(RuntimeError::StatefulStuck {
+                            action_key: metadata.base.key.clone(),
+                            node_key: context.node_key().clone(),
+                            iteration,
+                        });
                     }
 
                     // Persist the new state BEFORE sleeping. If the
@@ -614,7 +617,7 @@ impl ActionRuntime {
                         tokio::select! {
                             () = tokio::time::sleep(d) => {}
                             () = context.cancellation().cancelled() => {
-                                return Err(ActionError::Cancelled);
+                                return Err(ActionError::Cancelled.into());
                             }
                         }
                     }
@@ -2159,5 +2162,125 @@ mod tests {
         assert_eq!(saves.len(), 1, "expected one save at iteration 1");
         assert_eq!(saves[0].iteration, 1);
         assert_eq!(sink.clears.load(AtomicOrdering::Relaxed), 1);
+    }
+
+    /// A stateful handler that returns `Continue` without ever mutating its
+    /// state — used to pin the spec 28 §9.0 stuck-state guard.
+    struct NoProgressHandler {
+        meta: ActionMetadata,
+    }
+
+    #[async_trait::async_trait]
+    impl StatefulHandler for NoProgressHandler {
+        fn metadata(&self) -> &ActionMetadata {
+            &self.meta
+        }
+        fn init_state(&self) -> Result<JsonValue, ActionError> {
+            Ok(serde_json::json!({ "cursor": 0u32 }))
+        }
+        async fn execute(
+            &self,
+            _input: &JsonValue,
+            _state: &mut JsonValue,
+            _ctx: &dyn ActionContext,
+        ) -> Result<ActionResult<JsonValue>, ActionError> {
+            Ok(ActionResult::Continue {
+                output: ActionOutput::Value(serde_json::json!(null)),
+                progress: None,
+                delay: None,
+            })
+        }
+    }
+
+    /// Spec 28 §9.0: a stateful handler that Continues without mutating its
+    /// state must surface as a typed `RuntimeError::StatefulStuck`, NOT as
+    /// an opaque `ActionError::Fatal`. Retry/error routing depends on the
+    /// typed classification.
+    #[tokio::test]
+    async fn execute_stateful_stuck_surfaces_typed_variant() {
+        let registry = Arc::new(ActionRegistry::new());
+        let meta = ActionMetadata::new(action_key!("test.stuck"), "Stuck", "no progress");
+        registry.register(
+            meta.clone(),
+            ActionHandler::Stateful(Arc::new(NoProgressHandler { meta })),
+        );
+        let rt = make_runtime(registry);
+
+        let result = rt
+            .execute_action("test.stuck", serde_json::json!(null), &test_context())
+            .await;
+
+        match result {
+            Err(RuntimeError::StatefulStuck {
+                action_key,
+                iteration,
+                ..
+            }) => {
+                assert_eq!(action_key.as_str(), "test.stuck");
+                assert_eq!(iteration, 1, "stall detected on the first Continue");
+            },
+            other => panic!("expected RuntimeError::StatefulStuck, got {other:?}"),
+        }
+    }
+
+    /// A stateful handler that advances state on every iteration — used to
+    /// exercise the iteration cap without tripping the stuck-state guard.
+    struct EndlessCountingHandler {
+        meta: ActionMetadata,
+    }
+
+    #[async_trait::async_trait]
+    impl StatefulHandler for EndlessCountingHandler {
+        fn metadata(&self) -> &ActionMetadata {
+            &self.meta
+        }
+        fn init_state(&self) -> Result<JsonValue, ActionError> {
+            Ok(serde_json::json!({ "count": 0u32 }))
+        }
+        async fn execute(
+            &self,
+            _input: &JsonValue,
+            state: &mut JsonValue,
+            _ctx: &dyn ActionContext,
+        ) -> Result<ActionResult<JsonValue>, ActionError> {
+            let count = state
+                .get("count")
+                .and_then(serde_json::Value::as_u64)
+                .unwrap_or(0) as u32;
+            *state = serde_json::json!({ "count": count + 1 });
+            Ok(ActionResult::Continue {
+                output: ActionOutput::Value(serde_json::json!({ "n": count + 1 })),
+                progress: None,
+                delay: None,
+            })
+        }
+    }
+
+    /// A handler whose state evolves every iteration must still be capped
+    /// at `MAX_ITERATIONS`, and must surface as a typed
+    /// `RuntimeError::IterationCapExceeded` — not as a generic action fatal.
+    #[tokio::test(flavor = "current_thread")]
+    async fn execute_stateful_iteration_cap_surfaces_typed_variant() {
+        let registry = Arc::new(ActionRegistry::new());
+        let meta = ActionMetadata::new(action_key!("test.endless"), "Endless", "never breaks");
+        registry.register(
+            meta.clone(),
+            ActionHandler::Stateful(Arc::new(EndlessCountingHandler { meta })),
+        );
+        let rt = make_runtime(registry);
+
+        let result = rt
+            .execute_action("test.endless", serde_json::json!(null), &test_context())
+            .await;
+
+        match result {
+            Err(RuntimeError::IterationCapExceeded {
+                action_key, cap, ..
+            }) => {
+                assert_eq!(action_key.as_str(), "test.endless");
+                assert_eq!(cap, 10_000);
+            },
+            other => panic!("expected RuntimeError::IterationCapExceeded, got {other:?}"),
+        }
     }
 }

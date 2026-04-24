@@ -75,25 +75,6 @@ pub trait StatefulAction: Action {
         state: &mut Self::State,
         ctx: &(impl ActionContext + ?Sized),
     ) -> impl Future<Output = Result<ActionResult<Self::Output>, ActionError>> + Send;
-
-    /// Optional business idempotency key derived from the current state.
-    ///
-    /// When set, the engine appends this to the per-iteration idempotency
-    /// key — external systems (payment gateways, ticketing APIs, ...) can
-    /// dedup on the author's own notion of identity (invoice ID, job ID,
-    /// ...) instead of relying on the synthetic `{exe}:{node}:{iter}:{att}`
-    /// envelope.
-    ///
-    /// Default: `None` — engine uses the iteration counter alone, which is
-    /// sufficient for workflows with no external side effects.
-    ///
-    /// Called by the engine **before** `execute` for every iteration, so it
-    /// sees the state the action is about to read. If the business key
-    /// should reflect post-iteration identity, derive it inside `execute`
-    /// and stash it in the state before returning `Continue`.
-    fn idempotency_key(&self, _state: &Self::State) -> Option<String> {
-        None
-    }
 }
 
 // ── PaginatedAction ─────────────────────────────────────────────────────────
@@ -132,7 +113,7 @@ pub struct PaginationState<C> {
 ///     type Output = Vec<Repo>;
 ///     type Cursor = String;
 ///     fn max_pages(&self) -> u32 { 10 }
-///     async fn fetch_page(&self, input: &Value, cursor: Option<&String>, ctx: &ActionContext)
+///     async fn fetch_page(&self, input: &Value, cursor: Option<&String>, ctx: &(impl ActionContext + ?Sized))
 ///         -> Result<PageResult<Vec<Repo>, String>, ActionError> { todo!() }
 /// }
 /// nebula_action::impl_paginated_action!(ListRepos);
@@ -589,8 +570,7 @@ where
             // version skew between stored checkpoint and current State schema):
             // a second clone only when the first deserialization fails and
             // `migrate_state` is actually consulted.
-            let mut typed_state: A::State = match serde_json::from_value::<A::State>(state.clone())
-            {
+            let mut typed_state: A::State = match serde_json::from_value::<A::State>(state.clone()) {
                 Ok(s) => s,
                 Err(e) => self.action.migrate_state(state.clone()).ok_or_else(|| {
                     ActionError::validation(
@@ -658,17 +638,17 @@ impl<A: Action> fmt::Debug for StatefulActionAdapter<A> {
 
 #[cfg(test)]
 mod tests {
-    use std::sync::Arc;
-
     use nebula_core::DeclaresDependencies;
+    use std::sync::Arc;
 
     use super::*;
     use crate::{
-        ActionRuntimeContext, output::ActionOutput, result::BreakReason,
-        testing::TestContextBuilder,
+        output::ActionOutput,
+        result::BreakReason,
+        testing::{TestActionContext, TestContextBuilder},
     };
 
-    fn make_ctx() -> ActionRuntimeContext {
+    fn make_ctx() -> TestActionContext {
         TestContextBuilder::new().build()
     }
 

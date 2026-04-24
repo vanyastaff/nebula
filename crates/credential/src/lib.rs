@@ -151,11 +151,12 @@ pub use pending_store_memory::InMemoryPendingStore;
 pub use provider::{ExternalProvider, ExternalReference, ProviderError, ProviderKind};
 // Refresh coordination — moved to nebula-engine::credential::refresh (ADR-0030 §3 amendment)
 // Re-exports removed: RefreshAttempt, RefreshCoordinator now live in nebula-engine.
-// Auth schemes — open trait + 13-variant classification + 12 built-in scheme types
+// Auth schemes — open trait + 11-variant classification + 9 built-in scheme types.
+// Pruned 2026-04-24: FederatedAssertion (Plane A), OtpSeed + ChallengeSecret
+// (integration-internal, не projected auth material).
 pub use scheme::{
-    AuthPattern, AuthScheme, Certificate, ChallengeSecret, ConnectionUri, FederatedAssertion,
-    IdentityPassword, InstanceBinding, KeyPair, OAuth2Token, OtpSeed, SecretToken, SharedKey,
-    SigningKey,
+    AuthPattern, AuthScheme, Certificate, ConnectionUri, IdentityPassword, InstanceBinding,
+    KeyPair, OAuth2Token, SecretToken, SharedKey, SigningKey,
 };
 // §12.5 secret-handling primitives — crypto, guard, zeroizing wrappers
 pub use secrets::{

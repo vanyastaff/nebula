@@ -42,6 +42,7 @@ impl LayerLifecycle {
 
 /// Result of a graceful shutdown attempt.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum ShutdownOutcome {
     /// All children completed within grace period.
     Graceful,

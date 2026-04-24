@@ -7,6 +7,7 @@ use std::time::Duration;
 /// Default is [`DropOldest`](Self::DropOldest): emit path is non-blocking;
 /// lagging subscribers receive fewer events (best-effort).
 #[derive(Debug, Clone, Default)]
+#[non_exhaustive]
 pub enum BackPressurePolicy {
     /// Overwrite the oldest unread event for lagging subscribers.
     ///

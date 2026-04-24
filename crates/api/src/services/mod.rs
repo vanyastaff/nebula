@@ -2,9 +2,7 @@
 //!
 //! Business logic layer (вызов портов, оркестрация).
 
-#[cfg(feature = "credential-oauth")]
 pub mod credential;
-#[cfg(feature = "credential-oauth")]
 pub mod oauth;
 pub mod webhook;
 

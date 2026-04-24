@@ -91,6 +91,13 @@ impl CredentialStore for InMemoryStore {
                 data.insert(credential.id.clone(), credential.clone());
                 Ok(credential)
             },
+            // `PutMode` is `#[non_exhaustive]`. Reject unknown modes loudly so
+            // a new semantic (e.g. `CreateIfAbsent`) is not silently treated
+            // as `Overwrite` — the backend stays fail-closed until dispatch
+            // is wired for the new variant.
+            _ => Err(StoreError::Backend(
+                format!("memory store: unsupported PutMode variant `{mode:?}`").into(),
+            )),
         }
     }
 

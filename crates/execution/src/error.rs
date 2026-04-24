@@ -7,6 +7,7 @@ use crate::status::ExecutionStatus;
 
 /// Errors that can occur during workflow execution.
 #[derive(Debug, Error, nebula_error::Classify)]
+#[non_exhaustive]
 pub enum ExecutionError {
     /// A state transition is not valid for the current status.
     #[classify(category = "validation", code = "EXECUTION:INVALID_TRANSITION")]

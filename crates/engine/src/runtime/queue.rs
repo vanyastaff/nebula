@@ -18,6 +18,7 @@ use tokio::{sync::Mutex, time::Instant};
 
 /// Errors returned by queue operations.
 #[derive(Debug, Error)]
+#[non_exhaustive]
 pub enum QueueError {
     /// Task not found (e.g. ack/nack unknown id).
     #[error("{entity} not found: {id}")]
@@ -93,6 +94,7 @@ pub trait TaskQueue: Send + Sync {
 
 /// Outcome of a dequeue attempt.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum DequeueResult {
     /// A task was successfully leased to a worker.
     Item {

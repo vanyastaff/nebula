@@ -67,7 +67,7 @@ pub fn derive_credential(input: TokenStream) -> TokenStream {
 ///
 /// Generates an `impl AuthScheme` that returns the specified
 /// [`AuthPattern`] variant. Types with custom `expires_at()` logic
-/// (e.g., `OAuth2Token`, `FederatedAssertion`) should keep a manual impl.
+/// (e.g., `OAuth2Token`, `Certificate`) should keep a manual impl.
 ///
 /// # Errors
 ///

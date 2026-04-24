@@ -12,6 +12,7 @@ use crate::RuntimeError;
 
 /// Result of pushing an item into a bounded stream buffer.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum PushOutcome {
     /// Item was accepted without eviction.
     Accepted,

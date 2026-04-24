@@ -14,7 +14,7 @@
 //! | [`state`] | Signed OAuth state (CSRF) generation and verification |
 //! | [`http`] | HTTP client for token endpoint requests |
 //!
-//! Feature-gated behind `credential-oauth` during rollout.
+//! Part of `nebula-api` base deps (rollout window closed 2026-04-24).
 
 pub mod flow;
 pub mod http;

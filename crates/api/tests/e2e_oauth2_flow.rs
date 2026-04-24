@@ -1,4 +1,3 @@
-#![cfg(feature = "credential-oauth")]
 // `expose_secret` needs a higher-ranked closure; `|s| s.to_owned()` is required (clippy false
 // positive).
 #![allow(clippy::redundant_closure_for_method_calls)]
@@ -67,6 +66,14 @@ async fn spawn_mock_token_endpoint() -> (String, tokio::task::JoinHandle<()>) {
     (format!("http://{addr}/token"), handle)
 }
 
+// IGNORED 2026-04-24: test exercises engine's OAuth2 refresh path which requires
+// the `rotation` feature on nebula-engine. That feature currently fails to compile
+// due to missing `validation` submodule in nebula-credential::rotation (pre-existing
+// gap — `validation` is referenced by engine/src/credential/rotation.rs:34 but never
+// existed in credential crate after earlier refactor). Previously this test was
+// gated behind `credential-oauth` feature which effectively never ran in CI.
+// Un-ignore when engine's rotation feature compiles end-to-end (separate spec).
+#[ignore = "requires engine rotation feature which currently has broken module graph"]
 #[tokio::test]
 async fn e2e_oauth2_flow_persists_exchanged_credential_state() {
     let (state, _queue) = create_state_with_queue().await;

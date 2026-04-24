@@ -36,7 +36,7 @@ nebula-action = { path = "../action" }
 nebula-engine = { path = "../engine" }
 nebula-plugin = { path = "../plugin" }
 nebula-resilience = { path = "../resilience" }
-nebula-credential = { path = "../credential", optional = true }
+nebula-credential = { path = "../credential" }
 
 tokio = { workspace = true, features = [
   "rt",
@@ -73,11 +73,11 @@ reqwest = { workspace = true, default-features = false, features = [
   "rustls",
   "form",
   "stream",
-], optional = true }
-hmac = { workspace = true, optional = true }
-sha2 = { workspace = true, optional = true }
+] }
+hmac = { workspace = true }
+sha2 = { workspace = true }
 base64 = { workspace = true }
-zeroize = { version = "1.8.2", features = ["zeroize_derive"], optional = true }
+zeroize = { version = "1.8.2", features = ["zeroize_derive"] }
 async-trait = { workspace = true }
 tracing-subscriber = { workspace = true, features = ["env-filter", "fmt"] }
 
@@ -115,8 +115,9 @@ default = []
 # enable this in production builds — it exposes a constructor that
 # bypasses the JwtSecret validation gate.
 test-util = []
-# OAuth ceremony surface (ADR-0031 rollout gate).
-credential-oauth = ["dep:nebula-credential", "dep:reqwest", "dep:hmac", "dep:sha2", "dep:zeroize"]
+# Note: `credential-oauth` rollout feature gate deleted 2026-04-24 —
+# OAuth ceremony deps (nebula-credential, reqwest, hmac, sha2, zeroize)
+# are now unconditional base deps per ADR-0031 §6 (rollout window closed).
 
 [lints]
 workspace = true

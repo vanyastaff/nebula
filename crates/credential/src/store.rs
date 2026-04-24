@@ -11,6 +11,7 @@ use serde_json::Value;
 
 /// How to handle conflicts on put.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum PutMode {
     /// Fail if credential already exists.
     CreateOnly,

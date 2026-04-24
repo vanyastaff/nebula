@@ -27,8 +27,11 @@ use nebula_workflow::{NodeDefinition, Version, WorkflowConfig, WorkflowDefinitio
 // Action handler that acquires a resource
 // ---------------------------------------------------------------------------
 
-/// An action handler that calls `ctx.resource("mock")`, downcasts to a
-/// `ResourceHandle`, reads the inner `String`, and returns it as output.
+/// Placeholder handler used by the smoke tests below — returns a fixed
+/// output without actually consuming a resource. The test verifies that
+/// attaching a resource manager does not break end-to-end dispatch; it
+/// does not exercise resource acquisition (see [`ResourceProbeHandler`]
+/// for that).
 struct ResourceConsumerHandler {
     meta: ActionMetadata,
 }
@@ -49,10 +52,54 @@ impl StatelessAction for ResourceConsumerHandler {
         _input: Self::Input,
         _ctx: &(impl nebula_action::ActionContext + ?Sized),
     ) -> Result<ActionResult<Self::Output>, ActionError> {
-        // TODO: Resource acquisition via context is not yet wired up.
-        // For now, return a placeholder to keep the test compiling.
+        // Smoke-path action: does NOT call ctx.resource(). The
+        // attached-manager tests (below) verify that engine dispatch
+        // still works with a resource manager wired in; a parallel
+        // handler (`ResourceProbeHandler`) exercises the actual
+        // acquisition path.
         Ok(ActionResult::success(
             serde_json::json!({ "resource_value": "mock-instance" }),
+        ))
+    }
+}
+
+/// Handler that actually acquires a resource through the
+/// [`ActionContext`]. Used by the no-manager failure test to pin the
+/// contract that `ctx.resource(..)` returns an error when the engine
+/// was not wired with a resource manager.
+struct ResourceProbeHandler {
+    meta: ActionMetadata,
+}
+
+impl DeclaresDependencies for ResourceProbeHandler {}
+impl Action for ResourceProbeHandler {
+    fn metadata(&self) -> &ActionMetadata {
+        &self.meta
+    }
+}
+
+impl StatelessAction for ResourceProbeHandler {
+    type Input = serde_json::Value;
+    type Output = serde_json::Value;
+
+    async fn execute(
+        &self,
+        _input: Self::Input,
+        ctx: &(impl nebula_action::ActionContext + ?Sized),
+    ) -> Result<ActionResult<Self::Output>, ActionError> {
+        // Let ctx.resource() return its natural error when the accessor
+        // is the no-op default (no manager attached) — the engine then
+        // translates the action failure into a failed workflow run.
+        use nebula_core::ResourceKey;
+        let key = ResourceKey::new("mock")
+            .map_err(|e| ActionError::fatal(format!("invalid key: {e}")))?;
+        let _instance = ctx
+            .resources()
+            .acquire_any(&key)
+            .await
+            .map_err(ActionError::from)?;
+        Ok(ActionResult::success(
+            serde_json::json!({ "resource_value": "acquired" }),
         ))
     }
 }
@@ -194,15 +241,15 @@ async fn full_resource_lifecycle_with_shutdown() {
 /// Verify that `ctx.resource()` returns a fatal error when no resource
 /// manager is attached to the engine.
 ///
-/// TODO: Currently ignored because resource acquisition via context is not
-/// yet wired up — the handler returns a hardcoded success. Re-enable once
-/// `ActionContext` supports `ctx.resource()`.
+/// Uses [`ResourceProbeHandler`] (unlike the smoke tests above) so the
+/// handler actually calls `ctx.resources().acquire_any(..)` — exercising
+/// the engine's default [`NoopResourceAccessor`] fallback and surfacing
+/// its fail-closed error as a failed workflow run.
 #[tokio::test]
-#[ignore = "resource acquisition via context not yet wired up"]
 async fn action_resource_fails_without_manager() {
     let registry = Arc::new(ActionRegistry::new());
-    registry.register_stateless(ResourceConsumerHandler {
-        meta: meta(action_key!("resource-consumer")),
+    registry.register_stateless(ResourceProbeHandler {
+        meta: meta(action_key!("resource-probe")),
     });
 
     let executor: ActionExecutor =
@@ -217,11 +264,12 @@ async fn action_resource_fails_without_manager() {
     ));
 
     let engine = WorkflowEngine::new(runtime, metrics);
-    // No .with_resource_manager() — intentionally omitted
+    // No .with_resource_manager() — intentionally omitted so the engine
+    // falls back to the no-op accessor and the probe handler fails.
 
     let node = node_key!("test");
     let wf = make_workflow(vec![
-        NodeDefinition::new(node, "A", "resource-consumer").unwrap(),
+        NodeDefinition::new(node, "A", "resource-probe").unwrap(),
     ]);
 
     let result = engine

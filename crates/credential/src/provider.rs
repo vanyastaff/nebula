@@ -71,6 +71,7 @@ pub struct ExternalReference {
 
 /// Error returned by [`ExternalProvider::resolve`].
 #[derive(Debug, thiserror::Error)]
+#[non_exhaustive]
 pub enum ProviderError {
     /// Secret not found at the given path/version/field.
     #[error("secret not found: {path}")]

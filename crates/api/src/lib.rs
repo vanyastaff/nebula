@@ -33,7 +33,7 @@
 //! for workflows talking to *external* systems):
 //!
 //! - **`middleware::auth`** — **Plane A**: JWT bearer and `X-API-Key` for the Nebula API itself.
-//! - **`credential`** (feature `credential-oauth`) — **Plane B infrastructure**: OAuth2 flow
+//! - **`credential`** — **Plane B infrastructure**: OAuth2 flow
 //!   helpers (PKCE, signed state, token exchange) and input validators for integration credentials.
 //!   Located under [`services::oauth`] with validators in [`extractors::credential`]. HTTP handlers
 //!   live in [`handlers::credential`]; route wiring in [`routes::workspace`] and

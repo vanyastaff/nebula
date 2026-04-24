@@ -9,7 +9,12 @@ use std::{any::Any, fmt, future::Future, pin::Pin};
 
 use serde_json::Value;
 
-use crate::{action::Action, context::ActionContext, error::ActionError, metadata::ActionMetadata};
+use crate::{
+    action::Action,
+    context::ActionContext,
+    error::ActionError,
+    metadata::ActionMetadata,
+};
 
 // ── Core trait ──────────────────────────────────────────────────────────────
 
@@ -48,6 +53,16 @@ pub trait ResourceAction: Action {
 
 // ── Handler trait ───────────────────────────────────────────────────────────
 
+/// Type alias for the dyn-safe future returned by
+/// [`ResourceHandler::configure`] — a boxed `Box<dyn Any + Send + Sync>`
+/// carrying the configured resource instance.
+pub type ResourceConfigureFuture<'a> =
+    Pin<Box<dyn Future<Output = Result<Box<dyn Any + Send + Sync>, ActionError>> + Send + 'a>>;
+
+/// Type alias for the dyn-safe future returned by [`ResourceHandler::cleanup`].
+pub type ResourceCleanupFuture<'a> =
+    Pin<Box<dyn Future<Output = Result<(), ActionError>> + Send + 'a>>;
+
 /// Resource handler — configure/cleanup lifecycle for graph-scoped resources.
 ///
 /// The engine runs `configure` before downstream nodes; the resulting instance
@@ -65,16 +80,11 @@ pub trait ResourceHandler: Send + Sync {
     /// # Errors
     ///
     /// Returns [`ActionError`] if the resource cannot be configured.
-    #[allow(
-        clippy::type_complexity,
-        reason = "manual lifetime expansion of `async fn` — required for dyn-safety until \
-                  trait async-fn-in-dyn is widely available"
-    )]
     fn configure<'life0, 'life1, 'a>(
         &'life0 self,
         config: Value,
         ctx: &'life1 dyn ActionContext,
-    ) -> Pin<Box<dyn Future<Output = Result<Box<dyn Any + Send + Sync>, ActionError>> + Send + 'a>>
+    ) -> ResourceConfigureFuture<'a>
     where
         Self: 'a,
         'life0: 'a,
@@ -89,7 +99,7 @@ pub trait ResourceHandler: Send + Sync {
         &'life0 self,
         instance: Box<dyn Any + Send + Sync>,
         ctx: &'life1 dyn ActionContext,
-    ) -> Pin<Box<dyn Future<Output = Result<(), ActionError>> + Send + 'a>>
+    ) -> ResourceCleanupFuture<'a>
     where
         Self: 'a,
         'life0: 'a,
@@ -207,10 +217,9 @@ impl<A: Action> fmt::Debug for ResourceActionAdapter<A> {
 mod tests {
     use std::sync::Arc;
 
-    use nebula_core::DeclaresDependencies;
-
     use super::*;
-    use crate::{ActionRuntimeContext, testing::TestContextBuilder};
+    use nebula_core::DeclaresDependencies;
+    use crate::testing::{TestActionContext, TestContextBuilder};
 
     struct MockResourceAction {
         meta: ActionMetadata,
@@ -255,7 +264,7 @@ mod tests {
         }
     }
 
-    fn make_ctx() -> ActionRuntimeContext {
+    fn make_ctx() -> TestActionContext {
         TestContextBuilder::new().build()
     }
 

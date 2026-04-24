@@ -50,6 +50,7 @@
 use std::{
     fmt,
     future::Future,
+    pin::Pin,
     sync::{
         Arc,
         atomic::{AtomicU32, Ordering},
@@ -57,7 +58,6 @@ use std::{
     time::{Duration, SystemTime},
 };
 
-use async_trait::async_trait;
 use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64_STANDARD};
 use bytes::Bytes;
 use hmac::{Hmac, KeyInit, Mac};
@@ -557,11 +557,11 @@ impl WebhookResponse {
 /// impl WebhookAction for GitHubWebhook {
 ///     type State = WebhookReg;
 ///
-///     async fn on_activate(&self, ctx: &TriggerContext) -> Result<WebhookReg, ActionError> {
+///     async fn on_activate(&self, ctx: &(impl TriggerContext + ?Sized)) -> Result<WebhookReg, ActionError> {
 ///         Ok(WebhookReg { hook_id: register(ctx).await? })
 ///     }
 ///
-///     async fn handle_request(&self, req: &WebhookRequest, _state: &Self::State, _ctx: &TriggerContext)
+///     async fn handle_request(&self, req: &WebhookRequest, _state: &Self::State, _ctx: &(impl TriggerContext + ?Sized))
 ///         -> Result<WebhookResponse, ActionError> {
 ///         let outcome = verify_hmac_sha256(req, &self.secret, "X-Hub-Signature-256")?;
 ///         if !outcome.is_valid() {
@@ -570,7 +570,7 @@ impl WebhookResponse {
 ///         Ok(WebhookResponse::accept(TriggerEventOutcome::emit(req.body_json()?)))
 ///     }
 ///
-///     async fn on_deactivate(&self, state: WebhookReg, _ctx: &TriggerContext) -> Result<(), ActionError> {
+///     async fn on_deactivate(&self, state: WebhookReg, _ctx: &(impl TriggerContext + ?Sized)) -> Result<(), ActionError> {
 ///         delete_hook(&state.hook_id).await
 ///     }
 /// }
@@ -588,10 +588,6 @@ pub trait WebhookAction: Action + Send + Sync + 'static {
     /// Register webhook with external service. Returns state to persist.
     ///
     /// **Required** — no default implementation.
-    ///
-    /// The supplied context carries a [`HasWebhookEndpoint`] capability in
-    /// addition to the base [`TriggerContext`] — read the public URL via
-    /// `ctx.webhook_endpoint()` when registering with the upstream provider.
     ///
     /// # Errors
     ///
@@ -956,10 +952,10 @@ pub enum SignatureScheme {
 /// # Example
 ///
 /// ```rust,ignore
-/// async fn on_activate(&self, ctx: &TriggerContext)
+/// async fn on_activate(&self, ctx: &(impl TriggerContext + ?Sized + HasWebhookEndpoint))
 ///     -> Result<Self::State, ActionError>
 /// {
-///     let endpoint = ctx.webhook.as_ref().ok_or_else(|| {
+///     let endpoint = ctx.webhook_endpoint().ok_or_else(|| {
 ///         ActionError::fatal("webhook trigger activated without endpoint provider")
 ///     })?;
 ///     let hook_id = github_api::create_hook(
@@ -1008,7 +1004,7 @@ pub trait WebhookEndpointProvider: Send + Sync + fmt::Debug {
 /// (via RAII guard) on completion. `stop()` spins briefly if the
 /// counter is non-zero.
 ///
-/// Created automatically by `nebula_engine::ActionRegistry::register_webhook`.
+/// Created automatically by `nebula_runtime::ActionRegistry::register_webhook`.
 pub struct WebhookTriggerAdapter<A: WebhookAction> {
     action: A,
     /// Cached webhook-config read once from the wrapped action at
@@ -1075,7 +1071,6 @@ impl Drop for InFlightGuard {
     }
 }
 
-#[async_trait]
 impl<A> TriggerHandler for WebhookTriggerAdapter<A>
 where
     A: WebhookAction + Send + Sync + 'static,
@@ -1085,7 +1080,16 @@ where
         self.action.metadata()
     }
 
-    async fn start(&self, ctx: &dyn TriggerContext) -> Result<(), ActionError> {
+    fn start<'life0, 'life1, 'a>(
+        &'life0 self,
+        ctx: &'life1 dyn TriggerContext,
+    ) -> Pin<Box<dyn Future<Output = Result<(), ActionError>> + Send + 'a>>
+    where
+        Self: 'a,
+        'life0: 'a,
+        'life1: 'a,
+    {
+        Box::pin(async move {
         // Reject double-start: previous state must be stopped first.
         // Silently overwriting would leak external webhook registrations
         // (GitHub/Slack/Stripe) — the old hook stays live and stop() only
@@ -1128,9 +1132,19 @@ where
             ));
         }
         Ok(())
+        })
     }
 
-    async fn stop(&self, ctx: &dyn TriggerContext) -> Result<(), ActionError> {
+    fn stop<'life0, 'life1, 'a>(
+        &'life0 self,
+        ctx: &'life1 dyn TriggerContext,
+    ) -> Pin<Box<dyn Future<Output = Result<(), ActionError>> + Send + 'a>>
+    where
+        Self: 'a,
+        'life0: 'a,
+        'life1: 'a,
+    {
+        Box::pin(async move {
         let stored = self.state.write().take();
         match stored {
             Some(arc_state) => {
@@ -1163,6 +1177,7 @@ where
             },
             None => Ok(()),
         }
+        })
     }
 
     fn accepts_events(&self) -> bool {
@@ -1190,11 +1205,17 @@ where
     /// for the counter to reach zero before calling `on_deactivate`,
     /// preventing the state from being destroyed while a request is
     /// still being handled.
-    async fn handle_event(
-        &self,
+    fn handle_event<'life0, 'life1, 'a>(
+        &'life0 self,
         event: TriggerEvent,
-        ctx: &dyn TriggerContext,
-    ) -> Result<TriggerEventOutcome, ActionError> {
+        ctx: &'life1 dyn TriggerContext,
+    ) -> Pin<Box<dyn Future<Output = Result<TriggerEventOutcome, ActionError>> + Send + 'a>>
+    where
+        Self: 'a,
+        'life0: 'a,
+        'life1: 'a,
+    {
+        Box::pin(async move {
         let request = match event.downcast::<WebhookRequest>() {
             Ok((_id, _received_at, req)) => req,
             Err(mismatched) => {
@@ -1293,6 +1314,7 @@ where
         }
 
         Ok(outcome)
+        })
     }
 }
 

@@ -159,6 +159,7 @@ pub trait ResourceLike {
 /// validation code. The overlap is intentional — `DependencyError` is
 /// converted to `CoreError` at the API boundary via `From` impl.
 #[derive(Debug, thiserror::Error)]
+#[non_exhaustive]
 pub enum DependencyError {
     /// A required dependency was not registered.
     #[error("missing dependency: `{required_by}` requires `{name}`")]

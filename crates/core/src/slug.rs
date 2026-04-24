@@ -4,6 +4,7 @@ use serde::{Deserialize, Serialize};
 
 /// The kind of entity a slug identifies, which determines length constraints.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[non_exhaustive]
 pub enum SlugKind {
     Org,            // 3–39 chars
     Workspace,      // 1–50 chars

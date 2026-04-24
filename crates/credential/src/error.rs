@@ -83,6 +83,7 @@ pub enum CredentialAccessError {
 /// Wraps specific error categories (storage, cryptographic, validation)
 /// with contextual information for debugging and error handling.
 #[derive(Debug, Error)]
+#[non_exhaustive]
 pub enum CredentialError {
     /// Cryptographic error
     #[error("Cryptographic error: {source}")]
@@ -168,6 +169,7 @@ pub enum CredentialError {
 ///
 /// Errors from encryption, decryption, and key derivation operations.
 #[derive(Debug, Error, nebula_error::Classify)]
+#[non_exhaustive]
 pub enum CryptoError {
     /// Decryption failed - invalid key or corrupted data
     #[classify(category = "internal", code = "CREDENTIAL:CRYPTO_DECRYPT")]
@@ -200,6 +202,7 @@ pub enum CryptoError {
 /// Errors from input validation including invalid credential IDs
 /// and malformed credential data.
 #[derive(Debug, Error, nebula_error::Classify)]
+#[non_exhaustive]
 pub enum ValidationError {
     /// Credential ID cannot be empty
     #[classify(category = "validation", code = "CREDENTIAL:EMPTY_ID")]

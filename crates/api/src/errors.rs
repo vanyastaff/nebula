@@ -282,6 +282,11 @@ fn workflow_error_pointer(err: &nebula_workflow::WorkflowError) -> String {
         | WorkflowError::UnsupportedSchema { .. }
         | WorkflowError::InvalidOwnerId
         | WorkflowError::GraphError(_) => String::new(), // RFC 6901 root pointer
+
+        // `WorkflowError` is `#[non_exhaustive]`. Future variants without an
+        // API-side mapping fall back to the root pointer rather than failing
+        // to compile the API layer on every validator extension.
+        _ => String::new(),
     }
 }
 

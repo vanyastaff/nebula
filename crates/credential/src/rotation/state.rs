@@ -17,6 +17,7 @@ use super::error::{RotationError, RotationResult};
 /// ```
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
+#[non_exhaustive]
 pub enum RotationState {
     /// Queued for rotation but not yet started
     Pending,
