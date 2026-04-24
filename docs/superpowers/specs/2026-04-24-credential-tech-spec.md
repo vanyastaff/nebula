@@ -2345,6 +2345,8 @@ pub struct CredentialMetadata {
     pub rotation_policy: RotationPolicy,
     pub field_hints: Vec<FieldHint>,           // per-input-field UX hints
     pub capabilities_enabled: Capabilities,    // which of INTERACTIVE/REFRESHABLE/... are live
+    pub service_key: Option<ServiceKey>,       // for ServiceCapability slot matching (§9.4); None for service-agnostic credentials
+    pub provider_id: Option<&'static str>,     // §15.1 decision — registry-backed OAuth provider; None for non-OAuth / self-issued credentials
 }
 
 impl CredentialMetadata {
@@ -2400,8 +2402,8 @@ Action declares capability requirements via field types (`CredentialRef<dyn XPha
 
 **Matching pipeline:**
 
-1. **Compile-time slot metadata.** `#[action]` macro emits `SlotBinding` per credential field (§3.4 step 2), capturing `capability: Capability` + optional `service: ServiceKey`.
-2. **Runtime filter.** When user opens the action's credential picker, `CredentialRegistry::iter_compatible(slot_binding)` returns the subset of registered credentials satisfying the slot's bound:
+1. **Compile-time slot metadata.** `#[action]` macro emits `SlotBinding` per credential field (§3.4 step 2), with `slot_type` as one of three `SlotType` variants — `Concrete { type_id }` (Pattern 1), `ServiceCapability { capability, service }` (Pattern 2), or `CapabilityOnly { capability }` (Pattern 3).
+2. **Runtime filter.** When user opens the action's credential picker, `CredentialRegistry::iter_compatible(slot_binding)` returns the subset of registered credentials satisfying the slot's bound, dispatched per variant:
 
 ```rust
 impl CredentialRegistry {
@@ -2412,10 +2414,15 @@ impl CredentialRegistry {
         self.entries
             .values()
             .map(|boxed| &**boxed)
-            .filter(move |cred| cred.metadata().capabilities_enabled
-                                     .contains(binding.capability)
-                  && binding.service.map_or(true, |s|
-                         cred.metadata().service_key == Some(s)))
+            .filter(move |cred| match &binding.slot_type {
+                SlotType::Concrete { type_id } =>
+                    cred.type_id_marker() == *type_id,
+                SlotType::ServiceCapability { capability, service } =>
+                    cred.metadata().capabilities_enabled.contains(*capability)
+                        && cred.metadata().service_key == Some(*service),
+                SlotType::CapabilityOnly { capability } =>
+                    cred.metadata().capabilities_enabled.contains(*capability),
+            })
     }
 }
 ```
@@ -2850,6 +2857,284 @@ New credential types and new capability markers roll out gradually via cargo fea
 
 **Fast-track for critical fixes:** security-related additions (new capability flag to encode a security invariant) can skip phases with security-lead approval. Documented in CHANGELOG with security-advisory marker.
 
+## §14 Meta
+
+Maps 5 `user-meta-*` register rows. Largely pointers + closure since meta concerns are mostly OUT (sub-spec or product-policy).
+
+### §14.1 Threat model
+
+**OUT — Strategy §6.5 queue #9.** `docs/threat-model/credential.md` sub-spec, owned by security-lead, quarterly review cadence per register `user-meta-threat-model`. Tech Spec consumers reference the threat model for design-level threat enumeration; specific mitigations cross-referenced from individual §6 security sections.
+
+### §14.2 Compliance — SOC 2 / ISO 27001 / HIPAA
+
+**Product-policy** per register `user-meta-compliance`. Anthropic-managed for cloud mode (§11.3); operator self-certifies for self-hosted (§11.2); not applicable for desktop (single-user).
+
+Compliance mapping doc (separate, product-owned) maps Tech Spec sections to specific compliance controls:
+
+- §6.1 encryption-at-rest → SOC 2 CC6.1 / ISO 27001 A.10.1
+- §6.5 audit hash-chain → SOC 2 CC4.1 / ISO 27001 A.12.4
+- §6.7 zeroization → ISO 27001 A.10.1
+- §11.3 multi-tenant isolation → SOC 2 CC6.1 / ISO 27001 A.9.4
+
+Tech Spec does not contain the compliance mapping (out of scope); references the compliance doc.
+
+### §14.3 Documentation plan
+
+Per register `user-meta-documentation`. Implementation-phase work — ongoing as each piece lands.
+
+- **ADR index refresh.** ADR-0031 (api-owns-oauth-flow) is a candidate for supersede if §10 OAuth flow consolidation moves HTTP ceremony to engine per §16.1 phase П7. If superseded, new ADR cites Tech Spec §10 as canonical source.
+- **HLD (high-level design).** Credential subsystem section in product HLD references Strategy §2/§3 + Tech Spec §2/§3/§5 for engineering audience.
+- **Runbooks.** Covered by §6.10 + §14.4 OUT pointers — separate sub-specs.
+- **Per-piece doc updates.** Land with each implementation phase per §16.5 register maintenance rule.
+
+### §14.4 Incident response
+
+**OUT — Strategy §6.5 queue #10.** Three runbook sub-specs:
+
+- Credential leak runbook
+- Master key compromise runbook
+- IdP outage runbook
+
+Tech Spec describes detection mechanisms (failed-auth spike monitoring per §7.4 circuit breaker, anomaly detection events per §7.9, audit chain break detection per §6.5); specific response procedures live in runbooks. Owner: security-lead.
+
+### §14.5 Change management
+
+Per register `user-meta-change-management`. Process for credential subsystem changes:
+
+- Any `Credential` trait change → ADR (per §13.3 semver + Strategy §3.6 trait-heaviness discipline).
+- Any storage schema change → migration script + dialect parity CI gate (§5.4).
+- Any cryptographic primitive change → security-lead review + ADR.
+- Any deployment-mode behavior change → §11.4 feature matrix update + Tech Spec amendment.
+
+CI enforcement:
+
+- `cargo-public-api` for ABI stable surface (§13.4).
+- Migration parity CI script (§5.4).
+- Secret-scanner pre-commit + `detect-secrets` CI gate (§8.10).
+
+Tech Spec evolution itself: per §0 freeze policy. Each checkpoint review. Supersede via new Tech Spec version (major bump) or ADR (for trait / canonical-form changes).
+
+## §15 Open item decisions
+
+Resolves two `open` register rows surfaced through Strategy + Tech Spec drafting. Rationale-driven decisions, not coin flips.
+
+### §15.1 `critique-c9` — `PROVIDER_ID` for non-OAuth schemes
+
+**Open question.** How does the credential subsystem encode the `provider_id` concept (registry-backed OAuth provider) for non-OAuth credential types where the concept does not apply (e.g., AppPassword self-issued, API keys without provider relationship, mTLS certificates)?
+
+**Three candidates considered:**
+
+**(a) `const PROVIDER_ID: Option<&'static str>` on the `Credential` trait.** Default `None`; OAuth credentials override.
+
+```rust
+pub trait Credential: ... {
+    const PROVIDER_ID: Option<&'static str> = None;
+    // ...
+}
+```
+
+Pros: simple, single trait. Cons: encodes "missing concept" as `None` — readers cannot tell whether `None` is intentional ("this credential type has no registry-backed provider") or oversight ("author forgot to set it"). Pollutes the lean `Credential` trait surface (Strategy §3.6 trait-heaviness discipline) with a metadata concern.
+
+**(b) Scheme-conditional trait extension.**
+
+```rust
+pub trait HasProvider: Credential {
+    const PROVIDER_ID: &'static str;
+}
+
+impl HasProvider for SlackOAuth2 { const PROVIDER_ID: &'static str = "slack"; }
+// Non-OAuth credentials simply don't impl HasProvider.
+```
+
+Pros: type-level distinction — credentials either have `PROVIDER_ID` or they don't. Cons: forces dispatch-at-site complexity (every site that uses `provider_id` must handle the absence case via specialization or runtime check); breaks `Credential` uniformity; heavy infrastructure for one concern that registries already track.
+
+**(c) Move `provider_id` to `CredentialMetadata` as optional field.**
+
+```rust
+pub struct CredentialMetadata {
+    // ... other metadata fields ...
+    pub provider_id: Option<&'static str>,
+    // None = no registry-backed provider concept (self-issued / non-OAuth).
+    // Some(id) = look up id in provider_registry per §5.3 / §9.2.
+}
+```
+
+Pros:
+- `Credential` trait stays lean (Strategy §3.6 discipline preserved).
+- `provider_id` IS metadata semantically — it describes "this credential has a registry-backed provider relationship". Non-OAuth credentials have no such relationship; absence of the field is the honest expression.
+- Registry interaction (§5.3 `provider_registry` table + §5.5 `ProviderRegistryRepo` consumer) is metadata-driven anyway. Moving `provider_id` to `CredentialMetadata` aligns architecture with how registry is consumed.
+- Per-tenant metadata overrides (§9.2 `with_override`) extend naturally to `provider_id` (e.g., enterprise tenant uses Microsoft AD-tenant-specific provider variant).
+- Self-documenting at consumer sites: `metadata.provider_id.is_some()` reads as "credential has a registered provider" without ambiguity.
+
+Cons: migration effort if existing `PROVIDER_ID` references existed (none in current production — this is greenfield post-redesign).
+
+**Decision: (c).** `provider_id: Option<&'static str>` lives on `CredentialMetadata`, not on `Credential` trait.
+
+**Implementation impact:**
+
+- `CredentialMetadata` (§9.2) gains `pub provider_id: Option<&'static str>`. (Already added in §9.2 per this decision.)
+- OAuth2 credential types' `CredentialMetadataSource::metadata()` impl sets `provider_id: Some("slack")` / `Some("google")` / `Some("microsoft")` / etc.
+- Non-OAuth credentials (`ApiKeyCredential`, `BasicAuthCredential`, mTLS, signing-key creds) leave `provider_id: None` (struct field default).
+- Engine resolve path: `if let Some(id) = metadata.provider_id { let spec = registry.get_provider(id)?; ... }` — natural `Option` chain. Skipped entirely when `None`.
+- Audit + observability traces tag `credential.provider_id` only when `Some`; absent for non-OAuth credentials.
+
+**Rationale summary.** `provider_id` is a metadata concern, not a behavior concern. Behavior trait (`Credential`) stays minimal; metadata trait (`CredentialMetadataSource`) carries descriptive fields. This is the same separation principle that motivated `CredentialMetadataSource` as a companion trait (§2.8).
+
+Register row `critique-c9` flips from `open` → `decided` with pointer to this Tech Spec §15.1.
+
+### §15.2 `arch-authscheme-clone-zeroize` — `AuthScheme: Clone` bound
+
+**Open question.** The `AuthScheme: Clone` bound (Tech Spec §2.2) creates zeroization concerns for sensitive material — every `clone()` duplicates plaintext in heap, multiplying the attack surface for memory disclosure. mTLS certs, signing keys, etc. could leak via accidental clones. How should the `Clone` bound be reconciled with zeroization discipline?
+
+**Three candidates considered:**
+
+**(a) Relax `Clone` on the `AuthScheme` trait. Schemes opt in to `Clone` individually.**
+
+```rust
+pub trait AuthScheme: Send + Sync + 'static {}  // no Clone
+
+#[derive(Clone)]
+pub struct BearerScheme { /* ... */ }
+impl AuthScheme for BearerScheme {}
+// → BearerScheme is cloneable (token already in heap, refresh produces fresh).
+
+pub struct TlsIdentityScheme { /* cert + key */ }   // no Clone derive
+impl AuthScheme for TlsIdentityScheme {}
+// → TlsIdentityScheme cannot be cloned at type level.
+```
+
+Pros:
+- Rust idiom: don't add bounds you don't need at the trait level.
+- Type-level enforcement: mTLS / signing schemes literally cannot be cloned — discipline becomes a compile-time guarantee enforced by the borrow checker.
+- Zeroization story strengthens: long-lived sensitive material (cert + key, signing key, HSM-bound material) opts out of `Clone` → consumers must use borrowed access patterns → zeroize-on-drop fires deterministically at the Scheme's lifetime end.
+- Schemes with safe-to-clone material (`BearerScheme` token, `BasicScheme` username/password — already heap-allocated post-decrypt) explicitly derive `Clone` per the implementor's judgement.
+
+Cons:
+- Existing code paths assuming `Scheme: Clone` need migration. (Greenfield post-redesign — minimal existing surface.)
+- Some patterns become harder: capturing a Scheme in an async closure must use `Arc<S>` or borrow.
+
+**(b) `CredentialGuard<S>` accessors instead of clones.**
+
+```rust
+pub struct CredentialGuard<S: AuthScheme> { scheme: S, /* RAII state */ }
+
+impl<S> CredentialGuard<S> {
+    pub fn with<R>(&self, f: impl FnOnce(&S) -> R) -> R { f(&self.scheme) }
+}
+
+// Consumer never holds a Scheme directly — always goes through .with(...).
+```
+
+Pros: preserves `Clone` bound semantically (callers can still "use" the scheme). RAII guard zeroizes deterministically.
+
+Cons: every consumer site must wrap in `guard.with(|s| ...)`. Significantly more API surface. Doesn't actually prevent clones — just wraps them; mTLS / signing schemes still _could_ be cloned within the `with` closure if `S: Clone`. The zeroization concern isn't structurally addressed; only physically discouraged.
+
+**(c) Hybrid `clone_scheme()` returning `impl ZeroizeOnDrop + Deref<Target = Self>`.**
+
+```rust
+pub trait AuthScheme: Send + Sync + 'static {
+    fn clone_scheme(&self) -> impl ZeroizeOnDrop + Deref<Target = Self>;
+}
+```
+
+Pros: keeps `Clone`-like semantics, RAII guarantee on result.
+
+Cons: `impl Trait` in trait methods (RPITIT, stable since Rust 1.75) but with restrictions on `dyn`-compat — `dyn AuthScheme` would be problematic. Lifetime gymnastics for `Deref<Target = Self>` because the returned type cannot vary uniformly across implementors. Complexity vs benefit is unclear; the underlying zeroization concern still depends on the implementor's choice rather than being structural.
+
+**Decision: (a).** Relax `Clone` on `AuthScheme` trait. Schemes opt in to `Clone` per type.
+
+**Rationale summary.** This aligns with Rust idiom (don't force marker traits unless every implementor needs them) and converts zeroization from a discipline-and-review problem into a compile-time invariant. `BearerScheme` clones safely (post-decrypt token in heap, refresh produces fresh tokens routinely); `TlsIdentityScheme` does not (cert + key must not be duplicated). The compiler enforces the distinction. Reviewers no longer inspect every Scheme use site for accidental clones.
+
+The trade-off — some patterns require `Arc<S>` or borrowed access for non-cloneable schemes — is a feature, not a bug. It forces conscious decisions about Scheme lifetime + sharing.
+
+**Implementation impact:**
+
+- `AuthScheme` trait (§2.2): drop `Clone` from supertrait bounds. New form: `pub trait AuthScheme: Send + Sync + 'static {}`.
+- `BearerScheme`, `BasicScheme`, `SigV4Scheme`: keep `#[derive(Clone)]` — these are cloneable (heap material, refresh-driven rotation tolerates duplication).
+- `TlsIdentityScheme`: drop `#[derive(Clone)]`. Cert + key never cloned; consumer uses `&TlsIdentityScheme` via borrowed access.
+- Signing schemes (HMAC keys, RSA private keys for JWT signing): drop `#[derive(Clone)]`. Sign operations take `&self`.
+- Tests use factory functions to produce fresh instances rather than cloning fixtures.
+- `Resource::create<C>` signature accepts `&<C as Credential>::Scheme` rather than `<C as Credential>::Scheme` — borrowing, not consuming. Connection-bound resources (Postgres pool) extract any state needed at creation, not retaining the Scheme reference.
+
+**Migration plan** (per phase П8 in §16.1):
+
+1. Drop `Clone` from `AuthScheme` trait declaration in `nebula-credential`.
+2. Compiler errors surface at every consumer site that previously assumed `Scheme: Clone`.
+3. Each site refactored to either: borrow Scheme via `&S`, or wrap in `Arc<S>` for shared ownership, or factory-produce a fresh instance.
+4. `BearerScheme` / `BasicScheme` / `SigV4Scheme` retain `#[derive(Clone)]` — no changes at consumer site for those.
+5. `TlsIdentityScheme` / signing schemes: existing code that cloned now requires updates per step 3.
+
+Register row `arch-authscheme-clone-zeroize` flips from `open` → `decided` with pointer to this Tech Spec §15.2.
+
+## §16 Implementation handoff
+
+Implementation plan outline. Detailed phase plans land in `docs/superpowers/plans/<NNNN>-<phase>.md` per phase as implementation begins. Phase boundaries based on dependency ordering + landing-gate clarity.
+
+### §16.1 Phase list
+
+| Phase | Scope | Dependencies |
+|---|---|---|
+| **П1** | Trait shape scaffolding — `nebula-credential` trait + `mod sealed_caps` + phantom-shim canonical form per ADR-0035 + `nebula-credential-builtin` crate scaffold | None (foundational) |
+| **П2** | Refresh coordination L2 — `RefreshClaimRepo` impl + [`draft-f17`](2026-04-24-credential-refresh-coordination.md) sub-spec landing + L1+L2 two-tier integration | П1 |
+| **П3** | Builtin credential types — Slack, Anthropic, Bitbucket triad (OAuth2 + PAT + AppPassword), AwsSigV4 + STS, Postgres connection, mTLS, Salesforce JWT | П1 |
+| **П4** | ProviderRegistry — sub-spec `draft-f18/f19/f20` landing + admin API + URL template binding | П3 + Tech Spec §11 frozen |
+| **П5** | Multi-mode polish — desktop / self-hosted / cloud feature gating + cargo features per §11.5 | П1 + П3 |
+| **П6** | Audit + degraded mode — fail-closed write sequence + degraded read-only + fallback file sink + drain on recovery | П1 (storage layer wraps) |
+| **П7** | OAuth flow consolidation — engine HTTP ceremony + ADR-0031 supersede if needed | П3 + Tech Spec §10 frozen |
+| **П8** | §15 decisions implementation — `provider_id` move to `CredentialMetadata` + `AuthScheme: Clone` relax + per-scheme `Clone` derive cleanup + consumer site migration | П1 + П3 |
+| **П9** | Migration v1→v2 — `draft-f36` sub-spec landing + lazy migration on resolve + bulk CLI | П1 + П3 |
+| **П10** | Trigger ↔ credential — `draft-f35` sub-spec landing + Trigger trait integration | П1 + Trigger track (separate workstream) |
+
+### §16.2 Dependency graph
+
+```
+                   П1 (trait shape — foundational)
+                  /  |  |  |  |  |  \
+                 П2  П3 П5 П6 П8 П9
+                     |
+                     П4 (after Tech Spec §11 frozen)
+                     |
+                     П7 (after Tech Spec §10 frozen)
+
+                П10 (П1 + Trigger track)
+```
+
+П1 is the foundational gate. П2–П10 fan out from П1 with additional cross-dependencies on Tech Spec sections being frozen and sub-specs landing. П4 + П7 have hard dependencies on §11 + §10 freeze respectively.
+
+### §16.3 Landing gates per phase
+
+Each phase must satisfy before merge:
+
+- **Tests pass.** `cargo nextest run -p <crate> --profile ci --no-tests=pass`.
+- **Benches within baseline.** CodSpeed regression gate (no >20% regression vs committed baseline per §8.8).
+- **Docs synced.** Tech Spec sections referenced by phase remain consistent (no contradiction). Phase plan (`docs/superpowers/plans/<NNNN>-<phase>.md`) updated.
+- **Register row updates.** Affected register rows flip status (`locked-post-spike` → `decided` with phase commit pointer; or `pending-sub-spec` → `in-implementation` for sub-spec phases).
+- **ABI stability check.** `cargo-public-api` confirms no stable-surface change without semver bump (§13.4).
+- **Security review.** Phases touching crypto / audit / zeroization invariants get security-lead review before merge.
+
+### §16.4 Post-Tech-Spec ADRs anticipated
+
+Likely ADRs surfacing during implementation:
+
+- **ADR-0036** — Rotation leader election protocol (queue #2 sub-spec). Cross-replica leader election + heartbeat / claim TTL discipline.
+- **ADR-0037** — ProviderRegistry versioning + URL template binding (sub-spec `draft-f18/f19/f20`). Schema versioning + Microsoft multi-tenant template handling.
+- **ADR-0038** — Schema migration discipline (sub-spec `draft-f36`). v1→v2 migration mechanism + walker patterns.
+- **ADR-0031 supersede** — if §10 OAuth ceremony moves to engine per Strategy §6.4 ADR-0031 supersede candidacy + Tech Spec §10 implementation outcome.
+- **§15 decision ADRs** — only if implementation reveals issues with the chosen path. Default: §15 decisions are Tech-Spec-frozen, not ADR-level.
+
+### §16.5 Register maintenance during implementation
+
+Per register's own maintenance rules + Tech Spec §13.4 evolution:
+
+- Each landed phase: walk affected register rows; flip status + add Tech Spec / phase plan / commit pointer.
+- New concerns surfaced during implementation: triage to one of 6 labels within 2 working days per register maintenance rule.
+- Tech Spec section completes implementation: status flips to `in-implementation` then to `done` when phase merges + all tests pass.
+- Register totals re-audited at every revision (no silent count drift).
+
 ---
 
-**Checkpoint 3 ends here.** §14 (meta), §15 (open item decisions: `critique-c9` + `arch-authscheme-clone-zeroize`), §16 (implementation plan handoff) follow in Checkpoint 4.
+**Tech Spec complete — Checkpoint 4 ends here.**
+
+All 16 sections drafted. §15 open items resolved (`critique-c9` → `(c)` move to `CredentialMetadata.provider_id`; `arch-authscheme-clone-zeroize` → `(a)` relax `Clone` on `AuthScheme` trait). §16 implementation handoff defined with phase list, dependency graph, landing gates, anticipated ADRs.
+
+Tech Spec ready for `writing-plans` skill invocation to produce phased implementation plans (П1–П10).
