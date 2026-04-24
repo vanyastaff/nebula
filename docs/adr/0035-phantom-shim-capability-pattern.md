@@ -113,14 +113,28 @@ The phantom-shim pattern applies **only** to:
 
 ### §3. Sealed module placement convention
 
-Each capability-trait-defining crate declares a **locally-scoped** `sealed` module. Two equivalent forms:
+Each capability-trait-defining crate declares the sealed module at crate root in the **canonical ecosystem form**:
 
-- `mod sealed { pub trait Sealed {} }` — `mod` is non-public (no `pub` prefix).
-- `pub(crate) trait Sealed` within any pub module.
+```rust
+// At src/lib.rs (crate root), once per crate:
+mod sealed {
+    pub trait Sealed {}
+}
+```
 
-Either form achieves **crate-private** `Sealed`. The Sealed trait is NOT re-exported from the defining crate. External crates cannot reference `crate_x::sealed::Sealed` at import time and cannot impl it for their own types — no cross-crate forging of capability membership.
+The outer `mod` has no `pub` prefix (crate-private module), but the inner `trait Sealed` IS `pub` within that module. This distinction is load-bearing:
 
-**Plugin authors** declaring their own capability traits (`CustomServiceBearerPhantom`) follow the same convention: declare a local `mod sealed` in the plugin crate; the plugin's phantom chain seals against the plugin's own `sealed::Sealed`. No cross-crate Sealed sharing. Each crate protects only its own phantom traits. This decouples plugin's phantom-correctness from the builtin crate's.
+- `mod sealed` being crate-private means `crate_x::sealed::*` is not reachable from outside — external crates cannot import the path.
+- `pub trait Sealed` inside `mod sealed` is visible-within-the-crate; the `pub` phantom trait (`pub trait BitbucketBearerPhantom: sealed::Sealed + ...`) references a `pub`-within-scope supertrait, so `private_in_public` lint does not fire.
+
+Alternative forms tried and rejected:
+
+- `pub(crate) trait Sealed` within a `pub` module. The `pub` phantom trait then has a `pub(crate)` supertrait — triggers the `private_in_public` lint (warning in most editions, **hard error in Rust 2024**). Not viable.
+- `pub trait Sealed` at crate root (no surrounding `mod`). External crates can then import `crate_x::Sealed` and impl it for their own types — defeats the sealing intent entirely.
+
+The canonical `mod sealed { pub trait Sealed {} }` form is the **only supported shape** per this ADR. Tech Spec documents the convention; the `#[capability]` macro assumes this form exists at `crate::sealed::Sealed`.
+
+**Plugin authors** declaring their own capability traits (`CustomServiceBearerPhantom`) follow the same convention: declare a local `mod sealed` at their plugin's crate root; the plugin's phantom chain seals against the plugin's own `crate::sealed::Sealed`. No cross-crate Sealed sharing. Each crate protects only its own phantom traits. This decouples plugin's phantom-correctness from the builtin crate's.
 
 ### §4. Macro emission contract (`#[capability]`)
 
@@ -137,12 +151,34 @@ Output (macro emits):
 
 1. The "real" trait as written (with supertrait chain).
 2. Blanket `impl<T: BitbucketCredential> BitbucketBearer for T where T::Scheme: AcceptsBearer {}`.
-3. A single `mod sealed { pub trait Sealed {} }` at crate root — idempotent across `#[capability]` invocations (the macro emits this block only once per crate; subsequent invocations skip it).
-4. Blanket `impl<T: BitbucketBearer> sealed::Sealed for T {}`.
-5. The phantom trait `pub trait BitbucketBearerPhantom: sealed::Sealed + Send + Sync + 'static {}`.
-6. Blanket `impl<T: BitbucketBearer> BitbucketBearerPhantom for T {}`.
+3. Blanket `impl<T: BitbucketBearer> sealed::Sealed for T {}` — assumes `crate::sealed::Sealed` already exists (see §4.1).
+4. The phantom trait `pub trait BitbucketBearerPhantom: sealed::Sealed + Send + Sync + 'static {}`.
+5. Blanket `impl<T: BitbucketBearer> BitbucketBearerPhantom for T {}`.
 
-The macro ensures emitted phantom references `crate::sealed::Sealed` (same-crate path). Plugin crates get their own emission; cross-crate `sealed` sharing is neither requested nor permitted.
+#### §4.1 The macro does NOT emit the `sealed` module
+
+Proc-macros in stable Rust cannot share state across invocations. An "emit `mod sealed` once per crate, skip thereafter" pattern is **not implementable** without external mechanisms (e.g. `inventory`, which this redesign rejects as cross-crate unreliable — see Strategy §2.1 discussion). Macros expand at the call site, which may be inside a nested module; they cannot synthesise a single shared crate-root module across multiple invocations.
+
+Therefore the crate author declares the sealed module **manually, once, at crate root**, before any `#[capability]` invocation:
+
+```rust
+// src/lib.rs
+mod sealed { pub trait Sealed {} }
+
+// Later in the same crate:
+#[capability(scheme_bound = AcceptsBearer)]
+pub trait BitbucketBearer: BitbucketCredential {}
+// … etc.
+```
+
+If the module is absent when a `#[capability]` macro expansion runs, the emitted `impl sealed::Sealed for T` fails to compile with `E0433` (`unresolved import crate::sealed`). The error diagnostic points at the generated impl line; Tech Spec documents the one-line `mod sealed` onboarding step that resolves it.
+
+#### §4.2 Alternatives considered for the idempotency problem
+
+- **Uniquely-named per-capability sealed** (e.g. `BitbucketBearerSealed` as a separate trait per capability). Eliminates the manual `mod sealed` declaration but doubles the trait count per capability and pollutes the crate namespace. Trade-off rejected — one-line manual module is cheaper than N extra named sealed traits.
+- **Macro-emitted `mod sealed` at call site**. Unimplementable — the macro expands at the call site (which may be inside a nested module), not at crate root, and cannot share a single crate-wide module across invocations.
+
+#### §4.3 Action-side translation
 
 Action-side macro (`#[action]`) accepts `CredentialRef<dyn BitbucketBearer>` in user-facing syntax and rewrites it to `CredentialRef<dyn BitbucketBearerPhantom>` in generated code — or rejects the non-phantom form with a guidance diagnostic. Decision between rewrite-silently vs reject-with-guidance is Tech-Spec-material.
 
@@ -151,6 +187,7 @@ Action-side macro (`#[action]`) accepts `CredentialRef<dyn BitbucketBearer>` in 
 Spike iteration-2 shall verify empirically whether the phantom trait's bounds `Send + Sync + 'static` are all required at every real use site. Candidate tightenings:
 
 - If no `Send/Sync` requirement surfaces through `CredentialRef<C: ?Sized>` bounds or executor spawn boundaries, tighten to `sealed::Sealed + 'static`.
+- `'static` is likely redundant in the phantom supertrait — `Credential: 'static` per Strategy §3.1, the blanket chain `T: BitbucketBearer` transitively inherits, and `dyn BitbucketBearerPhantom` defaults to `'static` unless otherwise annotated at the use site. Iter-2 confirms empirically whether the explicit `'static` bound can be dropped without changing any error message or making the trait less object-safe.
 - If `Send + Sync` required at any real call site, bounds remain.
 
 Decision pinned empirically in iter-2 `NOTES.md`. If it differs from the starting form above, this ADR gains a "bounds-verification addendum" (an amendment to the existing ADR, not a new ADR).
