@@ -30,8 +30,8 @@ All 8 stakeholder agents present; roster matches prompt expectations.
 |-------|--------|----------|------------|
 | Pre-setup | ✅ complete | this file | CASCADE_LOG initialized |
 | Phase 0 | ✅ complete | [`01-current-state.md`](./01-current-state.md) + [`01a-code-audit.md`](./01a-code-audit.md) + [`01b-workspace-audit.md`](./01b-workspace-audit.md) | Gate passed: convergent audits, 4 🔴 + 9 🟠 findings; escalation flag raised (C1) but not hard-stop |
-| Phase 1 | in-progress | `02-pain-enumeration.md` | Dispatching 4-agent parallel review (dx-tester + security-lead + rust-senior + tech-lead) |
-| Phase 2 | blocked | `03-scope-decision.md` | Blocked by Phase 1 |
+| Phase 1 | ✅ complete | [`02-pain-enumeration.md`](./02-pain-enumeration.md) + 02a/b/c/d sub-reports | Gate passed: 11 🔴 + 30+ 🟠 findings; critical reframe from tech-lead (credential CP6 unimplemented in credential crate too) |
+| Phase 2 | in-progress | `03-scope-decision.md` | Dispatching co-decision (architect + tech-lead + security-lead) |
 | Phase 3 | blocked | Strategy CP3 | Blocked by Phase 2 |
 | Phase 4 | blocked | Spike NOTES.md | Conditional on Phase 3 scope |
 | Phase 5 | blocked | ADR(s) | Blocked by Phase 3 |
@@ -70,6 +70,24 @@ Rust-senior: 01a-code-audit.md (~450 lines). 4 🔴 + 9 🟠 findings.
 Devops: 01b-workspace-audit.md (~380 lines). 0 🔴 + 8 🟠 + 15 🟡 findings.
 
 Devops wrote to wrong repo path (main repo instead of worktree) — orchestrator corrected via `mv`. Soft process issue; no retry needed.
+
+### 2026-04-24 T16:48 — Phase 1 complete + gate passed (commit fc18c736 for Phase 0, next for Phase 1)
+
+**4 parallel agents returned, convergent findings:**
+
+- dx-tester: 7 🔴 + 12 🟠; time-to-first-compile Stateless 12min / Stateful 8min / ResourceAction+Credential 32min (target <5min). Credential attribute unusable in both string AND typed form.
+- security-lead: 2 🔴 exploitable-today (S-C2 cross-plugin credential shadow attack via type-name-lowercase key; S-J1 JSON depth bomb confirms Phase 0 C4) + 17 🟠/🟡. Webhook crypto primitives solid. Retry feature flag NOT exploitable (disproven via engine grep).
+- rust-senior: 1 🔴 (reconfirmed C2 with cargo expand evidence) + 2 🟠 DATED. Cancel safety + error taxonomy reference-quality. HRTB `*Handler` boilerplate inherited from `async-trait` convention; modernizable to single-`'a` + type alias + `trait_variant::make(Send)`.
+- tech-lead: 3 solo priority calls (ratified) + 1 structural co-decision input. **CRITICAL REFRAME**: credential CP6 vocabulary has zero `src/` matches in credential crate itself — Option A = co-landing two cascades, not catching up.
+
+**11 deduplicated 🔴 + 30+ 🟠 findings** → gate passes easily (threshold: 0 🔴 + <3 🟠 triggers escalation).
+
+**Tech-lead solo-decided priority calls** (Phase 1 outputs):
+1. Seal ControlAction + canonize DX tier in §3.5 as "erases to primary"
+2. Feature-gate AND wire `ActionResult::Terminate` in cascade (apply Retry discipline)
+3. Frame Option A/B/C as A'/B'/C' with cost re-estimates (A' exceeds 5-day budget; B' scoped but defers; C' unfreezes frozen spec)
+
+**Phase 2 dispatch next:** architect + tech-lead + security-lead co-decision on A'/B'/C'. Orchestrator expects escalation probability raised.
 
 ### 2026-04-24 T16:29 — Phase 0 consolidation + gate passed
 
