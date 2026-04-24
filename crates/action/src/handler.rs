@@ -84,7 +84,6 @@ impl ActionHandler {
     pub fn is_resource(&self) -> bool {
         matches!(self, Self::Resource(_))
     }
-
 }
 
 impl fmt::Debug for ActionHandler {
@@ -114,11 +113,7 @@ impl fmt::Debug for ActionHandler {
 
 #[cfg(test)]
 mod tests {
-    use std::{
-        future::Future,
-        pin::Pin,
-        sync::Arc,
-    };
+    use std::{future::Future, pin::Pin, sync::Arc};
 
     use serde_json::Value;
 
@@ -244,7 +239,13 @@ mod tests {
             &'life0 self,
             _config: Value,
             _ctx: &'life1 dyn ActionContext,
-        ) -> Pin<Box<dyn Future<Output = Result<Box<dyn std::any::Any + Send + Sync>, ActionError>> + Send + 'a>>
+        ) -> Pin<
+            Box<
+                dyn Future<Output = Result<Box<dyn std::any::Any + Send + Sync>, ActionError>>
+                    + Send
+                    + 'a,
+            >,
+        >
         where
             Self: 'a,
             'life0: 'a,

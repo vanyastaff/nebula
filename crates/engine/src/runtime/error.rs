@@ -82,9 +82,7 @@ pub enum RuntimeError {
         code = "RUNTIME:ITERATION_CAP",
         retryable = false
     )]
-    #[error(
-        "stateful action '{action_key}' exceeded max iterations ({cap}) at node {node_key:?}"
-    )]
+    #[error("stateful action '{action_key}' exceeded max iterations ({cap}) at node {node_key:?}")]
     IterationCapExceeded {
         /// The action key that hit the cap.
         action_key: ActionKey,

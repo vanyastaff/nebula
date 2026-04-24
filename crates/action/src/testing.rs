@@ -154,21 +154,18 @@ impl TestContextBuilder {
                 .cancellation(CancellationToken::new())
                 .build(),
         );
-        let ctx = crate::context::TriggerRuntimeContext::new(
-            base,
-            WorkflowId::new(),
-            node_key!("test"),
-        )
-        .with_resources(Arc::new(TestResourceAccessor {
-            resources: Arc::new(parking_lot::Mutex::new(self.resources)),
-        }))
-        .with_credentials(Arc::new(TestCredentialAccessor {
-            credentials: self.credentials,
-            typed_credentials: self.typed_credentials,
-        }))
-        .with_logger(self.logs)
-        .with_scheduler(Arc::clone(&scheduler) as Arc<dyn TriggerScheduler>)
-        .with_emitter(Arc::clone(&emitter) as Arc<dyn ExecutionEmitter>);
+        let ctx =
+            crate::context::TriggerRuntimeContext::new(base, WorkflowId::new(), node_key!("test"))
+                .with_resources(Arc::new(TestResourceAccessor {
+                    resources: Arc::new(parking_lot::Mutex::new(self.resources)),
+                }))
+                .with_credentials(Arc::new(TestCredentialAccessor {
+                    credentials: self.credentials,
+                    typed_credentials: self.typed_credentials,
+                }))
+                .with_logger(self.logs)
+                .with_scheduler(Arc::clone(&scheduler) as Arc<dyn TriggerScheduler>)
+                .with_emitter(Arc::clone(&emitter) as Arc<dyn ExecutionEmitter>);
         (ctx, emitter, scheduler)
     }
 }
@@ -198,7 +195,11 @@ impl SpyLogger {
 
     #[must_use]
     pub fn messages(&self) -> Vec<String> {
-        self.entries.lock().iter().map(|(_, msg)| msg.clone()).collect()
+        self.entries
+            .lock()
+            .iter()
+            .map(|(_, msg)| msg.clone())
+            .collect()
     }
 
     #[must_use]
@@ -280,9 +281,9 @@ impl CredentialAccessor for TestCredentialAccessor {
             let scheme_lower = snapshot.scheme_pattern().to_lowercase();
             if key_str == scheme_lower || key_str.ends_with(&scheme_lower) {
                 let snapshot = snapshot.clone();
-                return Box::pin(async move {
-                    Ok(Box::new(snapshot) as Box<dyn Any + Send + Sync>)
-                });
+                return Box::pin(
+                    async move { Ok(Box::new(snapshot) as Box<dyn Any + Send + Sync>) },
+                );
             }
         }
         let key_owned = key_str.to_owned();
@@ -296,9 +297,9 @@ impl CredentialAccessor for TestCredentialAccessor {
         let key_str = key.as_str();
         if let Some(snapshot) = self.credentials.get(key_str) {
             let snapshot = snapshot.clone();
-            return Box::pin(async move {
-                Ok(Some(Box::new(snapshot) as Box<dyn Any + Send + Sync>))
-            });
+            return Box::pin(
+                async move { Ok(Some(Box::new(snapshot) as Box<dyn Any + Send + Sync>)) },
+            );
         }
         for snapshot in self.typed_credentials.values() {
             let scheme_lower = snapshot.scheme_pattern().to_lowercase();
@@ -466,7 +467,10 @@ where
         self.iterations = self.iterations.saturating_add(1);
         let mut typed_state: A::State = serde_json::from_value(self.state.clone())
             .map_err(|e| ActionError::fatal(format!("state deserialize: {e}")))?;
-        let result = self.action.execute(input, &mut typed_state, &self.ctx).await?;
+        let result = self
+            .action
+            .execute(input, &mut typed_state, &self.ctx)
+            .await?;
         self.state = serde_json::to_value(&typed_state)
             .map_err(|e| ActionError::fatal(format!("state serialize: {e}")))?;
         Ok(result)

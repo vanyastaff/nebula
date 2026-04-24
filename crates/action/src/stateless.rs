@@ -19,9 +19,9 @@
 //! - [`FnStatelessCtxAction`] / [`stateless_ctx_fn`] — context-aware variant for closures that need
 //!   credentials, resources, or the logger.
 
-use nebula_core::DeclaresDependencies;
 use std::{fmt, future::Future, marker::PhantomData, pin::Pin};
 
+use nebula_core::DeclaresDependencies;
 use serde_json::Value;
 
 use crate::{
@@ -282,10 +282,7 @@ impl<F, Input, Output> fmt::Debug for FnStatelessCtxAction<F, Input, Output> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("FnStatelessCtxAction")
             .field("action", &self.metadata.base.key)
-            .field(
-                "ctx_mode",
-                &"<borrowed>",
-            )
+            .field("ctx_mode", &"<borrowed>")
             .finish_non_exhaustive()
     }
 }
@@ -442,9 +439,7 @@ mod tests {
                 "CtxFn",
                 "Context-aware function action",
             ),
-            |input| async move {
-                Ok(input)
-            },
+            |input| async move { Ok(input) },
         );
 
         let ctx = make_ctx();
