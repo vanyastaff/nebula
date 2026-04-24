@@ -1,6 +1,6 @@
 ---
 name: credential redesign — strategy (checkpoint 1)
-status: Checkpoint 1 — §0–§3 written. §4–§6 follow in Checkpoints 2–3.
+status: Checkpoint 2 — §0–§5 written + register seeded. §6 follows in Checkpoint 3 (post-spike).
 date: 2026-04-24
 authors: [vanyastaff, Claude]
 scope: cross-cutting — nebula-credential, nebula-storage, nebula-engine, nebula-api, nebula-resource, nebula-action, nebula-core, nebula-schema
@@ -28,7 +28,7 @@ related:
 
 - Compile-able Rust signatures for trait shapes (prototype produces these).
 - Full lifecycle / security / operational / testing / discovery / multi-mode decisions (→ Tech Spec after prototype).
-- Sub-spec material (Trigger integration, ProviderRegistry seeding, mid-refresh race with rotated refresh_token, schema migration on encrypted rows, WebSocket events, multi-step persistent flows) — tracked in `docs/tracking/credential-concerns-register.md` (file seeded in Checkpoint 2; not yet present at Checkpoint 1 freeze), land as separate documents.
+- Sub-spec material (Trigger integration, ProviderRegistry seeding, mid-refresh race with rotated refresh_token, schema migration on encrypted rows, WebSocket events, multi-step persistent flows) — tracked in [`docs/tracking/credential-concerns-register.md`](../../tracking/credential-concerns-register.md) (seeded 2026-04-24 in Checkpoint 2 with 112 initial rows; expected to grow to ~130–140 over next 2–3 cycles), land as separate documents.
 
 **Relationship to existing artefacts.**
 
@@ -39,15 +39,15 @@ related:
 | ADR-0028 through 0033 | Canon invariants for credential architecture | §2 preserves all; §6 (Checkpoint 3) may supersede ADR-0031 pending prototype outcome |
 | `research/n8n-credential-pain-points.md` | Pain data motivating redesign | Primary evidence basis for §1 |
 
-**Reading order.** §0 → §1 (why) → §2 (foundational) → §3 (type system contract). §4–§6 land in Checkpoints 2–3.
+**Reading order.** §0 → §1 (why) → §2 (foundational, frozen) → §3 (type system contract, frozen) → §4 (concerns classification + sub-spec queue) → §5 (prototype spike plan formal). §6 lands in Checkpoint 3 (post-spike).
 
 **Checkpoint path.**
 
-1. **Checkpoint 1** (this document): §0–§3 — blocks prototype spike dispatch.
-2. **Checkpoint 2** (parallel to spike execution): §4 Concerns classification (5-label matrix, summary here; full ~124 rows in Deferred Concerns Register) + §5 Prototype spike plan (revised — A1 budget, three hypotheses, macro out-of-scope, inter-iteration checkpoint, blanket sub-trait validation + fallback, compat sketches required).
-3. **Checkpoint 3** (after spike): §6 Post-prototype roadmap — freezes Strategy; Tech Spec kickoff signal.
+1. **Checkpoint 1** (committed `d5045774`): §0–§3 — blocked prototype spike dispatch.
+2. **Checkpoint 2** (this document update + register seed, parallel to spike execution): §4 Concerns classification (5-label summary in §4.2; full 112-row matrix in [`docs/tracking/credential-concerns-register.md`](../../tracking/credential-concerns-register.md)) + §5 Prototype spike plan formal (the dispatch prompt to `credential-spike-v1` agent is derived from §5).
+3. **Checkpoint 3** (after spike iteration outcomes reviewed): §6 Post-prototype roadmap — freezes Strategy; Tech Spec kickoff signal.
 
-**Freeze policy.** §2 Foundational decisions and §3 Type system contract are frozen after Checkpoint 1 review. Supersede requires ADR. §4–§6 may evolve through Checkpoints 2–3.
+**Freeze policy.** §2 Foundational decisions and §3 Type system contract are frozen as of Checkpoint 1 review (commit `d5045774`). Supersede requires ADR. §4 Concerns classification and §5 Prototype spike plan freeze after Checkpoint 2 review; §5 may receive minor narrative updates as spike iteration outcomes land (record updates as `Checkpoint 2.N` revisions, not supersede). §6 lands in Checkpoint 3.
 
 **Terminology.** "Strategy Document" = this file (decisions). "Tech Spec" = single production document written post-prototype (implementation-ready design). "Deferred Concerns Register" = `docs/tracking/credential-concerns-register.md` (living tracking doc, updated as sub-specs land).
 
@@ -288,6 +288,200 @@ This is a policy, not a mechanism. Violations are caught in review, not at compi
 - If §3.3 fails → Fallback A (regardless of §3.5).
 - `NOTES.md` records: §3.3 outcome, §3.5 outcome, fallback selected (none / A / B), with reproducible failing test where applicable.
 
+## §4 Concerns classification (summary)
+
+Strategy commits to **zero silent drops** of concerns surfaced in any of three sources (draft 2026-04-24, critique rounds, user's strategy-concerns list). The full matrix lives in [`docs/tracking/credential-concerns-register.md`](../../tracking/credential-concerns-register.md) — a living document that accumulates concerns and updates resolution pointers as sub-specs land. This section gives the per-category summary; the register is canonical for individual-row resolution.
+
+### §4.1 Five classification labels
+
+Per Strategy §2 (recapitulated):
+
+| Label | Meaning | Resolution path |
+|---|---|---|
+| **strategy-blocking** | Decision needed before prototype spike dispatch | Resolved in Strategy §2 / §3 |
+| **tech-spec-material** | Decision post-spike, affects trait/impl directly | Production Tech Spec (after Checkpoint 3) |
+| **sub-spec** | Requires separate design document | Individual sub-spec under `docs/superpowers/specs/` |
+| **implementation-phase** | Execution detail, no design decision needed | Implementation plan (`docs/superpowers/plans/`) |
+| **product-policy** | Orthogonal to type shape (sealed/open, SOC 2, deployment matrix, GDPR) | Product ADR |
+| **process** | Findings about the redesign workstream itself (budget, spike scope, checkpoints, success criteria) rather than about credential design concerns | Strategy §5 / this doc's checkpoint history |
+
+Labels are mutually exclusive by intent. A single concern lives in one bucket; cross-cutting concerns split into multiple register rows with separate IDs.
+
+### §4.2 Per-category seed (audited 2026-04-24 revision)
+
+| Category | Total | strategy-blocking | tech-spec | sub-spec | impl-phase | product-policy | process |
+|---|---|---|---|---|---|---|---|
+| Type system | 11 | 10 | 1 | — | — | — | — |
+| Sealed / plugin | 4 | — | 2 | 1 | — | 1 | — |
+| Patterns + service grouping | 3 | — | 3 | — | — | — | — |
+| Resource-per-capability | 2 | 2 | — | — | — | — | — |
+| Refresh / rotation | 5 | — | 3 | 2 | — | — | — |
+| ProviderRegistry | 4 | — | 1 | 3 | — | — | — |
+| Multi-step / pending | 2 | — | 1 | 1 | — | — | — |
+| Execution-scoped | 2 | — | 2 | — | — | — | — |
+| Connection-bound | 2 | — | 2 | — | — | — | — |
+| Storage layer | 3 | — | 3 | — | — | — | — |
+| Scheme / injection details | 8 | — | 6 | — | 2 | — | — |
+| Open / ambiguous | 4 | — | 1 | 3 | — | — | — |
+| Critique meta | 11 | — | 2 | — | 1 | — | 8 |
+| User-list lifecycle | 7 | — | 5 | 2 | — | — | — |
+| User-list security | 10 | — | 7 | 1 | — | 2 | — |
+| User-list operational | 7 | — | 7 | — | — | — | — |
+| User-list testing | 10 | — | 10 | — | — | — | — |
+| User-list evolution | 5 | — | 5 | — | — | — | — |
+| User-list discovery | 5 | — | 5 | — | — | — | — |
+| User-list redirect/flow | 6 | — | 5 | 1 | — | — | — |
+| User-list multi-mode | 4 | — | 4 | — | — | — | — |
+| User-list integration | 4 | — | 2 | — | — | 2 | — |
+| User-list data | 4 | — | 3 | — | — | 1 | — |
+| User-list meta | 5 | — | 1 | 2 | 1 | 1 | — |
+| **Total** | **128** | **12** | **81** | **16** | **4** | **7** | **8** |
+
+Labels clarified in §4.1 (added `process` as 6th label for workstream-meta findings). Counts rebuilt on every register revision per register's own maintenance rules.
+
+### §4.3 Sub-spec queue (landing order)
+
+Sub-spec items requiring separate design docs, in dependency-aware landing order:
+
+1. **Mid-refresh race with rotated refresh_token** (`draft-f17`) — draft proposal at [`docs/superpowers/specs/2026-04-24-credential-refresh-coordination.md`](2026-04-24-credential-refresh-coordination.md) (status `proposal`, 651 lines). Independent of spike outcome.
+2. **ProviderRegistry seeding + versioning + URL templates** (`draft-f18`/`f19`/`f20`) — depends on Tech Spec §11 (multi-mode deployment) for trust-anchor model per mode.
+3. **Multi-step persistent flow accumulator** (`draft-f22`) — depends on spike confirming `continue_resolve` signature compat (compat sketch #2).
+4. **Schema migration on encrypted rows v1→v2** (`draft-f36`) — depends on production State struct shape from Tech Spec.
+5. **Trigger ↔ credential integration** (`draft-f35`) — depends on spike confirming Trigger compat (compat sketch #1).
+6. **WebSocket `/credentials/events`** (`draft-f34`) — UX/realtime concern, lower priority.
+7. **Signed manifest infrastructure** (`arch-signing-infra`) — independent track per `#[plugin_credential]` policy in §2.1.
+8. **Compromise response runbook** (`user-sec-compromise-response`) — security-lead owned.
+9. **Threat model document** (`user-meta-threat-model`) — quarterly review cadence.
+10. **Incident response runbooks** (3 — leak / key compromise / IdP outage) (`user-meta-incident-response`).
+11. **GDPR compliance spec** (`user-data-gdpr`) — compliance + lawful basis of storage.
+12. **Credential import/export** (`user-lifecycle-import-export`) — encrypted backup format + n8n-compat import. Low priority, post-Tech-Spec.
+
+### §4.4 Notable open items
+
+The register has rows in `open` status awaiting Tech-Spec or product decision:
+
+- **`critique-c9`** — `const PROVIDER_ID: &'static str` for non-OAuth schemes (AppPassword self-issued). Two candidates: `Option<&'static str>` (lossy) or scheme-conditional trait (heavy). Decision needed in Tech Spec.
+
+Other rows tagged `pending-sub-spec` are not "open" — they have explicit owners and are queued in §4.3.
+
+### §4.5 Compliance: zero silent drops
+
+Cross-check at Checkpoint 3 freeze: every concern row in the register has either (a) a resolution pointer to Strategy / Tech Spec / sub-spec, OR (b) explicit `open` status with named blocker. Rows in `pending-sub-spec` count as resolved-by-pointer (the pointer is the queued sub-spec entry in §4.3).
+
+## §5 Prototype spike plan
+
+Strategy-level statement of the spike. The dispatch prompt sent to the `rust-senior` agent (named `credential-spike-v1`) is derived from this section + Strategy §2/§3 decisions.
+
+### §5.1 Scope (five questions, A1 budget)
+
+| Q | Topic | Resolves register IDs |
+|---|---|---|
+| Q1 | dyn service trait projection — does §3.3 blanket sub-trait pattern compile AND semantically constrain on Bitbucket triad? | `draft-f3`, `draft-f32`, `critique-c2`, `critique-c6` |
+| Q2 | `#[action]` ambiguity compile-error via hand-expanded macro output | `draft-f1` |
+| Q3 | `CredentialRef<C>` runtime shape — three hypotheses H1/H2/H3 | `draft-f4` |
+| Q3a | Resource `AcceptedAuth` ↔ Action credential bound cross-check (per §3.5) | `critique-b-macro-check` |
+| Q4 | DualAuth multi-credential resource (mTLS + Bearer in single client) | `draft-f14` |
+| Q7 | `credential-builtin` crate split validation (architecture, two-crate setup) | (architecture decision, not a specific finding) |
+
+### §5.2 OUT-of-scope, with rationale
+
+| Excluded | Reason |
+|---|---|
+| Q5 (sealed+plugin in spike) | Product-policy per §2.1, not trait-shape; single-crate validation is fictitious. Sealed-vs-open decision is product-frozen, not code-validated. |
+| Q6 (signing streaming) | Ill-formed under mock HTTP; arises naturally in production HTTP impl. |
+| Proc-macro development | OUT — hand-expand macro output instead. Macro polish is post-shape work. |
+| Real crypto / HTTP / storage / DB | Mocked with synchronous stubs. Spike validates trait shape, not infra. |
+| Integration with existing `nebula-credential` | Standalone throwaway crates; no migration attempted. |
+
+### §5.3 Hypotheses for `CredentialRef<C>` (per §3.4)
+
+Three concrete starting shapes, all evaluated in iteration 1; one picked with rationale:
+
+- **H1** — `PhantomData<fn() -> C>` + `CredentialKey` + runtime `TypeId` registry; HashMap-based dispatch.
+- **H2** — Hand-expanded macro binding table (`BindingEntry { field, resolve_fn }` array per action); compile-time index dispatch.
+- **H3** — Hand-expanded typed accessor methods per credential field; no shared `CredentialRef` type, generated per-field.
+
+Selection criteria: dyn-safety preserved (per §3.2 type-erased semantics), ergonomics on realistic actions, perf p95 ≤ 1µs (per §5.7).
+
+### §5.4 Fallback evaluation order
+
+Per §3.7. Spike evaluates §3.3 first; §3.5 only if §3.3 passes.
+
+| Step | Evaluate | If pass → next | If fail → action |
+|---|---|---|---|
+| 1 | §3.3 compile + semantic on Bitbucket triad | go to step 2 | Fallback A activates; §3.5 SKIPPED |
+| 2 | §3.5 mechanism (i): trait-resolution cross-check | done — no fallback | go to step 3 |
+| 3 | §3.5 mechanism (ii): compile-time capability registry | done — no fallback | Fallback B activates |
+
+NOTES.md records §3.3 outcome + §3.5 outcome (if evaluated) + fallback selected with reproducible failing test.
+
+### §5.5 Inter-iteration pause (operational trigger)
+
+After iteration 1 produces a first complete attempt:
+
+1. Commit `final_trait_shape_v1.rs` + NOTES-so-far to spike worktree branch with message: `spike: iteration 1 complete — PAUSE for orchestrator review`.
+2. Final agent message contains NOTES contents + status summary (§3.3 outcome, §3.5 outcome, fallback, perf measurements, blocker list).
+3. After final message — STOP. No further tool calls.
+4. Orchestrator reviews; SendMessage with explicit "continue to iteration 2" or alternative direction.
+
+Process-violation trap: "iteration 1 almost works, just one more tweak." Forbidden — surface follow-up in final message instead.
+
+### §5.6 Compat sketches required in NOTES.md
+
+After finalized shape selected, prove at sketch level (prose + pseudo-signatures, no code) that the shape accommodates without forcing breaking changes:
+
+1. **Trigger credential binding** — webhook HMAC verify + IMAP connection-bound (resolves register entry `draft-f35` compat).
+2. **Multi-step persistent flow accumulator** — `PendingStore` extension + `continue_resolve` step-index (`draft-f22`).
+3. **Mid-refresh race with rotated refresh_token** — sentinel + reclaim semantics (`draft-f17`).
+4. **ProviderRegistry URL templating** — Microsoft multi-tenant template binding through `Credential::Input` (`draft-f20`).
+5. **ExternalProvider typed resolve** — `RawProviderOutput` + `TryFrom<&RawProviderOutput>` for Scheme (`draft-f31`).
+
+Any sketch revealing a forced breaking change is a BLOCKER finding.
+
+### §5.7 Performance budget — absolute, not relative
+
+≤1µs per cached resolve as ABSOLUTE upper bound, applied per hypothesis. Baseline measured first via Criterion (`bench_baseline`) using synthetic `HashMap<CredentialKey, Box<dyn AnyCredential>>::get()` + `downcast_ref` path; reported p50/p95/p99 over 100K iterations.
+
+Each hypothesis (`bench_h1`, `bench_h2`, `bench_h3`) measured on same call pattern. Decision rule:
+
+- p95 > 1µs → REJECTED on perf grounds regardless of ergonomics.
+- p95 ≤ 1µs → eligible; ergonomics + dyn-safety decide.
+- All four numbers reported in NOTES regardless of selected hypothesis.
+
+Baseline is reference, not target — if baseline > 1µs, hypothesis ≤ 1µs still required.
+
+### §5.8 Success / partial / failure criteria
+
+| Outcome | Threshold | Next step |
+|---|---|---|
+| **Done** | ≥4 of 5 questions resolved + 5 compat sketches + fallback rationale + perf measurements | Tech Spec writing kicks off in Checkpoint 3 |
+| **Partial** | 3 of 5 resolved + explicit blocker statement on remaining 2 | Narrowed Tech Spec — only validated portions |
+| **Failure** | ≤2 of 5 resolved, OR §3.3 fails AND Pattern 3 perf budget blown | Accept current architecture (post P6–P11), document redirection ADR explaining why redesign was not pursued in 2026-04 |
+
+**Q3 resolution semantic** (perf-triggered fallback clarification): Q3 is "resolved" when EITHER (a) one hypothesis is picked with rationale (perf p95 ≤ 1µs + ergonomics + dyn-safety all eligible), OR (b) all three hypotheses are rejected with documented reasoning and explicit fallback consequence stated. "All three rejected on perf grounds" is a **valid Q3 resolution** — it cascades into a type-system-level decision (Fallback A / Fallback B per §3.7 selection rules, or a new explicit escalation if the perf budget broke all viable shapes across both Fallback A and B paths). Agent documents the cascade explicitly in `NOTES.md`; orchestrator decides escalation path at iteration-2 review.
+
+### §5.9 Budget
+
+6–9 days realistic. Halt at 10+ days rather than compress quality. Iteration-1 pause duration (orchestrator review) NOT counted against the 6–9 days.
+
+### §5.10 Q3 time-drain warning
+
+Q3 (three hypotheses × iterations × Criterion bench setup) is the single most time-consuming question. If Q3 is trending to drain >60% of total budget, halt further Q3 work and surface to orchestrator — sequencing among Q1/Q2/Q4/Q7 is open to mid-spike negotiation. Better partial-Q3 with Q4/Q7 covered than perfect-Q3 with Q4/Q7 shallow.
+
+### §5.11 Deliverables (on spike worktree branch only)
+
+- `spike/credential-proto/` (contract crate)
+- `spike/credential-proto-builtin/` (builtin crate — validates Q7 split)
+- `NOTES.md` — iterations + rationale + failed attempts + 5 compat sketches + fallback decision + perf baseline + hypothesis measurements
+- `final_trait_shape_v1.rs` — iteration-1 pause artifact (commit on spike branch)
+- `final_trait_shape.rs` — converged shape after all iterations
+- `bench_baseline` + `bench_h1` + `bench_h2` + `bench_h3` — Criterion harnesses
+- `tests/e2e.rs` — integration test (7 credential types × 3 resources × 3 actions compile + run)
+
+### §5.12 Worktree convention
+
+Isolation: dedicated worktree branch, auto-created by isolation mechanism. Main branch receives NO spike commits. Iteration-1 pause artifact commits to spike branch only. No in-tree `scratch/` directory — that would leak spike work into main's gitignore convention.
+
 ---
 
-**Checkpoint 1 ends here.** §4 Concerns classification and §5 Prototype spike plan land in Checkpoint 2 (parallel to spike execution). §6 Post-prototype roadmap lands in Checkpoint 3 (after spike completes).
+**Checkpoint 2 ends here.** §6 Post-prototype roadmap lands in Checkpoint 3 (after spike iteration outcomes are reviewed and either Done / Partial / Failure outcome is determined per §5.8).
