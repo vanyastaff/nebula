@@ -168,6 +168,8 @@ Locked decisions plus hypotheses for prototype validation. **No compile-able Rus
 - `const CAPS: Capabilities` — bitflags, 12 flags (see draft §01-type-system).
 - Async methods — `resolve`, `continue_resolve`, `refresh`, `revoke`, `test`. Rotation is engine-orchestrated per ADR-0030, **not a trait method**.
 
+**Representation drift correction (2026-04-24, post Tech Spec §2.1 review).** The bullet `const CAPS: Capabilities — bitflags, 12 flags` above is aspirational pseudo-Rust (per §3 opening: *"No compile-able Rust — pseudo-Rust below is illustrative intent, not a compile claim"*). Production implementation ([`crates/credential/src/contract/credential.rs:130-139`](../../../crates/credential/src/contract/credential.rs)), spike iter-1/iter-2 validation shape (`final_trait_shape_v2.rs`), and Tech Spec §2.1 all use **per-flag const bools** (`INTERACTIVE = false`, `REFRESHABLE = false`, `REVOCABLE = false`, `TESTABLE = false`). Information content is equivalent; representation aligned with reality. Not an ADR-level design change — clerical correction. If bitflag ergonomics become desirable later (single-line `CAPS` declaration), that migration is material change requiring ADR discipline.
+
 `continue_resolve` is retained for OAuth2 callback continuation even under atomic-only multi-step (draft finding #22 direction). Persistent N-step accumulator is a separate sub-spec; current `continue_resolve` signature handles the single-continuation case.
 
 **Trait-heaviness acknowledged.** Every associated type, every default-impl method, every capability flag has engineering cost — for dyn-safety, plugin ergonomics, readability. §3.6 records the discipline that controls additions.
