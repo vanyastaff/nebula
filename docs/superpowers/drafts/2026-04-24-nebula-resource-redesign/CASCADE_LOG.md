@@ -193,6 +193,41 @@
 - Phase 6 Tech Spec CP1 (§0-§3) — dispatch if time allows; otherwise flag in Phase 8 as post-cascade pickup
 - Phase 8 Summary — always produced regardless
 
+### 2026-04-24 T+~130min — Phase 5 complete (ADR-0036)
+
+- architect dispatched for primary ADR: `Resource::Credential` adoption + `Auth` retirement
+- Artefact: `docs/adr/0036-resource-credential-adoption-auth-retirement.md` (2203 w / 201 L)
+- Status: Proposed (acceptance gates on Phase 6 Tech Spec CP1 ratification)
+- Secondary ADR-0037 candidate (Daemon/EventSource engine-fold) recommended but DEFERRED — flagged in Phase 8 Q3 for user decision
+- Budget: ~5 min agent-effort
+
+### 2026-04-24 T+~135min — Phase 7 complete (concerns register)
+
+- **Orchestrator-direct** creation (no agent dispatch — consolidation of known data)
+- Artefact: `docs/tracking/nebula-resource-concerns-register.md` (35 rows, 6 label buckets)
+- Label distribution: 0 strategy-blocking / 22 tech-spec-material / 1 standalone-fix / 5 post-cascade / 4 future-cascade / 3 invariant-preservation
+- **0 strategy-blocking** — Phase 3 Strategy resolved all scope-blocking items
+- Phase 7 consensus session NOT needed (Phase 2 co-decision unanimous in round 1)
+
+### 2026-04-24 T+~145min — Phase 8 complete (final consolidated summary)
+
+- **Orchestrator-direct** creation (no agent dispatch)
+- Artefact: `docs/superpowers/specs/2026-04-24-nebula-resource-redesign-summary.md`
+- 5 open questions flagged for user decision (Q1 spike timing, Q2 Tech Spec scope, Q3 ADR-0037, Q4 SF-1 dispatch, Q5 MATURITY transition awareness)
+- 7-step recommended next-steps ordering
+- Artefact index (canonical + lost)
+
+## Cascade outcome — PARTIAL COMPLETION
+
+**Phases complete:** 0, 1, 2, 3, 5, 7, 8
+**Phases deferred:** 4 (spike), 6 (Tech Spec)
+**Escalations:** 1 soft (filesystem loss, recovered); 0 hard
+
+**Final budget:** ~118 min agent-effort / ~145 min wall-time across the full cascade.
+**Envelope used: ~2% of 5-day budget.** Room for Phase 4 + Phase 6 follow-up sessions.
+
+**User returns to implementation-ready state.** Strategy + ADR-0036 + Register + Summary provide full design foundation. Phase 4 spike and Phase 6 Tech Spec deferrals have clear orchestrator recommendations (see summary Q1 + Q2).
+
 ---
 
-*This log is append-only during cascade. Each phase gate adds an entry. Soft escalations logged prominently; hard escalations also write `ESCALATION.md` at repo root.*
+*Cascade log closed at 2026-04-24 T+~150min. Future amendments append-only here; major deviations would open a new cascade log for that work.*
