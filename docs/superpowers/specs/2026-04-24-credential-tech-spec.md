@@ -812,8 +812,9 @@ impl ActionSlots for BitbucketRepoFetchAction {
         const SLOTS: &[SlotBinding] = &[
             SlotBinding {
                 field_name: "bb",
-                slot_type: SlotType::CapabilityBound {
+                slot_type: SlotType::ServiceCapability {
                     capability: Capability::Bearer,
+                    service: ServiceKey::Bitbucket,
                 },
                 resolve_fn: resolve_bearer_slot,
             },
