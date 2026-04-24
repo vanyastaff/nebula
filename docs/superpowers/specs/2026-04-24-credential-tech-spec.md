@@ -996,6 +996,13 @@ impl Resource for PostgresPool {
 
 Lifecycle covers a credential instance's existence from creation to deletion. Per Strategy §4 and register `user-lifecycle-*` cluster (7 rows). State transitions map to the production `state_kind` enum (`active` / `refreshing` / `expired` / `revoked` / `suspended`) per migration `0017_credentials_v3.sql`.
 
+**Note on state vocabulary — two overlapping vocabularies appear throughout §4 and §7:**
+
+- **In-memory flow states** (transient, engine-managed). State-machine diagrams below track transitions through operations: `idle`, `resolving`, `pending`, `continuing`, `discarded`, `failed`, `refresh_pending`, `refreshing`, `reauth_required`, `revoked-grace`. **Not persisted** to `credentials.state_kind`.
+- **Persisted `state_kind` values** (from `credentials.state_kind` column per migration `0017_credentials_v3.sql`): `active` / `refreshing` / `expired` / `revoked` / `suspended`.
+
+Terminal diagram states with same spelling (`active`, `revoked`) equal the persisted `state_kind`. Transient states map to persisted values per the mapping table in §7.1 (refresh strategy): `refresh_pending` + `refreshing` → persisted `refreshing`; `reauth_required` → `suspended`; `revoked-grace` → `revoked` after grace expiry; transient `failed` (refresh-transient-error path) stays persisted `active` pending retry.
+
 ### §4.1 Creation strategies
 
 Four creation strategies per register row `user-lifecycle-creation`. Each maps to a distinct entry point + invariant set.
@@ -1055,7 +1062,7 @@ Three revocation modes per register row `user-lifecycle-revocation`. All update 
 
 **Hard revocation.** Immediately invalidate; in-flight resolves fail with `ResolveError::Revoked` even if they started before revocation. No grace window. Used for compromise response.
 
-**Cascade revocation.** Revoking a "parent" credential (e.g., a long-lived OAuth2 refresh token) cascades to dependent tokens (the access tokens it minted). Detection: `credential_audit` foreign-key relationships + per-type `Credential::dependent_credentials()` hook (default empty). Rare — only credentials with explicit dependency relationships.
+**Cascade revocation.** Revoking a "parent" credential (e.g., a long-lived OAuth2 refresh token) cascades to dependent tokens (the access tokens it minted). Detection relies on `credential_audit` foreign-key relationships (via `credential_id` on audit entries + parent-child markers in audit `detail` JSONB) + operator intervention. Rare — only credentials with explicit dependency relationships. **No trait method on `Credential`**; cascade is handled by storage-layer query + manual operator action to preserve the lean trait surface (Strategy §3.6 trait-heaviness discipline). See §6.11 for the audit-FK-based cascade revocation handler.
 
 State transitions:
 
@@ -1459,6 +1466,812 @@ Tech Spec requires consumer code (engine OAuth flow, credential resolve, multi-m
 
 **State schema migration v1→v2.** **OUT** — `draft-f36` sub-spec. Tech Spec consumers expect: lazy migration on resolve (decrypt v1 → migrate to v2 → re-encrypt) + bulk CLI for batch processing. Migration mechanism mechanism itself in sub-spec.
 
+## §6 Security
+
+Security contract preserves Strategy §1.2 non-goal invariants (§12.5 crypto bit-for-bit, zeroize boundaries). Implementation-level detail for 10 `user-sec-*` register rows + cascade revocation handler (§6.11 from Nit 2 resolution).
+
+### §6.1 Encryption-at-rest (§12.5 preserved bit-for-bit)
+
+Envelope shape per production migration `0017_credentials_v3.sql`:
+
+```
+envelope (JSONB, stored alongside ciphertext in plaintext):
+  {
+    kek_id: "uuid-of-kek",            // lookup key for KeyProvider
+    encrypted_dek: <bytes>,           // DEK wrapped with KEK
+    algorithm: "AES-256-GCM",         // fixed per §12.5
+    nonce: <12 bytes>,                // 96-bit random per encrypt
+    aad_digest: <32 bytes>            // SHA-256 of AAD for integrity
+  }
+
+encrypted_secret (BYTEA):
+  AES-256-GCM(DEK, nonce, AAD) of serde-serialized State bytes
+```
+
+**AAD construction** (bound to specific credential to defeat replay):
+
+```
+AAD = credential_id (16 bytes ULID) ||
+      kek_id         (16 bytes)     ||
+      encryption_version (4 bytes big-endian u32)
+```
+
+**Decrypt flow:**
+
+1. Read `envelope` JSONB + `encrypted_secret` BYTEA from `credentials` row.
+2. `KeyProvider::get_kek(kek_id)` — returns the KEK material (opaque; lives in HSM/KMS/memory depending on mode per §11).
+3. Unwrap DEK: decrypt `encrypted_dek` with KEK. DEK is an ephemeral 32-byte key.
+4. Verify AAD: compute `SHA-256(AAD_bytes)` and match `aad_digest`. Mismatch → `DecryptError::AadMismatch` (possible tampering or row rebinding attack).
+5. Decrypt `encrypted_secret` with DEK + nonce + AAD via AES-256-GCM. Failure → `DecryptError::Tampered`.
+6. Deserialize plaintext bytes via `serde_json::from_slice::<C::State>()`.
+
+Encrypt flow is the inverse. Zeroize the DEK + plaintext buffers immediately after use per §6.7.
+
+**Invariants (canonical, bit-preserved per Strategy §1.2 non-goal):**
+
+- Algorithm fixed to AES-256-GCM. No negotiation; no fallback. Changing algorithm is an ADR.
+- Nonce always 96-bit random from CSPRNG. Never reused per (KEK, DEK) pair.
+- AAD always includes `credential_id + kek_id + encryption_version` — enables KEK rotation without re-encrypting every row.
+- DEK wrapped with KEK. Raw KEK never leaves `KeyProvider`.
+- `KeyProvider` is the sole component that touches raw KEK material.
+
+### §6.2 Key rotation
+
+`KeyProvider` supports multiple active KEKs during a rotation window. Old KEK still decryptable for existing rows; new KEK encrypts new rows and is re-wrapping target for walker.
+
+**`nebula credential rotate-master-key --from=<old_kek_id> --to=<new_kek_id>` walker CLI:**
+
+```
+1. Generate or ingest new KEK (KMS / HSM / env-provided per §11).
+   Register new KEK in KeyProvider at a new version.
+2. Walk `credentials` table (paginated, cursor by `id`):
+   a. For rows with envelope.kek_id == old_kek_id:
+      b. Load KEK_old via KeyProvider.
+      c. Unwrap DEK with KEK_old.
+      d. Re-wrap DEK with KEK_new.
+      e. Update envelope.kek_id = new_kek_id + bump encryption_version.
+      f. CAS on `version` to avoid concurrent-rotation clobber.
+   No re-encrypt of State needed — only the DEK is rewrapped.
+3. Walk `pending_credentials` same way (no CAS needed — single-writer).
+4. `credential_audit` is NOT envelope-encrypted (uses HMAC hash chain,
+   see §6.5) — skipped.
+5. After walker completes + retention window (default 30 days), decommission
+   KEK_old via KeyProvider::retire_kek(old_kek_id).
+```
+
+Walker is **online** — each row is CAS-updated independently; no global lock. Concurrent reads continue (decrypt uses whichever `kek_id` is stamped on the row).
+
+`KeyProvider::with_legacy_keys(old_fp)` supports lazy re-wrap on resolve: if the walker hasn't reached a row yet but a read happens, the read decrypts with old KEK without re-wrapping. Walker eventually rewraps.
+
+### §6.3 Access control — RBAC matrix
+
+Operations × roles matrix. Roles are org-scoped; additional per-workspace scoping via `allowed_workspaces` on credentials.
+
+| Operation | Admin | Operator | Developer | Viewer |
+|---|---|---|---|---|
+| `credentials.create` | ✓ | ✓ | own workspace only | ✗ |
+| `credentials.read` (redacted metadata) | ✓ | ✓ | own workspace / org if scope=org | ✓ |
+| `credentials.resolve` (decrypt + use) | ✓ | ✗ | own workspace only | ✗ |
+| `credentials.update` | ✓ | ✓ | own + not rotated_by_another | ✗ |
+| `credentials.revoke` | ✓ | ✓ (if own) | own only | ✗ |
+| `credentials.delete` (soft) | ✓ | ✓ | own only | ✗ |
+| `credentials.purge` (hard) | ✓ | ✗ | ✗ | ✗ |
+| `credentials.rotate` (manual) | ✓ | ✓ | own only | ✗ |
+| `registry.provider.admin` | ✓ | ✗ | ✗ | ✗ |
+| `credentials.key_rotate` (master key walker) | ✓ | ✗ | ✗ | ✗ |
+
+Enforcement via `ScopeLayer` (see §6.4) — RBAC decision happens at request-entry in `nebula-api` based on principal's role; rejections never reach storage.
+
+`Developer` role's "own" means: creator (created_by) OR workspace member with write permission. Per-credential ACL can narrow further via `allowed_workspaces[]`.
+
+### §6.4 Scope isolation
+
+Tenant × workspace × user boundaries enforced at the storage layer via `ScopeLayer` (production — `crates/storage/src/credential/layer/scope.rs`).
+
+**Scope hierarchy:**
+
+1. **`org_id`** — required on every credential operation. ScopeLayer rejects requests without a valid org_id principal.
+2. **`workspace_id`** — scoped within org. If `scope = 'workspace'`, only that workspace can access. If `scope = 'org'`, all workspaces in org can access (subject to `allowed_workspaces[]` filter).
+3. **User principal** — tracked in audit (`created_by`, `principal_id` on audit entries). No direct access check at credential level (RBAC §6.3 governs).
+
+**FK constraints** (existing):
+
+- `credentials.org_id REFERENCES orgs(id) ON DELETE CASCADE`
+- `credentials.workspace_id REFERENCES workspaces(id) ON DELETE CASCADE` (nullable for org-scoped)
+- `credential_audit.org_id` (no FK — audit survives org deletion)
+
+**Cross-scope access prohibition.** ScopeLayer enforces: a request with `org_id = A` cannot read/write credentials with `org_id = B`, even if principal is admin of both. Explicit admin grant (per-credential `allowed_workspaces[]`) is the only cross-scope mechanism. No superuser that bypasses scope isolation.
+
+### §6.5 Audit
+
+Audit is fail-closed by default with a documented degraded read-only mode for audit-storage outages. Hash-chain integrity makes tampering detectable.
+
+**Normal mode — fail-closed.**
+
+Every credential operation (create / read / update / revoke / delete / purge / rotate / refresh / test / access) writes a `credential_audit` row **before** the operation commits. If the audit write fails (storage error, timeout), the operation fails with `AuditError::WriteFailed`. No silent success.
+
+**Write sequence (atomic per operation):**
+
+```
+BEGIN TRANSACTION
+  1. INSERT INTO credential_audit (
+       id, org_id, credential_id, seq, principal_kind, principal_id,
+       operation, result='pending', detail, prev_hmac, self_hmac,
+       emitted_at
+     )
+     -- seq is per-credential_id monotonic (engine computes via COUNT or
+     -- serial sequence scoped to credential_id)
+  2. EXECUTE operation on credentials/pending_credentials
+  3. UPDATE credential_audit SET result = 'success' | 'failure' WHERE id = audit_id
+COMMIT
+```
+
+Failure in step 2 → step 3 writes `result = 'failure'`, transaction commits with audit recording the attempt. Step 1 failure → transaction aborts, operation fails.
+
+**HMAC hash-chain verification.**
+
+Each row stores `prev_hmac` (HMAC of previous audit entry for same credential_id) + `self_hmac` (HMAC of this entry's content chained from prev_hmac).
+
+```
+self_hmac = HMAC-SHA-256(
+    key = audit_chain_key,   // per-org secret, managed by KeyProvider
+    input = prev_hmac || id || credential_id || seq || principal ||
+            operation || result || detail || emitted_at
+)
+```
+
+Verifier walks chain by `(credential_id, seq ASC)`, recomputing `self_hmac` from `(prev_hmac || row content || audit_chain_key)`. Any mutation of a row invalidates all subsequent `self_hmac`s in the chain. Tampering detection → `AuditError::ChainBroken(credential_id, seq)`.
+
+**Degraded read-only mode.**
+
+Triggered when audit storage is unreachable for >5 seconds. Engine enters degraded mode:
+
+- **Read operations continue.** `resolve` still succeeds against cached state; audit writes go to a local file buffer.
+- **Write operations blocked.** `create` / `update` / `revoke` / `delete` / `rotate` all return `ServiceUnavailable` because the audit write gate fails.
+- **Refresh allowed with caveat.** Automatic refresh is blocked (can't audit); manual operator-triggered refresh via explicit override returns `DegradedMode` warning.
+
+Local fallback sink: audit writes to a bounded file buffer (`/var/lib/nebula/audit-fallback.jsonl`, size-capped). When audit storage recovers, a drain task replays buffered entries in order, re-computing hash chain. If chain recomputation fails (e.g., entries went missing), operator notification via `CredentialEvent::AuditChainBroken`.
+
+### §6.6 Redaction
+
+Secrets never appear in logs, errors, debug output, or serialized state dumps. Enforced at the type layer.
+
+**`SecretString` / `SecretBytes`** (from `nebula-schema`):
+
+```rust
+impl fmt::Debug for SecretString {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("[REDACTED]")
+    }
+}
+
+impl fmt::Display for SecretString {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("[REDACTED]")
+    }
+}
+
+// Default Serialize impl: errors or writes "[REDACTED]" depending on
+// the SerializeStage marker (Storage / Transport / Diagnostic).
+impl Serialize for SecretString { /* … */ }
+
+impl SecretString {
+    // Single access point — caller must explicitly opt in.
+    pub fn expose_secret(&self) -> &str { /* … */ }
+}
+```
+
+**Rules:**
+
+- `expose_secret()` only at injection site — HTTP header construction, DB connection string, cryptographic operation. Never at log or error-formatting site.
+- Error types: `Debug` / `Display` impls formatted to omit secret material. Error messages reference credential ID (opaque ULID), never decrypted material.
+- Log filter via `tracing` instrumentation: fields typed `SecretString` / `SecretBytes` auto-redacted by the subscriber.
+
+**Checklist for reviewers** (per `credential-security-review` skill):
+
+- No `format!("{}", secret)` or `format!("{:?}", secret)` without explicit `expose_secret()`.
+- No `secret.to_string()` into log buffer.
+- No `serde_json::to_string(&state_with_secrets)` for diagnostic output.
+
+### §6.7 Zeroization invariants table
+
+Canonical zeroization discipline per lifecycle stage:
+
+| Stage | Memory lives | Zeroize mechanism |
+|---|---|---|
+| Pre-decrypt (from storage) | `Zeroizing<Vec<u8>>` ciphertext + `Zeroizing<Vec<u8>>` wrapped DEK | `ZeroizeOnDrop` (trait) + explicit `drop(buffer)` at boundary |
+| Post-decrypt (plaintext State) | `SecretString` / `SecretBytes` fields inside `C::State` | `ZeroizeOnDrop` on containing struct; serde deserialization wraps in Secret types |
+| Projection (`C::project(&state)`) | `C::Scheme` returned to engine | Scheme's `ZeroizeOnDrop` (where applicable; per §15.2 decision) |
+| Resource boundary (per-request injection) | Scheme material borrowed for HTTP header / DB conn string | Request scope drop zeroizes Scheme |
+| Execution cleanup (abort path) | `ExecutionCredentialStore` state | Explicit `cleanup()` call at execution teardown (per `draft-f25`); Drop is best-effort |
+| Audit `detail` JSONB | Non-sensitive operation metadata | No secret material allowed in detail; enforced by audit-write code path |
+
+**Non-negotiable invariants:**
+
+- Ciphertext decrypt buffer zeroized within one async-task-local scope.
+- Plaintext State never serialized to disk outside encrypted `credentials.encrypted_secret`.
+- `CredentialGuard<S>` RAII wrapper zeroizes Scheme at drop. Guard lifetime tied to resource-boundary usage.
+- Test code uses `SecretString::expose_secret()` only in assertion bodies, never in test output format strings.
+
+### §6.8 Egress control — SSRF mitigation
+
+All outgoing IdP calls go through registered provider endpoints in `provider_registry`. User cannot inject arbitrary URL via credential config — URL comes from `ProviderSpec` (registry read-only consumer surface per §5.5), not user `Credential::Input`.
+
+**SSRF mitigations (layered):**
+
+1. **Endpoint allowlist.** `ProviderSpec.authorize_endpoint` and `ProviderSpec.token_endpoint` are explicit strings set by operator (self-hosted/desktop) or Anthropic-curated (cloud). User-editable `Credential::Input` fields hold only binding variables (client_id, scopes, tenant for Microsoft multi-tenant template), not URLs.
+2. **URL template validation.** Microsoft multi-tenant case (`draft-f20`): template variables validated against per-spec regex (`tenant` must be UUID or "common" / "organizations" / "consumers") at credential activation. Invalid binding → `ResolveError::ProviderBindingInvalid`.
+3. **TLS required.** `reqwest::Client` configured with `min_tls_version(Tls12)`; plain HTTP rejected.
+4. **Private IP blocklist** (cloud mode; optional in self-hosted). Block 10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16, 127.0.0.0/8, 169.254.0.0/16 (AWS IMDSv1), ::1, fe80::/10. Resolved via DNS lookup before HTTP call; if destination resolves to blocked range, request rejected. Desktop mode: allowlist localhost for dev but still blocks link-local IMDSv1.
+5. **Redirect policy.** `reqwest::Client::redirect(Policy::none())` or `Policy::limited(3)` — follow at most a small bounded number, and re-check target against allowlist on each hop.
+
+### §6.9 Session binding
+
+`PendingStore` security for interactive OAuth2 flows:
+
+| Element | Rule |
+|---|---|
+| CSRF state parameter | 128-bit random from CSPRNG, single-use. Stored in `pending_credentials.state_encrypted` along with PKCE verifier. |
+| PKCE code_verifier | 32 bytes random from CSPRNG, base64url-encoded (43 chars). Per RFC 7636. |
+| PKCE code_challenge | `base64url(SHA-256(code_verifier))`. `code_challenge_method = S256` only. `plain` rejected. |
+| Pending state TTL | 10 minutes default (per `CredentialMetadata::pending_ttl`). Expired entries swept by GC job every minute. |
+| Single-use | `get_then_delete` transactional pop: rows are deleted as part of `continue_resolve`. Replay of same state → `PendingError::NotFound`. |
+| Session cookie | `Secure; HttpOnly; SameSite=Lax`. Issued by `nebula-api` after successful credential creation. Lifetime bounded. |
+| GC sweep | Periodic (cadence = 60 s) `DELETE FROM pending_credentials WHERE expires_at < now()`. |
+
+### §6.10 Compromise response
+
+**OUT — Strategy §6.5 queue #8** sub-spec. Tech Spec consumers expect: a documented runbook covering detection (failed-auth spike correlation, anomaly detection, operator-reported compromise), response (auto-revoke compromised credential, quarantine related credentials via cascade per §6.11, audit chain fork detection), and recovery (re-issue with forced reauth, notify affected workflows). Runbook owner is security-lead per register `user-sec-compromise-response`.
+
+### §6.11 Cascade revocation handler — Nit 2 resolution
+
+Cascade revocation uses **audit FK relationships + operator query** rather than a trait method. Rationale (preserves Strategy §3.6 trait-heaviness discipline):
+
+- Cascade is rare — only credentials with explicit parent-child dependency (OAuth2 refresh-token → minted access tokens; AWS STS AssumeRole → session tokens).
+- Dependency relationships are recorded in `credential_audit.detail` JSONB as parent-child markers at token-minting time (e.g., `detail = {"kind": "minted_from", "parent_credential_id": "<uuid>", "grant_type": "refresh_token"}`).
+- Revocation cascade is an operator-driven flow, not a runtime hot path:
+
+```
+When revoking credential P with cascade flag:
+  1. Query credential_audit for rows where
+       detail->>'parent_credential_id' = P.id
+       AND operation = 'created'
+     → list of child credentials.
+  2. For each child, apply soft revoke (state_kind = 'revoked') via engine.
+  3. Audit each cascade-revoke entry with detail.cascade_from = P.id.
+  4. Notify via CredentialEvent::Revoked with cascade_source field.
+```
+
+No trait method required. Revocation API accepts `cascade: bool` flag; handler queries audit DB and iterates. Expensive but rare — acceptable cost per frequency.
+
+## §7 Operational
+
+Runtime behavior under load + failure. Maps register `user-op-*` cluster (7 rows) + `draft-f15/f16` (refresh two-tier coordinator) + failure modes matrix.
+
+### §7.1 Refresh strategy — state vocabulary reconciled
+
+Per Nit 1 from CP2a review, this section consolidates the two vocabularies.
+
+**State vocabulary mapping table:**
+
+| In-memory flow state | Persisted `state_kind` | Notes |
+|---|---|---|
+| `idle` | `active` | Credential at rest, no operation in flight. |
+| `resolving` / `continuing` | `active` (creation time — no row yet) | Transient during `Credential::resolve` / `continue_resolve`. |
+| `pending` | N/A — lives in `pending_credentials` | OAuth2 callback awaited. Not in `credentials` row yet. |
+| `discarded` | N/A — row deleted | Pending TTL expired or user abandoned. |
+| `failed` (transient refresh error, non-terminal) | `active` | Engine retries per backoff; no `state_kind` change. |
+| `refresh_pending` | `refreshing` | Refresh coordinator claimed; about to call `Credential::refresh`. |
+| `refreshing` | `refreshing` | Refresh call in flight. |
+| `reauth_required` | `suspended` | Refresh returned permanent error (e.g., revoked refresh_token). Operator must re-auth via §4.1(a). |
+| `revoked-grace` | `revoked` (with grace window) | Soft revoke, in-flight ops within grace continue. |
+| (terminal) `active` | `active` | Healthy. |
+| (terminal) `revoked` | `revoked` | Post-grace soft-revoke OR hard revoke. |
+| (terminal) `expired` | `expired` | TTL exceeded, no auto-refresh (or auto-refresh failed). |
+
+**Refresh dispatch (resolves §3.4 step 2 forward-dep).**
+
+Engine's per-credential-type refresh is driven by a `RefreshDispatcher` populated at plugin registration. The pattern mirrors resolve dispatch but operates on credential_id instead of slot bindings.
+
+```rust
+/// Per-type refresh function pointer. Closes over the concrete Credential
+/// type C; erased for storage in the registry.
+pub struct RefreshDispatcher {
+    pub(crate) refresh_fn: for<'ctx> fn(
+        &'ctx CredentialContext<'ctx>,
+        &'ctx CredentialId,
+    ) -> BoxFuture<'ctx, Result<RefreshOutcome, RefreshError>>,
+    pub(crate) kind: &'static str, // Credential::KEY, for metrics
+}
+
+// Blanket builder — called by CredentialRegistry::register::<C>().
+impl RefreshDispatcher {
+    pub(crate) fn for_credential<C: Credential>() -> Self {
+        Self {
+            refresh_fn: |ctx, cred_id| Box::pin(refresh_worker::<C>(ctx, cred_id)),
+            kind: C::KEY,
+        }
+    }
+}
+
+// Generic refresh worker — instantiated once per concrete C at monomorphization.
+async fn refresh_worker<C: Credential>(
+    ctx: &CredentialContext<'_>,
+    cred_id: &CredentialId,
+) -> Result<RefreshOutcome, RefreshError> {
+    // 1. L1 in-proc coordinator claim.
+    let l1_permit = ctx.refresh_coordinator.try_claim(cred_id).await;
+    if !l1_permit.granted() {
+        return Ok(RefreshOutcome::CoalescedWithOther);
+    }
+
+    // 2. L2 cross-replica claim (OUT — draft-f17 sub-spec).
+    let claim = ctx.refresh_claim_repo
+        .try_claim(cred_id, CLAIM_TTL)
+        .await?;
+    if claim.claimed_by != ctx.replica_id() {
+        return Ok(RefreshOutcome::CoalescedWithReplica);
+    }
+
+    // 3. Load state (via layer stack per §5.5).
+    let state: C::State = ctx.load_state::<C>(&cred_id.key()).await?.clone();
+
+    // 4. Transition persisted state_kind: active → refreshing.
+    ctx.transition_state_kind(cred_id, StateKind::Refreshing).await?;
+
+    // 5. Call Credential::refresh — typed, dispatched at this call site.
+    let outcome = match C::refresh(ctx, state).await {
+        Ok(new_state) => {
+            ctx.save_state::<C>(cred_id, &new_state).await?;
+            ctx.transition_state_kind(cred_id, StateKind::Active).await?;
+            RefreshOutcome::Refreshed
+        }
+        Err(e) if e.classify() == Severity::Transient => {
+            // Keep state_kind = active; engine retries per backoff.
+            ctx.transition_state_kind(cred_id, StateKind::Active).await?;
+            return Err(e);
+        }
+        Err(e) => {
+            // Permanent — reauth required.
+            ctx.transition_state_kind(cred_id, StateKind::Suspended).await?;
+            return Err(e);
+        }
+    };
+
+    // 6. Release L2 claim.
+    ctx.refresh_claim_repo.release(cred_id, &claim.claim_token).await?;
+
+    // 7. Publish cache invalidation (per §7.2).
+    ctx.eventbus.publish(CacheInvalidation { cred_id: cred_id.clone() });
+
+    Ok(outcome)
+}
+```
+
+The same `for<'ctx> fn(...) -> BoxFuture<...>` pattern underlies resolve dispatch in §3.4 — action macro emits slot bindings with the same erasure shape. Forward-dep closed.
+
+**Proactive refresh.** Engine scheduler polls credentials where `expires_at - now() < refresh_lead_time` (default 5 min) and enqueues refresh tasks. Default cadence: 30 s.
+
+**Reactive refresh.** Downstream call fails with 401 from provider → engine detects `Severity::AuthExpired` and triggers synchronous refresh + retry once.
+
+**Multi-replica coordination** — OUT to `draft-f17`. Two-tier: L1 in-proc `RefreshCoordinator` (parking_lot Mutex keyed by credential_id), L2 cross-replica `RefreshClaimRepo` (§5.5 consumer surface).
+
+### §7.2 Caching
+
+Two-level cache for resolved State. Hot path reads from L1; L2 is the `credentials` table itself.
+
+**L1 — in-proc per replica:**
+
+```rust
+pub struct ResolvedStateCache {
+    entries: AHashMap<CredentialKey, CachedEntry>,
+}
+
+struct CachedEntry {
+    state: Arc<ErasedState>,           // decrypted C::State, type-erased
+    type_id: TypeId,                   // C's TypeId
+    cached_at: Instant,
+    ttl: Duration,                     // from CredentialMetadata::cache_ttl
+}
+```
+
+- Default TTL: 5 minutes.
+- Eviction: TTL expiry + explicit invalidation via `CacheInvalidation` eventbus subscription.
+- No LRU — append-only within TTL; memory bounded by active credentials × state size.
+
+**L2 — `credentials` table.** Every read path on cache miss decrypts from storage. Decrypt cost amortized across cache TTL.
+
+**Invalidation channel.**
+
+```rust
+pub struct CacheInvalidation {
+    pub cred_id: CredentialId,
+    pub reason: InvalidationReason,   // Refreshed | Revoked | Rotated | Updated
+}
+```
+
+Published on `nebula-eventbus` topic `credential.cache_invalidation`. Each replica subscribes + drops its L1 entry on receipt.
+
+**Negative caching.** `NotFound` results cached for 10 s to prevent storm when a workflow references a deleted credential. Cleared on next successful `create` of same key.
+
+**Per-replica vs shared.** L1 is per-replica (not shared). Cross-replica coherence via invalidation events, not shared cache. Eventual consistency with bounded staleness (≤ 1 s typical event propagation).
+
+### §7.3 Retry taxonomy
+
+Per `nebula-error::Classify` + register `user-op-retry`.
+
+| Error class | Retry? | Backoff | Budget |
+|---|---|---|---|
+| `Transient(Network)` — connection error, DNS, 5xx | Yes | Exponential w/ jitter (100ms × 2^n, max 60s, n≤5) | Per-credential: 10/hour |
+| `Transient(Timeout)` — request timed out | Yes | Same as above | Same |
+| `Transient(RateLimited)` — 429 from IdP | Yes | Respect `Retry-After` header; else 60s fixed | Count against budget |
+| `Permanent(AuthExpired)` — 401 from IdP | Reactive refresh + retry once; if still 401 → `Suspended` | No backoff | Trigger §7.1 reactive refresh |
+| `Permanent(Forbidden)` — 403 from IdP | No | — | — |
+| `Permanent(NotFound)` — 404 / credential deleted | No | — | — |
+| `Capability(WrongScheme)` — resolve-site type mismatch | No — programming error | — | — |
+| `Capability(NotSupported)` — operation not supported (e.g., revoke on non-revocable cred) | No | — | — |
+| `Context(*)` — caller-supplied bad params | No | — | — |
+
+Retry budget enforced per-credential to prevent feedback loops. Budget exhausted → `RateLimitExceededLocal`; operator notified via eventbus.
+
+### §7.4 Circuit breaker
+
+Per-credential / per-provider / per-endpoint. Implemented via `nebula-resilience` (existing crate).
+
+Trip conditions:
+- **Per-endpoint:** 5 consecutive `Transient(Network)` or `Transient(Timeout)` in 60 s window → open.
+- **Per-provider:** 10 endpoints tripped within same provider → open at provider level (blocks all resolve attempts for credentials from that provider).
+- **Per-credential:** 3 consecutive `Permanent` errors → open; only manual operator reset.
+
+Half-open: after 30 s, allow 1 probe request. Success → closed; failure → extend open by 60 s.
+
+### §7.5 Concurrency — thundering herd prevention + IdP rate limit
+
+**Single-flight refresh.** `RefreshCoordinator` (in-proc L1 per §7.1 step 1): concurrent refresh attempts for the same credential coalesce — only one calls `Credential::refresh`; others await the result or receive `CoalescedWithOther`.
+
+**IdP rate limit.** Per-provider token-bucket rate limiter in `nebula-resilience`. Provider-specific caps in `ProviderSpec.rate_limit`. Exceeded → `Transient(RateLimited)`.
+
+### §7.6 Distributed coordination
+
+**OUT** — two sub-specs:
+
+- Multi-replica refresh coordination (L2 `RefreshClaimRepo`) — [`draft-f17`](2026-04-24-credential-refresh-coordination.md), in flight.
+- Rotation leader election (`RotationLeaderClaimRepo`) — Strategy §6.5 queue #2, pending.
+- Cache invalidation broadcast — sub-spec of `draft-f17` or separate mechanism-spec (eventbus channel detail).
+
+Tech Spec consumers use the §5.5 consumer interfaces. Producer-side (claim protocol, heartbeat cadence, reclaim on crash, mid-refresh race mitigation) is in the sub-specs.
+
+### §7.7 Failure modes matrix
+
+Behavior per component-down scenario. Bounded degradation per Strategy §1.2 non-goal (fail-closed where safety requires, fail-open for read-only where possible).
+
+| Component down | Reads (resolve) | Writes (create/update/revoke) | Refresh | Notes |
+|---|---|---|---|---|
+| IdP unreachable | OK — stale cache returned | OK (new creds fail at resolve) | Circuit-break; retry per §7.3 | No data loss; eventual recovery |
+| Network partition (engine ↔ storage) | Fail-closed | Fail-closed | Fail-closed | All ops fail until partition heals |
+| Storage DB down | Fail-closed | Fail-closed | Fail-closed | Fatal for service — no cache-only mode |
+| Audit DB down | Fall-through to read-only mode (§6.5) | Fail-closed (audit-fail-closed) | Blocked | Fallback file sink drains on recovery |
+| Cache down (L1 corrupted) | Fall-through to storage | OK | OK | Slower hot path but functional |
+| KMS unreachable (cloud) | New decrypts fail; cached decrypts OK until TTL | Fail-closed (can't encrypt new) | Fail-closed | Restart after KMS recovery |
+| RefreshClaimRepo down | OK (resolve reads cached/stale state) | OK | Falls back to L1-only coordination; cross-replica racing possible | Degraded refresh quality |
+| Eventbus down | OK (cache invalidation delayed, stale for TTL) | OK | OK | Eventual consistency delay up to cache TTL |
+
+### §7.8 Health check
+
+Per-credential periodic `Credential::test()` via engine background task.
+
+**Cadence.** Default 1 hour per `CredentialMetadata::test_cadence`. Override per-credential-type (e.g., DB connection credentials every 5 min; API keys every 24 h).
+
+**Scheduler.** Engine runs `test_scheduler` task: iterates credentials where `TESTABLE = true`, elides if tested within cadence window, otherwise calls `Credential::test(&state)`. Result emitted as `CredentialEvent::HealthChanged { cred_id, outcome }`.
+
+**No side effects.** `test()` invariant (Strategy §2.1 / Tech Spec §2.1): "must not have side effects beyond read operations (no token mint, no resource creation)".
+
+**Result handling:** `Ok(TestOutcome::Healthy)` → no action. `Ok(TestOutcome::Degraded)` → log warning, emit event. `Err(TestError)` → emit `UnhealthyDetected`, operator alert via integration channel.
+
+### §7.9 Observability
+
+Three channels: metrics, traces, structured logs. All bounded-cardinality.
+
+**Metrics (Prometheus-style, via `nebula-metrics`):**
+
+```
+# Counter — cardinality = kinds × outcomes ≈ 400 credential types × 3 outcomes = 1200 series
+credential_resolve_total{kind, outcome}
+  # outcome ∈ {success, error, not_found, cache_hit, cache_miss}
+
+# Histogram — cardinality = kinds × buckets
+credential_resolve_duration_seconds{kind}
+  # buckets: [1e-6, 1e-5, 1e-4, 1e-3, 1e-2, 1e-1, 1]
+
+# Counter
+credential_refresh_total{kind, outcome}
+  # outcome ∈ {refreshed, coalesced, failed_transient, failed_permanent, reauth_required}
+
+# Gauge — cardinality = kinds
+credential_cache_hit_ratio{kind}
+
+# Gauge
+credential_pending_count   # current in-progress interactive flows
+credential_expiring_soon   # credentials expiring in next N hours
+
+# Counter
+audit_write_total{result}      # result ∈ {success, failure, fallback_sink}
+audit_chain_broken_total       # HMAC chain break detections
+```
+
+**No per-credential-ID metric labels** — that would blow cardinality. Only credential kind (type-level) and outcome.
+
+**Traces (OpenTelemetry-style, via `nebula-log`):**
+
+Span per operation. Attributes:
+
+- `credential.kind` — type key
+- `credential.id_hash` — SHA-256 of credential_id (first 16 chars), NOT raw ID if sensitive
+- `credential.operation` — resolve / refresh / revoke / test / create / update / delete
+- `credential.scope.org` — org_id (UUID is OK to span-attribute)
+- `credential.scope.workspace` — workspace_id
+- `credential.result` — outcome
+- `credential.cache.hit` — bool
+
+No secret material or decrypted state in span attributes. Ever.
+
+**Structured logs (via `tracing`):**
+
+| Level | Contents |
+|---|---|
+| `error` | Fatal failures, audit chain breaks, unhandled exceptions |
+| `warn` | Circuit-break trips, reauth required, fallback sink activated |
+| `info` | Normal operations (resolve, refresh, revoke), with non-secret metadata |
+| `debug` | Internal flow states (state_kind transitions, cache hit/miss) |
+| `trace` | Off by default; enable for deep debugging only; strictly no secret material |
+
+Structured fields: `credential_id` (ULID string), `operation`, `result`, `elapsed_ms`, `replica_id`, `trace_id`. `SecretString`-typed fields auto-redacted by `tracing` subscriber.
+
+**Events (eventbus fan-out, via `nebula-eventbus`):**
+
+```rust
+pub enum CredentialEvent {
+    Created { cred_id, kind, scope },
+    Refreshed { cred_id, prev_expiry, new_expiry },
+    Revoked { cred_id, cause, cascade_from: Option<CredentialId> },
+    Expired { cred_id },
+    ExpiringSoon { cred_id, expires_at },
+    HealthChanged { cred_id, outcome },
+    AuditChainBroken { cred_id, seq },
+}
+
+pub struct CacheInvalidation {
+    pub cred_id: CredentialId,
+    pub reason: InvalidationReason,
+}
+```
+
+Consumers: WebSocket push per `draft-f34` (sub-spec queue #6), metrics, integration webhooks.
+
+## §8 Testing
+
+Ten test categories per register `user-test-*` cluster (10 rows). Each category has concrete deliverables, tools, and coverage gates.
+
+### §8.1 Unit tests
+
+**Scope.** Pure primitives: PKCE code_verifier/challenge derivation, HMAC hash-chain computation, URL template substitution, envelope JSON serialization, CredentialKey hashing, `SecretString` redaction behavior.
+
+**Tools.** Standard `#[test]` + `#[cfg(test)]` modules inside `nebula-credential`. No async runtime required for most. `assert_eq!` / `assert!` assertions.
+
+**Target coverage.** ≥ 85 % line coverage on `nebula-credential` primitives (measured via `cargo llvm-cov`). Hot-path code (resolve, project, refresh dispatch) ≥ 95 %.
+
+**CI gate.** `cargo nextest run -p nebula-credential --profile ci --no-tests=pass` per `test-matrix.yml`. Fails PR on any unit test failure.
+
+### §8.2 Integration tests
+
+**Test crate layout:**
+
+```
+nebula-credential/
+├── tests/
+│   ├── credential_lifecycle.rs      # create → refresh → revoke → purge
+│   ├── pending_flow.rs              # OAuth2 interactive with wiremock IdP
+│   ├── pattern2_dispatch.rs         # Pattern 2 action dispatch (phantom + where-clause)
+│   ├── dualauth_resource.rs         # mTLS + Bearer combined
+│   ├── compile_fail_*.rs            # trybuild compile-fail probes
+│   └── common/
+│       └── mod.rs                   # shared fixtures (test credentials, fake registry)
+```
+
+**Tools.**
+
+- `wiremock` — mock OAuth2 token endpoint, revoke endpoint, IdP test endpoint.
+- In-memory `CredentialStore` impl (production fixture, already exists).
+- `tokio::test` runtime.
+- `trybuild` — compile-fail probes for phantom-shim and `#[action]` macro diagnostics.
+
+**Coverage target.** All lifecycle transitions (§4 state machine diagrams) exercised. All 10 OUT markers have integration-level stub tests verifying the pointer works (e.g., `draft-f17` integration: mock `RefreshClaimRepo` and verify L1 L2 two-tier coalesce).
+
+### §8.3 Contract tests (real providers)
+
+**Scope.** Real-IdP round-trips against sandbox accounts to catch provider-side API changes that mocks miss.
+
+**Providers (initial set):**
+
+- Google OAuth2 — test account with test app + workspace.
+- GitHub — test org with test OAuth app.
+- Slack — sandbox workspace + app.
+- AWS SigV4 — test IAM user with sandbox permissions.
+- Azure AD — test tenant.
+
+**Mechanism.**
+
+- `#[ignore]` by default — contract tests don't run on every PR.
+- Nightly CI job via GitHub Actions; secrets injected via `GITHUB_TOKEN` + provider-specific `CONTRACT_TEST_*` env vars.
+- Failures reported to security-lead + dev team via dedicated Slack channel.
+- Test runs periodically even outside PR flow (catch provider-side breaking changes, e.g., Google changing OAuth2 scopes format).
+
+### §8.4 Security tests
+
+**Fuzz (cargo-fuzz):**
+
+- `fuzz_state_param` — OAuth2 state parameter parser.
+- `fuzz_callback_params` — OAuth2 callback URL query parser.
+- `fuzz_pending_serde` — serialized Pending state deserializer (defends against malformed stored rows).
+- `fuzz_envelope_serde` — envelope JSONB deserializer.
+- `fuzz_url_template` — URL template variable substitution.
+
+Run nightly; corpus committed to `nebula-credential/fuzz/corpus/`.
+
+**Property tests (proptest):**
+
+- Crypto: `prop_encrypt_decrypt_roundtrip(data, key, nonce, aad) → data`.
+- HMAC chain: `prop_chain_verify(entries) ⇒ all self_hmacs match`.
+- Zeroize: `prop_drop_zeros_memory(secret) ⇒ buffer is zero after drop` (via miri).
+- URL template: `prop_bind_then_resolve(template, vars) ⇒ concrete URL validates`.
+
+**Miri** (unsafe + zeroize paths):
+
+- `cargo +nightly miri test -p nebula-credential --lib zeroize`
+- Target: `Zeroizing<Vec<u8>>` drop, `SecretString` drop, `CredentialGuard<S>` drop, any `unsafe` blocks in crypto primitives.
+
+### §8.5 Concurrency tests (loom)
+
+**Scope.** `RefreshCoordinator` L1 (in-proc) concurrent-refresh coalescing.
+
+**Model.** Loom simulates 2–3 threads concurrently calling `refresh(cred_id)` → verify only one `Credential::refresh` call reaches the trait method; others receive `CoalescedWithOther`. Covers Mutex semantics + state transition ordering.
+
+**Loom test** example:
+
+```rust
+#[test]
+fn refresh_coalesces_under_concurrent_calls() {
+    loom::model(|| {
+        let coord = Arc::new(RefreshCoordinator::new());
+        let call_count = Arc::new(AtomicUsize::new(0));
+
+        let t1 = {
+            let coord = coord.clone();
+            let call_count = call_count.clone();
+            thread::spawn(move || {
+                if coord.try_claim(&cred_id).granted() {
+                    call_count.fetch_add(1, Ordering::SeqCst);
+                    // simulate refresh work
+                    coord.release(&cred_id);
+                }
+            })
+        };
+        let t2 = { /* same pattern */ };
+
+        t1.join().unwrap();
+        t2.join().unwrap();
+
+        // Exactly one of (t1, t2) must have claimed.
+        assert_eq!(call_count.load(Ordering::SeqCst), 1);
+    });
+}
+```
+
+**L2 cross-replica concurrency** tests via real DB, not loom — in `draft-f17` sub-spec.
+
+### §8.6 Failure injection — chaos
+
+**Tool.** Custom `fault_injector` crate or existing `nebula-testing-chaos` pattern.
+
+**Scenarios (per failure modes matrix §7.7):**
+
+- Storage DB transaction fails mid-write (after audit-insert, before credentials-update) → verify rollback + audit shows `result = 'failure'`.
+- IdP request times out during refresh → verify circuit break + retry per §7.3.
+- Network partition between engine and storage → verify fail-closed to writes, reads from cache.
+- Audit DB unreachable → verify degraded read-only mode, fallback file sink, drain on recovery.
+- Mid-refresh crash (SIGKILL) → verify L2 claim TTL expires + reclaim succeeds (via `draft-f17` harness).
+
+**Gate.** Chaos suite runs nightly. All scenarios must pass; any failure blocks release.
+
+### §8.7 Upgrade tests
+
+**Scope.** Migration correctness + no data loss + rollback safety (forward-migration-safe, no literal rollback).
+
+**Scenarios:**
+
+- `credentials` v1 → v2 state shape migration (when `draft-f36` sub-spec lands). Test: seed v1 rows, run migration, verify all rows readable as v2 + content semantically equivalent.
+- Encryption version bump (key rotation walker per §6.2). Test: rows encrypted with kek_1, run walker, verify all rows rewrapped with kek_2 + kek_1 retirable without data loss.
+- Dialect parity: run same test suite against both Postgres and SQLite backends, assert identical outcomes.
+
+**Rollback "safety".** Not literal rollback; instead, tests verify:
+
+- Forward migration doesn't corrupt old-version rows during transition window.
+- If migration aborts mid-way, partially-migrated rows remain readable (engine handles mixed-version dataset).
+
+### §8.8 Performance tests (CodSpeed)
+
+**Baselines (from spike iter-2 at commit `1c107144`):**
+
+| Bench | Baseline |
+|---|---|
+| `bench_resolve_hot` (H1 cached) | 6.44 ns mean |
+| `bench_resolve_baseline` (synthetic HashMap+downcast) | 5.54 ns mean |
+| `bench_decrypt_hot` (envelope unwrap + decrypt + deserialize) | TBD — land at implementation time; expected ~500 ns |
+| `bench_refresh_inproc` (L1 coordinator path, no IdP call) | TBD — expected ~10 µs |
+| `bench_audit_write` (HMAC compute + DB insert) | TBD — expected ~1 ms |
+
+**Regression gates.** CodSpeed flags any bench >20% slower than committed baseline. CI alerts PR author + dev team.
+
+**Hot path absolute ceiling.** Resolve p95 ≤ 1 µs per Strategy §3.4. Current baseline has ~150× headroom.
+
+### §8.9 Determinism tests
+
+**`Clock` trait** for time-dependent behavior:
+
+```rust
+pub trait Clock: Send + Sync + 'static {
+    fn now(&self) -> SystemTime;
+}
+
+pub struct SystemClock;
+impl Clock for SystemClock {
+    fn now(&self) -> SystemTime { SystemTime::now() }
+}
+
+pub struct FakeClock { current: Arc<Mutex<SystemTime>> }
+impl FakeClock {
+    pub fn advance(&self, d: Duration) { /* ... */ }
+}
+impl Clock for FakeClock { /* returns current */ }
+```
+
+**Deterministic RNG** for PKCE verifier + state parameter generation:
+
+```rust
+pub trait RandSource: Send + Sync + 'static {
+    fn fill_bytes(&self, dest: &mut [u8]);
+}
+
+pub struct OsRandSource;          // production
+pub struct FixedSeedRandSource;   // tests — deterministic sequences
+```
+
+Tests compose `FakeClock` + `FixedSeedRandSource` → deterministic PKCE + state + TTL outcomes. No flaky time-based or random-based tests.
+
+### §8.10 Test fixtures
+
+**Generated test credentials.**
+
+```rust
+// macro shorthand
+let cred = fixture_credential!(
+    kind: "oauth2.google",
+    client_id: "test-client",
+    scopes: ["email", "profile"],
+);
+
+// Emits a typed Credential struct seeded with fake OAuth2 state
+// (fake access_token, fake refresh_token, fake expires_at).
+```
+
+Fixture material has a fixed deterministic pattern (e.g., `"test-" + kind + "-" + seed`) so test logs + traces are self-identifying.
+
+**No real secrets in CI.** Enforced by:
+
+- Pre-commit hook: `secrets-scanner` runs on staged files; rejects commits containing patterns matching real credential formats (AWS key IDs, GitHub tokens, Google OAuth client secrets).
+- CI gate: secondary `detect-secrets` scan on every push.
+- Contract test credentials (§8.3) injected via GitHub Actions secrets — never committed.
+
 ---
 
-**Checkpoint 2a ends here.** §6 Security + §7 Operational + §8 Testing follow in Checkpoint 2b. §9–§16 in Checkpoints 3 + 4.
+**Checkpoint 2b ends here.** §9–§13 follow in Checkpoint 3, §14–§16 in Checkpoint 4.
