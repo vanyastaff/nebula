@@ -49,6 +49,8 @@ related:
 
 **Freeze policy.** §2 Foundational decisions and §3 Type system contract are frozen as of Checkpoint 1 review (commit `d5045774`). Supersede requires ADR. §4 Concerns classification and §5 Prototype spike plan freeze after Checkpoint 2 review; §5 may receive minor narrative updates as spike iteration outcomes land (record updates as `Checkpoint 2.N` revisions, not supersede). §6 lands in Checkpoint 3.
 
+**Amendments via ADR.** When §2 / §3 content is superseded, the amending ADR is linked inline at the amended paragraph (e.g. "*Superseded by ADR-NNNN*" prefix) and the replacement text is inserted below. Strategy remains the primary reader entry point; ADRs provide decision-record depth. Active amendments as of Checkpoint 2: [ADR-0035](../../adr/0035-phantom-shim-capability-pattern.md) amends §3.2 "On `dyn` semantics" paragraph + §3.3 pseudo-Rust example + §3.3 closing paragraph.
+
 **Terminology.** "Strategy Document" = this file (decisions). "Tech Spec" = single production document written post-prototype (implementation-ready design). "Deferred Concerns Register" = `docs/tracking/credential-concerns-register.md` (living tracking doc, updated as sub-specs land).
 
 ## §1 Problem statement
@@ -183,32 +185,51 @@ pub trait BitbucketCredential: Credential + Sealed {}
 
 This closes finding #32 of the draft (non-dyn-safe projections of `C::Scheme` in paper design) by refusing to carry scheme information in the service trait at all.
 
-**On `dyn` semantics — what the spike must validate.** The `dyn BitbucketBearer` in `CredentialRef<dyn BitbucketBearer>` is a **nominal bound** for compile-time type-checking, **not a classical vtable trait object**. `Credential` itself has 4 associated types and methods using them — turning `Credential` directly into a vtable trait object requires either specifying all four assoc types (`dyn Credential<Input=_, State=_, Scheme=_, Pending=_>`) or excluding methods via `where Self: Sized`. `dyn BitbucketBearer` inherits the same constraint through its supertrait chain.
+**On `dyn` semantics — what the spike must validate.** *(Superseded by [ADR-0035](../../adr/0035-phantom-shim-capability-pattern.md) — original paragraph conflated type well-formedness with runtime dispatch. Replacement below.)*
 
-Runtime path is therefore **type-erased**: the handle is `CredentialKey` (carried alongside `PhantomData<fn() -> dyn BitbucketBearer>` in H1, or via macro-generated binding in H2/H3); resolve returns `Box<dyn AnyCredential>` — `AnyCredential` is a separate, narrower object-safe trait by design (no assoc types in its method signatures, by construction); downcast to concrete `T: BitbucketBearer` happens at the use site. **The `dyn` in `CredentialRef<dyn BitbucketBearer>` is for compile-time signature checking; runtime never holds a vtable pointer to `dyn BitbucketBearer` directly.**
+Two independent compile-time concerns apply to `dyn` in the credential subsystem:
 
-Spike must confirm this resolution path compiles end-to-end on the Bitbucket triad and that the macro-generated downcast at the use site type-checks. If reader (or spike agent) attempts to materialize `dyn BitbucketBearer` as a classical vtable object, that will fail compile — and the failure is **expected**, not evidence the pattern is broken.
+1. **Type well-formedness.** Rust rejects `dyn T` at the point of use if `T` has any unspecified associated types in its supertrait chain (`E0191`). `Credential` has 4 assoc types (`Input`, `State`, `Scheme`, `Pending`); `dyn Credential` requires all four specified; `dyn BitbucketCredential` inherits via its supertrait; and any capability sub-trait with `BitbucketCredential` supertrait inherits transitively. Therefore the form `CredentialRef<dyn BitbucketBearer>` (where `BitbucketBearer: BitbucketCredential`) is **not well-formed**. ADR-0035 introduces the phantom-shim pattern that provides a well-formed `dyn` marker for Pattern 2 and Pattern 3 positions; see [§3.3](#33-capability-binding--blanket-sub-trait-pattern) for the canonical form.
+
+2. **Vtable materialization.** Even when `dyn T` is well-formed, trait methods declared `where Self: Sized` are excluded from the vtable — the vtable carries only the methods callable through a dyn pointer. Runtime dispatch in the credential subsystem is type-erased through `AnyCredential` (a narrower object-safe trait, by construction without assoc-typed methods) + `TypeId` registry + downcast to concrete `T` at use site. The `dyn` in `CredentialRef<dyn FooPhantom>` is a compile-time bound for matching; runtime never holds a vtable pointer to `dyn FooPhantom` directly.
+
+Spike must confirm both layers on the Bitbucket triad: (a) the phantom form compiles at the action declaration, (b) the macro-generated downcast at the use site type-checks. Pattern 1 (concrete `CredentialRef<SlackOAuth2Credential>`) is unaffected — no `dyn` projection, no well-formedness gap.
 
 ### §3.3 Capability binding — blanket sub-trait pattern
 
 Capability requirements live on a separate layer — a sub-trait with blanket impl over service-trait types whose `Credential::Scheme` satisfies the capability.
 
-Intent (pseudo-Rust, illustrative):
+Intent (pseudo-Rust, illustrative — canonical two-trait form per [ADR-0035](../../adr/0035-phantom-shim-capability-pattern.md)):
 
 ```rust
-// Capability-constrained sub-trait — derived, not hand-implemented.
-pub trait BitbucketBearer: BitbucketCredential {}
+// Module-private sealing — see ADR-0035 §3 for per-crate placement rationale.
+mod sealed { pub trait Sealed {} }
 
+// "Real" capability trait — supertrait-chained for compile-time constraint.
+// Used only for blanket-impl eligibility; NOT usable in dyn positions.
+pub trait BitbucketBearer: BitbucketCredential {}
 impl<T> BitbucketBearer for T
 where
     T: BitbucketCredential,
     T::Scheme: AcceptsBearer,
 {}
 
-// Consumer (action) demands capability-bound service trait:
+// Sealed blanket — only types satisfying BitbucketBearer gain sealed
+// membership. sealed::Sealed is crate-private — external crates cannot
+// impl it, so they cannot forge phantom membership.
+impl<T: BitbucketBearer> sealed::Sealed for T {}
+
+// Phantom capability trait — dyn-safe marker for dyn positions.
+// NO Credential supertrait → well-formed as a type.
+pub trait BitbucketBearerPhantom: sealed::Sealed + Send + Sync + 'static {}
+impl<T: BitbucketBearer> BitbucketBearerPhantom for T {}
+
+// Consumer (action) — uses the phantom in the dyn position:
 #[action(credential)]
-pub bb: CredentialRef<dyn BitbucketBearer>,
+pub bb: CredentialRef<dyn BitbucketBearerPhantom>,
 ```
+
+The `#[capability]` macro (Tech-Spec-material per ADR-0035 §4) expands a single capability trait declaration into the full shape above — user-facing code writes only the "real" trait; the phantom, sealed module, and blanket impls are macro-emitted. `#[action]` macro translates `CredentialRef<dyn BitbucketBearer>` in user syntax to `CredentialRef<dyn BitbucketBearerPhantom>` in generated code (or rejects with guidance diagnostic — Tech Spec decision).
 
 Resolution walk:
 
@@ -216,7 +237,7 @@ Resolution walk:
 - `BitbucketPat` → `Scheme = BearerScheme` → `AcceptsBearer` → satisfies `BitbucketBearer` ✓
 - `BitbucketAppPassword` → `Scheme = BasicScheme` → does not implement `AcceptsBearer` → does not satisfy `BitbucketBearer` — **compile error** at action resolution ✓
 
-Service grouping (Bitbucket-ness) lives in one layer; capability (Bearer-ness) lives in another. Orthogonal. The `dyn BitbucketBearer` in `CredentialRef<dyn BitbucketBearer>` is a nominal bound for compile-time type-checking per §3.2 — the runtime path is type-erased through `AnyCredential` + downcast, not a direct vtable trait object on `BitbucketBearer`.
+Service grouping (Bitbucket-ness) lives in one layer (the "real" `BitbucketBearer` trait via its supertrait chain to `BitbucketCredential`); capability (Bearer-ness) lives in another (the blanket's `T::Scheme: AcceptsBearer` where-clause). Orthogonal. The `dyn BitbucketBearerPhantom` in `CredentialRef<dyn BitbucketBearerPhantom>` is well-formed per [ADR-0035](../../adr/0035-phantom-shim-capability-pattern.md) (phantom trait has no supertrait carrying unspecified associated types). Runtime path remains type-erased through `AnyCredential` + `TypeId` registry + downcast per §3.2 — runtime never holds a vtable pointer to `dyn BitbucketBearerPhantom` directly.
 
 ### §3.4 `CredentialRef<C>` — three hypotheses for prototype
 
@@ -311,7 +332,7 @@ Labels are mutually exclusive by intent. A single concern lives in one bucket; c
 
 | Category | Total | strategy-blocking | tech-spec | sub-spec | impl-phase | product-policy | process |
 |---|---|---|---|---|---|---|---|
-| Type system | 11 | 10 | 1 | — | — | — | — |
+| Type system | 12 | 10 | 2 | — | — | — | — |
 | Sealed / plugin | 4 | — | 2 | 1 | — | 1 | — |
 | Patterns + service grouping | 3 | — | 3 | — | — | — | — |
 | Resource-per-capability | 2 | 2 | — | — | — | — | — |
@@ -335,7 +356,7 @@ Labels are mutually exclusive by intent. A single concern lives in one bucket; c
 | User-list integration | 4 | — | 2 | — | — | 2 | — |
 | User-list data | 4 | — | 3 | — | — | 1 | — |
 | User-list meta | 5 | — | 1 | 2 | 1 | 1 | — |
-| **Total** | **128** | **12** | **81** | **16** | **4** | **7** | **8** |
+| **Total** | **129** | **12** | **82** | **16** | **4** | **7** | **8** |
 
 Labels clarified in §4.1 (added `process` as 6th label for workstream-meta findings). Counts rebuilt on every register revision per register's own maintenance rules.
 

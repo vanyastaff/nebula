@@ -58,6 +58,7 @@ All strategy-blocking findings resolved in Checkpoint 1 or deferred to spike val
 | critique-c6 | Bitbucket AppPassword vs Bearer service trait conflict | strategy-blocking | decided | Strategy §3.2–§3.3 — pure marker trait + blanket sub-trait with capability bound |
 | critique-c10 | Triggers / multi-step / refresh-race compat not sketched in spike | strategy-blocking | locked-post-spike | Spike requires 5 compat sketches in NOTES.md (Strategy §Spike plan) |
 | critique-c11 | `Credential` trait heaviness un-flagged | tech-spec-material | decided | Strategy §3.6 — addition discipline policy (ADR/alt/dyn-impact required per new assoc type / method / flag) |
+| arch-phantom-shim-convention | Two-trait phantom-shim pattern with per-crate sealed placement for capability traits in `dyn` positions | tech-spec-material | decided | [ADR-0035](../adr/0035-phantom-shim-capability-pattern.md) — supersedes Strategy §3.2/§3.3 portions; spike iter-1 validated first instance (commit `acfec719`) |
 
 ## Sealed / plugin / registration
 
@@ -302,16 +303,16 @@ All strategy-blocking findings resolved in Checkpoint 1 or deferred to spike val
 - **Product-policy rows** updated only when the product decision itself changes (via product ADR); independent of engineering cadence.
 - **Label / status counts audited** at every register revision — totals table rebuilt when rows are added, removed, or relabeled. Mismatched counts are a register bug.
 
-## Current totals (audited 2026-04-24 seed revision)
+## Current totals (audited 2026-04-24 — after ADR-0035 landing)
 
 | Label | Count | Notes |
 |---|---|---|
 | strategy-blocking | 12 | All resolved in Strategy §2/§3 or locked-post-spike |
-| tech-spec-material | 81 | Most `locked-post-spike`; unlock with Tech Spec |
+| tech-spec-material | 82 | Most `locked-post-spike`; unlock with Tech Spec |
 | sub-spec | 16 | Each row has a landing-order entry in Strategy §4.3 |
 | implementation-phase | 4 | Routine execution tasks |
 | product-policy | 7 | Frozen or awaiting product-level decision |
 | process | 8 | Findings about the redesign workstream itself |
-| **Total** | **128** | Counts audited at each register revision |
+| **Total** | **129** | Counts audited at each register revision |
 
 Totals rebuilt on every register revision — see maintenance rules below.
