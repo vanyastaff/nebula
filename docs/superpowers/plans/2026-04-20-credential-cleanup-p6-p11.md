@@ -29,7 +29,7 @@
 | **P7** | Pending + backup repos in storage | **Landed** | `pending.rs`, `backup.rs` (feature-gated with storage features) |
 | **P8** | Engine `credential/`: resolver, registry, executor, rotation orchestration | **Landed** | `crates/engine/src/credential/` (incl. `rotation/scheduler.rs`); engine `feature = "rotation"` |
 | **P9** | Engine token refresh HTTP (`reqwest`) | **Landed** | `crates/engine/src/credential/rotation/token_refresh.rs`; `reqwest` in `crates/engine/Cargo.toml` |
-| **P10** | API OAuth HTTP ceremony | **Landed** | `crates/api/src/credential/{oauth_controller.rs,flow.rs,state.rs,mod.rs}` |
+| **P10** | API OAuth HTTP ceremony | **Landed** (axum convention, not ADR-0031's aspirational `credential/` subdirectory — see [ADR-0031 amendment 2026-04-24-A](../../adr/0031-api-owns-oauth-flow.md)) | `crates/api/src/handlers/credential_oauth.rs` (594 LOC controller) + `crates/api/src/handlers/credential.rs` (wrapper) + `crates/api/src/services/oauth/{flow.rs, http.rs, state.rs, mod.rs}` + `crates/api/src/routes/workspace.rs` (wiring) + `crates/api/tests/e2e_oauth2_flow.rs` (316 LOC E2E). Feature-gated under `credential-oauth`. |
 | **P11** | Consumers + MATURITY honesty | **Landed** | Imports use `nebula_credential::…` / `nebula_storage::credential::…`; `docs/MATURITY.md` row for `nebula-credential` documents engine-owned runtime |
 
 ---

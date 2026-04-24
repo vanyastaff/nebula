@@ -25,10 +25,10 @@ related:
 
 **Builds on partially-completed P6-P11 cleanup** (CP6 correction 2026-04-24 Round 7 — prior CP5 claim «all landed» was wrong). ADRs [0028](../../adr/0028-cross-crate-credential-invariants.md) (cross-crate invariants), [0029](../../adr/0029-storage-owns-credential-persistence.md) (storage owns persistence), [0030](../../adr/0030-engine-owns-credential-orchestration.md) (engine owns orchestration), [0031](../../adr/0031-api-owns-oauth-flow.md) (API owns OAuth HTTP), [0032](../../adr/0032-credential-store-canonical-home.md) (CredentialStore home), [0033](../../adr/0033-integration-credentials-plane-b.md) (Plane B integration credentials), and [0034](../../adr/0034-schema-secret-value-credential-seam.md) (SecretValue schema seam) all accepted.
 
-**Actual landing status** (verified via `ls crates/*/src/credential/` 2026-04-24 Round 7):
+**Actual landing status** (verified 2026-04-24 Round 7 + Gate 1 amendment 2026-04-24):
 - **P6-P9 landed** ✓ — `crates/storage/src/credential/{backup.rs,key_provider.rs,layer/,memory.rs,pending.rs}` + `crates/engine/src/credential/{executor.rs,refresh.rs,registry.rs,resolver.rs,rotation/}`.
-- **P10 NOT landed** ✗ — `crates/api/src/credential/` directory is empty despite plan file [`2026-04-20-credential-cleanup-p6-p11.md:26-33`](../plans/2026-04-20-credential-cleanup-p6-p11.md) claiming «Landed» with `{oauth_controller.rs,flow.rs,state.rs,mod.rs}`. OAuth HTTP ceremony from ADR-0031 has NOT migrated to `nebula-api`. This is a plan-doc ↔ code-state drift that **Gate 1 (§15.12)** closes.
-- **P11 partial** — import migration done (`nebula_credential::…` + `nebula_storage::credential::…` paths used by consumers), but MATURITY row truth + OAuth-specific consumer migration tied to P10 completion. Tech Spec assumes the post-cleanup architecture: `nebula-credential` = pure contract trait + scheme DTOs + §12.5 primitives; `nebula-storage` owns persistence layers (`EncryptionLayer` / `CacheLayer` / `AuditLayer` / `ScopeLayer` + `KeyProvider`); `nebula-engine` owns orchestration (`CredentialResolver` / `RefreshCoordinator` / rotation scheduler / `token_refresh.rs` HTTP); `nebula-api` owns OAuth flow HTTP ceremony (`oauth_controller.rs` / `flow.rs` / `state.rs`).
+- **P10 landed under axum convention** ✓ (revised Gate 1 finding — see ADR-0031 amendment 2026-04-24-A). CP6 initially claimed «P10 NOT landed» based on incomplete verification (`ls crates/api/src/credential/` returning empty). Actual structure: `crates/api/src/handlers/credential_oauth.rs` (594 LOC controller) + `crates/api/src/handlers/credential.rs` (wrapper) + `crates/api/src/services/oauth/{flow.rs, http.rs, state.rs, mod.rs}` + route wiring in `routes/workspace.rs` + `tests/e2e_oauth2_flow.rs` (316 LOC E2E). Feature-gated under `credential-oauth`. Security invariants §4.1-§4.6 of ADR-0031 preserved at landed paths. Axum convention (`handlers/` + `services/`) is idiomatic for `nebula-api`; the `credential/` subdirectory ADR-0031 §1 originally prescribed would split one domain along a path axis inconsistent with webhook/auth/workflow handlers. [ADR-0031 amendment 2026-04-24-A](../../adr/0031-api-owns-oauth-flow.md) reconciles the aspirational paths with landed structure.
+- **P11 partial** — import migration done (`nebula_credential::…` + `nebula_storage::credential::…` paths used by consumers); consumer migrations complete for routes/handlers wiring; MATURITY row for `nebula-api` stays at «credential-oauth feature-gated; awaiting E2E stability» honest status until feature flips to default. Tech Spec assumes the post-cleanup architecture: `nebula-credential` = pure contract trait + scheme DTOs + §12.5 primitives; `nebula-storage` owns persistence layers (`EncryptionLayer` / `CacheLayer` / `AuditLayer` / `ScopeLayer` + `KeyProvider`); `nebula-engine` owns orchestration (`CredentialResolver` / `RefreshCoordinator` / rotation scheduler / `token_refresh.rs` HTTP); `nebula-api` owns OAuth flow HTTP ceremony (`oauth_controller.rs` / `flow.rs` / `state.rs`).
 
 **Tech Spec re-shapes the contract trait, not the layer boundaries.** Amendments §15.3-§15.10 (added 2026-04-24 CP5 per 3-stakeholder consensus session) introduce capability sub-trait split, `AuthScheme` sensitivity dichotomy, fatal duplicate-KEY registration, `SchemeGuard` + `SchemeFactory` for refresh hook, capability-from-type authority, and `PendingStore::consume` atomicity contract. **The sub-trait split (§15.4) preserves ADR-0035 phantom-shim dyn-safety** — Pattern 2 / Pattern 3 `dyn XPhantom` continues to work; if `dyn Refreshable` etc. are needed for runtime dispatch, parallel phantom shims are introduced via the same ADR-0035 mechanism (or ADR-0035 superseded if a structural gap surfaces during П1 scaffolding).
 
@@ -3622,32 +3622,31 @@ CP5 matrix superseded by CP6 after Rounds 6-7 re-engagement under active-dev fra
 
 Tech-lead Round 7 flip-to-B specifies exactly three gates that must close before П1 trait-scaffolding implementation starts. Each gate is a concrete PR scope, not a vague trigger.
 
-#### §15.12.1 Gate 1 — P10 cleanup completion + doc correction
+#### §15.12.1 Gate 1 — P10 doc reconciliation (CLOSED 2026-04-24 amendment)
 
-**Scope:** OAuth HTTP ceremony moves from `nebula-credential` (current home of `credentials/oauth2_flow.rs` fragment, or wherever the implementation currently lives post P6-P9 migration) to `crates/api/src/credential/` per ADR-0031.
+**Original scope (CP6 Round 7):** code migration to `crates/api/src/credential/` per ADR-0031 §1 prescription + doc correction.
 
-**Target crate state:**
-- `crates/api/src/credential/mod.rs` — module root.
-- `crates/api/src/credential/oauth_controller.rs` — `GET /credentials/:id/oauth2/auth` + `GET/POST /credentials/:id/oauth2/callback` endpoints.
-- `crates/api/src/credential/flow.rs` — HTTP client (reqwest) for token endpoint exchange + URI construction.
-- `crates/api/src/credential/state.rs` — CSRF token generation + pending-state correlation.
+**Revised scope post-verification:** P10 was **functionally landed** during the original cleanup track under axum convention (`crates/api/src/handlers/credential_oauth.rs` + `crates/api/src/services/oauth/`), not under ADR-0031's aspirational `credential/` subdirectory. CP6 Round 7 framing «P10 NOT landed» was based on incomplete verification (only `ls crates/api/src/credential/` returning empty; did not check `handlers/` or `services/`). Actual gap: docs drift (plan doc + ADR §1 paths + Tech Spec §0 claim), not code absence.
 
-**Doc corrections in the same PR:**
-- `docs/superpowers/plans/2026-04-20-credential-cleanup-p6-p11.md:26-33` — P10 status from «Landed» to accurate state (pre-Gate-1 truth: «not landed, OAuth HTTP remains in nebula-credential pending migration»; post-Gate-1 truth: «Landed» with current-crate evidence).
-- Tech Spec §0 — keep the corrected «Actual landing status» paragraph (added CP6); no further §0 change needed after Gate 1 lands.
-- `docs/MATURITY.md` `nebula-api` row — integration column updated if P10 changes it.
+**Gate closure = doc-sync PR** (this commit):
+- ADR-0031 amendment 2026-04-24-A applied (path reconciliation table + axum-convention rationale).
+- `p6-p11.md:P10` line updated with landed paths + feature-gate evidence.
+- Tech Spec §0 «Actual landing status» updated with landed-under-axum-convention narrative.
+- Register row `gate-p10-landing` flipped to `decided` with this commit ref.
 
-**Security invariants preserved** (per ADR-0031 §7 + credential cleanup design §7):
-- PKCE mandatory S256, no `plain` fallback.
-- CSRF token 128-bit, single-use, `subtle::ConstantTimeEq` comparison.
-- State parameter crypto-bound (HMAC over `{csrf_token || credential_id || expires_at}`).
-- reqwest: TLS-only (rustls), redirects capped at 5, per-call timeout ≤ 30s, response body cap 1 MiB.
-- Token endpoint URL allowlist from `allowed_token_endpoints` workflow-config binding.
-- Zeroize on partial failure (timeout, connection reset, truncated response).
+**Security invariants §4.1-§4.6 of ADR-0031 preserved at landed paths** (verified):
+- PKCE S256 mandatory — `services/oauth/flow.rs` construction path
+- CSRF HMAC-bound state — `services/oauth/state.rs` `OAuthStateSigner`
+- reqwest TLS+timeout+body-cap — `services/oauth/http.rs`
+- URL allowlist — per-credential config check (at callback handler)
+- Zeroize on partial failure — request body + response path (service layer)
+- Feature-gated `credential-oauth` — `crates/api/Cargo.toml` `[features]`
 
-**Estimated effort:** 2 PRs (code move + security-invariant test harness). `feature-gated` under `credential-oauth` default-off until E2E `crates/api/tests/e2e_oauth2_flow.rs` goes green.
+**What was NOT changed:** zero code moves, zero file renames. Axum convention preserved. Applying strict ADR-0031 §1 letter would require moving 594 LOC controller + multiple service files + updating all imports for no functional benefit (landed structure is already idiomatic).
 
-**Gate closes when:** `crates/api/src/credential/` contains the 4 files listed, p6-p11.md and Tech Spec §0 reflect accurate state, E2E integration test green.
+**What Gate 1 closure unblocks:** Tech Spec §0 honest baseline now matches code. Gate 3 spike (already landed at `f36f3739`) can reference accurate P10 status. П1 scaffolding PR writes against post-cleanup truth, not aspirational structure.
+
+**Remaining follow-up (not blocking Gate 2 or П1):** MATURITY row `nebula-api` integration column still reflects «credential-oauth feature-gated» honest status until E2E test stability allows feature-default flip. Tracked as post-П11 activity per ADR-0031 Follow-ups §.
 
 #### §15.12.2 Gate 2 — N7 registry standalone fix
 

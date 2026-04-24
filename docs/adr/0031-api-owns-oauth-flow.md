@@ -1,7 +1,7 @@
 ---
 id: 0031
 title: api-owns-oauth-flow
-status: accepted
+status: accepted (amendment 2026-04-24-A applied — path reconciliation to axum convention)
 date: 2026-04-20
 supersedes: []
 superseded_by: []
@@ -20,6 +20,43 @@ linear: []
 ---
 
 # 0031. `nebula-api` owns OAuth flow HTTP ceremony
+
+## Amendment 2026-04-24-A — path reconciliation to axum convention (post-P10 landing)
+
+Original §1 Scope, §2 n8n parity table, and §Seam/verification describe paths under an aspirational `crates/api/src/credential/` subdirectory. **Actual P10 landing uses the axum convention (`handlers/` for HTTP endpoint functions, `services/` for business logic)**, consistent with how `nebula-api` organizes webhook, auth, and workflow handlers. Creating a `credential/` subdirectory would be an antipattern — splits axum-idiomatic structure along a domain axis that doesn't match the rest of the crate.
+
+**Path reconciliation table** — aspirational (original ADR) → landed (actual structure):
+
+| Original ADR §1/§2/§Seam | Landed path (axum convention) |
+|---|---|
+| `crates/api/src/credential/mod.rs` | — (no subdirectory created; integrates via `handlers/mod.rs` + `services/mod.rs`) |
+| `crates/api/src/credential/oauth_controller.rs` | `crates/api/src/handlers/credential_oauth.rs` (594 LOC, `pub fn router() -> Router<AppState>`) + `crates/api/src/handlers/credential.rs` (wrapper re-exporting oauth surface) |
+| `crates/api/src/credential/flow.rs` | `crates/api/src/services/oauth/flow.rs` (auth URI construction + token exchange logic) + `crates/api/src/services/oauth/http.rs` (reqwest client configuration per §4.4) |
+| `crates/api/src/credential/state.rs` | `crates/api/src/services/oauth/state.rs` (`OAuthStateSigner` + HMAC-bound state per §4.3) |
+| `crates/api/src/credential/*` feature gate | `crates/api/Cargo.toml` `[features] credential-oauth = ["dep:nebula-credential", "dep:reqwest", "dep:hmac", "dep:sha2", "dep:zeroize"]` — landed and consistent |
+| `crates/api/tests/e2e_oauth2_flow.rs` | `crates/api/tests/e2e_oauth2_flow.rs` (316 LOC, `#![cfg(feature = "credential-oauth")]`) — landed at the ADR-prescribed path |
+
+**Security invariants §4.1-§4.6 are preserved** — PKCE S256 mandatory, CSRF HMAC-bound state, reqwest TLS+timeout+body-cap, URL allowlist, zeroize on partial failure. Enforced in landed code under the axum-convention paths; the ADR §4 prose still applies verbatim to the landed files.
+
+**Route wire-up** — landed, feature-gated:
+- `crates/api/src/routes/mod.rs` — `#[cfg(feature = "credential-oauth")]` routes mounted.
+- `crates/api/src/routes/workspace.rs` — credential routes included in workspace router.
+- `crates/api/src/state.rs` — `AppState` extended with OAuth deps under feature gate.
+- `crates/api/src/extractors/` + `crates/api/src/models/` — OAuth extractors + models.
+
+**What this amendment does NOT change:**
+- §4.1-§4.6 security invariants — still canon-level; CI-enforced at landed paths.
+- §5 `reqwest` base dep requirement — landed (feature-gated until E2E test is consistently green).
+- §6 feature gate during rollout — landed (`credential-oauth` not default).
+- §7 CI matrix requirement (`--all-features` + `--no-default-features`) — required job.
+
+**Rationale for reconciliation vs code-restructure:** axum convention (handlers/ + services/) is correct for `nebula-api`; creating a `credential/` subdirectory would split one domain along a path axis that's inconsistent with the rest of the crate (webhook, auth, workflow handlers all under `handlers/`). Original ADR-0031 §1 path prescription was aspirational from the spec perspective before axum-structure implications were evaluated. Post-P10 landing, this amendment reconciles the record with the idiomatic structure.
+
+**Register cross-reference:** `gate-p10-landing` row closed via the amendment commit (doc-sync, not code move); P10 was functionally landed during the original cleanup track but documented under aspirational paths.
+
+Remaining sections (§Context, §Decision §1-§8, §Consequences, §Alternatives, §Seam, §Follow-ups) retain original text for diff readability. Readers should substitute landed paths per table above when applying the ADR to current code.
+
+---
 
 ## Context
 
