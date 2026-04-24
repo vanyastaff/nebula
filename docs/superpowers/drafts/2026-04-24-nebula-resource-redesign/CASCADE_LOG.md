@@ -163,6 +163,36 @@
 
 **Next:** Phase 3 — Strategy Document draft. architect-led, CP1 §1-§3 → CP2 §4-§5 → CP3 §6 cadence per credential pattern. Each CP: draft → spec-auditor audit → tech-lead ratify → iterate once. Freeze on three signatures.
 
+### 2026-04-24 T+~120min — Phase 3 gate PASSED (Strategy FROZEN at CP3)
+
+- 3 checkpoints executed with efficient batching:
+  - CP1 draft (architect) → CP1 review parallel (spec-auditor PASS_WITH_MINOR + tech-lead RATIFY_WITH_EDITS)
+  - CP1 edits + CP2 draft (architect, batched) → CP2 review parallel (both PASS/RATIFY_WITH_EDITS)
+  - CP2 edits + CP3 draft (architect, batched) → FROZEN
+- Strategy total: **7920 words / 453 lines / 6 sections** (§0-§6) at `docs/superpowers/specs/2026-04-24-nebula-resource-redesign-strategy.md`
+
+**Key §4 decisions ratified:**
+- §4.1 Resource trait reshape: `type Credential: Credential` per Tech Spec §3.6 verbatim
+- §4.2 Separate `on_credential_revoked` method (not dual-semantics on refresh); invariant-prescriptive default ("no further authenticated traffic"); downgrade of §5.5 to §4.2 footnote (credential Tech Spec §Credential::revoke already exists at line 228)
+- §4.3 Parallel `join_all` dispatch with per-resource timeout isolation (NOT global) — cascade-failure invariant
+- §4.4 Daemon/EventSource: **engine-fold** (tech-lead strong endorse; no scheduler-shaped crate exists; TriggerAction precedent; atomic consumer migration)
+- §4.5 Manager file-split into 5 submodules: mod.rs, options.rs, gate.rs, execute.rs, rotation.rs
+- §4.6 drain-abort fix absorbed into Manager refactor (not standalone)
+- §4.9 Observability as DoD: `tracing::span!` + counter + `ResourceEvent::CredentialRefreshed` at every CP review gate
+
+**§5 open items (5 bullets):** AcquireOptions treatment, Runtime/Lease collapse trigger, NoCredential convenience symmetry, Phase 4 spike trigger, Transport test gap.
+
+**§6 post-validation roadmap:** 6 subsections covering cascade milestones, implementation wave, post-merge validation, MATURITY transition (frontier → core), future cascades, register ownership.
+
+**Budget used across Phase 3:** ~50 min agent-effort (architect 3 dispatches + spec-auditor 2 + tech-lead 2). Well inside envelope.
+
+**Next (pragmatic reprioritization for session budget):**
+- ~~Phase 4 spike~~ → DEFERRED to post-cascade implementation preamble (trigger per Strategy §5.5; will run when trait-reshape implementation PR is drafted)
+- Phase 5 ADR — dispatch now (primary: Resource::Credential adoption)
+- Phase 7 Register — dispatch now (living concerns doc)
+- Phase 6 Tech Spec CP1 (§0-§3) — dispatch if time allows; otherwise flag in Phase 8 as post-cascade pickup
+- Phase 8 Summary — always produced regardless
+
 ---
 
 *This log is append-only during cascade. Each phase gate adds an entry. Soft escalations logged prominently; hard escalations also write `ESCALATION.md` at repo root.*
