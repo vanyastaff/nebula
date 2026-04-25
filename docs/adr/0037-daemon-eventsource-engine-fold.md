@@ -1,7 +1,7 @@
 ---
 id: 0037
 title: daemon-eventsource-engine-fold
-status: proposed
+status: accepted
 date: 2026-04-25
 supersedes: []
 superseded_by: []
@@ -141,4 +141,14 @@ Acceptance gate: this ADR moves to `accepted` when Phase 6 Tech Spec CP1 ratifie
 
 ### Amended in place on
 
-(empty on first draft; future amendments listed here per the ADR-0035 / ADR-0036 amended-in-place pattern.)
+#### 2026-04-25 — Acceptance gate calibration (Tech Spec CP1 ratification cycle)
+
+Phase 6 Tech Spec CP1 [tech-lead ratification](../superpowers/drafts/2026-04-24-nebula-resource-redesign/phase-6-cp1-tech-lead-ratification.md) (E1) and [spec-auditor finding 2.1](../superpowers/drafts/2026-04-24-nebula-resource-redesign/phase-6-cp1-spec-auditor-review.md) surfaced a calibration mismatch between this ADR's acceptance gate and what Tech Spec CP1 was scoped to deliver. The original gate text named *"engine-side landing site (module layout, primitive name, EventSource→TriggerAction adapter signature)"* — but Tech Spec CP1 [§2.4 line 519](../superpowers/specs/2026-04-24-nebula-resource-tech-spec.md) explicitly defers all three to **CP3 §13**. The cadence in [`03-scope-decision.md` §6](../superpowers/drafts/2026-04-24-nebula-resource-redesign/03-scope-decision.md) puts §13 in CP3, not CP1; the gate text was over-specified relative to CP1 scope.
+
+**Reason for amendment:** the load-bearing decision this ADR records — *"Daemon and EventSource leave `nebula-resource` and fold into the engine layer (option (a)) rather than a sibling crate (option (b))"* — is what Phase 5 actually decided and what Tech Spec CP1 ratifies via the `TopologyRuntime<R>` enum shrink + the contractual commitment to engine-fold. The engine-side primitive naming, module layout, and adapter signature were always Tech Spec §13 work, deferred to CP3. Holding ADR-0037 at `proposed` until CP3 would create asymmetric gating against the sibling [ADR-0036](./0036-resource-credential-adoption-auth-retirement.md) — which contradicts this ADR's own *"same gating posture as ADR-0036"* framing. Rather than restage the gate, calibrate it to what CP1 actually delivers.
+
+**Original §Status text preserved verbatim.** Amended gate at [§Review](#review):
+
+> Acceptance gate (amended): this ADR moves to `accepted` when Phase 6 Tech Spec CP1 ratifies the **decision** that Daemon and EventSource leave `nebula-resource` and fold into the engine layer (recorded as the `TopologyRuntime<R>` enum shrink 7 → 5 in CP1 §2.4 + the contractual commitment to extraction in CP1 §1.2). The engine-side landing site (module layout, primitive naming, `EventSource → TriggerAction` adapter signature) is a **CP3 §13 deliverable**; CP3 ratification of §13 does not require a further ADR amendment unless the engine-side decisions diverge from the target-layer commitment recorded in this ADR's §Decision.
+>
+> Same gating posture as [ADR-0036](./0036-resource-credential-adoption-auth-retirement.md) — both ADRs ratify together at CP1 ratification, on the *decision* axis, not the *implementation* axis.

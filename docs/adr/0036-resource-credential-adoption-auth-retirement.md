@@ -1,7 +1,7 @@
 ---
 id: 0036
 title: resource-credential-adoption-auth-retirement
-status: proposed
+status: accepted
 date: 2026-04-24
 supersedes: []
 superseded_by: []
