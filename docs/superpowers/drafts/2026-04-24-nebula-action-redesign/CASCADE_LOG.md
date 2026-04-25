@@ -86,6 +86,33 @@ Devops wrote to wrong repo path (main repo instead of worktree) — orchestrator
 - ADR-0038 ControlAction seal + canon §3.5 DX tier ratification (canon revision per §0.2)
 - ADR-NNNN+3 cluster-mode hooks deliberately deferred (out of cascade scope per Strategy §6.2)
 
+### 2026-04-25 T03:00 — Post-freeze amendment Q3 — §2.9 third REJECT-refined (schema axis distinction)
+
+**User raised THIRD pushback на §2.9** с concrete consumer evidence: n8n 70+ trigger nodes expose Input schema (UI form generation) + Output schema (downstream type-checking) + filter/parameter validation. Examples: Telegram Trigger Input=`{allowed_updates}` Output=`TelegramUpdate`; GitHub Trigger Input=`{repository,events}` Output=`GitHubPayload`; Schedule Trigger Input=`{interval,cron}` Output=`ScheduledTick`. User claimed §2.9.6 point 2 ("no current consumer") incorrect; asked refactor handle() к accept `Self::Input` parameter.
+
+**Architect re-analyzed (third iteration). Outcome: 3C REJECT-refined again.**
+
+New concrete axis identified: **schema-as-data vs schema-as-trait-type carrier.**
+
+User's three n8n consumers (UI generation / downstream typing / filter validation) all live on **schema-as-data axis** (`ActionMetadata.base.schema` + `inputs: Vec<InputPort>` + `outputs: Vec<OutputPort>`) — universal across all 4 trait variants TODAY. Verified at `crates/action/src/metadata.rs:98-292`. n8n itself uses runtime `INodeTypeDescription` data, not TypeScript generic associated types.
+
+**Schema-as-trait-type axis** (consolidation target via base `Action<Input, Output>` trait) has NO current consumer. Adding it = parallel surface на trait-type axis without a consumer.
+
+`docs/COMPETITIVE.md:29,41` disclaims n8n surface parity at canon level — Nebula's strategic position = "typed Rust contracts AGAINST n8n's surface-area model". So n8n parity isn't actually a Nebula goal at the architectural level.
+
+Plus: user's handle() refactor proposal structurally breaks ADR-0035 §4.3 phantom-shim composition (configuration carrier `&self` is load-bearing — phantom-shim rewrites field zones; method parameters aren't field-zone targets).
+
+**Tech Spec amendments enacted:**
+- §2.9.1c (NEW) — verbatim Q3 record + axis distinction + n8n verification + COMPETITIVE.md citation + handle() refactor REJECT (4 reasons)
+- §2.9.5 — refined to "(refined three times)" + four-axis decomposition (trait-method-input / trigger-purpose-input / configuration / schema-carrier)
+- §2.9.6 prelude + point 2 — four-axis enumeration including Schema-as-data vs Schema-as-trait-type
+- §2.9.7 Implications + Re-open trigger — extended to all three iterations; re-open requires "schema-as-trait-type consumer" with worked examples (dependency-typed resource graph / `fn collect<T: Action<I, O>>` aggregation)
+- §15.9.6 — new Q3 enactment record sibling to §15.9.5 Q2
+
+**No status qualifier change** (rationale-only refinement per §15.9.5 Q2 precedent). ADRs unchanged. Strategy unchanged. Spike unchanged.
+
+**Tech-lead RATIFIED.** Third iteration closed.
+
 ### 2026-04-25 T02:00 — Post-freeze amendment (Q1 async_trait + Q2 §2.9 refinement)
 
 **User raised two post-freeze design questions.** Architect re-analyzed; tech-lead ratified.
