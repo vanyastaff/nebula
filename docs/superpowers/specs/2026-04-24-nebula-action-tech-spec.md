@@ -1,6 +1,6 @@
 ---
 name: nebula-action tech spec (implementation-ready design)
-status: DRAFT CP2 (iterated 2026-04-24)
+status: DRAFT CP3 (iterated 2026-04-24)
 date: 2026-04-24
 authors: [architect (drafting); tech-lead (CP gate decider); security-lead (VETO authority on §4 security floor); orchestrator (CP coordination)]
 scope: nebula-action redesign cascade Phase 6 — implementation-ready design for the action trait family, the `#[action]` attribute macro, runtime model, security floor, and codemod migration
@@ -28,8 +28,8 @@ This document moves through four checkpoints with parallel reviewer matrices per
 | Checkpoint | Sections | Focus | Status |
 |---|---|---|---|
 | **DRAFT CP1** | §0–§3 | Status, goals, trait contract, runtime model | locked CP1 |
-| **DRAFT CP2** (this revision) | §4–§8 | Macro emission, test harness, security floor, lifecycle, storage | active |
-| **DRAFT CP3** | §9–§13 | Codemod design, retry-scheduler chosen path, migration, interface | pending |
+| **DRAFT CP2** | §4–§8 | Macro emission, test harness, security floor, lifecycle, storage | locked CP2 |
+| **DRAFT CP3** (this revision) | §9–§13 | Public API surface, codemod migration, adapter authoring, ControlAction migration, evolution policy | active |
 | **DRAFT CP4 → FROZEN CP4** | §14–§16 | Open items, accepted gaps, handoff, implementation-path framing for Phase 8 user pick | pending |
 
 Inputs are **frozen** at this draft point: Strategy frozen at CP3 (commit pending; see status header of [`2026-04-24-action-redesign-strategy.md`](2026-04-24-action-redesign-strategy.md)); ADR-0036 / ADR-0037 / ADR-0038 in `proposed` (status moves to `accepted` upon Tech Spec ratification — ADR-0036 §Status / ADR-0037 §Status / ADR-0038 §Status); Phase 4 spike PASS at commit `c8aef6a0` (worktree-isolated; see [spike NOTES](../drafts/2026-04-24-nebula-action-redesign/07-spike-NOTES.md) §5).
@@ -1511,6 +1511,598 @@ Engine-side persistence (`crates/storage/`, `crates/engine/src/storage/`, `Execu
 
 ---
 
+## §9 Public API surface
+
+This section locks the **observable public surface** of `nebula-action` post-cascade. CP1 §2 already locked the trait signatures; CP3 §9 is the surface-area inventory: what's exported, what's added, what's removed, what's reshuffled. The Phase 0 reverse-deps fingerprint ([`01b-workspace-audit.md`](../drafts/2026-04-24-nebula-action-redesign/01b-workspace-audit.md) §9 line 252-329) is the baseline — 7 direct reverse-deps (engine, api, sandbox, sdk, plugin, cli + action-macros sibling), 69 source files importing `nebula_action::*`, 63 public items re-exported through `crates/action/src/lib.rs`, ~40+ items cascading through `nebula-sdk::prelude`. The redesign treats `nebula-sdk::prelude` (`crates/sdk/src/prelude.rs:15-33`) as the **public contract surface** per audit finding §9 🟠 MAJOR.
+
+**Semver posture (per §13.1).** Pre-1.0 alpha breaks are acceptable per `feedback_hard_breaking_changes.md`; semver-checks advisory-only per Phase 0 audit T7. CP3 §9 enumerates the surface honestly so post-1.0 callers have a stable target.
+
+### §9.1 Four primary trait surface — unchanged at trait level
+
+The four primary dispatch traits (`StatelessAction` / `StatefulAction` / `TriggerAction` / `ResourceAction` per §2.2) remain `pub` at the trait level. Per [ADR-0036 §Neutral item 2](../../adr/0036-action-trait-shape.md) line 80: "Public API surface of the 4 dispatch traits is unchanged at the trait level — only the macro that constructs implementations changes shape."
+
+**What CP3 §9 confirms:**
+
+- **Trait identity preserved.** `pub trait StatelessAction`, `pub trait StatefulAction`, `pub trait TriggerAction`, `pub trait ResourceAction` exported from `crates/action/src/{stateless,stateful,trigger,resource}.rs` per current shape (verified via `crates/action/src/lib.rs:91-153` re-export block per Phase 0 audit §9 line 308).
+- **Signature additions per CP1 §2.2.** Three deliberate-divergence overlays from CP1 §2 (`Input: HasSchema + DeserializeOwned`, `Output: Serialize`, `StatefulAction::State: Serialize + DeserializeOwned + Clone + ...`) lift bound chains onto the typed traits. **Semver impact: per-feature additions are non-breaking** at the trait-impl level (existing impls already satisfy these bounds via the adapter contract; the lift makes them surface at impl site instead of registration site — DX win, not surface change). **Removals would break** — none are proposed.
+- **`*Handler` companion shape** per CP1 §2.4 — single-`'a` lifetime + `BoxFut<'a, T>` per Strategy §4.3.1 modernization; trait-by-trait dyn-safe form preserved (per [rust-senior 02c §6 line 358](../drafts/2026-04-24-nebula-action-redesign/02c-idiomatic-review.md)). The HRTB collapse from `for<'life0, 'life1, 'a>` to single-`'a` is a **structural simplification, not a surface rename** — `Arc<dyn StatelessHandler>` continues to compile; existing `impl StatelessHandler for X` blocks pre-modernization need re-pin to the new shape (codemod transform T4, §10.2).
+
+### §9.2 Five sealed DX trait surface (sealed pattern per ADR-0038)
+
+Five DX specialization traits — `ControlAction`, `PaginatedAction`, `BatchAction`, `WebhookAction`, `PollAction` — become sealed per [ADR-0038 §1](../../adr/0038-controlaction-seal-canon-revision.md) line 49-70. Trait identifiers remain `pub` (community plugin code that names them in trait bounds compiles); the **implementation surface** is sealed via per-capability inner sealed traits (per ADR-0035 §3 + ADR-0038 §1):
+
+```rust
+// Surface visible to community plugins (unchanged identifiers; sealed implementation):
+pub trait ControlAction:    sealed_dx::ControlActionSealed    + StatelessAction { /* ... */ }
+pub trait PaginatedAction:  sealed_dx::PaginatedActionSealed  + StatefulAction  { /* ... */ }
+pub trait BatchAction:      sealed_dx::BatchActionSealed      + StatefulAction  { /* ... */ }
+pub trait WebhookAction:    sealed_dx::WebhookActionSealed    + TriggerAction   { /* ... */ }
+pub trait PollAction:       sealed_dx::PollActionSealed       + TriggerAction   { /* ... */ }
+```
+
+**Community plugin migration target — reaffirmed.** Per CP1 §2.6 + [ADR-0038 §Negative item 4](../../adr/0038-controlaction-seal-canon-revision.md) line 111: code that today writes `impl ControlAction for X` moves to `impl StatelessAction for X` + `#[action(control_flow = …)]` attribute. The macro emits the sealed `ControlActionAdapter` from cascade-internal `nebula-action::sealed_dx::*` namespace. Migration codemod T6 in §10.2 covers the common case.
+
+**Trait-by-trait audit status.** Per ADR-0038 Implementation note ("trait-by-trait audit at Tech Spec §7 design time"): all five DX traits use the §2.6 blanket-impl shape `impl<T: PrimaryTrait + ActionSlots> sealed_dx::TraitSealed for T {}` — the supertrait chain mirrors the §2.1 `Action: ActionSlots + Send + Sync + 'static` discipline. ControlAction wraps Stateless; Paginated/Batch wrap Stateful; Webhook/Poll wrap Trigger. CP3 §9 confirms the audit closes; exact attribute-zone syntax for each (`#[action(control_flow = …)]`, `#[action(paginated(cursor = …))]`, etc.) is CP4 §15 housekeeping not §9 scope.
+
+### §9.3 `prelude.rs` re-export reshuffle
+
+Phase 0 audit §9 line 295 enumerates the current `nebula-sdk::prelude` 40+ re-exports (`crates/sdk/src/prelude.rs:15-33`); `crates/action/src/prelude.rs:1-54` is the action-side prelude (subset of `lib.rs:91-153` exports). CP3 §9 locks the delta:
+
+#### §9.3.1 Removed (hard-cut per `feedback_no_shims.md`)
+
+| Removed item | Source (current) | Replacement | Rationale |
+|---|---|---|---|
+| `CredentialContextExt::credential<S>()` (no-key heuristic) | `crates/action/src/context.rs:635-668` | `ctx.resolved_scheme(&self.<slot>)` (typed slot ref via `#[action(credentials(...))]` zone) | §6.2 hard removal per security 03c §1 VETO; cross-plugin shadow attack S-C2 / CR3 |
+| `CredentialContextExt::credential_typed<S>(key)` *(retention TBD)* | `crates/action/src/context.rs:563-632` | Same `ctx.resolved_scheme(&self.<slot>)` form — **OR retained as side-channel for non-`#[action]` consumers** | §6.2.5 + §6.2-1 open item; CP3 §9 picks (recommendation: remove — unify on `resolved_scheme`; retention adds two parallel APIs with no current consumer) |
+| `CredentialGuard<S>` legacy guard type | `crates/credential/src/guard.rs` (legacy) | `SchemeGuard<'a, C>` per credential Tech Spec §15.7 | Cross-crate transition per §7.2; legacy guard goes away post-CP6-implementation |
+| `nebula_action_macros::Action` (derive) | `crates/action/src/lib.rs:91-153` | `nebula_action_macros::action` (attribute) | ADR-0036 §Decision item 1 (hard break per ADR-0036 §Negative item 1) |
+
+**Decision lock for `credential_typed` (§6.2-1 closed at CP3 §9).** Recommendation: **remove** alongside `credential<S>()`. Rationale: (a) explicit-key form is achievable via `ctx.resolved_scheme(&CredentialRef::from_key(key))` for the rare non-`#[action]` consumer (e.g., dynamic test harness construction); (b) two parallel APIs (`resolved_scheme(&CredentialRef<C>)` typed-handle vs `credential_typed::<C>(key: &str)` string-key) bifurcate authoring guidance; (c) Phase 0 audit shows zero `nebula-sdk::prelude` re-export of `credential_typed` — surface-area cost is internal-only. Tech-lead ratifies at CP3 close.
+
+#### §9.3.2 Added
+
+| Added item | Host crate / module | Notes |
+|---|---|---|
+| `ActionSlots` (trait) | `nebula-action::ActionSlots` per §2.1.1 | Macro-emitted-only; hand-impl discouraged via doc + Probe 4/5/6 invariants. Sealing decision §9.4 below + §4.4-1 open item |
+| `BoxFut<'a, T>` (type alias) | `nebula-action::BoxFut` per §2.3 | **Single home (resolves §9.4 forward-track from CP1 rust-senior 08b 🟡).** Cross-doc / sibling-crate references go through this single home; engine adapters that need the same shape `use nebula_action::BoxFut`, do not redeclare. Spike `final_shape_v2.rs:38` and credential Tech Spec §3.4 line 869 both name `BoxFuture` — Tech Spec re-pins both to `nebula-action::BoxFut` per CP3 §9 single-home decision. **Rationale for the `BoxFut` (vs spike's `BoxFuture`) name:** (a) shape alignment with Strategy §4.3.1 single-`'a` modernization (`BoxFut<'a, T>` has exactly one lifetime — the spike-original `BoxFuture` from `futures::future::BoxFuture` is `Pin<Box<dyn Future<Output = T> + Send + 'static>>` with implicit `'static`, semantically distinct from this alias); (b) avoids name conflict with `futures::future::BoxFuture` so plugin authors who `use futures::future::BoxFuture;` separately do not collide with `use nebula_action::BoxFut;`; (c) precedent: spike `final_shape_v2.rs:38` chose this short alias and Phase 4 PASS validated the shape (see [spike NOTES §5](../drafts/2026-04-24-nebula-action-redesign/07-spike-NOTES.md)). (Future cascade may hoist `nebula-core::BoxFuture`; per §0.2 invariant 4 that re-pin is in scope of Tech Spec amendment.) |
+| `SlotBinding`, `SlotType`, `Capability`, `ResolveFn` | `nebula-action::SlotBinding` etc. per §3.1 | Macro-emitted into `ActionSlots::credential_slots()` const slice; community plugins do not construct `SlotBinding` manually. `SlotType` and `Capability` are `#[non_exhaustive]` per CP1 iteration |
+| `redacted_display!` macro export *(or `redacted_display` fn)* | `nebula-redact::redacted_display` per §6.3.2 | NEW dedicated crate; `nebula-action` does NOT re-export — `redacted_display` is consumed at error-emit sites in `crates/action/src/{stateless,stateful}.rs`, NOT in the public action API surface. Open question §9.3-1: does `nebula-sdk::prelude` re-export `redacted_display` for community plugin authors who need it for their own error sanitization? CP4 §16 picks; default position **NO** (community plugins should depend on `nebula-redact` directly if they need it — keeps the single audit point) |
+| `ValidationReason::DepthExceeded { observed: u32, cap: u32 }` | `nebula-action::ValidationReason` (variant added) per §6.1.3 | `#[non_exhaustive]`-safe per `crates/action/src/error.rs:58-71` |
+| `DepthCheckError { observed: u32, cap: u32 }` *(internal)* | `nebula-action::webhook::DepthCheckError` (`pub(crate)` per §6.1.2-A) | Crate-internal only; not in public surface; webhook caller re-wraps to preserve public webhook API |
+
+#### §9.3.3 Reshuffled
+
+- **`SchemeGuard<'a, C>` re-export** lives in `nebula-credential` (per credential Tech Spec §15.7 line 3394-3429). `nebula-action::prelude` re-exports through canonical credential path: `pub use nebula_credential::SchemeGuard;` (NOT a hand-vendored alias). The credential side is the single home; action-side prelude points there. Closes Phase 0 §9 finding "redaction policy in `nebula-log` would force `nebula-error`-side error sanitization to depend on `nebula-log` (inverted dependency)" — same principle: vocabulary type lives where it's defined; consumers cite, not vendor.
+- **`CredentialRef<C>`** moves analogously — re-export through `nebula-credential` (per credential Tech Spec §3.5 + Strategy §3.2 placement lock). `nebula-action` consumes; does not own.
+- **40+ SDK prelude items** per Phase 0 audit §9 line 295 stay re-exported through `nebula-sdk::prelude`. Codemod transform T6 (§10.2) flags reverse-dep import sites for review when prelude paths change. Migration guide (§10.4) lists added/removed/renamed pairs.
+
+### §9.4 Builder/macro convenience methods — what's exposed in `nebula-sdk::prelude`
+
+`nebula-sdk::prelude` is the **community plugin author's entry point**. Per Phase 0 audit §9 finding 🟠 MAJOR (line 331): "any rename/relocation in action cascades directly to `nebula-sdk::prelude::*`, which is the officially-sanctioned user-facing API." CP3 §9 specifies what surface a community plugin author sees in one `use nebula_sdk::prelude::*;`:
+
+**Exposed in prelude (community plugin authoring path):**
+
+- The four primary traits (`StatelessAction`, `StatefulAction`, `TriggerAction`, `ResourceAction`) — direct impl target.
+- `ActionContext<'a>` — per CP1 §2.1 receiver type; community plugins use `ctx.resolved_scheme(&self.<slot>)` only. Internal API like `ctx.creds: &'a CredentialContext<'a>` (per spike `final_shape_v2.rs:205-207`) is `pub(crate)` field — surface is `pub` type with `pub(crate)` field access; the community-author method is `resolved_scheme`. **Internal storage shape (field vs method) may be revisited in CP4 §15 cross-section; community-facing API at `resolved_scheme(&self.<slot>)` is locked** — the `pub(crate)` field is unreachable from outside the crate, so any future field-to-method reshape is a crate-internal refactor, not a public-surface change.
+- `ActionResult<T>`, `ActionOutput<T>`, `ActionError`, `ValidationReason`, `RetryHintCode`, `BreakReason`, `TerminationCode`, `TerminationReason` — per CP1 §2.7-§2.8 + current `crates/action/src/result.rs` shape.
+- `#[action]` attribute macro re-export from `nebula_action_macros::action` (replacing the legacy `Action` derive).
+- The five DX trait identifiers (`ControlAction`, `PaginatedAction`, `BatchAction`, `WebhookAction`, `PollAction`) — bound-shape only; community plugins do not impl directly per §9.2 / ADR-0038.
+- Test harness types (`TestContextBuilder`, `SpyEmitter`, `SpyLogger`, `SpyScheduler`, `StatefulTestHarness`, `TriggerTestHarness`) — per `crates/action/src/prelude.rs:42-45` + Phase 0 audit §9 list.
+
+**Lower-level access (not in prelude — `use nebula_action::*` for these):**
+
+- `StatelessHandler`, `StatefulHandler`, `TriggerHandler`, `ResourceHandler` (the dyn-safe companion traits per §2.4) — engine-side / sandbox-side ABI; community plugins use the typed primary trait, not the handler.
+- `ActionHandler` enum (per §2.5) — engine dispatch surface; not authored by community plugins.
+- `*ActionAdapter` types (`StatelessActionAdapter`, `StatefulActionAdapter`, `TriggerActionAdapter`, `ResourceActionAdapter`, `ControlActionAdapter`) — engine-internal adapter pattern per §11; community plugins do not see these directly.
+- `SlotBinding`, `SlotType`, `Capability`, `ResolveFn` — macro-emitted internals per §3.1; not authored by hand.
+
+**ActionSlots seal decision (closes §4.4-1 open item).** CP3 §9 commits to **leave `ActionSlots` `pub` (NOT sealed)**. Rationale: (a) the `#[action]` macro is the recommended path and the dual enforcement layer (§4.4) makes hand-implementation observable in tests (Probe 4/5/6 fire on shape violations); (b) sealing would force a parallel `mod sealed_action_slots` pattern with no current consumer benefit beyond purity; (c) advanced internal-Nebula crates may need to hand-impl `ActionSlots` for special-cases (e.g., engine-internal `MetaAction` test fixtures) — sealing closes that door without a current upside. The doc comment per §4.4.3 already says "hand-implementing is technically possible (the trait is `pub`) but discouraged with rustdoc + spike Probe 4/5 invariants." Tech-lead ratifies at CP3 close.
+
+### §9.5 Cross-tenant `Terminate` boundary lock (security 08c Gap 5)
+
+This subsection closes [security 08c §Gap 5](../drafts/2026-04-24-nebula-action-redesign/08c-cp1-security-review.md) line 109-111 forward-tracked from CP2 §6.5. The contract is engine-side enforcement; action authors do not see tenant scope (it is an engine-internal invariant).
+
+#### §9.5.1 Engine-side enforcement contract
+
+**Invariant (verbatim language closing 08c Gap 5):**
+
+> `Terminate` from action A in tenant T cancels sibling branches **only within tenant T's execution scope**; engine MUST NOT propagate `Terminate` across tenant boundaries.
+
+#### §9.5.2 Mechanism
+
+Tenant scope check at scheduler dispatch path **before** fanning `Terminate` to siblings:
+
+1. Adapter returns `ActionResult::Terminate { reason }` from action A (under feature `unstable-terminate-scheduler` per §2.7.1 + §2.7.2).
+2. Engine's scheduler-integration hook (per §7.4 wire-end-to-end commitment + §2.7-2 forward-track) receives the variant alongside the dispatch context that produced it. The dispatch context carries `tenant_id` (per engine's existing tenant-isolation discipline; engine-side type, not surfaced to action authors).
+3. Scheduler enumerates sibling branches eligible for cancellation. For each candidate sibling branch B with dispatch-context `tenant_id_B`:
+   - **If `tenant_id_B == tenant_id_A`**: enqueue cancellation; emit `tracing::info!(tenant_id, terminating_action = %A, sibling_branch = %B, reason = %reason, "sibling branch cancelled by Terminate")`.
+   - **If `tenant_id_B != tenant_id_A`**: SKIP the cancellation; emit `tracing::warn!(tenant_id_termination_source = %tenant_id_A, tenant_id_sibling = %tenant_id_B, "cross-tenant Terminate ignored — sibling branch in different tenant scope")`. Counter `nebula_action_terminate_cross_tenant_blocked_total{tenant_origin, tenant_target}` increments per `feedback_observability_as_completion.md`.
+4. Cross-tenant Terminate **does NOT fail the originating action** — the originating action's `Terminate { reason }` propagates normally within its own tenant scope; cross-tenant siblings are simply un-reachable via this mechanism. **However:** if the scheduler-integration hook's pre-fan validation surfaces ANY structural error in the Terminate dispatch (e.g., malformed `TerminationReason`, scheduler unavailable, persistence backend failure for audit log), the originating action receives `ActionResult::Terminate { reason }` → engine maps to `Fatal` per §7.3 propagation table. **Cross-tenant ignore is silent (not Fatal); structural errors are Fatal.** This split is the active-dev-mode-coherent shape: cross-tenant is a known-policy boundary with observable telemetry, not an action-author error.
+
+#### §9.5.3 Why cross-tenant Terminate must NOT silently cross AND must NOT silently no-op
+
+Two reject paths considered and reasoning:
+
+- **REJECT — silent cross-tenant cancel.** If `Terminate` from tenant T cancels a tenant T'-owned branch, T can mount denial-of-service against T'-owned executions by emitting `Terminate` from any action in T's scope that the engine's scheduler-integration sibling fan-out treats as eligible. **Tenant isolation invariant violated** per security 08c Gap 5 verbatim language. Rejected.
+- **REJECT — silent cross-tenant no-op without telemetry.** If cross-tenant Terminate is silently dropped without trace span / counter, attempted misbehavior is **structurally invisible** to the security ops surface. Per `feedback_observability_as_completion.md` ("typed error + trace span + invariant check are DoD"), the observable shape is mandatory. Rejected.
+
+The accepted mechanism (§9.5.2 step 3) makes the cross-tenant skip **observable via `tracing::warn!` + counter** without elevating it to a fatal action error.
+
+#### §9.5.4 Action-author surface
+
+Action authors see no tenant scope. The action body returns `Ok(ActionResult::Terminate { reason })`; the engine handles tenant-scope filtering at the scheduler. This preserves the §1 G3 floor item discipline: action authors author within their own tenant scope; tenant-isolation is engine-internal contract per Nebula's threat model.
+
+#### §9.5.5 Implementation note
+
+The scheduler-integration hook trait surface (per §7.4 + §2.7-2 forward-track) must expose `tenant_id` in the dispatch context to make this check possible. CP3 §9 commits the contract; the exact engine trait shape (`SchedulerIntegrationHook::on_terminate(&self, dispatch_ctx: &DispatchContext, reason: TerminationReason) -> Result<(), SchedulerError>` — or analogous) is engine-side scope per §7.4 cross-ref. This Tech Spec defines what the action surface produces (`ActionResult::Terminate { reason }`); engine cascade defines how the scheduler consumes it (with the §9.5.2 tenant-scope filter as a non-negotiable invariant).
+
+**Security-lead implementation-time VETO retained.** Per [security 08c §Gap 5](../drafts/2026-04-24-nebula-action-redesign/08c-cp1-security-review.md) line 109-111: any implementation-time deviation from §9.5.1's invariant language ("engine MUST NOT propagate `Terminate` across tenant boundaries") triggers security-lead VETO. The wording "MUST NOT propagate" is normative — softening to "should not" or "by default does not" is a freeze invariant 3 violation per §0.2.
+
+---
+
+## §10 Migration plan (codemod runbook)
+
+This section locks the **codemod runbook** for migrating the 7 reverse-deps off pre-cascade shape onto the CP1+CP2-locked surface. Strategy §4.3.3 (line 231-243) locks the codemod **scope** at five mechanical transforms; CP3 §10 designs the runbook (script shape, transform list, dry-run output format) per Strategy §4.3.3 line 243 explicitly delegating "design only" to Tech Spec §9. Codemod **execution** (running the script on 7 reverse-deps) is post-cascade per Strategy §3.4 OUT row.
+
+### §10.1 Reverse-deps inventory (verbatim from Phase 0 audit §9)
+
+| Consumer | Cargo declared at | Source files | Risk |
+|---|---|---|---|
+| `crates/action/macros` | self-reference via `nebula-action-macros` | sibling proc-macro | intra-action |
+| `crates/engine` | `Cargo.toml:27` | 27+ import sites in `engine.rs`, `runtime.rs`, `registry.rs`, `error.rs`, `stream_backpressure.rs` | 🔴 HEAVY (per Phase 0 §10) |
+| `crates/api` | `Cargo.toml:35` | 4 files (webhook transport + tests) | 🟡 LIGHT |
+| `crates/sandbox` | `Cargo.toml:16` | 7 files (`runner`, `remote_action`, `handler`, `process`, `in_process`, `discovery`, `discovered_plugin`) | 🟠 MODERATE — dyn-handler ABI |
+| `crates/sdk` | `Cargo.toml:17` | 5 files; full re-export at `src/lib.rs:47` (`pub use nebula_action;`) + 40+ items in `prelude.rs:15-33` | 🟠 MODERATE — public contract |
+| `crates/plugin` | `Cargo.toml:22` | 2 src + 1 test (`Action`, `ActionMetadata`, `DeclaresDependencies`) | 🟡 LIGHT |
+| `apps/cli` | `Cargo.toml:66` | 5 files (`actions.rs`, `dev/action.rs`, `run.rs`, `watch.rs`, `replay.rs`) | 🟡 LIGHT |
+
+**Doc-only references** (no compile coupling, no codemod required): `crates/workflow/connection.rs` (rustdoc only), `crates/storage/execution_repo.rs:425` (rustdoc only), `crates/execution/status.rs:146` (rustdoc only). Migration guide (§10.4) flags these for review-only update; no automated transform.
+
+### §10.2 Codemod transforms (T1-T6)
+
+Per Strategy §4.3.3 transforms 1-5 are the **minimal complete set**; Tech Spec §10 may add transforms during design without re-opening Strategy (per Strategy §4.3.3 line 243). CP3 §10 names six transforms with the following Strategy → Tech Spec mapping (NOT 1:1):
+
+- **Strategy 1** (`#[derive]` → `#[action]`) → **T1** (verbatim scope).
+- **Strategy 2** (`ctx.credential_by_id` / `ctx.credential_typed` / `ctx.credential::<S>` → unified API) + **Strategy 3** (no-key heuristic hard removal) → **T2** (collapsed; per §6.2.4 hard-removal commitment).
+- **Strategy 4** (`[dev-dependencies]` block — Cargo.toml hygiene) → **NOT a code-edit transform**; lands at CP2 §5.1.
+- **Strategy 5** (`nebula-sdk::prelude` re-export reshuffle) → **NOT a code-edit transform per se**; covered by §9.3 reshuffled list.
+
+**T3** (`Box<dyn>` → `Arc<dyn>` safety net), **T4** (HRTB collapse to `BoxFut<'a, T>`), **T5** (`redacted_display!` wrap), and **T6** (ControlAction → StatelessAction migration) are added at Tech Spec design level per Strategy §4.3.3 line 243 license — not derived from Strategy 1-5. T6 in particular is added per ADR-0038 §Negative item 4 for the sealed-DX migration. (Earlier Tech-Spec mention of T1-T5 in CP1+CP2 forward-tracks predated this disambiguation; the CP3 mapping above is authoritative.)
+
+| Transform | What it rewrites | Source pattern | Target pattern | Auto / Manual | Notes |
+|---|---|---|---|---|---|
+| **T1** | `#[derive(Action)]` → `#[action(...)]` | `#[derive(Action)] struct X { ... }` + `#[nebula(key = ...)]` companion attribute | `#[action(key = ..., name = ..., credentials(slot: Type))] struct X { ... }` (zone-injected fields) | **AUTO** for happy-path; manual review for `parameters = T` arm (T2-related) | Attribute extraction from prior derive form; codemod parses `#[nebula(...)]` companions and folds into `#[action(...)]` |
+| **T2** | `ctx.credential::<S>()` (no-key, S-C2) → `ctx.resolved_scheme(&self.<slot>)` | Type-name heuristic call site | Typed slot-ref through macro-emitted `credentials(slot: Type)` zone | **MANUAL REVIEW** required for each call site; AUTO for cases with explicit type annotation `ctx.credential::<SlackToken>()` AND `SlackToken` registered in workflow manifest | §6.2.4 + §4.7-1 open item — codemod errors on remaining call sites with crisp diagnostic per Strategy §4.3.3 transform 3; emits `// TODO(action-cascade-codemod): manual rewrite required — see §10.4 migration guide` markers |
+| **T3** | `Box<dyn StatelessHandler>` → `Arc<dyn StatelessHandler>` (where ABI shape changed) | Sandbox in-process / out-of-process runners; engine handler storage | Per CP1 §2.5 `ActionHandler::Stateless(Arc<dyn StatelessHandler>)` form (current shape preserved; transform applies only to legacy `Box<dyn>` patterns if any) | **AUTO** | Verified against current `crates/action/src/handler.rs:39-50` — `Arc<dyn>` is already canonical; transform is a safety net for any pre-cascade `Box<dyn>` patterns the codemod surfaces |
+| **T4** | HRTB `for<'life0, 'life1, 'a>` patterns → `BoxFut<'a, T>` alias | Hand-written `*Handler` impls (rare; mostly engine-internal) | Single-`'a` + `BoxFut` per CP1 §2.4 + Strategy §4.3.1 modernization | **AUTO** | Token-form rewrite; per Phase 0 audit Phase 1 02c §6 line 358 the cut is ~8 lines per handler trait; codemod validates dyn-safety preserved |
+| **T5** | `tracing::error!(action_error = %e)` → `redacted_display!` wrap form | Adapter error log sites (`stateful.rs:609-615`, `stateless.rs:382` per §6.3.1) + any custom `tracing::error!(error = %ActionError, ...)` patterns in reverse-deps | `tracing::error!(action_error = %nebula_redact::redacted_display(&e), ...)` per §6.3.1-A | **MANUAL REVIEW** required — non-`ActionError` Display sites need case-by-case check per §6.3.1-A "every error whose Display could include credential material, module-path identity, or `SecretString`-bearing field accessors" | Cannot mechanically distinguish leak-prone from safe; codemod marks all `tracing::error!(.. = %e)` sites for review |
+| **T6** | `impl ControlAction for X` → `impl StatelessAction for X` + `#[action(control_flow, ...)]` | ControlAction direct-impl call sites (community plugin migration target per ADR-0038 §Negative item 4) | StatelessAction primary + control-flow attribute zone (flag form per §12.2; CP4 §15 may revisit `control_flow = SomeStrategy` config form) | **MIXED** — **AUTO** for the trivial pass-through case (default mode); **MANUAL REVIEW** marker for control-flow-specific behavior (custom Continue/Skip/Retry reasons; Terminate interaction; test fixtures) | New at CP3; per ADR-0038 §Negative item 4 ("Codemod can cover the common case; edge cases (control-flow-specific behavior) need hand migration") — codemod attempts AUTO first, falls back to MANUAL marker on edge-case detection |
+
+#### §10.2.1 Codemod execution model
+
+The codemod is a `cargo`-style binary `nebula-action-codemod` (location: `tools/codemod/` — exact crate name and host TBD per Phase 0 / orchestrator) operating per-crate via `cargo metadata` to walk a target workspace. Per-transform modes:
+
+- **AUTO mode (default for T1, T3, T4)** — codemod rewrites in place; surfaces a unified diff via `--dry-run` flag for review before commit.
+- **MANUAL-REVIEW mode (default for T2, T5)** — codemod inserts `// TODO(action-cascade-codemod): ...` marker + leaves the original line unchanged; reviewer applies the rewrite by hand using the marker hint.
+- **MIXED mode (T6)** — codemod attempts AUTO first for trivial pass-through (`impl ControlAction { fn execute(...) -> ControlOutcome }` → `impl StatelessAction` + `#[action(control_flow, ...)]` zone, body preserved); falls back to MANUAL-REVIEW marker on edge-case detection (custom Continue/Skip/Retry reason variants; ActionResult::Terminate interaction; test fixtures exercising `impl ControlAction` directly via mock dispatch).
+
+**Idempotent.** Re-running the codemod on already-migrated code is a no-op (no marker insertion if the new pattern is already present).
+
+### §10.3 Per-consumer migration step counts
+
+Estimates per Phase 0 §10 line 346-356 blast-radius weight (range includes the "Blast-radius weight by consumer" header at line 346), refined by transform applicability:
+
+| Consumer | T1 | T2 | T3 | T4 | T5 | T6 | Notes |
+|---|---|---|---|---|---|---|---|
+| `nebula-engine` | 0 (no `#[derive(Action)]` in engine source) | ~5 sites | ~3 sites (any pre-cascade `Box<dyn>`) | ~10 sites in `engine.rs` / `runtime.rs` / `registry.rs` | ~5-7 sites | 0 (engine doesn't impl ControlAction) | 27+ import sites total per Phase 0 §9 line 273 |
+| `nebula-api` | 0 | ~1 site (webhook transport) | 0 | ~2 sites | ~1 site | 0 | 4 files; 🟡 LIGHT per Phase 0 §10 |
+| `nebula-sandbox` | 0 | 0 (sandbox sees JSON adapter only) | ~3 sites (runner) | ~4 sites | ~2 sites | 0 | 7 files; 🟠 MODERATE per Phase 0 §10 — dyn-handler ABI |
+| `nebula-sdk` | 0 (sdk re-exports; no actions) | 0 | 0 | 0 | 0 | 0 | 5 files but mostly re-export changes; covered by §9.3 reshuffle, not codemod transforms |
+| `nebula-plugin` | ~1-2 sites (test fixtures) | 0 | 0 | 0 | 0 | 0 | 3 files; 🟡 LIGHT per Phase 0 §10 |
+| `apps/cli` | ~3 sites (CLI dev fixtures) | ~1-2 sites | 0 | 0 | ~1 site | 0 | 5 files; 🟡 LIGHT |
+| `crates/action/macros` (sibling) | self-reference; no transform | 0 | 0 | 0 | 0 | 0 | Macro crate itself; covered by §5 harness landing |
+
+**Aggregate touch count.** ~55 file edits across 6 crates + 1 app per Phase 0 §10 line 358; codemod converts most into mechanical edits, leaving ~12-20 manual-review sites (mostly T2 + T5).
+
+### §10.4 Plugin author migration guide (community plugins)
+
+This is the **community plugin author runbook** — separate from the internal-Nebula crate migration above. Community plugins are crates outside the Nebula workspace that depend on `nebula-action` / `nebula-sdk::prelude` and ship `#[derive(Action)]`-decorated structs.
+
+**Steps per plugin crate:**
+
+1. **Bump `nebula-action` and `nebula-sdk` to the new release.** Per Cargo.toml; CP3 §13 evolution policy locks the crate version posture. Plugin authors reading `crates.io` see the new shape on bump.
+1.5. **Add `semver = { workspace = true }` (or `semver = "1"` for non-workspace plugins) to consumer crate's `Cargo.toml`.** The `#[action]` macro emits `::semver::Version::new(major, minor, patch)` with the absolute `::semver::` path (per §4.6.2 line 920 + Phase 1 finding CC1); the macro is not auto-importable. Without this dep declared at the consumer's own Cargo.toml level, the first compile after migration fails with `error[E0433]: cannot find 'semver' in the crate root`. Re-export of `semver` through `nebula-action::__private::semver` is CP4 §15 housekeeping scope; for CP3, the consumer-side dep declaration is the smaller fix.
+2. **Run the codemod (§10.2) in `--dry-run` mode** against the plugin crate. Surfaces all proposed transforms; no edits applied.
+3. **Review the dry-run diff.** AUTO transforms (T1, T3, T4) rewrite mechanically; review for unintended catches. MANUAL-REVIEW transforms (T2, T5, T6) print TODO markers — plugin author applies the rewrite by hand following the marker hint.
+4. **Apply codemod (`--apply`).** AUTO transforms land; MANUAL markers remain for hand-review.
+5. **Resolve manual markers.** For each `// TODO(action-cascade-codemod): ...` marker:
+   - **T2 (`ctx.credential::<S>()` removal)**: replace with `ctx.resolved_scheme(&self.<slot_name>)?` where `<slot_name>` matches a `#[action(credentials(<slot_name>: <Type>))]` declaration on the action struct. If the credential type is unknown at the call site, the plugin author must add an explicit `credentials(...)` zone to the action's `#[action(...)]` attribute first.
+   - **T5 (`redacted_display!` wrap)**: confirm the error type's Display can leak credential material; if yes, wrap; if no (e.g., a numeric error code), leave unchanged.
+   - **T6 (ControlAction → StatelessAction)**: rewrite `impl ControlAction for X` to `impl StatelessAction for X` + `#[action(control_flow, ...)]` zone (flag form, matching §12.2 example) on the struct attribute. Control-flow-specific behavior (custom `Continue` / `Skip` / `Retry` reasons) ports per-case. (CP4 §15 may revisit flag form vs `control_flow = SomeStrategy` config form — the spelling will land via §9.2 trait-by-trait audit closure; for CP3, flag form is the consistent placeholder across §10.2 / §10.4 / §12.2.)
+6. **Run plugin's tests against the new release.** New compile-fail probes (§5.3 Probes 1-7) catch shape violations early. Cancellation-zeroize test (§6.4) validates `SchemeGuard` discipline.
+7. **Update plugin's documentation.** README + examples reference the new `#[action]` attribute shape; remove stale references to `#[derive(Action)]` + `ctx.credential::<S>()`.
+
+**Migration guide artefacts.** A `MIGRATION.md` ships in `crates/action/` alongside the cascade-landing PR documenting steps 1-7 with worked examples. Per `feedback_active_dev_mode.md` ("DoD includes migration guide for breaking changes"), the guide is a cascade-landing artefact, not a follow-up.
+
+**Estimated migration cost per plugin.** Trivial plugin (1 stateless action, 1 credential): **<30 minutes**. Complex plugin (5+ actions, mixed credential / resource patterns, custom error sanitization): **2-4 hours** — bulk in MANUAL-REVIEW resolution + test re-run.
+
+### §10.5 Auto-vs-manual breakdown summary
+
+Per devops CP2 09e NIT 4 (CP3-track):
+
+- **Automatable**: T1 (`#[derive]` → `#[action]`), T3 (`Box` → `Arc` legacy pattern), T4 (HRTB collapse). ~70% of total transforms by site count.
+- **Manual review**: T2 (no-key credential removal), T5 (`redacted_display` wrap). ~30% of total transforms; mostly concentrated in engine + plugin authoring code.
+- **Mixed**: T6 (ControlAction migration) — AUTO for trivial pass-through (default mode); MANUAL marker on edge-case detection per §10.2.1. Per ADR-0038 §Negative item 4 ("common case auto / edge cases manual").
+
+Per-consumer share differs from this workspace-aggregate ratio: a trivial community plugin (1 stateless action, 1 credential, no `ctx.credential::<S>()` call sites) approaches ~100% AUTO; a heavy reverse-dep like `nebula-engine` (~10 T4 sites + ~5 T2 sites + ~5-7 T5 sites) sits closer to 50/50. The 70/30 figure is by file-touch count across the workspace, not per-consumer; per `feedback_active_dev_mode.md` ("DoD includes migration guide"), §10.4 sets per-plugin expectations explicitly.
+
+Auto-vs-manual ratio aligns with Strategy §4.3.3 transform 3 ("Codemod must error on remaining call sites with crisp diagnostic, not silently rewrite") — the manual sites are where hard-removal discipline (per §6.2 + `feedback_no_shims.md`) requires human judgment, not silent rewrite. Automating those would be a `feedback_no_shims.md` violation.
+
+---
+
+## §11 Adapter authoring contract
+
+This section locks the **adapter pattern** that bridges the typed action body (per CP1 §2.2) and the dyn-erased handler surface (per CP1 §2.4 / §2.5). Adapters are the dyn-erasure boundary; they are emitted by the `#[action]` macro for community plugins (§11.1) and authored by hand only in narrow internal-Nebula cases (§11.2).
+
+### §11.1 Adapter macro emission semantics — `#[action]` macro is THE adapter
+
+For community plugins, **`#[action]` is the adapter**. The macro emits both the typed-impl side and the dyn-erased side; community plugins do not write adapter code.
+
+Per [ADR-0036 §Decision item 2](../../adr/0036-action-trait-shape.md) the macro emits:
+
+- `Action` impl (identity + metadata supertrait satisfaction per §2.1)
+- `ActionSlots` impl with `credential_slots() -> &'static [SlotBinding]` per §2.1.1 + §3.1
+- `DeclaresDependencies` impl (replaces hand-written) per `crates/action/src/lib.rs` legacy shape
+- The primary trait body wrapper (`StatelessAction` / `StatefulAction` / etc.) — connects user-typed `execute<'a>(...) -> impl Future + Send + 'a` to the adapter's `BoxFut<'a, ...>` conversion
+- Adapter wiring — the `*ActionAdapter<A>` instance constructed at registration time so `Arc<dyn StatelessHandler>` can wrap the user-typed action
+
+**Adapter as a generic wrapper.** Adapters are crate-local types per `crates/action/src/{stateless,stateful,trigger,resource}.rs` current shape:
+
+```rust
+// In crates/action/src/stateless.rs (current shape, preserved post-modernization):
+pub struct StatelessActionAdapter<A: StatelessAction> { /* metadata + zero-cost wrapper */ }
+
+impl<A: StatelessAction + ActionSlots> StatelessHandler for StatelessActionAdapter<A> {
+    fn metadata(&self) -> &ActionMetadata { /* ... */ }
+    fn execute<'a>(
+        &'a self,
+        ctx: &'a ActionContext<'a>,
+        input: serde_json::Value,
+    ) -> BoxFut<'a, Result<serde_json::Value, ActionError>> {
+        Box::pin(async move {
+            // 1. Pre-scan input depth (cap 128) per §6.1.2-C
+            // 2. Deserialize typed input
+            // 3. Resolve credential slots per §3.1
+            // 4. Invoke user-typed body: action.execute(ctx, input).await
+            // 5. Serialize typed output
+            // 6. Return ActionResult<Value> per §7.1
+        })
+    }
+}
+```
+
+Community plugins write `#[action(...)] struct MyAction { ... } impl StatelessAction for MyAction { ... }` — the macro emits the `StatelessActionAdapter` instantiation. Plugin code never names `StatelessActionAdapter` directly.
+
+### §11.2 Internal-Nebula adapter authoring (when `#[action]` is insufficient)
+
+A small set of internal-Nebula contexts may need to author adapters by hand:
+
+- **Engine-internal `MetaAction` test fixtures** that exercise dispatch shape without going through the `#[action]` macro (e.g., property tests on `ActionHandler` enum dispatch).
+- **Sandbox out-of-process runner** (`crates/sandbox/`) that may need a custom `*HandlerProxy<A>` adapter shape for cross-process serialization (per Phase 0 §9 line 288 — "spans both in-process and out-of-process runners").
+- **Future custom DX shapes** authored within `nebula-action` itself before sealed-DX expansion lands (rare; cascade-internal only).
+
+For these cases, the **sealed_dx adapter pattern from [ADR-0038 §1](../../adr/0038-controlaction-seal-canon-revision.md)** is the contract:
+
+```rust
+// Crate-internal adapter authoring path (mod sealed_dx::* private):
+mod sealed_dx {
+    pub trait MyCustomShapeSealed {}
+}
+
+pub struct MyCustomShapeAdapter<A: StatelessAction> {
+    inner: A,
+    metadata: ActionMetadata,
+}
+
+// Crate-internal blanket impl seals authoring eligibility:
+impl<T: StatelessAction + ActionSlots> sealed_dx::MyCustomShapeSealed for T {}
+
+// Adapter implements the dyn-safe primary handler:
+impl<A: StatelessAction + ActionSlots> StatelessHandler for MyCustomShapeAdapter<A> {
+    /* ... same shape as §11.1 adapter ... */
+}
+```
+
+The seal prevents external crates from authoring adapter parallels; `pub use` from `crates/action/src/lib.rs` is restricted to the adapter type identifier, not the sealed inner trait.
+
+### §11.3 Adapter responsibilities (load-bearing contract)
+
+Every adapter — macro-emitted or hand-authored — discharges these responsibilities:
+
+#### §11.3.1 Serialize/deserialize boundary (`Input` ↔ JSON)
+
+Per CP1 §2.4 + CP2 §6.1 + §7.1:
+
+- **Input pre-scan**: depth cap 128 via `crate::webhook::check_json_depth(&input_bytes, 128)` per §6.1.2-C; failure → `ActionError::Validation { reason: ValidationReason::DepthExceeded { observed, cap }, .. }`.
+- **Input deserialize**: `serde_json::from_slice::<A::Input>(&input_bytes)` per §6.1.2-C; failure → `ActionError::Validation { reason: ValidationReason::MalformedJson, .. }`.
+- **Output serialize**: `to_value(typed_output)` per §7.1 step 5; failure → `ActionError::Fatal { ... }` per §7.3 propagation table; wrapped through `redacted_display(&e)` per §6.3.1-A.
+- **Stateful adapters additionally** pre-scan + deserialize state JSON per §7.1 stateful-divergence (`crates/action/src/stateful.rs:573-582` shape; closes S-J2 simultaneously per 03c §1).
+
+#### §11.3.2 Error propagation (CP2 §6.3 sanitization)
+
+Per §6.3.1 + §7.3 propagation table:
+
+- Every `ActionError` emit site that includes a foreign error's `Display` (e.g., `serde_json::Error`, `ResolveError`, user-supplied `A::Error`) wraps the foreign Display through `nebula_redact::redacted_display(&e) -> String` per §6.3.1-A pre-`format!` wrap-form.
+- `From<A::Error>` impl is provided by the user-typed `A::Error: std::error::Error + Send + Sync + 'static`; per CP1 §2.8 the `ActionErrorExt` companion trait drives the typed → `ActionError` conversion.
+- Cancellation does NOT propagate as an error per §7.3 — adapter does not catch the body's `tokio::JoinHandle::abort` signal; engine sees task cancellation directly.
+
+#### §11.3.3 Cancellation safety (CP2 §6.4 ZeroizeProbe contract surface)
+
+Per §3.4 + §6.4 + spike Iter-2 §2.4 (commit `c8aef6a0`):
+
+- The adapter's `BoxFut<'a, ...>` body is cancellable at any `.await` point. The body's outermost `tokio::select!` discipline at the action body propagates cancellation (per §3.4 mechanism item 1).
+- All `SchemeGuard<'a, C>` instances in scope at cancellation drop deterministically, zeroizing their underlying `C::Scheme` before borrow-chain unwind. Adapter does NOT manually clean up guards — Drop runs naturally per credential Tech Spec §15.7.
+- Test contract (§6.4): adapters are exercised by the three sub-tests (`scheme_guard_zeroize_on_cancellation_via_select`, `scheme_guard_zeroize_on_normal_drop`, `scheme_guard_zeroize_on_future_drop_after_partial_progress`) per §6.4.1.
+- ZeroizeProbe instrumentation: per-test `Arc<AtomicUsize>` per §6.4.2 (closes 08c §Gap 4); adapters are constructed in tests via `engine_construct_with_probe` test-only constructor variant (soft-amendment к credential Tech Spec §15.7 per §6.4.2).
+
+**Open item §11.3-1.** Adapter performance budget — per-dispatch overhead (input serialization round-trip + depth pre-scan + slot resolution + output serialization). CP2 §6.1.2-D names the byte-pre-scan cost as "small (`to_vec` round-trip)"; CP3 §11 forward-tracks: a microbenchmark for a representative `StatelessAction` (e.g., the spike's iter-2 Action A `SlackSendAction` shape) lands as part of CP4 §15 housekeeping. CP3 §11 commits the responsibility table; perf measurement is CP4 / implementation-time scope.
+
+---
+
+## §12 ControlAction + DX migration
+
+This section locks the **ControlAction migration contract** per [ADR-0038](../../adr/0038-controlaction-seal-canon-revision.md). CP1 §2.6 already locked the sealed-DX trait family; CP3 §12 details the migration path from today's `pub trait ControlAction { ... }` (non-sealed, public-impl-allowed) to the sealed shape, and from the community plugin author perspective.
+
+### §12.1 Sealed adapter pattern (verbatim from [ADR-0038 §1](../../adr/0038-controlaction-seal-canon-revision.md))
+
+Per ADR-0038 §1 line 49-70 (verbatim):
+
+> `ControlAction` becomes a sealed trait — community plugin crates may NOT implement it directly. Sealing follows the per-capability inner-sealed-trait pattern from ADR-0035 §3:
+>
+> ```rust
+> mod sealed_dx {
+>     pub trait ControlActionSealed {}
+>     pub trait PaginatedActionSealed {}
+>     pub trait BatchActionSealed {}
+>     pub trait WebhookActionSealed {}
+>     pub trait PollActionSealed {}
+> }
+>
+> pub trait ControlAction: sealed_dx::ControlActionSealed { /* ... */ }
+> ```
+>
+> The blanket `impl<T: StatelessAction> sealed_dx::ControlActionSealed for T {}` (or analogous, depending on the wrap shape) ensures only `StatelessAction` implementors gain `ControlAction` membership via the **adapter pattern** — community plugins use `StatelessAction` as the primary dispatch trait + adapter to gain `ControlAction` semantics. Internal Nebula crates may continue to author `ControlAction`-using actions through the sealed adapter.
+
+CP1 §2.6 refines the blanket-impl to require `+ ActionSlots` per spike `final_shape_v2.rs:282`: `impl<T: StatelessAction + ActionSlots> sealed_dx::ControlActionSealed for T {}`. This Tech Spec preserves that refinement in §9.2 + §12.
+
+### §12.2 Community plugin DX flow
+
+Community plugin authors **do NOT implement any sealed DX trait directly**. Per [ADR-0038 §Negative item 4](../../adr/0038-controlaction-seal-canon-revision.md) line 111 (verbatim):
+
+> Two-step user-facing migration: code that today does `impl ControlAction for X` must move to `impl StatelessAction for X` + sealed adapter. Codemod can cover the common case; edge cases (control-flow-specific behavior) need hand migration. In-cascade per scope §1.6.
+
+**Concrete community-plugin authoring shape (post-cascade):**
+
+```rust
+use nebula_sdk::prelude::*;
+
+#[action(
+    key  = "myplugin.control_example",
+    name = "Control Example",
+    control_flow,                   // <- attribute zone signals control-flow shape; macro emits ControlActionAdapter wiring
+    credentials(api: ApiToken),
+)]
+pub struct ControlExampleAction;
+
+impl StatelessAction for ControlExampleAction {
+    type Input = ControlExampleInput;
+    type Output = ControlOutcome;       // <- typed control-flow output
+    type Error = MyPluginError;
+
+    fn execute<'a>(
+        &'a self,
+        ctx: &'a ActionContext<'a>,
+        input: Self::Input,
+    ) -> impl Future<Output = Result<Self::Output, Self::Error>> + Send + 'a {
+        async move {
+            // Plugin-author logic returns ControlOutcome::{Continue, Skip, Retry, ...}
+            // The macro-emitted ControlActionAdapter erases ControlOutcome to ActionResult<Value>
+            Ok(ControlOutcome::Continue { /* ... */ })
+        }
+    }
+}
+```
+
+The `#[action(control_flow)]` zone is the signal to the macro to emit the `ControlActionAdapter<ControlExampleAction>` wrapper per §11. Plugin author never names `ControlAction` trait or `ControlActionAdapter` type — both are cascade-internal per ADR-0038 §1. (The exact attribute zone syntax — `control_flow` flag vs `control_flow = SomeStrategy` config — is CP4 §15 scope per §9.2 trait-by-trait audit closure.)
+
+### §12.3 Internal Nebula crate migration (engine + sandbox)
+
+Engine + sandbox already implement at the **handler level** (`StatelessHandler`, `StatefulHandler`, etc. per `crates/action/src/handler.rs:39-50` + Phase 0 §9 line 288) — they consume `Arc<dyn StatelessHandler>`-erased actions, not typed `ControlAction` impls. The sealed DX is **mostly additive for community visibility**, not a refactor for engine / sandbox internal dispatch.
+
+What changes for internal Nebula crates:
+
+- **`crates/action/src/control.rs`** — current `pub trait ControlAction { ... }` becomes sealed per §12.1; existing internal `impl ControlAction for X` patterns (if any in `crates/action/src/` itself or test fixtures) re-pin via T6 codemod (§10.2). Per Phase 0 audit no external ControlAction implementors are tracked in Strategy §1(c); migration surface is small.
+- **`crates/action/src/lib.rs:4`** library docstring becomes truthful per ADR-0038 §Neutral item 2 — currently self-contradicts "adding a trait requires canon revision" (line 4 verbatim) while re-exporting 10 traits; post-cascade it states the actual shape (4 primary + 5 sealed DX).
+- **PRODUCT_CANON §3.5 line 82** — wording revision per [ADR-0038 §2](../../adr/0038-controlaction-seal-canon-revision.md). Inline canon edit lands as PR alongside ADR-0038 ratification per ADR-0038 Implementation note.
+
+### §12.4 Codemod coverage (T6) — common-case automation
+
+Per §10.2 transform T6 + ADR-0038 §Negative item 4 ("Codemod can cover the common case; edge cases need hand migration"):
+
+**Auto-rewrite path (T6 AUTO mode):**
+
+```rust
+// Source pattern:
+impl ControlAction for MyAction {
+    fn execute(...) -> ControlOutcome { /* ... */ }
+}
+
+// Target pattern (codemod-rewritten):
+impl StatelessAction for MyAction {
+    type Input = MyActionInput;
+    type Output = ControlOutcome;
+    type Error = MyPluginError;
+    fn execute<'a>(&'a self, ctx: &'a ActionContext<'a>, input: Self::Input)
+        -> impl Future<Output = Result<Self::Output, Self::Error>> + Send + 'a
+    {
+        async move { /* original body */ }
+    }
+}
+// + #[action(control_flow, ...)] zone added to the struct attribute
+```
+
+**Manual-review path (T6 MANUAL-REVIEW mode):**
+
+- Custom `Continue` / `Skip` / `Retry` reason variants — codemod cannot mechanically determine the user's intent.
+- Interaction with `ActionResult::Terminate` — manual confirmation of the wire-end-to-end discipline per §2.7.1.
+- Test fixtures that exercise `impl ControlAction` directly (e.g., via mock dispatch) — codemod marks; reviewer rewrites tests to use `StatelessAction` + adapter dispatch.
+
+CP3 §12.4 commits T6 in §10.2 codemod transform list. Plugin author migration guide §10.4 step 5 references the T6-specific rewrite pattern.
+
+---
+
+## §13 Evolution policy
+
+This section locks the **post-cascade evolution discipline** for `nebula-action`. Phase 0 audit T7 (semver-checks advisory-only during alpha) sets the current posture; CP3 §13 makes explicit how `nebula-action` evolves through deprecation, breaking changes, and per-crate versioning.
+
+### §13.1 Deprecation policy
+
+**Pre-1.0 alpha-cycle posture (current).** Hard breaking changes are acceptable per `feedback_hard_breaking_changes.md`. Per Phase 0 §10 line 362-363: "`semver-checks.yml:27` is advisory-only during alpha" + "feedback memory `feedback_hard_breaking_changes.md` + `feedback_adr_revisable.md` + `feedback_bold_refactor_pace.md` all align: hard breaking changes are acceptable right now for spec-correct outcomes; the blast radius just sets the scale, not the gate."
+
+**Post-1.0 posture.** Once `nebula-action` graduates to 1.0 (per ADR-0021 crate publication policy — out of cascade scope per §13.3), breaking changes require:
+1. **Deprecation cycle** of one minor release, NOT shim form per `feedback_no_shims.md`. Deprecation is `#[deprecated(since = "X.Y.0", note = "...")]` on the type / method, with a clear migration target named in the note.
+2. **Major-bump landing** at the next major release, with a CHANGELOG entry citing the ADR that ratified the breaking change.
+3. **Codemod artefact** for any non-trivial migration (the `#[derive(Action)]` → `#[action]` precedent at §10).
+
+**Forward-track for §6.2-1 (`credential_typed::<S>(key)` decision).** The §9.3.1 recommendation **remove** is consistent with the pre-1.0 alpha posture (hard breaking change acceptable now). Post-1.0 a similar removal would require a deprecation cycle. If the user / tech-lead picks **retain** instead of **remove** at CP3 close, the retention is a permanent surface element subject to the post-1.0 deprecation discipline above.
+
+### §13.2 Breaking-change policy
+
+Two classes of breaking change:
+
+#### §13.2.1 Spec-level (ADR amendment-in-place per ADR-0035 precedent)
+
+Per ADR-0035 amended-in-place precedent (referenced throughout CP2 §5.4.1 + §6.4 cross-crate amendments + §7.2): for breaking changes that refine existing decisions without paradigm shift, ADR amendment-in-place is the mechanism. Examples (from this Tech Spec):
+
+- ADR-0037 §1 `SlotBinding` shape divergence (CP2 §15 forward-track) — `field_name` vs `key`, capability folded into `SlotType` enum vs separate field. Lands as `*Amended by ADR-0037 inline edit, 2026-04-24*` prefix at §1; CHANGELOG entry.
+- Soft amendments к credential Tech Spec §16.1.1 probe #7 (qualified-syntax form per §5.4.1) and §15.7 (`engine_construct_with_probe` test-only constructor per §6.4.2) — flagged in this Tech Spec, NOT enacted; CP4 cross-section pass surfaces; credential Tech Spec author lands the inline edit.
+
+**Discipline.** Amendment-in-place preserves the ADR's identity (decision name unchanged); it adds a dated annotation and updates the affected paragraph(s). Surrounding decisions are not retracted.
+
+#### §13.2.2 Paradigm shift (full ADR supersession)
+
+For breaking changes that **invalidate** the prior decision rather than refine it, full ADR supersession applies per ADR-0035 / ADR-0036 / ADR-0037 / ADR-0038 own status mechanics: `superseded` status set + `supersedes:` / `superseded_by:` cross-reference in frontmatter.
+
+Examples (none active in current Tech Spec scope; all hypothetical):
+
+- If a future Rust release adds `for<'ctx> async fn(...)` syntax (per [ADR-0037 §Negative item 1](../../adr/0037-action-macro-emission.md) line 121), the HRTB fn-pointer shape may be superseded by an `async fn` pointer shape. ADR-0037 supersession lands; macro emission shifts.
+- If a future cluster-mode coordination cascade re-shapes `TriggerAction` cluster hooks from supertrait extensions to a separate `ClusterAware` trait (per N4 + Strategy §3.4 row), that's a paradigm shift; new ADR + supersession.
+
+**Discipline.** Supersession pre-empts amendment-in-place when the original decision's name no longer fits the new shape — e.g., "ADR-0036 action-trait-shape" describes attribute-macro-replaces-derive; if a future cascade restores derives via a different mechanism, supersession (not amendment) is the honest record.
+
+### §13.3 Versioning per crate publication
+
+**Out of cascade scope per ADR-0021.** Crate publication policy (when `nebula-action` ships to crates.io, what version it ships at, what its semver-checks posture is post-publication) is governed by ADR-0021. CP3 §13.3 explicitly defers; the action redesign cascade lands changes at 0.1.0-cycle pre-publication shape.
+
+**Cross-ref.** When `nebula-action` is queued for crates.io publication (post-cascade housekeeping), the publication PR should cite this Tech Spec §9 public surface as the at-publication contract. Pre-publication shape is mutable per §13.1; post-publication shape locks to the §13.1 post-1.0 posture.
+
+### §13.4 CP1 hygiene fold-in vs out-of-cascade scope
+
+CP1 + CP2 carry-forward devops nit-list (T4 / T5 / T9 from CP1 09e — minor; deferred to CP3 §13 fold-in or CP4 §16 explicit-pointer):
+
+#### §13.4.1 T4 — `zeroize` workspace=true pin (cascade-scope absorb)
+
+**Context (Phase 0 audit §1 finding 🟠 MAJOR line 44).** `crates/action/Cargo.toml:36` pins `zeroize = { version = "1.8.2" }` inline; workspace declares `zeroize = { version = "1.8.2", features = ["std"] }` at root `Cargo.toml:116`. Inline pin silently drops the `std` feature and de-unifies the version in the feature-unification graph.
+
+**Decision.** **Cascade-scope absorb.** The `nebula-action` Cargo.toml edit lands at implementation time per §10 codemod runbook Step 1 (cascade-landing PR includes Cargo.toml hygiene). Edit:
+
+```toml
+# crates/action/Cargo.toml (CP3 §13 amendment shape):
+# Before:  zeroize = { version = "1.8.2" }                              # line 36, drops std feature
+# After:   zeroize = { workspace = true }                                # workspace-pinned with std feature
+```
+
+**Why cascade-scope.** `zeroize` is the canonical zeroize dependency for `SchemeGuard<'a, C>` per credential Tech Spec §15.7 + spike `final_shape_v2.rs:95`; the `std` feature is required for `Vec<u8>` zeroization patterns the credential / action surfaces cross-reference. De-unifying the version risks crypto-dep version skew — shared with `crates/credential`, `crates/api`, webhook verification path per Phase 0 §1.
+
+#### §13.4.2 T5 — `lefthook.yml` doctests/msrv/doc parity (out of action cascade scope)
+
+**Context (Phase 0 audit §11 finding 🟠 MAJOR line 376).** `lefthook.yml:45` does not mirror CI's `doctests` / `msrv` / `doc` jobs; action has 20+ doctests per Phase 0 audit; `feedback_lefthook_mirrors_ci.md` discipline names this as a divergence.
+
+**Decision.** **Out of action cascade scope; separate housekeeping PR.** Per Phase 1 02d (workspace hygiene scope split) + `feedback_lefthook_mirrors_ci.md`, lefthook parity is workspace-wide concern and lands as its own housekeeping PR independent of the action redesign. Action cascade cites the gap; the fix is owned by devops with target sunset window per `feedback_lefthook_mirrors_ci.md` discipline (≤2 release cycles).
+
+**Forward-pointer.** Migration guide §10.4 step 7 ("Run plugin's tests against the new release") implicitly relies on lefthook parity for plugin authors who use lefthook locally. If a community plugin author hits a CI-pre-push divergence (e.g., a doctest fails in CI but passed pre-push), the housekeeping PR is the resolution path — not an action cascade re-open.
+
+#### §13.4.3 T9 — `deny.toml` layer-enforcement rule for `nebula-action` (cascade-scope absorb)
+
+**Context (Phase 0 audit §11 finding 🟠 MAJOR line 379).** `deny.toml` has positive bans for `engine` / `storage` / `sandbox` / `sdk`; `nebula-action` relies on implicit correctness — no positive ban rule. Action cascade introduces a `[dev-dependencies]` `nebula-engine` edge (per §5.3-1 rust-senior 09b #1 resolution) which compounds the missing guardrail.
+
+**Decision.** **Cascade-scope absorb.** Per CP2 §5.3-1 commitment ("CP3 §9 lands the `deny.toml` edit alongside the macro-crate dev-deps wiring"), the `deny.toml` amendment lands at implementation time alongside the cascade PR. **Two edits, both targeting the existing `[bans] deny = [...]` block at `deny.toml:48-81`:**
+
+```toml
+# deny.toml (CP3 §13 amendment shape) — both edits target existing [bans] deny = [...] block:
+
+# ---- Edit 1: extend the existing nebula-engine wrappers list (deny.toml:59-66). ----
+# Current shape:
+#   { crate = "nebula-engine", wrappers = ["nebula-cli", "nebula-api"], reason = "..." }
+# Amended shape (add "nebula-action-macros" to the wrappers list):
+{ crate = "nebula-engine", wrappers = [
+    "nebula-cli",
+    # Dev-only: `crates/api/tests/knife.rs` ... (existing comment preserved verbatim)
+    "nebula-api",
+    # Dev-only: `nebula-action-macros` `[dev-dependencies]` `nebula-engine` for
+    # compile-fail Probe 6 (real `resolve_as_bearer::<C>` HRTB coercion bound-mismatch
+    # verification per Tech Spec §5.3-1; stub-helper alternative rejected per CP2 §5.3-1).
+    "nebula-action-macros",
+], reason = "Engine is exec-layer orchestration; business/core crates must not depend on it" }
+
+# ---- Edit 2: NEW positive ban for nebula-action runtime layer (T9 full intent). ----
+# Symmetric with existing engine / sandbox / storage / sdk / plugin-sdk bans at deny.toml:52-81.
+# Per Phase 0 audit §11 row 9 + Strategy §1.6 layer ordering: nebula-action is the business-trait
+# layer; engine / api / storage / sandbox / sdk / plugin-sdk are upward layers and MUST NOT be
+# runtime deps of nebula-action.
+{ crate = "nebula-action", wrappers = [
+    # All current reverse-deps that are allowed to depend on nebula-action go here.
+    # Initial list per Phase 0 audit §9 reverse-deps inventory:
+    "nebula-engine",
+    "nebula-sandbox",
+    "nebula-api",
+    "nebula-sdk",
+    "nebula-plugin",
+    "nebula-cli",
+    "nebula-action-macros",  # sibling test crate
+], reason = "Action is business-trait layer; upward layers (engine/api/storage/sandbox/sdk/plugin-sdk) must not be runtime deps of nebula-action — symmetric with §1.6 layer ordering" }
+```
+
+**Verification.** `cargo deny check` post-amendment per CP2 §5.3-1; lefthook + CI both run `cargo deny`. Edit 1 closes the `nebula-engine` dev-dep wrapper omission; Edit 2 closes Phase 0 §11 row 9 (T9 full intent: positive ban on `nebula-action` symmetric with engine/sandbox/storage/sdk/plugin-sdk rules).
+
+#### §13.4.4 `nebula-redact` workspace integration (cascade-scope absorb — preliminary)
+
+**Context.** §6.3.2 (CP2) commits to creating `nebula-redact` as a NEW dedicated crate; §11.3.2 names `nebula_redact::redacted_display(&e)` in production code (adapter responsibility table); §9.3.2 added list re-exports `nebula-redact::redacted_display` through call sites. **`nebula-redact` does not exist in the current workspace** (verified: `crates/redact/` absent; root `Cargo.toml [workspace] members` does not list it; `[workspace.dependencies]` has no `nebula-redact` entry). Without explicit absorption, the cascade-landing engineer may either (a) land action changes that fail to compile (missing `nebula_redact` dep) or (b) land the redact crate as a separate PR (cascade-fragmentation per `feedback_active_dev_mode.md` "finish partial work in sibling crates").
+
+**Decision.** **Cascade-scope absorb (preliminary — must land BEFORE or atomic-with the action cascade PR per `feedback_active_dev_mode.md` DoD).** Four atomic edits in the cascade-landing PR:
+
+1. **`crates/redact/Cargo.toml`** — new manifest with name `nebula-redact`, version `0.1.0`, edition pinned to workspace.
+2. **`crates/redact/src/lib.rs`** — public surface: `redacted_display` function (per §6.3.2 specification).
+3. **Root `Cargo.toml`** — add `crates/redact` to `[workspace] members`; add `nebula-redact = { path = "crates/redact" }` (or workspace-version pin) to `[workspace.dependencies]`.
+4. **`deny.toml`** — **no new ban needed** (`nebula-redact` is a leaf utility crate consumed by `nebula-action` only; no upward-layer guardrail required at this stage). The Edit 1 + Edit 2 amendments to `[bans] deny = [...]` from §13.4.3 above are unaffected.
+
+**Why preliminary, not strictly cascade-scope.** The crate's existence is a precondition for the cascade landing — `crates/action/src/{stateless,stateful}.rs` error-emit sites (per §6.3.1-A) reference `nebula_redact::redacted_display`. Per `feedback_no_shims.md` discipline, no stub / empty-shell `nebula-redact` lands ahead of the actual implementation; the substantive `redacted_display` body lands atomic with the call sites that consume it.
+
+**Verification.** Post-cascade, `cargo build --workspace` resolves `nebula_redact::redacted_display` at every call site enumerated in §11.3.2 / §6.3.1-A; `cargo deny check` passes (no new ban; existing rules unaffected).
+
+#### §13.4.5 Summary of T4 / T5 / T9 / `nebula-redact` dispositions
+
+| Item | Disposition | Lands at |
+|---|---|---|
+| **T4** `zeroize` workspace=true pin | Cascade-scope absorb | `crates/action/Cargo.toml` edit alongside cascade PR |
+| **T5** `lefthook.yml` parity | Out of cascade scope | Separate housekeeping PR (devops-owned) |
+| **T9** `deny.toml` layer-enforcement | Cascade-scope absorb | `deny.toml` edits alongside macro-crate dev-deps wiring (per CP2 §5.3-1) — wrappers-list extension to existing `nebula-engine` rule + NEW positive ban for `nebula-action` runtime layer |
+| **`nebula-redact`** workspace integration (NEW crate) | Cascade-scope absorb (preliminary — atomic with cascade PR) | `crates/redact/{Cargo.toml,src/lib.rs}` + root `Cargo.toml` `[workspace] members` + `[workspace.dependencies]` (no new `deny.toml` ban — leaf utility) |
+
+CP4 §16 picks up only T5 as a sunset-tracked item; T4 + T9 + `nebula-redact` are absorbed.
+
+---
+
 ### Open items raised this checkpoint (CP1)
 
 - §1.2 / N5 — paths a/b/c implementation pick framing in CP4 §16; user picks at Phase 8 (Strategy §4.2 line 198-206 + §6.5 line 408-413). Track for CP4.
@@ -1638,3 +2230,66 @@ CP2 single-pass append 2026-04-24:
 - **rust-senior** — please confirm: (1) §4.5 per-slot emission cost bound (1.6-1.8x adjusted ratio) aligns with ADR-0037 §5 + spike §2.5 measurements; (2) §5.3-1 `nebula-engine` as dev-dep on `nebula-action-macros` does NOT introduce cycle / boundary-erosion; (3) §6.1.2 byte-pre-scan vs `Value`-walking primitive — flag if `Value`-walking preferred for performance / clarity reasons; (4) §6.3 `redacted_display()` helper signature (`fn redacted_display<T: ?Sized + Display>(value: &T) -> String`) is the right shape vs alternatives (e.g., `RedactedDisplay<'a, T>` newtype wrapper).
 - **dx-tester** — please review §4.6.1 + §4.7 from authoring-friction perspective: (1) does the typed `parameters = Type` requires-`HasSchema` diagnostic surface the actual missing bound clearly (vs the legacy "no method `with_parameters`" confusion)? (2) does the string-form `credential = "key"` `compile_error!` message (line "the `credential` attribute requires a type, not a string. Use `credential = SlackToken`...") give a clean migration signal? Flag any DX-friction the diagnostics produce in newcomer scenarios.
 - **spec-auditor** — please audit §4–§8 for: (a) cross-section consistency (every forward reference to CP3 / CP4 marked deferred, not dangling — 13 CP2 open items + 5 forward-track CP3 items); (b) every claim grounded in code (file:line citations) / canon / ADR / Strategy / spike artefacts / security 03c+08c at line-number granularity; (c) §5.4 + §6.4 cross-crate amendments к credential Tech Spec §16.1.1 + §15.7 are FLAGGED only (no inline credential Tech Spec edit performed by this Tech Spec); (d) terminology alignment with `docs/GLOSSARY.md`; (e) §6 co-decision items match security 03c VETO conditions verbatim (especially §6.2 hard-removal vs `#[deprecated]` language).
+
+### Open items raised this checkpoint (CP3)
+
+**Items resolved at CP3 §9-§13 drafting (closed in this revision):**
+- §2.7-2 — engine scheduler-integration hook trait surface — **PARTIALLY CLOSED at §9.5**. Cross-tenant boundary locked at §9.5; full engine-side trait surface (`SchedulerIntegrationHook::on_terminate(...)` shape) is engine-cascade scope per §9.5.5. Tech Spec scope: action surface produces `ActionResult::Terminate`; engine cascade designs the scheduler consumer.
+- §3.2-1 — `ResolvedSlot` engine-side wrap point (inside `resolve_fn` vs after) — **PARTIALLY CLOSED at §11.3.1 + §3.2 step 5**. Adapter responsibility table commits "engine wraps after `resolve_fn` returns `ResolvedSlot`" per spike interpretation; explicit wrap-point in engine code is engine-cascade scope.
+- §4.4-1 — `ActionSlots` trait sealing decision — **CLOSED at §9.4**. Decision: leave `pub`, NOT sealed. Rationale: `#[action]` macro is recommended path; dual enforcement layer (§4.4) makes hand-impl observable; advanced internal-Nebula contexts may need hand-impl for special cases. Tech-lead ratifies at CP3 close.
+- §6.2-1 — `credential_typed::<S>(key)` retention vs removal — **CLOSED at §9.3.1**. Recommendation: REMOVE alongside `credential<S>()`. Rationale: explicit-key form achievable via `ctx.resolved_scheme(&CredentialRef::from_key(key))`; two parallel APIs bifurcate authoring guidance; zero `nebula-sdk::prelude` re-export presence. Tech-lead ratifies at CP3 close.
+- §6.5 / §9.5 — cross-tenant `Terminate` boundary — **CLOSED at §9.5**. Engine-side enforcement contract locked: tenant scope check at scheduler dispatch path before fanning Terminate to siblings; cross-tenant skip is silent (telemetry observable via `tracing::warn!` + counter); structural errors are Fatal. Security-lead implementation-time VETO retained on §9.5.1 invariant language ("MUST NOT propagate").
+- §7.3-1 — `ResolveError::NotFound` mapping to `ActionError` taxonomy — **CARRIED FORWARD to CP4 §16** (security-neutral; not implementation-blocking; can land at implementation time without re-opening Tech Spec).
+- §10 codemod transforms named — **CLOSED at §10.2** (T1-T6).
+- §11.3 adapter responsibility contract — **CLOSED at §11.3** (serialize/deserialize, error propagation, cancellation safety).
+- §13.4 T4 / T9 cascade-scope absorb — **CLOSED at §13.4** (T4 `zeroize` workspace=true; T9 `deny.toml` wrappers-list extension + new positive ban for `nebula-action` runtime layer per devops 10e #2 critical iteration). T5 (`lefthook.yml` parity) explicitly out-of-cascade-scope per §13.4.2.
+- `nebula-redact` workspace integration (NEW crate creation + workspace member add) — **CLOSED at §13.4.4** (cascade-scope absorb preliminary; atomic with cascade PR per devops 10e #1 critical iteration; closes "compile-fail blocker" gap that CP3 single-pass §13.4 had silently dropped despite CP2 09e flagging it).
+
+**Items added during CP3 §9-§13 drafting:**
+- §9.3-1 — `nebula-sdk::prelude` re-export of `redacted_display` for community plugin authors — CP4 §16 picks; default position NO (community plugins depend on `nebula-redact` directly to preserve single audit point).
+- §11.3-1 — Adapter performance microbenchmark (per-dispatch overhead: input ser round-trip + depth pre-scan + slot resolution + output ser) — CP4 §15 housekeeping; CP3 §11 commits responsibility table only.
+- §12 `#[action(control_flow)]` attribute zone syntax — exact spelling (`control_flow` flag vs `control_flow = SomeStrategy` config) — CP4 §15 scope per §9.2 trait-by-trait audit closure.
+
+**Forward-track for CP4 §14-§16:**
+- (a) §1.2 / N5 — paths a/b/c implementation pick framing in CP4 §16; user picks at Phase 8 per Strategy §4.2 line 198-206 + §6.5 line 408-413.
+- (b) §2.2.3 — TriggerAction cluster-mode hooks final trait shape per Strategy §5.1.5 line 297 — CP4 §15 scope (deferred from CP3 §7 per ADR-0038 trait-by-trait audit closure plus §1.2 N4 boundary).
+- (c) §2.6 / §9.2 — DX trait blanket-impl trait-by-trait audit completion — CP4 §15 confirms exact `#[action(...)]` attribute zone spellings for each DX trait.
+- (d) §3.1 — engine `ActionRegistry::register*` call-site exact line range + final host-crate path — CP4 §15 confirms `nebula-engine::registry` surface as engine-cascade-handoff item.
+- (e) §3.2 — ActionContext API location in credential Tech Spec (Strategy §5.1.1) — coordination with credential Tech Spec author; CP4 cross-section pass surfaces.
+- (f) §5.4.1 + §6.4.2 cross-crate amendments к credential Tech Spec §16.1.1 + §15.7 — CP4 cross-section pass surfaces both for credential Tech Spec author inline edit per ADR-0035 amended-in-place precedent.
+- (g) ADR-0037 §1 SlotBinding shape divergence amendment-in-place — CP2 §15 forward-track preserved; Phase 8 enacts inline ADR edit + CHANGELOG entry. Per §0.2 invariant 2, must land before Tech Spec ratification.
+- (h) §10 codemod implementation host crate — `tools/codemod/` placeholder; CP4 §15 confirms exact crate name + binary location.
+- (i) §13.4.2 T5 lefthook parity — separate housekeeping PR (devops-owned); CP4 §16 sunset-tracked per `feedback_lefthook_mirrors_ci.md`.
+- (j) §11.3-1 + §13.3 — adapter perf microbenchmark + crate publication policy cross-ref to ADR-0021.
+
+### CHANGELOG — CP3
+
+CP3 single-pass append 2026-04-24:
+- Status header — `DRAFT CP2 (iterated 2026-04-24)` → `DRAFT CP3`. §0 status table — `(this revision)` annotation moved from CP2 row to CP3 row; CP2 row marked `locked CP2`.
+- §9 added — Public API surface: §9.1 four primary trait surface unchanged at trait level (per ADR-0036 §Neutral item 2); semver impact (per-feature additions OK; removals would break — none proposed); §9.2 five sealed DX trait surface (sealed per ADR-0038 §1; community migration target reaffirmed — `StatelessAction` primary + `#[action(control_flow = …)]`); §9.3 `prelude.rs` re-export reshuffle (removed: legacy `CredentialContextExt::credential` no-key + `credential_typed` recommendation REMOVE + `CredentialGuard` legacy + `nebula_action_macros::Action` derive; added: `ActionSlots` + `BoxFut` single-home + `SlotBinding`/`SlotType`/`Capability`/`ResolveFn` + `redacted_display!` from `nebula-redact` + `ValidationReason::DepthExceeded` + `DepthCheckError` internal; reshuffled: `SchemeGuard` and `CredentialRef` re-exported through canonical credential path); §9.4 builder/macro convenience methods exposed in `nebula-sdk::prelude` (community plugin authoring path) vs lower-level access (`nebula-action::*` for Handler types / Adapter types / SlotBinding internals); ActionSlots seal decision CLOSED — leave `pub` (NOT sealed) per §4.4-1; §9.5 cross-tenant `Terminate` boundary lock (security 08c Gap 5) — engine-side enforcement contract with verbatim "MUST NOT propagate" invariant language; mechanism (tenant-scope check at scheduler dispatch path before fanning Terminate); silent skip with telemetry; structural errors Fatal; security-lead implementation-time VETO retained.
+- §10 added — Migration plan (codemod runbook): §10.1 reverse-deps inventory (verbatim from Phase 0 §9 line 252-329); §10.2 codemod transforms T1-T6 (T6 added at CP3 for ControlAction → StatelessAction migration per ADR-0038 §Negative item 4; T1/T3/T4 AUTO; T2/T5/T6 MANUAL-REVIEW); §10.2.1 codemod execution model (`cargo`-style binary `nebula-action-codemod`; AUTO mode = unified-diff via `--dry-run`; MANUAL-REVIEW mode = TODO marker insertion; idempotent re-runs); §10.3 per-consumer migration step counts (engine ~30 sites; api ~5; sandbox ~9; sdk re-export-only; plugin ~2; cli ~6); §10.4 plugin author migration guide (7 steps; <30min trivial / 2-4hr complex; `MIGRATION.md` ships in `crates/action/`); §10.5 auto-vs-manual breakdown (~70% auto / ~30% manual review).
+- §11 added — Adapter authoring contract: §11.1 `#[action]` macro IS the adapter for community plugins (zero hand-authoring); §11.2 internal-Nebula adapter authoring path via sealed_dx pattern from ADR-0038 §1; §11.3 adapter responsibilities (serialize/deserialize boundary with depth cap 128 + `redacted_display(&e)` wrap; error propagation per §6.3 + §7.3; cancellation safety via Drop ordering + ZeroizeProbe per-test instrumentation per §6.4.2); §11.3-1 perf microbenchmark forward-track to CP4 §15.
+- §12 added — ControlAction + DX migration: §12.1 sealed adapter pattern verbatim from ADR-0038 §1 (with CP1 §2.6 refinement adding `+ ActionSlots`); §12.2 community plugin DX flow (concrete `#[action(control_flow)]` example); §12.3 internal Nebula crate migration (engine + sandbox already at handler level; sealed DX is mostly additive for community visibility); §12.4 codemod coverage T6 — auto-rewrite path for trivial pass-through; manual-review for custom Continue/Skip/Retry reason variants + Terminate interaction + test fixtures.
+- §13 added — Evolution policy: §13.1 deprecation policy (pre-1.0 alpha hard breaking changes acceptable per `feedback_hard_breaking_changes.md`; post-1.0 deprecation cycle + major-bump + codemod artefact); §13.2 breaking-change policy (spec-level via ADR amendment-in-place per ADR-0035 precedent; paradigm shift via full ADR supersession); §13.3 versioning per crate publication — out of cascade scope per ADR-0021 cross-ref; §13.4 CP1 hygiene fold-in (T4 `zeroize` workspace=true cascade-scope absorb; T5 `lefthook.yml` out-of-cascade-scope; T9 `deny.toml` layer-enforcement cascade-scope absorb with wrapper entry for `nebula-action-macros` dev-dep on `nebula-engine`); disposition summary table (re-numbered to §13.4.5 at 2026-04-24 iteration after `nebula-redact` absorption section §13.4.4 inserted per devops 10e #1).
+- §15 (open items) — CP3 closures recorded (§2.7-2 partial / §3.2-1 partial / §4.4-1 / §6.2-1 / §6.5 / §10 transforms / §11.3 / §13.4 T4+T9); CP3-new items added (§9.3-1 / §11.3-1 / §12 attribute syntax); 10-item CP4 forward-track including ADR-0037 §1 amendment-in-place trigger preserved from CP2.
+
+CP3 iteration append 2026-04-24 (post 5-reviewer-matrix consolidation: spec-auditor 10a PASS-WITH-NITS / rust-senior 10b RATIFY-WITH-NITS / security-lead 10c ACCEPT (no edits) / dx-tester 10d RATIFY-WITH-NITS / devops 10e RATIFY-WITH-NITS):
+- Status header — `DRAFT CP3` → `DRAFT CP3 (iterated 2026-04-24)`. Stays DRAFT until CP4 freeze.
+- §9.3.2 — `BoxFut` rename rationale added (rust-senior 10b #1): three-bullet why-not-`BoxFuture` clause covers (a) Strategy §4.3.1 single-`'a` shape alignment, (b) avoidance of `futures::future::BoxFuture` import collision, (c) spike `final_shape_v2.rs:38` precedent. Closes rust-senior 🟠 DATED.
+- §9.4 — `ActionContext` field-vs-method clarity (rust-senior 10b #2): "CP4 §15 may revisit field-vs-method shape" → "Internal storage shape may be revisited in CP4 §15 cross-section; community-facing API at `resolved_scheme(&self.<slot>)` is locked." Removes spurious public-surface uncertainty (field is `pub(crate)`, unreachable from outside crate). Closes rust-senior 🟠 DATED.
+- §10.2 prose — Strategy §4.3.3 → Tech Spec mapping disambiguated (spec-auditor 10a 🟠): T1 = Strategy 1; T2 = Strategy 2+3 collapsed; T3/T4/T5/T6 added at Tech Spec design level per Strategy §4.3.3 line 243 license (NOT 1:1 with Strategy 1-5). Closes spec-auditor 🟠 HIGH on misleading "T1-T5 from Strategy" framing.
+- §10.2 T6 row — verdict normalized to **MIXED** (AUTO default for trivial pass-through; MANUAL marker on edge-case detection) per ADR-0038 §Negative item 4. Closes spec-auditor 10a 🟠 HIGH on §10.2 vs §10.5 internal contradiction. §10.2.1 default-mode line revised to enumerate the MIXED behaviour explicitly.
+- §10.2 T6 + §10.4 step 5 T6 — `control_flow` attribute syntax unified to flag form (`control_flow,`) across §10.2, §10.4, §12.2 per dx-tester 10d R1 (§12.2 example was already flag form; §10.2 + §10.4 had `control_flow = ...` key=value form). CP4 §15 still owns the final spelling decision; flag form is the consistent CP3 placeholder.
+- §10.3 — Phase 0 §10 line range corrected `347-356` → `346-356` (spec-auditor 10a 🟡 off-by-one; range now includes the "Blast-radius weight by consumer" header at line 346).
+- §10.4 — added step 1.5 `semver` Cargo.toml dep instruction per dx-tester 10d R2 (Phase 1 CC1 carry-forward): macro emits unqualified `::semver::Version` path; consumer crate must declare `semver = { workspace = true }` or `semver = "1"` directly. Re-export of `semver` through `nebula-action::__private::semver` deferred to CP4 §15 housekeeping. Closes dx-tester 🟠 first-compile-fails-without-this NIT.
+- §10.5 — bucket entry refined: T6 reclassified from "Manual review" to new **Mixed** sub-bucket per ADR-0038 §Negative item 4 + spec-auditor 10a 🟠 closure. Per-consumer share clarification added per rust-senior 10b 🟡: 70/30 figure is workspace-aggregate file-touch count; trivial plugin ~100% AUTO; heavy engine consumer closer to 50/50.
+- §12.3 — false file-line citation `crates/action/src/lib.rs:14` → `:4` (spec-auditor 10a #1 🟠). Verified: line 4 is `Canon §3.5 (trait family; adding a trait requires canon revision)` (the contradicting docstring); line 14 is `StatelessAction` enumeration. Closes spec-auditor 🟠 HIGH on cross-doc reference resolution.
+- §13.4.3 — `deny.toml` edit shape rewritten per devops 10e #2 critical: Edit 1 changed from "parallel `nebula-engine` deny entry" (would duplicate-rule conflict against existing `deny.toml:59-66`) to **wrappers-list extension** of the existing rule (adds `nebula-action-macros` to existing `["nebula-cli", "nebula-api"]` wrappers list); Edit 2 added — **NEW positive ban for `nebula-action` runtime layer** symmetric with engine/sandbox/storage/sdk/plugin-sdk rules per Phase 0 §11 row 9 T9 full intent. Closes devops 🟠 HIGH critical (deny.toml syntax was wrong + full T9 intent was missing).
+- §13.4.4 (NEW subsection) + §13.4.5 (renumbered from prior §13.4.4) — `nebula-redact` workspace integration absorbed per devops 10e #1 critical: §13.4.4 commits four atomic edits (new `crates/redact/Cargo.toml` + `src/lib.rs`; root `Cargo.toml [workspace] members` + `[workspace.dependencies]`; no new `deny.toml` ban — leaf utility); §13.4.5 disposition table extended with fourth row. Closes devops 🟠 HIGH critical (cascade-landing PR would compile-fail without nebula-redact workspace member).
+
+### Handoffs requested — CP3
+
+- **devops** — please review §10 codemod runbook + §13.4 hygiene fold-in: (1) §10.2 transform table T1-T6 with AUTO / MANUAL-REVIEW classification — flag any transform where the auto/manual split is wrong (e.g., T3 should be MANUAL-REVIEW because of in-process/out-of-process ABI nuance?); (2) §10.2.1 execution model (`cargo`-style binary; idempotent re-run; `--dry-run` flag) — flag if alternative shape preferred (e.g., `cargo` subcommand vs standalone bin); (3) §10.3 per-consumer step counts — verify estimates against Phase 0 §10 audit blast-radius weights; (4) §13.4.1 T4 `zeroize` workspace=true edit + §13.4.3 T9 `deny.toml` wrapper entry — confirm both can land in the cascade PR without separate housekeeping; (5) §13.4.2 T5 `lefthook.yml` parity decision (out-of-cascade-scope) — confirm the separate housekeeping PR has a target sunset window per `feedback_lefthook_mirrors_ci.md`.
+- **rust-senior** — please confirm: (1) §9.1 trait-level surface unchanged claim — verify `Input: HasSchema + DeserializeOwned + Send + 'static` etc. lifts are non-breaking at the impl level (existing impls already satisfy via adapter contract); (2) §9.3.1 `credential_typed::<S>(key)` removal recommendation — flag if a legitimate non-`#[action]` consumer exists that would force retention; (3) §11.1 macro-emitted adapter shape — confirm the `StatelessActionAdapter<A>` example matches current `crates/action/src/stateless.rs` shape post-modernization; (4) §11.2 sealed_dx adapter authoring pattern for internal-Nebula crates — confirm the `mod sealed_dx { pub trait MyCustomShapeSealed {} }` shape composes with the §2.6 sealed-DX pattern without conflict; (5) §13.2 amendment-in-place vs supersession discipline — flag if the ADR-0035 precedent is mis-cited.
+- **spec-auditor** — please audit §9–§13 for: (a) cross-section consistency — every forward reference to CP4 / engine cascade marked deferred, not dangling (§9.5.5 engine trait surface; §11.3-1 perf microbench; §13.3 ADR-0021 cross-ref); (b) every claim grounded in code (file:line) / canon / ADR / Strategy / Phase 0 audit at line-number granularity (Phase 0 §9 reverse-deps verbatim; security 08c Gap 5 verbatim language; ADR-0038 §1 / §Negative item 4 verbatim); (c) §9.5 cross-tenant Terminate engine-side enforcement contract uses VETO trigger language verbatim (NOT paraphrased); (d) terminology alignment with `docs/GLOSSARY.md` (especially "tenant scope", "scheduler-integration hook", "sealed DX", "adapter responsibilities"); (e) §10 codemod transforms T1-T6 trace to specific reverse-deps + Phase 0 §10 blast-radius weights; (f) §13.4 T4/T5/T9 dispositions consistent with Phase 0 audit findings (§1 line 44; §11 line 376, line 379).
+- **security-lead** *(focused review on §9.5 only)* — please verify §9.5 cross-tenant `Terminate` boundary closure of 08c §Gap 5: (1) §9.5.1 invariant language quotes 08c §Gap 5 line 109-111 verbatim — confirm the wording matches your veto trigger position; (2) §9.5.2 mechanism (tenant scope check at scheduler dispatch path; cross-tenant skip silent with telemetry; structural error Fatal) — confirm the silent-skip path does NOT enable any tenant-isolation bypass; (3) §9.5.3 reject paths (silent cross-tenant cancel REJECT; silent no-op without telemetry REJECT) — confirm the threat-model coverage; (4) §9.5.5 implementation-time VETO retained on "MUST NOT propagate" — confirm the wording is the right strength. **Out of scope** for this review: §10 codemod, §11 adapter contract (already accepted at CP2 §6.4 + §7), §12 / §13 (no new security surface).

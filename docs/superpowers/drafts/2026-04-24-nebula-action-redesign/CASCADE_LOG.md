@@ -86,6 +86,24 @@ Devops wrote to wrong repo path (main repo instead of worktree) — orchestrator
 - ADR-0038 ControlAction seal + canon §3.5 DX tier ratification (canon revision per §0.2)
 - ADR-NNNN+3 cluster-mode hooks deliberately deferred (out of cascade scope per Strategy §6.2)
 
+### 2026-04-25 T00:30 — CP3 RATIFIED + commit-ready
+
+**CP3 §9-§13 (Tech Spec interface + migration):**
+
+- Architect drafted 548 lines (§9 public API surface incl. §9.5 cross-tenant Terminate boundary, §10 codemod runbook with 6 transforms T1-T6, §11 adapter authoring contract, §12 ControlAction + DX migration, §13 evolution policy)
+- 5 parallel reviewers returned: spec-auditor PASS-WITH-NITS (2 🟠 + 6 🟡), rust-senior RATIFY-WITH-NITS (2 🟠 + 1 🟡), security-lead ACCEPT (focused §9.5 only — preserves "MUST NOT propagate" verbatim from 08c §Gap 5; engine-side enforcement at scheduler dispatch), dx-tester RATIFY-WITH-NITS (2 🟠 — control_flow syntax inconsistency + semver Cargo.toml gap), devops RATIFY-WITH-NITS (**2 critical compile-fail blockers**: nebula-redact workspace integration missing; deny.toml syntax wrong)
+- Architect single-pass iteration applied 10 edits including 2 critical:
+  - **§13.4.4 NEW subsection** committing nebula-redact workspace integration (new crate Cargo.toml/lib.rs + root workspace member + workspace dep; no new deny ban for leaf utility)
+  - **§13.4.3 deny.toml restructure** — Edit 1 = wrappers-list extension of existing nebula-engine rule (NOT duplicate); Edit 2 = symmetric positive ban for nebula-action runtime layer per Phase 0 §11 row 9
+- §10.2 T6 normalized to MIXED (AUTO default + MANUAL fallback) per ADR-0038 §Negative item 4
+- §10.4 step 1.5 added `semver` Cargo.toml dep instruction (Phase 1 CC1 carry-forward)
+- Tech-lead RATIFIED post-iteration (commit-ready; no round-2; no escalation; security-lead implementation-time VETO authority retained on §9.5 softening)
+
+**Forward-tracked to CP4:**
+- ADR-0037 §1 SlotBinding amendment-in-place (capability folded into SlotType per credential Tech Spec §9.4) — Phase 8 cross-section pass per §0.2 invariant 2 (enactment before CP4 freeze)
+- Engine cascade handoff (§9.5.5 SchedulerIntegrationHook + §3.1 ActionRegistry::register* + §3.2 ActionContext API location)
+- 10-item open-items queue → CP4 §15 resolution
+
 ### 2026-04-24 T23:30 — CP2 RATIFIED + commit-ready
 
 **CP2 §4-§8 (Tech Spec macro emission + execution + security floor + lifecycle + storage):**
