@@ -86,6 +86,19 @@ Devops wrote to wrong repo path (main repo instead of worktree) — orchestrator
 - ADR-0038 ControlAction seal + canon §3.5 DX tier ratification (canon revision per §0.2)
 - ADR-NNNN+3 cluster-mode hooks deliberately deferred (out of cascade scope per Strategy §6.2)
 
+### 2026-04-24 T23:30 — CP2 RATIFIED + commit-ready
+
+**CP2 §4-§8 (Tech Spec macro emission + execution + security floor + lifecycle + storage):**
+
+- Architect drafted 711 lines (§4 macro full token shape, §5 trybuild+macrotest harness with 6-probe port from spike c8aef6a0, §6 security must-have floor co-decision, §7 lifecycle SchemeGuard RAII flow, §8 storage)
+- 5 parallel reviewers returned: spec-auditor PASS-WITH-NITS (3 🟠), security-lead ACCEPT-WITH-CONDITIONS (3 required edits + co-decision YES on all 4 §6 floor items), rust-senior RATIFY-WITH-NITS (3 🟠 incl. ADR-0037 amendment trigger), dx-tester RATIFY-WITH-NITS (2 🟠 cross-zone collision + author-trap probe), devops RATIFY-WITH-NITS (2 🟠 macrotest version + trybuild workspace pin)
+- **User raised mid-iteration**: §2.9 reconsideration on TriggerAction config (RSS url+interval, Kafka channel post-ack)
+- Architect single-pass iteration applied 13 reviewer items + §2.9 refinement
+- **§2.9 REJECT preserved** with refined axis: Configuration (per-instance, `&self` + universal `with_schema`, applies to all 4 trait variants) vs Runtime Input (divergent — Stateless/Stateful/Resource execute-shape vs TriggerAction event projection). User's RSS/Kafka examples are CONFIGURATION not RUNTIME-INPUT — different lifecycle phase. New CP3 §2.9-1 forward-track: `ActionMetadata::for_trigger::<A>()` helper
+- **§6 co-decision UNANIMOUS** tech-lead + security-lead on 4 floor items: JSON depth cap (`check_json_depth` `pub(crate)` + typed `DepthCheckError`), HARD REMOVAL `credential<S>()` (no `#[deprecated]`), `redacted_display()` in new `nebula-redact` crate + pre-`format!` sanitization, per-test `ZeroizeProbe`
+- **ADR-0037 §1 SlotBinding amendment-in-place** (capability folded into SlotType per credential Tech Spec §9.4) — flagged in §15 for Phase 8 cross-section pass per ADR-0035 amended-in-place precedent; §0.2 invariant 2 enforces enactment before CP4 freeze
+- Tech-lead RATIFIED post-iteration (commit-ready; no round-2; no escalation; implementation-time VETO authority retained on §6.2 hard-removal regression)
+
 ### 2026-04-24 T22:30 — CP1 RATIFIED + commit-ready
 
 **CP1 §0-§3 (Tech Spec foundation):**
