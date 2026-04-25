@@ -78,13 +78,7 @@ pub trait HasWebhookEndpoint: CoreContext {
     note = "ActionContext requires core::Context + resources + credentials + logger + metrics + event bus + node identity"
 )]
 pub trait ActionContext:
-    CoreContext
-    + HasResources
-    + HasCredentials
-    + HasLogger
-    + HasMetrics
-    + HasEventBus
-    + HasNodeIdentity
+    CoreContext + HasResources + HasCredentials + HasLogger + HasMetrics + HasEventBus + HasNodeIdentity
 {
 }
 
@@ -687,4 +681,3 @@ pub trait CredentialContextExt: HasCredentials {
 
 /// Blanket impl — any type carrying `HasCredentials` gets the helpers.
 impl<T: ?Sized + HasCredentials> CredentialContextExt for T {}
-

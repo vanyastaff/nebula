@@ -474,11 +474,12 @@ impl<A: Action> fmt::Debug for TriggerActionAdapter<A> {
 
 #[cfg(test)]
 mod tests {
-    use nebula_core::DeclaresDependencies;
     use std::sync::{
         Arc,
         atomic::{AtomicBool, Ordering},
     };
+
+    use nebula_core::DeclaresDependencies;
 
     use super::*;
     use crate::{

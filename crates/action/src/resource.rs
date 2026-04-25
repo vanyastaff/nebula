@@ -9,12 +9,7 @@ use std::{any::Any, fmt, future::Future, pin::Pin};
 
 use serde_json::Value;
 
-use crate::{
-    action::Action,
-    context::ActionContext,
-    error::ActionError,
-    metadata::ActionMetadata,
-};
+use crate::{action::Action, context::ActionContext, error::ActionError, metadata::ActionMetadata};
 
 // ── Core trait ──────────────────────────────────────────────────────────────
 
@@ -217,8 +212,9 @@ impl<A: Action> fmt::Debug for ResourceActionAdapter<A> {
 mod tests {
     use std::sync::Arc;
 
-    use super::*;
     use nebula_core::DeclaresDependencies;
+
+    use super::*;
     use crate::testing::{TestActionContext, TestContextBuilder};
 
     struct MockResourceAction {

@@ -13,7 +13,9 @@ use std::{
 
 use nebula_core::{
     CoreError, CredentialKey, ResourceKey,
-    accessor::{CredentialAccessor, EventEmitter, LogLevel, Logger, MetricsEmitter, ResourceAccessor},
+    accessor::{
+        CredentialAccessor, EventEmitter, LogLevel, Logger, MetricsEmitter, ResourceAccessor,
+    },
     id::ExecutionId,
 };
 
@@ -327,4 +329,3 @@ pub fn default_trigger_scheduler() -> Arc<dyn TriggerScheduler> {
 pub fn default_execution_emitter() -> Arc<dyn ExecutionEmitter> {
     Arc::new(NoopExecutionEmitter)
 }
-

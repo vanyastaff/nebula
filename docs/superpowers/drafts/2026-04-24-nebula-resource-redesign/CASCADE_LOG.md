@@ -231,3 +231,56 @@
 ---
 
 *Cascade log closed at 2026-04-24 T+~150min. Future amendments append-only here; major deviations would open a new cascade log for that work.*
+
+---
+
+## Continuation 2026-04-25
+
+### 2026-04-25 — Cascade continuation start
+
+User dispatched continuation prompt to complete deferred Phase 4 spike + Phase 6 Tech Spec. Hands-off mode resumes.
+
+State entering continuation:
+- Strategy CP3 frozen (`docs/superpowers/specs/2026-04-24-nebula-resource-redesign-strategy.md`)
+- ADR-0036 + ADR-0037 proposed-pending-CP1
+- Register seeded (35 rows, 22 tech-spec-material owned by Phase 6)
+- SF-1 deny.toml landed `bb66537a` (separate PR)
+- Continuation commits: `407db576` (ADR-0037 + summary revisions)
+
+Plan:
+1. Phase 4 spike — rust-senior in isolated worktree, iter-1 first; gate-check; iter-2 if needed
+2. Phase 6 Tech Spec multi-CP cascade — architect-led, per-CP review + commit
+3. Phase 8 summary update + ADR proposed → accepted transitions
+
+Commit per CP. Per-CP commit cadence enforced to prevent filesystem-event recurrence.
+
+**Next:** Dispatch Phase 4 spike iter-1 (rust-senior, isolated worktree).
+
+### 2026-04-25 — Phase 4 spike PASSED (iter-1 only, iter-2 skipped)
+
+- rust-senior in isolated worktree (`agent-a6945235` / branch `worktree-agent-a6945235`)
+- Iter-1 budget: ~17 min agent-effort (1038 s, 119 tools)
+- All 7 exit criteria met:
+  - `cargo check --all-targets` clean
+  - `cargo test --all-targets` 6/6 integration tests pass
+  - `cargo test --doc` 3/3 compile-fail probes resolve as expected
+  - `cargo clippy` clean
+  - `<Self::Credential as Credential>::Scheme` ergonomics workable
+  - `type Credential = NoCredential;` opt-out clean (no unwrap/footgun)
+  - Parallel `join_all` dispatch with per-resource isolation demonstrated under both latency (one resource sleeping 3s, budget 250ms) and error (one resource Err, siblings Ok)
+  - Reverse-index write path implemented (`Manager::register` populates `by_credential` for credential-bearing R, skips for `NoCredential`)
+
+**Iter-2 SKIPPED** per rust-senior recommendation: shape validated, compat sketches are Tech Spec §13 deliverable, `Box::pin`-per-dispatch micro-bench is optional perf check that doesn't gate spike pass.
+
+**Spike artefacts copied** to `docs/superpowers/drafts/2026-04-24-nebula-resource-redesign/spike/` (11 files: Cargo.toml + 2 inner Cargo.toml + 5 Rust source files + 2 test files + NOTES.md). Original worktree branch retained at `.claude/worktrees/agent-a6945235` for re-run reference.
+
+**Open questions for Tech Spec CP1** (full list in `spike/NOTES.md`):
+1. `NoCredential` location — `nebula-credential` vs `nebula-resource`
+2. `TypeId` vs sealed-trait marker for opt-out detection
+3. `Box::pin`-per-dispatch dynamic dispatch in `dyn ResourceDispatcher` (RPITIT-in-trait-objects not stable on 1.95) — observability impact
+4. Per-resource timeout config surface (per-Resource or per-Manager?)
+5. Compile-fail probe coverage gaps for production (double-registration, `NoCredential` + `Some(real_id)` registration)
+
+**ADR transitions UNBLOCKED:** ADR-0036 + ADR-0037 acceptance gates now cleared from spike side; ratification still requires Phase 6 CP1.
+
+**Next:** Phase 6 CP1 — architect drafts §0-§3 (foundation: status/scope/freeze + goals/non-goals + trait contract Rust signatures + runtime model). Spike `final_shape_v2.rs` equivalent extractable from `spike/crates/resource-shape/src/{lib,resource,topology,manager,no_credential}.rs`.

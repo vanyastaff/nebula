@@ -570,7 +570,8 @@ where
             // version skew between stored checkpoint and current State schema):
             // a second clone only when the first deserialization fails and
             // `migrate_state` is actually consulted.
-            let mut typed_state: A::State = match serde_json::from_value::<A::State>(state.clone()) {
+            let mut typed_state: A::State = match serde_json::from_value::<A::State>(state.clone())
+            {
                 Ok(s) => s,
                 Err(e) => self.action.migrate_state(state.clone()).ok_or_else(|| {
                     ActionError::validation(
@@ -638,8 +639,9 @@ impl<A: Action> fmt::Debug for StatefulActionAdapter<A> {
 
 #[cfg(test)]
 mod tests {
-    use nebula_core::DeclaresDependencies;
     use std::sync::Arc;
+
+    use nebula_core::DeclaresDependencies;
 
     use super::*;
     use crate::{

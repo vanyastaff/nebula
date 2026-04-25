@@ -538,8 +538,7 @@ fn derive_category(meta: &ActionMetadata) -> ActionCategory {
 
 #[cfg(test)]
 mod tests {
-    use nebula_core::DeclaresDependencies;
-    use nebula_core::action_key;
+    use nebula_core::{DeclaresDependencies, action_key};
 
     use super::*;
     use crate::{

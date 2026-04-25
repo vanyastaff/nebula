@@ -1090,48 +1090,48 @@ where
         'life1: 'a,
     {
         Box::pin(async move {
-        // Reject double-start: previous state must be stopped first.
-        // Silently overwriting would leak external webhook registrations
-        // (GitHub/Slack/Stripe) — the old hook stays live and stop() only
-        // deactivates the last one.
-        if self.state.read().is_some() {
-            return Err(ActionError::fatal(
-                "webhook trigger already started; call stop() before start() again",
-            ));
-        }
-
-        let new_state = self.action.on_activate(ctx).await?;
-
-        // Re-check under the write lock to close the race between the
-        // read-guard drop above and the write below. The `rollback_state`
-        // dance keeps the parking_lot guard strictly inside the block so
-        // it cannot sit across the `.await` on `on_deactivate` — holding
-        // a non-Send, non-async guard across a suspension point would
-        // make the whole future `!Send`.
-        let rollback_state = {
-            let mut guard = self.state.write();
-            if guard.is_some() {
-                Some(new_state)
-            } else {
-                *guard = Some(Arc::new(new_state));
-                None
+            // Reject double-start: previous state must be stopped first.
+            // Silently overwriting would leak external webhook registrations
+            // (GitHub/Slack/Stripe) — the old hook stays live and stop() only
+            // deactivates the last one.
+            if self.state.read().is_some() {
+                return Err(ActionError::fatal(
+                    "webhook trigger already started; call stop() before start() again",
+                ));
             }
-        };
 
-        if let Some(orphan) = rollback_state {
-            if let Err(e) = self.action.on_deactivate(orphan, ctx).await {
-                tracing::warn!(
-                    action = %self.action.metadata().base.key,
-                    error = %e,
-                    "webhook rollback on_deactivate failed after double-start race; \
-                     external hook may leak"
-                );
+            let new_state = self.action.on_activate(ctx).await?;
+
+            // Re-check under the write lock to close the race between the
+            // read-guard drop above and the write below. The `rollback_state`
+            // dance keeps the parking_lot guard strictly inside the block so
+            // it cannot sit across the `.await` on `on_deactivate` — holding
+            // a non-Send, non-async guard across a suspension point would
+            // make the whole future `!Send`.
+            let rollback_state = {
+                let mut guard = self.state.write();
+                if guard.is_some() {
+                    Some(new_state)
+                } else {
+                    *guard = Some(Arc::new(new_state));
+                    None
+                }
+            };
+
+            if let Some(orphan) = rollback_state {
+                if let Err(e) = self.action.on_deactivate(orphan, ctx).await {
+                    tracing::warn!(
+                        action = %self.action.metadata().base.key,
+                        error = %e,
+                        "webhook rollback on_deactivate failed after double-start race; \
+                         external hook may leak"
+                    );
+                }
+                return Err(ActionError::fatal(
+                    "webhook trigger already started; call stop() before start() again",
+                ));
             }
-            return Err(ActionError::fatal(
-                "webhook trigger already started; call stop() before start() again",
-            ));
-        }
-        Ok(())
+            Ok(())
         })
     }
 
@@ -1145,38 +1145,38 @@ where
         'life1: 'a,
     {
         Box::pin(async move {
-        let stored = self.state.write().take();
-        match stored {
-            Some(arc_state) => {
-                // Wait for in-flight handle_event calls to complete
-                // before calling on_deactivate. Replaces the old
-                // `yield_now` busy-wait with a tokio::sync::Notify
-                // waiter — the last `InFlightGuard::drop` calls
-                // `notify_waiters` when the counter transitions to 0.
-                //
-                // The check + await pattern protects against the race
-                // where all in-flight requests finish BEFORE stop()
-                // reaches the notified() call: we check first, and
-                // only await if there's still work in flight.
-                loop {
-                    if self.in_flight.load(Ordering::Acquire) == 0 {
-                        break;
+            let stored = self.state.write().take();
+            match stored {
+                Some(arc_state) => {
+                    // Wait for in-flight handle_event calls to complete
+                    // before calling on_deactivate. Replaces the old
+                    // `yield_now` busy-wait with a tokio::sync::Notify
+                    // waiter — the last `InFlightGuard::drop` calls
+                    // `notify_waiters` when the counter transitions to 0.
+                    //
+                    // The check + await pattern protects against the race
+                    // where all in-flight requests finish BEFORE stop()
+                    // reaches the notified() call: we check first, and
+                    // only await if there's still work in flight.
+                    loop {
+                        if self.in_flight.load(Ordering::Acquire) == 0 {
+                            break;
+                        }
+                        // Register interest before re-checking the counter
+                        // so we don't miss the notification.
+                        let notified = self.idle_notify.notified();
+                        tokio::pin!(notified);
+                        notified.as_mut().enable();
+                        if self.in_flight.load(Ordering::Acquire) == 0 {
+                            break;
+                        }
+                        notified.await;
                     }
-                    // Register interest before re-checking the counter
-                    // so we don't miss the notification.
-                    let notified = self.idle_notify.notified();
-                    tokio::pin!(notified);
-                    notified.as_mut().enable();
-                    if self.in_flight.load(Ordering::Acquire) == 0 {
-                        break;
-                    }
-                    notified.await;
-                }
-                let owned = Arc::unwrap_or_clone(arc_state);
-                self.action.on_deactivate(owned, ctx).await
-            },
-            None => Ok(()),
-        }
+                    let owned = Arc::unwrap_or_clone(arc_state);
+                    self.action.on_deactivate(owned, ctx).await
+                },
+                None => Ok(()),
+            }
         })
     }
 
@@ -1216,104 +1216,104 @@ where
         'life1: 'a,
     {
         Box::pin(async move {
-        let request = match event.downcast::<WebhookRequest>() {
-            Ok((_id, _received_at, req)) => req,
-            Err(mismatched) => {
-                return Err(ActionError::fatal(format!(
-                    "webhook adapter received non-webhook TriggerEvent payload \
+            let request = match event.downcast::<WebhookRequest>() {
+                Ok((_id, _received_at, req)) => req,
+                Err(mismatched) => {
+                    return Err(ActionError::fatal(format!(
+                        "webhook adapter received non-webhook TriggerEvent payload \
                      (got {}); engine routing bug",
-                    mismatched.payload_type_name()
-                )));
-            },
-        };
+                        mismatched.payload_type_name()
+                    )));
+                },
+            };
 
-        let response_tx = request.take_response_tx();
+            let response_tx = request.take_response_tx();
 
-        self.in_flight.fetch_add(1, Ordering::AcqRel);
-        let _guard = InFlightGuard {
-            counter: Arc::clone(&self.in_flight),
-            notify: Arc::clone(&self.idle_notify),
-        };
+            self.in_flight.fetch_add(1, Ordering::AcqRel);
+            let _guard = InFlightGuard {
+                counter: Arc::clone(&self.in_flight),
+                notify: Arc::clone(&self.idle_notify),
+            };
 
-        // Clone Arc under read lock; the guard drops at end of statement BEFORE
-        // the await on handle_request. Holding a parking_lot guard across .await
-        // would be unsound (non-Send) and risk re-entry panic with start/stop.
-        let state = if let Some(s) = self.state.read().as_ref().cloned() {
-            s
-        } else {
-            // State could be None in two situations: (1) genuine
-            // "before start" programmer error, or (2) a race with
-            // stop() that already took the state. Both should not
-            // hang the transport — send a 500 so the caller gets
-            // a real HTTP response instead of `RecvError`.
-            if let Some(tx) = response_tx {
-                let _ = tx.send(WebhookHttpResponse::new(
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    Bytes::new(),
-                ));
-            }
-            ctx.health().record_error();
-            return Err(ActionError::fatal(
-                "handle_event called before start or after stop — no state available",
-            ));
-        };
-
-        // H6 — cancellation-safe dispatch. If the trigger is being
-        // shut down mid-request, send `503 Service Unavailable` to
-        // the external caller and return a retryable error so the
-        // runtime records it and the task exits cleanly. Otherwise
-        // race the handler normally.
-        let response = tokio::select! {
-            biased;
-            () = ctx.cancellation().cancelled() => {
+            // Clone Arc under read lock; the guard drops at end of statement BEFORE
+            // the await on handle_request. Holding a parking_lot guard across .await
+            // would be unsound (non-Send) and risk re-entry panic with start/stop.
+            let state = if let Some(s) = self.state.read().as_ref().cloned() {
+                s
+            } else {
+                // State could be None in two situations: (1) genuine
+                // "before start" programmer error, or (2) a race with
+                // stop() that already took the state. Both should not
+                // hang the transport — send a 500 so the caller gets
+                // a real HTTP response instead of `RecvError`.
                 if let Some(tx) = response_tx {
                     let _ = tx.send(WebhookHttpResponse::new(
-                        StatusCode::SERVICE_UNAVAILABLE,
-                        Bytes::from_static(b"shutting down"),
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        Bytes::new(),
                     ));
                 }
                 ctx.health().record_error();
-                return Err(ActionError::retryable(
-                    "webhook trigger cancelled mid-request",
+                return Err(ActionError::fatal(
+                    "handle_event called before start or after stop — no state available",
                 ));
-            }
-            result = self.action.handle_request(&request, &state, ctx) => {
-                // H1 — on handler error, send a 500 via oneshot BEFORE
-                // propagating Err. Without this, the transport receives
-                // RecvError and has to guess the HTTP status.
-                match result {
-                    Ok(r) => r,
-                    Err(e) => {
-                        if let Some(tx) = response_tx {
-                            let _ = tx.send(WebhookHttpResponse::new(
-                                StatusCode::INTERNAL_SERVER_ERROR,
-                                Bytes::new(),
-                            ));
+            };
+
+            // H6 — cancellation-safe dispatch. If the trigger is being
+            // shut down mid-request, send `503 Service Unavailable` to
+            // the external caller and return a retryable error so the
+            // runtime records it and the task exits cleanly. Otherwise
+            // race the handler normally.
+            let response = tokio::select! {
+                biased;
+                () = ctx.cancellation().cancelled() => {
+                    if let Some(tx) = response_tx {
+                        let _ = tx.send(WebhookHttpResponse::new(
+                            StatusCode::SERVICE_UNAVAILABLE,
+                            Bytes::from_static(b"shutting down"),
+                        ));
+                    }
+                    ctx.health().record_error();
+                    return Err(ActionError::retryable(
+                        "webhook trigger cancelled mid-request",
+                    ));
+                }
+                result = self.action.handle_request(&request, &state, ctx) => {
+                    // H1 — on handler error, send a 500 via oneshot BEFORE
+                    // propagating Err. Without this, the transport receives
+                    // RecvError and has to guess the HTTP status.
+                    match result {
+                        Ok(r) => r,
+                        Err(e) => {
+                            if let Some(tx) = response_tx {
+                                let _ = tx.send(WebhookHttpResponse::new(
+                                    StatusCode::INTERNAL_SERVER_ERROR,
+                                    Bytes::new(),
+                                ));
+                            }
+                            ctx.health().record_error();
+                            return Err(e);
                         }
-                        ctx.health().record_error();
-                        return Err(e);
                     }
                 }
+            };
+
+            let (http_response, outcome) = response.into_parts();
+
+            if let Some(tx) = response_tx {
+                let _ = tx.send(http_response);
             }
-        };
 
-        let (http_response, outcome) = response.into_parts();
+            // H7 — health: emit = success, skip = idle-equivalent.
+            // Matches poll's record_success/record_idle split.
+            match &outcome {
+                TriggerEventOutcome::Emit(_) => ctx.health().record_success(1),
+                TriggerEventOutcome::EmitMany(batch) => {
+                    ctx.health().record_success(batch.len() as u64);
+                },
+                TriggerEventOutcome::Skip => ctx.health().record_idle(),
+            }
 
-        if let Some(tx) = response_tx {
-            let _ = tx.send(http_response);
-        }
-
-        // H7 — health: emit = success, skip = idle-equivalent.
-        // Matches poll's record_success/record_idle split.
-        match &outcome {
-            TriggerEventOutcome::Emit(_) => ctx.health().record_success(1),
-            TriggerEventOutcome::EmitMany(batch) => {
-                ctx.health().record_success(batch.len() as u64);
-            },
-            TriggerEventOutcome::Skip => ctx.health().record_idle(),
-        }
-
-        Ok(outcome)
+            Ok(outcome)
         })
     }
 }
