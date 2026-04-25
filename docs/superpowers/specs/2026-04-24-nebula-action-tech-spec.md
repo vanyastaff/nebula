@@ -1,6 +1,6 @@
 ---
 name: nebula-action tech spec (implementation-ready design)
-status: FROZEN CP4 2026-04-25 (amended-in-place 2026-04-25 — Q1 post-freeze)
+status: FROZEN CP4 2026-04-25 (amended-in-place 2026-04-25 — Q1 post-freeze; amended-in-place 2026-04-25 — Q6 lifecycle gap)
 date: 2026-04-24
 authors: [architect (drafting); tech-lead (CP gate decider); security-lead (VETO authority on §4 security floor); orchestrator (CP coordination)]
 scope: nebula-action redesign cascade Phase 6 — implementation-ready design for the action trait family, the `#[action]` attribute macro, runtime model, security floor, and codemod migration
@@ -30,9 +30,9 @@ This document moves through four checkpoints with parallel reviewer matrices per
 | **DRAFT CP1** | §0–§3 | Status, goals, trait contract, runtime model | locked CP1 |
 | **DRAFT CP2** | §4–§8 | Macro emission, test harness, security floor, lifecycle, storage | locked CP2 |
 | **DRAFT CP3** | §9–§13 | Public API surface, codemod migration, adapter authoring, ControlAction migration, evolution policy | locked CP3 |
-| **FROZEN CP4 2026-04-25** (iterated 2026-04-25 post 11a/11b; tech-lead RATIFY-FREEZE 11c; amended-in-place 2026-04-25 post-freeze for Q1 `*Handler` shape per §15.9 + Q2 §2.9.1b axis-naming refinement per ADR-0035 amended-in-place precedent) | §14–§16 | Open items, accepted gaps, handoff, implementation-path framing for Phase 8 user pick | **frozen (amended-in-place)** |
+| **FROZEN CP4 2026-04-25** (iterated 2026-04-25 post 11a/11b; tech-lead RATIFY-FREEZE 11c; amended-in-place 2026-04-25 post-freeze for Q1 `*Handler` shape per §15.9 + Q2 §2.9.1b axis-naming refinement + **Q6 §2.2.3 lifecycle methods per §15.10 — start/stop added to TriggerAction; production drift between `crates/action/src/trigger.rs:61-72` and spike-locked shape closed; Option (i) picked (lifecycle on TriggerAction, not TriggerSource); SPLIT decision (no Q4 type Input bundle)** per ADR-0035 amended-in-place precedent) | §14–§16 | Open items, accepted gaps, handoff, implementation-path framing for Phase 8 user pick | **frozen (amended-in-place)** |
 
-Inputs are **frozen** at this freeze point: Strategy frozen at CP3 (commit `a38f6f5a`); ADR-0036 status `accepted` 2026-04-25 + ADR-0037 status `accepted` 2026-04-25 (amended-in-place 2026-04-25 per §15.5 enactment) — both flipped on Tech Spec FROZEN CP4 ratification per their respective §Status sections; ADR-0038 retained at `proposed` pending explicit user ratification on canon §3.5 revision (per cascade prompt: surface к user в Phase 8 summary, не auto-flip); Phase 4 spike PASS at commit `c8aef6a0` (worktree-isolated; see [spike NOTES](../drafts/2026-04-24-nebula-action-redesign/07-spike-NOTES.md) §5).
+Inputs are **frozen** at this freeze point: Strategy frozen at CP3 (commit `a38f6f5a`); ADR-0036 status `accepted` 2026-04-25 + ADR-0037 status `accepted` 2026-04-25 (amended-in-place 2026-04-25 per §15.5 enactment) — both flipped on Tech Spec FROZEN CP4 ratification per their respective §Status sections; ADR-0038 retained at `proposed` pending explicit user ratification on canon §3.5 revision (per cascade prompt: surface к user в Phase 8 summary, не auto-flip); Phase 4 spike PASS at commit `c8aef6a0` (worktree-isolated; see [spike NOTES](../drafts/2026-04-24-nebula-action-redesign/07-spike-NOTES.md) §5; **scope clarification per §15.10 Q6 — spike validated trait-shape compose + cancellation only; lifecycle methods (`start` / `stop` on TriggerAction) are derived from production `crates/action/src/trigger.rs:61-72` PASS evidence, NOT from spike-shape change**).
 
 ### §0.2 What invalidates the freeze
 
@@ -194,6 +194,8 @@ State Send-bound discipline: `state: &'a mut Self::State` is borrowed mutably ac
 
 #### §2.2.3 `TriggerAction`
 
+> **Amended-in-place 2026-04-25 (Q6 lifecycle gap)** per §15.10 enactment. Pre-amendment: trait declared only `type Source` + `type Error` + `handle()` per spike `final_shape_v2.rs:254-262`; lifecycle methods `start` / `stop` (production `crates/action/src/trigger.rs:61-72`) were dropped from the spec without rationale. Post-amendment: `start` + `stop` lifecycle methods added on `TriggerAction` per Option (i) — per-instance state lives in `&self`, not in `TriggerSource`. Spike PASS verdict scope narrowed at §0.1 inputs footer: spike validated trait-shape compose + cancellation only; lifecycle is derived from production PASS evidence (Mock test `crates/action/src/trigger.rs:540-549` exercises `start` / `stop` round-trip).
+
 ```rust
 pub trait TriggerSource: Send + Sync + 'static {
     type Event: Send + 'static;
@@ -203,6 +205,51 @@ pub trait TriggerAction: Send + Sync + 'static {
     type Source: TriggerSource;     // Probe 2 verifies this is required
     type Error: std::error::Error + Send + Sync + 'static;
 
+    /// Start the trigger (register listener, schedule poll, etc.).
+    ///
+    /// Two valid shapes (mirrors production `TriggerHandler` contract at
+    /// `crates/action/src/trigger.rs:282-321`):
+    ///
+    /// 1. **Setup-and-return** — register external listener (webhook URL with
+    ///    GitHub/Slack/Stripe; queue consumer; cron schedule), then return.
+    ///    Listener runs asynchronously outside this call.
+    /// 2. **Run-until-cancelled** — run the trigger loop inline, returning only
+    ///    when `ctx.cancellation` fires or a fatal error occurs.
+    ///
+    /// **Callers MUST spawn `start()` in a dedicated task** — drivers that
+    /// run multiple triggers sequentially deadlock on shape (2).
+    ///
+    /// `start` MUST be paired with `stop`. Calling `start` twice without an
+    /// intervening `stop` returns a `Self::Error` carrying Fatal-level
+    /// classification (per `ActionError::fatal` semantics, §2.8) — implementations
+    /// MUST NOT silently re-register, as this leaks external resources
+    /// (webhook registrations, poll loops, schedules).
+    ///
+    /// Cancel-safe at every `.await` point per §3.4 invariant: dropping the
+    /// returned future MUST NOT leak external resources, corrupt internal
+    /// state, or lose in-flight work beyond what the trigger's contract
+    /// already tolerates. Shape (2) implementations structure
+    /// `tokio::select!` so each branch future is itself cancel-safe.
+    fn start<'a>(
+        &'a self,
+        ctx: &'a ActionContext<'a>,
+    ) -> impl Future<Output = Result<(), Self::Error>> + Send + 'a;
+
+    /// Stop the trigger (unregister, cancel schedule).
+    ///
+    /// Clears any state set by `start` so a subsequent `start` call is accepted.
+    /// For shape-2 (run-until-cancelled) triggers, prefer cancelling
+    /// `ctx.cancellation` to let `start()` exit cleanly rather than calling
+    /// `stop()` directly mid-loop.
+    fn stop<'a>(
+        &'a self,
+        ctx: &'a ActionContext<'a>,
+    ) -> impl Future<Output = Result<(), Self::Error>> + Send + 'a;
+
+    /// Handle a single event projected from `Source`. Engine-driven —
+    /// the engine sources events from `Source: TriggerSource` and dispatches
+    /// each into `handle`. Per-event work (parsing, dedup, emitting workflow
+    /// executions) lives here.
     fn handle<'a>(
         &'a self,
         ctx: &'a ActionContext<'a>,
@@ -213,7 +260,9 @@ pub trait TriggerAction: Send + Sync + 'static {
 
 `Source: TriggerSource` associated type per spike Probe 2 ([NOTES §1.3](../drafts/2026-04-24-nebula-action-redesign/07-spike-NOTES.md)) — without it, `impl TriggerAction for X` produces `error[E0046]: not all trait items implemented, missing: Source`. Per spike Iter-2 §2.2 the `<Self::Source as TriggerSource>::Event` projection composes cleanly with the action body's `&'a` borrow chain.
 
-Cluster-mode hooks (`IdempotencyKey`, `on_leader_*`, `dedup_window`) attach as supertrait extensions per Strategy §3.1 component 7 + §5.1.5 — exact trait shape locked at CP3 §7 (this Tech Spec section is foundational; full hook surface is Phase 3+ scope).
+**Lifecycle methods derive from production, not spike** (per §15.10 Q6 amendment + §0.1 inputs frozen-at footer scope clarification). Production `crates/action/src/trigger.rs:61-72` declares both methods with `#[diagnostic::on_unimplemented]` enforcement; production `TriggerHandler` (lines 282-353) carries the same lifecycle plus two-shape semantics (setup-and-return vs run-until-cancelled). Cascade preserves the lifecycle contract verbatim, lifts signature shape per cascade-wide pattern (single-`'a` + `&'a ActionContext<'a>` receiver context — replacing production's `&(impl TriggerContext + ?Sized)`). Per-instance state — webhook URL, secret, poll cursor, registration token — lives in `&self` fields populated at registration time per the `&self` configuration carrier paradigm (§2.9.1a Resolution point 1, line 501); `TriggerSource` remains shape-only (no runtime instantiation), so transport-level lifecycle is NOT split into `TriggerSource::start()` (Option (ii) / (iii) rejected per §15.10).
+
+Cluster-mode hooks (`IdempotencyKey`, `on_leader_*`, `dedup_window`) attach as supertrait extensions per Strategy §3.1 component 7 + §5.1.5 — exact trait shape locked at CP3 §7 (this Tech Spec section is foundational; full hook surface is Phase 3+ scope). The cluster-mode `on_leader_acquire` / `on_leader_release` hooks compose cleanly with `start` / `stop` — `on_leader_acquire` precedes `start` (engine waits for leadership before starting the trigger) and `on_leader_release` precedes `stop` (engine drains in-flight events before calling stop). Sequencing detail is engine-cascade scope per §1.2 N4.
 
 #### §2.2.4 `ResourceAction`
 
@@ -1761,7 +1810,7 @@ Per Strategy §4.3.3 transforms 1-5 are the **minimal complete set**; Tech Spec 
 - **Strategy 4** (`[dev-dependencies]` block — Cargo.toml hygiene) → **NOT a code-edit transform**; lands at CP2 §5.1.
 - **Strategy 5** (`nebula-sdk::prelude` re-export reshuffle) → **NOT a code-edit transform per se**; covered by §9.3 reshuffled list.
 
-**T3** (`Box<dyn>` → `Arc<dyn>` safety net), **T4** (HRTB collapse to `BoxFut<'a, T>`), **T5** (`redacted_display!` wrap), and **T6** (ControlAction → StatelessAction migration) are added at Tech Spec design level per Strategy §4.3.3 line 243 license — not derived from Strategy 1-5. T6 in particular is added per ADR-0038 §Negative item 4 for the sealed-DX migration. (Earlier Tech-Spec mention of T1-T5 in CP1+CP2 forward-tracks predated this disambiguation; the CP3 mapping above is authoritative.)
+**T3** (`Box<dyn>` → `Arc<dyn>` safety net), **T4** (HRTB collapse to `BoxFut<'a, T>`), **T5** (`redacted_display!` wrap), **T6** (ControlAction → StatelessAction migration), and **T7** (TriggerAction lifecycle method signature lift, added per §15.10 Q6 post-freeze amendment) are added at Tech Spec design level per Strategy §4.3.3 line 243 license — not derived from Strategy 1-5. T6 in particular is added per ADR-0038 §Negative item 4 for the sealed-DX migration. T7 covers the production drift between `crates/action/src/trigger.rs:61-72` and the cascade-locked `&'a ActionContext<'a>` + single-`'a` shape (lifecycle methods preserved; only receiver context type and lifetime form change). (Earlier Tech-Spec mention of T1-T5 in CP1+CP2 forward-tracks predated this disambiguation; the CP3 mapping above is authoritative.)
 
 | Transform | What it rewrites | Source pattern | Target pattern | Auto / Manual | Notes |
 |---|---|---|---|---|---|
@@ -1771,12 +1820,13 @@ Per Strategy §4.3.3 transforms 1-5 are the **minimal complete set**; Tech Spec 
 | **T4** | HRTB `for<'life0, 'life1, 'a>` patterns → `BoxFut<'a, T>` alias | Hand-written `*Handler` impls (rare; mostly engine-internal) | Single-`'a` + `BoxFut` per CP1 §2.4 + Strategy §4.3.1 modernization | **AUTO** | Token-form rewrite; per Phase 0 audit Phase 1 02c §6 line 358 the cut is ~8 lines per handler trait; codemod validates dyn-safety preserved |
 | **T5** | `tracing::error!(action_error = %e)` → `redacted_display!` wrap form | Adapter error log sites (`stateful.rs:609-615`, `stateless.rs:382` per §6.3.1) + any custom `tracing::error!(error = %ActionError, ...)` patterns in reverse-deps | `tracing::error!(action_error = %nebula_redact::redacted_display(&e), ...)` per §6.3.1-A | **MANUAL REVIEW** required — non-`ActionError` Display sites need case-by-case check per §6.3.1-A "every error whose Display could include credential material, module-path identity, or `SecretString`-bearing field accessors" | Cannot mechanically distinguish leak-prone from safe; codemod marks all `tracing::error!(.. = %e)` sites for review |
 | **T6** | `impl ControlAction for X` → `impl StatelessAction for X` + `#[action(control_flow, ...)]` | ControlAction direct-impl call sites (community plugin migration target per ADR-0038 §Negative item 4) | StatelessAction primary + control-flow attribute zone (flag form per §12.2; CP4 §15 may revisit `control_flow = SomeStrategy` config form) | **MIXED** — **AUTO** for the trivial pass-through case (default mode); **MANUAL REVIEW** marker for control-flow-specific behavior (custom Continue/Skip/Retry reasons; Terminate interaction; test fixtures) | New at CP3; per ADR-0038 §Negative item 4 ("Codemod can cover the common case; edge cases (control-flow-specific behavior) need hand migration") — codemod attempts AUTO first, falls back to MANUAL marker on edge-case detection |
+| **T7** | `TriggerAction` lifecycle method signature lift | `async fn start(&self, ctx: &(impl TriggerContext + ?Sized)) -> Result<(), ActionError>` (and `stop` mirror; production `crates/action/src/trigger.rs:61-72` shape) | `async fn start<'a>(&'a self, ctx: &'a ActionContext<'a>) -> Result<(), Self::Error>` (and `stop` mirror; cascade-locked §2.2.3 shape per §15.10) | **AUTO** | Token-level rewrite of receiver context type (`impl TriggerContext + ?Sized` → `ActionContext<'a>`) + lifetime form (implicit → explicit single-`'a`) + error type (`ActionError` → `Self::Error`); bodies pass through unchanged because per-instance state reads (`self.webhook_url`, `self.secret`) work identically. Added per §15.10 Q6 post-freeze amendment closing production drift |
 
 #### §10.2.1 Codemod execution model
 
 The codemod is a `cargo`-style binary `nebula-action-codemod` (location: `tools/codemod/` — exact crate name and host TBD per Phase 0 / orchestrator) operating per-crate via `cargo metadata` to walk a target workspace. Per-transform modes:
 
-- **AUTO mode (default for T1, T3, T4)** — codemod rewrites in place; surfaces a unified diff via `--dry-run` flag for review before commit.
+- **AUTO mode (default for T1, T3, T4, T7)** — codemod rewrites in place; surfaces a unified diff via `--dry-run` flag for review before commit.
 - **MANUAL-REVIEW mode (default for T2, T5)** — codemod inserts `// TODO(action-cascade-codemod): ...` marker + leaves the original line unchanged; reviewer applies the rewrite by hand using the marker hint.
 - **MIXED mode (T6)** — codemod attempts AUTO first for trivial pass-through (`impl ControlAction { fn execute(...) -> ControlOutcome }` → `impl StatelessAction` + `#[action(control_flow, ...)]` zone, body preserved); falls back to MANUAL-REVIEW marker on edge-case detection (custom Continue/Skip/Retry reason variants; ActionResult::Terminate interaction; test fixtures exercising `impl ControlAction` directly via mock dispatch).
 
@@ -1824,7 +1874,7 @@ This is the **community plugin author runbook** — separate from the internal-N
 
 Per devops CP2 09e NIT 4 (CP3-track):
 
-- **Automatable**: T1 (`#[derive]` → `#[action]`), T3 (`Box` → `Arc` legacy pattern), T4 (HRTB collapse). ~70% of total transforms by site count.
+- **Automatable**: T1 (`#[derive]` → `#[action]`), T3 (`Box` → `Arc` legacy pattern), T4 (HRTB collapse), T7 (TriggerAction lifecycle signature lift per §15.10 Q6). ~70% of total transforms by site count (T7 footprint is ~3-5 internal sites + ~1 per community trigger plugin per §15.10 Q2 Migration impact estimate; not material to aggregate ratio).
 - **Manual review**: T2 (no-key credential removal), T5 (`redacted_display` wrap). ~30% of total transforms; mostly concentrated in engine + plugin authoring code.
 - **Mixed**: T6 (ControlAction migration) — AUTO for trivial pass-through (default mode); MANUAL marker on edge-case detection per §10.2.1. Per ADR-0038 §Negative item 4 ("common case auto / edge cases manual").
 
@@ -2554,6 +2604,81 @@ Q3 (n8n trigger-node consumer evidence + trait-level vs method-level framing dis
 
 **Open items absorbed.** §2.9-1 (CP3 §7 `for_trigger::<A>()` helper) closure at §15.6 reaffirmed under Q3 framing — the n8n consumer evidence positions the helper question as a metadata-builder discoverability convenience for a future CP3 metadata-field-set lock, not a trait-shape question. No new open items raised.
 
+### §15.10 Q6 post-freeze amendment-in-place — `TriggerAction` lifecycle methods (`start` / `stop`) — ENACTED
+
+**Trigger:** Post-freeze user gap surface 2026-04-25. Production `crates/action/src/trigger.rs:61-72` declares `start(&self, ctx)` + `stop(&self, ctx)` as required `TriggerAction` methods with `#[diagnostic::on_unimplemented]` enforcement; production `TriggerHandler` (lines 282-353) carries the same lifecycle plus two-shape semantics. Tech Spec §2.2.3 (line 195-216 pre-amendment) froze the spike `final_shape_v2.rs:254-262` shape verbatim, which has only `handle()` — lifecycle methods were dropped from the spec without rationale. Spike Probe 2 was scoped to `error[E0046]: missing: Source` (associated-type compile-fail probe) and did NOT exercise lifecycle composition. Post-freeze §2.9.1b amendment line 530 references "engine drives `start`" but `start` was not defined anywhere in §2 — circular dangling reference exposed by user gap surface.
+
+**Status invariant.** Per §0.2 invariant 4: spike-shape divergence is a freeze trigger when `final_shape_v2.rs` requires a different shape. Q6 amendment does NOT change spike shape — spike validated trait-shape compose + cancellation only (per §0.1 inputs frozen-at footer scope clarification, lifecycle methods are derived from production PASS evidence at `crates/action/src/trigger.rs:540-549` Mock test, NOT from spike-shape change). The amendment is a canonical-form correction across cross-source-authoritative discipline (production wins for lifecycle scope where spike was not exercised), aligned with §15.9 / §15.5 amendment-in-place precedent under ADR-0035 §Status block "canonical-form correction" criterion.
+
+#### §15.10.1 Enactment
+
+This CP **enacts** the §2.2.3 trait-shape amendment-in-place per §15.9 precedent. Tech Spec edits are inline at §2.2.3 (signature change) + §0.1 status table (Q6 qualifier) + §0.1 inputs frozen-at footer (spike scope narrowing) + §10.2 (T7 codemod transform added) + §10.2.1 / §10.5 (T7 in AUTO mode) + this §15.10 enactment record + §17 CHANGELOG entry. No ADR file edit required because:
+
+- **ADR-0036** locks trait-shape via §Decision items 1-4 (rewriting scope; emission contract; dual enforcement; ADR-0035 phantom composition). Per ADR-0036 §Neutral block last bullet: "Public API surface of the 4 dispatch traits ... unchanged at the trait level — only the macro that constructs implementations changes shape." This phrasing preserves the four-trait family enumeration; it does NOT lock per-method signatures verbatim. Tech Spec §2.2 is the per-method signature lock; spike `final_shape_v2.rs:209-262` is the signature-locking source per §0.1 inputs frozen-at footer. ADR-0036 status (`accepted` 2026-04-25) is preserved.
+- **ADR-0037** locks macro emission for the action struct (`ActionSlots::credential_slots()` shape, `SlotBinding` shape, qualified-syntax probe, test harness, perf bound). Lifecycle methods are not in macro-emitted scope — implementors author them directly. ADR-0037 status (`proposed (amended-in-place 2026-04-25)` per §15.5) is preserved.
+- **ADR-0038** locks sealed DX tier + canon §3.5 revision. Lifecycle methods are at the primary-trait layer, not the DX layer. ADR-0038 status (`proposed`) is preserved.
+
+The amendment lands as **Tech Spec inline edits at §2.2.3 + §0.1 + §10.2 + §10.2.1 + §10.5** (with the amendment-in-place callout at §2.2.3 top), plus this §15.10 enactment record.
+
+**Picked: Option (i) — `TriggerAction` carries `start()` + `stop()`.** Concrete rationale per [`15-q6-lifecycle-gap-fix.md`](../drafts/2026-04-24-nebula-action-redesign/15-q6-lifecycle-gap-fix.md) §2.1:
+
+1. **Per-instance state lives in `&self`, not in `TriggerSource`.** Production `WebhookAction` has `pub webhook_url: String` and `pub secret: SecretString` — bound at registration time per the `&self` configuration carrier paradigm (§2.9.1a Resolution point 1, line 501). `TriggerSource` (post-redesign §2.2.3) is shape-only: type-level marker for the projected event payload, not a runtime carrier. Hoisting `start()` to `TriggerSource` would force runtime-instantiation paradigm break.
+2. **Consumer-side migration is null.** Existing `WebhookAction` / `PollAction` / community trigger implementors already write `start(&self, ctx)` + `stop(&self, ctx)`. Option (i) preserves their impl bodies verbatim; only signature shape lifts per cascade pattern (T7 codemod handles).
+3. **Option (iii) split has appeal but no current consumer.** A multi-action transport (one Kafka client servicing many trigger actions) with split lifecycle is speculative DX surface per `feedback_active_dev_mode.md`. Future cascade can add `TriggerSource::start()` if such a consumer materializes — that is canon §3.5 territory, not Q6 gap-fix scope.
+4. **Option (ii) cannot work.** `WebhookSource` (transport-level) does not know per-instance secrets or URLs — those are in the action's `&self`. Option (ii) collapses back to "action drives start()" with extra plumbing.
+
+#### §15.10.2 Bundle decision — SPLIT, not bundled with Q4 reconsideration
+
+User's bonus connection raised: «Then we can add also Input to start method to setup start configuration» — proposing `start(&self, ctx, input: Self::Input)` parameterizing `type Input` on `TriggerAction`, which would re-evaluate the Q4 verdict (REJECT, recorded at [`14-q4-trigger-input-asymmetry.md`](../drafts/2026-04-24-nebula-action-redesign/14-q4-trigger-input-asymmetry.md)).
+
+**Decision: SPLIT.** Q6 lifecycle-only fix; no Q4 re-litigation. Concrete rationale per [`15-q6-lifecycle-gap-fix.md`](../drafts/2026-04-24-nebula-action-redesign/15-q6-lifecycle-gap-fix.md) §3:
+
+| Q4 blocker | Status under `start(input: Self::Input)` |
+|---|---|
+| **B1 — silent semantic divergence** | **STILL HOLDS.** `start(input)` is called once per registration; `StatelessAction::execute(input)` is called per dispatch. Same name carries opposite frequency semantics (lifecycle-once vs per-dispatch-many). Name-collision trap from Q4 §14 line 103 survives the start(input) refinement. |
+| **B2 — signature-doubling** | DISSOLVES (Input method-bound, not also `&self`-bound; partial — runtime state still in `&self`). |
+| **B3 — decorative (no method-signature carry)** | DISSOLVES. |
+| **B4 — ADR-0036 binds verbatim spike shapes** | **STILL HOLDS.** Spike `final_shape_v2.rs:254-262` has no `type Input` on TriggerAction; bundle would invalidate freeze per §0.2 invariant 4 (spike-shape divergence trigger) without re-spike. |
+| **B5 — §2.9.1a paradigm contradiction** | Partially HOLDS. Even with `start(input)`, per-instance runtime state (atomics, task handles, registration tokens) still lives in `&self`. Mixed paradigm. |
+
+**B1 + B4 alone are sufficient blockers.** B1 is the load-bearing semantic trap (unchanged from Q4 verdict on iteration 4 — REJECT, [`14-q4-trigger-input-asymmetry.md`](../drafts/2026-04-24-nebula-action-redesign/14-q4-trigger-input-asymmetry.md) line 138). B4 invalidates the freeze without re-spike work.
+
+**Why split, not bundle:**
+
+1. **Q4 was a single-round REJECT closed 2026-04-25.** Re-opening it bundled with Q6 conflates two distinct decisions: lifecycle gap (mechanical drift) vs paradigm choice (`type Input` semantic on TriggerAction). Bundling muddies the freeze-warrant trail.
+2. **B1 survives under start(input).** The bonus user note reframes Q4 but does not dissolve the load-bearing blocker; bundle would be reversal without B1 dissolution.
+3. **B4 invalidates freeze without re-spike.** Per §0.2 invariant 4, adding `type Input` to TriggerAction is exactly that invalidation. Lifecycle-only fix preserves the spike-locked shape (no `type Input` added; `start()` / `stop()` derived from production, not from spike-shape change).
+4. **Lifecycle gap is a mechanical drift fix** (production has start/stop; spec dropped them; production wins per cross-source-authoritative discipline + §15.9.2 "canonical-form correction" criterion). Bundling Q4 ratification turns a mechanical fix into a paradigm decision.
+
+**If user contests SPLIT decision.** Single-round budget exhausted on the bundle question. Escalation paths: (a) B1 dissolution evidence (semantic disambiguation mechanism) — Q5 already explored `type Config` rename, REJECT on B5 paradigm contradiction; (b) B4 re-spike commitment (new spike validating `type Input` + `start(input)` end-to-end) — adds cascade-day cost; (c) tech-lead ratification override (cascade prompt explicitly authorized "Architect's call" — split is the call).
+
+#### §15.10.3 Cross-cascade and downstream impact
+
+**ADR composition.** ADR-0036 + ADR-0037 + ADR-0038 statuses preserved. ADR-0036 §Decision items 1-4 unchanged; lifecycle methods are at the per-method signature layer (Tech Spec §2.2 lock), not at trait-family enumeration layer (ADR-0036 §Neutral block lock). The four-ADR composition with ADR-0035 phantom-shim is unaffected.
+
+**Production code impact.** `crates/action/src/trigger.rs:61-72` already has the lifecycle methods; cascade lift modifies signature shape (receiver context: `&(impl TriggerContext + ?Sized)` → `&'a ActionContext<'a>`; lifetime form: implicit → explicit single-`'a`; error: `ActionError` → `Self::Error`). Bodies pass through unchanged. T7 codemod (§10.2) handles the signature lift mechanically.
+
+**Reverse-dep impact.** Per §10.3 + §15.10 Q2 Migration impact analysis:
+- `nebula-engine` — TriggerHandler dispatch sites unchanged at the engine boundary (engine sees `Arc<dyn TriggerHandler>`, see §2.4 post-Q1 `#[async_trait]` form per §15.9.1); ~0 T7 sites.
+- `nebula-api` — webhook transport calls handler boundary, not action trait directly; ~0 T7 sites.
+- `nebula-plugin` — test fixtures may include trigger action mocks; ~1-2 T7 sites estimated.
+- `apps/cli` — CLI dev fixtures may include trigger actions; ~1-2 T7 sites estimated.
+- Community plugins — every webhook/poll trigger action incurs 1 T7 (per impl). Migration-guide step added in §10.4.
+
+**Aggregate T7 footprint:** ~3-5 internal sites + ~1 per community trigger plugin. Well within cascade migration discipline; not material to §10.5 70/30 AUTO/MANUAL ratio.
+
+**No `crates/action/src/handler.rs` ABI change.** The `ActionHandler::Trigger(Arc<dyn TriggerHandler>)` variant continues to compile under `#[async_trait]`-annotated `TriggerHandler` per §15.9.1; lifecycle methods are at the primary `TriggerAction` typed-trait layer, not the dyn-erased `TriggerHandler` layer.
+
+**Spike artefact handling.** Spike `final_shape_v2.rs:254-262` remains the trait-shape signature-locking source per §0.1 inputs frozen-at footer. Lifecycle scope is narrowed in place — spike validated trait-shape compose + cancellation only; lifecycle is derived from production `crates/action/src/trigger.rs:61-72` PASS evidence (Mock test at `crates/action/src/trigger.rs:540-549` exercises `start` / `stop` round-trip), NOT spike-shape change. **No re-spike.**
+
+#### §15.10.4 §16.5 cascade-final precondition update
+
+Tech Spec ratification (CP4 freeze) is unaffected — this amendment-in-place is post-freeze (per ADR-0035 / §15.9 precedent allowing post-freeze amendment-in-place for canonical-form corrections). §16.5 cascade-final readiness check gains no new precondition; the lifecycle methods are absorbed mechanically (T7 codemod handles signature lift).
+
+#### §15.10.5 §15.1 closure entries updated
+
+§15.1 "CP1 §15 carry-forward" table — no row addressed lifecycle gap directly (the gap was uncaught by all CP-level reviews until Q6). New CP4 row added implicitly via this §15.10 enactment record + §17 CHANGELOG entry; no separate §15.1 row needed.
+
 ---
 
 ## §16 Implementation handoff
@@ -2906,4 +3031,28 @@ Post-freeze user re-examination raised two design questions on the FROZEN CP4 20
 - Cross-section signature impact: §2.3 + §2.4 only. §2.2 RPITIT signatures unchanged; §3 dispatch unchanged; §4 macro emission unchanged; §5 test harness unchanged; §6 security floor unchanged; §7 lifecycle unchanged; §8 storage unchanged; §9-§13 migration / interface unchanged. Spike `final_shape_v2.rs:209-262` is unchanged (it does not specify `*Handler` shape).
 
 **Audit obligations.** spec-auditor full cross-CP audit pre-freeze (handoff at line 2820) is augmented post-freeze with three additional checks: (i) §2.3 + §2.4 callout boxes reference §15.9 and ADR-0024 verbatim; (ii) §15.9 enactment record cites ADR-0024 §Decision items 1 + 4 with line-pinned references; (iii) §2.9.1b three-axis distinction is internally consistent with §2.9.2 trait-method-input table column.
+
+### CHANGELOG — post-freeze amendment-in-place 2026-04-25 (Q6 lifecycle gap)
+
+Targeted gap fix raised by user on the FROZEN CP4 (amended-in-place 2026-04-25 — Q1) commit. Production `crates/action/src/trigger.rs:61-72` declares `start(&self, ctx)` + `stop(&self, ctx)` lifecycle methods enforced by `#[diagnostic::on_unimplemented]`; Tech Spec §2.2.3 froze the spike shape (which had only `handle()`) without rationale. Spike Probe 2 was scoped to the missing-associated-type compile-fail probe and did not exercise lifecycle. §2.9.1b post-freeze Q2 amendment line 530 already referenced "engine drives `start`" — a circular dangling reference exposed by the user gap surface. Per `feedback_active_dev_mode.md` ("more-ideal over more-expedient") + `feedback_adr_revisable.md` precedent — honest correction of production drift beats reflexive defence of frozen spec.
+
+**Q6 — `TriggerAction` lifecycle methods (`start` / `stop`) (ACCEPTED, lifecycle-only fix):**
+- Status header — `FROZEN CP4 2026-04-25 (amended-in-place 2026-04-25 — Q1 post-freeze)` → `FROZEN CP4 2026-04-25 (amended-in-place 2026-04-25 — Q1 post-freeze; amended-in-place 2026-04-25 — Q6 lifecycle gap)`. §0.1 status table CP4 row gains "+ Q6 §2.2.3 lifecycle methods per §15.10 — start/stop added to TriggerAction; production drift between `crates/action/src/trigger.rs:61-72` and spike-locked shape closed; Option (i) picked (lifecycle on TriggerAction, not TriggerSource); SPLIT decision (no Q4 type Input bundle)" qualifier.
+- §0.1 inputs frozen-at footer — spike PASS scope narrowed in place: "spike validated trait-shape compose + cancellation only; lifecycle methods (`start` / `stop` on TriggerAction) are derived from production `crates/action/src/trigger.rs:61-72` PASS evidence, NOT from spike-shape change". No spike re-validation; no new spike probe required.
+- §2.2.3 — amended-in-place callout added at section top; trait gains `start<'a>(&'a self, ctx: &'a ActionContext<'a>) -> impl Future<...>` and `stop<'a>(&'a self, ctx: &'a ActionContext<'a>) -> impl Future<...>` adjacent to existing `handle()`. Two-shape semantics (setup-and-return vs run-until-cancelled) carried verbatim from production `TriggerHandler` doc comment (lines 282-321); idempotency invariant + cancel-safety contract preserved. Trailing prose names cluster-mode hook composition with `start` / `stop` (sequencing detail engine-cascade scope per §1.2 N4).
+- §10.2 — codemod transforms table gains T7 row (TriggerAction lifecycle method signature lift; AUTO; bodies pass through unchanged because per-instance state reads (`self.webhook_url`, `self.secret`) work identically before and after). T3-T6 enumeration extended to T3-T7 in transforms-list paragraph.
+- §10.2.1 codemod execution model — AUTO mode default-list extended from "T1, T3, T4" to "T1, T3, T4, T7".
+- §10.5 auto-vs-manual breakdown summary — Automatable list extended to include T7 with footprint estimate (~3-5 internal sites + ~1 per community trigger plugin; not material to aggregate 70/30 ratio).
+- §15.10 (NEW subsection) — Q6 post-freeze amendment-in-place enactment recorded. §15.10.1 enactment table (no ADR file edit needed — ADR-0036/0037/0038 do not lock per-method signatures; Tech Spec §2.2 is the per-method signature lock; spike `final_shape_v2.rs:254-262` is the signature-locking source for trait-shape compose, lifecycle methods derived from production). §15.10.2 bundle decision SPLIT with Q4 blocker-by-blocker analysis under `start(input)` framing (B1 + B4 still bind; Q4 verdict REJECT preserved; bundling would invalidate freeze without re-spike). §15.10.3 cross-cascade impact (no `crates/action/src/handler.rs` ABI change; no spike re-run; T7 codemod handles signature lift). §15.10.4 §16.5 cascade-final precondition unchanged. §15.10.5 §15.1 closure entries — no new row needed (gap was uncaught by all CP-level reviews; surfaced via this CHANGELOG entry).
+- New analysis artefact: [`docs/superpowers/drafts/2026-04-24-nebula-action-redesign/15-q6-lifecycle-gap-fix.md`](../drafts/2026-04-24-nebula-action-redesign/15-q6-lifecycle-gap-fix.md) — full trigger / honest-framing / option analysis / migration impact / bundle decision rationale. Cited from §15.10.1 (rationale for Option (i) pick) + §15.10.2 (bundle decision rationale).
+
+**Cascade-state changes:**
+- ADR transitions: NONE. ADR-0036 + ADR-0037 + ADR-0038 statuses preserved. ADR-0036 §Decision items 1-4 unchanged (items lock trait-shape rewriting / emission contract / dual enforcement / phantom composition — not per-method signature shape). ADR-0036 §Neutral block "Public API surface of the 4 dispatch traits ... unchanged at the trait level" preserves four-trait family enumeration; lifecycle method addition is at the per-method signature layer (Tech Spec §2.2 lock), not at family-enumeration layer.
+- Tech Spec status qualifier: `FROZEN CP4 2026-04-25 (amended-in-place 2026-04-25 — Q1 post-freeze; amended-in-place 2026-04-25 — Q6 lifecycle gap)`. Q6 is structural (signature change adding methods); earns separate qualifier per §15.9.5 / §15.9.6 precedent ("rationale-tightening amendments without signature ripple do not warrant a separate status header qualifier" — Q6 has signature ripple, so it does).
+- Cross-section signature impact: §2.2.3 only (signature change). §2.2.1 / §2.2.2 / §2.2.4 unchanged; §2.3 + §2.4 (Q1 amendment) unchanged; §3 dispatch unchanged (engine sees `Arc<dyn TriggerHandler>` per §2.4 post-Q1); §4 macro emission unchanged (lifecycle methods are NOT macro-emitted — implementors author them); §5 test harness unchanged; §6 security floor unchanged; §7 lifecycle was already CP3 §7 cluster-mode hooks scope (now composes with start/stop per §2.2.3 trailing prose); §8 storage unchanged; §9-§13 migration unchanged except §10.2 (T7 added); §14 unchanged; §15 gains §15.10 enactment subsection; §16 unchanged.
+- Spike `final_shape_v2.rs:254-262` is unchanged (it specifies trait-shape compose only; lifecycle scope was always production-evidence-based per §0.1 inputs frozen-at footer narrowing).
+
+**Audit obligations.** spec-auditor full cross-CP audit pre-freeze (handoff at line 2820) is augmented Q6-post-freeze with five additional checks: (i) §2.2.3 callout box references §15.10 verbatim + production line-pin (`crates/action/src/trigger.rs:61-72`); (ii) §15.10 enactment record cites Q4 §14 file + spike scope narrowing + production line-pins with grep-able anchors; (iii) §10.2 T7 row + §10.5 Automatable list internally consistent (T7 in both; AUTO mode); (iv) §0.1 inputs frozen-at footer scope clarification reconciles with §0.2 invariant 4 (spike-shape divergence trigger NOT activated because lifecycle scope was always production-derived); (v) bundle decision (§15.10.2) preserves Q4 verdict (REJECT) without re-litigation — B1 + B4 quoted verbatim from §14 file with line-pin references.
+
+**Open items.** No new open items raised. §15.1 closure entries do not need a new row (the gap was uncaught by CP-level reviews; the closure is this §15.10 enactment record + §17 CHANGELOG entry).
 

@@ -86,6 +86,38 @@ Devops wrote to wrong repo path (main repo instead of worktree) — orchestrator
 - ADR-0038 ControlAction seal + canon §3.5 DX tier ratification (canon revision per §0.2)
 - ADR-NNNN+3 cluster-mode hooks deliberately deferred (out of cascade scope per Strategy §6.2)
 
+### 2026-04-25 T04:30 — Post-freeze Q6 — TriggerAction lifecycle gap fix (SPLIT)
+
+**Gap identified during user review of Tech Spec design**: production code `crates/action/src/trigger.rs:61-72` имеет `TriggerAction::start()` + `::stop()` lifecycle methods. Tech Spec §2.2.3 frozen без них. Phase 4 spike covered shape-only probes, не lifecycle. Tech Spec §2.9 amendment line 530 references "engine drives start" но start не определён ни в TriggerAction ни в TriggerSource — slip между production code и frozen design.
+
+**Architect dispatched targeted gap fix** (no specialist parallel review per user spec — mechanical drift correction, не cascade revisit).
+
+**Outcome: SPLIT lifecycle-only fix** (NO Q4 bundle).
+
+**Design: Option (i)** — `TriggerAction` carries `start(&self, ctx)` + `stop(&self, ctx)` adjacent к existing `handle()`. Per-instance state (webhook URL, secret, registration token) lives в `&self` (consistent с §2.9.1a paradigm). `TriggerSource` остаётся shape-only (no runtime instantiation paradigm break).
+
+**Bundle-vs-split rationale (architect honest call):**
+- User trailing note suggested adding `Input` к start method to enable Q4 ACCEPT through backdoor
+- Architect declined bundle: B1 (silent semantic divergence) survives `start(input)` refinement — `start(input)` is per-registration, `execute(input)` is per-dispatch, same name-collision trap from Q4
+- B4 (ADR-0036 binds spike shape) would invalidate freeze without re-spike — disproportionate для mechanical gap fix
+- Bundling conflates drift correction с paradigm choice; muddies freeze-warrant trail
+
+**Migration**: ~3-5 internal sites + ~1 per community trigger plugin via new T7 codemod transform (AUTO; bodies unchanged).
+
+**Tech Spec amendments (8 edits):**
+- §0 status header + status table row updated
+- §2.2.3 amendment-in-place: start + stop methods added к TriggerAction trait
+- §10.2 transforms-list + new T7 row (AUTO migration)
+- §10.2.1 + §10.5 AUTO mode list extended
+- §15.10 enactment subsection (5 sub-sections documenting analysis + decision + design + migration + spike-scope-acknowledgment)
+- §17 CHANGELOG entry для Q6 post-freeze
+
+**ADR-0036 NOT modified** — lifecycle at per-method signature layer; ADR-0036 §Decision items 1-4 address trait-shape rewriting / emission / dual enforcement / phantom composition — none address per-method signatures, so signature addition не requires ADR amendment.
+
+**Status qualifier appended**: `FROZEN CP4 2026-04-25 (amended-in-place 2026-04-25 — Q1 post-freeze + Q6 lifecycle gap)`.
+
+**Spike scope acknowledged**: shape-only probes PASS verdict stands; lifecycle scope was out of spike contract; not a spike defect, a coverage gap closed by Q6 gap fix.
+
 ### 2026-04-25 T04:00 — Post-freeze Q5 — Option E (`type Config` rename) REJECT
 
 **User responded к Q4 REJECT с targeted refinement: "может быть тогда `type Config`?"**
