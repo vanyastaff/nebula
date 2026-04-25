@@ -19,6 +19,7 @@ related:
   - docs/adr/0028-cross-crate-credential-invariants.md
   - docs/adr/0030-engine-owns-credential-orchestration.md
   - docs/adr/0033-integration-credentials-plane-b.md
+  - docs/adr/0037-daemon-eventsource-engine-fold.md
 linear: []
 ---
 

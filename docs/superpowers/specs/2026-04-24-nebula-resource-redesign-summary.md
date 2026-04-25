@@ -87,6 +87,19 @@ No `ESCALATION.md` was written. The cascade did not hit:
 
 ---
 
+## Two distinct sets of open items (do not confuse)
+
+The cascade left two different question-sets with different lifecycles. Reader should not treat them as overlapping:
+
+| Set | Where | Lifecycle | Examples |
+|---|---|---|---|
+| **Strategy §5.1-§5.5** | `2026-04-24-nebula-resource-redesign-strategy.md` §5 | **Design questions** that surface during implementation; Phase 6 Tech Spec / Phase 4 spike resolves them | NoCredential convenience symmetry, AcquireOptions interim treatment, Runtime/Lease collapse trigger |
+| **Summary Q1-Q5** | This document below | **Process questions** about cascade pacing + scope (when to dispatch what) | Spike timing, Tech Spec scope, ADR-0037 dispatch, SF-1 PR, MATURITY transition awareness |
+
+The two sets do **not** overlap. Strategy §5 records design ambiguity; Summary Q records process choice.
+
+---
+
 ## Open questions awaiting user decision
 
 ### Q1 — Phase 4 spike: dispatch now (separate session), or roll into implementation PR drafting?
@@ -108,7 +121,15 @@ No `ESCALATION.md` was written. The cascade did not hit:
 - **(b)** Skip Tech Spec entirely — implementation PR wave uses Strategy §4 + ADR-0036 + Register as the design input. Phase 6 Tech Spec is template for Nebula but may be overkill given engine fold + credential Tech Spec §3.6 already exists as the concrete signature source.
 - **(c)** Dispatch a minimal Tech Spec CP1 only (§0-§3 scope + contract + runtime model) to anchor the implementation PR wave; defer CP2-CP4 to post-merge.
 
-**Orchestrator recommendation:** (c) **minimal CP1 then implementation**. Strategy §4 is dense enough that Tech Spec would largely restate it. CP1 encodes the consumer-migration plan + concrete trait signatures; that's enough. CP2-CP4 deliverables are optional.
+**Initial orchestrator recommendation (REVISED 2026-04-25):** previously (c). User push-back with concrete counter-evidence from credential cascade overrides:
+
+> Credential CP4→CP5 surfaced 8 compile-time amendments + 4 runtime checks via 3-agent consensus session. Strategy was frozen at CP3 — what caught those was Tech Spec CP4→CP5 reviews when Phase 1 sec-lead findings (N1-N10) were re-elaborated against actual Tech Spec sections. Without Tech Spec, sub-trait split (capability silent-downgrade fix) and sensitivity dichotomy would not have surfaced. ADR-0036 currently has gaps Tech Spec would close: conceptual `<Self::Credential as Credential>::Scheme` lacks ergonomic alternatives evaluation; default `on_credential_revoke` returning `Ok(())` lacks mechanism specification; dispatcher concurrency cap "~32" mentioned in tech-lead Phase 2 review not confirmed in ADR; 5-consumer migration not concretized to function-level diffs.
+
+**REVISED recommendation:** (a) **full multi-CP Tech Spec cascade in a follow-up session.** "Strategy §4 dense enough" justification rejected — that logic skipped credential cascade CP4→CP5 amendments and would have shipped a silent-downgrade vulnerability there.
+
+**Fallback if budget tight:** (c) minimal CP1 as preamble to first implementation PR — first PR commits CP1-only Tech Spec alongside code; remaining sections grow as implementation PRs land. Less rigorous than full multi-session cascade but cheaper.
+
+**Avoid (b)** — skipping Tech Spec entirely is the same anti-pattern as the credential cascade would have hit if it had stopped at Strategy.
 
 ### Q3 — ADR-0037 for Daemon/EventSource engine-fold?
 
@@ -138,15 +159,21 @@ No `ESCALATION.md` was written. The cascade did not hit:
 
 ---
 
-## Recommended next steps (ordered)
+## Recommended next steps (ordered, REVISED 2026-04-25 per user direction)
 
-1. **(immediate)** Review this summary + `03-scope-decision.md §4` + Strategy §4 to confirm orchestrator's framing matches your intent
-2. **(5 min)** Dispatch devops agent to land SF-1 `deny.toml` wrappers rule PR (standalone, mechanical — Q4 option a)
-3. **(optional, ~1-2 hours)** Dispatch architect for ADR-0037 Daemon/EventSource engine-fold decision record (Q3 option a)
-4. **(per your call)** Decide Q1 + Q2 — spike as separate session vs rolled-in-PR; Tech Spec minimal-CP1 vs skip
-5. **(implementation)** When ready, open a multi-session work stream for the trait-reshape PR wave. Use Strategy §4 as design input, ADR-0036 as decision record, register as scope tracker. Consumers migrate atomically per Strategy §4.8. Observability gate per Strategy §4.9 / Phase 6 review.
-6. **(post-merge)** Soak period per Strategy §6.3 (1-2 weeks). Watch `nebula_resource.credential_rotation_attempts` counter + `ResourceEvent::CredentialRefreshed` event stream.
-7. **(post-soak)** MATURITY.md `frontier` → `core` transition per Strategy §6.4. Register closes. Cascade formally complete.
+**LANDED 2026-04-25:**
+- ✅ SF-1 `deny.toml` wrappers rule — commit `bb66537a` `fix(deny): add nebula-resource layer-enforcement wrapper rule` — devops verified 5 consumers (action, engine, plugin, sandbox, sdk) and `cargo deny check bans` passes.
+- ✅ ADR-0037 Daemon/EventSource engine-fold drafted (1628w, status: Proposed pending Tech Spec CP1) — `docs/adr/0037-daemon-eventsource-engine-fold.md`. ADR-0036 frontmatter backlink added.
+
+**REMAINING decisions (per user direction 2026-04-25):**
+1. **Q2 Tech Spec — full Phase 6 cascade (option a) recommended** (not minimal CP1). User push-back vs orchestrator's initial recommendation accepted — see Q2 above for credential cascade evidence. Dispatch in dedicated follow-up session; budget ~10-15 hours agent-effort.
+2. **Q1 Phase 4 spike — roll into first implementation PR (option b)** — confirmed. First PR is effectively the spike; spike artefacts embed in PR commit history. Note: spike-as-first-PR has full security/rust-senior review on real code, higher signal but slower iteration than throwaway worktree spike.
+3. **Q5 MATURITY transition — automatic** per Strategy §6.4 trigger condition; tracked in register. No action.
+
+**Implementation start:**
+4. **(when ready)** Open multi-session work stream for trait-reshape PR wave. Strategy §4 as design input, ADR-0036 + ADR-0037 as decision records, register as scope tracker. Consumers migrate atomically per Strategy §4.8. Observability gate per Strategy §4.9.
+5. **(post-merge)** Soak period per Strategy §6.3 (1-2 weeks). Watch `nebula_resource.credential_rotation_attempts` counter + `ResourceEvent::CredentialRefreshed` event stream.
+6. **(post-soak)** MATURITY.md `frontier` → `core` transition per Strategy §6.4. Register closes. Cascade formally complete.
 
 ---
 
