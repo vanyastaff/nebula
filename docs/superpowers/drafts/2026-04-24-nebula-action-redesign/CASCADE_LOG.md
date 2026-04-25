@@ -35,7 +35,7 @@ All 8 stakeholder agents present; roster matches prompt expectations.
 | Phase 3 | ✅ complete | [`Strategy FROZEN CP3`](../../specs/2026-04-24-action-redesign-strategy.md) + 04a/b + 05a/b + 06a/b sub-reviews | Frozen 2026-04-24 after CP1+CP2+CP3 cycles. Each CP iterated once after spec-auditor + tech-lead review. 540 lines total. |
 | Phase 4 | ✅ complete | [`07-spike-NOTES.md`](./07-spike-NOTES.md) + `final_shape_v2.rs` | Iter-1 PASS + Iter-2 PASS; spike commit `c8aef6a0` on isolated worktree branch `worktree-agent-af478538`; 10 effective tests passing; Tech Spec §7 unblocks |
 | Phase 5 | ✅ complete | [`ADR-0036`](../../adr/0036-action-trait-shape.md) + [`ADR-0037`](../../adr/0037-action-macro-emission.md) + [`ADR-0038`](../../adr/0038-controlaction-seal-canon-revision.md) | 3 PROPOSED ADRs drafted; ADR-NNNN+3 cluster-mode hooks deliberately deferred (scope §2) |
-| Phase 6 | **DEFERRED** | (Tech Spec — separate continuation session) | Cascade scope completed at design closure (Strategy + Spike + ADRs); Tech Spec drafting deferred per orchestrator context budget management. User decides continuation session. |
+| Phase 6 | in-progress (continuation session) | Tech Spec CP1-CP4 (target file: `docs/superpowers/specs/2026-04-24-nebula-action-tech-spec.md`) | Continuation dispatched 2026-04-24; CP1 architect draft starting; 4 CPs × 5 parallel reviewers per Strategy §6.3 |
 | Phase 7 | ✅ complete (lite) | Concerns register summary in Phase 8 deliverable | No multi-blocker consensus session triggered; register lives as Phase 8 §register-state |
 | Phase 8 | in-progress | Summary file | Producing `docs/superpowers/specs/2026-04-24-nebula-action-redesign-summary.md` |
 
@@ -85,6 +85,37 @@ Devops wrote to wrong repo path (main repo instead of worktree) — orchestrator
 - ADR-0037 Action macro emission contract (HRTB resolve_fn; dual enforcement; macro test harness)
 - ADR-0038 ControlAction seal + canon §3.5 DX tier ratification (canon revision per §0.2)
 - ADR-NNNN+3 cluster-mode hooks deliberately deferred (out of cascade scope per Strategy §6.2)
+
+### 2026-04-24 T22:30 — CP1 RATIFIED + commit-ready
+
+**CP1 §0-§3 (Tech Spec foundation):**
+
+- Architect drafted 572 lines (§0 status/scope/freeze, §1 goals + non-goals, §2 trait contract with 4 primary + 5 sealed DX + ActionResult::Terminate decision, §3 runtime model with SlotBinding registry + HRTB dispatch + cancellation safety)
+- **§2.7.1 Terminate decision: WIRE-END-TO-END** (per tech-lead Phase 1 solo call + canon §4.5 false-capability avoidance)
+- 5 parallel reviewers returned: spec-auditor REVISE (3 🔴 + 3 🟠), rust-senior RATIFY-WITH-NITS (1 🔴 ser/de bound lift + 2 🟡), security-lead ACCEPT-WITH-CONDITIONS (no edits), dx-tester REVISE (2 🔴 ActionSlots undef + sealed migration target), devops RATIFY-WITH-NITS (2 🟠 feature flag freeze + nebula-runtime path)
+- Architect single-pass iteration applied 9 critical items + minor nits — all closed cleanly
+- **User-raised mid-iteration**: Input/Output base trait consolidation analysis. Architect added §2.9 with REJECT decision + concrete re-open trigger (TriggerAction structural divergence; no current consumer for sub-trait)
+- Tech-lead RATIFIED post-iteration (commit-ready; no round-2; no escalation)
+
+**Forward-tracked for CP2/CP3** (in §15 open items): security-lead 5 prep gaps (hard-removal mechanism, JSON depth-cap implementation, redacted_display() helper location, ZeroizeProbe instrumentation, cross-tenant Terminate boundary CP3); rust-senior BoxFut single-home (CP3 §7).
+
+**Feature flag granularity decision**: parallel `unstable-retry-scheduler` + `unstable-terminate-scheduler` (not unified) — devops recommended, architect committed, tech-lead ratified.
+
+### 2026-04-24 T22:00 — Continuation session start (Phase 6 Tech Spec)
+
+User authorized Phase 6 Tech Spec drafting in continuation session. Worktree isolation rule active — no cross-cascade references к sibling worktrees. Tasks for CP1/CP2/CP3/CP4 + Phase 8 update created.
+
+**Forward path locked** (per cascade prompt):
+- CP1 — §0-§3 foundation (~600-800 lines): status/scope, goals, trait contract (4 primary + 5 sealed DX with full Rust sigs, Terminate decision, BoxFut alias), runtime model
+- CP2 — §4-§8 macro + execution (~700-1000 lines, largest CP): #[action] token shape, macro test harness, security must-have floor, lifecycle, storage. Co-decision tech-lead + security-lead on §6.
+- CP3 — §9-§13 interface + migration (~500-700 lines): public API, migration plan, adapter contract, ControlAction migration, evolution
+- CP4 — §14-§16 meta + handoff (~200-300 lines): cross-refs, open items resolution, implementation handoff (Q1 options если not picked)
+
+Per-CP cadence (Strategy §6.3): architect draft → 5 parallel reviewers (rust-senior + security-lead + dx-tester + devops + spec-auditor) → architect iterate once → tech-lead ratify → commit per CP.
+
+**Hard escalation triggers:** review iteration round 3; CP2 co-decision deadlock; cross-crate API break beyond ADR-0037 §3 soft amendment; budget hit (5d); security 🔴 blocking CP ratification; macro emission perf bound violation.
+
+**Soft escalations (precedent):** --no-verify for unrelated fmt drift (per spike c8aef6a0 + summary commits aa63e424, 3e10329f).
 
 ### 2026-04-24 T20:45 — Cascade scope completion decision
 
