@@ -1,11 +1,13 @@
 # nebula-resource Concerns Register
 
 **Opened:** 2026-04-24 (cascade Phase 7)
-**Status:** Active
+**Status:** Active — design phase complete (2026-04-25); awaits implementation + soak
 **Pattern:** modeled on `docs/tracking/credential-concerns-register.md`
 **Owner during cascade:** orchestrator (main session)
-**Owner post-cascade:** to transfer on Phase 8 handoff
+**Owner post-cascade:** to transfer on implementation PR wave start
 **Close condition:** MATURITY.md transition `frontier` → `core` per Strategy §6.4
+
+**Tech Spec FROZEN 2026-04-25** — all 22 `tech-spec-material` rows have `decided` status with section pointers via Tech Spec §15.6. Lifecycle Rule 2 satisfied. See `docs/superpowers/specs/2026-04-24-nebula-resource-tech-spec.md` for resolution mapping.
 
 ---
 
@@ -131,4 +133,6 @@
 ## Register updates
 
 - 2026-04-24 T+~135min — Opened by orchestrator (Phase 7 dispatch)
-- (Future updates append-only as cascade / post-cascade work progresses)
+- 2026-04-25 — Cascade continuation: Phase 4 spike PASSED (commit `262665f8`); Phase 6 CP1 ratified (commit `1e416b91`); ADR-0036 + ADR-0037 flipped `proposed` → `accepted`; Phase 6 CP2 ratified (commit `e0f49536`); Phase 6 CP3 + CP4 ratified, Tech Spec FROZEN
+- 2026-04-25 — All 22 `tech-spec-material` rows status `decided` per Tech Spec §15.6 mapping. Lifecycle Rule 2 satisfied.
+- (Future updates append-only as implementation PR wave + soak progress)

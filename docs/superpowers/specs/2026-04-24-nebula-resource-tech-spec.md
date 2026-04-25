@@ -1,14 +1,14 @@
 ---
 name: nebula-resource tech spec (implementation-ready design)
-status: CP2 ratified — pending CP3 dispatch
+status: FROZEN (CP4) — ratified by architect + tech-lead 2026-04-25
 date: 2026-04-25
 authors: [architect (subagent dispatch)]
 scope: nebula-resource — single-crate redesign; 5 in-tree consumers migrate atomically
-cascade_phase: Phase 6 CP1
+cascade_phase: Phase 6 complete (all 4 CPs ratified)
 strategy: docs/superpowers/specs/2026-04-24-nebula-resource-redesign-strategy.md (FROZEN CP3)
 adrs:
-  - docs/adr/0036-resource-credential-adoption-auth-retirement.md (proposed-pending-CP1)
-  - docs/adr/0037-daemon-eventsource-engine-fold.md (proposed-pending-CP1)
+  - docs/adr/0036-resource-credential-adoption-auth-retirement.md (accepted)
+  - docs/adr/0037-daemon-eventsource-engine-fold.md (accepted, amended-in-place 2026-04-25)
 spike: docs/superpowers/drafts/2026-04-24-nebula-resource-redesign/spike/
 credential_cross_ref:
   - docs/superpowers/specs/2026-04-24-credential-tech-spec.md §3.6 (lines 928-996)
@@ -59,9 +59,11 @@ Strategy authority supersedes Tech Spec on conflict; Tech Spec wins over sub-spe
 
 ### §0.4 Reading order
 
-§0 → §1 (goals + non-goals) → §2 (trait contract) → §3 (runtime model) → §4 (lifecycle, CP2) → §5 (implementation specifics, CP2) → §6 (operational/observability, CP2) → §7 (testing strategy, CP2) → §8 (storage/state, CP2) → §9-§13 (interface, CP3) → §14-§16 (meta + open items + handoff, CP4).
+§0 → §1 (goals + non-goals) → §2 (trait contract) → §3 (runtime model) → §4 (lifecycle, CP2) → §5 (implementation specifics, CP2) → §6 (operational/observability, CP2) → §7 (testing strategy, CP2) → §8 (storage/state, CP2) → §9 (Manager file split function-level cuts, CP3) → §10 (Public API surface, CP3) → §11 (Adapter authoring contract, CP3) → §12 (Daemon/EventSource engine landing, CP3) → §13 (Evolution policy, CP3) → §14-§16 (meta + open items + handoff, CP4).
 
 CP1 readers: load Strategy §4, ADR-0036 §Decision, ADR-0037 §Decision, [credential Tech Spec §3.6 lines 928-996](2026-04-24-credential-tech-spec.md), and [`spike/NOTES.md`](../drafts/2026-04-24-nebula-resource-redesign/spike/NOTES.md) before reading §2-§3 of this document. Citations are dense; load order matters.
+
+CP3 readers: load CP1 §2 + §3 (trait + runtime contract — §9 enumerates them at function level), CP2 §5.4 (file-split structure — §9 takes the seven submodules and assigns functions), CP2 §5.6 (deferrals — §10.5 confirms `tainting_policy` does NOT enter CP3 surface), [ADR-0037 amended-in-place gate text](../adr/0037-daemon-eventsource-engine-fold.md) (§12 specifies the engine landing site), and the current [`crates/resource/docs/adapters.md`](../../../crates/resource/docs/adapters.md) (§11 is the rewrite content spec).
 
 ## §1 — Goals and non-goals
 
@@ -1552,6 +1554,1150 @@ Lives with Manager. Created in `Manager::with_config` ([`manager.rs:283-296`](..
 
 **No `RwLock<Pool>` on `ManagedResource<R>`.** The pool swap pattern (§5.1) is INSIDE the user's `Resource` impl (e.g., `PostgresPool::inner: Arc<RwLock<Pool>>`), not on `ManagedResource<R>`. Manager's owning structures stay lock-free; only the user-side runtime owns the swap-coordination lock.
 
+## §9 — Manager file split (function-level cuts)
+
+CP2 §5.4 locked the seven-submodule structure. CP3 §9 enumerates the per-`fn` cuts: which `impl Manager { fn ... }` block lands in which submodule, with current-line citations and post-split visibility. Public surface is preserved verbatim; submodule files re-export through `manager/mod.rs`.
+
+**Method audit baseline.** `crates/resource/src/manager.rs` exposes 35 public methods on `Manager` plus 5 private helpers, totalling 2101 lines. The cuts trace existing internal seams (registration / dispatch / rotation / shutdown / gate / execute) per [Strategy §4.5](2026-04-24-nebula-resource-redesign-strategy.md) "split-by-state-shape, not split-by-line-count" discipline. `pub` visibility is preserved on every method whose current visibility is `pub`; `pub(crate)` is reserved for newly-extracted internal seams (the dispatcher trampoline, the registration funnel, the file-private helpers).
+
+### §9.1 `manager/mod.rs` — type definition + constructors + lifecycle wiring
+
+The hub. Holds `struct Manager`, the four constructor / lifecycle methods, and event subscription. All other submodules add `impl Manager` blocks; `mod.rs` is the *only* site that declares fields.
+
+| Method                          | Current line       | Visibility post-split | Notes                                                     |
+|---------------------------------|--------------------|-----------------------|-----------------------------------------------------------|
+| `pub fn new`                    | [`manager.rs:269`](../../../crates/resource/src/manager.rs)   | `pub`                 | Wraps `with_config(ManagerConfig::default())` — unchanged |
+| `pub fn with_config`            | [`manager.rs:274`](../../../crates/resource/src/manager.rs)   | `pub`                 | Field initialiser — sole writer of `Manager` fields       |
+| `pub fn with_lifecycle`         | [`manager.rs:303`](../../../crates/resource/src/manager.rs)   | `pub`                 | Builder method — chaining preserved                       |
+| `pub fn lifecycle`              | [`manager.rs:309`](../../../crates/resource/src/manager.rs)   | `pub`                 | Read-only accessor                                        |
+| `pub fn subscribe_events`       | [`manager.rs:320`](../../../crates/resource/src/manager.rs)   | `pub`                 | Broadcast channel exposure                                |
+| `pub fn cancel_token`           | [`manager.rs:1659`](../../../crates/resource/src/manager.rs)  | `pub`                 | Cancellation wiring                                       |
+| `pub fn is_shutdown`            | [`manager.rs:1664`](../../../crates/resource/src/manager.rs)  | `pub`                 | Shutdown probe                                            |
+| `pub fn contains`               | [`manager.rs:1636`](../../../crates/resource/src/manager.rs)  | `pub`                 | Registry membership probe                                 |
+| `pub fn keys`                   | [`manager.rs:1641`](../../../crates/resource/src/manager.rs)  | `pub`                 | Registry key enumeration                                  |
+| `pub fn recovery_groups`        | [`manager.rs:1646`](../../../crates/resource/src/manager.rs)  | `pub`                 | Recovery-group accessor                                   |
+| `pub fn metrics`                | [`manager.rs:1652`](../../../crates/resource/src/manager.rs)  | `pub`                 | Metrics accessor                                          |
+| `pub fn get_any`                | [`manager.rs:1692`](../../../crates/resource/src/manager.rs)  | `pub`                 | Type-erased lookup                                        |
+
+**Field declarations** — verbatim from [`manager.rs:247-265`](../../../crates/resource/src/manager.rs); reverse-index field type changes from `Vec<ResourceKey>` to `Vec<Arc<dyn ResourceDispatcher>>` per §3.1. New CP3 field: `config: ManagerConfig` (currently inlined into individual fields; CP3 §9.1 reifies the struct so §9.5 timeout resolution can read `self.config.credential_rotation_timeout` directly per §3.3 line 899).
+
+**No method bodies move into `mod.rs` from elsewhere.** Every `impl Manager { fn ... }` block in §9.2-§9.7 lives in its target submodule and re-exports through `pub use` if `pub`, or stays as `pub(crate)` if internal.
+
+### §9.2 `manager/options.rs` — config + options + shutdown types
+
+Public types only — no `Manager` methods. Lifts the type definitions out of `manager.rs:23-237` to a dedicated file. Re-exported through `manager/mod.rs` `pub use options::*` so `nebula_resource::ManagerConfig` etc. resolves unchanged.
+
+| Type                       | Current line       | Visibility post-split | Notes                                                                |
+|----------------------------|--------------------|-----------------------|----------------------------------------------------------------------|
+| `ManagerConfig`            | [`manager.rs:193`](../../../crates/resource/src/manager.rs)   | `pub`                 | Gains `credential_rotation_timeout: Duration` + `credential_rotation_concurrency: usize` per §3.3 lines 850-854 |
+| `RegisterOptions`          | [`manager.rs:220`](../../../crates/resource/src/manager.rs)   | `pub`                 | Gains `credential_rotation_timeout: Option<Duration>` per §3.3 line 879 + `credential_id: Option<CredentialId>` per §10.4 |
+| `ShutdownConfig`           | [`manager.rs:85`](../../../crates/resource/src/manager.rs)    | `pub`                 | Unchanged                                                            |
+| `DrainTimeoutPolicy`       | [`manager.rs:75`](../../../crates/resource/src/manager.rs)    | `pub`                 | Unchanged                                                            |
+| `ShutdownError`            | [`manager.rs:158`](../../../crates/resource/src/manager.rs)   | `pub`                 | Unchanged                                                            |
+| `ShutdownReport`           | [`manager.rs:138`](../../../crates/resource/src/manager.rs)   | `pub`                 | Unchanged                                                            |
+| `ResourceHealthSnapshot`   | (currently `crate::manager::ResourceHealthSnapshot` re-export from a sibling file)   | `pub`                 | Stays in `state.rs`; `options.rs` does NOT take this type   |
+| `DrainTimeoutError`        | [`manager.rs:187`](../../../crates/resource/src/manager.rs)   | `pub(crate)`          | Internal — used by `wait_for_drain` (§9.7)                          |
+
+**Builder methods** on `ShutdownConfig` (`with_drain_timeout`, `with_drain_timeout_policy`, `with_release_queue_timeout` at [`manager.rs:115-132`](../../../crates/resource/src/manager.rs)) and matching builders to be added to `RegisterOptions` and `ManagerConfig` per CP3 §10.4 (the `RegisterOptions::with_credential_rotation_timeout` etc. builders) — all stay in `options.rs`. Builder pattern is maintained.
+
+**`Default` impls** on each type (currently scattered across [`manager.rs:99-105, 207-213, 230-236`](../../../crates/resource/src/manager.rs)) move with the types.
+
+**No `impl Manager` blocks in `options.rs`.** Pure type-definitions file; this is the cleanest cut in the seven-submodule split.
+
+### §9.3 `manager/registration.rs` — register surface + reverse-index write
+
+Houses every `register*` public method plus the §3.1 internal funnel `register_inner`. The reverse-index write path (Phase 1 🔴-1 fix) lives here exclusively — `mod.rs` does not write the DashMap.
+
+| Method                            | Current line       | Visibility post-split | Notes                                                                |
+|-----------------------------------|--------------------|-----------------------|----------------------------------------------------------------------|
+| `pub fn register`                 | [`manager.rs:347`](../../../crates/resource/src/manager.rs)   | `pub`                 | Public funnel — calls `register_inner` (§3.1) + registry write       |
+| `pub fn register_pooled`          | [`manager.rs:404`](../../../crates/resource/src/manager.rs)   | `pub`                 | `NoCredential` shortcut per §10.2 — bound `R::Credential = NoCredential`         |
+| `pub fn register_resident`        | [`manager.rs:439`](../../../crates/resource/src/manager.rs)   | `pub`                 | Same shape as `register_pooled`                                      |
+| `pub fn register_service`         | [`manager.rs:468`](../../../crates/resource/src/manager.rs)   | `pub`                 | Same shape                                                           |
+| `pub fn register_exclusive`       | [`manager.rs:499`](../../../crates/resource/src/manager.rs)   | `pub`                 | Same shape                                                           |
+| `pub fn register_transport`       | [`manager.rs:530`](../../../crates/resource/src/manager.rs)   | `pub`                 | Same shape                                                           |
+| `pub fn register_pooled_with`     | [`manager.rs:561`](../../../crates/resource/src/manager.rs)   | `pub`                 | Credential-bearing path per §10.2 — accepts `RegisterOptions` (carries credential_id) |
+| `pub fn register_resident_with`   | [`manager.rs:597`](../../../crates/resource/src/manager.rs)   | `pub`                 | Same shape                                                           |
+| `pub fn register_service_with`    | [`manager.rs:627`](../../../crates/resource/src/manager.rs)   | `pub`                 | Same shape                                                           |
+| `pub fn register_transport_with`  | [`manager.rs:659`](../../../crates/resource/src/manager.rs)   | `pub`                 | Same shape                                                           |
+| `pub fn register_exclusive_with`  | [`manager.rs:691`](../../../crates/resource/src/manager.rs)   | `pub`                 | Same shape                                                           |
+| `fn register_inner<R>`            | NEW (§3.1)         | `pub(crate)`          | Reverse-index write funnel — file-private to `registration.rs` if no test access needed; `pub(crate)` if §9.5 rotation needs to call back |
+| `pub fn lookup<R>`                | [`manager.rs:726`](../../../crates/resource/src/manager.rs)   | `pub`                 | Registry read — co-located with `register_inner` because both touch `registry` field directly |
+| `pub fn remove`                   | [`manager.rs:1409`](../../../crates/resource/src/manager.rs)  | `pub`                 | Symmetric to `register` — same DashMap surface; reverse-index entry purge per §8.3 lives here |
+
+**Why `lookup` lives here**: `lookup` is used by every `acquire_*` (§9.4) and every rotation dispatcher (§9.5) — the natural co-location is "the file that owns registry read/write." Moving `lookup` into `dispatch.rs` would require `dispatch.rs` to gain `pub(crate)` access to `registry`, which violates the §5.4 discipline.
+
+**Atomic invariant restated.** Per §3.1 + §4.1 step 3-4, `register_inner` writes the reverse-index *before* `registry.register` writes the registry. Both lines live in `registration.rs`; no other submodule touches either DashMap.
+
+### §9.4 `manager/dispatch.rs` — acquire surface (5 topologies × 4 variants)
+
+20 acquire methods total: 5 topologies × {base credential-bearing, `_default` no-credential, `try_` non-blocking, `try__default` no-credential non-blocking}. Plus auxiliary `pool_stats` and `warmup_pool` / `warmup_pool_no_credential`.
+
+| Method group                           | Current lines                  | Visibility | Notes                                                              |
+|----------------------------------------|--------------------------------|------------|--------------------------------------------------------------------|
+| `pub async fn acquire_pooled`          | [`manager.rs:752`](../../../crates/resource/src/manager.rs)              | `pub`      | Renamed parameter `auth: &R::Auth` → `credential: &<R::Credential as Credential>::Scheme` per §3.1 |
+| `pub async fn acquire_pooled_default`  | [`manager.rs:811`](../../../crates/resource/src/manager.rs)              | `pub`      | `R::Credential = NoCredential` bound; passes `&NoScheme`           |
+| `pub async fn acquire_resident*`       | [`manager.rs:833, 882`](../../../crates/resource/src/manager.rs)         | `pub`      | Same dual-shape per §10.3 unified vs dual decision                 |
+| `pub async fn acquire_service*`        | [`manager.rs:904, 958`](../../../crates/resource/src/manager.rs)         | `pub`      | Same                                                               |
+| `pub async fn acquire_transport*`      | [`manager.rs:980, 1034`](../../../crates/resource/src/manager.rs)        | `pub`      | Same                                                               |
+| `pub async fn acquire_exclusive*`      | [`manager.rs:1056, 1109`](../../../crates/resource/src/manager.rs)       | `pub`      | Same                                                               |
+| `pub async fn try_acquire_pooled*`     | [`manager.rs:1138, 1190`](../../../crates/resource/src/manager.rs)       | `pub`      | Non-blocking variant — Pool topology only                          |
+| `pub async fn pool_stats`              | [`manager.rs:1217`](../../../crates/resource/src/manager.rs)             | `pub`      | Pool inspection                                                    |
+| `pub async fn warmup_pool`             | [`manager.rs:1259`](../../../crates/resource/src/manager.rs)             | `pub`      | New signature per §5.2 — takes `credential: &<R::Credential as Credential>::Scheme` |
+| `pub async fn warmup_pool_no_credential` | NEW (§5.2 line 1187)         | `pub`      | NoCredential bound; new method                                     |
+| `pub fn reload_config`                 | [`manager.rs:1295`](../../../crates/resource/src/manager.rs)             | `pub`      | Hot-reload — touches both registry (read) and event_tx; co-locates with `acquire` because both consume `lookup` then `event_tx.send` |
+| `fn record_acquire_result`             | [`manager.rs:1702`](../../../crates/resource/src/manager.rs)             | `pub(crate)` | Private metrics helper; called by every `acquire*` variant      |
+| `pub fn health_check`                  | [`manager.rs:1674`](../../../crates/resource/src/manager.rs)             | `pub`      | Co-located with `acquire` — same lookup pattern                    |
+
+**Per-method credential parameter rename.** Every credential-bearing `acquire_*` variant changes parameter `auth: &R::Auth` (current) to `credential: &<R::Credential as Credential>::Scheme` (post-redesign). The `Auth = ()` `where`-clause on the `_default` shorthands at [`manager.rs:813, 884, 960, 1036, 1111`](../../../crates/resource/src/manager.rs) becomes `R::Credential = NoCredential` per §10.2-§10.3 unified-vs-dual decision.
+
+### §9.5 `manager/rotation.rs` — dispatcher trampoline + rotation handlers
+
+The rotation core. Houses the §3.2 `ResourceDispatcher` trait + `TypedDispatcher<R>` impl, plus the `on_credential_refreshed` / `on_credential_revoked` `impl Manager` methods. Per-resource isolation, per-resource timeout enforcement, observability scaffolding (trace span, counter emission, event broadcast) all live here.
+
+| Item                                  | Source                  | Visibility | Notes                                                              |
+|---------------------------------------|-------------------------|------------|--------------------------------------------------------------------|
+| `trait ResourceDispatcher`            | NEW (§3.2 line 697)     | `pub(crate)` | Internal trait; production test access via `#[doc(hidden)] pub use manager::ResourceDispatcher as __internal_ResourceDispatcher;` in `lib.rs` (§10.1 line 1783). Not part of the public API surface. |
+| `struct TypedDispatcher<R>`           | NEW (§3.2 line 725)     | `pub(crate)` | Concrete dispatcher — never named outside the crate              |
+| `impl<R: Resource> ResourceDispatcher for TypedDispatcher<R>` | NEW (§3.2 line 730) | (inherits) | Trait impl — Box::pin per dispatch (per Q3) |
+| `pub async fn on_credential_refreshed` | [`manager.rs:1360`](../../../crates/resource/src/manager.rs) | `pub`      | Replaces `todo!()` body; signature gains `scheme: &(dyn Any + Send + Sync)` parameter per §3.6 line 978 |
+| `pub async fn on_credential_revoked`   | [`manager.rs:1386`](../../../crates/resource/src/manager.rs) | `pub`      | Replaces `todo!()` body; symmetric to refreshed                    |
+| `fn timeout_for`                      | NEW (§3.3 line 896)     | `pub(crate)` | Per-dispatcher timeout resolution                                |
+| `fn dispatch_revoke_with_tainting`    | NEW (§5.3 line 1233)    | `pub(crate)` | Wraps `dispatch_revoke` + unconditional `set_revoked_for_dispatcher` |
+| `fn set_revoked_for_dispatcher`       | NEW (§5.3 line 1243)    | `pub(crate)` | Atomic flip on `ManagedResource<R>::credential_revoked`            |
+| `fn emit_refresh_event`               | NEW (§3.2 line 819)     | `pub(crate)` | Per-resource child-span emission + counter increment               |
+| `fn emit_revoke_event`                | NEW (symmetric)         | `pub(crate)` | Per-resource child-span emission + B-2 HealthChanged on failure    |
+
+**Trampoline trait visibility.** `ResourceDispatcher` is `pub(crate)` — *semantically* internal, declared with crate-only visibility. Production test access is provided exclusively through `#[doc(hidden)] pub use manager::ResourceDispatcher as __internal_ResourceDispatcher;` in `lib.rs` (§10.1 line 1783). CP2 §5.4 constrained the visibility to `pub(crate)`; CP3 §9.5 preserves that constraint and adds the `#[doc(hidden)]` re-export so the production test harness in CP3 §11.7 can name the trait via `nebula_resource::__internal_ResourceDispatcher` without bypassing module boundaries. The `__internal_` prefix and `#[doc(hidden)]` ensure the trait is excluded from rustdoc output and Cargo semver-checks; it is not part of the public API surface.
+
+**Observability scaffolding co-location.** `emit_refresh_event` + `emit_revoke_event` + the trace span entry at §3.2 line 793 all live in `rotation.rs`. The counter increment (`record_rotation_attempts` per §3.2 line 825) lives on `ResourceOpsMetrics` (in [`crates/resource/src/metrics.rs`](../../../crates/resource/src/metrics.rs)) but is *called* from `rotation.rs`.
+
+### §9.6 `manager/shutdown.rs` — graceful + force shutdown + drain-abort fix
+
+Houses the four shutdown paths (`shutdown`, `graceful_shutdown`, `set_phase_all`, `wait_for_drain`) plus the §5.5 fix wiring `set_phase_all_failed` into the `DrainTimeoutPolicy::Abort` branch (Phase 1 🔴-4).
+
+| Method                          | Current line       | Visibility post-split | Notes                                                              |
+|---------------------------------|--------------------|-----------------------|--------------------------------------------------------------------|
+| `pub fn shutdown`               | [`manager.rs:1430`](../../../crates/resource/src/manager.rs)  | `pub`                 | Force-shutdown — signals cancel token, drops registry              |
+| `pub async fn graceful_shutdown` | [`manager.rs:1458`](../../../crates/resource/src/manager.rs) | `pub`                 | Phased drain with `set_phase_all_failed` fix on `Abort` branch     |
+| `fn set_phase_all`              | [`manager.rs:1567`](../../../crates/resource/src/manager.rs)  | `pub(crate)`          | Phase transition helper — preserved unchanged                      |
+| `fn set_phase_all_failed`       | NEW (§5.5 line 1289) | `pub(crate)`          | Per-resource `set_failed(err)` on Abort path; replaces `set_phase_all(Ready)` corruption |
+| `async fn wait_for_drain`       | [`manager.rs:1592`](../../../crates/resource/src/manager.rs)  | `pub(crate)`          | Drain-tracker wait helper — co-locates with `graceful_shutdown` because both consume `drain_tracker` |
+
+**`set_phase_all` vs `set_phase_all_failed` split.** The current single helper assumes "all transitions are uniform." The §5.5 fix introduces a per-resource error-carrying transition (`set_failed(err.clone())` per resource) that cannot be expressed as a uniform `set_phase_all(Phase)` call. The new helper iterates `registry.all_managed()` and calls `managed.set_failed(err)` per resource, emitting `HealthChanged { healthy: false }` per resource per [`events.rs:54-60`](../../../crates/resource/src/events.rs). The original `set_phase_all` is preserved for the `Force` policy (which still uses uniform transitions).
+
+**Drain-tracker access.** `wait_for_drain` reads `self.drain_tracker.0.load(SeqCst)` and awaits `drain_tracker.1.notified()`. No other submodule touches `drain_tracker` — `acquire*` (§9.4) increments via `ResourceGuard::Drop`-driven RAII, but the increment itself is on `drain_tracker.0` directly through the guard. `shutdown.rs` is the only `impl Manager` site that reads it.
+
+**`wait_for_drain` placement note (cross-ref).** CP2 §5.4 originally listed `wait_for_drain` in `manager/execute.rs`; CP3 §9.6 moves it here to `shutdown.rs` because it is consumed exclusively by `graceful_shutdown` and shares the `drain_tracker` field with no other site — see §9.7 below for the gate-vs-shutdown rationale.
+
+### §9.7 `manager/gate.rs` — recovery gate + execute helpers
+
+The recovery-gate helpers, the resilience-execution wrapper, and pool-config validation. Used by `dispatch.rs` (every `acquire*`) but lives in its own file because the helpers are a coherent internal seam ([`Strategy §4.5`](2026-04-24-nebula-resource-redesign-strategy.md): "trace existing internal seams").
+
+| Item                          | Current line       | Visibility post-split | Notes                                                              |
+|-------------------------------|--------------------|-----------------------|--------------------------------------------------------------------|
+| `enum GateAdmission`          | (currently inline in [`manager.rs`](../../../crates/resource/src/manager.rs); line ~varies — check current source for exact range)  | `pub(crate)`          | Three-state admission enum (Open / Closed / Admitted)              |
+| `fn admit_through_gate`       | (currently inline)  | `pub(crate)`          | Recovery-gate consultation — early-`Err` if gate closed            |
+| `fn settle_gate_admission`    | (currently inline)  | `pub(crate)`          | Resolves ticket per result: `resolve` / `fail_transient` / `fail_permanent` |
+| `fn execute_with_resilience`  | (currently inline)  | `pub(crate)`          | Wraps `acquire` body with timeout/retry/circuit-breaker             |
+| `fn validate_pool_config`     | (currently inline)  | `pub(crate)`          | Pool-config validation — used by `register_pooled*`                 |
+| `fn wait_for_drain`           | already in `shutdown.rs` (§9.6) | -      | NOT in `gate.rs` — moved per §9.6 because semantically it is a shutdown helper, not a gate helper |
+
+**`wait_for_drain` placement.** CP2 §5.4 listed `wait_for_drain` in `manager/execute.rs`. CP3 §9 reconsiders: `wait_for_drain` consumes `drain_tracker` and is called only by `graceful_shutdown` — the natural co-location is `shutdown.rs`, not `execute.rs`. CP3 moves it to `shutdown.rs` (§9.6). This is a CP3 refinement of the CP2 cut, permissible per [§0.3 freeze policy](../specs/2026-04-24-nebula-resource-tech-spec.md) (function-arrangement is CP3 territory; CP2 locked file structure, not function placement).
+
+**File rename.** CP2 §5.4 named the file `execute.rs`; CP3 §9.7 renames to `gate.rs` per the contents. The dominant shape of the file is the gate-admission state machine plus the execute-wrapper; `gate.rs` reads more honestly. `execute_with_resilience` lives alongside the gate helpers because the wrapper consumes `gate_admission` directly.
+
+## §10 — Public API surface
+
+The crate-level export list. Resolves Strategy §5.4 (NoCredential convenience symmetry) — CP3 §10.2 commits to **dual helpers** (no-cred shortcut + credential-bearing variant) over a single unified `RegisterOptions`-only path.
+
+### §10.1 `lib.rs` re-exports
+
+The full re-export tree post-redesign. Compare to current [`crates/resource/src/lib.rs:58-111`](../../../crates/resource/src/lib.rs). Departures from current shape:
+
+- **`NoCredential` + `NoScheme` re-export added** (per §2.2 line 417). Imports from `nebula_credential`.
+- **`Resource::Auth` removed**; `Resource::Credential` and `Credential` trait re-exported from `nebula_credential` for ergonomic adapter authoring.
+- **`DaemonRuntime` / `EventSourceRuntime` re-exports REMOVED** per [ADR-0037](../adr/0037-daemon-eventsource-engine-fold.md) (extraction).
+- **`DaemonConfig` / `EventSourceConfig` REMOVED** (sibling extraction).
+- **`Daemon` / `RestartPolicy` / `EventSource` topology trait + types REMOVED** (sibling extraction).
+- **`RotationOutcome`, `RefreshOutcome`, `RevokeOutcome` ADDED** (§3.5).
+
+```rust
+// crates/resource/src/lib.rs (post-split, post-extraction).
+
+// Existing re-exports preserved verbatim:
+pub use cell::Cell;
+pub use context::ResourceContext;
+pub use error::{Error, ErrorKind, ErrorScope};
+pub use events::ResourceEvent;
+pub use ext::HasResourcesExt;
+pub use guard::ResourceGuard;
+pub use integration::{AcquireResilience, AcquireRetryConfig};
+pub use manager::{
+    DrainTimeoutPolicy, Manager, ManagerConfig, RegisterOptions, ResourceHealthSnapshot,
+    ShutdownConfig, ShutdownError, ShutdownReport,
+    // NEW per CP3 §9.5:
+    RotationOutcome, RefreshOutcome, RevokeOutcome,
+};
+pub use metrics::{ResourceOpsMetrics, ResourceOpsSnapshot};
+pub use nebula_core::{ExecutionId, ResourceKey, ScopeLevel, WorkflowId, resource_key};
+pub use nebula_resource_macros::{ClassifyError, Resource};
+pub use options::{AcquireIntent, AcquireOptions};
+pub use recovery::{
+    GateState, RecoveryGate, RecoveryGateConfig, RecoveryGroupKey, RecoveryGroupRegistry,
+    RecoveryTicket, RecoveryWaiter, WatchdogConfig, WatchdogHandle,
+};
+pub use registry::{AnyManagedResource, Registry};
+pub use release_queue::ReleaseQueue;
+pub use reload::ReloadOutcome;
+pub use resource::{
+    AnyResource, MetadataCompatibilityError, Resource, ResourceConfig, ResourceMetadata,
+};
+
+// NEW: NoCredential surface re-exported from nebula-credential
+// per CP1 §2.2 + Q1.
+pub use nebula_credential::{Credential, CredentialId, NoCredential, NoScheme};
+
+// Topology runtime — Daemon and EventSource removed per ADR-0037.
+pub use runtime::TopologyRuntime;
+pub use runtime::{
+    exclusive::ExclusiveRuntime,
+    managed::ManagedResource,
+    pool::{PoolRuntime, PoolStats},
+    resident::ResidentRuntime,
+    service::ServiceRuntime,
+    transport::TransportRuntime,
+};
+pub use state::{ResourcePhase, ResourceStatus};
+
+// Topology configurations — Daemon and EventSource removed per ADR-0037.
+pub use topology::{
+    exclusive::{Exclusive, config::Config as ExclusiveConfig},
+    pooled::{BrokenCheck, InstanceMetrics, Pooled, RecycleDecision, config::Config as PoolConfig},
+    resident::{Resident, config::Config as ResidentConfig},
+    service::{Service, TokenMode, config::Config as ServiceConfig},
+    transport::{Transport, config::Config as TransportConfig},
+};
+pub use topology_tag::TopologyTag;
+
+// Internal seam exposed for production test access — NOT for adapter consumers.
+#[doc(hidden)]
+pub use manager::ResourceDispatcher as __internal_ResourceDispatcher;
+```
+
+**Module list change.** [`lib.rs:38-56`](../../../crates/resource/src/lib.rs) `pub mod` declarations: `manager` continues to be a single module declaration (file becomes a directory `manager/` per §9), no top-level changes. `runtime::daemon` and `runtime::event_source` modules deleted; `topology::daemon` and `topology::event_source` modules deleted. Engine-side modules (per §12) house the moved code.
+
+### §10.2 `register_*` convenience methods — DUAL helpers (no-cred + credential-bearing)
+
+**Decision: dual helpers — `register_pooled` (NoCredential shortcut) + `register_pooled_with` (credential-bearing path via `RegisterOptions`).** Same pattern across all five topologies: 5 × 2 = 10 helpers.
+
+Strategy §5.4 framed the question as: "keep `Credential = NoCredential` shortcut, or require explicit `register_pooled::<R>(...)` with credential bound?" CP3 §10.2 commits to **keep the shortcut + add credential-bearing variant**, mirroring current `register_*` / `register_*_with` shape but with the no-cred bound made explicit.
+
+**Rationale (three reasons):**
+
+- **Migration parity.** Current 5 in-tree consumers all use `register_pooled` / `register_resident` etc. with `R::Auth = ()`. Atomic migration per [Strategy §4.8](2026-04-24-nebula-resource-redesign-strategy.md) means changing the `Auth = ()` bound to `Credential = NoCredential` and renaming nothing else. A unified `register_pooled_with(RegisterOptions)`-only API would force every consumer to construct a `RegisterOptions` explicitly even for the no-credential trivial case — that's added boilerplate for the 60% of registrations that are unauthenticated caches / connections to local services.
+- **DX symmetry with `acquire_*` / `acquire_*_default`.** §10.3 keeps the same pattern. Calling `register_pooled` without options means the matching `acquire_pooled_default` is also boilerplate-free. Forcing `RegisterOptions` everywhere desynchronises the acquire-side ergonomics.
+- **Type-bound compile-time enforcement.** `register_pooled<R: Pooled<Credential = NoCredential>>` enforces no-cred at compile time. A `RegisterOptions::credential_id == None` runtime check would not catch credential-bearing R registered with no id at compile time — only at the next `register_inner` call (which now `Err`s per §3.1, but the failure surfaces at registration-call site, not import-time).
+
+**Trade-off accepted.** 10 public methods on `Manager` instead of 5. Mitigated by: (a) the methods are mechanical thin wrappers — each is < 30 lines (current `register_pooled` at [`manager.rs:404-429`](../../../crates/resource/src/manager.rs) is 26 lines, post-rename stays at the same shape); (b) all 10 funnel through `register` + `register_inner` (§3.1) so the dispatch logic is single-sourced; (c) the doc comments form a clear pattern after the first one, so reading or maintaining the family is low-effort.
+
+**The 10 methods** (5 topologies × {no-cred, cred-bearing}):
+
+| Helper                            | Bound                                                              | Notes                                                              |
+|-----------------------------------|--------------------------------------------------------------------|--------------------------------------------------------------------|
+| `register_pooled<R>`              | `R: Pooled<Credential = NoCredential>`                             | Unchanged signature shape; bound updated from `Auth = ()` to `Credential = NoCredential` |
+| `register_pooled_with<R>`         | `R: Pooled` (any credential)                                       | Accepts `RegisterOptions` carrying `credential_id: Option<CredentialId>` |
+| `register_resident<R>`            | `R: Resident<Credential = NoCredential>`                           | Same                                                               |
+| `register_resident_with<R>`       | `R: Resident`                                                      | Same                                                               |
+| `register_service<R>`             | `R: Service<Credential = NoCredential>`                            | Same                                                               |
+| `register_service_with<R>`        | `R: Service`                                                       | Same                                                               |
+| `register_transport<R>`           | `R: Transport<Credential = NoCredential>`                          | Same                                                               |
+| `register_transport_with<R>`      | `R: Transport`                                                     | Same                                                               |
+| `register_exclusive<R>`           | `R: Exclusive<Credential = NoCredential>`                          | Same                                                               |
+| `register_exclusive_with<R>`      | `R: Exclusive`                                                     | Same                                                               |
+
+`register<R: Resource>` (the type-erased low-level method at [`manager.rs:347`](../../../crates/resource/src/manager.rs)) is preserved for callers that need to register a non-topology-specialised resource — it accepts `TopologyRuntime<R>` directly. Both no-cred and credential-bearing R can use it. The 10 dual helpers above are convenience over `register`.
+
+**Total `register*` public surface = 11 methods** on `Manager`: the 10 topology-specialised helpers in the table above, plus the 1 low-level type-erased `register<R: Resource>`. The trade-off accounting earlier in this section ("10 public methods on `Manager` instead of 5") frames the dual-helper *delta* against a hypothetical unified-`RegisterOptions` baseline; the absolute count including the type-erased `register` is 11.
+
+### §10.3 `acquire_*` paths — same dual pattern
+
+Mirroring §10.2: 5 topologies × 4 variants = 20 acquire methods (with `try_*` only on Pool per current shape). Bound update mirrors §10.2:
+
+| Pattern                                        | Bound after redesign                                | Replaces                                                       |
+|------------------------------------------------|-----------------------------------------------------|----------------------------------------------------------------|
+| `acquire_{topology}<R>(credential, ctx, opt)`  | `R: {Topology}` (any credential)                    | `auth: &R::Auth` → `credential: &<R::Credential as Credential>::Scheme` |
+| `acquire_{topology}_default<R>(ctx, opt)`      | `R: {Topology}<Credential = NoCredential>`          | `where R::Auth = ()` → `where R::Credential = NoCredential`    |
+| `try_acquire_pooled<R>(...)`                   | `R: Pooled` (any credential)                        | Same parameter rename                                          |
+| `try_acquire_pooled_default<R>(...)`           | `R: Pooled<Credential = NoCredential>`              | Same                                                           |
+
+`acquire_pooled_default` etc. delegate to the credential-bearing variant by passing `&NoScheme` literally:
+
+```rust
+pub async fn acquire_pooled_default<R>(
+    &self,
+    ctx: &ResourceContext,
+    options: &AcquireOptions,
+) -> Result<ResourceGuard<R>, Error>
+where
+    R: Pooled<Credential = NoCredential>,
+    // ... other existing bounds ...
+{
+    self.acquire_pooled::<R>(&NoScheme, ctx, options).await
+}
+```
+
+`NoScheme` is a zero-sized type per §2.2 line 351; passing `&NoScheme` is a single-byte reference with no runtime cost.
+
+### §10.4 `RegisterOptions` final shape
+
+Per CP1 §2.5 Q4 + CP3 §10.2 commit. Adds `credential_id: Option<CredentialId>` (read by `register_inner` per §3.1) and `credential_rotation_timeout: Option<Duration>` (per-resource override per §3.3).
+
+```rust
+// crates/resource/src/manager/options.rs (post-§9.2 split).
+
+#[derive(Debug, Clone)]
+#[non_exhaustive]
+pub struct RegisterOptions {
+    pub scope: ScopeLevel,
+    pub resilience: Option<AcquireResilience>,
+    pub recovery_gate: Option<Arc<RecoveryGate>>,
+    /// Credential binding for this registration.
+    ///
+    /// REQUIRED when `R::Credential != NoCredential`. When `Some(id)`,
+    /// `Manager` populates the credential reverse-index per §3.1 and the
+    /// resource will receive `on_credential_refresh` / `on_credential_revoke`
+    /// dispatches when the credential rotates or is revoked.
+    ///
+    /// Ignored (with `tracing::warn!`) when `R::Credential = NoCredential`.
+    pub credential_id: Option<CredentialId>,
+    /// Per-resource rotation-dispatch budget.
+    ///
+    /// `None` falls back to `ManagerConfig::credential_rotation_timeout`
+    /// (default 30s). Override only when this resource has non-uniform
+    /// rotation latency (e.g., remote pool with high handshake cost).
+    pub credential_rotation_timeout: Option<Duration>,
+}
+
+impl Default for RegisterOptions { /* fields default to None / Global / etc. */ }
+
+impl RegisterOptions {
+    #[must_use]
+    pub fn with_credential_id(mut self, id: CredentialId) -> Self {
+        self.credential_id = Some(id);
+        self
+    }
+
+    #[must_use]
+    pub fn with_credential_rotation_timeout(mut self, timeout: Duration) -> Self {
+        self.credential_rotation_timeout = Some(timeout);
+        self
+    }
+
+    #[must_use]
+    pub fn with_scope(mut self, scope: ScopeLevel) -> Self {
+        self.scope = scope;
+        self
+    }
+
+    #[must_use]
+    pub fn with_resilience(mut self, resilience: AcquireResilience) -> Self {
+        self.resilience = Some(resilience);
+        self
+    }
+
+    #[must_use]
+    pub fn with_recovery_gate(mut self, gate: Arc<RecoveryGate>) -> Self {
+        self.recovery_gate = Some(gate);
+        self
+    }
+}
+```
+
+**`#[non_exhaustive]` discipline.** Prevents external callers from struct-literal construction; forces builder-pattern ergonomics. Future additions (e.g., `tainting_policy` if the §5.6 SL-1 gates clear) land as new builder methods, not breaking struct-literal patterns.
+
+**No `tainting_policy` field in CP3 — see §10.5.**
+
+### §10.5 `RegisterOptions::tainting_policy` — DEFERRED to post-CP3 (SL-1 gates not cleared)
+
+**Decision: defer. `tainting_policy` does NOT enter the CP3 `RegisterOptions` surface.**
+
+CP2 §5.6 (line 1320) recorded two gates required before `tainting_policy` knob ships: (1) a real in-tree consumer surfaces the multi-tenant exception (synthetic tests do not qualify); (2) a security-review hook in the surface review wave introducing it. CP3 §10 surface review confirms **neither gate has cleared**:
+
+- **Gate 1 — real consumer.** The 5 in-tree consumers (`nebula-action`, `nebula-sdk`, `nebula-engine`, `nebula-plugin`, `nebula-sandbox`) all bind one credential per resource registration. None has a multi-tenant pool sharing one resource across many credentials. Phase 1 enumeration found no such pattern; Phase 4 spike did not surface one; CP1-CP2 review surfaced no consumer either. The §5.3 line 1252 trade-off — "zero in-tree consumers fit the multi-tenant exception today" — is still accurate at CP3.
+- **Gate 2 — security-review hook.** No security-review hook is currently scheduled for the CP3 surface review wave. Adding `tainting_policy` would necessitate threading a security-review pass into the CP3 → migration PR landing path; CP3 ratification cadence does not include a fresh security-review touch (security-lead's work on this redesign closed at CP2 ratification per the [convergent-review pattern](../../../.claude/agent-memory-local/architect/feedback_convergent_review_edits.md)).
+
+**Trade-off accepted.** Unconditional tainting per §5.3 option (b) remains the secure default. A future consumer that surfaces the multi-tenant exception triggers gate 1; a follow-up cascade re-engages security-review (gate 2) and lands `tainting_policy` as an additive `RegisterOptions` field via the `#[non_exhaustive]` builder pattern. Current consumers do not pay the cost of the un-needed knob; future consumers gain it without re-litigating §5.3.
+
+**No premature knob.** Per `feedback_no_shims.md` discipline + §5.6 deferral commitment, CP3 ships unconditional tainting only. The `RegisterOptions` shape in §10.4 has no `tainting_policy` field.
+
+## §11 — Adapter authoring contract
+
+This section is the **content spec** for `crates/resource/docs/adapters.md` rewrite. The current doc ([`crates/resource/docs/adapters.md`](../../../crates/resource/docs/adapters.md)) fabricates `Resource::Auth = ()` (line 204) under a trait that no longer has `Auth`, references nonexistent adapter crates `nebula-resource-postgres` / `nebula-resource-redis`, and ships compile-failing examples (per [Phase 1 finding 🔴-3](../drafts/2026-04-24-nebula-resource-redesign/02-pain-enumeration.md), 50% fabrication rate). CP3 §11 specifies the rewrite content; the actual file rewrite is a Phase 8 deliverable (or implementation-PR scope).
+
+### §11.1 Required imports
+
+The minimum import set for an adapter crate. Listed by layer; comments explain *why* each is needed.
+
+```rust
+// Core trait + associated types.
+use nebula_resource::{
+    Resource, ResourceConfig, ResourceMetadata,    // trait + supporting types
+    Error, ErrorKind,                              // unified error
+    ResourceContext,                               // execution context (cancel, scope, accessor)
+    ResourceKey, resource_key,                     // canonical key declaration
+    AcquireOptions, RegisterOptions,               // call-site options (acquire / register)
+    PoolConfig,                                    // Pool-topology config (used in §11.7 tests)
+};
+
+// Credential surface — REQUIRED. Either bind a real credential or opt out.
+use nebula_credential::{Credential, NoCredential, NoScheme};
+//                       ^^^^^^^^^^  ^^^^^^^^^^^^  ^^^^^^^^
+//                       trait         opt-out      zero-sized scheme
+
+// Schema declaration — required by `ResourceConfig`.
+use nebula_schema::HasSchema;
+
+// Topology trait — pick ONE per adapter.
+use nebula_resource::Pooled;       // most database adapters
+// OR Resident, Service, Transport, Exclusive (mutually exclusive).
+```
+
+**Imports referenced downstream.** `RegisterOptions` is consumed by `register_*_with` helpers (§10.2) when binding a credential at registration; `PoolConfig` is the Pool-topology configuration type (§11.7 integration tests use both). `NoScheme` is explicitly named in `&Self::Credential as Credential>::Scheme` projections (§11.2 line 2015, §11.4 line 2068) — keep imported even though Manager constructs it. `AcquireOptions` is used by every `acquire_*` call site (§11.7 line 2203).
+
+**`NoCredential` location.** Imported from `nebula_credential` (per CP1 §2.5 Q1). `nebula_resource` re-exports for ergonomics (`pub use nebula_credential::{NoCredential, NoScheme};` per §10.1) — `use nebula_resource::NoCredential` also works. Authors writing adapter crates should import from `nebula_credential` directly (the canonical home); reasons: future adapter crates may not depend transitively on `nebula_resource` (e.g., a `nebula-credential-action` for engine-side credential injection), and importing from the type's home crate is clearer.
+
+**No fabricated imports.** Current doc imports nonexistent items like `nebula_resource_postgres` (line 320) — DELETED in rewrite. The doc-rewrite acceptance gate is `cargo doc --all --no-deps` clean and `cargo test --doc` green for any non-`ignore` blocks.
+
+### §11.2 Minimum `Resource` impl shape
+
+Illustrative walkthrough using a `MockPostgresPool` adapter (an in-tree mock; no third-party driver dependency). The shape below is the structural skeleton — types, signatures, and the five "things to note" anchors. Some method bodies are abbreviated as `/* ... */` for narrative density (full bodies for `MockKvStore` and `MockHttpClient` mocks live in [`spike/.../resource-shape-test/src/lib.rs:125-200`](../drafts/2026-04-24-nebula-resource-redesign/spike/crates/resource-shape-test/src/lib.rs) — those lines compile against trunk after the redesign and serve as the canonical compile-checked reference for adapter authors). The doc-rewrite acceptance gate (per §11.1) is `cargo test --doc` green for any non-`ignore` blocks; this block is annotated `rust,ignore` if rendered as a doc-test, since the placeholder bodies and the omitted `Pooled` impl are not directly compilable.
+
+```rust,ignore
+use nebula_credential::{Credential, NoCredential};
+use nebula_resource::{
+    Error, Resource, ResourceConfig, ResourceContext, ResourceKey,
+    ResourceMetadata, resource_key,
+};
+use nebula_schema::HasSchema;
+
+#[derive(Debug, Clone)]
+pub struct MockPostgresConfig {
+    pub host: String,
+    pub max_size: u32,
+}
+
+impl HasSchema for MockPostgresConfig { /* schema derivation — see §11.1 */ }
+impl ResourceConfig for MockPostgresConfig { /* validate / defaults */ }
+
+#[derive(Debug, Clone)]
+pub struct MockPostgresConnection { /* internal connection state */ }
+
+#[derive(Debug, thiserror::Error)]
+pub enum MockPostgresError {
+    #[error("connection failed: {0}")]
+    Connect(String),
+}
+
+impl From<MockPostgresError> for Error {
+    fn from(e: MockPostgresError) -> Self { Error::transient(e.to_string()) }
+}
+
+pub struct MockPostgresPool;
+
+impl Resource for MockPostgresPool {
+    type Config = MockPostgresConfig;
+    type Runtime = MockPostgresConnection;
+    type Lease = MockPostgresConnection;
+    type Error = MockPostgresError;
+    // OPT-OUT — this adapter does not bind a credential.
+    type Credential = NoCredential;
+
+    fn key() -> ResourceKey {
+        resource_key!("mock-postgres")
+    }
+
+    async fn create(
+        &self,
+        config: &Self::Config,
+        _scheme: &<Self::Credential as Credential>::Scheme, // = &NoScheme
+        _ctx: &ResourceContext,
+    ) -> Result<Self::Runtime, Self::Error> {
+        Ok(MockPostgresConnection { /* construct from `config.host`, `config.max_size` */ })
+    }
+
+    fn metadata() -> ResourceMetadata {
+        ResourceMetadata::from_key(&Self::key())
+    }
+}
+
+// REQUIRED for Pool topology — adapter must also implement `Pooled` per §11.3.
+// Not shown here; see [`spike/.../resource-shape-test/src/lib.rs:200+`](spike).
+impl Pooled for MockPostgresPool { /* recycle / broken_check / ... */ }
+```
+
+**Five things to note.**
+
+- **`type Credential` instead of `type Auth`.** The redesign replaces `Auth: AuthScheme` with `Credential: Credential` per [ADR-0036](../adr/0036-resource-credential-adoption-auth-retirement.md).
+- **`scheme: &<Self::Credential as Credential>::Scheme` parameter.** The projected scheme — for `NoCredential`, it's `&NoScheme`. Always passed by reference; never owned (per [Strategy §4.3](2026-04-24-nebula-resource-redesign-strategy.md) hot-path borrow invariant).
+- **No `R::Auth::default()` calls anywhere.** The `Auth: Default` bound is gone (per §5.2 line 1204). `NoScheme` IS `Default` (because `NoScheme` derives `Default` — see [`nebula_credential/src/no_credential.rs`](../../../crates/credential/src/no_credential.rs)), but adapters never construct it manually; Manager passes `&NoScheme` automatically through `acquire_pooled_default`.
+- **`async fn` on impl side.** Per CP1 §2.1.1: trait declaration uses `impl Future<…> + Send` (RPITIT), but impl sites use `async fn` per clippy `manual_async_fn` lint default at 1.95+.
+- **Default no-op rotation hooks.** `on_credential_refresh` + `on_credential_revoke` not overridden. Default body returns `Ok(())` per §2.1 line 197-198. For `NoCredential` resources, these dispatchers never fire (Manager skips reverse-index write per §3.1 line 638).
+
+### §11.3 Topology selection guide
+
+Five topologies remain post-extraction. Daemon and EventSource are no longer in `nebula-resource` per [ADR-0037](../adr/0037-daemon-eventsource-engine-fold.md).
+
+| Topology    | Shape                          | When to use                                                                 |
+|-------------|--------------------------------|-----------------------------------------------------------------------------|
+| `Pooled`    | N instances, checkout-on-acquire | Stateful connections (Postgres, Redis, gRPC channels). Most common choice. |
+| `Resident`  | 1 instance, cloned on acquire  | Stateless / internally-pooled clients (`reqwest::Client`, AWS SDK, `tonic` channel). |
+| `Service`   | 1 instance, token-mediated     | Token-bucket / rate-limited services where each acquire mints a fresh token. |
+| `Transport` | 1 instance, session-mediated   | Transport-layer protocols (gRPC streaming, WebSocket, MQTT) where `open_session` returns a new logical session per acquire. |
+| `Exclusive` | 1 instance, owned guard        | Resources with mutex semantics (file handles, single-writer DB connections). |
+
+**If you previously used Daemon or EventSource**, see §12 — those topologies migrate to engine-side primitives (`DaemonRegistry` and `TriggerAction`-via-adapter).
+
+**Common selection mistakes.**
+
+- **Picking `Resident` for a single-connection stateful client.** If the client is genuinely single-connection and stateful (not internally pooled), `Exclusive` provides better mutual-exclusion semantics than `Resident`.
+- **Picking `Pooled` for stateless HTTP.** `reqwest::Client` is internally pooled — wrapping it in `Pooled` adds redundant pool layers. Use `Resident`.
+- **Picking `Service` for connection pools.** `Service` is for token-vending services (rate-limit semaphores), not connection-vending pools. `Pooled` is the right shape for "give me a connection, take it back when I'm done."
+
+### §11.4 `type Credential = NoCredential;` opt-out walkthrough
+
+For unauthenticated resources (caches, local services, in-memory stores):
+
+```rust
+use nebula_credential::{Credential, NoCredential, NoScheme};
+
+impl Resource for InMemoryCache {
+    type Credential = NoCredential;
+
+    async fn create(
+        &self,
+        config: &Self::Config,
+        _scheme: &NoScheme,                    // <Self::Credential as Credential>::Scheme = NoScheme
+        _ctx: &ResourceContext,
+    ) -> Result<Self::Runtime, Self::Error> {
+        Ok(InMemoryCacheRuntime::new(config))
+    }
+}
+```
+
+**Three guarantees of `NoCredential` opt-out.**
+
+- **Manager skips reverse-index write at register.** Per §3.1 line 627-636: `register_inner` checks `TypeId::of::<R::Credential>() == TypeId::of::<NoCredential>()` and short-circuits. The resource will never receive `on_credential_refresh` / `on_credential_revoke` dispatches.
+- **Compile-time enforcement.** `register_pooled<R: Pooled<Credential = NoCredential>>` rejects credential-bearing R at compile time; `register_pooled_with` accepts any credential. The wrong-method choice is caught by the bound, not by a runtime check.
+- **Zero overhead.** `NoScheme` is a zero-sized type ([`nebula_credential/src/no_credential.rs:351`](../../../crates/credential/src/no_credential.rs)). Passing `&NoScheme` is a single-byte reference. The default `on_credential_refresh` / `on_credential_revoke` bodies are no-op and never reached.
+
+**Common mistake.** Some authors write `type Credential = ();` (the unit type) by analogy with the old `type Auth = ();`. This does NOT compile — `()` does not implement `nebula_credential::Credential`. The compiler error names the missing trait bound; the §11.5 walkthrough makes this explicit. Compile-fail probe `_no_credential_scheme_is_inert_must_fail` (§7.5) carries this constraint forward.
+
+### §11.5 Credential-bearing adapter walkthrough
+
+A `RealPostgresPool` adapter that binds a real `Credential` (e.g., `PostgresCredential` from a hypothetical `nebula-credential-postgres` crate). Demonstrates the `<Self::Credential as Credential>::Scheme` projection.
+
+```rust,ignore
+// `nebula_credential_postgres`, `PostgresCredential`, `PostgresConnectionScheme`,
+// `deadpool_postgres`, and `build_deadpool_from_dsn` are HYPOTHETICAL — no such
+// adapter crate exists in the workspace today. The block below is a structural
+// walkthrough of how the credential-bearing trait shape composes; it does not
+// compile against trunk and is annotated `ignore` for that reason.
+
+use nebula_credential::Credential;
+use nebula_credential_postgres::{PostgresCredential, PostgresConnectionScheme};
+use nebula_resource::{Error, Resource, ResourceConfig, ResourceContext, ResourceKey,
+                       resource_key};
+
+pub struct RealPostgresPool {
+    inner: Arc<tokio::sync::RwLock<deadpool_postgres::Pool>>,
+}
+
+impl Resource for RealPostgresPool {
+    type Config = PostgresConfig;
+    type Runtime = deadpool_postgres::Object;
+    type Lease = deadpool_postgres::Object;
+    type Error = PostgresError;
+    // CREDENTIAL-BOUND.
+    type Credential = PostgresCredential;
+
+    fn key() -> ResourceKey {
+        resource_key!("postgres-real")
+    }
+
+    async fn create(
+        &self,
+        config: &Self::Config,
+        scheme: &PostgresConnectionScheme,    // <PostgresCredential as Credential>::Scheme
+        _ctx: &ResourceContext,
+    ) -> Result<Self::Runtime, Self::Error> {
+        // Pull what is needed from the scheme. Do NOT clone the scheme onto self.
+        let dsn = format!("postgresql://{}:{}@{}/{}",
+            scheme.username(), scheme.password_redacted_str(), config.host, config.database);
+        let pool = build_deadpool_from_dsn(&dsn).await?;
+        let conn = pool.get().await?;
+        Ok(conn)
+    }
+}
+```
+
+**Four invariants surfaced by this walkthrough** (per [Strategy §4.3](2026-04-24-nebula-resource-redesign-strategy.md) + [security review constraint #2](../drafts/2026-04-24-nebula-resource-redesign/phase-2-security-lead-review.md)):
+
+- **Borrow, do not clone.** `scheme: &PostgresConnectionScheme` is borrowed from the credential resolver. The impl pulls what it needs (DSN components) inside the await window; no `scheme.clone()` ever runs. Each clone is a zeroize obligation per [`PRODUCT_CANON.md §12.5`](../PRODUCT_CANON.md).
+- **No `Scheme::default()` in `create`.** Manager always supplies the resolved scheme; if the dispatcher fires, the scheme is real. Adapter never falls back to a default — there is no path where `create` runs with a stub scheme.
+- **Manager NEVER holds the scheme.** The scheme reference lives on the dispatcher's stack only during `dispatch_refresh` / `create` execution. After the future resolves, the scheme reference is dropped; only the resource-side runtime (e.g., `RealPostgresPool::inner`) retains state, and that state is built from the scheme's contents (DSN, derived secrets) — not the scheme itself.
+- **Pool swap on rotation.** §11.6 walkthrough.
+
+### §11.6 `on_credential_refresh` / `on_credential_revoked` overrides — blue-green swap example
+
+The canonical override pattern from [credential Tech Spec §3.6 lines 981-993](2026-04-24-credential-tech-spec.md), reproduced for the `RealPostgresPool` from §11.5.
+
+```rust,ignore
+// Continues the hypothetical `RealPostgresPool` from §11.5; same `ignore`
+// rationale (no `nebula_credential_postgres` crate in trunk).
+
+impl Resource for RealPostgresPool {
+    // ... (associated types + create as in §11.5) ...
+
+    async fn on_credential_refresh(
+        &self,
+        new_scheme: &PostgresConnectionScheme,
+    ) -> Result<(), Self::Error> {
+        // Build the new pool OUTSIDE the lock — `build_pool_from_scheme` is async
+        // and may take seconds (handshake, DNS, SSL). The Manager dispatches with
+        // a budget (default 30s; per-resource override via RegisterOptions per §3.3).
+        // SL-3 budget guidance: target ≤ 60% of dispatch timeout, leaving headroom
+        // for swap installation + old-pool drop.
+        let new_pool = build_pool_from_scheme(new_scheme).await?;
+
+        // Acquire write lock, swap, release.
+        let mut guard = self.inner.write().await;
+        *guard = new_pool;
+        // Old pool's RAII guards drain naturally as outstanding queries finish.
+        Ok(())
+    }
+
+    async fn on_credential_revoke(
+        &self,
+        _credential_id: &nebula_credential::CredentialId,
+    ) -> Result<(), Self::Error> {
+        // Override to taint outstanding handles + destroy pool synchronously.
+        // Manager will ALSO flip the per-resource `credential_revoked` atomic
+        // post-dispatch (per §5.3 option (b)) — your override augments, not replaces.
+        let mut guard = self.inner.write().await;
+        // Drop all idle connections; outstanding handles complete on their RAII drop.
+        guard.close_idle().await;
+        Ok(())
+    }
+}
+```
+
+**Three things to note about override semantics.**
+
+- **Override augments, never replaces, Manager's enforcement.** Per §5.3 line 1227: "override is additive, not corrective." Your override does resource-specific cleanup (drain idle connections, log, etc.); Manager handles the invariant-enforcement layer (atomic taint flip). You do NOT need to flip `credential_revoked` yourself.
+- **Idempotency.** Per §2.3 line 432: "Manager MAY retry under specific recovery flows." Pool-swap is naturally idempotent — re-publishing the same pool is a no-op.
+- **Budget.** Per §5.1 SL-3: target your `build_pool_from_scheme` to complete in ≤ 60% of the dispatch budget (default 18s under the 30s default). `nebula_resource.credential_rotation_dispatch_latency_seconds` histogram (§6.2) monitors per-resource latency.
+
+### §11.7 Testing your adapter
+
+Three test layers. Compile-fail probes are crate-side (you do not write them); integration tests are adapter-side.
+
+**1. Compile-fail probes (covered by `nebula-resource` itself).** §7.5 enumerates four trait-shape probes that prevent: wrong-signature `on_credential_refresh`, wrong-signature `on_credential_revoke`, `NoScheme` masquerading as a real scheme, non-`Credential` types in the bound. You inherit these — your adapter does not need its own.
+
+**2. Integration tests (`tests/integration.rs`).** Standard pattern:
+
+```rust
+use nebula_core::ExecutionId;
+use nebula_resource::{Manager, ResourceContext, AcquireOptions, PoolConfig};
+
+#[tokio::test]
+async fn register_and_acquire() {
+    let manager = Manager::new();
+    manager.register_pooled(
+        MockPostgresPool,                  // R: Pooled<Credential = NoCredential>
+        MockPostgresConfig::default(),
+        PoolConfig::default(),
+    ).expect("valid config registers");
+
+    let ctx = ResourceContext::new(ExecutionId::new());
+    let handle = manager
+        .acquire_pooled_default::<MockPostgresPool>(&ctx, &AcquireOptions::default())
+        .await
+        .expect("acquire succeeds after register");
+
+    assert_eq!(handle.topology_tag(), nebula_resource::TopologyTag::Pool);
+}
+```
+
+For credential-bearing adapters, mock the credential resolver via `ResourceContext::with_credential_accessor(...)`; integration tests do NOT require a live credential store. CP3 §12 (in `tests/basic_integration.rs`) demonstrates the pattern.
+
+**3. Rotation tests (credential-bearing adapters only).** Per §7.4: register your adapter with `Manager::register_pooled_with(R, config, opts.with_credential_id(cred_id))`, fire `manager.on_credential_refreshed(&cred_id, &new_scheme)`, assert your `on_credential_refresh` ran. Existing pattern in spike `parallel_dispatch_isolates_per_resource_errors` ([`spike/.../resource-shape-test/src/lib.rs:537-578`](../drafts/2026-04-24-nebula-resource-redesign/spike/crates/resource-shape-test/src/lib.rs)) — carries forward to production tests.
+
+### §11.8 Common pitfalls
+
+- **Calling `Scheme::default()` inside `create`.** Don't. Manager always passes the resolved scheme; falling back to a default re-introduces the silent-empty-credential bug (Phase 1 🟡-17). The `Auth: Default` bound is gone; the type system already prevents this.
+- **Cloning the scheme onto `self` or `Runtime`.** Don't. The scheme reference is borrowed for the lifetime of `create` / `on_credential_refresh`. Pull derived data (DSN string, token bytes) and let the borrow end.
+- **Sharing pool state across credentials in multi-tenant scenarios.** If you implement `on_credential_revoke`, your default override semantics (Manager's unconditional taint flip per §5.3) terminate ALL traffic on this resource. If your adapter wants per-credential tenant isolation, see §10.5 — `RegisterOptions::tainting_policy` is deferred and not currently available.
+- **Implementing `Daemon` or `EventSource` in your adapter.** These topologies have moved to the engine layer per [ADR-0037](../adr/0037-daemon-eventsource-engine-fold.md). See §12 for the engine-side landing.
+- **Forgetting `#[derive(Clone)]` on the resource struct.** `Manager::register*` requires `R: Clone + Send + Sync + 'static` for the topology variants that store the resource value (Pool, Service, Transport, Exclusive). `Resident` does not require `Clone` on R itself but does on `R::Lease`.
+- **Returning `Err(Self::Error)` with the wrong `ErrorKind`.** Map driver errors to `Transient` (will retry), `Permanent` (give up), or `Exhausted` (rate limit). Use `ClassifyError` derive for ergonomic mapping.
+
+## §12 — Daemon / EventSource extraction landing site
+
+[ADR-0037 amended-in-place gate text](../adr/0037-daemon-eventsource-engine-fold.md) commits to engine-fold; CP3 §12 specifies the landing site. The engine-side implementation is a separate work item (engine team coordination); CP3 §12 is the *contract* the implementation honours.
+
+### §12.1 Engine module path
+
+**Decision: `crates/engine/src/daemon/`** — a new top-level engine module dedicated to long-running worker primitives. EventSource lands as `crates/engine/src/daemon/event_source.rs` (the module that adapts EventSource → existing TriggerAction substrate).
+
+Two alternatives considered:
+
+- **`crates/engine/src/runtime/daemon/`.** Sub-module of an existing `runtime` directory. **Rejected** — engine's existing `runtime` directory ([`crates/engine/src/runtime/`](../../../crates/engine/src/runtime/)) already houses execution-runtime shapes (handlers, dispatchers); Daemon is *long-running* state, not *execution-runtime* state. The conceptual seam is different. Co-locating would dilute the runtime module's purpose.
+- **`crates/engine/src/scheduler/`.** Anticipating the future-cascade `nebula-scheduler` extraction (per [Strategy §6.5](2026-04-24-nebula-resource-redesign-strategy.md) future-cascade trigger). **Rejected** — pre-naming a module after a future crate that may never extract is speculative. `daemon/` is honest about today's contents; if the future cascade fires, the rename to `scheduler` is a single-PR mechanical rename per `feedback_no_shims.md` (no shim, no compat alias).
+
+`crates/engine/src/daemon/` is the chosen path.
+
+### §12.2 `DaemonRegistry` primitive
+
+The engine-side equivalent of `nebula-resource::Manager`, scoped to long-running worker lifecycles. Manages `Daemon` impl lifecycle (start, stop, restart per `RestartPolicy`).
+
+```rust
+// crates/engine/src/daemon/registry.rs (NEW).
+
+pub struct DaemonRegistry {
+    daemons: dashmap::DashMap<DaemonKey, Arc<dyn AnyDaemonHandle>>,
+    cancel: CancellationToken,
+    event_tx: broadcast::Sender<DaemonEvent>,
+}
+
+impl DaemonRegistry {
+    pub fn new() -> Self { /* ... */ }
+
+    pub fn register<D: Daemon>(
+        &self,
+        daemon: D,
+        config: D::Config,
+        restart_policy: RestartPolicy,
+    ) -> Result<(), DaemonError> { /* ... */ }
+
+    pub async fn start_all(&self) -> Result<(), DaemonError> { /* ... */ }
+
+    pub async fn stop_all(&self) -> Result<(), DaemonError> { /* ... */ }
+}
+```
+
+**Source migration.** [`crates/resource/src/runtime/daemon.rs`](../../../crates/resource/src/runtime/daemon.rs) (493 LOC) and [`crates/resource/src/topology/daemon/`](../../../crates/resource/src/topology/daemon/) (`Daemon` trait + `RestartPolicy` enum + `DaemonConfig`) move to `crates/engine/src/daemon/`. Type-name preservation: `Daemon` trait stays `Daemon`; `RestartPolicy` stays `RestartPolicy`; `DaemonConfig` stays `DaemonConfig`. **Re-import path changes**: every consumer that wrote `use nebula_resource::Daemon;` rewrites to `use nebula_engine::Daemon;`.
+
+`DaemonRegistry` is engine-internal — engine bootstrap (or applications using engine) constructs and consults it. Action and resource code does not touch `DaemonRegistry` directly.
+
+### §12.3 EventSource → TriggerAction adapter signature
+
+EventSource lands as a thin adapter onto engine's existing `TriggerAction` substrate ([`PRODUCT_CANON.md §3.5 line 82`](../PRODUCT_CANON.md), [`INTEGRATION_MODEL.md:99`](../INTEGRATION_MODEL.md)).
+
+```rust
+// crates/engine/src/daemon/event_source.rs (NEW).
+
+/// Adapter that wraps an EventSource impl as a TriggerAction.
+pub struct EventSourceAdapter<E: EventSource> {
+    source: E,
+    config: E::Config,
+}
+
+impl<E: EventSource> TriggerAction for EventSourceAdapter<E> {
+    type TriggerEvent = E::Event;
+
+    async fn subscribe(&self, ctx: &ActionContext) -> Result<EventStream<Self::TriggerEvent>, Error> {
+        // Delegates to E::subscribe, converts E::Event into TriggerAction event stream.
+        self.source.subscribe(ctx).await.map(|s| s.into())
+    }
+}
+```
+
+**Source migration.** [`crates/resource/src/runtime/event_source.rs`](../../../crates/resource/src/runtime/event_source.rs) (75 LOC) + [`crates/resource/src/topology/event_source/`](../../../crates/resource/src/topology/event_source/) (`EventSource` trait + `EventSourceConfig`) move to `crates/engine/src/daemon/event_source.rs`. The adapter shape (above) is new — engine's `TriggerAction` substrate already handles event streaming, so EventSource becomes an *adapter*, not a re-implementation.
+
+**Re-import paths.** `use nebula_resource::EventSource;` → `use nebula_engine::EventSource;`. Same for `EventSourceConfig`.
+
+### §12.4 Per-consumer migration steps
+
+Five in-tree consumers; each touches Daemon / EventSource differently. Migration is mechanical per [Strategy §4.8](2026-04-24-nebula-resource-redesign-strategy.md) atomic-PR-wave.
+
+| Consumer            | Daemon usage                          | EventSource usage                        | Migration steps                                         |
+|---------------------|----------------------------------------|------------------------------------------|---------------------------------------------------------|
+| `crates/action/`    | None (verified — no `Daemon` import)   | None                                     | No-op. `nebula_resource` import for `Resource` only.    |
+| `crates/sdk/`       | None (verified)                        | None                                     | No-op.                                                  |
+| `crates/engine/`    | Self — engine becomes the *home* of `Daemon` + `EventSource` (§12.1-§12.3) | Same | Implementation work — see §12.1-§12.3 above. NEW module. |
+| `crates/plugin/`    | None (verified)                        | None                                     | No-op.                                                  |
+| `crates/sandbox/`   | None (verified)                        | None                                     | No-op.                                                  |
+
+**Verification methodology.** `rg "Daemon|EventSource" crates/{action,sdk,plugin,sandbox}/src/` returns zero hits at CP3 draft time. Phase 1 evidence already established this (zero `Manager`-level Daemon/EventSource tests across consumers per [ADR-0037 Status section](../adr/0037-daemon-eventsource-engine-fold.md)).
+
+**Implementation-time verification.** Migration PR re-runs the rg query before merge; if any consumer surfaces a Daemon/EventSource use during the migration wave, that consumer is added to the migration steps with the corresponding rewrite pattern.
+
+### §12.5 `TopologyRuntime<R>` enum shrink (7 → 5)
+
+Mechanical change. [`crates/resource/src/runtime/managed.rs:35`](../../../crates/resource/src/runtime/managed.rs) currently:
+
+```rust
+pub(crate) enum TopologyRuntime<R: Resource> {
+    Pool(PoolRuntime<R>),
+    Resident(ResidentRuntime<R>),
+    Service(ServiceRuntime<R>),
+    Transport(TransportRuntime<R>),
+    Exclusive(ExclusiveRuntime<R>),
+    Daemon(DaemonRuntime<R>),         // REMOVED
+    EventSource(EventSourceRuntime<R>), // REMOVED
+}
+```
+
+Post-extraction:
+
+```rust
+pub(crate) enum TopologyRuntime<R: Resource> {
+    Pool(PoolRuntime<R>),
+    Resident(ResidentRuntime<R>),
+    Service(ServiceRuntime<R>),
+    Transport(TransportRuntime<R>),
+    Exclusive(ExclusiveRuntime<R>),
+}
+```
+
+**Match-arm sweep.** Every `match topology { ... }` site in `nebula_resource` removes the two arms. Current sites (rg `match.*topology` baseline): registration, dispatch, shutdown, `acquire_*` paths. The removal is mechanical — `cargo check` after the sibling enum-variant deletion surfaces every site.
+
+**`reload_config` daemon special-case** at [`manager.rs:1346`](../../../crates/resource/src/manager.rs) (`TopologyRuntime::Daemon(_) => ReloadOutcome::Restarting`) is removed alongside the variant. `ReloadOutcome::Restarting` enum variant remains (engine-side daemons may still surface it via their own reload path); `nebula-resource`'s `reload_config` no longer emits it.
+
+## §13 — Evolution policy
+
+How the redesigned crate handles future change. Compact subsections; this is policy, not specification.
+
+### §13.1 Versioning posture
+
+**Pre-redesign**: `nebula-resource = frontier` per [`docs/MATURITY.md:36`](../../MATURITY.md). Design-stable, interfaces-stable, behavior-stable, observability-partial.
+
+**Post-redesign target**: `core` (or `stable` per [`docs/MATURITY.md`](../../MATURITY.md) legend). Maturity bump conditional on §6.4 transition criteria from [Strategy §6.4](2026-04-24-nebula-resource-redesign-strategy.md):
+
+- Zero 🔴 findings in new `nebula_resource.credential_rotation_attempts` counter `errors` label over the [Strategy §6.3](2026-04-24-nebula-resource-redesign-strategy.md) soak window (1-2 weeks).
+- Phase 7 register shows zero unresolved `concerns: open` rows.
+- Per-consumer tests pass against new shape ([Strategy §6.2 validation gate](2026-04-24-nebula-resource-redesign-strategy.md) closed).
+- Documentation surface rebuilt per Strategy §4.7; dx-tester re-evaluation reports zero compile-fail walkthroughs.
+
+Maturity bump proposed by architect at cascade-completion summary; ratified by tech-lead in dedicated PR per [`docs/MATURITY.md`](../../MATURITY.md) review cadence. CP4 §16 records the migration-PR completion handoff that triggers the proposal.
+
+### §13.2 Breaking-change discipline
+
+**No shims** (per `feedback_no_shims.md`). Future trait or method changes that break the public surface land as breaking changes — replace the wrong thing directly; do not add an adapter, bridge, alias, or feature-flag-gated old-shape compatibility layer. `nebula-resource` has zero external adopters per [Strategy §2.5](2026-04-24-nebula-resource-redesign-strategy.md); breaking changes are absorbed by the 5 in-tree consumers in atomic PR waves.
+
+**No deprecated re-exports.** When a public type or method is removed, the `pub use` in `lib.rs` is removed in the same PR. No `#[deprecated(note = "use X instead")]` six-month transition periods — `frontier` and `core` maturity tiers both permit hard breaking changes per [`docs/MATURITY.md`](../../MATURITY.md).
+
+The current `_with` builder cleanup (Phase 1 🔴-3 / Strategy §5.4 — replaced by §10.2 dual-helper decision in this CP3) demonstrates the discipline: rather than deprecate `register_pooled` and add `register_pooled_v2`, the redesign updates `register_pooled`'s bound from `Auth = ()` to `Credential = NoCredential`. One method, one shape, one PR.
+
+### §13.3 Deprecation policy (post-`core`)
+
+When `nebula-resource` reaches `core` maturity (§13.1), deprecation cadence tightens — `core` carries an "interfaces-stable" connotation that `frontier` does not.
+
+- **Deprecation precedes removal.** `#[deprecated(note = "use X instead", since = "M.N.0")]` for one minor version cycle before removal. The `note` MUST name the replacement — bare `#[deprecated]` is rejected.
+- **Removal in next minor.** After one minor cycle (e.g., deprecated in 1.5.0, removed in 1.6.0), the type or method is deleted. `lib.rs` re-export is removed atomically.
+- **CHANGELOG entry required.** Every deprecation lands a CHANGELOG entry under `### Deprecated` for the deprecating release; every removal lands under `### Removed` for the removing release.
+- **Pre-`core` exception.** While `nebula-resource` is `frontier` (current state), deprecation is OPTIONAL — hard breaking changes are permitted per [`docs/MATURITY.md`](../../MATURITY.md). The redesign is using this affordance.
+
+### §13.4 Cross-crate boundary stability
+
+`nebula-resource` consumes `nebula-credential` primitives (per CP1 §2.1 trait declaration). The dependency direction is **one-way**: `nebula-resource → nebula-credential`. Future evolution preserves this:
+
+- **No reverse dependency.** `nebula-credential` MUST NOT depend on `nebula-resource`. Past tension on this boundary surfaced when adding `NoCredential` (Q1 resolution per CP1 §2.2 — `NoCredential` lives in `nebula_credential`, *not* `nebula_resource`).
+- **Re-exports for ergonomic adapter authoring.** `nebula-resource::lib.rs` re-exports `Credential`, `CredentialId`, `NoCredential`, `NoScheme` (per §10.1) so adapter authors can `use nebula_resource::*` for the trait surface. The re-exports are convenience; they do NOT introduce a hidden dependency direction.
+- **Engine-side dependency**. `nebula-engine` depends on `nebula-resource` per current `Cargo.toml` topology. Post-extraction (§12), engine also owns `Daemon` and `EventSource` — but does NOT depend on `nebula-resource` for them; those types live entirely engine-side.
+
+**Future cascade considerations.** If a future cascade changes the credential surface (new associated types on `Credential` trait, new methods), `nebula-resource` absorbs the change atomically — see CP4 §15 forward-references for known credential-side cascades.
+
+### §13.5 Public-surface freeze schedule
+
+**During redesign cascade** (current state, through Phase 8 cascade-completion summary): `nebula-resource` is in design churn. Public-surface changes via Tech Spec amendment cycle ([§0.3](#03-freeze-policy-per-cp)).
+
+**Post-cascade soak** (Strategy §6.3, 1-2 weeks): public surface FROZEN for evaluation. Any surface change during soak is a regression unless it closes a 🔴 finding — even then, fix lands in `main` and re-starts the soak window.
+
+**Post-soak, post-`core`-bump**: public surface stable per §13.3 deprecation policy. Additions (new methods, new fields under `#[non_exhaustive]`) land via additive minor releases. Removals via the deprecation cycle.
+
+**Cadence recap.**
+
+| Phase                     | Cadence                                                               |
+|---------------------------|-----------------------------------------------------------------------|
+| In redesign cascade       | Tech Spec checkpoint amendments per §0.3                              |
+| Post-cascade soak         | FROZEN (1-2 weeks); only 🔴 fixes permitted                          |
+| Post-soak, `frontier`     | Hard breaking changes permitted; 5 in-tree consumers absorb atomically |
+| Post-`core`-bump          | Deprecation cycle (one minor) + CHANGELOG discipline                  |
+
+Future cascade triggers (per [Strategy §6.5](2026-04-24-nebula-resource-redesign-strategy.md)) — `Runtime`/`Lease` collapse, `AcquireOptions::intent/.tags` wiring, Service/Transport merge, Daemon sibling-crate spinout, AuthScheme: Clone revisit — each opens a new cascade and its own freeze schedule.
+
+## §14 — Cross-references
+
+Compact cross-reference subsections — every external claim in CP1-CP3 traces back to one of these tables. CP4 §14 is the audit surface for spec-auditor's claim-vs-source pass; if an §X.Y citation in CP1-CP3 cannot be resolved here, that is an §14 omission to fix, not a CP1-CP3 amendment.
+
+### §14.1 Strategy refs (Strategy §4 → Tech Spec sections)
+
+Strategy §4 carries the binding decisions ratified at Strategy CP3 freeze (2026-04-24). Each Tech Spec section that elaborates a Strategy §4 decision into compile-able shape:
+
+| Strategy §            | Tech Spec section(s)                                                                  | What Tech Spec adds beyond Strategy            |
+|-----------------------|---------------------------------------------------------------------------------------|------------------------------------------------|
+| §4.1 trait reshape    | §2.1 (trait declaration), §11.2 (minimum impl walkthrough)                            | Compile-able Rust signatures, RPITIT lifetime  |
+| §4.2 revocation       | §2.1 (default body), §5.3 (Manager-enforced taint), §11.6 (override walkthrough)      | Option (b) tainting + atomic flip mechanism    |
+| §4.3 rotation dispatch| §3.2-§3.5 (dispatcher trampoline), §5.1 (pool swap), §7.4 (concurrency tests)         | `ResourceDispatcher` trait + per-resource timeout |
+| §4.4 Daemon/EventSource extraction | §10.1 (re-export removal), §12 (engine landing site)                       | `crates/engine/src/daemon/` path + `DaemonRegistry` |
+| §4.5 manager file-split | §5.4 (file structure), §9 (function-level cuts)                                     | Seven submodules + per-`fn` placement table   |
+| §4.6 drain-abort fix  | §5.5 (set_failed wiring), §7.2 (assertion test)                                       | `set_phase_all_failed` helper + B-2 events     |
+| §4.7 doc rewrite      | §11 (adapter authoring contract — content spec for `crates/resource/docs/adapters.md`) | 8 subsections covering imports → pitfalls    |
+| §4.8 atomic migration | §16.1 (PR wave plan), §16.2 (per-consumer sequence)                                   | Concrete consumer order + DoD checklist        |
+| §4.9 observability DoD| §6.1 (trace spans), §6.2 (counters), §6.3 (events), §6.5 (DoD gate)                  | Names + labels + bucket boundaries             |
+
+Strategy §5 open items map to CP4 §15 resolutions (§15.1-§15.5). Strategy §6 post-validation roadmap maps to CP4 §16 implementation handoff (§16.1-§16.5).
+
+### §14.2 ADR refs (ADR-0036 + ADR-0037 sections + amendment record)
+
+| ADR section                                        | Tech Spec section that ratifies / elaborates                                       |
+|----------------------------------------------------|------------------------------------------------------------------------------------|
+| [ADR-0036 §Decision](../adr/0036-resource-credential-adoption-auth-retirement.md) (trait + hooks) | §2.1 (compile-able signatures) + §3.1 (reverse-index write path) + §3.2 (dispatcher trampoline) |
+| [ADR-0036 §Consequences positive](../adr/0036-resource-credential-adoption-auth-retirement.md)    | §11.6 (blue-green swap walkthrough demonstrates safety claim)                      |
+| [ADR-0036 §Alternatives 2 (sub-trait)](../adr/0036-resource-credential-adoption-auth-retirement.md) | §10.2 (dual-helper pattern keeps single trait — sub-trait still rejected)           |
+| [ADR-0037 §Decision](../adr/0037-daemon-eventsource-engine-fold.md) (engine fold)                 | §12.1 (engine module path) + §12.2 (`DaemonRegistry`) + §12.3 (EventSource adapter) |
+| [ADR-0037 amended-in-place 2026-04-25](../adr/0037-daemon-eventsource-engine-fold.md) (CP1 gate calibration) | §12.5 (`TopologyRuntime<R>` enum shrink) — the *decision* axis CP1 ratifies |
+
+**ADR ratification path.** Both ADRs flipped from `proposed` to `accepted` at CP1 ratification per ADR-0036 §Status acceptance gate and ADR-0037 §Review amended gate. CP2-CP4 do not gate further ADR transitions; ADR amendments inside this cascade record any CP-discovered deltas via the "Amended in place on" pattern (ADR-0037 already records the CP1 calibration amendment; no further amendments required by CP4).
+
+### §14.3 credential Tech Spec refs (§3.6 + §Credential::revoke + §4.3)
+
+`nebula-resource` consumes `nebula-credential` primitives one-way. Cross-cascade coordination closed at Strategy §4.2 footnote — no credential-side spec extension required.
+
+| credential Tech Spec section                                                                  | Tech Spec consumer site(s)                                              |
+|-----------------------------------------------------------------------------------------------|--------------------------------------------------------------------------|
+| [§3.6 lines 928-996](2026-04-24-credential-tech-spec.md) (`on_credential_refresh` shape)     | §2.1 (trait declaration adopts §3.6 verbatim), §11.6 (override pattern)  |
+| [§3.6 lines 935-955](2026-04-24-credential-tech-spec.md) (associated-type shape)             | §2.1 (`type Credential: Credential` + projection)                        |
+| [§3.6 lines 961-993](2026-04-24-credential-tech-spec.md) (blue-green pool swap)              | §5.1 (pool-swap mechanism) + §11.6 (walkthrough)                         |
+| [§Credential::revoke line 228](2026-04-24-credential-tech-spec.md) (`async fn revoke`)       | §2.1 (revocation default-body invariant — credential side fires the call) |
+| [§4.3 lines 1062-1068](2026-04-24-credential-tech-spec.md) (revocation lifecycle modes)      | §5.3 (Manager-enforced taint matches credential's hard-revocation mode)  |
+
+`Credential` and `NoCredential` types are imported, not extended — the `Credential` trait surface used by `Resource::Credential` bound is the one declared in [`crates/credential/src/credential.rs`](../../../crates/credential/src/credential.rs); no new trait method or associated type proposed by this Tech Spec.
+
+### §14.4 Phase 1 finding map (each 🔴/🟠 → Tech Spec section that resolves it)
+
+[Phase 1 §4 severity matrix](../drafts/2026-04-24-nebula-resource-redesign/02-pain-enumeration.md) enumerates 28 findings; each in-scope finding has a Tech Spec section pointer below. Out-of-scope (deferred-with-pointer / future-cascade / accepted-as-is) per Strategy §0 are listed separately.
+
+| Phase 1 ID | Severity | Finding                                                                | Resolved by                                                |
+|------------|----------|------------------------------------------------------------------------|------------------------------------------------------------|
+| 🔴-1       | 🔴       | Credential×Resource seam: silent revocation drop + latent panic         | §3.1 reverse-index write + §3.2 dispatcher + §5.3 tainting |
+| 🔴-2       | 🔴       | Daemon orphan-surface (no public start path)                            | §12 engine extraction (Daemon migrates out of resource)    |
+| 🔴-3       | 🔴       | `docs/api-reference.md` ~50% fabrication + `adapters.md` compile-fails  | §11 adapter contract content spec (rewrite payload)        |
+| 🔴-4       | 🔴       | Drain-abort phase corruption (`Abort` flips to Ready)                   | §5.5 `set_phase_all_failed` + §7.2 assertion test          |
+| 🔴-5       | 🔴       | `Resource::Auth` dead bound (100% `()` usage)                           | §2.1 `type Auth` removed + §10.2 `Credential = NoCredential` |
+| 🔴-6       | 🔴       | EventSource same orphan-surface as Daemon                                | §12 engine extraction (EventSource→TriggerAction adapter)  |
+| 🟠-7       | 🟠       | `register_*_with` builder + 2101-line file                               | §9 file-split + §10.2 dual-helper pattern                  |
+| 🟠-8       | 🟠       | `AcquireOptions::intent/.tags` reserved-but-unused                       | §15.2 (deferred per Strategy §5.2)                         |
+| 🟠-9       | 🟠       | Daemon + EventSource out-of-canon §3.5                                   | §12 engine extraction (canon §3.5 alignment)               |
+| 🟠-10      | 🟠       | No `deny.toml` wrappers rule (SF-1)                                     | Standalone-fix devops PR per Strategy §0                   |
+| 🟠-11      | 🟠       | 5-assoc-type friction; 9/9 tests prove `Runtime == Lease` unused        | §15.3 (future-cascade per Strategy §5.3)                   |
+| 🟠-12      | 🟠       | `register_pooled` silently requires `Auth = ()`                          | §2.1 + §10.2 `register_pooled<R: Pooled<Credential = NoCredential>>` |
+| 🟠-13      | 🟠       | Transport topology — 0 Manager-level integration tests                  | Post-cascade test debt (Strategy §6.3 follow-up issue)     |
+| 🟠-14      | 🟠       | Missing observability on credential rotation path                        | §6 observability (trace + counter + event) + §6.5 DoD gate |
+| 🟠-15      | 🟠       | `Credential` vs `Auth` 3-way doc contradiction                          | §11 adapter contract (single-source `Credential` naming)   |
+
+🟡-grade and 🟢-grade findings: §14.4-cont. coverage in [Phase 7 register](../tracking/nebula-resource-concerns-register.md) per §14.5.
+
+### §14.5 Concerns register link
+
+[`docs/tracking/nebula-resource-concerns-register.md`](../../tracking/nebula-resource-concerns-register.md) is the canonical lifecycle tracker for all 35 concerns (28 Phase 1 findings + Strategy decisions + Phase 0 infrastructure rows). CP4 §15.6 enumerates the status flips for the 22 `tech-spec-material` rows.
+
+Register lifecycle (per register §"Lifecycle rules"): `tech-spec-material` rows must transition out of `open` status before CP4 freeze — this happens via §15.6. Closure of the register itself ties to MATURITY transition `frontier` → `core` per Strategy §6.4 (referenced in §13.1 + §16.5).
+
+### §14.6 Spike artefact link
+
+[`docs/superpowers/drafts/2026-04-24-nebula-resource-redesign/spike/`](../drafts/2026-04-24-nebula-resource-redesign/spike/) carries the Phase 4 iter-1 PASS artefacts that ground every CP1-CP3 trait-shape claim. Key files referenced inline:
+
+- [`spike/.../resource-shape-test/src/lib.rs:125-156`](../drafts/2026-04-24-nebula-resource-redesign/spike/crates/resource-shape-test/src/lib.rs) — `MockKvStore` (NoCredential, no topology) — referenced by §11.2 fall-back.
+- [`spike/.../resource-shape-test/src/lib.rs:158-200`](../drafts/2026-04-24-nebula-resource-redesign/spike/crates/resource-shape-test/src/lib.rs) — `MockHttpClient` (Resident, NoCredential) — second compile-checked baseline.
+- [`spike/.../resource-shape-test/src/lib.rs:483-531`](../drafts/2026-04-24-nebula-resource-redesign/spike/crates/resource-shape-test/src/lib.rs) — `parallel_dispatch_isolates_per_resource_latency` — carries forward to §7.4 production tests.
+- [`spike/.../resource-shape-test/src/lib.rs:537-578`](../drafts/2026-04-24-nebula-resource-redesign/spike/crates/resource-shape-test/src/lib.rs) — `parallel_dispatch_isolates_per_resource_errors` — security B-1 isolation invariant validation.
+- [`spike/.../resource-shape-test/src/compile_fail.rs`](../drafts/2026-04-24-nebula-resource-redesign/spike/crates/resource-shape-test/src/compile_fail.rs) — three of four production compile-fail probes (§7.5) carry forward verbatim.
+- [`spike/NOTES.md`](../drafts/2026-04-24-nebula-resource-redesign/spike/NOTES.md) — exit-criteria record (7/7 PASS, iter-2 deferred per Phase 4 closure).
+
+Spike worktree status: artefacts archival post-cascade; no further compilation expected against trunk after Tech Spec ratification (consumer migration happens against production code, not spike code).
+
+## §15 — Open items resolution
+
+Each Strategy §5.x open item gets a CP4 §15.x resolution with a section pointer to where it closes. Strategy §0 freeze policy permits Tech Spec to close §5 items with explicit "extends Strategy §X.Y" annotation; closure does not require Strategy amendment when the closure resolves an open question rather than reversing a §4 decision.
+
+### §15.1 Strategy §5.1 — Daemon revisit triggers (concretized)
+
+**Status: closed-with-trigger.** Per [ADR-0037 amended-in-place 2026-04-25 gate text](../adr/0037-daemon-eventsource-engine-fold.md), the engine-fold *decision* is locked at CP1; the engine-side *implementation* (module path, `DaemonRegistry` shape, adapter signature) is CP3 §13 deliverable, all of which §12 specifies. Strategy §5.1's "trigger to revisit sibling-crate" framing concretizes as:
+
+- **Trigger 1 (LOC threshold):** Daemon-specific engine code in `crates/engine/src/daemon/` grows beyond ~500 LOC (current sum: 493 daemon + 75 EventSource = 568 LOC; threshold conservative against current size).
+- **Trigger 2 (proliferation):** ≥2 non-trigger long-running workers materialize that don't fit the existing `DaemonRegistry` + `EventSourceAdapter` shape (e.g., a scheduler-shaped primitive distinct from both).
+- **Trigger fire path:** opens a new cascade per Strategy §0 amendment cycle; the new cascade considers `nebula-scheduler` extraction from engine-side. Does NOT re-route through `nebula-resource` per ADR-0037 §Consequences neutral.
+
+This Tech Spec does NOT propose immediate sibling-crate extraction. §12.1 records the rejection of `crates/engine/src/scheduler/` pre-naming for the same reason.
+
+### §15.2 Strategy §5.2 — `AcquireOptions::intent/.tags` (final treatment: deprecate)
+
+**Status: decided — `#[deprecated]` (not remove, not retain).**
+
+Strategy §5.2 framed three options: (a) `#[doc(hidden)]`, (b) `#[deprecated(note = "#391 not wired")]`, (c) retain unchanged. Per Strategy §5.2 cross-ref to `PRODUCT_CANON.md §4.5` + `feedback_incomplete_work.md`, **option (b) is more honest** than the alternatives:
+
+- **(c) retain** — false-capability per canon §4.5; reserved-but-unused public API is what the redesign closes.
+- **(a) `#[doc(hidden)]`** — hides the field from docs but leaves it construct-able; doesn't surface to callers that the field is non-functional.
+- **(b) `#[deprecated]`** — actively warns callers; pairs with engine-side ticket #391's eventual resolution. If #391 lands, deprecation is removed; if #391 dies, `AcquireOptions::intent` and `AcquireOptions::tags` are removed in a follow-up minor (per §13.3 deprecation policy once the crate hits `core`).
+
+**Implementation in Tech Spec:** [`crates/resource/src/options.rs:17-64`](../../../crates/resource/src/options.rs) `AcquireOptions::intent` and `AcquireOptions::tags` fields gain `#[deprecated(note = "engine integration ticket #391 not yet wired; field is reserved but does not affect acquire dispatch")]`. Lands in the migration PR wave (per §16.1). Future cascade closes (per Strategy §6.5 trigger: ticket #391 either wires or formally dies).
+
+### §15.3 Strategy §5.3 — `Runtime`/`Lease` collapse (future-cascade trigger confirmed)
+
+**Status: deferred — future cascade trigger confirmed.**
+
+Strategy §5.3's trigger framing held through Phase 4-6: any consumer that sets `Runtime != Lease` during spike, Tech Spec drafting, or post-cascade implementation triggers a future cascade. CP1-CP3 evidence:
+
+- **Spike (Phase 4)** — all spike test resources set `type Lease = Runtime;` (verified across `MockKvStore`, `MockHttpClient`, `MockPgPool`, etc. in [`spike/.../resource-shape-test/src/lib.rs`](../drafts/2026-04-24-nebula-resource-redesign/spike/crates/resource-shape-test/src/lib.rs)). No spike resource fired the trigger.
+- **Tech Spec (CP1-CP3)** — every walkthrough (§11.2, §11.5) sets `Lease = Runtime` (or analogue). No Tech Spec example fires the trigger.
+- **Production trunk** — Phase 1 §2.3 verified 9/9 tests + 5/5 production resources set `Lease = Runtime`. CP4 verification: no §9 method or §11 example departs from this.
+
+**Trigger fire path (unchanged from Strategy §5.3):** any future consumer that genuinely needs `Lease != Runtime` (i.e., the lease-side type carries reduced privileges or wraps the runtime) opens a future cascade per Strategy §6.5; ADR candidate at trigger fire. Open in [register row R-050](../../tracking/nebula-resource-concerns-register.md).
+
+### §15.4 Strategy §5.4 — `NoCredential` convenience symmetry (closed via §10.2 dual-helper)
+
+**Status: closed — resolved by §10.2 dual-helper pattern.**
+
+Strategy §5.4 framed the question as: "keep `Credential = NoCredential` shortcut, or require explicit `register_pooled::<R>(...)` with credential bound?" CP3 §10.2 commits to the dual-helper pattern: 5 topologies × {`register_pooled<R: Pooled<Credential = NoCredential>>`, `register_pooled_with<R: Pooled>`} = 10 dual helpers, plus the type-erased `register<R: Resource>` (per CP3 §10.2 line 1817 amended for E3 = 11 total). The trade-off (10 public methods vs unified `RegisterOptions`-only path) is recorded with three reasons (migration parity, DX symmetry with `acquire_*_default`, compile-time enforcement) and one accepted cost (10 thin wrappers; mitigated by single-sourcing through `register` + `register_inner`).
+
+CP3 §10.2 closes the open item; no further resolution required. dx-tester ratification in CP3 review confirms (or surfaces alternative; see CP3 review handoff in §16.4).
+
+### §15.5 Strategy §5.5 — revoke spec extension (closed)
+
+**Status: closed at Strategy §4.2 footnote (CP2 tech-lead E4) + reaffirmed via CP1 Q5 + CP2 §5.3.**
+
+Strategy §5.5 originally asked whether `nebula-credential` Tech Spec needs an extension to support `Resource::on_credential_revoke`. Tech-lead ratification at Strategy CP2 (E4) closed the question: credential Tech Spec already provides `Credential::revoke` ([line 228](2026-04-24-credential-tech-spec.md): `async fn revoke(ctx, state) -> Result<(), RevokeError>`) and revocation lifecycle modes ([§4.3 lines 1062-1068](2026-04-24-credential-tech-spec.md): soft/hard/cascade revocation, `state_kind = 'revoked'` semantics). The resource-side `on_credential_revoke` hook is a *consumer* of those existing primitives.
+
+- **CP1 Q5** confirmed the revoke-side trait method shape (`on_credential_revoke(&self, credential_id: &CredentialId)` — symmetric to `on_credential_refresh` per §2.1 line 197-198) without requiring credential-side changes.
+- **CP2 §5.3** locked the Manager-side default-tainting mechanism (option (b) unconditional taint flip on revocation) — operates against the credential's existing revocation primitives.
+- **Tech Spec §14.3** (this CP4) records the cross-spec one-way-dependency: `nebula-resource → nebula-credential`; reverse direction explicitly forbidden per §13.4.
+
+No spec extension required, no cross-cascade coordination round needed. Strategy §5.5 is not re-opened by CP4.
+
+### §15.6 Concerns register status flips (22 tech-spec-material rows)
+
+Per [register §"Lifecycle rules"](../../tracking/nebula-resource-concerns-register.md) rule 2: "tech-spec-material items must be addressed (status not 'open') before Phase 6 Tech Spec CP4 freeze." Status flips below for all 22 `tech-spec-material` rows; flip to `decided` with section pointer:
+
+| ID    | Concern                                                              | Status flip                                  | Section pointer              |
+|-------|----------------------------------------------------------------------|----------------------------------------------|------------------------------|
+| R-001 | `Resource::Auth` dead bound; `Resource::Credential` adoption          | open → decided                               | §2.1 + §11.2 + ADR-0036      |
+| R-002 | Reverse-index never populated; latent `todo!()` panic                 | open → decided                               | §3.1 + §5.3 + §14.4 row 🔴-1 |
+| R-003 | `on_credential_revoked` semantics                                     | open → decided                               | §2.1 + §5.3 + §11.6          |
+| R-004 | Rotation dispatch mechanics — parallel + per-resource timeout         | open → decided                               | §3.2-§3.5 + §7.4             |
+| R-005 | `warmup_pool` must not call `Scheme::default()`                       | open → decided                               | §5.2 (warmup signature)      |
+| R-010 | Daemon topology no public start path                                  | open → decided                               | §12 (engine extraction)      |
+| R-011 | EventSource orphan-surface pattern                                    | open → decided                               | §12.3 (EventSourceAdapter)   |
+| R-012 | Daemon + EventSource out-of-canon §3.5                                | open → decided                               | §12 + §10.1 (re-export removal) |
+| R-020 | `manager.rs` 2101 L grab-bag                                          | open → decided                               | §5.4 + §9 (file-split)       |
+| R-021 | `register_*_with` builder anti-pattern                                | open → decided                               | §9.3 + §10.2 (dual-helper)   |
+| R-022 | `register_pooled` silently requires `Auth = ()`                       | open → decided                               | §2.1 + §10.2                 |
+| R-023 | Drain-abort phase corruption                                          | open → decided                               | §5.5 + §7.2 + §9.6           |
+| R-030 | `docs/api-reference.md` ~50% fabrication                              | open → decided (content-spec)                | §11 adapter contract         |
+| R-031 | `docs/adapters.md` compile-fails                                      | open → decided (content-spec)                | §11 adapter contract         |
+| R-032 | `docs/Architecture.md` describes vanished v1                          | open → decided (rewrite-or-delete deferred to migration PR per Strategy §4.7) | §11 + §16.1 |
+| R-033 | `docs/README.md` case-drift broken intra-doc links                    | open → decided (migration PR scope)          | §16.1                        |
+| R-034 | `docs/dx-eval-real-world.rs` references nonexistent type              | open → decided (CI-gate deferred to §13)     | §13 + §16.1                  |
+| R-035 | `docs/events.md` variant count 7 vs actual 10                         | open → decided (migration PR scope)          | §16.1                        |
+| R-043 | Macros emit `DeclaresDependencies` for trait not in runtime           | open → decided (CP1 §1 wiring confirmed)     | §1 (CP1 trait declaration)   |
+| R-051 | `AcquireOptions::intent/.tags` reserved-but-unused                    | open → decided                               | §15.2 (`#[deprecated]`)      |
+| R-053 | `integration/` module name collision                                  | open → decided                               | §5.4 (file-split absorbs)    |
+| R-060 | Rotation path ships without observability                             | open → decided                               | §6 + §6.5 DoD gate           |
+
+**Total flipped:** 22 `tech-spec-material` rows now status `decided` with section pointers. Register §"Lifecycle rules" rule 2 satisfied for CP4 freeze.
+
+Remaining `open`-status rows in the register (post-flip): zero `tech-spec-material`; non-`tech-spec-material` rows (post-cascade, future-cascade, standalone-fix, invariant-preservation) keep their respective statuses per register lifecycle.
+
+## §16 — Implementation handoff
+
+How CP1-CP3's design lands as code. Compact subsections; this is sequencing + DoD, not specification (the specification is §1-§13).
+
+### §16.1 PR wave plan (atomic single-PR per Strategy §4.8)
+
+**Decision: single atomic PR per Strategy §4.8 + ADR-0036 §Consequences positive.**
+
+Strategy §4.8 commits to atomic 5-consumer migration in one PR wave; CP4 §16.1 reaffirms. Single-PR rationale: the trait reshape, reverse-index write, dispatcher implementation, observability scaffolding, file-split, drain-abort fix, Daemon/EventSource extraction, doc rewrite, and 5 consumer migrations all couple structurally — splitting the wave forces a "half-migrated state" in trunk that contradicts Strategy §0 freeze policy and `feedback_no_shims.md`.
+
+**PR contents (non-exhaustive):**
+
+- `crates/resource/src/` — trait reshape (§2.1), file-split (§9), reverse-index + dispatcher (§3.1-§3.2), Daemon/EventSource removal (§10.1, §12.5), observability wiring (§6).
+- `crates/engine/src/daemon/` — NEW module (per §12.1); `DaemonRegistry` + `EventSourceAdapter` per §12.2-§12.3.
+- `crates/{action,sdk,plugin,sandbox}/` — consumer migrations per §16.2.
+- `crates/resource/docs/` — adapter contract rewrite per §11 content spec; api-reference.md, README.md, events.md, Architecture.md per Strategy §4.7.
+- `crates/resource/tests/compile_fail/` — three carry-forward probes from spike + one new (§7.5).
+- `docs/tracking/nebula-resource-concerns-register.md` — status flips per §15.6.
+
+**Alternative considered: phased 2-3 PR sequence.** Rejected — violates atomicity invariant (security-lead BLOCK on Option A precedent). The phased alternative was Strategy §6.2 Phase C "default unless review surfaces a separable concern"; CP4 surfaces no separable concern.
+
+**PR review reviewers:** tech-lead (overall ratification), security-lead (B-1/B-2/B-3/SL-1/SL-2/SL-3 invariant verification), rust-senior (trait surface + interface), dx-tester (adapter contract rewrite + DX), spec-auditor (cross-section + claim-vs-source).
+
+### §16.2 Per-consumer migration sequence (action / sdk / engine / plugin / sandbox)
+
+Per [Strategy §4.8](2026-04-24-nebula-resource-redesign-strategy.md) consumer list. Each consumer's per-file change sequence:
+
+| Consumer        | Daemon usage | EventSource usage | Migration steps                                                     |
+|-----------------|--------------|-------------------|---------------------------------------------------------------------|
+| `nebula-action` | None         | None              | Rewrite every `type Auth = ();` → `type Credential = NoCredential;` in `impl Resource for *`. Replace `register_pooled<R>` call sites — bound update only (signature shape unchanged). |
+| `nebula-sdk`    | None         | None              | Same pattern as action; mostly mechanical. Re-export tree update if any sdk-side re-exports name `Resource::Auth`. |
+| `nebula-engine` | Self (becomes home) | Self (TriggerAction adapter) | Substantive — see §12.1-§12.3. New `crates/engine/src/daemon/` module. Migrates 493 LOC daemon + 75 LOC EventSource code into engine-side. Adds `DaemonRegistry` construction in engine bootstrap. |
+| `nebula-plugin` | None         | None              | Same as action / sdk.                                               |
+| `nebula-sandbox`| None         | None              | Same as action / sdk.                                               |
+
+**Mechanical verification.** Pre-PR `rg "type Auth = " crates/{action,sdk,engine,plugin,sandbox}/src/` returns the union of sites needing rewrite. Post-PR same query returns zero. `rg "Daemon|EventSource" crates/{action,sdk,plugin,sandbox}/src/` returns zero hits both pre- and post-PR per CP3 §12.4 verification.
+
+**Order within PR (mechanical sub-ordering):** action / sdk first (smallest delta, no engine coupling), then plugin / sandbox (similar pattern), then engine (carries the substantive new module). All five land in one commit-set; the ordering is for review-narrative purposes, not git-history requirement.
+
+### §16.3 Rollback strategy (if soak period reveals issues)
+
+Per [Strategy §6.3](2026-04-24-nebula-resource-redesign-strategy.md) post-merge soak (1-2 weeks observability-driven). Rollback paths:
+
+- **Targeted fix (preferred).** A 🔴-class issue surfaces during soak (e.g., dispatcher leaks `&Scheme` across an `await` window). Fix lands in `main` per §13.5 "post-cascade soak" rule ("only 🔴 fixes permitted; FROZEN otherwise") with a fresh soak-window restart. Atomic: no partial revert.
+- **Feature-flag escape (NOT used).** Per `feedback_no_shims.md` and Strategy §4.8 atomicity, no feature flag pre-installed for rollback. The crate is `frontier`; hard breaking changes are the discipline.
+- **Full revert (last resort).** If a structural problem (e.g., `Resource::Credential` shape breaks unexpectedly under real-load) escapes soak, revert the entire PR wave and re-open Strategy via Strategy §0 amendment cycle. The revert is mechanical (`git revert <merge-commit>`); the redesign cascade restarts at Phase 2 (scope round 2) with new evidence. This path is contemplated but not anticipated — Phase 4 spike PASSED iter-1 with all 7 exit criteria met, and CP1-CP3 review cycles surfaced no shape-breaking concerns.
+
+**Soak failure thresholds.** Fire targeted-fix path: counter `errors` label increments at non-trivial rate (>0.1% of attempts); structural panic in any rotation path; consumer test regression that didn't surface pre-merge. Fire full-revert path: shape-level invariant violation (e.g., a credential is observably retained beyond `on_credential_revoke` post-dispatch).
+
+### §16.4 Definition of done checklist (CI green + 7 invariants)
+
+CP4 freeze gates merge-readiness; merge gates DoD. Both checks below must hold for the redesign to be declared "complete":
+
+**CI gate (must be green pre-merge):**
+
+- `cargo +nightly fmt --all -- --check` clean (per `.github/workflows/ci.yml` lines 60-66).
+- `cargo clippy --workspace -- -D warnings` clean (per `.github/workflows/ci.yml` lines 87-88).
+- `cargo nextest run -p nebula-{resource,action,sdk,engine,plugin,sandbox} --profile ci` green (per `.github/workflows/test-matrix.yml` lines 160-164).
+- `cargo doc --all --no-deps` clean (per §11.1 doc-rewrite acceptance gate).
+- `cargo test --doc` green for non-`ignore` blocks in `crates/resource/docs/`.
+
+**Seven invariants (must be verified post-merge in soak window):**
+
+1. **No `todo!()` in `Manager` rotation paths.** Verifier: `rg "todo!" crates/resource/src/manager/` returns zero. Resolves §3.1 + §3.2 (CP1).
+2. **Reverse-index populated atomically with registry write.** Verifier: §7.2 wire test `register_pop_atomic` per §3.1.
+3. **Per-resource isolation invariant.** Verifier: §7.4 `parallel_dispatch_isolates_per_resource_errors` carry-forward from spike. Security B-1.
+4. **Manager NEVER holds `&Scheme` across dispatch boundary.** Verifier: §11.6 walkthrough lint + spec-auditor manual trace; security constraint #2.
+5. **`Scheme::default()` NOT called at warmup.** Verifier: `rg "::default\(\)" crates/resource/src/manager/` returns zero matches against `R::Auth` / `R::Credential::Scheme`. Security B-3.
+6. **Rotation dispatch emits trace + counter + event.** Verifier: §6.5 DoD gate; trace span in collected traces; counter non-zero on first rotation; `ResourceEvent::CredentialRefreshed` broadcast end-to-end. Strategy §4.9.
+7. **Drain-abort lands phase = `Failed`, not `Ready`.** Verifier: §7.2 wire test `drain_abort_records_failed_phase_not_ready`. Phase 1 🔴-4 fix.
+
+**Verification cadence:** invariants 1-2 verified at PR merge (CI integration tests); 3-7 verified during soak window (1-2 weeks per Strategy §6.3); MATURITY bump (§16.5) gates on all seven holding zero-defect through soak.
+
+### §16.5 MATURITY transition trigger (Strategy §6.4)
+
+`nebula-resource = frontier` today ([`docs/MATURITY.md:36`](../../MATURITY.md)). Post-cascade target: `core` (or `stable` per the `MATURITY.md` legend). Trigger conditions (from Strategy §6.4):
+
+- **Soak window clean.** Counter `nebula_resource.credential_rotation_attempts` `errors` label shows zero 🔴-class signal across the 1-2 week post-merge soak.
+- **Register zeroed.** Phase 7 register's `tech-spec-material` rows all `decided` (§15.6 already satisfies this); no `open` rows remain post-soak.
+- **Consumer tests pass.** All 5 in-tree consumers green per §16.4 CI gate, sustained through soak.
+- **Doc surface clean.** `cargo doc --all --no-deps` + `cargo test --doc` consistently green; dx-tester re-evaluation reports zero compile-fail walkthroughs (vs current ~50% baseline per Phase 1 🔴-3).
+
+**Bump proposal path.** Architect proposes `frontier → core` bump in Phase 8 cascade-completion summary (per Strategy §6.1 milestone Phase 8); tech-lead ratifies in dedicated PR per [`docs/MATURITY.md`](../../MATURITY.md) review cadence. The bump PR is *separate* from the migration PR (per §16.1) — migration ships at `frontier`; the maturity bump is a post-soak observability-validated decision.
+
+**Register closure ties to maturity transition.** Register §"Close condition" = `MATURITY.md` transition `frontier` → `core` (verified at register §"Owner during cascade" → "Owner post-cascade" handoff). After bump, register transitions to `completion-frozen` status; further concerns become new register entries in subsequent cascades, not retroactive amendments.
+
+CP4 freeze unblocks the migration PR; migration merge unblocks soak; soak completion + invariant verification unblocks maturity bump proposal. The cascade arc closes when `MATURITY.md` records `nebula-resource = core`.
+
 ### Open items raised this checkpoint
 
 **CP1 open items (unchanged from CP1 ratification):**
@@ -1567,7 +2713,16 @@ Lives with Manager. Created in `Manager::with_config` ([`manager.rs:283-296`](..
 - **§5.4 — Function-level boundaries within submodules.** CP2 locks file structure (which submodule each public method lands in) but defers the per-`impl Manager { fn ... }` block placement to CP3 §9. Reviewer note: cut points within `mod.rs` may surface ergonomics that warrant restructuring; CP3 captures.
 - **§6.3 — `ResourceEvent::key()` return type.** New `CredentialRefreshed` / `CredentialRevoked` variants are credential-scoped, not resource-scoped — current `key() -> &ResourceKey` is no longer total. CP3 §12 picks: `Option<&ResourceKey>` (breaking subscriber change) or orthogonal `credential_id() -> Option<&CredentialId>` accessor (additive). CP2 commits the *variants*; defers return-type to CP3.
 - **§6.5 — Histogram bucket boundaries.** CP2 commits the histogram metric *name* and *labels* but defers bucket configuration to CP3 §11 (default `[0.001, 0.01, 0.1, 1.0, 10.0, 60.0]` seconds is a candidate; production tuning post-soak per Strategy §6.3).
-- **§7.6 — Coverage tooling pick.** CP2 sets the 80% target; CP3 §13 picks `cargo tarpaulin` vs `cargo llvm-cov` based on Windows + macOS coverage support.
+- **§7.6 — Coverage tooling pick.** CP2 sets the 80% target; CP3 §13 picks `cargo tarpaulin` vs `cargo llvm-cov` based on Windows + macOS coverage support. **Resolved at CP3** — addressed in evolution-policy §13.5 implicitly (post-`core` posture); concrete tool pick deferred to migration PR (Strategy §6.2 implementation wave). Either tool meets the 80% target; `cargo llvm-cov` preferred for Windows + macOS parity if maintainer-tested by migration time, falling back to `cargo tarpaulin` otherwise.
+
+**CP3 open items (raised this checkpoint):**
+
+- **§9.7 — `gate.rs` vs `execute.rs` filename.** CP2 §5.4 used `execute.rs`; CP3 §9.7 renames to `gate.rs` per the dominant content shape. Reviewer pushback option — keep `execute.rs` per CP2 lock — would require restoring the filename without changing contents. Architect recommends `gate.rs` (the gate-admission state machine is more representative of the file's purpose than the resilience-execution wrapper). Tech-lead ratifies in CP3 review.
+- **§10.2 — register_* method count (10 helpers).** CP3 §10.2 commits to dual helpers per topology = 10 public methods on `Manager`. Reviewer concern surfaced in CP2 ratification ("does this fit the public-surface budget?") — CP3 records the trade-off (migration parity + DX symmetry + compile-time enforcement) but the count of 10 is itself a load-bearing decision. If DX feedback during the surface-review wave (or implementation PR review) flags 10 as over-budget, the alternative is to fold the dual into a single `register_pooled_with(RegisterOptions)`-only API at the cost of mandatory boilerplate for unauthenticated registrations (60% of current consumers). Architect prefers dual; dx-tester reviews specifically.
+- **§11 — adapters.md rewrite scope.** CP3 §11 is the *content spec* for the rewrite. The actual rewrite is a Phase 8 deliverable per [Strategy §4.7](2026-04-24-nebula-resource-redesign-strategy.md), bundled in the implementation PR wave. CP3 commits to §11 as the content; the `crates/resource/docs/adapters.md` file is touched at PR-implementation time, not now.
+- **§12.1 — `crates/engine/src/daemon/` module path.** CP3 commits to this path. Engine team has not weighed in on the path choice (their work happens at PR-implementation time per Strategy §4.4). If engine team prefers a different path during implementation, CP3 §12.1 records the rationale for `daemon/` (rejection of `runtime/` and `scheduler/` alternatives); engine team override is permitted via amendment cycle but not expected.
+- **§12.4 — engine self-migration scope.** §12.4 lists `crates/engine/` as the migration-target consumer (engine becomes the *home* of Daemon/EventSource). Implementation work is engine-side and substantial (493+75 LOC moved + new `DaemonRegistry` struct + `EventSourceAdapter`). CP3 §12 specifies the contract; the implementation work is engine-team's responsibility within the migration PR wave.
+- **§13.1 — MATURITY.md row update timing.** CP3 §13.1 commits to "post-soak `core` bump" but does not currently propose the bump. The bump is a separate PR per [`docs/MATURITY.md`](../../MATURITY.md) review cadence; CP4 §16 records the migration-PR-completion handoff that triggers the bump proposal.
 
 ### Handoffs requested
 
@@ -1583,13 +2738,21 @@ Lives with Manager. Created in `Manager::with_config` ([`manager.rs:283-296`](..
 - **security-lead**: CP2 ratification of all security-axis content. Specifically scrutinize: (a) §5.3 revocation default-tainting (option (a)/(b)/(c) trade-off — confirm option (b) honours [B-1 / constraint #2 invariant](../drafts/2026-04-24-nebula-resource-redesign/phase-2-security-lead-review.md)); (b) §5.2 `warmup_pool` credential-bearing signature (B-3 amendment honoured? `Scheme::default()` removed?); (c) §6.3 per-resource `HealthChanged { healthy: false }` on revocation failure (B-2 amendment honoured? cardinality acceptable?); (d) §5.1 `Arc<RwLock<Pool>>` vs `ArcSwap` — Manager NEVER holds scheme longer than dispatch call (constraint #2 invariant)?
 - **spec-auditor** (after tech-lead + security-lead converge): CP2 structural audit. Verify cross-section consistency (every § forward ref to CP3/CP4 is real, every code-block-cited-line is in the cited file), forward-reference integrity (no §6.5 DoD claim about a §7 test that doesn't exist in §7), claim-vs-source (every "per Strategy §X" is in Strategy §X; every spike `lib.rs:N-M` line range is in the spike file). Pay specific attention to §5.3 — three options enumerated; verify each rejection rationale derives from the cited source (Strategy §4.2, security review).
 
+**CP3 handoffs requested (parallel review; co-decision body when tech-lead + dx-tester converge):**
+
+- **dx-tester**: CP3 ratification of §11 adapter authoring contract specifically. Specifically scrutinize: (a) §11.2 minimum `Resource` impl shape — is this the minimum a newcomer needs to write a working adapter, or does the walkthrough miss a step (e.g., `HasSchema` derivation, `ResourceConfig::validate` shape)? (b) §11.3 topology selection guide — are the "common selection mistakes" the right traps to surface? (c) §11.5 credential-bearing walkthrough — does the `RealPostgresPool` shape compile against a hypothetical `nebula-credential-postgres` crate, or does it surface API gaps in the `Credential` trait? (d) §11.8 common pitfalls — are these the actual newcomer traps, or are there others surfaced by Phase 1 dx-tester input? (e) §10.2 dual-helper decision (10 public `register_*` methods) — does this fit the DX budget, or is the unified-`RegisterOptions`-only path more honest about the credential-bearing requirement?
+- **tech-lead**: CP3 ratification of §9 + §10 + §12 + §13. Specifically scrutinize: (a) §9 function-level cuts — are the per-method submodule assignments correct given current `manager.rs` line ranges? (b) §10.2 register_* dual-helper decision — accept the trade-off (10 methods over 5 + RegisterOptions); (c) §10.5 SL-1 deferral — confirm `tainting_policy` stays out of CP3 surface (gate 1 + gate 2 not cleared); (d) §12.1 engine module path (`crates/engine/src/daemon/`) — engine team coordination; (e) §13 evolution policy — versioning posture, breaking-change discipline, freeze schedule.
+- **spec-auditor** (after tech-lead + dx-tester converge): CP3 structural audit. Verify cross-section consistency (every §9 method citation is in the actual `manager.rs` line range; every §10.1 re-export line is in the proposed `lib.rs`; every §11 walkthrough type is consistent with §2 trait shape; every §12 ADR-0037 cross-ref is in the amended ADR text), forward-reference integrity (every CP4 forward-ref in §13.1 (MATURITY bump) and §13.5 (post-soak schedule) is consistent), claim-vs-source (every "per Strategy §X" lands in Strategy §X; every spike file path resolves). Pay specific attention to §9.7 — the CP2 → CP3 file rename (`execute.rs` → `gate.rs`) is a deliberate refinement; verify the freeze-policy permits this kind of CP2-to-CP3 cut adjustment per §0.3.
+
 ## Changelog
 
 - 2026-04-25 CP1 draft — §0 + §1 + §2 + §3 (architect)
 - 2026-04-25 CP1 ratified (architect; tech-lead RATIFY_WITH_EDITS + rust-senior RATIFY_WITH_EDITS + spec-auditor PASS_WITH_MINOR). Edits applied: §3.2 `Result<…, Error>` wrapper restored on `on_credential_refreshed`; §3.5 `RotationOutcome` aggregate type defined; §3.5 event broadcast contract LOCKED to aggregate-only refresh + aggregate revoke + per-resource `HealthChanged` on revoke failure (B-2); §3.2 dispatcher lifetime SAFETY comment added; §3.1 NEW error constructors (`Error::missing_credential_id`, `Error::scheme_type_mismatch::<R>()`) called out as required additions. ADR-0037 acceptance gate amended in place to gate on the engine-fold *decision*, not the engine-side *implementation* (which is CP3 §13).
 - 2026-04-26 CP2 draft — §4 lifecycle + §5 implementation specifics + §6 operational + §7 testing + §8 storage (architect). Status flipped to `CP2 draft — awaiting tech-lead + security-lead review` per cadence. Key locks: §5.3 revocation default-hook = option (b) Manager-enforced taint flip; §5.1 pool swap = `Arc<RwLock<Pool>>` (NOT `ArcSwap`); §5.2 `warmup_pool` takes credential scheme explicitly + dedicated `warmup_pool_no_credential` for opt-out; §6.1 six trace span names locked; §6.2 five counter metrics locked; §6.3 two new `ResourceEvent` variants + per-resource `HealthChanged` on revoke failure (B-2 honoured); §5.4 seven-submodule file-split cut points locked; §5.5 `ManagedResource::set_failed` wired into `DrainTimeoutPolicy::Abort` path (Phase 1 🔴-4 closed).
 - 2026-04-24 CP2 ratified (architect; tech-lead RATIFY_WITH_EDITS + security-lead ENDORSE_WITH_AMENDMENTS). Status flipped to `CP2 ratified — pending CP3 dispatch`. Six bounded edits applied: **E1** §6.3 line 1357 — "Three variants added" → "Two new variants added; existing `HealthChanged` reused per B-2"; **E2** §1.2 — 5-submodule list reconciled to §5.4's 7-submodule list with explicit "extending Strategy §4.5" rationale (registration.rs holds 🔴-1 fix; shutdown.rs holds 🔴-4 fix); **E3** §6.3 line 1391 — `event()::key()` CP3 §12 forward-ref tightened to pin (a) `RegisterOptions::register_with_event_filter` vs (b) crate-level filter trait trade-off and require it close in the same CP3 wave that lands the new variants; **SL-2** §7.4 — three security-axis concurrency tests added (`revoke_during_inflight_acquire`, `concurrent_refresh_plus_revoke`, `revoke_during_refresh`); **SL-3** §5.1 — resource-side `build_pool_from_scheme` budget guidance added (≤ 60% of dispatch timeout) with CP3 §11 forward-ref; **SL-1** new §5.6 — CP3 deferrals subsection capturing future `RegisterOptions::tainting_policy` knob + future `warmup_pool_by_id` helper with their gating constraints. §5 prelude updated five-items → six-items. ADR-0036 + ADR-0037 already at `accepted` per CP1 ratification — CP2 lock is a Tech Spec internal milestone, not an ADR gate. Awaiting orchestrator dispatch of CP3 (§9-§13 interface + ergonomics).
+- 2026-04-24 CP3 draft — §9 manager file split (function-level cuts) + §10 public API surface + §11 adapter authoring contract + §12 Daemon/EventSource engine landing + §13 evolution policy (architect). Status flipped to `CP3 draft — awaiting spec-auditor + dx-tester + tech-lead review` per cadence. Key locks: §9 seven-submodule function-level assignments enumerated against current `manager.rs` line ranges; §9.7 CP2 file rename `execute.rs` → `gate.rs` (refinement, freeze-policy permitted per §0.3); §10.2 dual-helper register_* decision (5 topologies × {NoCredential shortcut, credential-bearing} = 10 public methods; rejected unified-`RegisterOptions`-only alternative for migration parity + DX symmetry); §10.4 `RegisterOptions` final shape with `credential_id` + `credential_rotation_timeout` fields (`#[non_exhaustive]` builder pattern); §10.5 SL-1 `tainting_policy` confirmed deferred (gate 1 + gate 2 not cleared); §11 adapter contract content spec for `crates/resource/docs/adapters.md` rewrite (8 subsections covering imports, minimum impl, topology guide, NoCredential opt-out, credential-bearing walkthrough, override pattern, testing, common pitfalls); §12.1 engine module path = `crates/engine/src/daemon/` (rejected `runtime/` and `scheduler/` alternatives); §12.5 `TopologyRuntime<R>` enum shrink 7 → 5 enumerated; §13 evolution policy commits to no-shims discipline + post-`core` deprecation cycle + freeze schedule (in-cascade, post-cascade soak FROZEN, post-soak `frontier`, post-`core`-bump). CP3 deferrals: §7.6 coverage tool pick deferred to migration PR; CP4 §16 records `core` maturity bump trigger. ADR-0036 + ADR-0037 unchanged at `accepted`. Awaiting parallel review (spec-auditor + dx-tester + tech-lead).
+- 2026-04-24 CP3 review edits applied + CP4 draft (architect; final architect pass per orchestrator dispatch). Status flipped to `CP4 draft — awaiting spec-auditor + tech-lead review (final review round before FROZEN)`. **Six CP3 review edits applied inline:** **E1** (tech-lead) §9.5 dispatcher visibility — `ResourceDispatcher` declared `pub(crate)` (not `pub`) + `#[doc(hidden)] pub use ... as __internal_ResourceDispatcher` re-export from `lib.rs` (§10.1 line 1783) for production test access; clean shape replaces "two-faced" framing. **E2** (tech-lead) §9.6 cross-pointer added noting `wait_for_drain` moved from CP2 §5.4 `execute.rs` to CP3 §9.6 `shutdown.rs`. **E3** (tech-lead) §10.2 line 1817 — total `register*` public surface clarified as 11 (10 dual helpers + 1 type-erased `register<R: Resource>`). **DX-1** (dx-tester) §11.1 imports — added `RegisterOptions`, `PoolConfig`, `AcquireOptions` to import list with downstream-reference notes (`NoScheme` retained for projection sites). **DX-2** (dx-tester) §11.2 compile-claim — over-claim "every line compiles against trunk" replaced with honest illustrative-shape framing; `rust,ignore` annotation; `Pooled` impl line added; spike `MockKvStore`/`MockHttpClient` lines 125-200 cited as canonical compile-checked baseline. **DX-3** (dx-tester) §11.5 + §11.6 `rust,ignore` annotation on hypothetical `PostgresCredential`/`build_pool_from_scheme` blocks with explicit "no such crate exists in trunk" framing. **CP4 §14-§16 drafted:** §14 cross-references (six tables: Strategy §4 → Tech Spec, ADR-0036/0037 + amendment record, credential Tech Spec §3.6/§Credential::revoke/§4.3, Phase 1 🔴/🟠 finding map, register link, spike artefact link); §15 open items resolution (§15.1-§15.5 close all five Strategy §5 items: §5.1 daemon revisit triggers concretized, §5.2 `AcquireOptions::intent/.tags` final treatment = `#[deprecated]`, §5.3 `Runtime`/`Lease` collapse future-cascade trigger confirmed, §5.4 `NoCredential` symmetry closed via §10.2 dual-helper, §5.5 revoke spec extension closed via Strategy §4.2 footnote; §15.6 register status flips for all 22 `tech-spec-material` rows to `decided`); §16 implementation handoff (§16.1 atomic single-PR per Strategy §4.8, §16.2 per-consumer migration sequence action/sdk/engine/plugin/sandbox, §16.3 rollback strategy, §16.4 DoD checklist with CI gate + 7 invariants, §16.5 MATURITY transition trigger). Awaiting parallel review (spec-auditor + tech-lead) before FROZEN.
 
 ---
 
-**Tech Spec CP1 ratified.** ADR-0036 and ADR-0037 (per its 2026-04-25 amended-in-place gate text) both clear-able to `accepted` on this ratification. CP2 (§4-§8) drafted; awaiting tech-lead + security-lead parallel co-decision review.
+**Tech Spec CP1 + CP2 + CP3 ratified.** ADR-0036 and ADR-0037 (per its 2026-04-25 amended-in-place gate text) both at `accepted` on CP1 ratification. CP3 review edits applied; CP4 (§14-§16 meta + open items + handoff) drafted. Awaiting spec-auditor + tech-lead final review before Tech Spec FROZEN.

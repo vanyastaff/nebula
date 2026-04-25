@@ -1,7 +1,7 @@
 # nebula-resource Redesign Cascade — Summary
 
-**Date:** 2026-04-24
-**Status:** **PARTIAL COMPLETION** — Phases 0, 1, 2, 3, 5, 7, 8 complete; Phases 4, 6 deferred to post-cascade implementation wave
+**Date:** 2026-04-24 (initial); 2026-04-25 (continuation completed)
+**Status:** **CASCADE COMPLETE** — All 9 phases ratified (initial cascade 2026-04-24 covered Phases 0-3, 5, 7, 8; continuation 2026-04-25 completed Phase 4 spike + Phase 6 Tech Spec CP1-CP4)
 **Branch:** `claude/vigilant-mahavira-629d10`
 **Worktree:** `.worktrees/nebula/vigilant-mahavira-629d10`
 **Orchestrator:** main session (flat coordination; hands-off cascade per user's paste-in-session prompt of 2026-04-24)
@@ -10,7 +10,50 @@
 
 ## Headline
 
-The cascade established ground truth, enumerated 28 concrete pain findings (6 🔴 / 9 🟠 / 9 🟡 / 3 🟢 / 1 ✅), converged on Option B (targeted redesign) in a single co-decision round, and produced a **frozen 7920-word Strategy Document + ADR-0036 primary decision record + 35-row living concerns register**. Phase 4 spike and Phase 6 Tech Spec are deferred to the implementation PR wave — both are conditional on Strategy §4.1 trait shape validation, and a single session cannot usefully execute a 4-5-CP Tech Spec + 2-iteration spike in the remaining envelope. User returns to a complete design-phase deliverable with a clear path to implementation.
+The cascade established ground truth, enumerated 28 concrete pain findings (6 🔴 / 9 🟠 / 9 🟡 / 3 🟢 / 1 ✅), converged on Option B (targeted redesign) in a single co-decision round, produced a **frozen Strategy Document + 2 accepted ADRs + 35-row living concerns register**, validated the §3.6 trait shape via Phase 4 spike (PASSED iter-1), and elaborated the design to a **FROZEN 27,827-word Tech Spec across 16 sections + 4 ratified checkpoints**. **Implementation foundation now complete.** Implementation PR wave can begin per Tech Spec §16.1 (atomic single-PR plan).
+
+## Continuation 2026-04-25 outcomes (Phase 4 + Phase 6)
+
+| # | Phase | Status | Commit | Artefacts |
+|---|-------|--------|--------|-----------|
+| 4 | Spike (iter-1) | ✅ PASSED | `262665f8` | `docs/superpowers/drafts/2026-04-24-nebula-resource-redesign/spike/` (11 files including `NOTES.md` + 4 mock Resource impls + 6 integration tests) |
+| 6 CP1 | Tech Spec §0-§3 (foundation) | ✅ RATIFIED | `1e416b91` | Tech Spec §0-§3; ADR-0036 + ADR-0037 flipped to `accepted` |
+| 6 CP2 | Tech Spec §4-§8 (execution + storage) | ✅ RATIFIED | `e0f49536` | Tech Spec §4-§8; security amendments B-1/B-2/B-3 honored |
+| 6 CP3 | Tech Spec §9-§13 (interface + migration) | ✅ RATIFIED | (final commit) | Tech Spec §9-§13; manager file split function-level cuts; adapter contract spec |
+| 6 CP4 | Tech Spec §14-§16 (meta + handoff) | ✅ FROZEN | (final commit) | Tech Spec §14-§16; all 22 register tech-spec-material rows flipped to `decided`; PR wave plan locked atomic |
+
+### Spike outcome (Phase 4)
+
+- All 7 exit criteria met: cargo check/test/clippy clean; 6/6 integration tests pass; 3/3 compile-fail probes resolve as expected
+- `<Self::Credential as Credential>::Scheme` ergonomics workable
+- `type Credential = NoCredential;` opt-out clean
+- Parallel rotation dispatch with per-resource isolation demonstrated under latency (3s sleep, 250ms budget) AND error (one resource Err, siblings Ok)
+- Reverse-index write path implemented (resolves manager.rs:262/370 Phase 1 finding 🔴-1)
+- 5 open questions resolved in Tech Spec CP1 §2.5
+
+### Tech Spec ratification track (Phase 6)
+
+- **CP1:** spec-auditor PASS_WITH_MINOR + rust-senior RATIFY_WITH_EDITS + tech-lead RATIFY_WITH_EDITS — 6 bounded edits applied including ADR-0037 amended-in-place gate text
+- **CP2:** tech-lead RATIFY_WITH_EDITS + security-lead ENDORSE_WITH_AMENDMENTS — security B-1/B-2/B-3 verbatim honored; 6 edits applied
+- **CP3:** tech-lead RATIFY_WITH_EDITS + dx-tester ENDORSE_WITH_AMENDMENTS — 6 edits applied (3 spec-hygiene + 3 §11 adapter walkthrough fixes)
+- **CP4:** tech-lead RATIFY → FROZEN. **First CP this cascade requiring zero edits.**
+
+### Locked design decisions (canonical)
+
+- **`Resource::Credential` adoption** per credential Tech Spec §3.6 verbatim (ADR-0036)
+- **`NoCredential`** lives in `nebula-credential`, re-exported by `nebula-resource`
+- **`TypeId`-based opt-out** detection (over sealed-trait)
+- **`ManagerConfig::credential_rotation_concurrency = 32`** soft cap default
+- **30s rotation timeout** (Manager default) + per-`RegisterOptions` override
+- **Revocation default-hook = option (b):** Manager unconditionally flips `credential_revoked` atomic post-dispatch
+- **Blue-green pool swap = `Arc<RwLock<Pool>>`** (async-write exclusion across `.await`)
+- **`warmup_pool` two-method split:** credential-bearing + `warmup_pool_no_credential` (B-3 type-level guard)
+- **Manager file-split: 7 submodules** (mod / options / registration / dispatch / rotation / shutdown / gate)
+- **Daemon + EventSource → engine-fold** at `crates/engine/src/daemon/` (ADR-0037)
+- **`register_*` dual-helper API: 5 topologies × 2 = 10 helpers + 1 type-erased = 11 total methods**
+- **`AcquireOptions::intent/.tags`: `#[deprecated]`** (option b per Strategy §5.2)
+- **PR wave: atomic single-PR** (Strategy §4.8 + ADR-0036 + security atomicity invariant)
+- **MATURITY transition: frontier → core** post-soak (Strategy §6.4)
 
 ---
 

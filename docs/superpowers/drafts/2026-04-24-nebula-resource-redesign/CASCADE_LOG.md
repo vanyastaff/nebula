@@ -284,3 +284,60 @@ Commit per CP. Per-CP commit cadence enforced to prevent filesystem-event recurr
 **ADR transitions UNBLOCKED:** ADR-0036 + ADR-0037 acceptance gates now cleared from spike side; ratification still requires Phase 6 CP1.
 
 **Next:** Phase 6 CP1 — architect drafts §0-§3 (foundation: status/scope/freeze + goals/non-goals + trait contract Rust signatures + runtime model). Spike `final_shape_v2.rs` equivalent extractable from `spike/crates/resource-shape/src/{lib,resource,topology,manager,no_credential}.rs`.
+
+### 2026-04-25 — Phase 6 CP1 ratified (Tech Spec §0-§3 + ADR transitions)
+
+- architect drafted CP1 §0-§3 (~6700 words; full Rust signatures)
+- Parallel review: spec-auditor PASS_WITH_MINOR / rust-senior RATIFY_WITH_EDITS / tech-lead RATIFY_WITH_EDITS
+- Convergent edits applied: ADR-0037 amended-in-place gate text; §3.5 RotationOutcome defined; §3.6 Result wrapper aligned; §3.2 dispatcher lifetime SAFETY prose; §3.1 new error constructors called out
+- 5 spike open questions all resolved in §2.5 (NoCredential location, TypeId vs sealed-trait, Box::pin observability, timeout config hybrid, compile-fail probe gaps)
+- **ADR-0036 + ADR-0037 flipped `proposed` → `accepted`**
+- Commit: `1e416b91`
+
+### 2026-04-25 — Phase 6 CP2 ratified (Tech Spec §4-§8)
+
+- architect drafted CP2 §4-§8 (~11K words)
+- Parallel co-decision: tech-lead RATIFY_WITH_EDITS + security-lead ENDORSE_WITH_AMENDMENTS
+- Security amendments B-1 / B-2 / B-3 verbatim honored
+- 6 bounded edits applied (E1/E2/E3 spec hygiene + SL-1/SL-2/SL-3 security)
+- Key §5 decisions: option (b) revocation default-hook; `Arc<RwLock<Pool>>` blue-green swap; `warmup_pool` two-method split; 7-submodule split (registration.rs + shutdown.rs added)
+- Key §6 observability locked: 6 trace span names + 5 counter metrics + 2 new ResourceEvent variants
+- Commit: `e0f49536`
+
+### 2026-04-25 — Phase 6 CP3 ratified (Tech Spec §9-§13)
+
+- architect drafted CP3 §9-§13 (function-level cuts, surface, adapter contract, engine-fold landing, evolution)
+- Parallel review: tech-lead RATIFY_WITH_EDITS + dx-tester ENDORSE_WITH_AMENDMENTS
+- 6 edits applied (3 spec-hygiene + 3 §11 adapter walkthrough fixes including `rust,ignore` annotation)
+- Key §10.2 decision: dual register_* helpers (10 + 1 = 11 methods total)
+- Key §12.1 decision: engine module path = `crates/engine/src/daemon/`
+- §10.5 SL-1 `tainting_policy` deferred to future cascade (gates not satisfied)
+
+### 2026-04-25 — Phase 6 CP4 RATIFIED → Tech Spec FROZEN
+
+- architect drafted CP4 §14-§16 (cross-refs + open items resolution + handoff plan)
+- tech-lead final ratification: **RATIFY → FROZEN. First CP this cascade requiring zero edits.**
+- All 8 sub-gates pass (4 architect decisions + 6 CP3 edits + register flips + §14 cross-refs + §15 closures + §16 handoff + §16.5 maturity trigger + ADR-0036/0037 unchanged at accepted)
+- §15.2 AcquireOptions: `#[deprecated]` (option b per Strategy §5.2)
+- §16.1 PR wave: atomic single-PR (per Strategy §4.8 + ADR-0036 + security atomicity invariant)
+- §15.6 register flips: 22-of-22 tech-spec-material rows verified `decided` with section pointers
+- Tech Spec total: 2758 lines / 27,827 words across 16 sections
+
+## Cascade outcome — COMPLETE (all 9 phases)
+
+**Final state:**
+- Strategy FROZEN (commit `5cf00a24`)
+- ADR-0036 accepted (was proposed → accepted via CP1 ratification)
+- ADR-0037 accepted with amended-in-place gate text (was proposed → accepted via CP1 ratification)
+- Tech Spec FROZEN (CP1-CP4 ratified across 4 commits)
+- Concerns register: 35 rows; 22 tech-spec-material all `decided`
+- Spike artefacts preserved at `docs/superpowers/drafts/.../spike/`
+- Implementation PR wave UNBLOCKED — atomic single-PR per Tech Spec §16.1
+
+**Final budget:** ~120 min agent-effort initial cascade + ~190 min agent-effort continuation = **~310 min total agent-effort** across full cascade. **~7% of 5-day envelope used.** Massive headroom for implementation work.
+
+**Escalations:** 1 soft (filesystem loss in initial cascade — recovered); 0 hard.
+
+---
+
+*Cascade log closed at 2026-04-25 with full design foundation locked. Implementation PR wave per Tech Spec §16.1 begins separately. Future amendments to design require new cascade session.*
