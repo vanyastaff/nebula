@@ -86,6 +86,36 @@ Devops wrote to wrong repo path (main repo instead of worktree) — orchestrator
 - ADR-0038 ControlAction seal + canon §3.5 DX tier ratification (canon revision per §0.2)
 - ADR-NNNN+3 cluster-mode hooks deliberately deferred (out of cascade scope per Strategy §6.2)
 
+### 2026-04-25 T03:30 — Post-freeze amendment Q4 — Option D (TriggerAction.type Input asymmetry) REJECT
+
+**User raised FOURTH pushback.** Sharper framing than Iter 1-3:
+- NOT base trait consolidation (already rejected 3 times)
+- NOT new naming
+- Specific: should TriggerAction have `type Input` directly on trait, same syntactic shape as Stateless/Stateful/Resource? Method signatures unchanged.
+- Asymmetry argument: 3-vs-1 visible; user asks for technical/principled justification
+
+**Architect verification:**
+- §2.2 confirmed 3-vs-1: StatelessAction (line 159), StatefulAction (line 177), ResourceAction (line 227) declare `type Input`; TriggerAction (lines 202-211) does NOT
+- Spike `final_shape_v2.rs:209-262` confirms same 3-vs-1
+- This IS new framing — Option D (per-trait `type Input` decoupled from method parameter), not analyzed in Iter 1-3 (which all addressed CONSOLIDATION variants)
+
+**Outcome: REJECT (refined four times — Option D analyzed for first time)**
+
+**Concrete one-sentence reason**: Option D forces TriggerAction's `type Input` to mean per-instance configuration while the other 3 primaries' `type Input` means per-dispatch method-parameter; **same syntactic surface, opposite semantics** — silent divergence trap worse than the visible 3-vs-1 asymmetry it removes. Contributor reading `TelegramTrigger::Input = TelegramTriggerInput` would reasonably assume `handle(.., input: TelegramTriggerInput)` exists.
+
+**Why REJECT not ACCEPT**: user explicitly admits "method signatures unchanged — handle() takes event, not Input." That admission IS load-bearing: in the other 3, `type Input` is justified BECAUSE it appears in method signature. For TriggerAction it would be decorative — schema reflection already universal via `with_schema(<T as HasSchema>::schema())` per `crates/action/src/metadata.rs:292`, not trait-level-blocked.
+
+**Tech Spec amendments enacted (rationale-only, mirrors Q2/Q3 precedent):**
+- §2.9.1d (NEW) — Option D + 4 blockers (semantic divergence trap; user's "decorative Input" admission load-bearing; schema reflection already universal; ADR-0036 §Decision item 4 binds verbatim spike shapes)
+- §2.9.5/§2.9.6/§2.9.7 extended to "refined four times" + four-iteration history table
+- §17 CHANGELOG + §0.1 status line entries
+
+**No status qualifier change** (rationale-only per §15.9.5/§15.9.6 precedent). **No §2.2 signature change. No ADR amendment.**
+
+ADR-0036 §Decision item 4 binds verbatim spike shapes; Option D would invalidate freeze per §0.2 items 2+4 — REJECT preserves both.
+
+**Tech-lead ratification SKIPPED** (rationale-only refinement, mirror Q2 precedent; not amendment-cycle gate).
+
 ### 2026-04-25 T03:00 — Post-freeze amendment Q3 — §2.9 third REJECT-refined (schema axis distinction)
 
 **User raised THIRD pushback на §2.9** с concrete consumer evidence: n8n 70+ trigger nodes expose Input schema (UI form generation) + Output schema (downstream type-checking) + filter/parameter validation. Examples: Telegram Trigger Input=`{allowed_updates}` Output=`TelegramUpdate`; GitHub Trigger Input=`{repository,events}` Output=`GitHubPayload`; Schedule Trigger Input=`{interval,cron}` Output=`ScheduledTick`. User claimed §2.9.6 point 2 ("no current consumer") incorrect; asked refactor handle() к accept `Self::Input` parameter.
