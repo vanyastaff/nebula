@@ -32,8 +32,8 @@ All 8 stakeholder agents present; roster matches prompt expectations.
 | Phase 0 | ✅ complete | [`01-current-state.md`](./01-current-state.md) + [`01a-code-audit.md`](./01a-code-audit.md) + [`01b-workspace-audit.md`](./01b-workspace-audit.md) | Gate passed: convergent audits, 4 🔴 + 9 🟠 findings; escalation flag raised (C1) but not hard-stop |
 | Phase 1 | ✅ complete | [`02-pain-enumeration.md`](./02-pain-enumeration.md) + 02a/b/c/d sub-reports | Gate passed: 11 🔴 + 30+ 🟠 findings; critical reframe from tech-lead (credential CP6 unimplemented in credential crate too) |
 | Phase 2 | ✅ complete | [`03-scope-decision.md`](./03-scope-decision.md) + 03a/b/c sub-reports | Gate locked: **Option A'** (co-landed action + credential CP6 design). Round 2 required because architect proposed B'+ hybrid that tech-lead hadn't evaluated. Design-scope-only reframe resolved budget concern. No VETO, no escalation. |
-| Phase 3 | in-progress | Strategy Document CP3 | Dispatching architect CP1 (§1-§3) |
-| Phase 4 | blocked | Spike NOTES.md | Conditional on Phase 3 scope |
+| Phase 3 | ✅ complete | [`Strategy FROZEN CP3`](../../specs/2026-04-24-action-redesign-strategy.md) + 04a/b + 05a/b + 06a/b sub-reviews | Frozen 2026-04-24 after CP1+CP2+CP3 cycles. Each CP iterated once after spec-auditor + tech-lead review. 540 lines total. |
+| Phase 4 | in-progress | Spike NOTES.md (HRTB + SchemeGuard cancellation) | Spike required per Strategy §5.2; dispatching rust-senior isolated worktree, max 2 iterations |
 | Phase 5 | blocked | ADR(s) | Blocked by Phase 3 |
 | Phase 6 | blocked | Tech Spec CP4 | Blocked by Phases 4+5 |
 | Phase 7 | blocked | Concerns register | Conditional on Phase 1 severity |
@@ -70,6 +70,22 @@ Rust-senior: 01a-code-audit.md (~450 lines). 4 🔴 + 9 🟠 findings.
 Devops: 01b-workspace-audit.md (~380 lines). 0 🔴 + 8 🟠 + 15 🟡 findings.
 
 Devops wrote to wrong repo path (main repo instead of worktree) — orchestrator corrected via `mv`. Soft process issue; no retry needed.
+
+### 2026-04-24 T19:30 — Phase 3 complete + Strategy FROZEN CP3 (commit 68bbd4fc for Phase 2, next for Phase 3)
+
+**Strategy Document drafted across 3 checkpoints with 1 iteration each:**
+
+- **CP1** (§0-§3): architect drafted 197 lines; spec-auditor PASS-WITH-NITS (3 cite errors); tech-lead RATIFY-WITH-NITS (3 wording locks). Architect single-pass iteration applied 6 edits.
+- **CP2** (§4-§5): architect appended 215 lines (§4 recommendation + §5 open items + spike plan); spec-auditor REVISE (1 🔴 spike signature drift, 2 🟠, 5 🟡); tech-lead RATIFY-WITH-NITS (2 edits). Architect single-pass iteration applied 9 edits — load-bearing 🔴 closed via path (a) `SlotBinding::resolve_fn`.
+- **CP3** (§6): architect appended 128 lines (§6 post-validation roadmap, 8 sub-sections + new §6.9 retry-scheduler closure); spec-auditor REVISE (3 🔴 blockers); tech-lead RATIFY-WITH-NITS (1 edit). Architect single-pass iteration applied 7 edits.
+
+**Status header:** `FROZEN CP3 2026-04-24`. Strategy total: 540 lines.
+
+**Forward path locked:**
+- Phase 4 spike — `SlotBinding::resolve_fn` HRTB + `SchemeGuard<'a, C>` cancellation drop-order verification, rust-senior isolated worktree, 2 iterations max
+- Phase 5 ADRs — 3 required (trait shape; macro emission; ControlAction seal + canon §3.5 revision) + 1 optional (cluster-mode hooks)
+- Phase 6 Tech Spec — 5 CPs (CP1 §0-§3 / CP2a §4-§5 / CP2b §6-§8 / CP3 §9-§13 / CP4 §14-§16); per-CP 5 reviewers parallel
+- Phase 8 user pick — implementation path (a) single PR / (b) sibling cascades / (c) phased B'+ surface; (c) NOT VIABLE without committed credential CP6 cascade slot
 
 ### 2026-04-24 T17:22 — Phase 2 complete + scope locked (commit 786f2429 for Phase 1, next for Phase 2)
 
