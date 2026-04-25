@@ -86,6 +86,32 @@ Devops wrote to wrong repo path (main repo instead of worktree) — orchestrator
 - ADR-0038 ControlAction seal + canon §3.5 DX tier ratification (canon revision per §0.2)
 - ADR-NNNN+3 cluster-mode hooks deliberately deferred (out of cascade scope per Strategy §6.2)
 
+### 2026-04-25 T04:00 — Post-freeze Q5 — Option E (`type Config` rename) REJECT
+
+**User responded к Q4 REJECT с targeted refinement: "может быть тогда `type Config`?"**
+
+Sharpest framing yet — directly addresses Q4 blocker B1 (semantic divergence trap from `type Input` name collision). **`type Config`** carries clear "configuration" semantics; no contributor would assume `handle(.., config)` method parameter.
+
+**Architect: E.REJECT** (both E1 TriggerAction-only and E2 universal across 4 traits)
+
+**Honest acknowledgment**: user found sharpest framing на 5-й итерации; `type Config` **does dissolve B1** naming collision blocker.
+
+**Why REJECT still holds (3 carry-forward + 1 NEW):**
+- B2 signature-doubling persists (parallel к existing `&self` + `parameters = T`)
+- B3 no compile-time consumer beyond what schema-as-data already provides
+- B4 ADR-0036 binds verbatim spike shapes (`final_shape_v2.rs:254-262` has no `type Config`)
+- **B5 NEW (load-bearing)**: §2.9.1a Resolution point 1 (line 501) + closing line 507 made explicit deliberate **paradigm choice**: «Configuration carrier is `&self`; configuration schema carrier is `ActionMetadata::parameters` via `with_schema`. No new associated type, no signature edit.» Both E1 and E2 invert that choice.
+
+**Tech Spec amendments (rationale-only):**
+- §2.9.1e (NEW) — Option E analysis + sixth axis (trait-declared-configuration-carrier-with-rename) + 4 blockers
+- §2.9.5/§2.9.6/§2.9.7 extended to fifth iteration
+- §0.1 status qualifier appended «+ Q5 §2.9.1e configuration-carrier-rename refinement»
+- §17 CHANGELOG entry
+
+**Spike unchanged. ADRs unchanged. §2.2 unchanged.**
+
+**Escalation path**: B5 is paradigm-level decision locked at §2.9.1a. If user contests = §2.9.1a paradigm re-litigation, что = tech-lead ratification gate (not rationale-only architect call). Five iterations have established consistent REJECT под progressively sharper user framings; architect honest that prior reasons were sometimes incomplete (Q3 found schema axis; Q4 found Option D as new variant; Q5 dissolved name collision). B5 is the remaining principled axis.
+
 ### 2026-04-25 T03:30 — Post-freeze amendment Q4 — Option D (TriggerAction.type Input asymmetry) REJECT
 
 **User raised FOURTH pushback.** Sharper framing than Iter 1-3:

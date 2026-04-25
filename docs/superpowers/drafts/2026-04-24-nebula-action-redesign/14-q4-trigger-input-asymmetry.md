@@ -140,3 +140,103 @@ The user identified a real syntactic asymmetry: 3 traits declare `type Input`, 1
 **Tech Spec amendment:** §2.9.1d subsection naming Option D + four blockers (B1-B4) + extending §2.9.5 / §2.9.6 / §2.9.7 / §0.1 / §17 CHANGELOG per §15.9 precedent. No §2.2 signature change. No ADR amendment.
 
 **Handoff:** if user accepts this rejection, architect can enact §2.9 amendment-in-place per §15.9 precedent. If user contests, single-round budget is exhausted — escalate to tech-lead for ratification.
+
+---
+
+## Q5 Option E — `type Config` (rename to escape semantic divergence)
+
+**User's verbatim Q5 (post-Q4):** «может быть тогда `type Config`?» — proposing the per-instance configuration carrier be named `type Config` to avoid the `type Input` semantic-collision trap from Q4 B1.
+
+### Engagement — does `type Config` resolve Q4 B1?
+
+**Yes. Naming collision is resolved.** A new contributor reading `type Config = TelegramTriggerConfig` does NOT assume `handle(.., config: TelegramTriggerConfig)` because `Config` carries clear "configuration" semantics (per-instance, registration-time) at name-level. The cosmetic-vs-semantic mismatch from Q4 B1 dissolves. **User found the sharpest framing on iteration five.**
+
+### Scope question — E1 (TriggerAction-only) vs E2 (universal across 4 traits)
+
+User's proposal is ambiguous on scope. Two variants:
+
+- **(E1) `type Config` only on TriggerAction.** Resolves visible 3-vs-1 asymmetry (Trigger gets a typed surface). Introduces NEW asymmetry in opposite direction: only Trigger declares Config; other three do not.
+- **(E2) `type Config` universally across all 4 traits.** Symmetric outcome. Each trait gets `type Config` (per-instance) AND existing `type Input` where applicable (per-dispatch). Follows logically from §2.9.1a "Configuration is universal across all 4 trait variants."
+
+### Q5 analysis — which Q4 blockers survive `type Config`?
+
+| Blocker | Survives under E1? | Survives under E2? |
+|---|---|---|
+| **B1 — silent semantic divergence** (same name, opposite meaning) | NO. `type Config` ≠ `type Input` at name level → no collision | NO. Same — different name, different meaning |
+| **B2 — signature-doubling** (parallel to `&self` + `parameters = T`) | YES (mitigatable via macro-emission link) | YES (universal: every action declares Config in macro zone AND trait surface) |
+| **B3 — decorative (no method-signature carry)** | YES — `type Config` would not appear in `handle()`; only consumer is schema-reflection, already universal via schema-as-data axis | YES — same; consumer (compile-time bounded generic over configuration types) is speculative per §2.9.1c |
+| **B4 — ADR-0036 binds verbatim spike shapes** | YES — spike `final_shape_v2.rs:254-262` has no `type Config` on TriggerAction | YES — spike has no `type Config` on any trait |
+| **NEW B5 — §2.9.1a paradigm contradiction** | YES — E1 makes Trigger's universal-config carrier the trait associated type while other 3 keep `&self`+macro zone | YES — E2 inverts the universal-config paradigm choice (§2.9.1a Resolution point 1: «Configuration lives in `&self` fields, populated at registration» — chose this over `type Config` deliberately) |
+
+**B1 dissolved. B2-B5 persist.** Naming collision was the load-bearing blocker against Option D; renaming resolves it. The remaining blockers (B2/B3/B4/B5) are weaker but cumulatively still binding.
+
+### B5 in detail — §2.9.1a paradigm contradiction (the new finding under Option E)
+
+§2.9.1a Resolution point 1 (CP2 ratified, line 501) states:
+
+> «Configuration lives in `&self` fields, populated at registration. Per §4.2 ("Fields outside the zones pass through unchanged"), an action struct may declare ordinary fields — `pub url: String`, `pub interval: Duration`, `pub channel: KafkaChannel` — and the `#[action]` macro emits the struct verbatim with credentials/resources zone-injection composed in.»
+
+§2.9.1a Resolution point 2 names the universal mechanism (line 502):
+
+> «Configuration schema flows through `ActionMetadata::parameters` (`ValidSchema`) — universally, across all 4 variants.»
+
+And §2.9.1a closing (line 507) records the **deliberate negative choice**:
+
+> «`final_shape_v2.rs:209-262` does not have a `type Config` on any of the four traits; the spike's PASS is consistent with this resolution. Configuration carrier is `&self`; configuration schema carrier is `ActionMetadata::parameters` via `with_schema`. **No new associated type, no signature edit.**»
+
+**E1 (TriggerAction-only) contradicts this:** Trigger gets `type Config` while the universality of the `&self`+macro-zone carrier is preserved for the other three — splitting the universal carrier across two paradigms.
+
+**E2 (universal) contradicts this MORE STRONGLY:** every trait declares `type Config` AT TRAIT LEVEL while ALSO populating `&self` fields via macro zone — every action now has parallel declaration. The §2.9.1a "no new associated type" choice was deliberate; E2 inverts it.
+
+### B3 in detail — what `type Config` adds beyond `with_schema`
+
+User's framing implicitly asks: what consumer does `type Config` enable that `with_schema(<TelegramTriggerConfig as HasSchema>::schema())` does not? Four candidates evaluated:
+
+- **(a) Engine-side typed deserialization.** Engine erases through JSON by design (§2.9.6 point 2 + §3 / §2.5 `ActionHandler` enum). `type Config` does not pierce JSON erasure; deserialization happens through `serde_json::from_value::<T>(...)` which already works with the `&self` field type. Not a new consumer.
+- **(b) Compile-time bounded generic code: `fn validate<T: TriggerAction<Config = SomeBound>>(...)`.** This is a schema-as-trait-type axis consumer per §2.9.1c. Currently zero such consumers in Tech Spec scope. Speculative DX surface per `feedback_active_dev_mode.md`.
+- **(c) Schema-as-trait-type axis carrier symmetric with schema-as-data axis.** Symmetric in form, but schema-as-data is already universal and goal-aligned with `docs/COMPETITIVE.md` line 41 (typed-Rust-contracts bet). Adding the parallel trait-type axis surface costs without enabling a new consumer.
+- **(d) Compile-time bound `Config: HasSchema + DeserializeOwned`.** Today the `&self` field's type is the locus of these bounds (the `parameters = T` macro zone declares them at the macro layer; the field's type carries them). Hoisting to trait-associated-type adds the bound twice (trait + field), not once.
+
+**No candidate reaches "current consumer that schema-as-data does not satisfy" threshold.** B3 carries.
+
+### Outcome — **E.REJECT** (refined fifth time)
+
+**E.REJECT** for both E1 and E2.
+
+**Single-sentence reason:** Option E (renaming to `type Config`) resolves the Q4 B1 naming-collision blocker — user found the sharpest framing on iteration five — but the remaining blockers (B2 signature-doubling, B3 no compile-time consumer that schema-as-data does not satisfy, B4 ADR-0036 spike-shape binding, **B5 NEW — §2.9.1a "configuration carrier is `&self`+macro-zone, no new associated type" was a deliberate paradigm choice**) cumulatively still preclude ACCEPT under both E1 and E2.
+
+### Honest acknowledgment to user
+
+The user's `type Config` proposal is materially better than Option D. Q4 B1 was the load-bearing blocker — the silent-divergence trap from name-collision. `type Config` dissolves that. **Three of four Q4 blockers (B2/B3/B4) remain at lower force**, and a NEW blocker (B5 — paradigm contradiction with §2.9.1a Resolution point 1's deliberate "no `type Config` on any trait" closing) surfaces under direct re-examination.
+
+This is the FIFTH iteration of essentially the same question with progressively sharper framing. The cumulative analysis now distinguishes **six axes**:
+
+1. trait-method-input axis (where consolidation actually lives — §2.9.2)
+2. trigger-purpose-input axis (lifecycle layer, not trait method — §2.9.1b)
+3. configuration axis (per-instance, in `&self` fields — §2.9.1a Resolution)
+4. schema-as-data vs schema-as-trait-type carrier axis (§2.9.1c)
+5. trait-declared-configuration-carrier axis with name-collision (Option D — §2.9.1d)
+6. **trait-declared-configuration-carrier axis with rename (Option E — §2.9.1e)**
+
+Under axis 6, the rename resolves the silent-divergence concern but the §2.9.1a paradigm-choice (B5) and ADR-0036 spike-binding (B4) hold.
+
+### Tech Spec amendment-in-place trail (REJECT — rationale refinement only)
+
+Per §15.9 amendment-in-place precedent (Q1 + Q2 + Q3 + Q4 already established):
+
+1. **§2.9** — append §2.9.1e subsection naming Option E (rename to `type Config`) + B1-resolved-but-B2-B3-B4-B5-still-bind cumulative analysis + scope question (E1 vs E2) + the new B5 finding.
+2. **§2.9.5** — extend rationale chain: "post-freeze 2026-04-25 Q5 per §2.9.1e — six-axis distinction adds trait-declared-configuration-carrier-with-rename axis (Option E rejected on B5 paradigm contradiction with §2.9.1a + B4 ADR-0036 binding; B1 naming-collision dissolved by rename)."
+3. **§2.9.6** — append seventh rationale point referencing §2.9.1e.
+4. **§2.9.7** — append "Q5 post-freeze refinement (§2.9.1e) acknowledged user's sharpest-framing-yet `type Config` rename as resolving Q4 B1, but rejected on B5 (NEW — §2.9.1a Resolution point 1's deliberate 'no `type Config` on any trait, configuration carrier is `&self`+macro-zone' paradigm choice) + B4 (ADR-0036 binds verbatim spike shapes from `final_shape_v2.rs:209-262`)."
+5. **§0.1 line 33** — extend status line: "...amended-in-place 2026-04-25 post-freeze for Q1 + Q2 §2.9.1b + Q3 §2.9.1c + Q4 §2.9.1d + **Q5 §2.9.1e configuration-carrier-rename refinement** per ADR-0035 amended-in-place precedent."
+6. **§17 CHANGELOG** — append "Q5 post-freeze 2026-04-25: §2.9 amended-in-place — Option E (rename to `type Config` to resolve Q4 B1) rejected on B5 (NEW — paradigm contradiction with §2.9.1a Resolution point 1 deliberate 'no `type Config` on any trait' choice) + B4 (ADR-0036 spike binding). §2.9.1e added; §2.9.5 / §2.9.6 / §2.9.7 rationale extended; verdict unchanged. Both E1 (TriggerAction-only) and E2 (universal) rejected on the same blockers."
+7. **No ADR amendment.** ADR-0036 binding preserved. ADR-0038 not flipped.
+8. **No spike re-run.** Spike `final_shape_v2.rs:209-262` remains the signature-locking source unchanged.
+
+### Summary
+
+**Verdict: E.REJECT** (both E1 and E2 — refined fifth time).
+
+**Honest acknowledgment:** user found the right framing on iteration five — `type Config` resolves Q4 B1 (silent semantic divergence from `type Input` name-collision). The remaining blockers (B2 signature-doubling, B3 no compile-time consumer beyond schema-as-data, B4 ADR-0036 binding) are weaker than B1 was, but a NEW blocker (B5) surfaced: §2.9.1a Resolution point 1 / line 507 closing made an explicit deliberate paradigm choice ("Configuration carrier is `&self`; ... No new associated type, no signature edit"). Adding `type Config` — under either E1 or E2 — inverts that paradigm choice.
+
+**If user contests B5:** that is a §2.9.1a re-litigation, not a §2.9 re-litigation; cycle escalates to tech-lead for ratification of the B5 paradigm-choice question (whether `&self`+macro-zone universality should be inverted to a trait-associated-type universality). Single-round budget for this iteration is exhausted.
