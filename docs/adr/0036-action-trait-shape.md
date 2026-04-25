@@ -1,8 +1,9 @@
 ---
 id: 0036
 title: action-trait-shape
-status: proposed
+status: accepted
 date: 2026-04-24
+accepted_date: 2026-04-25
 supersedes: []
 superseded_by: []
 tags: [action, macro, trait-shape, nebula-action, canon-3.5, cascade-action-redesign]
@@ -19,7 +20,7 @@ linear: []
 
 ## Status
 
-**Proposed** — drafted 2026-04-24 alongside ADR-0037 / ADR-0038 as the 3-ADR set for the nebula-action redesign cascade ([Strategy §6.2](../superpowers/specs/2026-04-24-action-redesign-strategy.md#62-adr-drafting-roadmap)). Status moves to `accepted` only after Phase 6 Tech Spec ratification.
+**Accepted 2026-04-25** — drafted 2026-04-24 alongside ADR-0037 / ADR-0038 as the 3-ADR set for the nebula-action redesign cascade ([Strategy §6.2](../superpowers/specs/2026-04-24-action-redesign-strategy.md#62-adr-drafting-roadmap)). Status moved from `proposed` → `accepted` 2026-04-25 after Phase 6 Tech Spec FROZEN CP4 ratification (tech-lead 11c freeze ratification).
 
 ## Context
 

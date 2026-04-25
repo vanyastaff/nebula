@@ -86,6 +86,30 @@ Devops wrote to wrong repo path (main repo instead of worktree) — orchestrator
 - ADR-0038 ControlAction seal + canon §3.5 DX tier ratification (canon revision per §0.2)
 - ADR-NNNN+3 cluster-mode hooks deliberately deferred (out of cascade scope per Strategy §6.2)
 
+### 2026-04-25 T01:30 — CP4 FROZEN + Phase 6 closes
+
+**CP4 §14-§16 (Tech Spec meta + handoff, FINAL CP):**
+
+- Architect drafted 339 lines (§14 cross-references with 5 sub-tables, §15 open items resolution including §15.5 ADR-0037 amendment-in-place ENACTMENT, §16 implementation handoff with (a/b/c) PR wave plan + DoD + rollback strategy)
+- **ADR-0037 §1 SlotBinding amendment-in-place ENACTED** during CP4: capability folded into SlotType enum per credential Tech Spec §15.8 (CP5 supersession of §9.4); status header gains `proposed (amended-in-place 2026-04-25)` qualifier; CHANGELOG entry cites Tech Spec CP4 §15.5 + ADR-0035 amended-in-place precedent
+- 2 parallel reviewers (compressed CP — final meta CP): spec-auditor REVISE (3 🔴 mechanical pin-fixes — wrong file path propagating through §14.5/§13.4.x/§16.2; superseded credential §9.4 citation; superseded `unstable-action-scheduler` flag name), security-lead ACCEPT (no edits, freeze-blocker NO, VETO retained on shim-form drift)
+- Architect single-pass iteration applied 11 closures (3 🔴 + 3 🟠 + 5 🟡)
+- Tech-lead **RATIFY-FREEZE** 11c: all 8 ratification checks pass
+
+**Status transitions on freeze:**
+- Tech Spec: `DRAFT CP4 (iterated 2026-04-25)` → **`FROZEN CP4 2026-04-25`**
+- ADR-0036: `proposed` → **`accepted 2026-04-25`** (Tech Spec FROZEN CP4 gate cleared)
+- ADR-0037: `proposed (amended-in-place 2026-04-25)` → **`accepted 2026-04-25 (amended-in-place 2026-04-25)`** (Tech Spec FROZEN CP4 gate cleared; amendment qualifier preserved)
+- ADR-0038: stays **`proposed`** — user ratification on canon §3.5 revision required per cascade prompt; surfaced to user in Phase 8 summary as decision item
+
+**Phase 6 closes.** Cascade fully complete pending Phase 8 summary refresh.
+
+**Final Tech Spec line count:** ~2400+ lines (CP1 572 + CP2 711 + CP3 548 + CP4 339 + iteration entries).
+
+**Forward-flagged для Phase 8 summary** (cross-crate amendments к credential Tech Spec, NOT enacted per ADR-0035 soft-amendment precedent):
+- §16.1.1 probe #7 qualified-syntax SchemeGuard Clone shadow probe
+- §15.7 `engine_construct_with_probe` test variant
+
 ### 2026-04-25 T00:30 — CP3 RATIFIED + commit-ready
 
 **CP3 §9-§13 (Tech Spec interface + migration):**

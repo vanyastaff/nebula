@@ -1,8 +1,10 @@
 ---
 id: 0037
 title: action-macro-emission
-status: proposed
+status: accepted
 date: 2026-04-24
+accepted_date: 2026-04-25
+amended_in_place: 2026-04-25
 supersedes: []
 superseded_by: []
 tags: [action, macro, emission, hrtb, slot-binding, nebula-action, cascade-action-redesign]
@@ -19,7 +21,9 @@ linear: []
 
 ## Status
 
-**Proposed** — drafted 2026-04-24 as the second of the 3-ADR set for the nebula-action redesign cascade ([Strategy §6.2](../superpowers/specs/2026-04-24-action-redesign-strategy.md#62-adr-drafting-roadmap)). Drafted after ADR-0036 (trait shape) so the emission contract is grounded in the trait-shape decision. Status moves to `accepted` only after Phase 6 Tech Spec ratification.
+**Accepted 2026-04-25 (amended-in-place 2026-04-25)** — drafted 2026-04-24 as the second of the 3-ADR set for the nebula-action redesign cascade ([Strategy §6.2](../superpowers/specs/2026-04-24-action-redesign-strategy.md#62-adr-drafting-roadmap)). Drafted after ADR-0036 (trait shape) so the emission contract is grounded in the trait-shape decision. Status moved from `proposed` → `accepted` 2026-04-25 after Phase 6 Tech Spec FROZEN CP4 ratification (tech-lead 11c freeze ratification). Retains amendment-in-place qualifier from same date per Tech Spec CP4 §15.5 enactment.
+
+**Amended-in-place 2026-04-25** per [Tech Spec CP4 §15.5](../superpowers/specs/2026-04-24-nebula-action-tech-spec.md) to fold `capability` into the `SlotType` enum, aligning with [credential Tech Spec §9.4 line 2452](../superpowers/specs/2026-04-24-credential-tech-spec.md) authoritative three-variant matching pipeline (`Concrete { type_id }`, `ServiceCapability { capability, service }`, `CapabilityOnly { capability }`). Per [ADR-0035 amended-in-place precedent](./0035-phantom-shim-capability-pattern.md) (status block records 2026-04-24-B and 2026-04-24-C amendments — same canonical-form-correction discipline applies here, not a paradigm shift). Pre-amendment §1 had separate `capability` field; post-amendment shape locates capability inside `SlotType` variants. Field renamed `key` → `field_name` (`&'static str`) for clarity (this is the *Rust struct field name*, not a credential `SlotKey`). §3 (qualified-syntax probe), §4 (test harness), §5 (emission perf bound) unaffected — `SlotBinding` shape is not load-bearing for those sections.
 
 ## Context
 
@@ -44,14 +48,15 @@ The `#[action]` macro emits the following, per credential slot declared in the `
 
 ### §1. `ActionSlots::credential_slots()` returns `&'static [SlotBinding]`
 
+*(Shape amended-in-place 2026-04-25 per Tech Spec CP4 §15.5 — `capability` folded into `SlotType` enum; `key` renamed to `field_name`; receiver `&self` per credential Tech Spec §3.4 line 851 cardinality.)*
+
 ```rust
 impl ActionSlots for SlackBearerAction {
-    fn credential_slots() -> &'static [SlotBinding] {
+    fn credential_slots(&self) -> &'static [SlotBinding] {
         const SLOTS: &[SlotBinding] = &[
             SlotBinding {
-                key: "slack",
-                slot_type: SlotType::Credential,
-                capability: Capability::Bearer,
+                field_name: "slack",
+                slot_type: SlotType::CapabilityOnly { capability: Capability::Bearer },
                 resolve_fn: resolve_as_bearer::<SlackToken>,
             },
         ];
@@ -60,7 +65,38 @@ impl ActionSlots for SlackBearerAction {
 }
 ```
 
-The `resolve_fn` field has type `for<'ctx> fn(&'ctx CredentialContext<'ctx>, &'ctx SlotKey) -> BoxFuture<'ctx, Result<ResolvedSlot, ResolveError>>` per [credential Tech Spec §3.4 line 869](../superpowers/specs/2026-04-24-credential-tech-spec.md). `SlotBinding` is `Copy + 'static` (verified by spike `slot.rs` static assert) so `&'static [SlotBinding]` storage is well-formed.
+`SlotBinding` shape — three fields after amendment (capability lives inside `SlotType`):
+
+```rust
+#[derive(Clone, Copy, Debug)]
+pub struct SlotBinding {
+    pub field_name: &'static str,
+    pub slot_type: SlotType,
+    pub resolve_fn: ResolveFn,
+}
+```
+
+`SlotType` is the three-variant matching pipeline mirroring [credential Tech Spec §9.4 line 2452](../superpowers/specs/2026-04-24-credential-tech-spec.md) verbatim — engine-side `iter_compatible` (credential Tech Spec §9.4 line 2456-2470) dispatches on this enum:
+
+```rust
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[non_exhaustive]
+pub enum SlotType {
+    /// Pattern 1 — concrete `CredentialRef<C>` field; engine matches by type-id.
+    Concrete { type_id: TypeId },
+    /// Pattern 2 — `CredentialRef<dyn ServicePhantom>` with both service identity AND
+    /// capability projection. Engine matches by `service_key` + the registry-computed
+    /// capability set per credential Tech Spec §15.8 (`RegistryEntry::capabilities`,
+    /// CP5 supersession of §9.4 — pre-CP5 plugin-metadata `capabilities_enabled` is
+    /// REMOVED). Same matching axes; capability authority shifts plugin-metadata →
+    /// type-system at `CredentialRegistry::register<C>` time.
+    ServiceCapability { capability: Capability, service: ServiceKey },
+    /// Pattern 3 — `CredentialRef<dyn AnyBearerPhantom>`, capability-only projection.
+    CapabilityOnly { capability: Capability },
+}
+```
+
+The `resolve_fn` field has type `for<'ctx> fn(&'ctx CredentialContext<'ctx>, &'ctx SlotKey) -> BoxFuture<'ctx, Result<ResolvedSlot, ResolveError>>` per [credential Tech Spec §3.4 line 869](../superpowers/specs/2026-04-24-credential-tech-spec.md). `SlotBinding` is `Copy + 'static` (verified by spike `slot.rs` static assert) so `&'static [SlotBinding]` storage is well-formed. Capability dispatch (Pattern 2 ServiceCapability vs Pattern 3 CapabilityOnly) is encoded in the `slot_type` discriminant; the engine's runtime registry matches per credential Tech Spec §9.4 three-variant pipeline.
 
 ### §2. Dual enforcement layer for declaration-zone discipline (per spike finding #3)
 

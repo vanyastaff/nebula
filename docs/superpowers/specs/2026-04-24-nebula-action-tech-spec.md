@@ -1,6 +1,6 @@
 ---
 name: nebula-action tech spec (implementation-ready design)
-status: DRAFT CP3 (iterated 2026-04-24)
+status: FROZEN CP4 2026-04-25
 date: 2026-04-24
 authors: [architect (drafting); tech-lead (CP gate decider); security-lead (VETO authority on §4 security floor); orchestrator (CP coordination)]
 scope: nebula-action redesign cascade Phase 6 — implementation-ready design for the action trait family, the `#[action]` attribute macro, runtime model, security floor, and codemod migration
@@ -29,10 +29,10 @@ This document moves through four checkpoints with parallel reviewer matrices per
 |---|---|---|---|
 | **DRAFT CP1** | §0–§3 | Status, goals, trait contract, runtime model | locked CP1 |
 | **DRAFT CP2** | §4–§8 | Macro emission, test harness, security floor, lifecycle, storage | locked CP2 |
-| **DRAFT CP3** (this revision) | §9–§13 | Public API surface, codemod migration, adapter authoring, ControlAction migration, evolution policy | active |
-| **DRAFT CP4 → FROZEN CP4** | §14–§16 | Open items, accepted gaps, handoff, implementation-path framing for Phase 8 user pick | pending |
+| **DRAFT CP3** | §9–§13 | Public API surface, codemod migration, adapter authoring, ControlAction migration, evolution policy | locked CP3 |
+| **FROZEN CP4 2026-04-25** (iterated 2026-04-25 post 11a/11b; tech-lead RATIFY-FREEZE 11c) | §14–§16 | Open items, accepted gaps, handoff, implementation-path framing for Phase 8 user pick | **frozen** |
 
-Inputs are **frozen** at this draft point: Strategy frozen at CP3 (commit pending; see status header of [`2026-04-24-action-redesign-strategy.md`](2026-04-24-action-redesign-strategy.md)); ADR-0036 / ADR-0037 / ADR-0038 in `proposed` (status moves to `accepted` upon Tech Spec ratification — ADR-0036 §Status / ADR-0037 §Status / ADR-0038 §Status); Phase 4 spike PASS at commit `c8aef6a0` (worktree-isolated; see [spike NOTES](../drafts/2026-04-24-nebula-action-redesign/07-spike-NOTES.md) §5).
+Inputs are **frozen** at this freeze point: Strategy frozen at CP3 (commit `a38f6f5a`); ADR-0036 status `accepted` 2026-04-25 + ADR-0037 status `accepted` 2026-04-25 (amended-in-place 2026-04-25 per §15.5 enactment) — both flipped on Tech Spec FROZEN CP4 ratification per their respective §Status sections; ADR-0038 retained at `proposed` pending explicit user ratification on canon §3.5 revision (per cascade prompt: surface к user в Phase 8 summary, не auto-flip); Phase 4 spike PASS at commit `c8aef6a0` (worktree-isolated; see [spike NOTES](../drafts/2026-04-24-nebula-action-redesign/07-spike-NOTES.md) §5).
 
 ### §0.2 What invalidates the freeze
 
@@ -622,10 +622,13 @@ pub enum SlotType {
     /// type-id (not capability).
     Concrete { type_id: TypeId },
     /// Pattern 2 — `CredentialRef<dyn ServicePhantom>` field with both a
-    /// service identity AND a capability projection. Engine matches both
-    /// `cred.metadata().service_key == Some(*service)` AND
-    /// `cred.metadata().capabilities_enabled.contains(*capability)`
-    /// (credential Tech Spec §9.4 line 2467-2470).
+    /// service identity AND a capability projection. Engine matches by
+    /// `cred.metadata().service_key == Some(*service)` AND the registry-
+    /// computed capability set per credential Tech Spec §15.8 (CP5
+    /// supersession of §9.4): `RegistryEntry::capabilities.contains(*capability)`
+    /// rather than the pre-CP5 plugin-metadata field `capabilities_enabled`
+    /// (which is REMOVED in §15.8). Same matching axes; capability authority
+    /// shifts from plugin metadata to type-system registration time.
     ServiceCapability { capability: Capability, service: ServiceKey },
     /// Pattern 3 — `CredentialRef<dyn AnyBearerPhantom>` field, capability-only
     /// projection (no service binding). Engine matches purely on capability.
@@ -2012,7 +2015,7 @@ CP1 + CP2 carry-forward devops nit-list (T4 / T5 / T9 from CP1 09e — minor; de
 
 #### §13.4.1 T4 — `zeroize` workspace=true pin (cascade-scope absorb)
 
-**Context (Phase 0 audit §1 finding 🟠 MAJOR line 44).** `crates/action/Cargo.toml:36` pins `zeroize = { version = "1.8.2" }` inline; workspace declares `zeroize = { version = "1.8.2", features = ["std"] }` at root `Cargo.toml:116`. Inline pin silently drops the `std` feature and de-unifies the version in the feature-unification graph.
+**Context ([`01b-workspace-audit.md`](../drafts/2026-04-24-nebula-action-redesign/01b-workspace-audit.md) §1 finding 🟠 MAJOR line 44).** `crates/action/Cargo.toml:36` pins `zeroize = { version = "1.8.2" }` inline; workspace declares `zeroize = { version = "1.8.2", features = ["std"] }` at root `Cargo.toml:116`. Inline pin silently drops the `std` feature and de-unifies the version in the feature-unification graph.
 
 **Decision.** **Cascade-scope absorb.** The `nebula-action` Cargo.toml edit lands at implementation time per §10 codemod runbook Step 1 (cascade-landing PR includes Cargo.toml hygiene). Edit:
 
@@ -2022,11 +2025,11 @@ CP1 + CP2 carry-forward devops nit-list (T4 / T5 / T9 from CP1 09e — minor; de
 # After:   zeroize = { workspace = true }                                # workspace-pinned with std feature
 ```
 
-**Why cascade-scope.** `zeroize` is the canonical zeroize dependency for `SchemeGuard<'a, C>` per credential Tech Spec §15.7 + spike `final_shape_v2.rs:95`; the `std` feature is required for `Vec<u8>` zeroization patterns the credential / action surfaces cross-reference. De-unifying the version risks crypto-dep version skew — shared with `crates/credential`, `crates/api`, webhook verification path per Phase 0 §1.
+**Why cascade-scope.** `zeroize` is the canonical zeroize dependency for `SchemeGuard<'a, C>` per credential Tech Spec §15.7 + spike `final_shape_v2.rs:95`; the `std` feature is required for `Vec<u8>` zeroization patterns the credential / action surfaces cross-reference. De-unifying the version risks crypto-dep version skew — shared with `crates/credential`, `crates/api`, webhook verification path per [`01b-workspace-audit.md`](../drafts/2026-04-24-nebula-action-redesign/01b-workspace-audit.md) §1.
 
 #### §13.4.2 T5 — `lefthook.yml` doctests/msrv/doc parity (out of action cascade scope)
 
-**Context (Phase 0 audit §11 finding 🟠 MAJOR line 376).** `lefthook.yml:45` does not mirror CI's `doctests` / `msrv` / `doc` jobs; action has 20+ doctests per Phase 0 audit; `feedback_lefthook_mirrors_ci.md` discipline names this as a divergence.
+**Context ([`01b-workspace-audit.md`](../drafts/2026-04-24-nebula-action-redesign/01b-workspace-audit.md) §11 finding 🟠 MAJOR line 376).** `lefthook.yml:45` does not mirror CI's `doctests` / `msrv` / `doc` jobs; action has 20+ doctests per workspace audit; `feedback_lefthook_mirrors_ci.md` discipline names this as a divergence.
 
 **Decision.** **Out of action cascade scope; separate housekeeping PR.** Per Phase 1 02d (workspace hygiene scope split) + `feedback_lefthook_mirrors_ci.md`, lefthook parity is workspace-wide concern and lands as its own housekeeping PR independent of the action redesign. Action cascade cites the gap; the fix is owned by devops with target sunset window per `feedback_lefthook_mirrors_ci.md` discipline (≤2 release cycles).
 
@@ -2034,7 +2037,7 @@ CP1 + CP2 carry-forward devops nit-list (T4 / T5 / T9 from CP1 09e — minor; de
 
 #### §13.4.3 T9 — `deny.toml` layer-enforcement rule for `nebula-action` (cascade-scope absorb)
 
-**Context (Phase 0 audit §11 finding 🟠 MAJOR line 379).** `deny.toml` has positive bans for `engine` / `storage` / `sandbox` / `sdk`; `nebula-action` relies on implicit correctness — no positive ban rule. Action cascade introduces a `[dev-dependencies]` `nebula-engine` edge (per §5.3-1 rust-senior 09b #1 resolution) which compounds the missing guardrail.
+**Context ([`01b-workspace-audit.md`](../drafts/2026-04-24-nebula-action-redesign/01b-workspace-audit.md) §11 finding 🟠 MAJOR line 379).** `deny.toml` has positive bans for `engine` / `storage` / `sandbox` / `sdk`; `nebula-action` relies on implicit correctness — no positive ban rule. Action cascade introduces a `[dev-dependencies]` `nebula-engine` edge (per §5.3-1 rust-senior 09b #1 resolution) which compounds the missing guardrail.
 
 **Decision.** **Cascade-scope absorb.** Per CP2 §5.3-1 commitment ("CP3 §9 lands the `deny.toml` edit alongside the macro-crate dev-deps wiring"), the `deny.toml` amendment lands at implementation time alongside the cascade PR. **Two edits, both targeting the existing `[bans] deny = [...]` block at `deny.toml:48-81`:**
 
@@ -2100,6 +2103,349 @@ CP1 + CP2 carry-forward devops nit-list (T4 / T5 / T9 from CP1 09e — minor; de
 | **`nebula-redact`** workspace integration (NEW crate) | Cascade-scope absorb (preliminary — atomic with cascade PR) | `crates/redact/{Cargo.toml,src/lib.rs}` + root `Cargo.toml` `[workspace] members` + `[workspace.dependencies]` (no new `deny.toml` ban — leaf utility) |
 
 CP4 §16 picks up only T5 as a sunset-tracked item; T4 + T9 + `nebula-redact` are absorbed.
+
+---
+
+## §14 Cross-references
+
+This section consolidates every load-bearing cross-document reference the Tech Spec depends on at line-number granularity. CP4 binds these so that future re-pin events (per §0.2 invariants) trigger explicit reviewer pass rather than silent drift. Every citation below has a corresponding `grep`-able anchor in the cited document at draft time.
+
+### §14.1 ADR matrix
+
+| ADR | Status | Cited by | Relationship to Tech Spec |
+|---|---|---|---|
+| **ADR-0035** phantom-shim capability pattern | `accepted` (amended 2026-04-24-B post iter-2; 2026-04-24-C post iter-3) | §2.1 supertrait shape; §4.1.1 credential type-pattern dispatch; §11.2 sealed-DX adapter pattern; §13.2.1 amendment-in-place precedent (load-bearing for §15.5 ADR-0037 amendment); §13.4.4 `nebula-redact` `feedback_no_shims.md` discipline | Sets the cross-cascade precedent for amend-in-place vs supersession (ADR-0035 §Status block records iter-2-B and iter-3-C amendments — same mechanism §15.5 enacts on ADR-0037) |
+| **ADR-0036** action trait shape | `proposed` (status moves to `accepted` at Tech Spec ratification per §0.1 line 35) | §1 G1/G2 closures; §2.1.1 `ActionSlots` companion trait shape; §4 attribute macro narrow-zone rewriting contract; §11.1 macro-emitted adapter shape | Trait shape is signature-locked at §2; macro emission contract grounds in this ADR per ADR-0036 §Decision items 1-4 |
+| **ADR-0037** action macro emission | `proposed` → `proposed (amended-in-place 2026-04-25)` per §15.5 enactment | §3.1 `SlotBinding` shape (post-amendment); §4.3 per-slot emission table; §4.4 dual enforcement layer; §5.3 6-probe port (production harness); §5.4 qualified-syntax probe form | **Amended-in-place this CP per §15.5 — see §15.5.1 enactment**; pre-amendment shape diverged from credential Tech Spec §9.4 line 2452 |
+| **ADR-0038** ControlAction seal + canon §3.5 revision | `proposed` (status moves to `accepted` at canon §3.5 revision PR ratification — see §16.5) | §1 G4 sealed DX tier ratification; §2.6 five sealed DX traits; §9.2 sealed DX surface; §10.2 T6 codemod transform (community migration target per ADR-0038 §Negative item 4); §12 ControlAction migration | Canon §3.5 line 82 revision PR is a §16.5 cascade-final precondition (separate from Tech Spec ratification but co-gating) |
+
+**Phantom-shim composition note.** ADR-0036 + ADR-0037 + ADR-0038 all compose with [ADR-0035](../../adr/0035-phantom-shim-capability-pattern.md) at `SchemeGuard<'a, C>` + `RefreshDispatcher::refresh_fn` HRTB shape per credential Tech Spec §15.12.3. The four-ADR composition is structural; this Tech Spec inherits the composition without re-deriving. Per §0.2 invariant 2: any ADR moving from `accepted` to `superseded` (or undergoing non-trivial amendment beyond §15.5's enactment) re-opens this Tech Spec for re-pin.
+
+### §14.2 Strategy parent-doc cross-refs (frozen CP3)
+
+| Strategy § | Tech Spec sections citing | Purpose |
+|---|---|---|
+| §1 problem framing (line 70) — `Terminate` literal canon §4.5 false-capability violation | §1 G6 + §2.7.1 | G6 binds wire-end-to-end resolution to canon §4.5 violation |
+| §2.12 must-have floor (line 247-254) | §1 G3 four-item floor + §6 implementation forms | Verbatim must-have-floor cite (per `feedback_observability_as_completion.md` integration) |
+| §3.1 component 2-7 (post-pick A' decomposition) | §1 G1/G5 + §2.1.1 + §3.1 + §4 macro emission | A' eight-component decomposition grounds Tech Spec §1-§7 sections |
+| §3.4 OUT row table (line 165-183) | §1.2 N1-N7 non-goals | Each non-goal cites Strategy §3.4 OUT row verbatim (honest-deferral discipline) |
+| §4.2 implementation paths (a)/(b)/(c) (line 198-206) | §1.2 N5 + §16.1 path framing | Strategy frames the choice; CP4 §16 records criteria; user picks at Phase 8 |
+| §4.3.1 `*Handler` HRTB modernization in-scope (line 213-220) | §1 G5 + §2.4 | Modernization decision; ~30-40% LOC reduction sourced from rust-senior 02c §8 line 439 |
+| §4.3.2 retry-scheduler symmetric-gating principle (line 222-229) | §1 G6 + §2.7.1 | Strategy locks principle; Tech Spec §2.7.1 picks wire-end-to-end concrete path |
+| §4.3.3 codemod transforms 1-5 minimal-complete-set (line 231-243) | §10.2 T1-T6 (T1-T2 mapped from Strategy 1-3; T3-T6 added at Tech Spec design-level per Strategy §4.3.3 line 243 license) | Codemod design ground; Strategy 4-5 are not code-edit transforms (covered by CP2 §5.1 dev-deps + CP3 §9.3 prelude reshuffle) |
+| §4.4 security floor invariant (line 247-254) | §6 (CO-DECISION territory) | §6 implementation form must not relax (per §0.2 invariant 3) |
+| §6.4 concerns register lifecycle | §16.5 cascade-final readiness (no 🔴 unresolved at Phase 8) | Path (c) viability gate compounds with concerns register state |
+| §6.5 a/b/c decision tree (line 408-413) | §16.1 path table | Tech Spec §16.1 extends Strategy §6.5 with concrete cascade-final criteria |
+| §6.6 cross-crate coordination (line 416-426) | §16.1 path (b)/(c) viability gate | Credential CP6 cascade slot commitment is path (b)/(c) precondition; silent-degradation guard active |
+| §6.8 B'+ contingency (line 443-461) | §16.4 rollback strategy | B'+ activation is architect+tech-lead co-decision per §6.8 — orchestrator does NOT silently activate |
+| §6.9 retry-scheduler chosen path locus (line 463-465) | §1 G6 + §2.7.1 | Strategy locks principle, Tech Spec picks path (wire-end-to-end) |
+
+### §14.3 Credential Tech Spec cross-refs
+
+| Credential Tech Spec § | Tech Spec citation point | Status |
+|---|---|---|
+| §2.7 line 486-528 — `#[action]` macro `dyn ServiceCapability` → `dyn ServiceCapabilityPhantom` rewrite | §4.1.1 credential type-pattern dispatch | Cross-crate authoritative for Pattern 2/3 rewriting |
+| §3.4 line 807-939 — Pattern 2 dispatch narrative (4-step path) | §3.2 dispatch path (steps 1-7) | Cited verbatim, not restated |
+| §3.4 line 851-863 — `ActionSlots::credential_slots(&self)` cardinality on receiver | §2.1.1 + §3.1 — reconciled to `&self` form | Cross-crate authoritative (deliberate divergence #3 per §2 preamble); spike `final_shape_v2.rs:278` already aligned |
+| §3.4 line 869 — load-bearing HRTB declaration `for<'ctx> fn(&'ctx CredentialContext<'ctx>, &'ctx SlotKey) -> BoxFuture<'ctx, Result<ResolvedSlot, ResolveError>>` | §3.2 `ResolveFn` type alias + ADR-0037 §1 (post-amendment) | Cross-crate authoritative; same shape as `RefreshDispatcher::refresh_fn` (§7.1) |
+| §7.1 — `RefreshDispatcher::refresh_fn` HRTB pattern | §3.2 narrative parallel | Compositional cross-ref only |
+| §9.4 line 2452 → **§15.8 (CP5 supersession of §9.4)** — `SlotType` three-variant matching pipeline (`Concrete`, `ServiceCapability`, `CapabilityOnly`) | §3.1 `SlotType` enum (lines 619-633) | **Cross-crate authoritative — load-bearing for §15.5 ADR-0037 amendment.** Matching-axis shape preserved verbatim across supersession (`SlotType::Concrete / ServiceCapability / CapabilityOnly` axes per §15.8 line 3522 "Same `SlotType::Concrete / ServiceCapability / CapabilityOnly` matching axes"); only the **filter authority source** shifts plugin-metadata `capabilities_enabled` → registry-computed `RegistryEntry::capabilities` (per credential Tech Spec §15.8 line 3520-3528) |
+| §9.4 line 2456-2470 → **§15.8 (CP5 supersession)** — engine-side `iter_compatible` dispatch on `SlotType` | §3.1 storage-shape narrative | Cross-crate authoritative (engine-side runtime pipeline). CP5 canonical body at §15.8 consults `RegistryEntry::capabilities` rather than `cred.metadata().capabilities_enabled` (§9.4 supersede block line 2446) |
+| §15.7 line 3394-3429 — `SchemeGuard<'a, C>` decision (`!Clone`, `ZeroizeOnDrop`, `Deref`, lifetime parameter) | §7.2 RAII flow + §3.4 cancellation safety | Cross-crate authoritative; cited verbatim, not restated |
+| §15.7 line 3438-3447 — `SchemeFactory<C>` for re-acquisition by long-lived resources | §7.2 narrative cross-ref | Out-of-scope per §1.2 N1; cited for compositional completeness |
+| §15.7 line 3503-3516 — Iter-3 lifetime-pin refinement (`engine_construct(scheme, &'a credential_ctx)`) | §3.2 step 5 (`SchemeGuard::engine_construct`) | Cross-crate authoritative |
+| §15.12.3 line 3689 — Iter-3 Gate 3 sub-trait × phantom-shim composition validation | §0.1 inputs frozen-at footer + ADR-0035 amendment 2026-04-24-C citation | Validation evidence chain |
+| **§15.7 — soft amendment for `engine_construct_with_probe` test-only constructor variant** | §6.4.2 + §15.4 forward-track | **Soft amendment — FLAGGED, NOT ENACTED** per §15.4 |
+| **§16.1.1 probe #7 (line 3756) — `compile_fail_scheme_guard_clone.rs` shape** | §5.4.1 + §15.3 forward-track | **Soft amendment — FLAGGED, NOT ENACTED** per §15.3 |
+
+**Re-pin obligation.** Per §0.2 invariants 2 + 4: if any cited line range moves due to upstream credential Tech Spec edit, this Tech Spec must be re-pinned (CHANGELOG entry + reviewer pass). Reference [`reference_credential_tech_spec_pins.md`](../../../.claude/agent-memory-local/architect/reference_credential_tech_spec_pins.md) for line-pin governance.
+
+### §14.4 Phase 1 register cross-refs (CR1-CR11 closure traceability)
+
+Per [`02-pain-enumeration.md`](../drafts/2026-04-24-nebula-action-redesign/02-pain-enumeration.md) §4 Critical findings:
+
+| CR ID | Subject | Closed by | Verification |
+|---|---|---|---|
+| **CR1** | Typed credential surface unrealized | §1 G1 + §3.1 + §4.1.1 + §11.1 | `#[action]` macro emits `&'static [SlotBinding]` per ADR-0037 §1 (post-amendment); spike Iter-1 PASS |
+| **CR2** | Macro emission shape regressions | §1 G2 + §5 macro test harness + ADR-0037 §4 6-probe table | trybuild + macrotest dev-deps; 6 probes ported from spike commit `c8aef6a0` |
+| **CR3 / S-C2** | Cross-plugin shadow attack | §1 G3 + §6.2 hard removal of `CredentialContextExt::credential<S>()` | Verbatim VETO trigger language cited (security-lead 03c §1) |
+| **CR4 / S-J1** | JSON depth bomb (no cap) | §1 G3 + §6.1 depth cap 128 implementation | Apply sites: `stateless.rs:370`, `stateful.rs:561, 573`; typed `ValidationReason::DepthExceeded` |
+| **CR5** | Credential CP6 vocabulary not adopted | §1 G1 + §2.1.1 + §3.1 | Adoption complete at §2-§3 |
+| **CR6** | `ctx.credential_*` API fragmentation | §1 G1 + §6.2 + §10.2 T2 | Unified API per credential Tech Spec §3.4; codemod migration path |
+| **CR7** | Canon §3.5 governance debt (ControlAction not seal-ratified) | §1 G4 + §2.6 + ADR-0038 + §16.5 canon §3.5 revision PR | Sealed-DX trait family + canon line 82 revision |
+| **CR8** | `parameters = Type` macro emits non-existent `with_parameters()` | §1 G2 + §4.6.1 fix + §5.3 Probe 7 | Macro emits `with_schema(<T as HasSchema>::schema())` per `crates/action/src/metadata.rs:292` |
+| **CR9** | Undocumented `Input: HasSchema` bound | §1 G2 + §2 deliberate-divergence #1 (lift bounds onto typed trait) | §2.2.1 / §2.2.2 / §2.2.4 lift `Input: HasSchema + DeserializeOwned` |
+| **CR10** | `*Handler` HRTB pre-1.85 boilerplate | §1 G5 + §2.4 single-`'a` + `BoxFut<'a, T>` alias | rust-senior 02c §8 line 439 ~30-40% LOC reduction |
+| **CR11** | Three independent agents repeating same emission bug | §1 G2 + §5 production harness + §5.5 macrotest snapshots | Regression coverage makes the bug class structurally impossible |
+
+**CC1 (carry-forward from Phase 1 dx-tester).** `semver` consumer-side dep declaration → §10.4 step 1.5 closure (per CP3 iteration 2026-04-24 dx-tester 10d R2).
+
+### §14.5 Phase 0 evidence
+
+[`01b-workspace-audit.md`](../drafts/2026-04-24-nebula-action-redesign/01b-workspace-audit.md) audit findings cited at line-number granularity (workspace / CI / tooling tier of Phase 0; the source-tier is [`01-current-state.md`](../drafts/2026-04-24-nebula-action-redesign/01-current-state.md), cited only where source-side findings ground the row):
+
+- **`01b-workspace-audit.md` §1 line 44** — `zeroize` workspace-pin drift → §13.4.1 T4 cascade-scope absorb
+- **`01-current-state.md` §2 finding C1** — derives structurally cannot do field-type rewriting → Strategy §3 A' selection (informs §1 G1)
+- **`01b-workspace-audit.md` §9 line 252-329** — reverse-deps inventory verbatim → §10.1 reverse-deps table
+- **`01b-workspace-audit.md` §10 line 346-356** — blast-radius weight by consumer → §10.3 per-consumer step counts
+- **`01b-workspace-audit.md` §11 line 376** — `lefthook.yml` doctests/msrv/doc parity gap → §13.4.2 T5 out-of-cascade-scope
+- **`01b-workspace-audit.md` §11 line 379 row 9** — `nebula-action` runtime-layer positive ban absent → §13.4.3 T9 cascade-scope absorb (Edit 2 — symmetric with engine/sandbox/storage/sdk/plugin-sdk rules)
+- **Phase 0 T1 finding** — `crates/action/macros/Cargo.toml` lacks `[dev-dependencies]` block → §5.1 macro test harness landing
+
+**T-disposition table** (per CP3 §13.4.5 final form):
+
+| T | Phase 0 origin | Disposition | Lands at |
+|---|---|---|---|
+| T1 (`zeroize` workspace=true) | §1 line 44 | Cascade-scope absorb | `crates/action/Cargo.toml` edit alongside cascade PR |
+| T4 = §13.4.1 above (different Phase 0 source) | §1 line 44 | (same — clarification: T4 codemod transform vs T-disposition; see §10.2) | — |
+| T5 (`lefthook.yml` parity) | §11 line 376 | Out of cascade scope | Separate housekeeping PR (devops-owned; sunset ≤2 release cycles per `feedback_lefthook_mirrors_ci.md`) |
+| T9 (`deny.toml` layer-enforcement) | §11 line 379 row 9 | Cascade-scope absorb | `deny.toml` edits per §13.4.3 (wrappers-list extension + NEW positive ban) |
+| `nebula-redact` workspace integration | §6.3.2 helper crate decision | Cascade-scope absorb (preliminary) | Atomic with cascade PR per §13.4.4 |
+
+**Hygiene-T vs codemod-T naming caveat.** §13.4 enumerates hygiene items (T4/T5/T9 from CP1 09e devops review); §10.2 enumerates codemod transforms (T1-T6). The two T-namespaces overlap by accident only — T4 in §10.2 (HRTB collapse codemod transform) is unrelated to T4 in §13.4.1 (`zeroize` workspace-pin hygiene). CP4 explicitly disambiguates: §10.2 transforms are `T1`-`T6`; §13.4 hygiene items are `T4 (zeroize)` / `T5 (lefthook)` / `T9 (deny.toml)`.
+
+---
+
+## §15 Open items resolution
+
+This section walks every open item raised across CP1-CP3 to decided / deferred-with-trigger status. Carry-forward items get explicit closure rows; one cross-crate amendment is enacted in this CP (§15.5 ADR-0037 §1 SlotBinding shape per §0.2 invariant 2). Two soft amendments to credential Tech Spec are flagged (NOT enacted) per ADR-0035 amended-in-place precedent — credential Tech Spec author lands the inline edit during cross-section pass.
+
+### §15.1 Strategy + CP1-CP3 open-items walkthrough
+
+**Strategy §5 carry-forward (Strategy line 469-479):**
+
+| Open item | Status | Closure point |
+|---|---|---|
+| §4.3.2 — `unstable-retry-scheduler` wire vs gated-stub | **CLOSED** | §1 G6 + §2.7.1 (wire-end-to-end picked) |
+| §4.3.3 — codemod transform list locked at scope; Tech Spec design without re-opening Strategy | **CLOSED** | §10.2 T1-T6 (T6 added at design level per Strategy §4.3.3 line 243 license) |
+| §5.1.1 — ActionContext API location in credential Tech Spec | **DEFERRED-WITH-TRIGGER** | §15.8 cross-section coordination row; landing point is credential Tech Spec author edit, not action-side |
+| §5.1.2 — `redacted_display()` hosting crate decision | **CLOSED** | §6.3.2 NEW dedicated `nebula-redact` crate; §13.4.4 workspace integration |
+| §5.1.4 — B'+ activation criteria detail | **CLOSED at Strategy §6.8** | §16.4 rollback strategy cross-ref |
+| §5.1.5 — cluster-mode hooks final trait shape | **DEFERRED-WITH-TRIGGER** | §15.8 — TriggerAction cluster-mode hooks final trait shape per Strategy §5.1.5; deferred to Tech Spec §7 (which CP3 closed at §2.2.3 with `IdempotencyKey`/`on_leader_*`/`dedup_window` hook surface; full trait shape is engine-cascade scope per §1.2 N4) |
+| §5.2 — spike DONE criteria | **CLOSED** | Spike PASS commit `c8aef6a0` per §0.1 inputs frozen-at footer |
+| §2.11 amendment-pending — `feedback_idiom_currency.md` + `feedback_observability_as_completion.md` explicit citation roll-up | **CLOSED** | §1 G3 invokes `feedback_observability_as_completion.md`; §1 G5 invokes `feedback_idiom_currency.md`; both load-bear in this Tech Spec at §1 lock |
+| CP3 §6 inventory bookkeeping (~8 forward-promises) | **CLOSED at Strategy §6 frozen CP3** | All eight sub-promises mapped at Strategy frozen CP3 line 525 |
+
+**CP1 §15 carry-forward (Tech Spec line 2106-2125):**
+
+| Open item | Status | Closure point |
+|---|---|---|
+| §1.2 / N5 — paths a/b/c framing | **CLOSED at §16.1** | This CP |
+| §2.2.3 — TriggerAction cluster-mode hooks final trait shape | **DEFERRED-WITH-TRIGGER** | §15.8 — engine cluster-mode coordination cascade (§1.2 N4) |
+| §2.6 / §9.2 — DX trait blanket-impl trait-by-trait audit | **DEFERRED-WITH-TRIGGER** | §15.8 — exact `#[action(...)]` attribute zone spelling for each DX trait; CP4 housekeeping |
+| §3.1 — engine `ActionRegistry::register*` call-site exact line range + final host-crate path | **DEFERRED-WITH-TRIGGER** | §15.8 — engine cascade handoff; `crates/runtime/` does not exist (Phase 1 audit row 4) — current host is `crates/engine/src/runtime/registry.rs` (CP1 §3.1 cited `crates/engine/src/registry.rs`; the file lives under the `runtime/` submodule per `Glob crates/engine/src/registry*` returning no top-level match), exact line range CP4 §15.8 row |
+| §3.2 — ActionContext API location in credential Tech Spec | **DEFERRED-WITH-TRIGGER** | §15.8 — coordination with credential Tech Spec author |
+
+**CP2 §15 carry-forward (Tech Spec line 2157-2196):**
+
+| Open item | Status | Closure point |
+|---|---|---|
+| §4.4-1 — `ActionSlots` trait sealing | **CLOSED CP3 §9.4** | leave `pub` (NOT sealed); dual enforcement layer makes hand-impl observable |
+| §4.7-1 — codemod auto-rewrite vs manual-marker for `credential = "key"` | **CLOSED CP3 §10.2 T2** | MIXED: AUTO for explicit type annotation; MANUAL marker otherwise |
+| §5.1-1 — `cargo-public-api` snapshot for macro crate | **DEFERRED-WITH-TRIGGER** | §15.8 — out of cascade scope per ADR-0037 §4; future macro-evolution housekeeping |
+| §5.3-1 — `nebula-engine` as dev-dep on `nebula-action-macros` | **CLOSED CP2 iteration 2026-04-24** | committed; `deny.toml` wrappers amendment landed CP3 §13.4.3 |
+| §5.4.1 — soft amendment к credential Tech Spec §16.1.1 probe #7 | **FLAGGED NOT ENACTED — see §15.3** | Soft amendment to credential Tech Spec; this CP records, does not enact |
+| §6.1.2 — byte-pre-scan vs `Value`-walking primitive | **CLOSED CP2 §6.1.2** | byte-pre-scan path (existing `check_json_depth` primitive); rust-senior CP2 review confirmed acceptable |
+| §6.2-1 — `credential_typed::<S>(key)` retention vs removal | **CLOSED CP3 §9.3.1** | REMOVE alongside `credential<S>()`; explicit-key form via `ctx.resolved_scheme(&CredentialRef::from_key(key))` |
+| §6.3-1 — full `redacted_display()` rule set | **CLOSED CP3 §9 design + CP2 §6.3.1-A wrap-form** | Pre-`format!` sanitization wrap-form is the single rule; substring patterns deferred to `nebula-redact` crate's internal evolution post-cascade |
+| §6.4-1 — `tokio::time::pause()` vs real-clock 10ms | **CLOSED CP3 §9** | recommendation `tokio::time::pause()` for deterministic cancellation timing |
+| §6.4 cross-crate amendment к credential Tech Spec §15.7 | **FLAGGED NOT ENACTED — see §15.4** | Soft amendment; cross-section pass surfaces |
+| §6.5 — cross-tenant `Terminate` boundary | **CLOSED CP3 §9.5** | engine-side enforcement contract; verbatim "MUST NOT propagate" invariant; security-lead implementation-time VETO retained |
+| §7.3-1 — `ResolveError::NotFound` mapping to `ActionError` taxonomy | **DEFERRED-WITH-TRIGGER** | §15.8 — security-neutral; can land at implementation time without re-opening Tech Spec |
+| §7.1 step 3 / §3.2-1 — `ResolvedSlot` engine-side wrap point | **PARTIAL CLOSURE CP3 §11.3.1 + §3.2 step 5** | Adapter responsibility: engine wraps after `resolve_fn` returns; explicit wrap-point in engine code is engine-cascade scope |
+| §2.9-1 — `ActionMetadata::for_trigger::<A>()` helper | **CLOSED — see §15.6** | Closes carry-forward; no helper builder added |
+
+**CP3 §15 carry-forward (Tech Spec line 2234-2264):**
+
+| Open item | Status | Closure point |
+|---|---|---|
+| §9.3-1 — `nebula-sdk::prelude` re-export of `redacted_display` for community plugin authors | **CLOSED — see §15.8** | NO; community plugins depend on `nebula-redact` directly to preserve single audit point |
+| §11.3-1 — adapter performance microbenchmark | **DEFERRED-WITH-TRIGGER** | §15.8 — CP4 / implementation-time housekeeping; not blocking |
+| §12 `#[action(control_flow)]` attribute zone syntax — exact spelling | **DEFERRED-WITH-TRIGGER** | §15.8 — flag form is consistent CP3-CP4 placeholder; canonical spelling lands via §9.2 trait-by-trait audit closure |
+| Forward-track items (a)-(j) at CP3 CHANGELOG (current line 2598-2607) | Each enumerated below | §15.7 / §15.8 |
+
+### §15.2 Q2 ActionResult::Terminate decision recorded (cascade-scope-final)
+
+**Decision (recorded CP1 §2.7.1 — re-affirmed at CP4):** wire-end-to-end. Both `ActionResult::Retry` (existing `unstable-retry-scheduler`) and `ActionResult::Terminate` (new `unstable-terminate-scheduler`) graduate from gated-with-stub to wired-end-to-end in cascade scope. Parallel feature flags (committed CP1 §2.7.2 line 438) — each flag gates one variant; the two consume distinct scheduler subsystems (re-enqueue vs sibling-branch-cancel + termination-audit). Per §0.2 invariant 4: this Tech Spec freezes the parallel-flag signature; CP3 §9 may amend the *internal scheduler implementation* but cannot rename or unify the public flags without an ADR amendment.
+
+**Cross-tenant Terminate** — §9.5 engine-side enforcement contract; verbatim invariant "engine MUST NOT propagate `Terminate` across tenant boundaries" (security 08c §Gap 5 line 109-111); silent skip with `tracing::warn!` + counter on cross-tenant block; structural errors are Fatal. Security-lead implementation-time VETO retained on §9.5.1 invariant language.
+
+### §15.3 Cross-crate soft amendment к credential Tech Spec §16.1.1 probe #7 — FLAGGED, NOT ENACTED
+
+Per §5.4.1 — credential Tech Spec §16.1.1 probe #7 (line 3756) currently specifies the unqualified `let g2 = guard.clone()` form which is **silent-pass** per spike finding #1 (auto-deref Clone shadow on `SchemeGuard<'a, C>`).
+
+**Amendment candidate (form):**
+
+> | 7 | `tests/compile_fail_scheme_guard_clone.rs` | `<SchemeGuard<'_, C> as Clone>::clone(&guard)` qualified-syntax form on `SchemeGuard` | `E0277` — `Clone` bound not satisfied (subsumes naive `E0599` because qualified form bypasses auto-deref) |
+
+**Status: FLAGGED, NOT ENACTED in this Tech Spec.** Per ADR-0035 amended-in-place precedent (ADR-0035 §Status block records iter-2-B and iter-3-C amendments), cross-crate amendments to credential Tech Spec are coordinated by the credential Tech Spec author. This Tech Spec ratification (CP4 freeze) records the amendment as outstanding cross-cascade item; the amendment lands as credential Tech Spec inline edit ("*Amended by Tech Spec [`2026-04-24-nebula-action-tech-spec.md`](2026-04-24-nebula-action-tech-spec.md) §15.3, 2026-04-25*" prefix at the §16.1.1 probe #7 row, plus updated diagnostic column) + CHANGELOG entry, not via a new ADR.
+
+**Until amendment lands, the production credential probe at `crates/credential/tests/compile_fail_scheme_guard_clone.rs` would use the unqualified form** (silent-pass risk). The action-side probe (§5.4) catches the violation independently — so this gap is not action-cascade-blocking, only credential-side-soft-degradation.
+
+**Coordination owner.** Credential Tech Spec author. **Trigger:** CP4 cross-section pass (this CP). **Sunset window:** ≤1 release cycle (per ADR-0035 amendment-in-place tempo precedent).
+
+### §15.4 Cross-crate soft amendment к credential Tech Spec §15.7 — FLAGGED, NOT ENACTED
+
+Per §6.4.2 — credential Tech Spec §15.7 currently does not include the `engine_construct_with_probe` test-only constructor variant on `SchemeGuard<'a, C>`. CP2 §6.4.2 commits per-test `ZeroizeProbe: Arc<AtomicUsize>` instrumentation as the cancellation-zeroize test contract (closes 08c §Gap 4); this requires the test-only constructor.
+
+**Amendment candidate (form):**
+
+```rust
+// In nebula-credential's test surface (cfg(any(test, feature = "test-helpers"))):
+impl<C: Credential> SchemeGuard<'a, C> {
+    #[cfg(any(test, feature = "test-helpers"))]
+    pub fn engine_construct_with_probe(
+        scheme: C::Scheme,
+        ctx: &'a CredentialContext<'a>,
+        probe: Arc<AtomicUsize>,
+    ) -> Self { ... }  // bumps `probe` on Drop instead of (or in addition to) global
+
+    // Production constructor unchanged.
+    pub(crate) fn engine_construct(scheme: C::Scheme, ctx: &'a CredentialContext<'a>) -> Self { ... }
+}
+```
+
+**Status: FLAGGED, NOT ENACTED in this Tech Spec.** Same precedent as §15.3 — credential Tech Spec author lands the inline edit per ADR-0035 amended-in-place tempo. Until amendment lands, the cancellation-zeroize test (`crates/action/tests/cancellation_zeroize.rs`) cannot construct `SchemeGuard` with a per-test probe, so the test must be gated `#[cfg(feature = "test-helpers")]` until the credential-side feature lands.
+
+**Coordination owner.** Credential Tech Spec author. **Trigger:** CP4 cross-section pass (this CP). **Sunset window:** ≤1 release cycle, atomic with §15.3 if practical (both surface in same cross-section pass).
+
+### §15.5 ADR-0037 §1 SlotBinding shape amendment-in-place — ENACTED
+
+Per CP2 line 2179 ("ADR-0037 §1 SlotBinding shape divergence — amendment-in-place trigger"): ADR-0037 §1 currently shows `SlotBinding { key, slot_type, capability, resolve_fn }` with separate `capability` field; this Tech Spec §3.1 (lines 606-633) folds capability into the `SlotType` enum per credential Tech Spec §9.4 line 2452 three-variant matching pipeline (`Concrete { type_id }`, `ServiceCapability { capability, service }`, `CapabilityOnly { capability }`). The pre-amendment shape is a **§0.2 invariant 2 trigger** if not landed before Tech Spec ratification.
+
+**Supersession acknowledgement (CP4 iterated 2026-04-25).** Credential Tech Spec §9.4 was superseded by §15.8 in credential Tech Spec CP5 (2026-04-24). The §9.4 supersede blocks at credential Tech Spec lines 2376 and 2446 redirect readers to §15.8 (line 3520-3528) as the canonical shape. The amendment justification is **shape-preserving across the supersession**: §15.8 explicitly preserves the `SlotType::Concrete / ServiceCapability / CapabilityOnly` matching axes verbatim (credential Tech Spec line 3522 "Same `SlotType::Concrete / ServiceCapability / CapabilityOnly` matching axes"); the supersession shifts only the **filter authority source** (plugin-metadata `capabilities_enabled` → registry-computed `RegistryEntry::capabilities` at `register<C>` time). Capability-authority-source orthogonality means the §15.5 SlotBinding amendment-in-place is substantively correct under both pre-CP5 and post-CP5 forms. CP4 §14.3 row 7 re-pins the citation to §15.8 (CP5 supersession of §9.4); §3.1 SlotType doc comment likewise re-pins.
+
+#### §15.5.1 Enactment
+
+This CP **enacts** the ADR-0037 §1 amendment-in-place per ADR-0035 precedent. The enactment is recorded as a separate edit on `docs/adr/0037-action-macro-emission.md` co-landing with this CP4 draft:
+
+- **§1 SlotBinding shape** rewritten from `SlotBinding { key, slot_type, capability, resolve_fn }` (separate `capability` field) to `SlotBinding { field_name, slot_type, resolve_fn }` (capability folded into `SlotType` enum per credential Tech Spec §9.4 three-variant matching pipeline → §15.8 CP5 supersession preserves the same matching axes; capability authority source shifts plugin-metadata → `RegistryEntry::capabilities` registry-computed).
+- **Status header** changed from `proposed` to `proposed (amended-in-place 2026-04-25)` per ADR-0035 precedent block style.
+- **CHANGELOG entry added** at ADR top: "Amended-in-place 2026-04-25 per Tech Spec CP4 §15.5 to fold capability into `SlotType` enum, aligning with credential Tech Spec §9.4 line 2452 authoritative three-variant matching pipeline. Per ADR-0035 amended-in-place precedent."
+- **Field name reconciliation.** Pre-amendment `key: "slack"` (string-typed) is reconciled to `field_name: "slack"` (`&'static str`-typed) — matches Tech Spec §3.1 line 608 + spike `final_shape_v2.rs:43-55`. The runtime semantic is unchanged (the `field_name` identifies the action struct field by name); the rename clarifies that this is the *Rust field name*, not a credential `SlotKey`.
+- **Cross-section consistency.** ADR-0037 §3 Auto-deref Clone shadow probe section references `SlotBinding` shape only in the body — qualified-syntax probe form is preserved. ADR-0037 §4 Macro test harness section references the 6-probe table — `SlotBinding` shape not load-bearing for individual probe rows. ADR-0037 §5 Emission perf bound section refers to `LOC of macro-emitted region` — `SlotBinding` shape not load-bearing for naive-vs-adjusted ratio.
+
+**Why amend-in-place vs supersede.** Per ADR-0035 §Status block: "Post iter-2 amendments applied (canonical-form corrections, not stylistic)" — same shape-correction discipline applies here. The `capability` field divergence is a structural inconsistency (cross-crate authoritative source wins), not a paradigm shift; supersede would be disproportionate per `feedback_adr_revisable.md` precedent for ADR-0035 itself.
+
+**Status invariant.** Per §0.2 invariant 2: ADR-0037 amendment is recorded as `proposed (amended-in-place 2026-04-25)`. This Tech Spec ratification (CP4 freeze) is conditional on ADR-0037 amendment landing — verified in §16.5 cascade-final precondition. ADR-0037 status moves to `accepted` upon Tech Spec ratification per §0.1 line 35.
+
+### §15.6 §2.9-1 forward-track — closure (CP2 carry-forward)
+
+**Decision:** keep universal `with_schema` builder pattern; no `ActionMetadata::for_trigger::<A>()` helper added. Per §2.9.5 / §2.9.6 — Configuration vs Runtime Input axis distinction makes the universal pattern correct; trigger-shape-specific helper would over-specialize. Configuration lives in `&self` struct fields per §4.2 ("Fields outside the zones pass through unchanged") + schema declared via `ActionMetadata::parameters` per `crates/action/src/metadata.rs:292`. Closes CP2 §15 carry-forward.
+
+### §15.7 CP1 hygiene T-disposition ratification
+
+| Item | Disposition (CP3 §13.4.5) | CP4 ratification |
+|---|---|---|
+| **T4** `zeroize` workspace=true pin | Cascade-scope absorb | **RATIFIED** — lands in cascade-landing PR per §13.4.1 |
+| **T5** `lefthook.yml` parity | Out of cascade scope | **RATIFIED** — separate housekeeping PR (devops-owned); sunset ≤2 release cycles per `feedback_lefthook_mirrors_ci.md`; CP4 §16 sunset-tracked |
+| **T9** `deny.toml` layer-enforcement | Cascade-scope absorb | **RATIFIED** — wrappers-list extension + NEW positive ban per §13.4.3 |
+| **`nebula-redact`** workspace integration | Cascade-scope absorb (preliminary) | **RATIFIED** — atomic with cascade PR per §13.4.4 |
+
+Disposition table is final at CP4 freeze; no further T-item movement post-freeze per §0.2 invariant 1.
+
+### §15.8 Remaining minor open items walkthrough (deferred-with-trigger registry)
+
+Each item below has a **trigger** (when it surfaces for resolution), an **owner** (who resolves), and a **scope** (action-cascade-internal vs cross-cascade vs implementation-time). None block this Tech Spec freeze.
+
+| Open item | Trigger | Owner | Scope |
+|---|---|---|---|
+| **(a)** §1.2 N5 paths a/b/c framing | Phase 8 cascade summary | architect (frames) → user picks | Cascade-final |
+| **(b)** §2.2.3 TriggerAction cluster-mode hooks final trait shape | Engine cluster-mode coordination cascade activation | engine cascade architect | Out-of-this-cascade per §1.2 N4 |
+| **(c)** §2.6 / §9.2 DX trait blanket-impl trait-by-trait audit | Implementation-time finalization | rust-senior | Cascade-internal housekeeping |
+| **(d)** §3.1 engine `ActionRegistry::register*` call-site exact line range + final host-crate path | Engine cascade handoff | engine cascade architect | Out-of-this-cascade |
+| **(e)** §3.2 ActionContext API location in credential Tech Spec | Cross-section pass with credential Tech Spec author | architect + credential Tech Spec author | Cross-cascade |
+| **(f)** §15.3 + §15.4 cross-crate soft amendments | CP4 cross-section pass (this CP) | credential Tech Spec author | Cross-cascade |
+| **(g)** ADR-0037 §1 SlotBinding shape amendment-in-place | ENACTED §15.5 (this CP) | architect | Action-cascade-internal — **ENACTED** |
+| **(h)** §10 codemod implementation host crate (`tools/codemod/` placeholder) | Implementation-time | devops + architect | Cascade-final housekeeping |
+| **(i)** §13.4.2 T5 lefthook parity | Sunset ≤2 release cycles | devops | Out-of-cascade-scope |
+| **(j)** §11.3-1 adapter perf microbenchmark + §13.3 crate publication policy ADR-0021 cross-ref | Implementation-time | rust-senior + architect | Cascade-final housekeeping |
+| **§5.1-1** `cargo-public-api` snapshot for macro crate | Future macro-evolution housekeeping | rust-senior | Out-of-cascade-scope |
+| **§7.3-1** `ResolveError::NotFound` → `ActionError` taxonomy mapping | Implementation-time | rust-senior | Cascade-final housekeeping (security-neutral) |
+| **§9.3-1** `nebula-sdk::prelude` re-export of `redacted_display` | Closed: NO — community plugins depend on `nebula-redact` directly | architect | Single-audit-point preserved |
+| **§12 `#[action(control_flow)]` attribute syntax — exact spelling** | §9.2 trait-by-trait audit closure | rust-senior | Cascade-final housekeeping; flag form is CP3-CP4 placeholder |
+
+**Per `feedback_active_dev_mode.md` discipline:** every deferred-with-trigger row above has a named trigger + owner + scope. No silent deferral. Per the same discipline, none of these items is implementation-blocking — Phase 8 cascade summary surfaces them as the residual ledger after cascade close.
+
+---
+
+## §16 Implementation handoff
+
+This section frames the post-cascade-freeze handoff. CP4 records the structure; the user picks Q1 path (a)/(b)/(c) at Phase 8 cascade summary per Strategy §6.5 (line 408-413) — Tech Spec presents, does NOT pre-pick.
+
+**Phase numbering anchor.** Phase references in §16 (Phase 6 ratification / Phase 7 cross-section / Phase 8 cascade summary) live in cascade-orchestrator territory, defined in [Strategy §6](../specs/2026-04-24-action-redesign-strategy.md). This Tech Spec uses them as named hand-off points without redefinition.
+
+### §16.1 PR wave plan — Q1 implementation path options
+
+Per Strategy §4.2 (line 198-206) + §6.5 (line 408-413), three implementation paths frame the cascade-final user pick. CP4 §16.1 extends the Strategy table with concrete cascade-final criteria:
+
+| Path | Shape | Best when | Cascade-final criteria |
+|---|---|---|---|
+| **(a) Single coordinated PR** | One PR landing both crates' CP6 vocabulary + engine wiring + plugin migration in lockstep. ~18-22 agent-days full impl per architect 03a §1; 8-12d per tech-lead round 1 (gap reflects whether codemod + plugin migration are counted). | Credential cascade owner + action-crate owner have concurrent bandwidth committed; reviewer headcount available for one large landing | Reviewer load: 27+ engine import sites + 7 reverse-deps in one diff; ratification depends on tech-lead capacity to absorb single-PR review surface |
+| **(b) Sibling cascades — credential leaf-first; action consumer-second in lockstep** | Credential CP6 implementation cascade lands `CredentialRef<C>` / `SlotBinding` / `SchemeGuard` / `SchemeFactory` / `RefreshDispatcher` first. Action consumer cascade adopts CP6 vocabulary second, lockstep. Each fits normal autonomous budget. | Owner bandwidth permits leaf-first; cascade sequencing tolerable; reviewer load amortized over two diffs | Sequencing friction during the gap (CP6 surface lands before action consumer; engine sees CP6-shaped credential surface without action consumer); tech-lead round 2 preference if credential-crate owner has bandwidth |
+| **(c) Phased B'+ surface commitment — NOT VIABLE WITHOUT credential CP6 cascade slot** | Action ships CP6 API surface (the user-visible types) with delegating internals while credential cascade lands CP6 internals; plugin authors do not re-migrate. Action's `resolve_as_<capability><C>` thunk is the only action-side bridge. | Credential cascade owner cannot start CP6 implementation immediately but slot is committed; plugin authors need CP6 surface immediately for downstream work | **VIABILITY GATE — per Strategy §6.6 (line 416-426) silent-degradation guard:** committed credential CP6 cascade slot (named owner + scheduled date + queue position in `docs/tracking/cascade-queue.md` — or equivalent location, orchestrator picks at Phase 8 per Strategy §6.6 last paragraph) MUST exist before activation. Absent slot ⇒ path (c) NOT VIABLE; user pick narrows to (a) or (b). Architect+tech-lead co-decision required per Strategy §6.8 (line 459) — orchestrator does NOT silently activate |
+
+**(c) viability gate cross-ref.** Path (c) requires B'+ activation; B'+ activation is not user-pickable in isolation per Strategy §6.8 co-decision rule. The cascade-final readiness check at §16.5 confirms slot status before path (c) is offered as user choice.
+
+**This Tech Spec presents the table; user picks at Phase 8 cascade summary.** Per §1.2 N5 — Tech Spec does NOT pre-pick.
+
+### §16.2 Codemod ship plan
+
+Per CP3 §10.2 T1-T6 — codemod design lands as cascade artefact:
+
+- **Deliverable form.** `cargo`-style binary `nebula-action-codemod` (host: `tools/codemod/` placeholder per §10.2.1; exact crate name + binary location is §15.8 row (h)). AUTO mode default for T1/T3/T4; MANUAL-REVIEW marker for T2/T5; MIXED for T6 per ADR-0038 §Negative item 4.
+- **Idempotent re-run.** Codemod re-runs are no-ops if pattern already migrated (per §10.2.1).
+- **Automated step counts per consumer.** Per CP3 §10.3 table:
+  - `nebula-engine` — 27+ import sites; ~10 T4 + ~5 T2 + ~5-7 T5 sites; closer to 50/50 AUTO/MANUAL ratio
+  - `nebula-api` — ~4 sites total; 1 T2 + 2 T4 + 1 T5
+  - `nebula-sandbox` — 7 files; ~3 T3 + ~4 T4 + ~2 T5; dyn-handler ABI moderate risk
+  - `nebula-sdk` — re-export-only; covered by §9.3 reshuffle, not codemod transforms
+  - `nebula-plugin` — ~1-2 T1 sites; trivial
+  - `apps/cli` — ~3 T1 + ~1-2 T2 + ~1 T5
+- **Aggregate.** ~55 file edits across 6 crates + 1 app per [`01b-workspace-audit.md`](../drafts/2026-04-24-nebula-action-redesign/01b-workspace-audit.md) §10 line 358; ~70/30 AUTO/MANUAL workspace-aggregate per §10.5.
+- **`MIGRATION.md` artefact.** Ships in `crates/action/` alongside cascade-landing PR per §10.4 last paragraph; documents steps 1-7 with worked examples per `feedback_active_dev_mode.md` ("DoD includes migration guide for breaking changes").
+
+### §16.3 Definition of done (PR-wave-level)
+
+Per `feedback_active_dev_mode.md` ("Active dev ≠ prod release; never settle for green tests / cosmetic / quick win / deferred"), the cascade-landing PR is DONE when ALL of the following land in cascade scope:
+
+1. **All 11 🔴 from Phase 1 02-pain-enumeration §4 closed in code.** CR1-CR11 verifiable per §14.4 closure traceability table.
+2. **Security must-have floor (4 items) verified via tests.**
+   - **CR4 / S-J1** JSON depth bomb fix — depth cap 128 at every adapter JSON boundary per §6.1; typed `ValidationReason::DepthExceeded { observed, cap }` per §6.1.3
+   - **CR3 / S-C2** cross-plugin shadow attack fix — hard removal of `CredentialContextExt::credential<S>()` per §6.2 (NOT `#[deprecated]` shim — `feedback_no_shims.md` + security-lead 03c §1 VETO retained)
+   - **`ActionError` Display sanitization** — `redacted_display(&e)` wrap at every error-emit site per §6.3
+   - **Cancellation-zeroize test** — three sub-tests per §6.4.1; per-test `Arc<AtomicUsize>` probe per §6.4.2
+3. **Macro test harness landed.** `crates/action/macros/tests/` per §5.2; six probes ported from spike commit `c8aef6a0` + Probe 7 (`parameters = Type` no-`HasSchema` rejection) per §5.3; macrotest expansion snapshots per §5.5.
+4. **Sealed DX adapter pattern landed.** Five sealed DX traits (`ControlAction` / `PaginatedAction` / `BatchAction` / `WebhookAction` / `PollAction`) per §2.6 + §9.2; sealed_dx adapter pattern per §11.2 + §12.1; canon §3.5 line 82 revision PR co-lands per §16.5.
+5. **7 reverse-deps migrated.** Per §10.3 + §10.5 — engine + api + sandbox + sdk + plugin + cli + macros sibling crate via codemod + manual review.
+6. **`nebula-redact` workspace integration landed.** Per §13.4.4 — four atomic edits (new `crates/redact/Cargo.toml` + `src/lib.rs`; root `Cargo.toml [workspace] members` + `[workspace.dependencies]`; no new `deny.toml` ban — leaf utility). Atomic with cascade PR.
+7. **`deny.toml` positive ban for `nebula-action` runtime layer landed.** Per §13.4.3 — wrappers-list extension to existing `nebula-engine` rule + NEW positive ban for `nebula-action` runtime layer (Edit 1 + Edit 2). Symmetric with engine/sandbox/storage/sdk/plugin-sdk rules.
+
+**Plus implicit:** ADR-0036 / ADR-0037 / ADR-0038 status moves from `proposed` to `accepted` upon Tech Spec ratification (per §0.1 line 35); ADR-0037 has `proposed (amended-in-place 2026-04-25)` qualifier per §15.5 enactment.
+
+### §16.4 Rollback strategy if soak period reveals issues
+
+Two distinct rollback layers, applied per failure mode:
+
+**Layer 1 — Feature-flag gate path (symmetric `unstable-retry-scheduler` + `unstable-terminate-scheduler`).** If post-cascade soak surfaces issues with `Retry` or `Terminate` end-to-end wiring (e.g., scheduler-integration hook bug, cross-tenant boundary violation slipping through), feature-flag-gate the variant in question via the existing `unstable-retry-scheduler` / `unstable-terminate-scheduler` flags. Per §2.7.1 wire-end-to-end commitment — flags exist precisely for this rollback shape; gating one or both does NOT require Tech Spec amendment, only PRODUCT_CANON §11.2 status revert. Variant signatures remain frozen per §0.2 invariant 4.
+
+**Layer 2 — Reverse-codemod for transform regressions.** If post-cascade soak reveals codemod transforms (T1-T6) introduced regressions in reverse-deps, the codemod ships a reverse mode (`nebula-action-codemod --reverse`) that inverts AUTO transforms (T1, T3, T4, T6 trivial-pass-through case) per their unidirectional shape. MANUAL-REVIEW transforms (T2, T5, T6 edge-case markers) cannot be reverse-codemodded — manual revert required. Reverse-codemod is a §15.8 row (h) housekeeping commitment landing alongside the codemod itself; not a separate cascade.
+
+**Strategy §6.8 B'+ contingency activation** — if post-cascade soak reveals A' is structurally untenable (e.g., HRTB shape stops compiling against future Rust release; macro emission contract requires fundamental rework), B'+ activation is the architect+tech-lead co-decision rollback path. Strategy §6.8 (line 443-461) records the criteria and rollback shape; this is an out-of-scope-for-Tech-Spec recovery layer (Strategy-level reversal).
+
+### §16.5 Pre-implementation checklist (cascade-final)
+
+Per Strategy §6.5 (line 406-413) + §6.6 (line 416-426) + §6.8 (line 443-461) + this Tech Spec §0.1 + §15.5 + §15.8 — the cascade-final readiness check before Phase 8 user pick:
+
+- [ ] **Tech Spec ratified.** This Tech Spec FROZEN CP4 per §0.1 status table (status moves to `FROZEN CP4 2026-04-25` after CP4 review + iterate cycle).
+- [ ] **ADR-0036 / ADR-0037 / ADR-0038 status moved to `accepted`** per §0.1 line 35 (status moves at Tech Spec ratification).
+- [ ] **ADR-0037 §1 SlotBinding shape amendment-in-place landed.** Per §15.5.1 enactment — verified by `grep`-able anchor at ADR-0037 §Status block ("amended-in-place 2026-04-25") + §1 SlotBinding shape matching this Tech Spec §3.1 line 606-633.
+- [ ] **Canon §3.5 revision PR ratified.** Per ADR-0038 §2 — canon §3.5 line 82 revises to enumerate the DX tier explicitly. This is a separate PR from cascade-landing; precondition for ADR-0038 status moving to `accepted`.
+- [ ] **Credential CP6 cascade slot status confirmed.** Per Strategy §6.6 (line 416-426) — slot row in [`docs/tracking/cascade-queue.md`](../../tracking/cascade-queue.md) (or equivalent location — orchestrator picks at Phase 8 per Strategy §6.6 last paragraph; the file does not exist on disk at draft time per audit verification) with three required fields: named owner + scheduled date + queue position. **Required if user picks path (b) or (c).** Not required for path (a).
+- [ ] **§15.3 + §15.4 cross-crate soft amendments к credential Tech Spec coordinated.** Per cross-section pass (this CP); credential Tech Spec author lands inline edits per ADR-0035 amended-in-place tempo.
+- [ ] **Phase 1 register state verified — no 🔴 unresolved.** Per Strategy §6.4 (line 396-402) — concerns register lifecycle activated only if Phase 1 surfaced unresolved 🔴; absence confirmed.
+
+**User pick at Phase 8 cascade summary** — orchestrator surfaces the (a)/(b)/(c) table from §16.1 with each row's cascade-final criteria status (e.g., "(c) NOT VIABLE: credential CP6 cascade slot uncommitted in cascade-queue.md"). Per Strategy §4.2 line 206 + §6.5 line 408-413: Strategy does not pre-pick; orchestrator does not pre-pick; user picks.
 
 ---
 
@@ -2293,3 +2639,62 @@ CP3 iteration append 2026-04-24 (post 5-reviewer-matrix consolidation: spec-audi
 - **rust-senior** — please confirm: (1) §9.1 trait-level surface unchanged claim — verify `Input: HasSchema + DeserializeOwned + Send + 'static` etc. lifts are non-breaking at the impl level (existing impls already satisfy via adapter contract); (2) §9.3.1 `credential_typed::<S>(key)` removal recommendation — flag if a legitimate non-`#[action]` consumer exists that would force retention; (3) §11.1 macro-emitted adapter shape — confirm the `StatelessActionAdapter<A>` example matches current `crates/action/src/stateless.rs` shape post-modernization; (4) §11.2 sealed_dx adapter authoring pattern for internal-Nebula crates — confirm the `mod sealed_dx { pub trait MyCustomShapeSealed {} }` shape composes with the §2.6 sealed-DX pattern without conflict; (5) §13.2 amendment-in-place vs supersession discipline — flag if the ADR-0035 precedent is mis-cited.
 - **spec-auditor** — please audit §9–§13 for: (a) cross-section consistency — every forward reference to CP4 / engine cascade marked deferred, not dangling (§9.5.5 engine trait surface; §11.3-1 perf microbench; §13.3 ADR-0021 cross-ref); (b) every claim grounded in code (file:line) / canon / ADR / Strategy / Phase 0 audit at line-number granularity (Phase 0 §9 reverse-deps verbatim; security 08c Gap 5 verbatim language; ADR-0038 §1 / §Negative item 4 verbatim); (c) §9.5 cross-tenant Terminate engine-side enforcement contract uses VETO trigger language verbatim (NOT paraphrased); (d) terminology alignment with `docs/GLOSSARY.md` (especially "tenant scope", "scheduler-integration hook", "sealed DX", "adapter responsibilities"); (e) §10 codemod transforms T1-T6 trace to specific reverse-deps + Phase 0 §10 blast-radius weights; (f) §13.4 T4/T5/T9 dispositions consistent with Phase 0 audit findings (§1 line 44; §11 line 376, line 379).
 - **security-lead** *(focused review on §9.5 only)* — please verify §9.5 cross-tenant `Terminate` boundary closure of 08c §Gap 5: (1) §9.5.1 invariant language quotes 08c §Gap 5 line 109-111 verbatim — confirm the wording matches your veto trigger position; (2) §9.5.2 mechanism (tenant scope check at scheduler dispatch path; cross-tenant skip silent with telemetry; structural error Fatal) — confirm the silent-skip path does NOT enable any tenant-isolation bypass; (3) §9.5.3 reject paths (silent cross-tenant cancel REJECT; silent no-op without telemetry REJECT) — confirm the threat-model coverage; (4) §9.5.5 implementation-time VETO retained on "MUST NOT propagate" — confirm the wording is the right strength. **Out of scope** for this review: §10 codemod, §11 adapter contract (already accepted at CP2 §6.4 + §7), §12 / §13 (no new security surface).
+
+### Open items raised this checkpoint (CP4)
+
+CP4 §15 walks all CP1-CP3 carry-forward to decided / deferred-with-trigger status. No new open items raised at CP4 drafting — the §15.8 deferred-with-trigger registry is the residual ledger. Each row has trigger + owner + scope per `feedback_active_dev_mode.md`.
+
+**Items deferred-with-trigger (residual ledger from §15.8 — none implementation-blocking):**
+- (b) §2.2.3 TriggerAction cluster-mode hooks final trait shape — engine cluster-mode coordination cascade scope (§1.2 N4)
+- (c) §2.6 / §9.2 DX trait blanket-impl trait-by-trait audit — implementation-time housekeeping (rust-senior owner)
+- (d) §3.1 engine `ActionRegistry::register*` exact line range + final host-crate path — engine cascade handoff
+- (e) §3.2 ActionContext API location in credential Tech Spec — cross-section pass with credential Tech Spec author
+- (h) §10 codemod implementation host crate — cascade-final housekeeping (devops + architect)
+- (i) §13.4.2 T5 `lefthook.yml` parity — out-of-cascade-scope; sunset ≤2 release cycles
+- (j) §11.3-1 adapter perf microbenchmark + §13.3 ADR-0021 cross-ref — cascade-final housekeeping
+- §5.1-1 `cargo-public-api` snapshot for macro crate — out-of-cascade-scope; future macro-evolution housekeeping
+- §7.3-1 `ResolveError::NotFound` → `ActionError` taxonomy mapping — cascade-final housekeeping (security-neutral)
+- §12 `#[action(control_flow)]` exact spelling — cascade-final housekeeping (flag form is CP3-CP4 placeholder)
+
+**Items enacted this CP (no longer open):**
+- (g) ADR-0037 §1 SlotBinding shape amendment-in-place — **ENACTED** at §15.5.1 (ADR file edit lands co-with this CP4 draft)
+
+**Items flagged-not-enacted (cross-cascade coordination):**
+- (f) §15.3 + §15.4 cross-crate soft amendments к credential Tech Spec §16.1.1 / §15.7 — owner: credential Tech Spec author; trigger: cross-section pass (this CP); sunset ≤1 release cycle
+
+**Items closed at §15:**
+- §1.2 / N5 paths a/b/c framing — **CLOSED at §16.1**; user picks at Phase 8
+- §15.6 — `ActionMetadata::for_trigger::<A>()` helper question CLOSED (universal `with_schema` retained)
+- §15.7 — T4 / T5 / T9 / `nebula-redact` dispositions RATIFIED
+- §9.3-1 — `nebula-sdk::prelude` re-export of `redacted_display` — CLOSED (NO; community plugins depend on `nebula-redact` directly)
+
+### CHANGELOG — CP4
+
+CP4 single-pass append 2026-04-25:
+- Status header — `DRAFT CP3 (iterated 2026-04-24)` → `DRAFT CP4`. §0 status table — `(this revision)` annotation moves from CP3 row to CP4 row; CP3 row marked `locked CP3`.
+- §14 added — Cross-references: §14.1 ADR matrix (4 ADRs); §14.2 Strategy parent-doc cross-refs (frozen CP3) — 13 rows mapping Strategy § to Tech Spec sections; §14.3 credential Tech Spec cross-refs — 13 rows including 2 soft-amendment-flagged rows; §14.4 Phase 1 register cross-refs — CR1-CR11 closure traceability table; §14.5 Phase 0 evidence — 7 line-pinned audit findings + T-disposition table + hygiene-T vs codemod-T naming caveat.
+- §15 added — Open items resolution: §15.1 walkthrough of Strategy §5 + CP1-CP3 carry-forward (~25 items); §15.2 Q2 Terminate decision recorded (wire-end-to-end + cross-tenant boundary lock); §15.3 cross-crate soft amendment к credential Tech Spec §16.1.1 probe #7 (FLAGGED, NOT ENACTED); §15.4 cross-crate soft amendment к credential Tech Spec §15.7 (FLAGGED, NOT ENACTED); §15.5 ADR-0037 §1 SlotBinding shape amendment-in-place ENACTED with §15.5.1 enactment record; §15.6 §2.9-1 forward-track closed (no helper added); §15.7 CP1 hygiene T-disposition ratified (T4 + T5 + T9 + `nebula-redact`); §15.8 remaining minor open items walkthrough (deferred-with-trigger registry — 13 lettered (a)-(j) rows + 4 §-prefixed rows = 17 entries total; "14 rows" framing in earlier draft replaced after audit verification).
+- §16 added — Implementation handoff: §16.1 PR wave plan presenting Q1 paths (a)/(b)/(c) per Strategy §6.5 — extends Strategy table with cascade-final criteria column; (c) viability gate cross-ref to §6.6 silent-degradation guard; §16.2 codemod ship plan with per-consumer automated step counts; §16.3 definition of done (PR-wave-level) — 7-item DoD checklist + implicit ADR status moves; §16.4 rollback strategy — Layer 1 feature-flag gate path (symmetric `unstable-action-scheduler` + `unstable-retry-scheduler`); Layer 2 reverse-codemod for transform regressions; Strategy §6.8 B'+ contingency activation as Strategy-level reversal layer; §16.5 pre-implementation checklist (cascade-final) — 7-item readiness checkbox list including ADR-0037 amendment-in-place verification.
+- §15.5.1 ENACTMENT — separate edit on `docs/adr/0037-action-macro-emission.md` co-lands with this CP4 draft per §15.5 enactment record. Status moves `proposed` → `proposed (amended-in-place 2026-04-25)`; §1 SlotBinding shape rewritten to fold capability into `SlotType` enum per credential Tech Spec §9.4; CHANGELOG entry added at ADR top citing Tech Spec CP4 §15.5 as enactment trigger.
+
+CP4 iteration append 2026-04-25 (post spec-auditor 11a REVISE — 3 🔴 mechanical pin-fixes + 3 🟠 + 3 actionable 🟡; security-lead 11b ACCEPT, no edits required):
+- Status header — `DRAFT CP4` → `DRAFT CP4 (iterated 2026-04-25)`. Stays DRAFT until tech-lead freeze ratification.
+- 🔴 #1 (file path) — §14.5 evidence list re-pinned from `01-current-state.md` to `01b-workspace-audit.md` for the workspace/CI/tooling-tier line ranges (§1 line 44 zeroize, §9 line 252-329 reverse-deps, §10 line 346-356 blast-radius, §11 line 376 lefthook, §11 line 379 deny.toml). §13.4.1 / §13.4.2 / §13.4.3 source-attribution paragraphs likewise re-pinned. §16.2 aggregate cite ("~55 file edits per Phase 0 §10 line 358") re-pinned to `01b-workspace-audit.md`. Closes spec-auditor 11a 🔴 #1.
+- 🔴 #2 (supersede-stale §9.4) — §14.3 row 7 + row 8 re-pinned to `§15.8 (CP5 supersession of §9.4)` with explicit shape-preservation note (matching axes preserved; capability authority shifts plugin-metadata `capabilities_enabled` → registry-computed `RegistryEntry::capabilities`). §15.5 + §15.5.1 add supersession-acknowledgement paragraph and update §15.5.1 enactment-bullet citation. §3.1 SlotType `ServiceCapability` doc comment (lines 624-628) re-pinned: removes `cred.metadata().capabilities_enabled.contains(*capability)` reference; cites §15.8 + `RegistryEntry::capabilities`. ADR-0037 line 86 doc comment likewise re-pinned (separate Edit on ADR file; ADR amendment-in-place qualifier preserved). Closes spec-auditor 11a 🔴 #2.
+- 🔴 #3 (flag name) — §16.4 line 2423 parenthetical corrected from `(symmetric \`unstable-action-scheduler\` + \`unstable-retry-scheduler\`)` to `(symmetric \`unstable-retry-scheduler\` + \`unstable-terminate-scheduler\`)`. Body text was already correct; parenthetical now matches. Aligns with §0.2 invariant 4 freeze on parallel-flag signature per CP1 §2.7.2 line 2478 + Strategy line 432-438. Closes spec-auditor 11a 🔴 #3.
+- 🟠 #1 (CP1 path forwarded into CP4 §15.1) — §15.1 row "§3.1 — engine `ActionRegistry::register*` ... current host is `crates/engine/src/registry.rs`" amended in place: notes the file lives under `runtime/` submodule (`crates/engine/src/runtime/registry.rs`); CP1 line 642 + CP1 CHANGELOG line 2477 left untouched per CP1-locked discipline (audit footnote: `Glob crates/engine/src/registry*` returns no top-level match; the file's actual host is the `runtime/` submodule). Closes spec-auditor 11a 🟠 #1.
+- 🟠 #2 (§14.3 row 11 status-cell consistency) — `Soft amendment — flagged, NOT enacted` → `Soft amendment — FLAGGED, NOT ENACTED` (bold form aligned to row 12 / probe #7 row). Closes spec-auditor 11a 🟠 #2.
+- 🟠 #3 (cascade-queue.md hedge) — §16.1 (c) viability gate row + §16.5 cascade-queue checkbox both append "(or equivalent location — orchestrator picks at Phase 8 per Strategy §6.6 last paragraph)" hedge mirroring Strategy §6.6 framing; §16.5 also notes "the file does not exist on disk at draft time per audit verification". Closes spec-auditor 11a 🟠 #3.
+- 🟡 #1 (§15.1 cross-line drift "2253-2263") — re-pinned from "line 2253-2263" to "CP3 CHANGELOG (current line 2598-2607)" per audit verification. Closes spec-auditor 11a 🟡 #1.
+- 🟡 #4 (CHANGELOG row count §15.8) — count framing corrected from "14 rows" to "13 lettered (a)-(j) rows + 4 §-prefixed rows = 17 entries total" matching the actual table shape. Closes spec-auditor 11a 🟡 #4.
+- 🟡 #5 (Phase numbering anchor) — §16 prelude gains "Phase numbering anchor" sentence pointing to Strategy §6 as the canonical Phase 6/7/8 definitions source; once at top of §16, no per-section repetition. Closes spec-auditor 11a 🟡 #5.
+- 🟡 #2 / #3 / #6 — no edits required per audit (pure presentation; close with 🔴 #2 fix; optional symmetry move). Audit explicitly notes these as "current form is correct" or "could move ... but optional".
+- security-lead 11b ACCEPT — confirms §16.3 DoD item 2 (4 must-have floor items as cascade-landing-PR obligations); §15 §6.x closure complete (CLOSED or FLAGGED-NOT-ENACTED with named owner/trigger/sunset); VETO retention reinforced across §0.2 invariant 3 + §6.2.3 + §16.3 item 2. No edits required from security-lead review.
+
+### Handoffs requested — CP4
+
+- **spec-auditor** — please **full cross-CP audit** before freeze: (a) cross-section consistency — every forward reference resolves to actual content (especially §14.1 ADR matrix → all four ADRs at correct status; §14.2 / §14.3 / §14.4 / §14.5 cross-refs all `grep`-able at cited line ranges); (b) every claim grounded in code (file:line) / canon / ADR / Strategy / Phase 0 audit / spike artefacts at line-number granularity; (c) §15.5.1 ADR-0037 amendment-in-place actually enacted in `docs/adr/0037-action-macro-emission.md` (verify status header + §1 SlotBinding shape + CHANGELOG entry); (d) §15.3 + §15.4 soft amendments are FLAGGED only (no inline credential Tech Spec edit performed by this Tech Spec); (e) terminology alignment with `docs/GLOSSARY.md`; (f) §16.1 (a)/(b)/(c) framing aligns with Strategy §4.2 + §6.5 verbatim shape; (g) §16.5 pre-implementation checklist captures every cascade-final precondition (Tech Spec ratified + 4 ADRs accepted + ADR-0037 amendment-in-place + canon §3.5 revision PR + cred CP6 cascade slot + soft amendments coordinated + concerns register clean); (h) line-count budget — CP4 §14-§16 within 200-300 line target.
+- **tech-lead** — please ratify §15 closures (especially §15.5 ADR-0037 amendment-in-place enactment) and §16 framing (especially §16.3 7-item DoD checklist as the cascade-landing PR-wave-level definition of done, and §16.4 rollback strategy layer split). Solo-decider authority on §15.5 enactment (cascade-internal cross-cutting); CP4 freeze requires tech-lead explicit ratification. **Note:** §16.1 user-facing path framing is presented at Phase 8 cascade summary — Tech Spec presents, user picks; tech-lead ratifies the framing shape, not the user's pick.
+- **security-lead** *(no new security surface introduced at CP4 §14-§16; §9.5 cross-tenant boundary already accepted CP3 — confirmation review)* — please confirm §16.3 DoD item 2 (security must-have floor 4 items) verifies all four CR4/S-J1, CR3/S-C2, ActionError sanitization, cancellation-zeroize tests as cascade-landing-PR-DoD obligations (none deferred to follow-up). VETO authority retained on shim-form drift in CR3 fix per `feedback_no_shims.md` + 03c §1.
+
+
