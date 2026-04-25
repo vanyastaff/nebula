@@ -1,6 +1,6 @@
 ---
 name: nebula-action tech spec (implementation-ready design)
-status: FROZEN CP4 2026-04-25
+status: FROZEN CP4 2026-04-25 (amended-in-place 2026-04-25 — Q1 post-freeze)
 date: 2026-04-24
 authors: [architect (drafting); tech-lead (CP gate decider); security-lead (VETO authority on §4 security floor); orchestrator (CP coordination)]
 scope: nebula-action redesign cascade Phase 6 — implementation-ready design for the action trait family, the `#[action]` attribute macro, runtime model, security floor, and codemod migration
@@ -30,7 +30,7 @@ This document moves through four checkpoints with parallel reviewer matrices per
 | **DRAFT CP1** | §0–§3 | Status, goals, trait contract, runtime model | locked CP1 |
 | **DRAFT CP2** | §4–§8 | Macro emission, test harness, security floor, lifecycle, storage | locked CP2 |
 | **DRAFT CP3** | §9–§13 | Public API surface, codemod migration, adapter authoring, ControlAction migration, evolution policy | locked CP3 |
-| **FROZEN CP4 2026-04-25** (iterated 2026-04-25 post 11a/11b; tech-lead RATIFY-FREEZE 11c) | §14–§16 | Open items, accepted gaps, handoff, implementation-path framing for Phase 8 user pick | **frozen** |
+| **FROZEN CP4 2026-04-25** (iterated 2026-04-25 post 11a/11b; tech-lead RATIFY-FREEZE 11c; amended-in-place 2026-04-25 post-freeze for Q1 `*Handler` shape per §15.9 + Q2 §2.9.1b axis-naming refinement per ADR-0035 amended-in-place precedent) | §14–§16 | Open items, accepted gaps, handoff, implementation-path framing for Phase 8 user pick | **frozen (amended-in-place)** |
 
 Inputs are **frozen** at this freeze point: Strategy frozen at CP3 (commit `a38f6f5a`); ADR-0036 status `accepted` 2026-04-25 + ADR-0037 status `accepted` 2026-04-25 (amended-in-place 2026-04-25 per §15.5 enactment) — both flipped on Tech Spec FROZEN CP4 ratification per their respective §Status sections; ADR-0038 retained at `proposed` pending explicit user ratification on canon §3.5 revision (per cascade prompt: surface к user в Phase 8 summary, не auto-flip); Phase 4 spike PASS at commit `c8aef6a0` (worktree-isolated; see [spike NOTES](../drafts/2026-04-24-nebula-action-redesign/07-spike-NOTES.md) §5).
 
@@ -241,63 +241,85 @@ pub trait ResourceAction: Send + Sync + 'static {
 
 Resource-credential ownership boundary: the resource holds `SchemeFactory<C>` (per credential Tech Spec §15.7 line 3438-3447); the action body ALWAYS acquires `SchemeGuard<'a, C>` per request. This is N1 (Non-goal): resource-side scope (the `Resource` impl itself, `on_credential_refresh` full integration) is out of this Tech Spec's scope, but the type-level binding here is in scope per ADR-0035 §4.3 rewrite obligation.
 
-### §2.3 `BoxFut<'a, T>` type alias
+### §2.3 `BoxFut<'a, T>` type alias — used at `SlotBinding::resolve_fn` HRTB only
+
+> **Amended-in-place 2026-04-25 (Q1 post-freeze)** per §15.9 enactment. Pre-amendment: §2.3 + §2.4 locked manual `BoxFut<'a, T>` shape on `*Handler` methods. Post-amendment: §2.4 adopts `#[async_trait::async_trait]` per [ADR-0024 §Decision item 1](../../adr/0024-defer-dynosaur-migration.md) (which explicitly enumerates `StatelessHandler` / `StatefulHandler` / `TriggerHandler` / `ResourceHandler` among the 14 `dyn`-consumed traits approved for `#[async_trait]`). `BoxFut<'a, T>` survives as the alias used at `SlotBinding::resolve_fn`'s HRTB fn-pointer shape per credential Tech Spec §3.4 line 869 — that shape uses `for<'ctx> fn(...) -> BoxFuture<'ctx, ...>` and is structurally distinct from the `*Handler` per-method async return.
 
 ```rust
 pub type BoxFut<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
 ```
 
-Replaces the `for<'life0, 'life1, 'a>` HRTB boilerplate from the legacy `*Handler` trait surface (per Strategy §4.3.1 line 215-220, rust-senior 02c §6 line 358). This is the **dyn-safe companion** type used by §2.4 `*Handler` traits. The single-`'a` lifetime composes with the action body's borrow chain (spike Iter-2 §2.4 cancellation test); spike `final_shape_v2.rs:38` confirms the alias is well-formed under Rust 1.95 elision (rust-senior 02c line 55).
+**Use site (single).** `SlotBinding::resolve_fn` per §3.1 / ADR-0037 §1: `for<'ctx> fn(&'ctx CredentialContext<'ctx>, &'ctx SlotKey) -> BoxFut<'ctx, Result<ResolvedSlot, ResolveError>>`. The HRTB fn-pointer is monomorphized; the alias keeps the return-shape readable. `BoxFut` is **not** dyn-safe by itself; it is the return shape inside an HRTB fn-pointer. Spike `final_shape_v2.rs:38` confirms the alias is well-formed under Rust 1.95 elision (rust-senior 02c line 55); spike Iter-2 §2.4 cancellation test passes against this shape.
 
-`BoxFut` is **not** dyn-safe by itself; it is the return shape used by dyn-safe handler trait methods (§2.4). The HRTB used at the credential-resolution layer (§2.5 `ActionHandler` and §3.2 dispatch) uses the same fn-pointer shape per credential Tech Spec §3.4 line 869.
+**Why `BoxFut` survived the Q1 amendment.** The `*Handler` per-method async return (§2.4 below) and the `resolve_fn` HRTB fn-pointer (§3.1) are *different shapes*. `#[async_trait]` rewrites async-fn-in-trait into per-method `Pin<Box<dyn Future + Send>>` returns at the macro layer, but it does NOT rewrite HRTB fn-pointer signatures (those are not method bodies). `SlotBinding::resolve_fn` remains a hand-written HRTB fn-pointer with `BoxFut<'ctx, T>` return per credential Tech Spec §3.4 line 869 + ADR-0037 §1; the alias keeps that shape readable.
 
-**Crate residence.** `BoxFut<'a, T>` lives in `nebula-action` as the canonical alias for handler returns. Spike `final_shape_v2.rs:38` and credential Tech Spec §3.4 line 869 both use `BoxFuture` (longer name) for the same shape. CP3 §7 confirms the single-home decision: `nebula-action::BoxFut` is the action-side alias; if a shared `nebula-core::BoxFuture` is hoisted in a future cascade, this Tech Spec re-pins per §0.2 invariant 4. For CP1, the alias is action-local — engine adapters that need the same shape should `use nebula_action::BoxFut`, not redeclare.
+**Crate residence.** `BoxFut<'a, T>` lives in `nebula-action`. Credential Tech Spec §3.4 line 869 uses `BoxFuture` (longer name) for the same shape; the two aliases are interoperable. CP3 §7 confirmed the single-home decision: `nebula-action::BoxFut` is the action-side alias; if a shared `nebula-core::BoxFuture` is hoisted in a future cascade, this Tech Spec re-pins per §0.2 invariant 4.
 
-### §2.4 Four `*Handler` companion traits — dyn-safe parallels
+### §2.4 Four `*Handler` companion traits — `#[async_trait]`-annotated dyn-safe parallels
 
-Each primary dispatch trait has a **dyn-safe** companion `*Handler` trait used by the engine's `Arc<dyn XHandler>` storage (per `crates/action/src/handler.rs:39-50`). The HRTB modernization (G5 / Strategy §4.3.1) collapses the legacy quadruple-lifetime boilerplate to single-`'a` + `BoxFut`.
+> **Amended-in-place 2026-04-25 (Q1 post-freeze)** per §15.9 enactment. Pre-amendment: §2.4 used hand-written `BoxFut<'a, T>` returns per method (mimicking what `#[async_trait]` emits internally, but without the macro). Post-amendment: §2.4 adopts `#[async_trait::async_trait]` per [ADR-0024 §Decision items 1 + 4](../../adr/0024-defer-dynosaur-migration.md). ADR-0024 (accepted 2026-04-20, four days before this Tech Spec freeze) explicitly enumerates `StatelessHandler` / `StatefulHandler` / `TriggerHandler` / `ResourceHandler` among the 14 `dyn`-consumed traits approved for `#[async_trait]` (line 73-81 of the ADR). The Tech Spec freeze did not cite ADR-0024; this amendment realigns §2.4 with the already-ratified workspace policy and removes the residual `for<'life0, 'life1, 'a>` HRTB boilerplate from the production handler surface.
+
+Each primary dispatch trait has a **dyn-safe** companion `*Handler` trait used by the engine's `Arc<dyn XHandler>` storage (per `crates/action/src/handler.rs:39-50`). Per ADR-0024, the four traits are `#[async_trait]`-annotated; the macro emits the equivalent `Pin<Box<dyn Future<Output = T> + Send + 'a>>` return shape per method without the explicit `'life0`/`'life1` boilerplate appearing in source.
 
 ```rust
+use async_trait::async_trait;
+
+#[async_trait]
 pub trait StatelessHandler: Send + Sync + 'static {
     fn metadata(&self) -> &ActionMetadata;
-    fn execute<'a>(
-        &'a self,
-        ctx: &'a ActionContext<'a>,
+    async fn execute(
+        &self,
+        ctx: &ActionContext<'_>,
         input: serde_json::Value,
-    ) -> BoxFut<'a, Result<serde_json::Value, ActionError>>;
+    ) -> Result<serde_json::Value, ActionError>;
 }
 
+#[async_trait]
 pub trait StatefulHandler: Send + Sync + 'static {
     fn metadata(&self) -> &ActionMetadata;
-    fn execute<'a>(
-        &'a self,
-        ctx: &'a ActionContext<'a>,
-        state: &'a mut serde_json::Value,
+    async fn execute(
+        &self,
+        ctx: &ActionContext<'_>,
+        state: &mut serde_json::Value,
         input: serde_json::Value,
-    ) -> BoxFut<'a, Result<serde_json::Value, ActionError>>;
+    ) -> Result<serde_json::Value, ActionError>;
 }
 
+#[async_trait]
 pub trait TriggerHandler: Send + Sync + 'static {
     fn metadata(&self) -> &ActionMetadata;
-    fn handle<'a>(
-        &'a self,
-        ctx: &'a ActionContext<'a>,
+    async fn handle(
+        &self,
+        ctx: &ActionContext<'_>,
         event: serde_json::Value,
-    ) -> BoxFut<'a, Result<(), ActionError>>;
+    ) -> Result<(), ActionError>;
 }
 
+#[async_trait]
 pub trait ResourceHandler: Send + Sync + 'static {
     fn metadata(&self) -> &ActionMetadata;
-    fn execute<'a>(
-        &'a self,
-        ctx: &'a ActionContext<'a>,
+    async fn execute(
+        &self,
+        ctx: &ActionContext<'_>,
         resource_id: ResourceId,
         input: serde_json::Value,
-    ) -> BoxFut<'a, Result<serde_json::Value, ActionError>>;
+    ) -> Result<serde_json::Value, ActionError>;
 }
 ```
 
-JSON-typed input/output at the handler boundary preserves the JSON-level contract `crates/action/src/handler.rs:11-19` documents. Each handler trait is dyn-safe (per rust-senior 02c §6 line 358) — `Arc<dyn StatelessHandler>` continues to compile post-modernization. The `serde_json::from_value` adapter call sites are where G3 floor item 1 (JSON depth cap 128) attaches; detail in §4 (CP2).
+JSON-typed input/output at the handler boundary preserves the JSON-level contract `crates/action/src/handler.rs:11-19` documents. Each handler trait is dyn-safe — `Arc<dyn StatelessHandler>` etc. continue to compile (the macro emits the `Pin<Box<dyn Future<...> + Send + 'async_trait>>` form internally). The `serde_json::from_value` adapter call sites are where G3 floor item 1 (JSON depth cap 128) attaches; detail in §4 (CP2).
+
+**Equivalence note (perf + cancel-safety).** `#[async_trait]` macro-expands to `Pin<Box<dyn Future<Output = T> + Send + 'async_trait>>` returns per method — structurally equivalent at the runtime layer to the pre-amendment manual `BoxFut<'a, T>` form. Heap allocation per call is unchanged; cancel-safety (drop semantics on `SchemeGuard<'a, C>` mid-`.await`) is unchanged — verified by spike Iter-2 §2.4 cancellation drop test which passes under either shape. Bytecode delta is non-existent.
+
+**Migration trigger when `async_fn_in_dyn_trait` stabilizes.** Per [ADR-0024 §Decision item 5 re-evaluation triggers](../../adr/0024-defer-dynosaur-migration.md): when `async_fn_in_dyn_trait` ([rust-lang/rust#133119](https://github.com/rust-lang/rust/issues/133119)) stabilizes on stable Rust and Nebula's MSRV reaches that version, the migration is **mechanical** — delete the four `#[async_trait]` annotations; the `async fn` syntax in trait becomes natively dyn-safe; no other source changes required. The macro-emitted `Pin<Box<...>>` returns evaporate at the trait-definition layer; dispatch shape and drop semantics are preserved. This is the principled migration pathway ADR-0024 §Decision item 5 names.
+
+**Why `#[async_trait]` over manual `BoxFut` per-method.** Three reasons converge:
+
+1. **Already-ratified workspace policy.** ADR-0024 §Decision item 1 enumerates these four `*Handler` traits among the 14 dyn-consumed traits approved for `#[async_trait]`. The pre-amendment Tech Spec contradicted ADR-0024 by mandating manual `BoxFut` form on the same traits — a cross-ADR consistency violation that the Tech Spec freeze did not surface.
+2. **Mechanical migration on stabilization.** Removing `#[async_trait]` is **one attribute deletion per trait** when `async_fn_in_dyn_trait` stabilizes. Removing manual `BoxFut<'a, T>` returns + lifetime parameters from each method is a per-method-signature edit times four traits — strictly more migration work for no current benefit. User pushback is correct on this point: ecosystem-aligned macro use beats hand-rolled approximation when the migration cost trades favor the macro.
+3. **Production code today is hand-rolled HRTB.** `crates/action/src/stateless.rs:313-322` (and the three sibling files) currently has the `for<'life0, 'life1, 'a>` boilerplate that rust-senior 02c §6 marked DATED. The pre-amendment Tech Spec moved that to single-`'a` + `BoxFut` (cosmetic improvement); this amendment moves it further to `#[async_trait]` per ADR-0024 (workspace-policy-aligned). The two improvements compose: source reads cleanly; macro internals match what manual `BoxFut` would have emitted.
+
+**ADR composition.** This amendment introduces no new ADR. ADR-0024 already governs the policy; ADR-0036 (trait shape) and ADR-0037 (macro emission) are unaffected — neither ADR locks the `*Handler` per-method async return shape; both lock the *trait family* and *macro emission for the action struct*, which are orthogonal to the `*Handler` annotation choice. ADR-0035 phantom-shim composition is preserved (the phantom-shim contract is field-shape-level, not method-signature-level).
 
 ### §2.5 `ActionHandler` enum — 4 variants, no Control variant
 
@@ -486,6 +508,33 @@ During CP2 iteration the user pushed back on the §2.9 verdict:
 
 **Open item §2.9-1 (CP3 §7 carry).** `ActionMetadata::for_trigger::<A>()` helper — should the metadata-builder convenience layer add a Trigger-shaped helper analogous to `for_stateless` etc.? The current four `for_*` helpers derive from `A::Input`; Trigger has no `Input` so the helper would accept an explicit `parameters_schema: ValidSchema` argument (or a separate `type Config: HasSchema` associated type purely for the helper's discoverability — narrow speculative-DX risk per `feedback_active_dev_mode.md`). CP3 §7 ActionMetadata field-set lock decides; CP2 §2 leaves the universal `with_schema` builder as the ground-truth path.
 
+#### §2.9.1b User pushback during post-freeze re-examination (Q2, verbatim) and resolution
+
+**Amended-in-place 2026-04-25** post-freeze. The user re-raised §2.9 framing concerns:
+
+> «почему ты решил что Event/Source это Input это же Output? а Input это конфигурация которая приходит с настройки пользователем?»
+
+(Translation: "Why did you classify Event/Source as Input — they're OUTPUT (trigger emits events). Input is the configuration supplied at user-settings time.")
+
+**The user's framing is correct standard workflow nomenclature.** In n8n / Temporal / Camunda / Argo conventions, a trigger's *purpose* is "produce events" — events are conceptually trigger output. A trigger's *configuration* (RSS url + interval, Kafka channel + post-ack handler) is the configuration parameters supplied at user-settings time. Under this lens, the trigger lifecycle reads as: Input (config) → start → Output (event stream).
+
+**The §2.9.2 table column "Input shape" was loosely worded.** The pre-freeze table classified `<Source as TriggerSource>::Event` under "Input shape" because that is the **trait method `handle()`'s input parameter** at the type-system level. This conflated two distinct lifecycle phases:
+
+1. **Trait-method-input axis (what the §2.9.2 table actually measures).** `handle(&self, ctx, event)` — the `event` parameter IS a method input at the type-system level. The engine sources events from `Source: TriggerSource` and dispatches each into `handle`. From the type-system's viewpoint, `event` is bound at the call site as the second positional argument to the method.
+2. **Trigger-purpose axis (what the user names).** A trigger's reason-for-existence is "produce events for the engine's event channel." Events are conceptually trigger *output*; the trigger's *input* in the user's standard-nomenclature sense is configuration (`&self` fields populated from `parameters` schema at registration).
+
+**Both lenses are valid; they measure different things.** The §2.9 verdict turns on the *trait-method-input axis* (the type-system layer, where consolidation would actually live as `type Input` / `type Output` on the trait). Under this axis, `TriggerAction::handle()`'s parameter is the engine-delivered event — which is divergent in shape from `StatelessAction::execute()`'s user-supplied input. Under the user's *trigger-purpose axis*, the trigger's input is configuration — which is universal across all 4 traits (per §2.9.1a above), schema-declared via `parameters = T`. Neither axis enables `Action<Input, Output>` consolidation:
+
+- **Trait-method-input axis:** Trigger's `event` projection is asymmetric to Stateless/Stateful/Resource's user-input. Consolidation would force `type Input = <Source as TriggerSource>::Event` (redundant projection in supertrait + body) or `type Input = ()` (lying about the actual method input). Same divergence §2.9.2 already flagged.
+- **Trigger-purpose axis (user's framing):** Configuration is universal across all 4 traits, lives in `&self` fields, schema-declared via `parameters = T`. Hoisting "configuration" to a `type Config` associated trait surface is a different paradigm (option (b) "config-as-Input" from the post-freeze re-examination prompt §3) — but it would force every action (including Stateless) to declare `type Config = SomeStruct`, paradigm-breaking the universal `&self`-fields pattern that §4.2 / `parameters = T` already encodes.
+- **Output axis under user's framing:** "Trigger emits event stream" lives at the trigger lifecycle level (engine drives `start` → engine receives events on a channel → engine dispatches `handle(event)` per event). The trait method `handle()` returns `Result<(), Error>`; aggregate "trigger output = event stream" is not a method-return value — it's a lifecycle-phase phenomenon. Hoisting `type Output = EventStream` onto the trait would name something the trait method does NOT return.
+
+**Under either axis, consolidation breaks.** The trait-method-input axis breaks because Trigger's per-method input is engine-projected event, not user-supplied input. The trigger-purpose axis breaks because configuration is universal-but-paradigm-different (the universal pattern is `&self` + `parameters = T`, not `type Config` on the trait). The user's nomenclature is correct for workflow framing; it does not unblock consolidation.
+
+**Refined verdict (Q2 post-freeze).** REJECT (refined) preserved. §2.9.5 / §2.9.6 rationale tightened: the §2.9.2 table column "Input shape" is renamed-in-spirit to "Method-input shape" (what consolidation would actually consolidate) below. Configuration is named explicitly as universal across all 4 traits at the `&self` + `parameters = T` layer, orthogonal to consolidation. The user's standard-nomenclature framing is acknowledged as correct for the trigger-purpose axis; consolidation still cannot honestly resolve the trait-method-signature-level divergence.
+
+**Open items re-confirmation.** §2.9-1 (CP3 §7 `for_trigger::<A>()` helper) carry-forward closed at §15.6 — universal `with_schema` builder pattern preserved; no helper added. The user's framing reinforces the §15.6 closure rationale: configuration schema is universal, not Trigger-specific.
+
 #### §2.9.2 Consistency check (Q1)
 
 | Variant | `type Input`? | `type Output`? | Execute-shape signature? | Diverging axis |
@@ -564,11 +613,11 @@ ADR-0035 §4.3 ("action-side rewrite obligation") binds the `#[action]` macro to
 
 #### §2.9.5 Decision
 
-**REJECT consolidation. Status quo (Option C) preserved.** (Rationale tightened during CP2 iteration 2026-04-24 per §2.9.1a — explicit Configuration vs Runtime Input axis named; configuration goes through `&self` + `ActionMetadata::parameters` universally; runtime Input divergence is what consolidation cannot honestly resolve.)
+**REJECT consolidation. Status quo (Option C) preserved.** (Rationale tightened across two iterations: CP2 2026-04-24 per §2.9.1a — explicit Configuration vs Runtime Input axis named; **post-freeze 2026-04-25 per §2.9.1b** — three-axis distinction confirmed: trait-method-input axis vs trigger-purpose-input axis vs configuration-axis. Under all three axes, consolidation cannot honestly resolve the divergence. Configuration goes through `&self` + `ActionMetadata::parameters` universally; trait-method input divergence is what consolidation would actually have to consolidate; trigger-purpose framing the user names is correct workflow nomenclature but lives at the lifecycle layer, not the trait method signature.)
 
 #### §2.9.6 Rationale
 
-The analysis surfaces a **shape mismatch** that consolidation cannot honestly resolve. Before the rationale: **the §2.9 axis is Runtime Input/Output, not Configuration.** Per §2.9.1a above, configuration (per-instance settings — RSS url, Kafka channel) lives in `&self` struct fields with schema declared through `ActionMetadata::parameters` via `with_schema` (per `crates/action/src/metadata.rs:292`); this is universal across all 4 variants and orthogonal to consolidation. The shapes below concern runtime Input — what the engine threads to `execute(.., input)` / `handle(.., event)` per dispatch.
+The analysis surfaces a **three-axis shape mismatch** that consolidation cannot honestly resolve. Before the rationale: **the §2.9 axis at the trait-system layer is Method-Input/Output, not Configuration, not Trigger-purpose.** Per §2.9.1a, configuration (per-instance settings — RSS url, Kafka channel) lives in `&self` struct fields with schema declared through `ActionMetadata::parameters` via `with_schema` (per `crates/action/src/metadata.rs:292`); this is universal across all 4 variants and orthogonal to consolidation. Per §2.9.1b, the user's standard-nomenclature framing (events ARE trigger output; configuration is the user-supplied input) is correct at the trigger-purpose layer but does not survive translation to the trait method signature — consolidation lives on the trait, where "Input/Output" name method parameters and method returns. The shapes below concern Method-Input — what the engine threads to `execute(.., input)` / `handle(.., event)` per dispatch — which is the axis consolidation would actually consolidate.
 
 1. **Trigger's runtime-input/output divergence is structural, not stylistic.** `TriggerAction` has `type Source: TriggerSource` because triggers are event-driven — the runtime input shape is "event from a source," not "user-supplied parameter." Output is unit because triggers terminate by firing events, not by producing values. Forcing `Action<I, O>` parameterization onto a trigger requires lying (`type Input = ()`) or redundant projection (`<Source as TriggerSource>::Event` repeated in supertrait + body). Both violate `feedback_active_dev_mode.md` ("more-ideal over more-expedient") — the more-ideal shape is to let each trait read as what it actually is.
 
@@ -580,7 +629,7 @@ The apparent symmetry between Stateless/Stateful/Resource is shallower than the 
 
 #### §2.9.7 Implications
 
-**N/A — REJECT.** Status quo §2.2 signatures preserve verbatim. No refactor checklist. ADR-0036 ratification is unaffected; ADR-0035 §4.3 obligation is satisfied without change. Spike `final_shape_v2.rs:209-262` remains the signature-locking source.
+**N/A — REJECT (refined twice).** Status quo §2.2 signatures preserve verbatim. No refactor checklist. ADR-0036 ratification is unaffected; ADR-0035 §4.3 obligation is satisfied without change. Spike `final_shape_v2.rs:209-262` remains the signature-locking source. The Q2 post-freeze refinement (§2.9.1b) tightened the rationale by naming the three lifecycle axes explicitly (trait-method-input vs trigger-purpose-input vs configuration); the verdict is unchanged because none of the three axes enables consolidation.
 
 **Re-open trigger.** This decision is reconsidered if either of the following fires:
 
@@ -2367,6 +2416,81 @@ Each item below has a **trigger** (when it surfaces for resolution), an **owner*
 
 **Per `feedback_active_dev_mode.md` discipline:** every deferred-with-trigger row above has a named trigger + owner + scope. No silent deferral. Per the same discipline, none of these items is implementation-blocking — Phase 8 cascade summary surfaces them as the residual ledger after cascade close.
 
+### §15.9 Q1 post-freeze amendment-in-place — `*Handler` adopts `#[async_trait]` per ADR-0024 — ENACTED
+
+**Trigger:** Post-freeze user re-examination of §2.3 / §2.4 manual `BoxFut<'a, T>` shape vs ecosystem-standard `#[async_trait]` macro (~15k crates) at FROZEN CP4 2026-04-25. Re-analysis surfaced that **ADR-0024 (accepted 2026-04-20)** explicitly enumerates `StatelessHandler` / `StatefulHandler` / `TriggerHandler` / `ResourceHandler` (these exact 4 traits) among the 14 dyn-consumed traits approved for `#[async_trait]` — and the Tech Spec freeze did not cite ADR-0024. The pre-amendment shape (manual `BoxFut<'a, T>` per `*Handler` method) is a **cross-ADR consistency violation** that the freeze did not surface. Per ADR-0035 amended-in-place precedent, this CP enacts the amendment to align §2.3 + §2.4 with already-ratified workspace policy.
+
+**Status invariant.** Per §0.2 invariant 2: ADR amendments invalidate the freeze. This amendment-in-place follows ADR-0035 precedent (canonical-form correction across cross-cascade-authoritative source, not a paradigm shift). ADR-0024 is the cross-cascade-authoritative source on `*Handler` async-fn-in-trait shape; alignment closes the cross-ADR gap without superseding any ADR.
+
+#### §15.9.1 Enactment
+
+This CP **enacts** the §2.3 + §2.4 shape amendment-in-place per ADR-0024 §Decision items 1 + 4. Tech Spec edits are inline at §2.3 + §2.4; no ADR file edit is required because:
+
+- **ADR-0024** is the source-of-truth ADR; its §Decision item 1 already enumerates the four `*Handler` traits. No ADR-0024 edit needed.
+- **ADR-0036** locks trait-shape (the family of action traits, the macro emission contract for action structs) — the `*Handler` per-method async return shape is **not** locked by ADR-0036. No ADR-0036 edit needed.
+- **ADR-0037** locks macro emission for the action struct (`ActionSlots::credential_slots()` shape, `SlotBinding` shape, qualified-syntax probe, test harness, perf bound) — none of these are sensitive to whether `*Handler` uses `#[async_trait]` vs manual `BoxFut`. No ADR-0037 edit needed beyond the §15.5 amendment already enacted.
+
+The amendment lands as **Tech Spec inline edits at §2.3 + §2.4** (with the amendment-in-place callout at the top of each section), plus this §15.9 enactment record.
+
+**Pre-amendment shape (§2.4):**
+
+```rust
+pub trait StatelessHandler: Send + Sync + 'static {
+    fn metadata(&self) -> &ActionMetadata;
+    fn execute<'a>(
+        &'a self,
+        ctx: &'a ActionContext<'a>,
+        input: serde_json::Value,
+    ) -> BoxFut<'a, Result<serde_json::Value, ActionError>>;
+}
+// (same shape replicated across StatefulHandler / TriggerHandler / ResourceHandler)
+```
+
+**Post-amendment shape (§2.4):**
+
+```rust
+use async_trait::async_trait;
+
+#[async_trait]
+pub trait StatelessHandler: Send + Sync + 'static {
+    fn metadata(&self) -> &ActionMetadata;
+    async fn execute(
+        &self,
+        ctx: &ActionContext<'_>,
+        input: serde_json::Value,
+    ) -> Result<serde_json::Value, ActionError>;
+}
+// (same `#[async_trait]` annotation across StatefulHandler / TriggerHandler / ResourceHandler)
+```
+
+**`BoxFut<'a, T>` alias survives** at §2.3 — used at `SlotBinding::resolve_fn`'s HRTB fn-pointer per credential Tech Spec §3.4 line 869 + ADR-0037 §1. That shape is structurally distinct from `*Handler` per-method async return (HRTB fn-pointer with `for<'ctx>` quantification, not a method on a `dyn`-consumable trait); `#[async_trait]` does not rewrite HRTB fn-pointer signatures. The alias keeps the resolve-fn return shape readable.
+
+#### §15.9.2 Why amend-in-place vs supersede
+
+Per ADR-0035 §Status block: amendments are valid for "canonical-form corrections" (cross-source-authoritative-shape preservation under inconsistency); supersession is reserved for paradigm shifts. The Q1 amendment is a canonical-form correction across **cross-ADR-authoritative source** — ADR-0024 is the workspace-canonical ADR on `#[async_trait]` adoption for dyn-consumed traits; the Tech Spec's manual `BoxFut` form was inconsistent with ADR-0024 §Decision item 1's explicit enumeration of these four traits. Amendment-in-place is proportionate: it aligns the Tech Spec with already-ratified workspace policy without retracting any decision; ADR-0036 / ADR-0037 / ADR-0038 ratifications are unaffected; ADR-0024 ratification is unchanged.
+
+#### §15.9.3 Cross-cascade and downstream impact
+
+**ADR composition.** ADR-0024 + ADR-0036 + ADR-0037 + ADR-0038 (4-ADR set) compose without conflict. ADR-0024 governs the `*Handler` async-fn-in-trait shape; ADR-0036 / ADR-0037 govern the action struct + `#[action]` macro emission; ADR-0038 governs sealed DX tier + canon revision. The four ADRs are orthogonal at the source level.
+
+**Production code impact.** `crates/action/src/{stateless.rs:300-322, stateful.rs:445-472, trigger.rs:300-381, resource.rs:65-106}` currently has hand-rolled `for<'life0, 'life1, 'a>` HRTB boilerplate **without** `#[async_trait]` (verified: `grep -c "async_trait" crates/action/src/{stateless,stateful,trigger,resource}.rs` returns 0 across all four). The pre-amendment Tech Spec moved this to single-`'a` + `BoxFut<'a, T>` (cosmetic reduction, ~30-40% LOC per rust-senior 02c §6 line 87); this amendment moves further to `#[async_trait]` (workspace-policy-aligned per ADR-0024). LOC reduction is comparable; ecosystem alignment is the load-bearing benefit per user pushback.
+
+**`crates/action/Cargo.toml` changes.** Add `async-trait = { workspace = true }` to `[dependencies]` (it is already in `[workspace.dependencies]` per ADR-0024 §Consequences "the crate stays in `[workspace.dependencies]`"). No other dependency changes.
+
+**Migration trigger when `async_fn_in_dyn_trait` stabilizes.** Per ADR-0024 §Decision item 5 re-evaluation triggers — when `async_fn_in_dyn_trait` ([rust-lang/rust#133119](https://github.com/rust-lang/rust/issues/133119)) stabilizes on stable Rust and Nebula's MSRV reaches it, the migration is **mechanical**: delete the four `#[async_trait]` annotations from the trait definitions; the `async fn` syntax in trait becomes natively dyn-safe; production source is preserved otherwise. This is the principled migration pathway ADR-0024 names.
+
+**No `crates/action/src/handler.rs` ABI change.** The `ActionHandler` enum's variants (`Stateless(Arc<dyn StatelessHandler>)` etc.) continue to compile under `#[async_trait]`-annotated traits — `dyn StatelessHandler` remains dyn-safe (the macro emits the boxed-future return internally per ADR-0024's contract).
+
+#### §15.9.4 §16.5 cascade-final precondition update
+
+Tech Spec ratification (CP4 freeze) is unaffected — this amendment-in-place is post-freeze (per ADR-0035 precedent allowing post-freeze amendment-in-place for canonical-form corrections). §16.5 cascade-final readiness check gains no new precondition; the four `*Handler` traits adopt `#[async_trait]` in implementation per ADR-0024 + this Tech Spec §2.4. Cascade implementation absorbs the migration mechanically.
+
+#### §15.9.5 Q2 post-freeze refinement record
+
+Q2 (TriggerAction Input/Output framing under user's standard-workflow nomenclature) was re-examined post-freeze concurrently with Q1. Verdict: REJECT (refined). Refinement landed at **§2.9.1b** (new sub-subsection) explicitly naming the three lifecycle axes (trait-method-input vs trigger-purpose-input vs configuration); §2.9.5 / §2.9.6 / §2.9.7 prelude / decision / rationale / implications updated to reference the three-axis distinction. No ADR amendment, no signature ripple. The user's standard-nomenclature framing is acknowledged as correct for the trigger-purpose axis; consolidation still cannot honestly resolve the trait-method-signature-level divergence under any of the three axes.
+
+This is a rationale-tightening amendment, not a verdict change. Status header records "amended-in-place 2026-04-25 — Q1 post-freeze" because Q1 is the structural amendment (§2.3 + §2.4 shape change); Q2 is rationale refinement only and does not warrant a separate status qualifier.
+
 ---
 
 ## §16 Implementation handoff
@@ -2697,4 +2821,26 @@ CP4 iteration append 2026-04-25 (post spec-auditor 11a REVISE — 3 🔴 mechani
 - **tech-lead** — please ratify §15 closures (especially §15.5 ADR-0037 amendment-in-place enactment) and §16 framing (especially §16.3 7-item DoD checklist as the cascade-landing PR-wave-level definition of done, and §16.4 rollback strategy layer split). Solo-decider authority on §15.5 enactment (cascade-internal cross-cutting); CP4 freeze requires tech-lead explicit ratification. **Note:** §16.1 user-facing path framing is presented at Phase 8 cascade summary — Tech Spec presents, user picks; tech-lead ratifies the framing shape, not the user's pick.
 - **security-lead** *(no new security surface introduced at CP4 §14-§16; §9.5 cross-tenant boundary already accepted CP3 — confirmation review)* — please confirm §16.3 DoD item 2 (security must-have floor 4 items) verifies all four CR4/S-J1, CR3/S-C2, ActionError sanitization, cancellation-zeroize tests as cascade-landing-PR-DoD obligations (none deferred to follow-up). VETO authority retained on shim-form drift in CR3 fix per `feedback_no_shims.md` + 03c §1.
 
+### CHANGELOG — post-freeze amendment-in-place 2026-04-25
+
+Post-freeze user re-examination raised two design questions on the FROZEN CP4 2026-04-25 commit. Per ADR-0035 amended-in-place precedent, both were re-evaluated; outcomes recorded inline. Per `feedback_active_dev_mode.md` ("more-ideal over more-expedient") and `feedback_adr_revisable.md` ("ADRs are point-in-time; if following one forces workarounds, supersede it") — Q1 surfaced a cross-ADR consistency violation that the freeze did not catch; honest correction beats reflexive defence of prior position.
+
+**Q1 — `*Handler` async-fn-in-trait shape (ACCEPTED):**
+- Status header — `FROZEN CP4 2026-04-25` → `FROZEN CP4 2026-04-25 (amended-in-place 2026-04-25 — Q1 post-freeze)`. §0.1 status table CP4 row gains "amended-in-place 2026-04-25 post-freeze for Q1 `*Handler` shape per §15.9 + Q2 §2.9.1b axis-naming refinement per ADR-0035 amended-in-place precedent" qualifier.
+- §2.3 — amended-in-place callout added at section top; rewritten as `BoxFut<'a, T>` alias used at `SlotBinding::resolve_fn` HRTB only (single use site). Pre-amendment narrative ("dyn-safe companion type used by §2.4") replaced; post-amendment narrative names the survival rationale (HRTB fn-pointer is structurally distinct from `*Handler` per-method async return; `#[async_trait]` does not rewrite HRTB fn-pointer signatures).
+- §2.4 — amended-in-place callout added at section top; four `*Handler` traits flipped from manual `BoxFut<'a, T>` per-method to `#[async_trait::async_trait]` per ADR-0024 §Decision item 1 + 4. Cancel-safety note added (heap-allocation + drop semantics structurally equivalent; spike Iter-2 §2.4 cancellation drop test passes either shape; bytecode delta non-existent). Migration trigger when `async_fn_in_dyn_trait` stabilizes named (one-attribute deletion per trait per ADR-0024 §Decision item 5). Three reasons for `#[async_trait]` over manual `BoxFut` enumerated: (1) already-ratified workspace policy (ADR-0024 enumerates these 4 traits), (2) mechanical migration on stabilization, (3) production code today is hand-rolled HRTB without `#[async_trait]` — pre-amendment Tech Spec moved to single-`'a` + `BoxFut` (cosmetic), this amendment moves further to `#[async_trait]` (workspace-policy-aligned).
+- §15.9 (NEW subsection) — Q1 post-freeze amendment-in-place enactment recorded. §15.9.1 enactment table (no ADR file edit needed — ADR-0024 is source-of-truth and unchanged; ADR-0036/0037 do not lock `*Handler` async-fn shape; only Tech Spec inline edits at §2.3 + §2.4). §15.9.2 amend-in-place vs supersede rationale per ADR-0035 §Status block "canonical-form correction" criterion. §15.9.3 cross-cascade impact (Cargo.toml `async-trait` dep add; no `crates/action/src/handler.rs` ABI change; mechanical migration on stabilization). §15.9.4 §16.5 cascade-final precondition unchanged. §15.9.5 records Q2 refinement as rationale-tightening only (no separate Q2 amendment-in-place qualifier).
+
+**Q2 — TriggerAction Input/Output framing under user's standard-workflow nomenclature (REJECTED, refined):**
+- §2.9.1b (NEW sub-subsection) — user's verbatim post-freeze pushback recorded: «почему ты решил что Event/Source это Input это же Output? а Input это конфигурация которая приходит с настройки пользователем?». Three-axis distinction named explicitly: trait-method-input axis (what consolidation would actually consolidate); trigger-purpose-input axis (user's standard-nomenclature framing — events ARE trigger output; configuration is user-supplied input); configuration axis (universal across all 4 traits, lives in `&self` + `parameters = T`). Refined verdict: REJECT preserved; user's nomenclature acknowledged as correct for trigger-purpose axis; consolidation still cannot honestly resolve trait-method-signature-level divergence under any of the three axes.
+- §2.9.5 — verdict annotation refined to "REJECT consolidation. Status quo (Option C) preserved. Rationale tightened across two iterations: CP2 2026-04-24 per §2.9.1a; post-freeze 2026-04-25 per §2.9.1b — three-axis distinction confirmed."
+- §2.9.6 — rationale prelude refined to acknowledge three-axis distinction and explicitly name trait-method-Input as the consolidation axis (not configuration; not trigger-purpose).
+- §2.9.7 — implications refined to note "REJECT (refined twice)" with reference to §2.9.1b three-axis distinction.
+
+**Cascade-state changes:**
+- ADR transitions: NONE. ADR-0024 + ADR-0036 + ADR-0037 + ADR-0038 statuses preserved. ADR-0024 was already accepted 2026-04-20 and remains so; this amendment aligns Tech Spec with ADR-0024's pre-existing decision.
+- Tech Spec status qualifier: `FROZEN CP4 2026-04-25 (amended-in-place 2026-04-25 — Q1 post-freeze)`. Q2 is rationale refinement only — not a separate qualifier per §15.9.5.
+- Cross-section signature impact: §2.3 + §2.4 only. §2.2 RPITIT signatures unchanged; §3 dispatch unchanged; §4 macro emission unchanged; §5 test harness unchanged; §6 security floor unchanged; §7 lifecycle unchanged; §8 storage unchanged; §9-§13 migration / interface unchanged. Spike `final_shape_v2.rs:209-262` is unchanged (it does not specify `*Handler` shape).
+
+**Audit obligations.** spec-auditor full cross-CP audit pre-freeze (handoff at line 2820) is augmented post-freeze with three additional checks: (i) §2.3 + §2.4 callout boxes reference §15.9 and ADR-0024 verbatim; (ii) §15.9 enactment record cites ADR-0024 §Decision items 1 + 4 with line-pinned references; (iii) §2.9.1b three-axis distinction is internally consistent with §2.9.2 trait-method-input table column.
 

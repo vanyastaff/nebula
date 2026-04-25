@@ -86,6 +86,29 @@ Devops wrote to wrong repo path (main repo instead of worktree) — orchestrator
 - ADR-0038 ControlAction seal + canon §3.5 DX tier ratification (canon revision per §0.2)
 - ADR-NNNN+3 cluster-mode hooks deliberately deferred (out of cascade scope per Strategy §6.2)
 
+### 2026-04-25 T02:00 — Post-freeze amendment (Q1 async_trait + Q2 §2.9 refinement)
+
+**User raised two post-freeze design questions.** Architect re-analyzed; tech-lead ratified.
+
+**Q1 ACCEPT (amendment-in-place enacted):**
+- User pushback: ~15k crates use `async_trait`; ecosystem inertia argues for adopting it; on `dyn async fn` stabilization removing one attribute is mechanical
+- **Critical finding**: ADR-0024 (accepted 2026-04-20, **before** Tech Spec freeze) §Decision items 1+4 explicitly enumerate `StatelessHandler`, `StatefulHandler`, `TriggerHandler`, `ResourceHandler` among 14 dyn-consumed traits approved for `#[async_trait]`. Pre-amendment Tech Spec manual `BoxFut<'a, T>` shape was inadvertent cross-ADR violation
+- Amendment: §2.4 four *Handler traits flipped to `#[async_trait]`; §2.3 BoxFut alias survives ONLY for `SlotBinding::resolve_fn` HRTB fn-pointer (structurally distinct — compile-time fn pointer per credential Tech Spec §3.4 line 869, not runtime async dispatch)
+- §15.9 enactment record added
+- Cancel-safety preserved (Box::pin(async move {...}) preserves drop semantics on SchemeGuard<'a, C>; spike Iter-2 §2.4 test passes either shape)
+- ADR-0024 is source-of-truth — no ADR file edit required
+
+**Q2 REJECT (refined):**
+- User pushback: trigger Event/Source is OUTPUT (trigger emits events), Input is CONFIGURATION from user settings. §2.9 framing was mis-classified
+- Architect acknowledged: user's standard-workflow nomenclature is correct (events ARE trigger output for trigger-purpose axis); §2.9.2 "Input shape" column was loosely worded conflating trait-method-input axis with trigger-purpose axis
+- Added §2.9.1b naming three axes explicitly: trait-method-input / trigger-purpose-input / configuration
+- REJECT verdict basis SHARPENED (lifecycle-method divergence — start/stop vs execute vs configure/cleanup), not changed
+- §2.9.5/.6/.7 rationale tightened
+
+**Tech Spec status:** `FROZEN CP4 2026-04-25` → **`FROZEN CP4 2026-04-25 (amended-in-place 2026-04-25 — Q1 post-freeze)`** per ADR-0035 amended-in-place precedent (Q2 rationale-tightening doesn't warrant separate qualifier)
+
+**No ADR transitions; ADR-0038 still user ratification pending.**
+
 ### 2026-04-25 T01:30 — CP4 FROZEN + Phase 6 closes
 
 **CP4 §14-§16 (Tech Spec meta + handoff, FINAL CP):**
