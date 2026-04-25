@@ -86,6 +86,60 @@ Devops wrote to wrong repo path (main repo instead of worktree) — orchestrator
 - ADR-0038 ControlAction seal + canon §3.5 DX tier ratification (canon revision per §0.2)
 - ADR-NNNN+3 cluster-mode hooks deliberately deferred (out of cascade scope per Strategy §6.2)
 
+### 2026-04-25 T07:00 — Q7 post-closure audit complete + AMENDED CLOSED
+
+**Phase 1 returned (parallel rust-senior + tech-lead, ~6h):**
+
+- **Rust-senior production inventory** (9 traits + 7 adapters): 0 🔴 production bugs; 3 unexpected findings — (1) WebhookAction/PollAction PEERS of TriggerAction (NOT subtraits per ADR-0038); (2) 3 incompatible state shapes (WebhookAction::State ephemeral RwLock; PollAction::Cursor stack-frame; TriggerAction none); (3) PollCursor<C> wrapper не actual cursor (per-cycle wrapper, A::Cursor evaporates on task exit)
+- **Tech-lead coverage map**: 5 🔴 + 3 🟠 + 8 🟡 + 4 🟢 + ~25 ✅; ~50% coverage; recommendation **AMENDED-CLOSED** (всё mechanical lifecycle slips same class as Q6)
+
+**Phase 2+3 architect dispatch — combined (3h):**
+
+- **Part A — §2.9 fifth iteration**: Verdict **(III)** REJECT preserved at trait-method-input axis; new finding **R6** emerges (sealed-DX bound chain re-pin: Webhook/Poll PEERS не subtraits). Q5 framing's NEW evidence не flips §2.9 because Webhook/Poll's own associated types live на their own traits, not на TriggerAction.
+
+- **Part B — 17 amendments enacted as Q7 bundle:**
+  - 🔴 R1: §2.2.2 init_state + migrate_state restored from production stateful.rs:56
+  - 🔴 R2: §2.2.4 ResourceAction configure/cleanup restored; spurious execute/Input/Output dropped
+  - 🔴 R3: §2.2.3 TriggerEventOutcome multiplicity (Skip/Emit/EmitMany) + accepts_events restored
+  - 🔴 R4: §2.4 ResourceHandler Box<dyn Any> dyn boundary
+  - 🔴 R5: §2.4 TriggerHandler TriggerEvent envelope
+  - 🔴 R6: §2.6 sealed-DX bound chain re-pin (peer-of-Action, not TriggerAction subtraits)
+  - §3.5 NEW typification path narrative (R3 + R5 + I3 cross-cite)
+  - §8.1.2 cursor in-memory ownership narrative
+  - §1.2 N1 cred-cascade dependency note
+  - 8 🟡 doc-gap closures
+  - §15.11 NEW enactment record
+  - §17 CHANGELOG Q7 entry
+
+**Tech Spec final size:** 3522 lines (was ~2400 at FROZEN CP4; +1100 for Q7 production-shape restoration).
+
+**Tech-lead RATIFY-AMENDED-CLOSED** verdict (post-closure ratification gate). 1 mechanical nit fixed inline (§3.2 → §3.5 typification narrative reference в 6 sites).
+
+**Status header**: `FROZEN CP4 2026-04-25 (amended-in-place 2026-04-25 — Q1 post-freeze + Q6 lifecycle gap + Q7 post-closure audit per §15.11)`
+
+**Cascade closure**: **AMENDED CLOSED** (architect rejected face-saving FULLY-CLOSED framing; honest assessment per `feedback_active_dev_mode` — 17 missed findings is decisive cascade-quality miss).
+
+**Tech-lead meta-finding (cascade retrospective input):** standing dual-audit pattern (production inventory + spec coverage map) before declaring FROZEN should propagate to future cascades. 17 missed findings across 5 reviewers across 4 CPs = systematic gap, not user pushback.
+
+**No ADR amendments** — all R1-R6 fall within Tech Spec author authority per ADR-0035 amended-in-place precedent.
+
+**No escalation.** Cascade fully closed pending Q1 implementation path + Q5 canon §3.5 ratification.
+
+### 2026-04-25 T05:00 — Post-closure systematic audit dispatched
+
+**User concern**: prior cascade phases (especially Q4-Q6 on §2.9 + lifecycle) **may have been insufficiently thorough on Trigger DX**. Specific concerns:
+
+1. **PollCursor on PollAction = State analog** — PollAction (DX over TriggerAction per ADR-0038) has cursor concept. StatefulAction has `type State`. Does trigger family need State semantics что cascade missed?
+2. **start/stop fully addressed at Q6 OR partially?** — Q6 amendment-in-place added start/stop к TriggerAction direct, но adapter layer architecture (TriggerActionAdapter, WebhookTriggerAdapter, PollTriggerAdapter) что absorbs lifecycle complexity не explicit в Tech Spec
+3. **§2.9 fourth iteration via start() Input axis** — prior 4 REJECTs argued "Trigger has no user-supplied Input" basing on `handle()` parameter only. start() Input axis not discussed. WebhookAction.start() registers URL with external service — uses per-action info (URL, secret) — that's user-supplied configuration AT METHOD LEVEL via start(input)?
+4. **Other gaps potentially missed**: TriggerHandler decoupling pattern (production has separate trait; Tech Spec collapsed); TriggerEvent type-erased payload migration to typed Source::Event not in §10 codemod; StatefulAction state migration semantics; ResourceAction pool integration completion
+
+**3-phase audit dispatched (estimated 7-12h, 3-day budget):**
+
+- Phase 1: rust-senior production capability inventory + tech-lead Tech Spec coverage map (parallel)
+- Phase 2: §2.9 fifth iteration с start() Input axis specifically (if Phase 1 confirms axis materializes)
+- Phase 3: amendment-in-place per ADR-0035 precedent OR escalation if 🔴 REGRESSION
+
 ### 2026-04-25 T04:30 — Post-freeze Q6 — TriggerAction lifecycle gap fix (SPLIT)
 
 **Gap identified during user review of Tech Spec design**: production code `crates/action/src/trigger.rs:61-72` имеет `TriggerAction::start()` + `::stop()` lifecycle methods. Tech Spec §2.2.3 frozen без них. Phase 4 spike covered shape-only probes, не lifecycle. Tech Spec §2.9 amendment line 530 references "engine drives start" но start не определён ни в TriggerAction ни в TriggerSource — slip между production code и frozen design.

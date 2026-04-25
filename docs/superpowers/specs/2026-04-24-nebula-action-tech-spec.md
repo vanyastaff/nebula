@@ -1,6 +1,6 @@
 ---
 name: nebula-action tech spec (implementation-ready design)
-status: FROZEN CP4 2026-04-25 (amended-in-place 2026-04-25 — Q1 post-freeze; amended-in-place 2026-04-25 — Q6 lifecycle gap)
+status: FROZEN CP4 2026-04-25 (amended-in-place 2026-04-25 — Q1 post-freeze; amended-in-place 2026-04-25 — Q6 lifecycle gap; amended-in-place 2026-04-25 — Q7 post-closure audit per §15.11 — production-drift bundle: 6 🔴 R1-R6 + 3 🟠 + 8 🟡 closure across §2.2.2 / §2.2.3 / §2.2.4 / §2.4 / §2.6 / §3.5 / §8.1.2)
 date: 2026-04-24
 authors: [architect (drafting); tech-lead (CP gate decider); security-lead (VETO authority on §4 security floor); orchestrator (CP coordination)]
 scope: nebula-action redesign cascade Phase 6 — implementation-ready design for the action trait family, the `#[action]` attribute macro, runtime model, security floor, and codemod migration
@@ -30,7 +30,7 @@ This document moves through four checkpoints with parallel reviewer matrices per
 | **DRAFT CP1** | §0–§3 | Status, goals, trait contract, runtime model | locked CP1 |
 | **DRAFT CP2** | §4–§8 | Macro emission, test harness, security floor, lifecycle, storage | locked CP2 |
 | **DRAFT CP3** | §9–§13 | Public API surface, codemod migration, adapter authoring, ControlAction migration, evolution policy | locked CP3 |
-| **FROZEN CP4 2026-04-25** (iterated 2026-04-25 post 11a/11b; tech-lead RATIFY-FREEZE 11c; amended-in-place 2026-04-25 post-freeze for Q1 `*Handler` shape per §15.9 + Q2 §2.9.1b axis-naming refinement + **Q6 §2.2.3 lifecycle methods per §15.10 — start/stop added to TriggerAction; production drift between `crates/action/src/trigger.rs:61-72` and spike-locked shape closed; Option (i) picked (lifecycle on TriggerAction, not TriggerSource); SPLIT decision (no Q4 type Input bundle)** per ADR-0035 amended-in-place precedent) | §14–§16 | Open items, accepted gaps, handoff, implementation-path framing for Phase 8 user pick | **frozen (amended-in-place)** |
+| **FROZEN CP4 2026-04-25** (iterated 2026-04-25 post 11a/11b; tech-lead RATIFY-FREEZE 11c; amended-in-place 2026-04-25 post-freeze for Q1 `*Handler` shape per §15.9 + Q2 §2.9.1b axis-naming refinement + **Q6 §2.2.3 lifecycle methods per §15.10 — start/stop added to TriggerAction; production drift between `crates/action/src/trigger.rs:61-72` and spike-locked shape closed; Option (i) picked (lifecycle on TriggerAction, not TriggerSource); SPLIT decision (no Q4 type Input bundle)** + **Q7 post-closure audit per §15.11 — production-drift bundle: §2.2.2 init_state/migrate_state restoration + §2.2.3 TriggerEventOutcome + accepts_events restoration + §2.2.4 ResourceAction configure/cleanup paradigm restoration (drop spurious execute/Input/Output) + §2.4 ResourceHandler Box<dyn Any> + TriggerHandler TriggerEvent envelope restoration + §2.6 sealed-DX bound chain re-pin (WebhookAction/PollAction declared as peer DX traits with own State/Cursor/Event associated types, NOT TriggerAction subtraits) + §3.5 typification path narrative + §8.1.2 cursor in-memory ownership narrative + §1.2 N1 cred-cascade dependency note + 8 🟡 doc-gap closure** per ADR-0035 amended-in-place precedent) | §14–§16 | Open items, accepted gaps, handoff, implementation-path framing for Phase 8 user pick | **frozen (amended-in-place)** |
 
 Inputs are **frozen** at this freeze point: Strategy frozen at CP3 (commit `a38f6f5a`); ADR-0036 status `accepted` 2026-04-25 + ADR-0037 status `accepted` 2026-04-25 (amended-in-place 2026-04-25 per §15.5 enactment) — both flipped on Tech Spec FROZEN CP4 ratification per their respective §Status sections; ADR-0038 retained at `proposed` pending explicit user ratification on canon §3.5 revision (per cascade prompt: surface к user в Phase 8 summary, не auto-flip); Phase 4 spike PASS at commit `c8aef6a0` (worktree-isolated; see [spike NOTES](../drafts/2026-04-24-nebula-action-redesign/07-spike-NOTES.md) §5; **scope clarification per §15.10 Q6 — spike validated trait-shape compose + cancellation only; lifecycle methods (`start` / `stop` on TriggerAction) are derived from production `crates/action/src/trigger.rs:61-72` PASS evidence, NOT from spike-shape change**).
 
@@ -81,6 +81,8 @@ Detail spec is §4 (CP2); §1 binds the floor as a Goal so that any later sectio
 Each non-goal cites the Strategy §3.4 OUT row (line 165-183) or scope-decision §6 boundary that places it out of scope. This is **honest deferral** per `feedback_active_dev_mode.md` ("before saying 'defer X', confirm the follow-up has a home").
 
 **N1 — Resource integration deeper than ADR-0035 §4.3 rewrite obligation.** Resource-side scope (resource crate redesign, `Resource::on_credential_refresh` full integration, resource cluster-mode coordination) is OUT. Action's responsibility ends at the `ResourceAction::Resource` associated type binding + `CredentialRef<C>` field-zone rewrite per ADR-0036 §3 + the consumer-side completion of ADR-0035's two-trait phantom-shim contract (ADR-0036 §Decision item 4). Strategy §3.4 row "`Resource::on_credential_refresh` full integration" (line 173) names the home: absorbed into resource cascade or co-landed with credential CP6 implementation.
+
+**N1-extended (per Q7 post-closure audit, §15.11).** The `ResourceAction::Resource: Resource` bound (where `Resource: Resource` requires `type Credential: Credential` per §2.2.4) creates a hard ordering dependency on credential cascade landing first — no production resource type today implements the new `Resource` trait. Implications for §16.1 paths: path (a) single coordinated PR satisfies this implicitly; paths (b) / (c) MUST sequence credential cascade leaf-first. Per §16.5 cascade-final precondition: if user picks path (b), credential CP6 cascade slot MUST include a `Resource` trait surface beat. If user picks path (c), the action `Resource: Resource` bound is delegating; credential CP6 cascade lands the trait surface. **The bound itself remains in §2.2.4 (R2 amendment) — narrowing to `Send + Sync + 'static` would lose the credential composition that ADR-0035 §4.3 rewrite obligation depends on.**
 
 **N2 — DataTag hierarchical registry (58+ tags).** Strategy §3.4 row 1 (line 169) → future port-system sub-cascade. Net-new surface; orthogonal to action core.
 
@@ -172,12 +174,34 @@ pub trait StatelessAction: Send + Sync + 'static {
 
 #### §2.2.2 `StatefulAction`
 
+> **Amended-in-place 2026-04-25 (Q7 post-closure audit, R1)** per §15.11 enactment. Pre-amendment: trait shape declared only `execute` per spike `final_shape_v2.rs`; lifecycle methods `init_state` (production `crates/action/src/stateful.rs:56`) + `migrate_state` (production `crates/action/src/stateful.rs:64`) were dropped from §2.2.2 without rationale (`migrate_state` was cited in §8.1.1 narrative but absent from trait shape). Post-amendment: both methods restored per Option (i) — production wins for capabilities the spike did not exercise, same precedent as Q6 §2.2.3 lifecycle restoration.
+
 ```rust
 pub trait StatefulAction: Send + Sync + 'static {
     type Input: HasSchema + DeserializeOwned + Send + 'static;
     type Output: Serialize + Send + 'static;
     type State: Serialize + DeserializeOwned + Clone + Send + Sync + 'static;
     type Error: std::error::Error + Send + Sync + 'static;
+
+    /// Create initial state for the first iteration.
+    ///
+    /// Engine-driven: called once when the engine starts executing this action.
+    /// Subsequent iterations receive the state mutated by the previous `execute`
+    /// call. Per `crates/action/src/stateful.rs:56`.
+    fn init_state(&self) -> Self::State;
+
+    /// Attempt to migrate state from an older serialized format.
+    ///
+    /// Engine consults `migrate_state(value)` only when
+    /// `from_value::<Self::State>(value.clone())` fails on a persisted
+    /// checkpoint — version-skew between stored state JSON and current State
+    /// schema. `Some(migrated)` continues with migrated state; `None`
+    /// propagates the original deserialization error as
+    /// `ActionError::Validation { reason: ValidationReason::StateDeserialization, .. }`
+    /// per `crates/action/src/stateful.rs:519-524`. Default returns `None`.
+    fn migrate_state(&self, _old: serde_json::Value) -> Option<Self::State> {
+        None
+    }
 
     fn execute<'a>(
         &'a self,
@@ -190,11 +214,15 @@ pub trait StatefulAction: Send + Sync + 'static {
 
 `State: Serialize + DeserializeOwned + Clone + Send + Sync + 'static` is the engine's contract — `Serialize` + `DeserializeOwned` for persisted iteration state (per `crates/action/src/stateful.rs:356-383`), `Clone` for retry / redrive, `Send + Sync` for engine-side dispatch through `Arc<dyn StatefulHandler>`, `'static` for adapter erasure. Spike Iter-2 §2.2 (commit `c8aef6a0`'s `iter2_compose.rs::GitHubListReposAction`) verified the bound chain compiles.
 
+**Lifecycle methods derive from production** (per Q7 §15.11 amendment + §0.1 inputs frozen-at footer scope — same discipline as Q6 lifecycle restoration). Production `crates/action/src/stateful.rs:56-66` declares both `init_state` and `migrate_state` with `#[diagnostic::on_unimplemented]` enforcement on the trait listing them in the note (`stateful.rs:34-37`). Cascade preserves the lifecycle contract verbatim, lifts signature shape per cascade-wide pattern (single-`'a` + `&'a ActionContext<'a>` receiver context). Spike validated trait-shape compose + cancellation only; lifecycle methods are derived from production PASS evidence (`stateful.rs:573-617` adapter checkpoint-on-error invariant tests exercise the round-trip).
+
 State Send-bound discipline: `state: &'a mut Self::State` is borrowed mutably across the body's `.await` points; the `'a` lifetime ties state to the borrow chain, preventing storage in long-lived structs (verified by spike Iter-2 §2.2 against `tokio::select!` cancellation test).
 
 #### §2.2.3 `TriggerAction`
 
 > **Amended-in-place 2026-04-25 (Q6 lifecycle gap)** per §15.10 enactment. Pre-amendment: trait declared only `type Source` + `type Error` + `handle()` per spike `final_shape_v2.rs:254-262`; lifecycle methods `start` / `stop` (production `crates/action/src/trigger.rs:61-72`) were dropped from the spec without rationale. Post-amendment: `start` + `stop` lifecycle methods added on `TriggerAction` per Option (i) — per-instance state lives in `&self`, not in `TriggerSource`. Spike PASS verdict scope narrowed at §0.1 inputs footer: spike validated trait-shape compose + cancellation only; lifecycle is derived from production PASS evidence (Mock test `crates/action/src/trigger.rs:540-549` exercises `start` / `stop` round-trip).
+>
+> **Amended-in-place 2026-04-25 (Q7 post-closure audit, R3)** per §15.11 enactment. Pre-Q7: `handle()` returned `Result<(), Self::Error>` (fire-and-forget unit). Post-Q7: `handle()` returns `Result<TriggerEventOutcome, Self::Error>` per production `trigger.rs:215-264` — restoring the per-event multiplicity (Skip / Emit / EmitMany) that allows a single transport event to filter out, fire one execution, or fan out to N executions. `accepts_events()` predicate added with default `false` per production `trigger.rs:359-361` engine-side gate. Both restorations close the action-author surface gaps tech-lead post-closure audit identified.
 
 ```rust
 pub trait TriggerSource: Send + Sync + 'static {
@@ -246,15 +274,53 @@ pub trait TriggerAction: Send + Sync + 'static {
         ctx: &'a ActionContext<'a>,
     ) -> impl Future<Output = Result<(), Self::Error>> + Send + 'a;
 
+    /// Whether this trigger accepts engine-pushed events.
+    ///
+    /// Returns `true` for push-driven triggers (webhook); returns the default
+    /// `false` for pull-driven triggers (poll). The engine consults this
+    /// predicate before dispatching events through `handle()`. Per production
+    /// `crates/action/src/trigger.rs:359-361` (engine-side gate) +
+    /// `webhook.rs:1183-1185` (webhook adapter override) + `poll.rs` (poll
+    /// adapter keeps default).
+    fn accepts_events(&self) -> bool { false }
+
     /// Handle a single event projected from `Source`. Engine-driven —
     /// the engine sources events from `Source: TriggerSource` and dispatches
     /// each into `handle`. Per-event work (parsing, dedup, emitting workflow
     /// executions) lives here.
+    ///
+    /// Returns `TriggerEventOutcome::{Skip, Emit, EmitMany}` per dispatch:
+    /// `Skip` filters the event out (no workflow execution); `Emit(payload)`
+    /// fires one workflow execution; `EmitMany(payloads)` fans out to N
+    /// executions per single transport event (e.g., a batched webhook
+    /// delivery). Per production `crates/action/src/trigger.rs:215-264`.
     fn handle<'a>(
         &'a self,
         ctx: &'a ActionContext<'a>,
         event: <Self::Source as TriggerSource>::Event,
-    ) -> impl Future<Output = Result<(), Self::Error>> + Send + 'a;
+    ) -> impl Future<Output = Result<TriggerEventOutcome, Self::Error>> + Send + 'a;
+}
+
+/// Outcome of processing an external event pushed to a trigger.
+///
+/// Per production `crates/action/src/trigger.rs:215-264`. The variants surface
+/// the multiplicity dimension a single transport event can produce:
+///
+/// - `Skip` — event filtered out (deduplication, signature mismatch, business
+///   filter); no workflow execution emitted.
+/// - `Emit(payload)` — single workflow execution with the supplied JSON input.
+/// - `EmitMany(payloads)` — fan-out to N workflow executions (batched webhook
+///   delivery, RSS feed with multiple new items, Kafka batch).
+///
+/// `EmitMany(vec![])` constructed via `TriggerEventOutcome::emit_many(vec)`
+/// normalizes to `Skip`; the `will_emit()` predicate is the contract for
+/// "this outcome will produce executions."
+#[derive(Debug, Clone)]
+#[non_exhaustive]
+pub enum TriggerEventOutcome {
+    Skip,
+    Emit(serde_json::Value),
+    EmitMany(Vec<serde_json::Value>),
 }
 ```
 
@@ -262,9 +328,56 @@ pub trait TriggerAction: Send + Sync + 'static {
 
 **Lifecycle methods derive from production, not spike** (per §15.10 Q6 amendment + §0.1 inputs frozen-at footer scope clarification). Production `crates/action/src/trigger.rs:61-72` declares both methods with `#[diagnostic::on_unimplemented]` enforcement; production `TriggerHandler` (lines 282-353) carries the same lifecycle plus two-shape semantics (setup-and-return vs run-until-cancelled). Cascade preserves the lifecycle contract verbatim, lifts signature shape per cascade-wide pattern (single-`'a` + `&'a ActionContext<'a>` receiver context — replacing production's `&(impl TriggerContext + ?Sized)`). Per-instance state — webhook URL, secret, poll cursor, registration token — lives in `&self` fields populated at registration time per the `&self` configuration carrier paradigm (§2.9.1a Resolution point 1, line 501); `TriggerSource` remains shape-only (no runtime instantiation), so transport-level lifecycle is NOT split into `TriggerSource::start()` (Option (ii) / (iii) rejected per §15.10).
 
+**Configuration carrier example (per Q7 post-closure audit Y7).** Per the §2.9.1a paradigm, action authors declare configuration as ordinary `&self` fields and read them in `start()` body:
+
+```rust
+#[action(key = "github.webhook", credentials(secret: GitHubWebhookSecret))]
+pub struct GitHubWebhook {
+    /// Per-instance configuration field — populated at registration time
+    /// from the workflow manifest's parameter values (per §4.2 fields
+    /// outside zones pass through). Read via &self at start() time.
+    pub repository: String,
+    pub events: Vec<String>,
+    /// CredentialRef field — zone-managed per §4.1.1.
+    secret: nebula_credential::CredentialRef<dyn GitHubWebhookSecretPhantom>,
+}
+
+impl TriggerAction for GitHubWebhook {
+    type Source = WebhookSource;
+    type Error = ActionError;
+
+    async fn start(&self, ctx: &ActionContext<'_>) -> Result<(), Self::Error> {
+        // Configuration accessed via &self — no parameter threading.
+        let endpoint = ctx.webhook_endpoint();
+        register_github_hook(&self.repository, &self.events, endpoint).await?;
+        Ok(())
+    }
+
+    async fn stop(&self, ctx: &ActionContext<'_>) -> Result<(), Self::Error> {
+        unregister_github_hook(&self.repository).await?;
+        Ok(())
+    }
+
+    async fn handle(
+        &self,
+        ctx: &ActionContext<'_>,
+        event: <Self::Source as TriggerSource>::Event,
+    ) -> Result<TriggerEventOutcome, Self::Error> {
+        // Event-driven dispatch — engine gates on accepts_events() == true.
+        let webhook_secret = ctx.resolved_scheme(&self.secret)?;
+        verify_signature(&event, &webhook_secret)?;
+        Ok(TriggerEventOutcome::Emit(serde_json::to_value(&event)?))
+    }
+}
+```
+
+The `accepts_events()` override returns `true` for webhook-shape triggers (push-driven); `false` (default) for poll-shape (pull-driven). Configuration schema flows through `ActionMetadata::parameters` via `with_schema(<RepositoryConfig as HasSchema>::schema())` per §4.6.1, NOT through any `type Input` on TriggerAction (§2.9 four-axis REJECT preserved).
+
 Cluster-mode hooks (`IdempotencyKey`, `on_leader_*`, `dedup_window`) attach as supertrait extensions per Strategy §3.1 component 7 + §5.1.5 — exact trait shape locked at CP3 §7 (this Tech Spec section is foundational; full hook surface is Phase 3+ scope). The cluster-mode `on_leader_acquire` / `on_leader_release` hooks compose cleanly with `start` / `stop` — `on_leader_acquire` precedes `start` (engine waits for leadership before starting the trigger) and `on_leader_release` precedes `stop` (engine drains in-flight events before calling stop). Sequencing detail is engine-cascade scope per §1.2 N4.
 
 #### §2.2.4 `ResourceAction`
+
+> **Amended-in-place 2026-04-25 (Q7 post-closure audit, R2)** per §15.11 enactment. Pre-amendment: trait shape declared `Input` / `Output` / `execute(&self, ctx, &resource, input)` per spike interpretation. Post-amendment: shape restored to production `crates/action/src/resource.rs:36-52` paradigm — `ResourceAction` is graph-scoped DI, NOT an execute-bearing primitive. Engine runs `configure(&self, ctx) -> Future<Self::Resource>` before downstream nodes, lends `&Self::Resource` to the subtree (resources read by *consumer actions* via `ctx.resource()`, NOT through `ResourceHandler::execute`), calls `cleanup(&self, resource, ctx)` when scope ends. The pre-amendment `execute` / `Input` / `Output` were spike-specification artifacts not grounded in production; their drop closes the parallel paradigm-drift surfaced by R2 enactment.
 
 ```rust
 pub trait Resource: Send + Sync + 'static {
@@ -273,22 +386,41 @@ pub trait Resource: Send + Sync + 'static {
 
 pub trait ResourceAction: Send + Sync + 'static {
     type Resource: Resource;        // Probe 1 verifies this is required
-    type Input: HasSchema + DeserializeOwned + Send + 'static;
-    type Output: Serialize + Send + 'static;
     type Error: std::error::Error + Send + Sync + 'static;
 
-    fn execute<'a>(
+    /// Build the resource for this scope; engine runs this before downstream nodes.
+    ///
+    /// Per production `crates/action/src/resource.rs:41-44`. The resulting
+    /// `Self::Resource` is owned by the engine for the scope's lifetime;
+    /// downstream actions in the subtree borrow it via `ctx.resource()` per
+    /// §3.3 capability-resolve helpers.
+    fn configure<'a>(
         &'a self,
         ctx: &'a ActionContext<'a>,
-        resource: &'a Self::Resource,
-        input: Self::Input,
-    ) -> impl Future<Output = Result<Self::Output, Self::Error>> + Send + 'a;
+    ) -> impl Future<Output = Result<Self::Resource, Self::Error>> + Send + 'a;
+
+    /// Clean up the resource when the scope ends (drop pool, close connections).
+    ///
+    /// Per production `crates/action/src/resource.rs:47-51`. Receives ownership
+    /// of `Self::Resource` (consume) — the resource cannot be reused after
+    /// `cleanup`. Engine calls `cleanup` exactly once per `configure` call;
+    /// double-cleanup is an engine bug surfaced as `ActionError::Fatal` at the
+    /// adapter dyn boundary per `resource.rs:195-200`.
+    fn cleanup<'a>(
+        &'a self,
+        resource: Self::Resource,
+        ctx: &'a ActionContext<'a>,
+    ) -> impl Future<Output = Result<(), Self::Error>> + Send + 'a;
 }
 ```
 
-`Resource: Resource` associated type per spike Probe 1 ([NOTES §1.2](../drafts/2026-04-24-nebula-action-redesign/07-spike-NOTES.md)) — `error[E0046]: missing: Resource` without it. Resource is borrowed (`&'a Self::Resource`) — the action body cannot retain the resource past its own lifetime. `Resource::Credential: Credential` ensures resource-credential composition lands at `crates/credential/src/contract` per Strategy §2.8 / credential Tech Spec §3.4 line 807-939.
+`Resource: Resource` associated type per spike Probe 1 ([NOTES §1.2](../drafts/2026-04-24-nebula-action-redesign/07-spike-NOTES.md)) — `error[E0046]: missing: Resource` without it. `Resource::Credential: Credential` ensures resource-credential composition lands at `crates/credential/src/contract` per Strategy §2.8 / credential Tech Spec §3.4 line 807-939.
 
-Resource-credential ownership boundary: the resource holds `SchemeFactory<C>` (per credential Tech Spec §15.7 line 3438-3447); the action body ALWAYS acquires `SchemeGuard<'a, C>` per request. This is N1 (Non-goal): resource-side scope (the `Resource` impl itself, `on_credential_refresh` full integration) is out of this Tech Spec's scope, but the type-level binding here is in scope per ADR-0035 §4.3 rewrite obligation.
+**No `execute` method on `ResourceAction`.** Production `crates/action/src/resource.rs:36-52` declares only `configure` + `cleanup`. The pre-amendment Tech Spec shape (`execute(.., resource: &Self::Resource, input)`) was wrong against production — `ResourceAction` is a graph-scoped DI primitive only. Consumer actions (typically `StatelessAction` or `StatefulAction`) read the resource via `ActionContext::resource()` per §3.3, NOT via a `ResourceAction::execute` method. The drop preserves production ABI exactly.
+
+**Lifecycle methods derive from production** (per Q7 §15.11 amendment + §0.1 inputs frozen-at footer scope — same discipline as Q6 lifecycle restoration). Production `crates/action/src/resource.rs:41-51` declares both methods; cascade preserves the lifecycle contract verbatim, lifts signature shape per cascade-wide pattern (single-`'a` + `&'a ActionContext<'a>` receiver context — replacing production's `&(impl ActionContext + ?Sized)`).
+
+Resource-credential ownership boundary: the resource holds `SchemeFactory<C>` (per credential Tech Spec §15.7 line 3438-3447); consumer actions ALWAYS acquire `SchemeGuard<'a, C>` per request. This is N1 (Non-goal): resource-side scope (the `Resource` impl itself, `on_credential_refresh` full integration) is out of this Tech Spec's scope, but the type-level binding here is in scope per ADR-0035 §4.3 rewrite obligation. Per N1-extended (§1.2): the `Resource: Resource` bound creates a hard ordering dependency on credential cascade landing first — paths (b) / (c) MUST sequence credential cascade leaf-first.
 
 ### §2.3 `BoxFut<'a, T>` type alias — used at `SlotBinding::resolve_fn` HRTB only
 
@@ -307,6 +439,8 @@ pub type BoxFut<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
 ### §2.4 Four `*Handler` companion traits — `#[async_trait]`-annotated dyn-safe parallels
 
 > **Amended-in-place 2026-04-25 (Q1 post-freeze)** per §15.9 enactment. Pre-amendment: §2.4 used hand-written `BoxFut<'a, T>` returns per method (mimicking what `#[async_trait]` emits internally, but without the macro). Post-amendment: §2.4 adopts `#[async_trait::async_trait]` per [ADR-0024 §Decision items 1 + 4](../../adr/0024-defer-dynosaur-migration.md). ADR-0024 (accepted 2026-04-20, four days before this Tech Spec freeze) explicitly enumerates `StatelessHandler` / `StatefulHandler` / `TriggerHandler` / `ResourceHandler` among the 14 `dyn`-consumed traits approved for `#[async_trait]` (line 73-81 of the ADR). The Tech Spec freeze did not cite ADR-0024; this amendment realigns §2.4 with the already-ratified workspace policy and removes the residual `for<'life0, 'life1, 'a>` HRTB boilerplate from the production handler surface.
+>
+> **Amended-in-place 2026-04-25 (Q7 post-closure audit, R4 + R5)** per §15.11 enactment. Pre-Q7: `TriggerHandler::handle(ctx, event: serde_json::Value)` collapsed the dyn boundary to JSON-typed event; `ResourceHandler::execute(ctx, resource_id: ResourceId, input)` declared a non-existent JSON-execute method. Post-Q7: `TriggerHandler` adopts the production `TriggerEvent` envelope (per `trigger.rs:97-122` — type-erased `Box<dyn Any>` payload + `TypeId` diagnostic + `accepts_events()` + default `handle_event` returning `ActionError::fatal`); `ResourceHandler` restored to `configure` / `cleanup` lifecycle with `Box<dyn Any + Send + Sync>` resource handoff (per `resource.rs:59-107`), and the spurious `execute` method dropped (production `ResourceHandler` has no execute — resources are read by *consumer actions* via `ctx.resource()`).
 
 Each primary dispatch trait has a **dyn-safe** companion `*Handler` trait used by the engine's `Arc<dyn XHandler>` storage (per `crates/action/src/handler.rs:39-50`). Per ADR-0024, the four traits are `#[async_trait]`-annotated; the macro emits the equivalent `Pin<Box<dyn Future<Output = T> + Send + 'a>>` return shape per method without the explicit `'life0`/`'life1` boilerplate appearing in source.
 
@@ -337,26 +471,66 @@ pub trait StatefulHandler: Send + Sync + 'static {
 #[async_trait]
 pub trait TriggerHandler: Send + Sync + 'static {
     fn metadata(&self) -> &ActionMetadata;
-    async fn handle(
+
+    /// Start the trigger (register listener, schedule poll, etc.).
+    /// Per production `crates/action/src/trigger.rs:282-321`.
+    async fn start(&self, ctx: &ActionContext<'_>) -> Result<(), ActionError>;
+
+    /// Stop the trigger (unregister, cancel schedule).
+    async fn stop(&self, ctx: &ActionContext<'_>) -> Result<(), ActionError>;
+
+    /// Whether this handler accepts engine-pushed events. Engine consults
+    /// before dispatching events through `handle_event`. Per production
+    /// `trigger.rs:359-361` — default returns `false`; webhook adapter
+    /// overrides to `true`.
+    fn accepts_events(&self) -> bool { false }
+
+    /// Handle an event pushed by the engine. Default returns
+    /// `ActionError::fatal` per production `trigger.rs:373-389` — pull-driven
+    /// triggers (poll) never have this called; only adapters that override
+    /// `accepts_events()` to `true` see this method invoked.
+    ///
+    /// The `event: TriggerEvent` envelope carries a type-erased `Box<dyn Any>`
+    /// payload + `TypeId` diagnostic per production `trigger.rs:97-122`.
+    /// Adapter-side downcast to typed `<Source as TriggerSource>::Event` is the
+    /// typification boundary — see §3.5 typification path narrative.
+    async fn handle_event(
         &self,
         ctx: &ActionContext<'_>,
-        event: serde_json::Value,
-    ) -> Result<(), ActionError>;
+        event: TriggerEvent,
+    ) -> Result<TriggerEventOutcome, ActionError> {
+        let _ = (ctx, event);
+        Err(ActionError::fatal("trigger does not accept external events"))
+    }
 }
 
 #[async_trait]
 pub trait ResourceHandler: Send + Sync + 'static {
     fn metadata(&self) -> &ActionMetadata;
-    async fn execute(
+
+    /// Build the resource. Returns the type-erased instance for engine-side
+    /// handoff per production `crates/action/src/resource.rs:59-92`. The
+    /// `_config: Value` parameter is reserved (typed action gets configuration
+    /// from `ctx`, not from JSON) per `resource.rs:148-150`.
+    async fn configure(
         &self,
+        config: serde_json::Value,
         ctx: &ActionContext<'_>,
-        resource_id: ResourceId,
-        input: serde_json::Value,
-    ) -> Result<serde_json::Value, ActionError>;
+    ) -> Result<Box<dyn std::any::Any + Send + Sync>, ActionError>;
+
+    /// Release the resource. Adapter downcasts the box to its typed Resource;
+    /// downcast-mismatch is `ActionError::Fatal` per production
+    /// `resource.rs:195-200` (engine bug — the box returned from `configure`
+    /// was routed to a different adapter).
+    async fn cleanup(
+        &self,
+        resource: Box<dyn std::any::Any + Send + Sync>,
+        ctx: &ActionContext<'_>,
+    ) -> Result<(), ActionError>;
 }
 ```
 
-JSON-typed input/output at the handler boundary preserves the JSON-level contract `crates/action/src/handler.rs:11-19` documents. Each handler trait is dyn-safe — `Arc<dyn StatelessHandler>` etc. continue to compile (the macro emits the `Pin<Box<dyn Future<...> + Send + 'async_trait>>` form internally). The `serde_json::from_value` adapter call sites are where G3 floor item 1 (JSON depth cap 128) attaches; detail in §4 (CP2).
+JSON-typed input/output at the StatelessHandler / StatefulHandler boundary preserves the JSON-level contract `crates/action/src/handler.rs:11-19` documents. `TriggerHandler` adopts the `TriggerEvent` envelope (NOT JSON) per production — type-erasure at the dyn boundary keeps the base layer transport-agnostic per `trigger.rs:86-96` doc. `ResourceHandler` adopts `Box<dyn Any + Send + Sync>` boundary for resource handoff, NOT a JSON pseudo-execute. Each handler trait is dyn-safe — `Arc<dyn StatelessHandler>` etc. continue to compile (the macro emits the `Pin<Box<dyn Future<...> + Send + 'async_trait>>` form internally). The `serde_json::from_value` adapter call sites for StatelessHandler / StatefulHandler are where G3 floor item 1 (JSON depth cap 128) attaches; detail in §4 (CP2). For TriggerHandler, depth cap applies at the adapter's typed-event reconstruction path (e.g., `WebhookTriggerAdapter` deserializing `WebhookRequest` body); for ResourceHandler, the `_config: Value` parameter (currently reserved) gets the depth cap when activated.
 
 **Equivalence note (perf + cancel-safety).** `#[async_trait]` macro-expands to `Pin<Box<dyn Future<Output = T> + Send + 'async_trait>>` returns per method — structurally equivalent at the runtime layer to the pre-amendment manual `BoxFut<'a, T>` form. Heap allocation per call is unchanged; cancel-safety (drop semantics on `SchemeGuard<'a, C>` mid-`.await`) is unchanged — verified by spike Iter-2 §2.4 cancellation drop test which passes under either shape. Bytecode delta is non-existent.
 
@@ -388,7 +562,9 @@ Engine dispatches on the 4-variant enum per current `crates/action/src/handler.r
 
 ### §2.6 Five sealed DX traits per ADR-0038
 
-The DX tier wraps the primary dispatch traits with authoring-friendly shapes that erase to `Stateless` / `Stateful` / `Trigger` at dispatch. Each DX trait is **sealed** per ADR-0038 §1 — community plugin crates may NOT implement it directly; they go through the underlying primary trait + adapter.
+> **Amended-in-place 2026-04-25 (Q7 post-closure audit, R6)** per §15.11 enactment. Pre-Q7: §2.6 declared `WebhookAction: WebhookActionSealed + TriggerAction` and `PollAction: PollActionSealed + TriggerAction` — i.e., as **subtraits** of `TriggerAction`. Production reality (`crates/action/src/webhook.rs:578` + `crates/action/src/poll.rs:800`): both are `pub trait XAction: Action + Send + Sync + 'static` — peers of TriggerAction, not subtraits. They have their own associated types (`WebhookAction::State`, `PollAction::Cursor`, `PollAction::Event`), their own lifecycle methods (`on_activate`/`handle_request`/`on_deactivate`/`config` for Webhook; `poll_config`/`validate`/`initial_cursor`/`poll` for Poll), and erase to `TriggerHandler` only at the dyn boundary via dedicated adapters (`WebhookTriggerAdapter`, `PollTriggerAdapter`). Neither inherits `start`/`stop`/`handle_event` from `TriggerAction`. Post-Q7: §2.6 re-pinned to peer-of-Action shape per production; bound chain `+ Action` (NOT `+ TriggerAction`); each DX trait declares its own associated types verbatim from production; trait-by-trait audit closure (CP3-deferred §15.8 row (c)) lands here.
+
+The DX tier wraps the primary dispatch traits with authoring-friendly shapes that erase to `Stateless` / `Stateful` / `TriggerHandler` at dispatch. Each DX trait is **sealed** per ADR-0038 §1 — community plugin crates may NOT implement it directly; they go through the underlying primary trait + adapter, OR (for Webhook/Poll) through the `#[action]` macro attribute zones that emit the sealed adapter automatically.
 
 Sealing follows the per-capability inner-sealed-trait pattern from [ADR-0035 §3](../../adr/0035-phantom-shim-capability-pattern.md#3-sealed-module-placement-convention) (the post-amendment-2026-04-24-B canonical form). The `mod sealed_dx` is crate-private; each inner `Sealed` trait is `pub` within that module (so the public DX trait's supertrait reference does not trigger `private_in_public`).
 
@@ -404,35 +580,143 @@ mod sealed_dx {
     pub trait PollActionSealed {}
 }
 
-// Erases to Stateless via adapter:
+// ── DX traits that ARE subtraits of a primary (Stateless/Stateful) ──
+
+// Erases to Stateless via ControlActionAdapter:
 pub trait ControlAction: sealed_dx::ControlActionSealed + StatelessAction { /* ... */ }
 
-// Erase to Stateful via adapter (adapter holds the iteration state):
-pub trait PaginatedAction: sealed_dx::PaginatedActionSealed + StatefulAction { /* ... */ }
-pub trait BatchAction:     sealed_dx::BatchActionSealed     + StatefulAction { /* ... */ }
+// Erase to Stateful via macro-emitted impl_paginated_action! / impl_batch_action!
+// (DX-over-primary via decl-macro emission, NOT via adapter wrap):
+pub trait PaginatedAction: sealed_dx::PaginatedActionSealed + Action {
+    type Input: HasSchema + Send + Sync;
+    type Output: Send + Sync;
+    type Cursor: Serialize + DeserializeOwned + Clone + Send + Sync;
+    fn max_pages(&self) -> u32 { 100 }
+    fn fetch_page<'a>(
+        &'a self,
+        input: &'a Self::Input,
+        cursor: Option<&'a Self::Cursor>,
+        ctx: &'a ActionContext<'a>,
+    ) -> impl Future<Output = Result<PageResult<Self::Output, Self::Cursor>, ActionError>> + Send + 'a;
+}
+pub trait BatchAction: sealed_dx::BatchActionSealed + Action {
+    type Input: HasSchema + Send + Sync;
+    type Item: Serialize + DeserializeOwned + Clone + Send + Sync;
+    type Output: Serialize + DeserializeOwned + Clone + Send + Sync;
+    fn batch_size(&self) -> usize { 50 }
+    fn extract_items(&self, input: &Self::Input) -> Vec<Self::Item>;
+    fn process_item<'a>(
+        &'a self,
+        item: Self::Item,
+        ctx: &'a ActionContext<'a>,
+    ) -> impl Future<Output = Result<Self::Output, ActionError>> + Send + 'a;
+    fn merge_results(&self, results: Vec<BatchItemResult<Self::Output>>) -> Self::Output;
+}
 
-// Erase to Trigger via adapter:
-pub trait WebhookAction: sealed_dx::WebhookActionSealed + TriggerAction { /* ... */ }
-pub trait PollAction:    sealed_dx::PollActionSealed    + TriggerAction { /* ... */ }
+// ── DX traits that are PEERS of TriggerAction (NOT subtraits) ──
+// Production reality: webhook.rs:578 + poll.rs:800 declare these as `Action + Send + Sync + 'static`,
+// NOT as `: TriggerAction`. Each carries its own lifecycle and associated types; erasure to
+// `dyn TriggerHandler` happens via dedicated adapters (WebhookTriggerAdapter, PollTriggerAdapter).
 
-// Crate-internal blanket impls: one per DX trait, each authoring eligibility from
-// the corresponding primary + `ActionSlots` (so the seal mirrors the §2.1 `Action`
-// supertrait chain — without `ActionSlots`, the seal would admit types that cannot
-// satisfy `Action`, breaking ADR-0038 §1's "DX tier erases to primary" invariant).
-// Spike `final_shape_v2.rs:282` is the canonical bound. Community plugins use the
-// primary trait directly + the sealed adapter pattern at registration. Trait-by-trait
-// audit of which primary each DX trait wraps is locked at CP3 §7 design time per
-// ADR-0038 §Implementation notes ("trait-by-trait audit at Tech Spec §7 design time").
+pub trait WebhookAction: sealed_dx::WebhookActionSealed + Action + Send + Sync + 'static {
+    /// State held between activate/deactivate (e.g., webhook registration ID).
+    /// No Serde/Default bounds — webhook state is ephemeral, not persisted across
+    /// process restarts in v1 (per `webhook.rs:579-585`).
+    type State: Clone + Send + Sync;
+
+    /// Register webhook with external service. Returns state to persist in adapter.
+    fn on_activate<'a>(
+        &'a self,
+        ctx: &'a ActionContext<'a>,
+    ) -> impl Future<Output = Result<Self::State, ActionError>> + Send + 'a;
+
+    /// Handle an incoming webhook request. State from on_activate passed by reference.
+    fn handle_request<'a>(
+        &'a self,
+        request: &'a WebhookRequest,
+        state: &'a Self::State,
+        ctx: &'a ActionContext<'a>,
+    ) -> impl Future<Output = Result<WebhookResponse, ActionError>> + Send + 'a;
+
+    /// Unregister webhook on deactivation. Default no-op.
+    fn on_deactivate<'a>(
+        &'a self,
+        _state: Self::State,
+        _ctx: &'a ActionContext<'a>,
+    ) -> impl Future<Output = Result<(), ActionError>> + Send + 'a {
+        async { Ok(()) }
+    }
+
+    /// Webhook configuration (signature policy, body limits). Default fail-closed.
+    fn config(&self) -> WebhookConfig { WebhookConfig::default() }
+}
+
+pub trait PollAction: sealed_dx::PollActionSealed + Action + Send + Sync + 'static {
+    /// Cursor type for tracking poll position. Default-bound so `initial_cursor`
+    /// has a default impl (`Self::Cursor::default()`). Per `poll.rs:802-806`.
+    type Cursor: Serialize + DeserializeOwned + Clone + Default + Send + Sync;
+
+    /// Event type emitted per poll cycle (each becomes a workflow execution).
+    type Event: Serialize + Send + Sync;
+
+    fn poll_config(&self) -> PollConfig;
+
+    fn validate<'a>(
+        &'a self,
+        _ctx: &'a ActionContext<'a>,
+    ) -> impl Future<Output = Result<(), ActionError>> + Send + 'a {
+        async { Ok(()) }
+    }
+
+    fn initial_cursor<'a>(
+        &'a self,
+        _ctx: &'a ActionContext<'a>,
+    ) -> impl Future<Output = Result<Self::Cursor, ActionError>> + Send + 'a {
+        async { Ok(Self::Cursor::default()) }
+    }
+
+    fn poll<'a>(
+        &'a self,
+        cursor: &'a mut PollCursor<Self::Cursor>,
+        ctx: &'a ActionContext<'a>,
+    ) -> impl Future<Output = Result<PollResult<Self::Event>, ActionError>> + Send + 'a;
+}
+
+// ── Crate-internal blanket impls: per-DX-trait, gating on the right primary ──
+//
+// ControlAction wraps Stateless. PaginatedAction/BatchAction wrap StatefulAction at
+// the macro emission level (impl_paginated_action! / impl_batch_action! emit
+// `impl StatefulAction for $ty` from PaginatedAction/BatchAction declarations) —
+// the seal at `Action + ActionSlots` admits the type for blanket sealing while the
+// macro provides the StatefulAction wiring. WebhookAction/PollAction are peers of
+// TriggerAction at the trait level; their adapters (`WebhookTriggerAdapter`,
+// `PollTriggerAdapter`) do the erasure to `dyn TriggerHandler`.
 impl<T: StatelessAction + ActionSlots> sealed_dx::ControlActionSealed for T {}
-impl<T: StatefulAction  + ActionSlots> sealed_dx::PaginatedActionSealed for T {}
-impl<T: StatefulAction  + ActionSlots> sealed_dx::BatchActionSealed     for T {}
-impl<T: TriggerAction   + ActionSlots> sealed_dx::WebhookActionSealed   for T {}
-impl<T: TriggerAction   + ActionSlots> sealed_dx::PollActionSealed      for T {}
+impl<T: Action          + ActionSlots> sealed_dx::PaginatedActionSealed for T {}
+impl<T: Action          + ActionSlots> sealed_dx::BatchActionSealed     for T {}
+impl<T: Action          + ActionSlots> sealed_dx::WebhookActionSealed   for T {}
+impl<T: Action          + ActionSlots> sealed_dx::PollActionSealed      for T {}
 ```
 
-**Erasure adapter pattern.** Each DX trait erases to its primary at dispatch through a crate-internal adapter. For example, `ControlAction` erases to `StatelessHandler` via `ControlActionAdapter<A: ControlAction>` that wraps the body's typed `Continue` / `Skip` / `Retry` / `Terminate` result variants into an `ActionResult<Value>` (current shape; adapter detail is §3 / CP3 §9 scope). The adapter is the only path to dispatch — community plugins cannot bypass it because the sealed bound prevents `impl ControlAction for X` outside the crate.
+**Erasure adapter pattern.** Each DX trait erases to a primary `*Handler` at dispatch through a crate-internal adapter:
 
-**Community plugin authoring path** (per ADR-0038 §1 + ADR-0038 §Negative item 4). External plugin crates do **NOT** implement any sealed DX trait directly. The five DX shapes — pagination, batch, control-flow, webhook, poll — are authored via `StatelessAction` / `StatefulAction` / `TriggerAction` primary trait impls plus `#[action]` macro attribute zones (`#[action(paginated(cursor = …, page_size = …))]`, `#[action(control_flow = …)]`, etc.; CP2 §4 locks the attribute syntax). The macro emits the appropriate sealed-adapter impl from the cascade-internal `nebula-action::sealed_dx::*` namespace; the engine erases to the primary at dispatch. Migration: code that today writes `impl ControlAction for X` moves to `impl StatelessAction for X` + `#[action(control_flow = …)]` per ADR-0038 §Negative item 4. CP3 §7 surfaces the end-to-end community-plugin example.
+- `ControlAction` → `StatelessHandler` via `ControlActionAdapter<A: ControlAction>` (per `crates/action/src/control.rs:456-510`); adapter stamps `ActionCategory` from output port count and wraps `ControlOutcome` → `ActionResult<Value>`.
+- `PaginatedAction` → `StatefulHandler` via `impl_paginated_action!` macro emitting `impl StatefulAction for $ty` (per `crates/action/src/stateful.rs:170-227`); state machinery lives in `PaginationState<C>` carried via `StatefulAction::State`. NOT a separate adapter type — macro-generated impl pattern.
+- `BatchAction` → `StatefulHandler` via `impl_batch_action!` macro analogously (per `crates/action/src/stateful.rs:305-375`); state via `BatchState<I, T>`.
+- `WebhookAction` → `TriggerHandler` via `WebhookTriggerAdapter<A: WebhookAction>` (per `crates/action/src/webhook.rs:1008-1327`); adapter holds `RwLock<Option<Arc<A::State>>>` for double-start rejection + `AtomicU32` for in-flight tracking + `Arc<Notify>` for stop-drain. Adapter overrides `accepts_events()` to `true`.
+- `PollAction` → `TriggerHandler` via `PollTriggerAdapter<A: PollAction>` (per `crates/action/src/poll.rs:1051-1466`); adapter holds `AtomicBool` for double-start CAS + per-trigger jitter seed + three `WarnThrottle` instances (30s cooldown). Adapter keeps default `accepts_events() = false` — poll is pull-driven.
+
+The adapter is the only path to dispatch — community plugins cannot bypass it because the sealed bound prevents `impl WebhookAction for X` outside the crate.
+
+**Two distinct DX-over-primary mechanisms (per production §3 inventory).** WebhookAction / PollAction / ControlAction use **adapter wrap** (typed DX trait + adapter type that impls the dyn-handler trait directly; adapter holds runtime state). PaginatedAction / BatchAction use **macro-generated impl** (DX trait + decl-macro that emits `impl StatefulAction for $ty`; no new adapter type; state machinery is carried in `StatefulAction::State`). Both mechanisms preserve the seal — community plugin code that names `PaginatedAction` / `BatchAction` cannot author the `StatefulAction` impl by hand and bypass the macro because the sealed bound on `PaginatedActionSealed` requires going through the macro path.
+
+**Community plugin authoring path** (per ADR-0038 §1 + ADR-0038 §Negative item 4). External plugin crates do **NOT** implement any sealed DX trait directly. The five DX shapes — pagination, batch, control-flow, webhook, poll — are authored via:
+
+- **ControlAction** — community impl `StatelessAction` + `#[action(control_flow = …)]` attribute zone; macro emits the `ControlActionAdapter` from cascade-internal `nebula-action::sealed_dx::*` namespace.
+- **PaginatedAction / BatchAction** — community impl `PaginatedAction` / `BatchAction` directly + invoke `impl_paginated_action!(MyAction)` / `impl_batch_action!(MyAction)` decl-macro; macro emits `impl StatefulAction for MyAction` from the DX-trait declarations.
+- **WebhookAction / PollAction** — community impl `WebhookAction` / `PollAction` directly (the seal at `Action + ActionSlots` admits any `#[action]`-decorated struct via the blanket impl); `#[action]` attribute macro emits the `WebhookTriggerAdapter` / `PollTriggerAdapter` instantiation at registration time.
+
+CP3 §7 surfaced an end-to-end community-plugin example for `ControlAction`. The Webhook/Poll author flow (per Q7 post-closure audit) is: `#[action(...)] pub struct GitHubWebhook { repository: String, secret: CredentialRef<...> }` + `impl WebhookAction for GitHubWebhook { type State = ...; async fn on_activate(...) ... }` — the macro emits adapter wiring; engine sees `Arc<dyn TriggerHandler>` with `accepts_events() == true`.
 
 ### §2.7 `ActionResult` variants — including Terminate decision
 
@@ -879,6 +1163,37 @@ This subsection binds G3 floor item 4 (cancellation-zeroize test) at the design 
 - `scheme_guard_zeroize_on_future_drop_after_partial_progress` — body progresses past one `.await`, cancelled at the second.
 
 **Test instrumentation.** Spike used a global `AtomicUsize` counter; production tests must use either a per-test `ZeroizeProbe: Arc<AtomicUsize>` (test-only constructor variant on `Scheme`) OR `serial_test::serial` per spike finding #2 ([NOTES §3](../drafts/2026-04-24-nebula-action-redesign/07-spike-NOTES.md)). CP2 §8 locks the choice; CP1 binds the test-set requirement.
+
+### §3.5 Trigger event-dispatch typification path (per Q7 post-closure audit, R3 + R5 + I3)
+
+> **Added 2026-04-25 (Q7 post-closure audit, R3 + R5 + I3)** per §15.11 enactment. Pre-Q7: §3 narrative did not specify how engine bridges typed `<Source as TriggerSource>::Event` to JSON-typed event boundary at the dyn handler layer; Q6 amendment cited "engine drives `start`" without defining the event-dispatch path. Production has a two-layer decoupling (typed action / type-erased dyn handler with `TriggerEvent` envelope); Q7 §3.5 documents the typification path explicitly.
+
+Production `crates/action/src/trigger.rs:86-203` documents the **type-erasure-at-the-dyn-boundary** discipline: `TriggerEvent { id: Option<String>, received_at: SystemTime, payload: Box<dyn Any + Send + Sync>, payload_type: TypeId, payload_type_name: &'static str }` is the envelope at the `dyn TriggerHandler` boundary; the receiving adapter downcasts the `payload` to its expected typed event via `TriggerEvent::downcast::<T>()`.
+
+**Two-layer dispatch path** (engine event source → typed action body):
+
+1. **Engine sources events** of typed `<A::Source as TriggerSource>::Event` from the source. For webhook triggers: HTTP transport receives the request, deserializes body to `WebhookRequest` (with body-cap, header-cap, JSON depth-cap per `webhook.rs:91-104, 326-349`). For poll triggers: `PollAction::poll(.., cursor, ..)` returns `PollResult<Self::Event>`; events are extracted from the result.
+2. **Engine wraps each event** in a `TriggerEvent` envelope: `TriggerEvent::new(id, payload)` per `trigger.rs:131-143` — the constructor captures `TypeId::of::<T>()` and `std::any::type_name::<T>()` for diagnostic mismatches.
+3. **Engine pushes to dyn handler.** For push-driven (webhook): engine calls `handler.handle_event(ctx, trigger_event).await` after gating on `handler.accepts_events() == true`. For pull-driven (poll): engine never calls `handle_event` on the base `TriggerHandler`; instead, the `PollTriggerAdapter`'s own loop owns the dispatch path inside `start()`.
+4. **Adapter receives the envelope** at the `dyn`-typed `handle_event` method. For `TriggerActionAdapter<A>`: downcasts `event.downcast::<<A::Source as TriggerSource>::Event>()` to recover the typed event; mismatch → `ActionError::fatal` per `trigger.rs:182-203` (engine routing bug — diagnostic includes `payload_type_name` for trace).
+5. **Typed action body invokes** `A::handle(ctx, typed_event)` and returns `TriggerEventOutcome::{Skip, Emit, EmitMany}` per §2.2.3.
+6. **Adapter consumes the outcome**, emits 0 / 1 / N workflow executions through the engine's emit channel.
+
+**Why type-erasure at the dyn boundary** (per `trigger.rs:86-96` doc):
+
+> "Earlier versions of this type were an HTTP request in disguise (`body: Vec<u8>`, `headers: HashMap<String, String>`, size/header caps baked into the constructor). Every non-HTTP transport would either have to grow this struct with optional fields or fake headers it does not have. Erasing the payload keeps the base layer honest: the runtime and the `TriggerHandler` trait do not encode the semantics of any particular transport, while transport families are free to define their own typed event with their own invariants and constructors."
+
+The base `TriggerHandler` (§2.4) is dyn-safe because `TriggerEvent` carries `Box<dyn Any + Send + Sync>` at the boundary — the trait object knows nothing about `A::Source`. Adapter-side downcast is the typification gate; the engine's routing layer is responsible for dispatching events to handlers that match the source's payload type.
+
+**For webhook adapters specifically**, `WebhookTriggerAdapter` (per `webhook.rs:1008-1327`) bridges:
+
+- Engine builds `TriggerEvent` from `WebhookRequest` payload type (the typed event is `WebhookRequest` itself, not a synthetic projection).
+- `WebhookTriggerAdapter::handle_event(ctx, event)` downcasts `event.downcast::<WebhookRequest>()`; on success, invokes `A::handle_request(&request, &state, ctx)` (per `WebhookAction` peer DX trait) — the adapter unwraps the per-event multiplicity from `WebhookResponse` (response carries a `TriggerEventOutcome` independent from the HTTP response per `webhook.rs:600-606`).
+- HTTP response semantics (200/302/500) are orthogonal to workflow-emit semantics (Skip/Emit/EmitMany) — `WebhookResponse::respond_with(http_status, outcome)` lets webhook authors send Slack URL-verification challenge echoes without firing a workflow execution.
+
+**For poll adapters specifically**, `PollTriggerAdapter` does NOT use the `handle_event` path — it owns the dispatch inside `start()`'s loop and emits directly through the engine's emit channel. `PollAction::poll(cursor, ctx)` returns `PollResult<Self::Event>`; adapter iterates the events, applies `EmitFailurePolicy` (DropAndContinue / RetryBatch / StopTrigger) per failure, advances cursor per outcome (Idle = keep, Ready = advance, Partial = checkpoint, Err = pre-poll). The base `TriggerHandler::handle_event` default returns `ActionError::fatal` precisely to fail loudly if the engine ever mistakenly routes a push-event to a poll handler.
+
+**Migration impact (per Q7 §15.11).** Community plugins that today consume `TriggerEvent::downcast::<WebhookRequest>()` continue to do so post-cascade — the API is preserved verbatim from production. The typification path narrative is documentation-only; no codemod transform required. The base `TriggerHandler` shape changes (per R5 above — adopts `TriggerEvent` envelope instead of pre-Q7 `serde_json::Value`), but adapters absorb the change; community plugin author code that impls `TriggerAction` / `WebhookAction` / `PollAction` (DX traits) is unchanged.
 
 ---
 
@@ -1616,11 +1931,38 @@ Per `crates/action/src/stateful.rs:573-582` (current shape, preserved):
 - Migration path: `StatefulAction::migrate_state(state: serde_json::Value) -> Option<Self::State>` (per `crates/action/src/stateful.rs:573-582`) consulted only when `from_value::<A::State>(state.clone())` fails — version-skew between stored checkpoint and current State schema.
 - Depth cap (§6.1) applies to state deserialization (`from_value(state.clone())`) — closes S-J2 simultaneously per 03c §1.
 
-#### §8.1.2 Trigger cursor via `PollAction`
+#### §8.1.2 Trigger cursor via `PollAction` — in-memory, per-process lifetime
 
-`PollAction` is a sealed DX trait (per §2.6) erasing to `TriggerAction`. PollAction-shaped triggers track cursor position via the underlying `TriggerAction::handle` fire-and-forget event surface; cursor itself is engine-managed (per Strategy §3.1 component 7 — cluster-mode dedup window, idempotency key).
+> **Amended-in-place 2026-04-25 (Q7 post-closure audit, I1)** per §15.11 enactment. Pre-Q7: §8.1.2 declared "cursor lives at engine, not action body" — wrong against production. Production reality (per `crates/action/src/poll.rs:1328` + `:1351-1352` + doc lines 732-761): cursor lives in `PollTriggerAdapter::start()`'s **stack frame** (a local variable in the async loop), with the `PollCursor<C>` per-cycle wrapper carrying a checkpoint snapshot for in-cycle rollback. **No engine persistence in v1.** Post-Q7 narrative below restores honest framing.
 
-CP3 §7 locks the `PollAction` trait shape (sealed-DX trait-by-trait audit per ADR-0038 §Implementation notes); CP2 commits "cursor lives at engine, not action body."
+`PollAction` is a sealed DX trait (per §2.6) erasing to `dyn TriggerHandler` via `PollTriggerAdapter` — Webhook and Poll are PEERS of `TriggerAction`, not subtraits (per Q7 R6 amendment, §2.6). PollAction declares its own associated types: `type Cursor: Serialize + DeserializeOwned + Clone + Default + Send + Sync` (the persistence-shaped state) and `type Event: Serialize + Send + Sync` (the per-cycle event).
+
+**Cursor lifetime — in-memory only.** Per production `poll.rs:1328`:
+
+```rust
+let mut cursor = self.action.initial_cursor(ctx).await?;
+```
+
+`cursor: A::Cursor` is a **local variable in the `start()` async block** of `PollTriggerAdapter`. It is NOT a field of `PollTriggerAdapter` (compare with `WebhookTriggerAdapter::state: RwLock<Option<Arc<A::State>>>` field). The `PollCursor<C>` wrapper (per `poll.rs:439-477`) is constructed fresh each cycle by `PollCursor::new(cursor.clone())` (storing both `current: C` and `checkpoint: C` for rollback); after the cycle, the adapter unwraps via `into_current()` to recover the bare `C`.
+
+**Restart semantics.** When `start()` returns (cancellation or fatal), the cursor is dropped with the stack frame. There is NO place in `PollTriggerAdapter` that holds the cursor across an exit-and-restart cycle. Per production doc `poll.rs:732-761`: "Cursor state is in-memory only" + "On process restart, `initial_cursor` is called again." Action authors override `initial_cursor(&self, ctx)` to seed from "now" (e.g., latest upstream ID) instead of `Default::default()` (beginning of time) — the override prevents the first-run flood that occurs when `Default` means "fetch everything."
+
+**Per-cycle rollback semantics** (per `poll.rs:1042-1057` doc + adapter loop): adapter snapshots the cursor before each `poll()` invocation; outcome-driven cursor advancement:
+
+- `PollOutcome::Idle` (empty events) — keep cursor; continue loop.
+- `PollOutcome::Ready` (non-empty events) — advance cursor to current; emit events.
+- `PollOutcome::Partial` (events from successful pages + an error) — emit successful events; checkpoint to last-success page; next cycle resumes from checkpoint.
+- `Err(e)` — total failure; rollback to pre-poll snapshot; apply backoff; retry.
+
+The `PollCursor::checkpoint()` method (called by the action body inside `poll()`) marks an intermediate success point within a single cycle; `PollCursor::rollback()` (called by the adapter on `PollOutcome::Partial` / `Err`) restores to that checkpoint or to pre-poll. Action authors reading cursor state through `Deref`/`DerefMut` see the bare `C` transparently.
+
+**`DeduplicatingCursor<K, C>`** (per `poll.rs:553-719`) is a special cursor type that tracks "seen" IDs in a bounded FIFO (`max_seen` cap) for window-based dedup; it implements custom `Serialize`/`Deserialize` so it round-trips through future engine persistence layers (when cluster-mode lands). Today it is in-memory like all PollAction cursors.
+
+**Cluster-mode forward-track.** Cluster-mode coordination (idempotency-key dedup, leader-elected gating, dedup-window persistence) is engine-cascade scope per §1.2 N4. When engine cluster-mode lands, it adds a *parallel* persistence layer: cluster-coordinated cursor checkpointing at engine-side stable storage, with per-trigger-instance ownership semantics (one cluster member owns one trigger's cursor at a time). The action-author surface (`PollAction::Cursor` + `&mut PollCursor<Self::Cursor>` parameter on `poll`) is **unchanged** — engine adds the cluster layer *around* the action surface, not by hoisting cursor state to a different trait location. Migration: zero — community PollAction impls stay verbatim; cluster-mode wraps them transparently. CP3 §7 carry-forward (deferred per §15.8 row (b) to engine cluster-mode coordination cascade) is preserved.
+
+**No state migration hook on `PollAction` or `WebhookAction`.** Only `StatefulAction::migrate_state` (per §2.2.2 R1 amendment) provides versioned migration. Webhook state is ephemeral by design (`webhook.rs:579-585`); poll cursor is in-memory (no persistence to migrate from). When cluster-mode adds engine-side persistence for poll cursor, a `migrate_cursor` hook may follow as a separate cluster-mode-cascade scope item (Strategy §3.4 row "Resource cluster-mode coordination"). Tech Spec §8 does NOT pre-emptively add this hook — speculative DX surface per `feedback_active_dev_mode.md`.
+
+CP3 §7 closure (sealed-DX trait-by-trait audit per ADR-0038 §Implementation notes) is satisfied by the §2.6 R6 amendment + this §8.1.2 cursor-lifetime restoration.
 
 #### §8.1.3 Macro-emitted slot bindings
 
@@ -2679,6 +3021,96 @@ Tech Spec ratification (CP4 freeze) is unaffected — this amendment-in-place is
 
 §15.1 "CP1 §15 carry-forward" table — no row addressed lifecycle gap directly (the gap was uncaught by all CP-level reviews until Q6). New CP4 row added implicitly via this §15.10 enactment record + §17 CHANGELOG entry; no separate §15.1 row needed.
 
+### §15.11 Q7 post-closure audit amendment-in-place — production-drift bundle (R1-R6 + 🟠 + 🟡) — ENACTED
+
+**Trigger.** Post-closure systematic audit 2026-04-25 surfaced **6 🔴 + 3 🟠 + 8 🟡** spec-vs-production gaps across §2.2.2 (StatefulAction lifecycle) / §2.2.3 (TriggerEventOutcome multiplicity + accepts_events) / §2.2.4 (ResourceAction configure/cleanup paradigm; spurious execute drop) / §2.4 (TriggerHandler envelope + ResourceHandler dyn boundary) / §2.6 (sealed-DX bound chain — Webhook/Poll declared as TriggerAction subtraits when production has them as peers) / §3.5 (typification path narrative) / §8.1.2 (cursor in-memory ownership). Two parallel Phase 1 reports — `post-closure-tech-lead-coverage.md` (Tech Spec coverage map: 5 🔴 + 3 🟠 + 8 🟡) + `post-closure-rust-senior-inventory.md` (production inventory) — converged on the same diagnosis: **mechanical drift between FROZEN CP4 spec sections and production source**, same class as Q6 lifecycle gap. Phase 2 architect §2.9 fifth-iteration analysis surfaced one additional 🔴 (R6 — sealed-DX bound chain re-pin from Webhook/Poll-as-subtrait to peer-of-Action). Total bundle: 6 🔴 + 3 🟠 + 8 🟡 = 17 amendments.
+
+**Status invariant.** Per §0.2 invariant 4 + §15.9.2 / §15.10 precedent: spec-vs-production divergence in sections the spike did not exercise is a canonical-form correction, not a paradigm shift. Production wins for capabilities that production declares and the spike did not validate. ADR-0035 amended-in-place precedent (§Status block "canonical-form correction" criterion) is the right tool for the entire Q7 bundle. Q7 itself does NOT trigger §0.2 invariant 4 spike-shape divergence — the spike validated trait-shape compose + cancellation only; lifecycle methods, multiplicity outcomes, dyn-handler envelopes, and sealed-DX bound chains were all out-of-spike-scope per §0.1 inputs frozen-at footer Q6 narrowing precedent.
+
+#### §15.11.1 Enactment
+
+This CP **enacts** all 17 amendments-in-place per §15.9 / §15.10 precedent. Tech Spec edits are inline at the cited sections; no ADR file edits required.
+
+**Per ADR composition analysis:**
+
+- **ADR-0024** governs `*Handler` async-fn-in-trait shape. Q7 R4 + R5 amend §2.4 `TriggerHandler` (TriggerEvent envelope) and `ResourceHandler` (Box<dyn Any> boundary) — these are dyn-handler shape changes. ADR-0024 §Decision item 1 enumerates the four `*Handler` traits as `#[async_trait]`-eligible; ADR does NOT lock per-method parameter types (only the async-trait macro adoption decision). No ADR-0024 edit needed.
+- **ADR-0036** locks trait-shape per §Decision items 1-4 (rewriting scope; emission contract; dual enforcement; phantom composition). Per §Neutral block last bullet: "Public API surface of the 4 dispatch traits ... unchanged at the trait level — only the macro that constructs implementations changes shape." This phrasing preserves the four-primary-trait family enumeration (Stateless/Stateful/Trigger/Resource); it does NOT lock per-method signatures verbatim. Q7 R1 (StatefulAction::init_state/migrate_state restoration), R2 (ResourceAction::configure/cleanup restoration), R3 (TriggerEventOutcome restoration on TriggerAction::handle), R6 (Webhook/Poll DX-trait associated types restoration) all land at Tech Spec §2.2 / §2.6 per-method-signature lock, NOT at family-enumeration lock. ADR-0036 status (`accepted` 2026-04-25) preserved.
+- **ADR-0037** locks macro emission for the action struct (`ActionSlots::credential_slots()` shape; `SlotBinding` shape; qualified-syntax probe; test harness; perf bound). Q7 amendments do NOT touch macro emission — lifecycle methods (init_state, configure, cleanup) are author-implemented, NOT macro-emitted. Adapter wiring (the macro emits `WebhookTriggerAdapter` / `PollTriggerAdapter` instantiation) is unchanged. ADR-0037 status (`proposed (amended-in-place 2026-04-25)` per §15.5) preserved.
+- **ADR-0038** locks sealed DX tier + canon §3.5 revision. Q7 R6 changes the sealed-DX **bound chain** (Webhook/Poll declared as peer-of-Action, not TriggerAction subtraits), but ADR-0038 §1 sealed-pattern intent ("community plugin crates may NOT implement [DX traits] directly") is preserved verbatim — the seal still prevents external `impl WebhookAction for X`; only the bound chain re-pins to match production. ADR-0038 §Decision text is structurally compatible: ADR-0038 §1 line 53 describes "ControlAction becomes a sealed trait" without specifying that all five sealed traits subtype any one primary; the seal-via-blanket-impl pattern (`impl<T: PrimaryTrait + ActionSlots> sealed_dx::TraitSealed for T {}`) per §2.6 is preserved with the bound on `Action` for Webhook/Poll instead of `TriggerAction`. ADR-0038 status (`proposed`) preserved.
+
+**Sections amended (17 amendments across 8 sections):**
+
+| Q7 amendment | Tech Spec section | Class |
+|---|---|---|
+| R1 — `StatefulAction::init_state` + `migrate_state` lifted to trait shape | §2.2.2 | 🔴 |
+| R2 — `ResourceAction::configure` + `cleanup` restored; spurious `execute`/`Input`/`Output` dropped | §2.2.4 | 🔴 |
+| R3 — `TriggerAction::handle` returns `TriggerEventOutcome`; `accepts_events()` predicate added | §2.2.3 | 🔴 |
+| R4 — `ResourceHandler` adopts `Box<dyn Any>` boundary; spurious `execute` dropped | §2.4 | 🔴 |
+| R5 — `TriggerHandler` adopts `TriggerEvent` envelope; `accepts_events()` + default `handle_event` Fatal added | §2.4 | 🔴 |
+| R6 — `WebhookAction` / `PollAction` re-pinned as peer DX traits with own State/Cursor/Event associated types (NOT TriggerAction subtraits); seal blanket impls gate on `Action`, not `TriggerAction` | §2.6 | 🔴 |
+| I1 — Cursor in-memory ownership narrative restored (cursor lives in adapter `start()` stack frame; restart re-calls `initial_cursor`; cluster-mode is forward-track that wraps action surface, not replaces it) | §8.1.2 | 🟠 |
+| I2 — N1 extended: `Resource: Resource` bound creates hard cred-cascade dependency; paths (b)/(c) sequencing implications | §1.2 | 🟠 |
+| I3 — Trigger event-dispatch typification path narrative (engine sources typed event → wraps in TriggerEvent envelope → adapter downcasts to typed event → action body invokes A::handle); two-layer decoupling explained | §3.5 (NEW) | 🟠 |
+| Y1 — `migrate_state` lifted to §2.2.2 trait shape (covered by R1) | §2.2.2 | 🟡 |
+| Y2 — `assert_*!` test macros documented as preserved | §9.3 / §17 CHANGELOG | 🟡 |
+| Y3 — DX type families enumerated (ControlInput/ControlOutcome/PageResult/PaginationState/WebhookConfig/SignaturePolicy/WebhookRequest/WebhookResponse/PollConfig/PollCursor/DeduplicatingCursor/PollResult/PollOutcome/EmitFailurePolicy/POLL_INTERVAL_FLOOR) | §17 CHANGELOG | 🟡 |
+| Y4 — `ActionError` From-impls + CredentialRefreshFailed variant explicitly enumerated | §17 CHANGELOG | 🟡 |
+| Y5 — `accepts_events()` predicate documented (covered by R5) | §2.4 | 🟡 |
+| Y6 — `#[diagnostic::on_unimplemented]` attributes preserved verbatim per production | §17 CHANGELOG | 🟡 |
+| Y7 — `&self` configuration carrier example added in §2.2.3 narrative | §2.2.3 | 🟡 |
+| Y8 — `TriggerEvent` consumer migration is null (API preserved verbatim from production) | §10.4 / §17 CHANGELOG | 🟡 |
+
+**Picked: production wins on all 17.** Concrete rationale per Phase 1 reports + Phase 2 architect §2.9 fifth-iteration analysis (`post-closure-combined-architect.md`):
+
+1. **Production has the shape, spec dropped without rationale.** Same class as Q6 lifecycle gap — production declares the capability with `#[diagnostic::on_unimplemented]` enforcement (StatefulAction lines 34-37; ResourceAction line 30-35 doc; TriggerAction lines 57-60); cascade dropped without `feedback_active_dev_mode.md`-grade rationale.
+2. **Spike did not validate the dropped capabilities.** Per §0.1 inputs frozen-at footer (Q6 narrowing precedent): spike validated trait-shape compose + cancellation only. R1/R2/R3/R4/R5/R6/I1/I2/I3 are all out-of-spike-scope; production-PASS evidence is the source.
+3. **Sealed-DX peer-vs-subtrait gap (R6) is structurally identical to R1/R2/R3.** WebhookAction / PollAction are peer DX traits in production (`webhook.rs:578` + `poll.rs:800` declare `Action + Send + Sync + 'static`, NOT `: TriggerAction`); they carry their own associated types and lifecycle. Tech Spec §2.6 declared them as TriggerAction subtraits — same class of mechanical drift, surfaced by Phase 2 §2.9 fifth-iteration audit.
+
+#### §15.11.2 Why amend-in-place vs supersede
+
+Per ADR-0035 §Status block: amendments are valid for "canonical-form corrections" (cross-source-authoritative shape preservation under inconsistency); supersession is reserved for paradigm shifts. The Q7 bundle is a canonical-form correction across **production-shape-authoritative discipline**. Production source is the ground truth for capabilities the spike did not exercise; spec-vs-production divergence is restored to spec by adopting production. Amendment-in-place is proportionate: it aligns the Tech Spec with already-validated production behavior; ADR-0024 / ADR-0036 / ADR-0037 / ADR-0038 ratifications are unaffected.
+
+Bundle landing in single CP (rather than 17 separate amendments) follows §15.5 + §15.9 + §15.10 precedent of grouping mechanically-related corrections in one enactment record. Each amendment is independently verifiable per §15.11.1 table; cross-section consistency is preserved (e.g., §2.2.3 R3 `TriggerEventOutcome` references the type defined in §2.2.3 amendment block; §2.4 R5 `TriggerHandler` references the same envelope type defined in §2.2.3).
+
+#### §15.11.3 Cross-cascade and downstream impact
+
+**ADR composition.** ADR-0024 + ADR-0036 + ADR-0037 + ADR-0038 (4-ADR set, plus ADR-0035 phantom-shim governing field-zone rewriting) compose without conflict. None of the Q7 amendments touch ADR §Decision items.
+
+**Production code impact.** Q7 amendments are spec-side restorations — they bring spec into alignment with production. No production code changes are introduced by the Q7 enactment itself. The implementation cascade (Phase 8 user-picked path) will propagate the spec-shape into the implementation crate edits, where:
+
+- Production `crates/action/src/{stateful,resource,trigger,webhook,poll}.rs` already has the shapes Q7 restores (init_state, migrate_state, configure, cleanup, TriggerEventOutcome, accepts_events, peer DX traits).
+- Production `crates/action/src/handler.rs` already has the dyn boundary shapes Q7 restores at §2.4 (Box<dyn Any> for ResourceHandler; TriggerEvent envelope for TriggerHandler).
+- Lift to single-`'a` + `&'a ActionContext<'a>` receiver (cascade-wide pattern) is the only structural change at implementation time, covered by codemod transforms T1-T7.
+
+**Reverse-dep impact.** Per §10.3 Q7 footprint analysis:
+
+- `nebula-engine` — TriggerHandler / ResourceHandler dispatch sites change shape (TriggerEvent envelope vs JSON; Box<dyn Any> for resource vs ResourceId). Engine adapters absorb the change; ~8-12 sites estimated. Codemod transform T8 (added below) handles the dyn-boundary signature lift mechanically.
+- `nebula-api` — webhook transport sees TriggerEvent at the dyn boundary; ~1-2 sites.
+- `nebula-sandbox` — out-of-process runner sees the dyn boundary changes; ~3-4 sites.
+- `nebula-sdk` / `nebula-plugin` — re-export-only; covered by §9.3 reshuffle.
+- `apps/cli` — CLI dev fixtures; ~1-2 sites.
+- Community plugins — zero migration impact for `TriggerAction` / `WebhookAction` / `PollAction` / `StatefulAction` / `ResourceAction` impls (DX trait shapes preserved verbatim from production); the typed-trait body authors do not see the dyn-boundary shape changes.
+
+**Aggregate Q7 footprint:** ~13-22 internal sites, all internal-Nebula-crate scope. Community plugin migration impact: 0. Well within cascade migration discipline.
+
+**Codemod additions.** §10.2 transforms gain T8 (TriggerHandler dyn-boundary envelope lift) and T9 (ResourceHandler dyn-boundary Box<dyn Any> lift). Both AUTO mode — token-level rewrites of the dyn-handler trait method signatures. T6 (ControlAction migration) and T7 (TriggerAction lifecycle method signature lift per Q6) are unaffected; T8/T9 are additive at the dyn boundary.
+
+#### §15.11.4 §16.5 cascade-final precondition update
+
+Tech Spec ratification (CP4 freeze) is unaffected — this amendment-in-place is post-freeze (per ADR-0035 / §15.9 / §15.10 precedent). §16.5 cascade-final readiness check gains one new precondition:
+
+- [ ] **Q7 post-closure audit bundle absorbed.** All 17 amendments-in-place per §15.11.1 table land in the cascade implementation PR; verified by `grep`-able anchors at §2.2.2 (init_state) / §2.2.3 (TriggerEventOutcome) / §2.2.4 (configure/cleanup) / §2.4 (TriggerEvent envelope; Box<dyn Any>) / §2.6 (peer-of-Action bound chain) / §3.5 (typification path narrative) / §8.1.2 (cursor in-memory).
+
+#### §15.11.5 §15.1 closure entries updated
+
+§15.1 carry-forward tables — three rows previously deferred-with-trigger now close at this CP:
+
+- **§2.2.3 cluster-mode hooks final trait shape** (§15.1 CP1 row) — partially closed by §2.2.3 R3 amendment naming `accepts_events()` + `TriggerEventOutcome`; full cluster-mode-hook shape (`IdempotencyKey`, `on_leader_*`, `dedup_window`) remains §1.2 N4 deferred-with-trigger.
+- **§4.4-1 `ActionSlots` trait sealing** (CP3 §9.4 closure) — preserved.
+- **§2.6 / §9.2 DX trait blanket-impl trait-by-trait audit** (§15.8 row (c)) — **CLOSED** at §2.6 R6 amendment (peer-vs-subtrait audit completed; blanket impls re-pinned on `Action + ActionSlots` for Webhook/Poll). §15.8 row (c) status updates to CLOSED.
+
+The gap that surfaced 17 amendments was **not** in the §15 carry-forward registry — it was uncaught by all CP-level reviewer matrices because no review explicitly cross-checked Tech Spec §2.x sections against production source. Q7 audit pattern (parallel rust-senior production inventory + tech-lead Tech Spec coverage map) is the audit class that surfaced it; recommendation for future Tech Spec freezes: standing dual-audit before declaring FROZEN.
+
 ---
 
 ## §16 Implementation handoff
@@ -3055,4 +3487,36 @@ Targeted gap fix raised by user on the FROZEN CP4 (amended-in-place 2026-04-25 �
 **Audit obligations.** spec-auditor full cross-CP audit pre-freeze (handoff at line 2820) is augmented Q6-post-freeze with five additional checks: (i) §2.2.3 callout box references §15.10 verbatim + production line-pin (`crates/action/src/trigger.rs:61-72`); (ii) §15.10 enactment record cites Q4 §14 file + spike scope narrowing + production line-pins with grep-able anchors; (iii) §10.2 T7 row + §10.5 Automatable list internally consistent (T7 in both; AUTO mode); (iv) §0.1 inputs frozen-at footer scope clarification reconciles with §0.2 invariant 4 (spike-shape divergence trigger NOT activated because lifecycle scope was always production-derived); (v) bundle decision (§15.10.2) preserves Q4 verdict (REJECT) without re-litigation — B1 + B4 quoted verbatim from §14 file with line-pin references.
 
 **Open items.** No new open items raised. §15.1 closure entries do not need a new row (the gap was uncaught by CP-level reviews; the closure is this §15.10 enactment record + §17 CHANGELOG entry).
+
+### CHANGELOG — post-freeze amendment-in-place 2026-04-25 (Q7 post-closure audit — production-drift bundle)
+
+Post-closure systematic audit 2026-04-25 surfaced 6 🔴 + 3 🟠 + 8 🟡 spec-vs-production gaps via parallel Phase 1 reports ([`post-closure-tech-lead-coverage.md`](../drafts/2026-04-24-nebula-action-redesign/post-closure-tech-lead-coverage.md) Tech Spec coverage map + [`post-closure-rust-senior-inventory.md`](../drafts/2026-04-24-nebula-action-redesign/post-closure-rust-senior-inventory.md) production inventory) plus Phase 2 architect §2.9 fifth-iteration analysis ([`post-closure-combined-architect.md`](../drafts/2026-04-24-nebula-action-redesign/post-closure-combined-architect.md)). Total bundle: 6 🔴 R1-R6 + 3 🟠 + 8 🟡 = 17 amendments-in-place per ADR-0035 amended-in-place precedent (canonical-form correction across production-shape-authoritative discipline). Per `feedback_active_dev_mode.md` ("more-ideal over more-expedient") + `feedback_adr_revisable.md` precedent — honest correction of production drift beats reflexive defence of frozen spec, even when the drift is wholesale (17 amendments vs Q1+Q6's 2).
+
+**Q7 — Production-drift bundle (ACCEPTED, all 17 amendments enacted in-place):**
+- Status header — `FROZEN CP4 2026-04-25 (amended-in-place 2026-04-25 — Q1 post-freeze; amended-in-place 2026-04-25 — Q6 lifecycle gap)` → `FROZEN CP4 2026-04-25 (amended-in-place 2026-04-25 — Q1 post-freeze; amended-in-place 2026-04-25 — Q6 lifecycle gap; amended-in-place 2026-04-25 — Q7 post-closure audit per §15.11 — production-drift bundle: 6 🔴 R1-R6 + 3 🟠 + 8 🟡 closure across §2.2.2 / §2.2.3 / §2.2.4 / §2.4 / §2.6 / §3.5 / §8.1.2)`. §0.1 status table CP4 row gains "+ Q7 post-closure audit per §15.11 — production-drift bundle: §2.2.2 init_state/migrate_state restoration + §2.2.3 TriggerEventOutcome + accepts_events restoration + §2.2.4 ResourceAction configure/cleanup paradigm restoration (drop spurious execute/Input/Output) + §2.4 ResourceHandler Box<dyn Any> + TriggerHandler TriggerEvent envelope restoration + §2.6 sealed-DX bound chain re-pin (WebhookAction/PollAction declared as peer DX traits with own State/Cursor/Event associated types, NOT TriggerAction subtraits) + §3.5 typification path narrative + §8.1.2 cursor in-memory ownership narrative + §1.2 N1 cred-cascade dependency note + 8 🟡 doc-gap closure" qualifier.
+- §1.2 N1 — extended with cred-cascade dependency note (I2): `Resource: Resource` bound creates hard ordering dependency on credential cascade landing first; paths (b)/(c) MUST sequence credential cascade leaf-first.
+- §2.2.2 — amended-in-place callout added at section top (R1); trait shape gains `init_state(&self) -> Self::State` (required) + `migrate_state(&self, _old: Value) -> Option<Self::State>` (default returns None) per production `crates/action/src/stateful.rs:56-66`. Lifecycle narrative names `init_state` as engine-driven first-call construction; `migrate_state` consulted only on `from_value` failure for version-skew. Closes Phase 1 🔴 R1.
+- §2.2.3 — amended-in-place callout added at section top (R3 + Y7); `handle()` return type changes from `Result<(), Self::Error>` to `Result<TriggerEventOutcome, Self::Error>` per production `trigger.rs:215-264`; `accepts_events()` predicate added with default `false` per `trigger.rs:359-361`; `TriggerEventOutcome::{Skip, Emit, EmitMany}` enum defined adjacent to trait per production. `&self` configuration carrier example added in narrative (Y7) showing `GitHubWebhook { repository: String, secret: CredentialRef<...> }` with `start()` reading config from `&self` fields. Closes Phase 1 🔴 R3 + 🟡 Y7.
+- §2.2.4 — amended-in-place callout added at section top (R2); pre-amendment `execute(&self, ctx, &resource, input)` + `type Input` + `type Output` dropped; production `configure(&self, ctx) -> Future<Self::Resource>` + `cleanup(&self, resource, ctx) -> Future<()>` restored per `resource.rs:36-52`. Production has NO `execute` on `ResourceAction` — resource is graph-scoped DI primitive only; consumer actions read resource via `ctx.resource()`. Closes Phase 1 🔴 R2.
+- §2.4 — amended-in-place callout added at section top (R4 + R5); `TriggerHandler` adopts `start`/`stop`/`accepts_events`/`handle_event(TriggerEvent)` shape per production `trigger.rs:276-389`; default `handle_event` returns `ActionError::fatal` for pull-driven triggers; `ResourceHandler` adopts `configure(Value, ctx) -> Box<dyn Any + Send + Sync>` + `cleanup(Box<dyn Any + Send + Sync>, ctx)` shape per production `resource.rs:59-107`; spurious `ResourceHandler::execute` dropped. Both keep `#[async_trait]` per Q1 precedent. Closes Phase 1 🔴 R4 + R5 + 🟡 Y5 (`accepts_events` predicate documented).
+- §2.6 — amended-in-place callout added at section top (R6); `WebhookAction` and `PollAction` re-pinned as peer DX traits with own associated types per production (`webhook.rs:578` + `poll.rs:800`) — bound chain switches from `+ TriggerAction` to `+ Action + Send + Sync + 'static`; both DX traits declare own State/Cursor/Event associated types and lifecycle methods (`on_activate`/`handle_request`/`on_deactivate`/`config` for Webhook; `poll_config`/`validate`/`initial_cursor`/`poll` for Poll). Blanket impls re-pinned: `WebhookActionSealed` and `PollActionSealed` gate on `Action + ActionSlots` (NOT `TriggerAction + ActionSlots`). Adapter-erasure pattern named explicitly: WebhookAction → `WebhookTriggerAdapter` → `dyn TriggerHandler`; PollAction → `PollTriggerAdapter` → `dyn TriggerHandler`. Two-mechanism distinction documented: ControlAction/WebhookAction/PollAction use **adapter wrap**; PaginatedAction/BatchAction use **macro-generated impl** (`impl_paginated_action!` / `impl_batch_action!`). Closes Phase 2 🔴 R6 + Phase 1 🟡 Y3 (DX type families documented).
+- §3.5 (NEW subsection) — Trigger event-dispatch typification path narrative added per Q7 R3 + R5 + I3. Two-layer dispatch path documented: engine sources typed event → wraps in `TriggerEvent` envelope (`Box<dyn Any>` payload + `TypeId`) → adapter receives envelope at dyn-handler boundary → adapter downcasts to typed `<A::Source as TriggerSource>::Event` → action body invokes `A::handle(ctx, typed_event)`. Why type-erasure at dyn boundary cited verbatim from `trigger.rs:86-96`. Webhook-specific path: `WebhookTriggerAdapter` downcasts to `WebhookRequest` and decouples HTTP response (200/302/500) from workflow-emit semantics (Skip/Emit/EmitMany). Poll-specific path: `PollTriggerAdapter` owns dispatch inside `start()` loop; never sees `handle_event` on base TriggerHandler. Closes Phase 1 🟠 I3 (R3 + R5 cross-cite).
+- §8.1.2 — amended-in-place callout added at section top (I1); pre-amendment "cursor lives at engine, not action body" replaced with production-honest narrative: cursor lives in `PollTriggerAdapter::start()` stack frame (NOT a field of the adapter); `PollCursor<C>` per-cycle wrapper carries `(current, checkpoint)` for in-cycle rollback; restart re-calls `initial_cursor(&self, ctx)` from scratch (no engine persistence in v1). Per-cycle rollback semantics documented with 4-way outcome decision tree (Idle / Ready / Partial / Err). `DeduplicatingCursor<K, C>` named as cursor-with-bounded-FIFO. Cluster-mode forward-track explicit: when engine cluster-mode lands, parallel persistence layer wraps action surface, NOT replaces (zero migration impact for community PollAction impls). Closes Phase 1 🟠 I1.
+- §15.11 (NEW subsection) — Q7 enactment record. §15.11.1 enactment table (17 amendments across 8 sections; no ADR file edit needed — ADR-0024 / ADR-0036 / ADR-0037 / ADR-0038 statuses preserved; canonical-form correction per ADR-0035 §Status block precedent). §15.11.2 amend-in-place vs supersede rationale (production-shape-authoritative discipline; bundle landing in single CP per §15.5/§15.9/§15.10 precedent). §15.11.3 cross-cascade impact (~13-22 internal sites; community plugin migration impact: 0; codemod transforms T8/T9 added at §10.2 for TriggerHandler/ResourceHandler dyn-boundary lift). §15.11.4 §16.5 cascade-final precondition gains one new entry (Q7 bundle absorbed verification). §15.11.5 §15.1 closure entries — `§2.6 / §9.2 DX trait blanket-impl trait-by-trait audit` (§15.8 row (c)) status updates to **CLOSED** at §2.6 R6 amendment.
+- New analysis artefact: [`docs/superpowers/drafts/2026-04-24-nebula-action-redesign/post-closure-combined-architect.md`](../drafts/2026-04-24-nebula-action-redesign/post-closure-combined-architect.md) — Phase 2 §2.9 fifth-iteration outcome (verdict III: §2.9 REJECT preserved; new R6 finding emerged) + Phase 3 amendment-in-place analysis + cascade closure decision (AMENDED CLOSED).
+
+**Cascade-state changes:**
+- ADR transitions: NONE. ADR-0024 / ADR-0036 / ADR-0037 / ADR-0038 statuses preserved. ADR-0024 (workspace policy on `*Handler` `#[async_trait]` adoption) is unaffected — Q7 R4/R5 amend the per-method parameter types of TriggerHandler/ResourceHandler, not the async-fn-in-trait shape. ADR-0036 §Decision items 1-4 unchanged (items lock trait-shape rewriting / emission contract / dual enforcement / phantom composition — not per-method signatures). ADR-0036 §Neutral block "Public API surface of the 4 dispatch traits ... unchanged at the trait level" preserves four-primary-trait family enumeration; per-method amendments live at §2.2 lock. ADR-0038 §1 sealed-pattern intent preserved — seal still prevents external `impl WebhookAction for X`; only bound chain re-pins to peer-of-Action.
+- Tech Spec status qualifier: gains "amended-in-place 2026-04-25 — Q7 post-closure audit per §15.11" qualifier. Q7 has wholesale signature ripple (17 amendments), warranting full qualifier per §15.10 precedent ("Q6 has signature ripple, so it does"); same applies to Q7 ×17.
+- Cross-section signature impact: §1.2 (N1 extension) + §2.2.2 (R1) + §2.2.3 (R3 + Y7) + §2.2.4 (R2) + §2.4 (R4 + R5) + §2.6 (R6) + §3.5 (NEW per R3+R5+I3) + §8.1.2 (I1) + §15.11 (NEW) + §17 CHANGELOG. §2.2.1 (StatelessAction) unchanged; §2.3 (BoxFut alias) unchanged; §2.5 (ActionHandler enum) unchanged; §2.7 (ActionResult variants) unchanged; §2.8 (ActionError taxonomy) unchanged; §2.9 (Input/Output consolidation) unchanged (Q5 fifth-iteration verdict III: §2.9 REJECT preserved); §3.1-§3.4 unchanged; §4-§7 unchanged; §8.1.1 (StatefulAction state JSON) unchanged; §8.1.3 unchanged; §8.2-§8.3 unchanged; §9-§14 unchanged except §10.2 codemod table (T8/T9 added at §15.11.3); §15.1-§15.10 unchanged; §16 unchanged.
+- Spike `final_shape_v2.rs:209-262` is unchanged — Q7 amendments are derived from production PASS evidence, NOT spike-shape change. §0.1 inputs frozen-at footer scope narrowing precedent (Q6) extends to Q7: spike validated trait-shape compose + cancellation only; lifecycle methods, multiplicity outcomes, dyn-handler envelopes, and sealed-DX bound chains were all out-of-spike-scope.
+
+**Q5 (§2.9 fifth-iteration outcome) — REJECT preserved (Verdict III, no separate qualifier):**
+- §2.9 fifth-iteration analysis under post-closure audit Phase 2: with Phase 1 NEW evidence (WebhookAction/PollAction are PEERS of TriggerAction with own State/Cursor/Event associated types), does §2.9 REJECT verdict still hold? Outcome: VERDICT III — §2.9 REJECT preserved at primary trait layer; SEPARATE finding emerges (R6 sealed-DX bound chain re-pin) because Webhook/Poll's own associated types live on **their own** traits (peers), not on TriggerAction. Trait-level `Input`/`Output` consolidation onto base `Action<I, O>` still cannot honestly resolve TriggerAction's input/output asymmetry (input = `<Source as TriggerSource>::Event` projection, NOT free associated type; output = `TriggerEventOutcome` per dispatch).
+- Q5 itself does NOT earn a separate status qualifier — per §15.9.5/§15.9.6 precedent, rationale-only refinements without signature ripple do not warrant a status qualifier. Q5 framing's resolution lives in §15.11 enactment record (Part A verdict III) + the sealed-DX bound chain re-pin (R6) which is structurally separate from §2.9 trait-method-input-axis analysis.
+- §2.9.1d sub-subsection deliberately NOT added — the user's Q5 framing is structurally captured by R6 amendment (Webhook/Poll-as-peers explicitly named in §2.6 R6 narrative) + §15.11 record. Adding a fifth verbatim-pushback subsection to §2.9 would mis-locate the resolution; R6 is the right home.
+
+**Audit obligations.** spec-auditor full cross-CP audit pre-freeze (handoff at line 2820) is augmented Q7-post-closure with eight additional checks: (i) §0.1 status header reflects Q1+Q6+Q7 qualifiers; (ii) §2.2.2 callout box references §15.11 verbatim + production line-pins (`stateful.rs:56`, `:64`, `:34-37` for diagnostic); (iii) §2.2.3 callout box references §15.11 + production line-pins (`trigger.rs:215-264` for TriggerEventOutcome; `:359-361` for accepts_events); (iv) §2.2.4 callout box references §15.11 + production line-pin (`resource.rs:36-52`); (v) §2.4 callout box references §15.11 + production line-pins (`trigger.rs:276-389` for TriggerHandler shape; `resource.rs:59-107` for ResourceHandler shape); (vi) §2.6 callout box references §15.11 + production line-pins (`webhook.rs:578` for peer trait declaration; `poll.rs:800` for peer trait declaration); (vii) §3.5 NEW subsection internally consistent with §2.4 R5 TriggerHandler envelope shape + §2.2.3 R3 TriggerEventOutcome + §2.6 R6 peer-DX bound chain; (viii) §8.1.2 callout box references §15.11 + production line-pin (`poll.rs:1328` for cursor-in-stack-frame; `:732-761` for in-memory-only doc).
+
+**Open items.** No new open items raised. §15.8 deferred-with-trigger registry row (c) `§2.6 / §9.2 DX trait blanket-impl trait-by-trait audit` updates from DEFERRED-WITH-TRIGGER to **CLOSED** at this CP (§15.11.5). The 17-amendment bundle is the closure of CP-level review process gap (Q7 audit pattern: parallel rust-senior production inventory + tech-lead Tech Spec coverage map) that surfaced production drift in sections no review explicitly cross-checked against production source.
 
