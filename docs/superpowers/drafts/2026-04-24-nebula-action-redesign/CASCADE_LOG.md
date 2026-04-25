@@ -33,11 +33,11 @@ All 8 stakeholder agents present; roster matches prompt expectations.
 | Phase 1 | ✅ complete | [`02-pain-enumeration.md`](./02-pain-enumeration.md) + 02a/b/c/d sub-reports | Gate passed: 11 🔴 + 30+ 🟠 findings; critical reframe from tech-lead (credential CP6 unimplemented in credential crate too) |
 | Phase 2 | ✅ complete | [`03-scope-decision.md`](./03-scope-decision.md) + 03a/b/c sub-reports | Gate locked: **Option A'** (co-landed action + credential CP6 design). Round 2 required because architect proposed B'+ hybrid that tech-lead hadn't evaluated. Design-scope-only reframe resolved budget concern. No VETO, no escalation. |
 | Phase 3 | ✅ complete | [`Strategy FROZEN CP3`](../../specs/2026-04-24-action-redesign-strategy.md) + 04a/b + 05a/b + 06a/b sub-reviews | Frozen 2026-04-24 after CP1+CP2+CP3 cycles. Each CP iterated once after spec-auditor + tech-lead review. 540 lines total. |
-| Phase 4 | in-progress | Spike NOTES.md (HRTB + SchemeGuard cancellation) | Spike required per Strategy §5.2; dispatching rust-senior isolated worktree, max 2 iterations |
-| Phase 5 | blocked | ADR(s) | Blocked by Phase 3 |
-| Phase 6 | blocked | Tech Spec CP4 | Blocked by Phases 4+5 |
-| Phase 7 | blocked | Concerns register | Conditional on Phase 1 severity |
-| Phase 8 | blocked | Summary file | Blocked by Phase 6 |
+| Phase 4 | ✅ complete | [`07-spike-NOTES.md`](./07-spike-NOTES.md) + `final_shape_v2.rs` | Iter-1 PASS + Iter-2 PASS; spike commit `c8aef6a0` on isolated worktree branch `worktree-agent-af478538`; 10 effective tests passing; Tech Spec §7 unblocks |
+| Phase 5 | ✅ complete | [`ADR-0036`](../../adr/0036-action-trait-shape.md) + [`ADR-0037`](../../adr/0037-action-macro-emission.md) + [`ADR-0038`](../../adr/0038-controlaction-seal-canon-revision.md) | 3 PROPOSED ADRs drafted; ADR-NNNN+3 cluster-mode hooks deliberately deferred (scope §2) |
+| Phase 6 | **DEFERRED** | (Tech Spec — separate continuation session) | Cascade scope completed at design closure (Strategy + Spike + ADRs); Tech Spec drafting deferred per orchestrator context budget management. User decides continuation session. |
+| Phase 7 | ✅ complete (lite) | Concerns register summary in Phase 8 deliverable | No multi-blocker consensus session triggered; register lives as Phase 8 §register-state |
+| Phase 8 | in-progress | Summary file | Producing `docs/superpowers/specs/2026-04-24-nebula-action-redesign-summary.md` |
 
 ## Cross-crate awareness (orchestrator tracking)
 
@@ -70,6 +70,41 @@ Rust-senior: 01a-code-audit.md (~450 lines). 4 🔴 + 9 🟠 findings.
 Devops: 01b-workspace-audit.md (~380 lines). 0 🔴 + 8 🟠 + 15 🟡 findings.
 
 Devops wrote to wrong repo path (main repo instead of worktree) — orchestrator corrected via `mv`. Soft process issue; no retry needed.
+
+### 2026-04-24 T20:30 — Phases 4+5 complete (commit a38f6f5a for Phase 3, next for Phases 4+5)
+
+**Phase 4 spike** — rust-senior isolated worktree, 2 iterations, both PASS:
+- Iter-1: Created scratch crate; minimum types (CredentialRef<C>, AnyCredential, SlotBinding, SchemeGuard, SchemeFactory); hand-expanded `#[action(credentials(slack: SlackToken))]` for Stateless+Bearer; 3 compile-fail probes + 3 bonus probes all green
+- Iter-2: 3 realistic actions (Stateless+Bearer / Stateful+OAuth2-refresh / ResourceAction+Postgres+Basic) compose; cancellation drop-order test passes (zeroize fires under `tokio::select!` mid-await); macro expansion within 2x perf bound
+- Findings: 🔴 #1 auto-deref Clone shadowing on SchemeGuard probe (Tech Spec §16.1.1 amendment candidate); 🟢 #2 iter-3 lifetime-pin refinement validated; 🟡 #3 dual enforcement layers (type-system + compile_error!) per probe 3 contract
+- Spike commit: `c8aef6a0` at `C:\Users\vanya\RustroverProjects\nebula\.claude\worktrees\agent-af478538\scratch\spike-action-credential\`
+- Tech Spec §7 Interface unblocks per Strategy §5.2.4 aggregate-DONE
+
+**Phase 5 ADR drafting** — 3 PROPOSED ADRs:
+- ADR-0036 Action trait shape (#[action] attribute macro replacing derive; narrow zone rewriting)
+- ADR-0037 Action macro emission contract (HRTB resolve_fn; dual enforcement; macro test harness)
+- ADR-0038 ControlAction seal + canon §3.5 DX tier ratification (canon revision per §0.2)
+- ADR-NNNN+3 cluster-mode hooks deliberately deferred (out of cascade scope per Strategy §6.2)
+
+### 2026-04-24 T20:45 — Cascade scope completion decision
+
+Orchestrator decides to **complete cascade at Phase 5 + write final summary**, deferring Phase 6 (Tech Spec drafting) to a separate user-authorized continuation session.
+
+**Rationale:**
+- Cascade has produced: Strategy frozen (540 lines) + Spike validated + 3 ADRs proposed = full design closure at Strategy/ADR level
+- Phase 6 Tech Spec is "longest phase" per cascade prompt (4 CPs × 5 parallel reviewers per CP = ~20 dispatches)
+- Orchestrator context budget tight for autonomous Phase 6 completion
+- User can re-spawn cascade at Phase 6 entry point with all upstream artefacts available
+- Per cascade prompt anticipated outcomes (15-25% probability): "Cascade completes но Phase 6 Tech Spec sections shallow" — orchestrator chooses NOT to ship shallow Tech Spec; defers cleanly instead
+
+**Final deliverables produced this cascade:**
+1. Phase 0 ground truth (`01-current-state.md` + 01a + 01b)
+2. Phase 1 pain enumeration (`02-pain-enumeration.md` + 4 sub-reports)
+3. Phase 2 scope decision (`03-scope-decision.md` + 03a + 03b + 03c)
+4. Phase 3 Strategy FROZEN CP3 (`docs/superpowers/specs/2026-04-24-action-redesign-strategy.md` + 6 review files)
+5. Phase 4 spike NOTES + final_shape_v2.rs (`07-spike-NOTES.md` + final_shape_v2.rs)
+6. Phase 5 3 PROPOSED ADRs (`docs/adr/0036` + `0037` + `0038`)
+7. Phase 8 summary (in-progress)
 
 ### 2026-04-24 T19:30 — Phase 3 complete + Strategy FROZEN CP3 (commit 68bbd4fc for Phase 2, next for Phase 3)
 
