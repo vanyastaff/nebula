@@ -1,0 +1,21 @@
+733ed66 Updated README to reflect actual v1 implementation
+660abde Phase 5 Milestone 5.5: Release preparation and polish
+6775e2e Complete Phase 5 Milestone 5.4: Documentation and Examples
+c745d98 Moved into own doc.
+a5fcaac Updated links.
+873d5a7 Description tweak.
+76b149d Updated Makefile.
+3bec754 Complete Phase 5 Milestone 5.3: Integration Test - Full Pipeline
+86333a8 Complete Phase 5 Milestone 5.2: Tracing Integration
+b87a00f Updated logo.
+20d56d4 Complete Phase 5 Milestone 5.1: Pipeline Status Helpers
+5a9ddb4 Bumped in preparation for release.
+42cd8c0 Complete Phase 4: Workflow Executor and Event Streaming
+29cfa42 Added project logo.
+18f1db0 Updated docs.
+74afbe3 Complete Phase 3: Workflow Builder and DAG
+dbc7cb6 Complete Phase 2: State Store Implementations
+94783d8 Implement Phase 2 Milestone 2.1: MemoryStateStore
+1689e9b Implement Phase 1: Core types and traits
+6bad4dd Added Makefile.
+0.2.0

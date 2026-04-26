@@ -1,0 +1,21 @@
+# Completion — tianshu — Tier 2
+
+- timestamp: 2026-04-26T05:10:00Z
+- word_count: 5152
+- key_finding: Tianshu is an AI-first Rust workflow engine that replaces DAGs with a coroutine-replay model (`ctx.step()` = checkpoint), ships first-class LLM abstractions (LlmProvider, ToolRegistry, ToolSafety ReadOnly/Exclusive, ManagedConversation, ResilientLlmProvider) in v0.1, and targets the LangGraph-alternative niche; its `ToolSafety` concurrency model and `ManagedConversation` compaction strategy are directly borrowable by Nebula's future LLM plugin work.
+- gaps:
+  - A4 (Credentials): entirely absent — no vault, no encryption, no lifecycle; confirmed by grep (zero matches for zeroize/secrecy/vault/keyring)
+  - A5 (Resource): entirely absent — resources are closure-captured, no lifecycle management; confirmed by grep
+  - A11 (Plugin): entirely absent — no WASM, no dynamic loading, no manifest; confirmed by grep
+  - A12 (Trigger): polling-only; no webhook/cron/broker; IntentRouterV2 exists but is LLM semantic routing, not event trigger
+  - A21.8 (RAG/vector): entirely absent — confirmed by grep (zero matches for embedding/qdrant/pgvector)
+  - DeepWiki: all 3 queries failed (repo not indexed) — 3-fail-stop applied; all analysis from source code
+- escalations: none
+- artifacts:
+  - architecture.md: findings/tianshu/architecture.md
+  - structure-summary.md: findings/tianshu/structure-summary.md
+  - issues-architectural.md: findings/tianshu/issues-architectural.md
+  - deepwiki-findings.md: findings/tianshu/deepwiki-findings.md
+  - issues count: 2 open, 0 closed (below 100 closed threshold — §3.5 citation gate N/A)
+  - deepwiki queries: 3 attempted / 7 planned — all 3 failed (repo not indexed); stopped per 3-fail-stop rule
+  - scorecard rows: 14 / 14 required

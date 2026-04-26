@@ -1,0 +1,25 @@
+c09b94a refactor: improve code based on clippy
+8dbb540 feat: add SetVars action
+181799f chore: fix typo in comments
+65260c9 fix workspace version build error
+409a607 Merge branch 'develop'
+9537b7f fix: add info.MessageInfo uses property
+ed8d438 Merge branch 'develop'
+2a54887 fix: fix examples/plugins build issue when exclude examples
+ad0876f feat: add `env.expose` in workflow to support set default outputs, the default outputs is `data` feat: add `acts.app.shell` package plugin to support nushell, bash and powershell         support {{ }} refs the var in shell script feat: add `os` var in expression feat: use {{ }} for expression instead of ${ } feat: use var name directly in script or expression instead of $("var")         use $get("var") instead of $("var")         use $set("var", value) instead of $("var", value)         use $inputs() instead of $act.inputs()         use $data() instead of $act.data()
+42ce3d4  feat: add `acts.core.http` package plugin  feat: add `pid` prefix to the acts.app.state package feat: support private vars (starts with `__`) feat: use `acts.toml` instead of `acts.cfg`
+4776b3c feat: change event package params to Option<T> feat: skip initialization of plugin when there is no related section
+0e4f0a0 fix: change package groups to resources fix: fix acts.event.hook hang issue when calling from grpc client
+4411a76 - feat: reactoring env module to add register_var trait - feat: add "resects" user var to support get resects data from task context - feat: add step env module to support get step vars by step id - feat: change env var to $env, change act var to $act, and add inputs and data js function for $act - feat: rename proc env_local to env
+252a053 update plugin lib with license and description
+f181428 fix the publish script
+86241c4 copy readme.md to acts and publish
+56d0764 add readme.md to acts
+85395da create publish action
+515bb33 Release independent packages
+37b310c fix: fix create dir error in test engine_build_config_with_env
+v0.15.7
+v0.15.6
+v0.15.4
+v0.15.3
+v0.15.1

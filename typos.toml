@@ -11,6 +11,9 @@ extend-exclude = [
   # Spike iterations — reference-only artefacts, not production code.
   "spike-iter-1-2",
   "spike-iter-3",
+  # Competitor research v2 — harvested upstream docs/code with their own conventions.
+  "findings",
+  "targets",
 ]
 
 [default]

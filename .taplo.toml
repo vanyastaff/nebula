@@ -7,6 +7,9 @@ exclude = [
   ".worktrees/**",
   ".claude/worktrees/**",
   "apps/desktop/src-tauri/gen/**",
+  # Competitor research v2 — harvested upstream Cargo.toml content, not Nebula style.
+  "findings/**",
+  "targets/**",
 ]
 
 [formatting]

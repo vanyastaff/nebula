@@ -1,0 +1,22 @@
+89c6b9c Merge feature/execution-trace
+cb7fc10 test: expand traced execution invariants
+f7bbeb3 test: cover traced execution outputs and pruning
+bfd272b feat: add feature-gated execution tracing
+2c753a4 version: bump to v0.1.1
+2ee2e8a docs: fix README status and remove stale roadmap
+b9b7a36 docs: polish README and add rustdoc comments
+252bef2 cargo: set rust-version and publish metadata
+f7e2d8a examples: add pipeline, merkle, rollup demos
+4d8e89e examples: add shared helpers
+49c0568 docs: add examples and benchmarks usage
+acecb99 benches: add criterion suite (chain, fanout, prune, heavy)
+304dbbc examples: add pipeline demo and merkle stub
+ff0982c docs: clarify parallel backpressure and config semantics
+5b9d666 tests: strengthen parallel coverage and backpressure invariant
+48b0e4a tests: appease clippy
+594efdc tests: assert parallel respects max_in_flight backpressure
+a6fda1c exec: dedup output collection; normalize imports
+9654d79 parallel: add bounded backpressure via per-worker sync queues + max_in_flight
+f03192f test: cover sequential+parallel exec (correctness, pruning, cycle, failure)
+v0.1.1
+v0.1.0

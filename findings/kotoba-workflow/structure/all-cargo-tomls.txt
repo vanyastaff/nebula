@@ -1,0 +1,645 @@
+[workspace]
+members = [
+    "crates/010-logic/009-kotoba-logic",
+    # "crates/010-core/010-kotoba-codebase", # No Cargo.toml
+    "crates/010-logic/010-kotoba-types",
+    "crates/010-logic/011-kotoba-ir",
+    "crates/010-logic/012-kotoba-rewrite-kernel",
+    "crates/010-logic/013-kotoba-cid",
+    "crates/010-logic/014-kotoba-schema",
+    "crates/010-logic/019-kotoba-jsonld",
+    "crates/010-logic/020-kotoba-os",
+    "crates/010-logic/021-kotoba-phonosemantic",
+    "crates/010-logic/022-kotoba-owl-reasoner",
+    "crates/kotobas-tamaki-holochain",
+    "crates/030-storage/031-kotoba-storage",
+    "crates/030-storage/039-kotoba-storage-fcdb",
+    "crates/010-logic/015-kotoba-auth",
+    "crates/010-logic/016-kotoba-graph-core",
+    "crates/010-logic/017-kotoba-txlog",
+    "crates/010-logic/018-kotoba-api",
+    # "crates/020-language/031-kotoba-language", # No Cargo.toml
+    "crates/020-language/020-kotoba-syntax",
+    "crates/020-language/021-kotoba-parser",
+    "crates/020-language/022-kotoba-analyzer",
+    "crates/020-language/023-kotoba-jsonnet",
+    "crates/020-language/023-kotoba-kotobas",
+    # "crates/060-services/064-kotoba-server-core", # No Cargo.toml
+    # "crates/060-services/067-kotoba-server", # No Cargo.toml
+    # "crates/060-services/065-kotoba-graph-api", # No Cargo.toml
+    # "crates/070-deployment/072-kotoba-deploy", # No Cargo.toml
+    # "crates/070-deployment/077-kotoba-deploy-cli", # No Cargo.toml
+    # "crates/070-deployment/076-kotoba-deploy-controller", # No Cargo.toml
+    # "crates/070-deployment/071-kotoba-deploy-core", # No Cargo.toml
+    # "crates/070-deployment/075-kotoba-deploy-git", # No Cargo.toml
+    # "crates/070-deployment/079-kotoba-deploy-hosting", # No Cargo.toml
+    # "crates/070-deployment/074-kotoba-deploy-network", # No Cargo.toml
+    # "crates/070-deployment/078-kotoba-deploy-runtime", # No Cargo.toml
+    # "crates/070-deployment/073-kotoba-deploy-scaling", # No Cargo.toml
+    "crates/090-tools/100-kotoba-cli",
+    # "crates/090-tools/092-kotoba-build", # No Cargo.toml
+    # "crates/090-tools/099-kotoba-backup", # No Cargo.toml
+    # "crates/090-tools/098-kotoba-bench", # No Cargo.toml
+    # "crates/090-tools/091-kotoba-config", # No Cargo.toml
+    # "crates/090-tools/095-kotoba-docs", # No Cargo.toml
+    # "crates/090-tools/093-kotoba-package-manager", # No Cargo.toml
+    # "crates/090-tools/094-kotoba-runtime", # No Cargo.toml
+    # "crates/090-tools/096-kotoba-ssg", # No Cargo.toml
+    # "crates/090-tools/097-kotoba-tester", # No Cargo.toml
+    # "tests/integration", # No Cargo.toml
+    # "examples/vercel", # No Cargo.toml
+]
+
+[workspace.package]
+version = "0.1.22"
+edition = "2021"
+license = "Apache-2.0"
+repository = "https://github.com/com-junkawasaki/kotoba"
+
+[workspace.dependencies]
+# Common dependencies can be defined here
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+serde_yaml = "0.9"
+thiserror = "2.0"
+anyhow = "1.0"
+uuid = { version = "1.18", features = ["v4", "serde"] }
+sha2 = { version = "0.10", features = ["std"] }
+hex = "0.4"
+hmac = "0.12"
+parking_lot = "0.12"
+regex = "1.10"
+rocksdb = "0.21"
+tempfile = "3.0"
+dirs = "5.0"
+chrono = { version = "0.4", features = ["serde"] }
+url = "2.5"
+tokio = { version = "1.0", features = ["full"] }
+wasmtime = "0.35"
+rand = "0.8"
+futures = "0.3"
+base64 = "0.21"
+reqwest = { version = "0.11", features = ["json", "multipart"] }
+schemars = { version = "0.8", features = ["uuid1"] }
+jsonschema = "0.17"
+blake3 = "1.5"
+tracing = "0.1"
+tracing-subscriber = "0.3"
+async-trait = "0.1"
+redis = { version = "0.23", features = ["tokio-comp", "connection-manager"] }
+hyper = { version = "1.0", features = ["full"] }
+
+# Kotoba workspace crates
+# kotoba-logic = { path = "crates/010-core/009-kotoba-logic", version = "0.1.22" } # No Cargo.toml
+kotoba-codebase = { path = "crates/010-core/010-kotoba-codebase", version = "0.1.22" }
+kotoba-types = { path = "crates/010-core/010-kotoba-types", version = "0.1.22" }
+kotoba-ir = { path = "crates/010-core/011-kotoba-ir", version = "0.1.22" }
+kotoba-rewrite-kernel = { path = "crates/010-core/012-kotoba-rewrite-kernel", version = "0.1.22" }
+kotoba-cid = { path = "crates/010-core/013-kotoba-cid", version = "0.1.22" }
+kotoba-schema = { path = "crates/010-core/014-kotoba-schema", version = "0.1.22" }
+kotoba-auth = { path = "crates/010-core/015-kotoba-auth", version = "0.1.0" }
+kotoba-graph-core = { path = "crates/010-core/016-kotoba-graph-core", version = "0.1.22" }
+kotoba-txlog = { path = "crates/010-core/017-kotoba-txlog", version = "0.1.22" }
+kotoba-api = { path = "crates/010-core/019-kotoba-api", version = "0.1.22" }
+# kotoba-graph temporarily disabled
+# kotoba-graph = { path = "crates/030-storage/kotoba-graphdb", version = "0.1.21" }
+kotoba-storage = { path = "crates/030-storage/kotoba-storage", version = "0.1.21" }
+kotoba-execution = { path = "crates/040-application/kotoba-execution", version = "0.1.21" }
+kotoba-rewrite = { path = "crates/040-application/kotoba-rewrite", version = "0.1.21" }
+kotoba-jsonnet = { path = "crates/020-language/kotoba-jsonnet", version = "0.1.17" }
+kotoba-routing = { path = "crates/040-application/kotoba-routing", version = "0.1.16" }
+kotoba-workflow-core = { path = "crates/050-workflow/kotoba-workflow-core", version = "0.1.21" }
+kotoba-workflow = { path = "crates/050-workflow/kotoba-workflow", version = "0.1.21" }
+kotoba-workflow-activities = { path = "crates/050-workflow/kotoba-workflow-activities", version = "0.1.21" }
+kotoba-workflow-operator = { path = "crates/050-workflow/kotoba-workflow-operator", version = "0.1.21" }
+kotoba-deploy-core = { path = "crates/070-deployment/kotoba-deploy-core", version = "0.1.21" }
+kotoba-deploy-controller = { path = "crates/070-deployment/kotoba-deploy-controller", version = "0.1.21" }
+kotoba-deploy-runtime = { path = "crates/070-deployment/kotoba-deploy-runtime", version = "0.1.21" }
+kotoba-deploy-scaling = { path = "crates/070-deployment/kotoba-deploy-scaling", version = "0.1.21" }
+kotoba-deploy-network = { path = "crates/070-deployment/kotoba-deploy-network", version = "0.1.21" }
+
+# Fix digest version conflict
+digest = "0.10.7"
+
+# Core crates (local workspace paths for development)
+# These are workspace members, not external dependencies
+# kotoba-core = { path = "crates/kotoba-core", version = "0.1.21" }
+# kotoba-errors = { path = "crates/kotoba-errors", version = "0.1.2" }
+# kotoba-graph moved to optional dependencies
+# kotoba-storage = { path = "crates/kotoba-storage", version = "0.1.21" }
+# kotoba-execution moved to optional dependencies below
+# kotoba-rewrite = { path = "crates/kotoba-rewrite", version = "0.1.21" }
+
+# Root crate configuration
+[package]
+name = "eaf-ipg-runtime"
+version = "0.2.0"
+edition = "2021"
+description = "Kotoba - Language Graph Database - Unified IR execution engine"
+license = "Apache-2.0"
+repository = "https://github.com/com-junkawasaki/kotoba"
+keywords = ["graph", "database", "gql", "rewrite", "distributed"]
+categories = ["database", "data-structures", "algorithms"]
+authors = ["Jun Kawasaki <jun784@example.com>"]
+readme = "README.md"
+documentation = "https://docs.rs/kotoba"
+homepage = "https://github.com/com-junkawasaki/kotoba"
+exclude = ["examples/**/*"]
+
+[[bin]]
+name = "kotoba"
+path = "src/main.rs"
+
+[[bin]]
+name = "json-to-jsonld"
+path = "scripts/json-to-jsonld.rs"
+
+
+[profile.bench]
+opt-level = 3
+debug = false
+strip = true
+lto = true
+codegen-units = 1
+panic = "abort"
+
+[dependencies]
+
+# Serialization
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+
+# Graph algorithms and data structures
+petgraph = { version = "0.6", features = ["serde-1"] }
+
+# Error handling
+thiserror = "1.0"
+anyhow = "1.0"
+
+rayon = "1.8"
+
+# Logging
+tracing = "0.1"
+tracing-subscriber = "0.3"
+
+# Pure Rust embedded database
+sled = "0.34"
+
+
+# CLI
+clap = { version = "4.0", features = ["derive"] }
+
+# HTTP Server (Pure Rust - Axum/Hyper)
+axum = { version = "0.7", features = ["ws", "json", "form"] }
+axum-extra = { version = "0.9", features = ["typed-header"] }
+tower-http = { version = "0.5", features = ["cors", "trace", "fs", "request-id"] }
+tokio = { version = "1.0", features = ["rt-multi-thread", "macros", "signal"] }
+futures = "0.3"
+
+# Collections and utilities
+indexmap = { version = "2.0", features = ["serde"] }
+itertools = "0.12"
+regex = "1.10"
+
+# Time handling (minimize default features to avoid native libs)
+chrono = { version = "0.4", default-features = false, features = ["std", "clock", "serde"] }
+
+# Force rustls-only websocket stack to avoid native-tls linkage
+tokio-tungstenite = { version = "0.24", default-features = false, features = ["rustls-tls-webpki-roots"] }
+tungstenite = { version = "0.23", default-features = false }
+
+# WebAssembly support
+wasm-bindgen = "0.2"
+wasm-bindgen-futures = "0.4"
+web-sys = { version = "0.3", features = [
+    "console",
+    "Window",
+    "Document",
+    "Element",
+    "HtmlElement",
+    "Node",
+    "Event",
+    "EventTarget",
+] }
+js-sys = "0.3"
+serde-wasm-bindgen = "0.6"
+
+engidb = { path = "crates/engidb" }
+kotoba-types = { path = "crates/kotoba-types" }
+
+# FCDB test dependencies
+fcdb-core = "0.1"
+fcdb-cas = "0.1"
+fcdb-graph = "0.1"
+
+[[bin]]
+name = "test_fcdb"
+path = "test_fcdb_api.rs"
+
+[features]
+default = []
+fcdb = ["engidb/fcdb"]
+
+[dev-dependencies]
+# Coverage and testing tools
+# Note: cargo-tarpaulin is commented out due to indexmap version conflict
+# cargo-tarpaulin requires indexmap ~1.8, but kotoba-owl-reasoner requires ^1.9.3
+# Use: cargo install cargo-tarpaulin (globally) for coverage analysis if needed
+# cargo-tarpaulin = "0.34"
+criterion = { version = "0.5", features = ["html_reports"] }
+proptest = "1.0"
+quickcheck = "1.0"
+rand = "0.8"
+uuid = { version = "1.0", features = ["v4"] }
+rayon = "1.7"
+
+# Benchmarks temporarily disabled
+# [[bench]]
+# name = "graph_operations"
+# path = "benches/graph_operations.rs"
+# harness = false
+
+# [[bench]]
+# name = "query_execution"
+# path = "benches/query_execution.rs"
+# harness = false
+
+# [[bench]]
+# name = "rewrite_operations"
+# path = "benches/rewrite_operations.rs"
+# harness = false
+
+# [[bench]]
+# name = "storage_operations"
+# path = "benches/storage_operations.rs"
+# harness = false
+
+# [[bench]]
+# name = "jsonnet_benchmark"
+# path = "benches/jsonnet_benchmark.rs"
+# harness = false
+
+# [[bench]]
+# name = "parallel_processing"
+# path = "benches/parallel_processing.rs"
+# harness = false
+
+# [[bench]]
+# name = "advanced_algorithms"
+# path = "benches/advanced_algorithms.rs"
+# harness = false
+
+# Examples are excluded from publish to avoid dependency issues
+# [[example]]
+# name = "http_server"
+# path = "examples/http_server/main.rs"
+
+# Jsonnet benchmark binary removed due to compilation issues
+
+# [[example]]
+# name = "tauri_react_app"
+# path = "examples/tauri_react_app/src-tauri/src/main.rs"
+
+[patch.crates-io]
+[package]
+name = "kotoba-jsonld"
+version = "0.1.22"
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "JSON-LD utilities for Kotoba graph processing"
+keywords = ["jsonld", "json-ld", "rdf", "semantic-web", "linked-data"]
+categories = ["web-programming", "data-structures", "algorithms"]
+readme = "README.md"
+documentation = "https://docs.rs/kotoba-jsonld"
+homepage = "https://github.com/com-junkawasaki/kotoba"
+
+[dependencies]
+# Kotoba ecosystem
+kotoba-types = { path = "../010-kotoba-types" }
+kotoba-cid = { path = "../013-kotoba-cid" }
+kotoba-owl-reasoner = { path = "../022-kotoba-owl-reasoner", optional = true }
+
+# JSON processing
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+
+# Error handling
+thiserror = "2.0"
+anyhow = "1.0"
+
+# HTTP client for fetching contexts from GitHub
+reqwest = { version = "0.11", features = ["json"] }
+
+# URL parsing
+url = "2.5"
+
+[features]
+default = []
+reasoning = ["kotoba-owl-reasoner"]
+
+[dev-dependencies]
+tokio = { version = "1.0", features = ["full"] }
+tokio-test = "0.4"
+
+[package]
+name = "kotoba-os"
+version = "0.1.22"
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "KotobaOS Kernel + Actor + Mediator pattern for Kotoba"
+keywords = ["kotobaos", "kernel", "actor", "mediator", "process-network", "json-ld"]
+categories = ["web-programming", "asynchronous", "algorithms"]
+readme = "README.md"
+documentation = "https://docs.rs/kotoba-os"
+homepage = "https://github.com/com-junkawasaki/kotoba"
+
+[dependencies]
+# Kotoba ecosystem
+kotoba-jsonld = { path = "../019-kotoba-jsonld" }
+kotoba-types = { path = "../010-kotoba-types" }
+kotoba-owl-reasoner = { path = "../022-kotoba-owl-reasoner", optional = true }
+
+# Storage
+kotoba-storage = { path = "../../030-storage/031-kotoba-storage" }
+
+# fukurow crates for OWL reasoning
+fukurow-core = { git = "https://github.com/com-junkawasaki/fukurow", default-features = false }
+fukurow-store = { git = "https://github.com/com-junkawasaki/fukurow", default-features = false }
+fukurow-rdfs = { git = "https://github.com/com-junkawasaki/fukurow", default-features = false }
+fukurow-lite = { git = "https://github.com/com-junkawasaki/fukurow", default-features = false }
+fukurow-dl = { git = "https://github.com/com-junkawasaki/fukurow", default-features = false }
+fukurow-shacl = { git = "https://github.com/com-junkawasaki/fukurow", default-features = false }
+
+# JSON processing
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+
+# Error handling
+thiserror = "2.0"
+anyhow = "1.0"
+
+# Async runtime
+tokio = { version = "1.0", features = ["full"] }
+async-trait = "0.1"
+
+# URL parsing
+url = "2.5"
+
+# UUID generation
+uuid = { version = "1.18", features = ["v4", "serde"] }
+
+# Time handling
+chrono = { version = "0.4", features = ["serde"] }
+
+# Logging
+tracing = "0.1"
+
+[features]
+default = []
+reasoning = ["kotoba-owl-reasoner"]
+
+[dev-dependencies]
+tokio-test = "0.4"
+kotoba-storage-memory = { path = "../../030-storage/036-kotoba-memory" }
+
+[package]
+name = "kotoba-phonosemantic"
+version = "0.1.22"
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Phonosemantic vocabulary mapping system for Kotoba"
+keywords = ["phonosemantic", "phoneme", "vocabulary", "semantic-mapping", "json-ld"]
+categories = ["web-programming", "algorithms", "data-structures"]
+readme = "README.md"
+documentation = "https://docs.rs/kotoba-phonosemantic"
+homepage = "https://github.com/com-junkawasaki/kotoba"
+
+[dependencies]
+# Kotoba ecosystem
+kotoba-jsonld = { path = "../019-kotoba-jsonld" }
+kotoba-owl-reasoner = { path = "../022-kotoba-owl-reasoner", optional = true }
+
+# JSON processing
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+
+# Error handling
+thiserror = "2.0"
+anyhow = "1.0"
+
+# Async runtime
+tokio = { version = "1.0", features = ["full"] }
+async-trait = "0.1"
+
+# Logging
+tracing = "0.1"
+
+# Collections
+indexmap = "2.0"
+
+[features]
+default = []
+reasoning = ["kotoba-owl-reasoner"]
+
+[dev-dependencies]
+tokio-test = "0.4"
+
+[package]
+name = "kotoba-owl-reasoner"
+version = "0.1.22"
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "OWL reasoning engine integration for Kotoba using fukurow"
+keywords = ["owl", "reasoning", "rdfs", "semantic-web", "fukurow"]
+categories = ["web-programming", "algorithms", "data-structures"]
+readme = "README.md"
+documentation = "https://docs.rs/kotoba-owl-reasoner"
+homepage = "https://github.com/com-junkawasaki/kotoba"
+
+[dependencies]
+# Kotoba ecosystem
+# Note: kotoba-jsonld dependency removed to break circular dependency
+# kotoba-owl-reasoner uses serde_json::Value directly for JSON-LD processing
+
+# fukurow crates (git dependencies)
+fukurow-core = { git = "https://github.com/com-junkawasaki/fukurow", default-features = false }
+fukurow-store = { git = "https://github.com/com-junkawasaki/fukurow", default-features = false }
+fukurow-rdfs = { git = "https://github.com/com-junkawasaki/fukurow", default-features = false }
+fukurow-lite = { git = "https://github.com/com-junkawasaki/fukurow", default-features = false }
+fukurow-dl = { git = "https://github.com/com-junkawasaki/fukurow", default-features = false }
+fukurow-shacl = { git = "https://github.com/com-junkawasaki/fukurow", default-features = false }
+fukurow-sparql = { git = "https://github.com/com-junkawasaki/fukurow", default-features = false }
+fukurow-engine = { git = "https://github.com/com-junkawasaki/fukurow", default-features = false }
+
+# JSON processing
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+
+# Error handling
+thiserror = "2.0"
+anyhow = "1.0"
+
+# Async runtime
+tokio = { version = "1.0", features = ["full"] }
+async-trait = "0.1"
+
+# RDF/JSON-LD processing
+sophia = { version = "0.8", features = ["jsonld", "xml"], optional = true }
+
+# Logging
+tracing = "0.1"
+
+[features]
+default = []
+sophia = ["dep:sophia"]
+
+[dev-dependencies]
+tokio-test = "0.4"
+
+[package]
+name = "kotoba-storage-fcdb"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "FCDB storage adapter for Kotoba (Content-Addressable Storage with GraphDB)"
+keywords = ["storage", "fcdb", "cas", "graphdb", "json-ld"]
+categories = ["database", "storage"]
+
+[dependencies]
+# Kotoba storage interface
+kotoba-storage = { path = "../031-kotoba-storage" }
+kotoba-jsonld = { path = "../../010-logic/019-kotoba-jsonld" }
+
+# fcdb crates (from git)
+fcdb-core = { git = "https://github.com/com-junkawasaki/fcdb", default-features = false }
+fcdb-cas = { git = "https://github.com/com-junkawasaki/fcdb", default-features = false }
+fcdb-graph = { git = "https://github.com/com-junkawasaki/fcdb", default-features = false }
+
+# JSON processing
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+
+# Async runtime
+tokio = { version = "1.0", features = ["full"] }
+async-trait = "0.1"
+
+# Error handling
+thiserror = "2.0"
+anyhow = "1.0"
+
+# Logging
+tracing = "0.1"
+
+# Path handling
+tempfile = "3.0"
+
+[dev-dependencies]
+tokio-test = "0.4"
+
+[package]
+name = "engidb"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+kotoba-types = { path = "../kotoba-types" }
+sled = "0.34"
+cid = { version = "0.11.1", default-features = false, features = ["serde-codec"] }
+serde_ipld_dagcbor = "0.4.0"
+multihash = { version = "0.19.3", default-features = false }
+sha2 = "0.10"
+bincode = "1.3.3"
+serde = { version = "1.0", features = ["derive"] }
+thiserror = "1.0"
+
+# FCDB dependencies - only included when fcdb feature is enabled
+fcdb-core = { version = "0.1", optional = true }
+fcdb-cas = { version = "0.1", optional = true }
+fcdb-graph = { version = "0.1", optional = true }
+fcdb-concur = { version = "0.1", optional = true }
+
+# Additional dependencies for FCDB adapter
+tokio = { version = "1.0", features = ["rt-multi-thread", "macros"], optional = true }
+serde_json = { version = "1.0", optional = true }
+
+[features]
+default = []
+# Enable FCDB adapter with full implementation
+fcdb = ["fcdb-core", "fcdb-cas", "fcdb-graph", "fcdb-concur", "tokio", "serde_json"]
+[package]
+name = "kotoba-types"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+serde = { version = "1.0", features = ["derive"] }
+indexmap = { version = "2.0", features = ["serde"] }
+serde_json = "1.0"
+thiserror = "1.0"
+[package]
+name = "kotobas-tamaki-holochain"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Kotobasos Holochain implementation - Agent-centric distributed execution platform"
+keywords = ["holochain", "kotobasos", "distributed", "agent-centric", "dht", "merkle-dag"]
+categories = ["web-programming", "asynchronous", "distributed-computing"]
+readme = "README.md"
+documentation = "https://docs.rs/kotobas-tamaki-holochain"
+homepage = "https://github.com/com-junkawasaki/kotoba"
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+name = "kotobas_tamaki_holochain"
+
+[dependencies]
+# Holochain dependencies
+hdk = "0.4"
+holochain_zome_types = "0.4"
+
+# Kotoba ecosystem
+kotoba-os = { path = "../010-logic/020-kotoba-os" }
+kotoba-jsonld = { path = "../010-logic/019-kotoba-jsonld" }
+kotoba-owl-reasoner = { path = "../010-logic/022-kotoba-owl-reasoner" }
+kotoba-types = { path = "../010-logic/010-kotoba-types" }
+kotoba-cid = { path = "../010-logic/013-kotoba-cid" }
+
+# JSON processing
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+
+# Error handling
+thiserror = "2.0"
+anyhow = "1.0"
+
+# Time handling
+chrono = { version = "0.4", features = ["serde"] }
+
+# UUID generation
+uuid = { version = "1.18", features = ["v4", "serde"] }
+
+# Logging
+tracing = "0.1"
+
+# Async
+async-trait = "0.1"
+
+# Encoding
+hex = "0.4"
+sha2 = "0.10"
+
+[dev-dependencies]
+tokio-test = "0.4"
+tokio = { version = "1.0", features = ["full"] }
+mockall = "0.12"
+proptest = "1.5"
+
+[features]
+default = []
+

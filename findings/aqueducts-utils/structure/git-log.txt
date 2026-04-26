@@ -1,0 +1,25 @@
+8ade0f5 chore: update rand crate
+55f3d0a chore: update cargo-chef image
+727fd16 chore: update cargo-dist and remove native-tls dependency
+c2a7a7f chore: update deps axum, tracing-subscriber, bon and uuid
+0dd91a4 chore: update datafusion & datafusion-json-functions to v51, arrow to v57, arrow-odbc to v21
+4452f58 fix: remove unused delta_kernel dependency
+2d9e860 fix: add source & destination errors (#126)
+e0e4b3c temp: pin deltalake to newer version to resolve delta issue
+0e167b3 fix: clippy lint fix
+c552872 docs: udpate docs to reflect 500 item upper limit
+9ca8fd7 refactor: add upper limit of 500 rows for stage outputs
+287a83b chore: update to datafusion v48, datafusion-json-functions v0.48 and deltalake v0.27.0
+c5cdbac build(deps): bump bon from 3.6.3 to 3.6.5 (#110)
+1d88286 build(deps): bump tokio from 1.45.1 to 1.47.0 (#111)
+93dc151 Integrate miette diagnostics (#112)
+3e29904 fix(ci): correct arm runner name
+4c16fe8 fix: try to fix docker build
+104a059 chore: update cargo dist to v0.29.0
+fe111a9 fix: broken docker build due to race condition
+816156c fix: remove broken publish crates workflow
+aqueducts-cli-v0.11.1
+aqueducts-core-v0.11.1
+aqueducts-delta-v0.11.1
+aqueducts-executor-v0.11.1
+aqueducts-odbc-v0.11.1

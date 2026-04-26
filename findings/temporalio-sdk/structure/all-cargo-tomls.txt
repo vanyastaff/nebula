@@ -1,0 +1,648 @@
+[package]
+name = "temporalio-sdk"
+version = "0.3.0"
+edition = "2024"
+authors = ["Spencer Judge <spencer@temporal.io>"]
+license-file = { workspace = true }
+description = "Temporal Rust SDK"
+homepage = "https://temporal.io/"
+repository = "https://github.com/temporalio/sdk-rust"
+keywords = ["temporal", "workflow"]
+categories = ["development-tools"]
+readme = "README.md"
+autoexamples = false
+
+[dependencies]
+async-trait = "0.1"
+anyhow = "1.0"
+bon = { workspace = true }
+derive_more = { workspace = true }
+futures-util = { version = "0.3", default-features = false, features = [
+  "async-await-macro",
+] }
+gethostname = "1.0.2"
+parking_lot = { version = "0.12" }
+prost-types = { workspace = true }
+serde = "1.0"
+thiserror = "2"
+tokio = { version = "1.47", default-features = false, features = [
+  "rt",
+  "rt-multi-thread",
+  "parking_lot",
+  "time",
+  "fs",
+  "macros",
+] }
+tokio-util = { version = "0.7" }
+tokio-stream = { version = "0.1", default-features = false }
+tracing = "0.1"
+uuid = { version = "1.18", default-features = false, features = ["v4"] }
+
+[dependencies.temporalio-sdk-core]
+path = "../sdk-core"
+version = "0.3"
+default-features = false
+
+[dependencies.temporalio-common]
+path = "../common"
+version = "0.3"
+
+[dependencies.temporalio-client]
+path = "../client"
+version = "0.3"
+
+[dependencies.temporalio-macros]
+path = "../macros"
+version = "0.3"
+
+[dev-dependencies]
+futures = "0.3"
+rstest = "0.26"
+
+[features]
+default = []
+antithesis_assertions = ["temporalio-sdk-core/antithesis_assertions"]
+examples = ["serde/derive", "dep:serde_json"]
+
+[dependencies.serde_json]
+version = "1"
+optional = true
+
+[[example]]
+name = "hello-world-worker"
+path = "examples/hello_world/worker.rs"
+required-features = ["examples"]
+
+[[example]]
+name = "hello-world-starter"
+path = "examples/hello_world/starter.rs"
+required-features = ["examples"]
+
+[[example]]
+name = "activity-heartbeating-worker"
+path = "examples/activity_heartbeating/worker.rs"
+required-features = ["examples"]
+
+[[example]]
+name = "activity-heartbeating-starter"
+path = "examples/activity_heartbeating/starter.rs"
+required-features = ["examples"]
+
+[[example]]
+name = "timer-examples-worker"
+path = "examples/timer_examples/worker.rs"
+required-features = ["examples"]
+
+[[example]]
+name = "timer-examples-starter"
+path = "examples/timer_examples/starter.rs"
+required-features = ["examples"]
+
+[[example]]
+name = "message-passing-worker"
+path = "examples/message_passing/worker.rs"
+required-features = ["examples"]
+
+[[example]]
+name = "message-passing-starter"
+path = "examples/message_passing/starter.rs"
+required-features = ["examples"]
+
+[[example]]
+name = "child-workflows-worker"
+path = "examples/child_workflows/worker.rs"
+required-features = ["examples"]
+
+[[example]]
+name = "child-workflows-starter"
+path = "examples/child_workflows/starter.rs"
+required-features = ["examples"]
+
+[[example]]
+name = "continue-as-new-worker"
+path = "examples/continue_as_new/worker.rs"
+required-features = ["examples"]
+
+[[example]]
+name = "continue-as-new-starter"
+path = "examples/continue_as_new/starter.rs"
+required-features = ["examples"]
+
+[[example]]
+name = "saga-worker"
+path = "examples/saga/worker.rs"
+required-features = ["examples"]
+
+[[example]]
+name = "saga-starter"
+path = "examples/saga/starter.rs"
+required-features = ["examples"]
+
+[[example]]
+name = "local-activities-worker"
+path = "examples/local_activities/worker.rs"
+required-features = ["examples"]
+
+[[example]]
+name = "local-activities-starter"
+path = "examples/local_activities/starter.rs"
+required-features = ["examples"]
+
+[[example]]
+name = "search-attributes-worker"
+path = "examples/search_attributes/worker.rs"
+required-features = ["examples"]
+
+[[example]]
+name = "search-attributes-starter"
+path = "examples/search_attributes/starter.rs"
+required-features = ["examples"]
+
+[[example]]
+name = "updatable-timer-worker"
+path = "examples/updatable_timer/worker.rs"
+required-features = ["examples"]
+
+[[example]]
+name = "updatable-timer-starter"
+path = "examples/updatable_timer/starter.rs"
+required-features = ["examples"]
+
+[[example]]
+name = "polling-worker"
+path = "examples/polling/worker.rs"
+required-features = ["examples"]
+
+[[example]]
+name = "polling-starter"
+path = "examples/polling/starter.rs"
+required-features = ["examples"]
+
+[[example]]
+name = "cancellation-worker"
+path = "examples/cancellation/worker.rs"
+required-features = ["examples"]
+
+[[example]]
+name = "cancellation-starter"
+path = "examples/cancellation/starter.rs"
+required-features = ["examples"]
+
+[[example]]
+name = "schedules-worker"
+path = "examples/schedules/worker.rs"
+required-features = ["examples"]
+
+[[example]]
+name = "schedules-starter"
+path = "examples/schedules/starter.rs"
+required-features = ["examples"]
+
+[lints]
+workspace = true
+==common==
+[package]
+name = "temporalio-common"
+version = "0.3.0"
+edition = "2024"
+authors = ["Temporal Technologies Inc. <sdk@temporal.io>"]
+license-file = { workspace = true }
+description = "Common functionality for the Temporal SDK Core, Client, and Rust SDK"
+homepage = "https://temporal.io/"
+repository = "https://github.com/temporalio/sdk-rust"
+keywords = ["temporal", "workflow"]
+categories = ["development-tools"]
+exclude = ["protos/*/.github/*"]
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[features]
+history_builders = ["rand"]
+otel = ["dep:opentelemetry", "dep:opentelemetry_sdk", "dep:opentelemetry-otlp"]
+prometheus = [
+  "dep:prometheus",
+  "dep:hyper",
+  "dep:hyper-util",
+  "dep:http-body-util",
+  "dep:tokio",
+]
+envconfig = ["dep:toml", "dep:dirs"]
+serde_serialize = []
+test-utilities = ["history_builders"]
+core-based-sdk = [
+  "prometheus",
+  "envconfig",
+  "dep:ringbuf",
+  "dep:futures-channel",
+]
+
+[dependencies]
+anyhow = "1.0"
+async-trait = "0.1"
+base64 = "0.22"
+bon = { workspace = true }
+crc32fast = "1"
+dirs = { version = "6.0", optional = true }
+derive_more = { workspace = true }
+erased-serde = "0.4"
+futures = { version = "0.3", default-features = false, features = ["alloc"] }
+futures-channel = { version = "0.3", default-features = false, features = [
+  "std",
+], optional = true }
+http-body-util = { version = "0.1", optional = true }
+hyper = { version = "1.7", optional = true }
+hyper-util = { version = "0.1", features = [
+  "server",
+  "http1",
+  "http2",
+  "tokio",
+], optional = true }
+opentelemetry = { workspace = true, features = ["metrics"], optional = true }
+opentelemetry_sdk = { version = "0.31", default-features = false, features = [
+  "rt-tokio",
+  "metrics",
+  "spec_unstable_metrics_views",
+], optional = true }
+opentelemetry-otlp = { version = "0.31", default-features = false, features = [
+  "tokio",
+  "metrics",
+  "tls-roots",
+  "http-proto",
+  "grpc-tonic",
+  "reqwest-blocking-client",
+  "reqwest-rustls",
+], optional = true }
+parking_lot = { version = "0.12" }
+prometheus = { version = "0.14", optional = true, default-features = false }
+prost = { workspace = true }
+prost-wkt = "0.7"
+prost-types = { workspace = true }
+rand = { version = "0.10", optional = true }
+ringbuf = { version = "0.4", optional = true }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+tokio = { version = "1.47", default-features = false, features = [
+  "io-util",
+  "net",
+  "rt",
+], optional = true }
+toml = { version = "1.0", optional = true }
+tonic = { workspace = true, default-features = false, features = ["transport", "codegen"] }
+tonic-prost = { workspace = true }
+tracing = "0.1"
+# TODO [rust-sdk-branch]: Is it reasonable to make this optional?
+tracing-subscriber = { version = "0.3", default-features = false, features = [
+  "parking_lot",
+  "env-filter",
+  "registry",
+  "ansi",
+] }
+tracing-core = "0.1"
+url = "2.5"
+uuid = { version = "1.18", default-features = false, features = ["v4"] }
+pbjson = { workspace = true }
+
+[build-dependencies]
+prost = { workspace = true }
+prost-types = "0.14"
+tonic-prost-build = { workspace = true }
+pbjson-build = { workspace = true }
+
+[lints]
+workspace = true
+
+[dev-dependencies]
+futures-util = { version = "0.3", default-features = false }
+tempfile = "3.21"
+tokio = { version = "1.47", features = ["macros", "rt"] }
+==client==
+[package]
+name = "temporalio-client"
+version = "0.3.0"
+edition = "2024"
+authors = ["Temporal Technologies Inc. <sdk@temporal.io>"]
+license-file = { workspace = true }
+description = "Clients for interacting with Temporal"
+homepage = "https://temporal.io/"
+repository = "https://github.com/temporalio/sdk-rust"
+keywords = ["temporal", "workflow"]
+categories = ["development-tools"]
+readme = "README.md"
+
+[features]
+default = ["envconfig"]
+telemetry = ["dep:opentelemetry"]
+core-based-sdk = []
+envconfig = ["temporalio-common/envconfig"]
+
+[dependencies]
+anyhow = "1.0"
+async-trait = "0.1"
+backoff = "0.4"
+base64 = "0.22"
+bon = { version = "3", default-features = false, features = ["alloc"] }
+derive_more = { workspace = true }
+dyn-clone = "1.0"
+bytes = "1.10"
+futures-util = { version = "0.3", default-features = false }
+futures-retry = "0.6.0"
+http = "1.3"
+http-body-util = "0.1"
+hyper = { version = "1.7.0" }
+hyper-util = "0.1.16"
+opentelemetry = { workspace = true, features = ["metrics"], optional = true }
+parking_lot = "0.12"
+thiserror = { workspace = true }
+tokio = { version = "1.47", default-features = false, features = [
+  "io-util",
+  "net",
+  "rt",
+  "sync",
+  "time",
+] }
+tonic = { workspace = true, default-features = false, features = ["tls-ring", "tls-native-roots", "channel"] }
+tower = { version = "0.5", features = ["util"] }
+tracing = "0.1"
+url = "2.5"
+uuid = { version = "1.18", default-features = false, features = ["v4"] }
+rand = "0.10"
+
+[dependencies.temporalio-common]
+path = "../common"
+version = "0.3"
+
+[dev-dependencies]
+assert_matches = "1"
+mockall = "0.14"
+prost = "0.14"
+prost-types = { workspace = true }
+rstest = "0.26"
+tempfile = "3"
+tokio = { version = "1.47", default-features = false, features = [
+  "io-util",
+  "macros",
+  "net",
+  "rt",
+  "sync",
+  "time",
+] }
+
+[lints]
+workspace = true
+==sdk-core==
+[package]
+name = "temporalio-sdk-core"
+version = "0.3.0"
+authors = ["Temporal Technologies Inc. <sdk@temporal.io>"]
+edition = "2024"
+license-file = { workspace = true }
+description = "Library for building new Temporal SDKs"
+homepage = "https://temporal.io/"
+repository = "https://github.com/temporalio/sdk-rust"
+keywords = ["temporal", "workflow"]
+categories = ["development-tools"]
+exclude = ["machine_coverage/*"]
+rust-version = "1.88.0" # due to cargo msrv find
+
+[lib]
+
+[features]
+default = []
+otel = [
+  "dep:opentelemetry",
+  "dep:opentelemetry_sdk",
+  "dep:opentelemetry-otlp",
+  "temporalio-common/otel",
+]
+ephemeral-server = ["dep:flate2", "dep:reqwest", "dep:tar", "dep:zip"]
+debug-plugin = ["dep:reqwest", "dep:hyper"]
+test-utilities = ["dep:assert_matches", "dep:bimap"]
+antithesis_assertions = ["dep:antithesis_sdk"]
+
+[dependencies]
+anyhow = "1.0"
+antithesis_sdk = { version = "0.2.1", optional = true, default-features = false, features = [
+  "full",
+] }
+assert_matches = { version = "1.5", optional = true }
+backoff = "0.4"
+bimap = { version = "0.6.3", optional = true }
+async-trait = "0.1"
+bon = { workspace = true }
+crossbeam-channel = "0.5"
+crossbeam-utils = "0.8"
+derive_more = { workspace = true }
+enum_dispatch = "0.3"
+enum-iterator = "2"
+flate2 = { version = "1.1", optional = true }
+futures = { version = "0.3", default-features = false }
+futures-util = { version = "0.3", default-features = false }
+gethostname = "1.0.2"
+hyper = { version = "1.7", optional = true }
+itertools = "0.14"
+lru = "0.16"
+mockall = "0.14"
+opentelemetry = { workspace = true, features = ["metrics"], optional = true }
+opentelemetry_sdk = { version = "0.31", default-features = false, features = [
+  "rt-tokio",
+  "metrics",
+  "spec_unstable_metrics_views",
+], optional = true }
+opentelemetry-otlp = { version = "0.31", default-features = false, features = [
+  "tokio",
+  "metrics",
+  "tls-roots",
+  "http-proto",
+  "grpc-tonic",
+  "reqwest-blocking-client",
+  "reqwest-rustls",
+], optional = true }
+parking_lot = { version = "0.12" }
+pid = "4.0"
+pin-project = "1.1"
+prost = { workspace = true }
+prost-types = { workspace = true }
+rand = "0.10"
+reqwest = { version = "0.13", features = [
+  "json",
+  "stream",
+  "query",
+  "rustls",
+], default-features = false, optional = true }
+serde = "1.0"
+serde_json = { workspace = true }
+siphasher = "1.0"
+slotmap = "1.0"
+sysinfo = { version = "0.38", default-features = false, features = ["system"] }
+tar = { version = "0.4", optional = true }
+thiserror = { workspace = true }
+tokio = { version = "1.47", default-features = false, features = [
+  "rt",
+  "rt-multi-thread",
+  "parking_lot",
+  "time",
+  "fs",
+  "process",
+  "macros",
+] }
+tokio-util = { version = "0.7", features = ["io", "io-util"] }
+tokio-stream = { version = "0.1", default-features = false }
+tonic = { workspace = true, default-features = false, features = ["tls-ring", "tls-native-roots", "transport", "codegen"] }
+tracing = "0.1"
+url = "2.5"
+uuid = { version = "1.18", default-features = false, features = ["v4"] }
+# Only need specific features to decompress zip files for ephemeral server download
+zip = { version = "8.4", optional = true, default-features = false, features = [
+  "deflate",
+  "bzip2",
+  "zstd",
+] }
+
+# 1st party local deps
+[dependencies.temporalio-common]
+path = "../common"
+version = "0.3"
+features = ["core-based-sdk", "history_builders", "test-utilities"]
+
+[dependencies.temporalio-client]
+path = "../client"
+version = "0.3"
+features = ["core-based-sdk"]
+
+[dependencies.temporalio-macros]
+path = "../macros"
+version = "0.3"
+
+[dev-dependencies]
+assert_matches = "1.5"
+bimap = "0.6.3"
+bytes = "1.10"
+clap = { version = "4.5", features = ["derive"] }
+criterion = { version = "0.8", features = ["async", "async_tokio"] }
+crossbeam-queue = "0.3"
+http-body-util = { version = "0.1" }
+hyper = { version = "1.7" }
+hyper-util = { version = "0.1", features = [
+  "server",
+  "http1",
+  "http2",
+  "tokio",
+] }
+rstest = "0.26"
+semver = "1.0"
+temporalio-sdk = { path = "../sdk" }
+tokio = { version = "1.47", default-features = false, features = [
+  "rt",
+  "rt-multi-thread",
+  "parking_lot",
+  "time",
+  "fs",
+  "process",
+  "test-util",
+  "macros",
+] }
+tokio-stream = { version = "0.1", default-features = false, features = ["net"] }
+tonic = { workspace = true, default-features = false, features = ["router"] }
+tracing-subscriber = { version = "0.3", default-features = false }
+trybuild = { version = "1.0", features = ["diff"] }
+
+[[bin]]
+name = "histfetch"
+path = "src/histfetch.rs"
+required-features = ["test-utilities"]
+
+[[test]]
+name = "integ_tests"
+path = "tests/main.rs"
+# Prevents autodiscovery, and hence these getting run with `cargo test`. Run with
+# `cargo test --test integ_tests`
+test = false
+required-features = [
+  "temporalio-common/serde_serialize",
+  "test-utilities",
+  "ephemeral-server",
+]
+
+[[test]]
+name = "heavy_tests"
+path = "tests/heavy_tests.rs"
+test = false
+required-features = ["test-utilities"]
+
+[[test]]
+name = "manual_tests"
+path = "tests/manual_tests.rs"
+test = false
+required-features = ["test-utilities"]
+
+[[test]]
+name = "global_metric_tests"
+path = "tests/global_metric_tests.rs"
+test = false
+required-features = ["test-utilities"]
+
+[[test]]
+name = "cloud_tests"
+path = "tests/cloud_tests.rs"
+test = false
+required-features = ["test-utilities"]
+
+[[test]]
+name = "fsm_procmacro"
+path = "tests/fsm_procmacro.rs"
+required-features = ["temporalio-common/serde_serialize"]
+
+[[bench]]
+name = "workflow_replay"
+path = "benches/workflow_replay_bench.rs"
+test = false
+harness = false
+required-features = ["test-utilities"]
+
+# The integration test runner should compile with the same configuration as the
+# rest of the integration tests so that artifacts are shared and no additional
+# compilation is required when switching between using the runner and running
+# tests directly.
+[[test]]
+name = "integ_runner"
+path = "tests/runner.rs"
+harness = false
+test = false
+required-features = [
+  "temporalio-common/serde_serialize",
+  "test-utilities",
+  "ephemeral-server",
+]
+
+
+[lints]
+workspace = true
+==macros==
+[package]
+name = "temporalio-macros"
+version = "0.3.0"
+edition = "2024"
+authors = ["Temporal Technologies Inc. <sdk@temporal.io>"]
+license-file = { workspace = true }
+description = "Procmacros used in Temporal Core & Rust SDKs"
+homepage = "https://temporal.io/"
+repository = "https://github.com/temporalio/sdk-rust"
+keywords = ["temporal", "workflow", "macros"]
+categories = ["development-tools"]
+
+[lib]
+proc-macro = true
+
+[dependencies]
+proc-macro2 = "1.0"
+syn = { version = "2.0", features = ["default", "extra-traits", "full"] }
+quote = "1.0"
+
+[dev-dependencies]
+# This is to enable doctests for the macros
+temporalio-common = { path = "../common" }
+derive_more = { workspace = true }
+
+[package.metadata.workspaces]
+independent = true

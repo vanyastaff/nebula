@@ -1,0 +1,20 @@
+b5c21c8 Merge pull request #9 from Desicool/feat/dashboard
+e1b8215 feat(example): keep dashboard alive after demo + add E2E test script
+46bcaeb chore: update Cargo.lock for tianshu-dashboard dependencies
+e789747 feat(example): add --dashboard flag to approval_workflow + dashboard-e2e agent
+564de65 feat(dashboard): add CaseRow and StatsResponse re-exports to lib.rs
+22a433f feat: add tianshu-dashboard crate with HTTP API and web UI
+e5cd21f Merge pull request #7 from Desicool/docker
+abfed3b docker: rewrite Dockerfile and docker-compose for approval_workflow example
+f9f4e34 Merge pull request #6 from Desicool/use
+095c803 style: run cargo fmt across workspace
+d5c4ab8 docs: update READMEs for crates.io — tianshu-* names, quick start, crate badges
+fa53852 chore: rename crates to tianshu-* for crates.io publishing
+5621b9f chore: switch to Apache-2.0 license, add NOTICE, SPDX headers, crates.io metadata
+1b9b246 Merge pull request #5 from Desicool/feature/agent-definitions
+16e26b0 docs: add pipeline routing to CLAUDE.md and AGENTS.md
+f6050dc Merge pull request #4 from Desicool/feature/agent-definitions
+0be8618 feat: add Claude Code agent definitions and concept docs
+10d7cbd Merge pull request #3 from Desicool/plan_and_execute
+4f374ba fix: per-tool timing in ToolCallRecord and fallback deduplication in ResilientLlmProvider
+14203bb Merge pull request #1 from Desicool/plan_and_execute

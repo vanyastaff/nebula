@@ -1,0 +1,53 @@
+dagx/
+├── .github/workflows/ci.yml
+├── dagx-macros/
+│   ├── Cargo.toml
+│   └── src/lib.rs (307 LOC — proc-macro crate)
+├── dagx-test/
+│   ├── Cargo.toml
+│   └── src/
+│       ├── lib.rs (52 LOC — task_fn helper)
+│       └── extract.rs (158 LOC — ExtractInput trait for test harness)
+├── docs/
+│   ├── COMPARISONS.md
+│   ├── CYCLE_PREVENTION.md
+│   └── DESIGN_PHILOSOPHY.md
+├── examples/
+│   ├── 01_basic.rs
+│   ├── 02_fan_out.rs
+│   ├── 03_fan_in.rs
+│   ├── 04_parallel_computation.rs
+│   ├── circuit_breaker.rs
+│   ├── data_pipeline.rs
+│   └── error_handling.rs
+├── benches/
+│   ├── basic/ (creation, scaling)
+│   ├── comparisons/ (vs dagrs)
+│   ├── patterns/ (diamond, fanout, breakdown)
+│   └── realistic/ (etl, memory, mixed)
+├── tests/
+│   ├── boundaries/
+│   ├── cycle_prevention.rs
+│   ├── custom_type_test.rs
+│   ├── dependencies/
+│   ├── errors/
+│   ├── execution/
+│   ├── interleaving/
+│   ├── parallelism/
+│   ├── runtimes/
+│   └── tracing/
+├── src/
+│   ├── lib.rs (491 LOC — public API + docs)
+│   ├── task.rs (91 LOC — Task trait + TaskInput)
+│   ├── node.rs (100 LOC — TypedNode + ExecutableNode)
+│   ├── builder.rs (265 LOC — TaskBuilder + TaskHandle + TaskWire)
+│   ├── deps.rs (61 LOC — DepsTuple impls)
+│   ├── runner.rs (525 LOC — DagRunner + compute_layers + run)
+│   ├── output.rs (69 LOC — DagOutput + get)
+│   └── error.rs (39 LOC — DagError enum)
+├── Cargo.toml
+├── Cargo.lock
+├── CHANGELOG.md
+├── README.md
+├── LICENSE
+└── CONTRIBUTING.md

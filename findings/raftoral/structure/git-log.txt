@@ -1,0 +1,20 @@
+171332a Sidecar running a full node, serving RaftoralClient app
+644303b Starting to implement sidecar and raftoral-client library
+06538ee Plan for Raftoral as a sidecar
+d7b0539 Documentation update - QUICKSTART.md
+263da39 Implemented HTTP endpoints for running workflows
+6464f38 Updated README.md
+b349e33 Added a bit of debuggability (test was failing on unavailable port)
+7e26d2e Revert "WIP attempt to complete WASM build"
+c684481 WIP attempt to complete WASM build
+305cf21 Use forked raft-rs for better dependecies (prost, rand)
+7833ed4 Switch to use raft with prost-codec rather than protobuf (pins the protobuf version to 2)
+51c8b02 WASM Compilation
+54e2fc8 Improved logging
+784df68 Eliminated unnecessary swaped task to track leader in GrpcServer
+26fb087 Support joining node in http
+7f162a2 HTTP FullNode fully implemented
+bcfafb9 Node can recover from storage after restarting
+cf0b94f v0.2.0
+49f6fbe Fixed usage of target folder for protobuf descriptor
+d6f0937 More dep updates

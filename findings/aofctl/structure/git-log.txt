@@ -1,0 +1,24 @@
+bf15701 Merge pull request #101 from agenticdevops/fix/remove-hardcoded-secrets
+1ec3cd9 fix(aof-gateway): remove hardcoded Slack tokens to fix GitHub push protection
+b37e643 feat(web-app): create complete React + TypeScript scaffold for Milestone 2
+e787d6a docs(handoff): add builder.io project setup configuration
+0f7d347 docs(milestone-2): phase 1 planning + builder.io handoff package
+4d5e4b3 docs: create comprehensive API and frontend web app specifications for builder.io
+c2ddd4c docs(api): create formal coordination API and component specifications for builder.io
+c062783 docs: update STATE.md for Plan 07-05 completion
+5933bc1 docs(07-coordination-protocols): complete 07-05-PLAN execution summary and update STATE
+e92408a docs(07-coordination-protocols): update documentation for Mission Control UI
+96b9127 test(07-coordination-protocols): add component tests
+22513f0 feat(07-coordination-protocols): create CoordinationPage
+92e15e3 feat(07-coordination-protocols): create CoordinationStatus component
+39bbec2 feat(07-coordination-protocols): create StandupFeed component
+bf4c8d9 feat(07-coordination-protocols): create HeartbeatDashboard component
+20ddddf feat(07-coordination-protocols): extend useWebSocket for coordination events
+a4cf9b0 feat(07-coordination-protocols): create useCoordination hook
+257e283 feat(07-coordination-protocols): create Redux coordinationSlice
+210c22d feat(07-coordination-protocols): add TypeScript types for coordination UI
+926138f docs(quickstart): Update to use pnpm and add comprehensive web-ui setup guide
+v0.4.0-beta
+v0.3.0-beta
+v0.2.0-beta.2
+v0.2.0-beta

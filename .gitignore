@@ -203,3 +203,6 @@ logs/security/
 
 # Git worktrees created by superpowers / manual workflows
 .worktrees/
+
+# Competitor research (transient cloned repos)
+targets/

@@ -1,0 +1,25 @@
+b76bcb8 fix: Externalize lib deps in dataflow-ui build and bump to v2.1.5
+51ca629 fix: Fix empty .d.ts in dataflow-ui by using dedicated tsconfig for lib declarations
+09ff0f1 fix: Resolve clippy warnings in examples
+3a57434 chore: Bump to v2.1.3, update deps, and add CI/release workflows
+3d627b1 chore: Bump to v2.1.2 and update UI dependencies
+757ed3c feat: Feature-gate WASM web deps and trim unused dependency features
+7e7cb1e docs: Update README and docs for v2.1.1 features
+58e09aa feat: Implement feature requests #2-#8 for engine enhancements (v2.1.1)
+26a0bfb chore(ui): Bump version to 2.1.0
+6af0cce feat: Reposition as IFTTT-style rules engine (v2.1.0)
+6be910e feat(ui): Support 'validate' as alias for 'validation' function name
+2da12e5 fix(ui): Hardcode preserve-structure to true and remove toggle state
+4933f81 feat(ui): Add interactive preserve-structure toggle to DataLogic editors
+ad82d8b chore(ui): Update package-lock.json for dependency bumps
+7e17934 feat: Add per-mapping context snapshots for trace/debug support
+1cde523 fix(ui): Align flow diagram theme with datalogic-ui and improve node styling
+13f1116 fix: Use correct `length` operator instead of `strlen` in validation examples
+f4b30f7 fix(ui): Correct GitHub repository link in header
+7aed4f5 chore: Use local wasm build in docs CI and bump wasm dependency to v2.0.14
+0259709 feat(ui): Add flow diagram views for workflows and folder groups
+v2.1.5
+v2.1.4
+v2.1.3
+v2.1.1
+v2.1.0

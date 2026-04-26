@@ -1,0 +1,269 @@
+
+[package]
+authors = ["Yao <yaojianpin@sohu.com>"]
+description = "a fast, lightweight, extensiable workflow engine"
+keywords = ["workflow"]
+edition = "2024"
+license = "Apache-2.0"
+name = "acts"
+homepage = "https://docs.rs/acts"
+repository = "https://github.com/yaojianpin/acts.git"
+include = ["src/**/*", "../LICENSE", "../README.md", "!**/tests/**/*"]
+version.workspace = true
+
+[dependencies]
+tokio = { features = ["full", "macros"], workspace = true }
+async-trait = { workspace = true }
+chrono = { version = "0.4" }
+globset = { version = "0.4", default-features = false }
+inventory = "0.3.20"
+jsonschema = { version = "0.30.0", default-features = false }
+moka = { version = "0.12", features = ["sync"] }
+nanoid = "0.4"
+regex = "1.10"
+rquickjs = { version = "0.9", features = ["full", "parallel"] }
+serde = { features = ["derive"], workspace = true }
+serde_json = { workspace = true }
+serde_repr = "0.1"
+serde_yaml = "0.9"
+strum = { features = ["derive"], workspace = true }
+thiserror = "2"
+tracing = "0.1"
+toml = "0.8.22"
+
+[dev-dependencies]
+criterion = { version = "0.5", features = ["async_tokio"] }
+
+[features]
+default = []
+
+[[bench]]
+harness = false
+name = "workflow"
+path = "../benches/workflow.rs"
+
+[[example]]
+name = "simple"
+path = "../examples/simple/main.rs"
+
+[[example]]
+name = "model_build"
+path = "../examples/model_build/main.rs"
+
+[[example]]
+name = "actions"
+path = "../examples/actions/main.rs"
+
+[[example]]
+name = "approve"
+path = "../examples/approve/main.rs"
+
+[[example]]
+name = "catches"
+path = "../examples/catches/main.rs"
+
+[[example]]
+name = "event"
+path = "../examples/event/main.rs"
+
+[[example]]
+name = "message"
+path = "../examples/message/main.rs"
+
+[[example]]
+name = "package"
+path = "../examples/package/main.rs"
+
+[[example]]
+name = "subflow"
+path = "../examples/subflow/main.rs"
+
+[[example]]
+name = "timeout"
+path = "../examples/timeout/main.rs"
+
+[[example]]
+name = "user_var"
+path = "../examples/user_var/main.rs"
+
+[profile.release]
+codegen-units = 1
+lto = true
+opt-level = "z"
+strip = true
+
+[workspace]
+members = [
+    "acts",
+    "store/sqlite",
+    "store/postgres",
+    "plugins/state",
+    "plugins/http",
+    "examples/plugins/*",
+    "plugins/shell",
+]
+exclude = [
+    "examples/plugins/state",
+    "examples/plugins/http",
+    "examples/plugins/shell",
+]
+resolver = "3"
+
+[workspace.package]
+authors = ["Yao <yaojianpin@sohu.com>"]
+description = "a fast, lightweight, extensiable workflow engine"
+keywords = ["workflow"]
+edition = "2024"
+license = "Apache-2.0"
+repository = "https://github.com/yaojianpin/acts.git"
+version = "0.17.2"
+
+[workspace.dependencies]
+tokio = { version = "1.44", features = ["full"] }
+async-trait = { version = "0.1.88" }
+serde = "1.0.219"
+serde_json = "1.0.140"
+strum = { version = "0.27", features = ["derive"] }
+acts = { version = "0.17.2", path = "./acts" }
+
+[profile.release]
+codegen-units = 1
+lto = true
+opt-level = "z"
+strip = true
+[package]
+name = "acts-example-plugin-http"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+tokio = { version = "1.44", features = ["full"] }
+acts = { path = "../../../acts" }
+acts-package-http = { path = "../../../plugins/http" }
+mockito = "1.7.0"
+serde_json = "1.0.140"
+[package]
+name = "acts-example-plugin-shell"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+tokio = { version = "1.44", features = ["full"] }
+acts = { path = "../../../acts" }
+acts-package-shell = { path = "../../../plugins/shell" }
+serde_json = "1.0.140"
+[package]
+name = "acts-example-plugin-app-state"
+version = "0.1.0"
+edition = "2024"
+
+
+[dependencies]
+tokio = { version = "1.44", features = ["full"] }
+acts = { path = "../../../acts" }
+acts-package-state = { path = "../../../plugins/state" }
+[package]
+name = "acts-package-http"
+description = "acts package for http request"
+homepage = "https://docs.rs/acts-package-http"
+version.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+edition.workspace = true
+
+[dependencies]
+acts = { workspace = true }
+async-trait = { workspace = true }
+base64 = "0.22.1"
+reqwest = { version = "0.12.18", features = ["blocking", "json"] }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tokio = { workspace = true }
+[package]
+name = "acts-package-shell"
+description = "acts package for shell"
+homepage = "https://docs.rs/acts-package-http"
+version.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+edition.workspace = true
+
+[dependencies]
+acts = { workspace = true }
+async-trait = { workspace = true }
+serde = { workspace = true }
+tokio = { workspace = true }
+serde_json = { workspace = true }
+strum = { workspace = true }
+[package]
+name = "acts-package-state"
+description = "acts package for state store"
+homepage = "https://docs.rs/acts-package-state"
+edition = "2024"
+version.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+
+
+[dependencies]
+redis = { version = "0.31.0", default-features = false }
+acts = { version = "0.17.2", path = "../../acts" }
+serde = { workspace = true }
+serde_json = { workspace = true }
+async-trait = { workspace = true }
+[package]
+name = "acts-store-postgres"
+description = "acts store plugin for postgres"
+homepage = "https://docs.rs/acts-store-postgres"
+version.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+edition.workspace = true
+
+
+[dependencies]
+acts = { workspace = true }
+futures = "0.3.31"
+sea-query = { version = "0.32.4" }
+sqlx = { version = "0.8.5", features = ["postgres", "runtime-tokio"] }
+sea-query-binder = { version = "0.7.0", features = ["sqlx-postgres"] }
+serde = "1.0.219"
+serde_json = "1.0.140"
+async-trait = { workspace = true }
+
+[dev-dependencies]
+chrono = "0.4.41"
+nanoid = "0.4.0"
+tokio = "1.45.0"
+[package]
+name = "acts-store-sqlite"
+description = "acts store plugin for sqlite"
+homepage = "https://docs.rs/acts-store-sqlite"
+version.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+edition.workspace = true
+
+
+[dependencies]
+acts = { workspace = true }
+r2d2 = "0.8.10"
+r2d2_sqlite = { version = "0.25", features = ["bundled"] }
+rusqlite = { version = "0.32", features = ["bundled"] }
+sea-query = { version = "0.32.4" }
+sea-query-rusqlite = "0.7.0"
+serde = "1.0.219"
+serde_json = "1.0.140"
+async-trait = { workspace = true }
+
+[features]
+
+[dev-dependencies]
+chrono = "0.4.41"
+nanoid = "0.4.0"
+tokio = "1.45.0"

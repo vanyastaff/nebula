@@ -1,0 +1,318 @@
+# Changelog
+
+All notable changes to dagx will be documented in this file.
+
+The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
+and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
+
+## [Unreleased]
+
+### Fixed
+
+- Now able to return bare tuples as task outputs
+- No longer able to create a DAG with cyclic dependencies ([#3](https://github.com/swaits/dagx/pull/3))
+- The `#[task]` macro no longer requires an explicit return type ([#2](https://github.com/swaits/dagx/pull/2))
+
+### Changed
+
+- Task inputs no longer need to be `Clone` ([#7](https://github.com/swaits/dagx/pull/7))
+- Building a DAG is now a single-threaded operation ([#12](https://github.com/swaits/dagx/pull/12))
+- Running a DAG now consumes the `DagRunner` and returns a `DagOutput` from which to get results ([#12](https://github.com/swaits/dagx/pull/12))
+- `#[task]` macro support is now gated behind the `derive` default feature
+- Tasks now receive input via the `TaskInput` type, which guarantees via the public API that dependencies can be extracted ([#7](https://github.com/swaits/dagx/pull/7))
+- Task outputs are now extracted as owned values, not clones of an Arc value ([#7](https://github.com/swaits/dagx/pull/7))
+
+### Internal
+
+- The `task_fn` macro has been extracted to the dagx-test crate
+- Task inputs are passed to tasks directly from the runner, not through channels ([#1](https://github.com/swaits/dagx/pull/1))
+- Redundant tests/examples/benchmarks removed to lower maintenance and refactor burden ([#11](https://github.com/swaits/dagx/pull/11))
+- parking_lot dependency removed ([#12](https://github.com/swaits/dagx/pull/12))
+- futures dependency replaced with futures-util ([#8](https://github.com/swaits/dagx/pull/8))
+
+## [0.3.1] - 2025-10-10
+
+[View changes](https://github.com/swaits/dagx/compare/v0.3.0...v0.3.1)
+
+### Fixed
+
+- **Custom types now work automatically!** The `#[task]` macro now generates inline `extract_and_run()`
+  methods with type-specific extraction logic. This means **ANY type** implementing `Clone + Send + Sync + 'static`
+  works automatically without implementing any special traits.
+  - Previously, only types with `ExtractInput` implementations worked (primitives, String, Vec, HashMap, etc.)
+  - Now, custom user types work seamlessly - just derive `Clone` and you're good to go!
+  - No `ExtractInput` trait implementation needed for custom types
+  - Nested structs, collections of custom types, and complex type hierarchies all work out of the box
+  - New example: `examples/custom_types.rs` demonstrating custom types flowing through a DAG
+
+### Changed
+
+- **Documentation improvements**
+  - Updated README.md to highlight custom type support as a key feature
+  - Added "Custom Types" section to Core Concepts with examples
+  - Added `custom_types.rs` to the examples list
+  - Updated feature list to emphasize "Works with ANY type"
+
+### Internal
+
+- `ExtractInput` trait is now only used by the internal `task_fn` test helper
+- The `#[task]` macro generates custom extraction logic per task, bypassing `ExtractInput` entirely
+- This architectural change enables ANY type to work without requiring trait implementations
+
+## [0.3.0] - 2025-10-08
+
+[View changes](https://github.com/swaits/dagx/compare/v0.2.3...v0.3.0)
+
+### Added
+
+- **Compile-time cycle prevention proof** via new `src/cycle_prevention.rs` module
+  - Comprehensive documentation with `compile_fail` tests proving cycles are impossible
+  - New integration test suite `tests/cycle_prevention.rs` demonstrating type-state pattern
+  - Documents how the type system prevents cycles at compile-time (zero runtime cost)
+  - Added prominent documentation section in README.md explaining the feature
+
+- **New `DagError::ConcurrentExecution` variant**
+  - Replaces misuse of `CycleDetected` for concurrent run protection
+  - More semantically accurate error reporting
+
+### Removed - **BREAKING CHANGES**
+
+- **Removed `DagError::CycleDetected` error variant**
+  - Cycles are provably impossible via the public API due to type-state pattern
+  - Removed 24 lines of unreachable cycle detection code from `runner.rs`
+  - **Migration**: If you were handling `DagError::CycleDetected`, remove that match arm
+  - This error could never occur in practice, so no runtime behavior changes
+
+### Changed
+
+- **Documentation improvements**
+  - Added comprehensive "Compile-Time Cycle Prevention" section to README.md
+  - Updated lib.rs documentation to highlight cycle prevention as first feature
+  - Fixed rustdoc links in `src/cycle_prevention.rs`
+  - Updated all error documentation references (removed cycle detection)
+  - Added code examples demonstrating type-state pattern
+  - Updated tagline to emphasize compile-time cycle prevention
+
+- **Test coverage improvements**
+  - Added `#[cfg(not(tarpaulin_include))]` to untestable type alias
+  - Coverage at ~83% after removing dead code (target set to 80%)
+  - Remaining uncovered lines are primarily tracing macros and unreachable error paths
+
+- **Enhanced CI configuration** (`.github/workflows/ci.yml`)
+  - MSRV verification now tests all 3 feature combinations (no-default, all, default)
+  - Test matrix expanded to 18 runs (3 platforms × 2 Rust versions × 3 feature combos)
+  - New cargo check job for all feature combinations
+  - Lint (clippy) now runs on all feature combinations
+  - Doc generation for all feature combinations
+  - Coverage threshold set to 80% (accounts for tracing macros and unreachable error paths)
+
+- **Release check script improvements** (`scripts/release_check.sh`)
+  - Now reads MSRV from `Cargo.toml` instead of hardcoded version
+  - Uses `cargo msrv verify` for all feature combinations
+  - Tests all feature combinations (no-default, all, default)
+  - Runs clippy, check, and tests on all feature combos
+  - Includes coverage verification with 80% threshold
+
+### Fixed
+
+- **Clippy lints in test code**
+  - Removed unnecessary `.clone()` call on `Copy` type in `tests/cycle_prevention.rs`
+  - Removed unnecessary borrow in test dependency wiring
+
+- **Flaky timing test on macOS CI**
+  - Increased timeout threshold from 140ms to 200ms in `test_arc_parallel_execution`
+  - macOS CI runners are significantly slower than Linux/Windows
+  - 200ms threshold still proves parallelism while accounting for CI variability
+
+## [0.2.3] - 2025-10-08
+
+[View changes](https://github.com/swaits/dagx/compare/v0.2.2...v0.2.3)
+
+### Added
+
+- **Optional tracing support** via `tracing` feature flag
+  - Zero-cost when disabled (literally 0ns overhead - code removed at compile time)
+  - Structured logging at INFO, DEBUG, TRACE, and ERROR levels
+  - Instrumentation for DAG construction, execution, and error paths
+  - New example: `examples/tracing_example.rs` demonstrating usage
+  - Comprehensive test coverage in `tests/tracing/` for both with/without feature
+  - Follows same pattern as tokio/hyper for performance-critical libraries
+  - Updated documentation in README.md and lib.rs
+
+### Changed
+
+- Improved `examples/04_parallel_computation.rs` to actually prove parallelism
+  - Now compares parallel vs sequential execution with timing measurements
+  - Calculates and displays speedup ratio (e.g., "4.0x faster")
+  - Clarifies difference from basic fan-in pattern in 03_fan_in.rs
+  - Added warnings for debug builds with low speedup
+
+### Fixed
+
+- Fixed broken ASCII diagram in `examples/04_parallel_computation.rs`
+
+## [0.2.2] - 2025-10-07
+
+[View changes](https://github.com/swaits/dagx/compare/v0.2.1...v0.2.2)
+
+### Fixed
+
+- Fixed README.md to reference correct crate version (`0.2` instead of `0.1`)
+- Enhanced release check script to validate version consistency in documentation
+  - Automatically extracts major.minor version and verifies documentation matches
+
+## [0.2.1] - 2025-10-07
+
+[View changes](https://github.com/swaits/dagx/compare/v0.2.0...v0.2.1)
+
+### Fixed
+
+- Fixed test execution on macOS by forcing `tokio::test` to use multi-threaded runtime
+  - Ensures tests pass consistently across all platforms
+
+## [0.2.0] - 2025-10-08
+
+[View changes](https://github.com/swaits/dagx/compare/v0.1.0...v0.2.0)
+
+### Changed
+
+- **BREAKING**: Updated MSRV (Minimum Supported Rust Version) from 1.78.0 to 1.81.0
+  - Required by updated dependencies: `criterion@0.7.0`, `half@2.6.0`, `rayon@1.11.0`
+  - Updated in both `dagx` and `dagx-macros` crates
+  - Updated all documentation (README.md, CONTRIBUTING.md)
+
+### Added
+
+- Comprehensive test coverage improvements (82.61% → 92.94%)
+  - Added 9 new unit tests for error paths in `ExtractInput` implementations
+  - Added 3 new type conversion tests in `src/types/tests.rs`
+  - Added 1 new trait implementation test in `src/task/tests.rs`
+  - Added 1 new dependency tuple test in `src/deps/tests.rs`
+  - Added 6 new execution path tests in `tests/execution/basic.rs`
+  - Added error handling tests for HashMap, Result, Option, Vec, and Arc types
+  - Added tests for tuple dependency count validation
+  - Improved concurrent run protection test with better synchronization
+- Added `tarpaulin_include` to lint configuration for coverage tooling compatibility
+
+### Fixed
+
+- Fixed GitHub Actions `cargo-audit` workflow
+  - Replaced deprecated `actions-rs/audit-check@v1` with direct `cargo audit` command
+  - Resolved "Resource not accessible by integration" error
+- Fixed clippy warnings in test code
+  - Removed unnecessary borrows in `.depends_on()` calls
+  - Added `#[allow(clippy::clone_on_copy)]` for explicit clone test
+- Marked timing-sensitive and resource-intensive tests with `#[cfg_attr(tarpaulin, ignore)]`
+  - `test_arc_parallel_execution` (timing unreliable under instrumentation)
+  - `test_100000_nodes_stress` (resource intensive)
+  - `test_10000_level_chain_stress` (resource intensive)
+
+### Internal
+
+- Improved test organization following existing patterns in `tests/` directory
+- Enhanced error path coverage for all `ExtractInput` trait implementations
+- Better separation between unit tests and integration tests
+- Refactored `scripts/release_check.sh` to use configurable VERSION variable
+  - Replaced hardcoded version references throughout script
+  - Updated instructions to use `jj` commands instead of `git`
+  - Simplified version bumps for future releases
+
+## [0.1.0] - 2025-10-05
+
+### Added
+
+#### Core Features
+
+- Type-safe async DAG executor with compile-time dependency validation
+- Runtime-agnostic design (works with Tokio, async-std, smol, and other runtimes)
+- Fluent builder API with type-state pattern for compile-time safety
+- Comprehensive error handling with `DagResult<T>` and `DagError` enum
+- Support for up to 8 dependencies per task
+- True parallel execution with automatic task spawning
+
+#### Task Patterns
+
+- **Stateless tasks**: Pure functions with no self parameter
+- **Read-only state**: Tasks with `&self` for configuration
+- **Mutable state**: Tasks with `&mut self` for stateful operations
+- **Sync and async**: Both synchronous and asynchronous task execution
+- **Procedural macro**: `#[task]` macro for ergonomic task definitions
+
+#### Error Handling
+
+- Cycle detection with detailed node information
+- Type-safe handle validation
+- Panic isolation and conversion to errors
+- Actionable error messages with recovery suggestions
+
+#### Testing
+
+- Comprehensive unit tests covering core functionality
+- Documentation tests ensuring examples compile and run
+- Panic handling and isolation tests
+- Type safety verification tests
+- Concurrency stress tests
+- Integration tests for end-to-end workflows
+- Runtime compatibility tests (Tokio, async-std, smol)
+- Quirky runtime tests (async-executor, pollster, futures-executor)
+- Dependency tuple tests (1-8 dependency support)
+- Large DAG scalability tests (10,000+ nodes)
+
+#### Performance
+
+- Benchmark suite using Criterion
+- True parallel execution (tasks spawn to multiple threads)
+- Linear scaling verified up to 10,000+ tasks
+- ~1-2µs overhead per task
+- Efficient memory usage (~200 bytes per task)
+- Zero-cost abstractions via generics and monomorphization
+
+#### Documentation
+
+- Comprehensive API documentation
+- Tutorial examples (numbered, beginner-friendly):
+  - `01_basic.rs` - Getting started
+  - `02_fan_out.rs` - 1→N dependencies
+  - `03_fan_in.rs` - N→1 dependencies
+  - `04_parallel_computation.rs` - Parallel map-reduce
+- Reference examples (practical patterns):
+  - `complex_dag.rs` - Multi-layer workflows
+  - `conditional_workflow.rs` - Conditional execution
+  - `data_pipeline.rs` - ETL pipeline pattern
+  - `error_handling.rs` - Error propagation and recovery
+  - `timeout.rs` - Task timeouts
+  - `large_dag.rs` - Scalability demonstration
+  - `parallelism_proof.rs` - True parallelism proof
+- Architecture documentation
+- Security policy
+- Contributing guidelines
+
+### Dependencies
+
+- `futures = "0.3"` (runtime-agnostic async)
+- `parking_lot = "0.12"` (efficient synchronization)
+- `dagx-macros` (procedural macros)
+
+### Dev Dependencies
+
+- `tokio = "1"` (async runtime)
+- `async-std = "1"` (async runtime)
+- `smol = "2"` (async runtime)
+- `criterion = "0.7"` (benchmarking)
+- `async-executor = "1.13"` (quirky runtime testing)
+- `pollster = "0.4"` (quirky runtime testing)
+- `futures-executor = "0.3"` (quirky runtime testing)
+
+### Tested Platforms
+
+- Linux (primary development and CI)
+- macOS (compatible)
+- Windows (compatible)
+
+[0.3.1]: https://github.com/swaits/dagx/tree/v0.3.1
+[0.3.0]: https://github.com/swaits/dagx/tree/v0.3.0
+[0.2.3]: https://github.com/swaits/dagx/tree/v0.2.3
+[0.2.2]: https://github.com/swaits/dagx/tree/v0.2.2
+[0.2.1]: https://github.com/swaits/dagx/tree/v0.2.1
+[0.2.0]: https://github.com/swaits/dagx/tree/v0.2.0
+[0.1.0]: https://github.com/swaits/dagx/tree/v0.1.0

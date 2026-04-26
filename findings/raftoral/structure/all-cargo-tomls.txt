@@ -1,0 +1,123 @@
+[package]
+name = "raftoral"
+version = "0.2.0"
+edition = "2024"
+authors = ["Ori Shalev"]
+license = "MIT"
+description = "Fault-tolerant workflow orchestration library using embedded Raft consensus for Rust applications"
+homepage = "https://github.com/orishu/raftoral"
+repository = "https://github.com/orishu/raftoral"
+readme = "README.md"
+keywords = ["workflow", "orchestration", "raft", "consensus", "distributed"]
+categories = ["asynchronous", "concurrency", "development-tools"]
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+serde = { version = "^1.0.226", features = ["derive"] }
+serde_json = "^1.0.145"
+slog = "^2.7"
+slog-term = "^2.9"
+slog-async = "^2.8"
+log = "^0.4"
+bytes = "^1.0"
+rocksdb = { version = "^0.24.0", optional = true }
+raft = { version = "0.7.0", default-features = false, features = ["prost-codec", "default-logger"] }
+# Prost 0.14 to match forked raft's prost-codec feature
+prost = "^0.14"
+
+# Native (non-WASM) dependencies with full networking support
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+tokio = { version = "^1.47.1", features = ["full"] }
+tokio-stream = { version = "^0.1", features = ["sync"] }
+uuid = { version = "^1.0", features = ["v4", "serde"] }
+# gRPC dependencies
+protobuf = "^4.33.1-release"
+tonic = "^0.14"
+tonic-reflection = "^0.14"
+prost = "^0.14"
+tonic-prost = "^0.14"
+# HTTP server and client
+axum = "^0.8"
+reqwest = { version = "^0.12", features = ["json"] }
+tower = "^0.5"
+tower-http = { version = "^0.6", features = ["cors"] }
+async-trait = "^0.1"
+# CLI and utilities
+clap = { version = "^4.5", features = ["derive"] }
+env_logger = "^0.11"
+ttl_cache = "^0.5"
+rand = "^0.9.2"
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+# Tokio for WASM - only features that work without mio (no net, io, fs)
+tokio = { version = "^1.47.1", features = ["sync", "macros", "time"] }
+uuid = { version = "^1.0", features = ["v4", "serde", "js"] }
+wasm-bindgen = "^0.2"
+wasm-bindgen-futures = "^0.4"
+js-sys = "^0.3"
+web-sys = { version = "^0.3", features = ["Window", "Request", "Response", "Headers", "RequestInit", "RequestMode", "RequestCredentials"] }
+getrandom = { version = "^0.3", features = ["wasm_js"] }
+async-trait = "^0.1"
+console_error_panic_hook = "^0.1"
+serde-wasm-bindgen = "^0.6"
+
+[features]
+default = ["persistent-storage"]
+persistent-storage = ["rocksdb"]
+
+[dev-dependencies]
+port_check = "^0.3.0"
+tempfile = "3.8"
+raftoral-client = { path = "raftoral-client" }
+
+[build-dependencies]
+tonic-prost-build = "^0.14"
+
+# Patch raft-rs to use updated dependencies (prost 0.14, rand 0.9)
+[patch.crates-io]
+raft = { git = "https://github.com/orishu/raft-rs", branch = "orishu/prost-and-rand-deps" }
+raft-proto = { git = "https://github.com/orishu/raft-rs", branch = "orishu/prost-and-rand-deps" }
+[package]
+name = "raftoral-client"
+version = "0.1.0"
+edition = "2024"
+authors = ["Ori Shalev"]
+license = "MIT"
+description = "Client SDK for Raftoral sidecar communication"
+homepage = "https://github.com/orishu/raftoral"
+repository = "https://github.com/orishu/raftoral"
+keywords = ["workflow", "orchestration", "raft", "client", "sidecar"]
+
+[dependencies]
+# Async runtime
+tokio = { version = "^1.47", features = ["full"] }
+tokio-stream = { version = "^0.1", features = ["sync"] }
+
+# gRPC
+tonic = "^0.14"
+tonic-prost = "^0.14"
+prost = "^0.14"
+http = "^1.0"
+
+# Serialization
+serde = { version = "^1.0", features = ["derive"] }
+serde_json = "^1.0"
+
+# Error handling
+thiserror = "^2.0"
+
+# Logging
+slog = "^2.7"
+
+# Utilities
+futures = "^0.3"
+async-trait = "^0.1"
+
+[build-dependencies]
+tonic-prost-build = "^0.14"
+
+[dev-dependencies]
+slog-term = "^2.9"
+slog-async = "^2.8"

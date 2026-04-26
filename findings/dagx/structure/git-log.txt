@@ -1,0 +1,25 @@
+dfb7943 Merge pull request #14 from TechnoPorg/push-mzlqmxmonmyt
+9fbe4c2 fix: change where TaskHandle is borrowed to prevent repeat output fetches
+c8efb00 Merge pull request #13 from TechnoPorg/push-qlytvyqokrzl
+766555b doc: update for next release
+a13f148 deps: update lockfile
+827041c chore: clean up in preparation for release
+c002161 Merge pull request #12 from TechnoPorg/push-wummzrynoysn
+72a83e2 test: update tests/examples/benches
+e4fc0b0 refactor: make DagRunner interface single-threaded
+d83a815 Fix CI
+3e02d6b Merge pull request #11 from TechnoPorg/push-zvntumwxvoru
+a6b8ce4 test: bring tarpaulin coverage back up
+fe8de27 refactor: move task_fn into its own crate
+b8204c4 refactor: consolidate some tests/examples/benchmarks
+49be497 perf: don't double-box task outputs
+b48b3a5 Merge pull request #10 from TechnoPorg/push-lytsnzwpmxmy
+711cebd Speed up CI by installing dependencies as binaries
+5bfb284 Merge pull request #9 from TechnoPorg/push-kplnqxpsroms
+c027407 perf: use passthrough hasher and preallocate capacity for outputs
+b6ff1f8 chore: fix formatting for CI
+v0.3.1
+v0.2.1
+v0.2.3
+v0.2.2
+v0.3.0
