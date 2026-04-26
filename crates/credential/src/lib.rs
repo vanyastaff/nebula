@@ -156,7 +156,7 @@ pub use provider::{ExternalProvider, ExternalReference, ProviderError, ProviderK
 // (integration-internal, не projected auth material).
 pub use scheme::{
     AuthPattern, AuthScheme, Certificate, ConnectionUri, IdentityPassword, InstanceBinding,
-    KeyPair, OAuth2Token, SecretToken, SharedKey, SigningKey,
+    KeyPair, OAuth2Token, PublicScheme, SecretToken, SensitiveScheme, SharedKey, SigningKey,
 };
 // §12.5 secret-handling primitives — crypto, guard, zeroizing wrappers
 pub use secrets::{
@@ -222,8 +222,11 @@ pub mod prelude {
         CredentialMetadata,
         CredentialState,
         HasCredentialsExt,
+        // Sensitivity dichotomy (§15.5)
+        PublicScheme,
         // Secrets
         SecretString,
+        SensitiveScheme,
         credential_key,
     };
 }

@@ -108,6 +108,11 @@ pub struct CredentialSnapshot {
     /// Type-erased projected `AuthScheme`.
     projected: Box<dyn Any + Send + Sync>,
     /// Clone function captured at construction time from `S: AuthScheme + Clone`.
+    ///
+    /// Per Tech Spec §15.5, `AuthScheme` no longer mandates `Clone`; snapshot
+    /// stores a per-construction clone closure so consumers can opt out of
+    /// `Clone` while snapshots opt in via the explicit `Clone` bound on
+    /// [`new`](Self::new).
     clone_fn: fn(&(dyn Any + Send + Sync)) -> Box<dyn Any + Send + Sync>,
 }
 
@@ -140,12 +145,12 @@ impl CredentialSnapshot {
     /// assert_eq!(snap.scheme_pattern(), "SecretToken");
     /// ```
     #[must_use]
-    pub fn new<S: AuthScheme>(
+    pub fn new<S: AuthScheme + Clone>(
         kind: impl Into<String>,
         record: CredentialRecord,
         scheme: S,
     ) -> Self {
-        fn clone_projected<S: AuthScheme>(
+        fn clone_projected<S: AuthScheme + Clone>(
             boxed: &(dyn Any + Send + Sync),
         ) -> Box<dyn Any + Send + Sync> {
             // This downcast cannot fail: clone_fn is monomorphized at new::<S>()
