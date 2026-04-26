@@ -92,6 +92,9 @@ assert_fs = { workspace = true }
 insta = { workspace = true }
 pretty_assertions = { workspace = true }
 rstest = { workspace = true }
+# Loom CAS-atomicity probe lives in the sibling crate
+# `nebula-storage-loom-probe` to avoid `--cfg loom` polluting transitive
+# deps (concurrent-queue, etc.) — see that crate's lib doc.
 
 [lib]
 doctest = false

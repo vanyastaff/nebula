@@ -4513,6 +4513,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "nebula-storage-loom-probe"
+version = "0.1.0"
+dependencies = [
+ "loom",
+]
+
+[[package]]
 name = "nebula-system"
 version = "0.1.0"
 dependencies = [

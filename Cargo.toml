@@ -2,6 +2,7 @@
 members = [
   "crates/action",
   "crates/storage",
+  "crates/storage-loom-probe",
   "crates/core",
   "crates/credential",
   "crates/credential-builtin",
