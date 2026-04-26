@@ -1371,11 +1371,15 @@ impl Manager {
             return Ok(Vec::new());
         }
 
-        // TODO: For each affected resource key, trigger a per-topology
-        // reload once the runtime integration layer is available.
-        // Currently returns empty outcomes.
+        // Deferred per concerns register `stage6-followup-resource-integration`
+        // (see Tech Spec §15.7). Stage 6 lands `OnCredentialRefresh<C>` in
+        // nebula-credential as the canonical refresh-hook trait; this manager
+        // dispatch path threads it through once the Resource ↔ Credential
+        // integration shape is decided (Stage 7+ or follow-up cascade).
         let _ = &keys;
-        todo!("Implementation deferred to runtime integration")
+        todo!(
+            "on_credential_refreshed dispatch deferred — see stage6-followup-resource-integration"
+        )
     }
 
     /// Handle a credential revocation event. Stops accepting new acquires
