@@ -70,7 +70,7 @@ related:
 | `crates/credential/src/contract/any.rs` | `AnyCredential` revisit — drop assumptions about base trait having capability methods |
 | `crates/credential/src/scheme/*.rs` (each scheme) | `SensitiveScheme` or `PublicScheme` impl + `ZeroizeOnDrop` derive where required |
 | `crates/credential/src/scheme/connection_uri.rs` | Restructure with structured accessors per §15.5 §3295 |
-| `crates/credential/src/scheme/oauth2.rs` (or wherever `OAuth2Token` lives) | `bearer_header()` returns `SecretString` |
+| `crates/credential/src/scheme/oauth2.rs` (`OAuth2Token`) AND `crates/credential/src/credentials/oauth2.rs` (`OAuth2State`) | `bearer_header()` returns `SecretString` (both helpers — engine state and consumer scheme — leak via the same N4 vector) |
 | `crates/core/src/auth/mod.rs` (or wherever `AuthScheme` lives) | Reduce `AuthScheme` to base; add `SensitiveScheme` + `PublicScheme` sub-traits |
 | `crates/credential/src/credentials/api_key.rs` | Drop `const TESTABLE = ...`; impl `Testable` if previously testable |
 | `crates/credential/src/credentials/basic_auth.rs` | Same — sub-trait migration |
@@ -553,6 +553,7 @@ For each file under `crates/credential/src/scheme/*.rs`, add the appropriate sub
 - Modify: `crates/credential/src/scheme/instance_binding.rs` → `PublicScheme`
 - Modify: `crates/credential/src/scheme/connection_uri.rs` → `SensitiveScheme` + restructure (Task 1.5)
 - Modify: `crates/credential/src/scheme/oauth2.rs` → `SensitiveScheme` + `bearer_header()` returns `SecretString`
+- Modify: `crates/credential/src/credentials/oauth2.rs` (`OAuth2State`) → `bearer_header()` returns `SecretString` (symmetric with `OAuth2Token`; same N4 vector)
 - Modify: `crates/credential/src/scheme/certificate.rs` → `SensitiveScheme`
 - Modify: `crates/credential/src/scheme/coercion.rs` → audit — `PublicScheme` if no embedded secret material; `SensitiveScheme` otherwise
 

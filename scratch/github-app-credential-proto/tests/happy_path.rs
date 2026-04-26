@@ -65,7 +65,9 @@ async fn project_produces_bearer_with_installation_token() {
     let scheme = GitHubAppCredential::project(&state);
     let header = scheme.bearer_header();
 
-    assert!(header.starts_with("Bearer ghs_mock_token_hit_"));
+    // bearer_header returns SecretString per §15.5 — exposure happens at
+    // the assertion site (test scope), never in production logs.
+    assert!(header.expose_secret().starts_with("Bearer ghs_mock_token_hit_"));
 }
 
 #[tokio::test]

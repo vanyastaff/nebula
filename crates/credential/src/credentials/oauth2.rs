@@ -101,9 +101,15 @@ impl OAuth2State {
     }
 
     /// `Authorization: Bearer <access_token>` header value.
+    ///
+    /// Per Tech Spec §15.5 (closes security-lead N4): the bearer header
+    /// contains the access token verbatim; returning `SecretString` forces
+    /// `.expose_secret()` at the FFI boundary, eliminating accidental
+    /// `Debug` / log leaks of the bearer string. Symmetric with
+    /// [`OAuth2Token::bearer_header`](crate::scheme::OAuth2Token::bearer_header).
     #[must_use]
-    pub fn bearer_header(&self) -> String {
-        format!("Bearer {}", self.access_token.expose_secret())
+    pub fn bearer_header(&self) -> SecretString {
+        SecretString::new(format!("Bearer {}", self.access_token.expose_secret()))
     }
 }
 
@@ -1039,7 +1045,9 @@ mod tests {
     #[test]
     fn bearer_header_format() {
         let state = make_state();
-        assert_eq!(state.bearer_header(), "Bearer tok_abc");
+        // bearer_header returns SecretString per §15.5 — exposure happens at
+        // the assertion site (test scope), never in production logs.
+        assert_eq!(state.bearer_header().expose_secret(), "Bearer tok_abc");
     }
 
     #[test]
