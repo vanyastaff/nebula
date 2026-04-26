@@ -1,7 +1,5 @@
-//! Proc-macro crate for the `Credential` derive macro.
-//!
-//! Generates a Credential impl for static (non-interactive) credentials
-//! backed by a StaticProtocol.
+//! Proc-macro crate for the `Credential` derive macro and the
+//! `#[capability]` attribute macro.
 
 #![forbid(unsafe_code)]
 #![warn(missing_docs)]
@@ -11,6 +9,7 @@ extern crate proc_macro;
 use proc_macro::TokenStream;
 
 mod auth_scheme;
+mod capability;
 mod credential;
 
 /// Derive macro for the v2 `Credential` trait.
@@ -38,7 +37,7 @@ mod credential;
 /// ## Dependency attributes (outer attributes on the struct)
 ///
 /// - `#[uses_resource(TypeName, purpose = "...")]` - Declare a resource dependency (repeatable)
-/// - `#[uses_credential(...)]` - **Forbidden** — emits a compile error (spec 23)
+/// - `#[uses_credential(...)]` - **Forbidden** - emits a compile error (spec 23)
 ///
 /// # Example
 ///
@@ -63,64 +62,82 @@ pub fn derive_credential(input: TokenStream) -> TokenStream {
     credential::derive(input)
 }
 
-/// Derive macro for the [`AuthScheme`] trait + sensitivity sub-trait.
+/// Derive macro for the `AuthScheme` trait.
 ///
-/// Generates `impl AuthScheme` returning the specified [`AuthPattern`]
-/// variant, and one of `impl SensitiveScheme` or `impl PublicScheme`
-/// per Tech Spec §15.5 dichotomy. The macro also audits scheme fields
-/// against the declared sensitivity at expansion time.
+/// Generates an `impl AuthScheme` that returns the specified
+/// `AuthPattern` variant. Types with custom `expires_at()` logic
+/// (e.g., `OAuth2Token`, `Certificate`) should keep a manual impl.
 ///
 /// # Errors
 ///
-/// Emits a compile error when:
-/// - `#[auth_scheme(pattern = ...)]` is missing or the pattern variant is not a valid `AuthPattern`
-///   identifier.
-/// - Neither `sensitive` nor `public` is declared, or both are declared.
-/// - `sensitive` is declared but a secret-named field (token / secret / key / password / bearer) is
-///   typed as plain `String` / `Vec<u8>`.
-/// - `public` is declared but any field is typed as `SecretString` / `SecretBytes`.
+/// Emits a compile error when `#[auth_scheme(pattern = ...)]` is
+/// missing or the pattern variant is not a valid `AuthPattern` identifier.
 ///
 /// # Attributes
 ///
 /// ## Container attributes (`#[auth_scheme(...)]` on the struct)
 ///
-/// - `pattern = Variant` — the [`AuthPattern`] variant (required)
-/// - `sensitive` — declares scheme holds secret material; mandates `ZeroizeOnDrop` (enforced via
-///   `SensitiveScheme: AuthScheme + ZeroizeOnDrop` trait bound — derive `Zeroize`+`ZeroizeOnDrop`).
-/// - `public` — declares scheme holds no secret material; field audit forbids
-///   `SecretString`/`SecretBytes`.
+/// - `pattern = Variant` - the `AuthPattern` variant (required)
 ///
-/// `sensitive` and `public` are mutually exclusive; exactly one must be
-/// declared.
-///
-/// # Example — sensitive scheme
-///
-/// ```ignore
-/// use nebula_credential::{AuthScheme, SecretString};
-///
-/// #[derive(Clone, Serialize, Deserialize, Zeroize, ZeroizeOnDrop, AuthScheme)]
-/// #[auth_scheme(pattern = SecretToken, sensitive)]
-/// pub struct MyToken {
-///     token: SecretString,
-/// }
-/// ```
-///
-/// # Example — public scheme
+/// # Example
 ///
 /// ```ignore
 /// use nebula_credential::AuthScheme;
 ///
 /// #[derive(Clone, Serialize, Deserialize, AuthScheme)]
-/// #[auth_scheme(pattern = InstanceIdentity, public)]
-/// pub struct MyBinding {
-///     provider: String,
-///     role: String,
+/// #[auth_scheme(pattern = SecretToken)]
+/// pub struct MyToken {
+///     token: String,
 /// }
 /// ```
-///
-/// [`AuthScheme`]: https://docs.rs/nebula-credential/latest/nebula_credential/trait.AuthScheme.html
-/// [`AuthPattern`]: https://docs.rs/nebula-credential/latest/nebula_credential/enum.AuthPattern.html
 #[proc_macro_derive(AuthScheme, attributes(auth_scheme))]
 pub fn derive_auth_scheme(input: TokenStream) -> TokenStream {
     auth_scheme::derive(input)
+}
+
+/// Attribute macro for declaring a capability sub-trait.
+///
+/// Expands a single capability trait declaration into the full
+/// ADR-0035 canonical form: real trait, service/scheme blanket impl,
+/// sealed-blanket, phantom trait, and phantom blanket. Hides the
+/// two-trait verbosity from everyday plugin and built-in code.
+///
+/// # Arguments
+///
+/// - `scheme_bound = <Path>` - the marker trait the credential's `Scheme` associated type must
+///   satisfy (e.g. `AcceptsBearer`).
+/// - `sealed = <Ident>` - the per-capability inner sealed trait inside the crate-root `mod
+///   sealed_caps` (e.g. `BearerSealed`). The crate author must declare this module manually; see
+///   ADR-0035 4.1 / 4.2.
+///
+/// # Example
+///
+/// ```ignore
+/// // Crate-root module - declared once by the crate author.
+/// mod sealed_caps {
+///     pub trait BearerSealed {}
+///     pub trait BasicSealed {}
+/// }
+///
+/// // Service supertrait declared elsewhere in the same crate.
+/// pub trait BitbucketCredential: nebula_credential::Credential {}
+///
+/// // Capability declaration.
+/// #[nebula_credential_macros::capability(scheme_bound = AcceptsBearer, sealed = BearerSealed)]
+/// pub trait BitbucketBearer: BitbucketCredential {}
+/// ```
+///
+/// # Errors
+///
+/// Emits a compile error when:
+///
+/// - Either argument is missing or repeated.
+/// - The trait body is non-empty (capability traits are markers).
+/// - The trait has zero or multiple non-marker supertraits.
+///
+/// A missing `mod sealed_caps` or missing inner sealed trait surfaces
+/// as `E0433` at the emitted blanket impl line per ADR-0035 4.1.
+#[proc_macro_attribute]
+pub fn capability(args: TokenStream, input: TokenStream) -> TokenStream {
+    capability::expand(args, input)
 }
