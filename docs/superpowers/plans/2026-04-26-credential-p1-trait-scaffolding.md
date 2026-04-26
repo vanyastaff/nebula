@@ -184,7 +184,7 @@ workspace = true
 //! # nebula-credential-builtin
 //!
 //! Built-in concrete credential types and the canonical
-//! [`sealed_caps`] module per ADR-0035. Plugin authors depend on
+//! `sealed_caps` module per ADR-0035. Plugin authors depend on
 //! `nebula-credential` (the contract crate); first-party concrete
 //! types live here.
 //!
