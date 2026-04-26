@@ -206,6 +206,11 @@ impl TypeClass {
 /// The audit is best-effort and conservative: unrecognized types fall to
 /// `Other`. The trait-level `SensitiveScheme: ZeroizeOnDrop` bound catches
 /// missing zeroize at the impl site, so the macro audit is defense in depth.
+///
+/// `Option<T>`, `Box<T>`, `Arc<T>`, `Rc<T>` recurse to their inner type so
+/// `Option<SecretString>` on a `public` scheme is rejected (otherwise the
+/// audit would miss this and the trait bound `PublicScheme: AuthScheme`
+/// gives no friendly diagnostic).
 fn classify_type(ty: &Type) -> TypeClass {
     let Type::Path(type_path) = ty else {
         return TypeClass::Other;
@@ -218,6 +223,15 @@ fn classify_type(ty: &Type) -> TypeClass {
         "String" => TypeClass::PlainString,
         "SecretString" => TypeClass::SecretString,
         "SecretBytes" => TypeClass::SecretBytes,
+        "Option" | "Box" | "Arc" | "Rc" => {
+            // Look through the wrapper to its inner type and recurse.
+            if let syn::PathArguments::AngleBracketed(args) = &last.arguments
+                && let Some(syn::GenericArgument::Type(inner)) = args.args.first()
+            {
+                return classify_type(inner);
+            }
+            TypeClass::Other
+        },
         "Vec" => {
             // Distinguish `Vec<u8>` from `Vec<T>` in general
             if let syn::PathArguments::AngleBracketed(args) = &last.arguments
@@ -234,14 +248,34 @@ fn classify_type(ty: &Type) -> TypeClass {
 
 /// Whether a field name suggests it carries secret material.
 ///
-/// Matches the regex `^(token|secret|key|password|bearer)$/i` — explicit
-/// per Tech Spec §15.5 to keep the audit predictable. Field names like
-/// `token_id`, `key_alg`, `bearer_type` are NOT matched (they describe
-/// metadata about a secret, not the secret itself).
+/// Word-segment match: splits the name on `_` and matches any segment
+/// (case-insensitive) against `token`, `secret`, `key`, `password`,
+/// `bearer`. Catches `token`, `api_key`, `client_secret`, `access_token`,
+/// `bearer_token`, etc.
+///
+/// Per Tech Spec §15.5: "field-name lint catches common secret markers;
+/// combined with type-class audit, an author cannot declare a
+/// sensitive-named plain `String` field."
+///
+/// **Allowlisted prefixes** (treated as non-secret regardless of trailing
+/// secret-marker): `public_` — for `public_key` (the non-secret half of
+/// an asymmetric pair). All other compound names like `token_id`,
+/// `key_alg`, `bearer_type` ARE matched (they contain a secret-marker
+/// segment). The intent is erring on the side of safety — additional
+/// false positives can be silenced by renaming the field or by holding
+/// the metadata in a wrapper struct.
 fn is_secret_named(name: &str) -> bool {
+    const SECRETS: &[&str] = &["token", "secret", "key", "password", "bearer"];
+    /// Prefixes that mark a field as deliberately non-secret even when
+    /// the rest of the name contains a secret-marker segment.
+    const NON_SECRET_PREFIXES: &[&str] = &["public_"];
+
     let lower = name.to_ascii_lowercase();
-    matches!(
-        lower.as_str(),
-        "token" | "secret" | "key" | "password" | "bearer"
-    )
+    if NON_SECRET_PREFIXES
+        .iter()
+        .any(|prefix| lower.starts_with(prefix))
+    {
+        return false;
+    }
+    lower.split('_').any(|segment| SECRETS.contains(&segment))
 }
