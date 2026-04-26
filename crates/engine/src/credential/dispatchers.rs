@@ -23,7 +23,7 @@
 //! testing is read-only, lease release races a TTL). Putting policy in
 //! the dispatcher would either force one-size-fits-all defaults or
 //! demand parameterization that obscures the structural binding the
-//! dispatcher exists to provide. Cf. [`resolve_with_refresh`] which
+//! dispatcher exists to provide. Cf. `resolve_with_refresh` which
 //! adds policy precisely because there is a single canonical refresh
 //! call site.
 

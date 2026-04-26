@@ -3,8 +3,8 @@
 //! Connections are pure wires: they carry an output from one node's port to
 //! another node's port and nothing else. All routing logic (conditionals,
 //! error handling, branch selection) lives in explicit
-//! [`ControlAction`](nebula_action::control::ControlAction) nodes —
-//! [`If`](), [`Switch`](), [`Router`](), [`ErrorRouter`]() — so the shape of
+//! `ControlAction` nodes (`If` / `Switch` / `Router` / `ErrorRouter` —
+//! defined in the `nebula_action::control` module) — so the shape of
 //! a workflow is always visible on the graph, never hiding inside edge
 //! metadata. Spec 28 §2.2 replaced the previous `EdgeCondition` /
 //! `ResultMatcher` / `ErrorMatcher` trio with this port-driven routing.

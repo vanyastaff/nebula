@@ -1,7 +1,7 @@
-//! Engine-side [`CredentialAccessor`] implementation.
+//! Engine-side `CredentialAccessor` implementation.
 //!
 //! [`EngineCredentialAccessor`] bridges the engine's credential resolution
-//! infrastructure to the [`CredentialAccessor`] capability trait consumed by
+//! infrastructure to the `CredentialAccessor` capability trait consumed by
 //! actions. It enforces an allowlist of declared credential keys so that
 //! actions can only access credentials they have explicitly declared as
 //! dependencies.
@@ -108,9 +108,9 @@ impl EngineCredentialAccessor {
     ///   denies every request (deny-by-default, per `PRODUCT_CANON` §4.5 / §12.5). A non-empty set
     ///   permits only the listed keys.
     /// - `resolve_fn` — async closure that resolves a credential ID to a boxed `Any` (typically a
-    ///   [`CredentialSnapshot`]) or a [`CoreError`].
+    ///   `CredentialSnapshot`) or a `CoreError`.
     /// - `action_id` — the action key or node identifier for security attribution in
-    ///   [`CoreError::CredentialAccessDenied`] events.
+    ///   `CoreError::CredentialAccessDenied` events.
     pub fn new<F, Fut>(allowed_keys: HashSet<String>, resolve_fn: F, action_id: String) -> Self
     where
         F: Fn(&str) -> Fut + Send + Sync + 'static,
@@ -202,7 +202,7 @@ impl nebula_core::accessor::CredentialAccessor for EngineCredentialAccessor {
 
     /// Try to resolve a credential by key, returning `None` if not in allowlist.
     ///
-    /// Unlike [`resolve_any`], this does not error on disallowed keys — it
+    /// Unlike `resolve_any`, this does not error on disallowed keys — it
     /// returns `Ok(None)` instead, matching the "optional dependency" pattern.
     fn try_resolve_any(
         &self,

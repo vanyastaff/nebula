@@ -12,7 +12,7 @@ use uuid::Uuid;
 /// Holds the fully-resolved URL and path string so accessor calls
 /// are infallible reads. The transport constructs one instance per
 /// `(trigger_uuid, nonce)` activation and injects it via
-/// [`TriggerContext::with_webhook_endpoint`][nebula_action::TriggerContext::with_webhook_endpoint].
+/// `TriggerContext::with_webhook_endpoint` (in the `nebula_action` crate).
 #[derive(Debug, Clone)]
 pub struct EndpointProviderImpl {
     url: Url,

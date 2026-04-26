@@ -67,7 +67,7 @@ pub enum ExecutorError {
 /// credential-specific kickoff helpers (see
 /// [`OAuth2Credential::initiate_authorization_code`](nebula_credential::credentials::OAuth2Credential::initiate_authorization_code))
 /// and persist it via
-/// [`PendingStateStore::put`](nebula_credential::pending_store::PendingStateStore::put)
+/// [`PendingStateStore::put`]
 /// — this executor is *not* the kickoff path for those flows.
 pub async fn execute_resolve<C, S>(
     values: &FieldValues,
