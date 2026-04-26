@@ -2,7 +2,7 @@
 name: credential concerns register
 status: living document — updated as sub-specs land and concerns surface
 seeded: 2026-04-24 (Checkpoint 2)
-last-updated: 2026-04-24
+last-updated: 2026-04-26
 maintainer: credential-redesign workstream
 ---
 
@@ -70,6 +70,11 @@ All strategy-blocking findings resolved in Checkpoint 1 or deferred to spike val
 | critique-c16 | Plugin registration mechanism for 3rd-party | tech-spec-material | decided | Explicit `register::<C>()` in plugin init (Strategy §2.1); `inventory`-style rejected (cross-crate unreliable) |
 | arch-signing-infra | Signed manifest infrastructure (desktop / self-hosted / cloud trust anchors) | sub-spec | pending-sub-spec | Separate sub-spec per Strategy §2.1; macro works without signing until infra lands. Cross-ref: Tech Spec §15.6 fatal duplicate-KEY is interim mitigation pending signing-infra long-term defense. |
 | arch-registry-duplicate-fail-closed | `CredentialRegistry::register<C>` returns `Result<(), DuplicateKey>` fatal in BOTH debug + release. Replaces current "panic in debug, warn + overwrite in release" pattern (§3.1 line 663). Silent credential takeover via supply-chain plugin / namespace collision blocked at startup. (Closes security-lead N7 — interim, until signing-infra lands.) | tech-spec-material | decided | Tech Spec [§15.6](../superpowers/specs/2026-04-24-credential-tech-spec.md). 3-stakeholder consensus session 2026-04-24. П1 landing-gate `tests/runtime_duplicate_key_fatal.rs`. |
+| stage5-followup-i1 | `CredentialRegistry::register` visibility — Tech Spec §3.1 line 669 specifies `pub-crate` (only plugin init paths can call), code lands as `pub`. Stage 8 should resolve: amend §3.1 line 669 to allow `pub` (since registry is held privately by the engine entry-point) OR change code to `pub(crate)` and introduce a Builder pattern that mediates external registration. Severity: low — code works, deviation is from spec text. | process | proposed | Stage 8 doc-sync resolution (this plan). Code-quality review on `c44eb2ca`. Tech Spec [§3.1](../superpowers/specs/2026-04-24-credential-tech-spec.md) line 669. |
+| stage5-followup-i2 | `CredentialKey(Arc<str>)` newtype — Tech Spec §3.2 specifies a `CredentialKey(Arc<str>)` newtype around the registry storage key, code uses raw `Arc<str>` directly in `AHashMap<Arc<str>, RegistryEntry>`. Stage 8 should resolve: introduce `CredentialKey` newtype OR amend §3.2 to allow raw `Arc<str>` storage (justified by entry-point control over construction — only `Credential::KEY` ever flows in). Severity: low — runtime behavior identical, type-safety nuance only. | process | proposed | Stage 8 doc-sync resolution. Code-quality review on `c44eb2ca`. Tech Spec [§3.2](../superpowers/specs/2026-04-24-credential-tech-spec.md). |
+| stage5-followup-s1 | `CredentialRegistry::keys()` iterator — Stage 7 (`iter_compatible` filter via registry-computed capabilities, §15.8) requires iterating registered credentials. Currently the registry exposes `len()`, `is_empty()`, `contains()`, but no key iterator. Stage 7 will need to add `pub fn keys(&self) -> impl Iterator<Item = &str>` (or similar) when wiring the consumer. Severity: low — additive, only blocks Stage 7 not Stage 5. | process | proposed | Stage 7 implementation will add iterator method. Code-quality review on `c44eb2ca`. Tech Spec [§15.8](../superpowers/specs/2026-04-24-credential-tech-spec.md). |
+| stage5-followup-s2 | `register_with_capabilities` test helper — Stage 7 unit tests need to exercise capability-aware code paths without standing up real `Credential` impls with the full sub-trait surface. A `#[cfg(test)] pub(crate) fn register_with_capabilities(&mut self, key: &'static str, instance: Box<dyn AnyCredential>, caps: Capabilities) -> Result<(), RegisterError>` test helper enables targeted capability-routing probes. Severity: low — test-prep only. | process | proposed | Stage 7 prep. Code-quality review on `c44eb2ca`. |
+| stage5-followup-s3 | Tech Spec §15.6 snippet update — the `register` signature that landed in `c44eb2ca` differs from the §15.6 candidate (a) snippet (lines 3322-3360): (1) takes `registering_crate: &'static str` parameter explicitly instead of using `env!("CARGO_CRATE_NAME")` inside the function body (which would always resolve to `nebula-credential`, defeating the per-plugin attribution); (2) no `CredentialMetadataSource` bound on `C` (Stage 5 sticks to `C: Credential` — metadata-source bound is a Stage 7+ concern); (3) bound is just `C: Credential`. Stage 8 should update §15.6 candidate (a) snippet to match what landed. Severity: low — spec text reconciliation, no behavior change. | process | proposed | Stage 8 doc-sync resolution. Code-quality review on `c44eb2ca`. Tech Spec [§15.6](../superpowers/specs/2026-04-24-credential-tech-spec.md) lines 3322-3360. |
 
 ## Patterns and service grouping
 
@@ -317,7 +322,7 @@ All strategy-blocking findings resolved in Checkpoint 1 or deferred to spike val
 - **Product-policy rows** updated only when the product decision itself changes (via product ADR); independent of engineering cadence.
 - **Label / status counts audited** at every register revision — totals table rebuilt when rows are added, removed, or relabeled. Mismatched counts are a register bug.
 
-## Current totals (audited 2026-04-24 — Gate 3 spike iter-3 closed 3 rows)
+## Current totals (audited 2026-04-26 — Stage 5 follow-up added 5 process rows)
 
 | Label | Count | Notes |
 |---|---|---|
@@ -326,7 +331,7 @@ All strategy-blocking findings resolved in Checkpoint 1 or deferred to spike val
 | sub-spec | 16 | Each row has a landing-order entry in Strategy §4.3 |
 | implementation-phase | 4 | Routine execution tasks |
 | product-policy | 7 | Frozen or awaiting product-level decision |
-| process | 14 | Findings about the redesign workstream itself; CP5 added 1 (tech-spec-adoption-status, flipped CP6); CP6 added 3 (gate-p10-landing, gate-n7-registry-observability, gate-spike-iter3-dyn-safety); CP6 post-review added 2 (arch-cp5-spike-validation, arch-techspec-section-sync) |
-| **Total** | **143** | Counts audited at each register revision |
+| process | 19 | Findings about the redesign workstream itself; CP5 added 1 (tech-spec-adoption-status, flipped CP6); CP6 added 3 (gate-p10-landing, gate-n7-registry-observability, gate-spike-iter3-dyn-safety); CP6 post-review added 2 (arch-cp5-spike-validation, arch-techspec-section-sync); П1 Stage 5 review added 5 (stage5-followup-i1, stage5-followup-i2, stage5-followup-s1, stage5-followup-s2, stage5-followup-s3) |
+| **Total** | **148** | Counts audited at each register revision |
 
 Totals rebuilt on every register revision — see maintenance rules below.

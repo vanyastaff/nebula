@@ -174,16 +174,23 @@ impl CredentialRegistry {
     /// unregistered OR the registered entry is a different type than
     /// `C` (concrete-type mismatch).
     #[must_use]
-    pub fn resolve<C: Credential + 'static>(&self, key: &str) -> Option<&C> {
+    pub fn resolve<C: Credential>(&self, key: &str) -> Option<&C> {
         let entry = self.entries.get(key)?;
         entry.instance.as_any().downcast_ref::<C>()
     }
 
-    /// Return the [`Capabilities`] set computed at registration time
-    /// for `key`. Returns `None` if no credential is registered under
-    /// `key`. Stage 5 stubs detection — every entry currently reports
-    /// [`Capabilities::empty()`] until Stage 7 (Tech Spec §15.8) wires
-    /// real detection.
+    /// Returns the capability set for the credential at `key`, if registered.
+    ///
+    /// **Stage 5 stub.** Currently returns [`Capabilities::empty()`] for every
+    /// entry until Stage 7 (Tech Spec §15.8) wires real detection via
+    /// `plugin_capability_report::*` per-credential constants. Consumers must
+    /// not rely on this for security-relevant decisions until Stage 7 lands.
+    ///
+    /// Hidden from the rustdoc index during the Stage 5–7 window so external
+    /// consumers cannot accidentally bind to the empty-stub semantics. Stage 7
+    /// will re-expose this for the engine `iter_compatible` filter (Tech Spec
+    /// §15.8) without an API churn.
+    #[doc(hidden)]
     #[must_use]
     pub fn capabilities_of(&self, key: &str) -> Option<Capabilities> {
         self.entries.get(key).map(|e| e.capabilities)
