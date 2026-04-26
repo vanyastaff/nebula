@@ -2,7 +2,7 @@
 
 ## Status
 
-**Proposed**, with amendments applied 2026-04-24-B post spike iter-2 validation (worktree branch `worktree-agent-a23a1d2c`, commit `1c107144`), 2026-04-24-C post spike iter-3 (worktree branch `worktree-agent-afe8a4c6`, commit `f36f3739`), and 2026-04-26 post Stage 4 review (visibility-symmetry clarification on macro emission). 2026-04-24.
+**Proposed** 2026-04-24, with amendments applied 2026-04-24-B post spike iter-2 validation (worktree branch `worktree-agent-a23a1d2c`, commit `1c107144`), 2026-04-24-C post spike iter-3 (worktree branch `worktree-agent-afe8a4c6`, commit `f36f3739`), 2026-04-26 post Stage 4 review (visibility-symmetry clarification on macro emission), and 2026-04-26-B post PR #582 review (rename of `#[action]` attribute macro to `#[action_phantom]` to avoid collision with the `#[derive(Action)]` helper attribute).
 
 **Post iter-2 amendments applied** (canonical-form corrections, not stylistic):
 

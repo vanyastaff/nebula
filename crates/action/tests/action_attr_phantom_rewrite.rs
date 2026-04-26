@@ -1,4 +1,4 @@
-//! Integration test - `#[action] + #[derive(Action)]` end-to-end.
+//! Integration test - `#[action_phantom] + #[derive(Action)]` end-to-end.
 //!
 //! Verifies the documented "apply attribute first, derive sees rewritten
 //! struct" ordering behavior end-to-end (Tech Spec 2.7 / ADR-0035 §4.3).
@@ -16,10 +16,10 @@
 //! - local `mod sealed_caps` per ADR-0035 §4.1
 //! - local `AcceptsBearer` marker
 //! - local service supertrait + `#[capability]` invocation
-//! - stand-in `CredentialRef<C: ?Sized>` (the real type does not ship in Stage 4; the `#[action]`
-//!   rewriter operates on syntax, not on the type's semantics, so a stub suffices to exercise the
-//!   rewrite)
-//! - a Pattern 2 struct that wires `#[action] #[derive(Action)]` over a `CredentialRef<dyn
+//! - stand-in `CredentialRef<C: ?Sized>` (the real type does not ship in Stage 4; the
+//!   `#[action_phantom]` rewriter operates on syntax, not on the type's semantics, so a stub
+//!   suffices to exercise the rewrite)
+//! - a Pattern 2 struct that wires `#[action_phantom] #[derive(Action)]` over a `CredentialRef<dyn
 //!   LocalServiceBearer>` field
 //!
 //! The compile-fail companion is already covered by the standalone
@@ -120,10 +120,10 @@ impl Credential for LocalCredential {
 impl LocalService for LocalCredential {}
 
 /// Stand-in `CredentialRef<C: ?Sized>` for the test - the production
-/// type does not ship in Stage 4. The `#[action]` rewriter matches on
-/// the path-tail identifier `CredentialRef`, so this local stub exercises
-/// the rewrite end-to-end without depending on a future Stage's
-/// definition.
+/// type does not ship in Stage 4. The `#[action_phantom]` rewriter
+/// matches on the path-tail identifier `CredentialRef`, so this local
+/// stub exercises the rewrite end-to-end without depending on a future
+/// Stage's definition.
 pub struct CredentialRef<C: ?Sized>(PhantomData<C>);
 
 impl<C: ?Sized> Default for CredentialRef<C> {
@@ -134,8 +134,8 @@ impl<C: ?Sized> Default for CredentialRef<C> {
 
 // --- The test struct -------------------------------------------------------
 //
-// `#[action]` is applied FIRST, then `#[derive(Action)]`. The rewriter
-// turns `CredentialRef<dyn LocalServiceBearer>` into
+// `#[action_phantom]` is applied FIRST, then `#[derive(Action)]`. The
+// rewriter turns `CredentialRef<dyn LocalServiceBearer>` into
 // `CredentialRef<dyn LocalServiceBearerPhantom>` BEFORE the derive sees
 // the struct. If the ordering were wrong (or the rewriter missed the
 // field) the type would be `CredentialRef<dyn LocalServiceBearer>` -
@@ -143,16 +143,16 @@ impl<C: ?Sized> Default for CredentialRef<C> {
 // E0191 "unspecified associated types" gate from the `Credential`
 // supertrait closure (the whole reason ADR-0035 exists).
 
-#[nebula_action_macros::action]
+#[nebula_action_macros::action_phantom]
 #[derive(Action)]
 #[action(
     key = "local.bearer.fetch",
     name = "Fetch Local Bearer",
-    description = "Test fixture exercising #[action] + #[derive(Action)] coexistence"
+    description = "Test fixture exercising #[action_phantom] + #[derive(Action)] coexistence"
 )]
 pub struct LocalBearerAction {
     /// Pattern 2 field - typed against the capability trait. The
-    /// `#[action]` macro rewrites `dyn LocalServiceBearer` to
+    /// `#[action_phantom]` macro rewrites `dyn LocalServiceBearer` to
     /// `dyn LocalServiceBearerPhantom` before the derive runs.
     pub bearer: CredentialRef<dyn LocalServiceBearer>,
 }

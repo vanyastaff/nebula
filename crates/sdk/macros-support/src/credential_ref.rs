@@ -7,8 +7,8 @@
 //! helpers for integration tests; this crate can.
 //!
 //! See ADR-0035 paragraph 4.3 (action-side translation) and Tech Spec
-//! 2.7 (`#[action]` macro translation, "rewrites silently") for the
-//! contract.
+//! 2.7 (`#[action_phantom]` macro translation, "rewrites silently") for
+//! the contract.
 
 use quote::quote;
 use syn::{Field, Fields, GenericArgument, Ident, ItemStruct, PathArguments, Type, TypeParamBound};

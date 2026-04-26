@@ -224,7 +224,13 @@ async fn kickoff_test_pending(
     ctx: &CredentialContext,
     credential_key: &str,
 ) -> PendingToken {
-    let session_id = ctx.session_id().unwrap_or("default");
+    // Per Tech Spec §15.4 the executor requires explicit session scoping —
+    // tests must provide a session id via `with_session_id` rather than
+    // relying on a `"default"` fallback that would collapse concurrent
+    // owners into the same pending-store bucket.
+    let session_id = ctx
+        .session_id()
+        .expect("test must call CredentialContext::with_session_id before kickoff");
     let pending = TestPending {
         verification_code: "secret-code-123".into(),
     };

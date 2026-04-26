@@ -111,6 +111,38 @@ fn expand(input: DeriveInput) -> syn::Result<proc_macro2::TokenStream> {
 /// are accepted as-is — their own `#[derive(AuthScheme)]` audits them.
 ///
 /// For `public`: reject any `SecretString` / `SecretBytes` field.
+///
+/// ## Limitations (audit gap — best-effort detection)
+///
+/// The audit classifies field types by trailing path segment only
+/// (see [`classify_type`]). It catches the literal `SecretString`,
+/// `SecretBytes`, and their `Option<T>`/`Box<T>`/`Arc<T>`/`Rc<T>`
+/// wrappers; it does **not** catch:
+///
+/// 1. **Nested `SensitiveScheme` types embedded in a `#[auth_scheme(public)]` struct.** A
+///    proc-macro only sees its own input's tokens, never other crates' `impl SensitiveScheme for X`
+///    declarations. A `public` scheme that embeds e.g. `SecretToken`, `OAuth2Token`, or any
+///    user-defined `SensitiveScheme` slips through this audit.
+/// 2. **Renamed re-exports** (e.g. `use SecretString as MyToken;`) — the classifier only matches
+///    the literal trailing identifier.
+/// 3. **Type aliases** that hide a sensitive primitive behind a public-looking name.
+///
+/// Defense-in-depth: the trait-level `SensitiveScheme: AuthScheme +
+/// ZeroizeOnDrop` bound catches missing zeroize at the impl site for
+/// the wrapping struct, so a `#[auth_scheme(public)]` struct that
+/// embeds `OAuth2Token` would still need to satisfy `ZeroizeOnDrop` via
+/// `derive` to compile — which signals to the author that the wrapping
+/// type carries sensitive material. But the trait bound is not a strict
+/// negative-impl mechanism, and a hand-rolled `Drop` that does **not**
+/// zeroize will type-check.
+///
+/// Authors of nested-sensitive types should `#[derive(zeroize::ZeroizeOnDrop)]`
+/// on the wrapping struct **and** declare it `#[auth_scheme(sensitive)]`
+/// (or build it manually as `SensitiveScheme`). See the
+/// `arch-publicscheme-nested-sensitive-audit` row in
+/// `docs/tracking/credential-concerns-register.md` for the long-term
+/// refinement plan (compile-time `where Self::FieldsX: PublicScheme`
+/// reflection is not currently feasible at the macro level).
 fn audit_fields(input: &DeriveInput, sensitivity: Sensitivity) -> syn::Result<()> {
     let Data::Struct(data) = &input.data else {
         return Err(syn::Error::new(

@@ -1,9 +1,17 @@
-//! Proc-macro crate for the `Action` derive macro and `#[action]` attribute macro.
+//! Proc-macro crate for the `Action` derive macro and `#[action_phantom]` attribute macro.
 //!
 //! - `#[derive(Action)]` generates `DeclaresDependencies` and `Action` trait impls with
 //!   `metadata()`.
-//! - `#[action]` rewrites `CredentialRef<dyn X>` field types to `CredentialRef<dyn XPhantom>` per
-//!   ADR-0035 4.3 + Tech Spec 2.7.
+//! - `#[action_phantom]` rewrites `CredentialRef<dyn X>` field types to `CredentialRef<dyn
+//!   XPhantom>` per ADR-0035 4.3 + Tech Spec 2.7.
+//!
+//! ## Why a separate name from `#[action(...)]`
+//!
+//! `#[derive(Action)]` declares `#[action(key = ..., name = ..., ...)]` as an inert helper
+//! attribute. Naming the rewriter `#[action]` (no args) and putting it in scope would create a
+//! conceptual collision on the same struct - two different `#[action]` mean different things. The
+//! rewriter is therefore named `#[action_phantom]` to match its job (phantom-shim rewrite for
+//! action structs) and to keep the helper attribute's namespace clean.
 
 #![forbid(unsafe_code)]
 #![warn(missing_docs)]
@@ -67,13 +75,17 @@ pub fn derive_action(input: TokenStream) -> TokenStream {
 /// attribute rewrites first, then the derive sees the rewritten field
 /// types and generates impls against the phantom-suffixed `dyn`.
 ///
+/// The name disambiguates from `#[action(...)]` - that container
+/// attribute is consumed by `#[derive(Action)]` (key / name / etc.).
+/// `#[action_phantom]` is the rewriter; `#[action(...)]` is metadata.
+///
 /// # Example
 ///
 /// ```ignore
-/// use nebula_action_macros::{action, Action};
+/// use nebula_action_macros::{action_phantom, Action};
 /// use nebula_credential::CredentialRef;
 ///
-/// #[action]
+/// #[action_phantom]
 /// #[derive(Action)]
 /// #[action(key = "bitbucket.repo.fetch", name = "Fetch Repo")]
 /// pub struct BitbucketRepoFetch {
@@ -89,6 +101,6 @@ pub fn derive_action(input: TokenStream) -> TokenStream {
 /// the standard rustc diagnostics for any errors in their declaration;
 /// no extra error emission from this macro.
 #[proc_macro_attribute]
-pub fn action(args: TokenStream, input: TokenStream) -> TokenStream {
+pub fn action_phantom(args: TokenStream, input: TokenStream) -> TokenStream {
     action_attr::expand(args, input)
 }
