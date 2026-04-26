@@ -161,11 +161,12 @@ pub use scheme::{
     AuthPattern, AuthScheme, Certificate, ConnectionUri, IdentityPassword, InstanceBinding,
     KeyPair, OAuth2Token, PublicScheme, SecretToken, SensitiveScheme, SharedKey, SigningKey,
 };
-// §12.5 secret-handling primitives — crypto, guard, zeroizing wrappers
+// §12.5 secret-handling primitives — crypto, guard, zeroizing wrappers,
+// scheme-guard + refresh hook (§15.7).
 pub use secrets::{
-    CredentialGuard, EncryptedData, EncryptionKey, RedactedSecret, SecretString, decrypt,
-    decrypt_with_aad, encrypt, encrypt_with_aad, encrypt_with_key_id, generate_code_challenge,
-    generate_pkce_verifier, generate_random_state,
+    CredentialGuard, EncryptedData, EncryptionKey, OnCredentialRefresh, RedactedSecret,
+    SchemeFactory, SchemeGuard, SecretString, decrypt, decrypt_with_aad, encrypt, encrypt_with_aad,
+    encrypt_with_key_id, generate_code_challenge, generate_pkce_verifier, generate_random_state,
 };
 // Store trait + DTOs (canonical impls live in `nebula_storage::credential` per ADR-0032)
 pub use store::{CredentialStore, PutMode, StoreError, StoredCredential};
