@@ -86,6 +86,39 @@ Devops wrote to wrong repo path (main repo instead of worktree) — orchestrator
 - ADR-0038 ControlAction seal + canon §3.5 DX tier ratification (canon revision per §0.2)
 - ADR-NNNN+3 cluster-mode hooks deliberately deferred (out of cascade scope per Strategy §6.2)
 
+### 2026-04-26 — Spike iter-3 PASS (final_shape_v3 post-amendments)
+
+**User noted spike artefact stale relative к Tech Spec post-amendment state.** Phase 4 spike validated pre-FROZEN-CP4 shapes (commit `c8aef6a0`); since then 4 amendment rounds (Q1+Q6+Q7+Q8) added 11 trait shape changes.
+
+**Spike iter-3 dispatched** к rust-senior в isolated worktree (compile-validate, не full re-spike per Phase 4 PASS verdict для shape-only stands).
+
+**Outcome: PASS**
+- Isolated worktree commit: `10b24616` (branch `worktree-agent-a3ec73dbf722f0095`)
+- 8 probes; clean `cargo +1.95.0 check`; no warnings/errors
+- v3: 839 lines (vs v2's 284) — substantial growth reflects amendment additions
+
+**Files written к main worktree (un-committed для orchestrator):**
+- `docs/superpowers/drafts/2026-04-24-nebula-action-redesign/final_shape_v3.rs`
+- `docs/superpowers/drafts/2026-04-24-nebula-action-redesign/spike-iter3-NOTES.md`
+
+**v2 untouched** (historical artefact preserved per Phase 4 spike PASS reference).
+
+**Diff summary v3 vs v2 (11 amendments verified compose):**
+- **Q1** *Handler traits → `#[async_trait]`; BoxFut alias scope narrowed к SlotBinding HRTB only
+- **Q6** TriggerAction gains start/stop adjacent к handle()
+- **Q7 R1** StatefulAction restores init_state (mandatory) + migrate_state (default None)
+- **Q7 R2** ResourceAction paradigm flip — configure/cleanup only; spurious execute/Input/Output dropped
+- **Q7 R3** TriggerAction::handle returns Result<TriggerEventOutcome, Error> (Skip/Emit/EmitMany); accepts_events() predicate
+- **Q7 R4** ResourceHandler uses Box<dyn Any + Send + Sync> boundary
+- **Q7 R5** TriggerHandler::handle_event adopts TriggerEvent envelope (type-erased)
+- **Q7 R6** WebhookAction/PollAction re-pinned as peers of Action (NOT subtraits of TriggerAction); each carries own associated types + lifecycle
+- **Q8 F2** TriggerAction::idempotency_key default-opt-in hook + IdempotencyKey newtype
+- **Q8 F9** ActionMetadata::max_concurrent: Option<NonZeroU32>
+- **Q8 F12** NodeDefinition::action_version: semver::Version
+- **Q8 F13** 4 doc-only engine cluster-mode trait placeholders (CursorPersistence/LeaderElection/ExternalSubscriptionLedger/ScheduleLedger)
+
+**Спike iter-3 confirms FROZEN CP4 + Q1+Q6+Q7+Q8 amendments compose-clean.** Implementation can begin referencing v3 как concrete signature contract.
+
 ### 2026-04-26 — Q8 research-driven amendment complete (AMENDED-CLOSED-AGAIN)
 
 **Phase 1 (4 parallel agents, ~6h):**
