@@ -77,6 +77,7 @@ tokio-util = { workspace = true }
 criterion = { workspace = true }
 insta = { workspace = true }
 pretty_assertions = { workspace = true }
+proptest = { workspace = true }
 rstest = { workspace = true }
 wiremock = { workspace = true }
 

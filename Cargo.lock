@@ -4103,6 +4103,7 @@ dependencies = [
  "nebula-workflow",
  "parking_lot",
  "pretty_assertions",
+ "proptest",
  "rand 0.10.1",
  "reqwest 0.13.2",
  "rstest",

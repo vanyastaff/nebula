@@ -25,4 +25,7 @@ mod reclaim;
 #[allow(dead_code, reason = "Stage 2.1 stub; populated by Stage 2.4 + Stage 3")]
 mod sentinel;
 
-pub use coordinator::{RefreshAttempt, RefreshConfigError, RefreshCoordinator};
+pub use coordinator::{
+    ConfigError, RefreshAttempt, RefreshConfigError, RefreshCoordConfig, RefreshCoordinator,
+    RefreshError,
+};
