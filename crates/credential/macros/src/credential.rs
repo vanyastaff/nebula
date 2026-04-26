@@ -23,8 +23,6 @@ struct CredentialAttrsV2 {
     protocol: syn::Type,
     icon: Option<String>,
     doc_url: Option<String>,
-    dynamic: bool,
-    lease_ttl_secs: Option<u64>,
 }
 
 fn parse_credential_attrs(
@@ -50,8 +48,6 @@ fn parse_credential_attrs(
 
     let icon = attr_args.get_string("icon");
     let doc_url = attr_args.get_string("doc_url");
-    let dynamic = attr_args.get_bool("dynamic").unwrap_or(false);
-    let lease_ttl_secs = attr_args.get_int("lease_ttl_secs");
 
     Ok(CredentialAttrsV2 {
         key,
@@ -60,8 +56,6 @@ fn parse_credential_attrs(
         protocol,
         icon,
         doc_url,
-        dynamic,
-        lease_ttl_secs,
     })
 }
 
@@ -162,13 +156,6 @@ fn expand(input: DeriveInput) -> syn::Result<proc_macro2::TokenStream> {
     let name = &attrs.name;
     let scheme = &attrs.scheme;
     let protocol = &attrs.protocol;
-    let dynamic = attrs.dynamic;
-
-    let lease_ttl_expr = if let Some(secs) = attrs.lease_ttl_secs {
-        quote! { ::std::option::Option::Some(::std::time::Duration::from_secs(#secs)) }
-    } else {
-        quote! { ::std::option::Option::None }
-    };
 
     // Generate DeclaresDependencies impl.
     let deps_impl = if resource_deps.is_empty() {
@@ -258,12 +245,8 @@ fn expand(input: DeriveInput) -> syn::Result<proc_macro2::TokenStream> {
             type Input = <#protocol as ::nebula_credential::StaticProtocol>::Input;
             type Scheme = #scheme;
             type State = #scheme;
-            type Pending = ::nebula_credential::NoPendingState;
 
             const KEY: &'static str = #key;
-
-            const DYNAMIC: bool = #dynamic;
-            const LEASE_TTL: ::std::option::Option<::std::time::Duration> = #lease_ttl_expr;
 
             fn metadata() -> ::nebula_credential::CredentialMetadata
             where
@@ -284,7 +267,7 @@ fn expand(input: DeriveInput) -> syn::Result<proc_macro2::TokenStream> {
                 _ctx: &::nebula_credential::CredentialContext,
             ) -> impl ::std::future::Future<
                 Output = ::std::result::Result<
-                    ::nebula_credential::resolve::ResolveResult<#scheme, ::nebula_credential::NoPendingState>,
+                    ::nebula_credential::resolve::ResolveResult<#scheme, ()>,
                     ::nebula_credential::CredentialError,
                 >,
             > + ::std::marker::Send

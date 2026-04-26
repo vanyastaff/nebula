@@ -6,8 +6,8 @@
 use nebula_schema::{Field, FieldValues, HasSchema, Schema, ValidSchema};
 
 use crate::{
-    Credential, CredentialContext, NoPendingState, SecretString, error::CredentialError,
-    metadata::CredentialMetadata, resolve::StaticResolveResult, scheme::IdentityPassword,
+    Credential, CredentialContext, SecretString, error::CredentialError,
+    metadata::CredentialMetadata, resolve::ResolveResult, scheme::IdentityPassword,
 };
 
 /// Typed shape of the `basic_auth` credential setup form.
@@ -36,8 +36,10 @@ impl HasSchema for BasicAuthInput {
 /// HTTP Basic Auth credential -- resolves username + password into
 /// [`IdentityPassword`].
 ///
-/// - **Non-interactive:** resolves in one step from user input.
-/// - **Non-refreshable:** static credentials have no expiry.
+/// - **Non-interactive:** resolves in one step from user input. Per §15.4 sub-trait split, this
+///   credential does *not* implement [`Interactive`](crate::Interactive).
+/// - **Non-refreshable:** static credentials have no expiry. Does not implement
+///   [`Refreshable`](crate::Refreshable).
 /// - **Identity projection:** stored state is the scheme itself.
 pub struct BasicAuthCredential;
 
@@ -45,7 +47,6 @@ impl Credential for BasicAuthCredential {
     type Input = BasicAuthInput;
     type Scheme = IdentityPassword;
     type State = IdentityPassword;
-    type Pending = NoPendingState;
 
     const KEY: &'static str = "basic_auth";
 
@@ -68,7 +69,7 @@ impl Credential for BasicAuthCredential {
     async fn resolve(
         values: &FieldValues,
         _ctx: &CredentialContext,
-    ) -> Result<StaticResolveResult<IdentityPassword>, CredentialError> {
+    ) -> Result<ResolveResult<IdentityPassword, ()>, CredentialError> {
         let username = values.get_string_by_str("username").ok_or_else(|| {
             CredentialError::Provider("missing required field 'username'".to_owned())
         })?;
@@ -76,7 +77,7 @@ impl Credential for BasicAuthCredential {
             CredentialError::Provider("missing required field 'password'".to_owned())
         })?;
         let secret = SecretString::new(password.to_owned());
-        Ok(StaticResolveResult::Complete(IdentityPassword::new(
+        Ok(ResolveResult::Complete(IdentityPassword::new(
             username, secret,
         )))
     }
@@ -91,13 +92,11 @@ mod tests {
         assert_eq!(BasicAuthCredential::KEY, "basic_auth");
     }
 
-    #[test]
-    fn capabilities_are_all_false() {
-        const { assert!(!BasicAuthCredential::INTERACTIVE) };
-        const { assert!(!BasicAuthCredential::REFRESHABLE) };
-        const { assert!(!BasicAuthCredential::REVOCABLE) };
-        const { assert!(!BasicAuthCredential::TESTABLE) };
-    }
+    // Capability membership checks moved to compile-time: the absence
+    // of `impl Interactive | Refreshable | Revocable | Testable | Dynamic`
+    // for `BasicAuthCredential` is the type-level statement that this
+    // credential is static. Probe 4 (compile_fail_engine_dispatch_capability)
+    // pins this guarantee at the engine dispatch site.
 
     #[test]
     fn project_returns_clone_of_state() {
@@ -117,7 +116,7 @@ mod tests {
         let ctx = CredentialContext::for_test("test-user");
         let result = BasicAuthCredential::resolve(&values, &ctx).await.unwrap();
         match result {
-            StaticResolveResult::Complete(auth) => {
+            ResolveResult::Complete(auth) => {
                 assert_eq!(auth.identity(), "alice");
                 let pw = auth.password().expose_secret().to_owned();
                 assert_eq!(pw, "p@ssw0rd");

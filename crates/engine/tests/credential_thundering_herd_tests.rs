@@ -6,10 +6,9 @@ use std::sync::{
 };
 
 use nebula_credential::{
-    Credential, CredentialContext, CredentialMetadata, CredentialStore, NoPendingState,
-    SecretString,
+    Credential, CredentialContext, CredentialMetadata, CredentialStore, Refreshable, SecretString,
     error::CredentialError,
-    resolve::{RefreshOutcome, RefreshPolicy, StaticResolveResult},
+    resolve::{RefreshOutcome, RefreshPolicy, ResolveResult},
     scheme::SecretToken,
     store::{PutMode, StoredCredential},
 };
@@ -45,15 +44,8 @@ impl Credential for ThunderingHerdCredential {
     type Input = FieldValues;
     type Scheme = SecretToken;
     type State = ThunderingHerdState;
-    type Pending = NoPendingState;
 
     const KEY: &'static str = "thundering_herd_test";
-    const REFRESHABLE: bool = true;
-    const REFRESH_POLICY: RefreshPolicy = RefreshPolicy {
-        early_refresh: std::time::Duration::from_mins(5),
-        jitter: std::time::Duration::ZERO,
-        ..RefreshPolicy::DEFAULT
-    };
 
     fn metadata() -> CredentialMetadata {
         CredentialMetadata::new(
@@ -72,9 +64,17 @@ impl Credential for ThunderingHerdCredential {
     async fn resolve(
         _values: &FieldValues,
         _ctx: &CredentialContext,
-    ) -> Result<StaticResolveResult<ThunderingHerdState>, CredentialError> {
+    ) -> Result<ResolveResult<ThunderingHerdState, ()>, CredentialError> {
         unreachable!("not used in thundering herd tests")
     }
+}
+
+impl Refreshable for ThunderingHerdCredential {
+    const REFRESH_POLICY: RefreshPolicy = RefreshPolicy {
+        early_refresh: std::time::Duration::from_mins(5),
+        jitter: std::time::Duration::ZERO,
+        ..RefreshPolicy::DEFAULT
+    };
 
     async fn refresh(
         state: &mut ThunderingHerdState,

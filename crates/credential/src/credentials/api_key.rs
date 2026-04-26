@@ -7,8 +7,8 @@
 use nebula_schema::{Field, FieldValues, HasSchema, Schema, ValidSchema};
 
 use crate::{
-    Credential, CredentialContext, NoPendingState, SecretString, error::CredentialError,
-    metadata::CredentialMetadata, resolve::StaticResolveResult, scheme::SecretToken,
+    Credential, CredentialContext, SecretString, error::CredentialError,
+    metadata::CredentialMetadata, resolve::ResolveResult, scheme::SecretToken,
 };
 
 /// Typed shape of the `api_key` credential setup form.
@@ -40,8 +40,11 @@ impl HasSchema for ApiKeyInput {
 
 /// API Key credential -- resolves a single token into a [`SecretToken`].
 ///
-/// - **Non-interactive:** resolves in one step from user input.
-/// - **Non-refreshable:** static tokens have no expiry.
+/// - **Non-interactive:** resolves in one step from user input. Per §15.4 sub-trait split, this
+///   credential does *not* implement [`Interactive`](crate::Interactive) — the absence of the
+///   sub-trait impl is the type-level declaration of non-interactive.
+/// - **Non-refreshable:** static tokens have no expiry. Does not implement
+///   [`Refreshable`](crate::Refreshable).
 /// - **Identity projection:** stored state is the scheme itself.
 ///
 /// # Examples
@@ -51,8 +54,6 @@ impl HasSchema for ApiKeyInput {
 /// use nebula_credential::Credential;
 ///
 /// assert_eq!(ApiKeyCredential::KEY, "api_key");
-/// assert!(!ApiKeyCredential::INTERACTIVE);
-/// assert!(!ApiKeyCredential::REFRESHABLE);
 /// ```
 pub struct ApiKeyCredential;
 
@@ -60,7 +61,6 @@ impl Credential for ApiKeyCredential {
     type Input = ApiKeyInput;
     type Scheme = SecretToken;
     type State = SecretToken;
-    type Pending = NoPendingState;
 
     const KEY: &'static str = "api_key";
 
@@ -83,12 +83,12 @@ impl Credential for ApiKeyCredential {
     async fn resolve(
         values: &FieldValues,
         _ctx: &CredentialContext,
-    ) -> Result<StaticResolveResult<SecretToken>, CredentialError> {
+    ) -> Result<ResolveResult<SecretToken, ()>, CredentialError> {
         let token = values.get_string_by_str("api_key").ok_or_else(|| {
             CredentialError::Provider("missing required field 'api_key'".to_owned())
         })?;
         let secret = SecretString::new(token.to_owned());
-        Ok(StaticResolveResult::Complete(SecretToken::new(secret)))
+        Ok(ResolveResult::Complete(SecretToken::new(secret)))
     }
 }
 
@@ -101,13 +101,11 @@ mod tests {
         assert_eq!(ApiKeyCredential::KEY, "api_key");
     }
 
-    #[test]
-    fn capabilities_are_all_false() {
-        const { assert!(!ApiKeyCredential::INTERACTIVE) };
-        const { assert!(!ApiKeyCredential::REFRESHABLE) };
-        const { assert!(!ApiKeyCredential::REVOCABLE) };
-        const { assert!(!ApiKeyCredential::TESTABLE) };
-    }
+    // Capability membership checks moved to compile-time: the absence
+    // of `impl Interactive | Refreshable | Revocable | Testable | Dynamic`
+    // for `ApiKeyCredential` is the type-level statement that this
+    // credential is static. Probe 4 (compile_fail_engine_dispatch_capability)
+    // pins this guarantee at the engine dispatch site.
 
     #[test]
     fn project_returns_clone_of_state() {
@@ -125,7 +123,7 @@ mod tests {
         let ctx = CredentialContext::for_test("test-user");
         let result = ApiKeyCredential::resolve(&values, &ctx).await.unwrap();
         match result {
-            StaticResolveResult::Complete(token) => {
+            ResolveResult::Complete(token) => {
                 let exposed = token.token().expose_secret().to_owned();
                 assert_eq!(exposed, "sk-secret-123");
             },

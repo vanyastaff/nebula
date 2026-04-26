@@ -1,74 +1,84 @@
-//! Unified credential trait (v2).
+//! Unified credential trait (CP6).
 //!
-//! The [`Credential`] trait replaces six v1 traits (`CredentialType`,
-//! `FlowProtocol`, `InteractiveCredential`, `Refreshable`, `Revocable`,
-//! `StaticProtocol`) with a single trait that covers the full lifecycle:
+//! Per Tech Spec §15.4 capability sub-trait split — the previous shape
+//! (CP4) carried five `const X: bool = false` capability flags plus
+//! defaulted method bodies for `continue_resolve` / `refresh` / `revoke`
+//! / `test` / `release`. A plugin author setting `const REFRESHABLE =
+//! true` while forgetting to override `refresh()` produced a credential
+//! that *declared* refresh capability but silently returned
+//! `RefreshOutcome::NotSupported` — the engine treated this as a benign
+//! outcome and the credential never refreshed in production. The same
+//! silent-downgrade vector existed for the four sister capabilities.
 //!
-//! - **Resolve** user input into stored state (single-step or interactive).
-//! - **Project** consumer-facing auth material from stored state.
-//! - **Refresh** expiring tokens.
-//! - **Test** that a credential actually works.
-//! - **Revoke** a credential.
+//! CP5/CP6 splits the capability surface into per-capability sub-traits
+//! ([`Interactive`], [`Refreshable`], [`Revocable`], [`Testable`],
+//! [`Dynamic`]) — each carries the corresponding method without a
+//! defaulted body, so a plugin that fails to implement the capability
+//! method fails to compile (`E0046`). Engine dispatchers bind by
+//! sub-trait (`where C: Refreshable`); a non-`Refreshable` credential
+//! cannot reach the refresh dispatcher (`E0277`). Probes 3 + 4 cement
+//! both guarantees. This closes security-lead findings N1 + N3 + N5
+//! at the type level.
 //!
-//! Capability flags (`INTERACTIVE`, `REFRESHABLE`, etc.) are associated
-//! consts -- zero-cost, compile-time, no allocation.
+//! [`Interactive`]: crate::Interactive
+//! [`Refreshable`]: crate::Refreshable
+//! [`Revocable`]: crate::Revocable
+//! [`Testable`]: crate::Testable
+//! [`Dynamic`]: crate::Dynamic
 
 use std::future::Future;
 
 use nebula_schema::{FieldValues, ValidSchema};
 
-use super::{CredentialState, PendingState};
+use super::CredentialState;
 use crate::{
-    AuthScheme, CredentialContext, CredentialMetadata,
-    error::CredentialError,
-    resolve::{RefreshOutcome, RefreshPolicy, ResolveResult, TestResult, UserInput},
+    AuthScheme, CredentialContext, CredentialMetadata, error::CredentialError,
+    resolve::ResolveResult,
 };
 
 /// Unified trait for all credential types.
 ///
 /// # Integration credentials (Plane B)
 ///
-/// Implementations of this trait are **integration credentials** — secrets and auth material
-/// for **external** systems (SaaS APIs, webhooks, databases), not for logging into Nebula’s
-/// own API or control plane. That host-facing authentication (**Plane A**) stays out of this
-/// trait; see ADR-0033 (`docs/adr/0033-integration-credentials-plane-b.md`).
-///
-/// One trait replaces six v1 traits. Three associated types pin the
-/// generic parameters at the impl site; five associated consts declare
-/// capabilities at compile time.
+/// Implementations of this trait are **integration credentials** —
+/// secrets and auth material for **external** systems (SaaS APIs,
+/// webhooks, databases), not for logging into Nebula's own API or
+/// control plane. That host-facing authentication (**Plane A**) stays
+/// out of this trait; see ADR-0033 (`docs/adr/0033-integration-credentials-plane-b.md`).
 ///
 /// # Associated types
 ///
-/// - **`Scheme`** -- consumer-facing auth material ([`AuthScheme`]).
-/// - **`State`** -- what gets encrypted and stored ([`CredentialState`]). May include refresh
+/// - **`Input`** — typed shape of the setup-form fields ([`HasSchema`](nebula_schema::HasSchema)).
+/// - **`Scheme`** — consumer-facing auth material ([`AuthScheme`]).
+/// - **`State`** — what gets encrypted and stored ([`CredentialState`]). May include refresh
 ///   internals not exposed to consumers.
-/// - **`Pending`** -- typed ephemeral state for interactive flows ([`PendingState`]).
-///   Non-interactive credentials use [`NoPendingState`](crate::NoPendingState).
 ///
-/// # Capability consts
+/// The pre-§15.4 `Pending` associated type now lives on
+/// [`Interactive`](crate::Interactive); non-interactive credentials no
+/// longer declare a companion type.
 ///
-/// | Const | Default | Meaning |
-/// |---|---|---|
-/// | `INTERACTIVE` | `false` | Supports multi-step resolve |
-/// | `REFRESHABLE` | `false` | Supports token refresh |
-/// | `REVOCABLE` | `false` | Supports explicit revocation |
-/// | `TESTABLE` | `false` | Supports live testing |
-/// | `DYNAMIC` | `false` | Produces ephemeral per-execution secrets |
-/// | `REFRESH_POLICY` | 5 min early / 5 s backoff / 30 s jitter | Refresh timing |
-/// | `LEASE_TTL` | `None` | Lease duration for dynamic credentials |
+/// # Capability sub-traits
 ///
-/// # Methods
+/// Capabilities live in dedicated sub-traits — `impl
+/// Refreshable for MyCred` declares refresh capability and forces
+/// `refresh()` to be implemented (no default). Compile-time membership
+/// (`where C: Refreshable`) replaces runtime const-bool checks.
 ///
-/// Only [`resolve`](Credential::resolve) requires a real implementation.
-/// All other methods have sensible defaults.
+/// | Capability | Sub-trait |
+/// |------------|-----------|
+/// | Interactive multi-step resolve | [`Interactive`](crate::Interactive) |
+/// | Token refresh | [`Refreshable`](crate::Refreshable) |
+/// | Provider-side revocation | [`Revocable`](crate::Revocable) |
+/// | Live health probe | [`Testable`](crate::Testable) |
+/// | Per-execution ephemeral lease | [`Dynamic`](crate::Dynamic) |
 ///
 /// # Examples
 ///
 /// ```ignore
 /// use nebula_credential::{
-///     Credential, NoPendingState, identity_state,
+///     Credential, identity_state,
 ///     scheme::SecretToken,
-///     resolve::StaticResolveResult,
+///     resolve::ResolveResult,
 /// };
 ///
 /// struct SlackBotToken;
@@ -76,24 +86,21 @@ use crate::{
 /// identity_state!(SecretToken, "secret_token", 1);
 ///
 /// impl Credential for SlackBotToken {
+///     type Input = SlackBotInput;
 ///     type Scheme = SecretToken;
 ///     type State = SecretToken;
-///     type Pending = NoPendingState;
 ///
 ///     const KEY: &'static str = "slack_bot_token";
 ///
 ///     fn metadata() -> CredentialMetadata { /* ... */ }
-///     fn schema() -> ValidSchema { /* ... */ }
 ///     fn project(state: &SecretToken) -> SecretToken { state.clone() }
 ///
-///     fn resolve(
+///     async fn resolve(
 ///         values: &FieldValues,
-///         _ctx: &CredentialContext,
-///     ) -> impl Future<Output = Result<StaticResolveResult<SecretToken>, CredentialError>> + Send {
-///         async move {
-///             let token = values.get_string("bot_token").unwrap_or_default();
-///             Ok(StaticResolveResult::Complete(SecretToken::new(SecretString::new(token))))
-///         }
+///         _ctx: &CredentialContext<'_>,
+///     ) -> Result<ResolveResult<SecretToken, ()>, CredentialError> {
+///         let token = values.get_string_by_str("bot_token").unwrap_or_default();
+///         Ok(ResolveResult::Complete(SecretToken::new(SecretString::new(token.to_owned()))))
 ///     }
 /// }
 /// ```
@@ -107,68 +114,29 @@ pub trait Credential: Send + Sync + 'static {
     /// impl returns an empty schema).
     type Input: nebula_schema::HasSchema + Send + Sync + 'static;
 
-    /// What this credential produces -- the consumer-facing auth material.
+    /// What this credential produces — the consumer-facing auth material.
     type Scheme: AuthScheme;
 
-    /// What gets stored -- may include refresh internals not exposed to
+    /// What gets stored — may include refresh internals not exposed to
     /// resources. For static credentials: same type as `Scheme`
     /// (use [`identity_state!`](crate::identity_state) macro).
     type State: CredentialState;
 
-    /// Typed pending state for interactive flows.
-    ///
-    /// Non-interactive credentials: use
-    /// [`NoPendingState`](crate::NoPendingState).
-    /// No default -- associated type defaults are unstable on stable Rust.
-    /// The `#[derive(Credential)]` macro fills `NoPendingState` automatically.
-    type Pending: PendingState;
-
     /// Stable key for this credential type (e.g., `"github_oauth2"`).
     const KEY: &'static str;
 
-    /// Whether this credential requires multi-step interactive resolution.
-    const INTERACTIVE: bool = false;
-
-    /// Whether this credential supports token refresh.
-    const REFRESHABLE: bool = false;
-
-    /// Whether this credential supports explicit revocation.
-    const REVOCABLE: bool = false;
-
-    /// Whether this credential supports live testing.
-    const TESTABLE: bool = false;
-
-    /// Refresh timing policy -- controls early refresh, retry backoff,
-    /// and jitter.
-    const REFRESH_POLICY: RefreshPolicy = RefreshPolicy::DEFAULT;
-
-    /// Whether this credential produces ephemeral, per-execution secrets.
-    ///
-    /// Dynamic credentials are never cached — a fresh secret is generated
-    /// on every resolve. The framework calls [`release()`](Credential::release)
-    /// when the execution ends or the lease expires.
-    ///
-    /// Example: Vault database dynamic credentials that issue unique
-    /// username/password per execution with a TTL.
-    const DYNAMIC: bool = false;
-
-    /// Lease duration for dynamic credentials.
-    ///
-    /// Only meaningful when `DYNAMIC = true`. The framework tracks the lease
-    /// and calls `release()` when it expires. `None` means the credential
-    /// has no automatic expiry — release happens only at execution end.
-    const LEASE_TTL: Option<std::time::Duration> = None;
-
-    /// Integration-catalog metadata: key, name, icon, documentation URL, parameters.
+    /// Integration-catalog metadata: key, name, icon, documentation
+    /// URL, parameters.
     fn metadata() -> CredentialMetadata
     where
         Self: Sized;
 
     /// Returns the schema for credential input parameters.
     ///
-    /// The default implementation derives the schema from [`Self::Input`],
-    /// which must implement [`HasSchema`](nebula_schema::HasSchema). Override
-    /// only if the form layout must differ from the `Input` struct (rare).
+    /// The default implementation derives the schema from
+    /// [`Self::Input`], which must implement
+    /// [`HasSchema`](nebula_schema::HasSchema). Override only if the
+    /// form layout must differ from the `Input` struct (rare).
     fn schema() -> ValidSchema
     where
         Self: Sized,
@@ -176,109 +144,36 @@ pub trait Credential: Send + Sync + 'static {
         <Self::Input as nebula_schema::HasSchema>::schema()
     }
 
+    /// Project the runtime [`Scheme`] from stored [`State`]. Synchronous,
+    /// pure. `where Self: Sized` excludes this from any object-safe
+    /// vtable — dispatch goes through downcast at full type knowledge.
+    ///
+    /// [`Scheme`]: Credential::Scheme
+    /// [`State`]: Credential::State
     fn project(state: &Self::State) -> Self::Scheme
     where
         Self: Sized;
 
-    /// Resolve user input into credential state.
+    /// Build initial [`State`] from user [`Input`]. Returns
+    /// `ResolveResult<State, ()>` — interactive credentials carry typed
+    /// pending state on [`Interactive::continue_resolve`] rather than
+    /// here; non-interactive credentials always return
+    /// [`Complete`](ResolveResult::Complete).
     ///
-    /// **Framework handles `PendingState` storage.** Credential returns
-    /// raw `Pending { state, interaction }` -- framework encrypts, stores,
-    /// generates `PendingToken`, and manages the lifecycle. Credential
-    /// author never calls `store_pending()` or `consume_pending()`.
+    /// **Framework handles `PendingState` storage.** When an
+    /// implementation returns
+    /// [`Pending`](ResolveResult::Pending) — typically only the kickoff
+    /// for an interactive flow — the framework encrypts, stores, and
+    /// generates a [`PendingToken`](crate::PendingToken). Credential
+    /// authors never call `store_pending()` or `consume_pending()`.
     ///
-    /// For non-interactive credentials: use
-    /// [`StaticResolveResult<S>`](crate::resolve::StaticResolveResult).
+    /// [`Interactive::continue_resolve`]: crate::Interactive::continue_resolve
+    /// [`Input`]: Credential::Input
+    /// [`State`]: Credential::State
     fn resolve(
         values: &FieldValues,
         ctx: &CredentialContext,
-    ) -> impl Future<Output = Result<ResolveResult<Self::State, Self::Pending>, CredentialError>> + Send
+    ) -> impl Future<Output = Result<ResolveResult<Self::State, ()>, CredentialError>> + Send
     where
         Self: Sized;
-
-    /// Continue interactive resolve after user completes interaction.
-    ///
-    /// Framework loads and consumes `PendingState` before calling this.
-    /// The `pending` parameter is the typed state returned by `resolve()`.
-    ///
-    /// Default: returns [`CredentialError::NotInteractive`].
-    fn continue_resolve(
-        _pending: &Self::Pending,
-        _input: &UserInput,
-        _ctx: &CredentialContext,
-    ) -> impl Future<Output = Result<ResolveResult<Self::State, Self::Pending>, CredentialError>> + Send
-    where
-        Self: Sized,
-    {
-        async { Err(CredentialError::NotInteractive) }
-    }
-
-    /// Test that the credential actually works.
-    ///
-    /// Returns `Ok(None)` if this credential type does not support live testing.
-    /// Credentials that override this method return
-    /// `Ok(Some(TestResult::Success))` or `Ok(Some(TestResult::Failed { reason }))`.
-    ///
-    /// Default: `Ok(None)` (not testable).
-    ///
-    /// # Errors
-    ///
-    /// Returns [`CredentialError`] on infrastructure failures (network, I/O)
-    /// that prevent determining whether the credential is valid.
-    fn test(
-        _scheme: &Self::Scheme,
-        _ctx: &CredentialContext,
-    ) -> impl Future<Output = Result<Option<TestResult>, CredentialError>> + Send
-    where
-        Self: Sized,
-    {
-        async { Ok(None) }
-    }
-
-    /// Refresh expiring auth material.
-    ///
-    /// Default: returns [`RefreshOutcome::NotSupported`].
-    fn refresh(
-        _state: &mut Self::State,
-        _ctx: &CredentialContext,
-    ) -> impl Future<Output = Result<RefreshOutcome, CredentialError>> + Send
-    where
-        Self: Sized,
-    {
-        async { Ok(RefreshOutcome::NotSupported) }
-    }
-
-    /// Revoke credential at the provider.
-    ///
-    /// Default: no-op (succeeds silently).
-    fn revoke(
-        _state: &mut Self::State,
-        _ctx: &CredentialContext,
-    ) -> impl Future<Output = Result<(), CredentialError>> + Send
-    where
-        Self: Sized,
-    {
-        async { Ok(()) }
-    }
-
-    /// Release a dynamic credential lease.
-    ///
-    /// Called by the framework when:
-    /// - The execution completes (success or failure)
-    /// - The lease TTL expires
-    ///
-    /// Implementations should revoke the ephemeral credential from the
-    /// backing system (e.g., revoke a Vault lease).
-    ///
-    /// Default: no-op (non-dynamic credentials don't need release).
-    fn release(
-        &self,
-        _state: &Self::State,
-        _ctx: &CredentialContext,
-    ) -> impl Future<Output = Result<(), CredentialError>> + Send
-    where
-        Self: Sized,
-    {
-        async { Ok(()) }
-    }
 }

@@ -80,14 +80,6 @@ impl AnyCredential for StubCredential {
             AuthPattern::SecretToken,
         )
     }
-
-    fn is_dynamic(&self) -> bool {
-        false
-    }
-
-    fn lease_ttl(&self) -> Option<std::time::Duration> {
-        None
-    }
 }
 
 // ── Stub AnyResource ─────────────────────────────────────────────────────────

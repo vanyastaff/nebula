@@ -59,6 +59,25 @@ impl PendingState for NoPendingState {
     }
 }
 
+/// Per Tech Spec §15.4 — the base [`Credential::resolve`] returns
+/// `ResolveResult<Self::State, ()>`. Interactive credentials carry their
+/// typed `Self::Pending` on [`Interactive::continue_resolve`]; the base
+/// trait has no `Pending` associated type. This blanket lets `()` stand
+/// in as the second `ResolveResult` parameter for non-interactive
+/// resolve paths and as the kickoff "no carried state" marker for
+/// interactive flows that initialize their typed pending state inside
+/// `continue_resolve`.
+///
+/// [`Credential::resolve`]: crate::Credential::resolve
+/// [`Interactive::continue_resolve`]: crate::Interactive::continue_resolve
+impl PendingState for () {
+    const KIND: &'static str = "unit";
+
+    fn expires_in(&self) -> Duration {
+        Duration::ZERO
+    }
+}
+
 // ── PendingToken ───────────────────────────────────────────────────────
 
 /// Opaque handle to a stored [`PendingState`].

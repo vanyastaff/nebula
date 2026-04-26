@@ -123,8 +123,8 @@ pub use context::{CredentialContext, CredentialContextBuilder};
 pub use contract::resolve;
 // Credential contract — Credential trait + associated types
 pub use contract::{
-    AnyCredential, Credential, CredentialState, NoPendingState, PendingState, PendingToken,
-    StaticProtocol,
+    AnyCredential, Credential, CredentialState, Dynamic, Interactive, NoPendingState, PendingState,
+    PendingToken, Refreshable, Revocable, StaticProtocol, Testable,
 };
 // Resolve types
 pub use contract::{

@@ -24,7 +24,8 @@ use zeroize::{Zeroize, ZeroizeOnDrop};
 
 use super::oauth2_config;
 use crate::{
-    Credential, CredentialContext, CredentialState, PendingState, SecretString,
+    Credential, CredentialContext, CredentialState, Interactive, PendingState, Refreshable,
+    SecretString,
     error::CredentialError,
     metadata::CredentialMetadata,
     resolve::{InteractionRequest, RefreshOutcome, ResolveResult, UserInput},
@@ -260,30 +261,33 @@ impl PendingState for OAuth2Pending {
 
 // ── OAuth2Credential ───────────────────────────────────────────────────
 
-/// OAuth2 credential type implementing the v2 [`Credential`] trait.
+/// OAuth2 credential type implementing the [`Credential`] trait plus
+/// the [`Interactive`] and [`Refreshable`] sub-traits per Tech Spec
+/// §15.4.
 ///
 /// Configuration (auth URL, token URL, grant type, scopes) is provided
-/// via [`parameters()`](OAuth2Credential::parameters) and extracted from
-/// [`FieldValues`] in [`resolve()`](OAuth2Credential::resolve).
+/// via [`parameters()`](OAuth2Credential::schema) and extracted from
+/// [`FieldValues`] when the OAuth2 flow is initiated.
 ///
-/// # Grant types
+/// # Grant types and entry points
 ///
-/// - **Authorization Code** -- returns `Pending` with `Redirect`, completed via `continue_resolve`
-///   with callback `code`.
-/// - **Client Credentials** -- returns `Complete` immediately.
-/// - **Device Code** -- returns `Pending` with `DisplayInfo`, completed via polling
-///   `continue_resolve` with `UserInput::Poll`.
+/// Per §15.4 the base [`Credential::resolve`] returns
+/// `ResolveResult<State, ()>` and cannot carry typed
+/// [`OAuth2Pending`]. The interactive entry point therefore lives on
+/// the OAuth2-specific kickoff path:
 ///
-/// # Examples
-///
-/// ```ignore
-/// use nebula_credential::credentials::OAuth2Credential;
-/// use nebula_credential::Credential;
-///
-/// assert_eq!(OAuth2Credential::KEY, "oauth2");
-/// assert!(OAuth2Credential::INTERACTIVE);
-/// assert!(OAuth2Credential::REFRESHABLE);
-/// ```
+/// - **Authorization Code** — base `resolve` rejects with `Provider("OAuth2 authorization_code
+///   requires OAuth2-specific kickoff path")`. The API endpoint orchestrating the OAuth2 flow
+///   constructs an [`OAuth2Pending`] directly via [`OAuth2Credential::initiate_authorization_code`]
+///   and persists it to the [`PendingStateStore`](crate::pending_store::PendingStateStore). On
+///   callback, the framework loads the typed pending state and invokes
+///   [`Interactive::continue_resolve`].
+/// - **Client Credentials** — base `resolve` returns `Complete(state)` once the engine wires the
+///   moved `nebula-engine` HTTP transport (ADR-0031). For now `resolve` returns `Provider("OAuth2
+///   HTTP transport has moved …")` so callers surface the migration explicitly rather than silently
+///   no-op'ing.
+/// - **Device Code** — base `resolve` errors as per Authorization Code; kickoff goes through
+///   [`OAuth2Credential::initiate_device_code`].
 pub struct OAuth2Credential;
 
 /// Typed shape of the `oauth2` credential setup form.
@@ -347,11 +351,8 @@ impl Credential for OAuth2Credential {
     type Input = OAuth2Input;
     type Scheme = OAuth2Token;
     type State = OAuth2State;
-    type Pending = OAuth2Pending;
 
     const KEY: &'static str = "oauth2";
-    const INTERACTIVE: bool = true;
-    const REFRESHABLE: bool = true;
 
     fn metadata() -> CredentialMetadata {
         CredentialMetadata::builder()
@@ -379,62 +380,48 @@ impl Credential for OAuth2Credential {
     async fn resolve(
         values: &FieldValues,
         _ctx: &CredentialContext,
-    ) -> Result<ResolveResult<OAuth2State, OAuth2Pending>, CredentialError> {
-        let client_id = extract_required(values, "client_id")?;
-        let client_secret = extract_required(values, "client_secret")?;
-        let token_url = extract_required(values, "token_url")?;
-
+    ) -> Result<ResolveResult<OAuth2State, ()>, CredentialError> {
+        // Per Tech Spec §15.4, the base `Credential::resolve` returns
+        // `ResolveResult<State, ()>` — typed `OAuth2Pending` cannot ride
+        // along here. Validate the input shape, then route by grant type:
+        // * AuthorizationCode / DeviceCode: kick off via `OAuth2Credential::initiate_*` and persist
+        //   the typed `OAuth2Pending` through `PendingStateStore`. The continuation then routes
+        //   through `Interactive::continue_resolve`.
+        // * ClientCredentials: HTTP transport moved to nebula-engine (ADR-0031); surface the
+        //   migration explicitly.
+        let _client_id = extract_required(values, "client_id")?;
+        let _client_secret = extract_required(values, "client_secret")?;
+        let _token_url = extract_required(values, "token_url")?;
         let grant_type_str = values
             .get_string_by_str("grant_type")
             .unwrap_or("authorization_code");
         let grant_type = parse_grant_type(grant_type_str)?;
 
-        let auth_url = values.get_string_by_str("auth_url").unwrap_or_default();
-        let scopes = parse_scopes(values);
-
-        // `redirect_uri` is required for AuthorizationCode (RFC 6749
-        // §4.1.3), ignored for the other grants.
-        let redirect_uri_opt = values.get_string_by_str("redirect_uri").map(str::to_owned);
-        let config = build_config(grant_type, auth_url, token_url, &scopes, redirect_uri_opt)?;
+        // For AuthorizationCode the `redirect_uri` is required by RFC
+        // 6749 §4.1.3; surface the missing-field early before the
+        // OAuth2-specific kickoff is invoked. This keeps the failure
+        // mode stable for callers that today rely on `resolve` to
+        // validate setup form values.
+        if matches!(grant_type, GrantType::AuthorizationCode)
+            && values.get_string_by_str("redirect_uri").is_none()
+        {
+            return Err(CredentialError::InvalidInput(
+                "missing required field: redirect_uri (required for authorization_code grant)"
+                    .into(),
+            ));
+        }
 
         match grant_type {
-            GrantType::AuthorizationCode => {
-                // Generate per-flow PKCE verifier + anti-CSRF state.
-                let verifier = crate::generate_pkce_verifier();
-                let challenge = crate::generate_code_challenge(&verifier);
-                let state_token = crate::generate_random_state();
-
-                let url = build_auth_url(&config, client_id, &challenge, &state_token)?;
-
-                // `build_config` rejects missing `redirect_uri` for this
-                // grant type, so this `clone()` unwraps a value that was
-                // validated moments ago.
-                let redirect_uri = config
-                    .redirect_uri
-                    .clone()
-                    .expect("build_config guarantees redirect_uri for AuthorizationCode");
-
-                let pending = OAuth2Pending {
-                    client_id: client_id.to_owned(),
-                    client_secret: SecretString::new(client_secret),
-                    grant_type: GrantType::AuthorizationCode,
-                    auth_style: config.auth_style,
-                    device_code: None,
-                    interval: None,
-                    pkce_verifier: Some(SecretString::new(verifier)),
-                    state: Some(state_token),
-                    redirect_uri: Some(redirect_uri),
-                    config,
-                };
-                Ok(ResolveResult::Pending {
-                    state: pending,
-                    interaction: InteractionRequest::Redirect { url },
-                })
-            },
+            GrantType::AuthorizationCode | GrantType::DeviceCode => Err(CredentialError::Provider(
+                "OAuth2 authorization_code / device_code flow must be initiated via OAuth2Credential::initiate_* and the framework PendingStateStore (Tech Spec §15.4)".into(),
+            )),
             GrantType::ClientCredentials => Err(oauth2_http_transport_disabled()),
-            GrantType::DeviceCode => Err(oauth2_http_transport_disabled()),
         }
     }
+}
+
+impl Interactive for OAuth2Credential {
+    type Pending = OAuth2Pending;
 
     async fn continue_resolve(
         pending: &OAuth2Pending,
@@ -511,7 +498,9 @@ impl Credential for OAuth2Credential {
             )),
         }
     }
+}
 
+impl Refreshable for OAuth2Credential {
     async fn refresh(
         state: &mut OAuth2State,
         _ctx: &CredentialContext,
@@ -523,6 +512,61 @@ impl Credential for OAuth2Credential {
         // Token refresh HTTP has moved to nebula-engine per ADR-0031;
         // this crate no longer performs HTTP.
         Err(oauth2_http_transport_disabled())
+    }
+}
+
+impl OAuth2Credential {
+    /// Initiate the Authorization Code flow.
+    ///
+    /// Constructs the authorization URL (with PKCE challenge + anti-CSRF
+    /// state) and the typed [`OAuth2Pending`] state that the framework
+    /// must persist before redirecting the user. Per Tech Spec §15.4
+    /// the base [`Credential::resolve`] cannot carry the typed pending
+    /// state; this kickoff method exists so the API endpoint
+    /// orchestrating the OAuth2 flow can construct the pending state
+    /// directly and call
+    /// [`PendingStateStore::put`](crate::pending_store::PendingStateStore::put).
+    pub fn initiate_authorization_code(
+        values: &FieldValues,
+    ) -> Result<(OAuth2Pending, InteractionRequest), CredentialError> {
+        let client_id = extract_required(values, "client_id")?;
+        let client_secret = extract_required(values, "client_secret")?;
+        let token_url = extract_required(values, "token_url")?;
+
+        let auth_url = values.get_string_by_str("auth_url").unwrap_or_default();
+        let scopes = parse_scopes(values);
+        let redirect_uri_opt = values.get_string_by_str("redirect_uri").map(str::to_owned);
+        let config = build_config(
+            GrantType::AuthorizationCode,
+            auth_url,
+            token_url,
+            &scopes,
+            redirect_uri_opt,
+        )?;
+
+        let verifier = crate::generate_pkce_verifier();
+        let challenge = crate::generate_code_challenge(&verifier);
+        let state_token = crate::generate_random_state();
+
+        let url = build_auth_url(&config, client_id, &challenge, &state_token)?;
+        let redirect_uri = config
+            .redirect_uri
+            .clone()
+            .expect("build_config guarantees redirect_uri for AuthorizationCode");
+
+        let pending = OAuth2Pending {
+            client_id: client_id.to_owned(),
+            client_secret: SecretString::new(client_secret),
+            grant_type: GrantType::AuthorizationCode,
+            auth_style: config.auth_style,
+            device_code: None,
+            interval: None,
+            pkce_verifier: Some(SecretString::new(verifier)),
+            state: Some(state_token),
+            redirect_uri: Some(redirect_uri),
+            config,
+        };
+        Ok((pending, InteractionRequest::Redirect { url }))
     }
 }
 
@@ -669,12 +713,15 @@ mod tests {
         assert_eq!(OAuth2Credential::KEY, "oauth2");
     }
 
-    #[test]
-    fn capabilities_are_correct() {
-        const { assert!(OAuth2Credential::INTERACTIVE) };
-        const { assert!(OAuth2Credential::REFRESHABLE) };
-        const { assert!(!OAuth2Credential::REVOCABLE) };
-        const { assert!(!OAuth2Credential::TESTABLE) };
+    // Capability membership is type-level after §15.4: `OAuth2Credential`
+    // implements `Interactive` and `Refreshable` (and not `Revocable` /
+    // `Testable` / `Dynamic`). Trait bound checks below stand in for
+    // the previous const-bool assertions.
+    #[allow(dead_code)]
+    fn assert_oauth2_capabilities()
+    where
+        OAuth2Credential: Credential + Interactive + Refreshable,
+    {
     }
 
     #[test]

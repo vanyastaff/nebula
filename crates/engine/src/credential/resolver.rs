@@ -4,7 +4,7 @@ use std::sync::Arc;
 
 use nebula_credential::{
     Credential, CredentialContext, CredentialEvent, CredentialHandle, CredentialId,
-    CredentialState,
+    CredentialState, Refreshable,
     resolve::RefreshOutcome,
     store::{CredentialStore, PutMode, StoreError, StoredCredential},
 };
@@ -59,21 +59,27 @@ impl<S: CredentialStore> CredentialResolver<S> {
     }
 
     /// Resolve a credential and refresh it when it enters the early-refresh window.
+    ///
+    /// Per Tech Spec §15.4 — bound on [`Refreshable`] so a non-refreshable
+    /// credential cannot reach this dispatch path. Probe 4
+    /// (`compile_fail_engine_dispatch_capability`) cements the structural
+    /// barrier with `E0277` at the dispatch site.
     pub async fn resolve_with_refresh<C>(
         &self,
         credential_id: &str,
         ctx: &CredentialContext,
     ) -> Result<CredentialHandle<C::Scheme>, ResolveError>
     where
-        C: Credential,
+        C: Refreshable,
     {
         let stored = self.load_and_verify::<C>(credential_id).await?;
         let state: C::State = self.deserialize::<C>(credential_id, &stored)?;
 
         let needs_refresh = state.expires_at().is_some_and(|exp| {
             let now = chrono::Utc::now();
-            let jitter = if C::REFRESH_POLICY.jitter > std::time::Duration::ZERO {
-                let bound_ms = C::REFRESH_POLICY.jitter.as_millis();
+            let policy = <C as Refreshable>::REFRESH_POLICY;
+            let jitter = if policy.jitter > std::time::Duration::ZERO {
+                let bound_ms = policy.jitter.as_millis();
                 if bound_ms == 0 {
                     std::time::Duration::ZERO
                 } else {
@@ -83,7 +89,7 @@ impl<S: CredentialStore> CredentialResolver<S> {
             } else {
                 std::time::Duration::ZERO
             };
-            let early_with_jitter = C::REFRESH_POLICY.early_refresh + jitter;
+            let early_with_jitter = policy.early_refresh + jitter;
             let early =
                 chrono::Duration::from_std(early_with_jitter).unwrap_or(chrono::Duration::zero());
             exp - now <= early
@@ -207,10 +213,10 @@ impl<S: CredentialStore> CredentialResolver<S> {
         ctx: &CredentialContext,
     ) -> Result<CredentialHandle<C::Scheme>, ResolveError>
     where
-        C: Credential,
+        C: Refreshable,
     {
         #[cfg(feature = "rotation")]
-        async fn try_engine_oauth2_refresh<C: Credential>(
+        async fn try_engine_oauth2_refresh<C: Refreshable>(
             state: &mut C::State,
         ) -> Result<Option<RefreshOutcome>, CredentialError> {
             if C::KEY != OAuth2Credential::KEY {
@@ -246,7 +252,7 @@ impl<S: CredentialStore> CredentialResolver<S> {
             if let Some(outcome) = try_engine_oauth2_refresh::<C>(&mut state).await? {
                 return Ok(outcome);
             }
-            C::refresh(&mut state, ctx).await
+            <C as Refreshable>::refresh(&mut state, ctx).await
         })
         .await
         .map_err(|_| ResolveError::Refresh {
