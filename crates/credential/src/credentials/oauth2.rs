@@ -26,6 +26,7 @@ use super::oauth2_config;
 use crate::{
     Credential, CredentialContext, CredentialState, Interactive, PendingState, Refreshable,
     Revocable, SecretString, Testable,
+    contract::plugin_capability_report,
     error::CredentialError,
     metadata::CredentialMetadata,
     resolve::{InteractionRequest, RefreshOutcome, ResolveResult, TestResult, UserInput},
@@ -569,6 +570,29 @@ impl Testable for OAuth2Credential {
         // classification.
         Err(oauth2_http_transport_disabled())
     }
+}
+
+// Per Tech Spec §15.8 (closes security-lead N6) `OAuth2Credential`
+// reports its sub-trait surface via `plugin_capability_report::Is*` so
+// the `CredentialRegistry` capability bitflag set matches the
+// implementations directly above (Interactive + Refreshable + Revocable
+// + Testable). OAuth2 is not a `Dynamic` credential — its tokens are
+// stored, refreshed, and revoked by KEY rather than leased per
+// execution.
+impl plugin_capability_report::IsInteractive for OAuth2Credential {
+    const VALUE: bool = true;
+}
+impl plugin_capability_report::IsRefreshable for OAuth2Credential {
+    const VALUE: bool = true;
+}
+impl plugin_capability_report::IsRevocable for OAuth2Credential {
+    const VALUE: bool = true;
+}
+impl plugin_capability_report::IsTestable for OAuth2Credential {
+    const VALUE: bool = true;
+}
+impl plugin_capability_report::IsDynamic for OAuth2Credential {
+    const VALUE: bool = false;
 }
 
 impl OAuth2Credential {

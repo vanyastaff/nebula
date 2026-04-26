@@ -7,8 +7,9 @@
 use nebula_schema::{Field, FieldValues, HasSchema, Schema, ValidSchema};
 
 use crate::{
-    Credential, CredentialContext, SecretString, error::CredentialError,
-    metadata::CredentialMetadata, resolve::ResolveResult, scheme::SecretToken,
+    Credential, CredentialContext, SecretString, contract::plugin_capability_report,
+    error::CredentialError, metadata::CredentialMetadata, resolve::ResolveResult,
+    scheme::SecretToken,
 };
 
 /// Typed shape of the `api_key` credential setup form.
@@ -90,6 +91,27 @@ impl Credential for ApiKeyCredential {
         let secret = SecretString::new(token.to_owned());
         Ok(ResolveResult::Complete(SecretToken::new(secret)))
     }
+}
+
+// Per Tech Spec §15.8 every credential reports its sub-trait surface
+// via `plugin_capability_report::Is*`. `ApiKeyCredential` is fully
+// static — no capability sub-trait impls — so all five constants are
+// `false`. `CredentialRegistry::register` reads these to compute the
+// `Capabilities` bitflag set.
+impl plugin_capability_report::IsInteractive for ApiKeyCredential {
+    const VALUE: bool = false;
+}
+impl plugin_capability_report::IsRefreshable for ApiKeyCredential {
+    const VALUE: bool = false;
+}
+impl plugin_capability_report::IsRevocable for ApiKeyCredential {
+    const VALUE: bool = false;
+}
+impl plugin_capability_report::IsTestable for ApiKeyCredential {
+    const VALUE: bool = false;
+}
+impl plugin_capability_report::IsDynamic for ApiKeyCredential {
+    const VALUE: bool = false;
 }
 
 #[cfg(test)]

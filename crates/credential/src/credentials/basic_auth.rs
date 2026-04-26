@@ -6,8 +6,9 @@
 use nebula_schema::{Field, FieldValues, HasSchema, Schema, ValidSchema};
 
 use crate::{
-    Credential, CredentialContext, SecretString, error::CredentialError,
-    metadata::CredentialMetadata, resolve::ResolveResult, scheme::IdentityPassword,
+    Credential, CredentialContext, SecretString, contract::plugin_capability_report,
+    error::CredentialError, metadata::CredentialMetadata, resolve::ResolveResult,
+    scheme::IdentityPassword,
 };
 
 /// Typed shape of the `basic_auth` credential setup form.
@@ -81,6 +82,26 @@ impl Credential for BasicAuthCredential {
             username, secret,
         )))
     }
+}
+
+// Per Tech Spec §15.8 every credential reports its sub-trait surface
+// via `plugin_capability_report::Is*`. `BasicAuthCredential` is fully
+// static — no capability sub-trait impls — so all five constants are
+// `false`.
+impl plugin_capability_report::IsInteractive for BasicAuthCredential {
+    const VALUE: bool = false;
+}
+impl plugin_capability_report::IsRefreshable for BasicAuthCredential {
+    const VALUE: bool = false;
+}
+impl plugin_capability_report::IsRevocable for BasicAuthCredential {
+    const VALUE: bool = false;
+}
+impl plugin_capability_report::IsTestable for BasicAuthCredential {
+    const VALUE: bool = false;
+}
+impl plugin_capability_report::IsDynamic for BasicAuthCredential {
+    const VALUE: bool = false;
 }
 
 #[cfg(test)]

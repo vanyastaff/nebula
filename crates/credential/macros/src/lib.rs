@@ -29,10 +29,12 @@ mod credential;
 /// - `protocol = Type` - `StaticProtocol` impl for `parameters()` and `build()` (required)
 /// - `icon = "..."` - Icon identifier for UI (optional)
 /// - `doc_url = "..."` - Documentation URL (optional)
-/// - `dynamic = true` - Whether this credential produces ephemeral per-execution secrets (optional,
-///   default `false`)
-/// - `lease_ttl_secs = 300` - Lease duration in seconds for dynamic credentials (optional, default
-///   `None`)
+/// - `capabilities(...)` - List of sub-traits the credential implements (optional, default empty);
+///   accepts `interactive`, `refreshable`, `revocable`, `testable`, `dynamic`. Per Tech Spec §15.8
+///   (closes security-lead N6) the macro emits one `plugin_capability_report::IsX` const-bool impl
+///   per capability — `true` for listed flags, `false` for the rest — so
+///   `CredentialRegistry::capabilities_of` matches the actual sub-trait surface rather than a
+///   self-attested metadata field.
 ///
 /// ## Dependency attributes (outer attributes on the struct)
 ///

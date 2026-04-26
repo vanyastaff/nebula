@@ -18,7 +18,8 @@
 
 use nebula_credential::{
     Credential, CredentialContext, CredentialMetadata, CredentialRegistry, RegisterError,
-    SecretString, error::CredentialError, resolve::ResolveResult, scheme::SecretToken,
+    SecretString, contract::plugin_capability_report, error::CredentialError,
+    resolve::ResolveResult, scheme::SecretToken,
 };
 use nebula_schema::FieldValues;
 
@@ -61,6 +62,25 @@ impl Credential for CredA {
     }
 }
 
+// Tech Spec §15.8: every Credential must report its capability surface
+// for `CredentialRegistry::register` to compute the bitflag set. CredA
+// is a fully-static probe credential — all five constants are `false`.
+impl plugin_capability_report::IsInteractive for CredA {
+    const VALUE: bool = false;
+}
+impl plugin_capability_report::IsRefreshable for CredA {
+    const VALUE: bool = false;
+}
+impl plugin_capability_report::IsRevocable for CredA {
+    const VALUE: bool = false;
+}
+impl plugin_capability_report::IsTestable for CredA {
+    const VALUE: bool = false;
+}
+impl plugin_capability_report::IsDynamic for CredA {
+    const VALUE: bool = false;
+}
+
 /// Second credential — registered second, expected to be rejected.
 pub struct CredB;
 
@@ -94,6 +114,23 @@ impl Credential for CredB {
             SecretString::new("cred-b-token"),
         )))
     }
+}
+
+// CredB matches CredA's static-only capability surface.
+impl plugin_capability_report::IsInteractive for CredB {
+    const VALUE: bool = false;
+}
+impl plugin_capability_report::IsRefreshable for CredB {
+    const VALUE: bool = false;
+}
+impl plugin_capability_report::IsRevocable for CredB {
+    const VALUE: bool = false;
+}
+impl plugin_capability_report::IsTestable for CredB {
+    const VALUE: bool = false;
+}
+impl plugin_capability_report::IsDynamic for CredB {
+    const VALUE: bool = false;
 }
 
 // ── Probe assertions ───────────────────────────────────────────────

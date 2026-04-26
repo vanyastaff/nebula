@@ -1,6 +1,9 @@
 //! Credential derive macro implementation (v2).
 
-use nebula_macro_support::{attrs, diag};
+use nebula_macro_support::{
+    attrs::{self, AttrItem, AttrValue},
+    diag,
+};
 use proc_macro::TokenStream;
 use quote::quote;
 use syn::{Data, DeriveInput, Fields, parse_macro_input};
@@ -15,6 +18,20 @@ pub(crate) fn derive(input: TokenStream) -> TokenStream {
     }
 }
 
+/// Capability set declared via `#[credential(capabilities(...))]`. The
+/// macro emits one `plugin_capability_report::IsX` impl per flag — `true`
+/// when the flag was listed, `false` otherwise. Per Tech Spec §15.8 the
+/// declaration is opt-in (default static / no capabilities) so plugin
+/// authors cannot accidentally over-attest.
+#[derive(Debug, Clone, Copy, Default)]
+struct DeclaredCapabilities {
+    interactive: bool,
+    refreshable: bool,
+    revocable: bool,
+    testable: bool,
+    dynamic: bool,
+}
+
 /// Parsed `#[credential(...)]` attributes for v2 derive.
 struct CredentialAttrsV2 {
     key: String,
@@ -23,6 +40,7 @@ struct CredentialAttrsV2 {
     protocol: syn::Type,
     icon: Option<String>,
     doc_url: Option<String>,
+    capabilities: DeclaredCapabilities,
 }
 
 fn parse_credential_attrs(
@@ -49,6 +67,8 @@ fn parse_credential_attrs(
     let icon = attr_args.get_string("icon");
     let doc_url = attr_args.get_string("doc_url");
 
+    let capabilities = parse_capabilities(attr_args)?;
+
     Ok(CredentialAttrsV2 {
         key,
         name,
@@ -56,7 +76,63 @@ fn parse_credential_attrs(
         protocol,
         icon,
         doc_url,
+        capabilities,
     })
+}
+
+/// Parse the `capabilities(interactive, refreshable, revocable, testable,
+/// dynamic)` list inside `#[credential(...)]`. Per Tech Spec §15.8 each
+/// listed identifier flips the matching `plugin_capability_report::IsX::VALUE`
+/// to `true`; unlisted flags emit `false`. Unknown identifiers and
+/// non-ident values surface as compile errors so a typo cannot silently
+/// suppress a capability flag.
+fn parse_capabilities(attr_args: &attrs::AttrArgs) -> syn::Result<DeclaredCapabilities> {
+    let mut declared = DeclaredCapabilities::default();
+
+    let Some(values) = attr_args.items.iter().find_map(|item| match item {
+        AttrItem::List { key, values } if key == "capabilities" => Some(values),
+        _ => None,
+    }) else {
+        return Ok(declared);
+    };
+
+    for value in values {
+        let ident = match value {
+            AttrValue::Ident(i) => i,
+            AttrValue::Lit(lit) => {
+                return Err(diag::error_spanned(
+                    lit,
+                    "capabilities(...) accepts only bare identifiers \
+                     (interactive, refreshable, revocable, testable, dynamic)",
+                ));
+            },
+            AttrValue::Tokens(tokens) => {
+                return Err(diag::error_spanned(
+                    tokens,
+                    "capabilities(...) accepts only bare identifiers \
+                     (interactive, refreshable, revocable, testable, dynamic)",
+                ));
+            },
+        };
+        match ident.to_string().as_str() {
+            "interactive" => declared.interactive = true,
+            "refreshable" => declared.refreshable = true,
+            "revocable" => declared.revocable = true,
+            "testable" => declared.testable = true,
+            "dynamic" => declared.dynamic = true,
+            other => {
+                return Err(diag::error_spanned(
+                    ident,
+                    format!(
+                        "unknown capability `{other}` (expected one of: \
+                         interactive, refreshable, revocable, testable, dynamic)"
+                    ),
+                ));
+            },
+        }
+    }
+
+    Ok(declared)
 }
 
 /// Parsed `#[uses_resource(TypeName, purpose = "...")]` attribute.
@@ -74,7 +150,7 @@ fn parse_resource_deps(attrs: &[syn::Attribute]) -> syn::Result<Vec<ResourceDep>
                 .items
                 .iter()
                 .find_map(|item| match item {
-                    attrs::AttrItem::Flag(ident) => Some(ident.clone()),
+                    AttrItem::Flag(ident) => Some(ident.clone()),
                     _ => None,
                 })
                 .ok_or_else(|| {
@@ -156,6 +232,7 @@ fn expand(input: DeriveInput) -> syn::Result<proc_macro2::TokenStream> {
     let name = &attrs.name;
     let scheme = &attrs.scheme;
     let protocol = &attrs.protocol;
+    let caps = attrs.capabilities;
 
     // Generate DeclaresDependencies impl.
     let deps_impl = if resource_deps.is_empty() {
@@ -238,6 +315,51 @@ fn expand(input: DeriveInput) -> syn::Result<proc_macro2::TokenStream> {
         }
     };
 
+    // Per Tech Spec §15.8 (closes security-lead N6) emit one
+    // `plugin_capability_report::IsX` impl per capability flag — `true`
+    // when the flag was listed in `capabilities(...)`, `false` otherwise.
+    // The five impls together satisfy the bound on
+    // `CredentialRegistry::register` and make capability discovery
+    // type-driven rather than self-attested.
+    let interactive_value = caps.interactive;
+    let refreshable_value = caps.refreshable;
+    let revocable_value = caps.revocable;
+    let testable_value = caps.testable;
+    let dynamic_value = caps.dynamic;
+
+    let capability_impls = quote! {
+        impl #impl_generics
+            ::nebula_credential::contract::plugin_capability_report::IsInteractive
+            for #struct_name #ty_generics #where_clause
+        {
+            const VALUE: bool = #interactive_value;
+        }
+        impl #impl_generics
+            ::nebula_credential::contract::plugin_capability_report::IsRefreshable
+            for #struct_name #ty_generics #where_clause
+        {
+            const VALUE: bool = #refreshable_value;
+        }
+        impl #impl_generics
+            ::nebula_credential::contract::plugin_capability_report::IsRevocable
+            for #struct_name #ty_generics #where_clause
+        {
+            const VALUE: bool = #revocable_value;
+        }
+        impl #impl_generics
+            ::nebula_credential::contract::plugin_capability_report::IsTestable
+            for #struct_name #ty_generics #where_clause
+        {
+            const VALUE: bool = #testable_value;
+        }
+        impl #impl_generics
+            ::nebula_credential::contract::plugin_capability_report::IsDynamic
+            for #struct_name #ty_generics #where_clause
+        {
+            const VALUE: bool = #dynamic_value;
+        }
+    };
+
     let expanded = quote! {
         impl #impl_generics ::nebula_credential::Credential
             for #struct_name #ty_generics #where_clause
@@ -285,6 +407,8 @@ fn expand(input: DeriveInput) -> syn::Result<proc_macro2::TokenStream> {
         }
 
         #deps_impl
+
+        #capability_impls
     };
 
     Ok(expanded)

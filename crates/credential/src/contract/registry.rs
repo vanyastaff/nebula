@@ -37,7 +37,7 @@ use ahash::AHashMap;
 
 use super::{
     any::AnyCredential,
-    capability_report::{Capabilities, compute_capabilities},
+    capability_report::{Capabilities, compute_capabilities, plugin_capability_report},
     credential::Credential,
 };
 
@@ -125,7 +125,12 @@ impl CredentialRegistry {
         registering_crate: &'static str,
     ) -> Result<(), RegisterError>
     where
-        C: Credential,
+        C: Credential
+            + plugin_capability_report::IsInteractive
+            + plugin_capability_report::IsRefreshable
+            + plugin_capability_report::IsRevocable
+            + plugin_capability_report::IsTestable
+            + plugin_capability_report::IsDynamic,
     {
         let key: &'static str = C::KEY;
         if let Some(existing) = self.entries.get(key) {
@@ -181,19 +186,49 @@ impl CredentialRegistry {
 
     /// Returns the capability set for the credential at `key`, if registered.
     ///
-    /// **Stage 5 stub.** Currently returns [`Capabilities::empty()`] for every
-    /// entry until Stage 7 (Tech Spec §15.8) wires real detection via
-    /// `plugin_capability_report::*` per-credential constants. Consumers must
-    /// not rely on this for security-relevant decisions until Stage 7 lands.
-    ///
-    /// Hidden from the rustdoc index during the Stage 5–7 window so external
-    /// consumers cannot accidentally bind to the empty-stub semantics. Stage 7
-    /// will re-expose this for the engine `iter_compatible` filter (Tech Spec
-    /// §15.8) without an API churn.
-    #[doc(hidden)]
+    /// Per Tech Spec §15.8 (closes security-lead N6) the capability set is
+    /// computed at registration from per-credential `plugin_capability_report::*`
+    /// constants — consumers therefore see exactly the sub-trait surface the
+    /// type satisfies, not a self-attested metadata field. Discovery code
+    /// should prefer [`Self::iter_compatible`] which folds this lookup into
+    /// a registered-entry iterator.
     #[must_use]
     pub fn capabilities_of(&self, key: &str) -> Option<Capabilities> {
         self.entries.get(key).map(|e| e.capabilities)
+    }
+
+    /// Iterate registered `(key, capability_set)` pairs, filtered to
+    /// entries whose [`Capabilities`] superset matches `required`.
+    ///
+    /// Per Tech Spec §15.8 this is the discovery surface for "show me the
+    /// credentials that can refresh / revoke / test / lease" — operator UI,
+    /// CLI pickers, and engine wiring all funnel through here so a plugin
+    /// cannot lie about what slots it fills (the bitflag set comes from
+    /// [`compute_capabilities`] at registration, not metadata input).
+    ///
+    /// # Filter semantics
+    ///
+    /// `required` is a [`Capabilities`] bitflag set; an entry is included
+    /// iff `entry_caps.contains(required)`. Pass [`Capabilities::empty()`]
+    /// to iterate every registered credential. Multiple required flags
+    /// are AND'd (e.g. `INTERACTIVE | REFRESHABLE` matches only OAuth2-shape
+    /// credentials), matching `bitflags::contains` semantics.
+    ///
+    /// # Iteration order
+    ///
+    /// Order is unspecified (`AHashMap` randomizes per-process). Callers
+    /// that need a stable surface (e.g. UI lists) sort the result by key.
+    pub fn iter_compatible(
+        &self,
+        required: Capabilities,
+    ) -> impl Iterator<Item = (&str, Capabilities)> + '_ {
+        self.entries.iter().filter_map(move |(key, entry)| {
+            if entry.capabilities.contains(required) {
+                Some((key.as_ref(), entry.capabilities))
+            } else {
+                None
+            }
+        })
     }
 
     /// `CARGO_CRATE_NAME` of the crate that registered `key`. Returns

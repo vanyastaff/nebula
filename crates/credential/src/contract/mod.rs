@@ -26,7 +26,7 @@ mod static_protocol;
 mod testable;
 
 pub use any::AnyCredential;
-pub use capability_report::{Capabilities, compute_capabilities};
+pub use capability_report::{Capabilities, compute_capabilities, plugin_capability_report};
 pub use credential::Credential;
 pub use dynamic::Dynamic;
 pub use interactive::Interactive;
