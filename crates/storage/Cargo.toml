@@ -39,10 +39,14 @@ sha2 = { workspace = true }
 zeroize = { version = "1.8.2", features = ["zeroize_derive"] }
 moka = { workspace = true, features = ["future"] }
 
-# Optional backends (см. docs/nebula-architecture-final.md)
+# Optional backends (см. docs/nebula-architecture-final.md). The
+# `postgres` and `sqlite` features each turn on this dep — sqlx
+# features are additive, so enabling both compiles drivers for both
+# backends.
 sqlx = { version = "0.8", optional = true, features = [
   "runtime-tokio",
   "postgres",
+  "sqlite",
   "migrate",
   "uuid",
   "chrono",
@@ -75,6 +79,7 @@ test-util = ["nebula-credential/test-util"]
 # rotation error / id types (ADR-0029 §4, ADR-0032).
 rotation = ["nebula-credential/rotation"]
 postgres = ["dep:sqlx", "dep:hex"]
+sqlite = ["dep:sqlx"]
 redis = ["dep:redis"]
 s3 = ["dep:aws-config", "dep:aws-sdk-s3"]
 msgpack-storage = ["dep:rmp-serde"]

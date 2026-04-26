@@ -17,6 +17,11 @@ use uuid::Uuid;
 mod in_memory;
 pub use in_memory::InMemoryRefreshClaimRepo;
 
+#[cfg(feature = "sqlite")]
+mod sqlite;
+#[cfg(feature = "sqlite")]
+pub use sqlite::SqliteRefreshClaimRepo;
+
 /// Stable identifier for a Nebula replica process. Used to distinguish
 /// claim holders for diagnostics + sweep ownership.
 #[derive(Clone, Debug, Eq, PartialEq, Hash)]
@@ -91,7 +96,7 @@ pub enum HeartbeatError {
 pub enum RepoError {
     /// Storage backend error (sqlx). Only present when a SQL backend is
     /// compiled in.
-    #[cfg(feature = "postgres")]
+    #[cfg(any(feature = "postgres", feature = "sqlite"))]
     #[error("storage error: {0}")]
     Storage(#[from] sqlx::Error),
     /// Invariant violation observed in the repo (bad TTL, missing row

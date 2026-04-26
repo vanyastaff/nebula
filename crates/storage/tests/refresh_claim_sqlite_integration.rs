@@ -1,0 +1,206 @@
+//! SQLite integration tests for `SqliteRefreshClaimRepo`.
+//!
+//! Builds a fresh in-memory SQLite pool, runs migrations 0022 + 0023,
+//! and exercises the full `RefreshClaimRepo` contract.
+
+#![cfg(feature = "sqlite")]
+
+use std::time::Duration;
+
+use nebula_core::CredentialId;
+use nebula_storage::credential::{
+    ClaimAttempt, HeartbeatError, RefreshClaimRepo, ReplicaId, SentinelState,
+    SqliteRefreshClaimRepo,
+};
+use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
+
+/// Construct a fresh pool with claim tables installed. Single-connection so
+/// every test sees an isolated in-memory DB.
+async fn fresh_pool() -> sqlx::SqlitePool {
+    let options = SqliteConnectOptions::new()
+        .in_memory(true)
+        .create_if_missing(true);
+    let pool = SqlitePoolOptions::new()
+        .max_connections(1)
+        .connect_with(options)
+        .await
+        .expect("connect sqlite memory");
+
+    // Run only the two migrations our tests care about. Embedding the
+    // SQL inline avoids dragging in the full storage migration set
+    // (which references unrelated tables).
+    sqlx::query(include_str!(
+        "../migrations/sqlite/0022_credential_refresh_claims.sql"
+    ))
+    .execute(&pool)
+    .await
+    .expect("apply 0022");
+    sqlx::query(include_str!(
+        "../migrations/sqlite/0023_credential_sentinel_events.sql"
+    ))
+    .execute(&pool)
+    .await
+    .expect("apply 0023");
+
+    pool
+}
+
+#[tokio::test]
+async fn try_claim_acquire_then_release_then_reacquire() {
+    let pool = fresh_pool().await;
+    let repo = SqliteRefreshClaimRepo::new(pool);
+    let cid = CredentialId::new();
+
+    let first = match repo
+        .try_claim(&cid, &ReplicaId::new("A"), Duration::from_secs(30))
+        .await
+        .unwrap()
+    {
+        ClaimAttempt::Acquired(c) => c,
+        ClaimAttempt::Contended { .. } => panic!("expected Acquired"),
+    };
+    assert_eq!(first.token.generation, 0);
+    assert_eq!(first.credential_id, cid);
+
+    repo.release(first.token.clone()).await.unwrap();
+
+    // After release, a new acquirer wins. Generation resets because the row
+    // was deleted (matches the in-memory contract).
+    let second = match repo
+        .try_claim(&cid, &ReplicaId::new("B"), Duration::from_secs(30))
+        .await
+        .unwrap()
+    {
+        ClaimAttempt::Acquired(c) => c,
+        ClaimAttempt::Contended { .. } => panic!("expected Acquired"),
+    };
+    assert_eq!(second.token.generation, 0);
+}
+
+#[tokio::test]
+async fn try_claim_returns_contended_when_held() {
+    let pool = fresh_pool().await;
+    let repo = SqliteRefreshClaimRepo::new(pool);
+    let cid = CredentialId::new();
+
+    let _first = repo
+        .try_claim(&cid, &ReplicaId::new("A"), Duration::from_secs(30))
+        .await
+        .unwrap();
+
+    let second = repo
+        .try_claim(&cid, &ReplicaId::new("B"), Duration::from_secs(30))
+        .await
+        .unwrap();
+
+    match second {
+        ClaimAttempt::Contended {
+            existing_expires_at,
+        } => {
+            assert!(existing_expires_at > chrono::Utc::now());
+        },
+        ClaimAttempt::Acquired(_) => panic!("expected Contended"),
+    }
+}
+
+#[tokio::test]
+async fn heartbeat_extends_expiry_and_rejects_stale_token() {
+    let pool = fresh_pool().await;
+    let repo = SqliteRefreshClaimRepo::new(pool);
+    let cid = CredentialId::new();
+
+    let claim = match repo
+        .try_claim(&cid, &ReplicaId::new("A"), Duration::from_secs(5))
+        .await
+        .unwrap()
+    {
+        ClaimAttempt::Acquired(c) => c,
+        ClaimAttempt::Contended { .. } => panic!("expected Acquired"),
+    };
+
+    // Heartbeat with the live token succeeds.
+    repo.heartbeat(&claim.token).await.expect("heartbeat live");
+
+    // Heartbeat with a bumped generation fails.
+    let stale = nebula_storage::credential::ClaimToken {
+        claim_id: claim.token.claim_id,
+        generation: claim.token.generation + 1,
+    };
+    let result = repo.heartbeat(&stale).await;
+    assert!(matches!(result, Err(HeartbeatError::ClaimLost)));
+}
+
+#[tokio::test]
+async fn mark_sentinel_then_reclaim_returns_in_flight_state() {
+    let pool = fresh_pool().await;
+    let repo = SqliteRefreshClaimRepo::new(pool);
+    let cid = CredentialId::new();
+
+    let claim = match repo
+        .try_claim(
+            &cid,
+            &ReplicaId::new("crashed-replica"),
+            Duration::from_millis(50),
+        )
+        .await
+        .unwrap()
+    {
+        ClaimAttempt::Acquired(c) => c,
+        ClaimAttempt::Contended { .. } => panic!("expected Acquired"),
+    };
+    repo.mark_sentinel(&claim.token).await.unwrap();
+
+    tokio::time::sleep(Duration::from_millis(120)).await;
+
+    let reclaimed = repo.reclaim_stuck().await.unwrap();
+    assert_eq!(reclaimed.len(), 1);
+    assert_eq!(reclaimed[0].credential_id, cid);
+    assert_eq!(
+        reclaimed[0].previous_holder,
+        ReplicaId::new("crashed-replica")
+    );
+    assert_eq!(reclaimed[0].previous_generation, 0);
+    assert_eq!(reclaimed[0].sentinel, SentinelState::RefreshInFlight);
+
+    // Subsequent reclaim sees no rows.
+    let again = repo.reclaim_stuck().await.unwrap();
+    assert!(again.is_empty());
+}
+
+#[tokio::test]
+async fn concurrent_try_claim_across_pool_clones_yields_one_acquired() {
+    let pool = fresh_pool().await;
+    let repo_a = SqliteRefreshClaimRepo::new(pool.clone());
+    let repo_b = SqliteRefreshClaimRepo::new(pool.clone());
+    let cid = CredentialId::new();
+
+    let cid_a = cid;
+    let cid_b = cid;
+    let (a, b) = tokio::join!(
+        async move {
+            repo_a
+                .try_claim(&cid_a, &ReplicaId::new("A"), Duration::from_secs(30))
+                .await
+                .unwrap()
+        },
+        async move {
+            repo_b
+                .try_claim(&cid_b, &ReplicaId::new("B"), Duration::from_secs(30))
+                .await
+                .unwrap()
+        },
+    );
+
+    let acquired_count = [&a, &b]
+        .into_iter()
+        .filter(|o| matches!(o, ClaimAttempt::Acquired(_)))
+        .count();
+    let contended_count = [&a, &b]
+        .into_iter()
+        .filter(|o| matches!(o, ClaimAttempt::Contended { .. }))
+        .count();
+    // Single pool with max_connections=1 serialises queries, so exactly
+    // one wins and one sees Contended.
+    assert_eq!(acquired_count, 1, "exactly one acquirer should win");
+    assert_eq!(contended_count, 1, "the other must see Contended");
+}
