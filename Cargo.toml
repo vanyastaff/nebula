@@ -114,7 +114,7 @@ sha2 = "0.11"
 hmac = "0.13"
 hex = "0.4"
 subtle = "2.6"
-zeroize = { version = "1.8.2", features = ["std"] }
+zeroize = { version = "1.8.2", features = ["std", "zeroize_derive"] }
 secrecy = { version = "0.10", features = ["serde"] }
 argon2 = { version = "0.5.3", default-features = false, features = ["std"] }
 
