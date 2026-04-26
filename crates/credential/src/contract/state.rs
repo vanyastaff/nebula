@@ -8,14 +8,21 @@
 //! [`AuthScheme`]: crate::AuthScheme
 
 use serde::{Serialize, de::DeserializeOwned};
+use zeroize::ZeroizeOnDrop;
 
 /// Trait for credential state types stored in encrypted storage (v2).
 ///
 /// The `project()` method on `Credential` extracts an [`AuthScheme`]
 /// from this state for consumer use.
 ///
+/// `ZeroizeOnDrop` is mandatory — credential state contains decrypted
+/// secret material at runtime; deterministic plaintext drop is a
+/// §12.5 invariant (§15.4 amendment, Tech Spec).
+///
 /// [`AuthScheme`]: crate::AuthScheme
-pub trait CredentialState: Serialize + DeserializeOwned + Send + Sync + 'static {
+pub trait CredentialState:
+    Serialize + DeserializeOwned + Send + Sync + ZeroizeOnDrop + 'static
+{
     /// Unique identifier for this state type (e.g., `"oauth2_state"`).
     const KIND: &'static str;
     /// Schema version for migration support.

@@ -487,6 +487,7 @@ mod tests {
         assert_eq!(
             persisted_state
                 .refresh_token
+                .clone()
                 .expect("refresh token")
                 .expose_secret()
                 .to_owned(),
@@ -584,6 +585,7 @@ mod tests {
         assert_eq!(
             persisted_state
                 .refresh_token
+                .clone()
                 .expect("refresh token")
                 .expose_secret()
                 .to_owned(),

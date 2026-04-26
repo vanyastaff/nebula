@@ -18,9 +18,15 @@ use nebula_storage::credential::InMemoryStore;
 
 static REFRESH_COUNT: AtomicU32 = AtomicU32::new(0);
 
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[derive(
+    Debug, Clone, serde::Serialize, serde::Deserialize, zeroize::Zeroize, zeroize::ZeroizeOnDrop,
+)]
 struct ThunderingHerdState {
     token: String,
+    // Non-secret timestamp: zeroize would only flip a few bytes of an
+    // already-meaningless test fixture, and chrono::DateTime is not
+    // Zeroize.
+    #[zeroize(skip)]
     expires_at: chrono::DateTime<chrono::Utc>,
 }
 

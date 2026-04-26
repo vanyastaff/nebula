@@ -54,7 +54,9 @@ impl PendingState for ShortTtl {
     }
 }
 
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[derive(
+    Debug, Clone, serde::Serialize, serde::Deserialize, zeroize::Zeroize, zeroize::ZeroizeOnDrop,
+)]
 struct TestInteractiveState {
     token: String,
 }

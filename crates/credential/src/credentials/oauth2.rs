@@ -20,7 +20,7 @@ pub use oauth2_config::{
 };
 use serde::{Deserialize, Serialize};
 use subtle::ConstantTimeEq;
-use zeroize::Zeroize;
+use zeroize::{Zeroize, ZeroizeOnDrop};
 
 use super::oauth2_config;
 use crate::{
@@ -41,19 +41,28 @@ use crate::{
 /// Contains `client_id`, `client_secret`, and `token_url` so that
 /// [`OAuth2Credential::refresh`] can exchange a refresh token without
 /// requiring the original setup parameters.
-#[derive(Clone, Serialize, Deserialize)]
+///
+/// Per Tech Spec §15.4 amendment — `Zeroize` + `ZeroizeOnDrop` derived
+/// so the decrypted plaintext (access/refresh tokens, client creds)
+/// is scrubbed deterministically when this state is dropped. Non-secret
+/// fields (token type, expiry, scopes, URL, auth-style enum) carry
+/// `#[zeroize(skip)]`.
+#[derive(Clone, Serialize, Deserialize, Zeroize, ZeroizeOnDrop)]
 pub struct OAuth2State {
     /// Current access token.
     #[serde(with = "crate::serde_secret")]
     pub access_token: SecretString,
-    /// Token type (typically `"Bearer"`).
+    /// Token type (typically `"Bearer"`) — non-secret marker.
+    #[zeroize(skip)]
     pub token_type: String,
     /// Refresh token, if granted by the provider.
     #[serde(default, with = "crate::serde_secret::option")]
     pub refresh_token: Option<SecretString>,
-    /// When the access token expires, if known.
+    /// When the access token expires, if known — non-secret timestamp.
+    #[zeroize(skip)]
     pub expires_at: Option<DateTime<Utc>>,
-    /// Granted scopes.
+    /// Granted scopes — non-secret list of OAuth2 scope identifiers.
+    #[zeroize(skip)]
     pub scopes: Vec<String>,
     /// Stored for refresh operations.
     #[serde(with = "crate::serde_secret")]
@@ -61,10 +70,13 @@ pub struct OAuth2State {
     /// Stored for refresh operations (encrypted at rest via `EncryptionLayer`).
     #[serde(with = "crate::serde_secret")]
     pub client_secret: SecretString,
-    /// Token endpoint URL for refresh requests.
+    /// Token endpoint URL for refresh requests — non-secret endpoint URL.
+    #[zeroize(skip)]
     pub token_url: String,
-    /// How client credentials are sent (preserved from initial token exchange).
+    /// How client credentials are sent (preserved from initial token
+    /// exchange) — non-secret enum discriminant.
     #[serde(default)]
+    #[zeroize(skip)]
     pub auth_style: AuthStyle,
 }
 
