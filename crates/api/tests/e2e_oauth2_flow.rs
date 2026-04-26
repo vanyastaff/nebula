@@ -234,6 +234,7 @@ async fn e2e_oauth2_flow_persists_exchanged_credential_state() {
     assert_eq!(
         refreshed_state
             .refresh_token
+            .clone()
             .expect("refreshed refresh token")
             .expose_secret()
             .to_owned(),

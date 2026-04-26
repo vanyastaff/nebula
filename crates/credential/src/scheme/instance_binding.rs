@@ -15,6 +15,10 @@ use crate::AuthScheme;
 /// cloud provider's instance metadata service (IMDS) at runtime, using
 /// the provider, role/account, and region as lookup parameters.
 ///
+/// Per Tech Spec §15.5 — `PublicScheme`: provider, role, region are all
+/// non-secret identifiers; the actual cloud authentication happens at
+/// runtime against IMDS / managed identity / service account.
+///
 /// # Examples
 ///
 /// ```
@@ -24,7 +28,7 @@ use crate::AuthScheme;
 ///     .with_region("us-east-1");
 /// ```
 #[derive(Debug, Clone, Serialize, Deserialize, AuthScheme)]
-#[auth_scheme(pattern = InstanceIdentity)]
+#[auth_scheme(pattern = InstanceIdentity, public)]
 pub struct InstanceBinding {
     provider: String,
     role_or_account: String,

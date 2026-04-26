@@ -81,12 +81,8 @@ impl AnyCredential for StubCredential {
         )
     }
 
-    fn is_dynamic(&self) -> bool {
-        false
-    }
-
-    fn lease_ttl(&self) -> Option<std::time::Duration> {
-        None
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
     }
 }
 

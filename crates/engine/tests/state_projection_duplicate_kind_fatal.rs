@@ -1,23 +1,29 @@
-//! Gate 2 (N7 mitigation) — `CredentialRegistry::register` rejects
+//! Gate 2 (N7 mitigation) — `StateProjectionRegistry::register` rejects
 //! duplicate `<C::State as CredentialState>::KIND` on second registration.
 //!
 //! Verifies:
 //! 1. First registration succeeds (`Ok(())`).
-//! 2. Second registration of the same credential type returns [`RegistryError::DuplicateKind`] with
-//!    the colliding `kind`.
+//! 2. Second registration of the same credential type returns
+//!    [`StateProjectionError::DuplicateKind`] with the colliding `kind`.
 //! 3. Registry state is unchanged after the failure — original handler is not overwritten (len
 //!    remains 1, `contains(kind)` still true).
 //!
 //! Active-dev policy per Tech Spec §15.12.2: reject-second-registration.
 //! Silent `HashMap::insert` overwrite (prior behavior) would hide
 //! namespace collisions, including supply-chain plugin replacement.
+//!
+//! The companion KEY-keyed [`CredentialRegistry`](nebula_credential::CredentialRegistry)
+//! is exercised by `crates/credential/tests/runtime_duplicate_key_fatal.rs`
+//! (Probe 5, Tech Spec §15.6). Both registries fail-closed on duplicate
+//! registration; this probe covers the engine-side state-projection
+//! lookup.
 
 use nebula_credential::credentials::ApiKeyCredential;
-use nebula_engine::{CredentialRegistry, RegistryError};
+use nebula_engine::{StateProjectionError, StateProjectionRegistry};
 
 #[test]
 fn first_registration_succeeds() {
-    let mut registry = CredentialRegistry::new();
+    let mut registry = StateProjectionRegistry::new();
     assert!(registry.register::<ApiKeyCredential>().is_ok());
     assert_eq!(registry.len(), 1);
     assert!(registry.contains("secret_token"));
@@ -25,7 +31,7 @@ fn first_registration_succeeds() {
 
 #[test]
 fn duplicate_registration_returns_error_no_overwrite() {
-    let mut registry = CredentialRegistry::new();
+    let mut registry = StateProjectionRegistry::new();
 
     // First registration succeeds.
     registry
@@ -41,7 +47,7 @@ fn duplicate_registration_returns_error_no_overwrite() {
         .expect_err("second registration must fail");
 
     match err {
-        RegistryError::DuplicateKind { kind } => {
+        StateProjectionError::DuplicateKind { kind } => {
             assert_eq!(
                 kind, "secret_token",
                 "DuplicateKind must carry the colliding KIND verbatim"
@@ -64,12 +70,12 @@ fn duplicate_registration_returns_error_no_overwrite() {
 
 #[test]
 fn duplicate_error_message_includes_policy_hint() {
-    let mut registry = CredentialRegistry::new();
+    let mut registry = StateProjectionRegistry::new();
     registry.register::<ApiKeyCredential>().unwrap();
     let err = registry.register::<ApiKeyCredential>().unwrap_err();
     let msg = err.to_string();
     assert!(
-        msg.contains("duplicate credential kind"),
+        msg.contains("duplicate state kind"),
         "error message must identify the failure class"
     );
     assert!(

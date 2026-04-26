@@ -7,19 +7,28 @@ use crate::CredentialMetadata;
 /// Object-safe supertrait for declaring credential dependencies.
 ///
 /// `Resource` and `Action` return `Box<dyn AnyCredential>` to declare
-/// "I need a credential of this type." The engine uses `Any::type_id()` on
-/// `dyn AnyCredential` to identify the credential type at registration time.
+/// "I need a credential of this type." The engine uses `Any::type_id()`
+/// on `dyn AnyCredential` to identify the credential type at
+/// registration time.
 ///
-/// Automatically implemented for all `C: Credential` via the blanket impl below.
+/// Per Tech Spec §15.4 capability sub-trait split — `is_dynamic()` and
+/// `lease_ttl()` (which read the removed `C::DYNAMIC` / `C::LEASE_TTL`
+/// const-bool capability flags) have been dropped. Capability discovery
+/// over `dyn AnyCredential` moves to the contract-side
+/// `CredentialRegistry` (Tech Spec §3.1, §15.6) capability set computed
+/// at registration time from sub-trait membership (§15.8 / Stage 7).
+///
+/// Automatically implemented for all `C: Credential` via the blanket
+/// impl below.
 pub trait AnyCredential: Any + Send + Sync + 'static {
     /// The normalized key identifying this credential type.
     fn credential_key(&self) -> &str;
     /// Integration-catalog metadata describing this credential type.
     fn metadata(&self) -> CredentialMetadata;
-    /// Whether this credential produces ephemeral, per-execution secrets.
-    fn is_dynamic(&self) -> bool;
-    /// Lease duration for dynamic credentials (`None` = no automatic expiry).
-    fn lease_ttl(&self) -> Option<std::time::Duration>;
+    /// Type-erased self for downcast — required by the KEY-keyed
+    /// `CredentialRegistry` (Tech Spec §3.1) to return concrete
+    /// `&C` references via `Any::downcast_ref` after registry lookup.
+    fn as_any(&self) -> &dyn Any;
 }
 
 /// Blanket impl: every `Credential` is automatically an `AnyCredential`.
@@ -33,11 +42,7 @@ impl<C: crate::Credential + 'static> AnyCredential for C {
         C::metadata()
     }
 
-    fn is_dynamic(&self) -> bool {
-        C::DYNAMIC
-    }
-
-    fn lease_ttl(&self) -> Option<std::time::Duration> {
-        C::LEASE_TTL
+    fn as_any(&self) -> &dyn Any {
+        self
     }
 }

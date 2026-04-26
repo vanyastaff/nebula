@@ -1,6 +1,7 @@
 //! Identity + password authentication (username/email + password).
 
 use serde::{Deserialize, Serialize};
+use zeroize::{Zeroize, ZeroizeOnDrop};
 
 use crate::{AuthScheme, SecretString, identity_state};
 
@@ -9,6 +10,10 @@ use crate::{AuthScheme, SecretString, identity_state};
 /// Covers HTTP Basic Auth, database logins, SSH password auth, and any
 /// other scheme that combines an identity string with a secret password.
 ///
+/// Per Tech Spec §15.5 — `SensitiveScheme`: holds `SecretString` password;
+/// identity is a non-secret display value but the struct is sensitive
+/// because possession of the password establishes authentication.
+///
 /// # Examples
 ///
 /// ```
@@ -16,9 +21,10 @@ use crate::{AuthScheme, SecretString, identity_state};
 ///
 /// let cred = IdentityPassword::new("alice@example.com", SecretString::new("hunter2"));
 /// ```
-#[derive(Clone, Serialize, Deserialize, AuthScheme)]
-#[auth_scheme(pattern = IdentityPassword)]
+#[derive(Clone, Serialize, Deserialize, Zeroize, ZeroizeOnDrop, AuthScheme)]
+#[auth_scheme(pattern = IdentityPassword, sensitive)]
 pub struct IdentityPassword {
+    #[zeroize(skip)]
     identity: String,
     #[serde(with = "crate::serde_secret")]
     password: SecretString,

@@ -20,6 +20,7 @@ serde_json = { workspace = true }
 thiserror = { workspace = true }
 tokio = { workspace = true, features = ["macros", "time"] }
 tokio-util = { workspace = true, features = ["rt"] }
+zeroize = { workspace = true }
 
 [dev-dependencies]
 criterion = { workspace = true }

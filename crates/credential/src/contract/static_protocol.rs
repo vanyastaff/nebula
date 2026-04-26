@@ -24,10 +24,18 @@
 //!     }
 //!
 //!     fn build(values: &FieldValues) -> Result<ConnectionUri, CredentialError> {
-//!         let host = values.get_string_by_str("host").unwrap_or_default();
-//!         Ok(ConnectionUri::new(SecretString::new(
-//!             format!("postgres://user:pass@{host}:5432/db")
-//!         )))
+//!         let host = values
+//!             .get_string_by_str("host")
+//!             .ok_or_else(|| CredentialError::InvalidInput("missing host".into()))?
+//!             .to_owned();
+//!         Ok(ConnectionUri::new(
+//!             "postgres".into(),
+//!             host,
+//!             Some(5432),
+//!             "db".into(),
+//!             "user".into(),
+//!             SecretString::new("pass"),
+//!         ))
 //!     }
 //! }
 //! ```

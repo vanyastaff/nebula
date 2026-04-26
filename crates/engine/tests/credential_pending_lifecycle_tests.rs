@@ -6,11 +6,11 @@
 use std::time::Duration;
 
 use nebula_credential::{
-    Credential, CredentialContext, CredentialMetadata, PendingState, PendingStateStore,
-    PendingStoreError, PendingToken, SecretString,
+    Credential, CredentialContext, CredentialMetadata, Interactive, PendingState,
+    PendingStateStore, PendingStoreError, PendingToken, SecretString,
     credentials::OAuth2Pending,
     error::CredentialError,
-    resolve::{DisplayData, InteractionRequest, RefreshOutcome, ResolveResult, UserInput},
+    resolve::{ResolveResult, UserInput},
     scheme::SecretToken,
 };
 use nebula_schema::FieldValues;
@@ -26,6 +26,16 @@ impl zeroize::Zeroize for TestPending {
         self.verification_code.zeroize();
     }
 }
+
+// Per Tech Spec §15.4 — `PendingState: ZeroizeOnDrop`. Hand-rolled
+// because the manual `Zeroize` body above conflicts with a derived
+// `Drop`; this delegates Drop to the existing zeroize logic.
+impl Drop for TestPending {
+    fn drop(&mut self) {
+        zeroize::Zeroize::zeroize(self);
+    }
+}
+impl zeroize::ZeroizeOnDrop for TestPending {}
 
 impl PendingState for TestPending {
     const KIND: &'static str = "test_interactive_pending";
@@ -46,6 +56,15 @@ impl zeroize::Zeroize for ShortTtl {
     }
 }
 
+// Per Tech Spec §15.4 — `PendingState: ZeroizeOnDrop`. Same hand-roll
+// rationale as `TestPending` above.
+impl Drop for ShortTtl {
+    fn drop(&mut self) {
+        zeroize::Zeroize::zeroize(self);
+    }
+}
+impl zeroize::ZeroizeOnDrop for ShortTtl {}
+
 impl PendingState for ShortTtl {
     const KIND: &'static str = "short_ttl";
 
@@ -54,7 +73,9 @@ impl PendingState for ShortTtl {
     }
 }
 
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[derive(
+    Debug, Clone, serde::Serialize, serde::Deserialize, zeroize::Zeroize, zeroize::ZeroizeOnDrop,
+)]
 struct TestInteractiveState {
     token: String,
 }
@@ -70,10 +91,8 @@ impl Credential for InteractiveTestCredential {
     type Input = FieldValues;
     type Scheme = SecretToken;
     type State = TestInteractiveState;
-    type Pending = TestPending;
 
     const KEY: &'static str = "interactive_test";
-    const INTERACTIVE: bool = true;
 
     fn metadata() -> CredentialMetadata {
         CredentialMetadata::new(
@@ -92,19 +111,21 @@ impl Credential for InteractiveTestCredential {
     async fn resolve(
         _values: &FieldValues,
         _ctx: &CredentialContext,
-    ) -> Result<ResolveResult<TestInteractiveState, TestPending>, CredentialError> {
-        Ok(ResolveResult::Pending {
-            state: TestPending {
-                verification_code: "secret-code-123".into(),
-            },
-            interaction: InteractionRequest::DisplayInfo {
-                title: "Enter Code".into(),
-                message: "Please enter the verification code".into(),
-                data: DisplayData::Text("Check your email for the code".into()),
-                expires_in: Some(300),
-            },
-        })
+    ) -> Result<ResolveResult<TestInteractiveState, ()>, CredentialError> {
+        // Per Tech Spec §15.4 the base `Credential::resolve` cannot
+        // carry typed pending state. The interactive entry point goes
+        // through credential-specific kickoff helpers + direct
+        // PendingStateStore::put — see the test bodies below for the
+        // pattern.
+        Err(CredentialError::Provider(
+            "interactive_test must be initiated via PendingStateStore::put + execute_continue"
+                .into(),
+        ))
     }
+}
+
+impl Interactive for InteractiveTestCredential {
+    type Pending = TestPending;
 
     async fn continue_resolve(
         pending: &TestPending,
@@ -122,14 +143,14 @@ impl Credential for InteractiveTestCredential {
             )),
         }
     }
-
-    async fn refresh(
-        _state: &mut TestInteractiveState,
-        _ctx: &CredentialContext,
-    ) -> Result<RefreshOutcome, CredentialError> {
-        Ok(RefreshOutcome::NotSupported)
-    }
 }
+
+// Per Tech Spec §15.4 — `InteractiveTestCredential` is not `Refreshable`.
+// The legacy `impl Refreshable { Ok(NotSupported) }` was the exact
+// silent-downgrade vector §15.4 eliminates: a credential declared
+// "refreshable" but silently never refreshed. Tests below exercise only
+// the `Interactive` path (`execute_continue`), so no refresh impl is
+// needed.
 
 struct RetryAwareCredential;
 
@@ -137,10 +158,8 @@ impl Credential for RetryAwareCredential {
     type Input = FieldValues;
     type Scheme = SecretToken;
     type State = TestInteractiveState;
-    type Pending = TestPending;
 
     const KEY: &'static str = "retry_aware";
-    const INTERACTIVE: bool = true;
 
     fn metadata() -> CredentialMetadata {
         CredentialMetadata::new(
@@ -159,19 +178,15 @@ impl Credential for RetryAwareCredential {
     async fn resolve(
         _values: &FieldValues,
         _ctx: &CredentialContext,
-    ) -> Result<ResolveResult<TestInteractiveState, TestPending>, CredentialError> {
-        Ok(ResolveResult::Pending {
-            state: TestPending {
-                verification_code: "secret-code-123".into(),
-            },
-            interaction: InteractionRequest::DisplayInfo {
-                title: "Still waiting".into(),
-                message: "Poll once, then provide code".into(),
-                data: DisplayData::Text("waiting for user consent".into()),
-                expires_in: Some(300),
-            },
-        })
+    ) -> Result<ResolveResult<TestInteractiveState, ()>, CredentialError> {
+        Err(CredentialError::Provider(
+            "retry_aware must be initiated via PendingStateStore::put + execute_continue".into(),
+        ))
     }
+}
+
+impl Interactive for RetryAwareCredential {
+    type Pending = TestPending;
 
     async fn continue_resolve(
         pending: &TestPending,
@@ -192,39 +207,45 @@ impl Credential for RetryAwareCredential {
             )),
         }
     }
+}
 
-    async fn refresh(
-        _state: &mut TestInteractiveState,
-        _ctx: &CredentialContext,
-    ) -> Result<RefreshOutcome, CredentialError> {
-        Ok(RefreshOutcome::NotSupported)
-    }
+// Per Tech Spec §15.4 — `RetryAwareCredential` is not `Refreshable`.
+// The legacy `impl Refreshable { Ok(NotSupported) }` was the silent-
+// downgrade anti-pattern §15.4 eliminates. Tests below exercise only
+// the `Interactive` path (`execute_continue`).
+
+/// Helper: kickoff an interactive test credential by storing the typed
+/// `TestPending` directly in the pending store and returning the issued
+/// token. Per Tech Spec §15.4 the base `Credential::resolve` cannot
+/// carry typed pending state — the kickoff happens at the API
+/// orchestration layer (or in tests, here).
+async fn kickoff_test_pending(
+    pending_store: &InMemoryPendingStore,
+    ctx: &CredentialContext,
+    credential_key: &str,
+) -> PendingToken {
+    // Per Tech Spec §15.4 the executor requires explicit session scoping —
+    // tests must provide a session id via `with_session_id` rather than
+    // relying on a `"default"` fallback that would collapse concurrent
+    // owners into the same pending-store bucket.
+    let session_id = ctx
+        .session_id()
+        .expect("test must call CredentialContext::with_session_id before kickoff");
+    let pending = TestPending {
+        verification_code: "secret-code-123".into(),
+    };
+    pending_store
+        .put(credential_key, ctx.owner_id(), session_id, pending)
+        .await
+        .expect("pending_store::put should succeed")
 }
 
 #[tokio::test]
 async fn pending_lifecycle_resolve_then_continue() {
     let pending_store = InMemoryPendingStore::new();
     let ctx = CredentialContext::for_test("test-user").with_session_id("sess-1");
-    let values = FieldValues::new();
 
-    let response = nebula_engine::credential::execute_resolve::<InteractiveTestCredential, _>(
-        &values,
-        &ctx,
-        &pending_store,
-    )
-    .await
-    .expect("execute_resolve should succeed");
-
-    let token = match response {
-        nebula_engine::credential::ResolveResponse::Pending { token, interaction } => {
-            assert!(
-                matches!(interaction, InteractionRequest::DisplayInfo { ref title, .. } if title == "Enter Code"),
-                "expected DisplayInfo interaction, got: {interaction:?}"
-            );
-            token
-        },
-        other => panic!("expected Pending response, got: {other:?}"),
-    };
+    let token = kickoff_test_pending(&pending_store, &ctx, InteractiveTestCredential::KEY).await;
 
     let input = UserInput::Code {
         code: "secret-code-123".into(),
@@ -250,19 +271,8 @@ async fn pending_lifecycle_resolve_then_continue() {
 async fn pending_token_is_single_use() {
     let pending_store = InMemoryPendingStore::new();
     let ctx = CredentialContext::for_test("test-user").with_session_id("sess-1");
-    let values = FieldValues::new();
 
-    let response = nebula_engine::credential::execute_resolve::<InteractiveTestCredential, _>(
-        &values,
-        &ctx,
-        &pending_store,
-    )
-    .await
-    .unwrap();
-    let token = match response {
-        nebula_engine::credential::ResolveResponse::Pending { token, .. } => token,
-        other => panic!("expected Pending, got: {other:?}"),
-    };
+    let token = kickoff_test_pending(&pending_store, &ctx, InteractiveTestCredential::KEY).await;
 
     let input = UserInput::Code {
         code: "secret-code-123".into(),
@@ -290,19 +300,8 @@ async fn pending_token_is_single_use() {
 async fn continue_with_wrong_code_returns_error() {
     let pending_store = InMemoryPendingStore::new();
     let ctx = CredentialContext::for_test("test-user").with_session_id("sess-1");
-    let values = FieldValues::new();
 
-    let response = nebula_engine::credential::execute_resolve::<InteractiveTestCredential, _>(
-        &values,
-        &ctx,
-        &pending_store,
-    )
-    .await
-    .unwrap();
-    let token = match response {
-        nebula_engine::credential::ResolveResponse::Pending { token, .. } => token,
-        other => panic!("expected Pending, got: {other:?}"),
-    };
+    let token = kickoff_test_pending(&pending_store, &ctx, InteractiveTestCredential::KEY).await;
 
     let input = UserInput::Code {
         code: "wrong-code".into(),
@@ -324,19 +323,8 @@ async fn continue_with_wrong_code_returns_error() {
 async fn retry_does_not_consume_pending_token() {
     let pending_store = InMemoryPendingStore::new();
     let ctx = CredentialContext::for_test("test-user").with_session_id("sess-1");
-    let values = FieldValues::new();
 
-    let response = nebula_engine::credential::execute_resolve::<RetryAwareCredential, _>(
-        &values,
-        &ctx,
-        &pending_store,
-    )
-    .await
-    .expect("execute_resolve should succeed");
-    let token = match response {
-        nebula_engine::credential::ResolveResponse::Pending { token, .. } => token,
-        other => panic!("expected Pending, got: {other:?}"),
-    };
+    let token = kickoff_test_pending(&pending_store, &ctx, RetryAwareCredential::KEY).await;
 
     let retry = nebula_engine::credential::execute_continue::<RetryAwareCredential, _>(
         &token,
@@ -382,19 +370,8 @@ async fn retry_path_rejects_mismatched_session() {
     let pending_store = InMemoryPendingStore::new();
     let owner_ctx = CredentialContext::for_test("test-user").with_session_id("sess-owner");
     let attacker_ctx = CredentialContext::for_test("test-user").with_session_id("sess-attacker");
-    let values = FieldValues::new();
 
-    let response = nebula_engine::credential::execute_resolve::<RetryAwareCredential, _>(
-        &values,
-        &owner_ctx,
-        &pending_store,
-    )
-    .await
-    .expect("execute_resolve should succeed");
-    let token = match response {
-        nebula_engine::credential::ResolveResponse::Pending { token, .. } => token,
-        other => panic!("expected Pending, got: {other:?}"),
-    };
+    let token = kickoff_test_pending(&pending_store, &owner_ctx, RetryAwareCredential::KEY).await;
 
     let result = nebula_engine::credential::execute_continue::<RetryAwareCredential, _>(
         &token,

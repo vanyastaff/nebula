@@ -3,7 +3,7 @@
 //! These types form the HTTP API contract for credential lifecycle management.
 //! Response types **never** include secret material (encrypted state, tokens, keys).
 //! Request types carry user-provided configuration that will be validated against
-//! the credential type's [`ValidSchema`] before persistence.
+//! the credential type's `ValidSchema` before persistence.
 
 use std::collections::HashMap;
 

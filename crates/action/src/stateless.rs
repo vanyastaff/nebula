@@ -192,8 +192,8 @@ impl<F, Input, Output> fmt::Debug for FnStatelessAction<F, Input, Output> {
 /// The context is cloned before each call (cheap — all capabilities are
 /// behind `Arc`).
 ///
-/// **Important:** Without [`with_context`](FnStatelessCtxAction::with_context),
-/// `execute` builds a minimal context from the [`Context`] trait methods
+/// **Important:** Without a context-injection setup,
+/// `execute` builds a minimal context from the `Context` trait methods
 /// (noop capabilities). Call `with_context` to inject a base
 /// [`ActionContext`] whose credentials, resources, and logger are cloned
 /// into each invocation.

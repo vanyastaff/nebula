@@ -26,7 +26,7 @@ mod secret_token;
 mod shared_key;
 mod signing_key;
 
-pub use auth::{AuthPattern, AuthScheme};
+pub use auth::{AuthPattern, AuthScheme, PublicScheme, SensitiveScheme};
 pub use certificate::Certificate;
 pub use connection_uri::ConnectionUri;
 pub use identity_password::IdentityPassword;

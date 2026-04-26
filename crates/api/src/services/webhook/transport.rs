@@ -9,7 +9,7 @@
 //!
 //! 1. Runtime starts a webhook trigger. It builds an `Arc<dyn TriggerHandler>` (a
 //!    `WebhookTriggerAdapter`) and calls [`WebhookTransport::activate`], passing the handler and a
-//!    template [`TriggerContext`] with all capabilities wired except `webhook` (transport fills it
+//!    template `TriggerContext` with all capabilities wired except `webhook` (transport fills it
 //!    in).
 //! 2. Transport generates a fresh `(trigger_uuid, nonce)` pair, builds an [`EndpointProviderImpl`],
 //!    stores the handler + ctx in the routing map, and returns an [`ActivationHandle`].
@@ -167,7 +167,7 @@ impl WebhookTransport {
     /// Builds a fresh `(uuid, nonce)` pair, constructs an
     /// [`EndpointProviderImpl`], injects it into the supplied
     /// `ctx_template` via
-    /// [`TriggerContext::with_webhook_endpoint`](nebula_action::TriggerContext::with_webhook_endpoint),
+    /// `TriggerContext::with_webhook_endpoint` (in the `nebula_action` crate),
     /// and stores the pair in the routing map. Caller takes the
     /// returned [`ActivationHandle`] and passes `handle.ctx` to
     /// `adapter.start(...)`.

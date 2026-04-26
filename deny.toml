@@ -93,6 +93,22 @@ deny = [
     "nebula-sandbox",
     "nebula-sdk",
   ], reason = "Resource framework is shared infra; only the listed business/exec consumers may depend on it (no upward deps from API or core/*)" },
+
+  # nebula-credential-builtin is a Business-tier crate that ships first-party
+  # concrete credential types. Plugin authors depend on the contract crate
+  # (`nebula-credential`), NOT on this one — see crate README and
+  # `docs/superpowers/specs/2026-04-24-credential-redesign-strategy.md` §2.4.
+  # П1 ships only the empty scaffold; the wrappers allowlist starts empty and
+  # is widened in П3 when first-party concrete types land and composition
+  # roots wire them in.
+  # Allowed deps: nebula-credential, -macros, -core, -error, -schema (declared
+  # in crates/credential-builtin/Cargo.toml). Upward deps on Exec/API tier
+  # crates (nebula-engine, -storage, -api, -resource, -action, -runtime,
+  # -sandbox, -plugin, -sdk) are forbidden by the wrapper allowlists on each
+  # of those crates, which deliberately omit nebula-credential-builtin.
+  { crate = "nebula-credential-builtin", wrappers = [
+    "nebula-credential-builtin",
+  ], reason = "Built-in credential types are a first-party scaffold; П1 has only the self-reference (the crate's own dev-deps), П3+ extends this allowlist with composition-root crates that wire concrete types" },
 ]
 skip = [
   "bitflags",

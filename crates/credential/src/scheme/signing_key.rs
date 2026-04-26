@@ -1,6 +1,7 @@
 //! Request signing credentials (HMAC, SigV4, webhook signatures).
 
 use serde::{Deserialize, Serialize};
+use zeroize::{Zeroize, ZeroizeOnDrop};
 
 use crate::{AuthScheme, SecretString};
 
@@ -10,6 +11,9 @@ use crate::{AuthScheme, SecretString};
 /// request-signing mechanisms where a shared secret is used to compute
 /// a signature over request data.
 ///
+/// Per Tech Spec §15.5 — `SensitiveScheme`: signing key is the secret;
+/// algorithm identifier is non-secret metadata.
+///
 /// # Examples
 ///
 /// ```
@@ -17,11 +21,12 @@ use crate::{AuthScheme, SecretString};
 ///
 /// let key = SigningKey::new(SecretString::new("whsec_abc123"), "hmac-sha256");
 /// ```
-#[derive(Clone, Serialize, Deserialize, AuthScheme)]
-#[auth_scheme(pattern = RequestSigning)]
+#[derive(Clone, Serialize, Deserialize, Zeroize, ZeroizeOnDrop, AuthScheme)]
+#[auth_scheme(pattern = RequestSigning, sensitive)]
 pub struct SigningKey {
     #[serde(with = "crate::serde_secret")]
     key: SecretString,
+    #[zeroize(skip)]
     algorithm: String,
 }
 

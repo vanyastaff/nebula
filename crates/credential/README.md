@@ -31,21 +31,25 @@ The [credential architecture cleanup design](../../docs/superpowers/specs/2026-0
 
 ## Public API
 
-- `Credential` — unified trait: `resolve()`, `refresh()`, `test()`, `project()`, `schema()`.
-- `CredentialMetadata`, `CredentialMetadataBuilder` — static type descriptor: key, name, schema (`ValidSchema`), `AuthPattern`.
-
-> **Deprecation:** `Credential::parameters()` is deprecated in favor of `schema()` for naming consistency with `Resource::schema()` and `StatelessAction::schema()`.
+- `Credential` — base trait: `resolve()`, `project()`, plus the three associated types (`Input`, `State`, `Scheme`) and `KEY` const. Capability methods removed from base — see sub-traits below.
+- `Interactive`, `Refreshable`, `Revocable`, `Testable`, `Dynamic` — capability sub-traits added at П1 (Tech Spec §15.4). `Interactive` carries the `Pending` associated type; engine dispatchers bind `where C: <Capability>`.
+- `CredentialState` — supertrait `ZeroizeOnDrop` is now mandatory (Tech Spec §15.4 amendment); compile-fail probe `compile_fail_state_zeroize` enforces.
+- `CredentialMetadata`, `CredentialMetadataBuilder` — static type descriptor: key, name, schema (`ValidSchema`), `AuthPattern`. **`capabilities_enabled` field removed** (Tech Spec §15.8) — capability sets come from sub-trait membership at registration.
+- `Capabilities` (bitflags), `compute_capabilities::<C>() -> Capabilities`, `plugin_capability_report::*` — registration-time capability fold (Tech Spec §15.8).
+- `CredentialRegistry`, `RegisterError` — `register<C>(instance, registering_crate) -> Result<(), RegisterError>`; duplicates fatal in debug + release (Tech Spec §15.6). `iter_compatible(required: Capabilities)` for slot-picker / discovery code.
+- `AuthScheme` (base) + `SensitiveScheme: AuthScheme + ZeroizeOnDrop` + `PublicScheme: AuthScheme` — the П1 sensitivity dichotomy (Tech Spec §15.5). `AuthPattern` unchanged.
+- 9 built-in scheme types: `SecretToken`, `IdentityPassword`, `OAuth2Token`, `KeyPair`, `Certificate`, `SigningKey`, `ConnectionUri`, `InstanceBinding`, `SharedKey`. (Pruned 2026-04-24: `FederatedAssertion` → Plane A per ADR-0033; `ChallengeSecret` + `OtpSeed` → integration-internal, not projected.) Each scheme is now `SensitiveScheme` or `PublicScheme` per §15.5.
+- `SchemeGuard<'a, C>`, `SchemeFactory<C>`, `OnCredentialRefresh<C>` — refresh-hook surface (Tech Spec §15.7). `SchemeGuard` is `!Clone`, lifetime-pinned, and drop-zeroizes through the wrapped scheme's `ZeroizeOnDrop` impl.
 - `CredentialRecord` — runtime operational state (created_at, version, expiry, tags); non-sensitive domain representation. Previously named `Metadata` (ADR 0004).
-- `AuthScheme`, `AuthPattern` — open scheme trait and classification enum canonical in `nebula-core`, re-exported here for backward compatibility.
-- 9 built-in scheme types: `SecretToken`, `IdentityPassword`, `OAuth2Token`, `KeyPair`, `Certificate`, `SigningKey`, `ConnectionUri`, `InstanceBinding`, `SharedKey`. (Pruned 2026-04-24: `FederatedAssertion` → Plane A per ADR-0033; `ChallengeSecret` + `OtpSeed` → integration-internal, not projected.)
 - `CredentialStore`, `StoredCredential`, `PutMode`, `StoreError` — storage trait with layered composition.
 - `InMemoryStore` — in-crate test/development store shim (canonical impl is `nebula_storage::credential::InMemoryStore`).
 - `SecretString` — string type with automatic zeroization on drop.
 - `CredentialGuard` — secure RAII wrapper with `Deref` + zeroize on drop; implements `Guard` and `TypedGuard` from `nebula-core`.
-- `NoPendingState`, `PendingState`, `PendingToken` — pending state for interactive flows.
+- `NoPendingState`, `PendingState`, `PendingToken` — pending state for interactive flows (`Pending` lives on `Interactive` per §15.4).
 - `PendingStateStore`, `InMemoryPendingStore`, `PendingStoreError` — pending-state contract and in-memory shim.
 - `EncryptedData`, `EncryptionKey`, `encrypt`, `decrypt` — AES-256-GCM crypto primitives.
-- `#[derive(Credential)]`, `#[derive(AuthScheme)]` — proc-macro derivations (low boilerplate).
+- `#[derive(Credential)]`, `#[derive(AuthScheme)]` (with `sensitive` / `public` argument) — proc-macro derivations (low boilerplate).
+- `#[capability]` (in `nebula-credential-macros`) — capability sub-trait declaration with sealed companion + phantom-shim companion per ADR-0035.
 - `CredentialRotationEvent`, `RotationError` (feature `rotation`) — rotation event and error types.
 - `OAuth2Credential`, `ApiKeyCredential`, `BasicAuthCredential` — built-in credential implementations.
 - `StaticProtocol` — reusable pattern for static credentials (State = Scheme).
@@ -67,11 +71,24 @@ The [credential architecture cleanup design](../../docs/superpowers/specs/2026-0
 - Not an OAuth2 server — PKCE and device-code flows are client-side helpers; the OAuth2 authorization endpoint is external.
 - Not the schema system — field definitions use `nebula-schema`; `CredentialMetadata.properties` is a `ValidSchema`.
 
+## П1 trait shape (2026-04-26)
+
+The credential П1 phase landed the validated CP5/CP6 trait shape per Tech Spec §15.4-§15.8. Key shifts versus the pre-П1 surface:
+
+- **Capability sub-trait split (§15.4).** The 4 capability bools (`INTERACTIVE` / `REFRESHABLE` / `REVOCABLE` / `TESTABLE`) and the production `DYNAMIC` flag are gone. Credentials opt into capabilities by implementing `Interactive`, `Refreshable`, `Revocable`, `Testable`, or `Dynamic`. The `Pending` associated type lives on `Interactive` (was on the base trait). Engine dispatchers bind `where C: Refreshable` rather than reading a const; the silent-downgrade vector ("const says `true` but method defaults to `NotSupported`") is structurally absent. Closes security-lead N1+N3+N5.
+- **`AuthScheme` sensitivity dichotomy (§15.5).** `AuthScheme` is now the base; sensitive material implements `SensitiveScheme: AuthScheme + ZeroizeOnDrop`, public material implements `PublicScheme: AuthScheme`. Derive macros `#[auth_scheme(sensitive)]` / `#[auth_scheme(public)]` audit fields at expansion (forbid plain `String` for sensitive, forbid `SecretString` for public, name-based lint on `token` / `secret` / `key` / `password`). `OAuth2Token::bearer_header` returns `SecretString`; `ConnectionUri` exposes structured accessors only. Closes N2+N4+N10.
+- **Fatal duplicate-KEY registration (§15.6).** `CredentialRegistry::register<C>(instance, registering_crate)` returns `Result<(), RegisterError>` — duplicates are fatal in **both** debug and release builds. The previous "panic in debug, warn + overwrite in release" pattern is removed. Operators resolve via plugin uninstall, version pin, or namespace fix at startup rather than discovering silent credential takeover at runtime. Closes N7 (interim until signed-manifest infra lands).
+- **`SchemeGuard` + `SchemeFactory` refresh hook (§15.7).** Long-lived resources receive `SchemeGuard<'a, C>` (`!Clone`, drop-zeroizes via `SensitiveScheme: ZeroizeOnDrop`, lifetime-pinned by `PhantomData<&'a ()>`) instead of `&Scheme`. `SchemeFactory<C>` is the re-acquisition mechanism for connection pools / daemons that need fresh material per request. The parallel `OnCredentialRefresh<C>` trait is the canonical refresh-hook signature; resources that don't react to credential refresh leave it unimplemented. Closes N8 + tech-lead gap (i).
+- **Capability-from-type (§15.8).** `CredentialMetadata::capabilities_enabled` is removed. Capability sets come from `compute_capabilities::<C>()` over the `plugin_capability_report::Is*` constants (set by sub-trait membership) at registration; plugins cannot self-attest false capabilities. `CredentialRegistry::iter_compatible(required: Capabilities) -> impl Iterator<Item = (&str, Capabilities)>` is the discovery surface for slot pickers. Closes N6.
+- **ADR-0035 phantom-shim canonical form.** `dyn ServiceCapability` requires a per-capability `mod sealed_caps` + `dyn ServiceCapabilityPhantom` rewrite — see [ADR-0035](../../docs/adr/0035-phantom-shim-capability-pattern.md) (amendments 2026-04-24-B + -C + 2026-04-26 rename). The `#[capability]` proc-macro and `#[action_phantom]` rewriter make this one-line for plugin authors.
+
+Plugin authors: see [`crates/credential-builtin/`](../credential-builtin/) for canonical capability sub-trait impls and the `mod sealed_caps` convention. The 10 landing-gate compile-fail probes in `tests/compile_fail_*.rs` document every invariant — read those first when a credential change feels load-bearing.
+
 ## Maturity
 
 See `docs/MATURITY.md` row for `nebula-credential`.
 
-- API stability: `frontier` — core trait (including DYNAMIC credential support with `DYNAMIC`, `LEASE_TTL`, `release()`), 12 scheme types, store contract, and secret primitives are implemented. Runtime resolver/registry/executor moved to `nebula-engine::credential`. `CredentialContext` embeds `BaseContext` and implements `Context` trait from `nebula-core`. Former `accessor/` and `metadata/` directories flattened to root-level modules. Rotation feature (`rotation`) is feature-gated and still evolving.
+- API stability: `frontier` — П1 trait scaffolding landed (sub-trait capability split, sensitivity dichotomy, fatal duplicate-KEY registration, `SchemeGuard` / `SchemeFactory` refresh hook, capability-from-type). 9 scheme types, store contract, and secret primitives implemented. Runtime resolver/registry/executor in `nebula-engine::credential`. `CredentialContext` embeds `BaseContext` and implements `Context` trait from `nebula-core`. Former `accessor/` and `metadata/` directories flattened to root-level modules. Rotation feature (`rotation`) is feature-gated and still evolving. Engine `iter_compatible` consumer wiring + manager-side `OnCredentialRefresh<C>` fan-out tracked as post-П1 follow-ups (`stage7-followup-engine-discovery` + `stage6-followup-resource-integration` in the credential concerns register).
 - `#![forbid(unsafe_code)]` enforced.
 - Known gap: `CredentialRecord` placement is tracked for potential movement (see comment in `src/record.rs`); no canon revision required.
 

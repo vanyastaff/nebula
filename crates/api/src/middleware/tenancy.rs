@@ -1,8 +1,8 @@
 //! Tenancy resolution middleware.
 //!
 //! Parses path segments from `/api/v1/orgs/{org}/workspaces/{ws}/...`
-//! and resolves slug-or-ULID identifiers to typed IDs via [`OrgResolver`]
-//! and [`WorkspaceResolver`] port traits.
+//! and resolves slug-or-ULID identifiers to typed IDs via `OrgResolver`
+//! and `WorkspaceResolver` port traits.
 
 use std::str::FromStr;
 

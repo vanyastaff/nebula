@@ -21,7 +21,8 @@ Legend:
 | nebula-action        | frontier | stable  | stable | partial (webhook sig `Required` by default at trait surface — ADR-0022; CheckpointPolicy planned; `ActionResult::Retry` gated behind `unstable-retry-scheduler`, #290) | n/a |
 | nebula-api           | frontier | stable  | stable | partial (knife steps 3+5: Start/Cancel producers stable, #332/#330; engine-side Start/Resume/Restart dispatch wired via EngineControlDispatch — ADR-0008 A2; Cancel/Terminate dispatch wired via engine cancel registry — ADR-0008 A3 / ADR-0016; API routing infrastructure per spec 05: tenant-scoped routes, RBAC/tenancy/CSRF middleware, cursor pagination, port traits `OrgResolver`/`WorkspaceResolver`/`SessionStore`/`MembershipStore`, extended `ApiConfig` with TLS/Cookie/CORS/Versioning/Pagination sub-configs, 10 new `ApiError` variants) | partial |
 | nebula-core          | frontier | stable  | stable | stable (6 public modules: `role`, `permission`, `tenancy`, `slug`, `auth`, `guard` — `TenantContext`, `ResolvedIds`, `OrgRole`, `WorkspaceRole`, `Permission`, `PermissionDenied`, `Slug`, `SlugKind`, `SlugError`, `is_prefixed_ulid()`, `AuthScheme`, `AuthPattern`, `Guard`, `TypedGuard`, `BaseContext`, `Context`) | n/a |
-| nebula-credential    | frontier (P6-P11 architecture cleanup landed: accessor/metadata flattened, `AuthScheme`/`AuthPattern` canonical in `nebula-core`, dep diet к core/metadata/schema/resilience/error, DYNAMIC credential support, `ExternalProvider` abstraction; **pruned 2026-04-24**: `FederatedAssertion`/`OtpSeed`/`ChallengeSecret` schemes + corresponding `AuthPattern` variants — Plane-A / integration-internal territory) | stable  | stable | partial (runtime resolver/registry + rotation scheduler live in `nebula-engine::credential`; OAuth token refresh in engine + API OAuth callback persistence landed; **single-process refresh coordination only** — multi-replica mid-refresh race handling tracked in Spec H0 credential-refresh-coordination, 2026-04-24) | n/a |
+| nebula-credential    | frontier (**П1 trait scaffolding landed 2026-04-26** per Tech Spec §15.4-§15.8 — capability sub-trait split, `AuthScheme` sensitivity dichotomy, fatal duplicate-KEY registration, `SchemeGuard`/`SchemeFactory` refresh hook, capability-from-type authority shift; 10 landing-gate compile-fail probes + 1 runtime probe green; ADR-0035 phantom-shim canonical form; P6-P11 architecture cleanup remains — accessor/metadata flattened, `AuthScheme`/`AuthPattern` canonical in `nebula-core`, dep diet к core/metadata/schema/resilience/error, `ExternalProvider` abstraction; **pruned 2026-04-24**: `FederatedAssertion`/`OtpSeed`/`ChallengeSecret` schemes + corresponding `AuthPattern` variants — Plane-A / integration-internal territory) | stable  | stable | partial (runtime resolver/registry + rotation scheduler live in `nebula-engine::credential`; OAuth token refresh in engine + API OAuth callback persistence landed; **single-process refresh coordination only** — multi-replica mid-refresh race handling tracked in Spec H0 credential-refresh-coordination, 2026-04-24; engine `iter_compatible` slot-picker consumer wiring + manager-side `OnCredentialRefresh<C>` fan-out tracked as post-П1 follow-ups in credential concerns register) | n/a |
+| nebula-credential-builtin | frontier (preview — П1 trait scaffolding landed 2026-04-26; `mod sealed_caps` convention surface present; concrete capability sub-trait impls land in П3) | n/a | partial (README + crate-level rustdoc only — no concrete API surface yet beyond the П1 trait scaffolding re-exports) | n/a | n/a |
 | nebula-engine        | partial  | stable  | stable | partial (ControlConsumer skeleton lands §12.2; all five control commands dispatched via EngineControlDispatch — ADR-0008 A2 (Start/Resume/Restart) + A3 (Cancel/Terminate) + ADR-0016 cancel registry; ADR-0008 B1 reclaim sweep implemented via ControlQueueRepo::reclaim_stuck + ADR-0017; engine-owned `credential` runtime surface landed in P8 slice) | n/a |
 | nebula-error         | stable   | stable  | stable | n/a | n/a |
 | nebula-eventbus      | stable   | stable  | stable | n/a | n/a |
@@ -52,7 +53,21 @@ Legend:
 This file is a living dashboard. Reviewers check truthfulness on every PR that touches a crate's public surface, test suite, or docs. Canon §17 DoD includes "MATURITY.md row updated if the PR changes crate state."
 
 Last full sweep: 2026-04-17 (Pass 4 of docs architecture redesign).
-Last targeted revision: 2026-04-24 — **credential scheme pruning + honest multi-replica status:**
+Last targeted revision: 2026-04-26 — **credential П1 trait scaffolding landed:**
+worktree `worktree-credential-p1` lands the validated CP5/CP6 trait shape per
+Tech Spec §15.4-§15.8 in 8 stages — capability sub-trait split (Tech Spec §15.4
+— `Interactive`/`Refreshable`/`Revocable`/`Testable`/`Dynamic` replace 4 capability bools);
+`AuthScheme` sensitivity dichotomy (§15.5 — `SensitiveScheme: AuthScheme + ZeroizeOnDrop`
+vs `PublicScheme: AuthScheme`); fatal duplicate-KEY registration (§15.6 —
+`Result<(), RegisterError>`); `SchemeGuard`/`SchemeFactory` refresh hook (§15.7);
+capability-from-type authority shift (§15.8 — `iter_compatible(required: Capabilities)`).
+ADR-0035 phantom-shim canonical form via `#[capability]` proc-macro and `#[action]`
+attribute. 10 mandatory landing-gate compile-fail probes + 1 runtime probe green.
+`nebula-credential-builtin` scaffold present (concrete types land in П3).
+Tech Spec frontmatter status flipped to «П1 in-implementation 2026-04-26»; §16.5.1
+implementation tracker entry added; 5 architectural register rows flipped to
+`in-implementation`; 5 stage5-followup process rows resolved.
+Prior: 2026-04-24 — **credential scheme pruning + honest multi-replica status:**
 removed `FederatedAssertion`/`OtpSeed`/`ChallengeSecret` schemes (Plane A / integration-internal);
 removed corresponding `AuthPattern` variants (`FederatedIdentity`/`OneTimePasscode`/`ChallengeResponse`);
 `nebula-credential` Engine integration downgraded `stable → partial` honestly — single-process

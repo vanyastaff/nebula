@@ -68,8 +68,8 @@ pub use control_consumer::{
 };
 pub use control_dispatch::EngineControlDispatch;
 pub use credential::{
-    CredentialRegistry, CredentialResolver, ExecutorError, RegistryError, ResolveError,
-    ResolveResponse, execute_continue, execute_resolve,
+    CredentialResolver, ExecutorError, ResolveError, ResolveResponse, StateProjectionError,
+    StateProjectionRegistry, execute_continue, execute_resolve,
 };
 pub use credential_accessor::EngineCredentialAccessor;
 pub use engine::{DEFAULT_EVENT_CHANNEL_CAPACITY, WorkflowEngine};

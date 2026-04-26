@@ -8,7 +8,7 @@
 //!
 //! The `ResourceAccessor` trait operates on string keys (`&str`), while the
 //! resource manager uses typed [`ResourceKey`] values. The accessor parses
-//! the string key at call time and returns a [`ActionError::Fatal`] if the
+//! the string key at call time and returns a fatal `ActionError` if the
 //! key is not a valid resource key format.
 //!
 //! Acquire returns the underlying `Arc<dyn AnyManagedResource>` boxed as

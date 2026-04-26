@@ -145,7 +145,7 @@ pub async fn delete_credential(
 
 /// POST /orgs/{org}/workspaces/{ws}/credentials/{cred}/test — Test credential connectivity.
 ///
-/// Delegates to [`Credential::test()`] to verify the credential can
+/// Delegates to `Credential::test()` to verify the credential can
 /// successfully authenticate against the external system. Returns 400
 /// if the credential type does not support testing (`TESTABLE = false`).
 pub async fn test_credential(
@@ -161,7 +161,7 @@ pub async fn test_credential(
 
 /// POST /orgs/{org}/workspaces/{ws}/credentials/{cred}/refresh — Force token refresh.
 ///
-/// Delegates to [`Credential::refresh()`] to force a token refresh
+/// Delegates to `Credential::refresh()` to force a token refresh
 /// (e.g. OAuth2 `refresh_token` grant). Returns 400 if the credential
 /// type does not support refreshing (`REFRESHABLE = false`).
 pub async fn refresh_credential(
@@ -179,7 +179,7 @@ pub async fn refresh_credential(
 /// POST /orgs/{org}/workspaces/{ws}/credentials/{cred}/revoke — Explicitly revoke credential at
 /// provider.
 ///
-/// Delegates to [`Credential::revoke()`] to explicitly revoke the
+/// Delegates to `Credential::revoke()` to explicitly revoke the
 /// credential at the provider. Returns 400 if the credential type
 /// does not support revocation (`REVOCABLE = false`).
 pub async fn revoke_credential(
@@ -198,7 +198,7 @@ pub async fn revoke_credential(
 /// POST /orgs/{org}/workspaces/{ws}/credentials/resolve — Start credential acquisition.
 ///
 /// Accepts the credential type key and form field values, dispatches to
-/// the appropriate [`Credential::resolve()`] implementation. Returns either:
+/// the appropriate `Credential::resolve()` implementation. Returns either:
 /// - `Complete { credential_id }` for static credentials (api_key, basic_auth, client_credentials)
 /// - `Pending { pending_token, interaction }` for interactive flows (OAuth auth_code, device_code)
 pub async fn resolve_credential(

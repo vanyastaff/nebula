@@ -1,7 +1,8 @@
 //! Typed credential extension trait for capability contexts.
 //!
-//! [`HasCredentialsExt`] is a blanket extension on any [`HasCredentials`]
-//! context, providing ergonomic typed access:
+//! [`HasCredentialsExt`] is a blanket extension on any `HasCredentials`
+//! (defined in `nebula_core::context::capability`) context, providing
+//! ergonomic typed access:
 //!
 //! ```rust,ignore
 //! let guard = ctx.credential::<SlackBotToken>().await?;
@@ -9,7 +10,7 @@
 //! // guard drops → zeroized automatically
 //! ```
 //!
-//! The trait bridges between the dyn-safe [`CredentialAccessor`] (which
+//! The trait bridges between the dyn-safe `CredentialAccessor` (which
 //! returns `Box<dyn Any>`) and the typed `Credential` contract by:
 //!
 //! 1. Constructing a [`CredentialKey`] from `C::KEY`.
@@ -36,7 +37,7 @@ pub trait HasCredentialsExt: HasCredentials {
     /// # Flow
     ///
     /// 1. Builds a [`CredentialKey`] from `C::KEY`.
-    /// 2. Calls `resolve_any` on the underlying [`CredentialAccessor`].
+    /// 2. Calls `resolve_any` on the underlying `CredentialAccessor`.
     /// 3. Downcasts the `Box<dyn Any>` to [`CredentialSnapshot`].
     /// 4. Projects the scheme via [`CredentialSnapshot::into_project`].
     /// 5. Wraps the result in a [`CredentialGuard`] (zeroize on drop).

@@ -14,7 +14,7 @@
 use std::time::Duration;
 
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
-use zeroize::Zeroize;
+use zeroize::{Zeroize, ZeroizeOnDrop};
 
 /// Typed pending state for interactive credential flows.
 ///
@@ -26,9 +26,14 @@ use zeroize::Zeroize;
 ///   5-15 min).
 /// - **Single-use:** consumed (deleted) on first read by `continue_resolve()`.
 /// - **Encrypted at rest** by the `PendingStateStore` implementation.
-/// - **Zeroize on drop:** secrets zeroed when state is dropped.
+/// - **Zeroize on drop:** the [`ZeroizeOnDrop`] supertrait — added per Tech Spec §15.4 to mirror
+///   the [`CredentialState`](crate::CredentialState) requirement — guarantees deterministic
+///   scrubbing of ephemeral interactive secrets (PKCE verifiers, anti-CSRF state, device codes) on
+///   drop, even on cleanup paths that bypass the store.
 /// - Serialization buffers wrapped in `Zeroizing<Vec<u8>>` by store implementation.
-pub trait PendingState: Serialize + DeserializeOwned + Send + Sync + Zeroize + 'static {
+pub trait PendingState:
+    Serialize + DeserializeOwned + Send + Sync + Zeroize + ZeroizeOnDrop + 'static
+{
     /// Stable identifier for this pending-state type
     /// (e.g. `"oauth2_pending"`).
     const KIND: &'static str;
@@ -42,7 +47,10 @@ pub trait PendingState: Serialize + DeserializeOwned + Send + Sync + Zeroize + '
 /// Credential types that resolve in a single step (API key, basic auth,
 /// database) use `NoPendingState` as their `Credential::Pending`
 /// associated type. It serializes to `null` and expires immediately.
-#[derive(Clone, Debug, Serialize, Deserialize)]
+///
+/// Carries `ZeroizeOnDrop` (trivially — no fields) so it satisfies the
+/// `PendingState: ZeroizeOnDrop` supertrait.
+#[derive(Clone, Debug, Serialize, Deserialize, ZeroizeOnDrop)]
 pub struct NoPendingState;
 
 impl Zeroize for NoPendingState {
@@ -53,6 +61,25 @@ impl Zeroize for NoPendingState {
 
 impl PendingState for NoPendingState {
     const KIND: &'static str = "none";
+
+    fn expires_in(&self) -> Duration {
+        Duration::ZERO
+    }
+}
+
+/// Per Tech Spec §15.4 — the base [`Credential::resolve`] returns
+/// `ResolveResult<Self::State, ()>`. Interactive credentials carry their
+/// typed `Self::Pending` on [`Interactive::continue_resolve`]; the base
+/// trait has no `Pending` associated type. This blanket lets `()` stand
+/// in as the second `ResolveResult` parameter for non-interactive
+/// resolve paths and as the kickoff "no carried state" marker for
+/// interactive flows that initialize their typed pending state inside
+/// `continue_resolve`.
+///
+/// [`Credential::resolve`]: crate::Credential::resolve
+/// [`Interactive::continue_resolve`]: crate::Interactive::continue_resolve
+impl PendingState for () {
+    const KIND: &'static str = "unit";
 
     fn expires_in(&self) -> Duration {
         Duration::ZERO

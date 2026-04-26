@@ -13,7 +13,7 @@ use nebula_credential::{
     generate_code_challenge, generate_pkce_verifier, generate_random_state,
 };
 use serde::{Deserialize, Serialize};
-use zeroize::Zeroize;
+use zeroize::{Zeroize, ZeroizeOnDrop};
 
 use crate::{
     errors::{ApiError, ApiResult},
@@ -287,6 +287,18 @@ impl Zeroize for OAuthPendingExchange {
     }
 }
 
+// Per Tech Spec §15.4 — `PendingState: ZeroizeOnDrop`. Hand-rolled
+// because the manual `Zeroize` body above would conflict with a derived
+// `Drop`; this delegates Drop to the existing zeroize logic so the
+// deterministic-drop guarantee covers the API-side OAuth2 pending
+// exchange (carries the PKCE verifier, client secret, and redirect URI).
+impl Drop for OAuthPendingExchange {
+    fn drop(&mut self) {
+        self.zeroize();
+    }
+}
+impl ZeroizeOnDrop for OAuthPendingExchange {}
+
 impl PendingState for OAuthPendingExchange {
     const KIND: &'static str = "api_oauth_pending";
 
@@ -487,6 +499,7 @@ mod tests {
         assert_eq!(
             persisted_state
                 .refresh_token
+                .clone()
                 .expect("refresh token")
                 .expose_secret()
                 .to_owned(),
@@ -584,6 +597,7 @@ mod tests {
         assert_eq!(
             persisted_state
                 .refresh_token
+                .clone()
                 .expect("refresh token")
                 .expose_secret()
                 .to_owned(),

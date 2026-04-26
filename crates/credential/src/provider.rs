@@ -94,7 +94,8 @@ pub enum ProviderError {
 ///
 /// Implementations fetch secrets from external systems on demand.
 /// The credential framework calls [`resolve`](ExternalProvider::resolve)
-/// when resolving a [`ReferenceCredential`] that delegates to this provider.
+/// when resolving a credential that references this provider via
+/// [`ExternalReference`].
 ///
 /// # Implementors
 ///

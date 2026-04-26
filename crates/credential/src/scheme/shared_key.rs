@@ -1,6 +1,7 @@
 //! Pre-shared symmetric key authentication (TLS-PSK, WireGuard, IoT).
 
 use serde::{Deserialize, Serialize};
+use zeroize::{Zeroize, ZeroizeOnDrop};
 
 use crate::{AuthScheme, SecretString};
 
@@ -9,6 +10,9 @@ use crate::{AuthScheme, SecretString};
 /// Covers TLS-PSK, WireGuard pre-shared keys, IoT device symmetric keys,
 /// and other protocols where both parties share a secret key out-of-band.
 ///
+/// Per Tech Spec §15.5 — `SensitiveScheme`: shared key is the secret;
+/// identity hint is non-secret metadata sent during negotiation.
+///
 /// # Examples
 ///
 /// ```
@@ -16,11 +20,12 @@ use crate::{AuthScheme, SecretString};
 ///
 /// let key = SharedKey::new(SecretString::new("base64-encoded-key==")).with_identity("device-001");
 /// ```
-#[derive(Clone, Serialize, Deserialize, AuthScheme)]
-#[auth_scheme(pattern = SharedSecret)]
+#[derive(Clone, Serialize, Deserialize, Zeroize, ZeroizeOnDrop, AuthScheme)]
+#[auth_scheme(pattern = SharedSecret, sensitive)]
 pub struct SharedKey {
     #[serde(with = "crate::serde_secret")]
     key: SecretString,
+    #[zeroize(skip)]
     identity: Option<String>,
 }
 

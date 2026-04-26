@@ -1,20 +1,36 @@
 //! Authentication scheme contract types and pattern classification.
 //!
-//! [`AuthScheme`] is the bridge between the credential system and the
+//! `AuthScheme` is the bridge between the credential system and the
 //! resource system. Resources declare what auth material they need
 //! (`type Auth: AuthScheme`), and credentials produce it via `project()`.
 //!
-//! [`AuthPattern`] groups auth schemes into universal categories for UI,
+//! `AuthPattern` groups auth schemes into universal categories for UI,
 //! logging, and tooling.
+//!
+//! # Sensitivity dichotomy (§15.5)
+//!
+//! `AuthScheme` is the base trait — it carries no security guarantees by
+//! itself. Implementing types declare sensitivity by also implementing
+//! one of:
+//!
+//! - `SensitiveScheme: AuthScheme + ZeroizeOnDrop` — schemes that hold secret material (tokens,
+//!   passwords, keys, certificate private keys).
+//! - `PublicScheme: AuthScheme` — schemes that hold no secret material (provider/role/region
+//!   identifiers, public capability descriptors).
+//!
+//! A scheme MUST implement exactly one of these. The `#[derive(AuthScheme)]`
+//! macro accepts `#[auth_scheme(sensitive)]` or `#[auth_scheme(public)]`
+//! to declare the sensitivity and audit fields at expansion time.
 
-use serde::{Deserialize, Serialize, de::DeserializeOwned};
+use serde::{Deserialize, Serialize};
+use zeroize::ZeroizeOnDrop;
 
 // ── AuthPattern ─────────────────────────────────────────────────────────────
 
 /// Classification of authentication patterns.
 ///
 /// 10 built-in patterns cover common integration auth mechanisms.
-/// [`Custom`](AuthPattern::Custom) handles everything else.
+/// `Custom` handles everything else.
 ///
 /// **Pruned 2026-04-24** (zero consumers, Plane-A territory):
 /// `FederatedIdentity` (SAML/JWT → `nebula-auth`, not integration credentials),
@@ -49,26 +65,76 @@ pub enum AuthPattern {
 
 // ── AuthScheme ──────────────────────────────────────────────────────────────
 
-/// Consumer-facing authentication material.
+/// Base trait for runtime scheme output.
 ///
-/// Resources declare `type Auth: AuthScheme` to specify what auth
-/// material they need. Credentials produce it via `Credential::project()`.
+/// Implementations are concrete structs holding scheme material. Sensitivity
+/// is declared by the implementing crate via the `SensitiveScheme` or
+/// `PublicScheme` sub-trait — these are mutually exclusive and non-optional
+/// for any scheme that ships in production code.
 ///
-/// # Security contract
+/// `Clone` is NOT a supertrait — per Tech Spec §15.2, schemes opt in to
+/// `Clone` only when copying plaintext is acceptable for the type. Pattern:
+/// long-lived consumers receive `SchemeGuard` (per §15.7), not raw clones.
 ///
-/// `Serialize + DeserializeOwned` bounds exist for the State = Scheme
-/// identity path (static credentials stored directly). Serialization
-/// to plaintext JSON happens **exclusively** inside `EncryptionLayer`.
-/// Never serialize `AuthScheme` types in logging, debugging, or telemetry.
-pub trait AuthScheme: Serialize + DeserializeOwned + Send + Sync + Clone + 'static {
+/// `Serialize` / `DeserializeOwned` are NOT supertraits — schemes that need
+/// to round-trip through storage opt in via concrete `serde` derives. The
+/// reduction here closes security-lead N2 by removing the implicit "every
+/// scheme can be serialized into telemetry" assumption.
+pub trait AuthScheme: Send + Sync + 'static {
     /// Classification for UI, logging, and tooling.
     fn pattern() -> AuthPattern;
-
-    /// When this auth material expires, if applicable.
-    fn expires_at(&self) -> Option<chrono::DateTime<chrono::Utc>> {
-        None
-    }
 }
+
+/// Schemes that hold secret material.
+///
+/// Mandates [`ZeroizeOnDrop`] so plaintext drops from the heap deterministically.
+/// Derived via `#[auth_scheme(sensitive)]`; the macro audits fields at
+/// expansion to forbid plain `String` / `Vec<u8>` for token-named slots.
+///
+/// Examples: `BearerScheme`, `BasicScheme`, `OAuth2Token`, `KeyPair`,
+/// `Certificate`, `SigningKey`, `ConnectionUri`, `SharedKey`.
+///
+/// ## Exclusivity with `PublicScheme` is macro-enforced, not trait-enforced
+///
+/// `SensitiveScheme: AuthScheme + ZeroizeOnDrop` and
+/// `PublicScheme: AuthScheme` — both are satisfiable simultaneously by
+/// the same concrete type. Rust does not currently expose a stable
+/// negative-impl mechanism (`impl !PublicScheme for X`), so the
+/// dichotomy is enforced **at the `#[derive(AuthScheme)]` macro layer**:
+/// `#[auth_scheme(sensitive, public)]` is a compile error, and the
+/// macro emits exactly one of `impl SensitiveScheme` or
+/// `impl PublicScheme`. Hand-rolled impls bypass that audit — a
+/// downstream `impl SensitiveScheme for X { } impl PublicScheme for X { }`
+/// pair will type-check.
+///
+/// Defense-in-depth: the `ZeroizeOnDrop` bound catches a
+/// `SensitiveScheme` impl on a struct that doesn't zeroize (the
+/// canonical safety invariant), so even with two impls the sensitive
+/// bound carries the safety guarantee. See
+/// `arch-publicscheme-nested-sensitive-audit` in
+/// `docs/tracking/credential-concerns-register.md` for the long-term
+/// refinement plan (sealed `Sensitivity` associated tag, or signed
+/// manifests that surface dual impls at registry time).
+pub trait SensitiveScheme: AuthScheme + ZeroizeOnDrop {}
+
+/// Schemes that hold no secret material.
+///
+/// Provider / role / region identifiers, public capability descriptors —
+/// anything safe to serialize, log, or display in a UI without redaction.
+///
+/// ## Exclusivity with `SensitiveScheme`
+///
+/// **Macro-enforced**, not trait-enforced. The derive macro
+/// (`#[auth_scheme(public)]` vs `#[auth_scheme(sensitive)]`) forbids
+/// declaring both, but a hand-rolled `impl PublicScheme for X` on a
+/// type that also `impl SensitiveScheme for X` will compile — there is
+/// no stable negative-impl mechanism in Rust today. See
+/// [`SensitiveScheme`] doc-comment for the full discussion and pointer
+/// to the tracking concerns row.
+///
+/// Examples: `InstanceBinding` (provider + role + region; cloud IMDS lookup
+/// happens at runtime, no stored secret).
+pub trait PublicScheme: AuthScheme {}
 
 /// No authentication required.
 impl AuthScheme for () {
@@ -76,6 +142,9 @@ impl AuthScheme for () {
         AuthPattern::NoAuth
     }
 }
+
+/// `()` carries no secret material — it is `PublicScheme` by definition.
+impl PublicScheme for () {}
 
 #[cfg(test)]
 mod tests {
@@ -113,7 +182,10 @@ mod tests {
         assert_eq!(format!("{:?}", AuthPattern::SecretToken), "SecretToken");
     }
 
-    #[derive(Clone, serde::Serialize, serde::Deserialize)]
+    /// `TestToken` exercises the manual `AuthScheme` + `SensitiveScheme`
+    /// path — it derives `Zeroize`+`ZeroizeOnDrop` to satisfy
+    /// `SensitiveScheme: AuthScheme + ZeroizeOnDrop`.
+    #[derive(zeroize::Zeroize, zeroize::ZeroizeOnDrop)]
     struct TestToken {
         value: String,
     }
@@ -124,8 +196,11 @@ mod tests {
         }
     }
 
+    impl SensitiveScheme for TestToken {}
+
     #[test]
     fn custom_scheme_reports_correct_pattern() {
+        let _t = TestToken { value: "x".into() };
         assert_eq!(TestToken::pattern(), AuthPattern::SecretToken);
     }
 

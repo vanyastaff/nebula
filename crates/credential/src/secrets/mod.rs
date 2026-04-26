@@ -23,6 +23,7 @@
 mod crypto;
 mod guard;
 pub mod redacted;
+mod scheme_guard;
 mod secret_string;
 pub mod serde_secret;
 
@@ -33,4 +34,5 @@ pub use crypto::{
 };
 pub use guard::CredentialGuard;
 pub use redacted::RedactedSecret;
+pub use scheme_guard::{OnCredentialRefresh, SchemeFactory, SchemeGuard};
 pub use secret_string::SecretString;

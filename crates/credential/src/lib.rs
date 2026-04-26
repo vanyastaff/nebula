@@ -18,7 +18,9 @@
 //!
 //! ## Key types
 //!
-//! - `Credential` — unified trait: `resolve()`, `refresh()`, `test()`, `project()`, `schema()`.
+//! - `Credential` — base trait: `resolve()`, `project()`, `schema()`. Capability methods
+//!   (`continue_resolve`, `refresh`, `revoke`, `test`, `release`) live on dedicated sub-traits per
+//!   Tech Spec §15.4 — `Interactive`, `Refreshable`, `Revocable`, `Testable`, `Dynamic`.
 //! - `CredentialMetadata` — static type descriptor: key, name, schema, `AuthPattern`.
 //! - `CredentialRecord` — runtime operational state (created_at, version, expiry, tags). Previously
 //!   named `Metadata` (ADR 0004).
@@ -123,8 +125,9 @@ pub use context::{CredentialContext, CredentialContextBuilder};
 pub use contract::resolve;
 // Credential contract — Credential trait + associated types
 pub use contract::{
-    AnyCredential, Credential, CredentialState, NoPendingState, PendingState, PendingToken,
-    StaticProtocol,
+    AnyCredential, Capabilities, Credential, CredentialRegistry, CredentialState, Dynamic,
+    Interactive, NoPendingState, PendingState, PendingToken, Refreshable, RegisterError, Revocable,
+    StaticProtocol, Testable, compute_capabilities,
 };
 // Resolve types
 pub use contract::{
@@ -156,13 +159,14 @@ pub use provider::{ExternalProvider, ExternalReference, ProviderError, ProviderK
 // (integration-internal, не projected auth material).
 pub use scheme::{
     AuthPattern, AuthScheme, Certificate, ConnectionUri, IdentityPassword, InstanceBinding,
-    KeyPair, OAuth2Token, SecretToken, SharedKey, SigningKey,
+    KeyPair, OAuth2Token, PublicScheme, SecretToken, SensitiveScheme, SharedKey, SigningKey,
 };
-// §12.5 secret-handling primitives — crypto, guard, zeroizing wrappers
+// §12.5 secret-handling primitives — crypto, guard, zeroizing wrappers,
+// scheme-guard + refresh hook (§15.7).
 pub use secrets::{
-    CredentialGuard, EncryptedData, EncryptionKey, RedactedSecret, SecretString, decrypt,
-    decrypt_with_aad, encrypt, encrypt_with_aad, encrypt_with_key_id, generate_code_challenge,
-    generate_pkce_verifier, generate_random_state,
+    CredentialGuard, EncryptedData, EncryptionKey, OnCredentialRefresh, RedactedSecret,
+    SchemeFactory, SchemeGuard, SecretString, decrypt, decrypt_with_aad, encrypt, encrypt_with_aad,
+    encrypt_with_key_id, generate_code_challenge, generate_pkce_verifier, generate_random_state,
 };
 // Store trait + DTOs (canonical impls live in `nebula_storage::credential` per ADR-0032)
 pub use store::{CredentialStore, PutMode, StoreError, StoredCredential};
@@ -222,8 +226,11 @@ pub mod prelude {
         CredentialMetadata,
         CredentialState,
         HasCredentialsExt,
+        // Sensitivity dichotomy (§15.5)
+        PublicScheme,
         // Secrets
         SecretString,
+        SensitiveScheme,
         credential_key,
     };
 }

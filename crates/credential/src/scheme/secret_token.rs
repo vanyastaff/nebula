@@ -1,6 +1,7 @@
 //! Opaque secret token authentication (API key, bearer token, session token).
 
 use serde::{Deserialize, Serialize};
+use zeroize::{Zeroize, ZeroizeOnDrop};
 
 use crate::AuthScheme; // derive macro
 use crate::{SecretString, identity_state};
@@ -10,6 +11,9 @@ use crate::{SecretString, identity_state};
 /// Covers API keys, pre-issued bearer tokens, session tokens, and any other
 /// single-value opaque credential.
 ///
+/// Per Tech Spec §15.5 — `SensitiveScheme`: holds `SecretString` token;
+/// `ZeroizeOnDrop` derived to drop plaintext deterministically.
+///
 /// # Examples
 ///
 /// ```
@@ -17,8 +21,8 @@ use crate::{SecretString, identity_state};
 ///
 /// let token = SecretToken::new(SecretString::new("sk-abc123"));
 /// ```
-#[derive(Clone, Serialize, Deserialize, AuthScheme)]
-#[auth_scheme(pattern = SecretToken)]
+#[derive(Clone, Serialize, Deserialize, Zeroize, ZeroizeOnDrop, AuthScheme)]
+#[auth_scheme(pattern = SecretToken, sensitive)]
 pub struct SecretToken {
     #[serde(with = "crate::serde_secret")]
     token: SecretString,

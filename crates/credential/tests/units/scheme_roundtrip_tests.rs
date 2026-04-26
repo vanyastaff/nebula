@@ -143,18 +143,27 @@ fn shared_key_serde_roundtrip() {
 
 #[test]
 fn connection_uri_serde_roundtrip() {
-    let cu = ConnectionUri::new(SecretString::new("postgres://user:pass@localhost/db"));
+    // Per Tech Spec §15.5 §3295: ConnectionUri stores structured fields
+    // — host/port/database/username are non-secret, password is SecretString.
+    let cu = ConnectionUri::new(
+        "postgres".into(),
+        "localhost".into(),
+        None,
+        "db".into(),
+        "user".into(),
+        SecretString::new("pass"),
+    );
     let json = serde_json::to_string(&cu).unwrap();
-    assert!(
-        !json.contains("REDACTED"),
-        "json must not contain REDACTED: {json}"
-    );
-    assert!(json.contains("postgres://user:pass@localhost/db"));
+    // Non-secret fields serialize as plaintext.
+    assert!(json.contains("postgres"));
+    assert!(json.contains("localhost"));
+    assert!(json.contains("\"user\""));
+    // Password is wrapped via serde_secret — round-trip preserves it.
     let recovered: ConnectionUri = serde_json::from_str(&json).unwrap();
-    assert_eq!(
-        recovered.uri().expose_secret(),
-        "postgres://user:pass@localhost/db"
-    );
+    assert_eq!(recovered.scheme(), "postgres");
+    assert_eq!(recovered.host(), "localhost");
+    assert_eq!(recovered.username(), "user");
+    assert_eq!(recovered.password().expose_secret(), "pass");
 }
 
 // Tests for FederatedAssertion, ChallengeSecret, OtpSeed removed 2026-04-24

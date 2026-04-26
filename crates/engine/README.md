@@ -57,7 +57,10 @@ bounded concurrency.
 - `EngineCredentialAccessor` — scoped credential accessor injected into action contexts.
 - `credential` module — engine-owned credential runtime surface:
   - `CredentialResolver`, `ResolveError`
-  - `CredentialRegistry`, `RegistryError`
+  - `StateProjectionRegistry`, `StateProjectionError` — engine-side
+    `state_kind`-keyed projection dispatcher (deserialize stored bytes
+    → project to `Scheme`). Distinct from the canonical KEY-keyed
+    `nebula_credential::CredentialRegistry` (Tech Spec §3.1, §15.6).
   - `execute_resolve`, `execute_continue`, `ResolveResponse`, `ExecutorError`
   - `rotation` (feature-gated) orchestration facade
 - `EngineResourceAccessor` — scoped resource accessor injected into action contexts.

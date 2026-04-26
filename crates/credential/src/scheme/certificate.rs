@@ -1,6 +1,7 @@
 //! X.509 client certificate authentication (mTLS, TLS client auth).
 
 use serde::{Deserialize, Serialize};
+use zeroize::{Zeroize, ZeroizeOnDrop};
 
 use crate::{AuthScheme, SecretString};
 
@@ -9,6 +10,10 @@ use crate::{AuthScheme, SecretString};
 /// Produced by: mTLS credential configurations.
 /// Consumed by: HTTPS APIs requiring client certificates, gRPC, internal
 /// service mesh, and any TLS endpoint that validates client identity.
+///
+/// Per Tech Spec §15.5 — `SensitiveScheme`: private key + optional
+/// passphrase are secret; cert chain is public material but the struct
+/// is `SensitiveScheme` because possession of the key proves identity.
 ///
 /// # Examples
 ///
@@ -20,9 +25,10 @@ use crate::{AuthScheme, SecretString};
 ///     SecretString::new("-----BEGIN PRIVATE KEY-----\n..."),
 /// );
 /// ```
-#[derive(Clone, Serialize, Deserialize, AuthScheme)]
-#[auth_scheme(pattern = Certificate)]
+#[derive(Clone, Serialize, Deserialize, Zeroize, ZeroizeOnDrop, AuthScheme)]
+#[auth_scheme(pattern = Certificate, sensitive)]
 pub struct Certificate {
+    #[zeroize(skip)]
     cert_chain: String,
     #[serde(with = "crate::serde_secret")]
     private_key: SecretString,

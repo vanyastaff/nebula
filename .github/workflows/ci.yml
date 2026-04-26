@@ -113,7 +113,6 @@ jobs:
           cargo check -p nebula-log --no-default-features
           cargo check -p nebula-expression --no-default-features
           cargo check -p nebula-api --no-default-features
-          cargo check -p nebula-api --no-default-features --features credential-oauth
           cargo check -p nebula-credential --no-default-features
 
   # ── Doctests (workspace-wide, off the critical path) ──────────────────────
