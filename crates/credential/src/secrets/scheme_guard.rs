@@ -248,9 +248,24 @@ pub trait OnCredentialRefresh<C: Credential>: Send + Sync {
     /// `new_scheme` and `ctx` share the lifetime `'a`. The shared
     /// lifetime is the compile-time retention barrier — see Probe 6.
     /// Implementations MUST NOT store either argument past this call.
+    ///
+    /// # Default
+    ///
+    /// The default body is a no-op (returns `Ok(())` after dropping
+    /// `new_scheme` and `ctx`). Per Tech Spec §15.7 lines 3422-3429:
+    /// resources that don't react to credential refresh opt out via
+    /// the default rather than implementing an empty body. The wrapped
+    /// `SchemeGuard` zeroizes deterministically when the function
+    /// returns; no retention is possible across the default path.
     fn on_credential_refresh<'a>(
         &'a self,
         new_scheme: SchemeGuard<'a, C>,
         ctx: &'a CredentialContext,
-    ) -> impl Future<Output = Result<(), Self::Error>> + Send + 'a;
+    ) -> impl Future<Output = Result<(), Self::Error>> + Send + 'a {
+        async move {
+            let _ = new_scheme;
+            let _ = ctx;
+            Ok(())
+        }
+    }
 }

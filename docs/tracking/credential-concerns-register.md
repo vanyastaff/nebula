@@ -131,6 +131,7 @@ All strategy-blocking findings resolved in Checkpoint 1 or deferred to spike val
 |---|---|---|---|---|
 | draft-f26 | `on_credential_refresh(&mut self, ...)` on active pool + concurrent queries | tech-spec-material | locked-post-spike | Blue-green pool swap — `Arc<RwLock<PgPool>>` read for queries, write for refresh |
 | draft-f27 | Refresh frequency for DB/Kafka — overbuilt abstraction | tech-spec-material | decided | Accept — `on_credential_refresh` default no-op; real use case = AWS IAM DB auth |
+| stage6-followup-resource-integration | Wire `OnCredentialRefresh<C>` into resource manager dispatch path. Stage 6 lands the parallel `OnCredentialRefresh<C>` trait in `nebula-credential` (canonical refresh-hook signature per Tech Spec §15.7), but engine has no path to actually invoke `OnCredentialRefresh<C>` per affected resource. `crates/resource/src/manager.rs:1378` `on_credential_refreshed` (manager-level fan-out keyed by `&CredentialId`) still has `todo!()`. Either thread `Credential: Credential` cascade through 28+ `Resource` impls, or use `OnCredentialRefresh<C>` as supertrait of a `RefreshAware` `Resource` extension. Decision deferred to Stage 7+ or follow-up cascade — existing `Resource` carries 5 assoc types (`Config`/`Runtime`/`Lease`/`Error`/`Auth: AuthScheme`) with no `Credential` link; threading one would cascade through the 28+ impls. Per `feedback_adr_revisable.md` ("if following an ADR/spec forces workarounds, supersede it"), parallel `OnCredentialRefresh<C>` is canonical for П1. Severity: medium — engine-wiring follow-up, not a П1 blocker. | tech-spec-material | proposed | Stage 7 architecture call or follow-up cascade. Tech Spec [§15.7](../superpowers/specs/2026-04-24-credential-tech-spec.md). Spec compliance review on `c25fc6ff` (Stage 6). |
 
 ## Storage layer
 
@@ -322,16 +323,16 @@ All strategy-blocking findings resolved in Checkpoint 1 or deferred to spike val
 - **Product-policy rows** updated only when the product decision itself changes (via product ADR); independent of engineering cadence.
 - **Label / status counts audited** at every register revision — totals table rebuilt when rows are added, removed, or relabeled. Mismatched counts are a register bug.
 
-## Current totals (audited 2026-04-26 — Stage 5 follow-up added 5 process rows)
+## Current totals (audited 2026-04-26 — Stage 6 follow-up added 1 tech-spec-material row)
 
 | Label | Count | Notes |
 |---|---|---|
 | strategy-blocking | 12 | All resolved in Strategy §2/§3 or locked-post-spike |
-| tech-spec-material | 90 | Most `locked-post-spike`; unlock with Tech Spec. CP5 added 6: arch-capability-subtrait-split, arch-registry-duplicate-fail-closed, arch-scheme-sensitivity-dichotomy, arch-scheme-guard-factory, arch-metadata-capability-authority, runtime-pending-consume-atomicity. CP6 post-review added 1: arch-subtrait-phantom-compose-risk |
+| tech-spec-material | 91 | Most `locked-post-spike`; unlock with Tech Spec. CP5 added 6: arch-capability-subtrait-split, arch-registry-duplicate-fail-closed, arch-scheme-sensitivity-dichotomy, arch-scheme-guard-factory, arch-metadata-capability-authority, runtime-pending-consume-atomicity. CP6 post-review added 1: arch-subtrait-phantom-compose-risk. П1 Stage 6 review added 1: stage6-followup-resource-integration |
 | sub-spec | 16 | Each row has a landing-order entry in Strategy §4.3 |
 | implementation-phase | 4 | Routine execution tasks |
 | product-policy | 7 | Frozen or awaiting product-level decision |
 | process | 19 | Findings about the redesign workstream itself; CP5 added 1 (tech-spec-adoption-status, flipped CP6); CP6 added 3 (gate-p10-landing, gate-n7-registry-observability, gate-spike-iter3-dyn-safety); CP6 post-review added 2 (arch-cp5-spike-validation, arch-techspec-section-sync); П1 Stage 5 review added 5 (stage5-followup-i1, stage5-followup-i2, stage5-followup-s1, stage5-followup-s2, stage5-followup-s3) |
-| **Total** | **148** | Counts audited at each register revision |
+| **Total** | **149** | Counts audited at each register revision |
 
 Totals rebuilt on every register revision — see maintenance rules below.

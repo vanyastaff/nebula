@@ -3494,11 +3494,12 @@ Pool engineer reads this and sees: `SchemeGuard` lives only inside `fetch()`, dr
 
 **Implementation impact (П1 scope):**
 
-1. `crates/credential/src/contract/scheme.rs` — `SchemeGuard<'a, C>` and `SchemeFactory<C>` types added.
-2. `crates/resource/src/contract.rs` (or equivalent) — `Resource` trait `on_credential_refresh` signature updated.
-3. **Compile-fail probe** `tests/compile_fail_scheme_guard_retention.rs` — `Resource` impl that stores `SchemeGuard` in a struct field outlasting the call fails to compile (`E0597` lifetime error).
-4. **Compile-fail probe** `tests/compile_fail_scheme_guard_clone.rs` — `let g2 = guard.clone()` fails (`E0599` no `clone` method).
-5. Cancellation-safety contract documented inline in §3.6: `on_credential_refresh` must be cancel-safe; future drops zeroize `SchemeGuard` deterministically.
+1. `crates/credential/src/secrets/scheme_guard.rs` — `SchemeGuard<'a, C>` and `SchemeFactory<C>` types added (landed in Stage 6, commit `c25fc6ff`).
+2. `crates/credential/src/secrets/scheme_guard.rs` — `OnCredentialRefresh<C: Credential>` parallel trait carries the spec-canonical refresh-hook signature with default no-op body. Resource trait integration (`type Credential` on `nebula-resource::Resource`) is **deferred to a later phase**: existing `Resource` carries 5 assoc types (`Config`/`Runtime`/`Lease`/`Error`/`Auth: AuthScheme`) with no `Credential` link; threading one would cascade through 28+ impls. Per `feedback_adr_revisable.md` (ADR/spec workarounds → supersede, don't patch around), the parallel `OnCredentialRefresh<C>` trait in `nebula-credential` IS canonical for П1; full `Resource` trait integration via `Credential` cascade lives in a follow-up cascade. Tracked in the concerns register as `stage6-followup-resource-integration`. Stage 6 lands the type surface; engine wiring to dispatch refreshes via `OnCredentialRefresh` lives in a follow-up cascade.
+3. `crates/resource/src/manager.rs` — `on_credential_refreshed` (manager-level fan-out keyed by `&CredentialId`, line 1378) retains its current `todo!()`. Live wiring lands when `OnCredentialRefresh` integration is decided; the manager's role is dispatch-by-id, not the per-resource hook itself.
+4. **Compile-fail probe** `tests/compile_fail_scheme_guard_retention.rs` — `Resource` impl that stores `SchemeGuard` in a struct field outlasting the call fails to compile (`E0597` lifetime error).
+5. **Compile-fail probe** `tests/compile_fail_scheme_guard_clone.rs` — `let g2 = guard.clone()` fails (`E0599` no `clone` method).
+6. Cancellation-safety contract documented inline in §3.6: `on_credential_refresh` must be cancel-safe; future drops zeroize `SchemeGuard` deterministically.
 
 **Lifetime-gap refinement (spike iter-3 secondary finding, 2026-04-24 commit `f36f3739`):** the `SchemeGuard<'a, C>` structure above with only `PhantomData<&'a ()>` does NOT structurally prevent retention — the `'a` parameter is inferred `'static` when no actual borrow pins it. A `Resource` impl could accept `SchemeGuard<'static, C>` and store it in a field. To prevent this:
 
