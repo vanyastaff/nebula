@@ -246,7 +246,14 @@ impl RefreshCoordinator {
     ///
     /// Production deployments must thread a real `RefreshClaimRepo`
     /// (Postgres or SQLite) through [`Self::new_with`].
+    ///
+    /// `Default` is intentionally not implemented (review I9): this
+    /// constructor calls `expect()` on the default config validation,
+    /// and convention says `Default::default()` must not panic. Callers
+    /// pick `new()` (panicking semantics openly named) or `new_with(...)`
+    /// (typed error).
     #[must_use]
+    #[allow(clippy::new_without_default)]
     pub fn new() -> Self {
         let repo: Arc<dyn RefreshClaimRepo> = Arc::new(InMemoryRefreshClaimRepo::new());
         let config = RefreshCoordConfig::default();
@@ -371,20 +378,53 @@ impl RefreshCoordinator {
         // Heartbeat task in background.
         let hb_task = self.spawn_heartbeat(claim.token.clone());
 
+        // Panic-safety guard (review C1, sub-spec §3.4). Fires ONLY on
+        // panic unwind — `guard_on_unwind` does not fire on normal exit.
+        // Without this, a panic in `do_refresh` would leak the heartbeat
+        // task (extending L2 expiry forever) and skip `release()`,
+        // blocking Stage 3.3 reclaim and cross-replica callers
+        // (`ContentionExhausted` indefinitely). `release()` is
+        // idempotent and the spawned task is detached because Drop is
+        // synchronous; we cannot `.await` here.
+        let token_for_unwind = claim.token.clone();
+        let repo_for_unwind = Arc::clone(&self.repo);
+        let hb_task_for_unwind = hb_task.abort_handle();
+        let _l2_unwind_guard = scopeguard::guard_on_unwind((), move |()| {
+            hb_task_for_unwind.abort();
+            tokio::spawn(async move {
+                if let Err(e) = repo_for_unwind.release(token_for_unwind).await {
+                    tracing::warn!(?e, "L2 claim release on unwind failed");
+                }
+            });
+        });
+
+        // Keep the token for the normal-exit release; `do_refresh`
+        // takes the full `RefreshClaim` (which it may inspect for
+        // `expires_at`), so we hand it a clone and retain `token` here.
+        let token_for_release = claim.token.clone();
+
         // Run user's refresh closure under `refresh_timeout` per §3.5.
         // The timeout is shorter than the claim TTL by construction, so
         // the heartbeat keeps the L2 row alive while the closure runs.
         let timeout = self.config.refresh_timeout;
-        let result = tokio::time::timeout(timeout, do_refresh(claim.clone()))
+        let result = tokio::time::timeout(timeout, do_refresh(claim))
             .await
             .map_err(|_elapsed| RefreshError::Timeout(timeout))
             .and_then(std::convert::identity);
 
-        // Stop heartbeat + release claim. Release is idempotent so even
-        // if the heartbeat task already noticed `ClaimLost`, this is
-        // safe to call.
+        // Normal-exit release (review I1, sub-spec §3.4). We DO NOT
+        // propagate release errors — propagating them with `?` would
+        // mask a successful refresh: caller would observe
+        // `RefreshError::Repo(...)`, route to `record_failure`, then
+        // retry → ANOTHER IdP POST → invalidates the just-issued
+        // refresh token (n8n #13088 spec lineage). Log at warn level
+        // instead. The unwind guard above does NOT fire on normal exit
+        // (per `guard_on_unwind` semantics), so this synchronous
+        // release runs once, deterministically.
         hb_task.abort();
-        self.repo.release(claim.token).await?;
+        if let Err(e) = self.repo.release(token_for_release).await {
+            tracing::warn!(?e, "L2 claim release after successful refresh failed");
+        }
 
         result
     }
@@ -438,6 +478,10 @@ impl RefreshCoordinator {
         let ttl = self.config.claim_ttl;
         tokio::spawn(async move {
             let mut ticker = tokio::time::interval(interval);
+            // Avoid heartbeat amplification under storage backpressure:
+            // if a heartbeat call exceeds `interval`, drop missed ticks
+            // rather than firing them back-to-back when the call returns.
+            ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
             // Burn the initial immediate tick — the claim was just
             // acquired and already has a fresh `expires_at`.
             ticker.tick().await;
@@ -462,54 +506,86 @@ impl RefreshCoordinator {
 
     /// **Legacy.** Begin a refresh attempt against the L1 coalescer.
     /// Stage 2.3 deletes this in favour of [`Self::refresh_coalesced`].
+    #[deprecated(
+        since = "0.1.0",
+        note = "use refresh_coalesced; remove when typed CredentialId migration completes — П3+"
+    )]
     pub fn try_refresh(&self, credential_id: &str) -> RefreshAttempt {
         self.l1.try_refresh(credential_id).into()
     }
 
     /// **Legacy.** Mark the L1 in-flight slot complete. Stage 2.3
     /// deletes this in favour of [`Self::refresh_coalesced`].
+    #[deprecated(
+        since = "0.1.0",
+        note = "use refresh_coalesced; remove when typed CredentialId migration completes — П3+"
+    )]
     pub fn complete(&self, credential_id: &str) {
         self.l1.complete(credential_id);
     }
 
     /// **Legacy.** Number of credentials currently being refreshed in
     /// the L1 layer.
+    #[deprecated(
+        since = "0.1.0",
+        note = "use refresh_coalesced; remove when typed CredentialId migration completes — П3+"
+    )]
     pub fn in_flight_count(&self) -> usize {
         self.l1.in_flight_count()
     }
 
     /// **Legacy.** Acquire a permit from the L1 concurrency limiter.
+    #[deprecated(
+        since = "0.1.0",
+        note = "use refresh_coalesced; remove when typed CredentialId migration completes — П3+"
+    )]
     pub async fn acquire_permit(&self) -> tokio::sync::OwnedSemaphorePermit {
         self.l1.acquire_permit().await
     }
 
     /// **Legacy.** Available permits in the L1 concurrency limiter.
+    #[deprecated(
+        since = "0.1.0",
+        note = "use refresh_coalesced; remove when typed CredentialId migration completes — П3+"
+    )]
     pub fn available_permits(&self) -> usize {
         self.l1.available_permits()
     }
 
     /// **Legacy.** Record a refresh failure for the L1 circuit breaker.
+    #[deprecated(
+        since = "0.1.0",
+        note = "use refresh_coalesced; remove when typed CredentialId migration completes — П3+"
+    )]
     pub fn record_failure(&self, credential_id: &str) {
         self.l1.record_failure(credential_id);
     }
 
     /// **Legacy.** Record a refresh success for the L1 circuit breaker.
+    #[deprecated(
+        since = "0.1.0",
+        note = "use refresh_coalesced; remove when typed CredentialId migration completes — П3+"
+    )]
     pub fn record_success(&self, credential_id: &str) {
         self.l1.record_success(credential_id);
     }
 
     /// **Legacy.** Whether the L1 per-credential circuit breaker is
     /// open.
+    #[deprecated(
+        since = "0.1.0",
+        note = "use refresh_coalesced; remove when typed CredentialId migration completes — П3+"
+    )]
     pub fn is_circuit_open(&self, credential_id: &str) -> bool {
         self.l1.is_circuit_open(credential_id)
     }
 }
 
-impl Default for RefreshCoordinator {
-    fn default() -> Self {
-        Self::new()
-    }
-}
+// `Default` deliberately not implemented: `Self::new()` calls
+// `expect()` on `RefreshCoordConfig::default().validate()`, and
+// convention is that `Default` does not panic. Callers construct
+// explicitly via `RefreshCoordinator::new()` (which carries the
+// validation panic semantics openly) or `new_with(...)` (typed error).
 
 // ──────────────────────────────────────────────────────────────────────────
 // Helpers
@@ -638,5 +714,139 @@ mod tests {
         let coord = RefreshCoordinator::new();
         assert!(coord.config().validate().is_ok());
         assert_eq!(coord.replica_id().as_str(), "nebula-engine-default");
+    }
+
+    // ──────────────────────────────────────────────────────────────────
+    // Panic-safety + release-error masking regression tests
+    // (review feedback C1 + I1, sub-spec §3.4)
+    // ──────────────────────────────────────────────────────────────────
+
+    /// `FlakyReleaseRepo` delegates everything to an inner repo except
+    /// `release`, which always returns `RepoError::InvalidState`. Used to
+    /// prove the coordinator does not mask a successful refresh result
+    /// when release fails after the user closure already returned `Ok`.
+    struct FlakyReleaseRepo {
+        inner: Arc<dyn RefreshClaimRepo>,
+    }
+
+    #[async_trait::async_trait]
+    impl RefreshClaimRepo for FlakyReleaseRepo {
+        async fn try_claim(
+            &self,
+            credential_id: &CredentialId,
+            holder: &ReplicaId,
+            ttl: Duration,
+        ) -> Result<ClaimAttempt, RepoError> {
+            self.inner.try_claim(credential_id, holder, ttl).await
+        }
+
+        async fn heartbeat(&self, token: &ClaimToken, ttl: Duration) -> Result<(), HeartbeatError> {
+            self.inner.heartbeat(token, ttl).await
+        }
+
+        async fn release(&self, _token: ClaimToken) -> Result<(), RepoError> {
+            Err(RepoError::InvalidState("simulated release failure".into()))
+        }
+
+        async fn mark_sentinel(&self, token: &ClaimToken) -> Result<(), RepoError> {
+            self.inner.mark_sentinel(token).await
+        }
+
+        async fn reclaim_stuck(
+            &self,
+        ) -> Result<Vec<nebula_storage::credential::ReclaimedClaim>, RepoError> {
+            self.inner.reclaim_stuck().await
+        }
+    }
+
+    /// I1 regression — sub-spec §3.4. After Stage 2 review C1+I1: a
+    /// transient `release()` failure must NOT mask a successful refresh.
+    /// The previous `release().await?` propagated `Repo(...)` and would
+    /// trigger `record_failure` → another IdP POST → invalidates the
+    /// just-issued refresh token (n8n #13088 lineage). With the
+    /// scopeguard-based release, errors are logged not propagated.
+    #[tokio::test]
+    async fn release_failure_after_successful_refresh_returns_ok() {
+        let inner: Arc<dyn RefreshClaimRepo> = Arc::new(InMemoryRefreshClaimRepo::new());
+        let repo: Arc<dyn RefreshClaimRepo> = Arc::new(FlakyReleaseRepo { inner });
+        let coord = RefreshCoordinator::new_with(
+            repo,
+            ReplicaId::new("test"),
+            RefreshCoordConfig::default(),
+        )
+        .expect("default config valid");
+
+        let cid = CredentialId::new();
+        let result: Result<u32, RefreshError> = coord
+            .refresh_coalesced(&cid, |_claim| async move { Ok(42) })
+            .await;
+
+        assert_eq!(
+            result.unwrap(),
+            42,
+            "release failure must NOT mask successful refresh result"
+        );
+    }
+
+    /// C1 regression — sub-spec §3.4. If the user closure panics, the
+    /// coordinator MUST still abort the heartbeat task and release the
+    /// L2 claim row. Without the scopeguard, the heartbeat ticks
+    /// forever, the row stays held, and Stage 3.3 reclaim cannot
+    /// recover it.
+    ///
+    /// Test strategy: run the panicking closure under
+    /// `AssertUnwindSafe::catch_unwind`, give the detached release task
+    /// a moment to flush, then verify a fresh `try_claim` succeeds —
+    /// i.e. the row is releasable, not held by a phantom heartbeat.
+    #[tokio::test]
+    async fn user_closure_panic_releases_l2_claim() {
+        use std::panic::AssertUnwindSafe;
+
+        use futures::FutureExt;
+
+        let repo: Arc<dyn RefreshClaimRepo> = Arc::new(InMemoryRefreshClaimRepo::new());
+        let coord = Arc::new(
+            RefreshCoordinator::new_with(
+                Arc::clone(&repo),
+                ReplicaId::new("panic-test"),
+                RefreshCoordConfig::default(),
+            )
+            .expect("default config valid"),
+        );
+        let cid = CredentialId::new();
+
+        let coord_for_panic = Arc::clone(&coord);
+        let cid_for_panic = cid;
+        let panic_result = AssertUnwindSafe(async move {
+            let _: Result<i32, RefreshError> = coord_for_panic
+                .refresh_coalesced(&cid_for_panic, |_claim| async move {
+                    panic!("test panic");
+                    #[allow(unreachable_code)]
+                    Ok::<i32, RefreshError>(0)
+                })
+                .await;
+        })
+        .catch_unwind()
+        .await;
+        assert!(
+            panic_result.is_err(),
+            "user closure panic must propagate out of refresh_coalesced"
+        );
+
+        // Give the detached release-on-drop spawn a moment to land.
+        tokio::time::sleep(Duration::from_millis(100)).await;
+
+        // The L2 row must be releasable: a fresh `try_claim` from a
+        // different replica should succeed immediately. If the
+        // scopeguard had not fired, the row would still be heartbeated
+        // and we'd see `Contended` here.
+        let attempt = repo
+            .try_claim(&cid, &ReplicaId::new("recoverer"), Duration::from_secs(5))
+            .await
+            .expect("try_claim must not error");
+        assert!(
+            matches!(attempt, ClaimAttempt::Acquired(_)),
+            "panic must not leave the L2 row held — got {attempt:?}"
+        );
     }
 }
