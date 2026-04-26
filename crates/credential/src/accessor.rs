@@ -53,7 +53,7 @@ pub fn default_credential_accessor() -> Arc<dyn nebula_core::accessor::Credentia
 /// The `allowed_keys` set is populated from the action's declared
 /// credential key dependencies.
 ///
-/// Any [`resolve_any()`] or [`has()`] call for a key not in the set is
+/// Any `resolve_any()` or `has()` call for a key not in the set is
 /// rejected.
 ///
 /// # Examples

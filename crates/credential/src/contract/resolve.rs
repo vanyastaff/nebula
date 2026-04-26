@@ -13,7 +13,7 @@ use crate::{NoPendingState, PendingState};
 // ── ResolveResult ──────────────────────────────────────────────────────
 
 /// Outcome of [`Credential::resolve`](crate::Credential::resolve)
-/// or [`Credential::continue_resolve`](crate::Credential::continue_resolve).
+/// or [`Interactive::continue_resolve`](crate::Interactive::continue_resolve).
 ///
 /// # Variants
 ///
@@ -136,30 +136,42 @@ pub enum UserInput {
 // ── RefreshOutcome ─────────────────────────────────────────────────────
 
 /// Represents **successful or expected** outcomes from
-/// [`Credential::refresh`](crate::Credential::refresh).
+/// [`Refreshable::refresh`](crate::Refreshable::refresh).
 ///
-/// All **failures** go through
-/// `Err(CredentialError::...)`.
+/// Per Tech Spec §15.4 the type-level `Refreshable` membership already
+/// encodes "this credential supports refresh," so the post-§15.4 enum
+/// only models the success/expected-protocol-outcome dichotomy:
+/// [`Refreshed`](Self::Refreshed) on a successful refresh and
+/// [`ReauthRequired`](Self::ReauthRequired) when the refresh path fails
+/// irrecoverably (refresh token revoked, scope changed). All other
+/// failures go through `Err(CredentialError::...)`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum RefreshOutcome {
     /// Token was refreshed successfully.
     Refreshed,
-    /// Credential doesn't support refresh (permanent tokens, API keys).
-    NotSupported,
     /// Refresh failed due to expected protocol behavior -- needs full
     /// re-authentication. Framework triggers re-resolve with user
     /// interaction.
+    ///
+    /// Per Tech Spec §15.4 the `NotSupported` variant from the
+    /// pre-§15.4 const-bool era was removed: a credential is
+    /// [`Refreshable`](crate::Refreshable) by trait membership, so
+    /// runtime "not supported" is impossible (compile error at the
+    /// dispatch site).
     ReauthRequired,
 }
 
 // ── TestResult ─────────────────────────────────────────────────────────
 
 /// Outcome of
-/// [`Credential::test`](crate::Credential::test).
+/// [`Testable::test`](crate::Testable::test).
 ///
-/// `None` from `test()` means the credential type does not support testing.
-/// When `test()` returns `Some`, the result is one of these variants.
+/// Per Tech Spec §15.4 the type-level `Testable` membership already
+/// encodes "this credential supports testing," so the post-§15.4
+/// signature is `Result<TestResult, CredentialError>` without an
+/// `Option` carve-out for "not testable" — non-testable credentials
+/// simply do not implement [`Testable`](crate::Testable).
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum TestResult {
@@ -177,8 +189,10 @@ pub enum TestResult {
 /// Controls when and how the framework refreshes this credential.
 ///
 /// Used as an associated const on the
-/// [`Credential`](crate::Credential) trait:
-/// `const REFRESH_POLICY: RefreshPolicy`.
+/// [`Refreshable`](crate::Refreshable) sub-trait:
+/// [`Refreshable::REFRESH_POLICY`](crate::Refreshable::REFRESH_POLICY).
+/// Non-refreshable credentials do not declare a policy because they do
+/// not implement [`Refreshable`](crate::Refreshable).
 ///
 /// All fields are const-compatible (`Duration::from_secs` is `const fn`
 /// since Rust 1.53).

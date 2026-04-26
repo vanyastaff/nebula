@@ -14,10 +14,9 @@ use crate::CredentialMetadata;
 /// Per Tech Spec §15.4 capability sub-trait split — `is_dynamic()` and
 /// `lease_ttl()` (which read the removed `C::DYNAMIC` / `C::LEASE_TTL`
 /// const-bool capability flags) have been dropped. Capability discovery
-/// over `dyn AnyCredential` moves to the
-/// [`CredentialRegistry`](crate::CredentialRegistry) capability set
-/// computed at registration time from sub-trait membership (§15.8 /
-/// Stage 7).
+/// over `dyn AnyCredential` moves to the engine-side `CredentialRegistry`
+/// (in `nebula_engine::credential`) capability set computed at
+/// registration time from sub-trait membership (§15.8 / Stage 7).
 ///
 /// Automatically implemented for all `C: Credential` via the blanket
 /// impl below.

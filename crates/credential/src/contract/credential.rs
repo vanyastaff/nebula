@@ -5,8 +5,8 @@
 //! defaulted method bodies for `continue_resolve` / `refresh` / `revoke`
 //! / `test` / `release`. A plugin author setting `const REFRESHABLE =
 //! true` while forgetting to override `refresh()` produced a credential
-//! that *declared* refresh capability but silently returned
-//! `RefreshOutcome::NotSupported` — the engine treated this as a benign
+//! that *declared* refresh capability but silently returned a
+//! "not supported" outcome — the engine treated this as a benign
 //! outcome and the credential never refreshed in production. The same
 //! silent-downgrade vector existed for the four sister capabilities.
 //!

@@ -309,8 +309,10 @@ impl PendingState for OAuth2Pending {
 ///   moved `nebula-engine` HTTP transport (ADR-0031). For now `resolve` returns `Provider("OAuth2
 ///   HTTP transport has moved …")` so callers surface the migration explicitly rather than silently
 ///   no-op'ing.
-/// - **Device Code** — base `resolve` errors as per Authorization Code; kickoff goes through
-///   [`OAuth2Credential::initiate_device_code`].
+/// - **Device Code** — base `resolve` errors as per Authorization Code; the device-code variant
+///   (`initiate_device_code`) is deferred to a later phase. RFC 8628 requires HTTP transport which
+///   is currently disabled in this crate per ADR-0031 (see `docs/adr/0031-api-owns-oauth-flow.md`);
+///   the kickoff helper will land alongside the engine HTTP transport wiring.
 pub struct OAuth2Credential;
 
 /// Typed shape of the `oauth2` credential setup form.
@@ -1019,6 +1021,127 @@ mod tests {
         };
         let result = OAuth2Credential::continue_resolve(&pending, &input, &ctx).await;
         assert!(result.is_err());
+    }
+
+    // ── initiate_authorization_code coverage (Tech Spec §15.4) ─────────
+    //
+    // Per §15.4 the base `Credential::resolve` cannot carry typed
+    // pending state, so the AuthorizationCode kickoff lives on this
+    // OAuth2-specific helper. The tests below cover (a) success-path
+    // URL construction with PKCE + anti-CSRF, (b) input rejection for
+    // missing redirect_uri, (c) state-token unguessability across
+    // independent kickoffs.
+
+    fn auth_code_values() -> FieldValues {
+        let mut values = FieldValues::new();
+        values.set_raw("client_id", serde_json::json!("test_client_id"));
+        values.set_raw("client_secret", serde_json::json!("test_client_secret"));
+        values.set_raw(
+            "auth_url",
+            serde_json::json!("https://idp.example.com/authorize"),
+        );
+        values.set_raw(
+            "token_url",
+            serde_json::json!("https://idp.example.com/token"),
+        );
+        values.set_raw("grant_type", serde_json::json!("authorization_code"));
+        values.set_raw("scopes", serde_json::json!("read write"));
+        values.set_raw(
+            "redirect_uri",
+            serde_json::json!("https://app.example.com/oauth2/callback"),
+        );
+        values
+    }
+
+    #[tokio::test]
+    async fn initiate_authorization_code_returns_redirect_with_pkce_and_state() {
+        let values = auth_code_values();
+        let (pending, request) =
+            OAuth2Credential::initiate_authorization_code(&values).expect("kickoff should succeed");
+
+        let url = match request {
+            InteractionRequest::Redirect { url } => url,
+            other => panic!("expected Redirect, got {other:?}"),
+        };
+
+        // RFC 6749 §4.1.1 + RFC 7636 PKCE — mandatory query parameters.
+        assert!(url.contains("response_type=code"), "missing response_type");
+        assert!(url.contains("client_id="), "missing client_id");
+        assert!(url.contains("redirect_uri="), "missing redirect_uri");
+        assert!(url.contains("scope="), "missing scope");
+        assert!(url.contains("state="), "missing state");
+        assert!(url.contains("code_challenge="), "missing code_challenge");
+        assert!(
+            url.contains("code_challenge_method=S256"),
+            "missing or wrong code_challenge_method"
+        );
+
+        // Pending state populated for AuthorizationCode flow per §15.4.
+        assert!(
+            pending.pkce_verifier.is_some(),
+            "pkce_verifier must be populated"
+        );
+        assert!(pending.state.is_some(), "anti-CSRF state must be populated");
+        assert!(
+            pending.redirect_uri.is_some(),
+            "redirect_uri must be populated"
+        );
+        assert_eq!(pending.grant_type, GrantType::AuthorizationCode);
+    }
+
+    #[tokio::test]
+    async fn initiate_authorization_code_rejects_missing_redirect_uri() {
+        // Build values without redirect_uri — AuthorizationCode requires it
+        // per build_config (RFC 6749 §3.1.2 — registered redirection URI).
+        let mut values = FieldValues::new();
+        values.set_raw("client_id", serde_json::json!("test_client_id"));
+        values.set_raw("client_secret", serde_json::json!("test_client_secret"));
+        values.set_raw(
+            "auth_url",
+            serde_json::json!("https://idp.example.com/authorize"),
+        );
+        values.set_raw(
+            "token_url",
+            serde_json::json!("https://idp.example.com/token"),
+        );
+        values.set_raw("grant_type", serde_json::json!("authorization_code"));
+        values.set_raw("scopes", serde_json::json!("read"));
+
+        let result = OAuth2Credential::initiate_authorization_code(&values);
+        match result {
+            Err(CredentialError::InvalidInput(msg)) => {
+                assert!(
+                    msg.contains("redirect_uri"),
+                    "error must name redirect_uri: {msg}"
+                );
+            },
+            other => panic!("expected InvalidInput, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn initiate_authorization_code_csrf_state_is_unguessable() {
+        let values = auth_code_values();
+        let (pending1, _) =
+            OAuth2Credential::initiate_authorization_code(&values).expect("first kickoff");
+        let (pending2, _) =
+            OAuth2Credential::initiate_authorization_code(&values).expect("second kickoff");
+
+        let state1 = pending1.state.clone().expect("first state populated");
+        let state2 = pending2.state.clone().expect("second state populated");
+
+        assert_ne!(
+            state1, state2,
+            "anti-CSRF state must be unguessable across kickoffs"
+        );
+
+        // `generate_random_state` produces ≥128 bits of base64-encoded
+        // entropy → at least 22 base64 chars.
+        assert!(
+            state1.len() >= 22,
+            "state token should carry ≥128 bits of entropy: got {} chars",
+            state1.len()
+        );
     }
 
     #[tokio::test]

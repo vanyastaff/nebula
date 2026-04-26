@@ -320,13 +320,15 @@ impl<S: CredentialStore> CredentialResolver<S> {
                     actual: current_version,
                 }))
             },
-            RefreshOutcome::NotSupported => {
-                let scheme = C::project(&state);
-                Ok(CredentialHandle::new(scheme, credential_id))
-            },
             RefreshOutcome::ReauthRequired => Err(ResolveError::ReauthRequired {
                 credential_id: credential_id.to_string(),
             }),
+            // RefreshOutcome is `#[non_exhaustive]` — preserve the
+            // wildcard so adding future variants (e.g. partial refresh)
+            // does not silently break this match. Per Tech Spec §15.4
+            // the `NotSupported` variant was removed because membership
+            // in `Refreshable` already guarantees the credential
+            // supports refresh.
             _ => {
                 let scheme = C::project(&state);
                 Ok(CredentialHandle::new(scheme, credential_id))

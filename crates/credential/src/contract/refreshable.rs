@@ -3,16 +3,18 @@
 //! Per Tech Spec §15.4 capability sub-trait split — closes
 //! security-lead findings N1 + N3 + N5. The pre-§15.4 shape declared
 //! refresh capability via `const REFRESHABLE: bool = false` plus a
-//! defaulted [`refresh`] body that returned `Ok(RefreshOutcome::NotSupported)`.
+//! defaulted [`refresh`] body that returned a "not supported" sentinel.
 //! A plugin author setting `const REFRESHABLE = true` while forgetting
 //! to override `refresh` produced a credential that *declared* refresh
-//! capability but silently never refreshed — the engine read
-//! `NotSupported` as a benign outcome, no error class fired, the
-//! credential eventually expired in production with no alert. The
-//! sub-trait variant in this module makes that mistake structurally
-//! impossible: only credentials that explicitly `impl Refreshable` can
-//! route through the engine's refresh dispatcher, and `refresh` has no
-//! defaulted body (`E0046` if omitted).
+//! capability but silently never refreshed — the engine read the
+//! sentinel as a benign outcome, no error class fired, the credential
+//! eventually expired in production with no alert. The sub-trait
+//! variant in this module makes that mistake structurally impossible:
+//! only credentials that explicitly `impl Refreshable` can route
+//! through the engine's refresh dispatcher, and `refresh` has no
+//! defaulted body (`E0046` if omitted). The runtime back-channel
+//! variant has been removed from [`RefreshOutcome`](crate::RefreshOutcome)
+//! to seal the silent-downgrade vector at the type level.
 //!
 //! Engine [`RefreshDispatcher::for_credential<C>`] binds
 //! `where C: Refreshable`. A non-`Refreshable` credential cannot be

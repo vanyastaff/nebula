@@ -7,10 +7,10 @@ use std::time::Duration;
 
 use nebula_credential::{
     Credential, CredentialContext, CredentialMetadata, Interactive, PendingState,
-    PendingStateStore, PendingStoreError, PendingToken, Refreshable, SecretString,
+    PendingStateStore, PendingStoreError, PendingToken, SecretString,
     credentials::OAuth2Pending,
     error::CredentialError,
-    resolve::{RefreshOutcome, ResolveResult, UserInput},
+    resolve::{ResolveResult, UserInput},
     scheme::SecretToken,
 };
 use nebula_schema::FieldValues;
@@ -145,14 +145,12 @@ impl Interactive for InteractiveTestCredential {
     }
 }
 
-impl Refreshable for InteractiveTestCredential {
-    async fn refresh(
-        _state: &mut TestInteractiveState,
-        _ctx: &CredentialContext,
-    ) -> Result<RefreshOutcome, CredentialError> {
-        Ok(RefreshOutcome::NotSupported)
-    }
-}
+// Per Tech Spec §15.4 — `InteractiveTestCredential` is not `Refreshable`.
+// The legacy `impl Refreshable { Ok(NotSupported) }` was the exact
+// silent-downgrade vector §15.4 eliminates: a credential declared
+// "refreshable" but silently never refreshed. Tests below exercise only
+// the `Interactive` path (`execute_continue`), so no refresh impl is
+// needed.
 
 struct RetryAwareCredential;
 
@@ -211,14 +209,10 @@ impl Interactive for RetryAwareCredential {
     }
 }
 
-impl Refreshable for RetryAwareCredential {
-    async fn refresh(
-        _state: &mut TestInteractiveState,
-        _ctx: &CredentialContext,
-    ) -> Result<RefreshOutcome, CredentialError> {
-        Ok(RefreshOutcome::NotSupported)
-    }
-}
+// Per Tech Spec §15.4 — `RetryAwareCredential` is not `Refreshable`.
+// The legacy `impl Refreshable { Ok(NotSupported) }` was the silent-
+// downgrade anti-pattern §15.4 eliminates. Tests below exercise only
+// the `Interactive` path (`execute_continue`).
 
 /// Helper: kickoff an interactive test credential by storing the typed
 /// `TestPending` directly in the pending store and returning the issued
