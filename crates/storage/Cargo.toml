@@ -22,8 +22,10 @@ serde_json = { workspace = true }
 tokio = { workspace = true, features = ["sync", "time"] }
 chrono = { workspace = true }
 
-# Refresh-claim repo (ADR-0041): generates per-claim UUIDs.
+# Refresh-claim repo (ADR-0041): generates per-claim UUIDs and uses a
+# parking_lot mutex for the in-memory CAS path.
 uuid = { workspace = true }
+parking_lot = { workspace = true }
 # Used for structured logging in layers (audit, cache) and rotation/backup
 # restore path. Credential-side rotation also carries `tracing`, so when the
 # `rotation` feature is enabled we inherit the same observability surface.

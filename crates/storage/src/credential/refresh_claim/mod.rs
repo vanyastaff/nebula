@@ -14,6 +14,9 @@ use chrono::{DateTime, Utc};
 use nebula_core::CredentialId;
 use uuid::Uuid;
 
+mod in_memory;
+pub use in_memory::InMemoryRefreshClaimRepo;
+
 /// Stable identifier for a Nebula replica process. Used to distinguish
 /// claim holders for diagnostics + sweep ownership.
 #[derive(Clone, Debug, Eq, PartialEq, Hash)]

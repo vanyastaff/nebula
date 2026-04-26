@@ -38,6 +38,6 @@ pub use memory::InMemoryStore;
 #[cfg(any(test, feature = "credential-in-memory"))]
 pub use pending::InMemoryPendingStore;
 pub use refresh_claim::{
-    ClaimAttempt, ClaimToken, HeartbeatError, ReclaimedClaim, RefreshClaim, RefreshClaimRepo,
-    ReplicaId, RepoError, SentinelState,
+    ClaimAttempt, ClaimToken, HeartbeatError, InMemoryRefreshClaimRepo, ReclaimedClaim,
+    RefreshClaim, RefreshClaimRepo, ReplicaId, RepoError, SentinelState,
 };
