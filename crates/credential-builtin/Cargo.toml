@@ -1,0 +1,31 @@
+[package]
+name = "nebula-credential-builtin"
+version.workspace = true
+edition.workspace = true
+keywords.workspace = true
+authors.workspace = true
+description = "Built-in concrete credential types for Nebula. Plugin authors depend on nebula-credential (contract); this crate ships first-party concrete types and the canonical mod sealed_caps."
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+nebula-credential = { path = "../credential" }
+nebula-credential-macros = { path = "../credential/macros" }
+nebula-core = { path = "../core" }
+nebula-error = { workspace = true }
+nebula-schema = { path = "../schema" }
+serde = { workspace = true, features = ["derive"] }
+zeroize = { version = "1.8.2", features = ["zeroize_derive"] }
+secrecy = { workspace = true }
+tokio = { workspace = true, features = ["sync", "macros", "rt"] }
+tracing = { workspace = true }
+
+[dev-dependencies]
+trybuild = "1.0"
+tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
+
+[features]
+default = []
+
+[lints]
+workspace = true

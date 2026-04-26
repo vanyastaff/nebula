@@ -4039,6 +4039,23 @@ dependencies = [
 ]
 
 [[package]]
+name = "nebula-credential-builtin"
+version = "0.1.0"
+dependencies = [
+ "nebula-core",
+ "nebula-credential",
+ "nebula-credential-macros",
+ "nebula-error",
+ "nebula-schema",
+ "secrecy",
+ "serde",
+ "tokio",
+ "tracing",
+ "trybuild",
+ "zeroize",
+]
+
+[[package]]
 name = "nebula-credential-macros"
 version = "0.1.0"
 dependencies = [

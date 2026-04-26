@@ -4,6 +4,7 @@ members = [
   "crates/storage",
   "crates/core",
   "crates/credential",
+  "crates/credential-builtin",
   "crates/engine",
   "crates/eventbus",
   "crates/execution",
