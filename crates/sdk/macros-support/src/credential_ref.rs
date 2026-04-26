@@ -10,7 +10,6 @@
 //! 2.7 (`#[action]` macro translation, "rewrites silently") for the
 //! contract.
 
-use proc_macro2::TokenStream as TokenStream2;
 use quote::quote;
 use syn::{Field, Fields, GenericArgument, Ident, ItemStruct, PathArguments, Type, TypeParamBound};
 
@@ -40,16 +39,49 @@ fn rewrite_field(field: &mut Field) {
     rewrite_type(&mut field.ty);
 }
 
-/// Rewrite `ty` in place if it matches `CredentialRef<dyn X>`.
+/// Rewrite `ty` in place, recursively walking generic-argument trees so
+/// that wrapper types (`Vec<CredentialRef<dyn X>>`,
+/// `Option<CredentialRef<dyn X>>`, `Box<CredentialRef<dyn X>>`, …) get
+/// the same Pattern 2 phantom-suffix treatment as the bare form.
 ///
 /// Match is by path-tail (last segment named `CredentialRef`) so the
 /// helper accepts both `CredentialRef<...>` and fully-qualified
 /// `nebula_credential::CredentialRef<...>` user-facing forms.
+///
+/// Marker bounds (`Send`, `Sync`, `Sized`, `Unpin`, `Copy`, `Clone`) are
+/// preserved verbatim — only the capability trait identifier receives
+/// the `Phantom` suffix. Without this guard, `CredentialRef<dyn Cap +
+/// Send + Sync>` would expand to nonsensical `SendPhantom` / `SyncPhantom`
+/// references that fail with cryptic `E0405` and have no path back to
+/// the macro for the plugin author. ADR-0035 §5 retains `Send + Sync` on
+/// the phantom trait as a forward-compat promise; user-written
+/// `dyn Cap + Send + Sync` must compose with that promise unchanged.
+///
+/// `Type::Reference` (e.g. `CredentialRef<&dyn Cap>`) is **out of scope**
+/// today — the recursive walk only descends into `Type::Path` generics.
+/// Adding a `Type::Reference` arm would let `CredentialRef<&dyn Cap>`
+/// rewrite to `CredentialRef<&dyn CapPhantom>`, but that form is not a
+/// supported Pattern 2 spelling per ADR-0035 §1 (canonical form is
+/// owning `CredentialRef<dyn Cap>`). Authors who write the borrowed
+/// form get rustc's normal `E0191` for the unspecified-assoc-type
+/// closure on `dyn Cap` — which is the correct guidance to switch to
+/// the canonical owning form.
 pub fn rewrite_type(ty: &mut Type) {
     let Type::Path(type_path) = ty else { return };
     let Some(last_segment) = type_path.path.segments.last_mut() else {
         return;
     };
+
+    // Recurse into ALL generic args first so wrapper types
+    // (Vec / Option / Box / …) reach the inner CredentialRef.
+    if let PathArguments::AngleBracketed(generic_args) = &mut last_segment.arguments {
+        for arg in &mut generic_args.args {
+            if let GenericArgument::Type(inner) = arg {
+                rewrite_type(inner);
+            }
+        }
+    }
+
     if last_segment.ident != "CredentialRef" {
         return;
     }
@@ -73,6 +105,15 @@ pub fn rewrite_type(ty: &mut Type) {
         let Some(seg) = trait_bound.path.segments.last_mut() else {
             continue;
         };
+        // Pass marker bounds (Send / Sync / Sized / Unpin / Copy / Clone)
+        // through unchanged. Same list as
+        // `nebula_credential_macros::capability::is_marker_bound`.
+        if matches!(
+            seg.ident.to_string().as_str(),
+            "Send" | "Sync" | "Sized" | "Unpin" | "Copy" | "Clone"
+        ) {
+            continue;
+        }
         seg.ident = Ident::new(&format!("{}Phantom", seg.ident), seg.ident.span());
     }
 }
@@ -95,11 +136,6 @@ pub fn rewrite_type_to_string(src: &str) -> Result<String, String> {
     Ok(quote!(#ty).to_string())
 }
 
-#[doc(hidden)]
-pub fn _emit_token_stream(item: &ItemStruct) -> TokenStream2 {
-    quote!(#item)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -114,18 +150,55 @@ mod tests {
     }
 
     #[test]
-    fn pattern2_with_send_sync_bounds_preserves_extra_bounds() {
+    fn pattern2_send_sync_bounds_preserve_marker_identity() {
         let out =
             rewrite_type_to_string("CredentialRef<dyn BitbucketBearer + Send + Sync>").unwrap();
         let canon = out.replace(' ', "");
+        // Phantom-suffix only on the capability trait.
         assert!(
             canon.contains("BitbucketBearerPhantom"),
-            "expected phantom suffix; got: {out}"
+            "capability must be suffixed: {out}"
+        );
+        // Markers must NOT be suffixed (regression guard for the
+        // SendPhantom / SyncPhantom mangling bug — substring containment
+        // alone would silently pass since `SendPhantom` contains "Send").
+        assert!(
+            !canon.contains("SendPhantom"),
+            "Send must not be suffixed: {out}"
         );
         assert!(
-            canon.contains("Send") && canon.contains("Sync"),
-            "expected Send + Sync preserved; got: {out}"
+            !canon.contains("SyncPhantom"),
+            "Sync must not be suffixed: {out}"
         );
+        // Markers must remain as standalone tokens.
+        assert!(canon.contains("+Send"), "Send must remain: {out}");
+        assert!(canon.contains("+Sync"), "Sync must remain: {out}");
+    }
+
+    #[test]
+    fn pattern2_full_marker_bound_list_passes_through_unchanged() {
+        // Lock in the full marker list from `is_marker_bound` so any
+        // future drift from the canonical set is caught immediately.
+        // `Sized` / `Unpin` / `Copy` / `Clone` are not all valid trait-object
+        // bounds in production code, but the rewriter must still treat them
+        // as markers — exercising via `rewrite_type_to_string` lets the
+        // syn parser tolerate the synthetic combination.
+        let out = rewrite_type_to_string(
+            "CredentialRef<dyn BitbucketBearer + Send + Sync + Unpin + Sized + Copy + Clone>",
+        )
+        .unwrap();
+        let canon = out.replace(' ', "");
+        assert!(
+            canon.contains("BitbucketBearerPhantom"),
+            "capability must be suffixed: {out}"
+        );
+        for marker in ["Send", "Sync", "Unpin", "Sized", "Copy", "Clone"] {
+            let mangled = format!("{marker}Phantom");
+            assert!(
+                !canon.contains(&mangled),
+                "marker `{marker}` must not be suffixed; got `{mangled}` in: {out}"
+            );
+        }
     }
 
     #[test]
@@ -179,6 +252,80 @@ mod tests {
             out.replace(' ', ""),
             src.replace(' ', ""),
             "Pattern 1 (concrete) must remain unchanged"
+        );
+    }
+
+    // --- I4 wrapper-walk regression guards -----------------------------------
+    //
+    // Wrapper types around `CredentialRef<dyn X>` must reach the inner
+    // capability and apply the phantom suffix. The pre-fix rewriter only
+    // matched the outermost segment, so authors who wrote
+    // `Vec<CredentialRef<dyn Cap>>` got a struct that compiled without
+    // phantom enforcement — silently bypassing the ADR-0035 guarantee.
+
+    #[test]
+    fn pattern2_inside_vec_rewrites() {
+        let out = rewrite_type_to_string("Vec<CredentialRef<dyn BitbucketBearer>>").unwrap();
+        let canon = out.replace(' ', "");
+        assert!(
+            canon.contains("CredentialRef<dynBitbucketBearerPhantom"),
+            "Vec wrapper should rewrite inner: {out}"
+        );
+    }
+
+    #[test]
+    fn pattern2_inside_option_rewrites() {
+        let out = rewrite_type_to_string("Option<CredentialRef<dyn BitbucketBearer>>").unwrap();
+        let canon = out.replace(' ', "");
+        assert!(
+            canon.contains("CredentialRef<dynBitbucketBearerPhantom"),
+            "Option wrapper should rewrite inner: {out}"
+        );
+    }
+
+    #[test]
+    fn pattern2_inside_box_rewrites() {
+        let out = rewrite_type_to_string("Box<CredentialRef<dyn BitbucketBearer>>").unwrap();
+        let canon = out.replace(' ', "");
+        assert!(
+            canon.contains("CredentialRef<dynBitbucketBearerPhantom"),
+            "Box wrapper should rewrite inner: {out}"
+        );
+    }
+
+    #[test]
+    fn pattern2_inside_nested_wrapper_chain_rewrites() {
+        // Defense in depth — the recursive walk must reach an arbitrarily
+        // nested CredentialRef. This catches any future regression that
+        // would short-circuit the walk after the first non-CredentialRef
+        // segment.
+        let out =
+            rewrite_type_to_string("Vec<Option<Box<CredentialRef<dyn BitbucketBearer>>>>").unwrap();
+        let canon = out.replace(' ', "");
+        assert!(
+            canon.contains("CredentialRef<dynBitbucketBearerPhantom"),
+            "Nested wrapper chain should rewrite inner: {out}"
+        );
+    }
+
+    #[test]
+    fn pattern2_wrapper_with_send_sync_marker_preservation() {
+        // I4 + C1 interaction — wrapper rewrite must still preserve
+        // marker bounds on the inner capability.
+        let out = rewrite_type_to_string("Vec<CredentialRef<dyn BitbucketBearer + Send + Sync>>")
+            .unwrap();
+        let canon = out.replace(' ', "");
+        assert!(
+            canon.contains("BitbucketBearerPhantom"),
+            "capability must be suffixed inside wrapper: {out}"
+        );
+        assert!(
+            !canon.contains("SendPhantom"),
+            "Send must not be suffixed inside wrapper: {out}"
+        );
+        assert!(
+            !canon.contains("SyncPhantom"),
+            "Sync must not be suffixed inside wrapper: {out}"
         );
     }
 }
