@@ -224,9 +224,15 @@ ADR-0038 §2 proposes canon §3.5 revision: "Action — what a step does. Dispat
 
 ### Spike
 
-- [`docs/superpowers/drafts/2026-04-24-nebula-action-redesign/07-spike-NOTES.md`](../drafts/2026-04-24-nebula-action-redesign/07-spike-NOTES.md)
-- [`final_shape_v2.rs`](../drafts/2026-04-24-nebula-action-redesign/final_shape_v2.rs)
-- Spike commit `c8aef6a0` on isolated worktree `worktree-agent-af478538`
+- **Iter-1 + Iter-2 (Phase 4, pre-FROZEN-CP4 shapes)**:
+  - [`07-spike-NOTES.md`](../drafts/2026-04-24-nebula-action-redesign/07-spike-NOTES.md)
+  - [`final_shape_v2.rs`](../drafts/2026-04-24-nebula-action-redesign/final_shape_v2.rs) — 284 lines
+  - Spike commit `c8aef6a0` on isolated worktree `worktree-agent-af478538`
+- **Iter-3 (post-Q1+Q6+Q7+Q8 amendments compose-validation)**:
+  - [`spike-iter3-NOTES.md`](../drafts/2026-04-24-nebula-action-redesign/spike-iter3-NOTES.md)
+  - [`final_shape_v3.rs`](../drafts/2026-04-24-nebula-action-redesign/final_shape_v3.rs) — 839 lines (+555 vs v2; reflects 11 amendment shape changes)
+  - Spike commit `10b24616` on isolated worktree `worktree-agent-a3ec73dbf722f0095`
+  - PASS — implementation can reference v3 as concrete signature contract
 
 ### Phase 0-3 + 6 reviews
 
