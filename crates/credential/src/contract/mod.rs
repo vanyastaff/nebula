@@ -9,11 +9,15 @@
 //! `use nebula_credential::Credential;` (not `nebula_credential::contract::Credential`).
 
 mod any;
+/// Capability bitflag set + registration-time detection (Stage 7 wires real detection).
+pub mod capability_report;
 mod credential;
 mod dynamic;
 mod interactive;
 mod pending;
 mod refreshable;
+/// KEY-keyed `CredentialRegistry` + `RegisterError` (Tech Spec §15.6 fatal duplicate-KEY).
+pub mod registry;
 /// Resolve result types: interaction, refresh, test.
 pub mod resolve;
 mod revocable;
@@ -22,11 +26,13 @@ mod static_protocol;
 mod testable;
 
 pub use any::AnyCredential;
+pub use capability_report::{Capabilities, compute_capabilities};
 pub use credential::Credential;
 pub use dynamic::Dynamic;
 pub use interactive::Interactive;
 pub use pending::{NoPendingState, PendingState, PendingToken};
 pub use refreshable::Refreshable;
+pub use registry::{CredentialRegistry, RegisterError};
 pub use resolve::{
     DisplayData, InteractionRequest, RefreshOutcome, RefreshPolicy, ResolveResult,
     StaticResolveResult, TestResult, UserInput,

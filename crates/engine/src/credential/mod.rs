@@ -21,5 +21,5 @@ pub use executor::{ExecutorError, ResolveResponse, execute_continue, execute_res
 // dispatch path.
 pub use nebula_credential::resolve::TestResult;
 pub use refresh::{RefreshAttempt, RefreshCoordinator};
-pub use registry::{CredentialRegistry, RegistryError};
+pub use registry::{StateProjectionError, StateProjectionRegistry};
 pub use resolver::{CredentialResolver, ResolveError};

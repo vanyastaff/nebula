@@ -80,6 +80,10 @@ impl AnyCredential for StubCredential {
             AuthPattern::SecretToken,
         )
     }
+
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
 }
 
 // ── Stub AnyResource ─────────────────────────────────────────────────────────
