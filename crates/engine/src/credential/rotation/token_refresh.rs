@@ -3,6 +3,21 @@
 //! This module hosts the reqwest-based refresh client used by runtime execution
 //! paths. Keeping it in `nebula-engine` avoids coupling refresh transport logic
 //! to the contract crate.
+//!
+//! # Sentinel marking
+//!
+//! Per sub-spec
+//! `docs/superpowers/specs/2026-04-24-credential-refresh-coordination.md` §3.4
+//! the holder marks the L2 claim row `sentinel = RefreshInFlight`
+//! immediately before the IdP POST. That mark is set by the
+//! `CredentialResolver::refresh_via_coordinator` closure (the caller of
+//! `refresh_oauth2_state`) **outside** this module, so we do not have to
+//! thread `RefreshClaim` + `RefreshClaimRepo` into the transport layer.
+//!
+//! On the success path the row is deleted entirely by
+//! `RefreshCoordinator::refresh_coalesced` via `repo.release(token)` —
+//! the sentinel clears by row removal, no separate "clear" call is
+//! needed.
 
 use chrono::Utc;
 use nebula_credential::{

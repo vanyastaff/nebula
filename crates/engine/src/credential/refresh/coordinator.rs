@@ -300,13 +300,10 @@ impl RefreshCoordinator {
         &self.config
     }
 
-    /// Borrow the underlying claim repo (engine-internal — used by the
-    /// reclaim sweep handle in Stage 3.3).
-    #[allow(
-        dead_code,
-        reason = "consumed by the reclaim sweep landing in Stage 3.3"
-    )]
-    pub(crate) fn repo(&self) -> &Arc<dyn RefreshClaimRepo> {
+    /// Borrow the underlying claim repo. Used by call sites that need
+    /// to mark the sentinel before performing the IdP POST (Stage 2.4)
+    /// and by the reclaim sweep landing in Stage 3.3.
+    pub fn repo(&self) -> &Arc<dyn RefreshClaimRepo> {
         &self.repo
     }
 

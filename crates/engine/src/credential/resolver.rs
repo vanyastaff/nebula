@@ -181,12 +181,23 @@ impl<S: CredentialStore> CredentialResolver<S> {
         // so it propagates without being mistaken for a coordinator
         // failure.
         let coord = Arc::clone(&self.refresh_coordinator);
+        let repo = Arc::clone(coord.repo());
         let resolver_state = state;
         let resolver_stored = stored;
         let credential_id_owned = credential_id.to_string();
         let outcome: Result<Result<CredentialHandle<C::Scheme>, ResolveError>, RefreshError> =
             coord
-                .refresh_coalesced(typed_id, |_claim| async move {
+                .refresh_coalesced(typed_id, |claim| async move {
+                    // Stage 2.4 — mark sentinel = RefreshInFlight
+                    // immediately before the IdP POST (perform_refresh
+                    // dispatches into the OAuth2 token endpoint via
+                    // refresh_oauth2_state). On the success path
+                    // RefreshCoordinator::refresh_coalesced calls
+                    // repo.release(token) which deletes the row,
+                    // clearing the sentinel by removal — no separate
+                    // clear call needed.
+                    repo.mark_sentinel(&claim.token).await?;
+
                     Ok::<_, RefreshError>(
                         self.perform_refresh::<C>(
                             &credential_id_owned,

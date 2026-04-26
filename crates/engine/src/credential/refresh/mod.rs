@@ -20,12 +20,12 @@
 
 mod coordinator;
 mod l1;
-#[allow(dead_code, reason = "Stage 2.1 stub; populated by Stage 2.4 + 3.3")]
+#[allow(dead_code, reason = "Stage 2.1 stub; populated by Stage 3.3")]
 mod reclaim;
-#[allow(dead_code, reason = "Stage 2.1 stub; populated by Stage 2.4 + Stage 3")]
 mod sentinel;
 
 pub use coordinator::{
     ConfigError, RefreshAttempt, RefreshConfigError, RefreshCoordConfig, RefreshCoordinator,
     RefreshError,
 };
+pub use sentinel::{SentinelThresholdConfig, SentinelTrigger};
