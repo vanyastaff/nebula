@@ -97,8 +97,11 @@ impl RefreshClaimRepo for InMemoryRefreshClaimRepo {
         }))
     }
 
-    async fn heartbeat(&self, token: &ClaimToken) -> Result<(), HeartbeatError> {
+    async fn heartbeat(&self, token: &ClaimToken, ttl: Duration) -> Result<(), HeartbeatError> {
         let now = Utc::now();
+        let extension = chrono::Duration::from_std(ttl).map_err(|e| {
+            HeartbeatError::Repo(RepoError::InvalidState(format!("invalid ttl: {e}")))
+        })?;
         let mut guard = self.inner.lock();
 
         let row = guard
@@ -106,9 +109,9 @@ impl RefreshClaimRepo for InMemoryRefreshClaimRepo {
             .find(|r| r.claim_id == token.claim_id && r.generation == token.generation);
         match row {
             Some(r) if r.expires_at > now => {
-                // Extend by 30s past now (parallels SQL impls). Caller's
-                // RefreshCoordinator drives the heartbeat cadence.
-                r.expires_at = now + chrono::Duration::seconds(30);
+                // Extend by `ttl` past now. Caller (RefreshCoordinator) must
+                // pass the configured `claim_ttl` so the §3.5 invariants hold.
+                r.expires_at = now + extension;
                 Ok(())
             },
             _ => Err(HeartbeatError::ClaimLost),

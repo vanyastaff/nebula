@@ -1783,12 +1783,13 @@ impl RefreshCoordinator {
     ) -> tokio::task::JoinHandle<()> {
         let repo = Arc::clone(&self.repo);
         let interval = self.config.heartbeat_interval;
+        let ttl = self.config.claim_ttl; // §3.5: heartbeat extends by full claim_ttl
         tokio::spawn(async move {
             let mut ticker = tokio::time::interval(interval);
             ticker.tick().await; // first tick fires immediately
             loop {
                 ticker.tick().await;
-                if let Err(e) = repo.heartbeat(&token).await {
+                if let Err(e) = repo.heartbeat(&token, ttl).await {
                     tracing::warn!(?e, "heartbeat failed; coordinator will release on next loop");
                     break;
                 }

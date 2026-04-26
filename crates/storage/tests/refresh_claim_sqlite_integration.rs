@@ -119,14 +119,16 @@ async fn heartbeat_extends_expiry_and_rejects_stale_token() {
     };
 
     // Heartbeat with the live token succeeds.
-    repo.heartbeat(&claim.token).await.expect("heartbeat live");
+    repo.heartbeat(&claim.token, Duration::from_secs(5))
+        .await
+        .expect("heartbeat live");
 
     // Heartbeat with a bumped generation fails.
     let stale = nebula_storage::credential::ClaimToken {
         claim_id: claim.token.claim_id,
         generation: claim.token.generation + 1,
     };
-    let result = repo.heartbeat(&stale).await;
+    let result = repo.heartbeat(&stale, Duration::from_secs(5)).await;
     assert!(matches!(result, Err(HeartbeatError::ClaimLost)));
 }
 
@@ -203,4 +205,53 @@ async fn concurrent_try_claim_across_pool_clones_yields_one_acquired() {
     // one wins and one sees Contended.
     assert_eq!(acquired_count, 1, "exactly one acquirer should win");
     assert_eq!(contended_count, 1, "the other must see Contended");
+}
+
+#[tokio::test]
+async fn concurrent_reclaim_returns_each_stuck_row_to_exactly_one_sweeper() {
+    // Per sub-spec §3.4: each stuck row must be reclaimed by exactly one
+    // sweeper across concurrent sweeps. Two sweepers observing the same
+    // expired row both as `RefreshInFlight` would double-count toward the
+    // N=3 sentinel-event ReauthRequired threshold.
+    let pool = fresh_pool().await;
+    let repo1 = SqliteRefreshClaimRepo::new(pool.clone());
+    let repo2 = SqliteRefreshClaimRepo::new(pool.clone());
+
+    // Insert N expired rows, marking each as RefreshInFlight to mimic the
+    // worst case (a presumed mid-IdP-call crash).
+    let mut credential_ids = Vec::new();
+    for _ in 0..50 {
+        let cid = CredentialId::new();
+        let claim = match repo1
+            .try_claim(&cid, &ReplicaId::new("setup"), Duration::from_millis(50))
+            .await
+            .unwrap()
+        {
+            ClaimAttempt::Acquired(c) => c,
+            ClaimAttempt::Contended { .. } => panic!("setup must always acquire"),
+        };
+        repo1.mark_sentinel(&claim.token).await.unwrap();
+        credential_ids.push(cid);
+    }
+    // Wait past expiry so reclaim_stuck has work to do.
+    tokio::time::sleep(Duration::from_millis(150)).await;
+
+    // Two sweepers race.
+    let (a, b) = tokio::join!(repo1.reclaim_stuck(), repo2.reclaim_stuck());
+    let a = a.expect("sweeper a");
+    let b = b.expect("sweeper b");
+
+    // Each row should appear in exactly one sweeper's result.
+    let a_ids: std::collections::HashSet<_> = a.iter().map(|r| r.credential_id).collect();
+    let b_ids: std::collections::HashSet<_> = b.iter().map(|r| r.credential_id).collect();
+    let overlap = a_ids.intersection(&b_ids).count();
+    assert_eq!(
+        overlap, 0,
+        "no row should appear in both sweepers (would double-count toward N=3)"
+    );
+    assert_eq!(
+        a_ids.len() + b_ids.len(),
+        50,
+        "every row reclaimed by exactly one sweeper"
+    );
 }

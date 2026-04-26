@@ -110,6 +110,11 @@ impl RefreshClaimRepo for SqliteRefreshClaimRepo {
         }
 
         // CAS lost — fetch existing row's expires_at for the backoff hint.
+        // If the row vanished between the failed UPSERT and this SELECT
+        // (release / reclaim_stuck happened in between), surface as
+        // `Contended { existing_expires_at: now }`: the caller backs off the
+        // standard jitter delay and retries. Returning `InvalidState` here
+        // would surface a transient race as a hard error.
         let existing: Option<(String,)> = sqlx::query_as(
             "SELECT expires_at FROM credential_refresh_claims WHERE credential_id = ?1",
         )
@@ -121,16 +126,20 @@ impl RefreshClaimRepo for SqliteRefreshClaimRepo {
             Some((exp_str,)) => Ok(ClaimAttempt::Contended {
                 existing_expires_at: parse_iso(&exp_str)?,
             }),
-            None => Err(RepoError::InvalidState(
-                "CAS lost but no existing row visible".into(),
-            )),
+            None => Ok(ClaimAttempt::Contended {
+                existing_expires_at: now,
+            }),
         }
     }
 
-    async fn heartbeat(&self, token: &ClaimToken) -> Result<(), HeartbeatError> {
+    async fn heartbeat(&self, token: &ClaimToken, ttl: Duration) -> Result<(), HeartbeatError> {
         let now = Utc::now();
         let now_iso = now.to_rfc3339();
-        let extension = (now + chrono::Duration::seconds(30)).to_rfc3339();
+        let extension = (now
+            + chrono::Duration::from_std(ttl).map_err(|e| {
+                HeartbeatError::Repo(RepoError::InvalidState(format!("invalid ttl: {e}")))
+            })?)
+        .to_rfc3339();
         let claim_id_str = token.claim_id.to_string();
 
         let rows = sqlx::query(
@@ -184,25 +193,23 @@ impl RefreshClaimRepo for SqliteRefreshClaimRepo {
         let now = Utc::now();
         let now_iso = now.to_rfc3339();
 
-        // Two-phase for SQLite (no RETURNING with DELETE everywhere):
-        // 1. SELECT expired rows
-        // 2. DELETE them
-        let stuck: Vec<(String, String, i64, i64)> = sqlx::query_as(
-            "SELECT credential_id, holder_replica_id, generation, sentinel \
-             FROM credential_refresh_claims \
-             WHERE expires_at < ?1",
+        // Atomic reclaim via `DELETE ... RETURNING` (SQLite 3.35+, same
+        // version that enables UPSERT RETURNING in `try_claim`). Two
+        // sweepers running concurrently each get a disjoint subset of the
+        // expired rows — no row is observed by both, which preserves the
+        // §3.4 sentinel-event invariant (one event per stuck refresh,
+        // never double-counted toward the N=3 ReauthRequired threshold).
+        let rows: Vec<(String, String, i64, i64)> = sqlx::query_as(
+            "DELETE FROM credential_refresh_claims \
+             WHERE expires_at < ?1 \
+             RETURNING credential_id, holder_replica_id, generation, sentinel",
         )
         .bind(&now_iso)
         .fetch_all(&self.pool)
         .await?;
 
-        sqlx::query("DELETE FROM credential_refresh_claims WHERE expires_at < ?1")
-            .bind(&now_iso)
-            .execute(&self.pool)
-            .await?;
-
-        let mut out = Vec::with_capacity(stuck.len());
-        for (cid, holder, generation, sentinel_raw) in stuck {
+        let mut out = Vec::with_capacity(rows.len());
+        for (cid, holder, generation, sentinel_raw) in rows {
             out.push(ReclaimedClaim {
                 credential_id: parse_credential_id(&cid)?,
                 previous_holder: ReplicaId::new(holder),

@@ -138,13 +138,15 @@ async fn heartbeat_extends_expiry_and_rejects_stale_token() {
         ClaimAttempt::Contended { .. } => panic!("expected Acquired"),
     };
 
-    repo.heartbeat(&claim.token).await.expect("heartbeat live");
+    repo.heartbeat(&claim.token, Duration::from_secs(5))
+        .await
+        .expect("heartbeat live");
 
     let stale = ClaimToken {
         claim_id: claim.token.claim_id,
         generation: claim.token.generation + 1,
     };
-    let result = repo.heartbeat(&stale).await;
+    let result = repo.heartbeat(&stale, Duration::from_secs(5)).await;
     assert!(matches!(result, Err(HeartbeatError::ClaimLost)));
 
     repo.release(claim.token).await.unwrap();

@@ -79,11 +79,13 @@ async fn heartbeat_validates_generation() {
         generation: claim.token.generation + 99,
     };
 
-    let result = repo.heartbeat(&stale).await;
+    let result = repo.heartbeat(&stale, Duration::from_secs(30)).await;
     assert!(matches!(result, Err(HeartbeatError::ClaimLost)));
 
     // The original token still works.
-    repo.heartbeat(&claim.token).await.expect("live token");
+    repo.heartbeat(&claim.token, Duration::from_secs(30))
+        .await
+        .expect("live token");
 }
 
 #[tokio::test]
@@ -182,6 +184,6 @@ async fn try_claim_after_expiry_bumps_generation_in_place() {
     );
 
     // The first holder's heartbeat must now fail.
-    let stale = repo.heartbeat(&first.token).await;
+    let stale = repo.heartbeat(&first.token, Duration::from_secs(30)).await;
     assert!(matches!(stale, Err(HeartbeatError::ClaimLost)));
 }

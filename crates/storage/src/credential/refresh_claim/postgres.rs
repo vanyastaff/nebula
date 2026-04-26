@@ -91,6 +91,11 @@ impl RefreshClaimRepo for PgRefreshClaimRepo {
         }
 
         // CAS lost — fetch existing row's expires_at for backoff timing.
+        // If the row vanished between the failed UPSERT and this SELECT
+        // (release / reclaim_stuck happened in between), surface as
+        // `Contended { existing_expires_at: now }`: the caller backs off the
+        // standard jitter delay and retries. Returning `InvalidState` here
+        // would surface a transient race as a hard error.
         let existing: Option<(DateTime<Utc>,)> = sqlx::query_as(
             "SELECT expires_at FROM credential_refresh_claims WHERE credential_id = $1",
         )
@@ -102,15 +107,18 @@ impl RefreshClaimRepo for PgRefreshClaimRepo {
             Some((exp,)) => Ok(ClaimAttempt::Contended {
                 existing_expires_at: exp,
             }),
-            None => Err(RepoError::InvalidState(
-                "CAS lost but no existing row visible".into(),
-            )),
+            None => Ok(ClaimAttempt::Contended {
+                existing_expires_at: now,
+            }),
         }
     }
 
-    async fn heartbeat(&self, token: &ClaimToken) -> Result<(), HeartbeatError> {
+    async fn heartbeat(&self, token: &ClaimToken, ttl: Duration) -> Result<(), HeartbeatError> {
         let now = Utc::now();
-        let extension = now + chrono::Duration::seconds(30);
+        let extension = now
+            + chrono::Duration::from_std(ttl).map_err(|e| {
+                HeartbeatError::Repo(RepoError::InvalidState(format!("invalid ttl: {e}")))
+            })?;
 
         let rows = sqlx::query(
             "UPDATE credential_refresh_claims \

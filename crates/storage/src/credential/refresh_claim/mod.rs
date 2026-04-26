@@ -157,10 +157,16 @@ pub trait RefreshClaimRepo: Send + Sync + 'static {
         ttl: Duration,
     ) -> Result<ClaimAttempt, RepoError>;
 
-    /// Extend the TTL of an existing claim. Fails with `ClaimLost` if the
-    /// holder's token has been superseded (generation bumped) or the claim
-    /// has been released.
-    async fn heartbeat(&self, token: &ClaimToken) -> Result<(), HeartbeatError>;
+    /// Extend the TTL of an existing claim by `ttl`, replacing the previous
+    /// `expires_at` with `now + ttl`. The caller (typically
+    /// `RefreshCoordinator::spawn_heartbeat`) MUST pass the same TTL it used
+    /// for `try_claim` so the heartbeat / sweep invariants from sub-spec §3.5
+    /// hold (`heartbeat_interval × 3 < claim_ttl`,
+    /// `reclaim_sweep_interval ≤ claim_ttl`).
+    ///
+    /// Fails with `ClaimLost` if the holder's token has been superseded
+    /// (generation bumped) or the claim has been released.
+    async fn heartbeat(&self, token: &ClaimToken, ttl: Duration) -> Result<(), HeartbeatError>;
 
     /// Release a claim. Idempotent — a token that no longer matches a row
     /// is treated as already-released.
