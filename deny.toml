@@ -78,6 +78,21 @@ deny = [
   { crate = "nebula-plugin-sdk", wrappers = [
     "nebula-sandbox",
   ], reason = "Plugin-SDK is the out-of-process plugin protocol; only sandbox may depend on it" },
+
+  # ---- Layer enforcement: Business / shared infra ----
+  # nebula-resource is the runtime resource framework consumed by both business
+  # (action) and exec (engine/sandbox/sdk/plugin) tiers. The allowlist locks the
+  # current consumer set so a future PR cannot quietly introduce an upward
+  # dependency from API or core/* without an explicit deny.toml change.
+  # See `docs/superpowers/specs/2026-04-24-nebula-resource-redesign-summary.md`
+  # (R-040 / SF-1) for the rationale.
+  { crate = "nebula-resource", wrappers = [
+    "nebula-action",
+    "nebula-engine",
+    "nebula-plugin",
+    "nebula-sandbox",
+    "nebula-sdk",
+  ], reason = "Resource framework is shared infra; only the listed business/exec consumers may depend on it (no upward deps from API or core/*)" },
 ]
 skip = [
   "bitflags",

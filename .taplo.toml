@@ -5,6 +5,7 @@ exclude = [
   "node_modules/**",
   "**/node_modules/**",
   ".worktrees/**",
+  ".claude/worktrees/**",
   "apps/desktop/src-tauri/gen/**",
 ]
 

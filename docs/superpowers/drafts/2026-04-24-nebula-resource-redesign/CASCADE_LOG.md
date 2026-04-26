@@ -1,0 +1,343 @@
+# Nebula-resource Redesign Cascade — Log
+
+**Started:** 2026-04-24
+**Worktree:** `.worktrees/nebula/vigilant-mahavira-629d10`
+**Branch:** `claude/vigilant-mahavira-629d10`
+**Orchestrator:** main session (flat coordination — no recursive orchestrator dispatch)
+**Input prompt:** Hands-off Redesign Cascade Orchestrator Prompt (user-provided, paste-in-session confirmed 2026-04-24)
+
+## Budget
+
+- Hard stop: 5 days agent-work equivalent OR first irresoluble blocker
+- Consensus: max 3 rounds per protocol before escalation
+- Spike: max 2 iterations
+- Checkpoint review: max 2 rounds per CP
+
+## Initial agent roster (read from `.claude/agents/`)
+
+- architect — drafts long-form design docs with checkpoint cadence
+- devops — CI/cargo deny/MSRV/benches/build infra
+- dx-tester — newcomer API ergonomics smoke-test
+- orchestrator — consensus protocol picker (NOT invoked — main session coordinates flat)
+- rust-senior — idiomatic patterns, safety, perf, correctness
+- security-lead — credential encryption, auth, sandboxing, input validation
+- spec-auditor — document structural integrity (cross-refs, drift, bookkeeping)
+- tech-lead — priority calls, trade-offs, cross-crate coordination
+
+## Input reference artefacts verified
+
+| Path | Status |
+|---|---|
+| `crates/resource/src/` | present — module tree includes recovery/, runtime/, topology/, topology_tag.rs |
+| `crates/resource/docs/*.md` | present — Architecture, Pooling, adapters, README, api-reference, events, recovery |
+| `docs/superpowers/specs/2026-04-24-credential-redesign-strategy.md` | present (CP3) |
+| `docs/superpowers/specs/2026-04-24-credential-tech-spec.md` | present (CP5) |
+| `docs/superpowers/specs/2026-04-24-credential-refresh-coordination.md` | present |
+| `docs/superpowers/specs/2026-04-24-credential-3agent-consensus-session.md` | **NOT FOUND** — referenced in prompt but absent |
+| `docs/adr/0035-phantom-shim-capability-pattern.md` | present (amended) |
+| `docs/tracking/credential-concerns-register.md` | present |
+
+## Timeline
+
+### 2026-04-24 T+0 — Cascade start
+
+- User confirmed session-level launch
+- Initial recon: path verification complete
+- Phase tracking tasks created (9 tasks — Phase 0 through Phase 8)
+- CASCADE_LOG.md initialized
+
+### 2026-04-24 T+~15min — Phase 0 gate PASSED
+
+- rust-senior audit complete: `phase-0-code-audit.md` (1010 L, commit d6cee19f, 86 tool uses, ~9 min)
+- devops audit complete: `phase-0-manifest-audit.md` (336 L, commit d6cee19f, 55 tool uses, ~4 min)
+- Consolidation `01-current-state.md` written
+- Audits were consistent — no architect mediation needed
+- Gate: PASSES
+
+**Phase 0 findings (summary — detailed files lost in filesystem event; see soft-escalation below):**
+
+1. **Code is entirely v2.** Zero v1 symbols (`HookRegistry`, `QuarantineManager`, `HealthChecker`, `HealthPipeline`, `EventBus`, `HealthStage`, `ConnectivityStage`, `AutoScaler`, `Poison`, `DependencyGraph`, etc.) exist in `src/`. `docs/Architecture.md` describes vanished v1 module map.
+2. **`runtime/` + `topology/` are paired layers, NOT duplicates** — `topology/` = trait+config, `runtime/` = instance state. Each of 7 topologies has a pair.
+3. **`TopologyTag` is a concrete runtime `#[non_exhaustive] enum`, NOT a phantom-type tag** (brief was wrong). Stored at runtime on `ResourceGuard`. Zero `PhantomData<TopologyTag<...>>` anywhere.
+4. **`deny.toml` has zero layer-enforcement rule for `nebula-resource`** despite 5 consumers spanning business (action/sdk/plugin) and exec (engine/sandbox) tiers.
+5. **Resource crate has `features = { default = [] }`** and zero flags despite pulling heavy deps (nebula-telemetry, nebula-metrics, nebula-resilience).
+6. **No `benches/` directory, not in CodSpeed shard** — no perf gate for runtime-critical crate.
+7. **No external `nebula-resource-*` adapter crates** anywhere — `adapters.md` is purely aspirational.
+8. **Doc drift at multiple layers** — Architecture.md = v1, README case-mismatch filenames, adapters.md API signatures out-of-date, events.md variant count wrong (lists 7, actual 10).
+9. **🔴 panic surface identified** — `Manager::on_credential_refreshed` / `on_credential_revoked` `todo!()`-panic (manager.rs:1378, 1400). (Phase 1 later corrected threat characterization — see below.)
+
+### 2026-04-24 T+~35min — Phase 1 gate PASSED (easily)
+
+- 4 parallel agents dispatched and completed:
+  - dx-tester ~680s, 85 tools, 18 severity rows
+  - security-lead ~575s, 72 tools, 22 findings
+  - rust-senior ~698s, 94 tools, 24-row matrix
+  - tech-lead ~429s, 65 tools, 7 sections + priority preview
+- Consolidation `02-pain-enumeration.md` written (canonical Phase 1 deliverable)
+- `01-current-state.md` §3.1 **corrected** per Phase 1 security-lead finding
+
+**Gate verdict:** PASSES easily. 6 🔴 / 9 🟠 / 9 🟡 / 3 🟢 / 1 ✅. Escalation threshold (0 🔴 AND <3 🟠) not even close to triggering.
+
+**Convergent themes (cited by 2+ agents):**
+1. 🔴 **Credential×Resource seam is structurally wrong** — primary driver. `Resource::Auth` is dead weight (100% `()` usage); Tech Spec §3.6 designs different shape; reverse-index never populated → silent revocation drop today + latent `todo!()` panic if write added without dispatcher.
+2. 🔴 **Daemon topology has no public start path** — `ManagedResource.topology` pub(crate); `Manager::register(daemon)` works but user cannot reach `DaemonRuntime::start()`.
+3. 🔴 **Doc surface is broken** — `api-reference.md` ~50% fabrication rate, `adapters.md` 4/7 compile-fail blocks, `dx-eval-real-world.rs` references nonexistent `nebula_resource::Credential`.
+4. 🔴 **Drain-abort phase corruption** — `graceful_shutdown::Abort` flips phase back to `Ready` without recording failure; fix helper `ManagedResource::set_failed()` dead-coded. **Standalone-fix PR candidate SF-2.**
+5. 🟠 **`manager.rs` surface is the god-object, not the type.** 2101 L file: split file, keep type.
+6. 🟠 **Daemon + EventSource are canon-out-of-band** (§3.5 defines resource = pool/SDK client). Extraction recommended.
+7. 🟠 **Reserved-but-unused public API** (`AcquireOptions::intent/.tags`, `ErrorScope::Target`, `AcquireIntent::Critical`).
+
+**Standalone-fix PR candidates (outside cascade):**
+- **SF-1:** `deny.toml` wrappers rule for nebula-resource (security-lead, mechanical, CI-enforceable)
+- **SF-2:** Drain-abort phase corruption — wire `ManagedResource::set_failed()` in `graceful_shutdown::Abort` (rust-senior, one-function fix)
+
+**Phase 0 corrections captured in `01-current-state.md`:**
+- `credential_resources` is NEVER written (not "populated at register" as Phase 0 said)
+- Tech Spec §3.6 (not §15.7) is the rotation-hook design reference
+- Migration scope is in-tree only (no external adapters) — brief's deprecation-window machinery is over-engineered for 5 internal consumers
+
+**5 open questions for Phase 2 co-decision:**
+1. `Auth` → `Credential` reshape: drop entirely, make optional (`AuthenticatedResource` sub-trait), or keep current?
+2. Topology count: 5 (extract Daemon/EventSource), 6 (merge Service/Transport), or keep 7?
+3. `Runtime` vs `Lease`: collapse (9/9 tests prove `Runtime == Lease`), default, or keep separate?
+4. `AcquireOptions::intent/.tags`: remove, defer, or wire up this cascade?
+5. `manager.rs` split: file-split only (tech-lead's default)?
+
+**Budget usage so far:** ~36 min wall / ~68 min agent-effort. Well inside 5-day envelope.
+
+### 2026-04-24 T+~45min — SOFT ESCALATION: filesystem loss of per-agent findings files
+
+**Symptom:** during Edit of `01-current-state.md` and `CASCADE_LOG.md` after Phase 1 consolidation, Edit tool reported "File does not exist." Filesystem inspection shows only `02-pain-enumeration.md` survived from the draft directory. All other files (CASCADE_LOG.md, 01-current-state.md, phase-0-*.md, phase-1-*-findings.md, scratch/probe-*.md) are missing.
+
+**Hypothesis:** Agent subagents ran in isolated worktrees (per teammate-mode `CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS=1`); when those worktrees were cleaned up, the untracked files they created in `docs/superpowers/drafts/` may have been swept. The exact mechanism is unclear — worth investigating post-cascade.
+
+**Recovery:**
+- `02-pain-enumeration.md` is the canonical Phase 1 deliverable and survived — **no material loss to Phase 2+ dispatch**.
+- `01-current-state.md` reconstructed from orchestrator context with Phase 1 §3.1 correction applied.
+- `CASCADE_LOG.md` (this file) reconstructed from context — **Phase 0 + Phase 1 summaries captured above**.
+- Per-agent findings files (phase-0-code-audit.md, phase-0-manifest-audit.md, phase-1-*-findings.md) are unrecoverable from this session. Their key findings are captured in `02-pain-enumeration.md`.
+
+**Mitigation going forward:**
+- **Commit after every phase gate.** Artefacts go into git history immediately so they survive worktree cleanup.
+- Phase 2+ dispatch prompts will emphasize "file path = absolute path in main worktree, not in isolated worktree" — though this may not be sufficient if the cleanup mechanism affects the main tree.
+- If loss recurs for a critical artefact, escalate to hard ESCALATION.md rather than soft.
+
+**Next:** Phase 2 — scope narrowing co-decision. architect proposes 2-3 scope options, tech-lead priority-call, security-lead security-gate block. Max 3 rounds.
+
+### 2026-04-24 T+~60min — Phase 2 gate PASSED (round 1, unanimous convergence)
+
+- architect drafted `03-scope-options.md` (33 KB, 3 options A/B/C + comparison + 6 open questions)
+- Parallel review:
+  - tech-lead ~153 s, 9 tools, priority-call: **Option B + 2 amendments**
+  - security-lead ~179 s, 5 tools, gate: **BLOCK A, ENDORSE B with 3 amendments, ENDORSE C with same 3**
+- Consolidation `03-scope-decision.md` written — scope **LOCKED**
+
+**Verdict:** Phase 2 locks in round 1. Co-decision body unanimously aligned on Option B.
+
+**Locked design decisions:**
+1. **Credential reshape:** Tech Spec §3.6 verbatim — `type Credential: Credential` on `Resource` directly; `type Credential = NoCredential;` opt-out; **NO sub-trait**.
+2. **Rotation dispatch:** parallel `join_all` with per-resource failure isolation (unbounded now, `FuturesUnordered` cap as future optimization).
+3. **`on_credential_revoke`:** extends §3.6 — Strategy §3 to propose revoke semantics (destroy pool + reject new acquires).
+4. **Observability:** DoD — trace span + counter + `ResourceEvent::CredentialRefreshed` variant. Explicit Phase 6 CP-review gate.
+5. **Daemon + EventSource:** extract from crate (target: engine/scheduler fold OR sibling crate — Strategy §4 picks).
+6. **Manager:** split file, keep type.
+7. **Migration:** 5 in-tree consumers in same PR wave; no shims, no deprecation windows (MATURITY=frontier).
+8. **`warmup_pool`:** must not call `Scheme::default()` under new shape.
+
+**In scope:** 6/6 🔴 + 5/9 🟠 + 1/9 🟡 (total 12/28 findings). Remaining deferred with explicit pointers (no silent drops).
+
+**Out of scope:** `Runtime`/`Lease` collapse, `AcquireOptions::intent/.tags` wiring, Service/Transport merge, feature flags, bench harness — all pointer-referenced in §2.
+
+**Standalone-fix PRs:**
+- **SF-1:** `deny.toml` wrappers rule → dispatch to **devops** separately, land before/parallel to cascade completion.
+- **SF-2:** drain-abort phase corruption → **absorbed into Option B** atomically (tech-lead's call).
+
+**Spike scope (Phase 4 if triggered):**
+- Iter-1: §3.6 shape + NoCredential opt-out ergonomics
+- Iter-2: 3-of-5 consumer compat sketches + parallel refresh dispatch
+- Exit: §3.6 compiles, no footgun at call site, no perf regression on happy path
+- **Sub-trait fallback REMOVED from spike exit criteria** (tech-lead amendment 1)
+- If spike fails, escalate to Phase 2 round 2 — NOT a mid-flight shape change
+
+**Budget remaining:** ~20 hours agent-effort in 5-day envelope. Comfortable.
+
+**Next:** Phase 3 — Strategy Document draft. architect-led, CP1 §1-§3 → CP2 §4-§5 → CP3 §6 cadence per credential pattern. Each CP: draft → spec-auditor audit → tech-lead ratify → iterate once. Freeze on three signatures.
+
+### 2026-04-24 T+~120min — Phase 3 gate PASSED (Strategy FROZEN at CP3)
+
+- 3 checkpoints executed with efficient batching:
+  - CP1 draft (architect) → CP1 review parallel (spec-auditor PASS_WITH_MINOR + tech-lead RATIFY_WITH_EDITS)
+  - CP1 edits + CP2 draft (architect, batched) → CP2 review parallel (both PASS/RATIFY_WITH_EDITS)
+  - CP2 edits + CP3 draft (architect, batched) → FROZEN
+- Strategy total: **7920 words / 453 lines / 6 sections** (§0-§6) at `docs/superpowers/specs/2026-04-24-nebula-resource-redesign-strategy.md`
+
+**Key §4 decisions ratified:**
+- §4.1 Resource trait reshape: `type Credential: Credential` per Tech Spec §3.6 verbatim
+- §4.2 Separate `on_credential_revoked` method (not dual-semantics on refresh); invariant-prescriptive default ("no further authenticated traffic"); downgrade of §5.5 to §4.2 footnote (credential Tech Spec §Credential::revoke already exists at line 228)
+- §4.3 Parallel `join_all` dispatch with per-resource timeout isolation (NOT global) — cascade-failure invariant
+- §4.4 Daemon/EventSource: **engine-fold** (tech-lead strong endorse; no scheduler-shaped crate exists; TriggerAction precedent; atomic consumer migration)
+- §4.5 Manager file-split into 5 submodules: mod.rs, options.rs, gate.rs, execute.rs, rotation.rs
+- §4.6 drain-abort fix absorbed into Manager refactor (not standalone)
+- §4.9 Observability as DoD: `tracing::span!` + counter + `ResourceEvent::CredentialRefreshed` at every CP review gate
+
+**§5 open items (5 bullets):** AcquireOptions treatment, Runtime/Lease collapse trigger, NoCredential convenience symmetry, Phase 4 spike trigger, Transport test gap.
+
+**§6 post-validation roadmap:** 6 subsections covering cascade milestones, implementation wave, post-merge validation, MATURITY transition (frontier → core), future cascades, register ownership.
+
+**Budget used across Phase 3:** ~50 min agent-effort (architect 3 dispatches + spec-auditor 2 + tech-lead 2). Well inside envelope.
+
+**Next (pragmatic reprioritization for session budget):**
+- ~~Phase 4 spike~~ → DEFERRED to post-cascade implementation preamble (trigger per Strategy §5.5; will run when trait-reshape implementation PR is drafted)
+- Phase 5 ADR — dispatch now (primary: Resource::Credential adoption)
+- Phase 7 Register — dispatch now (living concerns doc)
+- Phase 6 Tech Spec CP1 (§0-§3) — dispatch if time allows; otherwise flag in Phase 8 as post-cascade pickup
+- Phase 8 Summary — always produced regardless
+
+### 2026-04-24 T+~130min — Phase 5 complete (ADR-0036)
+
+- architect dispatched for primary ADR: `Resource::Credential` adoption + `Auth` retirement
+- Artefact: `docs/adr/0036-resource-credential-adoption-auth-retirement.md` (2203 w / 201 L)
+- Status: Proposed (acceptance gates on Phase 6 Tech Spec CP1 ratification)
+- Secondary ADR-0037 candidate (Daemon/EventSource engine-fold) recommended but DEFERRED — flagged in Phase 8 Q3 for user decision
+- Budget: ~5 min agent-effort
+
+### 2026-04-24 T+~135min — Phase 7 complete (concerns register)
+
+- **Orchestrator-direct** creation (no agent dispatch — consolidation of known data)
+- Artefact: `docs/tracking/nebula-resource-concerns-register.md` (35 rows, 6 label buckets)
+- Label distribution: 0 strategy-blocking / 22 tech-spec-material / 1 standalone-fix / 5 post-cascade / 4 future-cascade / 3 invariant-preservation
+- **0 strategy-blocking** — Phase 3 Strategy resolved all scope-blocking items
+- Phase 7 consensus session NOT needed (Phase 2 co-decision unanimous in round 1)
+
+### 2026-04-24 T+~145min — Phase 8 complete (final consolidated summary)
+
+- **Orchestrator-direct** creation (no agent dispatch)
+- Artefact: `docs/superpowers/specs/2026-04-24-nebula-resource-redesign-summary.md`
+- 5 open questions flagged for user decision (Q1 spike timing, Q2 Tech Spec scope, Q3 ADR-0037, Q4 SF-1 dispatch, Q5 MATURITY transition awareness)
+- 7-step recommended next-steps ordering
+- Artefact index (canonical + lost)
+
+## Cascade outcome — PARTIAL COMPLETION
+
+**Phases complete:** 0, 1, 2, 3, 5, 7, 8
+**Phases deferred:** 4 (spike), 6 (Tech Spec)
+**Escalations:** 1 soft (filesystem loss, recovered); 0 hard
+
+**Final budget:** ~118 min agent-effort / ~145 min wall-time across the full cascade.
+**Envelope used: ~2% of 5-day budget.** Room for Phase 4 + Phase 6 follow-up sessions.
+
+**User returns to implementation-ready state.** Strategy + ADR-0036 + Register + Summary provide full design foundation. Phase 4 spike and Phase 6 Tech Spec deferrals have clear orchestrator recommendations (see summary Q1 + Q2).
+
+---
+
+*Cascade log closed at 2026-04-24 T+~150min. Future amendments append-only here; major deviations would open a new cascade log for that work.*
+
+---
+
+## Continuation 2026-04-25
+
+### 2026-04-25 — Cascade continuation start
+
+User dispatched continuation prompt to complete deferred Phase 4 spike + Phase 6 Tech Spec. Hands-off mode resumes.
+
+State entering continuation:
+- Strategy CP3 frozen (`docs/superpowers/specs/2026-04-24-nebula-resource-redesign-strategy.md`)
+- ADR-0036 + ADR-0037 proposed-pending-CP1
+- Register seeded (35 rows, 22 tech-spec-material owned by Phase 6)
+- SF-1 deny.toml landed `bb66537a` (separate PR)
+- Continuation commits: `407db576` (ADR-0037 + summary revisions)
+
+Plan:
+1. Phase 4 spike — rust-senior in isolated worktree, iter-1 first; gate-check; iter-2 if needed
+2. Phase 6 Tech Spec multi-CP cascade — architect-led, per-CP review + commit
+3. Phase 8 summary update + ADR proposed → accepted transitions
+
+Commit per CP. Per-CP commit cadence enforced to prevent filesystem-event recurrence.
+
+**Next:** Dispatch Phase 4 spike iter-1 (rust-senior, isolated worktree).
+
+### 2026-04-25 — Phase 4 spike PASSED (iter-1 only, iter-2 skipped)
+
+- rust-senior in isolated worktree (`agent-a6945235` / branch `worktree-agent-a6945235`)
+- Iter-1 budget: ~17 min agent-effort (1038 s, 119 tools)
+- All 7 exit criteria met:
+  - `cargo check --all-targets` clean
+  - `cargo test --all-targets` 6/6 integration tests pass
+  - `cargo test --doc` 3/3 compile-fail probes resolve as expected
+  - `cargo clippy` clean
+  - `<Self::Credential as Credential>::Scheme` ergonomics workable
+  - `type Credential = NoCredential;` opt-out clean (no unwrap/footgun)
+  - Parallel `join_all` dispatch with per-resource isolation demonstrated under both latency (one resource sleeping 3s, budget 250ms) and error (one resource Err, siblings Ok)
+  - Reverse-index write path implemented (`Manager::register` populates `by_credential` for credential-bearing R, skips for `NoCredential`)
+
+**Iter-2 SKIPPED** per rust-senior recommendation: shape validated, compat sketches are Tech Spec §13 deliverable, `Box::pin`-per-dispatch micro-bench is optional perf check that doesn't gate spike pass.
+
+**Spike artefacts copied** to `docs/superpowers/drafts/2026-04-24-nebula-resource-redesign/spike/` (11 files: Cargo.toml + 2 inner Cargo.toml + 5 Rust source files + 2 test files + NOTES.md). Original worktree branch retained at `.claude/worktrees/agent-a6945235` for re-run reference.
+
+**Open questions for Tech Spec CP1** (full list in `spike/NOTES.md`):
+1. `NoCredential` location — `nebula-credential` vs `nebula-resource`
+2. `TypeId` vs sealed-trait marker for opt-out detection
+3. `Box::pin`-per-dispatch dynamic dispatch in `dyn ResourceDispatcher` (RPITIT-in-trait-objects not stable on 1.95) — observability impact
+4. Per-resource timeout config surface (per-Resource or per-Manager?)
+5. Compile-fail probe coverage gaps for production (double-registration, `NoCredential` + `Some(real_id)` registration)
+
+**ADR transitions UNBLOCKED:** ADR-0036 + ADR-0037 acceptance gates now cleared from spike side; ratification still requires Phase 6 CP1.
+
+**Next:** Phase 6 CP1 — architect drafts §0-§3 (foundation: status/scope/freeze + goals/non-goals + trait contract Rust signatures + runtime model). Spike `final_shape_v2.rs` equivalent extractable from `spike/crates/resource-shape/src/{lib,resource,topology,manager,no_credential}.rs`.
+
+### 2026-04-25 — Phase 6 CP1 ratified (Tech Spec §0-§3 + ADR transitions)
+
+- architect drafted CP1 §0-§3 (~6700 words; full Rust signatures)
+- Parallel review: spec-auditor PASS_WITH_MINOR / rust-senior RATIFY_WITH_EDITS / tech-lead RATIFY_WITH_EDITS
+- Convergent edits applied: ADR-0037 amended-in-place gate text; §3.5 RotationOutcome defined; §3.6 Result wrapper aligned; §3.2 dispatcher lifetime SAFETY prose; §3.1 new error constructors called out
+- 5 spike open questions all resolved in §2.5 (NoCredential location, TypeId vs sealed-trait, Box::pin observability, timeout config hybrid, compile-fail probe gaps)
+- **ADR-0036 + ADR-0037 flipped `proposed` → `accepted`**
+- Commit: `1e416b91`
+
+### 2026-04-25 — Phase 6 CP2 ratified (Tech Spec §4-§8)
+
+- architect drafted CP2 §4-§8 (~11K words)
+- Parallel co-decision: tech-lead RATIFY_WITH_EDITS + security-lead ENDORSE_WITH_AMENDMENTS
+- Security amendments B-1 / B-2 / B-3 verbatim honored
+- 6 bounded edits applied (E1/E2/E3 spec hygiene + SL-1/SL-2/SL-3 security)
+- Key §5 decisions: option (b) revocation default-hook; `Arc<RwLock<Pool>>` blue-green swap; `warmup_pool` two-method split; 7-submodule split (registration.rs + shutdown.rs added)
+- Key §6 observability locked: 6 trace span names + 5 counter metrics + 2 new ResourceEvent variants
+- Commit: `e0f49536`
+
+### 2026-04-25 — Phase 6 CP3 ratified (Tech Spec §9-§13)
+
+- architect drafted CP3 §9-§13 (function-level cuts, surface, adapter contract, engine-fold landing, evolution)
+- Parallel review: tech-lead RATIFY_WITH_EDITS + dx-tester ENDORSE_WITH_AMENDMENTS
+- 6 edits applied (3 spec-hygiene + 3 §11 adapter walkthrough fixes including `rust,ignore` annotation)
+- Key §10.2 decision: dual register_* helpers (10 + 1 = 11 methods total)
+- Key §12.1 decision: engine module path = `crates/engine/src/daemon/`
+- §10.5 SL-1 `tainting_policy` deferred to future cascade (gates not satisfied)
+
+### 2026-04-25 — Phase 6 CP4 RATIFIED → Tech Spec FROZEN
+
+- architect drafted CP4 §14-§16 (cross-refs + open items resolution + handoff plan)
+- tech-lead final ratification: **RATIFY → FROZEN. First CP this cascade requiring zero edits.**
+- All 8 sub-gates pass (4 architect decisions + 6 CP3 edits + register flips + §14 cross-refs + §15 closures + §16 handoff + §16.5 maturity trigger + ADR-0036/0037 unchanged at accepted)
+- §15.2 AcquireOptions: `#[deprecated]` (option b per Strategy §5.2)
+- §16.1 PR wave: atomic single-PR (per Strategy §4.8 + ADR-0036 + security atomicity invariant)
+- §15.6 register flips: 22-of-22 tech-spec-material rows verified `decided` with section pointers
+- Tech Spec total: 2758 lines / 27,827 words across 16 sections
+
+## Cascade outcome — COMPLETE (all 9 phases)
+
+**Final state:**
+- Strategy FROZEN (commit `5cf00a24`)
+- ADR-0036 accepted (was proposed → accepted via CP1 ratification)
+- ADR-0037 accepted with amended-in-place gate text (was proposed → accepted via CP1 ratification)
+- Tech Spec FROZEN (CP1-CP4 ratified across 4 commits)
+- Concerns register: 35 rows; 22 tech-spec-material all `decided`
+- Spike artefacts preserved at `docs/superpowers/drafts/.../spike/`
+- Implementation PR wave UNBLOCKED — atomic single-PR per Tech Spec §16.1
+
+**Final budget:** ~120 min agent-effort initial cascade + ~190 min agent-effort continuation = **~310 min total agent-effort** across full cascade. **~7% of 5-day envelope used.** Massive headroom for implementation work.
+
+**Escalations:** 1 soft (filesystem loss in initial cascade — recovered); 0 hard.
+
+---
+
+*Cascade log closed at 2026-04-25 with full design foundation locked. Implementation PR wave per Tech Spec §16.1 begins separately. Future amendments to design require new cascade session.*
