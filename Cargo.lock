@@ -4020,6 +4020,7 @@ dependencies = [
  "nebula-metadata",
  "nebula-resilience",
  "nebula-schema",
+ "percent-encoding",
  "pretty_assertions",
  "rand 0.10.1",
  "rstest",

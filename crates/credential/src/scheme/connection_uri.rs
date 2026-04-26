@@ -119,17 +119,20 @@ impl ConnectionUri {
     /// once, at the FFI boundary. The wrapper guarantees the URL is never
     /// written to logs / debug output / serializers without an explicit
     /// `expose_secret()` call.
+    ///
+    /// The `username` and `password` components are percent-encoded per
+    /// RFC 3986 §3.2.1 so passwords containing reserved characters
+    /// (`@ : / ? #`) cannot break out of the userinfo segment and leak
+    /// into hostname or path parsing errors.
     #[must_use]
     pub fn as_url(&self) -> SecretString {
+        use percent_encoding::{NON_ALPHANUMERIC, utf8_percent_encode};
+        let user_enc = utf8_percent_encode(&self.username, NON_ALPHANUMERIC);
+        let pass_enc = utf8_percent_encode(self.password.expose_secret(), NON_ALPHANUMERIC);
         let port_part = self.port.map(|p| format!(":{p}")).unwrap_or_default();
         let url = format!(
             "{}://{}:{}@{}{}/{}",
-            self.scheme,
-            self.username,
-            self.password.expose_secret(),
-            self.host,
-            port_part,
-            self.database,
+            self.scheme, user_enc, pass_enc, self.host, port_part, self.database,
         );
         SecretString::new(url)
     }
@@ -217,6 +220,44 @@ mod tests {
         assert_eq!(
             full.expose_secret(),
             "redis://default:token123@cache.example.com/0"
+        );
+    }
+
+    #[test]
+    fn as_url_percent_encodes_password_special_chars() {
+        // Real-world passwords contain `@`, `:`, `/`, `?`, `#`.
+        // RFC 3986 §3.2.1 requires percent-encoding for userinfo.
+        // Without encoding, password `p@ss:w/d` would produce
+        // `u:p@ss:w/d@host` — drivers parse this as host `@host`
+        // with the password leaking into hostname error messages.
+        let uri = ConnectionUri::new(
+            "postgres".into(),
+            "host".into(),
+            None,
+            "db".into(),
+            "u".into(),
+            SecretString::new("p@ss:w/d"),
+        );
+        assert_eq!(
+            uri.as_url().expose_secret(),
+            "postgres://u:p%40ss%3Aw%2Fd@host/db"
+        );
+    }
+
+    #[test]
+    fn as_url_percent_encodes_username_special_chars() {
+        // Username also lives in userinfo and must be encoded.
+        let uri = ConnectionUri::new(
+            "postgres".into(),
+            "host".into(),
+            None,
+            "db".into(),
+            "user@corp".into(),
+            SecretString::new("plain"),
+        );
+        assert_eq!(
+            uri.as_url().expose_secret(),
+            "postgres://user%40corp:plain@host/db"
         );
     }
 }
