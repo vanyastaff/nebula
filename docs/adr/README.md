@@ -42,13 +42,20 @@ changes land as a new ADR that `supersedes` it.
 | [0032](./0032-credential-store-canonical-home.md) | `CredentialStore` trait stays in `nebula-credential`; only impls + layers move to storage (amends 0028 inv 6 and 0029 §1-§2 after dep-graph cycle discovered in P6) | accepted | 2026-04-20 |
 | [0033](./0033-integration-credentials-plane-b.md) | Integration credentials (Plane B) — canonical model; acquisition vs `AuthScheme` vs persistence; explicit non-scope for Plane A / future `nebula-auth` | accepted | 2026-04-21 |
 | [0034](./0034-schema-secret-value-credential-seam.md) | `SecretValue` in `nebula-schema` + `SecretWire` / KDF on resolve + explicit `nebula-credential` seam (Phase 3 security) | accepted | 2026-04-22 |
+| [0035](./0035-phantom-shim-capability-pattern.md) | Phantom-shim capability pattern (two-trait form for `dyn Capability` positions; per-capability sealed) | proposed | 2026-04-24 |
+| [0036](./0036-resource-credential-adoption-auth-retirement.md) | Resource credential adoption + auth retirement | accepted | 2026-04-24 |
+| [0037](./0037-daemon-eventsource-engine-fold.md) | Daemon + EventSource fold into engine | accepted | 2026-04-25 |
+| [0038](./0038-action-trait-shape.md) | Action trait shape — `#[action]` attribute macro replacing `#[derive(Action)]` | accepted | 2026-04-24 |
+| [0039](./0039-action-macro-emission.md) | Action `#[action]` macro emission contract | accepted | 2026-04-24 |
+| [0040](./0040-controlaction-seal-canon-revision.md) | `ControlAction` seal + canon §3.5 DX tier ratification | proposed | 2026-04-24 |
+| [0041](./0041-durable-credential-refresh-claim-repo.md) | Durable credential refresh claim repository (two-tier L1+L2 coordinator; amends 0030 §3) | proposed | 2026-04-26 |
 
 ## Writing a new ADR
 
 1. Copy the frontmatter block from any existing ADR (keep the keys: `id`,
    `title`, `status`, `date`, `supersedes`, `superseded_by`, `tags`,
    `related`, optional `linear`).
-2. Pick the next free number (currently **0035**). Do not reuse.
+2. Pick the next free number (currently **0042**). Do not reuse.
 3. File name: `NNNN-kebab-case-title.md` matching the `title:` field.
 4. Start `status: proposed`. Move to `accepted` only after review and merge.
 5. **Do not substantively edit an accepted ADR.** Open a new one with
