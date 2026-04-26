@@ -3,7 +3,7 @@
 **Date:** 2026-04-24
 **Reviewer:** rust-senior (sub-agent, idiomatic Rust correctness only — no security overlap with §9.5, no DX usability, no devops)
 **Target:** Rust 1.95.0, edition 2024 (workspace pin per `rust-toolchain.toml:17`)
-**Inputs:** Tech Spec §9–§12 (CP3 active); ADR-0036 / ADR-0037 / ADR-0038; spike `final_shape_v2.rs` (commit `c8aef6a0`); CP1 review `08b-cp1-rust-senior-review.md`.
+**Inputs:** Tech Spec §9–§12 (CP3 active); ADR-0038 / ADR-0039 / ADR-0040; spike `final_shape_v2.rs` (commit `c8aef6a0`); CP1 review `08b-cp1-rust-senior-review.md`.
 **Severity legend:** 🔴 WRONG / 🟠 DATED / 🟡 PREFERENCE.
 
 ---
@@ -12,7 +12,7 @@
 
 **RATIFY-WITH-NITS.** §9 / §10 / §11 / §12 are idiomatically sound. Two 🟠 must-fixes, two 🟡 preferences. No 🔴s.
 
-§9 surface inventory respects the ADR-0036 §Neutral item 2 promise (4 primary trait identity preserved). §9.3.1 hard-cut table aligns with `feedback_no_shims.md`. §9.3.2 closes the CP1 §2.3 `BoxFut` single-home open item per CP1 08b 🟠 PREFERENCE (line 58-63) — the resolution shape is correct. §10 codemod tagging (T1/T3/T4 AUTO; T2/T5/T6 MANUAL) honestly reflects which transforms are mechanical vs semantic. §11 adapter contract correctly distinguishes macro-emitted (§11.1 community path) from hand-authored (§11.2 internal-Nebula). §12 sealed-DX pattern matches ADR-0038 §1 verbatim and composes correctly with the CP1 §2.6 `+ ActionSlots` refinement.
+§9 surface inventory respects the ADR-0038 §Neutral item 2 promise (4 primary trait identity preserved). §9.3.1 hard-cut table aligns with `feedback_no_shims.md`. §9.3.2 closes the CP1 §2.3 `BoxFut` single-home open item per CP1 08b 🟠 PREFERENCE (line 58-63) — the resolution shape is correct. §10 codemod tagging (T1/T3/T4 AUTO; T2/T5/T6 MANUAL) honestly reflects which transforms are mechanical vs semantic. §11 adapter contract correctly distinguishes macro-emitted (§11.1 community path) from hand-authored (§11.2 internal-Nebula). §12 sealed-DX pattern matches ADR-0040 §1 verbatim and composes correctly with the CP1 §2.6 `+ ActionSlots` refinement.
 
 ---
 
@@ -20,7 +20,7 @@
 
 **🟢 §9.1 four primary trait identity preserved.** Tech Spec correctly notes that the bound chain additions (`Input: HasSchema + DeserializeOwned`, `Output: Serialize`, `StatefulAction::State: ...`) are surface-additive, not surface-renaming. The "DX win, not surface change" framing at line 1527 is honest — bounds at impl site catch errors earlier than at registration site. This is the correct fix for the CP1 08b 🔴 finding (adapter ser/de bound asymmetry); §9.1 confirms CP1's lift landed.
 
-**🟢 §9.2 sealed-DX surface — five trait identifiers stay `pub`, sealing is structural.** The `pub trait ControlAction: sealed_dx::ControlActionSealed + StatelessAction` shape (line 1536) is correct — community plugin code that names `ControlAction` in a bound (e.g., `fn requires_control<A: ControlAction>(...)`) compiles; only direct `impl ControlAction for X` is closed. This is the right "interface vs implementation" sealing posture per ADR-0038 §1.
+**🟢 §9.2 sealed-DX surface — five trait identifiers stay `pub`, sealing is structural.** The `pub trait ControlAction: sealed_dx::ControlActionSealed + StatelessAction` shape (line 1536) is correct — community plugin code that names `ControlAction` in a bound (e.g., `fn requires_control<A: ControlAction>(...)`) compiles; only direct `impl ControlAction for X` is closed. This is the right "interface vs implementation" sealing posture per ADR-0040 §1.
 
 **🟢 §9.3.1 hard-cut table — `feedback_no_shims.md` discipline.** All four removed items have a named replacement: `CredentialContextExt::credential<S>()` → `ctx.resolved_scheme(&self.<slot>)`; `CredentialGuard<S>` → `SchemeGuard<'a, C>`; `nebula_action_macros::Action` → `nebula_action_macros::action`. No `#[deprecated]` shim path — hard removal aligns with the cascade discipline.
 
@@ -83,7 +83,7 @@ The "Plugin code never names `StatelessActionAdapter` directly" line is the load
 
 **🟢 §11.2 internal-Nebula adapter authoring — narrow exception list.** The three cases enumerated (engine-internal `MetaAction` test fixtures; sandbox out-of-process runner `*HandlerProxy<A>`; future custom DX shapes) are honest. Hand-authored adapters are rare and crate-internal — community plugins never see this path.
 
-**🟢 §11.2 sealed_dx pattern composition — matches ADR-0038 §1 + ADR-0035 §3.** The example at lines 1786-1801 shows the per-capability inner sealed trait pattern correctly:
+**🟢 §11.2 sealed_dx pattern composition — matches ADR-0040 §1 + ADR-0035 §3.** The example at lines 1786-1801 shows the per-capability inner sealed trait pattern correctly:
 
 ```rust
 mod sealed_dx {
@@ -108,7 +108,7 @@ The `+ ActionSlots` bound on the blanket impl correctly inherits the CP1 §2.6 r
 
 ## §12 sealed pattern Rust shape
 
-**🟢 §12.1 sealed adapter pattern — verbatim from ADR-0038 §1 with CP1 §2.6 refinement.** The blanket impl `impl<T: StatelessAction + ActionSlots> sealed_dx::ControlActionSealed for T {}` (line 1864) correctly inherits the CP1 §2.6 refinement requiring `+ ActionSlots`. This is structurally sound:
+**🟢 §12.1 sealed adapter pattern — verbatim from ADR-0040 §1 with CP1 §2.6 refinement.** The blanket impl `impl<T: StatelessAction + ActionSlots> sealed_dx::ControlActionSealed for T {}` (line 1864) correctly inherits the CP1 §2.6 refinement requiring `+ ActionSlots`. This is structurally sound:
   - `mod sealed_dx` is crate-private (no `pub` prefix on the module itself).
   - `pub trait ControlActionSealed {}` inside is `pub` (so `pub trait ControlAction: sealed_dx::ControlActionSealed` doesn't trigger `private_in_public` per ADR-0035 §3 amendment 2026-04-24-B in Rust 2024 edition).
   - Blanket impl grants membership only to types satisfying `StatelessAction + ActionSlots`.
@@ -120,11 +120,11 @@ The `+ ActionSlots` bound on the blanket impl correctly inherits the CP1 §2.6 r
   - Plugin author never names `ControlAction` trait or `ControlActionAdapter` type.
   - Macro emits the `ControlActionAdapter<ControlExampleAction>` wrapper per §11.
 
-This is the right two-step migration pattern per ADR-0038 §Negative item 4.
+This is the right two-step migration pattern per ADR-0040 §Negative item 4.
 
 **🟡 PREFERENCE — §12.2 `control_flow` flag vs `control_flow = SomeStrategy` config deferred to CP4 §15.** Line 1904 says "exact attribute zone syntax — `control_flow` flag vs `control_flow = SomeStrategy` config — is CP4 §15 scope." This deferral is acceptable (the choice doesn't affect the public trait surface), but the CP1 §2.7 lesson applies: "feature flag granularity is an API-stabilization decision, not a type-system decision." Same applies here — the `control_flow` zone-syntax is a DX decision, not a Rust idiom decision. CP4 picks; my idiom-only opinion is irrelevant.
 
-**🟢 §12.3 internal Nebula crate migration — small surface.** The three bullets (control.rs sealed; lib.rs:14 docstring truthful; canon §3.5 wording revision) are honest scope. Per ADR-0038 §Negative item 1 ("Likely small surface (no tracked external implementors per Strategy §1(c))"), the internal migration cost is bounded.
+**🟢 §12.3 internal Nebula crate migration — small surface.** The three bullets (control.rs sealed; lib.rs:14 docstring truthful; canon §3.5 wording revision) are honest scope. Per ADR-0040 §Negative item 1 ("Likely small surface (no tracked external implementors per Strategy §1(c))"), the internal migration cost is bounded.
 
 **🟢 §12.4 codemod T6 coverage — common-case automation.** The auto-rewrite path example (lines 1923-1940) is mechanically sound:
   - Source: `impl ControlAction for MyAction { fn execute(...) -> ControlOutcome { ... } }`
@@ -154,7 +154,7 @@ Optional preferences (not blocking):
 
 ## Summary
 
-**Verdict: RATIFY-WITH-NITS.** §9 / §10 / §11 / §12 are idiomatically sound. The redesign correctly closes CP1 08b 🟠 PREFERENCE on `BoxFut` placement (single-home commit at §9.3.2). §10 codemod tagging honestly distinguishes mechanical (T1/T3/T4) from semantic (T2/T5/T6) transforms. §11 adapter contract correctly partitions community-plugin macro-emission (§11.1) from internal-Nebula hand-authoring (§11.2). §12 sealed-DX pattern composes correctly with ADR-0035 §3 per-capability inner sealed convention + ADR-0038 §1 + CP1 §2.6 `+ ActionSlots` refinement.
+**Verdict: RATIFY-WITH-NITS.** §9 / §10 / §11 / §12 are idiomatically sound. The redesign correctly closes CP1 08b 🟠 PREFERENCE on `BoxFut` placement (single-home commit at §9.3.2). §10 codemod tagging honestly distinguishes mechanical (T1/T3/T4) from semantic (T2/T5/T6) transforms. §11 adapter contract correctly partitions community-plugin macro-emission (§11.1) from internal-Nebula hand-authoring (§11.2). §12 sealed-DX pattern composes correctly with ADR-0035 §3 per-capability inner sealed convention + ADR-0040 §1 + CP1 §2.6 `+ ActionSlots` refinement.
 
 **Top 3 findings:**
 

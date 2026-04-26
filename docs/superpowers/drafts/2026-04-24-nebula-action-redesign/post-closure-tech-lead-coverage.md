@@ -17,9 +17,9 @@
 | Capability | Production location | Tech Spec coverage | Status | Severity notes |
 |---|---|---|---|---|
 | `metadata(&self) -> &ActionMetadata` | `action.rs:27` | §2.1 | ✅ | Identity preserved |
-| `#[diagnostic::on_unimplemented]` ("derive it: #[derive(Action)]") | `action.rs` | None — replaced by `#[action]` attribute macro | 🟢 | ADR-0036 §Decision item 1; rationale documented |
+| `#[diagnostic::on_unimplemented]` ("derive it: #[derive(Action)]") | `action.rs` | None — replaced by `#[action]` attribute macro | 🟢 | ADR-0038 §Decision item 1; rationale documented |
 | Direct user impl (today permissible) | `action.rs:27` | §2.1 narrative — "User code does NOT implement `Action` directly — the `#[action]` macro emits a concrete impl" | 🟢 | Locked behind macro; intentional |
-| `ActionSlots` supertrait composition | NONE today (`action.rs` does not require `ActionSlots`) | §2.1 — `Action: ActionSlots + Send + Sync + 'static` | ✅ | New supertrait chain; ADR-0037 §2 |
+| `ActionSlots` supertrait composition | NONE today (`action.rs` does not require `ActionSlots`) | §2.1 — `Action: ActionSlots + Send + Sync + 'static` | ✅ | New supertrait chain; ADR-0039 §2 |
 
 ### §1.2 `StatelessAction`
 
@@ -64,7 +64,7 @@
 
 | Capability | Production location | Tech Spec coverage | Status | Severity notes |
 |---|---|---|---|---|
-| 5 DX trait identifiers | `control.rs:945`, `stateful.rs` (Paginated/Batch), `webhook.rs:1852`, `poll.rs:1466` | §2.6 + §9.2 sealed pattern per ADR-0038 | ✅ | Sealing intentional |
+| 5 DX trait identifiers | `control.rs:945`, `stateful.rs` (Paginated/Batch), `webhook.rs:1852`, `poll.rs:1466` | §2.6 + §9.2 sealed pattern per ADR-0040 | ✅ | Sealing intentional |
 | `ControlInput` / `ControlOutcome` types | `control.rs` | NOT enumerated in §9.3 added/removed/reshuffled | 🟡 | Sealed-DX migration target says `#[action(control_flow = ...)]` zone replaces direct impl, but the **input/outcome value types** (the data the engine threads) are not surfaced. Reader can't tell if they survive, are renamed, or vanish. |
 | `PageResult<T, C>`, `PaginationState<C>` types | `stateful.rs:84-98` | NOT covered | 🟡 | DX type surface lost in Tech Spec; community plugins authoring `PaginatedAction` cannot tell from spec whether `PageResult` survives or is replaced. |
 | `WebhookConfig`, `SignaturePolicy`, `RequiredPolicy`, `SignatureScheme`, HMAC primitives (`verify_*`, `hmac_sha256_compute`) | `webhook.rs` | NOT covered | 🟡 | Webhook hardening cascade marked OUT (§1.2 N7), but the **action-author surface** (`SignaturePolicy::Custom(Arc<dyn Fn>)` and friends) is silent in Tech Spec. The `feedback_active_dev_mode.md` discipline of "if deferring, name where it lives" is met for the security floor but not for the type surface. |
@@ -75,7 +75,7 @@
 
 | Capability | Production location | Tech Spec coverage | Status | Severity notes |
 |---|---|---|---|---|
-| Five sealed traits via `mod sealed_dx` | NEW (none in production) | §2.6 + §9.2 | ✅ | New surface; intentional per ADR-0038 |
+| Five sealed traits via `mod sealed_dx` | NEW (none in production) | §2.6 + §9.2 | ✅ | New surface; intentional per ADR-0040 |
 
 ### §1.8 `ActionHandler` enum dispatch
 
@@ -231,7 +231,7 @@ Rationale:
 
 ### 🟢 INTENTIONAL REMOVALs (verified rationale)
 
-1. **`#[derive(Action)]` macro** — replaced by `#[action]` attribute macro per ADR-0036 §Decision item 1; rationale documented; codemod T1 covers.
+1. **`#[derive(Action)]` macro** — replaced by `#[action]` attribute macro per ADR-0038 §Decision item 1; rationale documented; codemod T1 covers.
 2. **`CredentialContextExt::credential<S>()` no-key heuristic** — hard-removed per §6.2 + security-lead VETO; codemod T2.
 3. **`Action` direct user impl** — locked behind macro; rationale at §2.1.
 4. **Resource `Config`/`Instance` split** — production already removed; preserved.
@@ -267,7 +267,7 @@ For each 🔴 / 🟠 / 🟡 finding (Phase 3 scope per orchestrator — not amen
 
 | Finding | Tech Spec amendment-in-place scope | ADR amendment? | §15 entry needed? | Escalation? |
 |---|---|---|---|---|
-| 🔴 R1 `init_state` dropped | Add `init_state(&self) -> Self::State` to §2.2.2 trait shape | NO (ADR-0036 §Neutral 2 phrasing covers) | YES — §15.11 enactment record | NO — amendment-in-place precedent (ADR-0035 / Q6) |
+| 🔴 R1 `init_state` dropped | Add `init_state(&self) -> Self::State` to §2.2.2 trait shape | NO (ADR-0038 §Neutral 2 phrasing covers) | YES — §15.11 enactment record | NO — amendment-in-place precedent (ADR-0035 / Q6) |
 | 🔴 R2 ResourceAction `configure`/`cleanup` dropped | Restore `configure(&self, ctx) -> Future<Self::Resource>` + `cleanup(resource, ctx) -> Future<()>` to §2.2.4 OR explicitly document the new "engine resolves" paradigm with full lifecycle spec | Possible ADR — depends on whether spec changes paradigm or restores lifecycle | YES | **POSSIBLY** — paradigm shift would benefit from architect co-decision; if restoration, mechanical |
 | 🔴 R3 `TriggerEventOutcome` lost | Add Skip/Emit/EmitMany return shape on `TriggerAction::handle` OR document where fan-out lives engine-side | NO if fan-out is engine-cascade scope; YES if action surface needs the multiplicity | YES | NO if engine-cascade defers |
 | 🔴 R4 `ResourceHandler` dyn boundary | Specify `ResourceHandler::configure / cleanup` shape in §2.4 OR explicitly document the resource_id paradigm with full migration | depends on R2 resolution | YES | follows R2 |

@@ -39,7 +39,7 @@ These are canon-level disclaim of n8n surface parity. Architect's citation is fa
 - §2.9.6 prelude moves three-axis → four-axis; point 2 refines "no current consumer" → "no current consumer on the schema-as-trait-type axis" with COMPETITIVE.md line 41 citation.
 - §2.9.7 implications wording extended; re-open trigger second bullet refined.
 - §15.9.6 new enactment record (sibling to §15.9.5).
-- No §2.2 signature ripple. No status header qualifier change (per §15.9.5 precedent — rationale-tightening without signature ripple). No ADR-0036 / 0037 / 0038 amendment. ADR-0035 phantom-shim composition explicitly preserved.
+- No §2.2 signature ripple. No status header qualifier change (per §15.9.5 precedent — rationale-tightening without signature ripple). No ADR-0038 / 0037 / 0038 amendment. ADR-0035 phantom-shim composition explicitly preserved.
 
 This matches §15.9.5 Q2 precedent exactly: rationale refinement absorbed into §2.9 sub-subsection + §15.9.6 record + verdict annotation, no status qualifier change.
 

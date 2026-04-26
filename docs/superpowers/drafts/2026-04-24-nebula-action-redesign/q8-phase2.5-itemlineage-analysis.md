@@ -61,7 +61,7 @@ For each use case: scenario → why lineage matters → criticality.
 | **U9** | **Workflow trace / audit** — "show execution path of item X end-to-end across 12 nodes" | Per-item trace through DAG. | Operator-side debugging; observability concern, not action-author concern. |
 | **U10** | **Deduplication across nodes** — "drop duplicate items based on `original_id`" | Item identity preserved across transformations. | Solvable without engine lineage — just preserve `id` field in payload. |
 | **U11** | **Cancellation propagation per item** — "if user cancels a batch sub-execution, cancel only items that haven't finished" | Per-item cancellation token, item identity. | Possible but not currently a Nebula semantic. Engine cancels at action-execution granularity, not item-level. |
-| **U12** | **Idempotency-per-item** — "this batch has 100 items; if we retry, don't reprocess items 1–47 already completed" | Per-item idempotency key + position-tracking checkpoint. | Currently ADR-0036 §15.12 idempotency hook applies to the *whole action invocation*, not per-item. Per-item idempotency would be a substantial scope expansion. |
+| **U12** | **Idempotency-per-item** — "this batch has 100 items; if we retry, don't reprocess items 1–47 already completed" | Per-item idempotency key + position-tracking checkpoint. | Currently ADR-0038 §15.12 idempotency hook applies to the *whole action invocation*, not per-item. Per-item idempotency would be a substantial scope expansion. |
 
 **Triage by criticality:**
 
@@ -112,7 +112,7 @@ Nebula (per Tech Spec §2.7.2 lines 742–790): `ActionResult<T>` carries an `Ac
 In Nebula's typed model:
 
 - **U2 (Filter)**: action takes `Vec<Order>`, returns `Vec<Order>` filtered. If downstream wants `original_index`, the author preserves an `id` field in `Order`. Engine doesn't need to know.
-- **U4 (Fan-out)**: today, this is **not an engine pattern** in Nebula. If the user wants per-item independent execution (each item retried independently, each item observed independently), they need an **item-loop primitive** — which Nebula does NOT currently have. The closest equivalent is `BatchAction` (per ADR-0036), which executes items as one batch, not per-item.
+- **U4 (Fan-out)**: today, this is **not an engine pattern** in Nebula. If the user wants per-item independent execution (each item retried independently, each item observed independently), they need an **item-loop primitive** — which Nebula does NOT currently have. The closest equivalent is `BatchAction` (per ADR-0038), which executes items as one batch, not per-item.
 - **U5 (Merge)**: author writes merge inside the action.
 - **U6 (Sub-workflow correlation)**: today this is an engine primitive (cross-action invocation). The engine could pass a per-call `correlation_id`; that's not the same as `pairedItem` (item-level) — it's invocation-level. **Lighter scope.**
 - **U8 (DB row attribution)**: author preserves input row id in the result row.

@@ -106,13 +106,13 @@ Four converging blockers:
 
 **B3 — User's claim "method signatures unchanged" exposes the asymmetry.** The user explicitly says: "Method signatures unchanged — handle() takes event, not Input." This is the load-bearing admission. In the other 3 primaries, declaring `type Input` is justified BECAUSE it appears in the method signature — the trait surface and the method surface are coherent. For TriggerAction, declaring `type Input` while the method signature does NOT carry it means the trait-level declaration is decorative — it exists for schema reflection and nothing else. But schema reflection is already universal via `with_schema(<T as HasSchema>::schema())` per B2. So the trait-level declaration serves no consumer that the schema-as-data path doesn't already serve, while introducing the silent-divergence trap from B1.
 
-**B4 — ADR-0036 `accepted` status binds the four trait shapes verbatim.** Per Tech Spec §0.1 line 35 + ADR-0036 §Decision item 4 + spike `final_shape_v2.rs:209-262` (signature-locking source per §2.9.7 line 674). The four trait shapes that compiled end-to-end at spike commit `c8aef6a0` (Probe 1-6 PASS, Iter-2 §2.2 compose PASS, Iter-2 §2.4 cancellation PASS) are non-consolidated AND asymmetric on `type Input`. Re-validation of Option D would require new spike work to confirm the type system accepts the decoupled-trait-Input pattern AND the macro emission contract per ADR-0037 §1 absorbs it without per-trait branching. This is achievable in principle, but per `feedback_active_dev_mode.md` the cost-benefit demands a current consumer that the existing schema-as-data path does not satisfy. None has surfaced through four iterations.
+**B4 — ADR-0038 `accepted` status binds the four trait shapes verbatim.** Per Tech Spec §0.1 line 35 + ADR-0038 §Decision item 4 + spike `final_shape_v2.rs:209-262` (signature-locking source per §2.9.7 line 674). The four trait shapes that compiled end-to-end at spike commit `c8aef6a0` (Probe 1-6 PASS, Iter-2 §2.2 compose PASS, Iter-2 §2.4 cancellation PASS) are non-consolidated AND asymmetric on `type Input`. Re-validation of Option D would require new spike work to confirm the type system accepts the decoupled-trait-Input pattern AND the macro emission contract per ADR-0039 §1 absorbs it without per-trait branching. This is achievable in principle, but per `feedback_active_dev_mode.md` the cost-benefit demands a current consumer that the existing schema-as-data path does not satisfy. None has surfaced through four iterations.
 
 **Critical: this is a rationale refinement, not a verdict change.** §2.9 verdict (REJECT) stands across all four iterations because the cumulative analysis surfaces five axes (method-input, trigger-purpose, configuration, schema-as-data-vs-schema-as-trait-type carrier, AND now trait-declared-configuration-carrier from Option D), and none enables consolidation OR per-trait `type Input` addition without silent semantic divergence (B1) or signature-doubling (B2).
 
 ## What §2.9.6 / §2.9.7 amendment-in-place captures
 
-A minimal rationale amendment to §2.9 names Option D explicitly as the fifth axis (trait-declared-configuration-carrier) and the four blockers above. **No §2.2 signature change.** No ADR amendment (ADR-0036 §Decision item 4 still binds the verbatim shapes from `final_shape_v2.rs:209-262`). Status qualifier on §0.1 line 33 already cites "Q2 §2.9.1b axis-naming refinement per ADR-0035 amended-in-place precedent" — extends naturally to "Q4 §2.9.1d axis-naming refinement" with same precedent.
+A minimal rationale amendment to §2.9 names Option D explicitly as the fifth axis (trait-declared-configuration-carrier) and the four blockers above. **No §2.2 signature change.** No ADR amendment (ADR-0038 §Decision item 4 still binds the verbatim shapes from `final_shape_v2.rs:209-262`). Status qualifier on §0.1 line 33 already cites "Q2 §2.9.1b axis-naming refinement per ADR-0035 amended-in-place precedent" — extends naturally to "Q4 §2.9.1d axis-naming refinement" with same precedent.
 
 ## Amendment trail (REJECT — rationale refinement only)
 
@@ -121,10 +121,10 @@ Per §15.9 amendment-in-place precedent (Q1 + Q2 + Q3 already established), this
 1. **Tech Spec §2.9** — append §2.9.1d subsection naming Option D + the trait-declared-configuration-carrier fifth axis + the four blockers (B1-B4) above.
 2. **Tech Spec §2.9.5** — append "post-freeze 2026-04-25 Q4 per §2.9.1d — five-axis distinction adds trait-declared-configuration-carrier axis (Option D rejected on silent-semantic-divergence + signature-doubling)" to the rationale chain.
 3. **Tech Spec §2.9.6** — append a sixth rationale point referencing §2.9.1d.
-4. **Tech Spec §2.9.7** — append "Q4 post-freeze refinement (§2.9.1d) named the fifth axis — trait-declared-configuration-carrier — and rejected Option D on B1 (silent semantic divergence) + B2 (signature-doubling) + B3 (admitted method-signature unchanged exposes the asymmetry) + B4 (ADR-0036 binds verbatim spike shapes)."
+4. **Tech Spec §2.9.7** — append "Q4 post-freeze refinement (§2.9.1d) named the fifth axis — trait-declared-configuration-carrier — and rejected Option D on B1 (silent semantic divergence) + B2 (signature-doubling) + B3 (admitted method-signature unchanged exposes the asymmetry) + B4 (ADR-0038 binds verbatim spike shapes)."
 5. **Tech Spec §0.1 line 33** — extend status line: "amended-in-place 2026-04-25 post-freeze for Q1 `*Handler` shape per §15.9 + Q2 §2.9.1b axis-naming refinement + Q3 §2.9.1c schema-carrier-axis refinement + Q4 §2.9.1d configuration-carrier-axis refinement per ADR-0035 amended-in-place precedent."
-6. **§17 CHANGELOG** — append "Q4 post-freeze 2026-04-25: §2.9 amended-in-place — Option D (trait-declared `type Input` on TriggerAction only, decoupled from method parameter) rejected on silent-semantic-divergence + signature-doubling + ADR-0036 binding. §2.9.1d added; §2.9.5 / §2.9.6 / §2.9.7 rationale extended; verdict unchanged."
-7. **No ADR amendment.** ADR-0036 §Decision item 4 binds the four trait shapes verbatim from `final_shape_v2.rs:209-262`; Option D would be a Tech Spec §2.2 signature change which would invalidate the freeze per §0.2 item 2 + item 4. REJECT preserves both.
+6. **§17 CHANGELOG** — append "Q4 post-freeze 2026-04-25: §2.9 amended-in-place — Option D (trait-declared `type Input` on TriggerAction only, decoupled from method parameter) rejected on silent-semantic-divergence + signature-doubling + ADR-0038 binding. §2.9.1d added; §2.9.5 / §2.9.6 / §2.9.7 rationale extended; verdict unchanged."
+7. **No ADR amendment.** ADR-0038 §Decision item 4 binds the four trait shapes verbatim from `final_shape_v2.rs:209-262`; Option D would be a Tech Spec §2.2 signature change which would invalidate the freeze per §0.2 item 2 + item 4. REJECT preserves both.
 8. **No spike re-run.** Spike `final_shape_v2.rs:209-262` remains the signature-locking source unchanged.
 
 ## Honest answer to user's asymmetry challenge (one paragraph)
@@ -165,7 +165,7 @@ User's proposal is ambiguous on scope. Two variants:
 | **B1 — silent semantic divergence** (same name, opposite meaning) | NO. `type Config` ≠ `type Input` at name level → no collision | NO. Same — different name, different meaning |
 | **B2 — signature-doubling** (parallel to `&self` + `parameters = T`) | YES (mitigatable via macro-emission link) | YES (universal: every action declares Config in macro zone AND trait surface) |
 | **B3 — decorative (no method-signature carry)** | YES — `type Config` would not appear in `handle()`; only consumer is schema-reflection, already universal via schema-as-data axis | YES — same; consumer (compile-time bounded generic over configuration types) is speculative per §2.9.1c |
-| **B4 — ADR-0036 binds verbatim spike shapes** | YES — spike `final_shape_v2.rs:254-262` has no `type Config` on TriggerAction | YES — spike has no `type Config` on any trait |
+| **B4 — ADR-0038 binds verbatim spike shapes** | YES — spike `final_shape_v2.rs:254-262` has no `type Config` on TriggerAction | YES — spike has no `type Config` on any trait |
 | **NEW B5 — §2.9.1a paradigm contradiction** | YES — E1 makes Trigger's universal-config carrier the trait associated type while other 3 keep `&self`+macro zone | YES — E2 inverts the universal-config paradigm choice (§2.9.1a Resolution point 1: «Configuration lives in `&self` fields, populated at registration» — chose this over `type Config` deliberately) |
 
 **B1 dissolved. B2-B5 persist.** Naming collision was the load-bearing blocker against Option D; renaming resolves it. The remaining blockers (B2/B3/B4/B5) are weaker but cumulatively still binding.
@@ -203,7 +203,7 @@ User's framing implicitly asks: what consumer does `type Config` enable that `wi
 
 **E.REJECT** for both E1 and E2.
 
-**Single-sentence reason:** Option E (renaming to `type Config`) resolves the Q4 B1 naming-collision blocker — user found the sharpest framing on iteration five — but the remaining blockers (B2 signature-doubling, B3 no compile-time consumer that schema-as-data does not satisfy, B4 ADR-0036 spike-shape binding, **B5 NEW — §2.9.1a "configuration carrier is `&self`+macro-zone, no new associated type" was a deliberate paradigm choice**) cumulatively still preclude ACCEPT under both E1 and E2.
+**Single-sentence reason:** Option E (renaming to `type Config`) resolves the Q4 B1 naming-collision blocker — user found the sharpest framing on iteration five — but the remaining blockers (B2 signature-doubling, B3 no compile-time consumer that schema-as-data does not satisfy, B4 ADR-0038 spike-shape binding, **B5 NEW — §2.9.1a "configuration carrier is `&self`+macro-zone, no new associated type" was a deliberate paradigm choice**) cumulatively still preclude ACCEPT under both E1 and E2.
 
 ### Honest acknowledgment to user
 
@@ -218,25 +218,25 @@ This is the FIFTH iteration of essentially the same question with progressively 
 5. trait-declared-configuration-carrier axis with name-collision (Option D — §2.9.1d)
 6. **trait-declared-configuration-carrier axis with rename (Option E — §2.9.1e)**
 
-Under axis 6, the rename resolves the silent-divergence concern but the §2.9.1a paradigm-choice (B5) and ADR-0036 spike-binding (B4) hold.
+Under axis 6, the rename resolves the silent-divergence concern but the §2.9.1a paradigm-choice (B5) and ADR-0038 spike-binding (B4) hold.
 
 ### Tech Spec amendment-in-place trail (REJECT — rationale refinement only)
 
 Per §15.9 amendment-in-place precedent (Q1 + Q2 + Q3 + Q4 already established):
 
 1. **§2.9** — append §2.9.1e subsection naming Option E (rename to `type Config`) + B1-resolved-but-B2-B3-B4-B5-still-bind cumulative analysis + scope question (E1 vs E2) + the new B5 finding.
-2. **§2.9.5** — extend rationale chain: "post-freeze 2026-04-25 Q5 per §2.9.1e — six-axis distinction adds trait-declared-configuration-carrier-with-rename axis (Option E rejected on B5 paradigm contradiction with §2.9.1a + B4 ADR-0036 binding; B1 naming-collision dissolved by rename)."
+2. **§2.9.5** — extend rationale chain: "post-freeze 2026-04-25 Q5 per §2.9.1e — six-axis distinction adds trait-declared-configuration-carrier-with-rename axis (Option E rejected on B5 paradigm contradiction with §2.9.1a + B4 ADR-0038 binding; B1 naming-collision dissolved by rename)."
 3. **§2.9.6** — append seventh rationale point referencing §2.9.1e.
-4. **§2.9.7** — append "Q5 post-freeze refinement (§2.9.1e) acknowledged user's sharpest-framing-yet `type Config` rename as resolving Q4 B1, but rejected on B5 (NEW — §2.9.1a Resolution point 1's deliberate 'no `type Config` on any trait, configuration carrier is `&self`+macro-zone' paradigm choice) + B4 (ADR-0036 binds verbatim spike shapes from `final_shape_v2.rs:209-262`)."
+4. **§2.9.7** — append "Q5 post-freeze refinement (§2.9.1e) acknowledged user's sharpest-framing-yet `type Config` rename as resolving Q4 B1, but rejected on B5 (NEW — §2.9.1a Resolution point 1's deliberate 'no `type Config` on any trait, configuration carrier is `&self`+macro-zone' paradigm choice) + B4 (ADR-0038 binds verbatim spike shapes from `final_shape_v2.rs:209-262`)."
 5. **§0.1 line 33** — extend status line: "...amended-in-place 2026-04-25 post-freeze for Q1 + Q2 §2.9.1b + Q3 §2.9.1c + Q4 §2.9.1d + **Q5 §2.9.1e configuration-carrier-rename refinement** per ADR-0035 amended-in-place precedent."
-6. **§17 CHANGELOG** — append "Q5 post-freeze 2026-04-25: §2.9 amended-in-place — Option E (rename to `type Config` to resolve Q4 B1) rejected on B5 (NEW — paradigm contradiction with §2.9.1a Resolution point 1 deliberate 'no `type Config` on any trait' choice) + B4 (ADR-0036 spike binding). §2.9.1e added; §2.9.5 / §2.9.6 / §2.9.7 rationale extended; verdict unchanged. Both E1 (TriggerAction-only) and E2 (universal) rejected on the same blockers."
-7. **No ADR amendment.** ADR-0036 binding preserved. ADR-0038 not flipped.
+6. **§17 CHANGELOG** — append "Q5 post-freeze 2026-04-25: §2.9 amended-in-place — Option E (rename to `type Config` to resolve Q4 B1) rejected on B5 (NEW — paradigm contradiction with §2.9.1a Resolution point 1 deliberate 'no `type Config` on any trait' choice) + B4 (ADR-0038 spike binding). §2.9.1e added; §2.9.5 / §2.9.6 / §2.9.7 rationale extended; verdict unchanged. Both E1 (TriggerAction-only) and E2 (universal) rejected on the same blockers."
+7. **No ADR amendment.** ADR-0038 binding preserved. ADR-0040 not flipped.
 8. **No spike re-run.** Spike `final_shape_v2.rs:209-262` remains the signature-locking source unchanged.
 
 ### Summary
 
 **Verdict: E.REJECT** (both E1 and E2 — refined fifth time).
 
-**Honest acknowledgment:** user found the right framing on iteration five — `type Config` resolves Q4 B1 (silent semantic divergence from `type Input` name-collision). The remaining blockers (B2 signature-doubling, B3 no compile-time consumer beyond schema-as-data, B4 ADR-0036 binding) are weaker than B1 was, but a NEW blocker (B5) surfaced: §2.9.1a Resolution point 1 / line 507 closing made an explicit deliberate paradigm choice ("Configuration carrier is `&self`; ... No new associated type, no signature edit"). Adding `type Config` — under either E1 or E2 — inverts that paradigm choice.
+**Honest acknowledgment:** user found the right framing on iteration five — `type Config` resolves Q4 B1 (silent semantic divergence from `type Input` name-collision). The remaining blockers (B2 signature-doubling, B3 no compile-time consumer beyond schema-as-data, B4 ADR-0038 binding) are weaker than B1 was, but a NEW blocker (B5) surfaced: §2.9.1a Resolution point 1 / line 507 closing made an explicit deliberate paradigm choice ("Configuration carrier is `&self`; ... No new associated type, no signature edit"). Adding `type Config` — under either E1 or E2 — inverts that paradigm choice.
 
 **If user contests B5:** that is a §2.9.1a re-litigation, not a §2.9 re-litigation; cycle escalates to tech-lead for ratification of the B5 paradigm-choice question (whether `&self`+macro-zone universality should be inverted to a trait-associated-type universality). Single-round budget for this iteration is exhausted.

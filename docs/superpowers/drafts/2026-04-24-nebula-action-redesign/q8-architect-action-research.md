@@ -26,7 +26,7 @@ For brevity, n8n issues are grouped by pain class (each row aggregates the n8n r
 | L86-94 | If/Switch bugs (#23862, #27693, #27070, #25971) | ControlAction §2.6 / §12.2 sealed DX wraps Stateless via adapter; engine-side branch routing is engine-cascade. Tech Spec §2.7.2 `Branch { selected, output, alternatives }` is the typed surface (lines 757-760) — better than n8n's stringly mode-flag | 🟡 |
 | L86-94 | Binary data memory leaks (#8028, #21746) | n8n correlation L413: content-addressed blob + reaper. **Tech Spec has NO binary-data surface.** ActionOutput is `serde_json::Value`-typed. §6.1 depth-cap addresses JSON depth, not binary size | 🟠 |
 | L86-94 | Community-node credential leaks across workflows (#27833) | §6.2 hard removal of `CredentialContextExt::credential<S>()` no-key heuristic per security 03c §1 VETO closes the cross-plugin shadow attack (S-C2 / CR3) | 🟢 |
-| L99-134 | INodeType declarative vs programmatic / VersionedNodeType pin discipline | §2.6 sealed DX adapter pattern (Q7 R6 — Webhook/Poll as peers of Action with own State/Cursor/Event) provides typed alternative to declarative routing. ADR-0036 / 0037 lock macro emission. **`#[action(version = "X.Y[.Z]")]` per §4.6.2 is set at compile time, not workflow-save-time pin.** n8n's "workflow pins type version at save time" model is structurally absent | 🟠 |
+| L99-134 | INodeType declarative vs programmatic / VersionedNodeType pin discipline | §2.6 sealed DX adapter pattern (Q7 R6 — Webhook/Poll as peers of Action with own State/Cursor/Event) provides typed alternative to declarative routing. ADR-0038 / 0037 lock macro emission. **`#[action(version = "X.Y[.Z]")]` per §4.6.2 is set at compile time, not workflow-save-time pin.** n8n's "workflow pins type version at save time" model is structurally absent | 🟠 |
 | L137-146 | Core taxonomy ~400 integrations + LangChain | Out of scope; per `docs/COMPETITIVE.md` line 29 explicit non-goal of n8n surface parity. §2.9.1c (Q3 post-freeze) cites COMPETITIVE.md L29 verbatim | 🟢 |
 | L181-191 | Native stream processors / stream windowing missing (the n8n research's own coverage-gap table) | **No Stream/StreamingAction in Tech Spec §2.2.** PollAction §2.6 (Q7 R6) is closest analog (cursor-driven event emission) but designed for triggers, not mid-graph stream operators | 🔴 |
 | L181-191 | Reliable bulk-ops (#26569 WooCommerce 20× amplification, #26571 Apify Cartesian product) | BatchAction §2.6 sealed DX (`fn extract_items` / `fn process_item` / `fn merge_results`) is the typed surface. **Idempotency invariants for bulk dedup are NOT in §2.6 BatchAction shape — author-responsibility.** Compare Temporal's idempotency-key plumbing (L284) — Nebula has none at action surface | 🔴 |
@@ -38,7 +38,7 @@ For brevity, n8n issues are grouped by pain class (each row aggregates the n8n r
 | L265-280 | Code node task runner #1 regression, sandbox prototype pollution, security `#26708` proposal | Out of scope (sandbox cascade); §1.2 N7 `S-I2 sandbox phase-1 cascade` deferred | 🟡 |
 | L281-296 | AI Agent / Tool wrappers high churn — `supplyData()` plug | Same as L77-84 — **NO sub-node typed traits** | 🔴 |
 | L298-306 | Expression scope `$input.all()`, `$('Node Name').item`, `$json`, `$binary`, `$now` | Out of scope; expression engine is sub-node territory. ActionContext §2.1 lifetime-bound `&'a self` configuration carrier (Q3 §2.9.1c) is the closest analog | 🟡 |
-| L308-312 | Node rename consequences — references break, autocomplete breaks (#21982) | n8n correlation L418: stable internal node IDs. Nebula's `ActionMetadata.key` is stable per `#[action(key = "slack.send")]` ADR-0037 §1 — name-rename does not affect engine routing because actions are referenced by key, not by Rust struct name. **However:** the Tech Spec has no `key` rename / supersession story documented. Plugin author who renames `key` from `slack.send` to `slack.post` has no guidance in §13.1 | 🟠 |
+| L308-312 | Node rename consequences — references break, autocomplete breaks (#21982) | n8n correlation L418: stable internal node IDs. Nebula's `ActionMetadata.key` is stable per `#[action(key = "slack.send")]` ADR-0039 §1 — name-rename does not affect engine routing because actions are referenced by key, not by Rust struct name. **However:** the Tech Spec has no `key` rename / supersession story documented. Plugin author who renames `key` from `slack.send` to `slack.post` has no guidance in §13.1 | 🟠 |
 | L314-321 | Batch size / concurrency — no framework-level knob, per-node author UI; #21376, #20630, #21817, #28488 freezes/OOM | n8n correlation L420: per-action-type semaphore in engine config from day one. **Tech Spec §1.2 N4 defers cluster-mode coordination to engine cascade; per-action concurrency limit is NOT in §2 trait shapes.** Strategy §3.4 row reserves cluster-mode hooks (`IdempotencyKey`, `on_leader_*`, `dedup_window`). Per-action-type concurrency cap (Temporal #7666 14 upvotes) is unaddressed at action layer | 🔴 |
 | L325-334 | Version-bump silent breakage (#22489, #17481, #27131, #27070, #18992 + forum 249698) | Same as L56-64 / L208-218 versioning class | 🔴 |
 | L336-342 | Code sandbox / prototype (#27734, #16404, #28222, #26865) | Out of scope; sandbox cascade | 🟡 |
@@ -133,7 +133,7 @@ trait StreamingAction {
         -> impl Future<Output = Result<(), Self::Error>> + Send + 'a;
 }
 ```
-would close the gap, but it's a 5th primary (canon §3.5 revision territory per §0.2 invariant 1 + ADR-0038 precedent). **Not in Tech Spec.**
+would close the gap, but it's a 5th primary (canon §3.5 revision territory per §0.2 invariant 1 + ADR-0040 precedent). **Not in Tech Spec.**
 
 **AgentAction / SubGraphAction.** AI Agent shape with sub-node typed traits (ChatModel, Memory, Tool, Retriever) per n8n correlation L412. Either a 5th primary OR a richer DX over Stateless. **Not in Tech Spec.**
 
@@ -141,7 +141,7 @@ would close the gap, but it's a 5th primary (canon §3.5 revision territory per 
 
 ### §3.3 Verdict on completeness
 
-The 4-primary + 5-DX shape is honest and well-grounded but **leaves three n8n / Temporal-prescribed shapes uncaptured.** Each is canon-§3.5-revision territory per ADR-0038 §2 — adding them is paradigm change, not amendment-in-place. **Phase 8 framing should explicitly disclaim or schedule these to keep §16.1 path (a/b/c) honest about "what Nebula commits to vs defers."**
+The 4-primary + 5-DX shape is honest and well-grounded but **leaves three n8n / Temporal-prescribed shapes uncaptured.** Each is canon-§3.5-revision territory per ADR-0040 §2 — adding them is paradigm change, not amendment-in-place. **Phase 8 framing should explicitly disclaim or schedule these to keep §16.1 path (a/b/c) honest about "what Nebula commits to vs defers."**
 
 ---
 

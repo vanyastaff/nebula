@@ -16,7 +16,7 @@ Cross-checked against [`08c-cp1-security-review.md`](08c-cp1-security-review.md)
 
 ## Verdict
 
-**ACCEPT-WITH-CONDITIONS.** §6 is freeze-grade for security with **two required edits** before CP2 ratification (none rises to VETO). All four must-have floor items (Strategy §2.12) are bound to concrete implementation forms; all five CP1 prep gaps close cleanly (Gap 5 forward-tracks к CP3 §9 as expected). §6.2 hard-removal language is unambiguous and quotes my 03c §1 VETO trigger verbatim — **VETO authority retained as written; no regression**. §5.4 qualified-syntax probe is correctly committed in qualified form per ADR-0037 §3 + spike finding #1.
+**ACCEPT-WITH-CONDITIONS.** §6 is freeze-grade for security with **two required edits** before CP2 ratification (none rises to VETO). All four must-have floor items (Strategy §2.12) are bound to concrete implementation forms; all five CP1 prep gaps close cleanly (Gap 5 forward-tracks к CP3 §9 as expected). §6.2 hard-removal language is unambiguous and quotes my 03c §1 VETO trigger verbatim — **VETO authority retained as written; no regression**. §5.4 qualified-syntax probe is correctly committed in qualified form per ADR-0039 §3 + spike finding #1.
 
 The two required edits are mechanical clarifications (§6.1.2 primitive visibility + §6.3.1 stateless apply-site form), not security-substance defects.
 
@@ -102,7 +102,7 @@ All five gaps close as expected. Gap 5 deferral to CP3 §9 is **acceptable** bec
 let _g2 = <SchemeGuard<'_, SlackToken> as Clone>::clone(guard);  // E0277 fires here
 ```
 
-Per ADR-0037 §3 + spike finding #1. Mechanism: explicit trait-projection `<T as Trait>::method` skips method resolution to `Scheme::clone` (which auto-deref would resolve to). `error[E0277]: trait bound SchemeGuard<'_, SlackToken>: Clone not satisfied` fires.
+Per ADR-0039 §3 + spike finding #1. Mechanism: explicit trait-projection `<T as Trait>::method` skips method resolution to `Scheme::clone` (which auto-deref would resolve to). `error[E0277]: trait bound SchemeGuard<'_, SlackToken>: Clone not satisfied` fires.
 
 **Why this matters for security.** The unqualified naive form `let g2 = guard.clone()` silently green-passes (auto-deref resolves to `Scheme::clone`, producing a `Scheme` clone — itself a secret leak since `Scheme` carries `SecretString`). The compile-fail probe **silently green-passes** on the wrong shape. Qualified syntax forces the compiler to look only at `SchemeGuard`'s `Clone` impl (which doesn't exist).
 
@@ -139,6 +139,6 @@ If tech-lead concurs on the three required edits: ratify CP2 with edits applied.
 
 ## Summary
 
-ACCEPT-WITH-CONDITIONS for CP2 §5–§6. All four must-have floor items (S-J1/J2, S-C2, S-O4/C3, S-C5) bound to concrete implementation forms; all five CP1 prep gaps close (Gap 5 forward-tracks к CP3 §9 as expected); §5.4 qualified-syntax probe correctly committed per ADR-0037 §3. §6.2 hard-removal language unambiguous and quotes my 03c §1 VETO trigger verbatim — **VETO authority retained, no regression**. Three required edits (mechanical/observability): §6.1-A `pub(crate)` visibility commit for `check_json_depth`, §6.1-B observed-depth value in `DepthExceeded`, §6.3-A pre-`format!` sanitization wrap-form for `serde_json::Error` Display. None rises to VETO. Implementation-time VETO authority on §6.2 shim-form drift retained per 03c §1 + §1 G3 + §0.2 item 3.
+ACCEPT-WITH-CONDITIONS for CP2 §5–§6. All four must-have floor items (S-J1/J2, S-C2, S-O4/C3, S-C5) bound to concrete implementation forms; all five CP1 prep gaps close (Gap 5 forward-tracks к CP3 §9 as expected); §5.4 qualified-syntax probe correctly committed per ADR-0039 §3. §6.2 hard-removal language unambiguous and quotes my 03c §1 VETO trigger verbatim — **VETO authority retained, no regression**. Three required edits (mechanical/observability): §6.1-A `pub(crate)` visibility commit for `check_json_depth`, §6.1-B observed-depth value in `DepthExceeded`, §6.3-A pre-`format!` sanitization wrap-form for `serde_json::Error` Display. None rises to VETO. Implementation-time VETO authority on §6.2 shim-form drift retained per 03c §1 + §1 G3 + §0.2 item 3.
 
 *End of CP2 security review.*

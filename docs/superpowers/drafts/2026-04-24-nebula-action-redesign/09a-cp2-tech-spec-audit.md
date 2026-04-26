@@ -160,9 +160,9 @@ Impact: security-lead reviewing CP2 §6.1 may sign off on "webhook bounding alre
 
 Suggested fix: architect to trace the actual depth-cap site in webhook flow (likely inside `WebhookRequest` consumer) and re-pin the citation. OR add an open item: "§6.1-2 — verify webhook body depth-cap enforcement site at CP3 §9; CP2 cites `transport.rs` but body parsing happens downstream." 03c §2 item 1 already requires the verification ("verify `body_json_bounded` is used, not raw `from_slice`") so it's a discharge-promise rather than new work.
 
-### 🟢 PASS — ADR-0035 / ADR-0036 / ADR-0037 / ADR-0038 cross-citations
+### 🟢 PASS — ADR-0035 / ADR-0038 / ADR-0039 / ADR-0040 cross-citations
 
-§4 cites ADR-0036 §Decision item 1 (line 730), ADR-0036 §Decision item 3 + §Negative item 2 (line 824, 830), ADR-0037 §1 / §2 / §3 / §4 / §5 (lines 724, 824, 1004, 948, 860), ADR-0035 §1 / §3 / §4.3 (lines 754, 856, 753), ADR-0038 §Implementation notes (line 1462). ADR-0035 amendment "2026-04-24-B" still cited at this Tech Spec via CP1 inheritance — flagged but not re-verified (CP1 audit medium 🟡 still applies; not new in CP2).
+§4 cites ADR-0038 §Decision item 1 (line 730), ADR-0038 §Decision item 3 + §Negative item 2 (line 824, 830), ADR-0039 §1 / §2 / §3 / §4 / §5 (lines 724, 824, 1004, 948, 860), ADR-0035 §1 / §3 / §4.3 (lines 754, 856, 753), ADR-0040 §Implementation notes (line 1462). ADR-0035 amendment "2026-04-24-B" still cited at this Tech Spec via CP1 inheritance — flagged but not re-verified (CP1 audit medium 🟡 still applies; not new in CP2).
 
 ---
 

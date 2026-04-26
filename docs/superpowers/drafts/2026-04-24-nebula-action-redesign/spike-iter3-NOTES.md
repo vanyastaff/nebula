@@ -138,7 +138,7 @@ state.
   iter-3 refinement.
 - `SchemeFactory<C>` (§4) — credential Tech Spec §15.7.
 - `ActionContext<'a>` (§5).
-- `ActionHandler` enum 4-variant shape (no `Control` variant per ADR-0038).
+- `ActionHandler` enum 4-variant shape (no `Control` variant per ADR-0040).
 - `ControlAction` / `PaginatedAction` / `BatchAction` DX traits — already
   carried v2 shape per CP3 §7.
 - `ActionSlots` macro-emitted-only blanket marker (§6 in v2; §12 in v3).

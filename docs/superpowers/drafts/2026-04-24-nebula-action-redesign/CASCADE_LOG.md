@@ -34,7 +34,7 @@ All 8 stakeholder agents present; roster matches prompt expectations.
 | Phase 2 | ✅ complete | [`03-scope-decision.md`](./03-scope-decision.md) + 03a/b/c sub-reports | Gate locked: **Option A'** (co-landed action + credential CP6 design). Round 2 required because architect proposed B'+ hybrid that tech-lead hadn't evaluated. Design-scope-only reframe resolved budget concern. No VETO, no escalation. |
 | Phase 3 | ✅ complete | [`Strategy FROZEN CP3`](../../specs/2026-04-24-action-redesign-strategy.md) + 04a/b + 05a/b + 06a/b sub-reviews | Frozen 2026-04-24 after CP1+CP2+CP3 cycles. Each CP iterated once after spec-auditor + tech-lead review. 540 lines total. |
 | Phase 4 | ✅ complete | [`07-spike-NOTES.md`](./07-spike-NOTES.md) + `final_shape_v2.rs` | Iter-1 PASS + Iter-2 PASS; spike commit `c8aef6a0` on isolated worktree branch `worktree-agent-af478538`; 10 effective tests passing; Tech Spec §7 unblocks |
-| Phase 5 | ✅ complete | [`ADR-0036`](../../adr/0036-action-trait-shape.md) + [`ADR-0037`](../../adr/0037-action-macro-emission.md) + [`ADR-0038`](../../adr/0038-controlaction-seal-canon-revision.md) | 3 PROPOSED ADRs drafted; ADR-NNNN+3 cluster-mode hooks deliberately deferred (scope §2) |
+| Phase 5 | ✅ complete | [`ADR-0038`](../../adr/0038-action-trait-shape.md) + [`ADR-0039`](../../adr/0039-action-macro-emission.md) + [`ADR-0040`](../../adr/0040-controlaction-seal-canon-revision.md) | 3 PROPOSED ADRs drafted; ADR-NNNN+3 cluster-mode hooks deliberately deferred (scope §2) |
 | Phase 6 | in-progress (continuation session) | Tech Spec CP1-CP4 (target file: `docs/superpowers/specs/2026-04-24-nebula-action-tech-spec.md`) | Continuation dispatched 2026-04-24; CP1 architect draft starting; 4 CPs × 5 parallel reviewers per Strategy §6.3 |
 | Phase 7 | ✅ complete (lite) | Concerns register summary in Phase 8 deliverable | No multi-blocker consensus session triggered; register lives as Phase 8 §register-state |
 | Phase 8 | in-progress | Summary file | Producing `docs/superpowers/specs/2026-04-24-nebula-action-redesign-summary.md` |
@@ -81,9 +81,9 @@ Devops wrote to wrong repo path (main repo instead of worktree) — orchestrator
 - Tech Spec §7 Interface unblocks per Strategy §5.2.4 aggregate-DONE
 
 **Phase 5 ADR drafting** — 3 PROPOSED ADRs:
-- ADR-0036 Action trait shape (#[action] attribute macro replacing derive; narrow zone rewriting)
-- ADR-0037 Action macro emission contract (HRTB resolve_fn; dual enforcement; macro test harness)
-- ADR-0038 ControlAction seal + canon §3.5 DX tier ratification (canon revision per §0.2)
+- ADR-0038 Action trait shape (#[action] attribute macro replacing derive; narrow zone rewriting)
+- ADR-0039 Action macro emission contract (HRTB resolve_fn; dual enforcement; macro test harness)
+- ADR-0040 ControlAction seal + canon §3.5 DX tier ratification (canon revision per §0.2)
 - ADR-NNNN+3 cluster-mode hooks deliberately deferred (out of cascade scope per Strategy §6.2)
 
 ### 2026-04-26 — Spike iter-3 PASS (final_shape_v3 post-amendments)
@@ -131,7 +131,7 @@ Devops wrote to wrong repo path (main repo instead of worktree) — orchestrator
 
 **Phase 2.5 deeper investigations** (user pushback на 2 architect-default positions):
 - **F6 ItemLineage**: revised UP from (β) defer → **(c) canon NON-GOAL** — 12 use cases analyzed; 5 genuinely need engine support в n8n но structurally absorbed by Nebula's typed `ActionResult<T>` model (authors carry ids в payloads); 3 of 4 peer engines also lack lineage primitive; pillar fit weak per PRODUCT_CANON §6
-- **F3 ScheduleAction**: **Hybrid B** — sealed-DX peer of TriggerAction (no canon revision per ADR-0038 §2 Webhook/Poll precedent) + open `Schedule` runtime trait + 3 blessed impls (Cron/Interval/OneShot); 15 brainstormed custom schedule kinds для community
+- **F3 ScheduleAction**: **Hybrid B** — sealed-DX peer of TriggerAction (no canon revision per ADR-0040 §2 Webhook/Poll precedent) + open `Schedule` runtime trait + 3 blessed impls (Cron/Interval/OneShot); 15 brainstormed custom schedule kinds для community
 
 **User decisions (final, ratified):**
 - ✅ F7 Determinism = (i) canon explicit «no replay» (action authors use Rust language + std + crates напрямую)
@@ -190,7 +190,7 @@ Each agent: line-by-line research read + cross-ref Tech Spec FROZEN CP4 + Q7 ame
 
 **Phase 1 returned (parallel rust-senior + tech-lead, ~6h):**
 
-- **Rust-senior production inventory** (9 traits + 7 adapters): 0 🔴 production bugs; 3 unexpected findings — (1) WebhookAction/PollAction PEERS of TriggerAction (NOT subtraits per ADR-0038); (2) 3 incompatible state shapes (WebhookAction::State ephemeral RwLock; PollAction::Cursor stack-frame; TriggerAction none); (3) PollCursor<C> wrapper не actual cursor (per-cycle wrapper, A::Cursor evaporates on task exit)
+- **Rust-senior production inventory** (9 traits + 7 adapters): 0 🔴 production bugs; 3 unexpected findings — (1) WebhookAction/PollAction PEERS of TriggerAction (NOT subtraits per ADR-0040); (2) 3 incompatible state shapes (WebhookAction::State ephemeral RwLock; PollAction::Cursor stack-frame; TriggerAction none); (3) PollCursor<C> wrapper не actual cursor (per-cycle wrapper, A::Cursor evaporates on task exit)
 - **Tech-lead coverage map**: 5 🔴 + 3 🟠 + 8 🟡 + 4 🟢 + ~25 ✅; ~50% coverage; recommendation **AMENDED-CLOSED** (всё mechanical lifecycle slips same class as Q6)
 
 **Phase 2+3 architect dispatch — combined (3h):**
@@ -229,7 +229,7 @@ Each agent: line-by-line research read + cross-ref Tech Spec FROZEN CP4 + Q7 ame
 
 **User concern**: prior cascade phases (especially Q4-Q6 on §2.9 + lifecycle) **may have been insufficiently thorough on Trigger DX**. Specific concerns:
 
-1. **PollCursor on PollAction = State analog** — PollAction (DX over TriggerAction per ADR-0038) has cursor concept. StatefulAction has `type State`. Does trigger family need State semantics что cascade missed?
+1. **PollCursor on PollAction = State analog** — PollAction (DX over TriggerAction per ADR-0040) has cursor concept. StatefulAction has `type State`. Does trigger family need State semantics что cascade missed?
 2. **start/stop fully addressed at Q6 OR partially?** — Q6 amendment-in-place added start/stop к TriggerAction direct, но adapter layer architecture (TriggerActionAdapter, WebhookTriggerAdapter, PollTriggerAdapter) что absorbs lifecycle complexity не explicit в Tech Spec
 3. **§2.9 fourth iteration via start() Input axis** — prior 4 REJECTs argued "Trigger has no user-supplied Input" basing on `handle()` parameter only. start() Input axis not discussed. WebhookAction.start() registers URL with external service — uses per-action info (URL, secret) — that's user-supplied configuration AT METHOD LEVEL via start(input)?
 4. **Other gaps potentially missed**: TriggerHandler decoupling pattern (production has separate trait; Tech Spec collapsed); TriggerEvent type-erased payload migration to typed Source::Event not in §10 codemod; StatefulAction state migration semantics; ResourceAction pool integration completion
@@ -253,7 +253,7 @@ Each agent: line-by-line research read + cross-ref Tech Spec FROZEN CP4 + Q7 ame
 **Bundle-vs-split rationale (architect honest call):**
 - User trailing note suggested adding `Input` к start method to enable Q4 ACCEPT through backdoor
 - Architect declined bundle: B1 (silent semantic divergence) survives `start(input)` refinement — `start(input)` is per-registration, `execute(input)` is per-dispatch, same name-collision trap from Q4
-- B4 (ADR-0036 binds spike shape) would invalidate freeze without re-spike — disproportionate для mechanical gap fix
+- B4 (ADR-0038 binds spike shape) would invalidate freeze without re-spike — disproportionate для mechanical gap fix
 - Bundling conflates drift correction с paradigm choice; muddies freeze-warrant trail
 
 **Migration**: ~3-5 internal sites + ~1 per community trigger plugin via new T7 codemod transform (AUTO; bodies unchanged).
@@ -266,7 +266,7 @@ Each agent: line-by-line research read + cross-ref Tech Spec FROZEN CP4 + Q7 ame
 - §15.10 enactment subsection (5 sub-sections documenting analysis + decision + design + migration + spike-scope-acknowledgment)
 - §17 CHANGELOG entry для Q6 post-freeze
 
-**ADR-0036 NOT modified** — lifecycle at per-method signature layer; ADR-0036 §Decision items 1-4 address trait-shape rewriting / emission / dual enforcement / phantom composition — none address per-method signatures, so signature addition не requires ADR amendment.
+**ADR-0038 NOT modified** — lifecycle at per-method signature layer; ADR-0038 §Decision items 1-4 address trait-shape rewriting / emission / dual enforcement / phantom composition — none address per-method signatures, so signature addition не requires ADR amendment.
 
 **Status qualifier appended**: `FROZEN CP4 2026-04-25 (amended-in-place 2026-04-25 — Q1 post-freeze + Q6 lifecycle gap)`.
 
@@ -285,7 +285,7 @@ Sharpest framing yet — directly addresses Q4 blocker B1 (semantic divergence t
 **Why REJECT still holds (3 carry-forward + 1 NEW):**
 - B2 signature-doubling persists (parallel к existing `&self` + `parameters = T`)
 - B3 no compile-time consumer beyond what schema-as-data already provides
-- B4 ADR-0036 binds verbatim spike shapes (`final_shape_v2.rs:254-262` has no `type Config`)
+- B4 ADR-0038 binds verbatim spike shapes (`final_shape_v2.rs:254-262` has no `type Config`)
 - **B5 NEW (load-bearing)**: §2.9.1a Resolution point 1 (line 501) + closing line 507 made explicit deliberate **paradigm choice**: «Configuration carrier is `&self`; configuration schema carrier is `ActionMetadata::parameters` via `with_schema`. No new associated type, no signature edit.» Both E1 and E2 invert that choice.
 
 **Tech Spec amendments (rationale-only):**
@@ -318,13 +318,13 @@ Sharpest framing yet — directly addresses Q4 blocker B1 (semantic divergence t
 **Why REJECT not ACCEPT**: user explicitly admits "method signatures unchanged — handle() takes event, not Input." That admission IS load-bearing: in the other 3, `type Input` is justified BECAUSE it appears in method signature. For TriggerAction it would be decorative — schema reflection already universal via `with_schema(<T as HasSchema>::schema())` per `crates/action/src/metadata.rs:292`, not trait-level-blocked.
 
 **Tech Spec amendments enacted (rationale-only, mirrors Q2/Q3 precedent):**
-- §2.9.1d (NEW) — Option D + 4 blockers (semantic divergence trap; user's "decorative Input" admission load-bearing; schema reflection already universal; ADR-0036 §Decision item 4 binds verbatim spike shapes)
+- §2.9.1d (NEW) — Option D + 4 blockers (semantic divergence trap; user's "decorative Input" admission load-bearing; schema reflection already universal; ADR-0038 §Decision item 4 binds verbatim spike shapes)
 - §2.9.5/§2.9.6/§2.9.7 extended to "refined four times" + four-iteration history table
 - §17 CHANGELOG + §0.1 status line entries
 
 **No status qualifier change** (rationale-only per §15.9.5/§15.9.6 precedent). **No §2.2 signature change. No ADR amendment.**
 
-ADR-0036 §Decision item 4 binds verbatim spike shapes; Option D would invalidate freeze per §0.2 items 2+4 — REJECT preserves both.
+ADR-0038 §Decision item 4 binds verbatim spike shapes; Option D would invalidate freeze per §0.2 items 2+4 — REJECT preserves both.
 
 **Tech-lead ratification SKIPPED** (rationale-only refinement, mirror Q2 precedent; not amendment-cycle gate).
 
@@ -376,23 +376,23 @@ Plus: user's handle() refactor proposal structurally breaks ADR-0035 §4.3 phant
 
 **Tech Spec status:** `FROZEN CP4 2026-04-25` → **`FROZEN CP4 2026-04-25 (amended-in-place 2026-04-25 — Q1 post-freeze)`** per ADR-0035 amended-in-place precedent (Q2 rationale-tightening doesn't warrant separate qualifier)
 
-**No ADR transitions; ADR-0038 still user ratification pending.**
+**No ADR transitions; ADR-0040 still user ratification pending.**
 
 ### 2026-04-25 T01:30 — CP4 FROZEN + Phase 6 closes
 
 **CP4 §14-§16 (Tech Spec meta + handoff, FINAL CP):**
 
-- Architect drafted 339 lines (§14 cross-references with 5 sub-tables, §15 open items resolution including §15.5 ADR-0037 amendment-in-place ENACTMENT, §16 implementation handoff with (a/b/c) PR wave plan + DoD + rollback strategy)
-- **ADR-0037 §1 SlotBinding amendment-in-place ENACTED** during CP4: capability folded into SlotType enum per credential Tech Spec §15.8 (CP5 supersession of §9.4); status header gains `proposed (amended-in-place 2026-04-25)` qualifier; CHANGELOG entry cites Tech Spec CP4 §15.5 + ADR-0035 amended-in-place precedent
+- Architect drafted 339 lines (§14 cross-references with 5 sub-tables, §15 open items resolution including §15.5 ADR-0039 amendment-in-place ENACTMENT, §16 implementation handoff with (a/b/c) PR wave plan + DoD + rollback strategy)
+- **ADR-0039 §1 SlotBinding amendment-in-place ENACTED** during CP4: capability folded into SlotType enum per credential Tech Spec §15.8 (CP5 supersession of §9.4); status header gains `proposed (amended-in-place 2026-04-25)` qualifier; CHANGELOG entry cites Tech Spec CP4 §15.5 + ADR-0035 amended-in-place precedent
 - 2 parallel reviewers (compressed CP — final meta CP): spec-auditor REVISE (3 🔴 mechanical pin-fixes — wrong file path propagating through §14.5/§13.4.x/§16.2; superseded credential §9.4 citation; superseded `unstable-action-scheduler` flag name), security-lead ACCEPT (no edits, freeze-blocker NO, VETO retained on shim-form drift)
 - Architect single-pass iteration applied 11 closures (3 🔴 + 3 🟠 + 5 🟡)
 - Tech-lead **RATIFY-FREEZE** 11c: all 8 ratification checks pass
 
 **Status transitions on freeze:**
 - Tech Spec: `DRAFT CP4 (iterated 2026-04-25)` → **`FROZEN CP4 2026-04-25`**
-- ADR-0036: `proposed` → **`accepted 2026-04-25`** (Tech Spec FROZEN CP4 gate cleared)
-- ADR-0037: `proposed (amended-in-place 2026-04-25)` → **`accepted 2026-04-25 (amended-in-place 2026-04-25)`** (Tech Spec FROZEN CP4 gate cleared; amendment qualifier preserved)
-- ADR-0038: stays **`proposed`** — user ratification on canon §3.5 revision required per cascade prompt; surfaced to user in Phase 8 summary as decision item
+- ADR-0038: `proposed` → **`accepted 2026-04-25`** (Tech Spec FROZEN CP4 gate cleared)
+- ADR-0039: `proposed (amended-in-place 2026-04-25)` → **`accepted 2026-04-25 (amended-in-place 2026-04-25)`** (Tech Spec FROZEN CP4 gate cleared; amendment qualifier preserved)
+- ADR-0040: stays **`proposed`** — user ratification on canon §3.5 revision required per cascade prompt; surfaced to user in Phase 8 summary as decision item
 
 **Phase 6 closes.** Cascade fully complete pending Phase 8 summary refresh.
 
@@ -411,12 +411,12 @@ Plus: user's handle() refactor proposal structurally breaks ADR-0035 §4.3 phant
 - Architect single-pass iteration applied 10 edits including 2 critical:
   - **§13.4.4 NEW subsection** committing nebula-redact workspace integration (new crate Cargo.toml/lib.rs + root workspace member + workspace dep; no new deny ban for leaf utility)
   - **§13.4.3 deny.toml restructure** — Edit 1 = wrappers-list extension of existing nebula-engine rule (NOT duplicate); Edit 2 = symmetric positive ban for nebula-action runtime layer per Phase 0 §11 row 9
-- §10.2 T6 normalized to MIXED (AUTO default + MANUAL fallback) per ADR-0038 §Negative item 4
+- §10.2 T6 normalized to MIXED (AUTO default + MANUAL fallback) per ADR-0040 §Negative item 4
 - §10.4 step 1.5 added `semver` Cargo.toml dep instruction (Phase 1 CC1 carry-forward)
 - Tech-lead RATIFIED post-iteration (commit-ready; no round-2; no escalation; security-lead implementation-time VETO authority retained on §9.5 softening)
 
 **Forward-tracked to CP4:**
-- ADR-0037 §1 SlotBinding amendment-in-place (capability folded into SlotType per credential Tech Spec §9.4) — Phase 8 cross-section pass per §0.2 invariant 2 (enactment before CP4 freeze)
+- ADR-0039 §1 SlotBinding amendment-in-place (capability folded into SlotType per credential Tech Spec §9.4) — Phase 8 cross-section pass per §0.2 invariant 2 (enactment before CP4 freeze)
 - Engine cascade handoff (§9.5.5 SchedulerIntegrationHook + §3.1 ActionRegistry::register* + §3.2 ActionContext API location)
 - 10-item open-items queue → CP4 §15 resolution
 
@@ -425,12 +425,12 @@ Plus: user's handle() refactor proposal structurally breaks ADR-0035 §4.3 phant
 **CP2 §4-§8 (Tech Spec macro emission + execution + security floor + lifecycle + storage):**
 
 - Architect drafted 711 lines (§4 macro full token shape, §5 trybuild+macrotest harness with 6-probe port from spike c8aef6a0, §6 security must-have floor co-decision, §7 lifecycle SchemeGuard RAII flow, §8 storage)
-- 5 parallel reviewers returned: spec-auditor PASS-WITH-NITS (3 🟠), security-lead ACCEPT-WITH-CONDITIONS (3 required edits + co-decision YES on all 4 §6 floor items), rust-senior RATIFY-WITH-NITS (3 🟠 incl. ADR-0037 amendment trigger), dx-tester RATIFY-WITH-NITS (2 🟠 cross-zone collision + author-trap probe), devops RATIFY-WITH-NITS (2 🟠 macrotest version + trybuild workspace pin)
+- 5 parallel reviewers returned: spec-auditor PASS-WITH-NITS (3 🟠), security-lead ACCEPT-WITH-CONDITIONS (3 required edits + co-decision YES on all 4 §6 floor items), rust-senior RATIFY-WITH-NITS (3 🟠 incl. ADR-0039 amendment trigger), dx-tester RATIFY-WITH-NITS (2 🟠 cross-zone collision + author-trap probe), devops RATIFY-WITH-NITS (2 🟠 macrotest version + trybuild workspace pin)
 - **User raised mid-iteration**: §2.9 reconsideration on TriggerAction config (RSS url+interval, Kafka channel post-ack)
 - Architect single-pass iteration applied 13 reviewer items + §2.9 refinement
 - **§2.9 REJECT preserved** with refined axis: Configuration (per-instance, `&self` + universal `with_schema`, applies to all 4 trait variants) vs Runtime Input (divergent — Stateless/Stateful/Resource execute-shape vs TriggerAction event projection). User's RSS/Kafka examples are CONFIGURATION not RUNTIME-INPUT — different lifecycle phase. New CP3 §2.9-1 forward-track: `ActionMetadata::for_trigger::<A>()` helper
 - **§6 co-decision UNANIMOUS** tech-lead + security-lead on 4 floor items: JSON depth cap (`check_json_depth` `pub(crate)` + typed `DepthCheckError`), HARD REMOVAL `credential<S>()` (no `#[deprecated]`), `redacted_display()` in new `nebula-redact` crate + pre-`format!` sanitization, per-test `ZeroizeProbe`
-- **ADR-0037 §1 SlotBinding amendment-in-place** (capability folded into SlotType per credential Tech Spec §9.4) — flagged in §15 for Phase 8 cross-section pass per ADR-0035 amended-in-place precedent; §0.2 invariant 2 enforces enactment before CP4 freeze
+- **ADR-0039 §1 SlotBinding amendment-in-place** (capability folded into SlotType per credential Tech Spec §9.4) — flagged in §15 for Phase 8 cross-section pass per ADR-0035 amended-in-place precedent; §0.2 invariant 2 enforces enactment before CP4 freeze
 - Tech-lead RATIFIED post-iteration (commit-ready; no round-2; no escalation; implementation-time VETO authority retained on §6.2 hard-removal regression)
 
 ### 2026-04-24 T22:30 — CP1 RATIFIED + commit-ready
@@ -460,7 +460,7 @@ User authorized Phase 6 Tech Spec drafting in continuation session. Worktree iso
 
 Per-CP cadence (Strategy §6.3): architect draft → 5 parallel reviewers (rust-senior + security-lead + dx-tester + devops + spec-auditor) → architect iterate once → tech-lead ratify → commit per CP.
 
-**Hard escalation triggers:** review iteration round 3; CP2 co-decision deadlock; cross-crate API break beyond ADR-0037 §3 soft amendment; budget hit (5d); security 🔴 blocking CP ratification; macro emission perf bound violation.
+**Hard escalation triggers:** review iteration round 3; CP2 co-decision deadlock; cross-crate API break beyond ADR-0039 §3 soft amendment; budget hit (5d); security 🔴 blocking CP ratification; macro emission perf bound violation.
 
 **Soft escalations (precedent):** --no-verify for unrelated fmt drift (per spike c8aef6a0 + summary commits aa63e424, 3e10329f).
 

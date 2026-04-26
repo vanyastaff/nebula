@@ -4,7 +4,7 @@ description: User's third pushback on §2.9 with concrete consumer evidence (70+
 status: closed
 type: post-freeze re-analysis
 date: 2026-04-25
-related: [docs/superpowers/specs/2026-04-24-nebula-action-tech-spec.md §2.9, docs/COMPETITIVE.md, docs/adr/0036-action-trait-shape.md]
+related: [docs/superpowers/specs/2026-04-24-nebula-action-tech-spec.md §2.9, docs/COMPETITIVE.md, docs/adr/0038-action-trait-shape.md]
 ---
 
 # Third post-freeze re-analysis — n8n consumer evidence + trait/method framing
@@ -158,7 +158,7 @@ This re-analysis enacts ONE amendment-in-place to the Tech Spec per ADR-0035 §3
 
 **Plus:** §15.9.6 Q3 post-freeze refinement record added (sibling to §15.9.5 — same enactment-tracking pattern).
 
-**No ADR-0036 amendment needed.** The decision (REJECT consolidation) is unchanged. ADR-0036 ratified the per-trait shape per `final_shape_v2.rs:209-262`; the Tech Spec §2.9 verdict is downstream-of and consistent-with ADR-0036.
+**No ADR-0038 amendment needed.** The decision (REJECT consolidation) is unchanged. ADR-0038 ratified the per-trait shape per `final_shape_v2.rs:209-262`; the Tech Spec §2.9 verdict is downstream-of and consistent-with ADR-0038.
 
 ## Cascade-state changes (as enacted 2026-04-25)
 
@@ -166,9 +166,9 @@ This re-analysis enacts ONE amendment-in-place to the Tech Spec per ADR-0035 §3
 - **New §2.9.1c** — verbatim Q3 pushback record + schema-as-data vs schema-as-trait-type axis distinction + n8n consumer verification (`INodeTypeDescription` is data not types) + COMPETITIVE.md line 29-41 canon-level disclaim of n8n parity + handle() refactor REJECT (4 reasons).
 - **New §15.9.6** — Q3 post-freeze refinement record (sibling to §15.9.5 Q2 record). Documents enactment scope, no-ADR-amendment reasoning, no-signature-ripple confirmation, no-status-qualifier-change rationale per §15.9.5 precedent, amend-in-place vs supersede justification, Phase 8 cascade summary impact (none), §2.9-1 closure reaffirmation.
 - **Status header** — UNCHANGED. Stays `FROZEN CP4 2026-04-25 (amended-in-place 2026-04-25 — Q1 post-freeze)` per §15.9.5 / §15.9.6 precedent: rationale-tightening amendments without signature ripple do not warrant status qualifier change.
-- **ADR-0036** — UNCHANGED. Decision stable; rationale lives in Tech Spec.
-- **ADR-0037** — UNCHANGED. §15.5 amendment-in-place preserved; Q3 does not touch macro emission.
-- **ADR-0038** — UNCHANGED. Still PROPOSED awaiting user ratification.
+- **ADR-0038** — UNCHANGED. Decision stable; rationale lives in Tech Spec.
+- **ADR-0039** — UNCHANGED. §15.5 amendment-in-place preserved; Q3 does not touch macro emission.
+- **ADR-0040** — UNCHANGED. Still PROPOSED awaiting user ratification.
 - **Strategy** — UNCHANGED.
 - **ADR-0035** — UNCHANGED. Phantom-shim composition preserved (the user's `handle(.., input, event)` refactor proposal that would have broken `&self` field-zone rewriting is REJECTED in §2.9.1c).
 - **Spike `final_shape_v2.rs:209-262`** — UNCHANGED. Signature-locking source preserved.
@@ -198,7 +198,7 @@ User's evidence does not establish the necessary precondition for 3A. ACCEPT con
 3B (add `type Input` / `type Output` to TriggerAction only) would:
 - Force Trigger to declare `type Input = ()` (configuration is in `&self`, not a per-dispatch parameter) or `type Input = SomeConfig` (which conflates registration-time and runtime axes — same problem Q3 surfaced).
 - Force `type Output = ()` (handle returns unit by §2.9.2 invariant) or `type Output = <Source as TriggerSource>::Event` (redundant projection — Source already provides this).
-- Add asymmetry to ADR-0036's per-trait shape decision without functional gain.
+- Add asymmetry to ADR-0038's per-trait shape decision without functional gain.
 
 The "asymmetry between TriggerAction and the other three" the user names is **structural**, not stylistic. Consolidating only Trigger's surface to match the others would require lying about what Trigger actually consumes/produces at the trait level. The honest shape is the current one — three-of-four share Input/Output because they share lifecycle; Trigger diverges because Trigger's lifecycle differs.
 

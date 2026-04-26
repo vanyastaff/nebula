@@ -6,7 +6,7 @@ Scope per parallel-review prompt: §4 (emission shape, perf bound, compile_error
 
 **RATIFY-WITH-NITS.**
 
-The emission shape, qualified-syntax probe form, and SchemeGuard borrow chain are sound and grounded in the spike artefact (commit `c8aef6a0`) plus ADR-0037. The HRTB fn-pointer choice over `Box<dyn Fn>` is correctly motivated and idiomatically the right call on Rust 1.95. Probe 7 addition is well-targeted at the real `with_parameters`-vs-`with_schema` bug (verified at `crates/action/macros/src/action_attrs.rs:131` + `crates/action/src/metadata.rs:292`). The dual enforcement layer (§4.4) cleanly separates structural ground (type system) from DX cleanup (proc-macro).
+The emission shape, qualified-syntax probe form, and SchemeGuard borrow chain are sound and grounded in the spike artefact (commit `c8aef6a0`) plus ADR-0039. The HRTB fn-pointer choice over `Box<dyn Fn>` is correctly motivated and idiomatically the right call on Rust 1.95. Probe 7 addition is well-targeted at the real `with_parameters`-vs-`with_schema` bug (verified at `crates/action/macros/src/action_attrs.rs:131` + `crates/action/src/metadata.rs:292`). The dual enforcement layer (§4.4) cleanly separates structural ground (type system) from DX cleanup (proc-macro).
 
 Three nits below; none block CP2 lock. One open item flagged in CHANGELOG (§5.3-1) gets a clean answer here.
 
@@ -22,7 +22,7 @@ Pattern-2 / Pattern-3 dispatch table at §4.3 (capability marker projected from 
 
 🟢 **Spec narrative claims spike Probe 6 verified the HRTB-coercion** at §4.3 line 818. Probe 6 actually verified the wrong-Scheme bound; the coercion shape is verified by the iter-2 compose binary (NOTES §2.2 + §2.3 — `resolve_as_oauth2::<GitHubOAuth2>` and `resolve_as_basic::<PostgresBasicCred>` both compile clean in const slot slices). Citation accuracy fix; evidence still holds via different spike artefact.
 
-🟢 **Field-name inconsistency between ADR-0037 §1 and Tech Spec §3.1.** ADR-0037's example uses `key`/`capability`/`resolve_fn`; Tech Spec §3.1 uses `field_name`/`slot_type`/`resolve_fn` with capability folded into `SlotType` enum. Tech Spec is correct (matches `final_shape_v2.rs:48-55` and the three-variant SlotType pipeline from credential Tech Spec §9.4). ADR-0037 example should be flagged for amendment to match Tech Spec's authoritative shape — otherwise an implementer reading ADR-first will write the wrong struct.
+🟢 **Field-name inconsistency between ADR-0039 §1 and Tech Spec §3.1.** ADR-0039's example uses `key`/`capability`/`resolve_fn`; Tech Spec §3.1 uses `field_name`/`slot_type`/`resolve_fn` with capability folded into `SlotType` enum. Tech Spec is correct (matches `final_shape_v2.rs:48-55` and the three-variant SlotType pipeline from credential Tech Spec §9.4). ADR-0039 example should be flagged for amendment to match Tech Spec's authoritative shape — otherwise an implementer reading ADR-first will write the wrong struct.
 
 ## §4.5 perf bound assessment
 
@@ -30,7 +30,7 @@ Pattern-2 / Pattern-3 dispatch table at §4.3 (capability marker projected from 
 
 Per-slot incremental of ~10 LOC (slot binding literal) is structurally minimal — one `SlotBinding { field_name, slot_type, resolve_fn }` literal per slot. Linear scaling at this magnitude is fine; even N=10 slots emit ~161 LOC total which is well within compile-time tolerance.
 
-🟢 **The bound is verifiable via `cargo expand`** as ADR-0037 §5 Positive item 6 names. Macrotest snapshots (§5.5, three fixtures) lock the byte-budget at the snapshot level — drift triggers diff. CP3 §9 picks hard-fail vs warn CI policy; recommend hard-fail to prevent silent emission-bloat creep.
+🟢 **The bound is verifiable via `cargo expand`** as ADR-0039 §5 Positive item 6 names. Macrotest snapshots (§5.5, three fixtures) lock the byte-budget at the snapshot level — drift triggers diff. CP3 §9 picks hard-fail vs warn CI policy; recommend hard-fail to prevent silent emission-bloat creep.
 
 ## §4.7 compile_error! discipline
 
@@ -38,7 +38,7 @@ Hard-error on string-form `credential = "key"` is the correct call. `compile_err
 
 The diagnostic message at line 913 is verbose but loadbearing — the three-sentence form is needed because the migration is non-obvious to plugin authors who copy-pasted the old shape. Approve as-written.
 
-🟢 **§4.4.2 `compile_error!`** for bare `CredentialRef<_>` outside zone is similarly correct. Hint message ("did you forget to declare this credential in `credentials(slot: Type)`?") is actionable. Both layers (proc-macro + type-system) firing for the same violation produce two diagnostics; spike confirmed both stay readable (ADR-0037 §Negative item 4).
+🟢 **§4.4.2 `compile_error!`** for bare `CredentialRef<_>` outside zone is similarly correct. Hint message ("did you forget to declare this credential in `credentials(slot: Type)`?") is actionable. Both layers (proc-macro + type-system) firing for the same violation produce two diagnostics; spike confirmed both stay readable (ADR-0039 §Negative item 4).
 
 🟡 **Probe 7 (`parameters = Type` no-`HasSchema` rejection)** is the right addition — bug verified at `crates/action/macros/src/action_attrs.rs:131` (`with_parameters` emission) vs `crates/action/src/metadata.rs:292` (only `with_schema` exists). The diagnostic surfacing the actual missing `HasSchema` bound (not "no method `with_parameters`") is a real DX win. Recommend: the macro-emitted form should ALSO check whether the parameters-type's `Schema` projection is fallible (i.e., does `<T as HasSchema>::schema()` panic on bad schemas, or return `Result`?). If `HasSchema::schema() -> Result<Schema, _>`, the macro needs to thread the error path; if infallible, the `<T as HasSchema>::schema()` call shape in §4.6.1 is correct as-is. Worth a one-line clarification at §4.6.1.
 
@@ -70,7 +70,7 @@ Path 1 is the senior-engineer call. The wrappers whitelist is the correct mechan
 
 ## §5.4 qualified-syntax probe
 
-**Form is correct per ADR-0037 §3 + spike finding #1.**
+**Form is correct per ADR-0039 §3 + spike finding #1.**
 
 ```rust
 let _g2 = <SchemeGuard<'_, SlackToken> as Clone>::clone(guard);  // E0277 fires
@@ -100,7 +100,7 @@ None blocking. Nits worth folding into CP2 lock pass:
 
 1. **§4.3 line 818 citation correction.** Change "spike Probe 6 verified at commit `c8aef6a0`" to "spike Iter-2 §2.2 + §2.3 verified the HRTB coercion" — Probe 6 is the wrong-Scheme bound, not coercion-shape.
 2. **§5.3-1 commit to path 1.** Tech Spec should commit to "add `nebula-action-macros` to `nebula-engine` wrappers list in `deny.toml` with dev-dep-only reason" rather than leaving the path open. Path 2 (stub helpers) loses Probe 6 verification and isn't worth the boundary purity it claims.
-3. **ADR-0037 §1 example shape mismatch.** ADR-0037 should be amended to use `field_name`/`slot_type` field names matching Tech Spec §3.1 (the authoritative implementer shape). Currently ADR has `key`/`capability` as separate fields; Tech Spec correctly folds capability into `SlotType` enum. This is an ADR amendment, not a Tech Spec change.
+3. **ADR-0039 §1 example shape mismatch.** ADR-0039 should be amended to use `field_name`/`slot_type` field names matching Tech Spec §3.1 (the authoritative implementer shape). Currently ADR has `key`/`capability` as separate fields; Tech Spec correctly folds capability into `SlotType` enum. This is an ADR amendment, not a Tech Spec change.
 
 ## Summary
 
@@ -110,4 +110,4 @@ None blocking. Nits worth folding into CP2 lock pass:
 
 1. (🔴-rated for visibility, 🟢 in severity) §5.3-1 dev-dep on `nebula-engine` requires `deny.toml` wrappers amendment, not stub helpers. Path is straightforward; recommend committing now.
 2. §4.3 citation for HRTB coercion verification is wrong probe — Iter-2 compose, not Probe 6. Correctness: holds.
-3. ADR-0037 §1 example field-shape diverges from Tech Spec §3.1 authoritative; ADR needs amendment to match.
+3. ADR-0039 §1 example field-shape diverges from Tech Spec §3.1 authoritative; ADR needs amendment to match.

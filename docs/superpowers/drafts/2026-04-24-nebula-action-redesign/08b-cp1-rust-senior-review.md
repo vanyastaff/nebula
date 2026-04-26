@@ -3,7 +3,7 @@
 **Date:** 2026-04-24
 **Reviewer:** rust-senior (sub-agent, idiomatic Rust correctness only — no security threat-model, no DX usability, no devops)
 **Target:** Rust 1.95.0, edition 2024 (workspace pin per `rust-toolchain.toml:17`)
-**Inputs:** Tech Spec §0–§3 (this revision); `final_shape_v2.rs` (spike commit `c8aef6a0`); my own Phase 1 review `02c-idiomatic-review.md`; ADR-0035 §3 (per-capability inner sealed convention); ADR-0038 §1 (sealed DX tier).
+**Inputs:** Tech Spec §0–§3 (this revision); `final_shape_v2.rs` (spike commit `c8aef6a0`); my own Phase 1 review `02c-idiomatic-review.md`; ADR-0035 §3 (per-capability inner sealed convention); ADR-0040 §1 (sealed DX tier).
 **Severity legend:** 🔴 WRONG / 🟠 DATED / 🟡 PREFERENCE.
 
 ---
@@ -26,7 +26,7 @@ The spec correctly applies the modernization findings from my 02c review (single
 
 **🟡 PREFERENCE — `Output: Send + 'static` framing.** §2.2.1 narrative line 139 reads "`Output: Send + 'static` per spike final_shape_v2.rs:211 — both `Send` for handler erasure and `'static` for serialization through the engine's port projection." The spike actually has `Output: Send + 'static` (line 211 verbatim) but the **typed surface** doesn't need `'static` for a non-erased adapter — `'static` is a serialization invariant, not a type-system invariant of the trait. This is a non-defect because the spec is explicit about WHY the bound is there; just flagging that the rationale combines two reasons.
 
-**🟢 Associated-type bound consistency vs spike.** Tech Spec adds `HasSchema + Send + 'static` to `Input` (line 127, 144, 195) — `final_shape_v2.rs:210, 221, 239` has only `Send + 'static`. The Tech Spec change is **deliberate and correct**: this lifts the adapter-side `HasSchema` bound (which 02c §3 finding line 213-217 flagged as "leaky adapter invariant") onto the trait itself. Error UX migrates from registration site → impl site, which is the right idiomatic call. Spec acknowledges this in §2.2.1 narrative ("documented per ADR-0037 §Context (Goal G2 — closes CR9 undocumented bound)"). Confirmed: this resolves my 02c §3 🟠 finding #5.
+**🟢 Associated-type bound consistency vs spike.** Tech Spec adds `HasSchema + Send + 'static` to `Input` (line 127, 144, 195) — `final_shape_v2.rs:210, 221, 239` has only `Send + 'static`. The Tech Spec change is **deliberate and correct**: this lifts the adapter-side `HasSchema` bound (which 02c §3 finding line 213-217 flagged as "leaky adapter invariant") onto the trait itself. Error UX migrates from registration site → impl site, which is the right idiomatic call. Spec acknowledges this in §2.2.1 narrative ("documented per ADR-0039 §Context (Goal G2 — closes CR9 undocumented bound)"). Confirmed: this resolves my 02c §3 🟠 finding #5.
 
 **🔴 WRONG — adapter-side `Serialize`/`DeserializeOwned` bounds are NOT lifted.** §2.2.1 / §2.2.2 / §2.2.4 adopt `HasSchema` on `Input` but say nothing about `Serialize`/`DeserializeOwned` on `Output` and `Input` — yet the adapter sites (per 02c §3 line 203-211) require `Input: DeserializeOwned`, `Output: Serialize`. This means the `with_parameters`-style "leaky adapter invariant" that 02c §3 flagged for Input/Output **persists** unless §2.2 lifts the bounds. Two paths:
 
@@ -110,13 +110,13 @@ This matches ADR-0035 §3 amendment 2026-04-24-B verbatim — outer `mod sealed_
 
 Tech Spec narrative line 287-289 cites this correctly: "the `mod sealed_dx` is crate-private; each inner `Sealed` trait is `pub` within that module (so the public DX trait's supertrait reference does not trigger `private_in_public`)."
 
-**🟢 Blanket-impl shape — correct.** §2.6 line 318 has `impl<T: StatelessAction> sealed_dx::ControlActionSealed for T {}`. This grants membership only to types satisfying `StatelessAction` — community plugins cannot bypass because `mod sealed_dx` is unreachable from outside the crate. ADR-0038 §1 ratifies this exact shape.
+**🟢 Blanket-impl shape — correct.** §2.6 line 318 has `impl<T: StatelessAction> sealed_dx::ControlActionSealed for T {}`. This grants membership only to types satisfying `StatelessAction` — community plugins cannot bypass because `mod sealed_dx` is unreachable from outside the crate. ADR-0040 §1 ratifies this exact shape.
 
-**🟡 PREFERENCE — comment at §2.6 line 313-317 forward-references CP3 §7 audit.** The trait-by-trait audit ("which primary each DX trait wraps") is locked at CP3 §7. CP1 is correct to defer; the line "trait-by-trait audit at Tech Spec §7 design time" tracks per ADR-0038 §Implementation notes. No action.
+**🟡 PREFERENCE — comment at §2.6 line 313-317 forward-references CP3 §7 audit.** The trait-by-trait audit ("which primary each DX trait wraps") is locked at CP3 §7. CP1 is correct to defer; the line "trait-by-trait audit at Tech Spec §7 design time" tracks per ADR-0040 §Implementation notes. No action.
 
 **🟡 PREFERENCE — declaration order vs implementation order.** The DX traits in §2.6 are declared but the corresponding adapter types are deferred to CP3 §9. This is fine for a signature-locking section but CP3 implementers must check: each DX trait + its adapter + the `compile_fail` probe verifying community plugins cannot impl directly should land together (so the sealing is verified, not just claimed). **Track for CP3 §9.** Not a CP1 blocker.
 
-**🟢 Naming distinguishes from credential `sealed_caps`.** ADR-0035's example uses `mod sealed_caps` for credentials; ADR-0038 / Tech Spec §2.6 uses `mod sealed_dx` for action DX tier. Two separate modules, two separate sealed conventions, no name collision. 🟢 right.
+**🟢 Naming distinguishes from credential `sealed_caps`.** ADR-0035's example uses `mod sealed_caps` for credentials; ADR-0040 / Tech Spec §2.6 uses `mod sealed_dx` for action DX tier. Two separate modules, two separate sealed conventions, no name collision. 🟢 right.
 
 ---
 

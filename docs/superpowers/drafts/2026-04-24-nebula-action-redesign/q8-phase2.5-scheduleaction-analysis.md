@@ -12,7 +12,7 @@
 - `q8-architect-action-research.md` §3.1 (Schedule shape vs PollAction; Temporal Schedule comparison)
 - `q8-phase2-synthesis.md` §2.6 (F3 deferral framing) + §6.3 (conditional escalation)
 - `docs/superpowers/specs/2026-04-24-nebula-action-tech-spec.md` §2.6 (sealed-DX peer pattern, lines 563-720)
-- `docs/adr/0038-controlaction-seal-canon-revision.md` §1, §2, §Negative item 4 (sealed enumeration constraint)
+- `docs/adr/0040-controlaction-seal-canon-revision.md` §1, §2, §Negative item 4 (sealed enumeration constraint)
 - `docs/COMPETITIVE.md` lines 17-31, 39-41 (Nebula positioning)
 
 **Posture:** Architect frames trade-offs and recommends; does NOT decide cascade scope inclusion (that is user's call after this analysis lands).
@@ -29,7 +29,7 @@ If Core: `nebula-action` ships a fixed enum of schedule kinds; community impleme
 // Sealed-DX peer of TriggerAction (same shape as WebhookAction / PollAction per §2.6).
 pub trait ScheduleAction: sealed_dx::ScheduleActionSealed + Action + Send + Sync + 'static {
     /// Engine-defined schedule kind. Closed enum — adding a variant requires
-    /// nebula-action release + canon §3.5 amendment per ADR-0038 §2.
+    /// nebula-action release + canon §3.5 amendment per ADR-0040 §2.
     fn schedule(&self) -> ScheduleKind;
 
     /// Event emitted on each fire (typed, not Value).
@@ -67,7 +67,7 @@ pub enum ScheduleKind {
 
 ### §1.3 Cons
 
-- **Enum extension requires nebula-action release.** Want "fire on Tuesdays of even weeks"? Wait for next nebula-action minor. ADR-0038 §Negative item 4 explicitly names this trade-off for sealed primaries.
+- **Enum extension requires nebula-action release.** Want "fire on Tuesdays of even weeks"? Wait for next nebula-action minor. ADR-0040 §Negative item 4 explicitly names this trade-off for sealed primaries.
 - **No path for genuinely novel schedule semantics.** A community plugin author who has a legitimate temporal pattern (calendar-driven, market-hours, holiday-aware — see §2.2) cannot ship without going through Nebula core process.
 - **Author falls back to TriggerAction shape-2** (run-until-cancelled per §2.2.3) for any custom temporal logic — losing schedule-ledger semantics, losing catch-up, losing leader-elected fire. Defeats the structural-fix-class motivation per `n8n-trigger-pain-points.md:354-357`.
 - **Falsely declares "this is the temporal universe"** when it's actually the most-common 4 kinds. Cron + Interval + OneShot covers ~80% of n8n use cases; the long tail (per §2.2 below) is real.
@@ -181,7 +181,7 @@ Realistic community pull rate: **5-10 of these 15 would be implemented in the fi
 - **Engine cannot reason exhaustively.** Schedule-ledger has to handle "unknown ScheduleAction impl" branch — what does catch-up mean for an `AdaptiveSchedule` that depends on queue depth? Fire all missed = re-observe queue depth every fire? Engine has no way to know.
 - **Misuse vector.** Community author writes `next_fire` that returns past instants in a loop → engine infinite-fires → workflow death-spiral. Mitigation: engine MUST validate `next_fire(from) > from`; reject impls that violate.
 - **Test surface multiplies.** Engine cannot fuzz against fixed enum; must fuzz against trait-impl behavior. Property-test "next_fire must be strictly after from" catches the obvious; subtler bugs (DST gaps, leap-second edges, missing holiday data) are author-responsibility.
-- **Sealed-DX-5-trait constraint (per ADR-0038 §Negative item 4).** Adding ScheduleAction as a sealed-DX peer adds a 6th sealed trait — but if it's NON-sealed (open), it's NOT a sealed-DX peer at all; it's a NEW PRIMARY trait, which **requires canon §3.5 revision per ADR-0038 §2** (canon enumerates the 4 primaries + 5 sealed DX). The "extensible ScheduleAction" path triggers canon revision.
+- **Sealed-DX-5-trait constraint (per ADR-0040 §Negative item 4).** Adding ScheduleAction as a sealed-DX peer adds a 6th sealed trait — but if it's NON-sealed (open), it's NOT a sealed-DX peer at all; it's a NEW PRIMARY trait, which **requires canon §3.5 revision per ADR-0040 §2** (canon enumerates the 4 primaries + 5 sealed DX). The "extensible ScheduleAction" path triggers canon revision.
 
 ### §2.5 DX impact
 
@@ -197,7 +197,7 @@ Realistic community pull rate: **5-10 of these 15 would be implemented in the fi
 - 3 blessed impls: `CronSchedule`, `IntervalSchedule`, `OneShotSchedule` (~200 lines each = 600 lines)
 - 1 adapter `ScheduleTriggerAdapter` (~400 lines)
 - ~1100-1400 lines crates/action/src/schedule.rs
-- **Canon §3.5 revision per ADR-0038 §2** (5th primary trait — NOT a sealed-DX-sugar; this is the load-bearing distinction)
+- **Canon §3.5 revision per ADR-0040 §2** (5th primary trait — NOT a sealed-DX-sugar; this is the load-bearing distinction)
 
 **Engine-cluster-mode-cascade scope:**
 - `ScheduleLedger` trait
@@ -255,7 +255,7 @@ impl ScheduleAction for HourlyReportDuringMarketHours {
 ```
 
 **Pros:**
-- ScheduleAction stays sealed-DX (no canon §3.5 revision per ADR-0038 §2 — matches Webhook/Poll precedent).
+- ScheduleAction stays sealed-DX (no canon §3.5 revision per ADR-0040 §2 — matches Webhook/Poll precedent).
 - Community gets custom schedule kinds via `Schedule` trait without needing canon revision.
 - Engine reasons via `Box<dyn Schedule>` — fixed dispatch surface; trait methods are exhaustive.
 
@@ -263,7 +263,7 @@ impl ScheduleAction for HourlyReportDuringMarketHours {
 - `Box<dyn Schedule>` allocation per registration (negligible for schedules).
 - Community `Schedule` impls live OUTSIDE the sealed-DX seal — author can ship a broken `Schedule` impl. Same misuse vector as §2.4 cons. Engine MUST validate `next_fire(from) > from`.
 - Two distinct concepts (`ScheduleAction` for action-side; `Schedule` for kind-side) — slightly more cognitive load than single-trait options.
-- **`Schedule` trait is itself a NEW primary** in some sense — ADR-0038 §2's canon revision rule is about the **action trait family** specifically; `Schedule` is a supporting trait, NOT an action-dispatch trait. So canon revision is NOT required. **This is the load-bearing structural advantage of Hybrid B over §2.**
+- **`Schedule` trait is itself a NEW primary** in some sense — ADR-0040 §2's canon revision rule is about the **action trait family** specifically; `Schedule` is a supporting trait, NOT an action-dispatch trait. So canon revision is NOT required. **This is the load-bearing structural advantage of Hybrid B over §2.**
 
 **Pattern precedent in codebase:** This is the **exact** shape `nebula-resilience::Policy` takes — sealed-action-side hook calls open-trait-side strategy. Per memory `reference_resilience_usage.md`. Also matches credential `SchemeFactory<C>` per credential Tech Spec — `nebula-credential::Credential` is open; `Scheme` (the auth-protocol surface) is open AND parametric. Hybrid B is **internally consistent with two existing Nebula patterns**.
 
@@ -297,7 +297,7 @@ Hybrid B's `Schedule` trait declares `next_fire` as deterministic. Schedules #12
 | Axis | §1 Core (closed enum) | §2 Open trait | Hybrid B (sealed-DX + Schedule trait) |
 |------|----------------------|---------------|---------------------------------------|
 | Long tail addressed | ❌ No | ✅ Yes | ✅ Yes (via `Schedule` impl) |
-| Canon §3.5 revision required | ❌ No | ✅ Yes (5th primary) | ❌ No (sealed-DX peer pattern, ADR-0038 §2) |
+| Canon §3.5 revision required | ❌ No | ✅ Yes (5th primary) | ❌ No (sealed-DX peer pattern, ADR-0040 §2) |
 | Engine reasoning | ✅ Exhaustive | ⚠️ Partial (trait-impl varies) | ✅ Exhaustive (via fixed `Schedule` trait surface) |
 | Fits `nebula-action` `feedback_active_dev_mode` "honest worst-case" rule | ❌ Worst-case is fall back to TriggerAction (loses ledger) | ✅ Worst-case is "author wrote bad Schedule" (engine validates) | ✅ Worst-case is "author wrote bad Schedule" (engine validates, same as §2) |
 | Internal pattern consistency | ⚠️ Diverges from credential's open shape | ⚠️ Forces canon revision unlike Webhook/Poll | ✅ Matches credential SchemeFactory + nebula-resilience Policy |
@@ -357,7 +357,7 @@ Per `n8n-trigger-pain-points.md:354`: «Schedule history table `(workflow_id, fi
 ### §5.1 Pick: **Hybrid B** (sealed-DX `ScheduleAction` peer + open `Schedule` runtime trait)
 
 Concretely:
-- `ScheduleAction` joins WebhookAction / PollAction as a **sealed-DX peer of TriggerAction** (no canon §3.5 revision required per ADR-0038 §2 — matches the existing Webhook/Poll seal-of-DX-but-open-supporting-types pattern).
+- `ScheduleAction` joins WebhookAction / PollAction as a **sealed-DX peer of TriggerAction** (no canon §3.5 revision required per ADR-0040 §2 — matches the existing Webhook/Poll seal-of-DX-but-open-supporting-types pattern).
 - `Schedule` runtime trait is **OPEN** — community plugins implement custom schedule kinds (`MarketHoursSchedule`, `BusinessDaySchedule`, `HolidaySchedule`, etc. per §2.2's 15 catalogued use cases).
 - Nebula core ships **3 blessed `Schedule` implementations** (`CronSchedule`, `IntervalSchedule`, `OneShotSchedule`) — 80% case is single-line. `CronWindowed` deferred to community impl (composes Cron + window predicate).
 - Engine validates `next_fire(from) > from` invariant at registration AND on every fire (defense-in-depth against author bugs).
@@ -370,7 +370,7 @@ Concretely:
 3. **Plugin-author DX wins for the 80% case AND the long-tail case.** §1 Core option fails the long tail; §2 fully-open option requires canon revision. Hybrid B is the only option with no compromise on either axis.
 4. **§2.2 brainstorm enumerated 15 plausible community schedule kinds** — this is NOT a hypothetical long tail; market-hours / business-day / fiscal-calendar / iCal subscription are real enterprise / vertical-domain needs that already exist in n8n forum threads (per `n8n-trigger-pain-points.md` workaround pattern).
 5. **Future-proofing per `feedback_active_dev_mode.md` ("never settle for cosmetic / quick win / deferred").** Closed Core is a "quick win" — picks 4 kinds, ships, declares done. Hybrid B is the more-ideal path: picks the open shape now, blessed kinds for ergonomics, no future-cascade pressure to "add ScheduleKind variant N+1."
-6. **No canon revision required per ADR-0038 §2** — sealed-DX peer + open supporting trait is the established Webhook/Poll precedent. Strategy §3.4 line 164 + Tech Spec §1.2 N4 deferral framework absorbs the cluster-mode pieces (ledger, leader-fire) without needing to revise canon.
+6. **No canon revision required per ADR-0040 §2** — sealed-DX peer + open supporting trait is the established Webhook/Poll precedent. Strategy §3.4 line 164 + Tech Spec §1.2 N4 deferral framework absorbs the cluster-mode pieces (ledger, leader-fire) without needing to revise canon.
 
 ### §5.3 Honest trade-off
 
@@ -410,7 +410,7 @@ Per Q8 Phase 2.5 constraints:
 | `q8-architect-action-research.md` §3.1 schedule row + §3.2 third-candidate-primary | Temporal Schedule comparison; "5th primary" canon-revision constraint |
 | `q8-phase2-synthesis.md` §1 F3 / §2.6 / §6.3 | F3 deferral framing; conditional escalation if pulled in |
 | `docs/superpowers/specs/2026-04-24-nebula-action-tech-spec.md` §2.6 (lines 563-720) | Sealed-DX peer pattern; Webhook/Poll precedent |
-| `docs/adr/0038-controlaction-seal-canon-revision.md` §1 / §2 / §Negative item 4 | Sealed-DX 5-trait constraint; canon §3.5 revision rule |
+| `docs/adr/0040-controlaction-seal-canon-revision.md` §1 / §2 / §Negative item 4 | Sealed-DX 5-trait constraint; canon §3.5 revision rule |
 | `docs/COMPETITIVE.md` lines 17-31, 39-41 | Nebula positioning ("typed contracts + honest durability + open plugin ecosystem") |
 | `nebula-credential::Credential` + `SchemeFactory<C>` (per memory `reference_credential_tech_spec_pins.md`) | Hybrid B precedent — open trait + blessed implementations |
 | `nebula-resilience::Policy` (per memory `reference_resilience_usage.md`) | Hybrid B precedent — sealed action-side hook + open strategy trait |

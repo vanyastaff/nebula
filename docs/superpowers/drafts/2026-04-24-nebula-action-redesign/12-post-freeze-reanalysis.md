@@ -8,8 +8,8 @@ related:
   - docs/superpowers/specs/2026-04-24-nebula-action-tech-spec.md
   - docs/adr/0024-defer-dynosaur-migration.md
   - docs/adr/0035-phantom-shim-capability-pattern.md
-  - docs/adr/0036-action-trait-shape.md
-  - docs/adr/0037-action-macro-emission.md
+  - docs/adr/0038-action-trait-shape.md
+  - docs/adr/0039-action-macro-emission.md
 ---
 
 # Post-freeze re-examination — Q1 + Q2 outcomes
@@ -57,8 +57,8 @@ User's pushback is correct. The 15k-crates ecosystem usage figure reflects matur
 
 **No ADR file edits required:**
 - ADR-0024 is source-of-truth and unchanged.
-- ADR-0036 locks trait shape (the action trait family + `#[action]` macro emission for action structs) — does NOT lock `*Handler` per-method async return shape. No edit needed.
-- ADR-0037 locks macro emission for the action struct (`ActionSlots::credential_slots()`, `SlotBinding`, qualified-syntax probe, test harness, perf bound) — none sensitive to `*Handler` shape. No edit needed beyond the §15.5 amendment already enacted.
+- ADR-0038 locks trait shape (the action trait family + `#[action]` macro emission for action structs) — does NOT lock `*Handler` per-method async return shape. No edit needed.
+- ADR-0039 locks macro emission for the action struct (`ActionSlots::credential_slots()`, `SlotBinding`, qualified-syntax probe, test harness, perf bound) — none sensitive to `*Handler` shape. No edit needed beyond the §15.5 amendment already enacted.
 - ADR-0035 phantom-shim composition preserved (field-shape-level, not method-signature-level).
 
 **Production code impact (next implementation step):**
@@ -112,9 +112,9 @@ Both lenses are valid; they measure different things:
 | Tech Spec status | `FROZEN CP4 2026-04-25` | `FROZEN CP4 2026-04-25 (amended-in-place 2026-04-25 — Q1 post-freeze)` | Q2 is rationale only |
 | ADR-0024 status | accepted 2026-04-20 | accepted 2026-04-20 (unchanged) | Source-of-truth ADR; this amendment realigns Tech Spec with it |
 | ADR-0035 status | accepted (amended 2026-04-24-B / 2026-04-24-C) | unchanged | Phantom-shim composition preserved |
-| ADR-0036 status | accepted 2026-04-25 | unchanged | Trait shape unchanged at `*Handler` shape level |
-| ADR-0037 status | accepted 2026-04-25 (amended-in-place 2026-04-25) | unchanged | Macro emission shape unchanged |
-| ADR-0038 status | proposed (pending user ratification on canon §3.5) | unchanged | Out-of-scope for this re-examination |
+| ADR-0038 status | accepted 2026-04-25 | unchanged | Trait shape unchanged at `*Handler` shape level |
+| ADR-0039 status | accepted 2026-04-25 (amended-in-place 2026-04-25) | unchanged | Macro emission shape unchanged |
+| ADR-0040 status | proposed (pending user ratification on canon §3.5) | unchanged | Out-of-scope for this re-examination |
 | Spike `final_shape_v2.rs` | unchanged | unchanged | Spike does not specify `*Handler` shape |
 | §2.2 RPITIT signatures | unchanged | unchanged | RPITIT typed surface preserved per ADR-0024 §Decision item 3 ("Native AFIT remains the default for new traits that are not `dyn`-consumed") |
 | §3 / §4 / §5 / §6 / §7 / §8 / §9-§13 | unchanged | unchanged | Cross-section impact is §2.3 + §2.4 only |
@@ -124,7 +124,7 @@ Both lenses are valid; they measure different things:
 ## Process retrospective (for memory update)
 
 **What surfaced through user pushback that the freeze missed:**
-- Cross-ADR consistency check was not part of the freeze ratification protocol. ADR-0024 (accepted 2026-04-20) was four days older than the Tech Spec FROZEN CP4 — the ADR set was searchable but not searched against the cascade-internal ADRs (ADR-0035 / ADR-0036 / ADR-0037 / ADR-0038). The Tech Spec's "related ADRs" frontmatter listed only the cascade-internal four; ADR-0024 was the policy-source for the pre-existing workspace decision on `#[async_trait]` for dyn-consumed traits.
+- Cross-ADR consistency check was not part of the freeze ratification protocol. ADR-0024 (accepted 2026-04-20) was four days older than the Tech Spec FROZEN CP4 — the ADR set was searchable but not searched against the cascade-internal ADRs (ADR-0035 / ADR-0038 / ADR-0039 / ADR-0040). The Tech Spec's "related ADRs" frontmatter listed only the cascade-internal four; ADR-0024 was the policy-source for the pre-existing workspace decision on `#[async_trait]` for dyn-consumed traits.
 - The §2.9.2 table column wording "Input shape" was loosely chosen — it conflated trait-method-input with trigger-purpose-input. CP2 §2.9.1a addressed configuration but not the Output framing the user named at post-freeze. Three-axis naming earlier would have prevented the Q2 re-raise.
 
 **Pattern to encode (architect memory):**

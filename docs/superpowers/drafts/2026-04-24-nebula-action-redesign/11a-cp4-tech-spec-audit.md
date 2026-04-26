@@ -2,7 +2,7 @@
 
 **Auditor:** spec-auditor
 **Document:** `docs/superpowers/specs/2026-04-24-nebula-action-tech-spec.md` (DRAFT CP4, 2679 lines)
-**Companion:** `docs/adr/0037-action-macro-emission.md` (amendment-in-place verification)
+**Companion:** `docs/adr/0039-action-macro-emission.md` (amendment-in-place verification)
 **Read passes:** structural | consistency | external | bookkeeping | terminology
 
 ---
@@ -15,7 +15,7 @@
 
 ## §14 cross-reference accuracy
 
-§14.1 ADR matrix (4 rows). ADR-0035 status verified `accepted` (amendments 2026-04-24-B + 2026-04-24-C present in §Status block, lines 5-16). ADR-0036 / 0037 / 0038 statuses all verified `proposed`. Row 3 ADR-0037 status update text "proposed → proposed (amended-in-place 2026-04-25)" matches on-disk ADR §Status line 22.
+§14.1 ADR matrix (4 rows). ADR-0035 status verified `accepted` (amendments 2026-04-24-B + 2026-04-24-C present in §Status block, lines 5-16). ADR-0038 / 0037 / 0038 statuses all verified `proposed`. Row 3 ADR-0039 status update text "proposed → proposed (amended-in-place 2026-04-25)" matches on-disk ADR §Status line 22.
 
 §14.2 Strategy cross-refs (13 rows). Strategy line ranges spot-checked: §4.2 line 198-206 (table), §6.5 line 408-413 (a/b/c table), §6.6 line 416-426 (cross-crate coordination), §6.8 line 443-461 (B'+ contingency) — all verified.
 
@@ -25,9 +25,9 @@
 
 §14.5 Phase 0 evidence. **🔴 BLOCKER** — see below.
 
-## §15.5 ADR-0037 amendment-in-place verification
+## §15.5 ADR-0039 amendment-in-place verification
 
-ADR-0037 on disk verified line-by-line against §15.5.1 enactment claims:
+ADR-0039 on disk verified line-by-line against §15.5.1 enactment claims:
 
 - Line 22 status header: `Proposed (amended-in-place 2026-04-25)` ✓
 - Line 24 CHANGELOG block: amendment narrative present, cites Tech Spec CP4 §15.5 + ADR-0035 precedent ✓
@@ -38,7 +38,7 @@ ADR-0037 on disk verified line-by-line against §15.5.1 enactment claims:
 - Line 80-90 three-variant `SlotType` enum present ✓
 - §3 / §4 / §5 unchanged per §15.5 "not load-bearing" claim ✓ (lines 104-148 spot-checked)
 
-Amendment **landed correctly**. Modulo 🔴 #1 (terminology in doc comment) — the structural shape is right but the doc comment at ADR-0037 line 86 references the now-removed `capabilities_enabled` field.
+Amendment **landed correctly**. Modulo 🔴 #1 (terminology in doc comment) — the structural shape is right but the doc comment at ADR-0039 line 86 references the now-removed `capabilities_enabled` field.
 
 ## §15.3 / §15.4 soft-amendment flag status
 
@@ -67,7 +67,7 @@ Path naming: Tech Spec uses `(a) Single coordinated PR` / `(b) Sibling cascades`
 6. `nebula-redact` workspace integration → 4 atomic edits ✓
 7. `deny.toml` positive ban → wrappers-list extension + new positive ban ✓
 
-Plus implicit: ADR-0036 / 0037 / 0038 status moves. ADR-0037 amended-in-place qualifier preserved. ✓
+Plus implicit: ADR-0038 / 0037 / 0038 status moves. ADR-0039 amended-in-place qualifier preserved. ✓
 
 DoD covers must-have floor (4), harness, sealed adapter, reverse-deps, nebula-redact, deny.toml. Complete.
 
@@ -75,7 +75,7 @@ DoD covers must-have floor (4), harness, sealed adapter, reverse-deps, nebula-re
 
 §0.1 status table now shows CP4 row as `active` and prior CP1/CP2/CP3 rows as `locked CPN`. Frontmatter `status: DRAFT CP4` matches. ✓
 
-CP4 CHANGELOG (lines 2664-2671) records §14 + §15 + §16 additions, §15.5.1 ADR-0037 enactment. Internally consistent with §15.5.1 narrative. ✓
+CP4 CHANGELOG (lines 2664-2671) records §14 + §15 + §16 additions, §15.5.1 ADR-0039 enactment. Internally consistent with §15.5.1 narrative. ✓
 
 Cross-CP residual contradictions: see 🟠 issues — `unstable-action-scheduler` typo in §16.4 (CP4-introduced); residual CP1 path bug at line 642 forwarded into §15.1 line 2233 (CP4 row).
 
@@ -105,18 +105,18 @@ Verification:
 
 ---
 
-**2. §14.3 + §15.5 cite credential Tech Spec §9.4 line 2452 as "cross-crate authoritative — load-bearing for §15.5 ADR-0037 amendment", but §9.4 is now SUPERSEDED by §15.8 in credential Tech Spec CP5.**
+**2. §14.3 + §15.5 cite credential Tech Spec §9.4 line 2452 as "cross-crate authoritative — load-bearing for §15.5 ADR-0039 amendment", but §9.4 is now SUPERSEDED by §15.8 in credential Tech Spec CP5.**
 
 Verification:
 - credential Tech Spec line 2446 quote: `> **Superseded by §15.8 (CP5 2026-04-24).** ` iter_compatible ` filter body below consults ` cred.metadata().capabilities_enabled.contains(...) ` — plugin-declared field. CP5 canonical form: filter consults ` RegistryEntry::capabilities ` (registry-computed at ` register<C> ` time from sub-trait membership).`
-- The `iter_compatible` body at lines 2456-2470 (cited by Tech Spec §14.3 row 7 as "Cross-crate authoritative — load-bearing for §15.5 ADR-0037 amendment") still references `cred.metadata().capabilities_enabled` and `cred.metadata().service_key` — both **plugin-declared** fields per pre-CP5 form.
+- The `iter_compatible` body at lines 2456-2470 (cited by Tech Spec §14.3 row 7 as "Cross-crate authoritative — load-bearing for §15.5 ADR-0039 amendment") still references `cred.metadata().capabilities_enabled` and `cred.metadata().service_key` — both **plugin-declared** fields per pre-CP5 form.
 - Per credential Tech Spec §15.8 (CP5): `capabilities_enabled` field is REMOVED from `CredentialMetadata`; capability authority shifts from plugin metadata to `RegistryEntry::capabilities` (registry-computed at `register<C>` time from sub-trait membership).
 
-ADR-0037 line 86 doc comment also reflects the stale terminology: `Engine matches both service_key + capabilities_enabled` — `capabilities_enabled` is REMOVED in CP5 canonical form.
+ADR-0039 line 86 doc comment also reflects the stale terminology: `Engine matches both service_key + capabilities_enabled` — `capabilities_enabled` is REMOVED in CP5 canonical form.
 
 The **structural shape** of `SlotType` (3 variants: `Concrete` / `ServiceCapability` / `CapabilityOnly`) is preserved across §9.4 → §15.8 ("Same `SlotType::Concrete / ServiceCapability / CapabilityOnly` matching axes"); only the **filter authority source** shifts. So the §15.5 SlotBinding amendment-in-place IS substantively correct, but the citation justification is supersede-stale.
 
-**Impact:** Tech Spec readers following the §14.3 row 7 citation land on a `> Superseded by §15.8` block. The §15.5 enactment narrative cites the superseded body as authority. ADR-0037 line 86 doc comment reflects superseded terminology in the canonical ADR shape. Load-bearing for amendment-justification audit trail.
+**Impact:** Tech Spec readers following the §14.3 row 7 citation land on a `> Superseded by §15.8` block. The §15.5 enactment narrative cites the superseded body as authority. ADR-0039 line 86 doc comment reflects superseded terminology in the canonical ADR shape. Load-bearing for amendment-justification audit trail.
 
 **Fix:** Three coordinated edits:
 
@@ -124,7 +124,7 @@ The **structural shape** of `SlotType` (3 variants: `Concrete` / `ServiceCapabil
 
 (b) Tech Spec §15.5 + §15.5.1: add explicit acknowledgement that §9.4 was superseded by §15.8 in credential Tech Spec CP5; the SlotType shape preservation is authority-source-orthogonal.
 
-(c) ADR-0037 line 86 doc comment: replace `Engine matches both service_key + capabilities_enabled` with `Engine matches by service_key + computed capability set per credential Tech Spec §15.8 RegistryEntry::capabilities` (or equivalent).
+(c) ADR-0039 line 86 doc comment: replace `Engine matches both service_key + capabilities_enabled` with `Engine matches by service_key + computed capability set per credential Tech Spec §15.8 RegistryEntry::capabilities` (or equivalent).
 
 Tech Spec §3.1 inline doc comment (lines 624-628) has the same stale-terminology problem (cites `capabilities_enabled.contains(*capability)` per credential Tech Spec §9.4 line 2467-2470). Fix in same pass.
 
@@ -233,14 +233,14 @@ Pure DX / readability.
 
 ## Recommended handoff
 
-- **architect:** all three 🔴 BLOCKERs are mechanical pin-fix scope (file rename in §14.5 / §13.4 / §16.2; supersede-stale citation in §14.3 / §15.5 / §3.1 / ADR-0037 doc comment; flag-name typo in §16.4 line 2423). 🟠 #1 is also pin-fix. 🟠 #3 hedge addition. 🟡 batch-applicable. Estimated 15-min pass.
+- **architect:** all three 🔴 BLOCKERs are mechanical pin-fix scope (file rename in §14.5 / §13.4 / §16.2; supersede-stale citation in §14.3 / §15.5 / §3.1 / ADR-0039 doc comment; flag-name typo in §16.4 line 2423). 🟠 #1 is also pin-fix. 🟠 #3 hedge addition. 🟡 batch-applicable. Estimated 15-min pass.
 - **tech-lead:** no decision-level items; no contested calls surfaced. **Ratification gate:** verify 🔴 #2 fix preserves the §15.5 amendment-in-place justification (capability authority source vs structural shape orthogonality is the load-bearing claim).
-- **orchestrator:** after architect pin-fix pass, freeze CP4. Before freeze, confirm tech-lead ratification of §15.5 ADR-0037 enactment + §16.3 DoD framing.
+- **orchestrator:** after architect pin-fix pass, freeze CP4. Before freeze, confirm tech-lead ratification of §15.5 ADR-0039 enactment + §16.3 DoD framing.
 
 ---
 
 ## Summary (≤150 words)
 
-CP4 §14-§16 are structurally complete and internally coherent. Three 🔴 BLOCKERs are all mechanical pin-fix scope: (1) §14.5 cites `01-current-state.md` as Phase 0 evidence source but the cited line numbers (44, 252-329, 376, 379) live in `01b-workspace-audit.md` instead — propagates through §13.4 + §16.2; (2) §14.3 + §15.5 + ADR-0037 line 86 cite credential Tech Spec §9.4 as authoritative for SlotBinding, but §9.4 was superseded by §15.8 in credential Tech Spec CP5 — structural shape preserved, citation stale; (3) §16.4 line 2423 names superseded flag `unstable-action-scheduler` against §0.2 invariant 4 freeze on parallel-flag signature. Plus 🟠 (CP1 file path drift forwarded to CP4 §15.1) + 🟢/🟡 minor. **Freeze-ready: NO** until 🔴 cleared. Estimate: 15-min architect pin-fix pass; no design rework.
+CP4 §14-§16 are structurally complete and internally coherent. Three 🔴 BLOCKERs are all mechanical pin-fix scope: (1) §14.5 cites `01-current-state.md` as Phase 0 evidence source but the cited line numbers (44, 252-329, 376, 379) live in `01b-workspace-audit.md` instead — propagates through §13.4 + §16.2; (2) §14.3 + §15.5 + ADR-0039 line 86 cite credential Tech Spec §9.4 as authoritative for SlotBinding, but §9.4 was superseded by §15.8 in credential Tech Spec CP5 — structural shape preserved, citation stale; (3) §16.4 line 2423 names superseded flag `unstable-action-scheduler` against §0.2 invariant 4 freeze on parallel-flag signature. Plus 🟠 (CP1 file path drift forwarded to CP4 §15.1) + 🟢/🟡 minor. **Freeze-ready: NO** until 🔴 cleared. Estimate: 15-min architect pin-fix pass; no design rework.
 
-**Top 3 issues:** (1) §14.5 wrong source file; (2) §14.3 + §15.5 + ADR-0037 supersede-stale `capabilities_enabled` terminology; (3) §16.4 flag-name typo against frozen signature.
+**Top 3 issues:** (1) §14.5 wrong source file; (2) §14.3 + §15.5 + ADR-0039 supersede-stale `capabilities_enabled` terminology; (3) §16.4 flag-name typo against frozen signature.

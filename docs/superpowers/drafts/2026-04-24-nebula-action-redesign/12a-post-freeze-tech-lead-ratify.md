@@ -29,7 +29,7 @@ The pre-amendment Tech Spec §2.4 mandating manual `BoxFut<'a, T>` per-method on
 
 ## §2.3 BoxFut survival scope check
 
-Verified at Tech Spec line 244-256 + line 2466. `BoxFut<'a, T>` alias survives **only** for `SlotBinding::resolve_fn` HRTB fn-pointer per credential Tech Spec §3.4 line 869 + ADR-0037 §1. Structurally distinct from `*Handler` per-method async return:
+Verified at Tech Spec line 244-256 + line 2466. `BoxFut<'a, T>` alias survives **only** for `SlotBinding::resolve_fn` HRTB fn-pointer per credential Tech Spec §3.4 line 869 + ADR-0039 §1. Structurally distinct from `*Handler` per-method async return:
 
 - HRTB fn-pointer with `for<'ctx>` quantification — compile-time monomorphized at slot registration
 - Not a method on a `dyn`-consumable trait — `#[async_trait]` does not rewrite HRTB fn-pointer signatures
@@ -60,7 +60,7 @@ Verified at Tech Spec line 3 + line 33 (§0.1 status table CP4 row). Qualifier r
 
 Status table row carries full attribution: "amended-in-place 2026-04-25 post-freeze for Q1 `*Handler` shape per §15.9 + Q2 §2.9.1b axis-naming refinement per ADR-0035 amended-in-place precedent."
 
-Per ADR-0035 amended-in-place precedent (referenced throughout Tech Spec §2037 and adjacent §15.5 ADR-0037 amendment), post-freeze canonical-form correction is the proportionate mechanism. Q1 (structural §2.3 + §2.4 signature change) is the amendment qualifier; Q2 (rationale-tightening only, verdict unchanged) is appropriately recorded in §15.9.5 without separate header qualifier. **Header form correct.**
+Per ADR-0035 amended-in-place precedent (referenced throughout Tech Spec §2037 and adjacent §15.5 ADR-0039 amendment), post-freeze canonical-form correction is the proportionate mechanism. Q1 (structural §2.3 + §2.4 signature change) is the amendment qualifier; Q2 (rationale-tightening only, verdict unchanged) is appropriately recorded in §15.9.5 without separate header qualifier. **Header form correct.**
 
 ## Regressions check
 
@@ -70,7 +70,7 @@ Verified across CP1/CP2/CP3 design surfaces:
 - **Spike NOTES finding #1 (SchemeGuard auto-deref Clone shadow probe)** — orthogonal to `*Handler` shape (probe lives at `SchemeGuard` `impl<'a, C: Capability>` level, not in handler trait method signatures). No interaction.
 - **§2.2 RPITIT signatures** (4 primary traits Stateless/Stateful/Trigger/Resource) — preserved per ADR-0024 §Decision item 3 ("Native AFIT remains the default for new traits that are not `dyn`-consumed"). The 4 primary traits stay native AFIT; only the 4 `*Handler` companions flip to `#[async_trait]`. Type-state separation between primary and companion preserved.
 - **CP3 §9-§13 floor items** (4 floor items including §9.5 secret-propagation `nebula-redact` + §13.4.3 deny.toml wrappers-list) — none sensitive to `*Handler` method signature shape. Untouched.
-- **ADR-0036 / ADR-0037 / ADR-0038 status invariants** — unchanged (verified at line 2168-2169). ADR-0036 locks trait shape at the action trait family level (not `*Handler` per-method); ADR-0037 amended-in-place per §15.5 (orthogonal to this Q1 amendment); ADR-0038 still proposed pending user ratification on canon §3.5 revision (correctly excluded from this scope).
+- **ADR-0038 / ADR-0039 / ADR-0040 status invariants** — unchanged (verified at line 2168-2169). ADR-0038 locks trait shape at the action trait family level (not `*Handler` per-method); ADR-0039 amended-in-place per §15.5 (orthogonal to this Q1 amendment); ADR-0040 still proposed pending user ratification on canon §3.5 revision (correctly excluded from this scope).
 - **§16.5 cascade-final precondition** — verified at line 2484-2486. No new precondition; implementation absorbs `#[async_trait]` adoption mechanically (Cargo.toml dep already in `[workspace.dependencies]` per ADR-0024).
 
 **No regressions.**
@@ -79,4 +79,4 @@ Verified across CP1/CP2/CP3 design surfaces:
 
 Cross-ADR violation correctly identified by user pushback; architect's amendment-in-place is the proportionate mechanism; all six ratification checks pass; no contested calls. Tech Spec FROZEN CP4 stands with the post-freeze amendment-in-place qualifier.
 
-**Verdict: RATIFY. Commit-ready: yes. No escalation. ADR-0038 not auto-flipped (canon §3.5 revision still pending user ratification — correctly out-of-scope).**
+**Verdict: RATIFY. Commit-ready: yes. No escalation. ADR-0040 not auto-flipped (canon §3.5 revision still pending user ratification — correctly out-of-scope).**

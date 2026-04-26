@@ -2,7 +2,7 @@
 
 **Reviewer:** tech-lead (solo decider)
 **Document:** [`docs/superpowers/specs/2026-04-24-nebula-action-tech-spec.md`](../../specs/2026-04-24-nebula-action-tech-spec.md) — DRAFT CP4 (iterated 2026-04-25), 2700 lines
-**Companion:** [`docs/adr/0037-action-macro-emission.md`](../../../adr/0037-action-macro-emission.md) — amendment-in-place verification
+**Companion:** [`docs/adr/0039-action-macro-emission.md`](../../../adr/0039-action-macro-emission.md) — amendment-in-place verification
 **Inputs:** spec-auditor [`11a-cp4-tech-spec-audit.md`](11a-cp4-tech-spec-audit.md) REVISE (3 🔴 + 3 🟠 + 3 actionable 🟡); security-lead [`11b-cp4-security-review.md`](11b-cp4-security-review.md) ACCEPT (no edits)
 
 ---
@@ -13,11 +13,11 @@
 
 ---
 
-## §15.5 ADR-0037 amendment enactment verification
+## §15.5 ADR-0039 amendment enactment verification
 
 ADR file edits landed verbatim on disk:
 
-- **Status header** [`0037-action-macro-emission.md`](../../../adr/0037-action-macro-emission.md) line 4 → `proposed` and line 22 → `Proposed (amended-in-place 2026-04-25)` ✓
+- **Status header** [`0039-action-macro-emission.md`](../../../adr/0039-action-macro-emission.md) line 4 → `proposed` and line 22 → `Proposed (amended-in-place 2026-04-25)` ✓
 - **CHANGELOG entry** lines 24 (narrative naming Tech Spec CP4 §15.5 + ADR-0035 amended-in-place precedent + supersede-aware "credential Tech Spec §9.4 line 2452 authoritative ... (`Concrete { type_id }`, `ServiceCapability { capability, service }`, `CapabilityOnly { capability }`)") ✓
 - **§1 SlotBinding shape rewritten** lines 49-95: `field_name` rename from `key`; capability folded into `SlotType` enum; `SlotBinding` shape three fields (`field_name`, `slot_type`, `resolve_fn`); three-variant `SlotType` enum (`Concrete { type_id }` / `ServiceCapability { capability, service }` / `CapabilityOnly { capability }`); §15.8 supersession cited at lines 86-90 with `RegistryEntry::capabilities` registry-computed authority replacing pre-CP5 `capabilities_enabled` plugin-metadata field ✓
 - **§3 / §4 / §5 unchanged** per "not load-bearing" claim — verified intact at lines 108-148 ✓
@@ -68,9 +68,9 @@ CHANGELOG line 2684 explicitly records the parenthetical correction from the sup
 - §14.3 row 7 + row 8 (lines 2152-2153) re-pinned to "§15.8 (CP5 supersession of §9.4)" with shape-preservation note + capability authority shift naming (`capabilities_enabled` → `RegistryEntry::capabilities`) ✓
 - §15.5 supersession-acknowledgement paragraph at line 2316 names shape-preservation orthogonality + §15.5.1 enactment-bullet citation updated ✓
 - §3.1 SlotType `ServiceCapability` doc comment (lines 624-631) re-pinned: cites §15.8 + `RegistryEntry::capabilities`; explicitly names pre-CP5 `capabilities_enabled` as REMOVED ✓
-- ADR-0037 line 86-90 doc comment carries the same correction (cited credential Tech Spec §15.8 `RegistryEntry::capabilities` + supersession-of-§9.4 narrative; pre-CP5 `capabilities_enabled` flagged REMOVED) ✓
+- ADR-0039 line 86-90 doc comment carries the same correction (cited credential Tech Spec §15.8 `RegistryEntry::capabilities` + supersession-of-§9.4 narrative; pre-CP5 `capabilities_enabled` flagged REMOVED) ✓
 
-All three justification axes (Tech Spec §14.3 + §15.5 + ADR-0037 doc comment) re-pinned in coordinated edit. Substantive amendment correctness preserved (shape orthogonal to authority source).
+All three justification axes (Tech Spec §14.3 + §15.5 + ADR-0039 doc comment) re-pinned in coordinated edit. Substantive amendment correctness preserved (shape orthogonal to authority source).
 
 ---
 
@@ -84,7 +84,7 @@ Full §0-§16 sweep (sampled at section boundaries + risk surfaces):
 - **§6 security floor** unchanged from CP2 lock; §16.3 item 2 surfaces same four items at cascade-landing-PR obligation tier (not duplicated; not contradictorily relaxed) ✓
 - **§9.5 cross-tenant Terminate** unchanged from CP3 lock; §15.1 closure row line 2253 + security-lead 11b cross-section consistency check ✓
 - **§13.4 four hygiene Ts** consistent across §15.7 ratification table + §16.3 item 6/7 + §14.5 disposition table ✓
-- **§14.3 row 7/8 supersession** pin-fix coordinated across §15.5 + §3.1 + ADR-0037 doc comment ✓
+- **§14.3 row 7/8 supersession** pin-fix coordinated across §15.5 + §3.1 + ADR-0039 doc comment ✓
 - **§16 phase numbering anchor** added at line 2376 per spec-auditor 🟡 #5 ✓
 - **CHANGELOG completeness** CP1 + CP2 + CP3 + CP4 all present with explicit Open-items / Forward-track / Handoff sections; CP4 iteration append (lines 2680-2692) records all 3 🔴 + 3 🟠 + 3 actionable 🟡 closures ✓
 
@@ -94,9 +94,9 @@ No residual contradictions across §0-§16 detected.
 
 ## Freeze decision
 
-**RATIFY-FREEZE.** Tech Spec internally consistent. All three 🔴 BLOCKERs cleared mechanically (no design rework). security-lead 11b ACCEPT verbatim. No contested calls. No co-decision routing required. ADR-0037 amendment-in-place ENACTED on disk. §16.3 DoD must-have floor binding as cascade-landing-PR obligation. §16.1 (a/b/c) framing presents-not-prepicks (Phase 8 user pick preserved). §16.4 rollback feature-flag names corrected to parallel form per §0.2 invariant 4 freeze.
+**RATIFY-FREEZE.** Tech Spec internally consistent. All three 🔴 BLOCKERs cleared mechanically (no design rework). security-lead 11b ACCEPT verbatim. No contested calls. No co-decision routing required. ADR-0039 amendment-in-place ENACTED on disk. §16.3 DoD must-have floor binding as cascade-landing-PR obligation. §16.1 (a/b/c) framing presents-not-prepicks (Phase 8 user pick preserved). §16.4 rollback feature-flag names corrected to parallel form per §0.2 invariant 4 freeze.
 
-After this ratification, status flips DRAFT CP4 (iterated 2026-04-25) → **FROZEN CP4 2026-04-25**; ADR-0036 / 0037 / 0038 status moves `proposed` → `accepted`; ADR-0037 retains `proposed (amended-in-place 2026-04-25)` qualifier per §15.5.1 record. Phase 6 closes.
+After this ratification, status flips DRAFT CP4 (iterated 2026-04-25) → **FROZEN CP4 2026-04-25**; ADR-0038 / 0037 / 0038 status moves `proposed` → `accepted`; ADR-0039 retains `proposed (amended-in-place 2026-04-25)` qualifier per §15.5.1 record. Phase 6 closes.
 
 **Escalation flag: NONE.**
 
@@ -104,6 +104,6 @@ After this ratification, status flips DRAFT CP4 (iterated 2026-04-25) → **FROZ
 
 ## Summary
 
-RATIFY-FREEZE — freeze yes. Tech Spec post-iteration is internally consistent and freeze-ready. (1) §15.5 ADR-0037 §1 SlotBinding amendment-in-place enacted on disk verbatim with shape-preserving supersession acknowledgement (§9.4 → §15.8 orthogonal to capability authority source); (2) §16.1 paths a/b/c presented per Strategy §4.2 framing without pre-picking — Phase 8 user pick preserved; (3) §16.3 DoD item 2 enumerates all four security must-have floor items as cascade-landing-PR obligations with security-lead 11b ACCEPT; (4) §16.4 Layer 1 parallel feature-flag names corrected per §0.2 invariant 4 freeze on parallel-flag signature; (5) file path + supersession citation pin-fixes coordinated across §14.5 / §13.4.x / §14.3 / §15.5 / §3.1 / ADR-0037 doc comment. No design-level rework. No contested calls. **Freeze gate: GREEN.** Escalation: NO.
+RATIFY-FREEZE — freeze yes. Tech Spec post-iteration is internally consistent and freeze-ready. (1) §15.5 ADR-0039 §1 SlotBinding amendment-in-place enacted on disk verbatim with shape-preserving supersession acknowledgement (§9.4 → §15.8 orthogonal to capability authority source); (2) §16.1 paths a/b/c presented per Strategy §4.2 framing without pre-picking — Phase 8 user pick preserved; (3) §16.3 DoD item 2 enumerates all four security must-have floor items as cascade-landing-PR obligations with security-lead 11b ACCEPT; (4) §16.4 Layer 1 parallel feature-flag names corrected per §0.2 invariant 4 freeze on parallel-flag signature; (5) file path + supersession citation pin-fixes coordinated across §14.5 / §13.4.x / §14.3 / §15.5 / §3.1 / ADR-0039 doc comment. No design-level rework. No contested calls. **Freeze gate: GREEN.** Escalation: NO.
 
 *End of CP4 freeze ratification (tech-lead).*

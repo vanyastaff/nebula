@@ -144,7 +144,7 @@ Windmill triggers (`backend/Cargo.toml` features `kafka`, `sqs_trigger`, `nats`,
 1. **Type-erased `TriggerEvent` envelope** at the dyn boundary (`trigger.rs:86-122`) — Windmill uses per-language executor modules with concrete event types; Nebula's `Box<dyn Any + Send + Sync>` + `TypeId` design lets transport families ship their own typed event without growing the base trait. Windmill's approach hard-codes "this is a script invocation" into the worker; ours is transport-shape-agnostic. **Better.**
 2. **Cancel-safety floor as design invariant** (Tech Spec §3.4 floor item 4 + `webhook.rs:1266-1298` `tokio::select!` shape) — Windmill issues like `#28632` Wait-tracker crashes on Postgres are partly avoidable here.
 3. **`PollCursor<C>` per-cycle wrapper with rollback semantics** (`poll.rs:439-477`) — Windmill polling lacks per-cycle checkpoint/rollback; Nebula's `PollOutcome::{Idle, Ready, Partial}` × `EmitFailurePolicy::{DropAndContinue, RetryBatch, StopTrigger}` matrix is more explicit.
-4. **Sealed DX pattern** (Tech Spec §2.6 ADR-0038) — Windmill's `FlowModule` enum is open; ours seals the surface for forward-compatible extension. Windmill `#5337` "rework dedicated workers" partly stems from open extension surface.
+4. **Sealed DX pattern** (Tech Spec §2.6 ADR-0040) — Windmill's `FlowModule` enum is open; ours seals the surface for forward-compatible extension. Windmill `#5337` "rework dedicated workers" partly stems from open extension surface.
 5. **`SignaturePolicy::Required` as default** for `WebhookAction::config()` (`webhook.rs:660-663`) — fail-closed default; Windmill webhook docs don't surface this discipline.
 
 ---

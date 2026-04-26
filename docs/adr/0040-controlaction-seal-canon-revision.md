@@ -20,7 +20,7 @@ linear: []
 
 ## Status
 
-**Proposed** — drafted 2026-04-24 as the third of the 3-ADR set for the nebula-action redesign cascade ([Strategy §6.2](../superpowers/specs/2026-04-24-action-redesign-strategy.md#62-adr-drafting-roadmap)). Drafted after ADR-0036 (trait shape) and ADR-0037 (emission contract) so the canon revision rationale is grounded in the prior two locks. Tech-lead solo-decided this call at Phase 1 ([pain enumeration §7](../superpowers/drafts/2026-04-24-nebula-action-redesign/02-pain-enumeration.md)); user ratification at Phase 8 cascade summary. Status moves to `accepted` upon user ratification.
+**Proposed** — drafted 2026-04-24 as the third of the 3-ADR set for the nebula-action redesign cascade ([Strategy §6.2](../superpowers/specs/2026-04-24-action-redesign-strategy.md#62-adr-drafting-roadmap)). Drafted after ADR-0038 (trait shape) and ADR-0039 (emission contract) so the canon revision rationale is grounded in the prior two locks. Tech-lead solo-decided this call at Phase 1 ([pain enumeration §7](../superpowers/drafts/2026-04-24-nebula-action-redesign/02-pain-enumeration.md)); user ratification at Phase 8 cascade summary. Status moves to `accepted` upon user ratification.
 
 ## Context
 
@@ -159,8 +159,8 @@ User ratification gates ADR `accepted` status. Tech-lead solo-decided this call 
 - [Phase 1 pain enumeration](../superpowers/drafts/2026-04-24-nebula-action-redesign/02-pain-enumeration.md) — §7 tech-lead Phase 1 solo decisions, including the ControlAction seal call (`decision_controlaction_seal`).
 - [Phase 2 scope decision](../superpowers/drafts/2026-04-24-nebula-action-redesign/03-scope-decision.md) — §1.5 ratifies tech-lead Phase 1 calls in cascade scope; §3 must-have floor (CR3 hard-removal discipline cited in §3 above).
 - [ADR-0035 phantom-shim capability pattern](./0035-phantom-shim-capability-pattern.md) — §3 sealed module placement convention (per-capability inner sealed traits); composition reference for §1 sealed-DX shape.
-- [ADR-0036 action trait shape](./0036-action-trait-shape.md) + [ADR-0037 macro emission](./0037-action-macro-emission.md) — companion ADRs in the 3-ADR set; macro emission contract assumes the sealed DX tier from this ADR.
+- [ADR-0038 action trait shape](./0038-action-trait-shape.md) + [ADR-0039 macro emission](./0039-action-macro-emission.md) — companion ADRs in the 3-ADR set; macro emission contract assumes the sealed DX tier from this ADR.
 
 ---
 
-*Proposed by: architect (nebula-action redesign cascade Phase 5), 2026-04-24. Tech-lead Phase 1 solo decision; user ratification at Phase 8 cascade summary. Composed with ADR-0036 (trait shape) and ADR-0037 (emission contract).*
+*Proposed by: architect (nebula-action redesign cascade Phase 5), 2026-04-24. Tech-lead Phase 1 solo decision; user ratification at Phase 8 cascade summary. Composed with ADR-0038 (trait shape) and ADR-0039 (emission contract).*

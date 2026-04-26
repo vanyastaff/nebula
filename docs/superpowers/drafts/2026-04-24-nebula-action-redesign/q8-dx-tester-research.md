@@ -64,7 +64,7 @@ Target (post-cascade): **<5 min for Action 1**. Phase 1 verdict: 👎 because th
 
 **Code-as-piece (custom code blocks).** Activepieces' code piece is fragile: #10634 fails on curly braces; #9554 fails on property named «target»; #10989/#11995/#11998 generic «code piece fails». Cross-cutting fragility class (peer-research lines 168-174). **Implication:** code-action surfaces need strict input schema + good error surfacing. Nebula's typed `parameters = T` + `redacted_display` partially closes this; **Q8 follow-up:** action-as-code-block (the «inline custom code» feature n8n + AP both expose) is **not** in Tech Spec §4 zones. Open question whether Nebula should support code-block-in-parameter at all — see §3 below.
 
-**Loops / branches.** AP's «callable subflow» exists but requires sequential processing workaround (#6844). Nebula's `ControlAction` (sealed DX trait per Tech Spec §2.6 + ADR-0038) is the parallel — lands as Stateless + `#[action(control_flow = …)]` zone.
+**Loops / branches.** AP's «callable subflow» exists but requires sequential processing workaround (#6844). Nebula's `ControlAction` (sealed DX trait per Tech Spec §2.6 + ADR-0040) is the parallel — lands as Stateless + `#[action(control_flow = …)]` zone.
 
 ### §1.5 Activepieces correlation table
 
@@ -340,7 +340,7 @@ Tech Spec §4.1 zones: `credentials(slot: Type)`, `resources(slot: Type)`, `para
 - Poll interval — for `PollAction`, lives in the impl body; Tech Spec §15.11 R6 names `PollConfig` + `POLL_INTERVAL_FLOOR`.
 - Output port declarations — `ActionMetadata.outputs` per `crates/action/src/port.rs`.
 
-**This is the right shape.** The `#[action]` macro is a **field-rewriting + metadata-generating attribute**, not a god-attribute. Per ADR-0036 §Negative item 2 («pervasive struct-level rewriting harms LSP / grep / IDE hover semantics»), the narrow zone discipline is load-bearing.
+**This is the right shape.** The `#[action]` macro is a **field-rewriting + metadata-generating attribute**, not a god-attribute. Per ADR-0038 §Negative item 2 («pervasive struct-level rewriting harms LSP / grep / IDE hover semantics»), the narrow zone discipline is load-bearing.
 
 **Severity:** 🟢.
 

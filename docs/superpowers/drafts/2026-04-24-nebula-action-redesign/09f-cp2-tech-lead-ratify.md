@@ -7,7 +7,7 @@
 - [`09c-cp2-security-review.md`](09c-cp2-security-review.md) — co-decision sign-off YES on all 4 §6 items + 3 required edits (now applied per CHANGELOG line 1614 / 1615)
 - [`09b-cp2-rust-senior-review.md`](09b-cp2-rust-senior-review.md) line 11, 51-67, 102, 107, 111 — §5.3-1 deny.toml wrappers amendment path committed
 - [`09a-cp2-tech-spec-audit.md`](09a-cp2-tech-spec-audit.md), [`09d-cp2-dx-review.md`](09d-cp2-dx-review.md), [`09e-cp2-devops-review.md`](09e-cp2-devops-review.md) — closures verified via CHANGELOG entries
-- ADR-0037 §1 line 50-54 (verified `SlotBinding { ..., capability: Capability::Bearer, ... }` shape divergence is real)
+- ADR-0039 §1 line 50-54 (verified `SlotBinding { ..., capability: Capability::Bearer, ... }` shape divergence is real)
 - Memory: `decision_terminate_gating`, `decision_action_techspec_cp1_ratify`, `decision_action_strategy_cp2_ratify` (load-bearing for ratification continuity)
 
 ---
@@ -16,7 +16,7 @@
 
 **RATIFY — commit-ready, no round-2.**
 
-CP2 iteration absorbed every reviewer required-edit class (security-lead 09c three required edits, rust-senior 09b three nits, dx-tester 09d two items, devops 09e two items, spec-auditor 09a three numbered items) plus the user §2.9 reconsideration. The CHANGELOG (lines 1606-1623) maps each closure to verified reviewer finding. §6 co-decision items lock concrete implementation forms with security-lead's three required edits applied verbatim. §2.9 refined REJECT preserves Phase 1 verdict with a tightened rationale that resolves the user's RSS/Kafka pushback principally rather than defensively. ADR-0037 §1 amendment-in-place trigger correctly deferred to Phase 8 with explicit re-pin fallback rejected by cross-crate authoritative-source rule.
+CP2 iteration absorbed every reviewer required-edit class (security-lead 09c three required edits, rust-senior 09b three nits, dx-tester 09d two items, devops 09e two items, spec-auditor 09a three numbered items) plus the user §2.9 reconsideration. The CHANGELOG (lines 1606-1623) maps each closure to verified reviewer finding. §6 co-decision items lock concrete implementation forms with security-lead's three required edits applied verbatim. §2.9 refined REJECT preserves Phase 1 verdict with a tightened rationale that resolves the user's RSS/Kafka pushback principally rather than defensively. ADR-0039 §1 amendment-in-place trigger correctly deferred to Phase 8 with explicit re-pin fallback rejected by cross-crate authoritative-source rule.
 
 No VETO trigger fired. Implementation-time security-lead VETO authority on §6.2 shim-form drift retained per 03c §1 + §1 G3 + §0.2 invariant 3.
 
@@ -53,16 +53,16 @@ No edit required. The §2.9.5 verdict annotation + §2.9.6 prelude addition corr
 
 ---
 
-## R5 ADR-0037 amendment-in-place defer check
+## R5 ADR-0039 amendment-in-place defer check
 
 **RATIFY DEFERRAL — does not violate `decision_terminate_gating`-style "finish partial work" mindset.**
 
 The trigger (Tech Spec §15 line 1587) is structurally different from the Terminate gate-and-defer pattern that `decision_terminate_gating` forbids:
 
 1. **Terminate gate-and-defer was forbidden** because the public API surface (`ActionResult::Terminate`) shipped without engine-end honoring it — a canon §4.5 false-capability violation in the production crate.
-2. **ADR-0037 amendment-in-place is a documentation reconciliation**, not a public-API shipping question. ADR-0037 is `proposed` (moves to `accepted` upon Tech Spec ratification per §0.2 line 38). The Tech Spec §3.1 has the correct shape (`SlotBinding { field_name, slot_type, resolve_fn }` per credential Tech Spec §9.4 authoritative source); ADR-0037 §1 example will be amended-in-place during Phase 8 cross-section pass.
+2. **ADR-0039 amendment-in-place is a documentation reconciliation**, not a public-API shipping question. ADR-0039 is `proposed` (moves to `accepted` upon Tech Spec ratification per §0.2 line 38). The Tech Spec §3.1 has the correct shape (`SlotBinding { field_name, slot_type, resolve_fn }` per credential Tech Spec §9.4 authoritative source); ADR-0039 §1 example will be amended-in-place during Phase 8 cross-section pass.
 
-**Phase 8 enactment commitment is real, not a TODO comment.** §15 line 1587 explicitly says: "*Phase 8 must enact OR this Tech Spec must re-pin §3.1 to ADR-0037's current shape (rejected — credential Tech Spec §9.4 wins per cross-crate authoritative-source rule).*" The fallback alternative is rejected by the cross-crate authoritative-source rule, which means Phase 8 enactment is the ONLY remaining path — this is `feedback_active_dev_mode.md` discipline ("before saying 'defer X', confirm the follow-up has a home"). The home is Phase 8.
+**Phase 8 enactment commitment is real, not a TODO comment.** §15 line 1587 explicitly says: "*Phase 8 must enact OR this Tech Spec must re-pin §3.1 to ADR-0039's current shape (rejected — credential Tech Spec §9.4 wins per cross-crate authoritative-source rule).*" The fallback alternative is rejected by the cross-crate authoritative-source rule, which means Phase 8 enactment is the ONLY remaining path — this is `feedback_active_dev_mode.md` discipline ("before saying 'defer X', confirm the follow-up has a home"). The home is Phase 8.
 
 **§0.2 invariant 2 trigger.** §15 line 1587 also notes this is a §0.2 invariant 2 trigger if not landed before Tech Spec ratification — meaning the freeze policy itself enforces enactment before CP4 → FROZEN CP4. Phase 8 cross-section pass is bounded by the freeze gate, not by an open-ended TODO.
 
@@ -113,6 +113,6 @@ CP2 is commit-ready as-is. **No round-2 needed.**
 
 ## Summary
 
-**RATIFY — commit-ready, no round-2.** §6 co-decision items (4 floor items) lock concrete implementation forms with security-lead's three required edits applied verbatim; agreement with security-lead 09c is full and unanimous — no escalation. §2.9 refined REJECT preserves Phase 1 verdict with the user's RSS/Kafka pushback resolved principally via Configuration ≠ Runtime Input axis. ADR-0037 §1 amendment-in-place trigger correctly deferred to Phase 8 cross-section pass — fallback re-pin rejected by cross-crate authoritative-source rule, §0.2 invariant 2 enforces enactment before CP4 freeze. §5.3-1 `deny.toml` wrappers amendment commits Path 1 (rust-senior 09b NIT 1 closed). §2.9-1 `for_trigger::<A>()` helper at CP3 §7 ActionMetadata field-set lock is correct placement. Implementation-time security-lead VETO authority on §6.2 shim-form drift retained per 03c §1 + §1 G3 + §0.2 invariant 3. **Orchestrator commits.**
+**RATIFY — commit-ready, no round-2.** §6 co-decision items (4 floor items) lock concrete implementation forms with security-lead's three required edits applied verbatim; agreement with security-lead 09c is full and unanimous — no escalation. §2.9 refined REJECT preserves Phase 1 verdict with the user's RSS/Kafka pushback resolved principally via Configuration ≠ Runtime Input axis. ADR-0039 §1 amendment-in-place trigger correctly deferred to Phase 8 cross-section pass — fallback re-pin rejected by cross-crate authoritative-source rule, §0.2 invariant 2 enforces enactment before CP4 freeze. §5.3-1 `deny.toml` wrappers amendment commits Path 1 (rust-senior 09b NIT 1 closed). §2.9-1 `for_trigger::<A>()` helper at CP3 §7 ActionMetadata field-set lock is correct placement. Implementation-time security-lead VETO authority on §6.2 shim-form drift retained per 03c §1 + §1 G3 + §0.2 invariant 3. **Orchestrator commits.**
 
 *End of CP2 tech-lead ratification.*

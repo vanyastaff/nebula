@@ -13,7 +13,7 @@ related:
   - docs/superpowers/specs/2026-04-24-credential-tech-spec.md
   - docs/superpowers/drafts/2026-04-24-nebula-action-redesign/07-spike-NOTES.md
   - docs/adr/0035-phantom-shim-capability-pattern.md
-  - docs/adr/0036-action-trait-shape.md
+  - docs/adr/0038-action-trait-shape.md
 linear: []
 ---
 
@@ -21,13 +21,13 @@ linear: []
 
 ## Status
 
-**Accepted 2026-04-25 (amended-in-place 2026-04-25)** — drafted 2026-04-24 as the second of the 3-ADR set for the nebula-action redesign cascade ([Strategy §6.2](../superpowers/specs/2026-04-24-action-redesign-strategy.md#62-adr-drafting-roadmap)). Drafted after ADR-0036 (trait shape) so the emission contract is grounded in the trait-shape decision. Status moved from `proposed` → `accepted` 2026-04-25 after Phase 6 Tech Spec FROZEN CP4 ratification (tech-lead 11c freeze ratification). Retains amendment-in-place qualifier from same date per Tech Spec CP4 §15.5 enactment.
+**Accepted 2026-04-25 (amended-in-place 2026-04-25)** — drafted 2026-04-24 as the second of the 3-ADR set for the nebula-action redesign cascade ([Strategy §6.2](../superpowers/specs/2026-04-24-action-redesign-strategy.md#62-adr-drafting-roadmap)). Drafted after ADR-0038 (trait shape) so the emission contract is grounded in the trait-shape decision. Status moved from `proposed` → `accepted` 2026-04-25 after Phase 6 Tech Spec FROZEN CP4 ratification (tech-lead 11c freeze ratification). Retains amendment-in-place qualifier from same date per Tech Spec CP4 §15.5 enactment.
 
 **Amended-in-place 2026-04-25** per [Tech Spec CP4 §15.5](../superpowers/specs/2026-04-24-nebula-action-tech-spec.md) to fold `capability` into the `SlotType` enum, aligning with [credential Tech Spec §9.4 line 2452](../superpowers/specs/2026-04-24-credential-tech-spec.md) authoritative three-variant matching pipeline (`Concrete { type_id }`, `ServiceCapability { capability, service }`, `CapabilityOnly { capability }`). Per [ADR-0035 amended-in-place precedent](./0035-phantom-shim-capability-pattern.md) (status block records 2026-04-24-B and 2026-04-24-C amendments — same canonical-form-correction discipline applies here, not a paradigm shift). Pre-amendment §1 had separate `capability` field; post-amendment shape locates capability inside `SlotType` variants. Field renamed `key` → `field_name` (`&'static str`) for clarity (this is the *Rust struct field name*, not a credential `SlotKey`). §3 (qualified-syntax probe), §4 (test harness), §5 (emission perf bound) unaffected — `SlotBinding` shape is not load-bearing for those sections.
 
 ## Context
 
-ADR-0036 locks the trait shape: `#[action]` attribute macro with narrow zone rewriting + dual enforcement layer. This ADR locks the **emission contract** — what tokens the macro produces, the HRTB function-pointer shape for `SlotBinding::resolve_fn`, and two emission-time obligations the spike surfaced.
+ADR-0038 locks the trait shape: `#[action]` attribute macro with narrow zone rewriting + dual enforcement layer. This ADR locks the **emission contract** — what tokens the macro produces, the HRTB function-pointer shape for `SlotBinding::resolve_fn`, and two emission-time obligations the spike surfaced.
 
 Three artefacts ground this ADR:
 
@@ -100,7 +100,7 @@ The `resolve_fn` field has type `for<'ctx> fn(&'ctx CredentialContext<'ctx>, &'c
 
 ### §2. Dual enforcement layer for declaration-zone discipline (per spike finding #3)
 
-Both enforcement mechanisms ship in the production macro per [ADR-0036 §3](./0036-action-trait-shape.md):
+Both enforcement mechanisms ship in the production macro per [ADR-0038 §3](./0038-action-trait-shape.md):
 
 - **Type-system layer (always on, structural).** Bare `CredentialRef<C>` field outside `credentials(...)` zone has no emitted `ActionSlots` impl → struct cannot reach `Action` blanket marker → `error[E0277]: trait bound X: Action not satisfied`. Spike Probe 3 confirms ([NOTES §1.4](../superpowers/drafts/2026-04-24-nebula-action-redesign/07-spike-NOTES.md)).
 - **Proc-macro layer (DX diagnostic).** When the macro parses an `#[action]` invocation and detects a `CredentialRef<_>` field outside the declared `credentials(...)` zone, it emits `compile_error!("did you forget to declare this credential in `credentials(slot: Type)`?")` with span pointing at the offending field. Cleaner than letting the user hit `E0277` with no actionable hint.
@@ -193,8 +193,8 @@ Instead of `impl ActionSlots for SlackBearerAction`, macro emits `struct SlackBe
 - [Spike NOTES](../superpowers/drafts/2026-04-24-nebula-action-redesign/07-spike-NOTES.md) — §1.1 module layout; §1.4 Probe 3 result; §1.6 hand-expansion; §2.5 emission perf; §3 finding #1 (auto-deref Clone shadow); §3 finding #3 (dual enforcement layer); commit `c8aef6a0`.
 - [Credential Tech Spec](../superpowers/specs/2026-04-24-credential-tech-spec.md) — §3.4 line 869 HRTB shape; §7.1 `RefreshDispatcher::refresh_fn` parallel pattern; §15.7 `SchemeGuard<'a, C>` lifecycle; §16.1.1 probe table (auto-deref Clone shadow amendment candidate).
 - [ADR-0035 phantom-shim capability pattern](./0035-phantom-shim-capability-pattern.md) — §4.3 action-side rewrite obligation; ADR-0035 §4.1 macro-cannot-emit-shared-module rationale (informs §4 test harness location: macro-adjacent, not pre-emitted).
-- [ADR-0036 action trait shape](./0036-action-trait-shape.md) — companion ADR locking trait shape; this ADR's emission contract assumes ADR-0036's narrow zone rewriting.
+- [ADR-0038 action trait shape](./0038-action-trait-shape.md) — companion ADR locking trait shape; this ADR's emission contract assumes ADR-0038's narrow zone rewriting.
 
 ---
 
-*Proposed by: architect (nebula-action redesign cascade Phase 5), 2026-04-24. Composed with ADR-0036 (trait shape) and ADR-0038 (ControlAction seal + canon revision).*
+*Proposed by: architect (nebula-action redesign cascade Phase 5), 2026-04-24. Composed with ADR-0038 (trait shape) and ADR-0040 (ControlAction seal + canon revision).*

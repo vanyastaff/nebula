@@ -79,7 +79,7 @@ Source: [`q8-security-credential-research.md`](q8-security-credential-research.m
 
 - **§15.12.1 Enactment** — 5 AMEND items table with Tech Spec section + class + spike risk per item; per-ADR composition analysis (no ADR file edits required); picked-rationale per amendment.
 - **§15.12.2 Why amend-in-place vs supersede** — research-driven gap-closure with default-opt-in surfaces and doc-only contracts (no paradigm shift); ADR-0035 §Status block "canonical-form correction" criterion satisfied; bundle landing in single CP per §15.5/§15.9/§15.10/§15.11 precedent.
-- **§15.12.3 Cross-cascade and downstream impact** — ADR statuses preserved (incl. ADR-0038 NOT auto-flipped); production code impact (zero immediate change required for community plugins); reverse-dep impact (~3-5 internal sites + 0 community plugin migration); codemod additions (T10 added).
+- **§15.12.3 Cross-cascade and downstream impact** — ADR statuses preserved (incl. ADR-0040 NOT auto-flipped); production code impact (zero immediate change required for community plugins); reverse-dep impact (~3-5 internal sites + 0 community plugin migration); codemod additions (T10 added).
 - **§15.12.4 §16.5 cascade-final precondition update** — two new preconditions added (Q8 5 AMEND items absorbed; cascade-queue slots 3-8 committed).
 - **§15.12.5 Canon updates flagged for separate PR** — F7 + F6 canon edits flagged; explicitly NOT touched in this Phase 3.
 - **§15.12.6 Outside-scope auth findings** — `nebula-auth` cascade slot 8 spawn record.

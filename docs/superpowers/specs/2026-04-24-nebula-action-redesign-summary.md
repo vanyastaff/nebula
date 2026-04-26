@@ -10,7 +10,7 @@
 
 ## Headline
 
-Action cascade fully complete с **8 post-closure amendment rounds (Q1-Q8)** разрешившими 1 cross-ADR alignment fix (Q1 async_trait), 1 lifecycle gap fix (Q6 start/stop), 17 production-drift findings (Q7 mechanical slips), 5 research-driven AMENDs (Q8 idempotency/concurrency/version/engine-placeholders/docs), и 8 cascade slots committed для deferred trait families. Tech Spec FROZEN CP4 currently 3522+ lines (was 2400 at initial freeze). 3 ADRs produced (ADR-0036 + ADR-0037 accepted on Tech Spec freeze + amended-in-place per Q7; ADR-0038 retained `proposed` pending user ratification on canon §3.5). Implementation can begin pending Q1 user pick (a/b/c) + Q5 canon §3.5 ratification + 2 separate canon update PRs (F7 «no replay» + F6 ItemLineage non-goal).
+Action cascade fully complete с **8 post-closure amendment rounds (Q1-Q8)** разрешившими 1 cross-ADR alignment fix (Q1 async_trait), 1 lifecycle gap fix (Q6 start/stop), 17 production-drift findings (Q7 mechanical slips), 5 research-driven AMENDs (Q8 idempotency/concurrency/version/engine-placeholders/docs), и 8 cascade slots committed для deferred trait families. Tech Spec FROZEN CP4 currently 3522+ lines (was 2400 at initial freeze). 3 ADRs produced (ADR-0038 + ADR-0039 accepted on Tech Spec freeze + amended-in-place per Q7; ADR-0040 retained `proposed` pending user ratification on canon §3.5). Implementation can begin pending Q1 user pick (a/b/c) + Q5 canon §3.5 ratification + 2 separate canon update PRs (F7 «no replay» + F6 ItemLineage non-goal).
 
 ---
 
@@ -23,12 +23,12 @@ Action cascade fully complete с **8 post-closure amendment rounds (Q1-Q8)** р�
 | 2 — Scope narrowing co-decision | ✅ complete (2 rounds) | [`03-scope-decision.md`](../drafts/2026-04-24-nebula-action-redesign/03-scope-decision.md) + 03a/b/c | `68bbd4fc` |
 | 3 — Strategy Document | ✅ FROZEN CP3 | [`2026-04-24-action-redesign-strategy.md`](2026-04-24-action-redesign-strategy.md) (540 lines) + 6 review files (04a/b, 05a/b, 06a/b) | `a38f6f5a` |
 | 4 — Design spike | ✅ Iter-1 + Iter-2 PASS | [`07-spike-NOTES.md`](../drafts/2026-04-24-nebula-action-redesign/07-spike-NOTES.md) + `final_shape_v2.rs` | `aa63e424` |
-| 5 — ADR drafting (initial proposed) | ✅ 3 PROPOSED | [`ADR-0036`](../../adr/0036-action-trait-shape.md) + [`ADR-0037`](../../adr/0037-action-macro-emission.md) + [`ADR-0038`](../../adr/0038-controlaction-seal-canon-revision.md) | `aa63e424` |
+| 5 — ADR drafting (initial proposed) | ✅ 3 PROPOSED | [`ADR-0038`](../../adr/0038-action-trait-shape.md) + [`ADR-0039`](../../adr/0039-action-macro-emission.md) + [`ADR-0040`](../../adr/0040-controlaction-seal-canon-revision.md) | `aa63e424` |
 | 8 (initial) — Cascade summary v1 | ✅ produced | this file (predecessor version) | `3e10329f` |
 | 6 CP1 — Tech Spec §0-§3 foundation | ✅ RATIFIED | [`2026-04-24-nebula-action-tech-spec.md`](2026-04-24-nebula-action-tech-spec.md) §0-§3 (572 lines) + 5 reviewers (08a-e) + tech-lead ratify (08f) | `087d6793` |
 | 6 CP2 — Tech Spec §4-§8 macro + execution | ✅ RATIFIED | Tech Spec §4-§8 (711 lines appended) + 5 reviewers (09a-e) + tech-lead ratify (09f) | `29bdb2d0` |
 | 6 CP3 — Tech Spec §9-§13 interface + migration | ✅ RATIFIED | Tech Spec §9-§13 (548 lines appended) + 5 reviewers (10a-e) + tech-lead ratify (10f) | `88899e51` |
-| 6 CP4 — Tech Spec §14-§16 meta + handoff | ✅ FROZEN CP4 2026-04-25 | Tech Spec §14-§16 (339 lines appended) + 2 reviewers (11a/b) + tech-lead RATIFY-FREEZE (11c) + ADR-0037 amendment-in-place enacted | (next commit) |
+| 6 CP4 — Tech Spec §14-§16 meta + handoff | ✅ FROZEN CP4 2026-04-25 | Tech Spec §14-§16 (339 lines appended) + 2 reviewers (11a/b) + tech-lead RATIFY-FREEZE (11c) + ADR-0039 amendment-in-place enacted | (next commit) |
 | 7 — Concerns register | ✅ lite (inline §register) | — | — |
 | 8 — Final summary refresh | ✅ this file (current revision) | `2026-04-24-nebula-action-redesign-summary.md` | (multi-commit; final at Q8) |
 | **Post-closure Q1** — async_trait cross-ADR alignment | ✅ AMENDMENT | Tech Spec §2.4 *Handler traits flipped к `#[async_trait]` per ADR-0024 §Decision items 1+4 (already approved 4 days before freeze; cross-ADR violation fixed) | `193af953` |
@@ -37,7 +37,7 @@ Action cascade fully complete с **8 post-closure amendment rounds (Q1-Q8)** р�
 | **Post-closure Q4** — Option D (TriggerAction.type Input asymmetry) | ✅ REJECT (Option D analyzed first time) | Tech Spec §2.9.1d NEW; semantic divergence trap (same name, opposite semantics — per-instance config vs per-dispatch input) | `4ba08b97` |
 | **Post-closure Q5** — Option E (`type Config` rename) | ✅ REJECT-refined fifth iteration | Tech Spec §2.9.1e NEW; user found sharpest framing dissolved B1 naming collision но 4 other blockers persist incl. B5 paradigm choice locked at §2.9.1a | `77203142` |
 | **Post-closure Q6** — TriggerAction lifecycle gap fix | ✅ AMENDMENT-IN-PLACE (SPLIT) | Tech Spec §2.2.3 lifecycle methods restored (start/stop) per Option (i) — production drift between `crates/action/src/trigger.rs:61-72` and spike-locked shape closed | `4d5f55ee` |
-| **Post-closure Q7** — Post-closure systematic audit (17 amendments) | ✅ AMENDED CLOSED | 6 🔴 R1-R6 + 3 🟠 + 8 🟡 mechanical lifecycle slips bundled per ADR-0035 precedent; ADR-0037 §1 SlotBinding amendment-in-place enacted | `5ad5d57e` |
+| **Post-closure Q7** — Post-closure systematic audit (17 amendments) | ✅ AMENDED CLOSED | 6 🔴 R1-R6 + 3 🟠 + 8 🟡 mechanical lifecycle slips bundled per ADR-0035 precedent; ADR-0039 §1 SlotBinding amendment-in-place enacted | `5ad5d57e` |
 | **Post-closure Q8** — Research-driven amendment (5 AMENDs + 8 cascade slots) | ✅ AMENDED-CLOSED-AGAIN | 4 parallel research agents + Phase 2 synthesis + 2 Phase 2.5 deeper investigations + 5 AMENDs (idempotency / concurrency / version-pin / 4× engine placeholders / docs) + 8 cascade-queue.md slots + 2 canon updates flagged | `0ddbdf5d` |
 
 ---
@@ -48,9 +48,9 @@ Action cascade fully complete с **8 post-closure amendment rounds (Q1-Q8)** р�
 |---|---|---|---|
 | **ADR-0024** Defer dynosaur migration | accepted (prior 2026-04-20) | accepted (cited Q1) | §Decision items 1+4 explicitly enumerate 4 *Handler traits among 14 dyn-consumed approved для `#[async_trait]`; Tech Spec FROZEN CP4 missed citing → Q1 amendment fixes cross-ADR violation |
 | **ADR-0035** Phantom-shim capability pattern | accepted (frozen, prior cascade) | accepted (unchanged) | amendment-in-place precedent invoked 4 times (Q1/Q6/Q7/Q8) для Tech Spec |
-| **ADR-0036** Action trait shape | proposed | **accepted 2026-04-25** | Tech Spec FROZEN CP4 ratification gate cleared |
-| **ADR-0037** Action macro emission | proposed | **accepted 2026-04-25 (amended-in-place 2026-04-25)** | Tech Spec FROZEN CP4 + Tech Spec CP4 §15.5 amendment-in-place enactment (capability folded into SlotType per credential Tech Spec §15.8) |
-| **ADR-0038** ControlAction seal + canon §3.5 revision | proposed | **proposed (USER RATIFICATION PENDING)** | Canon §3.5 revision wording requires explicit user signoff; orchestrator does NOT auto-flip per cascade prompt; surfaced as Q5 below |
+| **ADR-0038** Action trait shape | proposed | **accepted 2026-04-25** | Tech Spec FROZEN CP4 ratification gate cleared |
+| **ADR-0039** Action macro emission | proposed | **accepted 2026-04-25 (amended-in-place 2026-04-25)** | Tech Spec FROZEN CP4 + Tech Spec CP4 §15.5 amendment-in-place enactment (capability folded into SlotType per credential Tech Spec §15.8) |
+| **ADR-0040** ControlAction seal + canon §3.5 revision | proposed | **proposed (USER RATIFICATION PENDING)** | Canon §3.5 revision wording requires explicit user signoff; orchestrator does NOT auto-flip per cascade prompt; surfaced as Q5 below |
 
 ---
 
@@ -62,10 +62,10 @@ Action cascade fully complete с **8 post-closure amendment rounds (Q1-Q8)** р�
 
 ### Sub-decisions ratified
 
-1. **Seal `ControlAction` + 4 other DX traits** (`PaginatedAction` / `BatchAction` / `WebhookAction` / `PollAction`) via per-capability `mod sealed_dx` (ADR-0038)
+1. **Seal `ControlAction` + 4 other DX traits** (`PaginatedAction` / `BatchAction` / `WebhookAction` / `PollAction`) via per-capability `mod sealed_dx` (ADR-0040)
 2. **`ActionResult::Terminate` WIRE-END-TO-END** — feature-gated parallel `unstable-retry-scheduler` + `unstable-terminate-scheduler`; engine scheduler integration designed (Tech Spec CP1 §2.7.1)
 3. **`*Handler` HRTB modernization** — single-`'a` + `BoxFut<'a, T>` type alias (Tech Spec CP1 §2.3, §2.4)
-4. **`#[action]` attribute macro replacing `#[derive(Action)]`** with narrow zone rewriting (`credentials(slot: Type)` / `resources(slot: Type)`) + dual enforcement (type-system + proc-macro `compile_error!`) (ADR-0036, ADR-0037, Tech Spec CP2 §4)
+4. **`#[action]` attribute macro replacing `#[derive(Action)]`** with narrow zone rewriting (`credentials(slot: Type)` / `resources(slot: Type)`) + dual enforcement (type-system + proc-macro `compile_error!`) (ADR-0038, ADR-0039, Tech Spec CP2 §4)
 5. **Cross-tenant Terminate boundary** — engine-side enforcement at scheduler dispatch (pre-fan, TOCTOU-free); silent-skip + telemetry for cross-tenant; structural errors stay Fatal (Tech Spec CP3 §9.5)
 6. **§2.9 Input/Output base-trait consolidation REJECTED** with documented re-open trigger; refined Configuration vs Runtime Input axis distinction during user mid-iteration question (Tech Spec CP1 §2.9)
 
@@ -175,13 +175,13 @@ Out of cascade scope. Quick housekeeping PR.
 
 Cascade fully complete in this continuation. Tech Spec FROZEN CP4 2026-04-25.
 
-### Q5 (NEW — User ratification required) — Canon §3.5 revision per ADR-0038
+### Q5 (NEW — User ratification required) — Canon §3.5 revision per ADR-0040
 
-ADR-0038 §2 proposes canon §3.5 revision: "Action — what a step does. Dispatch via 4 primary trait variants (`StatelessAction`, `StatefulAction`, `TriggerAction`, `ResourceAction`). Authoring DX wraps these via sealed sugar traits (`ControlAction`, `PaginatedAction`, `BatchAction`, `WebhookAction`, `PollAction`) — adding a primary variant requires canon revision (§0.2); adding a sealed DX trait is a non-canon-revision act."
+ADR-0040 §2 proposes canon §3.5 revision: "Action — what a step does. Dispatch via 4 primary trait variants (`StatelessAction`, `StatefulAction`, `TriggerAction`, `ResourceAction`). Authoring DX wraps these via sealed sugar traits (`ControlAction`, `PaginatedAction`, `BatchAction`, `WebhookAction`, `PollAction`) — adding a primary variant requires canon revision (§0.2); adding a sealed DX trait is a non-canon-revision act."
 
-**Orchestrator does NOT auto-flip ADR-0038 to accepted per cascade prompt.** User decision required:
-- **Approve**: edit `docs/PRODUCT_CANON.md` §3.5 to the wording above (or refined); flip ADR-0038 to accepted; cascade fully closed
-- **Reject**: ADR-0038 needs supersession or rework; cascade has loose end
+**Orchestrator does NOT auto-flip ADR-0040 to accepted per cascade prompt.** User decision required:
+- **Approve**: edit `docs/PRODUCT_CANON.md` §3.5 to the wording above (or refined); flip ADR-0040 to accepted; cascade fully closed
+- **Reject**: ADR-0040 needs supersession or rework; cascade has loose end
 
 ---
 
@@ -189,7 +189,7 @@ ADR-0038 §2 proposes canon §3.5 revision: "Action — what a step does. Dispat
 
 1. **Review this summary** + walk artefacts (Strategy + 3 ADRs + Tech Spec + spike NOTES + Q8 research-driven amendments + cascade-queue.md slots)
 2. **Pick Q1 implementation path** (a/b/c)
-3. **Decide Q5 canon §3.5 revision** (approve to flip ADR-0038 accepted, or reject)
+3. **Decide Q5 canon §3.5 revision** (approve to flip ADR-0040 accepted, or reject)
 4. **File 2 separate canon update PRs** (per Q8 outcomes, NOT Tech Spec amendment): F7 §0 «no replay» declaration + F6 §6 ItemLineage non-goal entry
 5. **Schedule Q1 path execution** — if (b) sibling cascades: confirm credential CP6 cascade slot owner+date+queue position per Strategy §6.6 silent-degradation guard + cascade-queue.md slot 1
 6. **Fill cascade-queue.md slot owner/date/position fields** when planning future cascades — 8 slots committed, all carry architect-recommended trait shapes
@@ -208,7 +208,7 @@ ADR-0038 §2 proposes canon §3.5 revision: "Action — what a step does. Dispat
 2. Phase 3 each CP required 1 iteration after review
 3. Phase 4 spike committed with `--no-verify` (pre-existing fmt drift)
 4. CP4 user mid-iteration question on §2.9 Input/Output consolidation — REJECT preserved with refined Configuration vs Runtime Input axis
-5. CP4 ADR-0037 §1 SlotBinding amendment-in-place enacted (capability folding) per ADR-0035 precedent
+5. CP4 ADR-0039 §1 SlotBinding amendment-in-place enacted (capability folding) per ADR-0035 precedent
 
 ---
 
@@ -218,9 +218,9 @@ ADR-0038 §2 proposes canon §3.5 revision: "Action — what a step does. Dispat
 
 - [`docs/superpowers/specs/2026-04-24-action-redesign-strategy.md`](2026-04-24-action-redesign-strategy.md) — 540 lines, FROZEN CP3
 - [`docs/superpowers/specs/2026-04-24-nebula-action-tech-spec.md`](2026-04-24-nebula-action-tech-spec.md) — ~2400+ lines, FROZEN CP4
-- [`docs/adr/0036-action-trait-shape.md`](../../adr/0036-action-trait-shape.md) — accepted 2026-04-25
-- [`docs/adr/0037-action-macro-emission.md`](../../adr/0037-action-macro-emission.md) — accepted 2026-04-25 (amended-in-place 2026-04-25)
-- [`docs/adr/0038-controlaction-seal-canon-revision.md`](../../adr/0038-controlaction-seal-canon-revision.md) — proposed (USER RATIFICATION PENDING)
+- [`docs/adr/0038-action-trait-shape.md`](../../adr/0038-action-trait-shape.md) — accepted 2026-04-25
+- [`docs/adr/0039-action-macro-emission.md`](../../adr/0039-action-macro-emission.md) — accepted 2026-04-25 (amended-in-place 2026-04-25)
+- [`docs/adr/0040-controlaction-seal-canon-revision.md`](../../adr/0040-controlaction-seal-canon-revision.md) — proposed (USER RATIFICATION PENDING)
 
 ### Spike
 
@@ -280,8 +280,8 @@ Per continuation prompt's anticipated outcomes:
 
 - **Stated 55-65% probability**: Continuation completes with Tech Spec CP1-CP4 frozen — **MATCHED**. Review burden 1-3 hrs за тебя.
 - **Stated 20-30% probability**: CP2 co-decision deadlock between tech-lead + security-lead — **DID NOT HAPPEN**. Unanimous co-decision on 4 §6 floor items.
-- **Stated 10-15% probability**: Cross-crate amendment broader than ADR-0037 §3 soft amendment can absorb — **PARTIALLY REALIZED**. ADR-0037 §1 SlotBinding amendment-in-place enacted; §16.1.1 + §15.7 credential Tech Spec amendments soft-flagged not enacted (ADR-0035 precedent).
-- **Stated 5-10% probability**: Macro emission perf bound surfaced — **DID NOT HAPPEN**. Within 1.6-1.8x adjusted ratio per ADR-0037 §5.
+- **Stated 10-15% probability**: Cross-crate amendment broader than ADR-0039 §3 soft amendment can absorb — **PARTIALLY REALIZED**. ADR-0039 §1 SlotBinding amendment-in-place enacted; §16.1.1 + §15.7 credential Tech Spec amendments soft-flagged not enacted (ADR-0035 precedent).
+- **Stated 5-10% probability**: Macro emission perf bound surfaced — **DID NOT HAPPEN**. Within 1.6-1.8x adjusted ratio per ADR-0039 §5.
 
 **Outcome category:** Higher-quality than central tendency. Cascade fully closed; design ready for implementation; clean user decision points.
 

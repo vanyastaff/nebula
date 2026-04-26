@@ -7,7 +7,7 @@
 - `post-closure-tech-lead-coverage.md` (Tech Spec coverage map: 5 🔴 + 3 🟠 + 8 🟡)
 - Production: `crates/action/src/{trigger,webhook,poll,stateful,resource,control,stateless,handler}.rs`
 - Tech Spec FROZEN CP4 (status header line 3) and full `§0`-`§17` walk
-- ADR-0036 §Decision items 1-4 + §Neutral block; ADR-0038 §1 sealed-DX framing
+- ADR-0038 §Decision items 1-4 + §Neutral block; ADR-0040 §1 sealed-DX framing
 - Memory: `feedback_post_freeze_cross_adr_check.md`, `feedback_third_pushback_carrier_axis.md`
 
 **Scope:** (A) §2.9 fifth iteration with Phase 1 NEW evidence; (B) enact 5 🔴 + 3 🟠 + 8 🟡 amendments-in-place; (C) cascade closure verdict.
@@ -49,7 +49,7 @@ This is **not Q4/§2.9 territory** — it is a sealed-DX trait-shape spec drift 
 
 - **§2.9 verdict UNCHANGED.** REJECT (refined four times: §2.9.1a / §2.9.1b / §2.9.1c / §2.9.1d below). The Q5 framing does not surface any consumer that requires trait-level Input/Output.
 - **§2.6 amendment NEEDED** — listed under Part B as new 🔴 R6 (§2.6 sealed-DX bound chain re-pin: WebhookAction/PollAction declared as peer DX traits with their own State/Cursor/Event associated types, NOT as TriggerAction subtraits). Tech Spec §2.6 amendment-in-place lands per §15.11 enactment.
-- **No ADR amendment.** ADR-0038 §1 sealed-DX framing references "the adapter pattern" — adapter-erasure of DX traits to primary `*Handler` dyn boundary is preserved either way; the bound-chain typo does not contradict ADR-0038's sealing intent. ADR-0038 stays at `proposed` per cascade prompt (canon §3.5 ratification still pending).
+- **No ADR amendment.** ADR-0040 §1 sealed-DX framing references "the adapter pattern" — adapter-erasure of DX traits to primary `*Handler` dyn boundary is preserved either way; the bound-chain typo does not contradict ADR-0040's sealing intent. ADR-0040 stays at `proposed` per cascade prompt (canon §3.5 ratification still pending).
 
 ### Status qualifier
 
@@ -337,7 +337,7 @@ The following edits land via Edit tool calls (this report serves as the rational
 
 ### ADR amendments
 
-**NONE.** Per Part A verdict (III) — §2.9 unchanged so ADR-0036 / ADR-0037 / ADR-0038 unaffected. R1-R6 land at Tech Spec §2 per-method-signature lock, NOT at ADR family-enumeration lock; ADR-0036 §Neutral block "unchanged at the trait level — only the macro that constructs implementations changes shape" preserves the four-trait identity (no new primary trait added). R3/R5 dyn-handler shape adopts `TriggerEvent` (not JSON) — this is per ADR-0024 `#[async_trait]` policy (already covered at §15.9). R6 sealed-DX bound chain is at Tech Spec §2.6 lock; ADR-0038 §1 sealed-pattern intent (community plugins cannot bypass the adapter) is preserved either way.
+**NONE.** Per Part A verdict (III) — §2.9 unchanged so ADR-0038 / ADR-0039 / ADR-0040 unaffected. R1-R6 land at Tech Spec §2 per-method-signature lock, NOT at ADR family-enumeration lock; ADR-0038 §Neutral block "unchanged at the trait level — only the macro that constructs implementations changes shape" preserves the four-trait identity (no new primary trait added). R3/R5 dyn-handler shape adopts `TriggerEvent` (not JSON) — this is per ADR-0024 `#[async_trait]` policy (already covered at §15.9). R6 sealed-DX bound chain is at Tech Spec §2.6 lock; ADR-0040 §1 sealed-pattern intent (community plugins cannot bypass the adapter) is preserved either way.
 
 ---
 
@@ -351,7 +351,7 @@ The cascade is **NOT FULLY-CLOSED** — Phase 1 evidence is decisive that the FR
 
 - Q1 + Q6 closed prior cascade slips (manual `BoxFut` vs `#[async_trait]`; lifecycle methods on TriggerAction).
 - Q7 (this audit, batched) closes 6 🔴 + 3 🟠 + 8 🟡 in one amendment-in-place pass — same mechanism as Q1/Q6.
-- ADR-0036 / ADR-0037 / ADR-0038 statuses unchanged. Canon §3.5 ratification still pending on user; Phase 8 cascade summary surfaces it.
+- ADR-0038 / ADR-0039 / ADR-0040 statuses unchanged. Canon §3.5 ratification still pending on user; Phase 8 cascade summary surfaces it.
 
 The cascade is **NOT RE-OPENED** — no Strategy revision needed; no ADR supersede; no spike re-validation; the production-shape evidence is the source for restoration. Same precedent as Q6.
 

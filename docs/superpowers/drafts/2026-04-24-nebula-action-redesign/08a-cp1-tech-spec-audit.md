@@ -47,7 +47,7 @@ Three doc/code claims, three different signatures:
 |---|---|
 | Tech Spec § 2.1 line 117 (prose): `credential_slots() -> &'static [SlotBinding]` | no `&self` |
 | Tech Spec § 3.1 line 422+446 (prose): `ActionSlots::credential_slots()` static slice | implicit no `&self` |
-| ADR-0037 § 1 line 49: `fn credential_slots() -> &'static [SlotBinding]` | no `&self` |
+| ADR-0039 § 1 line 49: `fn credential_slots() -> &'static [SlotBinding]` | no `&self` |
 | `final_shape_v2.rs:278`: `fn credential_slots(&self) -> &'static [SlotBinding]` | **HAS `&self`** |
 | Credential Tech Spec § 3.4 line 851: `fn credential_slots(&self) -> &[SlotBinding]` | **HAS `&self`, drops `'static`** |
 
@@ -55,9 +55,9 @@ Evidence:
 - `Grep "fn credential_slots"` returns these four results across the doc + spike (verified above).
 - Tech Spec § 0 line 44 invariant 4 says: "Spike-shape divergence. `final_shape_v2.rs` (the shapes Tech Spec § 2 freezes verbatim) is re-validated and a different shape is required." → freezes the spike. The spike has `&self`.
 
-Impact: the macro emission shape (ADR-0037 § 1 example) generates code that won't satisfy the trait if the trait says `&self`. Implementer hits a contradiction between Tech Spec § 2.1 and ADR-0037 example on day 1.
+Impact: the macro emission shape (ADR-0039 § 1 example) generates code that won't satisfy the trait if the trait says `&self`. Implementer hits a contradiction between Tech Spec § 2.1 and ADR-0039 example on day 1.
 
-Suggested fix: pick `&self` (matches spike + credential Tech Spec). Update § 2.1 line 117, § 3.1 line 422+446, AND ADR-0037 § 1 example. Also reconcile `&[SlotBinding]` vs `&'static [SlotBinding]` with credential Tech Spec § 3.4.
+Suggested fix: pick `&self` (matches spike + credential Tech Spec). Update § 2.1 line 117, § 3.1 line 422+446, AND ADR-0039 § 1 example. Also reconcile `&[SlotBinding]` vs `&'static [SlotBinding]` with credential Tech Spec § 3.4.
 
 ### 🔴 BLOCKER — `SlotType::ServiceCapability` variant payload drops `service` field
 
@@ -100,7 +100,7 @@ Tech Spec § 2.0 line 101: "Each shape below is freeze-grade Rust, **compile-che
 `final_shape_v2.rs:221`: `type Input: Send + 'static;` (no `HasSchema`)
 `final_shape_v2.rs:239`: `type Input: Send + 'static;` (no `HasSchema`)
 
-Tech Spec § 2.2.1 line 139 cites this as "documented per ADR-0037 § Context (Goal G2 — closes CR9 undocumented bound)." ADR-0037 itself does not have a `Context` section using this header verbatim, but CR9 is real (pain enum line 112: `Input: HasSchema bound undocumented`).
+Tech Spec § 2.2.1 line 139 cites this as "documented per ADR-0039 § Context (Goal G2 — closes CR9 undocumented bound)." ADR-0039 itself does not have a `Context` section using this header verbatim, but CR9 is real (pain enum line 112: `Input: HasSchema bound undocumented`).
 
 Two acceptable resolutions:
 1. Tech Spec correctly adds `HasSchema` bound (matches Goal G2 / CR9 closure intent), and § 2.0 line 101 needs to say "compile-checked against the spike at final_shape_v2.rs WITH the addition of `HasSchema` per CR9 documentation requirement." Right now the claim is unconditional.
@@ -205,7 +205,7 @@ Suggested fix: architect to cross-check ADR-0035 amendment history; if 2026-04-2
 
 ### ✅ GOOD — ADR cross-references all resolve
 
-ADR-0036, ADR-0037, ADR-0038 are all in `docs/adr/` with `status: proposed` matching Tech Spec § 0.1 line 35 claim. ADR cross-citations from § 1 G1-G6 / § 2.x / § 4 are consistent.
+ADR-0038, ADR-0039, ADR-0040 are all in `docs/adr/` with `status: proposed` matching Tech Spec § 0.1 line 35 claim. ADR cross-citations from § 1 G1-G6 / § 2.x / § 4 are consistent.
 
 ---
 
@@ -287,7 +287,7 @@ Suggested fix: at CP4 § 14, audit § 2 vocabulary against `docs/GLOSSARY.md`; a
 
 ### ✅ GOOD — `sealed_dx::*` module path consistent
 
-Tech Spec § 2.6 lines 291-300 declare `mod sealed_dx`. Lines 295-299 enumerate 5 inner sealed traits; lines 303-311 reference them as supertraits on the public DX traits. Lines 313-319 reference the blanket impls. Module path `sealed_dx::*` is used consistently throughout § 2.6. ADR-0038 § 1 lines 56-66 use the same `sealed_dx::*` form. ✓
+Tech Spec § 2.6 lines 291-300 declare `mod sealed_dx`. Lines 295-299 enumerate 5 inner sealed traits; lines 303-311 reference them as supertraits on the public DX traits. Lines 313-319 reference the blanket impls. Module path `sealed_dx::*` is used consistently throughout § 2.6. ADR-0040 § 1 lines 56-66 use the same `sealed_dx::*` form. ✓
 
 ### ✅ GOOD — Status header `DRAFT CP1`
 
@@ -322,7 +322,7 @@ Total: 3 🔴 + 3 🟠 + 4 🟡 + 2 ✅
 **Iterate-yes.** All findings are mechanical (one-line edits) except the `SlotType` enum payload drop, which is one-table edit. None invalidates the CP1 design direction. Architect can resolve in one revision pass.
 
 **Top 3 must-fix before CP1 ratify:**
-1. § 2.1 / § 3.1 / ADR-0037 align `credential_slots()` to `&self` form per spike + credential Tech Spec.
+1. § 2.1 / § 3.1 / ADR-0039 align `credential_slots()` to `&self` form per spike + credential Tech Spec.
 2. § 3.1 `SlotType` enum gain `Concrete { type_id }` + `service: ServiceKey` field on `ServiceCapability` + `CapabilityOnly { capability }` per credential Tech Spec § 9.4 line 2452.
 3. § 2.0 line 101 add deliberate-divergence rationale for `Input: HasSchema` and `State: Serialize + DeserializeOwned + Clone` over spike.
 

@@ -49,7 +49,7 @@ This is a single sed-replace pre-commit; non-blocking, but commit-ready quality 
 
 ## AMENDED CLOSED honesty check
 
-**PASS.** Architect explicitly rejected FULLY-CLOSED framing (Part C line 350): *"Calling it FULLY-CLOSED would be face-saving per `feedback_active_dev_mode.md` (...). AMENDED CLOSED is honest."* This matches my Phase 1 coverage map verdict (line 305: "Recommendation: AMENDED-CLOSED with same amendment-in-place precedent that closed Q1/Q2/Q3/Q6"). The honest assessment per `feedback_active_dev_mode.md` discipline holds: Q1 + Q6 closed prior cascade slips; Q7 (this audit, batched) closes 6 🔴 + 3 🟠 + 8 🟡 in one amendment-in-place pass; ADR-0036 / ADR-0037 / ADR-0038 statuses unchanged; canon §3.5 ratification still pending on user (Phase 8 cascade summary surfaces it).
+**PASS.** Architect explicitly rejected FULLY-CLOSED framing (Part C line 350): *"Calling it FULLY-CLOSED would be face-saving per `feedback_active_dev_mode.md` (...). AMENDED CLOSED is honest."* This matches my Phase 1 coverage map verdict (line 305: "Recommendation: AMENDED-CLOSED with same amendment-in-place precedent that closed Q1/Q2/Q3/Q6"). The honest assessment per `feedback_active_dev_mode.md` discipline holds: Q1 + Q6 closed prior cascade slips; Q7 (this audit, batched) closes 6 🔴 + 3 🟠 + 8 🟡 in one amendment-in-place pass; ADR-0038 / ADR-0039 / ADR-0040 statuses unchanged; canon §3.5 ratification still pending on user (Phase 8 cascade summary surfaces it).
 
 ## Cascade closure recommendation
 
@@ -59,7 +59,7 @@ This is a single sed-replace pre-commit; non-blocking, but commit-ready quality 
 
 **1 mechanical sub-edit (non-blocking, commit-ready quality):** Fix `§3.2 typification path narrative` → `§3.5 typification path narrative (NEW)` in 3 sites (status header line 33; §15.11 line 3026; §17 CHANGELOG line 3496). Single sed-replace; preserves grep-ability of the typification narrative anchor.
 
-**0 structural edits.** All 17 amendments verified against production source (stateful.rs:56-66 + resource.rs:36-107 + trigger.rs:61-389 + webhook.rs:578 + poll.rs:800); §15.11 enactment record is internally consistent; cross-section ADR composition analysis (§15.11.1) is sound (no ADR §Decision item edits needed — only per-method-signature lock and sealed-DX bound chain re-pin, which neither ADR-0036 §Neutral block nor ADR-0038 §1 contradicts).
+**0 structural edits.** All 17 amendments verified against production source (stateful.rs:56-66 + resource.rs:36-107 + trigger.rs:61-389 + webhook.rs:578 + poll.rs:800); §15.11 enactment record is internally consistent; cross-section ADR composition analysis (§15.11.1) is sound (no ADR §Decision item edits needed — only per-method-signature lock and sealed-DX bound chain re-pin, which neither ADR-0038 §Neutral block nor ADR-0040 §1 contradicts).
 
 ## Summary
 

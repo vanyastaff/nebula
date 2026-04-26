@@ -149,7 +149,7 @@ User's bonus connection raised: «Then we can add also Input to start method to 
 | **B1 — silent semantic divergence** (same name, opposite meaning) | **STILL HOLDS.** `start(input: Self::Input)` is called once per registration; `StatelessAction::execute(input: Self::Input)` is called per dispatch. Same name carries opposite frequency semantics (lifecycle-once vs per-dispatch-many). A reader seeing `TelegramTrigger::Input = TelegramTriggerInput` and `StatelessSlackSend::Input = SlackSendInput` would assume identical lifecycle role; they would be wrong. The name-collision trap from Q4 §14 (line 103) survives the start(input) refinement. |
 | **B2 — signature-doubling** (parallel to `&self` + `parameters = T`) | DISSOLVES. If `start(input: Self::Input)` IS the configuration entry, then configuration is method-bound, not also `&self`-bound. (But: `&self` still carries spawned-task handle, atomics, internal state — so partial `&self` retention. Not a clean dissolution.) |
 | **B3 — decorative (no method-signature carry)** | DISSOLVES. `start(input)` puts Input in the method signature. |
-| **B4 — ADR-0036 binds verbatim spike shapes** (line 209-262) | **STILL HOLDS.** Spike `final_shape_v2.rs:254-262` has no `type Input` on TriggerAction. Adding would invalidate freeze per §0.2 invariant 4 (spike-shape divergence trigger). Re-validation would require new spike work. |
+| **B4 — ADR-0038 binds verbatim spike shapes** (line 209-262) | **STILL HOLDS.** Spike `final_shape_v2.rs:254-262` has no `type Input` on TriggerAction. Adding would invalidate freeze per §0.2 invariant 4 (spike-shape divergence trigger). Re-validation would require new spike work. |
 | **B5 — §2.9.1a paradigm contradiction** ("Configuration carrier is `&self` ... no new associated type") | Partially HOLDS. Even with `start(input)`, per-instance runtime state (atomics, task handles, registration tokens) still lives in `&self`. The paradigm "configuration in `&self` fields, populated at registration" is partially preserved (stable runtime state) and partially disrupted (input-typed configuration moved to method). Mixed paradigm is harder to teach than single paradigm. |
 
 **B1 + B4 alone are sufficient blockers.** B1 is the load-bearing semantic trap (unchanged from Q4 verdict on iteration 4 — REJECT). B4 invalidates the freeze without re-spike work.
@@ -188,16 +188,16 @@ Replace lines 195-216 with the four-method shape (TriggerSource declaration unch
 
 §10.2 transforms table gains T7 row (TriggerAction lifecycle signature lift, AUTO). §10.3 per-consumer step counts gains a "T7" column with estimates (~1-2 sites internal, ~1 per community trigger plugin). §10.4 plugin author migration guide steps 1-7 gain a sub-step under step 5: "T7 markers (if any): pass-through; bodies unchanged."
 
-### §4.4 ADR-0036 amendment-in-place — NOT REQUIRED under split
+### §4.4 ADR-0038 amendment-in-place — NOT REQUIRED under split
 
-Per ADR-0036 §Decision item 4 ("Pattern composition with ADR-0035") and §Neutral block last bullet ("Public API surface of the 4 dispatch traits ... unchanged at the trait level"), the trait-shape decision in ADR-0036 governs:
+Per ADR-0038 §Decision item 4 ("Pattern composition with ADR-0035") and §Neutral block last bullet ("Public API surface of the 4 dispatch traits ... unchanged at the trait level"), the trait-shape decision in ADR-0038 governs:
 - Macro emission contract (item 1: rewriting scope; item 2: emission contract; item 3: dual enforcement layer; item 4: ADR-0035 phantom composition).
-- ADR-0036 does **NOT** lock the per-method signatures of the 4 dispatch traits (that is ADR-0036 §Neutral block's "Public API surface ... unchanged at the trait level" — meaning the 4-trait family enumeration is preserved; not that every method signature is verbatim ADR-0036 lockdown).
+- ADR-0038 does **NOT** lock the per-method signatures of the 4 dispatch traits (that is ADR-0038 §Neutral block's "Public API surface ... unchanged at the trait level" — meaning the 4-trait family enumeration is preserved; not that every method signature is verbatim ADR-0038 lockdown).
 - Tech Spec §2.2 is the per-method signature lock; spike `final_shape_v2.rs:209-262` is the signature-locking source per §0.1 inputs frozen-at footer.
 
-**Lifecycle gap fix is Tech Spec amendment-in-place per §15.9 precedent** — it does not amend ADR-0036. ADR-0036 §Decision items 1-4 are unchanged. The Tech Spec § 2.2.3 signature change is a **§0.2 invariant 4 trigger** (spike-shape divergence; the spike did not have lifecycle methods, lifecycle methods are now added to §2.2.3) — but the divergence justification is documented (spike was shape-only; production has lifecycle; lifecycle is derived from production not from spike-shape change). This is the same discipline §15.9.1 used for `*Handler` `#[async_trait]` adoption (post-amendment shape derived from ADR-0024 and production code, not from new spike work).
+**Lifecycle gap fix is Tech Spec amendment-in-place per §15.9 precedent** — it does not amend ADR-0038. ADR-0038 §Decision items 1-4 are unchanged. The Tech Spec § 2.2.3 signature change is a **§0.2 invariant 4 trigger** (spike-shape divergence; the spike did not have lifecycle methods, lifecycle methods are now added to §2.2.3) — but the divergence justification is documented (spike was shape-only; production has lifecycle; lifecycle is derived from production not from spike-shape change). This is the same discipline §15.9.1 used for `*Handler` `#[async_trait]` adoption (post-amendment shape derived from ADR-0024 and production code, not from new spike work).
 
-**No ADR amendment.** Skip ADR-0036 file edit.
+**No ADR amendment.** Skip ADR-0038 file edit.
 
 ### §4.5 Status header qualifier
 
@@ -213,8 +213,8 @@ Final status header form: `FROZEN CP4 2026-04-25 (amended-in-place 2026-04-25 �
 
 **Migration impact one-liner:** ~3-5 internal sites + ~1 per community trigger plugin; new codemod transform T7 (AUTO signature lift; bodies pass through unchanged); reverse-dep impact null on `nebula-engine` boundary (engine sees `Arc<dyn TriggerHandler>`, internal handler shape change is sealed behind `#[async_trait]` per §15.9.1).
 
-**Bundle-vs-split rationale:** SPLIT. Q4 verdict (REJECT) stands; B1 (silent semantic divergence) survives the start(input) refinement; B4 (ADR-0036 binds spike shapes; Q4 bundle would invalidate freeze without re-spike) holds; bundling conflates mechanical drift fix with paradigm choice and muddies freeze-warrant trail. Architect's call per cascade prompt; tech-lead may revisit if user contests.
+**Bundle-vs-split rationale:** SPLIT. Q4 verdict (REJECT) stands; B1 (silent semantic divergence) survives the start(input) refinement; B4 (ADR-0038 binds spike shapes; Q4 bundle would invalidate freeze without re-spike) holds; bundling conflates mechanical drift fix with paradigm choice and muddies freeze-warrant trail. Architect's call per cascade prompt; tech-lead may revisit if user contests.
 
-**No ADR amendment required.** ADR-0036 §Decision items 1-4 unchanged; lifecycle is Tech Spec §2.2.3 amendment-in-place per §15.9 precedent.
+**No ADR amendment required.** ADR-0038 §Decision items 1-4 unchanged; lifecycle is Tech Spec §2.2.3 amendment-in-place per §15.9 precedent.
 
 **Status qualifier added** per §15.9.5 / §15.9.6 precedent for structural amendments.

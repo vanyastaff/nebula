@@ -20,7 +20,7 @@ linear: []
 
 ## Status
 
-**Accepted 2026-04-25** — drafted 2026-04-24 alongside ADR-0037 / ADR-0038 as the 3-ADR set for the nebula-action redesign cascade ([Strategy §6.2](../superpowers/specs/2026-04-24-action-redesign-strategy.md#62-adr-drafting-roadmap)). Status moved from `proposed` → `accepted` 2026-04-25 after Phase 6 Tech Spec FROZEN CP4 ratification (tech-lead 11c freeze ratification).
+**Accepted 2026-04-25** — drafted 2026-04-24 alongside ADR-0039 / ADR-0040 as the 3-ADR set for the nebula-action redesign cascade ([Strategy §6.2](../superpowers/specs/2026-04-24-action-redesign-strategy.md#62-adr-drafting-roadmap)). Status moved from `proposed` → `accepted` 2026-04-25 after Phase 6 Tech Spec FROZEN CP4 ratification (tech-lead 11c freeze ratification).
 
 ## Context
 
@@ -57,7 +57,7 @@ Adopt the `#[action]` **attribute macro** in `nebula-action`, replacing `#[deriv
 
 The macro test harness — `trybuild` for compile-fail probes + `macrotest` for emission stability — ships with the implementation per Strategy §4.3.1. Six probes already exist as spike artefacts (commit `c8aef6a0` `tests/compile_fail/probe_{1..6}_*.rs`); production harness ports these forward.
 
-The macro emission contract details (token shape, `ActionSlots::credential_slots()` HRTB shape, the auto-deref Clone shadow probe, etc.) are scoped to **ADR-0037** (this ADR locks trait-shape, ADR-0037 locks emission).
+The macro emission contract details (token shape, `ActionSlots::credential_slots()` HRTB shape, the auto-deref Clone shadow probe, etc.) are scoped to **ADR-0039** (this ADR locks trait-shape, ADR-0039 locks emission).
 
 ## Consequences
 
@@ -65,7 +65,7 @@ The macro emission contract details (token shape, `ActionSlots::credential_slots
 
 1. Aligns nebula-action with the credential CP6 typed surface ([credential Tech Spec §2.7 / §3.4](../superpowers/specs/2026-04-24-credential-tech-spec.md)) — `CredentialRef<C>` field handles, `SlotBinding` registration, `SchemeGuard` RAII flow through one cohesive vocabulary.
 2. Closes Strategy §1(a) credential paradigm mismatch — `time-to-first-successful credential-bearing action` target <5 minutes (vs current 32) becomes structurally achievable; `ctx.credential::<S>(key)` API surface materializes through macro-emitted slot bindings.
-3. Composes with ADR-0035 phantom-shim: action macro is the consumer-side rewrite obligation ADR-0035 §4.3 leaves unbound. After this ADR + ADR-0037, ADR-0035's contract is end-to-end.
+3. Composes with ADR-0035 phantom-shim: action macro is the consumer-side rewrite obligation ADR-0035 §4.3 leaves unbound. After this ADR + ADR-0039, ADR-0035's contract is end-to-end.
 4. Narrow rewriting zone preserves LSP/grep semantics — fields outside `credentials(...)`/`resources(...)` are visible, name-meaningful, and IDE-navigable. Rewriting is opt-in via attribute zone, not pervasive struct-level surgery.
 5. Macro test harness lands as a structural artefact — current `crates/action/macros/Cargo.toml` has no `[dev-dependencies]` (Strategy §1(b)). The 6-probe spike harness ports forward; emission-bug class (CR2 / CR8 / CR9 / CR11) becomes regression-covered.
 
@@ -73,12 +73,12 @@ The macro emission contract details (token shape, `ActionSlots::credential_slots
 
 1. **Hard break on `#[derive(Action)]` for plugin authors.** The 7 reverse-deps (Strategy §6.1) must migrate; codemod ships in cascade per [scope decision §1.6](../superpowers/drafts/2026-04-24-nebula-action-redesign/03-scope-decision.md). Acceptable per `feedback_hard_breaking_changes`.
 2. **Two enforcement layers add some apparent redundancy** (type-system + proc-macro both catch bare `CredentialRef`). Justified per spike finding #3: type-system layer is structural truth; proc-macro layer is DX cleanup. Removing either weakens the contract — type-system-only loses helpful diagnostic; proc-macro-only loses the structural guarantee for users who bypass the macro (impossible in normal flow but a real regression-test invariant).
-3. **Macro complexity grows** vs `#[derive(Action)]`. Token emission ~2x current (per spike §2.5; adjusted ratio 1.6-1.8x net of user-code absorbed). Within Strategy §5.2.4 perf bound. ADR-0037 specifies the emission shape.
+3. **Macro complexity grows** vs `#[derive(Action)]`. Token emission ~2x current (per spike §2.5; adjusted ratio 1.6-1.8x net of user-code absorbed). Within Strategy §5.2.4 perf bound. ADR-0039 specifies the emission shape.
 4. **`#[action]` attribute zones become canonical syntax** users learn. Documentation cost — README examples + migration guide must teach the zone discipline. Codemod and migration guide ship in cascade.
 
 ### Neutral
 
-- Action's runtime dispatch shape (4-variant `ActionHandler` enum, RPITIT body `impl Future + Send + 'a`) is unchanged. Trait-family enumeration (canon §3.5) is preserved at runtime. Governance / DX-tier seal questions are scoped to ADR-0038.
+- Action's runtime dispatch shape (4-variant `ActionHandler` enum, RPITIT body `impl Future + Send + 'a`) is unchanged. Trait-family enumeration (canon §3.5) is preserved at runtime. Governance / DX-tier seal questions are scoped to ADR-0040.
 - Public API surface of the 4 dispatch traits (`StatelessAction` / `StatefulAction` / `TriggerAction` / `ResourceAction`) is unchanged at the trait level — only the macro that constructs implementations changes shape.
 
 ## Alternatives considered
@@ -106,9 +106,9 @@ Instead of an attribute on the struct, macro consumes the impl block. Field shap
 - [Strategy Document](../superpowers/specs/2026-04-24-action-redesign-strategy.md) — §3.2 placement lock; §4.3.1 macro modernization; §6.2 ADR roadmap; §6.8 B'+ contingency activation criteria (fallback path for this decision).
 - [Scope decision](../superpowers/drafts/2026-04-24-nebula-action-redesign/03-scope-decision.md) — §1 chosen scope (Option A'); §1.6 plugin ecosystem migration design.
 - [Spike NOTES](../superpowers/drafts/2026-04-24-nebula-action-redesign/07-spike-NOTES.md) — §1.4 Probe 3 result (option (b) type-system-enforceable); §3 finding #3 (dual enforcement layer rationale); commit `c8aef6a0`.
-- [ADR-0035 phantom-shim capability pattern](./0035-phantom-shim-capability-pattern.md) — §4.3 action-side rewrite obligation discharged by this ADR + ADR-0037.
+- [ADR-0035 phantom-shim capability pattern](./0035-phantom-shim-capability-pattern.md) — §4.3 action-side rewrite obligation discharged by this ADR + ADR-0039.
 - [Credential Tech Spec](../superpowers/specs/2026-04-24-credential-tech-spec.md) — §2.7 line 486-528 macro translation; §3.4 line 807-939 dispatch narrative.
 
 ---
 
-*Proposed by: architect (nebula-action redesign cascade Phase 5), 2026-04-24. Composed with ADR-0037 (emission contract) and ADR-0038 (ControlAction seal + canon revision).*
+*Proposed by: architect (nebula-action redesign cascade Phase 5), 2026-04-24. Composed with ADR-0039 (emission contract) and ADR-0040 (ControlAction seal + canon revision).*
