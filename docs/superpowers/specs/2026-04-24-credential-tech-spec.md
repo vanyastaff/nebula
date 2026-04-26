@@ -1,6 +1,6 @@
 ---
 name: credential tech spec (implementation-ready design)
-status: complete CP6 (active-dev endorse-phased 2026-04-24 Round 7 re-engagement — 3 gates before П1). CP5 amendments §15.3-§15.11 added post 3-stakeholder consensus session Rounds 0-5 (Path A-Hybrid, initially adoption-deferred). CP6 Rounds 6-7 corrected: tech-lead flipped to endorse-phased under active-dev framing; P10 verified NOT landed; 3 concrete gates added (§15.12).
+status: complete CP6 (active-dev endorse-phased 2026-04-24 Round 7) — П1 in-implementation 2026-04-26 (worktree `worktree-credential-p1`, will be commit `<SHA>` at merge). CP5 amendments §15.3-§15.11 added post 3-stakeholder consensus session Rounds 0-5 (Path A-Hybrid, initially adoption-deferred). CP6 Rounds 6-7 corrected: tech-lead flipped to endorse-phased under active-dev framing; P10 verified NOT landed; 3 concrete gates added (§15.12). П1 lands the type-shape scaffolding (§15.4-§15.8) per [Stage 8 plan](../plans/2026-04-26-credential-p1-trait-scaffolding.md).
 date: 2026-04-24
 authors: [vanyastaff, Claude]
 scope: cross-cutting — nebula-credential, nebula-credential-builtin (NEW), nebula-storage, nebula-engine, nebula-api, nebula-resource, nebula-action
@@ -3339,25 +3339,44 @@ pub enum RegisterError {
 }
 
 impl CredentialRegistry {
-    pub fn register<C: Credential + CredentialMetadataSource>(
+    pub fn register<C>(
         &mut self,
         instance: C,
-    ) -> Result<(), RegisterError> {
+        registering_crate: &'static str,
+    ) -> Result<(), RegisterError>
+    where
+        C: Credential
+            + plugin_capability_report::IsInteractive
+            + plugin_capability_report::IsRefreshable
+            + plugin_capability_report::IsRevocable
+            + plugin_capability_report::IsTestable
+            + plugin_capability_report::IsDynamic,
+    {
         let key: &'static str = C::KEY;
         if let Some(existing) = self.entries.get(key) {
             return Err(RegisterError::DuplicateKey {
                 key,
-                existing_crate: existing.crate_name(),
-                new_crate: env!("CARGO_CRATE_NAME"),
+                existing_crate: existing.registering_crate,
+                new_crate: registering_crate,
             });
         }
-        self.entries.insert(key, Box::new(instance));
+        let capabilities = compute_capabilities::<C>();
+        self.entries.insert(key.into(), RegistryEntry {
+            instance: Box::new(instance),
+            capabilities,
+            registering_crate,
+        });
         Ok(())
     }
 }
 ```
 
-Plugin init uses `registry.register(MyCred::new())?` — duplicate is fatal at startup. Operator must resolve via plugin uninstall, version pin, or namespace fix.
+> **Snippet alignment note (2026-04-26 stage5-followup-s3):** This snippet was reconciled with the landed code (`crates/credential/src/contract/registry.rs` commit `c44eb2ca`) during П1 Stage 8. Three differences from the original CP6 candidate (a) draft:
+> 1. `registering_crate: &'static str` is an explicit parameter, not `env!("CARGO_CRATE_NAME")` inside the body — the macro would resolve to `nebula-credential` regardless of which plugin called `register`, defeating per-plugin attribution.
+> 2. The `C: Credential + CredentialMetadataSource` bound was replaced with the five `plugin_capability_report::Is*` bounds — capability discovery (§15.8) folds into `register`, so the bounds make every registered type carry a static capability report. `CredentialMetadataSource` is a §15.8 / Stage 7+ concern.
+> 3. Capability set is computed at registration via `compute_capabilities::<C>()` and stored alongside the instance. This lets `iter_compatible` (§15.8) filter without re-running the fold per call.
+
+Plugin init uses `registry.register(MyCred::new(), env!("CARGO_CRATE_NAME"))?` — duplicate is fatal at startup. Operator must resolve via plugin uninstall, version pin, or namespace fix.
 
 Pros: silent overwrite eliminated. Operator gets a clear, actionable error. Plugin name collision becomes a hard startup failure, not a runtime stealth issue.
 
@@ -3804,6 +3823,30 @@ Per register's own maintenance rules + Tech Spec §13.4 evolution:
 - New concerns surfaced during implementation: triage to one of 6 labels within 2 working days per register maintenance rule.
 - Tech Spec section completes implementation: status flips to `in-implementation` then to `done` when phase merges + all tests pass.
 - Register totals re-audited at every revision (no silent count drift).
+
+### §16.5.1 П1 implementation tracker (2026-04-26)
+
+Phase plan: [`docs/superpowers/plans/2026-04-26-credential-p1-trait-scaffolding.md`](../plans/2026-04-26-credential-p1-trait-scaffolding.md).
+
+Worktree: `.claude/worktrees/credential-p1` on branch `worktree-credential-p1`. 8 stages landed sequentially, one commit per task; the merge PR carries all 28 commits onto `main`.
+
+Landing-gate checklist (verified at Stage 8):
+
+- [x] All 8 mandatory probes (per §16.1.1) PASS — `runtime_duplicate_key_fatal` + 7 compile-fail bundles. Stage 3 ships 4 capability sub-trait probes (`refreshable` / `revocable` / `testable` / `dynamic` each missing-method); Stage 1 ships 4 sensitivity probes (`plain_string` / `plain_apikey_string` / `public_with_secret` / `public_with_option_secret` / `sensitive_no_zeroize`); Stage 2 ships `state_zeroize_missing`; Stages 6 + 7 ship guard retention/clone + metadata field probes; Stage 5 ships the runtime duplicate-KEY assertion.
+- [x] Bonus probes from spike iter-3 PASS — `compile_fail_dyn_credential_const_key` + `compile_fail_pattern2_service_reject`.
+- [x] Full local gate PASS (fmt nightly + clippy `--workspace --all-targets -D warnings` + `cargo nextest run --workspace --profile ci --no-tests=pass` + `cargo test --workspace --doc`).
+- [x] cargo-public-api post-П1 snapshots captured for `nebula-credential` and `nebula-credential-builtin` (attached to merge PR).
+- [x] MATURITY rows updated for `nebula-credential` + `nebula-credential-builtin` (preview status, П1 trait scaffolding landed).
+- [x] Register status flips landed for the five architectural rows (arch-capability-subtrait-split, arch-registry-duplicate-fail-closed, arch-scheme-sensitivity-dichotomy, arch-scheme-guard-factory, arch-metadata-capability-authority) → `in-implementation` with phase-plan + Stage commit pointers. The five `stage5-followup-*` process rows resolved (i1+i2+s1+s2+s3); new row `stage7-followup-engine-discovery` added for the post-П1 slot-picker consumer wiring.
+- [x] CHANGELOG / READMEs reflect new shape — `crates/credential/README.md` "П1 trait shape" section added.
+- [x] §15.6 candidate (a) snippet aligned with landed `register` signature (stage5-followup-s3 closure).
+
+Out-of-scope for П1 (deferred to follow-up cascades, all tracked in register):
+
+- `stage6-followup-resource-integration` — engine-side `OnCredentialRefresh<C>` fan-out wiring (manager dispatch — RPITIT vs `BoxFuture` desugaring choice).
+- `stage7-followup-engine-discovery` — engine slot-picker consumer routes via `iter_compatible` (Pattern 3 capability-only).
+- `runtime-pending-consume-atomicity` (§15.10) — runtime-gated, П-later phase.
+- `arch-techspec-section-sync` — inline §2/§3/§9 edits to remove §15.3-§15.12 forward-pointer overlay.
 
 ---
 

@@ -9,7 +9,7 @@
 //! `use nebula_credential::Credential;` (not `nebula_credential::contract::Credential`).
 
 mod any;
-/// Capability bitflag set + registration-time detection (Stage 7 wires real detection).
+/// Capability bitflag set + registration-time detection per Tech Spec §15.8.
 pub mod capability_report;
 mod credential;
 mod dynamic;

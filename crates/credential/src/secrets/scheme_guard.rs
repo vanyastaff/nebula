@@ -44,9 +44,18 @@ use crate::{Credential, context::CredentialContext, error::CredentialError};
 /// # Invariants enforced at compile time
 ///
 /// - `!Clone` — no `Clone` impl on this type. Verified by Probe 7.
-/// - Drop-zeroizes via the wrapped scheme's own `ZeroizeOnDrop` impl (`SensitiveScheme: AuthScheme
-///   + ZeroizeOnDrop` per §15.5).
-/// - `!Send` if `Scheme: !Send` — the bound propagates through the wrapped field and `PhantomData`.
+/// - Drop semantics depend on `<C as Credential>::Scheme`:
+///   - `SensitiveScheme: AuthScheme + ZeroizeOnDrop` (per §15.5) — drop zeroizes the wrapped
+///     scheme's plaintext deterministically through the scheme's own `ZeroizeOnDrop` impl. This is
+///     the path that closes N4 / N8 (no plaintext lives past the call boundary).
+///   - `PublicScheme: AuthScheme` (per §15.5) — wrapped scheme has no secrets, so no zeroize is
+///     needed; drop is a no-op beyond the field destructor. The guard pattern still applies because
+///     the **lifetime invariant** (`!Clone` + `'a` pinning) is independent of the scheme's
+///     sensitivity tier.
+/// - `Send + Sync` are inherited from `<C as Credential>::Scheme` via the wrapped field. Per §15.5,
+///   `AuthScheme: Send + Sync + 'static`, so every `SchemeGuard<'a, C>` is `Send + Sync` — no
+///   conditional language needed. The `PhantomData<&'a ()>` carries no auto-trait bounds of its own
+///   beyond what `&'a ()` carries (which is `Send + Sync` for any `'a`).
 ///
 /// # Construction
 ///
