@@ -192,4 +192,42 @@ impl RefreshClaimRepo for PgRefreshClaimRepo {
 
         Ok(out)
     }
+
+    async fn record_sentinel_event(
+        &self,
+        credential_id: &CredentialId,
+        crashed_holder: &ReplicaId,
+        generation: u64,
+    ) -> Result<(), RepoError> {
+        let cid_str = credential_id.to_string();
+        sqlx::query(
+            "INSERT INTO credential_sentinel_events \
+             (credential_id, detected_at, crashed_holder, generation) \
+             VALUES ($1, $2, $3, $4)",
+        )
+        .bind(&cid_str)
+        .bind(Utc::now())
+        .bind(crashed_holder.as_str())
+        .bind(generation as i64)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    async fn count_sentinel_events_in_window(
+        &self,
+        credential_id: &CredentialId,
+        window_start: DateTime<Utc>,
+    ) -> Result<u32, RepoError> {
+        let cid_str = credential_id.to_string();
+        let (count,): (i64,) = sqlx::query_as(
+            "SELECT COUNT(*) FROM credential_sentinel_events \
+             WHERE credential_id = $1 AND detected_at > $2",
+        )
+        .bind(&cid_str)
+        .bind(window_start)
+        .fetch_one(&self.pool)
+        .await?;
+        Ok(u32::try_from(count).unwrap_or(u32::MAX))
+    }
 }

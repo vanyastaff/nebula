@@ -28,4 +28,4 @@ pub use coordinator::{
     ConfigError, RefreshAttempt, RefreshConfigError, RefreshCoordConfig, RefreshCoordinator,
     RefreshError,
 };
-pub use sentinel::{SentinelThresholdConfig, SentinelTrigger};
+pub use sentinel::{SentinelDecision, SentinelThresholdConfig, SentinelTrigger};

@@ -255,3 +255,97 @@ async fn concurrent_reclaim_returns_each_stuck_row_to_exactly_one_sweeper() {
         "every row reclaimed by exactly one sweeper"
     );
 }
+
+// ──────────────────────────────────────────────────────────────────────────
+// Stage 3.2: sentinel-event recording + rolling-window count
+// ──────────────────────────────────────────────────────────────────────────
+
+#[tokio::test]
+async fn record_sentinel_event_and_count_in_window() {
+    let pool = fresh_pool().await;
+    let repo = SqliteRefreshClaimRepo::new(pool);
+
+    let cid = CredentialId::new();
+    let holder = ReplicaId::new("replica-A");
+
+    // Empty window → 0.
+    let window_start = chrono::Utc::now() - chrono::Duration::seconds(10);
+    let count = repo
+        .count_sentinel_events_in_window(&cid, window_start)
+        .await
+        .unwrap();
+    assert_eq!(count, 0, "no events recorded yet");
+
+    // Record three events in quick succession; all must fall inside
+    // a 10s window.
+    repo.record_sentinel_event(&cid, &holder, 1).await.unwrap();
+    repo.record_sentinel_event(&cid, &holder, 2).await.unwrap();
+    repo.record_sentinel_event(&cid, &holder, 3).await.unwrap();
+
+    let count = repo
+        .count_sentinel_events_in_window(&cid, window_start)
+        .await
+        .unwrap();
+    assert_eq!(count, 3, "three events inside the rolling window");
+}
+
+#[tokio::test]
+async fn sentinel_count_filters_by_credential_id() {
+    let pool = fresh_pool().await;
+    let repo = SqliteRefreshClaimRepo::new(pool);
+
+    let cid_a = CredentialId::new();
+    let cid_b = CredentialId::new();
+    let holder = ReplicaId::new("replica-A");
+
+    repo.record_sentinel_event(&cid_a, &holder, 1)
+        .await
+        .unwrap();
+    repo.record_sentinel_event(&cid_a, &holder, 2)
+        .await
+        .unwrap();
+    repo.record_sentinel_event(&cid_b, &holder, 1)
+        .await
+        .unwrap();
+
+    let window_start = chrono::Utc::now() - chrono::Duration::seconds(10);
+    let count_a = repo
+        .count_sentinel_events_in_window(&cid_a, window_start)
+        .await
+        .unwrap();
+    let count_b = repo
+        .count_sentinel_events_in_window(&cid_b, window_start)
+        .await
+        .unwrap();
+    assert_eq!(count_a, 2, "credential A has 2 events");
+    assert_eq!(count_b, 1, "credential B has 1 event");
+}
+
+#[tokio::test]
+async fn sentinel_count_excludes_events_before_window_start() {
+    let pool = fresh_pool().await;
+    let repo = SqliteRefreshClaimRepo::new(pool);
+
+    let cid = CredentialId::new();
+    let holder = ReplicaId::new("replica-A");
+
+    // Record an event, then sleep past the window we're going to query.
+    repo.record_sentinel_event(&cid, &holder, 1).await.unwrap();
+    tokio::time::sleep(Duration::from_millis(100)).await;
+
+    // Window starts AFTER the recorded event.
+    let window_start = chrono::Utc::now() - chrono::Duration::milliseconds(50);
+    let count = repo
+        .count_sentinel_events_in_window(&cid, window_start)
+        .await
+        .unwrap();
+    assert_eq!(count, 0, "event predates window_start; must not be counted");
+
+    // Record a fresh event and re-query; only the new one falls inside.
+    repo.record_sentinel_event(&cid, &holder, 2).await.unwrap();
+    let count = repo
+        .count_sentinel_events_in_window(&cid, window_start)
+        .await
+        .unwrap();
+    assert_eq!(count, 1, "only the post-window event counts");
+}

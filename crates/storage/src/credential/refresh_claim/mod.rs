@@ -180,4 +180,26 @@ pub trait RefreshClaimRepo: Send + Sync + 'static {
     /// with the sentinel state observed (so caller can record events for
     /// `RefreshInFlight` cases).
     async fn reclaim_stuck(&self) -> Result<Vec<ReclaimedClaim>, RepoError>;
+
+    /// Records a sentinel event into `credential_sentinel_events`. Called
+    /// by the reclaim sweep when an expired claim's sentinel column is
+    /// `RefreshInFlight` — meaning the holder crashed mid-refresh.
+    ///
+    /// One event per detected crash; the threshold logic
+    /// (`count_sentinel_events_in_window`) lives in `nebula-engine`.
+    async fn record_sentinel_event(
+        &self,
+        credential_id: &CredentialId,
+        crashed_holder: &ReplicaId,
+        generation: u64,
+    ) -> Result<(), RepoError>;
+
+    /// Counts sentinel events for `credential_id` whose `detected_at` is
+    /// strictly after `window_start`. Used by `SentinelTrigger` to apply
+    /// the rolling-window N-events-in-1h threshold per sub-spec §3.4.
+    async fn count_sentinel_events_in_window(
+        &self,
+        credential_id: &CredentialId,
+        window_start: DateTime<Utc>,
+    ) -> Result<u32, RepoError>;
 }

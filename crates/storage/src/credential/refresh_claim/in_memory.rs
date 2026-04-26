@@ -26,10 +26,28 @@ struct ClaimRow {
     sentinel: SentinelState,
 }
 
+/// One sentinel event record kept in the in-memory ring.
+#[derive(Clone, Debug)]
+struct SentinelEventRow {
+    credential_id: CredentialId,
+    detected_at: DateTime<Utc>,
+    #[allow(
+        dead_code,
+        reason = "kept for symmetry with the SQL backends; surfaces in diagnostics"
+    )]
+    crashed_holder: ReplicaId,
+    #[allow(
+        dead_code,
+        reason = "kept for symmetry with the SQL backends; surfaces in diagnostics"
+    )]
+    generation: u64,
+}
+
 /// In-memory `RefreshClaimRepo`. Cheap to clone (Arc-backed inner).
 #[derive(Clone, Default)]
 pub struct InMemoryRefreshClaimRepo {
     inner: Arc<Mutex<HashMap<CredentialId, ClaimRow>>>,
+    sentinel_events: Arc<Mutex<Vec<SentinelEventRow>>>,
 }
 
 impl InMemoryRefreshClaimRepo {
@@ -44,6 +62,7 @@ impl std::fmt::Debug for InMemoryRefreshClaimRepo {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("InMemoryRefreshClaimRepo")
             .field("entries", &self.inner.lock().len())
+            .field("sentinel_events", &self.sentinel_events.lock().len())
             .finish()
     }
 }
@@ -160,5 +179,36 @@ impl RefreshClaimRepo for InMemoryRefreshClaimRepo {
         }
 
         Ok(out)
+    }
+
+    async fn record_sentinel_event(
+        &self,
+        credential_id: &CredentialId,
+        crashed_holder: &ReplicaId,
+        generation: u64,
+    ) -> Result<(), RepoError> {
+        let mut guard = self.sentinel_events.lock();
+        guard.push(SentinelEventRow {
+            credential_id: *credential_id,
+            detected_at: Utc::now(),
+            crashed_holder: crashed_holder.clone(),
+            generation,
+        });
+        Ok(())
+    }
+
+    async fn count_sentinel_events_in_window(
+        &self,
+        credential_id: &CredentialId,
+        window_start: DateTime<Utc>,
+    ) -> Result<u32, RepoError> {
+        let guard = self.sentinel_events.lock();
+        let count = guard
+            .iter()
+            .filter(|row| row.credential_id == *credential_id && row.detected_at > window_start)
+            .count();
+        // u32 is plenty — even at one sentinel event per second, 1h
+        // window caps at 3600.
+        Ok(u32::try_from(count).unwrap_or(u32::MAX))
     }
 }

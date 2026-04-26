@@ -798,6 +798,27 @@ mod tests {
         ) -> Result<Vec<nebula_storage::credential::ReclaimedClaim>, RepoError> {
             self.inner.reclaim_stuck().await
         }
+
+        async fn record_sentinel_event(
+            &self,
+            credential_id: &CredentialId,
+            crashed_holder: &ReplicaId,
+            generation: u64,
+        ) -> Result<(), RepoError> {
+            self.inner
+                .record_sentinel_event(credential_id, crashed_holder, generation)
+                .await
+        }
+
+        async fn count_sentinel_events_in_window(
+            &self,
+            credential_id: &CredentialId,
+            window_start: chrono::DateTime<chrono::Utc>,
+        ) -> Result<u32, RepoError> {
+            self.inner
+                .count_sentinel_events_in_window(credential_id, window_start)
+                .await
+        }
     }
 
     /// I1 regression — sub-spec §3.4. After Stage 2 review C1+I1: a
