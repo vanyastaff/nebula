@@ -1,15 +1,16 @@
 # nebula-action redesign cascade — completion summary
 
-**Status:** Phases 0-8 complete. Tech Spec FROZEN CP4 2026-04-25.
-**Date:** 2026-04-24 (start) — 2026-04-25 (Tech Spec freeze)
+**Status:** Phases 0-8 complete + Q1-Q8 post-closure amendments. Tech Spec FROZEN CP4 2026-04-25 (amended-in-place 2026-04-25 — Q1+Q6+Q7; amended-in-place 2026-04-26 — Q8).
+**Date:** 2026-04-24 (start) — 2026-04-26 (Q8 closure).
 **Orchestrator:** claude/upbeat-mendel-b30f89 (worktree)
-**Cascade pattern:** Spike-first checkpoint-gated design cascade
+**Cascade pattern:** Spike-first checkpoint-gated design cascade + post-closure dual-audit (Q7) + research-driven gap audit (Q8)
+**Total commits:** 18 в branch claude/upbeat-mendel-b30f89
 
 ---
 
 ## Headline
 
-Action cascade fully complete. Tech Spec frozen at CP4 (2400+ lines across 4 checkpoints with parallel reviewer matrix per CP). 3 ADRs produced (ADR-0036 + ADR-0037 accepted on Tech Spec freeze; ADR-0038 retained `proposed` pending user ratification on canon §3.5 revision). Implementation can begin pending Q1 user pick (a/b/c).
+Action cascade fully complete с **8 post-closure amendment rounds (Q1-Q8)** разрешившими 1 cross-ADR alignment fix (Q1 async_trait), 1 lifecycle gap fix (Q6 start/stop), 17 production-drift findings (Q7 mechanical slips), 5 research-driven AMENDs (Q8 idempotency/concurrency/version/engine-placeholders/docs), и 8 cascade slots committed для deferred trait families. Tech Spec FROZEN CP4 currently 3522+ lines (was 2400 at initial freeze). 3 ADRs produced (ADR-0036 + ADR-0037 accepted on Tech Spec freeze + amended-in-place per Q7; ADR-0038 retained `proposed` pending user ratification on canon §3.5). Implementation can begin pending Q1 user pick (a/b/c) + Q5 canon §3.5 ratification + 2 separate canon update PRs (F7 «no replay» + F6 ItemLineage non-goal).
 
 ---
 
@@ -29,15 +30,24 @@ Action cascade fully complete. Tech Spec frozen at CP4 (2400+ lines across 4 che
 | 6 CP3 — Tech Spec §9-§13 interface + migration | ✅ RATIFIED | Tech Spec §9-§13 (548 lines appended) + 5 reviewers (10a-e) + tech-lead ratify (10f) | `88899e51` |
 | 6 CP4 — Tech Spec §14-§16 meta + handoff | ✅ FROZEN CP4 2026-04-25 | Tech Spec §14-§16 (339 lines appended) + 2 reviewers (11a/b) + tech-lead RATIFY-FREEZE (11c) + ADR-0037 amendment-in-place enacted | (next commit) |
 | 7 — Concerns register | ✅ lite (inline §register) | — | — |
-| 8 — Final summary refresh | ✅ this file (current revision) | `2026-04-24-nebula-action-redesign-summary.md` | (next commit) |
+| 8 — Final summary refresh | ✅ this file (current revision) | `2026-04-24-nebula-action-redesign-summary.md` | (multi-commit; final at Q8) |
+| **Post-closure Q1** — async_trait cross-ADR alignment | ✅ AMENDMENT | Tech Spec §2.4 *Handler traits flipped к `#[async_trait]` per ADR-0024 §Decision items 1+4 (already approved 4 days before freeze; cross-ADR violation fixed) | `193af953` |
+| **Post-closure Q2** — §2.9 Configuration vs Runtime Input axis refinement | ✅ REFINED REJECT | Tech Spec §2.9.1b NEW axis distinction added (rationale-only); user pushback acknowledged as correct nomenclature но не overturning REJECT | `193af953` |
+| **Post-closure Q3** — §2.9 third REJECT (schema axis distinction) | ✅ REFINED REJECT | Tech Spec §2.9.1c NEW; n8n consumer evidence catalogued as schema-as-data axis (already covered) vs schema-as-trait-type (no consumer); COMPETITIVE.md cited | `26e92c71` |
+| **Post-closure Q4** — Option D (TriggerAction.type Input asymmetry) | ✅ REJECT (Option D analyzed first time) | Tech Spec §2.9.1d NEW; semantic divergence trap (same name, opposite semantics — per-instance config vs per-dispatch input) | `4ba08b97` |
+| **Post-closure Q5** — Option E (`type Config` rename) | ✅ REJECT-refined fifth iteration | Tech Spec §2.9.1e NEW; user found sharpest framing dissolved B1 naming collision но 4 other blockers persist incl. B5 paradigm choice locked at §2.9.1a | `77203142` |
+| **Post-closure Q6** — TriggerAction lifecycle gap fix | ✅ AMENDMENT-IN-PLACE (SPLIT) | Tech Spec §2.2.3 lifecycle methods restored (start/stop) per Option (i) — production drift between `crates/action/src/trigger.rs:61-72` and spike-locked shape closed | `4d5f55ee` |
+| **Post-closure Q7** — Post-closure systematic audit (17 amendments) | ✅ AMENDED CLOSED | 6 🔴 R1-R6 + 3 🟠 + 8 🟡 mechanical lifecycle slips bundled per ADR-0035 precedent; ADR-0037 §1 SlotBinding amendment-in-place enacted | `5ad5d57e` |
+| **Post-closure Q8** — Research-driven amendment (5 AMENDs + 8 cascade slots) | ✅ AMENDED-CLOSED-AGAIN | 4 parallel research agents + Phase 2 synthesis + 2 Phase 2.5 deeper investigations + 5 AMENDs (idempotency / concurrency / version-pin / 4× engine placeholders / docs) + 8 cascade-queue.md slots + 2 canon updates flagged | `0ddbdf5d` |
 
 ---
 
 ## ADR status transitions
 
-| ADR | Pre-Phase 6 | Post-Phase 6 | Notes |
+| ADR | Pre-Phase 6 | Post-Q8 | Notes |
 |---|---|---|---|
-| **ADR-0035** Phantom-shim capability pattern | accepted (frozen, prior cascade) | accepted (unchanged) | composition cited throughout Tech Spec §15.5 amendment-in-place pattern |
+| **ADR-0024** Defer dynosaur migration | accepted (prior 2026-04-20) | accepted (cited Q1) | §Decision items 1+4 explicitly enumerate 4 *Handler traits among 14 dyn-consumed approved для `#[async_trait]`; Tech Spec FROZEN CP4 missed citing → Q1 amendment fixes cross-ADR violation |
+| **ADR-0035** Phantom-shim capability pattern | accepted (frozen, prior cascade) | accepted (unchanged) | amendment-in-place precedent invoked 4 times (Q1/Q6/Q7/Q8) для Tech Spec |
 | **ADR-0036** Action trait shape | proposed | **accepted 2026-04-25** | Tech Spec FROZEN CP4 ratification gate cleared |
 | **ADR-0037** Action macro emission | proposed | **accepted 2026-04-25 (amended-in-place 2026-04-25)** | Tech Spec FROZEN CP4 + Tech Spec CP4 §15.5 amendment-in-place enactment (capability folded into SlotType per credential Tech Spec §15.8) |
 | **ADR-0038** ControlAction seal + canon §3.5 revision | proposed | **proposed (USER RATIFICATION PENDING)** | Canon §3.5 revision wording requires explicit user signoff; orchestrator does NOT auto-flip per cascade prompt; surfaced as Q5 below |
@@ -111,6 +121,36 @@ Action cascade fully complete. Tech Spec frozen at CP4 (2400+ lines across 4 che
 
 ---
 
+## Q8 outcomes (research-driven amendments)
+
+### 5 AMENDs enacted (Tech Spec amendment-in-place per ADR-0035 precedent)
+
+- **F2 Idempotency hook**: `TriggerAction::idempotency_key(&self, request) -> Option<IdempotencyKey>` default-opt-in (Tech Spec §2.2.3); resolves rust-senior 🔴 webhook duplicate retry pain class
+- **F9 Per-action concurrency**: `ActionMetadata::max_concurrent: Option<NonZeroU32>` (§3.6.1 NEW); `#[non_exhaustive]`-safe
+- **F12 Workflow-version pin**: `NodeDefinition::action_version: SemVer` (§3.6.2 NEW); engine cascade locks enforcement
+- **F13 4× engine cluster-mode trait placeholders** (§3.7 NEW; doc-only): `CursorPersistence` (PollAction cross-restart durability), `LeaderElection` (multi-worker coordination), `ExternalSubscriptionLedger` (webhook URL stability), `ScheduleLedger` (missed-fire replay) — engine cascade implements bodies later; placeholders constrain future cascade scope per rust-senior recommendation
+- **F15 Mechanical docs cleanup** (flagged для co-landing PR)
+
+### 8 cascade slots committed к [`docs/tracking/cascade-queue.md`](../../tracking/cascade-queue.md) NEW
+
+| Slot | Cascade name | Trait shape | Trigger condition |
+|---|---|---|---|
+| 1 | Credential CP6 implementation | per credential Tech Spec CP5/CP6 | priority |
+| 2 | Engine cluster-mode coordination | implementations of F13 placeholders | post-credential |
+| 3 | ScheduleAction cascade | Sealed-DX peer + open Schedule trait + 3 blessed impls (Cron/Interval/OneShot) | post-action-redesign |
+| 4 | EventAction cascade (renamed от QueueAction by user) | Sealed-DX peer + Kafka/RabbitMQ/SQS unified shape | post-action-redesign |
+| 5 | AgentAction + ActionTool cascade (user-named) | New primary trait family с canon §3.5 revision | post-action-redesign; AI use case priority |
+| 6 | StreamAction + StreamStage cascade (user-named) | New primary family + composable pipeline stages | post-action-redesign |
+| 7 | TransactionAction cascade (user-named) | Sealed-DX over Stateful OR new primary; shape TBD | post-action-redesign |
+| 8 | nebula-auth cascade | SSO/SAML/OIDC/LDAP/MFA Tech Spec | priority — production blocker per security-lead Q8 |
+
+### Canon decisions ratified (separate PRs, NOT Tech Spec)
+
+- **F7 Canon §0 «no replay» declaration** — Nebula explicitly NOT durable-execution engine (graph-edge state model vs Temporal-style replay); cite COMPETITIVE.md line 41. Action authors use Rust language + std + crates напрямую без NDE wrappers.
+- **F6 Canon §6 ItemLineage non-goal** — n8n's `pairedItem` pain class structurally absorbed by Nebula's typed `ActionResult<T>` model (authors carry ids в payloads); 3 of 4 peer engines (Temporal/Windmill/Activepieces) also lack lineage primitive. Pillar fit weak per PRODUCT_CANON §6. Rejected as scope-creep at canon level (revised UP from defer).
+
+---
+
 ## Open questions awaiting user decision
 
 ### Q1 (LOAD-BEARING) — Implementation path choice
@@ -147,12 +187,14 @@ ADR-0038 §2 proposes canon §3.5 revision: "Action — what a step does. Dispat
 
 ## Recommended next steps (ordered)
 
-1. **Review this summary** + walk artefacts (Strategy + 3 ADRs + Tech Spec + spike NOTES)
+1. **Review this summary** + walk artefacts (Strategy + 3 ADRs + Tech Spec + spike NOTES + Q8 research-driven amendments + cascade-queue.md slots)
 2. **Pick Q1 implementation path** (a/b/c)
 3. **Decide Q5 canon §3.5 revision** (approve to flip ADR-0038 accepted, or reject)
-4. **Schedule Q1 path execution** — if (b) sibling cascades: confirm credential CP6 cascade slot owner+date+queue position per Strategy §6.6 silent-degradation guard
-5. **File adjacent T3 PR** for `nebula-runtime` cleanup (orthogonal; quick)
-6. **Implementation PR wave begins** — Tech Spec §16.3 DoD checklist + §16.4 rollback strategy + §16.5 cascade-final checklist as gating criteria
+4. **File 2 separate canon update PRs** (per Q8 outcomes, NOT Tech Spec amendment): F7 §0 «no replay» declaration + F6 §6 ItemLineage non-goal entry
+5. **Schedule Q1 path execution** — if (b) sibling cascades: confirm credential CP6 cascade slot owner+date+queue position per Strategy §6.6 silent-degradation guard + cascade-queue.md slot 1
+6. **Fill cascade-queue.md slot owner/date/position fields** when planning future cascades — 8 slots committed, all carry architect-recommended trait shapes
+7. **File adjacent T3 PR** for `nebula-runtime` cleanup (orthogonal; quick)
+8. **Implementation PR wave begins** — Tech Spec §16.3 DoD checklist + §16.4 rollback strategy + §16.5 cascade-final checklist + Q7 §15.11 + Q8 §15.12 amendment-in-place enactment records as gating criteria
 
 ---
 
@@ -201,7 +243,7 @@ All in `docs/superpowers/drafts/2026-04-24-nebula-action-redesign/`:
 - 11a/b/c (Tech Spec CP4)
 - CASCADE_LOG.md — full timeline
 
-### Commits (chronological)
+### Commits (chronological — 18 commits в branch claude/upbeat-mendel-b30f89)
 
 ```
 fc18c736 docs(action): Phase 0 — current state reconciliation
@@ -213,7 +255,15 @@ aa63e424 docs(action): Phases 4+5 — spike PASS + 3 PROPOSED ADRs
 087d6793 docs(action): Phase 6 CP1 — Tech Spec §0-§3 foundation
 29bdb2d0 docs(action): Phase 6 CP2 — Tech Spec §4-§8 macro + execution
 88899e51 docs(action): Phase 6 CP3 — Tech Spec §9-§13 interface + migration
-(next)   docs(action): Phase 6 CP4 + Phase 8 refresh — Tech Spec FROZEN CP4 + ADR statuses
+d24d318f docs(action): cascade continuation — Phase 6 Tech Spec FROZEN CP4
+193af953 docs(action): post-freeze amendment — Q1 async_trait + Q2 §2.9 refinement
+26e92c71 docs(action): post-freeze Q3 — §2.9 third REJECT (schema axis)
+4ba08b97 docs(action): post-freeze Q4 — Option D (TriggerAction.type Input) REJECT
+77203142 docs(action): post-freeze Q5 — Option E (type Config rename) REJECT
+4d5f55ee docs(action): post-freeze Q6 — TriggerAction lifecycle gap fix (SPLIT)
+5ad5d57e docs(action): Q7 post-closure audit — AMENDED CLOSED (17 amendments)
+0ddbdf5d docs(action): Q8 research-driven amendment — AMENDED-CLOSED-AGAIN
+(next)   docs(action): Phase 8 final summary refresh post-Q8
 ```
 
 ---
