@@ -1,6 +1,6 @@
 ---
 name: nebula-action tech spec (implementation-ready design)
-status: FROZEN CP4 2026-04-25 (amended-in-place 2026-04-25 — Q1 post-freeze; amended-in-place 2026-04-25 — Q6 lifecycle gap; amended-in-place 2026-04-25 — Q7 post-closure audit per §15.11 — production-drift bundle: 6 🔴 R1-R6 + 3 🟠 + 8 🟡 closure across §2.2.2 / §2.2.3 / §2.2.4 / §2.4 / §2.6 / §3.5 / §8.1.2)
+status: FROZEN CP4 2026-04-25 (amended-in-place 2026-04-25 — Q1 post-freeze; amended-in-place 2026-04-25 — Q6 lifecycle gap; amended-in-place 2026-04-25 — Q7 post-closure audit per §15.11 — production-drift bundle: 6 🔴 R1-R6 + 3 🟠 + 8 🟡 closure across §2.2.2 / §2.2.3 / §2.2.4 / §2.4 / §2.6 / §3.5 / §8.1.2; amended-in-place 2026-04-26 — Q8 research-driven amendment per §15.12 — 5 AMEND items: F2 idempotency hook + F9 per-action concurrency + F12 workflow-version pin + F13 4× engine cluster-mode trait placeholders + F15 mechanical docs cleanup, plus 5 deferred cascade slots committed to `docs/tracking/cascade-queue.md` + 2 canon updates flagged for separate PR + 3 outside-scope auth findings spawned to `nebula-auth` cascade slot)
 date: 2026-04-24
 authors: [architect (drafting); tech-lead (CP gate decider); security-lead (VETO authority on §4 security floor); orchestrator (CP coordination)]
 scope: nebula-action redesign cascade Phase 6 — implementation-ready design for the action trait family, the `#[action]` attribute macro, runtime model, security floor, and codemod migration
@@ -30,7 +30,7 @@ This document moves through four checkpoints with parallel reviewer matrices per
 | **DRAFT CP1** | §0–§3 | Status, goals, trait contract, runtime model | locked CP1 |
 | **DRAFT CP2** | §4–§8 | Macro emission, test harness, security floor, lifecycle, storage | locked CP2 |
 | **DRAFT CP3** | §9–§13 | Public API surface, codemod migration, adapter authoring, ControlAction migration, evolution policy | locked CP3 |
-| **FROZEN CP4 2026-04-25** (iterated 2026-04-25 post 11a/11b; tech-lead RATIFY-FREEZE 11c; amended-in-place 2026-04-25 post-freeze for Q1 `*Handler` shape per §15.9 + Q2 §2.9.1b axis-naming refinement + **Q6 §2.2.3 lifecycle methods per §15.10 — start/stop added to TriggerAction; production drift between `crates/action/src/trigger.rs:61-72` and spike-locked shape closed; Option (i) picked (lifecycle on TriggerAction, not TriggerSource); SPLIT decision (no Q4 type Input bundle)** + **Q7 post-closure audit per §15.11 — production-drift bundle: §2.2.2 init_state/migrate_state restoration + §2.2.3 TriggerEventOutcome + accepts_events restoration + §2.2.4 ResourceAction configure/cleanup paradigm restoration (drop spurious execute/Input/Output) + §2.4 ResourceHandler Box<dyn Any> + TriggerHandler TriggerEvent envelope restoration + §2.6 sealed-DX bound chain re-pin (WebhookAction/PollAction declared as peer DX traits with own State/Cursor/Event associated types, NOT TriggerAction subtraits) + §3.5 typification path narrative + §8.1.2 cursor in-memory ownership narrative + §1.2 N1 cred-cascade dependency note + 8 🟡 doc-gap closure** per ADR-0035 amended-in-place precedent) | §14–§16 | Open items, accepted gaps, handoff, implementation-path framing for Phase 8 user pick | **frozen (amended-in-place)** |
+| **FROZEN CP4 2026-04-25** (iterated 2026-04-25 post 11a/11b; tech-lead RATIFY-FREEZE 11c; amended-in-place 2026-04-25 post-freeze for Q1 `*Handler` shape per §15.9 + Q2 §2.9.1b axis-naming refinement + **Q6 §2.2.3 lifecycle methods per §15.10 — start/stop added to TriggerAction; production drift between `crates/action/src/trigger.rs:61-72` and spike-locked shape closed; Option (i) picked (lifecycle on TriggerAction, not TriggerSource); SPLIT decision (no Q4 type Input bundle)** + **Q7 post-closure audit per §15.11 — production-drift bundle: §2.2.2 init_state/migrate_state restoration + §2.2.3 TriggerEventOutcome + accepts_events restoration + §2.2.4 ResourceAction configure/cleanup paradigm restoration (drop spurious execute/Input/Output) + §2.4 ResourceHandler Box<dyn Any> + TriggerHandler TriggerEvent envelope restoration + §2.6 sealed-DX bound chain re-pin (WebhookAction/PollAction declared as peer DX traits with own State/Cursor/Event associated types, NOT TriggerAction subtraits) + §3.5 typification path narrative + §8.1.2 cursor in-memory ownership narrative + §1.2 N1 cred-cascade dependency note + 8 🟡 doc-gap closure** per ADR-0035 amended-in-place precedent + Q8 post-closure research-driven amendment per §15.12 — 5 AMEND items + 5 deferred cascade slots + 2 canon updates flagged + 3 outside-scope auth findings spawned) | §14–§16 | Open items, accepted gaps, handoff, implementation-path framing for Phase 8 user pick | **frozen (amended-in-place)** |
 
 Inputs are **frozen** at this freeze point: Strategy frozen at CP3 (commit `a38f6f5a`); ADR-0036 status `accepted` 2026-04-25 + ADR-0037 status `accepted` 2026-04-25 (amended-in-place 2026-04-25 per §15.5 enactment) — both flipped on Tech Spec FROZEN CP4 ratification per their respective §Status sections; ADR-0038 retained at `proposed` pending explicit user ratification on canon §3.5 revision (per cascade prompt: surface к user в Phase 8 summary, не auto-flip); Phase 4 spike PASS at commit `c8aef6a0` (worktree-isolated; see [spike NOTES](../drafts/2026-04-24-nebula-action-redesign/07-spike-NOTES.md) §5; **scope clarification per §15.10 Q6 — spike validated trait-shape compose + cancellation only; lifecycle methods (`start` / `stop` on TriggerAction) are derived from production `crates/action/src/trigger.rs:61-72` PASS evidence, NOT from spike-shape change**).
 
@@ -223,6 +223,8 @@ State Send-bound discipline: `state: &'a mut Self::State` is borrowed mutably ac
 > **Amended-in-place 2026-04-25 (Q6 lifecycle gap)** per §15.10 enactment. Pre-amendment: trait declared only `type Source` + `type Error` + `handle()` per spike `final_shape_v2.rs:254-262`; lifecycle methods `start` / `stop` (production `crates/action/src/trigger.rs:61-72`) were dropped from the spec without rationale. Post-amendment: `start` + `stop` lifecycle methods added on `TriggerAction` per Option (i) — per-instance state lives in `&self`, not in `TriggerSource`. Spike PASS verdict scope narrowed at §0.1 inputs footer: spike validated trait-shape compose + cancellation only; lifecycle is derived from production PASS evidence (Mock test `crates/action/src/trigger.rs:540-549` exercises `start` / `stop` round-trip).
 >
 > **Amended-in-place 2026-04-25 (Q7 post-closure audit, R3)** per §15.11 enactment. Pre-Q7: `handle()` returned `Result<(), Self::Error>` (fire-and-forget unit). Post-Q7: `handle()` returns `Result<TriggerEventOutcome, Self::Error>` per production `trigger.rs:215-264` — restoring the per-event multiplicity (Skip / Emit / EmitMany) that allows a single transport event to filter out, fire one execution, or fan out to N executions. `accepts_events()` predicate added with default `false` per production `trigger.rs:359-361` engine-side gate. Both restorations close the action-author surface gaps tech-lead post-closure audit identified.
+>
+> **Amended-in-place 2026-04-26 (Q8 post-closure F2 amendment)** per §15.12 enactment. `idempotency_key(&self, event) -> Option<IdempotencyKey>` hook added to `TriggerAction` with default `None` (default-opt-in shape per Q8 Phase 2 §4 architect-default position); `IdempotencyKey` type defined adjacent to `TriggerEventOutcome`. Engine cluster-mode coordination cascade (slot 2 per `docs/tracking/cascade-queue.md`) consumes the hook; pre-cluster-mode engine builds ignore it (default `None` preserves single-worker behavior). Per Strategy §3.1 component 7 + §5.1.5 (line 297) cluster-mode hook contract; surface-only commitment per §1.2 N4.
 
 ```rust
 pub trait TriggerSource: Send + Sync + 'static {
@@ -284,6 +286,40 @@ pub trait TriggerAction: Send + Sync + 'static {
     /// adapter keeps default).
     fn accepts_events(&self) -> bool { false }
 
+    /// Default-opt-in idempotency hook (Q8 post-closure F2 amendment per
+    /// §15.12). Returns `Some(key)` to mark the event for cluster-mode
+    /// dedup-window engine logic; default returns `None` (idempotency NOT
+    /// declared — engine emits one workflow execution per `handle` outcome
+    /// without dedup).
+    ///
+    /// **Engine consumption.** The engine cluster-mode coordination layer
+    /// (cascade slot 2 per `docs/tracking/cascade-queue.md`) reads
+    /// `idempotency_key()` per event before dispatch. If `Some(key)` returned,
+    /// engine consults the per-trigger `dedup_window` (cluster-mode
+    /// metadata, locked at engine cascade) and rejects events whose key
+    /// already fired within the window. Per Strategy §3.1 component 7 +
+    /// §5.1.5 (line 297) cluster-mode hook contract.
+    ///
+    /// **Default opt-in shape (per Q8 Phase 2 §4 architect-default position).**
+    /// Default returns `None` so triggers without explicit dedup intent
+    /// see no behavioral change; opt-in is per-action override of this
+    /// method. Same discipline as `accepts_events()` default `false`.
+    /// Cluster-mode is not yet shipped (see §3.7 placeholder); pre-cluster
+    /// engine builds ignore the hook (no-op) per the engine cascade
+    /// contract.
+    ///
+    /// **Surface contract only.** This Tech Spec locks the hook on the
+    /// `TriggerAction` typed trait so action authors can declare
+    /// idempotency intent now. The engine-side `IdempotencyLedger` /
+    /// `dedup_window` consumer lives in the cluster-mode coordination
+    /// cascade per §1.2 N4 + §3.7 trait placeholder.
+    fn idempotency_key<'a>(
+        &'a self,
+        _event: &'a <Self::Source as TriggerSource>::Event,
+    ) -> Option<IdempotencyKey> {
+        None
+    }
+
     /// Handle a single event projected from `Source`. Engine-driven —
     /// the engine sources events from `Source: TriggerSource` and dispatches
     /// each into `handle`. Per-event work (parsing, dedup, emitting workflow
@@ -321,6 +357,36 @@ pub enum TriggerEventOutcome {
     Skip,
     Emit(serde_json::Value),
     EmitMany(Vec<serde_json::Value>),
+}
+
+/// Per-event idempotency key for cluster-mode dedup-window engine logic.
+///
+/// Returned by `TriggerAction::idempotency_key(&self, event) -> Option<IdempotencyKey>`
+/// (Q8 post-closure F2 amendment per §15.12). Authors construct via
+/// `IdempotencyKey::new(value: impl Into<String>)` for opaque hash-of-event
+/// shape; the engine treats the inner value as opaque (string compare against
+/// the per-trigger dedup-window ledger).
+///
+/// **Engine consumption.** Cluster-mode coordination cascade (slot 2 per
+/// `docs/tracking/cascade-queue.md`) reads the key per dispatched event;
+/// if a key fired within the per-trigger `dedup_window` (cluster-mode metadata,
+/// engine-cascade scope), the new event is rejected (no workflow execution
+/// emitted). The pre-cluster-mode engine ignores the hook (default `None`
+/// preserves single-worker behavior).
+///
+/// Authors should derive the key from event content (e.g., `format!("github-pr-{}",
+/// pr.id)`) rather than monotonic time, so cross-worker dedup matches.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct IdempotencyKey(String);
+
+impl IdempotencyKey {
+    pub fn new(value: impl Into<String>) -> Self {
+        Self(value.into())
+    }
+
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
 }
 ```
 
@@ -1194,6 +1260,164 @@ The base `TriggerHandler` (§2.4) is dyn-safe because `TriggerEvent` carries `Bo
 **For poll adapters specifically**, `PollTriggerAdapter` does NOT use the `handle_event` path — it owns the dispatch inside `start()`'s loop and emits directly through the engine's emit channel. `PollAction::poll(cursor, ctx)` returns `PollResult<Self::Event>`; adapter iterates the events, applies `EmitFailurePolicy` (DropAndContinue / RetryBatch / StopTrigger) per failure, advances cursor per outcome (Idle = keep, Ready = advance, Partial = checkpoint, Err = pre-poll). The base `TriggerHandler::handle_event` default returns `ActionError::fatal` precisely to fail loudly if the engine ever mistakenly routes a push-event to a poll handler.
 
 **Migration impact (per Q7 §15.11).** Community plugins that today consume `TriggerEvent::downcast::<WebhookRequest>()` continue to do so post-cascade — the API is preserved verbatim from production. The typification path narrative is documentation-only; no codemod transform required. The base `TriggerHandler` shape changes (per R5 above — adopts `TriggerEvent` envelope instead of pre-Q7 `serde_json::Value`), but adapters absorb the change; community plugin author code that impls `TriggerAction` / `WebhookAction` / `PollAction` (DX traits) is unchanged.
+
+### §3.6 `ActionMetadata` extensions — per-action concurrency + workflow-version save-time pin (per Q8 post-closure F9 + F12 amendments)
+
+> **Added 2026-04-26 (Q8 post-closure audit, F9 + F12)** per §15.12 enactment. Pre-Q8: `ActionMetadata` (`crates/action/src/metadata.rs:96-118`) carried `base / inputs / outputs / isolation_level / category` fields without per-action concurrency control; workflow-version pin lived implicitly in `BaseMetadata::version` semver discipline without an explicit save-time `NodeDefinition` snapshot field. Q8 Phase 2 architect synthesis (`q8-phase2-synthesis.md` §3 F9 + F12) flagged both as gap-closure amendments — concurrency control is per-action policy not engine-global; workflow-version pin closes the cross-execution drift class where workflow author saves with action vN and engine dispatches against action vN+1 between save and execute.
+
+#### §3.6.1 `ActionMetadata::max_concurrent` field (F9)
+
+```rust
+// In nebula-action::ActionMetadata — appended to existing field set.
+//
+// Pre-Q8: ActionMetadata had no per-action concurrency control; engine
+// either dispatched without throttle or applied workflow-global throttle.
+// Post-Q8: per-action policy hint for engine-side dispatch throttling.
+
+#[non_exhaustive]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ActionMetadata {
+    // ... existing fields per crates/action/src/metadata.rs:98-117 ...
+
+    /// Per-action concurrency limit (Q8 F9 amendment per §15.12).
+    /// Engine-side dispatch throttle hint — engine respects this at action
+    /// dispatch time per dispatch-pool sizing.
+    ///
+    /// `None` (default) — no per-action limit (engine-global throttle still applies).
+    /// `Some(NonZeroU32)` — at most N concurrent in-flight executions of this action
+    /// across the workflow's dispatch pool.
+    ///
+    /// **Engine consumption.** Engine dispatch path (cluster-mode coordination
+    /// cascade slot 2 per `docs/tracking/cascade-queue.md`) reads this field
+    /// before dispatching `Arc<dyn StatelessHandler>` / `Arc<dyn StatefulHandler>`;
+    /// in-flight count is per-action across the workflow scope (not per-trigger,
+    /// not global). Pre-cluster-mode engine builds may ignore the hint (no-op);
+    /// engine cascade contract pins exact semantics.
+    ///
+    /// **Why per-action policy on metadata.** Per Q8 Phase 2 §3 F9 architect
+    /// synthesis: external-resource rate limits (rate-limited APIs, expensive
+    /// LLM calls, throttled databases) are intrinsic to the action, not to
+    /// the workflow. Workflow-global throttle composes — `max_concurrent`
+    /// is the floor; workflow-global rate limit is the ceiling.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_concurrent: Option<core::num::NonZeroU32>,
+}
+```
+
+**Builder method.** `ActionMetadata::with_max_concurrent(self, max: NonZeroU32) -> Self` — append to the existing builder chain at `crates/action/src/metadata.rs`. Macro-emission path (per ADR-0037 §1) reads `#[action(max_concurrent = N)]` attribute zone where present and threads through `with_max_concurrent(NonZeroU32::new(N).unwrap())`; emission is no-op when attribute absent.
+
+**`#[non_exhaustive]` discipline.** `ActionMetadata` is already `#[non_exhaustive]` per `metadata.rs:96`; adding `max_concurrent: Option<...>` with `#[serde(default, skip_serializing_if = "Option::is_none")]` is a non-breaking addition — pre-Q8 serialized metadata round-trips with `max_concurrent: None`.
+
+#### §3.6.2 Workflow-version save-time pin (F12)
+
+```rust
+// In nebula-engine NodeDefinition — engine-side workflow node reference.
+// Tech Spec records the surface contract; engine cascade locks the exact
+// NodeDefinition shape. Cross-reference: engine cascade scope per §1.2 N4.
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct NodeDefinition {
+    pub action_key: ActionKey,
+
+    /// Workflow-version save-time action pin (Q8 F12 amendment per §15.12).
+    /// Records the action's `BaseMetadata::version` at workflow-save time,
+    /// so engine dispatches against the version the workflow author saw.
+    /// Per Q8 Phase 2 §3 F12 architect synthesis.
+    ///
+    /// **Why save-time pin.** Without the pin, workflow saved at action vN and
+    /// dispatched after action vN+1 lands silently runs vN+1 — invisible
+    /// version drift. With the pin, engine dispatch path checks
+    /// `node.action_version == registered_action.metadata.base.version`;
+    /// mismatch surfaces as `ExecutionError::ActionVersionDrift { expected,
+    /// actual }` (engine-side typed error, exact shape engine-cascade scope).
+    ///
+    /// **`SemVer` shape.** Uses `nebula_resource::Version` (re-export of
+    /// `semver::Version`) — same shape as `ActionMetadata::base.version`
+    /// (`crates/action/src/metadata.rs:228-236`).
+    ///
+    /// **Engine cascade scope.** This Tech Spec records the surface contract
+    /// (NodeDefinition carries the field); engine cascade locks the exact
+    /// drift-detection enforcement (warn vs fail-closed default; opt-in
+    /// auto-upgrade policy) per `docs/tracking/cascade-queue.md` slot 2
+    /// (cluster-mode coordination — incorporates version-drift handling).
+    pub action_version: nebula_resource::Version,
+
+    // ... other engine-side NodeDefinition fields ...
+}
+```
+
+**Cross-reference.** This Tech Spec defines the **surface obligation** (NodeDefinition records `action_version` at workflow-save time); engine cascade defines **how dispatch enforces** the pin (exact `ExecutionError` variant, opt-in policy on auto-upgrade behavior). Per §1.2 N4 — engine-side NodeDefinition shape is engine-cascade scope; this Tech Spec commits the action-side cooperation contract that `ActionMetadata::base.version` is the canonical source the engine reads at workflow-save time.
+
+**Migration shape.** Workflows saved before F12 land have `action_version` absent at deserialize — engine cascade defines the migration policy (`#[serde(default)]` to a sentinel that triggers re-pin on next save vs hard-fail on missing pin). Architect-recommended policy: `#[serde(default = "ActionVersion::unknown")]` with a one-time re-pin migration when workflow loads — preserves user workflows without forcing manual edits.
+
+### §3.7 Engine cluster-mode trait placeholders (per Q8 post-closure F13 amendment)
+
+> **Added 2026-04-26 (Q8 post-closure audit, F13)** per §15.12 enactment. Pre-Q8: cluster-mode coordination was named in §1.2 N4 (engine cluster-mode coordination cascade) without explicit trait surfaces. Q8 Phase 2 architect synthesis (`q8-phase2-synthesis.md` §3 F13) committed cluster-mode lock NOW per rust-senior recommendation: declare empty trait shapes + doc-only contracts so action authors and engine cascade implementors share a vocabulary; engine cascade implements bodies later.
+
+**Doc-only contracts.** The four traits below are **declared shape, not implementation**. Engine cascade (slot 2 per `docs/tracking/cascade-queue.md`) lands the actual implementations. Action surface depends only on the shapes for hook-method return types (e.g., `IdempotencyKey` per §2.2.3); pre-cluster-mode engine builds satisfy the contract via no-op default impls or compile-time conditional (engine cascade decides).
+
+```rust
+// In nebula-engine — trait shapes only; bodies engine-cascade scope.
+//
+// Action authors do NOT impl these. They are the engine-side coordination
+// surface that cluster-mode cascade implements. Tech Spec declares the shape
+// so action-side hook return types (IdempotencyKey per §2.2.3, etc.) align
+// with engine consumption; engine cascade locks the exact body shape.
+
+/// Persistence layer for poll-trigger cursors across worker restart and
+/// cluster-mode rebalance. Per §1.2 N4 + §8.1.2 cursor in-memory ownership
+/// narrative — current shape is in-memory in `PollTriggerAdapter::start()`
+/// stack frame; cluster-mode cascade lands a parallel persistence layer
+/// that wraps action surface (zero migration impact for community PollAction
+/// impls).
+///
+/// **Doc-only contract.** Engine cascade implements; methods elided.
+pub trait CursorPersistence: Send + Sync + 'static {
+    // engine-cascade scope — locks the exact persistence API
+}
+
+/// Multi-worker coordination for at-most-one-leader-at-a-time triggers.
+/// Per Strategy §3.1 component 7 + §5.1.5 (line 297) — TriggerAction's
+/// `on_leader_acquire` / `on_leader_release` hooks (cluster-mode metadata)
+/// consume this trait at engine-coordination layer.
+///
+/// **Doc-only contract.** Engine cascade implements; methods elided.
+pub trait LeaderElection: Send + Sync + 'static {
+    // engine-cascade scope — locks the exact election API
+}
+
+/// Per-trigger external-subscription registry (webhook URL stability across
+/// worker rebalance). Without this ledger, webhook re-registration on
+/// worker restart races against external service de-dup; with it, the
+/// engine restores the prior registration token from the ledger so the
+/// external service sees a continuous registration. Per §2.2.3 webhook
+/// trigger lifecycle (`start` / `stop` registration).
+///
+/// **Doc-only contract.** Engine cascade implements; methods elided.
+pub trait ExternalSubscriptionLedger: Send + Sync + 'static {
+    // engine-cascade scope — locks the exact ledger API
+}
+
+/// Missed-fire replay ledger for time-based triggers (CronSchedule /
+/// IntervalSchedule / OneShotSchedule per cascade slot 3). Worker downtime
+/// during a scheduled fire window leaves a backlog; the ledger lets the
+/// engine replay the missed fires per the trigger's missed-fire policy
+/// (FireOnce / FireAll / Skip). Per ScheduleAction cascade slot 3
+/// architect-recommended shape.
+///
+/// **Doc-only contract.** Engine cascade implements; methods elided.
+pub trait ScheduleLedger: Send + Sync + 'static {
+    // engine-cascade scope — locks the exact ledger API
+}
+```
+
+**Why declare placeholders now (per rust-senior Q8 Phase 2 recommendation).** Cluster-mode cascade is engine-cascade scope (§1.2 N4); the actions cascade does NOT block on engine cascade landing. Declaring trait shapes now establishes the vocabulary so:
+
+1. **Action-side hooks return cluster-mode types without forward-reference rot.** `TriggerAction::idempotency_key()` returns `Option<IdempotencyKey>` (per §2.2.3 F2 amendment); the `IdempotencyKey` type lives in `nebula-action`, but its consumer is the engine-side `IdempotencyLedger` that this §3.7 names. Without the placeholder, the F2 hook return type would lack a documented engine consumer — silent forward-reference rot per `feedback_active_dev_mode.md` ("before saying 'defer X', confirm the follow-up has a home").
+2. **Engine cascade implementors have a starting trait surface.** Engine cascade landing PR opens with `impl CursorPersistence for SqliteCursorStore { /* ... */ }` instead of "first define the trait, then implement it." Faster cascade lift, fewer round-trips.
+3. **Architecture cohesion is `grep`-able.** Cross-cascade reviewers can `grep ClusterMode` and trace the contract from action-side hook → engine-side trait surface → cascade slot 2 implementation queue.
+
+**No body, no engine impl required for action cascade landing.** The four traits exist as doc-only contract surfaces in `nebula-engine`; engine cascade implementors fill in method bodies during cluster-mode cascade landing. Pre-cluster-mode engine builds compile against no-op marker impls (or feature-gated stubs; engine cascade decides). Per §1.2 N4 boundary discipline.
 
 ---
 
@@ -3111,6 +3335,117 @@ Tech Spec ratification (CP4 freeze) is unaffected — this amendment-in-place is
 
 The gap that surfaced 17 amendments was **not** in the §15 carry-forward registry — it was uncaught by all CP-level reviewer matrices because no review explicitly cross-checked Tech Spec §2.x sections against production source. Q7 audit pattern (parallel rust-senior production inventory + tech-lead Tech Spec coverage map) is the audit class that surfaced it; recommendation for future Tech Spec freezes: standing dual-audit before declaring FROZEN.
 
+### §15.12 Q8 post-closure research-driven amendment — 5 AMEND items + 5 deferred cascade slots + 2 canon updates flagged + 3 outside-scope auth findings — ENACTED
+
+**Trigger.** Post-closure research-driven audit 2026-04-26 surfaced **~150+ raw findings → 15 deduped findings** across four parallel research streams: architect action research ([`q8-architect-action-research.md`](../drafts/2026-04-24-nebula-action-redesign/q8-architect-action-research.md)), rust-senior trigger research ([`q8-rust-senior-trigger-research.md`](../drafts/2026-04-24-nebula-action-redesign/q8-rust-senior-trigger-research.md)), security credential research ([`q8-security-credential-research.md`](../drafts/2026-04-24-nebula-action-redesign/q8-security-credential-research.md)), Phase 2 architect synthesis ([`q8-phase2-synthesis.md`](../drafts/2026-04-24-nebula-action-redesign/q8-phase2-synthesis.md)). Two Phase 2.5 deeper investigations on disputed findings: ItemLineage primitive ([`q8-phase2.5-itemlineage-analysis.md`](../drafts/2026-04-24-nebula-action-redesign/q8-phase2.5-itemlineage-analysis.md)) and ScheduleAction core-vs-extensible bifurcation ([`q8-phase2.5-scheduleaction-analysis.md`](../drafts/2026-04-24-nebula-action-redesign/q8-phase2.5-scheduleaction-analysis.md)). User ratified all architect defaults after the deeper investigations.
+
+**Status invariant.** Per ADR-0035 amended-in-place precedent + §15.11 wholesale-bundle precedent: Q8 amendments are research-driven gap-closure (5 AMEND items) + named-home commitments (5 deferred cascade slots into `docs/tracking/cascade-queue.md`) + flag-for-separate-PR (2 canon updates) + outside-scope spawn (3 🔴 auth findings → `nebula-auth` Tech Spec cascade slot 8). All AMEND items are **non-spike-divergent** — F2 default-opt-in shape, F9 `#[non_exhaustive]`-safe field add, F12 surface contract only (engine cascade locks enforcement), F13 doc-only trait placeholders (engine cascade implements bodies), F15 mechanical docs cleanup. Q8 itself does NOT trigger §0.2 invariant 4 spike-shape divergence — none of the 5 AMEND items change `final_shape_v2.rs:209-262` trait shapes.
+
+#### §15.12.1 Enactment
+
+This CP **enacts** all 5 AMEND items in-place per §15.9 / §15.10 / §15.11 precedent. Tech Spec edits are inline at the cited sections; no ADR file edits required. 5 deferred cascade slots commit to `docs/tracking/cascade-queue.md`. 2 canon updates flag for separate PR. 3 outside-scope auth findings spawn a `nebula-auth` Tech Spec cascade slot (slot 8 in `cascade-queue.md`).
+
+**Per ADR composition analysis:**
+
+- **ADR-0024** (workspace policy on `*Handler` `#[async_trait]` adoption) — unaffected. Q8 amendments do not touch `*Handler` per-method async return shape.
+- **ADR-0035** (phantom-shim capability pattern) — unaffected. F2 idempotency hook is on the typed `TriggerAction` trait; `IdempotencyKey` is a value type, not a phantom-shim type.
+- **ADR-0036** (action trait shape) — unaffected at the §Decision item layer. F2 amendment adds an opt-in default method to TriggerAction; ADR-0036 §Neutral block "Public API surface of the 4 dispatch traits ... unchanged at the trait level — only the macro that constructs implementations changes shape" preserves four-primary-trait-family enumeration; per-method amendments live at §2.2 lock per §15.11.1 / §15.10.1 precedent.
+- **ADR-0037** (action macro emission) — unaffected. F9 `max_concurrent` field on ActionMetadata is metadata-builder-level; macro emission for the action struct is unchanged. ADR-0037 §1 SlotBinding shape preserved verbatim.
+- **ADR-0038** (ControlAction seal + canon revision) — unaffected. F2 hook is on the primary `TriggerAction` trait, not on a sealed DX trait. ADR-0038 status (`proposed` pending user ratification on canon §3.5 revision) preserved per cascade prompt — Q8 enactment does NOT auto-flip ADR-0038.
+
+**Sections amended (5 AMEND items across 3 sections + 1 cascade-queue commit):**
+
+| Q8 amendment | Tech Spec section | Class | Spike risk |
+|---|---|---|---|
+| **F2 — Idempotency hook contract** — `TriggerAction::idempotency_key(&self, event) -> Option<IdempotencyKey>` (default `None`, default-opt-in shape per Q8 Phase 2 §4); `IdempotencyKey` type defined adjacent to `TriggerEventOutcome` | §2.2.3 | AMEND | None — default `None` preserves existing behavior |
+| **F9 — Per-action concurrency** — `ActionMetadata::max_concurrent: Option<NonZeroU32>` field; engine respects at dispatch time (engine cascade locks enforcement) | §3.6.1 (NEW) | AMEND | None — `#[non_exhaustive]`-safe field add; default `None` preserves existing behavior |
+| **F12 — Workflow-version save-time pin** — `NodeDefinition::action_version: SemVer` field reference (engine cascade scope; surface contract only on this Tech Spec) | §3.6.2 (NEW) | AMEND | None — surface contract only; engine cascade locks enforcement |
+| **F13 — 4× engine trait placeholders** — `CursorPersistence`, `LeaderElection`, `ExternalSubscriptionLedger`, `ScheduleLedger` declared as doc-only trait shapes (engine cascade implements bodies) | §3.7 (NEW) | AMEND | None — doc-only contracts; cluster-mode cascade slot 2 implements bodies |
+| **F15 — Mechanical docs cleanup** — 6 pitfalls.md entries + minor doc cross-refs (Q8 Phase 2 synthesis §3 F15 enumeration; cleanup PR co-lands with cascade implementation) | §17 CHANGELOG (this entry) + cascade-final precondition | AMEND | None — docs-only |
+
+**Picked: amendment-in-place per ADR-0035 precedent on all 5.** Concrete rationale per Q8 Phase 2 architect synthesis + Phase 2.5 deeper investigations + user ratification of architect defaults:
+
+1. **F2 default-opt-in pattern** (per Q8 Phase 2 §4 architect-default position) — same discipline as `accepts_events()` default `false` per §15.11 R5 precedent. Action authors who want dedup opt in by overriding the default.
+2. **F9 `max_concurrent` per-action policy** — external-resource rate limits are intrinsic to the action, not the workflow. Per Q8 Phase 2 §3 F9 architect synthesis rationale.
+3. **F12 surface-contract commitment** — Tech Spec records the action-side cooperation contract (`ActionMetadata::base.version` is the source the engine reads at workflow-save time); engine cascade locks dispatch enforcement.
+4. **F13 doc-only trait placeholders** (per rust-senior Q8 Phase 2 recommendation) — declares vocabulary for action-side hooks (F2 IdempotencyKey return) without blocking on engine cascade implementation. Per `feedback_active_dev_mode.md` ("before saying 'defer X', confirm the follow-up has a home") — the placeholder + cascade slot 2 IS the home.
+5. **F15 mechanical docs cleanup** — pitfalls.md entries + doc cross-refs are non-load-bearing; cleanup PR co-lands with cascade implementation.
+
+#### §15.12.2 Why amend-in-place vs supersede
+
+Per ADR-0035 §Status block: amendments are valid for "canonical-form corrections" (cross-source-authoritative shape preservation under inconsistency); supersession is reserved for paradigm shifts. The Q8 bundle is research-driven gap-closure that adds default-opt-in surfaces (no paradigm shift) and doc-only contracts (no implementation surface). Amendment-in-place is proportionate: it adds the agreed-on hook / field / trait shapes without touching ADR ratifications.
+
+Bundle landing in single CP follows §15.5 + §15.9 + §15.10 + §15.11 precedent of grouping mechanically-related corrections in one enactment record. Each amendment is independently verifiable per §15.12.1 table; cross-section consistency is preserved (e.g., §2.2.3 F2 IdempotencyKey hook references the `IdempotencyKey` type defined adjacent in §2.2.3; §3.7 F13 trait placeholders explain why F2's IdempotencyKey return has an engine consumer).
+
+#### §15.12.3 Cross-cascade and downstream impact
+
+**ADR composition.** ADR-0024 + ADR-0035 + ADR-0036 + ADR-0037 + ADR-0038 — all preserved per §15.12.1 per-ADR composition analysis. None of the Q8 amendments touch ADR §Decision items. Q8 enactment does NOT auto-flip ADR-0038 — pending explicit user ratification on canon §3.5 revision per cascade prompt.
+
+**Production code impact.** Q8 amendments are spec-side additions with no immediate production code change required:
+
+- F2 — `IdempotencyKey` type new to `nebula-action`; `TriggerAction::idempotency_key()` default impl preserves existing behavior. Production trigger impls do NOT need to override unless they want dedup intent.
+- F9 — `ActionMetadata::max_concurrent` field add; existing `ActionMetadata::new(...)` constructor sets to `None` (default). Production code with hand-built `ActionMetadata` literals needs the field added (codemod transform — mechanical add of `max_concurrent: None` field).
+- F12 — `NodeDefinition::action_version` is engine-cascade scope; this Tech Spec records the surface contract.
+- F13 — engine cluster-mode trait declarations new to `nebula-engine`; engine cascade implements bodies.
+- F15 — pitfalls.md entries + doc cross-refs only.
+
+**Reverse-dep impact.** Per §10.3 footprint analysis applied to Q8 amendments:
+
+- `nebula-engine` — F9 + F12 + F13 land surface contracts in engine; cluster-mode coordination cascade (slot 2) implements bodies. ~3-5 engine-side sites estimated.
+- `nebula-api` — F12 surface contract only; engine-cascade scope. ~0 sites this cascade.
+- `nebula-sandbox` — F9 / F12 / F13 surface only; engine-cascade scope. ~0 sites this cascade.
+- `nebula-sdk` / `nebula-plugin` — re-export only; F2 `IdempotencyKey` re-export added per §9.3.2 (covered by §9.3 reshuffle pattern).
+- `apps/cli` — F15 doc cleanup only.
+- Community plugins — F2 default `None` preserves zero migration impact for `TriggerAction` impls. F9 builder method `with_max_concurrent` is opt-in.
+
+**Aggregate Q8 footprint:** ~3-5 internal sites + zero community plugin migration impact. Well within cascade migration discipline.
+
+**Codemod additions.** §10.2 transforms gain T10 (mechanical `ActionMetadata::new(...)` field-add for `max_concurrent: None` where hand-built metadata literals exist; AUTO mode token-level rewrite). T8/T9 (per §15.11.3) and T1-T7 unchanged.
+
+#### §15.12.4 §16.5 cascade-final precondition update
+
+Tech Spec ratification (CP4 freeze) is unaffected — this amendment-in-place is post-freeze (per ADR-0035 / §15.9 / §15.10 / §15.11 precedent). §16.5 cascade-final readiness check gains two new preconditions:
+
+- [ ] **Q8 5 AMEND items absorbed.** All 5 amendments per §15.12.1 table land in the cascade implementation PR; verified by `grep`-able anchors at §2.2.3 (idempotency_key + IdempotencyKey type) / §3.6.1 (max_concurrent) / §3.6.2 (action_version surface contract) / §3.7 (4× cluster-mode trait placeholders) / §17 CHANGELOG (F15 docs cleanup).
+- [ ] **Q8 cascade slots committed.** `docs/tracking/cascade-queue.md` carries slots 3 (ScheduleAction) / 4 (EventAction) / 5 (AgentAction + ActionTool) / 6 (StreamAction + StreamStage) / 7 (TransactionAction) / 8 (`nebula-auth`); each slot has architect-recommended shape recorded; Owner / Scheduled date / Queue position fields are TBD-acceptable at cascade-final (user fills at next planning cycle).
+
+#### §15.12.5 Canon updates flagged for separate PR (NOT Tech Spec amendment)
+
+Per cascade prompt Part C: two canon updates flag for **separate PR** — they touch `docs/PRODUCT_CANON.md`, not this Tech Spec. Mention here for traceability; actual canon edit lives in housekeeping PR after cascade closes.
+
+1. **F7 Canon §0 «no replay» declaration.** Add explicit position to `docs/PRODUCT_CANON.md` §0 that **Nebula is NOT a durable-execution engine** in the Temporal sense — workflows are durable per state machine; action authors use Rust language + std + crates directly without replay-determinism constraint. Rationale: per [`docs/COMPETITIVE.md`](../../COMPETITIVE.md) line 41 ("Our bet: Typed Rust integration contracts + honest durability beat a large but soft ecosystem; a smaller library of reliable nodes wins over time"), Nebula's durability is workflow-state-checkpoint, not action-body-replay. Closes Q8 Phase 2 §3 F7 architect-default position.
+2. **F6 Canon §6 ItemLineage non-goal entry.** Add explicit non-goal entry to `docs/PRODUCT_CANON.md` §6 — ItemLineage primitive (n8n's `pairedItem` lineage tracking) is NOT a Nebula goal. Rationale: per Phase 2.5 ItemLineage analysis ([`q8-phase2.5-itemlineage-analysis.md`](../drafts/2026-04-24-nebula-action-redesign/q8-phase2.5-itemlineage-analysis.md)), the typed payload model absorbs n8n lineage class; 3 of 4 peer engines (Temporal, Argo, Prefect) also lack lineage primitive — unambiguous structural-avoidance signal. NO future cascade slot for ItemLineage (rejected as scope-creep at canon level, revised UP from β defer per Phase 2.5 deeper analysis). Closes Q8 Phase 2 §3 F6 amended-default position.
+
+These two canon edits are **explicitly separate from this Tech Spec amendment** — Tech Spec records the flagging here; canon PR happens after cascade closes per `docs/AGENT_PROTOCOL.md` canon-edit discipline.
+
+#### §15.12.6 Outside-scope auth findings — `nebula-auth` cascade slot 8
+
+Per cascade prompt Part D: 3 🔴 SSO/SAML/OIDC/LDAP/MFA gaps identified by security-lead Q8 research ([`q8-security-credential-research.md`](../drafts/2026-04-24-nebula-action-redesign/q8-security-credential-research.md)) live **outside action-cascade scope** — they require a dedicated `nebula-auth` Tech Spec cascade. Architect-recommended shape: new crate `nebula-auth` with Tech Spec covering SSO / SAML / OIDC / LDAP / MFA primitives.
+
+Cascade slot 8 in `docs/tracking/cascade-queue.md` records the architect recommendation; orchestrator commits the slot at next planning cycle. Per `feedback_active_dev_mode.md` ("before saying 'defer X', confirm the follow-up has a home") — the slot IS the home.
+
+#### §15.12.7 Deferred cascade slots (5 trait families)
+
+Per cascade prompt Part B: 5 deferred cascade slots commit to `docs/tracking/cascade-queue.md` with architect-recommended shapes. Slot numbering continues from existing slots (1 = credential CP6 implementation per Strategy §6.6; 2 = cluster-mode coordination per Strategy §6.6 last paragraph).
+
+| Cascade-queue slot | Cascade name | Architect-recommended shape | Trigger condition |
+|---|---|---|---|
+| 3 | ScheduleAction cascade | Sealed-DX peer of TriggerAction (no canon revision per ADR-0038 §2 Webhook/Poll precedent) + open `Schedule` runtime trait + 3 blessed impls (`CronSchedule`, `IntervalSchedule`, `OneShotSchedule`). Rationale per Phase 2.5 deeper analysis ([`q8-phase2.5-scheduleaction-analysis.md`](../drafts/2026-04-24-nebula-action-redesign/q8-phase2.5-scheduleaction-analysis.md)) — Hybrid B picked: sealed-DX matches webhook/poll governance pattern; open Schedule trait admits community extension without touching primary trait family | After action redesign implementation lands |
+| 4 | EventAction cascade (renamed by user from QueueAction) | Sealed-DX peer like Webhook/Poll/Schedule (event-source family); unified shape covering Kafka / RabbitMQ / SQS / NATS | After ScheduleAction OR parallel |
+| 5 | AgentAction + ActionTool cascade | NEW primary trait family (AI ≠ trigger / event); likely canon §3.5 revision per ADR-0038 §2 enumeration discipline | After action redesign implementation; AI use case priority |
+| 6 | StreamAction + StreamStage cascade | NEW primary trait family (output streaming + composable pipeline stages); likely canon §3.5 revision | After action redesign implementation |
+| 7 | TransactionAction cascade | Shape TBD — sealed-DX over `StatefulAction` for compensation patterns OR new primary trait family | After action redesign implementation |
+
+Each slot has architect-recommended shape recorded in `cascade-queue.md`; Owner / Scheduled date / Queue position fields are TBD placeholders (user fills at next planning cycle).
+
+**Why commit slots now (per cascade prompt Part B rationale).** Per Strategy §6.6 silent-degradation guard: defer rationale needs a named home, not a vague "future cascade" pointer. Committing the 5 slots now closes the silent-degradation risk for Q8 deferred items — each slot has an architect-recommended shape grep-able from `cascade-queue.md` to the source rationale (Q8 Phase 2 synthesis, Phase 2.5 deeper analysis, user-named trait family).
+
+#### §15.12.8 §15.1 closure entries updated
+
+§15.1 carry-forward tables — no rows previously deferred address Q8 amendments directly (Q8 was research-driven post-closure audit, not pre-CP CP-level review). New CP4 row added implicitly via this §15.12 enactment record + §17 CHANGELOG entry; no separate §15.1 row needed.
+
+§15.8 deferred-with-trigger registry — new row not added (the deferred items committed to `docs/tracking/cascade-queue.md` slots 3-8 per §15.12.7 + §15.12.6; cascade-queue.md is the registry for these, parallel to §15.8's deferred-with-trigger registry for sub-spec scope-trims).
+
 ---
 
 ## §16 Implementation handoff
@@ -3519,4 +3854,29 @@ Post-closure systematic audit 2026-04-25 surfaced 6 🔴 + 3 🟠 + 8 🟡 spec-
 **Audit obligations.** spec-auditor full cross-CP audit pre-freeze (handoff at line 2820) is augmented Q7-post-closure with eight additional checks: (i) §0.1 status header reflects Q1+Q6+Q7 qualifiers; (ii) §2.2.2 callout box references §15.11 verbatim + production line-pins (`stateful.rs:56`, `:64`, `:34-37` for diagnostic); (iii) §2.2.3 callout box references §15.11 + production line-pins (`trigger.rs:215-264` for TriggerEventOutcome; `:359-361` for accepts_events); (iv) §2.2.4 callout box references §15.11 + production line-pin (`resource.rs:36-52`); (v) §2.4 callout box references §15.11 + production line-pins (`trigger.rs:276-389` for TriggerHandler shape; `resource.rs:59-107` for ResourceHandler shape); (vi) §2.6 callout box references §15.11 + production line-pins (`webhook.rs:578` for peer trait declaration; `poll.rs:800` for peer trait declaration); (vii) §3.5 NEW subsection internally consistent with §2.4 R5 TriggerHandler envelope shape + §2.2.3 R3 TriggerEventOutcome + §2.6 R6 peer-DX bound chain; (viii) §8.1.2 callout box references §15.11 + production line-pin (`poll.rs:1328` for cursor-in-stack-frame; `:732-761` for in-memory-only doc).
 
 **Open items.** No new open items raised. §15.8 deferred-with-trigger registry row (c) `§2.6 / §9.2 DX trait blanket-impl trait-by-trait audit` updates from DEFERRED-WITH-TRIGGER to **CLOSED** at this CP (§15.11.5). The 17-amendment bundle is the closure of CP-level review process gap (Q7 audit pattern: parallel rust-senior production inventory + tech-lead Tech Spec coverage map) that surfaced production drift in sections no review explicitly cross-checked against production source.
+
+### CHANGELOG — post-freeze amendment-in-place 2026-04-26 (Q8 post-closure research-driven amendment)
+
+Post-closure research-driven audit 2026-04-26 surfaced ~150+ raw findings → 15 deduped findings via four parallel research streams ([`q8-architect-action-research.md`](../drafts/2026-04-24-nebula-action-redesign/q8-architect-action-research.md) + [`q8-rust-senior-trigger-research.md`](../drafts/2026-04-24-nebula-action-redesign/q8-rust-senior-trigger-research.md) + [`q8-security-credential-research.md`](../drafts/2026-04-24-nebula-action-redesign/q8-security-credential-research.md) + Phase 2 synthesis [`q8-phase2-synthesis.md`](../drafts/2026-04-24-nebula-action-redesign/q8-phase2-synthesis.md)) + two Phase 2.5 deeper investigations ([`q8-phase2.5-itemlineage-analysis.md`](../drafts/2026-04-24-nebula-action-redesign/q8-phase2.5-itemlineage-analysis.md) + [`q8-phase2.5-scheduleaction-analysis.md`](../drafts/2026-04-24-nebula-action-redesign/q8-phase2.5-scheduleaction-analysis.md)). User ratified all architect defaults after deeper investigations. Total Q8 enactment scope: 5 AMEND items in-place (F2, F9, F12, F13, F15), 5 deferred cascade slots committed to `docs/tracking/cascade-queue.md` (slots 3-7), 2 canon updates flagged for separate PR (F7, F6), 3 outside-scope auth findings spawned (`nebula-auth` cascade slot 8). Per `feedback_active_dev_mode.md` ("more-ideal over more-expedient") + `feedback_adr_revisable.md` precedent — research-driven gap-closure with named-home commitments per Strategy §6.6 silent-degradation guard discipline.
+
+**Q8 — 5 AMEND items + 5 deferred cascade slots + 2 canon flags + 3 outside-scope spawns (ALL ACCEPTED, all in-place enactment):**
+
+- Status header — `FROZEN CP4 2026-04-25 (... Q7 ...)` → `FROZEN CP4 2026-04-25 (... Q7 ...; amended-in-place 2026-04-26 — Q8 research-driven amendment per §15.12 — 5 AMEND items: F2 idempotency hook + F9 per-action concurrency + F12 workflow-version pin + F13 4× engine cluster-mode trait placeholders + F15 mechanical docs cleanup, plus 5 deferred cascade slots committed to docs/tracking/cascade-queue.md + 2 canon updates flagged for separate PR + 3 outside-scope auth findings spawned to nebula-auth cascade slot)`. §0.1 status table CP4 row gains `+ Q8 post-closure research-driven amendment per §15.12 — 5 AMEND items + 5 deferred cascade slots + 2 canon updates flagged + 3 outside-scope auth findings spawned` qualifier.
+- §2.2.3 — second amended-in-place callout added at section top (Q8 F2). `idempotency_key(&self, event) -> Option<IdempotencyKey>` hook added to `TriggerAction` trait shape adjacent to `accepts_events()`; default returns `None` (default-opt-in shape per Q8 Phase 2 §4 architect-default position). `IdempotencyKey` value type (`pub struct IdempotencyKey(String)`) defined adjacent to `TriggerEventOutcome`. Engine cluster-mode coordination cascade (slot 2 per `cascade-queue.md`) consumes the hook; pre-cluster-mode engine builds ignore (default `None` preserves single-worker behavior). Closes Q8 Phase 2 F2.
+- §3.6 (NEW subsection) — `ActionMetadata` extensions per Q8 F9 + F12. §3.6.1: `ActionMetadata::max_concurrent: Option<NonZeroU32>` field add (`#[non_exhaustive]`-safe); engine respects at dispatch time per cluster-mode coordination cascade slot 2; rationale per Q8 Phase 2 §3 F9 architect synthesis (external-resource rate limits intrinsic to action). §3.6.2: `NodeDefinition::action_version: SemVer` surface contract reference (engine-cascade scope); workflow-version save-time pin closes cross-execution drift class. Both are surface contracts only (engine cascade locks enforcement). Closes Q8 Phase 2 F9 + F12.
+- §3.7 (NEW subsection) — Engine cluster-mode trait placeholders per Q8 F13 (rust-senior recommendation). Four doc-only trait shapes declared in `nebula-engine`: `CursorPersistence` (PollAction cross-restart durability), `LeaderElection` (multi-worker coordination), `ExternalSubscriptionLedger` (webhook URL stability across rebalance), `ScheduleLedger` (missed-fire replay). Engine cascade implements bodies; action-side hooks (F2 `IdempotencyKey` return) have a documented engine consumer per `feedback_active_dev_mode.md` ("before saying 'defer X', confirm the follow-up has a home"). Closes Q8 Phase 2 F13.
+- §15.12 (NEW subsection) — Q8 enactment record. §15.12.1 enactment table (5 AMEND items across 3 sections + 1 cascade-queue commit; no ADR file edit needed; canonical-form correction per ADR-0035 §Status block precedent). §15.12.2 amend-in-place vs supersede rationale (research-driven gap-closure that adds default-opt-in surfaces; no paradigm shift). §15.12.3 cross-cascade impact (~3-5 internal sites; community plugin migration impact: 0; codemod transform T10 added at §10.2 for ActionMetadata field-add). §15.12.4 §16.5 cascade-final preconditions gain two new entries (Q8 5 AMEND items absorbed; cascade-queue slots 3-8 committed). §15.12.5 canon updates flagged for separate PR (F7 «no replay» canon §0; F6 ItemLineage non-goal canon §6). §15.12.6 outside-scope auth findings spawn `nebula-auth` cascade slot 8. §15.12.7 5 deferred cascade slots committed (slots 3-7). §15.12.8 §15.1 closure no row needed (Q8 was research-driven post-closure audit, not pre-CP review).
+- §10.2 — codemod transforms table gains T10 row (`ActionMetadata::new(...)` mechanical field-add for `max_concurrent: None`; AUTO mode token-level rewrite). T8/T9 unchanged.
+- F15 mechanical docs cleanup — 6 pitfalls.md entries + minor doc cross-refs to land in cleanup PR co-landing with cascade implementation. Architect did not enact pitfalls edits in this CP — pitfalls.md is governed by `docs/AGENT_PROTOCOL.md` doc-edit discipline; cleanup PR scope per Q8 Phase 2 §3 F15.
+- New tracking artefact: [`docs/tracking/cascade-queue.md`](../../tracking/cascade-queue.md) created per Strategy §6.6 cross-crate coordination tracking; carries 8 cascade slots (1: credential CP6 implementation per Strategy §6.6; 2: cluster-mode coordination per Strategy §6.6 last paragraph; 3-7: Q8 deferred cascade slots per §15.12.7; 8: `nebula-auth` per §15.12.6). Each slot has architect-recommended shape recorded; Owner / Scheduled date / Queue position TBD-acceptable at cascade-final per §15.12.4.
+
+**Cascade-state changes:**
+- ADR transitions: NONE. ADR-0024 + ADR-0035 + ADR-0036 + ADR-0037 + ADR-0038 statuses preserved. ADR-0038 status (`proposed`) preserved per cascade prompt — Q8 enactment does NOT auto-flip ADR-0038 (still pending explicit user ratification on canon §3.5 revision; surface to user in Phase 8 summary per cascade prompt).
+- Tech Spec status qualifier: gains `amended-in-place 2026-04-26 — Q8 research-driven amendment per §15.12` qualifier. Q8 is research-driven gap-closure with surface contract additions and named-home commitments; warrants full qualifier per §15.10 / §15.11 precedent.
+- Cross-section signature impact: §2.2.3 (F2 hook + IdempotencyKey type) + §3.6 (NEW per F9 + F12) + §3.7 (NEW per F13) + §10.2 (T10 codemod) + §15.12 (NEW) + §16.5 (preconditions extended) + §17 CHANGELOG. §1 / §2.1 / §2.2.1 / §2.2.2 / §2.2.4 / §2.3 / §2.4 / §2.5 / §2.6 / §2.7 / §2.8 / §2.9 unchanged; §3.1-§3.5 unchanged; §4-§9 unchanged except §10.2 codemod table; §11-§15 unchanged except §15.12 enactment add; §16 unchanged except §16.5 precondition extension is implicit per §15.12.4 reference (table itself preserved verbatim — preconditions added via §15.12.4 record cross-ref).
+- Spike `final_shape_v2.rs:209-262` is unchanged — Q8 amendments add default-opt-in hooks, surface contracts, and doc-only trait shapes; none change the four primary trait shapes the spike validated. §0.2 invariant 4 spike-shape divergence trigger NOT activated.
+
+**Audit obligations.** spec-auditor full cross-CP audit pre-freeze (handoff at line 2820) is augmented Q8-post-closure with seven additional checks: (i) §0.1 status header reflects Q8 qualifier; (ii) §2.2.3 second callout box (Q8 F2) references §15.12 verbatim + Q8 Phase 2 §4 architect-default position citation; (iii) §3.6.1 cites Q8 Phase 2 §3 F9 architect synthesis + ActionMetadata `crates/action/src/metadata.rs:96-117` line-pin; (iv) §3.6.2 cites Q8 Phase 2 §3 F12 + cross-cascade scope (engine-cascade); (v) §3.7 cites Q8 Phase 2 §3 F13 + rust-senior recommendation + cluster-mode cascade slot 2; (vi) §15.12 enactment record cites Q8 Phase 2 synthesis + Phase 2.5 deeper analyses + user ratification of architect defaults; (vii) `docs/tracking/cascade-queue.md` exists with 8 slots — slots 1+2 from Strategy §6.6, slots 3-7 from §15.12.7, slot 8 from §15.12.6; each slot's architect-recommended shape grep-able to source rationale.
+
+**Open items.** No new open items raised. §15.8 deferred-with-trigger registry — no new row added (Q8 deferred items committed to `docs/tracking/cascade-queue.md` slots 3-8 per §15.12.7 + §15.12.6; cascade-queue is the registry for cascade-scope deferrals, parallel to §15.8 for sub-spec scope-trims).
 

@@ -86,6 +86,73 @@ Devops wrote to wrong repo path (main repo instead of worktree) — orchestrator
 - ADR-0038 ControlAction seal + canon §3.5 DX tier ratification (canon revision per §0.2)
 - ADR-NNNN+3 cluster-mode hooks deliberately deferred (out of cascade scope per Strategy §6.2)
 
+### 2026-04-26 — Q8 research-driven amendment complete (AMENDED-CLOSED-AGAIN)
+
+**Phase 1 (4 parallel agents, ~6h):**
+- rust-senior trigger-research: 5 🔴 + 9 🟠 (action scope) — cursor lie / no idempotency contract / no ScheduleAction / no external-reg reconciler / no QueueAction peer
+- architect action-research + Temporal: 8 🔴 + 6 🟠 (action scope) — ItemLineage / determinism / AI sub-node / per-action concurrency / streaming / Saga / bulk-op idempotency / workflow-version
+- security-lead credential-research: **0 🔴 in-scope** (3 🔴 outside scope → nebula-auth cascade slot)
+- dx-tester parameter-research: 0 NEW 🔴 + 4 🟠; ≥50 of 62 n8n parameter pains structurally addressed
+
+**Phase 2 architect synthesis: 15 unique deduped findings** (after rationalization across agents).
+
+**Phase 2.5 deeper investigations** (user pushback на 2 architect-default positions):
+- **F6 ItemLineage**: revised UP from (β) defer → **(c) canon NON-GOAL** — 12 use cases analyzed; 5 genuinely need engine support в n8n но structurally absorbed by Nebula's typed `ActionResult<T>` model (authors carry ids в payloads); 3 of 4 peer engines also lack lineage primitive; pillar fit weak per PRODUCT_CANON §6
+- **F3 ScheduleAction**: **Hybrid B** — sealed-DX peer of TriggerAction (no canon revision per ADR-0038 §2 Webhook/Poll precedent) + open `Schedule` runtime trait + 3 blessed impls (Cron/Interval/OneShot); 15 brainstormed custom schedule kinds для community
+
+**User decisions (final, ratified):**
+- ✅ F7 Determinism = (i) canon explicit «no replay» (action authors use Rust language + std + crates напрямую)
+- ✅ F6 ItemLineage = (c) canon NON-GOAL (revised UP, no future cascade slot)
+- ✅ F3 ScheduleAction = DEFER к future cascade (Hybrid B shape recorded)
+- ✅ F5 EventAction (renamed от QueueAction by user) = DEFER (sealed-DX peer shape recorded)
+- ✅ F8 AgentAction + ActionTool (user named) = DEFER (new primary family shape recorded)
+- ✅ F10 StreamAction + StreamStage (user named) = DEFER (new primary family shape recorded)
+- ✅ F11 TransactionAction (user named) = DEFER (sealed-DX over Stateful OR new primary; shape TBD)
+
+**Phase 3 architect enactment (5 AMENDs amendment-in-place per ADR-0035 precedent):**
+- F2 Idempotency hook contract — `TriggerAction::idempotency_key()` default-opt-in (Tech Spec §2.2.3)
+- F9 Per-action concurrency — `ActionMetadata::max_concurrent: Option<NonZeroU32>` (Tech Spec §3.6.1 NEW)
+- F12 Workflow-version save-time pin — `NodeDefinition::action_version: SemVer` (Tech Spec §3.6.2 NEW; engine cascade locks enforcement)
+- F13 4× engine cluster-mode trait placeholders — `CursorPersistence` / `LeaderElection` / `ExternalSubscriptionLedger` / `ScheduleLedger` (Tech Spec §3.7 NEW; doc-only contracts)
+- F15 Mechanical docs cleanup — flagged для co-landing PR
+
+**8 cascade slots committed** к `docs/tracking/cascade-queue.md` (NEW file):
+- 2 from Strategy §6.6 (credential CP6 implementation; cluster-mode coordination)
+- 5 from Q8 §15.12.7 (ScheduleAction / EventAction / AgentAction+ActionTool / StreamAction+StreamStage / TransactionAction) — каждый с architect-recommended trait shape
+- 1 from Q8 §15.12.6 (nebula-auth для SSO/SAML/OIDC/LDAP/MFA — outside-scope)
+
+**2 canon updates flagged для separate PR** (NOT Tech Spec):
+- F7 Canon §0 «no replay» declaration (cite COMPETITIVE.md line 41)
+- F6 Canon §6 ItemLineage non-goal entry
+
+**Tech-lead RATIFY-AMENDED-CLOSED-AGAIN** verdict (Q8 ratification gate). Zero required edits (Q7 had 1 nit; Q8 mechanically clean). Phase 6 cascade remains AMENDED-CLOSED.
+
+**Status header**: `FROZEN CP4 2026-04-25 (amended-in-place 2026-04-25 — Q1 + Q6 + Q7 post-closure audit; amended-in-place 2026-04-26 — Q8 research-driven amendment per §15.12)`
+
+**Tech Spec final size:** 3522 lines (Q8 mostly added §3.6/§3.7/§15.12; total growth modest per amendment-only scope).
+
+**No ADR amendments** — все Q8 AMEND items fall within Tech Spec author authority per ADR-0035 precedent.
+
+**No escalation.** Cascade remains AMENDED-CLOSED pending only Q1 implementation path + Q5 canon §3.5 ratification + 2 canon update PRs (F7/F6).
+
+### 2026-04-25 T08:00 — Q8 comprehensive design audit dispatched (research-driven gap closure)
+
+**User directive**: pre-implementation comprehensive audit using `docs/research/` (4428 lines across 8 peer-research files: n8n actions/triggers/credentials/parameters/auth + temporal + windmill + activepieces). Cascade should be «глубже и чище и продуманне»; cover ALL Action types; не упустить ничего; spike-validate если нужно.
+
+**Tech-lead Q7 retrospective recommendation already noted**: standing dual-audit pattern. Q8 extends к **research-driven coverage audit** — does FROZEN CP4 design address pain points identified in peer ecosystem? Are there architectural gaps что spike+research would surface?
+
+**Phase 1 dispatch (4 parallel agents)**:
+- **rust-senior**: research/n8n-trigger-pain-points + research/windmill-peer-research → trigger family coverage (3 incompatible state shapes from Q7; cluster-mode hooks; webhook reliability)
+- **architect**: research/n8n-action-pain-points + research/temporal-peer-research → action design coverage (durable execution semantics; activity vs workflow distinction; saga patterns)
+- **security-lead**: research/n8n-credential-pain-points + research/n8n-auth-architecture → credential integration coverage post Q7 R6 (peer-of-Action)
+- **dx-tester**: research/activepieces-peer-research + research/n8n-parameter-pain-points → DX/macro design coverage (parameter UI; type-safe pieces; developer-first claims)
+
+Each agent: line-by-line research read + cross-ref Tech Spec FROZEN CP4 + Q7 amendments. Output: research-cited gap list с severity tags.
+
+**Phase 2**: architect consolidation; if new shapes/traits proposed → rust-senior spike iter-3 в isolated worktree validates compose с existing 9 traits + 7 adapters.
+
+**Phase 3**: amendment-in-place per ADR-0035 precedent OR escalation если findings exceed amendment scope.
+
 ### 2026-04-25 T07:00 — Q7 post-closure audit complete + AMENDED CLOSED
 
 **Phase 1 returned (parallel rust-senior + tech-lead, ~6h):**
