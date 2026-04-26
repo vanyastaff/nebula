@@ -145,7 +145,15 @@ pub enum UserInput {
 /// [`ReauthRequired`](Self::ReauthRequired) when the refresh path fails
 /// irrecoverably (refresh token revoked, scope changed). All other
 /// failures go through `Err(CredentialError::...)`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+///
+/// Per sub-spec §3.6 ([credential-refresh-coordination]) a third
+/// successful outcome — [`CoalescedByOtherReplica`](Self::CoalescedByOtherReplica)
+/// — surfaces when another replica refreshed the credential while we
+/// were waiting on the cross-replica claim. Callers treat it as success
+/// and re-read the credential state from the store.
+///
+/// [credential-refresh-coordination]: https://github.com/nebula-engine/nebula/blob/main/docs/superpowers/specs/2026-04-24-credential-refresh-coordination.md
+#[derive(Debug, Clone)]
 #[non_exhaustive]
 pub enum RefreshOutcome {
     /// Token was refreshed successfully.
@@ -159,7 +167,43 @@ pub enum RefreshOutcome {
     /// [`Refreshable`](crate::Refreshable) by trait membership, so
     /// runtime "not supported" is impossible (compile error at the
     /// dispatch site).
-    ReauthRequired,
+    ///
+    /// Carries a typed [`ReauthReason`] so operators (and the credential
+    /// engine) can distinguish provider-rejected refresh-token rotation
+    /// from sentinel-threshold escalation per sub-spec §3.4.
+    ReauthRequired(ReauthReason),
+    /// Another replica refreshed the credential while this caller was
+    /// waiting on the cross-replica claim. Caller should treat as
+    /// success and re-read the credential state from the store. Per
+    /// sub-spec §3.6.
+    CoalescedByOtherReplica,
+}
+
+/// Why a credential transitioned to
+/// [`RefreshOutcome::ReauthRequired`].
+///
+/// Surfaces per sub-spec §3.4 (sentinel threshold) and the existing
+/// rotation-failure path (`refresh_token` invalidated by the IdP).
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum ReauthReason {
+    /// The IdP rejected the refresh — typically a rotated `refresh_token`
+    /// that has been invalidated. The `detail` carries the provider's
+    /// human-readable reason for diagnostics.
+    ProviderRejected {
+        /// Provider-supplied detail (e.g. error_description).
+        detail: String,
+    },
+    /// Sentinel threshold exceeded — the credential keeps crashing
+    /// mid-refresh. Per sub-spec §3.4 N=3 events within 1h escalate the
+    /// credential to `ReauthRequired`.
+    SentinelRepeated {
+        /// Number of sentinel events observed within `window_secs`.
+        event_count: u32,
+        /// Length of the rolling window over which `event_count` was
+        /// counted (seconds).
+        window_secs: u64,
+    },
 }
 
 // ── TestResult ─────────────────────────────────────────────────────────

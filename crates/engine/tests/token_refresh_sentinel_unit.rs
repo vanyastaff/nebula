@@ -36,16 +36,20 @@ async fn refresh_marks_sentinel_before_idp_call_and_clears_on_release() {
     // RefreshCoordinator::refresh_coalesced then calls release which
     // deletes the row entirely.
     let result: Result<u32, RefreshError> = coord
-        .refresh_coalesced(&cid, |claim| async move {
-            // Step 1: sentinel
-            repo_in_closure
-                .mark_sentinel(&claim.token)
-                .await
-                .map_err(RefreshError::Repo)?;
-            // Step 2: simulated IdP POST (no-op here)
-            // Step 3: success
-            Ok(1234)
-        })
+        .refresh_coalesced(
+            &cid,
+            |_id| async { true },
+            |claim| async move {
+                // Step 1: sentinel
+                repo_in_closure
+                    .mark_sentinel(&claim.token)
+                    .await
+                    .map_err(RefreshError::Repo)?;
+                // Step 2: simulated IdP POST (no-op here)
+                // Step 3: success
+                Ok(1234)
+            },
+        )
         .await;
 
     assert_eq!(result.unwrap(), 1234);
@@ -91,17 +95,21 @@ async fn closure_error_path_still_releases_claim_via_idempotent_release() {
     let repo_in_closure = Arc::clone(&repo);
 
     let result: Result<u32, RefreshError> = coord
-        .refresh_coalesced(&cid, |claim| async move {
-            repo_in_closure
-                .mark_sentinel(&claim.token)
-                .await
-                .map_err(RefreshError::Repo)?;
-            // Simulate IdP POST failure: returning a Repo-flavored
-            // RefreshError so the closure errors.
-            Err(RefreshError::Repo(
-                nebula_storage::credential::RepoError::InvalidState("simulated IdP 500".into()),
-            ))
-        })
+        .refresh_coalesced(
+            &cid,
+            |_id| async { true },
+            |claim| async move {
+                repo_in_closure
+                    .mark_sentinel(&claim.token)
+                    .await
+                    .map_err(RefreshError::Repo)?;
+                // Simulate IdP POST failure: returning a Repo-flavored
+                // RefreshError so the closure errors.
+                Err(RefreshError::Repo(
+                    nebula_storage::credential::RepoError::InvalidState("simulated IdP 500".into()),
+                ))
+            },
+        )
         .await;
 
     assert!(matches!(result, Err(RefreshError::Repo(_))));

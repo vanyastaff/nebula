@@ -326,19 +326,32 @@ impl RefreshCoordinator {
     /// 4. User-supplied `do_refresh(claim)` closure.
     /// 5. Stop heartbeat + release the claim row.
     ///
+    /// `needs_refresh_after_backoff` is consulted by the L2 backoff loop
+    /// per sub-spec §3.6 after the post-`Contended` sleep: if the
+    /// predicate returns `false` the credential was refreshed by another
+    /// replica while this caller was waiting and we short-circuit with
+    /// [`RefreshError::CoalescedByOtherReplica`]. Callers that don't
+    /// have a state-check available pass `|_| async { true }` — that
+    /// preserves the legacy "always retry" behavior at the cost of
+    /// occasionally running the refresh closure on a freshly-refreshed
+    /// credential.
+    ///
     /// # Errors
     ///
     /// See [`RefreshError`]. `CoalescedByOtherReplica` is success-with-side-effect:
     /// another replica refreshed while we were waiting. Caller should
     /// re-read the credential state and proceed.
-    pub async fn refresh_coalesced<F, Fut, T>(
+    pub async fn refresh_coalesced<F, Fut, T, P, PFut>(
         &self,
         credential_id: &CredentialId,
+        needs_refresh_after_backoff: P,
         do_refresh: F,
     ) -> Result<T, RefreshError>
     where
         F: FnOnce(RefreshClaim) -> Fut,
         Fut: Future<Output = Result<T, RefreshError>>,
+        P: Fn(&CredentialId) -> PFut,
+        PFut: Future<Output = bool>,
     {
         // L1: in-process coalescing.
         //
@@ -373,7 +386,9 @@ impl RefreshCoordinator {
         });
 
         // L2: durable claim with backoff per §3.6.
-        let claim = self.try_acquire_l2_with_backoff(credential_id).await?;
+        let claim = self
+            .try_acquire_l2_with_backoff(credential_id, &needs_refresh_after_backoff)
+            .await?;
 
         // Heartbeat task in background.
         let hb_task = self.spawn_heartbeat(claim.token.clone());
@@ -430,10 +445,24 @@ impl RefreshCoordinator {
     }
 
     /// L2 acquisition retry loop per sub-spec §3.6.
-    async fn try_acquire_l2_with_backoff(
+    ///
+    /// On `Contended` we sleep until the contender's claim is expected
+    /// to expire (capped + jitter) then consult
+    /// `needs_refresh_after_backoff(credential_id)`. If the predicate
+    /// returns `false` we surface
+    /// [`RefreshError::CoalescedByOtherReplica`] — another replica
+    /// completed the refresh while we were waiting, and the caller
+    /// should re-read state from storage. Otherwise we retry
+    /// `try_claim` until we win the claim or exhaust attempts.
+    async fn try_acquire_l2_with_backoff<P, PFut>(
         &self,
         credential_id: &CredentialId,
-    ) -> Result<RefreshClaim, RefreshError> {
+        needs_refresh_after_backoff: &P,
+    ) -> Result<RefreshClaim, RefreshError>
+    where
+        P: Fn(&CredentialId) -> PFut,
+        PFut: Future<Output = bool>,
+    {
         const MAX_ATTEMPTS: usize = 5;
         for _attempt in 0..MAX_ATTEMPTS {
             match self
@@ -456,11 +485,19 @@ impl RefreshCoordinator {
                         .to_std()
                         .unwrap_or(Duration::from_millis(200));
                     tokio::time::sleep(delay + jitter_ms(100)).await;
-                    // CRITICAL: Stage 3.1 will re-check credential state
-                    // here; if another replica already refreshed,
-                    // return Err(CoalescedByOtherReplica). Until then
-                    // the caller's L1 path is the only fast-coalesce
-                    // surface, so we just retry try_claim.
+                    // CRITICAL: post-backoff state recheck per §3.6. If
+                    // the contender finished the refresh while we slept,
+                    // the credential is now fresh — short-circuit with
+                    // CoalescedByOtherReplica so the caller re-reads
+                    // state instead of running another IdP POST. Without
+                    // this check, two replicas racing through L2 each
+                    // run the closure (one wins try_claim now that the
+                    // contender's row is gone), invalidating any
+                    // refresh_token rotation the contender just
+                    // committed (n8n #13088 lineage).
+                    if !needs_refresh_after_backoff(credential_id).await {
+                        return Err(RefreshError::CoalescedByOtherReplica);
+                    }
                 },
             }
         }
@@ -689,12 +726,16 @@ mod tests {
 
         let cid = CredentialId::new();
         let result: Result<u32, RefreshError> = coord
-            .refresh_coalesced(&cid, |claim| async move {
-                // Verify the claim is actually held — sentinel default
-                // is Normal; expires_at should be in the future.
-                assert!(claim.expires_at > chrono::Utc::now());
-                Ok(42)
-            })
+            .refresh_coalesced(
+                &cid,
+                |_id| async { true },
+                |claim| async move {
+                    // Verify the claim is actually held — sentinel default
+                    // is Normal; expires_at should be in the future.
+                    assert!(claim.expires_at > chrono::Utc::now());
+                    Ok(42)
+                },
+            )
             .await;
         assert_eq!(result.unwrap(), 42);
 
@@ -778,7 +819,7 @@ mod tests {
 
         let cid = CredentialId::new();
         let result: Result<u32, RefreshError> = coord
-            .refresh_coalesced(&cid, |_claim| async move { Ok(42) })
+            .refresh_coalesced(&cid, |_id| async { true }, |_claim| async move { Ok(42) })
             .await;
 
         assert_eq!(
@@ -819,11 +860,15 @@ mod tests {
         let cid_for_panic = cid;
         let panic_result = AssertUnwindSafe(async move {
             let _: Result<i32, RefreshError> = coord_for_panic
-                .refresh_coalesced(&cid_for_panic, |_claim| async move {
-                    panic!("test panic");
-                    #[allow(unreachable_code)]
-                    Ok::<i32, RefreshError>(0)
-                })
+                .refresh_coalesced(
+                    &cid_for_panic,
+                    |_id| async { true },
+                    |_claim| async move {
+                        panic!("test panic");
+                        #[allow(unreachable_code)]
+                        Ok::<i32, RefreshError>(0)
+                    },
+                )
                 .await;
         })
         .catch_unwind()

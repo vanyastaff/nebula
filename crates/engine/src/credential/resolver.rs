@@ -5,7 +5,7 @@ use std::sync::Arc;
 use nebula_credential::{
     Credential, CredentialContext, CredentialEvent, CredentialHandle, CredentialId,
     CredentialState, Refreshable,
-    resolve::RefreshOutcome,
+    resolve::{ReauthReason, RefreshOutcome},
     store::{CredentialStore, PutMode, StoreError, StoredCredential},
 };
 #[cfg(feature = "rotation")]
@@ -187,9 +187,65 @@ impl<S: CredentialStore> CredentialResolver<S> {
         let resolver_state = state;
         let resolver_stored = stored;
         let credential_id_owned = credential_id.to_string();
+
+        // Sub-spec §3.6 post-backoff state recheck. After the L2 backoff
+        // sleep the contender's claim may have been released because
+        // their refresh succeeded — in that case the credential is now
+        // fresh and we should short-circuit rather than running the
+        // closure on a freshly-rotated refresh_token (n8n #13088
+        // lineage). We re-read the credential from the store and apply
+        // the same `needs_refresh` predicate the parent
+        // `resolve_with_refresh` used; if the credential is no longer
+        // expired, return `false` so the coordinator surfaces
+        // `CoalescedByOtherReplica`.
+        let store_for_recheck = Arc::clone(&self.store);
+        let recheck_credential_id = credential_id.to_string();
+        let needs_refresh_after_backoff = move |_id: &CredentialId| {
+            let store = Arc::clone(&store_for_recheck);
+            let credential_id = recheck_credential_id.clone();
+            async move {
+                // On any read/decode failure, conservatively retry — the
+                // L2 layer will gate further work via heartbeat / claim
+                // ownership, so retrying is safe.
+                let stored = match store.get(&credential_id).await {
+                    Ok(s) => s,
+                    Err(e) => {
+                        tracing::debug!(
+                            credential_id,
+                            ?e,
+                            "post-backoff state recheck: store read failed; retrying claim"
+                        );
+                        return true;
+                    },
+                };
+                let state: C::State = match serde_json::from_slice(&stored.data) {
+                    Ok(s) => s,
+                    Err(e) => {
+                        tracing::debug!(
+                            credential_id,
+                            ?e,
+                            "post-backoff state recheck: state decode failed; retrying claim"
+                        );
+                        return true;
+                    },
+                };
+                state.expires_at().is_some_and(|exp| {
+                    let now = chrono::Utc::now();
+                    let policy = <C as Refreshable>::REFRESH_POLICY;
+                    // Use `early_refresh` without jitter for the recheck
+                    // — jitter belongs on the initial `needs_refresh`
+                    // decision (de-correlate replicas at startup), not
+                    // on the post-backoff coalesce gate.
+                    let early = chrono::Duration::from_std(policy.early_refresh)
+                        .unwrap_or(chrono::Duration::zero());
+                    exp - now <= early
+                })
+            }
+        };
+
         let outcome: Result<Result<CredentialHandle<C::Scheme>, ResolveError>, RefreshError> =
             coord
-                .refresh_coalesced(typed_id, |claim| async move {
+                .refresh_coalesced(typed_id, needs_refresh_after_backoff, |claim| async move {
                     // Stage 2.4 — mark sentinel = RefreshInFlight
                     // immediately before the IdP POST (perform_refresh
                     // dispatches into the OAuth2 token endpoint via
@@ -459,9 +515,23 @@ impl<S: CredentialStore> CredentialResolver<S> {
                     actual: current_version,
                 }))
             },
-            RefreshOutcome::ReauthRequired => Err(ResolveError::ReauthRequired {
+            RefreshOutcome::ReauthRequired(reason) => Err(ResolveError::ReauthRequired {
                 credential_id: credential_id.to_string(),
+                reason,
             }),
+            // CoalescedByOtherReplica is success — another replica
+            // refreshed while we were waiting on L2. Caller re-reads
+            // state from the store via the parent dispatch path. This
+            // arm reaches us from the inner `RefreshOutcome` only via a
+            // future resolver path; today the sub-spec §3.6 coalesce is
+            // surfaced by the `RefreshError` layer in
+            // `RefreshCoordinator::refresh_coalesced` (handled in the
+            // outer match on `outcome` above). Keep the arm explicit so
+            // adding consumers does not silently fall through.
+            RefreshOutcome::CoalescedByOtherReplica => {
+                let scheme = C::project(&state);
+                Ok(CredentialHandle::new(scheme, credential_id))
+            },
             // RefreshOutcome is `#[non_exhaustive]` — preserve the
             // wildcard so adding future variants (e.g. partial refresh)
             // does not silently break this match. Per Tech Spec §15.4
@@ -510,9 +580,15 @@ pub enum ResolveError {
         reason: String,
     },
     /// Credential requires full re-authentication.
+    ///
+    /// Carries a typed [`ReauthReason`] so callers (UI, metrics, audit)
+    /// can distinguish provider-rejected refresh from sentinel-threshold
+    /// escalation per sub-spec §3.4.
     #[error("credential {credential_id}: re-authentication required")]
     ReauthRequired {
         /// Credential identifier.
         credential_id: String,
+        /// Why re-authentication is required.
+        reason: ReauthReason,
     },
 }

@@ -34,7 +34,7 @@ pub use pending::{NoPendingState, PendingState, PendingToken};
 pub use refreshable::Refreshable;
 pub use registry::{CredentialRegistry, RegisterError};
 pub use resolve::{
-    DisplayData, InteractionRequest, RefreshOutcome, RefreshPolicy, ResolveResult,
+    DisplayData, InteractionRequest, ReauthReason, RefreshOutcome, RefreshPolicy, ResolveResult,
     StaticResolveResult, TestResult, UserInput,
 };
 pub use revocable::Revocable;

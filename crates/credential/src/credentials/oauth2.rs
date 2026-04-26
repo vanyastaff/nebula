@@ -532,7 +532,11 @@ impl Refreshable for OAuth2Credential {
         _ctx: &CredentialContext,
     ) -> Result<RefreshOutcome, CredentialError> {
         if state.refresh_token.is_none() {
-            return Ok(RefreshOutcome::ReauthRequired);
+            return Ok(RefreshOutcome::ReauthRequired(
+                crate::resolve::ReauthReason::ProviderRejected {
+                    detail: "missing refresh_token".to_string(),
+                },
+            ));
         }
 
         // Token refresh HTTP has moved to nebula-engine per ADR-0031;
@@ -1195,7 +1199,15 @@ mod tests {
 
         let ctx = CredentialContext::for_test("test-user");
         let outcome = OAuth2Credential::refresh(&mut state, &ctx).await.unwrap();
-        assert_eq!(outcome, RefreshOutcome::ReauthRequired);
+        assert!(
+            matches!(
+                outcome,
+                RefreshOutcome::ReauthRequired(
+                    crate::resolve::ReauthReason::ProviderRejected { .. }
+                )
+            ),
+            "expected ReauthRequired(ProviderRejected); got {outcome:?}"
+        );
     }
 
     #[test]
