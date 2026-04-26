@@ -1,8 +1,9 @@
 //! OAuth2 token -- consumer-facing (no refresh internals).
 
 use serde::{Deserialize, Serialize};
+use zeroize::{Zeroize, ZeroizeOnDrop};
 
-use crate::{AuthPattern, AuthScheme, SecretString};
+use crate::{AuthPattern, AuthScheme, SecretString, scheme::SensitiveScheme};
 
 /// OAuth2 bearer token with metadata.
 ///
@@ -12,16 +13,22 @@ use crate::{AuthPattern, AuthScheme, SecretString};
 /// Produced by: OAuth2 credential via `project()`.
 /// Consumed by: HTTP APIs requiring OAuth2 bearer auth.
 ///
+/// Per Tech Spec §15.5 — `SensitiveScheme`: access token is the secret;
+/// token type, scopes, expiry are non-secret metadata.
+///
 /// [`CredentialState`]: crate::CredentialState
-#[derive(Clone, Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize, Zeroize, ZeroizeOnDrop)]
 pub struct OAuth2Token {
     #[serde(with = "crate::serde_secret")]
     access_token: SecretString,
     /// Token type (typically `"Bearer"`).
+    #[zeroize(skip)]
     pub token_type: String,
     /// Granted scopes.
+    #[zeroize(skip)]
     pub scopes: Vec<String>,
     /// When the access token expires, if known.
+    #[zeroize(skip)]
     pub expires_at: Option<chrono::DateTime<chrono::Utc>>,
 }
 
@@ -69,6 +76,8 @@ impl AuthScheme for OAuth2Token {
         AuthPattern::OAuth2
     }
 }
+
+impl SensitiveScheme for OAuth2Token {}
 
 impl std::fmt::Debug for OAuth2Token {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {

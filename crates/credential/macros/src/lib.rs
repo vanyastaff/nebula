@@ -63,32 +63,58 @@ pub fn derive_credential(input: TokenStream) -> TokenStream {
     credential::derive(input)
 }
 
-/// Derive macro for the [`AuthScheme`] trait.
+/// Derive macro for the [`AuthScheme`] trait + sensitivity sub-trait.
 ///
-/// Generates an `impl AuthScheme` that returns the specified
-/// [`AuthPattern`] variant. Types with custom `expires_at()` logic
-/// (e.g., `OAuth2Token`, `Certificate`) should keep a manual impl.
+/// Generates `impl AuthScheme` returning the specified [`AuthPattern`]
+/// variant, and one of `impl SensitiveScheme` or `impl PublicScheme`
+/// per Tech Spec §15.5 dichotomy. The macro also audits scheme fields
+/// against the declared sensitivity at expansion time.
 ///
 /// # Errors
 ///
-/// Emits a compile error when `#[auth_scheme(pattern = ...)]` is
-/// missing or the pattern variant is not a valid `AuthPattern` identifier.
+/// Emits a compile error when:
+/// - `#[auth_scheme(pattern = ...)]` is missing or the pattern variant is not a valid `AuthPattern`
+///   identifier.
+/// - Neither `sensitive` nor `public` is declared, or both are declared.
+/// - `sensitive` is declared but a secret-named field (token / secret / key / password / bearer) is
+///   typed as plain `String` / `Vec<u8>`.
+/// - `public` is declared but any field is typed as `SecretString` / `SecretBytes`.
 ///
 /// # Attributes
 ///
 /// ## Container attributes (`#[auth_scheme(...)]` on the struct)
 ///
 /// - `pattern = Variant` — the [`AuthPattern`] variant (required)
+/// - `sensitive` — declares scheme holds secret material; mandates `ZeroizeOnDrop` (enforced via
+///   `SensitiveScheme: AuthScheme + ZeroizeOnDrop` trait bound — derive `Zeroize`+`ZeroizeOnDrop`).
+/// - `public` — declares scheme holds no secret material; field audit forbids
+///   `SecretString`/`SecretBytes`.
 ///
-/// # Example
+/// `sensitive` and `public` are mutually exclusive; exactly one must be
+/// declared.
+///
+/// # Example — sensitive scheme
+///
+/// ```ignore
+/// use nebula_credential::{AuthScheme, SecretString};
+///
+/// #[derive(Clone, Serialize, Deserialize, Zeroize, ZeroizeOnDrop, AuthScheme)]
+/// #[auth_scheme(pattern = SecretToken, sensitive)]
+/// pub struct MyToken {
+///     token: SecretString,
+/// }
+/// ```
+///
+/// # Example — public scheme
 ///
 /// ```ignore
 /// use nebula_credential::AuthScheme;
 ///
 /// #[derive(Clone, Serialize, Deserialize, AuthScheme)]
-/// #[auth_scheme(pattern = SecretToken)]
-/// pub struct MyToken {
-///     token: String,
+/// #[auth_scheme(pattern = InstanceIdentity, public)]
+/// pub struct MyBinding {
+///     provider: String,
+///     role: String,
 /// }
 /// ```
 ///

@@ -1,6 +1,7 @@
 //! Asymmetric key pair authentication (SSH, PGP, crypto wallets).
 
 use serde::{Deserialize, Serialize};
+use zeroize::{Zeroize, ZeroizeOnDrop};
 
 use crate::{AuthScheme, SecretString};
 
@@ -8,6 +9,10 @@ use crate::{AuthScheme, SecretString};
 ///
 /// Covers SSH key pairs, PGP keys, ECDSA/RSA signing keys, and other
 /// public/private key authentication mechanisms.
+///
+/// Per Tech Spec §15.5 — `SensitiveScheme`: private key + optional
+/// passphrase are secret; public key + algorithm hint are non-secret
+/// metadata.
 ///
 /// # Examples
 ///
@@ -20,14 +25,16 @@ use crate::{AuthScheme, SecretString};
 /// )
 /// .with_algorithm("ed25519");
 /// ```
-#[derive(Clone, Serialize, Deserialize, AuthScheme)]
-#[auth_scheme(pattern = KeyPair)]
+#[derive(Clone, Serialize, Deserialize, Zeroize, ZeroizeOnDrop, AuthScheme)]
+#[auth_scheme(pattern = KeyPair, sensitive)]
 pub struct KeyPair {
+    #[zeroize(skip)]
     public_key: String,
     #[serde(with = "crate::serde_secret")]
     private_key: SecretString,
     #[serde(default, with = "crate::serde_secret::option")]
     passphrase: Option<SecretString>,
+    #[zeroize(skip)]
     algorithm: Option<String>,
 }
 

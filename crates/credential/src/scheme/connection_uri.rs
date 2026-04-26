@@ -1,6 +1,7 @@
 //! Compound connection URI authentication (postgres://, redis://, etc.).
 
 use serde::{Deserialize, Serialize};
+use zeroize::{Zeroize, ZeroizeOnDrop};
 
 use crate::{AuthScheme, SecretString};
 
@@ -12,6 +13,11 @@ use crate::{AuthScheme, SecretString};
 ///
 /// The URI is treated as a secret because it typically embeds credentials.
 ///
+/// Per Tech Spec §15.5 — `SensitiveScheme`: the URI as a whole is a
+/// secret because it embeds the password component. (Task 1.5 of the П1
+/// plan restructures this into separate fields with non-secret accessors;
+/// see §15.5 §3295.)
+///
 /// # Examples
 ///
 /// ```
@@ -21,8 +27,8 @@ use crate::{AuthScheme, SecretString};
 ///     "postgres://alice:secret@db.example.com/mydb",
 /// ));
 /// ```
-#[derive(Clone, Serialize, Deserialize, AuthScheme)]
-#[auth_scheme(pattern = ConnectionUri)]
+#[derive(Clone, Serialize, Deserialize, Zeroize, ZeroizeOnDrop, AuthScheme)]
+#[auth_scheme(pattern = ConnectionUri, sensitive)]
 pub struct ConnectionUri {
     #[serde(with = "crate::serde_secret")]
     uri: SecretString,
