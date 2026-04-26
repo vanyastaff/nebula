@@ -1,7 +1,7 @@
 ---
 id: 0036
 title: resource-credential-adoption-auth-retirement
-status: accepted
+status: accepted (amended-in-place 2026-04-26 — cross-cascade R2)
 date: 2026-04-24
 supersedes: []
 superseded_by: []
@@ -32,6 +32,8 @@ linear: []
 Records the primary architectural decision from the [nebula-resource redesign Strategy](../superpowers/specs/2026-04-24-nebula-resource-redesign-strategy.md) §4.1 + §4.2 + §4.3 (frozen 2026-04-24). Cross-references the [credential Tech Spec](../superpowers/specs/2026-04-24-credential-tech-spec.md) §3.6 (lines 928-996) as the ratified downstream contract being adopted verbatim.
 
 **Cross-cascade coordination:** none. The resource-side hooks consume credential primitives that already exist in the credential Tech Spec ([§Credential::revoke line 228](../superpowers/specs/2026-04-24-credential-tech-spec.md), [§4.3 lines 1062-1068](../superpowers/specs/2026-04-24-credential-tech-spec.md)). No credential-side spec extension required.
+
+**Amended-in-place 2026-04-26 — cross-cascade R2.** Cross-cascade consolidated review 2026-04-26 ([`docs/superpowers/drafts/2026-04-24-cross-cascade-consolidated-review.md`](../superpowers/drafts/2026-04-24-cross-cascade-consolidated-review.md)) §3.2.1 surfaced 🔴 STRUCTURAL `on_credential_refresh` parameter shape divergence: this ADR's §Decision conceptual signature adopted the **pre-supersession** credential Tech Spec §3.6 borrowed-`&Scheme` shape (cited at line 32 above as "lines 928-996" — the very lines that carry the supersession header pointing to §15.7); credential CP5 §15.7 supersedes to owned `SchemeGuard<'a, _>` shape. ADR-0036 was accepted 2026-04-24 — same date credential CP5 supersession landed — supersession-propagation gap (cross-cascade review §6.3 Pattern A). Per cross-cascade review §7.1 path (a) routing: §Decision re-pinned to credential CP5 §15.7 canonical form. Counterpart resource Tech Spec §15.7 records the multi-section amendment-in-place; counterpart action-side R1 (action Tech Spec §2.2.4 stub Resource trait removal) recorded in action Tech Spec §15.13. Status invariant: ADR retains `accepted` status (canonical-form correction per ADR-0035 §Status block precedent); amendment qualifier is the cross-cascade marker, not a status transition.
 
 ## Context
 
@@ -78,9 +80,18 @@ pub trait Resource {
 
     /// Default no-op. Connection-bound resources override with blue-green
     /// pool swap pattern (credential Tech Spec §3.6 lines 961-993).
-    async fn on_credential_refresh(
+    ///
+    /// **Cross-cascade R2 amended-in-place 2026-04-26:** parameter re-pinned
+    /// from `&<Self::Credential as Credential>::Scheme` to
+    /// `SchemeGuard<'a, Self::Credential>` (owned, `!Clone`, `ZeroizeOnDrop`,
+    /// `Deref<Target = Scheme>`, lifetime-bound to call) per credential
+    /// Tech Spec §15.7 line 3394-3429 canonical CP5 form +
+    /// `ctx: &'a CredentialContext<'a>` shared `'a` lifetime per credential
+    /// Tech Spec §15.7 iter-3 lifetime-pin refinement (line 3503-3516).
+    async fn on_credential_refresh<'a>(
         &self,
-        new_scheme: &<Self::Credential as Credential>::Scheme,
+        new_scheme: SchemeGuard<'a, Self::Credential>,
+        ctx: &'a CredentialContext<'a>,
     ) -> Result<(), Self::Error> { Ok(()) }
 
     /// Default no-op. Override invariant: post-invocation, the resource
@@ -199,4 +210,4 @@ Acceptance gate: this ADR moves to `accepted` when Phase 6 Tech Spec CP1 ratifie
 
 ### Amended in place on
 
-(empty on first draft; future amendments listed here per the ADR-0035 amended-in-place pattern.)
+- **2026-04-26 — cross-cascade R2.** §Decision conceptual signature re-pinned from pre-supersession credential Tech Spec §3.6 borrowed-`&Scheme` shape to post-supersession credential Tech Spec §15.7 `SchemeGuard<'a, _>` shape (canonical CP5 form). §Status section gains amendment paragraph citing cross-cascade consolidated review §3.2.1 + §7.1 path (a) routing + §6.3 Pattern A supersession-propagation gap. §Decision `on_credential_refresh` doc comment annotated with cross-cascade R2 marker + lifetime-pin cross-ref. Counterpart resource Tech Spec §15.7 records the multi-section amendment-in-place per §15.7.5 enactment table; counterpart action-side R1 (action Tech Spec §2.2.4 stub Resource trait removal — replace with `use nebula_resource::Resource;` import-only) recorded in action Tech Spec §15.13. ADR retains `accepted` status (canonical-form correction per ADR-0035 §Status block precedent); amendment qualifier in frontmatter is the cross-cascade marker, not a status transition.

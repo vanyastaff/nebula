@@ -1,6 +1,6 @@
 ---
 name: nebula-action tech spec (implementation-ready design)
-status: FROZEN CP4 2026-04-25 (amended-in-place 2026-04-25 — Q1 post-freeze; amended-in-place 2026-04-25 — Q6 lifecycle gap; amended-in-place 2026-04-25 — Q7 post-closure audit per §15.11 — production-drift bundle: 6 🔴 R1-R6 + 3 🟠 + 8 🟡 closure across §2.2.2 / §2.2.3 / §2.2.4 / §2.4 / §2.6 / §3.5 / §8.1.2; amended-in-place 2026-04-26 — Q8 research-driven amendment per §15.12 — 5 AMEND items: F2 idempotency hook + F9 per-action concurrency + F12 workflow-version pin + F13 4× engine cluster-mode trait placeholders + F15 mechanical docs cleanup, plus 5 deferred cascade slots committed to `docs/tracking/cascade-queue.md` + 2 canon updates flagged for separate PR + 3 outside-scope auth findings spawned to `nebula-auth` cascade slot)
+status: FROZEN CP4 2026-04-25 (amended-in-place 2026-04-25 — Q1 post-freeze; amended-in-place 2026-04-25 — Q6 lifecycle gap; amended-in-place 2026-04-25 — Q7 post-closure audit per §15.11 — production-drift bundle: 6 🔴 R1-R6 + 3 🟠 + 8 🟡 closure across §2.2.2 / §2.2.3 / §2.2.4 / §2.4 / §2.6 / §3.5 / §8.1.2; amended-in-place 2026-04-26 — Q8 research-driven amendment per §15.12 — 5 AMEND items: F2 idempotency hook + F9 per-action concurrency + F12 workflow-version pin + F13 4× engine cluster-mode trait placeholders + F15 mechanical docs cleanup, plus 5 deferred cascade slots committed to `docs/tracking/cascade-queue.md` + 2 canon updates flagged for separate PR + 3 outside-scope auth findings spawned to `nebula-auth` cascade slot; amended-in-place 2026-04-26 — cross-cascade R1+R2 per §15.13 — action §2.2.4 stub Resource trait removal (R1 hard-deletes parallel-shape stub, replaces with `use nebula_resource::Resource;` import-only per cross-cascade consolidated review §7.1 + ADR-0035 amended-in-place precedent))
 date: 2026-04-24
 authors: [architect (drafting); tech-lead (CP gate decider); security-lead (VETO authority on §4 security floor); orchestrator (CP coordination)]
 scope: nebula-action redesign cascade Phase 6 — implementation-ready design for the action trait family, the `#[action]` attribute macro, runtime model, security floor, and codemod migration
@@ -30,7 +30,7 @@ This document moves through four checkpoints with parallel reviewer matrices per
 | **DRAFT CP1** | §0–§3 | Status, goals, trait contract, runtime model | locked CP1 |
 | **DRAFT CP2** | §4–§8 | Macro emission, test harness, security floor, lifecycle, storage | locked CP2 |
 | **DRAFT CP3** | §9–§13 | Public API surface, codemod migration, adapter authoring, ControlAction migration, evolution policy | locked CP3 |
-| **FROZEN CP4 2026-04-25** (iterated 2026-04-25 post 11a/11b; tech-lead RATIFY-FREEZE 11c; amended-in-place 2026-04-25 post-freeze for Q1 `*Handler` shape per §15.9 + Q2 §2.9.1b axis-naming refinement + **Q6 §2.2.3 lifecycle methods per §15.10 — start/stop added to TriggerAction; production drift between `crates/action/src/trigger.rs:61-72` and spike-locked shape closed; Option (i) picked (lifecycle on TriggerAction, not TriggerSource); SPLIT decision (no Q4 type Input bundle)** + **Q7 post-closure audit per §15.11 — production-drift bundle: §2.2.2 init_state/migrate_state restoration + §2.2.3 TriggerEventOutcome + accepts_events restoration + §2.2.4 ResourceAction configure/cleanup paradigm restoration (drop spurious execute/Input/Output) + §2.4 ResourceHandler Box<dyn Any> + TriggerHandler TriggerEvent envelope restoration + §2.6 sealed-DX bound chain re-pin (WebhookAction/PollAction declared as peer DX traits with own State/Cursor/Event associated types, NOT TriggerAction subtraits) + §3.5 typification path narrative + §8.1.2 cursor in-memory ownership narrative + §1.2 N1 cred-cascade dependency note + 8 🟡 doc-gap closure** per ADR-0035 amended-in-place precedent + Q8 post-closure research-driven amendment per §15.12 — 5 AMEND items + 5 deferred cascade slots + 2 canon updates flagged + 3 outside-scope auth findings spawned) | §14–§16 | Open items, accepted gaps, handoff, implementation-path framing for Phase 8 user pick | **frozen (amended-in-place)** |
+| **FROZEN CP4 2026-04-25** (iterated 2026-04-25 post 11a/11b; tech-lead RATIFY-FREEZE 11c; amended-in-place 2026-04-25 post-freeze for Q1 `*Handler` shape per §15.9 + Q2 §2.9.1b axis-naming refinement + **Q6 §2.2.3 lifecycle methods per §15.10 — start/stop added to TriggerAction; production drift between `crates/action/src/trigger.rs:61-72` and spike-locked shape closed; Option (i) picked (lifecycle on TriggerAction, not TriggerSource); SPLIT decision (no Q4 type Input bundle)** + **Q7 post-closure audit per §15.11 — production-drift bundle: §2.2.2 init_state/migrate_state restoration + §2.2.3 TriggerEventOutcome + accepts_events restoration + §2.2.4 ResourceAction configure/cleanup paradigm restoration (drop spurious execute/Input/Output) + §2.4 ResourceHandler Box<dyn Any> + TriggerHandler TriggerEvent envelope restoration + §2.6 sealed-DX bound chain re-pin (WebhookAction/PollAction declared as peer DX traits with own State/Cursor/Event associated types, NOT TriggerAction subtraits) + §3.5 typification path narrative + §8.1.2 cursor in-memory ownership narrative + §1.2 N1 cred-cascade dependency note + 8 🟡 doc-gap closure** per ADR-0035 amended-in-place precedent + Q8 post-closure research-driven amendment per §15.12 — 5 AMEND items + 5 deferred cascade slots + 2 canon updates flagged + 3 outside-scope auth findings spawned + cross-cascade R1 (action §2.2.4 stub Resource trait removal) per §15.13) | §14–§16 | Open items, accepted gaps, handoff, implementation-path framing for Phase 8 user pick | **frozen (amended-in-place)** |
 
 Inputs are **frozen** at this freeze point: Strategy frozen at CP3 (commit `a38f6f5a`); ADR-0038 status `accepted` 2026-04-25 + ADR-0039 status `accepted` 2026-04-25 (amended-in-place 2026-04-25 per §15.5 enactment) — both flipped on Tech Spec FROZEN CP4 ratification per their respective §Status sections; ADR-0040 retained at `proposed` pending explicit user ratification on canon §3.5 revision (per cascade prompt: surface к user в Phase 8 summary, не auto-flip); Phase 4 spike PASS at commit `c8aef6a0` (worktree-isolated; see [spike NOTES](../drafts/2026-04-24-nebula-action-redesign/07-spike-NOTES.md) §5; **scope clarification per §15.10 Q6 — spike validated trait-shape compose + cancellation only; lifecycle methods (`start` / `stop` on TriggerAction) are derived from production `crates/action/src/trigger.rs:61-72` PASS evidence, NOT from spike-shape change**).
 
@@ -444,14 +444,16 @@ Cluster-mode hooks (`IdempotencyKey`, `on_leader_*`, `dedup_window`) attach as s
 #### §2.2.4 `ResourceAction`
 
 > **Amended-in-place 2026-04-25 (Q7 post-closure audit, R2)** per §15.11 enactment. Pre-amendment: trait shape declared `Input` / `Output` / `execute(&self, ctx, &resource, input)` per spike interpretation. Post-amendment: shape restored to production `crates/action/src/resource.rs:36-52` paradigm — `ResourceAction` is graph-scoped DI, NOT an execute-bearing primitive. Engine runs `configure(&self, ctx) -> Future<Self::Resource>` before downstream nodes, lends `&Self::Resource` to the subtree (resources read by *consumer actions* via `ctx.resource()`, NOT through `ResourceHandler::execute`), calls `cleanup(&self, resource, ctx)` when scope ends. The pre-amendment `execute` / `Input` / `Output` were spike-specification artifacts not grounded in production; their drop closes the parallel paradigm-drift surfaced by R2 enactment.
+>
+> **Amended-in-place 2026-04-26 (cross-cascade R1)** per §15.13 enactment. Pre-amendment: section declared a stub `pub trait Resource: Send + Sync + 'static { type Credential: Credential; }` immediately preceding `ResourceAction`. Post-amendment: stub trait body hard-deleted; replaced with `use nebula_resource::Resource;` import-only. The stub shadowed the canonical authoritative `Resource` trait declared in [resource Tech Spec §2.1](2026-04-24-nebula-resource-tech-spec.md) (5 associated types `Config` / `Runtime` / `Lease` / `Error` / `Credential` + 9 lifecycle methods `key` / `create` / `check` / `on_credential_refresh` / `on_credential_revoke` / `shutdown` / `destroy` / `schema` / `metadata`); having two declarations in workspace would name-collide at compile time (`nebula-action::Resource` vs `nebula-resource::Resource` would not unify at the `ResourceAction::Resource: Resource` bound resolution site). The fix per `feedback_no_shims.md` ("never propose adapters/bridges/shims — replace the wrong thing directly") + cross-cascade consolidated review §2.2.1 (Pattern B — stub trait declarations are fragile): single source of truth for `Resource` lives in `nebula-resource`; this Tech Spec imports the trait identity via `use nebula_resource::Resource;` and binds `ResourceAction::Resource: Resource` against the imported trait. ADR-0035 §4.3 rewrite obligation is unaffected (no ABI change at the `ResourceAction` bound site; only the stub-shadow removed).
+
+`ResourceAction` binds the `Resource` trait through canonical import. The trait identity is owned by `nebula-resource`; this section only references it via the bound. See [resource Tech Spec §2.1 line 157-299](2026-04-24-nebula-resource-tech-spec.md) for the authoritative trait shape (5 associated types + 9 lifecycle methods).
 
 ```rust
-pub trait Resource: Send + Sync + 'static {
-    type Credential: Credential;
-}
+use nebula_resource::Resource;
 
 pub trait ResourceAction: Send + Sync + 'static {
-    type Resource: Resource;        // Probe 1 verifies this is required
+    type Resource: Resource;        // Probe 1 verifies this is required (trait imported above)
     type Error: std::error::Error + Send + Sync + 'static;
 
     /// Build the resource for this scope; engine runs this before downstream nodes.
@@ -3448,6 +3450,81 @@ Each slot has architect-recommended shape recorded in `cascade-queue.md`; Owner 
 
 ---
 
+### §15.13 Cross-cascade amendment R1 — action §2.2.4 stub Resource trait removal — ENACTED
+
+**Trigger.** Cross-cascade consolidated review 2026-04-26 ([`docs/superpowers/drafts/2026-04-24-cross-cascade-consolidated-review.md`](../drafts/2026-04-24-cross-cascade-consolidated-review.md)) surfaced 2 🔴 STRUCTURAL gaps tracing to a single root: resource cascade authored against credential Tech Spec pre-supersession §3.6 shape, but credential CP5 supersedes to §15.7 `SchemeGuard<'a, _>` shape. ADR-0036 (resource cascade) accepted 2026-04-24 — same date credential CP5 supersession landed — propagation gap. R1 closes the action-side parallel-shape stub gap; R2 (resource Tech Spec + ADR-0036 re-pin) closes the resource-side superseded-shape gap.
+
+**Status invariant.** Per ADR-0035 amended-in-place precedent + §15.11 wholesale-bundle precedent + §15.12 research-driven precedent: cross-cascade R1 is a single-section signature reconciliation removing a parallel-shape stub. R1 itself does NOT change `final_shape_v2.rs` trait shapes — `ResourceAction` shape is preserved verbatim; only the parallel-shape `Resource` stub at §2.2.4 (which had no spike validation — the stub was a Tech Spec drafting artifact predating resource Tech Spec ratification) is removed.
+
+#### §15.13.1 Enactment
+
+This CP **enacts** R1 in-place per §15.9 / §15.10 / §15.11 / §15.12 precedent. Tech Spec edit is inline at §2.2.4; no ADR file edit required (R1 affects only the action Tech Spec stub).
+
+**Per ADR composition analysis:**
+
+- **ADR-0024** (workspace policy on `*Handler` `#[async_trait]` adoption) — unaffected. R1 amendment does not touch `*Handler` per-method async return shape.
+- **ADR-0035** (phantom-shim capability pattern) — unaffected. §4.3 action-side rewrite obligation is honored verbatim — `ResourceAction::Resource: Resource` bound preserved (now resolves to imported `nebula_resource::Resource` instead of stub-shadow).
+- **ADR-0036** (resource Credential adoption) — composes cleanly. ADR-0036 §Decision line 64-95 commits the canonical 5-assoc-type + 9-method shape; this Tech Spec now imports rather than redeclares.
+- **ADR-0038** (action trait shape) — unaffected at the §Decision item layer. ResourceAction trait identity preserved; only the parallel-shape `Resource` stub removed.
+- **ADR-0039** (action macro emission) — unaffected. Macro emission for the action struct is unchanged.
+- **ADR-0040** (ControlAction seal + canon revision) — unaffected. R1 is on the primary `ResourceAction` trait, not on a sealed DX trait.
+
+**Sections amended (R1 — single-section enactment):**
+
+| Cross-cascade amendment | Tech Spec section | Class | Spike risk |
+|---|---|---|---|
+| **R1 — Resource trait single-source-of-truth** — hard-delete stub `pub trait Resource: Send + Sync + 'static { type Credential: Credential; }`; replace with `use nebula_resource::Resource;` import-only; preserve `ResourceAction::Resource: Resource` bound resolving against imported trait | §2.2.4 | AMEND | None — stub had no spike coverage; spike validated `ResourceAction` bound only |
+
+**Picked: amendment-in-place per ADR-0035 precedent.** Rationale per cross-cascade consolidated review §7.1 + `feedback_no_shims.md`:
+
+1. **Path (a) per consolidated review §7.1** — hard-delete + `use nebula_resource::Resource;` import-only is the cleaner option per `feedback_no_shims.md` (no parallel surface). Cross-cascade review §7.1 path (a) selected over path (b) ("explicitly marked forward-declaration") because path (a) gives single-source-of-truth, while path (b) leaves the parallel-shape risk latent (someone importing `nebula_action::Resource` would still see the stub).
+2. **`ResourceAction::Resource: Resource` bound semantics preserved.** The bound now resolves to imported `nebula_resource::Resource` (5 associated types + 9 lifecycle methods) instead of the local stub (1 associated type, no methods). At the `ResourceAction` trait layer, the bound is structurally tighter (gains 4 assoc types + 9 methods constraints), but no `ResourceAction` impl in the workspace today exercises the bound — the only call site is the cross-crate `Resource: Resource` requirement that ADR-0035 §4.3 rewrite obligation exposes through the macro emission. Macro emission unchanged.
+3. **N1-extended (§1.2) preserved verbatim.** Hard ordering dependency on credential cascade landing first remains in §1.2 N1-extended (line 85). The stub removal does NOT relax N1-extended — it strengthens it: with the import, ResourceAction impls cannot be written until `nebula_resource::Resource` is implementable, which itself requires `Resource::Credential: Credential` per ADR-0036. Path (a) single coordinated PR satisfies implicitly; paths (b) / (c) MUST sequence credential cascade leaf-first per §16.5 cascade-final precondition.
+
+#### §15.13.2 Why amend-in-place vs supersede
+
+Per ADR-0035 §Status block: amendments are valid for "canonical-form corrections" (cross-source-authoritative shape preservation under inconsistency); supersession is reserved for paradigm shifts. R1 is canonical-form correction — the stub was a parallel-shape shadow that contradicted the cross-source authority (resource Tech Spec §2.1). Amendment-in-place is proportionate: it removes the stub-shadow without touching ADR ratifications.
+
+R1 lands as standalone post-freeze amendment (vs bundling with R2 into a single CP) because R2 affects the resource Tech Spec + ADR-0036 (different documents, different authoring authority); this Tech Spec records R1 alone, while R2 is recorded in resource Tech Spec §15.7 with parallel cross-cascade-review citation.
+
+#### §15.13.3 Cross-cascade and downstream impact
+
+**ADR composition.** ADR-0024 + ADR-0035 + ADR-0036 + ADR-0038 + ADR-0039 + ADR-0040 — all preserved per §15.13.1 per-ADR composition analysis. None of the cross-cascade amendments touch ADR §Decision items at the action-cascade ADR layer. R1 enactment does NOT auto-flip any ADR status.
+
+**Production code impact.** R1 amendment is a spec-side correction with no immediate production code change required:
+
+- `nebula-action` — stub `Resource` trait declaration removed from §2.2.4; production code change is at implementation time per cascade-final precondition. Production `crates/action/src/resource.rs` will gain `use nebula_resource::Resource;` import at the same line range where the stub would have lived in pre-amendment shape.
+- `nebula-resource` — unchanged at this CP (resource Tech Spec §2.1 already declares the canonical shape; R1 is action-side stub removal only).
+- Community plugins — zero migration impact (no community plugin would have implemented `nebula_action::Resource` because there was no production code emitting that trait; the stub was a Tech Spec drafting artifact).
+
+**Reverse-dep impact.** Per §10.3 footprint analysis applied to R1:
+
+- `nebula-engine` — zero sites this cascade (R1 is type-import, not engine-surface).
+- `nebula-api` — zero sites this cascade.
+- `nebula-sandbox` — zero sites this cascade.
+- `nebula-sdk` / `nebula-plugin` — zero sites (no community-facing trait shape change).
+- `apps/cli` — zero sites.
+
+**Aggregate cross-cascade R1 footprint:** zero internal sites + zero community plugin migration impact. R1 is purely a spec-shape correction.
+
+**Codemod additions.** None. R1 has no production code rewrite (the production code didn't exist yet — Tech Spec was pre-implementation).
+
+#### §15.13.4 §16.5 cascade-final precondition update
+
+Tech Spec ratification (CP4 freeze) is unaffected — this amendment-in-place is post-freeze (per ADR-0035 / §15.9 / §15.10 / §15.11 / §15.12 precedent). §16.5 cascade-final readiness check gains one new precondition:
+
+- [ ] **Cross-cascade R1 absorbed.** §2.2.4 has zero stub `Resource` trait body (verifier: `rg "^pub trait Resource: Send" docs/superpowers/specs/2026-04-24-nebula-action-tech-spec.md` returns zero matches); §2.2.4 contains `use nebula_resource::Resource;` import-only paragraph; ResourceAction bound `type Resource: Resource` resolves to imported trait.
+
+#### §15.13.5 §15.1 closure entries updated
+
+§15.1 carry-forward tables — no rows previously deferred address R1 directly (R1 was surfaced post-freeze by cross-cascade consolidated review, not pre-CP CP-level review). New CP4 row added implicitly via this §15.13 enactment record + the "CHANGELOG — post-freeze amendment-in-place 2026-04-26 (cross-cascade R1)" entry; no separate §15.1 row needed.
+
+§15.8 deferred-with-trigger registry — no new row added. R1 is fully closed at §15.13 enactment; no follow-up trigger.
+
+**Counterpart enactment for R2.** R2 (resource Tech Spec §2.1 + ADR-0036 §Decision `on_credential_refresh` signature re-pin to credential CP5 §15.7 `SchemeGuard<'a, _>` shape) is enacted in [resource Tech Spec §15.7](2026-04-24-nebula-resource-tech-spec.md) + [ADR-0036 §Decision + §Amended in place on](../../adr/0036-resource-credential-adoption-auth-retirement.md). Both R1 and R2 originate from the same cross-cascade consolidated review §7.1 amendment routing.
+
+---
+
 ## §16 Implementation handoff
 
 This section frames the post-cascade-freeze handoff. CP4 records the structure; the user picks Q1 path (a)/(b)/(c) at Phase 8 cascade summary per Strategy §6.5 (line 408-413) — Tech Spec presents, does NOT pre-pick.
@@ -3879,4 +3956,24 @@ Post-closure research-driven audit 2026-04-26 surfaced ~150+ raw findings → 15
 **Audit obligations.** spec-auditor full cross-CP audit pre-freeze (handoff at line 2820) is augmented Q8-post-closure with seven additional checks: (i) §0.1 status header reflects Q8 qualifier; (ii) §2.2.3 second callout box (Q8 F2) references §15.12 verbatim + Q8 Phase 2 §4 architect-default position citation; (iii) §3.6.1 cites Q8 Phase 2 §3 F9 architect synthesis + ActionMetadata `crates/action/src/metadata.rs:96-117` line-pin; (iv) §3.6.2 cites Q8 Phase 2 §3 F12 + cross-cascade scope (engine-cascade); (v) §3.7 cites Q8 Phase 2 §3 F13 + rust-senior recommendation + cluster-mode cascade slot 2; (vi) §15.12 enactment record cites Q8 Phase 2 synthesis + Phase 2.5 deeper analyses + user ratification of architect defaults; (vii) `docs/tracking/cascade-queue.md` exists with 8 slots — slots 1+2 from Strategy §6.6, slots 3-7 from §15.12.7, slot 8 from §15.12.6; each slot's architect-recommended shape grep-able to source rationale.
 
 **Open items.** No new open items raised. §15.8 deferred-with-trigger registry — no new row added (Q8 deferred items committed to `docs/tracking/cascade-queue.md` slots 3-8 per §15.12.7 + §15.12.6; cascade-queue is the registry for cascade-scope deferrals, parallel to §15.8 for sub-spec scope-trims).
+
+### CHANGELOG — post-freeze amendment-in-place 2026-04-26 (cross-cascade R1 — action §2.2.4 stub Resource trait removal)
+
+Cross-cascade consolidated review 2026-04-26 ([`docs/superpowers/drafts/2026-04-24-cross-cascade-consolidated-review.md`](../drafts/2026-04-24-cross-cascade-consolidated-review.md)) surfaced 2 🔴 STRUCTURAL gaps tracing to a single root: resource cascade authored against credential Tech Spec pre-supersession §3.6 shape; credential CP5 supersedes to §15.7 `SchemeGuard<'a, _>` shape. ADR-0036 (resource cascade) accepted 2026-04-24 — same date credential CP5 supersession landed — supersession-propagation gap (cross-cascade review §6.3 Pattern A). R1 closes the action-side parallel-shape stub gap; R2 (resource Tech Spec + ADR-0036 re-pin) is enacted in counterpart documents.
+
+**R1 — action §2.2.4 stub Resource trait removal (ACCEPTED, in-place enactment):**
+
+- Status header — appended `+ cross-cascade R1+R2 per §15.13` qualifier (R2 is recorded in counterpart resource Tech Spec + ADR-0036; this Tech Spec status carries the cross-reference). §0.1 status table CP4 row gains `+ cross-cascade R1 (action §2.2.4 stub Resource trait removal)` qualifier.
+- §2.2.4 — third amended-in-place callout added at section top (cross-cascade R1). Stub `pub trait Resource: Send + Sync + 'static { type Credential: Credential; }` declaration hard-deleted. Replaced with explanatory paragraph citing resource Tech Spec §2.1 line 157-299 as canonical authority + `use nebula_resource::Resource;` import statement. `ResourceAction::Resource: Resource` bound preserved verbatim (now resolves to imported trait instead of stub-shadow). Closes cross-cascade consolidated review §2.2.1 🔴 STRUCTURAL Resource trait double-declaration finding via path (a) per §7.1 amendment routing.
+- §15.13 (NEW subsection) — Cross-cascade R1 enactment record. §15.13.1 enactment table (R1 single-section amendment; no ADR file edit needed; canonical-form correction per ADR-0035 §Status block precedent). §15.13.2 amend-in-place vs supersede rationale (canonical-form correction; standalone vs bundled with R2 because R2 affects different documents). §15.13.3 cross-cascade impact (zero internal sites + zero community plugin migration; spec-shape correction only). §15.13.4 §16.5 cascade-final precondition gains one new entry (R1 absorbed verification). §15.13.5 §15.1 closure no row needed (R1 is post-freeze cross-cascade-review-driven). Counterpart R2 cross-reference to resource Tech Spec §15.7 + ADR-0036.
+
+**Cascade-state changes:**
+- ADR transitions: NONE. ADR-0024 + ADR-0035 + ADR-0036 + ADR-0038 + ADR-0039 + ADR-0040 statuses preserved at this Tech Spec layer. ADR-0036 is amended-in-place at counterpart documents (R2) per cross-cascade review §7.1 routing — this Tech Spec records the cross-reference; the actual ADR-0036 §Status frontmatter qualifier addition lands in the ADR file edit per §15.13.5 counterpart enactment.
+- Tech Spec status qualifier: gains `amended-in-place 2026-04-26 — cross-cascade R1 (action §2.2.4 stub Resource trait removal)` qualifier. R1 is single-section spec-shape correction without signature-shape change to `ResourceAction`; warrants short qualifier per §15.5 / §15.9 / §15.10 / §15.11 / §15.12 precedent.
+- Cross-section signature impact: §0.1 status table + §2.2.4 (R1 stub removal) + §15.13 (NEW) + §17 CHANGELOG (this entry). All other sections unchanged. §1.2 N1-extended preserved verbatim (R1 strengthens N1-extended ordering dependency, does not relax it). §3.5 typification narrative unchanged (R1 is at trait-import layer, not at dispatch layer).
+- Spike `final_shape_v2.rs:209-262` is unchanged — R1 amendment removes a parallel-shape stub that was a Tech Spec drafting artifact predating resource Tech Spec ratification; the spike never validated the stub. §0.2 invariant 4 spike-shape divergence trigger NOT activated.
+
+**Audit obligations.** spec-auditor full cross-CP audit pre-freeze (handoff at line 2820) is augmented cross-cascade-R1-post-closure with three additional checks: (i) §0.1 status header reflects cross-cascade R1 qualifier; (ii) §2.2.4 third callout box (cross-cascade R1) references §15.13 verbatim + cross-cascade consolidated review §2.2.1 / §7.1 + resource Tech Spec §2.1 line 157-299 anchor; (iii) §15.13 enactment record cites cross-cascade consolidated review §7.1 + ADR-0035 amended-in-place precedent + counterpart R2 enactment in resource Tech Spec + ADR-0036.
+
+**Open items.** No new open items raised. §15.8 deferred-with-trigger registry — no new row added (R1 is fully closed at §15.13 enactment; no follow-up trigger).
 

@@ -1,6 +1,6 @@
 ---
 name: nebula-resource tech spec (implementation-ready design)
-status: FROZEN (CP4) — ratified by architect + tech-lead 2026-04-25
+status: FROZEN (CP4) — ratified by architect + tech-lead 2026-04-25 (amended-in-place 2026-04-26 — cross-cascade R2 per §15.7 — `on_credential_refresh` signature re-pin to credential CP5 §15.7 `SchemeGuard<'a, _>` shape; ADR-0036 §Decision counterpart amendment-in-place per §15.7.5)
 date: 2026-04-25
 authors: [architect (subagent dispatch)]
 scope: nebula-resource — single-crate redesign; 5 in-tree consumers migrate atomically
@@ -202,6 +202,18 @@ pub trait Resource: Send + Sync + 'static {
 
     /// Rotation hook — called when the engine detects credential refresh.
     ///
+    /// **Cross-cascade re-pin per credential CP5 §15.7 supersession:**
+    /// `new_scheme` is `SchemeGuard<'a, Self::Credential>` (owned, `!Clone`,
+    /// `ZeroizeOnDrop`, `Deref<Target = Scheme>`, lifetime-bound to call)
+    /// per [credential Tech Spec §15.7 line 3394-3429](2026-04-24-credential-tech-spec.md)
+    /// canonical CP5 form, NOT borrowed `&Scheme` per superseded §3.6 shape.
+    /// `ctx: &'a CredentialContext<'a>` shares the `'a` lifetime per
+    /// credential Tech Spec §15.7 iter-3 lifetime-pin refinement
+    /// (line 3503-3516). The owned guard enforces the zeroize / no-Clone /
+    /// no-retention discipline at the type level — impls cannot store the
+    /// scheme beyond the call (compile-fail probe coverage per credential
+    /// Tech Spec §16.1.1 probes #6, #7).
+    ///
     /// Default: no-op. Connection-bound resources (Postgres pool, Kafka
     /// producer) override with the **blue-green pool swap** pattern from
     /// credential Tech Spec §3.6 lines 961-993: `Arc<RwLock<Pool>>` +
@@ -221,11 +233,12 @@ pub trait Resource: Send + Sync + 'static {
     /// `ResourceEvent::CredentialRefreshed { outcome: Failed(...) }`
     /// and a per-resource error tracing span. Sibling dispatches are
     /// unaffected (Strategy §4.3, security amendment B-1).
-    fn on_credential_refresh(
+    fn on_credential_refresh<'a>(
         &self,
-        new_scheme: &<Self::Credential as Credential>::Scheme,
-    ) -> impl Future<Output = Result<(), Self::Error>> + Send {
-        let _ = new_scheme;
+        new_scheme: SchemeGuard<'a, Self::Credential>,
+        ctx: &'a CredentialContext<'a>,
+    ) -> impl Future<Output = Result<(), Self::Error>> + Send + 'a {
+        let _ = (new_scheme, ctx);
         async { Ok(()) }
     }
 
@@ -314,19 +327,28 @@ impl Resource for PostgresPool {
         ctx: &ResourceContext,
     ) -> Result<Self::Runtime, Self::Error> { /* ... */ }
 
-    async fn on_credential_refresh(
+    async fn on_credential_refresh<'a>(
         &self,
-        new_scheme: &<Self::Credential as Credential>::Scheme,
+        new_scheme: SchemeGuard<'a, Self::Credential>,
+        ctx: &'a CredentialContext<'a>,
     ) -> Result<(), Self::Error> {
-        let new_pool = build_pool_from_scheme(new_scheme).await?;
+        // `new_scheme` derefs to `&Scheme` per credential Tech Spec §15.7
+        // line 3394-3429 `Deref<Target = Scheme>` impl. Pull what is
+        // needed inside the await window; do NOT clone the scheme onto
+        // the new pool (clone would be another zeroize obligation per
+        // PRODUCT_CANON §12.5 + credential Tech Spec §15.7 `!Clone`
+        // discipline).
+        let new_pool = build_pool_from_scheme(&*new_scheme).await?;
         let mut guard = self.inner.write().await;
         *guard = new_pool;
+        // `new_scheme` zeroizes on Drop at end of scope (per credential
+        // Tech Spec §15.7 line 3412 Drop ordering); `ctx` is borrowed.
         Ok(())
     }
 }
 ```
 
-The blue-green swap example mirrors [credential Tech Spec §3.6 lines 981-993](2026-04-24-credential-tech-spec.md). Old connections drain naturally as their RAII guards drop; new queries use the new pool (read lock acquires against the new inner after swap).
+The blue-green swap example mirrors [credential Tech Spec §3.6 lines 981-993](2026-04-24-credential-tech-spec.md). Old connections drain naturally as their RAII guards drop; new queries use the new pool (read lock acquires against the new inner after swap). The `SchemeGuard<'a, _>` parameter (per [credential Tech Spec §15.7 line 3394-3429](2026-04-24-credential-tech-spec.md) canonical CP5 form) zeroizes on Drop at the end of the impl body's await window; the resource impl pulls what it needs (connection string, token) via `Deref` without cloning the scheme.
 
 ### §2.2 NoCredential type (location + impl)
 
@@ -427,9 +449,9 @@ Consumers writing `type Credential = NoCredential;` import from either crate; th
 
 Both signatures and default bodies are inlined in §2.1. This subsection records the **invariants** each method must honor.
 
-**`on_credential_refresh(new_scheme)`:**
+**`on_credential_refresh(new_scheme, ctx)`:**
 
-- **Borrow invariant.** `new_scheme: &<Self::Credential as Credential>::Scheme` — borrowed, not owned. Per [Strategy §4.3](2026-04-24-nebula-resource-redesign-strategy.md) hot-path invariant, no `Scheme::clone()` on the dispatcher path; each clone is another zeroize obligation per [`PRODUCT_CANON.md §12.5`](../PRODUCT_CANON.md). Resource impls pull what they need from the borrowed scheme inside the await window.
+- **Owned-guard invariant.** `new_scheme: SchemeGuard<'a, Self::Credential>` — owned guard, `!Clone`, `ZeroizeOnDrop`, `Deref<Target = Scheme>`, lifetime-bound to call. Per [credential Tech Spec §15.7 line 3394-3429](2026-04-24-credential-tech-spec.md) canonical CP5 form (re-pinned from superseded §3.6 borrowed `&Scheme` shape per cross-cascade R2 enactment §15.7 below). The `'a` lifetime is shared with `ctx: &'a CredentialContext<'a>` per credential Tech Spec §15.7 iter-3 lifetime-pin refinement (line 3503-3516). The owned guard enforces zeroize / no-Clone / no-retention discipline at the type level — impls cannot store the scheme beyond the call. Per [Strategy §4.3](2026-04-24-nebula-resource-redesign-strategy.md) hot-path invariant: no `Scheme::clone()` on the dispatcher path; each clone is another zeroize obligation per [`PRODUCT_CANON.md §12.5`](../PRODUCT_CANON.md). Resource impls pull what they need via `Deref` (`&*new_scheme`) inside the await window; the guard zeroizes on Drop at end of scope. Compile-fail probe coverage per credential Tech Spec §16.1.1 probes #6 (SchemeGuard retention in resource struct field), #7 (SchemeGuard clone attempt).
 - **Per-resource isolation invariant.** Manager (§3.2) bounds each invocation by a per-resource timeout; sibling dispatches run in parallel via `join_all`. A slow or failed refresh on this resource MUST NOT block siblings. The default no-op body satisfies this trivially.
 - **Idempotency expectation.** Manager MAY retry under specific recovery flows (CP2 §6 finalizes); impls SHOULD treat repeated `on_credential_refresh(same_scheme)` as a no-op after the first successful call. Default body satisfies; pool-swap impls are naturally idempotent because the second swap re-publishes the same pool.
 
@@ -2159,21 +2181,30 @@ The canonical override pattern from [credential Tech Spec §3.6 lines 981-993](2
 impl Resource for RealPostgresPool {
     // ... (associated types + create as in §11.5) ...
 
-    async fn on_credential_refresh(
+    async fn on_credential_refresh<'a>(
         &self,
-        new_scheme: &PostgresConnectionScheme,
+        new_scheme: SchemeGuard<'a, Self::Credential>,
+        ctx: &'a CredentialContext<'a>,
     ) -> Result<(), Self::Error> {
         // Build the new pool OUTSIDE the lock — `build_pool_from_scheme` is async
         // and may take seconds (handshake, DNS, SSL). The Manager dispatches with
         // a budget (default 30s; per-resource override via RegisterOptions per §3.3).
         // SL-3 budget guidance: target ≤ 60% of dispatch timeout, leaving headroom
         // for swap installation + old-pool drop.
-        let new_pool = build_pool_from_scheme(new_scheme).await?;
+        //
+        // `new_scheme` derefs to `&PostgresConnectionScheme` per credential Tech
+        // Spec §15.7 line 3394-3429 `Deref<Target = Scheme>` impl. Pull what is
+        // needed via `&*new_scheme` inside the await window; do NOT clone the
+        // scheme onto the new pool (clone would be another zeroize obligation
+        // per PRODUCT_CANON §12.5 + credential Tech Spec §15.7 `!Clone` discipline).
+        let new_pool = build_pool_from_scheme(&*new_scheme).await?;
 
         // Acquire write lock, swap, release.
         let mut guard = self.inner.write().await;
         *guard = new_pool;
         // Old pool's RAII guards drain naturally as outstanding queries finish.
+        // `new_scheme` zeroizes on Drop at end of scope (per credential Tech
+        // Spec §15.7 line 3412 Drop ordering); `ctx` is borrowed.
         Ok(())
     }
 
@@ -2610,6 +2641,96 @@ Per [register §"Lifecycle rules"](../../tracking/nebula-resource-concerns-regis
 
 Remaining `open`-status rows in the register (post-flip): zero `tech-spec-material`; non-`tech-spec-material` rows (post-cascade, future-cascade, standalone-fix, invariant-preservation) keep their respective statuses per register lifecycle.
 
+### §15.7 Cross-cascade amendment R2 — `on_credential_refresh` signature re-pin to credential CP5 §15.7 SchemeGuard shape — ENACTED
+
+**Trigger.** Cross-cascade consolidated review 2026-04-26 ([`docs/superpowers/drafts/2026-04-24-cross-cascade-consolidated-review.md`](../drafts/2026-04-24-cross-cascade-consolidated-review.md)) §3.2.1 surfaced 🔴 STRUCTURAL `on_credential_refresh` parameter shape divergence: this Tech Spec §2.1 + ADR-0036 §Decision adopted the **pre-supersession** credential Tech Spec §3.6 borrowed-`&Scheme` shape; credential CP5 §15.7 supersedes to owned `SchemeGuard<'a, _>` shape (per [credential Tech Spec §15.7 line 3394-3429](2026-04-24-credential-tech-spec.md), iter-3 lifetime-pin refinement at line 3503-3516). ADR-0036 was accepted 2026-04-24 — same date credential CP5 supersession landed — supersession-propagation gap (cross-cascade review §6.3 Pattern A). Resource impls per pre-amendment §2.1 would violate the credential CP5 SchemeGuard zeroize / no-Clone / no-retention contract (compile-fail probe coverage gap per credential Tech Spec §16.1.1 probes #6, #7).
+
+**Status invariant.** Per ADR-0035 amended-in-place precedent + cross-cascade review §7.1 path (a) routing: R2 is signature reconciliation between cascade Tech Specs that ratified at adjacent dates without cross-pin verification. R2 amendment-in-place applies to:
+
+1. Resource Tech Spec §2.1 trait method signature (this section enacts).
+2. Resource Tech Spec §2.1.1 idiomatic impl form example (this section enacts).
+3. Resource Tech Spec §2.3 invariants documentation (this section enacts).
+4. Resource Tech Spec §11.6 blue-green swap walkthrough example (this section enacts).
+5. ADR-0036 §Decision conceptual signature + §Status frontmatter qualifier (separate Edit on ADR file per cross-cascade enactment per §15.7.5 below).
+
+#### §15.7.1 Enactment
+
+This CP **enacts** R2 in-place per ADR-0035 amended-in-place precedent. Tech Spec edits are inline at §2.1 / §2.1.1 / §2.3 / §11.6; ADR-0036 file edit lands as a separate enactment per §15.7.5 below (paralleling action Tech Spec §15.5.1 ADR-0039 amendment-in-place precedent).
+
+**Per ADR composition analysis:**
+
+- **ADR-0028** (cross-crate credential invariants) — unaffected. R2 amendment realigns this Tech Spec with the credential CP5 SchemeGuard contract; ADR-0028 §Decision items remain authoritative.
+- **ADR-0030** (engine owns credential orchestration) — unaffected.
+- **ADR-0033** (integration credentials Plane B) — unaffected.
+- **ADR-0035** (phantom-shim capability pattern) — unaffected. R2 is at the rotation-hook layer, not at the phantom-shim/sealed-trait pattern layer.
+- **ADR-0036** (resource Credential adoption) — amended-in-place per §15.7.5 below. §Decision conceptual signature re-pinned from `&Scheme` to `SchemeGuard<'a, _>`; §Status frontmatter gains `accepted (amended-in-place 2026-04-26 — cross-cascade R2)` qualifier; §"Amended in place on" gains entry.
+- **ADR-0037** (Daemon + EventSource engine fold) — unaffected. R2 is at the Resource trait method shape layer, not at the engine-fold layer.
+
+**Sections amended (R2 — multi-section enactment in this Tech Spec + ADR-0036):**
+
+| Cross-cascade amendment | Document section | Class | Spike risk |
+|---|---|---|---|
+| **R2 trait signature** — `on_credential_refresh<'a>(&self, new_scheme: SchemeGuard<'a, Self::Credential>, ctx: &'a CredentialContext<'a>) -> impl Future + Send + 'a` per credential CP5 §15.7 canonical form | §2.1 trait declaration | AMEND | None — credential CP5 §15.7 spike iter-3 PASSED at the `SchemeGuard<'a, _>` shape; spike validation is upstream, not in this cascade |
+| **R2 idiomatic impl** — `async fn on_credential_refresh<'a>(&self, new_scheme: SchemeGuard<'a, Self::Credential>, ctx: &'a CredentialContext<'a>) -> Result<...>` walkthrough; `&*new_scheme` Deref pattern; zeroize-on-Drop comment | §2.1.1 impl form example | AMEND | None — example follows trait signature |
+| **R2 invariants** — borrow invariant replaced with owned-guard invariant; cite credential CP5 §15.7 line 3394-3429 + iter-3 lifetime-pin (line 3503-3516); cite probes #6, #7 | §2.3 first bullet | AMEND | None — invariant documentation only |
+| **R2 walkthrough** — RealPostgresPool blue-green swap example; `SchemeGuard` parameter; `&*new_scheme` Deref pattern; zeroize-on-Drop comment | §11.6 example block | AMEND | None — walkthrough follows trait signature |
+| **R2 ADR cross-pin** — ADR-0036 §Decision conceptual signature + §Status frontmatter qualifier + §"Amended in place on" entry | ADR-0036 §Decision + §Status + §"Amended in place on" | AMEND | None — ADR signature reconciliation |
+
+**Picked: amendment-in-place per ADR-0035 precedent on all 5 sections.** Rationale per cross-cascade consolidated review §7.1 + `feedback_adr_revisable.md` ("ADRs are point-in-time; if following one forces workarounds, supersede it") + credential CP5 spike iter-3 validation:
+
+1. **Path (a) per consolidated review §7.1** — re-pin to credential Tech Spec §15.7 CP5 SchemeGuard shape is the principled option (credential CP5 has spike-validated `SchemeGuard` shape per credential Tech Spec §15.7 line 3503-3516; reversal of credential CP5 — path (b) — would invalidate the upstream spike).
+2. **Cross-source authority alignment.** Credential Tech Spec §3.6 line 970 explicitly states: "**Superseded by §15.7 (CP5 2026-04-24).**" Cited resource Tech Spec frontmatter line 14 references credential Tech Spec §3.6 lines 928-996 — but the cited range is the **superseded** shape per the credential Tech Spec's own §3.6 supersession header. R2 closes the cross-source authority drift.
+3. **Compile-fail probe coverage restored.** Credential Tech Spec §16.1.1 probes #6 (`tests/compile_fail_scheme_guard_retention.rs` — Resource impl that stores `SchemeGuard` in struct field outlasting call) and #7 (`SchemeGuard` Clone attempt) test against the `SchemeGuard<'a, _>` shape. Pre-amendment §2.1 had no `SchemeGuard` parameter — probe fixtures could not be written. Post-amendment §2.1 enables the probe coverage.
+4. **5 in-tree consumer migration.** All 5 in-tree `impl Resource for *` sites (per ADR-0036 §Negative line 121-122) migrate from `&Scheme` parameter shape to `SchemeGuard<'a, _>` parameter shape in the same PR wave per Strategy §4.8 atomicity. Migration is mechanical (parameter rename + `&*` Deref accessor pattern); zero community plugin migration impact (no community plugin yet implements the new Resource trait — frontier maturity per `docs/MATURITY.md:36`).
+
+#### §15.7.2 Why amend-in-place vs supersede
+
+Per ADR-0035 §Status block: amendments are valid for "canonical-form corrections" (cross-source-authoritative shape preservation under inconsistency); supersession is reserved for paradigm shifts. R2 is canonical-form correction — pre-amendment §2.1 cited the pre-supersession credential §3.6 shape; post-amendment §2.1 cites the post-supersession credential §15.7 shape. The Resource trait paradigm (5 assoc types + 9 lifecycle methods) is preserved; only the rotation-hook parameter type is re-pinned.
+
+R2 lands as standalone post-freeze amendment (vs bundling with action-side R1 into a single CP) because R1 affects the action Tech Spec (different document, different authoring authority); this Tech Spec records R2 + ADR-0036 amendment, while R1 is recorded in action Tech Spec §15.13 with parallel cross-cascade-review citation.
+
+#### §15.7.3 Cross-cascade and downstream impact
+
+**ADR composition.** ADR-0028 + ADR-0030 + ADR-0033 + ADR-0035 + ADR-0037 — all preserved per §15.7.1 per-ADR composition analysis. ADR-0036 is amended-in-place per §15.7.5 below (separate ADR file edit).
+
+**Production code impact.** R2 amendment requires production code change at implementation time (atomic per Strategy §4.8 PR wave):
+
+- `crates/resource/src/resource.rs:233` — trait method signature changes from `fn on_credential_refresh(&self, new_scheme: &<Self::Credential as Credential>::Scheme) -> impl Future<Output = Result<(), Self::Error>> + Send` to `fn on_credential_refresh<'a>(&self, new_scheme: SchemeGuard<'a, Self::Credential>, ctx: &'a CredentialContext<'a>) -> impl Future<Output = Result<(), Self::Error>> + Send + 'a`. Default body remains `async { Ok(()) }`.
+- `crates/resource/src/manager.rs` — dispatcher path (per §3 of this Tech Spec) must hand `SchemeGuard<'a, _>` instead of `&Scheme` to each per-resource future. Spec-side dispatcher narrative in §3.2 line 731-857 references `&(dyn Any + Send + Sync)` parameter shape; post-implementation, Manager constructs `SchemeGuard` via `SchemeFactory<C>` per credential Tech Spec §15.7 line 3438-3447 and hands the owned guard to each per-resource future. Spec narrative in §3.2 + §3.6 retains the `&(dyn Any + Send + Sync)` shape at the type-erased dispatcher boundary; the typed-dispatcher (`TypedDispatcher<R>`) downcasts to typed `SchemeGuard<'a, R::Credential>` before calling `R::on_credential_refresh`. (Spec narrative re-pin is implementation-time, not amendment-time — the type-erased boundary signature is unchanged because erasure happens before the typed dispatch.)
+- 5 in-tree consumer resources (`runtime/{daemon,pool,resident,service}.rs` + 9 test resources per ADR-0036 §Negative) — atomically migrate from `&Scheme` parameter shape to `SchemeGuard<'a, _>` parameter shape; `&*new_scheme` Deref pattern at `build_pool_from_scheme(...)` call sites.
+
+**Reverse-dep impact.** Per existing §16.2 per-consumer migration sequence:
+
+- `nebula-action` — zero sites this cascade (action is not a Resource implementer; cross-cascade R1 closed action's parallel-shape stub).
+- `nebula-sdk` / `nebula-plugin` / `nebula-sandbox` — each crate's `impl Resource for *` sites migrate to `SchemeGuard<'a, _>` parameter pattern (atomically with this Tech Spec's parent PR wave per Strategy §4.8).
+- `nebula-engine` — Manager dispatcher path constructs `SchemeGuard` from `SchemeFactory<C>` per credential Tech Spec §15.7; engine bootstrap unchanged at the type-erased boundary.
+
+**Aggregate cross-cascade R2 footprint:** ~5 Resource impl sites + Manager dispatcher path narrative re-pin at implementation time. Atomic with the existing Strategy §4.8 PR wave; zero additional review rounds (R2 is included in the existing CP4 freeze ratification scope as cross-cascade alignment).
+
+#### §15.7.4 §16.4 + §16.5 cascade-final precondition update
+
+Tech Spec ratification (CP4 freeze) is unaffected — this amendment-in-place is post-freeze (per ADR-0035 amended-in-place precedent). §16.4 DoD checklist gains one new invariant:
+
+- [ ] **Cross-cascade R2 absorbed.** Trait `on_credential_refresh` signature uses `SchemeGuard<'a, Self::Credential>` parameter (verifier: `rg "fn on_credential_refresh" crates/resource/src/resource.rs` returns the post-amendment signature shape; zero matches against pre-amendment `&<Self::Credential as Credential>::Scheme` parameter shape). Compile-fail probes per credential Tech Spec §16.1.1 probes #6, #7 fire as expected against fixtures that retain `SchemeGuard` in struct fields or attempt `Clone`.
+
+#### §15.7.5 ADR-0036 amendment-in-place enactment
+
+Per cross-cascade review §7.1 R2 path (a) routing, ADR-0036 §Decision conceptual signature requires re-pin to credential CP5 §15.7 `SchemeGuard<'a, _>` shape. ADR-0036 amendment lands as separate Edit on the ADR file (paralleling action Tech Spec §15.5.1 ADR-0039 amendment-in-place precedent):
+
+1. **§Status frontmatter** — `status: accepted` → `status: accepted (amended-in-place 2026-04-26 — cross-cascade R2)`.
+2. **§Decision** — conceptual signature re-pinned from `async fn on_credential_refresh(&self, new_scheme: &<Self::Credential as Credential>::Scheme) -> Result<(), Self::Error> { Ok(()) }` to `async fn on_credential_refresh<'a>(&self, new_scheme: SchemeGuard<'a, Self::Credential>, ctx: &'a CredentialContext<'a>) -> Result<(), Self::Error> { Ok(()) }`. Cross-ref credential Tech Spec §15.7 line 3394-3429 (canonical CP5 form) + iter-3 lifetime-pin refinement (line 3503-3516).
+3. **§"Amended in place on"** — entry added: `2026-04-26 — cross-cascade R2: §Decision conceptual signature re-pinned from pre-supersession credential Tech Spec §3.6 borrowed-&Scheme shape to post-supersession credential Tech Spec §15.7 SchemeGuard<'a, _> shape per cross-cascade consolidated review §7.1 path (a) routing. Resource Tech Spec §15.7 records the corresponding multi-section amendment-in-place; Tech Spec §2.1 + §2.1.1 + §2.3 + §11.6 re-pinned. Counterpart action-side R1 (action §2.2.4 stub Resource trait removal) recorded in action Tech Spec §15.13.`
+
+Status invariant: ADR-0036 retains `accepted` status (canonical-form correction per ADR-0035 §Status block precedent); amendment qualifier in frontmatter is the cross-cascade marker, not a status transition.
+
+#### §15.7.6 §15.x closure entries
+
+§15.5 Strategy §5.5 — revoke spec extension closure preserved verbatim. R2 affects the refresh-side trait signature only; the revoke-side hook signature (`on_credential_revoke(&self, credential_id: &CredentialId)`) is unchanged because revocation has no scheme to swap (per §2.3 line 462 + credential Tech Spec §3.6 line 990-991).
+
+§15.6 concerns register status flips preserved verbatim. R-001 / R-002 / R-003 / R-004 rows remain `decided` post-amendment; the amendment refines the §2.1 trait shape but does not re-open the underlying concerns.
+
+**Counterpart enactment for R1.** R1 (action Tech Spec §2.2.4 stub Resource trait removal — replace with `use nebula_resource::Resource;` import-only) is enacted in [action Tech Spec §15.13](2026-04-24-nebula-action-tech-spec.md). Both R1 and R2 originate from the same cross-cascade consolidated review §7.1 amendment routing.
+
 ## §16 — Implementation handoff
 
 How CP1-CP3's design lands as code. Compact subsections; this is sequencing + DoD, not specification (the specification is §1-§13).
@@ -2756,3 +2877,5 @@ CP4 freeze unblocks the migration PR; migration merge unblocks soak; soak comple
 ---
 
 **Tech Spec CP1 + CP2 + CP3 ratified.** ADR-0036 and ADR-0037 (per its 2026-04-25 amended-in-place gate text) both at `accepted` on CP1 ratification. CP3 review edits applied; CP4 (§14-§16 meta + open items + handoff) drafted. Awaiting spec-auditor + tech-lead final review before Tech Spec FROZEN.
+
+- 2026-04-26 amended-in-place — cross-cascade R2 per §15.7 (architect; cross-cascade consolidated review 2026-04-26 §7.1 path (a) routing). `on_credential_refresh` signature re-pinned from pre-supersession credential Tech Spec §3.6 borrowed-`&Scheme` shape to post-supersession credential Tech Spec §15.7 `SchemeGuard<'a, _>` shape (canonical CP5 form). Sections amended: §2.1 trait declaration (parameter shape + lifetime form + default body), §2.1.1 idiomatic impl form example (PostgresPool walkthrough with `&*new_scheme` Deref pattern + zeroize-on-Drop comment), §2.3 invariants documentation (borrow invariant replaced with owned-guard invariant; cite credential CP5 §15.7 line 3394-3429 + iter-3 lifetime-pin line 3503-3516 + probes #6, #7), §11.6 RealPostgresPool blue-green swap example (parameter shape + Deref pattern + zeroize-on-Drop comment), §15.7 NEW enactment record (per-ADR composition analysis; amendment table; impact analysis; ADR-0036 §15.7.5 counterpart enactment). Status frontmatter qualifier appended `+ amended-in-place 2026-04-26 — cross-cascade R2`. Counterpart action-side R1 (action Tech Spec §2.2.4 stub Resource trait removal) recorded in [action Tech Spec §15.13](2026-04-24-nebula-action-tech-spec.md). ADR-0036 §Decision conceptual signature + §Status frontmatter + §"Amended in place on" updated as separate Edit per §15.7.5.
