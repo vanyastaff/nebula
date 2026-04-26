@@ -25,10 +25,10 @@ use zeroize::{Zeroize, ZeroizeOnDrop};
 use super::oauth2_config;
 use crate::{
     Credential, CredentialContext, CredentialState, Interactive, PendingState, Refreshable,
-    SecretString,
+    Revocable, SecretString, Testable,
     error::CredentialError,
     metadata::CredentialMetadata,
-    resolve::{InteractionRequest, RefreshOutcome, ResolveResult, UserInput},
+    resolve::{InteractionRequest, RefreshOutcome, ResolveResult, TestResult, UserInput},
     scheme::OAuth2Token,
 };
 
@@ -251,6 +251,19 @@ impl Zeroize for OAuth2Pending {
     }
 }
 
+// Per Tech Spec §15.4 — `PendingState: ZeroizeOnDrop`. Hand-rolled
+// (rather than `#[derive(ZeroizeOnDrop)]`) because the derive emits a
+// field-by-field `Drop` body and would not preserve the mixed-secret /
+// non-secret zeroize logic in the manual `Zeroize` impl above (drop
+// `Option`s to `None`, swap `client_secret` for an empty
+// `SecretString` so the heap buffer is scrubbed in place, etc.).
+impl Drop for OAuth2Pending {
+    fn drop(&mut self) {
+        self.zeroize();
+    }
+}
+impl ZeroizeOnDrop for OAuth2Pending {}
+
 impl PendingState for OAuth2Pending {
     const KIND: &'static str = "oauth2_pending";
 
@@ -262,8 +275,18 @@ impl PendingState for OAuth2Pending {
 // ── OAuth2Credential ───────────────────────────────────────────────────
 
 /// OAuth2 credential type implementing the [`Credential`] trait plus
-/// the [`Interactive`] and [`Refreshable`] sub-traits per Tech Spec
-/// §15.4.
+/// the [`Interactive`], [`Refreshable`], [`Revocable`], and [`Testable`]
+/// sub-traits per Tech Spec §15.4.
+///
+/// `Revocable` and `Testable` currently surface
+/// `CredentialError::Provider("OAuth2 HTTP transport has moved …")`
+/// because the underlying HTTP calls (RFC 7009 revoke endpoint, token
+/// introspection / userinfo health probe) live in nebula-engine per
+/// ADR-0031. The trait impls exist so the engine's revoke / test
+/// dispatchers (which bind `where C: Revocable` / `where C: Testable`)
+/// can route to OAuth2 once the transport is wired — and so plugin
+/// callers see a typed transport-disabled classification instead of
+/// "credential type does not support revocation / testing."
 ///
 /// Configuration (auth URL, token URL, grant type, scopes) is provided
 /// via [`parameters()`](OAuth2Credential::schema) and extracted from
@@ -515,6 +538,37 @@ impl Refreshable for OAuth2Credential {
     }
 }
 
+impl Revocable for OAuth2Credential {
+    async fn revoke(
+        _state: &mut OAuth2State,
+        _ctx: &CredentialContext,
+    ) -> Result<(), CredentialError> {
+        // OAuth2 RFC 7009 token revocation requires HTTP — moved to
+        // nebula-engine per ADR-0031. Returning the typed transport-
+        // disabled error keeps the failure classification stable for
+        // callers (engine routes to the HTTP transport when wired); a
+        // silent `Ok(())` would falsely signal "secret revoked at
+        // provider" while the token remains live.
+        Err(oauth2_http_transport_disabled())
+    }
+}
+
+impl Testable for OAuth2Credential {
+    async fn test(
+        _scheme: &OAuth2Token,
+        _ctx: &CredentialContext,
+    ) -> Result<TestResult, CredentialError> {
+        // OAuth2 health probe (token introspection / userinfo) requires
+        // HTTP — moved to nebula-engine per ADR-0031. Same routing
+        // rationale as `Refreshable::refresh` and `Revocable::revoke`
+        // above. Returning `Ok(TestResult::Failed { … })` would falsely
+        // signal "credential tested and is bad"; the test simply did
+        // not run, so the typed transport-disabled error is the correct
+        // classification.
+        Err(oauth2_http_transport_disabled())
+    }
+}
+
 impl OAuth2Credential {
     /// Initiate the Authorization Code flow.
     ///
@@ -714,13 +768,17 @@ mod tests {
     }
 
     // Capability membership is type-level after §15.4: `OAuth2Credential`
-    // implements `Interactive` and `Refreshable` (and not `Revocable` /
-    // `Testable` / `Dynamic`). Trait bound checks below stand in for
-    // the previous const-bool assertions.
+    // implements `Interactive`, `Refreshable`, `Revocable`, and
+    // `Testable` (and not `Dynamic`). Trait bound checks below stand in
+    // for the previous const-bool assertions. The `Revocable` and
+    // `Testable` impls currently route through ADR-0031 HTTP transport
+    // (returning `oauth2_http_transport_disabled()`); the trait
+    // membership is still required so the engine's revoke / test
+    // dispatchers can bind on it once the transport is wired.
     #[allow(dead_code)]
     fn assert_oauth2_capabilities()
     where
-        OAuth2Credential: Credential + Interactive + Refreshable,
+        OAuth2Credential: Credential + Interactive + Refreshable + Revocable + Testable,
     {
     }
 

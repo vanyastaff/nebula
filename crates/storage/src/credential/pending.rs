@@ -236,7 +236,7 @@ mod tests {
     use std::time::Duration;
 
     use serde::{Deserialize, Serialize};
-    use zeroize::Zeroize;
+    use zeroize::{Zeroize, ZeroizeOnDrop};
 
     use super::*;
 
@@ -250,6 +250,16 @@ mod tests {
             self.data.zeroize();
         }
     }
+
+    // Per Tech Spec §15.4 — `PendingState: ZeroizeOnDrop`. Hand-rolled
+    // because the manual `Zeroize` body above would conflict with a
+    // derived `Drop`; this delegates Drop to the existing zeroize logic.
+    impl Drop for TestPending {
+        fn drop(&mut self) {
+            self.zeroize();
+        }
+    }
+    impl ZeroizeOnDrop for TestPending {}
 
     impl PendingState for TestPending {
         const KIND: &'static str = "test_pending";
@@ -269,6 +279,15 @@ mod tests {
             self.data.zeroize();
         }
     }
+
+    // Per Tech Spec §15.4 — `PendingState: ZeroizeOnDrop`. Same hand-roll
+    // rationale as `TestPending` above.
+    impl Drop for ShortLivedPending {
+        fn drop(&mut self) {
+            self.zeroize();
+        }
+    }
+    impl ZeroizeOnDrop for ShortLivedPending {}
 
     impl PendingState for ShortLivedPending {
         const KIND: &'static str = "short_lived";

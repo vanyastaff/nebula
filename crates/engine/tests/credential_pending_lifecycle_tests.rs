@@ -27,6 +27,16 @@ impl zeroize::Zeroize for TestPending {
     }
 }
 
+// Per Tech Spec §15.4 — `PendingState: ZeroizeOnDrop`. Hand-rolled
+// because the manual `Zeroize` body above conflicts with a derived
+// `Drop`; this delegates Drop to the existing zeroize logic.
+impl Drop for TestPending {
+    fn drop(&mut self) {
+        zeroize::Zeroize::zeroize(self);
+    }
+}
+impl zeroize::ZeroizeOnDrop for TestPending {}
+
 impl PendingState for TestPending {
     const KIND: &'static str = "test_interactive_pending";
 
@@ -45,6 +55,15 @@ impl zeroize::Zeroize for ShortTtl {
         self.data.zeroize();
     }
 }
+
+// Per Tech Spec §15.4 — `PendingState: ZeroizeOnDrop`. Same hand-roll
+// rationale as `TestPending` above.
+impl Drop for ShortTtl {
+    fn drop(&mut self) {
+        zeroize::Zeroize::zeroize(self);
+    }
+}
+impl zeroize::ZeroizeOnDrop for ShortTtl {}
 
 impl PendingState for ShortTtl {
     const KIND: &'static str = "short_ttl";
