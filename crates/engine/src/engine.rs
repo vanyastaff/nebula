@@ -194,6 +194,17 @@ pub struct WorkflowEngine {
     /// [`resume_execution`]: Self::resume_execution
     /// [`cancel_execution`]: Self::cancel_execution
     running: Arc<DashMap<ExecutionId, RunningEntry>>,
+    /// Optional handle for the background credential-refresh reclaim
+    /// sweep. When set, dropping the engine aborts the spawned task —
+    /// see [`crate::credential::refresh::ReclaimSweepHandle`] (sub-spec
+    /// §3.3, §3.4).
+    ///
+    /// Wired by the composition root via
+    /// [`Self::with_credential_reclaim_sweep`] when the deployment has a
+    /// durable [`nebula_storage::credential::RefreshClaimRepo`] (Postgres
+    /// or SQLite). Single-replica desktop mode without sentinel-event
+    /// recording leaves this `None`.
+    credential_reclaim_sweep: Option<crate::credential::refresh::ReclaimSweepHandle>,
 }
 
 /// Monotonic per-registration identifier used to fence out-of-order drops
@@ -265,6 +276,7 @@ impl WorkflowEngine {
             lease_ttl: DEFAULT_EXECUTION_LEASE_TTL,
             lease_heartbeat_interval: DEFAULT_EXECUTION_LEASE_HEARTBEAT_INTERVAL,
             running: Arc::new(DashMap::new()),
+            credential_reclaim_sweep: None,
         }
     }
 
@@ -434,6 +446,28 @@ impl WorkflowEngine {
             Box::pin(refresh_fn(id))
                 as Pin<Box<dyn Future<Output = Result<(), ActionError>> + Send>>
         }));
+        self
+    }
+
+    /// Attach the background credential refresh reclaim sweep handle.
+    ///
+    /// Per sub-spec §3.3 + §3.4 the engine spawns a periodic task that
+    /// calls `RefreshClaimRepo::reclaim_stuck`, routes
+    /// `RefreshInFlight`-flagged stale claims through
+    /// [`crate::credential::refresh::SentinelTrigger`], and publishes
+    /// `CredentialEvent::ReauthRequired` once the rolling-window
+    /// threshold is exceeded.
+    ///
+    /// The composition root constructs the handle via
+    /// [`crate::credential::refresh::ReclaimSweepHandle::spawn`] and
+    /// passes it here. Storing the handle on the engine ensures the
+    /// task is aborted when the engine drops (clean shutdown).
+    #[must_use = "builder methods must be chained or built"]
+    pub fn with_credential_reclaim_sweep(
+        mut self,
+        handle: crate::credential::refresh::ReclaimSweepHandle,
+    ) -> Self {
+        self.credential_reclaim_sweep = Some(handle);
         self
     }
 
