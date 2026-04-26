@@ -629,10 +629,21 @@ impl OAuth2Credential {
         let state_token = crate::generate_random_state();
 
         let url = build_auth_url(&config, client_id, &challenge, &state_token)?;
-        let redirect_uri = config
-            .redirect_uri
-            .clone()
-            .expect("build_config guarantees redirect_uri for AuthorizationCode");
+        // `build_config` upstream rejects `AuthorizationCode` configs that
+        // lack `redirect_uri`, but the panic site is decoupled from that
+        // invariant by ~25 lines and a different match arm. Defensive
+        // typed-error: if anyone later relaxes `build_config` (e.g. to
+        // allow late-bound redirect URIs), this surfaces as a structured
+        // `CredentialError` rather than a runtime panic in library code.
+        // PR #582 review (CodeRabbit) — no `unwrap`/`expect` in lib code.
+        let redirect_uri = config.redirect_uri.clone().ok_or_else(|| {
+            CredentialError::Provider(
+                "authorization_code config missing redirect_uri (RFC 6749 §4.1.1 requires \
+                 `redirect_uri` to be present at the authorization request site; check \
+                 OAuth2Config builder)"
+                    .into(),
+            )
+        })?;
 
         let pending = OAuth2Pending {
             client_id: client_id.to_owned(),

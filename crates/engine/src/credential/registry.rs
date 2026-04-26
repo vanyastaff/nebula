@@ -143,12 +143,12 @@ impl Default for StateProjectionRegistry {
 #[non_exhaustive]
 pub enum StateProjectionError {
     /// No handler was registered for the requested state kind.
-    #[error("unknown credential kind: {0}")]
+    #[error("unknown state kind: {0}")]
     UnknownKind(String),
     /// Stored bytes failed to deserialize into the expected state type.
     #[error("deserialize failed: {0}")]
     Deserialize(String),
-    /// Attempted to register a credential kind that was already registered.
+    /// Attempted to register a state kind that was already registered.
     ///
     /// Active-dev policy: reject-second-registration. Silent
     /// `HashMap::insert` overwrite (prior behavior) hid namespace
@@ -156,13 +156,13 @@ pub enum StateProjectionError {
     /// Operators resolve via renaming, `#[plugin_credential]`
     /// namespacing, or removing the duplicate registration.
     #[error(
-        "duplicate credential kind: {kind} (active-dev policy: reject-second-registration; \
-         resolve via rename, #[plugin_credential] namespace, or remove duplicate)"
+        "duplicate state kind: {kind} (active-dev policy: reject-second-registration; resolve \
+         via rename, #[plugin_credential] namespace, or remove duplicate)"
     )]
     DuplicateKind {
         /// The `<C::State as CredentialState>::KIND` string whose second
         /// registration was rejected. Operator surfaces this value in logs
-        /// to identify which credential type collision occurred.
+        /// to identify which credential state-type collision occurred.
         kind: String,
     },
 }

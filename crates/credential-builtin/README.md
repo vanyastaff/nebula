@@ -27,7 +27,9 @@ Per Strategy §2.4 (frozen Checkpoint 1, commit `4316a292`):
    `#[capability(scheme_bound = ..., sealed = ...)]` on each capability
    trait you introduce.
 4. Register concrete types at plugin init via
-   `registry.register::<MyCred>()?` — duplicate `KEY` is fatal.
+   `registry.register(MyCred, env!("CARGO_CRATE_NAME"))?` — pass the
+   credential instance and the registering crate name. Duplicate `KEY`
+   is fatal in both debug and release.
 5. The contract's `nebula-credential::sealed::Sealed` is emitted by
    `#[plugin_credential]`; do not impl by hand.
 

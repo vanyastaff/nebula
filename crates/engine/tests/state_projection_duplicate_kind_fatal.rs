@@ -75,7 +75,7 @@ fn duplicate_error_message_includes_policy_hint() {
     let err = registry.register::<ApiKeyCredential>().unwrap_err();
     let msg = err.to_string();
     assert!(
-        msg.contains("duplicate credential kind"),
+        msg.contains("duplicate state kind"),
         "error message must identify the failure class"
     );
     assert!(

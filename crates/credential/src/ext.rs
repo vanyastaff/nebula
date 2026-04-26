@@ -1,8 +1,8 @@
 //! Typed credential extension trait for capability contexts.
 //!
 //! [`HasCredentialsExt`] is a blanket extension on any `HasCredentials`
-//! (re-exported from `nebula_core::context::capability`) context,
-//! providing ergonomic typed access:
+//! (defined in `nebula_core::context::capability`) context, providing
+//! ergonomic typed access:
 //!
 //! ```rust,ignore
 //! let guard = ctx.credential::<SlackBotToken>().await?;

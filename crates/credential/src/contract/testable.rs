@@ -44,8 +44,8 @@ use crate::{Credential, CredentialContext, error::CredentialError, resolve::Test
 ///
 /// impl Testable for OAuth2Cred {
 ///     async fn test(
-///         scheme: &OAuth2Token,
-///         ctx: &CredentialContext<'_>,
+///         scheme: &Self::Scheme,
+///         ctx: &CredentialContext,
 ///     ) -> Result<TestResult, CredentialError> {
 ///         // ... probe provider health endpoint with this scheme ...
 ///     }

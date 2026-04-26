@@ -155,18 +155,34 @@ pub trait Credential: Send + Sync + 'static {
         Self: Sized;
 
     /// Build initial [`State`] from user [`Input`]. Returns
-    /// `ResolveResult<State, ()>` — interactive credentials carry typed
-    /// pending state on [`Interactive::continue_resolve`] rather than
-    /// here; non-interactive credentials always return
-    /// [`Complete`](ResolveResult::Complete).
+    /// `ResolveResult<State, ()>`.
     ///
-    /// **Framework handles `PendingState` storage.** When an
-    /// implementation returns
-    /// [`Pending`](ResolveResult::Pending) — typically only the kickoff
-    /// for an interactive flow — the framework encrypts, stores, and
-    /// generates a [`PendingToken`](crate::PendingToken). Credential
-    /// authors never call `store_pending()` or `consume_pending()`.
+    /// # Allowed return shapes
     ///
+    /// - [`Complete(state)`](ResolveResult::Complete) — credential resolved synchronously (the
+    ///   common case for non-interactive credentials such as API keys).
+    /// - [`Retry { after }`](ResolveResult::Retry) — caller polls again after the delay (rare; some
+    ///   long-running provider calls).
+    ///
+    /// # Forbidden: `Pending(())`
+    ///
+    /// The base resolve **must not** return
+    /// [`Pending`](ResolveResult::Pending). Per Tech Spec §15.4 the
+    /// degenerate `state: ()` carried here cannot deserialize into a
+    /// credential's typed [`Interactive::Pending`] later in
+    /// [`Interactive::continue_resolve`]. The framework executor
+    /// (`nebula-engine` `execute_resolve`) rejects `Pending` from the
+    /// base resolve with `ExecutorError::BaseResolvePending`.
+    ///
+    /// Interactive credentials kick off through credential-specific
+    /// helpers (e.g. `OAuth2Credential::initiate_authorization_code`)
+    /// that construct the typed `Self::Pending` directly and persist it
+    /// via [`PendingStateStore::put`](crate::PendingStateStore::put);
+    /// `execute_continue::<C: Interactive>` then loads that typed
+    /// pending and threads it through
+    /// [`Interactive::continue_resolve`].
+    ///
+    /// [`Interactive::Pending`]: crate::Interactive::Pending
     /// [`Interactive::continue_resolve`]: crate::Interactive::continue_resolve
     /// [`Input`]: Credential::Input
     /// [`State`]: Credential::State
