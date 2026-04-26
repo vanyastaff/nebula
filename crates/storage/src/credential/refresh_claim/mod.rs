@@ -22,6 +22,11 @@ mod sqlite;
 #[cfg(feature = "sqlite")]
 pub use sqlite::SqliteRefreshClaimRepo;
 
+#[cfg(feature = "postgres")]
+mod postgres;
+#[cfg(feature = "postgres")]
+pub use postgres::PgRefreshClaimRepo;
+
 /// Stable identifier for a Nebula replica process. Used to distinguish
 /// claim holders for diagnostics + sweep ownership.
 #[derive(Clone, Debug, Eq, PartialEq, Hash)]
