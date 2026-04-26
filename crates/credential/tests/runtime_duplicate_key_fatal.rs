@@ -137,11 +137,19 @@ impl plugin_capability_report::IsDynamic for CredB {
 
 #[test]
 fn duplicate_key_returns_error_not_panic() {
+    // Per PR #582 review (CodeRabbit): pass distinct literal strings for
+    // the two registrar crate identifiers so the field-equality asserts
+    // below pin the contract direction. Using `env!("CARGO_CRATE_NAME")`
+    // for both calls would still pass even if the registry accidentally
+    // swapped which side it stamps as `existing_crate` vs `new_crate`.
+    const FIRST_REGISTRAR: &str = "first_registrar_crate";
+    const SECOND_REGISTRAR: &str = "second_registrar_crate";
+
     let mut registry = CredentialRegistry::new();
-    let r1 = registry.register(CredA, env!("CARGO_CRATE_NAME"));
+    let r1 = registry.register(CredA, FIRST_REGISTRAR);
     assert!(r1.is_ok(), "first registration must succeed: {r1:?}");
 
-    let r2 = registry.register(CredB, env!("CARGO_CRATE_NAME"));
+    let r2 = registry.register(CredB, SECOND_REGISTRAR);
     let err = r2.expect_err("second registration must error, not overwrite");
 
     match err {
@@ -155,14 +163,14 @@ fn duplicate_key_returns_error_not_panic() {
                 "DuplicateKey must carry the colliding KEY verbatim"
             );
             assert_eq!(
-                existing_crate,
-                env!("CARGO_CRATE_NAME"),
-                "existing_crate must point to the first registrar"
+                existing_crate, FIRST_REGISTRAR,
+                "existing_crate must point to the first registrar (the one that succeeded), not \
+                 the rejected one"
             );
             assert_eq!(
-                new_crate,
-                env!("CARGO_CRATE_NAME"),
-                "new_crate must point to the rejected registrar"
+                new_crate, SECOND_REGISTRAR,
+                "new_crate must point to the rejected registrar (the second register call), not \
+                 the one that won"
             );
         },
         // `RegisterError` is `#[non_exhaustive]` to extend with future

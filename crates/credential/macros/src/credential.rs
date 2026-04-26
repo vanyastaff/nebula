@@ -86,15 +86,45 @@ fn parse_credential_attrs(
 /// to `true`; unlisted flags emit `false`. Unknown identifiers and
 /// non-ident values surface as compile errors so a typo cannot silently
 /// suppress a capability flag.
+///
+/// **Duplicate handling.** Multiple `capabilities(...)` lists in the same
+/// `#[credential(...)]` are rejected with a "duplicate list" error
+/// (silent first-wins would discard the second author's intent).
+/// A duplicate identifier inside a single list (e.g.
+/// `capabilities(refreshable, refreshable)`) is likewise rejected — the
+/// declaration surface is opt-in and any redundancy is more likely a
+/// typo than an intent.
 fn parse_capabilities(attr_args: &attrs::AttrArgs) -> syn::Result<DeclaredCapabilities> {
     let mut declared = DeclaredCapabilities::default();
 
-    let Some(values) = attr_args.items.iter().find_map(|item| match item {
-        AttrItem::List { key, values } if key == "capabilities" => Some(values),
-        _ => None,
-    }) else {
+    // Collect every `capabilities(...)` list. PR #582 review (CodeRabbit)
+    // — silent first-wins on duplicate lists discards the second
+    // author's intent; emit a span-attached error instead.
+    let lists: Vec<(&syn::Ident, &Vec<AttrValue>)> = attr_args
+        .items
+        .iter()
+        .filter_map(|item| match item {
+            AttrItem::List { key, values } if key == "capabilities" => Some((key, values)),
+            _ => None,
+        })
+        .collect();
+
+    if lists.len() > 1 {
+        // Span the second occurrence so the diagnostic points at the
+        // redundant list, not the first (legitimate) one.
+        let (second_key, _) = lists[1];
+        return Err(diag::error_spanned(
+            second_key,
+            "duplicate `capabilities(...)` list inside `#[credential(...)]` — \
+             declare all flags in a single list",
+        ));
+    }
+
+    let Some((_, values)) = lists.into_iter().next() else {
         return Ok(declared);
     };
+
+    let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
 
     for value in values {
         let ident = match value {
@@ -114,7 +144,17 @@ fn parse_capabilities(attr_args: &attrs::AttrArgs) -> syn::Result<DeclaredCapabi
                 ));
             },
         };
-        match ident.to_string().as_str() {
+        let name = ident.to_string();
+        if !seen.insert(name.clone()) {
+            return Err(diag::error_spanned(
+                ident,
+                format!(
+                    "duplicate capability `{name}` in `capabilities(...)` — \
+                     each capability flag must appear at most once"
+                ),
+            ));
+        }
+        match name.as_str() {
             "interactive" => declared.interactive = true,
             "refreshable" => declared.refreshable = true,
             "revocable" => declared.revocable = true,
@@ -360,6 +400,68 @@ fn expand(input: DeriveInput) -> syn::Result<proc_macro2::TokenStream> {
         }
     };
 
+    // Per Tech Spec §15.8 + PR #582 review (CodeRabbit): emit a
+    // compile-time parity assertion for every declared capability so
+    // the macro cannot self-attest a capability without an actual
+    // sub-trait impl. A user who writes `capabilities(refreshable)`
+    // but forgets `impl Refreshable for X` previously passed
+    // expansion (the IsRefreshable::VALUE = true seemed to work) and
+    // failed only at engine dispatch — recreating the §15.8
+    // self-attestation anti-pattern that the registry rewrite was
+    // meant to close. With these assertions the missing sub-trait
+    // impl surfaces as `the trait bound \`X: Refreshable\` is not
+    // satisfied` at the macro-emit site, which is the right failure
+    // surface for plugin authors.
+    //
+    // Each block is a never-called private fn so it consumes no
+    // runtime cycles; the bound is a compile-time check only.
+    let mut parity_checks = quote! {};
+    if caps.interactive {
+        parity_checks = quote! {
+            #parity_checks
+            const _: fn() = || {
+                fn assert_capability<T: ::nebula_credential::Interactive>() {}
+                assert_capability::<#struct_name #ty_generics>();
+            };
+        };
+    }
+    if caps.refreshable {
+        parity_checks = quote! {
+            #parity_checks
+            const _: fn() = || {
+                fn assert_capability<T: ::nebula_credential::Refreshable>() {}
+                assert_capability::<#struct_name #ty_generics>();
+            };
+        };
+    }
+    if caps.revocable {
+        parity_checks = quote! {
+            #parity_checks
+            const _: fn() = || {
+                fn assert_capability<T: ::nebula_credential::Revocable>() {}
+                assert_capability::<#struct_name #ty_generics>();
+            };
+        };
+    }
+    if caps.testable {
+        parity_checks = quote! {
+            #parity_checks
+            const _: fn() = || {
+                fn assert_capability<T: ::nebula_credential::Testable>() {}
+                assert_capability::<#struct_name #ty_generics>();
+            };
+        };
+    }
+    if caps.dynamic {
+        parity_checks = quote! {
+            #parity_checks
+            const _: fn() = || {
+                fn assert_capability<T: ::nebula_credential::Dynamic>() {}
+                assert_capability::<#struct_name #ty_generics>();
+            };
+        };
+    }
+
     let expanded = quote! {
         impl #impl_generics ::nebula_credential::Credential
             for #struct_name #ty_generics #where_clause
@@ -409,6 +511,8 @@ fn expand(input: DeriveInput) -> syn::Result<proc_macro2::TokenStream> {
         #deps_impl
 
         #capability_impls
+
+        #parity_checks
     };
 
     Ok(expanded)

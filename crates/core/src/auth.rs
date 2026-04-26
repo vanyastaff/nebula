@@ -93,14 +93,44 @@ pub trait AuthScheme: Send + Sync + 'static {
 ///
 /// Examples: `BearerScheme`, `BasicScheme`, `OAuth2Token`, `KeyPair`,
 /// `Certificate`, `SigningKey`, `ConnectionUri`, `SharedKey`.
+///
+/// ## Exclusivity with `PublicScheme` is macro-enforced, not trait-enforced
+///
+/// `SensitiveScheme: AuthScheme + ZeroizeOnDrop` and
+/// `PublicScheme: AuthScheme` — both are satisfiable simultaneously by
+/// the same concrete type. Rust does not currently expose a stable
+/// negative-impl mechanism (`impl !PublicScheme for X`), so the
+/// dichotomy is enforced **at the `#[derive(AuthScheme)]` macro layer**:
+/// `#[auth_scheme(sensitive, public)]` is a compile error, and the
+/// macro emits exactly one of `impl SensitiveScheme` or
+/// `impl PublicScheme`. Hand-rolled impls bypass that audit — a
+/// downstream `impl SensitiveScheme for X { } impl PublicScheme for X { }`
+/// pair will type-check.
+///
+/// Defense-in-depth: the `ZeroizeOnDrop` bound catches a
+/// `SensitiveScheme` impl on a struct that doesn't zeroize (the
+/// canonical safety invariant), so even with two impls the sensitive
+/// bound carries the safety guarantee. See
+/// `arch-publicscheme-nested-sensitive-audit` in
+/// `docs/tracking/credential-concerns-register.md` for the long-term
+/// refinement plan (sealed `Sensitivity` associated tag, or signed
+/// manifests that surface dual impls at registry time).
 pub trait SensitiveScheme: AuthScheme + ZeroizeOnDrop {}
 
 /// Schemes that hold no secret material.
 ///
 /// Provider / role / region identifiers, public capability descriptors —
 /// anything safe to serialize, log, or display in a UI without redaction.
-/// Mutually exclusive with [`SensitiveScheme`] — the derive macro forbids
-/// declaring both.
+///
+/// ## Exclusivity with `SensitiveScheme`
+///
+/// **Macro-enforced**, not trait-enforced. The derive macro
+/// (`#[auth_scheme(public)]` vs `#[auth_scheme(sensitive)]`) forbids
+/// declaring both, but a hand-rolled `impl PublicScheme for X` on a
+/// type that also `impl SensitiveScheme for X` will compile — there is
+/// no stable negative-impl mechanism in Rust today. See
+/// [`SensitiveScheme`] doc-comment for the full discussion and pointer
+/// to the tracking concerns row.
 ///
 /// Examples: `InstanceBinding` (provider + role + region; cloud IMDS lookup
 /// happens at runtime, no stored secret).
