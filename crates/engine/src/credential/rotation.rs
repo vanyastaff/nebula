@@ -23,7 +23,9 @@ pub use grace_period::{
     cleanup_expired_credentials, track_credential_usage,
 };
 pub use nebula_credential::rotation::{
-    CredentialRotationEvent, RotationError, RotationResult,
+    CredentialRotationEvent, FailureHandler, FailureKind, RotatableCredential, RotationError,
+    RotationResult, SuccessCriteria, TestContext, TestMethod, TestResult, TestableCredential,
+    ValidationTest,
     error::RotationErrorLog,
     events::{
         LogEntryType, NotificationEvent, NotificationSender, TransactionLog, TransactionLogEntry,
@@ -31,10 +33,6 @@ pub use nebula_credential::rotation::{
     },
     policy::{BeforeExpiryConfig, ManualConfig, PeriodicConfig, RotationPolicy, ScheduledConfig},
     state::RotationState,
-    validation::{
-        FailureHandler, FailureKind, RotatableCredential, SuccessCriteria, TestContext, TestMethod,
-        TestResult, TestableCredential, ValidationTest,
-    },
 };
 pub use scheduler::{ExpiryMonitor, PeriodicScheduler, ScheduledRotation};
 pub use token_refresh::{TokenRefreshError, refresh_oauth2_state};
