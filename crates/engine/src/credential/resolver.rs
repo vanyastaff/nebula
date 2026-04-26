@@ -15,24 +15,31 @@ use nebula_credential::{
 };
 use nebula_eventbus::EventBus;
 
-use crate::credential::refresh::{RefreshAttempt, RefreshCoordinator};
+use crate::credential::refresh::{RefreshCoordinator, RefreshError};
 #[cfg(feature = "rotation")]
 use crate::credential::rotation::refresh_oauth2_state;
 
 /// Runtime credential resolver with optional coordinated refresh.
 pub struct CredentialResolver<S: CredentialStore> {
     store: Arc<S>,
-    refresh_coordinator: RefreshCoordinator,
+    refresh_coordinator: Arc<RefreshCoordinator>,
     event_bus: Option<Arc<EventBus<CredentialEvent>>>,
 }
 
 impl<S: CredentialStore> CredentialResolver<S> {
-    /// Create a resolver backed by the given credential store.
+    /// Create a resolver backed by the given credential store with a
+    /// default in-memory `RefreshCoordinator`.
+    ///
+    /// Production composition (CLI / API entrypoints) should call
+    /// [`Self::with_refresh_coordinator`] to wire a Postgres- or SQLite-
+    /// backed `RefreshClaimRepo` so cross-replica coordination is
+    /// durable. The default is suitable for tests and single-replica
+    /// desktop mode.
     #[must_use]
     pub fn new(store: Arc<S>) -> Self {
         Self {
             store,
-            refresh_coordinator: RefreshCoordinator::new(),
+            refresh_coordinator: Arc::new(RefreshCoordinator::new()),
             event_bus: None,
         }
     }
@@ -41,6 +48,19 @@ impl<S: CredentialStore> CredentialResolver<S> {
     /// Attach an event bus to emit credential refresh lifecycle events.
     pub fn with_event_bus(mut self, bus: Arc<EventBus<CredentialEvent>>) -> Self {
         self.event_bus = Some(bus);
+        self
+    }
+
+    /// Replace the default in-memory refresh coordinator with a shared
+    /// one.
+    ///
+    /// Composition root threads `Arc<RefreshCoordinator>` constructed via
+    /// `RefreshCoordinator::new_with(repo, replica_id, config)` (where
+    /// `repo` is a Postgres / SQLite `RefreshClaimRepo` for production)
+    /// here.
+    #[must_use = "builder methods must be chained or built"]
+    pub fn with_refresh_coordinator(mut self, coord: Arc<RefreshCoordinator>) -> Self {
+        self.refresh_coordinator = coord;
         self
     }
 
@@ -64,6 +84,12 @@ impl<S: CredentialStore> CredentialResolver<S> {
     /// credential cannot reach this dispatch path. Probe 4
     /// (`compile_fail_engine_dispatch_capability`) cements the structural
     /// barrier with `E0277` at the dispatch site.
+    ///
+    /// Refresh path goes through the two-tier
+    /// [`RefreshCoordinator::refresh_coalesced`] when `credential_id`
+    /// parses as a typed [`CredentialId`]. Non-parseable legacy ids fall
+    /// back to the L1-only coalescing path. `CoalescedByOtherReplica` is
+    /// success — caller re-reads state.
     pub async fn resolve_with_refresh<C>(
         &self,
         credential_id: &str,
@@ -121,12 +147,111 @@ impl<S: CredentialStore> CredentialResolver<S> {
             return Ok(CredentialHandle::new(scheme, credential_id));
         }
 
+        // Parse the string id; the typed `CredentialId` is required by
+        // the L2 claim repo. Legacy non-parseable ids (test fixtures
+        // such as `"herd-cred"`) skip the L2 layer and use only the L1
+        // coalescer — Stage 4 chaos test exercises the typed-id cross-
+        // process L2 path.
+        match CredentialId::parse(credential_id) {
+            Ok(typed_id) => {
+                self.refresh_via_coordinator::<C>(credential_id, &typed_id, state, stored, ctx)
+                    .await
+            },
+            Err(_) => {
+                self.refresh_via_l1_only::<C>(credential_id, state, stored, ctx)
+                    .await
+            },
+        }
+    }
+
+    /// Two-tier coordinated refresh path (parseable [`CredentialId`]).
+    async fn refresh_via_coordinator<C>(
+        &self,
+        credential_id: &str,
+        typed_id: &CredentialId,
+        state: C::State,
+        stored: StoredCredential,
+        ctx: &CredentialContext,
+    ) -> Result<CredentialHandle<C::Scheme>, ResolveError>
+    where
+        C: Refreshable,
+    {
+        // The `refresh_coalesced` user closure must yield `Result<_,
+        // RefreshError>`; we wrap the inner `ResolveError` in `Ok(Err(_))`
+        // so it propagates without being mistaken for a coordinator
+        // failure.
+        let coord = Arc::clone(&self.refresh_coordinator);
+        let resolver_state = state;
+        let resolver_stored = stored;
+        let credential_id_owned = credential_id.to_string();
+        let outcome: Result<Result<CredentialHandle<C::Scheme>, ResolveError>, RefreshError> =
+            coord
+                .refresh_coalesced(typed_id, |_claim| async move {
+                    Ok::<_, RefreshError>(
+                        self.perform_refresh::<C>(
+                            &credential_id_owned,
+                            resolver_state,
+                            resolver_stored,
+                            ctx,
+                        )
+                        .await,
+                    )
+                })
+                .await;
+
+        match outcome {
+            Ok(Ok(handle)) => {
+                self.refresh_coordinator.record_success(credential_id);
+                Ok(handle)
+            },
+            Ok(Err(e)) => {
+                self.refresh_coordinator.record_failure(credential_id);
+                Err(e)
+            },
+            // CoalescedByOtherReplica is success — another replica
+            // refreshed while we were waiting on L2. Re-read state from
+            // the store.
+            Err(RefreshError::CoalescedByOtherReplica) => {
+                tracing::debug!(
+                    credential_id,
+                    "refresh coalesced by another replica; re-reading state from store"
+                );
+                self.refresh_coordinator.record_success(credential_id);
+                self.resolve::<C>(credential_id).await
+            },
+            Err(e) => {
+                self.refresh_coordinator.record_failure(credential_id);
+                Err(ResolveError::Refresh {
+                    credential_id: credential_id.to_string(),
+                    reason: e.to_string(),
+                })
+            },
+        }
+    }
+
+    /// Legacy L1-only refresh path for non-parseable string ids.
+    ///
+    /// Mirrors the pre-Stage-2 single-process coalescer behavior: first
+    /// caller wins, others wait on a `oneshot::Receiver`, completion
+    /// drains all waiters. No L2 claim is acquired.
+    async fn refresh_via_l1_only<C>(
+        &self,
+        credential_id: &str,
+        state: C::State,
+        stored: StoredCredential,
+        ctx: &CredentialContext,
+    ) -> Result<CredentialHandle<C::Scheme>, ResolveError>
+    where
+        C: Refreshable,
+    {
+        use crate::credential::refresh::RefreshAttempt;
+
         match self.refresh_coordinator.try_refresh(credential_id) {
             RefreshAttempt::Winner => {
                 let _permit = self.refresh_coordinator.acquire_permit().await;
 
                 let credential_id_for_guard = credential_id.to_string();
-                let coordinator = &self.refresh_coordinator;
+                let coordinator = Arc::clone(&self.refresh_coordinator);
                 let _guard = scopeguard::guard((), |()| {
                     coordinator.complete(&credential_id_for_guard);
                 });

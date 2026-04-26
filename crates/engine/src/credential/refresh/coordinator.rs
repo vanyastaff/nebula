@@ -336,10 +336,32 @@ impl RefreshCoordinator {
         F: FnOnce(RefreshClaim) -> Fut,
         Fut: Future<Output = Result<T, RefreshError>>,
     {
-        // L1: in-process coalescing. Currently the legacy oneshot path —
-        // Stage 2.3+ may switch this to a per-credential mutex.
+        // L1: in-process coalescing.
+        //
+        // The L1 layer is keyed by string, so we hash on the typed id's
+        // canonical form. `try_refresh` returns Winner for the first
+        // caller and Waiter (with a oneshot::Receiver) for every other
+        // concurrent caller in the same process. Waiters await the
+        // Winner's `complete()` call, then surface
+        // `CoalescedByOtherReplica` so the caller re-reads state — by
+        // construction the Winner has already released the L2 claim and
+        // committed the refreshed state to storage.
         let cred_str = credential_id.to_string();
-        let _l1_attempt = self.l1.try_refresh(&cred_str);
+        match self.l1.try_refresh(&cred_str) {
+            super::l1::RefreshAttempt::Winner => {
+                // Fall through to acquire L2 + run the user closure.
+            },
+            super::l1::RefreshAttempt::Waiter(rx) => {
+                // Wait for the Winner to finish. If the receiver errors
+                // (Winner panicked / dropped without complete()) we still
+                // re-read state — pessimistic safety.
+                let _ = rx.await;
+                return Err(RefreshError::CoalescedByOtherReplica);
+            },
+        }
+
+        // Make sure `complete()` runs even on early return / panic so
+        // future callers can re-acquire the L1 slot.
         let credential_id_for_guard = cred_str.clone();
         let l1 = &self.l1;
         let _l1_complete = scopeguard::guard((), move |()| {
@@ -352,11 +374,9 @@ impl RefreshCoordinator {
         // Heartbeat task in background.
         let hb_task = self.spawn_heartbeat(claim.token.clone());
 
-        // Run user's refresh closure. Use `select!` to surface the
-        // `refresh_timeout` per §3.5 — the user closure must finish
-        // before the configured timeout (which is itself less than the
-        // claim TTL by construction so the heartbeat keeps the row
-        // alive).
+        // Run user's refresh closure under `refresh_timeout` per §3.5.
+        // The timeout is shorter than the claim TTL by construction, so
+        // the heartbeat keeps the L2 row alive while the closure runs.
         let timeout = self.config.refresh_timeout;
         let result = tokio::time::timeout(timeout, do_refresh(claim.clone()))
             .await
