@@ -102,7 +102,7 @@ pub use error::{
 };
 pub use handler::ActionHandler;
 pub use metadata::{ActionCategory, ActionMetadata, IsolationLevel, MetadataCompatibilityError};
-pub use nebula_action_macros::Action;
+pub use nebula_action_macros::{Action, action};
 pub use nebula_core::{
     Context, DeclaresDependencies,
     accessor::{EventEmitter, LogLevel, Logger, MetricsEmitter, ResourceAccessor},

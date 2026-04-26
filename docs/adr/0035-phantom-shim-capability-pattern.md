@@ -2,7 +2,7 @@
 
 ## Status
 
-**Proposed**, with amendments applied 2026-04-24-B post spike iter-2 validation (worktree branch `worktree-agent-a23a1d2c`, commit `1c107144`) and 2026-04-24-C post spike iter-3 (worktree branch `worktree-agent-afe8a4c6`, commit `f36f3739`). 2026-04-24.
+**Proposed**, with amendments applied 2026-04-24-B post spike iter-2 validation (worktree branch `worktree-agent-a23a1d2c`, commit `1c107144`), 2026-04-24-C post spike iter-3 (worktree branch `worktree-agent-afe8a4c6`, commit `f36f3739`), and 2026-04-26 post Stage 4 review (visibility-symmetry clarification on macro emission). 2026-04-24.
 
 **Post iter-2 amendments applied** (canonical-form corrections, not stylistic):
 
@@ -14,6 +14,10 @@
 
 - **§2 Scope** extended with **Pattern 4 — lifecycle sub-trait erasure** for `dyn RefreshablePhantom` / `dyn InteractivePhantom` / `dyn RevocablePhantom` / `dyn TestablePhantom` / `dyn DynamicPhantom`. Engine-side runtime registries that need to iterate over all credentials satisfying a lifecycle capability (e.g., proactive refresh scheduler over all `Refreshable` credentials) use the same phantom-shim pattern as Pattern 2/3. Structurally identical; additive. Details in §2 Pattern 4 amendment note.
 - **§3 Sealed module placement** extended convention — `mod sealed_lifecycle { pub trait RefreshableSealed {} pub trait InteractiveSealed {} ... }` per-capability seal analogous to `mod sealed_caps` for service capabilities. Same per-capability inner trait form per §3 amendment 2026-04-24-B rationale; same coherence correctness.
+
+**Post Stage 4 amendment applied 2026-04-26** (visibility-symmetry clarification, not a correction):
+
+- **§1 canonical form** clarified — the phantom trait inherits the visibility of the capability trait declared with `#[capability]`. `pub trait BitbucketBearer` produces `pub trait BitbucketBearerPhantom`; `pub(crate) trait` produces `pub(crate) trait`. This composes correctly with crate-internal capabilities, where forcing the phantom to `pub` would leak a private capability into the public surface. The `#[capability]` macro emits the phantom with `let vis = &trait_def.vis;` to preserve this symmetry. Details in §1 visibility-symmetry note. Cross-references the macro emission decision in §4.
 
 Amends portions of [Strategy §3.2 / §3.3](../superpowers/specs/2026-04-24-credential-redesign-strategy.md) (Checkpoint 1, frozen at commit `d5045774`):
 
@@ -121,6 +125,22 @@ error[E0277]: the trait bound `BasicScheme: AcceptsBearer` is not satisfied
   → required for BitbucketAppPassword to implement BitbucketBearerPhantom
 ```
 
+#### §1 Visibility-symmetry note (2026-04-26, post Stage 4 review)
+
+The phantom trait inherits the visibility of the capability trait declared with `#[capability]`. Concretely:
+
+| Capability declaration                              | Emitted phantom trait                                |
+|-----------------------------------------------------|------------------------------------------------------|
+| `pub trait BitbucketBearer: …`                      | `pub trait BitbucketBearerPhantom: …`                |
+| `pub(crate) trait LocalCapability: …`               | `pub(crate) trait LocalCapabilityPhantom: …`         |
+| `pub(super) trait ModScopedCap: …`                  | `pub(super) trait ModScopedCapPhantom: …`            |
+
+**Rationale.** Forcing the phantom to a fixed visibility (e.g. always `pub`) would leak a `pub(crate)` capability through the phantom into the crate's public surface — defeating the visibility constraint the author wrote. Inheriting visibility from the capability trait keeps the public surface symmetric: a crate-internal capability composes only with crate-internal phantom-typed positions; a public capability admits public phantom-typed positions across crate boundaries. This is the only direction that composes correctly with module-private capability traits.
+
+**Macro emission contract.** The `#[capability]` macro implementation reads `let vis = &trait_def.vis;` from the parsed `ItemTrait` and applies it verbatim to the emitted phantom trait declaration (see §4 macro emission contract and `crates/credential/macros/src/capability.rs`). Plugin authors who want a strictly-public phantom paired with a crate-internal capability can declare both manually following the §1 canonical form — the macro is the convenience path, not the only legal shape.
+
+**Sealing remains independent of visibility.** The crate-private `mod sealed_caps` (§3) is a separate axis: it prevents *external* crates from forging capability membership regardless of whether the visible capability/phantom pair is `pub` or `pub(crate)`. A `pub(crate) trait LocalCapabilityPhantom` is still sealed against the same crate's other `mod`s (other modules cannot impl it for foreign types because they cannot reach `crate::sealed_caps::LocalCapabilitySealed`). Visibility-symmetry is about API exposure; sealing is about authorship.
+
 ### §2. Scope
 
 The phantom-shim pattern applies to:
@@ -218,7 +238,7 @@ Output (macro emits):
 1. The "real" trait as written (with supertrait chain).
 2. Blanket `impl<T: BitbucketCredential> BitbucketBearer for T where T::Scheme: AcceptsBearer {}`.
 3. Blanket `impl<T: BitbucketBearer> sealed_caps::BearerSealed for T {}` — assumes `crate::sealed_caps::BearerSealed` already exists (see §4.1). The capability-specific inner Sealed trait name is specified via macro arg (`sealed = BearerSealed` below) or derived from the capability trait name.
-4. The phantom trait `pub trait BitbucketBearerPhantom: sealed_caps::BearerSealed + Send + Sync {}`. (`'static` dropped per §5 amendment.)
+4. The phantom trait `<vis> trait BitbucketBearerPhantom: sealed_caps::BearerSealed + Send + Sync {}`, where `<vis>` is the **visibility of the capability trait** (visibility-symmetry, per §1 visibility-symmetry note 2026-04-26). `'static` dropped per §5 amendment.
 5. Blanket `impl<T: BitbucketBearer> BitbucketBearerPhantom for T {}`.
 
 #### §4.1 The macro does NOT emit the `sealed` module

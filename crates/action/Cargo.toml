@@ -55,11 +55,16 @@ subtle = { workspace = true }
 
 [dev-dependencies]
 nebula-core = { path = "../core" }
+nebula-credential-macros = { path = "../credential/macros" }
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "time", "test-util"] }
 hex = { workspace = true }
 insta = { workspace = true }
 pretty_assertions = { workspace = true }
 rstest = { workspace = true }
+# Closes Stage-4 review I3 — fixture in tests/action_attr_phantom_rewrite.rs
+# wires #[capability] and #[action] together via local stand-in types.
+zeroize = { version = "1.8.2", features = ["zeroize_derive"] }
+serde = { workspace = true, features = ["derive"] }
 
 [lints]
 workspace = true

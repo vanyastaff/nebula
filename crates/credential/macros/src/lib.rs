@@ -110,6 +110,28 @@ pub fn derive_auth_scheme(input: TokenStream) -> TokenStream {
 ///   sealed_caps` (e.g. `BearerSealed`). The crate author must declare this module manually; see
 ///   ADR-0035 4.1 / 4.2.
 ///
+/// # Visibility
+///
+/// The emitted phantom trait inherits the visibility of the capability
+/// trait (visibility-symmetry, per ADR-0035 §1 amendment 2026-04-26).
+/// `pub trait Cap` produces `pub trait CapPhantom`; `pub(crate) trait
+/// Cap` produces `pub(crate) trait CapPhantom`. This composes correctly
+/// with crate-internal capabilities — forcing the phantom to a fixed
+/// visibility would leak crate-private capabilities through their
+/// phantoms onto the public surface.
+///
+/// ```ignore
+/// // Crate-internal capability — phantom is also pub(crate).
+/// #[nebula_credential_macros::capability(scheme_bound = AcceptsBearer, sealed = LocalSealed)]
+/// pub(crate) trait LocalCapability: LocalService {}
+/// // Emits: pub(crate) trait LocalCapabilityPhantom: …
+///
+/// // Public capability — phantom is also pub.
+/// #[nebula_credential_macros::capability(scheme_bound = AcceptsBearer, sealed = BearerSealed)]
+/// pub trait BitbucketBearer: BitbucketCredential {}
+/// // Emits: pub trait BitbucketBearerPhantom: …
+/// ```
+///
 /// # Example
 ///
 /// ```ignore
