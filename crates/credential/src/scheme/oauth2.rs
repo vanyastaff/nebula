@@ -61,8 +61,18 @@ impl OAuth2Token {
     }
 
     /// Formats as `<token_type> <token>` for the Authorization header.
-    pub fn bearer_header(&self) -> String {
-        format!("{} {}", self.token_type, self.access_token.expose_secret())
+    ///
+    /// Per Tech Spec §15.5 (closes security-lead N4): the bearer header
+    /// contains the access token verbatim; returning `SecretString` forces
+    /// `.expose_secret()` at the FFI boundary, eliminating accidental
+    /// `Debug` / log leaks of the bearer string.
+    #[must_use]
+    pub fn bearer_header(&self) -> SecretString {
+        SecretString::new(format!(
+            "{} {}",
+            self.token_type,
+            self.access_token.expose_secret()
+        ))
     }
 
     /// Returns `true` if the token has expired.

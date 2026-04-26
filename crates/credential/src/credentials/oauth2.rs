@@ -665,7 +665,9 @@ mod tests {
         let token = OAuth2Credential::project(&state);
 
         let header = token.bearer_header();
-        assert!(header.contains("tok_abc"));
+        // bearer_header returns SecretString per §15.5 — exposure happens at
+        // the assertion site (test scope), never in production logs.
+        assert!(header.expose_secret().contains("tok_abc"));
         assert_eq!(token.scopes, vec!["read", "write"]);
         assert!(token.expires_at.is_some());
     }
