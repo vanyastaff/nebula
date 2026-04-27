@@ -45,14 +45,24 @@ fn columns_of_table(sql: &str, table: &str) -> BTreeSet<String> {
             continue;
         }
         // Skip standalone constraints — they don't start with an identifier
-        // we treat as a column name.
+        // we treat as a column name. Tolerate either `KW(` or `KW (` so a
+        // dialect that omits the space (e.g. `UNIQUE(col)`) is still
+        // detected as a constraint and not mis-parsed as a column.
         let upper = line.to_uppercase();
-        if upper.starts_with("CHECK")
-            || upper.starts_with("PRIMARY KEY (")
-            || upper.starts_with("UNIQUE (")
-            || upper.starts_with("FOREIGN KEY")
-            || upper.starts_with("CONSTRAINT")
-        {
+        let is_constraint = [
+            "CHECK",
+            "UNIQUE",
+            "PRIMARY KEY",
+            "FOREIGN KEY",
+            "CONSTRAINT",
+        ]
+        .iter()
+        .any(|kw| {
+            upper
+                .strip_prefix(kw)
+                .is_some_and(|rest| rest.starts_with('(') || rest.starts_with(' '))
+        });
+        if is_constraint {
             continue;
         }
         // First whitespace-separated token is the column name.

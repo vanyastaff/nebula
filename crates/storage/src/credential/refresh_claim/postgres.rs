@@ -153,7 +153,12 @@ impl RefreshClaimRepo for PgRefreshClaimRepo {
     }
 
     async fn mark_sentinel(&self, token: &ClaimToken) -> Result<(), RepoError> {
-        sqlx::query(
+        // Mirrors heartbeat's claim-loss check: zero rows affected means
+        // the claim row was reclaimed (different generation or deleted)
+        // and another replica owns the credential. Returning Ok here would
+        // let the holder proceed to the IdP POST while another replica
+        // already owns the row.
+        let rows = sqlx::query(
             "UPDATE credential_refresh_claims \
              SET sentinel = 1 \
              WHERE claim_id = $1 AND generation = $2",
@@ -161,7 +166,14 @@ impl RefreshClaimRepo for PgRefreshClaimRepo {
         .bind(token.claim_id)
         .bind(token.generation as i64)
         .execute(&self.pool)
-        .await?;
+        .await?
+        .rows_affected();
+
+        if rows == 0 {
+            return Err(RepoError::InvalidState(
+                "mark_sentinel: claim lost — token no longer owns the row".to_string(),
+            ));
+        }
         Ok(())
     }
 
@@ -176,18 +188,34 @@ impl RefreshClaimRepo for PgRefreshClaimRepo {
         .fetch_all(&self.pool)
         .await?;
 
+        // The DELETE has already committed; short-circuiting on the first
+        // bad row would silently abandon every other already-deleted row,
+        // including ones with `sentinel = 1` that the engine reclaim sweep
+        // must turn into `credential_sentinel_events` inserts. Skip the bad
+        // row with a `warn!` and continue draining survivors.
         let mut out = Vec::with_capacity(rows.len());
         for (cid, holder, generation, sentinel_raw) in rows {
-            out.push(ReclaimedClaim {
-                credential_id: parse_credential_id(&cid)?,
-                previous_holder: ReplicaId::new(holder),
-                previous_generation: generation as u64,
-                sentinel: if sentinel_raw == 1 {
-                    SentinelState::RefreshInFlight
-                } else {
-                    SentinelState::Normal
+            match parse_credential_id(&cid) {
+                Ok(credential_id) => {
+                    out.push(ReclaimedClaim {
+                        credential_id,
+                        previous_holder: ReplicaId::new(holder),
+                        previous_generation: generation as u64,
+                        sentinel: if sentinel_raw == 1 {
+                            SentinelState::RefreshInFlight
+                        } else {
+                            SentinelState::Normal
+                        },
+                    });
                 },
-            });
+                Err(error) => {
+                    tracing::warn!(
+                        cid,
+                        %error,
+                        "reclaim_stuck: skipping deleted row with unparsable credential_id"
+                    );
+                },
+            }
         }
 
         Ok(out)

@@ -221,7 +221,13 @@ pub trait RefreshClaimRepo: Send + Sync + 'static {
     async fn release(&self, token: ClaimToken) -> Result<(), RepoError>;
 
     /// Marks the claim as `RefreshInFlight` — called immediately before
-    /// the IdP POST. Idempotent.
+    /// the IdP POST.
+    ///
+    /// Returns [`RepoError::InvalidState`] when the holder's `token` no
+    /// longer owns the row (claim was reclaimed and another replica owns
+    /// the row, or the row was deleted). Mirrors heartbeat's claim-loss
+    /// check so the holder cannot proceed to the IdP POST while another
+    /// replica already owns the credential.
     async fn mark_sentinel(&self, token: &ClaimToken) -> Result<(), RepoError>;
 
     /// Sweeps claims past TTL, returns reclaimed credential ids paired

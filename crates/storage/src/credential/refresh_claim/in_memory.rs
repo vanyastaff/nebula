@@ -150,10 +150,19 @@ impl RefreshClaimRepo for InMemoryRefreshClaimRepo {
         let row = guard
             .values_mut()
             .find(|r| r.claim_id == token.claim_id && r.generation == token.generation);
-        if let Some(r) = row {
-            r.sentinel = SentinelState::RefreshInFlight;
+        // Mirrors heartbeat's claim-loss check: a missing row means the
+        // claim was reclaimed or released and another replica owns the
+        // credential. Silently succeeding would let the holder proceed to
+        // the IdP POST while another replica already owns the row.
+        match row {
+            Some(r) => {
+                r.sentinel = SentinelState::RefreshInFlight;
+                Ok(())
+            },
+            None => Err(RepoError::InvalidState(
+                "mark_sentinel: claim lost — token no longer owns the row".to_string(),
+            )),
         }
-        Ok(())
     }
 
     async fn reclaim_stuck(&self) -> Result<Vec<ReclaimedClaim>, RepoError> {
@@ -188,6 +197,14 @@ impl RefreshClaimRepo for InMemoryRefreshClaimRepo {
         generation: u64,
     ) -> Result<(), RepoError> {
         let mut guard = self.sentinel_events.lock();
+        // Bound the in-memory event log: drop entries older than the §3.4
+        // retention horizon (24h, generously above the default 1h rolling
+        // window) on every insert. Keeps memory and the
+        // `count_sentinel_events_in_window` scan O(events-in-24h) regardless
+        // of process uptime. SQL backends are bounded by their tables and
+        // external GC, so this prune lives only on the in-memory impl.
+        let cutoff = Utc::now() - chrono::Duration::hours(24);
+        guard.retain(|row| row.detected_at > cutoff);
         guard.push(SentinelEventRow {
             credential_id: *credential_id,
             detected_at: Utc::now(),
