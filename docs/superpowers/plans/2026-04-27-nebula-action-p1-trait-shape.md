@@ -1,10 +1,10 @@
 ---
 name: nebula-action П1 — trait shape scaffolding
-status: draft (writing-plans skill output 2026-04-27 — awaiting execution-mode choice)
+status: LANDED 2026-04-27 (commits 710df767..6768e484 — 18 commits inclusive)
 date: 2026-04-27
 authors: [vanyastaff, Claude]
 phase: П1
-scope: cross-cutting — nebula-action, nebula-engine (compile-fix), nebula-sandbox (compile-fix), nebula-sdk (re-export), nebula-api (compile-fix)
+scope: cross-cutting — nebula-action, nebula-engine (compile-fix), nebula-sandbox (no-op), nebula-sdk (no-op), nebula-api (no-op)
 related:
   - docs/superpowers/specs/2026-04-24-nebula-action-tech-spec.md
   - docs/superpowers/specs/2026-04-24-action-redesign-strategy.md
