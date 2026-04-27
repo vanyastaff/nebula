@@ -16,6 +16,7 @@ use std::{
     time::{Duration, Instant},
 };
 
+use nebula_credential::Credential;
 use tokio::sync::{Mutex, OwnedSemaphorePermit, Semaphore};
 
 use crate::{
@@ -263,7 +264,7 @@ where
         &self,
         resource: &R,
         resource_config: &R::Config,
-        auth: &R::Auth,
+        scheme: &<R::Credential as Credential>::Scheme,
         ctx: &ResourceContext,
         release_queue: &Arc<ReleaseQueue>,
         generation: u64,
@@ -293,7 +294,7 @@ where
 
         // No idle instance available — create a new one with our permit.
         let entry = match self
-            .create_entry(resource, resource_config, auth, ctx, false)
+            .create_entry(resource, resource_config, scheme, ctx, false)
             .await
         {
             Ok(e) => e,
@@ -456,7 +457,7 @@ where
         &self,
         resource: &R,
         config: &R::Config,
-        auth: &R::Auth,
+        scheme: &<R::Credential as Credential>::Scheme,
         ctx: &ResourceContext,
         non_blocking: bool,
     ) -> Result<PoolEntry<R>, Error> {
@@ -499,18 +500,16 @@ where
         // Use `timeout_at` with the same absolute deadline so the budget
         // is shared: a long permit wait shortens the time available to
         // `resource.create`.
-        let runtime = match tokio::time::timeout_at(
-            deadline.into(),
-            resource.create(config, auth, ctx),
-        )
-        .await
-        {
-            Ok(Ok(rt)) => rt,
-            Ok(Err(e)) => return Err(e.into()),
-            Err(_timeout) => {
-                return Err(Error::transient("pool: create timed out"));
-            },
-        };
+        let runtime =
+            match tokio::time::timeout_at(deadline.into(), resource.create(config, scheme, ctx))
+                .await
+            {
+                Ok(Ok(rt)) => rt,
+                Ok(Err(e)) => return Err(e.into()),
+                Err(_timeout) => {
+                    return Err(Error::transient("pool: create timed out"));
+                },
+            };
 
         Ok(PoolEntry {
             runtime,
@@ -614,7 +613,7 @@ where
         &self,
         resource: &R,
         resource_config: &R::Config,
-        auth: &R::Auth,
+        scheme: &<R::Credential as Credential>::Scheme,
         ctx: &ResourceContext,
         release_queue: &Arc<ReleaseQueue>,
         generation: u64,
@@ -653,7 +652,7 @@ where
         // the non-blocking contract: if the create semaphore is full,
         // we return Backpressure instead of waiting (PR #399 review).
         let entry = match self
-            .create_entry(resource, resource_config, auth, ctx, true)
+            .create_entry(resource, resource_config, scheme, ctx, true)
             .await
         {
             Ok(e) => e,
@@ -707,7 +706,7 @@ where
         &self,
         resource: &R,
         resource_config: &R::Config,
-        auth: &R::Auth,
+        scheme: &<R::Credential as Credential>::Scheme,
         ctx: &ResourceContext,
     ) -> usize {
         use crate::topology::pooled::config::WarmupStrategy;
@@ -723,11 +722,11 @@ where
             // tasks. Until the Ctx API exposes an Arc variant, we fall back to
             // sequential to avoid an API-breaking change.
             WarmupStrategy::Sequential | WarmupStrategy::Parallel => {
-                self.warmup_sequential(resource, resource_config, auth, ctx, target)
+                self.warmup_sequential(resource, resource_config, scheme, ctx, target)
                     .await
             },
             WarmupStrategy::Staggered { interval } => {
-                self.warmup_staggered(resource, resource_config, auth, ctx, target, interval)
+                self.warmup_staggered(resource, resource_config, scheme, ctx, target, interval)
                     .await
             },
         }
@@ -738,14 +737,14 @@ where
         &self,
         resource: &R,
         resource_config: &R::Config,
-        auth: &R::Auth,
+        scheme: &<R::Credential as Credential>::Scheme,
         ctx: &ResourceContext,
         target: usize,
     ) -> usize {
         let mut created = 0usize;
         for _ in 0..target {
             match self
-                .create_entry(resource, resource_config, auth, ctx, false)
+                .create_entry(resource, resource_config, scheme, ctx, false)
                 .await
             {
                 Ok(mut entry) => {
@@ -782,7 +781,7 @@ where
         &self,
         resource: &R,
         resource_config: &R::Config,
-        auth: &R::Auth,
+        scheme: &<R::Credential as Credential>::Scheme,
         ctx: &ResourceContext,
         target: usize,
         interval: Duration,
@@ -793,7 +792,7 @@ where
                 tokio::time::sleep(interval).await;
             }
             match self
-                .create_entry(resource, resource_config, auth, ctx, false)
+                .create_entry(resource, resource_config, scheme, ctx, false)
                 .await
             {
                 Ok(mut entry) => {
@@ -1008,7 +1007,7 @@ mod tests {
         type Runtime = u32;
         type Lease = u32;
         type Error = MockError;
-        type Auth = ();
+        type Credential = nebula_credential::NoCredential;
 
         fn key() -> ResourceKey {
             resource_key!("mock-pool")
@@ -1017,7 +1016,7 @@ mod tests {
         fn create(
             &self,
             _config: &PoolTestConfig,
-            _auth: &(),
+            _scheme: &<Self::Credential as Credential>::Scheme,
             _ctx: &ResourceContext,
         ) -> impl Future<Output = Result<u32, MockError>> + Send {
             let fail = self.fail_create.load(Ordering::Relaxed);
