@@ -257,9 +257,8 @@ impl<S> EncryptionLayer<S> {
 #[cfg(all(test, feature = "test-util"))]
 mod tests {
     use nebula_credential::{
-        PutMode, SecretString,
+        EncryptedData, PutMode, SecretString,
         credentials::oauth2::{AuthStyle, OAuth2State},
-        encrypt,
         store::test_helpers::make_credential,
     };
 
@@ -389,12 +388,15 @@ mod tests {
     #[tokio::test]
     async fn rejects_data_without_aad() {
         let inner = InMemoryStore::new();
-        let key = Arc::new(EncryptionKey::from_bytes([0x42; 32]));
 
-        // Simulate legacy write: encrypt without AAD and store directly
-        let plaintext = b"legacy-secret";
-        let encrypted = encrypt(&key, plaintext).unwrap();
-        let encrypted_bytes = serde_json::to_vec(&encrypted).unwrap();
+        // Construct a legacy-shaped envelope directly: `key_id == ""` plus
+        // arbitrary stub bytes. The encryption layer's rejection is keyed
+        // off `key_id == ""` (the legacy/no-AAD marker) — the cryptographic
+        // contents do not need to be valid. This avoids exposing a
+        // production `encrypt()` shortcut from `nebula-credential`
+        // (SEC-11 hardening 2026-04-27).
+        let legacy_envelope = EncryptedData::new("", [0u8; 12], vec![0u8; 32], [0u8; 16]);
+        let encrypted_bytes = serde_json::to_vec(&legacy_envelope).unwrap();
 
         let cred = StoredCredential {
             id: "legacy-1".into(),
@@ -412,7 +414,8 @@ mod tests {
         inner.put(cred, PutMode::CreateOnly).await.unwrap();
 
         // Reading through the encryption layer must fail: AAD is mandatory.
-        // Data encrypted without AAD is unreadable — no legacy fallback.
+        // Data encrypted without AAD (legacy `key_id == ""` envelope) is
+        // unreadable — no legacy fallback path.
         let store = EncryptionLayer::new(inner, default_provider());
         let err = store.get("legacy-1").await.unwrap_err();
         assert!(matches!(err, StoreError::Backend(_)));

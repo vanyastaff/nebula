@@ -6,7 +6,7 @@
 use std::time::Instant;
 
 use nebula_credential::{
-    CryptoError, EncryptedData, EncryptionKey, SecretString, decrypt, encrypt,
+    CryptoError, EncryptedData, EncryptionKey, SecretString, decrypt, encrypt_with_aad,
 };
 use pretty_assertions::assert_eq;
 use rstest::rstest;
@@ -26,7 +26,7 @@ fn test_encrypt_decrypt_roundtrip() {
     let plaintext = secret.expose_secret().as_bytes().to_vec();
 
     // Encrypt
-    let encrypted = encrypt(&key, &plaintext).expect("encryption should succeed");
+    let encrypted = encrypt_with_aad(&key, &plaintext, b"").expect("encryption should succeed");
 
     // Verify encrypted data structure
     assert_eq!(encrypted.version, EncryptedData::CURRENT_VERSION);
@@ -52,7 +52,7 @@ fn encrypted_data_shape_snapshot() {
     let key = EncryptionKey::derive_from_password("snapshot-test", &salt)
         .expect("key derivation should succeed");
     let plaintext = b"snap";
-    let encrypted = encrypt(&key, plaintext).expect("encryption should succeed");
+    let encrypted = encrypt_with_aad(&key, plaintext, b"").expect("encryption should succeed");
 
     insta::assert_json_snapshot!(json!({
         "version": encrypted.version,
@@ -72,7 +72,7 @@ fn kdf_roundtrip_parametrized(#[case] password: &str) {
     let key = EncryptionKey::derive_from_password(password, &salt)
         .expect("key derivation should succeed");
     let plaintext = b"payload-bytes";
-    let encrypted = encrypt(&key, plaintext).expect("encryption should succeed");
+    let encrypted = encrypt_with_aad(&key, plaintext, b"").expect("encryption should succeed");
     let decrypted = decrypt(&key, &encrypted).expect("decryption should succeed");
     assert_eq!(decrypted.as_slice(), plaintext);
 }
@@ -94,14 +94,14 @@ fn test_key_derivation_deterministic() {
 
     // Verify keys are functionally identical by encrypting with one and decrypting with the other
     let plaintext = b"test data";
-    let encrypted = encrypt(&key1, plaintext).expect("encryption should succeed");
+    let encrypted = encrypt_with_aad(&key1, plaintext, b"").expect("encryption should succeed");
 
     // key2 should be able to decrypt what key1 encrypted
     let decrypted = decrypt(&key2, &encrypted).expect("decryption should succeed");
     assert_eq!(decrypted.as_slice(), plaintext);
 
     // And vice versa
-    let encrypted2 = encrypt(&key2, plaintext).expect("encryption should succeed");
+    let encrypted2 = encrypt_with_aad(&key2, plaintext, b"").expect("encryption should succeed");
     let decrypted2 = decrypt(&key1, &encrypted2).expect("decryption should succeed");
     assert_eq!(decrypted2.as_slice(), plaintext);
 }
@@ -122,8 +122,8 @@ fn test_key_derivation_different_passwords() {
 
     // Verify keys are functionally different by attempting cross-decryption
     let plaintext = b"same plaintext";
-    let encrypted1 = encrypt(&key1, plaintext).expect("encryption 1 should succeed");
-    let encrypted2 = encrypt(&key2, plaintext).expect("encryption 2 should succeed");
+    let encrypted1 = encrypt_with_aad(&key1, plaintext, b"").expect("encryption 1 should succeed");
+    let encrypted2 = encrypt_with_aad(&key2, plaintext, b"").expect("encryption 2 should succeed");
 
     // Ciphertext should be different (nonces are also different)
     assert_ne!(encrypted1.ciphertext, encrypted2.ciphertext);
@@ -148,7 +148,7 @@ fn test_nonce_uniqueness() {
 
     // Perform 100 encryptions
     for _ in 0..100 {
-        let encrypted = encrypt(&key, plaintext).expect("encryption should succeed");
+        let encrypted = encrypt_with_aad(&key, plaintext, b"").expect("encryption should succeed");
         nonces.push(encrypted.nonce);
     }
 
@@ -176,7 +176,7 @@ fn test_decryption_with_wrong_key() {
         .expect("key1 derivation should succeed");
 
     let plaintext = b"secret data";
-    let encrypted = encrypt(&key1, plaintext).expect("encryption should succeed");
+    let encrypted = encrypt_with_aad(&key1, plaintext, b"").expect("encryption should succeed");
 
     // Try to decrypt with different key
     let key2 = EncryptionKey::derive_from_password("wrong-password", &salt)
@@ -246,7 +246,7 @@ fn test_key_derivation_from_bytes() {
 
     // Encrypt some data with the key
     let plaintext = b"test data for from_bytes";
-    let encrypted = encrypt(&key1, plaintext).expect("encryption should succeed");
+    let encrypted = encrypt_with_aad(&key1, plaintext, b"").expect("encryption should succeed");
 
     // Create another key from the same bytes (simulating loading from secure storage)
     let key2 = EncryptionKey::from_bytes(key_bytes);
@@ -256,7 +256,7 @@ fn test_key_derivation_from_bytes() {
     assert_eq!(decrypted.as_slice(), plaintext);
 
     // Verify roundtrip works both ways
-    let encrypted2 = encrypt(&key2, plaintext).expect("encryption should succeed");
+    let encrypted2 = encrypt_with_aad(&key2, plaintext, b"").expect("encryption should succeed");
     let decrypted2 = decrypt(&key1, &encrypted2).expect("decryption should succeed");
     assert_eq!(decrypted2.as_slice(), plaintext);
 
@@ -286,7 +286,7 @@ fn test_encryption_key_zeroized() {
 
         // Use the key
         let plaintext = b"test";
-        let _encrypted = encrypt(&key, plaintext).expect("encryption should succeed");
+        let _encrypted = encrypt_with_aad(&key, plaintext, b"").expect("encryption should succeed");
 
         // Key will be dropped and zeroized at end of scope
     }
@@ -298,7 +298,7 @@ fn test_encryption_key_zeroized() {
     let key2 = EncryptionKey::derive_from_password(password, &salt)
         .expect("key derivation should succeed");
     let plaintext = b"test";
-    let _encrypted = encrypt(&key2, plaintext).expect("encryption should succeed");
+    let _encrypted = encrypt_with_aad(&key2, plaintext, b"").expect("encryption should succeed");
 
     // This test passes if:
     // 1. EncryptionKey implements ZeroizeOnDrop (checked by compiler)

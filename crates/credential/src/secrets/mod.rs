@@ -6,7 +6,7 @@
 //! # Canonical import paths
 //!
 //! This submodule is `pub` for escape hatches. Prefer flat root re-exports:
-//! `use nebula_credential::{SecretString, CredentialGuard, encrypt, decrypt};`.
+//! `use nebula_credential::{SecretString, CredentialGuard, encrypt_with_aad, decrypt};`.
 //!
 //! The `serde_secret` submodule is `pub` and re-exported at the crate root
 //! specifically so serde attribute paths
@@ -27,10 +27,15 @@ mod scheme_guard;
 mod secret_string;
 pub mod serde_secret;
 
+// SEC-11 (security hardening 2026-04-27 Stage 1): bare `encrypt` was
+// removed from the public surface (renamed to `pub(crate) encrypt_no_aad`,
+// reachable only inside `nebula-credential`). Plugins and external callers
+// must use `encrypt_with_aad` or `encrypt_with_key_id` — the AAD-mandatory
+// public path. The `decrypt` partner stays public; callers can decrypt
+// rotation-era envelopes that legitimately have the legacy shape.
 pub use crypto::{
-    EncryptedData, EncryptionKey, decrypt, decrypt_with_aad, encrypt, encrypt_with_aad,
-    encrypt_with_key_id, generate_code_challenge, generate_pkce_verifier, generate_random_state,
-    serde_base64,
+    EncryptedData, EncryptionKey, decrypt, decrypt_with_aad, encrypt_with_aad, encrypt_with_key_id,
+    generate_code_challenge, generate_pkce_verifier, generate_random_state, serde_base64,
 };
 pub use guard::CredentialGuard;
 pub use redacted::RedactedSecret;
