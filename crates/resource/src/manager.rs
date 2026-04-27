@@ -164,7 +164,11 @@ pub enum ShutdownError {
 
     /// The drain phase did not finish within `drain_timeout` and the
     /// policy was [`DrainTimeoutPolicy::Abort`]. The registry was **not**
-    /// cleared and any outstanding handles remain valid.
+    /// cleared and any outstanding handles remain valid, but every
+    /// registered resource is transitioned to
+    /// [`ResourcePhase::Failed`](crate::state::ResourcePhase::Failed) so
+    /// subsequent acquires fail fast and `health_check` reflects the
+    /// post-abort reality (R-023).
     #[error(
         "drain timeout expired with {outstanding} handle(s) still active; registry was NOT cleared (policy=Abort)"
     )]
@@ -1923,18 +1927,22 @@ impl Manager {
                     tracing::warn!(
                         outstanding,
                         "resource manager: drain timeout, policy=Abort — \
-                         registry preserved, returning DrainTimeout"
+                         registry preserved, marking all resources Failed, \
+                         returning DrainTimeout"
                     );
-                    // #387 / PR #399 review: we already flipped every
-                    // resource to `Draining` above. The Abort policy
-                    // preserves the "graceful" guarantee and keeps live
-                    // handles valid, so we must also restore the phase
-                    // back to `Ready` — otherwise `is_accepting()` would
-                    // falsely keep returning `false` and the manager
-                    // would reject new acquires forever.
-                    self.set_phase_all(crate::state::ResourcePhase::Ready);
+                    // R-023 / 🔴-4: every resource transitions to `Failed`
+                    // (with `HealthChanged{healthy:false}` emitted per key)
+                    // rather than back to `Ready`. The cancel token fired
+                    // in Phase 1 already rejects new acquires; pretending
+                    // the registry is `Ready` while the caller observes a
+                    // `DrainTimeout` is phase corruption — callers polling
+                    // `health_check` would see `Ready` but get
+                    // `Error::cancelled` from `lookup`. Marking `Failed`
+                    // makes the registry tell the truth.
+                    let err = ShutdownError::DrainTimeout { outstanding };
+                    self.set_phase_all_failed(&err);
                     self.shutting_down.store(false, AtomicOrdering::Release);
-                    return Err(ShutdownError::DrainTimeout { outstanding });
+                    return Err(err);
                 },
                 DrainTimeoutPolicy::Force => {
                     tracing::warn!(
@@ -1995,6 +2003,29 @@ impl Manager {
     fn set_phase_all(&self, phase: crate::state::ResourcePhase) {
         for managed in self.registry.all_managed() {
             managed.set_phase_erased(phase);
+        }
+    }
+
+    /// Marks every registered resource as `Failed` with the supplied
+    /// shutdown error and emits a per-resource
+    /// [`ResourceEvent::HealthChanged`] with `healthy: false`.
+    ///
+    /// Used by the [`DrainTimeoutPolicy::Abort`] branch (R-023) so the
+    /// registry's recorded phase agrees with the `Err(DrainTimeout)`
+    /// observed by the caller. Without this, `health_check` would report
+    /// `Ready` while `lookup` rejected acquires via the cancel token —
+    /// the exact "phase corruption" called out in Phase 1 finding 🔴-4.
+    ///
+    /// Broadcast send errors (no live subscribers) are intentionally
+    /// ignored, matching the rest of the manager's event-emission policy.
+    fn set_phase_all_failed(&self, error: &ShutdownError) {
+        let reason = error.to_string();
+        for managed in self.registry.all_managed() {
+            managed.set_failed_erased(&reason);
+            let _ = self.event_tx.send(ResourceEvent::HealthChanged {
+                key: managed.resource_key(),
+                healthy: false,
+            });
         }
     }
 

@@ -4028,6 +4028,99 @@ async fn graceful_shutdown_abort_on_drain_timeout_preserves_registry() {
     );
 }
 
+/// R-023 / 🔴-4 regression: `DrainTimeoutPolicy::Abort` must transition
+/// every registered resource to `ResourcePhase::Failed`, **not** restore
+/// `Ready`. Pre-fix the manager would set the phase back to `Ready` to
+/// "keep the resource acquirable", but the cancel token already rejects
+/// new acquires and `health_check` then lied about lifecycle state.
+///
+/// Also asserts the per-resource `HealthChanged{healthy:false}` event is
+/// emitted on the broadcast channel so external observers see the
+/// failure signal even if they only subscribe to events.
+#[tokio::test]
+async fn graceful_shutdown_abort_marks_resources_failed_not_ready() {
+    use nebula_resource::{ResourceEvent, ResourcePhase, manager::ShutdownError};
+
+    let manager = Manager::new();
+    let resource = ResidentTestResource::new();
+    let resident_rt =
+        ResidentRuntime::<ResidentTestResource>::new(resident::config::Config::default());
+
+    manager
+        .register(
+            resource,
+            test_config(),
+            ScopeLevel::Global,
+            TopologyRuntime::Resident(resident_rt),
+            None,
+            None,
+            None,
+            None,
+        )
+        .unwrap();
+
+    // Subscribe BEFORE the shutdown so we can capture the
+    // HealthChanged{healthy:false} broadcast emitted by
+    // set_phase_all_failed.
+    let mut events = manager.subscribe_events();
+
+    // Hold a handle across the shutdown so drain cannot complete.
+    let ctx = test_ctx();
+    let _handle = manager
+        .acquire_resident::<ResidentTestResource>(&(), &ctx, &AcquireOptions::default())
+        .await
+        .expect("acquire must succeed");
+
+    let err = manager
+        .graceful_shutdown(
+            ShutdownConfig::default().with_drain_timeout(std::time::Duration::from_millis(20)),
+        )
+        .await
+        .expect_err("Abort policy must surface drain timeout as Err");
+
+    assert!(
+        matches!(err, ShutdownError::DrainTimeout { .. }),
+        "expected DrainTimeout, got {err:?}"
+    );
+
+    // R-023 assertion: phase is `Failed`, NOT `Ready`. Pre-fix this
+    // would be `Ready` (the bug). We bypass `health_check` here because
+    // it goes through `lookup` which short-circuits on the cancel token
+    // post-shutdown; `get_any` reads the type-erased registry entry
+    // directly so we can observe the phase the abort branch wrote.
+    let phase = manager
+        .get_any(&resource_key!("test-resident"), &ScopeLevel::Global)
+        .expect("registry preserved (Abort policy)")
+        .phase_erased();
+    assert_eq!(
+        phase,
+        ResourcePhase::Failed,
+        "drain-abort must transition phase to Failed, got {phase:?} \
+         (R-023: Ready would be the pre-fix bug)",
+    );
+
+    // R-023 assertion: per-resource HealthChanged{healthy:false} was
+    // emitted. Drain through the channel until we find it (other
+    // events like `Registered` and `AcquireSuccess` were also emitted
+    // earlier).
+    let mut saw_health_change = false;
+    while let Ok(event) = events.try_recv() {
+        if let ResourceEvent::HealthChanged {
+            key,
+            healthy: false,
+        } = event
+            && key == resource_key!("test-resident")
+        {
+            saw_health_change = true;
+            break;
+        }
+    }
+    assert!(
+        saw_health_change,
+        "drain-abort must emit HealthChanged{{healthy:false}} per resource"
+    );
+}
+
 /// #302: `DrainTimeoutPolicy::Force` is the opt-in escape hatch. It clears
 /// the registry anyway and reports the outstanding-handle count so a
 /// supervisor with a hard deadline can still exit.

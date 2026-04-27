@@ -91,7 +91,13 @@ impl<R: Resource> ManagedResource<R> {
     }
 
     /// Replace the lifecycle status with `Failed` and record a reason.
-    #[expect(dead_code, reason = "callers will land with the recovery-error work")]
+    ///
+    /// Wired by `Manager::set_phase_all_failed` (R-023): when
+    /// `DrainTimeoutPolicy::Abort` fires we transition every registered
+    /// resource to `Failed` so callers cannot subsequently acquire a
+    /// resource the manager has already declared bankrupt. Per-resource
+    /// `HealthChanged{healthy:false}` event emission is owned by the
+    /// manager because it holds the broadcast channel.
     pub(crate) fn set_failed(&self, error: impl Into<String>) {
         let next = ResourceStatus {
             phase: ResourcePhase::Failed,
