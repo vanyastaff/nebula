@@ -47,6 +47,7 @@
 //! clocks into this module. Build them in your action on top of the
 //! primitives.
 
+mod source;
 use std::{
     fmt,
     future::Future,
@@ -64,6 +65,7 @@ use hmac::{Hmac, KeyInit, Mac};
 use http::{HeaderMap, HeaderName, HeaderValue, Method, StatusCode};
 use parking_lot::RwLock;
 use sha2::Sha256;
+pub use source::WebhookSource;
 use subtle::ConstantTimeEq;
 use tokio::sync::{Notify, oneshot};
 
