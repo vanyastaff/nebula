@@ -15,7 +15,10 @@
 
 use std::{
     collections::VecDeque,
-    sync::{Arc, Mutex},
+    sync::{
+        Arc, Mutex,
+        atomic::{AtomicUsize, Ordering},
+    },
     time::Duration,
 };
 
@@ -242,6 +245,69 @@ impl RefreshClaimRepo for SignallingFailHeartbeatRepo {
         // wakes and re-polls select! with both arms ready.
         self.heartbeat_called.notify_one();
         Err(HeartbeatError::ClaimLost)
+    }
+
+    async fn release(&self, token: ClaimToken) -> Result<(), RepoError> {
+        self.inner.release(token).await
+    }
+
+    async fn mark_sentinel(&self, token: &ClaimToken) -> Result<(), RepoError> {
+        self.inner.mark_sentinel(token).await
+    }
+
+    async fn reclaim_stuck(&self) -> Result<Vec<ReclaimedClaim>, RepoError> {
+        self.inner.reclaim_stuck().await
+    }
+
+    async fn record_sentinel_event(
+        &self,
+        credential_id: &CredentialId,
+        crashed_holder: &ReplicaId,
+        generation: u64,
+    ) -> Result<(), RepoError> {
+        self.inner
+            .record_sentinel_event(credential_id, crashed_holder, generation)
+            .await
+    }
+
+    async fn count_sentinel_events_in_window(
+        &self,
+        credential_id: &CredentialId,
+        window_start: DateTime<Utc>,
+    ) -> Result<u32, RepoError> {
+        self.inner
+            .count_sentinel_events_in_window(credential_id, window_start)
+            .await
+    }
+}
+
+// ──────────────────────────────────────────────────────────────────────────
+// CountingHeartbeatRepo — forwards every method to the inner repo while
+// incrementing an `AtomicUsize` on each `heartbeat` call. Used to prove the
+// heartbeat task STOPS after the outer `refresh_coalesced` future is dropped
+// (wave-5 cancel-safety regression). Without the wave-5 fix, dropping the
+// future leaks the heartbeat task and the counter keeps climbing after drop.
+// ──────────────────────────────────────────────────────────────────────────
+
+pub(crate) struct CountingHeartbeatRepo {
+    pub inner: Arc<dyn RefreshClaimRepo>,
+    pub heartbeat_count: Arc<AtomicUsize>,
+}
+
+#[async_trait::async_trait]
+impl RefreshClaimRepo for CountingHeartbeatRepo {
+    async fn try_claim(
+        &self,
+        credential_id: &CredentialId,
+        holder: &ReplicaId,
+        ttl: Duration,
+    ) -> Result<ClaimAttempt, RepoError> {
+        self.inner.try_claim(credential_id, holder, ttl).await
+    }
+
+    async fn heartbeat(&self, token: &ClaimToken, ttl: Duration) -> Result<(), HeartbeatError> {
+        self.heartbeat_count.fetch_add(1, Ordering::Relaxed);
+        self.inner.heartbeat(token, ttl).await
     }
 
     async fn release(&self, token: ClaimToken) -> Result<(), RepoError> {

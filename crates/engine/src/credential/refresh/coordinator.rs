@@ -487,6 +487,15 @@ impl RefreshCoordinator {
     /// cleanup path do not — the blocking task continues running after the
     /// `JoinHandle` is dropped, and any state it produces is silently
     /// discarded.
+    ///
+    /// The coordinator itself is cancel-safe: dropping the
+    /// `refresh_coalesced` future at any await point (`tokio::time::timeout`,
+    /// `tokio::select!`, `JoinHandle::abort`) cancels the heartbeat
+    /// task and best-effort releases the L2 claim row (spawned, fire-and-
+    /// forget; release errors are logged at WARN). The synchronous-release
+    /// contract on the success path is preserved — when `refresh_coalesced`
+    /// returns `Ok(...)`, the L2 row has been awaited-released before the
+    /// function returns.
     #[tracing::instrument(
         name = "credential.refresh.coordinate",
         skip(self, needs_refresh_after_backoff, do_refresh),
@@ -593,14 +602,24 @@ impl RefreshCoordinator {
         // Heartbeat task in background.
         let hb_task = self.spawn_heartbeat(claim.token.clone(), hb_cancel, *credential_id);
 
-        // Panic-safety guard (review C1, sub-spec §3.4). Fires ONLY on
-        // panic unwind — `guard_on_unwind` does not fire on normal exit.
-        // Without this, a panic in `do_refresh` would leak the heartbeat
-        // task (extending L2 expiry forever) and skip `release()`,
-        // blocking Stage 3.3 reclaim and cross-replica callers
-        // (`ContentionExhausted` indefinitely). `release()` is
-        // idempotent and the spawned task is detached because Drop is
-        // synchronous; we cannot `.await` here.
+        // Cancel-safety guard (review C1 + wave-5, sub-spec §3.4). Fires
+        // on EVERY exit path that does NOT explicitly defuse it: panic
+        // unwind, error early-return, AND Drop (caller cancels the
+        // outer future via `tokio::time::timeout`, `tokio::select!`, or
+        // `JoinHandle::abort`). Without Drop coverage, a caller that
+        // wraps `refresh_coalesced` in its own timeout / select! /
+        // spawn-and-drop would leak the heartbeat task (extending L2
+        // expiry forever) and skip `release()` — the same "stuck claim"
+        // failure mode the panic-only guard was designed to prevent,
+        // just triggered by `Drop` instead of unwind.
+        //
+        // The success path defuses this guard with
+        // `scopeguard::ScopeGuard::into_inner(...)` BEFORE running its
+        // synchronous release — that preserves the synchronous-release
+        // contract on `Ok(...)` while making every other exit do
+        // best-effort spawned cleanup. `release()` is idempotent and
+        // the spawned task is detached because Drop is synchronous; we
+        // cannot `.await` here.
         //
         // Heartbeat shutdown order mirrors the success path (below):
         // `cancel.cancel()` first so the heartbeat exits through its
@@ -608,20 +627,21 @@ impl RefreshCoordinator {
         // guarantee. `CancellationToken` is reference-counted so dropping
         // it does NOT auto-cancel — both paths must call `.cancel()`
         // explicitly to keep release semantics symmetric.
-        let token_for_unwind = claim.token.clone();
-        let repo_for_unwind = Arc::clone(&self.repo);
-        let hb_cancel_for_unwind = cancel.clone();
-        let hb_task_for_unwind = hb_task.abort_handle();
-        let hold_duration_for_unwind = self.metrics.hold_duration.clone();
-        let _l2_unwind_guard = scopeguard::guard_on_unwind((), move |()| {
-            hb_cancel_for_unwind.cancel();
-            hb_task_for_unwind.abort();
-            // Even on panic the hold time is observable — observe it
-            // before the spawn so the histogram never drops a sample.
-            hold_duration_for_unwind.observe(hold_start.elapsed().as_secs_f64());
+        let token_teardown = claim.token.clone();
+        let repo_teardown = Arc::clone(&self.repo);
+        let hb_cancel_teardown = cancel.clone();
+        let hb_task_teardown = hb_task.abort_handle();
+        let hold_duration_teardown = self.metrics.hold_duration.clone();
+        let l2_teardown = scopeguard::guard((), move |()| {
+            hb_cancel_teardown.cancel();
+            hb_task_teardown.abort();
+            // Hold-time histogram is recorded on every exit path —
+            // observe it before the spawn so the histogram never drops
+            // a sample regardless of which path triggered teardown.
+            hold_duration_teardown.observe(hold_start.elapsed().as_secs_f64());
             tokio::spawn(async move {
-                if let Err(e) = repo_for_unwind.release(token_for_unwind).await {
-                    tracing::warn!(?e, "L2 claim release on unwind failed");
+                if let Err(e) = repo_teardown.release(token_teardown).await {
+                    tracing::warn!(?e, "L2 claim release on drop/unwind failed");
                 }
             });
         });
@@ -662,22 +682,29 @@ impl RefreshCoordinator {
         .map_err(|_elapsed| RefreshError::Timeout(timeout))
         .and_then(std::convert::identity);
 
-        // Normal-exit release (review I1, sub-spec §3.4). We DO NOT
-        // propagate release errors — propagating them with `?` would
-        // mask a successful refresh: caller would observe
+        // Normal-exit release (review I1 + wave-5, sub-spec §3.4). We
+        // DO NOT propagate release errors — propagating them with `?`
+        // would mask a successful refresh: caller would observe
         // `RefreshError::Repo(...)`, route to `record_failure`, then
         // retry → ANOTHER IdP POST → invalidates the just-issued
         // refresh token (n8n #13088 spec lineage). Log at warn level
-        // instead. The unwind guard above does NOT fire on normal exit
-        // (per `guard_on_unwind` semantics), so this synchronous
-        // release runs once, deterministically.
+        // instead.
         //
+        // `into_inner` defuses the teardown guard BEFORE the explicit
+        // cleanup runs. Without this, the guard would also fire when
+        // `l2_teardown` goes out of scope at end of function, racing
+        // the synchronous release below (double-release; second one
+        // sees a missing row → spurious WARN log). Defusing first
+        // preserves the synchronous-release contract: when
+        // `refresh_coalesced` returns `Ok(...)`, the L2 row has been
+        // awaited-released before the function returns.
+        scopeguard::ScopeGuard::into_inner(l2_teardown);
         // Cancel the heartbeat token before aborting so the task exits
         // through its `cancelled()` arm rather than racing the abort.
         cancel.cancel();
         hb_task.abort();
         // Sub-spec §6 — observe the hold duration on the normal-exit
-        // release path. Symmetric with the unwind guard above.
+        // release path. Symmetric with the teardown guard above.
         self.metrics
             .hold_duration
             .observe(hold_start.elapsed().as_secs_f64());
@@ -1143,7 +1170,7 @@ mod tests {
     // ──────────────────────────────────────────────────────────────────
 
     use crate::credential::refresh::test_fixtures::{
-        AlwaysContendedRepo, AlwaysFailHeartbeatRepo, FlakyReleaseRepo,
+        AlwaysContendedRepo, AlwaysFailHeartbeatRepo, CountingHeartbeatRepo, FlakyReleaseRepo,
         SignallingFailHeartbeatRepo, TransientFailHeartbeatRepo,
     };
 
@@ -1732,6 +1759,156 @@ mod tests {
             result.expect("reset-on-success must absorb a second transient burst"),
             11,
             "two bursts of transient failures separated by a success must NOT cancel refresh"
+        );
+    }
+
+    // ──────────────────────────────────────────────────────────────────
+    // Wave-5 — coordinator cancel-safety on Drop
+    // ──────────────────────────────────────────────────────────────────
+
+    /// Wave-5 regression — sub-spec §3.4. Dropping the
+    /// `refresh_coalesced` future mid-`await` (e.g. via a caller's
+    /// `tokio::time::timeout`, `tokio::select!`, or `JoinHandle::abort`)
+    /// MUST cancel the heartbeat task and best-effort release the L2
+    /// claim row. Previously the panic-only `guard_on_unwind` did not
+    /// fire on Drop, leaving the heartbeat task ticking forever and the
+    /// L2 row held until TTL expiry — exactly the "stuck claim" failure
+    /// mode the panic guard was designed to prevent, just triggered by
+    /// `Drop` instead of unwind.
+    ///
+    /// Strategy under `start_paused = true`:
+    ///   1. Wrap the in-memory repo in `CountingHeartbeatRepo` so we can observe heartbeat ticks
+    ///      before and after Drop.
+    ///   2. Spawn `refresh_coalesced` as a `JoinHandle` whose user closure parks on
+    ///      `std::future::pending()` so the future is suspended.
+    ///   3. Advance virtual time past several heartbeat intervals; record `count_before_drop`.
+    ///   4. `handle.abort()` — drops the suspended future. With the wave-5 fix, the regular
+    ///      `scopeguard::guard` (no `_on_unwind`) fires on Drop: `cancel.cancel()` +
+    ///      `hb_task.abort()`
+    ///      + spawned `repo.release()`.
+    ///   5. Yield repeatedly so the spawned release task runs and the heartbeat task's
+    ///      `cancelled()` arm wakes.
+    ///   6. Advance virtual time again — far past several more heartbeat intervals — and yield.
+    ///      With the fix, the heartbeat task is gone, so `count_after_drop == count_before_drop`.
+    ///      Without the fix, the counter keeps climbing.
+    ///   7. Assert the L2 row is released: a fresh `try_claim` from a different replica returns
+    ///      `Acquired`. Without the fix, it would still be `Contended` (heartbeat keeps extending
+    ///      the claim TTL).
+    ///
+    /// Mutation-test rationale: reverting just the
+    /// `scopeguard::guard` → `scopeguard::guard_on_unwind` swap (and
+    /// removing the matching `into_inner` defuse on the success path)
+    /// makes both assertions fail — the heartbeat counter keeps
+    /// climbing AND `try_claim` returns `Contended`. So the test
+    /// structurally exercises the bug.
+    #[tokio::test(start_paused = true)]
+    async fn refresh_coalesced_drop_releases_l2_claim_and_stops_heartbeat() {
+        use std::{
+            future::pending,
+            sync::atomic::{AtomicUsize, Ordering},
+        };
+
+        let inner: Arc<dyn RefreshClaimRepo> = Arc::new(InMemoryRefreshClaimRepo::new());
+        let heartbeat_count = Arc::new(AtomicUsize::new(0));
+        let repo: Arc<dyn RefreshClaimRepo> = Arc::new(CountingHeartbeatRepo {
+            inner: Arc::clone(&inner),
+            heartbeat_count: Arc::clone(&heartbeat_count),
+        });
+
+        // §3.5-validating config tuned for short virtual-time intervals:
+        //   heartbeat_interval × 3 = 60ms ≤ claim_ttl 10s ✓
+        //   refresh_timeout (5s) + heartbeat × 2 (40ms) ≤ claim_ttl 10s ✓
+        // `refresh_timeout` is generous so the OUTER `refresh_coalesced`
+        // does NOT race the timeout under virtual time — we want the
+        // future to be SUSPENDED when we drop it, not resolved by
+        // timeout.
+        let cfg = RefreshCoordConfig {
+            claim_ttl: Duration::from_secs(10),
+            heartbeat_interval: Duration::from_millis(20),
+            refresh_timeout: Duration::from_secs(5),
+            reclaim_sweep_interval: Duration::from_secs(5),
+            sentinel_threshold: 3,
+            sentinel_window: Duration::from_hours(1),
+        };
+        let coord = Arc::new(
+            RefreshCoordinator::new_with(Arc::clone(&repo), ReplicaId::new("drop-test"), cfg)
+                .expect("config valid"),
+        );
+        let cid = CredentialId::new();
+
+        // Spawn the refresh future. The user closure parks on
+        // `pending()` so the future is suspended at the `select!` arm
+        // when we abort the JoinHandle.
+        let coord_for_task = Arc::clone(&coord);
+        let cid_for_task = cid;
+        let handle = tokio::spawn(async move {
+            coord_for_task
+                .refresh_coalesced(
+                    &cid_for_task,
+                    |_| async { true },
+                    |_claim| async move {
+                        // Park forever — only Drop on the outer future
+                        // will end this. Without the wave-5 fix, the
+                        // heartbeat task and L2 row leak when the outer
+                        // future is dropped here.
+                        pending::<Result<i32, RefreshError>>().await
+                    },
+                )
+                .await
+        });
+
+        // Drive virtual time past several heartbeat intervals so the
+        // heartbeat task has actually fired ticks before drop. Yielding
+        // between advance steps lets the spawned heartbeat task run.
+        for _ in 0..10 {
+            tokio::time::advance(Duration::from_millis(20)).await;
+            tokio::task::yield_now().await;
+        }
+        let count_before_drop = heartbeat_count.load(Ordering::Relaxed);
+        assert!(
+            count_before_drop >= 1,
+            "heartbeat task must have ticked at least once before drop; got {count_before_drop}"
+        );
+
+        // Abort the JoinHandle — this drops the suspended
+        // `refresh_coalesced` future. With the wave-5 fix, the
+        // teardown guard fires: cancel + abort + spawned release.
+        handle.abort();
+
+        // Yield so the dropped future's destructor runs, the heartbeat
+        // task's `cancelled()` arm wakes, and the spawned release task
+        // gets scheduled. A small budget (50 yields) is plenty under
+        // paused time — there are no real timers to wait on.
+        for _ in 0..50 {
+            tokio::task::yield_now().await;
+        }
+
+        // Advance virtual time WAY past several heartbeat intervals.
+        // With the fix, the heartbeat task has exited, so no ticks
+        // fire. Without the fix, the counter would climb by 50+ here.
+        for _ in 0..50 {
+            tokio::time::advance(Duration::from_millis(20)).await;
+            tokio::task::yield_now().await;
+        }
+
+        let count_after_drop = heartbeat_count.load(Ordering::Relaxed);
+        assert_eq!(
+            count_after_drop, count_before_drop,
+            "heartbeat task must STOP after refresh_coalesced is dropped; \
+             before={count_before_drop} after={count_after_drop} (fix not applied?)"
+        );
+
+        // L2 row must be released — a fresh `try_claim` from a
+        // different replica should win immediately. Without the fix,
+        // the heartbeat would keep extending the row's `expires_at`
+        // and `try_claim` would return `Contended`.
+        let attempt = repo
+            .try_claim(&cid, &ReplicaId::new("recoverer"), Duration::from_secs(5))
+            .await
+            .expect("try_claim must not error");
+        assert!(
+            matches!(attempt, ClaimAttempt::Acquired(_)),
+            "drop must not leave the L2 row held — got {attempt:?}"
         );
     }
 }
