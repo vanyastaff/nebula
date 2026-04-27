@@ -123,6 +123,14 @@ impl RefreshClaimRepo for InMemoryRefreshClaimRepo {
             holder: holder.clone(),
             acquired_at,
             expires_at,
+            // Resetting `sentinel` to `Normal` on overwrite is intentional.
+            // Sub-spec §3.5 invariant `reclaim_sweep_interval ≤ claim_ttl`
+            // (validated in `RefreshCoordConfig::validate`) guarantees the
+            // reclaim sweep observes any expired sentinel state before
+            // this overwrite path runs — so dropping the previous holder's
+            // `RefreshInFlight` here cannot cause silent loss of a
+            // sentinel signal that the sweep would otherwise have
+            // recorded.
             sentinel: SentinelState::Normal,
         };
         guard.insert(*credential_id, row);

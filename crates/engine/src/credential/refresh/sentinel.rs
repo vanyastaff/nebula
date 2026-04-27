@@ -156,7 +156,13 @@ impl SentinelTrigger {
         if count >= self.config.threshold {
             Ok(SentinelDecision::EscalateToReauth {
                 event_count: count,
-                window_secs: self.config.window.as_secs(),
+                // Saturate at 1 so sub-second test windows (e.g.
+                // `Duration::from_millis(50)`) don't surface as
+                // `window_secs: 0`. Production keeps full precision
+                // (1h ≫ 1s); only sub-second test escalations differ,
+                // and the saturation keeps `window_secs > 0` filters
+                // on dashboards usable. See PR #583 wave-3 review m3.
+                window_secs: self.config.window.as_secs().max(1),
             })
         } else {
             Ok(SentinelDecision::Recoverable { event_count: count })
@@ -324,15 +330,18 @@ mod tests {
             .unwrap();
 
         // The original event aged out; count = 2 (the two new ones).
+        // `window_secs` saturates at 1 (the sub-second 50ms window
+        // would otherwise truncate to 0 — m3 wave-3 fix). Dashboards
+        // filtering `window_secs > 0` stay usable.
         assert!(
             matches!(
                 third,
                 SentinelDecision::EscalateToReauth {
                     event_count: 2,
-                    window_secs: 0,
+                    window_secs: 1,
                 }
             ),
-            "expected EscalateToReauth with event_count=2; got {third:?}"
+            "expected EscalateToReauth with event_count=2 and saturated window_secs=1; got {third:?}"
         );
     }
 }
