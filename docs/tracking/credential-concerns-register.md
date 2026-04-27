@@ -98,9 +98,9 @@ All strategy-blocking findings resolved in Checkpoint 1 or deferred to spike val
 |---|---|---|---|---|
 | draft-f15 | In-proc vs cross-process RefreshToken handle mixed | tech-spec-material | locked-post-spike | Two-tier coordinator (L1 proc + L2 durable claim) — Tech Spec §6 |
 | draft-f16 | Heartbeat cadence / claim TTL / refresh timeout discipline | tech-spec-material | locked-post-spike | CI test + `debug_assert` constraints (not just documentation) per critique-c12 |
-| draft-f17 | Mid-refresh crash with rotated refresh_token (IdP invalidates old) | sub-spec | proposed | [`docs/superpowers/specs/2026-04-24-credential-refresh-coordination.md`](../superpowers/specs/2026-04-24-credential-refresh-coordination.md) — draft proposal (651 lines, status `proposal`) |
+| draft-f17 | Mid-refresh crash with rotated refresh_token (IdP invalidates old) | sub-spec | done | П2 landed via PR [#583](https://github.com/vanyastaff/nebula/pull/583) (2026-04-26) — two-tier coordinator (L1 + L2 claim repo per ADR-0041) + sentinel N=3-in-1h threshold + `ReauthRequired` escalation; closes n8n #13088 class race. Spec [`docs/superpowers/specs/2026-04-24-credential-refresh-coordination.md`](../superpowers/specs/2026-04-24-credential-refresh-coordination.md) frozen at P2 ship; plan [`docs/superpowers/plans/2026-04-26-credential-p2-refresh-coordination-l2.md`](../superpowers/plans/2026-04-26-credential-p2-refresh-coordination-l2.md); ADR [`docs/adr/0041-durable-credential-refresh-claim-repo.md`](../adr/0041-durable-credential-refresh-claim-repo.md) |
 | user-op-refresh | Refresh strategy: proactive / reactive / coordinated / failure handling | tech-spec-material | locked-post-spike | Tech Spec §6 |
-| user-op-distributed | Multi-replica refresh lock + cache invalidation broadcast + rotation coordination | sub-spec | pending-sub-spec | Refresh lock — see `draft-f17` (proposed); rotation leader + cache invalidation broadcast — separate sub-spec TBD (`RotationLeaderClaimRepo`) |
+| user-op-distributed | Multi-replica refresh lock + cache invalidation broadcast + rotation coordination | sub-spec | pending-sub-spec | Refresh lock — see `draft-f17` (done); rotation leader + cache invalidation broadcast — separate sub-spec TBD (`RotationLeaderClaimRepo`) |
 
 ## ProviderRegistry (sub-spec cluster)
 

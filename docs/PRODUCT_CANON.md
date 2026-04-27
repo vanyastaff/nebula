@@ -432,6 +432,16 @@ This is the **minimum bar** for “we did not break the product direction.” Ex
 4. **[L2]** **Trigger delivery semantics:** for TriggerAction-backed starts, tests cover the declared delivery contract (**at-least-once** unless explicitly stronger): no silent drop, and duplicate delivery is handled via stable event identity + dedup/idempotency (aligned with §9 and §11.3).
 5. **[L2]** **Non-idempotent side effects:** for ordinary Actions that can cause irreversible external effects (e.g. charge/refund/payout), integration tests prove **single-effect safety** under retry/restart/duplicate-dispatch pressure: idempotency key guard is applied before the side effect, and re-entry does **not** execute the external effect twice.
 
+### 13.2 Rotation refresh seam
+
+The canonical bar for credential rotation and refresh discipline (referenced as `§13.2` from credential-system ADRs and sub-specs). Restates the contract behind Integration bar item 2 above and ties it to the engine-orchestrated rotation seam (ADR-0030 §3) and cross-replica refresh coordination (ADR-0041).
+
+- **[L2]** **No silent strand:** an in-flight execution holding valid auth material survives a concurrent rotation or refresh of that credential — the engine completes the in-flight work against the material it observed at acquire time and does **not** mid-call swap to a fresher value that the action did not consent to.
+- **[L2]** **Explicit failure on irreconcilable state:** when reconciliation cannot succeed (e.g. provider rejected the refresh token, sentinel threshold tripped on repeated mid-refresh crashes per ADR-0041), the credential transitions to an explicit `ReauthRequired` state surfaced in `CredentialStatus` — never a silent stuck credential and never a synthetic success.
+- **[L2]** **Cross-replica coordination is durable, not folklore:** when running multi-replica, only one replica refreshes a credential per expiry window. The L2 claim repository (ADR-0041) is the ground truth; in-process L1 coalescing is an optimization on top, not a substitute.
+
+Tied seams: ADR-0028 cross-crate invariants (rotation/refresh boundaries between credential / storage / engine), ADR-0030 §3 engine-owned orchestration (refresh coordinator + rotation scheduler), ADR-0033 integration-credentials Plane B, ADR-0041 durable refresh claim repository. The credential Tech Spec §15.7 `SchemeGuard` (handed to resources at refresh time) prevents retention past the call site so a rotated credential does not bleed into the next request through a stale handle.
+
 **What “done” means for a change touching execution / API / storage / plugins:**
 
 - **[L2]** **Integration tests** exercise the path end-to-end, including **step 5** (engine-visible cancel), not only DB metadata.

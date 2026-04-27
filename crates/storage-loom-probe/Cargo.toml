@@ -1,0 +1,31 @@
+[package]
+name = "nebula-storage-loom-probe"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+description = "Loom CAS atomicity probe for the credential refresh-claim pattern (ADR-0041). Standalone — no nebula-storage dep — so RUSTFLAGS=\"--cfg loom\" can be set without polluting transitive deps that gate on cfg(loom)."
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+documentation.workspace = true
+keywords.workspace = true
+publish = false
+
+[dependencies]
+# Loom is the only runtime dep. Optional so the probe compiles cheaply
+# under non-loom builds (the test file itself is gated by `#![cfg(loom)]`).
+loom = { version = "0.7", optional = true }
+
+[features]
+default = []
+# Enables the loom dep so `--cfg loom` can resolve `loom::sync::atomic::*`.
+# Activated automatically by the helper script under
+# `RUSTFLAGS="--cfg loom"`.
+loom-test = ["dep:loom"]
+
+[lib]
+doctest = false
+
+[lints]
+workspace = true

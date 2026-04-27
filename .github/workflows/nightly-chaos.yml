@@ -1,0 +1,75 @@
+name: Nightly Chaos
+
+# Runs the full sub-spec §5.4 chaos plane (10 minutes × 100 credentials
+# × 3 replicas) plus loom probes. Default CI runs the scaled-down
+# 5s × 5-credential version; this workflow widens it via the
+# `chaos-full` feature.
+
+on:
+  schedule:
+    # 03:30 UTC daily — well after main CI quietens.
+    - cron: "30 3 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: 0
+  CARGO_NET_RETRY: 10
+  RUSTUP_MAX_RETRIES: 10
+  RUST_BACKTRACE: 1
+
+concurrency:
+  group: ${{ github.workflow }}
+  # Queue new triggers rather than cancelling a 25-min chaos run mid-flight
+  # — losing a partial chaos result on a re-fire wipes any signal we were
+  # going to record about the previous run.
+  cancel-in-progress: false
+
+jobs:
+  refresh-coordinator-chaos:
+    name: Refresh coordinator chaos (full)
+    runs-on: ubuntu-latest
+    # 10-min chaos run + compile time; allow 25 min total so an
+    # oversubscribed runner doesn't time out the assertion.
+    timeout-minutes: 25
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Cargo artifacts
+        uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: nightly-chaos
+          save-if: ${{ github.event_name == 'schedule' }}
+
+      - name: Install cargo-nextest
+        uses: taiki-e/install-action@cargo-nextest
+
+      - name: Run refresh-coordinator chaos test (full plane)
+        # Uses the `chaos` nextest profile (defined in
+        # `.config/nextest.toml`), which sets slow-timeout to 30 min so
+        # the 10-minute chaos plane is not killed by the `ci` profile's
+        # 180s slow-test ceiling.
+        run: |
+          set -euo pipefail
+          cargo nextest run \
+            -p nebula-engine \
+            --test refresh_coordinator_chaos \
+            --features chaos-full \
+            --profile chaos \
+            --no-tests=pass
+
+      - name: Upload chaos junit
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: nightly-chaos-junit
+          path: target/nextest/chaos/junit.xml
+          if-no-files-found: ignore
+          retention-days: 14

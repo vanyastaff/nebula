@@ -131,7 +131,7 @@ pub use contract::{
 };
 // Resolve types
 pub use contract::{
-    DisplayData, InteractionRequest, RefreshOutcome, RefreshPolicy, ResolveResult,
+    DisplayData, InteractionRequest, ReauthReason, RefreshOutcome, RefreshPolicy, ResolveResult,
     StaticResolveResult, TestResult, UserInput,
 };
 // Built-in credential implementations

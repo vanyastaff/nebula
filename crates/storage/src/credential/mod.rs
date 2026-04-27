@@ -21,6 +21,9 @@ pub mod pending;
 #[cfg(feature = "rotation")]
 pub mod backup;
 
+/// Cross-replica refresh claim repository — see ADR-0041.
+pub mod refresh_claim;
+
 #[cfg(feature = "rotation")]
 pub use backup::RotationBackup;
 #[cfg(any(test, feature = "test-util"))]
@@ -34,3 +37,11 @@ pub use layer::{
 pub use memory::InMemoryStore;
 #[cfg(any(test, feature = "credential-in-memory"))]
 pub use pending::InMemoryPendingStore;
+#[cfg(feature = "postgres")]
+pub use refresh_claim::PgRefreshClaimRepo;
+#[cfg(feature = "sqlite")]
+pub use refresh_claim::SqliteRefreshClaimRepo;
+pub use refresh_claim::{
+    ClaimAttempt, ClaimToken, HeartbeatError, InMemoryRefreshClaimRepo, ReclaimedClaim,
+    RefreshClaim, RefreshClaimRepo, ReplicaId, RepoError, SentinelState,
+};

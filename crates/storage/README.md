@@ -66,6 +66,28 @@ Layer 2 — planned / experimental (`repos` module):
   lands with ADR-0008 follow-ups A2 / A3). All other `repos::*` traits are spec-16 design
   placeholders with no implementations — see Appendix.
 
+Credential coordination — durable refresh claim (П2 / ADR-0041):
+
+- `credential::refresh_claim::RefreshClaimRepo` — cross-replica claim seam for the engine's
+  two-tier `RefreshCoordinator` (L1 in-process coalescer + L2 durable claim). Provides
+  CAS-based `try_claim` (one acquirer wins under contention), `heartbeat` (TTL extension
+  validated against `ClaimToken` generation), idempotent `release`, and `reclaim_stuck`
+  (sweeps expired claims past TTL). `mark_sentinel` flags an in-flight IdP POST so a
+  reclaim sweep can detect mid-refresh crashes; `record_sentinel_event` +
+  `count_sentinel_events_in_window` back the engine's N=3-in-1h `ReauthRequired`
+  escalation per sub-spec
+  [`2026-04-24-credential-refresh-coordination.md`](../../docs/superpowers/specs/2026-04-24-credential-refresh-coordination.md)
+  §3.4-§3.6.
+- `RefreshClaim`, `ClaimAttempt`, `ClaimToken`, `RepoError`, `HeartbeatError`,
+  `ReclaimedClaim`, `SentinelState`, `ReplicaId` — DTO surface re-exported at
+  `nebula_storage::{RefreshClaim, ClaimAttempt, ClaimToken, …}`.
+- `InMemoryRefreshClaimRepo` — production-shaped reference impl for tests + single-replica
+  deploys.
+- Feature `sqlite` adds `SqliteRefreshClaimRepo` (default local backend; `SQLITE` migrations
+  `0022_credential_refresh_claims` + `0023_credential_sentinel_events`).
+- Feature `postgres` adds `PgRefreshClaimRepo` (production multi-replica backend; `POSTGRES`
+  migrations `0022_credential_refresh_claims` + `0023_credential_sentinel_events`).
+
 ## Contract
 
 - **[L2-§11.1]** `ExecutionRepo::transition` is the **single source of truth** for execution
@@ -97,6 +119,16 @@ Layer 2 — planned / experimental (`repos` module):
 - **[L2-§12.3]** The default local storage path is **SQLite** (file or `sqlite::memory:`).
   In-process tests use `nebula_storage::test_support` (`sqlite_memory_*` helpers), not a
   separate HashMap "memory backend." There is **one** local storage path.
+
+- **[ADR-0041 / sub-spec §3]** `RefreshClaimRepo::try_claim` MUST be atomic under
+  contention — exactly one of N concurrent acquirers across N replicas wins. Implementations
+  achieve this via a CAS-shaped `INSERT … ON CONFLICT DO UPDATE WHERE expires_at < now()`
+  predicate (Postgres + SQLite) or a per-key `parking_lot::Mutex` guarded `HashMap` swap
+  (in-memory). `heartbeat` MUST validate the `ClaimToken.generation` so a stale holder
+  cannot extend a reclaimed claim (reclaim sweep bumps generation). `reclaim_stuck` MUST
+  return reclaimed credentials atomically — a partial reclaim that releases the row but
+  fails to surface it to the caller would leave the sentinel state un-observed and the
+  N=3-in-1h escalation count short. Seam: `crates/storage/src/credential/refresh_claim/`.
 
 ## Non-goals
 
@@ -166,7 +198,7 @@ contract consumers should depend on today.
 
 | Backend | Feature flag | Status |
 |---|---|---|
-| SQLite (file or `sqlite::memory:`) | built-in | `implemented` — local + test default |
+| SQLite (file or `sqlite::memory:`) | `sqlite` | `implemented` — local + test default; feature-gated since the wave-2 review (driver footprint not unconditional) |
 | PostgreSQL | `postgres` | `implemented` — production path |
 | Redis | `redis` | `experimental` — KV only, not execution state |
 | S3 / MinIO | `s3` | `experimental` — blob storage |

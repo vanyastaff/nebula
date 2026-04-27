@@ -7,7 +7,7 @@
 
 use std::fmt;
 
-use crate::CredentialId;
+use crate::{CredentialId, resolve::ReauthReason};
 
 /// Cross-crate credential lifecycle event.
 ///
@@ -23,7 +23,7 @@ use crate::CredentialId;
 /// let event = CredentialEvent::Refreshed { credential_id: id };
 /// assert_eq!(event.credential_id(), id);
 /// ```
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum CredentialEvent {
     /// Auth material was refreshed (e.g., OAuth2 token refresh).
@@ -43,6 +43,27 @@ pub enum CredentialEvent {
         /// The credential instance ID.
         credential_id: CredentialId,
     },
+
+    /// Credential needs full re-authentication. Per sub-spec §3.4
+    /// ([credential-refresh-coordination]) the engine emits this when:
+    ///
+    /// - The IdP rejects the refresh (`ReauthReason::ProviderRejected`).
+    /// - The sentinel threshold (default N=3 within 1h) is exceeded for mid-refresh crashes
+    ///   (`ReauthReason::SentinelRepeated`).
+    /// - A locally detected lack of refresh material — e.g. an OAuth2 state with no `refresh_token`
+    ///   (`ReauthReason::MissingRefreshMaterial`); the IdP was never contacted.
+    ///
+    /// Consumers (UI, monitoring) surface a re-auth prompt. Pools and
+    /// connections using this credential must be invalidated until the
+    /// user re-authenticates.
+    ///
+    /// [credential-refresh-coordination]: https://github.com/nebula-engine/nebula/blob/main/docs/superpowers/specs/2026-04-24-credential-refresh-coordination.md
+    ReauthRequired {
+        /// The credential instance ID.
+        credential_id: CredentialId,
+        /// Why re-authentication is required.
+        reason: ReauthReason,
+    },
 }
 
 impl CredentialEvent {
@@ -50,7 +71,9 @@ impl CredentialEvent {
     #[must_use]
     pub fn credential_id(&self) -> CredentialId {
         match self {
-            Self::Refreshed { credential_id } | Self::Revoked { credential_id } => *credential_id,
+            Self::Refreshed { credential_id }
+            | Self::Revoked { credential_id }
+            | Self::ReauthRequired { credential_id, .. } => *credential_id,
         }
     }
 }
@@ -63,6 +86,15 @@ impl fmt::Display for CredentialEvent {
             },
             Self::Revoked { credential_id } => {
                 write!(f, "credential revoked: {credential_id}")
+            },
+            Self::ReauthRequired {
+                credential_id,
+                reason,
+            } => {
+                write!(
+                    f,
+                    "credential reauth required: {credential_id} ({reason:?})"
+                )
             },
         }
     }
@@ -107,10 +139,30 @@ mod tests {
     }
 
     #[test]
-    fn copy_and_eq_work() {
+    fn clone_and_eq_work() {
         let id = CredentialId::new();
         let event = CredentialEvent::Refreshed { credential_id: id };
-        let copied = event;
-        assert_eq!(event, copied);
+        let cloned = event.clone();
+        assert_eq!(event, cloned);
+    }
+
+    #[test]
+    fn reauth_required_carries_reason() {
+        use crate::resolve::ReauthReason;
+
+        let id = CredentialId::new();
+        let event = CredentialEvent::ReauthRequired {
+            credential_id: id,
+            reason: ReauthReason::SentinelRepeated {
+                event_count: 3,
+                window_secs: 3600,
+            },
+        };
+        assert_eq!(event.credential_id(), id);
+        let display = event.to_string();
+        assert!(
+            display.starts_with("credential reauth required: cred_"),
+            "display: {display}"
+        );
     }
 }

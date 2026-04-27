@@ -20,6 +20,16 @@ default = []
 # variant via a single feature on the engine dependency.
 unstable-retry-scheduler = ["nebula-action/unstable-retry-scheduler"]
 rotation = ["nebula-credential/rotation", "nebula-storage/rotation"]
+# Run the full 10-min refresh-coordinator chaos test (sub-spec §5.4) in
+# `crates/engine/tests/refresh_coordinator_chaos.rs`. Default CI runs the
+# scaled-down 30s version; this feature is enabled in the nightly chaos
+# CI job to widen the test plane to 100 credentials × 10 minutes.
+chaos-full = []
+# Exposes `RefreshCoordMetrics::for_tests()` and other test-only helpers
+# that need to construct private MetricsRegistry instances without
+# routing through the engine-shared registry. Must NOT be enabled in a
+# production release build — see ADR-0023.
+test-util = []
 
 [dependencies]
 nebula-core = { path = "../core" }
@@ -77,6 +87,7 @@ tokio-util = { workspace = true }
 criterion = { workspace = true }
 insta = { workspace = true }
 pretty_assertions = { workspace = true }
+proptest = { workspace = true }
 rstest = { workspace = true }
 wiremock = { workspace = true }
 

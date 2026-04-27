@@ -381,6 +381,10 @@ async fn persist_oauth_state(
         created_at,
         updated_at: now,
         expires_at: oauth_state.expires_at(),
+        // Refresh-coordination state belongs to the resolver; the OAuth
+        // create/exchange path inserts a fresh credential, so reauth
+        // is not required.
+        reauth_required: false,
         metadata,
     };
 

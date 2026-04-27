@@ -406,6 +406,7 @@ mod tests {
             created_at: chrono::Utc::now(),
             updated_at: chrono::Utc::now(),
             expires_at: None,
+            reauth_required: false,
             metadata: Default::default(),
         };
         inner.put(cred, PutMode::CreateOnly).await.unwrap();
@@ -608,6 +609,7 @@ mod tests {
             created_at: chrono::Utc::now(),
             updated_at: chrono::Utc::now(),
             expires_at: None,
+            reauth_required: false,
             metadata: Default::default(),
         };
         inner.put(cred, PutMode::CreateOnly).await.unwrap();

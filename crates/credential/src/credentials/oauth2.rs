@@ -532,7 +532,16 @@ impl Refreshable for OAuth2Credential {
         _ctx: &CredentialContext,
     ) -> Result<RefreshOutcome, CredentialError> {
         if state.refresh_token.is_none() {
-            return Ok(RefreshOutcome::ReauthRequired);
+            // Locally detected: we never spoke to the IdP, so this is
+            // *not* a provider rejection. Surface as
+            // `MissingRefreshMaterial` so operators can distinguish a
+            // misconfigured grant (no refresh_token issued) from a
+            // genuine provider invalidation.
+            return Ok(RefreshOutcome::ReauthRequired(
+                crate::resolve::ReauthReason::MissingRefreshMaterial {
+                    detail: "OAuth2 state has no refresh_token".to_string(),
+                },
+            ));
         }
 
         // Token refresh HTTP has moved to nebula-engine per ADR-0031;
@@ -1195,7 +1204,17 @@ mod tests {
 
         let ctx = CredentialContext::for_test("test-user");
         let outcome = OAuth2Credential::refresh(&mut state, &ctx).await.unwrap();
-        assert_eq!(outcome, RefreshOutcome::ReauthRequired);
+        // Locally detected: never spoke to the IdP. Distinct from
+        // `ProviderRejected` per wave-2 review (see ReauthReason rustdoc).
+        assert!(
+            matches!(
+                outcome,
+                RefreshOutcome::ReauthRequired(
+                    crate::resolve::ReauthReason::MissingRefreshMaterial { .. }
+                )
+            ),
+            "expected ReauthRequired(MissingRefreshMaterial); got {outcome:?}"
+        );
     }
 
     #[test]

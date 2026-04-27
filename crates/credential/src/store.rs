@@ -46,6 +46,27 @@ pub struct StoredCredential {
     pub updated_at: chrono::DateTime<chrono::Utc>,
     /// Optional expiration time.
     pub expires_at: Option<chrono::DateTime<chrono::Utc>>,
+    /// Whether the credential requires interactive re-authentication.
+    ///
+    /// Set to `true` when a refresh attempt returns
+    /// [`crate::resolve::RefreshOutcome::ReauthRequired`] (provider rejected the
+    /// refresh token, e.g. OAuth2 `invalid_grant`, or sentinel-threshold
+    /// escalation per credential refresh sub-spec §3.4 / §3.6). Cleared
+    /// (`false`) on a successful `Refreshed` outcome.
+    ///
+    /// Cross-replica readers (e.g. the L2 post-backoff state-recheck
+    /// predicate) consult this flag to short-circuit refresh attempts that
+    /// would otherwise produce a duplicate IdP rejection — preventing
+    /// `O(replicas)` IdP load on a credential that has already been
+    /// rejected.
+    ///
+    /// Persistence: backends store this either as a dedicated column or as
+    /// a key in the metadata blob. Backend row structs that do use serde
+    /// should annotate this field with `#[serde(default)]` so older rows
+    /// missing the field deserialize as `false`. No dedicated SQL column
+    /// is required on `StoredCredential` itself (which has no serde
+    /// derives).
+    pub reauth_required: bool,
     /// Arbitrary metadata.
     pub metadata: serde_json::Map<String, Value>,
 }
@@ -182,6 +203,7 @@ pub mod test_helpers {
             created_at: chrono::Utc::now(),
             updated_at: chrono::Utc::now(),
             expires_at: None,
+            reauth_required: false,
             metadata: Default::default(),
         }
     }
