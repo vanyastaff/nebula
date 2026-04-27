@@ -57,7 +57,7 @@ pub mod topology_tag;
 
 pub use cell::Cell;
 pub use context::ResourceContext;
-pub use error::{Error, ErrorKind, ErrorScope};
+pub use error::{Error, ErrorKind, ErrorScope, RefreshOutcome, RevokeOutcome, RotationOutcome};
 pub use events::ResourceEvent;
 pub use ext::HasResourcesExt;
 pub use guard::ResourceGuard;
