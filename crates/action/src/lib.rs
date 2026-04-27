@@ -47,12 +47,12 @@ pub mod context;
 pub mod control;
 /// Error types distinguishing retryable from fatal failures.
 pub mod error;
-/// [`IdempotencyKey`] — transport-level dedup identifier returned by triggers.
-pub mod idempotency;
 /// Top-level [`ActionHandler`] enum dispatcher. Domain handler traits and
 /// adapters live in their respective domain files and are re-exported here
 /// for backwards compatibility of the `nebula_action::handler::*` path space.
 pub mod handler;
+/// [`IdempotencyKey`] — transport-level dedup identifier returned by triggers.
+pub mod idempotency;
 /// Assertion macros for testing action results (`assert_success!`, etc.).
 mod macros;
 /// Static metadata, versioning, and execution mode descriptors.
@@ -102,8 +102,8 @@ pub use control::{ControlAction, ControlActionAdapter, ControlInput, ControlOutc
 pub use error::{
     ActionError, ActionErrorExt, MAX_VALIDATION_DETAIL, RetryHintCode, ValidationReason,
 };
-pub use idempotency::IdempotencyKey;
 pub use handler::ActionHandler;
+pub use idempotency::IdempotencyKey;
 pub use metadata::{ActionCategory, ActionMetadata, IsolationLevel, MetadataCompatibilityError};
 pub use nebula_action_macros::{Action, action_phantom};
 pub use nebula_core::{
