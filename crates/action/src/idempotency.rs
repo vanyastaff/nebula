@@ -12,7 +12,7 @@ use std::fmt;
 
 /// Stable per-event dedup identifier returned by a trigger.
 ///
-/// `None` from [`TriggerAction::idempotency_key`] means the trigger does not
+/// `None` from `TriggerAction::idempotency_key` means the trigger does not
 /// supply a dedup id — engine falls back to the transport's own dedup or
 /// re-delivers events.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]

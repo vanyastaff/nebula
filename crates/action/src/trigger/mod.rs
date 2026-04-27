@@ -79,12 +79,12 @@ use crate::{context::TriggerContext, error::ActionError, metadata::ActionMetadat
 )]
 pub trait TriggerAction: Send + Sync + 'static {
     /// Trigger event family — see [`TriggerSource`] (e.g.
-    /// [`WebhookSource`](crate::WebhookSource), [`PollSource`](crate::PollSource)).
+    /// `WebhookSource`, `PollSource`).
     type Source: TriggerSource;
 
     /// Error type returned by lifecycle methods.
     ///
-    /// Most implementations use [`ActionError`](crate::ActionError) directly.
+    /// Most implementations use [`ActionError`] directly.
     /// Specialized triggers MAY use a richer typed error and let the
     /// adapter wrap it on the way to the dyn-layer.
     type Error: std::error::Error + Send + Sync + 'static;
@@ -94,7 +94,7 @@ pub trait TriggerAction: Send + Sync + 'static {
 
     /// Start the trigger (register listener, schedule poll, etc.).
     ///
-    /// Per [`TriggerHandler::start`](crate::TriggerHandler::start) for the
+    /// Per [`TriggerHandler::start`] for the
     /// two valid lifecycle shapes (setup-and-return vs run-until-cancelled)
     /// and cancel-safety contract.
     fn start(
