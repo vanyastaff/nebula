@@ -65,6 +65,7 @@ rstest = { workspace = true }
 # wires #[capability] and #[action_phantom] together via local stand-in types.
 zeroize = { version = "1.8.2", features = ["zeroize_derive"] }
 serde = { workspace = true, features = ["derive"] }
+trybuild = "1"
 
 [lints]
 workspace = true
