@@ -71,7 +71,7 @@ where
                 .await
                 .map_err(|e| DaemonError::StartFailed {
                     key: self.key.clone(),
-                    reason: e.to_string(),
+                    source: Box::new(e),
                 })
         })
     }
@@ -136,13 +136,18 @@ impl DaemonRegistry {
         self.daemons.is_empty()
     }
 
-    /// Register a `Daemon` impl. Returns `DaemonError::DuplicateKey` if a
-    /// daemon with the same `D::key()` is already registered.
+    /// Register a `Daemon` impl.
+    ///
+    /// Atomic via DashMap's [`Entry`](dashmap::mapref::entry::Entry) API:
+    /// duplicate detection and insertion happen under a single shard lock.
     ///
     /// # Errors
     ///
-    /// Returns `DaemonError::DuplicateKey` on collision (fail-closed per
-    /// ADR-0030 / Tech Spec §15.6 N7).
+    /// - [`DaemonError::DuplicateKey`] when a daemon with the same `D::key()` is already registered
+    ///   (fail-closed per ADR-0030 / Tech Spec §15.6 N7).
+    /// - [`DaemonError::RegistryCancelled`] when [`Self::shutdown`] has already cancelled the
+    ///   parent token; subsequent daemons would inherit a pre-cancelled child and never run, so the
+    ///   registry refuses the registration upfront.
     pub fn register<D>(
         &self,
         daemon: D,
@@ -154,10 +159,10 @@ impl DaemonRegistry {
         D: Daemon + Clone + Send + Sync + 'static,
         D::Runtime: Send + Sync + 'static,
     {
-        let key = D::key();
-        if self.daemons.contains_key(&key) {
-            return Err(DaemonError::DuplicateKey { key });
+        if self.parent_cancel.is_cancelled() {
+            return Err(DaemonError::RegistryCancelled);
         }
+        let key = D::key();
         let runtime_state = Arc::new(DaemonRuntime::<D>::new(config, self.parent_cancel.clone()));
         let handle: Arc<dyn AnyDaemonHandle> = Arc::new(TypedDaemonHandle {
             daemon,
@@ -166,9 +171,14 @@ impl DaemonRegistry {
             ctx,
             key: key.clone(),
         });
-        tracing::info!(daemon.key = %key, "daemon registered");
-        self.daemons.insert(key, handle);
-        Ok(())
+        match self.daemons.entry(key.clone()) {
+            dashmap::mapref::entry::Entry::Occupied(_) => Err(DaemonError::DuplicateKey { key }),
+            dashmap::mapref::entry::Entry::Vacant(slot) => {
+                tracing::info!(daemon.key = %key, "daemon registered");
+                slot.insert(handle);
+                Ok(())
+            },
+        }
     }
 
     /// Start every registered daemon in parallel.
@@ -178,9 +188,14 @@ impl DaemonRegistry {
     ///
     /// # Errors
     ///
-    /// Returns `DaemonError::StartFailed` for the first daemon that failed
-    /// (others may have succeeded; check via [`Self::is_running`]).
+    /// - [`DaemonError::RegistryCancelled`] if [`Self::shutdown`] already cancelled the parent
+    ///   token.
+    /// - [`DaemonError::StartFailed`] for the first daemon that failed (others may have succeeded;
+    ///   check via [`Self::is_running`]).
     pub async fn start_all(&self) -> Result<(), DaemonError> {
+        if self.parent_cancel.is_cancelled() {
+            return Err(DaemonError::RegistryCancelled);
+        }
         let handles: Vec<Arc<dyn AnyDaemonHandle>> = self
             .daemons
             .iter()
@@ -208,7 +223,12 @@ impl DaemonRegistry {
 
     /// Whether the daemon under `key` is currently running.
     pub async fn is_running(&self, key: &ResourceKey) -> bool {
-        match self.daemons.get(key) {
+        // Clone the Arc<dyn AnyDaemonHandle> out of the DashMap before
+        // awaiting — holding the entry guard across `.await` would block
+        // shard access for other operations and is the same pattern used
+        // by `start_all`/`stop_all` for their handle-collection step.
+        let handle = self.daemons.get(key).map(|entry| Arc::clone(entry.value()));
+        match handle {
             Some(handle) => handle.is_running().await,
             None => false,
         }
@@ -216,8 +236,11 @@ impl DaemonRegistry {
 
     /// Cancel the parent token and stop every daemon.
     ///
-    /// After `shutdown`, the registry's parent token is cancelled and cannot
-    /// be reused. Construct a new registry to start over.
+    /// After `shutdown`, the registry's parent token is cancelled. Subsequent
+    /// [`Self::register`] / [`Self::start_all`] calls return
+    /// [`DaemonError::RegistryCancelled`] — the registry refuses to register
+    /// new daemons that would inherit a pre-cancelled child token, and
+    /// refuses to attempt restarts. Construct a new registry to start over.
     pub async fn shutdown(&self) {
         self.parent_cancel.cancel();
         self.stop_all().await;
@@ -255,13 +278,26 @@ pub enum DaemonError {
         key: ResourceKey,
     },
     /// `DaemonRuntime::start` returned an error.
-    #[error("daemon start failed for {key}: {reason}")]
+    ///
+    /// The original error is preserved as `#[source]` so callers can walk
+    /// the error chain via [`std::error::Error::source`] for full diagnostic
+    /// context.
+    #[error("daemon start failed for {key}")]
     StartFailed {
         /// The daemon whose start failed.
         key: ResourceKey,
-        /// The error message from `Resource::Error` propagation.
-        reason: String,
+        /// Original error from `DaemonRuntime::start` (typically a
+        /// `nebula_resource::Error`).
+        #[source]
+        source: Box<dyn std::error::Error + Send + Sync>,
     },
+    /// The registry's parent token has been cancelled by [`DaemonRegistry::shutdown`].
+    /// Subsequent registrations or start attempts are refused — construct a
+    /// new registry instead.
+    #[error(
+        "daemon registry has been shut down; construct a new registry to register or start daemons"
+    )]
+    RegistryCancelled,
 }
 
 #[cfg(test)]
@@ -418,64 +454,53 @@ mod tests {
         assert!(matches!(err, DaemonError::DuplicateKey { .. }));
     }
 
-    /// Verifies the contract: when one daemon fails to start, siblings
-    /// still complete their start. `start_all` returns the first error,
-    /// but partial-startup state is observable via `is_running`.
+    /// Second test daemon used by the parallel-start + aggregation tests.
+    /// Distinct `Resource::key` so it can register alongside `CountedDaemon`.
+    #[derive(Clone)]
+    struct CountedDaemonB {
+        attempts: Arc<AtomicU32>,
+    }
+    impl Resource for CountedDaemonB {
+        type Config = EmptyCfg;
+        type Runtime = ();
+        type Lease = ();
+        type Error = TestError;
+        type Credential = nebula_credential::NoCredential;
+        fn key() -> ResourceKey {
+            ResourceKey::new("registry-counted-b").unwrap()
+        }
+        async fn create(
+            &self,
+            _config: &Self::Config,
+            _scheme: &<Self::Credential as nebula_credential::Credential>::Scheme,
+            _ctx: &ResourceContext,
+        ) -> Result<(), TestError> {
+            Ok(())
+        }
+        fn metadata() -> ResourceMetadata {
+            ResourceMetadata::from_key(&Self::key())
+        }
+    }
+    impl Daemon for CountedDaemonB {
+        async fn run(
+            &self,
+            _runtime: &Self::Runtime,
+            _ctx: &ResourceContext,
+            cancel: CancellationToken,
+        ) -> Result<(), TestError> {
+            self.attempts.fetch_add(1, Ordering::SeqCst);
+            cancel.cancelled().await;
+            Ok(())
+        }
+    }
+
+    /// `start_all` invokes every registered daemon's start in parallel —
+    /// neither daemon blocks the other from making progress.
     #[tokio::test]
-    async fn start_all_aggregates_failures() {
-        // Daemon that errors on its first run() — Always policy + max_restarts=0
-        // means start() spawns a task that will exit Err immediately, but the
-        // start() call itself returns Ok (the task is detached).
-        //
-        // To genuinely test "one daemon's *start* fails but siblings continue",
-        // we need a daemon whose DaemonRuntime::start returns Err. The current
-        // shape only fails on second concurrent start (already-running guard).
-        //
-        // We exercise the partial-startup-observability contract by registering
-        // two distinct daemons, calling start_all, then verifying both became
-        // running independently — i.e., neither blocked the other from starting.
+    async fn start_all_starts_daemons_in_parallel() {
         let reg = DaemonRegistry::new();
         let attempts_a = Arc::new(AtomicU32::new(0));
         let attempts_b = Arc::new(AtomicU32::new(0));
-
-        // Two distinct keys → both register cleanly.
-        #[derive(Clone)]
-        struct CountedDaemonB {
-            attempts: Arc<AtomicU32>,
-        }
-        impl Resource for CountedDaemonB {
-            type Config = EmptyCfg;
-            type Runtime = ();
-            type Lease = ();
-            type Error = TestError;
-            type Credential = nebula_credential::NoCredential;
-            fn key() -> ResourceKey {
-                ResourceKey::new("registry-counted-b").unwrap()
-            }
-            async fn create(
-                &self,
-                _config: &Self::Config,
-                _scheme: &<Self::Credential as nebula_credential::Credential>::Scheme,
-                _ctx: &ResourceContext,
-            ) -> Result<(), TestError> {
-                Ok(())
-            }
-            fn metadata() -> ResourceMetadata {
-                ResourceMetadata::from_key(&Self::key())
-            }
-        }
-        impl Daemon for CountedDaemonB {
-            async fn run(
-                &self,
-                _runtime: &Self::Runtime,
-                _ctx: &ResourceContext,
-                cancel: CancellationToken,
-            ) -> Result<(), TestError> {
-                self.attempts.fetch_add(1, Ordering::SeqCst);
-                cancel.cancelled().await;
-                Ok(())
-            }
-        }
 
         reg.register(
             CountedDaemon {
@@ -497,15 +522,96 @@ mod tests {
         .expect("register B");
 
         reg.start_all().await.expect("start_all ok");
-        // Give both daemons a chance to enter their cancel-await loops.
         tokio::time::sleep(Duration::from_millis(20)).await;
 
-        // Both attempted to run — neither blocked by the other.
+        // Both daemons reached their loop body — parallel start, neither
+        // blocked the other.
         assert_eq!(attempts_a.load(Ordering::SeqCst), 1);
         assert_eq!(attempts_b.load(Ordering::SeqCst), 1);
         assert!(reg.is_running(&CountedDaemon::key()).await);
         assert!(reg.is_running(&CountedDaemonB::key()).await);
 
         reg.shutdown().await;
+    }
+
+    /// Failure-aggregation contract: when `start_all` calls `start()` on a
+    /// daemon that's already running (returns `Err("daemon is already
+    /// running")`), the failure does NOT tear down the live siblings.
+    /// `start_all` returns the first error; both daemons remain running
+    /// from the prior `start_all` call.
+    #[tokio::test]
+    async fn start_all_does_not_tear_down_siblings_on_repeat_failure() {
+        let reg = DaemonRegistry::new();
+        let attempts_a = Arc::new(AtomicU32::new(0));
+        let attempts_b = Arc::new(AtomicU32::new(0));
+
+        reg.register(
+            CountedDaemon {
+                attempts: Arc::clone(&attempts_a),
+            },
+            Arc::new(()),
+            DaemonConfig::default(),
+            make_ctx(),
+        )
+        .expect("register A");
+        reg.register(
+            CountedDaemonB {
+                attempts: Arc::clone(&attempts_b),
+            },
+            Arc::new(()),
+            DaemonConfig::default(),
+            make_ctx(),
+        )
+        .expect("register B");
+
+        reg.start_all().await.expect("first start_all ok");
+        tokio::time::sleep(Duration::from_millis(20)).await;
+        assert!(reg.is_running(&CountedDaemon::key()).await);
+        assert!(reg.is_running(&CountedDaemonB::key()).await);
+
+        // Second start_all — both daemons still have running tasks, so each
+        // `DaemonRuntime::start` returns Err("daemon is already running").
+        // The aggregation contract: `start_all` collects both errors and
+        // returns the first one — it does NOT short-circuit, and it does
+        // NOT tear down siblings.
+        let result = reg.start_all().await;
+        assert!(
+            matches!(result, Err(DaemonError::StartFailed { .. })),
+            "second start_all expected to surface 'already running' error: {result:?}",
+        );
+
+        // Both daemons remain running — the failed start_all did not poison
+        // their state.
+        assert!(reg.is_running(&CountedDaemon::key()).await);
+        assert!(reg.is_running(&CountedDaemonB::key()).await);
+
+        reg.shutdown().await;
+    }
+
+    /// `register` and `start_all` reject calls after `shutdown` has cancelled
+    /// the parent token. Without this guard, daemons would inherit a
+    /// pre-cancelled child and silently never run.
+    #[tokio::test]
+    async fn register_and_start_all_rejected_after_shutdown() {
+        let reg = DaemonRegistry::new();
+        reg.shutdown().await;
+
+        let err = reg
+            .register(
+                CountedDaemon {
+                    attempts: Arc::new(AtomicU32::new(0)),
+                },
+                Arc::new(()),
+                DaemonConfig::default(),
+                make_ctx(),
+            )
+            .expect_err("register after shutdown must error");
+        assert!(matches!(err, DaemonError::RegistryCancelled));
+
+        let start_err = reg
+            .start_all()
+            .await
+            .expect_err("start_all after shutdown must error");
+        assert!(matches!(start_err, DaemonError::RegistryCancelled));
     }
 }

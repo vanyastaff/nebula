@@ -60,7 +60,7 @@ External connections — database pools, HTTP clients, message brokers — are a
 
 See `docs/MATURITY.md` row for `nebula-resource`.
 
-- API stability: `frontier` — 7 topologies, `Manager`, `ReleaseQueue`, and `ResourceGuard` are the authoritative lifecycle surface; topology runtime variants are actively evolving.
+- API stability: `frontier` — 5 topologies, `Manager`, `ReleaseQueue`, and `ResourceGuard` are the authoritative lifecycle surface; topology runtime variants are actively evolving.
 - `#![forbid(unsafe_code)]` enforced, `#![warn(missing_docs)]` active.
 - Integration tests: 0 in `tests/`; lifecycle covered by unit tests per topology.
 

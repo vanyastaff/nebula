@@ -61,10 +61,18 @@ pub trait EventSource: Resource {
 }
 
 /// EventSource configuration.
+///
+/// Currently inert under [`EventSourceAdapter`] — the adapter does not consult
+/// any field. Reserved for forward-compat: future transports may own bounded
+/// queues / flow-control parameters, and consumers can opt in via this
+/// `#[non_exhaustive]` struct without requiring a follow-up signature change.
 #[derive(Debug, Clone, Default)]
 #[non_exhaustive]
 pub struct EventSourceConfig {
-    /// Buffer size for the event channel (transport-dependent semantics).
+    /// Buffer size hint for transports that own a bounded internal queue
+    /// between `subscribe` and `recv`. **Currently NOT consulted by
+    /// `EventSourceAdapter::start`** — wire to a real buffering mechanism
+    /// when a concrete EventSource implementation needs flow control.
     pub buffer_size: usize,
 }
 
@@ -214,11 +222,16 @@ where
     async fn start(&self, ctx: &(impl TriggerContext + ?Sized)) -> Result<(), ActionError> {
         let resource_ctx =
             ResourceContext::minimal(ctx.scope().clone(), ctx.cancellation().clone());
-        let mut subscription = self
-            .source
-            .subscribe(&self.runtime, &resource_ctx)
-            .await
-            .map_err(|e| ActionError::retryable(e.to_string()))?;
+        let mut subscription = match self.source.subscribe(&self.runtime, &resource_ctx).await {
+            Ok(sub) => sub,
+            Err(e) => {
+                // Subscribe failure: classify by ErrorKind same as recv so a
+                // permanent / not-found subscribe error doesn't loop the
+                // engine's restart supervisor against a broken source.
+                ctx.health().record_error();
+                return Err(classify_resource_error(e.into()));
+            },
+        };
 
         loop {
             tokio::select! {
@@ -237,37 +250,13 @@ where
                             }
                         }
                         Err(e) => {
-                            // Classify via nebula_resource::Error semantics.
-                            // Supertrait `Resource::Error: Into<crate::Error>`
-                            // (resource.rs:237) propagates the conversion.
-                            // Permanent / NotFound / Cancelled -> fatal so the
-                            // engine's daemon supervisor doesn't hot-loop into
-                            // a broken source. Retryable kinds (Transient,
-                            // Exhausted, Backpressure) keep the loop alive —
-                            // recv() blocks until the next event so there's no
-                            // backoff to apply here. A future RecvErrorPolicy
-                            // enum could add structured backoff once a real
-                            // EventSource consumer needs operator tuning.
-                            let res_err: nebula_resource::Error = e.into();
                             ctx.health().record_error();
-                            if matches!(
-                                res_err.kind(),
-                                ResourceErrorKind::Transient
-                                    | ResourceErrorKind::Exhausted { .. }
-                                    | ResourceErrorKind::Backpressure
-                            ) {
-                                tracing::warn!(
-                                    error = %res_err,
-                                    "event_source: recv transient error; continuing",
-                                );
-                                continue;
+                            let res_err: nebula_resource::Error = e.into();
+                            match classify_resource_error_outcome(res_err) {
+                                RecvOutcome::Continue => continue,
+                                RecvOutcome::Cancelled => return Ok(()),
+                                RecvOutcome::Fatal(action_err) => return Err(action_err),
                             }
-                            tracing::error!(
-                                error = %res_err,
-                                kind = ?res_err.kind(),
-                                "event_source: recv permanent error; exiting",
-                            );
-                            return Err(ActionError::fatal(res_err.to_string()));
                         }
                     }
                 }
@@ -275,10 +264,85 @@ where
         }
     }
 
-    async fn stop(&self, _ctx: &(impl TriggerContext + ?Sized)) -> Result<(), ActionError> {
-        // Cancellation flows through ctx.cancellation() per PollTriggerAdapter
-        // convention; the live start() loop observes it and returns Ok(()).
+    async fn stop(&self, ctx: &(impl TriggerContext + ?Sized)) -> Result<(), ActionError> {
+        // Mirror PollTriggerAdapter::stop (poll.rs:1455) — cancel the trigger
+        // context's cancellation token so the run-until-cancelled start() loop
+        // observes the signal and returns Ok(()).
+        ctx.cancellation().cancel();
         Ok(())
+    }
+}
+
+/// Classify a `nebula_resource::Error` for the subscribe path: convert to the
+/// matching `ActionError` constructor.
+///
+/// Used by `start()` on the early-return subscribe error. Recv errors use
+/// [`classify_resource_error_outcome`] which additionally surfaces the
+/// "continue the loop" choice for transient kinds.
+fn classify_resource_error(res_err: nebula_resource::Error) -> ActionError {
+    match res_err.kind() {
+        ResourceErrorKind::Transient
+        | ResourceErrorKind::Exhausted { .. }
+        | ResourceErrorKind::Backpressure => {
+            tracing::warn!(error = %res_err, "event_source: subscribe transient error");
+            ActionError::retryable(res_err.to_string())
+        },
+        ResourceErrorKind::Cancelled => {
+            tracing::info!(error = %res_err, "event_source: subscribe cancelled");
+            ActionError::Cancelled
+        },
+        _ => {
+            tracing::error!(
+                error = %res_err,
+                kind = ?res_err.kind(),
+                "event_source: subscribe permanent error",
+            );
+            ActionError::fatal(res_err.to_string())
+        },
+    }
+}
+
+/// Outcome for a recv-path classification.
+enum RecvOutcome {
+    /// Loop continues — transient error; recv() blocks until next event so
+    /// there's no backoff to apply here. A future `RecvErrorPolicy` enum
+    /// could add structured backoff once a real EventSource consumer needs
+    /// operator tuning.
+    Continue,
+    /// Source-reported cancellation — return `Ok(())` so the engine treats
+    /// it as normal shutdown rather than a fatal trigger failure.
+    Cancelled,
+    /// Permanent error — return the fatal `ActionError` so the engine's
+    /// daemon supervisor doesn't hot-loop into a broken source.
+    Fatal(ActionError),
+}
+
+fn classify_resource_error_outcome(res_err: nebula_resource::Error) -> RecvOutcome {
+    match res_err.kind() {
+        ResourceErrorKind::Transient
+        | ResourceErrorKind::Exhausted { .. }
+        | ResourceErrorKind::Backpressure => {
+            tracing::warn!(
+                error = %res_err,
+                "event_source: recv transient error; continuing",
+            );
+            RecvOutcome::Continue
+        },
+        ResourceErrorKind::Cancelled => {
+            tracing::info!(
+                error = %res_err,
+                "event_source: recv cancelled; exiting cleanly",
+            );
+            RecvOutcome::Cancelled
+        },
+        _ => {
+            tracing::error!(
+                error = %res_err,
+                kind = ?res_err.kind(),
+                "event_source: recv permanent error; exiting",
+            );
+            RecvOutcome::Fatal(ActionError::fatal(res_err.to_string()))
+        },
     }
 }
 
