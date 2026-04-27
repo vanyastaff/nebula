@@ -66,6 +66,7 @@ humantime-serde = "1.1"
 lru = { workspace = true }
 parking_lot = { workspace = true }
 scopeguard = "1"
+regex = { workspace = true }
 reqwest = { workspace = true, default-features = false, features = [
   "json",
   "rustls",

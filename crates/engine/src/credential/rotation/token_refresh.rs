@@ -150,6 +150,32 @@ fn update_state_from_token_response(
     Ok(())
 }
 
+/// Redacts common sensitive-field-name=value patterns in IdP error
+/// strings. OAuth2 IdPs (per RFC 6749 §5.2) sometimes echo submitted
+/// credentials inside `error_description` — most commonly
+/// `refresh_token=<value>` on `invalid_grant` from buggy or hostile
+/// providers. Without redaction those values reach operator-facing
+/// logs / SIEM via [`TokenRefreshError::TokenEndpoint`]. This helper
+/// scrubs the value while preserving the structural diagnostic.
+///
+/// Implements ADR-0030 §4 redaction discipline at the source: the
+/// summary string emitted by [`oauth_token_error_summary`] is the
+/// single chokepoint through which non-2xx response bodies enter the
+/// error type, so applying redaction here covers all downstream
+/// renderings (`Display`, `tracing`, audit events) by construction.
+fn redact_sensitive_fields(input: &str) -> std::borrow::Cow<'_, str> {
+    use std::sync::OnceLock;
+
+    static REDACTION_RE: OnceLock<regex::Regex> = OnceLock::new();
+    let re = REDACTION_RE.get_or_init(|| {
+        regex::Regex::new(
+            r"(?i)\b(refresh[_-]?token|access[_-]?token|client[_-]?secret|bearer|api[_-]?key|password|secret)\s*[=:]\s*\S+",
+        )
+        .expect("static redaction regex must be valid")
+    });
+    re.replace_all(input, "$1=[REDACTED]")
+}
+
 fn oauth_token_error_summary(body_text: &str) -> String {
     let Ok(value) = serde_json::from_str::<Value>(body_text) else {
         return "<non-json body>".to_owned();
@@ -161,7 +187,8 @@ fn oauth_token_error_summary(body_text: &str) -> String {
     let mut out = error.to_owned();
     if let Some(desc) = value.get("error_description").and_then(Value::as_str) {
         out.push_str(": ");
-        let prefix: Vec<char> = desc.chars().take(257).collect();
+        let redacted = redact_sensitive_fields(desc);
+        let prefix: Vec<char> = redacted.chars().take(257).collect();
         out.extend(prefix.iter().take(256).copied());
         if prefix.len() > 256 {
             out.push('…');

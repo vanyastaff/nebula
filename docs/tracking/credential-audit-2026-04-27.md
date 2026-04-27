@@ -378,7 +378,7 @@ After security-lead reclassifications + tech-lead resolution + SEC-04 conflict r
 
 1. **SEC-02** (URL-validate `error_uri`) — security-lead: «only true prod-blocker among SEC-01..04 as written». Two-line fix: `Url::parse` + scheme allowlist `["https"]` + length cap.
 2. **SEC-05 + SEC-06 cluster (N10 violation)** — `CredentialGuard: Clone` removal + `SchemeGuard: !Send` enforcement. PRODUCT_CANON §4.2 invariant.
-3. **SEC-13 conditionally** — verify ADR-0030 §4 redaction CI gate on refresh error path; fix if not firing.
+3. **SEC-13** — **resolved in security hardening Stage 0.5** (PR/commit pending). Verdict per §XII.A process: gate did NOT fire; fix landed. `redact_sensitive_fields` helper added to `crates/engine/src/credential/rotation/token_refresh.rs::oauth_token_error_summary` — case-insensitive regex on `(refresh|access)_?token`, `client_secret`, `bearer`, `api_key`, `password`, `secret` field-name patterns. ADR-0030 §4 «one redaction test per token_refresh code path» CI gate now exists at `crates/engine/tests/credential_refresh_redaction.rs` with 5 initial rows (SEC-13 + 4 defensive coverage paths). Future token_refresh code paths add new rows.
 4. **SEC-01** (bounded reader on OAuth IdP body) — Medium under timeout mitigation, but cheap to fix; bundle with SEC-02.
 5. **SEC-03 (split from SEC-04)** — AAD + `key_id` as **separate PR with ADR amendment**, audit-trail integrity reframe. **NOT bundled with crypto cleanup** — different threat model, different review depth, different rollback shape.
 6. **`CredentialId: Copy` migration bundle** — PERF-01 + PERF-02 + IDIOM-10 as one architect-level PR; parallel track to §6.5 queue, not blocker.
