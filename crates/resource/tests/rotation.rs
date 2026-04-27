@@ -766,6 +766,29 @@ async fn revoke_emits_health_changed_for_failures() {
 
     assert_eq!(results.len(), 2);
 
+    // Pin per-resource RevokeOutcome shape — without this, a regression where
+    // both resources returned Ok would still pass the counter/event checks
+    // below (CodeRabbit Minor: "would still pass if on_credential_revoked
+    // returned Ok for both resources while the event path stayed correct").
+    let by_key: std::collections::HashMap<_, _> =
+        results.iter().map(|(k, o)| (k.clone(), o)).collect();
+    assert!(
+        matches!(
+            by_key.get(&TestResourceA::key()),
+            Some(nebula_resource::RevokeOutcome::Ok)
+        ),
+        "A should succeed, got {:?}",
+        by_key.get(&TestResourceA::key()),
+    );
+    assert!(
+        matches!(
+            by_key.get(&TestResourceB::key()),
+            Some(nebula_resource::RevokeOutcome::Failed(_))
+        ),
+        "B should fail, got {:?}",
+        by_key.get(&TestResourceB::key()),
+    );
+
     // A succeeded → counter incremented; B's failure short-circuits.
     assert_eq!(*observer_a.inner().revoke_count.lock().unwrap(), 1);
     assert_eq!(*observer_b.inner().revoke_count.lock().unwrap(), 0);
@@ -818,9 +841,15 @@ async fn revoke_emits_health_changed_for_failures() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn revoke_timeout_emits_health_changed() {
-    // Manager rotation timeout: 100ms. TestResource revoke_delay: 5s.
-    // The revoke dispatch will time out at 100ms long before the sleep
-    // completes, producing `RevokeOutcome::TimedOut { budget: 100ms }`.
+    // Manager rotation timeout: 100ms.
+    // - TestResourceA: revoke_delay = 5s → will time out at 100ms.
+    // - TestResourceB: revoke_delay = 0 → will succeed immediately.
+    //
+    // Two resources prove BOTH:
+    // - B-1 parallel isolation: B's fast Ok must not be blocked by A's 5s sleep. Wall-clock must
+    //   remain near 100ms (not 5s + 0).
+    // - B-2 selective HealthChanged emission: ONLY A (TimedOut) gets HealthChanged{healthy:false};
+    //   B (Ok) does not.
     let manager = Manager::with_config(ManagerConfig {
         credential_rotation_timeout: Duration::from_millis(100),
         ..Default::default()
@@ -828,24 +857,32 @@ async fn revoke_timeout_emits_health_changed() {
     let cid = CredentialId::new();
 
     let a = TestResourceA::new().with_revoke_delay(Duration::from_secs(5));
+    let b = TestResourceB::new(); // fast Ok
     let observer_a = a.clone();
+    let observer_b = b.clone();
 
-    manager
-        .register::<TestResourceA>(
-            a,
-            TestConfig,
-            ScopeLevel::Global,
-            pool_topology::<TestResourceA>(),
-            None,
-            None,
-            Some(cid),
-            None,
-        )
-        .expect("register succeeds");
+    macro_rules! register {
+        ($r:ident, $ty:ident) => {
+            manager
+                .register::<$ty>(
+                    $r,
+                    TestConfig,
+                    ScopeLevel::Global,
+                    pool_topology::<$ty>(),
+                    None,
+                    None,
+                    Some(cid),
+                    None,
+                )
+                .expect("register succeeds")
+        };
+    }
+    register!(a, TestResourceA);
+    register!(b, TestResourceB);
 
     // Subscribe BEFORE dispatch so the broadcast channel is wired.
     let mut rx = manager.subscribe_events();
-    // Drop the `Registered` event the registration broadcast.
+    // Drop the two `Registered` events the registrations broadcast.
     let _ = drain_events(&mut rx);
 
     let started = Instant::now();
@@ -855,38 +892,52 @@ async fn revoke_timeout_emits_health_changed() {
         .expect("dispatch loop succeeds even when one resource times out");
     let elapsed = started.elapsed();
 
-    // Sanity check: dispatch returned in ~100ms, NOT 5s. The per-resource
-    // timeout is doing its job (security amendment B-1 isolation).
+    // B-1 parallel isolation: dispatch returned in ~100ms (A's timeout),
+    // NOT ~5s. If B were sequential after A, this would be ≥5s. If B were
+    // blocked by A's slow path, this would also be ≥5s. Parallel
+    // dispatch + per-resource timeout means total wall-clock = max
+    // per-resource budget = 100ms (with scheduler/IO slack).
     assert!(
         elapsed < Duration::from_millis(800),
-        "revoke dispatch should honour per-resource timeout (~100ms), but took {elapsed:?}",
+        "revoke dispatch should honour per-resource timeout (~100ms), but took {elapsed:?} \
+         — would be ≥5s if A blocked B (B-1 violated)",
     );
 
-    assert_eq!(results.len(), 1, "one resource bound to credential");
+    assert_eq!(results.len(), 2, "two resources bound to credential");
 
-    // Outcome must be `TimedOut` (not `Failed`, not `Ok`) — the resource's
-    // 5s sleep is still running when we time out at 100ms, so the revoke
-    // hook's body never reached the counter increment.
-    match &results[0].1 {
-        nebula_resource::RevokeOutcome::TimedOut { budget } => {
+    // Pin per-resource RevokeOutcome shape — A=TimedOut, B=Ok.
+    let by_key: std::collections::HashMap<_, _> =
+        results.iter().map(|(k, o)| (k.clone(), o)).collect();
+    match by_key.get(&TestResourceA::key()) {
+        Some(nebula_resource::RevokeOutcome::TimedOut { budget }) => {
             assert_eq!(
                 *budget,
                 Duration::from_millis(100),
                 "TimedOut.budget should report the configured rotation timeout",
             );
         },
-        other => panic!("expected RevokeOutcome::TimedOut, got {other:?}"),
+        other => panic!("A should be TimedOut, got {other:?}"),
     }
-    assert_eq!(results[0].0, TestResourceA::key());
-    // The revoke hook never reached the counter increment — it was
-    // cut off by the timeout mid-sleep.
+    assert!(
+        matches!(
+            by_key.get(&TestResourceB::key()),
+            Some(nebula_resource::RevokeOutcome::Ok)
+        ),
+        "B should succeed (parallel, not blocked by A), got {:?}",
+        by_key.get(&TestResourceB::key()),
+    );
+
+    // A's hook never reached counter increment (timed out mid-sleep);
+    // B's hook ran to completion.
     assert_eq!(*observer_a.inner().revoke_count.lock().unwrap(), 0);
+    assert_eq!(*observer_b.inner().revoke_count.lock().unwrap(), 1);
 
     let events = drain_events(&mut rx);
 
     // Security amendment B-2: HealthChanged{healthy:false} MUST fire for
-    // the TimedOut resource. Pre-fix would only fire for `Failed`; this
-    // test pins the `TimedOut` branch independently.
+    // the TimedOut resource (A) ONLY — not for Ok (B). Pre-fix would
+    // only fire for `Failed`; this test pins both the `TimedOut` branch
+    // AND the selective emission (Ok skips emit).
     let health_events: Vec<_> = events
         .iter()
         .filter_map(|ev| match ev {
@@ -897,11 +948,12 @@ async fn revoke_timeout_emits_health_changed() {
     assert_eq!(
         health_events,
         vec![(TestResourceA::key(), false)],
-        "B-2: HealthChanged{{healthy:false}} must fire for RevokeOutcome::TimedOut, got events: {events:?}",
+        "B-2: HealthChanged{{healthy:false}} must fire ONLY for the TimedOut \
+         resource A; Ok resource B must not emit. Got events: {events:?}",
     );
 
-    // Aggregate CredentialRevoked event reflects the timeout in the
-    // outcome counters (timed_out=1, ok=0, failed=0).
+    // Aggregate CredentialRevoked event reflects the parallel outcome
+    // distribution (timed_out=1, ok=1, failed=0).
     let aggregate = events
         .iter()
         .find_map(|ev| match ev {
@@ -914,10 +966,10 @@ async fn revoke_timeout_emits_health_changed() {
         })
         .expect("CredentialRevoked aggregate event emitted");
     assert_eq!(aggregate.0, cid);
-    assert_eq!(aggregate.1, 1);
+    assert_eq!(aggregate.1, 2);
     assert_eq!(aggregate.2.timed_out, 1);
+    assert_eq!(aggregate.2.ok, 1);
     assert_eq!(aggregate.2.failed, 0);
-    assert_eq!(aggregate.2.ok, 0);
 }
 
 // ============================================================================
