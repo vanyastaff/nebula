@@ -36,6 +36,7 @@ mod source;
 use std::{
     any::{Any, TypeId},
     fmt,
+    future::Future,
     time::SystemTime,
 };
 
@@ -98,13 +99,13 @@ pub trait TriggerAction: Send + Sync + 'static {
     fn start(
         &self,
         ctx: &(impl TriggerContext + ?Sized),
-    ) -> impl std::future::Future<Output = Result<(), Self::Error>> + Send;
+    ) -> impl Future<Output = Result<(), Self::Error>> + Send;
 
     /// Stop the trigger (unregister, cancel schedule).
     fn stop(
         &self,
         ctx: &(impl TriggerContext + ?Sized),
-    ) -> impl std::future::Future<Output = Result<(), Self::Error>> + Send;
+    ) -> impl Future<Output = Result<(), Self::Error>> + Send;
 
     /// Whether this trigger accepts externally pushed events.
     /// Default: `false`. Override to return `true` from webhook / queue triggers.
@@ -139,7 +140,7 @@ pub trait TriggerAction: Send + Sync + 'static {
         &self,
         _ctx: &(impl TriggerContext + ?Sized),
         _event: <Self::Source as TriggerSource>::Event,
-    ) -> impl std::future::Future<Output = Result<TriggerEventOutcome, Self::Error>> + Send {
+    ) -> impl Future<Output = Result<TriggerEventOutcome, Self::Error>> + Send {
         async {
             // Default body: triggers that don't accept events should never
             // have this called. Engine checks `accepts_events()` first; this
@@ -398,6 +399,15 @@ pub trait TriggerHandler: Send + Sync + 'static {
     /// trigger's contract already tolerates (e.g., a poll trigger may
     /// lose one cycle of cursor progress, but must not leak its
     /// listener registration).
+    ///
+    /// Shape-1 (setup-and-return) implementations register the
+    /// listener, then return. Cancel safety is trivially satisfied
+    /// because no `.await` sits on user state after registration.
+    /// Shape-2 (run-until-cancelled) implementations must structure
+    /// their `tokio::select!` so that each branch future is itself
+    /// cancel-safe — see `crate::poll::PollTriggerAdapter::start`
+    /// for a worked example using cancel-safe
+    /// `CancellationToken::cancelled()` and `tokio::time::sleep`.
     ///
     /// # Errors
     ///

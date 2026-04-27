@@ -20,7 +20,7 @@ default = []
 unstable-retry-scheduler = []
 
 [dependencies]
-async-trait = "0.1"
+async-trait = { workspace = true }
 nebula-action-macros = { path = "macros" }
 nebula-core = { path = "../core" }
 nebula-credential = { path = "../credential" }

@@ -5,7 +5,7 @@
 //! to the downstream branch, unlike `ctx.resource()` from the global
 //! registry.
 
-use std::{any::Any, fmt, future::Future, pin::Pin};
+use std::{any::Any, fmt, future::Future};
 
 use serde_json::Value;
 
@@ -47,16 +47,6 @@ pub trait ResourceAction: Action {
 }
 
 // ── Handler trait ───────────────────────────────────────────────────────────
-
-/// Type alias for the dyn-safe future returned by
-/// [`ResourceHandler::configure`] — a boxed `Box<dyn Any + Send + Sync>`
-/// carrying the configured resource instance.
-pub type ResourceConfigureFuture<'a> =
-    Pin<Box<dyn Future<Output = Result<Box<dyn Any + Send + Sync>, ActionError>> + Send + 'a>>;
-
-/// Type alias for the dyn-safe future returned by [`ResourceHandler::cleanup`].
-pub type ResourceCleanupFuture<'a> =
-    Pin<Box<dyn Future<Output = Result<(), ActionError>> + Send + 'a>>;
 
 /// Resource handler — configure/cleanup lifecycle for graph-scoped resources.
 ///
