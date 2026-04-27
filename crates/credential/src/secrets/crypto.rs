@@ -132,7 +132,16 @@ impl EncryptedData {
 /// restarts — after ~65 k restart-encryptions per key the collision
 /// probability crossed 50%. AES-GCM nonce reuse is catastrophic (full
 /// plaintext recovery + authentication forgery), so we take the NIST random
-/// path and read the full 12 bytes from the OS CSPRNG on every call.
+/// path and read the full 12 bytes from a CSPRNG seeded from the OS via
+/// `getrandom` on every call.
+///
+/// SEC-04 doc clarification (security hardening 2026-04-27, post-audit
+/// Errata §XII.C): `rand::rng()` returns `ThreadRng` which is **CSPRNG-quality**
+/// — seeded from `OsRng` (`getrandom`) at thread start and periodically
+/// reseeded from the OS. The advisory `RUSTSEC-2026-0097` (already ignored
+/// in `deny.toml:16`) is a panic-handler thread-local soundness bug, NOT
+/// a CSPRNG flaw. The 96-bit nonce property required by NIST SP 800-38D
+/// §8.2.2 holds.
 fn fresh_nonce() -> aes_gcm::Nonce<aes_gcm::aes::cipher::typenum::U12> {
     use rand::RngExt;
 

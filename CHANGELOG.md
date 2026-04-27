@@ -6,6 +6,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Security
+
+- **nebula-credential** + **nebula-engine** (security hardening 2026-04-27, post-audit Errata §XII): closed 7 production-track findings from the credential audit cluster. SEC-01 (bounded reader on OAuth IdP error path), SEC-02 (`sanitize_error_uri` + scheme allowlist + control-byte strip + 256-char cap), SEC-05 (`CredentialGuard: !Clone`), SEC-06 (`SchemeGuard: !Send + !Sync` via `PhantomData<*const ()>`), SEC-09 (`bearer_header` builds via `Zeroizing<String>` buffer instead of `format!`), SEC-10 (`refresh_oauth2_state` scope-tightens secret borrows; eliminates 3 `Zeroizing<String>` intermediates), SEC-11 (bare `crypto::encrypt` removed from public surface — renamed to `#[cfg(test)] fn encrypt_no_aad`), SEC-13 (`redact_sensitive_fields` on `error_description` + ADR-0030 §4 redaction CI gate at `crates/engine/tests/credential_refresh_redaction.rs`).
+- **Breaking**: `CredentialGuard !Clone`, `SchemeGuard !Send + !Sync`, `crypto::encrypt` removed, `OnCredentialRefresh::on_credential_refresh` default future no longer `+ Send`, `SchemeFactory::AcquireFuture` no longer `+ Send`. Active dev mode; semver-major bump on next release. See `docs/UPGRADE_COMPAT.md`.
+- **Deferred**: SEC-08 to wrapper-removal spec; SEC-03 to AAD-redesign spec; PERF-01/02/IDIOM-10 to `CredentialId: Copy` migration spec.
+- See `docs/superpowers/specs/2026-04-27-credential-security-hardening-design.md`.
+
 ### Documentation
 
 - **nebula-sdk** (P11): Credential/OAuth re-export audit — described how the façade exposes `nebula_credential` (full crate + prelude picks), what is intentionally not part of the SDK, and how integrators should migrate when credential types change. See `crates/sdk/README.md` §*Credential, OAuth, and the SDK*.

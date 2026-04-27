@@ -467,4 +467,31 @@ Audit's §XI day-by-day plan does **not** reference Strategy [§6.5 frozen sub-s
 
 ---
 
-**Errata complete.** Original §I–§XI text unchanged; this section supersedes any classification or priority conflict. Next-up artefact: security-hardening sub-spec (`docs/superpowers/specs/2026-04-27-credential-security-hardening-design.md`) drafting per the §XII.E prod-blocker list.
+**Errata complete.** Original §I–§XI text unchanged; this section supersedes any classification or priority conflict.
+
+### §XII.I Implementation status (security-hardening spec executed)
+
+The §XII.E prod-blocker list landed across 5 stages on `claude/infallible-mclean-9903d1`:
+
+| Stage | SEC items | Commit |
+|---|---|---|
+| 0 + 0.5 — SEC-13 verify-first + redaction fix | SEC-13 (gate did NOT fire — fix landed; ADR-0030 §4 redaction CI gate created at `crates/engine/tests/credential_refresh_redaction.rs` with 5 initial rows) | `2f2619a5` |
+| 1 — visibility tightening | SEC-11 (`crypto::encrypt` removed from public surface; renamed `#[cfg(test)] fn encrypt_no_aad`); SEC-08 deferred entirely to wrapper-removal spec (would break legitimate `nebula-api` usage) | `d01d3a29` |
+| 2 — N10 plaintext lifecycle | SEC-05 (`CredentialGuard !Clone`), SEC-06 (`SchemeGuard !Send + !Sync` via `PhantomData<*const ()>`), SEC-09 (`bearer_header` Zeroizing<String> buffer), SEC-10 (`refresh_oauth2_state` scope-tighten — eliminated 3 `Zeroizing<String>` intermediates) | `7678527f` |
+| 3 — IdP boundary | SEC-01 (`read_token_response_text_limited` + 256 KiB cap on error path), SEC-02 (`sanitize_error_uri` + scheme allowlist + control-byte strip + 256-char length cap) | `357d90bf` |
+| 4 — doc sync | this entry + MATURITY/CHANGELOG/GLOSSARY/register flips | (current commit) |
+
+Out-of-scope (forward-pointers in spec §9):
+- **SEC-03** → `2026-04-27-credential-aad-key-id-redesign-design.md` (separate ADR-amendment track)
+- **SEC-08** → `2026-04-27-credential-secret-string-wrapper-removal-design.md` (subsumed by structural removal of custom SecretString wrapper)
+- **PERF-01/02/IDIOM-10** → `2026-04-27-credential-id-copy-migration-design.md` (architect bundle)
+- **PERF-05, IDIOM-01, IDIOM-03** → П3 capability sub-trait scope
+- **TEST-01/02** → П3 planning
+- **GAP-01** → П3+ deferred cascade per Tech Spec §15.7:3522-3523
+
+Test surface (fresh runs at completion, per crate to avoid trybuild cache contention):
+- `cargo nextest run -p nebula-credential`: 223+ tests pass (4 mandatory compile-fail probes — `compile_fail_credential_guard_clone`, `compile_fail_scheme_guard_send`, `compile_fail_encrypt_no_aad_removed`, plus existing Probe 6/7; new runtime `zeroize_drop_oauth2_bearer.rs` 5-row coverage)
+- `cargo nextest run -p nebula-engine --features rotation`: 334+ tests pass (5-row redaction CI gate `credential_refresh_redaction.rs`; 2-row `oauth_idp_oversized_body_bounded.rs`; 6-row `oauth_idp_error_uri_validation.rs`)
+- `cargo nextest run -p nebula-storage --features test-util`: 185 tests pass (post-encrypt-removal migration of 11 `encrypt(...)` call-sites to `encrypt_with_aad(..., b"")`)
+
+Spec-level DoD met. SEC-08 reclassified as «interim deferred to wrapper-removal» rather than fixed in-place.
