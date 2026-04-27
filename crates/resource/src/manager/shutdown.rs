@@ -158,7 +158,15 @@ impl Manager {
                     // makes the registry tell the truth.
                     let err = ShutdownError::DrainTimeout { outstanding };
                     self.set_phase_all_failed(&err);
-                    self.shutting_down.store(false, AtomicOrdering::Release);
+                    // CodeRabbit 🟠 #4: do NOT reset `shutting_down` here.
+                    // Both shutdown failure modes (`DrainTimeout`,
+                    // `ReleaseQueueTimeout` below) are non-recoverable —
+                    // the cancel token has fired and the registry has
+                    // either been marked Failed or contains live handles
+                    // we cannot safely re-drain. Resetting would only
+                    // permit a doomed retry that races the cancel token
+                    // with no benefit and risks tearing down state mid-
+                    // observation by a concurrent caller.
                     return Err(err);
                 },
                 DrainTimeoutPolicy::Force => {
@@ -179,8 +187,13 @@ impl Manager {
         self.set_phase_all(crate::state::ResourcePhase::ShuttingDown);
 
         // Phase 3: CLEAR — drop all ManagedResources so their
-        // Arc<ReleaseQueue> refs are released.
+        // Arc<ReleaseQueue> refs are released. Also clear the
+        // `credential_resources` reverse-index so its dispatchers (which
+        // each hold an `Arc<ManagedResource<R>>` via `TypedDispatcher`)
+        // do not pin the now-removed resources alive across any surviving
+        // `Arc<Manager>` clones (CodeRabbit 🔴 #2).
         self.registry.clear();
+        self.credential_resources.clear();
 
         // Phase 4: AWAIT WORKERS — workers are already draining (from
         // Phase 1 cancel signal). Await with a bounded timeout; failure

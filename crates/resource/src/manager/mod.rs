@@ -236,6 +236,13 @@ impl Manager {
         use crate::resource::ResourceConfig as _;
         config.validate()?;
 
+        // Validate credential-binding contract BEFORE registry mutation.
+        // Without this ordering, a credential-bearing resource without a
+        // `credential_id` would land in the registry first and only THEN
+        // surface `Error::missing_credential_id` — leaving an orphan entry
+        // that retries would see as "already registered" (CodeRabbit 🔴 #1).
+        registration::validate_credential_binding::<R>(credential_id.as_ref())?;
+
         let key = R::key();
 
         let managed = Arc::new(ManagedResource {
@@ -269,13 +276,14 @@ impl Manager {
 
         // Reverse-index write — populates `credential_resources` for
         // credential-bearing resources, no-op for `NoCredential`-bound ones.
-        // `credential_id` and `credential_rotation_timeout` flow through
-        // [`RegisterOptions`] in the `_with` shorthand variants.
-        self.register_inner(
+        // Validation already passed in `validate_credential_binding` above,
+        // so this path is infallible by construction.
+        registration::write_reverse_index::<R>(
+            self,
             Arc::clone(&managed),
             credential_id,
             credential_rotation_timeout,
-        )?;
+        );
 
         tracing::debug!(%key, "resource registered");
         Ok(())
@@ -1331,6 +1339,12 @@ impl Manager {
 
     /// Removes a resource from the registry by key.
     ///
+    /// Also prunes any matching dispatchers from the credential rotation
+    /// reverse-index so a future credential refresh / revoke does not fan out
+    /// to a resource that no longer exists. We compare by `resource_key()` on
+    /// each dispatcher because the original `credential_id` is not preserved
+    /// outside the dispatcher trampoline at remove-time (CodeRabbit 🔴 #2).
+    ///
     /// # Errors
     ///
     /// Returns [`ErrorKind::NotFound`](crate::error::ErrorKind::NotFound) if
@@ -1339,6 +1353,16 @@ impl Manager {
         if !self.registry.remove(key) {
             return Err(Error::not_found(key));
         }
+
+        // Prune reverse-index: drop dispatchers whose `resource_key()`
+        // matches the removed key, then drop empty CredentialId buckets so
+        // future lookups don't see hollow Vecs.
+        self.credential_resources.iter_mut().for_each(|mut entry| {
+            entry.value_mut().retain(|d| d.resource_key() != *key);
+        });
+        self.credential_resources
+            .retain(|_id, dispatchers| !dispatchers.is_empty());
+
         if let Some(m) = &self.metrics {
             m.record_destroy();
         }

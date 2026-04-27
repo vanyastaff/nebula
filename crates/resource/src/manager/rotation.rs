@@ -134,10 +134,27 @@ impl<R: Resource> ResourceDispatcher for TypedDispatcher<R> {
             // remainder of this future; dropped (and `ZeroizeOnDrop`
             // plaintext zeroed) at the await boundary below — RAII handles
             // secret hygiene per §15.7.
-            let guard = factory
-                .acquire()
-                .await
-                .map_err(|e| crate::Error::permanent(format!("SchemeFactory::acquire: {e}")))?;
+            //
+            // Classification (CodeRabbit 🟠 #3): the previous unconditional
+            // `Error::permanent` mis-classified transient acquire failures
+            // (network blip, vault unavailable, lock contention) as terminal
+            // and biased the rotation-attempts metric toward `failed`. We
+            // now consult `CredentialError::is_retryable()` (via
+            // `nebula_error::Classify`) to map the failure to
+            // [`Error::transient`] when retryable and [`Error::permanent`]
+            // otherwise. Authentication failures should fail in credential
+            // resolution before reaching the factory closure; if they DO
+            // reach here, the classifier reports them as non-retryable so
+            // the `permanent` arm still applies.
+            let guard = factory.acquire().await.map_err(|e| {
+                use nebula_error::Classify as _;
+                let key = R::key();
+                if e.is_retryable() {
+                    crate::Error::transient(format!("{key}: SchemeFactory::acquire: {e}"))
+                } else {
+                    crate::Error::permanent(format!("{key}: SchemeFactory::acquire: {e}"))
+                }
+            })?;
 
             self.managed
                 .resource
