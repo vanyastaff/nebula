@@ -286,6 +286,18 @@ impl From<L1ConfigError> for RefreshConfigError {
 }
 
 impl RefreshCoordinator {
+    /// Maximum number of consecutive non-`ClaimLost` heartbeat
+    /// failures tolerated before the heartbeat task gives up and
+    /// cancels the in-flight refresh (sub-spec §3.4 wave-4 fix).
+    ///
+    /// At three failures the worst-case latency before cancellation
+    /// is `3 × heartbeat_interval`, which is bounded by the §3.5
+    /// invariant `heartbeat_interval × 3 ≤ claim_ttl` — i.e. we
+    /// never burn more than one TTL window absorbing transient
+    /// noise. Not configurable: production tuning belongs in
+    /// `RefreshCoordConfig` if a need emerges.
+    const MAX_TRANSIENT_HEARTBEAT_FAILURES: u32 = 3;
+
     /// Construct a coordinator wired to a given `RefreshClaimRepo`.
     ///
     /// Metrics are bound to a fresh in-memory registry by default — call
@@ -774,19 +786,26 @@ impl RefreshCoordinator {
         Err(RefreshError::ContentionExhausted)
     }
 
-    /// Spawn the background heartbeat task. Per Stage 1 fix C2 the
-    /// trait's `heartbeat(token, ttl)` takes the same TTL passed to
+    /// Spawn the background heartbeat task that refreshes the L2 claim
+    /// TTL on a fixed interval. Per Stage 1 fix C2 the trait's
+    /// `heartbeat(token, ttl)` takes the same TTL passed to
     /// `try_claim`, so the §3.5 invariants
     /// (`heartbeat_interval × 3 < claim_ttl`,
     /// `reclaim_sweep_interval ≤ claim_ttl`) hold across heartbeats.
     ///
-    /// On heartbeat failure (e.g. the underlying row was reclaimed by
-    /// the sweep, or a transient repo error past retry budget), the
-    /// task fires `cancel.cancel()` on its caller's
-    /// [`CancellationToken`] so the concurrent `do_refresh` future can
-    /// abort BEFORE issuing the IdP POST. Without this signal the
-    /// closure would press on with a stale `refresh_token_v1` and
-    /// invalidate the just-rotated row (n8n #13088 lineage).
+    /// Exits and signals cancellation via the supplied
+    /// [`CancellationToken`] in two cases:
+    ///
+    /// 1. **Claim lost** (`HeartbeatError::ClaimLost`): a different replica reclaimed the row
+    ///    (generation bumped or row deleted). Cancellation fires immediately so the in-flight
+    ///    refresh aborts BEFORE the IdP POST. Without this signal the closure would press on with a
+    ///    stale `refresh_token_v1` and invalidate the just-rotated row (n8n #13088 lineage).
+    ///
+    /// 2. **Transient errors past budget**: any non-`ClaimLost` heartbeat error (e.g. transient
+    ///    backend hiccup wrapped in `HeartbeatError::Repo`) retries up to
+    ///    [`Self::MAX_TRANSIENT_HEARTBEAT_FAILURES`] times. Single transient hiccups are absorbed
+    ///    silently so storage backpressure does not amplify into refresh storms. After the budget
+    ///    is exhausted, cancellation fires.
     fn spawn_heartbeat(
         &self,
         token: ClaimToken,
@@ -806,6 +825,13 @@ impl RefreshCoordinator {
             // Burn the initial immediate tick — the claim was just
             // acquired and already has a fresh `expires_at`.
             ticker.tick().await;
+            // Transient-failure budget per sub-spec §3.4 (wave-4 fix).
+            // Resets on every successful heartbeat so a long-running
+            // refresh can absorb intermittent backend noise without
+            // cancelling. Only `HeartbeatError::ClaimLost` is treated
+            // as immediate-cancel — that is the unambiguous "your
+            // claim is gone" signal.
+            let mut transient_failures: u32 = 0;
             loop {
                 tokio::select! {
                     biased;
@@ -815,22 +841,63 @@ impl RefreshCoordinator {
                         break;
                     }
                     _ = ticker.tick() => {
-                        if let Err(error) = repo.heartbeat(&token, ttl).await {
-                            // ERROR-level: heartbeat loss is operationally
-                            // important. Promoting from WARN keeps it
-                            // distinguishable from transient retry noise on
-                            // dashboards filtering on level.
-                            tracing::error!(
-                                ?error,
-                                %credential_id,
-                                replica_id = %replica_id,
-                                "credential refresh heartbeat failed; cancelling concurrent do_refresh \
-                                 before it issues the IdP POST"
-                            );
-                            // Fire cancel BEFORE breaking so the user closure
-                            // sees `cancelled()` and aborts the IdP call.
-                            cancel.cancel();
-                            break;
+                        match repo.heartbeat(&token, ttl).await {
+                            Ok(()) => {
+                                // Reset the transient-failure budget on
+                                // every success so a long refresh can
+                                // absorb intermittent noise.
+                                transient_failures = 0;
+                            }
+                            Err(HeartbeatError::ClaimLost) => {
+                                // ERROR-level: claim loss is the
+                                // unambiguous "another replica reclaimed
+                                // the row" signal. Promoting from WARN
+                                // keeps it distinguishable from
+                                // transient retry noise on dashboards
+                                // filtering on level.
+                                tracing::error!(
+                                    %credential_id,
+                                    replica_id = %replica_id,
+                                    "credential refresh heartbeat lost claim; cancelling concurrent \
+                                     do_refresh before it issues the IdP POST"
+                                );
+                                // Fire cancel BEFORE breaking so the user
+                                // closure sees `cancelled()` and aborts
+                                // the IdP call.
+                                cancel.cancel();
+                                break;
+                            }
+                            Err(other) => {
+                                transient_failures += 1;
+                                if transient_failures >= Self::MAX_TRANSIENT_HEARTBEAT_FAILURES {
+                                    tracing::error!(
+                                        error = ?other,
+                                        %credential_id,
+                                        replica_id = %replica_id,
+                                        attempts = transient_failures,
+                                        max_attempts = Self::MAX_TRANSIENT_HEARTBEAT_FAILURES,
+                                        "credential refresh heartbeat exceeded transient-failure \
+                                         budget; cancelling concurrent do_refresh before it issues \
+                                         the IdP POST"
+                                    );
+                                    cancel.cancel();
+                                    break;
+                                }
+                                // Log at WARN — single hiccups are
+                                // absorbed silently from a level-filter
+                                // perspective. Operators can still see
+                                // them on noisy-log dashboards.
+                                tracing::warn!(
+                                    error = ?other,
+                                    %credential_id,
+                                    replica_id = %replica_id,
+                                    attempt = transient_failures,
+                                    max_attempts = Self::MAX_TRANSIENT_HEARTBEAT_FAILURES,
+                                    "credential refresh heartbeat transient error; retrying \
+                                     within budget"
+                                );
+                                // Continue — next ticker tick will retry.
+                            }
                         }
                     }
                 }
@@ -1066,7 +1133,7 @@ mod tests {
     // ──────────────────────────────────────────────────────────────────
 
     use crate::credential::refresh::test_fixtures::{
-        AlwaysContendedRepo, AlwaysFailHeartbeatRepo, FlakyReleaseRepo,
+        AlwaysContendedRepo, AlwaysFailHeartbeatRepo, FlakyReleaseRepo, TransientFailHeartbeatRepo,
     };
 
     /// I1 regression — sub-spec §3.4. After Stage 2 review C1+I1: a
@@ -1459,6 +1526,61 @@ mod tests {
         assert!(
             matches!(result, Ok(42)),
             "biased order must let ready future win even when cancel is set; got {result:?}"
+        );
+    }
+
+    /// M2 wave-4 regression — sub-spec §3.4. The heartbeat task MUST
+    /// absorb up to `MAX_TRANSIENT_HEARTBEAT_FAILURES - 1` consecutive
+    /// non-`ClaimLost` heartbeat errors without cancelling the
+    /// in-flight refresh. Otherwise a 50ms DB hiccup amplifies into a
+    /// refresh storm under storage backpressure.
+    ///
+    /// Strategy: `TransientFailHeartbeatRepo` returns
+    /// `HeartbeatError::Repo(...)` on the first 2 calls, then forwards
+    /// to the in-memory backing on subsequent calls. The user closure
+    /// sleeps long enough for at least 3 heartbeat ticks. With the
+    /// fix, the budget absorbs the first 2 failures and the 3rd
+    /// succeeds (resetting the counter), so the closure returns Ok.
+    /// Without the fix, the first failure cancels.
+    #[tokio::test]
+    async fn heartbeat_tolerates_transient_errors_within_budget() {
+        let inner: Arc<dyn RefreshClaimRepo> = Arc::new(InMemoryRefreshClaimRepo::new());
+        // 2 transient failures < MAX_TRANSIENT_HEARTBEAT_FAILURES (3),
+        // so the budget is NOT exhausted and the third tick succeeds.
+        let repo: Arc<dyn RefreshClaimRepo> =
+            Arc::new(TransientFailHeartbeatRepo::new(Arc::clone(&inner), 2));
+
+        // Tight heartbeat / refresh-timeout window so multiple ticks
+        // fire inside the closure's pause.
+        let cfg = RefreshCoordConfig {
+            claim_ttl: Duration::from_secs(10),
+            heartbeat_interval: Duration::from_millis(50),
+            refresh_timeout: Duration::from_secs(5),
+            reclaim_sweep_interval: Duration::from_secs(5),
+            sentinel_threshold: 3,
+            sentinel_window: Duration::from_hours(1),
+        };
+        let coord = RefreshCoordinator::new_with(repo, ReplicaId::new("transient-test"), cfg)
+            .expect("config valid");
+        let cid = CredentialId::new();
+
+        let result: Result<i32, RefreshError> = coord
+            .refresh_coalesced(
+                &cid,
+                |_| async { true },
+                |_claim| async move {
+                    // Sleep long enough for the heartbeat to fire at
+                    // least 3 times: 50ms × 3 + slack = ~250ms.
+                    tokio::time::sleep(Duration::from_millis(250)).await;
+                    Ok::<i32, RefreshError>(7)
+                },
+            )
+            .await;
+
+        assert_eq!(
+            result.expect("transient heartbeat errors within budget must NOT cancel refresh"),
+            7,
+            "user closure must complete despite 2 transient heartbeat failures"
         );
     }
 }

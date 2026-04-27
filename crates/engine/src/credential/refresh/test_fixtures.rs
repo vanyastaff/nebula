@@ -13,7 +13,13 @@
 
 #![cfg(test)]
 
-use std::{sync::Arc, time::Duration};
+use std::{
+    sync::{
+        Arc,
+        atomic::{AtomicU32, Ordering},
+    },
+    time::Duration,
+};
 
 use chrono::{DateTime, Utc};
 use nebula_core::CredentialId;
@@ -159,6 +165,91 @@ impl RefreshClaimRepo for AlwaysFailHeartbeatRepo {
 
     async fn heartbeat(&self, _token: &ClaimToken, _ttl: Duration) -> Result<(), HeartbeatError> {
         Err(HeartbeatError::ClaimLost)
+    }
+
+    async fn release(&self, token: ClaimToken) -> Result<(), RepoError> {
+        self.inner.release(token).await
+    }
+
+    async fn mark_sentinel(&self, token: &ClaimToken) -> Result<(), RepoError> {
+        self.inner.mark_sentinel(token).await
+    }
+
+    async fn reclaim_stuck(&self) -> Result<Vec<ReclaimedClaim>, RepoError> {
+        self.inner.reclaim_stuck().await
+    }
+
+    async fn record_sentinel_event(
+        &self,
+        credential_id: &CredentialId,
+        crashed_holder: &ReplicaId,
+        generation: u64,
+    ) -> Result<(), RepoError> {
+        self.inner
+            .record_sentinel_event(credential_id, crashed_holder, generation)
+            .await
+    }
+
+    async fn count_sentinel_events_in_window(
+        &self,
+        credential_id: &CredentialId,
+        window_start: DateTime<Utc>,
+    ) -> Result<u32, RepoError> {
+        self.inner
+            .count_sentinel_events_in_window(credential_id, window_start)
+            .await
+    }
+}
+
+// ──────────────────────────────────────────────────────────────────────────
+// TransientFailHeartbeatRepo — fails the first N `heartbeat` calls with
+// `HeartbeatError::Repo(RepoError::InvalidState(...))` (a non-`ClaimLost`
+// transient error), then forwards to inner. Used to prove the heartbeat
+// task absorbs transient backend noise within
+// `MAX_TRANSIENT_HEARTBEAT_FAILURES` budget instead of cancelling on the
+// first hiccup (M2 wave-4).
+// ──────────────────────────────────────────────────────────────────────────
+
+pub(crate) struct TransientFailHeartbeatRepo {
+    pub inner: Arc<dyn RefreshClaimRepo>,
+    failures_remaining: AtomicU32,
+}
+
+impl TransientFailHeartbeatRepo {
+    pub fn new(inner: Arc<dyn RefreshClaimRepo>, failures: u32) -> Self {
+        Self {
+            inner,
+            failures_remaining: AtomicU32::new(failures),
+        }
+    }
+}
+
+#[async_trait::async_trait]
+impl RefreshClaimRepo for TransientFailHeartbeatRepo {
+    async fn try_claim(
+        &self,
+        credential_id: &CredentialId,
+        holder: &ReplicaId,
+        ttl: Duration,
+    ) -> Result<ClaimAttempt, RepoError> {
+        self.inner.try_claim(credential_id, holder, ttl).await
+    }
+
+    async fn heartbeat(&self, token: &ClaimToken, ttl: Duration) -> Result<(), HeartbeatError> {
+        // Decrement only if there is budget remaining; on zero we
+        // forward to inner. `fetch_update` returns Ok(prev) on success
+        // so we get the pre-decrement value back.
+        let prev = self
+            .failures_remaining
+            .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |v| {
+                if v == 0 { None } else { Some(v - 1) }
+            });
+        if prev.is_ok() {
+            return Err(HeartbeatError::Repo(RepoError::InvalidState(
+                "simulated transient heartbeat failure".into(),
+            )));
+        }
+        self.inner.heartbeat(token, ttl).await
     }
 
     async fn release(&self, token: ClaimToken) -> Result<(), RepoError> {
