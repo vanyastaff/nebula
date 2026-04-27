@@ -568,6 +568,40 @@ impl RefreshCoordinator {
             l1.complete(&credential_id_for_guard);
         });
 
+        // Global rate-limit gate (audit B6 / wave-2 regression).
+        //
+        // Wave-2 introduced this typed entry point but silently bypassed
+        // the L1 global concurrency semaphore (`refresh_semaphore`,
+        // default 32 permits). Per-credential L1 coalescing alone does
+        // not bound the case where many *distinct* credentials expire
+        // near-simultaneously — e.g. on a daily TTL boundary or after
+        // a replica restart with stale tokens — and a 200-credential
+        // expiry burst would issue 200 concurrent IdP POSTs, recreating
+        // the cascading-429 / refresh-storm pattern the cap is meant to
+        // prevent. Only the legacy `String`-id path
+        // (`resolver.rs::refresh_via_l1_only`) consumed permits, so
+        // typed callers were unprotected.
+        //
+        // Acquired AFTER `try_refresh` (Winner-only — Waiters already
+        // park on the oneshot above and do not need a permit) and BEFORE
+        // L2 backoff so the bound covers the entire IdP POST window.
+        // The order also keeps `_l1_complete` declared first so its
+        // guard fires on every cancel/Drop path even if `acquire_permit`
+        // itself is cancelled (its `await` is cancel-safe per
+        // `L1RefreshCoalescer::acquire_permit` rustdoc — dropping the
+        // future does not consume a permit).
+        //
+        // RAII: `_permit` holds an `OwnedSemaphorePermit` until end of
+        // function (after explicit synchronous release on the success
+        // path; after `l2_teardown` fires on every other path), so the
+        // permit is released on every exit including Drop and panic.
+        // Regression test
+        // `refresh_coalesced_respects_global_concurrency_cap` proves
+        // the cap gates concurrent typed refreshes (mutation: removing
+        // this line makes the test observe `counter == 4` instead of
+        // `2`).
+        let _permit = self.l1.acquire_permit().await;
+
         // L2: durable claim with backoff per §3.6.
         let claim = self
             .try_acquire_l2_with_backoff(credential_id, &needs_refresh_after_backoff)
@@ -979,6 +1013,13 @@ impl RefreshCoordinator {
     }
 
     /// **Legacy.** Acquire a permit from the L1 concurrency limiter.
+    ///
+    /// Only the standalone permit-grab API is deprecated; the underlying
+    /// global concurrency semaphore is **not** going away. The typed-path
+    /// `Self::refresh_coalesced` acquires from the same semaphore
+    /// internally (Winner-only, RAII-scoped), so callers migrating off
+    /// the legacy `String`-id surface inherit the rate-limit defense
+    /// without any explicit wiring. See audit B6 / wave-2 regression.
     #[deprecated(
         since = "0.1.0",
         note = "use refresh_coalesced; remove when typed CredentialId migration completes — П3+"
@@ -1910,5 +1951,105 @@ mod tests {
             matches!(attempt, ClaimAttempt::Acquired(_)),
             "drop must not leave the L2 row held — got {attempt:?}"
         );
+    }
+
+    /// B6 wave-2 regression — global concurrency cap MUST gate the
+    /// typed `refresh_coalesced` path. Without the per-Winner permit
+    /// acquisition, 200 distinct credentials expiring near-simultaneously
+    /// would issue 200 concurrent IdP POSTs with no rate-limit defense
+    /// — the cascading-429 / refresh-storm scenario the 32-permit cap
+    /// (default) was designed to bound. Wave-2 silently bypassed this
+    /// for the typed code path; only the legacy `String`-id path
+    /// (`resolver.rs::refresh_via_l1_only`) consumed permits.
+    ///
+    /// Strategy under `start_paused = true`:
+    ///   1. Build coordinator with `max_concurrent=2`.
+    ///   2. Spawn 4 concurrent `refresh_coalesced` calls on different credentials. Each closure
+    ///      increments an atomic counter, then parks on `Notify::notified()` (no time involvement
+    ///      so virtual time does not advance and heartbeat ticks never fire during the assertion
+    ///      windows).
+    ///   3. Sleep 1ms (virtual) to let the runtime drive all 4 tasks to a parked state — two on
+    ///      `notified()` after running the closure, two on the semaphore's `acquire_owned()`.
+    ///   4. Assert counter == 2 — only the first two acquired permits.
+    ///   5. Wake the parked closures; the first two complete and drop their permits, freeing the
+    ///      semaphore for the remaining two.
+    ///   6. Sleep 1ms again; assert counter == 4.
+    ///
+    /// Pre-fix (no `acquire_permit` in `refresh_coalesced`): all 4
+    /// closures start immediately; counter reaches 4 before any notify
+    /// fires; the first assertion fails with `observed 4 started`.
+    /// Verified by mutation during construction — removing the
+    /// `let _permit = self.l1.acquire_permit().await;` line causes
+    /// this test to fail at the first assertion.
+    #[tokio::test(start_paused = true)]
+    async fn refresh_coalesced_respects_global_concurrency_cap() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        use tokio::sync::Notify;
+
+        let coord = Arc::new(
+            RefreshCoordinator::with_max_concurrent(2).expect("max=2 is a valid concurrency limit"),
+        );
+
+        let started = Arc::new(AtomicUsize::new(0));
+        let notify = Arc::new(Notify::new());
+
+        let cids: Vec<CredentialId> = (0..4).map(|_| CredentialId::new()).collect();
+        let mut handles = Vec::with_capacity(cids.len());
+
+        for cid in &cids {
+            let coord = Arc::clone(&coord);
+            let started = Arc::clone(&started);
+            let notify = Arc::clone(&notify);
+            let cid = *cid;
+            handles.push(tokio::spawn(async move {
+                coord
+                    .refresh_coalesced(
+                        &cid,
+                        |_| async { true },
+                        move |_claim| async move {
+                            started.fetch_add(1, Ordering::SeqCst);
+                            notify.notified().await;
+                            Ok::<i32, RefreshError>(7)
+                        },
+                    )
+                    .await
+            }));
+        }
+
+        // Sleep 1ms (virtual time) so the runtime drives all 4 spawned
+        // tasks to a parked state. 1ms is well below the default
+        // `heartbeat_interval` (10s), so no heartbeat tick fires during
+        // the assertion windows.
+        tokio::time::sleep(Duration::from_millis(1)).await;
+
+        assert_eq!(
+            started.load(Ordering::SeqCst),
+            2,
+            "with max_concurrent=2, only two closures must run concurrently; \
+             observed {} started",
+            started.load(Ordering::SeqCst)
+        );
+
+        // Wake the two parked closures. They return `Ok(7)`, drop their
+        // permits via RAII; the semaphore then wakes the two waiters
+        // parked on `acquire_owned()`.
+        notify.notify_waiters();
+        tokio::time::sleep(Duration::from_millis(1)).await;
+
+        assert_eq!(
+            started.load(Ordering::SeqCst),
+            4,
+            "after two permits released, the remaining two closures must run; \
+             observed {} started",
+            started.load(Ordering::SeqCst)
+        );
+
+        // Drain remaining tasks so the test exits cleanly.
+        notify.notify_waiters();
+        for handle in handles {
+            let outcome = handle.await.expect("spawned task did not panic");
+            assert_eq!(outcome.expect("refresh closure returned Ok"), 7);
+        }
     }
 }

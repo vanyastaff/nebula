@@ -71,6 +71,17 @@ pub(crate) struct L1RefreshCoalescer {
     ///
     /// Prevents cascading failures when many credentials expire simultaneously
     /// and the provider rate-limits (429). Default: 32 concurrent refreshes.
+    ///
+    /// Consumed by **both** entry points:
+    /// - `RefreshCoordinator::refresh_coalesced` (typed `CredentialId` path) — acquires a permit
+    ///   Winner-only after the L1 in-flight check, holds it for the L2 acquisition + IdP POST
+    ///   window, releases on RAII Drop.
+    /// - `RefreshCoordinator::acquire_permit` (legacy `String`-id path, deprecated — see
+    ///   coordinator.rs) — caller binds the permit explicitly via `let _permit = ...`.
+    ///
+    /// The Winner-only acquisition pattern matches the per-credential
+    /// coalescing model: Waiters already park on the in-flight oneshot
+    /// receiver and never issue an IdP POST themselves.
     refresh_semaphore: Arc<tokio::sync::Semaphore>,
 }
 
