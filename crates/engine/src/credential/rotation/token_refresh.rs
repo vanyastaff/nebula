@@ -186,24 +186,30 @@ fn update_state_from_token_response(
 /// error type, so applying redaction here covers all downstream
 /// renderings (`Display`, `tracing`, audit events) by construction.
 ///
-/// # Pattern stability
+/// # Pattern stability + non-panicking init
 ///
-/// [`REDACTION_PATTERN`] is the source-of-truth pattern. The `.expect`
-/// on `Regex::new` panics only if the pattern is statically broken —
-/// caught at CI by the unit test [`tests::redaction_regex_compiles`]
-/// and by every row in `crates/engine/tests/credential_refresh_redaction.rs`
-/// (integration test, ADR-0030 §4 CI gate). A future author who edits
-/// the pattern incorrectly hits the failure at CI, never in production.
+/// [`REDACTION_PATTERN`] is the source-of-truth pattern. We attempt
+/// `Regex::new` in a `OnceLock<Option<Regex>>` so a malformed pattern
+/// (theoretically possible if a future PR edits the literal incorrectly)
+/// never panics in library code — instead the helper returns a
+/// conservative full-redaction sentinel `[REDACTED]`, which is over-redaction
+/// (not under-redaction; never leaks the input). The CI safety net
+/// (`tests::redaction_regex_compiles` lib test +
+/// `crates/engine/tests/credential_refresh_redaction.rs` integration rows
+/// per ADR-0030 §4) catches the pattern regression before merge so the
+/// fallback path is never reached in production.
 const REDACTION_PATTERN: &str = r"(?i)\b(refresh[_-]?token|access[_-]?token|client[_-]?secret|bearer|api[_-]?key|password|secret)\s*[=:]\s*\S+";
 
 fn redact_sensitive_fields(input: &str) -> std::borrow::Cow<'_, str> {
     use std::sync::OnceLock;
 
-    static REDACTION_RE: OnceLock<regex::Regex> = OnceLock::new();
-    let re = REDACTION_RE.get_or_init(|| {
-        regex::Regex::new(REDACTION_PATTERN).expect("static redaction regex must be valid")
-    });
-    re.replace_all(input, "$1=[REDACTED]")
+    static REDACTION_RE: OnceLock<Option<regex::Regex>> = OnceLock::new();
+    let re = REDACTION_RE.get_or_init(|| regex::Regex::new(REDACTION_PATTERN).ok());
+
+    match re {
+        Some(re) => re.replace_all(input, "$1=[REDACTED]"),
+        None => std::borrow::Cow::Borrowed("[REDACTED]"),
+    }
 }
 
 /// Sanitizes a raw `error_uri` value from a non-2xx OAuth2 token response
@@ -272,20 +278,29 @@ fn oauth_token_error_summary(body_text: &str) -> String {
 mod tests {
     use super::*;
 
-    /// Pin: the static [`REDACTION_PATTERN`] compiles. A broken pattern
-    /// would panic at the first call to [`redact_sensitive_fields`] —
-    /// this lib-level test catches the regression at `cargo test --lib`
-    /// instead of waiting for the integration-test CI matrix
-    /// (`credential_refresh_redaction.rs` under `--features rotation`).
+    /// Pin: the static [`REDACTION_PATTERN`] compiles AND the helper
+    /// uses the regex path (not the over-redaction fallback). With the
+    /// non-panicking `OnceLock<Option<Regex>>` shape, a broken pattern
+    /// would silently route through the `[REDACTED]` fallback, which is
+    /// safer than a panic but hides the regression. This lib-level test
+    /// catches the pattern compile + the round-trip at `cargo test --lib`
+    /// — fails fast before the `--features rotation` integration matrix.
     #[test]
     fn redaction_regex_compiles() {
+        // Pattern parses standalone — fails fast on a malformed edit.
         let _ = regex::Regex::new(REDACTION_PATTERN).expect("REDACTION_PATTERN must compile");
-        // Sanity-check the round-trip too — in case the pattern is valid
-        // syntactically but fails to redact (e.g., someone replaced a
-        // capture group accidentally).
+
+        // Round-trip: helper redacts a known sensitive substring AND
+        // preserves surrounding text. If the pattern compiles but the
+        // helper falls back to `[REDACTED]` everywhere (Option::None
+        // branch), the surrounding-text assertion below catches it.
         let out = redact_sensitive_fields("refresh_token=abc12345 expired");
         assert!(out.contains("[REDACTED]"), "expected redaction: {out}");
         assert!(!out.contains("abc12345"), "secret leaked: {out}");
+        assert!(
+            out.contains("expired"),
+            "surrounding text preserved (regex path, not fallback): {out}"
+        );
     }
 
     fn sample_state() -> OAuth2State {
