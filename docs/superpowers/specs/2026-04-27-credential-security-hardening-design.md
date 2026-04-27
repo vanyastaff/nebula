@@ -20,7 +20,13 @@ defers-to:
 
 ## §0 Meta
 
-**Scope.** Implementation-ready design for the SEC cluster of `docs/tracking/credential-audit-2026-04-27.md` after §XII Errata reclassifications. Closes 7 production-track findings: SEC-01 (bounded reader), SEC-02 (URL-validate `error_uri`), SEC-05 + SEC-06 (plaintext lifecycle invariant N10), SEC-08 + SEC-11 (API surface tightening), SEC-09 + SEC-10 (Zeroizing wrapper discipline), and conditionally SEC-13 (refresh err redaction).
+**Scope.** Implementation-ready design for the SEC cluster of `docs/tracking/credential-audit-2026-04-27.md` after §XII Errata reclassifications. Closes **8 production-track findings** plus conditional SEC-13:
+- **Type-level / structural** — SEC-05 + SEC-06 (plaintext lifecycle invariant N10), SEC-08 + SEC-11 (API surface tightening).
+- **Pattern-level** — SEC-09 + SEC-10 (Zeroizing wrapper discipline).
+- **Operational hardening** — SEC-01 (bounded reader), SEC-02 (URL-validate `error_uri`).
+- **Conditional** — SEC-13 (refresh err redaction; verify-first in Stage 0; fix lands in Stage 0.5 if the ADR-0030 §4 redaction CI gate is missing).
+
+**Implementation note (post-Stage-1).** SEC-08 was deferred entirely from this spec to the wrapper-removal sub-spec ([`2026-04-27-credential-secret-string-wrapper-removal-design.md`](2026-04-27-credential-secret-string-wrapper-removal-design.md)) at execution time — the originally-planned `pub → pub(crate)` interim would break legitimate `nebula-api` external usage of `serde_secret`. Wrapper-removal subsumes SEC-08 structurally via `secrecy::SerializableSecret` opt-in. The «8 production-track findings» count above is the spec scope at draft time; the actual closed count at PR landing is 7 production-track + 1 conditional SEC-13 = 8 findings, with SEC-08 listed under §9 «Deferred / parallel tracks».
 
 **Non-goals.**
 - SEC-03 (AAD/`key_id` redesign) — separate spec with ADR-0028 amendment, different review depth, different rollback shape per Errata §XII.G.
