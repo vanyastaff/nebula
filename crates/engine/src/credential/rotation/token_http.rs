@@ -84,3 +84,38 @@ pub async fn read_token_response_limited(
     }
     serde_json::from_slice(&buf).map_err(TokenHttpError::Json)
 }
+
+/// Read a non-2xx token response body up to `max_bytes` as text (no JSON parse).
+///
+/// SEC-01 (security hardening 2026-04-27 Stage 3): the error path
+/// previously called `resp.text().await` unbounded. A compromised /
+/// MITM IdP could push hundreds of MB of error body within the 30s
+/// transport timeout, causing memory pressure on the engine. This
+/// helper bounds the read to `max_bytes` (default
+/// `OAUTH_TOKEN_HTTP_MAX_RESPONSE_BYTES`) using the same streaming
+/// approach as [`read_token_response_limited`], but returns raw text
+/// for downstream redaction-aware summarization.
+pub async fn read_token_response_text_limited(
+    response: reqwest::Response,
+    max_bytes: usize,
+) -> Result<String, TokenHttpError> {
+    if let Some(claimed) = response.content_length()
+        && claimed > u64::try_from(max_bytes).unwrap_or(u64::MAX)
+    {
+        return Err(TokenHttpError::ContentLengthTooLarge {
+            claimed,
+            max: max_bytes,
+        });
+    }
+
+    let mut buf = Vec::new();
+    let mut stream = response.bytes_stream();
+    while let Some(chunk) = stream.next().await {
+        let chunk = chunk.map_err(TokenHttpError::ReadChunk)?;
+        if buf.len().saturating_add(chunk.len()) > max_bytes {
+            return Err(TokenHttpError::BodyTooLarge { max: max_bytes });
+        }
+        buf.extend_from_slice(&chunk);
+    }
+    Ok(String::from_utf8_lossy(&buf).into_owned())
+}

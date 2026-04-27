@@ -29,6 +29,7 @@ use serde_json::Value;
 
 use super::token_http::{
     OAUTH_TOKEN_HTTP_MAX_RESPONSE_BYTES, oauth_token_http_client, read_token_response_limited,
+    read_token_response_text_limited,
 };
 
 /// Refresh-related failures produced by [`refresh_oauth2_state`].
@@ -120,10 +121,17 @@ pub async fn refresh_oauth2_state(state: &mut OAuth2State) -> Result<(), TokenRe
 async fn parse_token_response(resp: Response) -> Result<Value, TokenRefreshError> {
     let status = resp.status();
     if !status.is_success() {
-        let summary = match resp.text().await {
-            Ok(body_text) => oauth_token_error_summary(&body_text),
-            Err(e) => format!("failed to read token endpoint error body: {e}"),
-        };
+        // SEC-01 (security hardening 2026-04-27 Stage 3): bounded reader.
+        // Previously `resp.text().await` was unbounded on the error path —
+        // a compromised IdP could push hundreds of MB before the 30s
+        // transport timeout fired. The 256 KiB cap matches the success
+        // path's `read_token_response_limited`.
+        let summary =
+            match read_token_response_text_limited(resp, OAUTH_TOKEN_HTTP_MAX_RESPONSE_BYTES).await
+            {
+                Ok(body_text) => oauth_token_error_summary(&body_text),
+                Err(e) => format!("failed to read token endpoint error body: {e}"),
+            };
         return Err(TokenRefreshError::TokenEndpoint {
             status: status.to_string(),
             summary,
@@ -190,6 +198,42 @@ fn redact_sensitive_fields(input: &str) -> std::borrow::Cow<'_, str> {
     re.replace_all(input, "$1=[REDACTED]")
 }
 
+/// Sanitizes a raw `error_uri` value from a non-2xx OAuth2 token response
+/// before it lands in operator-facing summaries.
+///
+/// SEC-02 (security hardening 2026-04-27 Stage 3) — without sanitization a
+/// compromised / MITM IdP could inject:
+/// - Phishing URLs disguised as legitimate help pages (different scheme, host obfuscation),
+/// - Control characters (`\x00-\x1F`, `\x7F`) that mangle SIEM rows, inject ANSI escapes into
+///   terminal renderings, or break log parsers,
+/// - Arbitrarily long values that bloat audit storage.
+///
+/// Sanitization applies in this order:
+/// 1. `Url::parse` — reject anything that is not a valid absolute URL.
+/// 2. Scheme allowlist — only `https` survives. `http`, `javascript:`, `file:`, custom schemes are
+///    rejected.
+/// 3. Control-char strip — any byte `< 0x20` or `== 0x7F` is rejected.
+/// 4. Length cap — `> 256` chars truncates with a `…[truncated]` suffix.
+///
+/// Returns a placeholder for rejected inputs:
+/// - `[invalid_error_uri_redacted]` — parse fail or non-https scheme
+/// - `[control_chars_in_error_uri_redacted]` — control byte found
+fn sanitize_error_uri(raw: &str) -> std::borrow::Cow<'_, str> {
+    use std::borrow::Cow;
+    let parsed = match url::Url::parse(raw) {
+        Ok(u) if u.scheme() == "https" => u,
+        _ => return Cow::Borrowed("[invalid_error_uri_redacted]"),
+    };
+    let s = parsed.to_string();
+    if s.bytes().any(|b| b < 0x20 || b == 0x7f) {
+        return Cow::Borrowed("[control_chars_in_error_uri_redacted]");
+    }
+    if s.len() > 256 {
+        return Cow::Owned(format!("{}…[truncated]", &s[..256]));
+    }
+    Cow::Owned(s)
+}
+
 fn oauth_token_error_summary(body_text: &str) -> String {
     let Ok(value) = serde_json::from_str::<Value>(body_text) else {
         return "<non-json body>".to_owned();
@@ -210,7 +254,7 @@ fn oauth_token_error_summary(body_text: &str) -> String {
     }
     if let Some(uri) = value.get("error_uri").and_then(Value::as_str) {
         out.push_str(" (error_uri=");
-        out.push_str(uri);
+        out.push_str(&sanitize_error_uri(uri));
         out.push(')');
     }
     out

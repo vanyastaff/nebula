@@ -67,6 +67,7 @@ lru = { workspace = true }
 parking_lot = { workspace = true }
 scopeguard = "1"
 regex = { workspace = true }
+url = { workspace = true }
 reqwest = { workspace = true, default-features = false, features = [
   "json",
   "rustls",
