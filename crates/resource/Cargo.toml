@@ -41,6 +41,18 @@ tracing = { workspace = true }
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["rt-multi-thread", "test-util"] }
+# `test-util` enables `SchemeFactory::for_test*` and `SchemeGuard::for_test`
+# constructors so external integration tests (notably `tests/rotation.rs`) can
+# fabricate the rotation-dispatch inputs that production code only constructs
+# from inside the credential engine. Per ADR-0023 the feature MUST stay scoped
+# to dev-dependencies.
+nebula-credential = { path = "../credential", features = ["test-util"] }
+# `tests/rotation.rs` defines a mock `TestCredential` whose `State` impl
+# requires `Serialize + Deserialize + ZeroizeOnDrop` per the credential
+# contract. Production resources never define their own `Credential`/`State`
+# (they consume built-ins), so these are dev-only.
+serde = { workspace = true, features = ["derive"] }
+zeroize = { version = "1.8.2", features = ["zeroize_derive"] }
 insta = { workspace = true }
 pretty_assertions = { workspace = true }
 rstest = { workspace = true }

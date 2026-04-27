@@ -81,6 +81,22 @@ impl<C: Credential> SchemeGuard<'_, C> {
             _lifetime: PhantomData,
         }
     }
+
+    /// Test-only constructor for resource-side integration tests.
+    ///
+    /// Mirrors [`SchemeGuard::new`] but is publicly callable so external
+    /// integration tests (notably `nebula-resource`'s rotation dispatch
+    /// suite) can fabricate guards for fixture resources. Gated behind
+    /// `#[cfg(any(test, feature = "test-util"))]` per ADR-0023 — this
+    /// constructor MUST NOT be exposed in a production release build.
+    ///
+    /// Production code paths use the engine-driven flow that calls
+    /// [`SchemeFactory::acquire`], which hands out a borrow-pinned guard
+    /// the borrow checker rejects retention on (Probe 6).
+    #[cfg(any(test, feature = "test-util"))]
+    pub fn for_test(scheme: <C as Credential>::Scheme) -> Self {
+        Self::new(scheme)
+    }
 }
 
 impl<C: Credential> Deref for SchemeGuard<'_, C> {
@@ -160,6 +176,27 @@ impl<C: Credential> SchemeFactory<C> {
         Self { inner: Arc::new(f) }
     }
 
+    /// Test-only constructor for resource-side integration tests.
+    ///
+    /// Mirrors [`SchemeFactory::new`] but is publicly callable so external
+    /// integration tests (notably `nebula-resource`'s rotation dispatch
+    /// suite) can fabricate factories for fixture resources. Gated behind
+    /// `#[cfg(any(test, feature = "test-util"))]` per ADR-0023 — this
+    /// constructor MUST NOT be exposed in a production release build.
+    ///
+    /// The closure shape matches the canonical engine wiring: per call it
+    /// must produce a pinned future yielding a fresh `SchemeGuard<'static, C>`
+    /// (which `acquire` re-binds to `&self`). Tests typically capture an
+    /// owned scheme prototype and clone it inside the closure body — see
+    /// `crates/resource/tests/rotation.rs` for the canonical fixture form.
+    #[cfg(any(test, feature = "test-util"))]
+    pub fn for_test<F>(f: F) -> Self
+    where
+        F: Fn() -> AcquireFuture<C> + Send + Sync + 'static,
+    {
+        Self::new(f)
+    }
+
     /// Acquire a fresh guard tied to the factory's lifetime.
     ///
     /// The returned guard borrows from the factory; it cannot be hoisted
@@ -172,6 +209,30 @@ impl<C: Credential> SchemeFactory<C> {
         // guard and the borrow checker rejects retention attempts past
         // the factory's lifetime.
         (self.inner)().await
+    }
+}
+
+#[cfg(any(test, feature = "test-util"))]
+impl<C: Credential> SchemeFactory<C>
+where
+    <C as Credential>::Scheme: Clone,
+{
+    /// Test-only convenience: construct a factory that yields clones of the
+    /// supplied scheme on every [`acquire`](Self::acquire) call.
+    ///
+    /// Wraps [`SchemeFactory::for_test`] with the common test pattern of "I
+    /// already have a scheme value, hand it out N times." Requires
+    /// `Scheme: Clone` (most schemes — `PublicScheme` mocks and
+    /// `SensitiveScheme` carrying `SecretString` clones — satisfy this).
+    /// Production code never relies on `Scheme: Clone`; only the test path
+    /// requires it.
+    ///
+    /// Gated behind `#[cfg(any(test, feature = "test-util"))]` per ADR-0023.
+    pub fn for_test_static(scheme: <C as Credential>::Scheme) -> Self {
+        Self::for_test(move || {
+            let scheme = scheme.clone();
+            Box::pin(async move { Ok(SchemeGuard::for_test(scheme)) })
+        })
     }
 }
 
