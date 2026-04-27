@@ -83,7 +83,16 @@ test-util = ["nebula-credential/test-util"]
 # `nebula-credential/rotation` so the backup type can reference credential's
 # rotation error / id types (ADR-0029 §4, ADR-0032).
 rotation = ["nebula-credential/rotation"]
-postgres = ["dep:sqlx", "sqlx/postgres", "dep:hex"]
+# Postgres backend. `sqlx/tls-rustls` is included by default because
+# every managed Postgres tier (RDS, Cloud SQL, Neon, Supabase, Azure)
+# requires TLS — without this, downstream consumers had to layer
+# `sqlx/tls-rustls` themselves which silently broke first-time
+# `connect()` attempts in production. The pure-rust `tls-rustls` is
+# preferred over `tls-native-tls` so we don't drag system openssl into
+# the build matrix. The base `sqlx` dep already enables `runtime-tokio`,
+# so the runtime+TLS bundle (`runtime-tokio-rustls`) isn't needed
+# separately.
+postgres = ["dep:sqlx", "sqlx/postgres", "sqlx/tls-rustls", "dep:hex"]
 sqlite = ["dep:sqlx", "sqlx/sqlite"]
 redis = ["dep:redis"]
 s3 = ["dep:aws-config", "dep:aws-sdk-s3"]

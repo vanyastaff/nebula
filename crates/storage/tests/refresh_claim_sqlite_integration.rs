@@ -17,11 +17,33 @@ use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
 /// Construct a fresh pool with claim tables installed. Single-connection so
 /// every test sees an isolated in-memory DB.
 async fn fresh_pool() -> sqlx::SqlitePool {
-    let options = SqliteConnectOptions::new()
-        .in_memory(true)
+    fresh_pool_with_capacity(1).await
+}
+
+/// Same as [`fresh_pool`] but allows callers to opt into a multi-connection
+/// pool. Required for tests that want to genuinely exercise SQL-layer
+/// concurrency (e.g. `DELETE … RETURNING` single-winner contention),
+/// because a `max_connections=1` pool serialises queries at the pool layer
+/// before the SQL atomicity check runs — making the assertion trivially
+/// true via serialisation rather than the SQL invariant being tested.
+///
+/// To make multiple connections see the same in-memory database, we open
+/// it via a named URI (`file:<random>?mode=memory&cache=shared`). The
+/// random name keeps each test isolated from concurrent ones in the same
+/// process. (For real-DB tests this is irrelevant; on-disk SQLite shares
+/// state via the file system.)
+async fn fresh_pool_with_capacity(max_connections: u32) -> sqlx::SqlitePool {
+    use std::str::FromStr;
+    // Random DB name so concurrent tests in the same process don't share
+    // tables. `?mode=memory&cache=shared` is the canonical SQLite recipe
+    // for an in-memory DB visible across multiple connections.
+    let db_name = format!("nebula-claim-test-{}", uuid::Uuid::new_v4());
+    let url = format!("sqlite:file:{db_name}?mode=memory&cache=shared");
+    let options = SqliteConnectOptions::from_str(&url)
+        .expect("parse sqlite memory url")
         .create_if_missing(true);
     let pool = SqlitePoolOptions::new()
-        .max_connections(1)
+        .max_connections(max_connections)
         .connect_with(options)
         .await
         .expect("connect sqlite memory");
@@ -207,7 +229,12 @@ async fn mark_sentinel_after_reclaim_returns_invalid_state() {
 
 #[tokio::test]
 async fn concurrent_try_claim_across_pool_clones_yields_one_acquired() {
-    let pool = fresh_pool().await;
+    // Capacity ≥ 2 so the two `try_claim` calls genuinely race at the SQL
+    // layer rather than queueing behind a single-connection pool. The
+    // INSERT-on-conflict-DO-NOTHING (or equivalent) is atomic across
+    // connections, so exactly one row wins and the other observes
+    // Contended — this is the SQL invariant we're actually testing.
+    let pool = fresh_pool_with_capacity(2).await;
     let repo_a = SqliteRefreshClaimRepo::new(pool.clone());
     let repo_b = SqliteRefreshClaimRepo::new(pool.clone());
     let cid = CredentialId::new();
@@ -237,8 +264,9 @@ async fn concurrent_try_claim_across_pool_clones_yields_one_acquired() {
         .into_iter()
         .filter(|o| matches!(o, ClaimAttempt::Contended { .. }))
         .count();
-    // Single pool with max_connections=1 serialises queries, so exactly
-    // one wins and one sees Contended.
+    // `try_claim` is atomic across connections, so exactly one wins and
+    // the other sees Contended — the SQL single-winner property the
+    // contract relies on.
     assert_eq!(acquired_count, 1, "exactly one acquirer should win");
     assert_eq!(contended_count, 1, "the other must see Contended");
 }
@@ -249,7 +277,13 @@ async fn concurrent_reclaim_returns_each_stuck_row_to_exactly_one_sweeper() {
     // sweeper across concurrent sweeps. Two sweepers observing the same
     // expired row both as `RefreshInFlight` would double-count toward the
     // N=3 sentinel-event ReauthRequired threshold.
-    let pool = fresh_pool().await;
+    //
+    // Capacity ≥ 2 so the two `reclaim_stuck` calls genuinely race at the
+    // SQL layer. With `max_connections=1` they queue behind one
+    // connection and the SQL single-winner invariant
+    // (`DELETE … RETURNING` on the same row) is never actually
+    // contested — the assertion would pass trivially via serialisation.
+    let pool = fresh_pool_with_capacity(2).await;
     let repo1 = SqliteRefreshClaimRepo::new(pool.clone());
     let repo2 = SqliteRefreshClaimRepo::new(pool.clone());
 
