@@ -383,6 +383,7 @@ mod tests {
         NEBULA_CREDENTIAL_REFRESH_COORD_HOLD_DURATION_SECONDS,
         NEBULA_CREDENTIAL_REFRESH_COORD_RECLAIM_SWEEPS_TOTAL,
         NEBULA_CREDENTIAL_REFRESH_COORD_SENTINEL_EVENTS_TOTAL,
+        NEBULA_CREDENTIAL_RESOLVER_REAUTH_PERSIST_CAS_EXHAUSTED_TOTAL,
         NEBULA_CREDENTIAL_ROTATION_DURATION_SECONDS, NEBULA_CREDENTIAL_ROTATION_FAILURES_TOTAL,
         NEBULA_CREDENTIAL_ROTATIONS_TOTAL, NEBULA_RESOURCE_ACQUIRE_ERROR_TOTAL,
         NEBULA_RESOURCE_ACQUIRE_TOTAL, NEBULA_RESOURCE_ACQUIRE_WAIT_DURATION_SECONDS,
@@ -392,6 +393,8 @@ mod tests {
         NEBULA_RESOURCE_POOL_EXHAUSTED_TOTAL, NEBULA_RESOURCE_POOL_WAITERS,
         NEBULA_RESOURCE_QUARANTINE_RELEASED_TOTAL, NEBULA_RESOURCE_QUARANTINE_TOTAL,
         NEBULA_RESOURCE_RELEASE_TOTAL, NEBULA_RESOURCE_USAGE_DURATION_SECONDS,
+        refresh_coord_claim_outcome, refresh_coord_coalesced_tier, refresh_coord_reclaim_outcome,
+        refresh_coord_sentinel_action,
     };
 
     const RESOURCE_METRIC_NAMES: [&str; 16] = [
@@ -455,12 +458,13 @@ mod tests {
         assert_eq!(unique.len(), 16);
     }
 
-    const CREDENTIAL_METRIC_NAMES: [&str; 5] = [
+    const CREDENTIAL_METRIC_NAMES: [&str; 6] = [
         NEBULA_CREDENTIAL_ROTATIONS_TOTAL,
         NEBULA_CREDENTIAL_ROTATION_FAILURES_TOTAL,
         NEBULA_CREDENTIAL_ROTATION_DURATION_SECONDS,
         NEBULA_CREDENTIAL_ACTIVE_TOTAL,
         NEBULA_CREDENTIAL_EXPIRED_TOTAL,
+        NEBULA_CREDENTIAL_RESOLVER_REAUTH_PERSIST_CAS_EXHAUSTED_TOTAL,
     ];
 
     /// Refresh-coordinator metrics (sub-spec §6).
@@ -509,17 +513,52 @@ mod tests {
                 assert_eq!(counter.get(), 1);
             }
         }
-        assert_eq!(unique.len(), 5);
+        assert_eq!(unique.len(), 6);
     }
 
     /// Sub-spec §6 — five refresh-coordinator metrics. The histogram
     /// observes hold-duration in seconds; the four counters carry
-    /// closed label sets defined in this module's
-    /// `refresh_coord_*` submodules.
+    /// closed label sets defined in this module's `refresh_coord_*`
+    /// submodules.
+    ///
+    /// The per-counter `(name, label_key, sample_value)` table mirrors
+    /// the engine wiring in `crates/engine/src/credential/refresh/metrics.rs`
+    /// so a future drift between the doc-string label set and the
+    /// engine's `claim_label`/`coalesced_label`/`sentinel_label`/`reclaim_label`
+    /// builders fails CI rather than landing silently. Previously the
+    /// test hard-coded `outcome=acquired` for every counter, so a label
+    /// rename on three of four counters was invisible.
     #[test]
     fn credential_refresh_coord_constants_are_accessible_unique_and_registry_safe() {
         let registry = MetricsRegistry::new();
         let mut unique = HashSet::new();
+
+        // (constant, label_key, label_value) per counter — mirrors the
+        // engine's pre-bound handles. Histogram has no labels so it's
+        // handled separately below.
+        let counter_label_map: &[(&'static str, &'static str, &'static str)] = &[
+            (
+                NEBULA_CREDENTIAL_REFRESH_COORD_CLAIMS_TOTAL,
+                "outcome",
+                refresh_coord_claim_outcome::ACQUIRED,
+            ),
+            (
+                NEBULA_CREDENTIAL_REFRESH_COORD_COALESCED_TOTAL,
+                "tier",
+                refresh_coord_coalesced_tier::L1,
+            ),
+            (
+                NEBULA_CREDENTIAL_REFRESH_COORD_SENTINEL_EVENTS_TOTAL,
+                "action",
+                refresh_coord_sentinel_action::REAUTH_TRIGGERED,
+            ),
+            (
+                NEBULA_CREDENTIAL_REFRESH_COORD_RECLAIM_SWEEPS_TOTAL,
+                "outcome",
+                refresh_coord_reclaim_outcome::RECLAIMED,
+            ),
+        ];
+
         for metric_name in CREDENTIAL_REFRESH_COORD_METRIC_NAMES {
             assert!(!metric_name.is_empty());
             assert!(metric_name.starts_with("nebula_credential_refresh_coord_"));
@@ -531,14 +570,17 @@ mod tests {
             assert!(unique.insert(metric_name));
 
             if metric_name == NEBULA_CREDENTIAL_REFRESH_COORD_HOLD_DURATION_SECONDS {
-                let labels = registry.interner().single("outcome", "ok");
-                let histogram = registry.histogram_labeled(metric_name, &labels);
+                let histogram = registry.histogram(metric_name);
                 histogram.observe(0.5);
                 assert_eq!(histogram.count(), 1);
             } else {
-                // All four refresh-coord counters carry a closed label
-                // set; exercise the labeled accessor end-to-end.
-                let labels = registry.interner().single("outcome", "acquired");
+                // Find the matching label_key and sample_value for this
+                // counter — the table above is the source of truth.
+                let (_, label_key, label_value) = counter_label_map
+                    .iter()
+                    .find(|(name, ..)| *name == metric_name)
+                    .expect("every refresh-coord counter must appear in counter_label_map");
+                let labels = registry.interner().single(label_key, label_value);
                 let counter = registry.counter_labeled(metric_name, &labels);
                 counter.inc();
                 assert_eq!(counter.get(), 1);
@@ -552,11 +594,6 @@ mod tests {
     /// fails CI rather than landing silently.
     #[test]
     fn refresh_coord_label_constants_are_unique_per_module() {
-        use super::{
-            refresh_coord_claim_outcome, refresh_coord_coalesced_tier,
-            refresh_coord_reclaim_outcome, refresh_coord_sentinel_action,
-        };
-
         let claim = [
             refresh_coord_claim_outcome::ACQUIRED,
             refresh_coord_claim_outcome::CONTENDED,
