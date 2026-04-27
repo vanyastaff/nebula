@@ -4378,6 +4378,7 @@ dependencies = [
  "tokio",
  "tokio-util",
  "tracing",
+ "trybuild",
 ]
 
 [[package]]
