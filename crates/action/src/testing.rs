@@ -501,6 +501,7 @@ pub struct TriggerTestHarness<A: TriggerAction> {
 impl<A> TriggerTestHarness<A>
 where
     A: TriggerAction + Send + Sync + 'static,
+    A::Error: Into<ActionError>,
 {
     #[must_use]
     pub fn new(action: A, builder: TestContextBuilder) -> Self {
@@ -514,17 +515,11 @@ where
     }
 
     pub async fn start(&self) -> Result<(), ActionError> {
-        self.action
-            .start(&self.ctx)
-            .await
-            .map_err(ActionError::fatal_from)
+        self.action.start(&self.ctx).await.map_err(Into::into)
     }
 
     pub async fn stop(&self) -> Result<(), ActionError> {
-        self.action
-            .stop(&self.ctx)
-            .await
-            .map_err(ActionError::fatal_from)
+        self.action.stop(&self.ctx).await.map_err(Into::into)
     }
 
     #[must_use]

@@ -21,9 +21,9 @@ use std::sync::Arc;
 
 use dashmap::DashMap;
 use nebula_action::{
-    Action, ActionHandler, ActionMetadata, PollAction, PollTriggerAdapter, ResourceAction,
-    ResourceActionAdapter, StatefulAction, StatefulActionAdapter, StatelessAction,
-    StatelessActionAdapter, TriggerAction, TriggerActionAdapter, TriggerSource, WebhookAction,
+    Action, ActionError, ActionHandler, ActionMetadata, PollAction, PollTriggerAdapter,
+    ResourceAction, ResourceActionAdapter, StatefulAction, StatefulActionAdapter, StatelessAction,
+    StatelessActionAdapter, TriggerAction, TriggerActionAdapter, WebhookAction,
     WebhookTriggerAdapter,
 };
 use nebula_core::ActionKey;
@@ -160,7 +160,7 @@ impl ActionRegistry {
     pub fn register_trigger<A>(&self, action: A)
     where
         A: TriggerAction + Send + Sync + 'static,
-        <A::Source as TriggerSource>::Event: Send + Sync + 'static,
+        A::Error: Into<ActionError>,
     {
         let metadata = TriggerAction::metadata(&action).clone();
         let handler = ActionHandler::Trigger(Arc::new(TriggerActionAdapter::new(action)));

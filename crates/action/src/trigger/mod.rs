@@ -491,7 +491,7 @@ impl<A> TriggerActionAdapter<A> {
 impl<A> TriggerHandler for TriggerActionAdapter<A>
 where
     A: TriggerAction + Send + Sync + 'static,
-    <A::Source as TriggerSource>::Event: Send + Sync + 'static,
+    A::Error: Into<ActionError>,
 {
     fn metadata(&self) -> &ActionMetadata {
         self.action.metadata()
@@ -503,10 +503,7 @@ where
     ///
     /// Returns [`ActionError`] if the trigger cannot be started.
     async fn start(&self, ctx: &dyn TriggerContext) -> Result<(), ActionError> {
-        self.action
-            .start(ctx)
-            .await
-            .map_err(ActionError::fatal_from)
+        self.action.start(ctx).await.map_err(Into::into)
     }
 
     /// Stop the trigger by delegating to the typed action.
@@ -515,7 +512,7 @@ where
     ///
     /// Returns [`ActionError`] if the trigger cannot be stopped cleanly.
     async fn stop(&self, ctx: &dyn TriggerContext) -> Result<(), ActionError> {
-        self.action.stop(ctx).await.map_err(ActionError::fatal_from)
+        self.action.stop(ctx).await.map_err(Into::into)
     }
 
     fn accepts_events(&self) -> bool {
@@ -547,7 +544,7 @@ where
         self.action
             .handle(ctx, typed_event)
             .await
-            .map_err(ActionError::fatal_from)
+            .map_err(Into::into)
     }
 }
 

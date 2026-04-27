@@ -2,7 +2,7 @@
 //!
 //! Expected error: E0046 "not all trait items implemented, missing: Source".
 
-use nebula_action::{ActionError, ActionMetadata, IdempotencyKey, TriggerAction};
+use nebula_action::{ActionError, ActionMetadata, TriggerAction};
 use nebula_action::context::TriggerContext;
 
 struct BadTrigger;
