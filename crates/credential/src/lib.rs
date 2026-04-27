@@ -78,6 +78,8 @@ mod context;
 mod handle;
 /// Credential metadata — static type descriptor (CredentialMetadata, builder, compat).
 mod metadata;
+/// `NoCredential` opt-out type — for resources without an authenticated binding (ADR-0036).
+mod no_credential;
 /// Credential record — runtime operational state (timestamps, version, tags).
 mod record;
 
@@ -146,6 +148,7 @@ pub use nebula_core::accessor::CredentialAccessor;
 pub use nebula_core::{CredentialId, CredentialKey, credential_key};
 // Derive macros
 pub use nebula_credential_macros::{AuthScheme, Credential};
+pub use no_credential::{NoCredential, NoCredentialState};
 // Pending state store
 pub use pending_store::{PendingStateStore, PendingStoreError};
 #[cfg(any(test, feature = "test-util"))]
