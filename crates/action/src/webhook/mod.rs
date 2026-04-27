@@ -358,6 +358,25 @@ impl WebhookRequest {
         self.received_at
     }
 
+    /// Stable per-delivery id for transport-level idempotency.
+    ///
+    /// Checks common webhook delivery-id headers in precedence order:
+    /// - `X-Delivery-ID` (general convention)
+    /// - `X-GitHub-Delivery` (GitHub)
+    ///
+    /// Returns the first non-empty ASCII-valid header value found, or `None`
+    /// if no known delivery-id header is present.
+    ///
+    /// Use this from [`crate::TriggerAction::idempotency_key`] to surface
+    /// a transport-supplied dedup id to the engine without re-parsing headers.
+    #[must_use]
+    pub fn delivery_id(&self) -> Option<&str> {
+        // Check headers in precedence order. Uses `header_str` for
+        // case-insensitive lookup and ASCII validation.
+        self.header_str("x-delivery-id")
+            .or_else(|| self.header_str("x-github-delivery"))
+    }
+
     /// Attach a response channel for HTTP response plumbing.
     ///
     /// The HTTP transport layer calls this before wrapping the request
